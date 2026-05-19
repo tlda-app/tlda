@@ -12,10 +12,10 @@
 import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { dirname, basename, join } from 'path'
 
-const [texFile, lookupPath, outputPath] = process.argv.slice(2)
+const [texFile, lookupPath, outputPath, auxPathArg] = process.argv.slice(2)
 
 if (!texFile || !lookupPath || !outputPath) {
-  console.error('Usage: node compute-proof-pairing.mjs <tex-file> <lookup.json> <output.json>')
+  console.error('Usage: node compute-proof-pairing.mjs <tex-file> <lookup.json> <output.json> [aux-file]')
   process.exit(1)
 }
 
@@ -51,23 +51,29 @@ for (let i = 0; i < rawLines.length; i++) {
   lineToKey.push(`${i + 1}`) // main file: plain line number
 }
 
-// Parse .aux file for reference numbers (label → "E.2", etc.)
-const auxPath = texFile.replace(/\.tex$/, '.aux')
+// Parse .aux file for reference numbers AND page numbers (label → "E.2", page 5, etc.)
+// Prefer the build dir's .aux (4th arg) — it's fresh from compilation.
+// Fallback to tex source dir's .aux for standalone invocations.
+const auxPath = auxPathArg || texFile.replace(/\.tex$/, '.aux')
 const refNumbers = new Map()
+const auxPages = new Map()
 if (existsSync(auxPath)) {
   const auxContent = readFileSync(auxPath, 'utf8')
-  // \newlabel{label}{{refnum}{page}{...}{...}{...}}
-  const auxRe = /\\newlabel\{([^}]+)\}\{\{([^}]*)\}/g
+  // \newlabel{label}{{refnum}{page}{title}{...}{...}}
+  const auxRe = /\\newlabel\{([^}@]+)\}\{\{([^}]*)\}\{([^}]*)\}\{([^}]*)\}/g
   let m
   while ((m = auxRe.exec(auxContent)) !== null) {
-    refNumbers.set(m[1], m[2])
+    const [, label, refnum, page, title] = m
+    refNumbers.set(label, refnum)
+    const pageNum = parseInt(page, 10)
+    if (!isNaN(pageNum)) auxPages.set(label, { page: pageNum, title: title.trim() })
   }
 }
 
 /** Human-readable display name from aux file. "Lemma E.2", "(71)", etc. */
 const TYPE_DISPLAY = {
   theorem: 'Theorem', lemma: 'Lemma', proposition: 'Proposition', corollary: 'Corollary',
-  definition: 'Definition', assumption: 'Assumption', equation: '',
+  definition: 'Definition', assumption: 'Assumption', equation: '', scratch: '', condition: '',
 }
 function displayName(label, type) {
   const num = refNumbers.get(label)
@@ -75,6 +81,7 @@ function displayName(label, type) {
   const prefix = TYPE_DISPLAY[type]
   if (prefix === undefined) return label
   if (type === 'equation') return `(${num})`
+  if (!prefix) return label
   return `${prefix} ${num}`
 }
 
@@ -287,6 +294,7 @@ function inferLabelType(label) {
     eq: 'equation', thm: 'theorem', lem: 'lemma', prop: 'proposition',
     cor: 'corollary', def: 'definition', asn: 'assumption', asm: 'assumption',
     sec: 'section', subsec: 'section', fig: 'figure', tab: 'table',
+    scratch: 'scratch', cond: 'condition', ass: 'assumption',
   }
   return prefixMap[prefix] || 'unknown'
 }
@@ -543,6 +551,48 @@ for (const [label, info] of globalLabels) {
   }
 }
 
+const texParsedCount = Object.keys(labelRegions).length
+
+// Backfill labelRegions from .aux for labels not captured by tex parsing.
+// Custom environments like \begin{scratch}{label}{...} emit \label via macros
+// that aren't visible in the raw source — the .aux file is the only authority.
+for (const [label, auxInfo] of auxPages) {
+  if (labelRegions[label]) continue
+  const type = label.includes(':') ? label.split(':')[0] : 'label'
+  if (excludeRefTypes.has(type)) continue
+
+  // Try to find y-coordinates by scanning the lookup for this label's page.
+  // Search for the label text in lookup content (may appear as \label{X} or
+  // as an environment argument like \begin{scratch}{X}).
+  let yTop = 0, yBottom = 50
+  const page = auxInfo.page
+
+  for (const [key, entry] of Object.entries(lookup.lines)) {
+    if (entry.page === page && entry.content && entry.content.includes(label)) {
+      yTop = entry.y - 10
+      yBottom = entry.y + 20
+      break
+    }
+  }
+  if (yTop === 0) {
+    for (const [key, entry] of Object.entries(lookup.lines)) {
+      if (entry.page === page) {
+        yTop = entry.y - 10
+        yBottom = entry.y + 20
+        break
+      }
+    }
+  }
+
+  labelRegions[label] = {
+    page,
+    yTop,
+    yBottom,
+    type: inferLabelType(label),
+    displayLabel: displayName(label, inferLabelType(label)),
+  }
+}
+
 const output = {
   meta: {
     texFile,
@@ -558,6 +608,7 @@ writeFileSync(outputPath, JSON.stringify(output, null, 2))
 const crossPage = pairs.filter(p => !p.samePage).length
 const totalDeps = pairs.reduce((sum, p) => sum + p.dependencies.length, 0)
 console.log(`  ${pairs.length} pairs total, ${crossPage} cross-page, ${totalDeps} dependencies`)
-console.log(`  ${Object.keys(lineRefs).length} lines with refs, ${Object.keys(labelRegions).length} label regions`)
+const auxBackfillCount = Object.keys(labelRegions).length - texParsedCount
+console.log(`  ${Object.keys(lineRefs).length} lines with refs, ${Object.keys(labelRegions).length} label regions (${texParsedCount} from tex, ${auxBackfillCount} from .aux backfill)`)
 console.log(`  ${refNumbers.size} ref numbers from .aux file`)
 console.log(`  Written to ${outputPath}`)
