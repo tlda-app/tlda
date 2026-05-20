@@ -1775,12 +1775,17 @@ async function handleFleetWsMessage(ws, msg) {
       const wiretapRecipients = []
       for (const tap of taps) {
         if (!tap.filter) continue
+        if (tap.types && tap.types.length > 0 && !tap.types.includes('chat')) continue
         let matches = false
         try {
           const f = typeof tap.filter === 'string' ? JSON.parse(tap.filter) : tap.filter
-          const fromMatch = !f.from || f.from.some(grp => grp.every(t => fromLabels.includes(t)))
-          const toMatch = !f.to || f.to.some(grp => grp.every(t => toLabels.includes(t)))
-          matches = fromMatch && toMatch
+          matches = f.some(clause =>
+            clause.every(([role, label]) => {
+              if (role === 'from') return fromLabels.includes(label)
+              if (role === 'to') return toLabels.includes(label)
+              return false
+            })
+          )
         } catch {}
         if (matches && tap.agent_id !== from && tap.agent_id !== to) {
           wiretapRecipients.push(tap.agent_id)
