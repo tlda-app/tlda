@@ -603,6 +603,12 @@ function setCooldown(targetId, patternIdx) {
 const MANAGER_ESCALATION_PATTERN = /\b(?:talk|speak)\s+(?:to|with)\s+(?:(?:your|the|a)\s+)?manager\b/i
 const MANAGER_MODE_1_PATTERN = /\bI\b.*\b(?:talk|speak)\s+(?:to|with)\s+(?:(?:your|the|a)\s+)?manager\b/i
 const managerEscalationCooldowns = new Map()
+
+// --- Handoff automation ---
+const HANDOFF_PATTERN = /\b(?:hand\s*(?:this\s+)?off|handoff)\b/i
+const handoffCooldowns = new Map()
+const HANDOFF_COOLDOWN_MS = 120_000
+const pendingHandoffs = new Map()
 const MANAGER_ESCALATION_COOLDOWN_MS = 60_000
 
 function postJson(urlPath, body) {
@@ -781,6 +787,139 @@ async function hasInvokedSkillSince(agentId, skillName, sinceTs) {
   }
 }
 
+// ---- Handoff automation ----
+
+async function handleHandoff(agentId, triggerText) {
+  const now = Date.now()
+  const lastHandoff = handoffCooldowns.get(agentId) || 0
+  if (now - lastHandoff < HANDOFF_COOLDOWN_MS) return
+  handoffCooldowns.set(agentId, now)
+
+  const agentName = await resolveAgentName(agentId)
+  console.log(`[eliza] handoff triggered for ${agentName} (${agentId})`)
+
+  sendChat(OWNER_ID, `Starting handoff from **${agentName}**. Spawning briefing agent…`)
+  sendChat(agentId, `⚠️ Skip is handing off your work to a fresh agent. Stand by — a briefing agent will read your thread.`)
+
+  const briefingName = `briefing-${agentName}`
+  try {
+    let spawnResult = await postJson('/api/spawn', { name: briefingName })
+    if (spawnResult.error && spawnResult.error.includes('already exists')) {
+      spawnResult = await postJson('/api/spawn', { agent: briefingName, respawn: true })
+    }
+    if (spawnResult.error) {
+      sendChat(OWNER_ID, `⚠️ Failed to spawn briefing agent: ${spawnResult.error}`)
+      return
+    }
+
+    pendingHandoffs.set(briefingName, { originalAgent: agentName, originalAgentId: agentId, startedAt: now })
+
+    setTimeout(async () => {
+      try {
+        await postJson('/api/tasks/delegate', {
+          from: AGENT_ID,
+          agent: briefingName,
+          description: `Write handoff briefing for ${agentName}`,
+          message: `**Read these skills first:** \`write-briefing\`
+
+You are a briefing agent. Your job is to read **${agentName}**'s thread and extract Skip's decisions into a clean handoff document.
+
+**Steps:**
+1. \`get_thread(agent: "${agentName}", types: ["chat"], include_delegations: true)\`
+2. Read the full thread — find what Skip approved, rejected, and asked for
+3. Write the briefing to \`scratch/briefing-${agentName}.md\` following the \`write-briefing\` skill format
+4. When done, send this exact message to fleet:eliza: \`handoff-ready: scratch/briefing-${agentName}.md\`
+
+Do NOT continue the work. Do NOT form opinions about the argument. Extract decisions only.`,
+        })
+      } catch (e) {
+        console.error(`[eliza] delegate to briefing agent failed: ${e.message}`)
+      }
+    }, 15_000)
+
+    logDecision(agentId, 'handoff-initiated', 'handoff', { briefingAgent: briefingName }, triggerText)
+  } catch (e) {
+    sendChat(OWNER_ID, `⚠️ Failed to spawn briefing agent: ${e.message}`)
+  }
+}
+
+async function handleHandoffReady(fromId, text) {
+  const match = text.match(/^handoff-ready:\s*(.+)$/i)
+  if (!match) return false
+
+  const briefingPath = match[1].trim()
+
+  // Match the briefing agent to a pending handoff by name
+  const fromName = await resolveAgentName(fromId)
+  let handoffInfo = pendingHandoffs.get(fromName)
+  let briefingAgentName = fromName
+
+  // Fallback: check if any pending handoff name is a substring
+  if (!handoffInfo) {
+    for (const [name, info] of pendingHandoffs) {
+      if (fromName.includes(name) || name.includes(fromName)) {
+        handoffInfo = info
+        briefingAgentName = name
+        break
+      }
+    }
+  }
+
+  if (!handoffInfo) {
+    console.log(`[eliza] handoff-ready from ${fromName} but no pending handoff found`)
+    return false
+  }
+
+  pendingHandoffs.delete(briefingAgentName)
+  console.log(`[eliza] briefing ready: ${briefingPath} — spawning pickup agent for ${handoffInfo.originalAgent}`)
+
+  sendChat(OWNER_ID, `Briefing ready: **${briefingPath}**. Spawning fresh agent…`)
+
+  const pickupName = `pickup-${handoffInfo.originalAgent}`
+  const spawnPickup = async () => {
+    try {
+      let spawnResult = await postJson('/api/spawn', { name: pickupName })
+      if (spawnResult.error && spawnResult.error.includes('already exists')) {
+        spawnResult = await postJson('/api/spawn', { agent: pickupName, respawn: true })
+      }
+      if (spawnResult.error) {
+        sendChat(OWNER_ID, `⚠️ Failed to spawn pickup agent: ${spawnResult.error}`)
+        return
+      }
+
+      setTimeout(async () => {
+        try {
+          await postJson('/api/tasks/delegate', {
+            from: AGENT_ID,
+            agent: pickupName,
+            description: `Pick up work from ${handoffInfo.originalAgent}`,
+            message: `**Read these skills first:** \`pickup\`
+
+You are replacing **${handoffInfo.originalAgent}**, who went off track. A briefing agent has written a clean handoff document.
+
+**Steps:**
+1. Read the briefing: \`${briefingPath}\`
+2. Run the three-check from the \`pickup\` skill
+3. Check in with Skip — short message, 3 sentences max: what you understand, what's open, what you'll start on
+4. Wait for Skip's confirmation before diving in
+
+The briefing is your primary source. Only go to the original thread if the briefing is incomplete.`,
+          })
+          sendChat(OWNER_ID, `Handoff complete. **${pickupName}** is reading the briefing and will check in with you shortly.`)
+        } catch (e) {
+          console.error(`[eliza] delegate to pickup agent failed: ${e.message}`)
+        }
+      }, 15_000)
+
+      logDecision(handoffInfo.originalAgentId, 'handoff-pickup-spawned', 'handoff', { pickupAgent: pickupName, briefingPath }, '')
+    } catch (e) {
+      sendChat(OWNER_ID, `⚠️ Failed to spawn pickup agent: ${e.message}`)
+    }
+  }
+  spawnPickup().catch(e => console.error(`[eliza] pickup spawn error: ${e.message}`))
+  return true
+}
+
 // ---- WebSocket connection ----
 let ws = null
 let msgId = 1
@@ -851,8 +990,12 @@ function handleMessage(msg) {
   if (type === 'chat') {
     if (!text) return
 
-    // Messages sent directly to Eliza from agents: pattern arm registration
+    // Messages sent directly to Eliza from agents: handoff-ready signal or pattern arm registration
     if (to_id === AGENT_ID && from_id && from_id !== OWNER_ID) {
+      if (/^handoff-ready:/i.test(text)) {
+        handleHandoffReady(from_id, text).catch(e => console.error('[eliza] handoff-ready error:', e.message))
+        return
+      }
       handleRegistration(from_id, text)
       return
     }
@@ -864,6 +1007,12 @@ function handleMessage(msg) {
     if (from_id === OWNER_ID && to_id && to_id !== AGENT_ID && MANAGER_ESCALATION_PATTERN.test(text)) {
       const mode = MANAGER_MODE_1_PATTERN.test(text) ? 'talk-to-skip' : 'set-them-straight'
       handleManagerEscalation(to_id, text, mode).catch(e => console.error('[eliza] manager escalation error:', e.message))
+      return
+    }
+
+    // Handoff — Skip says "hand this off" to an agent
+    if (from_id === OWNER_ID && to_id && to_id !== AGENT_ID && HANDOFF_PATTERN.test(text)) {
+      handleHandoff(to_id, text).catch(e => console.error('[eliza] handoff error:', e.message))
       return
     }
 
