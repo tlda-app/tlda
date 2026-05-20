@@ -52,6 +52,14 @@ body.fog-dark-mode .scrolly-figure-wrap {
   background: #1a2024;
 }
 
+/* Fog dark — doc viewer shape (clip-panel) uses canvas bg, not generic dark */
+html body.fog-dark-mode .clip-panel {
+  background: #1a2024;
+}
+html body.fog-dark-mode .clip-panel-canvas {
+  background: #1a2024;
+}
+
 /* Fog dark — ribbon lane: white-transparent on dark canvas */
 body.fog-dark-mode .ribbon-lane {
   background: rgba(255, 255, 255, 0.08);
