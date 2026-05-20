@@ -1463,10 +1463,17 @@ server.on('upgrade', async (req, socket, head) => {
   // messages and (Phase 2) handles RPC requests routed by machine_id.
   if (url.pathname === '/ws/fleet-daemon') {
     const remoteAddr = req.socket.remoteAddress
+    const remotePort = req.socket.remotePort
     daemonWss.handleUpgrade(req, socket, head, (ws) => {
       ws._bootId = null
       ws._machineId = null
       ws._remoteAddr = remoteAddr  // captured so reaper can route kill RPC by chromium's source IP
+      trackWs(ws, {
+        kind: 'daemon',
+        sessionId: `daemon-${Date.now().toString(36)}`,
+        remoteAddr,
+        remotePort,
+      })
       ws.on('message', (raw) => {
         let msg
         try { msg = JSON.parse(raw.toString()) } catch { return }
@@ -1590,9 +1597,6 @@ async function handleFleetWsMessage(ws, msg) {
       human: !!msg.human,
       is_manager: !!manager,
       metadata: metadata || existing?.metadata || null,
-      // machine_id: optional. The fleet MCP doesn't send it yet — once it
-      // does, the server will know which fleet-daemon owns this agent and
-      // can route RPCs (Phase 2). Until then, agents stay with NULL.
       machine_id: machine_id || existing?.machine_id || null,
     }
     if (session_id && !agent.session_ids.includes(session_id)) {
@@ -2551,15 +2555,21 @@ function projectsForDaemon() {
 }
 
 function broadcastDaemonAgentsUpdated() {
-  if (!fleetStore || daemonConnections.size === 0) return
+  if (!fleetStore || daemonConnections.size === 0) {
+    if (!fleetStore) console.warn('[fleet-daemon] broadcastDaemonAgentsUpdated: no fleetStore')
+    return
+  }
   for (const [mid, dws] of daemonConnections) {
-    if (dws.readyState !== 1) continue
+    if (dws.readyState !== 1) {
+      console.warn(`[fleet-daemon] broadcastDaemonAgentsUpdated: ws for ${mid} not open (readyState=${dws.readyState})`)
+      continue
+    }
     try {
-      dws.send(JSON.stringify({
-        type: 'agents-updated',
-        agents: fleetStore.getAgentsByMachine(mid),
-      }))
-    } catch {}
+      const agents = fleetStore.getAgentsByMachine(mid)
+      dws.send(JSON.stringify({ type: 'agents-updated', agents }))
+    } catch (e) {
+      console.error(`[fleet-daemon] broadcastDaemonAgentsUpdated failed for ${mid}: ${e.message}`)
+    }
   }
 }
 
