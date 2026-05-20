@@ -1518,8 +1518,6 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
   ctx.texBase = basename(ctx.mainFile, '.tex')
   ctx.texPath = join(srcDir, ctx.mainFile)
   ctx.texDir = join(srcDir, dirname(ctx.mainFile))
-  ctx.buildDir = join(tmpdir(), `tlda-build-${name}-${Date.now()}`)
-  mkdirSync(ctx.buildDir, { recursive: true })
   // Output dir may not exist (e.g. after a wipe). All targets publish here.
   mkdirSync(outDir, { recursive: true })
 
@@ -1612,6 +1610,7 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
       if (isFinalPass) {
         targetMeta.push({ texBase: tBase, mainFile: mf, expectedPages: expectedPages ?? 0 })
         totalPages += expectedPages ?? 0
+        saveBuildCache(tCtx)
       }
 
       // Clean up this target's scratch build dir before the next iteration.
@@ -1666,7 +1665,6 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
       lastBuildSuccess: new Date().toISOString(),
       targets: targetMeta.map(t => ({ texBase: t.texBase, mainFile: t.mainFile, pages: t.expectedPages })),
     })
-    saveBuildCache(ctx)
     clearSynctexCache(name)
 
     // Touch build.stamp — staleness counterpart to source.stamp. Replaces
