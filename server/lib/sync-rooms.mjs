@@ -12,6 +12,7 @@ import { createMigrationSequence } from '@tldraw/store'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'node:fs'
 import { readFile, writeFile, rename, mkdir, appendFile } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
+import { gzipSync, gunzipSync } from 'node:zlib'
 import { emitShapeChangedDebounced } from './webhooks.mjs'
 
 // --- Custom shape schemas (prop validators only, no React) ---
@@ -473,7 +474,7 @@ const prevSnapshots = new Map()
  */
 function changelogPath(docName) {
   const projectName = docName.startsWith('doc-') ? docName.slice(4) : docName
-  return join(projectsDir, projectName, 'changelog.jsonl')
+  return join(projectsDir, projectName, 'changelog.jsonl.gz')
 }
 
 /**
@@ -541,7 +542,8 @@ function recordChanges(docName, room) {
 
   const path = changelogPath(docName)
   const lines = interesting.map(e => JSON.stringify(e)).join('\n') + '\n'
-  appendFile(path, lines).catch(e => console.error(`[changelog] Failed to write ${path}:`, e.message))
+  const compressed = gzipSync(lines)
+  appendFile(path, compressed).catch(e => console.error(`[changelog] Failed to write ${path}:`, e.message))
 
   return interesting
 }
@@ -959,7 +961,8 @@ export async function getShapesAt(projectName, timestamp) {
   // then parse in batches to avoid a 1-2s synchronous parse block.
   let entries = []
   try {
-    const content = await readFile(logPath, 'utf-8')
+    const raw = await readFile(logPath)
+    const content = gunzipSync(raw).toString('utf-8')
     const lines = content.split('\n')
     const BATCH = 500
     for (let i = 0; i < lines.length; i++) {
