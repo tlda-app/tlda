@@ -83,36 +83,36 @@ body.fog-dark-mode .tl-theme__dark .tlui-toolbar {
   background: rgba(26, 32, 36, 0.75) !important;
 }
 
-/* Teal dark — doc panel */
-body.fog-dark-mode .doc-panel {
+/* Teal dark — doc panel (html prefix for specificity over generic [data-theme="dark"]) */
+html body.fog-dark-mode .doc-panel {
   background: transparent;
   color: rgba(200, 218, 222, 0.1);
 }
-body.fog-dark-mode .doc-panel:hover,
-body.fog-dark-mode .doc-panel-open {
+html body.fog-dark-mode .doc-panel:hover,
+html body.fog-dark-mode .doc-panel-open {
   background: rgba(34, 42, 46, 0.92);
   color: rgba(200, 218, 222, 0.6);
 }
-body.fog-dark-mode .doc-panel-tabs {
+html body.fog-dark-mode .doc-panel-tabs {
   border-bottom-color: rgba(46, 58, 62, 0.4);
 }
-body.fog-dark-mode .doc-panel:hover .doc-panel-content,
-body.fog-dark-mode .doc-panel:hover .doc-panel-tabs,
-body.fog-dark-mode .doc-panel:hover .search-input-wrap,
-body.fog-dark-mode .doc-panel-open .doc-panel-content,
-body.fog-dark-mode .doc-panel-open .doc-panel-tabs,
-body.fog-dark-mode .doc-panel-open .search-input-wrap {
+html body.fog-dark-mode .doc-panel:hover .doc-panel-content,
+html body.fog-dark-mode .doc-panel:hover .doc-panel-tabs,
+html body.fog-dark-mode .doc-panel:hover .search-input-wrap,
+html body.fog-dark-mode .doc-panel-open .doc-panel-content,
+html body.fog-dark-mode .doc-panel-open .doc-panel-tabs,
+html body.fog-dark-mode .doc-panel-open .search-input-wrap {
   color: #c8dade;
 }
-body.fog-dark-mode .doc-panel:hover .doc-panel-tab.active,
-body.fog-dark-mode .doc-panel-open .doc-panel-tab.active {
+html body.fog-dark-mode .doc-panel:hover .doc-panel-tab.active,
+html body.fog-dark-mode .doc-panel-open .doc-panel-tab.active {
   color: #c8dade;
 }
-body.fog-dark-mode .toc-item:hover,
-body.fog-dark-mode .search-result:hover,
-body.fog-dark-mode .note-item:hover,
-body.fog-dark-mode .proof-item:hover,
-body.fog-dark-mode .toc-diff-hint:hover {
+html body.fog-dark-mode .toc-item:hover,
+html body.fog-dark-mode .search-result:hover,
+html body.fog-dark-mode .note-item:hover,
+html body.fog-dark-mode .proof-item:hover,
+html body.fog-dark-mode .toc-diff-hint:hover {
   background: rgba(46, 58, 62, 0.5);
 }
 
