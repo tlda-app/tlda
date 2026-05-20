@@ -147,6 +147,8 @@ function trackWs(ws, meta) {
   ws._wsRemotePort = meta.remotePort
   ws._wsConnectedAt = Date.now()
   ws._wsLastInputAt = Date.now()
+  ws._wsAlive = true
+  ws.on('pong', () => { ws._wsAlive = true })
   _trackedWs.add(ws)
   if (meta.kind === 'sync') {
     ws.on('message', (raw) => {
@@ -240,6 +242,25 @@ async function reapZombies() {
 }
 
 setInterval(reapZombies, REAPER_INTERVAL_MS).unref()
+
+// --- WebSocket heartbeat ---
+// Detect half-open connections (laptop sleep, network change) that TCP won't
+// notice for minutes. Server pings every 30s; if a client doesn't pong before
+// the next ping, terminate the socket. TLDraw's ClientWebSocketAdapter
+// reconnects automatically once the close fires.
+const WS_HEARTBEAT_INTERVAL_MS = 30_000
+setInterval(() => {
+  for (const ws of _trackedWs) {
+    if (ws.readyState !== 1) continue
+    if (ws._wsAlive === false) {
+      console.log(`[heartbeat] terminating unresponsive ${ws._wsKind} ws=${ws._wsSessionId} doc=${ws._wsDocName || '-'}`)
+      ws.terminate()
+      continue
+    }
+    ws._wsAlive = false
+    ws.ping()
+  }
+}, WS_HEARTBEAT_INTERVAL_MS).unref()
 
 // Local-machine daemon supervisor.
 //
