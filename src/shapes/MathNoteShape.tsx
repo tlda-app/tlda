@@ -326,6 +326,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     const [dotHovered, setDotHovered] = useState(false)
     const dotHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
     const [imgVersion, setImgVersion] = useState(0)
+    const [backingSyncState, setBackingSyncState] = useState<'synced' | 'pushing' | 'stale'>('synced')
 
     const docName = shape.props.docName as string | undefined
     const showDoc = !!(shape.props.docName && shape.props.docView)
@@ -452,11 +453,13 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       const content = (editor.getShape(shape.id) as any)?.props?.text ?? ''
       if (textAtEditStartRef.current === null || content === textAtEditStartRef.current) return
       textAtEditStartRef.current = null
+      setBackingSyncState('pushing')
       fetch('/api/backing-file-write', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ filePath: backingFile, content }),
-      }).catch(() => {})
+      }).then(() => setBackingSyncState('synced'))
+        .catch(() => setBackingSyncState('stale'))
     }, [isEditing])
 
     // Backing file conflict: when the file changes externally while the note
@@ -466,7 +469,8 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       return onFileUpdatedSignal((signal) => {
         if (signal.filePath !== backingFile) return
         const current = (editor.getShape(shape.id) as any)?.props?.text ?? ''
-        if (signal.content === current) return
+        if (signal.content === current) { setBackingSyncState('synced'); return }
+        setBackingSyncState('stale')
         // Divergence detected — split: update this note with the file version,
         // create a sibling with the canvas version.
         const bounds = editor.getShapePageBounds(shape.id)
@@ -1112,7 +1116,11 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
             }}
           >
             <span>
-              {backingFile && <span title={backingFile} style={{ opacity: 0.5, marginRight: 4 }}>⇄</span>}
+              {backingFile && <span title={backingFile} style={{
+                opacity: 0.7,
+                marginRight: 4,
+                color: backingSyncState === 'synced' ? '#4a9' : backingSyncState === 'pushing' ? '#aa7' : '#c55',
+              }}>{backingSyncState === 'synced' ? '⇄' : backingSyncState === 'pushing' ? '⇄' : '⇉'}</span>}
               {useVim ? `-- ${vimMode.toUpperCase()} --` : ''}
             </span>
             <span className="math-note-colors" style={{
@@ -1452,7 +1460,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
               style={{
                 position: 'absolute',
                 top: 3,
-                right: (docName || backingFile) ? 22 : 4,
+                right: docName ? 22 : 4,
                 width: 16,
                 height: 16,
                 display: 'flex',
@@ -1469,34 +1477,6 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
               onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.opacity = '0.8' }}
               onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = '0.3' }}
             >↧</div>
-          )}
-          {/* Backing file sync indicator */}
-          {backingFile && !docName && (
-            <div
-              title={`Synced: ${backingFile.split('/').pop()}`}
-              style={{
-                position: 'absolute',
-                top: 3,
-                right: 4,
-                width: 16,
-                height: 16,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                opacity: 0.1,
-                transition: 'opacity 0.3s',
-                zIndex: 10,
-                fontSize: '10px',
-                userSelect: 'none',
-              }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.opacity = '0.6' }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = '0.1' }}
-            >
-              <svg width="10" height="12" viewBox="0 0 10 12" fill="currentColor" opacity="0.7">
-                <path d="M1 1.5A.5.5 0 011.5 1h4.793l3.207 3.207V10.5a.5.5 0 01-.5.5h-7.5a.5.5 0 01-.5-.5v-9z"/>
-                <path d="M6 1v3.5h3.5" fill="none" stroke="currentColor" strokeWidth="0.8"/>
-              </svg>
-            </div>
           )}
           {/* Toggle doc view — top-right tlda logo button (only when docName is set) */}
           {docName && (
