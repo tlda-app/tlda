@@ -977,11 +977,17 @@ app.post('/api/plan-mode-respond', requireRead, async (req, res) => {
   if (!agent) return res.status(404).json({ error: 'agent not found' })
   if (!agent.tmux_session) return res.status(400).json({ error: 'no tmux session' })
   if (!['approve', 'supervised', 'reject'].includes(response)) return res.status(400).json({ error: 'response must be approve, supervised, or reject' })
-  const route = resolveRpc('send-text', agent)
+  const rpcType = response === 'reject' ? 'send-key' : 'send-text'
+  const route = resolveRpc(rpcType, agent)
   if (route.via === 'none') return res.status(503).json({ error: route.error })
   try {
-    const key = response === 'approve' ? '1' : response === 'supervised' ? '2' : '3'
-    const result = await sendRpc(route.machine_id, 'send-text', { tmux_session: agent.tmux_session, text: key, enter: false })
+    let result
+    if (response === 'reject') {
+      result = await sendRpc(route.machine_id, 'send-key', { tmux_session: agent.tmux_session, key: 'Escape' })
+    } else {
+      const key = response === 'approve' ? '1' : '2'
+      result = await sendRpc(route.machine_id, 'send-text', { tmux_session: agent.tmux_session, text: key, enter: false })
+    }
     fleetStore.updateAgentMeta?.(agent.id, { permission_mode: null, inPlanMode: false, planModeType: null })
     const pending = pendingPlanApprovals.get(agent.id)
     if (pending?.eventId) {

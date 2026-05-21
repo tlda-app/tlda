@@ -46,6 +46,7 @@ export class VoiceNoteTool extends StateNode {
       x: point.x - NOTE_W / 2,
       y: point.y - 10,
       props: { w: NOTE_W, h: 50, text: '', color: getPref('voice-note-color'), autoSize: true, collapsed: false },
+      meta: { createdAt: Date.now() } as Partial<JsonObject>,
     })
     // Poll transcript at 50ms so ghost text updates continuously, not just on pointer move
     this._transcriptInterval = setInterval(() => {

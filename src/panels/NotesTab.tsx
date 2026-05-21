@@ -93,7 +93,11 @@ export function NotesTab() {
 
   const { pendingItems, restItems } = useMemo(() => {
     const sortFn = (a: TLShape, b: TLShape) => {
-      if (sort === 'recency') return b.y - a.y
+      if (sort === 'recency') {
+        const aTime = (a.meta as Record<string, unknown>)?.createdAt as number || 0
+        const bTime = (b.meta as Record<string, unknown>)?.createdAt as number || 0
+        return bTime - aTime
+      }
       return a.y - b.y
     }
 
@@ -157,7 +161,14 @@ export function NotesTab() {
   const multiPage = editor.getPages().length > 1
 
   const sortedRemoteNotes = useMemo(() => {
-    return [...remoteNotes].sort((a, b) => sort === 'recency' ? b.y - a.y : a.y - b.y)
+    return [...remoteNotes].sort((a, b) => {
+      if (sort === 'recency') {
+        const aTime = (a.meta?.createdAt as number) || 0
+        const bTime = (b.meta?.createdAt as number) || 0
+        return bTime - aTime
+      }
+      return a.y - b.y
+    })
   }, [remoteNotes, sort])
 
   if (notes.length === 0 && remoteNotes.length === 0) {

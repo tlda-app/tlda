@@ -75,7 +75,7 @@ export class MathNoteTool extends StateNode {
       type: 'math-note' as any,
       x: point.x - NOTE_W / 2,
       y: point.y - NOTE_H / 2,
-      meta: (sourceAnchor ? { sourceAnchor } : {}) as Partial<JsonObject>,
+      meta: { createdAt: Date.now(), ...(sourceAnchor ? { sourceAnchor } : {}) } as Partial<JsonObject>,
       props: {
         w: NOTE_W,
         h: NOTE_H,
