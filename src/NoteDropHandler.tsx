@@ -87,8 +87,10 @@ export function NoteDropHandler() {
               },
               meta: {
                 createdAt: Date.now(),
-                copiedFrom: { doc: 'fleet', shapeId: '', timestamp: Date.now() },
-                fleetSource: { type: 'scratch-doc', name: dropData.name, path: dropData.path },
+                copiedFromDoc: 'fleet',
+                copiedFromShapeId: '',
+                copiedFromTimestamp: Date.now(),
+                fleetSource: JSON.stringify({ type: 'scratch-doc', name: dropData.name, path: dropData.path }),
                 docName: dropData.name,
                 docPath: dropData.path,
               },
@@ -139,12 +141,10 @@ export function NoteDropHandler() {
             },
             meta: {
               createdAt: Date.now(),
-              copiedFrom: {
-                doc: 'fleet',
-                shapeId: item.source || item.shareId || '',
-                timestamp: Date.now(),
-              },
-              fleetSource: item,
+              copiedFromDoc: 'fleet',
+              copiedFromShapeId: item.source || item.shareId || '',
+              copiedFromTimestamp: Date.now(),
+              fleetSource: JSON.stringify(item),
               ...(isDoc ? { docName: item.name, docPath: item.path } : {}),
             },
           } as any)
@@ -195,11 +195,9 @@ export function NoteDropHandler() {
         },
         meta: {
           createdAt: Date.now(),
-          copiedFrom: {
-            doc: data.sourceDoc,
-            shapeId: data.sourceShapeId,
-            timestamp: Date.now(),
-          },
+          copiedFromDoc: data.sourceDoc || '',
+          copiedFromShapeId: data.sourceShapeId || '',
+          copiedFromTimestamp: Date.now(),
         },
       } as any)
     }
