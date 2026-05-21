@@ -682,6 +682,106 @@ router.get('/:name/highlight-feedback', requireRead, async (req, res) => {
   res.json({ doc: req.params.name, feedback })
 })
 
+// POST /:name/extract — extract source lines to a markdown scratch note
+router.post('/:name/extract', requireRw, async (req, res) => {
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Not found' })
+
+  const { startLine, endLine, file, x, y } = req.body
+  if (!startLine || !endLine) return res.status(400).json({ error: 'startLine and endLine required' })
+
+  const texFile = file || project.mainFile || 'main.tex'
+  const content = readSourceFile(req.params.name, texFile)
+  if (content === null) return res.status(404).json({ error: `Source file "${texFile}" not found` })
+
+  const lines = content.split('\n')
+  const extracted = lines.slice(startLine - 1, endLine).join('\n')
+
+  let mdContent
+  try {
+    const { execSync } = await import('child_process')
+    mdContent = execSync('pandoc -f latex -t markdown --wrap=none', { input: extracted, encoding: 'utf8', timeout: 10000 })
+  } catch (e) {
+    return res.status(500).json({ error: `pandoc conversion failed: ${e.message}` })
+  }
+  mdContent = mdContent.replace(/\\ref\{([\w:.-]+)\}/g, '@$1')
+
+  const slug = `extract-L${startLine}-${endLine}`
+  const srcDir = getSourceDir(req.params.name)
+  const scratchDir = join(srcDir, 'scratch')
+  mkdirSync(scratchDir, { recursive: true })
+  const mdPath = join(scratchDir, `${slug}.md`)
+  writeFileSync(mdPath, mdContent, 'utf8')
+
+  const noteX = (x ?? 690) + 20
+  const noteY = y ?? 0
+  const shapeId = `shape:extract-${Date.now()}`
+
+  const allShapes = await getRoomRecords(syncRoomName(req.params.name))
+  let maxIndex = 'a1'
+  for (const s of allShapes) {
+    if (s.typeName === 'shape' && s.index && s.index > maxIndex) maxIndex = s.index
+  }
+  const { getIndexAbove } = await import('tldraw')
+  const noteIndex = getIndexAbove(maxIndex)
+
+  const shape = {
+    id: shapeId,
+    type: 'math-note',
+    typeName: 'shape',
+    x: noteX, y: noteY,
+    rotation: 0,
+    isLocked: false,
+    opacity: 1,
+    props: { w: 350, h: 200, text: mdContent, color: 'violet', autoSize: true },
+    meta: {
+      sourceAnchor: { file: `./${texFile}`, line: startLine, column: -1, content: lines[startLine - 1] || '' },
+      extractedFrom: { startLine, endLine, file: texFile },
+      createdAt: Date.now(),
+    },
+    parentId: 'page:page',
+    index: noteIndex,
+  }
+
+  try {
+    await putShape(syncRoomName(req.params.name), shape)
+    res.json({ ok: true, shapeId, scratchFile: mdPath, lines: `${startLine}–${endLine}` })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// POST /:name/inject — convert markdown note content to LaTeX and inject as scratch section
+router.post('/:name/inject', requireRw, async (req, res) => {
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Not found' })
+
+  const { markdown, anchorLine, anchorFile } = req.body
+  if (!markdown) return res.status(400).json({ error: 'markdown content required' })
+
+  let texContent = markdown.replace(/(?<![\\@\w])@([\w:.-]+)/g, '\\ref{$1}')
+  try {
+    const { execSync } = await import('child_process')
+    texContent = execSync('pandoc -f markdown -t latex --wrap=none', { input: texContent, encoding: 'utf8', timeout: 10000 })
+  } catch (e) {
+    return res.status(500).json({ error: `pandoc conversion failed: ${e.message}` })
+  }
+
+  const label = `inject-L${anchorLine || 0}-${Date.now()}`
+  const filename = label.replace(/[^a-z0-9]/gi, '-').toLowerCase() + '.tex'
+  const scratchPath = `.scratchinputs/${filename}`
+  const wrappedContent = `\\begin{scratch}{${label}}{${label}}\n${texContent}\n\\end{scratch}\n`
+
+  const sourceDir = project.sourceDir
+  if (!sourceDir) return res.status(400).json({ error: 'No sourceDir for this project' })
+
+  const scratchDir = join(sourceDir, '.scratchinputs')
+  mkdirSync(scratchDir, { recursive: true })
+  writeFileSync(join(sourceDir, scratchPath), wrappedContent, 'utf8')
+
+  res.json({ ok: true, scratchPath, label, texContent })
+})
+
 // GET /:name/shapes/stream — SSE stream of shape changes (must be before :id route)
 router.get('/:name/shapes/stream', requireRead, (req, res) => {
   const project = readProject(req.params.name)

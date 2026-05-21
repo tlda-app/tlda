@@ -1413,6 +1413,51 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
               onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = '0.6' }}
             >⇄</div>
           )}
+          {/* Inject into document — converts markdown to LaTeX via pandoc */}
+          {pageDoc?.docName && shape.props.text && (
+            <div
+              onPointerDown={(e) => {
+                stopEventPropagation(e)
+                const btn = e.currentTarget as HTMLElement
+                btn.textContent = '⏳'
+                fetch(`/api/projects/${pageDoc!.docName}/inject`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    markdown: shape.props.text,
+                    anchorLine: (shape.meta as any)?.sourceAnchor?.line,
+                    anchorFile: (shape.meta as any)?.sourceAnchor?.file,
+                  }),
+                }).then(r => {
+                  btn.textContent = r.ok ? '✓' : '✗'
+                  setTimeout(() => { btn.textContent = '↧' }, 2000)
+                }).catch(() => {
+                  btn.textContent = '✗'
+                  setTimeout(() => { btn.textContent = '↧' }, 2000)
+                })
+              }}
+              title="Inject into document as LaTeX"
+              style={{
+                position: 'absolute',
+                top: 3,
+                right: docName ? 22 : 4,
+                width: 16,
+                height: 16,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+                opacity: 0.3,
+                transition: 'opacity 0.15s',
+                zIndex: 10,
+                fontSize: '12px',
+                lineHeight: '16px',
+                userSelect: 'none',
+              }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.opacity = '0.8' }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = '0.3' }}
+            >↧</div>
+          )}
           {/* Toggle doc view — top-right tlda logo button (only when docName is set) */}
           {docName && (
             <div
