@@ -2499,6 +2499,142 @@ async function handleFleetWsMessage(ws, msg) {
   if (id) reply({ ok: false, error: `unknown type: ${type}` })
 }
 
+// ---------- Skill qualification checking (server-side) ----------
+//
+// Replaces the daemon-side qualification system. Rules live in
+// ~/.claude/qualifications.json. Two rule types:
+//   { "edit": "*.tex", "requires": ["writing-core"] }         — file extension trigger
+//   { "tool": "playwright/*", "requires": ["testing-apps"] }  — tool call trigger
+//
+// When an agent uses Edit/Write on a matching file or invokes a matching tool
+// without having read the required skill, we send a nudge from fleet:eliza.
+
+const QUALIFICATIONS_FILE = path.join(os.homedir(), '.claude', 'qualifications.json')
+let _qualRules = []
+const _qualAgentReads = new Map()   // agentId → Set of skill keys + file paths
+const _qualAgentWarned = new Map()  // agentId → Set of "trigger:skill" keys (dedup)
+
+function loadQualifications() {
+  try {
+    if (!fs.existsSync(QUALIFICATIONS_FILE)) return
+    const data = JSON.parse(fs.readFileSync(QUALIFICATIONS_FILE, 'utf8'))
+    _qualRules = (data.rules || []).map(r => {
+      const rule = { requires: r.requires || [] }
+      if (r.edit) {
+        rule.type = 'edit'
+        rule.pattern = r.edit
+        rule.re = qualGlobToRegex(r.edit)
+      } else if (r.tool) {
+        rule.type = 'tool'
+        rule.pattern = r.tool
+        rule.re = qualGlobToRegex(r.tool)
+      }
+      return rule
+    }).filter(r => r.type)
+    console.log(`[qualification] loaded ${_qualRules.length} rules`)
+  } catch (e) {
+    console.error(`[qualification] failed to load: ${e.message}`)
+  }
+}
+
+function qualGlobToRegex(glob) {
+  const escaped = glob
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*/g, '<<<GLOBSTAR>>>')
+    .replace(/\*/g, '[^/]*')
+    .replace(/<<<GLOBSTAR>>>/g, '.*')
+    .replace(/\?/g, '[^/]')
+  const withAlts = escaped.replace(/\\\{([^}]+)\\\}/g, (_, inner) =>
+    '(' + inner.split(',').join('|') + ')')
+  return new RegExp('^' + withAlts + '$')
+}
+
+function qualTrackRead(agentId, key) {
+  if (!key) return
+  if (!_qualAgentReads.has(agentId)) _qualAgentReads.set(agentId, new Set())
+  _qualAgentReads.get(agentId).add(key)
+}
+
+function checkQualifications(agentId, tool, arg, input) {
+  if (_qualRules.length === 0 || !fleetStore) return
+
+  const reads = _qualAgentReads.get(agentId) || new Set()
+  const warned = _qualAgentWarned.get(agentId) || (() => {
+    const s = new Set(); _qualAgentWarned.set(agentId, s); return s
+  })()
+
+  const matchingRules = []
+
+  if ((tool === 'Read' || tool === 'Skill') && input) {
+    if (tool === 'Read') {
+      const fp = input.file_path || input.path || arg || ''
+      if (fp) {
+        qualTrackRead(agentId, fp)
+        const skillMatch = fp.match(/[/\\]skills[/\\]([^/\\]+)[/\\]SKILL\.md$/)
+        if (skillMatch) qualTrackRead(agentId, 'skill:' + skillMatch[1])
+      }
+    }
+    if (tool === 'Skill') {
+      const skill = input.skill || ''
+      if (skill) qualTrackRead(agentId, 'skill:' + skill)
+    }
+    return
+  }
+
+  if (tool === 'Edit' || tool === 'Write') {
+    const fp = input?.file_path || input?.path || arg || ''
+    if (!fp) return
+    const basename = fp.split('/').pop()
+    for (const rule of _qualRules) {
+      if (rule.type !== 'edit') continue
+      if (rule.re.test(basename) || rule.re.test(fp)) {
+        matchingRules.push({ rule, trigger: fp, triggerShort: basename })
+      }
+    }
+  }
+
+  for (const rule of _qualRules) {
+    if (rule.type !== 'tool') continue
+    if (rule.re.test(tool)) {
+      matchingRules.push({ rule, trigger: tool, triggerShort: tool })
+    }
+  }
+
+  for (const { rule, trigger, triggerShort } of matchingRules) {
+    for (const skillName of rule.requires) {
+      const skillKey = 'skill:' + skillName
+      if (reads.has(skillKey)) continue
+      const warnKey = `${trigger}:${skillName}`
+      if (warned.has(warnKey)) continue
+      warned.add(warnKey)
+
+      const nudge = `⚠️ Read the **${skillName}** skill before this. \`/skill ${skillName}\``
+      try {
+        const event = fleetStore.share({
+          type: 'chat',
+          from: 'fleet:eliza',
+          to: agentId,
+          text: nudge,
+          metadata: { type: 'skill_nudge', skill: skillName, trigger: triggerShort },
+        })
+        if (event) {
+          fleetStore.addUnread?.(event.id, agentId)
+          broadcastEvent('fleet-event', { ...event, type: 'chat' })
+        }
+        console.log(`[qualification] nudged ${agentId}: read ${skillName} (triggered by ${triggerShort})`)
+      } catch (e) {
+        console.error(`[qualification] nudge failed: ${e.message}`)
+      }
+    }
+  }
+}
+
+loadQualifications()
+fs.watchFile(QUALIFICATIONS_FILE, { interval: 5000 }, () => {
+  console.log('[qualification] reloading rules')
+  loadQualifications()
+})
+
 // ---------- Fleet daemon WS message handler ----------
 //
 // Messages from fleet-daemon.mjs over `/ws/fleet-daemon`. The daemon owns
@@ -2731,28 +2867,13 @@ function handleDaemonWsMessage(ws, msg) {
     } catch (e) {
       console.error(`[fleet-daemon] activity write: ${e.message}`)
     }
+    checkQualifications(agent_id, tool, arg, input)
     return
   }
 
   if (type === 'qualification-warning') {
-    if (!fleetStore) return
-    const { agent_id, file, required, message: warnMsg } = msg
-    if (!agent_id || !warnMsg) return
-    try {
-      const event = fleetStore.share({
-        type: 'chat',
-        from: agent_id,
-        to: SERVER_OWNER_ID,
-        text: warnMsg,
-        metadata: { type: 'qualification_warning', file, required },
-      })
-      if (event) {
-        fleetStore.addUnread?.(event.id, SERVER_OWNER_ID)
-        broadcastEvent('fleet-event', { ...event, type: 'chat' })
-      }
-    } catch (e) {
-      console.error(`[fleet-daemon] qualification-warning write: ${e.message}`)
-    }
+    // Legacy: daemon still sends these but server now handles qualification
+    // checking directly via activity-event. Ignore.
     return
   }
 
