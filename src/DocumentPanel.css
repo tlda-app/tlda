@@ -1013,6 +1013,133 @@ html[data-theme="dark"] .note-doc-badge {
   border-top-color: rgba(0, 0, 0, 0.1);
 }
 
+/* Notes table */
+.notes-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  table-layout: fixed;
+}
+
+.notes-table-header {
+  font-size: 9px;
+  font-weight: 500;
+  text-align: left;
+  padding: 3px 6px;
+  color: rgba(0, 0, 0, 0.15);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  white-space: nowrap;
+  user-select: none;
+}
+
+.notes-table-header--sortable {
+  cursor: pointer;
+}
+
+.notes-table-header--sortable:hover {
+  color: rgba(0, 0, 0, 0.4);
+}
+
+.doc-panel:hover .notes-table-header,
+.doc-panel-open .notes-table-header {
+  color: rgba(0, 0, 0, 0.35);
+  border-bottom-color: rgba(0, 0, 0, 0.1);
+}
+
+.notes-table-header--pos { width: 34px; text-align: right; }
+.notes-table-header--age { width: 30px; text-align: right; }
+
+.notes-table-row {
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.notes-table-row:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.notes-table-row--done {
+  opacity: 0.55;
+}
+
+.notes-table-cell {
+  padding: 3px 6px;
+  vertical-align: top;
+  line-height: 1.3;
+}
+
+.notes-table-cell--note {
+  overflow: hidden;
+}
+
+.notes-table-note-inner {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.notes-table-note-inner .note-color-dot {
+  margin-top: 4px;
+  flex-shrink: 0;
+}
+
+.notes-table-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  flex: 1;
+}
+
+.notes-table-row--done .notes-table-text {
+  text-decoration: line-through;
+}
+
+.notes-table-cell--pos,
+.notes-table-cell--age {
+  font-size: 9px;
+  text-align: right;
+  white-space: nowrap;
+  opacity: 0.4;
+}
+
+.notes-table-section td {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 6px 6px 2px;
+  color: rgba(0, 0, 0, 0.15);
+}
+
+.doc-panel:hover .notes-table-section td,
+.doc-panel-open .notes-table-section td {
+  color: rgba(0, 0, 0, 0.4);
+}
+
+html[data-theme="dark"] .notes-table-header {
+  color: rgba(255, 255, 255, 0.15);
+  border-bottom-color: rgba(255, 255, 255, 0.06);
+}
+html[data-theme="dark"] .notes-table-header--sortable:hover {
+  color: rgba(255, 255, 255, 0.5);
+}
+html[data-theme="dark"] .doc-panel:hover .notes-table-header,
+html[data-theme="dark"] .doc-panel-open .notes-table-header {
+  color: rgba(255, 255, 255, 0.35);
+  border-bottom-color: rgba(255, 255, 255, 0.1);
+}
+html[data-theme="dark"] .notes-table-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+html[data-theme="dark"] .notes-table-section td {
+  color: rgba(255, 255, 255, 0.15);
+}
+html[data-theme="dark"] .doc-panel:hover .notes-table-section td,
+html[data-theme="dark"] .doc-panel-open .notes-table-section td {
+  color: rgba(255, 255, 255, 0.4);
+}
+
 /* Thread-specific note styles */
 .note-item.note-reply {
   padding-left: 20px;

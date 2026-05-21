@@ -5,7 +5,8 @@ import { navigateTo, getShapeText, COLOR_HEX } from './helpers'
 // noteThreading removed — no tabs
 import { useBook } from '../BookContext'
 
-type SortMode = 'document' | 'recency'
+type SortField = 'position' | 'recency'
+type SortDir = 'asc' | 'desc'
 
 /** Shape-like data from REST API for remote notes */
 interface RemoteNote {
@@ -45,8 +46,20 @@ export function NotesTab() {
   const book = useBook()
   const [notes, setNotes] = useState<TLShape[]>([])
   const [remoteNotes, setRemoteNotes] = useState<RemoteNote[]>([])
-  const [sort, setSort] = useState<SortMode>('document')
+  const [sortField, setSortField] = useState<SortField>('position')
+  const [sortDir, setSortDir] = useState<SortDir>('asc')
   const [hideDone, setHideDone] = useState(false)
+
+  const toggleSort = useCallback((field: SortField) => {
+    setSortField(prev => {
+      if (prev === field) {
+        setSortDir(d => d === 'asc' ? 'desc' : 'asc')
+        return prev
+      }
+      setSortDir(field === 'recency' ? 'desc' : 'asc')
+      return field
+    })
+  }, [])
 
   // Local notes from current editor
   useEffect(() => {
@@ -91,14 +104,51 @@ export function NotesTab() {
     return () => { cancelled = true; clearInterval(timer) }
   }, [book?.activeIndex, book?.members])
 
+  const pageOrder = useMemo(() => {
+    const map = new Map<string, number>()
+    editor.getPages().forEach((p, i) => map.set(p.id, i))
+    return map
+  }, [editor, notes])
+
+  const pageHeights = useMemo(() => {
+    const map = new Map<string, { minY: number; maxY: number }>()
+    const allShapes = editor.store.allRecords().filter((r: any) => r.typeName === 'shape') as TLShape[]
+    for (const s of allShapes) {
+      const pageId = s.parentId
+      const h = (s.props as any)?.h || 100
+      const bottom = s.y + h
+      const existing = map.get(pageId)
+      if (!existing) {
+        map.set(pageId, { minY: s.y, maxY: bottom })
+      } else {
+        if (s.y < existing.minY) existing.minY = s.y
+        if (bottom > existing.maxY) existing.maxY = bottom
+      }
+    }
+    return map
+  }, [editor, notes])
+
+  const getPagePosition = useCallback((shape: TLShape): string => {
+    const pageIdx = (pageOrder.get(shape.parentId) ?? 0) + 1
+    const bounds = pageHeights.get(shape.parentId)
+    if (!bounds || bounds.maxY === bounds.minY) return `${pageIdx}`
+    const frac = Math.max(0, Math.min(1, (shape.y - bounds.minY) / (bounds.maxY - bounds.minY)))
+    const decimal = Math.round(frac * 10)
+    return `${pageIdx}.${decimal}`
+  }, [pageOrder, pageHeights])
+
   const { pendingItems, restItems } = useMemo(() => {
+    const dir = sortDir === 'asc' ? 1 : -1
     const sortFn = (a: TLShape, b: TLShape) => {
-      if (sort === 'recency') {
+      if (sortField === 'recency') {
         const aTime = (a.meta as Record<string, unknown>)?.createdAt as number || 0
         const bTime = (b.meta as Record<string, unknown>)?.createdAt as number || 0
-        return bTime - aTime
+        return (aTime - bTime) * dir
       }
-      return a.y - b.y
+      const aPage = pageOrder.get(a.parentId) ?? 0
+      const bPage = pageOrder.get(b.parentId) ?? 0
+      if (aPage !== bPage) return (aPage - bPage) * dir
+      return (a.y - b.y) * dir
     }
 
     const pending: TLShape[] = []
@@ -117,7 +167,7 @@ export function NotesTab() {
     rest.sort(sortFn)
 
     return { pendingItems: pending, restItems: rest }
-  }, [notes, sort, hideDone])
+  }, [notes, sortField, sortDir, hideDone, pageOrder])
 
   const handleClick = useCallback((shape: TLShape) => {
     // Switch to the note's TLDraw page if it's on a different one
@@ -161,15 +211,16 @@ export function NotesTab() {
   const multiPage = editor.getPages().length > 1
 
   const sortedRemoteNotes = useMemo(() => {
+    const dir = sortDir === 'asc' ? 1 : -1
     return [...remoteNotes].sort((a, b) => {
-      if (sort === 'recency') {
+      if (sortField === 'recency') {
         const aTime = (a.meta?.createdAt as number) || 0
         const bTime = (b.meta?.createdAt as number) || 0
-        return bTime - aTime
+        return (aTime - bTime) * dir
       }
-      return a.y - b.y
+      return (a.y - b.y) * dir
     })
-  }, [remoteNotes, sort])
+  }, [remoteNotes, sortField, sortDir])
 
   if (notes.length === 0 && remoteNotes.length === 0) {
     return (
@@ -179,20 +230,30 @@ export function NotesTab() {
     )
   }
 
+  function formatAge(timestamp: number): string {
+    if (!timestamp) return '—'
+    const diff = Date.now() - timestamp
+    const mins = Math.floor(diff / 60000)
+    if (mins < 1) return 'now'
+    if (mins < 60) return `${mins}m`
+    const hrs = Math.floor(mins / 60)
+    if (hrs < 24) return `${hrs}h`
+    const days = Math.floor(hrs / 24)
+    return `${days}d`
+  }
+
   function renderNote(shape: TLShape) {
     const text = getShapeText(shape)
     const color = (shape.props as Record<string, unknown>).color as string || 'yellow'
     const meta = shape.meta as Record<string, unknown>
-    const anchor = meta?.sourceAnchor as { line?: number } | undefined
-    const pageName = multiPage ? pageNames.get(shape.parentId) : undefined
+    const createdAt = meta?.createdAt as number || 0
 
-    // Strip math delimiters for cleaner preview
     const cleanText = text.replace(/\$\$[\s\S]*?\$\$/g, '[math]').replace(/\$[^$]*\$/g, '[math]').trim()
 
     const shapeDone = isDone(shape)
     return (
-      <div key={shape.id} className="note-item" onClick={() => handleClick(shape)}
-        style={shapeDone ? { opacity: 0.55 } : undefined}
+      <tr key={shape.id} className={`notes-table-row${shapeDone ? ' notes-table-row--done' : ''}`}
+        onClick={() => handleClick(shape)}
         draggable
         onDragStart={(e) => handleDragStart(e, {
           text: text,
@@ -201,36 +262,29 @@ export function NotesTab() {
           sourceShapeId: shape.id,
         })}
       >
-        <div className="note-preview" style={{ display: 'flex', alignItems: 'flex-start', gap: '4px' }}>
-          <span className="note-color-dot" style={{ background: COLOR_HEX[color] || '#ccc', marginTop: '4px', flexShrink: 0 }} />
-          <span style={{
-            display: '-webkit-box',
-            WebkitLineClamp: 2,
-            WebkitBoxOrient: 'vertical' as any,
-            overflow: 'hidden',
-            lineHeight: '1.3',
-            textDecoration: shapeDone ? 'line-through' : undefined,
-          }}>
-            {cleanText || '(empty)'}
-          </span>
-        </div>
-        <div className="note-meta" style={{ display: 'flex', gap: '6px', paddingLeft: '9px' }}>
-          {pageName && <span style={{ opacity: 0.6 }}>{pageName}</span>}
-          {anchor?.line && <span>L{anchor.line}</span>}
-          {shapeDone && (
-            <button
-              className="note-undone-btn"
-              title="Reopen note"
-              onClick={(e) => {
-                e.stopPropagation()
-                editor.updateShape({ id: shape.id, type: shape.type, props: { done: false } } as any)
-              }}
-            >
-              ↩ reopen
-            </button>
-          )}
-        </div>
-      </div>
+        <td className="notes-table-cell notes-table-cell--note">
+          <div className="notes-table-note-inner">
+            <span className="note-color-dot" style={{ background: COLOR_HEX[color] || '#ccc' }} />
+            <span className="notes-table-text">
+              {cleanText || '(empty)'}
+            </span>
+            {shapeDone && (
+              <button
+                className="note-undone-btn"
+                title="Reopen note"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  editor.updateShape({ id: shape.id, type: shape.type, props: { done: false } } as any)
+                }}
+              >
+                ↩
+              </button>
+            )}
+          </div>
+        </td>
+        <td className="notes-table-cell notes-table-cell--pos">{getPagePosition(shape)}</td>
+        <td className="notes-table-cell notes-table-cell--age">{formatAge(createdAt)}</td>
+      </tr>
     )
   }
 
@@ -273,17 +327,11 @@ export function NotesTab() {
     )
   }
 
+  const arrow = sortDir === 'asc' ? '\u25B4' : '\u25BE'
+
   return (
     <div className="doc-panel-content" style={{ display: 'flex', flexDirection: 'column' }}>
-      {/* Sort toggle */}
       <div className="notes-toolbar">
-        <button
-          className="notes-sort-toggle"
-          onClick={() => setSort(s => s === 'document' ? 'recency' : 'document')}
-          title={sort === 'document' ? 'Sorted by position' : 'Sorted by newest'}
-        >
-          {sort === 'document' ? '\u2193 Position' : '\u21BB Recent'}
-        </button>
         <button
           className="notes-sort-toggle"
           onClick={() => setHideDone(h => !h)}
@@ -295,21 +343,32 @@ export function NotesTab() {
       </div>
 
       <div style={{ flex: 1, overflow: 'auto' }}>
-        {/* Pending MC section */}
-        {pendingItems.length > 0 && (
-          <>
-            <div className="notes-section-label">Pending</div>
+        <table className="notes-table">
+          <thead>
+            <tr>
+              <th className="notes-table-header notes-table-header--note">Note</th>
+              <th className="notes-table-header notes-table-header--pos notes-table-header--sortable"
+                onClick={() => toggleSort('position')}>
+                Pos {sortField === 'position' ? arrow : ''}
+              </th>
+              <th className="notes-table-header notes-table-header--age notes-table-header--sortable"
+                onClick={() => toggleSort('recency')}>
+                Age {sortField === 'recency' ? arrow : ''}
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {pendingItems.length > 0 && (
+              <tr className="notes-table-section"><td colSpan={3}>Pending</td></tr>
+            )}
             {pendingItems.map(renderNote)}
-          </>
-        )}
+            {pendingItems.length > 0 && restItems.length > 0 && (
+              <tr className="notes-table-section"><td colSpan={3}></td></tr>
+            )}
+            {restItems.map(renderNote)}
+          </tbody>
+        </table>
 
-        {/* Rest */}
-        {pendingItems.length > 0 && restItems.length > 0 && (
-          <div className="notes-section-divider" />
-        )}
-        {restItems.map(renderNote)}
-
-        {/* Remote notes from other book members */}
         {sortedRemoteNotes.length > 0 && (
           <>
             <div className="notes-section-divider" />
