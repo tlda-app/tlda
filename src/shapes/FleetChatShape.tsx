@@ -1192,13 +1192,14 @@ function FleetChatInner({ shape }: { shape: any }) {
     const chipTarget = (e.target as HTMLElement).closest('.ref-chip-annotation')
     if (chipTarget) { handleRefChipClick(e); return }
 
-    // Markdown chip → lightbox overlay
-    const mdChip = (e.target as HTMLElement).closest('.ref-chip-doc') as HTMLElement | null
+    // Markdown chip → lightbox overlay (ref-chip-doc chips AND md-file-card chips in activity cards)
+    const mdChip = (e.target as HTMLElement).closest('.ref-chip-doc, .md-file-card') as HTMLElement | null
     if (mdChip) {
       const chipUrl = mdChip.dataset.url || ''
       const chipPath = mdChip.dataset.path || ''
       const isMd = /\.md$/i.test(chipUrl || chipPath)
-      if (isMd && chipUrl) {
+      const fetchUrl = chipUrl || (chipPath ? `/api/local-image?path=${encodeURIComponent(chipPath)}` : '')
+      if (isMd && fetchUrl) {
         e.stopPropagation()
         const existing = document.querySelector('.chat-lightbox-md')
         if (existing) { existing.remove(); return }
@@ -1209,15 +1210,15 @@ function FleetChatInner({ shape }: { shape: any }) {
           if (ev.target === overlay) overlay.remove()
         })
         document.body.appendChild(overlay)
-        fetch(chipUrl)
+        fetch(fetchUrl)
           .then(r => r.ok ? r.text() : Promise.reject(r.status))
           .then(text => {
-            const baseUrl = chipUrl.substring(0, chipUrl.lastIndexOf('/') + 1)
-            const resolved = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, src) => {
+            const baseUrl = chipUrl ? chipUrl.substring(0, chipUrl.lastIndexOf('/') + 1) : ''
+            const resolved = baseUrl ? text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, src) => {
               if (src.startsWith('http') || src.startsWith('/')) return match
               return `![${alt}](${baseUrl}${src})`
-            })
-            const title = mdChip.textContent || chipUrl.split('/').pop() || 'file'
+            }) : text
+            const title = mdChip.querySelector('.md-file-chip')?.textContent || mdChip.textContent || chipPath.split('/').pop() || 'file'
             const cardEl = overlay.querySelector('.chat-lightbox-md-card')!
             cardEl.innerHTML = `<div class="chat-lightbox-md-header"><span>${title}</span><button class="chat-lightbox-md-close" title="Close">✕</button></div><div class="chat-lightbox-md-body">${tldaRenderMarkdown(resolved)}</div>`
             cardEl.querySelector('.chat-lightbox-md-close')?.addEventListener('click', () => overlay.remove())
