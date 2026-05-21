@@ -1219,8 +1219,13 @@ function FleetChatInner({ shape }: { shape: any }) {
               return `![${alt}](${baseUrl}${src})`
             }) : text
             const title = mdChip.querySelector('.md-file-chip')?.textContent || mdChip.textContent || chipPath.split('/').pop() || 'file'
+            let renderedHtml = tldaRenderMarkdown(resolved)
+            const lr = labelRegionsRef.current
+            if (lr && Object.keys(lr).length > 0) {
+              renderedHtml = linkifyAtRefs(renderedHtml, lr)
+            }
             const cardEl = overlay.querySelector('.chat-lightbox-md-card')!
-            cardEl.innerHTML = `<div class="chat-lightbox-md-header"><span>${title}</span><button class="chat-lightbox-md-close" title="Close">✕</button></div><div class="chat-lightbox-md-body">${tldaRenderMarkdown(resolved)}</div>`
+            cardEl.innerHTML = `<div class="chat-lightbox-md-header"><span>${title}</span><button class="chat-lightbox-md-close" title="Close">✕</button></div><div class="chat-lightbox-md-body">${renderedHtml}</div>`
             cardEl.querySelector('.chat-lightbox-md-close')?.addEventListener('click', () => overlay.remove())
           })
           .catch(() => {
