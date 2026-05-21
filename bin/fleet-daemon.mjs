@@ -1946,7 +1946,8 @@ async function reapVites() {
       try {
         process.kill(v.pid, 'SIGKILL')
         console.log(`[vite-reaper] killed pid=${v.pid} ports=${v.ports.join(',')} idle=${Math.round(idleMs / 60000)}m pressure=${(getMemoryPressure() * 100).toFixed(0)}%`)
-        killed.push({ pid: v.pid, kind: 'vite', ts: now, reason: `idle ${Math.round(idleMs / 60000)}m` })
+        const attr = await attributeToAgent(v.pid).catch(() => null)
+        killed.push({ pid: v.pid, kind: 'vite', ts: now, reason: `idle ${Math.round(idleMs / 60000)}m`, agent: attr?.name || null })
       } catch (e) {
         console.log(`[vite-reaper] kill pid=${v.pid} failed: ${e.message}`)
       }
@@ -2017,7 +2018,8 @@ async function reapPlaywright() {
         process.kill(b.pid, 'SIGKILL')
         try { await execFileP('pkill', ['-9', '-P', String(b.pid)], { timeout: 2000 }) } catch {}
         console.log(`[pw-reaper] killed pid=${b.pid} orphan=${Math.round(orphanMs / 1000)}s threshold=${Math.round(threshold / 1000)}s pressure=${(getMemoryPressure() * 100).toFixed(0)}%`)
-        killed.push({ pid: b.pid, kind: 'playwright', ts: now, reason: `orphan ${Math.round(orphanMs / 1000)}s` })
+        const attr = await attributeToAgent(b.pid).catch(() => null)
+        killed.push({ pid: b.pid, kind: 'playwright', ts: now, reason: `orphan ${Math.round(orphanMs / 1000)}s`, agent: attr?.name || null })
       } catch (e) {
         console.log(`[pw-reaper] kill pid=${b.pid} failed: ${e.message}`)
       }
@@ -2031,6 +2033,23 @@ async function reapPlaywright() {
     if (!livePids.has(pid)) _pwLastSeen.delete(pid)
   }
   return { browsers: enriched, killed }
+}
+
+async function getTopProcesses(limit = 8) {
+  try {
+    const { stdout } = await execFileP('ps', ['-axo', 'pid=,rss=,comm='], { timeout: 5000, encoding: 'utf8' })
+    const procs = []
+    for (const line of stdout.split('\n')) {
+      const m = line.match(/^\s*(\d+)\s+(\d+)\s+(.+)$/)
+      if (!m) continue
+      const rss = parseInt(m[2], 10) * 1024
+      if (rss < 50 * 1024 * 1024) continue
+      const comm = m[3].trim().split('/').pop()
+      procs.push({ pid: parseInt(m[1], 10), rss, name: comm })
+    }
+    procs.sort((a, b) => b.rss - a.rss)
+    return procs.slice(0, limit)
+  } catch { return [] }
 }
 
 // ─── Combined reaper sweep with status broadcast ──────────────────
@@ -2073,12 +2092,15 @@ async function reaperSweep() {
     agentId: viteAgentMap[v.pid]?.agentId || null,
   }))
 
+  const topProcesses = await getTopProcesses().catch(() => [])
+
   sendMsg({
     type: 'reaper-status',
     data: {
       pressure,
       totalMem: os.totalmem(),
       freeMem: os.freemem(),
+      topProcesses,
       vites: viteSnap,
       browsers: (pwResult.browsers || []).map(b => ({
         ...b,
@@ -2106,10 +2128,11 @@ function startReapers() {
 // ─── Reaper RPC handlers ──────────────────────────────────────────
 async function rpcReaperKill({ pid }) {
   if (!pid) throw new Error('missing pid')
+  const attr = await attributeToAgent(pid).catch(() => null)
   try {
     process.kill(pid, 'SIGKILL')
     try { await execFileP('pkill', ['-9', '-P', String(pid)], { timeout: 2000 }) } catch {}
-    _recentKills.push({ pid, kind: 'manual', ts: Date.now(), reason: 'manual kill' })
+    _recentKills.push({ pid, kind: 'manual', ts: Date.now(), reason: 'manual kill', agent: attr?.name || null })
     while (_recentKills.length > MAX_RECENT_KILLS) _recentKills.shift()
     return { killed: true, pid }
   } catch (e) {
