@@ -420,7 +420,7 @@ export function linkifyAtRefs(
   // Quick bail — @ not present
   if (!html.includes('@')) return html
 
-  const AT_RE = /(?<![\\@\w])@([\w:.-]+)/g
+  const AT_RE = /(?<![\\@\w])@([\w:.-]+[\w])/g
 
   const TAG_RE = /<[^>]+>/g
   const parts: Array<{ text: string; isTag: boolean }> = []
