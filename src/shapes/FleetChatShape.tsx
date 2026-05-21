@@ -1192,7 +1192,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     const chipTarget = (e.target as HTMLElement).closest('.ref-chip-annotation')
     if (chipTarget) { handleRefChipClick(e); return }
 
-    // Expandable markdown chips — click .ref-chip-doc for .md files to toggle inline card
+    // Markdown chip → lightbox overlay
     const mdChip = (e.target as HTMLElement).closest('.ref-chip-doc') as HTMLElement | null
     if (mdChip) {
       const chipUrl = mdChip.dataset.url || ''
@@ -1200,42 +1200,31 @@ function FleetChatInner({ shape }: { shape: any }) {
       const isMd = /\.md$/i.test(chipUrl || chipPath)
       if (isMd && chipUrl) {
         e.stopPropagation()
-        // Prevent auto-scroll from pushing the chip out of view when the expand card grows the content.
-        // isAtBottomRef is declared later but accessed at call time (ref identity is stable).
-        // eslint-disable-next-line @typescript-eslint/no-use-before-define
-        isAtBottomRef.current = false
-        // Toggle: if already expanded, collapse
-        const existing = mdChip.nextElementSibling as HTMLElement | null
-        if (existing?.classList.contains('md-expand-card')) {
-          existing.remove()
-          mdChip.classList.remove('md-chip-expanded')
-          return
-        }
-        // Create card
-        mdChip.classList.add('md-chip-expanded')
-        const card = document.createElement('div')
-        card.className = 'md-expand-card'
-        card.innerHTML = '<div class="md-expand-loading">Loading…</div>'
-        mdChip.insertAdjacentElement('afterend', card)
-        // Fetch and render
+        const existing = document.querySelector('.chat-lightbox-md')
+        if (existing) { existing.remove(); return }
+        const overlay = document.createElement('div')
+        overlay.className = 'chat-lightbox-md'
+        overlay.innerHTML = '<div class="chat-lightbox-md-card"><div class="chat-lightbox-md-loading">Loading…</div></div>'
+        overlay.addEventListener('click', (ev) => {
+          if (ev.target === overlay) overlay.remove()
+        })
+        document.body.appendChild(overlay)
         fetch(chipUrl)
           .then(r => r.ok ? r.text() : Promise.reject(r.status))
           .then(text => {
-            // Resolve relative image paths to absolute URLs based on the chip URL
             const baseUrl = chipUrl.substring(0, chipUrl.lastIndexOf('/') + 1)
             const resolved = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, src) => {
               if (src.startsWith('http') || src.startsWith('/')) return match
               return `![${alt}](${baseUrl}${src})`
             })
-            card.innerHTML = `<div class="md-expand-header"><span class="md-expand-title">${mdChip.textContent || 'file'}</span><span class="md-expand-close" title="Collapse">✕</span></div><div class="md-expand-body">${tldaRenderMarkdown(resolved)}</div>`
-            card.querySelector('.md-expand-close')?.addEventListener('click', (ev) => {
-              ev.stopPropagation()
-              card.remove()
-              mdChip.classList.remove('md-chip-expanded')
-            })
+            const title = mdChip.textContent || chipUrl.split('/').pop() || 'file'
+            const cardEl = overlay.querySelector('.chat-lightbox-md-card')!
+            cardEl.innerHTML = `<div class="chat-lightbox-md-header"><span>${title}</span><button class="chat-lightbox-md-close" title="Close">✕</button></div><div class="chat-lightbox-md-body">${tldaRenderMarkdown(resolved)}</div>`
+            cardEl.querySelector('.chat-lightbox-md-close')?.addEventListener('click', () => overlay.remove())
           })
           .catch(() => {
-            card.innerHTML = '<div class="md-expand-error">Failed to load</div>'
+            const cardEl = overlay.querySelector('.chat-lightbox-md-card')
+            if (cardEl) cardEl.innerHTML = '<div class="chat-lightbox-md-loading">Failed to load</div>'
           })
         return
       }
