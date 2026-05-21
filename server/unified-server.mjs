@@ -933,7 +933,8 @@ app.post('/api/backing-file-register', requireRead, (req, res) => {
   const { filePath, docName } = req.body || {}
   if (!filePath || !docName) return res.status(400).json({ error: 'Missing filePath or docName' })
   const expanded = filePath.startsWith('~/') ? join(homedir(), filePath.slice(2)) : filePath
-  backingFileRegister(expanded, docName)
+  const roomName = docName.startsWith('doc-') ? docName : `doc-${docName}`
+  backingFileRegister(expanded, roomName)
   res.json({ ok: true })
 })
 
