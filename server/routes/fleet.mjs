@@ -429,7 +429,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   // doc: project name — daemon resolves to sourceDir for the cwd
   // For respawn: { agent: "fleet:xxx" or "name", respawn: true }
   router.post('/api/spawn', async (req, res) => {
-    const { name, model, doc, agent, respawn } = req.body || {}
+    const { name, model, doc, cwd, agent, respawn } = req.body || {}
     // For respawn, resolve agent to a name
     let spawnName = name
     if (respawn && agent) {
@@ -447,6 +447,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         name: spawnName || undefined,
         model: model || undefined,
         doc: doc || undefined,
+        cwd: cwd || undefined,
         respawn: !!respawn,
       })
       broadcastState()

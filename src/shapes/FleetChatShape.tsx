@@ -25,7 +25,7 @@ import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil
 // @ts-ignore — vanilla JS module
 import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText, isRecording } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
-import { getHumanId, getHumanName } from '../fleet/fleet-data.mjs'
+import { getHumanId, getHumanName, updateEventById } from '../fleet/fleet-data.mjs'
 import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, sendMessage, loadBefore, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
 import { dragCoordinator } from './dragCoordinator'
@@ -1035,14 +1035,15 @@ function FleetChatInner({ shape }: { shape: any }) {
         const agentObj = agentObjs.find((a: any) => a.id === agentId)
         const agentName = agentObj?.friendly_name || agentId.replace('fleet:', '')
         const planBodyHtml = renderCtx.renderMarkdown(esc(m.text || ''))
-        const planResponseCls = m._planResponse === 'approved' ? ' plan-card-approved' : m._planResponse === 'rejected' ? ' plan-card-rejected' : ''
+        const planResponseCls = m._planResponse === 'approved' ? ' plan-card-approved' : m._planResponse === 'supervised' ? ' plan-card-supervised' : m._planResponse === 'rejected' ? ' plan-card-rejected' : ''
         const html = `<div class="plan-card${planResponseCls}" data-agent-id="${esc(agentId)}">` +
           `<div class="plan-card-header"><span class="plan-card-icon">📋</span>` +
           `<span class="plan-card-title">Plan from <strong>${esc(agentName)}</strong></span></div>` +
           `<div class="plan-card-body">${planBodyHtml}</div>` +
           `<div class="plan-card-actions">` +
-          `<button class="plan-approve-btn" data-agent-id="${esc(agentId)}">✓ Go for it</button>` +
-          `<button class="plan-reject-btn" data-agent-id="${esc(agentId)}">✗ Stop</button>` +
+          `<button class="plan-approve-btn" data-agent-id="${esc(agentId)}">✓ Auto</button>` +
+          `<button class="plan-supervised-btn" data-agent-id="${esc(agentId)}">✓ Supervised</button>` +
+          `<button class="plan-reject-btn" data-agent-id="${esc(agentId)}">✗</button>` +
           `</div></div>`
         items.push({ key: m._dbId || `${m.timestamp}:${m.from}:plan`, html })
       } else if (m.type === 'kill-session') {
@@ -1844,7 +1845,10 @@ function FleetChatInner({ shape }: { shape: any }) {
     prevTotalSizeRef.current = virtualizerTotalSize
     if (firstLoad || isAtBottomRef.current || hardLocked) {
       scrollToBottom()
-      requestAnimationFrame(scrollToBottom)
+      requestAnimationFrame(() => {
+        scrollToBottom()
+        requestAnimationFrame(scrollToBottom)
+      })
     }
   }, [virtualizerTotalSize, scrollToBottom, hardLocked])
 
@@ -2009,6 +2013,21 @@ function FleetChatInner({ shape }: { shape: any }) {
         }
         return
       }
+      const supervisedBtn = (e.target as HTMLElement).closest('.plan-supervised-btn') as HTMLElement
+      if (supervisedBtn) {
+        e.stopPropagation()
+        const agentId = supervisedBtn.dataset.agentId
+        if (agentId) {
+          fetch(`${FLEET_API}/api/plan-mode-respond`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ agent: agentId, response: 'supervised' }),
+          })
+            .then(r => r.ok ? null : r.json().then(d => { throw new Error(d?.error || 'failed') }))
+            .catch(err => sendMessage(getHumanId(), `⚠️ plan supervised-approve failed: ${err.message}`, {}))
+        }
+        return
+      }
       const rejectBtn = (e.target as HTMLElement).closest('.plan-reject-btn') as HTMLElement
       if (rejectBtn) {
         e.stopPropagation()
@@ -2038,7 +2057,9 @@ function FleetChatInner({ shape }: { shape: any }) {
           fetch(`${FLEET_API}/api/send-text`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent: agentId, text: '1', enter: true }) })
           const eventId = lcApproveBtn.dataset.eventId || lcApproveBtn.closest('[data-msg-id]')?.getAttribute('data-msg-id')
           if (eventId) {
-            fetch(`${FLEET_API}/api/prompt-respond`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ eventId, response: 'approved' }) }).catch(() => {})
+            fetch(`${FLEET_API}/api/prompt-respond`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ eventId, response: 'approved' }) })
+              .then(r => { if (r.ok) updateEventById(eventId, { _promptResponse: 'approved', metadata: { approvedAt: new Date().toISOString() } }) })
+              .catch(() => {})
           }
           return
         }
@@ -2050,7 +2071,9 @@ function FleetChatInner({ shape }: { shape: any }) {
           fetch(`${FLEET_API}/api/send-text`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent: agentId, text: '3', enter: true }) })
           const eventId = lcDenyBtn.dataset.eventId || lcDenyBtn.closest('[data-msg-id]')?.getAttribute('data-msg-id')
           if (eventId) {
-            fetch(`${FLEET_API}/api/prompt-respond`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ eventId, response: 'rejected' }) }).catch(() => {})
+            fetch(`${FLEET_API}/api/prompt-respond`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ eventId, response: 'rejected' }) })
+              .then(r => { if (r.ok) updateEventById(eventId, { _promptResponse: 'rejected', metadata: { rejectedAt: new Date().toISOString() } }) })
+              .catch(() => {})
           }
           return
         }

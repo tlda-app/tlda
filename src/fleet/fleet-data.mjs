@@ -196,6 +196,17 @@ export function updateOptimisticEvent(tempId, updates) {
   if (ev) { Object.assign(ev, updates); notify('messages', null) }
 }
 
+export function updateEventById(dbId, updates) {
+  const ev = _events.find(e => e._dbId === dbId || e._dbId === Number(dbId))
+  if (!ev) return
+  if (updates.metadata && ev.metadata) {
+    Object.assign(ev.metadata, updates.metadata)
+    delete updates.metadata
+  }
+  Object.assign(ev, updates)
+  notify('messages', null)
+}
+
 /** Link an optimistic event to its server-assigned ID (if SSE hasn't already done it). */
 export function reconcileOptimistic(tempId, serverEventId, newTo) {
   const ev = _events.find(e => e._tempId === tempId)
@@ -431,7 +442,7 @@ export function connect() {
             if (!ev.metadata) ev.metadata = {}
             Object.assign(ev.metadata, data.metadata_patch)
             if (data.metadata_patch.approvedAt) {
-              ev._planResponse = 'approved'
+              ev._planResponse = data.metadata_patch.mode === 'supervised' ? 'supervised' : 'approved'
               ev._promptResponse = 'approved'
             }
             if (data.metadata_patch.rejectedAt) {
@@ -555,7 +566,7 @@ export function convertChatEvent(e) {
     msg._planText = e.text || e.metadata?.planText || ''
     msg._tmuxSession = e.metadata?.tmux_session || ''
     msg._machineId = e.metadata?.machine_id || ''
-    msg._planResponse = e.metadata?.approvedAt ? 'approved' : e.metadata?.rejectedAt ? 'rejected' : ''
+    msg._planResponse = e.metadata?.rejectedAt ? 'rejected' : e.metadata?.approvedAt ? (e.metadata?.mode === 'supervised' ? 'supervised' : 'approved') : ''
   } else if (type === 'terminal_card') {
     msg._evType = 'terminal_card'
     msg._reason = e.metadata?.reason || ''

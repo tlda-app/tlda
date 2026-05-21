@@ -155,7 +155,7 @@ export function renderChatLine(m, ctx) {
       <div class="lifecycle-card lc-plan-approval">
         <div class="lc-header"><span class="lc-icon">\uD83D\uDCCB</span> <span class="lc-title">Ready to proceed</span> <span class="lc-routing"><span class="${agentCls}">${label}</span> wants to start implementation</span></div>
         ${planHtml}
-        <div class="plan-approval-hint">Reply <strong>yes</strong> / <strong>no</strong> to approve or reject</div>
+        <div class="plan-approval-hint">Reply <strong>yes</strong> / <strong>no</strong> in chat, or use buttons above</div>
       </div></div>`
   }
 
