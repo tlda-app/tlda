@@ -2640,10 +2640,10 @@ function FleetChatInner({ shape }: { shape: any }) {
         }
       }
 
-      // Activity card (only when NOT dragging from inside a tool line)
+      // Activity card (only when NOT dragging from inside a tool line or md-file chip)
       if (!drag) {
         const actCard = target.closest('.chat-activity-card') as HTMLElement
-        if (actCard) {
+        if (actCard && !target.closest('.md-file-card')) {
           const agentId = actCard.dataset.agent || ''
           const ts = actCard.dataset.ts || ''
           const actDbId = actCard.dataset.msgId || ''
@@ -2660,10 +2660,10 @@ function FleetChatInner({ shape }: { shape: any }) {
         }
       }
 
-      // Code block header (but not the copy button — let that through to onClick)
+      // Code block header (but not the copy button or md-file chip — let those through)
       if (!drag) {
         const codeHeader = target.closest('.code-block-header') as HTMLElement
-        if (codeHeader && !target.closest('.code-block-copy')) {
+        if (codeHeader && !target.closest('.code-block-copy') && !target.closest('.md-file-card')) {
           const wrap = codeHeader.closest('.code-block-wrap')
           const code = wrap?.querySelector('pre code')
           if (code) {
