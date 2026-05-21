@@ -408,6 +408,97 @@ export function linkifyLabelRefs(
   return result.join('')
 }
 
+/**
+ * Post-process rendered HTML to convert @label references into clickable doc links.
+ * @thm:bias-decomp → clickable link showing "Theorem 4.3" (from labelRegions displayLabel).
+ * Unresolved refs render with a red warning style.
+ */
+export function linkifyAtRefs(
+  html: string,
+  labelRegions: Record<string, LabelRegionInfo>,
+): string {
+  // Quick bail — @ not present
+  if (!html.includes('@')) return html
+
+  const AT_RE = /(?<![\\@\w])@([\w:.-]+)/g
+
+  const TAG_RE = /<[^>]+>/g
+  const parts: Array<{ text: string; isTag: boolean }> = []
+  let lastIdx = 0
+  let tagMatch: RegExpExecArray | null
+  TAG_RE.lastIndex = 0
+  while ((tagMatch = TAG_RE.exec(html)) !== null) {
+    if (tagMatch.index > lastIdx) parts.push({ text: html.slice(lastIdx, tagMatch.index), isTag: false })
+    parts.push({ text: tagMatch[0], isTag: true })
+    lastIdx = TAG_RE.lastIndex
+  }
+  if (lastIdx < html.length) parts.push({ text: html.slice(lastIdx), isTag: false })
+
+  let skipDepth = 0
+  const SKIP_OPEN = /^<(a|code|pre)[\s>]/i
+  const SKIP_CLOSE = /^<\/(a|code|pre|span)>/i
+  const SPAN_SKIP_OPEN = /^<span\s[^>]*class="[^"]*(?:doc-link|ref-chip)/i
+  const SPAN_OPEN = /^<span[\s>]/i
+
+  const TYPE_DISPLAY: Record<string, string> = {
+    thm: 'Thm', lem: 'Lem', prop: 'Prop', cor: 'Cor', def: 'Def',
+    ass: 'Asm', eq: 'Eq', sec: '§', fig: 'Fig', tab: 'Tab',
+  }
+
+  const result: string[] = []
+  for (const part of parts) {
+    if (part.isTag) {
+      if (skipDepth > 0) {
+        if (SPAN_OPEN.test(part.text)) skipDepth++
+        else if (SKIP_CLOSE.test(part.text)) skipDepth--
+      } else {
+        if (SKIP_OPEN.test(part.text) || SPAN_SKIP_OPEN.test(part.text)) skipDepth++
+        else if (SKIP_CLOSE.test(part.text)) skipDepth = Math.max(0, skipDepth - 1)
+      }
+      result.push(part.text)
+      continue
+    }
+    if (skipDepth > 0) { result.push(part.text); continue }
+
+    AT_RE.lastIndex = 0
+    let cursor = 0
+    let m: RegExpExecArray | null
+    let modified = false
+    const segments: string[] = []
+
+    while ((m = AT_RE.exec(part.text)) !== null) {
+      modified = true
+      if (m.index > cursor) segments.push(part.text.slice(cursor, m.index))
+
+      const label = m[1]
+      const info = labelRegions[label]
+
+      if (info) {
+        const typePrefix = label.split(':')[0]
+        const typeLabel = TYPE_DISPLAY[typePrefix] || ''
+        const displayText = info.displayLabel && info.displayLabel !== label
+          ? info.displayLabel
+          : (typeLabel ? `${typeLabel} ${label.split(':').slice(1).join(':')}` : label)
+        segments.push(
+          `<span class="doc-link ref-chip" data-ref-type="label" data-ref-label="${escAttr(label)}" data-ref-page="${info.page}" data-ref-y-top="${info.yTop}" data-ref-y-bottom="${info.yBottom}">${escAttr(displayText)}</span>`
+        )
+      } else {
+        segments.push(`<span class="doc-link doc-link-unresolved ref-chip-broken">@${escAttr(label)}</span>`)
+      }
+
+      cursor = m.index + m[0].length
+    }
+
+    if (modified) {
+      if (cursor < part.text.length) segments.push(part.text.slice(cursor))
+      result.push(segments.join(''))
+    } else {
+      result.push(part.text)
+    }
+  }
+  return result.join('')
+}
+
 // --- Reference resolution ---
 
 export interface ResolvedRef {

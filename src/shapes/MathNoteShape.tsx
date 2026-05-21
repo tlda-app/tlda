@@ -18,7 +18,7 @@ import MarkdownIt from 'markdown-it'
 import { getActiveMacros } from '../katexMacros'
 import { DocContext } from '../PanelContext'
 import { fetchProofInfo } from '../docInfoCache'
-import { linkifyArrowRefs, refToCanvas, type LabelRegionInfo, type ResolvedRef } from '../docLinks'
+import { linkifyArrowRefs, linkifyAtRefs, refToCanvas, type LabelRegionInfo, type ResolvedRef } from '../docLinks'
 import { PDF_HEIGHT } from '../layoutConstants'
 
 const md = new MarkdownIt({ html: true, breaks: true, linkify: true })
@@ -484,10 +484,11 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     const renderedHtmlBase = useMemo(
       () => {
         const t = shape.props.text || ''
-        if (!hasMath(t) && !hasMarkdown(t) && !t.includes('[->')) return null
+        if (!hasMath(t) && !hasMarkdown(t) && !t.includes('[->') && !t.includes('@')) return null
         let html = renderMarkdownMath(t)
         if (Object.keys(labelRegions).length > 0) {
           html = linkifyArrowRefs(html, labelRegions)
+          html = linkifyAtRefs(html, labelRegions)
         }
         return html
       },
@@ -1162,6 +1163,8 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
               .math-note-prose .doc-link { color: #7c3aed; cursor: pointer; border-bottom: 1px dotted #7c3aed; transition: opacity 0.15s; }
               .math-note-prose .doc-link:hover { opacity: 0.7; }
               .math-note-prose .doc-link-unresolved { color: inherit; opacity: 0.45; border-bottom-style: dashed; cursor: default; }
+              .math-note-prose .ref-chip { font-size: 0.9em; padding: 0 2px; border-radius: 2px; }
+              .math-note-prose .ref-chip-broken { color: #dc2626; opacity: 0.7; border-bottom: 1px dashed #dc2626; cursor: default; }
               .math-note-prose.tappable-bullets li { cursor: pointer; border-radius: 4px; padding: 2px 4px; margin: -2px -4px; transition: background-color 0.15s; }
               .math-note-prose.tappable-bullets li:hover { background-color: rgba(124, 58, 237, 0.08); }
               .math-note-prose.tappable-bullets li:active { background-color: rgba(124, 58, 237, 0.15); }

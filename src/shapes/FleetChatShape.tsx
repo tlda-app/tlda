@@ -32,7 +32,7 @@ import { dragCoordinator } from './dragCoordinator'
 import { DocContext, PanelContext } from '../PanelContext'
 import { loadLookup, type LookupData } from '../synctexLookup'
 import { log } from '../logger'
-import { linkifyDocRefs, linkifyArrowRefs, linkifyLabelRefs, buildRefResolver, refToCanvas, type DocRef, type ResolvedRef, type LabelRegionInfo, type TheoremMapEntry } from '../docLinks'
+import { linkifyDocRefs, linkifyArrowRefs, linkifyAtRefs, linkifyLabelRefs, buildRefResolver, refToCanvas, type DocRef, type ResolvedRef, type LabelRegionInfo, type TheoremMapEntry } from '../docLinks'
 import { fetchProofInfo, fetchTheoremMap } from '../docInfoCache'
 import { PDF_HEIGHT, PDF_WIDTH } from '../layoutConstants'
 import { TerminalCard } from './TerminalCard'
@@ -1144,6 +1144,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     // Process [->ref] arrow links BEFORE auto-detection (linkifyDocRefs)
     // so that [->Theorem 3.2] is consumed before "Theorem 3.2" gets auto-linked
     if (doc && Object.keys(labelRegions).length > 0) {
+      html = linkifyAtRefs(html, labelRegions)
       html = linkifyArrowRefs(html, labelRegions)
       html = linkifyLabelRefs(html, labelRegions)
     }

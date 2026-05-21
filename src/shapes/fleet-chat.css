@@ -1886,6 +1886,13 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   background: rgba(147, 112, 219, 0.25);
   border-color: rgba(147, 112, 219, 0.4);
 }
+.fleet-chat-shape .ref-chip-broken {
+  color: #dc2626;
+  background: rgba(220, 38, 38, 0.1);
+  border-color: rgba(220, 38, 38, 0.2);
+  opacity: 0.7;
+  cursor: default;
+}
 /* Chip hover popover — shows referenced chat content */
 .chip-hover-popover {
   background: rgba(15, 15, 26, 0.95);

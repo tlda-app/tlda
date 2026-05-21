@@ -398,6 +398,50 @@ function _lookupLineInData(lookup, lineNum, file) {
   return { page: entry.page, x: entry.x, y: entry.y, content: entry.content, texFile: lookup.meta?.texFile };
 }
 
+// ---- @label cross-reference validation ----
+
+const AT_REF_PATTERN = /(?<![\\@\w])@([\w:.-]+)/g
+
+function validateRefs(text, docName) {
+  if (!text) return { warnings: [], refs: [] }
+  const refs = []
+  let match
+  const re = new RegExp(AT_REF_PATTERN.source, 'g')
+  while ((match = re.exec(text)) !== null) {
+    refs.push(match[1])
+  }
+  if (refs.length === 0) return { warnings: [], refs: [] }
+
+  const sm = readJsonSync(docName, 'source-map.json')
+  const labels = sm?.labels || []
+  const labelSet = new Set(labels.map(e => e.label))
+
+  const warnings = []
+  const resolved = []
+  for (const ref of refs) {
+    if (labelSet.has(ref)) {
+      const entry = labels.find(e => e.label === ref)
+      resolved.push({ ref, entry })
+    } else {
+      const similar = labels
+        .filter(e => e.label.includes(ref.split(':').pop()) || ref.includes(e.label.split(':').pop()))
+        .slice(0, 3)
+        .map(e => e.label)
+      warnings.push({ ref, similar })
+    }
+  }
+  return { warnings, refs: resolved }
+}
+
+function formatRefWarnings(validation) {
+  if (validation.warnings.length === 0) return ''
+  const lines = validation.warnings.map(w => {
+    const hint = w.similar.length > 0 ? ` (similar: ${w.similar.join(', ')})` : ''
+    return `@${w.ref}${hint}`
+  })
+  return `\n⚠️ Broken refs: ${lines.join(', ')}`
+}
+
 // Coordinate mapping now lives in lib/formatCoords.mjs (imported above)
 
 function findNearbyLines(docName, canvasBBox) {
@@ -1872,7 +1916,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'add_note',
-      description: 'Add a math note annotation to the document at a specific source line. The note appears in the TLDraw canvas and syncs to all viewers. For multiple-choice options with long LaTeX content, prefer `options_file` over inline `text`+`choices` — the file format avoids escaping pain and gives the options a durable artifact.',
+      description: 'Add a math note annotation to the document at a specific source line. The note appears in the TLDraw canvas and syncs to all viewers. Supports @label cross-references (e.g. @thm:bias-decomp) — broken refs are reported in the response. For multiple-choice options with long LaTeX content, prefer `options_file` over inline `text`+`choices` — the file format avoids escaping pain and gives the options a durable artifact.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -2112,7 +2156,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'input_scratch',
-      description: 'Inject a scratch LaTeX section into a document at a specific location. Write plain LaTeX to a local file (no wrapper needed — the server wraps it in a \\begin{scratch}{label}...\\end{scratch} environment automatically). The scratch env renders in dark gray with the label visible at the top, so it is visually distinct from the main document. Requires exactly one of: after, before, replace. If the build fails, you will receive an automatic fleet chat with the LaTeX errors.',
+      description: 'Inject a scratch section into a document at a specific location. Accepts .tex (plain LaTeX) or .md/.qmd (markdown with @label refs — auto-converted to LaTeX via pandoc, @refs become \\ref{}). No wrapper needed — the server wraps it in a \\begin{scratch}{label}...\\end{scratch} environment automatically. The scratch env renders in dark gray with the label visible at the top. Requires exactly one of: after, before, replace. If the build fails, you will receive an automatic fleet chat with the LaTeX errors.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -2136,6 +2180,21 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           label: { type: 'string', description: 'Label of the scratch section to inline (same label used when it was created with input_scratch)' },
         },
         required: ['doc', 'label'],
+      },
+    },
+    {
+      name: 'extract_to_scratch',
+      description: 'Extract a range of source lines from the document into a markdown scratch note. Converts LaTeX to markdown via pandoc (\\ref{} → @label). Creates a backed math note on the canvas at the extracted region, and writes the .md file to the scratch directory.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name' },
+          startLine: { type: 'number', description: 'First source line to extract' },
+          endLine: { type: 'number', description: 'Last source line to extract' },
+          name: { type: 'string', description: 'Name for the scratch file (e.g. "bias-rework"). Creates scratch/{name}.md' },
+          file: { type: 'string', description: 'Source file (for multi-file projects). Omit for main file.' },
+        },
+        required: ['doc', 'startLine', 'endLine', 'name'],
       },
     },
     {
@@ -2311,7 +2370,7 @@ const TOOLS_NEEDING_BUILD = new Set([
   'scroll_to_line', 'read_annotations',
   'draw_highlight', 'draw_arrow',
   'set_understanding', 'get_understanding',
-  'lookup_theorem',
+  'lookup_theorem', 'extract_to_scratch',
 ]);
 
 // Handle tool calls
@@ -2450,7 +2509,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const result = await addAnnotation(doc, line, text, { color, size: effectiveSize, width, height, side, file, choices, page: pageNum });
       if (!result.ok) return { content: [{ type: 'text', text: result.error }], isError: true };
       const choicesNote = choices?.length ? `\n  choices: ${choices.join(' | ')}` : '';
-      return { content: [{ type: 'text', text: `Created ${result.shapeId}\n  ${line ? `line ${line}` : `page ${pageNum}`} → page ${result.page}, canvas (${result.x.toFixed(0)}, ${result.y.toFixed(0)})\n  "${text.slice(0, 60)}${text.length > 60 ? '...' : ''}"${choicesNote}` }] };
+      const refValidation = validateRefs(text, doc);
+      const refWarning = formatRefWarnings(refValidation);
+      return { content: [{ type: 'text', text: `Created ${result.shapeId}\n  ${line ? `line ${line}` : `page ${pageNum}`} → page ${result.page}, canvas (${result.x.toFixed(0)}, ${result.y.toFixed(0)})\n  "${text.slice(0, 60)}${text.length > 60 ? '...' : ''}"${choicesNote}${refWarning}` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
@@ -3534,6 +3595,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     try { content = fs.readFileSync(resolved, 'utf8'); } catch (e) {
       return { content: [{ type: 'text', text: `Cannot read ${resolved}: ${e.message}` }], isError: true };
     }
+    if (resolved.endsWith('.md') || resolved.endsWith('.qmd')) {
+      content = content.replace(/(?<![\\@\w])@([\w:.-]+)/g, '\\ref{$1}')
+      try {
+        content = execSync('pandoc -f markdown -t latex --wrap=none', { input: content, encoding: 'utf8', timeout: 10000 });
+      } catch (e) {
+        return { content: [{ type: 'text', text: `pandoc conversion failed: ${e.message}` }], isError: true };
+      }
+    }
     try {
       const agentId = process.env.FLEET_ID || null;
       const agentName = process.env.FLEET_NAME || null;
@@ -3575,11 +3644,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (mainContent) {
         fs.writeFileSync(path.join(sourceDir, mainFile), mainContent, 'utf8');
       }
+      const refValidation = validateRefs(content, doc);
+      const refWarning = formatRefWarnings(refValidation);
       if (result.action === 'replaced') {
-        return { content: [{ type: 'text', text: `Replaced scratch section "${replace}" — wrote ${scratchAbsPath}. Watcher will sync and rebuild.` }] };
+        return { content: [{ type: 'text', text: `Replaced scratch section "${replace}" — wrote ${scratchAbsPath}. Watcher will sync and rebuild.${refWarning}` }] };
       }
       const loc = after ? `after "${after}"` : `before "${before}"`;
-      return { content: [{ type: 'text', text: `Inserted scratch section "${label}" (${loc}) — wrote ${scratchAbsPath} and updated ${path.join(sourceDir, mainFile)}. Watcher will sync and rebuild.` }] };
+      return { content: [{ type: 'text', text: `Inserted scratch section "${label}" (${loc}) — wrote ${scratchAbsPath} and updated ${path.join(sourceDir, mainFile)}. Watcher will sync and rebuild.${refWarning}` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
@@ -3604,6 +3675,48 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const scratchAbsPath = path.join(sourceDir, scratchPath);
       try { fs.unlinkSync(scratchAbsPath); } catch (e) { if (e.code !== 'ENOENT') throw e; }
       return { content: [{ type: 'text', text: `Inlined "${label}" into ${path.join(sourceDir, mainFile)} and removed ${scratchAbsPath}. Watcher will sync and rebuild.` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'extract_to_scratch') {
+    const { doc, startLine, endLine, name: scratchName, file: sourceFile } = args;
+    if (!doc || !startLine || !endLine || !scratchName) {
+      return { content: [{ type: 'text', text: 'doc, startLine, endLine, and name are required.' }], isError: true };
+    }
+    try {
+      const projectInfo = await serverFetch(`/api/projects/${doc}`);
+      if (!projectInfo) return { content: [{ type: 'text', text: `Document "${doc}" not found.` }], isError: true };
+      const sourceDir = projectInfo.sourceDir;
+      if (!sourceDir) return { content: [{ type: 'text', text: `No sourceDir for "${doc}".` }], isError: true };
+
+      const texFile = sourceFile || projectInfo.mainFile || 'main.tex';
+      const texPath = path.join(sourceDir, texFile);
+      const texContent = fs.readFileSync(texPath, 'utf8');
+      const lines = texContent.split('\n');
+      const extracted = lines.slice(startLine - 1, endLine).join('\n');
+
+      let mdContent;
+      try {
+        mdContent = execSync('pandoc -f latex -t markdown --wrap=none', { input: extracted, encoding: 'utf8', timeout: 10000 });
+      } catch (e) {
+        return { content: [{ type: 'text', text: `pandoc conversion failed: ${e.message}` }], isError: true };
+      }
+      mdContent = mdContent.replace(/\\ref\{([\w:.-]+)\}/g, '@$1');
+
+      const scratchDir = path.join(sourceDir, 'scratch');
+      fs.mkdirSync(scratchDir, { recursive: true });
+      const mdPath = path.join(scratchDir, `${scratchName}.md`);
+      fs.writeFileSync(mdPath, mdContent, 'utf8');
+
+      const result = await addAnnotation(doc, startLine, mdContent, {
+        color: 'violet', size: 'lg', side: 'right',
+      });
+
+      const refValidation = validateRefs(mdContent, doc);
+      const refWarning = formatRefWarnings(refValidation);
+      return { content: [{ type: 'text', text: `Extracted lines ${startLine}–${endLine} to ${mdPath}${result.ok ? ` (note ${result.shapeId})` : ''}${refWarning}` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
