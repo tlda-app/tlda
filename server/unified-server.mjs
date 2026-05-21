@@ -397,12 +397,12 @@ setInterval(() => {
 // detectPlanApproval removed — plan detection is handled by the daemon
 
 // Fuzzy match Skip's reply to an affirmative or negative.
-// Returns 'y', 'n', or null.
+// Returns '1' (approve) or '3' (reject) — matching Claude Code's numbered menu.
 function matchApprovalResponse(text) {
   const t = text.trim().toLowerCase()
   // Negative — check first so "no go ahead" isn't misread as affirmative
-  if (/\b(no|nope|stop|cancel|wait|hold on|don'?t|not yet|abort|reject|denied)\b/.test(t)) return 'n'
-  if (/\b(yes|yeah|yep|yup|go ahead|do it|approve|proceed|proceed|sounds good|let'?s go|sure|absolutely|okay|ok)\b/.test(t)) return 'y'
+  if (/\b(no|nope|stop|cancel|wait|hold on|don'?t|not yet|abort|reject|denied)\b/.test(t)) return '3'
+  if (/\b(yes|yeah|yep|yup|go ahead|do it|approve|proceed|proceed|sounds good|let'?s go|sure|absolutely|okay|ok)\b/.test(t)) return '1'
   return null
 }
 
@@ -948,6 +948,65 @@ app.post('/api/backing-file-write', requireRead, async (req, res) => {
   } catch (e) {
     res.status(503).json({ error: e.message })
   }
+})
+
+// ---------- Fleet action HTTP routes ----------
+// These mirror WS message handlers so UI buttons (fetch POST) can reach them.
+
+app.post('/api/send-text', requireRead, async (req, res) => {
+  const { agent: agentQuery, text, enter } = req.body || {}
+  if (!agentQuery) return res.status(400).json({ error: 'Missing agent' })
+  if (!fleetStore) return res.status(503).json({ error: 'Fleet not initialized' })
+  const agent = fleetStore.findAgent(agentQuery)
+  if (!agent) return res.status(404).json({ error: 'agent not found' })
+  if (!agent.tmux_session) return res.status(400).json({ error: 'no tmux session' })
+  const route = resolveRpc('send-text', agent)
+  if (route.via === 'none') return res.status(503).json({ error: route.error })
+  try {
+    const result = await sendRpc(route.machine_id, 'send-text', { tmux_session: agent.tmux_session, text, enter: enter !== false })
+    res.json(result || { ok: true })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+app.post('/api/plan-mode-respond', requireRead, async (req, res) => {
+  const { agent: agentQuery, response } = req.body || {}
+  if (!agentQuery) return res.status(400).json({ error: 'Missing agent' })
+  if (!fleetStore) return res.status(503).json({ error: 'Fleet not initialized' })
+  const agent = fleetStore.findAgent(agentQuery)
+  if (!agent) return res.status(404).json({ error: 'agent not found' })
+  if (!agent.tmux_session) return res.status(400).json({ error: 'no tmux session' })
+  if (!['approve', 'supervised', 'reject'].includes(response)) return res.status(400).json({ error: 'response must be approve, supervised, or reject' })
+  const route = resolveRpc('send-text', agent)
+  if (route.via === 'none') return res.status(503).json({ error: route.error })
+  try {
+    const key = response === 'approve' ? '1' : response === 'supervised' ? '2' : '3'
+    const result = await sendRpc(route.machine_id, 'send-text', { tmux_session: agent.tmux_session, text: key, enter: false })
+    fleetStore.updateAgentMeta?.(agent.id, { permission_mode: null, inPlanMode: false, planModeType: null })
+    const pending = pendingPlanApprovals.get(agent.id)
+    if (pending?.eventId) {
+      const now = new Date().toISOString()
+      const patch = response === 'reject' ? { rejectedAt: now } : { approvedAt: now, mode: response }
+      try {
+        fleetStore.updateEventMetadata(pending.eventId, patch)
+        broadcastEvent('event-update', { id: pending.eventId, metadata_patch: patch })
+      } catch {}
+      pendingPlanApprovals.delete(agent.id)
+    }
+    broadcastState()
+    res.json(result || { ok: true })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+app.post('/api/prompt-respond', requireRead, async (req, res) => {
+  const { eventId, response } = req.body || {}
+  if (!eventId) return res.status(400).json({ error: 'Missing eventId' })
+  if (!fleetStore) return res.status(503).json({ error: 'Fleet not initialized' })
+  try {
+    const patch = response === 'approved' ? { approvedAt: new Date().toISOString() } : { rejectedAt: new Date().toISOString() }
+    fleetStore.updateEventMetadata(eventId, patch)
+    broadcastEvent('event-update', { id: eventId, metadata_patch: patch })
+    res.json({ ok: true })
+  } catch (e) { res.status(500).json({ error: e.message }) }
 })
 
 // ---------- Doc asset serving ----------
@@ -1834,7 +1893,7 @@ async function handleFleetWsMessage(ws, msg) {
           sendRpc(approval.machine_id, 'send-text', {
             tmux_session: approval.tmux_session,
             text: key,
-            enter: true,
+            enter: false,
           }).catch(e => console.error(`[plan-approval] keystroke failed: ${e.message}`))
         }
       }
@@ -2232,23 +2291,18 @@ async function handleFleetWsMessage(ws, msg) {
     const agent = fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
     if (!agent.tmux_session) { error('no tmux session'); return }
-    if (response !== 'approve' && response !== 'reject') { error('response must be approve or reject'); return }
-    const op = response === 'approve' ? 'send-text' : 'send-key'
-    const route = resolveRpc(op, agent)
+    if (!['approve', 'supervised', 'reject'].includes(response)) { error('response must be approve, supervised, or reject'); return }
+    const route = resolveRpc('send-text', agent)
     if (route.via === 'none') { error(route.error); return }
     try {
-      let result
-      if (response === 'approve') {
-        result = await sendRpc(route.machine_id, 'send-text', { tmux_session: agent.tmux_session, text: 'yes', enter: true })
-      } else {
-        result = await sendRpc(route.machine_id, 'send-text', { tmux_session: agent.tmux_session, text: 'no', enter: true })
-      }
+      const key = response === 'approve' ? '1' : response === 'supervised' ? '2' : '3'
+      let result = await sendRpc(route.machine_id, 'send-text', { tmux_session: agent.tmux_session, text: key, enter: false })
       fleetStore.updateAgentMeta?.(agent.id, { permission_mode: null, inPlanMode: false, planModeType: null })
       // Persist response on the plan_approval event
       const pending = pendingPlanApprovals.get(agent.id)
       if (pending?.eventId) {
         const now = new Date().toISOString()
-        const patch = response === 'approve' ? { approvedAt: now } : { rejectedAt: now }
+        const patch = response === 'reject' ? { rejectedAt: now } : { approvedAt: now, mode: response }
         try {
           fleetStore.updateEventMetadata(pending.eventId, patch)
           broadcastEvent('event-update', { id: pending.eventId, metadata_patch: patch })
@@ -2529,6 +2583,7 @@ function loadQualifications() {
         rule.pattern = r.tool
         rule.re = qualGlobToRegex(r.tool)
       }
+      if (r.condition) rule.condition = r.condition
       return rule
     }).filter(r => r.type)
     console.log(`[qualification] loaded ${_qualRules.length} rules`)
@@ -2553,6 +2608,27 @@ function qualTrackRead(agentId, key) {
   if (!key) return
   if (!_qualAgentReads.has(agentId)) _qualAgentReads.set(agentId, new Set())
   _qualAgentReads.get(agentId).add(key)
+}
+
+let _latexProjectDirs = null
+let _latexProjectDirsAt = 0
+
+function getLatexProjectDirs() {
+  const now = Date.now()
+  if (_latexProjectDirs && now - _latexProjectDirsAt < 30000) return _latexProjectDirs
+  try {
+    const projects = listProjects()
+    _latexProjectDirs = projects
+      .filter(p => p.format === 'svg' && p.sourceDir)
+      .map(p => p.sourceDir.endsWith('/') ? p.sourceDir : p.sourceDir + '/')
+    _latexProjectDirsAt = now
+  } catch { _latexProjectDirs = [] }
+  return _latexProjectDirs
+}
+
+function isInLatexProject(filePath) {
+  const dirs = getLatexProjectDirs()
+  return dirs.some(d => filePath.startsWith(d))
 }
 
 function checkQualifications(agentId, tool, arg, input) {
@@ -2585,8 +2661,10 @@ function checkQualifications(agentId, tool, arg, input) {
     const fp = input?.file_path || input?.path || arg || ''
     if (!fp) return
     const basename = fp.split('/').pop()
+    const inLatex = isInLatexProject(fp)
     for (const rule of _qualRules) {
       if (rule.type !== 'edit') continue
+      if (rule.condition === 'latex-project' && !inLatex) continue
       if (rule.re.test(basename) || rule.re.test(fp)) {
         matchingRules.push({ rule, trigger: fp, triggerShort: basename })
       }
@@ -2959,6 +3037,12 @@ function handleDaemonWsMessage(ws, msg) {
     if (!fleetStore) return
     const { agent_id, text, tmux_session, reason } = msg
     if (!agent_id) return
+    const dedupKey = `${agent_id}:${reason || text}`
+    const now = Date.now()
+    if (!globalThis._termAttentionDedup) globalThis._termAttentionDedup = new Map()
+    const lastTs = globalThis._termAttentionDedup.get(dedupKey)
+    if (lastTs && now - lastTs < 30_000) return
+    globalThis._termAttentionDedup.set(dedupKey, now)
     const agent = fleetStore.getAgent(agent_id)
     const label = agent?.friendly_name || agent_id.slice(0, 12)
     const event = fleetStore.share({
