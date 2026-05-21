@@ -531,27 +531,51 @@ async function checkForPlanModePrompt(agentId) {
 
   if (!pane.includes("Here is Claude's plan") || !pane.includes('Would you like to')) return
 
-  // Extract plan text between the two ╌╌╌ divider lines.
-  const lines = pane.split('\n')
-  let dividerIdx = []
-  for (let i = 0; i < lines.length; i++) {
-    if (/^[\s╌]{10,}$/.test(lines[i].trim()) || lines[i].includes('╌╌╌╌')) {
-      dividerIdx.push(i)
-    }
-  }
-  // Find the pair of dividers that straddles the plan content
-  let planText = ''
-  for (let d = 0; d < dividerIdx.length - 1; d++) {
-    const between = lines.slice(dividerIdx[d] + 1, dividerIdx[d + 1]).join('\n').trim()
-    if (between.length > 20) {
-      planText = between
-      break
-    }
-  }
-  if (!planText) return  // divider extraction failed — don't send garbage
-
   if (planModeHashes.has(agentId)) return
   planModeHashes.set(agentId, true)
+
+  // Strategy 1: Read the plan file directly (most reliable).
+  // Claude Code prints the path in the terminal output.
+  let planText = ''
+  const planFileMatch = pane.match(/\/[^\s]*\.claude\/plans\/[^\s]+\.md/)
+  if (planFileMatch) {
+    try {
+      planText = fs.readFileSync(planFileMatch[0], 'utf8').trim()
+      console.log(`[daemon] plan-mode: read plan file ${planFileMatch[0]}`)
+    } catch (e) {
+      console.warn(`[daemon] plan-mode: couldn't read plan file ${planFileMatch[0]}: ${e.message}`)
+    }
+  }
+
+  // Strategy 2: Extract between ╌╌╌ divider lines (original approach).
+  if (!planText) {
+    const lines = pane.split('\n')
+    const dividerIdx = []
+    for (let i = 0; i < lines.length; i++) {
+      if (/^[\s╌]{10,}$/.test(lines[i].trim()) || lines[i].includes('╌╌╌╌')) {
+        dividerIdx.push(i)
+      }
+    }
+    for (let d = 0; d < dividerIdx.length - 1; d++) {
+      const between = lines.slice(dividerIdx[d] + 1, dividerIdx[d + 1]).join('\n').trim()
+      if (between.length > 20) {
+        planText = between
+        break
+      }
+    }
+  }
+
+  // Strategy 3: Raw text between the sentinel strings (last resort).
+  if (!planText) {
+    const startIdx = pane.indexOf("Here is Claude's plan")
+    const endIdx = pane.indexOf('Would you like to')
+    if (startIdx >= 0 && endIdx > startIdx) {
+      planText = pane.slice(startIdx + "Here is Claude's plan".length, endIdx).trim()
+    }
+  }
+
+  // Always send — even with empty plan text, the card signals "agent is in plan mode"
+  if (!planText) planText = '(Plan text could not be extracted — check the agent terminal)'
 
   sendMsg({
     type: 'plan-mode-prompt',

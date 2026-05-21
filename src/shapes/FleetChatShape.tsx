@@ -2039,6 +2039,31 @@ function FleetChatInner({ shape }: { shape: any }) {
         }
         return
       }
+      // Plan mode badge click — toggle plan mode off
+      const planBadge = (e.target as HTMLElement).closest('.plan-badge-click') as HTMLElement
+      if (planBadge) {
+        e.stopPropagation()
+        const agentId = planBadge.dataset.agentId
+        if (agentId) {
+          const agentName = agentNamesRef.current[agentId] || agentId.replace('fleet:', '')
+          fetch(`${FLEET_API}/api/plan-mode-toggle`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ agent: agentId }),
+          })
+            .then(r => r.json().then(data => ({ ok: r.ok, data })))
+            .then(({ ok, data }) => {
+              if (!ok || data?.error) {
+                sendMessage(getHumanId(), `⚠️ plan mode toggle failed for ${agentName}: ${data?.error || 'unknown error'}`, {})
+              } else if (data?.mode) {
+                const modeLabel = data.mode === 'plan' ? 'plan mode ✓' : data.mode === 'default' ? 'plan mode off ✓' : data.mode
+                sendMessage(getHumanId(), `📋 ${agentName} → ${modeLabel}`, {})
+              }
+            })
+            .catch(err => sendMessage(getHumanId(), `⚠️ plan mode toggle failed for ${agentName}: ${err.message}`, {}))
+        }
+        return
+      }
       // Expand/collapse delegation message
       const lcMsg = (e.target as HTMLElement).closest('.lc-message') as HTMLElement
       if (lcMsg) {
@@ -3402,10 +3427,9 @@ function FleetChatInner({ shape }: { shape: any }) {
                       }
                     }
 
-                    // Plan mode toggle: enter ("let's plan", "plan first", etc.) or exit
-                    // ("exit plan mode", "done planning", "back to normal"). Same endpoint
-                    // handles both — it reads current mode and sends the right # of BTabs.
-                    const ENTER_PLAN_RE = /^\/plan\b|\blet'?s plan\b|\bplan mode\b|\bplan first\b|\bthink before\b|\bexit plan\b|\bdone planning\b|\bback to normal\b/i
+                    // Plan mode toggle: enter only ("let's plan", "planning mode", etc.).
+                    // Exit is handled by clicking the plan badge or approving the plan card.
+                    const ENTER_PLAN_RE = /^\/plan\b|\blet'?s plan\b|\bplan mode\b|\bplanning mode\b|\bchat in planning\b|\bstay in planning\b|\bplan first\b|\bthink before\b/i
                     if (ENTER_PLAN_RE.test(text)) {
                       for (const agentId of sendTargets) {
                         const agentName = agentNames[agentId] || agentId

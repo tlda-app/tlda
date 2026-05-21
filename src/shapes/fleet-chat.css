@@ -3152,6 +3152,13 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   margin: 0 2px;
   vertical-align: middle;
   opacity: 0.7;
+  transition: opacity 0.15s;
+}
+.fleet-chat-shape .plan-mode-badge.plan-badge-click {
+  cursor: pointer;
+}
+.fleet-chat-shape .plan-mode-badge.plan-badge-click:hover {
+  opacity: 1;
 }
 
 /* --- Doc Clip Shape --- */

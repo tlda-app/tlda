@@ -456,7 +456,7 @@ export function renderChatLine(m, ctx) {
   const planModeType = sender?.metadata?.planModeType
   const planEmoji = planModeType === 'outline' ? '📝' : '📅'
   const planTitle = planModeType === 'outline' ? 'outline mode' : 'plan mode'
-  const planBadge = planMode ? `<span class="plan-mode-badge" title="${planTitle}">${planEmoji}</span>` : ''
+  const planBadge = planMode ? `<span class="plan-mode-badge plan-badge-click" data-agent-id="${esc(m.from)}" title="Click to exit ${planTitle}">${planEmoji}</span>` : ''
   const nickHtml = isAmbient
     ? `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(nick)}</span>${planBadge}<span class="chat-arrow">${arrowHtml}</span>${toHtml}:</span>`
     : `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(nick)}</span>${planBadge}:</span>`
