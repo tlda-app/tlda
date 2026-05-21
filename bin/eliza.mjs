@@ -318,6 +318,27 @@ function isContradiction(text) {
   return CONTRADICTION_PATTERNS.some(p => p.test(text))
 }
 
+// ---- Remark detector ----
+// Fires when an agent mentions "remark" — a remark is an aside the reader can skip.
+// Agents use remarks to stash load-bearing content somewhere ignorable instead of
+// integrating it properly as a lemma or proposition.
+const REMARK_PATTERN = /\bremark\b/i
+const remarkCooldowns = new Map()
+const REMARK_COOLDOWN_MS = 10 * 60_000
+
+const REMARK_MSG = `💭 You mentioned a **Remark**. Before using one, check:
+
+- [ ] Is this an aside the reader can skip without losing the thread?
+- [ ] Does it make zero theoretical claims that need proof?
+- [ ] Is it truly not load-bearing for any theorem or proof?
+- [ ] If it makes a claim, should this be a Lemma or Proposition instead?
+
+A Remark is an aside — something the reader can ignore. If a remark makes a theoretical claim, it needs a proof, which means it's the wrong environment. If any box above is unchecked, promote it to a Lemma/Proposition.`
+
+function isRemarkMention(text) {
+  return REMARK_PATTERN.test(text)
+}
+
 // ---- Running-away detector ----
 // Tracks when Skip sends a message that goes unacknowledged while the agent makes write tool calls
 const pendingSkipMessages = new Map()
@@ -473,6 +494,18 @@ function handleSequence(fromId, toId, text) {
         logDecision(fromId, 'contradiction', 'contradiction-phrase-detected', {}, text)
         startRewardWindow(fromId, 'contradiction')
         contradictionCooldowns.set(fromId, now)
+      }
+    }
+
+    // Remark detector — nudge agents who mention "remark" with a checklist
+    if (isRemarkMention(text)) {
+      const lastRemark = remarkCooldowns.get(fromId) || 0
+      if (now - lastRemark > REMARK_COOLDOWN_MS) {
+        console.log(`[eliza] remark mention detected from ${fromId}`)
+        sendChat(fromId, REMARK_MSG)
+        logDecision(fromId, 'remark', 'remark-mention-detected', {}, text)
+        startRewardWindow(fromId, 'remark')
+        remarkCooldowns.set(fromId, now)
       }
     }
 
@@ -671,6 +704,27 @@ function resolveAgentName(agentId) {
   } catch { return agentId }
 }
 
+function resolveAgentCwd(agentId) {
+  try {
+    const url = `${SERVER}/api/store/agents`
+    const mod = url.startsWith('https') ? https : http
+    return new Promise((resolve) => {
+      mod.get(url, res => {
+        let buf = ''
+        res.on('data', c => buf += c)
+        res.on('end', () => {
+          try {
+            const agents = JSON.parse(buf)
+            const agent = (Array.isArray(agents) ? agents : (agents.agents || []))
+              .find(a => a.id === agentId || a.friendly_name === agentId)
+            resolve(agent?.cwd || null)
+          } catch { resolve(null) }
+        })
+      }).on('error', () => resolve(null))
+    })
+  } catch { return null }
+}
+
 async function handleManagerEscalation(agentId, triggerText, mode = 'talk-to-skip') {
   const now = Date.now()
   const lastEscalation = managerEscalationCooldowns.get(agentId) || 0
@@ -725,8 +779,9 @@ Skip already told the agent what he wanted — repeatedly. He's exhausted from r
     // No manager exists — spawn one
     console.log(`[eliza] no manager for ${agentName} — spawning one`)
     try {
+      const agentCwd = await resolveAgentCwd(agentId)
       const mgrName = `mgr-${agentName}`
-      let spawnResult = await postJson('/api/spawn', { name: mgrName })
+      let spawnResult = await postJson('/api/spawn', { name: mgrName, cwd: agentCwd })
       if (spawnResult.error && spawnResult.error.includes('already exists')) {
         console.log(`[eliza] manager ${mgrName} already exists — respawning`)
         spawnResult = await postJson('/api/spawn', { agent: mgrName, respawn: true })
@@ -801,9 +856,10 @@ async function handleHandoff(agentId, triggerText) {
   sendChat(OWNER_ID, `Starting handoff from **${agentName}**. Spawning briefing agent…`)
   sendChat(agentId, `⚠️ Skip is handing off your work to a fresh agent. Stand by — a briefing agent will read your thread.`)
 
+  const agentCwd = await resolveAgentCwd(agentId)
   const briefingName = `briefing-${agentName}`
   try {
-    let spawnResult = await postJson('/api/spawn', { name: briefingName })
+    let spawnResult = await postJson('/api/spawn', { name: briefingName, cwd: agentCwd })
     if (spawnResult.error && spawnResult.error.includes('already exists')) {
       spawnResult = await postJson('/api/spawn', { agent: briefingName, respawn: true })
     }
@@ -812,7 +868,7 @@ async function handleHandoff(agentId, triggerText) {
       return
     }
 
-    pendingHandoffs.set(briefingName, { originalAgent: agentName, originalAgentId: agentId, startedAt: now })
+    pendingHandoffs.set(briefingName, { originalAgent: agentName, originalAgentId: agentId, originalCwd: agentCwd, startedAt: now })
 
     setTimeout(async () => {
       try {
@@ -878,7 +934,7 @@ async function handleHandoffReady(fromId, text) {
   const pickupName = `pickup-${handoffInfo.originalAgent}`
   const spawnPickup = async () => {
     try {
-      let spawnResult = await postJson('/api/spawn', { name: pickupName })
+      let spawnResult = await postJson('/api/spawn', { name: pickupName, cwd: handoffInfo.originalCwd })
       if (spawnResult.error && spawnResult.error.includes('already exists')) {
         spawnResult = await postJson('/api/spawn', { agent: pickupName, respawn: true })
       }
