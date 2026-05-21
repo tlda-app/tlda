@@ -1,8 +1,3 @@
-/**
- * ReaperShape — TLDraw shape showing memory pressure, process inventory,
- * and kill controls for the fleet daemon's reaper subsystem.
- * Table view grouped/sortable by agent.
- */
 import {
   BaseBoxShapeUtil,
   HTMLContainer,
@@ -188,9 +183,6 @@ function ReaperComponent({ shape }: { shape: any }) {
           fontFamily: 'var(--tl-font-sans, system-ui)',
           userSelect: 'none',
         }}
-        onPointerDown={stopEventPropagation}
-        onPointerMove={stopEventPropagation}
-        onWheel={stopEventPropagation}
       >
         {/* Header */}
         <div style={{
@@ -211,6 +203,7 @@ function ReaperComponent({ shape }: { shape: any }) {
           )}
           <div style={{ flex: 1 }} />
           <button
+            onPointerDown={stopEventPropagation}
             onClick={handleReapNow}
             style={{
               background: 'var(--glass-4)',
@@ -231,7 +224,11 @@ function ReaperComponent({ shape }: { shape: any }) {
             Waiting for daemon...
           </div>
         ) : (
-          <div style={{ flex: 1, overflow: 'auto', padding: '6px 10px' }}>
+          <div
+            style={{ flex: 1, overflow: 'auto', padding: '6px 10px' }}
+            onPointerDown={stopEventPropagation}
+            onWheel={stopEventPropagation}
+          >
             {/* Memory pressure bar */}
             <div style={{ marginBottom: 8 }}>
               <div style={{
@@ -276,25 +273,64 @@ function ReaperComponent({ shape }: { shape: any }) {
               </div>
             </div>
 
+            {/* Top memory consumers */}
+            {status.topProcesses?.length > 0 && (
+              <div style={{ marginBottom: 8 }}>
+                <div style={{
+                  fontSize: 10,
+                  color: 'var(--text-dim)',
+                  marginBottom: 3,
+                  fontWeight: 600,
+                }}>
+                  Top memory
+                </div>
+                {status.topProcesses.map((p: any, i: number) => (
+                  <div key={i} style={{
+                    fontSize: 10,
+                    color: 'var(--text-dim)',
+                    padding: '1px 0',
+                    display: 'flex',
+                    gap: 6,
+                    alignItems: 'baseline',
+                  }}>
+                    <span style={{
+                      color: 'var(--text)',
+                      fontWeight: 500,
+                      minWidth: 36,
+                      textAlign: 'right',
+                    }}>
+                      {formatBytes(p.rss)}
+                    </span>
+                    <span style={{
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}>
+                      {p.name}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
             {/* Process table */}
             {rows.length > 0 ? (
               <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
                 <thead>
                   <tr>
-                    <th style={{ ...thStyle, width: '28%' }} onClick={() => handleSort('agent')}>
+                    <th style={{ ...thStyle, width: '30%' }} onClick={() => handleSort('agent')}>
                       Agent{sortIndicator('agent')}
                     </th>
                     <th style={{ ...thStyle, width: '18%' }} onClick={() => handleSort('type')}>
                       Type{sortIndicator('type')}
                     </th>
-                    <th style={{ ...thStyle, width: '14%' }}>PID</th>
-                    <th style={{ ...thStyle, width: '15%' }} onClick={() => handleSort('status')}>
+                    <th style={{ ...thStyle, width: '17%' }} onClick={() => handleSort('status')}>
                       Status{sortIndicator('status')}
                     </th>
                     <th style={{ ...thStyle, width: '12%' }} onClick={() => handleSort('idle')}>
                       Idle{sortIndicator('idle')}
                     </th>
-                    <th style={{ ...thStyle, width: '13%' }}></th>
+                    <th style={{ ...thStyle, width: '10%' }}></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -306,9 +342,6 @@ function ReaperComponent({ shape }: { shape: any }) {
                       <td style={{ ...tdStyle, color: 'var(--text-dim)' }}>
                         {r.type === 'vite' ? `vite ${r.detail}` : 'pw'}
                       </td>
-                      <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 10, color: 'var(--text-dim)' }}>
-                        {r.pid}
-                      </td>
                       <td style={{ ...tdStyle, color: r.statusColor, fontSize: 10 }}>
                         {r.status}
                       </td>
@@ -318,6 +351,7 @@ function ReaperComponent({ shape }: { shape: any }) {
                       <td style={{ ...tdStyle, textAlign: 'right' }}>
                         {r.killable && (
                           <button
+                            onPointerDown={stopEventPropagation}
                             onClick={() => handleKill(r.pid)}
                             disabled={killing.has(r.pid)}
                             style={{
@@ -363,9 +397,10 @@ function ReaperComponent({ shape }: { shape: any }) {
                     display: 'flex',
                     gap: 6,
                   }}>
-                    <span style={{ color: '#e55' }}>pid={k.pid}</span>
-                    <span>{k.kind}</span>
-                    <span>{k.reason}</span>
+                    <span style={{ color: '#e55' }}>
+                      {k.agent || k.kind}
+                    </span>
+                    <span>{k.kind === 'manual' ? 'manual kill' : k.reason}</span>
                     <span style={{ marginLeft: 'auto' }}>{formatAge(Date.now() - k.ts)} ago</span>
                   </div>
                 ))}
