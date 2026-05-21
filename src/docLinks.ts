@@ -480,10 +480,10 @@ export function linkifyAtRefs(
           ? info.displayLabel
           : (typeLabel ? `${typeLabel} ${label.split(':').slice(1).join(':')}` : label)
         segments.push(
-          `<span class="doc-link ref-chip" data-ref-type="label" data-ref-label="${escAttr(label)}" data-ref-page="${info.page}" data-ref-y-top="${info.yTop}" data-ref-y-bottom="${info.yBottom}">${escAttr(displayText)}</span>`
+          `<span class="doc-link at-ref" data-ref-type="label" data-ref-label="${escAttr(label)}" data-ref-page="${info.page}" data-ref-y-top="${info.yTop}" data-ref-y-bottom="${info.yBottom}">${escAttr(displayText)}</span>`
         )
       } else {
-        segments.push(`<span class="doc-link doc-link-unresolved ref-chip-broken">@${escAttr(label)}</span>`)
+        segments.push(`<span class="doc-link doc-link-unresolved at-ref-broken">@${escAttr(label)}</span>`)
       }
 
       cursor = m.index + m[0].length
