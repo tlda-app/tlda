@@ -1340,6 +1340,19 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
                 <path d="M10 11v4l4-4h-4z" fill={dotColor} opacity="0.6" />
               </svg>
             </div>
+            {/* Sync state pip on collapsed dot */}
+            {backingFile && backingSyncState !== 'synced' && (
+              <div style={{
+                position: 'absolute',
+                top: -1,
+                left: 8,
+                width: 5,
+                height: 5,
+                borderRadius: '50%',
+                backgroundColor: backingSyncState === 'pushing' ? '#aa7' : '#c55',
+                zIndex: 11,
+              }} />
+            )}
             {/* Hover preview */}
             {dotHovered && (
               <div
@@ -1413,25 +1426,25 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
             onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = '0.5' }}
             title="Collapse in place"
           />
-          {/* File-backed indicator */}
+          {/* Sync state indicator */}
           {backingFile && (
             <div
-              title={backingFile}
+              title={`${backingFile} — ${backingSyncState}`}
               style={{
                 position: 'absolute',
-                top: 3,
+                top: 2,
                 left: 16,
-                fontSize: 10,
+                fontSize: 12,
                 lineHeight: '16px',
-                color: isDark ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.25)',
+                color: backingSyncState === 'synced' ? '#4a9' : backingSyncState === 'pushing' ? '#aa7' : '#c55',
                 userSelect: 'none',
                 zIndex: 10,
-                opacity: 0.6,
-                transition: 'opacity 0.15s',
+                opacity: backingSyncState === 'synced' ? 0.7 : 1,
+                transition: 'opacity 0.15s, color 0.15s',
               }}
               onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.opacity = '1' }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = '0.6' }}
-            >⇄</div>
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = backingSyncState === 'synced' ? '0.7' : '1' }}
+            >{backingSyncState === 'stale' ? '⇉' : '⇄'}</div>
           )}
           {/* Inject into document — converts markdown to LaTeX via pandoc */}
           {pageDoc?.docName && shape.props.text && (
