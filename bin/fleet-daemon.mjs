@@ -698,13 +698,29 @@ function syncSessionWatchers(agentList) {
 
     try {
       let debounce = null
-      const watcher = fs.watch(jsonlPath, { persistent: false }, () => {
+      const onWatchFired = () => {
         if (debounce) clearTimeout(debounce)
         const pw = pathWatchers.get(jsonlPath)
         if (!pw) return
+        pw.watchSeenAt = Date.now()
         debounce = setTimeout(() => readNewSessionLines(pw.primaryAgentId, jsonlPath, pw.sessionId), 150)
+      }
+      const createWatcher = () => fs.watch(jsonlPath, onWatchFired)
+      const watcher = createWatcher()
+
+      // Poll fallback: catches writes that fs.watch misses when FSEvents goes silent on macOS.
+      fs.watchFile(jsonlPath, { interval: 2000, persistent: false }, (curr, prev) => {
+        if (curr.mtimeMs === prev.mtimeMs) return
+        const pw = pathWatchers.get(jsonlPath)
+        if (!pw) return
+        if (pw.watchSeenAt && Date.now() - pw.watchSeenAt < 3000) return
+        console.warn(`[daemon] fs.watch missed ${path.basename(jsonlPath)} — recreating`)
+        try { pw.watcher.close() } catch {}
+        pw.watcher = createWatcher()
+        readNewSessionLines(pw.primaryAgentId, jsonlPath, pw.sessionId)
       })
-      pathWatchers.set(jsonlPath, { watcher, primaryAgentId: agent.id, sessionId })
+
+      pathWatchers.set(jsonlPath, { watcher, primaryAgentId: agent.id, sessionId, watchSeenAt: 0 })
       console.log(`[daemon] watching JSONL for ${agent.friendly_name || agent.id}: ${path.basename(jsonlPath)} @ offset=${offset}`)
     } catch (e) {
       console.error(`[daemon] watcher creation failed for ${jsonlPath}: ${e.message}`)
@@ -715,6 +731,7 @@ function syncSessionWatchers(agentList) {
   for (const [p, pw] of pathWatchers) {
     if (!activePaths.has(p)) {
       try { pw.watcher.close() } catch {}
+      fs.unwatchFile(p)
       pathWatchers.delete(p)
     }
   }
@@ -2163,7 +2180,7 @@ function sendMsg(obj) {
 }
 
 function teardownWatchers() {
-  for (const [, pw] of pathWatchers) { try { pw.watcher.close() } catch {} }
+  for (const [p, pw] of pathWatchers) { try { pw.watcher.close() } catch {}; fs.unwatchFile(p) }
   pathWatchers.clear()
   agentPaths.clear()
   // Source watchers survive WS disconnects — they detect file changes
