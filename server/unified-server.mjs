@@ -864,6 +864,8 @@ app.get('/api/local-image', requireRead, (req, res) => {
 const backingFileRegistry = new Map()
 function backingRegistryPath() { return join(getProjectsDir(), '..', 'data', 'backing-registry.json') }
 loadBackingRegistry()
+// Supplement persisted registry with shapes from active rooms (async, non-blocking)
+rebuildBackingFileRegistry().catch(() => {})
 
 function backingFileRegister(filePath, docName) {
   if (!backingFileRegistry.has(filePath)) backingFileRegistry.set(filePath, new Set())

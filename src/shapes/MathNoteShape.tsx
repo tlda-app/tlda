@@ -429,8 +429,20 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       return () => clearInterval(interval)
     }, [docName, shape.id, editor])
 
-    // Backing file: write to file only when the user actually changed the text
+    // Backing file: register with the server so the daemon watches for changes
     const backingFile = shape.props.backingFile as string | undefined
+    useEffect(() => {
+      if (!backingFile) return
+      const docParam = new URLSearchParams(window.location.search).get('doc')
+      if (!docParam) return
+      fetch('/api/backing-file-register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filePath: backingFile, docName: docParam }),
+      }).catch(() => {})
+    }, [backingFile])
+
+    // Backing file: write to file only when the user actually changed the text
     useEffect(() => {
       if (!backingFile) return
       if (isEditing) {
@@ -1440,7 +1452,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
               style={{
                 position: 'absolute',
                 top: 3,
-                right: docName ? 22 : 4,
+                right: (docName || backingFile) ? 22 : 4,
                 width: 16,
                 height: 16,
                 display: 'flex',
@@ -1457,6 +1469,34 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
               onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.opacity = '0.8' }}
               onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = '0.3' }}
             >↧</div>
+          )}
+          {/* Backing file sync indicator */}
+          {backingFile && !docName && (
+            <div
+              title={`Synced: ${backingFile.split('/').pop()}`}
+              style={{
+                position: 'absolute',
+                top: 3,
+                right: 4,
+                width: 16,
+                height: 16,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                opacity: 0.1,
+                transition: 'opacity 0.3s',
+                zIndex: 10,
+                fontSize: '10px',
+                userSelect: 'none',
+              }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.opacity = '0.6' }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = '0.1' }}
+            >
+              <svg width="10" height="12" viewBox="0 0 10 12" fill="currentColor" opacity="0.7">
+                <path d="M1 1.5A.5.5 0 011.5 1h4.793l3.207 3.207V10.5a.5.5 0 01-.5.5h-7.5a.5.5 0 01-.5-.5v-9z"/>
+                <path d="M6 1v3.5h3.5" fill="none" stroke="currentColor" strokeWidth="0.8"/>
+              </svg>
+            </div>
           )}
           {/* Toggle doc view — top-right tlda logo button (only when docName is set) */}
           {docName && (
