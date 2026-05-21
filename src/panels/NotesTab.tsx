@@ -187,17 +187,27 @@ export function NotesTab() {
     if (idx >= 0) book.switchTo(idx)
   }, [book])
 
-  const handleDragStart = useCallback((e: React.DragEvent, data: {
-    text: string
-    color: string
-    sourceDoc?: string
-    sourceShapeId?: string
-  }) => {
+  const handleDragStart = useCallback((e: React.DragEvent, shapeOrRemote: TLShape | RemoteNote) => {
+    const isLocal = 'typeName' in shapeOrRemote
+    const props = (isLocal ? shapeOrRemote.props : shapeOrRemote.props) as Record<string, unknown>
+    const meta = (isLocal ? shapeOrRemote.meta : shapeOrRemote.meta) as Record<string, unknown>
+    const sourceDoc = isLocal
+      ? book?.members[book.activeIndex]?.key
+      : (shapeOrRemote as RemoteNote).docKey
+    const data = {
+      _tlda: true,
+      text: props.text || '',
+      color: props.color || 'yellow',
+      sourceDoc,
+      sourceShapeId: shapeOrRemote.id,
+      shapeType: isLocal ? shapeOrRemote.type : (shapeOrRemote as RemoteNote).type,
+      props: { ...props },
+      meta: { ...meta },
+    }
     e.dataTransfer.setData('application/x-tlda-note', JSON.stringify(data))
-    // text/plain with marker for cross-window Safari compatibility
-    e.dataTransfer.setData('text/plain', JSON.stringify({ _tlda: true, ...data }))
+    e.dataTransfer.setData('text/plain', JSON.stringify(data))
     e.dataTransfer.effectAllowed = 'copy'
-  }, [])
+  }, [book])
 
   // Build page name lookup for chapter labels (must be before any early returns — hooks ordering)
   const pageNames = useMemo(() => {
@@ -255,12 +265,7 @@ export function NotesTab() {
       <tr key={shape.id} className={`notes-table-row${shapeDone ? ' notes-table-row--done' : ''}`}
         onClick={() => handleClick(shape)}
         draggable
-        onDragStart={(e) => handleDragStart(e, {
-          text: text,
-          color,
-          sourceDoc: book?.members[book.activeIndex]?.key,
-          sourceShapeId: shape.id,
-        })}
+        onDragStart={(e) => handleDragStart(e, shape)}
       >
         <td className="notes-table-cell notes-table-cell--note">
           <div className="notes-table-note-inner">
@@ -300,12 +305,7 @@ export function NotesTab() {
         onClick={() => handleRemoteClick(note)}
         style={noteDone ? { opacity: 0.4 } : { opacity: 0.7 }}
         draggable
-        onDragStart={(e) => handleDragStart(e, {
-          text,
-          color,
-          sourceDoc: note.docKey,
-          sourceShapeId: note.id,
-        })}
+        onDragStart={(e) => handleDragStart(e, note)}
       >
         <div className="note-preview" style={{ display: 'flex', alignItems: 'flex-start', gap: '4px' }}>
           <span className="note-color-dot" style={{ background: COLOR_HEX[color] || '#ccc', marginTop: '4px', flexShrink: 0 }} />

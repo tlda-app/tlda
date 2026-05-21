@@ -164,12 +164,7 @@ export function NoteDropHandler() {
       if (!json) return
       e.preventDefault()
 
-      let data: {
-        text: string
-        color: string
-        sourceDoc?: string
-        sourceShapeId?: string
-      }
+      let data: Record<string, any>
       try {
         data = JSON.parse(json)
       } catch {
@@ -178,27 +173,35 @@ export function NoteDropHandler() {
 
       const point = editor.screenToPage({ x: e.clientX, y: e.clientY })
       const shapeId = createShapeId()
-      const text = data.text || ''
+
+      // Shallow copy: if the drag payload includes full props/meta from
+      // the notes panel, preserve them so file-sync and other metadata survive.
+      const srcProps = data.props as Record<string, unknown> | undefined
+      const srcMeta = data.meta as Record<string, unknown> | undefined
+
+      const props = srcProps
+        ? { ...srcProps }
+        : { text: data.text || '', color: data.color || 'orange', w: 200, h: 150, collapsed: false }
+
+      // Flatten any nested objects in meta to pass TLDraw validation
+      const flatMeta: Record<string, unknown> = { createdAt: Date.now() }
+      if (srcMeta) {
+        for (const [k, v] of Object.entries(srcMeta)) {
+          flatMeta[k] = (v !== null && typeof v === 'object') ? JSON.stringify(v) : v
+        }
+      }
+      flatMeta.copiedFromDoc = data.sourceDoc || ''
+      flatMeta.copiedFromShapeId = data.sourceShapeId || ''
+      flatMeta.copiedFromTimestamp = Date.now()
 
       editor.createShape({
         id: shapeId,
-        type: 'math-note',
+        type: data.shapeType || 'math-note',
         x: point.x,
         y: point.y,
         opacity: 1,
-        props: {
-          text,
-          color: data.color || 'orange',
-          w: 200,
-          h: 150,
-          collapsed: false,
-        },
-        meta: {
-          createdAt: Date.now(),
-          copiedFromDoc: data.sourceDoc || '',
-          copiedFromShapeId: data.sourceShapeId || '',
-          copiedFromTimestamp: Date.now(),
-        },
+        props,
+        meta: flatMeta,
       } as any)
     }
 
