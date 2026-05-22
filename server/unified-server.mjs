@@ -1768,6 +1768,10 @@ async function handleFleetWsMessage(ws, msg) {
         if (alive) continue
         console.log(`[respawn] waking ${agent.friendly_name || agentId} (${agentId})`)
         await sendRpc(machineIds[0], 'spawn', { name: agentId, respawn: true })
+        const wakeTs = new Date().toISOString()
+        fleetStore.db.prepare(
+          'INSERT INTO events (type, timestamp, from_id, to_id, text, metadata) VALUES (?, ?, ?, ?, ?, ?)'
+        ).run('lifecycle', wakeTs, agentId, agentId, 'agent woken', null)
       } catch (e) {
         console.warn(`[respawn] failed for ${agentId}: ${e.message}`)
       }
