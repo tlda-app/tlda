@@ -33,23 +33,24 @@ import {
   PDF_WIDTH, PDF_HEIGHT, PAGE_WIDTH, PAGE_HEIGHT, PAGE_GAP,
 } from './lib/formatCoords.mjs';
 
+import { getServerUrl } from '../shared/config.mjs'
+import { tldaFetch as _tldaFetch } from '../shared/http-client.mjs'
+
 const TLDA_TOKEN = resolveToken();
 const TLDA_AUTH_HEADERS = TLDA_TOKEN ? { 'Authorization': `Bearer ${TLDA_TOKEN}` } : {};
-const TLDA_SERVER = process.env.TLDA_SERVER || 'http://localhost:5176';
+const TLDA_SERVER = getServerUrl();
 // Separate sync server for shapes/signals (e.g. Fly.io) — falls back to TLDA_SERVER
 const TLDA_SYNC_SERVER = process.env.TLDA_SYNC_SERVER || TLDA_SERVER;
 
 // ---- REST API helpers (shape CRUD via @tldraw/sync rooms) ----
 
 async function serverFetch(urlPath, options = {}) {
-  const url = `${TLDA_SYNC_SERVER}${urlPath}`;
-  const headers = { ...TLDA_AUTH_HEADERS, ...(options.headers || {}) };
-  const res = await fetch(url, { ...options, headers });
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new Error(`${options.method || 'GET'} ${urlPath} → ${res.status}: ${body}`);
-  }
-  return res.json();
+  return _tldaFetch(urlPath, {
+    method: options.method,
+    body: options.body,
+    headers: options.headers,
+    server: TLDA_SYNC_SERVER,
+  });
 }
 
 async function fetchShapes(docName, typeFilter) {

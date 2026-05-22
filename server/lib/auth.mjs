@@ -8,9 +8,7 @@
  * When no tokens are configured, auth is disabled (backward-compatible local use).
  */
 
-import { existsSync, readFileSync } from 'fs'
-import { join } from 'path'
-import { homedir } from 'os'
+import { getReadToken, getRwToken } from '../../shared/config.mjs'
 
 let tokenRead = null
 let tokenRw = null
@@ -29,19 +27,8 @@ export function initAuth() {
     return
   }
 
-  tokenRead = process.env.TLDA_TOKEN_READ || null
-  tokenRw = process.env.TLDA_TOKEN_RW || null
-
-  if (!tokenRead || !tokenRw) {
-    const configPath = join(homedir(), '.config', 'tlda', 'config.json')
-    try {
-      if (existsSync(configPath)) {
-        const config = JSON.parse(readFileSync(configPath, 'utf8'))
-        tokenRead = tokenRead || config.tokenRead || null
-        tokenRw = tokenRw || config.tokenRw || null
-      }
-    } catch {}
-  }
+  tokenRead = getReadToken()
+  tokenRw = process.env.TLDA_TOKEN_RW || getRwToken()
 
   authEnabled = !!(tokenRead || tokenRw)
 
