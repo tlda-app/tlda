@@ -2342,21 +2342,20 @@ function FleetChatInner({ shape }: { shape: any }) {
     return () => logEl.removeEventListener('click', onClick)
   }, [])
 
-  // Esc interrupt via native listener — TLDraw's capture-phase stopPropagation blocks React
-  // synthetic keydown for Escape, so we attach directly at the target element.
+  // Esc interrupt — document-level listener so it works regardless of textarea focus.
   // Three tiers: 1×Esc = soft (single Escape to tmux), 2×Esc = hard (Escape+poll loop),
   // 3×Esc = kill session (tmux kill-session, agent dies immediately).
-  // No thinkingAgents dependency — if you're mashing Escape at an agent, you mean it.
+  const [escDisplay, setEscDisplay] = useState<{ count: number, label: string } | null>(null)
+  const escDisplayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
-    const ta = inputRef.current as HTMLTextAreaElement | null
-    if (!ta) return
     function onEscKey(e: KeyboardEvent) {
       if (e.key !== 'Escape') return
-      log.debug('esc', 'keydown', { value: ta!.value, targets: sendTargetsRef.current })
-      if (ta!.value !== '') return
+      const ta = inputRef.current as HTMLTextAreaElement | null
+      if (ta && ta.value !== '') return
       const targets = sendTargetsRef.current
       if (targets.length === 0) return
       e.preventDefault()
+      e.stopPropagation()
       const now = Date.now()
       const agent = targets[0]
       const gap = now - lastEscRef.current
@@ -2367,47 +2366,36 @@ function FleetChatInner({ shape }: { shape: any }) {
       }
       lastEscRef.current = now
       const count = escCountRef.current
-      log.debug('esc', 'count', { count, gap, agent })
+      const agentLabel = agentNamesRef.current[agent] || agent.replace('fleet:', '')
+      log.info('esc', 'interrupt', { count, gap, agent, agentLabel })
       if (count >= 3) {
-        // Kill session: 3×Esc — tmux kill-session, agent dies immediately
         escCountRef.current = 0
         lastEscRef.current = 0
-        log.info('esc', 'kill-session', { agent })
+        setEscDisplay({ count: 3, label: `Kill ${agentLabel}` })
+        injectOptimisticEvent({ type: 'chat', from: 'system', text: `💀 Killing **${agentLabel}**`, timestamp: new Date().toISOString(), metadata: JSON.stringify({ fromLabel: 'system' }) })
         fetch(`${FLEET_API}/api/kill-session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent }) })
           .then(r => r.json()).then(d => log.debug('esc', 'kill-session response', d))
           .catch(err => log.warn('esc', 'kill-session failed', { err }))
       } else if (count === 2) {
-        // Hard interrupt: 2×Esc — Escape+poll loop
-        log.info('esc', 'hard-interrupt', { agent })
-        const agentLabel = agentNamesRef.current[agent] || agent.replace('fleet:', '')
-        injectOptimisticEvent({ type: 'chat', from_id: 'system', text: `⏸ Interrupting **${agentLabel}**…`, metadata: JSON.stringify({ fromLabel: 'system' }) })
+        setEscDisplay({ count: 2, label: `Interrupt ${agentLabel}` })
+        injectOptimisticEvent({ type: 'chat', from: 'system', text: `⏸ Interrupting **${agentLabel}**…`, timestamp: new Date().toISOString(), metadata: JSON.stringify({ fromLabel: 'system' }) })
         fetch(`${FLEET_API}/api/interrupt`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent }) })
           .then(r => r.json())
-          .then(d => { if (d.error) injectOptimisticEvent({ type: 'chat', from_id: 'system', text: `⚠ Interrupt failed: ${d.error}`, metadata: JSON.stringify({ fromLabel: 'system' }) }) })
-          .catch(() => injectOptimisticEvent({ type: 'chat', from_id: 'system', text: `⚠ Interrupt failed (server unreachable)`, metadata: JSON.stringify({ fromLabel: 'system' }) }))
+          .then(d => { if (d.error) injectOptimisticEvent({ type: 'chat', from: 'system', text: `⚠ Interrupt failed: ${d.error}`, timestamp: new Date().toISOString(), metadata: JSON.stringify({ fromLabel: 'system' }) }) })
+          .catch(() => injectOptimisticEvent({ type: 'chat', from: 'system', text: `⚠ Interrupt failed (server unreachable)`, timestamp: new Date().toISOString(), metadata: JSON.stringify({ fromLabel: 'system' }) }))
       } else {
-        // Soft interrupt: 1×Esc — single Escape to tmux
-        log.info('esc', 'soft-interrupt', { agent })
-        const agentLabel1 = agentNamesRef.current[agent] || agent.replace('fleet:', '')
-        injectOptimisticEvent({ type: 'chat', from_id: 'system', text: `⏸ Escape → **${agentLabel1}**`, metadata: JSON.stringify({ fromLabel: 'system' }) })
+        setEscDisplay({ count: 1, label: `Esc → ${agentLabel}` })
+        injectOptimisticEvent({ type: 'chat', from: 'system', text: `⏸ Escape → **${agentLabel}**`, timestamp: new Date().toISOString(), metadata: JSON.stringify({ fromLabel: 'system' }) })
         fetch(`${FLEET_API}/api/send-key`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent, key: 'Escape' }) })
           .then(r => r.json())
-          .then(d => { if (d.error) injectOptimisticEvent({ type: 'chat', from_id: 'system', text: `⚠ Escape failed: ${d.error}`, metadata: JSON.stringify({ fromLabel: 'system' }) }) })
-          .catch(() => injectOptimisticEvent({ type: 'chat', from_id: 'system', text: `⚠ Escape failed (server unreachable)`, metadata: JSON.stringify({ fromLabel: 'system' }) }))
+          .then(d => { if (d.error) injectOptimisticEvent({ type: 'chat', from: 'system', text: `⚠ Escape failed: ${d.error}`, timestamp: new Date().toISOString(), metadata: JSON.stringify({ fromLabel: 'system' }) }) })
+          .catch(() => injectOptimisticEvent({ type: 'chat', from: 'system', text: `⚠ Escape failed (server unreachable)`, timestamp: new Date().toISOString(), metadata: JSON.stringify({ fromLabel: 'system' }) }))
       }
+      if (escDisplayTimerRef.current) clearTimeout(escDisplayTimerRef.current)
+      escDisplayTimerRef.current = setTimeout(() => setEscDisplay(null), 1500)
     }
-    function onBlur() {
-      // TLDraw steals focus after Esc — reclaim it if we're mid-sequence
-      if (escCountRef.current > 0 && Date.now() - lastEscRef.current < 500) {
-        ta!.focus()
-      }
-    }
-    ta.addEventListener('keydown', onEscKey)
-    ta.addEventListener('blur', onBlur)
-    return () => {
-      ta.removeEventListener('keydown', onEscKey)
-      ta.removeEventListener('blur', onBlur)
-    }
+    document.addEventListener('keydown', onEscKey, true)
+    return () => document.removeEventListener('keydown', onEscKey, true)
   }, [])
 
   // Textarea resize is handled by CSS field-sizing: content.
@@ -3238,6 +3226,17 @@ function FleetChatInner({ shape }: { shape: any }) {
               }}
               onMouseLeave={() => setTermHoverVisible(false)}
             />
+          )}
+          {escDisplay && (
+            <div style={{
+              position: 'absolute', top: -28, right: 8,
+              padding: '2px 8px', borderRadius: 4, fontSize: 12,
+              background: escDisplay.count >= 3 ? 'rgba(220,40,40,0.85)' : escDisplay.count === 2 ? 'rgba(200,120,20,0.85)' : 'rgba(128,128,128,0.7)',
+              color: '#fff', pointerEvents: 'none', zIndex: 10,
+              transition: 'opacity 0.3s',
+            }}>
+              {escDisplay.count}× {escDisplay.label}
+            </div>
           )}
           <SendHint
             filter={filter}
