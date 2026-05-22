@@ -45,7 +45,7 @@ export class ResilientWS {
   send(obj) {
     if (!this.connected) return false
     try { this._ws.send(JSON.stringify(obj)); return true }
-    catch { return false }
+    catch (e) { this._log(`[${this._label}] send error: ${e.message}`); return false }
   }
 
   connect() {
@@ -69,7 +69,7 @@ export class ResilientWS {
       ws.on('message', (raw) => {
         this._resetHeartbeat()
         let msg
-        try { msg = JSON.parse(raw.toString()) } catch { return }
+        try { msg = JSON.parse(raw.toString()) } catch (e) { this._log(`[${this._label}] bad JSON: ${e.message}`); return }
         this._onMessage(msg)
       })
 
@@ -94,7 +94,7 @@ export class ResilientWS {
     this._closed = true
     if (this._retryTimer) { clearTimeout(this._retryTimer); this._retryTimer = null }
     if (this._heartbeatTimer) { clearTimeout(this._heartbeatTimer); this._heartbeatTimer = null }
-    if (this._ws) { try { this._ws.close() } catch {} }
+    if (this._ws) { try { this._ws.close() } catch (e) { this._log(`[${this._label}] close error: ${e.message}`) } }
     this._ws = null
   }
 
@@ -121,7 +121,7 @@ export class ResilientWS {
     if (this._heartbeatTimer) clearTimeout(this._heartbeatTimer)
     this._heartbeatTimer = setTimeout(() => {
       this._log(`[${this._label}] no heartbeat in ${this._heartbeatTimeoutMs}ms — reconnecting`)
-      if (this._ws) { try { this._ws.close() } catch {} }
+      if (this._ws) { try { this._ws.close() } catch (e) { this._log(`[${this._label}] close error: ${e.message}`) } }
       this._cleanup()
       this._scheduleRetry()
     }, this._heartbeatTimeoutMs)
