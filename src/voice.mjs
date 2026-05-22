@@ -15,8 +15,9 @@ const _isSafari = !navigator.userAgent.includes('Chrome') && navigator.userAgent
 
 // --- Backend selection ---
 const WHISPER_BRIDGE_URL = 'ws://127.0.0.1:8179'
-let _backend = 'chrome'         // 'chrome' | 'whisper-stream'
+let _backend = 'chrome'         // 'chrome' | 'whisper-stream' | 'deepgram'
 let _whisperAvailable = false   // true if whisper bridge WebSocket connected at init
+let _deepgramAvailable = false  // true if deepgram bridge WebSocket connected at init
 
 // --- Whisper-stream backend state ---
 let _whisperWs = null           // WebSocket connection to whisper-bridge
@@ -361,7 +362,7 @@ function showHud(text, stateColor) {
 function showRecordingHud() {
   const who = targetLabel()
   const mode = _mathMode ? ' [math]' : ''
-  const be = _backend === 'whisper-stream' ? ' [whisper]' : ''
+  const be = _backend === 'deepgram' ? ' [deepgram]' : _backend === 'whisper-stream' ? ' [whisper]' : ''
   const text = who ? `recording → ${who}${mode}${be}` : `recording${mode}${be}`
   showHud(text, '#c87070')
 }
@@ -392,6 +393,10 @@ function enterEdit() {
     flushWhisperBridge()
     setTextareaGlow(GLOW_AMBER)
   }
+  if (_backend === 'deepgram') {
+    _deepgramInterim = ''
+    setTextareaGlow(GLOW_AMBER)
+  }
   _state = 'edit'
   _generation++
   _left = _interim = _right = ''
@@ -409,6 +414,7 @@ export function setVoiceTarget(textarea, sendTargets, agentNames, sendFn, agentC
     // generation and onresult discards everything, making voice appear dead.
     wasRecording = _recording
     if (_backend === 'whisper-stream') flushWhisperBridge()
+    if (_backend === 'deepgram') _deepgramInterim = ''
     hardResetVoice()
     // Remove old listeners
     if (_inputListeners && _activeTextarea) {
@@ -904,6 +910,209 @@ function disconnectWhisperBridge() {
   }
 }
 
+// --- Deepgram backend ---
+// Browser captures mic via AudioWorklet, sends raw PCM to deepgram-bridge (ws:8179).
+// Bridge relays to Deepgram API and returns transcripts with is_final flags.
+// No echo/doubling — Deepgram manages interim vs final results cleanly.
+
+let _deepgramWs = null
+let _deepgramConnected = false
+let _deepgramStream = null      // MediaStream from getUserMedia
+let _deepgramContext = null      // AudioContext
+let _deepgramProcessor = null    // ScriptProcessorNode (bridge to WS)
+let _deepgramInterim = ''        // current interim result (replaced on each interim)
+
+function onDeepgramMessage(event) {
+  if (!_recording || _backend !== 'deepgram') return
+  try {
+    const msg = JSON.parse(event.data)
+
+    if (msg.type === 'status') {
+      console.log('voice: deepgram status:', msg.status)
+      return
+    }
+
+    if (msg.type === 'utterance_end') {
+      // Utterance boundary — commit any pending interim
+      if (_deepgramInterim) {
+        _left += (_left.length && !_left.endsWith(' ') ? ' ' : '') + postProcessTranscript(_deepgramInterim)
+        _deepgramInterim = ''
+      }
+      fillTextarea(_left + _right)
+      return
+    }
+
+    if (msg.type !== 'transcript' || !msg.text) return
+
+    _lastResultTime = Date.now()
+    dotAudioFlowing()
+
+    if (_state !== 'speech') {
+      _state = 'speech'
+      const ta = _activeTextarea
+      const cursor = ta?.selectionStart ?? (ta?.value?.length ?? 0)
+      _left = ta?.value?.slice(0, cursor) ?? ''
+      _right = ta?.value?.slice(cursor) ?? ''
+      _deepgramInterim = ''
+    }
+
+    const text = msg.text
+
+    if (msg.is_final) {
+      // Final result — append to committed text, clear interim
+      const processed = postProcessTranscript(text)
+      _left += (_left.length && !_left.endsWith(' ') ? ' ' : '') + processed
+      _deepgramInterim = ''
+      _interim = ''
+    } else {
+      // Interim result — replaces previous interim (no accumulation)
+      _deepgramInterim = text
+      _interim = postProcessTranscript(text)
+    }
+
+    const leftTrimmed = (_left + (_deepgramInterim ? ' ' + postProcessTranscript(_deepgramInterim) : '')).trim()
+
+    // Voice-switch
+    const switchMatch = leftTrimmed.match(/(right|write|great|left|next|other)\s+chat\s*[.!,]?\s*$/i)
+    if (switchMatch) {
+      const textareas = [...document.querySelectorAll('.fleet-chat-shape textarea')]
+        .filter(ta => ta.offsetHeight > 0)
+        .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left)
+      const target = textareas.find(ta => ta !== _activeTextarea) || textareas[0]
+      if (target) {
+        target.focus()
+        showHud('→ other chat', '#9370db')
+        fadeHud(1500)
+        _state = 'edit'
+        _generation++
+        _left = _interim = _right = ''
+        _deepgramInterim = ''
+        setTimeout(() => { if (_recording) showRecordingHud() }, 1600)
+        return
+      }
+    }
+
+    // Voice-send
+    const sendMatch = leftTrimmed.match(/(send\s*it|send|sent)\s*[.!,]?\s*$/i)
+    if (sendMatch) {
+      const cleanText = leftTrimmed.slice(0, sendMatch.index).trim()
+      if (cleanText && _accumulator && _accumulator.onSend) {
+        _accumulator.onSend(cleanText)
+        showHud('sent', '#7ab8a0')
+        fadeHud(2500)
+        afterSend()
+        return
+      }
+      if (cleanText && _activeSendTargets.length > 0 && _activeSendFn) {
+        const who = targetLabel()
+        const wordCount = cleanText.split(/\s+/).length
+        _filling = true
+        if (_activeTextarea) {
+          _activeTextarea.value = ''
+          _activeTextarea.style.height = 'auto'
+        }
+        _filling = false
+        _activeSendFn(_activeSendTargets, cleanText)
+        showHud(`sent ${wordCount} words → ${who}`, '#7ab8a0')
+        fadeHud(2500)
+        afterSend()
+        return
+      }
+    }
+
+    // Display: committed text + space + interim
+    const display = _left + (_interim ? ' ' + _interim : '') + _right
+    fillTextarea(display)
+  } catch (err) {
+    console.warn('voice: deepgram message error', err)
+  }
+}
+
+function connectDeepgramBridge() {
+  if (_deepgramWs) return
+  try {
+    _deepgramWs = new WebSocket(WHISPER_BRIDGE_URL)
+    _deepgramWs.onopen = () => {
+      _deepgramConnected = true
+      console.log('voice: connected to deepgram bridge')
+      _deepgramWs.send(JSON.stringify({ type: 'start' }))
+    }
+    _deepgramWs.onmessage = onDeepgramMessage
+    _deepgramWs.onclose = () => {
+      _deepgramConnected = false
+      _deepgramWs = null
+    }
+    _deepgramWs.onerror = () => {}
+  } catch {
+    _deepgramWs = null
+  }
+}
+
+function disconnectDeepgramBridge() {
+  stopDeepgramMic()
+  if (_deepgramWs) {
+    if (_deepgramConnected) {
+      try { _deepgramWs.send(JSON.stringify({ type: 'stop' })) } catch {}
+    }
+    _deepgramWs.onclose = null
+    _deepgramWs.close()
+    _deepgramWs = null
+    _deepgramConnected = false
+  }
+}
+
+async function startDeepgramMic() {
+  if (_deepgramStream) return
+
+  try {
+    _deepgramStream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, sampleRate: 16000, echoCancellation: true, noiseSuppression: true }
+    })
+  } catch (err) {
+    console.error('voice: deepgram mic access failed', err)
+    showHud('mic denied — check permissions', '#c87070')
+    fadeHud(5000)
+    return
+  }
+
+  _deepgramContext = new AudioContext({ sampleRate: 16000 })
+  const source = _deepgramContext.createMediaStreamSource(_deepgramStream)
+
+  // ScriptProcessorNode: captures PCM and sends to bridge as Int16 binary
+  _deepgramProcessor = _deepgramContext.createScriptProcessor(4096, 1, 1)
+  _deepgramProcessor.onaudioprocess = (e) => {
+    if (!_deepgramWs || !_deepgramConnected || !_recording) return
+    const float32 = e.inputBuffer.getChannelData(0)
+    // Convert Float32 [-1,1] to Int16
+    const int16 = new Int16Array(float32.length)
+    for (let i = 0; i < float32.length; i++) {
+      const s = Math.max(-1, Math.min(1, float32[i]))
+      int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF
+    }
+    try { _deepgramWs.send(int16.buffer) } catch {}
+  }
+
+  source.connect(_deepgramProcessor)
+  _deepgramProcessor.connect(_deepgramContext.destination)
+}
+
+function stopDeepgramMic() {
+  if (_deepgramProcessor) {
+    _deepgramProcessor.disconnect()
+    _deepgramProcessor = null
+  }
+  if (_deepgramContext) {
+    _deepgramContext.close().catch(() => {})
+    _deepgramContext = null
+  }
+  if (_deepgramStream) {
+    for (const track of _deepgramStream.getTracks()) {
+      try { track.stop() } catch {}
+    }
+    _deepgramStream = null
+  }
+}
+
 // --- After-send state reset ---
 // Called after any send (Enter key or voice-send keyword) to prepare for the
 // next message. Resets text buffers and handles recognition restart.
@@ -911,8 +1120,21 @@ function disconnectWhisperBridge() {
 function afterSend() {
   _state = 'edit'
   _left = _interim = _right = ''
+  _deepgramInterim = ''
   if (_backend === 'whisper-stream') {
     flushWhisperBridge()
+    return
+  }
+  if (_backend === 'deepgram') {
+    // Deepgram: close and reopen the session for a clean slate
+    if (_deepgramWs && _deepgramConnected) {
+      _deepgramWs.send(JSON.stringify({ type: 'stop' }))
+      setTimeout(() => {
+        if (_recording && _deepgramWs && _deepgramConnected) {
+          _deepgramWs.send(JSON.stringify({ type: 'start' }))
+        }
+      }, 200)
+    }
     return
   }
   if (!_recording) return
@@ -967,7 +1189,10 @@ function startRecording() {
 
   _audioCaptureRetries = 0
 
-  if (_backend === 'whisper-stream') {
+  if (_backend === 'deepgram') {
+    connectDeepgramBridge()
+    startDeepgramMic()
+  } else if (_backend === 'whisper-stream') {
     // whisper-stream captures mic directly — no browser mic needed.
     // Just ensure we're connected to the bridge WebSocket.
     connectWhisperBridge()
@@ -1007,7 +1232,13 @@ function stopRecording() {
     _recognition = null
   }
 
-  // Whisper-stream: leave bridge connected (it auto-reconnects anyway)
+  // Deepgram: stop mic capture and close session
+  if (_backend === 'deepgram') {
+    stopDeepgramMic()
+    if (_deepgramWs && _deepgramConnected) {
+      try { _deepgramWs.send(JSON.stringify({ type: 'stop' })) } catch {}
+    }
+  }
 
   // Notify accumulator that recording stopped (caller can reset cursor anchor etc.)
   if (_accumulator?.onStop) _accumulator.onStop()
@@ -1034,6 +1265,8 @@ async function hardResetVoice() {
     _recognition = null
   }
   disconnectWhisperBridge()
+  disconnectDeepgramBridge()
+  _deepgramInterim = ''
   _recording = false
   _state = 'edit'
   _accumulator = null
@@ -1044,9 +1277,8 @@ async function hardResetVoice() {
   _lastResultTime = 0
   hideHealthDot()
   // Force the browser to drop and reacquire the microphone at the OS level.
-  // Skip this when using whisper-stream — it captures mic via SDL, not the browser.
-  // The getUserMedia cycle triggers Safari mic permission dialogs.
-  if (_backend !== 'whisper-stream') {
+  // Skip for whisper-stream (captures mic via SDL) and deepgram (manages its own stream).
+  if (_backend !== 'whisper-stream' && _backend !== 'deepgram') {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       for (const track of stream.getTracks()) {
@@ -1108,10 +1340,36 @@ export async function initVoice() {
   _initialized = true
 
   // Chrome Web Speech is the default voice backend.
-  // Whisper is opt-in via &voice=whisper — and only then do we ask the
-  // server to lazy-start the whisper bridge (it stays off otherwise).
+  // Whisper is opt-in via &voice=whisper, Deepgram via &voice=deepgram.
+  // Each asks the server to lazy-start its bridge (stays off otherwise).
   const urlVoice = new URLSearchParams(window.location.search).get('voice')
-  if (urlVoice === 'whisper') {
+  if (urlVoice === 'deepgram') {
+    _backend = 'deepgram'
+    try {
+      await fetch('/api/voice/deepgram/start', { method: 'POST' })
+    } catch (err) {
+      console.warn('voice: deepgram lazy-start request failed', err)
+    }
+    try {
+      const testWs = new WebSocket(WHISPER_BRIDGE_URL)
+      await new Promise((resolve, reject) => {
+        testWs.onopen = () => {
+          testWs.close()
+          _deepgramAvailable = true
+          console.log('voice: using deepgram backend (via URL param)')
+          resolve()
+        }
+        testWs.onerror = () => {
+          testWs.close()
+          reject()
+        }
+        setTimeout(reject, 2000)
+      })
+    } catch {
+      _backend = 'chrome'
+      console.log('voice: deepgram bridge not available, falling back to Chrome')
+    }
+  } else if (urlVoice === 'whisper') {
     _backend = 'whisper-stream'
     try {
       await fetch('/api/voice/whisper/start', { method: 'POST' })
@@ -1269,7 +1527,7 @@ export async function initVoice() {
     }
   })
 
-  const backend = _backend === 'whisper-stream' ? 'whisper' : 'Web Speech API'
+  const backend = _backend === 'deepgram' ? 'deepgram' : _backend === 'whisper-stream' ? 'whisper' : 'Web Speech API'
   console.log(`voice: initialized v8 — ${backend} — BroadcastChannel: ${!!_micChannel}`)
   return true
 }
@@ -1307,8 +1565,9 @@ export function getGeneration() { return _generation }
 export function getBackend() { return _backend }
 export function isWhisperAvailable() { return _whisperAvailable }
 export function setBackend(be) {
-  if (be !== 'chrome' && be !== 'whisper-stream') return
+  if (be !== 'chrome' && be !== 'whisper-stream' && be !== 'deepgram') return
   if (be === 'whisper-stream' && !_whisperAvailable) return
+  if (be === 'deepgram' && !_deepgramAvailable) return
   if (be === _backend) return
   const wasRecording = _recording
   if (wasRecording) stopRecording()
@@ -1321,6 +1580,7 @@ export function resetTranscript() {
   _state = 'edit'
   _generation++
   _left = _interim = _right = ''
+  _deepgramInterim = ''
   if (_backend === 'whisper-stream') flushWhisperBridge()
   if (_recording && _recognition) {
     try { _recognition.stop() } catch {}

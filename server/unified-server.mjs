@@ -746,6 +746,55 @@ app.post('/api/voice/whisper/stop', async (req, res) => {
   }
 })
 
+// Lazy-start the deepgram bridge. Browser hits this when voice=deepgram is selected.
+app.post('/api/voice/deepgram/start', async (req, res) => {
+  try {
+    const WS = (await import('ws')).default
+    const alreadyUp = await new Promise(resolve => {
+      let done = false
+      try {
+        const ws = new WS('ws://127.0.0.1:8179')
+        ws.on('open', () => { done = true; ws.close(); resolve(true) })
+        ws.on('error', () => { if (!done) { done = true; resolve(false) } })
+        setTimeout(() => { if (!done) { done = true; try { ws.close() } catch {}; resolve(false) } }, 800)
+      } catch { resolve(false) }
+    })
+    if (alreadyUp) return res.json({ ok: true, started: false })
+
+    const { spawn } = await import('child_process')
+    const { openSync } = await import('fs')
+    const { dirname, join } = await import('path')
+    const { fileURLToPath } = await import('url')
+    const here = dirname(fileURLToPath(import.meta.url))
+    const tldaRoot = dirname(here)
+    const bridgeScript = join(tldaRoot, 'bin', 'deepgram-bridge.mjs')
+    const logPath = join(process.env.HOME || '', '.config', 'tlda', 'deepgram-bridge.log')
+    const fd = openSync(logPath, 'a')
+    const child = spawn('node', [bridgeScript], {
+      detached: true,
+      stdio: ['ignore', fd, fd],
+      cwd: tldaRoot,
+    })
+    child.unref()
+    console.log('[voice] deepgram bridge spawned (lazy-start, pid', child.pid, ')')
+    res.json({ ok: true, started: true, pid: child.pid })
+  } catch (err) {
+    console.error('[voice] deepgram/start failed:', err.message)
+    res.status(500).json({ ok: false, error: err.message })
+  }
+})
+
+app.post('/api/voice/deepgram/stop', async (req, res) => {
+  try {
+    const { execSync } = await import('child_process')
+    try { execSync('pkill -f "deepgram-bridge.mjs" 2>/dev/null', { timeout: 3000 }) } catch {}
+    console.log('[voice] deepgram bridge stopped')
+    res.json({ ok: true })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message })
+  }
+})
+
 // Services health — checks tlda server (self), fleet server, Yjs sync
 app.get('/health/services', async (req, res) => {
   const FLEET_URL = process.env.FLEET_SERVER || 'http://localhost:5199'
