@@ -565,7 +565,7 @@ function AgentRow({
   const ago = formatRelativeTime(agent._ts)
   const meta = agent.metadata || {}
   const modelStr = formatModel(meta.model)
-  const effortStr = meta.effort ? formatEffort(meta.effort) : ''
+  const effortStr = formatEffort(meta.effort || 'medium')
 
   const secsAgo = agent._ts ? (Date.now() - agent._ts) / 1000 : Infinity
   const nameOpacity = secsAgo < 120 ? 1.0 : secsAgo < 600 ? 0.85 : 0.65

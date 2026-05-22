@@ -640,7 +640,8 @@ async function getUnread(_state, agent) {
 // Resolve {{att:N}} markers in message text using inline_attachments metadata.
 // For agent delivery (MCP text output), converts to markdown links/images.
 function resolveAttachmentMarkers(text, inlineAttachments) {
-  if (!text || !inlineAttachments?.length) return text;
+  if (!text) return text;
+  if (!inlineAttachments?.length) return text.replace(/\{\{att:(\d+)\}\}/g, (_, idx) => `[attachment ${idx}]`);
   const dashPort = process.env.FLEET_DASH_PORT || 5199;
   const baseUrl = `http://127.0.0.1:${dashPort}`;
   return text.replace(/\{\{att:(\d+)\}\}/g, (_, idx) => {
@@ -2748,7 +2749,7 @@ Do NOT report "looks good" without reading and describing the screenshots.${qaPr
       const age = Math.round((Date.now() - new Date(task.delegated_at)) / 60000);
       text = `Your task [${task.id}]: ${task.description}\nStatus: ${task.status} | ${age}m ago`;
       if (task.message) {
-        text += `\n\n${task.message}`;
+        text += `\n\n${resolveAttachmentMarkers(task.message, task.metadata?.inline_attachments)}`;
         if (task.success_criteria?.length) {
           text += `\n\n**Success criteria** (verify before calling task_done):`;
           task.success_criteria.forEach((c, i) => { text += `\n${i + 1}. ${c}`; });

@@ -1482,10 +1482,17 @@ server.on('upgrade', async (req, socket, head) => {
         } catch (e) {
           try { ws.send(JSON.stringify({ type: 'error', message: e.message })) } catch {}
         }
-      } else {
-        // Existing watcher already triggered the daemon — tell the new
-        // browser to wait for the next polled frame. (No replay.)
       }
+
+      // Seed with current terminal content so the card isn't blank on open.
+      try {
+        const { text } = await sendRpc(agent.machine_id, 'capture-pane', {
+          tmux_session: agent.tmux_session, start: -80, ansi: true,
+        })
+        if (text && ws.readyState === 1) {
+          ws.send(JSON.stringify({ type: 'output', data: Buffer.from(text).toString('base64'), encoding: 'base64' }))
+        }
+      } catch {}
 
       ws.on('message', async (raw) => {
         let msg
@@ -2932,8 +2939,12 @@ function handleDaemonWsMessage(ws, msg) {
       const incoming = new Set(msg.agent_ids)
       const agentsOnThisMachine = fleetStore?.getAgentsByMachine?.(ws._machineId) || []
       for (const a of agentsOnThisMachine) {
-        if (incoming.has(a.id)) _aliveAgents.add(a.id)
-        else _aliveAgents.delete(a.id)
+        if (incoming.has(a.id)) {
+          _aliveAgents.add(a.id)
+        } else {
+          _aliveAgents.delete(a.id)
+          clearEphemeralState(a.id)
+        }
       }
       broadcastState()
     }
@@ -3237,9 +3248,11 @@ server.listen(PORT, HOST, () => {
        ) < ?`
     ).all(cutoff)
     for (const agent of idle) {
+      if (_thinkingState.has(agent.id) || _compactingState.has(agent.id)) continue
       const machineIds = [...daemonConnections.keys()]
       if (machineIds.length === 0) continue
       console.log(`[hibernate] ${agent.friendly_name || agent.id} — no activity since before ${cutoff}`)
+      clearEphemeralState(agent.id)
       sendRpc(machineIds[0], 'kill-session', { agent_id: agent.id, tmux_session: agent.tmux_session })
         .catch(() => {})
       // NOTE: do NOT markDead — idling just hibernates, doesn't kill the agent

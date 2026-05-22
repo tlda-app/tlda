@@ -41,6 +41,8 @@ export function TerminalCard({ agentId, agentName, pinned, onDismiss, onMouseEnt
   const [inputValue, setInputValue] = useState('')
   const [frozen, setFrozen] = useState(false)
   const [frozenText, setFrozenText] = useState('')
+  const retryCountRef = useRef(0)
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Initialize xterm
   useEffect(() => {
@@ -94,57 +96,76 @@ export function TerminalCard({ agentId, agentName, pinned, onDismiss, onMouseEnt
     }
   }, [])
 
-  // Connect WebSocket
+  // Connect WebSocket with auto-reconnect
   useEffect(() => {
     if (!agentId || frozen) return
+    let cancelled = false
 
-    setStatus('connecting')
-    wsRef.current?.close()
+    function connect() {
+      if (cancelled) return
+      setStatus('connecting')
+      wsRef.current?.close()
 
-    const ws = new WebSocket(`${FLEET_WS_HOST}/ws/terminal?agent=${encodeURIComponent(agentId)}`)
-    wsRef.current = ws
+      const ws = new WebSocket(`${FLEET_WS_HOST}/ws/terminal?agent=${encodeURIComponent(agentId)}`)
+      wsRef.current = ws
 
-    ws.onopen = () => {
-      setStatus('connected')
-      setStatusMsg('')
-      const term = termRef.current
-      const fit = fitRef.current
-      if (term && fit) {
-        try { fit.fit() } catch {}
-        ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
-      }
-    }
-
-    ws.onmessage = (evt) => {
-      try {
-        const msg = JSON.parse(evt.data)
-        if (msg.type === 'output' && msg.data && termRef.current) {
-          if (msg.encoding === 'base64') {
-            const bytes = Uint8Array.from(atob(msg.data), c => c.charCodeAt(0))
-            termRef.current.write(bytes)
-          } else {
-            termRef.current.write(msg.data)
-          }
-        } else if (msg.type === 'error') {
-          setStatus('error')
-          setStatusMsg(msg.message || 'server error')
+      ws.onopen = () => {
+        if (cancelled) { ws.close(); return }
+        retryCountRef.current = 0
+        setStatus('connected')
+        setStatusMsg('')
+        const term = termRef.current
+        const fit = fitRef.current
+        if (term && fit) {
+          try { fit.fit() } catch {}
+          ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
         }
-      } catch {}
-    }
+      }
 
-    ws.onerror = () => {
-      setStatus('error')
-      setStatusMsg('WebSocket error')
-    }
+      ws.onmessage = (evt) => {
+        try {
+          const msg = JSON.parse(evt.data)
+          if (msg.type === 'output' && msg.data && termRef.current) {
+            if (msg.encoding === 'base64') {
+              const bytes = Uint8Array.from(atob(msg.data), c => c.charCodeAt(0))
+              termRef.current.write(bytes)
+            } else {
+              termRef.current.write(msg.data)
+            }
+          } else if (msg.type === 'error') {
+            setStatus('error')
+            setStatusMsg(msg.message || 'server error')
+          }
+        } catch {}
+      }
 
-    ws.onclose = (evt) => {
-      if (!frozen) {
+      ws.onerror = () => {
+        if (cancelled) return
         setStatus('error')
-        setStatusMsg(evt.reason || 'connection closed')
+        setStatusMsg('WebSocket error')
+      }
+
+      ws.onclose = (evt) => {
+        if (cancelled || frozen) return
+        if (retryCountRef.current < 3) {
+          retryCountRef.current++
+          setStatus('connecting')
+          setStatusMsg(`reconnecting (${retryCountRef.current}/3)…`)
+          retryTimerRef.current = setTimeout(connect, 2000)
+        } else {
+          setStatus('error')
+          setStatusMsg(evt.reason || 'connection lost')
+        }
       }
     }
 
-    return () => { ws.close() }
+    connect()
+
+    return () => {
+      cancelled = true
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current)
+      wsRef.current?.close()
+    }
   }, [agentId, frozen])
 
   // Resize xterm when container resizes

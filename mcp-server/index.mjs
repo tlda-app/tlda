@@ -2211,11 +2211,39 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     // suggest tool definition removed — functionality merged into add_note
     // update_shared_doc removed — use `tlda push` CLI instead
+    {
+      name: 'propose_edit',
+      description: 'Propose a text edit for approval before writing. Use this in dictation mode instead of editing files directly. Stores the proposal and returns a formatted card showing context (before/insert/after). Show the card to Skip via fleet chat. After approval, call apply_proposal to write the stored text verbatim.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          file: { type: 'string', description: 'Absolute path to the file to edit' },
+          old_string: { type: 'string', description: 'The text to replace (same as Edit tool — must be unique in the file). For pure insertions, use a context string at the insertion point.' },
+          new_string: { type: 'string', description: 'The replacement text' },
+        },
+        required: ['file', 'old_string', 'new_string'],
+      },
+    },
+    {
+      name: 'apply_proposal',
+      description: 'Apply a previously proposed edit. Writes the STORED text from propose_edit verbatim — the agent cannot modify the text at this stage. Call this after Skip approves the proposal shown in chat.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'Proposal ID returned by propose_edit' },
+        },
+        required: ['id'],
+      },
+    },
   ],
 }));
 
 // Track last ping timestamp (consumed by get_feedback)
 let lastPingTimestamp = 0;
+
+// ---- Proposal store (for propose_edit / apply_proposal) ----
+const _proposals = new Map(); // id → { file, old_string, new_string, context_before, context_after, created }
+let _proposalCounter = 0;
 
 async function summarizeAnnotations(docName) {
   try {
@@ -3798,6 +3826,75 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
     } catch (e) {
       return { content: [{ type: 'text', text: `tlda server error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'propose_edit') {
+    const { file, old_string, new_string } = args;
+    if (!file || !old_string || !new_string) {
+      return { content: [{ type: 'text', text: 'Missing required parameters: file, old_string, new_string' }], isError: true };
+    }
+    try {
+      const content = fs.readFileSync(file, 'utf8');
+      const idx = content.indexOf(old_string);
+      if (idx === -1) {
+        return { content: [{ type: 'text', text: `old_string not found in ${file}` }], isError: true };
+      }
+      if (content.indexOf(old_string, idx + 1) !== -1) {
+        return { content: [{ type: 'text', text: `old_string is not unique in ${file} — provide more context` }], isError: true };
+      }
+
+      const before = content.slice(0, idx);
+      const after = content.slice(idx + old_string.length);
+      const beforeLines = before.split('\n');
+      const afterLines = after.split('\n');
+      const ctxBefore = beforeLines.slice(-3).join('\n').trim();
+      const ctxAfter = afterLines.slice(0, 3).join('\n').trim();
+
+      const id = `proposal-${++_proposalCounter}`;
+      _proposals.set(id, { file, old_string, new_string, context_before: ctxBefore, context_after: ctxAfter, created: Date.now() });
+
+      const isInsertion = new_string.includes(old_string);
+      let card;
+      if (isInsertion) {
+        const inserted = new_string.replace(old_string, '').trim();
+        card = `**Proposal ${id}**\n\n` +
+          `── BEFORE (unchanged) ──\n${ctxBefore}\n${old_string}\n\n` +
+          `── INSERT ──\n${inserted}\n\n` +
+          `── AFTER (unchanged) ──\n${ctxAfter}`;
+      } else {
+        card = `**Proposal ${id}**\n\n` +
+          `── BEFORE (unchanged) ──\n${ctxBefore}\n\n` +
+          `── REPLACING ──\n${old_string}\n\n` +
+          `── WITH ──\n${new_string}\n\n` +
+          `── AFTER (unchanged) ──\n${ctxAfter}`;
+      }
+
+      return { content: [{ type: 'text', text: `${card}\n\n---\nShow this card to Skip via fleet chat. After approval, call apply_proposal with id="${id}".` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'apply_proposal') {
+    const { id } = args;
+    if (!id) return { content: [{ type: 'text', text: 'Missing required parameter: id' }], isError: true };
+    const proposal = _proposals.get(id);
+    if (!proposal) {
+      return { content: [{ type: 'text', text: `No proposal found with id "${id}". It may have expired or already been applied.` }], isError: true };
+    }
+    try {
+      const content = fs.readFileSync(proposal.file, 'utf8');
+      const idx = content.indexOf(proposal.old_string);
+      if (idx === -1) {
+        return { content: [{ type: 'text', text: `old_string no longer found in ${proposal.file} — file may have changed since proposal was created. Create a new proposal.` }], isError: true };
+      }
+      const updated = content.slice(0, idx) + proposal.new_string + content.slice(idx + proposal.old_string.length);
+      fs.writeFileSync(proposal.file, updated, 'utf8');
+      _proposals.delete(id);
+      return { content: [{ type: 'text', text: `Applied ${id} to ${proposal.file}. The stored text was written verbatim.` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Error applying proposal: ${e.message}` }], isError: true };
     }
   }
 

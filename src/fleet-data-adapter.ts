@@ -393,9 +393,11 @@ export function useFleetThinking(dnfFilter?: string[][] | [string,string][][] | 
           pendingRemoval.delete(data.agent)
           const ft = fallbackTimers.get(data.agent)
           if (ft) { clearTimeout(ft); fallbackTimers.delete(data.agent) }
+          const ts = data.startTs || data.ts || Date.now()
           setThinking(prev => {
+            if (prev.has(data.agent)) return prev
             const next = new Map(prev)
-            next.set(data.agent, Date.now())
+            next.set(data.agent, ts)
             return next
           })
         } else {
@@ -439,7 +441,7 @@ export function useFleetThinking(dnfFilter?: string[][] | [string,string][][] | 
           if (ft) { clearTimeout(ft); fallbackTimers.delete(data.agent) }
           setThinking(prev => {
             const next = new Map(prev)
-            if (!next.has(data.agent)) next.set(data.agent, Date.now())
+            if (!next.has(data.agent)) next.set(data.agent, data.startTs || data.ts || Date.now())
             return next
           })
         } else if (data.state === 'idle') {
@@ -457,7 +459,7 @@ export function useFleetThinking(dnfFilter?: string[][] | [string,string][][] | 
         // 'tool_call' — agent is working, don't touch thinking state
       })
 
-      // Server state sync — clear agents not in the server's authoritative set
+      // Server state sync — reconcile with server's authoritative set
       unsubSync = subscribe('thinking-sync', null, (serverSet: Set<string>) => {
         setThinking(prev => {
           let changed = false

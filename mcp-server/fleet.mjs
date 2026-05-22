@@ -28,6 +28,7 @@ import fs from 'fs';
 import http from 'http';
 import os from 'os';
 import path from 'path';
+import katex from 'katex';
 import { fileURLToPath } from 'url';
 // SearchIndex (search-index.sqlite) replaced by server-side fleet-search WS operation.
 // FleetStore import removed — MCP server is a REST client, no direct DB access
@@ -160,6 +161,54 @@ const _refTokens = new Map();
 let _currentDoc = null;
 let _docVersionCache = { doc: null, version: null, ts: 0 };
 const DOC_VERSION_CACHE_MS = 5000;
+
+// ---- Compose/send draft store ----
+const _drafts = new Map(); // id → { message, filter, lint, created }
+let _draftCounter = 0;
+
+function lintChatMessage(message) {
+  const issues = [];
+  const displayBlocks = (message.match(/\$\$[\s\S]*?\$\$/g) || []);
+  if (displayBlocks.length > 1) {
+    issues.push(`${displayBlocks.length} separate display blocks — consider combining into one \\begin{aligned} block so all steps are visible together.`);
+  }
+  const proseLines = message.split(/\$\$[\s\S]*?\$\$/);
+  const proseBetween = proseLines.slice(1, -1).filter(p => p.trim().length > 0);
+  if (proseBetween.length > 0 && displayBlocks.length > 1) {
+    issues.push(`Prose narration between display equations. If these are sequential algebra steps, put them in one block without interleaved text.`);
+  }
+  if (/\\text\{.*(?:by|since|because|using|from|note|recall).*\}/i.test(message) && displayBlocks.length > 0) {
+    const textAnnotations = (message.match(/\\text\{[^}]*\}/g) || []).length;
+    if (textAnnotations > 2) {
+      issues.push(`${textAnnotations} \\text{} annotations in display math. Show the steps and let the reader follow — don't narrate each one.`);
+    }
+  }
+  const allMath = [];
+  for (const m of message.matchAll(/\$\$([\s\S]*?)\$\$/g)) allMath.push({ tex: m[1], display: true, pos: m.index });
+  for (const m of message.matchAll(/(?<!\$)\$(?!\$)((?:[^$\\]|\\.)+)\$/g)) allMath.push({ tex: m[1], display: false, pos: m.index });
+  for (const { tex, display, pos } of allMath) {
+    try {
+      katex.renderToString(tex, { displayMode: display, throwOnError: true });
+    } catch (e) {
+      const snippet = tex.length > 40 ? tex.slice(0, 40) + '…' : tex;
+      issues.push(`LaTeX parse error in \`${display ? '$$' : '$'}${snippet}${display ? '$$' : '$'}\`: ${e.message}`);
+    }
+    if (!display) {
+      const before = pos > 0 ? message[pos - 1] : ' ';
+      const afterIdx = pos + tex.length + 2;
+      const after = afterIdx < message.length ? message[afterIdx] : ' ';
+      if (/[a-zA-Z]/.test(before)) {
+        const word = message.slice(Math.max(0, pos - 20), pos).match(/[a-zA-Z]+$/)?.[0] || '';
+        issues.push(`\`$\` delimiter glued to text "${word}$..." — the chat renderer may not find the math boundary. Add a space before \`$\`.`);
+      }
+      if (/[a-zA-Z]/.test(after)) {
+        const word = message.slice(afterIdx, afterIdx + 20).match(/^[a-zA-Z]+/)?.[0] || '';
+        issues.push(`\`$\` delimiter glued to text "...$${word}" — the chat renderer may not find the math boundary. Add a space after \`$\`.`);
+      }
+    }
+  }
+  return issues;
+}
 
 async function fetchCurrentDocVersion(doc) {
   if (!doc) return null;
@@ -632,6 +681,29 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           max_recipients: { type: 'number', description: 'If the resolved recipient list exceeds this count, abort and return an error listing the matched agents. Default: 5. Pass a higher value to explicitly confirm a large broadcast.' },
         },
         required: ['message'],
+      },
+    },
+    {
+      name: 'compose',
+      description: 'Draft a chat message before sending. Returns your message back to you with lint feedback so you can review what you actually wrote. Call send() with the returned draft ID when satisfied. Use this instead of chat() when presenting math, proof sketches, or any content where quality matters. You can call compose() multiple times to iterate before sending.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          message: { type: 'string', description: 'The draft message' },
+          filter: { type: 'object', description: 'Same as chat() filter — { to?: string[][] }. Stored for send().' },
+        },
+        required: ['message'],
+      },
+    },
+    {
+      name: 'send',
+      description: 'Send a previously composed draft. Sends the STORED message verbatim — you cannot modify it at this stage. The message that was returned by compose() is exactly what gets sent.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'Draft ID returned by compose()' },
+        },
+        required: ['id'],
       },
     },
     {
@@ -1507,6 +1579,60 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   // ==== Messaging ====
 
   // ---- chat ----
+  if (name === 'compose') {
+    const { message, filter } = args;
+    if (!message) return { content: [{ type: 'text', text: 'Missing required parameter: message' }], isError: true };
+    const lint = lintChatMessage(message);
+    const id = `draft-${++_draftCounter}`;
+    _drafts.set(id, { message, filter: filter || null, lint, created: Date.now() });
+    let response = `**Draft ${id}**\n\n---\n${message}\n---\n\n`;
+    if (lint.length > 0) {
+      response += `**Lint (${lint.length} issue${lint.length > 1 ? 's' : ''}):**\n${lint.map(l => `- ${l}`).join('\n')}\n\nRevise and call compose() again, or call send("${id}") if you're satisfied.`;
+    } else {
+      response += `Lint: clean. Review your message above, then call send("${id}") to deliver it.`;
+    }
+    return { content: [{ type: 'text', text: response }] };
+  }
+
+  if (name === 'send') {
+    const { id } = args;
+    if (!id) return { content: [{ type: 'text', text: 'Missing required parameter: id' }], isError: true };
+    const draft = _drafts.get(id);
+    if (!draft) return { content: [{ type: 'text', text: `No draft found with id "${id}". It may have been sent already or expired.` }], isError: true };
+    if (!draft.filter?.to) return { content: [{ type: 'text', text: 'Draft has no recipients (filter.to). Compose again with a filter.' }], isError: true };
+    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Cannot send: not registered.' }], isError: true };
+    _drafts.delete(id);
+    try {
+      const agents = await sendWS('store-agents');
+      const recipients = [];
+      for (const a of agents) {
+        if (a.id === AGENT_ID) continue;
+        const labels = [...(a.labels || []), ...(a.status === 'awake' ? ['awake'] : a.status === 'hibernating' ? ['hibernating'] : []), a.friendly_name, a.id].filter(Boolean);
+        if (draft.filter.to.some(andGroup => andGroup.every(term => labels.includes(term)))) {
+          recipients.push(a.id);
+        }
+      }
+      if (recipients.length === 0) return { content: [{ type: 'text', text: 'No agents matched filter.' }], isError: true };
+      const agentCwd = getAgentCwd();
+      const dashPort = process.env.FLEET_DASH_PORT || 5176;
+      const { resolvedMessage, inlineAttachments, brokenPaths } = await processMessageText(draft.message, agentCwd, `http://127.0.0.1:${dashPort}`);
+      let docContext = null;
+      if (_currentDoc) { const v = await fetchCurrentDocVersion(_currentDoc); docContext = { doc: _currentDoc, version: v || null }; }
+      const sent = [];
+      for (const to of recipients) {
+        const chatBody = { message: resolvedMessage, to, from: AGENT_ID };
+        if (inlineAttachments.length) chatBody.inline_attachments = inlineAttachments;
+        if (docContext) chatBody.context = docContext;
+        try { const data = await sendWS('chat', chatBody); if (data?.ok) sent.push(to); } catch {}
+      }
+      if (sent.length === 0) return { content: [{ type: 'text', text: 'Send failed — no messages delivered.' }], isError: true };
+      const names = sent.map(id => { const a = agents.find(x => x.id === id); return a?.friendly_name || id; });
+      return { content: [{ type: 'text', text: `Sent draft ${id} to ${names.join(', ')}.` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Send failed: ${e.message}` }], isError: true };
+    }
+  }
+
   if (name === 'chat') {
     const { message } = args;
     if (!AGENT_ID) return { content: [{ type: 'text', text: 'Cannot send chat: not registered.' }], isError: true };

@@ -1879,6 +1879,15 @@ function FleetChatInner({ shape }: { shape: any }) {
     return () => ro.disconnect()
   }, [scrollToBottom, hasMessages])
 
+  // Thinking/compacting status appears outside the virtualizer — its height
+  // change doesn't trigger the virtualizer size effect. Scroll when it changes.
+  const thinkingCount = thinkingAgents.size + (compactingAgents?.size || 0)
+  useEffect(() => {
+    if (thinkingCount > 0 && isAtBottomRef.current) {
+      requestAnimationFrame(scrollToBottom)
+    }
+  }, [thinkingCount, scrollToBottom])
+
   // --- Shared doc: auto-create sticky when a .md file chip appears in chat ---
   // Track which messages we've already processed to avoid duplicates.
   const sharedDocProcessed = useRef<Set<string>>(new Set())
@@ -2370,11 +2379,21 @@ function FleetChatInner({ shape }: { shape: any }) {
       } else if (count === 2) {
         // Hard interrupt: 2×Esc — Escape+poll loop
         log.info('esc', 'hard-interrupt', { agent })
+        const agentLabel = agentNamesRef.current[agent] || agent.replace('fleet:', '')
+        injectOptimisticEvent({ type: 'chat', from_id: 'system', text: `⏸ Interrupting **${agentLabel}**…`, metadata: JSON.stringify({ fromLabel: 'system' }) })
         fetch(`${FLEET_API}/api/interrupt`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent }) })
+          .then(r => r.json())
+          .then(d => { if (d.error) injectOptimisticEvent({ type: 'chat', from_id: 'system', text: `⚠ Interrupt failed: ${d.error}`, metadata: JSON.stringify({ fromLabel: 'system' }) }) })
+          .catch(() => injectOptimisticEvent({ type: 'chat', from_id: 'system', text: `⚠ Interrupt failed (server unreachable)`, metadata: JSON.stringify({ fromLabel: 'system' }) }))
       } else {
         // Soft interrupt: 1×Esc — single Escape to tmux
         log.info('esc', 'soft-interrupt', { agent })
+        const agentLabel1 = agentNamesRef.current[agent] || agent.replace('fleet:', '')
+        injectOptimisticEvent({ type: 'chat', from_id: 'system', text: `⏸ Escape → **${agentLabel1}**`, metadata: JSON.stringify({ fromLabel: 'system' }) })
         fetch(`${FLEET_API}/api/send-key`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent, key: 'Escape' }) })
+          .then(r => r.json())
+          .then(d => { if (d.error) injectOptimisticEvent({ type: 'chat', from_id: 'system', text: `⚠ Escape failed: ${d.error}`, metadata: JSON.stringify({ fromLabel: 'system' }) }) })
+          .catch(() => injectOptimisticEvent({ type: 'chat', from_id: 'system', text: `⚠ Escape failed (server unreachable)`, metadata: JSON.stringify({ fromLabel: 'system' }) }))
       }
     }
     function onBlur() {

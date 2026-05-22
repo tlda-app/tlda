@@ -272,8 +272,6 @@ def fresh_spawn(name, model, cwd, effort=None, mode=None):
             sys.exit(1)
         ws_register(fleet_id, name, sess, cwd, model, effort)
 
-    tmux_kill(sess)
-
     cmd = f"FLEET_ID={fleet_id} claude --dangerously-load-development-channels server:fleet --model '{model}'"
     if effort:
         cmd += f" --effort '{effort}'"
@@ -387,6 +385,9 @@ def respawn(name, model_override, cwd_override, session_override=None, effort=No
     model = resolve_model(model_override or (meta.get("model") if isinstance(meta, dict) else None) or DEFAULT_MODEL)
     sess = agent.get("tmux_session") or f"fleet-{name}"
 
+    if subprocess.run(tmux_cmd("has-session", "-t", sess), capture_output=True).returncode == 0:
+        return sess
+
     # Find JSONL: fast path uses session_id from DB, fallback does full content scan.
     sessions = find_sessions_for_agent(fleet_id, agent.get("session_id"))
 
@@ -398,7 +399,6 @@ def respawn(name, model_override, cwd_override, session_override=None, effort=No
     if not resume_id:
         # No session to resume — spawn fresh with the existing fleet ID.
         print(f"No resumable session for {name} ({fleet_id}) — spawning fresh.", file=sys.stderr)
-        tmux_kill(sess)
         if server_up:
             ws_register(fleet_id, name, sess, cwd, model, effort)
         cmd = f"FLEET_ID={fleet_id} claude --dangerously-load-development-channels server:fleet --model '{model}'"
@@ -409,8 +409,6 @@ def respawn(name, model_override, cwd_override, session_override=None, effort=No
         tmux_start(sess, cwd, cmd)
         print(f"{sess} ({fleet_id}) spawned fresh in {cwd}")
         return sess
-
-    tmux_kill(sess)
 
     cmd = f"FLEET_ID={fleet_id} claude --dangerously-load-development-channels server:fleet --resume {resume_id}"
     cmd += f" --model '{model}'"
@@ -470,7 +468,6 @@ def refresh_spawn(name, model_override, cwd_override, effort=None, mode=None):
         effort = meta.get("effort") if isinstance(meta, dict) else None
     sess = agent.get("tmux_session") or f"fleet-{name}"
 
-    tmux_kill(sess)
     ws_register(fleet_id, name, sess, cwd, model, effort)
 
     cmd = f"FLEET_ID={fleet_id} claude --dangerously-load-development-channels server:fleet --model '{model}'"
@@ -603,8 +600,6 @@ def respawn_from_session(session_uuid, model_override, cwd_override, effort=None
     server_up = ensure_server()
     if server_up:
         ws_register(fleet_id, name, sess, cwd, model, effort)
-
-    tmux_kill(sess)
 
     cmd = f"FLEET_ID={fleet_id} claude --dangerously-load-development-channels server:fleet --resume {session_uuid}"
     cmd += f" --model '{model}'"

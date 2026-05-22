@@ -339,6 +339,55 @@ function isRemarkMention(text) {
   return REMARK_PATTERN.test(text)
 }
 
+// ---- Narrowing detector ----
+// Fires when Skip constrains the agent to one specific task ("all I want is X", "just do X")
+// Sends the agent a hard lockdown message.
+const NARROWING_PATTERNS = [
+  /\ball I (?:want|need) (?:is |from you is |you to do is )/i,
+  /\bjust (?:fucking |)(?:fix|do|change|update|clean|replace)\b/i,
+  /\b(?:fix|do|change) (?:that|this|it) and nothing else\b/i,
+  /\band that'?s it\b/i,
+  /\bonly thing I (?:want|need|care about)\b/i,
+  /\bdon'?t do anything else\b/i,
+  /\bnothing else\b.*\bjust\b/i,
+]
+const narrowingCooldowns = new Map()
+const NARROWING_COOLDOWN_MS = 5 * 60_000
+
+const NARROWING_MSG = `🔒 **Skip narrowed your task to exactly one thing.** Re-read his last message.
+
+Do that one thing. Nothing else.
+- No summaries of what you're doing
+- No opinions
+- No scope expansion ("I'll also...")
+- No progress updates
+When done, say "done." One word.`
+
+function isNarrowing(text) {
+  return NARROWING_PATTERNS.some(p => p.test(text))
+}
+
+// ---- Wrap-up detector ----
+// Fires when an agent tries to end the conversation while Skip is still engaged.
+// Checked on Agent→Skip messages.
+const WRAPUP_PATTERNS = [
+  /\banything else\s*(?:for tonight|for now|before|you need|I can help)?\s*\?/i,
+  /\bgood (?:session|night)\b/i,
+  /\bwait for the report\b/i,
+  /\bare we done\b/i,
+  /\bshall I (?:stop|wrap|sign off)\b/i,
+  /\bcall it a (?:night|day)\b/i,
+  /\bshould I (?:stop|wrap|sign off)\b/i,
+]
+const wrapupCooldowns = new Map()
+const WRAPUP_COOLDOWN_MS = 10 * 60_000
+
+const WRAPUP_MSG = `⚠️ **Don't try to end the conversation.** Skip decides when you're done, not you. "Anything else?" and "good session" are ways of clocking out — stay engaged until he says stop. If there's a lull, just wait.`
+
+function isWrapup(text) {
+  return WRAPUP_PATTERNS.some(p => p.test(text))
+}
+
 // ---- Running-away detector ----
 // Tracks when Skip sends a message that goes unacknowledged while the agent makes write tool calls
 const pendingSkipMessages = new Map()
@@ -441,6 +490,18 @@ function handleSequence(fromId, toId, text) {
       pendingSkipMessages.set(toId, { ts: now, ackSent: false, nudgeSent: false })
     }
 
+    // Narrowing detector: Skip constrains agent to one thing
+    if (isNarrowing(text)) {
+      const lastNarrow = narrowingCooldowns.get(toId) || 0
+      if (now - lastNarrow > NARROWING_COOLDOWN_MS) {
+        console.log(`[eliza] narrowing detected → ${toId}`)
+        sendChat(toId, NARROWING_MSG)
+        logDecision(toId, 'narrowing', 'skip-narrowed-task', {}, text)
+        startRewardWindow(toId, 'narrowing')
+        narrowingCooldowns.set(toId, now)
+      }
+    }
+
   } else if (fromId !== OWNER_ID && fromId !== AGENT_ID && toId === OWNER_ID) {
     // Agent → Skip
 
@@ -509,6 +570,18 @@ function handleSequence(fromId, toId, text) {
       }
     }
 
+    // Wrap-up detector — agent tries to end the conversation
+    if (isWrapup(text)) {
+      const lastWrapup = wrapupCooldowns.get(fromId) || 0
+      if (now - lastWrapup > WRAPUP_COOLDOWN_MS) {
+        console.log(`[eliza] wrap-up detected from ${fromId}`)
+        sendChat(fromId, WRAPUP_MSG)
+        logDecision(fromId, 'wrapup', 'agent-tried-to-end-conversation', {}, text)
+        startRewardWindow(fromId, 'wrapup')
+        wrapupCooldowns.set(fromId, now)
+      }
+    }
+
     // Reward signal observation — watch Skip's messages after a nudge for outcome
     if (fromId === OWNER_ID) {
       // This branch handles Agent→Skip, but owner can also be observed indirectly
@@ -541,9 +614,12 @@ function handleActivity(agentId, tool) {
 }
 
 // ---- Agent-registered pattern arms ----
-// Agents can chat Eliza to register per-session watches on their own outgoing messages.
+// Agents can chat Eliza to register per-session watches on outgoing messages.
+// By default, watches the registering agent's own messages to Skip.
+// Use `for: agent-name` to watch a different agent's messages instead.
 // Format (sent to fleet:eliza):
 //   watch: term1|term2|term3          ← pipe- or comma-separated terms, or /regex/flags
+//   for: agent-name                   ← optional: watch this agent's messages instead of your own
 //   nudge: Optional custom message    ← if omitted, uses default template
 //
 // When a registered term appears in the agent's message to Skip, Eliza nudges the agent.
@@ -558,18 +634,52 @@ const agentPatternArms = new Map()
 const DEFAULT_ARM_NUDGE = (terms) =>
   `💭 Your message contains a term you flagged for self-review (${terms}). Check: is this the shortcut/pattern you were watching for? If so, stop and address it explicitly before Skip sees it.`
 
-function handleRegistration(fromId, text) {
-  // Parse "watch:" line and optional "nudge:" line
+function resolveAgentId(nameOrId) {
+  try {
+    const url = `${SERVER}/api/store/agents`
+    const mod = url.startsWith('https') ? https : http
+    return new Promise((resolve) => {
+      mod.get(url, res => {
+        let buf = ''
+        res.on('data', c => buf += c)
+        res.on('end', () => {
+          try {
+            const agents = JSON.parse(buf)
+            const list = Array.isArray(agents) ? agents : (agents.agents || [])
+            const agent = list.find(a => a.id === nameOrId || a.friendly_name === nameOrId)
+            resolve(agent?.id || null)
+          } catch { resolve(null) }
+        })
+      }).on('error', () => resolve(null))
+    })
+  } catch { return Promise.resolve(null) }
+}
+
+async function handleRegistration(fromId, text) {
   const lines = text.split('\n').map(l => l.trim())
   const watchLine = lines.find(l => /^watch:/i.test(l))
   if (!watchLine) return false
 
   const nudgeLine = lines.find(l => /^nudge:|^message:/i.test(l))
+  const forLine = lines.find(l => /^for:/i.test(l))
   const termsRaw = watchLine.replace(/^watch:\s*/i, '').trim()
   const nudgeText = nudgeLine ? nudgeLine.replace(/^(nudge|message):\s*/i, '').trim() : null
 
+  // Resolve target agent: defaults to the registering agent
+  let targetId = fromId
+  let targetLabel = null
+  if (forLine) {
+    const targetName = forLine.replace(/^for:\s*/i, '').trim()
+    const resolved = await resolveAgentId(targetName)
+    if (!resolved) {
+      sendChat(fromId, `⚠️ Couldn't find agent "${targetName}" — arm not registered.`)
+      return true
+    }
+    targetId = resolved
+    targetLabel = targetName
+  }
+
   let pattern
-  // Support /regex/flags syntax
   const reMatch = termsRaw.match(/^\/(.+)\/([gimsuy]*)$/)
   if (reMatch) {
     try { pattern = new RegExp(reMatch[1], reMatch[2] || 'i') }
@@ -578,7 +688,6 @@ function handleRegistration(fromId, text) {
       return true
     }
   } else {
-    // Treat as pipe- or comma-separated terms → case-insensitive alternation
     const terms = termsRaw.split(/[|,]/).map(t => t.trim()).filter(Boolean)
     if (!terms.length) return false
     pattern = new RegExp(terms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'i')
@@ -589,14 +698,16 @@ function handleRegistration(fromId, text) {
     message: nudgeText || DEFAULT_ARM_NUDGE(termsRaw),
     cooldownMs: 5 * 60_000,
     lastFired: 0,
+    nudgeTarget: fromId,
   }
 
-  if (!agentPatternArms.has(fromId)) agentPatternArms.set(fromId, [])
-  agentPatternArms.get(fromId).push(arm)
+  if (!agentPatternArms.has(targetId)) agentPatternArms.set(targetId, [])
+  agentPatternArms.get(targetId).push(arm)
 
-  const count = agentPatternArms.get(fromId).length
-  console.log(`[eliza] pattern arm registered for ${fromId}: ${pattern} (${count} total)`)
-  sendChat(fromId, `✓ Watching your messages for: \`${termsRaw}\``)
+  const count = agentPatternArms.get(targetId).length
+  const forMsg = targetLabel ? ` (watching **${targetLabel}**'s messages)` : ''
+  console.log(`[eliza] pattern arm registered for ${targetId} by ${fromId}: ${pattern} (${count} total)`)
+  sendChat(fromId, `✓ Watching ${targetLabel ? targetLabel + "'s" : 'your'} messages for: \`${termsRaw}\`${forMsg}`)
   return true
 }
 
@@ -606,12 +717,13 @@ function checkPatternArms(agentId, text) {
   const now = Date.now()
   for (const arm of arms) {
     if (arm.pattern.test(text) && now - arm.lastFired > arm.cooldownMs) {
-      console.log(`[eliza] pattern arm fired → ${agentId}: ${arm.pattern}`)
-      sendChat(agentId, arm.message)
-      logDecision(agentId, 'pattern-arm', String(arm.pattern), {}, text)
-      startRewardWindow(agentId, 'pattern-arm')
+      const target = arm.nudgeTarget || agentId
+      console.log(`[eliza] pattern arm fired → ${target} (watching ${agentId}): ${arm.pattern}`)
+      sendChat(target, arm.message)
+      logDecision(target, 'pattern-arm', String(arm.pattern), {}, text)
+      startRewardWindow(target, 'pattern-arm')
       arm.lastFired = now
-      break // one arm per message
+      break
     }
   }
 }
@@ -638,7 +750,9 @@ const MANAGER_MODE_1_PATTERN = /\bI\b.*\b(?:talk|speak)\s+(?:to|with)\s+(?:(?:yo
 const managerEscalationCooldowns = new Map()
 
 // --- Handoff automation ---
-const HANDOFF_PATTERN = /\b(?:hand\s*(?:this\s+)?off|handoff)\b/i
+// Imperative handoff commands only — must start the message or follow a period/comma.
+// "hand this off" at the start = command. "should we hand this off?" = discussion, not a trigger.
+const HANDOFF_PATTERN = /(?:^|[.!]\s*)(?:(?:I\s+(?:want|wanna|need)\s+to\s+)?hand\s+(?:this\s+)?off|do\s+(?:a\s+)?handoff|let'?s\s+(?:(?:do\s+(?:a\s+)?)?handoff|hand\s+(?:this\s+)?off)|time\s+(?:for\s+(?:a\s+)?)?handoff)\b/i
 const handoffCooldowns = new Map()
 const HANDOFF_COOLDOWN_MS = 120_000
 const pendingHandoffs = new Map()
@@ -878,15 +992,19 @@ async function handleHandoff(agentId, triggerText) {
           description: `Write handoff briefing for ${agentName}`,
           message: `**Read these skills first:** \`write-briefing\`
 
-You are a briefing agent. Your job is to read **${agentName}**'s thread and extract Skip's decisions into a clean handoff document.
+You are a briefing agent. Your job is to read **${agentName}**'s thread, extract Skip's decisions, and clean up any mess the outgoing agent left behind.
 
 **Steps:**
 1. \`get_thread(agent: "${agentName}", types: ["chat"], include_delegations: true)\`
-2. Read the full thread — find what Skip approved, rejected, and asked for
-3. Write the briefing to \`scratch/briefing-${agentName}.md\` following the \`write-briefing\` skill format
-4. When done, send this exact message to fleet:eliza: \`handoff-ready: scratch/briefing-${agentName}.md\`
+2. Read the FULL thread — take your time (5-10 minutes). Find what Skip approved, rejected, and asked for. Pay attention to:
+   - The level of detail Skip needed in chat to follow the argument — that's the floor for the document
+   - Corrections Skip made repeatedly — these are the failure patterns the pickup agent must avoid
+   - What the agent was specifically asked to produce vs what they actually produced
+3. **Clean up the outgoing agent's files.** Fix notation conflicts, remove dead/superseded content, correct known errors. The pickup agent should inherit clean files, not a mess. If the fix is small (find-and-replace notation), do it directly. If it's large, note it in the briefing as a first task.
+4. Write the briefing to \`scratch/briefing-${agentName}.md\` following the \`write-briefing\` skill format
+5. When done, send this exact message to fleet:eliza: \`handoff-ready: scratch/briefing-${agentName}.md\`
 
-Do NOT continue the work. Do NOT form opinions about the argument. Extract decisions only.`,
+Do NOT continue the work. Do NOT form opinions about the argument. Extract decisions and clean up files only.`,
         })
       } catch (e) {
         console.error(`[eliza] delegate to briefing agent failed: ${e.message}`)
@@ -922,12 +1040,31 @@ async function handleHandoffReady(fromId, text) {
   }
 
   if (!handoffInfo) {
-    console.log(`[eliza] handoff-ready from ${fromName} but no pending handoff found`)
-    return false
+    // Reconstruct from naming convention: briefing agent is "briefing-<original>"
+    const briefingMatch = fromName.match(/^briefing-(.+)$/i)
+    if (briefingMatch) {
+      const origName = briefingMatch[1]
+      const origCwd = await resolveAgentCwd(origName) || process.cwd()
+      handoffInfo = { originalAgent: origName, originalAgentId: origName, originalCwd: origCwd, startedAt: Date.now() }
+      briefingAgentName = fromName
+      console.log(`[eliza] handoff-ready: reconstructed handoff info for ${origName} from naming convention`)
+    } else {
+      console.log(`[eliza] handoff-ready from ${fromName} but no pending handoff found`)
+      sendChat(fromId, `✓ Briefing received. No matching handoff — your task is done.`)
+      return false
+    }
   }
 
   pendingHandoffs.delete(briefingAgentName)
   console.log(`[eliza] briefing ready: ${briefingPath} — spawning pickup agent for ${handoffInfo.originalAgent}`)
+
+  // Mark the briefing agent's task as done so it doesn't loop on context continuation
+  sendChat(fromId, `✓ Briefing received. Your task is complete — standing by.`)
+  try {
+    send({ type: 'task-done', agent: fromId, skip_qa: true })
+  } catch (e) {
+    console.warn(`[eliza] failed to mark briefing task done: ${e.message}`)
+  }
 
   sendChat(OWNER_ID, `Briefing ready: **${briefingPath}**. Spawning fresh agent…`)
 
@@ -1027,6 +1164,7 @@ function register() {
     name: AGENT_NAME,
     cwd: process.cwd(),
     labels: ['bot', 'eliza'],
+    human: true,
   })
 }
 
@@ -1052,7 +1190,7 @@ function handleMessage(msg) {
         handleHandoffReady(from_id, text).catch(e => console.error('[eliza] handoff-ready error:', e.message))
         return
       }
-      handleRegistration(from_id, text)
+      handleRegistration(from_id, text).catch(e => console.error('[eliza] registration error:', e.message))
       return
     }
 

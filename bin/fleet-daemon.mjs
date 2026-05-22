@@ -1514,6 +1514,9 @@ async function rpcStartTerminalWatch({ tmux_session, agent_id, poll_ms }) {
   checkSession(tmux_session)
   if (terminalWatchPtys.has(tmux_session)) return { ok: true, already: true }
 
+  // Disable tmux status bar — it generates escape code noise in the PTY stream
+  try { await execFileP('tmux', [...TMUX_ARGS, 'set-option', '-t', tmux_session, 'status', 'off'], { timeout: 3000 }) } catch {}
+
   const nodePty = await getPty()
   const pty = nodePty.spawn('tmux', [...TMUX_ARGS, 'attach-session', '-t', tmux_session], {
     name: 'xterm-256color',
