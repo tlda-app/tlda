@@ -440,6 +440,34 @@ function extractPromptContext(stripped) {
   return null
 }
 
+function extractPromptBody(stripped) {
+  const lines = stripped.split('\n')
+  // Find the last tool call marker (⏺ Tool(...))
+  let toolIdx = -1
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (/[⏺●]\s*(Write|Edit|Bash|Read|NotebookEdit|Agent|Skill)\(/.test(lines[i])) {
+      toolIdx = i
+      break
+    }
+  }
+  if (toolIdx < 0) return null
+  // Find the prompt question line ("Do you want to..." or "Allow this...")
+  let promptIdx = -1
+  for (let i = toolIdx + 1; i < lines.length; i++) {
+    if (/Do you want to|Allow this/i.test(lines[i])) {
+      promptIdx = i
+      break
+    }
+  }
+  if (promptIdx < 0) return null
+  // Extract the tool call line plus any body between it and the question
+  const bodyLines = lines.slice(toolIdx, promptIdx)
+    .map(l => l.replace(/^\s{0,4}/, ''))
+    .filter(l => l.trim())
+  if (bodyLines.length === 0) return null
+  return bodyLines.join('\n').slice(0, 1000)
+}
+
 function detectPrompt(paneText) {
   const stripped = typeof paneText === 'string' ? stripAnsi(paneText) : ''
 
@@ -450,14 +478,16 @@ function detectPrompt(paneText) {
     }
     const context = extractPromptContext(stripped)
     const reason = context ? `permission prompt: ${context}` : 'permission prompt'
-    return { type: 'surface', reason }
+    const snippet = extractPromptBody(stripped)
+    return { type: 'surface', reason, snippet }
   }
 
   // y/n permission prompt
   if (YN_PROMPT_RE.test(stripped)) {
     const context = extractPromptContext(stripped)
     const reason = context ? `permission prompt: ${context}` : 'permission prompt (y/n)'
-    return { type: 'surface', reason }
+    const snippet = extractPromptBody(stripped)
+    return { type: 'surface', reason, snippet }
   }
 
   return { type: 'none' }
@@ -508,7 +538,7 @@ function startAutoAcceptSweep() {
           if (surfacedPrompts.get(agent.tmux_session) === result.reason) continue
           surfacedPrompts.set(agent.tmux_session, result.reason)
           console.log(`[daemon] surfacing prompt for ${agent.friendly_name || agent.id}: ${result.reason}`)
-          sendMsg({ type: 'terminal_attention', agent_id: agent.id, tmux_session: agent.tmux_session, text: result.reason, reason: result.reason })
+          sendMsg({ type: 'terminal_attention', agent_id: agent.id, tmux_session: agent.tmux_session, text: result.reason, reason: result.reason, snippet: result.snippet || null })
         } else {
           surfacedPrompts.delete(agent.tmux_session)
         }
@@ -1402,7 +1432,7 @@ async function rpcCapturePane({ tmux_session, lines, agent_id }) {
   } else if (prompt.type === 'surface' && agent_id) {
     if (surfacedPrompts.get(tmux_session) !== prompt.reason) {
       surfacedPrompts.set(tmux_session, prompt.reason)
-      sendMsg({ type: 'terminal_attention', agent_id, tmux_session, text: prompt.reason, reason: prompt.reason })
+      sendMsg({ type: 'terminal_attention', agent_id, tmux_session, text: prompt.reason, reason: prompt.reason, snippet: prompt.snippet || null })
     }
   } else {
     surfacedPrompts.delete(tmux_session)
@@ -1509,7 +1539,7 @@ function detectPromptFromPty(agentId, tmuxSession, state) {
     if (state.lastPromptSurfaced === result.reason) return
     state.lastPromptSurfaced = result.reason
     console.log(`[daemon] pty surfacing prompt for ${agentId}: ${result.reason}`)
-    sendMsg({ type: 'terminal_attention', agent_id: agentId, tmux_session: tmuxSession, text: result.reason, reason: result.reason })
+    sendMsg({ type: 'terminal_attention', agent_id: agentId, tmux_session: tmuxSession, text: result.reason, reason: result.reason, snippet: result.snippet || null })
   } else {
     state.lastPromptSurfaced = ''
   }

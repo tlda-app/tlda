@@ -3132,7 +3132,7 @@ function handleDaemonWsMessage(ws, msg) {
 
   if (type === 'terminal_attention') {
     if (!fleetStore) return
-    const { agent_id, text, tmux_session, reason } = msg
+    const { agent_id, text, tmux_session, reason, snippet } = msg
     if (!agent_id) return
     const dedupKey = `${agent_id}:${reason || text}`
     const now = Date.now()
@@ -3147,7 +3147,7 @@ function handleDaemonWsMessage(ws, msg) {
       from: agent_id,
       to: SERVER_OWNER_ID,
       text: text || `${label}: needs attention`,
-      metadata: { agentId: agent_id, agentLabel: label, tmux_session: tmux_session || null, reason: reason || null },
+      metadata: { agentId: agent_id, agentLabel: label, tmux_session: tmux_session || null, reason: reason || null, snippet: snippet || null },
     })
     if (event) {
       fleetStore.addUnread?.(event.id, SERVER_OWNER_ID)
@@ -3158,7 +3158,7 @@ function handleDaemonWsMessage(ws, msg) {
         id: event.id,
         event_id: event.id,
         text: text || `${label}: needs attention`,
-        metadata: { agentId: agent_id, agentLabel: label, reason: reason || null },
+        metadata: { agentId: agent_id, agentLabel: label, reason: reason || null, snippet: snippet || null },
       })
     }
     return
