@@ -146,7 +146,14 @@ export function CanvasClipPanel({
   const store = useMemo(() => {
     const allRecords = mainEditor.store.allRecords()
     const docRecords = allRecords.filter(r => shouldSyncToCopy(r) && isKnownShape(r))
-      .map(r => lockCamera ? lockNonFleetUnlockFleet(r) : r)
+      .map(r => {
+        if (lockCamera) return lockNonFleetUnlockFleet(r)
+        if (readOnly && r.typeName === 'shape') {
+          lockedIdsRef.current.add(r.id)
+          return { ...r, isLocked: true } as TLRecord
+        }
+        return r
+      })
     const s = createTLStore({ shapeUtils })
     s.mergeRemoteChanges(() => { s.put(docRecords) })
     return s
@@ -858,19 +865,6 @@ export function CanvasClipPanel({
             // Users can toggle snap manually with Ctrl+Shift+S when needed.
             if (readOnly) {
               ed.updateInstanceState({ isReadonly: true })
-              // Lock all shapes so they can't be selected
-              const lockAll = () => {
-                for (const shape of ed.getCurrentPageShapes()) {
-                  if (!shape.isLocked) {
-                    ed.updateShape({ id: shape.id, type: shape.type, isLocked: true })
-                    lockedIdsRef.current.add(shape.id)
-                  }
-                }
-              }
-              lockAll()
-              // Re-lock after sync catches up (shapes arrive async from main store)
-              setTimeout(lockAll, 500)
-              setTimeout(lockAll, 2000)
             }
           }}
         />

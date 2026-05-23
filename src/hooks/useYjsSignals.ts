@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { createShapeId } from 'tldraw'
 import type { Editor } from 'tldraw'
-import { onReloadSignal, onSourceChangedSignal, onForwardSync, onScreenshotRequest, onScreenshotBounds, onRefViewerSignal, isSignalConnected } from '../useYjsSync'
+import { onReloadSignal, onSourceChangedSignal, onForwardSync, onScreenshotRequest, onScreenshotBounds, onRefViewerSignal, isSignalConnected, readSignal, writeSignal } from '../useYjsSync'
 import type { ForwardSyncSignal } from '../useYjsSync'
 import { clearLookupCache, loadLookup } from '../synctexLookup'
 import * as sourceMap from '../sourceMap'
@@ -204,6 +204,14 @@ export function useYjsSignals({
       const staleness = Math.min((Date.now() - lastInteraction) / 30000, 1)
       const delay = Math.round(staleness * 2000)
       if (delay > 0) await new Promise(r => setTimeout(r, delay))
+
+      // Only one viewer should handle each request. After the staleness delay,
+      // check if another viewer already claimed this request.
+      const reqTs = signal.timestamp || 0
+      const claimed = readSignal<{ requestTimestamp: number }>('signal:screenshot-claimed')
+      if (claimed && claimed.requestTimestamp === reqTs) return
+      writeSignal('signal:screenshot-claimed', { requestTimestamp: reqTs })
+
       try {
         // Determine capture bounds: explicit bounds > page > viewport
         let captureBounds: { x: number; y: number; w: number; h: number } | null = null
@@ -223,9 +231,6 @@ export function useYjsSignals({
           captureBounds = { x: vp.x, y: vp.y, w: vp.w, h: vp.h }
         }
 
-        // All screenshots go through CanvasClipPanel — no direct editor.toImage().
-        // ScreenshotCapture handles rendering, capturing, and sending signal:screenshot
-        // + signal:screenshot-bounds so the annotation viewer appears in chat.
         if (setScreenshotCapture) {
           setScreenshotCapture({ bounds: captureBounds, agent: signal.agent, timestamp: Date.now() })
         }
