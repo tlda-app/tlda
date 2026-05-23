@@ -140,7 +140,7 @@ const HOSTNAME = os.hostname()
 function loadCursors() {
   if (!fs.existsSync(CURSORS_FILE)) return {}
   try { return JSON.parse(fs.readFileSync(CURSORS_FILE, 'utf8')) }
-  catch { return {} }
+  catch (e) { console.warn(`[daemon] corrupt cursors file, resetting: ${e.message}`); return {} }
 }
 function saveCursors() {
   if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true })
@@ -1690,7 +1690,10 @@ async function checkAgentLiveness() {
         if (ppid) claudePids.add(ppid)
       }
     }
-  } catch {}
+  } catch (e) {
+    console.warn(`[daemon] ps failed during death detection — skipping cycle: ${e.message}`)
+    return
+  }
 
   const aliveAgentIds = []
   for (const agent of candidateAgents) {
@@ -2417,7 +2420,7 @@ try {
   }
 } catch { /* no PID file — first start, continue */ }
 
-try { fs.writeFileSync(PID_FILE, String(process.pid)) } catch {}
+try { fs.writeFileSync(PID_FILE, String(process.pid)) } catch (e) { console.warn(`[daemon] failed to write PID file: ${e.message}`) }
 
 function shutdown(signal) {
   // Log WHY we're dying so the next post-mortem isn't a scavenger hunt.

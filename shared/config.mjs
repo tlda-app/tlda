@@ -12,6 +12,8 @@ import { homedir } from 'os'
 const CONFIG_DIR = join(homedir(), '.config', 'tlda')
 const CONFIG_FILE = join(CONFIG_DIR, 'config.json')
 
+export const DEFAULT_PORT = 5176
+
 export { CONFIG_DIR, CONFIG_FILE }
 
 /**
@@ -39,7 +41,7 @@ export function saveConfig(config) {
 export function getServerUrl(config = null) {
   if (process.env.TLDA_SERVER) return process.env.TLDA_SERVER
   const cfg = config ?? loadConfig()
-  return cfg.server || 'http://localhost:5176'
+  return cfg.server || `http://localhost:${DEFAULT_PORT}`
 }
 
 /**

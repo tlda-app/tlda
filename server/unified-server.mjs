@@ -326,7 +326,9 @@ function ensureLocalDaemon() {
       if (pid > 0) {
         try { process.kill(pid, 0); return } catch {} // not alive → fall through to respawn
       }
-    } catch {}
+    } catch (e) {
+      console.warn(`[server] stale daemon PID file: ${e.message}`)
+    }
   }
   if (!existsSync(DAEMON_SCRIPT)) return
 
@@ -936,7 +938,7 @@ function sendWatchBackingFiles() {
   }))
   for (const [, dws] of daemonConnections) {
     if (dws.readyState !== 1) continue
-    try { dws.send(JSON.stringify({ type: 'watch-backing-files', files })) } catch {}
+    try { dws.send(JSON.stringify({ type: 'watch-backing-files', files })) } catch (e) { console.warn(`[server] daemon send failed: ${e.message}`) }
   }
 }
 
@@ -946,7 +948,7 @@ function persistBackingRegistry() {
       filePath, docNames: [...docNames],
     }))
     writeFileSync(backingRegistryPath(), JSON.stringify(data, null, 2), 'utf8')
-  } catch {}
+  } catch (e) { console.warn(`[server] failed to persist backing registry: ${e.message}`) }
 }
 
 function loadBackingRegistry() {
@@ -974,7 +976,7 @@ async function rebuildBackingFileRegistry() {
           backingFileRegistry.get(shape.props.backingFile).add(docName)
         }
       }
-    } catch {}
+    } catch (e) { console.warn(`[server] failed to scan backing files for ${docName}: ${e.message}`) }
   }
   persistBackingRegistry()
 }
@@ -1047,7 +1049,7 @@ app.post('/api/plan-mode-respond', requireRead, async (req, res) => {
       try {
         fleetStore.updateEventMetadata(pending.eventId, patch)
         broadcastEvent('event-update', { id: pending.eventId, metadata_patch: patch })
-      } catch {}
+      } catch (e) { console.warn(`[server] failed to update plan approval event: ${e.message}`) }
       pendingPlanApprovals.delete(agent.id)
     }
     broadcastState()
