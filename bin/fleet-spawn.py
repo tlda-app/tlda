@@ -398,6 +398,11 @@ def respawn(name, model_override, cwd_override, session_override=None, effort=No
 
     if not resume_id:
         # No session to resume — spawn fresh with the existing fleet ID.
+        # IMPORTANT: This is the ONLY path that spawns fresh for an existing agent.
+        # Do NOT add auto-fallback from --resume to --refresh anywhere in this script.
+        # If resume fails, it MUST fail visibly — never silently replace a session.
+        # Skip has context with the agent. A silent fresh session is an impostor
+        # that looks like the same agent but has zero context. That's worse than dead.
         print(f"No resumable session for {name} ({fleet_id}) — spawning fresh.", file=sys.stderr)
         if server_up:
             ws_register(fleet_id, name, sess, cwd, model, effort)

@@ -17,6 +17,7 @@ const DEFAULTS = {
   'math-note-color': 'light-blue' as string,
   'response-curve': DEFAULT_CURVE as CurveHandles,
   'spawn-mode': '' as string,
+  'voice-backend': 'chrome' as string,
 }
 
 export type PrefKey = keyof typeof DEFAULTS

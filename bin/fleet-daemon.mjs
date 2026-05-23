@@ -427,6 +427,19 @@ const RADIO_PROMPT_RE = /[❯>]\s*1\.\s*Yes/
 // Detect y/n permission prompts (Allow this command? (y/n))
 const YN_PROMPT_RE = /Allow this (?:command|action)\?\s*\(y\/n\)/i
 
+function extractPromptContext(stripped) {
+  // Extract the tool call line above the prompt (e.g. "⏺ Write(path/to/file)" or "⏺ Bash(command)")
+  const toolMatch = stripped.match(/[⏺●]\s*(Write|Edit|Bash|Read|NotebookEdit)\(([^)]*)\)/s)
+  if (toolMatch) return `${toolMatch[1]}(${toolMatch[2].trim().slice(0, 120)})`
+  // Try "Do you want to [verb] [thing]?" directly
+  const doMatch = stripped.match(/Do you want to (\w+) (.+?)\?/)
+  if (doMatch) return `${doMatch[1]} ${doMatch[2]}`
+  // Try "Allow this command/action" with surrounding context
+  const allowMatch = stripped.match(/Allow (.+?)\?/i)
+  if (allowMatch) return allowMatch[1].trim().slice(0, 120)
+  return null
+}
+
 function detectPrompt(paneText) {
   const stripped = typeof paneText === 'string' ? stripAnsi(paneText) : ''
 
@@ -435,15 +448,15 @@ function detectPrompt(paneText) {
     if (MEMORY_PATH_RE.test(stripped)) {
       return { type: 'auto-accept', reason: 'memory file write' }
     }
-    const doMatch = stripped.match(/Do you want to (\w+) (.+?)\?/)
-    const reason = doMatch ? `permission prompt: ${doMatch[1]} ${doMatch[2]}` : 'permission prompt'
+    const context = extractPromptContext(stripped)
+    const reason = context ? `permission prompt: ${context}` : 'permission prompt'
     return { type: 'surface', reason }
   }
 
   // y/n permission prompt
   if (YN_PROMPT_RE.test(stripped)) {
-    const cmdMatch = stripped.match(/(?:Run|Execute|Allow)[^?]*?\?/i)
-    const reason = cmdMatch ? `permission prompt: ${cmdMatch[0]}` : 'permission prompt (y/n)'
+    const context = extractPromptContext(stripped)
+    const reason = context ? `permission prompt: ${context}` : 'permission prompt (y/n)'
     return { type: 'surface', reason }
   }
 

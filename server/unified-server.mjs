@@ -2779,6 +2779,7 @@ function checkQualifications(agentId, tool, arg, input) {
       warned.add(warnKey)
 
       const nudge = `⚠️ Read the **${skillName}** skill before this. \`/skill ${skillName}\``
+      pendingEducation.set(agentId, { skill: skillName, ts: Date.now() })
       try {
         const event = fleetStore.share({
           type: 'chat',

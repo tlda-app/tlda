@@ -450,6 +450,39 @@ function isRemarkMention(text) {
   return REMARK_PATTERN.test(text)
 }
 
+// ---- Asymptotics detector ----
+// Fires when an agent uses asymptotic notation (O(·), o(·), O_P, Ω, Θ, etc.)
+// without specifying an asymptotic regime. In finite-sample results, asymptotic
+// notation is meaningless unless you say what goes to infinity, what's held fixed,
+// and what the limit is. Agents routinely write "= O(n^{-1/2})" in finite-sample
+// bounds without specifying a regime, producing statements that are literally
+// meaningless — you can't take a limit if you haven't said what limit.
+const ASYMPTOTIC_PATTERNS = [
+  /\bO\s*\(\s*[1n\\δεσ]/i,                  // O(1), O(n), O(\sqrt{...}), O(\delta)
+  /\b[oO]_[{Pp]/,                            // o_P(, O_P(, o_{P}(
+  /\bbig[- ]?O\b/i,                          // "big-O", "big O"
+  /\blittle[- ]?o\b/i,                       // "little-o", "little o"
+  /\basymptotic(?:ally)?\s+(?:negligible|equivalent|dominated|bounded|tight)\b/i,
+  /\\mathcal\{O\}/,                          // \mathcal{O}
+  /Ω\s*\(/,                                   // Ω(·)
+  /Θ\s*\(/,                                   // Θ(·)
+]
+const asymptoticsCooldowns = new Map()
+const ASYMPTOTICS_COOLDOWN_MS = 15 * 60_000
+
+const ASYMPTOTICS_MSG = `💭 You used **asymptotic notation** — make sure you've specified an **asymptotic regime**.
+
+$O(\\cdot)$, $o(\\cdot)$, $O_P(\\cdot)$ are meaningless in a finite-sample result unless you state:
+1. **What goes to infinity** (or zero) — usually $n \\to \\infty$
+2. **What's held fixed** — dimension? distribution parameters? the function class?
+3. **What the limit is over** — is this pointwise, uniform over a class, in probability?
+
+A statement like "$\\hat\\theta - \\theta_0 = O(n^{-1/2})$" in a finite-sample bound **with no regime specified** is not a result — it's a notation error. Either state the regime explicitly ("as $n \\to \\infty$ with $p$ fixed, ...") or give the finite-sample bound without asymptotic notation ($\\leq C n^{-1/2}$ with $C$ specified).`
+
+function isAsymptoticNotation(text) {
+  return ASYMPTOTIC_PATTERNS.some(p => p.test(text))
+}
+
 // ---- Narrowing detector ----
 // Fires when Skip constrains the agent to one specific task ("all I want is X", "just do X")
 // Sends the agent a hard lockdown message.
@@ -681,6 +714,18 @@ function handleSequence(fromId, toId, text) {
       }
     }
 
+    // Asymptotics detector — agent uses O(·)/o(·) notation
+    if (isAsymptoticNotation(text)) {
+      const lastAsymp = asymptoticsCooldowns.get(fromId) || 0
+      if (now - lastAsymp > ASYMPTOTICS_COOLDOWN_MS) {
+        console.log(`[eliza] asymptotic notation detected from ${fromId}`)
+        sendChat(fromId, ASYMPTOTICS_MSG)
+        logDecision(fromId, 'asymptotics', 'asymptotic-notation-without-regime', {}, text)
+        startRewardWindow(fromId, 'asymptotics')
+        asymptoticsCooldowns.set(fromId, now)
+      }
+    }
+
     // Wrap-up detector — agent tries to end the conversation
     if (isWrapup(text)) {
       const lastWrapup = wrapupCooldowns.get(fromId) || 0
@@ -900,9 +945,9 @@ const MANAGER_MODE_1_PATTERN = /\bI\b.*\b(?:talk|speak)\s+(?:to|with)\s+(?:(?:yo
 const managerEscalationCooldowns = new Map()
 
 // --- Handoff automation ---
-// Imperative handoff commands only — must start the message or follow a period/comma.
-// "hand this off" at the start = command. "should we hand this off?" = discussion, not a trigger.
-const HANDOFF_PATTERN = /(?:^|[.!]\s*)(?:(?:I\s+(?:want|wanna|need)\s+to\s+)?hand\s+(?:this\s+)?off|do\s+(?:a\s+)?handoff|let'?s\s+(?:(?:do\s+(?:a\s+)?)?handoff|hand\s+(?:this\s+)?off)|time\s+(?:for\s+(?:a\s+)?)?handoff)\b/i
+// Matches imperative handoff commands anywhere in a message (not just at start).
+// Skip often says "I'm done with you let's hand this off" — the phrase appears mid-sentence.
+const HANDOFF_PATTERN = /(?:(?:I\s+(?:want|wanna|need)\s+to\s+)?hand\s+(?:this\s+)?off|do\s+(?:a\s+)?handoff|let'?s\s+(?:(?:do\s+(?:a\s+)?)?handoff|hand\s+(?:this\s+)?off)|time\s+(?:for\s+(?:a\s+)?)?handoff)\b/i
 const handoffCooldowns = new Map()
 const HANDOFF_COOLDOWN_MS = 120_000
 const pendingHandoffs = new Map()

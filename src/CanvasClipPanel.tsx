@@ -696,9 +696,10 @@ export function CanvasClipPanel({
     const el = canvasRef.current
     if (!el || !editor) return
     const onWheel = (e: WheelEvent) => {
-      // Let fleet-docview shapes handle their own wheel events
+      // Let fleet-docview shapes and terminal cards handle their own wheel events
       const target = e.target as HTMLElement
       if (lockCamera && target?.closest('.fleet-docview')) return
+      if (lockCamera && target?.closest('.terminal-card')) return
       // In fullViewport mode, only handle wheel events over fleet shapes.
       // Events over empty areas should pass through to the main canvas.
       if (fullViewport) {
