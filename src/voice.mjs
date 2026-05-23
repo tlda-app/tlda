@@ -415,7 +415,7 @@ export function setVoiceTarget(textarea, sendTargets, agentNames, sendFn, agentC
     wasRecording = _recording
     if (_backend === 'whisper-stream') flushWhisperBridge()
     if (_backend === 'deepgram') _deepgramInterim = ''
-    hardResetVoice()
+    hardResetVoice({ keepDeepgramMic: true })
     // Remove old listeners
     if (_inputListeners && _activeTextarea) {
       _activeTextarea.removeEventListener('input', _inputListeners.input)
@@ -921,6 +921,7 @@ let _deepgramStream = null      // MediaStream from getUserMedia
 let _deepgramContext = null      // AudioContext
 let _deepgramProcessor = null    // ScriptProcessorNode (bridge to WS)
 let _deepgramInterim = ''        // current interim result (replaced on each interim)
+let _dgHasSeenInterim = false   // true after first interim in current session; guards against post-send final bleed
 
 function onDeepgramMessage(event) {
   if (!_recording || _backend !== 'deepgram') return
@@ -944,6 +945,11 @@ function onDeepgramMessage(event) {
 
     if (msg.type !== 'transcript' || !msg.text) return
 
+    // Discard finals that arrive after afterSend() cleared the session but before
+    // the user speaks again. Without this, the last utterance of the previous
+    // message bleeds into the new one.
+    if (msg.is_final && !_dgHasSeenInterim && _state === 'edit') return
+
     _lastResultTime = Date.now()
     dotAudioFlowing()
 
@@ -964,10 +970,12 @@ function onDeepgramMessage(event) {
       _left += (_left.length && !_left.endsWith(' ') ? ' ' : '') + processed
       _deepgramInterim = ''
       _interim = ''
+      _dgHasSeenInterim = false  // reset for next utterance
     } else {
       // Interim result — replaces previous interim (no accumulation)
       _deepgramInterim = text
       _interim = postProcessTranscript(text)
+      _dgHasSeenInterim = true   // saw an interim → finals for this utterance are valid
     }
 
     const leftTrimmed = (_left + (_deepgramInterim ? ' ' + postProcessTranscript(_deepgramInterim) : '')).trim()
@@ -1041,6 +1049,10 @@ function connectDeepgramBridge() {
     _deepgramWs.onclose = () => {
       _deepgramConnected = false
       _deepgramWs = null
+      // Auto-reconnect if still recording — bridge WS can drop on network blips
+      if (_recording && _backend === 'deepgram') {
+        setTimeout(connectDeepgramBridge, 1000)
+      }
     }
     _deepgramWs.onerror = () => {}
   } catch {
@@ -1121,6 +1133,7 @@ function afterSend() {
   _state = 'edit'
   _left = _interim = _right = ''
   _deepgramInterim = ''
+  _dgHasSeenInterim = false
   if (_backend === 'whisper-stream') {
     flushWhisperBridge()
     return
@@ -1160,9 +1173,46 @@ function vlog(msg, data) {
   _voiceLogs.push(`${new Date().toISOString().slice(11,19)} ${entry}`)
   if (_voiceLogs.length > 50) _voiceLogs.shift()
 }
-// Expose logs for reading via fetch
+// Expose logs and test hooks for development/testing
 if (typeof window !== 'undefined') {
   window.__voiceLogs = _voiceLogs
+  window.__voiceTest = {
+    // Inject a fake transcript message as if from the deepgram bridge
+    injectTranscript(text, is_final = true) {
+      onDeepgramMessage({ data: JSON.stringify({ type: 'transcript', text, is_final }) })
+    },
+    injectInterim(text) { this.injectTranscript(text, false) },
+    injectFinal(text) { this.injectTranscript(text, true) },
+    injectUtteranceEnd() {
+      onDeepgramMessage({ data: JSON.stringify({ type: 'utterance_end' }) })
+    },
+    fakeRecord(textarea) {
+      _activeTextarea = textarea
+      _recording = true
+      _state = 'edit'
+      _left = _interim = _right = ''
+      _deepgramInterim = ''
+      _dgHasSeenInterim = false
+      _backend = 'deepgram'
+      _generation++
+    },
+    simulateAfterSend() { afterSend() },
+    simulateSwitchTarget(textarea) {
+      setVoiceTarget(textarea, _activeSendTargets, _activeAgentNames, _activeSendFn)
+    },
+    getState() {
+      return {
+        recording: _recording,
+        state: _state,
+        left: _left,
+        interim: _interim,
+        deepgramInterim: _deepgramInterim,
+        dgHasSeenInterim: _dgHasSeenInterim,
+        generation: _generation,
+        backend: _backend,
+      }
+    },
+  }
 }
 
 function startRecording() {
@@ -1190,7 +1240,12 @@ function startRecording() {
   _audioCaptureRetries = 0
 
   if (_backend === 'deepgram') {
-    connectDeepgramBridge()
+    if (_deepgramWs && _deepgramConnected) {
+      // WS is still open (keepDeepgramMic reset) — restart the Deepgram session
+      try { _deepgramWs.send(JSON.stringify({ type: 'start' })) } catch {}
+    } else {
+      connectDeepgramBridge()
+    }
     startDeepgramMic()
   } else if (_backend === 'whisper-stream') {
     // whisper-stream captures mic directly — no browser mic needed.
@@ -1253,7 +1308,11 @@ function stopRecording() {
 // by double-tap on Right Shift. Aborts any live recognition, clears all
 // state, and releases the browser's microphone lock by opening and
 // immediately closing a getUserMedia audio stream.
-async function hardResetVoice() {
+//
+// keepDeepgramMic: true skips mic teardown for chat-switch resets.
+// The mic stream is stateless — only text state needs clearing on switch.
+// Full teardown (getUserMedia round-trip) is reserved for double-tap.
+async function hardResetVoice({ keepDeepgramMic = false } = {}) {
   if (_recognition) {
     try {
       _recognition.onresult = null
@@ -1265,8 +1324,19 @@ async function hardResetVoice() {
     _recognition = null
   }
   disconnectWhisperBridge()
-  disconnectDeepgramBridge()
+  if (_backend === 'deepgram' && keepDeepgramMic) {
+    // Lightweight reset for chat switch — cycle the bridge session, keep mic alive.
+    // This avoids the getUserMedia teardown/reacquire that causes intermittent failures.
+    _deepgramInterim = ''
+    _dgHasSeenInterim = false
+    if (_deepgramWs && _deepgramConnected) {
+      try { _deepgramWs.send(JSON.stringify({ type: 'stop' })) } catch {}
+    }
+  } else {
+    disconnectDeepgramBridge()
+  }
   _deepgramInterim = ''
+  _dgHasSeenInterim = false
   _recording = false
   _state = 'edit'
   _accumulator = null
