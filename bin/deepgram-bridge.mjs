@@ -86,7 +86,7 @@ wss.on('connection', (browserWs) => {
   let keepAliveInterval = null
 
   function connectDeepgram() {
-    if (dgWs && dgWs.readyState === WebSocket.OPEN) return
+    if (dgWs && (dgWs.readyState === WebSocket.OPEN || dgWs.readyState === WebSocket.CONNECTING)) return
 
     const url = buildDeepgramUrl()
     dgWs = new WebSocket(url, {
