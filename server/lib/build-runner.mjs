@@ -485,7 +485,7 @@ async function compileLaTeX(ctx) {
     const undefinedCites = (postSecondLog.match(/Citation .* undefined/g) || []).length
     if (undefinedCites > 5) {
       addLog(`${undefinedCites} undefined citations — running third pass`)
-      try { await run(cmd, { cwd: texDir, timeout: 120000, env }) } catch {}
+      try { await run(cmd, { cwd: texDir, timeout: 120000, env }) } catch (e) { addLog(`third pass failed: ${e.message}`) }
       const finalLog = readFileSync(logPath, 'utf8')
       const stillUndefined = (finalLog.match(/Citation .* undefined/g) || []).length
       if (stillUndefined > 5 && existsSync(bcfPath)) {
@@ -1375,7 +1375,7 @@ async function maybeBootstrapShadowFromProjectRepo(name) {
   const relPath = join(outputDir(name), 'relevant-files.json')
   if (!existsSync(relPath)) return
   let parsed
-  try { parsed = JSON.parse(readFileSync(relPath, 'utf8')) } catch { return }
+  try { parsed = JSON.parse(readFileSync(relPath, 'utf8')) } catch (e) { console.warn(`[build] corrupt relevant-files.json for ${name}: ${e.message}`); return }
   const files = Array.isArray(parsed?.files) ? parsed.files : []
   const scope = files
     .filter(p => typeof p === 'string' && p.startsWith(sourceDir + '/'))
@@ -1463,7 +1463,7 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
   buildVersion.set(name, myVersion)
 
   // Set buildStatus early — before any validation that might throw.
-  try { updateProject(name, { buildStatus: 'building', lastBuild: new Date().toISOString() }) } catch {}
+  try { updateProject(name, { buildStatus: 'building', lastBuild: new Date().toISOString() }) } catch (e) { console.error(`[build] failed to set building status for ${name}: ${e.message}`) }
 
   const srcDir = sourceDir(name)
   const outDir = outputDir(name)
@@ -1852,8 +1852,8 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
     status.phase = 'failed'
     status.error = e.message
 
-    try { updateProject(name, { buildStatus: 'failed' }) } catch {}
-    try { writeFileSync(join(projDir, 'build.log'), log.join('\n')) } catch {}
+    try { updateProject(name, { buildStatus: 'failed' }) } catch (e2) { console.error(`[build] failed to set failed status for ${name}: ${e2.message}`) }
+    try { writeFileSync(join(projDir, 'build.log'), log.join('\n')) } catch (e2) { console.error(`[build] failed to write build.log for ${name}: ${e2.message}`) }
 
     signalBuildStatus(name, e.message)
     signalBuildProgress(name, 'failed', e.message)
@@ -1861,7 +1861,7 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
     throw e
   } finally {
     buildChildProcesses.delete(buildId)
-    try { rmSync(buildDir, { recursive: true, force: true }) } catch {}
+    try { rmSync(buildDir, { recursive: true, force: true }) } catch (e) { console.warn(`[build] failed to clean build dir: ${e.message}`) }
   }
 }
 

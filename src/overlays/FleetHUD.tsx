@@ -299,17 +299,15 @@ export function FleetHUD({
     let rafId: number
     let lastCamX = mainEditor.getCamera().x
     let lastCamZ = mainEditor.getCamera().z
-    // Skip camera changes during the first 2s after mount — these are camera
-    // restoration and page-shape-driven adjustments, not user pans. Without
-    // this, the deltas get added to panOffset, corrupting the saved position.
-    // A single skipFirst wasn't enough: there can be multiple camera changes
-    // during load (default → restored → page-shape adjustment).
-    const mountTime = Date.now()
+    // Skip camera changes until doc shapes are ready — page-shape loading
+    // drives camera adjustments that are not user pans. docShapesReady is
+    // more reliable than a fixed timeout, which can expire before Yjs resync
+    // finishes on a server restart.
     const poll = () => {
       const cam = mainEditor.getCamera()
       if (cam.x !== lastCamX || cam.z !== lastCamZ) {
-        if (Date.now() - mountTime < 2000) {
-          // Settling period — don't update panOffset
+        if (!docShapesReady) {
+          // Doc shapes not yet loaded — camera changes are not user pans
         } else if (cam.z === lastCamZ && panOffsetRef.current !== null) {
           // Pure pan: update offset by screen-pixel delta
           panOffsetRef.current += (cam.x - lastCamX) * cam.z
@@ -323,7 +321,7 @@ export function FleetHUD({
     }
     rafId = requestAnimationFrame(poll)
     return () => cancelAnimationFrame(rafId)
-  }, [mainEditor, expanded])
+  }, [mainEditor, expanded, docShapesReady])
 
   // Block HTML5 file/chip drops on fleet shapes (except chat input areas).
   // With the full-viewport overlay, we check if the drop target is inside

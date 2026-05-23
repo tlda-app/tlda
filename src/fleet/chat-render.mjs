@@ -173,9 +173,10 @@ export function renderChatLine(m, ctx) {
       ? `<span class="lc-actions"><button class="lc-approve-btn" data-agent-id="${esc(m.from)}" data-event-id="${evId}" title="Approve (y)">\u2713</button><button class="lc-deny-btn" data-agent-id="${esc(m.from)}" data-event-id="${evId}" title="Deny (n)">\u2717</button></span>`
       : ''
     const cardCls = isPermission ? 'lc-permission-card' : 'lc-terminal-card'
+    const snippet = m._snippet ? `<div class="lc-prompt-body"><pre>${esc(m._snippet)}</pre></div>` : ''
     return `<div class="chat-line" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts">${ts}</span>
       <div class="lifecycle-card lc-attention ${cardCls}${responseCls}" data-lc-type="attention" data-agent-id="${esc(m.from)}">
-        <div class="lc-header"><span class="lc-icon">\u26A0</span> <span class="lc-title">${reason}</span> <span class="lc-chain"></span> <span class="lc-routing"><span class="agent-nick ${agentCls}" data-agent-id="${esc(m.from)}">${label}</span></span>${actionBtns}</div>
+        <div class="lc-header"><span class="lc-icon">\u26A0</span> <span class="lc-title">${reason}</span> <span class="lc-chain"></span> <span class="lc-routing"><span class="agent-nick ${agentCls}" data-agent-id="${esc(m.from)}">${label}</span></span>${actionBtns}</div>${snippet}
       </div></div>`
   }
 

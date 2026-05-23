@@ -33,23 +33,24 @@ import {
   PDF_WIDTH, PDF_HEIGHT, PAGE_WIDTH, PAGE_HEIGHT, PAGE_GAP,
 } from './lib/formatCoords.mjs';
 
+import { getServerUrl, DEFAULT_PORT } from '../shared/config.mjs'
+import { tldaFetch as _tldaFetch } from '../shared/http-client.mjs'
+
 const TLDA_TOKEN = resolveToken();
 const TLDA_AUTH_HEADERS = TLDA_TOKEN ? { 'Authorization': `Bearer ${TLDA_TOKEN}` } : {};
-const TLDA_SERVER = process.env.TLDA_SERVER || 'http://localhost:5176';
+const TLDA_SERVER = getServerUrl();
 // Separate sync server for shapes/signals (e.g. Fly.io) — falls back to TLDA_SERVER
 const TLDA_SYNC_SERVER = process.env.TLDA_SYNC_SERVER || TLDA_SERVER;
 
 // ---- REST API helpers (shape CRUD via @tldraw/sync rooms) ----
 
 async function serverFetch(urlPath, options = {}) {
-  const url = `${TLDA_SYNC_SERVER}${urlPath}`;
-  const headers = { ...TLDA_AUTH_HEADERS, ...(options.headers || {}) };
-  const res = await fetch(url, { ...options, headers });
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new Error(`${options.method || 'GET'} ${urlPath} → ${res.status}: ${body}`);
-  }
-  return res.json();
+  return _tldaFetch(urlPath, {
+    method: options.method,
+    body: options.body,
+    headers: options.headers,
+    server: TLDA_SYNC_SERVER,
+  });
 }
 
 async function fetchShapes(docName, typeFilter) {
@@ -194,7 +195,7 @@ function scheduleBrowserClose() {
 
 /** Check if a document has built pages. Returns { ok, pages, buildStatus } or { ok: false, reason }. */
 async function checkDocBuildStatus(docName) {
-  const sUrl = process.env.TLDA_SERVER || 'http://localhost:5176';
+  const sUrl = getServerUrl();
   try {
     const res = await fetch(`${sUrl}/api/projects/${docName}`, { headers: TLDA_AUTH_HEADERS });
     if (res.ok) {
@@ -215,7 +216,7 @@ async function checkDocBuildStatus(docName) {
     if (e?.cause?.code === 'ECONNREFUSED' || e?.code === 'ECONNREFUSED') {
       // Disk also failed — if we have a separate sync server, that's fine (doc assets are on disk)
       if (process.env.TLDA_SYNC_SERVER) return diskResult;
-      return { ok: false, reason: 'Server is not running (connection refused on port 5176). Start it with "tlda server start"' };
+      return { ok: false, reason: `Server is not running (connection refused on port ${DEFAULT_PORT}). Start it with "tlda server start"` };
     }
     return diskResult;
   }
@@ -239,7 +240,7 @@ function checkDocBuildStatusDisk(docName) {
 }
 
 async function headlessScreenshot(docName, targetPage) {
-  const serverUrl = process.env.TLDA_SERVER || 'http://localhost:5176';
+  const serverUrl = getServerUrl();
   const tokenParam = TLDA_TOKEN ? `&token=${TLDA_TOKEN}` : '';
   const url = `${serverUrl}/?doc=${docName}${tokenParam}`;
   const browser = await getHeadlessBrowser();
@@ -283,7 +284,7 @@ async function headlessScreenshot(docName, targetPage) {
  * @param {string} [focusShapeId] - if provided, desaturate other annotations to highlight this one
  */
 async function headlessScreenshotCrop(docName, bounds, padding = 200, focusShapeId = null) {
-  const serverUrl = process.env.TLDA_SERVER || 'http://localhost:5176';
+  const serverUrl = getServerUrl();
   const tokenParam = TLDA_TOKEN ? `&token=${TLDA_TOKEN}` : '';
   const url = `${serverUrl}/?doc=${docName}${tokenParam}`;
   const browser = await getHeadlessBrowser();
@@ -2156,12 +2157,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'input_scratch',
-      description: 'Inject a scratch section into a document at a specific location. Accepts .tex (plain LaTeX) or .md/.qmd (markdown with @label refs — auto-converted to LaTeX via pandoc, @refs become \\ref{}). No wrapper needed — the server wraps it in a \\begin{scratch}{label}...\\end{scratch} environment automatically. The scratch env renders in dark gray with the label visible at the top. Requires exactly one of: after, before, replace. If the build fails, you will receive an automatic fleet chat with the LaTeX errors.',
+      description: 'Inject a scratch section into a document at a specific location. Accepts .tex (plain LaTeX) or .md/.qmd (markdown with @label refs — auto-converted to LaTeX via pandoc, @refs become \\ref{}). Write plain content — no \\begin{scratch} wrapper. The \\inputscratch macro in the main tex file handles the scratch environment (gray text, label, timestamp header). Requires exactly one of: after, before, replace. If the build fails, you will receive an automatic fleet chat with the LaTeX errors.',
       inputSchema: {
         type: 'object',
         properties: {
           doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
-          content_path: { type: 'string', description: 'Local path to .tex file containing the scratch content (plain LaTeX — no \\begin{scratch} wrapper)' },
+          content_path: { type: 'string', description: 'Local path to .tex file containing the scratch content (plain LaTeX — no \\begin{scratch} wrapper, no \\inputscratch call)' },
           label: { type: 'string', description: 'Label for this scratch section. Convention: "scratch:descriptive-name" (e.g. "scratch:thm-bias-alt"). Used for cross-referencing and as the visible header.' },
           after: { type: 'string', description: 'Insert after this existing label (e.g. "thm:bias-decomp") or "line:N". Exclusive with before/replace.' },
           before: { type: 'string', description: 'Insert before this existing label or "line:N". Exclusive with after/replace.' },
@@ -2172,7 +2173,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'inline_scratch',
-      description: 'Promote a polished scratch section into the document proper. Strips the \\begin{scratch}...\\end{scratch} wrapper and replaces the \\inputscratch{} line in main.tex with the bare content. Use this when a scratch section is ready to become real document content.',
+      description: 'Promote a polished scratch section into the document proper. Replaces the \\inputscratch{}{}{} line in main.tex with the raw content from the scratch file. Use this when a scratch section is ready to become real document content.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -2705,7 +2706,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
     const tok = resolveToken();
     const tokParam = tok ? `&token=${tok}` : '';
-    const viewUrl = `http://localhost:5176/?doc=${encodeURIComponent(doc)}&cx=${(-result.x).toFixed(0)}&cy=${(-result.y).toFixed(0)}&cz=1${tokParam}`;
+    const viewUrl = `${getServerUrl()}/?doc=${encodeURIComponent(doc)}&cx=${(-result.x).toFixed(0)}&cy=${(-result.y).toFixed(0)}&cz=1${tokParam}`;
     return { content: [{ type: 'text', text: `Scrolled to line ${line} → page ${result.page} (${result.x.toFixed(0)}, ${result.y.toFixed(0)})\nView: ${viewUrl}` }] };
   }
 

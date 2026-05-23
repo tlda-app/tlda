@@ -13,21 +13,12 @@
  */
 
 import { connectSSE } from '../../shared/sse-parser.mjs'
-import { existsSync, readFileSync } from 'fs'
-import { join } from 'path'
-import { homedir } from 'os'
+import { getServerUrl, getRwToken } from '../../shared/config.mjs'
 
 // --- Config / auth ---
 
-function loadConfig() {
-  const f = join(homedir(), '.config', 'tlda', 'config.json')
-  if (!existsSync(f)) return {}
-  try { return JSON.parse(readFileSync(f, 'utf8')) } catch { return {} }
-}
-
-const config = loadConfig()
-const serverUrl = process.env.TLDA_SERVER || config.server || 'http://localhost:5176'
-const token = process.env.TLDA_TOKEN || config.tokenRw || config.token || null
+const serverUrl = getServerUrl()
+const token = getRwToken()
 const authHeaders = token ? { 'Authorization': `Bearer ${token}` } : {}
 
 // --- HTTP helpers ---

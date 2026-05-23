@@ -27,6 +27,7 @@ import {
 import { runBuild, getBuildStatus } from '../lib/build-runner.mjs'
 import { loadSynctex } from '../lib/synctex-query.mjs'
 import { buildMarkdown, buildHtml, buildSlides } from '../lib/format-builders.mjs'
+import { shouldBuildOnPush } from '../lib/build-decision.mjs'
 import historyRoutes from './history.mjs'
 import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeChange, getOrCreateRoom, broadcastSignal, getLastSignal, onSignal, replaceRoomSnapshot, getShapesAt, emitGlobalEvent, onGlobalEvent } from '../lib/sync-rooms.mjs'
 
@@ -306,50 +307,24 @@ export async function processProjectPush(name, body) {
     }
   }
 
-  if (!anyChanged && project.buildStatus === 'success') {
-    return { status: 200, ok: true, filesWritten: 0, building: false, unchanged: true }
+  const changedFiles = (files || []).map(f => f.path)
+  const decision = shouldBuildOnPush(project, name, { changedFiles, anyChanged })
+
+  if (!decision.build) {
+    const filtered = decision.reason === 'outside-tree' || decision.reason === 'relevant-files-parse-failed'
+    if (decision.reason === 'relevant-files-parse-failed') {
+      console.error(`[${name}] relevant-files.json parse failed`)
+    }
+    return { status: 200, ok: true, filesWritten: files?.length || 0, building: false,
+      ...(decision.reason === 'unchanged' ? { unchanged: true } : {}),
+      ...(filtered ? { filtered: true, reason: decision.reason } : {}),
+    }
   }
 
-  // New files written — if the viewer was pinned to an old version, unpin it now.
   broadcastSignal(`doc-${name}`, 'signal:view-pin', { ref: null, timestamp: Date.now() })
 
-  // LaTeX/SVG format: filter out source-change events for files that
-  // aren't part of the main file's include tree. The tree is captured
-  // from pdflatex's .fls after each successful build and stored as
-  // relevant-files.json in the project output dir. Files outside the
-  // tree (e.g. scratch notes under the project dir) still get mirrored
-  // above, but we skip the rebuild. If the set file doesn't exist yet,
-  // no rebuild either — bootstrap the set with a manual `tlda build`.
-  if (project.format === 'svg' && files?.length > 0) {
-    const relevantPath = join(getOutputDir(name), 'relevant-files.json')
-    if (!existsSync(relevantPath)) {
-      // No relevant-files.json yet — mark stale so the initial page request triggers a build.
-      markProjectStale(name)
-      broadcastSignal(`doc-${name}`, 'signal:source-changed', { timestamp: Date.now() })
-      return { status: 200, ok: true, filesWritten: files.length, building: false }
-    }
-    try {
-      const { files: relevantList } = JSON.parse(readFileSync(relevantPath, 'utf8'))
-      const relevantSet = new Set(relevantList || [])
-      const authorDir = project.sourceDir
-      const mirrorDir = getSourceDir(name)
-      const anyRelevant = files.some(f => {
-        const mirrorPath = join(mirrorDir, f.path)
-        if (relevantSet.has(mirrorPath)) return true
-        if (authorDir && relevantSet.has(join(authorDir, f.path))) return true
-        return false
-      })
-      if (!anyRelevant) {
-        return { status: 200, ok: true, filesWritten: files.length, building: false, filtered: true, reason: 'outside-tree' }
-      }
-    } catch (e) {
-      console.error(`[${name}] relevant-files.json parse failed: ${e.message}`)
-      return { status: 200, ok: true, filesWritten: files.length, building: false, filtered: true, reason: 'parse-failed' }
-    }
-  }
-
-  // Non-SVG formats: kick off build async, return immediately.
-  if (project.format === 'markdown' || project.format === 'html' || project.format === 'slides') {
+  if (decision.eager) {
+    // Non-SVG formats: kick off build async, return immediately.
     const builder = { markdown: buildMarkdown, html: buildHtml, slides: buildSlides }[project.format]
     builder(name).then(() => {
       const updated = readProject(name)
@@ -366,8 +341,7 @@ export async function processProjectPush(name, body) {
     return { status: 200, ok: true, filesWritten: files?.length || 0, building: true }
   }
 
-  // SVG/LaTeX format: mark source as stale so the ensure system rebuilds on
-  // the next page request. No proactive build — ensure does everything.
+  // SVG: mark stale, let ensure handle it on next page request
   markProjectStale(name)
   broadcastSignal(`doc-${name}`, 'signal:source-changed', { timestamp: Date.now() })
   return { status: 200, ok: true, filesWritten: files?.length || 0, building: false }
@@ -419,7 +393,8 @@ router.post('/:name/build', requireRw, async (req, res) => {
   res.json({ ok: true, building: true, clean })
 
   try {
-    const builder = { markdown: buildMarkdown, html: buildHtml, slides: buildSlides }[project.format]
+    const builders = { markdown: buildMarkdown, html: buildHtml, slides: buildSlides }
+    const builder = builders[project.format]
     if (builder) {
       await builder(req.params.name)
     } else {
@@ -770,14 +745,14 @@ router.post('/:name/inject', requireRw, async (req, res) => {
   const label = `inject-L${anchorLine || 0}-${Date.now()}`
   const filename = label.replace(/[^a-z0-9]/gi, '-').toLowerCase() + '.tex'
   const scratchPath = `.scratchinputs/${filename}`
-  const wrappedContent = `\\begin{scratch}{${label}}{${label}}\n${texContent}\n\\end{scratch}\n`
+  const rawContent = texContent.endsWith('\n') ? texContent : texContent + '\n'
 
   const sourceDir = project.sourceDir
   if (!sourceDir) return res.status(400).json({ error: 'No sourceDir for this project' })
 
   const scratchDir = join(sourceDir, '.scratchinputs')
   mkdirSync(scratchDir, { recursive: true })
-  writeFileSync(join(sourceDir, scratchPath), wrappedContent, 'utf8')
+  writeFileSync(join(sourceDir, scratchPath), rawContent, 'utf8')
 
   res.json({ ok: true, scratchPath, label, texContent })
 })
@@ -1193,13 +1168,20 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
   // Wrap content in scratch environment, signed with agent + timestamp
   const tz = project.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
   const timestamp = new Date().toLocaleString('sv-SE', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).slice(0, 16)
-  const signer = agentName || agentId || 'agent'
+  const signer = agentName || 'agent'
   const displayHeader = `${label} — ${signer} — ${timestamp}`
-  const wrappedContent = `\\begin{scratch}{${label}}{${displayHeader}}\n${content}\n\\end{scratch}\n`
+  const rawContent = content.endsWith('\n') ? content : content + '\n'
 
   if (replace) {
-    // Overwrite existing scratch section — no main.tex edit needed; caller writes the file
-    return res.json({ ok: true, scratchPath, wrappedContent, sourceDir: project.sourceDir || null, action: 'replaced' })
+    // Overwrite existing scratch section — caller writes the file; also update the \inputscratch line in main.tex with new header
+    const mainLines = mainContent.split('\n')
+    const scratchLineIdx = mainLines.findIndex(l => l.includes(`\\inputscratch`) && l.includes(scratchPath))
+    let mainContentUpdated = null
+    if (scratchLineIdx >= 0) {
+      mainLines[scratchLineIdx] = `\\inputscratch{${scratchPath}}{${label}}{${displayHeader}}`
+      mainContentUpdated = mainLines.join('\n')
+    }
+    return res.json({ ok: true, scratchPath, wrappedContent: rawContent, mainFile: project.mainFile, mainContent: mainContentUpdated, sourceDir: project.sourceDir || null, action: 'replaced' })
   }
 
   // Resolve location label to a line number in main.tex
@@ -1276,9 +1258,9 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
     })
   }
 
-  // Insert \inputscratch{} into main.tex
+  // Insert \inputscratch{path}{label}{header} into main.tex
   const newLines = [...mainLines]
-  const insertLine = `\\inputscratch{${scratchPath}}`
+  const insertLine = `\\inputscratch{${scratchPath}}{${label}}{${displayHeader}}`
   if (after) {
     newLines.splice(resolvedLine, 0, insertLine)      // after: insert at resolvedLine (0-indexed = after 1-indexed line)
   } else {
@@ -1288,13 +1270,12 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
   // Canonical scratch template — defines the scratch environment and helpers.
   // Kept in .scratchinputs/scratch-template.tex so it can be updated without touching main.tex.
   // Bump SCRATCH_TEMPLATE_VERSION when the default template content changes.
-  const SCRATCH_TEMPLATE_VERSION = 1
+  const SCRATCH_TEMPLATE_VERSION = 2
   const scratchTemplatePath = '.scratchinputs/scratch-template.tex'
   const scratchTemplateContent = [
     `% scratch-template-version: ${SCRATCH_TEMPLATE_VERSION}`,
     '\\usepackage{xcolor}',
-    '\\providecommand{\\inputscratch}[1]{\\input{#1}}',
-    '\\newenvironment{scratch}[2]{\\begingroup\\color[gray]{0.3}\\par\\noindent{\\footnotesize\\ttfamily[#2]}\\par\\label{#1}}{\\endgroup\\par}',
+    '\\newcommand{\\inputscratch}[3]{\\begingroup\\color[gray]{0.3}\\par\\noindent{\\footnotesize\\ttfamily[#3]}\\par\\label{#2}\\input{#1}\\endgroup\\par}',
     '',
   ].join('\n')
 
@@ -1319,7 +1300,7 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
   res.json({
     ok: true,
     scratchPath,
-    wrappedContent,
+    wrappedContent: rawContent,
     scratchTemplatePath,
     scratchTemplateContent,
     scratchTemplateVersion: SCRATCH_TEMPLATE_VERSION,
@@ -1350,17 +1331,13 @@ router.post('/:name/inline-scratch', requireRw, (req, res) => {
   const scratchContent = readSourceFile(req.params.name, scratchPath)
   if (!scratchContent) return res.status(404).json({ error: `Scratch file not found: ${scratchPath} — has it been synced to the server yet?` })
 
-  // Strip \begin{scratch}{label}{header} and \end{scratch} wrapper, keep inner content
-  const scratchLines = scratchContent.split('\n')
-  let innerLines = scratchLines
-  if (innerLines[0] && /^\\begin\{scratch\}/.test(innerLines[0])) innerLines = innerLines.slice(1)
-  const endIdx = innerLines.lastIndexOf('\\end{scratch}')
-  if (endIdx >= 0) innerLines = innerLines.slice(0, endIdx)
+  // Content is raw (no wrapper) — just trim trailing blank lines
+  const innerLines = scratchContent.split('\n')
   while (innerLines.length > 0 && innerLines[innerLines.length - 1] === '') innerLines.pop()
 
-  // Replace \inputscratch{scratchPath} line in main.tex with the bare content
+  // Replace \inputscratch{scratchPath}{...}{...} line in main.tex with the bare content
   const mainLines = mainContent.split('\n')
-  const scratchLineIdx = mainLines.findIndex(l => l.includes(`\\inputscratch{${scratchPath}}`))
+  const scratchLineIdx = mainLines.findIndex(l => l.includes(`\\inputscratch`) && l.includes(scratchPath))
   if (scratchLineIdx < 0) {
     return res.status(404).json({ error: `Cannot find \\inputscratch{${scratchPath}} in ${project.mainFile}` })
   }

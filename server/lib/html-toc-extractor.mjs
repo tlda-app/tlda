@@ -76,8 +76,7 @@ function extractToc(projectName) {
   const pageInfoPath = join(outputDir, 'page-info.json')
 
   if (!existsSync(pageInfoPath)) {
-    console.error(`No page-info.json found for project ${projectName}`)
-    process.exit(1)
+    throw new Error(`No page-info.json found for project ${projectName}`)
   }
 
   const pageInfo = JSON.parse(readFileSync(pageInfoPath, 'utf8'))
