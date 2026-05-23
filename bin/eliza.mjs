@@ -16,12 +16,11 @@ import { fileURLToPath } from 'url'
 import https from 'https'
 import http from 'http'
 
+import { getServerUrl, CONFIG_DIR } from '../shared/config.mjs'
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const CONFIG_DIR = path.join(process.env.HOME, '.config', 'tlda')
 const PID_FILE = path.join(CONFIG_DIR, 'eliza.pid')
-const configPath = path.join(CONFIG_DIR, 'config.json')
-const config = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, 'utf8')) : {}
-const SERVER = process.env.TLDA_SERVER || config.server || 'http://localhost:5176'
+const SERVER = getServerUrl()
 const WS_URL = SERVER.replace(/^http/, 'ws') + '/ws/fleet'
 const OWNER_ID = 'fleet:skip'
 const AGENT_ID = 'fleet:eliza'

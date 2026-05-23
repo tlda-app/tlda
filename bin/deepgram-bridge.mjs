@@ -7,8 +7,7 @@
 // The API key is resolved in order: --key flag > DEEPGRAM_API_KEY env > ~/.config/tlda/config.json
 
 import { WebSocketServer, WebSocket } from 'ws'
-import { readFileSync } from 'fs'
-import { join } from 'path'
+import { loadConfig } from '../shared/config.mjs'
 
 const PORT = process.argv.includes('--port')
   ? parseInt(process.argv[process.argv.indexOf('--port') + 1])
@@ -22,8 +21,7 @@ function resolveApiKey() {
     return process.env.DEEPGRAM_API_KEY
   }
   try {
-    const configPath = join(process.env.HOME || '', '.config', 'tlda', 'config.json')
-    const config = JSON.parse(readFileSync(configPath, 'utf8'))
+    const config = loadConfig()
     if (config.deepgramApiKey) return config.deepgramApiKey
   } catch {}
   return null

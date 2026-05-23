@@ -1,0 +1,129 @@
+/**
+ * Resilient WebSocket client with reconnect, backoff, and heartbeat.
+ *
+ * Shared by the fleet daemon and fleet MCP server. Handles the
+ * boilerplate that both implementations duplicate: connect, parse,
+ * exponential backoff, heartbeat timeout, error/close dedup.
+ */
+
+import { WebSocket } from 'ws'
+
+export class ResilientWS {
+  /**
+   * @param {object} options
+   * @param {() => string}  options.url          — called on each connect (URL may change)
+   * @param {string}        options.label        — log prefix (e.g. 'daemon', 'fleet-channel')
+   * @param {number}        [options.initialBackoffMs=1000]
+   * @param {number}        [options.maxBackoffMs=30000]
+   * @param {number}        [options.heartbeatTimeoutMs=0] — 0 = disabled
+   * @param {(ws) => void}  [options.onOpen]     — called after connection opens
+   * @param {(msg) => void} options.onMessage    — called with parsed JSON message
+   * @param {() => void}    [options.onClose]    — called on connection loss (before retry)
+   * @param {(s: string) => void} [options.log]  — log function (default: console.log)
+   */
+  constructor(options) {
+    this._getUrl = options.url
+    this._label = options.label
+    this._initialBackoff = options.initialBackoffMs ?? 1000
+    this._maxBackoff = options.maxBackoffMs ?? 30_000
+    this._heartbeatTimeoutMs = options.heartbeatTimeoutMs ?? 0
+    this._onOpen = options.onOpen
+    this._onMessage = options.onMessage
+    this._onClose = options.onClose
+    this._log = options.log ?? ((s) => console.log(s))
+
+    this._ws = null
+    this._backoff = this._initialBackoff
+    this._retryTimer = null
+    this._heartbeatTimer = null
+    this._closed = false
+  }
+
+  get ws() { return this._ws }
+  get connected() { return this._ws?.readyState === WebSocket.OPEN }
+
+  send(obj) {
+    if (!this.connected) return false
+    try { this._ws.send(JSON.stringify(obj)); return true }
+    catch (e) { this._log(`[${this._label}] send error: ${e.message}`); return false }
+  }
+
+  connect() {
+    if (this._closed) return
+    if (this._ws) return
+
+    const url = this._getUrl()
+    this._log(`[${this._label}] connecting to ${url.replace(/token=[^&]+/, 'token=***')}`)
+
+    try {
+      const ws = new WebSocket(url)
+      this._ws = ws
+
+      ws.on('open', () => {
+        this._log(`[${this._label}] connected`)
+        this._backoff = this._initialBackoff
+        this._resetHeartbeat()
+        this._onOpen?.(ws)
+      })
+
+      ws.on('message', (raw) => {
+        this._resetHeartbeat()
+        let msg
+        try { msg = JSON.parse(raw.toString()) } catch (e) { this._log(`[${this._label}] bad JSON: ${e.message}`); return }
+        this._onMessage(msg)
+      })
+
+      ws.on('close', (code, reason) => {
+        this._log(`[${this._label}] closed (${code} ${reason || ''})`)
+        this._cleanup()
+        this._scheduleRetry()
+      })
+
+      ws.on('error', (e) => {
+        this._log(`[${this._label}] error: ${e.message}`)
+        this._cleanup()
+        this._scheduleRetry()
+      })
+    } catch (e) {
+      this._log(`[${this._label}] connect failed: ${e.message}`)
+      this._scheduleRetry()
+    }
+  }
+
+  close() {
+    this._closed = true
+    if (this._retryTimer) { clearTimeout(this._retryTimer); this._retryTimer = null }
+    if (this._heartbeatTimer) { clearTimeout(this._heartbeatTimer); this._heartbeatTimer = null }
+    if (this._ws) { try { this._ws.close() } catch (e) { this._log(`[${this._label}] close error: ${e.message}`) } }
+    this._ws = null
+  }
+
+  _cleanup() {
+    this._ws = null
+    if (this._heartbeatTimer) { clearTimeout(this._heartbeatTimer); this._heartbeatTimer = null }
+    this._onClose?.()
+  }
+
+  _scheduleRetry() {
+    if (this._closed) return
+    if (this._retryTimer) return
+    const delay = this._backoff
+    this._backoff = Math.min(this._backoff * 2, this._maxBackoff)
+    this._log(`[${this._label}] reconnecting in ${delay}ms`)
+    this._retryTimer = setTimeout(() => {
+      this._retryTimer = null
+      this.connect()
+    }, delay)
+  }
+
+  _resetHeartbeat() {
+    if (!this._heartbeatTimeoutMs) return
+    if (this._heartbeatTimer) clearTimeout(this._heartbeatTimer)
+    this._heartbeatTimer = setTimeout(() => {
+      this._log(`[${this._label}] no heartbeat in ${this._heartbeatTimeoutMs}ms — reconnecting`)
+      if (this._ws) { try { this._ws.close() } catch (e) { this._log(`[${this._label}] close error: ${e.message}`) } }
+      this._cleanup()
+      this._scheduleRetry()
+    }, this._heartbeatTimeoutMs)
+  }
+}

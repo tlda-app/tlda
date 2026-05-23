@@ -22,21 +22,11 @@ import { fileURLToPath } from 'url'
 import { homedir } from 'os'
 import { randomBytes } from 'crypto'
 import { collectSourceFiles, collectSourceHashes, collectSpecificFiles } from './lib/source-files.mjs'
-
-// --- Config ---
-
-const CONFIG_DIR = join(homedir(), '.config', 'tlda')
-const CONFIG_FILE = join(CONFIG_DIR, 'config.json')
-
-function loadConfig() {
-  if (!existsSync(CONFIG_FILE)) return {}
-  try { return JSON.parse(readFileSync(CONFIG_FILE, 'utf8')) } catch { return {} }
-}
-
-function saveConfig(config) {
-  if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true })
-  writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2))
-}
+import {
+  loadConfig, saveConfig, getServerUrl, getRwToken, DEFAULT_PORT,
+  CONFIG_DIR, CONFIG_FILE,
+} from '../shared/config.mjs'
+import { tldaFetch } from '../shared/http-client.mjs'
 
 // --- Argument parsing ---
 
@@ -102,11 +92,11 @@ if (command && hasFlag('help') && COMMAND_HELP[command]) {
 }
 
 function getServer() {
-  return process.env.TLDA_SERVER || getFlag('server') || loadConfig().server || 'http://localhost:5176'
+  return getFlag('server') || getServerUrl()
 }
 
 function getToken() {
-  return process.env.TLDA_TOKEN || getFlag('token') || loadConfig().token || null
+  return getFlag('token') || getRwToken()
 }
 
 // --- Output helpers ---
@@ -122,34 +112,11 @@ const cyan  = (s) => isTTY ? `\x1b[36m${s}\x1b[0m` : s
 // --- HTTP helpers ---
 
 async function api(method, path, body = null, { timeoutMs = 30000 } = {}) {
-  const server = getServer()
-  const token = getToken()
-  const url = `${server}${path}`
-  const headers = { 'Content-Type': 'application/json' }
-  if (token) headers['Authorization'] = `Bearer ${token}`
-  const opts = {
-    method,
-    headers,
-    signal: AbortSignal.timeout(timeoutMs),
-  }
-  if (body) opts.body = JSON.stringify(body)
-
-  let res
-  try {
-    res = await fetch(url, opts)
-  } catch (e) {
-    if (e.name === 'TimeoutError') throw new Error(`Request timed out: ${method} ${path}`)
-    throw new Error(`Server not reachable at ${server} (${e.cause?.code || e.message})`)
-  }
-  const text = await res.text()
-  let data
-  try { data = JSON.parse(text) } catch { data = text }
-
-  if (!res.ok) {
-    const msg = data?.error || text || `HTTP ${res.status}`
-    throw new Error(msg)
-  }
-  return data
+  return tldaFetch(path, {
+    method, body, timeoutMs,
+    server: getServer(),
+    token: getToken(),
+  })
 }
 
 // --- Source file collection ---
@@ -1301,7 +1268,7 @@ _tlda "$@"`)
 const LOGFILE = join(homedir(), '.config', 'tlda', 'server.log')
 
 function getPort() {
-  try { return new URL(getServer()).port || '5176' } catch { return '5176' }
+  try { return new URL(getServer()).port || String(DEFAULT_PORT) } catch { return String(DEFAULT_PORT) }
 }
 
 async function cmdDeploy() {

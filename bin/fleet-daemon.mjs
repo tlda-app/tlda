@@ -52,6 +52,7 @@
  */
 
 import { WebSocket } from 'ws'
+import { ResilientWS } from '../shared/resilient-ws.mjs'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
@@ -60,14 +61,18 @@ import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { resolveFilePath, uploadFileToServer } from '../mcp-server/lib/chat-file-processing.mjs'
 import { processMessageText } from '../mcp-server/lib/message-processing.mjs'
+import {
+  loadConfig as _loadSharedConfig, saveConfig as _saveSharedConfig,
+  getServerUrl, getRwToken, DEFAULT_PORT,
+  CONFIG_DIR as _SHARED_CONFIG_DIR,
+} from '../shared/config.mjs'
 const execFileP = promisify(execFile)
 
 const VERSION = '0.1.0'
 // CONFIG_DIR holds config.json, cursors, PID and log files. Defaults to
 // ~/.config/tlda. TLDA_DAEMON_CONFIG_DIR lets the E2E test start a second
 // daemon in parallel without clobbering the live daemon's PID file.
-const CONFIG_DIR = process.env.TLDA_DAEMON_CONFIG_DIR || path.join(os.homedir(), '.config', 'tlda')
-const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json')
+const CONFIG_DIR = process.env.TLDA_DAEMON_CONFIG_DIR || _SHARED_CONFIG_DIR
 const CURSORS_FILE = path.join(CONFIG_DIR, 'daemon-cursors.json')
 const PID_FILE = path.join(CONFIG_DIR, 'fleet-daemon.pid')
 const LOG_FILE = path.join(CONFIG_DIR, 'fleet-daemon.log')
@@ -75,15 +80,25 @@ const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects')
 
 // ---------- config / machine identity ----------
 
+// When using a custom config dir (E2E tests), read from there instead of shared.
+const _usingCustomConfigDir = !!process.env.TLDA_DAEMON_CONFIG_DIR
+
 function loadConfig() {
-  if (!fs.existsSync(CONFIG_FILE)) return {}
-  try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')) }
-  catch (e) { console.error(`[daemon] failed to read config: ${e.message}`); return {} }
+  if (_usingCustomConfigDir) {
+    const f = path.join(CONFIG_DIR, 'config.json')
+    if (!fs.existsSync(f)) return {}
+    return JSON.parse(fs.readFileSync(f, 'utf8'))
+  }
+  return _loadSharedConfig()
 }
 
 function saveConfig(cfg) {
-  if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true })
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2))
+  if (_usingCustomConfigDir) {
+    if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true })
+    fs.writeFileSync(path.join(CONFIG_DIR, 'config.json'), JSON.stringify(cfg, null, 2))
+    return
+  }
+  _saveSharedConfig(cfg)
 }
 
 // Stable per-machine identifier. Uses the short hostname (hostname -s) —
@@ -98,8 +113,12 @@ function deriveMachineId() {
 }
 
 const config = loadConfig()
-const SERVER = process.env.TLDA_SERVER || config.server || 'http://localhost:5176'
-const TOKEN = process.env.TLDA_TOKEN || config.tokenRw || config.token || null
+const SERVER = _usingCustomConfigDir
+  ? (process.env.TLDA_SERVER || config.server || `http://localhost:${DEFAULT_PORT}`)
+  : getServerUrl(config)
+const TOKEN = _usingCustomConfigDir
+  ? (process.env.TLDA_TOKEN || config.tokenRw || config.token || null)
+  : getRwToken(config)
 const TMUX_SOCKET = config.tmuxSocket || null
 const TMUX_ARGS = TMUX_SOCKET ? ['-L', TMUX_SOCKET] : []
 
@@ -121,7 +140,7 @@ const HOSTNAME = os.hostname()
 function loadCursors() {
   if (!fs.existsSync(CURSORS_FILE)) return {}
   try { return JSON.parse(fs.readFileSync(CURSORS_FILE, 'utf8')) }
-  catch { return {} }
+  catch (e) { console.warn(`[daemon] corrupt cursors file, resetting: ${e.message}`); return {} }
 }
 function saveCursors() {
   if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true })
@@ -393,8 +412,7 @@ function extractActivityEvents(events) {
 
 // ---------- daemon state ----------
 
-let ws = null
-let backoff = 1000
+let _rws = null  // ResilientWS instance, created at startup
 let agents = []                   // current agent list (from welcome / updates)
 let projects = []                 // current project list
 const pathWatchers = new Map()    // jsonlPath -> { watcher, primaryAgentId, sessionId }
@@ -1715,7 +1733,10 @@ async function checkAgentLiveness() {
         if (ppid) claudePids.add(ppid)
       }
     }
-  } catch {}
+  } catch (e) {
+    console.warn(`[daemon] ps failed during death detection — skipping cycle: ${e.message}`)
+    return
+  }
 
   const aliveAgentIds = []
   for (const agent of candidateAgents) {
@@ -1745,12 +1766,12 @@ async function checkAgentLiveness() {
 async function rpcResolveFile({ path: filePath, cwd, server_url }) {
   const abs = resolveFilePath(filePath, cwd)
   if (!fs.existsSync(abs)) throw new Error(`File not found: ${abs}`)
-  const serverBase = server_url || `http://127.0.0.1:5176`
+  const serverBase = server_url || `http://127.0.0.1:${DEFAULT_PORT}`
   return await uploadFileToServer(abs, serverBase)
 }
 
 async function rpcRechat({ text, cwd, server_url }) {
-  const serverBase = server_url || `http://127.0.0.1:5176`
+  const serverBase = server_url || `http://127.0.0.1:${DEFAULT_PORT}`
   return await processMessageText(text, cwd, serverBase)
 }
 
@@ -2271,18 +2292,15 @@ async function handleRpc(msg) {
 let _droppedCount = 0
 let _droppedWarnAt = 0
 function sendMsg(obj) {
-  if (!ws || ws.readyState !== 1) {
-    _droppedCount++
-    const now = Date.now()
-    if (now - _droppedWarnAt > 5000) {
-      console.warn(`[daemon] dropping messages (ws not open); dropped ${_droppedCount} since last warn; sample type=${obj?.type}`)
-      _droppedCount = 0
-      _droppedWarnAt = now
-    }
-    return false
+  if (_rws?.send(obj)) return true
+  _droppedCount++
+  const now = Date.now()
+  if (now - _droppedWarnAt > 5000) {
+    console.warn(`[daemon] dropping messages (ws not open); dropped ${_droppedCount} since last warn; sample type=${obj?.type}`)
+    _droppedCount = 0
+    _droppedWarnAt = now
   }
-  try { ws.send(JSON.stringify(obj)); return true }
-  catch (e) { console.error(`[daemon] ws send: ${e.message}`); return false }
+  return false
 }
 
 function teardownWatchers() {
@@ -2300,60 +2318,24 @@ function teardownWatchers() {
 }
 
 function connect() {
-  const wsUrl = SERVER.replace(/^http/, 'ws') + '/ws/fleet-daemon' +
-    (TOKEN ? `?token=${encodeURIComponent(TOKEN)}` : '')
-  console.log(`[daemon] connecting to ${wsUrl.replace(/token=[^&]+/, 'token=***')}`)
-
-  try { ws = new WebSocket(wsUrl) }
-  catch (e) { console.error(`[daemon] WebSocket ctor: ${e.message}`); scheduleReconnect(); return }
-
-  ws.on('open', () => {
-    console.log(`[daemon] connected (machine_id=${MACHINE_ID}, boot_id=${BOOT_ID})`)
-    backoff = 1000
-    sendMsg({
-      type: 'daemon-hello',
-      machine_id: MACHINE_ID,
-      user: USER,
-      hostname: HOSTNAME,
-      version: VERSION,
-      boot_id: BOOT_ID,
-    })
+  _rws = new ResilientWS({
+    url: () => SERVER.replace(/^http/, 'ws') + '/ws/fleet-daemon' +
+      (TOKEN ? `?token=${encodeURIComponent(TOKEN)}` : ''),
+    label: 'daemon',
+    onOpen: () => {
+      sendMsg({
+        type: 'daemon-hello',
+        machine_id: MACHINE_ID,
+        user: USER,
+        hostname: HOSTNAME,
+        version: VERSION,
+        boot_id: BOOT_ID,
+      })
+    },
+    onMessage: handleServerMessage,
+    onClose: teardownWatchers,
   })
-
-  ws.on('message', (raw) => {
-    let msg
-    try { msg = JSON.parse(raw.toString()) } catch { return }
-    handleServerMessage(msg)
-  })
-
-  ws.on('close', (code, reason) => {
-    console.log(`[daemon] WS closed (${code} ${reason || ''}); will reconnect`)
-    teardownWatchers()
-    scheduleReconnect()
-  })
-
-  ws.on('error', (e) => {
-    console.error(`[daemon] WS error: ${e.message}`)
-    // Belt-and-suspenders: some ws error paths (e.g. ECONNREFUSED before
-    // the connection opens) may not reliably fire 'close' afterwards, or
-    // may fire close before the next connect() has even started. Schedule
-    // a reconnect here too — guarded by a flag so duplicate close+error
-    // events don't stack setTimeouts.
-    scheduleReconnect()
-  })
-}
-
-let reconnectScheduled = false
-function scheduleReconnect() {
-  if (reconnectScheduled) return
-  reconnectScheduled = true
-  const delay = backoff
-  backoff = Math.min(backoff * 2, 30000)
-  console.log(`[daemon] scheduling reconnect in ${delay}ms (next backoff=${backoff}ms)`)
-  setTimeout(() => {
-    reconnectScheduled = false
-    connect()
-  }, delay)
+  _rws.connect()
 }
 
 function handleServerMessage(msg) {
@@ -2494,14 +2476,14 @@ try {
   }
 } catch { /* no PID file — first start, continue */ }
 
-try { fs.writeFileSync(PID_FILE, String(process.pid)) } catch {}
+try { fs.writeFileSync(PID_FILE, String(process.pid)) } catch (e) { console.warn(`[daemon] failed to write PID file: ${e.message}`) }
 
 function shutdown(signal) {
   // Log WHY we're dying so the next post-mortem isn't a scavenger hunt.
   console.log(`[daemon] shutdown via ${signal || 'unknown'} signal; saving cursors and exiting`)
   saveCursors()
   try { fs.unlinkSync(PID_FILE) } catch {}
-  try { ws?.close() } catch {}
+  _rws?.close()
   process.exit(0)
 }
 process.on('SIGINT', () => shutdown('SIGINT'))

@@ -33,6 +33,7 @@ import os from 'os'
 const { homedir, hostname } = os
 import { spawn as cpSpawn } from 'child_process'
 import { lookup as mimeLookup } from 'mime-types'
+import { DEFAULT_PORT } from '../shared/config.mjs'
 import { initProjectStore, listProjects, readProject, getProjectsDir } from './lib/project-store.mjs'
 import { resetStaleBuildStates, killAllBuilds } from './lib/build-runner.mjs'
 import projectRoutes, { processProjectPush } from './routes/projects.mjs'
@@ -57,7 +58,7 @@ try {
   if (_envCount > 0) console.log(`[env] Loaded ${_envCount} vars from ${_envFile}`)
 } catch (e) { console.warn('[env] Failed to load .env:', e.message) }
 
-const PORT = process.env.PORT || 5176
+const PORT = process.env.PORT || DEFAULT_PORT
 const HOST = process.env.HOST || '0.0.0.0'
 const PROJECTS_DIR = process.env.PROJECTS_DIR || join(__dirname, 'projects')
 
@@ -326,7 +327,9 @@ function ensureLocalDaemon() {
       if (pid > 0) {
         try { process.kill(pid, 0); return } catch {} // not alive → fall through to respawn
       }
-    } catch {}
+    } catch (e) {
+      console.warn(`[server] stale daemon PID file: ${e.message}`)
+    }
   }
   if (!existsSync(DAEMON_SCRIPT)) return
 
@@ -685,7 +688,7 @@ app.post('/api/voice/restart-chrome', async (req, res) => {
     }
     execSync('sleep 1')
     // Reopen Chrome with debug flags
-    const tabUrls = (tabs && tabs.length > 0) ? tabs : ['http://localhost:5176/']
+    const tabUrls = (tabs && tabs.length > 0) ? tabs : [`http://localhost:${DEFAULT_PORT}/`]
     const urlArgs = tabUrls.map(u => `"${u}"`).join(' ')
     exec(`open -a "Google Chrome" --args --remote-debugging-port=9222 --user-data-dir=$HOME/.chrome-debug --remote-allow-origins='*' ${urlArgs}`)
     console.log('[voice] Chrome restarted with', tabUrls.length, 'tabs')
@@ -959,7 +962,7 @@ function sendWatchBackingFiles() {
   }))
   for (const [, dws] of daemonConnections) {
     if (dws.readyState !== 1) continue
-    try { dws.send(JSON.stringify({ type: 'watch-backing-files', files })) } catch {}
+    try { dws.send(JSON.stringify({ type: 'watch-backing-files', files })) } catch (e) { console.warn(`[server] daemon send failed: ${e.message}`) }
   }
 }
 
@@ -969,7 +972,7 @@ function persistBackingRegistry() {
       filePath, docNames: [...docNames],
     }))
     writeFileSync(backingRegistryPath(), JSON.stringify(data, null, 2), 'utf8')
-  } catch {}
+  } catch (e) { console.warn(`[server] failed to persist backing registry: ${e.message}`) }
 }
 
 function loadBackingRegistry() {
@@ -997,7 +1000,7 @@ async function rebuildBackingFileRegistry() {
           backingFileRegistry.get(shape.props.backingFile).add(docName)
         }
       }
-    } catch {}
+    } catch (e) { console.warn(`[server] failed to scan backing files for ${docName}: ${e.message}`) }
   }
   persistBackingRegistry()
 }
@@ -1070,7 +1073,7 @@ app.post('/api/plan-mode-respond', requireRead, async (req, res) => {
       try {
         fleetStore.updateEventMetadata(pending.eventId, patch)
         broadcastEvent('event-update', { id: pending.eventId, metadata_patch: patch })
-      } catch {}
+      } catch (e) { console.warn(`[server] failed to update plan approval event: ${e.message}`) }
       pendingPlanApprovals.delete(agent.id)
     }
     broadcastState()

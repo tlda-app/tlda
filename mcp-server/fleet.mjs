@@ -39,6 +39,7 @@ import { formatMessage, formatActivity, formatAnnotationRef } from './format-ann
 import { parseTimestamp } from './lib/parse-timestamp.mjs';
 import { processMessageText } from './lib/message-processing.mjs';
 import WebSocket from 'ws';
+import { ResilientWS } from '../shared/resilient-ws.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BIN = path.join(__dirname, 'bin');
@@ -69,40 +70,19 @@ function getAgentCwd() {
 const LOG_FILE = `${os.homedir()}/.claude/agent-messages.jsonl`;
 
 // --- tlda integration ---
-const TLDA_PORT = 5176;
-const TLDA_CONFIG = path.join(os.homedir(), '.config', 'tlda', 'config.json');
-let _tldaToken = null;
-try {
-  const cfg = JSON.parse(fs.readFileSync(TLDA_CONFIG, 'utf8'));
-  _tldaToken = cfg.tokenRw || cfg.tokenRead || null;
-} catch (e) {
-  if (e.code !== 'ENOENT') process.stderr.write(`[fleet] tlda config read failed: ${e.message}\n`);
-}
+import { getRwToken, DEFAULT_PORT } from '../shared/config.mjs';
+import { tldaFetch as _sharedFetch } from '../shared/http-client.mjs';
+const TLDA_PORT = parseInt(process.env.TLDA_PORT || String(DEFAULT_PORT));
+const _tldaToken = getRwToken();
 
-function tldaFetch(apiPath, opts = {}) {
-  return new Promise((resolve, reject) => {
-    const reqOpts = {
-      hostname: 'localhost',
-      port: TLDA_PORT,
-      path: '/api/projects/' + apiPath,
-      method: opts.method ?? 'GET',
-      headers: { ...opts.headers },
-    };
-    if (_tldaToken) reqOpts.headers['Authorization'] = 'Bearer ' + _tldaToken;
-    if (opts.body) reqOpts.headers['Content-Type'] = 'application/json';
-    const req = http.request(reqOpts, res => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try { resolve({ status: res.statusCode, data: JSON.parse(data) }); }
-        catch { resolve({ status: res.statusCode, data }); }
-      });
-    });
-    req.on('error', reject);
-    req.setTimeout(10000, () => { req.destroy(); reject(new Error('timeout')); });
-    if (opts.body) req.write(typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body));
-    req.end();
+async function tldaFetch(apiPath, opts = {}) {
+  const data = await _sharedFetch(`/api/projects/${apiPath}`, {
+    method: opts.method,
+    body: opts.body,
+    headers: opts.headers,
+    server: `http://127.0.0.1:${TLDA_PORT}`,
   });
+  return { status: 200, data };
 }
 
 
@@ -110,9 +90,9 @@ function tldaFetch(apiPath, opts = {}) {
 // All server fetches go through fleetFetch — adds a timeout so tool handlers
 // never hang when the server is down. Without this, Claude Code kills the
 // MCP process (SIGKILL) after its own internal timeout.
-const FETCH_TIMEOUT_MS = 10000;
 function fleetFetch(url, opts = {}) {
-  if (!opts.signal) opts.signal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
+  const timeoutMs = 10_000;
+  if (!opts.signal) opts.signal = AbortSignal.timeout(timeoutMs);
   return fetch(url, opts);
 }
 
@@ -217,9 +197,8 @@ async function fetchCurrentDocVersion(doc) {
     return _docVersionCache.version;
   }
   try {
-    const tldaPort = process.env.TLDA_PORT || 5176;
     const headers = _tldaToken ? { Authorization: `Bearer ${_tldaToken}` } : {};
-    const res = await fleetFetch(`http://127.0.0.1:${tldaPort}/api/projects/${encodeURIComponent(doc)}/history/shadow?limit=20`, {
+    const res = await fleetFetch(`http://127.0.0.1:${TLDA_PORT}/api/projects/${encodeURIComponent(doc)}/history/shadow?limit=20`, {
       headers,
       signal: AbortSignal.timeout(1500),
     });
@@ -1406,10 +1385,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       machine_id: machineId,
     };
     // Wait up to 2s for WS to connect (it should be fast — localhost)
-    if (!_channelWS) {
+    if (!_channelRWS?.connected) {
       startChannelWS();
       const deadline = Date.now() + 2000;
-      while (!_channelWS && Date.now() < deadline) {
+      while (!_channelRWS?.connected && Date.now() < deadline) {
         await new Promise(r => setTimeout(r, 50));
       }
     }
@@ -1441,20 +1420,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // Health check: report what's up/down so agent knows communication channels
     const health = [];
     try {
-      const tldaPort = process.env.TLDA_PORT || 5176;
-      const tldaRes = await fleetFetch(`http://127.0.0.1:${tldaPort}/api/projects`, { signal: AbortSignal.timeout(2000) });
+      const tldaRes = await fleetFetch(`http://127.0.0.1:${TLDA_PORT}/api/projects`, { signal: AbortSignal.timeout(2000) });
       health.push((tldaRes.ok || tldaRes.status === 401) ? 'tlda: ✔' : 'tlda: ✘ (not responding)');
     } catch {
       health.push('tlda: ✘ (unreachable)');
     }
-    health.push(_channelWS && _channelWS.readyState === 1 ? 'fleet WS: ✔' : 'fleet WS: ✘ (not connected)');
+    health.push(_channelRWS?.connected ? 'fleet WS: ✔' : 'fleet WS: ✘ (not connected)');
     msg += `\n\nHealth: ${health.join(', ')}`;
     if (health.some(h => h.includes('✘'))) {
       msg += '\n⚠ Some services are down. If tlda is down, Skip cannot see fleet chat — use terminal output instead.';
     }
 
     // Start channel WS for direct message injection (replaces tmux send-keys)
-    if (!_channelWS && !_channelRetryTimer) {
+    if (!_channelRWS) {
       startChannelWS();
     }
 
@@ -1614,8 +1592,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
       if (recipients.length === 0) return { content: [{ type: 'text', text: 'No agents matched filter.' }], isError: true };
       const agentCwd = getAgentCwd();
-      const dashPort = process.env.FLEET_DASH_PORT || 5176;
-      const { resolvedMessage, inlineAttachments, brokenPaths } = await processMessageText(draft.message, agentCwd, `http://127.0.0.1:${dashPort}`);
+      const { resolvedMessage, inlineAttachments, brokenPaths } = await processMessageText(draft.message, agentCwd, `http://127.0.0.1:${TLDA_PORT}`);
       let docContext = null;
       if (_currentDoc) { const v = await fetchCurrentDocVersion(_currentDoc); docContext = { doc: _currentDoc, version: v || null }; }
       const sent = [];
@@ -1639,7 +1616,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     // Resolve recipients from filter
     if (!args.filter?.to) return { content: [{ type: 'text', text: 'Missing filter.to — specify recipients as DNF expression.' }], isError: true };
-    const dashPort_ = process.env.FLEET_DASH_PORT || 5176;
     let recipients = [];
     let serverDown = false;
     let agents = [];
@@ -1666,9 +1642,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     // Resolve file paths in message text → inline attachments.
     const agentCwd = getAgentCwd();
-    const dashPortUpload = process.env.FLEET_DASH_PORT || 5176;
     const { resolvedMessage, inlineAttachments, brokenPaths } = await processMessageText(
-      message, agentCwd, `http://127.0.0.1:${dashPortUpload}`
+      message, agentCwd, `http://127.0.0.1:${TLDA_PORT}`
     );
 
     if (brokenPaths.length > 0) {
@@ -1716,8 +1691,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // Check if tlda is up — if not, Skip can't see the message even though it was delivered
     let tldaDown = false;
     try {
-      const tldaPort = process.env.TLDA_PORT || 5176;
-      const tldaRes = await fleetFetch(`http://127.0.0.1:${tldaPort}/api/projects`, { signal: AbortSignal.timeout(2000) });
+      const tldaRes = await fleetFetch(`http://127.0.0.1:${TLDA_PORT}/api/projects`, { signal: AbortSignal.timeout(2000) });
       // 401 means tlda is up but auth is required — that's fine, server is running
       if (!tldaRes.ok && tldaRes.status !== 401) tldaDown = true;
     } catch {
@@ -1746,8 +1720,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not registered. Call register() first.' }], isError: true };
     const { reason } = args || {};
     try {
-      const tldaPort = process.env.TLDA_PORT || 5176;
-      const res = await fleetFetch(`http://127.0.0.1:${tldaPort}/api/terminal-card`, {
+      const res = await fleetFetch(`http://127.0.0.1:${TLDA_PORT}/api/terminal-card`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ from: AGENT_ID, reason: reason || null }),
@@ -2198,7 +2171,6 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
     const chips = [...text.matchAll(chipPattern)]
     if (chips.length === 0) return { text, images: [] }
 
-    const dashPort = process.env.FLEET_DASH_PORT || 5176
     let resolved = text
     const chipImages = []
     for (const match of chips) {
@@ -2978,8 +2950,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     let shadowCommits = [];
     if (args.doc) {
       try {
-        const dashPort = process.env.FLEET_DASH_PORT || 5176;
-        const sRes = await fleetFetch(`http://127.0.0.1:${dashPort}/api/projects/${encodeURIComponent(args.doc)}/shadow/log`);
+        const sRes = await fleetFetch(`http://127.0.0.1:${TLDA_PORT}/api/projects/${encodeURIComponent(args.doc)}/shadow/log`);
         if (sRes.ok) {
           const sData = await sRes.json();
           shadowCommits = (sData.commits || []).map(c => ({ ...c, ms: new Date(c.timestamp).getTime() }));
@@ -3081,9 +3052,8 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     // fleet-mcp-restart script directly.
     if (!args.agent) return { content: [{ type: 'text', text: 'Specify an agent to restart.' }], isError: true };
     if (args.agent === AGENT_ID) return { content: [{ type: 'text', text: 'Cannot restart your own MCP via this tool (if your MCP is disconnected, calling the tool is impossible). Bash ~/work/fleet/bin/fleet-mcp-restart directly.' }], isError: true };
-    const dashPort = process.env.FLEET_DASH_PORT || 5176;
     try {
-      const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/restart-mcp`, {
+      const res = await fleetFetch(`http://127.0.0.1:${TLDA_PORT}/api/restart-mcp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ agent: args.agent }),
@@ -3108,9 +3078,8 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
 
   // ---- roll_call ----
   if (name === 'roll_call') {
-    const dashPort = process.env.FLEET_DASH_PORT || 5176;
     try {
-      const res = await fleetFetch(`http://127.0.0.1:${dashPort}/api/roll-call`);
+      const res = await fleetFetch(`http://127.0.0.1:${TLDA_PORT}/api/roll-call`);
       const data = await res.json();
       if (data.error) return { content: [{ type: 'text', text: `Roll call failed: ${data.error}` }], isError: true };
 
@@ -3399,7 +3368,6 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
 
   // ---- wiretap ----
   if (name === 'wiretap') {
-    const dashPort = process.env.FLEET_DASH_PORT || 5176;
     const myId = AGENT_ID;
     if (!myId) return { content: [{ type: 'text', text: 'Not registered. Call register() first.' }], isError: true };
 
@@ -3597,13 +3565,7 @@ await server.connect(transport);
 const _originatedEventIds = new Set();
 const ORIGINATED_TTL_MS = 30000;
 
-let _channelWS = null;
-let _channelRetryTimer = null;
-const CHANNEL_RETRY_MS = 1000; // reconnect fast so daemon's 8s check sees us already connected
-const CHANNEL_MAX_RETRY_MS = 30000;
-let _channelRetryDelay = CHANNEL_RETRY_MS;
-let _channelHeartbeatTimer = null;
-const CHANNEL_HEARTBEAT_TIMEOUT_MS = 45000; // server sends heartbeat every 15s; dead if silent for 45s
+let _channelRWS = null;  // ResilientWS instance
 
 // Request/response over WS — pending callbacks keyed by correlation ID
 const _wsPending = new Map();
@@ -3615,7 +3577,7 @@ const WS_TIMEOUT_MS = 10000;
  * If WS is not connected, returns null (caller should fallback to REST).
  */
 function sendWS(type, params = {}) {
-  if (!_channelWS || _channelWS.readyState !== WebSocket.OPEN) return null;
+  if (!_channelRWS?.connected) return null;
   const id = crypto.randomUUID();
   const promise = new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -3624,18 +3586,16 @@ function sendWS(type, params = {}) {
     }, WS_TIMEOUT_MS);
     _wsPending.set(id, { resolve, reject, timer });
   });
-  try {
-    _channelWS.send(JSON.stringify({ id, type, ...params }));
-  } catch (e) {
+  if (!_channelRWS.send({ id, type, ...params })) {
     const pending = _wsPending.get(id);
     if (pending) { clearTimeout(pending.timer); _wsPending.delete(id); }
-    return null; // fallback to REST
+    return null;
   }
   return promise;
 }
 
 async function _flushUnread() {
-  if (!AGENT_ID || !_channelWS || _channelWS.readyState !== WebSocket.OPEN) return;
+  if (!AGENT_ID || !_channelRWS?.connected) return;
   try {
     const data = await sendWS('my-task', { agent: AGENT_ID, peek: true });
     if (!data) return;
@@ -3652,110 +3612,53 @@ async function _flushUnread() {
   } catch {}
 }
 
-function resetHeartbeatTimeout() {
-  clearHeartbeatTimeout();
-  _channelHeartbeatTimer = setTimeout(() => {
-    process.stderr.write(`[fleet-channel] No heartbeat in ${CHANNEL_HEARTBEAT_TIMEOUT_MS}ms — assuming dead, reconnecting\n`);
-    if (_channelWS) {
-      try { _channelWS.terminate(); } catch {}
-      _channelWS = null;
-    }
-    scheduleChannelRetry();
-  }, CHANNEL_HEARTBEAT_TIMEOUT_MS);
-}
-
-function clearHeartbeatTimeout() {
-  if (_channelHeartbeatTimer) { clearTimeout(_channelHeartbeatTimer); _channelHeartbeatTimer = null; }
-}
-
 function startChannelWS() {
   if (!AGENT_ID) return;
-  if (_channelWS) return;
+  if (_channelRWS) return;
 
-  const dashPort = process.env.FLEET_DASH_PORT || 5176;
-  const url = `ws://127.0.0.1:${dashPort}/ws/fleet?agent=${encodeURIComponent(AGENT_ID)}`;
-
-  try {
-    const ws = new WebSocket(url);
-
-    ws.on('open', () => {
-      process.stderr.write(`[fleet-channel] WS connected for ${AGENT_ID}\n`);
-      _channelWS = ws;
-      _channelRetryDelay = CHANNEL_RETRY_MS;
-      resetHeartbeatTimeout();
-      // Re-register after reconnect — server may have restarted and lost our record
-      if (AGENT_ID) {
-        const regBody = {
-          id: AGENT_ID,
-          name: process.env.FLEET_NAME || undefined,
-          tmux_session: _tmuxSession || undefined,
-          cwd: process.cwd(),
-          machine_id: os.hostname().split('.')[0],
-        };
-        sendWS('register', regBody)?.catch(() => {});
-        process.stderr.write(`[fleet-channel] re-registered ${AGENT_ID}\n`);
-      }
-      // Flush any unread messages that arrived while WS was down (server restart, etc.)
-      if (AGENT_ID) setTimeout(_flushUnread, 500); // slight delay so WS is fully ready
-    });
-
-    ws.on('message', (raw) => {
-      resetHeartbeatTimeout();
-      try {
-        const msg = JSON.parse(raw.toString());
-        // Response to a pending WS request
-        if (msg.id && _wsPending.has(msg.id)) {
-          const { resolve, reject, timer } = _wsPending.get(msg.id);
-          _wsPending.delete(msg.id);
-          clearTimeout(timer);
-          if (msg.error) reject(new Error(msg.error));
-          else {
-            // Track event IDs we originated to suppress broadcast echoes
-            if (msg.result?.event_id) {
-              _originatedEventIds.add(msg.result.event_id);
-              setTimeout(() => _originatedEventIds.delete(msg.result.event_id), ORIGINATED_TTL_MS);
-            }
-            resolve(msg.result);
+  _channelRWS = new ResilientWS({
+    url: () => `ws://127.0.0.1:${TLDA_PORT}/ws/fleet?agent=${encodeURIComponent(AGENT_ID)}`,
+    label: 'fleet-channel',
+    heartbeatTimeoutMs: 45000,
+    log: (s) => process.stderr.write(s + '\n'),
+    onOpen: () => {
+      const regBody = {
+        id: AGENT_ID,
+        name: process.env.FLEET_NAME || undefined,
+        tmux_session: _tmuxSession || undefined,
+        cwd: process.cwd(),
+        machine_id: os.hostname().split('.')[0],
+      };
+      sendWS('register', regBody)?.catch(() => {});
+      process.stderr.write(`[fleet-channel] re-registered ${AGENT_ID}\n`);
+      setTimeout(_flushUnread, 500);
+    },
+    onMessage: (msg) => {
+      if (msg.id && _wsPending.has(msg.id)) {
+        const { resolve, reject, timer } = _wsPending.get(msg.id);
+        _wsPending.delete(msg.id);
+        clearTimeout(timer);
+        if (msg.error) reject(new Error(msg.error));
+        else {
+          if (msg.result?.event_id) {
+            _originatedEventIds.add(msg.result.event_id);
+            setTimeout(() => _originatedEventIds.delete(msg.result.event_id), ORIGINATED_TTL_MS);
           }
-          return;
+          resolve(msg.result);
         }
-        handleChannelMessage(msg);
-      } catch {}
-    });
-
-    ws.on('close', () => {
-      _channelWS = null;
-      clearHeartbeatTimeout();
-      // Reject all pending WS requests — callers will see the error
+        return;
+      }
+      handleChannelMessage(msg);
+    },
+    onClose: () => {
       for (const [id, { reject, timer }] of _wsPending) {
         clearTimeout(timer);
         reject(new Error('WS connection closed'));
       }
       _wsPending.clear();
-      scheduleChannelRetry();
-    });
-
-    ws.on('error', (err) => {
-      process.stderr.write(`[fleet-channel] WS error: ${err.message}\n`);
-      _channelWS = null;
-      clearHeartbeatTimeout();
-      // error may fire without a subsequent close (e.g. connection refused before open)
-      // schedule retry if not already scheduled
-      scheduleChannelRetry();
-    });
-  } catch (e) {
-    process.stderr.write(`[fleet-channel] WS connect failed: ${e.message}\n`);
-    scheduleChannelRetry();
-  }
-}
-
-function scheduleChannelRetry() {
-  if (_channelRetryTimer) return;
-  _channelRetryTimer = setTimeout(() => {
-    _channelRetryTimer = null;
-    startChannelWS();
-  }, _channelRetryDelay);
-  _channelRetryDelay = Math.min(_channelRetryDelay * 2, CHANNEL_MAX_RETRY_MS);
+    },
+  });
+  _channelRWS.connect();
 }
 
 // Dedup channel notifications by event DB id — prevents double delivery
@@ -3903,17 +3806,13 @@ function reportStatus(state, toolName) {
   if (now - _lastStatusReport < STATUS_DEBOUNCE_MS) return;
   _lastStatusReport = now;
 
-  if (_channelWS && _channelWS.readyState === WebSocket.OPEN) {
-    try {
-      _channelWS.send(JSON.stringify({
-        type: 'agent-status',
-        agentId: AGENT_ID,
-        state,
-        tool: toolName || null,
-        ts: new Date().toISOString(),
-      }));
-    } catch {}
-  }
+  _channelRWS?.send({
+    type: 'agent-status',
+    agentId: AGENT_ID,
+    state,
+    tool: toolName || null,
+    ts: new Date().toISOString(),
+  });
 }
 
 // Start channel WS immediately if AGENT_ID is already known from $FLEET_ID.
@@ -3954,7 +3853,7 @@ try {
 
 
 setInterval(() => {
-  if (!AGENT_ID || !_channelWS || _channelWS.readyState !== WebSocket.OPEN) return;
+  if (!AGENT_ID || !_channelRWS?.connected) return;
 
   // Retry tmux session detection if it failed at startup
   if (!_tmuxSession) {
@@ -3975,7 +3874,7 @@ setInterval(() => {
     const paneBottom = pane.split('\n').slice(-THINKING_SCAN_LINES).join('\n');
     const isThinking = THINKING_SPINNER_RE.test(paneBottom) || INTERRUPT_HINT_RE.test(paneBottom);
     // Always send current state — server uses timestamps for expiry
-    _channelWS.send(JSON.stringify({ type: 'agent-thinking', agentId: AGENT_ID, thinking: isThinking }));
+    _channelRWS.send({ type: 'agent-thinking', agentId: AGENT_ID, thinking: isThinking });
     // Only broadcast state-change events to dashboard (avoid noise)
     if (isThinking !== _wasThinking) {
       _wasThinking = isThinking;
@@ -3983,10 +3882,10 @@ setInterval(() => {
 
     // Compaction detection
     const isCompacting = COMPACTING_RE.test(pane);
-    _channelWS.send(JSON.stringify({ type: 'agent-compacting', agentId: AGENT_ID, compacting: isCompacting }));
+    _channelRWS.send({ type: 'agent-compacting', agentId: AGENT_ID, compacting: isCompacting });
     if (isCompacting && !_compactingReported) {
       _compactingReported = true;
-      _channelWS.send(JSON.stringify({ type: 'compacting', agentId: AGENT_ID }));
+      _channelRWS.send({ type: 'compacting', agentId: AGENT_ID });
     } else if (!isCompacting && _compactingReported) {
       _compactingReported = false;
     }
@@ -3997,7 +3896,7 @@ setInterval(() => {
       const fingerprint = approvalBottom.slice(-100);
       if (fingerprint !== _lastApprovalFingerprint) {
         _lastApprovalFingerprint = fingerprint;
-        _channelWS.send(JSON.stringify({ type: 'terminal_attention', agent_id: AGENT_ID, reason: 'permission prompt', text: 'permission prompt' }));
+        _channelRWS.send({ type: 'terminal_attention', agent_id: AGENT_ID, reason: 'permission prompt', text: 'permission prompt' });
       }
     } else {
       _lastApprovalFingerprint = null;

@@ -12,6 +12,7 @@ import { Router } from 'express'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
+import { DEFAULT_PORT } from '../../shared/config.mjs'
 
 // Server owner — the human running this server process. Browser users
 // log in via the WS 'login' message or register via 'register'.
@@ -796,7 +797,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       result = await sendRpc(route.machine_id, 'rechat', {
         text: rawText,
         cwd: agent.cwd,
-        server_url: `http://127.0.0.1:${process.env.PORT || 5176}`,
+        server_url: `http://127.0.0.1:${process.env.PORT || DEFAULT_PORT}`,
       })
     } catch (e) {
       return res.status(502).json({ ok: false, error: e.message })
