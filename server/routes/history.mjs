@@ -663,7 +663,7 @@ router.post('/shadow/:ref/checkout', requireRw, async (req, res) => {
     rmSync(tmpDir, { recursive: true, force: true })
 
     // Trigger build
-    runBuild(name).catch(() => {})
+    runBuild(name).catch(e => console.error(`[history] build trigger failed for ${name}: ${e.message}`))
 
     // Tell the viewer it's showing a pinned old version (cleared when daemon pushes fresh files)
     broadcastSignal(`doc-${name}`, 'signal:view-pin', { ref: ref.slice(0, 7), timestamp: Date.now() })
@@ -711,7 +711,7 @@ router.post('/shadow/:ref/revert', requireRw, async (req, res) => {
     }
 
     rmSync(tmpDir, { recursive: true, force: true })
-    runBuild(name).catch(() => {})
+    runBuild(name).catch(e => console.error(`[history] build trigger failed for ${name}: ${e.message}`))
 
     res.json({
       ok: true,

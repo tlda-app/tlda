@@ -211,7 +211,7 @@ function SvgPageComponent({ shape }: { shape: any }) {
           anchorIndex.set(id, { pageShapeId: shape.id as string, viewBox: view.getAttribute('viewBox') || undefined })
         }
       }
-    }).catch(() => {}) // AbortError is expected when scrolling fast
+    }).catch(e => { if (e.name !== 'AbortError') console.warn('[svg-page] anchor index build failed:', e.message) })
   }, [isNearViewport, svgText, shape.id, shape.props.pageIndex])
 
   // Subscribe to change store for THIS shape's highlights only (not all shapes)

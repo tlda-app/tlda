@@ -272,7 +272,7 @@ export function writeSignal(key: string, payload: Record<string, unknown>): void
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ key, ...data }),
-  }).catch(() => {})
+  }).catch(e => console.warn('[yjs] signal post failed:', e.message))
 }
 
 /** Read a signal from the local cache. Returns null if not found. */

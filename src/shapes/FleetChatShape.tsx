@@ -878,7 +878,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ event_id: eid, agent: getHumanId() }),
-      }).catch(() => {})
+      }).catch(e => console.warn('[fleet-chat] mark-read failed:', e.message))
     }
     setTermCardPinnedId(null)
     setTermCardHoverId(null)
@@ -1026,7 +1026,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     fetch(`/api/projects/${doc.docName}/macros`)
       .then(r => r.ok ? r.json() : null)
       .then(data => { if (data?.macros) setPreambleMacros(data.macros) })
-      .catch(() => {})
+      .catch(e => console.warn('[fleet-chat] macros fetch failed:', e.message))
   }, [doc?.docName])
 
   // Build context and render messages
@@ -2176,7 +2176,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           if (eventId) {
             fetch(`${FLEET_API}/api/prompt-respond`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ eventId, response: 'approved' }) })
               .then(r => { if (r.ok) updateEventById(eventId, { _promptResponse: 'approved', metadata: { approvedAt: new Date().toISOString() } }) })
-              .catch(() => {})
+              .catch(e => console.warn('[fleet-chat] prompt approve failed:', e.message))
           }
           return
         }
@@ -2190,7 +2190,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           if (eventId) {
             fetch(`${FLEET_API}/api/prompt-respond`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ eventId, response: 'rejected' }) })
               .then(r => { if (r.ok) updateEventById(eventId, { _promptResponse: 'rejected', metadata: { rejectedAt: new Date().toISOString() } }) })
-              .catch(() => {})
+              .catch(e => console.warn('[fleet-chat] prompt reject failed:', e.message))
           }
           return
         }
@@ -2919,7 +2919,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                 resolved += '\n\n⚠️ Some embedded images couldn\'t be resolved. Drag the containing folder instead of the file to include all images.'
               }
               if (dragRef.current) dragRef.current.content = resolved
-            }).catch(() => {})
+            }).catch(e => console.warn('[fleet-chat] file content resolve failed:', e.message))
           }
           const chatLine = fileChip.closest('[data-msg-from]') as HTMLElement | null
           const filePath = fileChip.dataset.path || ''
@@ -3529,7 +3529,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ agent: agentId, response: planResponse }),
-                          }).catch(() => {})
+                          }).catch(e => console.warn('[fleet-chat] plan-mode-respond failed:', e.message))
                         }
                       }
                     }

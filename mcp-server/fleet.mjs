@@ -531,7 +531,7 @@ async function getUnread(_state, agent) {
   try {
     const data = await sendWS('my-task', { agent, peek: true });
     return data?.messages || [];
-  } catch {}
+  } catch (e) { process.stderr.write(`[fleet] getUnread failed: ${e.message}\n`); }
   return [];
 }
 
@@ -1180,7 +1180,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             }
           }
         }
-      } catch {}
+      } catch (e) { process.stderr.write(`[fleet] session file read retry failed: ${e.message}\n`); }
     }
 
     // Need either a session UUID or a name
@@ -1542,7 +1542,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       // Set friendly name if provided (two-call form only; spawn form already has the name set)
       if (args.friendly_name) {
-        await sendWS('rename', { agent, name: args.friendly_name })?.catch(() => {});
+        await sendWS('rename', { agent, name: args.friendly_name })?.catch(e => process.stderr.write(`[fleet] rename failed: ${e.message}\n`));
       }
 
       if (spawnedInfo) {
@@ -1600,7 +1600,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const chatBody = { message: resolvedMessage, to, from: AGENT_ID };
         if (inlineAttachments.length) chatBody.inline_attachments = inlineAttachments;
         if (docContext) chatBody.context = docContext;
-        try { const data = await sendWS('chat', chatBody); if (data?.ok) sent.push(to); } catch {}
+        try { const data = await sendWS('chat', chatBody); if (data?.ok) sent.push(to); } catch (e) { process.stderr.write(`[fleet] chat send to ${to} failed: ${e.message}\n`); }
       }
       if (sent.length === 0) return { content: [{ type: 'text', text: 'Send failed — no messages delivered.' }], isError: true };
       const names = sent.map(id => { const a = agents.find(x => x.id === id); return a?.friendly_name || id; });
@@ -2261,14 +2261,14 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
               const until = new Date(new Date(isoTs).getTime() + 60000).toISOString()
               const data = await sendWS('store-events', { agent: agentId, since, until, limit: 50 })
               activities = (data.events || []).filter(e => e.type === 'activity')
-            } catch {}
+            } catch (e) { process.stderr.write(`[fleet] activity fetch failed: ${e.message}\n`); }
           }
         }
 
         // Parse metadata strings (events API returns raw DB rows)
         for (const ev of activities) {
           if (typeof ev.metadata === 'string') {
-            try { ev.metadata = JSON.parse(ev.metadata) } catch {}
+            try { ev.metadata = JSON.parse(ev.metadata) } catch (e) { process.stderr.write(`[fleet] metadata parse failed for event ${ev.id}: ${e.message}\n`); }
           }
         }
 
@@ -2278,7 +2278,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
           try {
             const stateData = await sendWS('store-agents')
             agents = Array.isArray(stateData) ? stateData : []
-          } catch {}
+          } catch (e) { process.stderr.write(`[fleet] store-agents fetch failed: ${e.message}\n`); }
           resolved = resolved.replace(match[0], '\n' + formatActivity(activities, agents) + '\n')
         }
       }
@@ -2298,7 +2298,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
             const ev = (data.events || [])[0]
             if (ev) {
               let meta = ev.metadata
-              if (typeof meta === 'string') { try { meta = JSON.parse(meta) } catch {} }
+              if (typeof meta === 'string') { try { meta = JSON.parse(meta) } catch (e) { process.stderr.write(`[fleet] event metadata parse failed: ${e.message}\n`); } }
               meta = meta || {}
               const tool = meta.tool || ev.text || displayLabel
               const arg = meta.arg || ''
@@ -3226,7 +3226,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
           id: agent.id, name: agent.friendly_name, session_id: agent.session_id,
           tmux_session: sessionName, cwd,
         });
-        if (rehydrateRegWS) await rehydrateRegWS.catch(() => {});
+        if (rehydrateRegWS) await rehydrateRegWS.catch(e => process.stderr.write(`[fleet] rehydrate register failed: ${e.message}\n`));
 
         logEvent({ type: 'rehydrate', action: 'tmux_respawn', agent: agent.id, name: label, tmux_session: sessionName, cwd });
         respawned.push(`${label} → tmux:${sessionName} (cwd: ${cwd})`);
@@ -3629,7 +3629,7 @@ function startChannelWS() {
         cwd: process.cwd(),
         machine_id: os.hostname().split('.')[0],
       };
-      sendWS('register', regBody)?.catch(() => {});
+      sendWS('register', regBody)?.catch(e => process.stderr.write(`[fleet-channel] re-register failed: ${e.message}\n`));
       process.stderr.write(`[fleet-channel] re-registered ${AGENT_ID}\n`);
       setTimeout(_flushUnread, 500);
     },

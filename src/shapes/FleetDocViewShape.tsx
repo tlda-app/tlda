@@ -219,7 +219,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
     fetch(`/docs/${doc.docName}/proof-info.json?t=${Date.now()}`)
       .then(r => r.ok ? r.json() : null)
       .then(setProofInfo)
-      .catch(() => {})
+      .catch(e => console.warn('[doc-view] proof-info fetch failed:', e.message))
   }, [doc?.docName])
 
   // Track main editor viewport for proof source — useValue can't track cross-editor
@@ -375,7 +375,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
           setSvgReady(true)
         }
       })
-      .catch(() => {})
+      .catch(e => console.warn('[doc-view] SVG fetch failed:', e.message))
   }, [boundsPageIdx, doc])
 
   const activeSource: Source | null =

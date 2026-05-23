@@ -49,8 +49,9 @@ async function awaitBuild(server, name, authHeaders = {}) {
         console.error(red(`[watch] Build failed`) + dim(` (${elapsed}s). Run \`tlda errors ${name}\` for details.`))
       }
       return
-    } catch {
-      return // server unreachable, don't spam
+    } catch (e) {
+      console.warn(`[watch] build status poll failed: ${e.message}`)
+      return
     }
   }
 }
@@ -237,5 +238,5 @@ function setupSignalStream(server, name, authHeaders, texDir, onViewportUpdate) 
   fetch(`${server}/api/projects/${name}/signal/${encodeURIComponent('signal:viewport')}`, { headers: authHeaders })
     .then(r => r.ok ? r.json() : null)
     .then(sig => { if (sig?.pages) onViewportUpdate(sig.pages) })
-    .catch(() => {})
+    .catch(e => console.warn(`[watch] viewport signal fetch failed: ${e.message}`))
 }

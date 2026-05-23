@@ -59,7 +59,7 @@ export function createSvgDocumentLayout(name: string, pageCount: number, basePat
         setActiveMacros(data.macros)
       }
     })
-    .catch(() => {})
+    .catch(e => console.warn('[svg-loader] macros fetch failed:', e.message))
 
   console.log(`SVG document layout ready: ${pages.length} pages (${effectiveTargets.length} target${effectiveTargets.length > 1 ? 's' : ''})`)
   return { name, pages, basePath, targets: effectiveTargets }

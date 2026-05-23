@@ -221,7 +221,7 @@ export function dropPillOnTarget(
           type: 'math-note' as any,
           props: { text },
         })
-      }).catch(() => {})
+      }).catch(e => console.warn('[fleet-pill] note update failed:', e.message))
     }
   } else if ((editor.getShape(pillId) as any)?.type === 'fleet-pill' &&
              (editor.getShape(pillId) as any)?.props?.pillType === 'doc') {
@@ -262,7 +262,7 @@ export function dropPillOnTarget(
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ filePath, docName }),
-            }).catch(() => {})
+            }).catch(e => console.warn('[fleet-pill] backing file register failed:', e.message))
           }
         } catch (e) {
           console.error('[fleet] Failed to read file for membrane drop:', e)

@@ -317,7 +317,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     fetch('/api/projects').then(r => r.ok ? r.json() : { projects: [] }).then((data: any) => {
       const projects = Array.isArray(data) ? data : (data.projects || [])
       setProjectList(projects.map((p: any) => p.name).sort())
-    }).catch(() => {})
+    }).catch(e => console.warn('[fleet-agents] projects fetch failed:', e.message))
   }, [showSpawnPicker])
 
   // Build task lookup: agent id → active task

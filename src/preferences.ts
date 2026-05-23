@@ -45,7 +45,7 @@ export function setPref<K extends PrefKey>(key: K, value: (typeof DEFAULTS)[K]) 
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ user: _userId, value }),
-    }).catch(() => {})
+    }).catch(e => console.warn('[prefs] save failed:', e.message))
   }
 }
 

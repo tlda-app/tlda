@@ -118,7 +118,7 @@ export function NoteDropHandler() {
               body: JSON.stringify({ path: item.path })
             }).then(r => r.json()).then(data => {
               if (data.openUrl) window.location.href = data.openUrl
-            }).catch(() => {})
+            }).catch(e => console.warn('[note-drop] share failed:', e.message))
             return
           }
 

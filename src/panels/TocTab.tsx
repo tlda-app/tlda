@@ -75,7 +75,7 @@ export function TocTab() {
         .then((entries: Array<{ title?: string }> | null) => {
           if (entries) setSlideTitles(entries.map(e => e.title || ''))
         })
-        .catch(() => {})
+        .catch(e => console.warn('[toc] slide titles fetch failed:', e.message))
       return
     }
     const targets = doc.targets

@@ -121,7 +121,7 @@ async function scanJsonl(filePath, agentFleetId) {
             }
           }
         }
-      } catch {}
+      } catch (e) { process.stderr.write(`[backfill] JSONL line parse error: ${e.message}\n`); }
     })
 
     rl.on('close', () => resolve(events))

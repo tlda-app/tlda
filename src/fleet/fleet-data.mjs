@@ -337,7 +337,7 @@ export function connect() {
           if (_events.length > MAX_EVENTS) _events = _events.slice(-MAX_EVENTS)
           for (const ev of newEvents) notify('messages', ev)
         })
-        .catch(() => {})
+        .catch(e => console.warn('[fleet-data] history backfill failed:', e.message))
     }
   }
 
@@ -486,8 +486,8 @@ export async function init() {
 
   // Fetch initial state + history in parallel
   const [stateRes, historyRes] = await Promise.all([
-    fetch(`${FLEET}/api/state`).then(r => r.json()).catch(() => ({})),
-    fetch(`${FLEET}/api/chat/history?limit=${MAX_EVENTS}`).then(r => r.json()).catch(() => ({ events: [] })),
+    fetch(`${FLEET}/api/state`).then(r => r.json()).catch(e => { console.warn('[fleet-data] state fetch failed:', e.message); return {} }),
+    fetch(`${FLEET}/api/chat/history?limit=${MAX_EVENTS}`).then(r => r.json()).catch(e => { console.warn('[fleet-data] history fetch failed:', e.message); return { events: [] } }),
   ])
 
   // Populate agents + tasks

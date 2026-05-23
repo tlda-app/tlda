@@ -1279,7 +1279,7 @@ function stopDeepgramMic() {
     _deepgramProcessor = null
   }
   if (_deepgramContext) {
-    _deepgramContext.close().catch(() => {})
+    _deepgramContext.close().catch(e => console.warn('[voice] AudioContext close failed:', e.message))
     _deepgramContext = null
   }
   if (_deepgramStream) {
@@ -1727,7 +1727,7 @@ export async function initVoice() {
         // Resume AudioContext if suspended (tab came back from background)
         if (_deepgramContext?.state === 'suspended') {
           vlog('visibilitychange: resuming AudioContext')
-          _deepgramContext.resume().catch(() => {})
+          _deepgramContext.resume().catch(e => console.warn('[voice] AudioContext resume failed:', e.message))
         }
         // Ensure bridge WS is up
         if (!_deepgramConnected) {

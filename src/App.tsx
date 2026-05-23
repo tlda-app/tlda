@@ -483,12 +483,12 @@ function DocumentPicker({ manifest, onSelect }: {
     fetch(`${ASSET_BASE}/api/projects/meta`)
       .then(r => r.ok ? r.json() : {})
       .then(setMeta)
-      .catch(() => {})
+      .catch(e => console.warn('[app] projects/meta fetch failed:', e.message))
     // Fetch sync health for all docs
     fetch(`${ASSET_BASE}/api/projects/health`)
       .then(r => r.ok ? r.json() : {})
       .then(setDocHealth)
-      .catch(() => {})
+      .catch(e => console.warn('[app] projects/health fetch failed:', e.message))
   }, [])
 
   // Fetch archived list when search is non-empty
@@ -497,7 +497,7 @@ function DocumentPicker({ manifest, onSelect }: {
     fetch(`${ASSET_BASE}/api/projects/archived`)
       .then(r => r.ok ? r.json() : { projects: [] })
       .then(data => setArchived(data.projects || []))
-      .catch(() => {})
+      .catch(e => console.warn('[app] archived fetch failed:', e.message))
   }, [search])
 
   const bookMembers = new Set<string>()

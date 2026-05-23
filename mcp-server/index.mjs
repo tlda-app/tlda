@@ -187,7 +187,7 @@ function scheduleBrowserClose() {
   clearTimeout(_browserIdleTimer);
   _browserIdleTimer = setTimeout(async () => {
     if (_browser) {
-      await _browser.close().catch(() => {});
+      await _browser.close().catch(e => process.stderr.write(`[mcp] browser close failed: ${e.message}\n`));
       _browser = null;
     }
   }, BROWSER_IDLE_MS);
@@ -3776,7 +3776,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...TLDA_AUTH_HEADERS },
       body: JSON.stringify({ type: 'preamble', target, macros, source: resolved, timestamp: new Date().toISOString() }),
-    }).catch(() => {});
+    }).catch(e => process.stderr.write(`[mcp] preamble event push failed: ${e.message}\n`));
     const examples = Object.entries(macros).slice(0, 5).map(([k, v]) => `  ${k} → ${v}`).join('\n');
     return { content: [{ type: 'text', text: `Set ${count} macro(s) for "${target}" from ${resolved}.\n\nExamples:\n${examples}${count > 5 ? `\n  ... and ${count - 5} more` : ''}` }] };
   }

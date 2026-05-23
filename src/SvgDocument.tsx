@@ -329,7 +329,7 @@ function VersionStamp({ docName }: { docName: string }) {
       .then(raw => {
         const data: Array<{ hash: string; timestamp: number }> = raw?.versions || raw
         if (data?.length > 0) { setHistory(data.slice(0, MAX_VISIBLE_VERSIONS)); setActiveIdx(0) }
-      }).catch(() => {})
+      }).catch(e => console.warn('[viewer] shadow history fetch failed:', e.message))
 
     // If SVGs were ready but we missed the reload signal, trigger a reload now.
     if (lastReloadAtRef.current > 0 && sentinel.buildReadyAt > lastReloadAtRef.current + 5000) {

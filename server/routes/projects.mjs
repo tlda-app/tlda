@@ -773,7 +773,7 @@ router.get('/:name/shapes/stream', requireRead, (req, res) => {
   const keepalive = setInterval(() => res.write(':\n\n'), 15000)
 
   // Ensure room exists so we get change notifications (fire-and-forget — SSE doesn't wait)
-  getOrCreateRoom(syncRoomName(req.params.name)).catch(() => {})
+  getOrCreateRoom(syncRoomName(req.params.name)).catch(e => console.warn(`[projects] room creation failed for ${req.params.name}: ${e.message}`))
 
   const unsub = onShapeChange(syncRoomName(req.params.name), (event) => {
     // Slim down changes for SSE — send action, id, shapeType, meta but not full state/diff

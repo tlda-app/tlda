@@ -114,7 +114,7 @@ export class VoiceNoteTool extends StateNode {
               })
             }
           })
-          .catch(() => {})
+          .catch(e => console.warn('[voice-note] update shape failed:', e.message))
       }
     }
 

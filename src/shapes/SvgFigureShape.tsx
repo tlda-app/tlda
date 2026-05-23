@@ -112,7 +112,7 @@ function SvgFigureComponent({ shape }: { shape: any }) {
           setSvgContent(text)
         }
       })
-      .catch(() => {})
+      .catch(e => console.warn('[svg-figure] fetch failed:', e.message))
   }, [shape.props.svgUrl, isInline])
 
   // Inject SVG into DOM (only for non-inline figures)

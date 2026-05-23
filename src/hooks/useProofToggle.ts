@@ -129,7 +129,7 @@ export function useProofToggle({
         if (!proofDataRef.current) proofDataRef.current = data
         setProofDataReady(true)
       })
-      .catch(() => {}) // proof-info.json may not exist — that's fine
+      .catch(e => { if (!e.message?.includes('404')) console.warn('[proof] proof data load failed:', e.message) })
   }, [hasProofInfo, document, proofFetchSeq])
 
   // Keyboard shortcut: 'r' for proof reader toggle
