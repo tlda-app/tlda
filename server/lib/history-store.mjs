@@ -111,7 +111,8 @@ function readIndex(name) {
   if (!existsSync(path)) return []
   try {
     return JSON.parse(readFileSync(path, 'utf8'))
-  } catch {
+  } catch (e) {
+    console.error(`[CORRUPTION] history index unreadable for ${name} at ${path}: ${e.message}`)
     return []
   }
 }

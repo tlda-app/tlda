@@ -70,10 +70,7 @@ resetStaleBuildStates()
 // Fleet store (SQLite-backed agent registry + chat).
 // TLDA_FLEET_DB overrides the default path — used by integration tests
 // to isolate from the live /tmp/fleet.db.
-const fleetStore = (() => {
-  try { return new FleetStore(process.env.TLDA_FLEET_DB) }
-  catch (e) { console.error('[fleet-store] init failed (non-fatal):', e.message); return null }
-})()
+const fleetStore = new FleetStore(process.env.TLDA_FLEET_DB)
 
 // Fleet state: in-memory
 const wsFleetClients = new Set()            // active /ws/fleet connections
@@ -955,7 +952,7 @@ const backingFileRegistry = new Map()
 function backingRegistryPath() { return join(getProjectsDir(), '..', 'data', 'backing-registry.json') }
 loadBackingRegistry()
 // Supplement persisted registry with shapes from active rooms (async, non-blocking)
-rebuildBackingFileRegistry().catch(() => {})
+rebuildBackingFileRegistry().catch(e => console.error('[CRITICAL] backing registry rebuild failed:', e.message))
 
 function backingFileRegister(filePath, docName) {
   if (!backingFileRegistry.has(filePath)) backingFileRegistry.set(filePath, new Set())
@@ -987,7 +984,7 @@ function persistBackingRegistry() {
       filePath, docNames: [...docNames],
     }))
     writeFileSync(backingRegistryPath(), JSON.stringify(data, null, 2), 'utf8')
-  } catch (e) { console.warn(`[server] failed to persist backing registry: ${e.message}`) }
+  } catch (e) { console.error(`[CRITICAL] failed to persist backing registry — file watches will be lost on restart: ${e.message}`) }
 }
 
 function loadBackingRegistry() {
@@ -1381,7 +1378,7 @@ app.use('/docs', (req, res, next) => {
                       : entry.title
                 }
               }
-            } catch (e) {}
+            } catch (e) { console.warn(`[server] TOC/chapter title parsing failed for ${name}: ${e.message}`) }
             const injected = injectBridge(html, `/docs/${name}/`, chapterTitle, isFirstPage, { prev: navPrev, next: navNext })
             res.type('html').send(injected)
             return
@@ -1815,7 +1812,7 @@ async function handleFleetWsMessage(ws, msg) {
 
   // ---- jsonl-index: daemon pushes JSONL text entries for unified search ----
   if (type === 'jsonl-index') {
-    try { fleetStore.insertSessionEntries(msg.entries || []) } catch (e) { error(e.message); return }
+    try { fleetStore.insertSessionEntries(msg.entries || []) } catch (e) { console.error(`[jsonl-index] Failed to index ${(msg.entries || []).length} entries — search gaps possible:`, e.message); error(e.message); return }
     reply({ ok: true })
     return
   }
@@ -2576,7 +2573,7 @@ async function handleFleetWsMessage(ws, msg) {
       const agentMap = {}
       for (const a of allAgents) agentMap[a.id] = a.friendly_name || a.name || a.id
       const unreadIds = new Set()
-      try { const rows = fleetStore.db.prepare('SELECT event_id FROM unread WHERE read = 0').all(); for (const r of rows) unreadIds.add(r.event_id) } catch {}
+      try { const rows = fleetStore.db.prepare('SELECT event_id FROM unread WHERE read = 0').all(); for (const r of rows) unreadIds.add(r.event_id) } catch (e) { console.error('[fleet] unread query failed:', e.message) }
       const resolved = events.map(e => ({
         ...e,
         read: !unreadIds.has(e.id),
@@ -2977,7 +2974,7 @@ function handleDaemonWsMessage(ws, msg) {
         if (a.tmux_session && terminalWatchers.has(a.id)) {
           sendRpc(machine_id, 'start-terminal-watch', {
             agent_id: a.id, tmux_session: a.tmux_session, poll_ms: 500,
-          }).catch(() => {})
+          }).catch(e => console.warn(`[server] terminal-watch resume failed for ${a.id}: ${e.message}`))
         }
       }
     }
@@ -3329,7 +3326,7 @@ server.listen(PORT, HOST, () => {
       console.log(`[hibernate] ${agent.friendly_name || agent.id} — no activity since before ${cutoff}`)
       clearEphemeralState(agent.id)
       sendRpc(machineIds[0], 'kill-session', { agent_id: agent.id, tmux_session: agent.tmux_session })
-        .catch(() => {})
+        .catch(e => console.warn(`[hibernate] kill-session RPC failed for ${agent.id}: ${e.message}`))
       // NOTE: do NOT markDead — idling just hibernates, doesn't kill the agent
       // identity. dead=1 is reserved for explicit kills.
     }

@@ -134,7 +134,7 @@ function findSvgFigures(dir) {
         results.push(full)
       }
     }
-  } catch {}
+  } catch (e) { console.warn(`[build] SVG figure discovery I/O error in ${dir}: ${e.message}`) }
   return results
 }
 
@@ -147,7 +147,7 @@ function loadPageHashes(outDir) {
         hashes[f] = hashSvgContent(readFileSync(join(outDir, f), 'utf8'))
       }
     }
-  } catch { /* outDir doesn't exist yet */ }
+  } catch (e) { if (e.code !== 'ENOENT') console.warn(`[build] page hash loading error in ${outDir}: ${e.message}`) }
   return hashes
 }
 
@@ -848,7 +848,7 @@ function summarizeDiff(diffText, projectName) {
   try {
     const pi = JSON.parse(readFileSync(join(outDir, `${primaryTexBase}-proof-info.json`), 'utf8'))
     proofPairs = pi.pairs || pi
-  } catch {}
+  } catch (e) { console.warn(`[build] proof-info.json parse failed for ${name}: ${e.message}`) }
 
   // 4. Load <primary>-source-map.json labels for numbering
   const labelNumbers = new Map()
@@ -857,7 +857,7 @@ function summarizeDiff(diffText, projectName) {
     for (const l of sm.labels || []) {
       labelNumbers.set(l.label, l.number)
     }
-  } catch {}
+  } catch (e) { console.warn(`[build] source-map.json parse failed for ${name}: ${e.message}`) }
 
   // 5. Parse result titles from tex source (the [...] optional argument)
   const resultTitles = new Map()
@@ -1433,7 +1433,7 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
       existing.building = false
       existing.phase = 'cancelled'
     }
-    await _buildLocks.get(name).catch(() => {})
+    await _buildLocks.get(name).catch(e => console.warn(`[build:${name}] previous build lock error:`, e.message))
   }
   let releaseLock
   _buildLocks.set(name, new Promise(r => { releaseLock = r }))

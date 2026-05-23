@@ -612,7 +612,8 @@ export class FleetStore {
     // Store status in metadata JSON blob — no schema migration needed
     const row = this._getAgent.get(id);
     if (!row) return;
-    let metadata = row.metadata ? JSON.parse(row.metadata) : {};
+    let metadata;
+    try { metadata = row.metadata ? JSON.parse(row.metadata) : {}; } catch (e) { console.warn(`[fleet-store] corrupt metadata JSON for agent ${id}, resetting: ${e.message}`); metadata = {}; }
     if (typeof metadata !== 'object' || metadata === null) metadata = {};
     metadata.status = { state, tool: tool || null, ts: ts || new Date().toISOString() };
     this.db.prepare('UPDATE agents SET metadata = ?, last_seen = ? WHERE id = ?')
@@ -623,7 +624,8 @@ export class FleetStore {
     // Merge patch into agent metadata JSON blob — no schema migration needed
     const row = this._getAgent.get(id);
     if (!row) return;
-    let metadata = row.metadata ? JSON.parse(row.metadata) : {};
+    let metadata;
+    try { metadata = row.metadata ? JSON.parse(row.metadata) : {}; } catch (e) { console.warn(`[fleet-store] corrupt metadata JSON for agent ${id}, resetting: ${e.message}`); metadata = {}; }
     if (typeof metadata !== 'object' || metadata === null) metadata = {};
     Object.assign(metadata, patch);
     this.db.prepare('UPDATE agents SET metadata = ? WHERE id = ?')
@@ -1044,7 +1046,7 @@ export class FleetStore {
     const agentMap = {};
     for (const row of this.db.prepare('SELECT id, session_id, session_ids FROM agents').all()) {
       if (row.session_id) agentMap[row.session_id] = row.id;
-      try { for (const sid of JSON.parse(row.session_ids || '[]')) agentMap[sid] = row.id; } catch {}
+      try { for (const sid of JSON.parse(row.session_ids || '[]')) agentMap[sid] = row.id; } catch (e) { console.warn(`[fleet-store] bad session_ids JSON for agent ${row.id}: ${e.message}`) }
     }
 
     const allFiles = [];

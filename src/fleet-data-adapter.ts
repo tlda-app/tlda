@@ -172,7 +172,7 @@ export function useTaskInbox(): { items: any[], refresh: () => void, act: (taskI
     fetch(`${INBOX_API}/api/inbox`)
       .then(r => r.json())
       .then(data => { if (Array.isArray(data)) setItems(data) })
-      .catch(() => {})
+      .catch(e => console.warn('[fleet] inbox fetch failed:', e.message))
   }, [])
 
   useEffect(() => {
@@ -626,7 +626,7 @@ export async function searchFleet(query: string, limit = 50): Promise<any[]> {
   try {
     const data = await _fleetWS('fleet-search', { query, limit })
     return data?.results || []
-  } catch { return [] }
+  } catch (e) { console.warn('[fleet] search failed:', (e as Error).message); return [] }
 }
 
 export async function fetchSharedDocs(): Promise<Array<{ doc: string; title: string; path: string; agent: string; agent_name: string; shared_at: string }>> {
@@ -634,7 +634,8 @@ export async function fetchSharedDocs(): Promise<Array<{ doc: string; title: str
     const res = await fetch(`${DASHBOARD_URL}/api/shared-docs`)
     if (!res.ok) return []
     return await res.json()
-  } catch {
+  } catch (e) {
+    console.warn('[fleet] fetchSharedDocs failed:', (e as Error).message)
     return []
   }
 }

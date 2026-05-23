@@ -74,7 +74,8 @@ export async function fetchHistory(docName: string): Promise<HistoryEntry[]> {
     if (!res.ok) return []
     const data = await res.json()
     return data.entries || []
-  } catch {
+  } catch (e) {
+    console.warn(`[history] fetch history failed for ${docName}:`, (e as Error).message)
     return []
   }
 }
@@ -88,7 +89,8 @@ export async function fetchDiff(docName: string, snapshotId: string): Promise<Pa
     if (!res.ok) return []
     const data = await res.json()
     return data.pages || []
-  } catch {
+  } catch (e) {
+    console.warn(`[history] fetch diff failed for ${docName}/${snapshotId}:`, (e as Error).message)
     return []
   }
 }

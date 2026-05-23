@@ -84,7 +84,7 @@ export function readChangelog(name, limit = 50) {
   if (!existsSync(file)) return []
   const lines = readFileSync(file, 'utf8').trim().split('\n').filter(Boolean)
   return lines
-    .map(line => { try { return JSON.parse(line) } catch { return null } })
+    .map((line, idx) => { try { return JSON.parse(line) } catch (e) { console.warn(`[changelog] corrupt line ${idx + 1} in ${name}: ${e.message}`); return null } })
     .filter(Boolean)
     .reverse()
     .slice(0, limit)
