@@ -825,6 +825,9 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Esc interrupt: track last Esc timestamp for soft/hard distinction
   const lastEscRef = useRef<number>(0)
   const escCountRef = useRef<number>(0)
+  // Track whether the user last clicked inside this fleet chat shape.
+  // Voice/touch users don't focus the textarea, so activeElement-based checks fail.
+  const chatActiveRef = useRef(false)
   // Keep sendTargets accessible from native event listener without re-registering
   const sendTargetsRef = useRef<string[]>([])
 
@@ -2342,19 +2345,27 @@ function FleetChatInner({ shape }: { shape: any }) {
     return () => logEl.removeEventListener('click', onClick)
   }, [])
 
-  // Esc interrupt — document-level listener, but scoped to fire only when the
-  // fleet chat shape owns focus (textarea focused or active element is inside the shape).
+  // Track clicks to determine which fleet chat shape the user is interacting with.
+  // Escape interrupt scopes to the shape the user last clicked on.
+  useEffect(() => {
+    function onPointerDownForEsc(e: PointerEvent) {
+      const container = shapeContainerRef.current
+      if (!container) return
+      chatActiveRef.current = container.contains(e.target as Node)
+    }
+    document.addEventListener('pointerdown', onPointerDownForEsc, true)
+    return () => document.removeEventListener('pointerdown', onPointerDownForEsc, true)
+  }, [])
+
+  // Esc interrupt — document-level listener, scoped to fire only when the user
+  // last clicked inside this fleet chat shape (chatActiveRef).
   // Three tiers: 1×Esc = soft (single Escape to tmux), 2×Esc = hard (Escape+poll loop),
   // 3×Esc = kill session (tmux kill-session, agent dies immediately).
   useEffect(() => {
     let escTempCounter = 0
     function onEscKey(e: KeyboardEvent) {
       if (e.key !== 'Escape') return
-      const container = shapeContainerRef.current
-      if (!container) return
-      const active = document.activeElement
-      const inChat = active && container.contains(active)
-      if (!inChat) return
+      if (!chatActiveRef.current) return
       const ta = inputRef.current as HTMLTextAreaElement | null
       if (ta && ta.value !== '') return
       const targets = sendTargetsRef.current
