@@ -914,6 +914,21 @@ app.delete('/api/education/pending/:agentId', (req, res) => {
   res.json({ ok: true })
 })
 
+// ---------- Eliza gated nudge status ----------
+let _elizaPending = []
+
+app.post('/api/eliza/pending', (req, res) => {
+  const { pending } = req.body
+  if (!Array.isArray(pending)) return res.status(400).json({ error: 'Missing pending array' })
+  _elizaPending = pending
+  broadcastEvent('eliza-pending', { pending })
+  res.json({ ok: true })
+})
+
+app.get('/api/eliza/pending', (_req, res) => {
+  res.json({ pending: _elizaPending })
+})
+
 // ---------- Local image serving ----------
 // Serves local filesystem images for math notes (paths starting with / or ~)
 app.get('/api/local-image', requireRead, (req, res) => {
@@ -2778,24 +2793,8 @@ function checkQualifications(agentId, tool, arg, input) {
       if (warned.has(warnKey)) continue
       warned.add(warnKey)
 
-      const nudge = `⚠️ Read the **${skillName}** skill before this. \`/skill ${skillName}\``
       pendingEducation.set(agentId, { skill: skillName, ts: Date.now() })
-      try {
-        const event = fleetStore.share({
-          type: 'chat',
-          from: 'fleet:eliza',
-          to: agentId,
-          text: nudge,
-          metadata: { type: 'skill_nudge', skill: skillName, trigger: triggerShort },
-        })
-        if (event) {
-          fleetStore.addUnread?.(event.id, agentId)
-          broadcastEvent('fleet-event', { ...event, type: 'chat' })
-        }
-        console.log(`[qualification] nudged ${agentId}: read ${skillName} (triggered by ${triggerShort})`)
-      } catch (e) {
-        console.error(`[qualification] nudge failed: ${e.message}`)
-      }
+      console.log(`[qualification] ${agentId} owes ${skillName} (triggered by ${triggerShort})`)
     }
   }
 }

@@ -459,6 +459,8 @@ export function connect() {
       } else if (eventType === 'reaper-status') {
         _reaperStatus = data
         notify('reaper', data)
+      } else if (eventType === 'eliza-pending') {
+        notify('eliza-pending', data)
       } else if (eventType === 'agent-thinking') {
         if (data.agent) notify('thinking', data)
       } else if (eventType === 'agent-compacting') {

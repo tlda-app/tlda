@@ -127,6 +127,103 @@ setInterval(() => {
   }
 }, 60_000)
 
+// ---- Gated nudge queue ----
+// All autonomous nudges go here instead of sendChat(). Skip says "Eliza [label]"
+// to release a specific nudge. Nudges expire after N messages in the conversation.
+const pendingNudgeQueue = []  // [{ id, label, targetId, text, ts, msgCount: 0 }]
+let nudgeIdCounter = 0
+const NUDGE_EXPIRY_MESSAGES = 10
+
+function queueNudge(targetId, label, text) {
+  const nudge = {
+    id: ++nudgeIdCounter,
+    label,
+    targetId,
+    text,
+    ts: Date.now(),
+    msgCount: 0,
+  }
+  pendingNudgeQueue.push(nudge)
+  console.log(`[eliza] queued nudge #${nudge.id} "${label}" for ${targetId}`)
+  broadcastPendingStatus()
+}
+
+function releaseNudge(nudge) {
+  const idx = pendingNudgeQueue.indexOf(nudge)
+  if (idx !== -1) pendingNudgeQueue.splice(idx, 1)
+  console.log(`[eliza] releasing nudge #${nudge.id} "${nudge.label}" → ${nudge.targetId}`)
+  sendChat(nudge.targetId, nudge.text)
+  logDecision(nudge.targetId, `released:${nudge.label}`, 'skip-requested', {}, null)
+  startRewardWindow(nudge.targetId, nudge.label)
+  broadcastPendingStatus()
+}
+
+function expireNudge(nudge) {
+  const idx = pendingNudgeQueue.indexOf(nudge)
+  if (idx !== -1) pendingNudgeQueue.splice(idx, 1)
+  console.log(`[eliza] expired nudge #${nudge.id} "${nudge.label}" for ${nudge.targetId} (${nudge.msgCount} msgs)`)
+  logDecision(nudge.targetId, `expired:${nudge.label}`, `message-count:${nudge.msgCount}`, {}, null)
+  broadcastPendingStatus()
+}
+
+function tickNudgeMessages(agentId) {
+  const toExpire = []
+  for (const nudge of pendingNudgeQueue) {
+    if (nudge.targetId === agentId) {
+      nudge.msgCount++
+      if (nudge.msgCount >= NUDGE_EXPIRY_MESSAGES) toExpire.push(nudge)
+    }
+  }
+  for (const nudge of toExpire) expireNudge(nudge)
+}
+
+function findNudgeByLabel(label) {
+  const lower = label.toLowerCase()
+  const byIndex = parseInt(lower, 10)
+  if (!isNaN(byIndex) && byIndex >= 1 && byIndex <= pendingNudgeQueue.length) {
+    return pendingNudgeQueue[byIndex - 1]
+  }
+  return pendingNudgeQueue.find(n => n.label.toLowerCase() === lower) ||
+         pendingNudgeQueue.find(n => n.label.toLowerCase().includes(lower))
+}
+
+const ELIZA_RELEASE_PATTERN = /^eliza\s+(.+)/i
+const ELIZA_SAY_IT_PATTERN = /^(?:eliza\s+)?say\s+it$/i
+
+function tryReleaseFromSkip(text) {
+  if (ELIZA_SAY_IT_PATTERN.test(text)) {
+    if (pendingNudgeQueue.length > 0) {
+      releaseNudge(pendingNudgeQueue[0])
+      return true
+    }
+    return false
+  }
+  const match = text.match(ELIZA_RELEASE_PATTERN)
+  if (match) {
+    const label = match[1].trim()
+    if (/^say\s+it$/i.test(label)) return false // already handled above
+    const nudge = findNudgeByLabel(label)
+    if (nudge) {
+      releaseNudge(nudge)
+      return true
+    }
+  }
+  return false
+}
+
+function broadcastPendingStatus() {
+  const pending = pendingNudgeQueue.map(n => ({
+    id: n.id,
+    label: n.label,
+    targetId: n.targetId,
+    ts: n.ts,
+    msgCount: n.msgCount,
+  }))
+  postJson('/api/eliza/pending', { pending }).catch(e =>
+    console.error(`[eliza] status broadcast failed: ${e.message}`)
+  )
+}
+
 // ---- Trigger table ----
 // Each entry: { pattern: RegExp, message: string, cooldown?: number }
 // `cooldown` is per-target in ms (default 60s) — won't re-fire for the
@@ -608,9 +705,8 @@ function handleSequence(fromId, toId, text) {
 
       if (isFuckYou && (state.phase === 'corrected' || state.phase === 'acked')) {
         console.log(`[eliza] fuck-you-in-context → ${toId} (phase=${state.phase})`)
-        sendChat(toId, FUCK_YOU_IN_CONTEXT_MSG)
+        queueNudge(toId, 'escalation', FUCK_YOU_IN_CONTEXT_MSG)
         logDecision(toId, 'fuck-you-in-context', 'fuck-you-while-corrected', { phase: state.phase }, text)
-        startRewardWindow(toId, 'fuck-you-in-context')
         state.phase = 'idle'
         state.windowStart = 0
         pendingSkipMessages.delete(toId)
@@ -619,9 +715,8 @@ function handleSequence(fromId, toId, text) {
 
       if (state.phase === 'acked') {
         console.log(`[eliza] performing-understanding → ${toId}`)
-        sendChat(toId, PERFORMING_UNDERSTANDING_MSG)
+        queueNudge(toId, 'performing', PERFORMING_UNDERSTANDING_MSG)
         logDecision(toId, 'performing-understanding', 'correction-after-ack', { phase: state.phase }, text)
-        startRewardWindow(toId, 'performing-understanding')
         state.phase = 'corrected'
         return 'handled'
       }
@@ -639,9 +734,8 @@ function handleSequence(fromId, toId, text) {
       const lastNarrow = narrowingCooldowns.get(toId) || 0
       if (now - lastNarrow > NARROWING_COOLDOWN_MS) {
         console.log(`[eliza] narrowing detected → ${toId}`)
-        sendChat(toId, NARROWING_MSG)
+        queueNudge(toId, 'narrowing', NARROWING_MSG)
         logDecision(toId, 'narrowing', 'skip-narrowed-task', {}, text)
-        startRewardWindow(toId, 'narrowing')
         narrowingCooldowns.set(toId, now)
       }
     }
@@ -665,9 +759,8 @@ function handleSequence(fromId, toId, text) {
         const lastThirsty = thirstyAckCooldowns.get(fromId) || 0
         if (now - lastThirsty > THIRSTY_ACK_COOLDOWN_MS) {
           console.log(`[eliza] thirsty-ack → ${fromId} (${wordCount} words, in correction sequence)`)
-          sendChat(fromId, THIRSTY_ACK_MSG)
+          queueNudge(fromId, 'thirsty-ack', THIRSTY_ACK_MSG)
           logDecision(fromId, 'thirsty-ack', `ack-opener+${wordCount}-words+corrected`, { wordCount, phase: state.phase }, text)
-          startRewardWindow(fromId, 'thirsty-ack')
           thirstyAckCooldowns.set(fromId, now)
         }
       }
@@ -682,9 +775,8 @@ function handleSequence(fromId, toId, text) {
       const lastPunt = puntCooldowns.get(fromId) || 0
       if (now - lastPunt > PUNT_COOLDOWN_MS) {
         console.log(`[eliza] punt detected from ${fromId}`)
-        sendChat(fromId, PUNT_MSG)
+        queueNudge(fromId, 'punt', PUNT_MSG)
         logDecision(fromId, 'punt', 'punt-phrase-detected', {}, text)
-        startRewardWindow(fromId, 'punt')
         puntCooldowns.set(fromId, now)
         return 'handled'
       }
@@ -695,9 +787,8 @@ function handleSequence(fromId, toId, text) {
       const lastContradiction = contradictionCooldowns.get(fromId) || 0
       if (now - lastContradiction > CONTRADICTION_COOLDOWN_MS) {
         console.log(`[eliza] contradiction detected from ${fromId}`)
-        sendChat(fromId, CONTRADICTION_MSG)
+        queueNudge(fromId, 'contradiction', CONTRADICTION_MSG)
         logDecision(fromId, 'contradiction', 'contradiction-phrase-detected', {}, text)
-        startRewardWindow(fromId, 'contradiction')
         contradictionCooldowns.set(fromId, now)
       }
     }
@@ -707,9 +798,8 @@ function handleSequence(fromId, toId, text) {
       const lastRemark = remarkCooldowns.get(fromId) || 0
       if (now - lastRemark > REMARK_COOLDOWN_MS) {
         console.log(`[eliza] remark mention detected from ${fromId}`)
-        sendChat(fromId, REMARK_MSG)
+        queueNudge(fromId, 'remark', REMARK_MSG)
         logDecision(fromId, 'remark', 'remark-mention-detected', {}, text)
-        startRewardWindow(fromId, 'remark')
         remarkCooldowns.set(fromId, now)
       }
     }
@@ -719,9 +809,8 @@ function handleSequence(fromId, toId, text) {
       const lastAsymp = asymptoticsCooldowns.get(fromId) || 0
       if (now - lastAsymp > ASYMPTOTICS_COOLDOWN_MS) {
         console.log(`[eliza] asymptotic notation detected from ${fromId}`)
-        sendChat(fromId, ASYMPTOTICS_MSG)
+        queueNudge(fromId, 'asymptotics', ASYMPTOTICS_MSG)
         logDecision(fromId, 'asymptotics', 'asymptotic-notation-without-regime', {}, text)
-        startRewardWindow(fromId, 'asymptotics')
         asymptoticsCooldowns.set(fromId, now)
       }
     }
@@ -731,9 +820,8 @@ function handleSequence(fromId, toId, text) {
       const lastWrapup = wrapupCooldowns.get(fromId) || 0
       if (now - lastWrapup > WRAPUP_COOLDOWN_MS) {
         console.log(`[eliza] wrap-up detected from ${fromId}`)
-        sendChat(fromId, WRAPUP_MSG)
+        queueNudge(fromId, 'wrapup', WRAPUP_MSG)
         logDecision(fromId, 'wrapup', 'agent-tried-to-end-conversation', {}, text)
-        startRewardWindow(fromId, 'wrapup')
         wrapupCooldowns.set(fromId, now)
       }
     }
@@ -763,9 +851,8 @@ function handleActivity(agentId, tool) {
   if (elapsed < RUNNING_AWAY_GRACE_MS) return
 
   console.log(`[eliza] running-away → ${agentId} (${tool} after ${Math.round(elapsed/1000)}s, no reply to Skip)`)
-  sendChat(agentId, RUNNING_AWAY_MSG)
+  queueNudge(agentId, 'running-away', RUNNING_AWAY_MSG)
   logDecision(agentId, 'running-away', `write-tool-while-unacknowledged:${tool}`, { elapsedSec: Math.round(elapsed/1000) }, null)
-  startRewardWindow(agentId, 'running-away')
   pending.nudgeSent = true
 }
 
@@ -1379,6 +1466,19 @@ function handleMessage(msg) {
       return
     }
 
+    // Gated nudge release: Skip says "Eliza [label]" or "say it"
+    if (from_id === OWNER_ID && tryReleaseFromSkip(text)) {
+      return
+    }
+
+    // Tick message counts for pending nudges (any Skip↔Agent message advances expiry)
+    if (from_id === OWNER_ID && to_id && to_id !== AGENT_ID) {
+      tickNudgeMessages(to_id)
+    }
+    if (from_id && from_id !== OWNER_ID && from_id !== AGENT_ID && to_id === OWNER_ID) {
+      tickNudgeMessages(from_id)
+    }
+
     // Sequence detection watches both directions
     const seqHandled = handleSequence(from_id, to_id, text)
 
@@ -1436,15 +1536,15 @@ async function checkTriggers(targetId, text) {
           message = `🔁 ${message}\n\n*(You were nudged about \`${trigger.skill}\` ~${minAgo}min ago and still haven't invoked it. Skip is still noticing the same pattern.)*`
         }
       }
+      const label = trigger.skill || `trigger-${i}`
       console.log(`[eliza] trigger ${i} fired → ${targetId}: ${trigger.pattern}`)
-      sendChat(targetId, message)
+      queueNudge(targetId, label, message)
       if (trigger.skill) {
         postJson('/api/education/pending', { agent: targetId, skill: trigger.skill })
           .then(() => console.log(`[eliza] education pending: ${targetId} owes ${trigger.skill}`))
           .catch(e => console.error(`[eliza] education POST failed: ${e.message}`))
       }
       logDecision(targetId, `single-trigger:${i}`, String(trigger.pattern), {}, text)
-      startRewardWindow(targetId, `single-trigger:${i}`)
       setCooldown(targetId, i)
       return // only fire one trigger per message
     }

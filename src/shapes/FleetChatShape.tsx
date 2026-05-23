@@ -26,7 +26,8 @@ import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil
 import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText, isRecording } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getHumanName, updateEventById } from '../fleet/fleet-data.mjs'
-import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, sendMessage, loadBefore, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useElizaPending, sendMessage, loadBefore, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
+import type { ElizaNudge } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
 import { dragCoordinator } from './dragCoordinator'
 import { DocContext, PanelContext } from '../PanelContext'
@@ -611,6 +612,37 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, ctx,
   )
 }
 
+function ElizaStatus({ pending, ctx }: { pending: ElizaNudge[], ctx: any }) {
+  if (pending.length === 0) return null
+  return (
+    <div style={{
+      padding: '2px 8px',
+      fontSize: 11,
+      flexShrink: 0,
+      opacity: 0.5,
+      transition: 'opacity 0.2s',
+    }}
+    className="eliza-status"
+    >
+      <div className="chat-line" style={{ padding: '2px 0', display: 'flex', alignItems: 'baseline', gap: 4 }}>
+        <span style={{ opacity: 0.7 }}>eliza:</span>
+        {pending.map((n, i) => (
+          <span key={n.id} style={{
+            padding: '1px 5px',
+            borderRadius: 3,
+            fontSize: 10,
+            opacity: 0.6,
+            background: 'var(--color-text, #ccc)',
+            color: 'var(--color-background, #222)',
+          }}>
+            {i + 1}. {n.label}
+          </span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // --- Nick color system (matches dashboard) ---
 
 const nickColors = ['nick-agent-0','nick-agent-1','nick-agent-2','nick-agent-3','nick-agent-4','nick-agent-5']
@@ -766,6 +798,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const thinkingAgents = useFleetThinking(dnfFilter, frameId)
   const compactingAgents = useFleetCompacting(dnfFilter, frameId)
   const contextPercent = useFleetContext(dnfFilter, frameId)
+  const elizaPending = useElizaPending()
   const [olderEvents, setOlderEvents] = useState<any[]>([])
 
   // When an agent renames itself, auto-update any filter terms that used the old name.
@@ -3192,6 +3225,7 @@ function FleetChatInner({ shape }: { shape: any }) {
               ))}
             </div>
           )}
+          <ElizaStatus pending={elizaPending} ctx={ctx} />
           <ThinkingStatus
             thinkingAgents={thinkingAgents}
             compactingAgents={compactingAgents}

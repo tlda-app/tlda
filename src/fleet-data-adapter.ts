@@ -552,6 +552,28 @@ export function useFleetCompacting(dnfFilter?: string[][] | [string,string][][] 
   return compacting
 }
 
+export type ElizaNudge = { id: number, label: string, targetId: string, ts: number, msgCount: number }
+
+export function useElizaPending(): ElizaNudge[] {
+  const [pending, setPending] = useState<ElizaNudge[]>([])
+
+  useEffect(() => {
+    let unsub: (() => void) | null = null
+    let cancelled = false
+
+    ensureInit().then(() => {
+      if (cancelled) return
+      unsub = subscribe('eliza-pending', null, (data: any) => {
+        setPending(data.pending || [])
+      })
+    })
+
+    return () => { cancelled = true; unsub?.() }
+  }, [])
+
+  return pending
+}
+
 /**
  * Subscribe to context-percent events for agents matching the filter.
  * Returns a Map of agentId → percent remaining (0–100).
