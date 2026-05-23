@@ -1423,6 +1423,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
               } else if (session?.camera) {
                 editor.setCamera(session.camera)
               }
+              window.dispatchEvent(new Event('camera-restored'))
               // Recompute HUD panOffset ONLY if no saved position exists.
               // With a saved panOffset (anchor shape from a previous session),
               // don't nuke it. Without one (first visit), recompute after camera
