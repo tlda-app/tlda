@@ -2075,20 +2075,33 @@ async function reapPlaywright() {
   return { browsers: enriched, killed }
 }
 
-async function getTopProcesses(limit = 8) {
+async function getMemoryByAgent() {
   try {
-    const { stdout } = await execFileP('ps', ['-axo', 'pid=,rss=,comm='], { timeout: 5000, encoding: 'utf8' })
+    const { stdout } = await execFileP('ps', ['-axo', 'pid=,ppid=,rss=,comm='], { timeout: 5000, encoding: 'utf8' })
     const procs = []
     for (const line of stdout.split('\n')) {
-      const m = line.match(/^\s*(\d+)\s+(\d+)\s+(.+)$/)
+      const m = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/)
       if (!m) continue
-      const rss = parseInt(m[2], 10) * 1024
-      if (rss < 50 * 1024 * 1024) continue
-      const comm = m[3].trim().split('/').pop()
-      procs.push({ pid: parseInt(m[1], 10), rss, name: comm })
+      const rss = parseInt(m[3], 10) * 1024
+      if (rss < 10 * 1024 * 1024) continue
+      const comm = m[4].trim().split('/').pop()
+      procs.push({ pid: parseInt(m[1], 10), ppid: parseInt(m[2], 10), rss, name: comm })
     }
-    procs.sort((a, b) => b.rss - a.rss)
-    return procs.slice(0, limit)
+    const attrs = await Promise.all(procs.map(async p => {
+      const match = await attributeToAgent(p.pid).catch(() => null)
+      return { ...p, agent: match?.name || null }
+    }))
+    const groups = new Map()
+    for (const p of attrs) {
+      const key = p.agent || 'system'
+      if (!groups.has(key)) groups.set(key, { agent: key, totalRss: 0, processes: [] })
+      const g = groups.get(key)
+      g.totalRss += p.rss
+      g.processes.push({ name: p.name, rss: p.rss })
+    }
+    const result = [...groups.values()]
+    result.sort((a, b) => b.totalRss - a.totalRss)
+    return result
   } catch { return [] }
 }
 
@@ -2132,7 +2145,7 @@ async function reaperSweep() {
     agentId: viteAgentMap[v.pid]?.agentId || null,
   }))
 
-  const topProcesses = await getTopProcesses().catch(() => [])
+  const memoryByAgent = await getMemoryByAgent().catch(() => [])
 
   sendMsg({
     type: 'reaper-status',
@@ -2140,7 +2153,7 @@ async function reaperSweep() {
       pressure,
       totalMem: os.totalmem(),
       freeMem: os.freemem(),
-      topProcesses,
+      memoryByAgent,
       vites: viteSnap,
       browsers: (pwResult.browsers || []).map(b => ({
         ...b,
