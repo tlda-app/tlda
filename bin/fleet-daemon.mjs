@@ -445,6 +445,19 @@ const RADIO_PROMPT_RE = /[❯>]\s*1\.\s*Yes/
 // Detect y/n permission prompts (Allow this command? (y/n))
 const YN_PROMPT_RE = /Allow this (?:command|action)\?\s*\(y\/n\)/i
 
+function extractPromptContext(stripped) {
+  // Extract the tool call line above the prompt (e.g. "⏺ Write(path/to/file)" or "⏺ Bash(command)")
+  const toolMatch = stripped.match(/[⏺●]\s*(Write|Edit|Bash|Read|NotebookEdit)\(([^)]*)\)/s)
+  if (toolMatch) return `${toolMatch[1]}(${toolMatch[2].trim().slice(0, 120)})`
+  // Try "Do you want to [verb] [thing]?" directly
+  const doMatch = stripped.match(/Do you want to (\w+) (.+?)\?/)
+  if (doMatch) return `${doMatch[1]} ${doMatch[2]}`
+  // Try "Allow this command/action" with surrounding context
+  const allowMatch = stripped.match(/Allow (.+?)\?/i)
+  if (allowMatch) return allowMatch[1].trim().slice(0, 120)
+  return null
+}
+
 function detectPrompt(paneText) {
   const stripped = typeof paneText === 'string' ? stripAnsi(paneText) : ''
 
@@ -453,15 +466,15 @@ function detectPrompt(paneText) {
     if (MEMORY_PATH_RE.test(stripped)) {
       return { type: 'auto-accept', reason: 'memory file write' }
     }
-    const doMatch = stripped.match(/Do you want to (\w+) (.+?)\?/)
-    const reason = doMatch ? `permission prompt: ${doMatch[1]} ${doMatch[2]}` : 'permission prompt'
+    const context = extractPromptContext(stripped)
+    const reason = context ? `permission prompt: ${context}` : 'permission prompt'
     return { type: 'surface', reason }
   }
 
   // y/n permission prompt
   if (YN_PROMPT_RE.test(stripped)) {
-    const cmdMatch = stripped.match(/(?:Run|Execute|Allow)[^?]*?\?/i)
-    const reason = cmdMatch ? `permission prompt: ${cmdMatch[0]}` : 'permission prompt (y/n)'
+    const context = extractPromptContext(stripped)
+    const reason = context ? `permission prompt: ${context}` : 'permission prompt (y/n)'
     return { type: 'surface', reason }
   }
 
@@ -2083,20 +2096,33 @@ async function reapPlaywright() {
   return { browsers: enriched, killed }
 }
 
-async function getTopProcesses(limit = 8) {
+async function getMemoryByAgent() {
   try {
-    const { stdout } = await execFileP('ps', ['-axo', 'pid=,rss=,comm='], { timeout: 5000, encoding: 'utf8' })
+    const { stdout } = await execFileP('ps', ['-axo', 'pid=,ppid=,rss=,comm='], { timeout: 5000, encoding: 'utf8' })
     const procs = []
     for (const line of stdout.split('\n')) {
-      const m = line.match(/^\s*(\d+)\s+(\d+)\s+(.+)$/)
+      const m = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/)
       if (!m) continue
-      const rss = parseInt(m[2], 10) * 1024
-      if (rss < 50 * 1024 * 1024) continue
-      const comm = m[3].trim().split('/').pop()
-      procs.push({ pid: parseInt(m[1], 10), rss, name: comm })
+      const rss = parseInt(m[3], 10) * 1024
+      if (rss < 10 * 1024 * 1024) continue
+      const comm = m[4].trim().split('/').pop()
+      procs.push({ pid: parseInt(m[1], 10), ppid: parseInt(m[2], 10), rss, name: comm })
     }
-    procs.sort((a, b) => b.rss - a.rss)
-    return procs.slice(0, limit)
+    const attrs = await Promise.all(procs.map(async p => {
+      const match = await attributeToAgent(p.pid).catch(() => null)
+      return { ...p, agent: match?.name || null }
+    }))
+    const groups = new Map()
+    for (const p of attrs) {
+      const key = p.agent || 'system'
+      if (!groups.has(key)) groups.set(key, { agent: key, totalRss: 0, processes: [] })
+      const g = groups.get(key)
+      g.totalRss += p.rss
+      g.processes.push({ name: p.name, rss: p.rss })
+    }
+    const result = [...groups.values()]
+    result.sort((a, b) => b.totalRss - a.totalRss)
+    return result
   } catch { return [] }
 }
 
@@ -2140,7 +2166,7 @@ async function reaperSweep() {
     agentId: viteAgentMap[v.pid]?.agentId || null,
   }))
 
-  const topProcesses = await getTopProcesses().catch(() => [])
+  const memoryByAgent = await getMemoryByAgent().catch(() => [])
 
   sendMsg({
     type: 'reaper-status',
@@ -2148,7 +2174,7 @@ async function reaperSweep() {
       pressure,
       totalMem: os.totalmem(),
       freeMem: os.freemem(),
-      topProcesses,
+      memoryByAgent,
       vites: viteSnap,
       browsers: (pwResult.browsers || []).map(b => ({
         ...b,

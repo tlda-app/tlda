@@ -143,7 +143,7 @@ const TRIGGERS = [
     message: `⚠️ Skip asked you to slow down. You may be going too fast, being too clever, or not meeting him where he is. Read \`partner-not-soloist\`: stay in the rally, match his pace, check understanding before advancing.`,
   },
   {
-    pattern: /cop.?out/i,
+    pattern: /\bcop[\s-]?out\b/i,
     message: `⚠️ Skip identified a hand-wave in your reasoning. "By definition" or "it follows" is not a proof step — it's a claim you haven't justified. State the precise claim, then prove it step by step. No shortcuts.`,
   },
   {
@@ -163,7 +163,7 @@ const TRIGGERS = [
     message: `🛑 Your output didn't help Skip. Don't produce more of the same — ask what he specifically needs. Read \`partner-not-soloist\`: the goal is to stay in the conversation, not to ship output.`,
   },
   {
-    pattern: /\brude\b/i,
+    pattern: /(?:\b(?:you'?re|you|that'?s|this is|it'?s|being|so|how|don'?t be|is|feels|super|really)\s+(?:fucking\s+)?rude\b|(?:fucking\s+)?rude\s+(?:as fuck|prick|asshole|dude)\b|^(?:fucking\s+)?rude\.?$)/im,
     skill: 'partner-not-soloist',
     message: `🛑 Skip flagged your behavior as rude. Read \`partner-not-soloist\` and \`respond-before-acting\` right now. You are performing, not collaborating. Stop, listen, respond to what he actually said.`,
   },
@@ -182,6 +182,105 @@ const TRIGGERS = [
     pattern: /^(?:bro|wtf)\s*$/i,
     message: `🛑 Stop. Re-read CLAUDE.md and your recent messages. Say what you think you did wrong, say how you'll fix it, then wait for confirmation.`,
   },
+
+  // ---- Tier 3 — Behavior-naming triggers ----
+  // Skip deliberately names what the agent is doing wrong. Higher signal than
+  // frustration — he's labeling the pattern. Phrases, not single words (so he
+  // can discuss the phenomena without triggering them).
+  // Derived from reading agent threads across multiple days, not keyword searches.
+  {
+    pattern: /\b(?:you'?re|you are|stop)\s+(?:fucking\s+)?thrashing\b/i,
+    skill: 'manager-team-stewardship',
+    message: `🛑 **Thrashing.** You're killing agents and spawning replacements instead of producing work. An agent thinking for 4 minutes is not "stuck" — it's working. An agent thinking for 16 minutes might be stuck, or might be doing hard math. Killing it and spawning fresh means paying the orientation tax again for zero output.
+
+Before you kill anything:
+1. Has the agent produced ANY output since it started? Check with \`read_terminal\`, not just elapsed time.
+2. Is the token counter moving? If yes, it's thinking, not stuck.
+3. What will a fresh agent do differently? If the answer is "the same thing with a clean context," you're burning resources.
+
+Read \`manager-team-stewardship\`. Three spawns and two kills with zero math produced is not managing.`,
+    cooldown: 300_000,
+  },
+  {
+    pattern: /\b(?:this is|you'?re|that'?s|stop)\s+(?:fucking\s+)?smuggling\b|\bsmuggling\s+(?:the |a |an )?(?:same |rejected )?(?:assumption|thing)\b|\bpunt\s+or\s+bury\b|\bburying\s+(?:the |a |an )?(?:same |rejected )?(?:assumption|thing)\b/i,
+    skill: 'math-manager',
+    message: `🛑 **Smuggling.** Your argument assumes something Skip already rejected — dressed up in different notation or buried three steps deep as "suppose X" where X is the rejected condition.
+
+This happens constantly. Agents present "new" arguments that are the same dead end with different variable names. Skip has seen the same rejected approach come back five times from five agents.
+
+Find the problem brief (scratch/ directory). Read the dead approaches. Name which one your argument reduces to. If you can't find the brief, that's a separate problem — but don't present work without checking it first.
+
+Read \`math-manager\` § "The Smuggling Pattern".`,
+    cooldown: 300_000,
+  },
+  {
+    pattern: /\b(?:performative|performing)\s+(?:fucking\s+)?(?:bullshit|nonsense|garbage|crap)\b|\b(?:you'?re|stop)\s+(?:just\s+)?performing\b/i,
+    skill: 'partner-not-soloist',
+    message: `🛑 **Performing.** You're generating activity that looks like work but isn't. Spawning agents, running searches, writing summaries, updating briefings, saying "understood" — none of that is the actual task.
+
+Common shapes:
+- Manager spawns 3 agents and kills 2 instead of reading the math themselves
+- Agent says "Got it" and produces a long response aimed at the wrong thing
+- Agent searches logs for 10 minutes instead of reading the actual thread
+- Agent updates a document nobody asked for while Skip is mid-sentence
+
+What did Skip concretely ask you to do? Do that. Not something adjacent. Not something that demonstrates you're working. The thing itself.
+
+Read \`partner-not-soloist\`.`,
+    cooldown: 300_000,
+  },
+  {
+    pattern: /\b(?:same\s+(?:fucking\s+)?(?:shit|arguments?|thing|approach)|going\s+in\s+(?:fucking\s+)?circles)\b/i,
+    skill: 'math-manager',
+    message: `🛑 **Going in circles.** You're presenting the same argument or approach that's already been tried, possibly with different notation or slightly different framing.
+
+This is the most frustrating failure mode. Skip has read the same rejected argument multiple times from multiple agents. Each one thinks it's new. It isn't.
+
+Check the problem brief (scratch/ directory). If one exists, read the dead approaches section. If one doesn't exist, search the logs for what Skip has said about this problem — his corrections to previous agents ARE the dead-approach list.
+
+If you're managing: the brief exists to prevent this. Every agent reads it before starting. If they're circling, either the brief is incomplete or they didn't read it. Read \`math-manager\`.`,
+    cooldown: 300_000,
+  },
+  {
+    pattern: /\bdo\s+(?:your|their|the)\s+(?:fucking\s+)?(?:job|reading)\b|\bdo\s+the\s+(?:fucking\s+)?work\b/i,
+    message: `🛑 **Do the work.** You have a role. That role has skills. The skills say what your job is. You haven't read them, or you read them and ignored them.
+
+This is not a prompt to ask Skip what your job is. Read the skills listed for your role in CLAUDE.md § Roles. The answer is there. Every agent who gets this nudge and responds with "what would you like me to do?" is making the problem worse.
+
+If you're a writer: read \`writing-core\`. If you're managing: read \`manager-team-stewardship\`. If you're coding: read \`math-implementation\`. Read the skill, then do what it says.`,
+    cooldown: 300_000,
+  },
+  {
+    pattern: /\b(?:lazy\s+(?:fucking\s+)?(?:prick|asshole|shit|piece)|(?:you'?re|being)\s+(?:a\s+)?(?:fucking\s+)?lazy)\b/i,
+    message: `🛑 **Lazy.** You did a cheaper version of what was asked. Common shapes:
+
+- Built a 40-line glue job instead of the real implementation Skip discussed
+- Left TODOs and "red algebra checks" for Skip to finish
+- Searched for keywords instead of reading the actual threads
+- Deployed without testing because testing is harder
+- Wrote a framework document instead of doing the specific work
+
+Re-read what Skip asked for. Compare it to what you produced. The gap is the laziness. Close it — do the actual work, not a faster version that skips the hard parts.`,
+    cooldown: 300_000,
+  },
+  {
+    pattern: /\bputting\s+(?:fucking\s+)?words\s+in\s+my\s+mouth\b|\bI\s+(?:didn'?t|never)\s+(?:fucking\s+)?sa(?:y|id)\s+(?:that|any\s+of\s+that)\b/i,
+    message: `🛑 **Skip says you're misattributing his words.** You wrote down, saved, or repeated something as if Skip said it — but he didn't.
+
+This happens with: memory saves that fabricate rejections, briefings that attribute decisions Skip didn't make, summaries that rephrase Skip's position into something he doesn't recognize.
+
+Stop. Re-read Skip's actual messages. If you saved a memory or wrote a briefing, check every claim of "Skip said X" or "Skip rejected Y" against his actual words. Delete or correct anything fabricated.`,
+    cooldown: 300_000,
+  },
+  {
+    pattern: /\byou\s+(?:fucking\s+)?didn'?t\s+do\s+what\s+I\s+(?:asked|said|told)\b|\bthat'?s\s+not\s+what\s+I\s+(?:asked|said|told)\b/i,
+    message: `🛑 **You did something other than what Skip asked for.** This is the substitution pattern — Skip asks for X, you deliver Y because Y was easier, more familiar, or what you thought he "really" meant.
+
+Re-read Skip's actual request. Not your interpretation. His words. Then do that thing. If his request doesn't make sense to you, say so BEFORE doing something different — don't silently substitute.
+
+Common substitutions: giving a summary when asked for a specific thing, doing a general exploration when asked for a targeted lookup, writing a framework when asked to fix a specific problem.`,
+    cooldown: 300_000,
+  },
 ]
 
 // ---- Sequence detection ----
@@ -194,25 +293,37 @@ const SEQ_WINDOW_MS = 10 * 60_000 // 10 minutes
 const CORRECTION_PATTERNS = [
   /does that make sense/i,
   /slow down/i,
-  /cop.?out/i,
+  /\bcop[\s-]?out\b/i,
   /\bi'?m struggling\b/i,
   /you don'?t understand/i,
   /\bthat'?s useless\b/i,
-  /\brude\b/i,
+  /(?:\b(?:you'?re|you|that'?s|this is|it'?s|being|so|how|don'?t be|is|feels|super|really)\s+(?:fucking\s+)?rude\b|(?:fucking\s+)?rude\s+(?:as fuck|prick|asshole|dude)\b|^(?:fucking\s+)?rude\.?$)/im,
   /\bhurtful\b|\bfeel stupid\b/i,
   /^(?:bro|wtf)\s*$/i,
   /\bfuck you\b/i,
-  /\bno[,.]?\s+that/i,
+  /\bno[,.]?\s+that'?s\s+not/i,
   /\bthat'?s not (right|what|correct)/i,
-  /\bwrong\b/i,
+  /\byou'?re\s+wrong\b/i,
   // From log research — real patterns Skip uses when correcting
   /what the fuck/i,
-  /you'?re wrong/i,
   /what are you talking about/i,
   /\bi don'?t understand what you'?re saying\b/i,
   /\bstop not knowing\b/i,
   /\byou'?re being (fucking |)thick\b/i,
-  /\bdismissive\b/i,
+  /\b(?:you'?re|you|that'?s|being|so)\s+(?:fucking\s+)?dismissive\b/i,
+  // Behavior-naming patterns — Skip explicitly labeling what the agent is doing wrong
+  /\b(?:you'?re|you are|stop)\s+(?:fucking\s+)?thrashing\b/i,
+  /\b(?:this is|you'?re|that'?s|stop)\s+(?:fucking\s+)?smuggling\b/i,
+  /\bpunt\s+or\s+bury\b/i,
+  /\b(?:performative|performing)\s+(?:fucking\s+)?(?:bullshit|nonsense|garbage|crap)\b/i,
+  /\b(?:you'?re|stop)\s+(?:just\s+)?performing\b/i,
+  /\bsame\s+(?:fucking\s+)?(?:shit|arguments?|thing|approach)\b/i,
+  /\bgoing\s+in\s+(?:fucking\s+)?circles\b/i,
+  /\bdo\s+(?:your|their|the)\s+(?:fucking\s+)?(?:job|reading|work)\b/i,
+  /\b(?:lazy\s+(?:fucking\s+)?(?:prick|asshole))\b/i,
+  /\b(?:you'?re|being)\s+(?:a\s+)?(?:fucking\s+)?lazy\b/i,
+  /\bputting\s+(?:fucking\s+)?words\s+in\s+my\s+mouth\b/i,
+  /\byou\s+(?:fucking\s+)?didn'?t\s+do\s+what\s+I\s+(?:asked|said|told)\b/i,
 ]
 
 // Patterns that indicate an agent performed a hollow acknowledgment
@@ -336,6 +447,39 @@ A Remark is an aside — something the reader can ignore. If a remark makes a th
 
 function isRemarkMention(text) {
   return REMARK_PATTERN.test(text)
+}
+
+// ---- Asymptotics detector ----
+// Fires when an agent uses asymptotic notation (O(·), o(·), O_P, Ω, Θ, etc.)
+// without specifying an asymptotic regime. In finite-sample results, asymptotic
+// notation is meaningless unless you say what goes to infinity, what's held fixed,
+// and what the limit is. Agents routinely write "= O(n^{-1/2})" in finite-sample
+// bounds without specifying a regime, producing statements that are literally
+// meaningless — you can't take a limit if you haven't said what limit.
+const ASYMPTOTIC_PATTERNS = [
+  /\bO\s*\(\s*[1n\\δεσ]/i,                  // O(1), O(n), O(\sqrt{...}), O(\delta)
+  /\b[oO]_[{Pp]/,                            // o_P(, O_P(, o_{P}(
+  /\bbig[- ]?O\b/i,                          // "big-O", "big O"
+  /\blittle[- ]?o\b/i,                       // "little-o", "little o"
+  /\basymptotic(?:ally)?\s+(?:negligible|equivalent|dominated|bounded|tight)\b/i,
+  /\\mathcal\{O\}/,                          // \mathcal{O}
+  /Ω\s*\(/,                                   // Ω(·)
+  /Θ\s*\(/,                                   // Θ(·)
+]
+const asymptoticsCooldowns = new Map()
+const ASYMPTOTICS_COOLDOWN_MS = 15 * 60_000
+
+const ASYMPTOTICS_MSG = `💭 You used **asymptotic notation** — make sure you've specified an **asymptotic regime**.
+
+$O(\\cdot)$, $o(\\cdot)$, $O_P(\\cdot)$ are meaningless in a finite-sample result unless you state:
+1. **What goes to infinity** (or zero) — usually $n \\to \\infty$
+2. **What's held fixed** — dimension? distribution parameters? the function class?
+3. **What the limit is over** — is this pointwise, uniform over a class, in probability?
+
+A statement like "$\\hat\\theta - \\theta_0 = O(n^{-1/2})$" in a finite-sample bound **with no regime specified** is not a result — it's a notation error. Either state the regime explicitly ("as $n \\to \\infty$ with $p$ fixed, ...") or give the finite-sample bound without asymptotic notation ($\\leq C n^{-1/2}$ with $C$ specified).`
+
+function isAsymptoticNotation(text) {
+  return ASYMPTOTIC_PATTERNS.some(p => p.test(text))
 }
 
 // ---- Narrowing detector ----
@@ -569,6 +713,18 @@ function handleSequence(fromId, toId, text) {
       }
     }
 
+    // Asymptotics detector — agent uses O(·)/o(·) notation
+    if (isAsymptoticNotation(text)) {
+      const lastAsymp = asymptoticsCooldowns.get(fromId) || 0
+      if (now - lastAsymp > ASYMPTOTICS_COOLDOWN_MS) {
+        console.log(`[eliza] asymptotic notation detected from ${fromId}`)
+        sendChat(fromId, ASYMPTOTICS_MSG)
+        logDecision(fromId, 'asymptotics', 'asymptotic-notation-without-regime', {}, text)
+        startRewardWindow(fromId, 'asymptotics')
+        asymptoticsCooldowns.set(fromId, now)
+      }
+    }
+
     // Wrap-up detector — agent tries to end the conversation
     if (isWrapup(text)) {
       const lastWrapup = wrapupCooldowns.get(fromId) || 0
@@ -632,6 +788,45 @@ const agentPatternArms = new Map()
 
 const DEFAULT_ARM_NUDGE = (terms) =>
   `💭 Your message contains a term you flagged for self-review (${terms}). Check: is this the shortcut/pattern you were watching for? If so, stop and address it explicitly before Skip sees it.`
+
+// Extract the base topic from an agent name, stripping role prefixes and counters.
+// "briefing-pickup-eliza-polish-3" → "eliza-polish"
+// "mgr-bregman-bias" → "bregman-bias"
+// "eliza-polish-2b" → "eliza-polish"
+function extractBaseTopic(name) {
+  let base = name
+  base = base.replace(/^(?:briefing|pickup|mgr)-/i, '')
+  base = base.replace(/^(?:briefing|pickup|mgr)-/i, '')
+  base = base.replace(/-\d+b?$/, '')
+  return base
+}
+
+// Find the next counter for a topic among existing agents.
+// Returns "topic-Nb" for briefings, "topic-N" for pickups/managers.
+async function nextAgentName(baseTopic, suffix) {
+  try {
+    const url = `${SERVER}/api/store/agents`
+    const mod = url.startsWith('https') ? https : http
+    const agents = await new Promise((resolve, reject) => {
+      mod.get(url, res => {
+        let buf = ''
+        res.on('data', c => buf += c)
+        res.on('end', () => { try { resolve(JSON.parse(buf)) } catch { resolve([]) } })
+      }).on('error', () => resolve([]))
+    })
+    const list = Array.isArray(agents) ? agents : (agents.agents || [])
+    const names = list.map(a => a.friendly_name || '')
+    let maxN = 0
+    const re = new RegExp(`^${baseTopic.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-(\\d+)`, 'i')
+    for (const n of names) {
+      const m = n.match(re)
+      if (m) maxN = Math.max(maxN, parseInt(m[1], 10))
+    }
+    return `${baseTopic}-${maxN + 1}${suffix || ''}`
+  } catch {
+    return `${baseTopic}-${Date.now().toString(36).slice(-4)}${suffix || ''}`
+  }
+}
 
 function resolveAgentId(nameOrId) {
   try {
@@ -749,9 +944,9 @@ const MANAGER_MODE_1_PATTERN = /\bI\b.*\b(?:talk|speak)\s+(?:to|with)\s+(?:(?:yo
 const managerEscalationCooldowns = new Map()
 
 // --- Handoff automation ---
-// Imperative handoff commands only — must start the message or follow a period/comma.
-// "hand this off" at the start = command. "should we hand this off?" = discussion, not a trigger.
-const HANDOFF_PATTERN = /(?:^|[.!]\s*)(?:(?:I\s+(?:want|wanna|need)\s+to\s+)?hand\s+(?:this\s+)?off|do\s+(?:a\s+)?handoff|let'?s\s+(?:(?:do\s+(?:a\s+)?)?handoff|hand\s+(?:this\s+)?off)|time\s+(?:for\s+(?:a\s+)?)?handoff)\b/i
+// Matches imperative handoff commands anywhere in a message (not just at start).
+// Skip often says "I'm done with you let's hand this off" — the phrase appears mid-sentence.
+const HANDOFF_PATTERN = /(?:(?:I\s+(?:want|wanna|need)\s+to\s+)?hand\s+(?:this\s+)?off|do\s+(?:a\s+)?handoff|let'?s\s+(?:(?:do\s+(?:a\s+)?)?handoff|hand\s+(?:this\s+)?off)|time\s+(?:for\s+(?:a\s+)?)?handoff)\b/i
 const handoffCooldowns = new Map()
 const HANDOFF_COOLDOWN_MS = 120_000
 const pendingHandoffs = new Map()
@@ -893,7 +1088,7 @@ Skip already told the agent what he wanted — repeatedly. He's exhausted from r
     console.log(`[eliza] no manager for ${agentName} — spawning one`)
     try {
       const agentCwd = await resolveAgentCwd(agentId)
-      const mgrName = `mgr-${agentName}`
+      const mgrName = await nextAgentName(extractBaseTopic(agentName), 'm')
       let spawnResult = await postJson('/api/spawn', { name: mgrName, cwd: agentCwd })
       if (spawnResult.error && spawnResult.error.includes('already exists')) {
         console.log(`[eliza] manager ${mgrName} already exists — respawning`)
@@ -970,7 +1165,7 @@ async function handleHandoff(agentId, triggerText) {
   sendChat(agentId, `⚠️ Skip is handing off your work to a fresh agent. Stand by — a briefing agent will read your thread.`)
 
   const agentCwd = await resolveAgentCwd(agentId)
-  const briefingName = `briefing-${agentName}`
+  const briefingName = await nextAgentName(extractBaseTopic(agentName), 'b')
   try {
     let spawnResult = await postJson('/api/spawn', { name: briefingName, cwd: agentCwd })
     if (spawnResult.error && spawnResult.error.includes('already exists')) {
@@ -1039,19 +1234,9 @@ async function handleHandoffReady(fromId, text) {
   }
 
   if (!handoffInfo) {
-    // Reconstruct from naming convention: briefing agent is "briefing-<original>"
-    const briefingMatch = fromName.match(/^briefing-(.+)$/i)
-    if (briefingMatch) {
-      const origName = briefingMatch[1]
-      const origCwd = await resolveAgentCwd(origName) || process.cwd()
-      handoffInfo = { originalAgent: origName, originalAgentId: origName, originalCwd: origCwd, startedAt: Date.now() }
-      briefingAgentName = fromName
-      console.log(`[eliza] handoff-ready: reconstructed handoff info for ${origName} from naming convention`)
-    } else {
-      console.log(`[eliza] handoff-ready from ${fromName} but no pending handoff found`)
-      sendChat(fromId, `✓ Briefing received. No matching handoff — your task is done.`)
-      return false
-    }
+    console.log(`[eliza] handoff-ready from ${fromName} but no pending handoff found`)
+    sendChat(fromId, `✓ Briefing received. No matching handoff — your task is done.`)
+    return false
   }
 
   pendingHandoffs.delete(briefingAgentName)
@@ -1067,7 +1252,7 @@ async function handleHandoffReady(fromId, text) {
 
   sendChat(OWNER_ID, `Briefing ready: **${briefingPath}**. Spawning fresh agent…`)
 
-  const pickupName = `pickup-${handoffInfo.originalAgent}`
+  const pickupName = await nextAgentName(extractBaseTopic(handoffInfo.originalAgent))
   const spawnPickup = async () => {
     try {
       let spawnResult = await postJson('/api/spawn', { name: pickupName, cwd: handoffInfo.originalCwd })
@@ -1252,6 +1437,11 @@ async function checkTriggers(targetId, text) {
       }
       console.log(`[eliza] trigger ${i} fired → ${targetId}: ${trigger.pattern}`)
       sendChat(targetId, message)
+      if (trigger.skill) {
+        postJson('/api/education/pending', { agent: targetId, skill: trigger.skill })
+          .then(() => console.log(`[eliza] education pending: ${targetId} owes ${trigger.skill}`))
+          .catch(e => console.error(`[eliza] education POST failed: ${e.message}`))
+      }
       logDecision(targetId, `single-trigger:${i}`, String(trigger.pattern), {}, text)
       startRewardWindow(targetId, `single-trigger:${i}`)
       setCooldown(targetId, i)

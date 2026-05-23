@@ -894,6 +894,29 @@ app.post('/api/fleet/prefs/:key', requireRead, (req, res) => {
   res.json({ ok: true })
 })
 
+// ---------- Education enforcement ----------
+// Eliza POSTs pending skill reads; agent PreToolUse hooks GET/DELETE them.
+const pendingEducation = new Map()
+
+app.post('/api/education/pending', (req, res) => {
+  const { agent, skill } = req.body
+  if (!agent || !skill) return res.status(400).json({ error: 'Missing agent or skill' })
+  pendingEducation.set(agent, { skill, ts: Date.now() })
+  console.log(`[education] pending: ${agent} owes ${skill}`)
+  res.json({ ok: true })
+})
+
+app.get('/api/education/pending/:agentId', (req, res) => {
+  const entry = pendingEducation.get(req.params.agentId)
+  if (!entry) return res.json({})
+  res.json(entry)
+})
+
+app.delete('/api/education/pending/:agentId', (req, res) => {
+  pendingEducation.delete(req.params.agentId)
+  res.json({ ok: true })
+})
+
 // ---------- Local image serving ----------
 // Serves local filesystem images for math notes (paths starting with / or ~)
 app.get('/api/local-image', requireRead, (req, res) => {
@@ -2759,6 +2782,7 @@ function checkQualifications(agentId, tool, arg, input) {
       warned.add(warnKey)
 
       const nudge = `⚠️ Read the **${skillName}** skill before this. \`/skill ${skillName}\``
+      pendingEducation.set(agentId, { skill: skillName, ts: Date.now() })
       try {
         const event = fleetStore.share({
           type: 'chat',

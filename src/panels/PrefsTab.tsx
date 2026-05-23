@@ -15,6 +15,7 @@ function readAll() {
     mathColor: getPref('math-note-color'),
     curve: getPref('response-curve'),
     spawnMode: getPref('spawn-mode'),
+    voiceBackend: getPref('voice-backend'),
   }
 }
 
@@ -79,6 +80,18 @@ export function PrefsTab() {
             ))}
           </select>
           <span className="prefs-color-swatch" style={{ background: NOTE_COLORS[prefs.mathColor] }} />
+        </div>
+      </div>
+
+      <div className="prefs-section">
+        <div className="prefs-section-label">Voice backend</div>
+        <select value={prefs.voiceBackend} onChange={e => setPref('voice-backend', e.target.value)} className="prefs-select">
+          <option value="chrome">Chrome Web Speech</option>
+          <option value="deepgram">Deepgram</option>
+          <option value="whisper">Whisper</option>
+        </select>
+        <div style={{ fontSize: 10, color: '#6b7280', marginTop: 2 }}>
+          Reload to apply. URL param &voice= overrides.
         </div>
       </div>
 

@@ -2157,12 +2157,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'input_scratch',
-      description: 'Inject a scratch section into a document at a specific location. Accepts .tex (plain LaTeX) or .md/.qmd (markdown with @label refs — auto-converted to LaTeX via pandoc, @refs become \\ref{}). No wrapper needed — the server wraps it in a \\begin{scratch}{label}...\\end{scratch} environment automatically. The scratch env renders in dark gray with the label visible at the top. Requires exactly one of: after, before, replace. If the build fails, you will receive an automatic fleet chat with the LaTeX errors.',
+      description: 'Inject a scratch section into a document at a specific location. Accepts .tex (plain LaTeX) or .md/.qmd (markdown with @label refs — auto-converted to LaTeX via pandoc, @refs become \\ref{}). Write plain content — no \\begin{scratch} wrapper. The \\inputscratch macro in the main tex file handles the scratch environment (gray text, label, timestamp header). Requires exactly one of: after, before, replace. If the build fails, you will receive an automatic fleet chat with the LaTeX errors.',
       inputSchema: {
         type: 'object',
         properties: {
           doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
-          content_path: { type: 'string', description: 'Local path to .tex file containing the scratch content (plain LaTeX — no \\begin{scratch} wrapper)' },
+          content_path: { type: 'string', description: 'Local path to .tex file containing the scratch content (plain LaTeX — no \\begin{scratch} wrapper, no \\inputscratch call)' },
           label: { type: 'string', description: 'Label for this scratch section. Convention: "scratch:descriptive-name" (e.g. "scratch:thm-bias-alt"). Used for cross-referencing and as the visible header.' },
           after: { type: 'string', description: 'Insert after this existing label (e.g. "thm:bias-decomp") or "line:N". Exclusive with before/replace.' },
           before: { type: 'string', description: 'Insert before this existing label or "line:N". Exclusive with after/replace.' },
@@ -2173,7 +2173,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'inline_scratch',
-      description: 'Promote a polished scratch section into the document proper. Strips the \\begin{scratch}...\\end{scratch} wrapper and replaces the \\inputscratch{} line in main.tex with the bare content. Use this when a scratch section is ready to become real document content.',
+      description: 'Promote a polished scratch section into the document proper. Replaces the \\inputscratch{}{}{} line in main.tex with the raw content from the scratch file. Use this when a scratch section is ready to become real document content.',
       inputSchema: {
         type: 'object',
         properties: {

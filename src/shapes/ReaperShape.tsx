@@ -8,7 +8,7 @@ import { useState, useCallback, useMemo } from 'react'
 import { useReaperStatus } from '../fleet-data-adapter'
 
 const DEFAULT_W = 480
-const DEFAULT_H = 360
+const DEFAULT_H = 400
 
 export class ReaperShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'fleet-reaper' as const
@@ -55,23 +55,20 @@ function formatAge(ms: number): string {
   return `${Math.floor(ms / 3600_000)}h`
 }
 
-type SortKey = 'agent' | 'type' | 'status' | 'idle'
+type SortKey = 'agent' | 'memory' | 'detail'
 
-interface ProcessRow {
-  pid: number
+interface AgentRow {
   agent: string
-  type: 'vite' | 'playwright'
+  totalRss: number
   detail: string
-  status: string
-  statusColor: string
-  idleMs: number
-  killable: boolean
+  processes: { name: string; rss: number }[]
+  killablePids: number[]
 }
 
 function ReaperComponent({ shape }: { shape: any }) {
   const [killing, setKilling] = useState<Set<number>>(new Set())
-  const [sortKey, setSortKey] = useState<SortKey>('agent')
-  const [sortAsc, setSortAsc] = useState(true)
+  const [sortKey, setSortKey] = useState<SortKey>('memory')
+  const [sortAsc, setSortAsc] = useState(false)
   const status = useReaperStatus()
 
   const handleKill = useCallback(async (pid: number) => {
@@ -99,52 +96,68 @@ function ReaperComponent({ shape }: { shape: any }) {
   const handleSort = useCallback((key: SortKey) => {
     setSortKey(prev => {
       if (prev === key) { setSortAsc(a => !a); return key }
-      setSortAsc(true)
+      setSortAsc(key === 'agent')
       return key
     })
   }, [])
 
-  const rows: ProcessRow[] = useMemo(() => {
+  const rows: AgentRow[] = useMemo(() => {
     if (!status) return []
-    const r: ProcessRow[] = []
+
+    const groups = new Map<string, AgentRow>()
+
+    const ensure = (agent: string) => {
+      if (!groups.has(agent)) {
+        groups.set(agent, { agent, totalRss: 0, detail: '', processes: [], killablePids: [] })
+      }
+      return groups.get(agent)!
+    }
+
+    if (status.memoryByAgent) {
+      for (const g of status.memoryByAgent) {
+        const row = ensure(g.agent)
+        row.totalRss = g.totalRss
+        row.processes = g.processes || []
+        row.detail = row.processes.slice(0, 3).map((p: any) => p.name).join(', ')
+      }
+    }
+
     for (const v of status.vites || []) {
-      r.push({
-        pid: v.pid,
-        agent: v.agent || '—',
-        type: 'vite',
-        detail: v.ports?.map((p: number) => `:${p}`).join(',') || '',
-        status: v.hasClient ? 'active' : 'idle',
-        statusColor: v.hasClient ? 'var(--green)' : 'var(--yellow)',
-        idleMs: v.idleMs || 0,
-        killable: !v.hasClient,
-      })
+      const agent = v.agent || 'system'
+      const row = ensure(agent)
+      if (!v.hasClient) {
+        row.killablePids.push(v.pid)
+      }
+      const label = `vite${v.ports?.length ? ' :' + v.ports[0] : ''}`
+      if (!row.detail.includes('vite')) {
+        row.detail = row.detail ? row.detail + ', ' + label : label
+      }
     }
+
     for (const b of status.browsers || []) {
-      r.push({
-        pid: b.pid,
-        agent: b.agent || '—',
-        type: 'playwright',
-        detail: `ppid=${b.ppid}`,
-        status: b.controllerAlive ? 'active' : 'orphan',
-        statusColor: b.controllerAlive ? 'var(--green)' : 'var(--orange)',
-        idleMs: b.idleMs || 0,
-        killable: !b.controllerAlive,
-      })
+      const agent = b.agent || 'system'
+      const row = ensure(agent)
+      if (!b.controllerAlive) {
+        row.killablePids.push(b.pid)
+      }
+      if (!row.detail.includes('pw')) {
+        row.detail = row.detail ? row.detail + ', pw' : 'pw'
+      }
     }
+
+    const result = [...groups.values()]
     const dir = sortAsc ? 1 : -1
-    r.sort((a, b) => {
-      let cmp = 0
-      if (sortKey === 'agent') cmp = a.agent.localeCompare(b.agent)
-      else if (sortKey === 'type') cmp = a.type.localeCompare(b.type)
-      else if (sortKey === 'status') cmp = a.status.localeCompare(b.status)
-      else if (sortKey === 'idle') cmp = a.idleMs - b.idleMs
-      return cmp * dir
+    result.sort((a, b) => {
+      if (sortKey === 'agent') return a.agent.localeCompare(b.agent) * dir
+      if (sortKey === 'memory') return (a.totalRss - b.totalRss) * dir
+      return a.detail.localeCompare(b.detail) * dir
     })
-    return r
+    return result
   }, [status, sortKey, sortAsc])
 
   const pressure = status?.pressure ?? 0
   const pctText = `${(pressure * 100).toFixed(0)}%`
+  const trackedMem = rows.reduce((s, r) => s + r.totalRss, 0)
 
   const thStyle: React.CSSProperties = {
     textAlign: 'left',
@@ -265,55 +278,13 @@ function ReaperComponent({ shape }: { shape: any }) {
                 display: 'flex',
                 gap: 12,
               }}>
+                <span>Tracked: {formatBytes(trackedMem)}</span>
                 <span>Vite timeout: {formatAge(status.scaledThresholds?.viteMs || 0)}</span>
                 <span>PW timeout: {formatAge(status.scaledThresholds?.pwMs || 0)}</span>
-                <span style={{ marginLeft: 'auto' }}>
-                  {rows.length} process{rows.length !== 1 ? 'es' : ''}
-                </span>
               </div>
             </div>
 
-            {/* Top memory consumers */}
-            {status.topProcesses?.length > 0 && (
-              <div style={{ marginBottom: 8 }}>
-                <div style={{
-                  fontSize: 10,
-                  color: 'var(--text-dim)',
-                  marginBottom: 3,
-                  fontWeight: 600,
-                }}>
-                  Top memory
-                </div>
-                {status.topProcesses.map((p: any, i: number) => (
-                  <div key={i} style={{
-                    fontSize: 10,
-                    color: 'var(--text-dim)',
-                    padding: '1px 0',
-                    display: 'flex',
-                    gap: 6,
-                    alignItems: 'baseline',
-                  }}>
-                    <span style={{
-                      color: 'var(--text)',
-                      fontWeight: 500,
-                      minWidth: 36,
-                      textAlign: 'right',
-                    }}>
-                      {formatBytes(p.rss)}
-                    </span>
-                    <span style={{
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                    }}>
-                      {p.name}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Process table */}
+            {/* Unified table */}
             {rows.length > 0 ? (
               <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
                 <thead>
@@ -321,50 +292,44 @@ function ReaperComponent({ shape }: { shape: any }) {
                     <th style={{ ...thStyle, width: '30%' }} onClick={() => handleSort('agent')}>
                       Agent{sortIndicator('agent')}
                     </th>
-                    <th style={{ ...thStyle, width: '18%' }} onClick={() => handleSort('type')}>
-                      Type{sortIndicator('type')}
+                    <th style={{ ...thStyle, width: '18%' }} onClick={() => handleSort('memory')}>
+                      Memory{sortIndicator('memory')}
                     </th>
-                    <th style={{ ...thStyle, width: '17%' }} onClick={() => handleSort('status')}>
-                      Status{sortIndicator('status')}
+                    <th style={{ ...thStyle, width: '40%' }} onClick={() => handleSort('detail')}>
+                      Processes{sortIndicator('detail')}
                     </th>
-                    <th style={{ ...thStyle, width: '12%' }} onClick={() => handleSort('idle')}>
-                      Idle{sortIndicator('idle')}
-                    </th>
-                    <th style={{ ...thStyle, width: '10%' }}></th>
+                    <th style={{ ...thStyle, width: '12%' }}></th>
                   </tr>
                 </thead>
                 <tbody>
                   {rows.map(r => (
-                    <tr key={r.pid} style={{ borderBottom: '1px solid var(--glass-2)' }}>
-                      <td style={{ ...tdStyle, color: r.agent === '—' ? 'var(--text-dim)' : 'var(--text)', maxWidth: 0 }}>
+                    <tr key={r.agent} style={{ borderBottom: '1px solid var(--glass-2)' }}>
+                      <td style={{ ...tdStyle, color: r.agent === 'system' ? 'var(--text-dim)' : 'var(--text)', fontWeight: r.agent === 'system' ? 400 : 500, maxWidth: 0 }}>
                         {r.agent}
                       </td>
-                      <td style={{ ...tdStyle, color: 'var(--text-dim)' }}>
-                        {r.type === 'vite' ? `vite ${r.detail}` : 'pw'}
+                      <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 10 }}>
+                        {r.totalRss > 0 ? formatBytes(r.totalRss) : '—'}
                       </td>
-                      <td style={{ ...tdStyle, color: r.statusColor, fontSize: 10 }}>
-                        {r.status}
-                      </td>
-                      <td style={{ ...tdStyle, color: 'var(--text-dim)', fontSize: 10 }}>
-                        {r.idleMs > 0 ? formatAge(r.idleMs) : '—'}
+                      <td style={{ ...tdStyle, color: 'var(--text-dim)', fontSize: 10, maxWidth: 0 }}>
+                        {r.detail}
                       </td>
                       <td style={{ ...tdStyle, textAlign: 'right' }}>
-                        {r.killable && (
+                        {r.killablePids.length > 0 && (
                           <button
                             onPointerDown={stopEventPropagation}
-                            onClick={() => handleKill(r.pid)}
-                            disabled={killing.has(r.pid)}
+                            onClick={() => r.killablePids.forEach(p => handleKill(p))}
+                            disabled={r.killablePids.some(p => killing.has(p))}
                             style={{
-                              background: killing.has(r.pid) ? 'var(--glass-3)' : 'rgba(238,85,85,0.15)',
+                              background: r.killablePids.some(p => killing.has(p)) ? 'var(--glass-3)' : 'rgba(238,85,85,0.15)',
                               border: '1px solid rgba(238,85,85,0.3)',
                               borderRadius: 3,
-                              color: killing.has(r.pid) ? 'var(--text-dim)' : '#e55',
+                              color: r.killablePids.some(p => killing.has(p)) ? 'var(--text-dim)' : '#e55',
                               fontSize: 10,
                               padding: '1px 5px',
-                              cursor: killing.has(r.pid) ? 'default' : 'pointer',
+                              cursor: r.killablePids.some(p => killing.has(p)) ? 'default' : 'pointer',
                             }}
                           >
-                            {killing.has(r.pid) ? '...' : 'kill'}
+                            {r.killablePids.some(p => killing.has(p)) ? '...' : 'kill'}
                           </button>
                         )}
                       </td>

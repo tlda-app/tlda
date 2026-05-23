@@ -58,9 +58,7 @@ function notify(channel, event) {
 export function matchesFilter(filter, event) {
   if (!event) return true  // broadcast (e.g. read-receipt refresh)
   if (!filter || filter.length === 0) return true
-  // System notifications from fleet:tlda show in the agent's chat view (not bypassed globally)
-  // Terminal cards are filtered like regular chat — they show in chats
-  // whose filter matches the agent that triggered them.
+  if (event.from_id === 'system' || event.from === 'system') return true
   return filter.some(clause =>
     clause.every(term => {
       if (Array.isArray(term)) {

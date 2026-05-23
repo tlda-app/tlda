@@ -7,11 +7,9 @@
  */
 import { useEffect, useRef, useState, useCallback } from 'react'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
-import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
+import { CanvasClipPanel } from '../CanvasClipPanel'
 import { writeSignal } from '../useYjsSync'
 import type { ScreenshotCaptureState } from '../hooks/useYjsSignals'
-import './RefViewer.css'
-
 interface ScreenshotCaptureProps {
   mainEditor: Editor
   capture: ScreenshotCaptureState
@@ -19,11 +17,10 @@ interface ScreenshotCaptureProps {
   tools: TLStateNodeConstructor[]
   licenseKey: string
   onClose: () => void
-  onGoThere: (bounds: ClipBounds) => void
 }
 
 export function ScreenshotCapture({
-  mainEditor, capture, shapeUtils, tools, licenseKey, onClose, onGoThere,
+  mainEditor, capture, shapeUtils, tools, licenseKey, onClose,
 }: ScreenshotCaptureProps) {
   const [panelEditor, setPanelEditor] = useState<Editor | null>(null)
   const capturedRef = useRef(false)
@@ -98,30 +95,9 @@ export function ScreenshotCapture({
         shapeUtils={shapeUtils}
         tools={tools}
         licenseKey={licenseKey}
-        className="ref-viewer"
         panelWidth={400}
-        readOnly
         onEditorMount={handleEditorMount}
-      >
-        <div className="ref-viewer-label">
-          <span className="ref-viewer-title">
-            📷 {capture.agent || 'agent'}
-          </span>
-          <button
-            className="ref-viewer-action"
-            onClick={() => onGoThere(bounds)}
-            title="Go to this location"
-          >
-            ↗
-          </button>
-          <button
-            className="ref-viewer-close"
-            onClick={onClose}
-          >
-            ×
-          </button>
-        </div>
-      </CanvasClipPanel>
+      />
     </div>
   )
 }

@@ -15,7 +15,7 @@ const _isSafari = !navigator.userAgent.includes('Chrome') && navigator.userAgent
 
 // --- Backend selection ---
 const WHISPER_BRIDGE_URL = 'ws://127.0.0.1:8179'
-let _backend = 'chrome'         // 'chrome' | 'whisper-stream' | 'deepgram'
+let _backend = 'deepgram'       // 'deepgram' | 'chrome' | 'whisper-stream'
 let _whisperAvailable = false   // true if whisper bridge WebSocket connected at init
 let _deepgramAvailable = false  // true if deepgram bridge WebSocket connected at init
 
@@ -34,7 +34,7 @@ let _mathMode = false
 // Greek letters and their known Chrome misrecognitions
 const GREEK = {
   phi:   ['five', 'fly', 'fire', 'fee', 'fi', 'phi'],
-  theta: ['fat a', 'the a', 'theta a', 'theta', 'data'],
+  theta: ['fat a', 'the a', 'theta a', 'theta', 'data', 'feta'],
   gamma: ['gama', 'gamma'],
   psi:   ['sigh', 'psi'],
   tau:   ['tao', 'tau'],
@@ -71,6 +71,7 @@ const VOCAB_REPLACEMENTS = [
   [/\bfat a\b/gi, 'theta'],
   [/\bthe a\b/gi, 'theta'],
   [/\btheta a\b/gi, 'theta'],
+  [/\bfeta\b/gi, 'theta'],
   [/\bgama\b/gi, 'gamma'],
   [/\btao\b/gi, 'tau'],
   [/\baida\b/gi, 'eta'],
@@ -298,6 +299,7 @@ function setTextareaGlow(color) {
 // Call when onresult fires — audio is flowing
 function dotAudioFlowing() {
   if (!_recording) return
+  hideDontSpeak()
   const dot = ensureHealthDot()
   dot.style.display = 'inline-block'
   dot.style.backgroundColor = DOT_GREEN
@@ -335,11 +337,48 @@ function hideHealthDot() {
   _healthDotTimer = null
   clearTimeout(_glowTimer)
   _glowTimer = null
+  hideDontSpeak()
   setTextareaGlow(null)
   if (_healthDot) {
     _healthDot.style.opacity = '0'
     setTimeout(() => { if (_healthDot) _healthDot.style.display = 'none' }, 300)
   }
+}
+
+// --- Giant "DON'T SPEAK" overlay when voice is dead ---
+let _dontSpeakOverlay = null
+
+function ensureDontSpeakOverlay() {
+  if (_dontSpeakOverlay) return _dontSpeakOverlay
+  _dontSpeakOverlay = document.createElement('div')
+  Object.assign(_dontSpeakOverlay.style, {
+    display: 'none',
+    position: 'fixed',
+    top: '0',
+    left: '0',
+    width: '100vw',
+    zIndex: '999999',
+    fontSize: '48px',
+    fontWeight: 'bold',
+    textAlign: 'center',
+    background: 'rgba(200, 50, 50, 0.85)',
+    color: 'white',
+    padding: '20px',
+    pointerEvents: 'none',
+  })
+  _dontSpeakOverlay.textContent = '\u{1F507} DON’T SPEAK'
+  document.body.appendChild(_dontSpeakOverlay)
+  return _dontSpeakOverlay
+}
+
+function showDontSpeak() {
+  if (!_recording) return
+  const el = ensureDontSpeakOverlay()
+  el.style.display = 'block'
+}
+
+function hideDontSpeak() {
+  if (_dontSpeakOverlay) _dontSpeakOverlay.style.display = 'none'
 }
 
 function showHud(text, stateColor) {
@@ -413,9 +452,10 @@ export function setVoiceTarget(textarea, sendTargets, agentNames, sendFn, agentC
     // Without this, the old recognition session keeps running with a stale
     // generation and onresult discards everything, making voice appear dead.
     wasRecording = _recording
+    vlog('setVoiceTarget: switching chat', { wasRecording, backend: _backend, wsOpen: _deepgramConnected, hasMic: !!_deepgramStream })
     if (_backend === 'whisper-stream') flushWhisperBridge()
     if (_backend === 'deepgram') _deepgramInterim = ''
-    hardResetVoice()
+    hardResetVoice({ keepDeepgramMic: true })
     // Remove old listeners
     if (_inputListeners && _activeTextarea) {
       _activeTextarea.removeEventListener('input', _inputListeners.input)
@@ -921,9 +961,39 @@ let _deepgramStream = null      // MediaStream from getUserMedia
 let _deepgramContext = null      // AudioContext
 let _deepgramProcessor = null    // ScriptProcessorNode (bridge to WS)
 let _deepgramInterim = ''        // current interim result (replaced on each interim)
+let _dgHasSeenInterim = false   // true after first interim in current session; guards against post-send final bleed
+let _lastAudioChunkTime = 0     // timestamp of last audio chunk sent to bridge (for heartbeat logging)
+let _audioHeartbeatInterval = null  // periodic interval that logs audio-flow health
+let _dgTrickleWords = []         // words currently being trickled in
+let _dgTrickleShown = 0          // how many trickle words are visible
+let _dgTrickleTimer = null       // setTimeout id for next trickle step
+let _dgTrickleDelay = 40         // ms between words (adjusted per burst)
+
+function _dgTrickleFlush() {
+  clearTimeout(_dgTrickleTimer)
+  _dgTrickleTimer = null
+}
+
+function _dgTrickleStep() {
+  _dgTrickleTimer = null
+  if (_dgTrickleShown >= _dgTrickleWords.length) return
+  _dgTrickleShown++
+  _interim = postProcessTranscript(_dgTrickleWords.slice(0, _dgTrickleShown).join(' '))
+  const display = _left + (_interim ? ' ' + _interim : '') + _right
+  fillTextarea(display)
+  if (_dgTrickleShown < _dgTrickleWords.length) {
+    _dgTrickleTimer = setTimeout(_dgTrickleStep, _dgTrickleDelay)
+  }
+}
 
 function onDeepgramMessage(event) {
-  if (!_recording || _backend !== 'deepgram') return
+  if (!_recording || _backend !== 'deepgram') {
+    try {
+      const m = JSON.parse(event.data)
+      if (m.type === 'transcript' && m.text) vlog('DROPPED transcript (not recording)', { text: m.text.slice(0, 30) })
+    } catch {}
+    return
+  }
   try {
     const msg = JSON.parse(event.data)
 
@@ -933,16 +1003,23 @@ function onDeepgramMessage(event) {
     }
 
     if (msg.type === 'utterance_end') {
-      // Utterance boundary — commit any pending interim
+      _dgTrickleFlush()
       if (_deepgramInterim) {
-        _left += (_left.length && !_left.endsWith(' ') ? ' ' : '') + postProcessTranscript(_deepgramInterim)
         _deepgramInterim = ''
+        _interim = ''
+        _dgTrickleWords = []
+        _dgTrickleShown = 0
+        fillTextarea(_left + _right)
       }
-      fillTextarea(_left + _right)
       return
     }
 
     if (msg.type !== 'transcript' || !msg.text) return
+
+    // Discard finals that arrive after afterSend() cleared the session but before
+    // the user speaks again. Without this, the last utterance of the previous
+    // message bleeds into the new one.
+    if (msg.is_final && !_dgHasSeenInterim && _state === 'edit') return
 
     _lastResultTime = Date.now()
     dotAudioFlowing()
@@ -954,20 +1031,46 @@ function onDeepgramMessage(event) {
       _left = ta?.value?.slice(0, cursor) ?? ''
       _right = ta?.value?.slice(cursor) ?? ''
       _deepgramInterim = ''
+      _dgTrickleFlush()
+      _dgTrickleWords = []
+      _dgTrickleShown = 0
     }
 
     const text = msg.text
 
     if (msg.is_final) {
       // Final result — append to committed text, clear interim
+      _dgTrickleFlush()
       const processed = postProcessTranscript(text)
       _left += (_left.length && !_left.endsWith(' ') ? ' ' : '') + processed
       _deepgramInterim = ''
       _interim = ''
+      _dgTrickleWords = []
+      _dgTrickleShown = 0
+      _dgHasSeenInterim = false  // reset for next utterance
     } else {
-      // Interim result — replaces previous interim (no accumulation)
+      // Interim — trickle new words in one at a time, smoothed
       _deepgramInterim = text
-      _interim = postProcessTranscript(text)
+      _dgHasSeenInterim = true   // saw an interim → finals for this utterance are valid
+      const newWords = text.split(/\s+/).filter(Boolean)
+      const prevLen = _dgTrickleWords.length
+      _dgTrickleWords = newWords
+      if (_dgTrickleShown > newWords.length) _dgTrickleShown = newWords.length
+      const pending = newWords.length - _dgTrickleShown
+      if (pending > 0 && newWords.length > prevLen && _dgTrickleShown >= prevLen) {
+        // Spread burst over ~200ms so pace feels even (min 30ms, max 90ms per word)
+        _dgTrickleDelay = Math.max(30, Math.min(90, Math.round(200 / pending)))
+        // Show first new word immediately for responsiveness
+        _dgTrickleShown++
+        _interim = postProcessTranscript(newWords.slice(0, _dgTrickleShown).join(' '))
+        const display = _left + (_interim ? ' ' + _interim : '') + _right
+        fillTextarea(display)
+        if (_dgTrickleShown < newWords.length && !_dgTrickleTimer) {
+          _dgTrickleTimer = setTimeout(_dgTrickleStep, _dgTrickleDelay)
+        }
+      } else {
+        _interim = postProcessTranscript(newWords.slice(0, _dgTrickleShown).join(' '))
+      }
     }
 
     const leftTrimmed = (_left + (_deepgramInterim ? ' ' + postProcessTranscript(_deepgramInterim) : '')).trim()
@@ -987,6 +1090,9 @@ function onDeepgramMessage(event) {
         _generation++
         _left = _interim = _right = ''
         _deepgramInterim = ''
+        _dgTrickleFlush()
+        _dgTrickleWords = []
+        _dgTrickleShown = 0
         setTimeout(() => { if (_recording) showRecordingHud() }, 1600)
         return
       }
@@ -1029,20 +1135,32 @@ function onDeepgramMessage(event) {
 }
 
 function connectDeepgramBridge() {
-  if (_deepgramWs) return
+  if (_deepgramWs && _deepgramWs.readyState === WebSocket.OPEN) return
+  if (_deepgramWs) {
+    _deepgramWs.onclose = null
+    try { _deepgramWs.close() } catch {}
+    _deepgramWs = null
+  }
   try {
     _deepgramWs = new WebSocket(WHISPER_BRIDGE_URL)
     _deepgramWs.onopen = () => {
       _deepgramConnected = true
-      console.log('voice: connected to deepgram bridge')
+      hideDontSpeak()
+      vlog('bridge WS open')
       _deepgramWs.send(JSON.stringify({ type: 'start' }))
     }
     _deepgramWs.onmessage = onDeepgramMessage
     _deepgramWs.onclose = () => {
       _deepgramConnected = false
       _deepgramWs = null
+      vlog('bridge WS closed', { recording: _recording })
+      showDontSpeak()
+      if (_recording && _backend === 'deepgram') {
+        vlog('bridge auto-reconnect in 1s')
+        setTimeout(connectDeepgramBridge, 1000)
+      }
     }
-    _deepgramWs.onerror = () => {}
+    _deepgramWs.onerror = (err) => { vlog('bridge WS error', { message: err?.message || 'unknown' }) }
   } catch {
     _deepgramWs = null
   }
@@ -1075,18 +1193,47 @@ async function startDeepgramMic() {
     return
   }
 
-  _deepgramContext = new AudioContext({ sampleRate: 16000 })
+  // Auto-recover if the mic track ends unexpectedly
+  const track = _deepgramStream.getAudioTracks()[0]
+  if (track) {
+    track.onended = () => {
+      vlog('mic track ended — OS killed mic', { recording: _recording, backend: _backend })
+      stopDeepgramMic()
+      if (_recording && _backend === 'deepgram') {
+        setTimeout(() => startDeepgramMic(), 500)
+      }
+    }
+  }
+
+  _deepgramContext = new AudioContext()
+  if (_deepgramContext.state === 'suspended') {
+    await _deepgramContext.resume()
+  }
+  const nativeSr = _deepgramContext.sampleRate
+  const targetSr = 16000
   const source = _deepgramContext.createMediaStreamSource(_deepgramStream)
 
-  // ScriptProcessorNode: captures PCM and sends to bridge as Int16 binary
   _deepgramProcessor = _deepgramContext.createScriptProcessor(4096, 1, 1)
   _deepgramProcessor.onaudioprocess = (e) => {
     if (!_deepgramWs || !_deepgramConnected || !_recording) return
+    _lastAudioChunkTime = Date.now()
     const float32 = e.inputBuffer.getChannelData(0)
+
+    // Downsample if needed (e.g. 48000 → 16000)
+    let samples = float32
+    if (nativeSr !== targetSr) {
+      const ratio = nativeSr / targetSr
+      const newLen = Math.floor(float32.length / ratio)
+      samples = new Float32Array(newLen)
+      for (let i = 0; i < newLen; i++) {
+        samples[i] = float32[Math.floor(i * ratio)]
+      }
+    }
+
     // Convert Float32 [-1,1] to Int16
-    const int16 = new Int16Array(float32.length)
-    for (let i = 0; i < float32.length; i++) {
-      const s = Math.max(-1, Math.min(1, float32[i]))
+    const int16 = new Int16Array(samples.length)
+    for (let i = 0; i < samples.length; i++) {
+      const s = Math.max(-1, Math.min(1, samples[i]))
       int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF
     }
     try { _deepgramWs.send(int16.buffer) } catch {}
@@ -1094,9 +1241,39 @@ async function startDeepgramMic() {
 
   source.connect(_deepgramProcessor)
   _deepgramProcessor.connect(_deepgramContext.destination)
+
+  _lastAudioChunkTime = 0
+  _audioHeartbeatInterval = setInterval(() => {
+    if (!_recording) return
+    const ago = _lastAudioChunkTime ? Date.now() - _lastAudioChunkTime : null
+    vlog('audio heartbeat', {
+      lastChunkMs: ago,
+      wsOpen: _deepgramConnected,
+      hasMic: !!_deepgramStream,
+      audioCtxState: _deepgramContext?.state,
+    })
+    // Resume AudioContext if it got suspended (tab backgrounded, OS audio pause, etc.)
+    if (_deepgramContext?.state === 'suspended') {
+      vlog('audio heartbeat: AudioContext suspended — resuming')
+      _deepgramContext.resume().then(() => {
+        vlog('audio heartbeat: AudioContext resumed')
+      }).catch(err => vlog('audio heartbeat: resume failed', { err: err.message }))
+    }
+    // If audio stopped flowing for >2s despite recording, restart the mic pipeline.
+    // onaudioprocess fires even during silence, so stale lastChunkMs means the
+    // AudioContext or ScriptProcessor died without us noticing.
+    if (ago !== null && ago > 2000) {
+      vlog('audio heartbeat: no audio for 2s — restarting mic pipeline')
+      showDontSpeak()
+      stopDeepgramMic()
+      startDeepgramMic()
+    }
+  }, 1000)
 }
 
 function stopDeepgramMic() {
+  clearInterval(_audioHeartbeatInterval)
+  _audioHeartbeatInterval = null
   if (_deepgramProcessor) {
     _deepgramProcessor.disconnect()
     _deepgramProcessor = null
@@ -1121,11 +1298,15 @@ function afterSend() {
   _state = 'edit'
   _left = _interim = _right = ''
   _deepgramInterim = ''
+  _dgHasSeenInterim = false
   if (_backend === 'whisper-stream') {
     flushWhisperBridge()
     return
   }
   if (_backend === 'deepgram') {
+    _dgTrickleFlush()
+    _dgTrickleWords = []
+    _dgTrickleShown = 0
     // Deepgram: close and reopen the session for a clean slate
     if (_deepgramWs && _deepgramConnected) {
       _deepgramWs.send(JSON.stringify({ type: 'stop' }))
@@ -1163,6 +1344,15 @@ function vlog(msg, data) {
 // Expose logs for reading via fetch
 if (typeof window !== 'undefined') {
   window.__voiceLogs = _voiceLogs
+  window.__voiceTest = {
+    fakeRecord: (ta) => { _recording = true; _state = 'edit'; _backend = 'deepgram'; if (ta) _activeTextarea = ta; },
+    fakeStop: () => { _recording = false; },
+    switchTarget: (ta) => setVoiceTarget(ta, [], {}, null, null),
+    getState: () => ({ recording: _recording, backend: _backend, state: _state, connected: _deepgramConnected, hasMic: !!_deepgramStream, left: _left, interim: _interim, hasTextarea: !!_activeTextarea }),
+    injectTranscript: (text, isFinal) => onDeepgramMessage({ data: JSON.stringify({ type: 'transcript', text, is_final: isFinal, speech_final: false }) }),
+    afterSend: () => afterSend(),
+    getTrickle: () => ({ words: _dgTrickleWords.slice(), shown: _dgTrickleShown, hasTimer: _dgTrickleTimer !== null }),
+  }
 }
 
 function startRecording() {
@@ -1192,6 +1382,10 @@ function startRecording() {
   if (_backend === 'deepgram') {
     connectDeepgramBridge()
     startDeepgramMic()
+    // Ensure Deepgram session is started (may have been stopped by hardResetVoice)
+    if (_deepgramWs && _deepgramConnected) {
+      try { _deepgramWs.send(JSON.stringify({ type: 'start' })) } catch {}
+    }
   } else if (_backend === 'whisper-stream') {
     // whisper-stream captures mic directly — no browser mic needed.
     // Just ensure we're connected to the bridge WebSocket.
@@ -1253,7 +1447,11 @@ function stopRecording() {
 // by double-tap on Right Shift. Aborts any live recognition, clears all
 // state, and releases the browser's microphone lock by opening and
 // immediately closing a getUserMedia audio stream.
-async function hardResetVoice() {
+//
+// keepDeepgramMic: true skips mic teardown for chat-switch resets.
+// The mic stream is stateless — only text state needs clearing on switch.
+// Full teardown (getUserMedia round-trip) is reserved for double-tap.
+async function hardResetVoice({ keepDeepgramMic = false } = {}) {
   if (_recognition) {
     try {
       _recognition.onresult = null
@@ -1265,8 +1463,23 @@ async function hardResetVoice() {
     _recognition = null
   }
   disconnectWhisperBridge()
-  disconnectDeepgramBridge()
+  if (_backend === 'deepgram' && keepDeepgramMic) {
+    // Lightweight reset for chat switch — cycle the bridge session, keep mic alive.
+    // This avoids the getUserMedia teardown/reacquire that causes intermittent failures.
+    vlog('hardReset/dg: keeping mic, cycling session', { wsOpen: _deepgramConnected, hasMic: !!_deepgramStream })
+    _deepgramInterim = ''
+    _dgHasSeenInterim = false
+    _dgTrickleFlush()
+    _dgTrickleWords = []
+    _dgTrickleShown = 0
+    if (_deepgramWs && _deepgramConnected) {
+      try { _deepgramWs.send(JSON.stringify({ type: 'stop' })) } catch {}
+    }
+  } else {
+    disconnectDeepgramBridge()
+  }
   _deepgramInterim = ''
+  _dgHasSeenInterim = false
   _recording = false
   _state = 'edit'
   _accumulator = null
@@ -1339,37 +1552,14 @@ export async function initVoice() {
 
   _initialized = true
 
-  // Chrome Web Speech is the default voice backend.
-  // Whisper is opt-in via &voice=whisper, Deepgram via &voice=deepgram.
-  // Each asks the server to lazy-start its bridge (stays off otherwise).
+  // Voice backend: URL param overrides pref. Default pref is 'chrome'.
   const urlVoice = new URLSearchParams(window.location.search).get('voice')
-  if (urlVoice === 'deepgram') {
-    _backend = 'deepgram'
-    try {
-      await fetch('/api/voice/deepgram/start', { method: 'POST' })
-    } catch (err) {
-      console.warn('voice: deepgram lazy-start request failed', err)
-    }
-    try {
-      const testWs = new WebSocket(WHISPER_BRIDGE_URL)
-      await new Promise((resolve, reject) => {
-        testWs.onopen = () => {
-          testWs.close()
-          _deepgramAvailable = true
-          console.log('voice: using deepgram backend (via URL param)')
-          resolve()
-        }
-        testWs.onerror = () => {
-          testWs.close()
-          reject()
-        }
-        setTimeout(reject, 2000)
-      })
-    } catch {
-      _backend = 'chrome'
-      console.log('voice: deepgram bridge not available, falling back to Chrome')
-    }
-  } else if (urlVoice === 'whisper') {
+  const { getPref } = await import('./preferences.ts')
+  const prefBackend = urlVoice || getPref('voice-backend') || 'chrome'
+  if (prefBackend === 'chrome') {
+    _backend = 'chrome'
+    console.log(`voice: using Chrome Web Speech API (${urlVoice ? 'URL param' : 'pref'})`)
+  } else if (prefBackend === 'whisper') {
     _backend = 'whisper-stream'
     try {
       await fetch('/api/voice/whisper/start', { method: 'POST' })
@@ -1394,6 +1584,33 @@ export async function initVoice() {
       }
     } catch {
       _backend = 'chrome'
+    }
+  } else {
+    // Deepgram (explicit pref or URL param)
+    _backend = 'deepgram'
+    try {
+      await fetch('/api/voice/deepgram/start', { method: 'POST' })
+    } catch (err) {
+      console.warn('voice: deepgram lazy-start request failed', err)
+    }
+    try {
+      const testWs = new WebSocket(WHISPER_BRIDGE_URL)
+      await new Promise((resolve, reject) => {
+        testWs.onopen = () => {
+          testWs.close()
+          _deepgramAvailable = true
+          console.log('voice: using deepgram backend (default)')
+          resolve()
+        }
+        testWs.onerror = () => {
+          testWs.close()
+          reject()
+        }
+        setTimeout(reject, 2000)
+      })
+    } catch {
+      _backend = 'chrome'
+      console.log('voice: deepgram bridge not available, falling back to Chrome')
     }
   }
 
@@ -1506,6 +1723,19 @@ export async function initVoice() {
       _recognition = null
     }
     if (!document.hidden && _recording) {
+      if (_backend === 'deepgram') {
+        // Resume AudioContext if suspended (tab came back from background)
+        if (_deepgramContext?.state === 'suspended') {
+          vlog('visibilitychange: resuming AudioContext')
+          _deepgramContext.resume().catch(() => {})
+        }
+        // Ensure bridge WS is up
+        if (!_deepgramConnected) {
+          vlog('visibilitychange: bridge disconnected — reconnecting')
+          connectDeepgramBridge()
+        }
+        return
+      }
       // Tab became visible again — Chrome may have suspended recognition.
       // Restart it cleanly.
       const dying = _recognition

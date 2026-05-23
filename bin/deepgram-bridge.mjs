@@ -51,7 +51,7 @@ function buildDeepgramUrl() {
     smart_format: 'true',
     punctuate: 'true',
     interim_results: 'true',
-    utterance_end_ms: '1500',
+    utterance_end_ms: '1000',
     vad_events: 'true',
     encoding: 'linear16',
     sample_rate: '16000',
@@ -84,7 +84,7 @@ wss.on('connection', (browserWs) => {
   let keepAliveInterval = null
 
   function connectDeepgram() {
-    if (dgWs && dgWs.readyState === WebSocket.OPEN) return
+    if (dgWs && (dgWs.readyState === WebSocket.OPEN || dgWs.readyState === WebSocket.CONNECTING)) return
 
     const url = buildDeepgramUrl()
     dgWs = new WebSocket(url, {
@@ -113,6 +113,8 @@ wss.on('connection', (browserWs) => {
           const text = alt.transcript.trim()
           if (!text) return
 
+          console.log(`[deepgram-bridge] transcript: is_final=${msg.is_final} speech_final=${msg.speech_final} "${text.slice(0, 60)}"`)
+
           broadcast({
             type: 'transcript',
             text,
@@ -135,6 +137,15 @@ wss.on('connection', (browserWs) => {
       clearInterval(keepAliveInterval)
       keepAliveInterval = null
       dgWs = null
+      // Auto-reconnect if the browser is still connected — don't wait for next audio chunk
+      if (browserWs.readyState === WebSocket.OPEN) {
+        setTimeout(() => {
+          if (browserWs.readyState === WebSocket.OPEN && !dgWs) {
+            console.log('[deepgram-bridge] auto-reconnecting to Deepgram')
+            connectDeepgram()
+          }
+        }, 1000)
+      }
     })
 
     dgWs.on('error', (err) => {
