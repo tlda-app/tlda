@@ -770,14 +770,14 @@ router.post('/:name/inject', requireRw, async (req, res) => {
   const label = `inject-L${anchorLine || 0}-${Date.now()}`
   const filename = label.replace(/[^a-z0-9]/gi, '-').toLowerCase() + '.tex'
   const scratchPath = `.scratchinputs/${filename}`
-  const wrappedContent = `\\begin{scratch}{${label}}{${label}}\n${texContent}\n\\end{scratch}\n`
+  const rawContent = texContent.endsWith('\n') ? texContent : texContent + '\n'
 
   const sourceDir = project.sourceDir
   if (!sourceDir) return res.status(400).json({ error: 'No sourceDir for this project' })
 
   const scratchDir = join(sourceDir, '.scratchinputs')
   mkdirSync(scratchDir, { recursive: true })
-  writeFileSync(join(sourceDir, scratchPath), wrappedContent, 'utf8')
+  writeFileSync(join(sourceDir, scratchPath), rawContent, 'utf8')
 
   res.json({ ok: true, scratchPath, label, texContent })
 })
@@ -1193,13 +1193,20 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
   // Wrap content in scratch environment, signed with agent + timestamp
   const tz = project.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
   const timestamp = new Date().toLocaleString('sv-SE', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).slice(0, 16)
-  const signer = agentName || agentId || 'agent'
+  const signer = agentName || 'agent'
   const displayHeader = `${label} — ${signer} — ${timestamp}`
-  const wrappedContent = `\\begin{scratch}{${label}}{${displayHeader}}\n${content}\n\\end{scratch}\n`
+  const rawContent = content.endsWith('\n') ? content : content + '\n'
 
   if (replace) {
-    // Overwrite existing scratch section — no main.tex edit needed; caller writes the file
-    return res.json({ ok: true, scratchPath, wrappedContent, sourceDir: project.sourceDir || null, action: 'replaced' })
+    // Overwrite existing scratch section — caller writes the file; also update the \inputscratch line in main.tex with new header
+    const mainLines = mainContent.split('\n')
+    const scratchLineIdx = mainLines.findIndex(l => l.includes(`\\inputscratch`) && l.includes(scratchPath))
+    let mainContentUpdated = null
+    if (scratchLineIdx >= 0) {
+      mainLines[scratchLineIdx] = `\\inputscratch{${scratchPath}}{${label}}{${displayHeader}}`
+      mainContentUpdated = mainLines.join('\n')
+    }
+    return res.json({ ok: true, scratchPath, wrappedContent: rawContent, mainFile: project.mainFile, mainContent: mainContentUpdated, sourceDir: project.sourceDir || null, action: 'replaced' })
   }
 
   // Resolve location label to a line number in main.tex
@@ -1276,9 +1283,9 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
     })
   }
 
-  // Insert \inputscratch{} into main.tex
+  // Insert \inputscratch{path}{label}{header} into main.tex
   const newLines = [...mainLines]
-  const insertLine = `\\inputscratch{${scratchPath}}`
+  const insertLine = `\\inputscratch{${scratchPath}}{${label}}{${displayHeader}}`
   if (after) {
     newLines.splice(resolvedLine, 0, insertLine)      // after: insert at resolvedLine (0-indexed = after 1-indexed line)
   } else {
@@ -1288,13 +1295,12 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
   // Canonical scratch template — defines the scratch environment and helpers.
   // Kept in .scratchinputs/scratch-template.tex so it can be updated without touching main.tex.
   // Bump SCRATCH_TEMPLATE_VERSION when the default template content changes.
-  const SCRATCH_TEMPLATE_VERSION = 1
+  const SCRATCH_TEMPLATE_VERSION = 2
   const scratchTemplatePath = '.scratchinputs/scratch-template.tex'
   const scratchTemplateContent = [
     `% scratch-template-version: ${SCRATCH_TEMPLATE_VERSION}`,
     '\\usepackage{xcolor}',
-    '\\providecommand{\\inputscratch}[1]{\\input{#1}}',
-    '\\newenvironment{scratch}[2]{\\begingroup\\color[gray]{0.3}\\par\\noindent{\\footnotesize\\ttfamily[#2]}\\par\\label{#1}}{\\endgroup\\par}',
+    '\\newcommand{\\inputscratch}[3]{\\begingroup\\color[gray]{0.3}\\par\\noindent{\\footnotesize\\ttfamily[#3]}\\par\\label{#2}\\input{#1}\\endgroup\\par}',
     '',
   ].join('\n')
 
@@ -1319,7 +1325,7 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
   res.json({
     ok: true,
     scratchPath,
-    wrappedContent,
+    wrappedContent: rawContent,
     scratchTemplatePath,
     scratchTemplateContent,
     scratchTemplateVersion: SCRATCH_TEMPLATE_VERSION,
@@ -1350,17 +1356,13 @@ router.post('/:name/inline-scratch', requireRw, (req, res) => {
   const scratchContent = readSourceFile(req.params.name, scratchPath)
   if (!scratchContent) return res.status(404).json({ error: `Scratch file not found: ${scratchPath} — has it been synced to the server yet?` })
 
-  // Strip \begin{scratch}{label}{header} and \end{scratch} wrapper, keep inner content
-  const scratchLines = scratchContent.split('\n')
-  let innerLines = scratchLines
-  if (innerLines[0] && /^\\begin\{scratch\}/.test(innerLines[0])) innerLines = innerLines.slice(1)
-  const endIdx = innerLines.lastIndexOf('\\end{scratch}')
-  if (endIdx >= 0) innerLines = innerLines.slice(0, endIdx)
+  // Content is raw (no wrapper) — just trim trailing blank lines
+  const innerLines = scratchContent.split('\n')
   while (innerLines.length > 0 && innerLines[innerLines.length - 1] === '') innerLines.pop()
 
-  // Replace \inputscratch{scratchPath} line in main.tex with the bare content
+  // Replace \inputscratch{scratchPath}{...}{...} line in main.tex with the bare content
   const mainLines = mainContent.split('\n')
-  const scratchLineIdx = mainLines.findIndex(l => l.includes(`\\inputscratch{${scratchPath}}`))
+  const scratchLineIdx = mainLines.findIndex(l => l.includes(`\\inputscratch`) && l.includes(scratchPath))
   if (scratchLineIdx < 0) {
     return res.status(404).json({ error: `Cannot find \\inputscratch{${scratchPath}} in ${project.mainFile}` })
   }
