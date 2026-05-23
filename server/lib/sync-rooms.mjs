@@ -17,14 +17,6 @@ import { emitShapeChangedDebounced } from './webhooks.mjs'
 
 // --- Custom shape schemas (prop validators only, no React) ---
 
-// Default values for required custom shape props. Used by the snapshot
-// auto-repair loop to fill in missing props on stale shapes.
-const shapeUtilDefaults = {
-  'understanding-line': { w: 6, h: 20, segments: '[]' },
-  'math-note': { w: 320, h: 200, text: '', autoSize: true },
-  'reading-assist-bar': { w: 200, h: 40, highlightId: '', responseId: '', color: 'black' },
-}
-
 const customShapeSchemas = {
   'math-note': {
     props: {
@@ -597,78 +589,10 @@ export async function getOrCreateRoom(docName) {
 
   let room
   if (snapshot) {
-    // Pre-validate and auto-repair snapshot records before room creation.
-    // Shapes with missing required props get defaults patched in — this
-    // prevents a single stale shape from breaking sync for ALL shapes in
-    // the room (the TLSyncClient resets the entire connection on any
-    // validation error during applyDiff).
-    if (snapshot.documents) {
-      for (const doc of snapshot.documents) {
-        const record = doc.state
-        if (!record?.typeName) continue
-        if (record.typeName === 'shape' && record.type && customShapeSchemas[record.type]) {
-          const schemaDef = customShapeSchemas[record.type]
-          if (schemaDef.props && record.props) {
-            const schemaKeys = new Set(Object.keys(schemaDef.props))
-            for (const [key, validator] of Object.entries(schemaDef.props)) {
-              if (record.props[key] === undefined) {
-                const util = shapeUtilDefaults[record.type]
-                const defaultVal = util?.[key]
-                if (defaultVal !== undefined) {
-                  record.props[key] = defaultVal
-                  console.warn(`[sync] Auto-repaired "${docName}" shape ${record.id}: added missing prop "${key}" = ${JSON.stringify(defaultVal)}`)
-                }
-              }
-            }
-            for (const key of Object.keys(record.props)) {
-              if (!schemaKeys.has(key)) {
-                delete record.props[key]
-                console.warn(`[sync] Auto-repaired "${docName}" shape ${record.id}: stripped unexpected prop "${key}"`)
-              }
-            }
-          }
-        }
-        const recordType = schema.types[record.typeName]
-        if (!recordType) continue
-        try {
-          recordType.validate(record)
-        } catch (e) {
-          const msg = e.message || ''
-          const unexpectedMatch = msg.match(/\.props\.(\w+): Unexpected property/)
-          if (unexpectedMatch && record.props) {
-            const badProp = unexpectedMatch[1]
-            delete record.props[badProp]
-            console.warn(`[sync] Auto-repaired "${docName}" shape ${record.id}: stripped unexpected prop "${badProp}" (${record.type})`)
-            try { recordType.validate(record) } catch (e2) {
-              console.error(`[sync] SNAPSHOT VALIDATION FAILED in "${docName}": type="${record.typeName}" id="${record.id}" — ${e2.message}`)
-              emitGlobalEvent('sync-error', { docName, shapeId: record.id, shapeType: record.type, error: e2.message })
-            }
-          } else {
-            console.error(`[sync] SNAPSHOT VALIDATION FAILED in "${docName}": type="${record.typeName}" id="${record.id}" — ${msg}`)
-            emitGlobalEvent('sync-error', { docName, shapeId: record.id, shapeType: record.type, error: msg })
-          }
-        }
-      }
-    }
-    try {
-      opts.initialSnapshot = snapshot
-      room = new TLSocketRoom(opts)
-      // Seed changelog baseline from loaded snapshot
-      prevSnapshots.set(docName, buildDocMap(snapshot.documents))
-      console.log(`[sync] Room created: ${docName} (loaded snapshot)`)
-    } catch (e) {
-      // Snapshot is incompatible (schema migration failure, corrupt data, etc.)
-      // Back up the bad snapshot and start fresh
-      console.error(`[sync] Failed to load snapshot for ${docName}: ${e.message}`)
-      const path = snapshotPath(docName)
-      try {
-        renameSync(path, path + '.broken')
-        console.log(`[sync] Backed up broken snapshot: ${path}.broken`)
-      } catch {}
-      delete opts.initialSnapshot
-      room = new TLSocketRoom(opts)
-      console.log(`[sync] Room created: ${docName} (fresh — snapshot was incompatible)`)
-    }
+    opts.initialSnapshot = snapshot
+    room = new TLSocketRoom(opts)
+    prevSnapshots.set(docName, buildDocMap(snapshot.documents))
+    console.log(`[sync] Room created: ${docName} (loaded snapshot)`)
   } else {
     room = new TLSocketRoom(opts)
     console.log(`[sync] Room created: ${docName}`)
