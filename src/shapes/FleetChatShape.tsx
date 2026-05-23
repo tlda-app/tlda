@@ -2451,15 +2451,9 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (e.key !== 'Escape') return
       if (!chatActiveRef.current) return
       const ta = inputRef.current as HTMLTextAreaElement | null
-      if (ta && ta.value !== '') {
-        injectOptimisticEvent({ _tempId: `esc-blocked-${Date.now()}`, _evType: 'system_notice', from: 'system', text: `Clear text first — Escape sends interrupt, not discard`, timestamp: new Date().toISOString() })
-        return
-      }
+      if (ta && ta.value !== '') return
       const targets = sendTargetsRef.current
-      if (targets.length === 0) {
-        injectOptimisticEvent({ _tempId: `esc-blocked-${Date.now()}`, _evType: 'system_notice', from: 'system', text: `No agent targeted — select a target first`, timestamp: new Date().toISOString() })
-        return
-      }
+      if (targets.length === 0) return
       e.preventDefault()
       e.stopPropagation()
       const now = Date.now()
@@ -2479,19 +2473,19 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (count >= 3) {
         escCountRef.current = 0
         lastEscRef.current = 0
-        injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', from: 'system', text: `💀 Killing ${agentLabel}…`, timestamp: ts })
+        injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', from: 'system', to: agent, text: `💀 Killing ${agentLabel}…`, timestamp: ts })
         fetch(`${FLEET_API}/api/kill-session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent }) })
           .then(r => r.json())
           .then(d => { updateOptimisticEvent(tempId, { text: d.error ? `⚠ Kill failed: ${d.error}` : `💀 Killed ${agentLabel}` }) })
           .catch(() => { updateOptimisticEvent(tempId, { text: `⚠ Kill failed (server unreachable)` }) })
       } else if (count === 2) {
-        injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', from: 'system', text: `⏸ Interrupting ${agentLabel}…`, timestamp: ts })
+        injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', from: 'system', to: agent, text: `⏸ Interrupting ${agentLabel}…`, timestamp: ts })
         fetch(`${FLEET_API}/api/interrupt`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent }) })
           .then(r => r.json())
           .then(d => { if (d.error) updateOptimisticEvent(tempId, { text: `⚠ Interrupt failed: ${d.error}` }) })
           .catch(() => { updateOptimisticEvent(tempId, { text: `⚠ Interrupt failed (server unreachable)` }) })
       } else {
-        injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', from: 'system', text: `⏸ Escape → ${agentLabel}…`, timestamp: ts })
+        injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', from: 'system', to: agent, text: `⏸ Escape → ${agentLabel}…`, timestamp: ts })
         fetch(`${FLEET_API}/api/send-key`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent, key: 'Escape' }) })
           .then(r => r.json())
           .then(d => { if (d.error) { updateOptimisticEvent(tempId, { text: `⚠ Escape failed: ${d.error}` }) } else { updateOptimisticEvent(tempId, { text: `⏸ Escape → ${agentLabel}` }) } })

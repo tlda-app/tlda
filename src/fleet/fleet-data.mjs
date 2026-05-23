@@ -58,7 +58,7 @@ function notify(channel, event) {
 export function matchesFilter(filter, event) {
   if (!event) return true  // broadcast (e.g. read-receipt refresh)
   if (!filter || filter.length === 0) return true
-  if (event.from_id === 'system' || event.from === 'system') return true
+  if ((event.from_id === 'system' || event.from === 'system') && !event.to) return true
   return filter.some(clause =>
     clause.every(term => {
       if (Array.isArray(term)) {
