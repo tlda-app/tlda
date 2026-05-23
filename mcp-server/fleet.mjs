@@ -70,9 +70,9 @@ function getAgentCwd() {
 const LOG_FILE = `${os.homedir()}/.claude/agent-messages.jsonl`;
 
 // --- tlda integration ---
-import { getRwToken } from '../shared/config.mjs';
+import { getRwToken, DEFAULT_PORT } from '../shared/config.mjs';
 import { tldaFetch as _sharedFetch } from '../shared/http-client.mjs';
-const TLDA_PORT = parseInt(process.env.TLDA_PORT || '5176');
+const TLDA_PORT = parseInt(process.env.TLDA_PORT || String(DEFAULT_PORT));
 const _tldaToken = getRwToken();
 
 async function tldaFetch(apiPath, opts = {}) {

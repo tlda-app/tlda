@@ -8,7 +8,7 @@
  * When no tokens are configured, auth is disabled (backward-compatible local use).
  */
 
-import { getReadToken, getRwToken } from '../../shared/config.mjs'
+import { getReadToken, getRwToken, DEFAULT_PORT } from '../../shared/config.mjs'
 
 let tokenRead = null
 let tokenRw = null
@@ -21,7 +21,7 @@ export function initAuth() {
   }
 
   // Non-standard port = dev/worktree server, skip auth so agents aren't blocked
-  if ((process.env.PORT || '5176') !== '5176') {
+  if ((process.env.PORT || String(DEFAULT_PORT)) !== String(DEFAULT_PORT)) {
     console.log('[auth] Dev port detected — auth disabled')
     authEnabled = false
     return

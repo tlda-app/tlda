@@ -23,7 +23,7 @@ import { homedir } from 'os'
 import { randomBytes } from 'crypto'
 import { collectSourceFiles, collectSourceHashes, collectSpecificFiles } from './lib/source-files.mjs'
 import {
-  loadConfig, saveConfig, getServerUrl, getRwToken,
+  loadConfig, saveConfig, getServerUrl, getRwToken, DEFAULT_PORT,
   CONFIG_DIR, CONFIG_FILE,
 } from '../shared/config.mjs'
 import { tldaFetch } from '../shared/http-client.mjs'
@@ -1268,7 +1268,7 @@ _tlda "$@"`)
 const LOGFILE = join(homedir(), '.config', 'tlda', 'server.log')
 
 function getPort() {
-  try { return new URL(getServer()).port || '5176' } catch { return '5176' }
+  try { return new URL(getServer()).port || String(DEFAULT_PORT) } catch { return String(DEFAULT_PORT) }
 }
 
 async function cmdDeploy() {

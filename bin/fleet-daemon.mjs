@@ -63,7 +63,7 @@ import { resolveFilePath, uploadFileToServer } from '../mcp-server/lib/chat-file
 import { processMessageText } from '../mcp-server/lib/message-processing.mjs'
 import {
   loadConfig as _loadSharedConfig, saveConfig as _saveSharedConfig,
-  getServerUrl, getRwToken,
+  getServerUrl, getRwToken, DEFAULT_PORT,
   CONFIG_DIR as _SHARED_CONFIG_DIR,
 } from '../shared/config.mjs'
 const execFileP = promisify(execFile)
@@ -114,7 +114,7 @@ function deriveMachineId() {
 
 const config = loadConfig()
 const SERVER = _usingCustomConfigDir
-  ? (process.env.TLDA_SERVER || config.server || 'http://localhost:5176')
+  ? (process.env.TLDA_SERVER || config.server || `http://localhost:${DEFAULT_PORT}`)
   : getServerUrl(config)
 const TOKEN = _usingCustomConfigDir
   ? (process.env.TLDA_TOKEN || config.tokenRw || config.token || null)
@@ -1723,12 +1723,12 @@ async function checkAgentLiveness() {
 async function rpcResolveFile({ path: filePath, cwd, server_url }) {
   const abs = resolveFilePath(filePath, cwd)
   if (!fs.existsSync(abs)) throw new Error(`File not found: ${abs}`)
-  const serverBase = server_url || `http://127.0.0.1:5176`
+  const serverBase = server_url || `http://127.0.0.1:${DEFAULT_PORT}`
   return await uploadFileToServer(abs, serverBase)
 }
 
 async function rpcRechat({ text, cwd, server_url }) {
-  const serverBase = server_url || `http://127.0.0.1:5176`
+  const serverBase = server_url || `http://127.0.0.1:${DEFAULT_PORT}`
   return await processMessageText(text, cwd, serverBase)
 }
 
