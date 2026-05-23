@@ -548,24 +548,43 @@ function ContextBadge({ percent }: { percent?: number }) {
  * When all agents stop, the space persists (ghost) until rawItemsLength changes
  * (i.e. a real message arrives to replace it). No timeout — no bounce.
  */
-function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, ctx, rawItemsLength }: {
+function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, ctx, rawItemsLength, agents }: {
   thinkingAgents: Map<string, number>
   compactingAgents: Map<string, number>
   contextPercent: Map<string, number>
   ctx: any
   rawItemsLength: number
+  agents: any[]
 }) {
+  const agentLiveness = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const a of agents) {
+      if (a.id) m.set(a.id, a.status || 'unknown')
+    }
+    return m
+  }, [agents])
+
   // Merge thinking + compacting into one map keyed by agentId
   const statusAgents = useMemo(() => {
-    const merged = new Map<string, { status: 'thinking' | 'compacting', startTs: number }>()
+    const merged = new Map<string, { status: 'thinking' | 'compacting' | 'hibernating', startTs: number }>()
     for (const [id, ts] of thinkingAgents) {
-      merged.set(id, { status: 'thinking', startTs: ts })
+      const liveness = agentLiveness.get(id)
+      if (liveness === 'dead' || liveness === 'hibernating') {
+        merged.set(id, { status: 'hibernating', startTs: ts })
+      } else {
+        merged.set(id, { status: 'thinking', startTs: ts })
+      }
     }
     for (const [id, ts] of compactingAgents) {
-      merged.set(id, { status: 'compacting', startTs: ts })
+      const liveness = agentLiveness.get(id)
+      if (liveness === 'dead' || liveness === 'hibernating') {
+        merged.set(id, { status: 'hibernating', startTs: ts })
+      } else {
+        merged.set(id, { status: 'compacting', startTs: ts })
+      }
     }
     return merged
-  }, [thinkingAgents, compactingAgents])
+  }, [thinkingAgents, compactingAgents, agentLiveness])
 
   const hasActive = statusAgents.size > 0
   const prevActiveRef = useRef(hasActive)
@@ -601,8 +620,8 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, ctx,
         <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
           <span>
             <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
-            {' '}<span className="thinking-text">{status === 'compacting' ? 'compacting…' : 'thinking…'}</span>
-            {' '}<ElapsedTime startMs={startTs} />
+            {' '}<span className="thinking-text">{status === 'hibernating' ? 'is hibernating' : status === 'compacting' ? 'compacting…' : 'thinking…'}</span>
+            {status !== 'hibernating' && <>{' '}<ElapsedTime startMs={startTs} /></>}
           </span>
           <ContextBadge percent={contextPercent.get(agentId)} />
         </div>
@@ -2400,9 +2419,19 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (e.key !== 'Escape') return
       if (!chatActiveRef.current) return
       const ta = inputRef.current as HTMLTextAreaElement | null
-      if (ta && ta.value !== '') return
+      if (ta && ta.value !== '') {
+        const ts = new Date().toISOString()
+        const meta = JSON.stringify({ fromLabel: 'system' })
+        injectOptimisticEvent({ _tempId: `esc-blocked-${Date.now()}`, type: 'chat', from: 'system', text: `Clear text first — Escape sends interrupt, not discard`, timestamp: ts, metadata: meta })
+        return
+      }
       const targets = sendTargetsRef.current
-      if (targets.length === 0) return
+      if (targets.length === 0) {
+        const ts = new Date().toISOString()
+        const meta = JSON.stringify({ fromLabel: 'system' })
+        injectOptimisticEvent({ _tempId: `esc-blocked-${Date.now()}`, type: 'chat', from: 'system', text: `No agent targeted — select a target first`, timestamp: ts, metadata: meta })
+        return
+      }
       e.preventDefault()
       e.stopPropagation()
       const now = Date.now()
@@ -3232,6 +3261,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             contextPercent={contextPercent}
             ctx={ctx}
             rawItemsLength={rawItems.length}
+            agents={agents}
           />
         </div>
 
