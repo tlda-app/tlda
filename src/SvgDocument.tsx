@@ -1138,12 +1138,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           tools={tools}
           licenseKey={LICENSE_KEY}
           onClose={() => setScreenshotCapture(null)}
-          onGoThere={(bounds) => {
-            editorRef.current?.centerOnPoint(
-              { x: bounds.x + bounds.w / 2, y: bounds.y + bounds.h / 2 },
-              { animation: { duration: 300 } }
-            )
-          }}
         />
       )}
       {panelsLocal && getFormatConfig(document.format).showScrollyOverlay && editorMounted && editorRef.current && (
