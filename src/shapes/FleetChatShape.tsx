@@ -2342,14 +2342,19 @@ function FleetChatInner({ shape }: { shape: any }) {
     return () => logEl.removeEventListener('click', onClick)
   }, [])
 
-  // Esc interrupt — document-level listener so it works regardless of textarea focus.
+  // Esc interrupt — document-level listener, but scoped to fire only when the
+  // fleet chat shape owns focus (textarea focused or active element is inside the shape).
   // Three tiers: 1×Esc = soft (single Escape to tmux), 2×Esc = hard (Escape+poll loop),
   // 3×Esc = kill session (tmux kill-session, agent dies immediately).
-  const [escDisplay, setEscDisplay] = useState<{ count: number, label: string } | null>(null)
-  const escDisplayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
+    let escTempCounter = 0
     function onEscKey(e: KeyboardEvent) {
       if (e.key !== 'Escape') return
+      const container = shapeContainerRef.current
+      if (!container) return
+      const active = document.activeElement
+      const inChat = active && container.contains(active)
+      if (!inChat) return
       const ta = inputRef.current as HTMLTextAreaElement | null
       if (ta && ta.value !== '') return
       const targets = sendTargetsRef.current
@@ -2368,31 +2373,30 @@ function FleetChatInner({ shape }: { shape: any }) {
       const count = escCountRef.current
       const agentLabel = agentNamesRef.current[agent] || agent.replace('fleet:', '')
       log.info('esc', 'interrupt', { count, gap, agent, agentLabel })
+      const tempId = `esc-${++escTempCounter}-${now}`
+      const ts = new Date().toISOString()
+      const meta = JSON.stringify({ fromLabel: 'system' })
       if (count >= 3) {
         escCountRef.current = 0
         lastEscRef.current = 0
-        setEscDisplay({ count: 3, label: `Kill ${agentLabel}` })
-        injectOptimisticEvent({ type: 'chat', from: 'system', text: `💀 Killing **${agentLabel}**`, timestamp: new Date().toISOString(), metadata: JSON.stringify({ fromLabel: 'system' }) })
+        injectOptimisticEvent({ _tempId: tempId, type: 'chat', from: 'system', text: `💀 Killing **${agentLabel}**…`, timestamp: ts, metadata: meta })
         fetch(`${FLEET_API}/api/kill-session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent }) })
-          .then(r => r.json()).then(d => log.debug('esc', 'kill-session response', d))
-          .catch(err => log.warn('esc', 'kill-session failed', { err }))
+          .then(r => r.json())
+          .then(d => { updateOptimisticEvent(tempId, { text: d.error ? `⚠ Kill failed: ${d.error}` : `💀 Killed **${agentLabel}**` }) })
+          .catch(() => { updateOptimisticEvent(tempId, { text: `⚠ Kill failed (server unreachable)` }) })
       } else if (count === 2) {
-        setEscDisplay({ count: 2, label: `Interrupt ${agentLabel}` })
-        injectOptimisticEvent({ type: 'chat', from: 'system', text: `⏸ Interrupting **${agentLabel}**…`, timestamp: new Date().toISOString(), metadata: JSON.stringify({ fromLabel: 'system' }) })
+        injectOptimisticEvent({ _tempId: tempId, type: 'chat', from: 'system', text: `⏸ Interrupting **${agentLabel}**…`, timestamp: ts, metadata: meta })
         fetch(`${FLEET_API}/api/interrupt`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent }) })
           .then(r => r.json())
-          .then(d => { if (d.error) injectOptimisticEvent({ type: 'chat', from: 'system', text: `⚠ Interrupt failed: ${d.error}`, timestamp: new Date().toISOString(), metadata: JSON.stringify({ fromLabel: 'system' }) }) })
-          .catch(() => injectOptimisticEvent({ type: 'chat', from: 'system', text: `⚠ Interrupt failed (server unreachable)`, timestamp: new Date().toISOString(), metadata: JSON.stringify({ fromLabel: 'system' }) }))
+          .then(d => { if (d.error) updateOptimisticEvent(tempId, { text: `⚠ Interrupt failed: ${d.error}` }) })
+          .catch(() => { updateOptimisticEvent(tempId, { text: `⚠ Interrupt failed (server unreachable)` }) })
       } else {
-        setEscDisplay({ count: 1, label: `Esc → ${agentLabel}` })
-        injectOptimisticEvent({ type: 'chat', from: 'system', text: `⏸ Escape → **${agentLabel}**`, timestamp: new Date().toISOString(), metadata: JSON.stringify({ fromLabel: 'system' }) })
+        injectOptimisticEvent({ _tempId: tempId, type: 'chat', from: 'system', text: `⏸ Escape → **${agentLabel}**…`, timestamp: ts, metadata: meta })
         fetch(`${FLEET_API}/api/send-key`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent, key: 'Escape' }) })
           .then(r => r.json())
-          .then(d => { if (d.error) injectOptimisticEvent({ type: 'chat', from: 'system', text: `⚠ Escape failed: ${d.error}`, timestamp: new Date().toISOString(), metadata: JSON.stringify({ fromLabel: 'system' }) }) })
-          .catch(() => injectOptimisticEvent({ type: 'chat', from: 'system', text: `⚠ Escape failed (server unreachable)`, timestamp: new Date().toISOString(), metadata: JSON.stringify({ fromLabel: 'system' }) }))
+          .then(d => { if (d.error) { updateOptimisticEvent(tempId, { text: `⚠ Escape failed: ${d.error}` }) } else { updateOptimisticEvent(tempId, { text: `⏸ Escape → **${agentLabel}**` }) } })
+          .catch(() => { updateOptimisticEvent(tempId, { text: `⚠ Escape failed (server unreachable)` }) })
       }
-      if (escDisplayTimerRef.current) clearTimeout(escDisplayTimerRef.current)
-      escDisplayTimerRef.current = setTimeout(() => setEscDisplay(null), 1500)
     }
     document.addEventListener('keydown', onEscKey, true)
     return () => document.removeEventListener('keydown', onEscKey, true)
@@ -3226,17 +3230,6 @@ function FleetChatInner({ shape }: { shape: any }) {
               }}
               onMouseLeave={() => setTermHoverVisible(false)}
             />
-          )}
-          {escDisplay && (
-            <div style={{
-              position: 'absolute', top: -28, right: 8,
-              padding: '2px 8px', borderRadius: 4, fontSize: 12,
-              background: escDisplay.count >= 3 ? 'rgba(220,40,40,0.85)' : escDisplay.count === 2 ? 'rgba(200,120,20,0.85)' : 'rgba(128,128,128,0.7)',
-              color: '#fff', pointerEvents: 'none', zIndex: 10,
-              transition: 'opacity 0.3s',
-            }}>
-              {escDisplay.count}× {escDisplay.label}
-            </div>
           )}
           <SendHint
             filter={filter}
