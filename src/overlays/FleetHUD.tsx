@@ -300,14 +300,15 @@ export function FleetHUD({
     let lastCamX = mainEditor.getCamera().x
     let lastCamZ = mainEditor.getCamera().z
     let cameraRestored = false
+    const mountTime = Date.now()
     const onCameraRestored = () => { cameraRestored = true }
     window.addEventListener('camera-restored', onCameraRestored)
     const fallbackTimer = setTimeout(() => { cameraRestored = true }, 5000)
     const poll = () => {
       const cam = mainEditor.getCamera()
       if (cam.x !== lastCamX || cam.z !== lastCamZ) {
-        if (!cameraRestored) {
-          // Camera not yet restored — skip panOffset updates
+        if (!cameraRestored || Date.now() - mountTime < 2000) {
+          // Wait for both camera restore AND 2s minimum settling
         } else if (cam.z === lastCamZ && panOffsetRef.current !== null) {
           panOffsetRef.current += (cam.x - lastCamX) * cam.z
           saveAnchorOffsets(mainEditor, panOffsetRef.current, cameraYRef.current!)

@@ -631,33 +631,46 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, ctx,
   )
 }
 
-function ElizaStatus({ pending, ctx }: { pending: ElizaNudge[], ctx: any }) {
-  if (pending.length === 0) return null
+function ElizaStatus({ pending, ctx, rawItemsLength }: { pending: ElizaNudge[], ctx: any, rawItemsLength: number }) {
+  const hasActive = pending.length > 0
+  const prevActiveRef = useRef(hasActive)
+  const [ghost, setGhost] = useState(false)
+  const ghostRawItemsRef = useRef(rawItemsLength)
+
+  if (prevActiveRef.current && !hasActive && !ghost) {
+    setGhost(true)
+    ghostRawItemsRef.current = rawItemsLength
+  }
+  if (hasActive && ghost) {
+    setGhost(false)
+  }
+  prevActiveRef.current = hasActive
+
+  useEffect(() => {
+    if (ghost && rawItemsLength !== ghostRawItemsRef.current) {
+      setGhost(false)
+    }
+  }, [ghost, rawItemsLength])
+
+  if (!hasActive && !ghost) return null
+
+  const labels = pending.map(n => n.label).join(', ')
   return (
     <div style={{
       padding: '2px 8px',
       fontSize: 11,
       flexShrink: 0,
-      opacity: 0.5,
+      opacity: ghost ? 0 : 0.4,
       transition: 'opacity 0.2s',
     }}
     className="eliza-status"
     >
-      <div className="chat-line" style={{ padding: '2px 0', display: 'flex', alignItems: 'baseline', gap: 4 }}>
-        <span style={{ opacity: 0.7 }}>eliza:</span>
-        {pending.map((n, i) => (
-          <span key={n.id} style={{
-            padding: '1px 5px',
-            borderRadius: 3,
-            fontSize: 10,
-            opacity: 0.6,
-            background: 'var(--color-text, #ccc)',
-            color: 'var(--color-background, #222)',
-          }}>
-            {i + 1}. {n.label}
-          </span>
-        ))}
-      </div>
+      {!ghost && (
+        <div className="chat-line" style={{ padding: '2px 0' }}>
+          <span style={{ opacity: 0.7 }}>eliza:</span> {labels}
+        </div>
+      )}
+      {ghost && <div style={{ padding: '2px 0', visibility: 'hidden' }}>placeholder</div>}
     </div>
   )
 }
@@ -817,7 +830,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const thinkingAgents = useFleetThinking(dnfFilter, frameId)
   const compactingAgents = useFleetCompacting(dnfFilter, frameId)
   const contextPercent = useFleetContext(dnfFilter, frameId)
-  const elizaPending = useElizaPending()
+  const elizaPendingAll = useElizaPending()
   const [olderEvents, setOlderEvents] = useState<any[]>([])
 
   // When an agent renames itself, auto-update any filter terms that used the old name.
@@ -917,6 +930,25 @@ function FleetChatInner({ shape }: { shape: any }) {
     )
     return agent?.id || label
   }, [agents])
+
+  const elizaPending = useMemo(() => {
+    let filtered = elizaPendingAll
+    if (dnfFilter && dnfFilter.length > 0) {
+      const targetIds = new Set<string>()
+      for (const andGroup of dnfFilter) {
+        for (const [, label] of andGroup) {
+          targetIds.add(resolveToFleetId(label))
+        }
+      }
+      filtered = filtered.filter(n => targetIds.has(n.targetId))
+    }
+    const seen = new Set<string>()
+    return filtered.filter(n => {
+      if (seen.has(n.label)) return false
+      seen.add(n.label)
+      return true
+    })
+  }, [elizaPendingAll, dnfFilter, resolveToFleetId])
 
   // Fetch per-agent history on mount / filter change.
   // The global event buffer (MAX_EVENTS=150) is shared across all agents.
@@ -2420,16 +2452,12 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (!chatActiveRef.current) return
       const ta = inputRef.current as HTMLTextAreaElement | null
       if (ta && ta.value !== '') {
-        const ts = new Date().toISOString()
-        const meta = JSON.stringify({ fromLabel: 'system' })
-        injectOptimisticEvent({ _tempId: `esc-blocked-${Date.now()}`, type: 'chat', from: 'system', text: `Clear text first — Escape sends interrupt, not discard`, timestamp: ts, metadata: meta })
+        injectOptimisticEvent({ _tempId: `esc-blocked-${Date.now()}`, _evType: 'system_notice', from: 'system', text: `Clear text first — Escape sends interrupt, not discard`, timestamp: new Date().toISOString() })
         return
       }
       const targets = sendTargetsRef.current
       if (targets.length === 0) {
-        const ts = new Date().toISOString()
-        const meta = JSON.stringify({ fromLabel: 'system' })
-        injectOptimisticEvent({ _tempId: `esc-blocked-${Date.now()}`, type: 'chat', from: 'system', text: `No agent targeted — select a target first`, timestamp: ts, metadata: meta })
+        injectOptimisticEvent({ _tempId: `esc-blocked-${Date.now()}`, _evType: 'system_notice', from: 'system', text: `No agent targeted — select a target first`, timestamp: new Date().toISOString() })
         return
       }
       e.preventDefault()
@@ -2448,26 +2476,25 @@ function FleetChatInner({ shape }: { shape: any }) {
       log.info('esc', 'interrupt', { count, gap, agent, agentLabel })
       const tempId = `esc-${++escTempCounter}-${now}`
       const ts = new Date().toISOString()
-      const meta = JSON.stringify({ fromLabel: 'system' })
       if (count >= 3) {
         escCountRef.current = 0
         lastEscRef.current = 0
-        injectOptimisticEvent({ _tempId: tempId, type: 'chat', from: 'system', text: `💀 Killing **${agentLabel}**…`, timestamp: ts, metadata: meta })
+        injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', from: 'system', text: `💀 Killing ${agentLabel}…`, timestamp: ts })
         fetch(`${FLEET_API}/api/kill-session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent }) })
           .then(r => r.json())
-          .then(d => { updateOptimisticEvent(tempId, { text: d.error ? `⚠ Kill failed: ${d.error}` : `💀 Killed **${agentLabel}**` }) })
+          .then(d => { updateOptimisticEvent(tempId, { text: d.error ? `⚠ Kill failed: ${d.error}` : `💀 Killed ${agentLabel}` }) })
           .catch(() => { updateOptimisticEvent(tempId, { text: `⚠ Kill failed (server unreachable)` }) })
       } else if (count === 2) {
-        injectOptimisticEvent({ _tempId: tempId, type: 'chat', from: 'system', text: `⏸ Interrupting **${agentLabel}**…`, timestamp: ts, metadata: meta })
+        injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', from: 'system', text: `⏸ Interrupting ${agentLabel}…`, timestamp: ts })
         fetch(`${FLEET_API}/api/interrupt`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent }) })
           .then(r => r.json())
           .then(d => { if (d.error) updateOptimisticEvent(tempId, { text: `⚠ Interrupt failed: ${d.error}` }) })
           .catch(() => { updateOptimisticEvent(tempId, { text: `⚠ Interrupt failed (server unreachable)` }) })
       } else {
-        injectOptimisticEvent({ _tempId: tempId, type: 'chat', from: 'system', text: `⏸ Escape → **${agentLabel}**…`, timestamp: ts, metadata: meta })
+        injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', from: 'system', text: `⏸ Escape → ${agentLabel}…`, timestamp: ts })
         fetch(`${FLEET_API}/api/send-key`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent, key: 'Escape' }) })
           .then(r => r.json())
-          .then(d => { if (d.error) { updateOptimisticEvent(tempId, { text: `⚠ Escape failed: ${d.error}` }) } else { updateOptimisticEvent(tempId, { text: `⏸ Escape → **${agentLabel}**` }) } })
+          .then(d => { if (d.error) { updateOptimisticEvent(tempId, { text: `⚠ Escape failed: ${d.error}` }) } else { updateOptimisticEvent(tempId, { text: `⏸ Escape → ${agentLabel}` }) } })
           .catch(() => { updateOptimisticEvent(tempId, { text: `⚠ Escape failed (server unreachable)` }) })
       }
     }
@@ -3254,7 +3281,7 @@ function FleetChatInner({ shape }: { shape: any }) {
               ))}
             </div>
           )}
-          <ElizaStatus pending={elizaPending} ctx={ctx} />
+          <ElizaStatus pending={elizaPending} ctx={ctx} rawItemsLength={rawItems.length} />
           <ThinkingStatus
             thinkingAgents={thinkingAgents}
             compactingAgents={compactingAgents}

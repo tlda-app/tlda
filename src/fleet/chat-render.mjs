@@ -113,6 +113,12 @@ export function renderChatLine(m, ctx) {
     return `<div class="chat-line chat-timer-msg"><span class="chat-ts">${ts}</span> <span class="agent-nick ${cls}" data-agent-id="${esc(m.from)}">${esc(nick)}</span> <span class="timer-msg">\u23F1 ${msg}</span></div>`
   }
 
+  // System notices — brief activity events, no routing
+  if (m._evType === 'system_notice') {
+    const ts = timeShort(m.timestamp)
+    return `<div class="chat-line system-notice" data-msg-ts="${esc(m.timestamp || '')}"><span class="chat-ts">${ts}</span> ${esc(m.text || '')}</div>`
+  }
+
   // Kick messages and channel notifications — infrastructure noise, filter from chat UI
   if ((m.text || '').startsWith('📬')) return ''
   if ((m.text || '').startsWith('<channel')) return ''
