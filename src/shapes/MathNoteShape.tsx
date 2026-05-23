@@ -440,7 +440,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ filePath: backingFile, docName: docParam }),
-      }).catch(() => {})
+      }).catch(e => console.warn('[math-note] backing file register failed:', e.message))
     }, [backingFile])
 
     // Backing file: write to file only when the user actually changed the text

@@ -101,7 +101,7 @@ function DocClipComponent({ shape }: { shape: any }) {
           setSvgReady(true)
         }
       })
-      .catch(() => {})
+      .catch(e => console.warn('[doc-clip] SVG fetch failed:', e.message))
   }, [doc, page])
 
   const shapeUtils = useMemo(() => {

@@ -61,7 +61,7 @@ function getAgentCwd() {
         return cwd;
       }
     }
-  } catch {}
+  } catch (e) { process.stderr.write(`[fleet] agent cwd detection failed: ${e.message}\n`); }
   _agentCwdCache = process.env.PWD || null;
   return _agentCwdCache;
 }
@@ -1483,7 +1483,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         try {
           const cfg = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.config', 'tlda', 'config.json'), 'utf8'));
           delegateSpawnMode = cfg.spawnMode || null;
-        } catch {}
+        } catch (e) { process.stderr.write(`[fleet] spawn mode config read failed: ${e.message}\n`); }
       }
 
       const fleetSpawnScript = path.join(os.homedir(), 'bin', 'fleet-spawn');
@@ -1909,7 +1909,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (!task) return { content: [{ type: 'text', text: 'No active task to report on.' }], isError: true };
 
     let agents = [];
-    try { agents = await sendWS('store-agents'); } catch {}
+    try { agents = await sendWS('store-agents'); } catch (e) { process.stderr.write(`[fleet] store-agents fetch for report failed: ${e.message}\n`); }
     const state = { agents, tasks: [], messages: [] };
 
     const agent = getAgent(state, AGENT_ID);
@@ -2684,7 +2684,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     let agentId;
     if (args.agent) {
       let allAgents = [];
-      try { const d = await sendWS('store-agents'); if (Array.isArray(d)) allAgents = d; } catch {}
+      try { const d = await sendWS('store-agents'); if (Array.isArray(d)) allAgents = d; } catch (e) { process.stderr.write(`[fleet] store-agents fetch for search failed: ${e.message}\n`); }
       const matches = allAgents.filter(a =>
         a.id === args.agent || a.friendly_name === args.agent || a.id.startsWith(args.agent)
       );

@@ -73,7 +73,7 @@ async function getNextShapeIndex(docName) {
         maxIndex = s.index;
       }
     }
-  } catch {}
+  } catch (e) { process.stderr.write(`[mcp] shape index scan failed: ${e.message}\n`); }
   return getIndexAbove(maxIndex);
 }
 
@@ -1180,7 +1180,7 @@ async function highlightLine(doc, file, line) {
       await sendHighlightSignal(coords.tldrawX, coords.tldrawY, coords.page);
       return { ok: true, page: coords.page, x: coords.tldrawX, y: coords.tldrawY };
     }
-  } catch {}
+  } catch (e) { process.stderr.write(`[mcp] synctex flash lookup failed: ${e.message}\n`); }
 
   return { ok: false, error: `Line ${line} not found in lookup or synctex` };
 }
@@ -1294,7 +1294,7 @@ async function addAnnotation(doc, line, text, { color = 'orange', size, width, h
         maxIndex = s.index;
       }
     }
-  } catch {}
+  } catch (e) { process.stderr.write(`[mcp] shape index scan failed for add_note: ${e.message}\n`); }
   const noteIndex = getIndexAbove(maxIndex);
 
   const shape = {
@@ -2513,7 +2513,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           // Don't pass file as source anchor since it was used for content
           file = undefined;
         }
-      } catch {}
+      } catch (e) { process.stderr.write(`[mcp] file read for annotation failed: ${e.message}\n`); }
     }
     if (optionsFile) {
       if (text || choices) {
@@ -3138,7 +3138,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       try {
         const shapes = await fetchShapes(doc, 'understanding-line');
         ribbon = shapes.find(s => s.id === RIBBON_ID);
-      } catch {}
+      } catch (e) { process.stderr.write(`[mcp] ribbon shape fetch failed: ${e.message}\n`); }
 
       if (!ribbon) {
         // Create the ribbon shape — the viewer will resize it on load
@@ -3455,7 +3455,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             viewerInfo = `**Viewer**: stale — showing ${viewerHash.slice(0, 7)}, latest is ${latestHash.slice(0, 7)} (${ageMins} min behind). User may need to reload.`;
           }
         }
-      } catch {}
+      } catch (e) { process.stderr.write(`[mcp] viewer stale check failed: ${e.message}\n`); }
       const triggered = (!isBuilding && name !== 'build_status') ? '**Build triggered.**\n' : (isBuilding ? '**Build already in progress.**\n' : '');
       const summary = [
         triggered,
@@ -3797,7 +3797,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           const parent = await serverFetch(`/api/projects/${doc}/shapes/${encodeURIComponent(replyTo.startsWith('shape:') ? replyTo : `shape:${replyTo}`)}`);
           noteY = parent.y ?? parent.meta?.anchorCanvasY ?? 100;
           if (parent.props?.color) inheritedColor = parent.props.color;
-        } catch {}
+        } catch (e) { process.stderr.write(`[mcp] parent shape fetch for reply failed: ${e.message}\n`); }
         const replyId = `shape:claude-${crypto.randomUUID().slice(0, 12)}`;
         await serverFetch(`/api/projects/${doc}/shapes`, {
           method: 'POST',
