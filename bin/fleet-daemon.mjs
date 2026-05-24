@@ -68,7 +68,9 @@ import {
 } from '../shared/config.mjs'
 const execFileP = promisify(execFile)
 
-const VERSION = '0.1.0'
+const VERSION = '0.1.1'
+import { createLogger } from '../shared/logger.mjs'
+const log = createLogger('daemon')
 // CONFIG_DIR holds config.json, cursors, PID and log files. Defaults to
 // ~/.config/tlda. TLDA_DAEMON_CONFIG_DIR lets the E2E test start a second
 // daemon in parallel without clobbering the live daemon's PID file.
@@ -76,6 +78,7 @@ const CONFIG_DIR = process.env.TLDA_DAEMON_CONFIG_DIR || _SHARED_CONFIG_DIR
 const CURSORS_FILE = path.join(CONFIG_DIR, 'daemon-cursors.json')
 const PID_FILE = path.join(CONFIG_DIR, 'fleet-daemon.pid')
 const LOG_FILE = path.join(CONFIG_DIR, 'fleet-daemon.log')
+const DEAD_LETTER_FILE = path.join(CONFIG_DIR, 'daemon-dead-letters.jsonl')
 const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects')
 
 // ---------- config / machine identity ----------
@@ -126,7 +129,7 @@ let MACHINE_ID = config.machineId || null
 if (!MACHINE_ID) {
   MACHINE_ID = deriveMachineId()
   saveConfig({ ...config, machineId: MACHINE_ID })
-  console.log(`[daemon] derived machine_id=${MACHINE_ID} (saved to config)`)
+  log.info(`derived machine_id=${MACHINE_ID} (saved to config)`)
 }
 
 // boot_id — monotonic per process start. Used by the server to break ties
@@ -140,12 +143,12 @@ const HOSTNAME = os.hostname()
 function loadCursors() {
   if (!fs.existsSync(CURSORS_FILE)) return {}
   try { return JSON.parse(fs.readFileSync(CURSORS_FILE, 'utf8')) }
-  catch (e) { console.warn(`[daemon] corrupt cursors file, resetting: ${e.message}`); return {} }
+  catch (e) { log.warn(`corrupt cursors file, resetting: ${e.message}`); return {} }
 }
 function saveCursors() {
   if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true })
   try { fs.writeFileSync(CURSORS_FILE, JSON.stringify(cursors, null, 2)) }
-  catch (e) { console.error(`[daemon] cursor save failed: ${e.message}`) }
+  catch (e) { log.error(`cursor save failed: ${e.message}`) }
 }
 let cursors = loadCursors() // { sessionId: { inode, offset } }
 
@@ -176,9 +179,9 @@ function loadQualifications() {
       editRe: globToRegex(r.edit),
       requires: r.requires || [],
     }))
-    console.log(`[daemon] loaded ${_qualRules.length} qualification rules`)
+    log.info(`loaded ${_qualRules.length} qualification rules`)
   } catch (e) {
-    console.error(`[daemon] failed to load qualifications: ${e.message}`)
+    log.error(`failed to load qualifications: ${e.message}`)
   }
 }
 
@@ -521,10 +524,10 @@ async function autoAcceptPrompt(tmuxSession, reason) {
       await new Promise(r => setTimeout(r, 100))
       await tmux('send-keys', '-t', tmuxSession, 'Enter')
     }
-    console.log(`[daemon] auto-accepted prompt (${reason}) in ${tmuxSession}`)
+    log.info(`auto-accepted prompt (${reason}) in ${tmuxSession}`)
     return true
   } catch (e) {
-    console.error(`[daemon] auto-accept failed in ${tmuxSession}: ${e.message}`)
+    log.error(`auto-accept failed in ${tmuxSession}: ${e.message}`)
     return false
   }
 }
@@ -555,7 +558,7 @@ function startAutoAcceptSweep() {
         } else if (result.type === 'surface') {
           if (surfacedPrompts.get(agent.tmux_session) === result.reason) continue
           surfacedPrompts.set(agent.tmux_session, result.reason)
-          console.log(`[daemon] surfacing prompt for ${agent.friendly_name || agent.id}: ${result.reason}`)
+          log.info(`surfacing prompt for ${agent.friendly_name || agent.id}: ${result.reason}`)
           sendMsg({ type: 'terminal_attention', agent_id: agent.id, tmux_session: agent.tmux_session, text: result.reason, reason: result.reason, snippet: result.snippet || null })
         } else {
           surfacedPrompts.delete(agent.tmux_session)
@@ -586,7 +589,7 @@ async function checkForPlanModePrompt(agentId) {
       { timeout: 5000, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 })
     pane = stripAnsi(stdout)
   } catch (e) {
-    console.error(`[daemon] plan-mode capture ${agentId}: ${e.message}`)
+    log.error(`plan-mode capture ${agentId}: ${e.message}`)
     return
   }
 
@@ -602,9 +605,9 @@ async function checkForPlanModePrompt(agentId) {
   if (planFileMatch) {
     try {
       planText = fs.readFileSync(planFileMatch[0], 'utf8').trim()
-      console.log(`[daemon] plan-mode: read plan file ${planFileMatch[0]}`)
+      log.info(`plan-mode: read plan file ${planFileMatch[0]}`)
     } catch (e) {
-      console.warn(`[daemon] plan-mode: couldn't read plan file ${planFileMatch[0]}: ${e.message}`)
+      log.warn(`plan-mode: couldn't read plan file ${planFileMatch[0]}: ${e.message}`)
     }
   }
 
@@ -644,7 +647,7 @@ async function checkForPlanModePrompt(agentId) {
     plan_text: planText,
     tmux_session: agent.tmux_session,
   })
-  console.log(`[daemon] plan-mode-prompt sent for agent ${agentId}`)
+  log.info(`plan-mode-prompt sent for agent ${agentId}`)
 }
 
 function scheduleCheckForPlanModePrompt(agentId) {
@@ -799,16 +802,16 @@ function syncSessionWatchers(agentList) {
         const pw = pathWatchers.get(jsonlPath)
         if (!pw) return
         if (pw.watchSeenAt && Date.now() - pw.watchSeenAt < 3000) return
-        console.warn(`[daemon] fs.watch missed ${path.basename(jsonlPath)} — recreating`)
+        log.warn(`fs.watch missed ${path.basename(jsonlPath)} — recreating`)
         try { pw.watcher.close() } catch {}
         pw.watcher = createWatcher()
         readNewSessionLines(pw.primaryAgentId, jsonlPath, pw.sessionId)
       })
 
       pathWatchers.set(jsonlPath, { watcher, primaryAgentId: agent.id, sessionId, watchSeenAt: 0 })
-      console.log(`[daemon] watching JSONL for ${agent.friendly_name || agent.id}: ${path.basename(jsonlPath)} @ offset=${offset}`)
+      log.info(`watching JSONL for ${agent.friendly_name || agent.id}: ${path.basename(jsonlPath)} @ offset=${offset}`)
     } catch (e) {
-      console.error(`[daemon] watcher creation failed for ${jsonlPath}: ${e.message}`)
+      log.error(`watcher creation failed for ${jsonlPath}: ${e.message}`)
     }
   }
 
@@ -828,7 +831,7 @@ function syncSessionWatchers(agentList) {
 function readNewSessionLines(agentId, jsonlPath, sessionId) {
   let stat
   try { stat = fs.statSync(jsonlPath) } catch (e) {
-    if (e.code !== 'ENOENT') console.error(`[daemon] stat ${jsonlPath}: ${e.message}`)
+    if (e.code !== 'ENOENT') log.error(`stat ${jsonlPath}: ${e.message}`)
     return
   }
   const cursor = cursors[sessionId]
@@ -849,7 +852,7 @@ function readNewSessionLines(agentId, jsonlPath, sessionId) {
     fs.readSync(fd, buf, 0, length, cursors[sessionId].offset)
     fs.closeSync(fd)
   } catch (e) {
-    console.error(`[daemon] read ${jsonlPath}: ${e.message}`)
+    log.error(`read ${jsonlPath}: ${e.message}`)
     return
   }
   cursors[sessionId].offset = stat.size
@@ -972,10 +975,10 @@ function backfillSearchEntries(agentId, jsonlPath, sessionId) {
       for (let i = 0; i < entries.length; i += 200) {
         sendMsg({ type: 'jsonl-index', entries: entries.slice(i, i + 200) })
       }
-      console.log(`[daemon] search backfill: ${entries.length} entries for ${path.basename(jsonlPath)}`)
+      log.info(`search backfill: ${entries.length} entries for ${path.basename(jsonlPath)}`)
     }
   } catch (e) {
-    console.error(`[daemon] search backfill failed for ${sessionId}: ${e.message}`)
+    log.error(`search backfill failed for ${sessionId}: ${e.message}`)
   }
 }
 
@@ -1006,10 +1009,10 @@ function backfillAllPriorSessions(agentId, fleetId) {
       }
     }
   } catch (e) {
-    console.error(`[daemon] backfillAllPriorSessions failed for ${fleetId}: ${e.message}`)
+    log.error(`backfillAllPriorSessions failed for ${fleetId}: ${e.message}`)
   }
   if (found > 0) {
-    console.log(`[daemon] backfilling ${found} prior session(s) for ${fleetId}`)
+    log.info(`backfilling ${found} prior session(s) for ${fleetId}`)
     scheduleCursorSave()
   }
 }
@@ -1140,7 +1143,7 @@ function syncSourceWatchers(projectList, activeViewers) {
       } else if (state.watcher) {
         const seenAt = state.watchSeen.get(filename)
         if (!seenAt || Date.now() - seenAt > 3000) {
-          console.warn(`[daemon] fs.watch missed ${filename} in ${state.projectName} — recreating`)
+          log.warn(`fs.watch missed ${filename} in ${state.projectName} — recreating`)
           try { state.watcher.close() } catch {}
           state.watcher = fs.watch(state.sourceDir, { recursive: true }, (_ev, fn) => state.onFileChange(fn))
         }
@@ -1154,10 +1157,10 @@ function syncSourceWatchers(projectList, activeViewers) {
     try {
       for (const rel of watchSet) startPolling(state, rel)
       sourceWatchers.set(p.name, state)
-      console.log(`[daemon] watching source ${p.name}: ${p.sourceDir} (${watchSet.size} files${hasFlsWatchList ? '' : ', bootstrap'})`)
+      log.info(`watching source ${p.name}: ${p.sourceDir} (${watchSet.size} files${hasFlsWatchList ? '' : ', bootstrap'})`)
       pushWatchedFiles(p.name, p.sourceDir, watchSet, hasFlsWatchList ? null : p.mainFile, p.extraInputCommands)
     } catch (e) {
-      console.error(`[daemon] source watcher failed for ${p.name}: ${e.message}`)
+      log.error(`source watcher failed for ${p.name}: ${e.message}`)
     }
   }
   for (const [name, state] of sourceWatchers) {
@@ -1176,8 +1179,8 @@ function syncFsWatchers() {
     if (needsWatch && !state.watcher) {
       try {
         state.watcher = fs.watch(state.sourceDir, { recursive: true }, (_ev, fn) => state.onFileChange(fn))
-        console.log(`[daemon] fs.watch started for ${name} (viewer connected)`)
-      } catch (e) { console.error(`[daemon] fs.watch failed for ${name}: ${e.message}`) }
+        log.info(`fs.watch started for ${name} (viewer connected)`)
+      } catch (e) { log.error(`fs.watch failed for ${name}: ${e.message}`) }
     } else if (!needsWatch && state.watcher) {
       try { state.watcher.close() } catch {}
       state.watcher = null
@@ -1201,22 +1204,22 @@ function pushWatchedFiles(projectName, sourceDir, watchSet, mainFile, extraInput
   if (mainFile) {
     // Bootstrap mode: no .fls yet, scan main .tex for \input-like commands
     const deps = scanTexInputs(sourceDir, mainFile, extraInputCommands || [])
-    console.log(`[daemon] bootstrap scan for ${projectName}: ${deps.size} files from ${mainFile}`)
+    log.info(`bootstrap scan for ${projectName}: ${deps.size} files from ${mainFile}`)
     for (const rel of deps) {
       const full = path.join(sourceDir, rel)
       try { files.push({ path: rel, ...readFileForUpload(full) }) }
-      catch (e) { console.error(`[daemon] read ${full}: ${e.message}`) }
+      catch (e) { log.error(`read ${full}: ${e.message}`) }
     }
   } else if (watchSet.size > 0) {
     for (const rel of watchSet) {
       const full = path.join(sourceDir, rel)
       if (!fs.existsSync(full)) continue
       try { files.push({ path: rel, ...readFileForUpload(full) }) }
-      catch (e) { console.error(`[daemon] read ${full}: ${e.message}`) }
+      catch (e) { log.error(`read ${full}: ${e.message}`) }
     }
   }
   if (files.length === 0) return
-  console.log(`[daemon] connect push: ${files.length} files for ${projectName}`)
+  log.info(`connect push: ${files.length} files for ${projectName}`)
   sendMsg({ type: 'source-change', project: projectName, files })
 }
 
@@ -1242,7 +1245,7 @@ function flushSourceChanges(projectName) {
     const full = path.join(state.sourceDir, rel)
     if (!fs.existsSync(full)) { deleted.push(rel); continue }
     try { files.push({ path: rel, ...readFileForUpload(full) }) }
-    catch (e) { console.error(`[daemon] read ${full}: ${e.message}`) }
+    catch (e) { log.error(`read ${full}: ${e.message}`) }
   }
 
   // When a .tex file changes, rescan for new \input deps not yet on the server.
@@ -1258,8 +1261,8 @@ function flushSourceChanges(projectName) {
       if (!fs.existsSync(full)) continue
       try {
         files.push({ path: rel, ...readFileForUpload(full) })
-        console.log(`[daemon] rescan discovered new dep: ${rel}`)
-      } catch (e) { console.error(`[daemon] read ${full}: ${e.message}`) }
+        log.info(`rescan discovered new dep: ${rel}`)
+      } catch (e) { log.error(`read ${full}: ${e.message}`) }
     }
   }
 
@@ -1313,20 +1316,20 @@ function syncBackingWatchers(files) {
         debounce = setTimeout(() => {
           try {
             const content = fs.readFileSync(fp, 'utf8')
-            console.log(`[daemon] backing file changed: ${fp} (${content.length} bytes)`)
+            log.info(`backing file changed: ${fp} (${content.length} bytes)`)
             sendMsg({ type: 'file-content-changed', filePath: fp, content })
           } catch (e) {
-            console.warn(`[daemon] read backing file ${fp}: ${e.message}`)
+            log.warn(`read backing file ${fp}: ${e.message}`)
           }
         }, 200)
       })
       backingWatchers.set(fp, { watcher, docNames, lastWriteAt: 0 })
-      console.log(`[daemon] watching backing file: ${fp}`)
+      log.info(`watching backing file: ${fp}`)
     } catch (e) {
-      console.warn(`[daemon] watch backing file ${fp}: ${e.message}`)
+      log.warn(`watch backing file ${fp}: ${e.message}`)
     }
   }
-  if (incoming.size > 0) console.log(`[daemon] backing watchers: ${backingWatchers.size} active`)
+  if (incoming.size > 0) log.info(`backing watchers: ${backingWatchers.size} active`)
 }
 
 async function rpcWriteBackingFile({ filePath, content }) {
@@ -1420,7 +1423,7 @@ async function rpcSendText({ tmux_session, text, enter }) {
     try {
       pty = await getOrSpawnEphemeralPty(tmux_session)
     } catch (e) {
-      console.error(`[daemon] ephemeral PTY failed for ${tmux_session}: ${e.message}, falling back to tmux`)
+      log.error(`ephemeral PTY failed for ${tmux_session}: ${e.message}, falling back to tmux`)
     }
   }
   if (pty) {
@@ -1550,13 +1553,13 @@ function detectPromptFromPty(agentId, tmuxSession, state) {
     state.lastPromptSurfaced = ''
     if (state.alive) {
       state.pty.write('1\r')
-      console.log(`[daemon] pty auto-accepted prompt (${result.reason}) in ${tmuxSession}`)
+      log.info(`pty auto-accepted prompt (${result.reason}) in ${tmuxSession}`)
       sendMsg({ type: 'prompt-auto-accepted', agent_id: agentId, reason: result.reason, ts: new Date().toISOString() })
     }
   } else if (result.type === 'surface') {
     if (state.lastPromptSurfaced === result.reason) return
     state.lastPromptSurfaced = result.reason
-    console.log(`[daemon] pty surfacing prompt for ${agentId}: ${result.reason}`)
+    log.info(`pty surfacing prompt for ${agentId}: ${result.reason}`)
     sendMsg({ type: 'terminal_attention', agent_id: agentId, tmux_session: tmuxSession, text: result.reason, reason: result.reason, snippet: result.snippet || null })
   } else {
     state.lastPromptSurfaced = ''
@@ -1606,6 +1609,7 @@ async function rpcStartTerminalWatch({ tmux_session, agent_id, poll_ms }) {
   pty.onExit(({ exitCode }) => {
     state.alive = false
     terminalWatchPtys.delete(tmux_session)
+    log.info(`terminal exited: agent=${agent_id} session=${tmux_session} exitCode=${exitCode}`)
     sendMsg({ type: 'terminal-dead', agent_id, tmux_session, exitCode })
   })
 
@@ -1692,7 +1696,7 @@ async function checkAgentLiveness() {
     if (!sessions.has(agent.tmux_session)) {
       _alivenessCache.set(agent.tmux_session, false)
       if (!agent.hibernating) {
-        console.log(`[daemon] agent ${agent.friendly_name || agent.id} is hibernating (tmux session ${agent.tmux_session} gone)`)
+        log.info(`agent ${agent.friendly_name || agent.id} is hibernating (tmux session ${agent.tmux_session} gone)`)
       }
       agent.hibernating = true
       continue
@@ -1734,7 +1738,7 @@ async function checkAgentLiveness() {
       }
     }
   } catch (e) {
-    console.warn(`[daemon] ps failed during death detection — skipping cycle: ${e.message}`)
+    log.warn(`ps failed during death detection — skipping cycle: ${e.message}`)
     return
   }
 
@@ -1747,14 +1751,14 @@ async function checkAgentLiveness() {
 
     if (!claudeAlive) {
       if (!agent.hibernating) {
-        console.log(`[daemon] agent ${agent.friendly_name || agent.id} is hibernating (no claude in session ${agent.tmux_session})`)
+        log.info(`agent ${agent.friendly_name || agent.id} is hibernating (no claude in session ${agent.tmux_session})`)
       }
       agent.hibernating = true
       continue
     }
 
     if (agent.hibernating) {
-      console.log(`[daemon] agent ${agent.friendly_name || agent.id} is awake`)
+      log.info(`agent ${agent.friendly_name || agent.id} is awake`)
       agent.hibernating = false
     }
     aliveAgentIds.push(agent.id)
@@ -2289,14 +2293,24 @@ async function handleRpc(msg) {
 
 // ---------- WS connection ----------
 
+const CRITICAL_MSG_TYPES = new Set(['terminal-dead', 'terminal_attention'])
 let _droppedCount = 0
 let _droppedWarnAt = 0
 function sendMsg(obj) {
   if (_rws?.send(obj)) return true
   _droppedCount++
+  if (obj?.type && CRITICAL_MSG_TYPES.has(obj.type)) {
+    try {
+      const line = JSON.stringify({ ...obj, ts: new Date().toISOString(), dropped: true })
+      fs.appendFileSync(DEAD_LETTER_FILE, line + '\n')
+      log.warn(`WS down — persisted ${obj.type} for ${obj.agent_id || 'unknown'} to dead-letter file`)
+    } catch (e) {
+      log.error(`failed to write dead-letter: ${e.message}`)
+    }
+  }
   const now = Date.now()
   if (now - _droppedWarnAt > 5000) {
-    console.warn(`[daemon] dropping messages (ws not open); dropped ${_droppedCount} since last warn; sample type=${obj?.type}`)
+    log.warn(`dropping messages (ws not open); dropped ${_droppedCount} since last warn; sample type=${obj?.type}`)
     _droppedCount = 0
     _droppedWarnAt = now
   }
@@ -2342,7 +2356,7 @@ function handleServerMessage(msg) {
   if (msg.type === 'daemon-welcome') {
     agents = msg.agents || []
     projects = msg.projects || []
-    console.log(`[daemon] welcome: ${agents.length} agents, ${projects.length} projects`)
+    log.info(`welcome: ${agents.length} agents, ${projects.length} projects`)
     syncSessionWatchers(agents)
     syncSourceWatchers(projects, msg.activeViewers)
     flushPendingSourceChanges()
@@ -2379,13 +2393,13 @@ function handleServerMessage(msg) {
   if (msg.type === 'daemon-evict') {
     if (msg.replaced_by_boot_id) {
       // Another live daemon took our slot — exit rather than loop-reconnecting.
-      console.warn(`[daemon] evicted by newer daemon (boot_id=${msg.replaced_by_boot_id}) — exiting`)
+      log.warn(`evicted by newer daemon (boot_id=${msg.replaced_by_boot_id}) — exiting`)
       shutdown('evicted-by-newer-daemon')
       return
     }
     // No replacement boot_id = server restarted and lost our connection.
     // Reconnect — the daemon should survive server restarts.
-    console.warn(`[daemon] evicted (${msg.reason || 'unknown'}) — reconnecting`)
+    log.warn(`evicted (${msg.reason || 'unknown'}) — reconnecting`)
     teardownWatchers()
     try { ws.close() } catch {}
     scheduleReconnect()
@@ -2428,7 +2442,7 @@ async function handleVersionCommitted(msg) {
     try {
       await execFileP('git', ['remote', 'add', 'tlda-shadow', repoPath], { cwd: sourceDir, timeout: 5000 })
     } catch (e) {
-      console.warn(`[daemon] failed to add tlda-shadow remote for ${projectName}: ${e.message}`)
+      log.warn(`failed to add tlda-shadow remote for ${projectName}: ${e.message}`)
       return
     }
   }
@@ -2446,17 +2460,17 @@ async function handleVersionCommitted(msg) {
 
     try {
       await execFileP('git', ['merge', '--ff-only', ref], { cwd: sourceDir, timeout: 15000 })
-      console.log(`[daemon] synced ${projectName}: ${hash?.slice(0, 7)}`)
+      log.info(`synced ${projectName}: ${hash?.slice(0, 7)}`)
     } finally {
       // Always unstash, even if merge fails
       if (didStash) {
         await execFileP('git', ['stash', 'pop'], { cwd: sourceDir, timeout: 10000 }).catch(e => {
-          console.warn(`[daemon] stash pop failed for ${projectName}: ${e.message}`)
+          log.warn(`stash pop failed for ${projectName}: ${e.message}`)
         })
       }
     }
   } catch (e) {
-    console.warn(`[daemon] sync failed for ${projectName}: ${e.message}`)
+    log.warn(`sync failed for ${projectName}: ${e.message}`)
   }
 }
 
@@ -2470,17 +2484,17 @@ try {
   if (existingPid && existingPid !== process.pid) {
     try {
       process.kill(existingPid, 0)  // signal 0 = existence check only
-      console.error(`[daemon] already running (pid=${existingPid}) — exiting`)
+      log.error(`already running (pid=${existingPid}) — exiting`)
       process.exit(0)
     } catch { /* stale PID file — previous daemon is gone, continue */ }
   }
 } catch { /* no PID file — first start, continue */ }
 
-try { fs.writeFileSync(PID_FILE, String(process.pid)) } catch (e) { console.warn(`[daemon] failed to write PID file: ${e.message}`) }
+try { fs.writeFileSync(PID_FILE, String(process.pid)) } catch (e) { log.warn(`failed to write PID file: ${e.message}`) }
 
 function shutdown(signal) {
   // Log WHY we're dying so the next post-mortem isn't a scavenger hunt.
-  console.log(`[daemon] shutdown via ${signal || 'unknown'} signal; saving cursors and exiting`)
+  log.info(`shutdown via ${signal || 'unknown'} signal; saving cursors and exiting`)
   saveCursors()
   try { fs.unlinkSync(PID_FILE) } catch {}
   _rws?.close()
@@ -2494,20 +2508,20 @@ process.on('SIGHUP', () => shutdown('SIGHUP'))
 for (const sig of ['SIGQUIT', 'SIGABRT', 'SIGPIPE', 'SIGUSR1', 'SIGUSR2', 'SIGBUS', 'SIGSEGV', 'SIGFPE']) {
   try {
     process.on(sig, () => {
-      console.error(`[daemon] received ${sig} — exiting`)
+      log.error(`received ${sig} — exiting`)
       process.exit(1)
     })
   } catch { /* some signals can't be handled on this platform */ }
 }
 process.on('uncaughtException', (e) => {
-  console.error(`[daemon] uncaught: ${e.stack || e.message}`)
+  log.error(`uncaught: ${e.stack || e.message}`)
 })
 process.on('unhandledRejection', (e) => {
-  console.error(`[daemon] unhandled rejection: ${e?.stack || e?.message || e}`)
+  log.error(`unhandled rejection: ${e?.stack || e?.message || e}`)
 })
 // Also log the regular `exit` event so silent process exits get a trace.
 process.on('exit', (code) => {
-  console.log(`[daemon] process exit (code=${code})`)
+  log.info(`process exit (code=${code})`)
 })
 
 // Heartbeat: lets the post-mortem distinguish "died at startup" from
@@ -2520,15 +2534,15 @@ function startHeartbeat() {
   if (_heartbeatTimer) return
   _heartbeatTimer = setInterval(() => {
     const mem = process.memoryUsage()
-    console.log(`[daemon] heartbeat pid=${process.pid} rss=${(mem.rss / 1e6).toFixed(1)}MB heap=${(mem.heapUsed / 1e6).toFixed(1)}MB uptime=${Math.round(process.uptime())}s`)
+    log.info(`heartbeat pid=${process.pid} rss=${(mem.rss / 1e6).toFixed(1)}MB heap=${(mem.heapUsed / 1e6).toFixed(1)}MB uptime=${Math.round(process.uptime())}s`)
   }, HEARTBEAT_INTERVAL_MS).unref?.() || _heartbeatTimer
 }
 
-console.log(`[daemon] fleet-daemon ${VERSION} starting pid=${process.pid}`)
-console.log(`[daemon]   server      = ${SERVER}`)
-console.log(`[daemon]   machine_id  = ${MACHINE_ID}`)
-console.log(`[daemon]   boot_id     = ${BOOT_ID}`)
-console.log(`[daemon]   user        = ${USER}@${HOSTNAME}`)
+log.info(`fleet-daemon ${VERSION} starting pid=${process.pid}`)
+log.info(`  server      = ${SERVER}`)
+log.info(`  machine_id  = ${MACHINE_ID}`)
+log.info(`  boot_id     = ${BOOT_ID}`)
+log.info(`  user        = ${USER}@${HOSTNAME}`)
 startHeartbeat()
 startReapers()
 connect()
