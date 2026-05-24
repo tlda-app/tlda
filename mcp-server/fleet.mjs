@@ -574,16 +574,16 @@ function tmuxIsIdle(text) {
 }
 
 function tmuxRespawn(sessionName, cwd, fleetId, sessionId) {
-  // Create a detached tmux session that resumes an existing claude session
   const dir = cwd || os.homedir();
   const rGuard = path.join(__dirname, 'bin', 'R-guard');
   const rsGuard = path.join(__dirname, 'bin', 'Rscript-guard');
   const setup = `alias R='${rGuard}' Rscript='${rsGuard}'; `;
   const channelFlag = ' --dangerously-load-development-channels server:fleet';
-  const cmd = `tmux new-session -d -s ${sessionName} -c ${JSON.stringify(dir)} "${setup}FLEET_ID=${fleetId} claude --resume ${sessionId}${channelFlag}"`;
+  const registerPrompt = 'Call register() with the fleet MCP server. Then call my_task() to check for a pending task.';
+  const cmd = `tmux new-session -d -s ${sessionName} -c ${JSON.stringify(dir)} "${setup}FLEET_ID=${fleetId} FLEET_TMUX_SESSION=${sessionName} claude --resume ${sessionId}${channelFlag} ${JSON.stringify(registerPrompt)}"`;
   execSync(cmd, { encoding: 'utf8', timeout: 10000 });
-  // Auto-accept channels development warning dialog
-  exec(`sleep 3 && tmux send-keys -t ${sessionName} Enter`, { timeout: 10000 });
+  // Dismiss dev-channels confirmation dialog (send "1" + Enter)
+  exec(`sleep 3 && tmux send-keys -t ${sessionName} 1 && tmux send-keys -t ${sessionName} Enter`, { timeout: 10000 });
   return sessionName;
 }
 
@@ -1295,18 +1295,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     // Update fields
-    // Auto-detect tmux session if running inside one
-    let detectedTmux = null;
-    if (process.env.TMUX) {
+    // Prefer FLEET_TMUX_SESSION (set by fleet-spawn) over auto-detection.
+    // Auto-detection via `tmux display-message` breaks in recycled sessions
+    // where the session name belongs to a different agent.
+    let detectedTmux = process.env.FLEET_TMUX_SESSION || null;
+    if (!detectedTmux && process.env.TMUX) {
       try {
         const tmuxSession = execSync('tmux display-message -p "#{session_name}"', { encoding: 'utf8', timeout: 3000 }).trim();
         if (tmuxSession.startsWith('fleet-')) {
-          entry.tmux_session = tmuxSession;
           detectedTmux = tmuxSession;
         }
       } catch (e) {
         // Not in tmux — expected for non-fleet agents
       }
+    }
+    if (detectedTmux) {
+      entry.tmux_session = detectedTmux;
     }
 
     // tmux is metadata, not identity. If two fleet IDs share a tmux session, that's a spawn bug.
