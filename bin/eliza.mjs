@@ -1484,27 +1484,27 @@ function handleMessage(msg) {
       tickNudgeMessages(from_id)
     }
 
-    // All triggers require direct address: message must contain "eliza" (case-insensitive)
+    // Direct address required for commands (escalation, handoff) but not for detection/queuing
     const addressedEliza = /\beliza\b/i.test(text)
 
-    // Sequence detection watches both directions (but only fires nudges when addressed)
-    const seqHandled = addressedEliza ? handleSequence(from_id, to_id, text) : false
+    // Sequence detection always watches — queues nudges silently for the status line
+    const seqHandled = handleSequence(from_id, to_id, text)
 
-    // Manager escalation — fires before other triggers, returns early
+    // Manager escalation — requires direct address, fires before other triggers
     if (addressedEliza && from_id === OWNER_ID && to_id && to_id !== AGENT_ID && MANAGER_ESCALATION_PATTERN.test(text)) {
       const mode = MANAGER_MODE_1_PATTERN.test(text) ? 'talk-to-skip' : 'set-them-straight'
       handleManagerEscalation(to_id, text, mode).catch(e => console.error('[eliza] manager escalation error:', e.message))
       return
     }
 
-    // Handoff — Skip says "Eliza hand this off" to an agent
+    // Handoff — requires direct address
     if (addressedEliza && from_id === OWNER_ID && to_id && to_id !== AGENT_ID && HANDOFF_PATTERN.test(text)) {
       handleHandoff(to_id, text).catch(e => console.error('[eliza] handoff error:', e.message))
       return
     }
 
-    // Single-message triggers only fire on Skip's outgoing messages with direct address
-    if (addressedEliza && from_id === OWNER_ID && to_id && to_id !== AGENT_ID && !seqHandled) {
+    // Single-message triggers detect and queue without direct address (status line shows them)
+    if (from_id === OWNER_ID && to_id && to_id !== AGENT_ID && !seqHandled) {
       checkTriggers(to_id, text).catch(e => console.error('[eliza] checkTriggers error:', e.message))
     }
 

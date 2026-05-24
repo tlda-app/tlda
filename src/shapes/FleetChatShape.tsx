@@ -2138,17 +2138,29 @@ function FleetChatInner({ shape }: { shape: any }) {
               })
               broadcastSharedDoc(existingId, filePath)
             } else {
-              // Create new sticky off to the right of the document
-              // Offset to avoid overlapping all existing math-notes and fleet-docview panels
-              let newX = 2000
+              // Find open canvas space for the new sticky (2D grid search)
+              const noteW = 550, noteH = 400, gap = 30
+              const startX = 2000, startY = 100
               const blockers = allShapes.filter((s: any) =>
                 s.type === 'math-note' ||
                 s.type === 'fleet-docview'
-              )
-              for (const s of blockers) {
-                const sb = mainEditor.getShapePageBounds(s.id)
-                if (sb && newX < sb.x + sb.w + 20 && newX + 550 > sb.x) {
-                  newX = sb.x + sb.w + 30
+              ).map((s: any) => mainEditor.getShapePageBounds(s.id)).filter(Boolean)
+
+              let newX = startX, newY = startY
+              const maxX = startX + (noteW + gap) * 4
+              let placed = false
+              for (let y = startY; !placed; y += noteH + gap) {
+                for (let x = startX; x < maxX; x += noteW + gap) {
+                  const collides = blockers.some((sb: any) =>
+                    x < sb.x + sb.w + gap && x + noteW > sb.x - gap &&
+                    y < sb.y + sb.h + gap && y + noteH > sb.y - gap
+                  )
+                  if (!collides) {
+                    newX = x
+                    newY = y
+                    placed = true
+                    break
+                  }
                 }
               }
               const stickyId = createShapeId()
@@ -2156,7 +2168,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                 id: stickyId,
                 type: 'math-note' as any,
                 x: newX,
-                y: 100,
+                y: newY,
                 isLocked: false,
                 props: {
                   w: 550,
