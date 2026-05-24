@@ -2314,6 +2314,37 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   color: var(--text-dim, #888);
 }
 
+/* Queued messages section — below thinking indicator */
+.queued-messages {
+  padding: 0 0 2px 0;
+  border-top: 1px solid rgba(128, 128, 128, 0.15);
+}
+
+/* Interrupt events — jump the queue, render between thinking line and queued messages */
+.interrupt-queue {
+  padding: 0;
+}
+
+/* Escalation badges in thinking indicator */
+.escalation-badge {
+  font-size: 10px;
+  font-style: normal;
+  margin-left: 4px;
+}
+.escalation-badge.escalation-soft {
+  color: var(--orange, #e90);
+  opacity: 0.8;
+}
+.escalation-badge.escalation-hard {
+  color: var(--red, #e55);
+  opacity: 0.9;
+}
+.escalation-badge.escalation-kill {
+  color: var(--red, #e55);
+  opacity: 1;
+  font-weight: 600;
+}
+
 /* =============================================================================
    Pointer-events architecture
    HTMLContainer: always pointer-events: all (content always interactive).

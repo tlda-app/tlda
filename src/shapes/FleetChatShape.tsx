@@ -548,13 +548,14 @@ function ContextBadge({ percent }: { percent?: number }) {
  * When all agents stop, the space persists (ghost) until rawItemsLength changes
  * (i.e. a real message arrives to replace it). No timeout — no bounce.
  */
-function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, ctx, rawItemsLength, agents }: {
+function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, ctx, rawItemsLength, agents, escalationState }: {
   thinkingAgents: Map<string, number>
   compactingAgents: Map<string, number>
   contextPercent: Map<string, number>
   ctx: any
   rawItemsLength: number
   agents: any[]
+  escalationState?: Record<string, { level: number; confirmed: number }>
 }) {
   const agentLiveness = useMemo(() => {
     const m = new Map<string, string>()
@@ -616,16 +617,33 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, ctx,
       opacity: ghost ? 0 : 0.6,
       transition: 'opacity 0.2s',
     }}>
-      {!ghost && [...statusAgents.entries()].map(([agentId, { status, startTs }]) => (
-        <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-          <span>
-            <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
-            {' '}<span className="thinking-text">{status === 'hibernating' ? 'is hibernating' : status === 'compacting' ? 'compacting…' : 'thinking…'}</span>
-            {status !== 'hibernating' && <>{' '}<ElapsedTime startMs={startTs} /></>}
-          </span>
-          <ContextBadge percent={contextPercent.get(agentId)} />
-        </div>
-      ))}
+      {!ghost && [...statusAgents.entries()].map(([agentId, { status, startTs }]) => {
+        const esc = escalationState?.[agentId]
+        const escLevel = esc?.level || 0
+        const escConfirmed = esc?.confirmed || 0
+        function tierOpacity(tier: number) {
+          if (escLevel < tier) return 0.15
+          if (escConfirmed >= tier) return 1
+          return 0.55 // optimistic — sent but not yet confirmed
+        }
+        return (
+          <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+            <span>
+              <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
+              {' '}<span className="thinking-text">{status === 'hibernating' ? 'is hibernating' : status === 'compacting' ? 'compacting…' : 'thinking…'}</span>
+              {status !== 'hibernating' && <>{' '}<ElapsedTime startMs={startTs} /></>}
+              {escLevel > 0 && (
+                <span className="escalation-meter" style={{ marginLeft: 6, letterSpacing: 2, fontSize: '0.9em' }}>
+                  <span style={{ opacity: tierOpacity(1), transition: 'opacity 0.15s' }}>↑</span>
+                  <span style={{ opacity: tierOpacity(2), transition: 'opacity 0.15s' }}>⏸</span>
+                  <span style={{ opacity: tierOpacity(3), transition: 'opacity 0.15s' }}>💀</span>
+                </span>
+              )}
+            </span>
+            <ContextBadge percent={contextPercent.get(agentId)} />
+          </div>
+        )
+      })}
       {ghost && <div style={{ padding: '2px 0', visibility: 'hidden' }}>placeholder</div>}
     </div>
   )
@@ -895,6 +913,37 @@ function FleetChatInner({ shape }: { shape: any }) {
   const chatActiveRef = useRef(false)
   // Keep sendTargets accessible from native event listener without re-registering
   const sendTargetsRef = useRef<string[]>([])
+  // Per-agent escalation state: tracks Esc presses for thinking indicator display.
+  // { [agentId]: { level, confirmed } } — level = optimistic (on keypress), confirmed = server ack'd
+  const [escalationState, setEscalationState] = useState<Record<string, { level: number; confirmed: number }>>({})
+
+  // Clear escalation state when an agent stops thinking
+  useEffect(() => {
+    setEscalationState(prev => {
+      let changed = false
+      const next = { ...prev }
+      for (const agentId of Object.keys(next)) {
+        if (!thinkingAgents.has(agentId) && !compactingAgents.has(agentId)) {
+          delete next[agentId]
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [thinkingAgents, compactingAgents])
+  const setEscLevel = (agentId: string, level: number) => {
+    setEscalationState(prev => ({ ...prev, [agentId]: { level, confirmed: prev[agentId]?.confirmed || 0 } }))
+  }
+  const confirmEscLevel = (agentId: string, level: number) => {
+    setEscalationState(prev => {
+      const cur = prev[agentId]
+      if (!cur) return prev
+      return { ...prev, [agentId]: { ...cur, confirmed: Math.max(cur.confirmed, level) } }
+    })
+  }
+  const clearEscState = (agentId: string) => {
+    setEscalationState(prev => { const next = { ...prev }; delete next[agentId]; return next })
+  }
 
   // Merge older (scrollback) events with live events
   const events = useMemo(() => {
@@ -1071,7 +1120,9 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   // Build per-item raw HTML array — each item is an independent renderable unit.
   // This replaces the old joined renderedHtml string and enables virtualization.
-  type RawItem = { key: string; html: string }
+  // Items tagged _queued render below the thinking indicator; _interrupt items
+  // render between the indicator and the queue (they "jump the line").
+  type RawItem = { key: string; html: string; _queued?: boolean; _interrupt?: boolean }
   const rawItems = useMemo(() => {
     // Extend ctx with thinking state so renderChatLine can apply queued styling
     const renderCtx = { ...ctx, thinkingAgents }
@@ -1085,6 +1136,16 @@ function FleetChatInner({ shape }: { shape: any }) {
         html: `<div class="chat-activity-inline-wrap">${renderActivityGroup(activityGroup, renderCtx)}</div>`,
       })
       activityGroup = []
+    }
+
+    // Helper: is this message queued behind a thinking agent?
+    function isMessageQueued(m: any): boolean {
+      const isFromUser = renderCtx.isHumanId?.(m.from)
+      if (!isFromUser) return false
+      const targetThinkingSince = thinkingAgents?.get?.(m.to)
+      if (!targetThinkingSince) return false
+      const msgTs = m.timestamp ? new Date(m.timestamp).getTime() : 0
+      return msgTs >= targetThinkingSince
     }
 
     for (let i = 0; i < chatMessages.length; i++) {
@@ -1145,7 +1206,16 @@ function FleetChatInner({ shape }: { shape: any }) {
         flushActivity()
         const html = renderChatLine(m, renderCtx)
         if (html) {
-          items.push({ key: `${m.timestamp}:${m.from}`, html })
+          const item: RawItem = { key: `${m.timestamp}:${m.from}`, html }
+          // Tag interrupt system_notices so they jump ahead of queued messages
+          if (m._evType === 'system_notice' && m._isInterrupt) {
+            item._interrupt = true
+          }
+          // Tag queued messages so they render below the thinking indicator
+          if (isMessageQueued(m)) {
+            item._queued = true
+          }
+          items.push(item)
         }
       }
     }
@@ -1239,13 +1309,27 @@ function FleetChatInner({ shape }: { shape: any }) {
     return html
   }, [doc, labelRegions, imageSrcs, editor])
 
+  // Split rawItems: normal items stay in the virtualizer; queued messages and
+  // interrupt events render below the thinking indicator (interrupts first, then queue).
+  const { normalItems, interruptItems, queuedItems } = useMemo(() => {
+    const normal: RawItem[] = []
+    const interrupt: RawItem[] = []
+    const queued: RawItem[] = []
+    for (const item of rawItems) {
+      if (item._interrupt) interrupt.push(item)
+      else if (item._queued) queued.push(item)
+      else normal.push(item)
+    }
+    return { normalItems: normal, interruptItems: interrupt, queuedItems: queued }
+  }, [rawItems])
+
   // Virtual scroll — only mount DOM nodes for visible messages.
   // Placed after rawItems so count is always defined.
   // estimateSize: 65px ≈ average message height (2-3 lines + padding).
   // A close estimate prevents the "scrolled to middle" bug where setting
   // scrollTop = estimated-total puts you far from the actual bottom.
   const virtualizer = useVirtualizer({
-    count: rawItems.length,
+    count: normalItems.length,
     getScrollElement: () => chatLogRef.current,
     estimateSize: () => 65,
     overscan: 8,
@@ -2470,25 +2554,36 @@ function FleetChatInner({ shape }: { shape: any }) {
       log.info('esc', 'interrupt', { count, gap, agent, agentLabel })
       const tempId = `esc-${++escTempCounter}-${now}`
       const ts = new Date().toISOString()
+      setEscLevel(agent, count >= 3 ? 3 : count)
       if (count >= 3) {
         escCountRef.current = 0
         lastEscRef.current = 0
-        injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', from: 'system', to: agent, text: `💀 Killing ${agentLabel}…`, timestamp: ts })
+        injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', _isInterrupt: true, from: 'system', to: agent, text: `💀 Killing ${agentLabel}…`, timestamp: ts })
         fetch(`${FLEET_API}/api/kill-session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent }) })
           .then(r => r.json())
-          .then(d => { updateOptimisticEvent(tempId, { text: d.error ? `⚠ Kill failed: ${d.error}` : `💀 Killed ${agentLabel}` }) })
+          .then(d => {
+            updateOptimisticEvent(tempId, { text: d.error ? `⚠ Kill failed: ${d.error}` : `💀 Killed ${agentLabel}` })
+            if (!d.error) confirmEscLevel(agent, 3)
+            setTimeout(() => clearEscState(agent), 2000)
+          })
           .catch(() => { updateOptimisticEvent(tempId, { text: `⚠ Kill failed (server unreachable)` }) })
       } else if (count === 2) {
-        injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', from: 'system', to: agent, text: `⏸ Interrupting ${agentLabel}…`, timestamp: ts })
+        injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', _isInterrupt: true, from: 'system', to: agent, text: `⏸ Interrupting ${agentLabel}…`, timestamp: ts })
         fetch(`${FLEET_API}/api/interrupt`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent }) })
           .then(r => r.json())
-          .then(d => { if (d.error) updateOptimisticEvent(tempId, { text: `⚠ Interrupt failed: ${d.error}` }) })
+          .then(d => {
+            if (d.error) updateOptimisticEvent(tempId, { text: `⚠ Interrupt failed: ${d.error}` })
+            else confirmEscLevel(agent, 2)
+          })
           .catch(() => { updateOptimisticEvent(tempId, { text: `⚠ Interrupt failed (server unreachable)` }) })
       } else {
-        injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', from: 'system', to: agent, text: `⏸ Escape → ${agentLabel}…`, timestamp: ts })
+        injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', _isInterrupt: true, from: 'system', to: agent, text: `⏸ Escape → ${agentLabel}…`, timestamp: ts })
         fetch(`${FLEET_API}/api/send-key`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent, key: 'Escape' }) })
           .then(r => r.json())
-          .then(d => { if (d.error) { updateOptimisticEvent(tempId, { text: `⚠ Escape failed: ${d.error}` }) } else { updateOptimisticEvent(tempId, { text: `⏸ Escape → ${agentLabel}` }) } })
+          .then(d => {
+            if (d.error) { updateOptimisticEvent(tempId, { text: `⚠ Escape failed: ${d.error}` }) }
+            else { updateOptimisticEvent(tempId, { text: `⏸ Escape → ${agentLabel}` }); confirmEscLevel(agent, 1) }
+          })
           .catch(() => { updateOptimisticEvent(tempId, { text: `⚠ Escape failed (server unreachable)` }) })
       }
     }
@@ -3270,7 +3365,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                   ref={virtualizer.measureElement}
                   style={{ position: 'absolute', top: 0, transform: `translateY(${vItem.start}px)`, width: '100%' }}
                 >
-                  <ChatMessageRow html={rawItems[vItem.index].html} postProcess={postProcess} itemKey={rawItems[vItem.index].key} expandedRowsRef={expandedRowsRef} />
+                  <ChatMessageRow html={normalItems[vItem.index].html} postProcess={postProcess} itemKey={normalItems[vItem.index].key} expandedRowsRef={expandedRowsRef} />
                 </div>
               ))}
             </div>
@@ -3283,7 +3378,24 @@ function FleetChatInner({ shape }: { shape: any }) {
             ctx={ctx}
             rawItemsLength={rawItems.length}
             agents={agents}
+            escalationState={escalationState}
           />
+          {/* Interrupt events jump the queue — render between thinking line and queued messages */}
+          {interruptItems.length > 0 && (
+            <div className="interrupt-queue">
+              {interruptItems.map(item => (
+                <ChatMessageRow key={item.key} html={item.html} postProcess={postProcess} itemKey={item.key} expandedRowsRef={expandedRowsRef} />
+              ))}
+            </div>
+          )}
+          {/* Queued messages render below the thinking indicator */}
+          {queuedItems.length > 0 && (
+            <div className="queued-messages">
+              {queuedItems.map(item => (
+                <ChatMessageRow key={item.key} html={item.html} postProcess={postProcess} itemKey={item.key} expandedRowsRef={expandedRowsRef} />
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Terminal card overlay — shown on hover or when pinned; outside scroll container */}
