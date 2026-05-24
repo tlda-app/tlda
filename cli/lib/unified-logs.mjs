@@ -202,7 +202,9 @@ function parseDeadLetters(since, agentFilter) {
         from_name: '',
         to_name: '',
       })
-    } catch {}
+    } catch (e) {
+      console.error(`Skipping malformed dead-letter line: ${e.message}`)
+    }
   }
   return events
 }
