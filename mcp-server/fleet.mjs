@@ -573,6 +573,28 @@ function tmuxIsIdle(text) {
   return /^[\s]*[❯>][\s📬]*$/.test(last);
 }
 
+function findValidSession(agent) {
+  const claudeDir = path.join(os.homedir(), '.claude', 'projects');
+  const jsonlExists = (uuid) => {
+    try {
+      const dirs = fs.readdirSync(claudeDir);
+      return dirs.some(d => fs.existsSync(path.join(claudeDir, d, `${uuid}.jsonl`)));
+    } catch { return false; }
+  };
+
+  const primary = agent.session_id;
+  if (primary && jsonlExists(primary)) return primary;
+
+  const ids = agent.session_ids || agent.sessions || [];
+  for (let i = ids.length - 1; i >= 0; i--) {
+    if (ids[i] !== primary && jsonlExists(ids[i])) {
+      process.stderr.write(`[fleet] session_id ${primary} has no .jsonl, falling back to ${ids[i]}\n`);
+      return ids[i];
+    }
+  }
+  return primary;
+}
+
 function tmuxRespawn(sessionName, cwd, fleetId, sessionId) {
   const dir = cwd || os.homedir();
   const rGuard = path.join(__dirname, 'bin', 'R-guard');
@@ -803,7 +825,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     // ---- Search & History ----
     {
       name: 'search_logs',
-      description: 'Full-text search across all agent session logs and event history. Returns matching snippets with source info. Powered by FTS5 index (fast). Use this to find past conversations, decisions, or context from any agent session.',
+      description: 'Full-text search across all agent session logs and event history. Returns matching snippets with source info. Powered by FTS5 index (fast). NOTE: this returns snippets, not full conversations. To read a complete conversation thread, use get_thread(agent) instead.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -1327,7 +1349,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // Compacting state: cleared after registration completes (see below after stale cleanup)
     delete entry.dead;
     const _detectedCwd = getAgentCwd();
-    if (_detectedCwd) entry.cwd = _detectedCwd;
+    if (_detectedCwd && !entry.cwd) entry.cwd = _detectedCwd;
     // is_manager removed — no permission gating
 
     // Labels: preserve existing, add auto-labels
@@ -2838,7 +2860,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       searchBytes += entryBytes;
     }
     if (searchTruncated) {
-      header += `\n⚠️ Output truncated to fit context (showing ${searchLines.length} of ${formatted.length} results). Narrow your query or time range.`;
+      header += `\n⚠️ Output truncated (showing ${searchLines.length} of ${formatted.length} results). For full conversation context, use get_thread(agent) — search_logs returns snippets, not complete conversations.`;
     }
 
     return { content: [{ type: 'text', text: `${header}\n\n${searchLines.join('\n\n')}` }] };
@@ -3223,7 +3245,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
           execSync(`tmux kill-session -t ${sessionName}`, { timeout: 3000 });
         }
 
-        tmuxRespawn(sessionName, cwd, agent.id, agent.session_id);
+        tmuxRespawn(sessionName, cwd, agent.id, findValidSession(agent));
 
         // Register via server API
         const rehydrateRegWS = sendWS('register', {
@@ -3823,90 +3845,15 @@ function reportStatus(state, toolName) {
 // For agents without $FLEET_ID, register() calls startChannelWS() after identity resolves.
 if (AGENT_ID) startChannelWS();
 
-// --- MCP-side tmux poller ---
-// Runs agent-side so the server doesn't need to be on the same machine.
-// Detects thinking spinner + compaction text; sends events over the WS channel.
-// Claude Code thinking lines always have the form: <glyph> <Word>ing… (<timing>)
-// Match on the "Xing…" pattern — specific enough to avoid false positives, glyph-agnostic.
-const THINKING_SPINNER_RE = /[A-Z][a-z]+ing…/;
-// Fallback signal: Claude Code's status bar shows "esc to interrupt" only
-// while an operation is running. More reliable than the spinner regex, and
-// sits at a fixed distance from the pane bottom regardless of TODO list size.
-const INTERRUPT_HINT_RE = /esc to interrupt/;
-const COMPACTING_RE = /Compacting conversation/;
-// How many lines from the bottom of the tmux pane to scan for the spinner.
-// The old 15-line slice missed the spinner when Claude Code showed a TODO
-// list above it (the spinner gets pushed up). 40 gives comfortable headroom
-// for realistic todo lists + tool output, still tight enough to avoid
-// scraping stale "Thinking…" text from scrollback.
-const THINKING_SCAN_LINES = 40;
-// Approval prompt patterns — check last 15 lines only to avoid matching tool output
-// Covers: TUI radio-button (○ Allow once), y/n inline, and numbered-choice (Esc to cancel · Tab to amend)
-const APPROVAL_PROMPT_RE = /[○●]\s*Allow once|Allow this .{0,30}\?\s*\(y\/n\)|Esc to cancel\s*·\s*Tab to amend/i;
-const APPROVAL_PROMPT_SCAN_LINES = 15;
-let _tmuxSession = null;
-let _wasThinking = false;
-let _compactingReported = false;
-let _lastApprovalFingerprint = null;
-
-// Detect own tmux session once at startup
-try {
-  const s = execSync('tmux display-message -p "#{session_name}"', { encoding: 'utf8', timeout: 1000 }).trim();
-  if (s.startsWith('fleet-')) _tmuxSession = s;
-} catch {}
-
-
-setInterval(() => {
-  if (!AGENT_ID || !_channelRWS?.connected) return;
-
-  // Retry tmux session detection if it failed at startup
-  if (!_tmuxSession) {
-    try {
-      const s = execSync('tmux display-message -p "#{session_name}"', { encoding: 'utf8', timeout: 1000 }).trim();
-      if (s.startsWith('fleet-')) _tmuxSession = s;
-    } catch {}
-    if (!_tmuxSession) return;
-  }
-
+// --- Tmux session detection (for registration only) ---
+// Thinking/compacting/approval detection moved to the fleet daemon.
+let _tmuxSession = process.env.FLEET_TMUX_SESSION || null;
+if (!_tmuxSession) {
   try {
-    const pane = execSync(`tmux capture-pane -t ${_tmuxSession} -p`, { timeout: 1000, encoding: 'utf8' });
-
-    // Thinking detection — test bottom of pane only (avoids old summary lines in scrollback).
-    // Accept either the spinner regex (which may be pushed up by a long TODO
-    // list) or the "esc to interrupt" hint in the status bar (fixed near the
-    // bottom). Either signal means Claude Code has an active operation.
-    const paneBottom = pane.split('\n').slice(-THINKING_SCAN_LINES).join('\n');
-    const isThinking = THINKING_SPINNER_RE.test(paneBottom) || INTERRUPT_HINT_RE.test(paneBottom);
-    // Always send current state — server uses timestamps for expiry
-    _channelRWS.send({ type: 'agent-thinking', agentId: AGENT_ID, thinking: isThinking });
-    // Only broadcast state-change events to dashboard (avoid noise)
-    if (isThinking !== _wasThinking) {
-      _wasThinking = isThinking;
-    }
-
-    // Compaction detection
-    const isCompacting = COMPACTING_RE.test(pane);
-    _channelRWS.send({ type: 'agent-compacting', agentId: AGENT_ID, compacting: isCompacting });
-    if (isCompacting && !_compactingReported) {
-      _compactingReported = true;
-      _channelRWS.send({ type: 'compacting', agentId: AGENT_ID });
-    } else if (!isCompacting && _compactingReported) {
-      _compactingReported = false;
-    }
-
-    // Approval prompt detection — piggybacks on already-captured pane
-    const approvalBottom = pane.split('\n').slice(-APPROVAL_PROMPT_SCAN_LINES).join('\n');
-    if (APPROVAL_PROMPT_RE.test(approvalBottom)) {
-      const fingerprint = approvalBottom.slice(-100);
-      if (fingerprint !== _lastApprovalFingerprint) {
-        _lastApprovalFingerprint = fingerprint;
-        _channelRWS.send({ type: 'terminal_attention', agent_id: AGENT_ID, reason: 'permission prompt', text: 'permission prompt' });
-      }
-    } else {
-      _lastApprovalFingerprint = null;
-    }
+    const s = execSync('tmux display-message -p "#{session_name}"', { encoding: 'utf8', timeout: 1000 }).trim();
+    if (s.startsWith('fleet-')) _tmuxSession = s;
   } catch {}
-}, 3000);
+}
 
 // Prevent unhandled rejections from crashing the MCP process.
 // WS disconnects cause pending promises to reject; if a caller doesn't catch,
