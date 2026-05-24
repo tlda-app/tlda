@@ -1541,11 +1541,8 @@ async function checkTriggers(targetId, text) {
       const label = trigger.skill || `trigger-${i}`
       console.log(`[eliza] trigger ${i} fired → ${targetId}: ${trigger.pattern}`)
       queueNudge(targetId, label, message)
-      if (trigger.skill) {
-        postJson('/api/education/pending', { agent: targetId, skill: trigger.skill })
-          .then(() => console.log(`[eliza] education pending: ${targetId} owes ${trigger.skill}`))
-          .catch(e => console.error(`[eliza] education POST failed: ${e.message}`))
-      }
+      // Qualification enforcement is handled by the PreToolUse hook +
+      // server-side checkQualifications(). Eliza's role is chat nudges only.
       logDecision(targetId, `single-trigger:${i}`, String(trigger.pattern), {}, text)
       setCooldown(targetId, i)
       return // only fire one trigger per message

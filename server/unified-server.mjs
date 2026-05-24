@@ -892,9 +892,30 @@ app.post('/api/fleet/prefs/:key', requireRead, (req, res) => {
 })
 
 // ---------- Education enforcement ----------
-// Eliza POSTs pending skill reads; agent PreToolUse hooks GET/DELETE them.
+// PreToolUse hooks call /check with tool+file info; server runs qualification
+// check preventively and returns a pending skill (if any) in one round-trip.
 const pendingEducation = new Map()
 
+// Preventive check: hook sends tool+file, server runs qualifications inline
+app.get('/api/education/check/:agentId', (req, res) => {
+  const agentId = req.params.agentId
+  const tool = req.query.tool || ''
+  const file = req.query.file || ''
+
+  // Run qualification check with the hook's tool+file info (preventive)
+  if (tool && _qualRules.length > 0) {
+    const input = file ? { file_path: file } : {}
+    checkQualifications(agentId, tool, file, input)
+  }
+
+  // Return and clear any pending skill
+  const entry = pendingEducation.get(agentId)
+  if (!entry) return res.json({})
+  pendingEducation.delete(agentId)
+  res.json(entry)
+})
+
+// Legacy endpoints — kept for backward compat during transition
 app.post('/api/education/pending', (req, res) => {
   const { agent, skill } = req.body
   if (!agent || !skill) return res.status(400).json({ error: 'Missing agent or skill' })
@@ -2662,13 +2683,14 @@ async function handleFleetWsMessage(ws, msg) {
 
 // ---------- Skill qualification checking (server-side) ----------
 //
-// Replaces the daemon-side qualification system. Rules live in
-// ~/.claude/qualifications.json. Two rule types:
+// Rules live in ~/.claude/qualifications.json. Two rule types:
 //   { "edit": "*.tex", "requires": ["writing-core"] }         — file extension trigger
 //   { "tool": "playwright/*", "requires": ["testing-apps"] }  — tool call trigger
 //
-// When an agent uses Edit/Write on a matching file or invokes a matching tool
-// without having read the required skill, we send a nudge from fleet:eliza.
+// Checked both reactively (daemon activity events) and preventively
+// (PreToolUse hook calls /api/education/check with tool+file info).
+// When an agent hasn't read a required skill, posts to pendingEducation
+// which the hook returns as a blocking response.
 
 const QUALIFICATIONS_FILE = path.join(os.homedir(), '.claude', 'qualifications.json')
 let _qualRules = []
