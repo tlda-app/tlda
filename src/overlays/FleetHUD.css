@@ -143,7 +143,7 @@
 /* When HUD is open, hide fleet shapes in the main canvas so the HUD is
    the sole view — prevents "two copies" confusion and clarifies what you're editing.
    The HUD's shapes (.fleet-hud-wrap inside) are explicitly restored. */
-body.fleet-hud-open .tl-canvas .fleet-shape:not(.fleet-reaper-shape) {
+body.fleet-hud-open .tl-canvas .fleet-shape {
   visibility: hidden;
   pointer-events: none;
 }
