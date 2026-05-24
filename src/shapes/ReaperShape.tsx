@@ -3,6 +3,7 @@ import {
   HTMLContainer,
   T,
   stopEventPropagation,
+  useEditor,
 } from 'tldraw'
 import { useState, useCallback, useMemo } from 'react'
 import { useReaperStatus } from '../fleet-data-adapter'
@@ -55,17 +56,40 @@ function formatAge(ms: number): string {
   return `${Math.floor(ms / 3600_000)}h`
 }
 
-type SortKey = 'agent' | 'memory' | 'detail'
+type SortKey = 'agent' | 'memory' | 'type'
 
-interface AgentRow {
+interface ProcessRow {
+  key: string
   agent: string
-  totalRss: number
-  detail: string
-  processes: { name: string; rss: number }[]
-  killablePids: number[]
+  type: string
+  name: string
+  rss: number
+  pid?: number
+  killable: boolean
+}
+
+const PROCESS_TYPES: Record<string, string> = {
+  'claude': 'claude',
+  'node': 'node',
+  'vite': 'vite',
+  'R': 'R',
+  'Rscript': 'R',
+  'rsession': 'R',
+  'chromium': 'playwright',
+  'chrome': 'playwright',
+  'Chromium': 'playwright',
+  'playwright': 'playwright',
+}
+
+function classifyProcess(name: string): string {
+  if (PROCESS_TYPES[name]) return PROCESS_TYPES[name]
+  if (/chrom/i.test(name)) return 'playwright'
+  if (/^[Rr]$/i.test(name) || /rsession/i.test(name)) return 'R'
+  return name
 }
 
 function ReaperComponent({ shape }: { shape: any }) {
+  const editor = useEditor()
   const [killing, setKilling] = useState<Set<number>>(new Set())
   const [sortKey, setSortKey] = useState<SortKey>('memory')
   const [sortAsc, setSortAsc] = useState(false)
@@ -96,68 +120,91 @@ function ReaperComponent({ shape }: { shape: any }) {
   const handleSort = useCallback((key: SortKey) => {
     setSortKey(prev => {
       if (prev === key) { setSortAsc(a => !a); return key }
-      setSortAsc(key === 'agent')
+      setSortAsc(key === 'agent' || key === 'type')
       return key
     })
   }, [])
 
-  const rows: AgentRow[] = useMemo(() => {
+  const rows: ProcessRow[] = useMemo(() => {
     if (!status) return []
 
-    const groups = new Map<string, AgentRow>()
+    const result: ProcessRow[] = []
+    const seen = new Set<string>()
 
-    const ensure = (agent: string) => {
-      if (!groups.has(agent)) {
-        groups.set(agent, { agent, totalRss: 0, detail: '', processes: [], killablePids: [] })
-      }
-      return groups.get(agent)!
-    }
+    // Build sets of vite/browser PIDs so we can tag them
+    const vitePids = new Map<number, any>()
+    for (const v of status.vites || []) vitePids.set(v.pid, v)
+    const browserPids = new Map<number, any>()
+    for (const b of status.browsers || []) browserPids.set(b.pid, b)
 
+    // Flatten memoryByAgent into process rows
     if (status.memoryByAgent) {
-      for (const g of status.memoryByAgent) {
-        const row = ensure(g.agent)
-        row.totalRss = g.totalRss
-        row.processes = g.processes || []
-        row.detail = row.processes.slice(0, 3).map((p: any) => p.name).join(', ')
+      for (const group of status.memoryByAgent) {
+        const agent = group.agent === 'system' ? 'skip' : group.agent
+        for (const proc of group.processes || []) {
+          const type = classifyProcess(proc.name)
+          const key = `${agent}-${proc.name}-${proc.rss}`
+          if (seen.has(key)) continue
+          seen.add(key)
+          result.push({
+            key,
+            agent,
+            type,
+            name: proc.name,
+            rss: proc.rss,
+            killable: false,
+          })
+        }
       }
     }
 
+    // Add vite processes (may already be in memoryByAgent, but with killable info)
     for (const v of status.vites || []) {
-      const agent = v.agent || 'system'
-      const row = ensure(agent)
-      if (!v.hasClient) {
-        row.killablePids.push(v.pid)
-      }
+      const agent = v.agent || 'skip'
       const label = `vite${v.ports?.length ? ' :' + v.ports[0] : ''}`
-      if (!row.detail.includes('vite')) {
-        row.detail = row.detail ? row.detail + ', ' + label : label
-      }
+      const key = `vite-${v.pid}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      result.push({
+        key,
+        agent,
+        type: 'vite',
+        name: label,
+        rss: 0,
+        pid: v.pid,
+        killable: !v.hasClient,
+      })
     }
 
+    // Add playwright browser processes
     for (const b of status.browsers || []) {
-      const agent = b.agent || 'system'
-      const row = ensure(agent)
-      if (!b.controllerAlive) {
-        row.killablePids.push(b.pid)
-      }
-      if (!row.detail.includes('pw')) {
-        row.detail = row.detail ? row.detail + ', pw' : 'pw'
-      }
+      const agent = b.agent || 'skip'
+      const key = `pw-${b.pid}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      result.push({
+        key,
+        agent,
+        type: 'playwright',
+        name: 'playwright',
+        rss: 0,
+        pid: b.pid,
+        killable: !b.controllerAlive,
+      })
     }
 
-    const result = [...groups.values()]
     const dir = sortAsc ? 1 : -1
     result.sort((a, b) => {
       if (sortKey === 'agent') return a.agent.localeCompare(b.agent) * dir
-      if (sortKey === 'memory') return (a.totalRss - b.totalRss) * dir
-      return a.detail.localeCompare(b.detail) * dir
+      if (sortKey === 'type') return a.type.localeCompare(b.type) * dir
+      return (a.rss - b.rss) * dir
     })
     return result
   }, [status, sortKey, sortAsc])
 
   const pressure = status?.pressure ?? 0
   const pctText = `${(pressure * 100).toFixed(0)}%`
-  const trackedMem = rows.reduce((s, r) => s + r.totalRss, 0)
+  const trackedMem = rows.reduce((s, r) => s + r.rss, 0)
 
   const thStyle: React.CSSProperties = {
     textAlign: 'left',
@@ -183,20 +230,52 @@ function ReaperComponent({ shape }: { shape: any }) {
     sortKey === key ? (sortAsc ? ' ▲' : ' ▼') : ''
 
   return (
-    <HTMLContainer>
+    <HTMLContainer
+      style={{
+        width: shape.props.w,
+        height: shape.props.h,
+        pointerEvents: 'all',
+        overflow: 'visible',
+      }}
+    >
       <div
-        className="fleet-reaper-shape fleet-chat-shape"
+        className="fleet-shape fleet-reaper-shape fleet-chat-shape"
         style={{
-          width: shape.props.w,
-          height: shape.props.h,
+          width: '100%',
+          height: '100%',
           display: 'flex',
           flexDirection: 'column',
-          overflow: 'hidden',
+          overflow: 'visible',
           fontSize: 12,
           fontFamily: 'var(--tl-font-sans, system-ui)',
           userSelect: 'none',
+          position: 'relative',
         }}
       >
+        {/* Close + layout buttons — same as other fleet shapes */}
+        <div className="fleet-btn-group" onPointerDown={(e) => e.stopPropagation()}>
+          <button
+            className="fleet-close-btn"
+            onPointerUp={(e) => {
+              e.stopPropagation()
+              editor.deleteShapes([shape.id])
+            }}
+          >
+            ×
+          </button>
+          <button
+            className="fleet-layout-btn"
+            onPointerUp={(e) => {
+              e.stopPropagation()
+              editor.setCurrentTool('select')
+              editor.select(shape.id)
+            }}
+            title="Resize / move"
+          >
+            ⊞
+          </button>
+        </div>
+
         {/* Header */}
         <div style={{
           padding: '6px 10px',
@@ -238,7 +317,7 @@ function ReaperComponent({ shape }: { shape: any }) {
           </div>
         ) : (
           <div
-            style={{ flex: 1, overflow: 'auto', padding: '6px 10px' }}
+            style={{ flex: 1, overflow: 'auto', padding: '6px 10px', minHeight: 0 }}
             onPointerDown={stopEventPropagation}
             onWheel={stopEventPropagation}
           >
@@ -284,52 +363,62 @@ function ReaperComponent({ shape }: { shape: any }) {
               </div>
             </div>
 
-            {/* Unified table */}
+            {/* Process table */}
             {rows.length > 0 ? (
               <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
                 <thead>
                   <tr>
-                    <th style={{ ...thStyle, width: '30%' }} onClick={() => handleSort('agent')}>
+                    <th style={{ ...thStyle, width: '30%' }} onClick={() => handleSort('type')}>
+                      Process{sortIndicator('type')}
+                    </th>
+                    <th style={{ ...thStyle, width: '25%' }} onClick={() => handleSort('agent')}>
                       Agent{sortIndicator('agent')}
                     </th>
                     <th style={{ ...thStyle, width: '18%' }} onClick={() => handleSort('memory')}>
-                      Memory{sortIndicator('memory')}
-                    </th>
-                    <th style={{ ...thStyle, width: '40%' }} onClick={() => handleSort('detail')}>
-                      Processes{sortIndicator('detail')}
+                      RSS{sortIndicator('memory')}
                     </th>
                     <th style={{ ...thStyle, width: '12%' }}></th>
                   </tr>
                 </thead>
                 <tbody>
                   {rows.map(r => (
-                    <tr key={r.agent} style={{ borderBottom: '1px solid var(--glass-2)' }}>
-                      <td style={{ ...tdStyle, color: r.agent === 'system' ? 'var(--text-dim)' : 'var(--text)', fontWeight: r.agent === 'system' ? 400 : 500, maxWidth: 0 }}>
+                    <tr key={r.key} style={{ borderBottom: '1px solid var(--glass-2)' }}>
+                      <td style={{ ...tdStyle, maxWidth: 0 }}>
+                        <span style={{ color: 'var(--text)', fontWeight: 500 }}>{r.type}</span>
+                        {r.name !== r.type && (
+                          <span style={{ color: 'var(--text-dim)', fontSize: 10, marginLeft: 4 }}>
+                            {r.name}
+                          </span>
+                        )}
+                      </td>
+                      <td style={{
+                        ...tdStyle,
+                        color: r.agent === 'skip' ? 'var(--text-dim)' : 'var(--text)',
+                        fontWeight: r.agent === 'skip' ? 400 : 500,
+                        maxWidth: 0,
+                      }}>
                         {r.agent}
                       </td>
                       <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 10 }}>
-                        {r.totalRss > 0 ? formatBytes(r.totalRss) : '—'}
-                      </td>
-                      <td style={{ ...tdStyle, color: 'var(--text-dim)', fontSize: 10, maxWidth: 0 }}>
-                        {r.detail}
+                        {r.rss > 0 ? formatBytes(r.rss) : '—'}
                       </td>
                       <td style={{ ...tdStyle, textAlign: 'right' }}>
-                        {r.killablePids.length > 0 && (
+                        {r.killable && r.pid && (
                           <button
                             onPointerDown={stopEventPropagation}
-                            onClick={() => r.killablePids.forEach(p => handleKill(p))}
-                            disabled={r.killablePids.some(p => killing.has(p))}
+                            onClick={() => handleKill(r.pid!)}
+                            disabled={killing.has(r.pid)}
                             style={{
-                              background: r.killablePids.some(p => killing.has(p)) ? 'var(--glass-3)' : 'rgba(238,85,85,0.15)',
+                              background: killing.has(r.pid) ? 'var(--glass-3)' : 'rgba(238,85,85,0.15)',
                               border: '1px solid rgba(238,85,85,0.3)',
                               borderRadius: 3,
-                              color: r.killablePids.some(p => killing.has(p)) ? 'var(--text-dim)' : '#e55',
+                              color: killing.has(r.pid) ? 'var(--text-dim)' : '#e55',
                               fontSize: 10,
                               padding: '1px 5px',
-                              cursor: r.killablePids.some(p => killing.has(p)) ? 'default' : 'pointer',
+                              cursor: killing.has(r.pid) ? 'default' : 'pointer',
                             }}
                           >
-                            {r.killablePids.some(p => killing.has(p)) ? '...' : 'kill'}
+                            {killing.has(r.pid) ? '...' : 'kill'}
                           </button>
                         )}
                       </td>

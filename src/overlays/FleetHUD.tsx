@@ -14,7 +14,7 @@ import { useFleetAgents } from '../fleet-data-adapter'
 import { FLEET_HUD_ANCHOR_ID } from '../shapes/fleet-utils'
 import './FleetHUD.css'
 
-const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview']
+const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview', 'fleet-reaper']
 
 function saveAnchorOffsets(editor: Editor, panOffset: number, cameraY: number) {
   const existing = editor.getShape(FLEET_HUD_ANCHOR_ID as any)
@@ -158,7 +158,7 @@ export function FleetHUD({
   // Track whether any fleet shapes are selected in the HUD editor (layout mode).
   // When active, the HUD canvas gets pointer-events: auto so drag-box select works.
   // Toggled via CSS class on the wrap div — see .fleet-hud-wrap.hud-layout-active in FleetHUD.css.
-  const FLEET_TYPES_HUD = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview'])
+  const FLEET_TYPES_HUD = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview', 'fleet-reaper'])
 
   // Camera offsets: initialized once on first expand, then frozen.
   // panOffsetRef (X): only updated by pan deltas, not zoom or shape moves.
@@ -337,7 +337,7 @@ export function FleetHUD({
     const isInsideFleetShape = (clientX: number, clientY: number) => {
       const target = document.elementFromPoint(clientX, clientY)
       if (!target) return false
-      return !!target.closest('[data-shape-type="fleet-chat"], [data-shape-type="fleet-agents"], [data-shape-type="fleet-search"], [data-shape-type="fleet-docview"]')
+      return !!target.closest('[data-shape-type="fleet-chat"], [data-shape-type="fleet-agents"], [data-shape-type="fleet-search"], [data-shape-type="fleet-docview"], [data-shape-type="fleet-reaper"]')
     }
     const isInsideChatInput = (e: DragEvent): boolean => {
       const target = document.elementFromPoint(e.clientX, e.clientY)
