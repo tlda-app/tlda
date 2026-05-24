@@ -30,6 +30,7 @@
 .fleet-chat-shape,
 .fleet-agents-shape,
 .fleet-search-shape,
+.fleet-reaper-shape,
 .cluster-shape {
   background-color: transparent;
   color: var(--text);
@@ -86,7 +87,8 @@
   transition: opacity 2s;
 }
 html.mousemove .fleet-shape:has(.fleet-chat-log:hover, .fleet-search-results:hover) .fleet-btn-group,
-html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hover .fleet-btn-group {
+html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hover .fleet-btn-group,
+html.mousemove .fleet-reaper-shape:hover .fleet-btn-group {
   opacity: 1;
   transition: opacity 2s;
 }
