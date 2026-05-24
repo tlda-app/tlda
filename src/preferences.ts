@@ -18,6 +18,10 @@ const DEFAULTS = {
   'response-curve': DEFAULT_CURVE as CurveHandles,
   'spawn-mode': '' as string,
   'voice-backend': 'chrome' as string,
+  'fleet-font-size': 11 as number,
+  'fleet-chrome-opacity': 1.0 as number,
+  'fleet-content-opacity': 1.0 as number,
+  'fleet-age-fade': true as boolean,
 }
 
 export type PrefKey = keyof typeof DEFAULTS

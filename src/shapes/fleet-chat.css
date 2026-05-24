@@ -63,7 +63,7 @@
   top: 50%;
   transform: translateY(-50%);
   font-size: 9px;
-  opacity: 0.25;
+  opacity: calc(0.25 * var(--fleet-chrome-alpha, 1));
   pointer-events: none;
   white-space: nowrap;
   z-index: 2;
@@ -437,12 +437,13 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 /* --- Chat line base --- */
 .fleet-chat-shape .chat-line {
   padding: 2px 8px;
-  font-size: 11px;
+  font-size: var(--fleet-base-font, 11px);
   line-height: 1.5;
   word-break: break-word;
   -webkit-user-select: text !important;
   user-select: text !important;
   cursor: text;
+  opacity: var(--fleet-content-alpha, 1);
 }
 /* tldraw sets user-select:none on .tl-container * which applies to child elements
    even when .chat-line has user-select:text !important (inheritance loses to any
@@ -459,7 +460,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 /* --- Timestamp --- */
 .fleet-chat-shape .chat-ts {
   color: var(--text-dim);
-  font-size: 11px;
+  font-size: calc(var(--fleet-base-font, 11px) - 2px);
   margin-right: 4px;
   user-select: none !important;
   -webkit-user-select: none !important;
@@ -497,22 +498,22 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 }
 
 /* --- Age-based opacity --- */
-.fleet-chat-shape .chat-line-recent { opacity: 1; }
-.fleet-chat-shape .chat-line-mid { opacity: 0.8; }
-.fleet-chat-shape .chat-line-old { opacity: 0.6; }
+.fleet-chat-shape .chat-line-recent { opacity: calc(1 - var(--fleet-age-fade, 1) * 0); }
+.fleet-chat-shape .chat-line-mid { opacity: calc(1 - var(--fleet-age-fade, 1) * 0.2); }
+.fleet-chat-shape .chat-line-old { opacity: calc(1 - var(--fleet-age-fade, 1) * 0.4); }
 
 /* --- Receipt / delivery indicator --- */
 .fleet-chat-shape .chat-receipt {
   font-size: 10px;
   margin-left: 4px;
-  opacity: 0.35;
+  opacity: calc(0.35 * var(--fleet-chrome-alpha, 1));
 }
 .fleet-chat-shape .chat-receipt.chat-delivered {
   color: var(--text-dim);
 }
 .fleet-chat-shape .chat-receipt.chat-read {
   color: var(--text-dim);
-  opacity: 0.5;
+  opacity: calc(0.5 * var(--fleet-chrome-alpha, 1));
 }
 
 /* --- CC separator --- */
@@ -2287,7 +2288,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .chat-thinking {
   font-style: italic;
   font-size: 11px;
-  opacity: 0.6;
+  opacity: calc(0.6 * var(--fleet-chrome-alpha, 1));
   pointer-events: none;
 }
 .chat-thinking .thinking-text {
@@ -2305,7 +2306,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
    stops thinking. */
 .chat-queued {
   font-size: 11px;
-  opacity: 0.55;
+  opacity: calc(0.55 * var(--fleet-chrome-alpha, 1));
   font-style: italic;
   pointer-events: none;
   padding-left: 8px;

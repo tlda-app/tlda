@@ -43,11 +43,27 @@ import { useIsInViewport } from './useIsInViewport'
 import { broadcastSharedDoc } from '../useYjsSync'
 import { getPageFilename } from '../stores/pageUrlStore'
 import { consumeBulletContexts, subscribeBulletContext, getBulletContexts } from '../stores/bulletContextStore'
+import { getPref, subscribePref } from '../preferences'
 import './fleet-chat.css'
 
 const DEFAULT_W = 400
 const DEFAULT_H = 600
 const FLEET_API = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5176'
+
+function getFleetStyleVars(): React.CSSProperties {
+  return {
+    '--fleet-base-font': `${getPref('fleet-font-size')}px`,
+    '--fleet-chrome-alpha': String(getPref('fleet-chrome-opacity')),
+    '--fleet-content-alpha': String(getPref('fleet-content-opacity')),
+    '--fleet-age-fade': getPref('fleet-age-fade') ? '1' : '0',
+  } as React.CSSProperties
+}
+
+function useFleetStyleVars() {
+  const [vars, setVars] = useState(getFleetStyleVars)
+  useEffect(() => subscribePref(() => setVars(getFleetStyleVars())), [])
+  return vars
+}
 
 // ---- Terminal hover pane ----
 
@@ -806,6 +822,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const editor = useEditor()
   const doc = useContext(DocContext)
   const panel = useContext(PanelContext)
+  const fleetStyleVars = useFleetStyleVars()
   const { w, h, filter } = shape.props as { w: number; h: number; filter: [string, string][][] }
   void useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
   const [filterOpen, setFilterOpen] = useState(false)
@@ -3269,6 +3286,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         ref={shapeContainerRef}
         className="fleet-shape fleet-chat-shape"
         style={{
+          ...fleetStyleVars,
           width: '100%',
           height: '100%',
           display: 'flex',
