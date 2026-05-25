@@ -1036,7 +1036,19 @@ const managerEscalationCooldowns = new Map()
 const HANDOFF_PATTERN = /(?:(?:I\s+(?:want|wanna|need)\s+to\s+)?hand\s+(?:this\s+)?off|do\s+(?:a\s+)?handoff|let'?s\s+(?:(?:do\s+(?:a\s+)?)?handoff|hand\s+(?:this\s+)?off)|time\s+(?:for\s+(?:a\s+)?)?handoff)\b/i
 const handoffCooldowns = new Map()
 const HANDOFF_COOLDOWN_MS = 120_000
-const pendingHandoffs = new Map()
+const PENDING_HANDOFFS_FILE = path.join(CONFIG_DIR, 'eliza-pending-handoffs.json')
+
+function loadPendingHandoffs() {
+  try {
+    const data = JSON.parse(fs.readFileSync(PENDING_HANDOFFS_FILE, 'utf8'))
+    return new Map(Object.entries(data))
+  } catch { return new Map() }
+}
+function savePendingHandoffs() {
+  fs.writeFileSync(PENDING_HANDOFFS_FILE, JSON.stringify(Object.fromEntries(pendingHandoffs), null, 2))
+}
+
+const pendingHandoffs = loadPendingHandoffs()
 const MANAGER_ESCALATION_COOLDOWN_MS = 60_000
 
 function postJson(urlPath, body) {
@@ -1264,6 +1276,7 @@ async function handleHandoff(agentId, triggerText) {
     }
 
     pendingHandoffs.set(briefingName, { originalAgent: agentName, originalAgentId: agentId, originalCwd: agentCwd, startedAt: now })
+    savePendingHandoffs()
 
     setTimeout(async () => {
       try {
@@ -1333,6 +1346,7 @@ async function handleHandoffReady(fromId, text) {
   }
 
   pendingHandoffs.delete(briefingAgentName)
+  savePendingHandoffs()
   console.log(`[eliza] briefing ready: ${briefingPath} — spawning pickup agent for ${handoffInfo.originalAgent}`)
 
   // Mark the briefing agent's task as done so it doesn't loop on context continuation
