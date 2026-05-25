@@ -886,12 +886,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     historyChangedPages,
     historyChanges,
     onHistoryChange: handleHistoryChange,
-    showHistoryPanel,
-    onToggleHistoryPanel: () => {
-      if (activeHistoryIdx >= 0 && activeHistoryIdx < historyEntries.length) {
-        toggleHistoryOverlay(docKey, historyEntries[activeHistoryIdx].id, historyChangedPages)
-      }
-    },
     selectedChangeId,
     onSelectChange: handleSelectChange,
     buildErrors,
@@ -901,7 +895,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     shadowHistoryVisible: shadowVisible,
     onToggleShadowHistory: toggleShadowOverlay,
     shadowActiveVersion,
-  }), [docKey, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, showHistoryPanel, toggleHistoryOverlay, selectedChangeId, handleSelectChange, buildErrors, buildWarnings, timelineActive, toggleTimeline, shadowVisible, toggleShadowOverlay, shadowActiveVersion])
+  }), [docKey, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, selectedChangeId, handleSelectChange, buildErrors, buildWarnings, timelineActive, toggleTimeline, shadowVisible, toggleShadowOverlay, shadowActiveVersion])
 
   // When the fleet HUD overlay is open, hide fleet shapes in the main editor
   // from both rendering AND hit-testing. The overlay renders its own copies.

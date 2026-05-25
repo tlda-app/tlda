@@ -40,8 +40,6 @@ export interface PanelContextValue {
   historyChangedPages?: PageDiff[]
   historyChanges?: ChangeItem[]
   onHistoryChange?: (idx: number) => void
-  showHistoryPanel?: boolean
-  onToggleHistoryPanel?: () => void
   selectedChangeId?: string | null
   onSelectChange?: (id: string | null) => void
   buildErrors?: BuildError[]
