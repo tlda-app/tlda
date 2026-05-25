@@ -17,7 +17,6 @@ import {
 } from 'tldraw'
 import { toolNameHud } from '../overlays/ToolNameHud'
 
-const TLDRAW_ICON_BASE = 'https://cdn.tldraw.com/4.3.1/icons/icon/0_merged.svg'
 
 const highlightColors: Record<string, string> = {
   black: '#1d1d1d', grey: '#9fa1a4', 'light-violet': '#e0d4f5',
@@ -26,34 +25,7 @@ const highlightColors: Record<string, string> = {
   'light-green': '#c5e8c5', 'light-red': '#f5c5c5', red: '#ff6b6b',
 }
 
-// Browse tool icon: pointer + starburst sparkle (matches the toolbar button)
-const _browseStarburst = (() => {
-  const cx = 12.5, cy = 5.5, rOuter = 5, rInner = 1.8, spikes = 8
-  const pts = []
-  for (let i = 0; i < spikes * 2; i++) {
-    const angle = (i * Math.PI) / spikes - Math.PI / 2
-    const r = i % 2 === 0 ? rOuter : rInner
-    pts.push(`${+(cx + Math.cos(angle) * r).toFixed(1)},${+(cy + Math.sin(angle) * r).toFixed(1)}`)
-  }
-  return pts.join(' ')
-})()
-const BROWSE_ICON_URL = `data:image/svg+xml,${encodeURIComponent(
-  `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18"><path d="M2 4.5l1 11 2.8-3.5 4.2 1.8L2 4.5z" fill="currentColor"/><polygon points="${_browseStarburst}" fill="currentColor"/></svg>`
-)}`
-
-const HL_SLOTS: { id: string; color: string; label: string; svgIcon?: string }[] = [
-  { id: 'eraser', color: '#888', label: 'eraser', svgIcon: `${TLDRAW_ICON_BASE}#tool-eraser` },
-  { id: 'black', color: '#1d1d1d', label: 'cut' },
-  { id: 'light-red', color: '#dc2626', label: 'wrong' },
-  { id: 'orange', color: '#ff8c40', label: 'expand' },
-  { id: 'yellow', color: '#ffc940', label: 'question' },
-  { id: 'grey', color: '#9fa1a4', label: 'compress' },
-  { id: 'light-blue', color: '#4ea2e2', label: 'notation' },
-  { id: 'light-green', color: '#65c365', label: 'approve' },
-  { id: 'light-violet', color: '#e0d4f5', label: 'personal' },
-  { id: 'select', color: '#666', label: 'browse', svgIcon: BROWSE_ICON_URL },
-  { id: 'draw', color: '#666', label: 'pen', svgIcon: `${TLDRAW_ICON_BASE}#tool-pencil` },
-]
+import { HL_SLOTS, TLDRAW_ICON_BASE } from '../highlighterSlots'
 
 const isTouch = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches
 const DOT_SIZE = 14
@@ -62,8 +34,7 @@ const DOT_GAP = 6
 export function HighlighterSlider() {
   // Hide in embed mode (fleet shared doc iframe)
   const isEmbed = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('embed')
-  // Default ON. The slider is the only tool picker now (no more pen-mode
-  // zones competing with it). The toggle in DocumentPanel can still hide it
+  // Default ON. The toggle in DocumentPanel can hide it
   // by setting hl-zone-mode='0' explicitly.
   const [zoneEnabled, setZoneEnabled] = useState(() =>
     typeof localStorage !== 'undefined' && localStorage.getItem('hl-zone-mode') !== '0'
