@@ -251,6 +251,9 @@ export function useFleetEvents(dnfFilter?: [string, string][][] | null, frameId?
     let isPlaybackMode = false
     const filter = dnfFilter && dnfFilter.length > 0 ? dnfFilter : null
 
+    // Clear stale state from previous filter immediately
+    setEvents([])
+
     function setupLive() {
       if (cancelled) return
       ensureInit().then(() => {
