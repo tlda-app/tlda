@@ -3125,8 +3125,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const RIBBON_ID = 'shape:understanding-ribbon';
 
       // Look up canvas positions for start and end lines
-      const startPos = lookupLine(doc, startLine);
-      const endPos = lookupLine(doc, endLine);
+      const startPos = await lookupLineAsync(doc, startLine);
+      const endPos = await lookupLineAsync(doc, endLine);
       if (!startPos) return { content: [{ type: 'text', text: `Line ${startLine} not found in lookup` }], isError: true };
       if (!endPos) return { content: [{ type: 'text', text: `Line ${endLine} not found in lookup` }], isError: true };
 

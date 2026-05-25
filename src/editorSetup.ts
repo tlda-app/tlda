@@ -631,7 +631,7 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
       // Shape is created on pointer-down with no segments. Wait for the stroke
       // to complete (user lifts pen), then snap. We detect completion by watching
       // for the editing shape to clear (user finishes the stroke).
-      if (shape.type === 'highlight') {
+      if (shape.type === 'highlight' && source === 'user') {
         // Wait for pen lift by polling editor.inputs.isPointing.
         // editor.on('event', pointer_up) doesn't fire during highlight.drawing state
         // because TLDraw's state machine consumes the event first.
