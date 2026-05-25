@@ -2332,6 +2332,23 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
+  // ---- hibernate-session ----
+  if (type === 'hibernate-session') {
+    const { agent: agentQuery } = msg
+    const agent = fleetStore.findAgent(agentQuery)
+    if (!agent) { error('agent not found'); return }
+    if (!agent.tmux_session) { error('no tmux session'); return }
+    const route = resolveRpc('kill-session', agent)
+    if (route.via === 'none') { error(route.error); return }
+    try {
+      const result = await sendRpc(route.machine_id, 'kill-session', { agent_id: agent.id, tmux_session: agent.tmux_session })
+      clearEphemeralState(agent.id)
+      broadcastState()
+      reply({ ok: true, agent: agent.friendly_name || agent.id, ...result })
+    } catch (e) { error(e.message) }
+    return
+  }
+
   // ---- interrupt ----
   if (type === 'interrupt') {
     const { agent: agentQuery } = msg

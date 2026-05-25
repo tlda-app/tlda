@@ -245,6 +245,10 @@ export function killSession(id) {
   return wsSend({ type: 'kill-session', agent: id })
 }
 
+export function hibernateSession(id) {
+  return wsSend({ type: 'hibernate-session', agent: id })
+}
+
 export function sendKey(agent, key) {
   return wsSend({ type: 'send-key', agent, key })
 }
