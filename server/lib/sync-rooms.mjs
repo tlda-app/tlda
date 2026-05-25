@@ -641,10 +641,6 @@ export async function getRoomRecords(docName, typeFilter) {
  */
 export async function putShape(docName, shape) {
   const room = await getOrCreateRoom(docName)
-  // storage.transaction writes to the Yjs doc but may not immediately
-  // broadcast to connected WebSocket clients. Shapes appear after
-  // reload or when the client re-syncs. For immediate visibility,
-  // shapes should be created client-side via the editor.
   room.storage.transaction((txn) => {
     txn.set(shape.id, shape)
   })
