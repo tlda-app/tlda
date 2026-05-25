@@ -2142,6 +2142,113 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
     };
   }
 
+  // ---- theorem/label reference resolution ----
+  const _refCache = new Map()
+  function loadRefIndex(doc) {
+    if (_refCache.has(doc)) return _refCache.get(doc)
+    const projectDir = path.join(os.homedir(), 'work', 'tlda', 'server', 'projects', doc, 'output')
+    const projJson = path.join(os.homedir(), 'work', 'tlda', 'server', 'projects', doc, 'project.json')
+    let texBase = 'main'
+    try {
+      const pj = JSON.parse(fs.readFileSync(projJson, 'utf8'))
+      if (pj.mainFile) texBase = pj.mainFile.replace(/\.tex$/, '')
+    } catch { /* project.json missing — use default texBase */ }
+
+    let labels = []
+    let labelRegions = {}
+    let pageIndex = {}
+
+    const smPath = path.join(projectDir, `${texBase}-source-map.json`)
+    if (fs.existsSync(smPath)) {
+      const sm = JSON.parse(fs.readFileSync(smPath, 'utf8'))
+      labels = sm.labels || []
+      pageIndex = sm.pages || {}
+    }
+
+    const piPath = path.join(projectDir, `${texBase}-proof-info.json`)
+    if (fs.existsSync(piPath)) {
+      const pi = JSON.parse(fs.readFileSync(piPath, 'utf8'))
+      labelRegions = pi.labelRegions || {}
+    }
+
+    if (!labels.length) {
+      _refCache.set(doc, null)
+      setTimeout(() => _refCache.delete(doc), 30000)
+      return null
+    }
+
+    const index = { labels, labelRegions, pageIndex, texBase }
+    _refCache.set(doc, index)
+    setTimeout(() => _refCache.delete(doc), 60000)
+    return index
+  }
+
+  function findSourceLine(index, label, page) {
+    const region = index.labelRegions[label]
+    const yTarget = region?.yTop
+    if (yTarget == null) return null
+    const pageEntries = index.pageIndex[String(page)]
+    if (!pageEntries?.length) return null
+    let best = null
+    let bestDist = Infinity
+    for (const entry of pageEntries) {
+      const dist = Math.abs(entry.y - yTarget)
+      if (dist < bestDist) { bestDist = dist; best = entry }
+    }
+    return best
+  }
+
+  const _REF_TYPES = [
+    { names: ['lemma'], types: ['lem', 'lemm', 'lemma'] },
+    { names: ['theorem', 'thm'], types: ['thm', 'theorem'] },
+    { names: ['proposition', 'prop'], types: ['prop', 'proposition'] },
+    { names: ['corollary', 'cor'], types: ['cor', 'corollary'] },
+    { names: ['definition', 'def'], types: ['def', 'definition'] },
+    { names: ['assumption'], types: ['a', 'ass', 'assumption'] },
+    { names: ['remark'], types: ['rem', 'remark'] },
+    { names: ['appendix'], types: ['app', 'sec'] },
+    { names: ['section', 'sec'], types: ['sec'] },
+    { names: ['equation', 'eq'], types: ['eq'] },
+  ]
+
+  const _REF_NAME_PATTERN = _REF_TYPES.flatMap(t => t.names).join('|')
+  // Matches "Lemma E5", "Lemma E.5", "Lemma E 5", "theorem 3.1", etc.
+  // Negative lookahead prevents double-resolution (already has " [label →" after it).
+  const _REF_REGEX = new RegExp(
+    '\\b(' + _REF_NAME_PATTERN + ')' +
+    '\\s+' +
+    '([A-Z]?\\.?\\s?\\d[\\d.]*)' +
+    '(?!\\])(?! \\[)',
+    'gi'
+  )
+
+  function resolveTheoremRefs(text, doc, version) {
+    if (!text || !doc) return text
+    const index = loadRefIndex(doc)
+    if (!index) return text
+
+    return text.replace(_REF_REGEX, (match, typeName, rawNumber) => {
+      const normalizedNumber = rawNumber.trim()
+        .replace(/\s+/g, '')
+        .replace(/([A-Z])(\d)/i, '$1.$2')
+
+      const typeInfo = _REF_TYPES.find(t =>
+        t.names.some(n => n.toLowerCase() === typeName.toLowerCase())
+      )
+      if (!typeInfo) return match
+
+      const entry = index.labels.find(l =>
+        typeInfo.types.includes(l.type) && l.number === normalizedNumber
+      )
+      if (!entry) return match
+
+      const srcLine = findSourceLine(index, entry.label, entry.page)
+      const filePart = srcLine ? `${srcLine.file}:${srcLine.line}` : `p${entry.page}`
+      const versionPart = version ? ` @${version.slice(0, 7)}` : ''
+      return `${match} [${entry.label} → ${filePart}${versionPart}]`
+    })
+  }
+
   // ---- image resolution ----
   // Extract image URLs from markdown, resolve to local paths, return as
   // { text, images } where images are { path, mimeType } objects.
@@ -2395,7 +2502,8 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
           }
         }
         const { text: chipResolvedText, images: chipImages } = await resolveChipTokens(m.text, m.metadata)
-        const { text: imgResolvedText, images } = await resolveImages(chipResolvedText)
+        const refResolvedText = resolveTheoremRefs(chipResolvedText, ctx?.doc, ctx?.version)
+        const { text: imgResolvedText, images } = await resolveImages(refResolvedText)
         images.push(...chipImages)
         const reminder = m.metadata?.chatReminder ? `\n⚠️ ${m.metadata.chatReminder}` : '';
         return { line: `[from ${fromLabel}${docHint}]${replyHint} ${imgResolvedText}${reminder}`, images };

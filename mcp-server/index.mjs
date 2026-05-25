@@ -3570,9 +3570,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const q = query.trim();
       let entry = null;
 
-      // Load source-map.json (unified index)
-      const smPath = path.join(tldaProjectsDir, doc, 'output', 'source-map.json');
-      const mapPath = path.join(tldaProjectsDir, doc, 'output', 'theorem-map.json');
+      // Resolve texBase from project.json for prefixed output files
+      let texBase = 'main';
+      try {
+        const pj = JSON.parse(fs.readFileSync(path.join(tldaProjectsDir, doc, 'project.json'), 'utf8'));
+        if (pj.mainFile) texBase = pj.mainFile.replace(/\.tex$/, '');
+      } catch {}
+
+      const smPath = path.join(tldaProjectsDir, doc, 'output', `${texBase}-source-map.json`);
+      const mapPath = path.join(tldaProjectsDir, doc, 'output', `${texBase}-theorem-map.json`);
 
       if (fs.existsSync(smPath)) {
         const sm = JSON.parse(fs.readFileSync(smPath, 'utf8'));
