@@ -16,7 +16,7 @@ import {
   createShapeId,
 } from 'tldraw'
 import { useState, useCallback, useMemo, useRef, useEffect, memo } from 'react'
-import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, useFleetContext, searchFleet, killSession, spawnAgent } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, useFleetContext, searchFleet, hibernateSession, spawnAgent } from '../fleet-data-adapter'
 import { dropPillOnTarget } from './FleetPillShape'
 import { dragCoordinator } from './dragCoordinator'
 import { useIsInViewport } from './useIsInViewport'
@@ -583,12 +583,12 @@ function AgentRow({
       >
         <span className={`fleet-agents-unread-dot${unreadCount > 0 ? ' active' : ''}`} />
 
-        {/* Kill button — shown on hover */}
+        {/* Hibernate button — shown on hover, kills session but keeps agent in panel */}
         <span
           className="fleet-agents-kill-btn"
           onPointerDown={(e) => e.stopPropagation()}
-          onPointerUp={(e) => { e.stopPropagation(); killSession(agent.id) }}
-          title="Kill agent session"
+          onPointerUp={(e) => { e.stopPropagation(); hibernateSession(agent.id) }}
+          title="Hibernate agent"
         >
           ×
         </span>

@@ -9,7 +9,6 @@ import { useState, useEffect, useCallback } from 'react'
 import {
   init,
   subscribe,
-  getEvents,
   getAgents,
   getTasks,
   getUnreadCountsForHuman,
@@ -24,6 +23,7 @@ import {
   matchesFilter,
   respawnAgent as _respawnAgent,
   killSession as _killSession,
+  hibernateSession as _hibernateSession,
   spawnAgent as _spawnAgent,
   isConnected as _isConnected,
   getReaperStatus,
@@ -254,39 +254,12 @@ export function useFleetEvents(dnfFilter?: [string, string][][] | null, frameId?
     function setupLive() {
       if (cancelled) return
       ensureInit().then(() => {
-        // If playback data arrived while we were waiting for init, don't start live
         if (cancelled || isPlaybackMode) return
-        const all = getEvents()
-        const filtered = filter
-          ? all.filter((e: any) => matchesFilter(filter, e))
-          : [...all]
-        setEvents(filtered.slice(-MAX_LOCAL_EVENTS))
 
-        const refreshEvents = () => {
-          if (!cancelled) {
-            const all = getEvents()
-            const bufferFiltered = filter ? all.filter((e: any) => matchesFilter(filter, e)) : [...all]
-            setEvents((prev: any[]) => {
-              const seen = new Set<string>()
-              for (const e of prev) {
-                if (e._dbId) seen.add(String(e._dbId))
-                seen.add(`${e.timestamp}:${e.from}`)
-              }
-              const novel = bufferFiltered.filter((e: any) => {
-                if (e._dbId && seen.has(String(e._dbId))) return false
-                if (seen.has(`${e.timestamp}:${e.from}`)) return false
-                return true
-              })
-              const merged = [...prev, ...novel]
-              return merged.length > MAX_LOCAL_EVENTS ? merged.slice(-MAX_LOCAL_EVENTS) : merged
-            })
-          }
-        }
-        const [, cleanupGate] = visibilityGate(() => {}, refreshEvents)
+        // Don't seed from the global buffer — it's shared across all agents and
+        // loses per-agent messages when other agents are chatty. The DB fetch in
+        // FleetChatShape provides authoritative history; we just handle live events.
 
-        // Batch incoming events within a 16ms window (one animation frame).
-        // WS messages arrive as separate macrotasks, so without batching each
-        // message triggers its own React render. This coalesces bursts into one.
         let pendingBatch: any[] = []
         let batchTimer: ReturnType<typeof setTimeout> | null = null
         const flushBatch = () => {
@@ -299,18 +272,21 @@ export function useFleetEvents(dnfFilter?: [string, string][][] | null, frameId?
           })
         }
 
+        const refreshEvents = () => {
+          if (cancelled) return
+          // Tab just became visible — flush any events accumulated while hidden
+          if (pendingBatch.length > 0) flushBatch()
+        }
+        const [, cleanupGate] = visibilityGate(() => {}, refreshEvents)
+
         const rawUnsub = subscribe('messages', filter, (event: any) => {
-          if (!_tabVisible) return  // skip render; refreshEvents will run on tab restore
           if (!event) {
-            // Full refresh from _events — clear pending batch since refreshEvents
-            // already includes everything. Without this, flushBatch appends events
-            // that refreshEvents already loaded, causing duplicates.
             pendingBatch.length = 0
             if (batchTimer !== null) { clearTimeout(batchTimer); batchTimer = null }
-            refreshEvents()
+            setEvents(prev => [...prev])
           } else {
             pendingBatch.push(event)
-            if (!batchTimer) batchTimer = setTimeout(flushBatch, 16)
+            if (_tabVisible && !batchTimer) batchTimer = setTimeout(flushBatch, 16)
           }
         })
         liveUnsub = () => {
@@ -764,6 +740,7 @@ export function useFleetIdentity(): { id: string | null, name: string | null, ne
 export const sendMessage = _sendMessage
 export const respawnAgent = _respawnAgent
 export const killSession = _killSession
+export const hibernateSession = _hibernateSession
 export const spawnAgent = _spawnAgent
 export const injectOptimisticEvent = _injectOptimisticEvent
 export const updateOptimisticEvent = _updateOptimisticEvent
