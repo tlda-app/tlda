@@ -3341,34 +3341,5 @@ server.listen(PORT, HOST, () => {
   ensureLocalDaemon()
   setInterval(ensureLocalDaemon, DAEMON_SUPERVISOR_INTERVAL_MS).unref()
 
-  // Idle-hibernation: kill tmux sessions for agents that have had no activity for a while.
-  // "Activity" = any event from or to the agent in the events table (chat, activity card,
-  // delegate, etc.). Heartbeats and last_seen are network signals — not used here.
-  // The process dies, RAM is freed. The agent enters hibernation (no process, but
-  // `dead=0`). Auto-respawn fires when anyone next messages them.
-  const IDLE_HIBERNATE_MS = 20 * 60 * 1000  // 20 minutes
-  setInterval(() => {
-    if (!fleetStore) return
-    const cutoff = new Date(Date.now() - IDLE_HIBERNATE_MS).toISOString()
-    const idle = fleetStore.db.prepare(
-      `SELECT a.* FROM agents a
-       WHERE a.dead = 0 AND a.human = 0 AND a.tmux_session IS NOT NULL
-       AND COALESCE(
-         (SELECT MAX(e.timestamp) FROM events e WHERE e.from_id = a.id OR e.to_id = a.id),
-         a.registered_at
-       ) < ?`
-    ).all(cutoff)
-    for (const agent of idle) {
-      if (_thinkingState.has(agent.id) || _compactingState.has(agent.id)) continue
-      const machineIds = [...daemonConnections.keys()]
-      if (machineIds.length === 0) continue
-      console.log(`[hibernate] ${agent.friendly_name || agent.id} — no activity since before ${cutoff}`)
-      clearEphemeralState(agent.id)
-      sendRpc(machineIds[0], 'kill-session', { agent_id: agent.id, tmux_session: agent.tmux_session })
-        .catch(e => console.warn(`[hibernate] kill-session RPC failed for ${agent.id}: ${e.message}`))
-      // NOTE: do NOT markDead — idling just hibernates, doesn't kill the agent
-      // identity. dead=1 is reserved for explicit kills.
-    }
-    if (idle.length > 0) broadcastState()
-  }, 5 * 60 * 1000).unref()  // check every 5 minutes
+  // Idle-hibernation disabled — agents stay alive until explicitly hibernated via UI.
 })
