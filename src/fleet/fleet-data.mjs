@@ -484,7 +484,7 @@ export async function init() {
   // If localStorage has a stored name, login is sent automatically.
   // If not, the UI shows a picker with login/register options.
 
-  // Fetch initial state + history in parallel
+  // Fetch initial state + history in parallel.
   const [stateRes, historyRes] = await Promise.all([
     fetch(`${FLEET}/api/state`).then(r => r.json()).catch(e => { console.warn('[fleet-data] state fetch failed:', e.message); return {} }),
     fetch(`${FLEET}/api/chat/history?limit=${MAX_EVENTS}`).then(r => r.json()).catch(e => { console.warn('[fleet-data] history fetch failed:', e.message); return { events: [] } }),
@@ -633,11 +633,10 @@ export async function fetchHistory(agentId, limit = 200) {
 }
 
 export async function loadBefore(agentId, beforeTs, count = 100) {
-  // Use WebSocket for history to avoid racing with live events.
-  // Falls back to HTTP if WS is not connected.
   let res
   if (_ws && _ws.readyState === 1) {
-    res = await wsSend({ type: 'load-history', agent: agentId || null, before: beforeTs, limit: count })
+    const msg = { type: 'load-history', agent: agentId || null, before: beforeTs, limit: count }
+    res = await wsSend(msg)
   } else {
     const agentParam = agentId ? `&agent=${encodeURIComponent(agentId)}` : ''
     res = await fetch(`${FLEET}/api/chat/history?limit=${count}&before=${encodeURIComponent(beforeTs)}${agentParam}`).then(r => r.json())

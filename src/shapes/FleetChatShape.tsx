@@ -1032,7 +1032,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     const loadKey = `${filterKey}:${fleetId}`
     if (historyLoadedRef.current === loadKey) return
     historyLoadedRef.current = loadKey
-    loadBefore(fleetId, new Date().toISOString(), 50).then((older: any[]) => {
+    loadBefore(fleetId, new Date().toISOString(), 200).then((older: any[]) => {
       if (older.length > 0) {
         // Deduplicate against live events already in the buffer.
         // convertChatEvent stores DB id in _dbId, not id.
