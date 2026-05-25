@@ -80,7 +80,7 @@ export function PingButton() {
 // Main panel
 // ======================
 
-type Tab = 'history' | 'toc' | 'notes' | 'fleet' | 'prefs'
+type Tab = 'toc' | 'notes' | 'prefs'
 
 export function DocumentPanel() {
   const doc = useContext(DocContext)

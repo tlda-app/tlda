@@ -41,7 +41,6 @@ import { Terminal } from 'xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { useIsInViewport } from './useIsInViewport'
 import { broadcastSharedDoc } from '../useYjsSync'
-import { getPageFilename } from '../stores/pageUrlStore'
 import { consumeBulletContexts, subscribeBulletContext, getBulletContexts } from '../stores/bulletContextStore'
 import { getPref, subscribePref } from '../preferences'
 import './fleet-chat.css'
@@ -1465,7 +1464,6 @@ function FleetChatInner({ shape }: { shape: any }) {
     if (!canvasPos) return
 
     e.stopPropagation()
-    setDocLinkHover(null) // dismiss preview on click
     // Update docview shape directly if one exists
     const mainEd = (window as any).__tldraw_editor__
     if (mainEd) {
@@ -1483,16 +1481,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     editor.centerOnPoint(canvasPos, { animation: { duration: 300 } })
   }, [doc, refResolver, editor])
 
-  // Hover preview for doc-link spans
   const shapeContainerRef = useRef<HTMLDivElement>(null)
-  const [_docLinkHover, setDocLinkHover] = useState<{
-    resolved: ResolvedRef
-    /** Anchor position in shape-local coordinates */
-    localX: number
-    localY: number
-    localW: number
-    text: string
-  } | null>(null)
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
@@ -4004,85 +3993,6 @@ const FleetChatComponent = memo(function FleetChatComponent({ shape }: { shape: 
   return <FleetChatInner shape={shape} />
 }, (prev, next) => prev.shape.props === next.shape.props)
 
-/** Floating preview panel — shows a clipped SVG region on doc-link hover */
-export function DocLinkPreview({
-  resolved,
-  localX,
-  localY,
-  text,
-  docName,
-  shapeW,
-  onDismiss,
-}: {
-  resolved: ResolvedRef
-  localX: number
-  localY: number
-  text: string
-  docName: string
-  shapeW: number
-  onDismiss: () => void
-}) {
-  // Compute the SVG region to show (in PDF coordinates)
-  const PREVIEW_H_PDF = 150
-  const pdfY = resolved.pdfY ?? PDF_HEIGHT * 0.3
-  const yTop = Math.max(0, pdfY - PREVIEW_H_PDF / 2)
-  const yBottom = Math.min(PDF_HEIGHT, yTop + PREVIEW_H_PDF)
-
-  // SVG URL
-  const ws = (import.meta as any).env?.VITE_SYNC_SERVER as string | undefined
-  const base = ws ? ws.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/+$/, '') + '/' : (import.meta as any).env?.BASE_URL || '/'
-  const svgFilename = getPageFilename(resolved.page - 1) ?? `page-${resolved.page}.svg`
-  const svgUrl = `${base}docs/${docName}/${svgFilename}`
-
-  // Preview dimensions — fit within the shape width
-  const PREVIEW_W = Math.min(320, shapeW - 16)
-  const scale = PREVIEW_W / PDF_WIDTH
-  const previewH = (yBottom - yTop) * scale
-  const labelH = 20
-
-  // Position above the hovered link, clamped to shape bounds
-  const left = Math.max(4, Math.min(localX, shapeW - PREVIEW_W - 4))
-  const top = localY - previewH - labelH - 6
-
-  return (
-    <div
-      className="doc-link-preview"
-      style={{
-        position: 'absolute',
-        left,
-        top: Math.max(0, top),
-        width: PREVIEW_W,
-        zIndex: 50,
-      }}
-      onMouseLeave={onDismiss}
-    >
-      <div className="doc-link-preview-label">
-        <span>{text}</span>
-        <span className="doc-link-preview-page">p.{resolved.page}</span>
-      </div>
-      <div
-        className="doc-link-preview-clip"
-        style={{
-          width: PREVIEW_W,
-          height: previewH,
-          overflow: 'hidden',
-        }}
-      >
-        <img
-          src={svgUrl}
-          alt=""
-          style={{
-            display: 'block',
-            width: PREVIEW_W,
-            height: PDF_HEIGHT * scale,
-            transform: `translateY(${-yTop * scale}px)`,
-            pointerEvents: 'none',
-          }}
-        />
-      </div>
-    </div>
-  )
-}
 
 function SendHint({
   filter: _filter,

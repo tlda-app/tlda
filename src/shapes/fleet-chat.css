@@ -1488,35 +1488,6 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   cursor: default;
 }
 
-/* --- Document link hover preview --- */
-.fleet-chat-shape .doc-link-preview {
-  background: var(--surface, #161625);
-  border: 1px solid var(--border, #1e1e32);
-  border-radius: 6px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-  overflow: hidden;
-  pointer-events: auto;
-}
-.fleet-chat-shape .doc-link-preview-label {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 2px 8px;
-  font-size: 9px;
-  font-weight: 500;
-  color: var(--accent, #9370db);
-  background: rgba(147, 112, 219, 0.06);
-  border-bottom: 1px solid var(--border, #1e1e32);
-}
-.fleet-chat-shape .doc-link-preview-page {
-  opacity: 0.5;
-  font-size: 8px;
-  font-weight: 400;
-}
-.fleet-chat-shape .doc-link-preview-clip {
-  background: #fff;
-}
-
 /* --- Fleet Agents Table --- */
 
 .fleet-agents-shape .fleet-agents-header {
