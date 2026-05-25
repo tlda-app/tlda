@@ -1275,15 +1275,21 @@ async function handleHandoff(agentId, triggerText) {
 
 You are a briefing agent. Your job is to read **${agentName}**'s thread, extract Skip's decisions, and clean up any mess the outgoing agent left behind.
 
+**Skip's handoff message — read this first, it scopes your work:**
+> ${triggerText}
+
+This tells you *why* Skip triggered the handoff. Use it to focus your thread reading — prioritize what's relevant to Skip's stated concern. Don't do an exhaustive archaeological dig unless the handoff message is vague.
+
 **Steps:**
-1. \`get_thread(agent: "${agentName}", types: ["chat"], include_delegations: true)\`
-2. Read the FULL thread — take your time (5-10 minutes). Find what Skip approved, rejected, and asked for. Pay attention to:
+1. Read Skip's handoff message above. It tells you what to focus on.
+2. \`get_thread(agent: "${agentName}", types: ["chat"], include_delegations: true)\`
+3. Read the thread through the lens of the handoff message. Find what Skip approved, rejected, and asked for — prioritizing what's relevant to the handoff reason. Pay attention to:
    - The level of detail Skip needed in chat to follow the argument — that's the floor for the document
    - Corrections Skip made repeatedly — these are the failure patterns the pickup agent must avoid
    - What the agent was specifically asked to produce vs what they actually produced
-3. **Clean up the outgoing agent's files.** Fix notation conflicts, remove dead/superseded content, correct known errors. The pickup agent should inherit clean files, not a mess. If the fix is small (find-and-replace notation), do it directly. If it's large, note it in the briefing as a first task.
-4. Write the briefing to \`scratch/briefing-${agentName}.md\` following the \`write-briefing\` skill format
-5. When done, send this exact message to fleet:eliza: \`handoff-ready: scratch/briefing-${agentName}.md\`
+4. **Clean up the outgoing agent's files.** Fix notation conflicts, remove dead/superseded content, correct known errors. The pickup agent should inherit clean files, not a mess. If the fix is small (find-and-replace notation), do it directly. If it's large, note it in the briefing as a first task.
+5. Write the briefing to \`scratch/briefing-${agentName}.md\` following the \`write-briefing\` skill format
+6. When done, send this exact message to fleet:eliza: \`handoff-ready: scratch/briefing-${agentName}.md\`
 
 Do NOT continue the work. Do NOT form opinions about the argument. Extract decisions and clean up files only.`,
         })
@@ -1478,27 +1484,27 @@ function handleMessage(msg) {
       tickNudgeMessages(from_id)
     }
 
-    // All triggers require direct address: message must contain "eliza" (case-insensitive)
+    // Direct address required for commands (escalation, handoff) but not for detection/queuing
     const addressedEliza = /\beliza\b/i.test(text)
 
-    // Sequence detection watches both directions (but only fires nudges when addressed)
-    const seqHandled = addressedEliza ? handleSequence(from_id, to_id, text) : false
+    // Sequence detection always watches — queues nudges silently for the status line
+    const seqHandled = handleSequence(from_id, to_id, text)
 
-    // Manager escalation — fires before other triggers, returns early
+    // Manager escalation — requires direct address, fires before other triggers
     if (addressedEliza && from_id === OWNER_ID && to_id && to_id !== AGENT_ID && MANAGER_ESCALATION_PATTERN.test(text)) {
       const mode = MANAGER_MODE_1_PATTERN.test(text) ? 'talk-to-skip' : 'set-them-straight'
       handleManagerEscalation(to_id, text, mode).catch(e => console.error('[eliza] manager escalation error:', e.message))
       return
     }
 
-    // Handoff — Skip says "Eliza hand this off" to an agent
+    // Handoff — requires direct address
     if (addressedEliza && from_id === OWNER_ID && to_id && to_id !== AGENT_ID && HANDOFF_PATTERN.test(text)) {
       handleHandoff(to_id, text).catch(e => console.error('[eliza] handoff error:', e.message))
       return
     }
 
-    // Single-message triggers only fire on Skip's outgoing messages with direct address
-    if (addressedEliza && from_id === OWNER_ID && to_id && to_id !== AGENT_ID && !seqHandled) {
+    // Single-message triggers detect and queue without direct address (status line shows them)
+    if (from_id === OWNER_ID && to_id && to_id !== AGENT_ID && !seqHandled) {
       checkTriggers(to_id, text).catch(e => console.error('[eliza] checkTriggers error:', e.message))
     }
 

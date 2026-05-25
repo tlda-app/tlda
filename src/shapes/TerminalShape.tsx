@@ -26,6 +26,7 @@ import { Terminal } from 'xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import 'xterm/css/xterm.css'
 import './TerminalShape.css'
+import { getPref, subscribePref } from '../preferences'
 
 // Use relative URLs for API (proxied by Vite in dev, same host in prod).
 // WebSocket needs an absolute URL — derive from current host.
@@ -33,6 +34,20 @@ const FLEET_WS_HOST = typeof window !== 'undefined' ? window.location.origin.rep
 
 const DEFAULT_W = 560
 const DEFAULT_H = 380
+
+function getFleetStyleVars(): React.CSSProperties {
+  return {
+    '--fleet-base-font': `${getPref('fleet-font-size')}px`,
+    '--fleet-chrome-alpha': String(getPref('fleet-chrome-opacity')),
+    '--fleet-content-alpha': String(getPref('fleet-content-opacity')),
+  } as React.CSSProperties
+}
+
+function useFleetStyleVars() {
+  const [vars, setVars] = useState(getFleetStyleVars)
+  useEffect(() => subscribePref(() => setVars(getFleetStyleVars())), [])
+  return vars
+}
 
 // ---- Shape definition ----
 
@@ -100,6 +115,7 @@ function useAgents(): Agent[] {
 function TerminalComponent({ shape }: { shape: any }) {
   const editor = useEditor()
   const { w, h, agentId } = shape.props
+  const fleetStyleVars = useFleetStyleVars()
 
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
@@ -311,7 +327,7 @@ function TerminalComponent({ shape }: { shape: any }) {
       onPointerDown={stopEventPropagation}
       onPointerMove={stopEventPropagation}
     >
-      <div className={`terminal-shape ${inputFocused ? 'terminal-shape-input-active' : ''}`}>
+      <div className={`terminal-shape ${inputFocused ? 'terminal-shape-input-active' : ''}`} style={fleetStyleVars}>
         {/* Title bar */}
         <div className="terminal-shape-header"
           onPointerDown={stopEventPropagation}

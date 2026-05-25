@@ -106,7 +106,7 @@ def ensure_server():
     return False
 
 
-def ws_register(fleet_id, name, tmux_session, cwd, model=None, effort=None):
+def ws_register(fleet_id, name, tmux_session, cwd, model=None, effort=None, refresh=False):
     ws_url = f"ws://{DASH_HOST}:{DASH_PORT}/ws/fleet?agent={fleet_id}"
     try:
         ws = websocket.create_connection(ws_url, timeout=3)
@@ -117,6 +117,8 @@ def ws_register(fleet_id, name, tmux_session, cwd, model=None, effort=None):
             meta["model"] = model
         if effort:
             meta["effort"] = effort
+        if refresh:
+            meta["refresh"] = True
         if meta:
             msg["metadata"] = meta
         ws.send(json.dumps(msg))
@@ -126,6 +128,136 @@ def ws_register(fleet_id, name, tmux_session, cwd, model=None, effort=None):
 
 
 # ---- Agent lookup ----
+
+
+def _jsonl_path_to_cwd(jsonl_path):
+    """Derive the original working directory from a JSONL file.
+    Reads the first line's cwd field (most reliable), falls back to
+    reconstructing from the Claude project directory name.
+    """
+    try:
+        with open(jsonl_path, "r", errors="replace") as f:
+            for i, line in enumerate(f):
+                if i > 20:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                cwd = d.get("cwd")
+                if cwd and os.path.isdir(cwd):
+                    return cwd
+    except OSError:
+        pass
+    # Fallback: reconstruct from project dir name by greedy path matching
+    project_dir = os.path.dirname(jsonl_path)
+    dirname = os.path.basename(project_dir)
+    if not dirname.startswith("-"):
+        return None
+    parts = dirname[1:].split("-")
+    path = ""
+    for i, part in enumerate(parts):
+        candidate = path + "/" + part
+        if os.path.isdir(candidate):
+            path = candidate
+        else:
+            # Try joining remaining parts with hyphens
+            rest = "-".join(parts[i:])
+            candidate = path + "/" + rest
+            if os.path.isdir(candidate):
+                return candidate
+            break
+    return path if os.path.isdir(path) else None
+
+
+def find_valid_session(agent):
+    """Find a session UUID that has a backing .jsonl file.
+    Three-step lookup: DB primary → DB session_ids list → content scan of all JSONLs.
+    Returns (session_id, cwd_from_jsonl) tuple."""
+    import glob as _glob
+    import re as _re
+
+    projects_base = os.path.expanduser("~/.claude/projects")
+
+    def _jsonl_path(uuid_str):
+        hits = _glob.glob(os.path.join(projects_base, "*", f"{uuid_str}.jsonl"))
+        return hits[0] if hits else None
+
+    # Step 1: DB primary session_id
+    primary = agent.get("session_id")
+    if primary:
+        p = _jsonl_path(primary)
+        if p:
+            return (primary, _jsonl_path_to_cwd(p))
+
+    # Step 2: DB session_ids list
+    session_ids = agent.get("session_ids") or agent.get("sessions") or []
+    if isinstance(session_ids, str):
+        try:
+            session_ids = json.loads(session_ids)
+        except Exception:
+            session_ids = []
+    for alt in reversed(session_ids):
+        if alt != primary:
+            p = _jsonl_path(alt)
+            if p:
+                print(f"  session_id {primary} has no .jsonl, falling back to {alt}", file=sys.stderr)
+                return (alt, _jsonl_path_to_cwd(p))
+
+    # Step 3: content scan — search all JSONLs for this agent's fleet ID
+    fleet_id = agent.get("id")
+    if not fleet_id or not os.path.isdir(projects_base):
+        return None
+    print(f"  scanning JSONLs for {fleet_id}...", file=sys.stderr)
+    register_pattern = _re.compile(r'Registered (fleet:\w+)')
+    candidates = []
+    for project_hash in os.listdir(projects_base):
+        project_dir = os.path.join(projects_base, project_hash)
+        if not os.path.isdir(project_dir):
+            continue
+        for fname in os.listdir(project_dir):
+            if not fname.endswith(".jsonl"):
+                continue
+            fpath = os.path.join(project_dir, fname)
+            sid = fname[:-6]
+            try:
+                mtime = os.path.getmtime(fpath)
+            except OSError:
+                continue
+            last_registered_id = None
+            try:
+                with open(fpath, "r", errors="replace") as f:
+                    for line in f:
+                        if "Registered fleet:" not in line:
+                            continue
+                        try:
+                            d = json.loads(line.strip())
+                            tur = d.get("toolUseResult")
+                            if not tur:
+                                continue
+                            items = tur if isinstance(tur, list) else [tur]
+                            for item in items:
+                                text = item.get("text", "") if isinstance(item, dict) else str(item)
+                                m = register_pattern.search(text)
+                                if m:
+                                    last_registered_id = m.group(1)
+                        except (json.JSONDecodeError, AttributeError):
+                            continue
+            except OSError:
+                continue
+            if last_registered_id == fleet_id:
+                candidates.append((sid, mtime, fpath))
+    if candidates:
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        best_sid, _, best_path = candidates[0]
+        print(f"  found {len(candidates)} session(s) via content scan, using {best_sid}", file=sys.stderr)
+        return (best_sid, _jsonl_path_to_cwd(best_path))
+
+    return None
+
 
 def find_agent(name):
     agents = api_get("/api/store/agents")
@@ -147,15 +279,12 @@ def agent_meta(agent):
 # ---- Tmux ----
 
 def build_claude_cmd(fleet_id, tmux_session, model, effort=None, mode=None,
-                     resume_id=None):
+                     resume_id=None, include_prompt=True):
     """Build the shell command string for claude inside tmux.
 
-    Passes REGISTER_PROMPT as a positional arg so the agent has work
-    immediately (fixes death loop where --resume exits "No response
-    requested" when last JSONL turn was assistant).
-
-    Passes FLEET_TMUX_SESSION so register() uses the correct session name
-    instead of auto-detecting (fixes identity corruption in recycled sessions).
+    When include_prompt=True (fresh spawn, refresh), appends REGISTER_PROMPT
+    as a positional arg. When False (resume), omits it so Claude Code stays
+    in interactive mode — the caller injects the prompt via tmux send-keys.
     """
     parts = [f"FLEET_ID={fleet_id}", f"FLEET_TMUX_SESSION={tmux_session}", "claude"]
     if resume_id:
@@ -166,21 +295,40 @@ def build_claude_cmd(fleet_id, tmux_session, model, effort=None, mode=None,
         parts.append(f"--effort '{effort}'")
     if mode:
         parts.append(f"--permission-mode '{mode}'")
-    parts.append(shlex.quote(REGISTER_PROMPT))
+    if include_prompt:
+        parts.append(shlex.quote(REGISTER_PROMPT))
     return " ".join(parts)
 
 
-def spawn_tmux(session, cwd, cmd):
-    """Start a tmux session running cmd. Backgrounds a process to dismiss
-    the dev-channels confirmation dialog (sends '1' + Enter after 3s)."""
+
+def _session_has_claude(session):
+    """Check if a tmux session has a running claude process."""
+    try:
+        r = subprocess.run(tmux("list-panes", "-t", session, "-F", "#{pane_pid}"),
+                           capture_output=True, text=True, timeout=5)
+        if r.returncode != 0:
+            return False
+        for pid in r.stdout.strip().split():
+            ps = subprocess.run(["ps", "-p", pid, "-o", "args="],
+                                capture_output=True, text=True, timeout=5)
+            if ps.returncode == 0 and "claude" in ps.stdout:
+                return True
+        return False
+    except Exception:
+        return False
+
+def spawn_tmux(session, cwd, cmd, auto_dismiss=True):
+    """Start a tmux session running cmd. When auto_dismiss=True, backgrounds
+    a process to dismiss the dev-channels confirmation dialog."""
     subprocess.run(tmux("new-session", "-d", "-s", session, "-c", cwd, cmd), check=True)
-    subprocess.Popen(
-        [sys.executable, "-c",
-         f"import time,subprocess; time.sleep(3); "
-         f"subprocess.run({tmux('send-keys', '-t', session, '1')!r}); "
-         f"subprocess.run({tmux('send-keys', '-t', session, 'Enter')!r})"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
+    if auto_dismiss:
+        subprocess.Popen(
+            [sys.executable, "-c",
+             f"import time,subprocess; time.sleep(3); "
+             f"subprocess.run({tmux('send-keys', '-t', session, '1')!r}); "
+             f"subprocess.run({tmux('send-keys', '-t', session, 'Enter')!r})"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
 
 
 def verify_session(session, context=""):
@@ -189,6 +337,51 @@ def verify_session(session, context=""):
     if subprocess.run(tmux("has-session", "-t", session), capture_output=True).returncode != 0:
         print(f"Error: Claude could not resume{' ' + context if context else ''}.", file=sys.stderr)
         sys.exit(1)
+
+
+def inject_prompt(session, prompt, timeout=60):
+    """Wait for Claude Code's ❯ prompt, then inject text via tmux send-keys.
+    Handles startup dialogs: dev-channels confirmation and resume-from-summary."""
+    deadline = time.time() + timeout
+    dismissed_devch = False
+    dismissed_summary = False
+    while time.time() < deadline:
+        try:
+            r = subprocess.run(
+                tmux("capture-pane", "-t", session, "-p"),
+                capture_output=True, text=True, timeout=5)
+            if r.returncode != 0:
+                time.sleep(1)
+                continue
+            pane = r.stdout.rstrip()
+            # Dev-channels dialog — select option 1
+            if not dismissed_devch and 'development-channels' in pane and 'Enter to confirm' in pane:
+                subprocess.run(tmux("send-keys", "-t", session, "1"), capture_output=True, timeout=5)
+                time.sleep(0.5)
+                subprocess.run(tmux("send-keys", "-t", session, "Enter"), capture_output=True, timeout=5)
+                dismissed_devch = True
+                time.sleep(3)
+                continue
+            # Resume-from-summary dialog — select option 2 (full resume)
+            if not dismissed_summary and 'Resume from summary' in pane:
+                subprocess.run(tmux("send-keys", "-t", session, "2"), capture_output=True, timeout=5)
+                time.sleep(0.5)
+                subprocess.run(tmux("send-keys", "-t", session, "Enter"), capture_output=True, timeout=5)
+                dismissed_summary = True
+                time.sleep(3)
+                continue
+            lines = pane.split('\n')
+            last = lines[-1] if lines else ''
+            if '❯' in last and 'Enter to confirm' not in pane:
+                subprocess.run(tmux("send-keys", "-t", session, prompt), capture_output=True, timeout=5)
+                time.sleep(0.3)
+                subprocess.run(tmux("send-keys", "-t", session, "Enter"), capture_output=True, timeout=5)
+                return True
+        except Exception:
+            pass
+        time.sleep(1)
+    print(f"  Warning: timed out waiting for prompt in {session}", file=sys.stderr)
+    return False
 
 
 # ---- Spawn modes ----
@@ -206,7 +399,7 @@ def fresh(name, model, cwd, effort, mode):
             print(f"Error: '{name}' already exists ({existing['id']}). "
                   f"Use: fleet-spawn {name}", file=sys.stderr)
             sys.exit(1)
-        ws_register(fleet_id, name, sess, cwd, model, effort)
+        ws_register(fleet_id, name, sess, cwd, model, effort, refresh=True)
 
     cmd = build_claude_cmd(fleet_id, sess, model, effort, mode)
     spawn_tmux(sess, cwd, cmd)
@@ -228,20 +421,32 @@ def respawn(name, model, cwd, effort, mode, session_override=None):
     sess = agent.get("tmux_session") or f"fleet-{name}"
 
     if subprocess.run(tmux("has-session", "-t", sess), capture_output=True).returncode == 0:
-        return sess
+        if _session_has_claude(sess):
+            return sess
+        print(f"  {sess} exists but claude is not running — killing zombie session", file=sys.stderr)
+        subprocess.run(tmux("kill-session", "-t", sess), capture_output=True)
 
-    resume_id = session_override or agent.get("session_id")
-    if not resume_id:
-        print(f"No session for {name} — spawning fresh with existing ID.", file=sys.stderr)
-        ws_register(fleet_id, name, sess, cwd, model, effort)
-        cmd = build_claude_cmd(fleet_id, sess, model, effort, mode)
-        spawn_tmux(sess, cwd, cmd)
-        print(f"{sess} ({fleet_id}) spawned fresh in {cwd}")
-        return sess
+    result = None
+    if session_override:
+        resume_id = session_override
+    else:
+        result = find_valid_session(agent)
+        if not result:
+            print(f"Error: No valid session to resume for {name} ({fleet_id}). Use --refresh to start fresh.", file=sys.stderr)
+            sys.exit(1)
+        resume_id, jsonl_cwd = result
+        if jsonl_cwd:
+            cwd = jsonl_cwd
 
-    cmd = build_claude_cmd(fleet_id, sess, model, effort, mode, resume_id=resume_id)
-    spawn_tmux(sess, cwd, cmd)
+    # NEVER fall back to --refresh here. --refresh spawns an imposter agent
+    # with no real context. If --resume is stuck in a death loop, let it fail
+    # visibly so someone can diagnose — don't silently replace the agent.
+
+    cmd = build_claude_cmd(fleet_id, sess, model, effort, mode,
+                           resume_id=resume_id, include_prompt=False)
+    spawn_tmux(sess, cwd, cmd, auto_dismiss=False)
     verify_session(sess, f"session {resume_id}")
+    inject_prompt(sess, REGISTER_PROMPT)
     print(f"{sess} ({fleet_id}) resumed {resume_id}")
     return sess
 
@@ -261,7 +466,7 @@ def refresh(name, model, cwd, effort, mode):
         effort = meta.get("effort")
     sess = agent.get("tmux_session") or f"fleet-{name}"
 
-    ws_register(fleet_id, name, sess, cwd, model, effort)
+    ws_register(fleet_id, name, sess, cwd, model, effort, refresh=True)
     cmd = build_claude_cmd(fleet_id, sess, model, effort, mode)
     spawn_tmux(sess, cwd, cmd)
     print(f"{sess} ({fleet_id}) refreshed in {cwd}")

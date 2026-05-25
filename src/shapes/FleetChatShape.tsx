@@ -43,11 +43,27 @@ import { useIsInViewport } from './useIsInViewport'
 import { broadcastSharedDoc } from '../useYjsSync'
 import { getPageFilename } from '../stores/pageUrlStore'
 import { consumeBulletContexts, subscribeBulletContext, getBulletContexts } from '../stores/bulletContextStore'
+import { getPref, subscribePref } from '../preferences'
 import './fleet-chat.css'
 
 const DEFAULT_W = 400
 const DEFAULT_H = 600
 const FLEET_API = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5176'
+
+function getFleetStyleVars(): React.CSSProperties {
+  return {
+    '--fleet-base-font': `${getPref('fleet-font-size')}px`,
+    '--fleet-chrome-alpha': String(getPref('fleet-chrome-opacity')),
+    '--fleet-content-alpha': String(getPref('fleet-content-opacity')),
+    '--fleet-age-fade': getPref('fleet-age-fade') ? '1' : '0',
+  } as React.CSSProperties
+}
+
+function useFleetStyleVars() {
+  const [vars, setVars] = useState(getFleetStyleVars)
+  useEffect(() => subscribePref(() => setVars(getFleetStyleVars())), [])
+  return vars
+}
 
 // ---- Terminal hover pane ----
 
@@ -806,6 +822,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const editor = useEditor()
   const doc = useContext(DocContext)
   const panel = useContext(PanelContext)
+  const fleetStyleVars = useFleetStyleVars()
   const { w, h, filter } = shape.props as { w: number; h: number; filter: [string, string][][] }
   void useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
   const [filterOpen, setFilterOpen] = useState(false)
@@ -2121,17 +2138,29 @@ function FleetChatInner({ shape }: { shape: any }) {
               })
               broadcastSharedDoc(existingId, filePath)
             } else {
-              // Create new sticky off to the right of the document
-              // Offset to avoid overlapping all existing math-notes and fleet-docview panels
-              let newX = 2000
+              // Find open canvas space for the new sticky (2D grid search)
+              const noteW = 550, noteH = 400, gap = 30
+              const startX = 2000, startY = 100
               const blockers = allShapes.filter((s: any) =>
                 s.type === 'math-note' ||
                 s.type === 'fleet-docview'
-              )
-              for (const s of blockers) {
-                const sb = mainEditor.getShapePageBounds(s.id)
-                if (sb && newX < sb.x + sb.w + 20 && newX + 550 > sb.x) {
-                  newX = sb.x + sb.w + 30
+              ).map((s: any) => mainEditor.getShapePageBounds(s.id)).filter(Boolean)
+
+              let newX = startX, newY = startY
+              const maxX = startX + (noteW + gap) * 4
+              let placed = false
+              for (let y = startY; !placed; y += noteH + gap) {
+                for (let x = startX; x < maxX; x += noteW + gap) {
+                  const collides = blockers.some((sb: any) =>
+                    x < sb.x + sb.w + gap && x + noteW > sb.x - gap &&
+                    y < sb.y + sb.h + gap && y + noteH > sb.y - gap
+                  )
+                  if (!collides) {
+                    newX = x
+                    newY = y
+                    placed = true
+                    break
+                  }
                 }
               }
               const stickyId = createShapeId()
@@ -2139,7 +2168,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                 id: stickyId,
                 type: 'math-note' as any,
                 x: newX,
-                y: 100,
+                y: newY,
                 isLocked: false,
                 props: {
                   w: 550,
@@ -3269,6 +3298,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         ref={shapeContainerRef}
         className="fleet-shape fleet-chat-shape"
         style={{
+          ...fleetStyleVars,
           width: '100%',
           height: '100%',
           display: 'flex',

@@ -443,6 +443,32 @@ html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-stale {
 [data-theme="dark"] .prefs-color-swatch {
   border-color: rgba(255, 255, 255, 0.15);
 }
+.prefs-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.prefs-slider-label {
+  width: 90px;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.prefs-slider {
+  flex: 1;
+  height: 4px;
+  cursor: pointer;
+}
+.prefs-slider-value {
+  width: 36px;
+  text-align: right;
+  font-size: 10px;
+  color: rgba(0, 0, 0, 0.5);
+  flex-shrink: 0;
+}
+[data-theme="dark"] .prefs-slider-value {
+  color: rgba(255, 255, 255, 0.5);
+}
 
 /* Pen double-tap zones — fixed squares at bottom-right (touch devices only) */
 .tool-toggle-zones {

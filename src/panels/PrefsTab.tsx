@@ -16,6 +16,10 @@ function readAll() {
     curve: getPref('response-curve'),
     spawnMode: getPref('spawn-mode'),
     voiceBackend: getPref('voice-backend'),
+    fontSize: getPref('fleet-font-size'),
+    chromeOpacity: getPref('fleet-chrome-opacity'),
+    contentOpacity: getPref('fleet-content-opacity'),
+    ageFade: getPref('fleet-age-fade'),
   }
 }
 
@@ -45,6 +49,61 @@ export function PrefsTab() {
 
   return (
     <div className="prefs-tab">
+      <div className="prefs-section">
+        <div className="prefs-section-label">Fleet readability</div>
+
+        <div className="prefs-slider-row">
+          <span className="prefs-slider-label">Font size</span>
+          <input
+            type="range"
+            min={8}
+            max={16}
+            step={1}
+            value={prefs.fontSize}
+            onChange={e => setPref('fleet-font-size', Number(e.target.value))}
+            className="prefs-slider"
+          />
+          <span className="prefs-slider-value">{prefs.fontSize}px</span>
+        </div>
+
+        <div className="prefs-slider-row">
+          <span className="prefs-slider-label">Chrome opacity</span>
+          <input
+            type="range"
+            min={0.3}
+            max={1.5}
+            step={0.1}
+            value={prefs.chromeOpacity}
+            onChange={e => setPref('fleet-chrome-opacity', Number(e.target.value))}
+            className="prefs-slider"
+          />
+          <span className="prefs-slider-value">{prefs.chromeOpacity.toFixed(1)}</span>
+        </div>
+
+        <div className="prefs-slider-row">
+          <span className="prefs-slider-label">Content opacity</span>
+          <input
+            type="range"
+            min={0.5}
+            max={1.0}
+            step={0.05}
+            value={prefs.contentOpacity}
+            onChange={e => setPref('fleet-content-opacity', Number(e.target.value))}
+            className="prefs-slider"
+          />
+          <span className="prefs-slider-value">{prefs.contentOpacity.toFixed(2)}</span>
+        </div>
+
+        <label className="prefs-check">
+          <input
+            type="checkbox"
+            checked={prefs.ageFade}
+            onChange={e => setPref('fleet-age-fade', e.target.checked)}
+          />
+          <span>Age fade</span>
+        </label>
+      </div>
+
       <div className="prefs-section">
         <div className="prefs-section-label">Doc viewer sources</div>
         <div className="prefs-source-checks">

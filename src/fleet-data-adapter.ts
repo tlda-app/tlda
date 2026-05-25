@@ -265,8 +265,21 @@ export function useFleetEvents(dnfFilter?: [string, string][][] | null, frameId?
         const refreshEvents = () => {
           if (!cancelled) {
             const all = getEvents()
-            const filtered = filter ? all.filter((e: any) => matchesFilter(filter, e)) : [...all]
-            setEvents(filtered.slice(-MAX_LOCAL_EVENTS))
+            const bufferFiltered = filter ? all.filter((e: any) => matchesFilter(filter, e)) : [...all]
+            setEvents((prev: any[]) => {
+              const seen = new Set<string>()
+              for (const e of prev) {
+                if (e._dbId) seen.add(String(e._dbId))
+                seen.add(`${e.timestamp}:${e.from}`)
+              }
+              const novel = bufferFiltered.filter((e: any) => {
+                if (e._dbId && seen.has(String(e._dbId))) return false
+                if (seen.has(`${e.timestamp}:${e.from}`)) return false
+                return true
+              })
+              const merged = [...prev, ...novel]
+              return merged.length > MAX_LOCAL_EVENTS ? merged.slice(-MAX_LOCAL_EVENTS) : merged
+            })
           }
         }
         const [, cleanupGate] = visibilityGate(() => {}, refreshEvents)
