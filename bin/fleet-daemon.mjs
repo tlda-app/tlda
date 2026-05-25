@@ -1070,6 +1070,10 @@ function scanTexInputs(sourceDir, mainFile, extraCommands = []) {
         const resolved = path.normalize(path.join(dir, ref))
         if (resolved.startsWith('..')) continue
         scan(resolved)
+        if (cmd === '\\inputscratch' && resolved.endsWith('.tex')) {
+          const mdCompanion = resolved.replace(/\.tex$/, '.md')
+          if (fs.existsSync(path.join(sourceDir, mdCompanion))) result.add(mdCompanion)
+        }
       }
     }
   }

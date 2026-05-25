@@ -2157,12 +2157,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'input_scratch',
-      description: 'Inject a scratch section into a document at a specific location. Accepts .tex (plain LaTeX) or .md/.qmd (markdown with @label refs — auto-converted to LaTeX via pandoc, @refs become \\ref{}). Write plain content — no \\begin{scratch} wrapper. The \\inputscratch macro in the main tex file handles the scratch environment (gray text, label, timestamp header). Requires exactly one of: after, before, replace. If the build fails, you will receive an automatic fleet chat with the LaTeX errors.',
+      description: 'Inject a scratch section into a document at a specific location. Accepts .tex (plain LaTeX) or .md/.qmd (markdown with @label refs). Markdown files are stored as-is and converted to LaTeX at build time — the original .md stays in .scratchinputs/ untouched. Write plain content — no \\begin{scratch} wrapper. The \\inputscratch macro in the main tex file handles the scratch environment (gray text, label, timestamp header). Requires exactly one of: after, before, replace. If the build fails, you will receive an automatic fleet chat with the LaTeX errors.',
       inputSchema: {
         type: 'object',
         properties: {
           doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
-          content_path: { type: 'string', description: 'Local path to .tex file containing the scratch content (plain LaTeX — no \\begin{scratch} wrapper, no \\inputscratch call)' },
+          content_path: { type: 'string', description: 'Local path to .tex or .md/.qmd file containing the scratch content. Markdown files are preserved as-is and converted at build time.' },
           label: { type: 'string', description: 'Label for this scratch section. Convention: "scratch:descriptive-name" (e.g. "scratch:thm-bias-alt"). Used for cross-referencing and as the visible header.' },
           after: { type: 'string', description: 'Insert after this existing label (e.g. "thm:bias-decomp") or "line:N". Exclusive with before/replace.' },
           before: { type: 'string', description: 'Insert before this existing label or "line:N". Exclusive with after/replace.' },
@@ -3630,21 +3630,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     try { content = fs.readFileSync(resolved, 'utf8'); } catch (e) {
       return { content: [{ type: 'text', text: `Cannot read ${resolved}: ${e.message}` }], isError: true };
     }
-    if (resolved.endsWith('.md') || resolved.endsWith('.qmd')) {
-      content = content.replace(/(?<![\\@\w])@([\w:.-]+)/g, '\\ref{$1}')
-      try {
-        content = execSync('pandoc -f markdown -t latex --wrap=none', { input: content, encoding: 'utf8', timeout: 10000 });
-      } catch (e) {
-        return { content: [{ type: 'text', text: `pandoc conversion failed: ${e.message}` }], isError: true };
-      }
-    }
+    const isMd = resolved.endsWith('.md') || resolved.endsWith('.qmd');
     try {
       const agentId = process.env.FLEET_ID || null;
       const agentName = process.env.FLEET_NAME || null;
       const result = await serverFetch(`/api/projects/${doc}/input-scratch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content, label, after, before, replace, agentId, agentName }),
+        body: JSON.stringify({ content, label, after, before, replace, agentId, agentName, format: isMd ? 'md' : 'tex' }),
       });
       const { scratchPath, wrappedContent, scratchTemplatePath, scratchTemplateContent, mainFile, mainContent, sourceDir } = result;
       if (!sourceDir) {
@@ -3676,16 +3669,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
       const scratchAbsPath = path.join(sourceDir, scratchPath);
       fs.writeFileSync(scratchAbsPath, wrappedContent, 'utf8');
+      if (result.sourcePath) {
+        const symlinkPath = path.join(sourceDir, result.sourcePath);
+        try { fs.unlinkSync(symlinkPath); } catch {}
+        fs.symlinkSync(resolved, symlinkPath);
+      }
       if (mainContent) {
         fs.writeFileSync(path.join(sourceDir, mainFile), mainContent, 'utf8');
       }
       const refValidation = validateRefs(content, doc);
       const refWarning = formatRefWarnings(refValidation);
+      const displayPath = result.sourcePath ? path.join(sourceDir, result.sourcePath) : scratchAbsPath;
       if (result.action === 'replaced') {
-        return { content: [{ type: 'text', text: `Replaced scratch section "${replace}" — wrote ${scratchAbsPath}. Watcher will sync and rebuild.${refWarning}` }] };
+        return { content: [{ type: 'text', text: `Replaced scratch section "${replace}" — wrote ${displayPath}. Watcher will sync and rebuild.${refWarning}` }] };
       }
       const loc = after ? `after "${after}"` : `before "${before}"`;
-      return { content: [{ type: 'text', text: `Inserted scratch section "${label}" (${loc}) — wrote ${scratchAbsPath} and updated ${path.join(sourceDir, mainFile)}. Watcher will sync and rebuild.${refWarning}` }] };
+      return { content: [{ type: 'text', text: `Inserted scratch section "${label}" (${loc}) — wrote ${displayPath} and updated ${path.join(sourceDir, mainFile)}. Watcher will sync and rebuild.${refWarning}` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }

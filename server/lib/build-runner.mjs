@@ -42,6 +42,33 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const PROJECT_ROOT = join(__dirname, '..', '..')
 const SCRIPTS_DIR = join(PROJECT_ROOT, 'scripts')
 
+function convertScratchMarkdown(srcDir, addLog) {
+  const scratchDir = join(srcDir, '.scratchinputs')
+  if (!existsSync(scratchDir)) return
+  let converted = 0
+  for (const f of readdirSync(scratchDir)) {
+    if (!f.endsWith('.md')) continue
+    const mdPath = join(scratchDir, f)
+    const texPath = join(scratchDir, f.replace(/\.md$/, '.tex'))
+    try {
+      const mdMtime = statSync(mdPath).mtimeMs
+      if (existsSync(texPath) && statSync(texPath).mtimeMs >= mdMtime) continue
+    } catch {}
+    const mdContent = readFileSync(mdPath, 'utf8')
+    let texContent = mdContent.replace(/(?<![\\@\w])@([\w:.-]+[\w])/g, '\\ref{$1}')
+    try {
+      texContent = execSync('pandoc -f markdown -t latex --wrap=none', { input: texContent, encoding: 'utf8', timeout: 10000 })
+    } catch (e) {
+      addLog(`pandoc failed for ${f}: ${e.message}`)
+      continue
+    }
+    if (!texContent.endsWith('\n')) texContent += '\n'
+    writeFileSync(texPath, texContent)
+    converted++
+  }
+  if (converted > 0) addLog(`Converted ${converted} markdown scratch file(s) to LaTeX`)
+}
+
 // ─── Utilities ───────────────────────────────────────────────────────────────
 
 /**
@@ -1203,6 +1230,14 @@ function writeRelevantFiles(ctx) {
     const svgPath = p.replace(/\.pdf$/, '.svg')
     if (existsSync(svgPath)) relevant.add(svgPath)
   }
+  // Augment with markdown source files for generated scratch .tex files.
+  // The build runner converts .scratchinputs/*.md → .tex; pdflatex only
+  // sees the .tex, but the daemon needs to watch the .md source.
+  for (const p of [...relevant]) {
+    if (!p.includes('.scratchinputs/') || !p.endsWith('.tex')) continue
+    const mdPath = p.replace(/\.tex$/, '.md')
+    if (existsSync(mdPath)) relevant.add(mdPath)
+  }
   // Augment with xr / xr-hyper externally-referenced documents. When main
   // does \externaldocument{X}, xr writes \@input{X.aux} into main's .aux —
   // that's the marker. Treat X as a paper file: include X.tex + (if
@@ -1576,6 +1611,8 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
         texDir: tDir,
         buildDir: tBuildDir,
       }
+
+      convertScratchMarkdown(srcDir, tCtx.addLog)
 
       // Phase 1: LaTeX compilation
       status.phase = 'compiling'

@@ -1149,7 +1149,7 @@ router.post('/:name/highlight', requireRead, async (req, res) => {
 
 // POST /:name/input-scratch — inject a scratch .tex file into the document
 router.post('/:name/input-scratch', requireRw, (req, res) => {
-  const { content, label, after, before, replace, agentId, agentName } = req.body
+  const { content, label, after, before, replace, agentId, agentName, format } = req.body
   if (!content) return res.status(400).json({ error: 'content is required' })
   if (!label) return res.status(400).json({ error: 'label is required' })
   if (!after && !before && !replace) return res.status(400).json({ error: 'one of after, before, or replace is required' })
@@ -1161,9 +1161,11 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
   const mainContent = readSourceFile(req.params.name, project.mainFile)
   if (!mainContent) return res.status(400).json({ error: `Main file not found: ${project.mainFile}` })
 
-  // Derive scratch filename from label
-  const filename = label.replace(/[^a-z0-9]/gi, '-').toLowerCase() + '.tex'
+  const isMd = format === 'md'
+  const baseFilename = label.replace(/[^a-z0-9]/gi, '-').toLowerCase()
+  const filename = baseFilename + '.tex'
   const scratchPath = `.scratchinputs/${filename}`
+  const sourcePath = isMd ? `.scratchinputs/${baseFilename}.md` : null
 
   // Wrap content in scratch environment, signed with agent + timestamp
   const tz = project.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
@@ -1171,9 +1173,9 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
   const signer = agentName || 'agent'
   const displayHeader = `${label} — ${signer} — ${timestamp}`
   const rawContent = content.endsWith('\n') ? content : content + '\n'
+  const wrappedContent = isMd ? `% Generated from ${baseFilename}.md — do not edit; build runner overwrites this.\n` : rawContent
 
   if (replace) {
-    // Overwrite existing scratch section — caller writes the file; also update the \inputscratch line in main.tex with new header
     const mainLines = mainContent.split('\n')
     const scratchLineIdx = mainLines.findIndex(l => l.includes(`\\inputscratch`) && l.includes(scratchPath))
     let mainContentUpdated = null
@@ -1181,7 +1183,7 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
       mainLines[scratchLineIdx] = `\\inputscratch{${scratchPath}}{${label}}{${displayHeader}}`
       mainContentUpdated = mainLines.join('\n')
     }
-    return res.json({ ok: true, scratchPath, wrappedContent: rawContent, mainFile: project.mainFile, mainContent: mainContentUpdated, sourceDir: project.sourceDir || null, action: 'replaced' })
+    return res.json({ ok: true, scratchPath, sourcePath, wrappedContent, mainFile: project.mainFile, mainContent: mainContentUpdated, sourceDir: project.sourceDir || null, action: 'replaced' })
   }
 
   // Resolve location label to a line number in main.tex
@@ -1296,11 +1298,11 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
     newLines.splice(insertAt, 0, templateInputLine)
   }
 
-  // Return content for the caller to write locally — watcher syncs to server and triggers build
   res.json({
     ok: true,
     scratchPath,
-    wrappedContent: rawContent,
+    sourcePath,
+    wrappedContent,
     scratchTemplatePath,
     scratchTemplateContent,
     scratchTemplateVersion: SCRATCH_TEMPLATE_VERSION,
