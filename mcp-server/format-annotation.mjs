@@ -39,7 +39,7 @@ export function formatNote(annotation) {
   const lineRef = annotation.sortLine ? `L${annotation.sortLine}` : (annotation.page ? `p${annotation.page}` : '')
   const fileRef = annotation.file ? ` ${annotation.file}` : ''
   let out = `[note] ${annotation.color || 'yellow'} ${lineRef}${fileRef}`
-  const noteText = (annotation.text || '').substring(0, 200)
+  const noteText = annotation.text || ''
   if (noteText) out += `\n  "${noteText}"`
   return out
 }

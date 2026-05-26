@@ -15,7 +15,8 @@
  * state persists until you (or another agent) mutates it.
  *
  * Usage:
- *   node bin/tlda-test-setup.mjs                  # default: 3col, 1920x1080, focus=both
+ *   node bin/tlda-test-setup.mjs                  # default: test-fleet, 3col, 1920x1080
+ *   node bin/tlda-test-setup.mjs --doc bregman    # apply layout to an existing doc
  *   node bin/tlda-test-setup.mjs --focus doc      # camera tight on doc (doc-focus tests)
  *   node bin/tlda-test-setup.mjs --focus fleet    # camera shifted to give fleet more room (chat tests)
  *   node bin/tlda-test-setup.mjs --focus both     # balanced (default)
@@ -32,7 +33,10 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 const SERVER = process.env.TLDA_SERVER || 'http://localhost:5176'
-const PROJECT = 'test-fleet'
+const PROJECT = (() => {
+  const i = process.argv.indexOf('--doc')
+  return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : 'test-fleet'
+})()
 // 1920×1080 — Skip's primary work environment is an ultrawide; the layout is
 // designed for it. The default 3-col fleet (1180pt of fleet content + ~600pt
 // doc + margin) doesn't fit comfortably below ~1900px since the HUD overlay
@@ -210,6 +214,12 @@ async function ensureProject(token) {
   }
 
   if (existing) {
+    const isCustomDoc = process.argv.includes('--doc')
+    if (isCustomDoc) {
+      console.log(`✓ project "${PROJECT}" exists (${existing.pages || '?'} pages)`)
+      await waitForBuildSettle(token)
+      return false
+    }
     const matches = existing.mainFile === 'main.tex' && existing.format !== 'book'
     const looksDisposable = !existing.sourceDir || existing.sourceDir.startsWith('/tmp/')
     if (matches) {
@@ -225,6 +235,10 @@ async function ensureProject(token) {
     }
     console.log(`replacing stale "${PROJECT}" (mainFile=${existing.mainFile}, sourceDir=${existing.sourceDir})…`)
     await api('DELETE', `/api/projects/${PROJECT}`, null, token)
+  }
+
+  if (process.argv.includes('--doc')) {
+    throw new Error(`project "${PROJECT}" not found on server`)
   }
 
   console.log(`creating project "${PROJECT}"…`)
@@ -279,12 +293,28 @@ async function applyLayoutAndCamera(page) {
   // Wait for the FleetIconPill (and the fleet agent list) to be ready.
   await page.waitForSelector('.fleet-icon-pill-container', { timeout: 15000 })
 
+  // Clear the room: delete every non-page shape so we start from a known state.
+  // Accumulated shapes from prior sessions (stale fleet layouts, old annotations,
+  // stale HUD anchor) cause the HUD camera to miss fleet shapes on fresh opens.
+  await page.evaluate(() => {
+    const ed = (window).__tldraw_editor__
+    const PAGE_TYPES = new Set(['svg-page', 'html-page', 'doc-version', 'toc-drop-target'])
+    const toDelete = ed.getCurrentPageShapes()
+      .filter(s => !PAGE_TYPES.has(s.type))
+      .map(s => s.id)
+    if (toDelete.length > 0) ed.deleteShapes(toDelete)
+    // Wipe stale HUD localStorage from prior sessions.
+    try { localStorage.removeItem('fleet-hud-panOffset') } catch {}
+    try { localStorage.removeItem('fleet-hud-cameraY') } catch {}
+    try { localStorage.removeItem('fleet-hud-override') } catch {}
+  })
+
   // CRITICAL: reset the camera to a known starting state BEFORE applying the
   // layout. createFleetLayout sizes fleet shapes by `vp.h / cam.z * 0.7`, so
   // if a prior session left the camera at a different zoom, the layout's
   // vertical extent changes and the resulting screenshots look inconsistent
   // across runs. By zooming to fit the doc page first, we anchor every run
-  // to the same starting camera state, regardless of session-storage history.
+  // to the same starting camera state, regardless of session-session history.
   await page.evaluate(() => {
     const ed = (window).__tldraw_editor__
     const pages = ed.getCurrentPageShapes()
@@ -297,10 +327,6 @@ async function applyLayoutAndCamera(page) {
     })[0]
     const b = ed.getShapePageBounds(first.id)
     if (b) ed.zoomToBounds(b, { inset: 16, animation: { duration: 0 } })
-    // Wipe stale HUD localStorage from prior sessions too.
-    try { localStorage.removeItem('fleet-hud-panOffset') } catch {}
-    try { localStorage.removeItem('fleet-hud-cameraY') } catch {}
-    try { localStorage.removeItem('fleet-hud-override') } catch {}
   })
 
   // Drag the pill ~22px to the right to select preset 0 = 3col.

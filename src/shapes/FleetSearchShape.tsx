@@ -175,10 +175,11 @@ export class FleetSearchShapeUtil extends BaseBoxShapeUtil<any> {
   static override props = {
     w: T.number,
     h: T.number,
+    userId: T.optional(T.string),
   }
 
   getDefaultProps() {
-    return { w: DEFAULT_W, h: DEFAULT_H }
+    return { w: DEFAULT_W, h: DEFAULT_H, userId: '' }
   }
 
   override canEdit = () => true

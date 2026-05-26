@@ -880,7 +880,8 @@ function readNewSessionLines(agentId, jsonlPath, sessionId) {
     if (!text || text.length < 3) continue
     if (text.length > 2000) text = text.substring(0, 2000)
     if (text.startsWith('<task-notification') || text.startsWith('<system-reminder') ||
-        text.startsWith('<channel') || text.startsWith('📬')) continue
+        text.startsWith('<channel') || text.startsWith('📬') ||
+        text.startsWith('Call register() with the fleet MCP server')) continue
     const ts = parsed.timestamp || null
     if (!ts) continue
     sendMsg({
@@ -1234,7 +1235,7 @@ function flushSourceChanges(projectName) {
   if (!state) return
   state.debounce = null
 
-  if (!ws || ws.readyState !== 1) {
+  if (!_rws?.connected) {
     _pendingSourceProjects.add(projectName)
     return
   }
@@ -1646,10 +1647,17 @@ function rpcTerminalInput({ tmux_session, data }) {
 }
 
 
+const _activeSpawns = new Map()
 async function rpcSpawn({ name, model, cwd, doc, respawn }) {
-  // Generate a temp name if none provided
   const agentName = name || `agent-${Date.now().toString(36).slice(-4)}`
-  // Resolve cwd from doc name if not explicitly set
+  if (_activeSpawns.has(agentName)) {
+    const age = Date.now() - _activeSpawns.get(agentName)
+    if (age < 90_000) {
+      log.info(`spawn deduped: ${agentName} already spawning (${Math.round(age / 1000)}s ago)`)
+      return { ok: true, name: agentName, deduped: true }
+    }
+    _activeSpawns.delete(agentName)
+  }
   let resolvedCwd = cwd
   if (!resolvedCwd && doc) {
     const project = projects.find(p => p.name === doc)
@@ -1660,15 +1668,19 @@ async function rpcSpawn({ name, model, cwd, doc, respawn }) {
   if (model) args.push('--model', model)
   if (resolvedCwd) args.push('--cwd', resolvedCwd)
   args.push('--no-attach')
-  try {
-    const { stdout, stderr } = await execFileP(spawnScript, args, {
-      timeout: 30000,
-      env: { ...process.env, PATH: process.env.PATH },
-    })
-    return { ok: true, name, stdout: stdout.trim(), stderr: stderr.trim() }
-  } catch (e) {
-    throw new Error(`fleet-spawn failed: ${e.stderr || e.message}`)
-  }
+  _activeSpawns.set(agentName, Date.now())
+  execFile(spawnScript, args, {
+    timeout: 120_000,
+    env: { ...process.env, PATH: process.env.PATH },
+  }, (err, stdout, stderr) => {
+    _activeSpawns.delete(agentName)
+    if (err) {
+      log.warn(`fleet-spawn finished with error: ${agentName}: ${stderr || err.message}`)
+    } else {
+      log.info(`fleet-spawn finished: ${agentName}: ${stdout.trim()}`)
+    }
+  })
+  return { ok: true, name: agentName, async: true }
 }
 
 // --- Agent death detection ---
@@ -1683,6 +1695,18 @@ const DEATH_CHECK_MS = 30_000   // liveness check every 30s
 // Cache populated by checkAgentLiveness every 30s.
 // rpcCheckAlive reads from here — zero spawns per call.
 const _alivenessCache = new Map()  // tmux_session → boolean
+
+// Thinking/compacting/approval detection — moved from MCP to daemon so it
+// survives MCP restarts and the hibernate sweep can trust it.
+const THINKING_SPINNER_RE = /[A-Z][a-z]+ing\u2026/
+const INTERRUPT_HINT_RE = /esc to interrupt/
+const COMPACTING_RE = /Compacting conversation/
+const THINKING_SCAN_LINES = 40
+const APPROVAL_PROMPT_RE = /[\u25CB\u25CF]\s*Allow once|Allow this .{0,30}\?\s*\(y\/n\)|Esc to cancel\s*\u00B7\s*Tab to amend/i
+const APPROVAL_PROMPT_SCAN_LINES = 15
+const _prevThinking = new Map()   // agent_id → boolean
+const _prevCompacting = new Map() // agent_id → boolean
+const _prevApprovalFP = new Map() // agent_id → string (fingerprint)
 
 async function checkAgentLiveness() {
   if (!agents.length) return
@@ -1756,6 +1780,22 @@ async function checkAgentLiveness() {
     if (!claudeAlive) {
       if (!agent.hibernating) {
         log.info(`agent ${agent.friendly_name || agent.id} is hibernating (no claude in session ${agent.tmux_session})`)
+        // Capture last lines of tmux for crash diagnosis
+        try {
+          const { stdout: lastLines } = await execFileP('tmux',
+            [...TMUX_ARGS, 'capture-pane', '-t', agent.tmux_session, '-p', '-S', '-15'],
+            { timeout: 3000, encoding: 'utf8' })
+          const trimmed = lastLines.trim()
+          if (trimmed) {
+            sendMsg({
+              type: 'agent-crash',
+              agent_id: agent.id,
+              agent_name: agent.friendly_name || agent.id,
+              tmux_session: agent.tmux_session,
+              last_output: trimmed,
+            })
+          }
+        } catch {}
       }
       agent.hibernating = true
       continue
@@ -1766,6 +1806,40 @@ async function checkAgentLiveness() {
       agent.hibernating = false
     }
     aliveAgentIds.push(agent.id)
+  }
+
+  // Scan alive agents for thinking/compacting/approval state
+  for (const agent of candidateAgents) {
+    if (agent.hibernating) continue
+    try {
+      const { stdout: pane } = await execFileP('tmux',
+        [...TMUX_ARGS, 'capture-pane', '-t', agent.tmux_session, '-p', '-S', `-${THINKING_SCAN_LINES}`],
+        { timeout: 3000, encoding: 'utf8' })
+
+      const paneBottom = pane.split('\n').slice(-THINKING_SCAN_LINES).join('\n')
+      const isThinking = THINKING_SPINNER_RE.test(paneBottom) || INTERRUPT_HINT_RE.test(paneBottom)
+      sendMsg({ type: 'agent-thinking', agentId: agent.id, thinking: isThinking })
+      if (isThinking !== _prevThinking.get(agent.id)) {
+        _prevThinking.set(agent.id, isThinking)
+      }
+
+      const isCompacting = COMPACTING_RE.test(pane)
+      sendMsg({ type: 'agent-compacting', agentId: agent.id, compacting: isCompacting })
+      if (isCompacting !== _prevCompacting.get(agent.id)) {
+        _prevCompacting.set(agent.id, isCompacting)
+      }
+
+      const approvalBottom = pane.split('\n').slice(-APPROVAL_PROMPT_SCAN_LINES).join('\n')
+      if (APPROVAL_PROMPT_RE.test(approvalBottom)) {
+        const fingerprint = approvalBottom.slice(-100)
+        if (fingerprint !== _prevApprovalFP.get(agent.id)) {
+          _prevApprovalFP.set(agent.id, fingerprint)
+          sendMsg({ type: 'terminal_attention', agent_id: agent.id, reason: 'permission prompt', text: 'permission prompt' })
+        }
+      } else {
+        _prevApprovalFP.delete(agent.id)
+      }
+    } catch {}
   }
 
   sendMsg({ type: 'agent-liveness', agent_ids: aliveAgentIds })
@@ -2101,6 +2175,7 @@ async function reapPlaywright() {
   const threshold = pressureScaledTimeout(PW_IDLE_THRESHOLD_MS)
   const killed = []
   const enriched = []
+  let orphanCount = 0
   for (const b of browsers) {
     const controllerAlive = await isPlaywrightControllerAlive(b.ppid)
     const idleMs = controllerAlive ? 0 : (now - (_pwLastSeen.get(b.pid) || now))
@@ -2405,7 +2480,7 @@ function handleServerMessage(msg) {
     // Reconnect — the daemon should survive server restarts.
     log.warn(`evicted (${msg.reason || 'unknown'}) — reconnecting`)
     teardownWatchers()
-    try { ws.close() } catch {}
+    try { _rws?.close() } catch {}
     scheduleReconnect()
     return
   }

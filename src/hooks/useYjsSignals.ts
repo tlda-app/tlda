@@ -1,14 +1,14 @@
 import { useEffect, useRef } from 'react'
 import { createShapeId } from 'tldraw'
 import type { Editor } from 'tldraw'
-import { onReloadSignal, onSourceChangedSignal, onForwardSync, onScreenshotRequest, onScreenshotBounds, onRefViewerSignal, isSignalConnected, readSignal, writeSignal } from '../useYjsSync'
+import { onReloadSignal, onSourceChangedSignal, onForwardSync, onScreenshotRequest, onScreenshotBounds, isSignalConnected, readSignal, writeSignal } from '../useYjsSync'
 import type { ForwardSyncSignal } from '../useYjsSync'
 import { clearLookupCache, loadLookup } from '../synctexLookup'
 import * as sourceMap from '../sourceMap'
 import type { LookupData } from '../synctexLookup'
 import { reloadPages } from '../editorSetup'
 import type { ReloadResult } from '../editorSetup'
-import type { SvgDocument, DiffData, LabelRegion } from '../svgDocumentLoader'
+import type { SvgDocument, DiffData } from '../svgDocumentLoader'
 
 export interface ScreenshotCaptureState {
   bounds: { x: number; y: number; w: number; h: number }
@@ -24,8 +24,6 @@ interface UseYjsSignalsParams {
   proofDataRef: React.MutableRefObject<any>
   setProofDataReady: (ready: boolean) => void
   setProofFetchSeq: React.Dispatch<React.SetStateAction<number>>
-  setRefViewerRefs: (refs: { label: string; region: LabelRegion }[] | null) => void
-  refViewerLineRef: React.MutableRefObject<number | null>
   panelsLocalRef: React.MutableRefObject<boolean>
   onReloadResult?: (result: ReloadResult | null) => void
   setScreenshotCapture?: (state: ScreenshotCaptureState | null) => void
@@ -35,7 +33,7 @@ export function useYjsSignals({
   editorRef, document,
   diffDataRef, setDiffFetchSeq,
   proofDataRef, setProofDataReady, setProofFetchSeq,
-  setRefViewerRefs, refViewerLineRef, panelsLocalRef,
+  panelsLocalRef,
   onReloadResult, setScreenshotCapture,
 }: UseYjsSignalsParams) {
   // Keep a snapshot of the current lookup for scroll anchoring across rebuilds.
@@ -164,7 +162,7 @@ export function useYjsSignals({
           target = chatShapes.sort((a: any, b: any) => a.x - b.x)[0]
         }
         if (target) {
-          const newFilter = agent ? [[['to', agent]]] : []
+          const newFilter = agent ? [[['to', agent]], [['from', agent]]] : []
           editor.store.update(target.id, (s: any) => ({
             ...s,
             props: { ...s.props, filter: newFilter },
@@ -295,16 +293,4 @@ export function useYjsSignals({
     }
   }, [])
 
-  // Incoming ref viewer signal: show refs from another viewer
-  useEffect(() => {
-    return onRefViewerSignal((signal) => {
-      if (!panelsLocalRef.current) return
-      if (signal.refs === null) {
-        setRefViewerRefs(null)
-        refViewerLineRef.current = null
-      } else {
-        setRefViewerRefs(signal.refs as any)
-      }
-    })
-  }, [])
 }

@@ -1,7 +1,7 @@
 /**
  * CanvasClipPanel — shared copy-store TLDraw panel that shows a clipped
- * region of the main canvas. Used by ProofStatementOverlay, RefViewer,
- * and ChangePreviewPanel.
+ * region of the main canvas. Used by ChangePreviewPanel, AnnotationViewer,
+ * ScreenshotCapture, and FleetHUD.
  *
  * Creates a one-way synced copy of the main editor's store and constrains
  * the camera to show only the specified bounds region.
@@ -13,6 +13,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Tldraw, createTLStore, stopEventPropagation } from 'tldraw'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor, TLRecord } from 'tldraw'
 import { chatInsertBus } from './shapes/FleetPillShape'
+// @ts-ignore — vanilla JS module
+import { getHumanId } from './fleet/fleet-data.mjs'
 import './CanvasClipPanel.css'
 
 const DEFAULT_WIDTH = 600
@@ -132,6 +134,10 @@ export function CanvasClipPanel({
   const shouldSyncToCopy = (r: TLRecord): boolean => {
     if (!isDocRecord(r)) return false
     if (lockCamera && r.typeName === 'shape' && !FLEET_TYPES.has((r as any).type)) return false
+    if (lockCamera && r.typeName === 'shape' && FLEET_TYPES.has((r as any).type)) {
+      const uid = (r as any).props?.userId
+      if (uid && uid !== getHumanId()) return false
+    }
     if (r.typeName === 'shape' && !shapeOverlapsVisibleRegion(r.id)) return false
     return true
   }
@@ -788,7 +794,7 @@ export function CanvasClipPanel({
   const fleetSelectedRef = useRef<Set<string>>(new Set())
   useEffect(() => {
     if (!editor) return
-    const FLEET_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview'])
+    const FLEET_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview', 'fleet-reaper'])
 
     function update() {
       const container = editor!.getContainer()
@@ -928,7 +934,7 @@ export function CanvasClipPanel({
   )
 }
 
-const FLEET_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview'])
+const FLEET_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview', 'fleet-reaper'])
 
 function isDocRecord(record: TLRecord): boolean {
   return record.typeName === 'shape' || record.typeName === 'asset' ||

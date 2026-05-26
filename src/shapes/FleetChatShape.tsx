@@ -516,10 +516,11 @@ export class FleetChatShapeUtil extends BaseBoxShapeUtil<any> {
     w: T.number,
     h: T.number,
     filter: T.arrayOf(T.arrayOf(T.arrayOf(T.string))),  // DNF of [role, label] tuples
+    userId: T.optional(T.string),
   }
 
   getDefaultProps() {
-    return { w: DEFAULT_W, h: DEFAULT_H, filter: [] }
+    return { w: DEFAULT_W, h: DEFAULT_H, filter: [], userId: '' }
   }
 
   override canEdit = () => false
@@ -563,42 +564,30 @@ function ContextBadge({ percent }: { percent?: number }) {
  * When all agents stop, the space persists (ghost) until rawItemsLength changes
  * (i.e. a real message arrives to replace it). No timeout — no bounce.
  */
-function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, wouldHibernate, ctx, rawItemsLength, agents, escalationState }: {
+function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, wouldHibernate, hibernatingAgents, ctx, rawItemsLength, agents, escalationState }: {
   thinkingAgents: Map<string, number>
   compactingAgents: Map<string, number>
   contextPercent: Map<string, number>
   wouldHibernate: Map<string, number>
+  hibernatingAgents: Set<string>
   ctx: any
   rawItemsLength: number
   agents: any[]
   escalationState?: Record<string, { level: number; confirmed: number }>
 }) {
-  const agentLiveness = useMemo(() => {
-    const m = new Map<string, string>()
-    for (const a of agents) {
-      if (a.id) m.set(a.id, a.status || 'unknown')
-    }
-    return m
-  }, [agents])
-
-  // Merge thinking + compacting into one map keyed by agentId
+  // Build status display from server-authoritative agent status field.
+  // thinkingAgents/compactingAgents are pre-filtered to chat targets and provide elapsed timestamps.
+  // hibernatingAgents is pre-filtered to chat targets.
   const statusAgents = useMemo(() => {
     const merged = new Map<string, { status: 'thinking' | 'compacting' | 'hibernating' | 'would-hibernate', startTs: number, idleSecs?: number }>()
     for (const [id, ts] of thinkingAgents) {
-      const liveness = agentLiveness.get(id)
-      if (liveness === 'dead' || liveness === 'hibernating') {
-        merged.set(id, { status: 'hibernating', startTs: ts })
-      } else {
-        merged.set(id, { status: 'thinking', startTs: ts })
-      }
+      merged.set(id, { status: 'thinking', startTs: ts })
     }
     for (const [id, ts] of compactingAgents) {
-      const liveness = agentLiveness.get(id)
-      if (liveness === 'dead' || liveness === 'hibernating') {
-        merged.set(id, { status: 'hibernating', startTs: ts })
-      } else {
-        merged.set(id, { status: 'compacting', startTs: ts })
-      }
+      if (!merged.has(id)) merged.set(id, { status: 'compacting', startTs: ts })
+    }
+    for (const id of hibernatingAgents) {
+      if (!merged.has(id)) merged.set(id, { status: 'hibernating', startTs: 0 })
     }
     for (const [id, secs] of wouldHibernate) {
       if (!merged.has(id)) {
@@ -606,7 +595,7 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, woul
       }
     }
     return merged
-  }, [thinkingAgents, compactingAgents, wouldHibernate, agentLiveness])
+  }, [thinkingAgents, compactingAgents, hibernatingAgents, wouldHibernate])
 
   const hasActive = statusAgents.size > 0
   const prevActiveRef = useRef(hasActive)
@@ -875,7 +864,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const thinkingAgents = useFleetThinking(dnfFilter, frameId)
   const compactingAgents = useFleetCompacting(dnfFilter, frameId)
   const contextPercent = useFleetContext(dnfFilter, frameId)
-  const wouldHibernate = useWouldHibernate()
+  const wouldHibernateAll = useWouldHibernate()
   const elizaPendingAll = useElizaPending()
   const [olderEvents, setOlderEvents] = useState<any[]>([])
 
@@ -973,6 +962,9 @@ function FleetChatInner({ shape }: { shape: any }) {
     setEscalationState(prev => { const next = { ...prev }; delete next[agentId]; return next })
   }
 
+  // Escape un-queues messages: messages sent before this timestamp are above the divider
+  const [unqueuedAt, setUnqueuedAt] = useState(0)
+
   // Merge older (scrollback) events with live events
   const events = useMemo(() => {
     if (olderEvents.length === 0) return liveEvents
@@ -1007,6 +999,39 @@ function FleetChatInner({ shape }: { shape: any }) {
     )
     return agent?.id || label
   }, [agents])
+
+  const wouldHibernate = useMemo(() => {
+    if (!dnfFilter || dnfFilter.length === 0) return wouldHibernateAll
+    const targetIds = new Set<string>()
+    for (const andGroup of dnfFilter) {
+      for (const [, label] of andGroup) {
+        targetIds.add(resolveToFleetId(label))
+      }
+    }
+    const filtered = new Map<string, number>()
+    for (const [id, secs] of wouldHibernateAll) {
+      if (targetIds.has(id)) filtered.set(id, secs)
+    }
+    return filtered
+  }, [wouldHibernateAll, dnfFilter, resolveToFleetId])
+
+  const hibernatingAgents = useMemo(() => {
+    const targetIds = new Set<string>()
+    if (dnfFilter && dnfFilter.length > 0) {
+      for (const andGroup of dnfFilter) {
+        for (const [, label] of andGroup) {
+          targetIds.add(resolveToFleetId(label))
+        }
+      }
+    }
+    const result = new Set<string>()
+    for (const a of agents) {
+      if (a.status === 'hibernating' && (!dnfFilter || targetIds.has(a.id))) {
+        result.add(a.id)
+      }
+    }
+    return result
+  }, [agents, dnfFilter, resolveToFleetId])
 
   const elizaPending = useMemo(() => {
     let filtered = elizaPendingAll
@@ -1133,7 +1158,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     const sorted = events
       .filter((m: any) => {
         const t = m.type
-        return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'activity' || t === 'kill-session' || t === 'terminal_attention' || t === 'terminal_card' || t === 'plan_approval'
+        return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'activity' || t === 'kill-session' || t === 'interrupt' || t === 'terminal_attention' || t === 'terminal_card' || t === 'plan_approval'
       })
       .filter((m: any) => !m._timer) // skip timer-fired messages
       .sort((a: any, b: any) => {
@@ -1150,7 +1175,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   // This replaces the old joined renderedHtml string and enables virtualization.
   // Items tagged _queued render below the thinking indicator; _interrupt items
   // render between the indicator and the queue (they "jump the line").
-  type RawItem = { key: string; html: string; _queued?: boolean; _interrupt?: boolean }
+  type RawItem = { key: string; html: string; _queued?: boolean; _interrupt?: boolean; _divider?: boolean }
   const rawItems = useMemo(() => {
     // Extend ctx with thinking state so renderChatLine can apply queued styling
     const renderCtx = { ...ctx, thinkingAgents }
@@ -1173,7 +1198,9 @@ function FleetChatInner({ shape }: { shape: any }) {
       const targetThinkingSince = thinkingAgents?.get?.(m.to)
       if (!targetThinkingSince) return false
       const msgTs = m.timestamp ? new Date(m.timestamp).getTime() : 0
-      return msgTs >= targetThinkingSince
+      if (msgTs < targetThinkingSince) return false
+      if (unqueuedAt && msgTs <= unqueuedAt) return false
+      return true
     }
 
     for (let i = 0; i < chatMessages.length; i++) {
@@ -1230,6 +1257,14 @@ function FleetChatInner({ shape }: { shape: any }) {
         const targetName = targetAgent?.friendly_name || targetId.replace('fleet:', '')
         const html = `<div class="kill-session-card"><span class="kill-session-icon">⚡</span><span class="kill-session-text">Session killed: <strong>${esc(targetName)}</strong></span></div>`
         items.push({ key: m._dbId || `${m.timestamp}:${m.from}:kill`, html })
+      } else if (m.type === 'interrupt') {
+        flushActivity()
+        const agentObjs: any[] = renderCtx.getAgents()
+        const targetId = m.to || ''
+        const targetAgent = agentObjs.find((a: any) => a.id === targetId)
+        const targetName = targetAgent?.friendly_name || targetId.replace('fleet:', '')
+        const html = `<div class="kill-session-card"><span class="kill-session-icon">⏸</span><span class="kill-session-text">Interrupted: <strong>${esc(targetName)}</strong></span></div>`
+        items.push({ key: m._dbId || `${m.timestamp}:${m.from}:interrupt`, html })
       } else {
         flushActivity()
         const html = renderChatLine(m, renderCtx)
@@ -1250,7 +1285,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     flushActivity()
     return items
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatMessages, ctx, thinkingAgents])
+  }, [chatMessages, ctx, thinkingAgents, unqueuedAt])
 
   // Per-item post-processing: applies chip replacement, URL linkification, and
   // doc-link resolution to a single item's HTML. Called by ChatMessageRow only
@@ -1337,18 +1372,18 @@ function FleetChatInner({ shape }: { shape: any }) {
     return html
   }, [doc, labelRegions, imageSrcs, editor])
 
-  // Split rawItems: normal items stay in the virtualizer; queued messages and
-  // interrupt events render below the thinking indicator (interrupts first, then queue).
-  const { normalItems, interruptItems, queuedItems } = useMemo(() => {
-    const normal: RawItem[] = []
-    const interrupt: RawItem[] = []
-    const queued: RawItem[] = []
-    for (const item of rawItems) {
-      if (item._interrupt) interrupt.push(item)
-      else if (item._queued) queued.push(item)
-      else normal.push(item)
+  // Mark the queue divider position inline — the last non-queued item before
+  // the first queued item gets _divider: true. All items stay in one list.
+  const allItems = useMemo(() => {
+    const items = [...rawItems]
+    let firstQueuedIdx = -1
+    for (let i = 0; i < items.length; i++) {
+      if (items[i]._queued) { firstQueuedIdx = i; break }
     }
-    return { normalItems: normal, interruptItems: interrupt, queuedItems: queued }
+    if (firstQueuedIdx > 0) {
+      items[firstQueuedIdx - 1] = { ...items[firstQueuedIdx - 1], _divider: true }
+    }
+    return items
   }, [rawItems])
 
   // Virtual scroll — only mount DOM nodes for visible messages.
@@ -1357,7 +1392,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   // A close estimate prevents the "scrolled to middle" bug where setting
   // scrollTop = estimated-total puts you far from the actual bottom.
   const virtualizer = useVirtualizer({
-    count: normalItems.length,
+    count: allItems.length,
     getScrollElement: () => chatLogRef.current,
     estimateSize: () => 65,
     overscan: 8,
@@ -2571,7 +2606,8 @@ function FleetChatInner({ shape }: { shape: any }) {
       e.preventDefault()
       e.stopPropagation()
       const now = Date.now()
-      const agent = targets[0]
+      setUnqueuedAt(now)
+      const agent = resolveToFleetIdRef.current(targets[0])
       const gap = now - lastEscRef.current
       if (gap < 500) {
         escCountRef.current++
@@ -2598,14 +2634,13 @@ function FleetChatInner({ shape }: { shape: any }) {
           })
           .catch(() => { updateOptimisticEvent(tempId, { text: `⚠ Kill failed (server unreachable)` }) })
       } else if (count === 2) {
-        injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', _isInterrupt: true, from: 'system', to: agent, text: `⏸ Interrupting ${agentLabel}…`, timestamp: ts })
         fetch(`${FLEET_API}/api/interrupt`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent }) })
           .then(r => r.json())
           .then(d => {
-            if (d.error) updateOptimisticEvent(tempId, { text: `⚠ Interrupt failed: ${d.error}` })
+            if (d.error) injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', _isInterrupt: true, from: 'system', to: agent, text: `⚠ Interrupt failed: ${d.error}`, timestamp: ts })
             else confirmEscLevel(agent, 2)
           })
-          .catch(() => { updateOptimisticEvent(tempId, { text: `⚠ Interrupt failed (server unreachable)` }) })
+          .catch(() => { injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', _isInterrupt: true, from: 'system', to: agent, text: `⚠ Interrupt failed (server unreachable)`, timestamp: ts }) })
       } else {
         injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', _isInterrupt: true, from: 'system', to: agent, text: `⏸ Escape → ${agentLabel}…`, timestamp: ts })
         fetch(`${FLEET_API}/api/send-key`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent, key: 'Escape' }) })
@@ -2617,8 +2652,19 @@ function FleetChatInner({ shape }: { shape: any }) {
           .catch(() => { updateOptimisticEvent(tempId, { text: `⚠ Escape failed (server unreachable)` }) })
       }
     }
+    function onNonEscAction(e: KeyboardEvent) {
+      if (e.key === 'Escape') return
+      if (escCountRef.current === 0) return
+      escCountRef.current = 0
+      lastEscRef.current = 0
+      setEscalationState({})
+    }
     document.addEventListener('keydown', onEscKey, true)
-    return () => document.removeEventListener('keydown', onEscKey, true)
+    document.addEventListener('keydown', onNonEscAction, true)
+    return () => {
+      document.removeEventListener('keydown', onEscKey, true)
+      document.removeEventListener('keydown', onNonEscAction, true)
+    }
   }, [])
 
   // Textarea resize is handled by CSS field-sizing: content.
@@ -2755,6 +2801,24 @@ function FleetChatInner({ shape }: { shape: any }) {
     loadingMore.current = false
   }, [chatMessages, loadBeforeAgent])
 
+  // Auto-load more history when content doesn't fill the scroll container.
+  // Without this, if initial messages are too few to create a scrollbar,
+  // handleScroll never fires and the user can't get more messages.
+  useEffect(() => {
+    const el = chatLogRef.current
+    if (!el || loadingMore.current || chatMessages.length === 0 || !loadBeforeAgent) return
+    if (el.scrollHeight > el.clientHeight) return
+    const oldestTs = chatMessages[0]?.timestamp
+    if (!oldestTs) return
+    loadingMore.current = true
+    loadBefore(loadBeforeAgent, oldestTs, 50).then((older: any[]) => {
+      if (older.length > 0) {
+        setOlderEvents((prev: any[]) => [...older, ...prev])
+      }
+      loadingMore.current = false
+    })
+  }, [chatMessages, loadBeforeAgent])
+
   // --- Chat log drag → ghost pill ---
   // Uses native capture-phase listeners because tldraw intercepts React events
   const DRAG_THRESHOLD = 5
@@ -2775,6 +2839,8 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Store agentNames in a ref so native listeners can access current value
   const agentNamesRef = useRef(agentNames)
   agentNamesRef.current = agentNames
+  const resolveToFleetIdRef = useRef(resolveToFleetId)
+  resolveToFleetIdRef.current = resolveToFleetId
 
   // Store shape.id in a ref so document-level listeners can access it
   const shapeIdRef = useRef(shape.id)
@@ -3394,9 +3460,10 @@ function FleetChatInner({ shape }: { shape: any }) {
                   key={vItem.key}
                   data-index={vItem.index}
                   ref={virtualizer.measureElement}
+                  className={allItems[vItem.index]?._divider ? 'queue-divider' : undefined}
                   style={{ position: 'absolute', top: 0, transform: `translateY(${vItem.start}px)`, width: '100%' }}
                 >
-                  <ChatMessageRow html={normalItems[vItem.index].html} postProcess={postProcess} itemKey={normalItems[vItem.index].key} expandedRowsRef={expandedRowsRef} />
+                  <ChatMessageRow html={allItems[vItem.index].html} postProcess={postProcess} itemKey={allItems[vItem.index].key} expandedRowsRef={expandedRowsRef} />
                 </div>
               ))}
             </div>
@@ -3407,27 +3474,13 @@ function FleetChatInner({ shape }: { shape: any }) {
             compactingAgents={compactingAgents}
             contextPercent={contextPercent}
             wouldHibernate={wouldHibernate}
+            hibernatingAgents={hibernatingAgents}
             ctx={ctx}
             rawItemsLength={rawItems.length}
             agents={agents}
             escalationState={escalationState}
           />
-          {/* Interrupt events jump the queue — render between thinking line and queued messages */}
-          {interruptItems.length > 0 && (
-            <div className="interrupt-queue">
-              {interruptItems.map(item => (
-                <ChatMessageRow key={item.key} html={item.html} postProcess={postProcess} itemKey={item.key} expandedRowsRef={expandedRowsRef} />
-              ))}
-            </div>
-          )}
-          {/* Queued messages render below the thinking indicator */}
-          {queuedItems.length > 0 && (
-            <div className="queued-messages">
-              {queuedItems.map(item => (
-                <ChatMessageRow key={item.key} html={item.html} postProcess={postProcess} itemKey={item.key} expandedRowsRef={expandedRowsRef} />
-              ))}
-            </div>
-          )}
+          {/* Queue divider and queued messages are now inline in the virtualizer */}
         </div>
 
         {/* Terminal card overlay — shown on hover or when pinned; outside scroll container */}
@@ -3564,8 +3617,6 @@ function FleetChatInner({ shape }: { shape: any }) {
               onKeyDown={(e) => {
                 stopEventPropagation(e)
                 const ta = e.currentTarget
-                // Escape: clear text if present. Interrupt escalation (soft/hard/kill)
-                // is handled entirely by the native keydown listener above.
                 if (e.key === 'Escape') {
                   e.preventDefault()
                   if (ta.value !== '') {
@@ -3573,6 +3624,11 @@ function FleetChatInner({ shape }: { shape: any }) {
                     ta.style.height = ''
                   }
                   return
+                }
+                if (escCountRef.current > 0) {
+                  escCountRef.current = 0
+                  lastEscRef.current = 0
+                  setEscalationState({})
                 }
                 if (e.key === 'ArrowUp') {
                   const history = sentHistoryRef.current
@@ -3759,8 +3815,11 @@ function FleetChatInner({ shape }: { shape: any }) {
                 }
               }}
               onInput={() => {
-                // field-sizing: content handles auto-resize natively.
-                // Chat log ResizeObserver handles scroll-to-bottom.
+                if (escCountRef.current > 0) {
+                  escCountRef.current = 0
+                  lastEscRef.current = 0
+                  setEscalationState({})
+                }
               }}
               onPointerDown={(e) => {
                 stopEventPropagation(e)

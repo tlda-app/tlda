@@ -7,6 +7,11 @@ const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-
 
 export const FLEET_HUD_ANCHOR_ID = 'shape:fleet-hud-anchor' as const
 
+export function getMyAnchorId(): string {
+  const uid = getHumanId()
+  return uid ? `shape:fleet-hud-anchor--${uid.replace('fleet:', '')}` : FLEET_HUD_ANCHOR_ID
+}
+
 /** Delete shapes even if locked (unlock first, then delete). */
 export function forceDeleteShapes(editor: Editor, ids: string[]) {
   for (const id of ids) {
@@ -25,21 +30,26 @@ export function forceDeleteShapes(editor: Editor, ids: string[]) {
  * agents: list of agent objects from useFleetAgents() — used to pre-fill chat filters.
  */
 export function createFleetLayout(editor: Editor, agents: any[], variant: '2col' | '3col' | 'wide' | 'grid' = '3col') {
-  // Preserve existing chat filters before nuking — so Fleet button restores geometry
-  // without losing filters the user has set by dragging agents.
-  const existing = editor.getCurrentPageShapes().filter(s => FLEET_SHAPE_TYPES.includes(s.type as string))
+  const myId = getHumanId() || ''
+  const isMyShape = (s: any) => {
+    if (!FLEET_SHAPE_TYPES.includes(s.type as string)) return false
+    const uid = s.props?.userId
+    if (!uid) return !myId  // legacy shapes: only claim if no user logged in
+    return uid === myId
+  }
+  const existing = editor.getCurrentPageShapes().filter(isMyShape)
   const existingChatFilters = existing
     .filter(s => (s.type as string) === 'fleet-chat')
     .map(s => (s as any).props?.filter as [string, string][][] | undefined)
 
   if (existing.length > 0) forceDeleteShapes(editor, existing.map(s => s.id as string))
 
-  // Clear HUD anchor shape so the offset recomputes from new shape positions.
+  const anchorId = getMyAnchorId()
   try {
-    const anchor = editor.getShape(FLEET_HUD_ANCHOR_ID as any)
+    const anchor = editor.getShape(anchorId as any)
     if (anchor) {
-      if (anchor.isLocked) editor.updateShape({ id: FLEET_HUD_ANCHOR_ID as any, type: 'geo', isLocked: false })
-      editor.deleteShape(FLEET_HUD_ANCHOR_ID as any)
+      if (anchor.isLocked) editor.updateShape({ id: anchorId as any, type: 'geo', isLocked: false })
+      editor.deleteShape(anchorId as any)
     }
   } catch {}
   // Force a global reload of the FleetHUD's hudOverride state. The simplest
@@ -273,6 +283,8 @@ export function createFleetLayout(editor: Editor, agents: any[], variant: '2col'
       },
     )
   }
+  const uid = getHumanId() || ''
+  for (const s of shapes) s.props.userId = uid
   editor.createShapes(shapes)
 
   // Don't center the main canvas on fleet shapes — that disrupts the user's

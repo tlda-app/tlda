@@ -18,6 +18,11 @@
  *   PROJECTS_DIR — project storage (default: server/projects/)
  */
 
+if (!process.argv.includes('--i-am-tlda-cli')) {
+  console.error('Use `tlda server start` to run the server. Do not run unified-server.mjs directly.')
+  process.exit(1)
+}
+
 import express from 'express'
 import { createServer } from 'http'
 import { WebSocketServer } from 'ws'
@@ -502,8 +507,13 @@ function getWouldHibernate() {
 
 function broadcastState() {
   if (!fleetStore) return
+  const agents = fleetStore.getAllAgents().map(a => {
+    if (_thinkingState.has(a.id)) return { ...a, status: 'thinking' }
+    if (_compactingState.has(a.id)) return { ...a, status: 'compacting' }
+    return a
+  })
   broadcastFleet({
-    agents: fleetStore.getAllAgents(),
+    agents,
     tasks: fleetStore.getActiveTasks(),
     thinking: Object.fromEntries(_thinkingState),
     compacting: Object.fromEntries(_compactingState),
@@ -1100,6 +1110,58 @@ app.post('/api/send-text', requireRead, async (req, res) => {
   try {
     const result = await sendRpc(route.machine_id, 'send-text', { tmux_session: agent.tmux_session, text, enter: enter !== false })
     res.json(result || { ok: true })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+app.post('/api/send-key', requireRead, async (req, res) => {
+  const { agent: agentQuery, key } = req.body || {}
+  if (!agentQuery || !key) return res.status(400).json({ error: 'Missing agent or key' })
+  if (!fleetStore) return res.status(503).json({ error: 'Fleet not initialized' })
+  const agent = fleetStore.findAgent(agentQuery)
+  if (!agent) return res.status(404).json({ error: 'agent not found' })
+  if (!agent.tmux_session) return res.status(400).json({ error: 'no tmux session' })
+  const route = resolveRpc('send-key', agent)
+  if (route.via === 'none') return res.status(503).json({ error: route.error })
+  try {
+    const result = await sendRpc(route.machine_id, 'send-key', { tmux_session: agent.tmux_session, key })
+    res.json(result || { ok: true })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+app.post('/api/interrupt', requireRead, async (req, res) => {
+  const { agent: agentQuery } = req.body || {}
+  if (!agentQuery) return res.status(400).json({ error: 'Missing agent' })
+  if (!fleetStore) return res.status(503).json({ error: 'Fleet not initialized' })
+  const agent = fleetStore.findAgent(agentQuery)
+  if (!agent) return res.status(404).json({ error: 'agent not found' })
+  if (!agent.tmux_session) return res.status(400).json({ error: 'no tmux session' })
+  const route = resolveRpc('interrupt', agent)
+  if (route.via === 'none') return res.status(503).json({ error: route.error })
+  try {
+    const result = await sendRpc(route.machine_id, 'interrupt', { agent_id: agent.id, tmux_session: agent.tmux_session })
+    const interruptEvent = { type: 'interrupt', from: SERVER_OWNER_ID, to: agent.id, text: `Interrupted ${agent.friendly_name || agent.id}` }
+    fleetStore.share(interruptEvent)
+    broadcastState()
+    res.json({ ok: true, agent: agent.friendly_name || agent.id, ...result })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+app.post('/api/kill-session', requireRead, async (req, res) => {
+  const { agent: agentQuery } = req.body || {}
+  if (!agentQuery) return res.status(400).json({ error: 'Missing agent' })
+  if (!fleetStore) return res.status(503).json({ error: 'Fleet not initialized' })
+  const agent = fleetStore.findAgent(agentQuery)
+  if (!agent) return res.status(404).json({ error: 'agent not found' })
+  if (!agent.tmux_session) return res.status(400).json({ error: 'no tmux session' })
+  const route = resolveRpc('kill-session', agent)
+  if (route.via === 'none') return res.status(503).json({ error: route.error })
+  try {
+    const result = await sendRpc(route.machine_id, 'kill-session', { agent_id: agent.id, tmux_session: agent.tmux_session })
+    fleetStore.markDead(agent.id)
+    const killEvent = { type: 'kill-session', from: SERVER_OWNER_ID, to: agent.id, text: `Killed ${agent.friendly_name || agent.id}` }
+    fleetStore.share(killEvent)
+    broadcastState()
+    res.json({ ok: true, agent: agent.friendly_name || agent.id, ...result })
   } catch (e) { res.status(500).json({ error: e.message }) }
 })
 
@@ -1869,7 +1931,7 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'fleet-search') {
     try {
       const results = fleetStore.searchAll(msg.query || '', {
-        limit: msg.limit, agent: msg.agent, role: msg.role, since: msg.since,
+        limit: msg.limit, agent: msg.agent, role: msg.role, since: msg.since, agentOnly: msg.agentOnly,
       })
       const context = {}
       if (msg.context_timestamps?.length) {
@@ -1887,7 +1949,6 @@ async function handleFleetWsMessage(ws, msg) {
   // A serial loop drains it — one spawn at a time, naturally deduped.
   const _wakeQueue = new Set()
   let _wakeDraining = false
-
   function requestWake(agentId) {
     const agent = fleetStore.getAgent?.(agentId)
     if (!agent || agent.dead || agent.human) return
@@ -1943,7 +2004,7 @@ async function handleFleetWsMessage(ws, msg) {
     const recipients = []
     for (const a of allAgents) {
       if (a.id === from) continue
-      const virtual = a.status === 'awake' ? ['awake'] : a.status === 'hibernating' ? ['hibernating'] : []
+      const virtual = a.status === 'awake' ? ['awake'] : a.status === 'hibernating' ? ['hibernating'] : a.status === 'human' ? ['human'] : a.status === 'human-away' ? ['human', 'human-away'] : []
       const labels = [...(a.labels || []), ...virtual, a.friendly_name, a.id].filter(Boolean)
       if (dnf.some(andGroup => andGroup.every(term => labels.includes(term)))) {
         recipients.push(a.id)
@@ -2128,7 +2189,7 @@ async function handleFleetWsMessage(ws, msg) {
   }
 
   if (type === 'delegate') {
-    const { agent: agentQuery, description, message: taskMsg, success_criteria, blocked_by, from } = msg
+    const { agent: agentQuery, description, message: taskMsg, success_criteria, blocked_by, from, requires_approval } = msg
     if (!agentQuery || !description) { error('missing agent or description'); return }
     const resolved = fleetStore.findAgent(agentQuery)
     if (!resolved) { error(`agent not found: ${agentQuery}`); return }
@@ -2142,6 +2203,7 @@ async function handleFleetWsMessage(ws, msg) {
       acknowledged: false,
       blockedBy: blocked_by || undefined,
       success_criteria: success_criteria || undefined,
+      metadata: requires_approval ? { requires_approval: true } : undefined,
     }
     fleetStore.upsertTask(task)
     const fromAgent = from ? fleetStore.findAgent(from) : null
@@ -2158,13 +2220,20 @@ async function handleFleetWsMessage(ws, msg) {
   }
 
   if (type === 'task-done') {
-    const { agent: rawAgent, task_id, skip_qa } = msg
+    const { agent: rawAgent, task_id, skip_qa, approval_id } = msg
     if (!rawAgent) { error('missing agent'); return }
     const agent = fleetStore.findAgent?.(rawAgent)?.id || rawAgent
     const task = task_id
       ? fleetStore.getTask?.(task_id)
       : fleetStore.getTaskByAgent?.(agent)
     if (!task) { error('no active task'); return }
+    if (task.metadata?.requires_approval) {
+      if (!approval_id) { error('This task requires approval. Pass approval_id (event ID of a human approval message).'); return }
+      const evt = fleetStore.getEventById(approval_id)
+      if (!evt) { error(`approval_id ${approval_id} not found`); return }
+      const fromAgent = (evt.from_id || evt.from) ? fleetStore.getAgent(evt.from_id || evt.from) : null
+      if (!fromAgent?.human) { error(`approval_id ${approval_id} is not from a human`); return }
+    }
     if (!skip_qa && fleetStore.getQaAgentIds) {
       const qaIds = fleetStore.getQaAgentIds()
       if (qaIds.length > 0) {
@@ -2785,6 +2854,20 @@ function qualTrackRead(agentId, key) {
   if (!key) return
   if (!_qualAgentReads.has(agentId)) _qualAgentReads.set(agentId, new Set())
   _qualAgentReads.get(agentId).add(key)
+  if (key.startsWith('skill:') && fleetStore) {
+    try { fleetStore.addSkillRead(agentId, key) } catch {}
+  }
+}
+
+function qualLoadReadsFromDb() {
+  if (!fleetStore) return
+  try {
+    const agents = fleetStore.getAllAgents()
+    for (const agent of agents) {
+      const reads = fleetStore.getSkillReads(agent.id)
+      if (reads.size > 0) _qualAgentReads.set(agent.id, reads)
+    }
+  } catch {}
 }
 
 let _latexProjectDirs = null
@@ -2870,6 +2953,7 @@ function checkQualifications(agentId, tool, arg, input) {
 }
 
 loadQualifications()
+qualLoadReadsFromDb()
 fs.watchFile(QUALIFICATIONS_FILE, { interval: 5000 }, () => {
   console.log('[qualification] reloading rules')
   loadQualifications()
@@ -3398,5 +3482,23 @@ server.listen(PORT, HOST, () => {
   ensureLocalDaemon()
   setInterval(ensureLocalDaemon, DAEMON_SUPERVISOR_INTERVAL_MS).unref()
 
-  // Idle-hibernation disabled — agents stay alive until explicitly hibernated via UI.
+  const HIBERNATE_CHECK_MS = 60_000
+  setInterval(async () => {
+    if (!fleetStore) return
+    const wouldHib = getWouldHibernate()
+    for (const agentId of Object.keys(wouldHib)) {
+      const agent = fleetStore.getAgent(agentId)
+      if (!agent || !agent.tmux_session) continue
+      const route = resolveRpc('kill-session', agent)
+      if (route.via === 'none') continue
+      console.log(`[hibernate] auto-hibernating ${agent.friendly_name || agent.id} (idle ${wouldHib[agentId]}s)`)
+      try {
+        await sendRpc(route.machine_id, 'kill-session', { agent_id: agent.id, tmux_session: agent.tmux_session })
+        clearEphemeralState(agent.id)
+      } catch (e) {
+        console.error(`[hibernate] failed to hibernate ${agent.friendly_name || agent.id}: ${e.message}`)
+      }
+    }
+    broadcastState()
+  }, HIBERNATE_CHECK_MS).unref()
 })

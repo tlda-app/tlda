@@ -82,8 +82,7 @@ function agentMatchesLabel(agentId, label) {
     if (_humanId && agentId === _humanId) return [_humanName, _humanId].filter(Boolean).includes(label)
     return false
   }
-  // Virtual labels derived from agent.status (mirrors server-side resolution).
-  const virtual = agent.status === 'awake' ? ['awake'] : agent.status === 'hibernating' ? ['hibernating'] : []
+  const virtual = agent.status === 'awake' ? ['awake'] : agent.status === 'hibernating' ? ['hibernating'] : agent.status === 'human' ? ['human'] : agent.status === 'human-away' ? ['human', 'human-away'] : []
   const labels = [...(agent.labels || []), ...virtual, agent.friendly_name, agent.id].filter(Boolean)
   return labels.includes(label)
 }
@@ -129,6 +128,7 @@ export async function login(name) {
   _identifyPending = false
   localStorage.setItem('tlda-identity', res.name)
   notify('identity', { type: 'identity', id: _humanId, name: _humanName })
+  _startHeartbeat()
   return res
 }
 
@@ -142,6 +142,7 @@ export async function registerHuman(name) {
   _identifyPending = false
   localStorage.setItem('tlda-identity', sanitized)
   notify('identity', { type: 'identity', id: _humanId, name: _humanName })
+  _startHeartbeat()
   return res
 }
 
@@ -267,6 +268,7 @@ let _ws = null
 let _reconnectDelay = 1000
 let _connected = false
 let _disconnectedAt = 0
+let _heartbeatInterval = null
 
 /** Returns true if the WS is currently connected */
 export function isConnected() { return _connected }
@@ -277,6 +279,15 @@ export function disconnectedFor() { return _connected ? 0 : (_disconnectedAt ? D
 // WS request/response: pending callbacks keyed by message ID
 let _wsReqId = 0
 const _wsCallbacks = new Map()
+
+function _startHeartbeat() {
+  if (_heartbeatInterval) clearInterval(_heartbeatInterval)
+  _heartbeatInterval = setInterval(() => {
+    if (_humanId && _ws && _ws.readyState === 1) {
+      _ws.send(JSON.stringify({ type: 'heartbeat', agent: _humanId }))
+    }
+  }, 30_000)
+}
 
 function wsSend(msg) {
   if (!_ws || _ws.readyState !== 1) return Promise.reject(new Error('not connected'))
@@ -307,6 +318,7 @@ export function connect() {
         _humanName = res.name
         _identifyPending = false
         notify('identity', { type: 'identity', id: _humanId, name: _humanName })
+        _startHeartbeat()
       }).catch(() => {
         // Login failed — agent may have been removed. Show picker.
         _identifyPending = true
@@ -349,6 +361,7 @@ export function connect() {
     _ws = null
     _connected = false
     _disconnectedAt = _disconnectedAt || Date.now()
+    if (_heartbeatInterval) { clearInterval(_heartbeatInterval); _heartbeatInterval = null }
     notify('connection', { type: 'connection', connected: false })
     setTimeout(connect, _reconnectDelay)
     _reconnectDelay = Math.min(_reconnectDelay * 2, 15000) // cap at 15s, not 30s
@@ -506,7 +519,7 @@ export async function init() {
   const chatEvents = (historyRes.events || [])
     .filter(e => {
       const t = e.event_type || e.type
-      return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_user' || t === 'terminal_assistant' || t === 'timer' || t === 'compacting' || t === 'activity' || t === 'terminal_attention' || t === 'terminal_card' || t === 'plan_approval' || t === 'kill-session'
+      return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_user' || t === 'terminal_assistant' || t === 'timer' || t === 'compacting' || t === 'activity' || t === 'terminal_attention' || t === 'terminal_card' || t === 'plan_approval' || t === 'kill-session' || t === 'interrupt'
     })
     .map(convertChatEvent)
   _events = chatEvents
@@ -631,7 +644,7 @@ export async function fetchHistory(agentId, limit = 200) {
   const events = (res.events || [])
     .filter(e => {
       const t = e.event_type || e.type
-      return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_user' || t === 'terminal_assistant' || t === 'timer' || t === 'compacting' || t === 'activity' || t === 'terminal_attention' || t === 'terminal_card' || t === 'plan_approval' || t === 'kill-session'
+      return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_user' || t === 'terminal_assistant' || t === 'timer' || t === 'compacting' || t === 'activity' || t === 'terminal_attention' || t === 'terminal_card' || t === 'plan_approval' || t === 'kill-session' || t === 'interrupt'
     })
     .map(convertChatEvent)
 
@@ -653,7 +666,7 @@ export async function loadBefore(agentId, beforeTs, count = 100) {
   const events = (res.events || [])
     .filter(e => {
       const t = e.event_type || e.type
-      return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_user' || t === 'terminal_assistant' || t === 'timer' || t === 'compacting' || t === 'activity' || t === 'terminal_attention' || t === 'terminal_card' || t === 'plan_approval' || t === 'kill-session'
+      return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_user' || t === 'terminal_assistant' || t === 'timer' || t === 'compacting' || t === 'activity' || t === 'terminal_attention' || t === 'terminal_card' || t === 'plan_approval' || t === 'kill-session' || t === 'interrupt'
     })
     .map(convertChatEvent)
 

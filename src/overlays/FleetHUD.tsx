@@ -11,26 +11,36 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { useFleetAgents } from '../fleet-data-adapter'
-import { FLEET_HUD_ANCHOR_ID } from '../shapes/fleet-utils'
+// @ts-ignore — vanilla JS module
+import { getHumanId } from '../fleet/fleet-data.mjs'
+import { getMyAnchorId } from '../shapes/fleet-utils'
 import './FleetHUD.css'
 
 const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview', 'fleet-reaper']
 
+function isMyFleetShape(s: any): boolean {
+  if (!FLEET_SHAPE_TYPES.includes(s.type as string)) return false
+  const uid = s.props?.userId
+  if (!uid) return true  // legacy shapes without userId belong to everyone
+  return uid === getHumanId()
+}
+
 function saveAnchorOffsets(editor: Editor, panOffset: number, cameraY: number) {
-  const existing = editor.getShape(FLEET_HUD_ANCHOR_ID as any)
+  const anchorId = getMyAnchorId()
+  const existing = editor.getShape(anchorId as any)
   if (existing) {
     if (existing.isLocked) {
-      editor.updateShape({ id: FLEET_HUD_ANCHOR_ID as any, type: 'geo', isLocked: false })
+      editor.updateShape({ id: anchorId as any, type: 'geo', isLocked: false })
     }
     editor.updateShape({
-      id: FLEET_HUD_ANCHOR_ID as any,
+      id: anchorId as any,
       type: 'geo',
       meta: { ...existing.meta, panOffset, cameraY },
       isLocked: true,
     })
   } else {
     editor.createShape({
-      id: FLEET_HUD_ANCHOR_ID as any,
+      id: anchorId as any,
       type: 'geo',
       x: 0, y: 0,
       opacity: 0,
@@ -70,7 +80,7 @@ interface FleetHUDProps {
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function repackFleetShapes(editor: Editor, targetBounds?: { x: number; y: number; w: number; h: number }) {
   const shapes = editor.getCurrentPageShapes()
-    .filter(s => FLEET_SHAPE_TYPES.includes(s.type as string))
+    .filter(isMyFleetShape)
   if (shapes.length === 0) return
 
   // Current bounding box
@@ -111,7 +121,7 @@ export function repackFleetShapes(editor: Editor, targetBounds?: { x: number; y:
 
 function getFleetBounds(editor: Editor): ClipBounds | null {
   const shapes = editor.getCurrentPageShapes()
-    .filter(s => FLEET_SHAPE_TYPES.includes(s.type as string))
+    .filter(isMyFleetShape)
   if (shapes.length === 0) return null
 
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
@@ -167,7 +177,7 @@ export function FleetHUD({
   const panOffsetRef = useRef<number | null>(null)
   const cameraYRef = useRef<number | null>(null)
   if (panOffsetRef.current === null && cameraYRef.current === null) {
-    const anchor = mainEditor.getShape(FLEET_HUD_ANCHOR_ID as any) as any
+    const anchor = mainEditor.getShape(getMyAnchorId() as any) as any
     if (anchor?.meta?.panOffset !== undefined) {
       panOffsetRef.current = anchor.meta.panOffset
       cameraYRef.current = anchor.meta.cameraY
@@ -187,7 +197,7 @@ export function FleetHUD({
 
     const unsub = mainEditor.store.listen(({ changes }) => {
       const isFleetChange = (record: any) =>
-        record.typeName === 'shape' && FLEET_SHAPE_TYPES.includes(record.type)
+        record.typeName === 'shape' && isMyFleetShape(record)
 
       // Immediate: add/remove always recalculates
       const hasAddition = Object.values(changes.added).some(isFleetChange)
@@ -246,7 +256,7 @@ export function FleetHUD({
       if (hasPage) {
         setDocShapesReady(true)
         // Only force recompute if we don't have a saved position
-        const anchor = mainEditor.getShape(FLEET_HUD_ANCHOR_ID as any) as any
+        const anchor = mainEditor.getShape(getMyAnchorId() as any) as any
         if (anchor?.meta?.panOffset === undefined) {
           panOffsetRef.current = null
         }
@@ -281,8 +291,7 @@ export function FleetHUD({
     const isOpen = !!(expanded && fleetBounds)
     if (isOpen === prevExpandedRef.current) return
     prevExpandedRef.current = isOpen
-    const fleetShapes = mainEditor.getCurrentPageShapes()
-      .filter(s => FLEET_SHAPE_TYPES_SET.has(s.type as string))
+    const fleetShapes = mainEditor.getCurrentPageShapes().filter(isMyFleetShape)
     if (fleetShapes.length > 0) {
       const tick = Date.now()
       mainEditor.updateShapes(fleetShapes.map(s => ({
@@ -381,7 +390,7 @@ export function FleetHUD({
       if (!editor) return
       const hasFleetSelected = editor.getSelectedShapeIds().some(id => {
         const s = editor.getShape(id as any)
-        return s && FLEET_TYPES_HUD.has(s.type as string)
+        return s && isMyFleetShape(s)
       })
       if (hasFleetSelected) {
         // ADD immediately — user selected a fleet shape, enable interaction
@@ -467,10 +476,11 @@ export function FleetHUD({
       panOffsetRef.current = null
       cameraYRef.current = null
       try {
-        const anchor = mainEditor.getShape(FLEET_HUD_ANCHOR_ID as any)
+        const myAnchorId = getMyAnchorId()
+        const anchor = mainEditor.getShape(myAnchorId as any)
         if (anchor) {
-          if (anchor.isLocked) mainEditor.updateShape({ id: FLEET_HUD_ANCHOR_ID as any, type: 'geo', isLocked: false })
-          mainEditor.deleteShape(FLEET_HUD_ANCHOR_ID as any)
+          if (anchor.isLocked) mainEditor.updateShape({ id: myAnchorId as any, type: 'geo', isLocked: false })
+          mainEditor.deleteShape(myAnchorId as any)
         }
       } catch {}
       setFleetBounds(getFleetBounds(mainEditor))
@@ -528,8 +538,7 @@ export function FleetHUD({
     // Use the left group's right edge for camera positioning — not the full
     // fleet bounds, which may include a right-margin chat far to the right.
     // "Left group" = shapes within 1200px of the leftmost fleet shape.
-    const fleetShapes = mainEditor.getCurrentPageShapes()
-      .filter(s => FLEET_SHAPE_TYPES.includes(s.type as string))
+    const fleetShapes = mainEditor.getCurrentPageShapes().filter(isMyFleetShape)
     let leftGroupRight = fleetBounds.x + fleetBounds.w
     if (fleetShapes.length > 0) {
       const rights = fleetShapes.map(s => {

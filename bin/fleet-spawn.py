@@ -259,6 +259,61 @@ def find_valid_session(agent):
     return None
 
 
+def strip_synthetic_tail(session_id):
+    """Strip synthetic assistant entries from the tail of a session JSONL.
+
+    CC writes model=<synthetic> entries on exit. On resume, CC uses their UUID
+    message.id as previous_message_id → API 400 (expects msg_* prefix).
+    GitHub issue #58427. We truncate these before resuming."""
+    import glob as _glob
+    import re as _re
+
+    projects_base = os.path.expanduser("~/.claude/projects")
+    hits = _glob.glob(os.path.join(projects_base, "*", f"{session_id}.jsonl"))
+    if not hits:
+        return
+    fpath = hits[0]
+
+    try:
+        with open(fpath, "r", errors="replace") as f:
+            lines = f.readlines()
+    except OSError:
+        return
+
+    if not lines:
+        return
+
+    uuid_re = _re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+    stripped = 0
+    while lines:
+        line = lines[-1].strip()
+        if not line:
+            lines.pop()
+            stripped += 1
+            continue
+        try:
+            entry = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            break
+        if entry.get("type") == "assistant":
+            msg = entry.get("message", {})
+            model = msg.get("model", "")
+            msg_id = msg.get("id", "")
+            if "<synthetic>" in model or (msg_id and uuid_re.match(msg_id)):
+                lines.pop()
+                stripped += 1
+                continue
+        break
+
+    if stripped:
+        print(f"  stripped {stripped} synthetic entries from tail of {session_id}", file=sys.stderr)
+        try:
+            with open(fpath, "w") as f:
+                f.writelines(lines)
+        except OSError as e:
+            print(f"  WARNING: failed to write stripped JSONL: {e}", file=sys.stderr)
+
+
 def find_agent(name):
     agents = api_get("/api/store/agents")
     if name.startswith("fleet:"):
@@ -321,6 +376,10 @@ def spawn_tmux(session, cwd, cmd, auto_dismiss=True):
     """Start a tmux session running cmd. When auto_dismiss=True, backgrounds
     a process to dismiss the dev-channels confirmation dialog."""
     subprocess.run(tmux("new-session", "-d", "-s", session, "-c", cwd, cmd), check=True)
+    # Preserve crash output: keep the pane alive after the command exits so
+    # the daemon can capture-pane and diagnose exitCode=1 crashes.
+    subprocess.run(tmux("set-option", "-t", session, "remain-on-exit", "on"),
+                   capture_output=True, timeout=5)
     if auto_dismiss:
         subprocess.Popen(
             [sys.executable, "-c",
@@ -423,8 +482,6 @@ def respawn(name, model, cwd, effort, mode, session_override=None):
     if subprocess.run(tmux("has-session", "-t", sess), capture_output=True).returncode == 0:
         if _session_has_claude(sess):
             return sess
-        print(f"  {sess} exists but claude is not running — killing zombie session", file=sys.stderr)
-        subprocess.run(tmux("kill-session", "-t", sess), capture_output=True)
 
     result = None
     if session_override:
@@ -441,6 +498,8 @@ def respawn(name, model, cwd, effort, mode, session_override=None):
     # NEVER fall back to --refresh here. --refresh spawns an imposter agent
     # with no real context. If --resume is stuck in a death loop, let it fail
     # visibly so someone can diagnose — don't silently replace the agent.
+
+    strip_synthetic_tail(resume_id)
 
     cmd = build_claude_cmd(fleet_id, sess, model, effort, mode,
                            resume_id=resume_id, include_prompt=False)

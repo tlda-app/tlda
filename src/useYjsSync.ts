@@ -204,16 +204,6 @@ const agentHeartbeatHandle = bus.register<AgentHeartbeatSignal>({
 })
 export const onAgentHeartbeat = agentHeartbeatHandle.on
 
-export type RefViewerSignal = {
-  refs: Array<{ label: string; region: { page: number; yTop: number; yBottom: number; displayLabel?: string } }> | null
-  viewerId: string
-  timestamp: number
-}
-const refViewerHandle = bus.register<RefViewerSignal>({
-  key: 'signal:ref-viewer',
-  accept: (s) => s.viewerId !== localViewerId,
-})
-export const onRefViewerSignal = refViewerHandle.on
 
 // Diff review and summaries — register so callers can subscribe to changes
 const diffReviewHandle = bus.register<{ reviews: Record<number, string>; timestamp: number }>({
@@ -297,9 +287,6 @@ export function broadcastCamera(x: number, y: number, z: number) {
   writeSignal('signal:camera-link', { x, y, z, viewerId: localViewerId })
 }
 
-export function broadcastRefViewer(refs: RefViewerSignal['refs']) {
-  writeSignal('signal:ref-viewer', { refs, viewerId: localViewerId })
-}
 
 export function broadcastSharedDoc(shapeId: string, filePath: string) {
   writeSignal('signal:shared-doc', { shapeId, filePath })

@@ -6,7 +6,7 @@
  * 2. Pinned — faint forward arrow (top-left) + × (top-right) overlaid
  * 3. Navigated — back arrow replaces forward, × stays
  *
- * Rendered in bottomPanelsContent alongside RefViewer.
+ * Rendered in bottomPanelsContent.
  * Triggered by custom DOM events from FleetChatShape ref-chip hover.
  */
 import { useEffect, useState, useCallback, useRef } from 'react'

@@ -1498,21 +1498,34 @@ function handleMessage(msg) {
       tickNudgeMessages(from_id)
     }
 
-    // Direct address required for commands (escalation, handoff) but not for detection/queuing
-    const addressedEliza = /\beliza\b/i.test(text)
+    // "Eliza" as direct address: must appear before the command phrase, and must NOT be
+    // preceded by an article/preposition (which makes it a noun-phrase reference, not an address).
+    // "eliza hand this off" = address. "use the eliza system to hand off" = reference.
 
     // Sequence detection always watches — queues nudges silently for the status line
     const seqHandled = handleSequence(from_id, to_id, text)
 
-    // Manager escalation — requires direct address, fires before other triggers
-    if (addressedEliza && from_id === OWNER_ID && to_id && to_id !== AGENT_ID && MANAGER_ESCALATION_PATTERN.test(text)) {
+    // Check if "eliza" appears before the command pattern as a direct address (not a reference).
+    // "eliza hand this off" = address. "use the eliza system" = reference (article before eliza).
+    const elizaBefore = (pattern) => {
+      const cmdMatch = text.match(pattern)
+      if (!cmdMatch) return false
+      const prefix = text.slice(0, cmdMatch.index)
+      const elizaMatch = prefix.match(/\beliza\b/i)
+      if (!elizaMatch) return false
+      const before = prefix.slice(0, elizaMatch.index)
+      return !/(?:the|an?|of|use|using)\s*$/i.test(before)
+    }
+
+    // Manager escalation — "eliza" must appear before the escalation phrase
+    if (elizaBefore(MANAGER_ESCALATION_PATTERN) && from_id === OWNER_ID && to_id && to_id !== AGENT_ID) {
       const mode = MANAGER_MODE_1_PATTERN.test(text) ? 'talk-to-skip' : 'set-them-straight'
       handleManagerEscalation(to_id, text, mode).catch(e => console.error('[eliza] manager escalation error:', e.message))
       return
     }
 
-    // Handoff — requires direct address
-    if (addressedEliza && from_id === OWNER_ID && to_id && to_id !== AGENT_ID && HANDOFF_PATTERN.test(text)) {
+    // Handoff — "eliza" must appear before the handoff phrase
+    if (elizaBefore(HANDOFF_PATTERN) && from_id === OWNER_ID && to_id && to_id !== AGENT_ID) {
       handleHandoff(to_id, text).catch(e => console.error('[eliza] handoff error:', e.message))
       return
     }

@@ -2,13 +2,11 @@
 /**
  * PreToolUse hook: skill qualification enforcement.
  *
- * Reads tool name and input from stdin (Claude Code hook protocol).
- * Sends the tool name and file path to the server, which checks
- * qualifications.json rules against the agent's read history.
- * If the agent hasn't read a required skill, blocks the tool call
- * with the skill content injected into the agent's context.
+ * Fail-open: if the server is down, slow, or broken, exit 0.
+ * Never block a tool call because the education system itself is broken.
  *
- * Skips Read and Skill tool calls (they only track reads, never trigger blocks).
+ * For Read/Skill calls: notifies the server for tracking, never blocks.
+ * For other calls: checks if the agent has unread required skills.
  */
 
 import { readFileSync } from 'fs'
@@ -22,32 +20,25 @@ if (!FLEET_ID) process.exit(0)
 
 const SERVER = process.env.TLDA_SERVER || 'http://localhost:5176'
 
-// Read hook input from stdin
+setTimeout(() => process.exit(0), 1500)
+
 let hookInput = {}
 try {
   const chunks = []
   for await (const chunk of process.stdin) chunks.push(chunk)
   hookInput = JSON.parse(Buffer.concat(chunks).toString())
 } catch {
-  // Fall back to env vars for compatibility
-  try {
-    hookInput = {
-      tool_name: '',
-      tool_input: JSON.parse(process.env.CLAUDE_TOOL_INPUT || '{}')
-    }
-  } catch { /* proceed with empty input */ }
+  process.exit(0)
 }
 
 const toolName = hookInput.tool_name || ''
 const toolInput = hookInput.tool_input || {}
 const filePath = toolInput.file_path || toolInput.path || ''
 
-if (toolName === 'Read' || toolName === 'Skill') process.exit(0)
-
 function httpGet(url) {
   const mod = url.startsWith('https') ? https : http
   return new Promise((resolve) => {
-    const req = mod.get(url, { timeout: 3000 }, res => {
+    const req = mod.get(url, { timeout: 1000 }, res => {
       let buf = ''
       res.on('data', c => buf += c)
       res.on('end', () => {
@@ -62,23 +53,45 @@ function httpGet(url) {
 const params = new URLSearchParams()
 if (toolName) params.set('tool', toolName)
 if (filePath) params.set('file', filePath)
+if (toolName === 'Skill' && toolInput.skill) params.set('skill', toolInput.skill)
+if (toolName === 'Bash' && toolInput.command) params.set('command', toolInput.command)
 const qs = params.toString()
 const url = `${SERVER}/api/education/check/${encodeURIComponent(FLEET_ID)}${qs ? '?' + qs : ''}`
 
+if (toolName === 'Read') {
+  httpGet(url)
+  process.exit(0)
+}
+
+if (toolName === 'Skill') {
+  await httpGet(url)
+  process.exit(0)
+}
+
 const pending = await httpGet(url)
-if (!pending.skill) process.exit(0)
+if (!pending || !pending.skill) process.exit(0)
 
-const skillDir = join(homedir(), '.claude', 'skills', pending.skill, 'SKILL.md')
-let content
-try {
-  content = readFileSync(skillDir, 'utf8')
-} catch {
-  content = `(Skill file not found at ${skillDir})`
+const skills = pending.skills || [pending.skill]
+const items = []
+for (const skill of skills) {
+  const skillPath = join(homedir(), '.claude', 'skills', skill, 'SKILL.md')
+  try {
+    const content = readFileSync(skillPath, 'utf8')
+    const descMatch = content.match(/^description:\s*"?(.+?)"?\s*$/m)
+    const desc = descMatch ? descMatch[1] : ''
+    items.push({ skill, desc })
+  } catch {
+    items.push({ skill, desc: '' })
+  }
 }
+if (items.length === 0) process.exit(0)
 
-const result = {
-  decision: 'block',
-  reason: `⚠️ **You must read this skill before continuing.**\n\nSkill: \`${pending.skill}\`\n\n---\n\n${content}\n\n---\n\n**Read the above. Apply it to what you're doing right now. Then continue.**`
+let reason = '\u26a0\ufe0f **You must read ' + (items.length === 1 ? 'this skill' : 'these ' + items.length + ' skills') + ' before continuing.**\n\n'
+for (const { skill, desc } of items) {
+  reason += '- **`' + skill + '`**' + (desc ? ' \u2014 ' + desc : '') + '\n'
 }
+reason += '\nUse the Skill tool to invoke each one (e.g. `Skill({ skill: "' + items[0].skill + '" })`), then retry your edit.'
+
+const result = { decision: 'block', reason }
 
 process.stdout.write(JSON.stringify(result))

@@ -29,7 +29,7 @@ import { FleetDocViewShapeUtil } from './shapes/FleetDocViewShape'
 import { DocClipShapeUtil } from './shapes/DocClipShape'
 import { FleetPillShapeUtil } from './shapes/FleetPillShape'
 import { FleetSearchShapeUtil } from './shapes/FleetSearchShape'
-import { FLEET_HUD_ANCHOR_ID } from './shapes/fleet-utils'
+import { getMyAnchorId } from './shapes/fleet-utils'
 import { ClusterShapeUtil } from './shapes/ClusterShape'
 import { TerminalShapeUtil } from './shapes/TerminalShape'
 import { ReaperShapeUtil } from './shapes/ReaperShape'
@@ -67,9 +67,8 @@ import { FormatToolbar } from './toolbar/FormatToolbar'
 import { DocContext, PanelContext, BottomPanelsContext, AgentPillContext } from './PanelContext'
 import { NoteDropHandler } from './NoteDropHandler'
 import { MarkdownDropHandler } from './MarkdownDropHandler'
-import { setCurrentDocumentInfo, pageSpacing, type SvgDocument, type LabelRegion } from './svgDocumentLoader'
+import { setCurrentDocumentInfo, pageSpacing, type SvgDocument } from './svgDocumentLoader'
 import { ScrollyOverlay } from './overlays/ScrollyOverlay'
-import { RefViewer } from './overlays/RefViewer'
 import { ScreenshotCapture } from './overlays/ScreenshotCapture'
 import { FleetHUD, fleetHudOpenRef } from './overlays/FleetHUD'
 
@@ -97,7 +96,6 @@ import { useCameraLink } from './hooks/useCameraLink'
 import { getCameraLinked } from './cameraLink'
 import { useDiffToggle } from './hooks/useDiffToggle'
 import { useProofToggle } from './hooks/useProofToggle'
-import { useRefViewer } from './hooks/useRefViewer'
 import { useYjsSignals } from './hooks/useYjsSignals'
 import { useSyncedPlayback } from './hooks/useSyncedPlayback'
 import { useFleetTheme, THEME_FAMILY } from './hooks/useFleetTheme'
@@ -425,7 +423,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   // --- Screenshot capture state ---
   const [screenshotCapture, setScreenshotCapture] = useState<import('./hooks/useYjsSignals').ScreenshotCaptureState | null>(null)
 
-  // --- Panels local toggle (hide RefViewer + ProofStatementOverlay locally) ---
+  // --- Panels local toggle (hide bottom panels locally) ---
   const [panelsLocal, setPanelsLocal] = useState(true)
   const panelsLocalRef = useRef(true)
   const [editorMounted, setEditorMounted] = useState(0)
@@ -534,14 +532,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     shapeIdSetRef, shapeIdsArrayRef,
   })
 
-  const {
-    refViewerRefs, setRefViewerRefs, setRefViewerRefsLocal,
-    refViewerLineRef,
-    navigateRef, handleGoThere, handleGoBack, canGoBack,
-    clearHistory,
-  } = useRefViewer({
-    editorRef, document, proofDataRef, proofDataReady,
-  })
 
   // Remap warnings from reload (merged into buildWarnings below)
   const [remapWarnings, setRemapWarnings] = useState<BuildWarning[]>([])
@@ -596,7 +586,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     editorRef, document,
     diffDataRef, setDiffFetchSeq,
     proofDataRef, setProofDataReady, setProofFetchSeq,
-    setRefViewerRefs, refViewerLineRef, panelsLocalRef,
+    panelsLocalRef,
     setScreenshotCapture,
     onReloadResult: useCallback((result: ReloadResult | null) => {
       if (!result) {
@@ -1119,26 +1109,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   // Bottom panels content — passed via context into InFrontOfTheCanvas
   const bottomPanelsContent = (
     <div className="bottom-panels">
-      {panelsLocal && refViewerRefs && editorRef.current &&
-        !editorRef.current.getCurrentPageShapes().some((s: any) => s.type === 'fleet-docview') && (
-        <RefViewer
-          mainEditor={editorRef.current}
-          pages={docContextValue.pages}
-          refs={refViewerRefs}
-          shapeUtils={shapeUtils}
-          tools={tools}
-          licenseKey={LICENSE_KEY}
-          onClose={() => {
-            setRefViewerRefsLocal(null)
-            clearHistory()
-          }}
-          onPrevLine={() => navigateRef(-1)}
-          onNextLine={() => navigateRef(1)}
-          onGoThere={handleGoThere}
-          onGoBack={handleGoBack}
-          canGoBack={canGoBack}
-        />
-      )}
       {screenshotCapture && editorRef.current && (
         <ScreenshotCapture
           mainEditor={editorRef.current}
@@ -1257,7 +1227,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
             return false
           }
 
-          // Set up hyperref link navigation: open target in RefViewer panel
+          // Set up hyperref link navigation: update fleet-docview shapes
           // Load source map (labels index) for ref resolution.
           // For multi-target docs, pass targets so per-target source-maps are merged
           // with global page offsets — the bare alias only covers the primary target.
@@ -1298,8 +1268,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
             const { type, displayLabel } = anchorIdToLabel(title || (smMatch ? `${smMatch.type}.${smMatch.number}` : anchorId))
 
-            const region: LabelRegion = { page, yTop, yBottom, type, displayLabel }
-            setRefViewerRefsLocal([{ label: labelForRegion, region }])
             const dvTitle = (displayLabel || anchorId).replace(/^equation\./, 'eq ').replace(/^theorem\./, 'thm ')
             editor.getCurrentPageShapes()
               .filter((s: any) => s.type === 'fleet-docview')
@@ -1437,7 +1405,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
               // With a saved panOffset (anchor shape from a previous session),
               // don't nuke it. Without one (first visit), recompute after camera
               // restoration so pageToScreen() uses the correct camera.
-              if (!editor.getShape(FLEET_HUD_ANCHOR_ID as any)) {
+              if (!editor.getShape(getMyAnchorId() as any)) {
                 requestAnimationFrame(() => {
                   requestAnimationFrame(() => {
                     window.dispatchEvent(new CustomEvent('fleet-hud-reset'))

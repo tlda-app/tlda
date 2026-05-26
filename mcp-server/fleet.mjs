@@ -666,6 +666,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           friendly_name: { type: 'string', description: 'Set a friendly name for the agent (optional, same as name_agent)' },
           success_criteria: { type: 'array', items: { type: 'string' }, description: 'Verifiable success criteria. Agent must verify each before marking done.' },
           template: { type: 'string', description: 'Task template name (e.g. "math-edit"). Auto-populates success_criteria; explicit criteria are appended.' },
+          requires_approval: { type: 'boolean', description: 'If true, task_done requires an approval_id — the event ID of a message from Skip approving the work. Agent cannot close without it.' },
         },
         required: ['message'],
       },
@@ -724,7 +725,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'task_done',
-      description: 'Mark a task done. If the task has success_criteria, you must pass verified=true confirming you checked each one. Call with no args to mark your own task done, or specify agent to accept/reject (manager only).',
+      description: 'Mark a task done. If the task has success_criteria, you must pass verified=true confirming you checked each one. If the task has requires_approval, you must pass approval_id — the event ID of a Skip message approving the work.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -734,6 +735,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           feedback: { type: 'string', description: ' feedback when rejecting a task.' },
           report: { type: 'string', description: 'Summary of what was done. Linted before accepting — no plans, no stream-of-consciousness, no raw LaTeX.' },
           overrides: { type: 'array', items: { type: 'string' }, description: 'Lint violation IDs to suppress (e.g. ["proofs-prove:main.tex:L42"]). Use sparingly.' },
+          approval_id: { type: 'integer', description: 'Event ID of a message from Skip approving this work. Required when the task has requires_approval set.' },
         },
       },
     },
@@ -1558,7 +1560,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const blockedBy = afterRaw ? (Array.isArray(afterRaw) ? afterRaw : [afterRaw]) : [];
 
     try {
-      const delegateBody = { from: AGENT_ID, agent, description, message, success_criteria: criteria.length ? criteria : undefined, blocked_by: blockedBy.length ? blockedBy : undefined };
+      const delegateBody = { from: AGENT_ID, agent, description, message, success_criteria: criteria.length ? criteria : undefined, blocked_by: blockedBy.length ? blockedBy : undefined, requires_approval: args.requires_approval || undefined };
       const data = await sendWS('delegate', delegateBody);
       if (data.event_id) {
         _originatedEventIds.add(data.event_id);
@@ -1869,6 +1871,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text: `This task has success criteria you must verify before marking done:\n\n${criteria}\n\nHave you verified each of these? Call task_done(verified: true) to confirm.` }] };
     }
 
+    // Approval gate: task requires a human-approved message ID
+    if (task.metadata?.requires_approval && !args.rejected) {
+      if (!args.approval_id) {
+        return { content: [{ type: 'text', text: `This task requires Skip's approval to close. Get approval in chat, then call task_done(approval_id: <id>) with the message ID shown in brackets (e.g. id:332656).` }] };
+      }
+    }
+
     // Report gate (own task only)
     if (agent === AGENT_ID && !task.reported) {
       try {
@@ -1900,7 +1909,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     // Complete via server
     try {
-      const doneBody = { agent, task_id: task.id, lint_overrides: _lintOverrides.length > 0 ? _lintOverrides : undefined };
+      const doneBody = { agent, task_id: task.id, lint_overrides: _lintOverrides.length > 0 ? _lintOverrides : undefined, approval_id: args.approval_id || undefined };
       const data = await sendWS('task-done', doneBody);
       if (data.event_id) {
         _originatedEventIds.add(data.event_id);
@@ -2483,6 +2492,9 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
           text += `\n\n**Success criteria** (verify before calling task_done):`;
           task.success_criteria.forEach((c, i) => { text += `\n${i + 1}. ${c}`; });
         }
+        if (task.metadata?.requires_approval) {
+          text += `\n\n⚠️ **Requires approval.** You cannot close this task without Skip's sign-off. Present your work, get approval in chat, then call task_done(approval_id: <id>) with the message ID shown in brackets (e.g. id:332656).`;
+        }
       }
     } else {
       text = `Nothing new. Keep working or use timer() — you'll see 📬 when a task or message arrives.`;
@@ -2506,7 +2518,8 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
         const { text: imgResolvedText, images } = await resolveImages(refResolvedText)
         images.push(...chipImages)
         const reminder = m.metadata?.chatReminder ? `\n⚠️ ${m.metadata.chatReminder}` : '';
-        return { line: `[from ${fromLabel}${docHint}]${replyHint} ${imgResolvedText}${reminder}`, images };
+        const idHint = m.id ? `, id:${m.id}` : '';
+        return { line: `[from ${fromLabel}${idHint}${docHint}]${replyHint} ${imgResolvedText}${reminder}`, images };
       })));
       const formatted = msgResults.map(r => r.line).join('\n\n');
       text += `\n\n📬 Messages:\n\n${formatted}`;
@@ -2814,15 +2827,25 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     const limit = isBoundedSearch ? Math.min(args.limit || 500, 500) : Math.min(args.limit || 20, 100);
     const contextWindow = Math.min(Math.max(args.context || 0, 0), 20);
 
-    // Resolve agent filter to fleet ID(s)
+    // Resolve agent filter to fleet ID(s).
+    // Also auto-detect: if query matches an agent name but no agent param given,
+    // apply the agent filter automatically so "search_logs(query='e2-prereader')" works.
     let agentId;
+    let allAgents = [];
+    try { const d = await sendWS('store-agents'); if (Array.isArray(d)) allAgents = d; } catch (e) { process.stderr.write(`[fleet] store-agents fetch for search failed: ${e.message}\n`); }
     if (args.agent) {
-      let allAgents = [];
-      try { const d = await sendWS('store-agents'); if (Array.isArray(d)) allAgents = d; } catch (e) { process.stderr.write(`[fleet] store-agents fetch for search failed: ${e.message}\n`); }
       const matches = allAgents.filter(a =>
         a.id === args.agent || a.friendly_name === args.agent || a.id.startsWith(args.agent)
       );
       agentId = matches[0]?.id || args.agent;
+    } else {
+      const qLower = query.toLowerCase().trim();
+      const nameMatch = allAgents.find(a =>
+        a.friendly_name?.toLowerCase() === qLower || a.id === qLower || a.id === `fleet:${qLower}`
+      );
+      if (nameMatch) {
+        agentId = nameMatch.id;
+      }
     }
 
     // Query the server's unified search (fleet events + session JSONL text)
@@ -2830,10 +2853,12 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     let contextMap = {};
     try {
       const contextTimestamps = [];
+      const agentOnly = !!(agentId && !args.agent);
       const data = await sendWS('fleet-search', {
         query,
         limit,
         agent: agentId,
+        agentOnly,
         role: args.role || undefined,
         since: sinceTs,
       });

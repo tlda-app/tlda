@@ -284,8 +284,7 @@ export function useFleetEvents(dnfFilter?: [string, string][][] | null, frameId?
 
         const rawUnsub = subscribe('messages', filter, (event: any) => {
           if (!event) {
-            pendingBatch.length = 0
-            if (batchTimer !== null) { clearTimeout(batchTimer); batchTimer = null }
+            if (pendingBatch.length > 0) flushBatch()
             setEvents(prev => [...prev])
           } else {
             pendingBatch.push(event)

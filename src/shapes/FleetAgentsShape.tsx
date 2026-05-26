@@ -56,7 +56,9 @@ function labelColor(name: string): string {
 
 type SortKey = 'active' | 'name' | 'status'
 
-function agentCategory(agent: any): 'awake' | 'hibernating' {
+function agentCategory(agent: any): 'awake' | 'hibernating' | 'human' | 'human-away' {
+  if (agent.status === 'human') return 'human'
+  if (agent.status === 'human-away') return 'human-away'
   return agent.status === 'awake' ? 'awake' : 'hibernating'
 }
 
@@ -92,10 +94,11 @@ export class FleetAgentsShapeUtil extends BaseBoxShapeUtil<any> {
   static override props = {
     w: T.number,
     h: T.number,
+    userId: T.optional(T.string),
   }
 
   getDefaultProps() {
-    return { w: DEFAULT_W, h: DEFAULT_H }
+    return { w: DEFAULT_W, h: DEFAULT_H, userId: '' }
   }
 
   override canEdit = () => false
@@ -336,11 +339,10 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     return matches.length > 0 ? matches : []
   }, [activeTasks])
 
-  // Flat sorted agent list — all non-human, non-dead agents
   const sortedAgents = useMemo(() => {
     const list: any[] = []
     for (const a of agents) {
-      if (a.human || a.dead) continue
+      if (a.dead) continue
       const ts = a.last_active ? new Date(a.last_active).getTime() : 0
       list.push({ ...a, _ts: ts })
     }
@@ -348,9 +350,9 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     list.sort((a, b) => {
       if (sortKey === 'name') return dir * agentDisplayName(a).localeCompare(agentDisplayName(b))
       if (sortKey === 'status') {
-        const order = { awake: 0, hibernating: 1 }
-        const ca = order[agentCategory(a)] ?? 1
-        const cb = order[agentCategory(b)] ?? 1
+        const order: Record<string, number> = { human: 0, awake: 1, hibernating: 2, 'human-away': 3 }
+        const ca = order[agentCategory(a)] ?? 2
+        const cb = order[agentCategory(b)] ?? 2
         return dir * (ca - cb) || b._ts - a._ts
       }
       return dir * (a._ts - b._ts)
@@ -359,7 +361,8 @@ function FleetAgentsInner({ shape }: { shape: any }) {
   }, [agents, sortKey, sortAsc])
 
   const hibernatingCount = useMemo(() => sortedAgents.filter(a => agentCategory(a) === 'hibernating').length, [sortedAgents])
-  const awakeCount = sortedAgents.length - hibernatingCount
+  const humanCount = useMemo(() => sortedAgents.filter(a => a.human).length, [sortedAgents])
+  const awakeCount = sortedAgents.length - hibernatingCount - humanCount
 
   // Fetch last messages for visible agents
   const lastMessages = useLastMessages(sortedAgents)
@@ -460,7 +463,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
               tasks={getTasksForAgent(agent.id)}
               unreadCount={unreadCounts[agent.id] || 0}
               contextPct={contextPercent.get(agent.id)}
-              dimmed={agentCategory(agent) === 'hibernating'}
+              dimmed={agentCategory(agent) === 'hibernating' || agentCategory(agent) === 'human-away'}
               expanded={expandedId === agent.id}
               lastMessage={lastMessages[agentDisplayName(agent)] || ''}
               onToggleExpand={() => setExpandedId(expandedId === agent.id ? null : agent.id)}
@@ -476,6 +479,14 @@ function FleetAgentsInner({ shape }: { shape: any }) {
               style={{ cursor: 'grab' }}
               onPointerDown={(e) => { e.stopPropagation(); startDrag(e, 'label', 'awake', 'awake', labelColor('awake')) }}
             >{awakeCount} awake</span>
+            {humanCount > 0 && (
+              <span style={{ marginLeft: 6 }}>·{' '}
+                <span
+                  style={{ cursor: 'grab' }}
+                  onPointerDown={(e) => { e.stopPropagation(); startDrag(e, 'label', 'human', 'human', labelColor('human')) }}
+                >{humanCount} {humanCount === 1 ? 'person' : 'people'}</span>
+              </span>
+            )}
             {hibernatingCount > 0 && (
               <span style={{ marginLeft: 6 }}>·{' '}
                 <span

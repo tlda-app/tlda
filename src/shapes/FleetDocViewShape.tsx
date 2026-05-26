@@ -85,10 +85,11 @@ export class FleetDocViewShapeUtil extends BaseBoxShapeUtil<any> {
     yTop: T.number,     // current ref region top (PDF coords)
     yBottom: T.number,  // current ref region bottom (PDF coords)
     title: T.string,    // display title
+    userId: T.optional(T.string),
   }
 
   getDefaultProps() {
-    return { w: DEFAULT_W, h: DEFAULT_H, sources: JSON.stringify(getPref('docview-sources')), label: '', page: 0, yTop: 0, yBottom: 0, title: '' }
+    return { w: DEFAULT_W, h: DEFAULT_H, sources: JSON.stringify(getPref('docview-sources')), label: '', page: 0, yTop: 0, yBottom: 0, title: '', userId: '' }
   }
 
   component(shape: any) {

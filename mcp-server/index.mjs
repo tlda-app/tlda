@@ -2627,7 +2627,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         } else {
           const lineRef = a.sortLine ? `L${a.sortLine}` : (a.page ? `p${a.page}` : '');
           out += `[${a.annotationType}] ${a.color} ${lineRef}\n  id: ${a.id}\n`;
-          if (a.text) out += `  "${a.text.substring(0, 100)}"\n`;
+          if (a.text) out += `  "${a.text}"\n`;
         }
         out += '\n';
       }

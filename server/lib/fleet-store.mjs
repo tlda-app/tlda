@@ -232,6 +232,15 @@ export class FleetStore {
     if (ftsCount === 0) {
       this.db.exec("INSERT INTO events_fts(events_fts) VALUES ('rebuild')");
     }
+
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS skill_reads (
+        agent_id TEXT NOT NULL,
+        skill_key TEXT NOT NULL,
+        read_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (agent_id, skill_key)
+      );
+    `);
   }
 
   // Standard SELECT for events — aliases from_id/to_id so consumers always see `from`/`to`
@@ -645,6 +654,15 @@ export class FleetStore {
     const isAwake = !row.dead && !row.human && this._isLiveOracle
       ? !!this._isLiveOracle(row.id)
       : false
+    let status
+    if (row.dead) {
+      status = 'dead'
+    } else if (row.human) {
+      const seenAgo = row.last_seen ? Date.now() - new Date(row.last_seen).getTime() : Infinity
+      status = seenAgo < 90_000 ? 'human' : 'human-away'
+    } else {
+      status = isAwake ? 'awake' : 'hibernating'
+    }
     return {
       ...row,
       session_ids: row.session_ids ? JSON.parse(row.session_ids) : [],
@@ -654,7 +672,7 @@ export class FleetStore {
       is_manager: !!row.is_manager,
       metadata: row.metadata ? JSON.parse(row.metadata) : null,
       last_active: lastActive,
-      status: row.dead ? 'dead' : row.human ? 'human' : isAwake ? 'awake' : 'hibernating',
+      status,
     };
   }
 
@@ -1101,22 +1119,32 @@ export class FleetStore {
   }
 
   // Unified search across fleet events (events_fts) and session JSONL text (session_entries_fts).
-  searchAll(query, { limit = 50, agent, role, since } = {}) {
+  searchAll(query, { limit = 50, agent, role, since, agentOnly } = {}) {
     const ftsQuery = query.replace(/"/g, '""');
     const runQuery = (sql, params) => {
       try { return this.db.prepare(sql).all(...params); } catch { return []; }
     };
 
     // 1. Fleet events
-    const eClauses = ['events_fts MATCH ?'];
-    const eParams = [ftsQuery];
-    if (agent) { eClauses.push('(e.from_id = ? OR e.to_id = ? OR e.agent_id = ?)'); eParams.push(agent, agent, agent); }
+    // When agentOnly is set, skip FTS and query by agent ID directly
+    let eClauses, eParams;
+    if (agentOnly && agent) {
+      eClauses = ['(e.from_id = ? OR e.to_id = ? OR e.agent_id = ?)'];
+      eParams = [agent, agent, agent];
+    } else {
+      eClauses = ['events_fts MATCH ?'];
+      eParams = [ftsQuery];
+      if (agent) { eClauses.push('(e.from_id = ? OR e.to_id = ? OR e.agent_id = ?)'); eParams.push(agent, agent, agent); }
+    }
     if (since) { eClauses.push('e.timestamp >= ?'); eParams.push(since); }
     eParams.push(limit);
+    const ftsJoin = (agentOnly && agent) ? '' : 'events_fts f JOIN';
+    const ftsOn = (agentOnly && agent) ? '' : 'ON e.id = f.rowid';
+    const snippetCol = (agentOnly && agent) ? 'substr(e.text, 1, 120) as snippet' : "snippet(events_fts, 0, '<<', '>>', '...', 40) as snippet";
     const eventRows = runQuery(`
       SELECT e.id, e.type, e.timestamp, e.from_id as "from", e.to_id as "to", e.text, e.metadata,
-             snippet(events_fts, 0, '<<', '>>', '...', 40) as snippet
-      FROM events_fts f JOIN events e ON e.id = f.rowid
+             ${snippetCol}
+      FROM ${ftsJoin} events e ${ftsOn}
       WHERE ${eClauses.join(' AND ')}
       ORDER BY e.timestamp DESC LIMIT ?
     `, eParams).map(r => ({
@@ -1132,16 +1160,25 @@ export class FleetStore {
     }));
 
     // 2. Session JSONL entries
-    const sClauses = ['session_entries_fts MATCH ?'];
-    const sParams = [ftsQuery];
-    if (agent) { sClauses.push('s.agent_id = ?'); sParams.push(agent); }
+    let sClauses, sParams;
+    if (agentOnly && agent) {
+      sClauses = ['s.agent_id = ?'];
+      sParams = [agent];
+    } else {
+      sClauses = ['session_entries_fts MATCH ?'];
+      sParams = [ftsQuery];
+      if (agent) { sClauses.push('s.agent_id = ?'); sParams.push(agent); }
+    }
     if (role && (role === 'user' || role === 'assistant')) { sClauses.push('s.role = ?'); sParams.push(role); }
     if (since) { sClauses.push('s.timestamp >= ?'); sParams.push(since); }
     sParams.push(limit);
+    const sFtsJoin = (agentOnly && agent) ? '' : 'session_entries_fts f JOIN';
+    const sFtsOn = (agentOnly && agent) ? '' : 'ON s.id = f.rowid';
+    const sSnippetCol = (agentOnly && agent) ? 'substr(s.text, 1, 120) as snippet' : "snippet(session_entries_fts, 0, '<<', '>>', '...', 40) as snippet";
     const sessionRows = runQuery(`
       SELECT s.id, s.agent_id, s.session_id, s.role, s.timestamp, s.text,
-             snippet(session_entries_fts, 0, '<<', '>>', '...', 40) as snippet
-      FROM session_entries_fts f JOIN session_entries s ON s.id = f.rowid
+             ${sSnippetCol}
+      FROM ${sFtsJoin} session_entries s ${sFtsOn}
       WHERE ${sClauses.join(' AND ')}
       ORDER BY s.timestamp DESC LIMIT ?
     `, sParams).map(r => ({
@@ -1326,6 +1363,20 @@ export class FleetStore {
   pruneDoneTasks(maxAgeMs = 86400000) {
     const cutoff = new Date(Date.now() - maxAgeMs).toISOString();
     return this.db.prepare("DELETE FROM tasks WHERE status = 'done' AND completed_at < ?").run(cutoff).changes;
+  }
+
+  addSkillRead(agentId, skillKey) {
+    this.db.prepare('INSERT OR IGNORE INTO skill_reads (agent_id, skill_key) VALUES (?, ?)').run(agentId, skillKey);
+  }
+
+  clearSkillReads(agentId) {
+    this.db.prepare('DELETE FROM skill_reads WHERE agent_id = ?').run(agentId);
+  }
+
+  getSkillReads(agentId) {
+    return new Set(
+      this.db.prepare('SELECT skill_key FROM skill_reads WHERE agent_id = ?').all(agentId).map(r => r.skill_key)
+    );
   }
 
   close() {
