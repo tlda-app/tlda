@@ -25,6 +25,19 @@ for (const texbin of ['/Library/TeX/texbin', '/usr/local/texlive/2024/bin/x86_64
   }
 }
 const execAsync = (cmd, opts = {}) => _execAsync(cmd, { maxBuffer: 50 * 1024 * 1024, ...opts })
+
+async function _gitRetryOnLock(fn, retries = 3, delayMs = 500) {
+  for (let i = 0; i < retries; i++) {
+    try { return await fn() }
+    catch (err) {
+      if (i < retries - 1 && /index\.lock|Unable to create.*lock/i.test(err.message)) {
+        await new Promise(r => setTimeout(r, delayMs))
+        continue
+      }
+      throw err
+    }
+  }
+}
 import { existsSync, readdirSync, writeFileSync, readFileSync, unlinkSync, renameSync, mkdirSync, cpSync, rmSync, statSync, realpathSync } from 'fs'
 import { createHash } from 'crypto'
 import { join, basename, dirname } from 'path'
@@ -1772,16 +1785,16 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
               await _execAsync(`git remote add tlda-shadow "${shadowDir}"`, { cwd, timeout: 5000 })
             }
             try {
-              await _execAsync(`git fetch --tags --force tlda-shadow`, { cwd, timeout: 10000 })
+              await _gitRetryOnLock(() => _execAsync(`git fetch --tags --force tlda-shadow`, { cwd, timeout: 10000 }))
             } catch (fetchErr) {
               if (/cannot lock ref|unable to update local ref/i.test(fetchErr.message)) {
                 await _execAsync(`git remote prune tlda-shadow`, { cwd, timeout: 10000 })
-                await _execAsync(`git fetch --tags --force tlda-shadow`, { cwd, timeout: 10000 })
+                await _gitRetryOnLock(() => _execAsync(`git fetch --tags --force tlda-shadow`, { cwd, timeout: 10000 }))
               } else {
                 throw fetchErr
               }
             }
-            await _execAsync(`git reset --mixed ${result.hash}`, { cwd, timeout: 10000 })
+            await _gitRetryOnLock(() => _execAsync(`git reset --mixed ${result.hash}`, { cwd, timeout: 10000 }))
             updateProject(name, { lastMirrorSuccess: new Date().toISOString() })
           }
         } catch (mirrorErr) {
