@@ -1239,8 +1239,14 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
     }
 
     // 2. Search included files; resolve within that file (not the main file's \input line)
-    for (const file of listSourceFiles(req.params.name)) {
-      if (file === project.mainFile) continue
+    // Prefer files in the same directory tree as mainFile
+    const allFiles = listSourceFiles(req.params.name).filter(f => f !== project.mainFile)
+    allFiles.sort((a, b) => {
+      const aInMain = a.startsWith(mainDir + '/') || mainDir === '.' ? 0 : 1
+      const bInMain = b.startsWith(mainDir + '/') || mainDir === '.' ? 0 : 1
+      return aInMain - bInMain
+    })
+    for (const file of allFiles) {
       const fc = readSourceFile(req.params.name, file)
       if (!fc || !fc.includes(`\\label{${locLabel}}`)) continue
       const incLines = fc.split('\n')
