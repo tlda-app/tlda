@@ -17,7 +17,7 @@
 
 import { Router } from 'express'
 import { existsSync, readFileSync, readdirSync, mkdirSync, statSync, writeFileSync } from 'fs'
-import { join, basename } from 'path'
+import { join, basename, dirname } from 'path'
 import { requireRead, requireRw } from '../lib/auth.mjs'
 import {
   createProject, readProject, updateProject, listProjects, deleteProject,
@@ -1164,8 +1164,11 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
   const isMd = format === 'md'
   const baseFilename = label.replace(/[^a-z0-9]/gi, '-').toLowerCase()
   const filename = baseFilename + '.tex'
-  const scratchPath = `.scratchinputs/${filename}`
-  const sourcePath = isMd ? `.scratchinputs/${baseFilename}.md` : null
+  const mainDir = dirname(project.mainFile)
+  const scratchRel = `.scratchinputs/${filename}`
+  const scratchPath = mainDir !== '.' ? join(mainDir, scratchRel) : scratchRel
+  const sourceRel = isMd ? `.scratchinputs/${baseFilename}.md` : null
+  const sourcePath = (isMd && mainDir !== '.') ? join(mainDir, sourceRel) : sourceRel
 
   // Wrap content in scratch environment, signed with agent + timestamp
   const tz = project.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
@@ -1177,10 +1180,10 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
 
   if (replace) {
     const mainLines = mainContent.split('\n')
-    const scratchLineIdx = mainLines.findIndex(l => l.includes(`\\inputscratch`) && l.includes(scratchPath))
+    const scratchLineIdx = mainLines.findIndex(l => l.includes(`\\inputscratch`) && l.includes(scratchRel))
     let mainContentUpdated = null
     if (scratchLineIdx >= 0) {
-      mainLines[scratchLineIdx] = `\\inputscratch{${scratchPath}}{${label}}{${displayHeader}}`
+      mainLines[scratchLineIdx] = `\\inputscratch{${scratchRel}}{${label}}{${displayHeader}}`
       mainContentUpdated = mainLines.join('\n')
     }
     return res.json({ ok: true, scratchPath, sourcePath, wrappedContent, mainFile: project.mainFile, mainContent: mainContentUpdated, sourceDir: project.sourceDir || null, action: 'replaced' })
@@ -1262,7 +1265,7 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
 
   // Insert \inputscratch{path}{label}{header} into main.tex
   const newLines = [...mainLines]
-  const insertLine = `\\inputscratch{${scratchPath}}{${label}}{${displayHeader}}`
+  const insertLine = `\\inputscratch{${scratchRel}}{${label}}{${displayHeader}}`
   if (after) {
     newLines.splice(resolvedLine, 0, insertLine)      // after: insert at resolvedLine (0-indexed = after 1-indexed line)
   } else {
@@ -1273,7 +1276,8 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
   // Kept in .scratchinputs/scratch-template.tex so it can be updated without touching main.tex.
   // Bump SCRATCH_TEMPLATE_VERSION when the default template content changes.
   const SCRATCH_TEMPLATE_VERSION = 2
-  const scratchTemplatePath = '.scratchinputs/scratch-template.tex'
+  const scratchTemplateRel = '.scratchinputs/scratch-template.tex'
+  const scratchTemplatePath = mainDir !== '.' ? join(mainDir, scratchTemplateRel) : scratchTemplateRel
   const scratchTemplateContent = [
     `% scratch-template-version: ${SCRATCH_TEMPLATE_VERSION}`,
     '\\usepackage{xcolor}',
@@ -1283,7 +1287,7 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
 
   // Ensure preamble references the scratch template file.
   // Remove any old inline scratch defs (from before the template-file design) and replace with \input.
-  const templateInputLine = `\\input{${scratchTemplatePath.replace(/\.tex$/, '')}}`
+  const templateInputLine = `\\input{${scratchTemplateRel.replace(/\.tex$/, '')}}`
   const hasTemplateInput = newLines.some(l => l.includes(templateInputLine))
   if (!hasTemplateInput) {
     // Remove old inline lines if present
@@ -1328,7 +1332,9 @@ router.post('/:name/inline-scratch', requireRw, (req, res) => {
   if (!mainContent) return res.status(400).json({ error: `Main file not found: ${project.mainFile}` })
 
   const filename = label.replace(/[^a-z0-9]/gi, '-').toLowerCase() + '.tex'
-  const scratchPath = `.scratchinputs/${filename}`
+  const mainDir = dirname(project.mainFile)
+  const scratchRel = `.scratchinputs/${filename}`
+  const scratchPath = mainDir !== '.' ? join(mainDir, scratchRel) : scratchRel
 
   const scratchContent = readSourceFile(req.params.name, scratchPath)
   if (!scratchContent) return res.status(404).json({ error: `Scratch file not found: ${scratchPath} — has it been synced to the server yet?` })
@@ -1337,11 +1343,11 @@ router.post('/:name/inline-scratch', requireRw, (req, res) => {
   const innerLines = scratchContent.split('\n')
   while (innerLines.length > 0 && innerLines[innerLines.length - 1] === '') innerLines.pop()
 
-  // Replace \inputscratch{scratchPath}{...}{...} line in main.tex with the bare content
+  // Replace \inputscratch{scratchRel}{...}{...} line in main.tex with the bare content
   const mainLines = mainContent.split('\n')
-  const scratchLineIdx = mainLines.findIndex(l => l.includes(`\\inputscratch`) && l.includes(scratchPath))
+  const scratchLineIdx = mainLines.findIndex(l => l.includes(`\\inputscratch`) && l.includes(scratchRel))
   if (scratchLineIdx < 0) {
-    return res.status(404).json({ error: `Cannot find \\inputscratch{${scratchPath}} in ${project.mainFile}` })
+    return res.status(404).json({ error: `Cannot find \\inputscratch{${scratchRel}} in ${project.mainFile}` })
   }
 
   const newLines = [...mainLines]

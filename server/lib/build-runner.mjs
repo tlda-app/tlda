@@ -1629,7 +1629,7 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
         buildDir: tBuildDir,
       }
 
-      convertScratchMarkdown(srcDir, tCtx.addLog)
+      convertScratchMarkdown(tDir, tCtx.addLog)
 
       // Phase 1: LaTeX compilation
       status.phase = 'compiling'
