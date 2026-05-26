@@ -481,6 +481,7 @@ const _thinkingState = new Map()   // agentId → timestamp (ms)
 const _compactingState = new Map() // agentId → timestamp (ms)
 const _contextState = new Map()    // agentId → { percent, inputTokens }
 const _lastActivityAt = new Map()  // agentId → timestamp (ms) — last real activity (thinking, tool call, chat)
+const _viewingContext = new Map()   // agentId → { doc, page, sourceLine, ... , updatedAt }
 let _lastReaperStatus = null       // latest reaper snapshot from daemon
 
 const HIBERNATE_IDLE_MS = 20 * 60 * 1000
@@ -899,6 +900,17 @@ app.post('/api/reaper/sweep', requireRead, async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
+})
+
+app.get('/api/fleet/viewing', requireRead, (req, res) => {
+  const userId = req.query.user
+  if (userId) {
+    const ctx = _viewingContext.get(userId)
+    return res.json(ctx || { error: 'no viewing context' })
+  }
+  const result = {}
+  for (const [id, ctx] of _viewingContext) result[id] = ctx
+  res.json(result)
 })
 
 app.get('/api/fleet/prefs', requireRead, (req, res) => {
@@ -2150,6 +2162,13 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'heartbeat') {
     const { agent } = msg
     if (agent) fleetStore.updateHeartbeat?.(agent)
+    reply({ ok: true })
+    return
+  }
+
+  if (type === 'viewing') {
+    const { agent, context } = msg
+    if (agent && context) _viewingContext.set(agent, { ...context, updatedAt: Date.now() })
     reply({ ok: true })
     return
   }

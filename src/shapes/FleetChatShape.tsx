@@ -25,7 +25,7 @@ import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil
 // @ts-ignore — vanilla JS module
 import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText, isRecording } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
-import { getHumanId, getHumanName, updateEventById } from '../fleet/fleet-data.mjs'
+import { getHumanId, getHumanName, updateEventById, sendViewingContext } from '../fleet/fleet-data.mjs'
 import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useElizaPending, useWouldHibernate, sendMessage, loadBefore, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
 import type { ElizaNudge } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
@@ -416,7 +416,7 @@ function gatherViewerContext(editor: any, doc: any, chatShapeId?: string, versio
     })
   }
   const compareRef = (window as any).__tlda_compare_ref__ || null
-  return {
+  const ctx = {
     doc: doc.docName || null,
     version: version || null,
     compareRef,
@@ -426,6 +426,8 @@ function gatherViewerContext(editor: any, doc: any, chatShapeId?: string, versio
     browser: /Chrome/.test(navigator.userAgent) ? 'chrome' : /Safari/.test(navigator.userAgent) ? 'safari' : /Firefox/.test(navigator.userAgent) ? 'firefox' : 'unknown',
     _viewportEdges: viewportEdges,
   }
+  sendViewingContext(ctx)
+  return ctx
 }
 
 async function enrichContextWithSourceLines(context: any): Promise<void> {

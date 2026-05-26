@@ -940,6 +940,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'viewing_context',
+      description: "Get the user's current viewing position: which document, page, and source file/line they're scrolled to. Returns structured data so you can read/edit the exact location the user is looking at.",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          user: { type: 'string', description: 'User fleet ID (default: server owner)' },
+        },
+      },
+    },
+    {
       name: 'batch_respawn',
       description: 'Batch respawn dead agents into tmux sessions. Finds dead agents with known session_ids and resumes them in tmux.',
       inputSchema: {
@@ -3236,6 +3246,26 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
   }
 
   // ==== Fleet Operations ====
+
+  // ---- viewing_context ----
+  if (name === 'viewing_context') {
+    try {
+      const userId = args.user || `fleet:${process.env.USER || 'skip'}`
+      const res = await fleetFetch(`http://127.0.0.1:${TLDA_PORT}/api/fleet/viewing?user=${encodeURIComponent(userId)}`)
+      const data = await res.json()
+      if (data.error) return { content: [{ type: 'text', text: `No viewing context available for ${userId}. The user may not have scrolled recently.` }] }
+      const parts = [`Document: ${data.doc || '(none)'}`, `Version: ${data.version || '(unknown)'}`]
+      if (data.page) parts.push(`Page: ${Array.isArray(data.page) ? data.page.join(', ') : data.page}`)
+      if (data.sourceLine) {
+        const sl = data.sourceLine
+        parts.push(`Source: ${sl.file}:${sl.startLine}${sl.endLine && sl.endLine !== sl.startLine ? '-' + sl.endLine : ''}`)
+      }
+      if (data.updatedAt) parts.push(`Updated: ${Math.round((Date.now() - data.updatedAt) / 1000)}s ago`)
+      return { content: [{ type: 'text', text: parts.join('\n') }] }
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true }
+    }
+  }
 
   // ---- roll_call ----
   if (name === 'roll_call') {

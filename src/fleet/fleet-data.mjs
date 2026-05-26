@@ -289,6 +289,16 @@ function _startHeartbeat() {
   }, 30_000)
 }
 
+let _lastViewingSent = 0
+export function sendViewingContext(context) {
+  const now = Date.now()
+  if (now - _lastViewingSent < 5000) return
+  _lastViewingSent = now
+  if (_humanId && _ws && _ws.readyState === 1) {
+    _ws.send(JSON.stringify({ type: 'viewing', agent: _humanId, context }))
+  }
+}
+
 function wsSend(msg) {
   if (!_ws || _ws.readyState !== 1) return Promise.reject(new Error('not connected'))
   const id = ++_wsReqId
