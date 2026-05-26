@@ -905,7 +905,11 @@ app.post('/api/reaper/sweep', requireRead, async (req, res) => {
 app.get('/api/fleet/viewing', requireRead, (req, res) => {
   const userId = req.query.user
   if (userId) {
-    const ctx = _viewingContext.get(userId)
+    let ctx = _viewingContext.get(userId)
+    if (!ctx && fleetStore) {
+      const agent = fleetStore.findAgent(userId)
+      if (agent) ctx = _viewingContext.get(agent.id)
+    }
     return res.json(ctx || { error: 'no viewing context' })
   }
   const result = {}

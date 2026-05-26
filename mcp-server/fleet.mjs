@@ -3250,10 +3250,12 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
   // ---- viewing_context ----
   if (name === 'viewing_context') {
     try {
-      const userId = args.user || `fleet:${process.env.USER || 'skip'}`
-      const res = await fleetFetch(`http://127.0.0.1:${TLDA_PORT}/api/fleet/viewing?user=${encodeURIComponent(userId)}`)
+      const userId = args.user
+      if (!userId) return { content: [{ type: 'text', text: 'Missing user — pass the fleet ID of the person whose viewport you want (e.g. "fleet:skip").' }], isError: true }
+      const url = `http://127.0.0.1:${TLDA_PORT}/api/fleet/viewing?user=${encodeURIComponent(userId)}`
+      const res = await fleetFetch(url)
       const data = await res.json()
-      if (data.error) return { content: [{ type: 'text', text: `No viewing context available for ${userId}. The user may not have scrolled recently.` }] }
+      if (data.error) return { content: [{ type: 'text', text: `No viewing context for ${userId}. They may not have scrolled recently.` }] }
       const parts = [`Document: ${data.doc || '(none)'}`, `Version: ${data.version || '(unknown)'}`]
       if (data.page) parts.push(`Page: ${Array.isArray(data.page) ? data.page.join(', ') : data.page}`)
       if (data.sourceLine) {
