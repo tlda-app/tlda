@@ -404,6 +404,10 @@ export function connect() {
         // Clear any agent NOT in the server's set
         notify('thinking-sync', serverThinking)
         notify('compacting-sync', serverCompacting)
+        // Dry-run hibernate indicator
+        if (msg.wouldHibernate) {
+          notify('would-hibernate', msg.wouldHibernate)
+        }
         return
       }
 

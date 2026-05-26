@@ -475,7 +475,30 @@ function broadcastEvent(type, data) {
 const _thinkingState = new Map()   // agentId → timestamp (ms)
 const _compactingState = new Map() // agentId → timestamp (ms)
 const _contextState = new Map()    // agentId → { percent, inputTokens }
+const _lastActivityAt = new Map()  // agentId → timestamp (ms) — last real activity (thinking, tool call, chat)
 let _lastReaperStatus = null       // latest reaper snapshot from daemon
+
+const HIBERNATE_IDLE_MS = 20 * 60 * 1000
+
+function touchActivity(agentId) {
+  _lastActivityAt.set(agentId, Date.now())
+}
+
+function getWouldHibernate() {
+  const now = Date.now()
+  const result = {}
+  for (const agentId of _aliveAgents) {
+    if (_thinkingState.has(agentId)) continue
+    if (_compactingState.has(agentId)) continue
+    const lastActive = _lastActivityAt.get(agentId)
+    if (!lastActive) continue
+    const idleMs = now - lastActive
+    if (idleMs >= HIBERNATE_IDLE_MS) {
+      result[agentId] = Math.round(idleMs / 1000)
+    }
+  }
+  return result
+}
 
 function broadcastState() {
   if (!fleetStore) return
@@ -485,6 +508,7 @@ function broadcastState() {
     thinking: Object.fromEntries(_thinkingState),
     compacting: Object.fromEntries(_compactingState),
     context: Object.fromEntries(_contextState),
+    wouldHibernate: getWouldHibernate(),
   })
 }
 
@@ -1790,7 +1814,10 @@ async function handleFleetWsMessage(ws, msg) {
     // Registration implies a live claude process — mark alive immediately so
     // the agent shows "awake" right away. The daemon's next sweep confirms
     // or evicts within 30s.
-    if (!agent.human) _aliveAgents.add(agentId)
+    if (!agent.human) {
+      _aliveAgents.add(agentId)
+      touchActivity(agentId)
+    }
     broadcastState()
     // If the agent has a machine_id, push the updated agent list to that
     // machine's daemon so it can start watching the new JSONL.
@@ -1927,8 +1954,11 @@ async function handleFleetWsMessage(ws, msg) {
       if (!recipients.includes(SERVER_OWNER_ID)) recipients.push(SERVER_OWNER_ID)
     }
     if (recipients.length === 0) { error(`No recipients matched: ${JSON.stringify(rawTo)}`); return }
-    // Update sender heartbeat
-    if (from) fleetStore.updateHeartbeat?.(from)
+    // Update sender heartbeat + activity tracking
+    if (from) {
+      fleetStore.updateHeartbeat?.(from)
+      touchActivity(from)
+    }
     // Resolve CC (still single-string list)
     let ccResolved = cc && cc.length ? cc.map(resolveSingle).filter(Boolean) : null
     if (ccResolved && ccResolved.length === 0) ccResolved = null
@@ -2203,6 +2233,7 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'agent-thinking') {
     if (msg.thinking) {
       _thinkingState.set(msg.agentId, Date.now())
+      touchActivity(msg.agentId)
     } else {
       _thinkingState.delete(msg.agentId)
     }
@@ -3066,6 +3097,7 @@ function handleDaemonWsMessage(ws, msg) {
     if (!fleetStore) return
     const { agent_id, tool, arg, input, ts, usage, prettyResult, origTool } = msg
     if (!agent_id) return
+    touchActivity(agent_id)
     if (tool === '_usage') return // usage stats don't need DB storage
     try {
       fleetStore.share({
@@ -3209,6 +3241,31 @@ function handleDaemonWsMessage(ws, msg) {
     pendingRpcs.delete(msg.id)
     if (msg.error) entry.reject(new Error(msg.error))
     else entry.resolve(msg.result)
+    return
+  }
+
+  if (type === 'agent-thinking') {
+    if (msg.agentId) {
+      if (msg.thinking) {
+        _thinkingState.set(msg.agentId, Date.now())
+        touchActivity(msg.agentId)
+      } else {
+        _thinkingState.delete(msg.agentId)
+      }
+      broadcastEvent('agent-thinking', { agent: msg.agentId, thinking: !!msg.thinking })
+    }
+    return
+  }
+
+  if (type === 'agent-compacting') {
+    if (msg.agentId) {
+      if (msg.compacting) {
+        _compactingState.set(msg.agentId, Date.now())
+      } else {
+        _compactingState.delete(msg.agentId)
+      }
+      broadcastEvent('agent-compacting', { agent: msg.agentId, compacting: !!msg.compacting })
+    }
     return
   }
 

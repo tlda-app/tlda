@@ -26,7 +26,7 @@ import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil
 import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText, isRecording } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getHumanName, updateEventById } from '../fleet/fleet-data.mjs'
-import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useElizaPending, sendMessage, loadBefore, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useElizaPending, useWouldHibernate, sendMessage, loadBefore, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
 import type { ElizaNudge } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
 import { dragCoordinator } from './dragCoordinator'
@@ -563,10 +563,11 @@ function ContextBadge({ percent }: { percent?: number }) {
  * When all agents stop, the space persists (ghost) until rawItemsLength changes
  * (i.e. a real message arrives to replace it). No timeout — no bounce.
  */
-function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, ctx, rawItemsLength, agents, escalationState }: {
+function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, wouldHibernate, ctx, rawItemsLength, agents, escalationState }: {
   thinkingAgents: Map<string, number>
   compactingAgents: Map<string, number>
   contextPercent: Map<string, number>
+  wouldHibernate: Map<string, number>
   ctx: any
   rawItemsLength: number
   agents: any[]
@@ -582,7 +583,7 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, ctx,
 
   // Merge thinking + compacting into one map keyed by agentId
   const statusAgents = useMemo(() => {
-    const merged = new Map<string, { status: 'thinking' | 'compacting' | 'hibernating', startTs: number }>()
+    const merged = new Map<string, { status: 'thinking' | 'compacting' | 'hibernating' | 'would-hibernate', startTs: number, idleSecs?: number }>()
     for (const [id, ts] of thinkingAgents) {
       const liveness = agentLiveness.get(id)
       if (liveness === 'dead' || liveness === 'hibernating') {
@@ -599,8 +600,13 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, ctx,
         merged.set(id, { status: 'compacting', startTs: ts })
       }
     }
+    for (const [id, secs] of wouldHibernate) {
+      if (!merged.has(id)) {
+        merged.set(id, { status: 'would-hibernate', startTs: Date.now() - secs * 1000, idleSecs: secs })
+      }
+    }
     return merged
-  }, [thinkingAgents, compactingAgents, agentLiveness])
+  }, [thinkingAgents, compactingAgents, wouldHibernate, agentLiveness])
 
   const hasActive = statusAgents.size > 0
   const prevActiveRef = useRef(hasActive)
@@ -632,21 +638,26 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, ctx,
       opacity: ghost ? 0 : 0.6,
       transition: 'opacity 0.2s',
     }}>
-      {!ghost && [...statusAgents.entries()].map(([agentId, { status, startTs }]) => {
+      {!ghost && [...statusAgents.entries()].map(([agentId, { status, startTs, idleSecs }]) => {
         const esc = escalationState?.[agentId]
         const escLevel = esc?.level || 0
         const escConfirmed = esc?.confirmed || 0
         function tierOpacity(tier: number) {
           if (escLevel < tier) return 0.15
           if (escConfirmed >= tier) return 1
-          return 0.55 // optimistic — sent but not yet confirmed
+          return 0.55
         }
+        const statusText = status === 'would-hibernate'
+          ? `idle ${Math.round((idleSecs || 0) / 60)}m — would hibernate`
+          : status === 'hibernating' ? 'is hibernating'
+          : status === 'compacting' ? 'compacting…'
+          : 'thinking…'
         return (
           <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
             <span>
               <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
-              {' '}<span className="thinking-text">{status === 'hibernating' ? 'is hibernating' : status === 'compacting' ? 'compacting…' : 'thinking…'}</span>
-              {status !== 'hibernating' && <>{' '}<ElapsedTime startMs={startTs} /></>}
+              {' '}<span className="thinking-text">{statusText}</span>
+              {status !== 'hibernating' && status !== 'would-hibernate' && <>{' '}<ElapsedTime startMs={startTs} /></>}
               {escLevel > 0 && (
                 <span className="escalation-meter" style={{ marginLeft: 6, letterSpacing: 2, fontSize: '0.9em' }}>
                   <span style={{ opacity: tierOpacity(1), transition: 'opacity 0.15s' }}>↑</span>
@@ -864,6 +875,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const thinkingAgents = useFleetThinking(dnfFilter, frameId)
   const compactingAgents = useFleetCompacting(dnfFilter, frameId)
   const contextPercent = useFleetContext(dnfFilter, frameId)
+  const wouldHibernate = useWouldHibernate()
   const elizaPendingAll = useElizaPending()
   const [olderEvents, setOlderEvents] = useState<any[]>([])
 
@@ -3394,6 +3406,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             thinkingAgents={thinkingAgents}
             compactingAgents={compactingAgents}
             contextPercent={contextPercent}
+            wouldHibernate={wouldHibernate}
             ctx={ctx}
             rawItemsLength={rawItems.length}
             agents={agents}
