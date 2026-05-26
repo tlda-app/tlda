@@ -633,7 +633,7 @@ onGlobalEvent((event) => {
       console.error(`[TLDA_DEBUG] FATAL sync error — crashing:\n  ${text}`)
       process.exit(1)
     }
-    deliverTldaFeedbackChat({ from: 'fleet:tlda', to: 'fleet:skip', text, metadata: { type: 'sync_error', docName, shapeId, shapeType } })
+    deliverTldaFeedbackChat({ from: 'fleet:tlda', to: SERVER_OWNER_ID, text, metadata: { type: 'sync_error', docName, shapeId, shapeType } })
   }
 })
 
@@ -2097,7 +2097,7 @@ async function handleFleetWsMessage(ws, msg) {
     // Plan mode approval routing: if Skip sends an affirmative/negative and
     // there's a pending plan approval for the targeted agent (or any agent),
     // route the keystroke to the agent's tmux pane.
-    if (from === 'fleet:skip' && pendingPlanApprovals.size > 0) {
+    if (from === SERVER_OWNER_ID && pendingPlanApprovals.size > 0) {
       const key = matchApprovalResponse(text)
       if (key) {
         let approval = null
