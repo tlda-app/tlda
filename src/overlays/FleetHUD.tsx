@@ -21,8 +21,10 @@ const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-
 function isMyFleetShape(s: any): boolean {
   if (!FLEET_SHAPE_TYPES.includes(s.type as string)) return false
   const uid = s.props?.userId
-  if (!uid) return true  // legacy shapes without userId belong to everyone
-  return uid === getHumanId()
+  if (!uid) return true
+  const myId = getHumanId()
+  if (!myId) return true  // identity not resolved yet — show all until login completes
+  return uid === myId
 }
 
 function saveAnchorOffsets(editor: Editor, panOffset: number, cameraY: number) {
