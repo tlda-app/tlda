@@ -1235,41 +1235,64 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
   function resolveLocation(locLabel) {
     // 1. Search main file for \label{X}
     for (let i = 0; i < mainLines.length; i++) {
-      if (mainLines[i].includes(`\\label{${locLabel}}`)) return climbToEnvEnd(i)
+      if (mainLines[i].includes(`\\label{${locLabel}}`)) return { file: project.mainFile, line: climbToEnvEnd(i) }
     }
 
-    // 2. Search included files; map back to the \input{} line in main
+    // 2. Search included files; resolve within that file (not the main file's \input line)
     for (const file of listSourceFiles(req.params.name)) {
       if (file === project.mainFile) continue
       const fc = readSourceFile(req.params.name, file)
       if (!fc || !fc.includes(`\\label{${locLabel}}`)) continue
-      const baseName = file.replace(/\.tex$/, '')
-      for (let i = 0; i < mainLines.length; i++) {
-        if (new RegExp(`\\\\(?:input|include)\\{${baseName}(?:\\.tex)?\\}`).test(mainLines[i])) return i + 1
+      const incLines = fc.split('\n')
+      for (let i = 0; i < incLines.length; i++) {
+        if (incLines[i].includes(`\\label{${locLabel}}`)) {
+          const envEnd = (() => {
+            const openCounts = {}
+            for (let j = i - 1; j >= 0; j--) {
+              const endM = incLines[j].match(/\\end\{([^}]+)\}/)
+              if (endM) { openCounts[endM[1]] = (openCounts[endM[1]] || 0) + 1; continue }
+              const beginM = incLines[j].match(/\\begin\{([^}]+)\}/)
+              if (beginM) {
+                const env = beginM[1]
+                if (TRANSPARENT_ENVS.has(env)) continue
+                if ((openCounts[env] || 0) > 0) { openCounts[env]--; continue }
+                let depth = 0
+                for (let k = j; k < incLines.length; k++) {
+                  if (incLines[k].includes(`\\begin{${env}}`)) depth++
+                  if (incLines[k].includes(`\\end{${env}}`)) { depth--; if (depth === 0) return k + 1 }
+                }
+                break
+              }
+            }
+            return i + 1
+          })()
+          return { file, line: envEnd }
+        }
       }
     }
 
     // 3. Fall back to line:N magic label
     const lineMatch = locLabel.match(/^line:(\d+)$/)
-    if (lineMatch) return parseInt(lineMatch[1])
+    if (lineMatch) return { file: project.mainFile, line: parseInt(lineMatch[1]) }
 
     return null
   }
 
-  const resolvedLine = resolveLocation(locationLabel)
-  if (resolvedLine === null) {
+  const resolved = resolveLocation(locationLabel)
+  if (resolved === null) {
     return res.status(400).json({
       error: `Cannot resolve location "${locationLabel}": not a label in the document, and not in line:N format`,
     })
   }
 
-  // Insert \inputscratch{path}{label}{header} into main.tex
-  const newLines = [...mainLines]
+  // Insert \inputscratch into the resolved file (may be main or an included file)
+  const targetContent = resolved.file === project.mainFile ? mainContent : readSourceFile(req.params.name, resolved.file)
+  const targetLines = targetContent.split('\n')
   const insertLine = `\\inputscratch{${scratchRel}}{${label}}{${displayHeader}}`
   if (after) {
-    newLines.splice(resolvedLine, 0, insertLine)      // after: insert at resolvedLine (0-indexed = after 1-indexed line)
+    targetLines.splice(resolved.line, 0, insertLine)
   } else {
-    newLines.splice(resolvedLine - 1, 0, insertLine)  // before: insert at resolvedLine-1
+    targetLines.splice(resolved.line - 1, 0, insertLine)
   }
 
   // Canonical scratch template — defines the scratch environment and helpers.
@@ -1285,21 +1308,20 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
     '',
   ].join('\n')
 
-  // Ensure preamble references the scratch template file.
-  // Remove any old inline scratch defs (from before the template-file design) and replace with \input.
+  // Ensure preamble references the scratch template file (always in main file).
+  const mainLines2 = resolved.file === project.mainFile ? targetLines : mainContent.split('\n')
   const templateInputLine = `\\input{${scratchTemplateRel.replace(/\.tex$/, '')}}`
-  const hasTemplateInput = newLines.some(l => l.includes(templateInputLine))
+  const hasTemplateInput = mainLines2.some(l => l.includes(templateInputLine))
   if (!hasTemplateInput) {
-    // Remove old inline lines if present
     const oldScratchLines = ['\\usepackage{xcolor}', '\\providecommand{\\inputscratch}', '\\newenvironment{scratch}', '\\renewenvironment{scratch}']
-    for (let i = newLines.length - 1; i >= 0; i--) {
-      if (oldScratchLines.some(prefix => newLines[i].trimStart().startsWith(prefix))) {
-        newLines.splice(i, 1)
+    for (let i = mainLines2.length - 1; i >= 0; i--) {
+      if (oldScratchLines.some(prefix => mainLines2[i].trimStart().startsWith(prefix))) {
+        mainLines2.splice(i, 1)
       }
     }
-    const beginDocIdx = newLines.findIndex(l => /\\begin\{document\}/.test(l))
+    const beginDocIdx = mainLines2.findIndex(l => /\\begin\{document\}/.test(l))
     const insertAt = beginDocIdx >= 0 ? beginDocIdx : 0
-    newLines.splice(insertAt, 0, templateInputLine)
+    mainLines2.splice(insertAt, 0, templateInputLine)
   }
 
   res.json({
@@ -1311,9 +1333,11 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
     scratchTemplateContent,
     scratchTemplateVersion: SCRATCH_TEMPLATE_VERSION,
     mainFile: project.mainFile,
-    mainContent: newLines.join('\n'),
+    mainContent: mainLines2.join('\n'),
+    targetFile: resolved.file !== project.mainFile ? resolved.file : undefined,
+    targetContent: resolved.file !== project.mainFile ? targetLines.join('\n') : undefined,
     sourceDir: project.sourceDir || null,
-    insertedAt: resolvedLine,
+    insertedAt: resolved.line,
     action: after ? 'inserted-after' : 'inserted-before',
   })
 })

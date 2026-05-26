@@ -3639,7 +3639,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content, label, after, before, replace, agentId, agentName, format: isMd ? 'md' : 'tex' }),
       });
-      const { scratchPath, wrappedContent, scratchTemplatePath, scratchTemplateContent, mainFile, mainContent, sourceDir } = result;
+      const { scratchPath, wrappedContent, scratchTemplatePath, scratchTemplateContent, mainFile, mainContent, targetFile, targetContent, sourceDir } = result;
       if (!sourceDir) {
         return { content: [{ type: 'text', text: `Error: project "${doc}" has no sourceDir — run the file watcher first so the server knows the local project path.` }], isError: true };
       }
@@ -3676,6 +3676,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
       if (mainContent) {
         fs.writeFileSync(path.join(sourceDir, mainFile), mainContent, 'utf8');
+      }
+      if (targetFile && targetContent) {
+        fs.writeFileSync(path.join(sourceDir, targetFile), targetContent, 'utf8');
       }
       const refValidation = validateRefs(content, doc);
       const refWarning = formatRefWarnings(refValidation);
