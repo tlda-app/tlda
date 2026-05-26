@@ -10,7 +10,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
-import { useFleetAgents } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetIdentity } from '../fleet-data-adapter'
 // @ts-ignore — vanilla JS module
 import { getHumanId } from '../fleet/fleet-data.mjs'
 import { getMyAnchorId } from '../shapes/fleet-utils'
@@ -22,9 +22,7 @@ function isMyFleetShape(s: any): boolean {
   if (!FLEET_SHAPE_TYPES.includes(s.type as string)) return false
   const uid = s.props?.userId
   if (!uid) return true
-  const myId = getHumanId()
-  if (!myId) return true  // identity not resolved yet — show all until login completes
-  return uid === myId
+  return uid === getHumanId()
 }
 
 function saveAnchorOffsets(editor: Editor, panOffset: number, cameraY: number) {
@@ -152,8 +150,12 @@ export function FleetHUD({
   tools,
   licenseKey,
 }: FleetHUDProps) {
+  const { id: identityId } = useFleetIdentity()
   const [expanded, setExpanded] = useState(() => localStorage.getItem('fleet-hud-expanded') === '1')
-  const [fleetBounds, setFleetBounds] = useState<ClipBounds | null>(() => getFleetBounds(mainEditor))
+  const [fleetBounds, setFleetBounds] = useState<ClipBounds | null>(() => identityId ? getFleetBounds(mainEditor) : null)
+  useEffect(() => {
+    if (identityId) setFleetBounds(getFleetBounds(mainEditor))
+  }, [identityId, mainEditor])
   // Camera tick used to recompute canvas→screen for the render on camera change
   const [cameraTick, setCameraTick] = useState(0)
   // True once document page shapes are present — panOffset must not be computed before this.
