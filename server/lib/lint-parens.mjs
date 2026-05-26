@@ -119,27 +119,50 @@ export function lintDiff(diffText, readFile) {
   return results
 }
 
-// Standalone CLI — pipe diff to stdin, set TLDA_SRCDIR to post-state source dir
+// Standalone CLI
+// Mode 1 (direct): node lint-parens.mjs <file.tex> [--lines START:END]
+// Mode 2 (BYOL):   pipe diff to stdin, set TLDA_SRCDIR to post-state source dir
 if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
-  const { readFileSync } = await import('fs')
+  const { readFileSync, statSync } = await import('fs')
   const { join } = await import('path')
-  const srcDir = process.env.TLDA_SRCDIR || ''
-  const diffText = readFileSync(0, 'utf8')
-  const findings = lintDiff(diffText, (file) => {
-    if (!srcDir) return null
-    try { return readFileSync(join(srcDir, file), 'utf8') } catch { return null }
-  })
-  if (findings.length > 0) {
-    const grouped = new Map()
-    for (const f of findings) {
-      if (!grouped.has(f.file)) grouped.set(f.file, [])
-      grouped.get(f.file).push(f)
+
+  let directFile = null
+  if (process.argv[2] && !process.argv[2].startsWith('-')) {
+    try { statSync(process.argv[2]); directFile = process.argv[2] } catch {}
+  }
+
+  if (directFile) {
+    const text = readFileSync(directFile, 'utf8')
+    let findings = lintText(text, directFile)
+
+    const linesIdx = process.argv.indexOf('--lines')
+    if (linesIdx !== -1 && process.argv[linesIdx + 1]) {
+      const [start, end] = process.argv[linesIdx + 1].split(':').map(Number)
+      findings = findings.filter(f => f.line >= start && f.line <= end)
     }
-    const lines = [`🟡 **Parens lint** — ${findings.length} new parenthetical(s) flagged in this build:`]
-    for (const [file, items] of grouped) {
-      lines.push(`- \`${file}\`: ${items.map((i) => `L${i.line}`).join(', ')}`)
+
+    if (findings.length > 0) {
+      process.stdout.write(JSON.stringify(findings) + '\n')
     }
-    lines.push('Agent-written parentheticals are usually fig leaves for weak structure. Skip writes them freely; this only flags ones added in build diffs.')
-    process.stdout.write(lines.join('\n') + '\n')
+  } else {
+    const srcDir = process.env.TLDA_SRCDIR || ''
+    const diffText = readFileSync(0, 'utf8')
+    const findings = lintDiff(diffText, (file) => {
+      if (!srcDir) return null
+      try { return readFileSync(join(srcDir, file), 'utf8') } catch { return null }
+    })
+    if (findings.length > 0) {
+      const grouped = new Map()
+      for (const f of findings) {
+        if (!grouped.has(f.file)) grouped.set(f.file, [])
+        grouped.get(f.file).push(f)
+      }
+      const lines = [`🟡 **Parens lint** — ${findings.length} new parenthetical(s) flagged in this build:`]
+      for (const [file, items] of grouped) {
+        lines.push(`- \`${file}\`: ${items.map((i) => `L${i.line}`).join(', ')}`)
+      }
+      lines.push('Agent-written parentheticals are usually fig leaves for weak structure. Skip writes them freely; this only flags ones added in build diffs.')
+      process.stdout.write(lines.join('\n') + '\n')
+    }
   }
 }

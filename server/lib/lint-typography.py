@@ -261,6 +261,89 @@ def check_comma_before_conjunction(raw_lines, file_label):
 
 
 # --------------------------------------------------------------------------
+# Pre-pass: "by [property]" passive mechanism pattern
+# --------------------------------------------------------------------------
+
+# Common math property nouns that follow "by" in the banned pattern.
+# This list catches the most frequent offenders; capitalized names
+# (Cauchy-Schwarz, Lemma, Proposition, etc.) are caught separately.
+_BY_PROPERTIES = (
+    'regularity', 'continuity', 'boundedness', 'convexity', 'linearity',
+    'monotonicity', 'symmetry', 'duality', 'compactness', 'completeness',
+    'dominated convergence', 'uniform convergence', 'convergence',
+    'induction', 'contradiction', 'construction', 'inspection',
+    'hypothesis', 'assumption', 'stationarity', 'measurability',
+    'integrability', 'orthogonality', 'positivity', 'subadditivity',
+    'superadditivity', 'homogeneity', 'concavity', 'separability',
+    'independence', 'exchangeability', 'sufficiency', 'optimality',
+    'equicontinuity', 'uniform integrability',
+)
+
+# "by" + capitalized word (Cauchy-Schwarz, Lemma, etc.) or \Cref/\ref
+_BY_CAP_RE = re.compile(
+    r'\bby\s+'
+    r'(?:'
+    r'(?:the\s+)?[A-Z][a-zA-Z-]*'       # capitalized name
+    r'|\\(?:Cref|cref|ref|eqref)\{'      # \Cref{...}, \ref{...}
+    r')',
+    re.IGNORECASE
+)
+
+# "by" + known property noun (case-insensitive)
+_BY_PROP_PATTERN = re.compile(
+    r'\bby\s+(?:the\s+)?(?:' +
+    '|'.join(re.escape(p) for p in sorted(_BY_PROPERTIES, key=len, reverse=True)) +
+    r')\b',
+    re.IGNORECASE
+)
+
+# Whitelist: "by definition" is OK
+_BY_WHITELIST_RE = re.compile(r'\bby\s+definition\b', re.IGNORECASE)
+
+
+def check_by_property(raw_lines, file_label):
+    """
+    Detect 'by [property]' passive-mechanism constructions.
+    Flags lines where the author names a tool without showing how it applies.
+    """
+    findings = []
+    in_display = False
+
+    for i, raw in enumerate(raw_lines, start=1):
+        line = strip_comment(raw)
+
+        # Track display state — only check prose lines
+        if ENV_BEGIN_RE.search(line) or DISPLAY_OPEN.match(line.strip()):
+            in_display = True
+            continue
+        if ENV_END_RE.search(line) or DISPLAY_CLOSE.match(line.strip()):
+            in_display = False
+            continue
+        if in_display:
+            continue
+
+        # Skip lines that are entirely math or empty
+        if not line.strip():
+            continue
+
+        for pattern in (_BY_CAP_RE, _BY_PROP_PATTERN):
+            for m in pattern.finditer(line):
+                matched = m.group()
+                # Whitelist check
+                if _BY_WHITELIST_RE.match(matched):
+                    continue
+                snippet = line[max(0, m.start() - 10):m.end() + 30].strip()
+                findings.append({
+                    'file': file_label,
+                    'line': i,
+                    'kind': 'by-property',
+                    'snippet': snippet[:80],
+                })
+
+    return findings
+
+
+# --------------------------------------------------------------------------
 # spaCy pass: check substituted prose for structural grammar violations
 # --------------------------------------------------------------------------
 
@@ -337,6 +420,7 @@ def lint_text(text: str, file_label: str = '<text>'):
     findings = []
     findings += check_punct_before_display(raw_lines, file_label)
     findings += check_comma_before_conjunction(raw_lines, file_label)
+    findings += check_by_property(raw_lines, file_label)
     # spaCy pass catches anything the pre-passes miss and provides the
     # infrastructure for future grammar rules.
     spacy_findings = check_grammar_with_spacy(raw_lines, file_label, nlp)
@@ -349,13 +433,33 @@ def lint_text(text: str, file_label: str = '<text>'):
     return findings
 
 
-def main():
-    if len(sys.argv) < 2:
-        print('usage: lint-typography.py <tex-file>', file=sys.stderr)
+def parse_line_range(arg):
+    """Parse START:END into (start, end) inclusive. Returns None if not given."""
+    if not arg:
+        return None
+    parts = arg.split(':')
+    if len(parts) != 2:
+        print(f'bad --lines format: {arg!r} (expected START:END)', file=sys.stderr)
         sys.exit(2)
-    with open(sys.argv[1], 'r', encoding='utf-8') as fh:
+    return int(parts[0]), int(parts[1])
+
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description='Grammar linter for .tex files')
+    parser.add_argument('file', help='tex file to lint')
+    parser.add_argument('--lines', help='filter to line range START:END (inclusive)')
+    args = parser.parse_args()
+
+    with open(args.file, 'r', encoding='utf-8') as fh:
         text = fh.read()
-    results = lint_text(text, sys.argv[1])
+    results = lint_text(text, args.file)
+
+    line_range = parse_line_range(args.lines)
+    if line_range:
+        start, end = line_range
+        results = [r for r in results if start <= r['line'] <= end]
+
     json.dump(results, sys.stdout)
 
 

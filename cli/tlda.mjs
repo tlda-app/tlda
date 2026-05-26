@@ -1532,7 +1532,7 @@ async function cmdDoctor() {
         const { spawn: cpSpawn } = await import('child_process')
         const { openSync: fsOpenSync } = await import('fs')
         const logFd = fsOpenSync(LOGFILE, 'a')
-        const child = cpSpawn(process.execPath, [serverScript], {
+        const child = cpSpawn(process.execPath, [serverScript, '--i-am-tlda-cli'], {
           detached: true, stdio: ['ignore', logFd, logFd],
           env: { ...process.env, PORT: getPort(), TMUX: undefined, TMUX_PANE: undefined }
         })
@@ -1877,6 +1877,7 @@ async function cmdServer(action) {
     <array>
         <string>${nodePath}</string>
         <string>${serverScript}</string>
+        <string>--i-am-tlda-cli</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>
@@ -2018,7 +2019,7 @@ ${tokenEnvLines.join('\n')}
       const { openSync: fsOpenSync } = await import('fs')
       const logFd = fsOpenSync(LOGFILE, 'a')
 
-      const serverArgs = [serverScript]
+      const serverArgs = [serverScript, '--i-am-tlda-cli']
       const child = spawn('node', serverArgs, {
         detached: true,
         stdio: ['ignore', logFd, logFd],

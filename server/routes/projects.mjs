@@ -1275,13 +1275,13 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
   // Canonical scratch template — defines the scratch environment and helpers.
   // Kept in .scratchinputs/scratch-template.tex so it can be updated without touching main.tex.
   // Bump SCRATCH_TEMPLATE_VERSION when the default template content changes.
-  const SCRATCH_TEMPLATE_VERSION = 2
+  const SCRATCH_TEMPLATE_VERSION = 3
   const scratchTemplateRel = '.scratchinputs/scratch-template.tex'
   const scratchTemplatePath = mainDir !== '.' ? join(mainDir, scratchTemplateRel) : scratchTemplateRel
   const scratchTemplateContent = [
     `% scratch-template-version: ${SCRATCH_TEMPLATE_VERSION}`,
     '\\usepackage{xcolor}',
-    '\\newcommand{\\inputscratch}[3]{\\begingroup\\color[gray]{0.3}\\par\\noindent{\\footnotesize\\ttfamily[#3]}\\par\\label{#2}\\input{#1}\\endgroup\\par}',
+    '\\newcommand{\\inputscratch}[3]{\\begingroup\\synctex=1\\color[gray]{0.3}\\par\\noindent{\\footnotesize\\ttfamily[#3]}\\par\\label{#2}\\input{#1}\\endgroup\\par}',
     '',
   ].join('\n')
 

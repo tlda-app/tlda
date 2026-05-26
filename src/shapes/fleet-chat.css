@@ -2286,15 +2286,9 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   color: var(--text-dim, #888);
 }
 
-/* Queued messages section — below thinking indicator */
-.queued-messages {
-  padding: 0 0 2px 0;
-  border-top: 1px solid rgba(128, 128, 128, 0.15);
-}
-
-/* Interrupt events — jump the queue, render between thinking line and queued messages */
-.interrupt-queue {
-  padding: 0;
+/* Queue divider — border on the last message before queued messages */
+.queue-divider {
+  border-bottom: 1px solid rgba(128, 128, 128, 0.25);
 }
 
 /* Escalation badges in thinking indicator */

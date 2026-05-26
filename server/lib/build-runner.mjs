@@ -65,7 +65,7 @@ function convertScratchMarkdown(srcDir, addLog) {
     const texPath = join(scratchDir, f.replace(/\.md$/, '.tex'))
     try {
       const mdMtime = statSync(mdPath).mtimeMs
-      if (existsSync(texPath) && statSync(texPath).mtimeMs >= mdMtime) continue
+      if (existsSync(texPath) && statSync(texPath).mtimeMs > mdMtime) continue
     } catch {}
     const mdContent = readFileSync(mdPath, 'utf8')
     let texContent = mdContent.replace(/(?<![\\@\w])@([\w:.-]+[\w])/g, '\\ref{$1}')

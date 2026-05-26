@@ -669,10 +669,10 @@ type ThemeStep = {
 }
 
 const THEME_STEPS: ThemeStep[] = [
-  { theme: null,        scheme: 'system', label: 'System',    icon: '◑' },
   { theme: null,        scheme: 'dark',   label: 'Dark',      icon: '☾' },
   { theme: 'fog-dark',  scheme: 'dark',   label: 'Fog Dark',  icon: '\u{1F30A}', bodyClass: 'fog-dark-mode' },
   { theme: null,        scheme: 'light',  label: 'Light',     icon: '☀' },
+  { theme: null,        scheme: 'system', label: 'System',    icon: '◑' },
   { theme: 'fog-light', scheme: 'light',  label: 'Fog Light', icon: '\u{1F9CA}', bodyClass: 'fog-light-mode' },
   { theme: 'warm',      scheme: 'light',  label: 'Warm',      icon: '☀︎',        bodyClass: 'warm-mode' },
 ]

@@ -1671,7 +1671,7 @@ async function rpcSpawn({ name, model, cwd, doc, respawn }) {
   _activeSpawns.set(agentName, Date.now())
   execFile(spawnScript, args, {
     timeout: 120_000,
-    env: { ...process.env, PATH: process.env.PATH },
+    env: { ...process.env, PATH: process.env.PATH, TMUX: '' },
   }, (err, stdout, stderr) => {
     _activeSpawns.delete(agentName)
     if (err) {

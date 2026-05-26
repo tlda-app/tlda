@@ -144,14 +144,32 @@ def lint_text(text: str, file_label: str = "<text>"):
     return findings
 
 
-def main():
-    if len(sys.argv) < 2:
-        print("usage: lint-passive.py <tex-file>", file=sys.stderr)
+def parse_line_range(arg):
+    if not arg:
+        return None
+    parts = arg.split(':')
+    if len(parts) != 2:
+        print(f'bad --lines format: {arg!r} (expected START:END)', file=sys.stderr)
         sys.exit(2)
-    path = sys.argv[1]
-    with open(path, "r", encoding="utf-8") as f:
+    return int(parts[0]), int(parts[1])
+
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description='Passive voice linter for .tex files')
+    parser.add_argument('file', help='tex file to lint')
+    parser.add_argument('--lines', help='filter to line range START:END (inclusive)')
+    args = parser.parse_args()
+
+    with open(args.file, "r", encoding="utf-8") as f:
         text = f.read()
-    findings = lint_text(text, path)
+    findings = lint_text(text, args.file)
+
+    line_range = parse_line_range(args.lines)
+    if line_range:
+        start, end = line_range
+        findings = [r for r in findings if start <= r['line'] <= end]
+
     json.dump(findings, sys.stdout)
 
 

@@ -375,11 +375,14 @@ def _session_has_claude(session):
 def spawn_tmux(session, cwd, cmd, auto_dismiss=True):
     """Start a tmux session running cmd. When auto_dismiss=True, backgrounds
     a process to dismiss the dev-channels confirmation dialog."""
-    subprocess.run(tmux("new-session", "-d", "-s", session, "-c", cwd, cmd), check=True)
-    # Preserve crash output: keep the pane alive after the command exits so
-    # the daemon can capture-pane and diagnose exitCode=1 crashes.
-    subprocess.run(tmux("set-option", "-t", session, "remain-on-exit", "on"),
-                   capture_output=True, timeout=5)
+    # Try respawn-pane first — handles dead panes left by remain-on-exit.
+    # Falls back to new-session when no session exists.
+    r = subprocess.run(tmux("respawn-pane", "-t", session, "-c", cwd, cmd),
+                       capture_output=True, timeout=5)
+    if r.returncode != 0:
+        subprocess.run(tmux("new-session", "-d", "-s", session, "-c", cwd, cmd), check=True)
+        subprocess.run(tmux("set-option", "-t", session, "remain-on-exit", "on"),
+                       capture_output=True, timeout=5)
     if auto_dismiss:
         subprocess.Popen(
             [sys.executable, "-c",
