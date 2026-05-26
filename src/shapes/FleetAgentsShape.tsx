@@ -56,9 +56,9 @@ function labelColor(name: string): string {
 
 type SortKey = 'active' | 'name' | 'status'
 
-function agentCategory(agent: any): 'awake' | 'hibernating' | 'human' | 'human-away' {
-  if (agent.status === 'human') return 'human'
-  if (agent.status === 'human-away') return 'human-away'
+function agentCategory(agent: any): 'awake' | 'hibernating' {
+  if (agent.status === 'human') return 'awake'
+  if (agent.status === 'human-away') return 'hibernating'
   return agent.status === 'awake' ? 'awake' : 'hibernating'
 }
 
@@ -350,7 +350,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     list.sort((a, b) => {
       if (sortKey === 'name') return dir * agentDisplayName(a).localeCompare(agentDisplayName(b))
       if (sortKey === 'status') {
-        const order: Record<string, number> = { human: 0, awake: 1, hibernating: 2, 'human-away': 3 }
+        const order: Record<string, number> = { awake: 0, hibernating: 1 }
         const ca = order[agentCategory(a)] ?? 2
         const cb = order[agentCategory(b)] ?? 2
         return dir * (ca - cb) || b._ts - a._ts
@@ -361,8 +361,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
   }, [agents, sortKey, sortAsc])
 
   const hibernatingCount = useMemo(() => sortedAgents.filter(a => agentCategory(a) === 'hibernating').length, [sortedAgents])
-  const humanCount = useMemo(() => sortedAgents.filter(a => a.human).length, [sortedAgents])
-  const awakeCount = sortedAgents.length - hibernatingCount - humanCount
+  const awakeCount = sortedAgents.length - hibernatingCount
 
   // Fetch last messages for visible agents
   const lastMessages = useLastMessages(sortedAgents)
@@ -463,7 +462,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
               tasks={getTasksForAgent(agent.id)}
               unreadCount={unreadCounts[agent.id] || 0}
               contextPct={contextPercent.get(agent.id)}
-              dimmed={agentCategory(agent) === 'hibernating' || agentCategory(agent) === 'human-away'}
+              dimmed={agentCategory(agent) === 'hibernating'}
               expanded={expandedId === agent.id}
               lastMessage={lastMessages[agentDisplayName(agent)] || ''}
               onToggleExpand={() => setExpandedId(expandedId === agent.id ? null : agent.id)}
@@ -479,14 +478,6 @@ function FleetAgentsInner({ shape }: { shape: any }) {
               style={{ cursor: 'grab' }}
               onPointerDown={(e) => { e.stopPropagation(); startDrag(e, 'label', 'awake', 'awake', labelColor('awake')) }}
             >{awakeCount} awake</span>
-            {humanCount > 0 && (
-              <span style={{ marginLeft: 6 }}>·{' '}
-                <span
-                  style={{ cursor: 'grab' }}
-                  onPointerDown={(e) => { e.stopPropagation(); startDrag(e, 'label', 'human', 'human', labelColor('human')) }}
-                >{humanCount} {humanCount === 1 ? 'person' : 'people'}</span>
-              </span>
-            )}
             {hibernatingCount > 0 && (
               <span style={{ marginLeft: 6 }}>·{' '}
                 <span

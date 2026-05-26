@@ -136,7 +136,8 @@ export function CanvasClipPanel({
     if (lockCamera && r.typeName === 'shape' && !FLEET_TYPES.has((r as any).type)) return false
     if (lockCamera && r.typeName === 'shape' && FLEET_TYPES.has((r as any).type)) {
       const uid = (r as any).props?.userId
-      if (uid && uid !== getHumanId()) return false
+      const myId = getHumanId()
+      if (uid && myId && uid !== myId) return false
     }
     if (r.typeName === 'shape' && !shapeOverlapsVisibleRegion(r.id)) return false
     return true
