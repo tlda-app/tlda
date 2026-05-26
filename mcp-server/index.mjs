@@ -3680,19 +3680,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (targetFile && targetContent) {
         fs.writeFileSync(path.join(sourceDir, targetFile), targetContent, 'utf8');
       }
-      // Push scratch file + updated tex files to server so the build sees them immediately
-      const pushFiles = [{ path: scratchPath, content: wrappedContent }]
-      if (mainContent) pushFiles.push({ path: mainFile, content: mainContent })
-      if (targetFile && targetContent) pushFiles.push({ path: targetFile, content: targetContent })
-      try {
-        await serverFetch(`/api/projects/${doc}/push`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ files: pushFiles }),
-        })
-      } catch (e) {
-        process.stderr.write(`[input_scratch] push failed: ${e.message}\n`)
-      }
       const refValidation = validateRefs(content, doc);
       const refWarning = formatRefWarnings(refValidation);
       const displayPath = result.sourcePath ? path.join(sourceDir, result.sourcePath) : scratchAbsPath;

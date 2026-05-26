@@ -1138,10 +1138,13 @@ function syncSourceWatchers(projectList, activeViewers) {
 
     const onFileChange = (filename, fromPoll) => {
       if (!filename) return
-      if (state.watchSet.size > 0) {
-        if (!state.watchSet.has(filename)) return
-      } else {
-        if (!isSourceFile(filename)) return
+      const isScratch = filename.includes('.scratchinputs/')
+      if (!isScratch) {
+        if (state.watchSet.size > 0) {
+          if (!state.watchSet.has(filename)) return
+        } else {
+          if (!isSourceFile(filename)) return
+        }
       }
       if (!fromPoll) {
         state.watchSeen.set(filename, Date.now())
@@ -1269,6 +1272,25 @@ function flushSourceChanges(projectName) {
         log.info(`rescan discovered new dep: ${rel}`)
       } catch (e) { log.error(`read ${full}: ${e.message}`) }
     }
+  }
+
+  // Watch symlink targets in .scratchinputs/ — changes to the linked file
+  // should trigger a rebuild. Poll the targets since they're outside the source dir.
+  for (const rel of filePaths) {
+    if (!rel.includes('.scratchinputs/')) continue
+    const full = path.join(state.sourceDir, rel)
+    try {
+      const stat = fs.lstatSync(full)
+      if (stat.isSymbolicLink()) {
+        const target = fs.realpathSync(full)
+        if (!state._symlinkPolls) state._symlinkPolls = new Map()
+        if (!state._symlinkPolls.has(target)) {
+          state._symlinkPolls.set(target, rel)
+          fs.watchFile(target, { interval: 2000 }, () => state.onFileChange(rel, true))
+          log.info(`watching symlink target: ${target} -> ${rel}`)
+        }
+      }
+    } catch {}
   }
 
   if (files.length === 0 && deleted.length === 0) return
