@@ -1201,7 +1201,7 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
   // Falls back to labelLineIdx+1 (after label line) if no enclosing env is found.
   function climbToEnvEnd(labelLineIdx) {
     const openCounts = {}
-    for (let j = labelLineIdx - 1; j >= 0; j--) {
+    for (let j = labelLineIdx; j >= 0; j--) {
       // Check for \end{ENV} first (going backward, ends precede their begins)
       const endM = mainLines[j].match(/\\end\{([^}]+)\}/)
       if (endM) {
@@ -1254,7 +1254,7 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
         if (incLines[i].includes(`\\label{${locLabel}}`)) {
           const envEnd = (() => {
             const openCounts = {}
-            for (let j = i - 1; j >= 0; j--) {
+            for (let j = i; j >= 0; j--) {
               const endM = incLines[j].match(/\\end\{([^}]+)\}/)
               if (endM) { openCounts[endM[1]] = (openCounts[endM[1]] || 0) + 1; continue }
               const beginM = incLines[j].match(/\\begin\{([^}]+)\}/)
