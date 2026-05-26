@@ -1,69 +1,93 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type RefObject } from 'react'
 import { loadLookup, type LookupData } from './synctexLookup'
 import { PDF_HEIGHT } from './layoutConstants'
 
 const VIEWBOX_OFFSET = 72
-const Y_GROUP_TOLERANCE = 3 // PDF points — merge entries on the same rendered line
+const Y_GROUP_TOLERANCE = 3 // PDF points — merge SVG text elements on the same rendered line
 
 interface LineLabel {
   lineNum: number
-  file: string | null // null = main file
-  localY: number      // page-local pixel Y
+  file: string | null
+  localY: number
 }
 
-function computeLabels(lookup: LookupData, pageNum: number, shapeH: number): LineLabel[] {
-  const scaleY = shapeH / PDF_HEIGHT
+interface LookupEntry {
+  lineNum: number
+  file: string | null
+  pdfY: number
+}
 
-  const entries: { lineNum: number; file: string | null; pdfX: number; pdfY: number }[] = []
+function buildPageLookup(lookup: LookupData, pageNum: number): LookupEntry[] {
+  const entries: LookupEntry[] = []
   for (const [key, entry] of Object.entries(lookup.lines)) {
     if (entry.page !== pageNum) continue
     const colonIdx = key.indexOf(':')
-    if (colonIdx >= 0) {
-      entries.push({
-        lineNum: parseInt(key.slice(colonIdx + 1)),
-        file: key.slice(0, colonIdx),
-        pdfX: entry.x,
-        pdfY: entry.y,
-      })
-    } else {
-      entries.push({
-        lineNum: parseInt(key),
-        file: null,
-        pdfX: entry.x,
-        pdfY: entry.y,
-      })
+    entries.push({
+      lineNum: colonIdx >= 0 ? parseInt(key.slice(colonIdx + 1)) : parseInt(key),
+      file: colonIdx >= 0 ? key.slice(0, colonIdx) : null,
+      pdfY: entry.y,
+    })
+  }
+  entries.sort((a, b) => a.pdfY - b.pdfY)
+  return entries
+}
+
+function findNearestSourceLine(pdfY: number, lookupEntries: LookupEntry[]): LookupEntry | null {
+  if (lookupEntries.length === 0) return null
+  let best = lookupEntries[0]
+  let bestDist = Math.abs(pdfY - best.pdfY)
+  for (let i = 1; i < lookupEntries.length; i++) {
+    const dist = Math.abs(pdfY - lookupEntries[i].pdfY)
+    if (dist < bestDist) {
+      best = lookupEntries[i]
+      bestDist = dist
+    }
+  }
+  return best
+}
+
+function computeLabels(
+  svgContainer: HTMLDivElement,
+  lookup: LookupData,
+  pageNum: number,
+  shapeH: number,
+): LineLabel[] {
+  const scaleY = shapeH / PDF_HEIGHT
+  const lookupEntries = buildPageLookup(lookup, pageNum)
+  if (lookupEntries.length === 0) return []
+
+  // Extract unique Y positions from SVG text elements (= rendered lines)
+  const svgEl = svgContainer.querySelector('svg')
+  if (!svgEl) return []
+  const textEls = svgEl.querySelectorAll('text')
+  const rawYs: number[] = []
+  for (let i = 0; i < textEls.length; i++) {
+    rawYs.push(parseFloat(textEls[i].getAttribute('y') || '0'))
+  }
+  if (rawYs.length === 0) return []
+
+  // Deduplicate Y positions (group within tolerance)
+  rawYs.sort((a, b) => a - b)
+  const uniqueYs: number[] = [rawYs[0]]
+  for (let i = 1; i < rawYs.length; i++) {
+    if (Math.abs(rawYs[i] - uniqueYs[uniqueYs.length - 1]) > Y_GROUP_TOLERANCE) {
+      uniqueYs.push(rawYs[i])
     }
   }
 
-  if (entries.length === 0) return []
-
-  // Sort by Y then X — leftmost first within each rendered line
-  entries.sort((a, b) => a.pdfY - b.pdfY || a.pdfX - b.pdfX)
-
-  // Group by approximate Y, pick leftmost (first) per group
+  // SVG text Y values are in viewBox coords; synctex Y = viewBox Y (same origin)
+  // Map each rendered line to its nearest source line
   const labels: LineLabel[] = []
-  let groupY = entries[0].pdfY
-  let groupBest = entries[0]
-
-  for (let i = 1; i < entries.length; i++) {
-    const e = entries[i]
-    if (Math.abs(e.pdfY - groupY) <= Y_GROUP_TOLERANCE) {
-      if (e.pdfX < groupBest.pdfX) groupBest = e
-    } else {
-      labels.push({
-        lineNum: groupBest.lineNum,
-        file: groupBest.file,
-        localY: (groupBest.pdfY + VIEWBOX_OFFSET) * scaleY,
-      })
-      groupY = e.pdfY
-      groupBest = e
-    }
+  for (const viewBoxY of uniqueYs) {
+    const synctexY = viewBoxY // same coordinate system origin
+    const nearest = findNearestSourceLine(synctexY, lookupEntries)
+    if (!nearest) continue
+    labels.push({
+      lineNum: nearest.lineNum,
+      file: nearest.file,
+      localY: (viewBoxY + VIEWBOX_OFFSET) * scaleY,
+    })
   }
-  labels.push({
-    lineNum: groupBest.lineNum,
-    file: groupBest.file,
-    localY: (groupBest.pdfY + VIEWBOX_OFFSET) * scaleY,
-  })
 
   return labels
 }
@@ -72,21 +96,29 @@ export function LineNumberOverlay({
   docName,
   pageNum,
   shapeH,
+  containerRef,
+  svgText,
 }: {
   docName: string
   pageNum: number
   shapeH: number
+  containerRef: RefObject<HTMLDivElement | null>
+  svgText: string | undefined
 }) {
   const [labels, setLabels] = useState<LineLabel[]>([])
 
   useEffect(() => {
+    if (!svgText || !containerRef.current) {
+      setLabels([])
+      return
+    }
     let cancelled = false
     loadLookup(docName).then(lookup => {
-      if (cancelled || !lookup) return
-      setLabels(computeLabels(lookup, pageNum, shapeH))
+      if (cancelled || !lookup || !containerRef.current) return
+      setLabels(computeLabels(containerRef.current, lookup, pageNum, shapeH))
     })
     return () => { cancelled = true }
-  }, [docName, pageNum, shapeH])
+  }, [docName, pageNum, shapeH, svgText])
 
   if (labels.length === 0) return null
 

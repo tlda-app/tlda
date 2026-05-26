@@ -403,6 +403,8 @@ function SvgPageComponent({ shape }: { shape: any }) {
             docName={docName}
             pageNum={shape.props.pageIndex + 1}
             shapeH={shape.props.h}
+            containerRef={containerRef}
+            svgText={svgText}
           />
         )}
       </div>
