@@ -1076,8 +1076,9 @@ async function cmdPreview() {
   const token = getToken()
   const previewHeaders = token ? { 'Authorization': `Bearer ${token}` } : {}
 
+  const texBase = data.mainFile ? data.mainFile.replace(/^.*\//, '').replace(/\.tex$/, '') : name
   async function convertPage(page) {
-    const svgUrl = `${server}/docs/${name}/page-${page}.svg`
+    const svgUrl = `${server}/docs/${name}/${texBase}-page-${page}.svg`
     const pngPath = join(outDir, `page-${page}.png`)
     try {
       const svgRes = await fetch(svgUrl, { headers: previewHeaders, signal: AbortSignal.timeout(10000) })
