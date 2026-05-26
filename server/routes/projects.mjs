@@ -1242,8 +1242,8 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
     // Prefer files in the same directory tree as mainFile
     const allFiles = listSourceFiles(req.params.name).filter(f => f !== project.mainFile)
     allFiles.sort((a, b) => {
-      const aInMain = a.startsWith(mainDir + '/') || mainDir === '.' ? 0 : 1
-      const bInMain = b.startsWith(mainDir + '/') || mainDir === '.' ? 0 : 1
+      const aInMain = (mainDir === '.' || a.startsWith(mainDir + '/')) ? 0 : 1
+      const bInMain = (mainDir === '.' || b.startsWith(mainDir + '/')) ? 0 : 1
       return aInMain - bInMain
     })
     for (const file of allFiles) {
