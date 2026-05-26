@@ -144,19 +144,28 @@ export function createFleetLayout(editor: Editor, agents: any[], variant: '2col'
     },
   ]
   if (variant === 'wide') {
-    // Agents+search left, one wide chat right
     const chatWide = Math.round(chatW3 * 2)
-    shapes.push({
-      id: createShapeId(),
-      type: 'fleet-chat' as any,
-      x: anchorX + leftW + gap, y: anchorY,
-      isLocked: false,
-      props: { w: chatWide, h: totalH, filter: filter1 },
-    })
+    shapes.push(
+      {
+        id: createShapeId(),
+        type: 'fleet-chat' as any,
+        x: anchorX + leftW + gap, y: anchorY,
+        isLocked: false,
+        props: { w: chatWide, h: rightChatH, filter: filter1 },
+      },
+      {
+        id: createShapeId(),
+        type: 'fleet-docview' as any,
+        x: anchorX + leftW + gap, y: anchorY + rightChatH + gap,
+        isLocked: false,
+        props: { w: chatWide, h: docviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '' },
+      },
+    )
   } else if (variant === 'grid') {
-    // Agents+search left, 2x2 chat grid right
     const gridChatW = chatW3
     const gridChatH = Math.round((totalH - gap) / 2)
+    const gridRightChatH = Math.round(gridChatH * 0.75)
+    const gridDocviewH = gridChatH - gap - gridRightChatH
     shapes.push(
       {
         id: createShapeId(),
@@ -184,7 +193,14 @@ export function createFleetLayout(editor: Editor, agents: any[], variant: '2col'
         type: 'fleet-chat' as any,
         x: anchorX + leftW + gap + gridChatW + gap, y: anchorY + gridChatH + gap,
         isLocked: false,
-        props: { w: gridChatW, h: gridChatH, filter: filter4 },
+        props: { w: gridChatW, h: gridRightChatH, filter: filter4 },
+      },
+      {
+        id: createShapeId(),
+        type: 'fleet-docview' as any,
+        x: anchorX + leftW + gap + gridChatW + gap, y: anchorY + gridChatH + gap + gridRightChatH + gap,
+        isLocked: false,
+        props: { w: gridChatW, h: gridDocviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '' },
       },
     )
   } else if (variant === '3col') {
