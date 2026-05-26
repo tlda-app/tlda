@@ -25,7 +25,7 @@ import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil
 // @ts-ignore — vanilla JS module
 import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText, isRecording } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
-import { getHumanId, getHumanName, updateEventById, sendViewingContext } from '../fleet/fleet-data.mjs'
+import { getHumanId, getHumanName, updateEventById, sendViewingContext, setViewingEnrichFn } from '../fleet/fleet-data.mjs'
 import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useElizaPending, useWouldHibernate, sendMessage, loadBefore, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
 import type { ElizaNudge } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
@@ -452,6 +452,11 @@ async function enrichContextWithSourceLines(context: any): Promise<void> {
   } catch {}
   delete context._viewportEdges
 }
+
+setViewingEnrichFn(async (ctx: any) => {
+  await enrichContextWithSourceLines(ctx)
+  return ctx
+})
 
 /**
  * Resolve the document version the user is currently viewing. Prefer the

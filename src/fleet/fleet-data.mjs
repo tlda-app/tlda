@@ -290,12 +290,18 @@ function _startHeartbeat() {
 }
 
 let _lastViewingSent = 0
+let _viewingEnrichFn = null
+export function setViewingEnrichFn(fn) { _viewingEnrichFn = fn }
 export function sendViewingContext(context) {
   const now = Date.now()
   if (now - _lastViewingSent < 5000) return
   _lastViewingSent = now
-  if (_humanId && _ws && _ws.readyState === 1) {
-    _ws.send(JSON.stringify({ type: 'viewing', agent: _humanId, context }))
+  if (!_humanId || !_ws || _ws.readyState !== 1) return
+  const send = (ctx) => _ws.send(JSON.stringify({ type: 'viewing', agent: _humanId, context: ctx }))
+  if (_viewingEnrichFn) {
+    _viewingEnrichFn({ ...context }).then(send).catch(() => send(context))
+  } else {
+    send(context)
   }
 }
 
