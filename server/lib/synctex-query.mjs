@@ -11,7 +11,7 @@ import { createReadStream } from 'fs'
 import { createGunzip } from 'zlib'
 import { createInterface } from 'readline'
 import { dirname, basename, join, resolve } from 'path'
-import { sourceDir, getProjectsDir } from './project-store.mjs'
+import { sourceDir, getProjectsDir, readProject } from './project-store.mjs'
 
 function realResolve(...args) {
   const p = resolve(...args)
@@ -41,19 +41,20 @@ export async function loadSynctex(projectName, texBase) {
   if (cache.has(key)) return cache.get(key)
 
   const srcDir = sourceDir(projectName)
-  // Locate the synctex.gz for this target. The build copies it next to
-  // the .tex file as <texBase>.synctex.gz; if texBase is omitted (e.g.
-  // for legacy callers), pick the first .synctex.gz in srcDir.
+  const proj = readProject(projectName)
+  const mainFileDir = proj?.mainFile ? dirname(proj.mainFile) : '.'
+  const synctexDir = (mainFileDir && mainFileDir !== '.') ? join(srcDir, mainFileDir) : srcDir
+
   let synctexFile
   if (texBase) {
     synctexFile = `${texBase}.synctex.gz`
   } else {
-    const files = existsSync(srcDir) ? readdirSync(srcDir) : []
+    const files = existsSync(synctexDir) ? readdirSync(synctexDir) : []
     synctexFile = files.find(f => f.endsWith('.synctex.gz'))
   }
   if (!synctexFile) return null
 
-  const synctexPath = join(srcDir, synctexFile)
+  const synctexPath = join(synctexDir, synctexFile)
   if (!existsSync(synctexPath)) return null
 
   const inputMap = new Map()

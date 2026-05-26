@@ -269,7 +269,7 @@ export function killAllBuilds() {
 // DeclareGraphicsRule tells dvips driver (used by pdflatex --output-format=dvi)
 // to read bounding box for .pdf files from the .bb companion file we generate.
 // Without this, dvips falls back to width×width square placeholders.
-const PRETEX = '\\PassOptionsToPackage{draft}{graphics}\\PassOptionsToPackage{draft}{graphicx}\\PassOptionsToPackage{hypertex,hidelinks}{hyperref}\\AddToHook{begindocument/before}{\\RequirePackage{hyperref}}\\AddToHook{begindocument}{\\DeclareGraphicsRule{.pdf}{eps}{.bb}{}}'
+const PRETEX = '\\PassOptionsToPackage{draft}{graphics}\\PassOptionsToPackage{draft}{graphicx}\\PassOptionsToPackage{hypertex,hidelinks}{hyperref}\\AddToHook{begindocument/before}{\\RequirePackage{hyperref}}\\AddToHook{package/graphicx/after}{\\DeclareGraphicsRule{.pdf}{eps}{.bb}{}}'
 
 /**
  * Extract preamble from a .tex file (everything before \begin{document}).
@@ -580,15 +580,19 @@ async function compileLaTeX(ctx) {
   let expectedPages = null
   if (existsSync(logPath)) {
     const raw = readFileSync(logPath, 'utf8')
-    const joined = raw.split('\n').reduce((acc, line) => {
-      if (acc.length > 0 && acc[acc.length - 1].length === 79) {
-        acc[acc.length - 1] += line
+    const rawLines = raw.split('\n')
+    const joined = []
+    let prevRawLen = 0
+    for (const line of rawLines) {
+      if (joined.length > 0 && prevRawLen === 79) {
+        joined[joined.length - 1] += line
       } else {
-        acc.push(line)
+        joined.push(line)
       }
-      return acc
-    }, []).join('\n')
-    const m = joined.match(/Output written on .+\((\d+) pages?/)
+      prevRawLen = line.length
+    }
+    const logText = joined.join('\n')
+    const m = logText.match(/Output written on .+\((\d+) pages?/)
     if (m) expectedPages = parseInt(m[1])
   }
   return { expectedPages }
