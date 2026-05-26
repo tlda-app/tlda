@@ -214,8 +214,8 @@ export function renderChatLine(m, ctx) {
       ? `<div class="lc-criteria">${criteria.map(c => `<div class="lc-criterion">\u2610 ${esc(c)}</div>`).join('')}</div>`
       : ''
     // Show the full delegation message so the user can see what was actually asked
-    const message = m._message || m.text || ''
-    const messageHtml = message && message !== (m._description || '')
+    const message = m._message || ''
+    const messageHtml = message
       ? `<div class="lc-message">${linkifyCodeUrls(renderMarkdown(message))}</div>`
       : ''
     return `<div class="chat-line" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span>

@@ -2510,7 +2510,9 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
           if (ctx.compareRef) {
             docHint = ` [viewing ${ctx.doc} — comparing old@${ctx.compareRef} vs current@${ctx.version || 'latest'}]`
           } else {
-            docHint = ` [viewing ${ctx.doc}${ctx.version ? '@' + ctx.version : ''}${ctx.page ? ' p' + (Array.isArray(ctx.page) ? ctx.page.join(',') : ctx.page) : ''}]`
+            const sl = ctx.sourceLine
+            const srcHint = sl ? ` ${sl.file}:${sl.startLine}${sl.endLine && sl.endLine !== sl.startLine ? '-' + sl.endLine : ''}` : ''
+            docHint = ` [viewing ${ctx.doc}${ctx.version ? '@' + ctx.version : ''}${ctx.page ? ' p' + (Array.isArray(ctx.page) ? ctx.page.join(',') : ctx.page) : ''}${srcHint}]`
           }
         }
         const { text: chipResolvedText, images: chipImages } = await resolveChipTokens(m.text, m.metadata)

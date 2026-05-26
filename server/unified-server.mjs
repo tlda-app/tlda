@@ -1999,8 +1999,9 @@ async function handleFleetWsMessage(ws, msg) {
     const from = rawFrom ? (resolveSingle(rawFrom) || rawFrom) : null
     // Normalize `to` to DNF: a single string becomes [[string]] (a singleton DNF).
     const dnf = Array.isArray(rawTo) ? rawTo : [[rawTo]]
-    // Resolve DNF over all alive agents using labels + virtual + friendly_name + id.
-    const allAgents = fleetStore.getAliveAgents?.() || []
+    // Resolve DNF over all agents (including dead) so messages to dead agents
+    // still get stored and broadcast — Eliza needs to see handoff commands.
+    const allAgents = fleetStore.getAllAgents?.() || []
     const recipients = []
     for (const a of allAgents) {
       if (a.id === from) continue

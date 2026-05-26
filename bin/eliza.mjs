@@ -1275,7 +1275,7 @@ async function handleHandoff(agentId, triggerText) {
       return
     }
 
-    pendingHandoffs.set(briefingName, { originalAgent: agentName, originalAgentId: agentId, originalCwd: agentCwd, startedAt: now })
+    pendingHandoffs.set(briefingName, { originalAgent: agentName, originalAgentId: agentId, originalCwd: agentCwd, startedAt: now, triggerText })
     savePendingHandoffs()
 
     setTimeout(async () => {
@@ -1380,7 +1380,7 @@ async function handleHandoffReady(fromId, text) {
             message: `**Read these skills first:** \`pickup\`
 
 You are replacing **${handoffInfo.originalAgent}**, who went off track. A briefing agent has written a clean handoff document.
-
+${handoffInfo.triggerText ? `\n**Skip's handoff message — pay attention to this:**\n> ${handoffInfo.triggerText}\n` : ''}
 **Steps:**
 1. Read the briefing: \`${briefingPath}\`
 2. Run the three-check from the \`pickup\` skill

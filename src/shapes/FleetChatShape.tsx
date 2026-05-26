@@ -32,6 +32,7 @@ import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } 
 import { dragCoordinator } from './dragCoordinator'
 import { DocContext, PanelContext } from '../PanelContext'
 import { loadLookup, type LookupData } from '../synctexLookup'
+import { getSourceAnchor } from '../synctexAnchor'
 import { log } from '../logger'
 import { linkifyDocRefs, linkifyArrowRefs, linkifyAtRefs, linkifyLabelRefs, buildRefResolver, refToCanvas, type DocRef, type ResolvedRef, type LabelRegionInfo, type TheoremMapEntry } from '../docLinks'
 import { fetchProofInfo, fetchTheoremMap } from '../docInfoCache'
@@ -394,20 +395,23 @@ function tldaRenderMarkdown(input: string, macros?: Record<string, string>): str
 
 function gatherViewerContext(editor: any, doc: any, chatShapeId?: string, version?: string | null) {
   if (!editor || !doc) return null
-  const camera = editor.getCamera()
-  const viewport = editor.getViewportPageBounds()
+  const mainEd = (window as any).__tldraw_editor__ || editor
+  const camera = mainEd.getCamera()
+  const viewport = mainEd.getViewportPageBounds()
   const visiblePages: number[] = []
+  const viewportEdges: { page: number; topY: number; bottomY: number }[] = []
   if (doc.pages && viewport) {
     doc.pages.forEach((page: any, i: number) => {
       const b = page.bounds
       if (!b) return
-      // Page is visible if it overlaps the viewport
-      // Box uses w/h, not width/height
       const bw = b.w ?? b.width ?? 0
       const bh = b.h ?? b.height ?? 0
       if (b.x + bw > viewport.minX && b.x < viewport.maxX &&
           b.y + bh > viewport.minY && b.y < viewport.maxY) {
         visiblePages.push(i + 1)
+        const topY = Math.max(viewport.minY - b.y, 0)
+        const bottomY = Math.min(viewport.maxY - b.y, bh)
+        viewportEdges.push({ page: i + 1, topY, bottomY })
       }
     })
   }
@@ -420,7 +424,31 @@ function gatherViewerContext(editor: any, doc: any, chatShapeId?: string, versio
     camera: { x: Math.round(camera.x), y: Math.round(camera.y), z: Math.round(camera.z * 100) / 100 },
     chatShapeId: chatShapeId || undefined,
     browser: /Chrome/.test(navigator.userAgent) ? 'chrome' : /Safari/.test(navigator.userAgent) ? 'safari' : /Firefox/.test(navigator.userAgent) ? 'firefox' : 'unknown',
+    _viewportEdges: viewportEdges,
   }
+}
+
+async function enrichContextWithSourceLines(context: any): Promise<void> {
+  const edges = context?._viewportEdges
+  delete context?._viewportEdges
+  if (!context?.doc || !edges?.length) return
+  const first = edges[0]
+  const last = edges[edges.length - 1]
+  try {
+    const [topAnchor, bottomAnchor] = await Promise.all([
+      getSourceAnchor(context.doc, first.page, 300, first.topY),
+      getSourceAnchor(context.doc, last.page, 300, last.bottomY),
+    ])
+    if (topAnchor) {
+      context.sourceLine = {
+        file: topAnchor.file,
+        startLine: topAnchor.line,
+        endLine: bottomAnchor?.line || topAnchor.line,
+        endFile: bottomAnchor?.file,
+      }
+    }
+  } catch {}
+  delete context._viewportEdges
 }
 
 /**
@@ -3693,10 +3721,11 @@ function FleetChatInner({ shape }: { shape: any }) {
                   const lastNewline = before.lastIndexOf('\n')
                   const lineText = before.substring(lastNewline + 1)
 
-                  const doSend = () => {
+                  const doSend = async () => {
                     const text = val.trim()
                     if (!text || sendTargets.length === 0) return
                     const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel))
+                    if (context) await enrichContextWithSourceLines(context)
                     const bullets = consumeBulletContexts()
                     if (bullets.length > 0 && context) {
                       ;(context as any).bullets = bullets
@@ -3824,9 +3853,9 @@ function FleetChatInner({ shape }: { shape: any }) {
               onPointerDown={(e) => {
                 stopEventPropagation(e)
                 // Register voice target on pointerdown — onFocus can be unreliable in tldraw
-                setVoiceTarget(e.currentTarget, sendTargets, agentNames, (targets: string[], text: string) => {
-                  // Same optimistic send path as Enter key — one send path for everything
+                setVoiceTarget(e.currentTarget, sendTargets, agentNames, async (targets: string[], text: string) => {
                   const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel))
+                  if (context) await enrichContextWithSourceLines(context)
                   const bullets = consumeBulletContexts()
                   if (bullets.length > 0 && context) {
                     ;(context as any).bullets = bullets
@@ -3867,8 +3896,9 @@ function FleetChatInner({ shape }: { shape: any }) {
               }}
               onFocus={(e) => {
                 stopEventPropagation(e)
-                setVoiceTarget(e.currentTarget, sendTargets, agentNames, (targets: string[], text: string) => {
+                setVoiceTarget(e.currentTarget, sendTargets, agentNames, async (targets: string[], text: string) => {
                   const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel))
+                  if (context) await enrichContextWithSourceLines(context)
                   const bullets = consumeBulletContexts()
                   if (bullets.length > 0 && context) {
                     ;(context as any).bullets = bullets
