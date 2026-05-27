@@ -1189,6 +1189,25 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
     return res.json({ ok: true, scratchPath, sourcePath, wrappedContent, mainFile: project.mainFile, mainContent: mainContentUpdated, sourceDir: project.sourceDir || null, action: 'replaced' })
   }
 
+  // Check if this scratch label already exists — agents should edit in place, not create new files
+  const allSourceFiles = [mainContent]
+  for (const f of listSourceFiles(req.params.name)) {
+    if (f !== project.mainFile) {
+      const fc = readSourceFile(req.params.name, f)
+      if (fc) allSourceFiles.push(fc)
+    }
+  }
+  for (const fc of allSourceFiles) {
+    const existingScratchLine = fc.split('\n').find(l => l.includes('\\inputscratch') && l.includes(`{${label}}`))
+    if (existingScratchLine) {
+      const existingFileMatch = existingScratchLine.match(/\\inputscratch\{([^}]+)\}/)
+      const existingFile = existingFileMatch ? existingFileMatch[1] : scratchRel
+      return res.status(400).json({
+        error: `Scratch section "${label}" already exists in the document (${existingFile}). Edit the scratch file directly instead of creating a new one — the watcher will detect changes and rebuild. Use replace: "${label}" if you need to update the \\inputscratch line itself.`
+      })
+    }
+  }
+
   // Resolve location label to a line number in main.tex
   const locationLabel = after || before
   const mainLines = mainContent.split('\n')
