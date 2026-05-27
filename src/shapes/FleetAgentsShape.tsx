@@ -25,10 +25,19 @@ import { useIsInViewport } from './useIsInViewport'
 const DEFAULT_W = 340
 const DEFAULT_H = 400
 
-function parseSpawnInput(raw: string): { doc: string; name: string | undefined } {
-  const colon = raw.indexOf(':')
-  if (colon < 0) return { doc: raw, name: undefined }
-  return { doc: raw.slice(0, colon), name: raw.slice(colon + 1) || undefined }
+const MODEL_SHORTHANDS: Record<string, string> = {
+  '45': 'opus45', '46': 'opus46', '47': 'opus47',
+  's': 'sonnet', 'h': 'haiku',
+  'o45': 'opus45', 'o46': 'opus46', 'o47': 'opus47',
+}
+
+function parseSpawnInput(raw: string): { doc: string; name: string | undefined; model: string | undefined } {
+  const parts = raw.split(':')
+  const doc = parts[0]
+  const name = parts[1] || undefined
+  const modelRaw = parts[2] || undefined
+  const model = modelRaw ? (MODEL_SHORTHANDS[modelRaw] || modelRaw) : undefined
+  return { doc, name, model }
 }
 
 // --- Nick color system (shared with FleetChatShape) ---
@@ -495,7 +504,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                   value={spawnDoc}
                   onChange={(e) => setSpawnDoc(e.target.value)}
                   onKeyDown={(e) => { e.stopPropagation(); if (e.key === 'Escape') setShowSpawnPicker(false) }}
-                  placeholder="project or project:name"
+                  placeholder="project:name:45"
                   autoFocus
                   list="spawn-projects"
                 />
@@ -515,12 +524,12 @@ function FleetAgentsInner({ shape }: { shape: any }) {
             <button
               className="fleet-agents-spawn-btn"
               title={`Spawn Sonnet in ${spawnDoc || 'default dir'}`}
-              onPointerUp={(e) => { e.stopPropagation(); const { doc, name } = parseSpawnInput(spawnDoc); spawnAgent('claude-sonnet-4-6', doc || undefined, name) }}
+              onPointerUp={(e) => { e.stopPropagation(); const { doc, name, model } = parseSpawnInput(spawnDoc); spawnAgent(model || 'claude-sonnet-4-6', doc || undefined, name) }}
             >+S</button>
             <button
               className="fleet-agents-spawn-btn"
               title={`Spawn Opus in ${spawnDoc || 'default dir'}`}
-              onPointerUp={(e) => { e.stopPropagation(); const { doc, name } = parseSpawnInput(spawnDoc); spawnAgent('claude-opus-4-6', doc || undefined, name) }}
+              onPointerUp={(e) => { e.stopPropagation(); const { doc, name, model } = parseSpawnInput(spawnDoc); spawnAgent(model || 'claude-opus-4-6', doc || undefined, name) }}
             >+O</button>
           </span>
         </div>
