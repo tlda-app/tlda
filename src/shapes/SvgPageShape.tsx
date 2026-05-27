@@ -7,6 +7,7 @@ import {
 } from 'tldraw'
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { injectSvgFonts } from '../svgFonts'
+import { LineNumberOverlay } from '../LineNumberOverlay'
 import { injectWordSpaces } from '../svgWordSpaces'
 import { subscribeSvgText, getSvgText, setSvgText } from '../stores/svgTextStore'
 import { changeStore, onShapeChangeUpdate, type ChangeRegion } from '../stores/changeStore'
@@ -94,6 +95,8 @@ function SvgPageComponent({ shape }: { shape: any }) {
   const editor = useEditor()
   const isDark = useValue('isDarkMode', () => editor.user.getIsDarkMode(), [editor])
   const containerRef = useRef<HTMLDivElement>(null)
+
+  const docName = new URLSearchParams(window.location.search).get('doc') || ''
 
   // Subscribe to reactive SVG text store
   const svgText = useSyncExternalStore(
@@ -395,6 +398,15 @@ function SvgPageComponent({ shape }: { shape: any }) {
             }}
           />
         </div>
+        {docName && isNearViewport && (
+          <LineNumberOverlay
+            docName={docName}
+            pageNum={shape.props.pageIndex + 1}
+            shapeH={shape.props.h}
+            containerRef={containerRef}
+            svgText={svgText}
+          />
+        )}
       </div>
     </HTMLContainer>
   )
