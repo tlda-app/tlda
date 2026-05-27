@@ -2157,7 +2157,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'input_scratch',
-      description: 'Inject a scratch section into a document at a specific location. Accepts .tex (plain LaTeX) or .md/.qmd (markdown with @label refs). Markdown files are stored as-is and converted to LaTeX at build time — the original .md stays in .scratchinputs/ untouched. Write plain content — no \\begin{scratch} wrapper. The \\inputscratch macro in the main tex file handles the scratch environment (gray text, label, timestamp header). Requires exactly one of: after, before, replace. If the build fails, you will receive an automatic fleet chat with the LaTeX errors.',
+      description: 'Inject a scratch section into a document at a specific location. Use this ONCE to place a new scratch section. After placement, edit your scratch file directly — the watcher detects changes and rebuilds automatically. Never create version-suffixed files (v2, v3); git handles versioning. Never write to .scratchinputs/ directly. Accepts .tex or .md/.qmd. Write plain content — no \\begin{scratch} wrapper. Requires exactly one of: after, before, replace. If the build fails, you will receive an automatic fleet chat with the LaTeX errors.',
       inputSchema: {
         type: 'object',
         properties: {
