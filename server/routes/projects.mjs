@@ -1235,7 +1235,7 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
   function resolveLocation(locLabel) {
     // 1. Search main file for \label{X}
     for (let i = 0; i < mainLines.length; i++) {
-      if (mainLines[i].includes(`\\label{${locLabel}}`)) return { file: project.mainFile, line: climbToEnvEnd(i) }
+      if (mainLines[i].includes(`\\label{${locLabel}}`)) return { file: project.mainFile, line: climbToEnvEnd(i), labelLine: i + 1 }
     }
 
     // 2. Search included files; resolve within that file (not the main file's \input line)
@@ -1272,33 +1272,32 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
             }
             return i + 1
           })()
-          return { file, line: envEnd }
+          return { file, line: envEnd, labelLine: i + 1 }
         }
       }
     }
 
     // 3. Fall back to line:N magic label
     const lineMatch = locLabel.match(/^line:(\d+)$/)
-    if (lineMatch) return { file: project.mainFile, line: parseInt(lineMatch[1]) }
+    if (lineMatch) { const ln = parseInt(lineMatch[1]); return { file: project.mainFile, line: ln, labelLine: ln } }
 
     return null
   }
 
-  const resolved = resolveLocation(locationLabel)
+  const resolved = resolveLocation(after || before)
   if (resolved === null) {
     return res.status(400).json({
-      error: `Cannot resolve location "${locationLabel}": not a label in the document, and not in line:N format`,
+      error: `Cannot resolve location "${after || before}": not a label in the document, and not in line:N format`,
     })
   }
 
-  // Insert \inputscratch into the resolved file (may be main or an included file)
   const targetContent = resolved.file === project.mainFile ? mainContent : readSourceFile(req.params.name, resolved.file)
   const targetLines = targetContent.split('\n')
   const insertLine = `\\inputscratch{${scratchRel}}{${label}}{${displayHeader}}`
   if (after) {
     targetLines.splice(resolved.line, 0, insertLine)
   } else {
-    targetLines.splice(resolved.line - 1, 0, insertLine)
+    targetLines.splice(resolved.labelLine - 1, 0, insertLine)
   }
 
   // Canonical scratch template — defines the scratch environment and helpers.
