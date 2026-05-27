@@ -34,6 +34,9 @@ const MODEL_SHORTHANDS: Record<string, string> = {
 function parseSpawnInput(raw: string): { doc: string; name: string | undefined; model: string | undefined } {
   const parts = raw.split(':')
   const doc = parts[0]
+  if (parts.length === 2 && MODEL_SHORTHANDS[parts[1]]) {
+    return { doc, name: undefined, model: MODEL_SHORTHANDS[parts[1]] }
+  }
   const name = parts[1] || undefined
   const modelRaw = parts[2] || undefined
   const model = modelRaw ? (MODEL_SHORTHANDS[modelRaw] || modelRaw) : undefined
