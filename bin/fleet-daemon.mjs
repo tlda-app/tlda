@@ -1252,7 +1252,22 @@ function flushSourceChanges(projectName) {
   for (const rel of filePaths) {
     const full = path.join(state.sourceDir, rel)
     if (!fs.existsSync(full)) { deleted.push(rel); continue }
-    try { files.push({ path: rel, ...readFileForUpload(full) }) }
+    // Resolve symlinks so the server stores files at their canonical path.
+    // Fixes the case where .scratchinputs/ is a directory symlink (e.g. pointing
+    // to revision/.scratchinputs/) — without this the daemon pushes
+    // .scratchinputs/file.tex but the build expects revision/.scratchinputs/file.tex.
+    let pushPath = rel
+    try {
+      const realFull = fs.realpathSync(full)
+      if (realFull !== full) {
+        const canonical = path.relative(state.sourceDir, realFull)
+        if (!canonical.startsWith('..')) {
+          pushPath = canonical
+          if (canonical !== rel) log.info(`resolved symlink: ${rel} → ${canonical}`)
+        }
+      }
+    } catch {}
+    try { files.push({ path: pushPath, ...readFileForUpload(full) }) }
     catch (e) { log.error(`read ${full}: ${e.message}`) }
   }
 
@@ -2555,9 +2570,14 @@ async function handleVersionCommitted(msg) {
     const { stdout: refOut } = await execFileP('git', ['rev-parse', '--verify', 'tlda-shadow/main'], { cwd: sourceDir, timeout: 5000 }).catch(() => ({ stdout: '' }))
     const ref = refOut.trim() ? 'tlda-shadow/main' : 'FETCH_HEAD'
 
-    // Stash any local changes
-    const { stdout: stashOut } = await execFileP('git', ['stash', 'push', '-m', 'tlda-sync-stash'], { cwd: sourceDir, timeout: 10000 })
-    const didStash = !stashOut.includes('No local changes')
+    // Stash any local changes (may fail on repos with symlink-traversing paths)
+    let didStash = false
+    try {
+      const { stdout: stashOut } = await execFileP('git', ['stash', 'push', '-m', 'tlda-sync-stash'], { cwd: sourceDir, timeout: 10000 })
+      didStash = !stashOut.includes('No local changes')
+    } catch (stashErr) {
+      log.warn(`stash failed for ${projectName} (continuing without stash): ${stashErr.message.split('\n')[0]}`)
+    }
 
     try {
       await execFileP('git', ['merge', '--ff-only', ref], { cwd: sourceDir, timeout: 15000 })
@@ -2572,6 +2592,7 @@ async function handleVersionCommitted(msg) {
     }
   } catch (e) {
     log.warn(`sync failed for ${projectName}: ${e.message}`)
+    sendMsg({ type: 'daemon-warning', project: projectName, message: `git sync failed: ${e.message.split('\n')[0]}` })
   }
 }
 

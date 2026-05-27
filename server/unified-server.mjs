@@ -3404,6 +3404,13 @@ function handleDaemonWsMessage(ws, msg) {
     return
   }
 
+  if (type === 'daemon-warning') {
+    const { project, message } = msg
+    const text = project ? `⚠️ daemon sync error on **${project}**: ${message}` : `⚠️ daemon warning: ${message}`
+    deliverTldaFeedbackChat({ from: 'fleet:tlda', to: SERVER_OWNER_ID, text, metadata: { type: 'daemon_warning', docName: project } })
+    return
+  }
+
   // Unknown — ignore.
 }
 
