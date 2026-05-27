@@ -343,23 +343,27 @@ export class BrowseIdle extends StateNode {
   override onPointerDown(info: TLPointerEventInfo) {
     switch (info.target) {
       case 'canvas': {
-        const hitShape = getHitShapeOnCanvasPointerDown(this.editor)
-
-        // svg-page shapes are document backgrounds — treat clicks on them as empty canvas
-        if (hitShape && (hitShape.type as string) === 'svg-page') {
-          if (info.accelKey) {
-            const onSourceClick = getOnSourceClick()
-            if (onSourceClick) {
-              const pagePoint2 = this.editor.inputs.getCurrentPagePoint()
-              const h = (hitShape.props as Record<string, number>).h ?? 1035
-              const yFraction = (pagePoint2.y - hitShape.y) / h
-              onSourceClick(hitShape.id, yFraction)
+        // cmd-click on document pages: getHitShapeOnCanvasPointerDown skips svg-page
+        // shapes (canSelect=false), so we hit-test them manually before the tldraw call.
+        if (info.accelKey) {
+          const onSourceClick = getOnSourceClick()
+          if (onSourceClick) {
+            const point = this.editor.inputs.getCurrentPagePoint()
+            const svgPage = this.editor.getCurrentPageShapes().find((s: TLShape) => {
+              if ((s.type as string) !== 'svg-page') return false
+              const b = this.editor.getShapePageBounds(s.id)
+              return b && point.x >= b.minX && point.x <= b.maxX && point.y >= b.minY && point.y <= b.maxY
+            })
+            if (svgPage) {
+              const b = this.editor.getShapePageBounds(svgPage.id)!
+              const yFraction = (point.y - b.minY) / b.h
+              onSourceClick(svgPage.id, yFraction)
+              return
             }
-            return
           }
-          this.parent.transition('pointing_canvas', info)
-          return
         }
+
+        const hitShape = getHitShapeOnCanvasPointerDown(this.editor)
 
         // ===== BROWSE ADDITION: fleet/HTML shape passthrough =====
         // Fleet shapes and locked HTML pages get DOM passthrough when NOT selected.
