@@ -53,6 +53,23 @@ function shAllowFail(cmd, opts = {}) {
   }
 }
 
+// Variant that returns a structured result including stderr on failure,
+// so callers can surface meaningful diagnostics instead of swallowing
+// errors. Used in the --apply path.
+function shResult(cmd, opts = {}) {
+  try {
+    const stdout = execSync(cmd, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts })
+    return { ok: true, stdout: String(stdout).trimEnd(), stderr: '' }
+  } catch (e) {
+    return {
+      ok: false,
+      stdout: e?.stdout != null ? String(e.stdout).trimEnd() : '',
+      stderr: e?.stderr != null ? String(e.stderr).trim() : (e?.message || ''),
+      code: e?.status,
+    }
+  }
+}
+
 function inRepo(repo) {
   return (cmd) => sh(`git -C "${repo}" ${cmd}`)
 }
@@ -493,7 +510,13 @@ export async function applyRescue(projectName, opts = {}) {
   let workTreeHash = null
   try {
     sh(`GIT_INDEX_FILE="${tmpIdx}" git -C "${plan.diag.sourceDir}" read-tree HEAD`)
-    sh(`GIT_INDEX_FILE="${tmpIdx}" git -C "${plan.diag.sourceDir}" add -u`)
+    // -A captures EVERYTHING on disk (respecting .gitignore), including
+    // files the user has on disk but never committed. Critical for repos
+    // whose tracked tree was filter-repo'd to a subset of what's on disk —
+    // without -A, untracked files vanish from the rescue commit and the
+    // subsequent merge refuses to overlay because they'd "overwrite
+    // untracked files".
+    sh(`GIT_INDEX_FILE="${tmpIdx}" git -C "${plan.diag.sourceDir}" add -A`)
     workTreeHash = sh(`GIT_INDEX_FILE="${tmpIdx}" git -C "${plan.diag.sourceDir}" write-tree`)
   } finally {
     sh(`rm -f "${tmpIdx}"`)
@@ -508,33 +531,55 @@ export async function applyRescue(projectName, opts = {}) {
   const upstreamName = plan.diag.upstream.ref.replace(/^refs\/remotes\//, '').split('/')[0]
 
   const log = opts.log || ((msg) => console.log(`[rescue] ${msg}`))
+
+  // Build the rescue-branch tip via plumbing — a commit whose tree IS the
+  // user's working tree, whose parent is the origin-side fork commit. We
+  // can't use `git checkout -b <commit>` here because the user's working
+  // tree has 60+ untracked files that exist as tracked files at the fork
+  // commit (because the local branch was filter-repo'd to paper-scope only,
+  // so anything outside paper-scope was untracked locally). `checkout`
+  // would refuse to overlay those — and rightly so, those untracked files
+  // ARE the user's work. By creating the rescue commit directly from
+  // workTreeHash and moving HEAD to it without touching the working tree,
+  // we keep every file the user has on disk and just align the index.
+  const commitTreeRes = shResult(`git -C "${plan.diag.sourceDir}" -c user.name=tlda-rescue -c user.email=tlda-rescue@local commit-tree -p "${plan.fork.origin.hash}" -m "Local work at ${ts}" "${workTreeHash}"`)
+  if (!commitTreeRes.ok || !/^[0-9a-f]{40}$/.test(commitTreeRes.stdout.trim())) {
+    return { ok: false, error: `Failed to build rescue tip commit:\n${commitTreeRes.stderr || commitTreeRes.stdout}` }
+  }
+  const rescueTipHash = commitTreeRes.stdout.trim()
+
   const steps = [
     ['fetch-upstream', `fetch ${upstreamName}`],
     ['save-tip',       `branch ${backupBranch} ${plan.diag.head.hash}`],
     ['mark-fork',      `update-ref refs/rescue-base ${plan.fork.origin.hash}`],
-    ['rescue-branch',  `checkout -b ${rescueBranch} ${plan.fork.origin.hash}`],
-    ['apply-wt',       `read-tree --reset -u ${workTreeHash}`],
-    ['commit-wt',      `-c user.name=tlda-rescue -c user.email=tlda-rescue@local commit -m "Local work at ${ts}" --allow-empty`],
-    ['merge',          `merge --no-commit --no-ff --allow-unrelated-histories ${plan.diag.upstream.ref}`],
+    // Plumbing: create the rescue branch ref, switch HEAD to it (no file
+    // movement), realign the index. Working tree stays as user left it.
+    ['rescue-branch',  `update-ref refs/heads/${rescueBranch} ${rescueTipHash}`],
+    ['move-head',      `symbolic-ref HEAD refs/heads/${rescueBranch}`],
+    ['align-index',    `reset --mixed ${rescueTipHash}`],
+    // Now porcelain again: 3-way merge. Merge-base is fork.origin (parent of
+    // rescue tip, ancestor of upstream), so this is a real 3-way merge with
+    // diff3 conflict markers in any conflicting files.
+    ['merge',          `merge --no-commit --no-ff ${plan.diag.upstream.ref}`],
   ]
 
   const completed = []
   for (const [label, cmd] of steps) {
     log(`${label}: git ${cmd}`)
-    // For `merge` we expect non-zero exit on conflict — that's a normal outcome.
-    const allowFail = label === 'merge'
-    const fn = allowFail ? shAllowFail : sh
-    const out = fn(`git -C "${plan.diag.sourceDir}" ${cmd}`)
-    if (out === null) {
+    const res = shResult(`git -C "${plan.diag.sourceDir}" ${cmd}`)
+    // `merge` is expected to exit non-zero on conflicts — that's a normal
+    // outcome we want to keep walking past.
+    const ok = res.ok || (label === 'merge' && /CONFLICT|Automatic merge failed/i.test(res.stderr + res.stdout))
+    if (!ok) {
       return {
         ok: false,
-        error: `Step "${label}" failed; halting.`,
+        error: `Step "${label}" failed (exit ${res.code ?? '?'}):\n${res.stderr || res.stdout || '(no output)'}`,
         completed,
         backupBranch,
         rescueBranch,
       }
     }
-    completed.push({ label, out })
+    completed.push({ label, out: res.stdout, stderr: res.stderr })
   }
 
   return {
@@ -546,6 +591,57 @@ export async function applyRescue(projectName, opts = {}) {
     fork: plan.fork,
     conflictedFiles: plan.conflictedFiles,
     sourceDir: plan.diag.sourceDir,
+  }
+}
+
+/**
+ * Roll back a partial rescue: if HEAD is currently on a `rescue-…` branch,
+ * move HEAD back to the original branch (read from the matching
+ * `pre-rescue-…` backup) and realign the index. Working tree is NOT
+ * touched.
+ *
+ * Optionally deletes the rescue branch and the backup branch (opts.deleteRefs).
+ */
+export async function rollbackRescue(projectName, opts = {}) {
+  const project = readProjectJson(projectName)
+  if (!project?.sourceDir) return { ok: false, error: `Project "${projectName}" not found / no sourceDir` }
+  const g = inRepo(project.sourceDir)
+  const headRef = g('symbolic-ref HEAD') // e.g. refs/heads/rescue-master-...
+  if (!headRef || !/^refs\/heads\/rescue-/.test(headRef)) {
+    return { ok: false, error: `HEAD is ${headRef || '(detached)'} — not a rescue branch, nothing to roll back.` }
+  }
+  // rescue-<branch>-<ts> → original branch is <branch>; backup is pre-rescue-<branch>-<ts>
+  const m = headRef.match(/^refs\/heads\/rescue-(.+?)-(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})$/)
+  if (!m) return { ok: false, error: `Unrecognized rescue branch format: ${headRef}` }
+  const originalBranch = m[1]
+  const ts = m[2]
+  const backupBranch = `pre-rescue-${originalBranch}-${ts}`
+  const backupHash = g(`rev-parse refs/heads/${backupBranch}`)
+  if (!backupHash) return { ok: false, error: `Backup branch ${backupBranch} not found — can't roll back safely.` }
+
+  // 1. Move HEAD back to original branch (symbolic-ref doesn't touch files).
+  const r1 = shResult(`git -C "${project.sourceDir}" symbolic-ref HEAD refs/heads/${originalBranch}`)
+  if (!r1.ok) return { ok: false, error: `symbolic-ref failed: ${r1.stderr}` }
+  // 2. Realign index to original branch's tree. Working tree untouched.
+  const r2 = shResult(`git -C "${project.sourceDir}" reset --mixed refs/heads/${originalBranch}`)
+  if (!r2.ok) return { ok: false, error: `reset --mixed failed: ${r2.stderr}` }
+
+  const rescueBranchRef = headRef.replace(/^refs\//, '')
+  const deleted = []
+  if (opts.deleteRefs) {
+    for (const ref of [rescueBranchRef.replace(/^heads\//, ''), backupBranch]) {
+      const d = shResult(`git -C "${project.sourceDir}" branch -D ${ref}`)
+      if (d.ok) deleted.push(ref)
+    }
+    sh(`git -C "${project.sourceDir}" update-ref -d refs/rescue-base`)
+  }
+
+  return {
+    ok: true,
+    sourceDir: project.sourceDir,
+    rolledBackFrom: rescueBranchRef.replace(/^heads\//, ''),
+    rolledBackTo: originalBranch,
+    deletedRefs: deleted,
   }
 }
 

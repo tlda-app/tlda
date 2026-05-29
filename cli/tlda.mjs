@@ -1460,6 +1460,15 @@ async function cmdRepoDoctor() {
     console.error('  to resolve. Never touches your master branch directly.')
     process.exit(1)
   }
+  if (process.argv.includes('--rollback')) {
+    const { rollbackRescue } = await import('./lib/repo-doctor.mjs')
+    const deleteRefs = process.argv.includes('--delete-refs')
+    const result = await rollbackRescue(name, { deleteRefs })
+    if (!result.ok) { console.error(`rollback: ${result.error}`); process.exit(1) }
+    console.log(`Rolled back: HEAD ${result.rolledBackFrom} → ${result.rolledBackTo}`)
+    console.log(`Working tree untouched. ${result.deletedRefs.length ? 'Deleted refs: ' + result.deletedRefs.join(', ') : '(Use --delete-refs to also delete the rescue/backup branches.)'}`)
+    process.exit(0)
+  }
   if (wantApply) {
     const { applyRescue, formatRescueResult } = await import('./lib/repo-doctor.mjs')
     const result = await applyRescue(name)
