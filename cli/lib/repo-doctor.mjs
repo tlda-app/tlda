@@ -532,36 +532,49 @@ export async function applyRescue(projectName, opts = {}) {
 
   const log = opts.log || ((msg) => console.log(`[rescue] ${msg}`))
 
-  // Build the rescue-branch tip via plumbing — a commit whose tree IS the
-  // user's working tree, whose parent is the origin-side fork commit. We
-  // can't use `git checkout -b <commit>` here because the user's working
-  // tree has 60+ untracked files that exist as tracked files at the fork
-  // commit (because the local branch was filter-repo'd to paper-scope only,
-  // so anything outside paper-scope was untracked locally). `checkout`
-  // would refuse to overlay those — and rightly so, those untracked files
-  // ARE the user's work. By creating the rescue commit directly from
-  // workTreeHash and moving HEAD to it without touching the working tree,
-  // we keep every file the user has on disk and just align the index.
-  const commitTreeRes = shResult(`git -C "${plan.diag.sourceDir}" -c user.name=tlda-rescue -c user.email=tlda-rescue@local commit-tree -p "${plan.fork.origin.hash}" -m "Local work at ${ts}" "${workTreeHash}"`)
-  if (!commitTreeRes.ok || !/^[0-9a-f]{40}$/.test(commitTreeRes.stdout.trim())) {
-    return { ok: false, error: `Failed to build rescue tip commit:\n${commitTreeRes.stderr || commitTreeRes.stdout}` }
-  }
-  const rescueTipHash = commitTreeRes.stdout.trim()
+  // Find untracked files that exist on disk AND are tracked at the upstream
+  // tip. These would block the merge ("would overwrite untracked files").
+  // We add+commit them on the rescue branch so the merge sees them as
+  // committed-on-our-side rather than as untracked obstacles. Files that
+  // are untracked AND not present on upstream are left alone (Skip's rule:
+  // if neither side tracks them, they stay untracked).
+  const upstreamPaths = new Set(
+    (sh(`git -C "${plan.diag.sourceDir}" ls-tree -r --name-only "${plan.diag.upstream.ref}"`) || '')
+      .split('\n').filter(Boolean)
+  )
+  const untrackedLines = (sh(`git -C "${plan.diag.sourceDir}" ls-files --others --exclude-standard`) || '')
+    .split('\n').filter(Boolean)
+  const promotePaths = untrackedLines.filter(p => upstreamPaths.has(p))
 
   const steps = [
     ['fetch-upstream', `fetch ${upstreamName}`],
     ['save-tip',       `branch ${backupBranch} ${plan.diag.head.hash}`],
     ['mark-fork',      `update-ref refs/rescue-base ${plan.fork.origin.hash}`],
-    // Plumbing: create the rescue branch ref, switch HEAD to it (no file
-    // movement), realign the index. Working tree stays as user left it.
-    ['rescue-branch',  `update-ref refs/heads/${rescueBranch} ${rescueTipHash}`],
-    ['move-head',      `symbolic-ref HEAD refs/heads/${rescueBranch}`],
-    ['align-index',    `reset --mixed ${rescueTipHash}`],
-    // Now porcelain again: 3-way merge. Merge-base is fork.origin (parent of
-    // rescue tip, ancestor of upstream), so this is a real 3-way merge with
-    // diff3 conflict markers in any conflicting files.
-    ['merge',          `merge --no-commit --no-ff ${plan.diag.upstream.ref}`],
+    // Branch off current tip — no file movement, no checkout overhead.
+    // `master` ref is unmoved; HEAD now points at the new rescue branch.
+    ['rescue-branch',  `checkout -b ${rescueBranch}`],
+    // Stage modifications to ALREADY-tracked files. Without this the
+    // merge would refuse because dirty working tree.
+    ['stage-modifications', `add -u`],
   ]
+  if (promotePaths.length) {
+    // Stage upstream-tracked-but-locally-untracked files (your local
+    // versions of files origin already tracks).
+    steps.push(['stage-untracked', `add -- ${promotePaths.map(p => `"${p.replace(/"/g, '\\"')}"`).join(' ')}`])
+  }
+  // Commit whatever's staged onto rescue branch so the index is clean
+  // before the merge starts. `--allow-empty` covers the case where
+  // nothing was staged (no untracked promotions, no tracked
+  // modifications).
+  steps.push(['commit-local-state',
+    `-c user.name=tlda-rescue -c user.email=tlda-rescue@local commit --allow-empty -m "Local work captured at ${ts}"`])
+  // Graft the local fork commit onto the origin fork commit so git's
+  // merge-base algorithm finds origin's fork as the common ancestor.
+  // Reversible with `git replace -d`.
+  steps.push(['graft-fork', `replace --graft ${plan.fork.local.hash} ${plan.fork.origin.hash}`])
+  // 3-way merge using grafted fork as base. Conflicts surface as diff3
+  // markers in the working tree for Skip to resolve in Zed.
+  steps.push(['merge', `merge --no-commit --no-ff ${plan.diag.upstream.ref}`])
 
   const completed = []
   for (const [label, cmd] of steps) {
@@ -576,21 +589,26 @@ export async function applyRescue(projectName, opts = {}) {
         error: `Step "${label}" failed (exit ${res.code ?? '?'}):\n${res.stderr || res.stdout || '(no output)'}`,
         completed,
         backupBranch,
-        rescueBranch,
       }
     }
     completed.push({ label, out: res.stdout, stderr: res.stderr })
   }
 
+  // Report conflicted files actually surfaced by the live merge.
+  const conflictListing = sh(`git -C "${plan.diag.sourceDir}" diff --name-only --diff-filter=U`) || ''
+  const liveConflicted = conflictListing.split('\n').filter(Boolean)
+  const inMerge = existsSync(join(gitDirAbs, 'MERGE_HEAD'))
+
   return {
     ok: true,
     completed,
     backupBranch,
-    rescueBranch,
     workTreeHash,
     fork: plan.fork,
-    conflictedFiles: plan.conflictedFiles,
+    conflictedFiles: liveConflicted,
+    inMerge,
     sourceDir: plan.diag.sourceDir,
+    branch: plan.diag.branch,
   }
 }
 
@@ -643,6 +661,72 @@ export async function rollbackRescue(projectName, opts = {}) {
     rolledBackTo: originalBranch,
     deletedRefs: deleted,
   }
+}
+
+/**
+ * Clean up a partial apply that left the user on their original branch
+ * but with staged changes / leftover graft / leftover MERGE_HEAD. Resets
+ * the index, deletes any replace refs we wrote, aborts any in-progress
+ * merge. Working tree is NOT touched.
+ */
+export async function cleanupApplyState(projectName, opts = {}) {
+  const project = readProjectJson(projectName)
+  if (!project?.sourceDir) return { ok: false, error: `Project "${projectName}" not found / no sourceDir` }
+
+  const cwd = project.sourceDir
+  const did = []
+  const targetBranch = opts.targetBranch || 'master'
+
+  // 0. If HEAD is on a rescue-* branch, move it back to the target branch
+  // (default master) first. symbolic-ref doesn't touch files.
+  const currentHead = sh(`git -C "${cwd}" symbolic-ref HEAD 2>/dev/null`) || ''
+  if (/^refs\/heads\/rescue-/.test(currentHead)) {
+    const r0 = shResult(`git -C "${cwd}" symbolic-ref HEAD refs/heads/${targetBranch}`)
+    if (r0.ok) did.push(`HEAD ${currentHead.replace(/^refs\/heads\//, '')} → ${targetBranch}`)
+  }
+
+  // 1. If a merge is in progress, abort it (but `--abort` will try to reset
+  // working tree to ORIG_HEAD's tree, which can fail on untracked-overwrite
+  // again). Safer: clear MERGE_HEAD/MERGE_MSG manually.
+  const gitDir = sh(`git -C "${cwd}" rev-parse --git-dir`)
+  const gitDirAbs = gitDir?.startsWith('/') ? gitDir : join(cwd, gitDir || '.git')
+  for (const f of ['MERGE_HEAD', 'MERGE_MSG', 'AUTO_MERGE']) {
+    const p = join(gitDirAbs, f)
+    if (existsSync(p)) {
+      try { sh(`rm -f "${p}"`); did.push(`cleared ${f}`) } catch {}
+    }
+  }
+
+  // 2. Unstage any staged changes (reset index to HEAD). Working tree
+  // untouched.
+  const headRef = sh(`git -C "${cwd}" symbolic-ref HEAD`)?.replace(/^refs\/heads\//, '') || 'HEAD'
+  const r2 = shResult(`git -C "${cwd}" reset --mixed`)
+  if (r2.ok) did.push(`unstaged index → ${headRef}`)
+
+  // 3. Remove any `git replace` grafts we added.
+  const replaceList = sh(`git -C "${cwd}" replace --list`) || ''
+  for (const ref of replaceList.split('\n').filter(Boolean)) {
+    const d = shResult(`git -C "${cwd}" replace -d ${ref}`)
+    if (d.ok) did.push(`removed graft ${ref.slice(0,7)}`)
+  }
+
+  // 4. Remove rescue-base ref if present.
+  if (sh(`git -C "${cwd}" rev-parse refs/rescue-base 2>/dev/null`)) {
+    sh(`git -C "${cwd}" update-ref -d refs/rescue-base`)
+    did.push('removed refs/rescue-base')
+  }
+
+  // 5. Optionally delete stale rescue-* and pre-rescue-* branches.
+  if (opts.deleteRescueBranches) {
+    const stale = (sh(`git -C "${cwd}" for-each-ref --format='%(refname:short)' 'refs/heads/rescue-*' 'refs/heads/pre-rescue-*'`) || '')
+      .split('\n').filter(Boolean)
+    for (const b of stale) {
+      const d = shResult(`git -C "${cwd}" branch -D ${b}`)
+      if (d.ok) did.push(`deleted ${b}`)
+    }
+  }
+
+  return { ok: true, sourceDir: cwd, did }
 }
 
 export function formatRescuePlan(r) {
@@ -718,25 +802,24 @@ export function formatRescueResult(r) {
   lines.push(`== Rescue applied ==`)
   lines.push(`Source repo: ${r.sourceDir}`)
   lines.push(`Backup of old tip: ${r.backupBranch}`)
-  lines.push(`Now on rescue branch: ${r.rescueBranch}`)
-  lines.push(`Fork point: local ${r.fork.local.hash.slice(0,7)} ↔ origin ${r.fork.origin.hash.slice(0,7)}`)
+  lines.push(`Branch: ${r.branch} (master untouched; merge sits in index with MERGE_HEAD = origin)`)
+  lines.push(`Fork point grafted: local ${r.fork.local.hash.slice(0,7)} ↔ origin ${r.fork.origin.hash.slice(0,7)}`)
   lines.push('')
   lines.push(`Steps run:`)
   for (const c of r.completed) lines.push(`  ✓ ${c.label}`)
   lines.push('')
   if (r.conflictedFiles?.length) {
-    lines.push(`Conflicts in ${r.conflictedFiles.length} file(s) — resolve with your editor, then commit on ${r.rescueBranch}:`)
+    lines.push(`Conflicts in ${r.conflictedFiles.length} file(s) — resolve in editor:`)
     for (const f of r.conflictedFiles) lines.push(`  ${f}`)
+  } else if (r.inMerge) {
+    lines.push(`Merge in progress, no conflicts surfaced. Run \`git status\` in source dir to verify.`)
   } else {
-    lines.push(`Merge appears clean. Verify with: git -C "${r.sourceDir}" status`)
+    lines.push(`No conflicts surfaced and not in merge state — check repo manually.`)
   }
   lines.push('')
   lines.push(`When done resolving:`)
   lines.push(`  git -C "${r.sourceDir}" add <resolved files>`)
   lines.push(`  git -C "${r.sourceDir}" commit -m "<your message>"`)
-  lines.push(`  # then fast-forward master to ${r.rescueBranch} when satisfied:`)
-  lines.push(`  git -C "${r.sourceDir}" checkout master`)
-  lines.push(`  git -C "${r.sourceDir}" merge --ff-only ${r.rescueBranch}`)
   return lines.join('\n')
 }
 

@@ -1469,6 +1469,17 @@ async function cmdRepoDoctor() {
     console.log(`Working tree untouched. ${result.deletedRefs.length ? 'Deleted refs: ' + result.deletedRefs.join(', ') : '(Use --delete-refs to also delete the rescue/backup branches.)'}`)
     process.exit(0)
   }
+  if (process.argv.includes('--cleanup')) {
+    const { cleanupApplyState } = await import('./lib/repo-doctor.mjs')
+    const deleteRescueBranches = process.argv.includes('--delete-rescue-branches')
+    const result = await cleanupApplyState(name, { deleteRescueBranches })
+    if (!result.ok) { console.error(`cleanup: ${result.error}`); process.exit(1) }
+    console.log(`Cleanup in ${result.sourceDir}:`)
+    for (const d of result.did) console.log(`  ✓ ${d}`)
+    if (!result.did.length) console.log('  (nothing to clean)')
+    console.log('Working tree untouched.')
+    process.exit(0)
+  }
   if (wantApply) {
     const { applyRescue, formatRescueResult } = await import('./lib/repo-doctor.mjs')
     const result = await applyRescue(name)
