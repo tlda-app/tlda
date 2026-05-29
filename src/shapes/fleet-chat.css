@@ -464,6 +464,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   margin-right: 4px;
   user-select: none !important;
   -webkit-user-select: none !important;
+  opacity: var(--fleet-chrome-alpha, 1);
 }
 
 /* --- Nick --- */
@@ -498,9 +499,10 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 }
 
 /* --- Age-based opacity --- */
-.fleet-chat-shape .chat-line-recent { opacity: calc(1 - var(--fleet-age-fade, 1) * 0); }
-.fleet-chat-shape .chat-line-mid { opacity: calc(1 - var(--fleet-age-fade, 1) * 0.2); }
-.fleet-chat-shape .chat-line-old { opacity: calc(1 - var(--fleet-age-fade, 1) * 0.4); }
+/* Multiply content-alpha by age-fade so both prefs have independent effect. */
+.fleet-chat-shape .chat-line-recent { opacity: var(--fleet-content-alpha, 1); }
+.fleet-chat-shape .chat-line-mid { opacity: calc(var(--fleet-content-alpha, 1) * (1 - var(--fleet-age-fade, 1) * 0.2)); }
+.fleet-chat-shape .chat-line-old { opacity: calc(var(--fleet-content-alpha, 1) * (1 - var(--fleet-age-fade, 1) * 0.4)); }
 
 /* --- Receipt / delivery indicator --- */
 .fleet-chat-shape .chat-receipt {
@@ -2235,7 +2237,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   padding: 4px 8px;
   border: 1px solid transparent;
   border-radius: 4px;
-  font-size: 11px;
+  font-size: var(--fleet-base-font, 11px);
   line-height: 1.4;
   font-family: inherit;
   font-weight: 300;
@@ -2247,6 +2249,10 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   background: rgba(128, 128, 128, 0.08);
   box-sizing: border-box;
 }
+.fleet-chat-shape textarea {
+  font-size: var(--fleet-base-font, 11px);
+}
+
 .fleet-chat-shape .ref-chip-underlay {
   background: rgba(147, 112, 219, 0.18);
   border-radius: 3px;
@@ -2258,7 +2264,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 /* Thinking indicator */
 .chat-thinking {
   font-style: italic;
-  font-size: 11px;
+  font-size: var(--fleet-base-font, 11px);
   opacity: calc(0.6 * var(--fleet-chrome-alpha, 1));
   pointer-events: none;
 }
@@ -2276,7 +2282,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
    are pending, not delivered. Cleared automatically when the agent
    stops thinking. */
 .chat-queued {
-  font-size: 11px;
+  font-size: var(--fleet-base-font, 11px);
   opacity: calc(0.55 * var(--fleet-chrome-alpha, 1));
   font-style: italic;
   pointer-events: none;
