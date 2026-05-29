@@ -1754,7 +1754,6 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
     })
 
     // Commit source snapshot to shadow repo (non-blocking)
-    const snapshotVersion = myVersion
     commitSnapshot(name).then(async result => {
       if (result) {
         // Update doc-version sentinel with shadow hash (the build's version identity)
@@ -1769,12 +1768,16 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
         // control and tracks their own remote (e.g. Overleaf). Agents and the
         // user can reach the snapshots via plain git: `git diff shadow/abc1234`,
         // `git checkout shadow/abc1234 -- path`, etc.
-        // Skip mirror if a newer build has already started — its callback will mirror.
+        // No buildVersion early-return: the previous version of this code
+        // skipped when a newer build had started, on the assumption that the
+        // newer build's callback would mirror. That's wrong — if the newer
+        // build's source already matched the shadow tree (because the older
+        // build captured the change), commitSnapshot returns null and the
+        // newer callback never enters this block. Net result: nobody mirrors.
+        // All operations here are idempotent (git tag -f, fetch --tags --force,
+        // update-ref) so running for both builds is harmless. The last call
+        // wins, leaving tag and ref pointing at the latest shadow hash.
         const hash7 = result.hash.slice(0, 7)
-        if (buildVersion.get(name) !== snapshotVersion) {
-          console.log(`[mirror] ${name}@${hash7} skipped: newer build (v${buildVersion.get(name)}) superseded this one (v${snapshotVersion})`)
-          return
-        }
         try {
           const project = readProject(name)
           if (!project?.sourceDir) {
