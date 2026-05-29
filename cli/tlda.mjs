@@ -1440,6 +1440,22 @@ async function cmdSpawn() {
   await new Promise(() => {})
 }
 
+async function cmdRepoDoctor() {
+  const name = getPositional(0)
+  if (!name) {
+    console.error('Usage: tlda repo-doctor <project>')
+    console.error('  Diagnose a project\'s source repo for tlda-induced damage:')
+    console.error('  silent `git reset --mixed` snapshots accumulated on the user\'s')
+    console.error('  branch (pre-b317ecc), unrelated histories with origin, leftover')
+    console.error('  merge backups, etc. Read-only: takes no action.')
+    process.exit(1)
+  }
+  const { diagnose, formatDiagnose } = await import('./lib/repo-doctor.mjs')
+  const result = await diagnose(name)
+  console.log(formatDiagnose(result))
+  process.exit(result.ok ? 0 : 1)
+}
+
 async function cmdInitShadow() {
   const name = getPositional(0)
   if (!name) {
@@ -2318,6 +2334,7 @@ async function main() {
       case 'deploy': await cmdDeploy(); break
       case 'doctor': await cmdDoctor(); break
       case 'init-shadow': await cmdInitShadow(); break
+      case 'repo-doctor': await cmdRepoDoctor(); break
       default:
         console.log(`tlda — tlda CLI
 
