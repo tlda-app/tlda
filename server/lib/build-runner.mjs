@@ -1763,12 +1763,12 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
         })
         recordGitSnapshot(name, { commitHash: result.hash, commitMessage: result.message || `Build at ${new Date().toISOString()}`, pages: expectedPages ?? 0 })
         emitGlobalEvent('version-committed', { name, hash: result.hash, timestamp: result.timestamp })
-        // Mirror: shadow repo records the build, working copy receives it via
-        // its tlda-shadow remote. No filter on the working-copy side — the
-        // shadow already contains paper-scope only (commitSnapshot enforces
-        // that). We update the working copy's master ref + index to match
-        // shadow's HEAD without touching the working tree, so any uncommitted
-        // edits survive and show as "modified" relative to the new master.
+        // Mirror: fetch shadow tags into the working copy and advance the
+        // optional refs/tlda/shadow/HEAD pointer. We never touch the user's
+        // branches, index, or working tree — their `master` stays under their
+        // control and tracks their own remote (e.g. Overleaf). Agents and the
+        // user can reach the snapshots via plain git: `git diff shadow/abc1234`,
+        // `git checkout shadow/abc1234 -- path`, etc.
         // Skip mirror if a newer build has already started — its callback will mirror.
         if (buildVersion.get(name) !== snapshotVersion) return
         try {
@@ -1794,7 +1794,10 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
                 throw fetchErr
               }
             }
-            await _gitRetryOnLock(() => _execAsync(`git reset --mixed ${result.hash}`, { cwd, timeout: 10000 }))
+            // Advance the optional shadow-HEAD pointer. Lives under refs/tlda/
+            // so it doesn't appear in `git branch` or `git log` output unless
+            // the user asks for it explicitly.
+            await _gitRetryOnLock(() => _execAsync(`git update-ref refs/tlda/shadow/HEAD ${result.hash}`, { cwd, timeout: 5000 }))
             updateProject(name, { lastMirrorSuccess: new Date().toISOString() })
           }
         } catch (mirrorErr) {
