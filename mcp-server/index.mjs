@@ -3659,22 +3659,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             const existingVersion = parseInt(versionMatch[1]);
             if (existingVersion === result.scratchTemplateVersion) {
               writeTemplate = false; // already current
+            } else if (existingVersion < result.scratchTemplateVersion) {
+              // Version-tagged default behind the tool's version. Tagged files
+              // are tool-managed; bumping is the expected upgrade path. Rewrite.
             } else {
-              // Version mismatch — default changed; surface error instead of overwriting
-              return { content: [{ type: 'text', text: `Error: scratch-template.tex in ${sourceDir} is version ${existingVersion} but the tool expects version ${result.scratchTemplateVersion}. The default template has changed. Review the new default, reconcile your template, and update the version tag.` }], isError: true };
+              // Existing is NEWER than the tool — that's a mismatch worth
+              // surfacing rather than downgrading.
+              return { content: [{ type: 'text', text: `Error: scratch-template.tex in ${sourceDir} is version ${existingVersion} but the tool expects version ${result.scratchTemplateVersion}. Tool is older than the template. Update the tool or downgrade the template manually.` }], isError: true };
             }
           }
         }
         if (writeTemplate) fs.writeFileSync(templateAbsPath, scratchTemplateContent, 'utf8');
       }
       const scratchAbsPath = path.join(sourceDir, scratchPath);
-      fs.writeFileSync(scratchAbsPath, wrappedContent, 'utf8');
-      if (isMd) {
-        // The placeholder must look STALE to the build runner's mtime check
-        // (convertScratchMarkdown skips when texMtime > mdMtime). Otherwise
-        // pandoc never runs on first build and the section ends up empty.
-        try { fs.utimesSync(scratchAbsPath, 0, 0); } catch {}
-      }
+      // For markdown scratch, skip writing the .tex placeholder entirely.
+      // Local-side utimes can't survive the daemon push (server stamps its
+      // own mtimes on write), so any placeholder we write ends up newer than
+      // the .md on the server and the build runner's staleness check skips
+      // pandoc — the section renders empty. Leaving the .tex absent makes
+      // existsSync(texPath) false in convertScratchMarkdown, so pandoc runs
+      // unconditionally on the first build, writes the real .tex, and
+      // subsequent builds use the mtime check correctly.
+      if (!isMd) fs.writeFileSync(scratchAbsPath, wrappedContent, 'utf8');
       if (result.sourcePath) {
         const symlinkPath = path.join(sourceDir, result.sourcePath);
         try { fs.unlinkSync(symlinkPath); } catch {}

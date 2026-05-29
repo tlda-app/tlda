@@ -407,6 +407,20 @@ async function compileLaTeX(ctx) {
     TEXINPUTS: `${buildDir}:${texDir}:${srcDir}:`,
   }
 
+  // Override the scratch-template for THIS build. The user's source dir has
+  // the marker version of \inputscratch (so local vanilla-latex builds show
+  // a visible placeholder per scratch section); the build runner writes a
+  // version into buildDir/.scratchinputs/ that actually \input{}s the scratch
+  // content. TEXINPUTS lists buildDir first, so pdflatex resolves
+  // \input{.scratchinputs/scratch-template} from here, not srcDir.
+  const buildScratchDir = join(buildDir, '.scratchinputs')
+  mkdirSync(buildScratchDir, { recursive: true })
+  writeFileSync(join(buildScratchDir, 'scratch-template.tex'),
+    '% scratch-template — server-build override\n' +
+    '\\usepackage{xcolor}\n' +
+    '\\newcommand{\\inputscratch}[3]{\\begingroup\\synctex=1\\color[gray]{0.3}\\par\\noindent{\\footnotesize\\ttfamily[#3]}\\par\\label{#2}\\input{#1}\\endgroup\\par}\n'
+  )
+
   // Build the pdflatex command — cwd is srcDir, output goes to buildDir.
   // -recorder emits <jobname>.fls listing every file read (INPUT) and
   // written (OUTPUT); we parse it after a successful build to populate

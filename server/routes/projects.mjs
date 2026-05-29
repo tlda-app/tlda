@@ -1319,16 +1319,39 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
     targetLines.splice(resolved.labelLine - 1, 0, insertLine)
   }
 
-  // Canonical scratch template — defines the scratch environment and helpers.
-  // Kept in .scratchinputs/scratch-template.tex so it can be updated without touching main.tex.
+  // Canonical scratch template — defines \inputscratch as a marker.
+  //
+  // The local definition is a pure marker: no file lookup, no \input. A user
+  // who builds main.tex locally with vanilla latex sees a visible framebox
+  // for each scratch section explaining that the real content is built by
+  // tlda. The tlda build runner ships its OWN scratch-template.tex (with the
+  // real-include version of \inputscratch) into buildDir/.scratchinputs/
+  // before pdflatex runs; TEXINPUTS puts buildDir first so the override wins
+  // and the server build sees the actual content. The user's source dir is
+  // never touched.
+  //
   // Bump SCRATCH_TEMPLATE_VERSION when the default template content changes.
-  const SCRATCH_TEMPLATE_VERSION = 3
+  const SCRATCH_TEMPLATE_VERSION = 4
   const scratchTemplateRel = '.scratchinputs/scratch-template.tex'
   const scratchTemplatePath = mainDir !== '.' ? join(mainDir, scratchTemplateRel) : scratchTemplateRel
   const scratchTemplateContent = [
     `% scratch-template-version: ${SCRATCH_TEMPLATE_VERSION}`,
+    '% Marker version — used for local builds. The tlda build runner swaps in',
+    '% a version that actually \\input{}s the scratch content.',
     '\\usepackage{xcolor}',
-    '\\newcommand{\\inputscratch}[3]{\\begingroup\\synctex=1\\color[gray]{0.3}\\par\\noindent{\\footnotesize\\ttfamily[#3]}\\par\\label{#2}\\input{#1}\\endgroup\\par}',
+    '\\newcommand{\\inputscratch}[3]{%',
+    '  \\begingroup',
+    '  \\par\\noindent',
+    '  \\framebox[\\linewidth]{\\parbox{\\dimexpr\\linewidth-2em}{%',
+    '    \\footnotesize\\ttfamily',
+    '    [tlda scratch placeholder: \\detokenize{#2}]\\par',
+    '    Header: #3\\par',
+    '    Source: \\detokenize{#1}\\par',
+    '    Built by tlda; local builds show this marker only.%',
+    '  }}%',
+    '  \\label{#2}%',
+    '  \\endgroup\\par',
+    '}',
     '',
   ].join('\n')
 

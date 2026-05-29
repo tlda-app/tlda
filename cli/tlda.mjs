@@ -1440,6 +1440,64 @@ async function cmdSpawn() {
   await new Promise(() => {})
 }
 
+async function cmdRepoDoctor() {
+  const name = getPositional(0)
+  const wantRescue = process.argv.includes('--rescue')
+  const wantApply = process.argv.includes('--apply')
+  if (!name) {
+    console.error('Usage:')
+    console.error('  tlda repo-doctor <project>             Diagnose only (read-only)')
+    console.error('  tlda repo-doctor <project> --rescue    Compute a rescue plan (DRY RUN)')
+    console.error('  tlda repo-doctor <project> --apply     Execute the rescue plan')
+    console.error('')
+    console.error('Inspects a project\'s source repo for tlda-induced damage.')
+    console.error('Without flags: prints diagnosis only.')
+    console.error('--rescue: finds the content-fork point with upstream and dry-runs a')
+    console.error('  3-way merge. Read-only.')
+    console.error('--apply: executes the rescue. Creates a backup branch, opens a new')
+    console.error('  rescue branch at the content-fork on origin\'s chain, replays your')
+    console.error('  working tree, merges origin/master. Stops in conflict state for you')
+    console.error('  to resolve. Never touches your master branch directly.')
+    process.exit(1)
+  }
+  if (process.argv.includes('--rollback')) {
+    const { rollbackRescue } = await import('./lib/repo-doctor.mjs')
+    const deleteRefs = process.argv.includes('--delete-refs')
+    const result = await rollbackRescue(name, { deleteRefs })
+    if (!result.ok) { console.error(`rollback: ${result.error}`); process.exit(1) }
+    console.log(`Rolled back: HEAD ${result.rolledBackFrom} → ${result.rolledBackTo}`)
+    console.log(`Working tree untouched. ${result.deletedRefs.length ? 'Deleted refs: ' + result.deletedRefs.join(', ') : '(Use --delete-refs to also delete the rescue/backup branches.)'}`)
+    process.exit(0)
+  }
+  if (process.argv.includes('--cleanup')) {
+    const { cleanupApplyState } = await import('./lib/repo-doctor.mjs')
+    const deleteRescueBranches = process.argv.includes('--delete-rescue-branches')
+    const result = await cleanupApplyState(name, { deleteRescueBranches })
+    if (!result.ok) { console.error(`cleanup: ${result.error}`); process.exit(1) }
+    console.log(`Cleanup in ${result.sourceDir}:`)
+    for (const d of result.did) console.log(`  ✓ ${d}`)
+    if (!result.did.length) console.log('  (nothing to clean)')
+    console.log('Working tree untouched.')
+    process.exit(0)
+  }
+  if (wantApply) {
+    const { applyRescue, formatRescueResult } = await import('./lib/repo-doctor.mjs')
+    const result = await applyRescue(name)
+    console.log(formatRescueResult(result))
+    process.exit(result.ok ? 0 : 1)
+  }
+  if (wantRescue) {
+    const { rescuePlan, formatRescuePlan } = await import('./lib/repo-doctor.mjs')
+    const result = await rescuePlan(name)
+    console.log(formatRescuePlan(result))
+    process.exit(result.ok ? 0 : 1)
+  }
+  const { diagnose, formatDiagnose } = await import('./lib/repo-doctor.mjs')
+  const result = await diagnose(name)
+  console.log(formatDiagnose(result))
+  process.exit(result.ok ? 0 : 1)
+}
+
 async function cmdInitShadow() {
   const name = getPositional(0)
   if (!name) {
@@ -2318,6 +2376,7 @@ async function main() {
       case 'deploy': await cmdDeploy(); break
       case 'doctor': await cmdDoctor(); break
       case 'init-shadow': await cmdInitShadow(); break
+      case 'repo-doctor': await cmdRepoDoctor(); break
       default:
         console.log(`tlda — tlda CLI
 
