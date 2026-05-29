@@ -3668,13 +3668,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (writeTemplate) fs.writeFileSync(templateAbsPath, scratchTemplateContent, 'utf8');
       }
       const scratchAbsPath = path.join(sourceDir, scratchPath);
-      fs.writeFileSync(scratchAbsPath, wrappedContent, 'utf8');
-      if (isMd) {
-        // The placeholder must look STALE to the build runner's mtime check
-        // (convertScratchMarkdown skips when texMtime > mdMtime). Otherwise
-        // pandoc never runs on first build and the section ends up empty.
-        try { fs.utimesSync(scratchAbsPath, 0, 0); } catch {}
-      }
+      // For markdown scratch, skip writing the .tex placeholder entirely.
+      // Local-side utimes can't survive the daemon push (server stamps its
+      // own mtimes on write), so any placeholder we write ends up newer than
+      // the .md on the server and the build runner's staleness check skips
+      // pandoc — the section renders empty. Leaving the .tex absent makes
+      // existsSync(texPath) false in convertScratchMarkdown, so pandoc runs
+      // unconditionally on the first build, writes the real .tex, and
+      // subsequent builds use the mtime check correctly.
+      if (!isMd) fs.writeFileSync(scratchAbsPath, wrappedContent, 'utf8');
       if (result.sourcePath) {
         const symlinkPath = path.join(sourceDir, result.sourcePath);
         try { fs.unlinkSync(symlinkPath); } catch {}
