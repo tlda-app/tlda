@@ -822,7 +822,14 @@ export function flushAllRooms() {
     const room = rooms.get(docName)
     if (room) {
       try {
-        saveSnapshot(docName, room)
+        // Use synchronous writes at shutdown so process.exit() doesn't interrupt them.
+        const path = snapshotPath(docName)
+        const dir = dirname(path)
+        mkdirSync(dir, { recursive: true })
+        const snapshot = room.getCurrentSnapshot()
+        const tmp = path + '.tmp'
+        writeFileSync(tmp, JSON.stringify(snapshot))
+        renameSync(tmp, path)
         console.log(`[sync] Flushed snapshot: ${docName}`)
       } catch (e) {
         console.error(`[sync] Failed to flush ${docName}:`, e.message)
