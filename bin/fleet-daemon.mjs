@@ -1140,10 +1140,17 @@ function syncSourceWatchers(projectList, activeViewers) {
       if (!filename) return
       const isScratch = filename.includes('.scratchinputs/')
       if (!isScratch) {
-        if (state.watchSet.size > 0) {
-          if (!state.watchSet.has(filename)) return
-        } else {
-          if (!isSourceFile(filename)) return
+        // Source files (.tex, .bib, .sty, etc.) always pass — even if not in the watchSet.
+        // The watchSet comes from the PREVIOUS build's .fls; a newly-added \input dep
+        // won't be in it yet, but we must still push it so the build can pick it up.
+        // Non-source files (build artifacts, .aux, etc.) are filtered by watchSet when
+        // available, or dropped entirely when the watchSet is empty (bootstrap mode).
+        if (!isSourceFile(filename)) {
+          if (state.watchSet.size > 0) {
+            if (!state.watchSet.has(filename)) return
+          } else {
+            return
+          }
         }
       }
       if (!fromPoll) {
