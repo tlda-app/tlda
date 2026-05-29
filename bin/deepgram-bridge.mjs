@@ -199,12 +199,13 @@ wss.on('connection', (browserWs) => {
       const msg = JSON.parse(data.toString())
       if (msg.type === 'start') {
         connectDeepgram()
-      } else if (msg.type === 'stop') {
-        disconnectDeepgram()
-      } else if (msg.type === 'flush') {
-        // Compatible with whisper-bridge flush
-        console.log('[deepgram-bridge] flush (closing Deepgram session)')
-        disconnectDeepgram()
+      } else if (msg.type === 'stop' || msg.type === 'flush') {
+        // Voice client sends these on pause/hardReset cycles, originally
+        // expecting the pre-isBinary-fix behavior (silent no-op — the text
+        // branch was unreachable). Honoring them here actually tears down
+        // Deepgram mid-utterance, which drops in-flight interim text and
+        // causes "transcripts vanish." Keep the session warm; rely on the
+        // browserWs close to end it.
       } else if (msg.type === 'log') {
         console.log(`[voice] ${msg.text}`)
       }
