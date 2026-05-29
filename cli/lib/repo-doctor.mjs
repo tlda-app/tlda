@@ -247,7 +247,91 @@ export function findContentFork(g, originRef, opts = {}) {
   // Walk local commits newest-first; first match wins.
   for (const local of localCommits) {
     const origin = originByTree.get(local.tree)
-    if (origin) return { local, origin }
+    if (origin) return { local, origin, matchType: 'tree' }
+  }
+  return null
+}
+
+/**
+ * Read paper-scope file paths from the server's relevant-files.json,
+ * normalized to be relative to the user's sourceDir. These are the files
+ * pdflatex actually opened in the last build — bib/svg are included by
+ * writeRelevantFiles in build-runner.mjs.
+ */
+function readPaperScopePaths(projectName, sourceDir) {
+  const path = join(SERVER_PROJECTS_DIR, projectName, 'output', 'relevant-files.json')
+  if (!existsSync(path)) return null
+  let parsed
+  try { parsed = JSON.parse(readFileSync(path, 'utf8')) } catch { return null }
+  if (!Array.isArray(parsed?.files)) return null
+  const prefix = sourceDir + '/'
+  const out = new Set()
+  for (const p of parsed.files) {
+    if (typeof p !== 'string' || !p.startsWith(prefix)) continue
+    out.add(p.slice(prefix.length))
+  }
+  return out.size === 0 ? null : [...out].sort()
+}
+
+/**
+ * Compute a stable signature of a commit's tree for a fixed list of paths:
+ * sorted `path:blob_hash` joined with newlines. Two commits with the same
+ * signature have byte-identical content for those paths, even if their
+ * top-level trees differ (because of paths outside the scope).
+ *
+ * Paths not present in a commit are treated as "missing" sentinel, so
+ * commits missing some scope files don't accidentally match commits that
+ * have them.
+ */
+function paperScopeSignature(g, commitHash, paths) {
+  const pathList = paths.map(p => `"${p.replace(/"/g, '\\"')}"`).join(' ')
+  const out = g(`ls-tree --full-tree -r ${commitHash} -- ${pathList}`)
+  if (out === null) return null
+  // ls-tree output: `<mode> <type> <hash>\t<path>`
+  const blobByPath = new Map()
+  for (const line of out.split('\n')) {
+    if (!line) continue
+    const tabIdx = line.indexOf('\t')
+    if (tabIdx < 0) continue
+    const fields = line.slice(0, tabIdx).split(' ')
+    const path = line.slice(tabIdx + 1)
+    if (fields.length < 3) continue
+    if (fields[1] !== 'blob') continue
+    blobByPath.set(path, fields[2])
+  }
+  return paths.map(p => `${p}:${blobByPath.get(p) || '_MISSING_'}`).join('\n')
+}
+
+/**
+ * Find a content-fork point by paper-scope signature: walk both histories,
+ * compute the signature of paper-scope files only, find a matching pair.
+ * Falls back to whole-tree match if no paper-scope is provided.
+ */
+export function findPaperScopeFork(g, originRef, paperScope, opts = {}) {
+  if (!paperScope || paperScope.length === 0) return null
+  const limit = opts.limit || 1000
+  const localLog = g(`log --format='%H%x09%T%x09%ae%x09%at%x09%s' -n ${limit} HEAD`)
+  const originLog = g(`log --format='%H%x09%T%x09%ae%x09%at%x09%s' -n ${limit} ${originRef}`)
+  if (!localLog || !originLog) return null
+
+  const localCommits = localLog.split('\n').filter(Boolean).map(parseLogLine)
+  const originCommits = originLog.split('\n').filter(Boolean).map(parseLogLine)
+
+  // Build origin signature index. Skip signatures where every path is missing
+  // (those would match any other "all missing" commit, which is meaningless).
+  const originBySig = new Map()
+  for (const c of originCommits) {
+    const sig = paperScopeSignature(g, c.hash, paperScope)
+    if (!sig || /^[^:]+:_MISSING_(\n[^:]+:_MISSING_)*$/.test(sig)) continue
+    if (!originBySig.has(sig)) originBySig.set(sig, c)
+  }
+
+  // Walk local commits newest-first; first match wins.
+  for (const local of localCommits) {
+    const sig = paperScopeSignature(g, local.hash, paperScope)
+    if (!sig) continue
+    const origin = originBySig.get(sig)
+    if (origin) return { local, origin, matchType: 'paper-scope' }
   }
   return null
 }
@@ -268,11 +352,24 @@ export async function rescuePlan(projectName) {
   if (!diag.upstream) return { ok: false, error: `No upstream remote — nothing to rescue against.`, diag }
 
   const g = inRepo(diag.sourceDir)
-  const fork = findContentFork(g, diag.upstream.ref)
+  // Prefer paper-scope signature matching (handles cases like synth-supplement
+  // where local trees are paper-scope-only but origin trees include
+  // figures/etc., so whole-tree hashes never match even on the same paper
+  // content). Fall back to whole-tree match if no paper-scope is available.
+  const paperScope = readPaperScopePaths(projectName, diag.sourceDir)
+  let fork = null
+  if (paperScope) {
+    fork = findPaperScopeFork(g, diag.upstream.ref, paperScope)
+  }
+  if (!fork) {
+    fork = findContentFork(g, diag.upstream.ref)
+  }
   if (!fork) {
     return {
       ok: false,
-      error: `No content-fork point found within the last 2000 commits on either side. The repos may have truly unrelated content.`,
+      error: paperScope
+        ? `No content-fork point found by paper-scope signature (${paperScope.length} files) or whole-tree hash. The repos may have genuinely diverged.`
+        : `No content-fork point found by whole-tree hash and no paper-scope available (run a build first to generate output/relevant-files.json).`,
       diag,
     }
   }
@@ -383,7 +480,11 @@ export function formatRescuePlan(r) {
   lines.push(`  by ${r.fork.local.email} at ${fmtTime(r.fork.local.ts)}`)
   lines.push(`Origin: ${short(r.fork.origin.hash)} — "${r.fork.origin.subject}"`)
   lines.push(`  by ${r.fork.origin.email} at ${fmtTime(r.fork.origin.ts)}`)
-  lines.push(`Both have tree hash: ${r.fork.local.tree.slice(0, 12)}…  (same paper content)`)
+  if (r.fork.matchType === 'tree') {
+    lines.push(`Matched on full tree hash: ${r.fork.local.tree.slice(0, 12)}…  (every file identical)`)
+  } else {
+    lines.push(`Matched on paper-scope signature  (paper files identical; other files may differ)`)
+  }
   lines.push('')
 
   lines.push(`== Files that would be touched ==`)
