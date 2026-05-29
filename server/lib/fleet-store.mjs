@@ -26,6 +26,12 @@ import os from 'os';
 const DB_PATH = path.join(os.homedir(), '.config', 'tlda', 'fleet.db');
 const FLEET_DIR = path.join(os.homedir(), '.fleet');
 
+// Virtual labels emitted by the DNF chat-routing resolver based on liveness
+// state — see unified-server.mjs `recipientLabels`. A friendly_name or label
+// that equals one of these would silently shadow the routing category.
+// Keep in sync with the `virtual` computation in the recipient resolver.
+export const PSEUDO_LABELS = Object.freeze(['awake', 'hibernating', 'human', 'human-away']);
+
 export class FleetStore {
   constructor(dbPath) {
     dbPath = dbPath || DB_PATH;
@@ -597,6 +603,60 @@ export class FleetStore {
 
   getAllAgents() {
     return this._getAllAgents.all().map(r => this._hydrateAgent(r));
+  }
+
+  // Single gate for naming/labeling. Returns [] if all `names` are available.
+  //
+  // Rules (DNF chat routing treats friendly_names and labels equivalently):
+  //   1. No name may equal a pseudo-label (awake/hibernating/human/human-away)
+  //      — would silently shadow the routing category.
+  //   2. No name may equal another live agent's friendly_name — would fan out
+  //      every message addressed to that name across both agents.
+  //   3. If `asFriendlyName`, additionally: no name may equal another live
+  //      agent's label — friendly_name=X with someone else's label=X has the
+  //      same fan-out problem. (When setting labels, repetition across agents
+  //      is allowed; group tags are intentional.)
+  //
+  // `excludeId` is the agent the names are being assigned to; it's exempt
+  // from the friendly_name and label collision checks.
+  checkNameAvailable(names, { excludeId = null, asFriendlyName = false } = {}) {
+    const collisions = [];
+    const rows = this.db.prepare(
+      'SELECT id, friendly_name, labels FROM agents WHERE dead = 0 AND id != ?'
+    ).all(excludeId || '');
+    const nameToId = new Map();
+    const labelToIds = new Map();
+    for (const r of rows) {
+      if (r.friendly_name) nameToId.set(r.friendly_name, r.id);
+      if (r.labels) {
+        let parsed;
+        try { parsed = JSON.parse(r.labels); } catch { continue; }
+        if (Array.isArray(parsed)) {
+          for (const l of parsed) {
+            if (!labelToIds.has(l)) labelToIds.set(l, []);
+            labelToIds.get(l).push(r.id);
+          }
+        }
+      }
+    }
+    for (const name of names) {
+      if (!name || typeof name !== 'string') continue;
+      if (PSEUDO_LABELS.includes(name)) {
+        collisions.push({ name, kind: 'pseudo_label' });
+        continue;
+      }
+      const owner = nameToId.get(name);
+      if (owner) {
+        collisions.push({ name, kind: 'friendly_name', agent_id: owner });
+      }
+      if (asFriendlyName) {
+        const labelHolders = labelToIds.get(name);
+        if (labelHolders?.length) {
+          for (const id of labelHolders) collisions.push({ name, kind: 'label', agent_id: id });
+        }
+      }
+    }
+    return collisions;
   }
 
   getAliveAgents() {

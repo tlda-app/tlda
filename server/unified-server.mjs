@@ -1860,11 +1860,10 @@ async function handleFleetWsMessage(ws, msg) {
     ws._tldaAgentId = agentId
     const now = new Date().toISOString()
     const existing = fleetStore.getAgent?.(agentId)
-    // Reject if another live agent already holds this name
     if (name) {
-      const nameRows = fleetStore.db.prepare('SELECT id FROM agents WHERE friendly_name = ? AND dead = 0 AND id != ?').all(name, agentId)
-      if (nameRows.length > 0) {
-        error(`Name "${name}" already in use by ${nameRows[0].id}`)
+      const cols = fleetStore.checkNameAvailable([name], { excludeId: agentId, asFriendlyName: true })
+      if (cols.length) {
+        error(`Name "${name}" unavailable: ${cols.map(c => c.kind === 'pseudo_label' ? 'reserved routing label' : `collides with ${c.kind} on ${c.agent_id}`).join('; ')}`)
         return
       }
     }
@@ -2021,6 +2020,7 @@ async function handleFleetWsMessage(ws, msg) {
     const recipients = []
     for (const a of allAgents) {
       if (a.id === from) continue
+      // Pseudo-labels — kept in sync with PSEUDO_LABELS in fleet-store.mjs.
       const virtual = a.status === 'awake' ? ['awake'] : a.status === 'hibernating' ? ['hibernating'] : a.status === 'human' ? ['human'] : a.status === 'human-away' ? ['human', 'human-away'] : []
       const labels = [...(a.labels || []), ...virtual, a.friendly_name, a.id].filter(Boolean)
       if (dnf.some(andGroup => andGroup.every(term => labels.includes(term)))) {
@@ -2415,6 +2415,12 @@ async function handleFleetWsMessage(ws, msg) {
     if (!agentQuery || !Array.isArray(labels)) { error('agent and labels[] required'); return }
     const agent = fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
+    const cols = fleetStore.checkNameAvailable(labels, { excludeId: agent.id, asFriendlyName: false })
+    if (cols.length) {
+      const list = cols.map(c => c.kind === 'pseudo_label' ? `"${c.name}" is a reserved routing label` : `"${c.name}" is ${c.agent_id}'s friendly_name`).join('; ')
+      error(`Label collision: ${list}. Pick a different label or rename the other agent first.`)
+      return
+    }
     agent.labels = labels
     fleetStore.upsertAgent(agent)
     broadcastState()

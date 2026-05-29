@@ -202,6 +202,21 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     catch (e) { res.status(500).json({ error: e.message }) }
   })
 
+  // --- GET /api/check-name?name=foo[&exclude=fleet:abc]
+  // Pre-flight collision check for fleet-spawn fresh(). Returns
+  // { ok: true } or { ok: false, collisions: [...] }. The same check
+  // also runs in the register and label WS handlers — this endpoint
+  // lets fleet-spawn fail before launching claude.
+  router.get('/api/check-name', (req, res) => {
+    if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
+    const name = req.query.name
+    if (!name || typeof name !== 'string') { res.status(400).json({ error: 'missing name param' }); return }
+    try {
+      const collisions = fleetStore.checkNameAvailable([name], { excludeId: req.query.exclude || null, asFriendlyName: true })
+      res.json({ ok: collisions.length === 0, collisions })
+    } catch (e) { res.status(500).json({ error: e.message }) }
+  })
+
   // --- GET /api/store/tasks ---
   router.get('/api/store/tasks', (req, res) => {
     if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
