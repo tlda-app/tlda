@@ -1770,14 +1770,23 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
         // user can reach the snapshots via plain git: `git diff shadow/abc1234`,
         // `git checkout shadow/abc1234 -- path`, etc.
         // Skip mirror if a newer build has already started — its callback will mirror.
-        if (buildVersion.get(name) !== snapshotVersion) return
+        const hash7 = result.hash.slice(0, 7)
+        if (buildVersion.get(name) !== snapshotVersion) {
+          console.log(`[mirror] ${name}@${hash7} skipped: newer build (v${buildVersion.get(name)}) superseded this one (v${snapshotVersion})`)
+          return
+        }
         try {
           const project = readProject(name)
-          if (project?.sourceDir && existsSync(join(project.sourceDir, '.git'))) {
+          if (!project?.sourceDir) {
+            console.log(`[mirror] ${name}@${hash7} skipped: no sourceDir in project.json`)
+          } else if (!existsSync(join(project.sourceDir, '.git'))) {
+            console.log(`[mirror] ${name}@${hash7} skipped: sourceDir ${project.sourceDir} has no .git`)
+          } else {
             const cwd = project.sourceDir
             const shadowDir = join(projDir, 'shadow-repo')
+            console.log(`[mirror] ${name}@${hash7} starting → ${cwd}`)
             // Tag the shadow commit so shadow/<hash> resolves to it.
-            const tag = `shadow/${result.hash.slice(0, 7)}`
+            const tag = `shadow/${hash7}`
             await _execAsync(`git tag -f "${tag}"`, { cwd: shadowDir, timeout: 5000 })
             try {
               await _execAsync(`git remote get-url tlda-shadow`, { cwd, timeout: 5000 })
@@ -1799,8 +1808,10 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
             // the user asks for it explicitly.
             await _gitRetryOnLock(() => _execAsync(`git update-ref refs/tlda/shadow/HEAD ${result.hash}`, { cwd, timeout: 5000 }))
             updateProject(name, { lastMirrorSuccess: new Date().toISOString() })
+            console.log(`[mirror] ${name}@${hash7} ok: tag shadow/${hash7} + refs/tlda/shadow/HEAD updated in ${cwd}`)
           }
         } catch (mirrorErr) {
+          console.error(`[mirror] ${name}@${hash7} failed: ${mirrorErr.message}`)
           ctx.addLog(`mirror to working copy failed (non-fatal): ${mirrorErr.message}`)
           // Include lastMirrorSuccess so the failure handler can narrow the responsible-agent
           // window to edits that happened after the last clean mirror.
