@@ -168,12 +168,17 @@ wss.on('connection', (browserWs) => {
     }
   }
 
-  browserWs.on('message', (data) => {
-    // Binary data = audio from browser mic
-    if (Buffer.isBuffer(data) || data instanceof ArrayBuffer) {
+  browserWs.on('message', (data, isBinary) => {
+    // ws v8+ delivers all incoming messages as Buffer regardless of frame
+    // type; the `isBinary` flag is the only reliable discriminator. Without
+    // it, text control messages ({type:'log'}, {type:'stop'}, etc.) get
+    // treated as audio and forwarded to Deepgram instead of being handled
+    // here — silently. The `start`/connectDeepgram effect happened to fall
+    // out of the audio path so things mostly looked right, but log + stop +
+    // flush never worked.
+    if (isBinary) {
       if (!dgWs || dgWs.readyState !== WebSocket.OPEN) {
         connectDeepgram()
-        // Buffer briefly while connection opens
         const pending = Buffer.from(data)
         const waitForOpen = () => {
           if (dgWs?.readyState === WebSocket.OPEN) {

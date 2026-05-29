@@ -1333,13 +1333,20 @@ function afterSend() {
 
 // --- Recording ---
 
-// Remote debug logging — sends voice logs to server so agent can read them
+// Remote debug logging — sends voice logs to server so agent can read them.
+// Whisper backend forwards via _whisperWs (see receive site at line 940).
+// Deepgram backend forwards here when the bridge WS is open; the bridge writes
+// `[voice] <text>` to ~/.config/tlda/deepgram-bridge.log so Safari debug is
+// observable without Web Inspector / USB pairing.
 const _voiceLogs = []
 function vlog(msg, data) {
   const entry = data ? `${msg} ${JSON.stringify(data)}` : msg
   console.log('voice:', entry)
   _voiceLogs.push(`${new Date().toISOString().slice(11,19)} ${entry}`)
   if (_voiceLogs.length > 50) _voiceLogs.shift()
+  if (_deepgramWs && _deepgramWs.readyState === 1) {
+    try { _deepgramWs.send(JSON.stringify({ type: 'log', text: entry })) } catch {}
+  }
 }
 // Expose logs for reading via fetch
 if (typeof window !== 'undefined') {

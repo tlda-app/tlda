@@ -1754,7 +1754,6 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
     })
 
     // Commit source snapshot to shadow repo (non-blocking)
-    const snapshotVersion = myVersion
     commitSnapshot(name).then(async result => {
       if (result) {
         // Update doc-version sentinel with shadow hash (the build's version identity)
@@ -1769,15 +1768,28 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
         // control and tracks their own remote (e.g. Overleaf). Agents and the
         // user can reach the snapshots via plain git: `git diff shadow/abc1234`,
         // `git checkout shadow/abc1234 -- path`, etc.
-        // Skip mirror if a newer build has already started — its callback will mirror.
-        if (buildVersion.get(name) !== snapshotVersion) return
+        // No buildVersion early-return: the previous version of this code
+        // skipped when a newer build had started, on the assumption that the
+        // newer build's callback would mirror. That's wrong — if the newer
+        // build's source already matched the shadow tree (because the older
+        // build captured the change), commitSnapshot returns null and the
+        // newer callback never enters this block. Net result: nobody mirrors.
+        // All operations here are idempotent (git tag -f, fetch --tags --force,
+        // update-ref) so running for both builds is harmless. The last call
+        // wins, leaving tag and ref pointing at the latest shadow hash.
+        const hash7 = result.hash.slice(0, 7)
         try {
           const project = readProject(name)
-          if (project?.sourceDir && existsSync(join(project.sourceDir, '.git'))) {
+          if (!project?.sourceDir) {
+            console.log(`[mirror] ${name}@${hash7} skipped: no sourceDir in project.json`)
+          } else if (!existsSync(join(project.sourceDir, '.git'))) {
+            console.log(`[mirror] ${name}@${hash7} skipped: sourceDir ${project.sourceDir} has no .git`)
+          } else {
             const cwd = project.sourceDir
             const shadowDir = join(projDir, 'shadow-repo')
+            console.log(`[mirror] ${name}@${hash7} starting → ${cwd}`)
             // Tag the shadow commit so shadow/<hash> resolves to it.
-            const tag = `shadow/${result.hash.slice(0, 7)}`
+            const tag = `shadow/${hash7}`
             await _execAsync(`git tag -f "${tag}"`, { cwd: shadowDir, timeout: 5000 })
             try {
               await _execAsync(`git remote get-url tlda-shadow`, { cwd, timeout: 5000 })
@@ -1799,8 +1811,10 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
             // the user asks for it explicitly.
             await _gitRetryOnLock(() => _execAsync(`git update-ref refs/tlda/shadow/HEAD ${result.hash}`, { cwd, timeout: 5000 }))
             updateProject(name, { lastMirrorSuccess: new Date().toISOString() })
+            console.log(`[mirror] ${name}@${hash7} ok: tag shadow/${hash7} + refs/tlda/shadow/HEAD updated in ${cwd}`)
           }
         } catch (mirrorErr) {
+          console.error(`[mirror] ${name}@${hash7} failed: ${mirrorErr.message}`)
           ctx.addLog(`mirror to working copy failed (non-fatal): ${mirrorErr.message}`)
           // Include lastMirrorSuccess so the failure handler can narrow the responsible-agent
           // window to edits that happened after the last clean mirror.
