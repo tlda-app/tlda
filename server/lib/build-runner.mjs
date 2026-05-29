@@ -72,7 +72,16 @@ function convertScratchMarkdown(srcDir, addLog) {
     try {
       texContent = execSync('pandoc -f markdown -t latex --wrap=none', { input: texContent, encoding: 'utf8', timeout: 10000 })
     } catch (e) {
-      addLog(`pandoc failed for ${f}: ${e.message}`)
+      // Surface the failure loudly: write a LaTeX error marker so the build
+      // halts with a clear pandoc-failed message instead of silently leaving
+      // a stale .tex (or the placeholder comment) in place. The build-error
+      // path then flows through to the agent via the existing fleet chat.
+      const stderr = (e.stderr || '').toString()
+      const msg = (stderr || e.message || 'unknown error').slice(0, 800)
+      const sanitized = msg.replace(/[\\{}#%&^_~$]/g, '?').replace(/\n/g, ' / ')
+      const errTex = `% Pandoc failed converting ${f}\n\\PackageError{tlda}{Pandoc failed converting ${f}: ${sanitized}}{Check the markdown source for syntax errors; see build.log for full pandoc stderr.}\n`
+      writeFileSync(texPath, errTex)
+      addLog(`pandoc failed for ${f}: ${e.message} — wrote error marker to ${texPath}`)
       continue
     }
     if (!texContent.endsWith('\n')) texContent += '\n'
@@ -397,6 +406,20 @@ async function compileLaTeX(ctx) {
     TEXMFOUTPUT: buildDir,
     TEXINPUTS: `${buildDir}:${texDir}:${srcDir}:`,
   }
+
+  // Override the scratch-template for THIS build. The user's source dir has
+  // the marker version of \inputscratch (so local vanilla-latex builds show
+  // a visible placeholder per scratch section); the build runner writes a
+  // version into buildDir/.scratchinputs/ that actually \input{}s the scratch
+  // content. TEXINPUTS lists buildDir first, so pdflatex resolves
+  // \input{.scratchinputs/scratch-template} from here, not srcDir.
+  const buildScratchDir = join(buildDir, '.scratchinputs')
+  mkdirSync(buildScratchDir, { recursive: true })
+  writeFileSync(join(buildScratchDir, 'scratch-template.tex'),
+    '% scratch-template — server-build override\n' +
+    '\\usepackage{xcolor}\n' +
+    '\\newcommand{\\inputscratch}[3]{\\begingroup\\synctex=1\\color[gray]{0.3}\\par\\noindent{\\footnotesize\\ttfamily[#3]}\\par\\label{#2}\\input{#1}\\endgroup\\par}\n'
+  )
 
   // Build the pdflatex command — cwd is srcDir, output goes to buildDir.
   // -recorder emits <jobname>.fls listing every file read (INPUT) and

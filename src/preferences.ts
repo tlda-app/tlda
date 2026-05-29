@@ -30,6 +30,15 @@ const _cache: Partial<typeof DEFAULTS> = {}
 const _listeners = new Set<() => void>()
 let _userId: string | null = null
 
+let _loadedResolve: (() => void) | null = null
+const _loaded = new Promise<void>(r => { _loadedResolve = r })
+
+/** Resolves after the first loadPrefs() completes (or fails). Callers that
+ * read prefs at startup should await this to avoid racing against the
+ * async fetch — otherwise getPref() returns DEFAULTS even when the user
+ * has a saved value. */
+export function whenPrefsLoaded(): Promise<void> { return _loaded }
+
 function _notify() { _listeners.forEach(cb => cb()) }
 
 export function subscribePref(cb: () => void): () => void {
@@ -67,6 +76,9 @@ export async function loadPrefs(userId: string): Promise<void> {
     Object.assign(_cache, data)
     _notify()
   } catch {}
+  finally {
+    if (_loadedResolve) { _loadedResolve(); _loadedResolve = null }
+  }
 }
 
 export { DEFAULTS }

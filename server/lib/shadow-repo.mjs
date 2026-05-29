@@ -135,7 +135,15 @@ export async function initShadowRepo(name) {
   await execAsync('git config user.name "tlda"', { cwd: repoDir, timeout: 5000 })
 
   writeFileSync(join(repoDir, '.gitignore'), GITIGNORE_CONTENT)
-  await execAsync('git add .gitignore && git commit -m "init"', { cwd: repoDir, timeout: 10000 })
+
+  const claudeMd = `# DO NOT WRITE HERE\n\nThis directory is a server-managed mirror of the paper's source files.\n\n**Do not commit changes here.** Write in your project directory instead\n(e.g. \`~/work/${name}/\`). Use the MCP \`push\` or \`input_scratch\`\ntools to send changes to the server.\n\nChanges committed directly here **do not trigger builds** and will be\n**overwritten by the next successful build**.\n\nOnly touch this repo if the build pipeline itself has broken badly and you\nare debugging the server infrastructure directly.\n`
+  writeFileSync(join(repoDir, 'CLAUDE.md'), claudeMd)
+
+  const commitMsgHook = `#!/bin/sh\n# Block agent commits to shadow repo — only the server's commitSnapshot should write here.\nmsg=$(cat "$1")\nif ! echo "$msg" | grep -qE "^Build at "; then\n  echo "ERROR: Direct commits to this shadow repo are blocked." >&2\n  echo "Write your changes in your project source directory instead." >&2\n  echo "See CLAUDE.md in this repo for details." >&2\n  exit 1\nfi\n`
+  const hookPath = join(repoDir, '.git', 'hooks', 'commit-msg')
+  writeFileSync(hookPath, commitMsgHook, { mode: 0o755 })
+
+  await execAsync('git add .gitignore CLAUDE.md && git commit -m "init"', { cwd: repoDir, timeout: 10000 })
 
   return repoDir
 }

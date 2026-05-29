@@ -168,12 +168,17 @@ wss.on('connection', (browserWs) => {
     }
   }
 
-  browserWs.on('message', (data) => {
-    // Binary data = audio from browser mic
-    if (Buffer.isBuffer(data) || data instanceof ArrayBuffer) {
+  browserWs.on('message', (data, isBinary) => {
+    // ws v8+ delivers all incoming messages as Buffer regardless of frame
+    // type; the `isBinary` flag is the only reliable discriminator. Without
+    // it, text control messages ({type:'log'}, {type:'stop'}, etc.) get
+    // treated as audio and forwarded to Deepgram instead of being handled
+    // here — silently. The `start`/connectDeepgram effect happened to fall
+    // out of the audio path so things mostly looked right, but log + stop +
+    // flush never worked.
+    if (isBinary) {
       if (!dgWs || dgWs.readyState !== WebSocket.OPEN) {
         connectDeepgram()
-        // Buffer briefly while connection opens
         const pending = Buffer.from(data)
         const waitForOpen = () => {
           if (dgWs?.readyState === WebSocket.OPEN) {
@@ -194,12 +199,13 @@ wss.on('connection', (browserWs) => {
       const msg = JSON.parse(data.toString())
       if (msg.type === 'start') {
         connectDeepgram()
-      } else if (msg.type === 'stop') {
-        disconnectDeepgram()
-      } else if (msg.type === 'flush') {
-        // Compatible with whisper-bridge flush
-        console.log('[deepgram-bridge] flush (closing Deepgram session)')
-        disconnectDeepgram()
+      } else if (msg.type === 'stop' || msg.type === 'flush') {
+        // Voice client sends these on pause/hardReset cycles, originally
+        // expecting the pre-isBinary-fix behavior (silent no-op — the text
+        // branch was unreachable). Honoring them here actually tears down
+        // Deepgram mid-utterance, which drops in-flight interim text and
+        // causes "transcripts vanish." Keep the session warm; rely on the
+        // browserWs close to end it.
       } else if (msg.type === 'log') {
         console.log(`[voice] ${msg.text}`)
       }

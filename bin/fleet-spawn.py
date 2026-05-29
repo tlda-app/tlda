@@ -322,6 +322,20 @@ def find_agent(name):
     return next((a for a in agents if a.get("friendly_name") == name), None)
 
 
+def check_name_collisions(name):
+    """Pre-flight against /api/check-name. Returns list of collision dicts
+    (empty if available). Authoritative check is server-side; this is just
+    fail-fast before we launch claude."""
+    if not name or name.startswith("fleet:"):
+        return []
+    from urllib.parse import quote
+    try:
+        result = json.loads(urlopen(f"{API}/api/check-name?name={quote(name)}", timeout=5).read())
+        return result.get("collisions", [])
+    except URLError:
+        return []
+
+
 def agent_meta(agent):
     meta = agent.get("metadata") or {}
     if isinstance(meta, str):
@@ -461,6 +475,25 @@ def fresh(name, model, cwd, effort, mode):
         if existing:
             print(f"Error: '{name}' already exists ({existing['id']}). "
                   f"Use: fleet-spawn {name}", file=sys.stderr)
+            sys.exit(1)
+        collisions = check_name_collisions(name)
+        if collisions:
+            lines = [f"Error: '{name}' is not available:"]
+            kinds = {}
+            for c in collisions:
+                kinds.setdefault(c.get("kind"), []).append(c.get("agent_id"))
+            if "pseudo_label" in kinds:
+                lines.append(f"  • reserved routing label (awake / hibernating / human / human-away)")
+            if "friendly_name" in kinds:
+                lines.append(f"  • already the friendly_name of {kinds['friendly_name'][0]}")
+            if "label" in kinds:
+                ids = kinds["label"]
+                shown = ", ".join(ids[:5])
+                more = f" (+{len(ids) - 5} more)" if len(ids) > 5 else ""
+                lines.append(f"  • collides with a label on {len(ids)} live agent(s): {shown}{more}")
+            lines.append("")
+            lines.append("  Pick a different name, or drop the conflicting label first.")
+            print("\n".join(lines), file=sys.stderr)
             sys.exit(1)
         ws_register(fleet_id, name, sess, cwd, model, effort, refresh=True)
 

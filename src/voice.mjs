@@ -1333,13 +1333,20 @@ function afterSend() {
 
 // --- Recording ---
 
-// Remote debug logging — sends voice logs to server so agent can read them
+// Remote debug logging — sends voice logs to server so agent can read them.
+// Whisper backend forwards via _whisperWs (see receive site at line 940).
+// Deepgram backend forwards here when the bridge WS is open; the bridge writes
+// `[voice] <text>` to ~/.config/tlda/deepgram-bridge.log so Safari debug is
+// observable without Web Inspector / USB pairing.
 const _voiceLogs = []
 function vlog(msg, data) {
   const entry = data ? `${msg} ${JSON.stringify(data)}` : msg
   console.log('voice:', entry)
   _voiceLogs.push(`${new Date().toISOString().slice(11,19)} ${entry}`)
   if (_voiceLogs.length > 50) _voiceLogs.shift()
+  if (_deepgramWs && _deepgramWs.readyState === 1) {
+    try { _deepgramWs.send(JSON.stringify({ type: 'log', text: entry })) } catch {}
+  }
 }
 // Expose logs for reading via fetch
 if (typeof window !== 'undefined') {
@@ -1554,7 +1561,14 @@ export async function initVoice() {
 
   // Voice backend: URL param overrides pref. Default pref is 'chrome'.
   const urlVoice = new URLSearchParams(window.location.search).get('voice')
-  const { getPref } = await import('./preferences.ts')
+  const { getPref, whenPrefsLoaded } = await import('./preferences.ts')
+  // Don't race the async pref load — initVoice runs at module-load time but
+  // loadPrefs is triggered by the identity event. Without this wait, voice
+  // would commit to the chrome default even when the user's saved pref is
+  // deepgram. Cap at 2s so a never-resolving identity doesn't block voice.
+  if (!urlVoice) {
+    await Promise.race([whenPrefsLoaded(), new Promise(r => setTimeout(r, 2000))])
+  }
   const prefBackend = urlVoice || getPref('voice-backend') || 'chrome'
   if (prefBackend === 'chrome') {
     _backend = 'chrome'

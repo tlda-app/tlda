@@ -3659,16 +3659,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             const existingVersion = parseInt(versionMatch[1]);
             if (existingVersion === result.scratchTemplateVersion) {
               writeTemplate = false; // already current
+            } else if (existingVersion < result.scratchTemplateVersion) {
+              // Version-tagged default behind the tool's version. Tagged files
+              // are tool-managed; bumping is the expected upgrade path. Rewrite.
             } else {
-              // Version mismatch — default changed; surface error instead of overwriting
-              return { content: [{ type: 'text', text: `Error: scratch-template.tex in ${sourceDir} is version ${existingVersion} but the tool expects version ${result.scratchTemplateVersion}. The default template has changed. Review the new default, reconcile your template, and update the version tag.` }], isError: true };
+              // Existing is NEWER than the tool — that's a mismatch worth
+              // surfacing rather than downgrading.
+              return { content: [{ type: 'text', text: `Error: scratch-template.tex in ${sourceDir} is version ${existingVersion} but the tool expects version ${result.scratchTemplateVersion}. Tool is older than the template. Update the tool or downgrade the template manually.` }], isError: true };
             }
           }
         }
         if (writeTemplate) fs.writeFileSync(templateAbsPath, scratchTemplateContent, 'utf8');
       }
       const scratchAbsPath = path.join(sourceDir, scratchPath);
-      fs.writeFileSync(scratchAbsPath, wrappedContent, 'utf8');
+      // For markdown scratch, skip writing the .tex placeholder entirely.
+      // Local-side utimes can't survive the daemon push (server stamps its
+      // own mtimes on write), so any placeholder we write ends up newer than
+      // the .md on the server and the build runner's staleness check skips
+      // pandoc — the section renders empty. Leaving the .tex absent makes
+      // existsSync(texPath) false in convertScratchMarkdown, so pandoc runs
+      // unconditionally on the first build, writes the real .tex, and
+      // subsequent builds use the mtime check correctly.
+      if (!isMd) fs.writeFileSync(scratchAbsPath, wrappedContent, 'utf8');
       if (result.sourcePath) {
         const symlinkPath = path.join(sourceDir, result.sourcePath);
         try { fs.unlinkSync(symlinkPath); } catch {}
@@ -3683,11 +3695,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const refValidation = validateRefs(content, doc);
       const refWarning = formatRefWarnings(refValidation);
       const displayPath = result.sourcePath ? path.join(sourceDir, result.sourcePath) : scratchAbsPath;
+      const lang = isMd ? 'markdown' : 'latex';
+      const contentLines = content.split('\n');
+      const preview = contentLines.length > 30
+        ? contentLines.slice(0, 30).join('\n') + `\n… (${contentLines.length - 30} more lines)`
+        : content;
+      const contentBlock = `\n\n**Content written:**\n\`\`\`${lang}\n${preview}\n\`\`\``;
       if (result.action === 'replaced') {
-        return { content: [{ type: 'text', text: `Replaced scratch section "${replace}" — wrote ${displayPath}. Watcher will sync and rebuild.${refWarning}` }] };
+        return { content: [{ type: 'text', text: `Replaced scratch section "${replace}" — wrote ${displayPath}. Watcher will sync and rebuild.${refWarning}${contentBlock}` }] };
       }
       const loc = after ? `after "${after}"` : `before "${before}"`;
-      return { content: [{ type: 'text', text: `Inserted scratch section "${label}" (${loc}) — wrote ${displayPath} and updated ${path.join(sourceDir, mainFile)}. Watcher will sync and rebuild.${refWarning}` }] };
+      return { content: [{ type: 'text', text: `Inserted scratch section "${label}" (${loc}) — wrote ${displayPath} and updated ${path.join(sourceDir, mainFile)}. Watcher will sync and rebuild.${refWarning}${contentBlock}` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }

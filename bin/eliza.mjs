@@ -992,6 +992,44 @@ async function handleRegistration(fromId, text) {
   return true
 }
 
+// ---- Agent-to-Skip hardcoded triggers ----
+// Patterns that fire when an AGENT says something to Skip.
+// Unlike TRIGGERS (which fire on Skip→agent), these watch the outgoing agent message.
+// Each entry has: pattern, message (nudge to send back to agent), interrupt (bool).
+const AGENT_TO_SKIP_TRIGGERS = [
+  {
+    pattern: /\b(?:no\s+more\s+outlin|skip\s+(?:the\s+)?outlin|no\s+(?:need\s+(?:to\s+)?)?outlin|done\s+(?:with\s+)?outlin|without\s+(?:an?\s+)?outlin|move\s+(?:past|beyond|on\s+from)\s+outlin|past\s+the\s+outline|bypass\s+(?:the\s+)?outlin|let'?s\s+(?:just\s+)?(?:go\s+straight\s+to|jump\s+to)\s+(?:the\s+)?(?:prose|draft|writing))\b/i,
+    message: `🛑 **Do not skip the outline.** The writing process has phases: outline first, then prose. You do not get to decide the outline is unnecessary. Go back and do the outline. Skip will tell you when to move on.`,
+    interrupt: true,
+    cooldown: 120_000,
+  },
+]
+
+const agentTriggerCooldowns = new Map()
+
+function checkAgentTriggers(agentId, text) {
+  const now = Date.now()
+  if (!agentTriggerCooldowns.has(agentId)) agentTriggerCooldowns.set(agentId, [])
+  const cooldowns = agentTriggerCooldowns.get(agentId)
+
+  for (let i = 0; i < AGENT_TO_SKIP_TRIGGERS.length; i++) {
+    const trigger = AGENT_TO_SKIP_TRIGGERS[i]
+    const lastFired = cooldowns[i] || 0
+    if (trigger.pattern.test(text) && now - lastFired > (trigger.cooldown || 60_000)) {
+      console.log(`[eliza] agent-trigger ${i} fired on ${agentId}: ${trigger.pattern}`)
+      queueNudge(agentId, `agent-trigger-${i}`, trigger.message)
+      logDecision(agentId, `agent-trigger:${i}`, String(trigger.pattern), {}, text)
+      cooldowns[i] = now
+      if (trigger.interrupt) {
+        postJson('/api/interrupt', { agent: agentId })
+          .then(() => console.log(`[eliza] interrupted ${agentId}`))
+          .catch(e => console.warn(`[eliza] interrupt failed for ${agentId}: ${e.message}`))
+      }
+      break
+    }
+  }
+}
+
 function checkPatternArms(agentId, text) {
   const arms = agentPatternArms.get(agentId)
   if (!arms?.length) return
@@ -1036,6 +1074,30 @@ const managerEscalationCooldowns = new Map()
 const HANDOFF_PATTERN = /(?:(?:I\s+(?:want|wanna|need)\s+to\s+)?hand\s+(?:this\s+)?off|do\s+(?:a\s+)?handoff|let'?s\s+(?:(?:do\s+(?:a\s+)?)?handoff|hand\s+(?:this\s+)?off)|time\s+(?:for\s+(?:a\s+)?)?handoff)\b/i
 const handoffCooldowns = new Map()
 const HANDOFF_COOLDOWN_MS = 120_000
+
+// ---- QA dispatch ----
+// "eliza, get qa <instruction>" forwards a scoped QA request to the qa-gate agent.
+// The QA agent reads the target agent's thread, evaluates, and sends feedback directly.
+const QA_PATTERN = /\bget\s+qa\b/i
+const QA_AGENT_ID = 'fleet:deepseek-qa'
+
+async function handleQaDispatch(targetIds, instruction, filterDesc) {
+  const targets = Array.isArray(targetIds) ? targetIds : [targetIds]
+  const targetNames = await Promise.all(targets.map(id => resolveAgentName(id)))
+
+  const qaPayload = JSON.stringify({
+    type: 'qa-request',
+    targets: targets.map((id, i) => ({ id, name: targetNames[i] })),
+    instruction: instruction || 'Review the recent conversation — did the agent do what Skip asked?',
+    from: OWNER_ID,
+  })
+
+  sendChat(QA_AGENT_ID, qaPayload)
+  const nameList = targetNames.join(', ')
+  console.log(`[eliza] QA dispatched for ${nameList}: ${instruction || '(default review)'}`)
+  sendChat(OWNER_ID, `QA dispatched for **${nameList}**.`)
+  logDecision(targets[0], 'qa-dispatch', 'eliza-get-qa', { targets, instruction }, instruction)
+}
 const PENDING_HANDOFFS_FILE = path.join(CONFIG_DIR, 'eliza-pending-handoffs.json')
 
 function loadPendingHandoffs() {
@@ -1530,14 +1592,29 @@ function handleMessage(msg) {
       return
     }
 
+    // QA dispatch — "eliza, get qa <instruction>"
+    if (elizaBefore(QA_PATTERN) && from_id === OWNER_ID) {
+      const qaMatch = text.match(QA_PATTERN)
+      const instruction = qaMatch ? text.slice(qaMatch.index + qaMatch[0].length).trim() : ''
+      // Target is whoever Skip is chatting with (to_id), or if broadcast, resolve from filter
+      const target = (to_id && to_id !== AGENT_ID) ? to_id : null
+      if (target) {
+        handleQaDispatch(target, instruction).catch(e => console.error('[eliza] QA dispatch error:', e.message))
+      } else {
+        sendChat(OWNER_ID, `QA dispatch needs a target — say it in a chat with the agent you want reviewed.`)
+      }
+      return
+    }
+
     // Single-message triggers detect and queue without direct address (status line shows them)
     if (from_id === OWNER_ID && to_id && to_id !== AGENT_ID && !seqHandled) {
       checkTriggers(to_id, text).catch(e => console.error('[eliza] checkTriggers error:', e.message))
     }
 
-    // Pattern arms: check agent's registered patterns on their outgoing messages to Skip
+    // Pattern arms + hardcoded agent triggers: check on agent→Skip messages
     if (from_id && from_id !== OWNER_ID && from_id !== AGENT_ID && to_id === OWNER_ID) {
       checkPatternArms(from_id, text)
+      checkAgentTriggers(from_id, text)
     }
   }
 

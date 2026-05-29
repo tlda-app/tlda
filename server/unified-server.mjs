@@ -40,10 +40,10 @@ import { spawn as cpSpawn } from 'child_process'
 import { lookup as mimeLookup } from 'mime-types'
 import { DEFAULT_PORT } from '../shared/config.mjs'
 import { initProjectStore, listProjects, readProject, getProjectsDir } from './lib/project-store.mjs'
-import { resetStaleBuildStates, killAllBuilds } from './lib/build-runner.mjs'
+import { resetStaleBuildStates, killAllBuilds, runBuild } from './lib/build-runner.mjs'
 import projectRoutes, { processProjectPush } from './routes/projects.mjs'
 import { initAuth, isAuthEnabled, validateToken, extractToken, requireRead, loginRoute } from './lib/auth.mjs'
-import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, updateShape } from './lib/sync-rooms.mjs'
+import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, updateShape, putShape } from './lib/sync-rooms.mjs'
 import * as tldaFeedback from './lib/tlda-feedback.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
 import { FleetStore } from './lib/fleet-store.mjs'
@@ -1860,11 +1860,10 @@ async function handleFleetWsMessage(ws, msg) {
     ws._tldaAgentId = agentId
     const now = new Date().toISOString()
     const existing = fleetStore.getAgent?.(agentId)
-    // Reject if another live agent already holds this name
     if (name) {
-      const nameRows = fleetStore.db.prepare('SELECT id FROM agents WHERE friendly_name = ? AND dead = 0 AND id != ?').all(name, agentId)
-      if (nameRows.length > 0) {
-        error(`Name "${name}" already in use by ${nameRows[0].id}`)
+      const cols = fleetStore.checkNameAvailable([name], { excludeId: agentId, asFriendlyName: true })
+      if (cols.length) {
+        error(`Name "${name}" unavailable: ${cols.map(c => c.kind === 'pseudo_label' ? 'reserved routing label' : `collides with ${c.kind} on ${c.agent_id}`).join('; ')}`)
         return
       }
     }
@@ -2021,6 +2020,7 @@ async function handleFleetWsMessage(ws, msg) {
     const recipients = []
     for (const a of allAgents) {
       if (a.id === from) continue
+      // Pseudo-labels — kept in sync with PSEUDO_LABELS in fleet-store.mjs.
       const virtual = a.status === 'awake' ? ['awake'] : a.status === 'hibernating' ? ['hibernating'] : a.status === 'human' ? ['human'] : a.status === 'human-away' ? ['human', 'human-away'] : []
       const labels = [...(a.labels || []), ...virtual, a.friendly_name, a.id].filter(Boolean)
       if (dnf.some(andGroup => andGroup.every(term => labels.includes(term)))) {
@@ -2415,6 +2415,12 @@ async function handleFleetWsMessage(ws, msg) {
     if (!agentQuery || !Array.isArray(labels)) { error('agent and labels[] required'); return }
     const agent = fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
+    const cols = fleetStore.checkNameAvailable(labels, { excludeId: agent.id, asFriendlyName: false })
+    if (cols.length) {
+      const list = cols.map(c => c.kind === 'pseudo_label' ? `"${c.name}" is a reserved routing label` : `"${c.name}" is ${c.agent_id}'s friendly_name`).join('; ')
+      error(`Label collision: ${list}. Pick a different label or rename the other agent first.`)
+      return
+    }
     agent.labels = labels
     fleetStore.upsertAgent(agent)
     broadcastState()
@@ -3080,6 +3086,104 @@ function broadcastDaemonActiveViewers() {
   }
 }
 
+/**
+ * If the shadow repo HEAD is not a "Build at" commit (i.e. an agent committed
+ * directly to the shadow repo since the last build), copy the changed files to
+ * the server source directory and trigger a rebuild so Skip sees the changes.
+ */
+async function checkShadowAhead(projectName) {
+  const project = readProject(projectName)
+  if (!project || project.format !== 'svg') return
+
+  const shadowDir = join(getProjectsDir(), projectName, 'shadow-repo')
+  if (!existsSync(shadowDir)) return
+
+  try {
+    const { execFile } = await import('child_process')
+    const { promisify } = await import('util')
+    const execFileP = promisify(execFile)
+
+    const { stdout: headLog } = await execFileP('git', ['log', '-1', '--format=%H %s'], { cwd: shadowDir })
+    const trimmed = headLog.trim()
+    if (!trimmed) return
+    const spaceIdx = trimmed.indexOf(' ')
+    const headHash = trimmed.slice(0, spaceIdx)
+    const headMsg = trimmed.slice(spaceIdx + 1)
+
+    if (headMsg.startsWith('Build at ')) return  // shadow is in sync with last build
+
+    // Find most recent "Build at" commit
+    const { stdout: buildLog } = await execFileP('git', ['log', '--format=%H %s', '--grep=^Build at '], { cwd: shadowDir })
+    const firstBuildLine = buildLog.trim().split('\n')[0]
+    if (!firstBuildLine) return
+    const lastBuildHash = firstBuildLine.split(' ')[0]
+
+    // Files changed in shadow since last build
+    const { stdout: diffOut } = await execFileP('git', ['diff', '--name-only', lastBuildHash, 'HEAD'], { cwd: shadowDir })
+    const changedFiles = diffOut.trim().split('\n').filter(Boolean)
+    if (changedFiles.length === 0) return
+
+    // Copy changed files from shadow HEAD into server source
+    const srcDir = join(getProjectsDir(), projectName, 'source')
+    for (const rel of changedFiles) {
+      const shadowFile = join(shadowDir, rel)
+      if (!existsSync(shadowFile)) continue
+      const destFile = join(srcDir, rel)
+      mkdirSync(path.dirname(destFile), { recursive: true })
+      fs.copyFileSync(shadowFile, destFile)
+    }
+
+    console.log(`[shadow-ahead] ${projectName}: ${changedFiles.length} file(s) from agent commit(s) since ${lastBuildHash.slice(0, 7)}, triggering build`)
+    runBuild(projectName).catch(e => console.warn(`[shadow-ahead] build failed for ${projectName}: ${e.message}`))
+  } catch (e) {
+    console.warn(`[shadow-ahead] ${projectName}: check failed: ${e.message}`)
+  }
+}
+
+// Sync the doc-version sentinel in the Yjs room with the shadow repo's latest
+// "Build at" commit. Called on daemon-hello so the sentinel is always current
+// even after a forced server restart that didn't persist the Yjs snapshot.
+async function syncSentinelFromShadow(projectName) {
+  const project = readProject(projectName)
+  if (!project || project.format !== 'svg') return
+
+  const shadowDir = join(getProjectsDir(), projectName, 'shadow-repo')
+  if (!existsSync(shadowDir)) return
+
+  try {
+    const { execFile } = await import('child_process')
+    const { promisify } = await import('util')
+    const execFileP = promisify(execFile)
+
+    const { stdout } = await execFileP('git', ['log', '--format=%H %ai %s', '--grep=^Build at ', '-1'], { cwd: shadowDir })
+    const line = stdout.trim()
+    if (!line) return
+    const parts = line.split(' ')
+    const latestBuildHash = parts[0]
+    const latestBuildAt = new Date(parts[1] + ' ' + parts[2]).getTime() || Date.now()
+
+    const docName = `doc-${projectName}`
+    const room = await getOrCreateRoom(docName)
+    const current = room.getRecord?.('shape:doc-version--sentinel')
+    const currentHash = current?.props?.commitHash
+
+    if (currentHash === latestBuildHash) return  // already current
+
+    console.log(`[sentinel-sync] ${projectName}: updating ${currentHash?.slice(0, 7) || 'none'} → ${latestBuildHash.slice(0, 7)}`)
+    await putShape(docName, {
+      id: 'shape:doc-version--sentinel',
+      typeName: 'shape',
+      type: 'doc-version',
+      x: 0, y: 0, rotation: 0, index: 'a0',
+      parentId: 'page:page',
+      isLocked: true, opacity: 0, meta: {},
+      props: { w: 1, h: 1, commitHash: latestBuildHash, timestamp: Date.now(), buildReadyAt: latestBuildAt },
+    })
+  } catch (e) {
+    console.warn(`[sentinel-sync] ${projectName}: failed: ${e.message}`)
+  }
+}
+
 function broadcastDaemonVersionCommitted(projectName, hash) {
   if (daemonConnections.size === 0) return
   const project = readProject(projectName)
@@ -3174,6 +3278,18 @@ function handleDaemonWsMessage(ws, msg) {
     }
     // Send persisted backing file watch list to daemon.
     sendWatchBackingFiles()
+
+    // Check each project's shadow repo for agent commits that haven't been built yet.
+    // This catches the case where an agent committed directly to the shadow repo
+    // (bypassing the push API) and no build was triggered.
+    // Also sync the Yjs sentinel from the shadow repo's latest build — this corrects
+    // stale sentinels left by forced server restarts that didn't flush Yjs to disk.
+    for (const p of listProjects()) {
+      if (p.format === 'svg' && p.sourceDir) {
+        checkShadowAhead(p.name)
+        syncSentinelFromShadow(p.name).catch(e => console.warn(`[sentinel-sync] ${p.name}: ${e.message}`))
+      }
+    }
     return
   }
 
