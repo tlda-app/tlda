@@ -3646,30 +3646,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // Write files to the local source directory; the watcher will push them and trigger the build
       const scratchDir = path.join(sourceDir, path.dirname(scratchPath));
       fs.mkdirSync(scratchDir, { recursive: true });
-      // Check/write template file. Version-tagged files are tool-managed; untagged files are user-customized.
+      // .scratchinputs/ is fully tlda-managed — agents never edit it. Rewrite
+      // the template whenever it doesn't match the current canonical content.
       if (scratchTemplatePath && scratchTemplateContent) {
         const templateAbsPath = path.join(sourceDir, scratchTemplatePath);
-        let writeTemplate = true;
-        if (fs.existsSync(templateAbsPath)) {
-          const existing = fs.readFileSync(templateAbsPath, 'utf8');
-          const versionMatch = existing.match(/% scratch-template-version: (\d+)/);
-          if (!versionMatch) {
-            writeTemplate = false; // user-customized — leave it alone
-          } else {
-            const existingVersion = parseInt(versionMatch[1]);
-            if (existingVersion === result.scratchTemplateVersion) {
-              writeTemplate = false; // already current
-            } else if (existingVersion < result.scratchTemplateVersion) {
-              // Version-tagged default behind the tool's version. Tagged files
-              // are tool-managed; bumping is the expected upgrade path. Rewrite.
-            } else {
-              // Existing is NEWER than the tool — that's a mismatch worth
-              // surfacing rather than downgrading.
-              return { content: [{ type: 'text', text: `Error: scratch-template.tex in ${sourceDir} is version ${existingVersion} but the tool expects version ${result.scratchTemplateVersion}. Tool is older than the template. Update the tool or downgrade the template manually.` }], isError: true };
-            }
-          }
-        }
-        if (writeTemplate) fs.writeFileSync(templateAbsPath, scratchTemplateContent, 'utf8');
+        const existing = fs.existsSync(templateAbsPath) ? fs.readFileSync(templateAbsPath, 'utf8') : null;
+        if (existing !== scratchTemplateContent) fs.writeFileSync(templateAbsPath, scratchTemplateContent, 'utf8');
       }
       const scratchAbsPath = path.join(sourceDir, scratchPath);
       // For markdown scratch, skip writing the .tex placeholder entirely.
