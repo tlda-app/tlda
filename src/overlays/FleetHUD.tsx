@@ -21,7 +21,7 @@ const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-
 function isMyFleetShape(s: any): boolean {
   if (!FLEET_SHAPE_TYPES.includes(s.type as string)) return false
   const uid = s.props?.userId
-  if (!uid) return true
+  if (uid == null) return true
   return uid === getHumanId()
 }
 
