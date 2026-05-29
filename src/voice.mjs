@@ -1561,7 +1561,14 @@ export async function initVoice() {
 
   // Voice backend: URL param overrides pref. Default pref is 'chrome'.
   const urlVoice = new URLSearchParams(window.location.search).get('voice')
-  const { getPref } = await import('./preferences.ts')
+  const { getPref, whenPrefsLoaded } = await import('./preferences.ts')
+  // Don't race the async pref load — initVoice runs at module-load time but
+  // loadPrefs is triggered by the identity event. Without this wait, voice
+  // would commit to the chrome default even when the user's saved pref is
+  // deepgram. Cap at 2s so a never-resolving identity doesn't block voice.
+  if (!urlVoice) {
+    await Promise.race([whenPrefsLoaded(), new Promise(r => setTimeout(r, 2000))])
+  }
   const prefBackend = urlVoice || getPref('voice-backend') || 'chrome'
   if (prefBackend === 'chrome') {
     _backend = 'chrome'
