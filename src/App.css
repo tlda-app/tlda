@@ -822,3 +822,27 @@ body.text-select-mode ::selection {
 .line-number-label:hover {
   opacity: 0.5;
 }
+
+.file-seam {
+  opacity: 0.2;
+  transition: opacity 0.2s;
+}
+.file-seam:hover {
+  opacity: 0.6;
+}
+.file-seam-label {
+  font-size: 6px;
+  font-family: ui-monospace, "SF Mono", Monaco, monospace;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 60px;
+  user-select: none;
+}
+.file-seam-rule {
+  height: 1px;
+  background: currentColor;
+  margin: 1px 0;
+  opacity: 0.5;
+}

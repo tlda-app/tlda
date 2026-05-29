@@ -2,8 +2,9 @@ import { useEffect, useState, type RefObject } from 'react'
 import { loadLookup, type LookupData } from './synctexLookup'
 import { PDF_HEIGHT } from './layoutConstants'
 
+// Must match synctexAnchor.ts
 const VIEWBOX_OFFSET = 72
-const Y_GROUP_TOLERANCE = 3 // PDF points — merge SVG text elements on the same rendered line
+const Y_GROUP_TOLERANCE = 4 // PDF points — deduplicate entries at the same visual line
 
 interface LineLabel {
   lineNum: number
@@ -15,6 +16,10 @@ interface LookupEntry {
   lineNum: number
   file: string | null
   pdfY: number
+}
+
+function basename(file: string): string {
+  return file.replace(/^.*[\\/]/, '')
 }
 
 function buildPageLookup(lookup: LookupData, pageNum: number): LookupEntry[] {
@@ -32,71 +37,49 @@ function buildPageLookup(lookup: LookupData, pageNum: number): LookupEntry[] {
   return entries
 }
 
-function findNearestSourceLine(pdfY: number, lookupEntries: LookupEntry[]): LookupEntry | null {
-  if (lookupEntries.length === 0) return null
-  let best = lookupEntries[0]
-  let bestDist = Math.abs(pdfY - best.pdfY)
-  for (let i = 1; i < lookupEntries.length; i++) {
-    const dist = Math.abs(pdfY - lookupEntries[i].pdfY)
-    if (dist < bestDist) {
-      best = lookupEntries[i]
-      bestDist = dist
+function computeLabels(lookup: LookupData, pageNum: number, shapeH: number): LineLabel[] {
+  const scaleY = shapeH / PDF_HEIGHT
+  const entries = buildPageLookup(lookup, pageNum)
+  if (entries.length === 0) return []
+
+  // Deduplicate entries that land on the same visual line (within tolerance)
+  const deduped: LookupEntry[] = [entries[0]]
+  for (let i = 1; i < entries.length; i++) {
+    const prev = deduped[deduped.length - 1]
+    if (Math.abs(entries[i].pdfY - prev.pdfY) > Y_GROUP_TOLERANCE || entries[i].file !== prev.file) {
+      deduped.push(entries[i])
     }
   }
-  return best
+
+  return deduped.map(e => ({
+    lineNum: e.lineNum,
+    file: e.file,
+    localY: (e.pdfY + VIEWBOX_OFFSET) * scaleY,
+  }))
 }
 
-function computeLabels(
-  svgContainer: HTMLDivElement,
-  lookup: LookupData,
-  pageNum: number,
-  shapeH: number,
-): LineLabel[] {
-  const scaleY = shapeH / PDF_HEIGHT
-  const lookupEntries = buildPageLookup(lookup, pageNum)
-  if (lookupEntries.length === 0) return []
+type RenderItem =
+  | { kind: 'label'; label: LineLabel }
+  | { kind: 'seam'; y: number; fromFile: string | null; toFile: string | null }
 
-  // Extract unique Y positions from SVG text elements (= rendered lines)
-  const svgEl = svgContainer.querySelector('svg')
-  if (!svgEl) return []
-  const textEls = svgEl.querySelectorAll('text')
-  const rawYs: number[] = []
-  for (let i = 0; i < textEls.length; i++) {
-    rawYs.push(parseFloat(textEls[i].getAttribute('y') || '0'))
-  }
-  if (rawYs.length === 0) return []
-
-  // Deduplicate Y positions (group within tolerance)
-  rawYs.sort((a, b) => a - b)
-  const uniqueYs: number[] = [rawYs[0]]
-  for (let i = 1; i < rawYs.length; i++) {
-    if (Math.abs(rawYs[i] - uniqueYs[uniqueYs.length - 1]) > Y_GROUP_TOLERANCE) {
-      uniqueYs.push(rawYs[i])
+function buildRenderItems(labels: LineLabel[]): RenderItem[] {
+  const items: RenderItem[] = []
+  for (let i = 0; i < labels.length; i++) {
+    const label = labels[i]
+    const prev = labels[i - 1]
+    if (prev && label.file !== prev.file) {
+      items.push({ kind: 'seam', y: (prev.localY + label.localY) / 2, fromFile: prev.file, toFile: label.file })
     }
+    items.push({ kind: 'label', label })
   }
-
-  // SVG text Y values are in viewBox coords; synctex Y = viewBox Y (same origin)
-  // Map each rendered line to its nearest source line
-  const labels: LineLabel[] = []
-  for (const viewBoxY of uniqueYs) {
-    const synctexY = viewBoxY // same coordinate system origin
-    const nearest = findNearestSourceLine(synctexY, lookupEntries)
-    if (!nearest) continue
-    labels.push({
-      lineNum: nearest.lineNum,
-      file: nearest.file,
-      localY: (viewBoxY + VIEWBOX_OFFSET) * scaleY,
-    })
-  }
-
-  return labels
+  return items
 }
 
 export function LineNumberOverlay({
   docName,
   pageNum,
   shapeH,
-  containerRef,
+  containerRef: _containerRef,
   svgText,
 }: {
   docName: string
@@ -108,19 +91,21 @@ export function LineNumberOverlay({
   const [labels, setLabels] = useState<LineLabel[]>([])
 
   useEffect(() => {
-    if (!svgText || !containerRef.current) {
+    if (!svgText) {
       setLabels([])
       return
     }
     let cancelled = false
     loadLookup(docName).then(lookup => {
-      if (cancelled || !lookup || !containerRef.current) return
-      setLabels(computeLabels(containerRef.current, lookup, pageNum, shapeH))
+      if (cancelled || !lookup) return
+      setLabels(computeLabels(lookup, pageNum, shapeH))
     })
     return () => { cancelled = true }
   }, [docName, pageNum, shapeH, svgText])
 
   if (labels.length === 0) return null
+
+  const items = buildRenderItems(labels)
 
   return (
     <div
@@ -134,24 +119,54 @@ export function LineNumberOverlay({
         pointerEvents: 'none',
       }}
     >
-      {labels.map((label, i) => (
-        <span
-          key={i}
-          className="line-number-label"
-          title={label.file ? `${label.file}:${label.lineNum}` : `line ${label.lineNum}`}
-          style={{
-            position: 'absolute',
-            left: 2,
-            top: label.localY - 5,
-            fontSize: 8,
-            fontFamily: 'ui-monospace, "SF Mono", Monaco, monospace',
-            lineHeight: 1,
-            pointerEvents: 'auto',
-          }}
-        >
-          {label.lineNum}
-        </span>
-      ))}
+      {items.map((item, i) => {
+        if (item.kind === 'label') {
+          const { label } = item
+          return (
+            <span
+              key={i}
+              className="line-number-label"
+              title={label.file ? `${label.file}:${label.lineNum}` : `line ${label.lineNum}`}
+              style={{
+                position: 'absolute',
+                left: 2,
+                top: label.localY - 5,
+                fontSize: 8,
+                fontFamily: 'ui-monospace, "SF Mono", Monaco, monospace',
+                lineHeight: 1,
+                pointerEvents: 'auto',
+              }}
+            >
+              {label.lineNum}
+            </span>
+          )
+        }
+        return (
+          <div
+            key={i}
+            className="file-seam"
+            style={{
+              position: 'absolute',
+              left: 0,
+              top: item.y - 10,
+              width: 60,
+              pointerEvents: 'none',
+            }}
+          >
+            {item.fromFile && (
+              <div className="file-seam-label file-seam-from">
+                {basename(item.fromFile)}
+              </div>
+            )}
+            <div className="file-seam-rule" />
+            {item.toFile && (
+              <div className="file-seam-label file-seam-to">
+                {basename(item.toFile)}
+              </div>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }
