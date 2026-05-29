@@ -3683,11 +3683,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const refValidation = validateRefs(content, doc);
       const refWarning = formatRefWarnings(refValidation);
       const displayPath = result.sourcePath ? path.join(sourceDir, result.sourcePath) : scratchAbsPath;
+      const lang = isMd ? 'markdown' : 'latex';
+      const contentLines = content.split('\n');
+      const preview = contentLines.length > 30
+        ? contentLines.slice(0, 30).join('\n') + `\n… (${contentLines.length - 30} more lines)`
+        : content;
+      const contentBlock = `\n\n**Content written:**\n\`\`\`${lang}\n${preview}\n\`\`\``;
       if (result.action === 'replaced') {
-        return { content: [{ type: 'text', text: `Replaced scratch section "${replace}" — wrote ${displayPath}. Watcher will sync and rebuild.${refWarning}` }] };
+        return { content: [{ type: 'text', text: `Replaced scratch section "${replace}" — wrote ${displayPath}. Watcher will sync and rebuild.${refWarning}${contentBlock}` }] };
       }
       const loc = after ? `after "${after}"` : `before "${before}"`;
-      return { content: [{ type: 'text', text: `Inserted scratch section "${label}" (${loc}) — wrote ${displayPath} and updated ${path.join(sourceDir, mainFile)}. Watcher will sync and rebuild.${refWarning}` }] };
+      return { content: [{ type: 'text', text: `Inserted scratch section "${label}" (${loc}) — wrote ${displayPath} and updated ${path.join(sourceDir, mainFile)}. Watcher will sync and rebuild.${refWarning}${contentBlock}` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }

@@ -187,6 +187,13 @@ function lintChatMessage(message) {
       }
     }
   }
+  const codeBlocks = message.match(/```[\s\S]*?```/g) || [];
+  for (const block of codeBlocks) {
+    const inner = block.slice(3, -3).replace(/^[a-z]*\n/, '');
+    if (/\\(?:begin|end|frac|sum|int|prod|hat|bar|tilde|mathbb|mathrm|operatorname|left|right|alpha|beta|gamma|theta|lambda|mu|sigma|phi|psi|omega|infty|partial|nabla|sqrt|over|under)\b/.test(inner)) {
+      issues.push(`Don't put LaTeX in a code block unless you want to show the code itself, not the rendered math. Use $$ delimiters for display math or $ for inline — the chat renderer supports KaTeX. Consider using compose() to preview before sending.`);
+    }
+  }
   return issues;
 }
 
@@ -1744,6 +1751,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const brokenFiles = inlineAttachments.filter(a => a.broken).map(a => a.path);
     if (brokenFiles.length) {
       warning += `\n\n⚠ **File(s) not uploaded** (not found or upload failed — removed from message):\n${brokenFiles.map(p => `- ${p}`).join('\n')}`;
+    }
+
+    const lint = lintChatMessage(message);
+    if (lint.length > 0) {
+      warning += `\n\n⚠ **Lint (${lint.length} issue${lint.length > 1 ? 's' : ''}):**\n${lint.map(l => `- ${l}`).join('\n')}\nYour message was sent but has issues. Use compose() → send() to catch these before delivery.`;
     }
 
     return { content: [{ type: 'text', text: `Message queued for ${sent.join(', ')}.${warning}` }] };
