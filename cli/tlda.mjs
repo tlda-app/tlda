@@ -1442,13 +1442,24 @@ async function cmdSpawn() {
 
 async function cmdRepoDoctor() {
   const name = getPositional(0)
+  const wantRescue = process.argv.includes('--rescue')
   if (!name) {
-    console.error('Usage: tlda repo-doctor <project>')
-    console.error('  Diagnose a project\'s source repo for tlda-induced damage:')
-    console.error('  silent `git reset --mixed` snapshots accumulated on the user\'s')
-    console.error('  branch (pre-b317ecc), unrelated histories with origin, leftover')
-    console.error('  merge backups, etc. Read-only: takes no action.')
+    console.error('Usage:')
+    console.error('  tlda repo-doctor <project>             Diagnose only (read-only)')
+    console.error('  tlda repo-doctor <project> --rescue    Compute a rescue plan (DRY RUN)')
+    console.error('')
+    console.error('Inspects a project\'s source repo for tlda-induced damage.')
+    console.error('Without --rescue: prints diagnosis only.')
+    console.error('With --rescue: finds the content-fork point with upstream by tree-hash')
+    console.error('matching, dry-runs a 3-way merge, and prints the steps that --apply')
+    console.error('would execute. --apply is not yet implemented.')
     process.exit(1)
+  }
+  if (wantRescue) {
+    const { rescuePlan, formatRescuePlan } = await import('./lib/repo-doctor.mjs')
+    const result = await rescuePlan(name)
+    console.log(formatRescuePlan(result))
+    process.exit(result.ok ? 0 : 1)
   }
   const { diagnose, formatDiagnose } = await import('./lib/repo-doctor.mjs')
   const result = await diagnose(name)
