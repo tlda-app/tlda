@@ -72,7 +72,16 @@ function convertScratchMarkdown(srcDir, addLog) {
     try {
       texContent = execSync('pandoc -f markdown -t latex --wrap=none', { input: texContent, encoding: 'utf8', timeout: 10000 })
     } catch (e) {
-      addLog(`pandoc failed for ${f}: ${e.message}`)
+      // Surface the failure loudly: write a LaTeX error marker so the build
+      // halts with a clear pandoc-failed message instead of silently leaving
+      // a stale .tex (or the placeholder comment) in place. The build-error
+      // path then flows through to the agent via the existing fleet chat.
+      const stderr = (e.stderr || '').toString()
+      const msg = (stderr || e.message || 'unknown error').slice(0, 800)
+      const sanitized = msg.replace(/[\\{}#%&^_~$]/g, '?').replace(/\n/g, ' / ')
+      const errTex = `% Pandoc failed converting ${f}\n\\PackageError{tlda}{Pandoc failed converting ${f}: ${sanitized}}{Check the markdown source for syntax errors; see build.log for full pandoc stderr.}\n`
+      writeFileSync(texPath, errTex)
+      addLog(`pandoc failed for ${f}: ${e.message} — wrote error marker to ${texPath}`)
       continue
     }
     if (!texContent.endsWith('\n')) texContent += '\n'

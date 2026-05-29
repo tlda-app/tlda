@@ -3669,6 +3669,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
       const scratchAbsPath = path.join(sourceDir, scratchPath);
       fs.writeFileSync(scratchAbsPath, wrappedContent, 'utf8');
+      if (isMd) {
+        // The placeholder must look STALE to the build runner's mtime check
+        // (convertScratchMarkdown skips when texMtime > mdMtime). Otherwise
+        // pandoc never runs on first build and the section ends up empty.
+        try { fs.utimesSync(scratchAbsPath, 0, 0); } catch {}
+      }
       if (result.sourcePath) {
         const symlinkPath = path.join(sourceDir, result.sourcePath);
         try { fs.unlinkSync(symlinkPath); } catch {}
