@@ -460,6 +460,95 @@ export async function rescuePlan(projectName) {
   }
 }
 
+/**
+ * Execute the rescue plan computed by rescuePlan(). Re-captures the
+ * current working-tree state at apply-time (the dry-run's tree may be
+ * stale if the user has edited since). Stops on the first failure.
+ *
+ * Pre-flight: refuse to run if the working repo is in the middle of a
+ * merge/rebase/cherry-pick. The user has to resolve that state first.
+ */
+export async function applyRescue(projectName, opts = {}) {
+  const plan = await rescuePlan(projectName)
+  if (!plan.ok) return plan
+
+  const g = inRepo(plan.diag.sourceDir)
+
+  // Pre-flight: refuse to apply if a merge/rebase/cherry-pick is in progress.
+  const gitDir = sh(`git -C "${plan.diag.sourceDir}" rev-parse --git-dir`)
+  if (!gitDir) return { ok: false, error: 'Could not locate .git directory' }
+  const gitDirAbs = gitDir.startsWith('/') ? gitDir : join(plan.diag.sourceDir, gitDir)
+  const inProgress = [
+    ['MERGE_HEAD', 'merge'],
+    ['CHERRY_PICK_HEAD', 'cherry-pick'],
+    ['rebase-merge', 'rebase'],
+    ['rebase-apply', 'rebase'],
+  ].find(([name]) => existsSync(join(gitDirAbs, name)))
+  if (inProgress) {
+    return { ok: false, error: `Refusing to apply: a ${inProgress[1]} is already in progress in ${plan.diag.sourceDir}` }
+  }
+
+  // Re-capture work-tree tree at apply time.
+  const tmpIdx = `/tmp/tlda-rescue-apply-idx-${process.pid}-${Date.now()}`
+  let workTreeHash = null
+  try {
+    sh(`GIT_INDEX_FILE="${tmpIdx}" git -C "${plan.diag.sourceDir}" read-tree HEAD`)
+    sh(`GIT_INDEX_FILE="${tmpIdx}" git -C "${plan.diag.sourceDir}" add -u`)
+    workTreeHash = sh(`GIT_INDEX_FILE="${tmpIdx}" git -C "${plan.diag.sourceDir}" write-tree`)
+  } finally {
+    sh(`rm -f "${tmpIdx}"`)
+  }
+  if (!workTreeHash) {
+    return { ok: false, error: 'Failed to capture working-tree state at apply time' }
+  }
+
+  const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
+  const backupBranch = `pre-rescue-${plan.diag.branch}-${ts}`
+  const rescueBranch = `rescue-${plan.diag.branch}-${ts}`
+  const upstreamName = plan.diag.upstream.ref.replace(/^refs\/remotes\//, '').split('/')[0]
+
+  const log = opts.log || ((msg) => console.log(`[rescue] ${msg}`))
+  const steps = [
+    ['fetch-upstream', `fetch ${upstreamName}`],
+    ['save-tip',       `branch ${backupBranch} ${plan.diag.head.hash}`],
+    ['mark-fork',      `update-ref refs/rescue-base ${plan.fork.origin.hash}`],
+    ['rescue-branch',  `checkout -b ${rescueBranch} ${plan.fork.origin.hash}`],
+    ['apply-wt',       `read-tree --reset -u ${workTreeHash}`],
+    ['commit-wt',      `-c user.name=tlda-rescue -c user.email=tlda-rescue@local commit -m "Local work at ${ts}" --allow-empty`],
+    ['merge',          `merge --no-commit --no-ff --allow-unrelated-histories ${plan.diag.upstream.ref}`],
+  ]
+
+  const completed = []
+  for (const [label, cmd] of steps) {
+    log(`${label}: git ${cmd}`)
+    // For `merge` we expect non-zero exit on conflict — that's a normal outcome.
+    const allowFail = label === 'merge'
+    const fn = allowFail ? shAllowFail : sh
+    const out = fn(`git -C "${plan.diag.sourceDir}" ${cmd}`)
+    if (out === null) {
+      return {
+        ok: false,
+        error: `Step "${label}" failed; halting.`,
+        completed,
+        backupBranch,
+        rescueBranch,
+      }
+    }
+    completed.push({ label, out })
+  }
+
+  return {
+    ok: true,
+    completed,
+    backupBranch,
+    rescueBranch,
+    workTreeHash,
+    fork: plan.fork,
+    conflictedFiles: plan.conflictedFiles,
+    sourceDir: plan.diag.sourceDir,
+  }
+}
+
 export function formatRescuePlan(r) {
   if (!r.ok) {
     let out = `repo-doctor rescue: ${r.error}`
@@ -516,6 +605,42 @@ export function formatRescuePlan(r) {
   lines.push(`  • Current branch tip preserved on: ${r.backupBranch}`)
   lines.push(`  • Working tree captured as tree object before any action`)
   lines.push(`  • No action taken in this run — pass --apply to actually run the steps.`)
+  return lines.join('\n')
+}
+
+export function formatRescueResult(r) {
+  if (!r.ok) {
+    let out = `repo-doctor --apply: ${r.error}`
+    if (r.completed?.length) {
+      out += '\nCompleted before failure:'
+      for (const c of r.completed) out += `\n  ✓ ${c.label}`
+    }
+    if (r.backupBranch) out += `\nBackup branch: ${r.backupBranch}`
+    return out
+  }
+  const lines = []
+  lines.push(`== Rescue applied ==`)
+  lines.push(`Source repo: ${r.sourceDir}`)
+  lines.push(`Backup of old tip: ${r.backupBranch}`)
+  lines.push(`Now on rescue branch: ${r.rescueBranch}`)
+  lines.push(`Fork point: local ${r.fork.local.hash.slice(0,7)} ↔ origin ${r.fork.origin.hash.slice(0,7)}`)
+  lines.push('')
+  lines.push(`Steps run:`)
+  for (const c of r.completed) lines.push(`  ✓ ${c.label}`)
+  lines.push('')
+  if (r.conflictedFiles?.length) {
+    lines.push(`Conflicts in ${r.conflictedFiles.length} file(s) — resolve with your editor, then commit on ${r.rescueBranch}:`)
+    for (const f of r.conflictedFiles) lines.push(`  ${f}`)
+  } else {
+    lines.push(`Merge appears clean. Verify with: git -C "${r.sourceDir}" status`)
+  }
+  lines.push('')
+  lines.push(`When done resolving:`)
+  lines.push(`  git -C "${r.sourceDir}" add <resolved files>`)
+  lines.push(`  git -C "${r.sourceDir}" commit -m "<your message>"`)
+  lines.push(`  # then fast-forward master to ${r.rescueBranch} when satisfied:`)
+  lines.push(`  git -C "${r.sourceDir}" checkout master`)
+  lines.push(`  git -C "${r.sourceDir}" merge --ff-only ${r.rescueBranch}`)
   return lines.join('\n')
 }
 
