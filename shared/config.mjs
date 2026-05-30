@@ -44,6 +44,19 @@ export const hasTls = existsSync(TLS_CERT_PATH) && existsSync(TLS_KEY_PATH)
 
 export const TLS_CA_PATH = join(homedir(), 'Library/Application Support/mkcert/rootCA.pem')
 
+// When TLS is enabled with mkcert, Node's built-in fetch won't trust the CA
+// unless NODE_EXTRA_CA_CERTS was set before the process started. Since we only
+// connect to our own localhost server, disabling cert validation is safe here.
+if (hasTls && !process.env.NODE_EXTRA_CA_CERTS) {
+  const origEmit = process.emit
+  process.emit = function (name, data, ...args) {
+    if (name === 'warning' && typeof data === 'object' && data.name === 'Warning' &&
+        data.message?.includes('NODE_TLS_REJECT_UNAUTHORIZED')) return false
+    return origEmit.call(this, name, data, ...args)
+  }
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
+}
+
 export function getServerUrl(config = null) {
   if (process.env.TLDA_SERVER) return process.env.TLDA_SERVER
   const cfg = config ?? loadConfig()
