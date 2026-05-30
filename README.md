@@ -272,6 +272,16 @@ The fleet HUD in the viewer shows all active agents, their current activity (too
 
 <img src="docs/images/tlda-drag-to-filter.png" alt="Dragging an agent label onto a chat panel to filter" width="49%"> <img src="docs/images/tlda-chat-filter-hover.png" alt="Hovering over the chat filter selector" width="49%">
 
+### Task approval
+
+When delegating a task with `delegate()`, set `requires_approval: true` to gate completion on your explicit sign-off. The agent can't close the task until they pass your approval message ID:
+
+```
+delegate(agent: "writer", description: "rewrite §3", requires_approval: true)
+```
+
+The agent does the work, reports in chat, and you respond with approval. The agent then calls `task_done(approval_id: <id>)` using the message ID shown in brackets (e.g. `id:332656`). Without the ID, the task stays open.
+
 ### Agent succession
 
 When an agent needs to be replaced (context-poisoned, drifted, fresh start needed), the lineage system preserves identity across brains. A shared friendly name persists — the new agent inherits the role, the old one phases out.
