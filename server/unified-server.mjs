@@ -1989,8 +1989,10 @@ async function handleFleetWsMessage(ws, msg) {
   // ---- fleet-search: unified search across fleet events + session JSONL text ----
   if (type === 'fleet-search') {
     try {
+      // Support lineage search: agents[] (array of fleet IDs to union)
+      const searchAgent = msg.agents?.length ? msg.agents : msg.agent;
       const results = fleetStore.searchAll(msg.query || '', {
-        limit: msg.limit, agent: msg.agent, role: msg.role, since: msg.since, agentOnly: msg.agentOnly,
+        limit: msg.limit, agent: searchAgent, role: msg.role, since: msg.since, agentOnly: msg.agentOnly,
       })
       const context = {}
       if (msg.context_timestamps?.length) {
@@ -2067,6 +2069,14 @@ async function handleFleetWsMessage(ws, msg) {
       // Pseudo-labels — kept in sync with PSEUDO_LABELS in fleet-store.mjs.
       const virtual = a.status === 'awake' ? ['awake'] : a.status === 'hibernating' ? ['hibernating'] : a.status === 'human' ? ['human'] : a.status === 'human-away' ? ['human', 'human-away'] : []
       const labels = [...(a.labels || []), ...virtual, a.friendly_name, a.id].filter(Boolean)
+      // Lineage addressing: add lineage name (resolves to day) and phase-qualified tags
+      if (a.lineage_id && a.phase) {
+        const lineage = fleetStore.getLineage?.(a.lineage_id)
+        if (lineage) {
+          if (a.phase === 'day') labels.push(lineage.friendly_name)
+          labels.push(`${lineage.friendly_name}:${a.phase}`)
+        }
+      }
       if (dnf.some(andGroup => andGroup.every(term => labels.includes(term)))) {
         recipients.push(a.id)
       }
@@ -2450,6 +2460,77 @@ async function handleFleetWsMessage(ws, msg) {
     fleetStore.db.prepare('UPDATE agents SET friendly_name = ? WHERE id = ?').run(newName || null, agent.id)
     broadcastState()
     reply({ ok: true, agent: agent.id, name: newName || null })
+    return
+  }
+
+  // ---- lineage-assign: assign an agent to a lineage with a phase ----
+  if (type === 'lineage-assign') {
+    const { agent: agentQuery, phase } = msg
+    if (!agentQuery || !phase) { error('agent and phase required'); return }
+    if (!['dawn', 'day', 'dusk'].includes(phase)) { error('phase must be dawn, day, or dusk'); return }
+    const agent = fleetStore.findAgent(agentQuery)
+    if (!agent) { error('agent not found'); return }
+    const agentName = agent.friendly_name || agentQuery
+    const lineage = fleetStore.getOrCreateLineage(agentName)
+    const roster = fleetStore.getLineageRoster(lineage.id)
+    const occupied = roster.find(a => a.phase === phase)
+    if (occupied) { error(`Phase "${phase}" in lineage "${agentName}" is occupied by ${occupied.friendly_name || occupied.id}`); return }
+    fleetStore.assignPhase(agent.id, lineage.id, phase)
+    broadcastState()
+    reply({ ok: true, agent: agent.id, lineage: lineage.id, lineage_name: lineage.friendly_name, phase })
+    return
+  }
+
+  // ---- lineage-retire: remove an agent from its lineage ----
+  if (type === 'lineage-retire') {
+    const { agent: agentQuery } = msg
+    if (!agentQuery) { error('agent required'); return }
+    const agent = fleetStore.findAgent(agentQuery)
+    if (!agent) { error('agent not found'); return }
+    if (!agent.lineage_id) { error('agent is not in a lineage'); return }
+    // Re-aim pending tasks to the new day
+    const lineage = fleetStore.getLineage(agent.lineage_id)
+    const dayAgent = fleetStore.getLineageDay(agent.lineage_id)
+    if (dayAgent && dayAgent.id !== agent.id) {
+      const pendingTasks = fleetStore.db.prepare(
+        "SELECT id FROM tasks WHERE agent = ? AND status NOT IN ('done')"
+      ).all(agent.id)
+      for (const t of pendingTasks) {
+        fleetStore.db.prepare('UPDATE tasks SET agent = ? WHERE id = ?').run(dayAgent.id, t.id)
+      }
+    }
+    fleetStore.retireFromLineage(agent.id)
+    broadcastState()
+    reply({ ok: true, agent: agent.id, retired_from: lineage?.friendly_name || agent.lineage_id })
+    return
+  }
+
+  // ---- lineage-transition: change an agent's phase within its lineage ----
+  if (type === 'lineage-transition') {
+    const { agent: agentQuery, phase } = msg
+    if (!agentQuery || !phase) { error('agent and phase required'); return }
+    if (!['dawn', 'day', 'dusk'].includes(phase)) { error('phase must be dawn, day, or dusk'); return }
+    const agent = fleetStore.findAgent(agentQuery)
+    if (!agent) { error('agent not found'); return }
+    if (!agent.lineage_id) { error('agent is not in a lineage'); return }
+    const roster = fleetStore.getLineageRoster(agent.lineage_id)
+    const occupied = roster.find(a => a.phase === phase && a.id !== agent.id)
+    if (occupied) { error(`Phase "${phase}" is occupied by ${occupied.friendly_name || occupied.id}`); return }
+    fleetStore.transitionPhase(agent.id, phase)
+    broadcastState()
+    reply({ ok: true, agent: agent.id, phase })
+    return
+  }
+
+  // ---- lineage-roster: get the current roster for a lineage ----
+  if (type === 'lineage-roster') {
+    const { lineage: lineageQuery } = msg
+    if (!lineageQuery) { error('lineage required'); return }
+    const lineage = fleetStore.getLineage(lineageQuery)
+    if (!lineage) { error('lineage not found'); return }
+    const roster = fleetStore.getLineageRoster(lineage.id)
+    const history = fleetStore.getLineageHistory(lineage.id)
+    reply({ lineage, roster, history })
     return
   }
 

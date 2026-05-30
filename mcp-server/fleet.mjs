@@ -465,12 +465,24 @@ function requireManager() {
 
 function getAgent(state, id) {
   if (!state.agents) return null;
-  // Exact match on id, friendly_name, or session_id (name is display-only, not for resolution)
+  // Lineage:phase addressing (e.g. "writing-A:dawn")
+  const colonIdx = id.indexOf(':');
+  if (colonIdx > 0 && !id.startsWith('fleet:')) {
+    const lineageName = id.slice(0, colonIdx);
+    const phase = id.slice(colonIdx + 1);
+    if (['dawn', 'day', 'dusk'].includes(phase)) {
+      return state.agents.find(a => a.lineage_name === lineageName && a.phase === phase) || null;
+    }
+  }
+  // Exact match on id, friendly_name, or session_id
   const exact = state.agents.find(a =>
     a.id === id || a.friendly_name === id ||
     a.session_id === id || (a.session_ids && a.session_ids.includes(id))
   );
-  return exact || null;
+  if (exact) return exact;
+  // Lineage name → day agent
+  const dayAgent = state.agents.find(a => a.lineage_name === id && a.phase === 'day');
+  return dayAgent || null;
 }
 
 /** Check if an ID belongs to a human agent (by registry lookup, not aliases) */
@@ -836,7 +848,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'spawn',
-      description: 'Spawn or respawn a fleet agent via fleet-spawn. Default: respawn existing agent (resume session). Pass fresh=true to create a new agent. Pass refresh=true to start a fresh session for an existing agent (same fleet ID — breaks compaction loops).',
+      description: 'Spawn or respawn a fleet agent via fleet-spawn. Default: respawn existing agent (resume session). Pass fresh=true to create a new agent. Pass refresh=true to start a fresh session for an existing agent (same fleet ID — breaks compaction loops). Supports lineage: set phase to join/create a lineage (auto-created from the agent name on first spawn).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -848,6 +860,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           cwd: { type: 'string', description: 'Working directory (fresh mode only).' },
           effort: { type: 'string', description: 'Effort level: low|medium|high|xhigh|max (default: inherit global config).' },
           mode: { type: 'string', description: 'Permission mode for claude (e.g. plan, default, auto). Falls back to spawnMode in ~/.config/tlda/config.json.' },
+          phase: { type: 'string', enum: ['dawn', 'day', 'dusk'], description: 'Phase slot in the lineage. Rejects if slot is occupied. Default: day for fresh agents joining a lineage.' },
         },
       },
     },
@@ -1652,6 +1665,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       for (const a of agents) {
         if (a.id === AGENT_ID) continue;
         const labels = [...(a.labels || []), ...(a.status === 'awake' ? ['awake'] : a.status === 'hibernating' ? ['hibernating'] : []), a.friendly_name, a.id].filter(Boolean);
+        if (a.lineage_name && a.phase) {
+          if (a.phase === 'day') labels.push(a.lineage_name);
+          labels.push(`${a.lineage_name}:${a.phase}`);
+        }
         if (draft.filter.to.some(andGroup => andGroup.every(term => labels.includes(term)))) {
           recipients.push(a.id);
         }
@@ -1691,6 +1708,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (a.id === AGENT_ID) continue;
         const virtualLabels = a.status === 'awake' ? ['awake'] : a.status === 'hibernating' ? ['hibernating'] : [];
         const labels = [...(a.labels || []), ...virtualLabels, a.friendly_name, a.id].filter(Boolean);
+        if (a.lineage_name && a.phase) {
+          if (a.phase === 'day') labels.push(a.lineage_name);
+          labels.push(`${a.lineage_name}:${a.phase}`);
+        }
         if (args.filter.to.some(andGroup => andGroup.every(term => labels.includes(term)))) {
           recipients.push(a.id);
         }
@@ -2660,6 +2681,20 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
       return { content: [{ type: 'text', text: isFresh ? 'fresh=true requires name' : 'agent name required' }], isError: true };
     }
 
+    // Phase-slot enforcement: check before spawning
+    const phase = args.phase || null;
+    if (phase && isFresh) {
+      try {
+        const agents = await sendWS('store-agents');
+        state.agents = agents;
+        // Find or infer lineage from agent name
+        const lineageAgent = agents.find(a => a.lineage_name === agentName && a.phase === phase);
+        if (lineageAgent) {
+          return { content: [{ type: 'text', text: `Phase slot "${phase}" in lineage "${agentName}" is occupied by ${lineageAgent.friendly_name || lineageAgent.id}. Use handoff to rotate.` }], isError: true };
+        }
+      } catch {}
+    }
+
     // Resolve mode: explicit arg > config file default
     let spawnMode = args.mode || null;
     if (!spawnMode) {
@@ -2682,6 +2717,19 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
 
     try {
       const output = execSync(cmdParts.join(' '), { encoding: 'utf8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'] });
+
+      // Assign lineage/phase after spawn
+      if (phase && isFresh) {
+        try {
+          const result = await sendWS('lineage-assign', { agent: agentName, phase });
+          if (result?.error) {
+            return { content: [{ type: 'text', text: `Spawned but lineage assignment failed: ${result.error}\n${output.trim()}` }], isError: true };
+          }
+        } catch (e) {
+          process.stderr.write(`[fleet] lineage-assign after spawn failed: ${e.message}\n`);
+        }
+      }
+
       return { content: [{ type: 'text', text: output.trim() }] };
     } catch (e) {
       const msg = (e.stderr || e.stdout || e.message || '').trim();
@@ -2879,11 +2927,43 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     let agentId;
     let allAgents = [];
     try { const d = await sendWS('store-agents'); if (Array.isArray(d)) allAgents = d; } catch (e) { process.stderr.write(`[fleet] store-agents fetch for search failed: ${e.message}\n`); }
+
+    // Lineage-aware agent resolution for search
+    let lineageFleetIds = null;
     if (args.agent) {
-      const matches = allAgents.filter(a =>
-        a.id === args.agent || a.friendly_name === args.agent || a.id.startsWith(args.agent)
-      );
-      agentId = matches[0]?.id || args.agent;
+      // Check for lineage:phase syntax
+      const colonIdx = args.agent.indexOf(':');
+      if (colonIdx > 0 && !args.agent.startsWith('fleet:')) {
+        const lineageName = args.agent.slice(0, colonIdx);
+        const phase = args.agent.slice(colonIdx + 1);
+        if (['dawn', 'day', 'dusk'].includes(phase)) {
+          const phaseAgent = allAgents.find(a => a.lineage_name === lineageName && a.phase === phase);
+          agentId = phaseAgent?.id || args.agent;
+        }
+      }
+      if (!agentId) {
+        // Check if it's a lineage name — union all fleet IDs in that lineage
+        const lineageAgents = allAgents.filter(a => a.lineage_name === args.agent);
+        if (lineageAgents.length > 0) {
+          // Get all fleet IDs that have ever held this lineage via server
+          try {
+            const rosterData = await sendWS('lineage-roster', { lineage: args.agent });
+            if (rosterData?.history) {
+              lineageFleetIds = [...new Set(rosterData.history.map(h => h.fleet_id))];
+            }
+          } catch {}
+          if (!lineageFleetIds) {
+            lineageFleetIds = lineageAgents.map(a => a.id);
+          }
+          agentId = lineageFleetIds[0];
+        }
+      }
+      if (!agentId) {
+        const matches = allAgents.filter(a =>
+          a.id === args.agent || a.friendly_name === args.agent || a.id.startsWith(args.agent)
+        );
+        agentId = matches[0]?.id || args.agent;
+      }
     } else {
       const qLower = query.toLowerCase().trim();
       const nameMatch = allAgents.find(a =>
@@ -2900,14 +2980,16 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     try {
       const contextTimestamps = [];
       const agentOnly = !!(agentId && !args.agent);
-      const data = await sendWS('fleet-search', {
+      const searchParams = {
         query,
         limit,
-        agent: agentId,
         agentOnly,
         role: args.role || undefined,
         since: sinceTs,
-      });
+      };
+      if (lineageFleetIds) { searchParams.agents = lineageFleetIds; }
+      else if (agentId) { searchParams.agent = agentId; }
+      const data = await sendWS('fleet-search', searchParams);
       results = data?.results || [];
       // Apply before filter
       if (beforeTs) results = results.filter(r => !r.timestamp || r.timestamp < beforeTs);
@@ -2918,15 +3000,11 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
           if (r.source === 'fleet' && r.timestamp) contextTimestamps.push(r.timestamp);
         }
         if (contextTimestamps.length > 0) {
-          const ctxData = await sendWS('fleet-search', {
-            query,
-            limit,
-            agent: agentId,
-            role: args.role || undefined,
-            since: sinceTs,
-            context_timestamps: contextTimestamps.slice(0, 10),
-            context_window: contextWindow,
-          });
+          const ctxSearchParams = { query, limit, role: args.role || undefined, since: sinceTs,
+            context_timestamps: contextTimestamps.slice(0, 10), context_window: contextWindow };
+          if (lineageFleetIds) { ctxSearchParams.agents = lineageFleetIds; }
+          else if (agentId) { ctxSearchParams.agent = agentId; }
+          const ctxData = await sendWS('fleet-search', ctxSearchParams);
           contextMap = ctxData?.context || {};
         }
       }
@@ -3106,7 +3184,19 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       if (!agentEntry) {
         return { content: [{ type: 'text', text: `Agent "${args.agent}" not found.` }], isError: true };
       }
-      try { await fetchEventsForAgent(agentEntry.id); } catch (e) {
+      // Lineage-aware: if the agent is in a lineage, fetch events for all fleet IDs
+      let threadFleetIds = [agentEntry.id];
+      if (agentEntry.lineage_name && !args.agent.includes(':')) {
+        try {
+          const rosterData = await sendWS('lineage-roster', { lineage: agentEntry.lineage_name });
+          if (rosterData?.history) {
+            threadFleetIds = [...new Set(rosterData.history.map(h => h.fleet_id))];
+          }
+        } catch {}
+      }
+      try {
+        for (const fid of threadFleetIds) { await fetchEventsForAgent(fid); }
+      } catch (e) {
         process.stderr.write(`[fleet] get_thread DB fetch failed: ${e.message}\n`);
       }
     } else {

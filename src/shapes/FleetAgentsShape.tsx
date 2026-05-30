@@ -151,6 +151,33 @@ function agentDisplayName(agent: any): string {
   return agent.friendly_name || (agent.id || '').replace('fleet:', '')
 }
 
+function PhaseIcon({ phase }: { phase: string | null }) {
+  if (!phase || phase === 'day') return null
+  const size = 12
+  const style = { opacity: 0.6, flexShrink: 0, marginRight: 3 }
+  if (phase === 'dawn') {
+    return (
+      <svg width={size} height={size} viewBox="0 0 16 16" style={style}>
+        <line x1="0.5" y1="11" x2="15.5" y2="11" stroke="currentColor" fill="none" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M9 11 a3 3 0 0 1 6 0" stroke="currentColor" fill="none" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+        <line x1="12" y1="6" x2="12" y2="4" stroke="currentColor" fill="none" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+        <line x1="15" y1="9" x2="16.5" y2="8" stroke="currentColor" fill="none" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    )
+  }
+  if (phase === 'dusk') {
+    return (
+      <svg width={size} height={size} viewBox="0 0 16 16" style={style}>
+        <line x1="0.5" y1="11" x2="15.5" y2="11" stroke="currentColor" fill="none" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M1 11 a3 3 0 0 1 6 0" stroke="currentColor" fill="none" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+        <line x1="4" y1="6" x2="4" y2="4" stroke="currentColor" fill="none" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+        <line x1="1" y1="9" x2="-0.5" y2="8" stroke="currentColor" fill="none" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    )
+  }
+  return null
+}
+
 function formatRelativeTime(ts: number | undefined): string {
   if (!ts) return ''
   const delta = Date.now() - ts
@@ -664,12 +691,13 @@ function AgentRow({
           ×
         </span>
 
-        {/* Agent name — draggable */}
+        {/* Agent name — draggable, with phase icon for dawn/dusk */}
         <span
           className="fleet-agents-col-name fleet-agents-pill"
-          style={{ color, opacity: nameOpacity }}
+          style={{ color, opacity: nameOpacity, display: 'flex', alignItems: 'center' }}
           onPointerDown={(e) => { e.stopPropagation(); onStartDrag(e, 'agent', name, name, color) }}
         >
+          <PhaseIcon phase={agent.phase} />
           {name}
         </span>
 

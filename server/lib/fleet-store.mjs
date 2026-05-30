@@ -16,6 +16,7 @@
  */
 
 import Database from 'better-sqlite3';
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -231,6 +232,37 @@ export class FleetStore {
       this.db.exec("ALTER TABLE agents ADD COLUMN machine_id TEXT");
     }
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_agents_machine ON agents(machine_id)");
+
+    // Add lineage columns to agents if missing
+    if (!agentCols.some(c => c.name === 'lineage_id')) {
+      this.db.exec("ALTER TABLE agents ADD COLUMN lineage_id TEXT");
+    }
+    if (!agentCols.some(c => c.name === 'phase')) {
+      this.db.exec("ALTER TABLE agents ADD COLUMN phase TEXT");
+    }
+
+    // Lineage tables
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS lineages (
+        id TEXT PRIMARY KEY,
+        friendly_name TEXT UNIQUE,
+        labels TEXT,
+        created_at INTEGER
+      );
+
+      CREATE TABLE IF NOT EXISTS lineage_phase_log (
+        lineage_id TEXT,
+        fleet_id TEXT,
+        phase TEXT,
+        entered_at INTEGER,
+        exited_at INTEGER,
+        PRIMARY KEY (lineage_id, fleet_id, entered_at)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_lineage_phase_log_lineage ON lineage_phase_log(lineage_id);
+      CREATE INDEX IF NOT EXISTS idx_lineage_phase_log_fleet ON lineage_phase_log(fleet_id);
+      CREATE INDEX IF NOT EXISTS idx_agents_lineage ON agents(lineage_id);
+    `);
 
     // Backfill events_fts for existing events (one-time; trigger handles new inserts).
     // Use FTS5 rebuild to populate the index from the content table.
@@ -585,6 +617,17 @@ export class FleetStore {
 
   findAgent(query) {
     if (!query) return null;
+
+    // Lineage:phase addressing (e.g. "writing-A:dawn", "writing-A:dusk")
+    const colonIdx = query.indexOf(':');
+    if (colonIdx > 0 && !query.startsWith('fleet:')) {
+      const lineageName = query.slice(0, colonIdx);
+      const phase = query.slice(colonIdx + 1);
+      if (['dawn', 'day', 'dusk'].includes(phase)) {
+        return this.findAgentByLineagePhase(lineageName, phase);
+      }
+    }
+
     let row = this._getAgent.get(query);
     if (!row) {
       // Name lookup — assert uniqueness among live agents
@@ -593,6 +636,16 @@ export class FleetStore {
         throw new Error(`Name collision: ${nameRows.length} live agents named "${query}": ${nameRows.map(r => r.id).join(', ')}`);
       }
       row = nameRows[0] || this._getAgentByName.get(query);
+    }
+    if (!row) {
+      // Lineage name → resolve to day agent
+      const lineage = this.getLineage(query);
+      if (lineage) {
+        const dayRow = this.db.prepare(
+          "SELECT * FROM agents WHERE lineage_id = ? AND phase = 'day' AND dead = 0"
+        ).get(lineage.id);
+        if (dayRow) return this._hydrateAgent(dayRow);
+      }
     }
     if (!row) {
       // Search by session_id
@@ -709,6 +762,102 @@ export class FleetStore {
   // connect, so this is only the cold-start transient.
   setLivenessOracle(fn) { this._isLiveOracle = fn }
 
+  // ---- Lineage management ----
+
+  getOrCreateLineage(friendlyName) {
+    let row = this.db.prepare('SELECT * FROM lineages WHERE friendly_name = ?').get(friendlyName);
+    if (row) {
+      row.labels = row.labels ? JSON.parse(row.labels) : [];
+      return row;
+    }
+    const id = 'lineage:' + crypto.randomUUID().slice(0, 8);
+    this.db.prepare('INSERT INTO lineages (id, friendly_name, labels, created_at) VALUES (?, ?, ?, ?)')
+      .run(id, friendlyName, '[]', Date.now());
+    return { id, friendly_name: friendlyName, labels: [], created_at: Date.now() };
+  }
+
+  getLineage(idOrName) {
+    let row = this.db.prepare('SELECT * FROM lineages WHERE id = ? OR friendly_name = ?').get(idOrName, idOrName);
+    if (!row) return null;
+    row.labels = row.labels ? JSON.parse(row.labels) : [];
+    return row;
+  }
+
+  getLineageRoster(lineageId) {
+    return this.db.prepare(
+      "SELECT * FROM agents WHERE lineage_id = ? AND phase IN ('dawn','day','dusk') AND dead = 0"
+    ).all(lineageId).map(r => this._hydrateAgent(r));
+  }
+
+  getLineageDay(lineageId) {
+    const row = this.db.prepare(
+      "SELECT * FROM agents WHERE lineage_id = ? AND phase = 'day' AND dead = 0"
+    ).get(lineageId);
+    return row ? this._hydrateAgent(row) : null;
+  }
+
+  assignPhase(agentId, lineageId, phase) {
+    const now = Date.now();
+    this.db.transaction(() => {
+      this.db.prepare('UPDATE agents SET lineage_id = ?, phase = ? WHERE id = ?')
+        .run(lineageId, phase, agentId);
+      this.db.prepare(
+        'INSERT INTO lineage_phase_log (lineage_id, fleet_id, phase, entered_at) VALUES (?, ?, ?, ?)'
+      ).run(lineageId, agentId, phase, now);
+    })();
+  }
+
+  retireFromLineage(agentId) {
+    const now = Date.now();
+    this.db.transaction(() => {
+      const agent = this._getAgent.get(agentId);
+      if (!agent || !agent.lineage_id) return;
+      this.db.prepare(
+        'UPDATE lineage_phase_log SET exited_at = ? WHERE fleet_id = ? AND exited_at IS NULL'
+      ).run(now, agentId);
+      this.db.prepare('UPDATE agents SET lineage_id = NULL, phase = NULL WHERE id = ?')
+        .run(agentId);
+    })();
+  }
+
+  transitionPhase(agentId, newPhase) {
+    const now = Date.now();
+    this.db.transaction(() => {
+      const agent = this._getAgent.get(agentId);
+      if (!agent || !agent.lineage_id) return;
+      this.db.prepare(
+        'UPDATE lineage_phase_log SET exited_at = ? WHERE fleet_id = ? AND exited_at IS NULL'
+      ).run(now, agentId);
+      this.db.prepare('UPDATE agents SET phase = ? WHERE id = ?')
+        .run(newPhase, agentId);
+      this.db.prepare(
+        'INSERT INTO lineage_phase_log (lineage_id, fleet_id, phase, entered_at) VALUES (?, ?, ?, ?)'
+      ).run(agent.lineage_id, agentId, newPhase, now);
+    })();
+  }
+
+  getLineageHistory(lineageId) {
+    return this.db.prepare(
+      'SELECT * FROM lineage_phase_log WHERE lineage_id = ? ORDER BY entered_at'
+    ).all(lineageId);
+  }
+
+  getLineageFleetIds(lineageId) {
+    const rows = this.db.prepare(
+      'SELECT DISTINCT fleet_id FROM lineage_phase_log WHERE lineage_id = ?'
+    ).all(lineageId);
+    return rows.map(r => r.fleet_id);
+  }
+
+  findAgentByLineagePhase(lineageName, phase) {
+    const lineage = this.getLineage(lineageName);
+    if (!lineage) return null;
+    const row = this.db.prepare(
+      'SELECT * FROM agents WHERE lineage_id = ? AND phase = ? AND dead = 0'
+    ).get(lineage.id, phase);
+    return row ? this._hydrateAgent(row) : null;
+  }
+
   _hydrateAgent(row) {
     const lastActive = row.last_active || null
     const isAwake = !row.dead && !row.human && this._isLiveOracle
@@ -733,6 +882,9 @@ export class FleetStore {
       metadata: row.metadata ? JSON.parse(row.metadata) : null,
       last_active: lastActive,
       status,
+      lineage_id: row.lineage_id || null,
+      phase: row.phase || null,
+      lineage_name: row.lineage_id ? (this.db.prepare('SELECT friendly_name FROM lineages WHERE id = ?').get(row.lineage_id)?.friendly_name || null) : null,
     };
   }
 
@@ -1185,22 +1337,37 @@ export class FleetStore {
       try { return this.db.prepare(sql).all(...params); } catch { return []; }
     };
 
+    // Normalize agent to array for multi-ID lineage search
+    const agentIds = Array.isArray(agent) ? agent : agent ? [agent] : [];
+    const hasAgent = agentIds.length > 0;
+    const agentPlaceholders = agentIds.map(() => '?').join(',');
+
+    function agentClause(fromCol, toCol, agentCol) {
+      if (agentIds.length === 1) {
+        return { clause: `(${fromCol} = ? OR ${toCol} = ? OR ${agentCol} = ?)`, params: [agentIds[0], agentIds[0], agentIds[0]] };
+      }
+      return {
+        clause: `(${fromCol} IN (${agentPlaceholders}) OR ${toCol} IN (${agentPlaceholders}) OR ${agentCol} IN (${agentPlaceholders}))`,
+        params: [...agentIds, ...agentIds, ...agentIds]
+      };
+    }
+
     // 1. Fleet events
-    // When agentOnly is set, skip FTS and query by agent ID directly
     let eClauses, eParams;
-    if (agentOnly && agent) {
-      eClauses = ['(e.from_id = ? OR e.to_id = ? OR e.agent_id = ?)'];
-      eParams = [agent, agent, agent];
+    if (agentOnly && hasAgent) {
+      const ac = agentClause('e.from_id', 'e.to_id', 'e.agent_id');
+      eClauses = [ac.clause];
+      eParams = [...ac.params];
     } else {
       eClauses = ['events_fts MATCH ?'];
       eParams = [ftsQuery];
-      if (agent) { eClauses.push('(e.from_id = ? OR e.to_id = ? OR e.agent_id = ?)'); eParams.push(agent, agent, agent); }
+      if (hasAgent) { const ac = agentClause('e.from_id', 'e.to_id', 'e.agent_id'); eClauses.push(ac.clause); eParams.push(...ac.params); }
     }
     if (since) { eClauses.push('e.timestamp >= ?'); eParams.push(since); }
     eParams.push(limit);
-    const ftsJoin = (agentOnly && agent) ? '' : 'events_fts f JOIN';
-    const ftsOn = (agentOnly && agent) ? '' : 'ON e.id = f.rowid';
-    const snippetCol = (agentOnly && agent) ? 'substr(e.text, 1, 120) as snippet' : "snippet(events_fts, 0, '<<', '>>', '...', 40) as snippet";
+    const ftsJoin = (agentOnly && hasAgent) ? '' : 'events_fts f JOIN';
+    const ftsOn = (agentOnly && hasAgent) ? '' : 'ON e.id = f.rowid';
+    const snippetCol = (agentOnly && hasAgent) ? 'substr(e.text, 1, 120) as snippet' : "snippet(events_fts, 0, '<<', '>>', '...', 40) as snippet";
     const eventRows = runQuery(`
       SELECT e.id, e.type, e.timestamp, e.from_id as "from", e.to_id as "to", e.text, e.metadata,
              ${snippetCol}
@@ -1221,13 +1388,21 @@ export class FleetStore {
 
     // 2. Session JSONL entries
     let sClauses, sParams;
-    if (agentOnly && agent) {
-      sClauses = ['s.agent_id = ?'];
-      sParams = [agent];
+    if (agentOnly && hasAgent) {
+      if (agentIds.length === 1) {
+        sClauses = ['s.agent_id = ?'];
+        sParams = [agentIds[0]];
+      } else {
+        sClauses = [`s.agent_id IN (${agentPlaceholders})`];
+        sParams = [...agentIds];
+      }
     } else {
       sClauses = ['session_entries_fts MATCH ?'];
       sParams = [ftsQuery];
-      if (agent) { sClauses.push('s.agent_id = ?'); sParams.push(agent); }
+      if (hasAgent) {
+        if (agentIds.length === 1) { sClauses.push('s.agent_id = ?'); sParams.push(agentIds[0]); }
+        else { sClauses.push(`s.agent_id IN (${agentPlaceholders})`); sParams.push(...agentIds); }
+      }
     }
     if (role && (role === 'user' || role === 'assistant')) { sClauses.push('s.role = ?'); sParams.push(role); }
     if (since) { sClauses.push('s.timestamp >= ?'); sParams.push(since); }

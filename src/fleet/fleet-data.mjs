@@ -84,6 +84,10 @@ function agentMatchesLabel(agentId, label) {
   }
   const virtual = agent.status === 'awake' ? ['awake'] : agent.status === 'hibernating' ? ['hibernating'] : agent.status === 'human' ? ['human'] : agent.status === 'human-away' ? ['human', 'human-away'] : []
   const labels = [...(agent.labels || []), ...virtual, agent.friendly_name, agent.id].filter(Boolean)
+  if (agent.lineage_name && agent.phase) {
+    if (agent.phase === 'day') labels.push(agent.lineage_name)
+    labels.push(`${agent.lineage_name}:${agent.phase}`)
+  }
   return labels.includes(label)
 }
 
@@ -97,6 +101,10 @@ function resolveFilter(filter) {
   for (const a of allAgents) {
     const virtual = a.status === 'awake' ? ['awake'] : a.status === 'hibernating' ? ['hibernating'] : []
     const labels = [...(a.labels || []), ...virtual, a.friendly_name, a.id].filter(Boolean)
+    if (a.lineage_name && a.phase) {
+      if (a.phase === 'day') labels.push(a.lineage_name)
+      labels.push(`${a.lineage_name}:${a.phase}`)
+    }
     const matches = filter.some(clause =>
       clause.every(term => {
         const label = Array.isArray(term) ? term[1] : term
@@ -158,7 +166,19 @@ export function getUnreadCountsForHuman() {
 }
 
 export function getAgent(id) {
-  return _agents.find(a => a.id === id || a.friendly_name === id)
+  // Lineage:phase addressing
+  const colonIdx = id?.indexOf(':')
+  if (colonIdx > 0 && !id.startsWith('fleet:')) {
+    const lineageName = id.slice(0, colonIdx)
+    const phase = id.slice(colonIdx + 1)
+    if (['dawn', 'day', 'dusk'].includes(phase)) {
+      return _agents.find(a => a.lineage_name === lineageName && a.phase === phase)
+    }
+  }
+  const exact = _agents.find(a => a.id === id || a.friendly_name === id)
+  if (exact) return exact
+  // Lineage name → day agent
+  return _agents.find(a => a.lineage_name === id && a.phase === 'day')
 }
 
 // --- Write API (all go through server) ---
