@@ -39,7 +39,7 @@ import os from 'os'
 const { homedir, hostname } = os
 import { spawn as cpSpawn } from 'child_process'
 import { lookup as mimeLookup } from 'mime-types'
-import { DEFAULT_PORT } from '../shared/config.mjs'
+import { DEFAULT_PORT, hasTls } from '../shared/config.mjs'
 import { initProjectStore, listProjects, readProject, getProjectsDir } from './lib/project-store.mjs'
 import { resetStaleBuildStates, killAllBuilds, runBuild } from './lib/build-runner.mjs'
 import projectRoutes, { processProjectPush } from './routes/projects.mjs'
@@ -671,6 +671,14 @@ initAuth()
 // Express app
 const app = express()
 app.use(express.json({ limit: '50mb' }))
+
+// HSTS — after one visit over HTTPS, browser auto-upgrades localhost:5176 to HTTPS
+if (hasTls) {
+  app.use((req, res, next) => {
+    res.header('Strict-Transport-Security', 'max-age=31536000')
+    next()
+  })
+}
 
 // CORS — allow cross-origin requests (needed when SPA is on a different domain, e.g. GitHub Pages)
 app.use((req, res, next) => {
