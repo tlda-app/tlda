@@ -45,7 +45,7 @@ Chat messages support markdown, KaTeX math, code blocks, lifecycle cards (delega
 
 ### Agents
 
-Each agent is a Claude Code instance running in a tmux pane. Identified by a fleet ID (`fleet:abc12345`) and a friendly name (`help-m7`). Spawned via `fleet-spawn` (tmux-based) or via `mcp__fleet__spawn` (MCP wrapper).
+Each agent is a Claude Code instance running in a tmux pane. Identified by a fleet ID (`fleet:abc12345`) and a friendly name (`help-m7`). Spawned via `fleet-spawn` (tmux-based) or via `mcp__tlda__spawn` (MCP wrapper).
 
 Agents communicate via the fleet daemon, which writes/reads from the tlda server. Skip sees agents as participants in chat, not as backend mechanisms — they have names, they have presences, they have draggable handles.
 

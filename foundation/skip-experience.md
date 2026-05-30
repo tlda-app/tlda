@@ -65,7 +65,7 @@ Three-beat correction (per `three-beat-corrections`): acknowledge in one beat, s
 1. Call `register()` with the fleet MCP server.
 2. Call `my_task()` to find out what's pending.
 3. Read your task. Read the relevant skill files. Read the user CLAUDE.md, the project CLAUDE.md, this doc.
-4. If you're spawning fresh and don't know what's been going on, use `mcp__fleet__get_thread({ agent: '<your id>', since: '-2h' })` to catch up on your own thread.
+4. If you're spawning fresh and don't know what's been going on, use `mcp__tlda__get_thread({ agent: '<your id>', since: '-2h' })` to catch up on your own thread.
 5. Don't start editing until you understand what's being asked.
 
 ## What to do when uncertain

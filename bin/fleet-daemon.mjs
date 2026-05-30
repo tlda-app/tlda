@@ -307,18 +307,18 @@ const ACTIVITY_NOISE = new Set([
   'task_check', 'unregister_manager', 'task_done', 'timer',
   'chat', 'delegate', 'report', 'share', 'spawn', 'respawn', 'interrupt',
   'name_agent', 'label_agent', 'observe', 'promote', 'cleanup',
-  'mcp__fleet__wait_for_task', 'mcp__fleet__my_task', 'mcp__fleet__task_list',
-  'mcp__fleet__register', 'mcp__fleet__register_manager', 'mcp__fleet__task_check',
-  'mcp__fleet__task_done', 'mcp__fleet__timer',
-  'mcp__fleet__chat', 'mcp__fleet__delegate', 'mcp__fleet__report',
-  'mcp__fleet__share', 'mcp__fleet__spawn', 'mcp__fleet__respawn',
-  'mcp__fleet__interrupt', 'mcp__fleet__name_agent', 'mcp__fleet__label_agent',
-  'mcp__fleet__observe', 'mcp__fleet__promote', 'mcp__fleet__cleanup',
+  'mcp__tlda__wait_for_task', 'mcp__tlda__my_task', 'mcp__tlda__task_list',
+  'mcp__tlda__register', 'mcp__tlda__register_manager', 'mcp__tlda__task_check',
+  'mcp__tlda__task_done', 'mcp__tlda__timer',
+  'mcp__tlda__chat', 'mcp__tlda__delegate', 'mcp__tlda__report',
+  'mcp__tlda__share', 'mcp__tlda__spawn', 'mcp__tlda__respawn',
+  'mcp__tlda__interrupt', 'mcp__tlda__name_agent', 'mcp__tlda__label_agent',
+  'mcp__tlda__observe', 'mcp__tlda__promote', 'mcp__tlda__cleanup',
   'ToolSearch',
 ])
 
 // Tools whose results should be captured and forwarded as pretty-printed cards
-const PRETTY_PRINT_TOOLS = new Set(['mcp__fleet__search_logs', 'mcp__fleet__get_thread', 'ScheduleWakeup', 'mcp__tlda__screenshot'])
+const PRETTY_PRINT_TOOLS = new Set(['mcp__tlda__search_logs', 'mcp__tlda__get_thread', 'ScheduleWakeup', 'mcp__tlda__screenshot'])
 
 function truncatePrettyResult(text, toolName) {
   if (text.length <= 5000) return text

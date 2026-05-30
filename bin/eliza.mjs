@@ -1220,7 +1220,7 @@ async function handleManagerEscalation(agentId, triggerText, mode = 'talk-to-ski
 
 **Before you do ANYTHING, read these skills:** \`manager-team-stewardship\` and \`partner-not-soloist\`. They contain the exact rules for this situation.
 
-**Your first move:** \`mcp__fleet__get_thread\` on ${agentName}'s thread (last 1–2 hours). Find what Skip was asking for — in his words, not yours. Read Skip's messages FIRST, form your understanding, THEN read the agent's messages.
+**Your first move:** \`mcp__tlda__get_thread\` on ${agentName}'s thread (last 1–2 hours). Find what Skip was asking for — in his words, not yours. Read Skip's messages FIRST, form your understanding, THEN read the agent's messages.
 
 **DO NOT:**
 - Send Skip a summary of the thread
