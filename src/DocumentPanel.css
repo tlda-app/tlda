@@ -459,6 +459,24 @@ html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-stale {
   height: 4px;
   cursor: pointer;
 }
+
+@media (pointer: coarse) {
+  .prefs-tab {
+    flex: 1;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    min-height: 0;
+  }
+
+  .prefs-slider {
+    height: 28px;
+  }
+
+  .prefs-slider-row {
+    margin-bottom: 10px;
+  }
+}
+
 .prefs-slider-value {
   width: 36px;
   text-align: right;
