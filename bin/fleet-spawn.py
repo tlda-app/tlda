@@ -21,6 +21,7 @@ import argparse
 import json
 import os
 import shlex
+import ssl
 import subprocess
 import sys
 import time
@@ -31,7 +32,14 @@ import websocket
 
 DASH_PORT = os.environ.get("FLEET_DASH_PORT", "5176")
 DASH_HOST = os.environ.get("FLEET_DASH_HOST", "127.0.0.1")
-API = f"http://{DASH_HOST}:{DASH_PORT}"
+_tls_cert = os.path.expanduser("~/.config/tlda/localhost+2.pem")
+_scheme = "https" if os.path.exists(_tls_cert) else "http"
+API = f"{_scheme}://{DASH_HOST}:{DASH_PORT}"
+_ca_path = os.path.expanduser("~/Library/Application Support/mkcert/rootCA.pem")
+_ssl_ctx = None
+if _scheme == "https" and os.path.exists(_ca_path):
+    _ssl_ctx = ssl.create_default_context()
+    _ssl_ctx.load_verify_locations(_ca_path)
 DEFAULT_MODEL = "claude-opus-4-6[1m]"
 REGISTER_PROMPT = "Call register() with the fleet MCP server. Then call my_task() to check for a pending task."
 
@@ -77,7 +85,7 @@ def resolve_model(model):
 
 def api_get(path):
     try:
-        return json.loads(urlopen(f"{API}{path}", timeout=5).read())
+        return json.loads(urlopen(f"{API}{path}", timeout=5, context=_ssl_ctx).read())
     except URLError as e:
         print(f"Error: server unreachable at {API} — {e}", file=sys.stderr)
         sys.exit(1)
@@ -85,7 +93,7 @@ def api_get(path):
 
 def ensure_server():
     try:
-        urlopen(f"{API}/api/state", timeout=2)
+        urlopen(f"{API}/api/state", timeout=2, context=_ssl_ctx)
         return True
     except URLError:
         pass
@@ -98,7 +106,7 @@ def ensure_server():
     for _ in range(20):
         time.sleep(0.5)
         try:
-            urlopen(f"{API}/api/state", timeout=1)
+            urlopen(f"{API}/api/state", timeout=1, context=_ssl_ctx)
             print("Server started.", file=sys.stderr)
             return True
         except URLError:
@@ -108,9 +116,13 @@ def ensure_server():
 
 
 def ws_register(fleet_id, name, tmux_session, cwd, model=None, effort=None, refresh=False):
-    ws_url = f"ws://{DASH_HOST}:{DASH_PORT}/ws/fleet?agent={fleet_id}"
+    _ws_scheme = "wss" if _scheme == "https" else "ws"
+    ws_url = f"{_ws_scheme}://{DASH_HOST}:{DASH_PORT}/ws/fleet?agent={fleet_id}"
     try:
-        ws = websocket.create_connection(ws_url, timeout=3)
+        ws_opts = {"timeout": 3}
+        if _ssl_ctx:
+            ws_opts["sslopt"] = {"context": _ssl_ctx}
+        ws = websocket.create_connection(ws_url, **ws_opts)
         msg = {"type": "register", "id": fleet_id, "name": name,
                "tmux_session": tmux_session, "cwd": cwd}
         meta = {}
@@ -330,7 +342,7 @@ def check_name_collisions(name):
         return []
     from urllib.parse import quote
     try:
-        result = json.loads(urlopen(f"{API}/api/check-name?name={quote(name)}", timeout=5).read())
+        result = json.loads(urlopen(f"{API}/api/check-name?name={quote(name)}", timeout=5, context=_ssl_ctx).read())
         return result.get("collisions", [])
     except URLError:
         return []

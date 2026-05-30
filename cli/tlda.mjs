@@ -910,7 +910,8 @@ async function cmdShare() {
   }
 
   // Localhost fallback
-  const url = `http://localhost:${port}/?doc=${name}&token=${readToken}`
+  const proto = hasTls ? 'https' : 'http'
+  const url = `${proto}://localhost:${port}/?doc=${name}&token=${readToken}`
   console.log(`${bold('Local')} ${dim('(not reachable from other devices)')}`)
   console.log(`  ${cyan(url)}`)
   console.log()
