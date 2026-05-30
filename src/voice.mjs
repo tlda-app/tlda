@@ -434,6 +434,10 @@ function enterEdit() {
   }
   if (_backend === 'deepgram') {
     _deepgramInterim = ''
+    _dgHasSeenInterim = false
+    _dgTrickleFlush()
+    _dgTrickleWords = []
+    _dgTrickleShown = 0
     setTextareaGlow(GLOW_AMBER)
   }
   _state = 'edit'
