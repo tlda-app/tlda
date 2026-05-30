@@ -9,7 +9,7 @@
  * Rendered in bottomPanelsContent.
  * Triggered by custom DOM events from FleetChatShape ref-chip hover.
  */
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import './AnnotationViewer.css'
@@ -193,7 +193,26 @@ export function AnnotationViewer({
     window.addEventListener('pointerup', onUp)
   }, [size])
 
-  if (!data) return null
+  // Stable bounds reference for CanvasClipPanel. The inner clip panel has a
+  // useEffect that resets its camera whenever `bounds` changes; with an inline
+  // object literal the prop reference changes on every render, so any other
+  // state update would snap the camera back and undo any pan the user did.
+  const clipBounds = useMemo<ClipBounds | null>(() => {
+    if (!data) return null
+    return data.useFullBounds ? {
+      x: data.bounds.x - 20,
+      y: data.bounds.y - 20,
+      w: data.bounds.w + 40,
+      h: data.bounds.h + 40,
+    } : {
+      x: 0,
+      y: data.bounds.y - 200,
+      w: 800,
+      h: 1035,
+    }
+  }, [data?.useFullBounds, data?.bounds.x, data?.bounds.y, data?.bounds.w, data?.bounds.h])
+
+  if (!data || !clipBounds) return null
 
   const isPinnedOrNav = state === 'pinned' || state === 'navigated'
 
@@ -241,17 +260,7 @@ export function AnnotationViewer({
       <div ref={canvasWrapRef} className="annotation-viewer-canvas" style={{ height: size.h }}>
         <CanvasClipPanel
           mainEditor={mainEditor}
-          bounds={data.useFullBounds ? {
-            x: data.bounds.x - 20,
-            y: data.bounds.y - 20,
-            w: data.bounds.w + 40,
-            h: data.bounds.h + 40,
-          } : {
-            x: 0,
-            y: data.bounds.y - 200,
-            w: 800,
-            h: 1035,
-          }}
+          bounds={clipBounds}
           shapeUtils={shapeUtils}
           tools={[]}
           licenseKey={licenseKey}

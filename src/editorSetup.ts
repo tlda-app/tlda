@@ -891,6 +891,13 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
     let cleanupTimer: ReturnType<typeof setTimeout> | null = null
     editor.store.listen(() => {
       try {
+        // If cursor is over the source-context card, ignore hover changes
+        // entirely. TLDraw keeps hover-testing for shapes underneath the card
+        // (svg-page, other highlights), and any non-null hoveredId would
+        // otherwise tear the card down out from under the user's cursor.
+        // The card's own mouseleave (attached at card creation below) handles
+        // cleanup when the cursor actually leaves it.
+        if (globalThis.document.querySelector('.hl-source-card:hover')) return
         const hoveredId = editor.getHoveredShapeId()
         const id = hoveredId ?? null
         if (id === glowShapeId) return
@@ -927,6 +934,21 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
               // Re-check that we're still hovering this shape
               if (editor.getHoveredShapeId() !== id) return
               const cardOff = showSourceContextCardForShape(editor, id)
+              // Wire the card's own mouseleave to glowCleanup, so the card
+              // dies when the cursor actually leaves it — independent of
+              // TLDraw hover state. This is the canonical dismissal path
+              // once the card is shown; the bridge timer below only matters
+              // for the case where the cursor exits the highlight without
+              // ever reaching the card.
+              const cardEl = globalThis.document.querySelector('.hl-source-card') as HTMLElement | null
+              if (cardEl) {
+                const onCardLeave = () => {
+                  cardEl.removeEventListener('mouseleave', onCardLeave)
+                  if (glowCleanup) { glowCleanup(); glowCleanup = null }
+                  glowShapeId = null
+                }
+                cardEl.addEventListener('mouseleave', onCardLeave)
+              }
               glowCleanup = () => { cardOff?.() }
             }, 500)
             glowCleanup = () => { clearTimeout(hoverTimer) }

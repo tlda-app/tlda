@@ -62,13 +62,21 @@ type RenderItem =
   | { kind: 'label'; label: LineLabel }
   | { kind: 'seam'; y: number; fromFile: string | null; toFile: string | null }
 
-function buildRenderItems(labels: LineLabel[]): RenderItem[] {
+function buildRenderItems(labels: LineLabel[], mainFile: string | null): RenderItem[] {
+  // Labels from the document's main file have file=null in the lookup. Resolve
+  // null to the main file's name so the seam shows the real filename on both
+  // sides instead of leaving the main-file side blank.
   const items: RenderItem[] = []
   for (let i = 0; i < labels.length; i++) {
     const label = labels[i]
     const prev = labels[i - 1]
     if (prev && label.file !== prev.file) {
-      items.push({ kind: 'seam', y: (prev.localY + label.localY) / 2, fromFile: prev.file, toFile: label.file })
+      items.push({
+        kind: 'seam',
+        y: (prev.localY + label.localY) / 2,
+        fromFile: prev.file ?? mainFile,
+        toFile: label.file ?? mainFile,
+      })
     }
     items.push({ kind: 'label', label })
   }
@@ -89,6 +97,7 @@ export function LineNumberOverlay({
   svgText: string | undefined
 }) {
   const [labels, setLabels] = useState<LineLabel[]>([])
+  const [mainFile, setMainFile] = useState<string | null>(null)
 
   useEffect(() => {
     if (!svgText) {
@@ -99,13 +108,14 @@ export function LineNumberOverlay({
     loadLookup(docName).then(lookup => {
       if (cancelled || !lookup) return
       setLabels(computeLabels(lookup, pageNum, shapeH))
+      setMainFile(lookup.meta.texFile || null)
     })
     return () => { cancelled = true }
   }, [docName, pageNum, shapeH, svgText])
 
   if (labels.length === 0) return null
 
-  const items = buildRenderItems(labels)
+  const items = buildRenderItems(labels, mainFile)
 
   return (
     <div
@@ -149,7 +159,8 @@ export function LineNumberOverlay({
               position: 'absolute',
               left: 0,
               top: item.y - 10,
-              width: 60,
+              // Width grows with the longer of the two filenames (no truncation).
+              width: 'max-content',
               pointerEvents: 'none',
             }}
           >
