@@ -112,7 +112,7 @@ export function NoteDropHandler() {
           const isDoc = item.type === 'shared-doc'
           if (isDoc && e.shiftKey && item.path) {
             // Open as a full tlda document via fleet's share endpoint
-            fetch(`http://localhost:5176/api/tlda/share`, {
+            fetch(`${window.location.origin}/api/tlda/share`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ path: item.path })

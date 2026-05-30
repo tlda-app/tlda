@@ -189,7 +189,7 @@ export function useSyncedPlayback(
 
   // Primary: SSE from fleet server (cross-origin)
   useEffect(() => {
-    const FLEET_URL = 'http://localhost:5176/api/playback/stream'
+    const FLEET_URL = `${window.location.origin}/api/playback/stream`
     let es: EventSource | null = null
     let retryTimer: ReturnType<typeof setTimeout> | null = null
 

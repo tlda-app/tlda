@@ -163,7 +163,7 @@ export function useFleetAgents(frameId?: string): any[] {
 }
 
 
-const INBOX_API = 'http://localhost:5176'
+const INBOX_API = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5176'
 
 export function useTaskInbox(): { items: any[], refresh: () => void, act: (taskId: string, action: string, reason?: string) => Promise<any> } {
   const [items, setItems] = useState<any[]>([])
@@ -638,7 +638,7 @@ export function useFleetContext(dnfFilter?: string[][] | [string,string][][] | n
 
 // --- Search API ---
 
-const DASHBOARD_URL = 'http://localhost:5176'
+const DASHBOARD_URL = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5176'
 
 export async function searchFleet(query: string, limit = 50): Promise<any[]> {
   await ensureInit()
