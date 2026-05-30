@@ -2000,15 +2000,37 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Tracks which chat rows have been expanded (by item key) so the state
   // survives dangerouslySetInnerHTML re-renders.
   const expandedRowsRef = useRef<Set<string>>(new Set())
-  // Imperative scroll-to-bottom (used by the floating ⇣ button and the
-  // post-send paths that want a guaranteed pin). Virtuoso's followOutput
-  // handles the on-content-change case; this is for explicit jumps.
+  // Imperative scroll-to-bottom for the floating ⇣ button. Must go through
+  // Virtuoso's API — raw scrollTop = scrollHeight only seeks to currently-
+  // rendered content, not the true last item.
   const scrollToBottom = useCallback(() => {
-    const el = chatLogRef.current
-    if (!el) return
-    el.scrollTop = el.scrollHeight
+    virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'auto' })
     isAtBottomRef.current = true
   }, [])
+
+  // Snap to bottom on initial load. customScrollParent + Virtuoso's
+  // initialTopMostItemIndex don't reliably land at bottom — we directly set
+  // scrollTop on the parent once items + scroll parent are ready, and keep
+  // pinning while content is still flowing in (early renders may report a
+  // stale scrollHeight before items measure).
+  const initialPinUntilRef = useRef(0)
+  useEffect(() => {
+    if (!scrollParent || allItems.length === 0) return
+    if (initialPinUntilRef.current === 0) {
+      initialPinUntilRef.current = Date.now() + 800
+    }
+    let raf = 0
+    const pin = () => {
+      if (Date.now() > initialPinUntilRef.current) return
+      const el = scrollParent
+      if (el) el.scrollTop = el.scrollHeight
+      virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'auto' })
+      raf = requestAnimationFrame(pin)
+    }
+    raf = requestAnimationFrame(pin)
+    return () => cancelAnimationFrame(raf)
+  }, [scrollParent, allItems.length])
+
 
   // Terminal card hover — mouseover on .lc-terminal-card shows the terminal overlay.
   useEffect(() => {
@@ -3385,7 +3407,13 @@ function FleetChatInner({ shape }: { shape: any }) {
               ref={virtuosoRef}
               customScrollParent={scrollParent}
               data={allItems}
+              // Start at the bottom on mount (most recent messages).
+              initialTopMostItemIndex={Math.max(allItems.length - 1, 0)}
               followOutput="auto"
+              // Tight threshold so any meaningful scroll-up un-pins; prevents
+              // followOutput from auto-snapping back to bottom when the user
+              // is reading earlier messages.
+              atBottomThreshold={4}
               atBottomStateChange={(atBottom) => { isAtBottomRef.current = atBottom; setShowScrollBtn(!atBottom) }}
               itemContent={(_index, item) => (
                 <div className={item?._divider ? 'queue-divider' : undefined}>
@@ -3400,7 +3428,7 @@ function FleetChatInner({ shape }: { shape: any }) {
               // appear floating over/under the messages.
               components={{
                 Footer: () => (
-                  <>
+                  <div>
                     <ElizaStatus pending={elizaPending} ctx={ctx} rawItemsLength={rawItems.length} />
                     <ThinkingStatus
                       thinkingAgents={thinkingAgents}
@@ -3413,7 +3441,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                       agents={agents}
                       escalationState={escalationState}
                     />
-                  </>
+                  </div>
                 ),
               }}
             />
