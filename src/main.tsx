@@ -36,6 +36,19 @@ import App from './App.tsx'
   })
 }
 
+// Automated browsers (playwright, etc.) get a forced dark theme and
+// camera-link OFF, regardless of whatever localStorage holds. Avoids two
+// concrete failure modes:
+//   1. White-themed playwright windows flash on the user's screen at night
+//   2. The agent's pan/zoom hijacks the human's view via the camera-link sync
+// Detection: navigator.webdriver is true for any automated browser session.
+if ((navigator as any).webdriver) {
+  try {
+    localStorage.setItem('tlda-theme', 'fog-dark')
+    localStorage.setItem('tlda-camera-linked', 'false')
+  } catch { /* localStorage may be unavailable */ }
+}
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <App />
