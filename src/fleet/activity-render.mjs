@@ -533,13 +533,7 @@ export function renderActivityGroup(group, ctx) {
       if (fullText.startsWith('📬')) return ''
       const allLines = fullText.split('\n')
       const long = allLines.length > 12 || fullText.length > 800
-      // Agent's between-tool text — render as markdown so backticks/lists/
-      // code fences/$math$ display the way the model wrote them. Falls back
-      // to escaped plain text if no renderMarkdown is wired.
-      const body = ctx.renderMarkdown
-        ? ctx.renderMarkdown(esc(fullText))
-        : esc(fullText)
-      return fullText ? `<div class="activity-text-block${long ? ' scrollable' : ''}">${body}</div>` : ''
+      return fullText ? `<div class="activity-text-block${long ? ' scrollable' : ''}">${esc(fullText)}</div>` : ''
     }
     const deduped = dedupTools(seg.items)
     const toolLines = deduped.map(t => {
