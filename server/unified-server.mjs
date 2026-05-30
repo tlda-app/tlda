@@ -880,6 +880,36 @@ app.get('/api/auth/me', (req, res) => {
   res.json({ level, presenter: level === 'rw' })
 })
 
+// ---------- Browser-side log sink ----------
+// Clients POST log entries here (one or many). Each entry is appended as a
+// JSON line to ~/.config/tlda/client.log so we can tail/grep. Use this from
+// the browser via src/logger.ts — every log.{debug,info,warn,error} call
+// gets forwarded here automatically. See CLAUDE.md "Client logging".
+const CLIENT_LOG_FILE = join(homedir(), '.config', 'tlda', 'client.log')
+app.post('/api/log', (req, res) => {
+  const body = req.body
+  const entries = Array.isArray(body) ? body : [body]
+  const lines = []
+  for (const e of entries) {
+    if (!e || typeof e !== 'object') continue
+    const obj = {
+      ts: e.ts || new Date().toISOString(),
+      level: e.level || 'info',
+      ns: e.ns || 'unknown',
+      msg: e.msg ?? '',
+      ...(e.data !== undefined ? { data: e.data } : {}),
+      ...(e.session ? { session: e.session } : {}),
+    }
+    lines.push(JSON.stringify(obj))
+  }
+  if (lines.length) {
+    fs.appendFile(CLIENT_LOG_FILE, lines.join('\n') + '\n', (err) => {
+      if (err) console.log(`[client-log] append failed: ${err.message}`)
+    })
+  }
+  res.json({ ok: true, n: lines.length })
+})
+
 // ---------- Fleet user prefs ----------
 // Per-user key-value store backed by fleet_prefs table. User is identified by fleet ID.
 

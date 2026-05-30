@@ -2023,6 +2023,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   // the last item's *bottom* lands at the viewport bottom (default 'start'
   // would only put the top of the last item at the top of the viewport).
   const scrollToBottom = useCallback(() => {
+    log.warn('chat-scroll', 'scrollToBottom (user click ⇣)')
     virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
     isAtBottomRef.current = true
   }, [])
@@ -2038,14 +2039,34 @@ function FleetChatInner({ shape }: { shape: any }) {
     let prevH = el.clientHeight
     const ro = new ResizeObserver(() => {
       const h = el.clientHeight
-      if (h !== prevH && isAtBottomRef.current) {
-        virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
+      if (h !== prevH) {
+        const pin = isAtBottomRef.current
+        log.warn('chat-scroll', 'container resize', { prevH, h, atBottom: pin, action: pin ? 'pin' : 'skip' })
+        if (pin) virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
       }
       prevH = h
     })
     ro.observe(el)
     return () => ro.disconnect()
   }, [chatLogEl])
+
+  // Force-pin when new items arrive AND we were at bottom. Virtuoso's
+  // followOutput="auto" sometimes scrolls against a stale measurement of
+  // the new item's height, ending up ~20px short — enough to trip
+  // atBottomThreshold and surface the ⇣ arrow even though the user didn't
+  // scroll. This redundant scroll catches that.
+  const prevItemCountRef = useRef(allItems.length)
+  useEffect(() => {
+    const prev = prevItemCountRef.current
+    prevItemCountRef.current = allItems.length
+    if (allItems.length > prev && isAtBottomRef.current) {
+      log.warn('chat-scroll', 'force-pin on item grow', { prev, now: allItems.length })
+      // Wait a frame so the new item is laid out before we measure-and-scroll.
+      requestAnimationFrame(() => {
+        virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
+      })
+    }
+  }, [allItems.length])
 
 
   // Terminal card hover — mouseover on .lc-terminal-card shows the terminal overlay.
@@ -3431,7 +3452,20 @@ function FleetChatInner({ shape }: { shape: any }) {
             initialTopMostItemIndex={{ index: 'LAST', align: 'end' }}
             followOutput="auto"
             atBottomThreshold={4}
-            atBottomStateChange={(atBottom) => { isAtBottomRef.current = atBottom; setShowScrollBtn(!atBottom) }}
+            atBottomStateChange={(atBottom) => {
+              if (isAtBottomRef.current !== atBottom) {
+                const el = chatLogEl
+                log.warn('chat-scroll', atBottom ? 'pinned to bottom' : 'left bottom', {
+                  scrollTop: el?.scrollTop,
+                  scrollHeight: el?.scrollHeight,
+                  clientHeight: el?.clientHeight,
+                  gap: el ? (el.scrollHeight - (el.scrollTop + el.clientHeight)) : null,
+                  items: allItems.length,
+                })
+              }
+              isAtBottomRef.current = atBottom
+              setShowScrollBtn(!atBottom)
+            }}
             itemContent={(_index, item) => (
               <div className={item?._divider ? 'queue-divider' : undefined}>
                 <ChatMessageRow html={item.html} postProcess={postProcess} itemKey={item.key} expandedRowsRef={expandedRowsRef} />
