@@ -40,7 +40,7 @@ _ssl_ctx = None
 if _scheme == "https" and os.path.exists(_ca_path):
     _ssl_ctx = ssl.create_default_context()
     _ssl_ctx.load_verify_locations(_ca_path)
-DEFAULT_MODEL = "claude-opus-4-6[1m]"
+DEFAULT_MODEL = "claude-opus-4-8[1m]"
 REGISTER_PROMPT = "Call register() with the fleet MCP server. Then call my_task() to check for a pending task."
 
 MODEL_ALIASES = {

@@ -42,6 +42,14 @@ const EFFORT_SHORTHANDS: Record<string, string> = {
   'xhi': 'xhigh', 'xhigh': 'xhigh', 'xh': 'xhigh', 'x': 'xhigh',
   'max': 'max',
 }
+const DEFAULT_MODEL = 'opus48'
+const DEFAULT_EFFORT = 'medium'
+const CAT_NAMES = [
+  'whiskers', 'mittens', 'shadow', 'luna', 'mochi', 'pepper', 'nugget', 'biscuit',
+  'pickles', 'waffles', 'noodle', 'tofu', 'gizmo', 'beans', 'ziggy', 'cleo',
+  'fig', 'olive', 'pixel', 'sprout', 'taco', 'chai', 'dumpling', 'mango',
+  'pebble', 'sage', 'jinx', 'kiwi', 'marble', 'rumble',
+]
 
 function parseSpawnInput(raw: string): { doc: string; name: string | undefined; model: string | undefined; effort: string | undefined } {
   const parts = raw.split(':')
@@ -62,23 +70,38 @@ const ALL_COMPLETABLE = [...ALL_MODELS, ...Object.keys(MODEL_SHORTHANDS)]
 const ALL_EFFORT_COMPLETABLE = [...EFFORT_LEVELS, ...Object.keys(EFFORT_SHORTHANDS)]
   .filter((v, i, a) => a.indexOf(v) === i)
 
-function getGhostCompletion(input: string, projects: string[]): string {
-  if (!input) return ''
+function completeSegment(typed: string, candidates: string[]): string {
+  if (!typed) return ''
+  const match = candidates.find(c => c.startsWith(typed) && c !== typed)
+  return match ? match.slice(typed.length) : ''
+}
+
+function getGhostCompletion(input: string, projects: string[], catName: string): string {
+  const defaults = [projects[0] || 'doc', catName, DEFAULT_MODEL, DEFAULT_EFFORT]
+  if (!input) return defaults.join(':')
+
   const parts = input.split(':')
   const lastPart = parts[parts.length - 1]
-  if (!lastPart) return ''
+  const pos = parts.length // 1-based: 1=project, 2=name, 3=model, 4=effort
 
-  if (parts.length === 1) {
-    const match = projects.find(p => p.startsWith(lastPart) && p !== lastPart)
-    if (match) return match.slice(lastPart.length)
-  } else if (parts.length === 2 || parts.length === 3) {
-    const match = ALL_COMPLETABLE.find(m => m.startsWith(lastPart) && m !== lastPart)
-    if (match) return match.slice(lastPart.length)
-  } else if (parts.length === 4) {
-    const match = ALL_EFFORT_COMPLETABLE.find(e => e.startsWith(lastPart) && e !== lastPart)
-    if (match) return match.slice(lastPart.length)
+  let segCompletion = ''
+  if (!lastPart) {
+    segCompletion = defaults[pos - 1] || ''
+  } else if (pos === 1) {
+    segCompletion = completeSegment(lastPart, projects)
+  } else if (pos === 2) {
+    segCompletion = completeSegment(lastPart, CAT_NAMES)
+  } else if (pos === 3) {
+    segCompletion = completeSegment(lastPart, ALL_COMPLETABLE)
+  } else if (pos === 4) {
+    segCompletion = completeSegment(lastPart, ALL_EFFORT_COMPLETABLE)
   }
-  return ''
+
+  const remaining = defaults.slice(pos)
+  if (remaining.length > 0) {
+    return segCompletion + ':' + remaining.join(':')
+  }
+  return segCompletion
 }
 
 // --- Nick color system (shared with FleetChatShape) ---
@@ -364,6 +387,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
   const currentDoc = useMemo(() => new URLSearchParams(window.location.search).get('doc') || '', [])
   const [spawnDoc, setSpawnDoc] = useState(currentDoc)
   const [projectList, setProjectList] = useState<string[]>([])
+  const [catName] = useState(() => CAT_NAMES[Math.floor(Math.random() * CAT_NAMES.length)])
   const spawnInputRef = useRef<HTMLInputElement>(null)
   useEffect(() => {
     fetch('/api/projects').then(r => r.ok ? r.json() : { projects: [] }).then((data: any) => {
@@ -546,17 +570,17 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                 onKeyDown={(e) => {
                   e.stopPropagation()
                   if (e.key === 'Tab') {
-                    const ghost = getGhostCompletion(spawnDoc, projectList)
+                    const ghost = getGhostCompletion(spawnDoc, projectList, catName)
                     if (ghost) { e.preventDefault(); setSpawnDoc(spawnDoc + ghost) }
                   } else if (e.key === 'Enter') {
                     e.preventDefault()
                     const { doc, name, model, effort } = parseSpawnInput(spawnDoc)
-                    spawnAgent(model || 'opus', doc || undefined, name, effort)
+                    spawnAgent(model || DEFAULT_MODEL, doc || undefined, name, effort || DEFAULT_EFFORT)
                   }
                 }}
-                placeholder="project:name:model:effort"
+                placeholder=""
               />
-              <span className="fleet-agents-spawn-ghost"><span style={{ visibility: 'hidden' }}>{spawnDoc}</span>{getGhostCompletion(spawnDoc, projectList)}</span>
+              <span className="fleet-agents-spawn-ghost"><span style={{ visibility: 'hidden' }}>{spawnDoc}</span>{getGhostCompletion(spawnDoc, projectList, catName)}</span>
             </span>
             <button
               className="fleet-agents-spawn-btn"
@@ -564,7 +588,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
               onPointerUp={(e) => {
                 e.stopPropagation()
                 const { doc, name, model, effort } = parseSpawnInput(spawnDoc)
-                spawnAgent(model || 'opus', doc || undefined, name, effort)
+                spawnAgent(model || DEFAULT_MODEL, doc || undefined, name, effort || DEFAULT_EFFORT)
               }}
             >+</button>
           </span>
