@@ -2046,14 +2046,35 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Tracks which chat rows have been expanded (by item key) so the state
   // survives dangerouslySetInnerHTML re-renders.
   const expandedRowsRef = useRef<Set<string>>(new Set())
-  // Imperative scroll-to-bottom for the floating ⇣ button. align:'end' so
-  // the last item's *bottom* lands at the viewport bottom (default 'start'
-  // would only put the top of the last item at the top of the viewport).
+  // Hard-lock toggle: when on, every pin path fires unconditionally
+  // (ignores isAtBottomRef), and atBottomStateChange can't un-pin us.
+  // Persisted per browser in localStorage.
+  const HARD_LOCKED_KEY = 'fleet-chat-hard-locked'
+  const [hardLocked, setHardLocked] = useState(() => localStorage.getItem(HARD_LOCKED_KEY) === 'true')
+  const hardLockedRef = useRef(hardLocked)
+  useEffect(() => {
+    hardLockedRef.current = hardLocked
+    localStorage.setItem(HARD_LOCKED_KEY, String(hardLocked))
+  }, [hardLocked])
+
+  // pin-to-bottom: scrollToIndex + direct scrollTop assignment, twice (one
+  // immediate, one after layout) to catch late-measure growth.
+  const pinHard = useCallback(() => {
+    virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
+    const el = chatLogEl
+    if (el) el.scrollTop = el.scrollHeight
+    requestAnimationFrame(() => {
+      const el2 = chatLogEl
+      if (el2) el2.scrollTop = el2.scrollHeight
+    })
+  }, [chatLogEl])
+
+  // Imperative scroll-to-bottom for the floating ⇣ button.
   const scrollToBottom = useCallback(() => {
     log.warn('chat-scroll', 'scrollToBottom (user click ⇣)')
-    virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
+    pinHard()
     isAtBottomRef.current = true
-  }, [])
+  }, [pinHard])
 
   // When the scroll container resizes — textarea growing as you type
   // (shrinks chat-log) OR shrinking back after send (grows chat-log) — pin
@@ -2067,15 +2088,15 @@ function FleetChatInner({ shape }: { shape: any }) {
     const ro = new ResizeObserver(() => {
       const h = el.clientHeight
       if (h !== prevH) {
-        const pin = isAtBottomRef.current
-        log.warn('chat-scroll', 'container resize', { prevH, h, atBottom: pin, action: pin ? 'pin' : 'skip' })
-        if (pin) virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
+        const pin = isAtBottomRef.current || hardLockedRef.current
+        log.warn('chat-scroll', 'container resize', { prevH, h, atBottom: isAtBottomRef.current, hardLocked: hardLockedRef.current, action: pin ? 'pin' : 'skip' })
+        if (pin) pinHard()
       }
       prevH = h
     })
     ro.observe(el)
     return () => ro.disconnect()
-  }, [chatLogEl])
+  }, [chatLogEl, pinHard])
 
   // Force-pin when new items arrive AND we were at bottom. Virtuoso's
   // followOutput="auto" sometimes scrolls against a stale measurement of
@@ -2089,14 +2110,11 @@ function FleetChatInner({ shape }: { shape: any }) {
   useEffect(() => {
     const prev = prevItemCountRef.current
     prevItemCountRef.current = allItems.length
-    if (allItems.length > prev && isAtBottomRef.current) {
-      log.warn('chat-scroll', 'force-pin on item grow', { prev, now: allItems.length })
-      // Wait a frame so the new item is laid out before we measure-and-scroll.
-      requestAnimationFrame(() => {
-        virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
-      })
+    if (allItems.length > prev && (isAtBottomRef.current || hardLockedRef.current)) {
+      log.warn('chat-scroll', 'force-pin on item grow', { prev, now: allItems.length, hardLocked: hardLockedRef.current })
+      requestAnimationFrame(pinHard)
     }
-  }, [allItems.length])
+  }, [allItems.length, pinHard])
 
 
   // Terminal card hover — mouseover on .lc-terminal-card shows the terminal overlay.
@@ -3489,9 +3507,9 @@ function FleetChatInner({ shape }: { shape: any }) {
             totalListHeightChanged={(h) => {
               const prev = prevTotalHeightRef.current
               prevTotalHeightRef.current = h
-              if (h > prev && isAtBottomRef.current) {
-                log.warn('chat-scroll', 'pin on list-height grow', { prev, h })
-                virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
+              if (h > prev && (isAtBottomRef.current || hardLockedRef.current)) {
+                log.warn('chat-scroll', 'pin on list-height grow', { prev, h, hardLocked: hardLockedRef.current })
+                pinHard()
               }
             }}
             atBottomStateChange={(atBottom) => {
@@ -3503,10 +3521,15 @@ function FleetChatInner({ shape }: { shape: any }) {
                   clientHeight: el?.clientHeight,
                   gap: el ? (el.scrollHeight - (el.scrollTop + el.clientHeight)) : null,
                   items: allItems.length,
+                  hardLocked: hardLockedRef.current,
                 })
               }
               isAtBottomRef.current = atBottom
-              setShowScrollBtn(!atBottom)
+              setShowScrollBtn(!atBottom && !hardLockedRef.current)
+              // When hardLocked, snap back immediately if Virtuoso reports off-bottom.
+              if (!atBottom && hardLockedRef.current) {
+                requestAnimationFrame(pinHard)
+              }
             }}
             itemContent={(_index, item) => (
               <div className={item?._divider ? 'queue-divider' : undefined}>
@@ -3604,6 +3627,29 @@ function FleetChatInner({ shape }: { shape: any }) {
           <div style={{ position: 'relative' }}>
             {/* Highlight underlay — mirrors textarea text, highlights <<ref>> tokens */}
             <InputHighlightUnderlay inputRef={inputRef} />
+            {/* Hard-lock scroll toggle — when on, the chat always pins to bottom,
+                ignoring user scroll. Visual: magnet/horseshoe glyph. */}
+            <button
+              className="fleet-hardlock-toggle"
+              onPointerDown={stopEventPropagation}
+              onClick={(e) => {
+                stopEventPropagation(e as any)
+                setHardLocked(prev => {
+                  const next = !prev
+                  if (next) requestAnimationFrame(pinHard)
+                  return next
+                })
+              }}
+              title={hardLocked ? 'Hard-locked — always pinned to bottom (click to release)' : 'Smart scroll — click to hard-lock to bottom'}
+            >
+              <svg width="10" height="14" viewBox="0 0 10 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M2 9 L2 4 Q2 1 5 1 Q8 1 8 4 L8 9"/>
+                {hardLocked && <>
+                  <path d="M1 11 Q2.5 10 5 11 Q7.5 12 9 11" strokeWidth="1"/>
+                  <path d="M2 13 Q3.5 12 5 13 Q6.5 14 8 13" strokeWidth="0.8"/>
+                </>}
+              </svg>
+            </button>
             {/* Terminal peek icon — hover to show agent's tmux output. Hidden when no targeted agent has a tmux session. */}
             {hoverTargetAgentId && (
               <button
