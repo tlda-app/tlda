@@ -1692,7 +1692,7 @@ function rpcTerminalInput({ tmux_session, data }) {
 
 
 const _activeSpawns = new Map()
-async function rpcSpawn({ name, model, cwd, doc, respawn }) {
+async function rpcSpawn({ name, model, cwd, doc, respawn, effort }) {
   const agentName = name || `agent-${Date.now().toString(36).slice(-4)}`
   if (_activeSpawns.has(agentName)) {
     const age = Date.now() - _activeSpawns.get(agentName)
@@ -1710,6 +1710,7 @@ async function rpcSpawn({ name, model, cwd, doc, respawn }) {
   const spawnScript = process.env.FLEET_SPAWN || 'fleet-spawn'
   const args = respawn ? [agentName] : ['--fresh', agentName]
   if (model) args.push('--model', model)
+  if (effort) args.push('--effort', effort)
   if (resolvedCwd) args.push('--cwd', resolvedCwd)
   args.push('--no-attach')
   _activeSpawns.set(agentName, Date.now())

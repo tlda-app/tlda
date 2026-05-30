@@ -2510,7 +2510,7 @@ async function handleFleetWsMessage(ws, msg) {
 
   // ---- spawn ----
   if (type === 'spawn') {
-    const { name, model, doc, agent, respawn } = msg
+    const { name, model, doc, agent, respawn, effort } = msg
     let spawnName = name
     if (respawn && agent) {
       const a = fleetStore.findAgent(agent)
@@ -2521,7 +2521,7 @@ async function handleFleetWsMessage(ws, msg) {
     try {
       const result = await sendRpc(machineIds[0], 'spawn', {
         name: spawnName || undefined, model: model || undefined,
-        doc: doc || undefined, respawn: !!respawn,
+        doc: doc || undefined, respawn: !!respawn, effort: effort || undefined,
       })
       broadcastState()
       reply(result)

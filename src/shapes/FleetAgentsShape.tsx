@@ -26,21 +26,47 @@ const DEFAULT_W = 340
 const DEFAULT_H = 400
 
 const MODEL_SHORTHANDS: Record<string, string> = {
-  '45': 'opus45', '46': 'opus46', '47': 'opus47',
+  'opus': 'opus', 'opus45': 'opus45', 'opus46': 'opus46', 'opus47': 'opus47', 'opus48': 'opus48',
+  'sonnet': 'sonnet', 'haiku': 'haiku',
+  '45': 'opus45', '46': 'opus46', '47': 'opus47', '48': 'opus48',
   's': 'sonnet', 'h': 'haiku',
-  'o45': 'opus45', 'o46': 'opus46', 'o47': 'opus47',
+  'o45': 'opus45', 'o46': 'opus46', 'o47': 'opus47', 'o48': 'opus48',
 }
 
-function parseSpawnInput(raw: string): { doc: string; name: string | undefined; model: string | undefined } {
+const ALL_MODELS = ['opus', 'opus45', 'opus46', 'opus47', 'opus48', 'sonnet', 'haiku']
+const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
+
+function parseSpawnInput(raw: string): { doc: string; name: string | undefined; model: string | undefined; effort: string | undefined } {
   const parts = raw.split(':')
   const doc = parts[0]
   if (parts.length === 2 && MODEL_SHORTHANDS[parts[1]]) {
-    return { doc, name: undefined, model: MODEL_SHORTHANDS[parts[1]] }
+    return { doc, name: undefined, model: MODEL_SHORTHANDS[parts[1]], effort: undefined }
   }
   const name = parts[1] || undefined
   const modelRaw = parts[2] || undefined
   const model = modelRaw ? (MODEL_SHORTHANDS[modelRaw] || modelRaw) : undefined
-  return { doc, name, model }
+  const effortRaw = parts[3] || undefined
+  const effort = effortRaw && EFFORT_LEVELS.includes(effortRaw) ? effortRaw : undefined
+  return { doc, name, model, effort }
+}
+
+function getGhostCompletion(input: string, projects: string[]): string {
+  if (!input) return ''
+  const parts = input.split(':')
+  const lastPart = parts[parts.length - 1]
+  if (!lastPart) return ''
+
+  if (parts.length === 1) {
+    const match = projects.find(p => p.startsWith(lastPart) && p !== lastPart)
+    if (match) return match.slice(lastPart.length)
+  } else if (parts.length === 2 || parts.length === 3) {
+    const match = ALL_MODELS.find(m => m.startsWith(lastPart) && m !== lastPart)
+    if (match) return match.slice(lastPart.length)
+  } else if (parts.length === 4) {
+    const match = EFFORT_LEVELS.find(e => e.startsWith(lastPart) && e !== lastPart)
+    if (match) return match.slice(lastPart.length)
+  }
+  return ''
 }
 
 // --- Nick color system (shared with FleetChatShape) ---
@@ -322,18 +348,17 @@ function FleetAgentsInner({ shape }: { shape: any }) {
   const [sortKey, setSortKey] = useState<SortKey>('active')
   const [sortAsc, setSortAsc] = useState(false)
 
-  // Spawn: project selector. Default to current doc, dropdown shows all projects.
+  // Spawn input — always visible, fetches projects for autocomplete
   const currentDoc = useMemo(() => new URLSearchParams(window.location.search).get('doc') || '', [])
   const [spawnDoc, setSpawnDoc] = useState(currentDoc)
   const [projectList, setProjectList] = useState<string[]>([])
-  const [showSpawnPicker, setShowSpawnPicker] = useState(false)
+  const spawnInputRef = useRef<HTMLInputElement>(null)
   useEffect(() => {
-    if (!showSpawnPicker) return
     fetch('/api/projects').then(r => r.ok ? r.json() : { projects: [] }).then((data: any) => {
       const projects = Array.isArray(data) ? data : (data.projects || [])
       setProjectList(projects.map((p: any) => p.name).sort())
     }).catch(e => console.warn('[fleet-agents] projects fetch failed:', e.message))
-  }, [showSpawnPicker])
+  }, [])
 
   // Build task lookup: agent id → active task
   const activeTasks = useMemo(() => {
@@ -500,40 +525,36 @@ function FleetAgentsInner({ shape }: { shape: any }) {
             )}
           </span>
           <span className="fleet-agents-spawn-btns" onPointerDown={(e) => e.stopPropagation()}>
-            {showSpawnPicker && (
-              <span className="fleet-agents-spawn-search-wrap">
-                <input
-                  className="fleet-agents-spawn-search"
-                  value={spawnDoc}
-                  onChange={(e) => setSpawnDoc(e.target.value)}
-                  onKeyDown={(e) => { e.stopPropagation(); if (e.key === 'Escape') setShowSpawnPicker(false) }}
-                  placeholder="project:name:45"
-                  autoFocus
-                  list="spawn-projects"
-                />
-                <datalist id="spawn-projects">
-                  {projectList.map(p =>
-                    <option key={p} value={p} />
-                  )}
-                </datalist>
-              </span>
-            )}
+            <span className="fleet-agents-spawn-input-wrap">
+              <input
+                ref={spawnInputRef}
+                className="fleet-agents-spawn-search"
+                value={spawnDoc}
+                onChange={(e) => setSpawnDoc(e.target.value)}
+                onKeyDown={(e) => {
+                  e.stopPropagation()
+                  if (e.key === 'Tab') {
+                    const ghost = getGhostCompletion(spawnDoc, projectList)
+                    if (ghost) { e.preventDefault(); setSpawnDoc(spawnDoc + ghost) }
+                  } else if (e.key === 'Enter') {
+                    e.preventDefault()
+                    const { doc, name, model, effort } = parseSpawnInput(spawnDoc)
+                    spawnAgent(model || 'opus', doc || undefined, name, effort)
+                  }
+                }}
+                placeholder="project:name:model:effort"
+              />
+              <span className="fleet-agents-spawn-ghost"><span style={{ visibility: 'hidden' }}>{spawnDoc}</span>{getGhostCompletion(spawnDoc, projectList)}</span>
+            </span>
             <button
               className="fleet-agents-spawn-btn"
-              title={showSpawnPicker ? 'Hide project picker' : `Spawning in: ${spawnDoc || '(none)'}`}
-              onPointerUp={(e) => { e.stopPropagation(); setShowSpawnPicker(v => !v) }}
-              style={{ opacity: showSpawnPicker ? 0.8 : undefined }}
-            >📂</button>
-            <button
-              className="fleet-agents-spawn-btn"
-              title={`Spawn Sonnet in ${spawnDoc || 'default dir'}`}
-              onPointerUp={(e) => { e.stopPropagation(); const { doc, name, model } = parseSpawnInput(spawnDoc); spawnAgent(model || 'claude-sonnet-4-6', doc || undefined, name) }}
-            >+S</button>
-            <button
-              className="fleet-agents-spawn-btn"
-              title={`Spawn Opus in ${spawnDoc || 'default dir'}`}
-              onPointerUp={(e) => { e.stopPropagation(); const { doc, name, model } = parseSpawnInput(spawnDoc); spawnAgent(model || 'claude-opus-4-6', doc || undefined, name) }}
-            >+O</button>
+              title="Spawn agent"
+              onPointerUp={(e) => {
+                e.stopPropagation()
+                const { doc, name, model, effort } = parseSpawnInput(spawnDoc)
+                spawnAgent(model || 'opus', doc || undefined, name, effort)
+              }}
+            >+</button>
           </span>
         </div>
       </div>

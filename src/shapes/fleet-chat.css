@@ -1807,11 +1807,49 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   opacity: 0.4;
 }
 
-/* --- Spawn buttons --- */
+/* --- Spawn input + button --- */
 
 .fleet-agents-shape .fleet-agents-spawn-btns {
   display: flex;
   gap: 3px;
+  align-items: center;
+}
+.fleet-agents-shape .fleet-agents-spawn-input-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+.fleet-agents-shape .fleet-agents-spawn-search {
+  background: transparent;
+  color: #ccc;
+  border: 1px solid rgba(128,128,128,0.2);
+  border-radius: 3px;
+  font-size: 8px;
+  padding: 2px 4px;
+  width: 100%;
+  font-family: inherit;
+  outline: none;
+  position: relative;
+  z-index: 1;
+  box-sizing: border-box;
+}
+.fleet-agents-shape .fleet-agents-spawn-search:focus {
+  border-color: rgba(128,128,128,0.5);
+}
+.fleet-agents-shape .fleet-agents-spawn-ghost {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: 2px 4px;
+  font-size: 8px;
+  font-family: inherit;
+  color: rgba(128,128,128,0.35);
+  pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  border: 1px solid transparent;
+  box-sizing: border-box;
 }
 .fleet-agents-shape .fleet-agents-spawn-btn {
   background: none;
@@ -1819,29 +1857,16 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   border-radius: 3px;
   color: inherit;
   font: inherit;
-  font-size: 8px;
-  padding: 0 4px;
-  line-height: 14px;
+  font-size: 10px;
+  padding: 0 5px;
+  line-height: 16px;
   cursor: pointer;
   opacity: 0.5;
+  flex-shrink: 0;
 }
 .fleet-agents-shape .fleet-agents-spawn-btn:hover {
   opacity: 1;
   border-color: rgba(128,128,128,0.4);
-}
-.fleet-agents-shape .fleet-agents-spawn-search {
-  background: rgba(30,30,40,0.9);
-  color: #ccc;
-  border: 1px solid rgba(128,128,128,0.2);
-  border-radius: 3px;
-  font-size: 8px;
-  padding: 2px 4px;
-  width: 80px;
-  font-family: inherit;
-  outline: none;
-}
-.fleet-agents-shape .fleet-agents-spawn-search:focus {
-  border-color: rgba(128,128,128,0.5);
 }
 
 /* --- Search shape enhancements --- */

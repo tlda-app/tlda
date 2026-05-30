@@ -45,9 +45,10 @@ REGISTER_PROMPT = "Call register() with the fleet MCP server. Then call my_task(
 
 MODEL_ALIASES = {
     "opus": "claude-opus-4-6[1m]",
-    "opus45": "claude-opus-4-5-20250514",
+    "opus45": "claude-opus-4-5",
     "opus46": "claude-opus-4-6[1m]",
     "opus47": "claude-opus-4-7[1m]",
+    "opus48": "claude-opus-4-8[1m]",
     "sonnet": "claude-sonnet-4-6",
     "haiku": "claude-haiku-4-5",
 }
