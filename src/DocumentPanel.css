@@ -236,11 +236,6 @@ html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-stale {
   pointer-events: none;
 }
 
-/* Narrower panel for HTML-format docs (no history tab = less width needed) */
-.doc-panel.doc-panel--html {
-  --panel-full-width: 180px;
-}
-
 .toc-zone-width-slider {
   position: absolute;
   bottom: 0;
@@ -1247,10 +1242,6 @@ html[data-theme="dark"] .doc-panel-open .notes-table-section td {
     width: 300px;
     font-size: 14px;
     color: rgba(0, 0, 0, 0.25);
-  }
-
-  .doc-panel.doc-panel--html {
-    width: 200px;
   }
 
   .doc-panel:hover,
