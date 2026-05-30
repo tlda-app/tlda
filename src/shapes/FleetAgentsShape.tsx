@@ -148,6 +148,7 @@ function formatEffort(effort: string): string {
 
 
 function agentDisplayName(agent: any): string {
+  if (agent.lineage_name) return agent.lineage_name
   return agent.friendly_name || (agent.id || '').replace('fleet:', '')
 }
 

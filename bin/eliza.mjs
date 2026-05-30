@@ -1329,7 +1329,11 @@ async function handleHandoff(agentId, triggerText) {
   const briefingName = await nextAgentName(extractBaseTopic(agentName), 'b')
   try {
     // Transition original agent from day → dusk in its lineage
-    send({ type: 'lineage-transition', agent: agentId, phase: 'dusk' })
+    try {
+      await sendRequest({ type: 'lineage-transition', agent: agentId, phase: 'dusk' })
+    } catch (e) {
+      sendChat(OWNER_ID, `⚠️ Lineage transition (${agentName} → dusk) failed: ${e.message}. Handoff continuing without lineage tracking.`)
+    }
 
     let spawnResult = await postJson('/api/spawn', { name: briefingName, cwd: agentCwd })
     if (spawnResult.error && spawnResult.error.includes('already exists')) {
@@ -1346,7 +1350,11 @@ async function handleHandoff(agentId, triggerText) {
     setTimeout(async () => {
       try {
         // Assign briefer to the lineage as day (original agent is now dusk)
-        send({ type: 'lineage-assign', agent: briefingName, phase: 'day' })
+        try {
+          await sendRequest({ type: 'lineage-assign', agent: briefingName, phase: 'day' })
+        } catch (e) {
+          sendChat(OWNER_ID, `⚠️ Lineage assign (${briefingName} → day) failed: ${e.message}`)
+        }
 
         await postJson('/api/tasks/delegate', {
           from: AGENT_ID,
@@ -1442,9 +1450,17 @@ async function handleHandoffReady(fromId, text) {
       setTimeout(async () => {
         try {
           // Assign pickup to the lineage as dawn
-          send({ type: 'lineage-assign', agent: pickupName, phase: 'dawn' })
+          try {
+            await sendRequest({ type: 'lineage-assign', agent: pickupName, phase: 'dawn' })
+          } catch (e) {
+            sendChat(OWNER_ID, `⚠️ Lineage assign (${pickupName} → dawn) failed: ${e.message}`)
+          }
           // Retire the original agent (dusk) from the lineage
-          send({ type: 'lineage-retire', agent: handoffInfo.originalAgentId })
+          try {
+            await sendRequest({ type: 'lineage-retire', agent: handoffInfo.originalAgentId })
+          } catch (e) {
+            sendChat(OWNER_ID, `⚠️ Lineage retire (${handoffInfo.originalAgent}) failed: ${e.message}`)
+          }
 
           await postJson('/api/tasks/delegate', {
             from: AGENT_ID,
@@ -1493,6 +1509,7 @@ function connect() {
   ws.on('message', (raw) => {
     try {
       const msg = JSON.parse(raw.toString())
+      if (handleWsReply(msg)) return
       handleMessage(msg)
     } catch {}
   })
@@ -1519,6 +1536,34 @@ function send(msg) {
   if (ws?.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ id: msgId++, ...msg }))
   }
+}
+
+const _pendingRequests = new Map()
+
+function sendRequest(msg, timeoutMs = 10_000) {
+  return new Promise((resolve, reject) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      reject(new Error('WS not connected'))
+      return
+    }
+    const id = msgId++
+    const timer = setTimeout(() => {
+      _pendingRequests.delete(id)
+      reject(new Error('timeout'))
+    }, timeoutMs)
+    _pendingRequests.set(id, { resolve, reject, timer })
+    ws.send(JSON.stringify({ id, ...msg }))
+  })
+}
+
+function handleWsReply(msg) {
+  if (!msg.id || !_pendingRequests.has(msg.id)) return false
+  const { resolve, reject, timer } = _pendingRequests.get(msg.id)
+  _pendingRequests.delete(msg.id)
+  clearTimeout(timer)
+  if (msg.error) reject(new Error(msg.error))
+  else resolve(msg.result)
+  return true
 }
 
 function register() {

@@ -755,7 +755,7 @@ function makeCtx(agents: any[], tasks: any[], preambleMacros: Record<string, str
   const agentLabel = (id: string) => {
     if (!id) return '[unknown]'
     const a = agents.find((a: any) => a.id === id)
-    if (a) return a.friendly_name || a.id
+    if (a) return a.lineage_name || a.friendly_name || a.id
     return typeof id === 'string' ? id : String(id)
   }
   const getNickClass = (id: string) => {
@@ -1029,9 +1029,19 @@ function FleetChatInner({ shape }: { shape: any }) {
   const resolveToFleetId = useCallback((label: string): string => {
     if (label.startsWith('fleet:')) return label
     const agent = agents.find((a: any) =>
-      a.friendly_name === label || a.id === label || (a.labels || []).includes(label)
+      a.friendly_name === label || a.id === label || (a.labels || []).includes(label) ||
+      (a.lineage_name === label && a.phase === 'day')
     )
     return agent?.id || label
+  }, [agents])
+
+  const resolveToFleetIds = useCallback((label: string): string[] => {
+    if (label.startsWith('fleet:')) return [label]
+    const matched = agents.filter((a: any) =>
+      a.friendly_name === label || a.id === label || (a.labels || []).includes(label) ||
+      a.lineage_name === label
+    )
+    return matched.length > 0 ? matched.map((a: any) => a.id) : [label]
   }, [agents])
 
   const wouldHibernate = useMemo(() => {
@@ -1039,7 +1049,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     const targetIds = new Set<string>()
     for (const andGroup of dnfFilter) {
       for (const [, label] of andGroup) {
-        targetIds.add(resolveToFleetId(label))
+        for (const id of resolveToFleetIds(label)) targetIds.add(id)
       }
     }
     const filtered = new Map<string, number>()
@@ -1047,14 +1057,14 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (targetIds.has(id)) filtered.set(id, secs)
     }
     return filtered
-  }, [wouldHibernateAll, dnfFilter, resolveToFleetId])
+  }, [wouldHibernateAll, dnfFilter, resolveToFleetIds])
 
   const hibernatingAgents = useMemo(() => {
     const targetIds = new Set<string>()
     if (dnfFilter && dnfFilter.length > 0) {
       for (const andGroup of dnfFilter) {
         for (const [, label] of andGroup) {
-          targetIds.add(resolveToFleetId(label))
+          for (const id of resolveToFleetIds(label)) targetIds.add(id)
         }
       }
     }
@@ -1065,7 +1075,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       }
     }
     return result
-  }, [agents, dnfFilter, resolveToFleetId])
+  }, [agents, dnfFilter, resolveToFleetIds])
 
   const elizaPending = useMemo(() => {
     let filtered = elizaPendingAll
@@ -1073,7 +1083,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       const targetIds = new Set<string>()
       for (const andGroup of dnfFilter) {
         for (const [, label] of andGroup) {
-          targetIds.add(resolveToFleetId(label))
+          for (const id of resolveToFleetIds(label)) targetIds.add(id)
         }
       }
       filtered = filtered.filter(n => targetIds.has(n.targetId))
@@ -1084,7 +1094,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       seen.add(n.label)
       return true
     })
-  }, [elizaPendingAll, dnfFilter, resolveToFleetId])
+  }, [elizaPendingAll, dnfFilter, resolveToFleetIds])
 
   // Fetch per-agent history on mount / filter change.
   // The global event buffer (MAX_EVENTS=150) is shared across all agents.
