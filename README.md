@@ -278,27 +278,26 @@ Agents don't start from zero — they have situational awareness of you, the doc
 
 **Your reading position.** `viewing_context()` returns which document, page, and source lines are in your viewport right now. An agent can answer "is this right?" without asking what "this" is.
 
-```json
-{
-  "doc": "bregman",
-  "page": 12,
-  "source": { "file": "main.tex", "startLine": 418, "endLine": 435 },
-  "version": "a4f975a",
-  "updatedAt": "2026-05-30T04:12:33Z"
-}
+```
+viewing_context()
+
+bregman — page 12
+  main.tex:418–435
+  version: a4f975a (built 2m ago)
 ```
 
 **Your annotations.** `read_annotations()` returns highlights, notes, and pen strokes — each with its source-line position and the text under it. Agents read what you marked without you typing a description.
 
 ```
-read_annotations("bregman", type: ["highlight", "note"])
+read_annotations("bregman")
 
-Page 8 (main.tex:271–273) — highlight (orange/question)
-  ⟦We claim that $\hat\mu$ converges at the parametric rate⟧
+bregman — 3 annotation(s)
 
-Page 12 (main.tex:420) — note
-  "Why doesn't this use the tighter bound from Prop 2.1?"
-  tabs: 2 (1: question, 2: agent reply)
+[highlight] orange L271 "We claim that $\hat\mu$ converges at the parametric rate"
+  id: shape:abc123
+
+[note] purple L420 "Why doesn't this use the tighter bound from Prop 2.1?"
+  id: shape:def456  tabs: 2
 ```
 
 **Build status and errors.** Agents see when builds start, succeed, or fail. On failure, they get the LaTeX error with ±3 lines of source context — enough to diagnose without asking you to paste the log.
@@ -308,28 +307,43 @@ Page 12 (main.tex:420) — note
 **Full chat history.** `search_logs()` and `get_thread()` span the complete fleet chat history — across sessions, across context windows, across agent lifetimes. An agent spawned today can read decisions made last week.
 
 ```
-search_logs("proof convergence", limit: 3)
+search_logs("proof")
 
-5/30 4:58 AM | [activity] worksheets → worksheets
-  ...outline-highlighter is 2/3 built — slider slot and server
-  endpoint verified producing the clause-outline from the real proof...
+3 results (3 fleet, 0 session)
 
-5/29 11:22 PM | [chat] skip → proof-writer
-  "the rate in Thm 3 is wrong — should be root-n not n"
+5/30/2026, 5:00:57 AM | [fleet] [activity] worksheets → worksheets |
+  ...built and verified the outline tool → root-caused and shipped the
+  macro-extractor bug → delivered the full proof...
 
-5/29 10:15 PM | [chat] proof-writer → skip
-  "Fixed. New bound uses Lemma 2.4 directly..."
+5/30/2026, 4:58:04 AM | [fleet] [activity] worksheets → worksheets |
+  ...outline-highlighter is 2/3 built — slider slot and server endpoint
+  verified producing the clause-outline from the real proof...
 ```
 
 ```
-get_thread("proof-writer", since: "1h", types: ["chat"])
+get_thread("docs-builder", since: "30m", types: ["chat"])
 
-[5/30 4:35 AM] skip → proof-writer
-  is the convergence proof done?
+Showing messages 1–4 of 12 (5/30/2026, 4:35:53 AM → 5/30/2026, 4:40:38 AM)
+⚠️ 8 more message(s) not shown
 
-[5/30 4:36 AM] proof-writer → skip
-  Yes — committed at a4f975a. The key change was switching from
-  the empirical process bound to the direct Bregman argument.
+[5/30/2026, 4:35:53 AM] real-tlda-rev → docs-builder
+Outline is solid — captures the gaps without duplicating what's there.
+
+---
+
+[5/30/2026, 4:38:23 AM] docs-builder → real-tlda-rev
+Draft is in `README.md`. Five new sections added — here's what went where...
+```
+
+**Pending messages.** `my_task()` shows unread messages from other agents:
+
+```
+my_task()
+
+📬 Messages:
+
+[from fleet:9ab2e702, id:355048] (reply with chat(to: "fleet:9ab2e702"))
+  Update from Skip: all of it goes in the README. One doc, not three.
 ```
 
 **Document version.** Every chat message agents send is stamped with the current shadow-repo commit hash. They know which version of the document you're reasoning about, and whether the text has changed since their last read.
