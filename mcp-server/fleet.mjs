@@ -70,9 +70,10 @@ function getAgentCwd() {
 const LOG_FILE = `${os.homedir()}/.claude/agent-messages.jsonl`;
 
 // --- tlda integration ---
-import { getRwToken, DEFAULT_PORT } from '../shared/config.mjs';
+import { getRwToken, getServerUrl } from '../shared/config.mjs';
 import { tldaFetch as _sharedFetch } from '../shared/http-client.mjs';
-const TLDA_PORT = parseInt(process.env.TLDA_PORT || String(DEFAULT_PORT));
+const TLDA_SERVER = getServerUrl();
+const TLDA_WS_SERVER = TLDA_SERVER.replace(/^http/, 'ws');
 const _tldaToken = getRwToken();
 
 async function tldaFetch(apiPath, opts = {}) {
@@ -80,7 +81,7 @@ async function tldaFetch(apiPath, opts = {}) {
     method: opts.method,
     body: opts.body,
     headers: opts.headers,
-    server: `http://127.0.0.1:${TLDA_PORT}`,
+    server: TLDA_SERVER,
   });
   return { status: 200, data };
 }
@@ -205,7 +206,7 @@ async function fetchCurrentDocVersion(doc) {
   }
   try {
     const headers = _tldaToken ? { Authorization: `Bearer ${_tldaToken}` } : {};
-    const res = await fleetFetch(`http://127.0.0.1:${TLDA_PORT}/api/projects/${encodeURIComponent(doc)}/history/shadow?limit=20`, {
+    const res = await fleetFetch(`${TLDA_SERVER}/api/projects/${encodeURIComponent(doc)}/history/shadow?limit=20`, {
       headers,
       signal: AbortSignal.timeout(1500),
     });
@@ -1465,7 +1466,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // Health check: report what's up/down so agent knows communication channels
     const health = [];
     try {
-      const tldaRes = await fleetFetch(`http://127.0.0.1:${TLDA_PORT}/api/projects`, { signal: AbortSignal.timeout(2000) });
+      const tldaRes = await fleetFetch(`${TLDA_SERVER}/api/projects`, { signal: AbortSignal.timeout(2000) });
       health.push((tldaRes.ok || tldaRes.status === 401) ? 'tlda: ✔' : 'tlda: ✘ (not responding)');
     } catch {
       health.push('tlda: ✘ (unreachable)');
@@ -1637,7 +1638,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
       if (recipients.length === 0) return { content: [{ type: 'text', text: 'No agents matched filter.' }], isError: true };
       const agentCwd = getAgentCwd();
-      const { resolvedMessage, inlineAttachments, brokenPaths } = await processMessageText(draft.message, agentCwd, `http://127.0.0.1:${TLDA_PORT}`);
+      const { resolvedMessage, inlineAttachments, brokenPaths } = await processMessageText(draft.message, agentCwd, `${TLDA_SERVER}`);
       let docContext = null;
       if (_currentDoc) { const v = await fetchCurrentDocVersion(_currentDoc); docContext = { doc: _currentDoc, version: v || null }; }
       const sent = [];
@@ -1688,7 +1689,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // Resolve file paths in message text → inline attachments.
     const agentCwd = getAgentCwd();
     const { resolvedMessage, inlineAttachments, brokenPaths } = await processMessageText(
-      message, agentCwd, `http://127.0.0.1:${TLDA_PORT}`
+      message, agentCwd, `${TLDA_SERVER}`
     );
 
     if (brokenPaths.length > 0) {
@@ -1736,7 +1737,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // Check if tlda is up — if not, Skip can't see the message even though it was delivered
     let tldaDown = false;
     try {
-      const tldaRes = await fleetFetch(`http://127.0.0.1:${TLDA_PORT}/api/projects`, { signal: AbortSignal.timeout(2000) });
+      const tldaRes = await fleetFetch(`${TLDA_SERVER}/api/projects`, { signal: AbortSignal.timeout(2000) });
       // 401 means tlda is up but auth is required — that's fine, server is running
       if (!tldaRes.ok && tldaRes.status !== 401) tldaDown = true;
     } catch {
@@ -1770,7 +1771,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not registered. Call register() first.' }], isError: true };
     const { reason } = args || {};
     try {
-      const res = await fleetFetch(`http://127.0.0.1:${TLDA_PORT}/api/terminal-card`, {
+      const res = await fleetFetch(`${TLDA_SERVER}/api/terminal-card`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ from: AGENT_ID, reason: reason || null }),
@@ -3133,7 +3134,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     let shadowCommits = [];
     if (args.doc) {
       try {
-        const sRes = await fleetFetch(`http://127.0.0.1:${TLDA_PORT}/api/projects/${encodeURIComponent(args.doc)}/shadow/log`);
+        const sRes = await fleetFetch(`${TLDA_SERVER}/api/projects/${encodeURIComponent(args.doc)}/shadow/log`);
         if (sRes.ok) {
           const sData = await sRes.json();
           shadowCommits = (sData.commits || []).map(c => ({ ...c, ms: new Date(c.timestamp).getTime() }));
@@ -3236,7 +3237,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     if (!args.agent) return { content: [{ type: 'text', text: 'Specify an agent to restart.' }], isError: true };
     if (args.agent === AGENT_ID) return { content: [{ type: 'text', text: 'Cannot restart your own MCP via this tool (if your MCP is disconnected, calling the tool is impossible). Bash ~/work/fleet/bin/fleet-mcp-restart directly.' }], isError: true };
     try {
-      const res = await fleetFetch(`http://127.0.0.1:${TLDA_PORT}/api/restart-mcp`, {
+      const res = await fleetFetch(`${TLDA_SERVER}/api/restart-mcp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ agent: args.agent }),
@@ -3264,7 +3265,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     try {
       const userId = args.user
       if (!userId) return { content: [{ type: 'text', text: 'Missing user — pass the fleet ID of the person whose viewport you want (e.g. "fleet:skip").' }], isError: true }
-      const url = `http://127.0.0.1:${TLDA_PORT}/api/fleet/viewing?user=${encodeURIComponent(userId)}`
+      const url = `${TLDA_SERVER}/api/fleet/viewing?user=${encodeURIComponent(userId)}`
       const res = await fleetFetch(url)
       const data = await res.json()
       if (data.error) return { content: [{ type: 'text', text: `No viewing context for ${userId}. They may not have scrolled recently.` }] }
@@ -3284,7 +3285,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
   // ---- roll_call ----
   if (name === 'roll_call') {
     try {
-      const res = await fleetFetch(`http://127.0.0.1:${TLDA_PORT}/api/roll-call`);
+      const res = await fleetFetch(`${TLDA_SERVER}/api/roll-call`);
       const data = await res.json();
       if (data.error) return { content: [{ type: 'text', text: `Roll call failed: ${data.error}` }], isError: true };
 
@@ -3822,7 +3823,7 @@ function startChannelWS() {
   if (_channelRWS) return;
 
   _channelRWS = new ResilientWS({
-    url: () => `ws://127.0.0.1:${TLDA_PORT}/ws/fleet?agent=${encodeURIComponent(AGENT_ID)}`,
+    url: () => `${TLDA_WS_SERVER}/ws/fleet?agent=${encodeURIComponent(AGENT_ID)}`,
     label: 'fleet-channel',
     heartbeatTimeoutMs: 45000,
     log: (s) => process.stderr.write(s + '\n'),

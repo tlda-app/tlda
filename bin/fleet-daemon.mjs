@@ -1892,12 +1892,12 @@ async function checkAgentLiveness() {
 async function rpcResolveFile({ path: filePath, cwd, server_url }) {
   const abs = resolveFilePath(filePath, cwd)
   if (!fs.existsSync(abs)) throw new Error(`File not found: ${abs}`)
-  const serverBase = server_url || `http://127.0.0.1:${DEFAULT_PORT}`
+  const serverBase = server_url || getServerUrl()
   return await uploadFileToServer(abs, serverBase)
 }
 
 async function rpcRechat({ text, cwd, server_url }) {
-  const serverBase = server_url || `http://127.0.0.1:${DEFAULT_PORT}`
+  const serverBase = server_url || getServerUrl()
   return await processMessageText(text, cwd, serverBase)
 }
 
