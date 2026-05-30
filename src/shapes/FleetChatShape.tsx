@@ -2056,6 +2056,9 @@ function FleetChatInner({ shape }: { shape: any }) {
   // atBottomThreshold and surface the ⇣ arrow even though the user didn't
   // scroll. This redundant scroll catches that.
   const prevItemCountRef = useRef(allItems.length)
+  // Tracks Virtuoso's total list height for totalListHeightChanged — catches
+  // in-place item growth that doesn't tick items.length.
+  const prevTotalHeightRef = useRef(0)
   useEffect(() => {
     const prev = prevItemCountRef.current
     prevItemCountRef.current = allItems.length
@@ -3452,6 +3455,18 @@ function FleetChatInner({ shape }: { shape: any }) {
             initialTopMostItemIndex={{ index: 'LAST', align: 'end' }}
             followOutput="auto"
             atBottomThreshold={4}
+            // Fires whenever Virtuoso's computed total list height changes —
+            // catches in-place item growth (markdown/font/image late-render
+            // adds pixels to existing items) which doesn't tick items.length
+            // and so isn't caught by force-pin-on-item-grow.
+            totalListHeightChanged={(h) => {
+              const prev = prevTotalHeightRef.current
+              prevTotalHeightRef.current = h
+              if (h > prev && isAtBottomRef.current) {
+                log.warn('chat-scroll', 'pin on list-height grow', { prev, h })
+                virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
+              }
+            }}
             atBottomStateChange={(atBottom) => {
               if (isAtBottomRef.current !== atBottom) {
                 const el = chatLogEl
