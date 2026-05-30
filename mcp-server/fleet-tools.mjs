@@ -459,10 +459,9 @@ function getAgent(state, id) {
     a.session_id === id || (a.session_ids && a.session_ids.includes(id))
   );
   if (exact) return exact;
-  // Lineage name → resolves only if exactly one agent in the lineage
-  const lineageMatches = state.agents.filter(a => a.lineage_name === id && a.phase);
-  if (lineageMatches.length === 1) return lineageMatches[0];
-  return null;
+  // Bare lineage name → resolve to day agent
+  const dayAgent = state.agents.find(a => a.lineage_name === id && a.phase === 'day');
+  return dayAgent || null;
 }
 
 /** Check if an ID belongs to a human agent (by registry lookup, not aliases) */

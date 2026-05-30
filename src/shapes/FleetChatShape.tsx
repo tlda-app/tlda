@@ -1044,9 +1044,19 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   const resolveToFleetIds = useCallback((label: string): string[] => {
     if (label.startsWith('fleet:')) return [label]
+    // Lineage:phase → specific agent
+    const colonIdx = label.indexOf(':')
+    if (colonIdx > 0) {
+      const lineageName = label.slice(0, colonIdx)
+      const phase = label.slice(colonIdx + 1)
+      if (['dawn', 'day', 'dusk'].includes(phase)) {
+        const a = agents.find((a: any) => a.lineage_name === lineageName && a.phase === phase)
+        return a ? [a.id] : [label]
+      }
+    }
     const matched = agents.filter((a: any) =>
       a.friendly_name === label || a.id === label || (a.labels || []).includes(label) ||
-      a.lineage_name === label
+      (a.lineage_name === label && a.phase === 'day')
     )
     return matched.length > 0 ? matched.map((a: any) => a.id) : [label]
   }, [agents])

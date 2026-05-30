@@ -638,13 +638,13 @@ export class FleetStore {
       row = nameRows[0] || this._getAgentByName.get(query);
     }
     if (!row) {
-      // Lineage name → resolve only if exactly one agent in the lineage
+      // Bare lineage name → resolve to day agent
       const lineage = this.getLineage(query);
       if (lineage) {
-        const roster = this.db.prepare(
-          "SELECT * FROM agents WHERE lineage_id = ? AND phase IS NOT NULL AND dead = 0"
-        ).all(lineage.id);
-        if (roster.length === 1) return this._hydrateAgent(roster[0]);
+        const dayRow = this.db.prepare(
+          "SELECT * FROM agents WHERE lineage_id = ? AND phase = 'day' AND dead = 0"
+        ).get(lineage.id);
+        if (dayRow) return this._hydrateAgent(dayRow);
       }
     }
     if (!row) {
