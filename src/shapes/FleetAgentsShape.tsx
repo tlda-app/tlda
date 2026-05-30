@@ -35,6 +35,13 @@ const MODEL_SHORTHANDS: Record<string, string> = {
 
 const ALL_MODELS = ['opus', 'opus45', 'opus46', 'opus47', 'opus48', 'sonnet', 'haiku']
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
+const EFFORT_SHORTHANDS: Record<string, string> = {
+  'lo': 'low', 'low': 'low', 'l': 'low',
+  'med': 'medium', 'medium': 'medium', 'm': 'medium',
+  'hi': 'high', 'high': 'high', 'h': 'high',
+  'xhi': 'xhigh', 'xhigh': 'xhigh', 'xh': 'xhigh', 'x': 'xhigh',
+  'max': 'max',
+}
 
 function parseSpawnInput(raw: string): { doc: string; name: string | undefined; model: string | undefined; effort: string | undefined } {
   const parts = raw.split(':')
@@ -46,7 +53,7 @@ function parseSpawnInput(raw: string): { doc: string; name: string | undefined; 
   const modelRaw = parts[2] || undefined
   const model = modelRaw ? (MODEL_SHORTHANDS[modelRaw] || modelRaw) : undefined
   const effortRaw = parts[3] || undefined
-  const effort = effortRaw && EFFORT_LEVELS.includes(effortRaw) ? effortRaw : undefined
+  const effort = effortRaw ? (EFFORT_SHORTHANDS[effortRaw] || undefined) : undefined
   return { doc, name, model, effort }
 }
 
