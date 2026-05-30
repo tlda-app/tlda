@@ -147,7 +147,26 @@ const DOC_VERSION_CACHE_MS = 5000;
 const _drafts = new Map(); // id → { message, filter, lint, created }
 let _draftCounter = 0;
 
-function lintChatMessage(message) {
+// Per-doc macro cache. Paper-defined macros (e.g. \E, \chis) must be passed
+// to katex.renderToString so the chat linter doesn't false-positive on them.
+const _macrosCache = new Map(); // doc → { macros, ts }
+const MACROS_CACHE_MS = 5 * 60_000; // 5 min
+async function getMacrosForDoc(doc) {
+  if (!doc) return {};
+  const cached = _macrosCache.get(doc);
+  if (cached && Date.now() - cached.ts < MACROS_CACHE_MS) return cached.macros;
+  try {
+    const url = `${TLDA_SERVER}/api/projects/${encodeURIComponent(doc)}/macros`;
+    const res = await fleetFetch(url, { signal: AbortSignal.timeout(2000) });
+    if (!res.ok) return {};
+    const body = await res.json();
+    const macros = body?.macros || {};
+    _macrosCache.set(doc, { macros, ts: Date.now() });
+    return macros;
+  } catch { return {}; }
+}
+
+function lintChatMessage(message, macros = {}) {
   const issues = [];
   const displayBlocks = (message.match(/\$\$[\s\S]*?\$\$/g) || []);
   if (displayBlocks.length > 1) {
@@ -169,7 +188,7 @@ function lintChatMessage(message) {
   for (const m of message.matchAll(/(?<!\$)\$(?!\$)((?:[^$\\]|\\.)+)\$/g)) allMath.push({ tex: m[1], display: false, pos: m.index });
   for (const { tex, display, pos } of allMath) {
     try {
-      katex.renderToString(tex, { displayMode: display, throwOnError: true });
+      katex.renderToString(tex, { displayMode: display, throwOnError: true, macros });
     } catch (e) {
       const snippet = tex.length > 40 ? tex.slice(0, 40) + '…' : tex;
       issues.push(`LaTeX parse error in \`${display ? '$$' : '$'}${snippet}${display ? '$$' : '$'}\`: ${e.message}`);
@@ -1606,7 +1625,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (name === 'compose') {
     const { message, filter } = args;
     if (!message) return { content: [{ type: 'text', text: 'Missing required parameter: message' }], isError: true };
-    const lint = lintChatMessage(message);
+    const macros = await getMacrosForDoc(_currentDoc);
+    const lint = lintChatMessage(message, macros);
     const id = `draft-${++_draftCounter}`;
     _drafts.set(id, { message, filter: filter || null, lint, created: Date.now() });
     let response = `**Draft ${id}**\n\n---\n${message}\n---\n\n`;
@@ -1754,7 +1774,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       warning += `\n\n⚠ **File(s) not uploaded** (not found or upload failed — removed from message):\n${brokenFiles.map(p => `- ${p}`).join('\n')}`;
     }
 
-    const lint = lintChatMessage(message);
+    const macros = await getMacrosForDoc(_currentDoc);
+    const lint = lintChatMessage(message, macros);
     if (lint.length > 0) {
       warning += `\n\n⚠ **Lint (${lint.length} issue${lint.length > 1 ? 's' : ''}):**\n${lint.map(l => `- ${l}`).join('\n')}\nYour message was sent but has issues. Use compose() → send() to catch these before delivery.`;
     }
