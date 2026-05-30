@@ -24,7 +24,7 @@ import { randomBytes } from 'crypto'
 import { collectSourceFiles, collectSourceHashes, collectSpecificFiles } from './lib/source-files.mjs'
 import {
   loadConfig, saveConfig, getServerUrl, getRwToken, DEFAULT_PORT,
-  CONFIG_DIR, CONFIG_FILE,
+  CONFIG_DIR, CONFIG_FILE, hasTls, TLS_CA_PATH,
 } from '../shared/config.mjs'
 import { tldaFetch } from '../shared/http-client.mjs'
 import { cmdLogs } from './lib/unified-logs.mjs'
@@ -545,7 +545,7 @@ async function ensureFleetDaemonRunning() {
   const child = cpSpawn(process.execPath, [daemonScript], {
     detached: true,
     stdio: ['ignore', logFd, logFd],
-    env: { ...process.env },
+    env: { ...process.env, ...(hasTls && !process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: TLS_CA_PATH } : {}) },
   })
   child.unref()
   await new Promise(r => setTimeout(r, 800))
@@ -622,7 +622,7 @@ async function cmdFleetWatch(sub) {
   if (sub === 'run') {
     // Foreground — exec the daemon directly so SIGINT etc. work normally.
     const { spawn: cpSpawn } = await import('child_process')
-    const child = cpSpawn(process.execPath, [daemonScript], { stdio: 'inherit', env: { ...process.env } })
+    const child = cpSpawn(process.execPath, [daemonScript], { stdio: 'inherit', env: { ...process.env, ...(hasTls && !process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: TLS_CA_PATH } : {}) } })
     child.on('exit', (code) => process.exit(code ?? 0))
     return
   }
@@ -1945,6 +1945,7 @@ async function cmdServer(action) {
         <key>PATH</key>
         <string>${dirname(nodePath)}:/usr/local/bin:/usr/bin:/bin</string>
 ${tokenEnvLines.join('\n')}
+${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PATH}</string>` : ''}
     </dict>
     <key>KeepAlive</key>
     <true/>
@@ -2082,7 +2083,7 @@ ${tokenEnvLines.join('\n')}
       const child = spawn('node', serverArgs, {
         detached: true,
         stdio: ['ignore', logFd, logFd],
-        env: { ...process.env, PORT: port, TMUX: undefined, TMUX_PANE: undefined },
+        env: { ...process.env, PORT: port, TMUX: undefined, TMUX_PANE: undefined, ...(hasTls && !process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: TLS_CA_PATH } : {}) },
       })
       child.unref()
     }

@@ -14,7 +14,7 @@ const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecogni
 const _isSafari = !navigator.userAgent.includes('Chrome') && navigator.userAgent.includes('Safari')
 
 // --- Backend selection ---
-const WHISPER_BRIDGE_URL = 'ws://127.0.0.1:8179'
+const WHISPER_BRIDGE_URL = location.protocol === 'https:' ? 'wss://127.0.0.1:8179' : 'ws://127.0.0.1:8179'
 let _backend = 'deepgram'       // 'deepgram' | 'chrome' | 'whisper-stream'
 let _whisperAvailable = false   // true if whisper bridge WebSocket connected at init
 let _deepgramAvailable = false  // true if deepgram bridge WebSocket connected at init

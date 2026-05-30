@@ -1,9 +1,14 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import { createReadStream, existsSync } from 'fs'
+import { createReadStream, existsSync, readFileSync } from 'fs'
 import { homedir } from 'os'
-import { resolve } from 'path'
+import { join, resolve } from 'path'
 import { lookup as mimeLookup } from 'mime-types'
+
+const tlsDir = join(homedir(), '.config/tlda')
+const tlsCert = join(tlsDir, 'localhost+2.pem')
+const tlsKey  = join(tlsDir, 'localhost+2-key.pem')
+const hasTls = existsSync(tlsCert) && existsSync(tlsKey)
 
 // Dev-only plugin: serve local filesystem images for math notes
 const localImagePlugin = {
@@ -33,46 +38,55 @@ export default defineConfig({
   server: {
     host: true,
     port: 5179,
+    ...(hasTls ? { https: { cert: readFileSync(tlsCert, 'utf8'), key: readFileSync(tlsKey, 'utf8') } } : {}),
     fs: {
       allow: ['..'],
     },
     hmr: process.env.VITE_HMR !== '1',
     watch: {
-      // Don't watch the fleet dashboard — it's a runtime dep that changes at runtime,
-      // and triggering HMR on every fleet event breaks playwright tests.
       ignored: ['**/fleet/dashboard/**'],
     },
     proxy: {
-      // Fleet WebSocket endpoints (keep on shared server)
       '/ws/fleet': {
-        target: `ws://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
+        target: `${hasTls ? 'wss' : 'ws'}://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
         ws: true,
+        ...(hasTls ? { secure: false } : {}),
       },
       '/ws/terminal': {
-        target: `ws://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
+        target: `${hasTls ? 'wss' : 'ws'}://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
         ws: true,
+        ...(hasTls ? { secure: false } : {}),
       },
-      // Yjs sync WebSocket
       '/sync': {
-        target: `ws://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
+        target: `${hasTls ? 'wss' : 'ws'}://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
         ws: true,
+        ...(hasTls ? { secure: false } : {}),
       },
-      // All API routes → unified server
-      '/api': `http://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
-      '/docs': `http://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
-      '/health': `http://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
+      '/api': {
+        target: `${hasTls ? 'https' : 'http'}://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
+        ...(hasTls ? { secure: false } : {}),
+      },
+      '/docs': {
+        target: `${hasTls ? 'https' : 'http'}://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
+        ...(hasTls ? { secure: false } : {}),
+      },
+      '/health': {
+        target: `${hasTls ? 'https' : 'http'}://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
+        ...(hasTls ? { secure: false } : {}),
+      },
     },
   },
   preview: {
     host: true,
     port: 5179,
+    ...(hasTls ? { https: { cert: readFileSync(tlsCert, 'utf8'), key: readFileSync(tlsKey, 'utf8') } } : {}),
     proxy: {
-      '/ws/fleet': { target: 'ws://localhost:5176', ws: true },
-      '/ws/terminal': { target: 'ws://localhost:5176', ws: true },
-      '/sync': { target: 'ws://localhost:5176', ws: true },
-      '/api': 'http://localhost:5176',
-      '/docs': 'http://localhost:5176',
-      '/health': 'http://localhost:5176',
+      '/ws/fleet': { target: `${hasTls ? 'wss' : 'ws'}://localhost:5176`, ws: true, ...(hasTls ? { secure: false } : {}) },
+      '/ws/terminal': { target: `${hasTls ? 'wss' : 'ws'}://localhost:5176`, ws: true, ...(hasTls ? { secure: false } : {}) },
+      '/sync': { target: `${hasTls ? 'wss' : 'ws'}://localhost:5176`, ws: true, ...(hasTls ? { secure: false } : {}) },
+      '/api': { target: `${hasTls ? 'https' : 'http'}://localhost:5176`, ...(hasTls ? { secure: false } : {}) },
+      '/docs': { target: `${hasTls ? 'https' : 'http'}://localhost:5176`, ...(hasTls ? { secure: false } : {}) },
+      '/health': { target: `${hasTls ? 'https' : 'http'}://localhost:5176`, ...(hasTls ? { secure: false } : {}) },
     },
   },
   define: {

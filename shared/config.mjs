@@ -38,10 +38,17 @@ export function saveConfig(config) {
  *
  * The CLI adds --server flag support on top of this via getFlag().
  */
+const TLS_CERT_PATH = join(CONFIG_DIR, 'localhost+2.pem')
+const TLS_KEY_PATH  = join(CONFIG_DIR, 'localhost+2-key.pem')
+export const hasTls = existsSync(TLS_CERT_PATH) && existsSync(TLS_KEY_PATH)
+
+export const TLS_CA_PATH = join(homedir(), 'Library/Application Support/mkcert/rootCA.pem')
+
 export function getServerUrl(config = null) {
   if (process.env.TLDA_SERVER) return process.env.TLDA_SERVER
   const cfg = config ?? loadConfig()
-  return cfg.server || `http://localhost:${DEFAULT_PORT}`
+  const proto = hasTls ? 'https' : 'http'
+  return cfg.server || `${proto}://localhost:${DEFAULT_PORT}`
 }
 
 /**

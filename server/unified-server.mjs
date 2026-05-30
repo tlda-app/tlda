@@ -25,6 +25,7 @@ if (!process.argv.includes('--i-am-tlda-cli')) {
 
 import express from 'express'
 import { createServer } from 'http'
+import { createServer as createHttpsServer } from 'https'
 import { WebSocketServer } from 'ws'
 import { spawn } from 'child_process'
 // Runtime guard: warn on execSync in server process (tmux commands still use it)
@@ -1575,9 +1576,14 @@ app.get('/{*path}', (req, res) => {
   res.status(404).send('Viewer not built. Run: npm run build')
 })
 
-// ---------- HTTP + WebSocket server ----------
+// ---------- HTTP(S) + WebSocket server ----------
 
-const server = createServer(app)
+const TLS_CERT = join(homedir(), '.config/tlda/localhost+2.pem')
+const TLS_KEY  = join(homedir(), '.config/tlda/localhost+2-key.pem')
+const useTls = existsSync(TLS_CERT) && existsSync(TLS_KEY)
+const server = useTls
+  ? createHttpsServer({ cert: readFileSync(TLS_CERT), key: readFileSync(TLS_KEY) }, app)
+  : createServer(app)
 
 const syncWss = new WebSocketServer({ noServer: true })
 const fleetWss = new WebSocketServer({ noServer: true })
@@ -3613,7 +3619,9 @@ process.on('unhandledRejection', (err) => {
 // ---------- Start ----------
 
 server.listen(PORT, HOST, () => {
-  console.log(`Unified server running on http://${HOST}:${PORT}`)
+  const proto = useTls ? 'https' : 'http'
+  console.log(`Unified server running on ${proto}://${HOST}:${PORT}`)
+  if (useTls) console.log(`  TLS: ${TLS_CERT}`)
   console.log(`  Projects: ${PROJECTS_DIR}`)
   if (existsSync(distDir)) {
     console.log(`  Viewer SPA: ${distDir}`)

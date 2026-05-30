@@ -7,6 +7,10 @@
 // The API key is resolved in order: --key flag > DEEPGRAM_API_KEY env > ~/.config/tlda/config.json
 
 import { WebSocketServer, WebSocket } from 'ws'
+import { createServer as createHttpsServer } from 'https'
+import { readFileSync, existsSync } from 'fs'
+import { join } from 'path'
+import { homedir } from 'os'
 import { loadConfig } from '../shared/config.mjs'
 
 const PORT = process.argv.includes('--port')
@@ -66,8 +70,24 @@ function buildDeepgramUrl() {
 // Track active Deepgram connections per browser client
 const clientSessions = new Map()
 
-const wss = new WebSocketServer({ port: PORT })
-console.log(`[deepgram-bridge] WebSocket server on ws://localhost:${PORT}`)
+const tlsDir = join(homedir(), '.config/tlda')
+const tlsCert = join(tlsDir, 'localhost+2.pem')
+const tlsKey  = join(tlsDir, 'localhost+2-key.pem')
+const useTls = existsSync(tlsCert) && existsSync(tlsKey)
+
+let wss
+if (useTls) {
+  const httpsServer = createHttpsServer({
+    cert: readFileSync(tlsCert),
+    key: readFileSync(tlsKey),
+  })
+  wss = new WebSocketServer({ server: httpsServer })
+  httpsServer.listen(PORT)
+  console.log(`[deepgram-bridge] WebSocket server on wss://localhost:${PORT}`)
+} else {
+  wss = new WebSocketServer({ port: PORT })
+  console.log(`[deepgram-bridge] WebSocket server on ws://localhost:${PORT}`)
+}
 console.log(`[deepgram-bridge] Using ${KEYWORDS.length} keyword boosts`)
 
 function broadcast(msg) {

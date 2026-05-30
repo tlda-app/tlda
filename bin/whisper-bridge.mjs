@@ -7,6 +7,10 @@
 import { spawn } from 'child_process'
 import { WebSocketServer } from 'ws'
 import { createInterface } from 'readline'
+import { createServer as createHttpsServer } from 'https'
+import { readFileSync, existsSync } from 'fs'
+import { join } from 'path'
+import { homedir } from 'os'
 
 const MODEL = process.argv.includes('--model')
   ? process.argv[process.argv.indexOf('--model') + 1]
@@ -76,9 +80,25 @@ whisper.stderr.on('data', (data) => {
     console.log(`[whisper] ${line}`)
 })
 
-// WebSocket server
-const wss = new WebSocketServer({ port: PORT })
-console.log(`[bridge] WebSocket server on ws://localhost:${PORT}`)
+// WebSocket server — use WSS if TLS certs are available
+const tlsDir = join(homedir(), '.config/tlda')
+const tlsCert = join(tlsDir, 'localhost+2.pem')
+const tlsKey  = join(tlsDir, 'localhost+2-key.pem')
+const useTls = existsSync(tlsCert) && existsSync(tlsKey)
+
+let wss
+if (useTls) {
+  const httpsServer = createHttpsServer({
+    cert: readFileSync(tlsCert),
+    key: readFileSync(tlsKey),
+  })
+  wss = new WebSocketServer({ server: httpsServer })
+  httpsServer.listen(PORT)
+  console.log(`[bridge] WebSocket server on wss://localhost:${PORT}`)
+} else {
+  wss = new WebSocketServer({ port: PORT })
+  console.log(`[bridge] WebSocket server on ws://localhost:${PORT}`)
+}
 
 function broadcast(msg) {
   for (const ws of wss.clients) {

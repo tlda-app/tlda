@@ -63,7 +63,7 @@ import { resolveFilePath, uploadFileToServer } from '../mcp-server/lib/chat-file
 import { processMessageText } from '../mcp-server/lib/message-processing.mjs'
 import {
   loadConfig as _loadSharedConfig, saveConfig as _saveSharedConfig,
-  getServerUrl, getRwToken, DEFAULT_PORT,
+  getServerUrl, getRwToken, DEFAULT_PORT, hasTls,
   CONFIG_DIR as _SHARED_CONFIG_DIR,
 } from '../shared/config.mjs'
 const execFileP = promisify(execFile)
@@ -117,7 +117,7 @@ function deriveMachineId() {
 
 const config = loadConfig()
 const SERVER = _usingCustomConfigDir
-  ? (process.env.TLDA_SERVER || config.server || `http://localhost:${DEFAULT_PORT}`)
+  ? (process.env.TLDA_SERVER || config.server || `${hasTls ? 'https' : 'http'}://localhost:${DEFAULT_PORT}`)
   : getServerUrl(config)
 const TOKEN = _usingCustomConfigDir
   ? (process.env.TLDA_TOKEN || config.tokenRw || config.token || null)

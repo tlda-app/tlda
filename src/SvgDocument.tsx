@@ -116,7 +116,7 @@ import { SlidesNavigator } from './SlidesNavigator'
 // Production (unified server): same host, ws/wss based on protocol
 const SYNC_SERVER = import.meta.env.VITE_SYNC_SERVER ||
   (import.meta.env.DEV
-    ? `ws://${window.location.hostname}:5176`
+    ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.hostname}:5176`
     : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`)
 
 const LICENSE_KEY = 'tldraw-2027-01-19/WyJhUGMwcWRBayIsWyIqLnF0bTI4NS5naXRodWIuaW8iXSw5LCIyMDI3LTAxLTE5Il0.Hq9z1V8oTLsZKgpB0pI3o/RXCoLOsh5Go7Co53YGqHNmtEO9Lv/iuyBPzwQwlxQoREjwkkFbpflOOPmQMwvQSQ'
