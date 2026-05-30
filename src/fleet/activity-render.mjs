@@ -31,14 +31,14 @@ export function esc(s) {
 export const ACTIVITY_NOISE = new Set([
   'wait_for_task', 'my_task', 'task_list', 'register', 'register_manager',
   'task_check', 'unregister_manager', 'task_done', 'timer',
-  'mcp__fleet__wait_for_task', 'mcp__fleet__my_task', 'mcp__fleet__task_list',
-  'mcp__fleet__register', 'mcp__fleet__register_manager', 'mcp__fleet__task_check',
-  'mcp__fleet__task_done', 'mcp__fleet__timer',
+  'mcp__tlda__wait_for_task', 'mcp__tlda__my_task', 'mcp__tlda__task_list',
+  'mcp__tlda__register', 'mcp__tlda__register_manager', 'mcp__tlda__task_check',
+  'mcp__tlda__task_done', 'mcp__tlda__timer',
   'ToolSearch',
 ])
 
 export const CHAT_TOOLS = new Set([
-  'chat', 'delegate', 'mcp__fleet__chat', 'mcp__fleet__delegate',
+  'chat', 'delegate', 'mcp__tlda__chat', 'mcp__tlda__delegate',
 ])
 
 // --- Pretty-print tool results ---

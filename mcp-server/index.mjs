@@ -1,10 +1,6 @@
 #!/usr/bin/env node
 /**
- * MCP Server for TLDraw Feedback
- *
- * Provides:
- * - HTTP endpoint to receive snapshots from Share button
- * - MCP tools to wait for / check feedback
+ * Unified MCP Server — tlda doc tools + fleet agent tools.
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -13,6 +9,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
+import { getFleetTools, handleFleetTool, initFleet, FLEET_INSTRUCTIONS } from './fleet-tools.mjs';
 import http from 'http';
 import fs from 'fs';
 import os from 'os';
@@ -1857,7 +1854,15 @@ function broadcastReply(shapeId, text) {
 // MCP Server
 const server = new Server(
   { name: 'tlda', version: '1.0.0' },
-  { capabilities: { tools: {} } }
+  {
+    capabilities: {
+      tools: {},
+      experimental: {
+        'claude/channel': {},
+      },
+    },
+    instructions: FLEET_INSTRUCTIONS,
+  }
 );
 
 // List available tools
@@ -2236,6 +2241,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['id'],
       },
     },
+    ...getFleetTools(),
   ],
 }));
 
@@ -3907,6 +3913,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
+  // Dispatch to fleet tools
+  const fleetResult = await handleFleetTool(name, args);
+  if (fleetResult !== null) return fleetResult;
+
   return {
     content: [{ type: 'text', text: `Unknown tool: ${name}` }],
     isError: true,
@@ -3987,5 +3997,68 @@ async function getAnnotationSummary() {
 
 // Start MCP server
 const transport = new StdioServerTransport();
-server.connect(transport);
-console.error('TLDraw Feedback MCP server started');
+await server.connect(transport);
+console.error('Unified MCP server started (tlda + fleet)');
+
+// Initialize fleet tools (channel WS, agent registration)
+initFleet(server);
+
+// ---- Process safety (from fleet MCP) ----
+
+process.on('unhandledRejection', (reason) => {
+  process.stderr.write(`[mcp] unhandled rejection (suppressed): ${reason?.message || reason}\n`);
+});
+
+process.on('uncaughtException', (err) => {
+  const msg = `[${new Date().toISOString()}] mcp PID ${process.pid}: uncaught exception: ${err?.message || err}\n${err?.stack || ''}\n`;
+  process.stderr.write(msg);
+  try { fs.appendFileSync('/tmp/fleet-mcp-exit.log', msg); } catch {}
+});
+
+process.stdin.on('end', () => {
+  const msg = `[${new Date().toISOString()}] mcp PID ${process.pid}: stdin end — parent closed pipe, exiting\n`;
+  process.stderr.write(msg);
+  try { fs.appendFileSync('/tmp/fleet-mcp-exit.log', msg); } catch {}
+  process.exit(0);
+});
+process.stdin.on('close', () => {
+  const msg = `[${new Date().toISOString()}] mcp PID ${process.pid}: stdin close — exiting\n`;
+  process.stderr.write(msg);
+  try { fs.appendFileSync('/tmp/fleet-mcp-exit.log', msg); } catch {}
+  process.exit(0);
+});
+
+const _parentPid = process.ppid;
+setInterval(() => {
+  try {
+    process.kill(_parentPid, 0);
+  } catch {
+    const msg = `[${new Date().toISOString()}] mcp PID ${process.pid}: parent ${_parentPid} dead, exiting as orphan\n`;
+    process.stderr.write(msg);
+    try { fs.appendFileSync('/tmp/fleet-mcp-exit.log', msg); } catch {}
+    process.exit(0);
+  }
+}, 30000);
+
+for (const sig of ['SIGTERM', 'SIGHUP']) {
+  process.on(sig, () => {
+    const msg = `[${new Date().toISOString()}] mcp PID ${process.pid}: received ${sig}, exiting\n`;
+    process.stderr.write(msg);
+    try { fs.appendFileSync('/tmp/fleet-mcp-exit.log', msg); } catch {}
+    process.exit(0);
+  });
+}
+
+process.on('SIGINT', () => {
+  process.stderr.write(`[${new Date().toISOString()}] mcp PID ${process.pid}: received SIGINT, ignoring\n`);
+});
+
+process.on('exit', (code) => {
+  const msg = `[${new Date().toISOString()}] mcp PID ${process.pid}: process.exit(${code}) — catch-all\n`;
+  try { fs.appendFileSync('/tmp/fleet-mcp-exit.log', msg); } catch {}
+});
+process.on('beforeExit', (code) => {
+  const msg = `[${new Date().toISOString()}] mcp PID ${process.pid}: beforeExit(${code}) — event loop drained\n`;
+  process.stderr.write(msg);
+  try { fs.appendFileSync('/tmp/fleet-mcp-exit.log', msg); } catch {}
+});
