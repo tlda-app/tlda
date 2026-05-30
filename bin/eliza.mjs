@@ -1328,6 +1328,9 @@ async function handleHandoff(agentId, triggerText) {
   const agentCwd = await resolveAgentCwd(agentId)
   const briefingName = await nextAgentName(extractBaseTopic(agentName), 'b')
   try {
+    // Transition original agent from day → dusk in its lineage
+    send({ type: 'lineage-transition', agent: agentId, phase: 'dusk' })
+
     let spawnResult = await postJson('/api/spawn', { name: briefingName, cwd: agentCwd })
     if (spawnResult.error && spawnResult.error.includes('already exists')) {
       spawnResult = await postJson('/api/spawn', { agent: briefingName, respawn: true })
@@ -1342,6 +1345,9 @@ async function handleHandoff(agentId, triggerText) {
 
     setTimeout(async () => {
       try {
+        // Assign briefer to the lineage as day (original agent is now dusk)
+        send({ type: 'lineage-assign', agent: briefingName, phase: 'day' })
+
         await postJson('/api/tasks/delegate', {
           from: AGENT_ID,
           agent: briefingName,
@@ -1435,6 +1441,11 @@ async function handleHandoffReady(fromId, text) {
 
       setTimeout(async () => {
         try {
+          // Assign pickup to the lineage as dawn
+          send({ type: 'lineage-assign', agent: pickupName, phase: 'dawn' })
+          // Retire the original agent (dusk) from the lineage
+          send({ type: 'lineage-retire', agent: handoffInfo.originalAgentId })
+
           await postJson('/api/tasks/delegate', {
             from: AGENT_ID,
             agent: pickupName,
