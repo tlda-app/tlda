@@ -1,4 +1,5 @@
 import { StateNode, createShapeId } from 'tldraw'
+import { getHumanId } from '../fleet/fleet-data.mjs'
 
 const REAPER_W = 480
 const REAPER_H = 360
@@ -8,6 +9,8 @@ export class ReaperTool extends StateNode {
 
   override onPointerDown = () => {
     const { editor } = this
+    const userId = getHumanId()
+    if (!userId) return
     const hudEditor = (window as any).__tldraw_hud_editor__
     const screen = editor.inputs.currentScreenPoint
 
@@ -28,7 +31,7 @@ export class ReaperTool extends StateNode {
       type: 'fleet-reaper' as any,
       x,
       y,
-      props: { w: REAPER_W, h: REAPER_H },
+      props: { w: REAPER_W, h: REAPER_H, userId },
     })
     editor.setCurrentTool('select')
     editor.select(id)
