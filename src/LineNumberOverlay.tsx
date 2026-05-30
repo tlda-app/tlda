@@ -139,7 +139,9 @@ export function LineNumberOverlay({
               title={label.file ? `${label.file}:${label.lineNum}` : `line ${label.lineNum}`}
               style={{
                 position: 'absolute',
-                left: 2,
+                // Shifted right ~3 chars so the labels don't overlap the
+                // understanding ribbon in the margin (8px font, monospace ~5px/char).
+                left: 17,
                 top: label.localY - 5,
                 fontSize: 8,
                 fontFamily: 'ui-monospace, "SF Mono", Monaco, monospace',
