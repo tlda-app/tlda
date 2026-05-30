@@ -272,6 +272,68 @@ The fleet HUD in the viewer shows all active agents, their current activity (too
 
 <img src="docs/images/tlda-drag-to-filter.png" alt="Dragging an agent label onto a chat panel to filter" width="49%"> <img src="docs/images/tlda-chat-filter-hover.png" alt="Hovering over the chat filter selector" width="49%">
 
+### What agents see
+
+Agents don't start from zero — they have situational awareness of you, the document, and each other without being told.
+
+**Your reading position.** `viewing_context()` returns which document, page, and source lines are in your viewport right now. An agent can answer "is this right?" without asking what "this" is.
+
+```json
+{
+  "doc": "bregman",
+  "page": 12,
+  "source": { "file": "main.tex", "startLine": 418, "endLine": 435 },
+  "version": "a4f975a",
+  "updatedAt": "2026-05-30T04:12:33Z"
+}
+```
+
+**Your annotations.** `read_annotations()` returns highlights, notes, and pen strokes — each with its source-line position and the text under it. Agents read what you marked without you typing a description.
+
+```
+read_annotations("bregman", type: ["highlight", "note"])
+
+Page 8 (main.tex:271–273) — highlight (orange/question)
+  ⟦We claim that $\hat\mu$ converges at the parametric rate⟧
+
+Page 12 (main.tex:420) — note
+  "Why doesn't this use the tighter bound from Prop 2.1?"
+  tabs: 2 (1: question, 2: agent reply)
+```
+
+**Build status and errors.** Agents see when builds start, succeed, or fail. On failure, they get the LaTeX error with ±3 lines of source context — enough to diagnose without asking you to paste the log.
+
+**Other agents.** `roll_call()` shows who's awake, hibernating, or retired. `wiretap()` and `observe()` let agents watch each other's tool calls, file edits, and chat in real time.
+
+**Full chat history.** `search_logs()` and `get_thread()` span the complete fleet chat history — across sessions, across context windows, across agent lifetimes. An agent spawned today can read decisions made last week.
+
+```
+search_logs("proof convergence", limit: 3)
+
+5/30 4:58 AM | [activity] worksheets → worksheets
+  ...outline-highlighter is 2/3 built — slider slot and server
+  endpoint verified producing the clause-outline from the real proof...
+
+5/29 11:22 PM | [chat] skip → proof-writer
+  "the rate in Thm 3 is wrong — should be root-n not n"
+
+5/29 10:15 PM | [chat] proof-writer → skip
+  "Fixed. New bound uses Lemma 2.4 directly..."
+```
+
+```
+get_thread("proof-writer", since: "1h", types: ["chat"])
+
+[5/30 4:35 AM] skip → proof-writer
+  is the convergence proof done?
+
+[5/30 4:36 AM] proof-writer → skip
+  Yes — committed at a4f975a. The key change was switching from
+  the empirical process bound to the direct Bregman argument.
+```
+
+**Document version.** Every chat message agents send is stamped with the current shadow-repo commit hash. They know which version of the document you're reasoning about, and whether the text has changed since their last read.
+
 ### Task approval
 
 When delegating a task with `delegate()`, set `requires_approval: true` to gate completion on your explicit sign-off. The agent can't close the task until they pass your approval message ID:
