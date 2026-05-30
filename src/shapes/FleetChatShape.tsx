@@ -13,7 +13,7 @@ import {
   useEditor,
   useValue,
 } from 'tldraw'
-import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, useContext, memo, useSyncExternalStore } from 'react'
+import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, useContext, memo, useSyncExternalStore, forwardRef } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 
 // @ts-ignore — vanilla JS module
@@ -1126,15 +1126,34 @@ function FleetChatInner({ shape }: { shape: any }) {
 
 
   const chatLogRef = useRef<HTMLDivElement>(null)
-  // Virtuoso needs the scroll parent as a real HTMLElement; chatLogRef is null
-  // on first render, so mirror it into state and only mount <Virtuoso> after
-  // the element exists.
-  const [scrollParent, setScrollParent] = useState<HTMLElement | null>(null)
-  const setChatLogRef = useCallback((el: HTMLDivElement | null) => {
-    chatLogRef.current = el
-    setScrollParent(el)
-  }, [])
+  // chatLogEl tracks the scroller element in state so effects can attach
+  // listeners as soon as Virtuoso mounts its scroll container.
+  const [chatLogEl, setChatLogEl] = useState<HTMLDivElement | null>(null)
   const virtuosoRef = useRef<VirtuosoHandle | null>(null)
+
+  // Stable Scroller component for Virtuoso. Owns the .fleet-chat-log class
+  // (so CanvasClipPanel's wheel reroute keeps targeting it) and captures the
+  // element into chatLogRef / chatLogEl. Event listeners are attached in
+  // separate effects keyed off chatLogEl — keeps this component free of
+  // changing callback closures.
+  const ChatLogScroller = useMemo(
+    () => forwardRef<HTMLDivElement, any>(function ChatLogScroller(props, ref) {
+      return (
+        <div
+          {...props}
+          ref={(el: HTMLDivElement | null) => {
+            if (typeof ref === 'function') ref(el)
+            else if (ref) (ref as any).current = el
+            chatLogRef.current = el
+            setChatLogEl(el)
+          }}
+          className="fleet-chat-log"
+          style={{ ...props.style, padding: '4px 0' }}
+        />
+      )
+    }),
+    [],
+  )
   const inputRef = useRef<HTMLInputElement>(null)
 
   // Reactive map of image asset ID → src URL (populated from tldraw store).
@@ -2008,29 +2027,6 @@ function FleetChatInner({ shape }: { shape: any }) {
     isAtBottomRef.current = true
   }, [])
 
-  // Snap to bottom on initial load. customScrollParent + Virtuoso's
-  // initialTopMostItemIndex don't reliably land at bottom — we directly set
-  // scrollTop on the parent once items + scroll parent are ready, and keep
-  // pinning while content is still flowing in (early renders may report a
-  // stale scrollHeight before items measure).
-  const initialPinUntilRef = useRef(0)
-  useEffect(() => {
-    if (!scrollParent || allItems.length === 0) return
-    if (initialPinUntilRef.current === 0) {
-      initialPinUntilRef.current = Date.now() + 800
-    }
-    let raf = 0
-    const pin = () => {
-      if (Date.now() > initialPinUntilRef.current) return
-      const el = scrollParent
-      if (el) el.scrollTop = el.scrollHeight
-      virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'auto' })
-      raf = requestAnimationFrame(pin)
-    }
-    raf = requestAnimationFrame(pin)
-    return () => cancelAnimationFrame(raf)
-  }, [scrollParent, allItems.length])
-
 
   // Terminal card hover — mouseover on .lc-terminal-card shows the terminal overlay.
   useEffect(() => {
@@ -2742,6 +2738,22 @@ function FleetChatInner({ shape }: { shape: any }) {
     loadingMore.current = false
   }, [chatMessages, loadBeforeAgent])
 
+  // Attach scroll + click handlers to the Virtuoso-owned scroll container.
+  // Listener-based (not JSX prop) because the Scroller is memoized and
+  // doesn't close over changing callbacks.
+  useEffect(() => {
+    const el = chatLogEl
+    if (!el) return
+    const onScroll = (e: Event) => handleScroll(e as any)
+    const onClick = (e: Event) => handleDocLinkClick(e as any)
+    el.addEventListener('scroll', onScroll, { passive: true })
+    el.addEventListener('click', onClick)
+    return () => {
+      el.removeEventListener('scroll', onScroll)
+      el.removeEventListener('click', onClick)
+    }
+  }, [chatLogEl, handleScroll, handleDocLinkClick])
+
   // Auto-load more history when content doesn't fill the scroll container.
   // Without this, if initial messages are too few to create a scrollbar,
   // handleScroll never fires and the user can't get more messages.
@@ -3368,85 +3380,68 @@ function FleetChatInner({ shape }: { shape: any }) {
           />
         )}
 
-        {/* Messages — scroll container. Textarea is OUTSIDE (flex sibling). */}
-        {/*
-          Virtuoso experiment: uses `customScrollParent` so the outer
-          .fleet-chat-log div remains the scroll container (CanvasClipPanel's
-          wheel reroute targets that element by class). Virtuoso reads the
-          parent's scroll position to decide what to render and uses
-          `followOutput="auto"` to stick to bottom unless the user scrolls up.
-          `atBottomStateChange` replaces the custom `isAtBottomRef` tracking.
-        */}
-        <div
-          ref={setChatLogRef}
-          className="fleet-chat-log"
-          style={{
-            flex: 1,
-            minHeight: 0,  // Allow flex item to shrink below content height
-            overflowY: 'auto',
-            overflowX: 'hidden',
-            padding: '4px 0',
-          }}
-          onScroll={handleScroll}
-          onClick={handleDocLinkClick}
-        >
-          {chatMessages.length === 0 ? (
-            <div style={{
+        {/* Messages — Virtuoso owns the scroll container via components.Scroller.
+            Dropping customScrollParent: with Virtuoso-owned scroll,
+            initialTopMostItemIndex is reliably honored and the previous
+            "start at top" / RAF pin loop / scroll race is gone. */}
+        {chatMessages.length === 0 ? (
+          <div
+            className="fleet-chat-log"
+            ref={(el) => { chatLogRef.current = el; setChatLogEl(el) }}
+            style={{
+              flex: 1,
+              minHeight: 0,
+              overflowY: 'auto',
               padding: '20px 8px',
               opacity: isImpossibleFilter ? 0.6 : 0.3,
               textAlign: 'center',
               fontSize: 10,
               color: isImpossibleFilter ? 'var(--red, #e55)' : undefined,
-            }}>
-              {isImpossibleFilter
-                ? '⚠ Filter matches no known agents'
-                : filter.length > 0 ? 'No messages' : 'No filter set'}
-            </div>
-          ) : scrollParent ? (
-            <Virtuoso
-              ref={virtuosoRef}
-              customScrollParent={scrollParent}
-              data={allItems}
-              // Start at the bottom on mount (most recent messages).
-              initialTopMostItemIndex={Math.max(allItems.length - 1, 0)}
-              followOutput="auto"
-              // Tight threshold so any meaningful scroll-up un-pins; prevents
-              // followOutput from auto-snapping back to bottom when the user
-              // is reading earlier messages.
-              atBottomThreshold={4}
-              atBottomStateChange={(atBottom) => { isAtBottomRef.current = atBottom; setShowScrollBtn(!atBottom) }}
-              itemContent={(_index, item) => (
-                <div className={item?._divider ? 'queue-divider' : undefined}>
-                  <ChatMessageRow html={item.html} postProcess={postProcess} itemKey={item.key} expandedRowsRef={expandedRowsRef} />
+            }}
+          >
+            {isImpossibleFilter
+              ? '⚠ Filter matches no known agents'
+              : filter.length > 0 ? 'No messages' : 'No filter set'}
+          </div>
+        ) : (
+          <Virtuoso
+            ref={virtuosoRef}
+            data={allItems}
+            style={{ flex: 1, minHeight: 0 }}
+            initialTopMostItemIndex={{ index: 'LAST', align: 'end' }}
+            followOutput="auto"
+            atBottomThreshold={4}
+            atBottomStateChange={(atBottom) => { isAtBottomRef.current = atBottom; setShowScrollBtn(!atBottom) }}
+            itemContent={(_index, item) => (
+              <div className={item?._divider ? 'queue-divider' : undefined}>
+                <ChatMessageRow html={item.html} postProcess={postProcess} itemKey={item.key} expandedRowsRef={expandedRowsRef} />
+              </div>
+            )}
+            computeItemKey={(_index, item) => item?.key ?? _index}
+            components={{
+              Scroller: ChatLogScroller,
+              // Eliza/thinking status as Footer so they sit inside Virtuoso's
+              // tracked layout — sibling rendering would float over/under
+              // the virtualized list.
+              Footer: () => (
+                <div>
+                  <ElizaStatus pending={elizaPending} ctx={ctx} rawItemsLength={rawItems.length} />
+                  <ThinkingStatus
+                    thinkingAgents={thinkingAgents}
+                    compactingAgents={compactingAgents}
+                    contextPercent={contextPercent}
+                    wouldHibernate={wouldHibernate}
+                    hibernatingAgents={hibernatingAgents}
+                    ctx={ctx}
+                    rawItemsLength={rawItems.length}
+                    agents={agents}
+                    escalationState={escalationState}
+                  />
                 </div>
-              )}
-              computeItemKey={(_index, item) => item?.key ?? _index}
-              // Render the eliza/thinking status as a Footer so they sit
-              // inside Virtuoso's flow (below the last message, scroll with it)
-              // instead of as siblings of the virtualized list — siblings of
-              // Virtuoso get laid out outside its tracked layout space and
-              // appear floating over/under the messages.
-              components={{
-                Footer: () => (
-                  <div>
-                    <ElizaStatus pending={elizaPending} ctx={ctx} rawItemsLength={rawItems.length} />
-                    <ThinkingStatus
-                      thinkingAgents={thinkingAgents}
-                      compactingAgents={compactingAgents}
-                      contextPercent={contextPercent}
-                      wouldHibernate={wouldHibernate}
-                      hibernatingAgents={hibernatingAgents}
-                      ctx={ctx}
-                      rawItemsLength={rawItems.length}
-                      agents={agents}
-                      escalationState={escalationState}
-                    />
-                  </div>
-                ),
-              }}
-            />
-          ) : null}
-        </div>
+              ),
+            }}
+          />
+        )}
 
         {/* Terminal card overlay — shown on hover or when pinned; outside scroll container */}
         {(termCardPinnedId || termCardHoverId) && (() => {
