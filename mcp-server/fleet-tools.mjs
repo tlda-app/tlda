@@ -931,7 +931,7 @@ export function getFleetTools() {
     },
     {
       name: 'restart_mcp',
-      description: 'Restart MCP servers on one or all agents by sending /mcp + Enter to their tmux sessions.  Use after updating fleet code that agents need to pick up.',
+      description: 'BEST-EFFORT: send /mcp and menu-navigation keystrokes to a target agent\'s tmux session in an attempt to restart their MCP. The keystrokes get typed into their terminal; whether the menu actually navigates and reconnects is unreliable and unobservable from here. This tool does NOT confirm restart. The target may still be running old code. Do not infer success from a successful tool return — and never assume your own MCP got restarted just because /mcp text appeared in your terminal.',
       inputSchema: {
         type: 'object',
         properties: {
