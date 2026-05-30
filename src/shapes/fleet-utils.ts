@@ -1,14 +1,14 @@
 import type { Editor } from 'tldraw'
 import { createShapeId } from 'tldraw'
 // @ts-ignore — vanilla JS module
-import { getHumanId } from '../fleet/fleet-data.mjs'
+import { getHumanId, getHumanIdMaybe } from '../fleet/fleet-data.mjs'
 
 const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview', 'fleet-reaper']
 
 export const FLEET_HUD_ANCHOR_ID = 'shape:fleet-hud-anchor' as const
 
 export function getMyAnchorId(): string {
-  const uid = getHumanId()
+  const uid = getHumanIdMaybe()
   return uid ? `shape:fleet-hud-anchor--${uid.replace('fleet:', '')}` : FLEET_HUD_ANCHOR_ID
 }
 
@@ -30,7 +30,7 @@ export function forceDeleteShapes(editor: Editor, ids: string[]) {
  * agents: list of agent objects from useFleetAgents() — used to pre-fill chat filters.
  */
 export function createFleetLayout(editor: Editor, agents: any[], variant: '2col' | '3col' | 'wide' | 'grid' = '3col') {
-  const myId = getHumanId() || ''
+  const myId = getHumanIdMaybe() ?? ''
   const isMyShape = (s: any) => {
     if (!FLEET_SHAPE_TYPES.includes(s.type as string)) return false
     const uid = s.props?.userId
@@ -62,7 +62,7 @@ export function createFleetLayout(editor: Editor, agents: any[], variant: '2col'
   try { window.dispatchEvent(new CustomEvent('fleet-hud-reset')) } catch {}
 
   // Fall back to most-recently-active agents only if no existing filter to restore
-  const humanId = getHumanId()
+  const humanId = getHumanIdMaybe()
   const nonHuman = agents.filter((a: any) => a.id !== humanId && !a.human)
   const sorted = [...nonHuman].sort((a: any, b: any) => {
     const ta = a.last_seen ? new Date(a.last_seen).getTime() : 0
@@ -299,7 +299,7 @@ export function createFleetLayout(editor: Editor, agents: any[], variant: '2col'
       },
     )
   }
-  const uid = getHumanId() || ''
+  const uid = getHumanId()   // throws if called pre-login; the toolbar entry that fires createFleetLayout is gated by the login screen so this should be unreachable from the UI
   for (const s of shapes) s.props.userId = uid
   editor.createShapes(shapes)
 

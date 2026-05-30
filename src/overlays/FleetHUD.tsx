@@ -12,7 +12,7 @@ import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from '
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { useFleetAgents, useFleetIdentity } from '../fleet-data-adapter'
 // @ts-ignore — vanilla JS module
-import { getHumanId } from '../fleet/fleet-data.mjs'
+import { getHumanIdMaybe } from '../fleet/fleet-data.mjs'
 import { getMyAnchorId } from '../shapes/fleet-utils'
 import './FleetHUD.css'
 
@@ -22,7 +22,7 @@ function isMyFleetShape(s: any): boolean {
   if (!FLEET_SHAPE_TYPES.includes(s.type as string)) return false
   const uid = s.props?.userId
   if (!uid) return true
-  return uid === getHumanId()
+  return uid === getHumanIdMaybe()
 }
 
 function saveAnchorOffsets(editor: Editor, panOffset: number, cameraY: number) {

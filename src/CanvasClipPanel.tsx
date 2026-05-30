@@ -14,7 +14,7 @@ import { Tldraw, createTLStore, stopEventPropagation } from 'tldraw'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor, TLRecord } from 'tldraw'
 import { chatInsertBus } from './shapes/FleetPillShape'
 // @ts-ignore — vanilla JS module
-import { getHumanId } from './fleet/fleet-data.mjs'
+import { getHumanIdMaybe } from './fleet/fleet-data.mjs'
 import './CanvasClipPanel.css'
 
 const DEFAULT_WIDTH = 600
@@ -136,7 +136,7 @@ export function CanvasClipPanel({
     if (lockCamera && r.typeName === 'shape' && !FLEET_TYPES.has((r as any).type)) return false
     if (lockCamera && r.typeName === 'shape' && FLEET_TYPES.has((r as any).type)) {
       const uid = (r as any).props?.userId
-      const myId = getHumanId()
+      const myId = getHumanIdMaybe()
       if (uid && myId && uid !== myId) return false
     }
     if (r.typeName === 'shape' && !shapeOverlapsVisibleRegion(r.id)) return false

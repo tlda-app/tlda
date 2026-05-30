@@ -116,7 +116,19 @@ export function getAgents() { return _agents }
 export function getTasks() { return _tasks }
 export function getEvents() { return _events }
 export function getActivity(agentId) { return _events.filter(e => e._activity && e.agent === agentId) }
-export function getHumanId() { return _humanId }
+/**
+ * Returns the logged-in human's fleet ID. Throws if called before login —
+ * if you need to query identity from a pre-login render path (e.g. the
+ * canvas is rendered behind the login dialog), use getHumanIdMaybe() and
+ * handle null explicitly. Shape-creation paths, network sends, anything
+ * that needs a real owner — call this and don't null-check.
+ */
+export function getHumanId() {
+  if (!_humanId) throw new Error('getHumanId() called before login — use getHumanIdMaybe() if null is a legitimate state for this caller')
+  return _humanId
+}
+/** Returns the logged-in human's fleet ID, or null if login hasn't completed. */
+export function getHumanIdMaybe() { return _humanId }
 export function getHumanName() { return _humanName }
 export function needsIdentity() { return !_humanId && _identifyPending }
 
