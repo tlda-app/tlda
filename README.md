@@ -5,7 +5,7 @@
 A collaborative workspace for reading and writing LaTeX documents with AI agents and human collaborators. Renders your compiled paper exactly as it would appear in published form, on a shared canvas where everyone — humans and agents — can annotate, highlight, chat, and point at things in real time.
 
 <p align="center">
-  <img src="docs/images/tlda-overview.png" alt="tlda in action — paper review with fleet chat" width="100%">
+  <img src="docs/images/tlda-overview.png" alt="tlda in action — paper review with chat" width="100%">
 </p>
 
 > **Fair warning:** This entire codebase was vibe-coded with Claude Code. The author has not read the source.
@@ -143,7 +143,7 @@ The cycle: extract a passage → iterate in scratch (rendered live on every save
 
 ### Writing linters
 
-Per-user linter scripts in `~/.config/tlda/linters/` run automatically after every build. Only new text is checked (diff-scoped). Findings are posted to fleet chat and routed to the most recent editor. Ships three opt-in linters:
+Per-user linter scripts in `~/.config/tlda/linters/` run automatically after every build. Only new text is checked (diff-scoped). Findings are posted to chat and routed to the most recent editor. Ships three opt-in linters:
 
 | Script | What it flags |
 |--------|--------------|
@@ -244,13 +244,13 @@ tlda integrates with [Claude Code](https://docs.anthropic.com/en/docs/claude-cod
 tlda mcp-setup
 ```
 
-This writes `.mcp.json` so Claude Code can see tlda's tools. Open Claude Code in that directory and the `tlda` and `fleet` tool sets are available. Agents can see your highlights, drop anchored notes and questions on the document, read the text you're pointing at, monitor for changes, and edit your LaTeX source directly.
+This writes `.mcp.json` so Claude Code can see tlda's tools. Open Claude Code in that directory and the `tlda` tool set is available. Agents can see your highlights, drop anchored notes and questions on the document, read the text you're pointing at, monitor for changes, and edit your LaTeX source directly.
 
 You talk to agents via voice or text in chat panels that live on the canvas. They respond in the same space — with rendered math, clickable labels, and inline diffs of their edits.
 
-### Fleet
+### Agents
 
-Fleet is the coordination layer for running multiple Claude Code agents simultaneously. Each agent runs in its own tmux session with a persistent identity.
+tlda is the coordination layer for running multiple Claude Code agents simultaneously. Each agent runs in its own tmux session with a persistent identity.
 
 ```bash
 tlda spawn proof-writer                            # respawn an existing agent (resume session)
@@ -262,11 +262,11 @@ Each agent gets its own tmux session (`fleet-<name>`) that persists across resta
 
 **Hibernation:** Agents hibernate after 20 minutes of inactivity instead of dying. Send a chat message to a hibernating agent and it wakes up automatically — no `tlda spawn` needed. Just talk to them. The agents panel shows who's awake and who's hibernating.
 
-**Permission prompts:** When an agent hits a Claude Code permission prompt, it surfaces as an approve/deny card in fleet chat. You can authorize work without switching to the terminal.
+**Permission prompts:** When an agent hits a Claude Code permission prompt, it surfaces as an approve/deny card in chat. You can authorize work without switching to the terminal.
 
-Agents coordinate using fleet MCP tools: `chat()` to message each other or you, `delegate()` to assign tasks, `spawn()` to start new agents, `wiretap()` to listen in on other conversations, and `monitor_add()` to subscribe to document changes.
+Agents coordinate using tlda MCP tools: `chat()` to message each other or you, `delegate()` to assign tasks, `spawn()` to start new agents, `wiretap()` to listen in on other conversations, and `monitor_add()` to subscribe to document changes.
 
-The fleet HUD in the viewer shows all active agents, their current activity (tool calls, file edits), and lets you chat with any of them. Drag an agent's name onto a chat panel to filter to that conversation.
+The HUD in the viewer shows all active agents, their current activity (tool calls, file edits), and lets you chat with any of them. Drag an agent's name onto a chat panel to filter to that conversation.
 
 <img src="docs/images/tlda-spawn-terminal.png" alt="Spawning a new agent from the terminal with tlda spawn" width="100%">
 
@@ -278,7 +278,7 @@ Agents don't start from zero — they have situational awareness of you, the doc
 
 **Your reading position.** `viewing_context()` returns which document, page, and source lines are in your viewport right now. An agent can answer "is this right?" without asking what "this" is.
 
-<!-- Example output from viewing_context (format per mcp-server/fleet.mjs:3383) -->
+<!-- Example output from viewing_context -->
 ```
 viewing_context(user: "fleet:skip")
 
@@ -314,7 +314,7 @@ bregman — 3 annotation(s)
 
 **Other agents.** `roll_call()` shows who's awake, hibernating, or retired. `wiretap()` and `observe()` let agents watch each other's tool calls, file edits, and chat in real time.
 
-**Full chat history.** `search_logs()` and `get_thread()` span the complete fleet chat history — across sessions, across context windows, across agent lifetimes. An agent spawned today can read decisions made last week.
+**Full chat history.** `search_logs()` and `get_thread()` span the complete chat history — across sessions, across context windows, across agent lifetimes. An agent spawned today can read decisions made last week.
 
 ```
 search_logs("proof")
@@ -443,9 +443,9 @@ Agents call `viewing_context()` to see what you're looking at — which document
 
 ### Record keeping
 
-All fleet chat history is persisted and searchable — both for you and for agents.
+All chat history is persisted and searchable — both for you and for agents.
 
-**For you:** The fleet search shape lives in every default layout. Type in the box to search the full chat history — results render as complete chat lines with the same styling as the fleet chat view (colored nick chips, tool cards, rendered math).
+**For you:** The search shape lives in every default layout. Type in the box to search the full chat history — results render as complete chat lines with the same styling as the chat view (colored nick chips, tool cards, rendered math).
 
 **Inline filters** (combine freely with text):
 
@@ -465,13 +465,13 @@ Each result has a ↗ button that opens a live chat panel for that agent inline 
 
 ### Arranging shapes
 
-Fleet shapes (chat panels, agent notes, search, doc viewer) can be arranged however you want. The **Fleet** button in the bottom-left corner toggles them on or off. Click and drag it to the right to open the layout picker with presets.
+Shapes (chat panels, agent notes, search, doc viewer) can be arranged however you want. The **Shapes** button in the bottom-left corner toggles them on or off. Click and drag it to the right to open the layout picker with presets.
 
-<img src="docs/images/tlda-proof-reader.png" alt="Fleet button with layout picker showing two presets" width="100%">
+<img src="docs/images/tlda-proof-reader.png" alt="Shapes button with layout picker showing two presets" width="100%">
 
 Each shape has a layout button — click it to get drag handles. With drag handles active, drag a box around multiple shapes to select them as a group. Drag the group to reposition all your shapes at once, or resize the bounding box to rescale them together.
 
-<img src="docs/images/tlda-fleet-agents.png" alt="Resize/move handle on a fleet shape" width="49%"> <img src="docs/images/tlda-layout-3.png" alt="Fleet shapes arranged across the canvas" width="49%">
+<img src="docs/images/tlda-fleet-agents.png" alt="Resize/move handle on a shape" width="49%"> <img src="docs/images/tlda-layout-3.png" alt="Shapes arranged across the canvas" width="49%">
 
 ### Fog themes
 
@@ -503,7 +503,7 @@ tlda config set spawn-mode opus48               # default model for new agents
 
 Or set `TLDA_SERVER` as an environment variable — it takes precedence over `config.json`.
 
-**Qualification rules** (`~/.claude/qualifications.json`): The fleet daemon watches every agent's tool calls. When an agent tries to edit a file without having read the required prerequisite files, it fires a warning to you in chat.
+**Qualification rules** (`~/.claude/qualifications.json`): The daemon watches every agent's tool calls. When an agent tries to edit a file without having read the required prerequisite files, it fires a warning to you in chat.
 
 **Per-project metadata** lives in `server/projects/{name}/project.json` — name, title, format, page count, build status, source directory. Managed by the server; you shouldn't need to edit it directly.
 
@@ -517,7 +517,7 @@ LaTeX → DVI → SVG, with seven phases per build. The parts that matter for da
 
 **Priority pages.** The daemon knows which pages are visible in the viewport. Those pages are converted and published first — you see the change before the rest of the document finishes building.
 
-**Error surfacing.** LaTeX errors are extracted from the build log with ±3 lines of source context, broadcast to fleet chat, and shown in the doc-view error source. Click an error to open the source line in your editor.
+**Error surfacing.** LaTeX errors are extracted from the build log with ±3 lines of source context, broadcast to chat, and shown in the doc-view error source. Click an error to open the source line in your editor.
 
 **Precompiled format.** The first build caches your preamble as a `.fmt` file. Subsequent builds skip ~3 seconds of package loading. Invalidated automatically when the preamble changes.
 
@@ -553,7 +553,7 @@ Each line has `ts`, `level`, `ns` (namespace), `msg`, `data`, and `session` (per
 | `tlda list` | List projects |
 | `tlda status [name]` | Show build status |
 | `tlda errors [name]` | Show LaTeX errors/warnings |
-| `tlda spawn <name>` | Spawn or resume a fleet agent in tmux |
+| `tlda spawn <name>` | Spawn or resume an agent in tmux |
 | `tlda setup editor` | Install editor integration (Cmd-click → open source) |
 | `tlda share [name]` | Print shareable read-only URL (Tailscale/Funnel aware) |
 | `tlda mcp-setup` | Write `.mcp.json` for Claude Code integration |
