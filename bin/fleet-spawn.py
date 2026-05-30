@@ -372,7 +372,7 @@ def build_claude_cmd(fleet_id, tmux_session, model, effort=None, mode=None,
     parts = [f"FLEET_ID={fleet_id}", f"FLEET_TMUX_SESSION={tmux_session}", "claude"]
     if resume_id:
         parts.append(f"--resume {resume_id}")
-    parts.append("--dangerously-load-development-channels server:fleet")
+    parts.append("--dangerously-load-development-channels server:tlda")
     parts.append(f"--model '{model}'")
     if effort:
         parts.append(f"--effort '{effort}'")

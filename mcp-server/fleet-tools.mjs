@@ -618,7 +618,7 @@ function tmuxRespawn(sessionName, cwd, fleetId, sessionId) {
   const rGuard = path.join(__dirname, 'bin', 'R-guard');
   const rsGuard = path.join(__dirname, 'bin', 'Rscript-guard');
   const setup = `alias R='${rGuard}' Rscript='${rsGuard}'; `;
-  const channelFlag = ' --dangerously-load-development-channels server:fleet';
+  const channelFlag = ' --dangerously-load-development-channels server:tlda';
   const registerPrompt = 'Call register() with the fleet MCP server. Then call my_task() to check for a pending task.';
   const cmd = `tmux new-session -d -s ${sessionName} -c ${JSON.stringify(dir)} "${setup}FLEET_ID=${fleetId} FLEET_TMUX_SESSION=${sessionName} claude --resume ${sessionId}${channelFlag} ${JSON.stringify(registerPrompt)}"`;
   execSync(cmd, { encoding: 'utf8', timeout: 10000 });
