@@ -12,7 +12,7 @@ import {
   getAgents,
   getTasks,
   getUnreadCountsForHuman,
-  getHumanIdMaybe,
+  getHumanId,
   getHumanName,
   needsIdentity as _needsIdentity,
   login as _login,
@@ -43,7 +43,7 @@ import { loadPrefs } from './preferences'
 
 // Load prefs whenever the user's fleet identity is established
 subscribe('identity', null, (ev: any) => {
-  const userId = ev.id || getHumanIdMaybe()
+  const userId = ev.id || getHumanId()
   if (userId) loadPrefs(userId)
 })
 
@@ -742,7 +742,7 @@ export function useReaperStatus(): any {
 // --- Identity hook ---
 
 export function useFleetIdentity(): { id: string | null, name: string | null, needsIdentity: boolean, login: (name: string) => Promise<any>, register: (name: string) => Promise<any> } {
-  const [identity, setIdentity] = useState({ id: getHumanIdMaybe(), name: getHumanName(), needsIdentity: _needsIdentity() })
+  const [identity, setIdentity] = useState({ id: getHumanId(), name: getHumanName(), needsIdentity: _needsIdentity() })
 
   useEffect(() => {
     let unsub: (() => void) | null = null
@@ -750,9 +750,9 @@ export function useFleetIdentity(): { id: string | null, name: string | null, ne
 
     ensureInit().then(() => {
       if (cancelled) return
-      setIdentity({ id: getHumanIdMaybe(), name: getHumanName(), needsIdentity: _needsIdentity() })
+      setIdentity({ id: getHumanId(), name: getHumanName(), needsIdentity: _needsIdentity() })
       unsub = subscribe('identity', null, (ev: any) => {
-        setIdentity({ id: ev.id || getHumanIdMaybe(), name: ev.name || getHumanName(), needsIdentity: !!ev.needsIdentity })
+        setIdentity({ id: ev.id || getHumanId(), name: ev.name || getHumanName(), needsIdentity: !!ev.needsIdentity })
       })
     })
 

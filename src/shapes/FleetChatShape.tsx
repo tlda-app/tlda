@@ -25,7 +25,7 @@ import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil
 // @ts-ignore — vanilla JS module
 import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText, isRecording } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
-import { getHumanId, getHumanIdMaybe, getHumanName, updateEventById, sendViewingContext, setViewingEnrichFn } from '../fleet/fleet-data.mjs'
+import { getHumanId, getHumanName, updateEventById, sendViewingContext, setViewingEnrichFn } from '../fleet/fleet-data.mjs'
 import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useElizaPending, useWouldHibernate, sendMessage, loadBefore, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
 import type { ElizaNudge } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
@@ -2710,8 +2710,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     for (const a of agents) {
       if (a.id) map[a.id] = a.friendly_name || (a.id || '').replace('fleet:', '')
     }
-    const myId = getHumanIdMaybe()
-    if (myId) map[myId] = getHumanName() || 'user'
+    if (getHumanId()) map[getHumanId()] = getHumanName() || 'user'
     return map
   }, [agents])
 
@@ -2804,8 +2803,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       return { id: a.id, labels }
     })
     // Also include human
-    const myIdForAll = getHumanIdMaybe()
-    if (myIdForAll) allIds.push({ id: myIdForAll, labels: [getHumanName() || 'user', myIdForAll] })
+    if (getHumanId()) allIds.push({ id: getHumanId(), labels: [getHumanName() || 'user', getHumanId()] })
     // For each OR clause, check if there's any agent that matches ALL terms
     return !filter.some(clause =>
       allIds.some(agent =>
