@@ -58,6 +58,127 @@ tlda open                                          # open the index (lists all d
 
 Run `tlda doctor` to check that all dependencies are installed and the server is healthy.
 
+## Reading a paper
+
+### Labels are links
+
+When an agent mentions a label in chat, it renders as a clickable link. Hover to see a preview of the target. Click to pin the preview in place — arrow buttons appear so you can navigate to the target page and back.
+
+<img src="docs/images/tlda-ref-1-hover.png" alt="1. Hover a label to preview" width="49%"> <img src="docs/images/tlda-ref-2-click.png" alt="2. Click to open the viewer" width="49%">
+<img src="docs/images/tlda-ref-3-go.png" alt="3. Navigate to the target page" width="49%"> <img src="docs/images/tlda-ref-4-return.png" alt="4. Return to where you were" width="49%">
+
+### Doc view
+
+A floating panel on the canvas that auto-shows relevant context from elsewhere in the document. Click a cross-reference and the panel shows the target — before and after:
+
+<img src="docs/images/tlda-doc-view-before.png" alt="Before clicking a reference" width="49%"> <img src="docs/images/tlda-doc-view-after.png" alt="After clicking — doc view shows the target" width="49%">
+
+The panel subscribes to configurable *sources*:
+
+- **ref** — click a `\ref` or `\eqref` and the panel shows the target (equation, theorem, figure) so you can read it without leaving the current page.
+- **proof** — scroll into a proof and the panel shows the theorem statement from wherever it appears in the document.
+- **errors** — when a build fails, the panel jumps to the error location.
+
+### Math notes
+
+Click the note button in the toolbar to drop a sticky note on the canvas. Notes support KaTeX: `$x^2$` for inline math, `$$\int_0^1 f(x)\,dx$$` for display math. Custom macros from your paper's preamble are automatically available.
+
+When an agent shares a markdown file by saying its path (not in backticks — those are for quoting), you get a chip in chat that you can drag onto the canvas to create a math note. Notes appear in compact form as a dot — click the dot to see the full note, click the note to edit.
+
+<img src="docs/images/tlda-math-note-source.png" alt="Markdown source alongside the rendered math note" width="49%"> <img src="docs/images/tlda-math-note.png" alt="Rendered math note with KaTeX formulas on the canvas" width="49%">
+
+### Multiple-choice notes
+
+Agents drop questions with tappable KaTeX-rendered options. Your selection syncs back immediately.
+
+<img src="docs/images/tlda-multiple-choice-zoomed.png" alt="Multiple-choice note with rendered KaTeX options" width="100%">
+
+### Highlighting
+
+To activate highlighting, grab the highlighter button in the bottom-right corner and drag it up — this opens the highlighter zone on the right edge. Put your cursor down in the zone and drag to select a color, eraser, or other tool. Each color has an assigned meaning — question, notation, expand, cut, etc. — shown in a HUD when you select a color.
+
+<img src="docs/images/tlda-highlighter-toolbar.png" alt="Highlighter zone activated — color dots on the right edge" width="49%"> <img src="docs/images/tlda-color-picker.png" alt="Selecting a color from the highlighter strip" width="49%">
+
+Draw on the page and agents read the text under your stroke. A source context card pops up showing the LaTeX source and the text you selected. Drag the card to a chat panel to share it as a chip, or agents can subscribe via `tlda monitor` to receive highlight notifications automatically.
+
+<img src="docs/images/tlda-highlight-and-notes.png" alt="Highlights with source context cards and math notes" width="49%"> <img src="docs/images/tlda-highlight-chip.png" alt="Highlight chip dragged into chat" width="49%">
+
+### Ribbon
+
+A per-user annotation strip on the left edge of each page for tracking reading comprehension. Five status colors (unchecked through fully verified), click to cycle. Survives document rebuilds via source-line anchoring with edit resilience — deletions, insertions, and splits are tracked and remapped.
+
+### Version history
+
+A small stack of build timestamps sits in the top-left corner of the canvas. The most recent build is at the top; up to five recent versions are shown, fading out toward the bottom.
+
+Click any older timestamp to open a history column to the right of your document — the paper as it was at that build, side by side with the current version. A slider appears at the bottom of the screen to scrub through your full build history.
+
+<img src="docs/images/tlda-compare-mode.png" alt="Side-by-side version comparison" width="100%">
+
+A gray divider bar appears between the two columns. Drag it left or right to move the columns closer together; drag it up or down to vertically align the text between them.
+
+Click the current (top) timestamp to dismiss the history column.
+
+**How it works:** Every successful build is automatically committed to a per-project shadow repo. The full history of your document is preserved regardless of your own git habits. Chat messages are tagged with the version you're viewing, so agents always know which version of the document you're looking at.
+
+### Source-anchored annotations
+
+Notes are tied to source lines via synctex, so they survive rebuilds and recompilations. Build errors appear anchored to the source line, clickable to open in your editor.
+
+## Modifying the document
+
+### Scratch workflow
+
+Three tools form a cycle for iterating on document content without clobbering the source:
+
+| Tool | What it does |
+|------|-------------|
+| `extract_to_scratch` | Pull a range of source lines into a `.md` scratch file (pandoc-converted). A violet note marks the extraction region on the canvas. |
+| `input_scratch` | Write a `.tex` or `.md` file that appears as an `\input`-ed section in the rendered document. Signed with agent name + timestamp, styled with `xcolor`. |
+| `inline_scratch` | Promote a polished scratch section into permanent source — replaces the `\inputscratch{}` directive with the raw content and deletes the scratch file. |
+
+The cycle: extract a passage → iterate in scratch (rendered live on every save) → inline when satisfied. Agent work shows up in the document as it happens, not buried in a terminal.
+
+**File-backed stickies:** Agents write a `.md` file and it appears as a synced math note on the canvas. Drop a `.md` chip from chat onto the canvas to create one. Edits propagate bidirectionally — change the file or the note and the other updates.
+
+### Writing linters
+
+Per-user linter scripts in `~/.config/tlda/linters/` run automatically after every build. Only new text is checked (diff-scoped). Findings are posted to fleet chat and routed to the most recent editor. Ships three opt-in linters:
+
+| Script | What it flags |
+|--------|--------------|
+| `lint-parens.mjs` | New parenthetical asides in prose |
+| `lint-passive.mjs` | New passive-voice constructions |
+| `lint-typography.mjs` | Grammar errors in display math (e.g. comma before conjunction) |
+
+To activate, symlink to your linters directory:
+
+```bash
+mkdir -p ~/.config/tlda/linters
+ln -s /path/to/tlda/server/lib/lint-parens.mjs ~/.config/tlda/linters/parens.mjs
+```
+
+### Mirroring
+
+Enable on the project's index page to have each build automatically synced to your working copy as a git commit. Shadow versions are tagged in your repo, making it easy to map between shadow versions and your own commits.
+
+### Editor integration
+
+Cmd-click (Mac) or Ctrl-click (Linux) on any rendered text to open the source file at that line in your editor. Highlight cards also have an edit button (✎) that does the same thing.
+
+<img src="docs/images/tlda-open-in-editor.png" alt="Cmd-click to open source in editor" width="100%">
+
+One-time setup:
+
+```bash
+tlda setup editor                  # Zed (default)
+tlda setup editor --editor code    # VS Code
+tlda setup editor --editor cursor  # Cursor
+tlda setup editor --editor nvim    # Neovim
+```
+
+## Project setup
+
 ### Existing repos
 
 If your paper already lives in a git repo (Overleaf, GitHub, local), point `tlda create` at it:
@@ -69,8 +190,6 @@ tlda create my-paper --dir ~/overleaf/my-paper --main paper.tex
 The `--dir` path becomes the project's `sourceDir`. The daemon watches it for changes and pushes to the server on save — you keep editing in your normal workflow.
 
 **Shadow repos.** Every successful build is automatically committed to a per-project shadow repository inside the server. This gives you full version history regardless of your own git habits. Shadow versions appear in the version-history timeline on the canvas.
-
-**Mirroring.** Enable on the project's index page to sync each shadow commit back to your working copy as a tagged git commit. Tags let you `git diff shadow/abc1234` to see what changed between builds without polluting your branch history.
 
 **Smart file watching.** After the first build, the daemon switches from scanning `\input` directives to watching only the files LaTeX actually read (from the `.fls` recorder output). This means auxiliary files, figures, and nested inputs are all tracked automatically — no manual configuration.
 
@@ -95,7 +214,29 @@ tlda create my-paper --dir /path/to/source --main paper.tex
 
 Annotations survive in the Yjs room (keyed by project name). Source files are untouched.
 
-## Working with agents
+### Multi-document projects
+
+If your project uses `xr` or `xr-hyper` to cross-reference a companion document (e.g. a supplement), the build pipeline detects `\externaldocument{X}` and automatically builds both. Both documents share the same project and appear together on the canvas.
+
+### Other formats
+
+LaTeX is the primary format. tlda also supports:
+
+| Format | Command |
+|--------|---------|
+| **Markdown** | `tlda create notes --format markdown --dir /path` |
+| **HTML** (Quarto) | `tlda create book --format html --dir _book-tlda` |
+| **Slides** (reveal.js) | `tlda create deck --format slides --dir /path` |
+
+### Figures
+
+LaTeX runs in DVI mode, so `\includegraphics` produces placeholder boxes that get patched with actual images.
+
+**Supported:** `.svg` (preferred), `.png`, `.jpg`, `.eps`
+
+**For PDF figures:** provide an SVG with the same basename and dimensions. If your LaTeX says `\includegraphics{plot.pdf}`, the pipeline uses `plot.svg` instead.
+
+## Agents on the canvas
 
 tlda integrates with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) via an MCP server. In your paper directory, run:
 
@@ -107,7 +248,7 @@ This writes `.mcp.json` so Claude Code can see tlda's tools. Open Claude Code in
 
 You talk to agents via voice or text in chat panels that live on the canvas. They respond in the same space — with rendered math, clickable labels, and inline diffs of their edits.
 
-### Fleet: managing multiple agents
+### Fleet
 
 Fleet is the coordination layer for running multiple Claude Code agents simultaneously. Each agent runs in its own tmux session with a persistent identity.
 
@@ -131,9 +272,9 @@ The fleet HUD in the viewer shows all active agents, their current activity (too
 
 <img src="docs/images/tlda-drag-to-filter.png" alt="Dragging an agent label onto a chat panel to filter" width="49%"> <img src="docs/images/tlda-chat-filter-hover.png" alt="Hovering over the chat filter selector" width="49%">
 
-**Viewing context:** Agents call `viewing_context()` to see what you're looking at — which document, which page, which source lines. They respond to your reading position without you describing it. Scroll to a proof and ask "is this right?" — the agent already knows which proof.
+### Agent succession
 
-**Agent succession:** When an agent needs to be replaced (context-poisoned, drifted, fresh start needed), the lineage system preserves identity across brains. A shared friendly name persists — the new agent inherits the role, the old one phases out.
+When an agent needs to be replaced (context-poisoned, drifted, fresh start needed), the lineage system preserves identity across brains. A shared friendly name persists — the new agent inherits the role, the old one phases out.
 
 Each lineage has up to three phase slots:
 
@@ -145,7 +286,9 @@ Each lineage has up to three phase slots:
 
 Address agents by lineage name (`writing-A` → resolves to day) or by explicit phase (`writing-A:dusk`). Search and thread history unions across all brains that ever held a lineage.
 
-**Chatbot commands.** Drive succession from the in-app chatbot:
+### Chatbot commands
+
+Drive succession from the in-app chatbot:
 
 | Command | What it does |
 |---------|-------------|
@@ -154,6 +297,30 @@ Address agents by lineage name (`writing-A` → resolves to day) or by explicit 
 | "hand off to dawn" | Dawn → day, day → dusk, old dusk retires |
 
 Handoff always spawns a briefer/pickup pair — the outgoing agent can't be trusted to brief its own successor (context poisoning is why you're replacing it).
+
+### Eliza — automated agent coaching
+
+A lightweight pseudo-agent that watches your chat messages for frustration signals and sends corrective nudges to agents before you have to escalate. Pure regex pattern matching — no LLM, no latency, just pattern matching → chat dispatch. Auto-starts with `tlda server start`.
+
+When you send a message to an agent, eliza scans it for trigger phrases. On a match it sends the agent a directive (referencing the relevant skill) before you have to escalate.
+
+| Trigger phrase | What eliza sends |
+|----------------|-----------------|
+| "does that make sense" | Reflect back before proceeding |
+| "slow down" | Read `partner-not-soloist` |
+| "cop-out" | State the precise claim, prove it step by step |
+| "I'm struggling" | Slow down, be more explicit |
+| "you don't understand" | 🛑 STOP — reflect back, don't propose solutions |
+| "that's useless" | Ask what's needed instead |
+| "rude" | Read `partner-not-soloist` + `respond-before-acting` |
+| "hurtful" / "feel stupid" | 🛑 Full stop — acknowledge, listen |
+| "bro" / "wtf" (standalone) | Re-read CLAUDE.md, say what went wrong |
+
+Eliza tracks whether agents actually read the referenced skill after being nudged. On re-fire, the nudge escalates: "you read it but the pattern is recurring" or "you were nudged X minutes ago and still haven't read it."
+
+### Viewing context
+
+Agents call `viewing_context()` to see what you're looking at — which document, which page, which source lines. They respond to your reading position without you describing it. Scroll to a proof and ask "is this right?" — the agent already knows which proof.
 
 ### Chat
 
@@ -198,7 +365,9 @@ Each result has a ↗ button that opens a live chat panel for that agent inline 
 
 **For agents:** Agents have `search_logs()` to search the full chat history programmatically, and `get_thread()` to retrieve a specific conversation thread. This means agents can look up what was discussed in previous sessions, what decisions were made, and what other agents reported — even across context window boundaries.
 
-### Arranging the canvas
+## The canvas itself
+
+### Arranging shapes
 
 Fleet shapes (chat panels, agent notes, search, doc viewer) can be arranged however you want. The **Fleet** button in the bottom-left corner toggles them on or off. Click and drag it to the right to open the layout picker with presets.
 
@@ -208,144 +377,41 @@ Each shape has a layout button — click it to get drag handles. With drag handl
 
 <img src="docs/images/tlda-fleet-agents.png" alt="Resize/move handle on a fleet shape" width="49%"> <img src="docs/images/tlda-layout-3.png" alt="Fleet shapes arranged across the canvas" width="49%">
 
-## Core features
+### Fog themes
 
-### Labels are links
+Two desaturated cool-gray themes — Fog Light and Fog Dark. UI elements fade to near-invisible at rest and appear on hover. Toggle in the Prefs tab (gear icon).
 
-When an agent mentions a label in chat, it renders as a clickable link. Hover to see a preview of the target. Click to pin the preview in place — arrow buttons appear so you can navigate to the target page and back.
+## Sharing
 
-<img src="docs/images/tlda-ref-1-hover.png" alt="1. Hover a label to preview" width="49%"> <img src="docs/images/tlda-ref-2-click.png" alt="2. Click to open the viewer" width="49%">
-<img src="docs/images/tlda-ref-3-go.png" alt="3. Navigate to the target page" width="49%"> <img src="docs/images/tlda-ref-4-return.png" alt="4. Return to where you were" width="49%">
+`tlda share my-paper` prints a shareable URL with your read-only token embedded. Anyone with that URL can view and annotate. It checks for Tailscale and Tailscale Funnel automatically — if either is running, you get a network-reachable URL instead of localhost.
 
-### Doc view
+## Configuration
 
-A floating panel on the canvas that auto-shows relevant context from elsewhere in the document. Click a cross-reference and the panel shows the target — before and after:
+All persistent config lives in `~/.config/tlda/`:
 
-<img src="docs/images/tlda-doc-view-before.png" alt="Before clicking a reference" width="49%"> <img src="docs/images/tlda-doc-view-after.png" alt="After clicking — doc view shows the target" width="49%">
+| Path | What it stores |
+|------|---------------|
+| `config.json` | Server URL, auth tokens (read-write + read-only), spawn-mode default |
+| `client.log` | Browser log events (JSON-lines, written by `/api/log`) |
+| `server.log` | Server process log |
+| `fleet-daemon.log` | Daemon process log |
+| `linters/` | Per-user linter scripts (symlinks to `.mjs` files) |
+| `eliza-decisions.jsonl` | Eliza's decision log for HMM training |
 
-The panel subscribes to configurable *sources*:
-
-- **ref** — click a `\ref` or `\eqref` and the panel shows the target (equation, theorem, figure) so you can read it without leaving the current page.
-- **proof** — scroll into a proof and the panel shows the theorem statement from wherever it appears in the document.
-- **errors** — when a build fails, the panel jumps to the error location.
-
-### Math notes
-
-Click the note button in the toolbar to drop a sticky note on the canvas. Notes support KaTeX: `$x^2$` for inline math, `$$\int_0^1 f(x)\,dx$$` for display math. Custom macros from your paper's preamble are automatically available.
-
-When an agent shares a markdown file by saying its path (not in backticks — those are for quoting), you get a chip in chat that you can drag onto the canvas to create a math note. Notes appear in compact form as a dot — click the dot to see the full note, click the note to edit.
-
-<img src="docs/images/tlda-math-note-source.png" alt="Markdown source alongside the rendered math note" width="49%"> <img src="docs/images/tlda-math-note.png" alt="Rendered math note with KaTeX formulas on the canvas" width="49%">
-
-### Multiple-choice notes
-
-Agents drop questions with tappable KaTeX-rendered options. Your selection syncs back immediately.
-
-<img src="docs/images/tlda-multiple-choice-zoomed.png" alt="Multiple-choice note with rendered KaTeX options" width="100%">
-
-### Version history
-
-A small stack of build timestamps sits in the top-left corner of the canvas. The most recent build is at the top; up to five recent versions are shown, fading out toward the bottom.
-
-Click any older timestamp to open a history column to the right of your document — the paper as it was at that build, side by side with the current version. A slider appears at the bottom of the screen to scrub through your full build history.
-
-<img src="docs/images/tlda-compare-mode.png" alt="Side-by-side version comparison" width="100%">
-
-A gray divider bar appears between the two columns. Drag it left or right to move the columns closer together; drag it up or down to vertically align the text between them.
-
-Click the current (top) timestamp to dismiss the history column.
-
-**How it works:** Every successful build is automatically committed to a per-project shadow repo. The full history of your document is preserved regardless of your own git habits. Chat messages are tagged with the version you're viewing, so agents always know which version of the document you're looking at.
-
-**Mirroring** (optional): enable on the project's index page to have each build automatically synced to your working copy as a git commit. Shadow versions are tagged in your repo, making it easy to map between shadow versions and your own commits.
-
-### Source-anchored annotations
-
-Notes are tied to source lines via synctex, so they survive rebuilds and recompilations. Build errors appear anchored to the source line, clickable to open in your editor.
-
-## Power features
-
-### Review & interaction
-
-**Highlighting:** To activate highlighting, grab the highlighter button in the bottom-right corner and drag it up — this opens the highlighter zone on the right edge. Put your cursor down in the zone and drag to select a color, eraser, or other tool. Each color has an assigned meaning — question, notation, expand, cut, etc. — shown in a HUD when you select a color.
-
-<img src="docs/images/tlda-highlighter-toolbar.png" alt="Highlighter zone activated — color dots on the right edge" width="49%"> <img src="docs/images/tlda-color-picker.png" alt="Selecting a color from the highlighter strip" width="49%">
-
-Draw on the page and agents read the text under your stroke. A source context card pops up showing the LaTeX source and the text you selected. Drag the card to a chat panel to share it as a chip, or agents can subscribe via `tlda monitor` to receive highlight notifications automatically.
-
-<img src="docs/images/tlda-highlight-and-notes.png" alt="Highlights with source context cards and math notes" width="49%"> <img src="docs/images/tlda-highlight-chip.png" alt="Highlight chip dragged into chat" width="49%">
-
-**Ribbon:** A per-user annotation strip on the left edge of each page for tracking reading comprehension. Five status colors (unchecked through fully verified), click to cycle. Survives document rebuilds via source-line anchoring with edit resilience — deletions, insertions, and splits are tracked and remapped.
-
-### Writing tools
-
-**Scratch workflow.** Three tools form a cycle for iterating on document content without clobbering the source:
-
-| Tool | What it does |
-|------|-------------|
-| `extract_to_scratch` | Pull a range of source lines into a `.md` scratch file (pandoc-converted). A violet note marks the extraction region on the canvas. |
-| `input_scratch` | Write a `.tex` or `.md` file that appears as an `\input`-ed section in the rendered document. Signed with agent name + timestamp, styled with `xcolor`. |
-| `inline_scratch` | Promote a polished scratch section into permanent source — replaces the `\inputscratch{}` directive with the raw content and deletes the scratch file. |
-
-The cycle: extract a passage → iterate in scratch (rendered live on every save) → inline when satisfied. Agent work shows up in the document as it happens, not buried in a terminal.
-
-**File-backed stickies:** Agents write a `.md` file and it appears as a synced math note on the canvas. Drop a `.md` chip from chat onto the canvas to create one. Edits propagate bidirectionally — change the file or the note and the other updates.
-
-**Writing linters:** Per-user linter scripts in `~/.config/tlda/linters/` run automatically after every build. Only new text is checked (diff-scoped). Findings are posted to fleet chat and routed to the most recent editor. Ships three opt-in linters:
-
-| Script | What it flags |
-|--------|--------------|
-| `lint-parens.mjs` | New parenthetical asides in prose |
-| `lint-passive.mjs` | New passive-voice constructions |
-| `lint-typography.mjs` | Grammar errors in display math (e.g. comma before conjunction) |
-
-To activate, symlink to your linters directory:
+**Setting values:**
 
 ```bash
-mkdir -p ~/.config/tlda/linters
-ln -s /path/to/tlda/server/lib/lint-parens.mjs ~/.config/tlda/linters/parens.mjs
+tlda config set server https://my-server:5176   # server URL
+tlda config set spawn-mode opus48               # default model for new agents
 ```
 
-### Eliza — automated agent coaching
-
-A lightweight pseudo-agent that watches your chat messages for frustration signals and sends corrective nudges to agents before you have to escalate. Pure regex pattern matching — no LLM, no latency, just pattern matching → chat dispatch. Auto-starts with `tlda server start`.
-
-When you send a message to an agent, eliza scans it for trigger phrases. On a match it sends the agent a directive (referencing the relevant skill) before you have to escalate.
-
-| Trigger phrase | What eliza sends |
-|----------------|-----------------|
-| "does that make sense" | Reflect back before proceeding |
-| "slow down" | Read `partner-not-soloist` |
-| "cop-out" | State the precise claim, prove it step by step |
-| "I'm struggling" | Slow down, be more explicit |
-| "you don't understand" | 🛑 STOP — reflect back, don't propose solutions |
-| "that's useless" | Ask what's needed instead |
-| "rude" | Read `partner-not-soloist` + `respond-before-acting` |
-| "hurtful" / "feel stupid" | 🛑 Full stop — acknowledge, listen |
-| "bro" / "wtf" (standalone) | Re-read CLAUDE.md, say what went wrong |
-
-Eliza tracks whether agents actually read the referenced skill after being nudged. On re-fire, the nudge escalates: "you read it but the pattern is recurring" or "you were nudged X minutes ago and still haven't read it."
+Or set `TLDA_SERVER` as an environment variable — it takes precedence over `config.json`.
 
 **Qualification rules** (`~/.claude/qualifications.json`): The fleet daemon watches every agent's tool calls. When an agent tries to edit a file without having read the required prerequisite files, it fires a warning to you in chat.
 
-### Editor & project
+**Per-project metadata** lives in `server/projects/{name}/project.json` — name, title, format, page count, build status, source directory. Managed by the server; you shouldn't need to edit it directly.
 
-**Editor integration:** Cmd-click (Mac) or Ctrl-click (Linux) on any rendered text to open the source file at that line in your editor. Highlight cards also have an edit button (✎) that does the same thing.
-
-<img src="docs/images/tlda-open-in-editor.png" alt="Cmd-click to open source in editor" width="100%">
-
-One-time setup:
-
-```bash
-tlda setup editor                  # Zed (default)
-tlda setup editor --editor code    # VS Code
-tlda setup editor --editor cursor  # Cursor
-tlda setup editor --editor nvim    # Neovim
-```
-
-**Multi-document projects:** If your project uses `xr` or `xr-hyper` to cross-reference a companion document (e.g. a supplement), the build pipeline detects `\externaldocument{X}` and automatically builds both. Both documents share the same project and appear together on the canvas.
-
-**Fog themes:** Two desaturated cool-gray themes — Fog Light and Fog Dark. UI elements fade to near-invisible at rest and appear on hover. Toggle in the Prefs tab (gear icon).
+## Under the hood
 
 ### Build pipeline
 
@@ -399,30 +465,6 @@ Each line has `ts`, `level`, `ns` (namespace), `msg`, `data`, and `session` (per
 | `tlda attach <name>` | Attach to an agent's tmux session |
 | `tlda config set <key> <val>` | Persistent configuration |
 | `tlda delete <name>` | Delete a project |
-
-Configure with `tlda config set server <url>` or the `TLDA_SERVER` environment variable.
-
-### Other formats
-
-LaTeX is the primary format. tlda also supports:
-
-| Format | Command |
-|--------|---------|
-| **Markdown** | `tlda create notes --format markdown --dir /path` |
-| **HTML** (Quarto) | `tlda create book --format html --dir _book-tlda` |
-| **Slides** (reveal.js) | `tlda create deck --format slides --dir /path` |
-
-### Sharing
-
-`tlda share my-paper` prints a shareable URL with your read-only token embedded. Anyone with that URL can view and annotate. It checks for Tailscale and Tailscale Funnel automatically — if either is running, you get a network-reachable URL instead of localhost.
-
-### Figures
-
-LaTeX runs in DVI mode, so `\includegraphics` produces placeholder boxes that get patched with actual images.
-
-**Supported:** `.svg` (preferred), `.png`, `.jpg`, `.eps`
-
-**For PDF figures:** provide an SVG with the same basename and dimensions. If your LaTeX says `\includegraphics{plot.pdf}`, the pipeline uses `plot.svg` instead.
 
 ## Third-party licenses
 
