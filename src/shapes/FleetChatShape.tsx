@@ -2019,13 +2019,33 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Tracks which chat rows have been expanded (by item key) so the state
   // survives dangerouslySetInnerHTML re-renders.
   const expandedRowsRef = useRef<Set<string>>(new Set())
-  // Imperative scroll-to-bottom for the floating ⇣ button. Must go through
-  // Virtuoso's API — raw scrollTop = scrollHeight only seeks to currently-
-  // rendered content, not the true last item.
+  // Imperative scroll-to-bottom for the floating ⇣ button. align:'end' so
+  // the last item's *bottom* lands at the viewport bottom (default 'start'
+  // would only put the top of the last item at the top of the viewport).
   const scrollToBottom = useCallback(() => {
-    virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'auto' })
+    virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
     isAtBottomRef.current = true
   }, [])
+
+  // When the scroll container resizes — textarea growing as you type
+  // (shrinks chat-log) OR shrinking back after send (grows chat-log) — pin
+  // to bottom if we were at bottom. Virtuoso's followOutput only fires on
+  // *content* change, not container resize, so without this you drift off
+  // the bottom whenever the input area changes height.
+  useEffect(() => {
+    const el = chatLogEl
+    if (!el) return
+    let prevH = el.clientHeight
+    const ro = new ResizeObserver(() => {
+      const h = el.clientHeight
+      if (h !== prevH && isAtBottomRef.current) {
+        virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
+      }
+      prevH = h
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [chatLogEl])
 
 
   // Terminal card hover — mouseover on .lc-terminal-card shows the terminal overlay.
