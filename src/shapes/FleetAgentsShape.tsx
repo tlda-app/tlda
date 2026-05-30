@@ -57,6 +57,11 @@ function parseSpawnInput(raw: string): { doc: string; name: string | undefined; 
   return { doc, name, model, effort }
 }
 
+const ALL_COMPLETABLE = [...ALL_MODELS, ...Object.keys(MODEL_SHORTHANDS)]
+  .filter((v, i, a) => a.indexOf(v) === i)
+const ALL_EFFORT_COMPLETABLE = [...EFFORT_LEVELS, ...Object.keys(EFFORT_SHORTHANDS)]
+  .filter((v, i, a) => a.indexOf(v) === i)
+
 function getGhostCompletion(input: string, projects: string[]): string {
   if (!input) return ''
   const parts = input.split(':')
@@ -67,10 +72,10 @@ function getGhostCompletion(input: string, projects: string[]): string {
     const match = projects.find(p => p.startsWith(lastPart) && p !== lastPart)
     if (match) return match.slice(lastPart.length)
   } else if (parts.length === 2 || parts.length === 3) {
-    const match = ALL_MODELS.find(m => m.startsWith(lastPart) && m !== lastPart)
+    const match = ALL_COMPLETABLE.find(m => m.startsWith(lastPart) && m !== lastPart)
     if (match) return match.slice(lastPart.length)
   } else if (parts.length === 4) {
-    const match = EFFORT_LEVELS.find(e => e.startsWith(lastPart) && e !== lastPart)
+    const match = ALL_EFFORT_COMPLETABLE.find(e => e.startsWith(lastPart) && e !== lastPart)
     if (match) return match.slice(lastPart.length)
   }
   return ''
