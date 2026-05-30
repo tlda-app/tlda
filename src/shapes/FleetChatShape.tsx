@@ -1583,7 +1583,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
-    const logEl = chatLogRef.current
+    const logEl = chatLogEl
     if (!logEl) return
 
     function onMouseOver(e: MouseEvent) {
@@ -1818,7 +1818,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
       document.querySelector('.chip-hover-popover')?.remove()
     }
-  }, [doc, refResolver, w, liveEvents])
+  }, [chatLogEl, doc, refResolver, w, liveEvents])
 
   // Native capture-phase drop handler — intercepts OS file drops (from Finder etc.)
   // anywhere on the chat shape before tldraw can create a canvas image shape.
@@ -1902,7 +1902,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Hover events on annotation ref-chips → dispatch to AnnotationViewer
   const annotationHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
-    const logEl = chatLogRef.current
+    const logEl = chatLogEl
     if (!logEl) return
 
     function onAnnotationOver(e: MouseEvent) {
@@ -1949,12 +1949,12 @@ function FleetChatInner({ shape }: { shape: any }) {
       logEl.removeEventListener('mouseout', onAnnotationOut)
       if (annotationHoverTimerRef.current) clearTimeout(annotationHoverTimerRef.current)
     }
-  }, [])
+  }, [chatLogEl])
 
   // Hover events on bullet cards → dispatch to AnnotationViewer
   const bulletHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
-    const logEl = chatLogRef.current
+    const logEl = chatLogEl
     if (!logEl) return
 
     function onBulletOver(e: MouseEvent) {
@@ -2002,7 +2002,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       logEl.removeEventListener('mouseout', onBulletOut)
       if (bulletHoverTimerRef.current) clearTimeout(bulletHoverTimerRef.current)
     }
-  }, [editor])
+  }, [chatLogEl, editor])
 
   // Auto-scroll to bottom — event-driven, not every frame.
   // CanvasClipPanel already routes wheel events to .fleet-chat-log via
@@ -2050,7 +2050,7 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   // Terminal card hover — mouseover on .lc-terminal-card shows the terminal overlay.
   useEffect(() => {
-    const el = chatLogRef.current
+    const el = chatLogEl
     if (!el) return
     const onOver = (e: MouseEvent) => {
       const card = (e.target as HTMLElement).closest('.lc-terminal-card') as HTMLElement | null
@@ -2070,7 +2070,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     el.addEventListener('mouseover', onOver)
     el.addEventListener('mouseout', onOut)
     return () => { el.removeEventListener('mouseover', onOver); el.removeEventListener('mouseout', onOut) }
-  }, [])
+  }, [chatLogEl])
 
   // --- Shared doc: auto-create sticky when a .md file chip appears in chat ---
   // Track which messages we've already processed to avoid duplicates.
@@ -2195,7 +2195,7 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   // Lightbox: click on chat-image opens full-size overlay
   useEffect(() => {
-    const logEl = chatLogRef.current
+    const logEl = chatLogEl
     if (!logEl) return
     function onClick(e: Event) {
       // Plan approval buttons
@@ -2417,14 +2417,14 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
     logEl.addEventListener('click', onClick)
     return () => logEl.removeEventListener('click', onClick)
-  }, [])
+  }, [chatLogEl])
 
   // Unquote: double-click on <code> spans inside chat messages.
   // TLDraw intercepts the native dblclick event in its capture-phase handler on .tl-canvas,
   // so we detect double-click via two consecutive click events on the same <code> element.
   // click events reach bubble phase normally (markEventAsHandled on pointerdown handles TLDraw).
   useEffect(() => {
-    const logEl = chatLogRef.current
+    const logEl = chatLogEl
     if (!logEl) return
 
     function isLatexLabel(text: string): boolean {
@@ -2778,7 +2778,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Without this, if initial messages are too few to create a scrollbar,
   // handleScroll never fires and the user can't get more messages.
   useEffect(() => {
-    const el = chatLogRef.current
+    const el = chatLogEl
     if (!el || loadingMore.current || chatMessages.length === 0 || !loadBeforeAgent) return
     if (el.scrollHeight > el.clientHeight) return
     const oldestTs = chatMessages[0]?.timestamp
@@ -2790,7 +2790,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       }
       loadingMore.current = false
     })
-  }, [chatMessages, loadBeforeAgent])
+  }, [chatLogEl, chatMessages, loadBeforeAgent])
 
   // --- Chat log drag → ghost pill ---
   // Uses native capture-phase listeners because tldraw intercepts React events
@@ -2827,7 +2827,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   isSelectedRef.current = useValue('isSelected', () => editor.getSelectedShapeIds().includes(shape.id), [editor, shape.id])
 
   useEffect(() => {
-    const logEl = chatLogRef.current
+    const logEl = chatLogEl
     if (!logEl) return
 
     // Document-level capture listeners: fires before tldraw's tl-container
@@ -3282,7 +3282,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       // Release coordinator if this component unmounts during a drag
       if (dragRef.current) dragCoordinator.release()
     }
-  }, [editor])
+  }, [chatLogEl, editor])
 
   // --- chatInsertBus listener: content drops insert into textarea ---
   useEffect(() => {
