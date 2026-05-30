@@ -278,26 +278,36 @@ Agents don't start from zero — they have situational awareness of you, the doc
 
 **Your reading position.** `viewing_context()` returns which document, page, and source lines are in your viewport right now. An agent can answer "is this right?" without asking what "this" is.
 
+<!-- Example output from viewing_context (format per mcp-server/fleet.mjs:3383) -->
 ```
-viewing_context()
+viewing_context(user: "fleet:skip")
 
-bregman — page 12
-  main.tex:418–435
-  version: a4f975a (built 2m ago)
+Document: bregman
+Version: a4f975a
+Page: 12
+Source: main.tex:418-435
+Updated: 8s ago
 ```
 
 **Your annotations.** `read_annotations()` returns highlights, notes, and pen strokes — each with its source-line position and the text under it. Agents read what you marked without you typing a description.
 
+<!-- Example output from read_annotations (format per mcp-server/format-annotation.mjs) -->
 ```
 read_annotations("bregman")
 
 bregman — 3 annotation(s)
 
-[highlight] orange L271 "We claim that $\hat\mu$ converges at the parametric rate"
-  id: shape:abc123
+[highlight] orange L271 main.tex
+  ⟦We claim that $\hat\mu$ converges at the parametric rate⟧
+  id: shape:Hx7kQ2
 
-[note] purple L420 "Why doesn't this use the tighter bound from Prop 2.1?"
-  id: shape:def456  tabs: 2
+[note] violet L420 main.tex
+  "Why doesn't this use the tighter bound from Prop 2.1?"
+  id: shape:Nq3mR8
+
+[pen] red L195
+  near: "the proof of Theorem~\ref{thm:main} proceeds by"
+  id: shape:Pw9sT4
 ```
 
 **Build status and errors.** Agents see when builds start, succeed, or fail. On failure, they get the LaTeX error with ±3 lines of source context — enough to diagnose without asking you to paste the log.
