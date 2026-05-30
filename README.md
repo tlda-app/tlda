@@ -58,6 +58,43 @@ tlda open                                          # open the index (lists all d
 
 Run `tlda doctor` to check that all dependencies are installed and the server is healthy.
 
+### Existing repos
+
+If your paper already lives in a git repo (Overleaf, GitHub, local), point `tlda create` at it:
+
+```bash
+tlda create my-paper --dir ~/overleaf/my-paper --main paper.tex
+```
+
+The `--dir` path becomes the project's `sourceDir`. The daemon watches it for changes and pushes to the server on save — you keep editing in your normal workflow.
+
+**Shadow repos.** Every successful build is automatically committed to a per-project shadow repository inside the server. This gives you full version history regardless of your own git habits. Shadow versions appear in the version-history timeline on the canvas.
+
+**Mirroring.** Enable on the project's index page to sync each shadow commit back to your working copy as a tagged git commit. Tags let you `git diff shadow/abc1234` to see what changed between builds without polluting your branch history.
+
+**Smart file watching.** After the first build, the daemon switches from scanning `\input` directives to watching only the files LaTeX actually read (from the `.fls` recorder output). This means auxiliary files, figures, and nested inputs are all tracked automatically — no manual configuration.
+
+#### When it breaks
+
+**`sourceDir` must contain `.git`.** If you `git init` a fresh directory and point tlda at it, the shadow repo can't merge Overleaf history. Clone the Overleaf repo properly — don't start from a blank init.
+
+**Git lock contention.** The shadow commit retries automatically (3×, 500ms backoff) when `.git/index.lock` is held. If it wedges, kill the stale lock:
+
+```bash
+rm /path/to/sourceDir/.git/index.lock
+```
+
+**Missing `.fls` after build.** Non-fatal — the daemon falls back to `\input` scanning. The next successful build regenerates it.
+
+**Nuclear option.** If the project state is unsalvageable:
+
+```bash
+tlda delete my-paper
+tlda create my-paper --dir /path/to/source --main paper.tex
+```
+
+Annotations survive in the Yjs room (keyed by project name). Source files are untouched.
+
 ## Working with agents
 
 tlda integrates with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) via an MCP server. In your paper directory, run:
@@ -94,6 +131,30 @@ The fleet HUD in the viewer shows all active agents, their current activity (too
 
 <img src="docs/images/tlda-drag-to-filter.png" alt="Dragging an agent label onto a chat panel to filter" width="49%"> <img src="docs/images/tlda-chat-filter-hover.png" alt="Hovering over the chat filter selector" width="49%">
 
+**Viewing context:** Agents call `viewing_context()` to see what you're looking at — which document, which page, which source lines. They respond to your reading position without you describing it. Scroll to a proof and ask "is this right?" — the agent already knows which proof.
+
+**Agent succession:** When an agent needs to be replaced (context-poisoned, drifted, fresh start needed), the lineage system preserves identity across brains. A shared friendly name persists — the new agent inherits the role, the old one phases out.
+
+Each lineage has up to three phase slots:
+
+| Phase | Icon | Role |
+|-------|------|------|
+| **day** | <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cg stroke='%23333' fill='none' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='8' cy='8' r='2.5'/%3E%3Cline x1='8' y1='2.5' x2='8' y2='0.5'/%3E%3Cline x1='8' y1='15.5' x2='8' y2='13.5'/%3E%3Cline x1='2.5' y1='8' x2='0.5' y2='8'/%3E%3Cline x1='15.5' y1='8' x2='13.5' y2='8'/%3E%3Cline x1='4.3' y1='4.3' x2='2.9' y2='2.9'/%3E%3Cline x1='11.7' y1='4.3' x2='13.1' y2='2.9'/%3E%3Cline x1='4.3' y1='11.7' x2='2.9' y2='13.1'/%3E%3Cline x1='11.7' y1='11.7' x2='13.1' y2='13.1'/%3E%3C/g%3E%3C/svg%3E" height="16"> | Primary actor. Default chat target. |
+| **dawn** | <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cg stroke='%23333' fill='none' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cline x1='0.5' y1='11' x2='15.5' y2='11'/%3E%3Cpath d='M9 11 a3 3 0 0 1 6 0'/%3E%3Cline x1='12' y1='6' x2='12' y2='4'/%3E%3Cline x1='15' y1='9' x2='16.5' y2='8'/%3E%3C/g%3E%3C/svg%3E" height="16"> | Helper or successor-in-training. Sun rising on the east horizon. |
+| **dusk** | <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cg stroke='%23333' fill='none' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cline x1='0.5' y1='11' x2='15.5' y2='11'/%3E%3Cpath d='M1 11 a3 3 0 0 1 6 0'/%3E%3Cline x1='4' y1='6' x2='4' y2='4'/%3E%3Cline x1='1' y1='9' x2='-0.5' y2='8'/%3E%3C/g%3E%3C/svg%3E" height="16"> | Previous primary, handing off. Sun setting on the west horizon. |
+
+Address agents by lineage name (`writing-A` → resolves to day) or by explicit phase (`writing-A:dusk`). Search and thread history unions across all brains that ever held a lineage.
+
+**Chatbot commands.** Drive succession from the in-app chatbot:
+
+| Command | What it does |
+|---------|-------------|
+| "hand off writing-A" | Spawn briefer (→ day) + pickup (→ dawn), rotate old day → dusk, retire old dusk |
+| "add a dawn to writing-A" | Spawn a helper into the dawn slot without rotation |
+| "hand off to dawn" | Dawn → day, day → dusk, old dusk retires |
+
+Handoff always spawns a briefer/pickup pair — the outgoing agent can't be trusted to brief its own successor (context poisoning is why you're replacing it).
+
 ### Chat
 
 **Voice input:** Dictate into chat instead of typing. **Right Shift** toggles recording on/off. Say "send" to dispatch the message. Say "right chat" or "left chat" to switch between chat panels. Uses Chrome's Web Speech API for transcription. Domain-specific vocabulary — Greek letters, author names, math terms — is auto-corrected. For local transcription without a network dependency, add `&voice=whisper` to the URL (requires [whisper-stream](https://github.com/ggerganov/whisper.cpp) installed locally).
@@ -107,7 +168,7 @@ The fleet HUD in the viewer shows all active agents, their current activity (too
 
 **Terminal peek:** When a chat panel is filtered to a specific agent, a small terminal icon appears in the input bar. Hover to peek at the agent's live tmux output — this shows the current tool call, file being read, or shell command in real time. Click to pin the pane open so it stays visible. The pane has a `^C` button to send an interrupt and a text input to type commands directly into the agent's terminal.
 
-**Scroll modes:** Smart scroll (default) tries to keep the view at the bottom when messages arrive but backs off when you've scrolled up to read. Hard-lock mode (click the magnet icon to the left of the chat input) scrolls to the bottom unconditionally on every update. Two modes, two tradeoffs — use smart scroll when reading back, hard-lock when you want guaranteed live tracking.
+**Scroll behavior:** Chat stays pinned to the bottom when new messages arrive. Scroll up to read history and it stays put — no fighting. A small ⇣ button appears in the bottom-right when you're off the bottom; tap it to jump back down.
 
 **Interrupting an agent:** With the chat input focused and filtered to an agent, pressing Escape interrupts the agent. Three escalating tiers:
 
@@ -218,7 +279,15 @@ Draw on the page and agents read the text under your stroke. A source context ca
 
 ### Writing tools
 
-**Input scratch** (LaTeX projects): Agents write into the document via `input_scratch`, which creates `\input`-ed scratch sections. Each section is signed (agent name + timestamp), styled with `xcolor`, and appears in the rendered paper immediately. Agent work shows up in the document as it happens, not buried in a terminal.
+**Scratch workflow.** Three tools form a cycle for iterating on document content without clobbering the source:
+
+| Tool | What it does |
+|------|-------------|
+| `extract_to_scratch` | Pull a range of source lines into a `.md` scratch file (pandoc-converted). A violet note marks the extraction region on the canvas. |
+| `input_scratch` | Write a `.tex` or `.md` file that appears as an `\input`-ed section in the rendered document. Signed with agent name + timestamp, styled with `xcolor`. |
+| `inline_scratch` | Promote a polished scratch section into permanent source — replaces the `\inputscratch{}` directive with the raw content and deletes the scratch file. |
+
+The cycle: extract a passage → iterate in scratch (rendered live on every save) → inline when satisfied. Agent work shows up in the document as it happens, not buried in a terminal.
 
 **File-backed stickies:** Agents write a `.md` file and it appears as a synced math note on the canvas. Drop a `.md` chip from chat onto the canvas to create one. Edits propagate bidirectionally — change the file or the note and the other updates.
 
@@ -277,6 +346,34 @@ tlda setup editor --editor nvim    # Neovim
 **Multi-document projects:** If your project uses `xr` or `xr-hyper` to cross-reference a companion document (e.g. a supplement), the build pipeline detects `\externaldocument{X}` and automatically builds both. Both documents share the same project and appear together on the canvas.
 
 **Fog themes:** Two desaturated cool-gray themes — Fog Light and Fog Dark. UI elements fade to near-invisible at rest and appear on hover. Toggle in the Prefs tab (gear icon).
+
+### Build pipeline
+
+LaTeX → DVI → SVG, with seven phases per build. The parts that matter for daily use:
+
+**Incremental rebuilds.** Each SVG page is content-hashed. Only pages whose output actually changed get republished and trigger a reload signal. Editing page 12 doesn't re-render pages 1–11.
+
+**Priority pages.** The daemon knows which pages are visible in the viewport. Those pages are converted and published first — you see the change before the rest of the document finishes building.
+
+**Error surfacing.** LaTeX errors are extracted from the build log with ±3 lines of source context, broadcast to fleet chat, and shown in the doc-view error source. Click an error to open the source line in your editor.
+
+**Precompiled format.** The first build caches your preamble as a `.fmt` file. Subsequent builds skip ~3 seconds of package loading. Invalidated automatically when the preamble changes.
+
+**Biber recovery.** If biber's PAR cache corrupts (common after upgrades), the build auto-cleans and retries.
+
+**Macro extraction.** After each build, `\newcommand` and `\DeclareMathOperator` definitions are extracted from the preamble and served as `macros.json`. KaTeX in chat and math notes uses these — `$\E[X]$` renders correctly if your paper defines `\E`.
+
+### Debugging
+
+**Client logging.** Every browser log event is POSTed to `/api/log` and appended to `~/.config/tlda/client.log` as JSON-lines. Agents can `tail -f` or `grep` this file to see what the browser is doing — no DevTools or playwright needed.
+
+```bash
+tail -f ~/.config/tlda/client.log | jq .
+```
+
+Each line has `ts`, `level`, `ns` (namespace), `msg`, `data`, and `session` (per-tab ID). Tune the browser console threshold via URL param `?log=chat-scroll:debug` — the server sink captures everything regardless.
+
+**Automated sessions.** Add `?pw=1` to any URL to mark it as an automated session. This sets fog-dark theme (no white flash) and disables camera-link sync (agent's pan/zoom doesn't broadcast to your view).
 
 ## Reference
 
