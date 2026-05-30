@@ -405,12 +405,17 @@ def spawn_tmux(session, cwd, cmd, auto_dismiss=True):
     a process to dismiss the dev-channels confirmation dialog."""
     # Try respawn-pane first — handles dead panes left by remain-on-exit.
     # Falls back to new-session when no session exists.
+    # TMUX is cleared in env so tmux doesn't print the "sessions should be
+    # nested with care" warning when fleet-spawn is invoked from inside an
+    # existing tmux session (e.g. an agent calling mcp__tlda__spawn).
+    spawn_env = {**os.environ, "TMUX": ""}
     r = subprocess.run(tmux("respawn-pane", "-t", session, "-c", cwd, cmd),
-                       capture_output=True, timeout=5)
+                       capture_output=True, timeout=5, env=spawn_env)
     if r.returncode != 0:
-        subprocess.run(tmux("new-session", "-d", "-s", session, "-c", cwd, cmd), check=True)
+        subprocess.run(tmux("new-session", "-d", "-s", session, "-c", cwd, cmd),
+                       check=True, env=spawn_env)
         subprocess.run(tmux("set-option", "-t", session, "remain-on-exit", "on"),
-                       capture_output=True, timeout=5)
+                       capture_output=True, timeout=5, env=spawn_env)
     if auto_dismiss:
         subprocess.Popen(
             [sys.executable, "-c",
