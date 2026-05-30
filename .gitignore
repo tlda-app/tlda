@@ -76,3 +76,4 @@ bin/finish-merge.sh
 bin/fleet-resume.sh
 fleet.db
 .pw.lock
+.playwright/

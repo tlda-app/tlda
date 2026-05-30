@@ -41,12 +41,18 @@ import App from './App.tsx'
 // concrete failure modes:
 //   1. White-themed playwright windows flash on the user's screen at night
 //   2. The agent's pan/zoom hijacks the human's view via the camera-link sync
-// Detection: navigator.webdriver is true for any automated browser session.
-if ((navigator as any).webdriver) {
-  try {
-    localStorage.setItem('tlda-theme', 'fog-dark')
-    localStorage.setItem('tlda-camera-linked', 'false')
-  } catch { /* localStorage may be unavailable */ }
+// Detection: navigator.webdriver OR ?pw=1 in the URL. playwright-mcp sets
+// --disable-features=AutomationControlled which hides the webdriver flag, so
+// the URL param is the reliable signal; agents must add &pw=1 to their URLs.
+{
+  const url = new URL(window.location.href)
+  const isAuto = (navigator as any).webdriver || url.searchParams.get('pw') === '1'
+  if (isAuto) {
+    try {
+      localStorage.setItem('tlda-theme', 'fog-dark')
+      localStorage.setItem('tlda-camera-linked', 'false')
+    } catch { /* localStorage may be unavailable */ }
+  }
 }
 
 createRoot(document.getElementById('root')!).render(
