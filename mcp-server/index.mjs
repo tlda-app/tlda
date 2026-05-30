@@ -9,7 +9,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { getFleetTools, handleFleetTool, initFleet, FLEET_INSTRUCTIONS } from './fleet-tools.mjs';
+import { getFleetTools, handleFleetTool, initFleet, TLDA_INSTRUCTIONS } from './fleet-tools.mjs';
 import http from 'http';
 import fs from 'fs';
 import os from 'os';
@@ -1861,7 +1861,7 @@ const server = new Server(
         'claude/channel': {},
       },
     },
-    instructions: FLEET_INSTRUCTIONS,
+    instructions: TLDA_INSTRUCTIONS,
   }
 );
 
