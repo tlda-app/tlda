@@ -25,6 +25,7 @@ import {
   extractBuildErrors, extractPipelineWarnings, addBookMember, getProjectsDir, projectDir as getProjectDir,
 } from '../lib/project-store.mjs'
 import { runBuild, getBuildStatus } from '../lib/build-runner.mjs'
+import { outlineForRegion } from '../lib/outline/outline.mjs'
 import { loadSynctex } from '../lib/synctex-query.mjs'
 import { buildMarkdown, buildHtml, buildSlides } from '../lib/format-builders.mjs'
 import { shouldBuildOnPush } from '../lib/build-decision.mjs'
@@ -254,6 +255,27 @@ router.get('/:name/macros', requireRead, (req, res) => {
     res.json({ macros: data.macros || {} })
   } catch {
     res.json({ macros: {} })
+  }
+})
+
+// Clause-grain outline of a source line range — drives the "outline" highlighter.
+// GET /:name/outline?lines=A-B[&file=path.tex]  ->  { markdown, lines, file }
+router.get('/:name/outline', requireRead, (req, res) => {
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+  const m = String(req.query.lines || '').match(/^(\d+)-(\d+)$/)
+  if (!m) return res.status(400).json({ error: 'lines=A-B required' })
+  const A = parseInt(m[1], 10)
+  const B = parseInt(m[2], 10)
+  const file = String(req.query.file || project.mainFile || 'main.tex')
+  const texPath = join(getSourceDir(req.params.name), file)
+  if (!existsSync(texPath)) return res.status(404).json({ error: `tex not found: ${file}` })
+  const all = readFileSync(texPath, 'utf8').split('\n')
+  const region = all.slice(A - 1, B).join('\n') + '\n'
+  try {
+    res.json({ markdown: outlineForRegion(region), lines: [A, B], file })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
   }
 })
 

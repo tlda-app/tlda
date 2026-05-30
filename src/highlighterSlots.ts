@@ -26,7 +26,10 @@ export const HL_SLOTS: HlSlot[] = [
   { id: 'grey', color: '#9fa1a4', label: 'compress' },
   { id: 'light-blue', color: '#4ea2e2', label: 'notation' },
   { id: 'light-green', color: '#65c365', label: 'approve' },
-  { id: 'light-violet', color: '#e0d4f5', label: 'personal' },
+  { id: 'violet', color: '#c77cff', label: 'personal' },
   { id: 'select', color: '#888', label: 'browse', svgIcon: BROWSE_ICON_URL },
   { id: 'draw', color: '#666', label: 'pen', svgIcon: `${TLDRAW_ICON_BASE}#tool-pencil` },
+  // Outline highlighter: behavior differs from the marking colors (it extracts a
+  // clause-outline of the highlighted region), so it sits apart at the bottom edge.
+  { id: 'light-violet', color: '#e0d4f5', label: 'outline' },
 ]
