@@ -2465,16 +2465,16 @@ async function handleFleetWsMessage(ws, msg) {
 
   // ---- lineage-assign: assign an agent to a lineage with a phase ----
   if (type === 'lineage-assign') {
-    const { agent: agentQuery, phase } = msg
+    const { agent: agentQuery, phase, lineage: lineageQuery } = msg
     if (!agentQuery || !phase) { error('agent and phase required'); return }
     if (!['dawn', 'day', 'dusk'].includes(phase)) { error('phase must be dawn, day, or dusk'); return }
     const agent = fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    const agentName = agent.friendly_name || agentQuery
-    const lineage = fleetStore.getOrCreateLineage(agentName)
+    const lineageName = lineageQuery || agent.friendly_name || agentQuery
+    const lineage = fleetStore.getOrCreateLineage(lineageName)
     const roster = fleetStore.getLineageRoster(lineage.id)
     const occupied = roster.find(a => a.phase === phase)
-    if (occupied) { error(`Phase "${phase}" in lineage "${agentName}" is occupied by ${occupied.friendly_name || occupied.id}`); return }
+    if (occupied) { error(`Phase "${phase}" in lineage "${lineageName}" is occupied by ${occupied.friendly_name || occupied.id}`); return }
     fleetStore.assignPhase(agent.id, lineage.id, phase)
     broadcastState()
     reply({ ok: true, agent: agent.id, lineage: lineage.id, lineage_name: lineage.friendly_name, phase })

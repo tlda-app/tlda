@@ -1349,11 +1349,11 @@ async function handleHandoff(agentId, triggerText) {
 
     setTimeout(async () => {
       try {
-        // Assign briefer to the lineage as day (original agent is now dusk)
+        // Assign briefer to the original agent's lineage as day
         try {
-          await sendRequest({ type: 'lineage-assign', agent: briefingName, phase: 'day' })
+          await sendRequest({ type: 'lineage-assign', agent: briefingName, phase: 'day', lineage: agentName })
         } catch (e) {
-          sendChat(OWNER_ID, `⚠️ Lineage assign (${briefingName} → day) failed: ${e.message}`)
+          sendChat(OWNER_ID, `⚠️ Lineage assign (${briefingName} → day in ${agentName}) failed: ${e.message}`)
         }
 
         await postJson('/api/tasks/delegate', {
@@ -1449,11 +1449,11 @@ async function handleHandoffReady(fromId, text) {
 
       setTimeout(async () => {
         try {
-          // Assign pickup to the lineage as dawn
+          // Assign pickup to the original agent's lineage as dawn
           try {
-            await sendRequest({ type: 'lineage-assign', agent: pickupName, phase: 'dawn' })
+            await sendRequest({ type: 'lineage-assign', agent: pickupName, phase: 'dawn', lineage: handoffInfo.originalAgent })
           } catch (e) {
-            sendChat(OWNER_ID, `⚠️ Lineage assign (${pickupName} → dawn) failed: ${e.message}`)
+            sendChat(OWNER_ID, `⚠️ Lineage assign (${pickupName} → dawn in ${handoffInfo.originalAgent}) failed: ${e.message}`)
           }
           // Retire the original agent (dusk) from the lineage
           try {
