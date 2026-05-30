@@ -634,7 +634,7 @@ function windowTail(output, n = 40) {
 // ---- Server reference (set by initFleet) ----
 let server = null;
 
-export const TLDA_INSTRUCTIONS = 'Fleet messages arrive as <channel source="tlda"> tags. When you see one, call my_task() to get full context and respond via chat(). Treat channel messages exactly like 📬 notifications.';
+export const TLDA_INSTRUCTIONS = 'Fleet messages arrive as <channel source="tlda"> tags. When you see one, call my_task() to get full context and respond via chat().';
 
 export function getFleetTools() {
   return [
