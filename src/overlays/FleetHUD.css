@@ -98,6 +98,22 @@
   pointer-events: auto !important;
 }
 
+/* Tool pass-through: when the main editor's current tool is a drawing/erasing
+   tool, fleet shapes get pointer-events: none so the tool can operate over
+   them. The HUD root toggles .tool-passes-through based on currentToolId
+   (see FleetHUD.tsx). Layout mode wins — never block events when the user is
+   actively arranging fleet shapes. */
+.fleet-hud-wrap.tool-passes-through:not(.hud-layout-active) .clip-panel-fullvp .tl-shape[data-shape-type="fleet-chat"],
+.fleet-hud-wrap.tool-passes-through:not(.hud-layout-active) .clip-panel-fullvp .tl-shape[data-shape-type="fleet-chat"] *,
+.fleet-hud-wrap.tool-passes-through:not(.hud-layout-active) .clip-panel-fullvp .tl-shape[data-shape-type="fleet-agents"],
+.fleet-hud-wrap.tool-passes-through:not(.hud-layout-active) .clip-panel-fullvp .tl-shape[data-shape-type="fleet-agents"] *,
+.fleet-hud-wrap.tool-passes-through:not(.hud-layout-active) .clip-panel-fullvp .tl-shape[data-shape-type="fleet-search"],
+.fleet-hud-wrap.tool-passes-through:not(.hud-layout-active) .clip-panel-fullvp .tl-shape[data-shape-type="fleet-search"] *,
+.fleet-hud-wrap.tool-passes-through:not(.hud-layout-active) .clip-panel-fullvp .tl-shape[data-shape-type="fleet-docview"],
+.fleet-hud-wrap.tool-passes-through:not(.hud-layout-active) .clip-panel-fullvp .tl-shape[data-shape-type="fleet-docview"] * {
+  pointer-events: none !important;
+}
+
 /* The HUD mirrors document records (including html-page shapes that contain
    iframes for markdown/HTML projects) so the user can see the doc behind the
    fleet shapes. iframes capture pointer events regardless of any pe:none on

@@ -8,6 +8,7 @@
  * Pointer events pass through to the main canvas for non-fleet areas.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { react } from 'tldraw'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { useFleetAgents, useFleetIdentity } from '../fleet-data-adapter'
@@ -378,6 +379,22 @@ export function FleetHUD({
       document.removeEventListener('drop', onDrop, true)
     }
   }, [expanded])
+
+  // When the main editor is in a drawing/erasing tool, make fleet shapes
+  // pointer-events:none so the tool can operate over them directly instead of
+  // being intercepted by the chat's interactive elements. CSS uses the
+  // .tool-passes-through class on .fleet-hud-wrap to flip pointer-events.
+  useEffect(() => {
+    const el = hudRef.current
+    if (!el) return
+    // Tool-based pass-through trades one problem for another: when the user is
+    // in eraser/highlight, they can brush over chat — but they also lose the
+    // ability to interact with chat without switching tools. Skip judged the
+    // tradeoff bad. Reverting until we have a drag-only or pointer-down-only
+    // gate that keeps chat interactive on tap.
+    void react
+    el.classList.remove('tool-passes-through')
+  }, [mainEditor])
 
   // Toggle .hud-layout-active on the wrap div when fleet shapes are selected
   // in the HUD editor. This enables pointer-events on .tl-canvas so drag-box

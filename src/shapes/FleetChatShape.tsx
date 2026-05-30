@@ -14,7 +14,7 @@ import {
   useValue,
 } from 'tldraw'
 import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, useContext, memo, useSyncExternalStore } from 'react'
-import { useVirtualizer } from '@tanstack/react-virtual'
+import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 
 // @ts-ignore — vanilla JS module
 import { renderChatLine, resolveInlineAttachments, esc } from '../fleet/chat-render.mjs'
@@ -1023,7 +1023,6 @@ function FleetChatInner({ shape }: { shape: any }) {
     setOlderEvents([])
     isAtBottomRef.current = true
     setShowScrollBtn(false)
-    prevTotalSizeRef.current = 0
   }, [filterKey])
 
   // Resolve a friendly name/label to a fleet ID for DB queries.
@@ -1127,6 +1126,15 @@ function FleetChatInner({ shape }: { shape: any }) {
 
 
   const chatLogRef = useRef<HTMLDivElement>(null)
+  // Virtuoso needs the scroll parent as a real HTMLElement; chatLogRef is null
+  // on first render, so mirror it into state and only mount <Virtuoso> after
+  // the element exists.
+  const [scrollParent, setScrollParent] = useState<HTMLElement | null>(null)
+  const setChatLogRef = useCallback((el: HTMLDivElement | null) => {
+    chatLogRef.current = el
+    setScrollParent(el)
+  }, [])
+  const virtuosoRef = useRef<VirtuosoHandle | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
   // Reactive map of image asset ID → src URL (populated from tldraw store).
@@ -1422,17 +1430,6 @@ function FleetChatInner({ shape }: { shape: any }) {
   }, [rawItems])
 
   // Virtual scroll — only mount DOM nodes for visible messages.
-  // Placed after rawItems so count is always defined.
-  // estimateSize: 65px ≈ average message height (2-3 lines + padding).
-  // A close estimate prevents the "scrolled to middle" bug where setting
-  // scrollTop = estimated-total puts you far from the actual bottom.
-  const virtualizer = useVirtualizer({
-    count: allItems.length,
-    getScrollElement: () => chatLogRef.current,
-    estimateSize: () => 65,
-    overscan: 8,
-  })
-
   // Handle clicks on ref-chip annotations → navigate to canvas bounds
   const handleRefChipClick = useCallback((e: React.MouseEvent) => {
     const chip = (e.target as HTMLElement).closest('.ref-chip-annotation') as HTMLElement | null
@@ -1995,15 +1992,6 @@ function FleetChatInner({ shape }: { shape: any }) {
   // or the container resizes, but only if the user hasn't scrolled up.
   const isAtBottomRef = useRef(true)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
-  // Hard-locked mode: every content change scrolls to bottom unconditionally.
-  // Persisted to localStorage so it survives reloads.
-  const HARD_LOCKED_KEY = 'fleet-chat-hard-locked'
-  const [hardLocked, setHardLocked] = useState(() => localStorage.getItem(HARD_LOCKED_KEY) === 'true')
-  const hardLockedRef = useRef(hardLocked)
-  useEffect(() => {
-    hardLockedRef.current = hardLocked
-    localStorage.setItem(HARD_LOCKED_KEY, String(hardLocked))
-  }, [hardLocked])
   const [termHoverVisible, setTermHoverVisible] = useState(false)
   const [termHoverPinned, setTermHoverPinned] = useState(false)
   const termHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -2012,55 +2000,15 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Tracks which chat rows have been expanded (by item key) so the state
   // survives dangerouslySetInnerHTML re-renders.
   const expandedRowsRef = useRef<Set<string>>(new Set())
-  // scrollToBottom sets scrollTop = scrollHeight. The ResizeObserver on the
-  // virtualizer's inner div calls it again after measurement, catching the
-  // race where scrollHeight grows after the initial scroll.
-  const scrollSuppressUntilRef = useRef(0)
+  // Imperative scroll-to-bottom (used by the floating ⇣ button and the
+  // post-send paths that want a guaranteed pin). Virtuoso's followOutput
+  // handles the on-content-change case; this is for explicit jumps.
   const scrollToBottom = useCallback(() => {
     const el = chatLogRef.current
     if (!el) return
     el.scrollTop = el.scrollHeight
-    scrollSuppressUntilRef.current = Date.now() + 100
     isAtBottomRef.current = true
   }, [])
-
-  // Sticky-bottom scroll tracking.
-  // Only un-pin (isAtBottomRef = false) when scrollTop actually decreases,
-  // meaning the user scrolled up. Content growth increases scrollHeight
-  // without changing scrollTop, so it can't falsely un-pin us.
-  const prevClientHeightRef = useRef(0)
-  const prevScrollTopRef = useRef(0)
-  useEffect(() => {
-    const el = chatLogRef.current
-    if (!el) return
-    prevClientHeightRef.current = el.clientHeight
-    prevScrollTopRef.current = el.scrollTop
-    const onScroll = () => {
-      if (Date.now() < scrollSuppressUntilRef.current) {
-        prevScrollTopRef.current = el.scrollTop
-        return
-      }
-      const ch = el.clientHeight
-      const resized = ch !== prevClientHeightRef.current
-      prevClientHeightRef.current = ch
-      const dist = el.scrollHeight - el.scrollTop - ch
-      const atBottom = dist < 30
-      const scrolledUp = el.scrollTop < prevScrollTopRef.current - 3
-      prevScrollTopRef.current = el.scrollTop
-      if (resized && isAtBottomRef.current && !atBottom) {
-        scrollToBottom()
-        return
-      }
-      if (scrolledUp && !atBottom) {
-        isAtBottomRef.current = false
-      } else if (atBottom) {
-        isAtBottomRef.current = true
-      }
-      setShowScrollBtn(!isAtBottomRef.current)
-    }
-    el.addEventListener('scroll', onScroll, { passive: true })
-    return () => el.removeEventListener('scroll', onScroll)
-  }, [scrollToBottom])
 
   // Terminal card hover — mouseover on .lc-terminal-card shows the terminal overlay.
   useEffect(() => {
@@ -2085,67 +2033,6 @@ function FleetChatInner({ shape }: { shape: any }) {
     el.addEventListener('mouseout', onOut)
     return () => { el.removeEventListener('mouseover', onOver); el.removeEventListener('mouseout', onOut) }
   }, [])
-
-  // Scroll to bottom when new messages arrive or activity cards grow.
-  //
-  // rawItems.length alone is not enough: activity messages from the same
-  // agent merge into a single rawItem, so a burst of tool-call events can
-  // make scrollHeight grow by hundreds of px without changing rawItems.length.
-  // Tracking getTotalSize() catches both new items AND measurement updates.
-  const virtualizerTotalSize = virtualizer.getTotalSize()
-  const prevTotalSizeRef = useRef(0)
-  useEffect(() => {
-    if (virtualizerTotalSize === 0) return
-    const firstLoad = prevTotalSizeRef.current === 0
-    prevTotalSizeRef.current = virtualizerTotalSize
-    if (firstLoad || isAtBottomRef.current || hardLocked) {
-      scrollToBottom()
-      requestAnimationFrame(() => {
-        scrollToBottom()
-        requestAnimationFrame(scrollToBottom)
-      })
-    }
-  }, [virtualizerTotalSize, scrollToBottom, hardLocked])
-
-  // rawItems.length effect: reset prevTotalSizeRef on filter change / target switch
-  // so the next load is treated as a first load. (filterKey effect handles this
-  // for the target-switch case; this handles in-flight rawItems resets.)
-  useEffect(() => {
-    if (rawItems.length === 0) prevTotalSizeRef.current = 0
-  }, [rawItems.length])
-
-  // ResizeObserver on the inner content div (virtualizer total-size container).
-  // When the virtualizer measures a new item, this div's height changes, which
-  // updates scrollHeight. We scroll to bottom at that point if we should be
-  // pinned there. Observing the outer scroll container wouldn't work — its
-  // visible size is fixed, only scrollHeight changes.
-  //
-  // hasMessages re-runs the effect when messages first arrive: el.firstElementChild
-  // changes identity (empty-state div → virtualizer total-size div) and the observer
-  // must re-attach to the new element. Without this, the observer watches the detached
-  // empty-state div and misses all virtualizer height updates during initial load.
-  const hasMessages = rawItems.length > 0
-  useEffect(() => {
-    const el = chatLogRef.current
-    if (!el) return
-    const ro = new ResizeObserver(() => {
-      if (isAtBottomRef.current || hardLockedRef.current) {
-        requestAnimationFrame(scrollToBottom)
-      }
-    })
-    ro.observe(el)
-    if (el.firstElementChild) ro.observe(el.firstElementChild)
-    return () => ro.disconnect()
-  }, [scrollToBottom, hasMessages])
-
-  // Thinking/compacting status appears outside the virtualizer — its height
-  // change doesn't trigger the virtualizer size effect. Scroll when it changes.
-  const thinkingCount = thinkingAgents.size + (compactingAgents?.size || 0)
-  useEffect(() => {
-    if (thinkingCount > 0 && isAtBottomRef.current) {
-      requestAnimationFrame(scrollToBottom)
-    }
-  }, [thinkingCount, scrollToBottom])
 
   // --- Shared doc: auto-create sticky when a .md file chip appears in chat ---
   // Track which messages we've already processed to avoid duplicates.
@@ -2701,9 +2588,6 @@ function FleetChatInner({ shape }: { shape: any }) {
       document.removeEventListener('keydown', onNonEscAction, true)
     }
   }, [])
-
-  // Textarea resize is handled by CSS field-sizing: content.
-  // The chat log ResizeObserver catches the container shrink and scrolls to bottom.
 
   const agentNames = useMemo(() => {
     const map: Record<string, string> = {}
@@ -3463,8 +3347,16 @@ function FleetChatInner({ shape }: { shape: any }) {
         )}
 
         {/* Messages — scroll container. Textarea is OUTSIDE (flex sibling). */}
+        {/*
+          Virtuoso experiment: uses `customScrollParent` so the outer
+          .fleet-chat-log div remains the scroll container (CanvasClipPanel's
+          wheel reroute targets that element by class). Virtuoso reads the
+          parent's scroll position to decide what to render and uses
+          `followOutput="auto"` to stick to bottom unless the user scrolls up.
+          `atBottomStateChange` replaces the custom `isAtBottomRef` tracking.
+        */}
         <div
-          ref={chatLogRef}
+          ref={setChatLogRef}
           className="fleet-chat-log"
           style={{
             flex: 1,
@@ -3488,34 +3380,44 @@ function FleetChatInner({ shape }: { shape: any }) {
                 ? '⚠ Filter matches no known agents'
                 : filter.length > 0 ? 'No messages' : 'No filter set'}
             </div>
-          ) : (
-            <div style={{ height: `${virtualizer.getTotalSize()}px`, position: 'relative' }}>
-              {virtualizer.getVirtualItems().map(vItem => (
-                <div
-                  key={vItem.key}
-                  data-index={vItem.index}
-                  ref={virtualizer.measureElement}
-                  className={allItems[vItem.index]?._divider ? 'queue-divider' : undefined}
-                  style={{ position: 'absolute', top: 0, transform: `translateY(${vItem.start}px)`, width: '100%' }}
-                >
-                  <ChatMessageRow html={allItems[vItem.index].html} postProcess={postProcess} itemKey={allItems[vItem.index].key} expandedRowsRef={expandedRowsRef} />
+          ) : scrollParent ? (
+            <Virtuoso
+              ref={virtuosoRef}
+              customScrollParent={scrollParent}
+              data={allItems}
+              followOutput="auto"
+              atBottomStateChange={(atBottom) => { isAtBottomRef.current = atBottom; setShowScrollBtn(!atBottom) }}
+              itemContent={(_index, item) => (
+                <div className={item?._divider ? 'queue-divider' : undefined}>
+                  <ChatMessageRow html={item.html} postProcess={postProcess} itemKey={item.key} expandedRowsRef={expandedRowsRef} />
                 </div>
-              ))}
-            </div>
-          )}
-          <ElizaStatus pending={elizaPending} ctx={ctx} rawItemsLength={rawItems.length} />
-          <ThinkingStatus
-            thinkingAgents={thinkingAgents}
-            compactingAgents={compactingAgents}
-            contextPercent={contextPercent}
-            wouldHibernate={wouldHibernate}
-            hibernatingAgents={hibernatingAgents}
-            ctx={ctx}
-            rawItemsLength={rawItems.length}
-            agents={agents}
-            escalationState={escalationState}
-          />
-          {/* Queue divider and queued messages are now inline in the virtualizer */}
+              )}
+              computeItemKey={(_index, item) => item?.key ?? _index}
+              // Render the eliza/thinking status as a Footer so they sit
+              // inside Virtuoso's flow (below the last message, scroll with it)
+              // instead of as siblings of the virtualized list — siblings of
+              // Virtuoso get laid out outside its tracked layout space and
+              // appear floating over/under the messages.
+              components={{
+                Footer: () => (
+                  <>
+                    <ElizaStatus pending={elizaPending} ctx={ctx} rawItemsLength={rawItems.length} />
+                    <ThinkingStatus
+                      thinkingAgents={thinkingAgents}
+                      compactingAgents={compactingAgents}
+                      contextPercent={contextPercent}
+                      wouldHibernate={wouldHibernate}
+                      hibernatingAgents={hibernatingAgents}
+                      ctx={ctx}
+                      rawItemsLength={rawItems.length}
+                      agents={agents}
+                      escalationState={escalationState}
+                    />
+                  </>
+                ),
+              }}
+            />
+          ) : null}
         </div>
 
         {/* Terminal card overlay — shown on hover or when pinned; outside scroll container */}
@@ -3583,33 +3485,6 @@ function FleetChatInner({ shape }: { shape: any }) {
           <div style={{ position: 'relative' }}>
             {/* Highlight underlay — mirrors textarea text, highlights <<ref>> tokens */}
             <InputHighlightUnderlay inputRef={inputRef} />
-            {/* Hard-lock scroll toggle — magnet icon, left of textarea */}
-            <button
-              className="fleet-hardlock-toggle"
-              onPointerDown={stopEventPropagation}
-              onClick={(e) => {
-                stopEventPropagation(e)
-                setHardLocked(prev => !prev)
-              }}
-              title={hardLocked ? 'Hard-locked scroll — click for smart scroll' : 'Smart scroll — click to hard-lock'}
-            >
-              <svg
-                width="10"
-                height="14"
-                viewBox="0 0 10 14"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M2 9 L2 4 Q2 1 5 1 Q8 1 8 4 L8 9"/>
-                {hardLocked && <>
-                  <path d="M1 11 Q2.5 10 5 11 Q7.5 12 9 11" strokeWidth="1"/>
-                  <path d="M2 13 Q3.5 12 5 13 Q6.5 14 8 13" strokeWidth="0.8"/>
-                </>}
-              </svg>
-            </button>
             {/* Terminal peek icon — hover to show agent's tmux output. Hidden when no targeted agent has a tmux session. */}
             {hoverTargetAgentId && (
               <button
@@ -3813,9 +3688,9 @@ function FleetChatInner({ shape }: { shape: any }) {
                     restartRecording()
                     sentHistoryRef.current = [...sentHistoryRef.current, text]
                     historyIndexRef.current = -1
-                    isAtBottomRef.current = true
-                    setShowScrollBtn(false)
-                    requestAnimationFrame(() => scrollToBottom())
+                    // No explicit scroll on send — Virtuoso's followOutput
+                    // handles this: if the user was at bottom, the new
+                    // message gets followed; if scrolled up, position holds.
                     const refAttachments = buildRefAttachments(text, editor)
                     const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
                     if (refAttachments.length > 0) sendOpts.attachments = refAttachments
@@ -3878,9 +3753,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                     timestamp: new Date().toISOString(),
                     read: false,
                   })
-                  isAtBottomRef.current = true
-                  setShowScrollBtn(false)
-                  requestAnimationFrame(() => scrollToBottom())
+                  // No explicit scroll on send — Virtuoso's followOutput handles it.
                   const refAttachments = buildRefAttachments(text, editor)
                   const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
                   if (refAttachments.length > 0) sendOpts.attachments = refAttachments
@@ -3921,9 +3794,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                     timestamp: new Date().toISOString(),
                     read: false,
                   })
-                  isAtBottomRef.current = true
-                  setShowScrollBtn(false)
-                  requestAnimationFrame(() => scrollToBottom())
+                  // No explicit scroll on send — Virtuoso's followOutput handles it.
                   const refAttachments = buildRefAttachments(text, editor)
                   const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
                   if (refAttachments.length > 0) sendOpts.attachments = refAttachments

@@ -2591,32 +2591,10 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   color: #9370db;
 }
 
-/* Hard-lock scroll toggle — magnet icon, left of textarea */
-.fleet-chat-shape .fleet-hardlock-toggle {
-  position: absolute;
-  left: 4px;
-  top: 50%;
-  transform: translateY(-50%);
-  border: none;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  opacity: 0.05;
-  transition: opacity 0.3s;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  z-index: 2;
-  line-height: 1;
-}
-.fleet-chat-shape .fleet-hardlock-toggle:hover {
-  opacity: 0.55;
-}
-
-/* Terminal peek icon — same family as magnet, positioned just right of it */
+/* Terminal peek icon */
 .fleet-chat-shape .fleet-terminal-icon {
   position: absolute;
-  left: 20px;
+  left: 4px;
   top: 50%;
   transform: translateY(-50%);
   border: none;
