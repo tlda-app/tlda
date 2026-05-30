@@ -299,15 +299,7 @@ export function createFleetLayout(editor: Editor, agents: any[], variant: '2col'
       },
     )
   }
-  const uid = getHumanId()
-  if (!uid) {
-    // No real owner — don't create orphan fleet shapes. The default-layout
-    // call is normally only fired from UI that requires login already, but
-    // guard here so we never persist userId='' shapes that the HUD can't
-    // route or reset.
-    console.warn('[fleet-utils] createDefaultLayout skipped: no humanId yet')
-    return
-  }
+  const uid = getHumanId() || ''
   for (const s of shapes) s.props.userId = uid
   editor.createShapes(shapes)
 

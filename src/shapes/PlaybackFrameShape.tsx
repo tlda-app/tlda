@@ -45,7 +45,6 @@ import {
   type TimewarpRegion,
 } from '../playback-context'
 import './PlaybackFrameShape.css'
-import { getHumanId } from '../fleet/fleet-data.mjs'
 
 const FLEET_API = 'http://localhost:5176'
 const DEFAULT_W = 500
@@ -340,26 +339,23 @@ function PlaybackFrameComponent({ shape }: { shape: any }) {
     const agentsW = w - chatW - 4
     const contentY = CHROME_H  // below header + scrubber
 
-    const userId = getHumanId()
-    if (userId) {
-      if (!hasChat) {
-        editor.createShape({
-          type: 'fleet-chat' as any,
-          parentId: shape.id,
-          x: 0,
-          y: contentY,
-          props: { w: chatW, h: h - contentY, filter: [], userId },
-        })
-      }
-      if (!hasAgents) {
-        editor.createShape({
-          type: 'fleet-agents' as any,
-          parentId: shape.id,
-          x: chatW + 4,
-          y: contentY,
-          props: { w: agentsW, h: h - contentY, userId },
-        })
-      }
+    if (!hasChat) {
+      editor.createShape({
+        type: 'fleet-chat' as any,
+        parentId: shape.id,
+        x: 0,
+        y: contentY,
+        props: { w: chatW, h: h - contentY, filter: [] },
+      })
+    }
+    if (!hasAgents) {
+      editor.createShape({
+        type: 'fleet-agents' as any,
+        parentId: shape.id,
+        x: chatW + 4,
+        y: contentY,
+        props: { w: agentsW, h: h - contentY },
+      })
     }
   }
 
