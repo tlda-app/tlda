@@ -966,6 +966,7 @@ let _deepgramContext = null      // AudioContext
 let _deepgramProcessor = null    // ScriptProcessorNode (bridge to WS)
 let _deepgramInterim = ''        // current interim result (replaced on each interim)
 let _dgHasSeenInterim = false   // true after first interim in current session; guards against post-send final bleed
+let _afterSendAt = 0             // timestamp of last afterSend() — results within 500ms are stale pipeline drain
 let _lastAudioChunkTime = 0     // timestamp of last audio chunk sent to bridge (for heartbeat logging)
 let _audioHeartbeatInterval = null  // periodic interval that logs audio-flow health
 let _dgTrickleWords = []         // words currently being trickled in
@@ -1019,6 +1020,12 @@ function onDeepgramMessage(event) {
     }
 
     if (msg.type !== 'transcript' || !msg.text) return
+
+    // Discard all results (interims AND finals) that arrive within 500ms of a
+    // send. The bridge ignores stop messages, so Deepgram keeps processing
+    // buffered audio after Enter/voice-send. Without this cooldown, stale
+    // interims re-fill the textarea after the chat component cleared it.
+    if (_afterSendAt && Date.now() - _afterSendAt < 500) return
 
     // Discard finals that arrive after afterSend() cleared the session but before
     // the user speaks again. Without this, the last utterance of the previous
@@ -1303,6 +1310,7 @@ function afterSend() {
   _left = _interim = _right = ''
   _deepgramInterim = ''
   _dgHasSeenInterim = false
+  _afterSendAt = Date.now()
   if (_backend === 'whisper-stream') {
     flushWhisperBridge()
     return
