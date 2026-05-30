@@ -16,7 +16,9 @@
 
 set -euo pipefail
 
-LOCK="${TLDA_PW_LOCK:-$HOME/.config/tlda/playwright.lock}"
+# Lock lives inside the project tree so the fleet-agent rm shim (which
+# blocks deletes outside ~/work) can clean it up. Override with TLDA_PW_LOCK.
+LOCK="${TLDA_PW_LOCK:-$HOME/work/tlda/.pw.lock}"
 STALE_SECS="${TLDA_PW_LOCK_STALE:-600}"
 
 mkdir -p "$(dirname "$LOCK")"
