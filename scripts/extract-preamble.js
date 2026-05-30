@@ -93,14 +93,44 @@ while ((idx = preamble.indexOf('\\newcommand', idx)) !== -1) {
   }
 }
 
-// Match \DeclareMathOperator{\name}{text} or \DeclareMathOperator*{\name}{text}
-const operatorRegex = /\\DeclareMathOperator(\*?)\{\\(\w+)\}\{([^}]+)\}/g
-let match
-while ((match = operatorRegex.exec(preamble)) !== null) {
-  const [, star, name, text] = match
-  const op = star ? `\\operatorname*{${text}}` : `\\operatorname{${text}}`
-  macros[`\\${name}`] = op
+// Match \DeclareMathOperator{\name}{body} / \DeclareMathOperator*{\name}{body}.
+// The body must be matched brace-aware — a naive [^}]+ truncates bodies with
+// nested braces like \mathbb{P}_n (it stops at the first }), producing a broken
+// macro that KaTeX can't render.
+let opIdx = 0
+const OP = '\\DeclareMathOperator'
+while ((opIdx = preamble.indexOf(OP, opIdx)) !== -1) {
+  let p = opIdx + OP.length
+  const star = preamble[p] === '*'
+  if (star) p++
+  const nameBrace = extractBraceContent(preamble, p)        // {\name}
+  if (!nameBrace) { opIdx += OP.length; continue }
+  const name = nameBrace.content.trim()                     // includes leading backslash
+  const bodyBrace = extractBraceContent(preamble, nameBrace.endIdx + 1) // {body}
+  if (!bodyBrace) { opIdx += OP.length; continue }
+  macros[name] = star ? `\\operatorname*{${bodyBrace.content}}` : `\\operatorname{${bodyBrace.content}}`
+  opIdx = bodyBrace.endIdx
 }
+
+// Match \DeclarePairedDelimiter{\name}{left}{right} → a KaTeX 1-arg macro
+// "left #1 right" (KaTeX has no \DeclarePairedDelimiter, so these were missing
+// entirely, e.g. \abs, \norm). Brace-aware on all three arguments.
+let pdIdx = 0
+const PD = '\\DeclarePairedDelimiter'
+while ((pdIdx = preamble.indexOf(PD, pdIdx)) !== -1) {
+  let p = pdIdx + PD.length
+  if (preamble[p] === '*') p++
+  const nameBrace = extractBraceContent(preamble, p)        // {\name}
+  if (!nameBrace) { pdIdx += PD.length; continue }
+  const left = extractBraceContent(preamble, nameBrace.endIdx + 1)   // {left}
+  if (!left) { pdIdx += PD.length; continue }
+  const right = extractBraceContent(preamble, left.endIdx + 1)       // {right}
+  if (!right) { pdIdx += PD.length; continue }
+  macros[nameBrace.content.trim()] = `${left.content} #1 ${right.content}`
+  pdIdx = right.endIdx
+}
+
+let match
 
 // Match \def\name{...} (simpler macro form)
 const defRegex = /\\def\\(\w+)\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}/g
