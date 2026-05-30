@@ -177,8 +177,10 @@ export function getAgent(id) {
   }
   const exact = _agents.find(a => a.id === id || a.friendly_name === id)
   if (exact) return exact
-  // Lineage name → day agent
-  return _agents.find(a => a.lineage_name === id && a.phase === 'day')
+  // Lineage name → resolves only if exactly one agent in the lineage
+  const lineageMatches = _agents.filter(a => a.lineage_name === id && a.phase)
+  if (lineageMatches.length === 1) return lineageMatches[0]
+  return undefined
 }
 
 // --- Write API (all go through server) ---

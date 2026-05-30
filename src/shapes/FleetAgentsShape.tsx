@@ -147,8 +147,12 @@ function formatEffort(effort: string): string {
 }
 
 
-function agentDisplayName(agent: any): string {
-  if (agent.lineage_name) return agent.lineage_name
+function agentDisplayName(agent: any, allAgents?: any[]): string {
+  if (agent.lineage_name && agent.phase) {
+    const hasSiblings = allAgents?.some((a: any) => a.lineage_id === agent.lineage_id && a.id !== agent.id && a.phase)
+    if (hasSiblings) return `${agent.lineage_name}:${agent.phase}`
+    return agent.lineage_name
+  }
   return agent.friendly_name || (agent.id || '').replace('fleet:', '')
 }
 
@@ -354,7 +358,7 @@ function useLastMessages(agents: any[]): Record<string, string> {
 
   useEffect(() => {
     let mounted = true
-    const names = agents.map(a => agentDisplayName(a))
+    const names = agents.map(a => agentDisplayName(a, agents))
     Promise.all(names.map(async (name) => {
       const msg = await fetchLastMessage(name)
       return [name, msg?.text || ''] as const
@@ -449,7 +453,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     }
     const dir = sortAsc ? 1 : -1
     list.sort((a, b) => {
-      if (sortKey === 'name') return dir * agentDisplayName(a).localeCompare(agentDisplayName(b))
+      if (sortKey === 'name') return dir * agentDisplayName(a, agents).localeCompare(agentDisplayName(b, agents))
       if (sortKey === 'status') {
         const order: Record<string, number> = { awake: 0, hibernating: 1 }
         const ca = order[agentCategory(a)] ?? 2
@@ -560,12 +564,13 @@ function FleetAgentsInner({ shape }: { shape: any }) {
             <AgentRow
               key={agent.id}
               agent={agent}
+              allAgents={agents}
               tasks={getTasksForAgent(agent.id)}
               unreadCount={unreadCounts[agent.id] || 0}
               contextPct={contextPercent.get(agent.id)}
               dimmed={agentCategory(agent) === 'hibernating'}
               expanded={expandedId === agent.id}
-              lastMessage={lastMessages[agentDisplayName(agent)] || ''}
+              lastMessage={lastMessages[agentDisplayName(agent, agents)] || ''}
               onToggleExpand={() => setExpandedId(expandedId === agent.id ? null : agent.id)}
               onStartDrag={startDrag}
             />
@@ -637,6 +642,7 @@ const FleetAgentsComponent = memo(function FleetAgentsComponent({ shape }: { sha
 
 function AgentRow({
   agent,
+  allAgents,
   tasks,
   dimmed,
   unreadCount,
@@ -647,6 +653,7 @@ function AgentRow({
   onStartDrag,
 }: {
   agent: any
+  allAgents: any[]
   tasks: any[]
   dimmed?: boolean
   unreadCount: number
@@ -658,7 +665,7 @@ function AgentRow({
 }) {
   const firstTask = tasks[0]
   const taskDesc = firstTask?.title || firstTask?.description || ''
-  const name = agentDisplayName(agent)
+  const name = agentDisplayName(agent, allAgents)
   const color = getNickColor(agent.id, agent.is_manager)
   const labels: string[] = agent.labels || []
   const ago = formatRelativeTime(agent._ts)

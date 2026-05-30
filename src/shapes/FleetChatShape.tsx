@@ -755,7 +755,14 @@ function makeCtx(agents: any[], tasks: any[], preambleMacros: Record<string, str
   const agentLabel = (id: string) => {
     if (!id) return '[unknown]'
     const a = agents.find((a: any) => a.id === id)
-    if (a) return a.lineage_name || a.friendly_name || a.id
+    if (a) {
+      if (a.lineage_name && a.phase) {
+        const hasSiblings = agents.some((b: any) => b.lineage_id === a.lineage_id && b.id !== a.id && b.phase)
+        if (hasSiblings) return `${a.lineage_name}:${a.phase}`
+        return a.lineage_name
+      }
+      return a.friendly_name || a.id
+    }
     return typeof id === 'string' ? id : String(id)
   }
   const getNickClass = (id: string) => {
