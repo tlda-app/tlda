@@ -554,7 +554,64 @@ export function getShadowRepoDir(name) {
 // First request for a hash7 starts the compile; all subsequent requests wait on the same promise.
 const _activeDviBuilds = new Map()
 
-const SHADOW_PRETEX = '\\PassOptionsToPackage{draft}{graphics}\\PassOptionsToPackage{draft}{graphicx}\\PassOptionsToPackage{hypertex,hidelinks}{hyperref}\\AddToHook{begindocument/before}{\\RequirePackage{hyperref}}'
+// Single source of truth for the historical-build pretex. Used by every
+// shadow compile path so they can't drift apart (they used to each carry
+// their own copy — one even omitted the hyperref hook).
+export const SHADOW_PRETEX = '\\PassOptionsToPackage{draft}{graphics}\\PassOptionsToPackage{draft}{graphicx}\\PassOptionsToPackage{hypertex,hidelinks}{hyperref}\\AddToHook{begindocument/before}{\\RequirePackage{hyperref}}'
+
+/**
+ * Compile a checked-out historical source tree to a DVI — the ONE place that
+ * runs latexmk for a shadow/historical version. Directory-aware: latexmk runs
+ * in the directory that actually contains the main tex, because `mainFile` may
+ * live in a subdirectory (e.g. `revision/supplementary_appendix.tex`). The
+ * live build (`build-runner.compileLaTeX`) already does this via its texDir;
+ * the shadow paths used to hardcode the checkout root, which silently produced
+ * no DVI for any subdir-main doc.
+ *
+ * Fails LOUD: if no DVI is produced it throws with the tail of the latexmk log
+ * (or the exec error). Callers must NOT swallow this — a blank shadow column
+ * is exactly the failure mode we're eliminating.
+ *
+ * @param {{ srcDir: string, mainFile: string }} args
+ *   srcDir  — root of the checked-out source tree
+ *   mainFile — repo-relative path to the main tex (may include a subdir)
+ * @returns {{ texBase, compileDir, dviPath, synctexPath, logPath }}
+ */
+export async function compileHistoricalDvi({ srcDir, mainFile }) {
+  const texBase = basename(mainFile, '.tex')
+  const compileDir = join(srcDir, dirname(mainFile))
+
+  let execErr = null
+  try {
+    await execAsync(
+      `latexmk -dvi -synctex=1 -f -interaction=nonstopmode -pretex='${SHADOW_PRETEX}' "${texBase}.tex"`,
+      { cwd: compileDir, timeout: 180000 },
+    )
+  } catch (e) { execErr = e }
+
+  const dviPath = join(compileDir, `${texBase}.dvi`)
+  const logPath = join(compileDir, `${texBase}.log`)
+  if (!existsSync(dviPath)) {
+    let detail
+    if (existsSync(logPath)) {
+      detail = readFileSync(logPath, 'utf8').split('\n').slice(-40).join('\n')
+    } else {
+      detail = execErr?.message || 'latexmk produced no log and no DVI'
+    }
+    throw new Error(
+      `Historical LaTeX compile produced no DVI (cwd=${compileDir}, main=${mainFile}):\n${detail}`,
+    )
+  }
+
+  const synctexPath = join(compileDir, `${texBase}.synctex.gz`)
+  return {
+    texBase,
+    compileDir,
+    dviPath,
+    synctexPath: existsSync(synctexPath) ? synctexPath : null,
+    logPath: existsSync(logPath) ? logPath : null,
+  }
+}
 
 /**
  * Compile shadow source at hash7 to a DVI file cached at
@@ -579,41 +636,28 @@ export async function ensureShadowDvi(name, hash7) {
       const tmpSrc = await checkoutSource(name, hash7)
       try {
         mkdirSync(cacheDir, { recursive: true })
-        try {
-          await execAsync(
-            `latexmk -dvi -synctex=1 -f -interaction=nonstopmode -pretex='${SHADOW_PRETEX}' "${texBase}.tex"`,
-            { cwd: tmpSrc, timeout: 180000 },
-          )
-        } catch { /* check for DVI below */ }
-
-        const srcDvi = join(tmpSrc, `${texBase}.dvi`)
-        if (!existsSync(srcDvi)) throw new Error(`LaTeX compile failed for ${name}@${hash7}`)
-        copyFileSync(srcDvi, dviFile)
+        // Directory-aware, loud-on-failure compile (shared with ensure.mjs).
+        const { dviPath, synctexPath, logPath } = await compileHistoricalDvi({ srcDir: tmpSrc, mainFile })
+        copyFileSync(dviPath, dviFile)
 
         let pages = null
-        const logPath = join(tmpSrc, `${texBase}.log`)
-        if (existsSync(logPath)) {
+        if (logPath && existsSync(logPath)) {
           const m = readFileSync(logPath, 'utf8').match(/Output written on .+?\((\d+) pages?\)/)
           if (m) pages = parseInt(m[1], 10)
         }
         writeFileSync(join(cacheDir, 'meta.json'), JSON.stringify({ pages, hash7, compiledAt: Date.now() }))
         console.log(`[shadow] DVI ready: ${name}@${hash7} (${pages ?? '?'} pages)`)
 
-        const synctexFile = join(tmpSrc, `${texBase}.synctex.gz`)
         const lookupPath = join(cacheDir, `${texBase}-lookup.json`)
-        if (existsSync(synctexFile) && !existsSync(lookupPath)) {
+        if (synctexPath && !existsSync(lookupPath)) {
           try {
             const texFilePath = join(tmpSrc, mainFile)
-            const synctexDest = join(tmpSrc, dirname(mainFile), `${texBase}.synctex.gz`)
-            if (synctexFile !== synctexDest && !existsSync(synctexDest)) {
-              copyFileSync(synctexFile, synctexDest)
-            }
             await execAsync(
               `node "${join(SCRIPTS_DIR, 'extract-synctex-lookup.mjs')}" "${texFilePath}" "${lookupPath}"`,
               { timeout: 30000 },
             )
             // Save synctex.gz alongside lookup so ensure recipes find it.
-            copyFileSync(synctexFile, join(cacheDir, `${texBase}.synctex.gz`))
+            copyFileSync(synctexPath, join(cacheDir, `${texBase}.synctex.gz`))
             console.log(`[shadow] ${texBase}-lookup.json ready for ${name}@${hash7}`)
           } catch (e) {
             console.warn(`[shadow] lookup generation failed for ${name}@${hash7}:`, e.message)

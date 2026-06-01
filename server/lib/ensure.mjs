@@ -270,36 +270,35 @@ async function buildCurrentDvi(ctx) {
  * save DVI + synctex.gz to ctx.outDir, extract lookup.json.
  */
 async function buildHistoricalDvi(ctx) {
-  const { checkoutSource } = await import('./shadow-repo.mjs')
+  const { checkoutSource, compileHistoricalDvi } = await import('./shadow-repo.mjs')
 
   const texBase = ctx.texBase
+  // The main tex may live in a subdirectory (e.g. revision/foo.tex). For
+  // multi-target builds the target's basename may differ from the project's
+  // primary mainFile, in which case it sits at the checkout root as
+  // <texBase>.tex (mirrors buildLookup's logic).
+  const project = readProject(ctx.name)
+  const mainFile = project?.mainFile && basename(project.mainFile, '.tex') === texBase
+    ? project.mainFile
+    : `${texBase}.tex`
 
   console.log(`[ensure] Compiling ${ctx.name}@${ctx.version}...`)
   mkdirSync(ctx.outDir, { recursive: true })
 
   const tmpSrc = await checkoutSource(ctx.name, ctx.version)
   try {
-    const SHADOW_PRETEX = String.raw`\PassOptionsToPackage{draft}{graphicx}\PassOptionsToPackage{draft}{graphics}`
-    try {
-      await execAsync(
-        `latexmk -dvi -synctex=1 -f -interaction=nonstopmode -pretex='${SHADOW_PRETEX}' "${texBase}.tex"`,
-        { cwd: tmpSrc, timeout: 180000 },
-      )
-    } catch { /* check for DVI below */ }
+    // Directory-aware, loud-on-failure compile (shared with shadow-repo).
+    const { dviPath, synctexPath } = await compileHistoricalDvi({ srcDir: tmpSrc, mainFile })
 
-    const srcDvi = join(tmpSrc, `${texBase}.dvi`)
-    if (!existsSync(srcDvi)) throw new Error(`LaTeX compile failed for ${ctx.name}@${ctx.version}`)
+    copyFileSync(dviPath, artifactPath(ctx, `${texBase}.dvi`))
 
-    copyFileSync(srcDvi, artifactPath(ctx, `${texBase}.dvi`))
-
-    const srcSynctex = join(tmpSrc, `${texBase}.synctex.gz`)
-    if (existsSync(srcSynctex)) {
-      copyFileSync(srcSynctex, artifactPath(ctx, `${texBase}.synctex.gz`))
+    if (synctexPath) {
+      copyFileSync(synctexPath, artifactPath(ctx, `${texBase}.synctex.gz`))
     }
 
-    const srcTexFile = join(tmpSrc, `${texBase}.tex`)
+    const srcTexFile = join(tmpSrc, mainFile)
     const lookupPath = artifactPath(ctx, `${texBase}-lookup.json`)
-    if (existsSync(srcSynctex) && existsSync(srcTexFile)) {
+    if (synctexPath && existsSync(srcTexFile)) {
       try {
         await execAsync(
           `node "${join(SCRIPTS_DIR, 'extract-synctex-lookup.mjs')}" "${srcTexFile}" "${lookupPath}"`,
@@ -312,7 +311,7 @@ async function buildHistoricalDvi(ctx) {
     }
 
     let pages = null
-    const logPath = join(tmpSrc, `${texBase}.log`)
+    const logPath = join(tmpSrc, dirname(mainFile), `${texBase}.log`)
     if (existsSync(logPath)) {
       const raw = readFileSync(logPath, 'utf8')
       const joined = raw.split('\n').reduce((acc, line) => {
