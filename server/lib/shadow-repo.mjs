@@ -581,6 +581,27 @@ export async function compileHistoricalDvi({ srcDir, mainFile }) {
   const texBase = basename(mainFile, '.tex')
   const compileDir = join(srcDir, dirname(mainFile))
 
+  // The doc's preamble does \input{.scratchinputs/scratch-template}. In a live
+  // build, build-runner injects its own scratch-template into buildDir (first
+  // on TEXINPUTS), so that path is a build artifact and is deliberately kept
+  // OUT of the paper scope / shadow repo. That means a historical checkout may
+  // not contain scratch-template at all (older commits) — and the versions
+  // that do contain it carry the author's marker version, whose \inputscratch
+  // pulls in scratch CONTENT files that were never versioned either. Both cases
+  // break the historical compile. Mirror the live build's injection, but as a
+  // no-op: define \inputscratch to expand to nothing so the paper itself
+  // compiles and renders its real text; scratch sections are simply omitted
+  // from historical views (their content isn't versioned anyway).
+  try {
+    const scratchDir = join(compileDir, '.scratchinputs')
+    mkdirSync(scratchDir, { recursive: true })
+    writeFileSync(
+      join(scratchDir, 'scratch-template.tex'),
+      '% historical no-op scratch-template (shadow build override)\n' +
+      '\\newcommand{\\inputscratch}[3]{}\n',
+    )
+  } catch { /* if this fails the compile will fail loud below */ }
+
   let execErr = null
   try {
     await execAsync(
