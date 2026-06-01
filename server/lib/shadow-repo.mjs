@@ -600,7 +600,11 @@ export async function compileHistoricalDvi({ srcDir, mainFile }) {
       '% historical no-op scratch-template (shadow build override)\n' +
       '\\newcommand{\\inputscratch}[3]{}\n',
     )
-  } catch { /* if this fails the compile will fail loud below */ }
+  } catch (e) {
+    // Non-fatal: if we can't write the override, the compile below will fail
+    // loud on the missing \input. Surface why so it's diagnosable.
+    console.warn(`[shadow] could not write scratch-template override in ${compileDir}: ${e.message}`)
+  }
 
   let execErr = null
   try {
