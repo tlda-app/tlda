@@ -12,6 +12,24 @@ export function getMyAnchorId(): string {
   return uid ? `shape:fleet-hud-anchor--${uid.replace('fleet:', '')}` : FLEET_HUD_ANCHOR_ID
 }
 
+/**
+ * A fleet shape belongs to the current user iff its userId matches.
+ * Shapes with an empty/missing userId belong to NO ONE — they are orphans
+ * created before identity resolved (or by a session with no identity), and
+ * must never be shown to or claimed by anyone. Treating empty userId as
+ * "global/legacy" is what let orphan shapes pollute every user's layout while
+ * no layout-switch would clean them up.
+ *
+ * Single source of truth for fleet-shape ownership — both the HUD (what to
+ * render) and createFleetLayout (what to delete/replace) use it, so the two
+ * can never disagree.
+ */
+export function isMyFleetShape(s: any): boolean {
+  if (!FLEET_SHAPE_TYPES.includes(s.type as string)) return false
+  const uid = s.props?.userId
+  return !!uid && uid === getHumanId()
+}
+
 /** Delete shapes even if locked (unlock first, then delete). */
 export function forceDeleteShapes(editor: Editor, ids: string[]) {
   for (const id of ids) {
@@ -30,14 +48,12 @@ export function forceDeleteShapes(editor: Editor, ids: string[]) {
  * agents: list of agent objects from useFleetAgents() — used to pre-fill chat filters.
  */
 export function createFleetLayout(editor: Editor, agents: any[], variant: '2col' | '3col' | 'wide' | 'grid' = '3col') {
-  const myId = getHumanId() || ''
-  const isMyShape = (s: any) => {
-    if (!FLEET_SHAPE_TYPES.includes(s.type as string)) return false
-    const uid = s.props?.userId
-    if (!uid) return !myId  // legacy shapes: only claim if no user logged in
-    return uid === myId
-  }
-  const existing = editor.getCurrentPageShapes().filter(isMyShape)
+  const myId = getHumanId()
+  // Never build a layout without a resolved identity. Doing so stamps
+  // userId="" on every shape, creating orphans that show for everyone but
+  // that no one's layout-switch will ever clean up.
+  if (!myId) return
+  const existing = editor.getCurrentPageShapes().filter(isMyFleetShape)
   const existingChatFilters = existing
     .filter(s => (s.type as string) === 'fleet-chat')
     .map(s => (s as any).props?.filter as [string, string][][] | undefined)
@@ -299,8 +315,7 @@ export function createFleetLayout(editor: Editor, agents: any[], variant: '2col'
       },
     )
   }
-  const uid = getHumanId() || ''
-  for (const s of shapes) s.props.userId = uid
+  for (const s of shapes) s.props.userId = myId
   editor.createShapes(shapes)
 
   // Don't center the main canvas on fleet shapes — that disrupts the user's

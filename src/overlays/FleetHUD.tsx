@@ -14,19 +14,16 @@ import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { useFleetAgents, useFleetIdentity } from '../fleet-data-adapter'
 // @ts-ignore — vanilla JS module
 import { getHumanId } from '../fleet/fleet-data.mjs'
-import { getMyAnchorId } from '../shapes/fleet-utils'
+import { getMyAnchorId, isMyFleetShape } from '../shapes/fleet-utils'
 import './FleetHUD.css'
 
 const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview', 'fleet-reaper']
 
-function isMyFleetShape(s: any): boolean {
-  if (!FLEET_SHAPE_TYPES.includes(s.type as string)) return false
-  const uid = s.props?.userId
-  if (!uid) return true
-  return uid === getHumanId()
-}
-
 function saveAnchorOffsets(editor: Editor, panOffset: number, cameraY: number) {
+  // Never persist a HUD anchor without a resolved identity — getMyAnchorId()
+  // falls back to the bare `shape:fleet-hud-anchor` id, which becomes a global
+  // orphan shared across users.
+  if (!getHumanId()) return
   const anchorId = getMyAnchorId()
   const existing = editor.getShape(anchorId as any)
   if (existing) {
