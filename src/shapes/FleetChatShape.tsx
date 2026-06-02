@@ -2042,6 +2042,10 @@ function FleetChatInner({ shape }: { shape: any }) {
   // markdown/KaTeX/image growth) must not latch auto-follow off — only a deliberate
   // scroll-up past 200px counts as intent.
   const userScrolledUpRef = useRef(false)
+  // TRACE: timestamp until which scroll events are attributable to our own
+  // programmatic pinning (pinHard). Lets the scroll-trace tell "my pin" apart
+  // from "user wheel" and "Virtuoso/virtualization". Temporary diagnostic.
+  const programmaticUntilRef = useRef(0)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
   const [termHoverVisible, setTermHoverVisible] = useState(false)
   const [termHoverPinned, setTermHoverPinned] = useState(false)
@@ -2065,12 +2069,14 @@ function FleetChatInner({ shape }: { shape: any }) {
   // pin-to-bottom: scrollToIndex + direct scrollTop assignment, twice (one
   // immediate, one after layout) to catch late-measure growth.
   const pinHard = useCallback(() => {
+    programmaticUntilRef.current = performance.now() + 300
     virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
     const el = chatLogEl
     if (el) el.scrollTop = el.scrollHeight
     requestAnimationFrame(() => {
       const el2 = chatLogEl
       if (el2) el2.scrollTop = el2.scrollHeight
+      programmaticUntilRef.current = performance.now() + 100
     })
   }, [chatLogEl])
 
@@ -2147,6 +2153,34 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
     el.addEventListener('fleet-user-scroll', onUserScroll as EventListener)
     return () => el.removeEventListener('fleet-user-scroll', onUserScroll as EventListener)
+  }, [chatLogEl])
+
+  // TRACE (temporary diagnostic — remove once scroll is solid): make the log
+  // tell the WHOLE story so the fix comes from ground truth, not theory.
+  // Logs the chat's mount/unmount (to confirm or rule out remount-resets) and
+  // every scroll event with its attributed cause (our pin vs. anything else).
+  useEffect(() => {
+    log.warn('chat-scroll', 'TRACE mount')
+    return () => log.warn('chat-scroll', 'TRACE unmount')
+  }, [])
+  useEffect(() => {
+    const el = chatLogEl
+    if (!el) return
+    let prevTop = Math.round(el.scrollTop)
+    const onTrace = () => {
+      const now = performance.now()
+      const top = Math.round(el.scrollTop)
+      const gap = Math.round(el.scrollHeight - (el.scrollTop + el.clientHeight))
+      const dir = top > prevTop ? 'down' : top < prevTop ? 'up' : 'same'
+      const cause = now < programmaticUntilRef.current ? 'pin' : 'other'
+      log.warn('chat-scroll', 'TRACE scroll', {
+        top, sh: el.scrollHeight, ch: el.clientHeight, gap, dir, cause,
+        scrolledUp: userScrolledUpRef.current, atBottom: isAtBottomRef.current,
+      })
+      prevTop = top
+    }
+    el.addEventListener('scroll', onTrace, { passive: true })
+    return () => el.removeEventListener('scroll', onTrace)
   }, [chatLogEl])
 
 
@@ -3534,7 +3568,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             data={allItems}
             style={{ flex: 1, minHeight: 0 }}
             initialTopMostItemIndex={{ index: 'LAST', align: 'end' }}
-            followOutput="auto"
+            followOutput={false}
             atBottomThreshold={24}
             // Fires whenever Virtuoso's computed total list height changes —
             // catches in-place item growth (markdown/font/image late-render
