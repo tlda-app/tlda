@@ -2122,6 +2122,33 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
   }, [allItems.length, pinHard])
 
+  // Single source of user-scroll intent. In the HUD, a user can only scroll the
+  // chat log via CanvasClipPanel's wheel handler (wheel is captured there and
+  // never reaches the scroller natively), which fires 'fleet-user-scroll' right
+  // after it moves scrollTop. Because programmatic pins (pinHard/scrollToIndex)
+  // never fire this event, we can set follow intent from real user motion
+  // without the programmatic-vs-user ambiguity that broke every prior approach.
+  // Scroll away from bottom → stop following (+ show ⇣); land within EPS of the
+  // true bottom → resume following. No gap thresholds, no timing magic.
+  useEffect(() => {
+    const el = chatLogEl
+    if (!el) return
+    const BOTTOM_EPS = 32
+    const onUserScroll = () => {
+      const gap = el.scrollHeight - (el.scrollTop + el.clientHeight)
+      if (gap <= BOTTOM_EPS) {
+        userScrolledUpRef.current = false
+        setShowScrollBtn(false)
+      } else if (!hardLockedRef.current) {
+        userScrolledUpRef.current = true
+        setShowScrollBtn(true)
+      }
+      log.warn('chat-scroll', 'user scroll', { gap, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
+    }
+    el.addEventListener('fleet-user-scroll', onUserScroll as EventListener)
+    return () => el.removeEventListener('fleet-user-scroll', onUserScroll as EventListener)
+  }, [chatLogEl])
+
 
   // Terminal card hover — mouseover on .lc-terminal-card shows the terminal overlay.
   useEffect(() => {
@@ -3508,7 +3535,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             style={{ flex: 1, minHeight: 0 }}
             initialTopMostItemIndex={{ index: 'LAST', align: 'end' }}
             followOutput="auto"
-            atBottomThreshold={120}
+            atBottomThreshold={24}
             // Fires whenever Virtuoso's computed total list height changes —
             // catches in-place item growth (markdown/font/image late-render
             // adds pixels to existing items) which doesn't tick items.length
@@ -3536,14 +3563,17 @@ function FleetChatInner({ shape }: { shape: any }) {
                 })
               }
               isAtBottomRef.current = atBottom
-              // Only a genuine, deliberate scroll-up (gap > 200px) counts as user
-              // intent; a transient sub-threshold reflow gap must NOT latch
-              // auto-follow off. Returning to bottom clears intent.
-              if (atBottom) userScrolledUpRef.current = false
-              else if (gap != null && gap > 200) userScrolledUpRef.current = true
-              setShowScrollBtn(userScrolledUpRef.current && !hardLockedRef.current)
-              // When hardLocked, snap back immediately if Virtuoso reports off-bottom.
-              if (!atBottom && hardLockedRef.current) {
+              // Auto-follow intent is NOT inferred from gap here — that guessing
+              // (and the 120/200 threshold mismatch) was the whole bug. Intent is
+              // owned by the fleet-user-scroll handler, which sees real user
+              // scrolls at their single source. Here we only:
+              //  - resume following when we genuinely reach the bottom, and
+              //  - snap back to the exact bottom whenever we're still following
+              //    (auto-follow on, or hard-locked) but drift off it.
+              if (atBottom) {
+                userScrolledUpRef.current = false
+                setShowScrollBtn(false)
+              } else if (!userScrolledUpRef.current || hardLockedRef.current) {
                 requestAnimationFrame(pinHard)
               }
             }}

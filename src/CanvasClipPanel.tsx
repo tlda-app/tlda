@@ -725,7 +725,15 @@ export function CanvasClipPanel({
           const scrollable = (shapeEl?.querySelector('.fleet-chat-log') ??
             shapeEl?.querySelector('.fleet-agents-body') ??
             shapeEl?.querySelector('.fleet-search-results') ?? null) as HTMLElement | null
-          if (scrollable) scrollable.scrollTop += e.deltaY
+          if (scrollable) {
+            scrollable.scrollTop += e.deltaY
+            // This is the single chokepoint where a real user scroll enters the
+            // chat log (wheel is captured here, never reaching the scroller as a
+            // native event). Emit the user's intent at the source so the chat's
+            // auto-follow can't confuse it with programmatic scrolls (pinHard /
+            // scrollToIndex), which never fire this signal.
+            scrollable.dispatchEvent(new CustomEvent('fleet-user-scroll', { detail: { deltaY: e.deltaY } }))
+          }
         }
         // Horizontal: pan main editor camera so HUD viewport shifts
         if (Math.abs(e.deltaX) > 0) {
