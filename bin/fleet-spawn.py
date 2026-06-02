@@ -466,8 +466,13 @@ def inject_prompt(session, prompt, timeout=60):
                 time.sleep(3)
                 continue
             lines = pane.split('\n')
-            last = lines[-1] if lines else ''
-            if '❯' in last and 'Enter to confirm' not in pane:
+            # Claude Code renders a status bar (mode/effort) below the ❯ input
+            # line, so ❯ is not on lines[-1] — scan the last few lines.
+            prompt_ready = any('❯' in l for l in lines[-3:])
+            if prompt_ready and 'Enter to confirm' not in pane:
+                # Clear any stale text in the input box before typing.
+                subprocess.run(tmux("send-keys", "-t", session, "C-u"), capture_output=True, timeout=5)
+                time.sleep(0.2)
                 subprocess.run(tmux("send-keys", "-t", session, prompt), capture_output=True, timeout=5)
                 time.sleep(0.3)
                 subprocess.run(tmux("send-keys", "-t", session, "Enter"), capture_output=True, timeout=5)
