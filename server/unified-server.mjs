@@ -520,7 +520,6 @@ function broadcastState() {
     thinking: Object.fromEntries(_thinkingState),
     compacting: Object.fromEntries(_compactingState),
     context: Object.fromEntries(_contextState),
-    wouldHibernate: getWouldHibernate(),
   })
 }
 
