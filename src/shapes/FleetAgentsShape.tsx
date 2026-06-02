@@ -104,6 +104,33 @@ function getGhostCompletion(input: string, projects: string[], catName: string):
   return segCompletion
 }
 
+const SEG_LABELS = ['project', 'name', 'model', 'effort']
+
+// Candidate list for the segment the cursor is currently in (the last colon-part).
+// Shows canonical values only (not shorthand aliases) so the dropdown stays readable.
+function getSegmentCandidates(input: string, projects: string[]): { pos: number; prefix: string; candidates: string[] } {
+  const parts = input.split(':')
+  const pos = parts.length // 1=project, 2=name, 3=model, 4=effort
+  const prefix = parts[parts.length - 1]
+  let pool: string[] = []
+  if (pos === 1) pool = projects
+  else if (pos === 2) pool = CAT_NAMES
+  else if (pos === 3) pool = ALL_MODELS
+  else if (pos === 4) pool = EFFORT_LEVELS
+  const lower = prefix.toLowerCase()
+  const candidates = prefix
+    ? pool.filter(c => c.toLowerCase().startsWith(lower) && c !== prefix)
+    : pool
+  return { pos, prefix, candidates }
+}
+
+// Replace the current (last) segment's typed prefix with the chosen candidate.
+function applyCandidate(input: string, candidate: string): string {
+  const parts = input.split(':')
+  parts[parts.length - 1] = candidate
+  return parts.join(':')
+}
+
 // --- Nick color system (shared with FleetChatShape) ---
 const NICK_COLORS = ['#7a9ec8', '#9370db', '#c8956a', '#6aafb0', '#b87a95', '#c8b060']
 const nickMap = new Map<string, string>()
@@ -421,6 +448,20 @@ function FleetAgentsInner({ shape }: { shape: any }) {
   const [projectList, setProjectList] = useState<string[]>([])
   const [catName] = useState(() => CAT_NAMES[Math.floor(Math.random() * CAT_NAMES.length)])
   const spawnInputRef = useRef<HTMLInputElement>(null)
+  const [spawnFocused, setSpawnFocused] = useState(false)
+  const [dropdownIdx, setDropdownIdx] = useState(-1) // -1 = nothing highlighted
+  const [dropdownDismissed, setDropdownDismissed] = useState(false)
+  const { pos: segPos, candidates: segCandidates } = useMemo(
+    () => getSegmentCandidates(spawnDoc, projectList),
+    [spawnDoc, projectList],
+  )
+  const dropdownOpen = spawnFocused && !dropdownDismissed && segCandidates.length > 0
+  const acceptCandidate = useCallback((candidate: string) => {
+    setSpawnDoc(applyCandidate(spawnDoc, candidate))
+    setDropdownIdx(-1)
+    setDropdownDismissed(true)
+    spawnInputRef.current?.focus()
+  }, [spawnDoc])
   useEffect(() => {
     fetch('/api/projects').then(r => r.ok ? r.json() : { projects: [] }).then((data: any) => {
       const projects = Array.isArray(data) ? data : (data.projects || [])
@@ -599,21 +640,54 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                 ref={spawnInputRef}
                 className="fleet-agents-spawn-search"
                 value={spawnDoc}
-                onChange={(e) => setSpawnDoc(e.target.value)}
+                onFocus={() => setSpawnFocused(true)}
+                onBlur={() => { setSpawnFocused(false); setDropdownIdx(-1) }}
+                onChange={(e) => { setSpawnDoc(e.target.value); setDropdownIdx(-1); setDropdownDismissed(false) }}
                 onKeyDown={(e) => {
                   e.stopPropagation()
-                  if (e.key === 'Tab') {
-                    const ghost = getGhostCompletion(spawnDoc, projectList, catName)
-                    if (ghost) { e.preventDefault(); setSpawnDoc(spawnDoc + ghost) }
+                  if (e.key === 'ArrowDown') {
+                    e.preventDefault()
+                    setDropdownDismissed(false)
+                    if (segCandidates.length) setDropdownIdx(i => Math.min(i + 1, segCandidates.length - 1))
+                  } else if (e.key === 'ArrowUp') {
+                    e.preventDefault()
+                    setDropdownIdx(i => Math.max(i - 1, -1))
+                  } else if (e.key === 'Escape') {
+                    if (dropdownOpen) { e.preventDefault(); setDropdownDismissed(true); setDropdownIdx(-1) }
+                  } else if (e.key === 'Tab') {
+                    if (dropdownOpen && dropdownIdx >= 0) {
+                      e.preventDefault()
+                      acceptCandidate(segCandidates[dropdownIdx])
+                    } else {
+                      const ghost = getGhostCompletion(spawnDoc, projectList, catName)
+                      if (ghost) { e.preventDefault(); setSpawnDoc(spawnDoc + ghost); setDropdownDismissed(true) }
+                    }
                   } else if (e.key === 'Enter') {
                     e.preventDefault()
-                    const { doc, name, model, effort } = parseSpawnInput(spawnDoc)
-                    spawnAgent(model || DEFAULT_MODEL, doc || undefined, name, effort || DEFAULT_EFFORT)
+                    if (dropdownOpen && dropdownIdx >= 0) {
+                      acceptCandidate(segCandidates[dropdownIdx])
+                    } else {
+                      const { doc, name, model, effort } = parseSpawnInput(spawnDoc)
+                      spawnAgent(model || DEFAULT_MODEL, doc || undefined, name, effort || DEFAULT_EFFORT)
+                    }
                   }
                 }}
                 placeholder=""
               />
               <span className="fleet-agents-spawn-ghost"><span style={{ visibility: 'hidden' }}>{spawnDoc}</span>{getGhostCompletion(spawnDoc, projectList, catName)}</span>
+              {dropdownOpen && (
+                <ul className="fleet-agents-spawn-dropdown" onPointerDown={(e) => e.stopPropagation()}>
+                  <li className="fleet-agents-spawn-dropdown-label">{SEG_LABELS[segPos - 1]}</li>
+                  {segCandidates.map((c, i) => (
+                    <li
+                      key={c}
+                      className={'fleet-agents-spawn-dropdown-item' + (i === dropdownIdx ? ' is-active' : '')}
+                      onMouseEnter={() => setDropdownIdx(i)}
+                      onMouseDown={(e) => { e.preventDefault(); acceptCandidate(c) }}
+                    >{c}</li>
+                  ))}
+                </ul>
+              )}
             </span>
             <button
               className="fleet-agents-spawn-btn"
