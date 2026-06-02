@@ -2066,12 +2066,16 @@ function FleetChatInner({ shape }: { shape: any }) {
     localStorage.setItem(HARD_LOCKED_KEY, String(hardLocked))
   }, [hardLocked])
 
-  // pin-to-bottom: scrollToIndex + direct scrollTop assignment, twice (one
-  // immediate, one after layout) to catch late-measure growth.
-  // Pin via Virtuoso's scrollToIndex ONLY — it knows the full virtual list
-  // height. A raw `el.scrollTop = el.scrollHeight` is wrong under virtualization
-  // (scrollHeight is just the *rendered* slice), which made pins land thousands
-  // of px short on long chats — the "doesn't follow" bug.
+  // pin-to-bottom: each frame, scrollToIndex(LAST) AND a raw scrollTop assign,
+  // repeated (bounded) until the gap actually closes.
+  //  - scrollToIndex handles LONG/virtualized lists (knows the full virtual
+  //    height); a lone raw scrollTop undershoots there because scrollHeight is
+  //    only the rendered slice until Virtuoso measures more.
+  //  - the raw scrollTop=scrollHeight handles SHORT content, where
+  //    scrollToIndex lands a few px above the true bottom (the "won't hit
+  //    bottom" case). The loop re-runs as the height settles, so raw is correct
+  //    once scrollHeight is full → works for both regimes.
+  // No re-trigger from atBottomStateChange, so this can't bounce.
   const pinHard = useCallback(() => {
     programmaticUntilRef.current = performance.now() + 400
     let frames = 0
@@ -2079,13 +2083,10 @@ function FleetChatInner({ shape }: { shape: any }) {
       // Stop if the user has taken over since we started (unless hard-locked).
       if (userScrolledUpRef.current && !hardLockedRef.current) return
       virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
-      programmaticUntilRef.current = performance.now() + 120
       const el = chatLogEl
+      if (el) el.scrollTop = el.scrollHeight
+      programmaticUntilRef.current = performance.now() + 120
       const gap = el ? (el.scrollHeight - (el.scrollTop + el.clientHeight)) : 0
-      // One scrollToIndex doesn't reach the true bottom in a single frame while
-      // Virtuoso is still rendering/measuring just-arrived content (traced gaps
-      // of 583–4231px after a one-shot pin). Keep re-pinning across the next few
-      // frames until it actually lands — bounded so it can't loop forever.
       if (gap > 8 && ++frames < 12) requestAnimationFrame(step)
     }
     step()
