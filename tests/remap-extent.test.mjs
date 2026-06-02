@@ -4,23 +4,29 @@
 // startLine/endLine resolve — via independent nearest-line lookup — to inverted
 // canvas-Y, so the renderer (height = max(2, y2-y1)) flattens it to a 2px sliver.
 //
-// The lookup below is the actual main-lookup.json produced by building the
-// `ribbon-state-test` doc (clone of the ribbon-c test surface). It contains a
-// genuinely non-monotonic region: line 46 -> y405.8 sits BELOW line 47 -> y392.2.
+// LINE_Y below is real synctex output: the line -> pdf-Y map from building a
+// clone of the ribbon-c test surface. Inlined here so the test is self-contained
+// (no dependency on a build doc that could be deleted). It contains a genuinely
+// non-monotonic region: line 46 -> y405.8 sits BELOW line 47 -> y392.2.
 //
 // Run: node tests/remap-extent.test.mjs
 
-import { readFileSync } from 'fs'
 import assert from 'assert'
 
-const lookup = JSON.parse(readFileSync(
-  new URL('../../../server/projects/ribbon-state-test/output/main-lookup.json', import.meta.url)
-))
+const LINE_Y = {
+  16: 131.8, 18: 156.3, 19: 156.3, 20: 169.9, 23: 192.5, 24: 192.5, 25: 206.1,
+  27: 228.7, 28: 249.1, 30: 304.3, 32: 328.8, 33: 328.8, 34: 328.8, 38: 351.4,
+  39: 351.4, 40: 365, 42: 378.6, 43: 378.6, 44: 392.2, 45: 392.2, 46: 405.8,
+  47: 392.2, 49: 440.3, 52: 464.7, 55: 487.3, 56: 487.3, 58: 530.3, 60: 550.9,
+  61: 550.9, 63: 624.5, 64: 638.1, 66: 11, 68: 35.4, 69: 35.4, 72: -25, 74: 99,
+  75: 99, 76: 112.6, 78: 139.8, 79: 139.8, 80: 153.4, 82: 196.4, 84: 217,
+  85: 217, 86: 230.6, 88: -25,
+}
 
 // Build the same line->canvasY index remap uses (here canvasY == synctex y;
 // the pdf->canvas transform is monotonic so it preserves ordering/inversions).
-const index = Object.entries(lookup.lines)
-  .map(([k, v]) => ({ line: parseInt(k.includes(':') ? k.split(':')[1] : k, 10), canvasY: v.y }))
+const index = Object.entries(LINE_Y)
+  .map(([k, y]) => ({ line: parseInt(k, 10), canvasY: y }))
   .filter(e => !isNaN(e.line))
   .sort((a, b) => a.canvasY - b.canvasY)
 
