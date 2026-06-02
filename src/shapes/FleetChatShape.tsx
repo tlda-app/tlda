@@ -2037,6 +2037,11 @@ function FleetChatInner({ shape }: { shape: any }) {
   // continuous rAF loop. Instead: scroll to bottom when new content arrives
   // or the container resizes, but only if the user hasn't scrolled up.
   const isAtBottomRef = useRef(true)
+  // Pin decisions gate on "did the user deliberately scroll up" (userScrolledUpRef),
+  // NOT Virtuoso's raw at-bottom bool. A transient sub-threshold reflow gap (late
+  // markdown/KaTeX/image growth) must not latch auto-follow off — only a deliberate
+  // scroll-up past 200px counts as intent.
+  const userScrolledUpRef = useRef(false)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
   const [termHoverVisible, setTermHoverVisible] = useState(false)
   const [termHoverPinned, setTermHoverPinned] = useState(false)
@@ -2074,6 +2079,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     log.warn('chat-scroll', 'scrollToBottom (user click ⇣)')
     pinHard()
     isAtBottomRef.current = true
+    userScrolledUpRef.current = false
   }, [pinHard])
 
   // When the scroll container resizes — textarea growing as you type
@@ -2088,8 +2094,8 @@ function FleetChatInner({ shape }: { shape: any }) {
     const ro = new ResizeObserver(() => {
       const h = el.clientHeight
       if (h !== prevH) {
-        const pin = isAtBottomRef.current || hardLockedRef.current
-        log.warn('chat-scroll', 'container resize', { prevH, h, atBottom: isAtBottomRef.current, hardLocked: hardLockedRef.current, action: pin ? 'pin' : 'skip' })
+        const pin = !userScrolledUpRef.current || hardLockedRef.current
+        log.warn('chat-scroll', 'container resize', { prevH, h, atBottom: isAtBottomRef.current, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current, action: pin ? 'pin' : 'skip' })
         if (pin) pinHard()
       }
       prevH = h
@@ -2110,8 +2116,8 @@ function FleetChatInner({ shape }: { shape: any }) {
   useEffect(() => {
     const prev = prevItemCountRef.current
     prevItemCountRef.current = allItems.length
-    if (allItems.length > prev && (isAtBottomRef.current || hardLockedRef.current)) {
-      log.warn('chat-scroll', 'force-pin on item grow', { prev, now: allItems.length, hardLocked: hardLockedRef.current })
+    if (allItems.length > prev && (!userScrolledUpRef.current || hardLockedRef.current)) {
+      log.warn('chat-scroll', 'force-pin on item grow', { prev, now: allItems.length, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
       requestAnimationFrame(pinHard)
     }
   }, [allItems.length, pinHard])
@@ -3499,7 +3505,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             style={{ flex: 1, minHeight: 0 }}
             initialTopMostItemIndex={{ index: 'LAST', align: 'end' }}
             followOutput="auto"
-            atBottomThreshold={4}
+            atBottomThreshold={120}
             // Fires whenever Virtuoso's computed total list height changes —
             // catches in-place item growth (markdown/font/image late-render
             // adds pixels to existing items) which doesn't tick items.length
@@ -3507,25 +3513,32 @@ function FleetChatInner({ shape }: { shape: any }) {
             totalListHeightChanged={(h) => {
               const prev = prevTotalHeightRef.current
               prevTotalHeightRef.current = h
-              if (h > prev && (isAtBottomRef.current || hardLockedRef.current)) {
-                log.warn('chat-scroll', 'pin on list-height grow', { prev, h, hardLocked: hardLockedRef.current })
+              if (h > prev && (!userScrolledUpRef.current || hardLockedRef.current)) {
+                log.warn('chat-scroll', 'pin on list-height grow', { prev, h, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
                 pinHard()
               }
             }}
             atBottomStateChange={(atBottom) => {
+              const el = chatLogEl
+              const gap = el ? (el.scrollHeight - (el.scrollTop + el.clientHeight)) : null
               if (isAtBottomRef.current !== atBottom) {
-                const el = chatLogEl
                 log.warn('chat-scroll', atBottom ? 'pinned to bottom' : 'left bottom', {
                   scrollTop: el?.scrollTop,
                   scrollHeight: el?.scrollHeight,
                   clientHeight: el?.clientHeight,
-                  gap: el ? (el.scrollHeight - (el.scrollTop + el.clientHeight)) : null,
+                  gap,
                   items: allItems.length,
+                  scrolledUp: userScrolledUpRef.current,
                   hardLocked: hardLockedRef.current,
                 })
               }
               isAtBottomRef.current = atBottom
-              setShowScrollBtn(!atBottom && !hardLockedRef.current)
+              // Only a genuine, deliberate scroll-up (gap > 200px) counts as user
+              // intent; a transient sub-threshold reflow gap must NOT latch
+              // auto-follow off. Returning to bottom clears intent.
+              if (atBottom) userScrolledUpRef.current = false
+              else if (gap != null && gap > 200) userScrolledUpRef.current = true
+              setShowScrollBtn(userScrolledUpRef.current && !hardLockedRef.current)
               // When hardLocked, snap back immediately if Virtuoso reports off-bottom.
               if (!atBottom && hardLockedRef.current) {
                 requestAnimationFrame(pinHard)
