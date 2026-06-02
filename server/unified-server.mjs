@@ -40,6 +40,7 @@ const { homedir, hostname } = os
 import { spawn as cpSpawn } from 'child_process'
 import { lookup as mimeLookup } from 'mime-types'
 import { DEFAULT_PORT, hasTls } from '../shared/config.mjs'
+import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
 import { initProjectStore, listProjects, readProject, getProjectsDir } from './lib/project-store.mjs'
 import { resetStaleBuildStates, killAllBuilds, runBuild } from './lib/build-runner.mjs'
 import projectRoutes, { processProjectPush } from './routes/projects.mjs'
@@ -1425,27 +1426,15 @@ app.use('/docs', (req, res, next) => {
     }
   }
 
-  // Project-level metadata aliases — bare names resolve to the primary
-  // target's per-target file. These names predate multi-target; viewer code
-  // fetches them as project-wide artifacts. Aliasing keeps callers simple
-  // and the canonical "doc metadata" is the primary target's.
-  const BARE_METADATA = new Set([
-    'lookup.json', 'macros.json', 'proof-info.json',
-    'source-map.json', 'theorem-map.json',
-  ])
+  // Project-level metadata aliases — bare names (lookup.json, etc.) resolve to
+  // the primary target's prefixed file. Shared with the MCP disk reader via
+  // shared/doc-assets.mjs so the two resolution paths can't drift.
   if (BARE_METADATA.has(filePath)) {
-    try {
-      const projectJsonPath = join(PROJECTS_DIR, name, 'project.json')
-      if (existsSync(projectJsonPath)) {
-        const project = JSON.parse(readFileSync(projectJsonPath, 'utf8'))
-        const primaryTexBase = (project.mainFile || 'main.tex').replace(/\.tex$/, '').split('/').pop()
-        const aliased = join(PROJECTS_DIR, name, 'output', `${primaryTexBase}-${filePath}`)
-        if (existsSync(aliased)) {
-          res.set('Cache-Control', 'no-cache')
-          return res.sendFile(resolve(aliased), { dotfiles: 'allow' })
-        }
-      }
-    } catch { /* fall through */ }
+    const aliased = resolveAsset(PROJECTS_DIR, name, filePath)
+    if (aliased) {
+      res.set('Cache-Control', 'no-cache')
+      return res.sendFile(resolve(aliased), { dotfiles: 'allow' })
+    }
   }
 
   // Try project output first
