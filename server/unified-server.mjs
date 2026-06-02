@@ -1393,37 +1393,23 @@ app.use('/docs', (req, res, next) => {
   }
 
   // On-demand current-column SVG: <texBase>-page-N.svg.
-  // Outputs are flat under output/, prefixed by target's texBase. The ensure
-  // system (via buildCurrentPage) decides whether to (re)compile the DVI and
-  // (re)render the page; we just check whether the file is on disk.
+  // The ensure system (via buildCurrentPage) is the SINGLE staleness authority:
+  // its isStale check decides whether to (re)compile the DVI and (re)render the
+  // page, and returns the existing artifact untouched when it's fresh. We don't
+  // recompute staleness here — a second copy of the rule could disagree with
+  // isStale and serve a stale page.
   const livePageMatch = filePath.match(/^([^/]+)-page-(\d+)\.svg$/)
   if (livePageMatch) {
     const texBase = livePageMatch[1]
     const pageNum = parseInt(livePageMatch[2], 10)
-    const outputBase = join(PROJECTS_DIR, name, 'output')
-    const svgPath = join(outputBase, `${texBase}-page-${pageNum}.svg`)
-    const dviPath = join(outputBase, `${texBase}.dvi`)
-    const stampPath = join(PROJECTS_DIR, name, 'source.stamp')
-    const buildStampPath = join(outputBase, 'build.stamp')
-    const svgExists = existsSync(svgPath)
-    const dviExists = existsSync(dviPath)
-    const buildMtime = existsSync(buildStampPath) ? statSync(buildStampPath).mtimeMs : 0
-    const sourceNewerThanBuild = existsSync(stampPath) && statSync(stampPath).mtimeMs > buildMtime
-    const dviMtime = dviExists ? statSync(dviPath).mtimeMs : 0
-    const needsBuild = !svgExists ||
-      !dviExists ||
-      statSync(svgPath).mtimeMs < dviMtime ||
-      sourceNewerThanBuild
-    if (needsBuild) {
-      try {
-        const { buildCurrentPage } = await import('./lib/shadow-repo.mjs')
-        const built = await buildCurrentPage(name, pageNum, texBase)
-        res.set('Cache-Control', 'no-cache')
-        return res.sendFile(resolve(built), { dotfiles: 'allow' })
-      } catch (e) {
-        console.error(`[live] on-demand page failed: ${name}/${texBase} p${pageNum}: ${e.message}`)
-        return res.status(404).json({ error: 'Page unavailable', detail: e.message })
-      }
+    try {
+      const { buildCurrentPage } = await import('./lib/shadow-repo.mjs')
+      const built = await buildCurrentPage(name, pageNum, texBase)
+      res.set('Cache-Control', 'no-cache')
+      return res.sendFile(resolve(built), { dotfiles: 'allow' })
+    } catch (e) {
+      console.error(`[live] on-demand page failed: ${name}/${texBase} p${pageNum}: ${e.message}`)
+      return res.status(404).json({ error: 'Page unavailable', detail: e.message })
     }
   }
 
