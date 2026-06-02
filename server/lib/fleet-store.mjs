@@ -412,17 +412,12 @@ export class FleetStore {
     this._queryEventsBefore = this.db.prepare(`
       SELECT ${E} FROM events WHERE timestamp < ? ORDER BY timestamp DESC LIMIT ?
     `);
-    this._queryEventsBeforeAgent = this.db.prepare(`
-      SELECT ${E} FROM events WHERE timestamp < ? AND (from_id = ? OR to_id = ?)
-      ORDER BY timestamp DESC LIMIT ?
-    `);
     this._queryEventsLatest = this.db.prepare(`
       SELECT ${E} FROM events ORDER BY timestamp DESC LIMIT ?
     `);
-    this._queryEventsLatestAgent = this.db.prepare(`
-      SELECT ${E} FROM events WHERE from_id = ? OR to_id = ?
-      ORDER BY timestamp DESC LIMIT ?
-    `);
+    // Agent-scoped history matches a *set* of fleet ids (a lineage's incarnations),
+    // so the SQL has variable arity and is built per-call in queryChatHistory()
+    // rather than prepared here. See relatedFleetIds().
     this._queryEventsByType = this.db.prepare(`
       SELECT ${E} FROM events WHERE type = ? ORDER BY timestamp DESC LIMIT ?
     `);
@@ -1193,14 +1188,43 @@ export class FleetStore {
     return { ...row, from: row.from, to: row.to, metadata: meta };
   }
 
-  queryChatHistory({ before, agent, limit = 50 } = {}) {
+  // The set of fleet ids whose events belong to the same logical agent as
+  // `fleetId`. A lineage's history is spread across one fleet id per phase
+  // incarnation; lineage_phase_log is the authoritative link and retains
+  // retired-phase ids (whose agent row may have lineage_id = NULL by now),
+  // so we recover the lineage from the log when the current row has none.
+  relatedFleetIds(fleetId) {
+    let lineageId = this._getAgent.get(fleetId)?.lineage_id;
+    if (!lineageId) {
+      lineageId = this.db
+        .prepare('SELECT lineage_id FROM lineage_phase_log WHERE fleet_id = ? LIMIT 1')
+        .get(fleetId)?.lineage_id;
+    }
+    if (!lineageId) return [fleetId];
+    return [...new Set([fleetId, ...this.getLineageFleetIds(lineageId)])];
+  }
+
+  // `agents` is the set of fleet ids the chat is filtered to (resolved on the
+  // client by the same logic the live display uses — friendly names, lineage
+  // names, and `name:phase` colon labels). Each id is expanded to its lineage's
+  // full incarnation set via relatedFleetIds(), so history for a lineage agent
+  // returns the union across all its phase/respawn ids — matching what live shows.
+  queryChatHistory({ before, agents, limit = 50 } = {}) {
     let rows;
-    if (before && agent) {
-      rows = this._query(this._queryEventsBeforeAgent, before, agent, agent, limit);
+    const ids = Array.isArray(agents) ? agents : [];
+    if (ids.length > 0) {
+      const expanded = [...new Set(ids.flatMap(id => this.relatedFleetIds(id)))];
+      const ph = expanded.map(() => '?').join(',');
+      const E = this._EVT;
+      if (before) {
+        const sql = `SELECT ${E} FROM events WHERE timestamp < ? AND (from_id IN (${ph}) OR to_id IN (${ph})) ORDER BY timestamp DESC LIMIT ?`;
+        rows = this._query(this.db.prepare(sql), before, ...expanded, ...expanded, limit);
+      } else {
+        const sql = `SELECT ${E} FROM events WHERE from_id IN (${ph}) OR to_id IN (${ph}) ORDER BY timestamp DESC LIMIT ?`;
+        rows = this._query(this.db.prepare(sql), ...expanded, ...expanded, limit);
+      }
     } else if (before) {
       rows = this._query(this._queryEventsBefore, before, limit);
-    } else if (agent) {
-      rows = this._query(this._queryEventsLatestAgent, agent, agent, limit);
     } else {
       rows = this._query(this._queryEventsLatest, limit);
     }

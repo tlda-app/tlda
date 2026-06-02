@@ -21,6 +21,7 @@ import {
   fetchHistory,
   loadBefore,
   matchesFilter,
+  resolveFilter,
   respawnAgent as _respawnAgent,
   killSession as _killSession,
   hibernateSession as _hibernateSession,
@@ -776,4 +777,4 @@ export const injectOptimisticEvent = _injectOptimisticEvent
 export const updateOptimisticEvent = _updateOptimisticEvent
 export const reconcileOptimistic = _reconcileOptimistic
 export const fleetWS = _fleetWS
-export { loadBefore, fetchHistory }
+export { loadBefore, fetchHistory, resolveFilter }
