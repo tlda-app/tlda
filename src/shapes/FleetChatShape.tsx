@@ -2073,9 +2073,23 @@ function FleetChatInner({ shape }: { shape: any }) {
   // (scrollHeight is just the *rendered* slice), which made pins land thousands
   // of px short on long chats — the "doesn't follow" bug.
   const pinHard = useCallback(() => {
-    programmaticUntilRef.current = performance.now() + 300
-    virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
-  }, [])
+    programmaticUntilRef.current = performance.now() + 400
+    let frames = 0
+    const step = () => {
+      // Stop if the user has taken over since we started (unless hard-locked).
+      if (userScrolledUpRef.current && !hardLockedRef.current) return
+      virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
+      programmaticUntilRef.current = performance.now() + 120
+      const el = chatLogEl
+      const gap = el ? (el.scrollHeight - (el.scrollTop + el.clientHeight)) : 0
+      // One scrollToIndex doesn't reach the true bottom in a single frame while
+      // Virtuoso is still rendering/measuring just-arrived content (traced gaps
+      // of 583–4231px after a one-shot pin). Keep re-pinning across the next few
+      // frames until it actually lands — bounded so it can't loop forever.
+      if (gap > 8 && ++frames < 12) requestAnimationFrame(step)
+    }
+    step()
+  }, [chatLogEl])
 
   // Imperative scroll-to-bottom for the floating ⇣ button.
   const scrollToBottom = useCallback(() => {
