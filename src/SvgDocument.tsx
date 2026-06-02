@@ -1408,7 +1408,12 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
               if (!editor.getShape(getMyAnchorId() as any)) {
                 requestAnimationFrame(() => {
                   requestAnimationFrame(() => {
-                    window.dispatchEvent(new CustomEvent('fleet-hud-reset'))
+                    // preserveAnchor: this is a plain reload, where a missing anchor
+                    // may just be unsynced/identity-unresolved (large rooms deliver it
+                    // late). The HUD should recompute a provisional default but MUST NOT
+                    // delete the saved anchor — see onReset. Destructive resets
+                    // (layout switch, emergency recovery) dispatch without this flag.
+                    window.dispatchEvent(new CustomEvent('fleet-hud-reset', { detail: { preserveAnchor: true } }))
                   })
                 })
               }

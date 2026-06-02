@@ -174,6 +174,10 @@ export function FleetHUD({
   // Persisted via an invisible anchor shape in Yjs (survives across sessions/devices).
   const panOffsetRef = useRef<number | null>(null)
   const cameraYRef = useRef<number | null>(null)
+  // True once the user has deliberately panned this session. Guards the
+  // adopt-anchor-on-late-arrival listener so a late-syncing anchor can't
+  // snap the HUD back after the user has intentionally moved it.
+  const userPannedRef = useRef(false)
   if (panOffsetRef.current === null && cameraYRef.current === null) {
     const anchor = mainEditor.getShape(getMyAnchorId() as any) as any
     if (anchor?.meta?.panOffset !== undefined) {
@@ -318,6 +322,7 @@ export function FleetHUD({
           // Wait for both camera restore AND 2s minimum settling
         } else if (cam.z === lastCamZ && panOffsetRef.current !== null) {
           panOffsetRef.current += (cam.x - lastCamX) * cam.z
+          userPannedRef.current = true
           saveAnchorOffsets(mainEditor, panOffsetRef.current, cameraYRef.current!)
         }
         lastCamX = cam.x
@@ -333,6 +338,34 @@ export function FleetHUD({
       clearTimeout(fallbackTimer)
     }
   }, [mainEditor, expanded])
+
+  // Adopt the saved anchor when it arrives in the store — even if panOffsetRef
+  // is already set to a provisional recomputed default. In large multi-machine
+  // rooms the anchor record can sync AFTER the fleet shapes, so the first render
+  // recomputes a flush-left default; when the real anchor lands we replace it.
+  // Guarded by userPannedRef so a late anchor can't undo a deliberate user pan.
+  useEffect(() => {
+    const unsub = mainEditor.store.listen(({ changes }) => {
+      if (userPannedRef.current) return
+      const myAnchorId = getMyAnchorId()
+      const isMyAnchor = (r: any) => r?.typeName === 'shape' && r.id === myAnchorId
+      const arrivals = [
+        ...Object.values(changes.added),
+        ...Object.values(changes.updated).map((pair: any) => pair[1]),
+      ]
+      for (const r of arrivals as any[]) {
+        if (isMyAnchor(r) && r.meta?.panOffset !== undefined) {
+          if (panOffsetRef.current !== r.meta.panOffset || cameraYRef.current !== r.meta.cameraY) {
+            panOffsetRef.current = r.meta.panOffset
+            cameraYRef.current = r.meta.cameraY
+            setCameraTick(t => t + 1)
+          }
+          break
+        }
+      }
+    }, { source: 'all', scope: 'document' })
+    return unsub
+  }, [mainEditor])
 
   // Block HTML5 file/chip drops on fleet shapes (except chat input areas).
   // With the full-viewport overlay, we check if the drop target is inside
@@ -486,17 +519,26 @@ export function FleetHUD({
   // recreates the fleet shapes AND fires a `fleet-hud-reset` event.
   // Reset camera refs so the overlay re-centers on the new shapes.
   useEffect(() => {
-    const onReset = () => {
+    const onReset = (e: Event) => {
+      // preserveAnchor (plain reload): a missing anchor may just be unsynced or
+      // identity-unresolved. Reset the refs so the HUD recomputes a provisional
+      // default, but do NOT delete the saved anchor — deleting it here is what
+      // destroyed the user's position when the anchor synced late (drift Path A).
+      // The adopt-on-arrival listener restores the real position once it lands.
+      // Destructive callers (layout switch, emergency recovery) omit the flag.
+      const preserveAnchor = !!(e as CustomEvent)?.detail?.preserveAnchor
       panOffsetRef.current = null
       cameraYRef.current = null
-      try {
-        const myAnchorId = getMyAnchorId()
-        const anchor = mainEditor.getShape(myAnchorId as any)
-        if (anchor) {
-          if (anchor.isLocked) mainEditor.updateShape({ id: myAnchorId as any, type: 'geo', isLocked: false })
-          mainEditor.deleteShape(myAnchorId as any)
-        }
-      } catch {}
+      if (!preserveAnchor) {
+        try {
+          const myAnchorId = getMyAnchorId()
+          const anchor = mainEditor.getShape(myAnchorId as any)
+          if (anchor) {
+            if (anchor.isLocked) mainEditor.updateShape({ id: myAnchorId as any, type: 'geo', isLocked: false })
+            mainEditor.deleteShape(myAnchorId as any)
+          }
+        } catch {}
+      }
       setFleetBounds(getFleetBounds(mainEditor))
     }
     // Toggle: FleetIconPill click dispatches fleet-hud-toggle
@@ -566,9 +608,12 @@ export function FleetHUD({
     }
     panOffsetRef.current = docLeftScreen - MARGIN_GAP - leftGroupRight
     cameraYRef.current = TOP_PAD - fleetBounds.y
-    // Defer store write to after render — writing during render triggers
-    // "Cannot update a component while rendering" and breaks drag state.
-    queueMicrotask(() => saveAnchorOffsets(mainEditor, panOffsetRef.current!, cameraYRef.current!))
+    // This is a *derived default*, not a user-chosen position. Do NOT persist it:
+    // a saved anchor may simply be unsynced (large multi-machine rooms deliver it
+    // in a later chunk), and saving the default here would overwrite the real
+    // position. The anchor is persisted only on a real user pan (see pan tracking
+    // above); if a saved anchor arrives late, the adopt-on-arrival listener picks
+    // it up and replaces this provisional value.
   }
 
   const overlayCam = {
