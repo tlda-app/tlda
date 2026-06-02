@@ -26,7 +26,7 @@ import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil
 import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText, isRecording } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getHumanName, updateEventById, sendViewingContext, setViewingEnrichFn } from '../fleet/fleet-data.mjs'
-import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useElizaPending, useWouldHibernate, sendMessage, loadBefore, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useElizaPending, sendMessage, loadBefore, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
 import type { ElizaNudge } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
 import { dragCoordinator } from './dragCoordinator'
@@ -599,11 +599,10 @@ function ContextBadge({ percent }: { percent?: number }) {
  * When all agents stop, the space persists (ghost) until rawItemsLength changes
  * (i.e. a real message arrives to replace it). No timeout — no bounce.
  */
-function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, wouldHibernate, hibernatingAgents, ctx, rawItemsLength, agents: _agents, escalationState }: {
+function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibernatingAgents, ctx, rawItemsLength, agents: _agents, escalationState }: {
   thinkingAgents: Map<string, number>
   compactingAgents: Map<string, number>
   contextPercent: Map<string, number>
-  wouldHibernate: Map<string, number>
   hibernatingAgents: Set<string>
   ctx: any
   rawItemsLength: number
@@ -614,7 +613,7 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, woul
   // thinkingAgents/compactingAgents are pre-filtered to chat targets and provide elapsed timestamps.
   // hibernatingAgents is pre-filtered to chat targets.
   const statusAgents = useMemo(() => {
-    const merged = new Map<string, { status: 'thinking' | 'compacting' | 'hibernating' | 'would-hibernate', startTs: number, idleSecs?: number }>()
+    const merged = new Map<string, { status: 'thinking' | 'compacting' | 'hibernating', startTs: number }>()
     for (const [id, ts] of thinkingAgents) {
       merged.set(id, { status: 'thinking', startTs: ts })
     }
@@ -624,13 +623,8 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, woul
     for (const id of hibernatingAgents) {
       if (!merged.has(id)) merged.set(id, { status: 'hibernating', startTs: 0 })
     }
-    for (const [id, secs] of wouldHibernate) {
-      if (!merged.has(id)) {
-        merged.set(id, { status: 'would-hibernate', startTs: Date.now() - secs * 1000, idleSecs: secs })
-      }
-    }
     return merged
-  }, [thinkingAgents, compactingAgents, hibernatingAgents, wouldHibernate])
+  }, [thinkingAgents, compactingAgents, hibernatingAgents])
 
   const hasActive = statusAgents.size > 0
   const prevActiveRef = useRef(hasActive)
@@ -662,7 +656,7 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, woul
       opacity: ghost ? 0 : 0.6,
       transition: 'opacity 0.2s',
     }}>
-      {!ghost && [...statusAgents.entries()].map(([agentId, { status, startTs, idleSecs }]) => {
+      {!ghost && [...statusAgents.entries()].map(([agentId, { status, startTs }]) => {
         const esc = escalationState?.[agentId]
         const escLevel = esc?.level || 0
         const escConfirmed = esc?.confirmed || 0
@@ -671,9 +665,7 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, woul
           if (escConfirmed >= tier) return 1
           return 0.55
         }
-        const statusText = status === 'would-hibernate'
-          ? `idle ${Math.round((idleSecs || 0) / 60)}m — would hibernate`
-          : status === 'hibernating' ? 'is hibernating'
+        const statusText = status === 'hibernating' ? 'is hibernating'
           : status === 'compacting' ? 'compacting…'
           : 'thinking…'
         return (
@@ -681,7 +673,7 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, woul
             <span>
               <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
               {' '}<span className="thinking-text">{statusText}</span>
-              {status !== 'hibernating' && status !== 'would-hibernate' && <>{' '}<ElapsedTime startMs={startTs} /></>}
+              {status !== 'hibernating' && <>{' '}<ElapsedTime startMs={startTs} /></>}
               {escLevel > 0 && (
                 <span className="escalation-meter" style={{ marginLeft: 6, letterSpacing: 2, fontSize: '0.9em' }}>
                   <span style={{ opacity: tierOpacity(1), transition: 'opacity 0.15s' }}>↑</span>
@@ -906,7 +898,6 @@ function FleetChatInner({ shape }: { shape: any }) {
   const thinkingAgents = useFleetThinking(dnfFilter, frameId)
   const compactingAgents = useFleetCompacting(dnfFilter, frameId)
   const contextPercent = useFleetContext(dnfFilter, frameId)
-  const wouldHibernateAll = useWouldHibernate()
   const elizaPendingAll = useElizaPending()
   const [olderEvents, setOlderEvents] = useState<any[]>([])
 
@@ -1060,21 +1051,6 @@ function FleetChatInner({ shape }: { shape: any }) {
     )
     return matched.length > 0 ? matched.map((a: any) => a.id) : [label]
   }, [agents])
-
-  const wouldHibernate = useMemo(() => {
-    if (!dnfFilter || dnfFilter.length === 0) return wouldHibernateAll
-    const targetIds = new Set<string>()
-    for (const andGroup of dnfFilter) {
-      for (const [, label] of andGroup) {
-        for (const id of resolveToFleetIds(label)) targetIds.add(id)
-      }
-    }
-    const filtered = new Map<string, number>()
-    for (const [id, secs] of wouldHibernateAll) {
-      if (targetIds.has(id)) filtered.set(id, secs)
-    }
-    return filtered
-  }, [wouldHibernateAll, dnfFilter, resolveToFleetIds])
 
   const hibernatingAgents = useMemo(() => {
     const targetIds = new Set<string>()
@@ -3661,7 +3637,6 @@ function FleetChatInner({ shape }: { shape: any }) {
                     thinkingAgents={thinkingAgents}
                     compactingAgents={compactingAgents}
                     contextPercent={contextPercent}
-                    wouldHibernate={wouldHibernate}
                     hibernatingAgents={hibernatingAgents}
                     ctx={ctx}
                     rawItemsLength={rawItems.length}
