@@ -26,6 +26,7 @@ import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil
 import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText, isRecording } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getHumanName, updateEventById, sendViewingContext, setViewingEnrichFn } from '../fleet/fleet-data.mjs'
+import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useElizaPending, sendMessage, loadBefore, resolveFilter, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
 import type { ElizaNudge } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
@@ -1029,34 +1030,20 @@ function FleetChatInner({ shape }: { shape: any }) {
     setShowScrollBtn(false)
   }, [filterKey])
 
-  // Resolve a friendly name/label to a fleet ID for DB queries.
-  const resolveToFleetId = useCallback((label: string): string => {
-    if (label.startsWith('fleet:')) return label
-    const agent = agents.find((a: any) =>
-      a.friendly_name === label || a.id === label || (a.labels || []).includes(label) ||
-      (a.lineage_name === label && a.phase === 'day')
-    )
-    return agent?.id || label
-  }, [agents])
-
+  // Resolve a friendly name/label to fleet IDs for DB queries. Uses the shared
+  // labelsForAgent so send-targeting matches the live/history filters — incl.
+  // pseudo-labels (awake/hibernating/human), bare lineage names, and
+  // `lineage:phase` tags (all subsumed by the label set).
   const resolveToFleetIds = useCallback((label: string): string[] => {
     if (label.startsWith('fleet:')) return [label]
-    // Lineage:phase → specific agent
-    const colonIdx = label.indexOf(':')
-    if (colonIdx > 0) {
-      const lineageName = label.slice(0, colonIdx)
-      const phase = label.slice(colonIdx + 1)
-      if (['dawn', 'day', 'dusk'].includes(phase)) {
-        const a = agents.find((a: any) => a.lineage_name === lineageName && a.phase === phase)
-        return a ? [a.id] : [label]
-      }
-    }
-    const matched = agents.filter((a: any) =>
-      a.friendly_name === label || a.id === label || (a.labels || []).includes(label) ||
-      (a.lineage_name === label && a.phase === 'day')
-    )
+    const matched = agents.filter((a: any) => labelsForAgent(a).includes(label))
     return matched.length > 0 ? matched.map((a: any) => a.id) : [label]
   }, [agents])
+
+  const resolveToFleetId = useCallback((label: string): string => {
+    if (label.startsWith('fleet:')) return label
+    return resolveToFleetIds(label)[0] || label
+  }, [resolveToFleetIds])
 
   const hibernatingAgents = useMemo(() => {
     const targetIds = new Set<string>()

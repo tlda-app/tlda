@@ -21,6 +21,8 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 
+import { PSEUDO_LABELS } from '../../shared/fleet-labels.mjs';
+
 // Persistent DB under ~/.config/tlda/ (survives macOS reboots).
 // Previously /tmp/fleet.db which got wiped on reboot — lost all agents/state.
 // Excluded from Spotlight via a .metadata_never_index file next to the DB.
@@ -28,10 +30,10 @@ const DB_PATH = path.join(os.homedir(), '.config', 'tlda', 'fleet.db');
 const FLEET_DIR = path.join(os.homedir(), '.fleet');
 
 // Virtual labels emitted by the DNF chat-routing resolver based on liveness
-// state — see unified-server.mjs `recipientLabels`. A friendly_name or label
-// that equals one of these would silently shadow the routing category.
-// Keep in sync with the `virtual` computation in the recipient resolver.
-export const PSEUDO_LABELS = Object.freeze(['awake', 'hibernating', 'human', 'human-away']);
+// state. A friendly_name or label that equals one of these would silently
+// shadow the routing category. Single source of truth: shared/fleet-labels.mjs
+// (statusLabels), re-exported here for the name-collision checks.
+export { PSEUDO_LABELS };
 
 export class FleetStore {
   constructor(dbPath) {

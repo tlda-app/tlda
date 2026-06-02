@@ -41,6 +41,7 @@ import { spawn as cpSpawn } from 'child_process'
 import { lookup as mimeLookup } from 'mime-types'
 import { DEFAULT_PORT, hasTls } from '../shared/config.mjs'
 import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
+import { labelsForAgent, evalDnf } from '../shared/fleet-labels.mjs'
 import { initProjectStore, listProjects, readProject, getProjectsDir } from './lib/project-store.mjs'
 import { resetStaleBuildStates, killAllBuilds, runBuild } from './lib/build-runner.mjs'
 import projectRoutes, { processProjectPush } from './routes/projects.mjs'
@@ -2054,18 +2055,10 @@ async function handleFleetWsMessage(ws, msg) {
     const recipients = []
     for (const a of allAgents) {
       if (a.id === from) continue
-      // Pseudo-labels — kept in sync with PSEUDO_LABELS in fleet-store.mjs.
-      const virtual = a.status === 'awake' ? ['awake'] : a.status === 'hibernating' ? ['hibernating'] : a.status === 'human' ? ['human'] : a.status === 'human-away' ? ['human', 'human-away'] : []
-      const labels = [...(a.labels || []), ...virtual, a.friendly_name, a.id].filter(Boolean)
-      // Lineage addressing: add lineage name (resolves to day) and phase-qualified tags
-      if (a.lineage_id && a.phase) {
-        const lineage = fleetStore.getLineage?.(a.lineage_id)
-        if (lineage) {
-          if (a.phase === 'day') labels.push(lineage.friendly_name)
-          labels.push(`${lineage.friendly_name}:${a.phase}`)
-        }
-      }
-      if (dnf.some(andGroup => andGroup.every(term => labels.includes(term)))) {
+      // labelsForAgent (shared with the client filters) covers pseudo-labels,
+      // friendly_name, id, and lineage tags. getAllAgents() hydrates
+      // lineage_name + status, so no per-agent lineage lookup is needed here.
+      if (evalDnf(dnf, labelsForAgent(a))) {
         recipients.push(a.id)
       }
     }
@@ -2102,13 +2095,13 @@ async function handleFleetWsMessage(ws, msg) {
     const senderAgent = fleetStore.getAgent?.(from)
     const chatReminder = senderAgent?.metadata?.chatReminder || undefined
     const taps = fleetStore.getWiretaps?.() || []
-    const fromLabels = [from, ...(fleetStore.findAgent(from)?.labels || [])].filter(Boolean)
+    const fromLabels = labelsForAgent(fleetStore.findAgent(from) || { id: from })
     const ts = new Date().toISOString()
     const eventIds = []
     const insertedEvents = []
     for (const to of recipients) {
       // Resolve wiretaps per recipient — tap labels are matched against this `to`.
-      const toLabels = [to, ...(fleetStore.findAgent(to)?.labels || [])].filter(Boolean)
+      const toLabels = labelsForAgent(fleetStore.findAgent(to) || { id: to })
       const wiretapRecipients = []
       for (const tap of taps) {
         if (!tap.filter) continue

@@ -17,6 +17,7 @@ import https from 'https'
 import http from 'http'
 
 import { getServerUrl, CONFIG_DIR } from '../shared/config.mjs'
+import { labelsForAgent } from '../shared/fleet-labels.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const PID_FILE = path.join(CONFIG_DIR, 'eliza.pid')
@@ -927,7 +928,9 @@ function resolveAgentId(nameOrId) {
           try {
             const agents = JSON.parse(buf)
             const list = Array.isArray(agents) ? agents : (agents.agents || [])
-            const agent = list.find(a => a.id === nameOrId || a.friendly_name === nameOrId)
+            // Shared label universe: id, friendly_name, explicit labels, pseudo
+            // and lineage tags — matches the chat router's resolution.
+            const agent = list.find(a => labelsForAgent(a).includes(nameOrId))
             resolve(agent?.id || null)
           } catch { resolve(null) }
         })

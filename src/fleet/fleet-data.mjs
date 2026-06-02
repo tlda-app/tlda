@@ -15,6 +15,7 @@
 
 import { toolContentDetail } from './activity-render.mjs'
 import { setActiveMacros } from '../katexMacros'
+import { labelsForAgent, evalDnf } from '../../shared/fleet-labels.mjs'
 
 // Fleet is embedded in tlda — use same-origin (no separate server)
 const FLEET = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5176'
@@ -76,42 +77,27 @@ export function matchesFilter(filter, event) {
 function agentMatchesLabel(agentId, label) {
   if (!agentId) return false
   if (agentId === label) return true
-  const agent = _agents.find(a => a.id === agentId)
-  if (!agent) {
-    // Check human
-    if (_humanId && agentId === _humanId) return [_humanName, _humanId].filter(Boolean).includes(label)
-    return false
+  let agent = _agents.find(a => a.id === agentId)
+  if (!agent && _humanId && agentId === _humanId) {
+    // Human not in the agents list yet — synthesize so pseudo-labels resolve.
+    agent = { id: _humanId, friendly_name: _humanName || 'user', status: 'human', labels: [] }
   }
-  const virtual = agent.status === 'awake' ? ['awake'] : agent.status === 'hibernating' ? ['hibernating'] : agent.status === 'human' ? ['human'] : agent.status === 'human-away' ? ['human', 'human-away'] : []
-  const labels = [...(agent.labels || []), ...virtual, agent.friendly_name, agent.id].filter(Boolean)
-  if (agent.lineage_name && agent.phase) {
-    if (agent.phase === 'day') labels.push(agent.lineage_name)
-    labels.push(`${agent.lineage_name}:${agent.phase}`)
-  }
-  return labels.includes(label)
+  if (!agent) return false
+  return labelsForAgent(agent).includes(label)
 }
 
-// Resolve a DNF filter to set of agent IDs that match any clause.
-// Handles both [role, label] tuple terms and plain string terms.
+// Resolve a DNF filter to set of agent IDs that match any clause. Uses the
+// shared labelsForAgent/evalDnf so the history id-set matches the live display
+// filter (matchesFilter) — they must agree or scrollback diverges from live.
 function resolveFilter(filter) {
   if (!filter) return new Set()
   const ids = new Set()
   const allAgents = [..._agents]
-  if (_humanId) allAgents.push({ id: _humanId, friendly_name: _humanName || 'user', labels: [_humanName || 'user'] })
+  if (_humanId && !allAgents.some(a => a.id === _humanId)) {
+    allAgents.push({ id: _humanId, friendly_name: _humanName || 'user', status: 'human', labels: [] })
+  }
   for (const a of allAgents) {
-    const virtual = a.status === 'awake' ? ['awake'] : a.status === 'hibernating' ? ['hibernating'] : []
-    const labels = [...(a.labels || []), ...virtual, a.friendly_name, a.id].filter(Boolean)
-    if (a.lineage_name && a.phase) {
-      if (a.phase === 'day') labels.push(a.lineage_name)
-      labels.push(`${a.lineage_name}:${a.phase}`)
-    }
-    const matches = filter.some(clause =>
-      clause.every(term => {
-        const label = Array.isArray(term) ? term[1] : term
-        return labels.includes(label)
-      })
-    )
-    if (matches) ids.add(a.id)
+    if (evalDnf(filter, labelsForAgent(a))) ids.add(a.id)
   }
   return ids
 }
