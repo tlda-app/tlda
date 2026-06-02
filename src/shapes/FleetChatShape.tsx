@@ -2895,6 +2895,8 @@ function FleetChatInner({ shape }: { shape: any }) {
   // fall back to global history inside a filtered view).
   const loadBeforeAgents = useMemo<string[] | null>(
     () => (dnfFilter ? [...resolveFilter(dnfFilter)] : null),
+    // filterKey is the stable string encoding of dnfFilter (avoids re-running on
+    // a fresh array identity each render); resolveFilter is a stable module import.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [filterKey, agents]
   )
