@@ -74,6 +74,7 @@ import { FleetHUD, fleetHudOpenRef } from './overlays/FleetHUD'
 
 const FLEET_TYPES_FOR_VIS = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview'])
 import { BuildWarningPill } from './pills/BuildWarningPill'
+import { BuildErrorPill } from './pills/BuildErrorPill'
 import { BuildProgressPill } from './pills/BuildProgressPill'
 import { AnnotationVisibilityPill } from './pills/AnnotationVisibilityPill'
 import { DraftPill } from './pills/DraftPill'
@@ -1161,11 +1162,12 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
         {isPresentation && <DraftPill />}{isPresentation && role === 'presenter' && <AnnotationVisibilityPill />}<FollowingBadge />
         <ViewPinBadge docName={document.name} />
         <PlaybackPill state={playbackState} />
+        <BuildErrorPill errors={buildErrors} />
         <BuildWarningPill warnings={buildWarnings}>
           <BuildProgressPill />
         </BuildWarningPill>
         {editorRef.current && <FleetIconPill mainEditor={editorRef.current} />}
-        {/* Build errors handled by fleet-docview shapes with 'errors' source */}
+        {/* Build errors: loud pill above + canvas text shapes (BuildErrorOverlay) at the source line */}
       </div>
       {editorRef.current && (
         <FleetHUD
