@@ -2,13 +2,12 @@ import {
   BaseBoxShapeUtil,
   HTMLContainer,
   Rectangle2d,
-  T,
   useEditor,
   useValue,
   stopEventPropagation,
-  DefaultColorStyle,
   AssetRecordType,
 } from 'tldraw'
+import { mathNoteProps } from '../../shared/shapes/math-note-schema.mjs'
 // Type imports not needed with 'any' approach
 import { useCallback, useRef, useEffect, useState, useMemo, useSyncExternalStore, useContext } from 'react'
 // noteThreading removed — no tabs, no merge
@@ -214,20 +213,9 @@ function stopIfNotPenTouch(editor: any, isEditing: boolean) {
 
 export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'math-note' as const
-  static override props = {
-    w: T.number,
-    h: T.number,
-    text: T.string,
-    color: DefaultColorStyle,
-    autoSize: T.optional(T.boolean),
-    choices: T.optional(T.arrayOf(T.string)),
-    selectedChoice: T.optional(T.number),
-    done: T.optional(T.boolean),
-    collapsed: T.optional(T.boolean),
-    docName: T.optional(T.string),
-    docView: T.optional(T.boolean),
-    backingFile: T.optional(T.string),
-  }
+  // Shared with the server sync schema (server/lib/sync-rooms.mjs) so the two
+  // can't drift — a prop mismatch is a TLSyncError that crashes the room.
+  static override props = mathNoteProps
 
   getDefaultProps() {
     // Match the MCP `md` size preset (450×200) so canvas-created notes have

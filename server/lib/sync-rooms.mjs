@@ -14,27 +14,17 @@ import { readFile, writeFile, rename, mkdir, appendFile } from 'node:fs/promises
 import { join, dirname } from 'node:path'
 import { gzipSync, gunzipSync } from 'node:zlib'
 import { emitShapeChangedDebounced } from './webhooks.mjs'
+import { mathNoteProps } from '../../shared/shapes/math-note-schema.mjs'
 
 // --- Custom shape schemas (prop validators only, no React) ---
+// Props that must mirror the client shape util exactly are imported from
+// shared/shapes/*-schema.mjs so the two sides can't drift (a mismatch is a
+// TLSyncError that crashes the room). Shapes still declared inline here have
+// not yet been extracted.
 
 const customShapeSchemas = {
   'math-note': {
-    props: {
-      w: T.number,
-      h: T.number,
-      text: T.string,
-      color: DefaultColorStyle,
-      autoSize: T.optional(T.boolean),
-      choices: T.optional(T.arrayOf(T.string)),
-      selectedChoice: T.optional(T.number),
-      tabs: T.optional(T.arrayOf(T.string)),
-      activeTab: T.optional(T.number),
-      done: T.optional(T.boolean),
-      collapsed: T.optional(T.boolean),
-      docName: T.optional(T.string),
-      docView: T.optional(T.boolean),
-      backingFile: T.optional(T.string),
-    },
+    props: mathNoteProps,
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.math-note',
       sequence: [],
@@ -188,17 +178,6 @@ const customShapeSchemas = {
       sequence: [],
     }),
   },
-  'fleet-container': {
-    props: {
-      w: T.number,
-      h: T.number,
-      label: T.string,
-    },
-    migrations: createMigrationSequence({
-      sequenceId: 'com.tldraw.shape.fleet-container',
-      sequence: [],
-    }),
-  },
   'fleet-search': {
     props: {
       w: T.number,
@@ -318,16 +297,6 @@ const customShapeSchemas = {
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.fleet-reaper',
-      sequence: [],
-    }),
-  },
-  'shadow-handle': {
-    props: {
-      w: T.number,
-      h: T.number,
-    },
-    migrations: createMigrationSequence({
-      sequenceId: 'com.tldraw.shape.shadow-handle',
       sequence: [],
     }),
   },
