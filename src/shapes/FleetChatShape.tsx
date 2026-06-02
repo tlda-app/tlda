@@ -26,7 +26,7 @@ import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil
 import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText, isRecording } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getHumanName, updateEventById, sendViewingContext, setViewingEnrichFn } from '../fleet/fleet-data.mjs'
-import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useElizaPending, useWouldHibernate, sendMessage, loadBefore, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useElizaPending, useWouldHibernate, sendMessage, loadBefore, resolveFilter, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
 import type { ElizaNudge } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
 import { dragCoordinator } from './dragCoordinator'
@@ -1120,16 +1120,24 @@ function FleetChatInner({ shape }: { shape: any }) {
   const historyLoadedRef = useRef<string | null>(null)
   useEffect(() => {
     if (!dnfFilter || dnfFilter.length === 0) return
-    const firstLabel = dnfFilter[0]?.[0]?.[1]
-    if (!firstLabel) return
-    const fleetId = resolveToFleetId(firstLabel)
-    // Agents start as [] (async init). If the label didn't resolve to a
-    // fleet ID yet, bail out — the effect re-runs when agents populate.
-    if (fleetId === firstLabel && !firstLabel.startsWith('fleet:')) return
-    const loadKey = `${filterKey}:${fleetId}`
+    // Resolve the filter to the SET of fleet ids using the same logic the live
+    // display uses (resolveFilter → agent label matching, incl. lineage
+    // `name:phase` colon labels). One resolver for live and history. The server
+    // then expands each id to its lineage's full incarnation set.
+    const ids = [...resolveFilter(dnfFilter)]
+    if (ids.length === 0) {
+      // agents not populated yet (async init): the effect re-runs when `agents`
+      // arrives. agents loaded but nothing matched: surface it (no silent
+      // fallback) so an empty scrollback is diagnosable instead of mysterious.
+      if (agents.length > 0) {
+        log.warn('chat', 'filter resolved to no fleet ids; no history will load', { filter: dnfFilter })
+      }
+      return
+    }
+    const loadKey = `${filterKey}:${ids.join(',')}`
     if (historyLoadedRef.current === loadKey) return
     historyLoadedRef.current = loadKey
-    loadBefore(fleetId, new Date().toISOString(), 200).then((older: any[]) => {
+    loadBefore(ids, new Date().toISOString(), 200).then((older: any[]) => {
       if (older.length > 0) {
         // Deduplicate against live events already in the buffer.
         // convertChatEvent stores DB id in _dbId, not id.
@@ -1149,7 +1157,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       }
     })
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dnfFilter, filterKey, resolveToFleetId])
+  }, [dnfFilter, filterKey, agents])
 
 
   const chatLogRef = useRef<HTMLDivElement>(null)
@@ -2881,19 +2889,28 @@ function FleetChatInner({ shape }: { shape: any }) {
     )
   }, [filterKey, agents])
 
-  // Derive a loadBefore agent: use first agent in filter
-  const loadBeforeAgent = sendTargets[0] ? resolveToFleetId(sendTargets[0]) : undefined
+  // Resolve the filter to the fleet-id set for history paging — same resolver
+  // as the initial load and the live display. null = no filter (unfiltered
+  // view loads global history); [] = filtered but nothing resolved yet (don't
+  // fall back to global history inside a filtered view).
+  const loadBeforeAgents = useMemo<string[] | null>(
+    () => (dnfFilter ? [...resolveFilter(dnfFilter)] : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [filterKey, agents]
+  )
 
   // Infinite scroll — load older messages
   const loadingMore = useRef(false)
   const handleScroll = useCallback(async (e: React.UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget
     if (el.scrollTop > 50 || loadingMore.current || chatMessages.length === 0) return
+    // Filtered view that hasn't resolved to any id yet — don't page in global history.
+    if (loadBeforeAgents !== null && loadBeforeAgents.length === 0) return
     loadingMore.current = true
     const oldestTs = chatMessages[0]?.timestamp
     if (oldestTs) {
       const prevHeight = el.scrollHeight
-      const older = await loadBefore(loadBeforeAgent, oldestTs, 50)
+      const older = await loadBefore(loadBeforeAgents || [], oldestTs, 50)
       if (older.length > 0) {
         setOlderEvents(prev => [...older, ...prev])
       }
@@ -2903,7 +2920,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       })
     }
     loadingMore.current = false
-  }, [chatMessages, loadBeforeAgent])
+  }, [chatMessages, loadBeforeAgents])
 
   // Attach scroll + click handlers to the Virtuoso-owned scroll container.
   // Listener-based (not JSX prop) because the Scroller is memoized and
@@ -2926,18 +2943,20 @@ function FleetChatInner({ shape }: { shape: any }) {
   // handleScroll never fires and the user can't get more messages.
   useEffect(() => {
     const el = chatLogEl
-    if (!el || loadingMore.current || chatMessages.length === 0 || !loadBeforeAgent) return
+    // Auto-load only for a resolved filtered view (a specific id set) — not for
+    // the unfiltered view (null) and not while a filter is still unresolved ([]).
+    if (!el || loadingMore.current || chatMessages.length === 0 || !loadBeforeAgents || loadBeforeAgents.length === 0) return
     if (el.scrollHeight > el.clientHeight) return
     const oldestTs = chatMessages[0]?.timestamp
     if (!oldestTs) return
     loadingMore.current = true
-    loadBefore(loadBeforeAgent, oldestTs, 50).then((older: any[]) => {
+    loadBefore(loadBeforeAgents, oldestTs, 50).then((older: any[]) => {
       if (older.length > 0) {
         setOlderEvents((prev: any[]) => [...older, ...prev])
       }
       loadingMore.current = false
     })
-  }, [chatLogEl, chatMessages, loadBeforeAgent])
+  }, [chatLogEl, chatMessages, loadBeforeAgents])
 
   // --- Chat log drag → ghost pill ---
   // Uses native capture-phase listeners because tldraw intercepts React events

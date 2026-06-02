@@ -673,9 +673,9 @@ export function convertChatEvent(e) {
 // All events (chat + activity) come from the events table via /api/chat/history.
 // No separate activity fetch needed.
 
-export async function fetchHistory(agentId, limit = 200) {
-  const agentParam = agentId ? `&agent=${encodeURIComponent(agentId)}` : ''
-  const res = await fetch(`${FLEET}/api/chat/history?limit=${limit}${agentParam}`).then(r => r.json())
+export async function fetchHistory(agentIds = [], limit = 200) {
+  const agentParams = (agentIds || []).map(id => `&agents=${encodeURIComponent(id)}`).join('')
+  const res = await fetch(`${FLEET}/api/chat/history?limit=${limit}${agentParams}`).then(r => r.json())
 
   const events = (res.events || [])
     .filter(e => {
@@ -689,14 +689,14 @@ export async function fetchHistory(agentId, limit = 200) {
   )
 }
 
-export async function loadBefore(agentId, beforeTs, count = 100) {
+export async function loadBefore(agentIds = [], beforeTs, count = 100) {
   let res
   if (_ws && _ws.readyState === 1) {
-    const msg = { type: 'load-history', agent: agentId || null, before: beforeTs, limit: count }
+    const msg = { type: 'load-history', agents: agentIds || [], before: beforeTs, limit: count }
     res = await wsSend(msg)
   } else {
-    const agentParam = agentId ? `&agent=${encodeURIComponent(agentId)}` : ''
-    res = await fetch(`${FLEET}/api/chat/history?limit=${count}&before=${encodeURIComponent(beforeTs)}${agentParam}`).then(r => r.json())
+    const agentParams = (agentIds || []).map(id => `&agents=${encodeURIComponent(id)}`).join('')
+    res = await fetch(`${FLEET}/api/chat/history?limit=${count}&before=${encodeURIComponent(beforeTs)}${agentParams}`).then(r => r.json())
   }
 
   const events = (res.events || [])

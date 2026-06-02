@@ -2234,9 +2234,9 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'load-history') {
     const limit = Math.min(parseInt(msg.limit || '50'), 1000)
     const before = msg.before || null
-    const agent = msg.agent || null
+    const agents = Array.isArray(msg.agents) ? msg.agents : []
     try {
-      let events = fleetStore.queryChatHistory({ before, agent, limit: limit + 1 })
+      let events = fleetStore.queryChatHistory({ before, agents, limit: limit + 1 })
         .map(e => ({ ...e, event_type: e.type, from: e.from, to: e.to, agent: e.agent_id }))
       const hasMore = events.length > limit
       if (hasMore) events.shift()
@@ -2853,11 +2853,11 @@ async function handleFleetWsMessage(ws, msg) {
 
   // ---- chat-history ----
   if (type === 'chat-history') {
-    const { limit: rawLimit = 50, before, agent } = msg
+    const { limit: rawLimit = 50, before, agents } = msg
     const limit = Math.min(parseInt(rawLimit) || 50, 1000)
     try {
       let events = []
-      const fleetEvents = fleetStore.queryChatHistory?.({ before, agent, limit: limit + 1 }) || []
+      const fleetEvents = fleetStore.queryChatHistory?.({ before, agents: Array.isArray(agents) ? agents : [], limit: limit + 1 }) || []
       events = fleetEvents.map(e => ({ ...e, event_type: e.type, from: e.from, to: e.to, agent: e.agent_id }))
       const hasMore = events.length > limit
       if (hasMore) events.shift()
