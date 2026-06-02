@@ -79,6 +79,34 @@ function lineToCanvasY(
   return best?.canvasY ?? null
 }
 
+// Canvas-Y extent (top, bottom) spanned by all source lines in [loLine, hiLine].
+// Synctex Y is not monotonic in line number (display math, page breaks), so taking
+// the min/max over the whole range — rather than resolving the two endpoints
+// independently — keeps the band from inverting or collapsing after a rebuild.
+// Falls back to the endpoints' nearest-line positions when no lines land in range.
+function lineRangeToCanvasYExtent(
+  index: Array<{ line: number; canvasY: number }>,
+  loLine: number,
+  hiLine: number
+): { top: number; bottom: number } | null {
+  if (index.length === 0) return null
+  let top = Infinity
+  let bottom = -Infinity
+  for (const e of index) {
+    if (e.line < loLine || e.line > hiLine) continue
+    if (e.canvasY < top) top = e.canvasY
+    if (e.canvasY > bottom) bottom = e.canvasY
+  }
+  if (top === Infinity) {
+    // No surviving lines inside the range — fall back to the endpoints.
+    const a = lineToCanvasY(index, loLine)
+    const b = lineToCanvasY(index, hiLine)
+    if (a == null || b == null) return null
+    return { top: Math.min(a, b), bottom: Math.max(a, b) }
+  }
+  return { top, bottom }
+}
+
 function getRibbonShape(editor: Editor) {
   return editor.getShape(RIBBON_SHAPE_ID)
 }
@@ -264,15 +292,25 @@ export async function remapRibbonSegments(
   const segments = getSegments(editor)
   const updated: RibbonSegment[] = []
 
+  const MIN_SPAN_PX = 2
+
   for (const seg of segments) {
-    const newY1 = lineToCanvasY(index, seg.startLine)
-    const newY2 = lineToCanvasY(index, seg.endLine)
-    if (newY1 == null || newY2 == null) continue
-    updated.push({
-      ...seg,
-      y1: newY1 - ribbonY,
-      y2: newY2 - ribbonY,
-    })
+    const loLine = Math.min(seg.startLine, seg.endLine)
+    const hiLine = Math.max(seg.startLine, seg.endLine)
+    const extent = lineRangeToCanvasYExtent(index, loLine, hiLine)
+    if (!extent) continue
+
+    let y1 = extent.top - ribbonY
+    let y2 = extent.bottom - ribbonY
+
+    // Collapse guard: if the remap flattened the band (lines merged onto a
+    // single Y), keep the prior span rather than render an invisible sliver.
+    if (y2 - y1 < MIN_SPAN_PX && seg.y2 - seg.y1 >= MIN_SPAN_PX) {
+      y1 = seg.y1
+      y2 = seg.y2
+    }
+
+    updated.push({ ...seg, y1, y2 })
   }
 
   if (updated.length !== segments.length ||
