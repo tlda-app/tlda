@@ -136,13 +136,49 @@ async function getMacrosForDoc(doc) {
   if (cached && Date.now() - cached.ts < MACROS_CACHE_MS) return cached.macros;
   try {
     const url = `${TLDA_SERVER}/api/projects/${encodeURIComponent(doc)}/macros`;
-    const res = await fleetFetch(url, { signal: AbortSignal.timeout(2000) });
+    const headers = _tldaToken ? { Authorization: `Bearer ${_tldaToken}` } : {};
+    const res = await fleetFetch(url, { headers, signal: AbortSignal.timeout(2000) });
     if (!res.ok) return {};
     const body = await res.json();
     const macros = body?.macros || {};
     _macrosCache.set(doc, { macros, ts: Date.now() });
     return macros;
   } catch { return {}; }
+}
+
+// Resolve which project an agent "is on" from its working folder: the project
+// whose sourceDir contains the agent's cwd (longest match wins). This is the
+// document whose macros render/lint the agent's chat — an agent working in
+// ~/work/bregman-lower-bound uses bregman's \E, \chis, etc. No tool call or
+// human-viewport guessing required; the folder is the source of truth.
+let _agentDocCache = { doc: null, ts: 0 };
+async function getAgentDoc() {
+  if (_agentDocCache.doc !== null && Date.now() - _agentDocCache.ts < MACROS_CACHE_MS) return _agentDocCache.doc;
+  const cwd = getAgentCwd();
+  if (!cwd) return null;
+  try {
+    const headers = _tldaToken ? { Authorization: `Bearer ${_tldaToken}` } : {};
+    const res = await fleetFetch(`${TLDA_SERVER}/api/projects`, { headers, signal: AbortSignal.timeout(2000) });
+    if (!res.ok) return null;
+    const body = await res.json();
+    const projects = body?.projects || [];
+    let best = null;
+    for (const p of projects) {
+      if (!p.sourceDir) continue;
+      const sd = p.sourceDir.replace(/\/+$/, '');
+      if (cwd === sd || cwd.startsWith(sd + '/')) {
+        if (!best || sd.length > best.len) best = { name: p.name, len: sd.length };
+      }
+    }
+    const doc = best?.name || null;
+    _agentDocCache = { doc, ts: Date.now() };
+    return doc;
+  } catch { return null; }
+}
+
+// Macros for the document the calling agent is working on (folder-based).
+async function getMacrosForAgent() {
+  return getMacrosForDoc(await getAgentDoc());
 }
 
 function lintChatMessage(message, macros = {}) {
@@ -1605,7 +1641,7 @@ export async function handleFleetTool(name, args) {
   if (name === 'compose') {
     const { message, filter } = args;
     if (!message) return { content: [{ type: 'text', text: 'Missing required parameter: message' }], isError: true };
-    const macros = await getMacrosForDoc(_currentDoc);
+    const macros = await getMacrosForAgent();
     const lint = lintChatMessage(message, macros);
     const id = `draft-${++_draftCounter}`;
     _drafts.set(id, { message, filter: filter || null, lint, created: Date.now() });
@@ -1762,7 +1798,7 @@ export async function handleFleetTool(name, args) {
       warning += `\n\n⚠ **File(s) not uploaded** (not found or upload failed — removed from message):\n${brokenFiles.map(p => `- ${p}`).join('\n')}`;
     }
 
-    const macros = await getMacrosForDoc(_currentDoc);
+    const macros = await getMacrosForAgent();
     const lint = lintChatMessage(message, macros);
     if (lint.length > 0) {
       warning += `\n\n⚠ **Lint (${lint.length} issue${lint.length > 1 ? 's' : ''}):**\n${lint.map(l => `- ${l}`).join('\n')}\nYour message was sent but has issues. Use compose() → send() to catch these before delivery.`;
