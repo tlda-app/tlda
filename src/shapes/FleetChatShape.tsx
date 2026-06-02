@@ -627,6 +627,12 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
   }, [thinkingAgents, compactingAgents, hibernatingAgents])
 
   const hasActive = statusAgents.size > 0
+  // Remember the last non-empty status so the ghost window can keep rendering
+  // those rows (invisibly) to RESERVE their height. When thinking ends the
+  // agent leaves statusAgents, so without this snapshot the ghost div has no
+  // rows → zero height → the slot collapses and the chat bounces.
+  const lastStatusRef = useRef(statusAgents)
+  if (hasActive) lastStatusRef.current = statusAgents
   const prevActiveRef = useRef(hasActive)
   const [ghost, setGhost] = useState(false)
   const ghostRawItemsRef = useRef(rawItemsLength)
@@ -656,7 +662,7 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
       opacity: ghost ? 0 : 0.6,
       transition: 'opacity 0.2s',
     }}>
-      {!ghost && [...statusAgents.entries()].map(([agentId, { status, startTs }]) => {
+      {[...(hasActive ? statusAgents : lastStatusRef.current).entries()].map(([agentId, { status, startTs }]) => {
         const esc = escalationState?.[agentId]
         const escLevel = esc?.level || 0
         const escConfirmed = esc?.confirmed || 0
