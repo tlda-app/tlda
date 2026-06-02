@@ -16,6 +16,7 @@
 import { toolContentDetail } from './activity-render.mjs'
 import { setActiveMacros } from '../katexMacros'
 import { labelsForAgent, evalDnf } from '../../shared/fleet-labels.mjs'
+import { bindOptimisticEcho } from './optimistic-reconcile.mjs'
 
 // Fleet is embedded in tlda — use same-origin (no separate server)
 const FLEET = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5176'
@@ -369,6 +370,14 @@ export function connect() {
             // Deduplicate against existing events
             const key = `${event.timestamp}:${event.from}`
             if (_events.some(e => (e._dbId || `${e.timestamp}:${e.from}`) === (eid || key))) continue
+            // Echo of a failed-then-recovered send arriving after reconnect. DB rows
+            // carry no _tempId, so bind by content (same sender + text) to the orphaned
+            // optimistic entry instead of appending a duplicate.
+            if (eid && event.type === 'chat' &&
+                bindOptimisticEcho(_events, eid, e => e.from === event.from && e.text === event.text)) {
+              notify('messages', null)
+              continue
+            }
             _events.push(event)
             newEvents.push(event)
           }
@@ -461,6 +470,13 @@ export function connect() {
         // Dedup: skip if this event was already added (optimistic send or prior echo)
         if (data.id && _events.some(e => e._dbId === data.id)) {
           if (data.id > _lastEventId) _lastEventId = data.id
+          return
+        }
+        // If our WS reply was lost, the optimistic entry never got a _dbId. The echo
+        // carries the _tempId we sent — bind it to that entry instead of appending a dup.
+        if (data._tempId && bindOptimisticEcho(_events, data.id, e => e._tempId === data._tempId)) {
+          if (data.id > _lastEventId) _lastEventId = data.id
+          notify('messages', null)
           return
         }
         _events.push(event)

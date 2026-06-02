@@ -2123,7 +2123,10 @@ async function handleFleetWsMessage(ws, msg) {
       const eventId = Number(result.lastInsertRowid)
       fleetStore.db.prepare('INSERT OR IGNORE INTO unread (event_id, to_id, read) VALUES (?, ?, 0)').run(eventId, to)
       eventIds.push(eventId)
-      insertedEvents.push({ id: eventId, type: 'chat', timestamp: ts, from_id: from, to_id: to, text, metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null })
+      // Echo _tempId on the broadcast so a client whose WS reply was lost during
+      // a hiccup can still bind this echo to its orphaned optimistic entry
+      // (the reply, not the DB row, is what normally carries _tempId).
+      insertedEvents.push({ id: eventId, type: 'chat', timestamp: ts, from_id: from, to_id: to, text, metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null, ...(msg._tempId ? { _tempId: msg._tempId } : {}) })
     }
     // Cache _tempId for idempotent retries
     if (msg._tempId) _chatTempIds.set(msg._tempId, { eventIds, recipients, ts: Date.now() })
