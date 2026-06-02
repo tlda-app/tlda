@@ -3626,17 +3626,19 @@ function FleetChatInner({ shape }: { shape: any }) {
                 })
               }
               isAtBottomRef.current = atBottom
-              // Auto-follow intent is NOT inferred from gap here — that guessing
-              // (and the 120/200 threshold mismatch) was the whole bug. Intent is
-              // owned by the fleet-user-scroll handler, which sees real user
-              // scrolls at their single source. Here we only:
-              //  - resume following when we genuinely reach the bottom, and
-              //  - snap back to the exact bottom whenever we're still following
-              //    (auto-follow on, or hard-locked) but drift off it.
+              // Auto-follow intent is owned by the fleet-user-scroll handler.
+              // Here we ONLY resume-follow when we genuinely reach bottom.
+              // We do NOT re-pin smart-follow on a spurious "left bottom":
+              // doing so created an INFINITE BOUNCE when content barely exceeds
+              // the viewport — pin→bottom→(something resets)→left-bottom→pin→…
+              // every ~50ms. Following on real new content is handled by the
+              // content-grow pins (item-grow / list-height-grow), not here.
+              // Hard-lock is the one exception: it means "always pinned", so it
+              // still snaps back.
               if (atBottom) {
                 userScrolledUpRef.current = false
                 setShowScrollBtn(false)
-              } else if (!userScrolledUpRef.current || hardLockedRef.current) {
+              } else if (hardLockedRef.current) {
                 requestAnimationFrame(pinHard)
               }
             }}
