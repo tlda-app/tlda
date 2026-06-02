@@ -3577,9 +3577,24 @@ function FleetChatInner({ shape }: { shape: any }) {
             totalListHeightChanged={(h) => {
               const prev = prevTotalHeightRef.current
               prevTotalHeightRef.current = h
-              if (h > prev && (!userScrolledUpRef.current || hardLockedRef.current)) {
-                log.warn('chat-scroll', 'pin on list-height grow', { prev, h, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
+              const grew = h > prev
+              const follow = !userScrolledUpRef.current || hardLockedRef.current
+              // TRACE: log the gap the MOMENT content grows, follow-or-not. This
+              // catches the "doesn't follow" symptom directly — content grew, we
+              // were supposed to be at bottom, but the view didn't move. The plain
+              // scroll-trace is blind to this (no scrollTop change => no event).
+              const el = chatLogEl
+              const gapNow = el ? Math.round(el.scrollHeight - (el.scrollTop + el.clientHeight)) : null
+              if (grew) {
+                log.warn('chat-scroll', 'TRACE content grew', { prev, h, gapNow, follow, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
+              }
+              if (grew && follow) {
                 pinHard()
+                requestAnimationFrame(() => {
+                  const el2 = chatLogEl
+                  const gapAfter = el2 ? Math.round(el2.scrollHeight - (el2.scrollTop + el2.clientHeight)) : null
+                  log.warn('chat-scroll', 'TRACE after pin', { gapAfter })
+                })
               }
             }}
             atBottomStateChange={(atBottom) => {
