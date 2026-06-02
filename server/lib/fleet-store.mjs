@@ -518,8 +518,16 @@ export class FleetStore {
     if (inserted.from_id && inserted.to_id) {
       const wiretapAgents = this.resolveWiretaps(inserted.from_id, inserted.to_id, inserted.type)
       if (wiretapAgents.length > 0) {
-        inserted.metadata = inserted.metadata || {}
-        inserted.metadata.wiretap_cc = wiretapAgents
+        // metadata can arrive as an unparsed JSON string (e.g. daemon_warning
+        // events); setting a property on a string primitive throws. Coerce to a
+        // plain object first.
+        let meta = inserted.metadata
+        if (typeof meta === 'string') {
+          try { meta = JSON.parse(meta) } catch { meta = {} }
+        }
+        if (!meta || typeof meta !== 'object') meta = {}
+        meta.wiretap_cc = wiretapAgents
+        inserted.metadata = meta
       }
     }
 
