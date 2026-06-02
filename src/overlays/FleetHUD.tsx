@@ -17,8 +17,6 @@ import { getHumanId } from '../fleet/fleet-data.mjs'
 import { getMyAnchorId, isMyFleetShape } from '../shapes/fleet-utils'
 import './FleetHUD.css'
 
-const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview', 'fleet-reaper']
-
 function saveAnchorOffsets(editor: Editor, panOffset: number, cameraY: number) {
   // Never persist a HUD anchor without a resolved identity — getMyAnchorId()
   // falls back to the bare `shape:fleet-hud-anchor` id, which becomes a global
@@ -48,7 +46,6 @@ function saveAnchorOffsets(editor: Editor, panOffset: number, cameraY: number) {
     })
   }
 }
-const FLEET_SHAPE_TYPES_SET = new Set(FLEET_SHAPE_TYPES)
 
 /** Mutable flag: true when the HUD overlay is expanded. Read by
  *  getShapeVisibility on the main editor to hide fleet shapes from
@@ -170,7 +167,6 @@ export function FleetHUD({
   // Track whether any fleet shapes are selected in the HUD editor (layout mode).
   // When active, the HUD canvas gets pointer-events: auto so drag-box select works.
   // Toggled via CSS class on the wrap div — see .fleet-hud-wrap.hud-layout-active in FleetHUD.css.
-  const FLEET_TYPES_HUD = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview', 'fleet-reaper'])
 
   // Camera offsets: initialized once on first expand, then frozen.
   // panOffsetRef (X): only updated by pan deltas, not zoom or shape moves.

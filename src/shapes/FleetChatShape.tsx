@@ -36,7 +36,7 @@ import { getSourceAnchor } from '../synctexAnchor'
 import { log } from '../logger'
 import { linkifyDocRefs, linkifyArrowRefs, linkifyAtRefs, linkifyLabelRefs, buildRefResolver, refToCanvas, type DocRef, type ResolvedRef, type LabelRegionInfo, type TheoremMapEntry } from '../docLinks'
 import { fetchProofInfo, fetchTheoremMap } from '../docInfoCache'
-import { PDF_HEIGHT, PDF_WIDTH } from '../layoutConstants'
+import { PDF_HEIGHT } from '../layoutConstants'
 import { TerminalCard } from './TerminalCard'
 import { Terminal } from 'xterm'
 import { FitAddon } from '@xterm/addon-fit'
@@ -599,7 +599,7 @@ function ContextBadge({ percent }: { percent?: number }) {
  * When all agents stop, the space persists (ghost) until rawItemsLength changes
  * (i.e. a real message arrives to replace it). No timeout — no bounce.
  */
-function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, wouldHibernate, hibernatingAgents, ctx, rawItemsLength, agents, escalationState }: {
+function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, wouldHibernate, hibernatingAgents, ctx, rawItemsLength, agents: _agents, escalationState }: {
   thinkingAgents: Map<string, number>
   compactingAgents: Map<string, number>
   contextPercent: Map<string, number>
@@ -699,7 +699,7 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, woul
   )
 }
 
-function ElizaStatus({ pending, ctx, rawItemsLength }: { pending: ElizaNudge[], ctx: any, rawItemsLength: number }) {
+function ElizaStatus({ pending, ctx: _ctx, rawItemsLength }: { pending: ElizaNudge[], ctx: any, rawItemsLength: number }) {
   const hasActive = pending.length > 0
   const prevActiveRef = useRef(hasActive)
   const [ghost, setGhost] = useState(false)
@@ -2877,6 +2877,9 @@ function FleetChatInner({ shape }: { shape: any }) {
     displayName: string
     color: string
     content?: string
+    sourceAgent?: string
+    filePath?: string
+    fileUrl?: string
     startX: number
     startY: number
     started: boolean

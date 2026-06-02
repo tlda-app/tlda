@@ -874,7 +874,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
 
     const handleBulletClick = useCallback((e: React.MouseEvent): boolean => {
       if (!backingFile) return false
-      const li = (e.target as HTMLElement).closest('li') as HTMLElement | null
+      const li = (e.target as HTMLElement).closest('li') as HTMLLIElement | null
       if (!li) return false
       const container = contentRef.current
       if (!container) return false
@@ -882,10 +882,10 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       const tuplePath: number[] = []
       let el: HTMLElement | null = li
       while (el && el !== container) {
-        const parent = el.parentElement
+        const parent: HTMLElement | null = el.parentElement
         if (!parent) break
         if (el.tagName === 'LI') {
-          tuplePath.unshift(Array.from(parent.children).filter(c => c.tagName === 'LI').indexOf(el))
+          tuplePath.unshift(Array.from(parent.children).filter((c: Element) => c.tagName === 'LI').indexOf(el))
         }
         el = parent
       }

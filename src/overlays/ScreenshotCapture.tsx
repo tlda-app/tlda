@@ -7,7 +7,7 @@
  */
 import { useEffect, useRef, useState, useCallback } from 'react'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
-import { CanvasClipPanel } from '../CanvasClipPanel'
+import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { writeSignal } from '../useYjsSync'
 import type { ScreenshotCaptureState } from '../hooks/useYjsSignals'
 interface ScreenshotCaptureProps {

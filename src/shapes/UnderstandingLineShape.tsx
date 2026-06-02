@@ -280,7 +280,7 @@ export class UnderstandingLineShapeUtil extends BaseBoxShapeUtil<any> {
               }} />
             )]
           }
-          const parts: React.ReactNode[] = []
+          const parts: React.ReactElement[] = []
           if (seg.y1 < eraseRange.y1) {
             parts.push(<div key={`${i}-above`} style={{
               position: 'absolute', left: 0, width: '100%',
@@ -333,7 +333,6 @@ export class UnderstandingLineShapeUtil extends BaseBoxShapeUtil<any> {
         )}
         {/* Suck-in path morph animation */}
         {suckIn && (() => {
-          const offsetY = suckIn.shapeY - shape.y - suckIn.ribbonY + shape.y
           const targetX = shape.props.w / 2
           const morphPath = interpolatePath(suckIn.pathD, targetX - suckIn.shapeX + shape.x, suckIn.t)
           const opacity = suckIn.t < 0.3 ? 0.5 : 0.5 * (1 - (suckIn.t - 0.3) / 0.7)

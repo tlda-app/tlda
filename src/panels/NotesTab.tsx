@@ -209,17 +209,6 @@ export function NotesTab() {
     e.dataTransfer.effectAllowed = 'copy'
   }, [book])
 
-  // Build page name lookup for chapter labels (must be before any early returns — hooks ordering)
-  const pageNames = useMemo(() => {
-    const map = new Map<string, string>()
-    for (const p of editor.getPages()) {
-      map.set(p.id, p.name)
-    }
-    return map
-  }, [editor, notes])
-
-  const multiPage = editor.getPages().length > 1
-
   const sortedRemoteNotes = useMemo(() => {
     const dir = sortDir === 'asc' ? 1 : -1
     return [...remoteNotes].sort((a, b) => {
