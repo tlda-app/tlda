@@ -8,7 +8,7 @@ import type { TLShapePartial, Editor, TLShape, TLShapeId } from 'tldraw'
 import { getSvgText, setSvgText, svgViewBoxStore, anchorIndex, setChangeHighlights, dismissAllChanges, getPageUrl } from './stores'
 import { resolvAnchor, pdfToCanvas, type SourceAnchor } from './synctexAnchor'
 import { extractTextFromSvgAsync, type PageTextData } from './TextSelectionLayer'
-import { currentDocumentInfo, type SvgDocument } from './svgDocumentLoader'
+import { currentDocumentInfo, setCurrentDocumentInfo, createSvgDocumentLayout, type SvgDocument } from './svgDocumentLoader'
 import { createSvgShapes, createHtmlShapes, createSlidesShapes, createImageShapes } from './loaders/createShapes'
 import { anchorShape } from './anchorCluster'
 import { snapHighlighterToText, restoreHighlightsFromShapes, showSourceContextCardForShape } from './highlighterSnap'
@@ -302,6 +302,50 @@ export async function reloadPages(
   if (document.format === 'png' || document.format === 'diff') return { failedPages: [] }
 
   const gen = ++reloadGeneration
+
+  // On a full reload the page COUNT may have changed — e.g. the author added an
+  // \input section and the doc grew. reloadPages was handed the layout captured
+  // at mount; without refreshing it, shapes for the new pages are never created
+  // and the viewer wedges on the stale layout (showing the last old page on
+  // repeat). Re-fetch the count and, if it changed, rebuild the layout and
+  // reconcile the page shapes (create new, drop removed) before fetching SVGs.
+  if (pageNumbers === null && document.format !== 'html' && document.format !== 'markdown' && document.format !== 'slides') {
+    try {
+      const res = await fetch(`/api/projects/${encodeURIComponent(document.name)}`)
+      if (res.ok) {
+        const cfg = await res.json()
+        const newCount: number = cfg.pages ?? document.pages.length
+        if (newCount > 0 && newCount !== document.pages.length) {
+          const docBasePath = document.basePath || `${import.meta.env.BASE_URL || '/'}docs/${document.name}/`
+          const targets = cfg.targets?.map((t: any) => ({
+            name: t.texBase,
+            title: String(t.texBase).replace(/_/g, ' '),
+            pages: t.pages,
+            basePath: docBasePath,
+          }))
+          const fresh = createSvgDocumentLayout(document.name, newCount, docBasePath, targets)
+          // Mutate the live layout object in place so every reader — this reload,
+          // remapAnnotations below, and future reloads — sees the new page set.
+          document.pages.length = 0
+          document.pages.push(...fresh.pages)
+          document.targets = fresh.targets
+          createSvgShapes(editor, document)
+          // Keep the synctex/anchoring snapshot in step with the new page set.
+          setCurrentDocumentInfo({
+            name: document.name,
+            pages: document.pages.map(p => ({
+              bounds: { x: p.bounds.x, y: p.bounds.y, width: p.bounds.width, height: p.bounds.height },
+              width: p.width,
+              height: p.height,
+            })),
+          })
+          console.log(`[Reload] Page count changed (→ ${newCount}); rebuilt layout and reconciled page shapes`)
+        }
+      }
+    } catch (e) {
+      console.warn('[Reload] page-count refresh failed:', (e as Error).message)
+    }
+  }
 
   const basePath = document.basePath || `${import.meta.env.BASE_URL || '/'}docs/${document.name}/`
   const pages = document.pages
