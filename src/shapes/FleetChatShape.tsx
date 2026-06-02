@@ -2068,17 +2068,14 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   // pin-to-bottom: scrollToIndex + direct scrollTop assignment, twice (one
   // immediate, one after layout) to catch late-measure growth.
+  // Pin via Virtuoso's scrollToIndex ONLY — it knows the full virtual list
+  // height. A raw `el.scrollTop = el.scrollHeight` is wrong under virtualization
+  // (scrollHeight is just the *rendered* slice), which made pins land thousands
+  // of px short on long chats — the "doesn't follow" bug.
   const pinHard = useCallback(() => {
     programmaticUntilRef.current = performance.now() + 300
     virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
-    const el = chatLogEl
-    if (el) el.scrollTop = el.scrollHeight
-    requestAnimationFrame(() => {
-      const el2 = chatLogEl
-      if (el2) el2.scrollTop = el2.scrollHeight
-      programmaticUntilRef.current = performance.now() + 100
-    })
-  }, [chatLogEl])
+  }, [])
 
   // Imperative scroll-to-bottom for the floating ⇣ button.
   const scrollToBottom = useCallback(() => {
@@ -3568,7 +3565,10 @@ function FleetChatInner({ shape }: { shape: any }) {
             data={allItems}
             style={{ flex: 1, minHeight: 0 }}
             initialTopMostItemIndex={{ index: 'LAST', align: 'end' }}
-            followOutput={false}
+            // Virtuoso owns the actual scrolling (it's virtualization-aware, so it
+            // reaches the TRUE list bottom); our scroll-intent just gates WHEN it
+            // follows. Follow on new content unless the user deliberately scrolled up.
+            followOutput={() => (!userScrolledUpRef.current || hardLockedRef.current) ? 'auto' : false}
             atBottomThreshold={24}
             // Fires whenever Virtuoso's computed total list height changes —
             // catches in-place item growth (markdown/font/image late-render
