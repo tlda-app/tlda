@@ -814,7 +814,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       result = await sendRpc(route.machine_id, 'rechat', {
         text: rawText,
         cwd: agent.cwd,
-        server_url: `http://127.0.0.1:${process.env.PORT || DEFAULT_PORT}`,
       })
     } catch (e) {
       return res.status(502).json({ ok: false, error: e.message })

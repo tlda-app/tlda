@@ -1905,7 +1905,15 @@ async function handleFleetWsMessage(ws, msg) {
     if (session_id && !agent.session_ids.includes(session_id)) {
       agent.session_ids = [...(agent.session_ids || []), session_id].slice(-10)
     }
-    fleetStore.upsertAgent(agent)
+    try {
+      fleetStore.upsertAgent(agent)
+    } catch (e) {
+      if (e.message?.includes('already taken')) {
+        error(e.message)
+        return
+      }
+      throw e
+    }
     fleetStore.share?.({ type: 'register', agent_id: agentId, from: agentId, to: agentId, text: `${name || agentId} registered` })
     // Registration implies a live claude process — mark alive immediately so
     // the agent shows "awake" right away. The daemon's next sweep confirms
@@ -2340,7 +2348,19 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'update-agent') {
     const { agent: agentData } = msg
     if (agentData?.id) {
-      fleetStore.upsertAgent(agentData)
+      if (agentData.friendly_name) {
+        const cols = fleetStore.checkNameAvailable([agentData.friendly_name], { excludeId: agentData.id, asFriendlyName: true })
+        if (cols.length) {
+          error(`Name "${agentData.friendly_name}" unavailable: ${cols.map(c => c.kind === 'pseudo_label' ? 'reserved routing label' : `collides with ${c.kind} on ${c.agent_id}`).join('; ')}`)
+          return
+        }
+      }
+      try {
+        fleetStore.upsertAgent(agentData)
+      } catch (e) {
+        if (e.message?.includes('already taken')) { error(e.message); return }
+        throw e
+      }
       broadcastState()
     }
     reply({ ok: true })

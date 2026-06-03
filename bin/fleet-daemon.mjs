@@ -59,8 +59,8 @@ import os from 'os'
 import { fileURLToPath } from 'url'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
-import { resolveFilePath, uploadFileToServer } from '../mcp-server/lib/chat-file-processing.mjs'
-import { processMessageText } from '../mcp-server/lib/message-processing.mjs'
+import { resolveFilePath, uploadFileToServer } from '../shared/chat-file-processing.mjs'
+import { processMessageText } from '../shared/message-processing.mjs'
 import {
   loadConfig as _loadSharedConfig, saveConfig as _saveSharedConfig,
   getServerUrl, getRwToken, DEFAULT_PORT, hasTls,

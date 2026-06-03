@@ -56,7 +56,10 @@ export class ResilientWS {
     this._log(`[${this._label}] connecting to ${url.replace(/token=[^&]+/, 'token=***')}`)
 
     try {
-      const ws = new WebSocket(url)
+      // For wss:// with self-signed certs (local dev), skip cert validation.
+      // External wss:// (production) should validate normally.
+      const isLocalWss = url.startsWith('wss://127.0.0.1') || url.startsWith('wss://localhost')
+      const ws = new WebSocket(url, isLocalWss ? { rejectUnauthorized: false } : undefined)
       this._ws = ws
 
       ws.on('open', () => {
