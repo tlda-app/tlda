@@ -1,4 +1,5 @@
-import { StateNode, createShapeId } from 'tldraw'
+import { StateNode } from 'tldraw'
+import { createFleetShape } from '../shapes/fleet-utils'
 
 const W = 400
 const H = 500
@@ -9,15 +10,9 @@ export class FleetAgentsTool extends StateNode {
   override onPointerDown = () => {
     const { editor } = this
     const point = editor.inputs.currentPagePoint
-    const id = createShapeId()
-    editor.createShape({
-      id,
-      type: 'fleet-agents' as any,
-      x: point.x - W / 2,
-      y: point.y,
-      props: { w: W, h: H },
-    })
+    const id = createFleetShape(editor, 'fleet-agents', point.x - W / 2, point.y, { w: W, h: H })
+    if (!id) return
     editor.setCurrentTool('select')
-    editor.select(id)
+    editor.select(id as any)
   }
 }

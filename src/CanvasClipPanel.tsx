@@ -13,8 +13,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Tldraw, createTLStore, stopEventPropagation } from 'tldraw'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor, TLRecord } from 'tldraw'
 import { chatInsertBus } from './shapes/FleetPillShape'
-// @ts-ignore — vanilla JS module
-import { getHumanId } from './fleet/fleet-data.mjs'
+import { FLEET_SHAPE_TYPES, isMyFleetShape } from './shapes/fleet-utils'
 import './CanvasClipPanel.css'
 
 const DEFAULT_WIDTH = 600
@@ -57,6 +56,9 @@ interface CanvasClipPanelProps {
   /** When true, the panel renders full-viewport with transparent background
    *  and pointer-events: none on the container. Fleet shapes get pointer-events: auto. */
   fullViewport?: boolean
+  /** Current fleet identity id — when this changes (e.g. identity resolves after
+   *  initial load), fleet shapes are re-evaluated through the ownership gate. */
+  identityId?: string | null
   children?: React.ReactNode
 }
 
@@ -77,6 +79,7 @@ export function CanvasClipPanel({
   liveEdit = false,
   cameraOverride,
   fullViewport = false,
+  identityId,
   children,
 }: CanvasClipPanelProps) {
   const [editor, setEditor] = useState<Editor | null>(null)
@@ -133,11 +136,9 @@ export function CanvasClipPanel({
 
   const shouldSyncToCopy = (r: TLRecord): boolean => {
     if (!isDocRecord(r)) return false
-    if (lockCamera && r.typeName === 'shape' && !FLEET_TYPES.has((r as any).type)) return false
-    if (lockCamera && r.typeName === 'shape' && FLEET_TYPES.has((r as any).type)) {
-      const uid = (r as any).props?.userId
-      const myId = getHumanId()
-      if (uid && myId && uid !== myId) return false
+    if (lockCamera && r.typeName === 'shape') {
+      if (!FLEET_SHAPE_TYPES.has((r as any).type)) return false
+      if (!isMyFleetShape(r)) return false
     }
     if (r.typeName === 'shape' && !shapeOverlapsVisibleRegion(r.id)) return false
     return true
@@ -324,7 +325,7 @@ export function CanvasClipPanel({
     // naturally breaks the feedback loop: main echoes changes back to HUD via
     // mergeRemoteChanges (source:'remote'), which this listener never sees.
     const isFleetShape = (r: any) =>
-      r.typeName === 'shape' && FLEET_TYPES.has(r.type)
+      r.typeName === 'shape' && FLEET_SHAPE_TYPES.has(r.type)
     const unsubCopy = store.listen(({ changes }) => {
       for (const record of Object.values(changes.added)) {
         if (isPill(record)) continue
@@ -350,6 +351,30 @@ export function CanvasClipPanel({
 
     return () => { unsubMain(); unsubCopy() }
   }, [mainEditor.store, store, lockCamera, readOnly])
+
+  // Identity-resolved resync: when the fleet identity changes (null → real id,
+  // or id switch), re-evaluate all fleet shapes through shouldSyncToCopy and
+  // add/remove from the copy store. This ensures owned shapes appear even if
+  // identity resolved AFTER the initial store creation or live sync events.
+  useEffect(() => {
+    if (!lockCamera || !identityId) return
+    const toAdd: TLRecord[] = []
+    const toRemove: TLRecord['id'][] = []
+    for (const r of mainEditor.store.allRecords()) {
+      if (r.typeName !== 'shape' || !FLEET_SHAPE_TYPES.has((r as any).type)) continue
+      const passes = shouldSyncToCopy(r)
+      const inCopy = store.has(r.id)
+      if (passes && !inCopy) toAdd.push(lockNonFleetUnlockFleet(r))
+      if (!passes && inCopy) toRemove.push(r.id)
+    }
+    if (toAdd.length > 0 || toRemove.length > 0) {
+      store.mergeRemoteChanges(() => {
+        if (toRemove.length > 0) store.remove(toRemove)
+        if (toAdd.length > 0) store.put(toAdd)
+      })
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [identityId, lockCamera])
 
   // HUD always stays in browse mode — it's a viewport overlay, not an editing surface.
   // Mirroring the main tool caused placement tools (voice-note, math-note, etc.) to
@@ -803,8 +828,6 @@ export function CanvasClipPanel({
   const fleetSelectedRef = useRef<Set<string>>(new Set())
   useEffect(() => {
     if (!editor) return
-    const FLEET_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview', 'fleet-reaper'])
-
     function update() {
       const container = editor!.getContainer()
       const selected = new Set(editor!.getSelectedShapeIds() as string[])
@@ -821,7 +844,7 @@ export function CanvasClipPanel({
       const next = new Set<string>()
       for (const id of selected) {
         const shape = editor!.getShape(id as any)
-        if (shape && FLEET_TYPES.has(shape.type as string)) {
+        if (shape && FLEET_SHAPE_TYPES.has(shape.type as string)) {
           next.add(id as string)
           if (!prev.has(id as string)) {
             container.querySelector(`[data-shape-id="${id}"]`)?.classList.add('fleet-drag-mode')
@@ -943,8 +966,6 @@ export function CanvasClipPanel({
   )
 }
 
-const FLEET_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview', 'fleet-reaper'])
-
 function isDocRecord(record: TLRecord): boolean {
   return record.typeName === 'shape' || record.typeName === 'asset' ||
     record.typeName === 'page' || record.typeName === 'document'
@@ -959,7 +980,7 @@ const HUD_ALWAYS_LOCKED = new Set(['svg-page', 'highlight', 'draw', 'dot-annotat
  *  can delete them), lock only intentional non-fleet shapes like PDF pages and annotations. */
 function lockNonFleetUnlockFleet(record: TLRecord): TLRecord {
   if (record.typeName !== 'shape') return record
-  if (FLEET_TYPES.has((record as any).type)) {
+  if (FLEET_SHAPE_TYPES.has((record as any).type)) {
     return { ...record, isLocked: false } as TLRecord
   }
   // Always lock PDF pages and annotation shapes — they shouldn't be moveable in HUD
@@ -972,7 +993,7 @@ function lockNonFleetUnlockFleet(record: TLRecord): TLRecord {
 
 /** Re-lock fleet shapes when syncing back to main store. */
 function relockFleetShape(record: TLRecord): TLRecord {
-  if (record.typeName === 'shape' && FLEET_TYPES.has((record as any).type)) {
+  if (record.typeName === 'shape' && FLEET_SHAPE_TYPES.has((record as any).type)) {
     return { ...record, isLocked: true } as TLRecord
   }
   return record

@@ -3,7 +3,12 @@ import { createShapeId } from 'tldraw'
 // @ts-ignore — vanilla JS module
 import { getHumanId } from '../fleet/fleet-data.mjs'
 
-const FLEET_SHAPE_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview', 'fleet-reaper']
+/** Canonical list of fleet shape types — the single source of truth for
+ *  ownership filtering, visibility, copy gating, and hit-test exclusion.
+ *  Import this everywhere instead of defining local copies. */
+export const FLEET_SHAPE_TYPES = new Set([
+  'fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview', 'fleet-reaper',
+])
 
 export const FLEET_HUD_ANCHOR_ID = 'shape:fleet-hud-anchor' as const
 
@@ -25,9 +30,32 @@ export function getMyAnchorId(): string {
  * can never disagree.
  */
 export function isMyFleetShape(s: any): boolean {
-  if (!FLEET_SHAPE_TYPES.includes(s.type as string)) return false
+  if (!FLEET_SHAPE_TYPES.has(s.type as string)) return false
   const uid = s.props?.userId
   return !!uid && uid === getHumanId()
+}
+
+/** Create a fleet shape with ownership stamped. Returns the shape id, or null
+ *  if identity is unresolved (shape not created). Every fleet-shape creation
+ *  MUST go through this so unowned shapes can never enter the store. */
+export function createFleetShape(
+  editor: Editor,
+  type: string,
+  x: number,
+  y: number,
+  props: Record<string, any>,
+): string | null {
+  const myId = getHumanId()
+  if (!myId) return null
+  const id = createShapeId()
+  editor.createShape({
+    id,
+    type: type as any,
+    x,
+    y,
+    props: { ...props, userId: myId },
+  })
+  return id as unknown as string
 }
 
 /** Delete shapes even if locked (unlock first, then delete). */

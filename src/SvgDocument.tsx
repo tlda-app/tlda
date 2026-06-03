@@ -29,7 +29,7 @@ import { FleetDocViewShapeUtil } from './shapes/FleetDocViewShape'
 import { DocClipShapeUtil } from './shapes/DocClipShape'
 import { FleetPillShapeUtil } from './shapes/FleetPillShape'
 import { FleetSearchShapeUtil } from './shapes/FleetSearchShape'
-import { getMyAnchorId } from './shapes/fleet-utils'
+import { getMyAnchorId, isMyFleetShape, FLEET_SHAPE_TYPES } from './shapes/fleet-utils'
 import { ClusterShapeUtil } from './shapes/ClusterShape'
 import { TerminalShapeUtil } from './shapes/TerminalShape'
 import { ReaperShapeUtil } from './shapes/ReaperShape'
@@ -72,7 +72,6 @@ import { ScrollyOverlay } from './overlays/ScrollyOverlay'
 import { ScreenshotCapture } from './overlays/ScreenshotCapture'
 import { FleetHUD, fleetHudOpenRef } from './overlays/FleetHUD'
 
-const FLEET_TYPES_FOR_VIS = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview'])
 import { BuildWarningPill } from './pills/BuildWarningPill'
 import { BuildErrorPill } from './pills/BuildErrorPill'
 import { BuildProgressPill } from './pills/BuildProgressPill'
@@ -888,12 +887,14 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     shadowActiveVersion,
   }), [docKey, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, selectedChangeId, handleSelectChange, buildErrors, buildWarnings, timelineActive, toggleTimeline, shadowVisible, toggleShadowOverlay, shadowActiveVersion])
 
-  // When the fleet HUD overlay is open, hide fleet shapes in the main editor
-  // from both rendering AND hit-testing. The overlay renders its own copies.
-  // Uses a stable ref (fleetHudOpenRef) so the callback identity never changes
-  // (changing it would recreate the entire editor).
+  // Hide fleet shapes on the main canvas in two cases:
+  // 1. Non-owned fleet shapes (belong to another user or orphans) — always hidden
+  // 2. Owned fleet shapes when HUD is open — the HUD renders its own copies
   const getShapeVisibility = useCallback((shape: any) => {
-    if (fleetHudOpenRef.current && FLEET_TYPES_FOR_VIS.has(shape.type)) return 'hidden' as const
+    if (FLEET_SHAPE_TYPES.has(shape.type)) {
+      if (!isMyFleetShape(shape)) return 'hidden' as const
+      if (fleetHudOpenRef.current) return 'hidden' as const
+    }
     return undefined
   }, [])
 
