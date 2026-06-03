@@ -16,7 +16,7 @@ import { createPlayback, getPlayback, listPlaybacks, editPlayback, playbackTrans
 import { ledger } from './identity.mjs';
 import { formatMessage, formatActivity, formatAnnotationRef } from './format-annotation.mjs';
 import { parseTimestamp } from './lib/parse-timestamp.mjs';
-import { processMessageText } from './lib/message-processing.mjs';
+import { processMessageText } from '../shared/message-processing.mjs';
 import WebSocket from 'ws';
 import { ResilientWS } from '../shared/resilient-ws.mjs';
 
@@ -1429,10 +1429,10 @@ export async function handleFleetTool(name, args) {
     }
     if (labels.size > 0) entry.labels = [...labels];
 
-    // Uniqueness: name must be unique among live agents — error, don't log-and-continue
+    // Uniqueness: name must be unique among non-dead agents (matches server's dead=0 criterion)
     if (entry.friendly_name) {
       const nameConflict = state.agents.find(a =>
-        a.id !== entry.id && (a.friendly_name === entry.friendly_name) && agentAlive(a)
+        a.id !== entry.id && (a.friendly_name === entry.friendly_name) && !a.dead
       );
       if (nameConflict) {
         return { content: [{ type: 'text', text: `Name collision: "${entry.friendly_name}" is already used by live agent ${nameConflict.id}. Use a different name or respawn the existing agent.` }], isError: true };
@@ -1487,10 +1487,17 @@ export async function handleFleetTool(name, args) {
       }
     }
     const wsSent = sendWS('register', regBody);
+    let serverResult = null;
     if (wsSent) {
-      await wsSent.catch(e => process.stderr.write(`[fleet] register WS failed: ${e.message}\n`));
+      serverResult = await wsSent.catch(e => {
+        process.stderr.write(`[fleet] register WS failed: ${e.message}\n`);
+        return { error: e.message };
+      });
     } else {
       process.stderr.write(`[fleet] register failed: WS not connected after 2s\n`);
+    }
+    if (serverResult?.error) {
+      return { content: [{ type: 'text', text: `Registration rejected by server: ${serverResult.error}` }], isError: true };
     }
 
     const agentCount = state.agents.length;

@@ -2661,7 +2661,7 @@ function FleetChatInner({ shape }: { shape: any }) {
 
     logEl.addEventListener('click', onClick)
     return () => logEl.removeEventListener('click', onClick)
-  }, [])
+  }, [chatLogEl])
 
   // Track clicks to determine which fleet chat shape the user is interacting with.
   // Escape interrupt scopes to the shape the user last clicked on.

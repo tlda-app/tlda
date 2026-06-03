@@ -266,6 +266,33 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS idx_agents_lineage ON agents(lineage_id);
     `);
 
+    // Dedupe + enforce unique friendly_name among live agents.
+    // Step 1: resolve existing duplicates — keep the most-recently-seen, mark the rest dead.
+    const dupes = this.db.prepare(`
+      SELECT friendly_name, COUNT(*) AS cnt FROM agents
+      WHERE dead = 0 AND friendly_name IS NOT NULL
+      GROUP BY friendly_name HAVING cnt > 1
+    `).all();
+    if (dupes.length > 0) {
+      this.db.transaction(() => {
+        for (const { friendly_name } of dupes) {
+          const rows = this.db.prepare(
+            'SELECT id, last_seen FROM agents WHERE friendly_name = ? AND dead = 0 ORDER BY last_seen DESC'
+          ).all(friendly_name);
+          // Keep the first (most recent), mark the rest dead
+          for (let i = 1; i < rows.length; i++) {
+            this.db.prepare('UPDATE agents SET dead = 1 WHERE id = ?').run(rows[i].id);
+          }
+        }
+      })();
+      console.log(`[fleet-store] deduplicated friendly_names: ${dupes.map(d => d.friendly_name).join(', ')}`);
+    }
+    // Step 2: create partial unique index (idempotent)
+    this.db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_live_name
+      ON agents(friendly_name) WHERE dead = 0 AND friendly_name IS NOT NULL
+    `);
+
     // Backfill events_fts for existing events (one-time; trigger handles new inserts).
     // Use FTS5 rebuild to populate the index from the content table.
     const ftsCount = this.db.prepare("SELECT COUNT(*) AS c FROM events_fts").get().c;
@@ -590,22 +617,29 @@ export class FleetStore {
   // ---- Agent state management ----
 
   upsertAgent(agent) {
-    this._upsertAgent.run(
-      agent.id,
-      agent.friendly_name || null,
-      agent.tmux_session || null,
-      agent.session_id || null,
-      agent.session_ids ? JSON.stringify(agent.session_ids) : null,
-      agent.cwd || null,
-      agent.labels ? JSON.stringify(agent.labels) : null,
-      agent.registered_at || null,
-      agent.last_seen || new Date().toISOString(),
-      agent.dead ? 1 : 0,
-      agent.human ? 1 : 0,
-      agent.is_manager ? 1 : 0,
-      agent.metadata ? JSON.stringify(agent.metadata) : null,
-      agent.machine_id || null
-    );
+    try {
+      this._upsertAgent.run(
+        agent.id,
+        agent.friendly_name || null,
+        agent.tmux_session || null,
+        agent.session_id || null,
+        agent.session_ids ? JSON.stringify(agent.session_ids) : null,
+        agent.cwd || null,
+        agent.labels ? JSON.stringify(agent.labels) : null,
+        agent.registered_at || null,
+        agent.last_seen || new Date().toISOString(),
+        agent.dead ? 1 : 0,
+        agent.human ? 1 : 0,
+        agent.is_manager ? 1 : 0,
+        agent.metadata ? JSON.stringify(agent.metadata) : null,
+        agent.machine_id || null
+      );
+    } catch (e) {
+      if (e.code === 'SQLITE_CONSTRAINT_UNIQUE' || e.message?.includes('UNIQUE constraint failed')) {
+        throw new Error(`Name "${agent.friendly_name}" is already taken by another live agent`);
+      }
+      throw e;
+    }
   }
 
   // Agents associated with a particular fleet-daemon machine. Used by the

@@ -120,7 +120,7 @@ def ws_register(fleet_id, name, tmux_session, cwd, model=None, effort=None, refr
     _ws_scheme = "wss" if _scheme == "https" else "ws"
     ws_url = f"{_ws_scheme}://{DASH_HOST}:{DASH_PORT}/ws/fleet?agent={fleet_id}"
     try:
-        ws_opts = {"timeout": 3}
+        ws_opts = {"timeout": 5}
         if _ssl_ctx:
             ws_opts["sslopt"] = {"context": _ssl_ctx}
         ws = websocket.create_connection(ws_url, **ws_opts)
@@ -136,7 +136,17 @@ def ws_register(fleet_id, name, tmux_session, cwd, model=None, effort=None, refr
         if meta:
             msg["metadata"] = meta
         ws.send(json.dumps(msg))
+        try:
+            resp = json.loads(ws.recv())
+            if resp.get("error"):
+                ws.close()
+                print(f"[fleet-spawn] registration rejected: {resp['error']}", file=sys.stderr)
+                sys.exit(1)
+        except (json.JSONDecodeError, websocket.WebSocketTimeoutException):
+            pass
         ws.close()
+    except SystemExit:
+        raise
     except Exception as e:
         print(f"[fleet-spawn] pre-register failed (non-fatal): {e}", file=sys.stderr)
 

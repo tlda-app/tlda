@@ -3632,6 +3632,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text: 'One of after, before, or replace is required.' }], isError: true };
     }
     const resolved = path.resolve(content_path);
+    // .scratchinputs/ is fully tlda-managed. For markdown, this tool symlinks
+    // .scratchinputs/<name>.md -> the agent's content_path; if content_path is
+    // ITSELF inside .scratchinputs/, the symlink target equals its own path and
+    // the unlink-then-symlink below destroys the file (self-referential link).
+    // Block it up front, before any server-side mutation.
+    if (/(^|\/)\.scratchinputs(\/|$)/.test(resolved)) {
+      return { content: [{ type: 'text', text: `content_path "${resolved}" is inside the tlda-managed .scratchinputs/ directory. Keep your scratch source elsewhere (e.g. a scratch/ dir) and pass that path — tlda owns .scratchinputs/ and will create the link itself.` }], isError: true };
+    }
     let content;
     try { content = fs.readFileSync(resolved, 'utf8'); } catch (e) {
       return { content: [{ type: 'text', text: `Cannot read ${resolved}: ${e.message}` }], isError: true };
@@ -3671,8 +3679,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (!isMd) fs.writeFileSync(scratchAbsPath, wrappedContent, 'utf8');
       if (result.sourcePath) {
         const symlinkPath = path.join(sourceDir, result.sourcePath);
-        try { fs.unlinkSync(symlinkPath); } catch {}
-        fs.symlinkSync(resolved, symlinkPath);
+        // Never unlink-then-symlink onto the content file itself — that would
+        // delete it and leave a self-referential link. The early .scratchinputs/
+        // guard already prevents this; this is belt-and-suspenders.
+        if (path.resolve(symlinkPath) !== resolved) {
+          try { fs.unlinkSync(symlinkPath); } catch {}
+          fs.symlinkSync(resolved, symlinkPath);
+        }
       }
       if (mainContent) {
         fs.writeFileSync(path.join(sourceDir, mainFile), mainContent, 'utf8');
