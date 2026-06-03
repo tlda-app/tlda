@@ -649,18 +649,31 @@ function findValidSession(agent) {
   return primary;
 }
 
-function tmuxRespawn(sessionName, cwd, fleetId, sessionId) {
-  const dir = cwd || os.homedir();
-  const rGuard = path.join(__dirname, 'bin', 'R-guard');
-  const rsGuard = path.join(__dirname, 'bin', 'Rscript-guard');
-  const setup = `alias R='${rGuard}' Rscript='${rsGuard}'; `;
-  const channelFlag = ' --dangerously-load-development-channels server:tlda';
-  const registerPrompt = 'Call register() with the fleet MCP server. Then call my_task() to check for a pending task.';
-  const cmd = `tmux new-session -d -s ${sessionName} -c ${JSON.stringify(dir)} "${setup}FLEET_ID=${fleetId} FLEET_TMUX_SESSION=${sessionName} claude --resume ${sessionId}${channelFlag} ${JSON.stringify(registerPrompt)}"`;
-  execSync(cmd, { encoding: 'utf8', timeout: 10000 });
-  // Dismiss dev-channels confirmation dialog (send "1" + Enter)
-  exec(`sleep 3 && tmux send-keys -t ${sessionName} 1 && tmux send-keys -t ${sessionName} Enter`, { timeout: 10000 });
-  return sessionName;
+/** Single spawn path — every fleet-shape creation goes through ~/bin/fleet-spawn,
+ *  which clears $TMUX, handles registration, and manages tmux sessions.
+ *  @param {string} name - Agent name
+ *  @param {object} opts
+ *  @param {boolean} [opts.fresh] - --fresh (new agent)
+ *  @param {boolean} [opts.refresh] - --refresh (fresh session, same fleet ID)
+ *  @param {string}  [opts.session] - --session <uuid> (resume specific session)
+ *  @param {string}  [opts.model]
+ *  @param {string}  [opts.effort]
+ *  @param {string}  [opts.cwd]
+ *  @param {string}  [opts.mode] - permission mode
+ *  @returns {string} fleet-spawn stdout (trimmed)
+ */
+function runFleetSpawn(name, opts = {}) {
+  const script = path.join(os.homedir(), 'bin', 'fleet-spawn');
+  const parts = [script];
+  if (opts.fresh) parts.push('--fresh');
+  if (opts.refresh) parts.push('--refresh');
+  if (opts.session) parts.push('--session', opts.session);
+  if (opts.model) parts.push('--model', opts.model);
+  if (opts.effort) parts.push('--effort', opts.effort);
+  if (opts.cwd) parts.push('--cwd', JSON.stringify(opts.cwd));
+  if (opts.mode) parts.push('--mode', opts.mode);
+  parts.push('--no-attach', name);
+  return execSync(parts.join(' '), { encoding: 'utf8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
 }
 
 function windowTail(output, n = 40) {
@@ -1567,17 +1580,13 @@ export async function handleFleetTool(name, args) {
         } catch (e) { process.stderr.write(`[fleet] spawn mode config read failed: ${e.message}\n`); }
       }
 
-      const fleetSpawnScript = path.join(os.homedir(), 'bin', 'fleet-spawn');
-      const cmdParts = [fleetSpawnScript, '--fresh'];
-      if (spawnOpts.model) cmdParts.push('--model', JSON.stringify(spawnOpts.model));
-      if (spawnOpts.effort) cmdParts.push('--effort', JSON.stringify(spawnOpts.effort));
-      if (agentCwd) cmdParts.push('--cwd', JSON.stringify(agentCwd));
-      if (delegateSpawnMode) cmdParts.push('--mode', delegateSpawnMode);
-      cmdParts.push('--no-attach', agentName);
-
       let spawnOutput;
       try {
-        spawnOutput = execSync(cmdParts.join(' '), { encoding: 'utf8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+        spawnOutput = runFleetSpawn(agentName, {
+          fresh: true,
+          model: spawnOpts.model, effort: spawnOpts.effort,
+          cwd: agentCwd, mode: delegateSpawnMode,
+        });
       } catch (e) {
         const msg = (e.stderr || e.stdout || e.message || '').trim();
         return { content: [{ type: 'text', text: `spawn failed: ${msg}` }], isError: true };
@@ -2707,33 +2716,26 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
       } catch {}
     }
 
-    const fleetSpawnScript = path.join(os.homedir(), 'bin', 'fleet-spawn');
-    const cmdParts = [fleetSpawnScript];
-    if (isFresh) cmdParts.push('--fresh');
-    if (isRefresh) cmdParts.push('--refresh');
-    if (args.model) cmdParts.push('--model', args.model);
-    if (args.effort) cmdParts.push('--effort', args.effort);
-    if (args.cwd) cmdParts.push('--cwd', JSON.stringify(args.cwd));
-    if (spawnMode) cmdParts.push('--mode', spawnMode);
-    cmdParts.push('--no-attach');
-    cmdParts.push(agentName);
-
     try {
-      const output = execSync(cmdParts.join(' '), { encoding: 'utf8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'] });
+      const output = runFleetSpawn(agentName, {
+        fresh: isFresh, refresh: isRefresh,
+        model: args.model, effort: args.effort,
+        cwd: args.cwd, mode: spawnMode,
+      });
 
       // Assign lineage/phase after spawn
       if (phase && isFresh) {
         try {
           const result = await sendWS('lineage-assign', { agent: agentName, phase });
           if (result?.error) {
-            return { content: [{ type: 'text', text: `Spawned but lineage assignment failed: ${result.error}\n${output.trim()}` }], isError: true };
+            return { content: [{ type: 'text', text: `Spawned but lineage assignment failed: ${result.error}\n${output}` }], isError: true };
           }
         } catch (e) {
           process.stderr.write(`[fleet] lineage-assign after spawn failed: ${e.message}\n`);
         }
       }
 
-      return { content: [{ type: 'text', text: output.trim() }] };
+      return { content: [{ type: 'text', text: output }] };
     } catch (e) {
       const msg = (e.stderr || e.stdout || e.message || '').trim();
       return { content: [{ type: 'text', text: `spawn failed: ${msg}` }], isError: true };
@@ -3529,27 +3531,14 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
         continue;
       }
 
-      // Respawn into tmux
-      const sessionName = `fleet-${label.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
       const cwd = agent.cwd || os.homedir();
+      const sessionId = findValidSession(agent);
 
       try {
-        // Kill old tmux session if name collision
-        if (tmuxHasSession(sessionName)) {
-          execSync(`tmux kill-session -t ${sessionName}`, { timeout: 3000 });
-        }
+        runFleetSpawn(label, { session: sessionId, cwd });
 
-        tmuxRespawn(sessionName, cwd, agent.id, findValidSession(agent));
-
-        // Register via server API
-        const rehydrateRegWS = sendWS('register', {
-          id: agent.id, name: agent.friendly_name, session_id: agent.session_id,
-          tmux_session: sessionName, cwd,
-        });
-        if (rehydrateRegWS) await rehydrateRegWS.catch(e => process.stderr.write(`[fleet] rehydrate register failed: ${e.message}\n`));
-
-        logEvent({ type: 'rehydrate', action: 'tmux_respawn', agent: agent.id, name: label, tmux_session: sessionName, cwd });
-        respawned.push(`${label} → tmux:${sessionName} (cwd: ${cwd})`);
+        logEvent({ type: 'rehydrate', action: 'tmux_respawn', agent: agent.id, name: label, cwd });
+        respawned.push(`${label} (cwd: ${cwd})`);
 
         // Throttle: wait 5s between spawns to avoid overwhelming the system
         execSync('sleep 5', { timeout: 10000 });
