@@ -1138,7 +1138,7 @@ function syncSourceWatchers(projectList, activeViewers) {
 
     const onFileChange = (filename, fromPoll) => {
       if (!filename) return
-      const isScratch = filename.includes('.scratchinputs/')
+      const isScratch = filename.includes('.tlda/scratch/')
       if (!isScratch) {
         // Source files (.tex, .bib, .sty, etc.) always pass — even if not in the watchSet.
         // The watchSet comes from the PREVIOUS build's .fls; a newly-added \input dep
@@ -1260,9 +1260,9 @@ function flushSourceChanges(projectName) {
     const full = path.join(state.sourceDir, rel)
     if (!fs.existsSync(full)) { deleted.push(rel); continue }
     // Resolve symlinks so the server stores files at their canonical path.
-    // Fixes the case where .scratchinputs/ is a directory symlink (e.g. pointing
-    // to revision/.scratchinputs/) — without this the daemon pushes
-    // .scratchinputs/file.tex but the build expects revision/.scratchinputs/file.tex.
+    // Fixes the case where .tlda/scratch/ is a directory symlink (e.g. pointing
+    // to revision/.tlda/scratch/) — without this the daemon pushes
+    // .tlda/scratch/file.tex but the build expects revision/.tlda/scratch/file.tex.
     let pushPath = rel
     try {
       const realFull = fs.realpathSync(full)
@@ -1296,10 +1296,10 @@ function flushSourceChanges(projectName) {
     }
   }
 
-  // Watch symlink targets in .scratchinputs/ — changes to the linked file
+  // Watch symlink targets in .tlda/scratch/ — changes to the linked file
   // should trigger a rebuild. Poll the targets since they're outside the source dir.
   for (const rel of filePaths) {
-    if (!rel.includes('.scratchinputs/')) continue
+    if (!rel.includes('.tlda/scratch/')) continue
     const full = path.join(state.sourceDir, rel)
     try {
       const stat = fs.lstatSync(full)

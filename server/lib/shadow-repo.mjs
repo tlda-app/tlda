@@ -581,7 +581,7 @@ export async function compileHistoricalDvi({ srcDir, mainFile }) {
   const texBase = basename(mainFile, '.tex')
   const compileDir = join(srcDir, dirname(mainFile))
 
-  // The doc's preamble does \input{.scratchinputs/scratch-template}. In a live
+  // The doc's preamble does \input{.tlda/scratch/scratch-template}. In a live
   // build, build-runner injects its own scratch-template into buildDir (first
   // on TEXINPUTS), so that path is a build artifact and is deliberately kept
   // OUT of the paper scope / shadow repo. That means a historical checkout may
@@ -593,7 +593,7 @@ export async function compileHistoricalDvi({ srcDir, mainFile }) {
   // compiles and renders its real text; scratch sections are simply omitted
   // from historical views (their content isn't versioned anyway).
   try {
-    const scratchDir = join(compileDir, '.scratchinputs')
+    const scratchDir = join(compileDir, '.tlda', 'scratch')
     mkdirSync(scratchDir, { recursive: true })
     writeFileSync(
       join(scratchDir, 'scratch-template.tex'),

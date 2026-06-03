@@ -2162,7 +2162,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'input_scratch',
-      description: 'Inject a scratch section into a document at a specific location. Use this ONCE to place a new scratch section. After placement, edit your scratch file directly — the watcher detects changes and rebuilds automatically. Never create version-suffixed files (v2, v3); git handles versioning. Never write to .scratchinputs/ directly. Accepts .tex or .md/.qmd. Write plain content — no \\begin{scratch} wrapper. Requires exactly one of: after, before, replace. If the build fails, you will receive an automatic fleet chat with the LaTeX errors.',
+      description: 'Inject a scratch section into a document at a specific location. Use this ONCE to place a new scratch section. After placement, edit your scratch file directly — the watcher detects changes and rebuilds automatically. Never create version-suffixed files (v2, v3); git handles versioning. Never write to .tlda/ directly. Accepts .tex or .md/.qmd. Write plain content — no \\begin{scratch} wrapper. Requires exactly one of: after, before, replace. If the build fails, you will receive an automatic fleet chat with the LaTeX errors.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -3632,6 +3632,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text: 'One of after, before, or replace is required.' }], isError: true };
     }
     const resolved = path.resolve(content_path);
+    // .tlda/scratch/ is fully tlda-managed. Block content_path pointing inside
+    // it to prevent self-referential symlinks that destroy the file.
+    if (/(^|\/)\.tlda\/scratch(\/|$)/.test(resolved)) {
+      return { content: [{ type: 'text', text: `content_path "${resolved}" is inside the tlda-managed .tlda/scratch/ directory. Keep your scratch source elsewhere (e.g. a scratch/ dir) and pass that path — tlda owns .tlda/scratch/ and will create the link itself.` }], isError: true };
+    }
     let content;
     try { content = fs.readFileSync(resolved, 'utf8'); } catch (e) {
       return { content: [{ type: 'text', text: `Cannot read ${resolved}: ${e.message}` }], isError: true };
@@ -3640,10 +3645,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     try {
       const agentId = process.env.FLEET_ID || null;
       const agentName = process.env.FLEET_NAME || null;
+      // Relativize content_path to sourceDir for display in \inputscratch
+      const projectInfo = await serverFetch(`/api/projects/${doc}`);
+      const relContentPath = projectInfo.sourceDir ? path.relative(projectInfo.sourceDir, resolved) : path.basename(resolved);
       const result = await serverFetch(`/api/projects/${doc}/input-scratch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content, label, after, before, replace, agentId, agentName, format: isMd ? 'md' : 'tex' }),
+        body: JSON.stringify({ content, label, after, before, replace, agentId, agentName, format: isMd ? 'md' : 'tex', contentPath: relContentPath }),
       });
       const { scratchPath, wrappedContent, scratchTemplatePath, scratchTemplateContent, mainFile, mainContent, targetFile, targetContent, sourceDir } = result;
       if (!sourceDir) {
@@ -3652,7 +3660,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // Write files to the local source directory; the watcher will push them and trigger the build
       const scratchDir = path.join(sourceDir, path.dirname(scratchPath));
       fs.mkdirSync(scratchDir, { recursive: true });
-      // .scratchinputs/ is fully tlda-managed — agents never edit it. Rewrite
+      // Auto-add .tlda/ to .gitignore
+      const gitignorePath = path.join(sourceDir, '.gitignore');
+      try {
+        const existing = fs.existsSync(gitignorePath) ? fs.readFileSync(gitignorePath, 'utf8') : '';
+        if (!existing.split('\n').some(l => l.trim() === '.tlda/' || l.trim() === '.tlda')) {
+          const suffix = existing.endsWith('\n') || existing === '' ? '' : '\n';
+          fs.writeFileSync(gitignorePath, existing + suffix + '.tlda/\n', 'utf8');
+        }
+      } catch {}
+      // .tlda/scratch/ is fully tlda-managed — agents never edit it. Rewrite
       // the template whenever it doesn't match the current canonical content.
       if (scratchTemplatePath && scratchTemplateContent) {
         const templateAbsPath = path.join(sourceDir, scratchTemplatePath);
@@ -3660,19 +3677,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (existing !== scratchTemplateContent) fs.writeFileSync(templateAbsPath, scratchTemplateContent, 'utf8');
       }
       const scratchAbsPath = path.join(sourceDir, scratchPath);
-      // For markdown scratch, skip writing the .tex placeholder entirely.
-      // Local-side utimes can't survive the daemon push (server stamps its
-      // own mtimes on write), so any placeholder we write ends up newer than
-      // the .md on the server and the build runner's staleness check skips
-      // pandoc — the section renders empty. Leaving the .tex absent makes
-      // existsSync(texPath) false in convertScratchMarkdown, so pandoc runs
-      // unconditionally on the first build, writes the real .tex, and
-      // subsequent builds use the mtime check correctly.
       if (!isMd) fs.writeFileSync(scratchAbsPath, wrappedContent, 'utf8');
       if (result.sourcePath) {
         const symlinkPath = path.join(sourceDir, result.sourcePath);
-        try { fs.unlinkSync(symlinkPath); } catch {}
-        fs.symlinkSync(resolved, symlinkPath);
+        // Belt-and-suspenders: don't self-link
+        if (path.resolve(symlinkPath) !== resolved) {
+          try { fs.unlinkSync(symlinkPath); } catch {}
+          fs.symlinkSync(resolved, symlinkPath);
+        }
       }
       if (mainContent) {
         fs.writeFileSync(path.join(sourceDir, mainFile), mainContent, 'utf8');
@@ -3682,7 +3694,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
       const refValidation = validateRefs(content, doc);
       const refWarning = formatRefWarnings(refValidation);
-      const displayPath = result.sourcePath ? path.join(sourceDir, result.sourcePath) : scratchAbsPath;
       const lang = isMd ? 'markdown' : 'latex';
       const contentLines = content.split('\n');
       const preview = contentLines.length > 30
@@ -3690,10 +3701,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         : content;
       const contentBlock = `\n\n**Content written:**\n\`\`\`${lang}\n${preview}\n\`\`\``;
       if (result.action === 'replaced') {
-        return { content: [{ type: 'text', text: `Replaced scratch section "${replace}" — wrote ${displayPath}. Watcher will sync and rebuild.${refWarning}${contentBlock}` }] };
+        return { content: [{ type: 'text', text: `Replaced scratch section "${replace}". Your file: \`${resolved}\`. Watcher will rebuild on edits.${refWarning}${contentBlock}` }] };
       }
       const loc = after ? `after "${after}"` : `before "${before}"`;
-      return { content: [{ type: 'text', text: `Inserted scratch section "${label}" (${loc}) — wrote ${displayPath} and updated ${path.join(sourceDir, mainFile)}. Watcher will sync and rebuild.${refWarning}${contentBlock}` }] };
+      return { content: [{ type: 'text', text: `Inserted scratch section "${label}" ${loc}. Your file: \`${resolved}\`. Watcher will rebuild on edits.${refWarning}${contentBlock}` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
