@@ -1150,6 +1150,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       const choices = shape.props.choices as string[] | undefined
       const selectedChoice = (shape.props.selectedChoice as number) ?? -1
       const hasChoices = choices && choices.length > 0
+      const hasTabs = (shape.props.tabs as string[] | undefined)?.length === 3
 
       let textContent
       if (renderedHtml) {
@@ -1223,7 +1224,54 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           }}
         >
           {textContent}
-          {hasChoices && (
+          {hasTabs && (
+            <div style={{
+              height: '20px',
+              lineHeight: '20px',
+              fontSize: '10px',
+              fontFamily: '"SF Mono", Menlo, monospace',
+              padding: '0 10px',
+              color: 'rgba(0,0,0,0.35)',
+              backgroundColor: 'rgba(0,0,0,0.02)',
+              borderTop: '1px solid rgba(0,0,0,0.04)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              flexShrink: 0,
+              userSelect: 'none',
+            }}>
+              {['tex', 'md', 'outline'].map((label) => {
+                const tabIdx = label === 'tex' ? 1 : label === 'md' ? 0 : 2
+                const isActive = (shape.props.activeTab as number | undefined) === tabIdx
+                return (
+                  <span
+                    key={label}
+                    onPointerDown={(e) => {
+                      stopEventPropagation(e)
+                      const tabsArr = shape.props.tabs as string[]
+                      if (!tabsArr?.[tabIdx]) return
+                      editor.updateShape({
+                        id: shape.id,
+                        type: 'math-note' as any,
+                        props: { activeTab: tabIdx, text: tabsArr[tabIdx] },
+                      })
+                    }}
+                    style={{
+                      cursor: 'pointer',
+                      fontWeight: isActive ? 700 : 400,
+                      opacity: isActive ? 1 : 0.6,
+                      borderBottom: isActive ? '1px solid currentColor' : 'none',
+                      paddingBottom: '1px',
+                      transition: 'opacity 0.15s',
+                    }}
+                  >
+                    {label}
+                  </span>
+                )
+              })}
+            </div>
+          )}
+          {hasChoices && !hasTabs && (
             <div style={{
               padding: '4px 10px 10px',
               display: 'flex',
@@ -1237,8 +1285,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
                   <button
                     key={i}
                     onPointerDown={(e) => {
-                      if (editor.getInstanceState().isPenMode && e.pointerType === 'touch') return
-                      e.stopPropagation()
+                      stopEventPropagation(e)
                       editor.updateShape({
                         id: shape.id,
                         type: 'math-note' as any,

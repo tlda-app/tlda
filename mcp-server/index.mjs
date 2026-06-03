@@ -3751,6 +3751,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const lines = texContent.split('\n');
       const extracted = lines.slice(startLine - 1, endLine).join('\n');
 
+      // Generate three format views
       let mdContent;
       try {
         mdContent = execSync('pandoc -f latex -t markdown --wrap=none', { input: extracted, encoding: 'utf8', timeout: 10000 });
@@ -3758,6 +3759,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: `pandoc conversion failed: ${e.message}` }], isError: true };
       }
       mdContent = mdContent.replace(/\\ref\{([\w:.-]+)\}/g, '@$1');
+
+      const texView = extracted;
+
+      // Outline: extract structural elements (environments, labels, refs, section commands)
+      const outlineLines = [];
+      for (const l of extracted.split('\n')) {
+        const trimmed = l.trim();
+        if (!trimmed || trimmed.startsWith('%')) continue;
+        const beginM = trimmed.match(/\\begin\{(\w+)\}(?:\[([^\]]*)\])?(?:\{([^}]*)\})?/);
+        if (beginM) { outlineLines.push(`- **${beginM[1]}**${beginM[2] ? ` [${beginM[2]}]` : ''}${beginM[3] ? ` {${beginM[3]}}` : ''}`); continue; }
+        const secM = trimmed.match(/\\(section|subsection|paragraph)\*?\{([^}]+)\}/);
+        if (secM) { outlineLines.push(`- **${secM[1]}**: ${secM[2]}`); continue; }
+        const labelM = trimmed.match(/\\label\{([^}]+)\}/);
+        if (labelM) { outlineLines.push(`  - label: \`${labelM[1]}\``); continue; }
+        const eqM = trimmed.match(/\\(eqref|ref)\{([^}]+)\}/g);
+        if (eqM) { outlineLines.push(`  - refs: ${eqM.map(r => '`' + r + '`').join(', ')}`); }
+      }
+      const outlineView = outlineLines.length > 0 ? outlineLines.join('\n') : '(no structural elements found)';
 
       const scratchDir = path.join(sourceDir, 'scratch');
       fs.mkdirSync(scratchDir, { recursive: true });
@@ -3768,9 +3787,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         color: 'violet', size: 'lg', side: 'right',
       });
 
+      // Add format tabs to the created note
+      if (result.ok) {
+        try {
+          const fullId = result.shapeId.startsWith('shape:') ? result.shapeId : `shape:${result.shapeId}`;
+          await updateShapeRest(doc, fullId, {
+            props: {
+              tabs: [mdContent, texView, outlineView],
+              activeTab: 0,
+            },
+          });
+        } catch (e) {
+          process.stderr.write(`[mcp] failed to add format tabs: ${e.message}\n`);
+        }
+      }
+
       const refValidation = validateRefs(mdContent, doc);
       const refWarning = formatRefWarnings(refValidation);
-      return { content: [{ type: 'text', text: `Extracted lines ${startLine}–${endLine} to ${mdPath}${result.ok ? ` (note ${result.shapeId})` : ''}${refWarning}` }] };
+      return { content: [{ type: 'text', text: `Extracted lines ${startLine}–${endLine} to ${mdPath}${result.ok ? ` (note ${result.shapeId})` : ''}. Format tabs: prose / tex / outline.${refWarning}` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
