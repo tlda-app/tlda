@@ -1726,6 +1726,8 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
 
     // Send the reload signal once, after all targets finish.
     const svgsReadyAt = Date.now()
+    // Snapshot the current build errors/warnings to persist in the sentinel.
+    const { errors: buildErrSnapshot, warnings: buildWarnSnapshot } = extractBuildErrors(name)
     signalReload(name, null)
 
     // Total pages across all targets — what the viewer reports as project.pages.
@@ -1780,7 +1782,8 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
     commitSnapshot(name).then(async result => {
       if (result) {
         // Update doc-version sentinel with shadow hash (the build's version identity)
-        updateDocVersionSentinel(name, result.hash, svgsReadyAt).catch(e => {
+        // plus the build's errors/warnings (persistent, convergent).
+        updateDocVersionSentinel(name, result.hash, svgsReadyAt, buildErrSnapshot, buildWarnSnapshot).catch(e => {
           ctx.addLog(`doc-version sentinel update failed (non-fatal): ${e.message}`)
         })
         recordGitSnapshot(name, { commitHash: result.hash, commitMessage: result.message || `Build at ${new Date().toISOString()}`, pages: expectedPages ?? 0 })
@@ -2008,7 +2011,7 @@ function signalReload(name, pages) {
  * Update the doc-version sentinel shape in the Yjs room with the current
  * source git commit hash. Fire-and-forget — call without await.
  */
-async function updateDocVersionSentinel(name, shadowHash, buildReadyAt) {
+async function updateDocVersionSentinel(name, shadowHash, buildReadyAt, errors, warnings) {
   const commitHash = shadowHash || 'unknown'
 
   const docName = `doc-${name}`
@@ -2030,9 +2033,15 @@ async function updateDocVersionSentinel(name, shadowHash, buildReadyAt) {
       commitHash,
       timestamp: Date.now(),
       buildReadyAt: buildReadyAt || Date.now(),
+      // Build errors/warnings live HERE — convergent Yjs state, not a
+      // fire-and-forget signal. A build's error status is a stable property
+      // that must survive reconnect/restart, so the viewer reads it straight
+      // from the sentinel (single source of truth, no signal fallback).
+      warningsJson: warnings ? JSON.stringify(warnings) : '',
+      errorsJson: errors ? JSON.stringify(errors) : '',
     },
   }
 
   await putShape(docName, sentinel)
-  console.log(`[build:${name}] doc-version sentinel updated: ${commitHash.slice(0, 7)}`)
+  console.log(`[build:${name}] doc-version sentinel updated: ${commitHash.slice(0, 7)} (${errors?.length || 0} errors, ${warnings?.length || 0} warnings)`)
 }
