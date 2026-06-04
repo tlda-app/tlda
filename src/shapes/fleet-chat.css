@@ -1161,12 +1161,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .tool-name { color: var(--text); }
 .fleet-chat-shape .tool-sep { color: var(--text-dim); opacity: 0.4; }
 .fleet-chat-shape .tool-arg { color: var(--text-dim); opacity: 0.7; }
-/* Skill tool: highlight which skill is running */
-.fleet-chat-shape .skill-icon { font-size: 10px; opacity: 0.85; margin-right: 1px; }
-.fleet-chat-shape .tool-line.is-skill .tool-name { color: var(--accent, #7a9ec8); font-weight: 600; }
-.fleet-chat-shape .tool-line.is-skill .tool-arg { color: var(--text); opacity: 0.95; }
 /* Compose draft: hover the line to preview the message rendered as if sent */
-.fleet-chat-shape .tool-line.is-compose { cursor: help; }
 .fleet-chat-shape .compose-preview-popover {
   display: none;
   position: absolute;
@@ -1183,6 +1178,16 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   max-height: 320px;
   overflow-y: auto;
   white-space: normal;
+}
+/* Invisible bridge spanning the margin gap so moving the pointer from the
+   line down into the popover never crosses a dead zone (kills the flicker). */
+.fleet-chat-shape .compose-preview-popover::before {
+  content: '';
+  position: absolute;
+  top: -6px;
+  left: 0;
+  right: 0;
+  height: 6px;
 }
 .fleet-chat-shape .tool-line.is-compose:hover .compose-preview-popover,
 .fleet-chat-shape .compose-preview-popover:hover {

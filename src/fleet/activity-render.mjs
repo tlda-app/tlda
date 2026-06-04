@@ -546,15 +546,13 @@ export function renderActivityGroup(group, ctx) {
       arg = arg.replace(/\{\{att:(\d+)\}\}/g, (_, idx) => `<span class="md-file-chip">att:${idx}</span>`)
       let displayName = toolNameRaw
       let detail = t._toolDetail ? `<div class="tool-detail">${esc(t._toolDetail)}</div>` : ''
-      // Skill tool: surface *which* skill is running instead of a bare "Skill" line.
-      let skillIcon = ''
+      // Skill tool: render as an ordinary tool card — surface *which* skill is
+      // running as the argument (no special icon or color).
       if (isSkill) {
         const skillName = t._toolInput?.skill || ''
         const skillArgs = t._toolInput?.args || ''
-        displayName = 'skill'
         arg = skillName ? esc(skillName) : arg
         detail = skillArgs ? `<div class="tool-detail">${esc(skillArgs)}</div>` : ''
-        skillIcon = `<span class="skill-icon" aria-hidden="true">📖</span>`
       }
       const isEdit = (t._toolName || '').toLowerCase() === 'edit' && t._toolInput?.old_string && t._toolInput?.new_string
       const hasDiff = isEdit ? ' has-diff' : ''
@@ -579,11 +577,10 @@ export function renderActivityGroup(group, ctx) {
       const prettyHtml = t._prettyResult
         ? renderPrettyResult(t._toolName, t._prettyResult, ctx, t._toolInput)
         : ''
-      return `<div class="tool-line${hasDiff}${isSkill ? ' is-skill' : ''}${composeClass}"${cmdAttr} data-line="${num}" data-tool-name="${esc(t._toolName || '')}" data-tool-arg="${esc(t._toolArg || '')}">`
+      return `<div class="tool-line${hasDiff}${composeClass}"${cmdAttr} data-line="${num}" data-tool-name="${esc(t._toolName || '')}" data-tool-arg="${esc(t._toolArg || '')}">`
         + `<span class="drag-handle" title="Drag tool call"></span>`
         + `<span class="tool-linenum">${num}</span>`
         + `${countHtml}`
-        + skillIcon
         + `<span class="tool-name">${esc(displayName)}</span>`
         + (showArg ? `<span class="tool-sep">:</span> <span class="tool-arg">${arg}</span>` : '')
         + detail
