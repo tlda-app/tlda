@@ -59,8 +59,8 @@ import os from 'os'
 import { fileURLToPath } from 'url'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
-import { resolveFilePath, uploadFileToServer } from '../mcp-server/lib/chat-file-processing.mjs'
-import { processMessageText } from '../mcp-server/lib/message-processing.mjs'
+import { resolveFilePath, uploadFileToServer } from '../shared/chat-file-processing.mjs'
+import { processMessageText } from '../shared/message-processing.mjs'
 import {
   loadConfig as _loadSharedConfig, saveConfig as _saveSharedConfig,
   getServerUrl, getRwToken, DEFAULT_PORT, hasTls,
@@ -307,18 +307,18 @@ const ACTIVITY_NOISE = new Set([
   'task_check', 'unregister_manager', 'task_done', 'timer',
   'chat', 'delegate', 'report', 'share', 'spawn', 'respawn', 'interrupt',
   'name_agent', 'label_agent', 'observe', 'promote', 'cleanup',
-  'mcp__fleet__wait_for_task', 'mcp__fleet__my_task', 'mcp__fleet__task_list',
-  'mcp__fleet__register', 'mcp__fleet__register_manager', 'mcp__fleet__task_check',
-  'mcp__fleet__task_done', 'mcp__fleet__timer',
-  'mcp__fleet__chat', 'mcp__fleet__delegate', 'mcp__fleet__report',
-  'mcp__fleet__share', 'mcp__fleet__spawn', 'mcp__fleet__respawn',
-  'mcp__fleet__interrupt', 'mcp__fleet__name_agent', 'mcp__fleet__label_agent',
-  'mcp__fleet__observe', 'mcp__fleet__promote', 'mcp__fleet__cleanup',
+  'mcp__tlda__wait_for_task', 'mcp__tlda__my_task', 'mcp__tlda__task_list',
+  'mcp__tlda__register', 'mcp__tlda__register_manager', 'mcp__tlda__task_check',
+  'mcp__tlda__task_done', 'mcp__tlda__timer',
+  'mcp__tlda__chat', 'mcp__tlda__delegate', 'mcp__tlda__report',
+  'mcp__tlda__share', 'mcp__tlda__spawn', 'mcp__tlda__respawn',
+  'mcp__tlda__interrupt', 'mcp__tlda__name_agent', 'mcp__tlda__label_agent',
+  'mcp__tlda__observe', 'mcp__tlda__promote', 'mcp__tlda__cleanup',
   'ToolSearch',
 ])
 
 // Tools whose results should be captured and forwarded as pretty-printed cards
-const PRETTY_PRINT_TOOLS = new Set(['mcp__fleet__search_logs', 'mcp__fleet__get_thread', 'ScheduleWakeup', 'mcp__tlda__screenshot'])
+const PRETTY_PRINT_TOOLS = new Set(['mcp__tlda__search_logs', 'mcp__tlda__get_thread', 'ScheduleWakeup', 'mcp__tlda__screenshot'])
 
 function truncatePrettyResult(text, toolName) {
   if (text.length <= 5000) return text
@@ -1138,7 +1138,7 @@ function syncSourceWatchers(projectList, activeViewers) {
 
     const onFileChange = (filename, fromPoll) => {
       if (!filename) return
-      const isScratch = filename.includes('.scratchinputs/')
+      const isScratch = filename.includes('.tlda/scratch/')
       if (!isScratch) {
         // Source files (.tex, .bib, .sty, etc.) always pass — even if not in the watchSet.
         // The watchSet comes from the PREVIOUS build's .fls; a newly-added \input dep
@@ -1260,9 +1260,9 @@ function flushSourceChanges(projectName) {
     const full = path.join(state.sourceDir, rel)
     if (!fs.existsSync(full)) { deleted.push(rel); continue }
     // Resolve symlinks so the server stores files at their canonical path.
-    // Fixes the case where .scratchinputs/ is a directory symlink (e.g. pointing
-    // to revision/.scratchinputs/) — without this the daemon pushes
-    // .scratchinputs/file.tex but the build expects revision/.scratchinputs/file.tex.
+    // Fixes the case where .tlda/scratch/ is a directory symlink (e.g. pointing
+    // to revision/.tlda/scratch/) — without this the daemon pushes
+    // .tlda/scratch/file.tex but the build expects revision/.tlda/scratch/file.tex.
     let pushPath = rel
     try {
       const realFull = fs.realpathSync(full)
@@ -1296,10 +1296,10 @@ function flushSourceChanges(projectName) {
     }
   }
 
-  // Watch symlink targets in .scratchinputs/ — changes to the linked file
+  // Watch symlink targets in .tlda/scratch/ — changes to the linked file
   // should trigger a rebuild. Poll the targets since they're outside the source dir.
   for (const rel of filePaths) {
-    if (!rel.includes('.scratchinputs/')) continue
+    if (!rel.includes('.tlda/scratch/')) continue
     const full = path.join(state.sourceDir, rel)
     try {
       const stat = fs.lstatSync(full)

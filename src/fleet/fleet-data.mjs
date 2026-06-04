@@ -15,6 +15,8 @@
 
 import { toolContentDetail } from './activity-render.mjs'
 import { setActiveMacros } from '../katexMacros'
+import { labelsForAgent, evalDnf } from '../../shared/fleet-labels.mjs'
+import { bindOptimisticEcho } from './optimistic-reconcile.mjs'
 
 // Fleet is embedded in tlda — use same-origin (no separate server)
 const FLEET = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5176'
@@ -76,42 +78,27 @@ export function matchesFilter(filter, event) {
 function agentMatchesLabel(agentId, label) {
   if (!agentId) return false
   if (agentId === label) return true
-  const agent = _agents.find(a => a.id === agentId)
-  if (!agent) {
-    // Check human
-    if (_humanId && agentId === _humanId) return [_humanName, _humanId].filter(Boolean).includes(label)
-    return false
+  let agent = _agents.find(a => a.id === agentId)
+  if (!agent && _humanId && agentId === _humanId) {
+    // Human not in the agents list yet — synthesize so pseudo-labels resolve.
+    agent = { id: _humanId, friendly_name: _humanName || 'user', status: 'human', labels: [] }
   }
-  const virtual = agent.status === 'awake' ? ['awake'] : agent.status === 'hibernating' ? ['hibernating'] : agent.status === 'human' ? ['human'] : agent.status === 'human-away' ? ['human', 'human-away'] : []
-  const labels = [...(agent.labels || []), ...virtual, agent.friendly_name, agent.id].filter(Boolean)
-  if (agent.lineage_name && agent.phase) {
-    if (agent.phase === 'day') labels.push(agent.lineage_name)
-    labels.push(`${agent.lineage_name}:${agent.phase}`)
-  }
-  return labels.includes(label)
+  if (!agent) return false
+  return labelsForAgent(agent).includes(label)
 }
 
-// Resolve a DNF filter to set of agent IDs that match any clause.
-// Handles both [role, label] tuple terms and plain string terms.
+// Resolve a DNF filter to set of agent IDs that match any clause. Uses the
+// shared labelsForAgent/evalDnf so the history id-set matches the live display
+// filter (matchesFilter) — they must agree or scrollback diverges from live.
 function resolveFilter(filter) {
   if (!filter) return new Set()
   const ids = new Set()
   const allAgents = [..._agents]
-  if (_humanId) allAgents.push({ id: _humanId, friendly_name: _humanName || 'user', labels: [_humanName || 'user'] })
+  if (_humanId && !allAgents.some(a => a.id === _humanId)) {
+    allAgents.push({ id: _humanId, friendly_name: _humanName || 'user', status: 'human', labels: [] })
+  }
   for (const a of allAgents) {
-    const virtual = a.status === 'awake' ? ['awake'] : a.status === 'hibernating' ? ['hibernating'] : []
-    const labels = [...(a.labels || []), ...virtual, a.friendly_name, a.id].filter(Boolean)
-    if (a.lineage_name && a.phase) {
-      if (a.phase === 'day') labels.push(a.lineage_name)
-      labels.push(`${a.lineage_name}:${a.phase}`)
-    }
-    const matches = filter.some(clause =>
-      clause.every(term => {
-        const label = Array.isArray(term) ? term[1] : term
-        return labels.includes(label)
-      })
-    )
-    if (matches) ids.add(a.id)
+    if (evalDnf(filter, labelsForAgent(a))) ids.add(a.id)
   }
   return ids
 }
@@ -177,7 +164,7 @@ export function getAgent(id) {
   }
   const exact = _agents.find(a => a.id === id || a.friendly_name === id)
   if (exact) return exact
-  // Lineage name → day agent
+  // Bare lineage name → resolve to day agent
   return _agents.find(a => a.lineage_name === id && a.phase === 'day')
 }
 
@@ -383,6 +370,14 @@ export function connect() {
             // Deduplicate against existing events
             const key = `${event.timestamp}:${event.from}`
             if (_events.some(e => (e._dbId || `${e.timestamp}:${e.from}`) === (eid || key))) continue
+            // Echo of a failed-then-recovered send arriving after reconnect. DB rows
+            // carry no _tempId, so bind by content (same sender + text) to the orphaned
+            // optimistic entry instead of appending a duplicate.
+            if (eid && event.type === 'chat' &&
+                bindOptimisticEcho(_events, eid, e => e.from === event.from && e.text === event.text)) {
+              notify('messages', null)
+              continue
+            }
             _events.push(event)
             newEvents.push(event)
           }
@@ -453,10 +448,6 @@ export function connect() {
         // Clear any agent NOT in the server's set
         notify('thinking-sync', serverThinking)
         notify('compacting-sync', serverCompacting)
-        // Dry-run hibernate indicator
-        if (msg.wouldHibernate) {
-          notify('would-hibernate', msg.wouldHibernate)
-        }
         return
       }
 
@@ -479,6 +470,13 @@ export function connect() {
         // Dedup: skip if this event was already added (optimistic send or prior echo)
         if (data.id && _events.some(e => e._dbId === data.id)) {
           if (data.id > _lastEventId) _lastEventId = data.id
+          return
+        }
+        // If our WS reply was lost, the optimistic entry never got a _dbId. The echo
+        // carries the _tempId we sent — bind it to that entry instead of appending a dup.
+        if (data._tempId && bindOptimisticEcho(_events, data.id, e => e._tempId === data._tempId)) {
+          if (data.id > _lastEventId) _lastEventId = data.id
+          notify('messages', null)
           return
         }
         _events.push(event)
@@ -673,9 +671,9 @@ export function convertChatEvent(e) {
 // All events (chat + activity) come from the events table via /api/chat/history.
 // No separate activity fetch needed.
 
-export async function fetchHistory(agentId, limit = 200) {
-  const agentParam = agentId ? `&agent=${encodeURIComponent(agentId)}` : ''
-  const res = await fetch(`${FLEET}/api/chat/history?limit=${limit}${agentParam}`).then(r => r.json())
+export async function fetchHistory(agentIds = [], limit = 200) {
+  const agentParams = (agentIds || []).map(id => `&agents=${encodeURIComponent(id)}`).join('')
+  const res = await fetch(`${FLEET}/api/chat/history?limit=${limit}${agentParams}`).then(r => r.json())
 
   const events = (res.events || [])
     .filter(e => {
@@ -689,14 +687,14 @@ export async function fetchHistory(agentId, limit = 200) {
   )
 }
 
-export async function loadBefore(agentId, beforeTs, count = 100) {
+export async function loadBefore(agentIds = [], beforeTs, count = 100) {
   let res
   if (_ws && _ws.readyState === 1) {
-    const msg = { type: 'load-history', agent: agentId || null, before: beforeTs, limit: count }
+    const msg = { type: 'load-history', agents: agentIds || [], before: beforeTs, limit: count }
     res = await wsSend(msg)
   } else {
-    const agentParam = agentId ? `&agent=${encodeURIComponent(agentId)}` : ''
-    res = await fetch(`${FLEET}/api/chat/history?limit=${count}&before=${encodeURIComponent(beforeTs)}${agentParam}`).then(r => r.json())
+    const agentParams = (agentIds || []).map(id => `&agents=${encodeURIComponent(id)}`).join('')
+    res = await fetch(`${FLEET}/api/chat/history?limit=${count}&before=${encodeURIComponent(beforeTs)}${agentParams}`).then(r => r.json())
   }
 
   const events = (res.events || [])

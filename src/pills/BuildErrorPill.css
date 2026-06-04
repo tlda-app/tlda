@@ -1,0 +1,91 @@
+/* BuildErrorPill — mirrors BuildWarningPill, red. Visible (errors matter more
+   than warnings) but calm: no animation, no filled banner. */
+
+.build-error-container {
+  position: relative;
+  pointer-events: all;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.build-error-badge {
+  font-size: 10px;
+  font-weight: 600;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  color: #d9342b;
+  cursor: pointer;
+  opacity: 0.6;
+  transition: opacity 0.3s;
+}
+
+.build-error-badge:hover {
+  opacity: 1;
+}
+
+/* Popup list */
+.build-error-list {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  width: max-content;
+  max-width: min(600px, calc(100vw - 48px));
+  max-height: 320px;
+  overflow-y: auto;
+  background: #fafafa;
+  border: 1px solid rgba(217, 52, 43, 0.3);
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  padding: 4px 0;
+  pointer-events: all;
+  z-index: 10;
+}
+
+.build-error-item {
+  padding: 4px 10px;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #444;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.build-error-loc {
+  display: inline-block;
+  color: #d9342b;
+  font-weight: 600;
+  margin-right: 6px;
+}
+
+.build-error-item.clickable { cursor: pointer; }
+.build-error-item.clickable:hover { background: rgba(217, 52, 43, 0.08); }
+
+.build-error-item + .build-error-item {
+  border-top: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.build-error-item.clean-rebuild {
+  color: #7ab8a0;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 10px;
+  padding-top: 6px;
+  margin-top: 2px;
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+/* Dark mode */
+html[data-theme="dark"] .build-error-badge {
+  color: #ff6b61;
+}
+
+html[data-theme="dark"] .build-error-list {
+  background: #1e1e1e;
+  border-color: rgba(217, 52, 43, 0.4);
+}
+
+html[data-theme="dark"] .build-error-item { color: #ccc; }
+
+html[data-theme="dark"] .build-error-item + .build-error-item {
+  border-top-color: rgba(255, 255, 255, 0.06);
+}

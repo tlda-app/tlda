@@ -21,6 +21,7 @@ import {
   fetchHistory,
   loadBefore,
   matchesFilter,
+  resolveFilter,
   respawnAgent as _respawnAgent,
   killSession as _killSession,
   hibernateSession as _hibernateSession,
@@ -543,34 +544,6 @@ export function useFleetCompacting(dnfFilter?: string[][] | [string,string][][] 
   return compacting
 }
 
-/**
- * Subscribe to dry-run hibernate state.
- * Returns a Map of agentId → idle seconds for agents that would be hibernated.
- */
-export function useWouldHibernate(): Map<string, number> {
-  const [wouldHibernate, setWouldHibernate] = useState<Map<string, number>>(new Map())
-
-  useEffect(() => {
-    let unsub: (() => void) | null = null
-    let cancelled = false
-
-    ensureInit().then(() => {
-      if (cancelled) return
-      unsub = subscribe('would-hibernate', null, (data: any) => {
-        const next = new Map<string, number>()
-        for (const [id, secs] of Object.entries(data)) {
-          next.set(id, secs as number)
-        }
-        setWouldHibernate(next)
-      })
-    })
-
-    return () => { cancelled = true; unsub?.() }
-  }, [])
-
-  return wouldHibernate
-}
-
 export type ElizaNudge = { id: number, label: string, targetId: string, ts: number, msgCount: number }
 
 export function useElizaPending(): ElizaNudge[] {
@@ -776,4 +749,4 @@ export const injectOptimisticEvent = _injectOptimisticEvent
 export const updateOptimisticEvent = _updateOptimisticEvent
 export const reconcileOptimistic = _reconcileOptimistic
 export const fleetWS = _fleetWS
-export { loadBefore, fetchHistory }
+export { loadBefore, fetchHistory, resolveFilter }

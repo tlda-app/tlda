@@ -17,6 +17,7 @@ import https from 'https'
 import http from 'http'
 
 import { getServerUrl, CONFIG_DIR } from '../shared/config.mjs'
+import { labelsForAgent } from '../shared/fleet-labels.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const PID_FILE = path.join(CONFIG_DIR, 'eliza.pid')
@@ -376,6 +377,20 @@ Stop. Re-read Skip's actual messages. If you saved a memory or wrote a briefing,
 Re-read Skip's actual request. Not your interpretation. His words. Then do that thing. If his request doesn't make sense to you, say so BEFORE doing something different — don't silently substitute.
 
 Common substitutions: giving a summary when asked for a specific thing, doing a general exploration when asked for a targeted lookup, writing a framework when asked to fix a specific problem.`,
+    cooldown: 300_000,
+  },
+  {
+    pattern: /\bdefine\s+(?:your|the|that)\s+notation\b|\byou\s+(?:didn'?t|never)\s+define(?:d|\s+(?:your|the|that))?\b|\bundefined\s+notation\b|\bnotation\s+(?:that\s+)?(?:you|they)\s+(?:didn'?t|never)\s+define\b|\bin\s+your\s+head\b|\bI\s+(?:didn'?t|don'?t|never)\s+(?:want|ask(?:ed)?\s+for)\s+a\s+(?:fucking\s+)?book\b|\bwhat\s+you\s+actually\s+said\b/i,
+    skill: 'math-report',
+    message: `🛑 **Skip asked you to pin down your notation — restate, do NOT re-derive.** You used a symbol you never defined, or defined it somewhere he'd have to hunt for (an unrequested file, far up the scrollback). That makes him do work he can't afford. It reads as rude.
+
+The only correct answer:
+- Take the exact claim you already made and restate it with **every symbol defined inline, in this same message**.
+- No new notation. No "see the file." No "as I said earlier." The definition travels *with* the symbol, every time.
+- Keep it to ≤2 sentences. He asked what you meant, not for a book.
+- If the original was incomplete or ill-defined, the honest answer is "here's precisely what I meant" — or "I was hand-waving, here's the gap." Do not bury the dodge in a wall of fresh notation.
+
+Read \`math-report\` before you send: it's the self-review checklist for exactly this — dropped variables, notation drift, unanswered questions.`,
     cooldown: 300_000,
   },
 ]
@@ -927,7 +942,9 @@ function resolveAgentId(nameOrId) {
           try {
             const agents = JSON.parse(buf)
             const list = Array.isArray(agents) ? agents : (agents.agents || [])
-            const agent = list.find(a => a.id === nameOrId || a.friendly_name === nameOrId)
+            // Shared label universe: id, friendly_name, explicit labels, pseudo
+            // and lineage tags — matches the chat router's resolution.
+            const agent = list.find(a => labelsForAgent(a).includes(nameOrId))
             resolve(agent?.id || null)
           } catch { resolve(null) }
         })
@@ -1220,7 +1237,7 @@ async function handleManagerEscalation(agentId, triggerText, mode = 'talk-to-ski
 
 **Before you do ANYTHING, read these skills:** \`manager-team-stewardship\` and \`partner-not-soloist\`. They contain the exact rules for this situation.
 
-**Your first move:** \`mcp__fleet__get_thread\` on ${agentName}'s thread (last 1–2 hours). Find what Skip was asking for — in his words, not yours. Read Skip's messages FIRST, form your understanding, THEN read the agent's messages.
+**Your first move:** \`mcp__tlda__get_thread\` on ${agentName}'s thread (last 1–2 hours). Find what Skip was asking for — in his words, not yours. Read Skip's messages FIRST, form your understanding, THEN read the agent's messages.
 
 **DO NOT:**
 - Send Skip a summary of the thread
@@ -1322,12 +1339,61 @@ async function handleHandoff(agentId, triggerText) {
   const agentName = await resolveAgentName(agentId)
   console.log(`[eliza] handoff triggered for ${agentName} (${agentId})`)
 
+  // Two handoff types. "directly" in the statement → direct handoff: no briefer,
+  // one rotation. The current worker is promoted to manager (day) and a fresh
+  // worker enters at dawn. Otherwise → the briefing path (two rotations) below.
+  if (/\bdirectly\b/i.test(triggerText || '')) {
+    sendChat(OWNER_ID, `Direct handoff from **${agentName}** — promoting it to manager and bringing in a fresh worker.`)
+    sendChat(agentId, `⚠️ Skip is handing your work off directly. You're being promoted to manager; a fresh worker is coming in.`)
+    const agentCwd = await resolveAgentCwd(agentId)
+    const workerName = await nextAgentName(extractBaseTopic(agentName))
+    let spawnResult = await postJson('/api/spawn', { name: workerName, cwd: agentCwd })
+    if (spawnResult.error && spawnResult.error.includes('already exists')) {
+      spawnResult = await postJson('/api/spawn', { agent: workerName, respawn: true })
+    }
+    if (spawnResult.error) {
+      sendChat(OWNER_ID, `⚠️ Failed to spawn worker: ${spawnResult.error}`)
+      return
+    }
+    setTimeout(async () => {
+      try {
+        // One rotation: new worker → dawn, original → day (manager),
+        // old manager → dusk, old dusk → fades.
+        try {
+          await sendRequest({ type: 'lineage-rotate', agent: workerName, lineage: agentName })
+        } catch (e) {
+          sendChat(OWNER_ID, `⚠️ Lineage rotate (${workerName} → dawn in ${agentName}) failed: ${e.message}`)
+        }
+        await postJson('/api/tasks/delegate', {
+          from: AGENT_ID,
+          agent: workerName,
+          description: `Pick up work from ${agentName}`,
+          message: `**Read these skills first:** \`pickup\`
+
+You're taking over the work directly from **${agentName}**, who is now your manager. There's no separate briefing — orient from the thread and check in with your manager.
+${triggerText ? `\n**Skip's handoff message:**\n> ${triggerText}\n` : ''}
+**Steps:**
+1. Read the recent thread to understand where things stand.
+2. Check in with Skip — 3 sentences max: what you understand, what's open, what you'll start on.
+3. Wait for Skip's confirmation before diving in.`,
+        })
+        sendChat(OWNER_ID, `Direct handoff complete. **${workerName}** is the new worker; **${agentName}** is now its manager.`)
+      } catch (e) {
+        console.error(`[eliza] direct handoff delegate failed: ${e.message}`)
+      }
+    }, 15_000)
+    logDecision(agentId, 'handoff-direct', 'handoff', { workerAgent: workerName }, triggerText)
+    return
+  }
+
   sendChat(OWNER_ID, `Starting handoff from **${agentName}**. Spawning briefing agent…`)
   sendChat(agentId, `⚠️ Skip is handing off your work to a fresh agent. Stand by — a briefing agent will read your thread.`)
 
   const agentCwd = await resolveAgentCwd(agentId)
   const briefingName = await nextAgentName(extractBaseTopic(agentName), 'b')
   try {
+    // (The original is demoted day → dusk by the rotation when the briefer
+    // enters as the new day, below — no separate transition needed.)
     let spawnResult = await postJson('/api/spawn', { name: briefingName, cwd: agentCwd })
     if (spawnResult.error && spawnResult.error.includes('already exists')) {
       spawnResult = await postJson('/api/spawn', { agent: briefingName, respawn: true })
@@ -1342,6 +1408,14 @@ async function handleHandoff(agentId, triggerText) {
 
     setTimeout(async () => {
       try {
+        // Rotate the briefer into the lineage as the new day (short-lived).
+        // One rotation: original day → dusk, briefer → day.
+        try {
+          await sendRequest({ type: 'lineage-rotate', agent: briefingName, lineage: agentName })
+        } catch (e) {
+          sendChat(OWNER_ID, `⚠️ Lineage rotate (${briefingName} → day in ${agentName}) failed: ${e.message}`)
+        }
+
         await postJson('/api/tasks/delegate', {
           from: AGENT_ID,
           agent: briefingName,
@@ -1435,6 +1509,16 @@ async function handleHandoffReady(fromId, text) {
 
       setTimeout(async () => {
         try {
+          // Rotate the pickup into the lineage as the new day. One rotation:
+          // briefer day → dusk, original (was dusk) loses its name and drops to
+          // nameless history, pickup → day. Nothing is marked dead or unlinked —
+          // the original just fades and hibernates once no one talks to it.
+          try {
+            await sendRequest({ type: 'lineage-rotate', agent: pickupName, lineage: handoffInfo.originalAgent })
+          } catch (e) {
+            sendChat(OWNER_ID, `⚠️ Lineage rotate (${pickupName} → day in ${handoffInfo.originalAgent}) failed: ${e.message}`)
+          }
+
           await postJson('/api/tasks/delegate', {
             from: AGENT_ID,
             agent: pickupName,
@@ -1482,6 +1566,7 @@ function connect() {
   ws.on('message', (raw) => {
     try {
       const msg = JSON.parse(raw.toString())
+      if (handleWsReply(msg)) return
       handleMessage(msg)
     } catch {}
   })
@@ -1508,6 +1593,34 @@ function send(msg) {
   if (ws?.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ id: msgId++, ...msg }))
   }
+}
+
+const _pendingRequests = new Map()
+
+function sendRequest(msg, timeoutMs = 10_000) {
+  return new Promise((resolve, reject) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      reject(new Error('WS not connected'))
+      return
+    }
+    const id = msgId++
+    const timer = setTimeout(() => {
+      _pendingRequests.delete(id)
+      reject(new Error('timeout'))
+    }, timeoutMs)
+    _pendingRequests.set(id, { resolve, reject, timer })
+    ws.send(JSON.stringify({ id, ...msg }))
+  })
+}
+
+function handleWsReply(msg) {
+  if (!msg.id || !_pendingRequests.has(msg.id)) return false
+  const { resolve, reject, timer } = _pendingRequests.get(msg.id)
+  _pendingRequests.delete(msg.id)
+  clearTimeout(timer)
+  if (msg.error) reject(new Error(msg.error))
+  else resolve(msg.result)
+  return true
 }
 
 function register() {

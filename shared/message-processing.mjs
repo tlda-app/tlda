@@ -1,9 +1,8 @@
 // message-processing.mjs — shared pipeline for chat message text processing.
-// Used by chat() in fleet.mjs and rechat daemon RPC.
+// Used by MCP chat()/compose(), daemon rechat RPC, and server unquote-file.
 import fs from 'fs'
 import path from 'path'
-import os from 'os'
-import { uploadFileToServer } from './chat-file-processing.mjs'
+import { resolveFilePath, uploadFileToServer } from './chat-file-processing.mjs'
 
 const PATH_EXT = 'md|R|qmd|py|mjs|js|ts|tsx|jsx|css|html|tex|bib|rds|csv|tsv|txt|sh|yml|yaml|json|toml|cfg|log|svg|png|jpg|jpeg|gif|webp|pdf|sql|xml|rs|go|c|h|cpp|hpp|lua|rb|jl|rmd'
 const pathRe = new RegExp(
@@ -16,7 +15,6 @@ const pathRe = new RegExp(
 // Returns { resolvedMessage, inlineAttachments } where inlineAttachments entries
 // have { type: 'file', id, path, name } — no url yet (call uploadAttachments next).
 export function detectAttachments(message, agentCwd) {
-  if (!agentCwd) return { resolvedMessage: message, inlineAttachments: [] }
   const inlineAttachments = []
   const masked = []
   const maskToken = (kind, raw) => {
@@ -44,8 +42,7 @@ export function detectAttachments(message, agentCwd) {
   })
   // 3b. Bare file paths — any match enters the pipeline; missing files are marked broken.
   working = working.replace(pathRe, (match, filePath) => {
-    const expanded = filePath.replace(/^~\//, os.homedir() + '/')
-    const resolved = expanded.startsWith('/') ? expanded : path.resolve(agentCwd, expanded)
+    const resolved = resolveFilePath(filePath, agentCwd)
     const id = attIdx++
     if (fs.existsSync(resolved)) {
       inlineAttachments.push({ type: 'file', id, path: resolved, name: path.basename(resolved) })

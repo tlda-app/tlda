@@ -1,4 +1,5 @@
-import { StateNode, createShapeId } from 'tldraw'
+import { StateNode } from 'tldraw'
+import { createFleetShape } from '../shapes/fleet-utils'
 
 const W = 400
 const H = 600
@@ -9,15 +10,9 @@ export class FleetChatTool extends StateNode {
   override onPointerDown = () => {
     const { editor } = this
     const point = editor.inputs.currentPagePoint
-    const id = createShapeId()
-    editor.createShape({
-      id,
-      type: 'fleet-chat' as any,
-      x: point.x - W / 2,
-      y: point.y,
-      props: { w: W, h: H, filter: [] },
-    })
+    const id = createFleetShape(editor, 'fleet-chat', point.x - W / 2, point.y, { w: W, h: H, filter: [] })
+    if (!id) return
     editor.setCurrentTool('select')
-    editor.select(id)
+    editor.select(id as any)
   }
 }

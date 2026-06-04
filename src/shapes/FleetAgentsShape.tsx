@@ -18,6 +18,7 @@ import {
 import { useState, useCallback, useMemo, useRef, useEffect, memo } from 'react'
 import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, useFleetContext, searchFleet, hibernateSession, spawnAgent } from '../fleet-data-adapter'
 import { dropPillOnTarget } from './FleetPillShape'
+import { agentDisplayName } from './fleet-utils'
 import { dragCoordinator } from './dragCoordinator'
 import { useIsInViewport } from './useIsInViewport'
 
@@ -104,6 +105,33 @@ function getGhostCompletion(input: string, projects: string[], catName: string):
   return segCompletion
 }
 
+const SEG_LABELS = ['project', 'name', 'model', 'effort']
+
+// Candidate list for the segment the cursor is currently in (the last colon-part).
+// Shows canonical values only (not shorthand aliases) so the dropdown stays readable.
+function getSegmentCandidates(input: string, projects: string[]): { pos: number; prefix: string; candidates: string[] } {
+  const parts = input.split(':')
+  const pos = parts.length // 1=project, 2=name, 3=model, 4=effort
+  const prefix = parts[parts.length - 1]
+  let pool: string[] = []
+  if (pos === 1) pool = projects
+  else if (pos === 2) pool = CAT_NAMES
+  else if (pos === 3) pool = ALL_MODELS
+  else if (pos === 4) pool = EFFORT_LEVELS
+  const lower = prefix.toLowerCase()
+  const candidates = prefix
+    ? pool.filter(c => c.toLowerCase().startsWith(lower) && c !== prefix)
+    : pool
+  return { pos, prefix, candidates }
+}
+
+// Replace the current (last) segment's typed prefix with the chosen candidate.
+function applyCandidate(input: string, candidate: string): string {
+  const parts = input.split(':')
+  parts[parts.length - 1] = candidate
+  return parts.join(':')
+}
+
 // --- Nick color system (shared with FleetChatShape) ---
 const NICK_COLORS = ['#7a9ec8', '#9370db', '#c8956a', '#6aafb0', '#b87a95', '#c8b060']
 const nickMap = new Map<string, string>()
@@ -147,21 +175,25 @@ function formatEffort(effort: string): string {
 }
 
 
-function agentDisplayName(agent: any): string {
-  return agent.friendly_name || (agent.id || '').replace('fleet:', '')
-}
+// agentDisplayName imported from ./fleet-utils — single source of truth so the
+// panel and the chat target chip can't drift.
 
 function PhaseIcon({ phase }: { phase: string | null }) {
-  if (!phase || phase === 'day') return null
+  // dawn is the default (the worker) — no icon. Only the non-default roles are
+  // marked: day (manager) and dusk (consultant). Dropping the dawn icon removes
+  // the dawn/dusk mirror-image confusion.
+  if (!phase || phase === 'dawn') return null
   const size = 12
   const style = { opacity: 0.6, flexShrink: 0, marginRight: 3 }
-  if (phase === 'dawn') {
+  if (phase === 'day') {
+    // midday sun — full disc with rays (clearly distinct from dusk's horizon sun)
     return (
       <svg width={size} height={size} viewBox="0 0 16 16" style={style}>
-        <line x1="0.5" y1="11" x2="15.5" y2="11" stroke="currentColor" fill="none" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
-        <path d="M9 11 a3 3 0 0 1 6 0" stroke="currentColor" fill="none" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
-        <line x1="12" y1="6" x2="12" y2="4" stroke="currentColor" fill="none" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
-        <line x1="15" y1="9" x2="16.5" y2="8" stroke="currentColor" fill="none" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+        <circle cx="8" cy="8" r="3" stroke="currentColor" fill="none" strokeWidth={1.5} />
+        <line x1="8" y1="1" x2="8" y2="2.5" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" />
+        <line x1="8" y1="13.5" x2="8" y2="15" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" />
+        <line x1="1" y1="8" x2="2.5" y2="8" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" />
+        <line x1="13.5" y1="8" x2="15" y2="8" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" />
       </svg>
     )
   }
@@ -353,7 +385,7 @@ function useLastMessages(agents: any[]): Record<string, string> {
 
   useEffect(() => {
     let mounted = true
-    const names = agents.map(a => agentDisplayName(a))
+    const names = agents.map(a => agentDisplayName(a, agents))
     Promise.all(names.map(async (name) => {
       const msg = await fetchLastMessage(name)
       return [name, msg?.text || ''] as const
@@ -416,6 +448,20 @@ function FleetAgentsInner({ shape }: { shape: any }) {
   const [projectList, setProjectList] = useState<string[]>([])
   const [catName] = useState(() => CAT_NAMES[Math.floor(Math.random() * CAT_NAMES.length)])
   const spawnInputRef = useRef<HTMLInputElement>(null)
+  const [spawnFocused, setSpawnFocused] = useState(false)
+  const [dropdownIdx, setDropdownIdx] = useState(-1) // -1 = nothing highlighted
+  const [dropdownDismissed, setDropdownDismissed] = useState(false)
+  const { pos: segPos, candidates: segCandidates } = useMemo(
+    () => getSegmentCandidates(spawnDoc, projectList),
+    [spawnDoc, projectList],
+  )
+  const dropdownOpen = spawnFocused && !dropdownDismissed && segCandidates.length > 0
+  const acceptCandidate = useCallback((candidate: string) => {
+    setSpawnDoc(applyCandidate(spawnDoc, candidate))
+    setDropdownIdx(-1)
+    setDropdownDismissed(true)
+    spawnInputRef.current?.focus()
+  }, [spawnDoc])
   useEffect(() => {
     fetch('/api/projects').then(r => r.ok ? r.json() : { projects: [] }).then((data: any) => {
       const projects = Array.isArray(data) ? data : (data.projects || [])
@@ -448,7 +494,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     }
     const dir = sortAsc ? 1 : -1
     list.sort((a, b) => {
-      if (sortKey === 'name') return dir * agentDisplayName(a).localeCompare(agentDisplayName(b))
+      if (sortKey === 'name') return dir * agentDisplayName(a, agents).localeCompare(agentDisplayName(b, agents))
       if (sortKey === 'status') {
         const order: Record<string, number> = { awake: 0, hibernating: 1 }
         const ca = order[agentCategory(a)] ?? 2
@@ -559,12 +605,13 @@ function FleetAgentsInner({ shape }: { shape: any }) {
             <AgentRow
               key={agent.id}
               agent={agent}
+              allAgents={agents}
               tasks={getTasksForAgent(agent.id)}
               unreadCount={unreadCounts[agent.id] || 0}
               contextPct={contextPercent.get(agent.id)}
               dimmed={agentCategory(agent) === 'hibernating'}
               expanded={expandedId === agent.id}
-              lastMessage={lastMessages[agentDisplayName(agent)] || ''}
+              lastMessage={lastMessages[agentDisplayName(agent, agents)] || ''}
               onToggleExpand={() => setExpandedId(expandedId === agent.id ? null : agent.id)}
               onStartDrag={startDrag}
             />
@@ -593,21 +640,54 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                 ref={spawnInputRef}
                 className="fleet-agents-spawn-search"
                 value={spawnDoc}
-                onChange={(e) => setSpawnDoc(e.target.value)}
+                onFocus={() => setSpawnFocused(true)}
+                onBlur={() => { setSpawnFocused(false); setDropdownIdx(-1) }}
+                onChange={(e) => { setSpawnDoc(e.target.value); setDropdownIdx(-1); setDropdownDismissed(false) }}
                 onKeyDown={(e) => {
                   e.stopPropagation()
-                  if (e.key === 'Tab') {
-                    const ghost = getGhostCompletion(spawnDoc, projectList, catName)
-                    if (ghost) { e.preventDefault(); setSpawnDoc(spawnDoc + ghost) }
+                  if (e.key === 'ArrowDown') {
+                    e.preventDefault()
+                    setDropdownDismissed(false)
+                    if (segCandidates.length) setDropdownIdx(i => Math.min(i + 1, segCandidates.length - 1))
+                  } else if (e.key === 'ArrowUp') {
+                    e.preventDefault()
+                    setDropdownIdx(i => Math.max(i - 1, -1))
+                  } else if (e.key === 'Escape') {
+                    if (dropdownOpen) { e.preventDefault(); setDropdownDismissed(true); setDropdownIdx(-1) }
+                  } else if (e.key === 'Tab') {
+                    if (dropdownOpen && dropdownIdx >= 0) {
+                      e.preventDefault()
+                      acceptCandidate(segCandidates[dropdownIdx])
+                    } else {
+                      const ghost = getGhostCompletion(spawnDoc, projectList, catName)
+                      if (ghost) { e.preventDefault(); setSpawnDoc(spawnDoc + ghost); setDropdownDismissed(true) }
+                    }
                   } else if (e.key === 'Enter') {
                     e.preventDefault()
-                    const { doc, name, model, effort } = parseSpawnInput(spawnDoc)
-                    spawnAgent(model || DEFAULT_MODEL, doc || undefined, name, effort || DEFAULT_EFFORT)
+                    if (dropdownOpen && dropdownIdx >= 0) {
+                      acceptCandidate(segCandidates[dropdownIdx])
+                    } else {
+                      const { doc, name, model, effort } = parseSpawnInput(spawnDoc)
+                      spawnAgent(model || DEFAULT_MODEL, doc || undefined, name, effort || DEFAULT_EFFORT)
+                    }
                   }
                 }}
                 placeholder=""
               />
               <span className="fleet-agents-spawn-ghost"><span style={{ visibility: 'hidden' }}>{spawnDoc}</span>{getGhostCompletion(spawnDoc, projectList, catName)}</span>
+              {dropdownOpen && (
+                <ul className="fleet-agents-spawn-dropdown" onPointerDown={(e) => e.stopPropagation()}>
+                  <li className="fleet-agents-spawn-dropdown-label">{SEG_LABELS[segPos - 1]}</li>
+                  {segCandidates.map((c, i) => (
+                    <li
+                      key={c}
+                      className={'fleet-agents-spawn-dropdown-item' + (i === dropdownIdx ? ' is-active' : '')}
+                      onMouseEnter={() => setDropdownIdx(i)}
+                      onMouseDown={(e) => { e.preventDefault(); acceptCandidate(c) }}
+                    >{c}</li>
+                  ))}
+                </ul>
+              )}
             </span>
             <button
               className="fleet-agents-spawn-btn"
@@ -636,6 +716,7 @@ const FleetAgentsComponent = memo(function FleetAgentsComponent({ shape }: { sha
 
 function AgentRow({
   agent,
+  allAgents,
   tasks,
   dimmed,
   unreadCount,
@@ -646,6 +727,7 @@ function AgentRow({
   onStartDrag,
 }: {
   agent: any
+  allAgents: any[]
   tasks: any[]
   dimmed?: boolean
   unreadCount: number
@@ -657,7 +739,7 @@ function AgentRow({
 }) {
   const firstTask = tasks[0]
   const taskDesc = firstTask?.title || firstTask?.description || ''
-  const name = agentDisplayName(agent)
+  const name = agentDisplayName(agent, allAgents)
   const color = getNickColor(agent.id, agent.is_manager)
   const labels: string[] = agent.labels || []
   const ago = formatRelativeTime(agent._ts)

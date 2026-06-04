@@ -1,10 +1,6 @@
 #!/usr/bin/env node
 /**
- * MCP Server for TLDraw Feedback
- *
- * Provides:
- * - HTTP endpoint to receive snapshots from Share button
- * - MCP tools to wait for / check feedback
+ * Unified MCP Server — tlda doc tools + fleet agent tools.
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -13,6 +9,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
+import { getFleetTools, handleFleetTool, initFleet, TLDA_INSTRUCTIONS } from './fleet-tools.mjs';
 import http from 'http';
 import fs from 'fs';
 import os from 'os';
@@ -1861,7 +1858,15 @@ function broadcastReply(shapeId, text) {
 // MCP Server
 const server = new Server(
   { name: 'tlda', version: '1.0.0' },
-  { capabilities: { tools: {} } }
+  {
+    capabilities: {
+      tools: {},
+      experimental: {
+        'claude/channel': {},
+      },
+    },
+    instructions: TLDA_INSTRUCTIONS,
+  }
 );
 
 // List available tools
@@ -2186,7 +2191,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'input_scratch',
-      description: 'Inject a scratch section into a document at a specific location. Use this ONCE to place a new scratch section. After placement, edit your scratch file directly — the watcher detects changes and rebuilds automatically. Never create version-suffixed files (v2, v3); git handles versioning. Never write to .scratchinputs/ directly. Accepts .tex or .md/.qmd. Write plain content — no \\begin{scratch} wrapper. Requires exactly one of: after, before, replace. If the build fails, you will receive an automatic fleet chat with the LaTeX errors.',
+      description: 'Inject a scratch section into a document at a specific location. Use this ONCE to place a new scratch section. After placement, edit your scratch file directly — the watcher detects changes and rebuilds automatically. Never create version-suffixed files (v2, v3); git handles versioning. Never write to .tlda/ directly. Accepts .tex or .md/.qmd. Write plain content — no \\begin{scratch} wrapper. Requires exactly one of: after, before, replace. If the build fails, you will receive an automatic fleet chat with the LaTeX errors.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -2265,6 +2270,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['id'],
       },
     },
+    ...getFleetTools(),
   ],
 }));
 
@@ -3723,6 +3729,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text: 'One of after, before, or replace is required.' }], isError: true };
     }
     const resolved = path.resolve(content_path);
+    // .tlda/scratch/ is fully tlda-managed. Block content_path pointing inside
+    // it to prevent self-referential symlinks that destroy the file.
+    if (/(^|\/)\.tlda\/scratch(\/|$)/.test(resolved)) {
+      return { content: [{ type: 'text', text: `content_path "${resolved}" is inside the tlda-managed .tlda/scratch/ directory. Keep your scratch source elsewhere (e.g. a scratch/ dir) and pass that path — tlda owns .tlda/scratch/ and will create the link itself.` }], isError: true };
+    }
     let content;
     try { content = fs.readFileSync(resolved, 'utf8'); } catch (e) {
       return { content: [{ type: 'text', text: `Cannot read ${resolved}: ${e.message}` }], isError: true };
@@ -3731,10 +3742,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     try {
       const agentId = process.env.FLEET_ID || null;
       const agentName = process.env.FLEET_NAME || null;
+      // Relativize content_path to sourceDir for display in \inputscratch
+      const projectInfo = await serverFetch(`/api/projects/${doc}`);
+      const relContentPath = projectInfo.sourceDir ? path.relative(projectInfo.sourceDir, resolved) : path.basename(resolved);
       const result = await serverFetch(`/api/projects/${doc}/input-scratch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content, label, after, before, replace, agentId, agentName, format: isMd ? 'md' : 'tex' }),
+        body: JSON.stringify({ content, label, after, before, replace, agentId, agentName, format: isMd ? 'md' : 'tex', contentPath: relContentPath }),
       });
       const { scratchPath, wrappedContent, scratchTemplatePath, scratchTemplateContent, mainFile, mainContent, targetFile, targetContent, sourceDir } = result;
       if (!sourceDir) {
@@ -3743,7 +3757,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // Write files to the local source directory; the watcher will push them and trigger the build
       const scratchDir = path.join(sourceDir, path.dirname(scratchPath));
       fs.mkdirSync(scratchDir, { recursive: true });
-      // .scratchinputs/ is fully tlda-managed — agents never edit it. Rewrite
+      // Auto-add .tlda/ to .gitignore
+      const gitignorePath = path.join(sourceDir, '.gitignore');
+      try {
+        const existing = fs.existsSync(gitignorePath) ? fs.readFileSync(gitignorePath, 'utf8') : '';
+        if (!existing.split('\n').some(l => l.trim() === '.tlda/' || l.trim() === '.tlda')) {
+          const suffix = existing.endsWith('\n') || existing === '' ? '' : '\n';
+          fs.writeFileSync(gitignorePath, existing + suffix + '.tlda/\n', 'utf8');
+        }
+      } catch {}
+      // .tlda/scratch/ is fully tlda-managed — agents never edit it. Rewrite
       // the template whenever it doesn't match the current canonical content.
       if (scratchTemplatePath && scratchTemplateContent) {
         const templateAbsPath = path.join(sourceDir, scratchTemplatePath);
@@ -3751,19 +3774,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (existing !== scratchTemplateContent) fs.writeFileSync(templateAbsPath, scratchTemplateContent, 'utf8');
       }
       const scratchAbsPath = path.join(sourceDir, scratchPath);
-      // For markdown scratch, skip writing the .tex placeholder entirely.
-      // Local-side utimes can't survive the daemon push (server stamps its
-      // own mtimes on write), so any placeholder we write ends up newer than
-      // the .md on the server and the build runner's staleness check skips
-      // pandoc — the section renders empty. Leaving the .tex absent makes
-      // existsSync(texPath) false in convertScratchMarkdown, so pandoc runs
-      // unconditionally on the first build, writes the real .tex, and
-      // subsequent builds use the mtime check correctly.
       if (!isMd) fs.writeFileSync(scratchAbsPath, wrappedContent, 'utf8');
       if (result.sourcePath) {
         const symlinkPath = path.join(sourceDir, result.sourcePath);
-        try { fs.unlinkSync(symlinkPath); } catch {}
-        fs.symlinkSync(resolved, symlinkPath);
+        // Belt-and-suspenders: don't self-link
+        if (path.resolve(symlinkPath) !== resolved) {
+          try { fs.unlinkSync(symlinkPath); } catch {}
+          fs.symlinkSync(resolved, symlinkPath);
+        }
       }
       if (mainContent) {
         fs.writeFileSync(path.join(sourceDir, mainFile), mainContent, 'utf8');
@@ -3773,7 +3791,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
       const refValidation = validateRefs(content, doc);
       const refWarning = formatRefWarnings(refValidation);
-      const displayPath = result.sourcePath ? path.join(sourceDir, result.sourcePath) : scratchAbsPath;
       const lang = isMd ? 'markdown' : 'latex';
       const contentLines = content.split('\n');
       const preview = contentLines.length > 30
@@ -3781,10 +3798,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         : content;
       const contentBlock = `\n\n**Content written:**\n\`\`\`${lang}\n${preview}\n\`\`\``;
       if (result.action === 'replaced') {
-        return { content: [{ type: 'text', text: `Replaced scratch section "${replace}" — wrote ${displayPath}. Watcher will sync and rebuild.${refWarning}${contentBlock}` }] };
+        return { content: [{ type: 'text', text: `Replaced scratch section "${replace}". Your file: \`${resolved}\`. Watcher will rebuild on edits.${refWarning}${contentBlock}` }] };
       }
       const loc = after ? `after "${after}"` : `before "${before}"`;
-      return { content: [{ type: 'text', text: `Inserted scratch section "${label}" (${loc}) — wrote ${displayPath} and updated ${path.join(sourceDir, mainFile)}. Watcher will sync and rebuild.${refWarning}${contentBlock}` }] };
+      return { content: [{ type: 'text', text: `Inserted scratch section "${label}" ${loc}. Your file: \`${resolved}\`. Watcher will rebuild on edits.${refWarning}${contentBlock}` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
@@ -3831,6 +3848,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const lines = texContent.split('\n');
       const extracted = lines.slice(startLine - 1, endLine).join('\n');
 
+      // Generate three format views
       let mdContent;
       try {
         mdContent = execSync('pandoc -f latex -t markdown --wrap=none', { input: extracted, encoding: 'utf8', timeout: 10000 });
@@ -3838,6 +3856,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: `pandoc conversion failed: ${e.message}` }], isError: true };
       }
       mdContent = mdContent.replace(/\\ref\{([\w:.-]+)\}/g, '@$1');
+
+      const texView = extracted;
+
+      // Outline: extract structural elements (environments, labels, refs, section commands)
+      const outlineLines = [];
+      for (const l of extracted.split('\n')) {
+        const trimmed = l.trim();
+        if (!trimmed || trimmed.startsWith('%')) continue;
+        const beginM = trimmed.match(/\\begin\{(\w+)\}(?:\[([^\]]*)\])?(?:\{([^}]*)\})?/);
+        if (beginM) { outlineLines.push(`- **${beginM[1]}**${beginM[2] ? ` [${beginM[2]}]` : ''}${beginM[3] ? ` {${beginM[3]}}` : ''}`); continue; }
+        const secM = trimmed.match(/\\(section|subsection|paragraph)\*?\{([^}]+)\}/);
+        if (secM) { outlineLines.push(`- **${secM[1]}**: ${secM[2]}`); continue; }
+        const labelM = trimmed.match(/\\label\{([^}]+)\}/);
+        if (labelM) { outlineLines.push(`  - label: \`${labelM[1]}\``); continue; }
+        const eqM = trimmed.match(/\\(eqref|ref)\{([^}]+)\}/g);
+        if (eqM) { outlineLines.push(`  - refs: ${eqM.map(r => '`' + r + '`').join(', ')}`); }
+      }
+      const outlineView = outlineLines.length > 0 ? outlineLines.join('\n') : '(no structural elements found)';
 
       const scratchDir = path.join(sourceDir, 'scratch');
       fs.mkdirSync(scratchDir, { recursive: true });
@@ -3848,9 +3884,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         color: 'violet', size: 'lg', side: 'right',
       });
 
+      // Add format tabs to the created note
+      if (result.ok) {
+        try {
+          const fullId = result.shapeId.startsWith('shape:') ? result.shapeId : `shape:${result.shapeId}`;
+          await updateShapeRest(doc, fullId, {
+            props: {
+              tabs: [mdContent, texView, outlineView],
+              activeTab: 0,
+            },
+          });
+        } catch (e) {
+          process.stderr.write(`[mcp] failed to add format tabs: ${e.message}\n`);
+        }
+      }
+
       const refValidation = validateRefs(mdContent, doc);
       const refWarning = formatRefWarnings(refValidation);
-      return { content: [{ type: 'text', text: `Extracted lines ${startLine}–${endLine} to ${mdPath}${result.ok ? ` (note ${result.shapeId})` : ''}${refWarning}` }] };
+      return { content: [{ type: 'text', text: `Extracted lines ${startLine}–${endLine} to ${mdPath}${result.ok ? ` (note ${result.shapeId})` : ''}. Format tabs: prose / tex / outline.${refWarning}` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
@@ -3971,6 +4022,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
+  // Dispatch to fleet tools
+  const fleetResult = await handleFleetTool(name, args);
+  if (fleetResult !== null) return fleetResult;
+
   return {
     content: [{ type: 'text', text: `Unknown tool: ${name}` }],
     isError: true,
@@ -4051,5 +4106,68 @@ async function getAnnotationSummary() {
 
 // Start MCP server
 const transport = new StdioServerTransport();
-server.connect(transport);
-console.error('TLDraw Feedback MCP server started');
+await server.connect(transport);
+console.error('Unified MCP server started (tlda + fleet)');
+
+// Initialize fleet tools (channel WS, agent registration)
+initFleet(server);
+
+// ---- Process safety (from fleet MCP) ----
+
+process.on('unhandledRejection', (reason) => {
+  process.stderr.write(`[mcp] unhandled rejection (suppressed): ${reason?.message || reason}\n`);
+});
+
+process.on('uncaughtException', (err) => {
+  const msg = `[${new Date().toISOString()}] mcp PID ${process.pid}: uncaught exception: ${err?.message || err}\n${err?.stack || ''}\n`;
+  process.stderr.write(msg);
+  try { fs.appendFileSync('/tmp/fleet-mcp-exit.log', msg); } catch {}
+});
+
+process.stdin.on('end', () => {
+  const msg = `[${new Date().toISOString()}] mcp PID ${process.pid}: stdin end — parent closed pipe, exiting\n`;
+  process.stderr.write(msg);
+  try { fs.appendFileSync('/tmp/fleet-mcp-exit.log', msg); } catch {}
+  process.exit(0);
+});
+process.stdin.on('close', () => {
+  const msg = `[${new Date().toISOString()}] mcp PID ${process.pid}: stdin close — exiting\n`;
+  process.stderr.write(msg);
+  try { fs.appendFileSync('/tmp/fleet-mcp-exit.log', msg); } catch {}
+  process.exit(0);
+});
+
+const _parentPid = process.ppid;
+setInterval(() => {
+  try {
+    process.kill(_parentPid, 0);
+  } catch {
+    const msg = `[${new Date().toISOString()}] mcp PID ${process.pid}: parent ${_parentPid} dead, exiting as orphan\n`;
+    process.stderr.write(msg);
+    try { fs.appendFileSync('/tmp/fleet-mcp-exit.log', msg); } catch {}
+    process.exit(0);
+  }
+}, 30000);
+
+for (const sig of ['SIGTERM', 'SIGHUP']) {
+  process.on(sig, () => {
+    const msg = `[${new Date().toISOString()}] mcp PID ${process.pid}: received ${sig}, exiting\n`;
+    process.stderr.write(msg);
+    try { fs.appendFileSync('/tmp/fleet-mcp-exit.log', msg); } catch {}
+    process.exit(0);
+  });
+}
+
+process.on('SIGINT', () => {
+  process.stderr.write(`[${new Date().toISOString()}] mcp PID ${process.pid}: received SIGINT, ignoring\n`);
+});
+
+process.on('exit', (code) => {
+  const msg = `[${new Date().toISOString()}] mcp PID ${process.pid}: process.exit(${code}) — catch-all\n`;
+  try { fs.appendFileSync('/tmp/fleet-mcp-exit.log', msg); } catch {}
+});
+process.on('beforeExit', (code) => {
+  const msg = `[${new Date().toISOString()}] mcp PID ${process.pid}: beforeExit(${code}) — event loop drained\n`;
+  process.stderr.write(msg);
+  try { fs.appendFileSync('/tmp/fleet-mcp-exit.log', msg); } catch {}
+});

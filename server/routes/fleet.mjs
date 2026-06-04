@@ -246,11 +246,13 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   router.get('/api/chat/history', (req, res) => {
     const limit = Math.min(parseInt(req.query.limit || '50'), 1000)
     const before = req.query.before || null
-    const agent = req.query.agent || null
+    // ?agents=a&agents=b (array) or ?agents=a (string) → normalize to array
+    const rawAgents = req.query.agents
+    const agents = Array.isArray(rawAgents) ? rawAgents : (rawAgents ? [rawAgents] : [])
     try {
       let events = []
       if (fleetStore) {
-        const fleetEvents = fleetStore.queryChatHistory({ before, agent, limit: limit + 1 })
+        const fleetEvents = fleetStore.queryChatHistory({ before, agents, limit: limit + 1 })
         events = fleetEvents.map(e => ({ ...e, event_type: e.type, from: e.from, to: e.to, agent: e.agent_id }))
       }
       const hasMore = events.length > limit
@@ -812,7 +814,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       result = await sendRpc(route.machine_id, 'rechat', {
         text: rawText,
         cwd: agent.cwd,
-        server_url: `http://127.0.0.1:${process.env.PORT || DEFAULT_PORT}`,
       })
     } catch (e) {
       return res.status(502).json({ ok: false, error: e.message })

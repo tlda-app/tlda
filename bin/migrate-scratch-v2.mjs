@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // One-time migration: strip \begin{scratch}...\end{scratch} wrappers from
-// .scratchinputs/*.tex files and update \inputscratch{path} lines in the
+// .tlda/scratch/*.tex files and update \inputscratch{path} lines in the
 // main tex file to the new 3-arg format: \inputscratch{path}{label}{header}
 
 import fs from 'fs'
@@ -13,9 +13,9 @@ if (!projectDir) {
   process.exit(1)
 }
 
-const scratchDir = path.join(projectDir, '.scratchinputs')
+const scratchDir = path.join(projectDir, '.tlda/scratch')
 if (!fs.existsSync(scratchDir)) {
-  console.log('No .scratchinputs directory found — nothing to migrate.')
+  console.log('No .tlda/scratch directory found — nothing to migrate.')
   process.exit(0)
 }
 
@@ -31,7 +31,7 @@ for (const file of files) {
   if (!beginMatch) {
     // File has no wrapper — already raw content. Derive label from filename for the \inputscratch line update.
     const derivedLabel = file.replace(/\.tex$/, '').replace(/^scratch-/, 'scratch:')
-    migrated.push({ file, scratchPath: `.scratchinputs/${file}`, label: derivedLabel, header: `${derivedLabel} — migrated` })
+    migrated.push({ file, scratchPath: `.tlda/scratch/${file}`, label: derivedLabel, header: `${derivedLabel} — migrated` })
     console.log(`  RAW  ${file} — already unwrapped, derived label=${derivedLabel}`)
     continue
   }
@@ -46,7 +46,7 @@ for (const file of files) {
 
   const newContent = innerLines.join('\n') + '\n'
   fs.writeFileSync(filePath, newContent, 'utf8')
-  migrated.push({ file, scratchPath: `.scratchinputs/${file}`, label, header })
+  migrated.push({ file, scratchPath: `.tlda/scratch/${file}`, label, header })
   console.log(`  OK   ${file} — stripped wrapper, label=${label}`)
 }
 

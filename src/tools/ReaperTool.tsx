@@ -1,4 +1,5 @@
-import { StateNode, createShapeId } from 'tldraw'
+import { StateNode } from 'tldraw'
+import { createFleetShape } from '../shapes/fleet-utils'
 
 const REAPER_W = 480
 const REAPER_H = 360
@@ -22,15 +23,9 @@ export class ReaperTool extends StateNode {
       y = point.y - REAPER_H / 2
     }
 
-    const id = createShapeId()
-    editor.createShape({
-      id,
-      type: 'fleet-reaper' as any,
-      x,
-      y,
-      props: { w: REAPER_W, h: REAPER_H },
-    })
+    const id = createFleetShape(editor, 'fleet-reaper', x, y, { w: REAPER_W, h: REAPER_H })
+    if (!id) return
     editor.setCurrentTool('select')
-    editor.select(id)
+    editor.select(id as any)
   }
 }

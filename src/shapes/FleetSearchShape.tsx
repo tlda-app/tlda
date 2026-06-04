@@ -14,6 +14,7 @@ import {
   useValue,
   createShapeId,
 } from 'tldraw'
+import { createFleetShape } from './fleet-utils'
 import { useState, useCallback, useRef, useMemo, useEffect, memo } from 'react'
 import { searchFleet, fetchSharedDocs, useFleetAgents, useFleetTasks } from '../fleet-data-adapter'
 import katex from 'katex'
@@ -411,22 +412,14 @@ function FleetSearchInner({ shape }: { shape: any }) {
     const filter: [string, string][][] = [[['name', name]]]
     const rec = editor.getShape(shape.id) as any
     if (!rec) return
-    const newId = createShapeId()
-    editor.run(() => {
-      editor.createShape({
-        id: newId,
-        type: 'fleet-chat' as any,
-        x: rec.x,
-        y: rec.y + CHAT_HEADER_H,
-        props: {
-          w: rec.props.w,
-          h: rec.props.h - CHAT_HEADER_H,
-          filter,
-        }
-      })
-      editor.bringToFront([newId])
-    }, { history: 'ignore' })
-    setChatShapeId(newId as unknown as string)
+    const newId = createFleetShape(editor, 'fleet-chat', rec.x, rec.y + CHAT_HEADER_H, {
+      w: rec.props.w,
+      h: rec.props.h - CHAT_HEADER_H,
+      filter,
+    })
+    if (!newId) return
+    editor.bringToFront([newId as any])
+    setChatShapeId(newId)
   }, [agentName, editor, shape.id])
 
   const handleInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {

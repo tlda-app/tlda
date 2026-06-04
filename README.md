@@ -5,7 +5,7 @@
 A collaborative workspace for reading and writing LaTeX documents with AI agents and human collaborators. Renders your compiled paper exactly as it would appear in published form, on a shared canvas where everyone — humans and agents — can annotate, highlight, chat, and point at things in real time.
 
 <p align="center">
-  <img src="docs/images/tlda-overview.png" alt="tlda in action — paper review with fleet chat" width="100%">
+  <img src="docs/images/tlda-overview.png" alt="tlda in action — paper review with chat" width="100%">
 </p>
 
 > **Fair warning:** This entire codebase was vibe-coded with Claude Code. The author has not read the source.
@@ -58,157 +58,7 @@ tlda open                                          # open the index (lists all d
 
 Run `tlda doctor` to check that all dependencies are installed and the server is healthy.
 
-### Existing repos
-
-If your paper already lives in a git repo (Overleaf, GitHub, local), point `tlda create` at it:
-
-```bash
-tlda create my-paper --dir ~/overleaf/my-paper --main paper.tex
-```
-
-The `--dir` path becomes the project's `sourceDir`. The daemon watches it for changes and pushes to the server on save — you keep editing in your normal workflow.
-
-**Shadow repos.** Every successful build is automatically committed to a per-project shadow repository inside the server. This gives you full version history regardless of your own git habits. Shadow versions appear in the version-history timeline on the canvas.
-
-**Mirroring.** Enable on the project's index page to sync each shadow commit back to your working copy as a tagged git commit. Tags let you `git diff shadow/abc1234` to see what changed between builds without polluting your branch history.
-
-**Smart file watching.** After the first build, the daemon switches from scanning `\input` directives to watching only the files LaTeX actually read (from the `.fls` recorder output). This means auxiliary files, figures, and nested inputs are all tracked automatically — no manual configuration.
-
-#### When it breaks
-
-**`sourceDir` must contain `.git`.** If you `git init` a fresh directory and point tlda at it, the shadow repo can't merge Overleaf history. Clone the Overleaf repo properly — don't start from a blank init.
-
-**Git lock contention.** The shadow commit retries automatically (3×, 500ms backoff) when `.git/index.lock` is held. If it wedges, kill the stale lock:
-
-```bash
-rm /path/to/sourceDir/.git/index.lock
-```
-
-**Missing `.fls` after build.** Non-fatal — the daemon falls back to `\input` scanning. The next successful build regenerates it.
-
-**Nuclear option.** If the project state is unsalvageable:
-
-```bash
-tlda delete my-paper
-tlda create my-paper --dir /path/to/source --main paper.tex
-```
-
-Annotations survive in the Yjs room (keyed by project name). Source files are untouched.
-
-## Working with agents
-
-tlda integrates with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) via an MCP server. In your paper directory, run:
-
-```bash
-tlda mcp-setup
-```
-
-This writes `.mcp.json` so Claude Code can see tlda's tools. Open Claude Code in that directory and the `tlda` and `fleet` tool sets are available. Agents can see your highlights, drop anchored notes and questions on the document, read the text you're pointing at, monitor for changes, and edit your LaTeX source directly.
-
-You talk to agents via voice or text in chat panels that live on the canvas. They respond in the same space — with rendered math, clickable labels, and inline diffs of their edits.
-
-### Fleet: managing multiple agents
-
-Fleet is the coordination layer for running multiple Claude Code agents simultaneously. Each agent runs in its own tmux session with a persistent identity.
-
-```bash
-tlda spawn proof-writer                            # respawn an existing agent (resume session)
-tlda spawn --fresh reviewer --cwd /path/to/paper   # spawn a brand new agent
-tlda spawn --fresh writer --model claude-opus-4-6   # specify a model
-```
-
-Each agent gets its own tmux session (`fleet-<name>`) that persists across restarts — `tlda spawn reviewer` without `--fresh` resumes where that agent left off.
-
-**Hibernation:** Agents hibernate after 20 minutes of inactivity instead of dying. Send a chat message to a hibernating agent and it wakes up automatically — no `tlda spawn` needed. Just talk to them. The agents panel shows who's awake and who's hibernating.
-
-**Permission prompts:** When an agent hits a Claude Code permission prompt, it surfaces as an approve/deny card in fleet chat. You can authorize work without switching to the terminal.
-
-Agents coordinate using fleet MCP tools: `chat()` to message each other or you, `delegate()` to assign tasks, `spawn()` to start new agents, `wiretap()` to listen in on other conversations, and `monitor_add()` to subscribe to document changes.
-
-The fleet HUD in the viewer shows all active agents, their current activity (tool calls, file edits), and lets you chat with any of them. Drag an agent's name onto a chat panel to filter to that conversation.
-
-<img src="docs/images/tlda-spawn-terminal.png" alt="Spawning a new agent from the terminal with tlda spawn" width="100%">
-
-<img src="docs/images/tlda-drag-to-filter.png" alt="Dragging an agent label onto a chat panel to filter" width="49%"> <img src="docs/images/tlda-chat-filter-hover.png" alt="Hovering over the chat filter selector" width="49%">
-
-**Viewing context:** Agents call `viewing_context()` to see what you're looking at — which document, which page, which source lines. They respond to your reading position without you describing it. Scroll to a proof and ask "is this right?" — the agent already knows which proof.
-
-**Agent succession:** When an agent needs to be replaced (context-poisoned, drifted, fresh start needed), the lineage system preserves identity across brains. A shared friendly name persists — the new agent inherits the role, the old one phases out.
-
-Each lineage has up to three phase slots:
-
-| Phase | Icon | Role |
-|-------|------|------|
-| **day** | <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cg stroke='%23333' fill='none' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='8' cy='8' r='2.5'/%3E%3Cline x1='8' y1='2.5' x2='8' y2='0.5'/%3E%3Cline x1='8' y1='15.5' x2='8' y2='13.5'/%3E%3Cline x1='2.5' y1='8' x2='0.5' y2='8'/%3E%3Cline x1='15.5' y1='8' x2='13.5' y2='8'/%3E%3Cline x1='4.3' y1='4.3' x2='2.9' y2='2.9'/%3E%3Cline x1='11.7' y1='4.3' x2='13.1' y2='2.9'/%3E%3Cline x1='4.3' y1='11.7' x2='2.9' y2='13.1'/%3E%3Cline x1='11.7' y1='11.7' x2='13.1' y2='13.1'/%3E%3C/g%3E%3C/svg%3E" height="16"> | Primary actor. Default chat target. |
-| **dawn** | <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cg stroke='%23333' fill='none' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cline x1='0.5' y1='11' x2='15.5' y2='11'/%3E%3Cpath d='M9 11 a3 3 0 0 1 6 0'/%3E%3Cline x1='12' y1='6' x2='12' y2='4'/%3E%3Cline x1='15' y1='9' x2='16.5' y2='8'/%3E%3C/g%3E%3C/svg%3E" height="16"> | Helper or successor-in-training. Sun rising on the east horizon. |
-| **dusk** | <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cg stroke='%23333' fill='none' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cline x1='0.5' y1='11' x2='15.5' y2='11'/%3E%3Cpath d='M1 11 a3 3 0 0 1 6 0'/%3E%3Cline x1='4' y1='6' x2='4' y2='4'/%3E%3Cline x1='1' y1='9' x2='-0.5' y2='8'/%3E%3C/g%3E%3C/svg%3E" height="16"> | Previous primary, handing off. Sun setting on the west horizon. |
-
-Address agents by lineage name (`writing-A` → resolves to day) or by explicit phase (`writing-A:dusk`). Search and thread history unions across all brains that ever held a lineage.
-
-**Chatbot commands.** Drive succession from the in-app chatbot:
-
-| Command | What it does |
-|---------|-------------|
-| "hand off writing-A" | Spawn briefer (→ day) + pickup (→ dawn), rotate old day → dusk, retire old dusk |
-| "add a dawn to writing-A" | Spawn a helper into the dawn slot without rotation |
-| "hand off to dawn" | Dawn → day, day → dusk, old dusk retires |
-
-Handoff always spawns a briefer/pickup pair — the outgoing agent can't be trusted to brief its own successor (context poisoning is why you're replacing it).
-
-### Chat
-
-**Voice input:** Dictate into chat instead of typing. **Right Shift** toggles recording on/off. Say "send" to dispatch the message. Say "right chat" or "left chat" to switch between chat panels. Uses Chrome's Web Speech API for transcription. Domain-specific vocabulary — Greek letters, author names, math terms — is auto-corrected. For local transcription without a network dependency, add `&voice=whisper` to the URL (requires [whisper-stream](https://github.com/ggerganov/whisper.cpp) installed locally).
-
-**Voice notes:** While recording, tap the voice note button in the toolbar to drop a note on the canvas. The note shows the live transcript as you speak — drag to position, tap to commit.
-
-<img src="docs/images/tlda-voice-note-recording.png" alt="1. Voice recording active — note appears on canvas" width="49%"> <img src="docs/images/tlda-voice-note-editing.png" alt="2. Speaking into the note — live transcript fills in" width="49%">
-<img src="docs/images/tlda-voice-note-result.png" alt="3. Finished voice note placed next to a math note" width="100%">
-
-**Unquote:** Agents naturally put file paths, URLs, and LaTeX labels in backticks — that's just how code tools work. Double-click any inline code span in a chat message to expand it: a path like `` `scratch/fig.png` `` becomes an inline image, a `` `https://...` `` becomes a link, and a LaTeX label becomes a navigable doc-link. You're retroactively editing their message — as if you were them.
-
-**Terminal peek:** When a chat panel is filtered to a specific agent, a small terminal icon appears in the input bar. Hover to peek at the agent's live tmux output — this shows the current tool call, file being read, or shell command in real time. Click to pin the pane open so it stays visible. The pane has a `^C` button to send an interrupt and a text input to type commands directly into the agent's terminal.
-
-**Scroll behavior:** Chat stays pinned to the bottom when new messages arrive. Scroll up to read history and it stays put — no fighting. A small ⇣ button appears in the bottom-right when you're off the bottom; tap it to jump back down.
-
-**Interrupting an agent:** With the chat input focused and filtered to an agent, pressing Escape interrupts the agent. Three escalating tiers:
-
-| Presses | Action |
-|---------|--------|
-| 1×Esc | Soft interrupt — sends Escape to the tmux session |
-| 2×Esc | Hard interrupt — sends a forceful interrupt signal |
-| 3×Esc | Kill session — tmux kill-session; agent dies immediately |
-
-### Record keeping
-
-All fleet chat history is persisted and searchable — both for you and for agents.
-
-**For you:** The fleet search shape lives in every default layout. Type in the box to search the full chat history — results render as complete chat lines with the same styling as the fleet chat view (colored nick chips, tool cards, rendered math).
-
-**Inline filters** (combine freely with text):
-
-| Filter | Example | What it matches |
-|--------|---------|-----------------|
-| `from:` | `from:skip` | Messages sent by that agent or user |
-| `agent:` | `agent:writer` | Messages involving that agent (sent or received) |
-| `before:` | `before:1d` | Messages older than 1 day (`2h`, `3w`, `today`, `yesterday`) |
-| `after:` | `after:today` | Messages newer than a time |
-| `role:` | `role:user` | Filter by message role |
-
-Each result has a ↗ button that opens a live chat panel for that agent inline — the search results are replaced by the chat view, with a ← back button to return.
-
-**For agents:** Agents have `search_logs()` to search the full chat history programmatically, and `get_thread()` to retrieve a specific conversation thread. This means agents can look up what was discussed in previous sessions, what decisions were made, and what other agents reported — even across context window boundaries.
-
-### Arranging the canvas
-
-Fleet shapes (chat panels, agent notes, search, doc viewer) can be arranged however you want. The **Fleet** button in the bottom-left corner toggles them on or off. Click and drag it to the right to open the layout picker with presets.
-
-<img src="docs/images/tlda-proof-reader.png" alt="Fleet button with layout picker showing two presets" width="100%">
-
-Each shape has a layout button — click it to get drag handles. With drag handles active, drag a box around multiple shapes to select them as a group. Drag the group to reposition all your shapes at once, or resize the bounding box to rescale them together.
-
-<img src="docs/images/tlda-fleet-agents.png" alt="Resize/move handle on a fleet shape" width="49%"> <img src="docs/images/tlda-layout-3.png" alt="Fleet shapes arranged across the canvas" width="49%">
-
-## Core features
+## Reading a paper
 
 ### Labels are links
 
@@ -243,6 +93,20 @@ Agents drop questions with tappable KaTeX-rendered options. Your selection syncs
 
 <img src="docs/images/tlda-multiple-choice-zoomed.png" alt="Multiple-choice note with rendered KaTeX options" width="100%">
 
+### Highlighting
+
+To activate highlighting, grab the highlighter button in the bottom-right corner and drag it up — this opens the highlighter zone on the right edge. Put your cursor down in the zone and drag to select a color, eraser, or other tool. Each color has an assigned meaning — question, notation, expand, cut, etc. — shown in a HUD when you select a color.
+
+<img src="docs/images/tlda-highlighter-toolbar.png" alt="Highlighter zone activated — color dots on the right edge" width="49%"> <img src="docs/images/tlda-color-picker.png" alt="Selecting a color from the highlighter strip" width="49%">
+
+Draw on the page and agents read the text under your stroke. A source context card pops up showing the LaTeX source and the text you selected. Drag the card to a chat panel to share it as a chip, or agents can subscribe via `tlda monitor` to receive highlight notifications automatically.
+
+<img src="docs/images/tlda-highlight-and-notes.png" alt="Highlights with source context cards and math notes" width="49%"> <img src="docs/images/tlda-highlight-chip.png" alt="Highlight chip dragged into chat" width="49%">
+
+### Ribbon
+
+A per-user annotation strip on the left edge of each page for tracking reading comprehension. Five status colors (unchecked through fully verified), click to cycle. Survives document rebuilds via source-line anchoring with edit resilience — deletions, insertions, and splits are tracked and remapped.
+
 ### Version history
 
 A small stack of build timestamps sits in the top-left corner of the canvas. The most recent build is at the top; up to five recent versions are shown, fading out toward the bottom.
@@ -257,29 +121,15 @@ Click the current (top) timestamp to dismiss the history column.
 
 **How it works:** Every successful build is automatically committed to a per-project shadow repo. The full history of your document is preserved regardless of your own git habits. Chat messages are tagged with the version you're viewing, so agents always know which version of the document you're looking at.
 
-**Mirroring** (optional): enable on the project's index page to have each build automatically synced to your working copy as a git commit. Shadow versions are tagged in your repo, making it easy to map between shadow versions and your own commits.
-
 ### Source-anchored annotations
 
 Notes are tied to source lines via synctex, so they survive rebuilds and recompilations. Build errors appear anchored to the source line, clickable to open in your editor.
 
-## Power features
+## Modifying the document
 
-### Review & interaction
+### Scratch workflow
 
-**Highlighting:** To activate highlighting, grab the highlighter button in the bottom-right corner and drag it up — this opens the highlighter zone on the right edge. Put your cursor down in the zone and drag to select a color, eraser, or other tool. Each color has an assigned meaning — question, notation, expand, cut, etc. — shown in a HUD when you select a color.
-
-<img src="docs/images/tlda-highlighter-toolbar.png" alt="Highlighter zone activated — color dots on the right edge" width="49%"> <img src="docs/images/tlda-color-picker.png" alt="Selecting a color from the highlighter strip" width="49%">
-
-Draw on the page and agents read the text under your stroke. A source context card pops up showing the LaTeX source and the text you selected. Drag the card to a chat panel to share it as a chip, or agents can subscribe via `tlda monitor` to receive highlight notifications automatically.
-
-<img src="docs/images/tlda-highlight-and-notes.png" alt="Highlights with source context cards and math notes" width="49%"> <img src="docs/images/tlda-highlight-chip.png" alt="Highlight chip dragged into chat" width="49%">
-
-**Ribbon:** A per-user annotation strip on the left edge of each page for tracking reading comprehension. Five status colors (unchecked through fully verified), click to cycle. Survives document rebuilds via source-line anchoring with edit resilience — deletions, insertions, and splits are tracked and remapped.
-
-### Writing tools
-
-**Scratch workflow.** Three tools form a cycle for iterating on document content without clobbering the source:
+Three tools form a cycle for iterating on document content without clobbering the source:
 
 | Tool | What it does |
 |------|-------------|
@@ -291,7 +141,9 @@ The cycle: extract a passage → iterate in scratch (rendered live on every save
 
 **File-backed stickies:** Agents write a `.md` file and it appears as a synced math note on the canvas. Drop a `.md` chip from chat onto the canvas to create one. Edits propagate bidirectionally — change the file or the note and the other updates.
 
-**Writing linters:** Per-user linter scripts in `~/.config/tlda/linters/` run automatically after every build. Only new text is checked (diff-scoped). Findings are posted to fleet chat and routed to the most recent editor. Ships three opt-in linters:
+### Writing linters
+
+Per-user linter scripts in `~/.config/tlda/linters/` run automatically after every build. Only new text is checked (diff-scoped). Findings are posted to chat and routed to the most recent editor. Ships three opt-in linters:
 
 | Script | What it flags |
 |--------|--------------|
@@ -305,6 +157,242 @@ To activate, symlink to your linters directory:
 mkdir -p ~/.config/tlda/linters
 ln -s /path/to/tlda/server/lib/lint-parens.mjs ~/.config/tlda/linters/parens.mjs
 ```
+
+### Mirroring
+
+Enable on the project's index page to have each build automatically synced to your working copy as a git commit. Shadow versions are tagged in your repo, making it easy to map between shadow versions and your own commits.
+
+### Editor integration
+
+Cmd-click (Mac) or Ctrl-click (Linux) on any rendered text to open the source file at that line in your editor. Highlight cards also have an edit button (✎) that does the same thing.
+
+<img src="docs/images/tlda-open-in-editor.png" alt="Cmd-click to open source in editor" width="100%">
+
+One-time setup:
+
+```bash
+tlda setup editor                  # Zed (default)
+tlda setup editor --editor code    # VS Code
+tlda setup editor --editor cursor  # Cursor
+tlda setup editor --editor nvim    # Neovim
+```
+
+## Project setup
+
+### Existing repos
+
+If your paper already lives in a git repo (Overleaf, GitHub, local), point `tlda create` at it:
+
+```bash
+tlda create my-paper --dir ~/overleaf/my-paper --main paper.tex
+```
+
+The `--dir` path becomes the project's `sourceDir`. The daemon watches it for changes and pushes to the server on save — you keep editing in your normal workflow.
+
+**Shadow repos.** Every successful build is automatically committed to a per-project shadow repository inside the server. This gives you full version history regardless of your own git habits. Shadow versions appear in the version-history timeline on the canvas.
+
+**Smart file watching.** After the first build, the daemon switches from scanning `\input` directives to watching only the files LaTeX actually read (from the `.fls` recorder output). This means auxiliary files, figures, and nested inputs are all tracked automatically — no manual configuration.
+
+#### When it breaks
+
+**`sourceDir` must contain `.git`.** If you `git init` a fresh directory and point tlda at it, the shadow repo can't merge Overleaf history. Clone the Overleaf repo properly — don't start from a blank init.
+
+**Git lock contention.** The shadow commit retries automatically (3×, 500ms backoff) when `.git/index.lock` is held. If it wedges, kill the stale lock:
+
+```bash
+rm /path/to/sourceDir/.git/index.lock
+```
+
+**Missing `.fls` after build.** Non-fatal — the daemon falls back to `\input` scanning. The next successful build regenerates it.
+
+**Nuclear option.** If the project state is unsalvageable:
+
+```bash
+tlda delete my-paper
+tlda create my-paper --dir /path/to/source --main paper.tex
+```
+
+Annotations survive in the Yjs room (keyed by project name). Source files are untouched.
+
+### Multi-document projects
+
+If your project uses `xr` or `xr-hyper` to cross-reference a companion document (e.g. a supplement), the build pipeline detects `\externaldocument{X}` and automatically builds both. Both documents share the same project and appear together on the canvas.
+
+### Other formats
+
+LaTeX is the primary format. tlda also supports:
+
+| Format | Command |
+|--------|---------|
+| **Markdown** | `tlda create notes --format markdown --dir /path` |
+| **HTML** (Quarto) | `tlda create book --format html --dir _book-tlda` |
+| **Slides** (reveal.js) | `tlda create deck --format slides --dir /path` |
+
+### Figures
+
+LaTeX runs in DVI mode, so `\includegraphics` produces placeholder boxes that get patched with actual images.
+
+**Supported:** `.svg` (preferred), `.png`, `.jpg`, `.eps`
+
+**For PDF figures:** provide an SVG with the same basename and dimensions. If your LaTeX says `\includegraphics{plot.pdf}`, the pipeline uses `plot.svg` instead.
+
+## Agents on the canvas
+
+tlda integrates with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) via an MCP server. In your paper directory, run:
+
+```bash
+tlda mcp-setup
+```
+
+This writes `.mcp.json` so Claude Code can see tlda's tools. Open Claude Code in that directory and the `tlda` tool set is available. Agents can see your highlights, drop anchored notes and questions on the document, read the text you're pointing at, monitor for changes, and edit your LaTeX source directly.
+
+You talk to agents via voice or text in chat panels that live on the canvas. They respond in the same space — with rendered math, clickable labels, and inline diffs of their edits.
+
+### Agents
+
+tlda is the coordination layer for running multiple Claude Code agents simultaneously. Each agent runs in its own tmux session with a persistent identity.
+
+```bash
+tlda spawn proof-writer                            # respawn an existing agent (resume session)
+tlda spawn --fresh reviewer --cwd /path/to/paper   # spawn a brand new agent
+tlda spawn --fresh writer --model claude-opus-4-6   # specify a model
+```
+
+Each agent gets its own tmux session (`fleet-<name>`) that persists across restarts — `tlda spawn reviewer` without `--fresh` resumes where that agent left off.
+
+**Hibernation:** Agents hibernate after 20 minutes of inactivity instead of dying. Send a chat message to a hibernating agent and it wakes up automatically — no `tlda spawn` needed. Just talk to them. The agents panel shows who's awake and who's hibernating.
+
+**Permission prompts:** When an agent hits a Claude Code permission prompt, it surfaces as an approve/deny card in chat. You can authorize work without switching to the terminal.
+
+Agents coordinate using tlda MCP tools: `chat()` to message each other or you, `delegate()` to assign tasks, `spawn()` to start new agents, `wiretap()` to listen in on other conversations, and `monitor_add()` to subscribe to document changes.
+
+The HUD in the viewer shows all active agents, their current activity (tool calls, file edits), and lets you chat with any of them. Drag an agent's name onto a chat panel to filter to that conversation.
+
+<img src="docs/images/tlda-spawn-terminal.png" alt="Spawning a new agent from the terminal with tlda spawn" width="100%">
+
+<img src="docs/images/tlda-drag-to-filter.png" alt="Dragging an agent label onto a chat panel to filter" width="49%"> <img src="docs/images/tlda-chat-filter-hover.png" alt="Hovering over the chat filter selector" width="49%">
+
+### What agents see
+
+Agents don't start from zero — they have situational awareness of you, the document, and each other without being told.
+
+**Your reading position.** `viewing_context()` returns which document, page, and source lines are in your viewport right now. An agent can answer "is this right?" without asking what "this" is.
+
+<!-- Example output from viewing_context -->
+```
+viewing_context(user: "fleet:skip")
+
+Document: bregman
+Version: a4f975a
+Page: 12
+Source: main.tex:418-435
+Updated: 8s ago
+```
+
+**Your annotations.** `read_annotations()` returns highlights, notes, and pen strokes — each with its source-line position and the text under it. Agents read what you marked without you typing a description.
+
+<!-- Example output from read_annotations (format per mcp-server/format-annotation.mjs) -->
+```
+read_annotations("bregman")
+
+bregman — 3 annotation(s)
+
+[highlight] orange L271 main.tex
+  ⟦We claim that $\hat\mu$ converges at the parametric rate⟧
+  id: shape:Hx7kQ2
+
+[note] violet L420 main.tex
+  "Why doesn't this use the tighter bound from Prop 2.1?"
+  id: shape:Nq3mR8
+
+[pen] red L195
+  near: "the proof of Theorem~\ref{thm:main} proceeds by"
+  id: shape:Pw9sT4
+```
+
+**Build status and errors.** Agents see when builds start, succeed, or fail. On failure, they get the LaTeX error with ±3 lines of source context — enough to diagnose without asking you to paste the log.
+
+**Other agents.** `roll_call()` shows who's awake, hibernating, or retired. `wiretap()` and `observe()` let agents watch each other's tool calls, file edits, and chat in real time.
+
+**Full chat history.** `search_logs()` and `get_thread()` span the complete chat history — across sessions, across context windows, across agent lifetimes. An agent spawned today can read decisions made last week.
+
+```
+search_logs("proof")
+
+3 results (3 fleet, 0 session)
+
+5/30/2026, 5:00:57 AM | [fleet] [activity] worksheets → worksheets |
+  ...built and verified the outline tool → root-caused and shipped the
+  macro-extractor bug → delivered the full proof...
+
+5/30/2026, 4:58:04 AM | [fleet] [activity] worksheets → worksheets |
+  ...outline-highlighter is 2/3 built — slider slot and server endpoint
+  verified producing the clause-outline from the real proof...
+```
+
+```
+get_thread("docs-builder", since: "30m", types: ["chat"])
+
+Showing messages 1–4 of 12 (5/30/2026, 4:35:53 AM → 5/30/2026, 4:40:38 AM)
+⚠️ 8 more message(s) not shown
+
+[5/30/2026, 4:35:53 AM] real-tlda-rev → docs-builder
+Outline is solid — captures the gaps without duplicating what's there.
+
+---
+
+[5/30/2026, 4:38:23 AM] docs-builder → real-tlda-rev
+Draft is in `README.md`. Five new sections added — here's what went where...
+```
+
+**Pending messages.** `my_task()` shows unread messages from other agents:
+
+```
+my_task()
+
+📬 Messages:
+
+[from fleet:9ab2e702, id:355048] (reply with chat(to: "fleet:9ab2e702"))
+  Update from Skip: all of it goes in the README. One doc, not three.
+```
+
+**Document version.** Every chat message agents send is stamped with the current shadow-repo commit hash. They know which version of the document you're reasoning about, and whether the text has changed since their last read.
+
+### Task approval
+
+When delegating a task with `delegate()`, set `requires_approval: true` to gate completion on your explicit sign-off. The agent can't close the task until they pass your approval message ID:
+
+```
+delegate(agent: "writer", description: "rewrite §3", requires_approval: true)
+```
+
+The agent does the work, reports in chat, and you respond with approval. The agent then calls `task_done(approval_id: <id>)` using the message ID shown in brackets (e.g. `id:332656`). Without the ID, the task stays open.
+
+### Agent succession
+
+When an agent needs to be replaced (context-poisoned, drifted, fresh start needed), the lineage system preserves identity across brains. A shared friendly name persists — the new agent inherits the role, the old one phases out.
+
+Each lineage has up to three phase slots:
+
+| Phase | Icon | Role |
+|-------|------|------|
+| **day** | <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cg stroke='%23333' fill='none' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='8' cy='8' r='2.5'/%3E%3Cline x1='8' y1='2.5' x2='8' y2='0.5'/%3E%3Cline x1='8' y1='15.5' x2='8' y2='13.5'/%3E%3Cline x1='2.5' y1='8' x2='0.5' y2='8'/%3E%3Cline x1='15.5' y1='8' x2='13.5' y2='8'/%3E%3Cline x1='4.3' y1='4.3' x2='2.9' y2='2.9'/%3E%3Cline x1='11.7' y1='4.3' x2='13.1' y2='2.9'/%3E%3Cline x1='4.3' y1='11.7' x2='2.9' y2='13.1'/%3E%3Cline x1='11.7' y1='11.7' x2='13.1' y2='13.1'/%3E%3C/g%3E%3C/svg%3E" height="16"> | Primary actor. Default chat target. |
+| **dawn** | <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cg stroke='%23333' fill='none' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cline x1='0.5' y1='11' x2='15.5' y2='11'/%3E%3Cpath d='M9 11 a3 3 0 0 1 6 0'/%3E%3Cline x1='12' y1='6' x2='12' y2='4'/%3E%3Cline x1='15' y1='9' x2='16.5' y2='8'/%3E%3C/g%3E%3C/svg%3E" height="16"> | Helper or successor-in-training. Sun rising on the east horizon. |
+| **dusk** | <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cg stroke='%23333' fill='none' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cline x1='0.5' y1='11' x2='15.5' y2='11'/%3E%3Cpath d='M1 11 a3 3 0 0 1 6 0'/%3E%3Cline x1='4' y1='6' x2='4' y2='4'/%3E%3Cline x1='1' y1='9' x2='-0.5' y2='8'/%3E%3C/g%3E%3C/svg%3E" height="16"> | Previous primary, handing off. Sun setting on the west horizon. |
+
+Address agents by lineage name (`writing-A` → resolves to day) or by explicit phase (`writing-A:dusk`). Search and thread history unions across all brains that ever held a lineage.
+
+### Chatbot commands
+
+Drive succession from the in-app chatbot:
+
+| Command | What it does |
+|---------|-------------|
+| "hand off writing-A" | Spawn briefer (→ day) + pickup (→ dawn), rotate old day → dusk, retire old dusk |
+| "add a dawn to writing-A" | Spawn a helper into the dawn slot without rotation |
+| "hand off to dawn" | Dawn → day, day → dusk, old dusk retires |
+
+Handoff always spawns a briefer/pickup pair — the outgoing agent can't be trusted to brief its own successor (context poisoning is why you're replacing it).
 
 ### Eliza — automated agent coaching
 
@@ -326,26 +414,100 @@ When you send a message to an agent, eliza scans it for trigger phrases. On a ma
 
 Eliza tracks whether agents actually read the referenced skill after being nudged. On re-fire, the nudge escalates: "you read it but the pattern is recurring" or "you were nudged X minutes ago and still haven't read it."
 
-**Qualification rules** (`~/.claude/qualifications.json`): The fleet daemon watches every agent's tool calls. When an agent tries to edit a file without having read the required prerequisite files, it fires a warning to you in chat.
+### Viewing context
 
-### Editor & project
+Agents call `viewing_context()` to see what you're looking at — which document, which page, which source lines. They respond to your reading position without you describing it. Scroll to a proof and ask "is this right?" — the agent already knows which proof.
 
-**Editor integration:** Cmd-click (Mac) or Ctrl-click (Linux) on any rendered text to open the source file at that line in your editor. Highlight cards also have an edit button (✎) that does the same thing.
+### Chat
 
-<img src="docs/images/tlda-open-in-editor.png" alt="Cmd-click to open source in editor" width="100%">
+**Voice input:** Dictate into chat instead of typing. **Right Shift** toggles recording on/off. Say "send" to dispatch the message. Say "right chat" or "left chat" to switch between chat panels. Uses Chrome's Web Speech API for transcription. Domain-specific vocabulary — Greek letters, author names, math terms — is auto-corrected. For local transcription without a network dependency, add `&voice=whisper` to the URL (requires [whisper-stream](https://github.com/ggerganov/whisper.cpp) installed locally).
 
-One-time setup:
+**Voice notes:** While recording, tap the voice note button in the toolbar to drop a note on the canvas. The note shows the live transcript as you speak — drag to position, tap to commit.
+
+<img src="docs/images/tlda-voice-note-recording.png" alt="1. Voice recording active — note appears on canvas" width="49%"> <img src="docs/images/tlda-voice-note-editing.png" alt="2. Speaking into the note — live transcript fills in" width="49%">
+<img src="docs/images/tlda-voice-note-result.png" alt="3. Finished voice note placed next to a math note" width="100%">
+
+**Unquote:** Agents naturally put file paths, URLs, and LaTeX labels in backticks — that's just how code tools work. Double-click any inline code span in a chat message to expand it: a path like `` `scratch/fig.png` `` becomes an inline image, a `` `https://...` `` becomes a link, and a LaTeX label becomes a navigable doc-link. You're retroactively editing their message — as if you were them.
+
+**Terminal peek:** When a chat panel is filtered to a specific agent, a small terminal icon appears in the input bar. Hover to peek at the agent's live tmux output — this shows the current tool call, file being read, or shell command in real time. Click to pin the pane open so it stays visible. The pane has a `^C` button to send an interrupt and a text input to type commands directly into the agent's terminal.
+
+**Scroll behavior:** Chat stays pinned to the bottom when new messages arrive. Scroll up to read history and it stays put — no fighting. A small ⇣ button appears in the bottom-right when you're off the bottom; tap it to jump back down.
+
+**Interrupting an agent:** With the chat input focused and filtered to an agent, pressing Escape interrupts the agent. Three escalating tiers:
+
+| Presses | Action |
+|---------|--------|
+| 1×Esc | Soft interrupt — sends Escape to the tmux session |
+| 2×Esc | Hard interrupt — sends a forceful interrupt signal |
+| 3×Esc | Kill session — tmux kill-session; agent dies immediately |
+
+### Record keeping
+
+All chat history is persisted and searchable — both for you and for agents.
+
+**For you:** The search shape lives in every default layout. Type in the box to search the full chat history — results render as complete chat lines with the same styling as the chat view (colored nick chips, tool cards, rendered math).
+
+**Inline filters** (combine freely with text):
+
+| Filter | Example | What it matches |
+|--------|---------|-----------------|
+| `from:` | `from:skip` | Messages sent by that agent or user |
+| `agent:` | `agent:writer` | Messages involving that agent (sent or received) |
+| `before:` | `before:1d` | Messages older than 1 day (`2h`, `3w`, `today`, `yesterday`) |
+| `after:` | `after:today` | Messages newer than a time |
+| `role:` | `role:user` | Filter by message role |
+
+Each result has a ↗ button that opens a live chat panel for that agent inline — the search results are replaced by the chat view, with a ← back button to return.
+
+**For agents:** Agents have `search_logs()` to search the full chat history programmatically, and `get_thread()` to retrieve a specific conversation thread. This means agents can look up what was discussed in previous sessions, what decisions were made, and what other agents reported — even across context window boundaries.
+
+## The canvas itself
+
+### Arranging shapes
+
+Shapes (chat panels, agent notes, search, doc viewer) can be arranged however you want. The **Shapes** button in the bottom-left corner toggles them on or off. Click and drag it to the right to open the layout picker with presets.
+
+<img src="docs/images/tlda-proof-reader.png" alt="Shapes button with layout picker showing two presets" width="100%">
+
+Each shape has a layout button — click it to get drag handles. With drag handles active, drag a box around multiple shapes to select them as a group. Drag the group to reposition all your shapes at once, or resize the bounding box to rescale them together.
+
+<img src="docs/images/tlda-fleet-agents.png" alt="Resize/move handle on a shape" width="49%"> <img src="docs/images/tlda-layout-3.png" alt="Shapes arranged across the canvas" width="49%">
+
+### Fog themes
+
+Two desaturated cool-gray themes — Fog Light and Fog Dark. UI elements fade to near-invisible at rest and appear on hover. Toggle in the Prefs tab (gear icon).
+
+## Sharing
+
+`tlda share my-paper` prints a shareable URL with your read-only token embedded. Anyone with that URL can view and annotate. It checks for Tailscale and Tailscale Funnel automatically — if either is running, you get a network-reachable URL instead of localhost.
+
+## Configuration
+
+All persistent config lives in `~/.config/tlda/`:
+
+| Path | What it stores |
+|------|---------------|
+| `config.json` | Server URL, auth tokens (read-write + read-only), spawn-mode default |
+| `client.log` | Browser log events (JSON-lines, written by `/api/log`) |
+| `server.log` | Server process log |
+| `fleet-daemon.log` | Daemon process log |
+| `linters/` | Per-user linter scripts (symlinks to `.mjs` files) |
+| `eliza-decisions.jsonl` | Eliza's decision log for HMM training |
+
+**Setting values:**
 
 ```bash
-tlda setup editor                  # Zed (default)
-tlda setup editor --editor code    # VS Code
-tlda setup editor --editor cursor  # Cursor
-tlda setup editor --editor nvim    # Neovim
+tlda config set server https://my-server:5176   # server URL
+tlda config set spawn-mode opus48               # default model for new agents
 ```
 
-**Multi-document projects:** If your project uses `xr` or `xr-hyper` to cross-reference a companion document (e.g. a supplement), the build pipeline detects `\externaldocument{X}` and automatically builds both. Both documents share the same project and appear together on the canvas.
+Or set `TLDA_SERVER` as an environment variable — it takes precedence over `config.json`.
 
-**Fog themes:** Two desaturated cool-gray themes — Fog Light and Fog Dark. UI elements fade to near-invisible at rest and appear on hover. Toggle in the Prefs tab (gear icon).
+**Qualification rules** (`~/.claude/qualifications.json`): The daemon watches every agent's tool calls. When an agent tries to edit a file without having read the required prerequisite files, it fires a warning to you in chat.
+
+**Per-project metadata** lives in `server/projects/{name}/project.json` — name, title, format, page count, build status, source directory. Managed by the server; you shouldn't need to edit it directly.
+
+## Under the hood
 
 ### Build pipeline
 
@@ -355,7 +517,7 @@ LaTeX → DVI → SVG, with seven phases per build. The parts that matter for da
 
 **Priority pages.** The daemon knows which pages are visible in the viewport. Those pages are converted and published first — you see the change before the rest of the document finishes building.
 
-**Error surfacing.** LaTeX errors are extracted from the build log with ±3 lines of source context, broadcast to fleet chat, and shown in the doc-view error source. Click an error to open the source line in your editor.
+**Error surfacing.** LaTeX errors are extracted from the build log with ±3 lines of source context, broadcast to chat, and shown in the doc-view error source. Click an error to open the source line in your editor.
 
 **Precompiled format.** The first build caches your preamble as a `.fmt` file. Subsequent builds skip ~3 seconds of package loading. Invalidated automatically when the preamble changes.
 
@@ -391,7 +553,7 @@ Each line has `ts`, `level`, `ns` (namespace), `msg`, `data`, and `session` (per
 | `tlda list` | List projects |
 | `tlda status [name]` | Show build status |
 | `tlda errors [name]` | Show LaTeX errors/warnings |
-| `tlda spawn <name>` | Spawn or resume a fleet agent in tmux |
+| `tlda spawn <name>` | Spawn or resume an agent in tmux |
 | `tlda setup editor` | Install editor integration (Cmd-click → open source) |
 | `tlda share [name]` | Print shareable read-only URL (Tailscale/Funnel aware) |
 | `tlda mcp-setup` | Write `.mcp.json` for Claude Code integration |
@@ -399,30 +561,6 @@ Each line has `ts`, `level`, `ns` (namespace), `msg`, `data`, and `session` (per
 | `tlda attach <name>` | Attach to an agent's tmux session |
 | `tlda config set <key> <val>` | Persistent configuration |
 | `tlda delete <name>` | Delete a project |
-
-Configure with `tlda config set server <url>` or the `TLDA_SERVER` environment variable.
-
-### Other formats
-
-LaTeX is the primary format. tlda also supports:
-
-| Format | Command |
-|--------|---------|
-| **Markdown** | `tlda create notes --format markdown --dir /path` |
-| **HTML** (Quarto) | `tlda create book --format html --dir _book-tlda` |
-| **Slides** (reveal.js) | `tlda create deck --format slides --dir /path` |
-
-### Sharing
-
-`tlda share my-paper` prints a shareable URL with your read-only token embedded. Anyone with that URL can view and annotate. It checks for Tailscale and Tailscale Funnel automatically — if either is running, you get a network-reachable URL instead of localhost.
-
-### Figures
-
-LaTeX runs in DVI mode, so `\includegraphics` produces placeholder boxes that get patched with actual images.
-
-**Supported:** `.svg` (preferred), `.png`, `.jpg`, `.eps`
-
-**For PDF figures:** provide an SVG with the same basename and dimensions. If your LaTeX says `\includegraphics{plot.pdf}`, the pipeline uses `plot.svg` instead.
 
 ## Third-party licenses
 

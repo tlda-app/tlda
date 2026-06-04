@@ -2,13 +2,12 @@ import {
   BaseBoxShapeUtil,
   HTMLContainer,
   Rectangle2d,
-  T,
   useEditor,
   useValue,
   stopEventPropagation,
-  DefaultColorStyle,
   AssetRecordType,
 } from 'tldraw'
+import { mathNoteProps } from '../../shared/shapes/math-note-schema.mjs'
 // Type imports not needed with 'any' approach
 import { useCallback, useRef, useEffect, useState, useMemo, useSyncExternalStore, useContext } from 'react'
 // noteThreading removed — no tabs, no merge
@@ -214,20 +213,9 @@ function stopIfNotPenTouch(editor: any, isEditing: boolean) {
 
 export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'math-note' as const
-  static override props = {
-    w: T.number,
-    h: T.number,
-    text: T.string,
-    color: DefaultColorStyle,
-    autoSize: T.optional(T.boolean),
-    choices: T.optional(T.arrayOf(T.string)),
-    selectedChoice: T.optional(T.number),
-    done: T.optional(T.boolean),
-    collapsed: T.optional(T.boolean),
-    docName: T.optional(T.string),
-    docView: T.optional(T.boolean),
-    backingFile: T.optional(T.string),
-  }
+  // Shared with the server sync schema (server/lib/sync-rooms.mjs) so the two
+  // can't drift — a prop mismatch is a TLSyncError that crashes the room.
+  static override props = mathNoteProps
 
   getDefaultProps() {
     // Match the MCP `md` size preset (450×200) so canvas-created notes have
@@ -874,7 +862,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
 
     const handleBulletClick = useCallback((e: React.MouseEvent): boolean => {
       if (!backingFile) return false
-      const li = (e.target as HTMLElement).closest('li') as HTMLElement | null
+      const li = (e.target as HTMLElement).closest('li') as HTMLLIElement | null
       if (!li) return false
       const container = contentRef.current
       if (!container) return false
@@ -882,10 +870,10 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       const tuplePath: number[] = []
       let el: HTMLElement | null = li
       while (el && el !== container) {
-        const parent = el.parentElement
+        const parent: HTMLElement | null = el.parentElement
         if (!parent) break
         if (el.tagName === 'LI') {
-          tuplePath.unshift(Array.from(parent.children).filter(c => c.tagName === 'LI').indexOf(el))
+          tuplePath.unshift(Array.from(parent.children).filter((c: Element) => c.tagName === 'LI').indexOf(el))
         }
         el = parent
       }
@@ -1162,6 +1150,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       const choices = shape.props.choices as string[] | undefined
       const selectedChoice = (shape.props.selectedChoice as number) ?? -1
       const hasChoices = choices && choices.length > 0
+      const hasTabs = (shape.props.tabs as string[] | undefined)?.length === 3
 
       let textContent
       if (renderedHtml) {
@@ -1235,7 +1224,54 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           }}
         >
           {textContent}
-          {hasChoices && (
+          {hasTabs && (
+            <div style={{
+              height: '20px',
+              lineHeight: '20px',
+              fontSize: '10px',
+              fontFamily: '"SF Mono", Menlo, monospace',
+              padding: '0 10px',
+              color: 'rgba(0,0,0,0.35)',
+              backgroundColor: 'rgba(0,0,0,0.02)',
+              borderTop: '1px solid rgba(0,0,0,0.04)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              flexShrink: 0,
+              userSelect: 'none',
+            }}>
+              {['tex', 'md', 'outline'].map((label) => {
+                const tabIdx = label === 'tex' ? 1 : label === 'md' ? 0 : 2
+                const isActive = (shape.props.activeTab as number | undefined) === tabIdx
+                return (
+                  <span
+                    key={label}
+                    onPointerDown={(e) => {
+                      stopEventPropagation(e)
+                      const tabsArr = shape.props.tabs as string[]
+                      if (!tabsArr?.[tabIdx]) return
+                      editor.updateShape({
+                        id: shape.id,
+                        type: 'math-note' as any,
+                        props: { activeTab: tabIdx, text: tabsArr[tabIdx] },
+                      })
+                    }}
+                    style={{
+                      cursor: 'pointer',
+                      fontWeight: isActive ? 700 : 400,
+                      opacity: isActive ? 1 : 0.6,
+                      borderBottom: isActive ? '1px solid currentColor' : 'none',
+                      paddingBottom: '1px',
+                      transition: 'opacity 0.15s',
+                    }}
+                  >
+                    {label}
+                  </span>
+                )
+              })}
+            </div>
+          )}
+          {hasChoices && !hasTabs && (
             <div style={{
               padding: '4px 10px 10px',
               display: 'flex',
@@ -1249,8 +1285,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
                   <button
                     key={i}
                     onPointerDown={(e) => {
-                      if (editor.getInstanceState().isPenMode && e.pointerType === 'touch') return
-                      e.stopPropagation()
+                      stopEventPropagation(e)
                       editor.updateShape({
                         id: shape.id,
                         type: 'math-note' as any,

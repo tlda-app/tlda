@@ -33,7 +33,7 @@ export function useYjsSignals({
   editorRef, document,
   diffDataRef, setDiffFetchSeq,
   proofDataRef, setProofDataReady, setProofFetchSeq,
-  panelsLocalRef,
+  panelsLocalRef: _panelsLocalRef,
   onReloadResult, setScreenshotCapture,
 }: UseYjsSignalsParams) {
   // Keep a snapshot of the current lookup for scroll anchoring across rebuilds.

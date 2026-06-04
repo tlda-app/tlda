@@ -11,6 +11,7 @@
 import fs from 'fs'
 import path from 'path'
 import { resolveToken } from './resolve-token.mjs'
+import { resolveAsset } from '../shared/doc-assets.mjs'
 
 let projectRoot = null
 let serverUrl = null
@@ -44,12 +45,16 @@ export function isRemote() {
  */
 export function localPath(docName, filename) {
   if (!projectRoot) return null
-  // Prefer fresh build output over stale legacy public/docs/
-  const serverPath = path.join(projectRoot, 'server', 'projects', docName, 'output', filename)
-  if (fs.existsSync(serverPath)) return serverPath
+  // Prefer fresh build output over stale legacy public/docs/. resolveAsset
+  // (shared with the server route) applies the bare→texBase alias for
+  // metadata files like lookup.json, so disk mode resolves the same file the
+  // server serves over HTTP — fixes line→page anchoring on single-machine setups.
+  const projectsDir = path.join(projectRoot, 'server', 'projects')
+  const resolved = resolveAsset(projectsDir, docName, filename)
+  if (resolved) return resolved
   const publicPath = path.join(projectRoot, 'public', 'docs', docName, filename)
   if (fs.existsSync(publicPath)) return publicPath
-  return serverPath // default for new files
+  return path.join(projectsDir, docName, 'output', filename) // default for new files
 }
 
 /**

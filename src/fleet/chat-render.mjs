@@ -74,6 +74,17 @@ export function resolveInlineAttachments(text, inlineAttachments, renderMarkdown
 
 // --- Main renderer ---
 
+const PHASE_ICON_DAWN = '<svg width="10" height="10" viewBox="0 0 16 16" style="opacity:0.6;vertical-align:-1px;margin-right:2px"><line x1="0.5" y1="11" x2="15.5" y2="11" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round"/><path d="M9 11 a3 3 0 0 1 6 0" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round"/><line x1="12" y1="6" x2="12" y2="4" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round"/><line x1="15" y1="9" x2="16.5" y2="8" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round"/></svg>'
+const PHASE_ICON_DUSK = '<svg width="10" height="10" viewBox="0 0 16 16" style="opacity:0.6;vertical-align:-1px;margin-right:2px"><line x1="0.5" y1="11" x2="15.5" y2="11" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round"/><path d="M1 11 a3 3 0 0 1 6 0" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round"/><line x1="4" y1="6" x2="4" y2="4" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round"/><line x1="1" y1="9" x2="-0.5" y2="8" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round"/></svg>'
+
+function phaseIconHtml(agentId, getAgents) {
+  if (!getAgents) return ''
+  const agents = getAgents()
+  const a = agents?.find(x => x.id === agentId)
+  if (!a?.phase || a.phase === 'day') return ''
+  return a.phase === 'dawn' ? PHASE_ICON_DAWN : a.phase === 'dusk' ? PHASE_ICON_DUSK : ''
+}
+
 export function renderChatLine(m, ctx) {
   const { agentLabel, getNickClass, isHumanId, getAgents, getTasks, tldaToken, renderMarkdown } = ctx
 
@@ -140,9 +151,11 @@ export function renderChatLine(m, ctx) {
     const toNick = agentLabel(m.to)
     const toCls = getNickClass(m.to)
     const isFromUser = isHumanId(m.from)
+    const fromPhaseIcon = phaseIconHtml(m.from, getAgents)
+    const toPhaseIcon = phaseIconHtml(m.to, getAgents)
     const nickHtml = isFromUser
       ? `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(nick)}:</span></span>`
-      : `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(nick)}</span><span class="chat-arrow">&rarr;</span><span class="agent-nick ${toCls}" data-agent-id="${esc(m.to)}">${esc(toNick)}</span>:</span>`
+      : `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${fromPhaseIcon}${esc(nick)}</span><span class="chat-arrow">&rarr;</span><span class="agent-nick ${toCls}" data-agent-id="${esc(m.to)}">${toPhaseIcon}${esc(toNick)}</span>:</span>`
     return `<div class="chat-line terminal-msg ${dimClass}${isFromUser ? ' from-user' : ''}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span> <span class="terminal-badge">term</span> ${nickHtml} ${text}</div>`
   }
 

@@ -56,32 +56,24 @@ const PROJECT_ROOT = join(__dirname, '..', '..')
 const SCRIPTS_DIR = join(PROJECT_ROOT, 'scripts')
 
 function convertScratchMarkdown(srcDir, addLog) {
-  const scratchDir = join(srcDir, '.scratchinputs')
+  const scratchDir = join(srcDir, '.tlda', 'scratch')
   if (!existsSync(scratchDir)) return
   let converted = 0
   for (const f of readdirSync(scratchDir)) {
     if (!f.endsWith('.md')) continue
     const mdPath = join(scratchDir, f)
     const texPath = join(scratchDir, f.replace(/\.md$/, '.tex'))
-    try {
-      const mdMtime = statSync(mdPath).mtimeMs
-      if (existsSync(texPath) && statSync(texPath).mtimeMs > mdMtime) continue
-    } catch {}
     const mdContent = readFileSync(mdPath, 'utf8')
     let texContent = mdContent.replace(/(?<![\\@\w])@([\w:.-]+[\w])/g, '\\ref{$1}')
     try {
       texContent = execSync('pandoc -f markdown -t latex --wrap=none', { input: texContent, encoding: 'utf8', timeout: 10000 })
     } catch (e) {
-      // Surface the failure loudly: write a LaTeX error marker so the build
-      // halts with a clear pandoc-failed message instead of silently leaving
-      // a stale .tex (or the placeholder comment) in place. The build-error
-      // path then flows through to the agent via the existing fleet chat.
       const stderr = (e.stderr || '').toString()
       const msg = (stderr || e.message || 'unknown error').slice(0, 800)
       const sanitized = msg.replace(/[\\{}#%&^_~$]/g, '?').replace(/\n/g, ' / ')
-      const errTex = `% Pandoc failed converting ${f}\n\\PackageError{tlda}{Pandoc failed converting ${f}: ${sanitized}}{Check the markdown source for syntax errors; see build.log for full pandoc stderr.}\n`
+      const errTex = `\\par\\noindent\\fbox{\\footnotesize\\ttfamily [scratch: pandoc failed for ${sanitized.slice(0, 200)} — check source]}\\par\n`
       writeFileSync(texPath, errTex)
-      addLog(`pandoc failed for ${f}: ${e.message} — wrote error marker to ${texPath}`)
+      addLog(`pandoc failed for ${f}: ${e.message} — wrote warning marker to ${texPath}`)
       continue
     }
     if (!texContent.endsWith('\n')) texContent += '\n'
@@ -410,15 +402,36 @@ async function compileLaTeX(ctx) {
   // Override the scratch-template for THIS build. The user's source dir has
   // the marker version of \inputscratch (so local vanilla-latex builds show
   // a visible placeholder per scratch section); the build runner writes a
-  // version into buildDir/.scratchinputs/ that actually \input{}s the scratch
+  // version into buildDir/.tlda/scratch/ that actually \input{}s the scratch
   // content. TEXINPUTS lists buildDir first, so pdflatex resolves
-  // \input{.scratchinputs/scratch-template} from here, not srcDir.
-  const buildScratchDir = join(buildDir, '.scratchinputs')
+  // \input{.tlda/scratch/scratch-template} from here, not srcDir.
+  const buildScratchDir = join(buildDir, '.tlda', 'scratch')
   mkdirSync(buildScratchDir, { recursive: true })
+  // Scan scratch dir for .tex files and generate per-label mappings so the
+  // macro can resolve label → internal path without string manipulation packages.
+  const srcScratchDir = join(srcDir, '.tlda', 'scratch')
+  const labelMappings = []
+  if (existsSync(srcScratchDir)) {
+    for (const f of readdirSync(srcScratchDir)) {
+      if (!f.endsWith('.tex') || f === 'scratch-template.tex') continue
+      const label = 'scratch:' + f.replace(/^scratch-/, '').replace(/\.tex$/, '')
+      labelMappings.push(`\\@namedef{tlda@scratch@${label}}{.tlda/scratch/${f}}`)
+    }
+  }
   writeFileSync(join(buildScratchDir, 'scratch-template.tex'),
     '% scratch-template — server-build override\n' +
+    '% #1 = agent file path (display only), #2 = label, #3 = header\n' +
     '\\usepackage{xcolor}\n' +
-    '\\newcommand{\\inputscratch}[3]{\\begingroup\\synctex=1\\color[gray]{0.3}\\par\\noindent{\\footnotesize\\ttfamily[#3]}\\par\\label{#2}\\input{#1}\\endgroup\\par}\n'
+    '\\makeatletter\n' +
+    '\\newcommand{\\inputscratch}[3]{%\n' +
+    '  \\@ifundefined{tlda@scratch@#2}{%\n' +
+    '    \\par\\noindent\\fbox{\\footnotesize\\ttfamily [scratch: unknown label \\detokenize{#2}]}\\par\n' +
+    '  }{%\n' +
+    '    \\begingroup\\synctex=1\\color[gray]{0.3}\\par\\noindent{\\footnotesize\\ttfamily[#3]}\\par\\label{#2}\\input{\\csname tlda@scratch@#2\\endcsname}\\endgroup\\par\n' +
+    '  }%\n' +
+    '}\n' +
+    (labelMappings.length > 0 ? labelMappings.join('\n') + '\n' : '') +
+    '\\makeatother\n'
   )
 
   // Build the pdflatex command — cwd is srcDir, output goes to buildDir.
@@ -1271,10 +1284,10 @@ function writeRelevantFiles(ctx) {
     if (existsSync(svgPath)) relevant.add(svgPath)
   }
   // Augment with markdown source files for generated scratch .tex files.
-  // The build runner converts .scratchinputs/*.md → .tex; pdflatex only
+  // The build runner converts .tlda/scratch/*.md → .tex; pdflatex only
   // sees the .tex, but the daemon needs to watch the .md source.
   for (const p of [...relevant]) {
-    if (!p.includes('.scratchinputs/') || !p.endsWith('.tex')) continue
+    if (!p.includes('.tlda/scratch/') || !p.endsWith('.tex')) continue
     const mdPath = p.replace(/\.tex$/, '.md')
     if (existsSync(mdPath)) relevant.add(mdPath)
   }
@@ -1726,6 +1739,8 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
 
     // Send the reload signal once, after all targets finish.
     const svgsReadyAt = Date.now()
+    // Snapshot the current build errors/warnings to persist in the sentinel.
+    const { errors: buildErrSnapshot, warnings: buildWarnSnapshot } = extractBuildErrors(name)
     signalReload(name, null)
 
     // Total pages across all targets — what the viewer reports as project.pages.
@@ -1780,7 +1795,8 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
     commitSnapshot(name).then(async result => {
       if (result) {
         // Update doc-version sentinel with shadow hash (the build's version identity)
-        updateDocVersionSentinel(name, result.hash, svgsReadyAt).catch(e => {
+        // plus the build's errors/warnings (persistent, convergent).
+        updateDocVersionSentinel(name, result.hash, svgsReadyAt, buildErrSnapshot, buildWarnSnapshot).catch(e => {
           ctx.addLog(`doc-version sentinel update failed (non-fatal): ${e.message}`)
         })
         recordGitSnapshot(name, { commitHash: result.hash, commitMessage: result.message || `Build at ${new Date().toISOString()}`, pages: expectedPages ?? 0 })
@@ -2008,7 +2024,7 @@ function signalReload(name, pages) {
  * Update the doc-version sentinel shape in the Yjs room with the current
  * source git commit hash. Fire-and-forget — call without await.
  */
-async function updateDocVersionSentinel(name, shadowHash, buildReadyAt) {
+async function updateDocVersionSentinel(name, shadowHash, buildReadyAt, errors, warnings) {
   const commitHash = shadowHash || 'unknown'
 
   const docName = `doc-${name}`
@@ -2030,9 +2046,15 @@ async function updateDocVersionSentinel(name, shadowHash, buildReadyAt) {
       commitHash,
       timestamp: Date.now(),
       buildReadyAt: buildReadyAt || Date.now(),
+      // Build errors/warnings live HERE — convergent Yjs state, not a
+      // fire-and-forget signal. A build's error status is a stable property
+      // that must survive reconnect/restart, so the viewer reads it straight
+      // from the sentinel (single source of truth, no signal fallback).
+      warningsJson: warnings ? JSON.stringify(warnings) : '',
+      errorsJson: errors ? JSON.stringify(errors) : '',
     },
   }
 
   await putShape(docName, sentinel)
-  console.log(`[build:${name}] doc-version sentinel updated: ${commitHash.slice(0, 7)}`)
+  console.log(`[build:${name}] doc-version sentinel updated: ${commitHash.slice(0, 7)} (${errors?.length || 0} errors, ${warnings?.length || 0} warnings)`)
 }

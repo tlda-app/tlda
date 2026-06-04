@@ -21,6 +21,8 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 
+import { PSEUDO_LABELS } from '../../shared/fleet-labels.mjs';
+
 // Persistent DB under ~/.config/tlda/ (survives macOS reboots).
 // Previously /tmp/fleet.db which got wiped on reboot — lost all agents/state.
 // Excluded from Spotlight via a .metadata_never_index file next to the DB.
@@ -28,10 +30,10 @@ const DB_PATH = path.join(os.homedir(), '.config', 'tlda', 'fleet.db');
 const FLEET_DIR = path.join(os.homedir(), '.fleet');
 
 // Virtual labels emitted by the DNF chat-routing resolver based on liveness
-// state — see unified-server.mjs `recipientLabels`. A friendly_name or label
-// that equals one of these would silently shadow the routing category.
-// Keep in sync with the `virtual` computation in the recipient resolver.
-export const PSEUDO_LABELS = Object.freeze(['awake', 'hibernating', 'human', 'human-away']);
+// state. A friendly_name or label that equals one of these would silently
+// shadow the routing category. Single source of truth: shared/fleet-labels.mjs
+// (statusLabels), re-exported here for the name-collision checks.
+export { PSEUDO_LABELS };
 
 export class FleetStore {
   constructor(dbPath) {
@@ -264,6 +266,33 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS idx_agents_lineage ON agents(lineage_id);
     `);
 
+    // Dedupe + enforce unique friendly_name among live agents.
+    // Step 1: resolve existing duplicates — keep the most-recently-seen, mark the rest dead.
+    const dupes = this.db.prepare(`
+      SELECT friendly_name, COUNT(*) AS cnt FROM agents
+      WHERE dead = 0 AND friendly_name IS NOT NULL
+      GROUP BY friendly_name HAVING cnt > 1
+    `).all();
+    if (dupes.length > 0) {
+      this.db.transaction(() => {
+        for (const { friendly_name } of dupes) {
+          const rows = this.db.prepare(
+            'SELECT id, last_seen FROM agents WHERE friendly_name = ? AND dead = 0 ORDER BY last_seen DESC'
+          ).all(friendly_name);
+          // Keep the first (most recent), mark the rest dead
+          for (let i = 1; i < rows.length; i++) {
+            this.db.prepare('UPDATE agents SET dead = 1 WHERE id = ?').run(rows[i].id);
+          }
+        }
+      })();
+      console.log(`[fleet-store] deduplicated friendly_names: ${dupes.map(d => d.friendly_name).join(', ')}`);
+    }
+    // Step 2: create partial unique index (idempotent)
+    this.db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_live_name
+      ON agents(friendly_name) WHERE dead = 0 AND friendly_name IS NOT NULL
+    `);
+
     // Backfill events_fts for existing events (one-time; trigger handles new inserts).
     // Use FTS5 rebuild to populate the index from the content table.
     const ftsCount = this.db.prepare("SELECT COUNT(*) AS c FROM events_fts").get().c;
@@ -412,17 +441,12 @@ export class FleetStore {
     this._queryEventsBefore = this.db.prepare(`
       SELECT ${E} FROM events WHERE timestamp < ? ORDER BY timestamp DESC LIMIT ?
     `);
-    this._queryEventsBeforeAgent = this.db.prepare(`
-      SELECT ${E} FROM events WHERE timestamp < ? AND (from_id = ? OR to_id = ?)
-      ORDER BY timestamp DESC LIMIT ?
-    `);
     this._queryEventsLatest = this.db.prepare(`
       SELECT ${E} FROM events ORDER BY timestamp DESC LIMIT ?
     `);
-    this._queryEventsLatestAgent = this.db.prepare(`
-      SELECT ${E} FROM events WHERE from_id = ? OR to_id = ?
-      ORDER BY timestamp DESC LIMIT ?
-    `);
+    // Agent-scoped history matches a *set* of fleet ids (a lineage's incarnations),
+    // so the SQL has variable arity and is built per-call in queryChatHistory()
+    // rather than prepared here. See relatedFleetIds().
     this._queryEventsByType = this.db.prepare(`
       SELECT ${E} FROM events WHERE type = ? ORDER BY timestamp DESC LIMIT ?
     `);
@@ -521,8 +545,16 @@ export class FleetStore {
     if (inserted.from_id && inserted.to_id) {
       const wiretapAgents = this.resolveWiretaps(inserted.from_id, inserted.to_id, inserted.type)
       if (wiretapAgents.length > 0) {
-        inserted.metadata = inserted.metadata || {}
-        inserted.metadata.wiretap_cc = wiretapAgents
+        // metadata can arrive as an unparsed JSON string (e.g. daemon_warning
+        // events); setting a property on a string primitive throws. Coerce to a
+        // plain object first.
+        let meta = inserted.metadata
+        if (typeof meta === 'string') {
+          try { meta = JSON.parse(meta) } catch { meta = {} }
+        }
+        if (!meta || typeof meta !== 'object') meta = {}
+        meta.wiretap_cc = wiretapAgents
+        inserted.metadata = meta
       }
     }
 
@@ -585,22 +617,29 @@ export class FleetStore {
   // ---- Agent state management ----
 
   upsertAgent(agent) {
-    this._upsertAgent.run(
-      agent.id,
-      agent.friendly_name || null,
-      agent.tmux_session || null,
-      agent.session_id || null,
-      agent.session_ids ? JSON.stringify(agent.session_ids) : null,
-      agent.cwd || null,
-      agent.labels ? JSON.stringify(agent.labels) : null,
-      agent.registered_at || null,
-      agent.last_seen || new Date().toISOString(),
-      agent.dead ? 1 : 0,
-      agent.human ? 1 : 0,
-      agent.is_manager ? 1 : 0,
-      agent.metadata ? JSON.stringify(agent.metadata) : null,
-      agent.machine_id || null
-    );
+    try {
+      this._upsertAgent.run(
+        agent.id,
+        agent.friendly_name || null,
+        agent.tmux_session || null,
+        agent.session_id || null,
+        agent.session_ids ? JSON.stringify(agent.session_ids) : null,
+        agent.cwd || null,
+        agent.labels ? JSON.stringify(agent.labels) : null,
+        agent.registered_at || null,
+        agent.last_seen || new Date().toISOString(),
+        agent.dead ? 1 : 0,
+        agent.human ? 1 : 0,
+        agent.is_manager ? 1 : 0,
+        agent.metadata ? JSON.stringify(agent.metadata) : null,
+        agent.machine_id || null
+      );
+    } catch (e) {
+      if (e.code === 'SQLITE_CONSTRAINT_UNIQUE' || e.message?.includes('UNIQUE constraint failed')) {
+        throw new Error(`Name "${agent.friendly_name}" is already taken by another live agent`);
+      }
+      throw e;
+    }
   }
 
   // Agents associated with a particular fleet-daemon machine. Used by the
@@ -638,7 +677,7 @@ export class FleetStore {
       row = nameRows[0] || this._getAgentByName.get(query);
     }
     if (!row) {
-      // Lineage name → resolve to day agent
+      // Bare lineage name → resolve to day agent
       const lineage = this.getLineage(query);
       if (lineage) {
         const dayRow = this.db.prepare(
@@ -833,6 +872,66 @@ export class FleetStore {
       this.db.prepare(
         'INSERT INTO lineage_phase_log (lineage_id, fleet_id, phase, entered_at) VALUES (?, ?, ?, ?)'
       ).run(agent.lineage_id, agentId, newPhase, now);
+    })();
+  }
+
+  // One rotation: the incoming agent enters at `dawn` (the worker), and every
+  // existing slot shifts up a rung — dawn → day (becomes the manager), day →
+  // dusk (becomes the consultant on the way out), dusk → loses its friendly name
+  // and drops out of the slots (stays in the lineage as nameless history).
+  // Nothing is marked dead and nothing is removed from the lineage — a faded
+  // agent just has its name rotate off, and it hibernates on its own once no one
+  // talks to it. Direct handoff applies this once; the briefing handoff applies
+  // it twice (briefer in, then the new worker in).
+  rotateLineageIn(lineageId, incomingAgentId) {
+    const now = Date.now();
+    const slotIds = (phase) => this.db.prepare(
+      "SELECT id FROM agents WHERE lineage_id = ? AND phase = ? AND dead = 0"
+    ).all(lineageId, phase).map(r => r.id);
+    const exitLog = (id) => this.db.prepare(
+      'UPDATE lineage_phase_log SET exited_at = ? WHERE fleet_id = ? AND exited_at IS NULL'
+    ).run(now, id);
+    const enterLog = (id, phase) => {
+      // PK is (lineage_id, fleet_id, entered_at); ms-resolution Date.now() can
+      // collide with a prior entry for the same agent under rapid rotation, so
+      // force the timestamp strictly past this agent's last entry in the lineage.
+      const prev = this.db.prepare(
+        'SELECT MAX(entered_at) AS m FROM lineage_phase_log WHERE lineage_id = ? AND fleet_id = ?'
+      ).get(lineageId, id);
+      const ts = Math.max(now, (prev?.m || 0) + 1);
+      this.db.prepare(
+        'INSERT INTO lineage_phase_log (lineage_id, fleet_id, phase, entered_at) VALUES (?, ?, ?, ?)'
+      ).run(lineageId, id, phase, ts);
+    };
+    // Order frees each target slot before the next agent moves into it:
+    // dusk out → day→dusk → dawn→day → incoming→dawn.
+    this.db.transaction(() => {
+      // 1. Current dusk (consultant) ages out: name rotates off, drops the slot,
+      //    stays in the lineage as nameless history.
+      for (const id of slotIds('dusk')) {
+        if (id === incomingAgentId) continue;
+        exitLog(id);
+        this.db.prepare('UPDATE agents SET friendly_name = NULL, phase = NULL WHERE id = ?').run(id);
+      }
+      // 2. Current day (manager) → dusk (consultant).
+      for (const id of slotIds('day')) {
+        if (id === incomingAgentId) continue;
+        exitLog(id);
+        this.db.prepare('UPDATE agents SET phase = ? WHERE id = ?').run('dusk', id);
+        enterLog(id, 'dusk');
+      }
+      // 3. Current dawn (worker) → day (manager).
+      for (const id of slotIds('dawn')) {
+        if (id === incomingAgentId) continue;
+        exitLog(id);
+        this.db.prepare('UPDATE agents SET phase = ? WHERE id = ?').run('day', id);
+        enterLog(id, 'day');
+      }
+      // 4. Incoming enters at dawn (the worker).
+      exitLog(incomingAgentId);
+      this.db.prepare('UPDATE agents SET lineage_id = ?, phase = ? WHERE id = ?')
+        .run(lineageId, 'dawn', incomingAgentId);
+      enterLog(incomingAgentId, 'dawn');
     })();
   }
 
@@ -1193,14 +1292,43 @@ export class FleetStore {
     return { ...row, from: row.from, to: row.to, metadata: meta };
   }
 
-  queryChatHistory({ before, agent, limit = 50 } = {}) {
+  // The set of fleet ids whose events belong to the same logical agent as
+  // `fleetId`. A lineage's history is spread across one fleet id per phase
+  // incarnation; lineage_phase_log is the authoritative link and retains
+  // retired-phase ids (whose agent row may have lineage_id = NULL by now),
+  // so we recover the lineage from the log when the current row has none.
+  relatedFleetIds(fleetId) {
+    let lineageId = this._getAgent.get(fleetId)?.lineage_id;
+    if (!lineageId) {
+      lineageId = this.db
+        .prepare('SELECT lineage_id FROM lineage_phase_log WHERE fleet_id = ? LIMIT 1')
+        .get(fleetId)?.lineage_id;
+    }
+    if (!lineageId) return [fleetId];
+    return [...new Set([fleetId, ...this.getLineageFleetIds(lineageId)])];
+  }
+
+  // `agents` is the set of fleet ids the chat is filtered to (resolved on the
+  // client by the same logic the live display uses — friendly names, lineage
+  // names, and `name:phase` colon labels). Each id is expanded to its lineage's
+  // full incarnation set via relatedFleetIds(), so history for a lineage agent
+  // returns the union across all its phase/respawn ids — matching what live shows.
+  queryChatHistory({ before, agents, limit = 50 } = {}) {
     let rows;
-    if (before && agent) {
-      rows = this._query(this._queryEventsBeforeAgent, before, agent, agent, limit);
+    const ids = Array.isArray(agents) ? agents : [];
+    if (ids.length > 0) {
+      const expanded = [...new Set(ids.flatMap(id => this.relatedFleetIds(id)))];
+      const ph = expanded.map(() => '?').join(',');
+      const E = this._EVT;
+      if (before) {
+        const sql = `SELECT ${E} FROM events WHERE timestamp < ? AND (from_id IN (${ph}) OR to_id IN (${ph})) ORDER BY timestamp DESC LIMIT ?`;
+        rows = this._query(this.db.prepare(sql), before, ...expanded, ...expanded, limit);
+      } else {
+        const sql = `SELECT ${E} FROM events WHERE from_id IN (${ph}) OR to_id IN (${ph}) ORDER BY timestamp DESC LIMIT ?`;
+        rows = this._query(this.db.prepare(sql), ...expanded, ...expanded, limit);
+      }
     } else if (before) {
       rows = this._query(this._queryEventsBefore, before, limit);
-    } else if (agent) {
-      rows = this._query(this._queryEventsLatestAgent, agent, agent, limit);
     } else {
       rows = this._query(this._queryEventsLatest, limit);
     }

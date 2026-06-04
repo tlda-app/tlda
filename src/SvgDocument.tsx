@@ -29,7 +29,7 @@ import { FleetDocViewShapeUtil } from './shapes/FleetDocViewShape'
 import { DocClipShapeUtil } from './shapes/DocClipShape'
 import { FleetPillShapeUtil } from './shapes/FleetPillShape'
 import { FleetSearchShapeUtil } from './shapes/FleetSearchShape'
-import { getMyAnchorId } from './shapes/fleet-utils'
+import { getMyAnchorId, isMyFleetShape, FLEET_SHAPE_TYPES } from './shapes/fleet-utils'
 import { ClusterShapeUtil } from './shapes/ClusterShape'
 import { TerminalShapeUtil } from './shapes/TerminalShape'
 import { ReaperShapeUtil } from './shapes/ReaperShape'
@@ -72,8 +72,8 @@ import { ScrollyOverlay } from './overlays/ScrollyOverlay'
 import { ScreenshotCapture } from './overlays/ScreenshotCapture'
 import { FleetHUD, fleetHudOpenRef } from './overlays/FleetHUD'
 
-const FLEET_TYPES_FOR_VIS = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview'])
 import { BuildWarningPill } from './pills/BuildWarningPill'
+import { BuildErrorPill } from './pills/BuildErrorPill'
 import { BuildProgressPill } from './pills/BuildProgressPill'
 import { AnnotationVisibilityPill } from './pills/AnnotationVisibilityPill'
 import { DraftPill } from './pills/DraftPill'
@@ -887,12 +887,14 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     shadowActiveVersion,
   }), [docKey, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, selectedChangeId, handleSelectChange, buildErrors, buildWarnings, timelineActive, toggleTimeline, shadowVisible, toggleShadowOverlay, shadowActiveVersion])
 
-  // When the fleet HUD overlay is open, hide fleet shapes in the main editor
-  // from both rendering AND hit-testing. The overlay renders its own copies.
-  // Uses a stable ref (fleetHudOpenRef) so the callback identity never changes
-  // (changing it would recreate the entire editor).
+  // Hide fleet shapes on the main canvas in two cases:
+  // 1. Non-owned fleet shapes (belong to another user or orphans) — always hidden
+  // 2. Owned fleet shapes when HUD is open — the HUD renders its own copies
   const getShapeVisibility = useCallback((shape: any) => {
-    if (fleetHudOpenRef.current && FLEET_TYPES_FOR_VIS.has(shape.type)) return 'hidden' as const
+    if (FLEET_SHAPE_TYPES.has(shape.type)) {
+      if (!isMyFleetShape(shape)) return 'hidden' as const
+      if (fleetHudOpenRef.current) return 'hidden' as const
+    }
     return undefined
   }, [])
 
@@ -1161,11 +1163,12 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
         {isPresentation && <DraftPill />}{isPresentation && role === 'presenter' && <AnnotationVisibilityPill />}<FollowingBadge />
         <ViewPinBadge docName={document.name} />
         <PlaybackPill state={playbackState} />
+        <BuildErrorPill />
         <BuildWarningPill warnings={buildWarnings}>
           <BuildProgressPill />
         </BuildWarningPill>
         {editorRef.current && <FleetIconPill mainEditor={editorRef.current} />}
-        {/* Build errors handled by fleet-docview shapes with 'errors' source */}
+        {/* Build errors: red BuildErrorPill (reads errorsJson from the doc-version sentinel) */}
       </div>
       {editorRef.current && (
         <FleetHUD
@@ -1266,7 +1269,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
             if (page < 1) return
 
-            const { type, displayLabel } = anchorIdToLabel(title || (smMatch ? `${smMatch.type}.${smMatch.number}` : anchorId))
+            const { displayLabel } = anchorIdToLabel(title || (smMatch ? `${smMatch.type}.${smMatch.number}` : anchorId))
 
             const dvTitle = (displayLabel || anchorId).replace(/^equation\./, 'eq ').replace(/^theorem\./, 'thm ')
             editor.getCurrentPageShapes()
@@ -1408,7 +1411,12 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
               if (!editor.getShape(getMyAnchorId() as any)) {
                 requestAnimationFrame(() => {
                   requestAnimationFrame(() => {
-                    window.dispatchEvent(new CustomEvent('fleet-hud-reset'))
+                    // preserveAnchor: this is a plain reload, where a missing anchor
+                    // may just be unsynced/identity-unresolved (large rooms deliver it
+                    // late). The HUD should recompute a provisional default but MUST NOT
+                    // delete the saved anchor — see onReset. Destructive resets
+                    // (layout switch, emergency recovery) dispatch without this flag.
+                    window.dispatchEvent(new CustomEvent('fleet-hud-reset', { detail: { preserveAnchor: true } }))
                   })
                 })
               }

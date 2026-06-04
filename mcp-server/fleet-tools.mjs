@@ -1,28 +1,7 @@
-#!/usr/bin/env node
 /**
- * Agent Manager MCP Server v5.0
- *
- * Coordinates agents via shared state file + tmux sessions.
- * Agent identity = fleet ID (durable), backed by sqlite identity ledger.
- * See fleet-identity.md for the full identity system design.
- *
- * Tools:
- *   - register(session_id?, name?)       register this agent (all agents call this)
- *   - delegate(agent, description, message)  assign task (manager only)
- *   - chat(message, to?)                 send message + kick recipient
- *   - task_list()                        show active tasks + registered agents
- *   - task_done(agent?)                  mark task complete
- *   - task_check(agent)                  read agent's tmux terminal (escape hatch)
- *   - my_task()                          show own task + unread messages
- *   - report(pass?, summary?)            self-review gate for task completion
+ * Fleet tools module — imported by the unified MCP server (index.mjs).
+ * Exports: getFleetTools(), handleFleetTool(), initFleet()
  */
-
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from '@modelcontextprotocol/sdk/types.js';
 import { execSync, exec } from 'child_process';
 import fs from 'fs';
 import http from 'http';
@@ -37,7 +16,7 @@ import { createPlayback, getPlayback, listPlaybacks, editPlayback, playbackTrans
 import { ledger } from './identity.mjs';
 import { formatMessage, formatActivity, formatAnnotationRef } from './format-annotation.mjs';
 import { parseTimestamp } from './lib/parse-timestamp.mjs';
-import { processMessageText } from './lib/message-processing.mjs';
+import { processMessageText } from '../shared/message-processing.mjs';
 import WebSocket from 'ws';
 import { ResilientWS } from '../shared/resilient-ws.mjs';
 
@@ -157,13 +136,49 @@ async function getMacrosForDoc(doc) {
   if (cached && Date.now() - cached.ts < MACROS_CACHE_MS) return cached.macros;
   try {
     const url = `${TLDA_SERVER}/api/projects/${encodeURIComponent(doc)}/macros`;
-    const res = await fleetFetch(url, { signal: AbortSignal.timeout(2000) });
+    const headers = _tldaToken ? { Authorization: `Bearer ${_tldaToken}` } : {};
+    const res = await fleetFetch(url, { headers, signal: AbortSignal.timeout(2000) });
     if (!res.ok) return {};
     const body = await res.json();
     const macros = body?.macros || {};
     _macrosCache.set(doc, { macros, ts: Date.now() });
     return macros;
   } catch { return {}; }
+}
+
+// Resolve which project an agent "is on" from its working folder: the project
+// whose sourceDir contains the agent's cwd (longest match wins). This is the
+// document whose macros render/lint the agent's chat — an agent working in
+// ~/work/bregman-lower-bound uses bregman's \E, \chis, etc. No tool call or
+// human-viewport guessing required; the folder is the source of truth.
+let _agentDocCache = { doc: null, ts: 0 };
+async function getAgentDoc() {
+  if (_agentDocCache.doc !== null && Date.now() - _agentDocCache.ts < MACROS_CACHE_MS) return _agentDocCache.doc;
+  const cwd = getAgentCwd();
+  if (!cwd) return null;
+  try {
+    const headers = _tldaToken ? { Authorization: `Bearer ${_tldaToken}` } : {};
+    const res = await fleetFetch(`${TLDA_SERVER}/api/projects`, { headers, signal: AbortSignal.timeout(2000) });
+    if (!res.ok) return null;
+    const body = await res.json();
+    const projects = body?.projects || [];
+    let best = null;
+    for (const p of projects) {
+      if (!p.sourceDir) continue;
+      const sd = p.sourceDir.replace(/\/+$/, '');
+      if (cwd === sd || cwd.startsWith(sd + '/')) {
+        if (!best || sd.length > best.len) best = { name: p.name, len: sd.length };
+      }
+    }
+    const doc = best?.name || null;
+    _agentDocCache = { doc, ts: Date.now() };
+    return doc;
+  } catch { return null; }
+}
+
+// Macros for the document the calling agent is working on (folder-based).
+async function getMacrosForAgent() {
+  return getMacrosForDoc(await getAgentDoc());
 }
 
 function lintChatMessage(message, macros = {}) {
@@ -480,7 +495,7 @@ function getAgent(state, id) {
     a.session_id === id || (a.session_ids && a.session_ids.includes(id))
   );
   if (exact) return exact;
-  // Lineage name → day agent
+  // Bare lineage name → resolve to day agent
   const dayAgent = state.agents.find(a => a.lineage_name === id && a.phase === 'day');
   return dayAgent || null;
 }
@@ -634,41 +649,44 @@ function findValidSession(agent) {
   return primary;
 }
 
-function tmuxRespawn(sessionName, cwd, fleetId, sessionId) {
-  const dir = cwd || os.homedir();
-  const rGuard = path.join(__dirname, 'bin', 'R-guard');
-  const rsGuard = path.join(__dirname, 'bin', 'Rscript-guard');
-  const setup = `alias R='${rGuard}' Rscript='${rsGuard}'; `;
-  const channelFlag = ' --dangerously-load-development-channels server:fleet';
-  const registerPrompt = 'Call register() with the fleet MCP server. Then call my_task() to check for a pending task.';
-  const cmd = `tmux new-session -d -s ${sessionName} -c ${JSON.stringify(dir)} "${setup}FLEET_ID=${fleetId} FLEET_TMUX_SESSION=${sessionName} claude --resume ${sessionId}${channelFlag} ${JSON.stringify(registerPrompt)}"`;
-  execSync(cmd, { encoding: 'utf8', timeout: 10000 });
-  // Dismiss dev-channels confirmation dialog (send "1" + Enter)
-  exec(`sleep 3 && tmux send-keys -t ${sessionName} 1 && tmux send-keys -t ${sessionName} Enter`, { timeout: 10000 });
-  return sessionName;
+/** Single spawn path — every fleet-shape creation goes through ~/bin/fleet-spawn,
+ *  which clears $TMUX, handles registration, and manages tmux sessions.
+ *  @param {string} name - Agent name
+ *  @param {object} opts
+ *  @param {boolean} [opts.fresh] - --fresh (new agent)
+ *  @param {boolean} [opts.refresh] - --refresh (fresh session, same fleet ID)
+ *  @param {string}  [opts.session] - --session <uuid> (resume specific session)
+ *  @param {string}  [opts.model]
+ *  @param {string}  [opts.effort]
+ *  @param {string}  [opts.cwd]
+ *  @param {string}  [opts.mode] - permission mode
+ *  @returns {string} fleet-spawn stdout (trimmed)
+ */
+function runFleetSpawn(name, opts = {}) {
+  const script = path.join(os.homedir(), 'bin', 'fleet-spawn');
+  const parts = [script];
+  if (opts.fresh) parts.push('--fresh');
+  if (opts.refresh) parts.push('--refresh');
+  if (opts.session) parts.push('--session', opts.session);
+  if (opts.model) parts.push('--model', opts.model);
+  if (opts.effort) parts.push('--effort', opts.effort);
+  if (opts.cwd) parts.push('--cwd', JSON.stringify(opts.cwd));
+  if (opts.mode) parts.push('--mode', opts.mode);
+  parts.push('--no-attach', name);
+  return execSync(parts.join(' '), { encoding: 'utf8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
 }
 
 function windowTail(output, n = 40) {
   return output.split('\n').slice(-n).join('\n');
 }
 
-// ---- MCP server ----
+// ---- Server reference (set by initFleet) ----
+let server = null;
 
-const server = new Server(
-  { name: 'fleet', version: '0.1.0' },
-  {
-    capabilities: {
-      tools: {},
-      experimental: {
-        'claude/channel': {},
-      },
-    },
-    instructions: 'Fleet messages arrive as <channel source="fleet"> tags. When you see one, call my_task() to get full context and respond via chat(). Treat channel messages exactly like 📬 notifications.',
-  }
-);
+export const TLDA_INSTRUCTIONS = 'Fleet messages arrive as <channel source="tlda"> tags. When you see one, call my_task() to get full context and respond via chat().';
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [
+export function getFleetTools() {
+  return [
     // ---- Registration & Identity ----
     {
       name: 'register',
@@ -962,7 +980,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'restart_mcp',
-      description: 'Restart MCP servers on one or all agents by sending /mcp + Enter to their tmux sessions.  Use after updating fleet code that agents need to pick up.',
+      description: 'BEST-EFFORT: send /mcp and menu-navigation keystrokes to a target agent\'s tmux session in an attempt to restart their MCP. The keystrokes get typed into their terminal; whether the menu actually navigates and reconnects is unreliable and unobservable from here. This tool does NOT confirm restart. The target may still be running old code. Do not infer success from a successful tool return — and never assume your own MCP got restarted just because /mcp text appeared in your terminal.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -1192,12 +1210,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
       },
     },
-  ],
-}));
+  ];
+}
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
-
+export async function handleFleetTool(name, args) {
   // Report tool_call status to dashboard (replaces pane scraping for idle detection)
   reportStatus('tool_call', name);
 
@@ -1413,10 +1429,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
     if (labels.size > 0) entry.labels = [...labels];
 
-    // Uniqueness: name must be unique among live agents — error, don't log-and-continue
+    // Uniqueness: name must be unique among non-dead agents (matches server's dead=0 criterion)
     if (entry.friendly_name) {
       const nameConflict = state.agents.find(a =>
-        a.id !== entry.id && (a.friendly_name === entry.friendly_name) && agentAlive(a)
+        a.id !== entry.id && (a.friendly_name === entry.friendly_name) && !a.dead
       );
       if (nameConflict) {
         return { content: [{ type: 'text', text: `Name collision: "${entry.friendly_name}" is already used by live agent ${nameConflict.id}. Use a different name or respawn the existing agent.` }], isError: true };
@@ -1471,10 +1487,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
     }
     const wsSent = sendWS('register', regBody);
+    let serverResult = null;
     if (wsSent) {
-      await wsSent.catch(e => process.stderr.write(`[fleet] register WS failed: ${e.message}\n`));
+      serverResult = await wsSent.catch(e => {
+        process.stderr.write(`[fleet] register WS failed: ${e.message}\n`);
+        return { error: e.message };
+      });
     } else {
       process.stderr.write(`[fleet] register failed: WS not connected after 2s\n`);
+    }
+    if (serverResult?.error) {
+      return { content: [{ type: 'text', text: `Registration rejected by server: ${serverResult.error}` }], isError: true };
     }
 
     const agentCount = state.agents.length;
@@ -1564,17 +1587,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         } catch (e) { process.stderr.write(`[fleet] spawn mode config read failed: ${e.message}\n`); }
       }
 
-      const fleetSpawnScript = path.join(os.homedir(), 'bin', 'fleet-spawn');
-      const cmdParts = [fleetSpawnScript, '--fresh'];
-      if (spawnOpts.model) cmdParts.push('--model', JSON.stringify(spawnOpts.model));
-      if (spawnOpts.effort) cmdParts.push('--effort', JSON.stringify(spawnOpts.effort));
-      if (agentCwd) cmdParts.push('--cwd', JSON.stringify(agentCwd));
-      if (delegateSpawnMode) cmdParts.push('--mode', delegateSpawnMode);
-      cmdParts.push('--no-attach', agentName);
-
       let spawnOutput;
       try {
-        spawnOutput = execSync(cmdParts.join(' '), { encoding: 'utf8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+        spawnOutput = runFleetSpawn(agentName, {
+          fresh: true,
+          model: spawnOpts.model, effort: spawnOpts.effort,
+          cwd: agentCwd, mode: delegateSpawnMode,
+        });
       } catch (e) {
         const msg = (e.stderr || e.stdout || e.message || '').trim();
         return { content: [{ type: 'text', text: `spawn failed: ${msg}` }], isError: true };
@@ -1638,7 +1657,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (name === 'compose') {
     const { message, filter } = args;
     if (!message) return { content: [{ type: 'text', text: 'Missing required parameter: message' }], isError: true };
-    const macros = await getMacrosForDoc(_currentDoc);
+    const macros = await getMacrosForAgent();
     const lint = lintChatMessage(message, macros);
     const id = `draft-${++_draftCounter}`;
     _drafts.set(id, { message, filter: filter || null, lint, created: Date.now() });
@@ -1795,7 +1814,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       warning += `\n\n⚠ **File(s) not uploaded** (not found or upload failed — removed from message):\n${brokenFiles.map(p => `- ${p}`).join('\n')}`;
     }
 
-    const macros = await getMacrosForDoc(_currentDoc);
+    const macros = await getMacrosForAgent();
     const lint = lintChatMessage(message, macros);
     if (lint.length > 0) {
       warning += `\n\n⚠ **Lint (${lint.length} issue${lint.length > 1 ? 's' : ''}):**\n${lint.map(l => `- ${l}`).join('\n')}\nYour message was sent but has issues. Use compose() → send() to catch these before delivery.`;
@@ -2704,33 +2723,26 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
       } catch {}
     }
 
-    const fleetSpawnScript = path.join(os.homedir(), 'bin', 'fleet-spawn');
-    const cmdParts = [fleetSpawnScript];
-    if (isFresh) cmdParts.push('--fresh');
-    if (isRefresh) cmdParts.push('--refresh');
-    if (args.model) cmdParts.push('--model', args.model);
-    if (args.effort) cmdParts.push('--effort', args.effort);
-    if (args.cwd) cmdParts.push('--cwd', JSON.stringify(args.cwd));
-    if (spawnMode) cmdParts.push('--mode', spawnMode);
-    cmdParts.push('--no-attach');
-    cmdParts.push(agentName);
-
     try {
-      const output = execSync(cmdParts.join(' '), { encoding: 'utf8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'] });
+      const output = runFleetSpawn(agentName, {
+        fresh: isFresh, refresh: isRefresh,
+        model: args.model, effort: args.effort,
+        cwd: args.cwd, mode: spawnMode,
+      });
 
       // Assign lineage/phase after spawn
       if (phase && isFresh) {
         try {
           const result = await sendWS('lineage-assign', { agent: agentName, phase });
           if (result?.error) {
-            return { content: [{ type: 'text', text: `Spawned but lineage assignment failed: ${result.error}\n${output.trim()}` }], isError: true };
+            return { content: [{ type: 'text', text: `Spawned but lineage assignment failed: ${result.error}\n${output}` }], isError: true };
           }
         } catch (e) {
           process.stderr.write(`[fleet] lineage-assign after spawn failed: ${e.message}\n`);
         }
       }
 
-      return { content: [{ type: 'text', text: output.trim() }] };
+      return { content: [{ type: 'text', text: output }] };
     } catch (e) {
       const msg = (e.stderr || e.stdout || e.message || '').trim();
       return { content: [{ type: 'text', text: `spawn failed: ${msg}` }], isError: true };
@@ -3526,27 +3538,14 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
         continue;
       }
 
-      // Respawn into tmux
-      const sessionName = `fleet-${label.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
       const cwd = agent.cwd || os.homedir();
+      const sessionId = findValidSession(agent);
 
       try {
-        // Kill old tmux session if name collision
-        if (tmuxHasSession(sessionName)) {
-          execSync(`tmux kill-session -t ${sessionName}`, { timeout: 3000 });
-        }
+        runFleetSpawn(label, { session: sessionId, cwd });
 
-        tmuxRespawn(sessionName, cwd, agent.id, findValidSession(agent));
-
-        // Register via server API
-        const rehydrateRegWS = sendWS('register', {
-          id: agent.id, name: agent.friendly_name, session_id: agent.session_id,
-          tmux_session: sessionName, cwd,
-        });
-        if (rehydrateRegWS) await rehydrateRegWS.catch(e => process.stderr.write(`[fleet] rehydrate register failed: ${e.message}\n`));
-
-        logEvent({ type: 'rehydrate', action: 'tmux_respawn', agent: agent.id, name: label, tmux_session: sessionName, cwd });
-        respawned.push(`${label} → tmux:${sessionName} (cwd: ${cwd})`);
+        logEvent({ type: 'rehydrate', action: 'tmux_respawn', agent: agent.id, name: label, cwd });
+        respawned.push(`${label} (cwd: ${cwd})`);
 
         // Throttle: wait 5s between spawns to avoid overwhelming the system
         execSync('sleep 5', { timeout: 10000 });
@@ -3862,16 +3861,13 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     return { content: [{ type: 'text', text: result.transcript }] };
   }
 
-  return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };
+  return null;
 
   } catch (err) {
     process.stderr.write(`[fleet] tool ${name} threw: ${err?.message || err}\n${err?.stack || ''}\n`);
     return { content: [{ type: 'text', text: `Fleet MCP error (${name}): ${err?.message || err}` }], isError: true };
   }
-});
-
-const transport = new StdioServerTransport();
-await server.connect(transport);
+}
 
 // ---- Channel: WebSocket to dashboard for direct message injection ----
 // Each MCP server instance opens its own WS to the dashboard, filtered to this agent.
@@ -4132,12 +4128,7 @@ function reportStatus(state, toolName) {
   });
 }
 
-// Start channel WS immediately if AGENT_ID is already known from $FLEET_ID.
-// For agents without $FLEET_ID, register() calls startChannelWS() after identity resolves.
-if (AGENT_ID) startChannelWS();
-
 // --- Tmux session detection (for registration only) ---
-// Thinking/compacting/approval detection moved to the fleet daemon.
 let _tmuxSession = process.env.FLEET_TMUX_SESSION || null;
 if (!_tmuxSession) {
   try {
@@ -4146,69 +4137,7 @@ if (!_tmuxSession) {
   } catch {}
 }
 
-// Prevent unhandled rejections from crashing the MCP process.
-// WS disconnects cause pending promises to reject; if a caller doesn't catch,
-// Node.js would terminate the process and Claude Code marks the MCP as failed.
-process.on('unhandledRejection', (reason) => {
-  process.stderr.write(`[fleet] unhandled rejection (suppressed): ${reason?.message || reason}\n`);
-});
-
-// Also catch synchronous throws that escape all try-catch blocks.
-process.on('uncaughtException', (err) => {
-  const msg = `[${new Date().toISOString()}] fleet PID ${process.pid}: uncaught exception: ${err?.message || err}\n${err?.stack || ''}\n`;
-  process.stderr.write(msg);
-  try { fs.appendFileSync('/tmp/fleet-mcp-exit.log', msg); } catch {}
-});
-
-// Orphan prevention: exit if parent process dies or stdin closes.
-// Log before exiting so we can diagnose unexpected stdin closes (e.g. during server restart).
-process.stdin.on('end', () => {
-  const msg = `[${new Date().toISOString()}] fleet PID ${process.pid}: stdin end — parent closed pipe, exiting\n`;
-  process.stderr.write(msg);
-  try { fs.appendFileSync('/tmp/fleet-mcp-exit.log', msg); } catch {}
-  process.exit(0);
-});
-process.stdin.on('close', () => {
-  const msg = `[${new Date().toISOString()}] fleet PID ${process.pid}: stdin close — exiting\n`;
-  process.stderr.write(msg);
-  try { fs.appendFileSync('/tmp/fleet-mcp-exit.log', msg); } catch {}
-  process.exit(0);
-});
-const _parentPid = process.ppid;
-setInterval(() => {
-  try {
-    process.kill(_parentPid, 0); // signal 0 = check existence
-  } catch {
-    const msg = `[${new Date().toISOString()}] fleet PID ${process.pid}: parent ${_parentPid} dead, exiting as orphan\n`;
-    process.stderr.write(msg);
-    try { fs.appendFileSync('/tmp/fleet-mcp-exit.log', msg); } catch {}
-    process.exit(0);
-  }
-}, 30000); // check every 30s
-
-// SIGTERM/SIGHUP: exit gracefully (parent wants us dead).
-for (const sig of ['SIGTERM', 'SIGHUP']) {
-  process.on(sig, () => {
-    const msg = `[${new Date().toISOString()}] fleet PID ${process.pid}: received ${sig}, exiting\n`;
-    process.stderr.write(msg);
-    try { fs.appendFileSync('/tmp/fleet-mcp-exit.log', msg); } catch {}
-    process.exit(0);
-  });
+export function initFleet(serverInstance) {
+  server = serverInstance;
+  if (AGENT_ID) startChannelWS();
 }
-// SIGINT: log but ignore. Claude Code propagates SIGINT from terminal interrupts
-// (Ctrl+C, Escape). Exiting on SIGINT kills the MCP every time the agent gets
-// interrupted, which is the main cause of "MCP disconnected" errors.
-process.on('SIGINT', () => {
-  process.stderr.write(`[${new Date().toISOString()}] fleet PID ${process.pid}: received SIGINT, ignoring\n`);
-});
-
-// Catch-all exit diagnostics: log every exit with code and reason.
-process.on('exit', (code) => {
-  const msg = `[${new Date().toISOString()}] fleet PID ${process.pid}: process.exit(${code}) — catch-all\n`;
-  try { fs.appendFileSync('/tmp/fleet-mcp-exit.log', msg); } catch {}
-});
-process.on('beforeExit', (code) => {
-  const msg = `[${new Date().toISOString()}] fleet PID ${process.pid}: beforeExit(${code}) — event loop drained\n`;
-  process.stderr.write(msg);
-  try { fs.appendFileSync('/tmp/fleet-mcp-exit.log', msg); } catch {}
-});

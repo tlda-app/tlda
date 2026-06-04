@@ -16,10 +16,14 @@ export class DocVersionShapeUtil extends BaseBoxShapeUtil<any> {
     commitHash: T.string,
     timestamp: T.number,
     buildReadyAt: T.optional(T.number),
+    // Build errors/warnings for the current build (JSON arrays). Persistent,
+    // convergent state — the build-error/warning badges read these directly.
+    warningsJson: T.optional(T.string),
+    errorsJson: T.optional(T.string),
   }
 
   getDefaultProps() {
-    return { w: 1, h: 1, commitHash: 'unknown', timestamp: 0, buildReadyAt: 0 }
+    return { w: 1, h: 1, commitHash: 'unknown', timestamp: 0, buildReadyAt: 0, warningsJson: '', errorsJson: '' }
   }
 
   override canEdit = () => false

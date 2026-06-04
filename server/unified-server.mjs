@@ -40,6 +40,8 @@ const { homedir, hostname } = os
 import { spawn as cpSpawn } from 'child_process'
 import { lookup as mimeLookup } from 'mime-types'
 import { DEFAULT_PORT, hasTls } from '../shared/config.mjs'
+import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
+import { labelsForAgent, evalDnf } from '../shared/fleet-labels.mjs'
 import { initProjectStore, listProjects, readProject, getProjectsDir } from './lib/project-store.mjs'
 import { resetStaleBuildStates, killAllBuilds, runBuild } from './lib/build-runner.mjs'
 import projectRoutes, { processProjectPush } from './routes/projects.mjs'
@@ -520,7 +522,6 @@ function broadcastState() {
     thinking: Object.fromEntries(_thinkingState),
     compacting: Object.fromEntries(_compactingState),
     context: Object.fromEntries(_contextState),
-    wouldHibernate: getWouldHibernate(),
   })
 }
 
@@ -1392,61 +1393,35 @@ app.use('/docs', (req, res, next) => {
   }
 
   // On-demand current-column SVG: <texBase>-page-N.svg.
-  // Outputs are flat under output/, prefixed by target's texBase. The ensure
-  // system (via buildCurrentPage) decides whether to (re)compile the DVI and
-  // (re)render the page; we just check whether the file is on disk.
+  // The ensure system (via buildCurrentPage) is the SINGLE staleness authority:
+  // its isStale check decides whether to (re)compile the DVI and (re)render the
+  // page, and returns the existing artifact untouched when it's fresh. We don't
+  // recompute staleness here — a second copy of the rule could disagree with
+  // isStale and serve a stale page.
   const livePageMatch = filePath.match(/^([^/]+)-page-(\d+)\.svg$/)
   if (livePageMatch) {
     const texBase = livePageMatch[1]
     const pageNum = parseInt(livePageMatch[2], 10)
-    const outputBase = join(PROJECTS_DIR, name, 'output')
-    const svgPath = join(outputBase, `${texBase}-page-${pageNum}.svg`)
-    const dviPath = join(outputBase, `${texBase}.dvi`)
-    const stampPath = join(PROJECTS_DIR, name, 'source.stamp')
-    const buildStampPath = join(outputBase, 'build.stamp')
-    const svgExists = existsSync(svgPath)
-    const dviExists = existsSync(dviPath)
-    const buildMtime = existsSync(buildStampPath) ? statSync(buildStampPath).mtimeMs : 0
-    const sourceNewerThanBuild = existsSync(stampPath) && statSync(stampPath).mtimeMs > buildMtime
-    const dviMtime = dviExists ? statSync(dviPath).mtimeMs : 0
-    const needsBuild = !svgExists ||
-      !dviExists ||
-      statSync(svgPath).mtimeMs < dviMtime ||
-      sourceNewerThanBuild
-    if (needsBuild) {
-      try {
-        const { buildCurrentPage } = await import('./lib/shadow-repo.mjs')
-        const built = await buildCurrentPage(name, pageNum, texBase)
-        res.set('Cache-Control', 'no-cache')
-        return res.sendFile(resolve(built), { dotfiles: 'allow' })
-      } catch (e) {
-        console.error(`[live] on-demand page failed: ${name}/${texBase} p${pageNum}: ${e.message}`)
-        return res.status(404).json({ error: 'Page unavailable', detail: e.message })
-      }
+    try {
+      const { buildCurrentPage } = await import('./lib/shadow-repo.mjs')
+      const built = await buildCurrentPage(name, pageNum, texBase)
+      res.set('Cache-Control', 'no-cache')
+      return res.sendFile(resolve(built), { dotfiles: 'allow' })
+    } catch (e) {
+      console.error(`[live] on-demand page failed: ${name}/${texBase} p${pageNum}: ${e.message}`)
+      return res.status(404).json({ error: 'Page unavailable', detail: e.message })
     }
   }
 
-  // Project-level metadata aliases — bare names resolve to the primary
-  // target's per-target file. These names predate multi-target; viewer code
-  // fetches them as project-wide artifacts. Aliasing keeps callers simple
-  // and the canonical "doc metadata" is the primary target's.
-  const BARE_METADATA = new Set([
-    'lookup.json', 'macros.json', 'proof-info.json',
-    'source-map.json', 'theorem-map.json',
-  ])
+  // Project-level metadata aliases — bare names (lookup.json, etc.) resolve to
+  // the primary target's prefixed file. Shared with the MCP disk reader via
+  // shared/doc-assets.mjs so the two resolution paths can't drift.
   if (BARE_METADATA.has(filePath)) {
-    try {
-      const projectJsonPath = join(PROJECTS_DIR, name, 'project.json')
-      if (existsSync(projectJsonPath)) {
-        const project = JSON.parse(readFileSync(projectJsonPath, 'utf8'))
-        const primaryTexBase = (project.mainFile || 'main.tex').replace(/\.tex$/, '').split('/').pop()
-        const aliased = join(PROJECTS_DIR, name, 'output', `${primaryTexBase}-${filePath}`)
-        if (existsSync(aliased)) {
-          res.set('Cache-Control', 'no-cache')
-          return res.sendFile(resolve(aliased), { dotfiles: 'allow' })
-        }
-      }
-    } catch { /* fall through */ }
+    const aliased = resolveAsset(PROJECTS_DIR, name, filePath)
+    if (aliased) {
+      res.set('Cache-Control', 'no-cache')
+      return res.sendFile(resolve(aliased), { dotfiles: 'allow' })
+    }
   }
 
   // Try project output first
@@ -1930,8 +1905,29 @@ async function handleFleetWsMessage(ws, msg) {
     if (session_id && !agent.session_ids.includes(session_id)) {
       agent.session_ids = [...(agent.session_ids || []), session_id].slice(-10)
     }
-    fleetStore.upsertAgent(agent)
+    try {
+      fleetStore.upsertAgent(agent)
+    } catch (e) {
+      if (e.message?.includes('already taken')) {
+        error(e.message)
+        return
+      }
+      throw e
+    }
     fleetStore.share?.({ type: 'register', agent_id: agentId, from: agentId, to: agentId, text: `${name || agentId} registered` })
+    // Every non-human agent belongs to a lineage from birth, as its own `dawn`
+    // (the worker). This guarantees a handoff always has a chain to rotate within
+    // — a direct handoff promotes that dawn → day (manager). The lineage is an
+    // overlay, so a failure here must never block registration.
+    if (!agent.human && agent.friendly_name) {
+      const stored = fleetStore.getAgent?.(agentId)
+      if (stored && !stored.lineage_id) {
+        try {
+          const lineage = fleetStore.getOrCreateLineage(agent.friendly_name)
+          fleetStore.assignPhase(agentId, lineage.id, 'dawn')
+        } catch (e) { console.error(`[lineage] auto-assign failed for ${agentId}: ${e.message}`) }
+      }
+    }
     // Registration implies a live claude process — mark alive immediately so
     // the agent shows "awake" right away. The daemon's next sweep confirms
     // or evicts within 30s.
@@ -2066,18 +2062,10 @@ async function handleFleetWsMessage(ws, msg) {
     const recipients = []
     for (const a of allAgents) {
       if (a.id === from) continue
-      // Pseudo-labels — kept in sync with PSEUDO_LABELS in fleet-store.mjs.
-      const virtual = a.status === 'awake' ? ['awake'] : a.status === 'hibernating' ? ['hibernating'] : a.status === 'human' ? ['human'] : a.status === 'human-away' ? ['human', 'human-away'] : []
-      const labels = [...(a.labels || []), ...virtual, a.friendly_name, a.id].filter(Boolean)
-      // Lineage addressing: add lineage name (resolves to day) and phase-qualified tags
-      if (a.lineage_id && a.phase) {
-        const lineage = fleetStore.getLineage?.(a.lineage_id)
-        if (lineage) {
-          if (a.phase === 'day') labels.push(lineage.friendly_name)
-          labels.push(`${lineage.friendly_name}:${a.phase}`)
-        }
-      }
-      if (dnf.some(andGroup => andGroup.every(term => labels.includes(term)))) {
+      // labelsForAgent (shared with the client filters) covers pseudo-labels,
+      // friendly_name, id, and lineage tags. getAllAgents() hydrates
+      // lineage_name + status, so no per-agent lineage lookup is needed here.
+      if (evalDnf(dnf, labelsForAgent(a))) {
         recipients.push(a.id)
       }
     }
@@ -2114,13 +2102,13 @@ async function handleFleetWsMessage(ws, msg) {
     const senderAgent = fleetStore.getAgent?.(from)
     const chatReminder = senderAgent?.metadata?.chatReminder || undefined
     const taps = fleetStore.getWiretaps?.() || []
-    const fromLabels = [from, ...(fleetStore.findAgent(from)?.labels || [])].filter(Boolean)
+    const fromLabels = labelsForAgent(fleetStore.findAgent(from) || { id: from })
     const ts = new Date().toISOString()
     const eventIds = []
     const insertedEvents = []
     for (const to of recipients) {
       // Resolve wiretaps per recipient — tap labels are matched against this `to`.
-      const toLabels = [to, ...(fleetStore.findAgent(to)?.labels || [])].filter(Boolean)
+      const toLabels = labelsForAgent(fleetStore.findAgent(to) || { id: to })
       const wiretapRecipients = []
       for (const tap of taps) {
         if (!tap.filter) continue
@@ -2156,7 +2144,10 @@ async function handleFleetWsMessage(ws, msg) {
       const eventId = Number(result.lastInsertRowid)
       fleetStore.db.prepare('INSERT OR IGNORE INTO unread (event_id, to_id, read) VALUES (?, ?, 0)').run(eventId, to)
       eventIds.push(eventId)
-      insertedEvents.push({ id: eventId, type: 'chat', timestamp: ts, from_id: from, to_id: to, text, metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null })
+      // Echo _tempId on the broadcast so a client whose WS reply was lost during
+      // a hiccup can still bind this echo to its orphaned optimistic entry
+      // (the reply, not the DB row, is what normally carries _tempId).
+      insertedEvents.push({ id: eventId, type: 'chat', timestamp: ts, from_id: from, to_id: to, text, metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null, ...(msg._tempId ? { _tempId: msg._tempId } : {}) })
     }
     // Cache _tempId for idempotent retries
     if (msg._tempId) _chatTempIds.set(msg._tempId, { eventIds, recipients, ts: Date.now() })
@@ -2234,9 +2225,9 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'load-history') {
     const limit = Math.min(parseInt(msg.limit || '50'), 1000)
     const before = msg.before || null
-    const agent = msg.agent || null
+    const agents = Array.isArray(msg.agents) ? msg.agents : []
     try {
-      let events = fleetStore.queryChatHistory({ before, agent, limit: limit + 1 })
+      let events = fleetStore.queryChatHistory({ before, agents, limit: limit + 1 })
         .map(e => ({ ...e, event_type: e.type, from: e.from, to: e.to, agent: e.agent_id }))
       const hasMore = events.length > limit
       if (hasMore) events.shift()
@@ -2370,7 +2361,19 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'update-agent') {
     const { agent: agentData } = msg
     if (agentData?.id) {
-      fleetStore.upsertAgent(agentData)
+      if (agentData.friendly_name) {
+        const cols = fleetStore.checkNameAvailable([agentData.friendly_name], { excludeId: agentData.id, asFriendlyName: true })
+        if (cols.length) {
+          error(`Name "${agentData.friendly_name}" unavailable: ${cols.map(c => c.kind === 'pseudo_label' ? 'reserved routing label' : `collides with ${c.kind} on ${c.agent_id}`).join('; ')}`)
+          return
+        }
+      }
+      try {
+        fleetStore.upsertAgent(agentData)
+      } catch (e) {
+        if (e.message?.includes('already taken')) { error(e.message); return }
+        throw e
+      }
       broadcastState()
     }
     reply({ ok: true })
@@ -2465,16 +2468,16 @@ async function handleFleetWsMessage(ws, msg) {
 
   // ---- lineage-assign: assign an agent to a lineage with a phase ----
   if (type === 'lineage-assign') {
-    const { agent: agentQuery, phase } = msg
+    const { agent: agentQuery, phase, lineage: lineageQuery } = msg
     if (!agentQuery || !phase) { error('agent and phase required'); return }
     if (!['dawn', 'day', 'dusk'].includes(phase)) { error('phase must be dawn, day, or dusk'); return }
     const agent = fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    const agentName = agent.friendly_name || agentQuery
-    const lineage = fleetStore.getOrCreateLineage(agentName)
+    const lineageName = lineageQuery || agent.friendly_name || agentQuery
+    const lineage = fleetStore.getOrCreateLineage(lineageName)
     const roster = fleetStore.getLineageRoster(lineage.id)
     const occupied = roster.find(a => a.phase === phase)
-    if (occupied) { error(`Phase "${phase}" in lineage "${agentName}" is occupied by ${occupied.friendly_name || occupied.id}`); return }
+    if (occupied) { error(`Phase "${phase}" in lineage "${lineageName}" is occupied by ${occupied.friendly_name || occupied.id}`); return }
     fleetStore.assignPhase(agent.id, lineage.id, phase)
     broadcastState()
     reply({ ok: true, agent: agent.id, lineage: lineage.id, lineage_name: lineage.friendly_name, phase })
@@ -2519,6 +2522,24 @@ async function handleFleetWsMessage(ws, msg) {
     fleetStore.transitionPhase(agent.id, phase)
     broadcastState()
     reply({ ok: true, agent: agent.id, phase })
+    return
+  }
+
+  // ---- lineage-rotate: rotate an agent in at `dawn` ----
+  // incoming → dawn (worker), dawn → day (manager), day → dusk (consultant),
+  // dusk → loses its name and drops out of the slots (stays in the lineage as
+  // history). Nothing is marked dead or unlinked. Direct handoff = one rotate;
+  // briefing handoff = two (briefer in, then the new worker in).
+  if (type === 'lineage-rotate') {
+    const { agent: agentQuery, lineage: lineageQuery } = msg
+    if (!agentQuery) { error('agent required'); return }
+    const agent = fleetStore.findAgent(agentQuery)
+    if (!agent) { error('agent not found'); return }
+    const lineageName = lineageQuery || agent.friendly_name || agentQuery
+    const lineage = fleetStore.getOrCreateLineage(lineageName)
+    fleetStore.rotateLineageIn(lineage.id, agent.id)
+    broadcastState()
+    reply({ ok: true, agent: agent.id, lineage: lineage.id, lineage_name: lineage.friendly_name, phase: 'dawn' })
     return
   }
 
@@ -2853,11 +2874,11 @@ async function handleFleetWsMessage(ws, msg) {
 
   // ---- chat-history ----
   if (type === 'chat-history') {
-    const { limit: rawLimit = 50, before, agent } = msg
+    const { limit: rawLimit = 50, before, agents } = msg
     const limit = Math.min(parseInt(rawLimit) || 50, 1000)
     try {
       let events = []
-      const fleetEvents = fleetStore.queryChatHistory?.({ before, agent, limit: limit + 1 }) || []
+      const fleetEvents = fleetStore.queryChatHistory?.({ before, agents: Array.isArray(agents) ? agents : [], limit: limit + 1 }) || []
       events = fleetEvents.map(e => ({ ...e, event_type: e.type, from: e.from, to: e.to, agent: e.agent_id }))
       const hasMore = events.length > limit
       if (hasMore) events.shift()

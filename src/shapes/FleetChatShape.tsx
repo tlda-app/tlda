@@ -26,9 +26,11 @@ import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil
 import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText, isRecording } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getHumanName, updateEventById, sendViewingContext, setViewingEnrichFn } from '../fleet/fleet-data.mjs'
-import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useElizaPending, useWouldHibernate, sendMessage, loadBefore, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
+import { labelsForAgent } from '../../shared/fleet-labels.mjs'
+import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useElizaPending, sendMessage, loadBefore, resolveFilter, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
 import type { ElizaNudge } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
+import { agentDisplayName } from './fleet-utils'
 import { dragCoordinator } from './dragCoordinator'
 import { DocContext, PanelContext } from '../PanelContext'
 import { loadLookup, type LookupData } from '../synctexLookup'
@@ -36,7 +38,7 @@ import { getSourceAnchor } from '../synctexAnchor'
 import { log } from '../logger'
 import { linkifyDocRefs, linkifyArrowRefs, linkifyAtRefs, linkifyLabelRefs, buildRefResolver, refToCanvas, type DocRef, type ResolvedRef, type LabelRegionInfo, type TheoremMapEntry } from '../docLinks'
 import { fetchProofInfo, fetchTheoremMap } from '../docInfoCache'
-import { PDF_HEIGHT, PDF_WIDTH } from '../layoutConstants'
+import { PDF_HEIGHT } from '../layoutConstants'
 import { TerminalCard } from './TerminalCard'
 import { Terminal } from 'xterm'
 import { FitAddon } from '@xterm/addon-fit'
@@ -599,11 +601,10 @@ function ContextBadge({ percent }: { percent?: number }) {
  * When all agents stop, the space persists (ghost) until rawItemsLength changes
  * (i.e. a real message arrives to replace it). No timeout — no bounce.
  */
-function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, wouldHibernate, hibernatingAgents, ctx, rawItemsLength, agents, escalationState }: {
+function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibernatingAgents, ctx, rawItemsLength, agents: _agents, escalationState }: {
   thinkingAgents: Map<string, number>
   compactingAgents: Map<string, number>
   contextPercent: Map<string, number>
-  wouldHibernate: Map<string, number>
   hibernatingAgents: Set<string>
   ctx: any
   rawItemsLength: number
@@ -614,7 +615,7 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, woul
   // thinkingAgents/compactingAgents are pre-filtered to chat targets and provide elapsed timestamps.
   // hibernatingAgents is pre-filtered to chat targets.
   const statusAgents = useMemo(() => {
-    const merged = new Map<string, { status: 'thinking' | 'compacting' | 'hibernating' | 'would-hibernate', startTs: number, idleSecs?: number }>()
+    const merged = new Map<string, { status: 'thinking' | 'compacting' | 'hibernating', startTs: number }>()
     for (const [id, ts] of thinkingAgents) {
       merged.set(id, { status: 'thinking', startTs: ts })
     }
@@ -624,15 +625,16 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, woul
     for (const id of hibernatingAgents) {
       if (!merged.has(id)) merged.set(id, { status: 'hibernating', startTs: 0 })
     }
-    for (const [id, secs] of wouldHibernate) {
-      if (!merged.has(id)) {
-        merged.set(id, { status: 'would-hibernate', startTs: Date.now() - secs * 1000, idleSecs: secs })
-      }
-    }
     return merged
-  }, [thinkingAgents, compactingAgents, hibernatingAgents, wouldHibernate])
+  }, [thinkingAgents, compactingAgents, hibernatingAgents])
 
   const hasActive = statusAgents.size > 0
+  // Remember the last non-empty status so the ghost window can keep rendering
+  // those rows (invisibly) to RESERVE their height. When thinking ends the
+  // agent leaves statusAgents, so without this snapshot the ghost div has no
+  // rows → zero height → the slot collapses and the chat bounces.
+  const lastStatusRef = useRef(statusAgents)
+  if (hasActive) lastStatusRef.current = statusAgents
   const prevActiveRef = useRef(hasActive)
   const [ghost, setGhost] = useState(false)
   const ghostRawItemsRef = useRef(rawItemsLength)
@@ -662,7 +664,7 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, woul
       opacity: ghost ? 0 : 0.6,
       transition: 'opacity 0.2s',
     }}>
-      {!ghost && [...statusAgents.entries()].map(([agentId, { status, startTs, idleSecs }]) => {
+      {[...(hasActive ? statusAgents : lastStatusRef.current).entries()].map(([agentId, { status, startTs }]) => {
         const esc = escalationState?.[agentId]
         const escLevel = esc?.level || 0
         const escConfirmed = esc?.confirmed || 0
@@ -671,9 +673,7 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, woul
           if (escConfirmed >= tier) return 1
           return 0.55
         }
-        const statusText = status === 'would-hibernate'
-          ? `idle ${Math.round((idleSecs || 0) / 60)}m — would hibernate`
-          : status === 'hibernating' ? 'is hibernating'
+        const statusText = status === 'hibernating' ? 'is hibernating'
           : status === 'compacting' ? 'compacting…'
           : 'thinking…'
         return (
@@ -681,7 +681,7 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, woul
             <span>
               <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
               {' '}<span className="thinking-text">{statusText}</span>
-              {status !== 'hibernating' && status !== 'would-hibernate' && <>{' '}<ElapsedTime startMs={startTs} /></>}
+              {status !== 'hibernating' && <>{' '}<ElapsedTime startMs={startTs} /></>}
               {escLevel > 0 && (
                 <span className="escalation-meter" style={{ marginLeft: 6, letterSpacing: 2, fontSize: '0.9em' }}>
                   <span style={{ opacity: tierOpacity(1), transition: 'opacity 0.15s' }}>↑</span>
@@ -699,7 +699,7 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, woul
   )
 }
 
-function ElizaStatus({ pending, ctx, rawItemsLength }: { pending: ElizaNudge[], ctx: any, rawItemsLength: number }) {
+function ElizaStatus({ pending, ctx: _ctx, rawItemsLength }: { pending: ElizaNudge[], ctx: any, rawItemsLength: number }) {
   const hasActive = pending.length > 0
   const prevActiveRef = useRef(hasActive)
   const [ghost, setGhost] = useState(false)
@@ -755,7 +755,7 @@ function makeCtx(agents: any[], tasks: any[], preambleMacros: Record<string, str
   const agentLabel = (id: string) => {
     if (!id) return '[unknown]'
     const a = agents.find((a: any) => a.id === id)
-    if (a) return a.friendly_name || a.id
+    if (a) return agentDisplayName(a)
     return typeof id === 'string' ? id : String(id)
   }
   const getNickClass = (id: string) => {
@@ -899,7 +899,6 @@ function FleetChatInner({ shape }: { shape: any }) {
   const thinkingAgents = useFleetThinking(dnfFilter, frameId)
   const compactingAgents = useFleetCompacting(dnfFilter, frameId)
   const contextPercent = useFleetContext(dnfFilter, frameId)
-  const wouldHibernateAll = useWouldHibernate()
   const elizaPendingAll = useElizaPending()
   const [olderEvents, setOlderEvents] = useState<any[]>([])
 
@@ -1022,39 +1021,30 @@ function FleetChatInner({ shape }: { shape: any }) {
   useEffect(() => {
     setOlderEvents([])
     isAtBottomRef.current = true
-    setShowScrollBtn(false)
+    setAtBottom(true)
   }, [filterKey])
 
-  // Resolve a friendly name/label to a fleet ID for DB queries.
-  const resolveToFleetId = useCallback((label: string): string => {
-    if (label.startsWith('fleet:')) return label
-    const agent = agents.find((a: any) =>
-      a.friendly_name === label || a.id === label || (a.labels || []).includes(label)
-    )
-    return agent?.id || label
+  // Resolve a friendly name/label to fleet IDs for DB queries. Uses the shared
+  // labelsForAgent so send-targeting matches the live/history filters — incl.
+  // pseudo-labels (awake/hibernating/human), bare lineage names, and
+  // `lineage:phase` tags (all subsumed by the label set).
+  const resolveToFleetIds = useCallback((label: string): string[] => {
+    if (label.startsWith('fleet:')) return [label]
+    const matched = agents.filter((a: any) => labelsForAgent(a).includes(label))
+    return matched.length > 0 ? matched.map((a: any) => a.id) : [label]
   }, [agents])
 
-  const wouldHibernate = useMemo(() => {
-    if (!dnfFilter || dnfFilter.length === 0) return wouldHibernateAll
-    const targetIds = new Set<string>()
-    for (const andGroup of dnfFilter) {
-      for (const [, label] of andGroup) {
-        targetIds.add(resolveToFleetId(label))
-      }
-    }
-    const filtered = new Map<string, number>()
-    for (const [id, secs] of wouldHibernateAll) {
-      if (targetIds.has(id)) filtered.set(id, secs)
-    }
-    return filtered
-  }, [wouldHibernateAll, dnfFilter, resolveToFleetId])
+  const resolveToFleetId = useCallback((label: string): string => {
+    if (label.startsWith('fleet:')) return label
+    return resolveToFleetIds(label)[0] || label
+  }, [resolveToFleetIds])
 
   const hibernatingAgents = useMemo(() => {
     const targetIds = new Set<string>()
     if (dnfFilter && dnfFilter.length > 0) {
       for (const andGroup of dnfFilter) {
         for (const [, label] of andGroup) {
-          targetIds.add(resolveToFleetId(label))
+          for (const id of resolveToFleetIds(label)) targetIds.add(id)
         }
       }
     }
@@ -1065,7 +1055,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       }
     }
     return result
-  }, [agents, dnfFilter, resolveToFleetId])
+  }, [agents, dnfFilter, resolveToFleetIds])
 
   const elizaPending = useMemo(() => {
     let filtered = elizaPendingAll
@@ -1073,7 +1063,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       const targetIds = new Set<string>()
       for (const andGroup of dnfFilter) {
         for (const [, label] of andGroup) {
-          targetIds.add(resolveToFleetId(label))
+          for (const id of resolveToFleetIds(label)) targetIds.add(id)
         }
       }
       filtered = filtered.filter(n => targetIds.has(n.targetId))
@@ -1084,7 +1074,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       seen.add(n.label)
       return true
     })
-  }, [elizaPendingAll, dnfFilter, resolveToFleetId])
+  }, [elizaPendingAll, dnfFilter, resolveToFleetIds])
 
   // Fetch per-agent history on mount / filter change.
   // The global event buffer (MAX_EVENTS=150) is shared across all agents.
@@ -1093,16 +1083,24 @@ function FleetChatInner({ shape }: { shape: any }) {
   const historyLoadedRef = useRef<string | null>(null)
   useEffect(() => {
     if (!dnfFilter || dnfFilter.length === 0) return
-    const firstLabel = dnfFilter[0]?.[0]?.[1]
-    if (!firstLabel) return
-    const fleetId = resolveToFleetId(firstLabel)
-    // Agents start as [] (async init). If the label didn't resolve to a
-    // fleet ID yet, bail out — the effect re-runs when agents populate.
-    if (fleetId === firstLabel && !firstLabel.startsWith('fleet:')) return
-    const loadKey = `${filterKey}:${fleetId}`
+    // Resolve the filter to the SET of fleet ids using the same logic the live
+    // display uses (resolveFilter → agent label matching, incl. lineage
+    // `name:phase` colon labels). One resolver for live and history. The server
+    // then expands each id to its lineage's full incarnation set.
+    const ids = [...resolveFilter(dnfFilter)]
+    if (ids.length === 0) {
+      // agents not populated yet (async init): the effect re-runs when `agents`
+      // arrives. agents loaded but nothing matched: surface it (no silent
+      // fallback) so an empty scrollback is diagnosable instead of mysterious.
+      if (agents.length > 0) {
+        log.warn('chat', 'filter resolved to no fleet ids; no history will load', { filter: dnfFilter })
+      }
+      return
+    }
+    const loadKey = `${filterKey}:${ids.join(',')}`
     if (historyLoadedRef.current === loadKey) return
     historyLoadedRef.current = loadKey
-    loadBefore(fleetId, new Date().toISOString(), 200).then((older: any[]) => {
+    loadBefore(ids, new Date().toISOString(), 200).then((older: any[]) => {
       if (older.length > 0) {
         // Deduplicate against live events already in the buffer.
         // convertChatEvent stores DB id in _dbId, not id.
@@ -1114,7 +1112,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           const fresh = older.filter((e: any) => !existingIds.has(e._dbId))
           if (fresh.length > 0) {
             isAtBottomRef.current = true
-            setShowScrollBtn(false)
+            setAtBottom(true)
             return [...fresh, ...prev]
           }
           return prev
@@ -1122,7 +1120,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       }
     })
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dnfFilter, filterKey, resolveToFleetId])
+  }, [dnfFilter, filterKey, agents])
 
 
   const chatLogRef = useRef<HTMLDivElement>(null)
@@ -2010,7 +2008,20 @@ function FleetChatInner({ shape }: { shape: any }) {
   // continuous rAF loop. Instead: scroll to bottom when new content arrives
   // or the container resizes, but only if the user hasn't scrolled up.
   const isAtBottomRef = useRef(true)
-  const [showScrollBtn, setShowScrollBtn] = useState(false)
+  // Pin decisions gate on "did the user deliberately scroll up" (userScrolledUpRef),
+  // NOT Virtuoso's raw at-bottom bool. A transient sub-threshold reflow gap (late
+  // markdown/KaTeX/image growth) must not latch auto-follow off — only a deliberate
+  // scroll-up past 200px counts as intent.
+  const userScrolledUpRef = useRef(false)
+  // TRACE: timestamp until which scroll events are attributable to our own
+  // programmatic pinning (pinHard). Lets the scroll-trace tell "my pin" apart
+  // from "user wheel" and "Virtuoso/virtualization". Temporary diagnostic.
+  const programmaticUntilRef = useRef(0)
+  // Reactive bottom-position state. Drives the unified follow/jump button:
+  // at bottom → follow-mode toggle (horseshoe); off bottom → ⇣ jump-to-bottom.
+  // Position (not scroll-intent) is the right signal here — matches the spec
+  // "at the bottom it toggles the mode; off the bottom it's click-to-go-down."
+  const [atBottom, setAtBottom] = useState(true)
   const [termHoverVisible, setTermHoverVisible] = useState(false)
   const [termHoverPinned, setTermHoverPinned] = useState(false)
   const termHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -2019,14 +2030,55 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Tracks which chat rows have been expanded (by item key) so the state
   // survives dangerouslySetInnerHTML re-renders.
   const expandedRowsRef = useRef<Set<string>>(new Set())
-  // Imperative scroll-to-bottom for the floating ⇣ button. align:'end' so
-  // the last item's *bottom* lands at the viewport bottom (default 'start'
-  // would only put the top of the last item at the top of the viewport).
+  // Hard-lock toggle: when on, every pin path fires unconditionally
+  // (ignores isAtBottomRef), and atBottomStateChange can't un-pin us.
+  // Persisted per browser in localStorage.
+  const HARD_LOCKED_KEY = 'fleet-chat-hard-locked'
+  const [hardLocked, setHardLocked] = useState(() => localStorage.getItem(HARD_LOCKED_KEY) === 'true')
+  const hardLockedRef = useRef(hardLocked)
+  useEffect(() => {
+    hardLockedRef.current = hardLocked
+    localStorage.setItem(HARD_LOCKED_KEY, String(hardLocked))
+  }, [hardLocked])
+
+  // pin-to-bottom: each frame, scrollToIndex(LAST) AND a raw scrollTop assign,
+  // repeated (bounded) until the gap actually closes.
+  //  - scrollToIndex handles LONG/virtualized lists (knows the full virtual
+  //    height); a lone raw scrollTop undershoots there because scrollHeight is
+  //    only the rendered slice until Virtuoso measures more.
+  //  - the raw scrollTop=scrollHeight handles SHORT content, where
+  //    scrollToIndex lands a few px above the true bottom (the "won't hit
+  //    bottom" case). The loop re-runs as the height settles, so raw is correct
+  //    once scrollHeight is full → works for both regimes.
+  // No re-trigger from atBottomStateChange, so this can't bounce.
+  const pinHard = useCallback(() => {
+    programmaticUntilRef.current = performance.now() + 400
+    let frames = 0
+    const step = () => {
+      // Stop if the user has taken over since we started (unless hard-locked).
+      if (userScrolledUpRef.current && !hardLockedRef.current) return
+      virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
+      const el = chatLogEl
+      if (el) el.scrollTop = el.scrollHeight
+      programmaticUntilRef.current = performance.now() + 120
+      const gap = el ? (el.scrollHeight - (el.scrollTop + el.clientHeight)) : 0
+      if (gap > 8 && ++frames < 12) requestAnimationFrame(step)
+    }
+    step()
+  }, [chatLogEl])
+
+  // Imperative scroll-to-bottom for the floating ⇣ button.
   const scrollToBottom = useCallback(() => {
     log.warn('chat-scroll', 'scrollToBottom (user click ⇣)')
-    virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
+    // Clear the scroll-up flag BEFORE pinHard: pinHard's step() bails
+    // immediately when userScrolledUp is set (and we're not hard-locked), so
+    // calling it first made the click a no-op — that was the "click twice to
+    // reach the bottom" bug. Reset intent + position first, then pin.
+    userScrolledUpRef.current = false
     isAtBottomRef.current = true
-  }, [])
+    setAtBottom(true)
+    pinHard()
+  }, [pinHard])
 
   // When the scroll container resizes — textarea growing as you type
   // (shrinks chat-log) OR shrinking back after send (grows chat-log) — pin
@@ -2040,15 +2092,15 @@ function FleetChatInner({ shape }: { shape: any }) {
     const ro = new ResizeObserver(() => {
       const h = el.clientHeight
       if (h !== prevH) {
-        const pin = isAtBottomRef.current
-        log.warn('chat-scroll', 'container resize', { prevH, h, atBottom: pin, action: pin ? 'pin' : 'skip' })
-        if (pin) virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
+        const pin = !userScrolledUpRef.current || hardLockedRef.current
+        log.warn('chat-scroll', 'container resize', { prevH, h, atBottom: isAtBottomRef.current, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current, action: pin ? 'pin' : 'skip' })
+        if (pin) pinHard()
       }
       prevH = h
     })
     ro.observe(el)
     return () => ro.disconnect()
-  }, [chatLogEl])
+  }, [chatLogEl, pinHard])
 
   // Force-pin when new items arrive AND we were at bottom. Virtuoso's
   // followOutput="auto" sometimes scrolls against a stale measurement of
@@ -2062,14 +2114,76 @@ function FleetChatInner({ shape }: { shape: any }) {
   useEffect(() => {
     const prev = prevItemCountRef.current
     prevItemCountRef.current = allItems.length
-    if (allItems.length > prev && isAtBottomRef.current) {
-      log.warn('chat-scroll', 'force-pin on item grow', { prev, now: allItems.length })
-      // Wait a frame so the new item is laid out before we measure-and-scroll.
-      requestAnimationFrame(() => {
-        virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
-      })
+    if (allItems.length > prev && (!userScrolledUpRef.current || hardLockedRef.current)) {
+      log.warn('chat-scroll', 'force-pin on item grow', { prev, now: allItems.length, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
+      requestAnimationFrame(pinHard)
     }
-  }, [allItems.length])
+  }, [allItems.length, pinHard])
+
+  // Single source of user-scroll intent. In the HUD, a user can only scroll the
+  // chat log via CanvasClipPanel's wheel handler (wheel is captured there and
+  // never reaches the scroller natively), which fires 'fleet-user-scroll' right
+  // after it moves scrollTop. Because programmatic pins (pinHard/scrollToIndex)
+  // never fire this event, we can set follow intent from real user motion
+  // without the programmatic-vs-user ambiguity that broke every prior approach.
+  // Scroll away from bottom → stop following (+ show ⇣); land within EPS of the
+  // true bottom → resume following. No gap thresholds, no timing magic.
+  useEffect(() => {
+    const el = chatLogEl
+    if (!el) return
+    // Asymmetric, tolerant thresholds. Because this handler fires ONLY on real
+    // user wheel motion (programmatic pins never dispatch fleet-user-scroll),
+    // there is no pin-vs-user ambiguity here — so the asymmetry that created the
+    // old dead zone (when atBottomStateChange conflated pins with scrolls) does
+    // NOT recur. We deliberately restore the proven-good 120/200 feel:
+    //   - re-engage follow when the user lands within REENGAGE of the bottom
+    //     (generous, so getting back to the bottom is easy — the c12d2cc 32px
+    //     value forced the user to drag all the way to gap 0),
+    //   - disengage only on a DELIBERATE scroll-up past DISENGAGE (a stray
+    //     trackpad nudge in between leaves follow untouched),
+    //   - in the band between, leave follow state unchanged.
+    const REENGAGE = 120
+    const DISENGAGE = 200
+    const onUserScroll = () => {
+      const gap = el.scrollHeight - (el.scrollTop + el.clientHeight)
+      if (gap <= REENGAGE) {
+        userScrolledUpRef.current = false
+      } else if (gap > DISENGAGE && !hardLockedRef.current) {
+        userScrolledUpRef.current = true
+      }
+      log.warn('chat-scroll', 'user scroll', { gap, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
+    }
+    el.addEventListener('fleet-user-scroll', onUserScroll as EventListener)
+    return () => el.removeEventListener('fleet-user-scroll', onUserScroll as EventListener)
+  }, [chatLogEl])
+
+  // TRACE (temporary diagnostic — remove once scroll is solid): make the log
+  // tell the WHOLE story so the fix comes from ground truth, not theory.
+  // Logs the chat's mount/unmount (to confirm or rule out remount-resets) and
+  // every scroll event with its attributed cause (our pin vs. anything else).
+  useEffect(() => {
+    log.warn('chat-scroll', 'TRACE mount')
+    return () => log.warn('chat-scroll', 'TRACE unmount')
+  }, [])
+  useEffect(() => {
+    const el = chatLogEl
+    if (!el) return
+    let prevTop = Math.round(el.scrollTop)
+    const onTrace = () => {
+      const now = performance.now()
+      const top = Math.round(el.scrollTop)
+      const gap = Math.round(el.scrollHeight - (el.scrollTop + el.clientHeight))
+      const dir = top > prevTop ? 'down' : top < prevTop ? 'up' : 'same'
+      const cause = now < programmaticUntilRef.current ? 'pin' : 'other'
+      log.warn('chat-scroll', 'TRACE scroll', {
+        top, sh: el.scrollHeight, ch: el.clientHeight, gap, dir, cause,
+        scrolledUp: userScrolledUpRef.current, atBottom: isAtBottomRef.current,
+      })
+      prevTop = top
+    }
+    el.addEventListener('scroll', onTrace, { passive: true })
+    return () => el.removeEventListener('scroll', onTrace)
+  }, [chatLogEl])
 
 
   // Terminal card hover — mouseover on .lc-terminal-card shows the terminal overlay.
@@ -2560,7 +2674,7 @@ function FleetChatInner({ shape }: { shape: any }) {
 
     logEl.addEventListener('click', onClick)
     return () => logEl.removeEventListener('click', onClick)
-  }, [])
+  }, [chatLogEl])
 
   // Track clicks to determine which fleet chat shape the user is interacting with.
   // Escape interrupt scopes to the shape the user last clicked on.
@@ -2654,7 +2768,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const agentNames = useMemo(() => {
     const map: Record<string, string> = {}
     for (const a of agents) {
-      if (a.id) map[a.id] = a.friendly_name || (a.id || '').replace('fleet:', '')
+      if (a.id) map[a.id] = agentDisplayName(a)
     }
     if (getHumanId()) map[getHumanId()] = getHumanName() || 'user'
     return map
@@ -2713,25 +2827,46 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   // Resolve the first send target to a fleet ID with an active tmux_session.
   // The terminal icon is hidden when this is null.
-  const hoverTargetAgentId = useMemo(() => {
-    for (const label of sendTargets) {
-      const fleetId = label.startsWith('fleet:') ? label
-        : agents.find((a: any) => a.friendly_name === label || a.id === label || (a.labels || []).includes(label))?.id || label
-      const agent = agents.find((a: any) => a.id === fleetId)
-      if (agent?.tmux_session && !agent?.dead) return fleetId
+  // Resolve a send-target label to an agent. Handles all addressing forms the
+  // chat can produce: fleet:id, lineage:phase (e.g. "real-tlda-rev-2:dawn" —
+  // matched on lineage_name + phase, same as getAgent), friendly_name, label.
+  // The lineage:phase case is why the terminal icon used to vanish for
+  // lineage-addressed agents: the old resolver only knew names/ids/labels.
+  const resolveTargetAgent = useCallback((label: string, agentList: any[]) => {
+    if (label.startsWith('fleet:')) return agentList.find((a: any) => a.id === label) || null
+    const ci = label.indexOf(':')
+    if (ci > 0) {
+      const lineageName = label.slice(0, ci)
+      const phase = label.slice(ci + 1)
+      if (phase === 'dawn' || phase === 'day' || phase === 'dusk') {
+        const m = agentList.find((a: any) => a.lineage_name === lineageName && a.phase === phase)
+        if (m) return m
+      }
     }
+    return agentList.find((a: any) => a.friendly_name === label || a.id === label || (a.labels || []).includes(label)) || null
+  }, [])
+
+  const hoverTargetAgentId = useMemo(() => {
+    const diag: any[] = []
+    for (const label of sendTargets) {
+      const agent = resolveTargetAgent(label, agents)
+      diag.push({ label, fleetId: agent?.id || label, found: !!agent, tmux: agent?.tmux_session || null, dead: agent?.dead ?? null })
+      if (agent?.tmux_session && !agent?.dead) {
+        log.info('terminal-icon', 'resolved target', { sendTargets, fleetId: agent.id, diag, agentCount: agents.length })
+        return agent.id
+      }
+    }
+    log.info('terminal-icon', 'no terminal target', { sendTargets, diag, agentCount: agents.length })
     return null
-  }, [sendTargets, agents])
+  }, [sendTargets, agents, resolveTargetAgent])
 
   const deadTargetAgent = useMemo(() => {
     for (const label of sendTargets) {
-      const fleetId = label.startsWith('fleet:') ? label
-        : agents.find((a: any) => a.friendly_name === label || a.id === label || (a.labels || []).includes(label))?.id || label
-      const agent = agents.find((a: any) => a.id === fleetId)
-      if (agent?.dead) return { id: agent.id, name: agent.friendly_name || fleetId.replace('fleet:', '') }
+      const agent = resolveTargetAgent(label, agents)
+      if (agent?.dead) return { id: agent.id, name: agent.friendly_name || agent.id.replace('fleet:', '') }
     }
     return null
-  }, [sendTargets, agents])
+  }, [sendTargets, agents, resolveTargetAgent])
 
   // Reset auto-pin tracking when the target agent changes
   useEffect(() => {
@@ -2758,19 +2893,30 @@ function FleetChatInner({ shape }: { shape: any }) {
     )
   }, [filterKey, agents])
 
-  // Derive a loadBefore agent: use first agent in filter
-  const loadBeforeAgent = sendTargets[0] ? resolveToFleetId(sendTargets[0]) : undefined
+  // Resolve the filter to the fleet-id set for history paging — same resolver
+  // as the initial load and the live display. null = no filter (unfiltered
+  // view loads global history); [] = filtered but nothing resolved yet (don't
+  // fall back to global history inside a filtered view).
+  const loadBeforeAgents = useMemo<string[] | null>(
+    () => (dnfFilter ? [...resolveFilter(dnfFilter)] : null),
+    // filterKey is the stable string encoding of dnfFilter (avoids re-running on
+    // a fresh array identity each render); resolveFilter is a stable module import.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [filterKey, agents]
+  )
 
   // Infinite scroll — load older messages
   const loadingMore = useRef(false)
   const handleScroll = useCallback(async (e: React.UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget
     if (el.scrollTop > 50 || loadingMore.current || chatMessages.length === 0) return
+    // Filtered view that hasn't resolved to any id yet — don't page in global history.
+    if (loadBeforeAgents !== null && loadBeforeAgents.length === 0) return
     loadingMore.current = true
     const oldestTs = chatMessages[0]?.timestamp
     if (oldestTs) {
       const prevHeight = el.scrollHeight
-      const older = await loadBefore(loadBeforeAgent, oldestTs, 50)
+      const older = await loadBefore(loadBeforeAgents || [], oldestTs, 50)
       if (older.length > 0) {
         setOlderEvents(prev => [...older, ...prev])
       }
@@ -2780,7 +2926,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       })
     }
     loadingMore.current = false
-  }, [chatMessages, loadBeforeAgent])
+  }, [chatMessages, loadBeforeAgents])
 
   // Attach scroll + click handlers to the Virtuoso-owned scroll container.
   // Listener-based (not JSX prop) because the Scroller is memoized and
@@ -2803,18 +2949,20 @@ function FleetChatInner({ shape }: { shape: any }) {
   // handleScroll never fires and the user can't get more messages.
   useEffect(() => {
     const el = chatLogEl
-    if (!el || loadingMore.current || chatMessages.length === 0 || !loadBeforeAgent) return
+    // Auto-load only for a resolved filtered view (a specific id set) — not for
+    // the unfiltered view (null) and not while a filter is still unresolved ([]).
+    if (!el || loadingMore.current || chatMessages.length === 0 || !loadBeforeAgents || loadBeforeAgents.length === 0) return
     if (el.scrollHeight > el.clientHeight) return
     const oldestTs = chatMessages[0]?.timestamp
     if (!oldestTs) return
     loadingMore.current = true
-    loadBefore(loadBeforeAgent, oldestTs, 50).then((older: any[]) => {
+    loadBefore(loadBeforeAgents, oldestTs, 50).then((older: any[]) => {
       if (older.length > 0) {
         setOlderEvents((prev: any[]) => [...older, ...prev])
       }
       loadingMore.current = false
     })
-  }, [chatLogEl, chatMessages, loadBeforeAgent])
+  }, [chatLogEl, chatMessages, loadBeforeAgents])
 
   // --- Chat log drag → ghost pill ---
   // Uses native capture-phase listeners because tldraw intercepts React events
@@ -2826,6 +2974,9 @@ function FleetChatInner({ shape }: { shape: any }) {
     displayName: string
     color: string
     content?: string
+    sourceAgent?: string
+    filePath?: string
+    fileUrl?: string
     startX: number
     startY: number
     started: boolean
@@ -3453,8 +3604,19 @@ function FleetChatInner({ shape }: { shape: any }) {
             data={allItems}
             style={{ flex: 1, minHeight: 0 }}
             initialTopMostItemIndex={{ index: 'LAST', align: 'end' }}
-            followOutput="auto"
-            atBottomThreshold={4}
+            // Virtuoso owns the actual scrolling (it's virtualization-aware, so it
+            // reaches the TRUE list bottom); our scroll-intent just gates WHEN it
+            // follows. Follow on new content unless the user deliberately scrolled up.
+            followOutput={() => (!userScrolledUpRef.current || hardLockedRef.current) ? 'auto' : false}
+            // Generous enough to absorb the Virtuoso Footer (eliza/thinking
+            // status, ~40px): scrollToIndex(LAST) aligns the last DATA item, so
+            // the footer sits just below the viewport and "true bottom" is ~40px
+            // past the last item. With the tight 24px value, that residual read
+            // as "not at bottom" and surfaced the ⇣ arrow even though the user
+            // never scrolled. 120 (the long-proven value) keeps follow engaged
+            // through the footer. Safe because user-intent is now owned by the
+            // single-source fleet-user-scroll handler, not inferred from this gap.
+            atBottomThreshold={120}
             // Fires whenever Virtuoso's computed total list height changes —
             // catches in-place item growth (markdown/font/image late-render
             // adds pixels to existing items) which doesn't tick items.length
@@ -3462,24 +3624,56 @@ function FleetChatInner({ shape }: { shape: any }) {
             totalListHeightChanged={(h) => {
               const prev = prevTotalHeightRef.current
               prevTotalHeightRef.current = h
-              if (h > prev && isAtBottomRef.current) {
-                log.warn('chat-scroll', 'pin on list-height grow', { prev, h })
-                virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
+              const grew = h > prev
+              const follow = !userScrolledUpRef.current || hardLockedRef.current
+              // TRACE: log the gap the MOMENT content grows, follow-or-not. This
+              // catches the "doesn't follow" symptom directly — content grew, we
+              // were supposed to be at bottom, but the view didn't move. The plain
+              // scroll-trace is blind to this (no scrollTop change => no event).
+              const el = chatLogEl
+              const gapNow = el ? Math.round(el.scrollHeight - (el.scrollTop + el.clientHeight)) : null
+              if (grew) {
+                log.warn('chat-scroll', 'TRACE content grew', { prev, h, gapNow, follow, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
+              }
+              if (grew && follow) {
+                pinHard()
+                requestAnimationFrame(() => {
+                  const el2 = chatLogEl
+                  const gapAfter = el2 ? Math.round(el2.scrollHeight - (el2.scrollTop + el2.clientHeight)) : null
+                  log.warn('chat-scroll', 'TRACE after pin', { gapAfter })
+                })
               }
             }}
             atBottomStateChange={(atBottom) => {
+              const el = chatLogEl
+              const gap = el ? (el.scrollHeight - (el.scrollTop + el.clientHeight)) : null
               if (isAtBottomRef.current !== atBottom) {
-                const el = chatLogEl
                 log.warn('chat-scroll', atBottom ? 'pinned to bottom' : 'left bottom', {
                   scrollTop: el?.scrollTop,
                   scrollHeight: el?.scrollHeight,
                   clientHeight: el?.clientHeight,
-                  gap: el ? (el.scrollHeight - (el.scrollTop + el.clientHeight)) : null,
+                  gap,
                   items: allItems.length,
+                  scrolledUp: userScrolledUpRef.current,
+                  hardLocked: hardLockedRef.current,
                 })
               }
               isAtBottomRef.current = atBottom
-              setShowScrollBtn(!atBottom)
+              setAtBottom(atBottom)
+              // Auto-follow intent is owned by the fleet-user-scroll handler.
+              // Here we ONLY resume-follow when we genuinely reach bottom.
+              // We do NOT re-pin smart-follow on a spurious "left bottom":
+              // doing so created an INFINITE BOUNCE when content barely exceeds
+              // the viewport — pin→bottom→(something resets)→left-bottom→pin→…
+              // every ~50ms. Following on real new content is handled by the
+              // content-grow pins (item-grow / list-height-grow), not here.
+              // Hard-lock is the one exception: it means "always pinned", so it
+              // still snaps back.
+              if (atBottom) {
+                userScrolledUpRef.current = false
+              } else if (hardLockedRef.current) {
+                requestAnimationFrame(pinHard)
+              }
             }}
             itemContent={(_index, item) => (
               <div className={item?._divider ? 'queue-divider' : undefined}>
@@ -3499,7 +3693,6 @@ function FleetChatInner({ shape }: { shape: any }) {
                     thinkingAgents={thinkingAgents}
                     compactingAgents={compactingAgents}
                     contextPercent={contextPercent}
-                    wouldHibernate={wouldHibernate}
                     hibernatingAgents={hibernatingAgents}
                     ctx={ctx}
                     rawItemsLength={rawItems.length}
@@ -3577,6 +3770,50 @@ function FleetChatInner({ shape }: { shape: any }) {
           <div style={{ position: 'relative' }}>
             {/* Highlight underlay — mirrors textarea text, highlights <<ref>> tokens */}
             <InputHighlightUnderlay inputRef={inputRef} />
+            {/* Unified follow / jump-to-bottom control. One button, fixed here:
+                  - off bottom → ⇣ arrow; click jumps to bottom (does NOT change
+                    follow mode — you return to the bottom first, then it's a
+                    toggle again),
+                  - at bottom → follow-mode toggle (horseshoe); open = smart-follow,
+                    engaged (field lines) = hard-lock (always pinned).
+                This replaces the separate floating ⇣ arrow. */}
+            <button
+              className={`fleet-hardlock-toggle${!atBottom ? ' jump-mode' : ''}`}
+              onPointerDown={stopEventPropagation}
+              onClick={(e) => {
+                stopEventPropagation(e as any)
+                if (!atBottom) {
+                  // Off bottom: this click only returns to the bottom.
+                  scrollToBottom()
+                  return
+                }
+                // At bottom: toggle follow mode.
+                setHardLocked(prev => {
+                  const next = !prev
+                  if (next) requestAnimationFrame(pinHard)
+                  return next
+                })
+              }}
+              title={!atBottom
+                ? 'Scroll to bottom'
+                : hardLocked
+                  ? 'Hard-locked — always pinned to bottom (click to release)'
+                  : 'Smart scroll — click to hard-lock to bottom'}
+            >
+              {!atBottom ? (
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M6 1 L6 10 M2.5 6.5 L6 10 L9.5 6.5"/>
+                </svg>
+              ) : (
+                <svg width="10" height="14" viewBox="0 0 10 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M2 9 L2 4 Q2 1 5 1 Q8 1 8 4 L8 9"/>
+                  {hardLocked && <>
+                    <path d="M1 11 Q2.5 10 5 11 Q7.5 12 9 11" strokeWidth="1"/>
+                    <path d="M2 13 Q3.5 12 5 13 Q6.5 14 8 13" strokeWidth="0.8"/>
+                  </>}
+                </svg>
+              )}
+            </button>
             {/* Terminal peek icon — hover to show agent's tmux output. Hidden when no targeted agent has a tmux session. */}
             {hoverTargetAgentId && (
               <button
@@ -3698,6 +3935,29 @@ function FleetChatInner({ shape }: { shape: any }) {
                   const doSend = async () => {
                     const text = val.trim()
                     if (!text || sendTargets.length === 0) return
+                    // Echo the message and clear the box synchronously, BEFORE any awaited
+                    // work. The source-line context lookup below can hit the network; if the
+                    // echo/clear waited on it, the message looked unsent and a second Enter
+                    // queued another send — one Enter-mash → many duplicate rows.
+                    const tempId = `opt-${Date.now()}-${Math.random().toString(36).slice(2)}`
+                    injectOptimisticEvent({
+                      _tempId: tempId,
+                      type: 'chat',
+                      event_type: 'chat',
+                      from: getHumanId(),
+                      to: sendTargets[0],
+                      text,
+                      timestamp: new Date().toISOString(),
+                      read: false,
+                    })
+                    ta.value = ''
+                    ta.style.height = ''
+                    ta.dispatchEvent(new Event('input', { bubbles: true }))
+                    resetTranscript()
+                    restartRecording()
+                    sentHistoryRef.current = [...sentHistoryRef.current, text]
+                    historyIndexRef.current = -1
+                    // Now resolve viewer context (may hit the network) off the critical path.
                     const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel))
                     if (context) await enrichContextWithSourceLines(context)
                     const bullets = consumeBulletContexts()
@@ -3761,25 +4021,6 @@ function FleetChatInner({ shape }: { shape: any }) {
                       }
                     }
 
-                    // Inject optimistic event immediately so the message appears in history
-                    const tempId = `opt-${Date.now()}-${Math.random().toString(36).slice(2)}`
-                    injectOptimisticEvent({
-                      _tempId: tempId,
-                      type: 'chat',
-                      event_type: 'chat',
-                      from: getHumanId(),
-                      to: sendTargets[0],
-                      text,
-                      timestamp: new Date().toISOString(),
-                      read: false,
-                    })
-                    ta.value = ''
-                    ta.style.height = ''
-                    ta.dispatchEvent(new Event('input', { bubbles: true }))
-                    resetTranscript()
-                    restartRecording()
-                    sentHistoryRef.current = [...sentHistoryRef.current, text]
-                    historyIndexRef.current = -1
                     // No explicit scroll on send — Virtuoso's followOutput
                     // handles this: if the user was at bottom, the new
                     // message gets followed; if scrolled up, position holds.
@@ -4005,42 +4246,6 @@ function FleetChatInner({ shape }: { shape: any }) {
           </div>
         </div>
 
-        {/* Scroll-to-bottom button — floats over the bottom of the chat */}
-        {showScrollBtn && (
-          <div style={{ position: 'relative', height: 0, zIndex: 10 }}>
-            <button
-              className="fleet-scroll-bottom-btn"
-              onPointerDown={stopEventPropagation}
-              onClick={(e) => {
-                stopEventPropagation(e)
-                scrollToBottom()
-                setShowScrollBtn(false)
-              }}
-              style={{
-                position: 'absolute',
-                right: 8,
-                bottom: 4,
-                width: 22,
-                height: 22,
-                borderRadius: '50%',
-                border: 'none',
-                background: 'transparent',
-                color: 'rgba(200, 200, 200, 1)',
-                opacity: 0.35,
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontSize: 16,
-                fontWeight: 'bold',
-                lineHeight: 1,
-                padding: 0,
-                transition: 'opacity 0.2s',
-              }}
-              title="Scroll to bottom"
-            >↓</button>
-          </div>
-        )}
       </div>
     </HTMLContainer>
   )
@@ -4388,7 +4593,9 @@ function FilterOverlay({
 
   // Render a single chip (role:label) — matches dashboard's chipHtml
   function renderChip(role: string, label: string, opts?: { ghost?: boolean; x?: { ci: number; ti: number } }) {
-    const display = agentNames[label] || label.replace('fleet:', '')
+    // Strip the lineage phase suffix (:dawn/:day/:dusk) — phase is shown by the
+    // icon, never in text. Keeps the filter chip consistent with every other name.
+    const display = agentNames[label] || label.replace(/:(?:dawn|day|dusk)$/, '').replace('fleet:', '')
     return (
       <span className={`fleet-filter-chip fleet-filter-chip-${role}${opts?.ghost ? ' fleet-filter-chip-ghost' : ''}`}>
         <span className="fleet-filter-chip-role">{role}:</span>

@@ -4,7 +4,7 @@
  *
  * Extracts two kinds of events:
  *   1. Skip's messages to agents — from [from fleet:skip ...] in my_task() results
- *   2. Agent outgoing messages to Skip — from mcp__fleet__chat tool_use calls
+ *   2. Agent outgoing messages to Skip — from mcp__tlda__chat tool_use calls
  *
  * Usage:
  *   node bin/backfill-chat-from-jsonl.mjs [--dry-run] [--since YYYY-MM-DD] [--before YYYY-MM-DD]
@@ -97,7 +97,7 @@ async function scanJsonl(filePath, agentFleetId) {
           if (!item || typeof item !== 'object') continue
 
           // Outgoing: agent sends a chat message
-          if (agentFleetId && item.type === 'tool_use' && item.name === 'mcp__fleet__chat') {
+          if (agentFleetId && item.type === 'tool_use' && item.name === 'mcp__tlda__chat') {
             const inp = item.input || {}
             const text = inp.message || ''
             const toId = resolveFilter(inp.filter)
