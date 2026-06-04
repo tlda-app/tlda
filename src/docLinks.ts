@@ -13,6 +13,13 @@
  */
 
 import type { LookupData } from './synctexLookup'
+import {
+  THEOREM_REF_TYPES,
+  REF_NUMBER_SRC,
+  normalizeRefNumber,
+  refTypeForName,
+  labelTypesForEnvType,
+} from '../shared/doc-refs.mjs'
 
 // --- Reference pattern matching ---
 
@@ -26,33 +33,43 @@ export interface DocRef {
   envType?: string
 }
 
-// Order matters: longer patterns first to avoid partial matches
-const REF_PATTERNS: Array<{ re: RegExp; type: DocRef['type']; envType?: string }> = [
-  // Theorem-like with number
-  { re: /\b(Theorem)\s+(\d+(?:\.\d+)*)/gi, type: 'theorem', envType: 'theorem' },
-  { re: /\b(Lemma)\s+(\d+(?:\.\d+)*)/gi, type: 'theorem', envType: 'lemma' },
-  { re: /\b(Proposition)\s+(\d+(?:\.\d+)*)/gi, type: 'theorem', envType: 'proposition' },
-  { re: /\b(Corollary)\s+(\d+(?:\.\d+)*)/gi, type: 'theorem', envType: 'corollary' },
-  { re: /\b(Definition)\s+(\d+(?:\.\d+)*)/gi, type: 'theorem', envType: 'definition' },
-  { re: /\b(Remark)\s+(\d+(?:\.\d+)*)/gi, type: 'theorem', envType: 'remark' },
-  { re: /\b(Example)\s+(\d+(?:\.\d+)*)/gi, type: 'theorem', envType: 'example' },
-  { re: /\b(Assumption)\s+(\d+(?:\.\d+)*)/gi, type: 'theorem', envType: 'assumption' },
+// Theorem-like env words (lemma, theorem, prop, …), shared with the server so
+// detection can't drift between Skip's chat view and the agent's. The number
+// sub-pattern (REF_NUMBER_SRC) accepts letter-prefixed appendix numbers —
+// "Lemma C5", "Lemma C.10" — which the old digit-only pattern dropped.
+const THEOREM_NAMES = THEOREM_REF_TYPES.flatMap((t: { names: string[] }) => t.names)
+const THEOREM_RE = new RegExp(
+  '\\b(' + THEOREM_NAMES.join('|') + ')\\s+(' + REF_NUMBER_SRC + ')',
+  'gi',
+)
 
-  // Sections
-  { re: /\b(Section)\s+(\d+(?:\.\d+)*)/gi, type: 'section' },
+// Order matters: longer patterns first to avoid partial matches
+const REF_PATTERNS: Array<{ re: RegExp; type: DocRef['type']; envType?: string; multi?: boolean }> = [
+  // Theorem-like with number — env word in group 1, number in group 2.
+  // envType is derived per-match from the env word (see findRefs).
+  { re: THEOREM_RE, type: 'theorem' },
+
+  // Sections — number may be digits ("4", "4.1") or appendix-lettered
+  // ("A", "C", "A.1", "E.2", "E2").
+  { re: /\b(Section)\s+([A-Z](?:\.?\d+)*|\d+(?:\.\d+)*)/gi, type: 'section' },
   { re: /§\s*(\d+(?:\.\d+)*)/g, type: 'section' },
-  { re: /\b(Appendix)\s+([A-Z](?:\.\d+)*)/gi, type: 'section' },
+  { re: /\b(Appendix)\s+([A-Z](?:\.?\d+)*)/gi, type: 'section' },
 
   // Equations
   { re: /\b(?:Equation|Eq\.)\s*\((\d+(?:\.\d+)*)\)/gi, type: 'equation' },
   { re: /\beq\.\s*(\d+(?:\.\d+)*)/gi, type: 'equation' },
 
-  // Page references
-  { re: /\b(?:page|p\.)\s*(\d+)/gi, type: 'page' },
+  // Page references — "page 36", "p. 36", and the no-dot shorthand "p36"
+  // (bare "p" only when a digit follows immediately, to avoid matching "p < 3").
+  { re: /\b(?:page\s*|p\.\s*|p(?=\d))(\d+)/gi, type: 'page' },
 
-  // Line references — "line 45", "lines 45-78", or shorthand "L45"
-  { re: /\blines?\s+(\d+)(?:\s*[-–]\s*(\d+))?/gi, type: 'line' },
-  { re: /\bL(\d+)/g, type: 'line' },
+  // Line lists — "lines 3733 and 3758", "lines 3733, 3758, 3911". Each number
+  // becomes its own link (multi). Must come before the single-line pattern.
+  { re: /\blines\s+\d+(?:\s*(?:,|and)\s*\d+)+/gi, type: 'line', multi: true },
+
+  // Line references — "line 45", "lines 45-78", approx "line ~3733".
+  // (No bare "L45" shorthand: it false-positives on L1/L2 norm notation.)
+  { re: /\blines?\s+~?\s*(\d+)(?:\s*[-–]\s*(\d+))?/gi, type: 'line' },
 
 ]
 
@@ -79,13 +96,34 @@ export function findRefs(text: string): Array<DocRef & { start: number; end: num
 
       for (let i = start; i < end; i++) covered.add(i)
 
+      // Line lists ("lines 3733 and 3758"): emit one ref per number so each
+      // links independently.
+      if (pat.multi) {
+        const numRe = /\d+/g
+        let nm: RegExpExecArray | null
+        while ((nm = numRe.exec(m[0])) !== null) {
+          refs.push({
+            type: 'line',
+            text: nm[0],
+            value: nm[0],
+            start: start + nm.index,
+            end: start + nm.index + nm[0].length,
+          })
+        }
+        continue
+      }
+
       let value: string
+      let envType = pat.envType
       if (pat.type === 'section' && m[0].startsWith('§')) {
         value = m[1]
       } else if (pat.type === 'theorem') {
-        value = m[2]
+        // env word in group 1, number in group 2; normalize "C5" → "C.5"
+        value = normalizeRefNumber(m[2])
+        envType = refTypeForName(m[1])?.envType
       } else if (pat.type === 'section') {
-        value = m[2]
+        // normalize appendix-lettered numbers ("E2" → "E.2")
+        value = normalizeRefNumber(m[2])
       } else if (pat.type === 'equation') {
         value = m[1]
       } else if (pat.type === 'page') {
@@ -99,7 +137,7 @@ export function findRefs(text: string): Array<DocRef & { start: number; end: num
         type: pat.type,
         text: m[0],
         value,
-        envType: pat.envType,
+        envType,
         start,
         end,
       })
@@ -499,6 +537,139 @@ export function linkifyAtRefs(
   return result.join('')
 }
 
+/**
+ * Post-process rendered HTML to convert raw LaTeX cross-reference commands —
+ * \ref{l}, \eqref{l}, \cref{l}/\Cref{l}, \autoref{l}, \cpageref{l} — into the
+ * form LaTeX would compile them to, as clickable doc-links:
+ *   \ref{lem:envelope}   → "A.5"           (bare number)
+ *   \eqref{eq:foo}       → "(14)"          (number in parens)
+ *   \cref{lem:envelope}  → "Lemma A.5"     (type + number, type from the table)
+ * Resolution data: labelRegions for page/y nav + displayLabel; theoremMap for
+ * the authoritative type/number (esp. sections, whose displayLabel is the raw
+ * label). Unknown labels are left as the original text.
+ */
+const _TYPE_WORD: Record<string, string> = {
+  lem: 'Lemma', thm: 'Theorem', prop: 'Proposition', cor: 'Corollary',
+  def: 'Definition', ass: 'Assumption', rem: 'Remark', eq: 'Equation',
+  sec: 'Section', fig: 'Figure', tab: 'Table',
+}
+const _FULL_TO_KEY: Record<string, string> = {
+  equation: 'eq', section: 'sec', theorem: 'thm', lemma: 'lem',
+  proposition: 'prop', corollary: 'cor', definition: 'def',
+  assumption: 'ass', remark: 'rem', figure: 'fig', table: 'tab',
+}
+
+export function linkifyRefCommands(
+  html: string,
+  labelRegions: Record<string, LabelRegionInfo>,
+  theoremMap?: Record<string, TheoremMapEntry>,
+): string {
+  if (!html.includes('\\')) return html
+
+  const numberFromDisplay = (dl?: string): string => {
+    if (!dl) return ''
+    const paren = dl.match(/\(([^)]+)\)/)
+    if (paren) return paren[1]
+    const tail = dl.match(/([A-Z]?\.?\d[\d.]*|[A-Z](?:\.\d+)*)\s*$/)
+    return tail ? tail[1] : ''
+  }
+
+  const renderOne = (cmd: string, label: string): string | null => {
+    const info = labelRegions[label]
+    const tm = theoremMap?.[label]
+    if (!info && !tm) return null
+
+    const typeKey = (tm?.type || _FULL_TO_KEY[info?.type || ''] || '').toLowerCase()
+    const num = (tm?.number || numberFromDisplay(info?.displayLabel)).toString()
+    const niceDisplay = info?.displayLabel && info.displayLabel !== label ? info.displayLabel : ''
+
+    let text: string
+    if (cmd === 'eqref') text = num ? `(${num})` : (niceDisplay || label)
+    else if (cmd === 'ref' || cmd === 'vref') text = num || niceDisplay || label
+    else if (cmd === 'cpageref' || cmd === 'Cpageref') text = `page ${info?.page ?? tm?.page ?? '?'}`
+    else {
+      // cref / Cref / autoref / namecref → "Type Number"
+      if (typeKey === 'eq') text = `Eq. (${num})`
+      else if (typeKey === 'sec') text = `${/^[A-Z]/.test(num) ? 'Appendix' : 'Section'} ${num}`
+      else if (niceDisplay) text = niceDisplay
+      else text = `${_TYPE_WORD[typeKey] || ''} ${num}`.trim()
+    }
+    if (!text) return null
+
+    const page = info?.page ?? tm?.page
+    if (page == null) return null
+    const attrs = [
+      `class="doc-link ref-cmd"`,
+      `data-ref-type="label"`,
+      `data-ref-label="${escAttr(label)}"`,
+      `data-ref-page="${page}"`,
+    ]
+    if (info?.yTop != null) attrs.push(`data-ref-y-top="${info.yTop}"`)
+    if (info?.yBottom != null) attrs.push(`data-ref-y-bottom="${info.yBottom}"`)
+    return `<span ${attrs.join(' ')}>${escAttr(text)}</span>`
+  }
+
+  const CMD_RE = /\\(eqref|cref|Cref|autoref|namecref|vref|cpageref|Cpageref|ref)\b\*?\s*\{([^}]*)\}/g
+
+  const TAG_RE = /<[^>]+>/g
+  const parts: Array<{ text: string; isTag: boolean }> = []
+  let lastIdx = 0
+  let tagMatch: RegExpExecArray | null
+  TAG_RE.lastIndex = 0
+  while ((tagMatch = TAG_RE.exec(html)) !== null) {
+    if (tagMatch.index > lastIdx) parts.push({ text: html.slice(lastIdx, tagMatch.index), isTag: false })
+    parts.push({ text: tagMatch[0], isTag: true })
+    lastIdx = TAG_RE.lastIndex
+  }
+  if (lastIdx < html.length) parts.push({ text: html.slice(lastIdx), isTag: false })
+
+  let skipDepth = 0
+  const SKIP_OPEN = /^<(a|code|pre)[\s>]/i
+  const SKIP_CLOSE = /^<\/(a|code|pre|span)>/i
+  const SPAN_SKIP_OPEN = /^<span\s[^>]*class="[^"]*(?:doc-link|ref-chip)/i
+  const SPAN_OPEN = /^<span[\s>]/i
+
+  const result: string[] = []
+  for (const part of parts) {
+    if (part.isTag) {
+      if (skipDepth > 0) {
+        if (SPAN_OPEN.test(part.text)) skipDepth++
+        else if (SKIP_CLOSE.test(part.text)) skipDepth--
+      } else {
+        if (SKIP_OPEN.test(part.text) || SPAN_SKIP_OPEN.test(part.text)) skipDepth++
+        else if (SKIP_CLOSE.test(part.text)) skipDepth = Math.max(0, skipDepth - 1)
+      }
+      result.push(part.text)
+      continue
+    }
+    if (skipDepth > 0) { result.push(part.text); continue }
+
+    CMD_RE.lastIndex = 0
+    let cursor = 0
+    let m: RegExpExecArray | null
+    let modified = false
+    const segments: string[] = []
+    while ((m = CMD_RE.exec(part.text)) !== null) {
+      const cmd = m[1]
+      // \cref{a,b} — render each label, comma-joined
+      const labels = m[2].split(/\s*,\s*/).map(s => s.trim()).filter(Boolean)
+      const rendered = labels.map(l => renderOne(cmd, l))
+      if (!rendered.length || rendered.some(r => r === null)) continue // leave raw if any unknown
+      modified = true
+      if (m.index > cursor) segments.push(part.text.slice(cursor, m.index))
+      segments.push(rendered.join(', '))
+      cursor = m.index + m[0].length
+    }
+    if (modified) {
+      if (cursor < part.text.length) segments.push(part.text.slice(cursor))
+      result.push(segments.join(''))
+    } else {
+      result.push(part.text)
+    }
+  }
+  return result.join('')
+}
+
 // --- Reference resolution ---
 
 export interface ResolvedRef {
@@ -583,6 +754,28 @@ export function buildRefResolver(lookup: LookupData, theoremMap?: Record<string,
       }
 
       case 'section': {
+        // Prefer the label table: it carries section/appendix numbers verbatim,
+        // including letters ("A", "C", "A.1", "E.2"), so we don't have to
+        // reconstruct appendix ordering by counting headings.
+        if (theoremMap) {
+          const num = normalizeRefNumber(ref.value)
+          for (const entry of Object.values(theoremMap)) {
+            if (entry.type === 'sec' && entry.number === num) {
+              return { page: entry.page }
+            }
+          }
+          // Graceful fallback: an appendix sub-section with no label of its own
+          // ("Appendix E.2" when only "E" is labeled) → land on the parent appendix.
+          const parent = num.match(/^([A-Z])(?=\.|$)/)?.[1]
+          if (parent && parent !== num) {
+            for (const entry of Object.values(theoremMap)) {
+              if (entry.type === 'sec' && entry.number === parent) {
+                return { page: entry.page }
+              }
+            }
+          }
+        }
+
         // ref.value is like "2" or "A" (for appendix)
         const letter = ref.value.match(/^[A-Z]/)
         if (letter) {
@@ -609,12 +802,14 @@ export function buildRefResolver(lookup: LookupData, theoremMap?: Record<string,
       }
 
       case 'theorem': {
-        // First try theorem-map (authoritative: parsed from .aux file)
+        // First try theorem-map (authoritative: parsed from .aux file).
+        // Match the entry's label-type against the shared type list for this
+        // envType — a naive slice(0,3) breaks theorem ("the"≠"thm") and
+        // proposition ("pro"≠"prop").
         if (theoremMap && ref.envType) {
-          // Map envType to theorem-map type prefix (proposition→prop, definition→def, etc.)
-          const typePrefix = ref.envType.slice(0, 3)
+          const validTypes: string[] = labelTypesForEnvType(ref.envType)
           for (const entry of Object.values(theoremMap)) {
-            if (entry.number === ref.value && entry.type === typePrefix) {
+            if (entry.number === ref.value && validTypes.includes(entry.type)) {
               return { page: entry.page }
             }
           }

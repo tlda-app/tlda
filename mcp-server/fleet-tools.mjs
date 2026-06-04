@@ -17,6 +17,7 @@ import { ledger } from './identity.mjs';
 import { formatMessage, formatActivity, formatAnnotationRef } from './format-annotation.mjs';
 import { parseTimestamp } from './lib/parse-timestamp.mjs';
 import { processMessageText } from '../shared/message-processing.mjs';
+import { normalizeRefNumber as _normalizeRefNumber, refTypeForName as _refTypeForName, buildTheoremRefRegex as _buildTheoremRefRegex } from '../shared/doc-refs.mjs';
 import WebSocket from 'ws';
 import { ResilientWS } from '../shared/resilient-ws.mjs';
 
@@ -2291,29 +2292,12 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
     return best
   }
 
-  const _REF_TYPES = [
-    { names: ['lemma'], types: ['lem', 'lemm', 'lemma'] },
-    { names: ['theorem', 'thm'], types: ['thm', 'theorem'] },
-    { names: ['proposition', 'prop'], types: ['prop', 'proposition'] },
-    { names: ['corollary', 'cor'], types: ['cor', 'corollary'] },
-    { names: ['definition', 'def'], types: ['def', 'definition'] },
-    { names: ['assumption'], types: ['a', 'ass', 'assumption'] },
-    { names: ['remark'], types: ['rem', 'remark'] },
-    { names: ['appendix'], types: ['app', 'sec'] },
-    { names: ['section', 'sec'], types: ['sec'] },
-    { names: ['equation', 'eq'], types: ['eq'] },
-  ]
-
-  const _REF_NAME_PATTERN = _REF_TYPES.flatMap(t => t.names).join('|')
-  // Matches "Lemma E5", "Lemma E.5", "Lemma E 5", "theorem 3.1", etc.
-  // Negative lookahead prevents double-resolution (already has " [label →" after it).
-  const _REF_REGEX = new RegExp(
-    '\\b(' + _REF_NAME_PATTERN + ')' +
-    '\\s+' +
-    '([A-Z]?\\.?\\s?\\d[\\d.]*)' +
-    '(?!\\])(?! \\[)',
-    'gi'
-  )
+  // Detection (env-name table, number pattern, normalization) is shared with
+  // the client linkifier via ../shared/doc-refs.mjs so the two contexts can't
+  // disagree on what counts as a reference. The idempotence guard
+  // `(?!\])(?! \[)` is server-only — it stops us re-annotating text we already
+  // injected a " [label → …]" into.
+  const _REF_REGEX = _buildTheoremRefRegex(undefined, '(?!\\])(?! \\[)')
 
   function resolveTheoremRefs(text, doc, version) {
     if (!text || !doc) return text
@@ -2321,13 +2305,9 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
     if (!index) return text
 
     return text.replace(_REF_REGEX, (match, typeName, rawNumber) => {
-      const normalizedNumber = rawNumber.trim()
-        .replace(/\s+/g, '')
-        .replace(/([A-Z])(\d)/i, '$1.$2')
+      const normalizedNumber = _normalizeRefNumber(rawNumber)
 
-      const typeInfo = _REF_TYPES.find(t =>
-        t.names.some(n => n.toLowerCase() === typeName.toLowerCase())
-      )
+      const typeInfo = _refTypeForName(typeName)
       if (!typeInfo) return match
 
       const entry = index.labels.find(l =>

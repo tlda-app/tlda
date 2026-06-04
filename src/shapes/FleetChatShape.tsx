@@ -35,7 +35,7 @@ import { DocContext, PanelContext } from '../PanelContext'
 import { loadLookup, type LookupData } from '../synctexLookup'
 import { getSourceAnchor } from '../synctexAnchor'
 import { log } from '../logger'
-import { linkifyDocRefs, linkifyArrowRefs, linkifyAtRefs, linkifyLabelRefs, buildRefResolver, refToCanvas, type DocRef, type ResolvedRef, type LabelRegionInfo, type TheoremMapEntry } from '../docLinks'
+import { linkifyDocRefs, linkifyArrowRefs, linkifyAtRefs, linkifyLabelRefs, linkifyRefCommands, buildRefResolver, refToCanvas, type DocRef, type ResolvedRef, type LabelRegionInfo, type TheoremMapEntry } from '../docLinks'
 import { fetchProofInfo, fetchTheoremMap } from '../docInfoCache'
 import { PDF_HEIGHT } from '../layoutConstants'
 import { TerminalCard } from './TerminalCard'
@@ -1430,13 +1430,16 @@ function FleetChatInner({ shape }: { shape: any }) {
     // Process [->ref] arrow links BEFORE auto-detection (linkifyDocRefs)
     // so that [->Theorem 3.2] is consumed before "Theorem 3.2" gets auto-linked
     if (doc && Object.keys(labelRegions).length > 0) {
+      // Raw \ref/\eqref/\cref commands first — convert to their compiled form
+      // so the inner label isn't double-processed by the passes below.
+      html = linkifyRefCommands(html, labelRegions, theoremMap)
       html = linkifyAtRefs(html, labelRegions)
       html = linkifyArrowRefs(html, labelRegions)
       html = linkifyLabelRefs(html, labelRegions)
     }
     if (doc) html = linkifyDocRefs(html)
     return html
-  }, [doc, labelRegions, imageSrcs, editor])
+  }, [doc, labelRegions, theoremMap, imageSrcs, editor])
 
   // Mark the queue divider position inline — the last non-queued item before
   // the first queued item gets _divider: true. All items stay in one list.
