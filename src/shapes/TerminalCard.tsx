@@ -14,6 +14,7 @@ import { Terminal } from 'xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import 'xterm/css/xterm.css'
 import './TerminalCard.css'
+import { log } from '../logger'
 
 // WebSocket for terminal — goes through Vite proxy in dev
 const FLEET_WS_HOST = typeof window !== 'undefined'
@@ -103,6 +104,7 @@ export function TerminalCard({ agentId, agentName, pinned, onDismiss, onMouseEnt
 
     function connect() {
       if (cancelled) return
+      log.info('terminal-card', 'connecting', { agentId, agentName })
       setStatus('connecting')
       wsRef.current?.close()
 
@@ -112,6 +114,7 @@ export function TerminalCard({ agentId, agentName, pinned, onDismiss, onMouseEnt
       ws.onopen = () => {
         if (cancelled) { ws.close(); return }
         retryCountRef.current = 0
+        log.info('terminal-card', 'connected', { agentId, agentName })
         setStatus('connected')
         setStatusMsg('')
         const term = termRef.current
@@ -133,6 +136,7 @@ export function TerminalCard({ agentId, agentName, pinned, onDismiss, onMouseEnt
               termRef.current.write(msg.data)
             }
           } else if (msg.type === 'error') {
+            log.warn('terminal-card', 'server error', { agentId, agentName, message: msg.message })
             setStatus('error')
             setStatusMsg(msg.message || 'server error')
           }
@@ -141,6 +145,7 @@ export function TerminalCard({ agentId, agentName, pinned, onDismiss, onMouseEnt
 
       ws.onerror = () => {
         if (cancelled) return
+        log.warn('terminal-card', 'ws error', { agentId, agentName })
         setStatus('error')
         setStatusMsg('WebSocket error')
       }
@@ -149,10 +154,12 @@ export function TerminalCard({ agentId, agentName, pinned, onDismiss, onMouseEnt
         if (cancelled || frozen) return
         if (retryCountRef.current < 3) {
           retryCountRef.current++
+          log.warn('terminal-card', 'ws closed — retrying', { agentId, agentName, code: evt.code, reason: evt.reason, attempt: retryCountRef.current })
           setStatus('connecting')
           setStatusMsg(`reconnecting (${retryCountRef.current}/3)…`)
           retryTimerRef.current = setTimeout(connect, 2000)
         } else {
+          log.warn('terminal-card', 'ws closed — gave up', { agentId, agentName, code: evt.code, reason: evt.reason })
           setStatus('error')
           setStatusMsg(evt.reason || 'connection lost')
         }

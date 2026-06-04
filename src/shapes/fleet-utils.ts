@@ -10,6 +10,19 @@ export const FLEET_SHAPE_TYPES = new Set([
   'fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview', 'fleet-reaper',
 ])
 
+/**
+ * The display name for an agent — the single source of truth used everywhere a
+ * name is shown (agents panel, chat target chip, nicks). The lineage phase is
+ * conveyed by the icon, NOT a ":phase" suffix, so the name stays clean and
+ * consistent. Keeping this in one place stops the panel and chat from drifting
+ * (which is exactly how a `:phase` suffix lingered in one but not the other).
+ */
+export function agentDisplayName(agent: any, _allAgents?: any[]): string {
+  if (!agent) return '[unknown]'
+  if (agent.lineage_name) return agent.lineage_name
+  return agent.friendly_name || (agent.id || '').replace('fleet:', '')
+}
+
 export const FLEET_HUD_ANCHOR_ID = 'shape:fleet-hud-anchor' as const
 
 export function getMyAnchorId(): string {
