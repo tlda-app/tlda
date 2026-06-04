@@ -875,6 +875,66 @@ export class FleetStore {
     })();
   }
 
+  // One rotation: the incoming agent enters at `dawn` (the worker), and every
+  // existing slot shifts up a rung — dawn → day (becomes the manager), day →
+  // dusk (becomes the consultant on the way out), dusk → loses its friendly name
+  // and drops out of the slots (stays in the lineage as nameless history).
+  // Nothing is marked dead and nothing is removed from the lineage — a faded
+  // agent just has its name rotate off, and it hibernates on its own once no one
+  // talks to it. Direct handoff applies this once; the briefing handoff applies
+  // it twice (briefer in, then the new worker in).
+  rotateLineageIn(lineageId, incomingAgentId) {
+    const now = Date.now();
+    const slotIds = (phase) => this.db.prepare(
+      "SELECT id FROM agents WHERE lineage_id = ? AND phase = ? AND dead = 0"
+    ).all(lineageId, phase).map(r => r.id);
+    const exitLog = (id) => this.db.prepare(
+      'UPDATE lineage_phase_log SET exited_at = ? WHERE fleet_id = ? AND exited_at IS NULL'
+    ).run(now, id);
+    const enterLog = (id, phase) => {
+      // PK is (lineage_id, fleet_id, entered_at); ms-resolution Date.now() can
+      // collide with a prior entry for the same agent under rapid rotation, so
+      // force the timestamp strictly past this agent's last entry in the lineage.
+      const prev = this.db.prepare(
+        'SELECT MAX(entered_at) AS m FROM lineage_phase_log WHERE lineage_id = ? AND fleet_id = ?'
+      ).get(lineageId, id);
+      const ts = Math.max(now, (prev?.m || 0) + 1);
+      this.db.prepare(
+        'INSERT INTO lineage_phase_log (lineage_id, fleet_id, phase, entered_at) VALUES (?, ?, ?, ?)'
+      ).run(lineageId, id, phase, ts);
+    };
+    // Order frees each target slot before the next agent moves into it:
+    // dusk out → day→dusk → dawn→day → incoming→dawn.
+    this.db.transaction(() => {
+      // 1. Current dusk (consultant) ages out: name rotates off, drops the slot,
+      //    stays in the lineage as nameless history.
+      for (const id of slotIds('dusk')) {
+        if (id === incomingAgentId) continue;
+        exitLog(id);
+        this.db.prepare('UPDATE agents SET friendly_name = NULL, phase = NULL WHERE id = ?').run(id);
+      }
+      // 2. Current day (manager) → dusk (consultant).
+      for (const id of slotIds('day')) {
+        if (id === incomingAgentId) continue;
+        exitLog(id);
+        this.db.prepare('UPDATE agents SET phase = ? WHERE id = ?').run('dusk', id);
+        enterLog(id, 'dusk');
+      }
+      // 3. Current dawn (worker) → day (manager).
+      for (const id of slotIds('dawn')) {
+        if (id === incomingAgentId) continue;
+        exitLog(id);
+        this.db.prepare('UPDATE agents SET phase = ? WHERE id = ?').run('day', id);
+        enterLog(id, 'day');
+      }
+      // 4. Incoming enters at dawn (the worker).
+      exitLog(incomingAgentId);
+      this.db.prepare('UPDATE agents SET lineage_id = ?, phase = ? WHERE id = ?')
+        .run(lineageId, 'dawn', incomingAgentId);
+      enterLog(incomingAgentId, 'dawn');
+    })();
+  }
+
   getLineageHistory(lineageId) {
     return this.db.prepare(
       'SELECT * FROM lineage_phase_log WHERE lineage_id = ? ORDER BY entered_at'

@@ -1915,6 +1915,19 @@ async function handleFleetWsMessage(ws, msg) {
       throw e
     }
     fleetStore.share?.({ type: 'register', agent_id: agentId, from: agentId, to: agentId, text: `${name || agentId} registered` })
+    // Every non-human agent belongs to a lineage from birth, as its own `dawn`
+    // (the worker). This guarantees a handoff always has a chain to rotate within
+    // — a direct handoff promotes that dawn → day (manager). The lineage is an
+    // overlay, so a failure here must never block registration.
+    if (!agent.human && agent.friendly_name) {
+      const stored = fleetStore.getAgent?.(agentId)
+      if (stored && !stored.lineage_id) {
+        try {
+          const lineage = fleetStore.getOrCreateLineage(agent.friendly_name)
+          fleetStore.assignPhase(agentId, lineage.id, 'dawn')
+        } catch (e) { console.error(`[lineage] auto-assign failed for ${agentId}: ${e.message}`) }
+      }
+    }
     // Registration implies a live claude process — mark alive immediately so
     // the agent shows "awake" right away. The daemon's next sweep confirms
     // or evicts within 30s.
@@ -2509,6 +2522,24 @@ async function handleFleetWsMessage(ws, msg) {
     fleetStore.transitionPhase(agent.id, phase)
     broadcastState()
     reply({ ok: true, agent: agent.id, phase })
+    return
+  }
+
+  // ---- lineage-rotate: rotate an agent in at `dawn` ----
+  // incoming → dawn (worker), dawn → day (manager), day → dusk (consultant),
+  // dusk → loses its name and drops out of the slots (stays in the lineage as
+  // history). Nothing is marked dead or unlinked. Direct handoff = one rotate;
+  // briefing handoff = two (briefer in, then the new worker in).
+  if (type === 'lineage-rotate') {
+    const { agent: agentQuery, lineage: lineageQuery } = msg
+    if (!agentQuery) { error('agent required'); return }
+    const agent = fleetStore.findAgent(agentQuery)
+    if (!agent) { error('agent not found'); return }
+    const lineageName = lineageQuery || agent.friendly_name || agentQuery
+    const lineage = fleetStore.getOrCreateLineage(lineageName)
+    fleetStore.rotateLineageIn(lineage.id, agent.id)
+    broadcastState()
+    reply({ ok: true, agent: agent.id, lineage: lineage.id, lineage_name: lineage.friendly_name, phase: 'dawn' })
     return
   }
 

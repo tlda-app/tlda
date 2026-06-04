@@ -410,6 +410,36 @@ def _session_has_claude(session):
     except Exception:
         return False
 
+def dismiss_devchannels(session, timeout=30):
+    """Poll the pane and dismiss the dev-channels confirmation dialog (option 1)
+    the moment it appears. Bounded by `timeout` so it can't loop forever — that
+    was the original over-correction. Returns early once the ❯ prompt is up with
+    no dialog, so a no-dialog start doesn't wait the full timeout.
+
+    The fresh-spawn path previously fired a single blind keystroke at t=3s; when
+    Claude Code was slow the dialog appeared later and the agent hung. This polls
+    instead, the same way the resume path (inject_prompt) already does."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            r = subprocess.run(tmux("capture-pane", "-t", session, "-p"),
+                               capture_output=True, text=True, timeout=5)
+            if r.returncode == 0:
+                pane = r.stdout
+                if 'development-channels' in pane and 'Enter to confirm' in pane:
+                    subprocess.run(tmux("send-keys", "-t", session, "1"), capture_output=True, timeout=5)
+                    time.sleep(0.5)
+                    subprocess.run(tmux("send-keys", "-t", session, "Enter"), capture_output=True, timeout=5)
+                    return True
+                # ❯ prompt up and no dialog pending — nothing to dismiss.
+                if 'Enter to confirm' not in pane and any('❯' in l for l in pane.splitlines()[-3:]):
+                    return False
+        except Exception:
+            pass
+        time.sleep(0.5)
+    return False
+
+
 def spawn_tmux(session, cwd, cmd, auto_dismiss=True):
     """Start a tmux session running cmd. When auto_dismiss=True, backgrounds
     a process to dismiss the dev-channels confirmation dialog."""
@@ -427,11 +457,11 @@ def spawn_tmux(session, cwd, cmd, auto_dismiss=True):
         subprocess.run(tmux("set-option", "-t", session, "remain-on-exit", "on"),
                        capture_output=True, timeout=5, env=spawn_env)
     if auto_dismiss:
+        # Background the bounded poll-and-dismiss (see dismiss_devchannels).
+        # Detached so spawn_tmux returns immediately and the dismiss survives
+        # this process exiting.
         subprocess.Popen(
-            [sys.executable, "-c",
-             f"import time,subprocess; time.sleep(3); "
-             f"subprocess.run({tmux('send-keys', '-t', session, '1')!r}); "
-             f"subprocess.run({tmux('send-keys', '-t', session, 'Enter')!r})"],
+            [sys.executable, __file__, "--_dismiss-devch", session],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
 
@@ -706,7 +736,13 @@ def main():
     parser.add_argument("--enroll", action="store_true")
     parser.add_argument("--no-attach", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--_dismiss-devch", default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
+
+    # Internal: backgrounded dev-channels dialog dismisser (spawned by spawn_tmux).
+    if args._dismiss_devch:
+        dismiss_devchannels(args._dismiss_devch)
+        return
 
     if not args.name and not args.session:
         parser.print_usage(sys.stderr)

@@ -42,8 +42,9 @@ export function statusLabels(status) {
  * filtering, and history resolution.
  *
  * Includes: explicit labels[], status pseudo-labels, friendly_name, id, and
- * lineage tags (the bare lineage name for the `day` phase, plus the
- * phase-qualified `name:phase` for every phase).
+ * the phase-qualified lineage tag `name:phase` for every phase. No agent
+ * answers to the bare lineage name — targeting is by filter, not by typing a
+ * name, so the bare name belongs to no one (avoids the duplicate-name clash).
  */
 export function labelsForAgent(agent) {
   if (!agent) return []
@@ -54,7 +55,9 @@ export function labelsForAgent(agent) {
     agent.id,
   ]
   if (agent.lineage_name && agent.phase) {
-    if (agent.phase === 'day') out.push(agent.lineage_name)
+    // No agent owns the bare lineage name — you target by filtering, not by
+    // typing a name, so nothing answers to the bare name (that was the
+    // duplicate-name collision). Only the phase-qualified tag is a label.
     out.push(`${agent.lineage_name}:${agent.phase}`)
   }
   return out.filter(Boolean)

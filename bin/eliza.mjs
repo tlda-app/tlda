@@ -1339,19 +1339,61 @@ async function handleHandoff(agentId, triggerText) {
   const agentName = await resolveAgentName(agentId)
   console.log(`[eliza] handoff triggered for ${agentName} (${agentId})`)
 
+  // Two handoff types. "directly" in the statement → direct handoff: no briefer,
+  // one rotation. The current worker is promoted to manager (day) and a fresh
+  // worker enters at dawn. Otherwise → the briefing path (two rotations) below.
+  if (/\bdirectly\b/i.test(triggerText || '')) {
+    sendChat(OWNER_ID, `Direct handoff from **${agentName}** — promoting it to manager and bringing in a fresh worker.`)
+    sendChat(agentId, `⚠️ Skip is handing your work off directly. You're being promoted to manager; a fresh worker is coming in.`)
+    const agentCwd = await resolveAgentCwd(agentId)
+    const workerName = await nextAgentName(extractBaseTopic(agentName))
+    let spawnResult = await postJson('/api/spawn', { name: workerName, cwd: agentCwd })
+    if (spawnResult.error && spawnResult.error.includes('already exists')) {
+      spawnResult = await postJson('/api/spawn', { agent: workerName, respawn: true })
+    }
+    if (spawnResult.error) {
+      sendChat(OWNER_ID, `⚠️ Failed to spawn worker: ${spawnResult.error}`)
+      return
+    }
+    setTimeout(async () => {
+      try {
+        // One rotation: new worker → dawn, original → day (manager),
+        // old manager → dusk, old dusk → fades.
+        try {
+          await sendRequest({ type: 'lineage-rotate', agent: workerName, lineage: agentName })
+        } catch (e) {
+          sendChat(OWNER_ID, `⚠️ Lineage rotate (${workerName} → dawn in ${agentName}) failed: ${e.message}`)
+        }
+        await postJson('/api/tasks/delegate', {
+          from: AGENT_ID,
+          agent: workerName,
+          description: `Pick up work from ${agentName}`,
+          message: `**Read these skills first:** \`pickup\`
+
+You're taking over the work directly from **${agentName}**, who is now your manager. There's no separate briefing — orient from the thread and check in with your manager.
+${triggerText ? `\n**Skip's handoff message:**\n> ${triggerText}\n` : ''}
+**Steps:**
+1. Read the recent thread to understand where things stand.
+2. Check in with Skip — 3 sentences max: what you understand, what's open, what you'll start on.
+3. Wait for Skip's confirmation before diving in.`,
+        })
+        sendChat(OWNER_ID, `Direct handoff complete. **${workerName}** is the new worker; **${agentName}** is now its manager.`)
+      } catch (e) {
+        console.error(`[eliza] direct handoff delegate failed: ${e.message}`)
+      }
+    }, 15_000)
+    logDecision(agentId, 'handoff-direct', 'handoff', { workerAgent: workerName }, triggerText)
+    return
+  }
+
   sendChat(OWNER_ID, `Starting handoff from **${agentName}**. Spawning briefing agent…`)
   sendChat(agentId, `⚠️ Skip is handing off your work to a fresh agent. Stand by — a briefing agent will read your thread.`)
 
   const agentCwd = await resolveAgentCwd(agentId)
   const briefingName = await nextAgentName(extractBaseTopic(agentName), 'b')
   try {
-    // Transition original agent from day → dusk in its lineage
-    try {
-      await sendRequest({ type: 'lineage-transition', agent: agentId, phase: 'dusk' })
-    } catch (e) {
-      sendChat(OWNER_ID, `⚠️ Lineage transition (${agentName} → dusk) failed: ${e.message}. Handoff continuing without lineage tracking.`)
-    }
-
+    // (The original is demoted day → dusk by the rotation when the briefer
+    // enters as the new day, below — no separate transition needed.)
     let spawnResult = await postJson('/api/spawn', { name: briefingName, cwd: agentCwd })
     if (spawnResult.error && spawnResult.error.includes('already exists')) {
       spawnResult = await postJson('/api/spawn', { agent: briefingName, respawn: true })
@@ -1366,11 +1408,12 @@ async function handleHandoff(agentId, triggerText) {
 
     setTimeout(async () => {
       try {
-        // Assign briefer to the original agent's lineage as day
+        // Rotate the briefer into the lineage as the new day (short-lived).
+        // One rotation: original day → dusk, briefer → day.
         try {
-          await sendRequest({ type: 'lineage-assign', agent: briefingName, phase: 'day', lineage: agentName })
+          await sendRequest({ type: 'lineage-rotate', agent: briefingName, lineage: agentName })
         } catch (e) {
-          sendChat(OWNER_ID, `⚠️ Lineage assign (${briefingName} → day in ${agentName}) failed: ${e.message}`)
+          sendChat(OWNER_ID, `⚠️ Lineage rotate (${briefingName} → day in ${agentName}) failed: ${e.message}`)
         }
 
         await postJson('/api/tasks/delegate', {
@@ -1466,17 +1509,14 @@ async function handleHandoffReady(fromId, text) {
 
       setTimeout(async () => {
         try {
-          // Assign pickup to the original agent's lineage as dawn
+          // Rotate the pickup into the lineage as the new day. One rotation:
+          // briefer day → dusk, original (was dusk) loses its name and drops to
+          // nameless history, pickup → day. Nothing is marked dead or unlinked —
+          // the original just fades and hibernates once no one talks to it.
           try {
-            await sendRequest({ type: 'lineage-assign', agent: pickupName, phase: 'dawn', lineage: handoffInfo.originalAgent })
+            await sendRequest({ type: 'lineage-rotate', agent: pickupName, lineage: handoffInfo.originalAgent })
           } catch (e) {
-            sendChat(OWNER_ID, `⚠️ Lineage assign (${pickupName} → dawn in ${handoffInfo.originalAgent}) failed: ${e.message}`)
-          }
-          // Retire the original agent (dusk) from the lineage
-          try {
-            await sendRequest({ type: 'lineage-retire', agent: handoffInfo.originalAgentId })
-          } catch (e) {
-            sendChat(OWNER_ID, `⚠️ Lineage retire (${handoffInfo.originalAgent}) failed: ${e.message}`)
+            sendChat(OWNER_ID, `⚠️ Lineage rotate (${pickupName} → day in ${handoffInfo.originalAgent}) failed: ${e.message}`)
           }
 
           await postJson('/api/tasks/delegate', {

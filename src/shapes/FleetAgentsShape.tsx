@@ -18,6 +18,7 @@ import {
 import { useState, useCallback, useMemo, useRef, useEffect, memo } from 'react'
 import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, useFleetContext, searchFleet, hibernateSession, spawnAgent } from '../fleet-data-adapter'
 import { dropPillOnTarget } from './FleetPillShape'
+import { agentDisplayName } from './fleet-utils'
 import { dragCoordinator } from './dragCoordinator'
 import { useIsInViewport } from './useIsInViewport'
 
@@ -174,26 +175,25 @@ function formatEffort(effort: string): string {
 }
 
 
-function agentDisplayName(agent: any, allAgents?: any[]): string {
-  if (agent.lineage_name && agent.phase) {
-    const hasSiblings = allAgents?.some((a: any) => a.lineage_id === agent.lineage_id && a.id !== agent.id && a.phase)
-    if (hasSiblings) return `${agent.lineage_name}:${agent.phase}`
-    return agent.lineage_name
-  }
-  return agent.friendly_name || (agent.id || '').replace('fleet:', '')
-}
+// agentDisplayName imported from ./fleet-utils — single source of truth so the
+// panel and the chat target chip can't drift.
 
 function PhaseIcon({ phase }: { phase: string | null }) {
-  if (!phase || phase === 'day') return null
+  // dawn is the default (the worker) — no icon. Only the non-default roles are
+  // marked: day (manager) and dusk (consultant). Dropping the dawn icon removes
+  // the dawn/dusk mirror-image confusion.
+  if (!phase || phase === 'dawn') return null
   const size = 12
   const style = { opacity: 0.6, flexShrink: 0, marginRight: 3 }
-  if (phase === 'dawn') {
+  if (phase === 'day') {
+    // midday sun — full disc with rays (clearly distinct from dusk's horizon sun)
     return (
       <svg width={size} height={size} viewBox="0 0 16 16" style={style}>
-        <line x1="0.5" y1="11" x2="15.5" y2="11" stroke="currentColor" fill="none" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
-        <path d="M9 11 a3 3 0 0 1 6 0" stroke="currentColor" fill="none" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
-        <line x1="12" y1="6" x2="12" y2="4" stroke="currentColor" fill="none" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
-        <line x1="15" y1="9" x2="16.5" y2="8" stroke="currentColor" fill="none" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+        <circle cx="8" cy="8" r="3" stroke="currentColor" fill="none" strokeWidth={1.5} />
+        <line x1="8" y1="1" x2="8" y2="2.5" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" />
+        <line x1="8" y1="13.5" x2="8" y2="15" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" />
+        <line x1="1" y1="8" x2="2.5" y2="8" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" />
+        <line x1="13.5" y1="8" x2="15" y2="8" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" />
       </svg>
     )
   }

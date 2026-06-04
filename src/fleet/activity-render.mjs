@@ -213,9 +213,9 @@ function renderSearchResult(text, ctx) {
 
 export function humanizeToolName(name) {
   let n = (name || '').replace(/^mcp__/, '').replace(/__/g, '/')
-  const shorts = { 'fleet/chat': 'chat', 'fleet/delegate': 'delegate', 'fleet/task_done': 'done',
-    'fleet/interrupt': 'interrupt', 'fleet/label_agent': 'label', 'fleet/respawn': 'respawn',
-    'fleet/spawn': 'spawn', 'fleet/name_agent': 'name', 'fleet/search_logs': 'search_logs' }
+  const shorts = { 'tlda/chat': 'chat', 'tlda/delegate': 'delegate', 'tlda/task_done': 'done',
+    'tlda/interrupt': 'interrupt', 'tlda/label_agent': 'label', 'tlda/respawn': 'respawn',
+    'tlda/spawn': 'spawn', 'tlda/name_agent': 'name', 'tlda/search_logs': 'search_logs' }
   return shorts[n] || n
 }
 
