@@ -509,6 +509,12 @@ function getWouldHibernate() {
   return result
 }
 
+// Last-broadcast agent snapshot: agentId → JSON string. Lets broadcastState
+// emit only the agents that actually changed instead of the whole list, so a
+// single status flip is O(1) on the wire rather than O(all agents). The full
+// list still goes to each client once, on connect (see the /ws/fleet handler).
+const _lastAgentJson = new Map()
+
 function broadcastState() {
   if (!fleetStore) return
   const agents = fleetStore.getAllAgents().map(a => {
@@ -516,12 +522,33 @@ function broadcastState() {
     if (_compactingState.has(a.id)) return { ...a, status: 'compacting' }
     return a
   })
+  // Diff against the last broadcast: only changed/new agents go on the wire.
+  const changed = []
+  const seen = new Set()
+  for (const a of agents) {
+    seen.add(a.id)
+    const json = JSON.stringify(a)
+    if (_lastAgentJson.get(a.id) !== json) {
+      changed.push(a)
+      _lastAgentJson.set(a.id, json)
+    }
+  }
+  const removed = []
+  for (const id of _lastAgentJson.keys()) {
+    if (!seen.has(id)) { removed.push(id); _lastAgentJson.delete(id) }
+  }
+  // tasks + ephemeral maps (thinking/compacting/context) are bounded by the
+  // active agent set, so they stay small — send them whole each time.
   broadcastFleet({
-    agents,
-    tasks: fleetStore.getActiveTasks(),
-    thinking: Object.fromEntries(_thinkingState),
-    compacting: Object.fromEntries(_compactingState),
-    context: Object.fromEntries(_contextState),
+    event: 'agents-delta',
+    data: {
+      changed,
+      removed,
+      tasks: fleetStore.getActiveTasks(),
+      thinking: Object.fromEntries(_thinkingState),
+      compacting: Object.fromEntries(_compactingState),
+      context: Object.fromEntries(_contextState),
+    },
   })
 }
 
