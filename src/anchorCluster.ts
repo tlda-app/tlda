@@ -64,6 +64,9 @@ export async function anchorShape(
 ): Promise<void> {
   if (!ANCHORABLE_TYPES.has(shape.type)) return
   if (isSystemShape(shape.id)) return
+  // Outline notes set their own source anchor (the selected span); don't
+  // re-anchor them by their drop position.
+  if ((shape.meta as any)?.anchorLocked) return
 
   const doc = currentDocumentInfo
   if (!doc) return

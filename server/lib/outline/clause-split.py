@@ -160,12 +160,30 @@ def split(text: str):
         # require a real clause: at least one verb/relation in the verbalized form
         if b > a:
             spans.append([a, b])
-    return spans
+
+    # Group clauses by sentence so the outline can nest clause-under-sentence.
+    # Sentence boundaries come from the same parse; map them back to original.
+    sent_ostarts = sorted({vpos_to_opos(s.start_char, segs) for s in doc.sents})
+
+    def sent_index(pos):
+        idx = 0
+        for i, so in enumerate(sent_ostarts):
+            if so <= pos:
+                idx = i
+            else:
+                break
+        return idx
+
+    groups = {}
+    for sp in spans:
+        groups.setdefault(sent_index(sp[0]), []).append(sp)
+    return [groups[k] for k in sorted(groups)]
 
 
 def main():
     with open(sys.argv[1], "r", encoding="utf-8") as f:
         text = f.read()
+    # Output: list of sentences, each a list of [start,end] clause spans.
     json.dump(split(text), sys.stdout)
 
 

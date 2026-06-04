@@ -41,6 +41,10 @@ const TLDA_AUTH_HEADERS = TLDA_TOKEN ? { 'Authorization': `Bearer ${TLDA_TOKEN}`
 const TLDA_SERVER = getServerUrl();
 // Separate sync server for shapes/signals (e.g. Fly.io) — falls back to TLDA_SERVER
 const TLDA_SYNC_SERVER = process.env.TLDA_SYNC_SERVER || TLDA_SERVER;
+// Outline-tool routes (/outline-model, /outline-apply) can be pointed at a
+// different server while the routes are still on a branch — keeps fleet comms on
+// TLDA_SERVER. Temporary; goes away once the routes land on the shared server.
+const TLDA_OUTLINE_SERVER = process.env.TLDA_OUTLINE_SERVER || TLDA_SERVER;
 
 // ---- REST API helpers (shape CRUD via @tldraw/sync rooms) ----
 
@@ -2065,6 +2069,31 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'outline_open',
+      description: 'Open the id-tagged structural outline for a region (created by a violet "outline" highlight). Returns a clause-grain markdown outline where every leaf is a FROZEN token tagged with an [id]. This is the ONLY editing surface for structural work: you may reorder the dash lines (a MOVE) or add a "- [NEW] text" line (an INSERT) — you may NEVER rewrite the words inside a token. Submit changes with outline_apply.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name' },
+          slug: { type: 'string', description: 'Outline slug, from the note\'s backingFile (e.g. "appendix_b-L200-L240")' },
+        },
+        required: ['doc', 'slug'],
+      },
+    },
+    {
+      name: 'outline_apply',
+      description: 'Submit an edited id-tagged outline. The edit is checked: reordering tokens (MOVE) and adding "- [NEW] …" lines (INSERT) are allowed; rewriting any token\'s text is REJECTED. A clean edit is rendered back to .tex and routed to the user as a proposal to accept/reject — it does NOT mutate the source directly. This is how agents edit structure without touching prose ("tokens, not words").',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name' },
+          slug: { type: 'string', description: 'Outline slug (same as outline_open)' },
+          editedMd: { type: 'string', description: 'The full edited id-tagged outline markdown (reordered lines and/or "- [NEW] text" inserts). Token text must be left verbatim.' },
+        },
+        required: ['doc', 'slug', 'editedMd'],
+      },
+    },
+    {
       name: 'set_chat_target',
       description: 'Change which agent a fleet chat panel targets. Used for hands-free layout — Skip says "give me historian" and the agent calls this to reconfigure the panel. Pass chatShapeId from the message context to target the specific panel the user is chatting in.',
       inputSchema: {
@@ -2245,6 +2274,28 @@ let lastPingTimestamp = 0;
 // ---- Proposal store (for propose_edit / apply_proposal) ----
 const _proposals = new Map(); // id → { file, old_string, new_string, context_before, context_after, created }
 let _proposalCounter = 0;
+
+// Create a proposal from a unique source substring. Reads the local file (the
+// agent's machine, where source lives), verifies old_string is present and
+// unique, stores the proposal, and returns the chat card. Shared by propose_edit
+// and outline_apply so the store + card formatting have one implementation.
+function createProposal(file, old_string, new_string) {
+  const content = fs.readFileSync(file, 'utf8');
+  const idx = content.indexOf(old_string);
+  if (idx === -1) return { ok: false, error: `old_string not found in ${file}` };
+  if (content.indexOf(old_string, idx + 1) !== -1) return { ok: false, error: `old_string is not unique in ${file} — provide more context` };
+
+  const ctxBefore = content.slice(0, idx).split('\n').slice(-3).join('\n').trim();
+  const ctxAfter = content.slice(idx + old_string.length).split('\n').slice(0, 3).join('\n').trim();
+  const id = `proposal-${++_proposalCounter}`;
+  _proposals.set(id, { file, old_string, new_string, context_before: ctxBefore, context_after: ctxAfter, created: Date.now() });
+
+  const isInsertion = new_string.includes(old_string);
+  const card = isInsertion
+    ? `**Proposal ${id}**\n\n── BEFORE (unchanged) ──\n${ctxBefore}\n${old_string}\n\n── INSERT ──\n${new_string.replace(old_string, '').trim()}\n\n── AFTER (unchanged) ──\n${ctxAfter}`
+    : `**Proposal ${id}**\n\n── BEFORE (unchanged) ──\n${ctxBefore}\n\n── REPLACING ──\n${old_string}\n\n── WITH ──\n${new_string}\n\n── AFTER (unchanged) ──\n${ctxAfter}`;
+  return { ok: true, id, card };
+}
 
 async function summarizeAnnotations(docName) {
   try {
@@ -3212,6 +3263,52 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
+  if (name === 'outline_open') {
+    const { doc, slug } = args;
+    if (!doc || !slug) return { content: [{ type: 'text', text: 'Missing required parameter: doc and slug' }], isError: true };
+    try {
+      const data = await _tldaFetch(`/api/projects/${encodeURIComponent(doc)}/outline-model?slug=${encodeURIComponent(slug)}`, { server: TLDA_OUTLINE_SERVER });
+      const md = data.markdown || '';
+      return { content: [{ type: 'text', text:
+        `Outline for ${slug}. Edit by MOVE (reorder the dash lines) or INSERT (add a "- [NEW] text" line). Do NOT rewrite the words inside a token — that is rejected. Submit the full edited outline with outline_apply.\n\n${md}` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'outline_apply') {
+    const { doc, slug, editedMd } = args;
+    if (!doc || !slug || editedMd == null) return { content: [{ type: 'text', text: 'Missing required parameter: doc, slug, editedMd' }], isError: true };
+    try {
+      const data = await _tldaFetch(`/api/projects/${encodeURIComponent(doc)}/outline-apply`, {
+        server: TLDA_OUTLINE_SERVER,
+        method: 'POST',
+        body: { slug, editedMd },
+      });
+      if (data.ok === false) {
+        const v = (data.violations || []).map((x) => '  ✗ ' + x).join('\n');
+        return { content: [{ type: 'text', text: `REJECTED — you may only MOVE or INSERT tokens, not rewrite them:\n${v}` }], isError: true };
+      }
+      // Clean edit. The server returned the candidate (file + exact region oldText
+      // + rendered newText); create the proposal HERE — the _proposals store is
+      // in-process, so apply_proposal can find it after Skip approves.
+      const cand = data.candidate || {};
+      if (!cand.file || cand.oldText == null || cand.newText == null) {
+        return { content: [{ type: 'text', text: `Error: outline-apply returned no candidate (got ${JSON.stringify(data).slice(0, 200)})` }], isError: true };
+      }
+      const r = createProposal(cand.file, cand.oldText, cand.newText);
+      if (!r.ok) return { content: [{ type: 'text', text: `Edit passed check but could not be proposed: ${r.error}` }], isError: true };
+      const summary = [];
+      if (data.moves?.length) summary.push(`moves: ${data.moves.join('; ')}`);
+      if (data.inserts?.length) summary.push(`inserts: ${data.inserts.length}`);
+      if (data.deletes?.length) summary.push(`deletes: ${data.deletes.join(', ')}`);
+      return { content: [{ type: 'text', text:
+        `✓ Accepted (move/insert only). ${r.card}\n\n---\nShow this card to Skip via fleet chat. After approval, call apply_proposal with id="${r.id}".${summary.length ? '\n\n' + summary.join('\n') : ''}` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+
   if (name === 'get_highlight_feedback') {
     const { doc, unaddressed_only, since_minutes } = args;
     if (!doc) return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
@@ -3844,42 +3941,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text: 'Missing required parameters: file, old_string, new_string' }], isError: true };
     }
     try {
-      const content = fs.readFileSync(file, 'utf8');
-      const idx = content.indexOf(old_string);
-      if (idx === -1) {
-        return { content: [{ type: 'text', text: `old_string not found in ${file}` }], isError: true };
-      }
-      if (content.indexOf(old_string, idx + 1) !== -1) {
-        return { content: [{ type: 'text', text: `old_string is not unique in ${file} — provide more context` }], isError: true };
-      }
-
-      const before = content.slice(0, idx);
-      const after = content.slice(idx + old_string.length);
-      const beforeLines = before.split('\n');
-      const afterLines = after.split('\n');
-      const ctxBefore = beforeLines.slice(-3).join('\n').trim();
-      const ctxAfter = afterLines.slice(0, 3).join('\n').trim();
-
-      const id = `proposal-${++_proposalCounter}`;
-      _proposals.set(id, { file, old_string, new_string, context_before: ctxBefore, context_after: ctxAfter, created: Date.now() });
-
-      const isInsertion = new_string.includes(old_string);
-      let card;
-      if (isInsertion) {
-        const inserted = new_string.replace(old_string, '').trim();
-        card = `**Proposal ${id}**\n\n` +
-          `── BEFORE (unchanged) ──\n${ctxBefore}\n${old_string}\n\n` +
-          `── INSERT ──\n${inserted}\n\n` +
-          `── AFTER (unchanged) ──\n${ctxAfter}`;
-      } else {
-        card = `**Proposal ${id}**\n\n` +
-          `── BEFORE (unchanged) ──\n${ctxBefore}\n\n` +
-          `── REPLACING ──\n${old_string}\n\n` +
-          `── WITH ──\n${new_string}\n\n` +
-          `── AFTER (unchanged) ──\n${ctxAfter}`;
-      }
-
-      return { content: [{ type: 'text', text: `${card}\n\n---\nShow this card to Skip via fleet chat. After approval, call apply_proposal with id="${id}".` }] };
+      const r = createProposal(file, old_string, new_string);
+      if (!r.ok) return { content: [{ type: 'text', text: r.error }], isError: true };
+      return { content: [{ type: 'text', text: `${r.card}\n\n---\nShow this card to Skip via fleet chat. After approval, call apply_proposal with id="${r.id}".` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }

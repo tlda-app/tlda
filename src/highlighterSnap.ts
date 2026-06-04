@@ -16,6 +16,8 @@ import { openInEditor } from './texsync'
 import { dropPillOnTarget } from './shapes/FleetPillShape'
 import { dragCoordinator } from './shapes/dragCoordinator'
 import type { TargetInfo } from './loaders/types'
+import { getViewerId } from './useYjsSync'
+import { log } from './logger'
 
 // Word-space heuristic matching svg-text.mjs: gap > 0.1 * fontSize → space
 const SPACE_THRESHOLD = 0.1
@@ -113,10 +115,11 @@ export function snapHighlighterToText(editor: Editor, shapeId: string, docName?:
 
 function _snapHighlighterToText(editor: Editor, shapeId: string, docName?: string, targets?: TargetInfo[]) {
   const shape = editor.getShape(shapeId as any)
-  if (!shape) return
+  if (!shape) { log.warn('outline-hl', 'snap: no shape', { shapeId }); return }
+  log.info('outline-hl', 'snap enter', { shapeId, color: (shape.props as any)?.color })
 
   const bounds = editor.getShapePageBounds(shapeId as any)
-  if (!bounds) return
+  if (!bounds) { log.warn('outline-hl', 'snap: no bounds'); return }
 
   // Find which svg-page shape this highlight overlaps
   const allShapes = editor.getCurrentPageShapes()
@@ -127,19 +130,32 @@ function _snapHighlighterToText(editor: Editor, shapeId: string, docName?: strin
     return bounds.maxY > pageBounds.minY && bounds.minY < pageBounds.maxY
       && bounds.maxX > pageBounds.minX && bounds.minX < pageBounds.maxX
   })
-  if (!pageShape) return
+  if (!pageShape) { log.warn('outline-hl', 'snap: no overlapping svg-page'); return }
 
   const pageBounds = editor.getShapePageBounds(pageShape.id)
-  if (!pageBounds) return
+  if (!pageBounds) { log.warn('outline-hl', 'snap: no pageBounds'); return }
 
-  const pageEl = document.querySelector(`[data-shape-id="${pageShape.id}"]:not(.tl-shape-background)`)
-  if (!pageEl) return
-
-  const svgEl = pageEl.querySelector('svg')
-  if (!svgEl) return
+  // There can be MORE than one element with this data-shape-id (e.g. the HUD's
+  // copy store renders a duplicate). querySelector would grab the first, which
+  // may be the one without injected SVG. Search all candidates for the one that
+  // actually contains an <svg>.
+  const pageCandidates = document.querySelectorAll(`[data-shape-id="${pageShape.id}"]:not(.tl-shape-background)`)
+  let svgEl: SVGSVGElement | null = null
+  for (const cand of pageCandidates) {
+    const s = cand.querySelector('svg')
+    if (s) { svgEl = s as SVGSVGElement; break }
+  }
+  if (!svgEl) {
+    log.warn('outline-hl', 'snap: no svgEl in any candidate', {
+      pageShapeId: pageShape.id,
+      candidates: pageCandidates.length,
+      anySvgOnPage: document.querySelectorAll('svg').length,
+    })
+    return
+  }
 
   const viewBox = svgEl.viewBox?.baseVal
-  if (!viewBox || viewBox.width === 0) return
+  if (!viewBox || viewBox.width === 0) { log.warn('outline-hl', 'snap: bad viewBox', { w: viewBox?.width }); return }
 
   const scaleX = viewBox.width / pageBounds.width
   const scaleY = viewBox.height / pageBounds.height
@@ -227,6 +243,7 @@ function _snapHighlighterToText(editor: Editor, shapeId: string, docName?: strin
     const near = sorted.slice(0, 3)
     const nearDesc = near.map(f => `y=${f.y.toFixed(1)} dist=${Math.abs(f.y-hlCenterY).toFixed(1)} "${f.text}"`).join(', ')
     console.warn(`[highlighter-snap] 0/${fragments.length} matched. centerY=${hlCenterY.toFixed(1)} hlH=${hlHeight.toFixed(1)} x=[${hlMinX.toFixed(0)},${hlMaxX.toFixed(0)}]. Nearest: ${nearDesc}`)
+    log.warn('outline-hl', 'snap: 0 fragments matched', { totalFragments: fragments.length, color: (shape.props as any)?.color })
     return
   }
 
@@ -272,7 +289,8 @@ function _snapHighlighterToText(editor: Editor, shapeId: string, docName?: strin
   }
 
   const matchedText = lines.join(' ')
-  if (!matchedText.trim()) return
+  log.info('outline-hl', 'fragments matched', { matchedTextLen: matchedText.length, lines: lines.length })
+  if (!matchedText.trim()) { log.warn('outline-hl', 'snap: empty matchedText'); return }
 
   const hlColor = (shape.props as any).color || 'yellow'
 
@@ -285,6 +303,20 @@ function _snapHighlighterToText(editor: Editor, shapeId: string, docName?: strin
 
   const resolveAndStore = async () => {
     const sourceLines = docName ? await findSourceLinesFromBounds(docName, bounds, editor, matchedText, shape, fragmentPositions, targets) : []
+
+    log.info('outline-hl', 'resolveAndStore', {
+      hlColor,
+      sourceLines: sourceLines.length,
+      highlighted: sourceLines.filter(l => l.highlighted).length,
+      docName,
+    })
+    // Outline highlighter: word-precise span → clause outline → file-backed
+    // sticky note. Routed through this path so it reuses the same fragment
+    // matching that gives us per-word hlStart/hlEnd columns.
+    if (hlColor === 'light-violet') {
+      await handleOutlineSelection(editor, shape, bounds, sourceLines, docName)
+      return
+    }
 
     // Attach metadata to the highlight shape
     editor.updateShape({
@@ -329,6 +361,110 @@ function _snapHighlighterToText(editor: Editor, shapeId: string, docName?: strin
   }
   // Defer slightly so flash isn't wiped by re-render
   setTimeout(resolveAndStore, 50)
+}
+
+/**
+ * Outline highlighter (light-violet). Given the resolved source lines (with
+ * per-word hlStart/hlEnd columns), compute the span from the FIRST highlighted
+ * word to the LAST — a continuous, word-precise range; the stroke shape is
+ * irrelevant. Fetch a clause-grain outline of exactly that span and drop it as
+ * a file-backed `math-note` sticky. The violet stroke is removed — the note IS
+ * the result, not a mark.
+ */
+async function handleOutlineSelection(
+  editor: Editor,
+  shape: any,
+  bounds: { minX: number; minY: number; maxX: number; maxY: number },
+  sourceLines: SourceLine[],
+  docName?: string,
+) {
+  log.info('outline-hl', 'handleOutlineSelection enter', { docName, sourceLines: sourceLines.length })
+  if (!docName) { log.warn('outline-hl', 'no docName'); return }
+
+  // Prefer entries with resolved word columns; fall back to all lines.
+  const withCols = sourceLines.filter(l => l.highlighted && l.hlStart != null && l.hlEnd != null)
+  const span = (withCols.length ? withCols : sourceLines.filter(l => l.highlighted))
+    .slice()
+    .sort((a, b) => a.line - b.line)
+  const ordered = span.length ? span : sourceLines.slice().sort((a, b) => a.line - b.line)
+  if (ordered.length === 0) { log.warn('outline-hl', 'no source span resolved', { sourceLines: sourceLines.length }); return }
+
+  const first = ordered[0]
+  const last = ordered[ordered.length - 1]
+  const startLine = first.line
+  const startCol = first.hlStart ?? 0
+  const endLine = last.line
+  const endCol = last.hlEnd ?? last.content.length
+  const file = ordered.find(l => l.file)?.file
+  log.info('outline-hl', 'span computed', { file, startLine, startCol, endLine, endCol, withCols: withCols.length })
+
+  const serverUrl = (window as any).__tlda_server || window.location.origin
+  const qs = new URLSearchParams({
+    startLine: String(startLine), startCol: String(startCol),
+    endLine: String(endLine), endCol: String(endCol),
+  })
+  if (file) qs.set('file', file)
+
+  let markdown = ''
+  let backingFile = ''
+  let slug = ''
+  try {
+    const url = `${serverUrl}/api/projects/${docName}/outline?${qs}`
+    log.info('outline-hl', 'fetching outline', { url })
+    const resp = await fetch(url)
+    log.info('outline-hl', 'outline response', { status: resp.status, ok: resp.ok })
+    if (!resp.ok) { log.warn('outline-hl', 'outline endpoint non-ok', { status: resp.status }); return }
+    const data = await resp.json()
+    markdown = data?.markdown || ''
+    backingFile = data?.backingFile || ''
+    slug = data?.slug || ''
+  } catch (e: any) {
+    log.error('outline-hl', 'outline fetch threw', { error: String(e?.message || e) })
+    return
+  }
+  log.info('outline-hl', 'markdown length', { len: markdown.length, backingFile })
+  if (!markdown.trim()) { log.warn('outline-hl', 'empty outline'); return }
+
+  // Write the initial outline to its backing file (under <project>/.outlines/)
+  // so it exists on disk for agents and the file-back icon lights up. The write
+  // goes through the daemon (multi-machine correct), so it must target the live
+  // server, not __tlda_server (which may be a read-only mirror).
+  if (backingFile) {
+    fetch(`/api/backing-file-write`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filePath: backingFile, content: markdown }),
+    }).catch(e => log.warn('outline-hl', 'backing-file-write failed', { error: String(e?.message || e) }))
+  }
+
+  // Drop a file-backed sticky note just past the right edge of the selection.
+  // anchorLocked tells anchorShape to respect the source anchor we set here
+  // (the selected span) instead of re-anchoring by the note's drop position.
+  const id = createShapeId()
+  try {
+    editor.createShape({
+      id,
+      type: 'math-note' as any,
+      x: bounds.maxX + 24,
+      y: bounds.minY,
+      meta: {
+        createdAt: Date.now(),
+        authorId: getViewerId(),
+        anchorLocked: true,
+        sourceAnchor: { file: file || '', line: startLine, column: startCol, content: first.content },
+        // Handle for the token-ops tools: outline_open(doc, slug) / outline_apply.
+        ...(slug ? { outlineSlug: slug } : {}),
+      },
+      props: { w: 460, h: 200, text: markdown, color: 'light-violet', autoSize: true, ...(backingFile ? { backingFile } : {}) },
+    } as any)
+  } catch (e: any) {
+    log.error('outline-hl', 'createShape threw', { error: String(e?.message || e) })
+    return
+  }
+  const created = !!editor.getShape(id)
+  // The outline replaces the mark — remove the light-violet stroke gesture.
+  editor.deleteShapes([shape.id])
+  log.info('outline-hl', 'note created', { id, created, file: file || 'main', startLine, startCol, endLine, endCol })
 }
 
 /** Resolve tint color, compensating for dark mode filter if needed. */
@@ -441,7 +577,7 @@ function float16(bits: number): number {
  * Find source text for a highlight by tracing its path through synctex records.
  * Decodes the highlight path, converts points to PDF coords, sends to server.
  */
-async function findSourceLinesFromBounds(
+export async function findSourceLinesFromBounds(
   docName: string,
   bounds: { minX: number; minY: number; maxX: number; maxY: number },
   editor: Editor,

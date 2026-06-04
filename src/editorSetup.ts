@@ -12,6 +12,7 @@ import { currentDocumentInfo, type SvgDocument } from './svgDocumentLoader'
 import { createSvgShapes, createHtmlShapes, createSlidesShapes, createImageShapes } from './loaders/createShapes'
 import { anchorShape } from './anchorCluster'
 import { snapHighlighterToText, restoreHighlightsFromShapes, showSourceContextCardForShape } from './highlighterSnap'
+import { log } from './logger'
 import { processHighlightFeedback } from './highlightFeedback'
 import { processRibbonHighlight, isInRibbonZone, clearLineYIndexCache, remapRibbonSegments, initRibbon, setupRibbonEraser } from './ribbonInteraction'
 import { subscribe as fleetSubscribe, getHumanId } from './fleet/fleet-data.mjs'
@@ -642,12 +643,20 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
           if (done) return
           done = true
           const s = editor.getShape(shape.id as any)
-          if (!s) return
+          if (!s) { log.warn('outline-hl', 'processShape: shape gone'); return }
           const bounds = editor.getShapePageBounds(shape.id as any)
-          if (!bounds || (bounds.width < 5 && bounds.height < 10)) return
+          log.info('outline-hl', 'processShape', { color: (s.props as any)?.color, w: bounds?.width, h: bounds?.height })
+          if (!bounds || (bounds.width < 5 && bounds.height < 10)) { log.warn('outline-hl', 'processShape: too small', { w: bounds?.width, h: bounds?.height }); return }
           // Ribbon zone: highlight drawn in left margin → update understanding lines
           if (document.format !== 'diff' && isInRibbonZone(editor, shape.id as any)) {
             processRibbonHighlight(editor, shape.id as any, document.name, document.pages)
+            return
+          }
+          // Outline highlighter (light-violet): snapHighlighterToText branches
+          // internally to build a clause-outline sticky note instead of a mark.
+          // Skip agent-feedback processing — it's not a review annotation.
+          if ((s.props as any).color === 'light-violet') {
+            snapHighlighterToText(editor, shape.id, document.name, document.targets)
             return
           }
           snapHighlighterToText(editor, shape.id, document.name, document.targets)
