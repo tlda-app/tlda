@@ -1470,7 +1470,11 @@ export async function handleFleetTool(name, args) {
     // restart-mcp) to the right per-machine fleet-daemon.
     const machineId = os.hostname().split('.')[0];
     const regBody = {
-      id: entry.id,
+      // agent_id (not id): sendWS() stamps a correlation `id` onto every
+      // message, which would clobber a payload `id`. Sending the real fleet
+      // id under agent_id keeps the two separate so register can't create a
+      // phantom row keyed by the random correlation UUID.
+      agent_id: entry.id,
       name: entry.friendly_name,
       session_id: entry.session_id,
       tmux_session: entry.tmux_session,
@@ -3899,7 +3903,7 @@ function sendWS(type, params = {}) {
     }, WS_TIMEOUT_MS);
     _wsPending.set(id, { resolve, reject, timer });
   });
-  if (!_channelRWS.send({ id, type, ...params })) {
+  if (!_channelRWS.send({ type, ...params, id })) {
     const pending = _wsPending.get(id);
     if (pending) { clearTimeout(pending.timer); _wsPending.delete(id); }
     return null;
@@ -3936,7 +3940,9 @@ function startChannelWS() {
     log: (s) => process.stderr.write(s + '\n'),
     onOpen: () => {
       const regBody = {
-        id: AGENT_ID,
+        // agent_id (not id): the correlation `id` sendWS() adds would
+        // otherwise overwrite this and register a phantom UUID-keyed row.
+        agent_id: AGENT_ID,
         name: process.env.FLEET_NAME || undefined,
         tmux_session: _tmuxSession || undefined,
         cwd: process.cwd(),

@@ -1899,7 +1899,13 @@ async function handleFleetWsMessage(ws, msg) {
   if (!fleetStore) { error('fleet store unavailable'); return }
 
   if (type === 'register') {
-    const { id: agentId, name, tmux_session, cwd, labels, manager, session_id, metadata, machine_id } = msg
+    // Prefer agent_id over id: the MCP's sendWS() stamps a correlation `id`
+    // onto every message, so the real fleet id arrives as agent_id. Falling
+    // back to id keeps python fleet-spawn's ws_register (which sends id=fleet_id
+    // directly, no correlation) working. Reading the bare `id` here was the
+    // root cause of phantom UUID-keyed agent rows.
+    const { agent_id, id: msgId, name, tmux_session, cwd, labels, manager, session_id, metadata, machine_id } = msg
+    const agentId = agent_id || msgId
     if (!agentId) { error('missing id'); return }
     // Remember which agent owns this WS so we can clean up their tlda-feedback
     // subscriptions on close.
@@ -3804,23 +3810,32 @@ server.listen(PORT, HOST, () => {
   ensureLocalDaemon()
   setInterval(ensureLocalDaemon, DAEMON_SUPERVISOR_INTERVAL_MS).unref()
 
+  // Auto-hibernate DISABLED: this loop killed live agents whose activity was
+  // mis-attributed to a phantom duplicate identity (the sendWS register-id
+  // collision), making real working agents look idle. Re-enable only once
+  // identity is reliable AND idle-detection is verified against the agent's
+  // real row. Gated behind FLEET_AUTO_HIBERNATE=1 so it can't silently return.
   const HIBERNATE_CHECK_MS = 60_000
-  setInterval(async () => {
-    if (!fleetStore) return
-    const wouldHib = getWouldHibernate()
-    for (const agentId of Object.keys(wouldHib)) {
-      const agent = fleetStore.getAgent(agentId)
-      if (!agent || !agent.tmux_session) continue
-      const route = resolveRpc('kill-session', agent)
-      if (route.via === 'none') continue
-      console.log(`[hibernate] auto-hibernating ${agent.friendly_name || agent.id} (idle ${wouldHib[agentId]}s)`)
-      try {
-        await sendRpc(route.machine_id, 'kill-session', { agent_id: agent.id, tmux_session: agent.tmux_session })
-        clearEphemeralState(agent.id)
-      } catch (e) {
-        console.error(`[hibernate] failed to hibernate ${agent.friendly_name || agent.id}: ${e.message}`)
+  if (process.env.FLEET_AUTO_HIBERNATE === '1') {
+    setInterval(async () => {
+      if (!fleetStore) return
+      const wouldHib = getWouldHibernate()
+      for (const agentId of Object.keys(wouldHib)) {
+        const agent = fleetStore.getAgent(agentId)
+        if (!agent || !agent.tmux_session) continue
+        const route = resolveRpc('kill-session', agent)
+        if (route.via === 'none') continue
+        console.log(`[hibernate] auto-hibernating ${agent.friendly_name || agent.id} (idle ${wouldHib[agentId]}s)`)
+        try {
+          await sendRpc(route.machine_id, 'kill-session', { agent_id: agent.id, tmux_session: agent.tmux_session })
+          clearEphemeralState(agent.id)
+        } catch (e) {
+          console.error(`[hibernate] failed to hibernate ${agent.friendly_name || agent.id}: ${e.message}`)
+        }
       }
-    }
-    broadcastState()
-  }, HIBERNATE_CHECK_MS).unref()
+      broadcastState()
+    }, HIBERNATE_CHECK_MS).unref()
+  } else {
+    console.log('[hibernate] auto-hibernate DISABLED (set FLEET_AUTO_HIBERNATE=1 to enable)')
+  }
 })
