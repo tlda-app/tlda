@@ -539,9 +539,23 @@ export function renderActivityGroup(group, ctx) {
     const toolLines = deduped.map(t => {
       const num = lineNum++
       const countHtml = t._count > 1 ? `<span class="tool-count">×${t._count}</span>` : ''
+      const toolNameRaw = t._toolName || ''
+      const isSkill = toolNameRaw === 'Skill'
+      const isCompose = toolNameRaw.toLowerCase().endsWith('compose')
       let arg = t._toolArg ? esc(t._toolArg) : ''
       arg = arg.replace(/\{\{att:(\d+)\}\}/g, (_, idx) => `<span class="md-file-chip">att:${idx}</span>`)
-      const detail = t._toolDetail ? `<div class="tool-detail">${esc(t._toolDetail)}</div>` : ''
+      let displayName = toolNameRaw
+      let detail = t._toolDetail ? `<div class="tool-detail">${esc(t._toolDetail)}</div>` : ''
+      // Skill tool: surface *which* skill is running instead of a bare "Skill" line.
+      let skillIcon = ''
+      if (isSkill) {
+        const skillName = t._toolInput?.skill || ''
+        const skillArgs = t._toolInput?.args || ''
+        displayName = 'skill'
+        arg = skillName ? esc(skillName) : arg
+        detail = skillArgs ? `<div class="tool-detail">${esc(skillArgs)}</div>` : ''
+        skillIcon = `<span class="skill-icon" aria-hidden="true">📖</span>`
+      }
       const isEdit = (t._toolName || '').toLowerCase() === 'edit' && t._toolInput?.old_string && t._toolInput?.new_string
       const hasDiff = isEdit ? ' has-diff' : ''
       const diffHtml = isEdit ? renderEditDiff(t._toolInput, ctx) : ''
@@ -550,17 +564,31 @@ export function renderActivityGroup(group, ctx) {
       const cmdAttr = cmd ? ` data-cmd="${esc(cmd)}"` : ''
       const copyBtn = cmd ? `<span class="tool-copy" title="Copy command">⎘</span>` : ''
       const showArg = arg && !codeCardHtml
+      // Compose tool: hover the line to preview the draft rendered as if sent
+      // (markdown + KaTeX). Lets Skip read a composed-but-unsent message.
+      let composePopover = ''
+      let composeClass = ''
+      if (isCompose) {
+        const msg = t._toolInput?.message || t._toolArg || ''
+        if (msg) {
+          const rendered = ctx.renderMarkdown ? ctx.renderMarkdown(esc(msg)) : esc(msg)
+          composePopover = `<div class="compose-preview-popover"><div class="compose-preview-label">draft — rendered preview</div><div class="pretty-msg-body">${rendered}</div></div>`
+          composeClass = ' is-compose'
+        }
+      }
       const prettyHtml = t._prettyResult
         ? renderPrettyResult(t._toolName, t._prettyResult, ctx, t._toolInput)
         : ''
-      return `<div class="tool-line${hasDiff}"${cmdAttr} data-line="${num}" data-tool-name="${esc(t._toolName || '')}" data-tool-arg="${esc(t._toolArg || '')}">`
+      return `<div class="tool-line${hasDiff}${isSkill ? ' is-skill' : ''}${composeClass}"${cmdAttr} data-line="${num}" data-tool-name="${esc(t._toolName || '')}" data-tool-arg="${esc(t._toolArg || '')}">`
         + `<span class="drag-handle" title="Drag tool call"></span>`
         + `<span class="tool-linenum">${num}</span>`
         + `${countHtml}`
-        + `<span class="tool-name">${esc(t._toolName || '')}</span>`
+        + skillIcon
+        + `<span class="tool-name">${esc(displayName)}</span>`
         + (showArg ? `<span class="tool-sep">:</span> <span class="tool-arg">${arg}</span>` : '')
         + detail
         + copyBtn
+        + composePopover
         + `</div>`
         + diffHtml
         + codeCardHtml
