@@ -17,6 +17,7 @@ import { ledger } from './identity.mjs';
 import { formatMessage, formatActivity, formatAnnotationRef } from './format-annotation.mjs';
 import { parseTimestamp } from './lib/parse-timestamp.mjs';
 import { processMessageText } from '../shared/message-processing.mjs';
+import { baseName, nameForPhase, phaseFromName } from '../shared/lineage-name.mjs';
 import { normalizeRefNumber as _normalizeRefNumber, refTypeForName as _refTypeForName, buildTheoremRefRegex as _buildTheoremRefRegex } from '../shared/doc-refs.mjs';
 import WebSocket from 'ws';
 import { ResilientWS } from '../shared/resilient-ws.mjs';
@@ -481,24 +482,19 @@ function requireManager() {
 
 function getAgent(state, id) {
   if (!state.agents) return null;
-  // Lineage:phase addressing (e.g. "writing-A:dawn")
-  const colonIdx = id.indexOf(':');
-  if (colonIdx > 0 && !id.startsWith('fleet:')) {
-    const lineageName = id.slice(0, colonIdx);
-    const phase = id.slice(colonIdx + 1);
-    if (['dawn', 'day', 'dusk'].includes(phase)) {
-      return state.agents.find(a => a.lineage_name === lineageName && a.phase === phase) || null;
-    }
-  }
-  // Exact match on id, friendly_name, or session_id
+  // Phase is encoded in the friendly name now ("base:day"/"base:dusk"; dawn is
+  // the bare base), so a lineage address is a plain name lookup.
   const exact = state.agents.find(a =>
     a.id === id || a.friendly_name === id ||
     a.session_id === id || (a.session_ids && a.session_ids.includes(id))
   );
   if (exact) return exact;
-  // Bare lineage name → resolve to day agent
-  const dayAgent = state.agents.find(a => a.lineage_name === id && a.phase === 'day');
-  return dayAgent || null;
+  // ":dawn" is an alias for the bare base name (dawn carries no suffix).
+  if (id.endsWith(':dawn')) {
+    const base = id.slice(0, -':dawn'.length);
+    return state.agents.find(a => a.friendly_name === base) || null;
+  }
+  return null;
 }
 
 /** Check if an ID belongs to a human agent (by registry lookup, not aliases) */
@@ -1689,10 +1685,10 @@ export async function handleFleetTool(name, args) {
       for (const a of agents) {
         if (a.id === AGENT_ID) continue;
         const labels = [...(a.labels || []), ...(a.status === 'awake' ? ['awake'] : a.status === 'hibernating' ? ['hibernating'] : []), a.friendly_name, a.id].filter(Boolean);
-        if (a.lineage_name && a.phase) {
-          if (a.phase === 'day') labels.push(a.lineage_name);
-          labels.push(`${a.lineage_name}:${a.phase}`);
-        }
+        // Lineage members also answer to the bare base name (for lineage search);
+        // the phase-qualified name is already covered by friendly_name above.
+        const _base = baseName(a.friendly_name);
+        if (_base && _base !== a.friendly_name) labels.push(_base);
         if (draft.filter.to.some(andGroup => andGroup.every(term => labels.includes(term)))) {
           recipients.push(a.id);
         }
@@ -1732,10 +1728,10 @@ export async function handleFleetTool(name, args) {
         if (a.id === AGENT_ID) continue;
         const virtualLabels = a.status === 'awake' ? ['awake'] : a.status === 'hibernating' ? ['hibernating'] : [];
         const labels = [...(a.labels || []), ...virtualLabels, a.friendly_name, a.id].filter(Boolean);
-        if (a.lineage_name && a.phase) {
-          if (a.phase === 'day') labels.push(a.lineage_name);
-          labels.push(`${a.lineage_name}:${a.phase}`);
-        }
+        // Lineage members also answer to the bare base name (for lineage search);
+        // the phase-qualified name is already covered by friendly_name above.
+        const _base = baseName(a.friendly_name);
+        if (_base && _base !== a.friendly_name) labels.push(_base);
         if (args.filter.to.some(andGroup => andGroup.every(term => labels.includes(term)))) {
           recipients.push(a.id);
         }
@@ -2690,8 +2686,10 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
       try {
         const agents = await sendWS('store-agents');
         state.agents = agents;
-        // Find or infer lineage from agent name
-        const lineageAgent = agents.find(a => a.lineage_name === agentName && a.phase === phase);
+        // Find the current holder of this phase slot: its name is the lineage
+        // base with the phase suffix (dawn = bare base).
+        const slotName = nameForPhase(agentName, phase);
+        const lineageAgent = agents.find(a => a.friendly_name === slotName);
         if (lineageAgent) {
           return { content: [{ type: 'text', text: `Phase slot "${phase}" in lineage "${agentName}" is occupied by ${lineageAgent.friendly_name || lineageAgent.id}. Use handoff to rotate.` }], isError: true };
         }
@@ -2933,7 +2931,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
         const lineageName = args.agent.slice(0, colonIdx);
         const phase = args.agent.slice(colonIdx + 1);
         if (['dawn', 'day', 'dusk'].includes(phase)) {
-          const phaseAgent = allAgents.find(a => a.lineage_name === lineageName && a.phase === phase);
+          const phaseAgent = allAgents.find(a => a.friendly_name === nameForPhase(lineageName, phase));
           agentId = phaseAgent?.id || args.agent;
         }
       }

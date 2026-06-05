@@ -42,6 +42,7 @@ import { lookup as mimeLookup } from 'mime-types'
 import { DEFAULT_PORT, hasTls } from '../shared/config.mjs'
 import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
 import { labelsForAgent, evalDnf } from '../shared/fleet-labels.mjs'
+import { phaseFromName } from '../shared/lineage-name.mjs'
 import { initProjectStore, listProjects, readProject, getProjectsDir } from './lib/project-store.mjs'
 import { resetStaleBuildStates, killAllBuilds, runBuild } from './lib/build-runner.mjs'
 import projectRoutes, { processProjectPush } from './routes/projects.mjs'
@@ -2597,7 +2598,7 @@ async function handleFleetWsMessage(ws, msg) {
     const lineageName = lineageQuery || agent.friendly_name || agentQuery
     const lineage = fleetStore.getOrCreateLineage(lineageName)
     const roster = fleetStore.getLineageRoster(lineage.id)
-    const occupied = roster.find(a => a.phase === phase)
+    const occupied = roster.find(a => phaseFromName(a.friendly_name) === phase)
     if (occupied) { error(`Phase "${phase}" in lineage "${lineageName}" is occupied by ${occupied.friendly_name || occupied.id}`); return }
     fleetStore.assignPhase(agent.id, lineage.id, phase)
     broadcastState()
@@ -2638,7 +2639,7 @@ async function handleFleetWsMessage(ws, msg) {
     if (!agent) { error('agent not found'); return }
     if (!agent.lineage_id) { error('agent is not in a lineage'); return }
     const roster = fleetStore.getLineageRoster(agent.lineage_id)
-    const occupied = roster.find(a => a.phase === phase && a.id !== agent.id)
+    const occupied = roster.find(a => phaseFromName(a.friendly_name) === phase && a.id !== agent.id)
     if (occupied) { error(`Phase "${phase}" is occupied by ${occupied.friendly_name || occupied.id}`); return }
     fleetStore.transitionPhase(agent.id, phase)
     broadcastState()

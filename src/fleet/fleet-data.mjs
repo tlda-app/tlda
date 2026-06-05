@@ -153,19 +153,17 @@ export function getUnreadCountsForHuman() {
 }
 
 export function getAgent(id) {
-  // Lineage:phase addressing
-  const colonIdx = id?.indexOf(':')
-  if (colonIdx > 0 && !id.startsWith('fleet:')) {
-    const lineageName = id.slice(0, colonIdx)
-    const phase = id.slice(colonIdx + 1)
-    if (['dawn', 'day', 'dusk'].includes(phase)) {
-      return _agents.find(a => a.lineage_name === lineageName && a.phase === phase)
-    }
-  }
+  if (!id) return undefined
+  // Phase is part of the friendly name now ("base:day"/"base:dusk"; dawn is the
+  // bare base), so a lineage address is just a friendly_name lookup.
   const exact = _agents.find(a => a.id === id || a.friendly_name === id)
   if (exact) return exact
-  // Bare lineage name → resolve to day agent
-  return _agents.find(a => a.lineage_name === id && a.phase === 'day')
+  // ":dawn" is an alias for the bare base name (dawn carries no suffix).
+  if (id.endsWith(':dawn')) {
+    const base = id.slice(0, -':dawn'.length)
+    return _agents.find(a => a.friendly_name === base)
+  }
+  return undefined
 }
 
 // --- Write API (all go through server) ---

@@ -20,6 +20,8 @@
  * same shape over /api/state and the WS push.
  */
 
+import { baseName } from './lineage-name.mjs'
+
 /**
  * The reserved routing labels derived from an agent's status. A friendly_name
  * or explicit label may not collide with these (see fleet-store name checks).
@@ -41,10 +43,11 @@ export function statusLabels(status) {
  * The full set of labels a (hydrated) agent answers to, for chat routing,
  * filtering, and history resolution.
  *
- * Includes: explicit labels[], status pseudo-labels, friendly_name, id, and
- * the phase-qualified lineage tag `name:phase` for every phase. No agent
- * answers to the bare lineage name — targeting is by filter, not by typing a
- * name, so the bare name belongs to no one (avoids the duplicate-name clash).
+ * Includes: explicit labels[], status pseudo-labels, friendly_name, id. Phase
+ * is encoded in the friendly name ("base:day"/"base:dusk"; dawn is the bare
+ * base), so the phase-qualified address is already covered by friendly_name.
+ * For lineage-wide search/filter, every member ALSO answers to the bare base
+ * name, so filtering "conc5" matches conc5, conc5:day, and conc5:dusk together.
  */
 export function labelsForAgent(agent) {
   if (!agent) return []
@@ -54,12 +57,8 @@ export function labelsForAgent(agent) {
     agent.friendly_name,
     agent.id,
   ]
-  if (agent.lineage_name && agent.phase) {
-    // No agent owns the bare lineage name — you target by filtering, not by
-    // typing a name, so nothing answers to the bare name (that was the
-    // duplicate-name collision). Only the phase-qualified tag is a label.
-    out.push(`${agent.lineage_name}:${agent.phase}`)
-  }
+  const base = baseName(agent.friendly_name)
+  if (base && base !== agent.friendly_name) out.push(base)
   return out.filter(Boolean)
 }
 

@@ -18,7 +18,7 @@ import {
 import { useState, useCallback, useMemo, useRef, useEffect, memo } from 'react'
 import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, useFleetContext, searchFleet, hibernateSession, spawnAgent } from '../fleet-data-adapter'
 import { dropPillOnTarget } from './FleetPillShape'
-import { agentDisplayName } from './fleet-utils'
+import { agentDisplayName, agentPhase } from './fleet-utils'
 import { dragCoordinator } from './dragCoordinator'
 import { useIsInViewport } from './useIsInViewport'
 
@@ -779,7 +779,7 @@ function AgentRow({
           style={{ color, opacity: nameOpacity, display: 'flex', alignItems: 'center' }}
           onPointerDown={(e) => { e.stopPropagation(); onStartDrag(e, 'agent', name, name, color) }}
         >
-          <PhaseIcon phase={agent.phase} />
+          <PhaseIcon phase={agentPhase(agent)} />
           {name}
         </span>
 

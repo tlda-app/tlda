@@ -22,6 +22,7 @@ import path from 'path';
 import os from 'os';
 
 import { PSEUDO_LABELS } from '../../shared/fleet-labels.mjs';
+import { baseName, nameForPhase, phaseFromName } from '../../shared/lineage-name.mjs';
 
 // Persistent DB under ~/.config/tlda/ (survives macOS reboots).
 // Previously /tmp/fleet.db which got wiped on reboot — lost all agents/state.
@@ -677,13 +678,13 @@ export class FleetStore {
       row = nameRows[0] || this._getAgentByName.get(query);
     }
     if (!row) {
-      // Bare lineage name → resolve to day agent
+      // A bare lineage name normally matches its dawn member directly (that
+      // member's name IS the base). Fall back to the day member if the dawn
+      // slot is currently empty.
       const lineage = this.getLineage(query);
       if (lineage) {
-        const dayRow = this.db.prepare(
-          "SELECT * FROM agents WHERE lineage_id = ? AND phase = 'day' AND dead = 0"
-        ).get(lineage.id);
-        if (dayRow) return this._hydrateAgent(dayRow);
+        const day = this.getLineageDay(lineage.id);
+        if (day) return day;
       }
     }
     if (!row) {
@@ -822,24 +823,37 @@ export class FleetStore {
     return row;
   }
 
+  // The lineage's base name — the bare (dawn) name its triple is built on.
+  _lineageBase(lineageId) {
+    return this.db.prepare('SELECT friendly_name FROM lineages WHERE id = ?').get(lineageId)?.friendly_name || null;
+  }
+
+  // The live, named members of a lineage. Phase is read off each name on the
+  // client; rotated-off members have a NULL name and are excluded here.
   getLineageRoster(lineageId) {
     return this.db.prepare(
-      "SELECT * FROM agents WHERE lineage_id = ? AND phase IN ('dawn','day','dusk') AND dead = 0"
+      "SELECT * FROM agents WHERE lineage_id = ? AND friendly_name IS NOT NULL AND dead = 0"
     ).all(lineageId).map(r => this._hydrateAgent(r));
   }
 
+  // The day (manager) member — the one whose name is "<base>:day".
   getLineageDay(lineageId) {
+    const base = this._lineageBase(lineageId);
+    if (!base) return null;
     const row = this.db.prepare(
-      "SELECT * FROM agents WHERE lineage_id = ? AND phase = 'day' AND dead = 0"
-    ).get(lineageId);
+      "SELECT * FROM agents WHERE lineage_id = ? AND friendly_name = ? AND dead = 0"
+    ).get(lineageId, nameForPhase(base, 'day'));
     return row ? this._hydrateAgent(row) : null;
   }
 
+  // Assign an agent into a lineage at a phase. Phase isn't stored — it's the
+  // name: the agent is renamed to "<base>" (dawn) / "<base>:day" / "<base>:dusk".
   assignPhase(agentId, lineageId, phase) {
     const now = Date.now();
+    const base = this._lineageBase(lineageId);
     this.db.transaction(() => {
-      this.db.prepare('UPDATE agents SET lineage_id = ?, phase = ? WHERE id = ?')
-        .run(lineageId, phase, agentId);
+      this.db.prepare('UPDATE agents SET lineage_id = ?, friendly_name = ? WHERE id = ?')
+        .run(lineageId, base ? nameForPhase(base, phase) : null, agentId);
       this.db.prepare(
         'INSERT INTO lineage_phase_log (lineage_id, fleet_id, phase, entered_at) VALUES (?, ?, ?, ?)'
       ).run(lineageId, agentId, phase, now);
@@ -854,40 +868,47 @@ export class FleetStore {
       this.db.prepare(
         'UPDATE lineage_phase_log SET exited_at = ? WHERE fleet_id = ? AND exited_at IS NULL'
       ).run(now, agentId);
-      this.db.prepare('UPDATE agents SET lineage_id = NULL, phase = NULL WHERE id = ?')
+      this.db.prepare('UPDATE agents SET lineage_id = NULL WHERE id = ?')
         .run(agentId);
     })();
   }
 
+  // Move an agent to a different phase within its lineage = rename it.
   transitionPhase(agentId, newPhase) {
     const now = Date.now();
     this.db.transaction(() => {
       const agent = this._getAgent.get(agentId);
       if (!agent || !agent.lineage_id) return;
+      const base = this._lineageBase(agent.lineage_id);
       this.db.prepare(
         'UPDATE lineage_phase_log SET exited_at = ? WHERE fleet_id = ? AND exited_at IS NULL'
       ).run(now, agentId);
-      this.db.prepare('UPDATE agents SET phase = ? WHERE id = ?')
-        .run(newPhase, agentId);
+      this.db.prepare('UPDATE agents SET friendly_name = ? WHERE id = ?')
+        .run(base ? nameForPhase(base, newPhase) : null, agentId);
       this.db.prepare(
         'INSERT INTO lineage_phase_log (lineage_id, fleet_id, phase, entered_at) VALUES (?, ?, ?, ?)'
       ).run(agent.lineage_id, agentId, newPhase, now);
     })();
   }
 
-  // One rotation: the incoming agent enters at `dawn` (the worker), and every
-  // existing slot shifts up a rung — dawn → day (becomes the manager), day →
-  // dusk (becomes the consultant on the way out), dusk → loses its friendly name
-  // and drops out of the slots (stays in the lineage as nameless history).
-  // Nothing is marked dead and nothing is removed from the lineage — a faded
-  // agent just has its name rotate off, and it hibernates on its own once no one
-  // talks to it. Direct handoff applies this once; the briefing handoff applies
-  // it twice (briefer in, then the new worker in).
+  // One rotation of the lineage's name-triple. The incoming agent takes the
+  // dawn name (bare base); the existing holders each shift up a rung —
+  // dawn → "<base>:day", day → "<base>:dusk", and the old dusk loses its name
+  // (set NULL) and drops out of the triple while staying in the lineage as
+  // nameless history (reachable only by id). Nothing is marked dead. Direct
+  // handoff applies this once; the briefing handoff applies it twice.
   rotateLineageIn(lineageId, incomingAgentId) {
     const now = Date.now();
-    const slotIds = (phase) => this.db.prepare(
-      "SELECT id FROM agents WHERE lineage_id = ? AND phase = ? AND dead = 0"
-    ).all(lineageId, phase).map(r => r.id);
+    const base = this._lineageBase(lineageId);
+    if (!base) return;
+    const dawnName = nameForPhase(base, 'dawn');
+    const dayName = nameForPhase(base, 'day');
+    const duskName = nameForPhase(base, 'dusk');
+    // Find the current holder of a given name within this lineage.
+    const holder = (name) => this.db.prepare(
+      'SELECT id FROM agents WHERE lineage_id = ? AND friendly_name = ? AND dead = 0'
+    ).get(lineageId, name)?.id || null;
+    const rename = (id, name) => this.db.prepare('UPDATE agents SET friendly_name = ? WHERE id = ?').run(name, id);
     const exitLog = (id) => this.db.prepare(
       'UPDATE lineage_phase_log SET exited_at = ? WHERE fleet_id = ? AND exited_at IS NULL'
     ).run(now, id);
@@ -903,34 +924,31 @@ export class FleetStore {
         'INSERT INTO lineage_phase_log (lineage_id, fleet_id, phase, entered_at) VALUES (?, ?, ?, ?)'
       ).run(lineageId, id, phase, ts);
     };
-    // Order frees each target slot before the next agent moves into it:
-    // dusk out → day→dusk → dawn→day → incoming→dawn.
+    // Resolve holders BEFORE any rename, then apply in an order that frees each
+    // name before it's reused: dusk name → null, day → dusk, dawn → day, in → dawn.
+    const duskId = holder(duskName);
+    const dayId = holder(dayName);
+    const dawnId = holder(dawnName);
     this.db.transaction(() => {
-      // 1. Current dusk (consultant) ages out: name rotates off, drops the slot,
-      //    stays in the lineage as nameless history.
-      for (const id of slotIds('dusk')) {
-        if (id === incomingAgentId) continue;
-        exitLog(id);
-        this.db.prepare('UPDATE agents SET friendly_name = NULL, phase = NULL WHERE id = ?').run(id);
+      if (duskId && duskId !== incomingAgentId) {
+        exitLog(duskId);
+        rename(duskId, null); // ages out: name rotates off, stays in lineage as nameless history
       }
-      // 2. Current day (manager) → dusk (consultant).
-      for (const id of slotIds('day')) {
-        if (id === incomingAgentId) continue;
-        exitLog(id);
-        this.db.prepare('UPDATE agents SET phase = ? WHERE id = ?').run('dusk', id);
-        enterLog(id, 'dusk');
+      if (dayId && dayId !== incomingAgentId) {
+        exitLog(dayId);
+        rename(dayId, duskName);
+        enterLog(dayId, 'dusk');
       }
-      // 3. Current dawn (worker) → day (manager).
-      for (const id of slotIds('dawn')) {
-        if (id === incomingAgentId) continue;
-        exitLog(id);
-        this.db.prepare('UPDATE agents SET phase = ? WHERE id = ?').run('day', id);
-        enterLog(id, 'day');
+      if (dawnId && dawnId !== incomingAgentId) {
+        exitLog(dawnId);
+        rename(dawnId, dayName);
+        enterLog(dawnId, 'day');
       }
-      // 4. Incoming enters at dawn (the worker).
+      // Incoming enters at dawn (the worker), taking the bare base name and
+      // leaving whatever lineage/name it held before.
       exitLog(incomingAgentId);
-      this.db.prepare('UPDATE agents SET lineage_id = ?, phase = ? WHERE id = ?')
-        .run(lineageId, 'dawn', incomingAgentId);
+      this.db.prepare('UPDATE agents SET lineage_id = ?, friendly_name = ? WHERE id = ?')
+        .run(lineageId, dawnName, incomingAgentId);
       enterLog(incomingAgentId, 'dawn');
     })();
   }
@@ -951,9 +969,10 @@ export class FleetStore {
   findAgentByLineagePhase(lineageName, phase) {
     const lineage = this.getLineage(lineageName);
     if (!lineage) return null;
+    // Phase is the name: "<base>" (dawn) / "<base>:day" / "<base>:dusk".
     const row = this.db.prepare(
-      'SELECT * FROM agents WHERE lineage_id = ? AND phase = ? AND dead = 0'
-    ).get(lineage.id, phase);
+      'SELECT * FROM agents WHERE lineage_id = ? AND friendly_name = ? AND dead = 0'
+    ).get(lineage.id, nameForPhase(lineage.friendly_name, phase));
     return row ? this._hydrateAgent(row) : null;
   }
 
@@ -982,7 +1001,8 @@ export class FleetStore {
       last_active: lastActive,
       status,
       lineage_id: row.lineage_id || null,
-      phase: row.phase || null,
+      // No `phase` field — phase is encoded in friendly_name and parsed on the
+      // client. lineage_name (the base) is still exposed for lineage search.
       lineage_name: row.lineage_id ? (this.db.prepare('SELECT friendly_name FROM lineages WHERE id = ?').get(row.lineage_id)?.friendly_name || null) : null,
     };
   }

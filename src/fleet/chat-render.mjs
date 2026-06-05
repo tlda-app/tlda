@@ -17,6 +17,8 @@
 //   renderMarkdown: (escapedHtml) => html,
 // }
 
+import { phaseFromName } from '../../shared/lineage-name.mjs'
+
 // --- Pure helpers (copied from utils.mjs) ---
 
 export function esc(s) {
@@ -84,8 +86,10 @@ function phaseIconHtml(agentId, getAgents) {
   if (!getAgents) return ''
   const agents = getAgents()
   const a = agents?.find(x => x.id === agentId)
-  if (!a?.phase || a.phase === 'dawn') return ''
-  return a.phase === 'day' ? PHASE_ICON_DAY : a.phase === 'dusk' ? PHASE_ICON_DUSK : ''
+  // Phase is encoded in the friendly name (":day"/":dusk"; bare = dawn), not a
+  // server field. dawn is the default and gets no icon.
+  const phase = phaseFromName(a?.friendly_name)
+  return phase === 'day' ? PHASE_ICON_DAY : phase === 'dusk' ? PHASE_ICON_DUSK : ''
 }
 
 export function renderChatLine(m, ctx) {

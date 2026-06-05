@@ -2914,25 +2914,19 @@ function FleetChatInner({ shape }: { shape: any }) {
   }, [filterKey])
   sendTargetsRef.current = sendTargets
 
-  // Resolve the first send target to a fleet ID with an active tmux_session.
-  // The terminal icon is hidden when this is null.
-  // Resolve a send-target label to an agent. Handles all addressing forms the
-  // chat can produce: fleet:id, lineage:phase (e.g. "real-tlda-rev-2:dawn" —
-  // matched on lineage_name + phase, same as getAgent), friendly_name, label.
-  // The lineage:phase case is why the terminal icon used to vanish for
-  // lineage-addressed agents: the old resolver only knew names/ids/labels.
+  // Resolve a send-target label to an agent. Phase is encoded in the friendly
+  // name now ("base:day" / "base:dusk"; dawn is the bare base), so a lineage
+  // address matches a friendly_name directly. ":dawn" is accepted as an alias
+  // for the bare base name.
   const resolveTargetAgent = useCallback((label: string, agentList: any[]) => {
     if (label.startsWith('fleet:')) return agentList.find((a: any) => a.id === label) || null
-    const ci = label.indexOf(':')
-    if (ci > 0) {
-      const lineageName = label.slice(0, ci)
-      const phase = label.slice(ci + 1)
-      if (phase === 'dawn' || phase === 'day' || phase === 'dusk') {
-        const m = agentList.find((a: any) => a.lineage_name === lineageName && a.phase === phase)
-        if (m) return m
-      }
+    const direct = agentList.find((a: any) => a.friendly_name === label || a.id === label || (a.labels || []).includes(label))
+    if (direct) return direct
+    if (label.endsWith(':dawn')) {
+      const base = label.slice(0, -':dawn'.length)
+      return agentList.find((a: any) => a.friendly_name === base) || null
     }
-    return agentList.find((a: any) => a.friendly_name === label || a.id === label || (a.labels || []).includes(label)) || null
+    return null
   }, [])
 
   const hoverTargetAgentId = useMemo(() => {

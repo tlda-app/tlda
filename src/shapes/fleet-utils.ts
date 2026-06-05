@@ -2,6 +2,8 @@ import type { Editor } from 'tldraw'
 import { createShapeId } from 'tldraw'
 // @ts-ignore — vanilla JS module
 import { getHumanId } from '../fleet/fleet-data.mjs'
+// @ts-ignore — vanilla JS module
+import { baseName, phaseFromName } from '../../shared/lineage-name.mjs'
 
 /** Canonical list of fleet shape types — the single source of truth for
  *  ownership filtering, visibility, copy gating, and hit-test exclusion.
@@ -12,17 +14,22 @@ export const FLEET_SHAPE_TYPES = new Set([
 
 /**
  * The display name for an agent — the single source of truth used everywhere a
- * name is shown (agents panel, chat target chip, nicks). Lineage is just an
- * overlay: the agent's own friendly_name is its identity and is what displays.
- * Never construct a name from lineage + phase — the lineage facet is conveyed
- * only by the specialized rendering (the phase icon) and the searchable
- * `name:phase` label, NOT by overriding the displayed name. Substituting
- * lineage_name here collapsed every agent in a lineage to one shared name,
- * making day/dawn indistinguishable and unfilterable.
+ * name is shown (agents panel, chat target chip, nicks). Lineage is purely a
+ * naming convention: the agent's friendly_name IS its identity. The phase is
+ * encoded in the name as a ":day"/":dusk" suffix (dawn is bare), so display
+ * strips that suffix and shows the base name; the phase is conveyed only by the
+ * icon. Never derive the name from any server "phase" — there is no such field.
  */
 export function agentDisplayName(agent: any, _allAgents?: any[]): string {
   if (!agent) return '[unknown]'
-  return agent.friendly_name || (agent.id || '').replace('fleet:', '')
+  return baseName(agent.friendly_name) || (agent.id || '').replace('fleet:', '')
+}
+
+/** The phase (dawn/day/dusk) for an agent, parsed from its friendly name.
+ *  Returns null for agents with no name. Used only by the phase-icon rendering. */
+export function agentPhase(agent: any): string | null {
+  if (!agent) return null
+  return phaseFromName(agent.friendly_name)
 }
 
 export const FLEET_HUD_ANCHOR_ID = 'shape:fleet-hud-anchor' as const
