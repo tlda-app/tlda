@@ -2188,25 +2188,22 @@ function FleetChatInner({ shape }: { shape: any }) {
   useEffect(() => {
     const el = chatLogEl
     if (!el) return
-    // Asymmetric, tolerant thresholds. Because this handler fires ONLY on real
-    // user wheel motion (programmatic pins never dispatch fleet-user-scroll),
-    // there is no pin-vs-user ambiguity here — so the asymmetry that created the
-    // old dead zone (when atBottomStateChange conflated pins with scrolls) does
-    // NOT recur. We deliberately restore the proven-good 120/200 feel:
-    //   - re-engage follow when the user lands within REENGAGE of the bottom
-    //     (generous, so getting back to the bottom is easy — the c12d2cc 32px
-    //     value forced the user to drag all the way to gap 0),
-    //   - disengage only on a DELIBERATE scroll-up past DISENGAGE (a stray
-    //     trackpad nudge in between leaves follow untouched),
-    //   - in the band between, leave follow state unchanged.
-    const REENGAGE = 120
-    const DISENGAGE = 200
+    // SINGLE threshold, no dead band. This handler fires ONLY on real user wheel
+    // motion (programmatic pins never dispatch fleet-user-scroll), so we can set
+    // follow intent directly from the gap the user scrolled to: above the
+    // threshold = "I'm reading, don't follow"; within it = "I'm at the bottom,
+    // follow." The old asymmetric 120/200 dead band left scrolledUp=FALSE in the
+    // 120–200 zone, so a small scroll-up followed by a message or thinking-status
+    // growth pinned the user back down — the "jerked to the bottom when scrolled
+    // up" bug. A single threshold means ANY deliberate scroll-up past it
+    // disengages follow until the user returns to the bottom. Content-induced
+    // gaps never reach here (no wheel event), so false-bottom recovery — which
+    // keys off scrolledUp staying false while content grows — is unaffected.
+    const FOLLOW_THRESHOLD = 120
     const onUserScroll = () => {
       const gap = el.scrollHeight - (el.scrollTop + el.clientHeight)
-      if (gap <= REENGAGE) {
-        userScrolledUpRef.current = false
-      } else if (gap > DISENGAGE && !hardLockedRef.current) {
-        userScrolledUpRef.current = true
+      if (!hardLockedRef.current) {
+        userScrolledUpRef.current = gap > FOLLOW_THRESHOLD
       }
       log.warn('chat-scroll', 'user scroll', { gap, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
     }
