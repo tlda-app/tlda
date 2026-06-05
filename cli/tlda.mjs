@@ -1210,7 +1210,7 @@ async function cmdAuth() {
 function cmdCompletions() {
   // Fetch project names at completion time via a helper function in the script
   const commands = [
-    'server', 'create', 'push', 'watch', 'watch-all', 'open', 'list', 'ls',
+    'server', 'agent', 'create', 'push', 'watch', 'watch-all', 'open', 'list', 'ls',
     'status', 'errors', 'delete', 'rm', 'preview', 'revert',
     'logs', 'log', 'config', 'completions',
   ]
@@ -1410,36 +1410,98 @@ Example:
   }
 }
 
-// ---- spawn: forward to bin/fleet-spawn.py ----
-async function cmdAttach() {
-  const name = getPositional(0)
+// ---- agent commands (local: they act on this machine's tmux sessions) ----
+// tmux is local to the box, so agent manipulation never routes through the
+// daemon — you run these where the agent lives.
+
+function agentSessionName(name) {
+  return name.startsWith('fleet-') ? name : `fleet-${name}`
+}
+
+function tmuxBase() {
+  const sock = loadConfig().tmuxSocket || null
+  return sock ? ['-L', sock] : []
+}
+
+async function attachToAgent(name) {
   if (!name) {
-    console.error('Usage: tlda attach <agent-name>')
+    console.error('Usage: tlda agent attach <name>')
     process.exit(1)
   }
   const { spawnSync } = await import('child_process')
-  const cfg = loadConfig()
-  const socket = cfg.tmuxSocket || null
-  const sess = name.startsWith('fleet-') ? name : `fleet-${name}`
-  const tmuxArgs = socket ? ['-L', socket, 'attach-session', '-t', sess]
-                          : ['attach-session', '-t', sess]
-  const result = spawnSync('tmux', tmuxArgs, { stdio: 'inherit' })
+  const result = spawnSync('tmux', [...tmuxBase(), 'attach-session', '-t', agentSessionName(name)], { stdio: 'inherit' })
   process.exit(result.status ?? 0)
 }
 
-async function cmdSpawn() {
+async function runFleetSpawn(spawnArgs) {
   const { spawn: cpSpawn } = await import('child_process')
   const spawnScript = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'fleet-spawn.py')
   if (!existsSync(spawnScript)) {
     console.error(red(`fleet-spawn script not found: ${spawnScript}`))
     process.exit(1)
   }
-  const spawnArgs = process.argv.slice(3) // everything after "tlda spawn"
   const child = cpSpawn('python3', [spawnScript, ...spawnArgs], { stdio: 'inherit' })
   child.on('exit', (code) => process.exit(code ?? 0))
-  // Keep the process alive until child exits
-  await new Promise(() => {})
+  await new Promise(() => {}) // keep alive until child exits
 }
+
+async function listLocalAgents() {
+  const { spawnSync } = await import('child_process')
+  const res = spawnSync('tmux', [...tmuxBase(), 'list-sessions', '-F', '#{session_name}\t#{session_attached}'], { encoding: 'utf8' })
+  // tmux exits non-zero when there are zero sessions.
+  const rows = (res.status === 0 ? res.stdout.trim().split('\n') : [])
+    .map(l => l.split('\t'))
+    .filter(([n]) => n && n.startsWith('fleet-'))
+  if (rows.length === 0) {
+    console.log('No agent sessions on this machine.')
+    process.exit(0)
+  }
+  console.log(`Agents on this machine (${rows.length}):`)
+  for (const [name, attached] of rows) {
+    const mark = attached !== '0' ? ' (attached)' : ''
+    console.log(`  ${name.replace(/^fleet-/, '')}${mark}`)
+  }
+  process.exit(0)
+}
+
+async function hibernateAgent(name) {
+  if (!name) {
+    console.error('Usage: tlda agent hibernate <name>')
+    process.exit(1)
+  }
+  const { spawnSync } = await import('child_process')
+  const sess = agentSessionName(name)
+  const has = spawnSync('tmux', [...tmuxBase(), 'has-session', '-t', sess], { stdio: 'ignore' })
+  if (has.status !== 0) {
+    console.error(`No live session "${sess}" on this machine — already hibernating, or it lives on another box.`)
+    process.exit(1)
+  }
+  const res = spawnSync('tmux', [...tmuxBase(), 'kill-session', '-t', sess], { stdio: 'inherit' })
+  const short = name.replace(/^fleet-/, '')
+  if (res.status === 0) {
+    console.log(`Hibernated ${short} — its thread is intact; \`tlda agent spawn ${short}\` brings it back.`)
+  }
+  process.exit(res.status ?? 0)
+}
+
+async function cmdAgent() {
+  const sub = getPositional(0)
+  switch (sub) {
+    case 'list':
+    case 'ls':        await listLocalAgents(); break
+    case 'spawn':     await ensureServer(); await runFleetSpawn(process.argv.slice(4)); break // after "tlda agent spawn"
+    case 'attach':    await attachToAgent(getPositional(1)); break
+    case 'hibernate': await hibernateAgent(getPositional(1)); break
+    default:
+      console.error('Usage: tlda agent <list|spawn|attach|hibernate> [name]')
+      process.exit(1)
+  }
+}
+
+// Top-level spawn/attach kept working so the existing spawn path isn't broken;
+// `tlda agent …` is the canonical form.
+async function cmdAttach() { await attachToAgent(getPositional(0)) }
+async function cmdSpawn() { await runFleetSpawn(process.argv.slice(3)) }
 
 async function cmdRepoDoctor() {
   const name = getPositional(0)
@@ -2376,6 +2438,7 @@ async function main() {
       case 'mcp-setup': await cmdMcpSetup(); break
       case 'config': await cmdConfig(); break
       case 'setup': await cmdSetup(); break
+      case 'agent': await cmdAgent(); break
       case 'attach': await cmdAttach(); break
       case 'spawn': await ensureServer(); await cmdSpawn(); break
       case 'fleet-dev': await ensureServer(); await cmdFleetDev(); break
