@@ -2151,7 +2151,9 @@ async function handleFleetWsMessage(ws, msg) {
               text: `⚠️ Couldn't wake **${agent.friendly_name || agentId}** — ${e.message}`,
               metadata: { type: 'wake_failed', agentId },
             })
-          } catch {}
+          } catch (notifyErr) {
+            console.warn(`[respawn] could not surface wake failure for ${agentId}: ${notifyErr.message}`)
+          }
         }
       }
     }
