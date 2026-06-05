@@ -3514,12 +3514,17 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   opacity: 0;
   pointer-events: none;
   transform: translateY(2px);
-  transition: opacity 0.15s, transform 0.15s;
+  /* Fast hide, no delay — vanishes the instant the cursor leaves the name. */
+  transition: opacity 0.12s ease, transform 0.12s ease;
+  transition-delay: 0s;
   z-index: 8300;
 }
 .fleet-chat-shape .eliza-suggestion:hover .eliza-suggestion-tip {
   opacity: 1;
   transform: translateY(0);
+  /* Hover-intent: only engage after resting ~0.7s, so sweeping the cursor
+     through the names doesn't pop the card. */
+  transition-delay: 0.7s;
 }
 .fleet-chat-shape .eliza-tip-trigger {
   color: var(--text-bright);
