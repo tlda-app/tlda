@@ -12,14 +12,16 @@ export const FLEET_SHAPE_TYPES = new Set([
 
 /**
  * The display name for an agent — the single source of truth used everywhere a
- * name is shown (agents panel, chat target chip, nicks). The lineage phase is
- * conveyed by the icon, NOT a ":phase" suffix, so the name stays clean and
- * consistent. Keeping this in one place stops the panel and chat from drifting
- * (which is exactly how a `:phase` suffix lingered in one but not the other).
+ * name is shown (agents panel, chat target chip, nicks). Lineage is just an
+ * overlay: the agent's own friendly_name is its identity and is what displays.
+ * Never construct a name from lineage + phase — the lineage facet is conveyed
+ * only by the specialized rendering (the phase icon) and the searchable
+ * `name:phase` label, NOT by overriding the displayed name. Substituting
+ * lineage_name here collapsed every agent in a lineage to one shared name,
+ * making day/dawn indistinguishable and unfilterable.
  */
 export function agentDisplayName(agent: any, _allAgents?: any[]): string {
   if (!agent) return '[unknown]'
-  if (agent.lineage_name) return agent.lineage_name
   return agent.friendly_name || (agent.id || '').replace('fleet:', '')
 }
 
