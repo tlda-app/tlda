@@ -55,6 +55,12 @@ if (toolName) params.set('tool', toolName)
 if (filePath) params.set('file', filePath)
 if (toolName === 'Skill' && toolInput.skill) params.set('skill', toolInput.skill)
 if (toolName === 'Bash' && toolInput.command) params.set('command', toolInput.command)
+// For chat, send the message text so the server can assess math-heaviness
+// (the content-conditioned `chat` gate). Cap length — we only need to detect
+// math markers, not ship the whole message.
+if (toolName === 'mcp__tlda__chat' && toolInput.message) {
+  params.set('content', String(toolInput.message).slice(0, 4000))
+}
 const qs = params.toString()
 const url = `${SERVER}/api/education/check/${encodeURIComponent(FLEET_ID)}${qs ? '?' + qs : ''}`
 

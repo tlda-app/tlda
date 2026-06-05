@@ -1095,10 +1095,12 @@ app.get('/api/education/check/:agentId', (req, res) => {
   // closes the race where a sticky block would persist for a beat after the
   // agent actually read the skill.
   const skill = req.query.skill || ''
+  const content = req.query.content || ''
   if (tool && _qualRules.length > 0) {
     const input = {}
     if (file) input.file_path = file
     if (skill) input.skill = skill
+    if (content) input.content = content
     checkQualifications(agentId, tool, file, input)
   }
 
@@ -3233,7 +3235,9 @@ async function handleFleetWsMessage(ws, msg) {
 // When an agent hasn't read a required skill, posts to pendingEducation
 // which the hook returns as a blocking response.
 
-const QUALIFICATIONS_FILE = path.join(os.homedir(), '.claude', 'qualifications.json')
+// TLDA_QUALIFICATIONS_FILE overrides the default path — used by integration
+// tests to exercise new rules without touching the live ~/.claude config.
+const QUALIFICATIONS_FILE = process.env.TLDA_QUALIFICATIONS_FILE || path.join(os.homedir(), '.claude', 'qualifications.json')
 let _qualRules = []
 const _qualAgentReads = new Map()     // agentId → Set of skill keys + file paths
 const _qualAgentDismissed = new Map() // agentId → Set of dismiss keys (skillName | skillName@filepath)
@@ -3326,6 +3330,34 @@ function isInLatexProject(filePath) {
   return dirs.some(d => filePath.startsWith(d))
 }
 
+// "Math-heavy" chat detection for the content-conditioned `chat` gate. We want
+// to catch a message that leans on rendered math — a display equation, or
+// several inline bits — while NOT firing on prose that mentions a lone `$x$` or
+// a dollar amount. Conservative on purpose: the gate blocks AGENTS (not Skip),
+// and the recourse is trivial (read the skill once, dismiss, or drop the math),
+// so a missed catch is cheaper than a false block.
+function isMathHeavy(text) {
+  if (!text || typeof text !== 'string') return false
+  const hasDisplay =
+    /\$\$[\s\S]+?\$\$/.test(text) ||            // $$ … $$
+    /\\\[[\s\S]+?\\\]/.test(text) ||            // \[ … \]
+    /\\begin\{(?:equation|align|gather|multline|eqnarray)\*?\}/.test(text)
+  if (hasDisplay) return true
+  // Count inline $…$ after removing any $$ display blocks so they aren't
+  // double-counted. Require ≥2 so a single inline term doesn't trip it.
+  const noDisplay = text.replace(/\$\$[\s\S]+?\$\$/g, '')
+  const inline = noDisplay.match(/\$[^$\n]+?\$/g) || []
+  return inline.length >= 2
+}
+
+// Evaluate a tool-rule `condition`. Returns true when the rule applies.
+function qualToolConditionMet(condition, input) {
+  if (condition === 'math-heavy') return isMathHeavy(input?.content)
+  // Unknown condition → don't apply the rule (fail safe: never gate on a
+  // condition the server doesn't understand).
+  return false
+}
+
 function checkQualifications(agentId, tool, arg, input) {
   if (_qualRules.length === 0 || !fleetStore) return
 
@@ -3371,6 +3403,9 @@ function checkQualifications(agentId, tool, arg, input) {
   const toolNorm = tool && tool.startsWith('mcp__') ? tool.slice(5).replace(/__/g, '/') : tool
   for (const rule of _qualRules) {
     if (rule.type !== 'tool') continue
+    // Content-conditioned tool rules (e.g. gate `chat` only when the message is
+    // math-heavy). A condition that isn't met means the rule doesn't apply.
+    if (rule.condition && !qualToolConditionMet(rule.condition, input)) continue
     if (rule.re.test(toolNorm)) {
       matchingRules.push({ rule, trigger: toolNorm, triggerShort: toolNorm })
     }
