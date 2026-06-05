@@ -91,6 +91,7 @@ for (const { skill, desc } of items) {
   reason += '- **`' + skill + '`**' + (desc ? ' \u2014 ' + desc : '') + '\n'
 }
 reason += '\nUse the Skill tool to invoke each one (e.g. `Skill({ skill: "' + items[0].skill + '" })`), then retry your edit.'
+reason += '\n\nIf you are genuinely sure a skill does not apply to what you are doing, you may dismiss it instead — `dismiss_skill({ reason: "why it does not apply" })` (a reason is required and is shown to Skip). Otherwise, read it.'
 
 const result = { decision: 'block', reason }
 
