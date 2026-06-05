@@ -46,51 +46,46 @@ for (const { lineage_id } of multi) {
     'SELECT id, friendly_name, phase, last_seen FROM agents WHERE lineage_id = ? AND dead = 0 AND friendly_name IS NOT NULL'
   ).all(lineage_id)
 
-  // Conservative: only migrate a lineage we can resolve UNAMBIGUOUSLY. Flag the
-  // rest for human resolution rather than guess (guessing could orphan a live
-  // agent's work or steal a name from an unrelated agent).
+  // Auto-resolve: at most one holder per phase slot. Candidates for a slot are
+  // the lineage members whose old phase maps to it, PLUS any live agent outside
+  // the lineage that already holds the target name (e.g. a stray "wavelet-infconv"
+  // with no lineage). Most-recently-seen wins the slot and takes the name (joining
+  // the lineage if it was outside); every other candidate loses its name (set
+  // NULL) and stays in the lineage as nameless history.
+  const seenMs = (m) => (m.last_seen ? new Date(m.last_seen).getTime() : 0)
   const byPhase = { dawn: [], day: [], dusk: [] }
   for (const m of members) {
     const phase = (m.phase === 'day' || m.phase === 'dusk') ? m.phase : 'dawn'
     byPhase[phase].push(m)
   }
-  const conflicts = []
-  // (a) duplicate holders of a phase slot
+  const ops = [] // { id, to, join } — final name + whether to set lineage_id
   for (const phase of ['dawn', 'day', 'dusk']) {
-    if (byPhase[phase].length > 1) {
-      conflicts.push(`${byPhase[phase].length} members at "${phase}": ${byPhase[phase].map(m => m.friendly_name).join(', ')}`)
+    const target = nameForPhase(base, phase)
+    const candidates = [...byPhase[phase]]
+    const outside = db.prepare(
+      'SELECT id, last_seen FROM agents WHERE friendly_name = ? AND dead = 0 AND (lineage_id IS NULL OR lineage_id != ?)'
+    ).all(target, lineage_id)
+    for (const o of outside) candidates.push({ id: o.id, friendly_name: target, last_seen: o.last_seen, _outside: true })
+    if (candidates.length === 0) continue
+    candidates.sort((a, b) => seenMs(b) - seenMs(a))
+    const winner = candidates[0]
+    ops.push({ id: winner.id, from: winner.friendly_name, to: target, phase, join: !!winner._outside, win: true })
+    for (const loser of candidates.slice(1)) {
+      ops.push({ id: loser.id, from: loser.friendly_name, to: null, phase, join: false, win: false })
     }
   }
-  // (b) a target name already held by a LIVE agent outside this lineage
-  const targets = ['dawn', 'day', 'dusk']
-    .filter(p => byPhase[p].length === 1)
-    .map(p => nameForPhase(base, p))
-  for (const t of targets) {
-    const holder = db.prepare(
-      'SELECT id FROM agents WHERE friendly_name = ? AND dead = 0 AND (lineage_id IS NULL OR lineage_id != ?)'
-    ).get(t, lineage_id)
-    if (holder) conflicts.push(`target "${t}" already held by outside agent ${holder.id}`)
-  }
 
-  if (conflicts.length) {
-    console.log(`  lineage "${base}": ⚠ NEEDS MANUAL RESOLUTION`)
-    for (const c of conflicts) console.log(`      - ${c}`)
-    skipped.push({ base, conflicts })
-    continue
-  }
-
-  const plan = members.map(m => {
-    const phase = (m.phase === 'day' || m.phase === 'dusk') ? m.phase : 'dawn'
-    return { id: m.id, from: m.friendly_name, to: nameForPhase(base, phase), phase }
-  })
   console.log(`  lineage "${base}":`)
-  for (const p of plan) console.log(`    ${p.from}  →  ${p.to}  (${p.phase})`)
+  for (const o of ops) console.log(`    ${o.from}  →  ${o.to === null ? '(nameless history)' : o.to}  (${o.phase}${o.win ? '' : ', dropped'}${o.join ? ', joined from outside' : ''})`)
 
   if (apply) {
     // Two-pass to dodge the live-name UNIQUE index: temp names first, then final.
     db.transaction(() => {
-      for (const p of plan) renameTmp.run(`__mig_${p.id}`, p.id)
-      for (const p of plan) renameTmp.run(p.to, p.id)
+      for (const o of ops) renameTmp.run(`__mig_${o.id}`, o.id)
+      for (const o of ops) {
+        if (o.join) db.prepare('UPDATE agents SET friendly_name = ?, lineage_id = ? WHERE id = ?').run(o.to, lineage_id, o.id)
+        else renameTmp.run(o.to, o.id)
+      }
     })()
     migrated.push(base)
   }
