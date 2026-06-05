@@ -2999,13 +2999,12 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
         agentOnly,
         role: args.role || undefined,
         since: sinceTs,
+        before: beforeTs,
       };
       if (lineageFleetIds) { searchParams.agents = lineageFleetIds; }
       else if (agentId) { searchParams.agent = agentId; }
       const data = await sendWS('fleet-search', searchParams);
       results = data?.results || [];
-      // Apply before filter
-      if (beforeTs) results = results.filter(r => !r.timestamp || r.timestamp < beforeTs);
 
       // Fetch context for chat results if requested
       if (contextWindow > 0) {
@@ -3013,7 +3012,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
           if (r.source === 'fleet' && r.timestamp) contextTimestamps.push(r.timestamp);
         }
         if (contextTimestamps.length > 0) {
-          const ctxSearchParams = { query, limit, role: args.role || undefined, since: sinceTs,
+          const ctxSearchParams = { query, limit, role: args.role || undefined, since: sinceTs, before: beforeTs,
             context_timestamps: contextTimestamps.slice(0, 10), context_window: contextWindow };
           if (lineageFleetIds) { ctxSearchParams.agents = lineageFleetIds; }
           else if (agentId) { ctxSearchParams.agent = agentId; }

@@ -1506,7 +1506,7 @@ export class FleetStore {
   }
 
   // Unified search across fleet events (events_fts) and session JSONL text (session_entries_fts).
-  searchAll(query, { limit = 50, agent, role, since, agentOnly } = {}) {
+  searchAll(query, { limit = 50, agent, role, since, before, agentOnly } = {}) {
     const ftsQuery = query.replace(/"/g, '""');
     const runQuery = (sql, params) => {
       try { return this.db.prepare(sql).all(...params); } catch { return []; }
@@ -1539,6 +1539,7 @@ export class FleetStore {
       if (hasAgent) { const ac = agentClause('e.from_id', 'e.to_id', 'e.agent_id'); eClauses.push(ac.clause); eParams.push(...ac.params); }
     }
     if (since) { eClauses.push('e.timestamp >= ?'); eParams.push(since); }
+    if (before) { eClauses.push('e.timestamp < ?'); eParams.push(before); }
     eParams.push(limit);
     const ftsJoin = (agentOnly && hasAgent) ? '' : 'events_fts f JOIN';
     const ftsOn = (agentOnly && hasAgent) ? '' : 'ON e.id = f.rowid';
@@ -1581,6 +1582,7 @@ export class FleetStore {
     }
     if (role && (role === 'user' || role === 'assistant')) { sClauses.push('s.role = ?'); sParams.push(role); }
     if (since) { sClauses.push('s.timestamp >= ?'); sParams.push(since); }
+    if (before) { sClauses.push('s.timestamp < ?'); sParams.push(before); }
     sParams.push(limit);
     const sFtsJoin = (agentOnly && agent) ? '' : 'session_entries_fts f JOIN';
     const sFtsOn = (agentOnly && agent) ? '' : 'ON s.id = f.rowid';

@@ -2162,7 +2162,7 @@ async function handleFleetWsMessage(ws, msg) {
       // Support lineage search: agents[] (array of fleet IDs to union)
       const searchAgent = msg.agents?.length ? msg.agents : msg.agent;
       const results = fleetStore.searchAll(msg.query || '', {
-        limit: msg.limit, agent: searchAgent, role: msg.role, since: msg.since, agentOnly: msg.agentOnly,
+        limit: msg.limit, agent: searchAgent, role: msg.role, since: msg.since, before: msg.before, agentOnly: msg.agentOnly,
       })
       const context = {}
       if (msg.context_timestamps?.length) {
