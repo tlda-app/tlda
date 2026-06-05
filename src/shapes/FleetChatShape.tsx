@@ -2041,16 +2041,17 @@ function FleetChatInner({ shape }: { shape: any }) {
     localStorage.setItem(HARD_LOCKED_KEY, String(hardLocked))
   }, [hardLocked])
 
-  // pin-to-bottom: each frame, scrollToIndex(LAST) AND a raw scrollTop assign,
-  // repeated (bounded) until the gap actually closes.
-  //  - scrollToIndex handles LONG/virtualized lists (knows the full virtual
-  //    height); a lone raw scrollTop undershoots there because scrollHeight is
-  //    only the rendered slice until Virtuoso measures more.
-  //  - the raw scrollTop=scrollHeight handles SHORT content, where
-  //    scrollToIndex lands a few px above the true bottom (the "won't hit
-  //    bottom" case). The loop re-runs as the height settles, so raw is correct
-  //    once scrollHeight is full → works for both regimes.
-  // No re-trigger from atBottomStateChange, so this can't bounce.
+  // pin-to-bottom: two complementary mechanisms, each needed.
+  //  - scrollToIndex(LAST) forces Virtuoso to render+measure the last items
+  //    (virtualization-aware); without it the raw scrollTop undershoots while
+  //    the tail is unmeasured.
+  //  - raw scrollTop = scrollHeight reaches the ABSOLUTE bottom past the Virtuoso
+  //    Footer (eliza/thinking status). scrollToIndex(LAST, 'end') only aligns the
+  //    last DATA item, stopping ~the footer's height above true bottom — that was
+  //    the consistent ~514px residual gap when raw was removed.
+  // The bounded loop re-runs as height settles. The standing watchdog below is
+  // what guarantees convergence after this loop's frame budget — the original
+  // bug was that nothing re-applied this once events stopped firing.
   const pinHard = useCallback(() => {
     programmaticUntilRef.current = performance.now() + 400
     let frames = 0
@@ -2156,6 +2157,32 @@ function FleetChatInner({ shape }: { shape: any }) {
     el.addEventListener('fleet-user-scroll', onUserScroll as EventListener)
     return () => el.removeEventListener('fleet-user-scroll', onUserScroll as EventListener)
   }, [chatLogEl])
+
+  // Convergence watchdog — the reconciler of last resort. scrollToIndex(LAST)
+  // can land SHORT while freshly-added tall items are still being measured, and
+  // once Virtuoso reports "not at bottom" no further event necessarily re-fires
+  // (atBottomStateChange only fires on a state TRANSITION, not while stuck), so
+  // a single short pin could strand the view above a persistent gap — the
+  // reproduced false-bottom (dist stuck 500–1100px). This low-rate check re-pins
+  // whenever we SHOULD be following (user hasn't scrolled up) but a large gap
+  // persists, guaranteeing convergence as items finish measuring.
+  //
+  // Threshold 200 == the user-scroll DISENGAGE distance, so this can NEVER fight
+  // a user reading in the 120–200 dead band: any gap >200 with userScrolledUp
+  // false can only be a failed pin, never user intent (a real scroll past 200
+  // sets userScrolledUp=true synchronously in the wheel handler before this
+  // timer next fires). 200ms cadence is well below human-perceptible and can't
+  // thrash — pinHard converges to bottom, gap drops under 200, this goes quiet.
+  useEffect(() => {
+    const el = chatLogEl
+    if (!el) return
+    const id = setInterval(() => {
+      if (userScrolledUpRef.current && !hardLockedRef.current) return
+      const gap = el.scrollHeight - (el.scrollTop + el.clientHeight)
+      if (gap > 200) pinHard()
+    }, 200)
+    return () => clearInterval(id)
+  }, [chatLogEl, pinHard])
 
   // TRACE (temporary diagnostic — remove once scroll is solid): make the log
   // tell the WHOLE story so the fix comes from ground truth, not theory.
@@ -3662,13 +3689,15 @@ function FleetChatInner({ shape }: { shape: any }) {
               setAtBottom(atBottom)
               // Auto-follow intent is owned by the fleet-user-scroll handler.
               // Here we ONLY resume-follow when we genuinely reach bottom.
-              // We do NOT re-pin smart-follow on a spurious "left bottom":
+              // We deliberately do NOT re-pin on a spurious "left bottom" here:
               // doing so created an INFINITE BOUNCE when content barely exceeds
-              // the viewport — pin→bottom→(something resets)→left-bottom→pin→…
-              // every ~50ms. Following on real new content is handled by the
-              // content-grow pins (item-grow / list-height-grow), not here.
-              // Hard-lock is the one exception: it means "always pinned", so it
-              // still snaps back.
+              // the viewport — pin→bottom→(recompute)→left-bottom→pin→… every
+              // ~50ms. The persistent false-bottom (a short pin that strands the
+              // view above a growing gap because no further event re-fires) is
+              // now closed by the standing convergence watchdog above, which is
+              // bounce-safe: it samples on a 200ms cadence, so a transient
+              // sub-200ms left-bottom that self-heals never triggers it.
+              // Hard-lock is the one exception: it means "always pinned".
               if (atBottom) {
                 userScrolledUpRef.current = false
               } else if (hardLockedRef.current) {
