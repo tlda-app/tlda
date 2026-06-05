@@ -2388,7 +2388,8 @@ function FleetChatInner({ shape }: { shape: any }) {
         const tempId = resendBtn.dataset.resendTempid
         if (to && text && tempId) {
           updateOptimisticEvent(tempId, { _failed: false })
-          sendMessage(to, text, { _tempId: tempId } as any)
+          const resendOpts: any = { _tempId: tempId }
+          sendMessage(to, text, resendOpts)
             .then((r: any) => { if (!r?.ok) throw new Error('resend failed') })
             .catch(() => updateOptimisticEvent(tempId, { _failed: true }))
         }
