@@ -2256,7 +2256,7 @@ async function handleFleetWsMessage(ws, msg) {
         const meta = target.metadata && typeof target.metadata === 'object' ? { ...target.metadata } : {}
         meta.inline_attachments = inline_attachments
         fleetStore.updateEventMetadata?.(target.id, meta)
-      } catch {}
+      } catch (e) { console.error(`[amend] inline_attachments update failed (non-fatal): ${e.message}`) }
     }
     fleetStore.amendEventText(target.id, text)
     reply({ ok: true, event_id: target.id })
