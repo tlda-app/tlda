@@ -767,6 +767,18 @@ export function getFleetTools() {
       },
     },
     {
+      name: 'dismiss_skill',
+      description: 'Dismiss a required-skill block when you are genuinely sure the skill does not apply to what you are doing (e.g. you are editing a .tex file only to fix a build path, not to write prose). This is the ONE deliberate way past a sticky skill block — the alternative is to actually read the skill with the Skill tool. A reason is REQUIRED and is shown to Skip as a card, so dismiss honestly: if the skill might apply, read it instead. You can dismiss several skills at once. Edit-specific skills are dismissed for the current file; dispositional/tool skills for the session.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          reason: { type: 'string', description: 'Why this skill does not apply to your current action. Required. Shown to Skip.' },
+          skills: { type: 'array', items: { type: 'string' }, description: 'Skill name(s) to dismiss (e.g. ["writing-core","writing-process"]). Omit to dismiss everything currently blocking you.' },
+        },
+        required: ['reason'],
+      },
+    },
+    {
       name: 'request_terminal',
       description: 'Voluntarily ask the user to look at your terminal — pops a live terminal card in their fleet chat that mirrors your tmux session. Use when you are stuck on something the user needs to do interactively (e.g. a permission prompt that survives `tlda watch start`, an external login). Do NOT use for routine status — that is what `chat()` is for. The user can dismiss the card to freeze a snapshot.',
       inputSchema: {
@@ -1714,6 +1726,33 @@ export async function handleFleetTool(name, args) {
       return { content: [{ type: 'text', text: `Sent draft ${id} to ${names.join(', ')}.` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Send failed: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'dismiss_skill') {
+    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Cannot dismiss: not registered.' }], isError: true };
+    const reason = (args.reason || '').trim();
+    if (!reason) return { content: [{ type: 'text', text: 'A reason is required to dismiss a skill. Say why it does not apply — or read the skill instead.' }], isError: true };
+    const skills = Array.isArray(args.skills) ? args.skills.filter(Boolean) : null;
+    try {
+      const res = await fleetFetch(`${TLDA_SERVER}/api/education/dismiss/${encodeURIComponent(AGENT_ID)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason, ...(skills ? { skills } : {}) }),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        return { content: [{ type: 'text', text: `Dismiss failed: HTTP ${res.status}${text ? ' — ' + text.slice(0, 200) : ''}` }], isError: true };
+      }
+      const data = await res.json();
+      if (data.error) return { content: [{ type: 'text', text: `Dismiss failed: ${data.error}` }], isError: true };
+      if (!data.dismissed || data.dismissed.length === 0) {
+        return { content: [{ type: 'text', text: data.note || 'Nothing is currently blocking you — no skills dismissed.' }] };
+      }
+      const names = data.dismissed.map(d => d.skill).join(', ');
+      return { content: [{ type: 'text', text: `Dismissed ${names}. The block is lifted; you can proceed. (Logged for Skip with your reason.)` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Dismiss failed (server unreachable): ${e.message}` }], isError: true };
     }
   }
 
