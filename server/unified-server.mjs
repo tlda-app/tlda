@@ -2230,6 +2230,46 @@ async function handleFleetWsMessage(ws, msg) {
     _wakeDraining = false
   }
 
+  if (type === 'amend') {
+    // Edit an already-sent chat message in place. Retains prior text in
+    // metadata.amend_history and broadcasts a `chat-updated` so clients
+    // re-render the same message rather than appending a new one.
+    const { from: rawFrom, event_id, message: text, inline_attachments } = msg
+    if (!text) { error('missing message'); return }
+    const resolveSingle = (id) => {
+      if (id === SERVER_OWNER_NAME) return SERVER_OWNER_ID
+      const a = fleetStore?.findAgent(id); return a ? a.id : null
+    }
+    const from = rawFrom ? (resolveSingle(rawFrom) || rawFrom) : null
+    if (!from) { reply({ ok: false, error: 'missing from' }); return }
+    let target
+    if (event_id != null) {
+      target = fleetStore.getEventById(Number(event_id))
+      if (!target || target.type !== 'chat') { reply({ ok: false, error: `no chat message with id ${event_id}` }); return }
+      if (target.from_id !== from) { reply({ ok: false, error: `message ${event_id} was not sent by you` }); return }
+    } else {
+      target = fleetStore.getLatestChatFrom?.(from)
+      if (!target) { reply({ ok: false, error: 'you have no message to amend' }); return }
+    }
+    if (inline_attachments) {
+      try {
+        const meta = target.metadata && typeof target.metadata === 'object' ? { ...target.metadata } : {}
+        meta.inline_attachments = inline_attachments
+        fleetStore.updateEventMetadata?.(target.id, meta)
+      } catch {}
+    }
+    fleetStore.amendEventText(target.id, text)
+    reply({ ok: true, event_id: target.id })
+    // Reuse the existing in-place `event-update` envelope — the client already
+    // finds the message by id and replaces its text/attachments in place.
+    broadcastEvent('event-update', {
+      id: target.id,
+      text,
+      ...(inline_attachments ? { inline_attachments } : {}),
+    })
+    return
+  }
+
   if (type === 'chat') {
     const { message: text, to: rawTo, from: rawFrom, metadata, inline_attachments, attachments, cc, context } = msg
     if (!rawTo || !text) { error('missing to or message'); return }

@@ -1305,6 +1305,30 @@ export class FleetStore {
     this.db.prepare('UPDATE events SET text = ? WHERE id = ?').run(newText, eventId);
   }
 
+  // Edit a message in place, retaining the prior text in metadata.amend_history
+  // (the accountability trail — so an "amend" that's really a new message is visible).
+  amendEventText(eventId, newText) {
+    const row = this.db.prepare('SELECT text, metadata FROM events WHERE id = ?').get(eventId);
+    if (!row) return false;
+    let meta = {};
+    if (row.metadata) { try { meta = JSON.parse(row.metadata); } catch { meta = {}; } }
+    if (!Array.isArray(meta.amend_history)) meta.amend_history = [];
+    meta.amend_history.push({ text: row.text, ts: new Date().toISOString() });
+    this.db.prepare('UPDATE events SET text = ?, metadata = ? WHERE id = ?')
+      .run(newText, JSON.stringify(meta), eventId);
+    return true;
+  }
+
+  // Most recent chat message authored by `fromId` — the default amend target.
+  getLatestChatFrom(fromId) {
+    const row = this.db.prepare(
+      `SELECT ${this._EVT} FROM events WHERE from_id = ? AND type = 'chat' ORDER BY id DESC LIMIT 1`
+    ).get(fromId);
+    if (!row) return null;
+    const meta = row.metadata ? JSON.parse(row.metadata) : null;
+    return { ...row, metadata: meta };
+  }
+
   getEventById(eventId) {
     const row = this.db.prepare(`SELECT ${this._EVT} FROM events WHERE id = ?`).get(eventId);
     if (!row) return null;

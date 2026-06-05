@@ -124,9 +124,6 @@ let _currentDoc = null;
 let _docVersionCache = { doc: null, version: null, ts: 0 };
 const DOC_VERSION_CACHE_MS = 5000;
 
-// ---- Compose/send draft store ----
-const _drafts = new Map(); // id → { message, filter, lint, created }
-let _draftCounter = 0;
 
 // Per-doc macro cache. Paper-defined macros (e.g. \E, \chis) must be passed
 // to katex.renderToString so the chat linter doesn't false-positive on them.
@@ -228,7 +225,7 @@ function lintChatMessage(message, macros = {}) {
   for (const block of codeBlocks) {
     const inner = block.slice(3, -3).replace(/^[a-z]*\n/, '');
     if (/\\(?:begin|end|frac|sum|int|prod|hat|bar|tilde|mathbb|mathrm|operatorname|left|right|alpha|beta|gamma|theta|lambda|mu|sigma|phi|psi|omega|infty|partial|nabla|sqrt|over|under)\b/.test(inner)) {
-      issues.push(`Don't put LaTeX in a code block unless you want to show the code itself, not the rendered math. Use $$ delimiters for display math or $ for inline — the chat renderer supports KaTeX. Consider using compose() to preview before sending.`);
+      issues.push(`Don't put LaTeX in a code block unless you want to show the code itself, not the rendered math. Use $$ delimiters for display math or $ for inline — the chat renderer supports KaTeX. You can fix this in place with amend() after it sends.`);
     }
   }
   return issues;
@@ -740,26 +737,15 @@ export function getFleetTools() {
       },
     },
     {
-      name: 'compose',
-      description: 'Draft a chat message before sending. Returns your message back to you with lint feedback so you can review what you actually wrote. Call send() with the returned draft ID when satisfied. Use this instead of chat() when presenting math, proof sketches, or any content where quality matters. You can call compose() multiple times to iterate before sending.',
+      name: 'amend',
+      description: 'Edit a message you already sent — it changes IN PLACE in Skip\'s view (it does NOT post a new message). Use this to fix a message after `chat` flagged a lint issue, or to revise wording, rather than sending a correction as a follow-up. The original text is preserved in the message\'s history. Amend honestly: this is for fixing or clarifying the SAME message, not for slipping in a different one.',
       inputSchema: {
         type: 'object',
         properties: {
-          message: { type: 'string', description: 'The draft message' },
-          filter: { type: 'object', description: 'Same as chat() filter — { to?: string[][] }. Stored for send().' },
+          message: { type: 'string', description: 'The corrected message text — replaces the old text in place.' },
+          event_id: { type: 'number', description: 'The id of the message to amend (returned by chat()). Omit to amend your most recent message.' },
         },
         required: ['message'],
-      },
-    },
-    {
-      name: 'send',
-      description: 'Send a previously composed draft. Sends the STORED message verbatim — you cannot modify it at this stage. The message that was returned by compose() is exactly what gets sent.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          id: { type: 'string', description: 'Draft ID returned by compose()' },
-        },
-        required: ['id'],
       },
     },
     {
@@ -1666,62 +1652,27 @@ export async function handleFleetTool(name, args) {
 
   // ==== Messaging ====
 
-  // ---- chat ----
-  if (name === 'compose') {
-    const { message, filter } = args;
+  // ---- amend (edit an already-sent message in place) ----
+  if (name === 'amend') {
+    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Cannot amend: not registered.' }], isError: true };
+    const { message, event_id } = args;
     if (!message) return { content: [{ type: 'text', text: 'Missing required parameter: message' }], isError: true };
-    const macros = await getMacrosForAgent();
-    const lint = lintChatMessage(message, macros);
-    const id = `draft-${++_draftCounter}`;
-    _drafts.set(id, { message, filter: filter || null, lint, created: Date.now() });
-    let response = `**Draft ${id}**\n\n---\n${message}\n---\n\n`;
-    if (lint.length > 0) {
-      response += `**Lint (${lint.length} issue${lint.length > 1 ? 's' : ''}):**\n${lint.map(l => `- ${l}`).join('\n')}\n\nRevise and call compose() again, or call send("${id}") if you're satisfied.`;
-    } else {
-      response += `Lint: clean. Review your message above, then call send("${id}") to deliver it.`;
-    }
-    return { content: [{ type: 'text', text: response }] };
-  }
-
-  if (name === 'send') {
-    const { id } = args;
-    if (!id) return { content: [{ type: 'text', text: 'Missing required parameter: id' }], isError: true };
-    const draft = _drafts.get(id);
-    if (!draft) return { content: [{ type: 'text', text: `No draft found with id "${id}". It may have been sent already or expired.` }], isError: true };
-    if (!draft.filter?.to) return { content: [{ type: 'text', text: 'Draft has no recipients (filter.to). Compose again with a filter.' }], isError: true };
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Cannot send: not registered.' }], isError: true };
-    _drafts.delete(id);
     try {
-      const agents = await sendWS('store-agents');
-      const recipients = [];
-      for (const a of agents) {
-        if (a.id === AGENT_ID) continue;
-        const labels = [...(a.labels || []), ...(a.status === 'awake' ? ['awake'] : a.status === 'hibernating' ? ['hibernating'] : []), a.friendly_name, a.id].filter(Boolean);
-        // Lineage members also answer to the bare base name (for lineage search);
-        // the phase-qualified name is already covered by friendly_name above.
-        const _base = baseName(a.friendly_name);
-        if (_base && _base !== a.friendly_name) labels.push(_base);
-        if (draft.filter.to.some(andGroup => andGroup.every(term => labels.includes(term)))) {
-          recipients.push(a.id);
-        }
-      }
-      if (recipients.length === 0) return { content: [{ type: 'text', text: 'No agents matched filter.' }], isError: true };
       const agentCwd = getAgentCwd();
-      const { resolvedMessage, inlineAttachments, brokenPaths } = await processMessageText(draft.message, agentCwd, `${TLDA_SERVER}`);
-      let docContext = null;
-      if (_currentDoc) { const v = await fetchCurrentDocVersion(_currentDoc); docContext = { doc: _currentDoc, version: v || null }; }
-      const sent = [];
-      for (const to of recipients) {
-        const chatBody = { message: resolvedMessage, to, from: AGENT_ID };
-        if (inlineAttachments.length) chatBody.inline_attachments = inlineAttachments;
-        if (docContext) chatBody.context = docContext;
-        try { const data = await sendWS('chat', chatBody); if (data?.ok) sent.push(to); } catch (e) { process.stderr.write(`[fleet] chat send to ${to} failed: ${e.message}\n`); }
-      }
-      if (sent.length === 0) return { content: [{ type: 'text', text: 'Send failed — no messages delivered.' }], isError: true };
-      const names = sent.map(id => { const a = agents.find(x => x.id === id); return a?.friendly_name || id; });
-      return { content: [{ type: 'text', text: `Sent draft ${id} to ${names.join(', ')}.` }] };
+      const { resolvedMessage, inlineAttachments } = await processMessageText(message, agentCwd, `${TLDA_SERVER}`);
+      const body = { from: AGENT_ID, message: resolvedMessage };
+      if (event_id != null) body.event_id = event_id;
+      if (inlineAttachments?.length) body.inline_attachments = inlineAttachments;
+      const data = await sendWS('amend', body);
+      if (!data?.ok) return { content: [{ type: 'text', text: `Amend failed: ${data?.error || 'no message of yours matched (have you sent one yet?)'}` }], isError: true };
+      const macros = await getMacrosForAgent();
+      const lint = lintChatMessage(message, macros);
+      const extra = lint.length > 0
+        ? `\n\n⚠ Still has ${lint.length} lint issue${lint.length > 1 ? 's' : ''}:\n${lint.map(l => `- ${l}`).join('\n')}`
+        : '';
+      return { content: [{ type: 'text', text: `Amended message ${data.event_id} in place.${extra}` }] };
     } catch (e) {
-      return { content: [{ type: 'text', text: `Send failed: ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `Amend failed: ${e.message}` }], isError: true };
     }
   }
 
@@ -1818,6 +1769,7 @@ export async function handleFleetTool(name, args) {
     // Single write: send to dashboard server via WS.
     const sent = [];
     const failed = [];
+    let lastEventId = null;
     for (const to of recipients) {
       const chatBody = { message: resolvedMessage, to, from: AGENT_ID };
       if (inlineAttachments.length) chatBody.inline_attachments = inlineAttachments;
@@ -1825,7 +1777,7 @@ export async function handleFleetTool(name, args) {
       if (docContext) chatBody.context = docContext;
       try {
         const data = await sendWS('chat', chatBody);
-        if (data?.ok) sent.push(to);
+        if (data?.ok) { sent.push(to); if (data.event_ids?.length) lastEventId = data.event_ids[0]; }
         else failed.push(to);
       } catch (e) {
         failed.push(`${to} (${e.message})`);
@@ -1857,10 +1809,12 @@ export async function handleFleetTool(name, args) {
     const macros = await getMacrosForAgent();
     const lint = lintChatMessage(message, macros);
     if (lint.length > 0) {
-      warning += `\n\n⚠ **Lint (${lint.length} issue${lint.length > 1 ? 's' : ''}):**\n${lint.map(l => `- ${l}`).join('\n')}\nYour message was sent but has issues. Use compose() → send() to catch these before delivery.`;
+      const target = lastEventId != null ? `amend({ event_id: ${lastEventId}, message: "…" })` : 'amend({ message: "…" })';
+      warning += `\n\n⚠ **Lint (${lint.length} issue${lint.length > 1 ? 's' : ''}):**\n${lint.map(l => `- ${l}`).join('\n')}\nYour message went out but has these issues — **you are strongly encouraged to fix it in place** with \`${target}\` (it edits the message Skip is reading, no new message).`;
     }
 
-    return { content: [{ type: 'text', text: `Message queued for ${sent.join(', ')}.${warning}` }] };
+    const amendHint = lastEventId != null ? ` (message id ${lastEventId} — amend() to edit it in place)` : '';
+    return { content: [{ type: 'text', text: `Message queued for ${sent.join(', ')}.${amendHint}${warning}` }] };
   }
 
   // ---- request_terminal ----
