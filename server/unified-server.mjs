@@ -1089,13 +1089,23 @@ app.get('/api/education/check/:agentId', (req, res) => {
   const tool = req.query.tool || ''
   const file = req.query.file || ''
 
-  // Run qualification check with the hook's tool+file info (preventive)
+  // Run qualification check with the hook's tool+file info (preventive).
+  // Pass the skill param too, so a Skill/Read of a skill is recorded
+  // synchronously here — not only via the async daemon activity stream. This
+  // closes the race where a sticky block would persist for a beat after the
+  // agent actually read the skill.
+  const skill = req.query.skill || ''
   if (tool && _qualRules.length > 0) {
-    const input = file ? { file_path: file } : {}
+    const input = {}
+    if (file) input.file_path = file
+    if (skill) input.skill = skill
     checkQualifications(agentId, tool, file, input)
   }
 
-  // Return and clear any pending skill
+  // Return any owed skill(s). The block is STICKY: checkQualifications above
+  // recomputes the owed set every call, so a retry of the same action re-blocks
+  // until the agent reads the skill or dismisses it. (Clearing the per-call
+  // signal here is fine — the next check re-derives it.)
   const entry = pendingEducation.get(agentId)
   if (!entry) return res.json({})
   pendingEducation.delete(agentId)
@@ -1121,6 +1131,65 @@ app.delete('/api/education/pending/:agentId', (req, res) => {
   pendingEducation.delete(req.params.agentId)
   res.json({ ok: true })
 })
+
+// Manual dismiss — the one deliberate way past a sticky skill block. The agent
+// must give a reason; the dismissal is recorded (so the block lifts) and a card
+// is posted so Skip sees the skip and its justification.
+app.post('/api/education/dismiss/:agentId', (req, res) => {
+  const agentId = req.params.agentId
+  const reason = (req.body?.reason || '').trim()
+  if (!reason) return res.status(400).json({ error: 'A reason is required to dismiss a skill.' })
+  const requested = Array.isArray(req.body?.skills) ? req.body.skills.filter(Boolean) : null
+
+  const owedDetail = _qualAgentOwed.get(agentId)
+  const toDismiss = (requested && requested.length)
+    ? requested
+    : (owedDetail ? [...owedDetail.keys()] : [])
+  if (toDismiss.length === 0) return res.json({ ok: true, dismissed: [], note: 'nothing currently owed' })
+
+  let dset = _qualAgentDismissed.get(agentId)
+  if (!dset) { dset = new Set(); _qualAgentDismissed.set(agentId, dset) }
+  const done = []
+  for (const skillName of toDismiss) {
+    const detail = owedDetail?.get(skillName) || { scope: 'session', trigger: '', triggerShort: '' }
+    dset.add(qualDismissKey(skillName, detail.scope, detail.trigger))
+    owedDetail?.delete(skillName)
+    done.push({ skill: skillName, scope: detail.scope, trigger: detail.triggerShort || null })
+  }
+  pendingEducation.delete(agentId)
+  emitSkillDismissCard(agentId, done, reason)
+  console.log(`[qualification] ${agentId} DISMISSED ${done.map(d => d.skill).join(', ')} — "${reason}"`)
+  res.json({ ok: true, dismissed: done })
+})
+
+// Post a single merged activity card for one or more dismissed skills.
+function emitSkillDismissCard(agentId, dismissed, reason) {
+  if (!fleetStore) return
+  const agent = fleetStore.getAgent?.(agentId)
+  const label = agent?.friendly_name || agentId.slice(0, 12)
+  const names = dismissed.map(d => d.skill).join(', ')
+  const ctx = dismissed.find(d => d.trigger)?.trigger
+  const text = `⊘ dismissed ${names}${ctx ? ` on ${ctx}` : ''} — "${reason}"`
+  try {
+    fleetStore.share({
+      type: 'activity',
+      from: agentId,
+      to: agentId,
+      text,
+      metadata: {
+        kind: 'skill-dismiss',
+        agentLabel: label,
+        skills: dismissed.map(d => d.skill),
+        scopes: dismissed.map(d => d.scope),
+        trigger: ctx || null,
+        reason,
+      },
+      unread: false,
+    })
+  } catch (e) {
+    console.error(`[qualification] dismiss card failed: ${e.message}`)
+  }
+}
 
 // ---------- Eliza gated nudge status ----------
 let _elizaPending = []
@@ -3109,8 +3178,16 @@ async function handleFleetWsMessage(ws, msg) {
 
 const QUALIFICATIONS_FILE = path.join(os.homedir(), '.claude', 'qualifications.json')
 let _qualRules = []
-const _qualAgentReads = new Map()   // agentId → Set of skill keys + file paths
-const _qualAgentWarned = new Map()  // agentId → Set of "trigger:skill" keys (dedup)
+const _qualAgentReads = new Map()     // agentId → Set of skill keys + file paths
+const _qualAgentDismissed = new Map() // agentId → Set of dismiss keys (skillName | skillName@filepath)
+const _qualAgentOwed = new Map()      // agentId → Map<skillName, {scope, trigger, triggerShort}> — latest context per owed skill, for dismiss lookup
+
+// Dismiss scope: dispositional skills (the `*` rule) and tool-triggered skills
+// are session-scoped (one dismissal sticks for the session). Edit-specific
+// skills are file-scoped (re-prompt on the next file).
+function qualDismissKey(skillName, scope, trigger) {
+  return scope === 'file' ? `${skillName}@${trigger}` : skillName
+}
 
 function loadQualifications() {
   try {
@@ -3152,8 +3229,11 @@ function qualTrackRead(agentId, key) {
   if (!key) return
   if (!_qualAgentReads.has(agentId)) _qualAgentReads.set(agentId, new Set())
   _qualAgentReads.get(agentId).add(key)
-  if (key.startsWith('skill:') && fleetStore) {
-    try { fleetStore.addSkillRead(agentId, key) } catch {}
+  if (key.startsWith('skill:')) {
+    // Reading the skill clears it from the owed set — the block lifts.
+    const owed = _qualAgentOwed.get(agentId)
+    if (owed) owed.delete(key.slice('skill:'.length))
+    if (fleetStore) { try { fleetStore.addSkillRead(agentId, key) } catch {} }
   }
 }
 
@@ -3193,9 +3273,7 @@ function checkQualifications(agentId, tool, arg, input) {
   if (_qualRules.length === 0 || !fleetStore) return
 
   const reads = _qualAgentReads.get(agentId) || new Set()
-  const warned = _qualAgentWarned.get(agentId) || (() => {
-    const s = new Set(); _qualAgentWarned.set(agentId, s); return s
-  })()
+  const dismissed = _qualAgentDismissed.get(agentId) || new Set()
 
   const matchingRules = []
 
@@ -3229,24 +3307,40 @@ function checkQualifications(agentId, tool, arg, input) {
     }
   }
 
+  // Normalize MCP tool names to the rule format. The hook sends raw CC names
+  // (`mcp__tlda__report`); the daemon activity stream sends the already-
+  // normalized `tlda/report`. Tool rules are written in the `namespace/tool`
+  // form, so collapse the raw form to match either source.
+  const toolNorm = tool && tool.startsWith('mcp__') ? tool.slice(5).replace(/__/g, '/') : tool
   for (const rule of _qualRules) {
     if (rule.type !== 'tool') continue
-    if (rule.re.test(tool)) {
-      matchingRules.push({ rule, trigger: tool, triggerShort: tool })
+    if (rule.re.test(toolNorm)) {
+      matchingRules.push({ rule, trigger: toolNorm, triggerShort: toolNorm })
     }
   }
 
+  // Owed = required-by-a-matching-rule, not yet read, not dismissed. Computed
+  // fresh every call (no warn-once suppression) so the block is STICKY: it
+  // re-fires on every retry of the same action until the agent reads the skill
+  // or explicitly dismisses it via dismiss_skill.
+  const owedNow = []
+  let owedDetail = _qualAgentOwed.get(agentId)
   for (const { rule, trigger, triggerShort } of matchingRules) {
+    const scope = (rule.type === 'tool' || rule.pattern === '*') ? 'session' : 'file'
     for (const skillName of rule.requires) {
-      const skillKey = 'skill:' + skillName
-      if (reads.has(skillKey)) continue
-      const warnKey = `${trigger}:${skillName}`
-      if (warned.has(warnKey)) continue
-      warned.add(warnKey)
-
-      pendingEducation.set(agentId, { skill: skillName, ts: Date.now() })
-      console.log(`[qualification] ${agentId} owes ${skillName} (triggered by ${triggerShort})`)
+      if (reads.has('skill:' + skillName)) continue
+      if (dismissed.has(qualDismissKey(skillName, scope, trigger))) continue
+      if (!owedDetail) { owedDetail = new Map(); _qualAgentOwed.set(agentId, owedDetail) }
+      if (!owedDetail.has(skillName)) {
+        console.log(`[qualification] ${agentId} owes ${skillName} (triggered by ${triggerShort})`)
+      }
+      owedDetail.set(skillName, { scope, trigger, triggerShort })
+      owedNow.push(skillName)
     }
+  }
+  if (owedNow.length > 0) {
+    const skills = [...new Set(owedNow)]
+    pendingEducation.set(agentId, { skill: skills[0], skills, ts: Date.now() })
   }
 }
 

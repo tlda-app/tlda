@@ -365,9 +365,10 @@ export function connect() {
             const event = convertChatEvent(raw)
             const eid = raw.id || raw._dbId
             if (eid && eid > _lastEventId) _lastEventId = eid
-            // Deduplicate against existing events
-            const key = `${event.timestamp}:${event.from}`
-            if (_events.some(e => (e._dbId || `${e.timestamp}:${e.from}`) === (eid || key))) continue
+            // Deduplicate by DB id only — never timestamp+from (not unique across
+            // events). The bindOptimisticEcho below reconciles the optimistic copy
+            // (which has no _dbId yet) by content, so this won't drop a real event.
+            if (eid != null && _events.some(e => e._dbId === eid)) continue
             // Echo of a failed-then-recovered send arriving after reconnect. DB rows
             // carry no _tempId, so bind by content (same sender + text) to the orphaned
             // optimistic entry instead of appending a duplicate.

@@ -134,18 +134,37 @@ const pendingNudgeQueue = []  // [{ id, label, targetId, text, ts, msgCount: 0 }
 let nudgeIdCounter = 0
 const NUDGE_EXPIRY_MESSAGES = 10
 
-function queueNudge(targetId, label, text) {
+function queueNudge(targetId, label, text, opts = {}) {
   const nudge = {
     id: ++nudgeIdCounter,
     label,
     targetId,
     text,
+    // 'nudge' = a gated frustration nudge released to the agent on "say it".
+    // 'action' = a clickable command suggestion (e.g. hand off / get qa); clicking
+    // sends `command` verbatim, which eliza routes via its normal command handling.
+    kind: opts.kind || 'nudge',
+    command: opts.command || null,
     ts: Date.now(),
     msgCount: 0,
   }
   pendingNudgeQueue.push(nudge)
-  console.log(`[eliza] queued nudge #${nudge.id} "${label}" for ${targetId}`)
+  console.log(`[eliza] queued ${nudge.kind} #${nudge.id} "${label}" for ${targetId}`)
   broadcastPendingStatus()
+}
+
+// On a frustration signal, also surface "hand off" and "get qa" as clickable
+// suggestions for the same agent (deduped). Clicking sends the command verbatim;
+// eliza's existing handoff / QA routing (keyed on to_id) does the rest.
+function queueFrustrationActions(targetId) {
+  const actions = [
+    { label: 'hand off', command: 'eliza hand this off', text: 'Start a handoff — brief a fresh agent and rotate this one out.' },
+    { label: 'get qa', command: 'eliza get qa', text: 'Send this agent to QA — a reviewer reads its thread and checks whether it did what you asked.' },
+  ]
+  for (const a of actions) {
+    const exists = pendingNudgeQueue.some(n => n.targetId === targetId && n.kind === 'action' && n.label === a.label)
+    if (!exists) queueNudge(targetId, a.label, a.text, { kind: 'action', command: a.command })
+  }
 }
 
 function releaseNudge(nudge) {
@@ -179,12 +198,15 @@ function tickNudgeMessages(agentId) {
 
 function findNudgeByLabel(label) {
   const lower = label.toLowerCase()
+  // Only gated nudges are releasable; action suggestions (hand off / get qa) are
+  // fired by sending their command, not by "eliza <label>".
+  const releasable = pendingNudgeQueue.filter(n => n.kind !== 'action')
   const byIndex = parseInt(lower, 10)
-  if (!isNaN(byIndex) && byIndex >= 1 && byIndex <= pendingNudgeQueue.length) {
-    return pendingNudgeQueue[byIndex - 1]
+  if (!isNaN(byIndex) && byIndex >= 1 && byIndex <= releasable.length) {
+    return releasable[byIndex - 1]
   }
-  return pendingNudgeQueue.find(n => n.label.toLowerCase() === lower) ||
-         pendingNudgeQueue.find(n => n.label.toLowerCase().includes(lower))
+  return releasable.find(n => n.label.toLowerCase() === lower) ||
+         releasable.find(n => n.label.toLowerCase().includes(lower))
 }
 
 const ELIZA_RELEASE_PATTERN = /^eliza\s+(.+)/i
@@ -192,8 +214,9 @@ const ELIZA_SAY_IT_PATTERN = /^(?:eliza\s+)?say\s+it$/i
 
 function tryReleaseFromSkip(text) {
   if (ELIZA_SAY_IT_PATTERN.test(text)) {
-    if (pendingNudgeQueue.length > 0) {
-      releaseNudge(pendingNudgeQueue[0])
+    const first = pendingNudgeQueue.find(n => n.kind !== 'action')
+    if (first) {
+      releaseNudge(first)
       return true
     }
     return false
@@ -217,6 +240,8 @@ function broadcastPendingStatus() {
     label: n.label,
     targetId: n.targetId,
     text: n.text,
+    kind: n.kind,
+    command: n.command,
     ts: n.ts,
     msgCount: n.msgCount,
   }))
@@ -721,6 +746,7 @@ function handleSequence(fromId, toId, text) {
       if (isFuckYou && (state.phase === 'corrected' || state.phase === 'acked')) {
         console.log(`[eliza] fuck-you-in-context → ${toId} (phase=${state.phase})`)
         queueNudge(toId, 'escalation', FUCK_YOU_IN_CONTEXT_MSG)
+        queueFrustrationActions(toId)
         logDecision(toId, 'fuck-you-in-context', 'fuck-you-while-corrected', { phase: state.phase }, text)
         state.phase = 'idle'
         state.windowStart = 0
@@ -731,6 +757,7 @@ function handleSequence(fromId, toId, text) {
       if (state.phase === 'acked') {
         console.log(`[eliza] performing-understanding → ${toId}`)
         queueNudge(toId, 'performing', PERFORMING_UNDERSTANDING_MSG)
+        queueFrustrationActions(toId)
         logDecision(toId, 'performing-understanding', 'correction-after-ack', { phase: state.phase }, text)
         state.phase = 'corrected'
         return 'handled'
@@ -908,15 +935,7 @@ function extractBaseTopic(name) {
 // Returns "topic-Nb" for briefings, "topic-N" for pickups/managers.
 async function nextAgentName(baseTopic, suffix) {
   try {
-    const url = `${SERVER}/api/store/agents`
-    const mod = url.startsWith('https') ? https : http
-    const agents = await new Promise((resolve, reject) => {
-      mod.get(url, res => {
-        let buf = ''
-        res.on('data', c => buf += c)
-        res.on('end', () => { try { resolve(JSON.parse(buf)) } catch { resolve([]) } })
-      }).on('error', () => resolve([]))
-    })
+    const agents = await getJson('/api/store/agents', [])
     const list = Array.isArray(agents) ? agents : (agents.agents || [])
     const names = list.map(a => a.friendly_name || '')
     let maxN = 0
@@ -932,26 +951,13 @@ async function nextAgentName(baseTopic, suffix) {
 }
 
 function resolveAgentId(nameOrId) {
-  try {
-    const url = `${SERVER}/api/store/agents`
-    const mod = url.startsWith('https') ? https : http
-    return new Promise((resolve) => {
-      mod.get(url, res => {
-        let buf = ''
-        res.on('data', c => buf += c)
-        res.on('end', () => {
-          try {
-            const agents = JSON.parse(buf)
-            const list = Array.isArray(agents) ? agents : (agents.agents || [])
-            // Shared label universe: id, friendly_name, explicit labels, pseudo
-            // and lineage tags — matches the chat router's resolution.
-            const agent = list.find(a => labelsForAgent(a).includes(nameOrId))
-            resolve(agent?.id || null)
-          } catch { resolve(null) }
-        })
-      }).on('error', () => resolve(null))
-    })
-  } catch { return Promise.resolve(null) }
+  return getJson('/api/store/agents', []).then(agents => {
+    const list = Array.isArray(agents) ? agents : (agents.agents || [])
+    // Shared label universe: id, friendly_name, explicit labels, pseudo
+    // and lineage tags — matches the chat router's resolution.
+    const agent = list.find(a => labelsForAgent(a).includes(nameOrId))
+    return agent?.id || null
+  })
 }
 
 async function handleRegistration(fromId, text) {
@@ -1188,17 +1194,29 @@ function postJson(urlPath, body) {
   })
 }
 
+// RESILIENCE companion to postJson: a GET that always resolves (parsed JSON,
+// or `fallback` on timeout / network error / parse error). Never hangs — the
+// inline get blocks here had no timeout and could freeze eliza the same way a
+// stuck postJson did.
+function getJson(urlPath, fallback = null) {
+  const url = `${SERVER}${urlPath}`
+  const mod = url.startsWith('https') ? https : http
+  return new Promise((resolve) => {
+    let done = false
+    const finish = (v) => { if (!done) { done = true; resolve(v) } }
+    const req = mod.get(url, res => {
+      let buf = ''
+      res.on('data', c => buf += c)
+      res.on('end', () => { try { finish(JSON.parse(buf)) } catch { finish(fallback) } })
+    })
+    req.setTimeout(15_000, () => { req.destroy(); finish(fallback) })
+    req.on('error', () => finish(fallback))
+  })
+}
+
 async function findAgentManager(agentId) {
   try {
-    const url = `${SERVER}/api/store/tasks`
-    const mod = url.startsWith('https') ? https : http
-    const data = await new Promise((resolve, reject) => {
-      mod.get(url, res => {
-        let buf = ''
-        res.on('data', c => buf += c)
-        res.on('end', () => { try { resolve(JSON.parse(buf)) } catch (e) { reject(e) } })
-      }).on('error', reject)
-    })
+    const data = await getJson('/api/store/tasks', [])
     const tasks = Array.isArray(data) ? data : (data.tasks || [])
     const activeTask = tasks.find(t => t.agent === agentId && t.status === 'pending' && t.delegated_by)
     return activeTask?.delegated_by || null
@@ -1209,45 +1227,19 @@ async function findAgentManager(agentId) {
 }
 
 function resolveAgentName(agentId) {
-  try {
-    const url = `${SERVER}/api/store/agents`
-    const mod = url.startsWith('https') ? https : http
-    return new Promise((resolve) => {
-      mod.get(url, res => {
-        let buf = ''
-        res.on('data', c => buf += c)
-        res.on('end', () => {
-          try {
-            const agents = JSON.parse(buf)
-            const agent = (Array.isArray(agents) ? agents : (agents.agents || []))
-              .find(a => a.id === agentId || a.friendly_name === agentId)
-            resolve(agent?.friendly_name || agentId)
-          } catch { resolve(agentId) }
-        })
-      }).on('error', () => resolve(agentId))
-    })
-  } catch { return agentId }
+  return getJson('/api/store/agents', []).then(agents => {
+    const agent = (Array.isArray(agents) ? agents : (agents.agents || []))
+      .find(a => a.id === agentId || a.friendly_name === agentId)
+    return agent?.friendly_name || agentId
+  })
 }
 
 function resolveAgentCwd(agentId) {
-  try {
-    const url = `${SERVER}/api/store/agents`
-    const mod = url.startsWith('https') ? https : http
-    return new Promise((resolve) => {
-      mod.get(url, res => {
-        let buf = ''
-        res.on('data', c => buf += c)
-        res.on('end', () => {
-          try {
-            const agents = JSON.parse(buf)
-            const agent = (Array.isArray(agents) ? agents : (agents.agents || []))
-              .find(a => a.id === agentId || a.friendly_name === agentId)
-            resolve(agent?.cwd || null)
-          } catch { resolve(null) }
-        })
-      }).on('error', () => resolve(null))
-    })
-  } catch { return null }
+  return getJson('/api/store/agents', []).then(agents => {
+    const agent = (Array.isArray(agents) ? agents : (agents.agents || []))
+      .find(a => a.id === agentId || a.friendly_name === agentId)
+    return agent?.cwd || null
+  })
 }
 
 async function handleManagerEscalation(agentId, triggerText, mode = 'talk-to-skip') {
@@ -1346,15 +1338,8 @@ Skip already told the agent what he wanted — repeatedly. He's exhausted from r
 async function hasInvokedSkillSince(agentId, skillName, sinceTs) {
   try {
     const since = new Date(sinceTs).toISOString()
-    const url = `${SERVER}/api/store/events?agent=${encodeURIComponent(agentId)}&type=activity&since=${encodeURIComponent(since)}&limit=200`
-    const mod = url.startsWith('https') ? https : http
-    const data = await new Promise((resolve, reject) => {
-      mod.get(url, res => {
-        let buf = ''
-        res.on('data', c => buf += c)
-        res.on('end', () => { try { resolve(JSON.parse(buf)) } catch (e) { reject(e) } })
-      }).on('error', reject)
-    })
+    const url = `/api/store/events?agent=${encodeURIComponent(agentId)}&type=activity&since=${encodeURIComponent(since)}&limit=200`
+    const data = await getJson(url, { events: [] })
     return (data.events || []).some(e => {
       try {
         const meta = typeof e.metadata === 'string' ? JSON.parse(e.metadata) : (e.metadata || {})
@@ -1593,12 +1578,14 @@ The briefing is your primary source. Only go to the original thread if the brief
 let ws = null
 let msgId = 1
 let reconnectTimer = null
+let reconnectDelay = 500 // fast first retry, backs off; reset on clean connect
 
 function connect() {
   ws = new WebSocket(WS_URL)
 
   ws.on('open', () => {
     console.log(`[eliza] connected to ${WS_URL}`)
+    reconnectDelay = 500 // back fast next time too
     register()
   })
 
@@ -1611,7 +1598,7 @@ function connect() {
   })
 
   ws.on('close', () => {
-    console.log('[eliza] disconnected, reconnecting in 5s...')
+    console.log(`[eliza] disconnected, reconnecting in ${reconnectDelay}ms...`)
     scheduleReconnect()
   })
 
@@ -1625,7 +1612,11 @@ function scheduleReconnect() {
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null
     connect()
-  }, 5000)
+  }, reconnectDelay)
+  // Catch a short blip in <1s, but back off (cap 5s) so we don't hammer a
+  // server that's down for a while. Was a flat 5s poll → eliza was gone for a
+  // full 5s+ even when the server came right back.
+  reconnectDelay = Math.min(reconnectDelay * 2, 5000)
 }
 
 function send(msg) {
@@ -1803,6 +1794,7 @@ async function checkTriggers(targetId, text) {
       const label = trigger.skill || `trigger-${i}`
       console.log(`[eliza] trigger ${i} fired → ${targetId}: ${trigger.pattern}`)
       queueNudge(targetId, label, message)
+      queueFrustrationActions(targetId)
       // Qualification enforcement is handled by the PreToolUse hook +
       // server-side checkQualifications(). Eliza's role is chat nudges only.
       logDecision(targetId, `single-trigger:${i}`, String(trigger.pattern), {}, text)

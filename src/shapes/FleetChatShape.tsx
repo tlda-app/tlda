@@ -700,11 +700,14 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
 }
 
 function ElizaSuggestion({ nudge, isFirst, agentName }: { nudge: ElizaNudge, isFirst: boolean, agentName: string }) {
+  // Release nudges fire via "eliza <label>"; action suggestions (hand off / get qa)
+  // carry an explicit command. Either way, sending it as a real message keeps a
+  // visible record of what fired and reuses eliza's existing routing.
+  const command = nudge.command || `eliza ${nudge.label}`
+  const canSayIt = isFirst && nudge.kind !== 'action'
   const fire = (e: React.SyntheticEvent) => {
     stopEventPropagation(e as any)
-    // Eliza listens for "eliza <label>" from Skip and releases the matching nudge.
-    // Sending it as a real message keeps a visible record of what fired.
-    sendMessage(nudge.targetId, `eliza ${nudge.label}`)
+    sendMessage(nudge.targetId, command)
   }
   return (
     <span
@@ -715,7 +718,7 @@ function ElizaSuggestion({ nudge, isFirst, agentName }: { nudge: ElizaNudge, isF
       <span className="eliza-suggestion-label">{nudge.label}</span>
       <span className="eliza-suggestion-tip" onPointerDown={stopEventPropagation}>
         <span className="eliza-tip-trigger">
-          Say <b>"eliza {nudge.label}"</b>{isFirst ? <> or <b>"say it"</b></> : null} — or click to send now
+          Say <b>"{command}"</b>{canSayIt ? <> or <b>"say it"</b></> : null} — or click to send now
         </span>
         <span className="eliza-tip-target">→ {agentName}</span>
         <span className="eliza-tip-text">{nudge.text}</span>
@@ -1032,15 +1035,19 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Merge older (scrollback) events with live events
   const events = useMemo(() => {
     if (olderEvents.length === 0) return liveEvents
-    // Deduplicate by _dbId AND timestamp+from (covers pre-reconciliation optimistic events)
+    // Dedup by stable id ONLY — _dbId (persisted) or _tempId (optimistic, which
+    // optimistic-reconcile binds to its _dbId on echo). NEVER timestamp+from:
+    // an agent fires a text block and a tool call on the same millisecond, so
+    // timestamp+from is not unique for activity events — that hack silently
+    // dropped the thinking-text sections.
     const seen = new Set<string>()
     for (const e of liveEvents) {
-      if (e._dbId) seen.add(String(e._dbId))
-      seen.add(`${e.timestamp}:${e.from}`)
+      if (e._dbId != null) seen.add('db:' + e._dbId)
+      if (e._tempId) seen.add('tmp:' + e._tempId)
     }
     const unique = olderEvents.filter((e: any) => {
-      if (e._dbId && seen.has(String(e._dbId))) return false
-      if (seen.has(`${e.timestamp}:${e.from}`)) return false
+      if (e._dbId != null && seen.has('db:' + e._dbId)) return false
+      if (e._tempId && seen.has('tmp:' + e._tempId)) return false
       return true
     })
     return [...unique, ...liveEvents]
@@ -1100,8 +1107,11 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
     const seen = new Set<string>()
     return filtered.filter(n => {
-      if (seen.has(n.label)) return false
-      seen.add(n.label)
+      // Key on target too: the same label (e.g. "hand off") can be pending for
+      // multiple agents at once, and each must stay clickable against its own target.
+      const key = `${n.targetId}::${n.label}`
+      if (seen.has(key)) return false
+      seen.add(key)
       return true
     })
   }, [elizaPendingAll, dnfFilter, resolveToFleetIds])
@@ -1277,7 +1287,9 @@ function FleetChatInner({ shape }: { shape: any }) {
     let activityGroup: any[] = []
     function flushActivity() {
       if (activityGroup.length === 0) return
-      const key = `activity:${activityGroup[0].from}:${activityGroup[0].timestamp}`
+      const a0: any = activityGroup[0]
+      const aid = a0._dbId != null ? `db${a0._dbId}` : a0._tempId ? `tmp${a0._tempId}` : `${a0.from}:${a0.timestamp}`
+      const key = `activity:${aid}`
       items.push({
         key,
         html: `<div class="chat-activity-inline-wrap">${renderActivityGroup(activityGroup, renderCtx)}</div>`,
@@ -1331,7 +1343,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             ? `<div class="build-result-body">${summaryHtml}${lintHtml}</div>`
             : '') +
           `</div>`
-        items.push({ key: m._dbId || `${m.timestamp}:${m.from}:build`, html })
+        items.push({ key: m._dbId || m._tempId || `${m.timestamp}:${m.from}:build`, html })
       } else if (m._evType === 'plan_approval' || m.type === 'plan_approval') {
         flushActivity()
         const agentId: string = m.from || ''
@@ -1349,7 +1361,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           `<button class="plan-supervised-btn" data-agent-id="${esc(agentId)}">✓ Supervised</button>` +
           `<button class="plan-reject-btn" data-agent-id="${esc(agentId)}">✗</button>` +
           `</div></div>`
-        items.push({ key: m._dbId || `${m.timestamp}:${m.from}:plan`, html })
+        items.push({ key: m._dbId || m._tempId || `${m.timestamp}:${m.from}:plan`, html })
       } else if (m.type === 'kill-session') {
         flushActivity()
         const agentObjs: any[] = renderCtx.getAgents()
@@ -1357,7 +1369,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         const targetAgent = agentObjs.find((a: any) => a.id === targetId)
         const targetName = targetAgent?.friendly_name || targetId.replace('fleet:', '')
         const html = `<div class="kill-session-card"><span class="kill-session-icon">⚡</span><span class="kill-session-text">Session killed: <strong>${esc(targetName)}</strong></span></div>`
-        items.push({ key: m._dbId || `${m.timestamp}:${m.from}:kill`, html })
+        items.push({ key: m._dbId || m._tempId || `${m.timestamp}:${m.from}:kill`, html })
       } else if (m.type === 'interrupt') {
         flushActivity()
         const agentObjs: any[] = renderCtx.getAgents()
@@ -1365,12 +1377,12 @@ function FleetChatInner({ shape }: { shape: any }) {
         const targetAgent = agentObjs.find((a: any) => a.id === targetId)
         const targetName = targetAgent?.friendly_name || targetId.replace('fleet:', '')
         const html = `<div class="kill-session-card"><span class="kill-session-icon">⏸</span><span class="kill-session-text">Interrupted: <strong>${esc(targetName)}</strong></span></div>`
-        items.push({ key: m._dbId || `${m.timestamp}:${m.from}:interrupt`, html })
+        items.push({ key: m._dbId || m._tempId || `${m.timestamp}:${m.from}:interrupt`, html })
       } else {
         flushActivity()
         const html = renderChatLine(m, renderCtx)
         if (html) {
-          const item: RawItem = { key: `${m.timestamp}:${m.from}`, html }
+          const item: RawItem = { key: m._dbId || m._tempId || `${m.timestamp}:${m.from}`, html }
           // Tag interrupt system_notices so they jump ahead of queued messages
           if (m._evType === 'system_notice' && m._isInterrupt) {
             item._interrupt = true
@@ -2176,25 +2188,22 @@ function FleetChatInner({ shape }: { shape: any }) {
   useEffect(() => {
     const el = chatLogEl
     if (!el) return
-    // Asymmetric, tolerant thresholds. Because this handler fires ONLY on real
-    // user wheel motion (programmatic pins never dispatch fleet-user-scroll),
-    // there is no pin-vs-user ambiguity here — so the asymmetry that created the
-    // old dead zone (when atBottomStateChange conflated pins with scrolls) does
-    // NOT recur. We deliberately restore the proven-good 120/200 feel:
-    //   - re-engage follow when the user lands within REENGAGE of the bottom
-    //     (generous, so getting back to the bottom is easy — the c12d2cc 32px
-    //     value forced the user to drag all the way to gap 0),
-    //   - disengage only on a DELIBERATE scroll-up past DISENGAGE (a stray
-    //     trackpad nudge in between leaves follow untouched),
-    //   - in the band between, leave follow state unchanged.
-    const REENGAGE = 120
-    const DISENGAGE = 200
+    // SINGLE threshold, no dead band. This handler fires ONLY on real user wheel
+    // motion (programmatic pins never dispatch fleet-user-scroll), so we can set
+    // follow intent directly from the gap the user scrolled to: above the
+    // threshold = "I'm reading, don't follow"; within it = "I'm at the bottom,
+    // follow." The old asymmetric 120/200 dead band left scrolledUp=FALSE in the
+    // 120–200 zone, so a small scroll-up followed by a message or thinking-status
+    // growth pinned the user back down — the "jerked to the bottom when scrolled
+    // up" bug. A single threshold means ANY deliberate scroll-up past it
+    // disengages follow until the user returns to the bottom. Content-induced
+    // gaps never reach here (no wheel event), so false-bottom recovery — which
+    // keys off scrolledUp staying false while content grows — is unaffected.
+    const FOLLOW_THRESHOLD = 120
     const onUserScroll = () => {
       const gap = el.scrollHeight - (el.scrollTop + el.clientHeight)
-      if (gap <= REENGAGE) {
-        userScrolledUpRef.current = false
-      } else if (gap > DISENGAGE && !hardLockedRef.current) {
-        userScrolledUpRef.current = true
+      if (!hardLockedRef.current) {
+        userScrolledUpRef.current = gap > FOLLOW_THRESHOLD
       }
       log.warn('chat-scroll', 'user scroll', { gap, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
     }
@@ -2290,7 +2299,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     if (!mainEditor) return
 
     for (const m of chatMessages) {
-      const msgKey = `${m.timestamp}:${m.from}`
+      const msgKey = m._dbId != null ? `db${m._dbId}` : m._tempId ? `tmp${m._tempId}` : `${m.timestamp}:${m.from}`
       if (sharedDocProcessed.current.has(msgKey)) continue
       sharedDocProcessed.current.add(msgKey)
 
