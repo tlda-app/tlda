@@ -2232,8 +2232,8 @@ async function handleFleetWsMessage(ws, msg) {
 
   if (type === 'amend') {
     // Edit an already-sent chat message in place. Retains prior text in
-    // metadata.amend_history and broadcasts a `chat-updated` so clients
-    // re-render the same message rather than appending a new one.
+    // metadata.amend_history and broadcasts the existing `event-update` so
+    // clients re-render the same message rather than appending a new one.
     const { from: rawFrom, event_id, message: text, inline_attachments } = msg
     if (!text) { error('missing message'); return }
     const resolveSingle = (id) => {
@@ -2246,7 +2246,8 @@ async function handleFleetWsMessage(ws, msg) {
     if (event_id != null) {
       target = fleetStore.getEventById(Number(event_id))
       if (!target || target.type !== 'chat') { reply({ ok: false, error: `no chat message with id ${event_id}` }); return }
-      if (target.from_id !== from) { reply({ ok: false, error: `message ${event_id} was not sent by you` }); return }
+      // getEventById aliases the sender column to `from` (not `from_id`).
+      if (target.from !== from) { reply({ ok: false, error: `message ${event_id} was not sent by you` }); return }
     } else {
       target = fleetStore.getLatestChatFrom?.(from)
       if (!target) { reply({ ok: false, error: 'you have no message to amend' }); return }
