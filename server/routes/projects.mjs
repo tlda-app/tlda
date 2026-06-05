@@ -265,7 +265,7 @@ router.get('/:name/macros', requireRead, (req, res) => {
 // a coordinate; the outline covers exactly the first-word→last-word substring.
 // GET /:name/outline?startLine&startCol&endLine&endCol[&file=path.tex]
 //   -> { markdown, span, file }
-router.get('/:name/outline', requireRead, (req, res) => {
+router.get('/:name/outline', requireRead, async (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
   const startLine = parseInt(req.query.startLine, 10)
@@ -287,18 +287,39 @@ router.get('/:name/outline', requireRead, (req, res) => {
   const slug = `${base}-L${startLine}c${startCol}-L${endLine}c${endCol}`
   const backingFile = join(root, '.outlines', `${slug}.md`)
   try {
-    const markdown = outlineForRegion(region)
-    // Persist the frozen-token model server-local (output/outlines/) so the
-    // move/insert ops (outline-model / outline-apply) can render & check
-    // without re-deriving. The span lets outline-apply target the source range.
-    const model = buildModel(region, structuralLeaves(region))
-    assertRoundTrip(model, region)
-    model.regionFile = file
-    model.span = { startLine, startCol, endLine, endCol }
-    const modelDir = join(getOutputDir(req.params.name), 'outlines')
-    mkdirSync(modelDir, { recursive: true })
-    writeFileSync(join(modelDir, `${slug}.model.json`), JSON.stringify(model), 'utf8')
-    res.json({ markdown, span: { startLine, startCol, endLine, endCol }, file, backingFile, slug })
+    // Best-effort clause outline; if the span yields nothing, fall back to the
+    // raw highlighted text so the extracted note is never empty.
+    let markdown = outlineForRegion(region)
+    if (!markdown || !markdown.trim()) markdown = region
+    // Persist the frozen-token model so the token-edit ops (outline_open /
+    // outline_apply) can render & check without re-deriving. This is the
+    // FRAGILE step: structuralLeaves must be an EXACT partition of the region,
+    // which fails for some LaTeX and used to throw a 500 here — so extraction
+    // silently produced no note at all (the "doesn't work consistently" bug).
+    // Degrade gracefully: if the model can't be built, still return the note
+    // text below; only the token-edit outline ops are unavailable for this span.
+    let modelOk = false
+    try {
+      const model = buildModel(region, structuralLeaves(region))
+      assertRoundTrip(model, region)
+      model.regionFile = file
+      model.span = { startLine, startCol, endLine, endCol }
+      const modelDir = join(getOutputDir(req.params.name), 'outlines')
+      mkdirSync(modelDir, { recursive: true })
+      writeFileSync(join(modelDir, `${slug}.model.json`), JSON.stringify(model), 'utf8')
+      modelOk = true
+    } catch (modelErr) {
+      console.warn(`[outline] token model unavailable for ${slug} (${String(modelErr?.message || modelErr)}); returning plain note`)
+    }
+    // Companion tex / md views so the note can offer the tex/md/outline switch.
+    // tex is the raw region; md is its pandoc conversion (raw tex on failure).
+    const tex = region
+    let mdView = region
+    try {
+      const { execSync } = await import('child_process')
+      mdView = execSync('pandoc -f latex -t markdown --wrap=none', { input: region, encoding: 'utf8', timeout: 10000 })
+    } catch { /* pandoc unavailable — fall back to raw tex */ }
+    res.json({ markdown, tex, md: mdView, span: { startLine, startCol, endLine, endCol }, file, backingFile, slug: modelOk ? slug : '' })
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) })
   }

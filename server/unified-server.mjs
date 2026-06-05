@@ -377,6 +377,73 @@ function ensureLocalDaemon() {
   }
 }
 
+// ---- Eliza supervisor ----
+// Eliza (bin/eliza.mjs, the frustration-watcher pseudo-agent) has no supervisor
+// of its own; if it crashes it stays dead until the next `tlda server start`,
+// which is exactly how it silently went missing. Keep it alive the same way we
+// keep the fleet daemon alive: check its pidfile each tick and respawn it
+// (detached, logging to its own file) when the process is gone, with the same
+// crash-loop backoff so a startup crash doesn't hot-loop.
+const ELIZA_LOG_FILE = join(homedir(), '.config', 'tlda', 'eliza.log')
+const ELIZA_PID_FILE = join(homedir(), '.config', 'tlda', 'eliza.pid')
+const ELIZA_SCRIPT = (() => {
+  const d = dirname(fileURLToPath(import.meta.url))
+  const m = d.match(/^(.+?)\/\.claude\/worktrees\//)
+  return m ? join(m[1], 'bin', 'eliza.mjs') : join(d, '..', 'bin', 'eliza.mjs')
+})()
+let _elizaSpawnInFlight = false
+let _elizaLastSpawnAt = 0
+let _elizaRapidFails = 0
+let _elizaBackoffUntil = 0
+let _elizaGivingUpLogged = false
+
+function ensureEliza() {
+  if (_elizaSpawnInFlight) return
+  const now = Date.now()
+  if (now < _elizaBackoffUntil) return
+  // Already running? (pidfile process alive — eliza writes its own pid on start)
+  if (existsSync(ELIZA_PID_FILE)) {
+    try {
+      const pid = parseInt(readFileSync(ELIZA_PID_FILE, 'utf8').trim(), 10)
+      if (pid > 0) { try { process.kill(pid, 0); return } catch {} } // not alive → respawn
+    } catch (e) { console.warn(`[eliza-supervisor] stale pid file: ${e.message}`) }
+  }
+  if (!existsSync(ELIZA_SCRIPT)) return
+  // Crash-loop guard — same shape/budget as the daemon supervisor.
+  if (_elizaLastSpawnAt > 0 && now - _elizaLastSpawnAt < DAEMON_FAST_DEATH_MS) {
+    _elizaRapidFails++
+    if (_elizaRapidFails >= DAEMON_MAX_RAPID_RESPAWNS) {
+      _elizaBackoffUntil = now + DAEMON_BACKOFF_MS
+      if (!_elizaGivingUpLogged) {
+        console.error(`[eliza-supervisor] eliza crashed ${_elizaRapidFails}× in <${DAEMON_FAST_DEATH_MS}ms each — backing off ${DAEMON_BACKOFF_MS / 1000}s. Tail ${ELIZA_LOG_FILE} for the cause.`)
+        _elizaGivingUpLogged = true
+      }
+      _elizaRapidFails = 0
+      return
+    }
+  } else if (_elizaLastSpawnAt > 0) {
+    _elizaRapidFails = 0
+  }
+  _elizaSpawnInFlight = true
+  try {
+    if (!existsSync(dirname(ELIZA_LOG_FILE))) mkdirSync(dirname(ELIZA_LOG_FILE), { recursive: true })
+    const logFd = openSync(ELIZA_LOG_FILE, 'a')
+    const child = cpSpawn(process.execPath, [ELIZA_SCRIPT], {
+      detached: true,
+      stdio: ['ignore', logFd, logFd],
+      env: { ...process.env, TMUX: undefined, TMUX_PANE: undefined },
+    })
+    child.unref()
+    _elizaLastSpawnAt = now
+    _elizaGivingUpLogged = false
+    console.log('[eliza-supervisor] respawned eliza')
+  } catch (e) {
+    console.error(`[eliza-supervisor] spawn failed: ${e.message}`)
+  } finally {
+    setTimeout(() => { _elizaSpawnInFlight = false }, 3000)
+  }
+}
+
 // Pending RPCs awaiting a daemon `rpc-reply`. Keyed by RPC id.
 // Each entry: { resolve, reject, timer, machine_id }.
 const pendingRpcs = new Map()
@@ -486,6 +553,8 @@ const _contextState = new Map()    // agentId → { percent, inputTokens }
 const _lastActivityAt = new Map()  // agentId → timestamp (ms) — last real activity (thinking, tool call, chat)
 const _viewingContext = new Map()   // agentId → { doc, page, sourceLine, ... , updatedAt }
 let _lastReaperStatus = null       // latest reaper snapshot from daemon
+const _daemonWarnDedup = new Map() // project → { eventId, count, lastSeen, baseText }
+const DAEMON_WARN_DEDUP_MS = 5 * 60 * 1000
 
 const HIBERNATE_IDLE_MS = 20 * 60 * 1000
 
@@ -2039,6 +2108,9 @@ async function handleFleetWsMessage(ws, msg) {
   // A serial loop drains it — one spawn at a time, naturally deduped.
   const _wakeQueue = new Set()
   let _wakeDraining = false
+  // Per-agent throttle so a repeatedly-failing wake doesn't spam Skip's chat.
+  const _wakeFailWarned = new Map() // agentId → last-warned ms
+  const WAKE_FAIL_WARN_MS = 5 * 60 * 1000
   function requestWake(agentId) {
     const agent = fleetStore.getAgent?.(agentId)
     if (!agent || agent.dead || agent.human) return
@@ -2067,6 +2139,20 @@ async function handleFleetWsMessage(ws, msg) {
         ).run('lifecycle', wakeTs, agentId, agentId, 'agent woken', null)
       } catch (e) {
         console.warn(`[respawn] failed for ${agentId}: ${e.message}`)
+        // Surface the failure to Skip instead of failing silently (throttled
+        // per-agent so a stuck wake doesn't spam chat).
+        const _now = Date.now()
+        if (!_wakeFailWarned.has(agentId) || _now - _wakeFailWarned.get(agentId) > WAKE_FAIL_WARN_MS) {
+          _wakeFailWarned.set(agentId, _now)
+          try {
+            deliverTldaFeedbackChat({
+              from: 'fleet:tlda',
+              to: SERVER_OWNER_ID,
+              text: `⚠️ Couldn't wake **${agent.friendly_name || agentId}** — ${e.message}`,
+              metadata: { type: 'wake_failed', agentId },
+            })
+          } catch {}
+        }
       }
     }
     _wakeDraining = false
@@ -3701,8 +3787,25 @@ function handleDaemonWsMessage(ws, msg) {
 
   if (type === 'daemon-warning') {
     const { project, message } = msg
-    const text = project ? `⚠️ daemon sync error on **${project}**: ${message}` : `⚠️ daemon warning: ${message}`
-    deliverTldaFeedbackChat({ from: 'fleet:tlda', to: SERVER_OWNER_ID, text, metadata: { type: 'daemon_warning', docName: project } })
+    const baseText = project ? `⚠️ daemon sync error on **${project}**: ${message}` : `⚠️ daemon warning: ${message}`
+    const key = project || ''
+    const now = Date.now()
+    const existing = _daemonWarnDedup.get(key)
+    if (existing && (now - existing.lastSeen) < DAEMON_WARN_DEDUP_MS) {
+      existing.count++
+      existing.lastSeen = now
+      const updatedText = `${existing.baseText} (×${existing.count})`
+      fleetStore?.updateEventText(existing.eventId, updatedText)
+      broadcastEvent('event-update', { id: existing.eventId, text: updatedText })
+    } else {
+      const metadataJson = JSON.stringify({ type: 'daemon_warning', docName: project })
+      const event = fleetStore?.share?.({ type: 'chat', from: 'fleet:tlda', to: SERVER_OWNER_ID, text: baseText, metadata: metadataJson })
+      if (event) {
+        fleetStore?.addUnread?.(event.id, SERVER_OWNER_ID)
+        broadcastEvent('fleet-event', { type: 'chat', from: 'fleet:tlda', to: SERVER_OWNER_ID, id: event.id, text: baseText, event_id: event.id })
+        _daemonWarnDedup.set(key, { eventId: event.id, count: 1, lastSeen: now, baseText })
+      }
+    }
     return
   }
 
@@ -3810,32 +3913,28 @@ server.listen(PORT, HOST, () => {
   ensureLocalDaemon()
   setInterval(ensureLocalDaemon, DAEMON_SUPERVISOR_INTERVAL_MS).unref()
 
-  // Auto-hibernate DISABLED: this loop killed live agents whose activity was
-  // mis-attributed to a phantom duplicate identity (the sendWS register-id
-  // collision), making real working agents look idle. Re-enable only once
-  // identity is reliable AND idle-detection is verified against the agent's
-  // real row. Gated behind FLEET_AUTO_HIBERNATE=1 so it can't silently return.
+  // Keep Eliza alive too — same cadence as the daemon supervisor.
+  console.log('[eliza-supervisor] watching for eliza')
+  ensureEliza()
+  setInterval(ensureEliza, DAEMON_SUPERVISOR_INTERVAL_MS).unref()
+
   const HIBERNATE_CHECK_MS = 60_000
-  if (process.env.FLEET_AUTO_HIBERNATE === '1') {
-    setInterval(async () => {
-      if (!fleetStore) return
-      const wouldHib = getWouldHibernate()
-      for (const agentId of Object.keys(wouldHib)) {
-        const agent = fleetStore.getAgent(agentId)
-        if (!agent || !agent.tmux_session) continue
-        const route = resolveRpc('kill-session', agent)
-        if (route.via === 'none') continue
-        console.log(`[hibernate] auto-hibernating ${agent.friendly_name || agent.id} (idle ${wouldHib[agentId]}s)`)
-        try {
-          await sendRpc(route.machine_id, 'kill-session', { agent_id: agent.id, tmux_session: agent.tmux_session })
-          clearEphemeralState(agent.id)
-        } catch (e) {
-          console.error(`[hibernate] failed to hibernate ${agent.friendly_name || agent.id}: ${e.message}`)
-        }
+  setInterval(async () => {
+    if (!fleetStore) return
+    const wouldHib = getWouldHibernate()
+    for (const agentId of Object.keys(wouldHib)) {
+      const agent = fleetStore.getAgent(agentId)
+      if (!agent || !agent.tmux_session) continue
+      const route = resolveRpc('kill-session', agent)
+      if (route.via === 'none') continue
+      console.log(`[hibernate] auto-hibernating ${agent.friendly_name || agent.id} (idle ${wouldHib[agentId]}s)`)
+      try {
+        await sendRpc(route.machine_id, 'kill-session', { agent_id: agent.id, tmux_session: agent.tmux_session })
+        clearEphemeralState(agent.id)
+      } catch (e) {
+        console.error(`[hibernate] failed to hibernate ${agent.friendly_name || agent.id}: ${e.message}`)
       }
-      broadcastState()
-    }, HIBERNATE_CHECK_MS).unref()
-  } else {
-    console.log('[hibernate] auto-hibernate DISABLED (set FLEET_AUTO_HIBERNATE=1 to enable)')
-  }
+    }
+    broadcastState()
+  }, HIBERNATE_CHECK_MS).unref()
 })
