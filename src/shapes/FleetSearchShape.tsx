@@ -14,7 +14,7 @@ import {
   useValue,
   createShapeId,
 } from 'tldraw'
-import { createFleetShape } from './fleet-utils'
+import { createFleetShape, agentDisplayName } from './fleet-utils'
 import { useState, useCallback, useRef, useMemo, useEffect, memo } from 'react'
 import { searchFleet, fetchSharedDocs, useFleetAgents, useFleetTasks } from '../fleet-data-adapter'
 import katex from 'katex'
@@ -140,7 +140,7 @@ function makeChatCtx(agents: any[], tasks: any[]) {
   const agentLabel = (id: string) => {
     if (!id) return '[unknown]'
     const a = agents.find((a: any) => a.id === id)
-    if (a) return a.friendly_name || a.id
+    if (a) return agentDisplayName(a)
     return typeof id === 'string' ? id : String(id)
   }
   const getNickClass = (id: string) => {

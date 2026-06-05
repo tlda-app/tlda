@@ -30,7 +30,8 @@ import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useElizaPending, sendMessage, loadBefore, resolveFilter, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
 import type { ElizaNudge } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
-import { agentDisplayName } from './fleet-utils'
+import { agentDisplayName, agentPhase } from './fleet-utils'
+import { PhaseIcon } from './PhaseIcon'
 import { dragCoordinator } from './dragCoordinator'
 import { DocContext, PanelContext } from '../PanelContext'
 import { loadLookup, type LookupData } from '../synctexLookup'
@@ -2956,6 +2957,14 @@ function FleetChatInner({ shape }: { shape: any }) {
     return map
   }, [agents])
 
+  const agentPhases = useMemo(() => {
+    const map: Record<string, string | null> = {}
+    for (const a of agents) {
+      if (a.id) map[a.id] = agentPhase(a)
+    }
+    return map
+  }, [agents])
+
   // Detect pill drag hovering over this chat — returns stable string to avoid flicker
   // Only agent/label pills trigger filter overlay, not content pills (msg, code, etc.)
   const pillOverKey = useValue('pill-over', () => {
@@ -3928,6 +3937,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             filter={filter}
             sendTargets={sendTargets}
             agentNames={agentNames}
+            agentPhases={agentPhases}
             inputRef={inputRef}
           />
           {deadTargetAgent && (
@@ -4453,44 +4463,36 @@ function SendHint({
   filter: _filter,
   sendTargets,
   agentNames,
+  agentPhases,
   inputRef,
 }: {
   filter: [string, string][][]
   sendTargets: string[]
   agentNames: Record<string, string>
+  agentPhases: Record<string, string | null>
   inputRef: React.RefObject<HTMLInputElement | null>
 }) {
-  const [hint, setHint] = useState('')
+  // kind: '' (hidden) | 'empty' (no text, show target) | 'newline' | 'enter'
+  const [kind, setKind] = useState<'' | 'empty' | 'newline' | 'enter'>('')
 
-  const targetLabel = useMemo(() => {
-    if (sendTargets.length === 0) return ''
-    return sendTargets.map(t => agentNames[t] || t.replace('fleet:', '')).join(' + ')
-  }, [sendTargets, agentNames])
+  const hasTargets = sendTargets.length > 0
 
   const update = useCallback(() => {
     const el = inputRef.current as HTMLTextAreaElement | null
-    if (!el) {
-      setHint(targetLabel ? `→ ${targetLabel}` : '')
-      return
-    }
-    const val = el.value
+    const val = el?.value ?? ''
     if (!val) {
-      setHint(targetLabel ? `→ ${targetLabel}` : '')
+      setKind(hasTargets ? 'empty' : '')
       return
     }
-    const pos = el.selectionStart ?? val.length
+    const pos = el!.selectionStart ?? val.length
     const lineStart = val.lastIndexOf('\n', pos - 1) + 1
     const currentLine = val.slice(lineStart, pos)
-    if (currentLine.endsWith(' ')) {
-      setHint('↵ newline')
-    } else {
-      setHint(targetLabel ? `↵ → ${targetLabel}` : '↵')
-    }
-  }, [targetLabel, inputRef])
+    setKind(currentLine.endsWith(' ') ? 'newline' : 'enter')
+  }, [hasTargets, inputRef])
 
   useEffect(() => {
     update()
-  }, [targetLabel, update])
+  }, [hasTargets, update])
 
   useEffect(() => {
     const el = inputRef.current as HTMLTextAreaElement | null
@@ -4508,11 +4510,25 @@ function SendHint({
     }
   }, [inputRef, update])
 
-  if (!hint) return null
+  if (kind === '') return null
+  if (kind === 'newline') return <span className="fleet-chat-send-hint">↵ newline</span>
+
+  // 'empty' and 'enter' both show the target list (with phase icons, mirroring the
+  // agents panel). 'enter' prefixes the ↵ glyph; with no targets it's just ↵.
+  const enterPrefix = kind === 'enter' ? '↵ ' : ''
+  if (!hasTargets) return <span className="fleet-chat-send-hint">↵</span>
+
+  const targets = sendTargets.map((t, i) => (
+    <span key={t} className="send-hint-target" style={{ display: 'inline-flex', alignItems: 'center' }}>
+      {i > 0 ? ' + ' : null}
+      <PhaseIcon phase={agentPhases[t] ?? null} />
+      {agentNames[t] || t.replace('fleet:', '')}
+    </span>
+  ))
 
   return (
-    <span className="fleet-chat-send-hint">
-      {hint}
+    <span className="fleet-chat-send-hint" style={{ display: 'inline-flex', alignItems: 'center', gap: 0 }}>
+      {enterPrefix}→&nbsp;{targets}
     </span>
   )
 }

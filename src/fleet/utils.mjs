@@ -3,6 +3,7 @@ import 'katex/dist/katex.min.css'
 import { getAgents, getAgent } from './fleet-data.mjs'
 import { getActiveMacros } from '../katexMacros'
 import { myTldaUrl } from './tldaUrl.mjs'
+import { baseName } from '../../shared/lineage-name.mjs'
 // Utility functions. Agent lookups read from fleet-data directly.
 
 const _tldaToken = null // was from state.mjs (removed)
@@ -84,7 +85,7 @@ export function humanIdSet() {
 // --- Agent display ---
 export function agentLabel(id) {
   const a = getAgent(id)
-  if (a) return a.friendly_name || a.id
+  if (a) return baseName(a.friendly_name) || a.id
   if (id == null) { fleetError('agentLabel', 'null agent id'); return '[unknown]' }
   return typeof id === 'string' ? id : String(id)
 }
