@@ -700,11 +700,14 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
 }
 
 function ElizaSuggestion({ nudge, isFirst, agentName }: { nudge: ElizaNudge, isFirst: boolean, agentName: string }) {
+  // Release nudges fire via "eliza <label>"; action suggestions (hand off / get qa)
+  // carry an explicit command. Either way, sending it as a real message keeps a
+  // visible record of what fired and reuses eliza's existing routing.
+  const command = nudge.command || `eliza ${nudge.label}`
+  const canSayIt = isFirst && nudge.kind !== 'action'
   const fire = (e: React.SyntheticEvent) => {
     stopEventPropagation(e as any)
-    // Eliza listens for "eliza <label>" from Skip and releases the matching nudge.
-    // Sending it as a real message keeps a visible record of what fired.
-    sendMessage(nudge.targetId, `eliza ${nudge.label}`)
+    sendMessage(nudge.targetId, command)
   }
   return (
     <span
@@ -715,7 +718,7 @@ function ElizaSuggestion({ nudge, isFirst, agentName }: { nudge: ElizaNudge, isF
       <span className="eliza-suggestion-label">{nudge.label}</span>
       <span className="eliza-suggestion-tip" onPointerDown={stopEventPropagation}>
         <span className="eliza-tip-trigger">
-          Say <b>"eliza {nudge.label}"</b>{isFirst ? <> or <b>"say it"</b></> : null} — or click to send now
+          Say <b>"{command}"</b>{canSayIt ? <> or <b>"say it"</b></> : null} — or click to send now
         </span>
         <span className="eliza-tip-target">→ {agentName}</span>
         <span className="eliza-tip-text">{nudge.text}</span>
@@ -1100,8 +1103,11 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
     const seen = new Set<string>()
     return filtered.filter(n => {
-      if (seen.has(n.label)) return false
-      seen.add(n.label)
+      // Key on target too: the same label (e.g. "hand off") can be pending for
+      // multiple agents at once, and each must stay clickable against its own target.
+      const key = `${n.targetId}::${n.label}`
+      if (seen.has(key)) return false
+      seen.add(key)
       return true
     })
   }, [elizaPendingAll, dnfFilter, resolveToFleetIds])

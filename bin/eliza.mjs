@@ -134,18 +134,37 @@ const pendingNudgeQueue = []  // [{ id, label, targetId, text, ts, msgCount: 0 }
 let nudgeIdCounter = 0
 const NUDGE_EXPIRY_MESSAGES = 10
 
-function queueNudge(targetId, label, text) {
+function queueNudge(targetId, label, text, opts = {}) {
   const nudge = {
     id: ++nudgeIdCounter,
     label,
     targetId,
     text,
+    // 'nudge' = a gated frustration nudge released to the agent on "say it".
+    // 'action' = a clickable command suggestion (e.g. hand off / get qa); clicking
+    // sends `command` verbatim, which eliza routes via its normal command handling.
+    kind: opts.kind || 'nudge',
+    command: opts.command || null,
     ts: Date.now(),
     msgCount: 0,
   }
   pendingNudgeQueue.push(nudge)
-  console.log(`[eliza] queued nudge #${nudge.id} "${label}" for ${targetId}`)
+  console.log(`[eliza] queued ${nudge.kind} #${nudge.id} "${label}" for ${targetId}`)
   broadcastPendingStatus()
+}
+
+// On a frustration signal, also surface "hand off" and "get qa" as clickable
+// suggestions for the same agent (deduped). Clicking sends the command verbatim;
+// eliza's existing handoff / QA routing (keyed on to_id) does the rest.
+function queueFrustrationActions(targetId) {
+  const actions = [
+    { label: 'hand off', command: 'eliza hand this off', text: 'Start a handoff — brief a fresh agent and rotate this one out.' },
+    { label: 'get qa', command: 'eliza get qa', text: 'Send this agent to QA — a reviewer reads its thread and checks whether it did what you asked.' },
+  ]
+  for (const a of actions) {
+    const exists = pendingNudgeQueue.some(n => n.targetId === targetId && n.kind === 'action' && n.label === a.label)
+    if (!exists) queueNudge(targetId, a.label, a.text, { kind: 'action', command: a.command })
+  }
 }
 
 function releaseNudge(nudge) {
@@ -179,12 +198,15 @@ function tickNudgeMessages(agentId) {
 
 function findNudgeByLabel(label) {
   const lower = label.toLowerCase()
+  // Only gated nudges are releasable; action suggestions (hand off / get qa) are
+  // fired by sending their command, not by "eliza <label>".
+  const releasable = pendingNudgeQueue.filter(n => n.kind !== 'action')
   const byIndex = parseInt(lower, 10)
-  if (!isNaN(byIndex) && byIndex >= 1 && byIndex <= pendingNudgeQueue.length) {
-    return pendingNudgeQueue[byIndex - 1]
+  if (!isNaN(byIndex) && byIndex >= 1 && byIndex <= releasable.length) {
+    return releasable[byIndex - 1]
   }
-  return pendingNudgeQueue.find(n => n.label.toLowerCase() === lower) ||
-         pendingNudgeQueue.find(n => n.label.toLowerCase().includes(lower))
+  return releasable.find(n => n.label.toLowerCase() === lower) ||
+         releasable.find(n => n.label.toLowerCase().includes(lower))
 }
 
 const ELIZA_RELEASE_PATTERN = /^eliza\s+(.+)/i
@@ -192,8 +214,9 @@ const ELIZA_SAY_IT_PATTERN = /^(?:eliza\s+)?say\s+it$/i
 
 function tryReleaseFromSkip(text) {
   if (ELIZA_SAY_IT_PATTERN.test(text)) {
-    if (pendingNudgeQueue.length > 0) {
-      releaseNudge(pendingNudgeQueue[0])
+    const first = pendingNudgeQueue.find(n => n.kind !== 'action')
+    if (first) {
+      releaseNudge(first)
       return true
     }
     return false
@@ -217,6 +240,8 @@ function broadcastPendingStatus() {
     label: n.label,
     targetId: n.targetId,
     text: n.text,
+    kind: n.kind,
+    command: n.command,
     ts: n.ts,
     msgCount: n.msgCount,
   }))
@@ -1765,6 +1790,7 @@ async function checkTriggers(targetId, text) {
       const label = trigger.skill || `trigger-${i}`
       console.log(`[eliza] trigger ${i} fired → ${targetId}: ${trigger.pattern}`)
       queueNudge(targetId, label, message)
+      queueFrustrationActions(targetId)
       // Qualification enforcement is handled by the PreToolUse hook +
       // server-side checkQualifications(). Eliza's role is chat nudges only.
       logDecision(targetId, `single-trigger:${i}`, String(trigger.pattern), {}, text)
