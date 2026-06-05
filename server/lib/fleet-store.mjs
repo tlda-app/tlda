@@ -1636,7 +1636,7 @@ export class FleetStore {
     // Build messages array from recent events (last 500 chat + lifecycle events)
     const recentEvents = this.db.prepare(`
       SELECT ${this._EVT} FROM events
-      WHERE type IN ('chat', 'delegate', 'task_done', 'lifecycle')
+      WHERE type IN ('chat', 'delegate', 'task_done', 'lifecycle', 'amend')
       ORDER BY timestamp DESC LIMIT 500
     `).all();
 
@@ -1664,6 +1664,11 @@ export class FleetStore {
         msg._description = e.text;
         msg._taskId = e.task_id;
         msg._agent = e.agent_id;
+      } else if (e.type === 'amend') {
+        // Reference-event amend: carry metadata so the client can fold it into
+        // its original (metadata.amends) and show the right version/source.
+        msg.type = 'amend';
+        if (meta) msg.metadata = meta;
       }
       return msg;
     });

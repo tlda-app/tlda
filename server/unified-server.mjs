@@ -2231,9 +2231,13 @@ async function handleFleetWsMessage(ws, msg) {
   }
 
   if (type === 'amend') {
-    // Edit an already-sent chat message in place. Retains prior text in
-    // metadata.amend_history and broadcasts the existing `event-update` so
-    // clients re-render the same message rather than appending a new one.
+    // Amend = a NEW event of type 'amend' that REFERENCES the original chat
+    // event (metadata.amends = <original id>). The original row is NEVER
+    // mutated — fully immutable, an accountability trail. The client folds
+    // amend events into their original message and renders the version (V{n})
+    // stepper. Each version (original + each amend) carries its OWN
+    // metadata.source, so the file-section provenance chip reflects whichever
+    // version is being viewed (a string-form amend has no source → no chip).
     const { from: rawFrom, event_id, message: text, inline_attachments, source } = msg
     if (!text) { error('missing message'); return }
     const resolveSingle = (id) => {
@@ -2245,35 +2249,39 @@ async function handleFleetWsMessage(ws, msg) {
     let target
     if (event_id != null) {
       target = fleetStore.getEventById(Number(event_id))
-      if (!target || target.type !== 'chat') { reply({ ok: false, error: `no chat message with id ${event_id}` }); return }
+      if (!target) { reply({ ok: false, error: `no message with id ${event_id}` }); return }
       // getEventById aliases the sender column to `from` (not `from_id`).
       if (target.from !== from) { reply({ ok: false, error: `message ${event_id} was not sent by you` }); return }
     } else {
       target = fleetStore.getLatestChatFrom?.(from)
       if (!target) { reply({ ok: false, error: 'you have no message to amend' }); return }
     }
-    const hadSource = !!(target.metadata && typeof target.metadata === 'object' && target.metadata.source)
-    if (inline_attachments || source || hadSource) {
-      try {
-        const meta = target.metadata && typeof target.metadata === 'object' ? { ...target.metadata } : {}
-        if (inline_attachments) meta.inline_attachments = inline_attachments
-        // file-form amend sets provenance; string-form amend clears any prior one.
-        // updateEventMetadata applies a JSON merge-patch (json_patch), so a key is
-        // removed by setting it to null — omitting it would leave the old value.
-        meta.source = source || null
-        fleetStore.updateEventMetadata?.(target.id, meta)
-      } catch (e) { console.error(`[amend] metadata update failed (non-fatal): ${e.message}`) }
-    }
-    fleetStore.amendEventText(target.id, text)
-    reply({ ok: true, event_id: target.id })
-    // Reuse the existing in-place `event-update` envelope — the client already
-    // finds the message by id and replaces its text/attachments in place.
-    broadcastEvent('event-update', {
-      id: target.id,
-      text,
+    // All amends chain off the ORIGINAL chat event. If the target is itself an
+    // amend (agent passed an amend id), follow its reference to the original.
+    const origId = (target.type === 'amend' && target.metadata?.amends) ? target.metadata.amends : target.id
+    const orig = origId === target.id ? target : fleetStore.getEventById(Number(origId))
+    if (!orig || orig.type !== 'chat') { reply({ ok: false, error: `cannot resolve original message for ${target.id}` }); return }
+
+    const ts = new Date().toISOString()
+    const meta = {
+      amends: orig.id,
+      ...(source ? { source } : {}),
       ...(inline_attachments ? { inline_attachments } : {}),
-      // carry source on any change (null clears a prior provenance chip)
-      ...((source || hadSource) ? { source: source || null } : {}),
+    }
+    const result = fleetStore.db.prepare(
+      'INSERT INTO events (type, timestamp, from_id, to_id, text, metadata) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run('amend', ts, from, orig.to, text, JSON.stringify(meta))
+    const amendId = Number(result.lastInsertRowid)
+    reply({ ok: true, event_id: orig.id, amend_id: amendId })
+    // Broadcast the amend event; the client folds it into the original message.
+    broadcastEvent('fleet-event', {
+      id: amendId,
+      type: 'amend',
+      timestamp: ts,
+      from_id: from,
+      to_id: orig.to,
+      text,
+      metadata: meta,
     })
     return
   }
