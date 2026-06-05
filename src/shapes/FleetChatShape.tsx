@@ -1236,6 +1236,10 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Items tagged _queued render below the thinking indicator; _interrupt items
   // render between the indicator and the queue (they "jump the line").
   type RawItem = { key: string; html: string; _queued?: boolean; _interrupt?: boolean; _divider?: boolean }
+  // Short hash of the version currently shown in the viewer (accounts for
+  // scrubbing to a historical version). Build cards compare against this to
+  // style themselves green (you're viewing this build) vs gray (stale).
+  const viewingVersion = currentDocVersion(panel)
   const rawItems = useMemo(() => {
     // Extend ctx with thinking state so renderChatLine can apply queued styling
     const renderCtx = { ...ctx, thinkingAgents }
@@ -1270,7 +1274,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         activityGroup.push(m)
       } else if (m.metadata?.type === 'build_result') {
         flushActivity()
-        const { name: docName, hash, summary, lintFindings = [] } = m.metadata
+        const { name: docName, hash, summary, lintFindings = [], mirrorFailed } = m.metadata
         const hasDetails = !!(summary || lintFindings.length > 0)
         const lintCount = lintFindings.length
         const lintBadge = lintCount > 0
@@ -1279,7 +1283,14 @@ function FleetChatInner({ shape }: { shape: any }) {
         const summaryHtml = summary ? renderCtx.renderMarkdown(esc(summary)) : ''
         const lintHtml = lintFindings.map((f: any) => renderCtx.renderMarkdown(esc(f.text))).join('')
         const toggle = hasDetails ? `<span class="build-result-toggle">▾</span>` : ''
-        const html = `<div class="build-result-card">` +
+        // Status color: red = mirror/build failed; green = the version you're
+        // viewing is this build; gray = a newer build you haven't loaded (or a
+        // card for a doc you're not currently viewing).
+        const builtHash = String(hash || '').slice(0, 7)
+        let statusCls = 'build-result-neutral'
+        if (mirrorFailed) statusCls = 'build-result-failed'
+        else if (docName === doc) statusCls = (viewingVersion && viewingVersion === builtHash) ? 'build-result-current' : 'build-result-stale'
+        const html = `<div class="build-result-card ${statusCls}">` +
           `<div class="build-result-header">` +
           `<span class="build-result-icon">🔨</span>` +
           `<span class="build-result-title">Build <code>${esc(hash)}</code> — <strong>${esc(docName)}</strong></span>` +
@@ -1345,7 +1356,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     flushActivity()
     return items
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatMessages, ctx, thinkingAgents, unqueuedAt])
+  }, [chatMessages, ctx, thinkingAgents, unqueuedAt, viewingVersion, doc])
 
   // Per-item post-processing: applies chip replacement, URL linkification, and
   // doc-link resolution to a single item's HTML. Called by ChatMessageRow only
