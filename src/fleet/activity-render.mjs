@@ -531,9 +531,18 @@ export function renderActivityGroup(group, ctx) {
         return `<div class="activity-status-badge interrupt-badge">⏸ interrupted</div>`
       }
       if (fullText.startsWith('📬')) return ''
+      // Render what the agent actually SAID/thought as markdown (code fences,
+      // lists, math) — same renderer as every other rich block in this file —
+      // instead of raw escaped text. This is the agent-terminal rendering Skip
+      // relies on when an agent dumps code/thinking instead of chatting.
+      // KEEP the fixed-height `scrollable` cap on long blocks: removing it let a
+      // single block balloon to ~26000px, whose massive reflow destabilized the
+      // chat scroll. Long blocks scroll within their own box; markdown still
+      // renders. renderMarkdown expects esc()'d input.
       const allLines = fullText.split('\n')
       const long = allLines.length > 12 || fullText.length > 800
-      return fullText ? `<div class="activity-text-block${long ? ' scrollable' : ''}">${esc(fullText)}</div>` : ''
+      const body = ctx.renderMarkdown ? ctx.renderMarkdown(esc(fullText)) : esc(fullText)
+      return fullText ? `<div class="activity-text-block${long ? ' scrollable' : ''}"><div class="pretty-msg-body">${body}</div></div>` : ''
     }
     const deduped = dedupTools(seg.items)
     const toolLines = deduped.map(t => {
