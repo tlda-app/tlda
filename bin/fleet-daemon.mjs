@@ -1722,6 +1722,11 @@ async function rpcSpawn({ name, model, cwd, doc, respawn, effort }) {
     _activeSpawns.delete(agentName)
     if (err) {
       log.warn(`fleet-spawn finished with error: ${agentName}: ${stderr || err.message}`)
+      // Spawn is fire-and-forget (we already returned ok:true), so this async
+      // failure is invisible to the server unless we report it. Surface it so a
+      // chat-wake that can't resume an agent isn't silently swallowed.
+      const detail = ((stderr || err.message || '').trim().split('\n').filter(Boolean).pop()) || 'unknown error'
+      sendMsg({ type: 'daemon-warning', message: `couldn't ${respawn ? 'wake' : 'spawn'} ${agentName} — ${detail}` })
     } else {
       log.info(`fleet-spawn finished: ${agentName}: ${stdout.trim()}`)
     }

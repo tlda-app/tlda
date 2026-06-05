@@ -714,7 +714,7 @@ export function getFleetTools() {
             properties: {
               name: { type: 'string', description: 'Agent name (auto-generated if omitted)' },
               cwd: { type: 'string', description: 'Working directory (inherits from caller if omitted)' },
-              model: { type: 'string', description: 'Model override (default: sonnet)' },
+              model: { type: 'string', description: 'Model override (omit to use fleet-spawn\'s default)' },
               effort: { type: 'string', description: 'Effort level: low|medium|high|xhigh|max (default: inherit global config)' },
             },
           },
@@ -875,7 +875,7 @@ export function getFleetTools() {
           fresh: { type: 'boolean', description: 'Create a fresh agent instead of respawning.' },
           refresh: { type: 'boolean', description: 'Fresh session for existing agent (same fleet ID, breaks compaction loops).' },
           name: { type: 'string', description: 'Name for the new agent (fresh mode only).' },
-          model: { type: 'string', description: 'Model override. Default: sonnet.' },
+          model: { type: 'string', description: 'Model override. Omit to use fleet-spawn\'s default.' },
           cwd: { type: 'string', description: 'Working directory (fresh mode only).' },
           effort: { type: 'string', description: 'Effort level: low|medium|high|xhigh|max (default: inherit global config).' },
           mode: { type: 'string', description: 'Permission mode for claude (e.g. plan, default, auto). Falls back to spawnMode in ~/.config/tlda/config.json.' },
@@ -3873,7 +3873,7 @@ const WS_TIMEOUT_MS = 10000;
  * Returns the result on success, throws on error or timeout.
  * If WS is not connected, returns null (caller should fallback to REST).
  */
-function sendWS(type, params = {}) {
+function _sendWSOnce(type, params = {}) {
   if (!_channelRWS?.connected) return null;
   const id = crypto.randomUUID();
   const promise = new Promise((resolve, reject) => {
@@ -3889,6 +3889,24 @@ function sendWS(type, params = {}) {
     return null;
   }
   return promise;
+}
+
+// Retry transient disconnects before reporting the server as down. The common
+// false "server down" is a momentary !connected window while ResilientWS
+// reconnects — it fails instantly, not because of a real outage — so we retry
+// that fast not-connected case a few times (~2s total) to ride through the
+// reconnect. A genuine in-flight request timeout (WS_TIMEOUT_MS = a real stall)
+// is NOT retried; it surfaces as before. Contract preserved: resolves with data
+// when up, returns null only when still not connected after the retries.
+async function sendWS(type, params = {}) {
+  const MAX_ATTEMPTS = 4;
+  const RETRY_DELAY_MS = 700;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    const result = _sendWSOnce(type, params);
+    if (result !== null) return await result; // connected — await the response
+    if (attempt < MAX_ATTEMPTS - 1) await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
+  }
+  return null; // still not connected after retries — genuinely down
 }
 
 async function _flushUnread() {

@@ -74,15 +74,18 @@ export function resolveInlineAttachments(text, inlineAttachments, renderMarkdown
 
 // --- Main renderer ---
 
-const PHASE_ICON_DAWN = '<svg width="10" height="10" viewBox="0 0 16 16" style="opacity:0.6;vertical-align:-1px;margin-right:2px"><line x1="0.5" y1="11" x2="15.5" y2="11" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round"/><path d="M9 11 a3 3 0 0 1 6 0" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round"/><line x1="12" y1="6" x2="12" y2="4" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round"/><line x1="15" y1="9" x2="16.5" y2="8" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round"/></svg>'
+// Phase icons mirror FleetAgentsShape's PhaseIcon exactly: dawn (the default
+// worker) gets NO icon; only the non-default roles are marked — day (manager)
+// is a midday sun, dusk (consultant) is a horizon sun.
+const PHASE_ICON_DAY = '<svg width="10" height="10" viewBox="0 0 16 16" style="opacity:0.6;vertical-align:-1px;margin-right:2px"><circle cx="8" cy="8" r="3" stroke="currentColor" fill="none" stroke-width="1.5"/><line x1="8" y1="1" x2="8" y2="2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="8" y1="13.5" x2="8" y2="15" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="1" y1="8" x2="2.5" y2="8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="13.5" y1="8" x2="15" y2="8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>'
 const PHASE_ICON_DUSK = '<svg width="10" height="10" viewBox="0 0 16 16" style="opacity:0.6;vertical-align:-1px;margin-right:2px"><line x1="0.5" y1="11" x2="15.5" y2="11" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round"/><path d="M1 11 a3 3 0 0 1 6 0" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round"/><line x1="4" y1="6" x2="4" y2="4" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round"/><line x1="1" y1="9" x2="-0.5" y2="8" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round"/></svg>'
 
 function phaseIconHtml(agentId, getAgents) {
   if (!getAgents) return ''
   const agents = getAgents()
   const a = agents?.find(x => x.id === agentId)
-  if (!a?.phase || a.phase === 'day') return ''
-  return a.phase === 'dawn' ? PHASE_ICON_DAWN : a.phase === 'dusk' ? PHASE_ICON_DUSK : ''
+  if (!a?.phase || a.phase === 'dawn') return ''
+  return a.phase === 'day' ? PHASE_ICON_DAY : a.phase === 'dusk' ? PHASE_ICON_DUSK : ''
 }
 
 export function renderChatLine(m, ctx) {
@@ -375,11 +378,11 @@ export function renderChatLine(m, ctx) {
   // Multi-target: show all cc recipients
   let toHtml
   if (m.cc && m.cc.length > 1) {
-    toHtml = m.cc.map(id => `<span class="agent-nick ${getNickClass(id)}" data-agent-id="${esc(id)}">${esc(agentLabel(id))}</span>`).join('<span class="cc-separator">,</span>')
+    toHtml = m.cc.map(id => `<span class="agent-nick ${getNickClass(id)}" data-agent-id="${esc(id)}">${phaseIconHtml(id, getAgents)}${esc(agentLabel(id))}</span>`).join('<span class="cc-separator">,</span>')
   } else {
     const toNick = agentLabel(m.to)
     const toCls = getNickClass(m.to)
-    toHtml = `<span class="agent-nick ${toCls}" data-agent-id="${esc(m.to)}">${esc(toNick)}</span>`
+    toHtml = `<span class="agent-nick ${toCls}" data-agent-id="${esc(m.to)}">${phaseIconHtml(m.to, getAgents)}${esc(toNick)}</span>`
   }
 
   // Render attachments as interactive refs
@@ -478,9 +481,10 @@ export function renderChatLine(m, ctx) {
   const planEmoji = planModeType === 'outline' ? '📝' : '📅'
   const planTitle = planModeType === 'outline' ? 'outline mode' : 'plan mode'
   const planBadge = planMode ? `<span class="plan-mode-badge plan-badge-click" data-agent-id="${esc(m.from)}" title="Click to exit ${planTitle}">${planEmoji}</span>` : ''
+  const fromPhaseIcon = phaseIconHtml(m.from, getAgents)
   const nickHtml = isAmbient
-    ? `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(nick)}</span>${planBadge}<span class="chat-arrow">${arrowHtml}</span>${toHtml}:</span>`
-    : `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(nick)}</span>${planBadge}:</span>`
+    ? `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${fromPhaseIcon}${esc(nick)}</span>${planBadge}<span class="chat-arrow">${arrowHtml}</span>${toHtml}:</span>`
+    : `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${fromPhaseIcon}${esc(nick)}</span>${planBadge}:</span>`
   // Long message: block display
   const rawLineCount = (m.text || '').split('\n').length
   const isLongMsg = rawLineCount > 20
