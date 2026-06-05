@@ -1035,15 +1035,19 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Merge older (scrollback) events with live events
   const events = useMemo(() => {
     if (olderEvents.length === 0) return liveEvents
-    // Deduplicate by _dbId AND timestamp+from (covers pre-reconciliation optimistic events)
+    // Dedup by stable id ONLY — _dbId (persisted) or _tempId (optimistic, which
+    // optimistic-reconcile binds to its _dbId on echo). NEVER timestamp+from:
+    // an agent fires a text block and a tool call on the same millisecond, so
+    // timestamp+from is not unique for activity events — that hack silently
+    // dropped the thinking-text sections.
     const seen = new Set<string>()
     for (const e of liveEvents) {
-      if (e._dbId) seen.add(String(e._dbId))
-      seen.add(`${e.timestamp}:${e.from}`)
+      if (e._dbId != null) seen.add('db:' + e._dbId)
+      if (e._tempId) seen.add('tmp:' + e._tempId)
     }
     const unique = olderEvents.filter((e: any) => {
-      if (e._dbId && seen.has(String(e._dbId))) return false
-      if (seen.has(`${e.timestamp}:${e.from}`)) return false
+      if (e._dbId != null && seen.has('db:' + e._dbId)) return false
+      if (e._tempId && seen.has('tmp:' + e._tempId)) return false
       return true
     })
     return [...unique, ...liveEvents]
@@ -1283,7 +1287,9 @@ function FleetChatInner({ shape }: { shape: any }) {
     let activityGroup: any[] = []
     function flushActivity() {
       if (activityGroup.length === 0) return
-      const key = `activity:${activityGroup[0].from}:${activityGroup[0].timestamp}`
+      const a0: any = activityGroup[0]
+      const aid = a0._dbId != null ? `db${a0._dbId}` : a0._tempId ? `tmp${a0._tempId}` : `${a0.from}:${a0.timestamp}`
+      const key = `activity:${aid}`
       items.push({
         key,
         html: `<div class="chat-activity-inline-wrap">${renderActivityGroup(activityGroup, renderCtx)}</div>`,
@@ -1337,7 +1343,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             ? `<div class="build-result-body">${summaryHtml}${lintHtml}</div>`
             : '') +
           `</div>`
-        items.push({ key: m._dbId || `${m.timestamp}:${m.from}:build`, html })
+        items.push({ key: m._dbId || m._tempId || `${m.timestamp}:${m.from}:build`, html })
       } else if (m._evType === 'plan_approval' || m.type === 'plan_approval') {
         flushActivity()
         const agentId: string = m.from || ''
@@ -1355,7 +1361,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           `<button class="plan-supervised-btn" data-agent-id="${esc(agentId)}">✓ Supervised</button>` +
           `<button class="plan-reject-btn" data-agent-id="${esc(agentId)}">✗</button>` +
           `</div></div>`
-        items.push({ key: m._dbId || `${m.timestamp}:${m.from}:plan`, html })
+        items.push({ key: m._dbId || m._tempId || `${m.timestamp}:${m.from}:plan`, html })
       } else if (m.type === 'kill-session') {
         flushActivity()
         const agentObjs: any[] = renderCtx.getAgents()
@@ -1363,7 +1369,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         const targetAgent = agentObjs.find((a: any) => a.id === targetId)
         const targetName = targetAgent?.friendly_name || targetId.replace('fleet:', '')
         const html = `<div class="kill-session-card"><span class="kill-session-icon">⚡</span><span class="kill-session-text">Session killed: <strong>${esc(targetName)}</strong></span></div>`
-        items.push({ key: m._dbId || `${m.timestamp}:${m.from}:kill`, html })
+        items.push({ key: m._dbId || m._tempId || `${m.timestamp}:${m.from}:kill`, html })
       } else if (m.type === 'interrupt') {
         flushActivity()
         const agentObjs: any[] = renderCtx.getAgents()
@@ -1371,12 +1377,12 @@ function FleetChatInner({ shape }: { shape: any }) {
         const targetAgent = agentObjs.find((a: any) => a.id === targetId)
         const targetName = targetAgent?.friendly_name || targetId.replace('fleet:', '')
         const html = `<div class="kill-session-card"><span class="kill-session-icon">⏸</span><span class="kill-session-text">Interrupted: <strong>${esc(targetName)}</strong></span></div>`
-        items.push({ key: m._dbId || `${m.timestamp}:${m.from}:interrupt`, html })
+        items.push({ key: m._dbId || m._tempId || `${m.timestamp}:${m.from}:interrupt`, html })
       } else {
         flushActivity()
         const html = renderChatLine(m, renderCtx)
         if (html) {
-          const item: RawItem = { key: `${m.timestamp}:${m.from}`, html }
+          const item: RawItem = { key: m._dbId || m._tempId || `${m.timestamp}:${m.from}`, html }
           // Tag interrupt system_notices so they jump ahead of queued messages
           if (m._evType === 'system_notice' && m._isInterrupt) {
             item._interrupt = true
@@ -2296,7 +2302,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     if (!mainEditor) return
 
     for (const m of chatMessages) {
-      const msgKey = `${m.timestamp}:${m.from}`
+      const msgKey = m._dbId != null ? `db${m._dbId}` : m._tempId ? `tmp${m._tempId}` : `${m.timestamp}:${m.from}`
       if (sharedDocProcessed.current.has(msgKey)) continue
       sharedDocProcessed.current.add(msgKey)
 
