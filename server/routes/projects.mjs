@@ -25,7 +25,8 @@ import {
   extractBuildErrors, extractPipelineWarnings, addBookMember, getProjectsDir, projectDir as getProjectDir,
 } from '../lib/project-store.mjs'
 import { runBuild, getBuildStatus } from '../lib/build-runner.mjs'
-import { outlineForRegion } from '../lib/outline/outline.mjs'
+import { outlineForRegion, regionFromSpan, structuralLeaves } from '../lib/outline/outline.mjs'
+import { buildModel, render as renderModel, check as checkModel, parseEditedOutline, emitModelMarkdown, assertRoundTrip } from '../lib/outline/model.mjs'
 import { loadSynctex } from '../lib/synctex-query.mjs'
 import { buildMarkdown, buildHtml, buildSlides } from '../lib/format-builders.mjs'
 import { shouldBuildOnPush } from '../lib/build-decision.mjs'
@@ -258,22 +259,91 @@ router.get('/:name/macros', requireRead, (req, res) => {
   }
 })
 
-// Clause-grain outline of a source line range — drives the "outline" highlighter.
-// GET /:name/outline?lines=A-B[&file=path.tex]  ->  { markdown, lines, file }
+// Clause-grain outline of a word-precise source span — drives the "outline"
+// highlighter. The span is (startLine,startCol)→(endLine,endCol), 1-indexed
+// lines / 0-indexed cols, collapsed to whole words server-side. Lines are only
+// a coordinate; the outline covers exactly the first-word→last-word substring.
+// GET /:name/outline?startLine&startCol&endLine&endCol[&file=path.tex]
+//   -> { markdown, span, file }
 router.get('/:name/outline', requireRead, (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
-  const m = String(req.query.lines || '').match(/^(\d+)-(\d+)$/)
-  if (!m) return res.status(400).json({ error: 'lines=A-B required' })
-  const A = parseInt(m[1], 10)
-  const B = parseInt(m[2], 10)
+  const startLine = parseInt(req.query.startLine, 10)
+  const startCol = parseInt(req.query.startCol, 10)
+  const endLine = parseInt(req.query.endLine, 10)
+  const endCol = parseInt(req.query.endCol, 10)
+  if (![startLine, startCol, endLine, endCol].every(Number.isFinite)) {
+    return res.status(400).json({ error: 'startLine, startCol, endLine, endCol required' })
+  }
   const file = String(req.query.file || project.mainFile || 'main.tex')
   const texPath = join(getSourceDir(req.params.name), file)
   if (!existsSync(texPath)) return res.status(404).json({ error: `tex not found: ${file}` })
-  const all = readFileSync(texPath, 'utf8').split('\n')
-  const region = all.slice(A - 1, B).join('\n') + '\n'
+  const text = readFileSync(texPath, 'utf8')
+  const region = regionFromSpan(text, startLine, startCol, endLine, endCol)
+  // Backing file for the outline note — lives under <project-root>/.outlines/ in
+  // the authoring source tree so agents can open/edit it. Stable per span.
+  const root = project.sourceDir || getSourceDir(req.params.name)
+  const base = String(file).replace(/\.tex$/, '').split('/').pop()
+  const slug = `${base}-L${startLine}c${startCol}-L${endLine}c${endCol}`
+  const backingFile = join(root, '.outlines', `${slug}.md`)
   try {
-    res.json({ markdown: outlineForRegion(region), lines: [A, B], file })
+    const markdown = outlineForRegion(region)
+    // Persist the frozen-token model server-local (output/outlines/) so the
+    // move/insert ops (outline-model / outline-apply) can render & check
+    // without re-deriving. The span lets outline-apply target the source range.
+    const model = buildModel(region, structuralLeaves(region))
+    assertRoundTrip(model, region)
+    model.regionFile = file
+    model.span = { startLine, startCol, endLine, endCol }
+    const modelDir = join(getOutputDir(req.params.name), 'outlines')
+    mkdirSync(modelDir, { recursive: true })
+    writeFileSync(join(modelDir, `${slug}.model.json`), JSON.stringify(model), 'utf8')
+    res.json({ markdown, span: { startLine, startCol, endLine, endCol }, file, backingFile, slug })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// Load the persisted outline model for a slug.
+function loadOutlineModel(name, slug) {
+  if (!/^[\w.\-]+$/.test(String(slug || ''))) return null
+  const p = join(getOutputDir(name), 'outlines', `${slug}.model.json`)
+  if (!existsSync(p)) return null
+  return JSON.parse(readFileSync(p, 'utf8'))
+}
+
+// GET /:name/outline-model?slug=… — the id-tagged outline an agent edits.
+// This is the move/insert surface (each token carries an [id] handle); the
+// agent reorders [id] lines or adds [NEW] lines, never rewriting a token.
+router.get('/:name/outline-model', requireRead, (req, res) => {
+  const model = loadOutlineModel(req.params.name, req.query.slug)
+  if (!model) return res.status(404).json({ error: 'outline model not found' })
+  res.json({ markdown: emitModelMarkdown(model), slug: String(req.query.slug) })
+})
+
+// POST /:name/outline-apply { slug, editedMd } — the "tokens not words" gate.
+// render→check the edited id-outline against the frozen model. A rewritten token
+// is a hard reject; a clean move/insert returns the candidate .tex for the
+// caller (the MCP outline_apply tool) to route through propose_edit. This route
+// never writes the source — it only computes the candidate.
+router.post('/:name/outline-apply', requireRead, (req, res) => {
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+  const { slug, editedMd } = req.body || {}
+  const model = loadOutlineModel(req.params.name, slug)
+  if (!model) return res.status(404).json({ error: 'outline model not found' })
+  try {
+    const entries = parseEditedOutline(String(editedMd || ''))
+    const result = checkModel(model, entries)
+    if (result.violations.length) {
+      return res.json({ ok: false, violations: result.violations })
+    }
+    const oldText = renderModel(model, model.leaves.map((l) => ({ id: l.id })))
+    const newText = renderModel(model, entries)
+    // Absolute authoring path — what the MCP process / propose_edit reads.
+    const root = project.sourceDir || getSourceDir(req.params.name)
+    const file = join(root, model.regionFile || project.mainFile || 'main.tex')
+    res.json({ ok: true, candidate: { file, oldText, newText }, moves: result.moves, inserts: result.inserts, deletes: result.deletes })
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) })
   }

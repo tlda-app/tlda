@@ -63,7 +63,7 @@ import { latex } from 'codemirror-lang-latex'
 // KaTeX HTML back in. Rendering text segments individually causes markdown-it
 // to wrap each one in its own <p>, which produces spurious line breaks around
 // every inline $...$.
-function renderMarkdownMath(text: string, showErrors = false): string {
+export function renderMarkdownMath(text: string, showErrors = false): string {
   const katexOptions = { macros: getActiveMacros(), throwOnError: true }
   const placeholders: string[] = []
 

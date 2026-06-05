@@ -426,34 +426,25 @@ export function connect() {
         return
       }
 
-      // State updates (agents + tasks + ephemeral state) — no event field
+      // Full-state snapshot (sent once on connect) — no event field
       if (msg.agents && !msg.event) {
         updateAgents(msg.agents || [])
         updateTasks(msg.tasks || [])
-        // Sync thinking/compacting state from server (authoritative)
-        // Clear agents no longer thinking, add/update those that are
-        const serverThinking = new Set(Object.keys(msg.thinking || {}))
-        const serverCompacting = new Set(Object.keys(msg.compacting || {}))
-        // Notify all — subscribers track their own state and will reconcile
-        for (const [agent, ts] of Object.entries(msg.thinking || {})) {
-          notify('thinking', { agent, thinking: true, ts })
-        }
-        for (const [agent, ts] of Object.entries(msg.compacting || {})) {
-          notify('compacting', { agent, compacting: true, ts })
-        }
-        // Context percent state
-        for (const [agent, ctx] of Object.entries(msg.context || {})) {
-          notify('context', { agent, percent: ctx.percent, inputTokens: ctx.inputTokens })
-        }
-        // Clear any agent NOT in the server's set
-        notify('thinking-sync', serverThinking)
-        notify('compacting-sync', serverCompacting)
+        applyFleetEphemeral(msg)
         return
       }
 
       // Event-typed messages
       const eventType = msg.event
       const data = msg.data
+
+      // Incremental agent/task state — only changed/removed agents on the wire.
+      if (eventType === 'agents-delta') {
+        applyAgentDelta(data.changed, data.removed)
+        updateTasks(data.tasks || [])
+        applyFleetEphemeral(data)
+        return
+      }
 
       if (eventType === 'fleet-event') {
         if (!data || !data.type) return
@@ -571,6 +562,35 @@ export async function init() {
 function updateAgents(agents) {
   _agents = agents
   notify('agents', { type: 'agents', agents })
+}
+
+// Merge an incremental agent delta into the current list, then notify with the
+// full merged list (same contract subscribers already rely on for 'agents').
+function applyAgentDelta(changed, removed) {
+  if (!(changed?.length || removed?.length)) return
+  const byId = new Map(_agents.map(a => [a.id, a]))
+  for (const a of (changed || [])) byId.set(a.id, a)
+  for (const id of (removed || [])) byId.delete(id)
+  _agents = [...byId.values()]
+  notify('agents', { type: 'agents', agents: _agents })
+}
+
+// Apply server-authoritative ephemeral state (thinking/compacting/context).
+// Shared by the connect snapshot and the agents-delta path so both stay in sync.
+function applyFleetEphemeral(src) {
+  const serverThinking = new Set(Object.keys(src.thinking || {}))
+  const serverCompacting = new Set(Object.keys(src.compacting || {}))
+  for (const [agent, ts] of Object.entries(src.thinking || {})) {
+    notify('thinking', { agent, thinking: true, ts })
+  }
+  for (const [agent, ts] of Object.entries(src.compacting || {})) {
+    notify('compacting', { agent, compacting: true, ts })
+  }
+  for (const [agent, ctx] of Object.entries(src.context || {})) {
+    notify('context', { agent, percent: ctx.percent, inputTokens: ctx.inputTokens })
+  }
+  notify('thinking-sync', serverThinking)
+  notify('compacting-sync', serverCompacting)
 }
 
 function updateTasks(tasks) {

@@ -1386,6 +1386,7 @@ async function rpcWriteBackingFile({ filePath, content }) {
   // Record write time before writing to suppress the watcher echo
   const entry = backingWatchers.get(fp)
   if (entry) entry.lastWriteAt = Date.now()
+  fs.mkdirSync(path.dirname(fp), { recursive: true })
   fs.writeFileSync(fp, content ?? '', 'utf8')
   return { ok: true }
 }
