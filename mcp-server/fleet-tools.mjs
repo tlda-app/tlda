@@ -17,6 +17,8 @@ import { ledger } from './identity.mjs';
 import { formatMessage, formatActivity, formatAnnotationRef } from './format-annotation.mjs';
 import { parseTimestamp } from './lib/parse-timestamp.mjs';
 import { processMessageText } from '../shared/message-processing.mjs';
+import { resolveFilePath } from '../shared/chat-file-processing.mjs';
+import { extractMarkdownSection } from '../shared/markdown-section.mjs';
 import { baseName, nameForPhase, phaseFromName } from '../shared/lineage-name.mjs';
 import { normalizeRefNumber as _normalizeRefNumber, refTypeForName as _refTypeForName, buildTheoremRefRegex as _buildTheoremRefRegex } from '../shared/doc-refs.mjs';
 import WebSocket from 'ws';
@@ -45,6 +47,36 @@ function getAgentCwd() {
   } catch (e) { process.stderr.write(`[fleet] agent cwd detection failed: ${e.message}\n`); }
   _agentCwdCache = process.env.PWD || null;
   return _agentCwdCache;
+}
+
+// Resolve a chat/amend message body from the tool args. Two forms:
+//   - { message } : an inline string → body = message, no source provenance.
+//   - { file, section } : read the markdown file (agent-side — the file is on
+//     the agent's machine, not the server's), extract the named pandoc section,
+//     and bake its markdown as the body. Stamps source = { file: <abs>, section }
+//     so amend can re-extract the same reference after the section is edited.
+// Returns { body, source } on success or { error } with a human-readable message.
+function resolveChatBody(args, agentCwd) {
+  const hasFile = typeof args.file === 'string' && args.file.trim();
+  const hasMessage = typeof args.message === 'string' && args.message.length > 0;
+  if (hasFile) {
+    if (hasMessage) return { error: 'Provide either `message` or `file`+`section`, not both.' };
+    const section = typeof args.section === 'string' ? args.section.trim() : '';
+    if (!section) return { error: 'The `file` form needs a `section` (a pandoc heading id, e.g. "the-plan").' };
+    const abs = resolveFilePath(args.file, agentCwd);
+    if (!fs.existsSync(abs)) return { error: `File not found: ${abs}` };
+    let content;
+    try { content = fs.readFileSync(abs, 'utf8'); }
+    catch (e) { return { error: `Could not read ${abs}: ${e.message}` }; }
+    const result = extractMarkdownSection(content, section);
+    if (!result.found) {
+      const avail = result.ids?.length ? `\nSections in this file: ${result.ids.join(', ')}` : '\n(no headings found in this file)';
+      return { error: `No section "${section}" in ${path.basename(abs)}.${avail}` };
+    }
+    return { body: result.body, source: { file: abs, section } };
+  }
+  if (hasMessage) return { body: args.message, source: null };
+  return { error: 'Missing message: provide `message`, or `file`+`section`.' };
 }
 
 // State file eliminated — all data through server REST API
@@ -725,27 +757,29 @@ export function getFleetTools() {
     // ---- Messaging ----
     {
       name: 'chat',
-      description: 'Send a message. Filter is { to?: string[][] } — DNF label expression matching agent name/ID/labels. Omit filter to send to your manager. Format with markdown.',
+      description: 'Send a message. Filter is { to?: string[][] } — DNF label expression matching agent name/ID/labels. Omit filter to send to your manager. Format with markdown.\n\nTwo ways to give the message body: (1) `message` — an inline string (filenames in it auto-become clickable chips); or (2) `file` + `section` — render a section of a markdown file as the message. Use the file form for a report or any longer, proofread-worthy message: write it in a file, then chat the section. The referenced section is the message; the rest of the file is your workspace / extended detail.',
       inputSchema: {
         type: 'object',
         properties: {
           filter: { type: 'object', description: 'Filter object: { to?: string[][] }. DNF expression — resolves to matching agents, sends to all of them.' },
-          message: { type: 'string', description: 'Message to send' },
+          message: { type: 'string', description: 'Inline message text. Provide this OR (file + section), not both.' },
+          file: { type: 'string', description: 'Path to a markdown file (absolute or relative to your cwd). With `section`, the named section is rendered as the message body.' },
+          section: { type: 'string', description: 'Pandoc-style section id within `file` (a heading slug, e.g. "the-plan" for "## The plan", or an explicit {#id}). The section runs to the next heading of the same or higher level.' },
           max_recipients: { type: 'number', description: 'If the resolved recipient list exceeds this count, abort and return an error listing the matched agents. Default: 5. Pass a higher value to explicitly confirm a large broadcast.' },
         },
-        required: ['message'],
       },
     },
     {
       name: 'amend',
-      description: 'Edit a message you already sent — it changes IN PLACE in Skip\'s view (it does NOT post a new message). Use this to fix a message after `chat` flagged a lint issue, or to revise wording, rather than sending a correction as a follow-up. The original text is preserved in the message\'s history. Amend honestly: this is for fixing or clarifying the SAME message, not for slipping in a different one.',
+      description: 'Edit a message you already sent — it changes IN PLACE in Skip\'s view (it does NOT post a new message). Use this to fix a message after `chat` flagged a lint issue, or to revise wording, rather than sending a correction as a follow-up. The original text is preserved in the message\'s history. Amend honestly: this is for fixing or clarifying the SAME message, not for slipping in a different one.\n\nTakes the same body forms as `chat`: either `message` (inline string) or `file` + `section`. With the file form you can edit the section in the file, then amend with the same `file`+`section` to re-render the updated section in place.',
       inputSchema: {
         type: 'object',
         properties: {
-          message: { type: 'string', description: 'The corrected message text — replaces the old text in place.' },
+          message: { type: 'string', description: 'The corrected message text — replaces the old text in place. Provide this OR (file + section).' },
+          file: { type: 'string', description: 'Path to a markdown file (absolute or relative to your cwd). With `section`, re-renders that section as the amended body.' },
+          section: { type: 'string', description: 'Pandoc-style section id within `file` (heading slug or explicit {#id}).' },
           event_id: { type: 'number', description: 'The id of the message to amend (returned by chat()). Omit to amend your most recent message.' },
         },
-        required: ['message'],
       },
     },
     {
@@ -1655,18 +1689,21 @@ export async function handleFleetTool(name, args) {
   // ---- amend (edit an already-sent message in place) ----
   if (name === 'amend') {
     if (!AGENT_ID) return { content: [{ type: 'text', text: 'Cannot amend: not registered.' }], isError: true };
-    const { message, event_id } = args;
-    if (!message) return { content: [{ type: 'text', text: 'Missing required parameter: message' }], isError: true };
+    const { event_id } = args;
+    const agentCwd = getAgentCwd();
+    const resolved = resolveChatBody(args, agentCwd);
+    if (resolved.error) return { content: [{ type: 'text', text: resolved.error }], isError: true };
+    const { body: messageBody, source } = resolved;
     try {
-      const agentCwd = getAgentCwd();
-      const { resolvedMessage, inlineAttachments } = await processMessageText(message, agentCwd, `${TLDA_SERVER}`);
+      const { resolvedMessage, inlineAttachments } = await processMessageText(messageBody, agentCwd, `${TLDA_SERVER}`);
       const body = { from: AGENT_ID, message: resolvedMessage };
       if (event_id != null) body.event_id = event_id;
       if (inlineAttachments?.length) body.inline_attachments = inlineAttachments;
+      if (source) body.source = source;
       const data = await sendWS('amend', body);
       if (!data?.ok) return { content: [{ type: 'text', text: `Amend failed: ${data?.error || 'no message of yours matched (have you sent one yet?)'}` }], isError: true };
       const macros = await getMacrosForAgent();
-      const lint = lintChatMessage(message, macros);
+      const lint = lintChatMessage(messageBody, macros);
       const extra = lint.length > 0
         ? `\n\n⚠ Still has ${lint.length} lint issue${lint.length > 1 ? 's' : ''}:\n${lint.map(l => `- ${l}`).join('\n')}`
         : '';
@@ -1704,8 +1741,14 @@ export async function handleFleetTool(name, args) {
   }
 
   if (name === 'chat') {
-    const { message } = args;
     if (!AGENT_ID) return { content: [{ type: 'text', text: 'Cannot send chat: not registered.' }], isError: true };
+
+    // Resolve the message body — either an inline `message` string or a
+    // `file`+`section` markdown reference (extracted agent-side).
+    const agentCwd = getAgentCwd();
+    const resolvedBody = resolveChatBody(args, agentCwd);
+    if (resolvedBody.error) return { content: [{ type: 'text', text: resolvedBody.error }], isError: true };
+    const { body: message, source } = resolvedBody;
 
     // Resolve recipients from filter
     if (!args.filter?.to) return { content: [{ type: 'text', text: 'Missing filter.to — specify recipients as DNF expression.' }], isError: true };
@@ -1738,7 +1781,6 @@ export async function handleFleetTool(name, args) {
     }
 
     // Resolve file paths in message text → inline attachments.
-    const agentCwd = getAgentCwd();
     const { resolvedMessage, inlineAttachments, brokenPaths } = await processMessageText(
       message, agentCwd, `${TLDA_SERVER}`
     );
@@ -1775,6 +1817,7 @@ export async function handleFleetTool(name, args) {
       if (inlineAttachments.length) chatBody.inline_attachments = inlineAttachments;
       if (refAttachments.length) chatBody.attachments = refAttachments;
       if (docContext) chatBody.context = docContext;
+      if (source) chatBody.source = source;
       try {
         const data = await sendWS('chat', chatBody);
         if (data?.ok) { sent.push(to); if (data.event_ids?.length) lastEventId = data.event_ids[0]; }

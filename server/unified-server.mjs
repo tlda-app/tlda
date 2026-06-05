@@ -2234,7 +2234,7 @@ async function handleFleetWsMessage(ws, msg) {
     // Edit an already-sent chat message in place. Retains prior text in
     // metadata.amend_history and broadcasts the existing `event-update` so
     // clients re-render the same message rather than appending a new one.
-    const { from: rawFrom, event_id, message: text, inline_attachments } = msg
+    const { from: rawFrom, event_id, message: text, inline_attachments, source } = msg
     if (!text) { error('missing message'); return }
     const resolveSingle = (id) => {
       if (id === SERVER_OWNER_NAME) return SERVER_OWNER_ID
@@ -2252,12 +2252,17 @@ async function handleFleetWsMessage(ws, msg) {
       target = fleetStore.getLatestChatFrom?.(from)
       if (!target) { reply({ ok: false, error: 'you have no message to amend' }); return }
     }
-    if (inline_attachments) {
+    const hadSource = !!(target.metadata && typeof target.metadata === 'object' && target.metadata.source)
+    if (inline_attachments || source || hadSource) {
       try {
         const meta = target.metadata && typeof target.metadata === 'object' ? { ...target.metadata } : {}
-        meta.inline_attachments = inline_attachments
+        if (inline_attachments) meta.inline_attachments = inline_attachments
+        // file-form amend sets provenance; string-form amend clears any prior one.
+        // updateEventMetadata applies a JSON merge-patch (json_patch), so a key is
+        // removed by setting it to null — omitting it would leave the old value.
+        meta.source = source || null
         fleetStore.updateEventMetadata?.(target.id, meta)
-      } catch (e) { console.error(`[amend] inline_attachments update failed (non-fatal): ${e.message}`) }
+      } catch (e) { console.error(`[amend] metadata update failed (non-fatal): ${e.message}`) }
     }
     fleetStore.amendEventText(target.id, text)
     reply({ ok: true, event_id: target.id })
@@ -2267,12 +2272,14 @@ async function handleFleetWsMessage(ws, msg) {
       id: target.id,
       text,
       ...(inline_attachments ? { inline_attachments } : {}),
+      // carry source on any change (null clears a prior provenance chip)
+      ...((source || hadSource) ? { source: source || null } : {}),
     })
     return
   }
 
   if (type === 'chat') {
-    const { message: text, to: rawTo, from: rawFrom, metadata, inline_attachments, attachments, cc, context } = msg
+    const { message: text, to: rawTo, from: rawFrom, metadata, inline_attachments, attachments, cc, context, source } = msg
     if (!rawTo || !text) { error('missing to or message'); return }
     // Idempotency: if the client retries with the same _tempId, return the
     // previously inserted event IDs instead of creating duplicates.
@@ -2368,6 +2375,7 @@ async function handleFleetWsMessage(ws, msg) {
         ...(wiretapRecipients.length ? { wiretap_cc: wiretapRecipients } : {}),
         ...(context ? { context } : {}),
         ...(chatReminder ? { chatReminder } : {}),
+        ...(source ? { source } : {}),
       }
       const metaStr = Object.keys(combinedMetadata).length ? JSON.stringify(combinedMetadata) : null
       const result = fleetStore.db.prepare(
