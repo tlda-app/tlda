@@ -592,8 +592,12 @@ export function linkifyRefCommands(
     else if (cmd === 'ref' || cmd === 'vref') text = num || niceDisplay || label
     else if (cmd === 'cpageref' || cmd === 'Cpageref') text = `page ${info?.page ?? tm?.page ?? '?'}`
     else {
-      // cref / Cref / autoref / namecref → "Type Number"
-      if (typeKey === 'eq') text = `Eq. (${num})`
+      // cref / Cref / autoref / namecref → "Type Number". Without a resolved
+      // number, never emit a bare type word ("Section ", "Eq. ()", "Lemma ") —
+      // that renders as a clickable "Section" with no number. Fall back to the
+      // nice display or the raw label, exactly like \ref does.
+      if (!num) text = niceDisplay || label
+      else if (typeKey === 'eq') text = `Eq. (${num})`
       else if (typeKey === 'sec') text = `${/^[A-Z]/.test(num) ? 'Appendix' : 'Section'} ${num}`
       else if (niceDisplay) text = niceDisplay
       else text = `${_TYPE_WORD[typeKey] || ''} ${num}`.trim()
