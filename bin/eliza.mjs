@@ -746,6 +746,7 @@ function handleSequence(fromId, toId, text) {
       if (isFuckYou && (state.phase === 'corrected' || state.phase === 'acked')) {
         console.log(`[eliza] fuck-you-in-context → ${toId} (phase=${state.phase})`)
         queueNudge(toId, 'escalation', FUCK_YOU_IN_CONTEXT_MSG)
+        queueFrustrationActions(toId)
         logDecision(toId, 'fuck-you-in-context', 'fuck-you-while-corrected', { phase: state.phase }, text)
         state.phase = 'idle'
         state.windowStart = 0
@@ -756,6 +757,7 @@ function handleSequence(fromId, toId, text) {
       if (state.phase === 'acked') {
         console.log(`[eliza] performing-understanding → ${toId}`)
         queueNudge(toId, 'performing', PERFORMING_UNDERSTANDING_MSG)
+        queueFrustrationActions(toId)
         logDecision(toId, 'performing-understanding', 'correction-after-ack', { phase: state.phase }, text)
         state.phase = 'corrected'
         return 'handled'
