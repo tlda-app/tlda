@@ -506,11 +506,14 @@ export function renderChatLine(m, ctx) {
     const _title = `from ${esc(String(_src.file))}${_section ? ' §' + _section : ''}`
     sourceChipHtml = ` <span class="ref-chip ref-chip-doc src-chip" data-path="${esc(String(_src.file))}" title="${_title}" draggable="true"><span class="ref-chip-doc-icon">📄</span>${_fileName}${_sectionHtml}</span>`
   }
+  // Amend version stepper (V{n} ◀▶) — present only on a message that's been
+  // amended (folded by FleetChatShape, which sets m._amendStepper).
+  const amendStepper = m._amendStepper || ''
   let line
   if (isAmbient) {
-    line = `<div class="${lineClass} ${dimClass}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span> ${nickHtml} ${bodyText}${sourceChipHtml}${attachHtml}</div>`
+    line = `<div class="${lineClass} ${dimClass}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span> ${nickHtml} ${bodyText}${sourceChipHtml}${amendStepper}${attachHtml}</div>`
   } else {
-    line = `<div class="${lineClass} ${dimClass}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span> ${nickHtml} ${bodyText}${sourceChipHtml}${receipt}${attachHtml}${retractBtn}</div>`
+    line = `<div class="${lineClass} ${dimClass}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span> ${nickHtml} ${bodyText}${sourceChipHtml}${amendStepper}${receipt}${attachHtml}${retractBtn}</div>`
   }
   if (m._interrupt) {
     const age = Date.now() - new Date(m.timestamp).getTime()

@@ -695,6 +695,12 @@ export function convertChatEvent(e) {
   if (e.metadata?.source) {
     msg.metadata = { ...(msg.metadata || {}), source: e.metadata.source }
   }
+  // Reference-event amend: carry metadata.amends so the chat shape can fold this
+  // amend event into its original message's version stepper (it never renders
+  // standalone). The amend's own text/source ride along normally.
+  if (e.metadata?.amends != null) {
+    msg.metadata = { ...(msg.metadata || {}), amends: e.metadata.amends }
+  }
   if (e.metadata?.context?.bullets) {
     msg._bullets = e.metadata.context.bullets
   }

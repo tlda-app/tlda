@@ -2095,6 +2095,38 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   font-weight: 400;
 }
 
+/* Amend version stepper (V{n} ◀▶) — subtle, reveals on row hover. Present only
+   on an amended message; steps through prior versions in place. */
+.fleet-chat-shape .amend-versions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 5px;
+  vertical-align: baseline;
+  opacity: 0.3;
+  transition: opacity 0.2s;
+  user-select: none;
+}
+.fleet-chat-shape .chat-line:hover .amend-versions { opacity: 0.65; }
+.fleet-chat-shape .amend-vlabel {
+  font-size: 8px;
+  letter-spacing: 0.03em;
+  opacity: 0.85;
+}
+.fleet-chat-shape .amend-arrow {
+  background: none;
+  border: none;
+  padding: 0 1px;
+  margin: 0;
+  font-size: 8px;
+  line-height: 1;
+  cursor: pointer;
+  color: inherit;
+  opacity: 0.8;
+}
+.fleet-chat-shape .amend-arrow:hover:not([disabled]) { opacity: 1; }
+.fleet-chat-shape .amend-arrow[disabled] { opacity: 0.2; cursor: default; }
+
 .fleet-chat-shape .ref-chip {
   display: inline-flex;
   align-items: center;

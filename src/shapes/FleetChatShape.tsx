@@ -1280,6 +1280,25 @@ function FleetChatInner({ shape }: { shape: any }) {
     return sorted
   }, [events])
 
+  // Amend events (type 'amend', metadata.amends = original id) are folded into
+  // their original message as version history — they never render standalone
+  // (chatMessages excludes type 'amend'). Grouped here off the full events list.
+  const amendsByOrig = useMemo(() => {
+    const map = new Map<number, any[]>()
+    for (const e of events as any[]) {
+      if (e.type !== 'amend') continue
+      const orig = e.metadata?.amends
+      if (orig == null) continue
+      if (!map.has(orig)) map.set(orig, [])
+      map.get(orig)!.push(e)
+    }
+    for (const list of map.values()) list.sort((a, b) => (a._dbId || 0) - (b._dbId || 0))
+    return map
+  }, [events])
+  // Which version index the user is viewing, per original message id (default:
+  // latest). The ◀▶ stepper arrows step through.
+  const [amendView, setAmendView] = useState<Map<number, number>>(new Map())
+
 
   // Build per-item raw HTML array — each item is an independent renderable unit.
   // This replaces the old joined renderedHtml string and enables virtualization.
@@ -1390,7 +1409,26 @@ function FleetChatInner({ shape }: { shape: any }) {
         items.push({ key: m._dbId || m._tempId || `${m.timestamp}:${m.from}:interrupt`, html })
       } else {
         flushActivity()
-        const html = renderChatLine(m, renderCtx)
+        // Fold amends: if this message has amend events, show the viewed
+        // version's text (+ its own source, so the chip is per-version) and a
+        // V{n} ◀▶ stepper. Un-amended messages render untouched.
+        let renderM = m
+        const amends = (m._dbId != null) ? amendsByOrig.get(m._dbId) : undefined
+        if (amends && amends.length) {
+          const versions = [
+            { text: m.text, source: m.metadata?.source ?? null },
+            ...amends.map((a: any) => ({ text: a.text, source: a.metadata?.source ?? null })),
+          ]
+          const total = versions.length
+          const viewIdx = Math.min(amendView.get(m._dbId) ?? (total - 1), total - 1)
+          const backDis = viewIdx <= 0 ? ' disabled' : ''
+          const fwdDis = viewIdx >= total - 1 ? ' disabled' : ''
+          const oid = esc(String(m._dbId))
+          const stepper = `<span class="amend-versions" data-orig="${oid}"><button class="amend-arrow"${backDis} data-orig="${oid}" data-total="${total}" data-dir="back" title="older version">◀</button><span class="amend-vlabel">V${viewIdx + 1}</span><button class="amend-arrow"${fwdDis} data-orig="${oid}" data-total="${total}" data-dir="fwd" title="newer version">▶</button></span>`
+          const v = versions[viewIdx]
+          renderM = { ...m, text: v.text, metadata: { ...(m.metadata || {}), source: v.source }, _amendStepper: stepper }
+        }
+        const html = renderChatLine(renderM, renderCtx)
         if (html) {
           const item: RawItem = { key: m._dbId || m._tempId || `${m.timestamp}:${m.from}`, html }
           // Tag interrupt system_notices so they jump ahead of queued messages
@@ -1408,7 +1446,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     flushActivity()
     return items
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatMessages, ctx, thinkingAgents, unqueuedAt, viewingVersion, doc])
+  }, [chatMessages, ctx, thinkingAgents, unqueuedAt, viewingVersion, doc, amendsByOrig, amendView])
 
   // Per-item post-processing: applies chip replacement, URL linkification, and
   // doc-link resolution to a single item's HTML. Called by ChatMessageRow only
@@ -2444,6 +2482,24 @@ function FleetChatInner({ shape }: { shape: any }) {
     const logEl = chatLogEl
     if (!logEl) return
     function onClick(e: Event) {
+      // Amend version stepper ◀▶ — step through a message's versions in place.
+      const amendArrow = (e.target as HTMLElement).closest('.amend-arrow') as HTMLElement | null
+      if (amendArrow) {
+        e.stopPropagation()
+        if (amendArrow.hasAttribute('disabled')) return
+        const orig = Number(amendArrow.dataset.orig)
+        const total = Number(amendArrow.dataset.total) || 1
+        const dir = amendArrow.dataset.dir
+        if (!orig) return
+        setAmendView(prev => {
+          const next = new Map(prev)
+          const cur = next.get(orig) ?? (total - 1)
+          const nv = dir === 'back' ? Math.max(0, cur - 1) : Math.min(total - 1, cur + 1)
+          next.set(orig, nv)
+          return next
+        })
+        return
+      }
       // Resend a failed ("not sent") message — re-send with the same _tempId so
       // the existing optimistic-echo reconcile clears it on success; re-mark
       // failed if it fails again.
