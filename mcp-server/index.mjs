@@ -24,6 +24,7 @@ import { findRenderedText } from './svg-text.mjs';
 import { initDataSource, readJsonSync, readJson, readManifestSync, readManifest, localDocDir, isRemote } from './data-source.mjs';
 import { resolveToken } from './resolve-token.mjs';
 import { formatHighlight, formatNote } from './format-annotation.mjs';
+import { extractMacrosFromFile } from '../scripts/extract-preamble.js';
 import {
   isHtmlDoc, docToCanvas, canvasToDoc, getPageWidth,
   pdfToCanvas, canvasToPdf, htmlToCanvas, canvasToHtml, loadHtmlLayout,
@@ -3911,19 +3912,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const texFile = args.tex_file;
     const target = args.target || 'default';
     const resolved = path.resolve(texFile);
-    let tex;
-    try { tex = fs.readFileSync(resolved, 'utf8'); } catch (e) {
-      return { content: [{ type: 'text', text: `Cannot read file: ${e.message}` }], isError: true };
+    if (!fs.existsSync(resolved)) {
+      return { content: [{ type: 'text', text: `Cannot read file: ${resolved} does not exist` }], isError: true };
     }
-    const macros = {};
-    const newcommandRegex = /\\(?:re)?newcommand\{\\(\w+)\}(?:\[\d+\])?\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}/g;
-    let match;
-    while ((match = newcommandRegex.exec(tex)) !== null) macros[`\\${match[1]}`] = match[2];
-    const operatorRegex = /\\DeclareMathOperator\*?\{\\(\w+)\}\{([^}]+)\}/g;
-    while ((match = operatorRegex.exec(tex)) !== null) {
-      const isStar = match[0].includes('*');
-      macros[`\\${match[1]}`] = isStar ? `\\operatorname*{${match[2]}}` : `\\operatorname{${match[2]}}`;
-    }
+    // Use the same brace-aware extractor as the build pipeline — one macro
+    // parser, so the explicit setter (dashboard) and the linter never disagree.
+    const macros = extractMacrosFromFile(resolved);
     const count = Object.keys(macros).length;
     if (count === 0) {
       return { content: [{ type: 'text', text: `No macros found in ${resolved}. Looked for \\newcommand, \\renewcommand, \\DeclareMathOperator.` }] };
