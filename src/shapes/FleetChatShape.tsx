@@ -2247,6 +2247,24 @@ function FleetChatInner({ shape }: { shape: any }) {
     return () => clearInterval(id)
   }, [chatLogEl, pinHard])
 
+  // Refilter → bottom. Changing the filter swaps the whole rendered list out
+  // from under Virtuoso; the scroll-position reset effect above (keyed on
+  // filterKey) clears olderEvents and the atBottom *state*, but it runs before
+  // userScrolledUpRef exists and never actually pins. So a refilter while at the
+  // bottom could strand the user mid-list (Virtuoso keeps the old scrollTop
+  // against new content) and, worse, a stale userScrolledUp=true would keep
+  // every follow path disabled in the new view. Reset follow intent and pin:
+  // the filtered history loads async, so the one pin here lands at the current
+  // tail and the existing force-pin-on-item-grow + followOutput + watchdog ride
+  // the new content down as it arrives. A refilter is a fresh view — bottom is
+  // the right default, which is exactly what the user asked for.
+  useEffect(() => {
+    userScrolledUpRef.current = false
+    isAtBottomRef.current = true
+    setAtBottom(true)
+    requestAnimationFrame(pinHard)
+  }, [filterKey, pinHard])
+
   // TRACE (temporary diagnostic — remove once scroll is solid): make the log
   // tell the WHOLE story so the fix comes from ground truth, not theory.
   // Logs the chat's mount/unmount (to confirm or rule out remount-resets) and
