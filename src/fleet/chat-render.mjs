@@ -445,7 +445,7 @@ export function renderChatLine(m, ctx) {
   }
   // Failed local messages
   if (m._failed) {
-    return `<div class="chat-line from-user" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts">${ts}</span> <span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(nick)}:</span></span> ${displayText} <span class="chat-warning">\u26A0 not sent</span></div>`
+    return `<div class="chat-line from-user" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts">${ts}</span> <span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(nick)}:</span></span> ${displayText} <span class="chat-warning">\u26A0 not sent</span> <button class="chat-resend-btn" data-resend-to="${esc(m.to || '')}" data-resend-text="${esc(m.text || '')}" data-resend-tempid="${esc(m._tempId || '')}" title="Resend">\u21BB</button></div>`
   }
   // Voicemail
   if (m._voicemail) {

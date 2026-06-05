@@ -2377,6 +2377,23 @@ function FleetChatInner({ shape }: { shape: any }) {
     const logEl = chatLogEl
     if (!logEl) return
     function onClick(e: Event) {
+      // Resend a failed ("not sent") message — re-send with the same _tempId so
+      // the existing optimistic-echo reconcile clears it on success; re-mark
+      // failed if it fails again.
+      const resendBtn = (e.target as HTMLElement).closest('.chat-resend-btn') as HTMLElement
+      if (resendBtn) {
+        e.stopPropagation()
+        const to = resendBtn.dataset.resendTo
+        const text = resendBtn.dataset.resendText
+        const tempId = resendBtn.dataset.resendTempid
+        if (to && text && tempId) {
+          updateOptimisticEvent(tempId, { _failed: false })
+          sendMessage(to, text, { _tempId: tempId } as any)
+            .then((r: any) => { if (!r?.ok) throw new Error('resend failed') })
+            .catch(() => updateOptimisticEvent(tempId, { _failed: true }))
+        }
+        return
+      }
       // Plan approval buttons
       const approveBtn = (e.target as HTMLElement).closest('.plan-approve-btn') as HTMLElement
       if (approveBtn) {

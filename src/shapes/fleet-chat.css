@@ -831,6 +831,20 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   color: var(--orange);
   font-size: 10px;
 }
+/* Resend control on a failed ("not sent") message — subtle until hovered. */
+.fleet-chat-shape .chat-resend-btn {
+  background: none;
+  border: none;
+  color: var(--orange);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0 2px;
+  opacity: 0.6;
+  transition: opacity 0.2s;
+}
+.fleet-chat-shape .chat-resend-btn:hover {
+  opacity: 1;
+}
 .fleet-chat-shape .chat-voicemail {
   opacity: 0.5;
   border-left: 2px solid var(--orange);
