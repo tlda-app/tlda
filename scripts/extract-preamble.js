@@ -73,7 +73,12 @@ function collapseOptionalArg(body, def) {
     const k = parseInt(d, 10)
     return k === 1 ? def : `#${k - 1}`
   })
-  return substituted.replace(/\s+$/, '')
+  const out = substituted.replace(/\s+$/, '')
+  // Wrap in braces so the macro is a single grouped unit, usable as a bare
+  // sub/superscript (KaTeX rejects \operatorname directly after _ / ^). Skip
+  // STARRED operators: bracing demotes \operatorname* from a limits-operator to
+  // an ordinary atom, pushing its subscript from underneath to the side.
+  return out.includes('\\operatorname*') ? out : `{${out}}`
 }
 
 // Extract KaTeX-compatible macros from already-expanded preamble text.
@@ -141,7 +146,10 @@ export function extractMacros(preamble) {
     const name = nameBrace.content.trim()                     // includes leading backslash
     const bodyBrace = extractBraceContent(preamble, nameBrace.endIdx + 1) // {body}
     if (!bodyBrace) { opIdx += OP.length; continue }
-    macros[name] = star ? `\\operatorname*{${bodyBrace.content}}` : `\\operatorname{${bodyBrace.content}}`
+    // Non-starred operators are brace-wrapped so they work as a bare
+    // sub/superscript; starred operators are left bare to preserve their
+    // limits-underneath layout (bracing would demote them to ordinary atoms).
+    macros[name] = star ? `\\operatorname*{${bodyBrace.content}}` : `{\\operatorname{${bodyBrace.content}}}`
     opIdx = bodyBrace.endIdx
   }
 
