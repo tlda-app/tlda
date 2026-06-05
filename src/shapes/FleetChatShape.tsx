@@ -649,7 +649,12 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
   prevActiveRef.current = hasActive
 
   useEffect(() => {
-    if (ghost && rawItemsLength !== ghostRawItemsRef.current) {
+    // Cede the reserved space ONLY when a new item is actually appended (count
+    // goes UP — a real message taking the slot's place), not on any change.
+    // The old `!==` released on ANY churn above (an activity card updating, an
+    // item removed, scrollback) — which in a busy chat fires instantly, so the
+    // reserve collapsed the moment the status cleared → the bounce Skip sees.
+    if (ghost && rawItemsLength > ghostRawItemsRef.current) {
       setGhost(false)
     }
   }, [ghost, rawItemsLength])
@@ -743,7 +748,12 @@ function ElizaStatus({ pending, ctx, rawItemsLength }: { pending: ElizaNudge[], 
   prevActiveRef.current = hasActive
 
   useEffect(() => {
-    if (ghost && rawItemsLength !== ghostRawItemsRef.current) {
+    // Cede the reserved space ONLY when a new item is actually appended (count
+    // goes UP — a real message taking the slot's place), not on any change.
+    // The old `!==` released on ANY churn above (an activity card updating, an
+    // item removed, scrollback) — which in a busy chat fires instantly, so the
+    // reserve collapsed the moment the status cleared → the bounce Skip sees.
+    if (ghost && rawItemsLength > ghostRawItemsRef.current) {
       setGhost(false)
     }
   }, [ghost, rawItemsLength])
