@@ -810,6 +810,13 @@ function syncSessionWatchers(agentList) {
 
       pathWatchers.set(jsonlPath, { watcher, primaryAgentId: agent.id, sessionId, watchSeenAt: 0 })
       log.info(`watching JSONL for ${agent.friendly_name || agent.id}: ${path.basename(jsonlPath)} @ offset=${offset}`)
+
+      // Drain any backlog immediately rather than waiting for the next write to
+      // fire the watcher. This is what makes reconnect lossless: on a resumed
+      // cursor (daemon was disconnected while the agent kept working), the bytes
+      // written during the gap stream in now. Self-guards — for a fresh session
+      // the cursor is at EOF, so this returns without replaying history.
+      readNewSessionLines(agent.id, jsonlPath, sessionId)
     } catch (e) {
       log.error(`watcher creation failed for ${jsonlPath}: ${e.message}`)
     }
@@ -829,6 +836,12 @@ function syncSessionWatchers(agentList) {
 }
 
 function readNewSessionLines(agentId, jsonlPath, sessionId) {
+  // The cursor is a high-water mark of *delivered* bytes. If the WS is down we
+  // can't push, so don't read+advance past it — leave the bytes for the next
+  // read. Otherwise the cursor would skip over activity cards whose send was
+  // dropped, losing them permanently. On reconnect, syncSessionWatchers does an
+  // immediate read that drains everything written during the outage.
+  if (!_rws?.connected) return
   let stat
   try { stat = fs.statSync(jsonlPath) } catch (e) {
     if (e.code !== 'ENOENT') log.error(`stat ${jsonlPath}: ${e.message}`)
