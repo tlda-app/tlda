@@ -50,10 +50,14 @@ const REF_PATTERNS: Array<{ re: RegExp; type: DocRef['type']; envType?: string; 
   { re: THEOREM_RE, type: 'theorem' },
 
   // Sections — number may be digits ("4", "4.1") or appendix-lettered
-  // ("A", "C", "A.1", "E.2", "E2").
-  { re: /\b(Section)\s+([A-Z](?:\.?\d+)*|\d+(?:\.\d+)*)/gi, type: 'section' },
+  // ("A", "C", "A.1", "E.2", "E2"). The appendix-letter form is genuinely
+  // uppercase (NO /i flag) and must not be the first letter of a longer word
+  // ((?![A-Za-z])): under a case-insensitive flag, `[A-Z]` with zero trailing
+  // digits matched the lowercase initial of the *next* word, so "Section ref"
+  // and "Section numbers" lit up. Word stays case-flexible via [Ss]/[Aa].
+  { re: /\b([Ss]ection)\s+(\d+(?:\.\d+)*|[A-Z](?:\.?\d+)*(?![A-Za-z]))/g, type: 'section' },
   { re: /§\s*(\d+(?:\.\d+)*)/g, type: 'section' },
-  { re: /\b(Appendix)\s+([A-Z](?:\.?\d+)*)/gi, type: 'section' },
+  { re: /\b([Aa]ppendix)\s+([A-Z](?:\.?\d+)*(?![A-Za-z]))/g, type: 'section' },
 
   // Equations
   { re: /\b(?:Equation|Eq\.)\s*\((\d+(?:\.\d+)*)\)/gi, type: 'equation' },
