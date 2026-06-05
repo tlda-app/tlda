@@ -481,6 +481,14 @@ export function connect() {
         if (ev) {
           if (data.text !== undefined) ev.text = data.text
           if (data.inline_attachments) ev._inlineAttachments = data.inline_attachments
+          // Amend can set or clear file-section provenance. A file-form amend
+          // sends source = { file, section }; a string-form amend sends
+          // source = null to clear it. Updating ev.metadata.source makes the
+          // provenance chip appear/disappear in place on the amended message.
+          if (data.source !== undefined) {
+            if (!ev.metadata) ev.metadata = {}
+            ev.metadata.source = data.source
+          }
           if (data.metadata_patch) {
             if (!ev.metadata) ev.metadata = {}
             Object.assign(ev.metadata, data.metadata_patch)
@@ -679,6 +687,13 @@ export function convertChatEvent(e) {
   }
   if (e.metadata?.attachments) {
     msg.attachments = e.metadata.attachments
+  }
+  // File-section provenance: a message whose body was baked from a file section
+  // carries metadata.source = { file, section }. Carry it onto the msg so the
+  // chat renderer can draw the "from <file> §<section>" chip. (convertChatEvent
+  // otherwise only cherry-picks specific metadata keys onto msg.)
+  if (e.metadata?.source) {
+    msg.metadata = { ...(msg.metadata || {}), source: e.metadata.source }
   }
   if (e.metadata?.context?.bullets) {
     msg._bullets = e.metadata.context.bullets

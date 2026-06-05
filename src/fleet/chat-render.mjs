@@ -493,11 +493,24 @@ export function renderChatLine(m, ctx) {
   const rawLineCount = (m.text || '').split('\n').length
   const isLongMsg = rawLineCount > 20
   let bodyText = isLongMsg ? `<span class="message-body message-long">${displayText}</span>` : displayText
+  // Provenance chip: a message body baked from a file section (chat/amend with
+  // file+section) carries metadata.source = { file, section }. Show a subtle
+  // "from <file> §<section>" chip so the reader can see/open the source. Reuses
+  // the existing ref-chip styling — no new visual language.
+  let sourceChipHtml = ''
+  const _src = m.metadata?.source
+  if (_src && _src.file) {
+    const _fileName = esc(String(_src.file).split('/').pop() || _src.file)
+    const _section = _src.section ? esc(String(_src.section)) : ''
+    const _sectionHtml = _section ? `<span class="src-chip-section">§${_section}</span>` : ''
+    const _title = `from ${esc(String(_src.file))}${_section ? ' §' + _section : ''}`
+    sourceChipHtml = ` <span class="ref-chip ref-chip-doc src-chip" data-path="${esc(String(_src.file))}" title="${_title}" draggable="true"><span class="ref-chip-doc-icon">📄</span>${_fileName}${_sectionHtml}</span>`
+  }
   let line
   if (isAmbient) {
-    line = `<div class="${lineClass} ${dimClass}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span> ${nickHtml} ${bodyText}${attachHtml}</div>`
+    line = `<div class="${lineClass} ${dimClass}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span> ${nickHtml} ${bodyText}${sourceChipHtml}${attachHtml}</div>`
   } else {
-    line = `<div class="${lineClass} ${dimClass}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span> ${nickHtml} ${bodyText}${receipt}${attachHtml}${retractBtn}</div>`
+    line = `<div class="${lineClass} ${dimClass}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span> ${nickHtml} ${bodyText}${sourceChipHtml}${receipt}${attachHtml}${retractBtn}</div>`
   }
   if (m._interrupt) {
     const age = Date.now() - new Date(m.timestamp).getTime()

@@ -2087,6 +2087,14 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 
 /* --- Reference chips (dropped from drag) --- */
 
+/* Provenance chip: the "§section" suffix on a file-section message's source
+   chip — slightly dimmer/lighter than the filename so it reads as secondary. */
+.fleet-chat-shape .src-chip .src-chip-section {
+  margin-left: 3px;
+  opacity: 0.65;
+  font-weight: 400;
+}
+
 .fleet-chat-shape .ref-chip {
   display: inline-flex;
   align-items: center;
