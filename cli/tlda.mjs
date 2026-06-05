@@ -2051,16 +2051,7 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
         return
       }
     } catch {
-      // Not running — kill any zombie holding the port
-      try {
-        const stale = execSync(`lsof -ti:${port} -sTCP:LISTEN`, { stdio: 'pipe' }).toString().trim()
-        if (stale) {
-          for (const pid of stale.split('\n')) {
-            try { process.kill(parseInt(pid), 'SIGKILL') } catch {}
-          }
-          await new Promise(r => setTimeout(r, 500))
-        }
-      } catch {}
+      // Health check failed — fall through to (re)start below.
     }
 
     if (!existsSync(serverScript)) {
@@ -2072,10 +2063,25 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
     if (!existsSync(dirname(LOGFILE))) mkdirSync(dirname(LOGFILE), { recursive: true })
 
     if (hasLaunchd) {
-      // Use launchd — auto-restarts on crash, persists across login
+      // launchd owns the single instance (KeepAlive). NEVER kill the
+      // port-holder — a slow-to-respond server is still alive, and killing it
+      // is exactly what caused the restart-stampede. Just ensure the job is
+      // loaded and running; launchd handles crash-restart. kickstart WITHOUT
+      // -k starts it only if stopped, so concurrent callers can't force
+      // competing restarts.
       try { execSync('launchctl bootstrap gui/$(id -u) ' + PLIST, { stdio: 'pipe' }) } catch {}
-      try { execSync('launchctl kickstart -k gui/$(id -u)/com.tlda.server', { stdio: 'pipe' }) } catch {}
+      try { execSync('launchctl kickstart gui/$(id -u)/com.tlda.server', { stdio: 'pipe' }) } catch {}
     } else {
+      // No supervisor: reclaim a genuinely-dead port, then spawn directly.
+      try {
+        const stale = execSync(`lsof -ti:${port} -sTCP:LISTEN`, { stdio: 'pipe' }).toString().trim()
+        if (stale) {
+          for (const pid of stale.split('\n')) {
+            try { process.kill(parseInt(pid), 'SIGKILL') } catch {}
+          }
+          await new Promise(r => setTimeout(r, 500))
+        }
+      } catch {}
       const { spawn } = await import('child_process')
       const { openSync: fsOpenSync } = await import('fs')
       const logFd = fsOpenSync(LOGFILE, 'a')
