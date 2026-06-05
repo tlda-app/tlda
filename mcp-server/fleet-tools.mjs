@@ -257,7 +257,7 @@ function lintChatMessage(message, macros = {}) {
   for (const block of codeBlocks) {
     const inner = block.slice(3, -3).replace(/^[a-z]*\n/, '');
     if (/\\(?:begin|end|frac|sum|int|prod|hat|bar|tilde|mathbb|mathrm|operatorname|left|right|alpha|beta|gamma|theta|lambda|mu|sigma|phi|psi|omega|infty|partial|nabla|sqrt|over|under)\b/.test(inner)) {
-      issues.push(`Don't put LaTeX in a code block unless you want to show the code itself, not the rendered math. Use $$ delimiters for display math or $ for inline — the chat renderer supports KaTeX. You can fix this in place with amend() after it sends.`);
+      issues.push(`Don't put LaTeX in a code block unless you want to show the code itself, not the rendered math. Use $$ delimiters for display math or $ for inline — the chat renderer supports KaTeX. You can fix this in place by re-chatting with amend_id after it sends.`);
     }
   }
   return issues;
@@ -757,28 +757,16 @@ export function getFleetTools() {
     // ---- Messaging ----
     {
       name: 'chat',
-      description: 'Send a message. Filter is { to?: string[][] } — DNF label expression matching agent name/ID/labels. Omit filter to send to your manager. Format with markdown.\n\nTwo ways to give the message body: (1) `message` — an inline string (filenames in it auto-become clickable chips); or (2) `file` + `section` — render a section of a markdown file as the message. Use the file form for a report or any longer, proofread-worthy message: write it in a file, then chat the section. The referenced section is the message; the rest of the file is your workspace / extended detail.',
+      description: 'Send a message — or, with `amend_id`, edit one you already sent. Filter is { to?: string[][] } — DNF label expression matching agent name/ID/labels. Omit filter to send to your manager. Format with markdown.\n\nTwo ways to give the message body: (1) `message` — an inline string (filenames in it auto-become clickable chips); or (2) `file` + `section` — render a section of a markdown file as the message. Use the file form for a report or any longer, proofread-worthy message: write it in a file, then chat the section. The referenced section is the message; the rest of the file is your workspace / extended detail.\n\nPass `amend_id` (the id returned by a previous chat()) to edit that message IN PLACE in Skip\'s view instead of posting a new one — fix a lint issue or revise wording rather than sending a follow-up correction. The original text is kept in the message\'s history. With the file form you can edit the section in the file, then chat the same `file`+`section` with its `amend_id` to re-render the update in place. Amend honestly: an amend is for fixing the SAME message, not slipping in a different one.',
       inputSchema: {
         type: 'object',
         properties: {
-          filter: { type: 'object', description: 'Filter object: { to?: string[][] }. DNF expression — resolves to matching agents, sends to all of them.' },
+          filter: { type: 'object', description: 'Filter object: { to?: string[][] }. DNF expression — resolves to matching agents. Required for a new message; ignored when amend_id is set.' },
           message: { type: 'string', description: 'Inline message text. Provide this OR (file + section), not both.' },
           file: { type: 'string', description: 'Path to a markdown file (absolute or relative to your cwd). With `section`, the named section is rendered as the message body.' },
           section: { type: 'string', description: 'Pandoc-style section id within `file` (a heading slug, e.g. "the-plan" for "## The plan", or an explicit {#id}). The section runs to the next heading of the same or higher level.' },
+          amend_id: { type: 'number', description: 'The id of one of your earlier messages (returned by chat()). When set, this edits that message in place instead of sending a new one — no filter needed.' },
           max_recipients: { type: 'number', description: 'If the resolved recipient list exceeds this count, abort and return an error listing the matched agents. Default: 5. Pass a higher value to explicitly confirm a large broadcast.' },
-        },
-      },
-    },
-    {
-      name: 'amend',
-      description: 'Edit a message you already sent — it changes IN PLACE in Skip\'s view (it does NOT post a new message). Use this to fix a message after `chat` flagged a lint issue, or to revise wording, rather than sending a correction as a follow-up. The original text is preserved in the message\'s history. Amend honestly: this is for fixing or clarifying the SAME message, not for slipping in a different one.\n\nTakes the same body forms as `chat`: either `message` (inline string) or `file` + `section`. With the file form you can edit the section in the file, then amend with the same `file`+`section` to re-render the updated section in place.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          message: { type: 'string', description: 'The corrected message text — replaces the old text in place. Provide this OR (file + section).' },
-          file: { type: 'string', description: 'Path to a markdown file (absolute or relative to your cwd). With `section`, re-renders that section as the amended body.' },
-          section: { type: 'string', description: 'Pandoc-style section id within `file` (heading slug or explicit {#id}).' },
-          event_id: { type: 'number', description: 'The id of the message to amend (returned by chat()). Omit to amend your most recent message.' },
         },
       },
     },
@@ -1686,33 +1674,6 @@ export async function handleFleetTool(name, args) {
 
   // ==== Messaging ====
 
-  // ---- amend (edit an already-sent message in place) ----
-  if (name === 'amend') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Cannot amend: not registered.' }], isError: true };
-    const { event_id } = args;
-    const agentCwd = getAgentCwd();
-    const resolved = resolveChatBody(args, agentCwd);
-    if (resolved.error) return { content: [{ type: 'text', text: resolved.error }], isError: true };
-    const { body: messageBody, source } = resolved;
-    try {
-      const { resolvedMessage, inlineAttachments } = await processMessageText(messageBody, agentCwd, `${TLDA_SERVER}`);
-      const body = { from: AGENT_ID, message: resolvedMessage };
-      if (event_id != null) body.event_id = event_id;
-      if (inlineAttachments?.length) body.inline_attachments = inlineAttachments;
-      if (source) body.source = source;
-      const data = await sendWS('amend', body);
-      if (!data?.ok) return { content: [{ type: 'text', text: `Amend failed: ${data?.error || 'no message of yours matched (have you sent one yet?)'}` }], isError: true };
-      const macros = await getMacrosForAgent();
-      const lint = lintChatMessage(messageBody, macros);
-      const extra = lint.length > 0
-        ? `\n\n⚠ Still has ${lint.length} lint issue${lint.length > 1 ? 's' : ''}:\n${lint.map(l => `- ${l}`).join('\n')}`
-        : '';
-      return { content: [{ type: 'text', text: `Amended message ${data.event_id} in place.${extra}` }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Amend failed: ${e.message}` }], isError: true };
-    }
-  }
-
   if (name === 'dismiss_skill') {
     if (!AGENT_ID) return { content: [{ type: 'text', text: 'Cannot dismiss: not registered.' }], isError: true };
     const reason = (args.reason || '').trim();
@@ -1749,6 +1710,28 @@ export async function handleFleetTool(name, args) {
     const resolvedBody = resolveChatBody(args, agentCwd);
     if (resolvedBody.error) return { content: [{ type: 'text', text: resolvedBody.error }], isError: true };
     const { body: message, source } = resolvedBody;
+
+    // ---- amend branch: edit an already-sent message in place ----
+    // `amend_id` present → route to the server's amend handler (same body forms,
+    // same keep/clear-`source` semantics) instead of posting a new message.
+    if (args.amend_id != null) {
+      try {
+        const { resolvedMessage, inlineAttachments } = await processMessageText(message, agentCwd, `${TLDA_SERVER}`);
+        const body = { from: AGENT_ID, message: resolvedMessage, event_id: args.amend_id };
+        if (inlineAttachments?.length) body.inline_attachments = inlineAttachments;
+        if (source) body.source = source;
+        const data = await sendWS('amend', body);
+        if (!data?.ok) return { content: [{ type: 'text', text: `Amend failed: ${data?.error || `no message of yours matched id ${args.amend_id}`}` }], isError: true };
+        const macros = await getMacrosForAgent();
+        const lint = lintChatMessage(message, macros);
+        const extra = lint.length > 0
+          ? `\n\n⚠ Still has ${lint.length} lint issue${lint.length > 1 ? 's' : ''}:\n${lint.map(l => `- ${l}`).join('\n')}`
+          : '';
+        return { content: [{ type: 'text', text: `Amended message ${data.event_id} in place.${extra}` }] };
+      } catch (e) {
+        return { content: [{ type: 'text', text: `Amend failed: ${e.message}` }], isError: true };
+      }
+    }
 
     // Resolve recipients from filter
     if (!args.filter?.to) return { content: [{ type: 'text', text: 'Missing filter.to — specify recipients as DNF expression.' }], isError: true };
@@ -1852,11 +1835,11 @@ export async function handleFleetTool(name, args) {
     const macros = await getMacrosForAgent();
     const lint = lintChatMessage(message, macros);
     if (lint.length > 0) {
-      const target = lastEventId != null ? `amend({ event_id: ${lastEventId}, message: "…" })` : 'amend({ message: "…" })';
+      const target = lastEventId != null ? `chat({ amend_id: ${lastEventId}, message: "…" })` : 'chat({ amend_id: <id>, message: "…" })';
       warning += `\n\n⚠ **Lint (${lint.length} issue${lint.length > 1 ? 's' : ''}):**\n${lint.map(l => `- ${l}`).join('\n')}\nYour message went out but has these issues — **you are strongly encouraged to fix it in place** with \`${target}\` (it edits the message Skip is reading, no new message).`;
     }
 
-    const amendHint = lastEventId != null ? ` (message id ${lastEventId} — amend() to edit it in place)` : '';
+    const amendHint = lastEventId != null ? ` (message id ${lastEventId} — chat({ amend_id: ${lastEventId} }) to edit it in place)` : '';
     return { content: [{ type: 'text', text: `Message queued for ${sent.join(', ')}.${amendHint}${warning}` }] };
   }
 
