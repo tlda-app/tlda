@@ -3532,18 +3532,12 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   color: var(--text-dim);
   font-size: 10px;
 }
-/* Short summary only — a 2-line preview, not the full nudge block, so the card
-   stays glanceable and doesn't overwhelm. */
 .fleet-chat-shape .eliza-tip-text {
   margin-top: 2px;
   padding-top: 6px;
   border-top: 1px solid var(--border);
   color: var(--text-dim);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  white-space: normal;
+  white-space: pre-wrap;
   word-break: break-word;
 }
 
