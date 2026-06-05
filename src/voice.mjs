@@ -292,8 +292,13 @@ let _glowTimer = null
 function setTextareaGlow(color) {
   const ta = _activeTextarea
   if (!ta) return
-  ta.style.boxShadow = color ? `0 0 0 2px ${color}` : ''
+  // Keep the 2px ring ALWAYS present — transparent when idle — so only the
+  // colour ever changes, never the geometry. Toggling box-shadow between '' and
+  // '0 0 0 2px' made the ring pop in/out on every record-start/stop, which reads
+  // as the border "changing size" / bouncing. A constant-size ring transitions
+  // colour-only and never moves.
   ta.style.transition = 'box-shadow 0.3s'
+  ta.style.boxShadow = `0 0 0 2px ${color || 'transparent'}`
 }
 
 // Call when onresult fires — audio is flowing
@@ -498,6 +503,9 @@ export function setVoiceTarget(textarea, sendTargets, agentNames, sendFn, agentC
   _activeAgentNames = agentNames || {}
   _activeAgentColor = agentColor || null
   _activeSendFn = sendFn || null
+  // Prime the always-present transparent ring so the first record-start is a
+  // colour-only transition, not a 0→2px geometry pop (see setTextareaGlow).
+  if (textarea && !textarea.style.boxShadow) textarea.style.boxShadow = '0 0 0 2px transparent'
   // If voice was recording before the chat switch, restart it on the new target
   if (wasRecording && textarea) {
     startRecording()
