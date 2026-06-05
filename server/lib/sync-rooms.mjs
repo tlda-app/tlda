@@ -540,42 +540,77 @@ function shallowDiff(a, b) {
  * @param {string} docName
  * @returns {Promise<TLSocketRoom>}
  */
+// ─── Room-load throttle ────────────────────────────────────────────────────
+// A server restart triggers a reconnection storm: every client/tab/daemon
+// reconnects at once, and each reconnect loads its room's snapshot — an async
+// readFile, then a SYNCHRONOUS JSON.parse + `new TLSocketRoom(initialSnapshot)`
+// (CPU-heavy Yjs apply). Loading all of them concurrently pegs the single-
+// threaded event loop, so /health and new requests can't get a turn for ~30s.
+// Cap how many load at once and yield the loop between them, so the server
+// stays responsive while rooms load in the background. Already-loaded rooms
+// return immediately above and never touch this throttle (no steady-state cost).
+const ROOM_LOAD_CONCURRENCY = 3
+let _roomLoadsInFlight = 0
+const _roomLoadWaiters = []
+function _acquireRoomLoadSlot() {
+  if (_roomLoadsInFlight < ROOM_LOAD_CONCURRENCY) {
+    _roomLoadsInFlight++
+    return Promise.resolve()
+  }
+  return new Promise(resolve => _roomLoadWaiters.push(resolve))
+}
+function _releaseRoomLoadSlot() {
+  const next = _roomLoadWaiters.shift()
+  if (next) next()           // hand the slot to the next waiter (count unchanged)
+  else _roomLoadsInFlight--
+}
+
 export async function getOrCreateRoom(docName) {
   if (rooms.has(docName)) return rooms.get(docName)
 
-  const snapshot = await loadSnapshot(docName)
-  // Re-check after await — another concurrent caller may have already created it
-  if (rooms.has(docName)) return rooms.get(docName)
+  await _acquireRoomLoadSlot()
+  try {
+    // Re-check: another caller may have created it while we waited for a slot.
+    if (rooms.has(docName)) return rooms.get(docName)
 
-  const opts = {
-    schema,
-    log: {
-      warn: (...args) => console.warn(`[sync:${docName}]`, ...args),
-      error: (...args) => console.error(`[sync:${docName}]`, ...args),
-    },
-    onSessionRemoved: (_room, { sessionId, numSessionsRemaining }) => {
-      console.log(`[sync] Session removed from "${docName}": ${sessionId} (${numSessionsRemaining} remaining)`)
-    },
-    onDataChange: () => {
-      scheduleSave(docName, room)
-      const changes = recordChanges(docName, room)
-      notifyChangeListeners(docName, changes)
-    },
+    const snapshot = await loadSnapshot(docName)
+    // Re-check after await — another concurrent caller may have already created it
+    if (rooms.has(docName)) return rooms.get(docName)
+
+    const opts = {
+      schema,
+      log: {
+        warn: (...args) => console.warn(`[sync:${docName}]`, ...args),
+        error: (...args) => console.error(`[sync:${docName}]`, ...args),
+      },
+      onSessionRemoved: (_room, { sessionId, numSessionsRemaining }) => {
+        console.log(`[sync] Session removed from "${docName}": ${sessionId} (${numSessionsRemaining} remaining)`)
+      },
+      onDataChange: () => {
+        scheduleSave(docName, room)
+        const changes = recordChanges(docName, room)
+        notifyChangeListeners(docName, changes)
+      },
+    }
+
+    let room
+    if (snapshot) {
+      opts.initialSnapshot = snapshot
+      room = new TLSocketRoom(opts)
+      prevSnapshots.set(docName, buildDocMap(snapshot.documents))
+      console.log(`[sync] Room created: ${docName} (loaded snapshot)`)
+    } else {
+      room = new TLSocketRoom(opts)
+      console.log(`[sync] Room created: ${docName}`)
+    }
+
+    rooms.set(docName, room)
+    // Yield so /health and other requests can run before the next queued load.
+    await new Promise(r => setImmediate(r))
+    return room
+  } finally {
+    _releaseRoomLoadSlot()
   }
-
-  let room
-  if (snapshot) {
-    opts.initialSnapshot = snapshot
-    room = new TLSocketRoom(opts)
-    prevSnapshots.set(docName, buildDocMap(snapshot.documents))
-    console.log(`[sync] Room created: ${docName} (loaded snapshot)`)
-  } else {
-    room = new TLSocketRoom(opts)
-    console.log(`[sync] Room created: ${docName}`)
-  }
-
-  rooms.set(docName, room)
-  return room
 }
 
 /**
