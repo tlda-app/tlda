@@ -296,8 +296,11 @@ export class FleetStore {
 
     // Backfill events_fts for existing events (one-time; trigger handles new inserts).
     // Use FTS5 rebuild to populate the index from the content table.
-    const ftsCount = this.db.prepare("SELECT COUNT(*) AS c FROM events_fts").get().c;
-    if (ftsCount === 0) {
+    // Cheap existence check, NOT COUNT(*): FTS5 has no maintained row count, so
+    // COUNT(*) scans the whole index — O(events), ~seconds on a large DB, every
+    // startup. We only need to know whether the index is EMPTY (one-time backfill).
+    const ftsHasRows = this.db.prepare("SELECT 1 FROM events_fts LIMIT 1").get();
+    if (!ftsHasRows) {
       this.db.exec("INSERT INTO events_fts(events_fts) VALUES ('rebuild')");
     }
 
