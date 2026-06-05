@@ -699,7 +699,32 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
   )
 }
 
-function ElizaStatus({ pending, ctx: _ctx, rawItemsLength }: { pending: ElizaNudge[], ctx: any, rawItemsLength: number }) {
+function ElizaSuggestion({ nudge, isFirst, agentName }: { nudge: ElizaNudge, isFirst: boolean, agentName: string }) {
+  const fire = (e: React.SyntheticEvent) => {
+    stopEventPropagation(e as any)
+    // Eliza listens for "eliza <label>" from Skip and releases the matching nudge.
+    // Sending it as a real message keeps a visible record of what fired.
+    sendMessage(nudge.targetId, `eliza ${nudge.label}`)
+  }
+  return (
+    <span
+      className="eliza-suggestion"
+      onPointerDown={stopEventPropagation}
+      onClick={fire}
+    >
+      <span className="eliza-suggestion-label">{nudge.label}</span>
+      <span className="eliza-suggestion-tip" onPointerDown={stopEventPropagation}>
+        <span className="eliza-tip-trigger">
+          Say <b>"eliza {nudge.label}"</b>{isFirst ? <> or <b>"say it"</b></> : null} — or click to send now
+        </span>
+        <span className="eliza-tip-target">→ {agentName}</span>
+        <span className="eliza-tip-text">{nudge.text}</span>
+      </span>
+    </span>
+  )
+}
+
+function ElizaStatus({ pending, ctx, rawItemsLength }: { pending: ElizaNudge[], ctx: any, rawItemsLength: number }) {
   const hasActive = pending.length > 0
   const prevActiveRef = useRef(hasActive)
   const [ghost, setGhost] = useState(false)
@@ -722,20 +747,25 @@ function ElizaStatus({ pending, ctx: _ctx, rawItemsLength }: { pending: ElizaNud
 
   if (!hasActive && !ghost) return null
 
-  const labels = pending.map(n => n.label).join(', ')
   return (
     <div style={{
       padding: '2px 8px',
       fontSize: 11,
       flexShrink: 0,
-      opacity: ghost ? 0 : 0.4,
+      opacity: ghost ? 0 : 1,
       transition: 'opacity 0.2s',
     }}
     className="eliza-status"
     >
       {!ghost && (
         <div className="chat-line" style={{ padding: '2px 0' }}>
-          <span style={{ opacity: 0.7 }}>eliza:</span> {labels}
+          <span className="eliza-status-prefix">eliza:</span>{' '}
+          {pending.map((n, i) => (
+            <span key={n.id}>
+              {i > 0 ? <span className="eliza-suggestion-label">, </span> : null}
+              <ElizaSuggestion nudge={n} isFirst={i === 0} agentName={ctx.agentLabel(n.targetId)} />
+            </span>
+          ))}
         </div>
       )}
       {ghost && <div style={{ padding: '2px 0', visibility: 'hidden' }}>placeholder</div>}

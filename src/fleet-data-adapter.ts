@@ -544,7 +544,7 @@ export function useFleetCompacting(dnfFilter?: string[][] | [string,string][][] 
   return compacting
 }
 
-export type ElizaNudge = { id: number, label: string, targetId: string, ts: number, msgCount: number }
+export type ElizaNudge = { id: number, label: string, targetId: string, text: string, ts: number, msgCount: number }
 
 export function useElizaPending(): ElizaNudge[] {
   const [pending, setPending] = useState<ElizaNudge[]>([])

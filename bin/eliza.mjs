@@ -216,6 +216,7 @@ function broadcastPendingStatus() {
     id: n.id,
     label: n.label,
     targetId: n.targetId,
+    text: n.text,
     ts: n.ts,
     msgCount: n.msgCount,
   }))

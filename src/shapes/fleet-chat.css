@@ -3428,3 +3428,75 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   color: var(--text-bright);
 }
 
+/* --- Eliza pending-nudge suggestions (clickable + hover tooltip) --- */
+/* At rest the line looks identical to the old faint status line. Hover reveals
+   a tooltip describing the trigger phrase + the text that will be sent; clicking
+   fires the release. The label text and the tooltip carry their own opacity so
+   the tooltip stays fully readable while the resting label stays faint. */
+.fleet-chat-shape .eliza-status-prefix {
+  opacity: 0.28;
+}
+.fleet-chat-shape .eliza-suggestion {
+  position: relative;
+  cursor: pointer;
+}
+.fleet-chat-shape .eliza-suggestion-label {
+  opacity: 0.4;
+  transition: opacity 0.2s;
+}
+.fleet-chat-shape .eliza-suggestion:hover .eliza-suggestion-label {
+  opacity: 0.85;
+}
+
+.fleet-chat-shape .eliza-suggestion-tip {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  margin-bottom: 6px;
+  width: max-content;
+  max-width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px var(--shadow-lg);
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.45;
+  text-align: left;
+  white-space: normal;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(2px);
+  transition: opacity 0.15s, transform 0.15s;
+  z-index: 8300;
+}
+.fleet-chat-shape .eliza-suggestion:hover .eliza-suggestion-tip {
+  opacity: 1;
+  transform: translateY(0);
+}
+.fleet-chat-shape .eliza-tip-trigger {
+  color: var(--text-bright);
+}
+.fleet-chat-shape .eliza-tip-trigger b {
+  color: var(--accent);
+  font-weight: 600;
+}
+.fleet-chat-shape .eliza-tip-target {
+  color: var(--text-dim);
+  font-size: 10px;
+}
+.fleet-chat-shape .eliza-tip-text {
+  margin-top: 2px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+  color: var(--text-dim);
+  max-height: 160px;
+  overflow: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
