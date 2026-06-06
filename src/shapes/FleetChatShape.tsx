@@ -80,6 +80,9 @@ const TERM_HOVER_WS_HOST = typeof window !== 'undefined'
 // the xterm grid has to be the same width or every frame garbles.
 const PEEK_COLS = 120
 const PEEK_ROWS = 40
+// Lightbox height. When lightboxed the pane is bottom-anchored so it grows
+// UPWARD from the (fixed) input bar instead of pushing the input off-screen.
+const LIGHTBOX_H = 480
 
 // Hover mode: read-only snapshot that resets on each server push.
 // Pinned mode: stays open, shows input bar for sending commands, resizable.
@@ -163,6 +166,16 @@ function TerminalHoverPane({ agentId, pinned, onDismiss, onMouseEnter, onMouseLe
   // Leaving pinned mode also leaves the lightbox.
   useEffect(() => { if (!pinned) setLightboxed(false) }, [pinned])
 
+  // On lightbox, scroll the body to the bottom so the live (cursor) region of
+  // the terminal is what's visible, not the top of the screen.
+  useEffect(() => {
+    if (!lightboxed) return
+    requestAnimationFrame(() => {
+      const body = bodyRef.current
+      if (body) body.scrollTop = body.scrollHeight
+    })
+  }, [lightboxed])
+
   useEffect(() => {
     if (!agentId) return
     wsRef.current?.close()
@@ -244,7 +257,9 @@ function TerminalHoverPane({ agentId, pinned, onDismiss, onMouseEnter, onMouseLe
   return (
     <div
       className={`fleet-terminal-hover-pane${pinned ? ' fleet-terminal-hover-pane-pinned' : ''}${lightboxed ? ' fleet-terminal-hover-pane-lightboxed' : ''}`}
-      style={{ height: lightboxed ? undefined : height }}
+      style={lightboxed
+        ? { top: 'auto', bottom: -height, height: LIGHTBOX_H }
+        : { height }}
       onMouseEnter={onMouseEnter}
       onMouseLeave={pinned ? undefined : onMouseLeave}
       onPointerDown={stopEventPropagation}

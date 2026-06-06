@@ -2852,11 +2852,12 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 }
 
 /* Lightbox: pinned terminal pops out to natural (readable) size when the input
-   is focused — i.e. when you actually intend to drive the terminal. */
+   is focused — i.e. when you actually intend to drive the terminal. Bottom-
+   anchored (top/bottom/height set inline) so it grows UPWARD and to the right,
+   keeping the input bar fixed instead of pushing it off the bottom of the screen. */
 .fleet-chat-shape .fleet-terminal-hover-pane-lightboxed {
   right: auto;
   width: min(840px, 92vw);
-  height: min(640px, 88vh);
   z-index: 60;
   border: 1px solid rgba(80, 80, 110, 0.5);
   border-radius: 4px;
