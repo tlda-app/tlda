@@ -1142,7 +1142,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const resolvedFilterIdKey = useMemo(() => {
     if (!dnfFilter || dnfFilter.length === 0) return ''
     return [...resolveFilter(dnfFilter)].sort().join(',')
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- depend on filterKey (the stable string form of dnfFilter) not dnfFilter (new array identity each render); resolveFilter is a stable module import
   }, [filterKey, agents])
 
   const historyLoadedRef = useRef<string | null>(null)
@@ -1193,7 +1193,8 @@ function FleetChatInner({ shape }: { shape: any }) {
       // Scroll to the end explicitly once the prepended items have committed.
       if (didPrepend) {
         requestAnimationFrame(() => {
-          try { virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end' }) } catch {}
+          try { virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end' }) }
+          catch (e) { log.debug('chat', 'post-backfill scrollToIndex skipped (virtuoso not mounted)', { e: String(e) }) }
         })
       }
     })
