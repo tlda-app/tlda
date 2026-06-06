@@ -32,6 +32,7 @@ import type { ElizaNudge } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
 import { agentDisplayName, agentPhase } from './fleet-utils'
 import { PhaseIcon } from './PhaseIcon'
+import { baseName, phaseFromName } from '../../shared/lineage-name.mjs'
 import { dragCoordinator } from './dragCoordinator'
 import { DocContext, PanelContext } from '../PanelContext'
 import { loadLookup, type LookupData } from '../synctexLookup'
@@ -4787,13 +4788,18 @@ function FilterOverlay({
 
   // Render a single chip (role:label) — matches dashboard's chipHtml
   function renderChip(role: string, label: string, opts?: { ghost?: boolean; x?: { ci: number; ti: number } }) {
-    // Strip the lineage phase suffix (:dawn/:day/:dusk) — phase is shown by the
-    // icon, never in text. Keeps the filter chip consistent with every other name.
-    const display = agentNames[label] || label.replace(/:(?:dawn|day|dusk)$/, '').replace('fleet:', '')
+    // The value is always the full name; the display is the lossless map
+    // name → (base text + phase glyph) — same bijective transform as every other
+    // surface. Compute straight from the name string; a plain (non-agent) label
+    // has no suffix, so it renders verbatim with no glyph.
+    const display = agentNames[label] || baseName(label).replace('fleet:', '')
+    const phase = phaseFromName(label)
     return (
       <span className={`fleet-filter-chip fleet-filter-chip-${role}${opts?.ghost ? ' fleet-filter-chip-ghost' : ''}`}>
         <span className="fleet-filter-chip-role">{role}:</span>
-        <span className="fleet-filter-chip-label">{display}</span>
+        <span className="fleet-filter-chip-label" style={{ display: 'inline-flex', alignItems: 'center' }}>
+          <PhaseIcon phase={phase} />{display}
+        </span>
         {opts?.x && (
           <span className="fleet-filter-term-x" data-clause={opts.x.ci} data-term={opts.x.ti}>×</span>
         )}

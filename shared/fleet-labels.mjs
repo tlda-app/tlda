@@ -20,8 +20,6 @@
  * same shape over /api/state and the WS push.
  */
 
-import { baseName } from './lineage-name.mjs'
-
 /**
  * The reserved routing labels derived from an agent's status. A friendly_name
  * or explicit label may not collide with these (see fleet-store name checks).
@@ -46,8 +44,9 @@ export function statusLabels(status) {
  * Includes: explicit labels[], status pseudo-labels, friendly_name, id. Phase
  * is encoded in the friendly name ("base:day"/"base:dusk"; dawn is the bare
  * base), so the phase-qualified address is already covered by friendly_name.
- * For lineage-wide search/filter, every member ALSO answers to the bare base
- * name, so filtering "conc5" matches conc5, conc5:day, and conc5:dusk together.
+ * Each agent answers ONLY to its own full name — the base name does NOT fan out
+ * to the whole lineage. Lineage is a name-rotation convention, a search gloss,
+ * and a graphical overlay; it is not a chat-routing label.
  */
 export function labelsForAgent(agent) {
   if (!agent) return []
@@ -57,8 +56,6 @@ export function labelsForAgent(agent) {
     agent.friendly_name,
     agent.id,
   ]
-  const base = baseName(agent.friendly_name)
-  if (base && base !== agent.friendly_name) out.push(base)
   return out.filter(Boolean)
 }
 

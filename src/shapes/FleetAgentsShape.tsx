@@ -746,7 +746,7 @@ function AgentRow({
         <span
           className="fleet-agents-col-name fleet-agents-pill"
           style={{ color, opacity: nameOpacity, display: 'flex', alignItems: 'center' }}
-          onPointerDown={(e) => { e.stopPropagation(); onStartDrag(e, 'agent', name, name, color) }}
+          onPointerDown={(e) => { e.stopPropagation(); onStartDrag(e, 'agent', agent.friendly_name || name, name, color) }}
         >
           <PhaseIcon phase={agentPhase(agent)} />
           {name}
