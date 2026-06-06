@@ -759,7 +759,7 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
         return (
           <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
             <span>
-              <span className={ctx.getNickClass(agentId)}>{ctx.agentLabel(agentId)}</span>
+              <span className={ctx.getNickClass(agentId)}><AgentName name={ctx.agentFullName(agentId)} /></span>
               {' '}<span className="thinking-text">{statusText}</span>
               {status !== 'hibernating' && <>{' '}<ElapsedTime startMs={startTs} /></>}
               {escLevel > 0 && (
@@ -883,8 +883,17 @@ function makeCtx(agents: any[], tasks: any[], preambleMacros: Record<string, str
     return nickMap.get(id)!
   }
   const getAgentColor = (id: string) => nickHexMap.get(id) || '#9370db'
+  // Full friendly name (e.g. "conc5:day") — keeps the phase suffix so AgentName
+  // can render the dawn/day/dusk glyph. agentLabel strips it; use this where the
+  // lineage lift should show.
+  const agentFullName = (id: string) => {
+    if (!id) return ''
+    const a = agents.find((a: any) => a.id === id)
+    return a?.friendly_name || (typeof id === 'string' ? id : String(id))
+  }
   return {
     agentLabel,
+    agentFullName,
     getNickClass,
     getAgentColor,
     isHumanId: (id: string) => {
