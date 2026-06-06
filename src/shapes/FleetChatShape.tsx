@@ -42,7 +42,6 @@ import { fetchProofInfo, fetchTheoremMap } from '../docInfoCache'
 import { PDF_HEIGHT } from '../layoutConstants'
 import { TerminalCard } from './TerminalCard'
 import { Terminal } from 'xterm'
-import { FitAddon } from '@xterm/addon-fit'
 import { useIsInViewport } from './useIsInViewport'
 import { broadcastSharedDoc } from '../useYjsSync'
 import { consumeBulletContexts, subscribeBulletContext, getBulletContexts } from '../stores/bulletContextStore'
@@ -75,6 +74,13 @@ const TERM_HOVER_WS_HOST = typeof window !== 'undefined'
   : 'ws://localhost:5176'
 
 // Terminal peek overlay — shown when hovering the terminal icon on a chat shape.
+// Fixed grid for the peek. MUST match the daemon's tmux-attach PTY size in
+// fleet-daemon.mjs (rpcStartTerminalWatch spawns at cols:120, rows:40). The
+// agent's TUI repaints at the PTY column count with absolute cursor moves, so
+// the xterm grid has to be the same width or every frame garbles.
+const PEEK_COLS = 120
+const PEEK_ROWS = 40
+
 // Hover mode: read-only snapshot that resets on each server push.
 // Pinned mode: stays open, shows input bar for sending commands, resizable.
 function TerminalHoverPane({ agentId, pinned, onDismiss, onMouseEnter, onMouseLeave }: {
@@ -85,21 +91,31 @@ function TerminalHoverPane({ agentId, pinned, onDismiss, onMouseEnter, onMouseLe
   onMouseLeave: () => void
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
+  const bodyRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
-  const fitRef = useRef<FitAddon | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const pinnedRef = useRef(pinned)
   const [status, setStatus] = useState<'connecting' | 'connected' | 'error'>('connecting')
   const [height, setHeight] = useState(210)
   const [inputValue, setInputValue] = useState('')
+  const [lightboxed, setLightboxed] = useState(false)
+  const [scale, setScale] = useState(1)
   const dragRef = useRef<{ startY: number; startH: number } | null>(null)
 
   useEffect(() => { pinnedRef.current = pinned }, [pinned])
 
+  // Render at a FIXED grid that matches the daemon's tmux-attach PTY
+  // (PEEK_COLS × PEEK_ROWS == fleet-daemon.mjs rpcStartTerminalWatch). The two
+  // MUST agree: the agent's TUI repaints at the PTY's column count using
+  // absolute cursor positioning, so a mismatched xterm grid garbles every
+  // frame. We never reflow the grid to fit the popup — instead we scale the
+  // rendered terminal visually (see the scale effect below).
   useEffect(() => {
     if (!containerRef.current) return
     const term = new Terminal({
-      fontSize: 10,
+      cols: PEEK_COLS,
+      rows: PEEK_ROWS,
+      fontSize: 11,
       fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace",
       theme: {
         background: '#0d0d14',
@@ -114,29 +130,38 @@ function TerminalHoverPane({ agentId, pinned, onDismiss, onMouseEnter, onMouseLe
         cyan: '#4ec9b0', brightCyan: '#4ec9b0',
         white: '#d4d4d4', brightWhite: '#ffffff',
       },
-      scrollback: 100,
+      scrollback: 200,
       cursorBlink: false,
       disableStdin: true,
     })
-    const fit = new FitAddon()
-    term.loadAddon(fit)
     term.open(containerRef.current)
-    requestAnimationFrame(() => { try { fit.fit() } catch {} })
     termRef.current = term
-    fitRef.current = fit
     return () => {
       term.dispose()
       termRef.current = null
-      fitRef.current = null
     }
   }, [])
 
-  // Re-fit when height changes
+  // Scale the fixed-grid terminal to fit the pane width. Peek/pinned shrink it
+  // to fit (no horizontal scroll); the lightbox renders it at natural size.
   useEffect(() => {
-    requestAnimationFrame(() => {
-      try { fitRef.current?.fit() } catch {}
-    })
-  }, [height])
+    let raf = 0
+    const measure = () => {
+      const inner = containerRef.current?.querySelector('.xterm') as HTMLElement | null
+      const body = bodyRef.current
+      if (!inner || !body) return
+      const natW = inner.offsetWidth
+      if (!natW) { raf = requestAnimationFrame(measure); return }
+      setScale(lightboxed ? 1 : Math.min(1, body.clientWidth / natW))
+    }
+    raf = requestAnimationFrame(measure)
+    const ro = new ResizeObserver(() => measure())
+    if (bodyRef.current) ro.observe(bodyRef.current)
+    return () => { cancelAnimationFrame(raf); ro.disconnect() }
+  }, [lightboxed, height, status])
+
+  // Leaving pinned mode also leaves the lightbox.
+  useEffect(() => { if (!pinned) setLightboxed(false) }, [pinned])
 
   useEffect(() => {
     if (!agentId) return
@@ -146,7 +171,6 @@ function TerminalHoverPane({ agentId, pinned, onDismiss, onMouseEnter, onMouseLe
     wsRef.current = ws
     ws.onopen = () => {
       setStatus('connected')
-      try { fitRef.current?.fit() } catch {}
     }
     ws.onmessage = (evt) => {
       try {
@@ -219,8 +243,8 @@ function TerminalHoverPane({ agentId, pinned, onDismiss, onMouseEnter, onMouseLe
 
   return (
     <div
-      className={`fleet-terminal-hover-pane${pinned ? ' fleet-terminal-hover-pane-pinned' : ''}`}
-      style={{ height }}
+      className={`fleet-terminal-hover-pane${pinned ? ' fleet-terminal-hover-pane-pinned' : ''}${lightboxed ? ' fleet-terminal-hover-pane-lightboxed' : ''}`}
+      style={{ height: lightboxed ? undefined : height }}
       onMouseEnter={onMouseEnter}
       onMouseLeave={pinned ? undefined : onMouseLeave}
       onPointerDown={stopEventPropagation}
@@ -245,7 +269,14 @@ function TerminalHoverPane({ agentId, pinned, onDismiss, onMouseEnter, onMouseLe
           </button>
         )}
       </div>
-      <div ref={containerRef} className="fleet-terminal-hover-body" />
+      <div ref={bodyRef} className="fleet-terminal-hover-body">
+        <div
+          className="fleet-terminal-hover-scale"
+          style={{ transform: `scale(${scale})`, transformOrigin: 'top left' }}
+        >
+          <div ref={containerRef} />
+        </div>
+      </div>
       {pinned && status === 'connected' && (
         <div className="fleet-terminal-hover-input-bar"
           onPointerDown={stopEventPropagation}
@@ -259,6 +290,8 @@ function TerminalHoverPane({ agentId, pinned, onDismiss, onMouseEnter, onMouseLe
             onChange={(e) => { stopEventPropagation(e as any); setInputValue(e.target.value) }}
             onKeyDown={handleInputKeyDown}
             onKeyUp={(e) => stopEventPropagation(e as any)}
+            onFocus={() => setLightboxed(true)}
+            onBlur={() => setLightboxed(false)}
             placeholder="type command…"
             spellCheck={false}
             autoComplete="off"
