@@ -43,6 +43,17 @@ if _scheme == "https" and os.path.exists(_ca_path):
 DEFAULT_MODEL = "claude-opus-4-8[1m]"
 REGISTER_PROMPT = "Call register() with the fleet MCP server. Then call my_task() to check for a pending task."
 
+
+def register_prompt(name=None):
+    """The register prompt, with the friendly name baked in so the agent
+    registers under the name it was spawned with. Without this the agent has
+    no clean source for its name and derives it from the tmux window
+    (FLEET_TMUX_SESSION), which carries slot suffixes like ``-1b`` — that's how
+    the friendly name gets corrupted to ``leverage?-1b``."""
+    if name:
+        return f'Call register(name="{name}") with the fleet MCP server. Then call my_task() to check for a pending task.'
+    return REGISTER_PROMPT
+
 MODEL_ALIASES = {
     "opus": DEFAULT_MODEL,
     "opus45": "claude-opus-4-5",
@@ -372,14 +383,21 @@ def agent_meta(agent):
 # ---- Tmux ----
 
 def build_claude_cmd(fleet_id, tmux_session, model, effort=None, mode=None,
-                     resume_id=None, include_prompt=True):
+                     resume_id=None, include_prompt=True, name=None):
     """Build the shell command string for claude inside tmux.
 
-    When include_prompt=True (fresh spawn, refresh), appends REGISTER_PROMPT
+    When include_prompt=True (fresh spawn, refresh), appends the register prompt
     as a positional arg. When False (resume), omits it so Claude Code stays
     in interactive mode — the caller injects the prompt via tmux send-keys.
+
+    `name` is the clean friendly name; it's passed both as FLEET_NAME and baked
+    into the register prompt so the agent registers under it rather than the
+    tmux window name.
     """
-    parts = [f"FLEET_ID={fleet_id}", f"FLEET_TMUX_SESSION={tmux_session}", "claude"]
+    parts = [f"FLEET_ID={fleet_id}", f"FLEET_TMUX_SESSION={tmux_session}"]
+    if name:
+        parts.append(f"FLEET_NAME={shlex.quote(name)}")
+    parts.append("claude")
     if resume_id:
         parts.append(f"--resume {resume_id}")
     parts.append("--dangerously-load-development-channels server:tlda")
@@ -389,7 +407,7 @@ def build_claude_cmd(fleet_id, tmux_session, model, effort=None, mode=None,
     if mode:
         parts.append(f"--permission-mode '{mode}'")
     if include_prompt:
-        parts.append(shlex.quote(REGISTER_PROMPT))
+        parts.append(shlex.quote(register_prompt(name)))
     return " ".join(parts)
 
 
@@ -560,7 +578,7 @@ def fresh(name, model, cwd, effort, mode):
             sys.exit(1)
         ws_register(fleet_id, name, sess, cwd, model, effort, refresh=True)
 
-    cmd = build_claude_cmd(fleet_id, sess, model, effort, mode)
+    cmd = build_claude_cmd(fleet_id, sess, model, effort, mode, name=name)
     spawn_tmux(sess, cwd, cmd)
     print(f"{sess} ({fleet_id}) spawned in {cwd}")
     return sess
@@ -602,10 +620,10 @@ def respawn(name, model, cwd, effort, mode, session_override=None):
     strip_synthetic_tail(resume_id)
 
     cmd = build_claude_cmd(fleet_id, sess, model, effort, mode,
-                           resume_id=resume_id, include_prompt=False)
+                           resume_id=resume_id, include_prompt=False, name=name)
     spawn_tmux(sess, cwd, cmd, auto_dismiss=False)
     verify_session(sess, f"session {resume_id}")
-    inject_prompt(sess, REGISTER_PROMPT)
+    inject_prompt(sess, register_prompt(name))
     print(f"{sess} ({fleet_id}) resumed {resume_id}")
     return sess
 
@@ -626,7 +644,7 @@ def refresh(name, model, cwd, effort, mode):
     sess = agent.get("tmux_session") or f"fleet-{name}"
 
     ws_register(fleet_id, name, sess, cwd, model, effort, refresh=True)
-    cmd = build_claude_cmd(fleet_id, sess, model, effort, mode)
+    cmd = build_claude_cmd(fleet_id, sess, model, effort, mode, name=name)
     spawn_tmux(sess, cwd, cmd)
     print(f"{sess} ({fleet_id}) refreshed in {cwd}")
     return sess
@@ -713,7 +731,7 @@ def respawn_session(session_uuid, name_override, model, cwd, effort, mode,
 
     ensure_server()
     ws_register(fleet_id, agent_name, sess, cwd, model, effort)
-    cmd = build_claude_cmd(fleet_id, sess, model, effort, mode, resume_id=session_uuid)
+    cmd = build_claude_cmd(fleet_id, sess, model, effort, mode, resume_id=session_uuid, name=agent_name)
     spawn_tmux(sess, cwd, cmd)
     verify_session(sess, f"session {session_uuid}")
     action = "enrolled" if enroll else "resumed"

@@ -1240,7 +1240,9 @@ export async function handleFleetTool(name, args) {
 
   // ---- register ----
   if (name === 'register') {
-    const agentName = args.name || null;
+    // FLEET_NAME (set by fleet-spawn) is the clean spawn name — fall back to it
+    // so the agent registers under that, not a name derived from the tmux window.
+    const agentName = args.name || process.env.FLEET_NAME || null;
 
     // The MCP process is preserved across compactions (it's a stdio child of
     // Claude Code), and Claude Code does NOT create a new JSONL file on

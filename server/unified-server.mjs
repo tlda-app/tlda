@@ -2054,7 +2054,13 @@ async function handleFleetWsMessage(ws, msg) {
     ws._tldaAgentId = agentId
     const now = new Date().toISOString()
     const existing = fleetStore.getAgent?.(agentId)
-    if (name) {
+    // The friendly name is set once (first registration) and is thereafter owned
+    // by rename/rotation. Re-registration must NOT clobber it with the spawn name
+    // — that would undo a lineage rotation. The terminal/window name lives in
+    // tmux_session, independent of the friendly name. So only the *first* name
+    // is taken from `name`; once set, it's preserved.
+    const willSetName = !existing?.friendly_name && name
+    if (willSetName) {
       const cols = fleetStore.checkNameAvailable([name], { excludeId: agentId, asFriendlyName: true })
       if (cols.length) {
         error(`Name "${name}" unavailable: ${cols.map(c => c.kind === 'pseudo_label' ? 'reserved routing label' : `collides with ${c.kind} on ${c.agent_id}`).join('; ')}`)
@@ -2063,7 +2069,7 @@ async function handleFleetWsMessage(ws, msg) {
     }
     const agent = {
       id: agentId,
-      friendly_name: name || existing?.friendly_name || null,
+      friendly_name: existing?.friendly_name || name || null,
       tmux_session: tmux_session || existing?.tmux_session || null,
       session_id: session_id || existing?.session_id || null,
       session_ids: existing?.session_ids || [],
