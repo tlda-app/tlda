@@ -17,7 +17,7 @@
 //   renderMarkdown: (escapedHtml) => html,
 // }
 
-import { phaseFromName } from '../../shared/lineage-name.mjs'
+import { phaseFromName, baseName } from '../../shared/lineage-name.mjs'
 
 // --- Pure helpers (copied from utils.mjs) ---
 
@@ -82,14 +82,25 @@ export function resolveInlineAttachments(text, inlineAttachments, renderMarkdown
 const PHASE_ICON_DAY = '<svg width="10" height="10" viewBox="0 0 16 16" style="opacity:0.6;vertical-align:-1px;margin-right:2px"><circle cx="8" cy="8" r="3" stroke="currentColor" fill="none" stroke-width="1.5"/><line x1="8" y1="1" x2="8" y2="2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="8" y1="13.5" x2="8" y2="15" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="1" y1="8" x2="2.5" y2="8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="13.5" y1="8" x2="15" y2="8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>'
 const PHASE_ICON_DUSK = '<svg width="10" height="10" viewBox="0 0 16 16" style="opacity:0.6;vertical-align:-1px;margin-right:2px"><line x1="0.5" y1="11" x2="15.5" y2="11" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round"/><path d="M1 11 a3 3 0 0 1 6 0" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round"/><line x1="4" y1="6" x2="4" y2="4" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round"/><line x1="1" y1="9" x2="-0.5" y2="8" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round"/></svg>'
 
+function glyphForPhase(phase) {
+  return phase === 'day' ? PHASE_ICON_DAY : phase === 'dusk' ? PHASE_ICON_DUSK : ''
+}
+
 function phaseIconHtml(agentId, getAgents) {
   if (!getAgents) return ''
   const agents = getAgents()
   const a = agents?.find(x => x.id === agentId)
   // Phase is encoded in the friendly name (":day"/":dusk"; bare = dawn), not a
   // server field. dawn is the default and gets no icon.
-  const phase = phaseFromName(a?.friendly_name)
-  return phase === 'day' ? PHASE_ICON_DAY : phase === 'dusk' ? PHASE_ICON_DUSK : ''
+  return glyphForPhase(phaseFromName(a?.friendly_name))
+}
+
+// The HTML display primitive — a full friendly name → glyph + base text. The
+// bijective name display for HTML surfaces (search/thread result cards),
+// mirroring the React AgentName. Pass the full name; never a pre-stripped base.
+export function agentNameHtml(name) {
+  if (!name) return ''
+  return glyphForPhase(phaseFromName(name)) + esc(baseName(name))
 }
 
 export function renderChatLine(m, ctx) {

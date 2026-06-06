@@ -18,6 +18,7 @@
 // }
 
 import katex from 'katex'
+import { agentNameHtml } from './chat-render.mjs'
 
 // --- Pure helpers (copied from utils.mjs) ---
 
@@ -129,9 +130,9 @@ function renderThreadResult(text, ctx) {
     const userClass = isFromUser ? ' from-user' : ''
     return `<div class="chat-line${userClass}" data-msg-from="${esc(from)}">
       <span class="chat-ts">${esc(shortTs)}${verHtml}</span>
-      <span class="chat-nick ${fromCls}">${esc(from)}</span>
+      <span class="chat-nick ${fromCls}">${agentNameHtml(from)}</span>
       <span class="chat-arrow">→</span>
-      <span class="chat-nick ${toCls}">${esc(to)}</span>
+      <span class="chat-nick ${toCls}">${agentNameHtml(to)}</span>
       <div class="pretty-msg-body">${bodyHtml}</div>
     </div>`
   }
@@ -157,6 +158,19 @@ function renderThreadResult(text, ctx) {
   return `<div class="tool-pretty-result tool-pretty-thread">${header}${moreHtml}${rows}</div>`
 }
 
+// A search row's "source" field is "[tag] [tag] <names>" where <names> is either
+// a single agent name or "from → to". Keep the bracket tags verbatim, but run the
+// agent names through the HTML display primitive (base text + phase glyph).
+function prettySearchSource(source) {
+  const m = source.match(/^((?:\[[^\]]*\]\s*)+)(.*)$/)
+  if (!m) return esc(source)
+  const rest = m[2].trim()
+  if (!rest) return esc(source)
+  const names = rest.split(/\s*→\s*/).map(n => agentNameHtml(n.trim()))
+    .join(' <span class="chat-arrow">→</span> ')
+  return esc(m[1]) + names
+}
+
 function renderSearchResult(text, ctx) {
   // Format: "N results (X session, Y chat) — index: ...\n\nresult1\n\nresult2\n\n..."
   // Each result: "timestamp | [source] [role] agent | snippet"
@@ -179,7 +193,7 @@ function renderSearchResult(text, ctx) {
       const tsShort = ts.replace(/^\d+\/\d+\/\d+,?\s*/, '')  // strip date, keep time
       return `<div class="pretty-search-row ${stripe}" draggable="true" data-ts="${esc(ts)}">
         <span class="pretty-search-ts" title="${esc(ts)}">${esc(tsShort)}</span>
-        <span class="pretty-search-source">${esc(source)}</span>
+        <span class="pretty-search-source">${prettySearchSource(source)}</span>
         <span class="pretty-search-snippet">${highlightedSnippet}</span>
       </div>`
     }
