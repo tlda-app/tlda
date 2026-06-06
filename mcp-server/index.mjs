@@ -2100,6 +2100,32 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'chain_open',
+      description: 'Open the ARGUMENT-GRAPH (arrow-chain) for an outline region. Unlike outline_open (which MOVES frozen text), this is a CONSTRUCTION surface: you build a chain of objects/states connected by arrows, each arrow labeled by the single property that drives that transition (e.g. coercive → bounded → (totally convex) Cauchy → (complete) converges). Returns the chain rendered as arrows + an editable id-tagged markdown you submit with chain_apply. If no chain exists yet, pass seedFromLeaf=<leaf id of the bag-of-properties sentence> to split that sentence into its candidate properties (UNBOUND — you must assign each to the arrow it drives).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name' },
+          slug: { type: 'string', description: 'Outline slug (same as outline_open)' },
+          seedFromLeaf: { type: 'string', description: 'Optional leaf id (e.g. "l3") from the outline model to split into candidate properties when starting a new chain.' },
+        },
+        required: ['doc', 'slug'],
+      },
+    },
+    {
+      name: 'chain_apply',
+      description: 'Submit an edited argument-graph (arrow-chain) markdown. The chain is validated for graph shape (every arrow must name the one property that drives it; no dangling endpoints or cycles) and persisted as the chain artifact — it does NOT mutate the .tex source. Returns the chain rendered back as arrows so the current state is always visible. Edit format: a "### nodes" list of "- [id] kind | label" (kind = object|state|roadmap; optional "  gloss: …" line) and a "### edges" list of "- [id] from -> to | property | weight" (weight = load-bearing|one-liner; optional "  justify: …" line).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name' },
+          slug: { type: 'string', description: 'Outline slug (same as chain_open)' },
+          editedMd: { type: 'string', description: 'The full edited arrow-chain markdown (nodes + edges, with gloss/justify continuation lines).' },
+        },
+        required: ['doc', 'slug', 'editedMd'],
+      },
+    },
+    {
       name: 'set_chat_target',
       description: 'Change which agent a fleet chat panel targets. Used for hands-free layout — Skip says "give me historian" and the agent calls this to reconfigure the panel. Pass chatShapeId from the message context to target the specific panel the user is chatting in.',
       inputSchema: {
@@ -3311,6 +3337,31 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (data.deletes?.length) summary.push(`deletes: ${data.deletes.join(', ')}`);
       return { content: [{ type: 'text', text:
         `✓ Accepted (move/insert only). ${r.card}\n\n---\nShow this card to Skip via fleet chat. After approval, call apply_proposal with id="${r.id}".${summary.length ? '\n\n' + summary.join('\n') : ''}` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'chain_open' || name === 'chain_apply') {
+    const { doc, slug, editedMd, seedFromLeaf } = args;
+    if (!doc || !slug) return { content: [{ type: 'text', text: 'Missing required parameter: doc and slug' }], isError: true };
+    if (name === 'chain_apply' && editedMd == null) return { content: [{ type: 'text', text: 'Missing required parameter: editedMd' }], isError: true };
+    try {
+      const data = name === 'chain_open'
+        ? await _tldaFetch(`/api/projects/${encodeURIComponent(doc)}/chain?slug=${encodeURIComponent(slug)}${seedFromLeaf ? `&seedFromLeaf=${encodeURIComponent(seedFromLeaf)}` : ''}`, { server: TLDA_OUTLINE_SERVER })
+        : await _tldaFetch(`/api/projects/${encodeURIComponent(doc)}/chain-apply`, { server: TLDA_OUTLINE_SERVER, method: 'POST', body: { slug, editedMd } });
+      // Echo the rendered chain into the turn EVERY call — the motion-view
+      // arrows, candidate properties (if freshly split), graph validation, and
+      // the editable markdown the agent submits back with chain_apply.
+      const parts = [`Arrow-chain for ${slug}:`];
+      parts.push(data.arrows && data.arrows.trim() ? `\n${data.arrows}\n` : '\n(empty — no arrows yet)\n');
+      if (data.candidateProperties?.length) {
+        parts.push(`Candidate properties from the bag (UNBOUND — assign each to the arrow it drives):\n  ${data.candidateProperties.join(', ')}\n`);
+      }
+      const v = data.validation;
+      if (v && !v.ok) parts.push(`⚠ Graph not yet valid:\n${(v.errors || []).map((e) => '  ✗ ' + e).join('\n')}\n`);
+      parts.push(`Edit the chain and submit with chain_apply. Editable form:\n\n${data.markdown || ''}`);
+      return { content: [{ type: 'text', text: parts.join('\n') }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
