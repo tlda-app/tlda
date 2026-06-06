@@ -599,10 +599,10 @@ function ContextBadge({ percent }: { percent?: number }) {
 
 /**
  * ThinkingStatus — one status line per agent (thinking / compacting).
- * When all agents stop, the space persists (ghost) until rawItemsLength changes
- * (i.e. a real message arrives to replace it). No timeout — no bounce.
+ * Space is always reserved once any agent has been active — opacity-only
+ * transitions prevent layout bounce when thinking starts or stops.
  */
-function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibernatingAgents, ctx, rawItemsLength, agents: _agents, escalationState }: {
+function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibernatingAgents, ctx, rawItemsLength: _rawItemsLength, agents: _agents, escalationState }: {
   thinkingAgents: Map<string, number>
   compactingAgents: Map<string, number>
   contextPercent: Map<string, number>
@@ -630,44 +630,22 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
   }, [thinkingAgents, compactingAgents, hibernatingAgents])
 
   const hasActive = statusAgents.size > 0
-  // Remember the last non-empty status so the ghost window can keep rendering
-  // those rows (invisibly) to RESERVE their height. When thinking ends the
-  // agent leaves statusAgents, so without this snapshot the ghost div has no
-  // rows → zero height → the slot collapses and the chat bounces.
+  // Always keep the last non-empty status so the component stays mounted at the
+  // same height. Space is reserved by keeping opacity:0 instead of unmounting —
+  // this eliminates the layout bounce that happened when the component returned
+  // null (on stop) or remounted (on start).
   const lastStatusRef = useRef(statusAgents)
   if (hasActive) lastStatusRef.current = statusAgents
-  const prevActiveRef = useRef(hasActive)
-  const [ghost, setGhost] = useState(false)
-  const ghostRawItemsRef = useRef(rawItemsLength)
 
-  if (prevActiveRef.current && !hasActive && !ghost) {
-    setGhost(true)
-    ghostRawItemsRef.current = rawItemsLength
-  }
-  if (hasActive && ghost) {
-    setGhost(false)
-  }
-  prevActiveRef.current = hasActive
-
-  useEffect(() => {
-    // Cede the reserved space ONLY when a new item is actually appended (count
-    // goes UP — a real message taking the slot's place), not on any change.
-    // The old `!==` released on ANY churn above (an activity card updating, an
-    // item removed, scrollback) — which in a busy chat fires instantly, so the
-    // reserve collapsed the moment the status cleared → the bounce Skip sees.
-    if (ghost && rawItemsLength > ghostRawItemsRef.current) {
-      setGhost(false)
-    }
-  }, [ghost, rawItemsLength])
-
-  if (!hasActive && !ghost) return null
+  // Never mounted before (no agents have ever been thinking in this chat) — return null
+  if (!hasActive && lastStatusRef.current.size === 0) return null
 
   return (
     <div style={{
       padding: '0 8px',
       fontSize: 11,
       flexShrink: 0,
-      opacity: ghost ? 0 : 0.6,
+      opacity: hasActive ? 0.6 : 0,
       transition: 'opacity 0.2s',
     }}>
       {[...(hasActive ? statusAgents : lastStatusRef.current).entries()].map(([agentId, { status, startTs }]) => {
@@ -700,7 +678,6 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
           </div>
         )
       })}
-      {ghost && <div style={{ padding: '2px 0', visibility: 'hidden' }}>placeholder</div>}
     </div>
   )
 }
@@ -733,56 +710,35 @@ function ElizaSuggestion({ nudge, isFirst, agentName }: { nudge: ElizaNudge, isF
   )
 }
 
-function ElizaStatus({ pending, ctx, rawItemsLength }: { pending: ElizaNudge[], ctx: any, rawItemsLength: number }) {
+function ElizaStatus({ pending, ctx, rawItemsLength: _rawItemsLength }: { pending: ElizaNudge[], ctx: any, rawItemsLength: number }) {
   const hasActive = pending.length > 0
-  const prevActiveRef = useRef(hasActive)
-  const [ghost, setGhost] = useState(false)
-  const ghostRawItemsRef = useRef(rawItemsLength)
+  // Keep last pending list so the component stays mounted at the same height —
+  // opacity-only transition, no layout change when Eliza suggestions appear/vanish.
+  const lastPendingRef = useRef(pending)
+  if (hasActive) lastPendingRef.current = pending
 
-  if (prevActiveRef.current && !hasActive && !ghost) {
-    setGhost(true)
-    ghostRawItemsRef.current = rawItemsLength
-  }
-  if (hasActive && ghost) {
-    setGhost(false)
-  }
-  prevActiveRef.current = hasActive
+  if (!hasActive && lastPendingRef.current.length === 0) return null
 
-  useEffect(() => {
-    // Cede the reserved space ONLY when a new item is actually appended (count
-    // goes UP — a real message taking the slot's place), not on any change.
-    // The old `!==` released on ANY churn above (an activity card updating, an
-    // item removed, scrollback) — which in a busy chat fires instantly, so the
-    // reserve collapsed the moment the status cleared → the bounce Skip sees.
-    if (ghost && rawItemsLength > ghostRawItemsRef.current) {
-      setGhost(false)
-    }
-  }, [ghost, rawItemsLength])
-
-  if (!hasActive && !ghost) return null
-
+  const displayPending = hasActive ? pending : lastPendingRef.current
   return (
     <div style={{
       padding: '2px 8px',
       fontSize: 11,
       flexShrink: 0,
-      opacity: ghost ? 0 : 1,
+      opacity: hasActive ? 1 : 0,
       transition: 'opacity 0.2s',
     }}
     className="eliza-status"
     >
-      {!ghost && (
-        <div className="chat-line" style={{ padding: '2px 0' }}>
-          <span className="eliza-status-prefix">eliza:</span>{' '}
-          {pending.map((n, i) => (
-            <span key={n.id}>
-              {i > 0 ? <span className="eliza-suggestion-label">, </span> : null}
-              <ElizaSuggestion nudge={n} isFirst={i === 0} agentName={ctx.agentLabel(n.targetId)} />
-            </span>
-          ))}
-        </div>
-      )}
-      {ghost && <div style={{ padding: '2px 0', visibility: 'hidden' }}>placeholder</div>}
+      <div className="chat-line" style={{ padding: '2px 0' }}>
+        <span className="eliza-status-prefix">eliza:</span>{' '}
+        {displayPending.map((n, i) => (
+          <span key={n.id}>
+            {i > 0 ? <span className="eliza-suggestion-label">, </span> : null}
+            <ElizaSuggestion nudge={n} isFirst={i === 0} agentName={ctx.agentLabel(n.targetId)} />
+          </span>
+        ))}
+      </div>
     </div>
   )
 }
