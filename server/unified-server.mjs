@@ -2541,10 +2541,14 @@ async function handleFleetWsMessage(ws, msg) {
       for (const a of allAgents) agentMap[a.id] = a.friendly_name || a.name || a.id
       agentMap['web'] = agentMap[SERVER_OWNER_ID] || SERVER_OWNER_NAME
       const unreadIds = new Set()
-      try {
-        const rows = fleetStore.db.prepare('SELECT event_id FROM unread WHERE read = 0').all()
-        for (const r of rows) unreadIds.add(r.event_id)
-      } catch {}
+      const _evIds = events.map(e => e.id).filter(id => id != null)
+      if (_evIds.length) {
+        const _ph = _evIds.map(() => '?').join(',')
+        try {
+          const rows = fleetStore.db.prepare(`SELECT event_id FROM unread WHERE read = 0 AND event_id IN (${_ph})`).all(..._evIds)
+          for (const r of rows) unreadIds.add(r.event_id)
+        } catch {}
+      }
       const resolved = events.map(e => ({
         ...e,
         read: !unreadIds.has(e.id),
@@ -3188,7 +3192,11 @@ async function handleFleetWsMessage(ws, msg) {
       const agentMap = {}
       for (const a of allAgents) agentMap[a.id] = a.friendly_name || a.name || a.id
       const unreadIds = new Set()
-      try { const rows = fleetStore.db.prepare('SELECT event_id FROM unread WHERE read = 0').all(); for (const r of rows) unreadIds.add(r.event_id) } catch (e) { console.error('[fleet] unread query failed:', e.message) }
+      const _evIds = events.map(e => e.id).filter(id => id != null)
+      if (_evIds.length) {
+        const _ph = _evIds.map(() => '?').join(',')
+        try { const rows = fleetStore.db.prepare(`SELECT event_id FROM unread WHERE read = 0 AND event_id IN (${_ph})`).all(..._evIds); for (const r of rows) unreadIds.add(r.event_id) } catch (e) { console.error('[fleet] unread query failed:', e.message) }
+      }
       const resolved = events.map(e => ({
         ...e,
         read: !unreadIds.has(e.id),
