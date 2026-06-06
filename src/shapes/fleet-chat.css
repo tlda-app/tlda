@@ -2759,6 +2759,31 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   opacity: 0.55;
 }
 
+/* Ghost drop preview — purple lozenges shown in the input while dragging a file
+   over the field. One per file: picture glyph for images, document otherwise. */
+.fleet-chat-shape .fleet-drop-ghost {
+  position: absolute;
+  left: 9px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  gap: 4px;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.fleet-chat-shape .fleet-drop-lozenge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 15px;
+  border-radius: 8px;
+  background: rgba(147, 112, 219, 0.16);
+  border: 1px solid rgba(147, 112, 219, 0.45);
+  color: rgba(176, 146, 230, 0.85);
+}
+
 /* Terminal hover pane — read-only terminal peek, floats below input area */
 .fleet-chat-shape .fleet-terminal-hover-pane {
   position: absolute;

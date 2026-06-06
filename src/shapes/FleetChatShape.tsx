@@ -31,7 +31,8 @@ import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFle
 import type { ElizaNudge } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
 import { agentDisplayName } from './fleet-utils'
-import { AgentName } from './PhaseIcon'
+import { AgentName, PhaseIcon } from './PhaseIcon'
+import { baseName, phaseFromName } from '../../shared/lineage-name.mjs'
 import { dragCoordinator } from './dragCoordinator'
 import { DocContext, PanelContext } from '../PanelContext'
 import { loadLookup, type LookupData } from '../synctexLookup'
@@ -760,7 +761,9 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
         return (
           <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
             <span>
-              <span className={ctx.getNickClass(agentId)}><AgentName name={ctx.agentFullName(agentId)} /></span>
+              <span className="thinking-text">
+                <PhaseIcon phase={phaseFromName(ctx.agentFullName(agentId))} />{baseName(ctx.agentFullName(agentId)).replace('fleet:', '')}
+              </span>
               {' '}<span className="thinking-text">{statusText}</span>
               {status !== 'hibernating' && <>{' '}<ElapsedTime startMs={startTs} /></>}
               {escLevel > 0 && (
@@ -1749,6 +1752,9 @@ function FleetChatInner({ shape }: { shape: any }) {
   }, [doc, refResolver, editor])
 
   const shapeContainerRef = useRef<HTMLDivElement>(null)
+  const inputAreaRef = useRef<HTMLDivElement>(null)
+  const dragClearTimerRef = useRef<number | null>(null)
+  const [dragLozenges, setDragLozenges] = useState<Array<'image' | 'file'> | null>(null)
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
@@ -1990,22 +1996,55 @@ function FleetChatInner({ shape }: { shape: any }) {
   }, [chatLogEl, doc, refResolver, w, liveEvents])
 
   // Native capture-phase drop handler — intercepts OS file drops (from Finder etc.)
-  // anywhere on the chat shape before tldraw can create a canvas image shape.
-  // Files are uploaded to the fleet server and referenced by stable URL.
+  // on the chat shape before tldraw can create a canvas image shape. A file only
+  // ATTACHES when dropped over the input field; over the rest of the shape it's
+  // swallowed (does nothing). While dragging over the field, ghost lozenges
+  // preview the incoming attachment(s). Files upload to the fleet server and are
+  // referenced by stable URL.
   useEffect(() => {
     const el = shapeContainerRef.current
     if (!el) return
+
+    // True when the pointer is over the input field's drop zone.
+    function overInput(e: DragEvent) {
+      const r = inputAreaRef.current?.getBoundingClientRect()
+      if (!r) return false
+      return e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom
+    }
+
+    function clearDrag() {
+      if (dragClearTimerRef.current) { clearTimeout(dragClearTimerRef.current); dragClearTimerRef.current = null }
+      setDragLozenges(null)
+    }
 
     function onDragOver(e: DragEvent) {
       if (!e.dataTransfer?.types.includes('Files')) return
       e.preventDefault()
       e.stopPropagation()
+      if (overInput(e)) {
+        e.dataTransfer.dropEffect = 'copy'
+        // dataTransfer.items is only readable inside the event — snapshot the
+        // per-file kind (image vs other) now so we can render ghost lozenges.
+        const kinds = [...(e.dataTransfer.items || [])]
+          .filter(it => it.kind === 'file')
+          .map(it => (it.type.startsWith('image/') ? 'image' : 'file') as 'image' | 'file')
+        setDragLozenges(kinds.length ? kinds : ['file'])
+        if (dragClearTimerRef.current) clearTimeout(dragClearTimerRef.current)
+        dragClearTimerRef.current = window.setTimeout(clearDrag, 250)
+      } else {
+        e.dataTransfer.dropEffect = 'none'
+        clearDrag()
+      }
     }
 
     async function onDrop(e: DragEvent) {
       if (!e.dataTransfer?.types.includes('Files')) return
       e.preventDefault()
       e.stopPropagation()
+      const wasOverInput = overInput(e)
+      clearDrag()
+      // Only the input field accepts the drop; elsewhere on the shape, swallow it.
+      if (!wasOverInput) return
 
       // Use items API to support folder drops
       const items = e.dataTransfer.items ? [...e.dataTransfer.items] : []
@@ -2062,9 +2101,12 @@ function FleetChatInner({ shape }: { shape: any }) {
 
     el.addEventListener('dragover', onDragOver, true)
     el.addEventListener('drop', onDrop, true)
+    el.addEventListener('dragleave', clearDrag, true)
     return () => {
       el.removeEventListener('dragover', onDragOver, true)
       el.removeEventListener('drop', onDrop, true)
+      el.removeEventListener('dragleave', clearDrag, true)
+      if (dragClearTimerRef.current) clearTimeout(dragClearTimerRef.current)
     }
   }, [shape.id, editor])
 
@@ -3959,6 +4001,7 @@ function FleetChatInner({ shape }: { shape: any }) {
 
         {/* Input — outside scroll container, flex sibling with flexShrink:0 */}
         <div
+          ref={inputAreaRef}
           className="fleet-chat-input-area"
           style={{
             borderTop: '1px solid rgba(128, 128, 128, 0.15)',
@@ -4003,6 +4046,29 @@ function FleetChatInner({ shape }: { shape: any }) {
             </div>
           )}
           <div style={{ position: 'relative' }}>
+            {/* Ghost drop preview — purple lozenges per dragged file (picture
+                glyph for images, document glyph otherwise) shown while a file is
+                dragged over the field. */}
+            {dragLozenges && (
+              <div className="fleet-drop-ghost">
+                {dragLozenges.map((kind, i) => (
+                  <span key={i} className="fleet-drop-lozenge">
+                    {kind === 'image' ? (
+                      <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3">
+                        <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" />
+                        <circle cx="5.5" cy="6" r="1.3" fill="currentColor" stroke="none" />
+                        <path d="M2 12 L6 8 L9 11 L11 9 L14 12" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    ) : (
+                      <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3">
+                        <path d="M4 1.5 H9.5 L13 5 V14 a0.5 0.5 0 0 1 -0.5 0.5 H4 a0.5 0.5 0 0 1 -0.5 -0.5 V2 a0.5 0.5 0 0 1 0.5 -0.5 Z" strokeLinejoin="round" />
+                        <path d="M9.5 1.5 V5 H13" strokeLinejoin="round" />
+                      </svg>
+                    )}
+                  </span>
+                ))}
+              </div>
+            )}
             {/* Highlight underlay — mirrors textarea text, highlights <<ref>> tokens */}
             <InputHighlightUnderlay inputRef={inputRef} />
             {/* Unified follow / jump-to-bottom control. One button, fixed here:

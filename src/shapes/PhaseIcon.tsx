@@ -26,7 +26,7 @@ export function AgentName({ name, slotWidth }: { name: string | null | undefined
 export function PhaseIcon({ phase }: { phase: string | null }) {
   if (!phase || phase === 'dawn') return null
   const size = 12
-  const style = { opacity: 0.6, flexShrink: 0, marginRight: 3 }
+  const style = { opacity: 0.6, flexShrink: 0, marginRight: 3, verticalAlign: 'middle' as const }
   if (phase === 'day') {
     // midday sun — full disc with rays (clearly distinct from dusk's horizon sun)
     return (
