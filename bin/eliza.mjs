@@ -234,18 +234,17 @@ function tryReleaseFromSkip(text) {
   return false
 }
 
+// KILL SWITCH (2026-06-05, re-applied 2026-06-06 after a `git reset --hard`
+// wiped the original uncommitted version): the clickable/hover suggestion
+// footer has an unresolved bug where the hover card fires across the whole
+// chat surface, which makes fleet chat unusable. Fleet chat is Skip's only
+// comms channel (RSI, voice-first) — accessibility-critical, priority zero —
+// so until the hover bug is root-caused eliza must NEVER push any pending to
+// the footer. It always broadcasts an empty list. Re-enable (restore the
+// pendingNudgeQueue.map below) only once the hover trigger bug is fixed and
+// verified on Skip's actual screen.
 function broadcastPendingStatus() {
-  const pending = pendingNudgeQueue.map(n => ({
-    id: n.id,
-    label: n.label,
-    targetId: n.targetId,
-    text: n.text,
-    kind: n.kind,
-    command: n.command,
-    ts: n.ts,
-    msgCount: n.msgCount,
-  }))
-  postJson('/api/eliza/pending', { pending }).catch(e =>
+  postJson('/api/eliza/pending', { pending: [] }).catch(e =>
     console.error(`[eliza] status broadcast failed: ${e.message}`)
   )
 }
