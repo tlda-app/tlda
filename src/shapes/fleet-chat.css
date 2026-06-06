@@ -2870,43 +2870,36 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 
 .fleet-chat-shape .fleet-terminal-hover-input-bar {
   display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 6px;
-  background: rgba(20, 20, 30, 0.9);
-  border-top: 1px solid rgba(80, 80, 110, 0.2);
+  align-items: flex-start;
+  gap: 5px;
+  padding: 4px 6px;
+  background: transparent;
+  border-top: 1px solid rgba(128, 128, 128, 0.15);
   flex-shrink: 0;
 }
 
 .fleet-chat-shape .fleet-terminal-hover-prompt {
   color: rgba(100, 200, 120, 0.7);
-  font-size: 9px;
+  font-size: 11px;
+  line-height: 1.4;
+  padding-top: 4px;
   flex-shrink: 0;
 }
 
-.fleet-chat-shape .fleet-terminal-hover-input {
-  flex: 1;
-  background: none;
-  border: none;
-  outline: none;
-  color: rgba(200, 200, 220, 0.9);
-  font-family: inherit;
-  font-size: 9px;
-  padding: 0;
-}
-
+/* The field itself is styled inline to match the chat textarea; only the
+   placeholder colour lives here. */
 .fleet-chat-shape .fleet-terminal-hover-input::placeholder {
-  color: rgba(168, 168, 192, 0.25);
+  color: rgba(168, 168, 192, 0.3);
 }
 
 .fleet-chat-shape .fleet-terminal-hover-ctrl-c {
   background: none;
   border: none;
-  padding: 1px 4px;
+  padding: 4px 4px 0;
   cursor: pointer;
   color: rgba(168, 168, 192, 0.35);
   font-family: inherit;
-  font-size: 8px;
+  font-size: 9px;
   flex-shrink: 0;
   transition: color 0.15s;
 }

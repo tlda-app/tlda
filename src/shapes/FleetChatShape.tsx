@@ -98,9 +98,9 @@ function TerminalHoverPane({ agentId, pinned, onDismiss, onMouseEnter, onMouseLe
   const termRef = useRef<Terminal | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const pinnedRef = useRef(pinned)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
   const [status, setStatus] = useState<'connecting' | 'connected' | 'error'>('connecting')
   const [height, setHeight] = useState(210)
-  const [inputValue, setInputValue] = useState('')
   const [lightboxed, setLightboxed] = useState(false)
   const [scale, setScale] = useState(1)
   const dragRef = useRef<{ startY: number; startH: number } | null>(null)
@@ -211,16 +211,28 @@ function TerminalHoverPane({ agentId, pinned, onDismiss, onMouseEnter, onMouseLe
     }
   }
 
-  const handleInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+  const shortId = agentId.replace('fleet:', '')
+
+  // Make this field the active voice target — dictation flows in, and saying
+  // "send" runs the command in the terminal pane (mirrors the chat textarea's
+  // setVoiceTarget wiring, but with a terminal-specific send).
+  const registerVoice = (el: HTMLTextAreaElement) => {
+    setVoiceTarget(el, [agentId], { [agentId]: shortId }, async (_targets: string[], text: string) => {
+      sendInput(text + '\r')
+      el.value = ''
+    })
+  }
+
+  const handleInputKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     stopEventPropagation(e as any)
-    if (e.key === 'Enter') {
+    if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      sendInput(inputValue + '\r')
-      setInputValue('')
+      sendInput((inputRef.current?.value ?? '') + '\r')
+      if (inputRef.current) inputRef.current.value = ''
     } else if (e.key === 'c' && e.ctrlKey) {
       e.preventDefault()
       sendInput('\x03')
-      setInputValue('')
+      if (inputRef.current) inputRef.current.value = ''
     } else if (e.key === 'd' && e.ctrlKey) {
       e.preventDefault()
       sendInput('\x04')
@@ -251,8 +263,6 @@ function TerminalHoverPane({ agentId, pinned, onDismiss, onMouseEnter, onMouseLe
       () => { dragRef.current = null },
     )
   }
-
-  const shortId = agentId.replace('fleet:', '')
 
   return (
     <div
@@ -298,18 +308,33 @@ function TerminalHoverPane({ agentId, pinned, onDismiss, onMouseEnter, onMouseLe
           onPointerMove={stopEventPropagation}
         >
           <span className="fleet-terminal-hover-prompt">$</span>
-          <input
+          <textarea
+            ref={inputRef}
             className="fleet-terminal-hover-input"
-            type="text"
-            value={inputValue}
-            onChange={(e) => { stopEventPropagation(e as any); setInputValue(e.target.value) }}
+            rows={1}
             onKeyDown={handleInputKeyDown}
             onKeyUp={(e) => stopEventPropagation(e as any)}
-            onFocus={() => setLightboxed(true)}
-            onBlur={() => setLightboxed(false)}
-            placeholder="type command…"
+            onPointerDown={(e) => { stopEventPropagation(e as any); setLightboxed(true); registerVoice(e.currentTarget) }}
+            onFocus={(e) => { stopEventPropagation(e); setLightboxed(true); registerVoice(e.currentTarget) }}
+            onBlur={(e) => { clearVoiceTarget(e.currentTarget); setLightboxed(false) }}
+            placeholder="type or speak a command…"
             spellCheck={false}
             autoComplete="off"
+            style={{
+              flex: 1,
+              background: 'transparent',
+              border: '1px solid rgba(128, 128, 128, 0.15)',
+              borderRadius: 4,
+              padding: '3px 7px',
+              fontSize: 11,
+              color: 'inherit',
+              outline: 'none',
+              resize: 'none',
+              lineHeight: 1.4,
+              fontFamily: 'inherit',
+              fieldSizing: 'content',
+              maxHeight: 120,
+            } as any}
           />
           <button
             className="fleet-terminal-hover-ctrl-c"
