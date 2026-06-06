@@ -2868,10 +2868,10 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   overflow: auto;
 }
 
+/* Full-width field; the prompt and ^C float INSIDE it (terminal-style) rather
+   than flanking it, so the input reads as one full-width line. */
 .fleet-chat-shape .fleet-terminal-hover-input-bar {
-  display: flex;
-  align-items: flex-start;
-  gap: 5px;
+  position: relative;
   padding: 4px 6px;
   background: transparent;
   border-top: 1px solid rgba(128, 128, 128, 0.15);
@@ -2879,11 +2879,13 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 }
 
 .fleet-chat-shape .fleet-terminal-hover-prompt {
+  position: absolute;
+  left: 13px;
+  top: 8px;
   color: rgba(100, 200, 120, 0.7);
   font-size: 11px;
   line-height: 1.4;
-  padding-top: 4px;
-  flex-shrink: 0;
+  pointer-events: none;
 }
 
 /* The field itself is styled inline to match the chat textarea; only the
@@ -2892,15 +2894,20 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   color: rgba(168, 168, 192, 0.3);
 }
 
+/* A subtle clickable character, not a button — like the chat field's inline
+   affordances. */
 .fleet-chat-shape .fleet-terminal-hover-ctrl-c {
+  position: absolute;
+  right: 12px;
+  top: 7px;
   background: none;
   border: none;
-  padding: 4px 4px 0;
+  padding: 0;
   cursor: pointer;
-  color: rgba(168, 168, 192, 0.35);
+  color: rgba(168, 168, 192, 0.3);
   font-family: inherit;
   font-size: 9px;
-  flex-shrink: 0;
+  line-height: 1.4;
   transition: color 0.15s;
 }
 

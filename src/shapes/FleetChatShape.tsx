@@ -321,11 +321,11 @@ function TerminalHoverPane({ agentId, pinned, onDismiss, onMouseEnter, onMouseLe
             spellCheck={false}
             autoComplete="off"
             style={{
-              flex: 1,
+              width: '100%',
               background: 'transparent',
               border: '1px solid rgba(128, 128, 128, 0.15)',
               borderRadius: 4,
-              padding: '3px 7px',
+              padding: '3px 26px 3px 18px',
               fontSize: 11,
               color: 'inherit',
               outline: 'none',
@@ -334,6 +334,7 @@ function TerminalHoverPane({ agentId, pinned, onDismiss, onMouseEnter, onMouseLe
               fontFamily: 'inherit',
               fieldSizing: 'content',
               maxHeight: 120,
+              boxSizing: 'border-box',
             } as any}
           />
           <button
