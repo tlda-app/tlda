@@ -894,7 +894,9 @@ function readNewSessionLines(agentId, jsonlPath, sessionId) {
     if (text.length > 2000) text = text.substring(0, 2000)
     if (text.startsWith('<task-notification') || text.startsWith('<system-reminder') ||
         text.startsWith('<channel') || text.startsWith('📬') ||
-        text.startsWith('Call register() with the fleet MCP server')) continue
+        // The resume/wake bootstrap prompt, in either the no-name `Call register()`
+        // or named `Call register(name="foo")` form — plumbing, never shown to the user.
+        /^Call register\([^)]*\) with the fleet MCP server\b/.test(text)) continue
     const ts = parsed.timestamp || null
     if (!ts) continue
     sendMsg({
