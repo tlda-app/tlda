@@ -316,7 +316,7 @@ function TerminalHoverPane({ agentId, pinned, onDismiss, onMouseEnter, onMouseLe
             onKeyUp={(e) => stopEventPropagation(e as any)}
             onPointerDown={(e) => { stopEventPropagation(e as any); setLightboxed(true); registerVoice(e.currentTarget) }}
             onFocus={(e) => { stopEventPropagation(e); setLightboxed(true); registerVoice(e.currentTarget) }}
-            onBlur={(e) => { clearVoiceTarget(e.currentTarget); setLightboxed(false) }}
+            onBlur={(e) => { clearVoiceTarget(e.currentTarget); e.currentTarget.style.boxShadow = ''; setLightboxed(false) }}
             placeholder="type or speak a command…"
             spellCheck={false}
             autoComplete="off"
