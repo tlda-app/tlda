@@ -557,6 +557,12 @@ let _lastReaperStatus = null       // latest reaper snapshot from daemon
 const _daemonWarnDedup = new Map() // project → { eventId, count, lastSeen, baseText }
 const DAEMON_WARN_DEDUP_MS = 5 * 60 * 1000
 
+// machine_id → ts when the CURRENT uninterrupted daemon connection began. Reset on
+// every daemon-hello (i.e. every reconnect). Agent activity events arrive over the
+// daemon WS, so if that WS flapped, an agent's activity wasn't delivered and its
+// _lastActivityAt went stale — making an active agent *look* idle. See getWouldHibernate.
+const _daemonConnectedSince = new Map()
+
 const HIBERNATE_IDLE_MS = 20 * 60 * 1000
 
 function touchActivity(agentId) {
@@ -572,9 +578,18 @@ function getWouldHibernate() {
     const lastActive = _lastActivityAt.get(agentId)
     if (!lastActive) continue
     const idleMs = now - lastActive
-    if (idleMs >= HIBERNATE_IDLE_MS) {
-      result[agentId] = Math.round(idleMs / 1000)
+    if (idleMs < HIBERNATE_IDLE_MS) continue
+    // Gap-aware idle: a 20-min-idle reading is only trustworthy if the activity
+    // feed (this agent's daemon WS) was continuously connected for that whole
+    // window. If the daemon (re)connected within the window, activity events were
+    // dropped during the gap — the agent may have been active the entire time, its
+    // events just never arrived. Don't hibernate on an unreliable reading.
+    const machineId = fleetStore?.getAgent(agentId)?.machine_id
+    if (machineId) {
+      const connectedSince = _daemonConnectedSince.get(machineId)
+      if (!connectedSince || (now - connectedSince) < HIBERNATE_IDLE_MS) continue
     }
+    result[agentId] = Math.round(idleMs / 1000)
   }
   return result
 }
@@ -3705,6 +3720,11 @@ async function handleDaemonWsMessage(ws, msg) {
     ws._hostname = hostname
     ws._version = version
     daemonConnections.set(machine_id, ws)
+    // Reset the activity-feed uptime clock: this (re)connect starts a fresh
+    // continuous window. getWouldHibernate won't hibernate agents on this machine
+    // until the feed has been up a full idle window, so a flap can't cause a
+    // stale-_lastActivityAt false hibernate.
+    _daemonConnectedSince.set(machine_id, Date.now())
     if (machine_id === LOCAL_MACHINE_ID) noteDaemonHealthyConnect()
     console.log(`[fleet-daemon] connected: machine_id=${machine_id} user=${user}@${hostname} v=${version} boot_id=${boot_id}`)
 
