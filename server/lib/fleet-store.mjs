@@ -193,6 +193,9 @@ export class FleetStore {
 
       CREATE INDEX IF NOT EXISTS idx_tasks_agent ON tasks(agent, status);
       CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+      -- Partial index for the frequent active-tasks list (status != 'done' can't
+      -- use idx_tasks_status; this serves the scan + ORDER BY index-only).
+      CREATE INDEX IF NOT EXISTS idx_tasks_active ON tasks(delegated_at DESC) WHERE status != 'done';
 
       -- Unread message tracking (multiple entries per event for CC)
       CREATE TABLE IF NOT EXISTS unread (
