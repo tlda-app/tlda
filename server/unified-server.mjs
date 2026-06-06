@@ -600,7 +600,7 @@ function getWouldHibernate() {
 // list still goes to each client once, on connect (see the /ws/fleet handler).
 const _lastAgentJson = new Map()
 
-function broadcastState() {
+function _broadcastStateNow() {
   if (!fleetStore) return
   const agents = fleetStore.getAllAgents().map(a => {
     if (_thinkingState.has(a.id)) return { ...a, status: 'thinking' }
@@ -635,6 +635,16 @@ function broadcastState() {
       context: Object.fromEntries(_contextState),
     },
   })
+}
+
+// Debounced entry point: ~12 call sites fire broadcastState() and on boot a
+// burst hits it 15+ times in a row, each doing a getAllAgents()+getActiveTasks()
+// pass. Coalesce rapid calls into one run per 50ms — the agent-delta diff means
+// no change is missed, and a 50ms delay on status updates is imperceptible.
+let _broadcastTimer = null
+function broadcastState() {
+  if (_broadcastTimer) return
+  _broadcastTimer = setTimeout(() => { _broadcastTimer = null; _broadcastStateNow() }, 50)
 }
 
 // Wire fleet store events → WS broadcast
@@ -2547,7 +2557,7 @@ async function handleFleetWsMessage(ws, msg) {
         try {
           const rows = fleetStore.db.prepare(`SELECT event_id FROM unread WHERE read = 0 AND event_id IN (${_ph})`).all(..._evIds)
           for (const r of rows) unreadIds.add(r.event_id)
-        } catch {}
+        } catch (e) { console.error('[fleet] unread query failed:', e.message) }
       }
       const resolved = events.map(e => ({
         ...e,
