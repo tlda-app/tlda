@@ -1142,17 +1142,12 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
     const ids = resolvedFilterIdKey.split(',')
     const loadKey = `${filterKey}:${resolvedFilterIdKey}`
-    if (historyLoadedRef.current === loadKey) {
-      log.info('filter-empty', 'backfill SKIPPED (guard hit — already loaded this filter)', { loadKey, liveLen: liveEvents.length })
-      return
-    }
+    if (historyLoadedRef.current === loadKey) return
     historyLoadedRef.current = loadKey
-    log.info('filter-empty', 'backfill loading', { loadKey, idCount: ids.length })
     // loadBefore folds the scrollback into the single store (deduping by id) and
     // returns the count of genuinely-new rows. No local olderEvents list — the
     // history just appears in `events` via the store view.
     loadBefore(ids, new Date().toISOString(), 200).then((added: number) => {
-      log.info('filter-empty', 'backfill loadBefore returned', { added, liveLen: liveEvents.length })
       if (added <= 0) return
       isAtBottomRef.current = true
       setAtBottom(true)
@@ -1273,11 +1268,6 @@ function FleetChatInner({ shape }: { shape: any }) {
         return ta - tb
       })
 
-    if (events.length > 0 && sorted.length === 0) {
-      const types: Record<string, number> = {}
-      for (const e of events as any[]) { const t = e.type || '(none)'; types[t] = (types[t] || 0) + 1 }
-      log.info('filter-empty', 'chatMessages DROPPED ALL (type filter)', { events: events.length, types })
-    }
     return sorted
   }, [events])
 
@@ -1548,11 +1538,8 @@ function FleetChatInner({ shape }: { shape: any }) {
     if (firstQueuedIdx > 0) {
       items[firstQueuedIdx - 1] = { ...items[firstQueuedIdx - 1], _divider: true }
     }
-    if (chatMessages.length > 0 && items.length === 0) {
-      log.info('filter-empty', 'allItems EMPTY despite chatMessages', { chatMessages: chatMessages.length, rawItems: rawItems.length })
-    }
     return items
-  }, [rawItems, chatMessages])
+  }, [rawItems])
 
   // Virtual scroll — only mount DOM nodes for visible messages.
   // Handle clicks on ref-chip annotations → navigate to canvas bounds
