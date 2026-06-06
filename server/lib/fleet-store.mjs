@@ -316,6 +316,25 @@ export class FleetStore {
       this.db.exec("ALTER TABLE agents ADD COLUMN phase TEXT");
     }
 
+    // last_active = most recent event timestamp where the agent is sender or
+    // recipient. Maintained incrementally on every event insert (see share())
+    // so the agents-list query is a plain indexed read and NEVER scans the
+    // ~400k-row events table — the correlated/grouped scan it replaced pinned
+    // the event loop for tens of seconds under load.
+    if (!agentCols.some(c => c.name === 'last_active')) {
+      this.db.exec("ALTER TABLE agents ADD COLUMN last_active TEXT");
+      // One-time backfill from existing events (single indexed pass).
+      this.db.exec(`
+        UPDATE agents SET last_active = la.la FROM (
+          SELECT id, MAX(ts) AS la FROM (
+            SELECT from_id AS id, MAX(timestamp) AS ts FROM events WHERE from_id IS NOT NULL GROUP BY from_id
+            UNION ALL
+            SELECT to_id AS id, MAX(timestamp) AS ts FROM events WHERE to_id IS NOT NULL GROUP BY to_id
+          ) GROUP BY id
+        ) AS la WHERE agents.id = la.id
+      `);
+    }
+
     // Lineage tables
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS lineages (
@@ -401,6 +420,14 @@ export class FleetStore {
       INSERT OR IGNORE INTO unread (event_id, to_id, read) VALUES (?, ?, 0)
     `);
 
+    // Incrementally bump last_active for the event's sender + recipient. Both
+    // params are the event timestamp; MAX keeps the newest if events arrive out
+    // of order. id IN (?, ?) is an O(1) PK lookup; null from/to simply matches
+    // nothing. Runs on the writer worker, off the main loop.
+    this._updateAgentLastActive = this.db.prepare(`
+      UPDATE agents SET last_active = MAX(COALESCE(last_active, ?), ?) WHERE id IN (?, ?)
+    `);
+
     this._markRead = this.db.prepare(`
       UPDATE unread SET read = 1 WHERE to_id = ? AND read = 0
     `);
@@ -454,22 +481,12 @@ export class FleetStore {
     this._getAgent = this.db.prepare('SELECT * FROM agents WHERE id = ?');
     this._getAgentsByMachine = this.db.prepare('SELECT * FROM agents WHERE machine_id = ? AND dead = 0');
     this._getAgentByName = this.db.prepare('SELECT * FROM agents WHERE friendly_name = ?');
-    // last_active = most recent event where the agent is sender OR recipient.
-    // Computed in ONE indexed pass (two GROUP BY scans over idx_events_from /
-    // idx_events_to, then merged) instead of a correlated subquery per agent —
-    // the latter ran ~1315 full events scans per call and pinned the event loop.
-    this._getAllAgents = this.db.prepare(`
-      SELECT a.*, la.last_active
-      FROM agents a
-      LEFT JOIN (
-        SELECT id, MAX(ts) AS last_active FROM (
-          SELECT from_id AS id, MAX(timestamp) AS ts FROM events WHERE from_id IS NOT NULL GROUP BY from_id
-          UNION ALL
-          SELECT to_id AS id, MAX(timestamp) AS ts FROM events WHERE to_id IS NOT NULL GROUP BY to_id
-        ) GROUP BY id
-      ) la ON la.id = a.id
-      ORDER BY a.last_seen DESC
-    `);
+    // last_active is a maintained column on agents (bumped on every event
+    // insert — see share()), so this is a plain indexed read that never touches
+    // the events table. Earlier versions computed last_active inline (correlated
+    // subquery, then a grouped index pass); both scanned ~400k events per call
+    // and pinned the event loop for seconds-to-tens-of-seconds under load.
+    this._getAllAgents = this.db.prepare(`SELECT * FROM agents ORDER BY last_seen DESC`);
     this._deleteAgent = this.db.prepare('DELETE FROM agents WHERE id = ?');
     this._updateAgentLastSeen = this.db.prepare('UPDATE agents SET last_seen = ?, dead = 0 WHERE id = ?');
     this._markAgentDead = this.db.prepare('UPDATE agents SET dead = 1 WHERE id = ?');
@@ -602,6 +619,12 @@ export class FleetStore {
     ]);
 
     const eventId = result.lastInsertRowid;
+
+    // Maintain agents.last_active incrementally (writer worker, ordered after
+    // the insert) so getAllAgents never scans events.
+    if (event.from || event.to) {
+      this._w(this._updateAgentLastActive, [ts, ts, event.from || null, event.to || null]);
+    }
 
     // Track unread if this is a message to someone (fire-and-forget on the
     // worker — same writer, so it's ordered after the event insert above).
