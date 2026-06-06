@@ -20,6 +20,7 @@ Options:
 import argparse
 import json
 import os
+import re
 import shlex
 import ssl
 import subprocess
@@ -81,6 +82,31 @@ def read_config():
 def tmux(*args):
     sock = read_config().get("tmuxSocket")
     return ["tmux", "-L", sock, *args] if sock else ["tmux", *args]
+
+
+def sanitize_session_name(name):
+    """Map an (expressive) friendly name to a safe tmux session token.
+
+    tmux session names can't contain '.', ':', whitespace, or shell-unsafe chars
+    — those break has-session / send-keys and the server's hibernate ("unsafe
+    tmux session name"). The friendly name itself is unchanged and lives in the
+    DB; only the derived session string is sanitized, so e.g. ``leverage?`` keeps
+    its name but runs in session ``fleet-leverage``.
+    """
+    safe = re.sub(r"[^A-Za-z0-9_-]", "-", name or "")
+    safe = re.sub(r"-+", "-", safe).strip("-")
+    return safe or "agent"
+
+
+def unique_session_name(base):
+    """Append -2, -3, … if a DIFFERENT tmux session already holds the name, so
+    two friendly names that sanitize to the same token don't share a session."""
+    sess = base
+    n = 2
+    while subprocess.run(tmux("has-session", "-t", sess), capture_output=True).returncode == 0:
+        sess = f"{base}-{n}"
+        n += 1
+    return sess
 
 
 def resolve_model(model):
@@ -547,7 +573,7 @@ def inject_prompt(session, prompt, timeout=60):
 def fresh(name, model, cwd, effort, mode):
     server_up = ensure_server()
     fleet_id = f"fleet:{uuid.uuid4().hex[:8]}"
-    sess = f"fleet-{name}"
+    sess = unique_session_name(f"fleet-{sanitize_session_name(name)}")
     cwd = cwd or os.getcwd()
     model = resolve_model(model)
 
@@ -723,7 +749,7 @@ def respawn_session(session_uuid, name_override, model, cwd, effort, mode,
 
     agent_name = name_override or agent_name or fleet_id.replace("fleet:", "agent-")
     model = resolve_model(model)
-    sess = f"fleet-{agent_name}"
+    sess = f"fleet-{sanitize_session_name(agent_name)}"
 
     if dry_run:
         print(f"[dry-run] {sess} ({fleet_id}) — session {session_uuid}, cwd {cwd}")
