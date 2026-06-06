@@ -45,6 +45,32 @@ export class FleetStore {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
     this.db = new Database(dbPath);
+    // Slow-query logger: any .all()/.get() >= TLDA_SLOWQUERY_MS (default 25ms)
+    // logs its SQL + duration + rowcount to [slowquery] in server.log. Installed
+    // before any statement is prepared so it covers every query. Kept permanently
+    // — these logs are how we catch event-loop-blocking scans.
+    {
+      const SLOW_MS = Number(process.env.TLDA_SLOWQUERY_MS || 25);
+      const _origPrepare = this.db.prepare.bind(this.db);
+      this.db.prepare = (sql) => {
+        const stmt = _origPrepare(sql);
+        for (const m of ['all', 'get']) {
+          const orig = stmt[m].bind(stmt);
+          stmt[m] = (...args) => {
+            const t = process.hrtime.bigint();
+            const r = orig(...args);
+            const ms = Number(process.hrtime.bigint() - t) / 1e6;
+            if (ms >= SLOW_MS) {
+              const flat = String(sql).replace(/\s+/g, ' ').trim().slice(0, 200);
+              const n = Array.isArray(r) ? r.length : (r ? 1 : 0);
+              console.warn(`[slowquery] ${ms.toFixed(0)}ms rows=${n} :: ${flat}`);
+            }
+            return r;
+          };
+        }
+        return stmt;
+      };
+    }
     // WAL (set here + by the writer worker; it's a persistent property of the
     // file): lets THIS main connection READ concurrently while the worker holds
     // the write lock during a slow FTS merge. NORMAL is durable across an app
@@ -425,10 +451,21 @@ export class FleetStore {
     this._getAgent = this.db.prepare('SELECT * FROM agents WHERE id = ?');
     this._getAgentsByMachine = this.db.prepare('SELECT * FROM agents WHERE machine_id = ? AND dead = 0');
     this._getAgentByName = this.db.prepare('SELECT * FROM agents WHERE friendly_name = ?');
+    // last_active = most recent event where the agent is sender OR recipient.
+    // Computed in ONE indexed pass (two GROUP BY scans over idx_events_from /
+    // idx_events_to, then merged) instead of a correlated subquery per agent —
+    // the latter ran ~1315 full events scans per call and pinned the event loop.
     this._getAllAgents = this.db.prepare(`
-      SELECT a.*,
-        (SELECT MAX(e.timestamp) FROM events e WHERE e.from_id = a.id OR e.to_id = a.id) AS last_active
-      FROM agents a ORDER BY a.last_seen DESC
+      SELECT a.*, la.last_active
+      FROM agents a
+      LEFT JOIN (
+        SELECT id, MAX(ts) AS last_active FROM (
+          SELECT from_id AS id, MAX(timestamp) AS ts FROM events WHERE from_id IS NOT NULL GROUP BY from_id
+          UNION ALL
+          SELECT to_id AS id, MAX(timestamp) AS ts FROM events WHERE to_id IS NOT NULL GROUP BY to_id
+        ) GROUP BY id
+      ) la ON la.id = a.id
+      ORDER BY a.last_seen DESC
     `);
     this._deleteAgent = this.db.prepare('DELETE FROM agents WHERE id = ?');
     this._updateAgentLastSeen = this.db.prepare('UPDATE agents SET last_seen = ?, dead = 0 WHERE id = ?');
