@@ -649,7 +649,10 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
     if (hasActive && ghost) {
       setGhost(false)
     }
-  }, [hasActive]) // eslint-disable-line react-hooks/exhaustive-deps
+  // rawItemsLength intentionally omitted: this effect fires only on the
+  // hasActive transition. ghostRawItemsRef captures rawItemsLength at that
+  // moment; including rawItemsLength would re-fire on every chat update.
+  }, [hasActive]) // eslint-disable-line react-hooks/exhaustive-deps -- intentional: transition-only detection
 
   // Release ghost when a new item is appended (something filled the space).
   useEffect(() => {
@@ -744,7 +747,7 @@ function ElizaStatus({ pending, ctx, rawItemsLength }: { pending: ElizaNudge[], 
       ghostRawItemsRef.current = rawItemsLength
     }
     if (hasActive && ghost) setGhost(false)
-  }, [hasActive]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [hasActive]) // eslint-disable-line react-hooks/exhaustive-deps -- intentional: transition-only detection
 
   useEffect(() => {
     if (ghost && rawItemsLength > ghostRawItemsRef.current) setGhost(false)
