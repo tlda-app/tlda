@@ -17,7 +17,7 @@
  */
 
 import { resolve, basename, dirname, join } from 'path'
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync, appendFileSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { homedir } from 'os'
 import { randomBytes } from 'crypto'
@@ -1631,11 +1631,21 @@ async function cmdDoctor() {
 
   // 3. Server
   const serverUrl = getServer()
-  let serverRunning = false
-  try {
-    const res = await fetch(`${serverUrl}/health`, { signal: AbortSignal.timeout(2000) })
-    serverRunning = res.ok
-  } catch {}
+  const probeHealth = async (timeoutMs = 2000) => {
+    try {
+      const res = await fetch(`${serverUrl}/health`, { signal: AbortSignal.timeout(timeoutMs) })
+      return res.ok
+    } catch { return false }
+  }
+  // A single slow /health probe false-negatives when the server is busy (build,
+  // GC, heavy sync), and the old code reacted by force-restarting (kickstart -k)
+  // a server that was actually alive — that's the restart-stampede. Retry before
+  // concluding it's dead, and never force-kill below.
+  let serverRunning = await probeHealth()
+  for (let i = 0; i < 3 && !serverRunning; i++) {
+    await new Promise(r => setTimeout(r, 1000))
+    serverRunning = await probeHealth(4000)
+  }
 
   if (serverRunning) {
     ok(`Server running at ${serverUrl}`)
@@ -1646,8 +1656,11 @@ async function cmdDoctor() {
       const PLIST = join(homedir(), 'Library', 'LaunchAgents', 'com.tlda.server.plist')
       const hasLaunchd = process.platform === 'darwin' && existsSync(PLIST)
       if (hasLaunchd) {
+        // kickstart WITHOUT -k: starts the job only if it's stopped. Never -k —
+        // a forced restart on a live-but-slow server is what caused the flapping.
+        // launchd (KeepAlive) handles genuine crash-restarts on its own.
         try { execSync('launchctl bootstrap gui/$(id -u) ' + PLIST, { stdio: 'pipe' }) } catch {}
-        try { execSync('launchctl kickstart -k gui/$(id -u)/com.tlda.server', { stdio: 'pipe' }) } catch {}
+        try { execSync('launchctl kickstart gui/$(id -u)/com.tlda.server', { stdio: 'pipe' }) } catch {}
       } else {
         const tldaRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
         const serverScript = join(tldaRoot, 'server', 'unified-server.mjs')
@@ -2048,6 +2061,16 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
   }
 
   if (sub === 'stop') {
+    // Diagnostic: record who's stopping the server. The server flaps because
+    // something keeps issuing graceful stops; this kill-log names the caller
+    // (parent command + argv) so we can trace it instead of guessing.
+    try {
+      const killLog = join(homedir(), '.config', 'tlda', 'server-kills.log')
+      let parent = ''
+      try { parent = execSync(`ps -o command= -p ${process.ppid}`, { stdio: ['pipe', 'pipe', 'ignore'] }).toString().trim() } catch {}
+      appendFileSync(killLog, JSON.stringify({ t: new Date().toISOString(), pid: process.pid, ppid: process.ppid, parent, argv: process.argv.slice(1) }) + '\n')
+    } catch {}
+
     if (hasLaunchd) {
       try { execSync('launchctl bootout gui/$(id -u)/com.tlda.server', { stdio: 'pipe' }) } catch {}
     }
