@@ -14,7 +14,7 @@ import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { useFleetAgents, useFleetIdentity } from '../fleet-data-adapter'
 // @ts-ignore — vanilla JS module
 import { getHumanId } from '../fleet/fleet-data.mjs'
-import { getMyAnchorId, isMyFleetShape } from '../shapes/fleet-utils'
+import { getMyAnchorId, isMyFleetShape, FLEET_SHAPE_TYPES } from '../shapes/fleet-utils'
 import './FleetHUD.css'
 
 function saveAnchorOffsets(editor: Editor, panOffset: number, cameraY: number) {
@@ -421,6 +421,33 @@ export function FleetHUD({
     void react
     el.classList.remove('tool-passes-through')
   }, [mainEditor])
+
+  // Raise-on-interaction: pointer-down on a fleet shape in the HUD brings it to
+  // the front so an overlapping fleet shape's controls/body are grabbable.
+  // Scoped to the HUD wrap (never the main canvas) and to fleet shape types only
+  // — non-fleet shapes and TLDraw's default stacking are untouched. Capture phase
+  // so it fires before inner elements stopPropagation. Guarded to skip when the
+  // shape is already frontmost, so it doesn't spam undo/Yjs writes on every tap.
+  useEffect(() => {
+    if (!expanded) return
+    const el = hudRef.current
+    if (!el) return
+    const onPointerDownCapture = (e: PointerEvent) => {
+      const target = e.target as HTMLElement | null
+      const shapeEl = target?.closest?.('.tl-shape[data-shape-id]') as HTMLElement | null
+      if (!shapeEl) return
+      const type = shapeEl.getAttribute('data-shape-type') || ''
+      if (!FLEET_SHAPE_TYPES.has(type)) return
+      const shapeId = shapeEl.getAttribute('data-shape-id')
+      if (!shapeId) return
+      const fleetSorted = mainEditor.getCurrentPageShapesSorted().filter(s => FLEET_SHAPE_TYPES.has(s.type))
+      const frontmost = fleetSorted[fleetSorted.length - 1]
+      if (frontmost && frontmost.id === shapeId) return
+      mainEditor.bringToFront([shapeId as any])
+    }
+    el.addEventListener('pointerdown', onPointerDownCapture, true)
+    return () => el.removeEventListener('pointerdown', onPointerDownCapture, true)
+  }, [expanded, mainEditor])
 
   // Toggle .hud-layout-active on the wrap div when fleet shapes are selected
   // in the HUD editor. This enables pointer-events on .tl-canvas so drag-box
