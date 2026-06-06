@@ -436,10 +436,14 @@ export function connect() {
         // carries the _tempId we sent (or the WS reply already set the _dbId),
         // it rebinds the pending entry instead of appending a duplicate. All by
         // id — no content matching.
-        const { event, isNew } = _store.upsert(convertChatEvent(data))
+        const converted = convertChatEvent(data)
+        const { event, isNew } = _store.upsert(converted)
         if (data.id && data.id > _lastEventId) _lastEventId = data.id
         if (data.type === 'chat') {
           console.log(`[chat-recv] id=${data.id} from=${data.from_id||data.from} text=${(data.text||'').substring(0,30)}`)
+        }
+        if (data.type === 'interrupt' || data.type === 'kill-session') {
+          console.log(`[interrupt-recv] type=${data.type} id=${data.id} from=${data.from_id||data.from} to=${data.to_id||data.to} isNew=${isNew}`)
         }
         notify('messages', isNew ? event : null)
       } else if (eventType === 'event-update') {

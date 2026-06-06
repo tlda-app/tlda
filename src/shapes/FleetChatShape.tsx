@@ -994,7 +994,6 @@ function FleetChatInner({ shape }: { shape: any }) {
   const sentHistoryRef = useRef<string[]>([])
   const historyIndexRef = useRef<number>(-1)
   // Esc interrupt: track last Esc timestamp for soft/hard distinction
-  const lastEscRef = useRef<number>(0)
   const escCountRef = useRef<number>(0)
   // Track whether the user last clicked inside this fleet chat shape.
   // Voice/touch users don't focus the textarea, so activeElement-based checks fail.
@@ -2873,22 +2872,17 @@ function FleetChatInner({ shape }: { shape: any }) {
       const now = Date.now()
       setUnqueuedAt(now)
       const agent = resolveToFleetIdRef.current(targets[0])
-      const gap = now - lastEscRef.current
-      if (gap < 500) {
-        escCountRef.current++
-      } else {
-        escCountRef.current = 1
-      }
-      lastEscRef.current = now
+      // Escalation is action-based: each Esc increments; any non-Esc action
+      // (keydown, pointer, message send) resets. No timing window.
+      escCountRef.current++
       const count = escCountRef.current
       const agentLabel = agentNamesRef.current[agent] || agent.replace('fleet:', '')
-      log.info('esc', 'interrupt', { count, gap, agent, agentLabel })
+      log.info('esc', 'interrupt', { count, agent, agentLabel })
       const tempId = `esc-${++escTempCounter}-${now}`
       const ts = new Date().toISOString()
       setEscLevel(agent, count >= 3 ? 3 : count)
       if (count >= 3) {
         escCountRef.current = 0
-        lastEscRef.current = 0
         injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', _isInterrupt: true, from: 'system', to: agent, text: `💀 Killing ${agentLabel}…`, timestamp: ts })
         fetch(`${FLEET_API}/api/kill-session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent }) })
           .then(r => r.json())
@@ -2917,18 +2911,26 @@ function FleetChatInner({ shape }: { shape: any }) {
           .catch(() => { updateOptimisticEvent(tempId, { text: `⚠ Escape failed (server unreachable)` }) })
       }
     }
-    function onNonEscAction(e: KeyboardEvent) {
-      if (e.key === 'Escape') return
+    function resetEscState() {
       if (escCountRef.current === 0) return
       escCountRef.current = 0
-      lastEscRef.current = 0
       setEscalationState({})
     }
+    function onNonEscKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') return
+      resetEscState()
+    }
+    function onPointerDownReset() {
+      if (!chatActiveRef.current) return
+      resetEscState()
+    }
     document.addEventListener('keydown', onEscKey, true)
-    document.addEventListener('keydown', onNonEscAction, true)
+    document.addEventListener('keydown', onNonEscKey, true)
+    document.addEventListener('pointerdown', onPointerDownReset, true)
     return () => {
       document.removeEventListener('keydown', onEscKey, true)
-      document.removeEventListener('keydown', onNonEscAction, true)
+      document.removeEventListener('keydown', onNonEscKey, true)
+      document.removeEventListener('pointerdown', onPointerDownReset, true)
     }
   }, [])
 
@@ -4016,7 +4018,6 @@ function FleetChatInner({ shape }: { shape: any }) {
                 }
                 if (escCountRef.current > 0) {
                   escCountRef.current = 0
-                  lastEscRef.current = 0
                   setEscalationState({})
                 }
                 if (e.key === 'ArrowUp') {
@@ -4211,7 +4212,6 @@ function FleetChatInner({ shape }: { shape: any }) {
               onInput={() => {
                 if (escCountRef.current > 0) {
                   escCountRef.current = 0
-                  lastEscRef.current = 0
                   setEscalationState({})
                 }
               }}
