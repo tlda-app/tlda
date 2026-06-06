@@ -1175,46 +1175,6 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .tool-name { color: var(--text); }
 .fleet-chat-shape .tool-sep { color: var(--text-dim); opacity: 0.4; }
 .fleet-chat-shape .tool-arg { color: var(--text-dim); opacity: 0.7; }
-/* Compose draft: hover the line to preview the message rendered as if sent */
-.fleet-chat-shape .compose-preview-popover {
-  display: none;
-  position: absolute;
-  top: 100%;
-  left: 16px;
-  right: 0;
-  z-index: 60;
-  margin-top: 4px;
-  padding: 8px 10px;
-  background: var(--glass-1, rgba(30,34,42,0.98));
-  border: 1px solid var(--accent, #7a9ec8);
-  border-radius: 6px;
-  box-shadow: 0 6px 24px rgba(0,0,0,0.4);
-  max-height: 320px;
-  overflow-y: auto;
-  white-space: normal;
-}
-/* Invisible bridge spanning the margin gap so moving the pointer from the
-   line down into the popover never crosses a dead zone (kills the flicker). */
-.fleet-chat-shape .compose-preview-popover::before {
-  content: '';
-  position: absolute;
-  top: -6px;
-  left: 0;
-  right: 0;
-  height: 6px;
-}
-.fleet-chat-shape .tool-line.is-compose:hover .compose-preview-popover,
-.fleet-chat-shape .compose-preview-popover:hover {
-  display: block;
-}
-.fleet-chat-shape .compose-preview-label {
-  font-size: 9px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--accent, #7a9ec8);
-  opacity: 0.8;
-  margin-bottom: 5px;
-}
 .fleet-chat-shape .tool-count { color: var(--text-dim); font-size: 9px; }
 .fleet-chat-shape .tool-sep { color: var(--text-dim); opacity: 0.4; }
 .fleet-chat-shape .tool-copy { display: none; }
