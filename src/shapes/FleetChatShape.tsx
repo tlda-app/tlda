@@ -678,13 +678,13 @@ function ContextBadge({ percent }: { percent?: number }) {
  * arrives to fill it. Ghost detection uses useEffect — not during-render
  * ref mutation — so the transition is never missed across render batches.
  */
-function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibernatingAgents, ctx, rawItemsLength, agents: _agents, escalationState }: {
+function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibernatingAgents, ctx, lastItemKey, agents: _agents, escalationState }: {
   thinkingAgents: Map<string, number>
   compactingAgents: Map<string, number>
   contextPercent: Map<string, number>
   hibernatingAgents: Set<string>
   ctx: any
-  rawItemsLength: number
+  lastItemKey: string | null
   agents: any[]
   escalationState?: Record<string, { level: number; confirmed: number }>
 }) {
@@ -710,31 +710,42 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
   if (hasActive) lastStatusRef.current = statusAgents
 
   const [ghost, setGhost] = useState(false)
-  const ghostRawItemsRef = useRef(rawItemsLength)
+  // Bottom-row key captured when the slot is reserved; the slot is "absorbed"
+  // (released) only when a genuinely new row lands at the bottom.
+  const ghostKeyRef = useRef<string | null>(null)
+  // Bottom-row key as of the previous render — lets the reserve check tell
+  // whether a new message landed in the same tick the agent went inactive.
+  const prevKeyRef = useRef<string | null>(lastItemKey)
 
-  // Detect active→inactive transition via useEffect so it fires exactly once
-  // per transition, even when React batches multiple renders together. The
-  // during-render prevActiveRef pattern missed the transition when rendering
-  // was batched — useEffect is guaranteed to fire after every committed render.
-  useEffect(() => {
-    if (!hasActive && lastStatusRef.current.size > 0 && !ghost) {
+  // Reserve the slot when the agent goes inactive — in a LAYOUT effect so the
+  // footer never paints a collapsed frame (which itself read as a bounce). Skip
+  // reserving if a new bottom row landed this same tick: that row already
+  // absorbed the space, so reserving would leave a leftover gap.
+  useLayoutEffect(() => {
+    const bottomJustChanged = lastItemKey !== prevKeyRef.current
+    if (!hasActive && lastStatusRef.current.size > 0 && !ghost && !bottomJustChanged) {
       setGhost(true)
-      ghostRawItemsRef.current = rawItemsLength
+      ghostKeyRef.current = lastItemKey
     }
     if (hasActive && ghost) {
       setGhost(false)
     }
-  // rawItemsLength intentionally omitted: this effect fires only on the
-  // hasActive transition. ghostRawItemsRef captures rawItemsLength at that
-  // moment; including rawItemsLength would re-fire on every chat update.
+  // lastItemKey intentionally omitted — this fires only on the hasActive
+  // transition; prevKeyRef carries the previous render's bottom key.
   }, [hasActive]) // eslint-disable-line react-hooks/exhaustive-deps -- intentional: transition-only detection
 
-  // Release ghost when a new item is appended (something filled the space).
+  // Release the slot only when a NEW row lands at the bottom (its key changes) —
+  // NOT on raw item-count churn (dividers, activity grouping, other agents'
+  // activity), which collapsed the slot with nothing to fill it.
   useEffect(() => {
-    if (ghost && rawItemsLength > ghostRawItemsRef.current) {
+    if (ghost && lastItemKey !== ghostKeyRef.current) {
       setGhost(false)
     }
-  }, [ghost, rawItemsLength])
+  }, [ghost, lastItemKey])
+
+  // Track the bottom key every render (after the reserve check above reads the
+  // previous value) so the same-tick-absorb detection works.
+  useLayoutEffect(() => { prevKeyRef.current = lastItemKey })
 
   if (!hasActive && !ghost) return null
 
@@ -4000,7 +4011,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                     contextPercent={contextPercent}
                     hibernatingAgents={hibernatingAgents}
                     ctx={ctx}
-                    rawItemsLength={rawItems.length}
+                    lastItemKey={rawItems.length ? rawItems[rawItems.length - 1].key : null}
                     agents={agents}
                     escalationState={escalationState}
                   />
