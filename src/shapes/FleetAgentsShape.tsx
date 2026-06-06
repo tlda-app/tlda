@@ -748,7 +748,10 @@ function AgentRow({
           style={{ color, opacity: nameOpacity, display: 'flex', alignItems: 'center' }}
           onPointerDown={(e) => { e.stopPropagation(); onStartDrag(e, 'agent', agent.friendly_name || name, name, color) }}
         >
-          <PhaseIcon phase={agentPhase(agent)} />
+          {/* Fixed-width glyph slot (blank for dawn) so base names column-align */}
+          <span style={{ width: 15, flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}>
+            <PhaseIcon phase={agentPhase(agent)} />
+          </span>
           {name}
         </span>
 
