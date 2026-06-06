@@ -1137,40 +1137,52 @@ const QA_AGENT_ID = 'fleet:deepseek-qa'
 
 // ---- Scheduled actions: countdown + cancel ----
 // Any automatic, irreversible Eliza action (handoff, manager escalation, QA
-// dispatch) is announced with a one-shot countdown and a ~5s grace window
-// before it executes. "Eliza cancel" / "Eliza don't do that" aborts anything
-// still pending. Nudges are deliberately NOT wrapped — they're already gated
-// behind Skip's explicit "say it" release, so a countdown would double-gate them.
-const COUNTDOWN_MS = 5_000
-const ELIZA_CANCEL_PATTERN = /\b(?:cancel|don'?t\s+do\s+that|do\s+not\s+do\s+that)\b/i
+// dispatch) announces itself with a live ticking countdown (the same `timer`
+// widget real agents get from the MCP `timer()` tool — same wire format) and a
+// grace window before it executes. "Eliza cancel" / "Eliza don't do that"
+// aborts anything still pending and clears its widget. Nudges are deliberately
+// NOT wrapped — they're already gated behind Skip's explicit "say it" release,
+// so a countdown would double-gate them.
+const COUNTDOWN_MS = 20_000 // voice-usable window — 5s was too short to cancel by speech
+const ELIZA_CANCEL_PATTERN = /\b(?:cancel(?:l?ed|l?ing|s)?|don'?t\s+do\s+that|do\s+not\s+do\s+that|stop\s+(?:that|it)|never\s*mind|abort)\b/i
 let _scheduledSeq = 0
-const pendingActions = new Map() // id → { label, timer }
+const pendingActions = new Map() // id → { label, timer, eventId }
 
-// Announce "<lead> in 5…4…3…2…1" once, wait ~delayMs, then run fn unless
-// cancelled in the window. Returns the action id.
+// Emit a live countdown widget, wait ~delayMs, then run fn unless cancelled in
+// the window. The countdown is a `timer` event the viewer renders as a ticking
+// bubble (see server timer-set handler + client ticker). Returns the action id.
 function scheduleAction(label, lead, fn, delayMs = COUNTDOWN_MS) {
   const id = ++_scheduledSeq
-  const secs = Math.max(1, Math.round(delayMs / 1000))
-  const ticks = Array.from({ length: secs }, (_, i) => secs - i).join('…')
-  sendChat(OWNER_ID, `${lead} in ${ticks}\n_(say “Eliza cancel” to stop)_`)
-  // Best-effort visual countdown via the MCP-timer widget. The merged server
-  // has no timer-set handler yet, so this is a no-op there until that bridge is
-  // restored — harmless (fire-and-forget, no reply awaited).
-  send({ type: 'timer-set', agent: AGENT_ID, message: lead, fire_at: new Date(Date.now() + delayMs).toISOString() })
+  const fireAt = new Date(Date.now() + delayMs).toISOString()
+  const message = `${lead} — say “Eliza cancel” to stop`
+  pendingActions.set(id, { label, timer: null, eventId: null })
+  // Capture the widget's event id so cancel/fire can target it. sendRequest
+  // resolves with { id }; if it times out we still run the action — the widget
+  // just won't get a clean cancel/fire update.
+  sendRequest({ type: 'timer-set', agent: AGENT_ID, message, fire_at: fireAt })
+    .then(r => { const a = pendingActions.get(id); if (a) a.eventId = r?.id ?? null })
+    .catch(() => {})
   const timer = setTimeout(async () => {
+    const a = pendingActions.get(id)
     pendingActions.delete(id)
+    if (a?.eventId != null) send({ type: 'timer-fire', event_id: a.eventId })
     try { await fn() } catch (e) { console.error(`[eliza] scheduled "${label}" failed: ${e.message}`) }
   }, delayMs)
-  pendingActions.set(id, { label, timer })
+  const a = pendingActions.get(id); if (a) a.timer = timer
   logDecision(OWNER_ID, 'scheduled-action', label, { delayMs }, lead)
   return id
 }
 
-// Abort every pending scheduled action. Returns true if anything was cancelled.
+// Abort every pending scheduled action and clear its countdown widget.
+// Returns true if anything was cancelled.
 function cancelScheduledActions(reason = 'skip-cancel') {
   if (pendingActions.size === 0) return false
   const labels = []
-  for (const [, a] of pendingActions) { clearTimeout(a.timer); labels.push(a.label) }
+  for (const [, a] of pendingActions) {
+    if (a.timer) clearTimeout(a.timer)
+    if (a.eventId != null) send({ type: 'timer-cancel', event_id: a.eventId })
+    labels.push(a.label)
+  }
   pendingActions.clear()
   sendChat(OWNER_ID, `🚫 Cancelled: ${labels.join(', ')}.`)
   logDecision(OWNER_ID, 'scheduled-action-cancel', reason, { labels }, reason)

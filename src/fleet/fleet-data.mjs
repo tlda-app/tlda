@@ -470,6 +470,15 @@ export function connect() {
               ev._planResponse = 'rejected'
               ev._promptResponse = 'rejected'
             }
+            // Timer countdown reaching a terminal state: flip the derived flags
+            // so the line re-renders as cancelled (struck) or vanishes (fired).
+            if (ev.type === 'timer' || ev._timerCountdown || ev._timerCancelled) {
+              if (ev.metadata.state === 'cancelled') {
+                ev._timerCancelled = true; ev._timerCountdown = false
+              } else if (ev.metadata.pending === false) {
+                ev._timer = true; ev._timerCountdown = false
+              }
+            }
           }
           notify('messages', null)
         }
@@ -627,12 +636,18 @@ export function convertChatEvent(e) {
     msg._evType = type
     msg._source = e.source || 'terminal'
   } else if (type === 'timer') {
-    if (e.metadata?.pending) {
+    const tmsg = e.metadata?.message || (e.text || '').replace(/^[⏱⏰]\s*/, '')
+    if (e.metadata?.state === 'cancelled') {
+      // Cancelled in the grace window — show a struck "cancelled" line, not hidden.
+      msg._timerCancelled = true
+      msg._timerMessage = tmsg
+    } else if (e.metadata?.pending) {
       msg._timerCountdown = true
       msg._timerUntil = e.metadata.fire_at
-      msg._timerMessage = e.metadata.message || (e.text || '').replace(/^⏰\s*/, '')
+      msg._timerMessage = tmsg
       msg._timerRemaining = Math.max(0, Math.ceil((new Date(e.metadata.fire_at) - Date.now()) / 1000))
     } else {
+      // Fired/expired — hidden; the action's own result message follows.
       msg._timer = true
     }
   } else if (type === 'compacting') {
