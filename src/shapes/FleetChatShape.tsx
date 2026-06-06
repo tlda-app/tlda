@@ -599,10 +599,11 @@ function ContextBadge({ percent }: { percent?: number }) {
 
 /**
  * ThinkingStatus — one status line per agent (thinking / compacting).
- * Space is always reserved once any agent has been active — opacity-only
- * transitions prevent layout bounce when thinking starts or stops.
+ * When all agents stop, the space persists (ghost) until a new chat item
+ * arrives to fill it. Ghost detection uses useEffect — not during-render
+ * ref mutation — so the transition is never missed across render batches.
  */
-function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibernatingAgents, ctx, rawItemsLength: _rawItemsLength, agents: _agents, escalationState }: {
+function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibernatingAgents, ctx, rawItemsLength, agents: _agents, escalationState }: {
   thinkingAgents: Map<string, number>
   compactingAgents: Map<string, number>
   contextPercent: Map<string, number>
@@ -630,22 +631,41 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
   }, [thinkingAgents, compactingAgents, hibernatingAgents])
 
   const hasActive = statusAgents.size > 0
-  // Always keep the last non-empty status so the component stays mounted at the
-  // same height. Space is reserved by keeping opacity:0 instead of unmounting —
-  // this eliminates the layout bounce that happened when the component returned
-  // null (on stop) or remounted (on start).
   const lastStatusRef = useRef(statusAgents)
   if (hasActive) lastStatusRef.current = statusAgents
 
-  // Never mounted before (no agents have ever been thinking in this chat) — return null
-  if (!hasActive && lastStatusRef.current.size === 0) return null
+  const [ghost, setGhost] = useState(false)
+  const ghostRawItemsRef = useRef(rawItemsLength)
+
+  // Detect active→inactive transition via useEffect so it fires exactly once
+  // per transition, even when React batches multiple renders together. The
+  // during-render prevActiveRef pattern missed the transition when rendering
+  // was batched — useEffect is guaranteed to fire after every committed render.
+  useEffect(() => {
+    if (!hasActive && lastStatusRef.current.size > 0 && !ghost) {
+      setGhost(true)
+      ghostRawItemsRef.current = rawItemsLength
+    }
+    if (hasActive && ghost) {
+      setGhost(false)
+    }
+  }, [hasActive]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Release ghost when a new item is appended (something filled the space).
+  useEffect(() => {
+    if (ghost && rawItemsLength > ghostRawItemsRef.current) {
+      setGhost(false)
+    }
+  }, [ghost, rawItemsLength])
+
+  if (!hasActive && !ghost) return null
 
   return (
     <div style={{
       padding: '0 8px',
       fontSize: 11,
       flexShrink: 0,
-      opacity: hasActive ? 0.6 : 0,
+      opacity: ghost ? 0 : 0.6,
       transition: 'opacity 0.2s',
     }}>
       {[...(hasActive ? statusAgents : lastStatusRef.current).entries()].map(([agentId, { status, startTs }]) => {
@@ -710,35 +730,50 @@ function ElizaSuggestion({ nudge, isFirst, agentName }: { nudge: ElizaNudge, isF
   )
 }
 
-function ElizaStatus({ pending, ctx, rawItemsLength: _rawItemsLength }: { pending: ElizaNudge[], ctx: any, rawItemsLength: number }) {
+function ElizaStatus({ pending, ctx, rawItemsLength }: { pending: ElizaNudge[], ctx: any, rawItemsLength: number }) {
   const hasActive = pending.length > 0
-  // Keep last pending list so the component stays mounted at the same height —
-  // opacity-only transition, no layout change when Eliza suggestions appear/vanish.
   const lastPendingRef = useRef(pending)
   if (hasActive) lastPendingRef.current = pending
 
-  if (!hasActive && lastPendingRef.current.length === 0) return null
+  const [ghost, setGhost] = useState(false)
+  const ghostRawItemsRef = useRef(rawItemsLength)
 
-  const displayPending = hasActive ? pending : lastPendingRef.current
+  useEffect(() => {
+    if (!hasActive && lastPendingRef.current.length > 0 && !ghost) {
+      setGhost(true)
+      ghostRawItemsRef.current = rawItemsLength
+    }
+    if (hasActive && ghost) setGhost(false)
+  }, [hasActive]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (ghost && rawItemsLength > ghostRawItemsRef.current) setGhost(false)
+  }, [ghost, rawItemsLength])
+
+  if (!hasActive && !ghost) return null
+
   return (
     <div style={{
       padding: '2px 8px',
       fontSize: 11,
       flexShrink: 0,
-      opacity: hasActive ? 1 : 0,
+      opacity: ghost ? 0 : 1,
       transition: 'opacity 0.2s',
     }}
     className="eliza-status"
     >
-      <div className="chat-line" style={{ padding: '2px 0' }}>
-        <span className="eliza-status-prefix">eliza:</span>{' '}
-        {displayPending.map((n, i) => (
-          <span key={n.id}>
-            {i > 0 ? <span className="eliza-suggestion-label">, </span> : null}
-            <ElizaSuggestion nudge={n} isFirst={i === 0} agentName={ctx.agentLabel(n.targetId)} />
-          </span>
-        ))}
-      </div>
+      {!ghost && (
+        <div className="chat-line" style={{ padding: '2px 0' }}>
+          <span className="eliza-status-prefix">eliza:</span>{' '}
+          {pending.map((n, i) => (
+            <span key={n.id}>
+              {i > 0 ? <span className="eliza-suggestion-label">, </span> : null}
+              <ElizaSuggestion nudge={n} isFirst={i === 0} agentName={ctx.agentLabel(n.targetId)} />
+            </span>
+          ))}
+        </div>
+      )}
+      {ghost && <div style={{ padding: '2px 0', visibility: 'hidden' }}>placeholder</div>}
     </div>
   )
 }
