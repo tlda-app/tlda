@@ -2074,7 +2074,10 @@ async function handleFleetWsMessage(ws, msg) {
     const eventId = msg.event_id
     const state = type === 'timer-cancel' ? 'cancelled' : 'fired'
     if (eventId != null) {
-      try { fleetStore.updateEventMetadata?.(eventId, { pending: false, state }) } catch {}
+      // Persist the terminal state; the live event-update below is what the
+      // viewer actually reacts to, so a persist failure is logged, not fatal.
+      try { fleetStore.updateEventMetadata?.(eventId, { pending: false, state }) }
+      catch (e) { console.warn(`[timer] persist ${state} for event ${eventId} failed: ${e.message}`) }
       broadcastEvent('event-update', { id: eventId, metadata_patch: { pending: false, state } })
     }
     reply({ ok: true })
