@@ -98,6 +98,67 @@ export function render(model, entries) {
   return out
 }
 
+// ---------- split a bag-of-properties leaf into a starter chain ----------
+// The drill's `split` move (punch-list #2): take one fat property-bag atom
+// ("p is proper … convexity, lower semicontinuity, strict convexity, and
+// coercivity …") and seed an argument-graph from it. This emits the raw
+// materials ONLY — the source object plus the UNBOUND list of properties it
+// collapses — it does NOT bind properties to arrows. Binding each property to
+// the transition it drives is the subject's work, and the thing the drill
+// grades; auto-wiring the chain here would defeat the exercise.
+//
+//   seedChainFromLeaf(model, "l3") -> {
+//     sourceLeafIds: ["l3"], sourceText, nodes: [], edges: [],
+//     candidateProperties: ["proper","convexity","lower semicontinuity",…]
+//   }
+//
+// Returns a partial chain (chain.mjs shape) the subject fills in via
+// chain_open/chain_apply.
+const PROPERTY_LEXICON = [
+  'lower semicontinuity', 'lower semicontinuous', 'strict convexity', 'strictly convex',
+  'total convexity', 'totally convex', 'uniform convexity', 'uniformly convex',
+  'coercivity', 'coercive', 'properness', 'proper', 'convexity', 'convex',
+  'boundedness', 'bounded', 'closedness', 'closed', 'continuity', 'continuous',
+  'completeness', 'complete', 'monotonicity', 'monotone', 'nonnegativity',
+  'nonnegative', 'nondecreasing', 'differentiability', 'differentiable', 'smoothness',
+  'smooth', 'compactness', 'compact', 'lipschitz', 'measurability', 'measurable',
+  'integrability', 'integrable', 'positivity', 'positive', 'finiteness', 'finite',
+]
+function extractProperties(body) {
+  let text = ' ' + viewText(String(body || ''))
+    .toLowerCase()
+    .replace(/\$[^$]*\$/g, ' ')
+    .replace(/[*_`]/g, ' ') + ' '
+  const found = []
+  // Longest entries first; mask each hit so a shorter contained term
+  // ("convex" inside "strict convexity") can't double-count.
+  for (const term of [...PROPERTY_LEXICON].sort((a, b) => b.length - a.length)) {
+    const re = new RegExp(`(?<![a-z])${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![a-z])`, 'g')
+    const spans = []
+    let m
+    while ((m = re.exec(text))) spans.push([m.index, m[0].length])
+    for (const [i] of spans) found.push({ term, pos: i })
+    for (const [i, len] of spans) text = text.slice(0, i) + ' '.repeat(len) + text.slice(i + len)
+  }
+  // De-dup by term, keep first appearance, return in document order.
+  const seen = new Set()
+  return found
+    .sort((a, b) => a.pos - b.pos)
+    .filter((f) => (seen.has(f.term) ? false : seen.add(f.term)))
+    .map((f) => f.term)
+}
+export function seedChainFromLeaf(model, leafId) {
+  const leaf = (model?.leaves || []).find((l) => l.id === leafId)
+  if (!leaf) throw new Error(`seedChainFromLeaf: no leaf [${leafId}] in model`)
+  return {
+    sourceLeafIds: [leafId],
+    sourceText: viewText(leaf.body),
+    nodes: [],
+    edges: [],
+    candidateProperties: extractProperties(leaf.body),
+  }
+}
+
 // ---------- check: classify the edit, reject any rewritten token ----------
 // The single gate behind "tokens, not words": if a token's shown text differs
 // from its verbatim source, that's a TEXT REWRITTEN violation and the apply is

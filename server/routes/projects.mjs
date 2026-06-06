@@ -26,7 +26,8 @@ import {
 } from '../lib/project-store.mjs'
 import { runBuild, getBuildStatus } from '../lib/build-runner.mjs'
 import { outlineForRegion, regionFromSpan, structuralLeaves } from '../lib/outline/outline.mjs'
-import { buildModel, render as renderModel, check as checkModel, parseEditedOutline, emitModelMarkdown, assertRoundTrip } from '../lib/outline/model.mjs'
+import { buildModel, render as renderModel, check as checkModel, parseEditedOutline, emitModelMarkdown, assertRoundTrip, seedChainFromLeaf } from '../lib/outline/model.mjs'
+import { parseChainMarkdown, emitChainMarkdown, renderChainArrows, validateChain } from '../lib/outline/chain.mjs'
 import { loadSynctex } from '../lib/synctex-query.mjs'
 import { buildMarkdown, buildHtml, buildSlides } from '../lib/format-builders.mjs'
 import { shouldBuildOnPush } from '../lib/build-decision.mjs'
@@ -365,6 +366,86 @@ router.post('/:name/outline-apply', requireRead, (req, res) => {
     const root = project.sourceDir || getSourceDir(req.params.name)
     const file = join(root, model.regionFile || project.mainFile || 'main.tex')
     res.json({ ok: true, candidate: { file, oldText, newText }, moves: result.moves, inserts: result.inserts, deletes: result.deletes })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// ---- argument-graph (arrow-chain) persistence + open/apply ----------------
+// The chain is a CONSTRUCTION artifact (authored nodes/labels/justifications),
+// NOT a verbatim partition like the outline model — so it lives in its own
+// `<slug>.chain.json` next to `<slug>.model.json`, and never touches
+// outline-apply's move-only path. It carries the `sourceLeafIds` it was split
+// from for provenance.
+function chainPath(name, slug) {
+  if (!/^[\w.\-]+$/.test(String(slug || ''))) return null
+  return join(getOutputDir(name), 'outlines', `${slug}.chain.json`)
+}
+function loadChain(name, slug) {
+  const p = chainPath(name, slug)
+  if (!p || !existsSync(p)) return null
+  return JSON.parse(readFileSync(p, 'utf8'))
+}
+function saveChain(name, slug, chain) {
+  const p = chainPath(name, slug)
+  if (!p) throw new Error('bad slug')
+  mkdirSync(dirname(p), { recursive: true })
+  writeFileSync(p, JSON.stringify(chain), 'utf8')
+}
+// The rendered chain echoed into the agent's turn (the in-transcript carry):
+// the motion-view arrows, the editable id-tagged markdown, and structural
+// validation. seed.candidateProperties (the freshly-split bag) ride along.
+function chainResponse(slug, chain) {
+  return {
+    slug,
+    arrows: renderChainArrows(chain),
+    markdown: emitChainMarkdown(chain),
+    candidateProperties: chain.candidateProperties || [],
+    validation: validateChain(chain),
+  }
+}
+
+// GET /:name/chain?slug=…[&seedFromLeaf=lN] — chain_open backend.
+// If a chain exists for the slug, return it. Otherwise, if seedFromLeaf is
+// given, split that leaf of the outline model into a starter chain (candidate
+// properties, empty graph), persist it, and return it. The split is mechanical
+// scaffolding, not a graded move — the graded move is binding via chain-apply.
+router.get('/:name/chain', requireRead, (req, res) => {
+  const { name } = req.params
+  const slug = String(req.query.slug || '')
+  let chain = loadChain(name, slug)
+  if (!chain) {
+    const leafId = req.query.seedFromLeaf ? String(req.query.seedFromLeaf) : null
+    if (!leafId) return res.status(404).json({ error: 'no chain for slug; pass seedFromLeaf to start one' })
+    const model = loadOutlineModel(name, slug)
+    if (!model) return res.status(404).json({ error: 'outline model not found (open the outline first)' })
+    try {
+      chain = seedChainFromLeaf(model, leafId)
+    } catch (e) {
+      return res.status(400).json({ error: String(e?.message || e) })
+    }
+    saveChain(name, slug, chain)
+  }
+  res.json(chainResponse(slug, chain))
+})
+
+// POST /:name/chain-apply { slug, editedMd } — chain_apply backend.
+// Parse the edited chain markdown, validate the graph shape, persist, and
+// return the rendered chain. Unlike outline-apply this DOES persist (the chain
+// is the artifact); it never writes the .tex source — that proposal→approve
+// path is deferred (live-proof use, out of scope for the drill).
+router.post('/:name/chain-apply', requireRead, (req, res) => {
+  const { name } = req.params
+  const { slug, editedMd } = req.body || {}
+  if (!slug || editedMd == null) return res.status(400).json({ error: 'slug and editedMd required' })
+  const prev = loadChain(name, slug)
+  try {
+    const chain = parseChainMarkdown(String(editedMd))
+    // preserve provenance the editing surface doesn't round-trip
+    if (prev?.candidateProperties && !chain.candidateProperties) chain.candidateProperties = prev.candidateProperties
+    const validation = validateChain(chain)
+    saveChain(name, slug, chain)
+    res.json({ ok: validation.ok, ...chainResponse(slug, chain) })
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) })
   }
