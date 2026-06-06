@@ -17,6 +17,7 @@ import { toolContentDetail } from './activity-render.mjs'
 import { setActiveMacros } from '../katexMacros'
 import { labelsForAgent, evalDnf } from '../../shared/fleet-labels.mjs'
 import { makeEventStore } from './event-store.mjs'
+import { log } from '../logger'
 
 // Fleet is embedded in tlda — use same-origin (no separate server)
 const FLEET = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5176'
@@ -443,7 +444,7 @@ export function connect() {
           console.log(`[chat-recv] id=${data.id} from=${data.from_id||data.from} text=${(data.text||'').substring(0,30)}`)
         }
         if (data.type === 'interrupt' || data.type === 'kill-session') {
-          console.log(`[interrupt-recv] type=${data.type} id=${data.id} from=${data.from_id||data.from} to=${data.to_id||data.to} isNew=${isNew}`)
+          log.warn('interrupt-recv', 'event received', { type: data.type, id: data.id, from: data.from_id||data.from, to: data.to_id||data.to, isNew })
         }
         notify('messages', isNew ? event : null)
       } else if (eventType === 'event-update') {
