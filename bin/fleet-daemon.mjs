@@ -1411,10 +1411,15 @@ async function rpcWriteBackingFile({ filePath, content }) {
 // into `error`). The dispatcher in handleServerMessage takes care of
 // sending `rpc-reply`.
 //
-// All tmux interaction goes through `execFile('tmux', [args])` so we
-// don't have to worry about shell metacharacter escaping. The session
-// names we accept are validated against [a-zA-Z0-9_.\-] just in case.
-const SAFE_SESSION_RE = /^[a-zA-Z0-9_.\-]+$/
+// All tmux interaction goes through `execFile('tmux', [args])` (never a shell),
+// so shell metacharacters need no escaping — a name like `fleet-leverage?` is
+// safe to pass verbatim. The only chars that genuinely break tmux are its target
+// separators (`:` for session:window) plus whitespace/control, so reject only
+// those and tolerate everything else. The old allowlist `[a-zA-Z0-9_.\-]` wrongly
+// rejected expressive agent names like `leverage?`, wedging auto-hibernate in a
+// retry loop. New spawns are sanitized at the source (fleet-spawn.py); this keeps
+// the daemon tolerant of legacy sessions that already carry punctuation.
+const SAFE_SESSION_RE = /^[^\s:\x00-\x1f]+$/
 
 function checkSession(session) {
   if (!session || !SAFE_SESSION_RE.test(session)) {
