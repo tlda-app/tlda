@@ -3,7 +3,7 @@ import { createShapeId } from 'tldraw'
 // @ts-ignore — vanilla JS module
 import { getHumanId } from '../fleet/fleet-data.mjs'
 // @ts-ignore — vanilla JS module
-import { baseName, phaseFromName } from '../../shared/lineage-name.mjs'
+import { baseName } from '../../shared/lineage-name.mjs'
 
 /** Canonical list of fleet shape types — the single source of truth for
  *  ownership filtering, visibility, copy gating, and hit-test exclusion.
@@ -23,13 +23,6 @@ export const FLEET_SHAPE_TYPES = new Set([
 export function agentDisplayName(agent: any, _allAgents?: any[]): string {
   if (!agent) return '[unknown]'
   return baseName(agent.friendly_name) || (agent.id || '').replace('fleet:', '')
-}
-
-/** The phase (dawn/day/dusk) for an agent, parsed from its friendly name.
- *  Returns null for agents with no name. Used only by the phase-icon rendering. */
-export function agentPhase(agent: any): string | null {
-  if (!agent) return null
-  return phaseFromName(agent.friendly_name)
 }
 
 export const FLEET_HUD_ANCHOR_ID = 'shape:fleet-hud-anchor' as const

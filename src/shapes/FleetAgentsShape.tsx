@@ -18,8 +18,8 @@ import {
 import { useState, useCallback, useMemo, useRef, useEffect, memo } from 'react'
 import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, useFleetContext, searchFleet, hibernateSession, spawnAgent } from '../fleet-data-adapter'
 import { dropPillOnTarget } from './FleetPillShape'
-import { agentDisplayName, agentPhase } from './fleet-utils'
-import { PhaseIcon } from './PhaseIcon'
+import { agentDisplayName } from './fleet-utils'
+import { AgentName } from './PhaseIcon'
 import { dragCoordinator } from './dragCoordinator'
 import { useIsInViewport } from './useIsInViewport'
 
@@ -749,10 +749,7 @@ function AgentRow({
           onPointerDown={(e) => { e.stopPropagation(); onStartDrag(e, 'agent', agent.friendly_name || name, name, color) }}
         >
           {/* Fixed-width glyph slot (blank for dawn) so base names column-align */}
-          <span style={{ width: 15, flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}>
-            <PhaseIcon phase={agentPhase(agent)} />
-          </span>
-          {name}
+          <AgentName name={agent.friendly_name} slotWidth={15} />
         </span>
 
         <span className="fleet-agents-col-seen">{ago}</span>

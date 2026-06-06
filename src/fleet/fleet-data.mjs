@@ -154,16 +154,9 @@ export function getUnreadCountsForHuman() {
 
 export function getAgent(id) {
   if (!id) return undefined
-  // Phase is part of the friendly name now ("base:day"/"base:dusk"; dawn is the
-  // bare base), so a lineage address is just a friendly_name lookup.
-  const exact = _agents.find(a => a.id === id || a.friendly_name === id)
-  if (exact) return exact
-  // ":dawn" is an alias for the bare base name (dawn carries no suffix).
-  if (id.endsWith(':dawn')) {
-    const base = id.slice(0, -':dawn'.length)
-    return _agents.find(a => a.friendly_name === base)
-  }
-  return undefined
+  // The friendly name is an opaque atom — look up by exact id or friendly_name.
+  // No suffix games: dawn is "base", day is "base:day", dusk is "base:dusk".
+  return _agents.find(a => a.id === id || a.friendly_name === id)
 }
 
 // --- Write API (all go through server) ---

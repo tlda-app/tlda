@@ -30,9 +30,8 @@ import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useElizaPending, sendMessage, loadBefore, resolveFilter, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
 import type { ElizaNudge } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
-import { agentDisplayName, agentPhase } from './fleet-utils'
-import { PhaseIcon } from './PhaseIcon'
-import { baseName, phaseFromName } from '../../shared/lineage-name.mjs'
+import { agentDisplayName } from './fleet-utils'
+import { AgentName } from './PhaseIcon'
 import { dragCoordinator } from './dragCoordinator'
 import { DocContext, PanelContext } from '../PanelContext'
 import { loadLookup, type LookupData } from '../synctexLookup'
@@ -2958,14 +2957,6 @@ function FleetChatInner({ shape }: { shape: any }) {
     return map
   }, [agents])
 
-  const agentPhases = useMemo(() => {
-    const map: Record<string, string | null> = {}
-    for (const a of agents) {
-      if (a.id) map[a.id] = agentPhase(a)
-    }
-    return map
-  }, [agents])
-
   // Detect pill drag hovering over this chat — returns stable string to avoid flicker
   // Only agent/label pills trigger filter overlay, not content pills (msg, code, etc.)
   const pillOverKey = useValue('pill-over', () => {
@@ -3017,19 +3008,12 @@ function FleetChatInner({ shape }: { shape: any }) {
   }, [filterKey])
   sendTargetsRef.current = sendTargets
 
-  // Resolve a send-target label to an agent. Phase is encoded in the friendly
-  // name now ("base:day" / "base:dusk"; dawn is the bare base), so a lineage
-  // address matches a friendly_name directly. ":dawn" is accepted as an alias
-  // for the bare base name.
+  // Resolve a send-target label to an agent. The friendly name is an opaque
+  // atom — you address an agent by its exact full name (or id, or a label it
+  // carries). No suffix games: dawn is "base", day is "base:day", etc.
   const resolveTargetAgent = useCallback((label: string, agentList: any[]) => {
     if (label.startsWith('fleet:')) return agentList.find((a: any) => a.id === label) || null
-    const direct = agentList.find((a: any) => a.friendly_name === label || a.id === label || (a.labels || []).includes(label))
-    if (direct) return direct
-    if (label.endsWith(':dawn')) {
-      const base = label.slice(0, -':dawn'.length)
-      return agentList.find((a: any) => a.friendly_name === base) || null
-    }
-    return null
+    return agentList.find((a: any) => a.friendly_name === label || a.id === label || (a.labels || []).includes(label)) || null
   }, [])
 
   const hoverTargetAgentId = useMemo(() => {
@@ -3753,7 +3737,6 @@ function FleetChatInner({ shape }: { shape: any }) {
         {filterOpen && (
           <FilterOverlay
             filter={filter}
-            agentNames={agentNames}
             shapeId={shape.id}
             editor={editor}
             onClose={() => setFilterOpen(false)}
@@ -3937,8 +3920,6 @@ function FleetChatInner({ shape }: { shape: any }) {
           <SendHint
             filter={filter}
             sendTargets={sendTargets}
-            agentNames={agentNames}
-            agentPhases={agentPhases}
             inputRef={inputRef}
           />
           {deadTargetAgent && (
@@ -4463,14 +4444,10 @@ const FleetChatComponent = memo(function FleetChatComponent({ shape }: { shape: 
 function SendHint({
   filter: _filter,
   sendTargets,
-  agentNames,
-  agentPhases,
   inputRef,
 }: {
   filter: [string, string][][]
   sendTargets: string[]
-  agentNames: Record<string, string>
-  agentPhases: Record<string, string | null>
   inputRef: React.RefObject<HTMLInputElement | null>
 }) {
   // kind: '' (hidden) | 'empty' (no text, show target) | 'newline' | 'enter'
@@ -4522,8 +4499,7 @@ function SendHint({
   const targets = sendTargets.map((t, i) => (
     <span key={t} className="send-hint-target" style={{ display: 'inline-flex', alignItems: 'center' }}>
       {i > 0 ? ' + ' : null}
-      <PhaseIcon phase={agentPhases[t] ?? null} />
-      {agentNames[t] || t.replace('fleet:', '')}
+      <AgentName name={t} />
     </span>
   ))
 
@@ -4581,14 +4557,12 @@ function buildFilterPreview(
 
 function FilterOverlay({
   filter,
-  agentNames,
   shapeId,
   editor,
   onClose,
   externalPillOver,
 }: {
   filter: [string, string][][]
-  agentNames: Record<string, string>
   shapeId: any
   editor: any
   onClose: () => void
@@ -4788,17 +4762,14 @@ function FilterOverlay({
 
   // Render a single chip (role:label) — matches dashboard's chipHtml
   function renderChip(role: string, label: string, opts?: { ghost?: boolean; x?: { ci: number; ti: number } }) {
-    // The value is always the full name; the display is the lossless map
-    // name → (base text + phase glyph) — same bijective transform as every other
-    // surface. Compute straight from the name string; a plain (non-agent) label
+    // The value is always the full name (an opaque atom); AgentName is the one
+    // display split — full name → base text + glyph. A plain (non-agent) label
     // has no suffix, so it renders verbatim with no glyph.
-    const display = agentNames[label] || baseName(label).replace('fleet:', '')
-    const phase = phaseFromName(label)
     return (
       <span className={`fleet-filter-chip fleet-filter-chip-${role}${opts?.ghost ? ' fleet-filter-chip-ghost' : ''}`}>
         <span className="fleet-filter-chip-role">{role}:</span>
-        <span className="fleet-filter-chip-label" style={{ display: 'inline-flex', alignItems: 'center' }}>
-          <PhaseIcon phase={phase} />{display}
+        <span className="fleet-filter-chip-label">
+          <AgentName name={label} />
         </span>
         {opts?.x && (
           <span className="fleet-filter-term-x" data-clause={opts.x.ci} data-term={opts.x.ti}>×</span>

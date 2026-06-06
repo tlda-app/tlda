@@ -1,3 +1,24 @@
+import { baseName, phaseFromName } from '../../shared/lineage-name.mjs'
+
+// The ONE place a friendly name becomes "base text + phase glyph" for React
+// surfaces. Everywhere else the friendly name is an opaque atom — only rotation
+// and search ever split it; this is the only display split. Give it the full
+// name (e.g. "conc5:day"); it renders the base ("conc5") plus the phase glyph.
+// `slotWidth` reserves a fixed-width glyph box (blank for dawn) so a column of
+// names aligns — used by the agents panel.
+export function AgentName({ name, slotWidth }: { name: string | null | undefined; slotWidth?: number }) {
+  const text = baseName(name || '').replace('fleet:', '')
+  const icon = <PhaseIcon phase={phaseFromName(name)} />
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', minWidth: 0 }}>
+      {slotWidth != null
+        ? <span style={{ width: slotWidth, flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}>{icon}</span>
+        : icon}
+      {text}
+    </span>
+  )
+}
+
 // Single source of truth for the lineage phase icon (React form). The HTML-string
 // form in src/fleet/chat-render.mjs (PHASE_ICON_DAY/PHASE_ICON_DUSK) mirrors this
 // exactly. dawn (the default worker) gets NO icon; only the non-default roles are
