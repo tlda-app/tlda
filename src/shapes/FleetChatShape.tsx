@@ -944,7 +944,6 @@ function FleetChatInner({ shape }: { shape: any }) {
   const compactingAgents = useFleetCompacting(dnfFilter, frameId)
   const contextPercent = useFleetContext(dnfFilter, frameId)
   const elizaPendingAll = useElizaPending()
-  const [olderEvents, setOlderEvents] = useState<any[]>([])
 
   // When an agent renames itself, auto-update any filter terms that used the old name.
   useEffect(() => {
@@ -1043,32 +1042,16 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Escape un-queues messages: messages sent before this timestamp are above the divider
   const [unqueuedAt, setUnqueuedAt] = useState(0)
 
-  // Merge older (scrollback) events with live events
-  const events = useMemo(() => {
-    if (olderEvents.length === 0) return liveEvents
-    // Dedup by stable id ONLY — _dbId (persisted) or _tempId (optimistic, which
-    // optimistic-reconcile binds to its _dbId on echo). NEVER timestamp+from:
-    // an agent fires a text block and a tool call on the same millisecond, so
-    // timestamp+from is not unique for activity events — that hack silently
-    // dropped the thinking-text sections.
-    const seen = new Set<string>()
-    for (const e of liveEvents) {
-      if (e._dbId != null) seen.add('db:' + e._dbId)
-      if (e._tempId) seen.add('tmp:' + e._tempId)
-    }
-    const unique = olderEvents.filter((e: any) => {
-      if (e._dbId != null && seen.has('db:' + e._dbId)) return false
-      if (e._tempId && seen.has('tmp:' + e._tempId)) return false
-      return true
-    })
-    return [...unique, ...liveEvents]
-  }, [liveEvents, olderEvents])
+  // One buffer: liveEvents IS the full id-keyed store view (live + backfilled
+  // history, deduped by id in fleet-data). No live/older merge here — that merge
+  // seam was what rendered a slipped event twice. Scrollback is folded into the
+  // same store by loadBefore(), so it just appears in this list.
+  const events = liveEvents
 
-  // Reset older events and scroll state when filter changes
+  // Reset scroll state when filter changes (history for the new filter is folded
+  // into the store by the backfill effect below).
   const filterKey = JSON.stringify(filter)
   useEffect(() => {
-    log.info('filter-empty', 'clear olderEvents (filterKey changed)', { filterKey })
-    setOlderEvents([])
     isAtBottomRef.current = true
     setAtBottom(true)
   }, [filterKey])
@@ -1160,43 +1143,28 @@ function FleetChatInner({ shape }: { shape: any }) {
     const ids = resolvedFilterIdKey.split(',')
     const loadKey = `${filterKey}:${resolvedFilterIdKey}`
     if (historyLoadedRef.current === loadKey) {
-      log.info('filter-empty', 'backfill SKIPPED (guard hit — already loaded this filter)', { loadKey, olderLen: olderEvents.length, liveLen: liveEvents.length })
+      log.info('filter-empty', 'backfill SKIPPED (guard hit — already loaded this filter)', { loadKey, liveLen: liveEvents.length })
       return
     }
     historyLoadedRef.current = loadKey
     log.info('filter-empty', 'backfill loading', { loadKey, idCount: ids.length })
-    loadBefore(ids, new Date().toISOString(), 200).then((older: any[]) => {
-      log.info('filter-empty', 'backfill loadBefore returned', { older: older.length })
-      if (older.length === 0) return
-      let didPrepend = false
-      // Deduplicate against live events already in the buffer.
-      // convertChatEvent stores DB id in _dbId, not id.
-      setOlderEvents(prev => {
-        const existingIds = new Set([
-          ...prev.map((e: any) => e._dbId || e._tempId),
-          ...liveEvents.map((e: any) => e._dbId || e._tempId),
-        ])
-        const fresh = older.filter((e: any) => !existingIds.has(e._dbId))
-        log.info('filter-empty', 'backfill dedup', { older: older.length, fresh: fresh.length, prevLen: prev.length, liveLen: liveEvents.length, dropped: older.length - fresh.length })
-        if (fresh.length > 0) {
-          isAtBottomRef.current = true
-          setAtBottom(true)
-          didPrepend = true
-          return [...fresh, ...prev]
-        }
-        return prev
+    // loadBefore folds the scrollback into the single store (deduping by id) and
+    // returns the count of genuinely-new rows. No local olderEvents list — the
+    // history just appears in `events` via the store view.
+    loadBefore(ids, new Date().toISOString(), 200).then((added: number) => {
+      log.info('filter-empty', 'backfill loadBefore returned', { added, liveLen: liveEvents.length })
+      if (added <= 0) return
+      isAtBottomRef.current = true
+      setAtBottom(true)
+      // The history lands as an async PREPEND into the store; Virtuoso's
+      // followOutput only follows bottom appends, and initialTopMostItemIndex
+      // applied at first mount (while data was empty). So without this the list
+      // stays parked at the top and a freshly-filtered view renders blank until a
+      // live event arrives. Scroll to the end once the prepend has committed.
+      requestAnimationFrame(() => {
+        try { virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end' }) }
+        catch (e) { log.debug('chat', 'post-backfill scrollToIndex skipped (virtuoso not mounted)', { e: String(e) }) }
       })
-      // The history lands as an async PREPEND; Virtuoso's followOutput only
-      // follows bottom appends, and initialTopMostItemIndex applied at first mount
-      // (while data was empty). So without this the list stays parked at the top
-      // and a freshly-filtered view renders blank until a live event arrives.
-      // Scroll to the end explicitly once the prepended items have committed.
-      if (didPrepend) {
-        requestAnimationFrame(() => {
-          try { virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end' }) }
-          catch (e) { log.debug('chat', 'post-backfill scrollToIndex skipped (virtuoso not mounted)', { e: String(e) }) }
-        })
-      }
     })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resolvedFilterIdKey, filterKey])
@@ -2323,7 +2291,7 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   // Refilter → bottom. Changing the filter swaps the whole rendered list out
   // from under Virtuoso; the scroll-position reset effect above (keyed on
-  // filterKey) clears olderEvents and the atBottom *state*, but it runs before
+  // filterKey) resets the atBottom *state*, but it runs before
   // userScrolledUpRef exists and never actually pins. So a refilter while at the
   // bottom could strand the user mid-list (Virtuoso keeps the old scrollTop
   // against new content) and, worse, a stale userScrolledUp=true would keep
@@ -3121,11 +3089,9 @@ function FleetChatInner({ shape }: { shape: any }) {
     const oldestTs = chatMessages[0]?.timestamp
     if (oldestTs) {
       const prevHeight = el.scrollHeight
-      const older = await loadBefore(loadBeforeAgents || [], oldestTs, 50)
-      if (older.length > 0) {
-        setOlderEvents(prev => [...older, ...prev])
-      }
-      // Maintain scroll position
+      // Older rows fold into the single store (deduped by id); the view re-renders
+      // off the store. Restore scroll position so the viewport doesn't jump.
+      await loadBefore(loadBeforeAgents || [], oldestTs, 50)
       requestAnimationFrame(() => {
         el.scrollTop = el.scrollHeight - prevHeight
       })
@@ -3161,10 +3127,8 @@ function FleetChatInner({ shape }: { shape: any }) {
     const oldestTs = chatMessages[0]?.timestamp
     if (!oldestTs) return
     loadingMore.current = true
-    loadBefore(loadBeforeAgents, oldestTs, 50).then((older: any[]) => {
-      if (older.length > 0) {
-        setOlderEvents((prev: any[]) => [...older, ...prev])
-      }
+    loadBefore(loadBeforeAgents, oldestTs, 50).then(() => {
+      // Older rows fold into the single store; the view re-renders off it.
       loadingMore.current = false
     })
   }, [chatLogEl, chatMessages, loadBeforeAgents])

@@ -20,6 +20,7 @@ import {
   sendMessage as _sendMessage,
   fetchHistory,
   loadBefore,
+  getEvents,
   matchesFilter,
   resolveFilter,
   respawnAgent as _respawnAgent,
@@ -234,7 +235,6 @@ export function useFleetTasks(frameId?: string): any[] {
  * Subscribe to fleet chat events, optionally filtered.
  * Accepts a DNF filter: string[][] (OR of ANDs), or null for all.
  */
-const MAX_LOCAL_EVENTS = 500
 
 export function useFleetEvents(dnfFilter?: [string, string][][] | null, frameId?: string): any[] {
   const [events, setEvents] = useState<any[]>([])
@@ -260,43 +260,31 @@ export function useFleetEvents(dnfFilter?: [string, string][][] | null, frameId?
       ensureInit().then(() => {
         if (cancelled || isPlaybackMode) return
 
-        // Don't seed from the global buffer — it's shared across all agents and
-        // loses per-agent messages when other agents are chatty. The DB fetch in
-        // FleetChatShape provides authoritative history; we just handle live events.
-
-        let pendingBatch: any[] = []
-        let batchTimer: ReturnType<typeof setTimeout> | null = null
-        const flushBatch = () => {
-          batchTimer = null
-          if (pendingBatch.length === 0) return
-          const batch = pendingBatch.splice(0)
-          setEvents(prev => {
-            const next = [...prev, ...batch]
-            return next.length > MAX_LOCAL_EVENTS ? next.slice(-MAX_LOCAL_EVENTS) : next
-          })
-        }
-
-        const refreshEvents = () => {
+        // Thin filtered VIEW over the single store (fleet-data holds live +
+        // history in one id-keyed buffer). On any 'messages' change we re-derive
+        // the filtered slice from the store rather than accumulating our own
+        // array — so there's no second list to drift from the store, and the
+        // backfilled history (upserted into the store) shows up immediately.
+        let refreshTimer: ReturnType<typeof setTimeout> | null = null
+        const refresh = () => {
+          refreshTimer = null
           if (cancelled) return
-          // Tab just became visible — flush any events accumulated while hidden
-          if (pendingBatch.length > 0) flushBatch()
+          setEvents(getEvents().filter((ev: any) => matchesFilter(filter, ev)))
         }
-        const [, cleanupGate] = visibilityGate(() => {}, refreshEvents)
+        refresh() // initial paint from the store (uncapped — has history + live)
 
-        const rawUnsub = subscribe('messages', filter, (event: any) => {
-          if (!event) {
-            if (pendingBatch.length > 0) flushBatch()
-            setEvents(prev => [...prev])
-          } else {
-            pendingBatch.push(event)
-            if (_tabVisible && !batchTimer) batchTimer = setTimeout(flushBatch, 16)
-          }
+        const rawUnsub = subscribe('messages', filter, () => {
+          if (_tabVisible) { if (!refreshTimer) refreshTimer = setTimeout(refresh, 16) }
+        })
+        // On tab re-show, drop any pending debounce and refresh now.
+        const [, cleanupGate] = visibilityGate(() => {}, () => {
+          if (refreshTimer !== null) { clearTimeout(refreshTimer); refreshTimer = null }
+          refresh()
         })
         liveUnsub = () => {
           rawUnsub()
           cleanupGate()
-          if (batchTimer !== null) { clearTimeout(batchTimer); batchTimer = null }
-          if (pendingBatch.length > 0) flushBatch()
+          if (refreshTimer !== null) { clearTimeout(refreshTimer); refreshTimer = null }
         }
       })
     }

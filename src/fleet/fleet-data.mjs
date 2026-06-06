@@ -16,7 +16,7 @@
 import { toolContentDetail } from './activity-render.mjs'
 import { setActiveMacros } from '../katexMacros'
 import { labelsForAgent, evalDnf } from '../../shared/fleet-labels.mjs'
-import { bindOptimisticEcho } from './optimistic-reconcile.mjs'
+import { makeEventStore } from './event-store.mjs'
 
 // Fleet is embedded in tlda — use same-origin (no separate server)
 const FLEET = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5176'
@@ -25,8 +25,14 @@ const FLEET_WS = typeof window !== 'undefined' ? window.location.origin.replace(
 // --- Stores ---
 let _agents = []
 let _tasks = []
-let _events = []          // chat + lifecycle (delegate, task_done) — capped at MAX_EVENTS
-const MAX_EVENTS = 150    // keep only the most recent N events in memory; older events fetched from DB on scroll
+// One id-keyed ordered buffer — the SINGLE source for chat + activity, fed by
+// two sources (live WS + DB history). upsert() dedups by id and binds the
+// optimistic tempId→dbId handoff, so there's no live/older split to merge (the
+// old two-list merge was what duplicated cards). No memory cap: the buffer
+// grows and the renderer windows the tail (fixed size in render, not memory).
+const _store = makeEventStore()
+// History fetched from the server is limited to this many rows per request.
+const HISTORY_PAGE = 150
 // Activity events are now stored in the events table (type='activity')
 // and flow through the same channel as chat — no separate store needed.
 let _reaperStatus = null     // latest reaper-status from daemon
@@ -109,8 +115,8 @@ export { resolveFilter }
 export function getReaperStatus() { return _reaperStatus }
 export function getAgents() { return _agents }
 export function getTasks() { return _tasks }
-export function getEvents() { return _events }
-export function getActivity(agentId) { return _events.filter(e => e._activity && e.agent === agentId) }
+export function getEvents() { return _store.all() }
+export function getActivity(agentId) { return _store.all().filter(e => e._activity && e.agent === agentId) }
 export function getHumanId() { return _humanId }
 export function getHumanName() { return _humanName }
 export function needsIdentity() { return !_humanId && _identifyPending }
@@ -144,7 +150,7 @@ export async function registerHuman(name) {
 // Returns { agentId: count } for unread messages from agents to the human
 export function getUnreadCountsForHuman() {
   const counts = {}
-  for (const ev of _events) {
+  for (const ev of _store.all()) {
     if (ev.type === 'chat' && !ev.read && ev.to === _humanId && ev.from) {
       counts[ev.from] = (counts[ev.from] || 0) + 1
     }
@@ -182,42 +188,28 @@ export async function sendMessage(to, text, opts = {}) {
 
 /** Inject an optimistic (locally-authored) event into the event list immediately. */
 export function injectOptimisticEvent(event) {
-  _events.push(event)
-  if (_events.length > MAX_EVENTS) _events = _events.slice(-MAX_EVENTS)
-  notify('messages', event)
+  const { event: ev } = _store.upsert(event)
+  notify('messages', ev)
 }
 
 /** Update fields on an optimistic event (e.g. mark _failed, or set _dbId on reconcile). */
 export function updateOptimisticEvent(tempId, updates) {
-  const ev = _events.find(e => e._tempId === tempId)
-  if (ev) { Object.assign(ev, updates); notify('messages', null) }
+  if (_store.patchByTempId(tempId, updates)) notify('messages', null)
 }
 
 export function updateEventById(dbId, updates) {
-  const ev = _events.find(e => e._dbId === dbId || e._dbId === Number(dbId))
-  if (!ev) return
-  if (updates.metadata && ev.metadata) {
-    Object.assign(ev.metadata, updates.metadata)
-    delete updates.metadata
-  }
-  Object.assign(ev, updates)
-  notify('messages', null)
+  if (_store.patchByDbId(dbId, updates)) notify('messages', null)
 }
 
 /** Link an optimistic event to its server-assigned ID (if SSE hasn't already done it). */
 export function reconcileOptimistic(tempId, serverEventId, newTo) {
-  const ev = _events.find(e => e._tempId === tempId)
-  // SSE handler may have already reconciled — only act if _tempId still present
-  if (ev) {
-    ev._dbId = serverEventId
-    // For broadcasts, the optimistic event was injected with `to: <label>` (e.g. "awake").
-    // On reconcile we rewrite it to the first concrete recipient so the line transitions
-    // from "Skip → awake" to "Skip → alice" — a delivery confirmation for the first agent.
-    // Broadcasts for the remaining recipients arrive as separate events with their own to_id.
-    if (newTo) ev.to = newTo
-    delete ev._tempId
-    notify('messages', null)
-  }
+  // For broadcasts, the optimistic event was injected with `to: <label>` (e.g. "awake").
+  // reconcile() rewrites it to the first concrete recipient so the line transitions
+  // from "Skip → awake" to "Skip → alice" — a delivery confirmation for the first agent.
+  // Broadcasts for the remaining recipients arrive as separate events with their own to_id.
+  // Idempotent with the WS-echo path: whichever binds the tempId→dbId first wins.
+  _store.reconcile(tempId, serverEventId, newTo)
+  notify('messages', null)
 }
 
 export function respawnAgent(id) {
@@ -354,27 +346,18 @@ export function connect() {
             return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_attention' || t === 'terminal_card' || t === 'plan_approval'
           })
           const newEvents = []
+          let boundAny = false
           for (const raw of missed) {
-            const event = convertChatEvent(raw)
             const eid = raw.id || raw._dbId
             if (eid && eid > _lastEventId) _lastEventId = eid
-            // Deduplicate by DB id only — never timestamp+from (not unique across
-            // events). The bindOptimisticEcho below reconciles the optimistic copy
-            // (which has no _dbId yet) by content, so this won't drop a real event.
-            if (eid != null && _events.some(e => e._dbId === eid)) continue
-            // Echo of a failed-then-recovered send arriving after reconnect. DB rows
-            // carry no _tempId, so bind by content (same sender + text) to the orphaned
-            // optimistic entry instead of appending a duplicate.
-            if (eid && event.type === 'chat' &&
-                bindOptimisticEcho(_events, eid, e => e.from === event.from && e.text === event.text)) {
-              notify('messages', null)
-              continue
-            }
-            _events.push(event)
-            newEvents.push(event)
+            // upsert dedups by id and binds the optimistic tempId→dbId handoff
+            // (the replayed row carries _tempId, persisted server-side). No
+            // content matching — binding is always by id, per the dedup rule.
+            const { event: ev, isNew } = _store.upsert(convertChatEvent(raw))
+            if (isNew) newEvents.push(ev); else boundAny = true
           }
-          if (_events.length > MAX_EVENTS) _events = _events.slice(-MAX_EVENTS)
           for (const ev of newEvents) notify('messages', ev)
+          if (boundAny && !newEvents.length) notify('messages', null)
         })
         .catch(e => console.warn('[fleet-data] history backfill failed:', e.message))
     }
@@ -449,28 +432,18 @@ export function connect() {
           setActiveMacros(data.macros)
           return
         }
-        const event = convertChatEvent(data)
-        // Dedup: skip if this event was already added (optimistic send or prior echo)
-        if (data.id && _events.some(e => e._dbId === data.id)) {
-          if (data.id > _lastEventId) _lastEventId = data.id
-          return
-        }
-        // If our WS reply was lost, the optimistic entry never got a _dbId. The echo
-        // carries the _tempId we sent — bind it to that entry instead of appending a dup.
-        if (data._tempId && bindOptimisticEcho(_events, data.id, e => e._tempId === data._tempId)) {
-          if (data.id > _lastEventId) _lastEventId = data.id
-          notify('messages', null)
-          return
-        }
-        _events.push(event)
-        if (_events.length > MAX_EVENTS) _events = _events.slice(-MAX_EVENTS)
+        // upsert dedups by db id and binds our optimistic send: if the echo
+        // carries the _tempId we sent (or the WS reply already set the _dbId),
+        // it rebinds the pending entry instead of appending a duplicate. All by
+        // id — no content matching.
+        const { event, isNew } = _store.upsert(convertChatEvent(data))
         if (data.id && data.id > _lastEventId) _lastEventId = data.id
         if (data.type === 'chat') {
           console.log(`[chat-recv] id=${data.id} from=${data.from_id||data.from} text=${(data.text||'').substring(0,30)}`)
         }
-        notify('messages', event)
+        notify('messages', isNew ? event : null)
       } else if (eventType === 'event-update') {
-        const ev = _events.find(e => e._dbId === data.id)
+        const ev = _store.get('db:' + data.id)
         if (ev) {
           if (data.text !== undefined) ev.text = data.text
           if (data.inline_attachments) ev._inlineAttachments = data.inline_attachments
@@ -498,7 +471,7 @@ export function connect() {
         }
       } else if (eventType === 'read-receipt') {
         const ids = new Set(data.event_ids || [])
-        for (const ev of _events) {
+        for (const ev of _store.all()) {
           if (ids.has(ev._dbId)) ev.read = true
         }
         if (ids.size) notify('messages', null)
@@ -533,7 +506,7 @@ export async function init() {
   // Fetch initial state + history in parallel.
   const [stateRes, historyRes] = await Promise.all([
     fetch(`${FLEET}/api/state`).then(r => r.json()).catch(e => { console.warn('[fleet-data] state fetch failed:', e.message); return {} }),
-    fetch(`${FLEET}/api/chat/history?limit=${MAX_EVENTS}`).then(r => r.json()).catch(e => { console.warn('[fleet-data] history fetch failed:', e.message); return { events: [] } }),
+    fetch(`${FLEET}/api/chat/history?limit=${HISTORY_PAGE}`).then(r => r.json()).catch(e => { console.warn('[fleet-data] history fetch failed:', e.message); return { events: [] } }),
   ])
 
   // Populate agents + tasks
@@ -547,7 +520,7 @@ export async function init() {
       return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_user' || t === 'terminal_assistant' || t === 'timer' || t === 'compacting' || t === 'activity' || t === 'terminal_attention' || t === 'terminal_card' || t === 'plan_approval' || t === 'kill-session' || t === 'interrupt'
     })
     .map(convertChatEvent)
-  _events = chatEvents
+  for (const ev of chatEvents) _store.upsert(ev)
   // Track highest event ID for reconnect catch-up
   for (const e of historyRes.events || []) {
     if (e.id && e.id > _lastEventId) _lastEventId = e.id
@@ -737,7 +710,12 @@ export async function loadBefore(agentIds = [], beforeTs, count = 100) {
     })
     .map(convertChatEvent)
 
-  return events.sort((a, b) =>
-    (a.timestamp || '') < (b.timestamp || '') ? -1 : 1
-  )
+  // Fold scrollback into the single store (it orders by timestamp, so these
+  // land before the live tail and dedup against anything already present).
+  // Return the count of genuinely-new rows so the caller knows whether to
+  // re-pin scroll after a prepend.
+  let added = 0
+  for (const ev of events) { if (_store.upsert(ev).isNew) added++ }
+  if (added) notify('messages', null)
+  return added
 }
