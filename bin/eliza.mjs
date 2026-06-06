@@ -1125,7 +1125,7 @@ const managerEscalationCooldowns = new Map()
 // --- Handoff automation ---
 // Matches imperative handoff commands anywhere in a message (not just at start).
 // Skip often says "I'm done with you let's hand this off" — the phrase appears mid-sentence.
-const HANDOFF_PATTERN = /(?:(?:I\s+(?:want|wanna|need)\s+to\s+)?hand\s+(?:this\s+)?off|do\s+(?:a\s+)?handoff|let'?s\s+(?:(?:do\s+(?:a\s+)?)?handoff|hand\s+(?:this\s+)?off)|time\s+(?:for\s+(?:a\s+)?)?handoff)\b/i
+const HANDOFF_PATTERN = /(?:(?:I\s+(?:want|wanna|need)\s+to\s+)?hand\s+(?:this\s+)?off|do\s+(?:a\s+)?handoff|direct\s+handoff|let'?s\s+(?:(?:do\s+(?:a\s+)?)?handoff|hand\s+(?:this\s+)?off)|time\s+(?:for\s+(?:a\s+)?)?handoff)\b/i
 const handoffCooldowns = new Map()
 const HANDOFF_COOLDOWN_MS = 120_000
 
@@ -1134,6 +1134,48 @@ const HANDOFF_COOLDOWN_MS = 120_000
 // The QA agent reads the target agent's thread, evaluates, and sends feedback directly.
 const QA_PATTERN = /\bget\s+qa\b/i
 const QA_AGENT_ID = 'fleet:deepseek-qa'
+
+// ---- Scheduled actions: countdown + cancel ----
+// Any automatic, irreversible Eliza action (handoff, manager escalation, QA
+// dispatch) is announced with a one-shot countdown and a ~5s grace window
+// before it executes. "Eliza cancel" / "Eliza don't do that" aborts anything
+// still pending. Nudges are deliberately NOT wrapped — they're already gated
+// behind Skip's explicit "say it" release, so a countdown would double-gate them.
+const COUNTDOWN_MS = 5_000
+const ELIZA_CANCEL_PATTERN = /\b(?:cancel|don'?t\s+do\s+that|do\s+not\s+do\s+that)\b/i
+let _scheduledSeq = 0
+const pendingActions = new Map() // id → { label, timer }
+
+// Announce "<lead> in 5…4…3…2…1" once, wait ~delayMs, then run fn unless
+// cancelled in the window. Returns the action id.
+function scheduleAction(label, lead, fn, delayMs = COUNTDOWN_MS) {
+  const id = ++_scheduledSeq
+  const secs = Math.max(1, Math.round(delayMs / 1000))
+  const ticks = Array.from({ length: secs }, (_, i) => secs - i).join('…')
+  sendChat(OWNER_ID, `${lead} in ${ticks}\n_(say “Eliza cancel” to stop)_`)
+  // Best-effort visual countdown via the MCP-timer widget. The merged server
+  // has no timer-set handler yet, so this is a no-op there until that bridge is
+  // restored — harmless (fire-and-forget, no reply awaited).
+  send({ type: 'timer-set', agent: AGENT_ID, message: lead, fire_at: new Date(Date.now() + delayMs).toISOString() })
+  const timer = setTimeout(async () => {
+    pendingActions.delete(id)
+    try { await fn() } catch (e) { console.error(`[eliza] scheduled "${label}" failed: ${e.message}`) }
+  }, delayMs)
+  pendingActions.set(id, { label, timer })
+  logDecision(OWNER_ID, 'scheduled-action', label, { delayMs }, lead)
+  return id
+}
+
+// Abort every pending scheduled action. Returns true if anything was cancelled.
+function cancelScheduledActions(reason = 'skip-cancel') {
+  if (pendingActions.size === 0) return false
+  const labels = []
+  for (const [, a] of pendingActions) { clearTimeout(a.timer); labels.push(a.label) }
+  pendingActions.clear()
+  sendChat(OWNER_ID, `🚫 Cancelled: ${labels.join(', ')}.`)
+  logDecision(OWNER_ID, 'scheduled-action-cancel', reason, { labels }, reason)
+  return true
+}
 
 async function handleQaDispatch(targetIds, instruction, filterDesc) {
   const targets = Array.isArray(targetIds) ? targetIds : [targetIds]
@@ -1363,10 +1405,11 @@ async function handleHandoff(agentId, triggerText) {
   const agentName = await resolveAgentName(agentId)
   console.log(`[eliza] handoff triggered for ${agentName} (${agentId})`)
 
-  // Two handoff types. "directly" in the statement → direct handoff: no briefer,
-  // one rotation. The current worker is promoted to manager (day) and a fresh
-  // worker enters at dawn. Otherwise → the briefing path (two rotations) below.
-  if (/\bdirectly\b/i.test(triggerText || '')) {
+  // Two handoff types. "direct"/"directly" in the statement → direct handoff:
+  // no briefer, one rotation. The current worker is promoted to manager (day)
+  // and a fresh worker enters at dawn. Otherwise → the briefing path (two
+  // rotations) below. ("direct handoff" and "hand off directly" both qualify.)
+  if (/\bdirect(?:ly)?\b/i.test(triggerText || '')) {
     sendChat(OWNER_ID, `Direct handoff from **${agentName}** — promoting it to manager and bringing in a fresh worker.`)
     sendChat(agentId, `⚠️ Skip is handing your work off directly. You're being promoted to manager; a fresh worker is coming in.`)
     const agentCwd = await resolveAgentCwd(agentId)
@@ -1722,16 +1765,30 @@ function handleMessage(msg) {
       return !/(?:the|an?|of|use|using)\s*$/i.test(before)
     }
 
+    // Eliza cancel — abort any pending countdown/scheduled action. Accept
+    // "Eliza cancel" / "Eliza don't do that" (address before the phrase), or a
+    // bare cancel phrase sent directly to Eliza. Only consumes the message if
+    // something was actually pending; otherwise falls through untouched.
+    if (from_id === OWNER_ID) {
+      const cancelAddressed = to_id === AGENT_ID
+        ? ELIZA_CANCEL_PATTERN.test(text)
+        : elizaBefore(ELIZA_CANCEL_PATTERN)
+      if (cancelAddressed && cancelScheduledActions('skip-cancel')) return
+    }
+
     // Manager escalation — "eliza" must appear before the escalation phrase
     if (elizaBefore(MANAGER_ESCALATION_PATTERN) && from_id === OWNER_ID && to_id && to_id !== AGENT_ID) {
       const mode = MANAGER_MODE_1_PATTERN.test(text) ? 'talk-to-skip' : 'set-them-straight'
-      handleManagerEscalation(to_id, text, mode).catch(e => console.error('[eliza] manager escalation error:', e.message))
+      scheduleAction('manager-escalation', 'Escalating to a manager',
+        () => handleManagerEscalation(to_id, text, mode).catch(e => console.error('[eliza] manager escalation error:', e.message)))
       return
     }
 
     // Handoff — "eliza" must appear before the handoff phrase
     if (elizaBefore(HANDOFF_PATTERN) && from_id === OWNER_ID && to_id && to_id !== AGENT_ID) {
-      handleHandoff(to_id, text).catch(e => console.error('[eliza] handoff error:', e.message))
+      const direct = /\bdirect(?:ly)?\b/i.test(text)
+      scheduleAction(direct ? 'handoff-direct' : 'handoff', direct ? 'Direct handoff' : 'Handing off',
+        () => handleHandoff(to_id, text).catch(e => console.error('[eliza] handoff error:', e.message)))
       return
     }
 
@@ -1742,7 +1799,8 @@ function handleMessage(msg) {
       // Target is whoever Skip is chatting with (to_id), or if broadcast, resolve from filter
       const target = (to_id && to_id !== AGENT_ID) ? to_id : null
       if (target) {
-        handleQaDispatch(target, instruction).catch(e => console.error('[eliza] QA dispatch error:', e.message))
+        scheduleAction('qa-dispatch', 'Dispatching QA',
+          () => handleQaDispatch(target, instruction).catch(e => console.error('[eliza] QA dispatch error:', e.message)))
       } else {
         sendChat(OWNER_ID, `QA dispatch needs a target — say it in a chat with the agent you want reviewed.`)
       }
