@@ -502,7 +502,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     if (result === null) return
     fleetStore?.markDead(agent.id)
     const killEvent = { type: 'kill-session', from: SERVER_OWNER_ID, to: agent.id, text: `Killed ${agent.friendly_name || agent.id}` }
-    fleetStore?.share(killEvent)
+    await fleetStore?.share(killEvent)
     broadcastEvent('fleet-event', killEvent)
     broadcastState()
     res.json({ ok: true, agent: agent.friendly_name || agent.id, ...result })
@@ -936,7 +936,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   // The involuntary equivalent is `terminal_attention`, fired by the
   // attention scanner when the watcher detects a stuck agent without the
   // agent's involvement. They render the same UI; only the trigger differs.
-  router.post('/api/terminal-card', (req, res) => {
+  router.post('/api/terminal-card', async (req, res) => {
     const { from: rawFrom, reason } = req.body || {}
     if (!rawFrom) { res.status(400).json({ error: 'missing "from"' }); return }
     const agent = fleetStore?.findAgent(rawFrom)
@@ -951,7 +951,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     }
     const label = agent.friendly_name || agent.id.slice(0, 12)
     const text = reason ? `${label}: ${reason}` : `${label}: terminal requested`
-    const event = fleetStore?.share({
+    const event = await fleetStore?.share({
       type: 'terminal_card',
       from: agent.id,
       to: SERVER_OWNER_ID,

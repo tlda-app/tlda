@@ -1165,7 +1165,7 @@ app.post('/api/education/dismiss/:agentId', (req, res) => {
 })
 
 // Post a single merged activity card for one or more dismissed skills.
-function emitSkillDismissCard(agentId, dismissed, reason) {
+async function emitSkillDismissCard(agentId, dismissed, reason) {
   if (!fleetStore) return
   const agent = fleetStore.getAgent?.(agentId)
   const label = agent?.friendly_name || agentId.slice(0, 12)
@@ -1173,7 +1173,7 @@ function emitSkillDismissCard(agentId, dismissed, reason) {
   const ctx = dismissed.find(d => d.trigger)?.trigger
   const text = `⊘ dismissed ${names}${ctx ? ` on ${ctx}` : ''} — "${reason}"`
   try {
-    fleetStore.share({
+    await fleetStore.share({
       type: 'activity',
       from: agentId,
       to: agentId,
@@ -1364,7 +1364,7 @@ app.post('/api/interrupt', requireRead, async (req, res) => {
   try {
     const result = await sendRpc(route.machine_id, 'interrupt', { agent_id: agent.id, tmux_session: agent.tmux_session })
     const interruptEvent = { type: 'interrupt', from: SERVER_OWNER_ID, to: agent.id, text: `Interrupted ${agent.friendly_name || agent.id}` }
-    fleetStore.share(interruptEvent)
+    await fleetStore.share(interruptEvent)
     broadcastState()
     res.json({ ok: true, agent: agent.friendly_name || agent.id, ...result })
   } catch (e) { res.status(500).json({ error: e.message }) }
@@ -1383,7 +1383,7 @@ app.post('/api/kill-session', requireRead, async (req, res) => {
     const result = await sendRpc(route.machine_id, 'kill-session', { agent_id: agent.id, tmux_session: agent.tmux_session })
     fleetStore.markDead(agent.id)
     const killEvent = { type: 'kill-session', from: SERVER_OWNER_ID, to: agent.id, text: `Killed ${agent.friendly_name || agent.id}` }
-    fleetStore.share(killEvent)
+    await fleetStore.share(killEvent)
     broadcastState()
     res.json({ ok: true, agent: agent.friendly_name || agent.id, ...result })
   } catch (e) { res.status(500).json({ error: e.message }) }
@@ -1946,10 +1946,11 @@ server.on('upgrade', async (req, socket, head) => {
         remoteAddr,
         remotePort,
       })
-      ws.on('message', (raw) => {
+      ws.on('message', async (raw) => {
         let msg
         try { msg = JSON.parse(raw.toString()) } catch { return }
-        handleDaemonWsMessage(ws, msg)
+        try { await handleDaemonWsMessage(ws, msg) }
+        catch (e) { console.error('[daemon-ws] handler error:', e?.message) }
       })
       ws.on('close', () => {
         if (ws._machineId && daemonConnections.get(ws._machineId) === ws) {
@@ -2851,7 +2852,7 @@ async function handleFleetWsMessage(ws, msg) {
       const result = await sendRpc(route.machine_id, 'kill-session', { agent_id: agent.id, tmux_session: agent.tmux_session })
       fleetStore.markDead(agent.id)
       const killEvent = { type: 'kill-session', from: SERVER_OWNER_ID, to: agent.id, text: `Killed ${agent.friendly_name || agent.id}` }
-      fleetStore.share(killEvent)
+      await fleetStore.share(killEvent)
       broadcastState()
       reply({ ok: true, agent: agent.friendly_name || agent.id, ...result })
     } catch (e) { error(e.message) }
@@ -3656,7 +3657,7 @@ function broadcastDaemonVersionCommitted(projectName, hash) {
   }
 }
 
-function handleDaemonWsMessage(ws, msg) {
+async function handleDaemonWsMessage(ws, msg) {
   const { type } = msg
 
   if (type === 'daemon-hello') {
@@ -3778,7 +3779,7 @@ function handleDaemonWsMessage(ws, msg) {
     touchActivity(agent_id)
     if (tool === '_usage') return // usage stats don't need DB storage
     try {
-      fleetStore.share({
+      await fleetStore.share({
         type: 'activity',
         from: agent_id,
         to: agent_id,
@@ -3808,7 +3809,7 @@ function handleDaemonWsMessage(ws, msg) {
     try {
       const existing = _terminalDedupStmt.get(ts, from || SERVER_OWNER_ID, agent_id, text.slice(0, 500))
       if (existing) return // duplicate, swallow silently
-      fleetStore.share({
+      await fleetStore.share({
         type: 'chat',
         from: from || SERVER_OWNER_ID,
         to: agent_id,
@@ -3854,7 +3855,7 @@ function handleDaemonWsMessage(ws, msg) {
     try {
       const agent = fleetStore.findAgent(agent_id)
       const machine_id = agent?.machine_id
-      const event = fleetStore.share({
+      const event = await fleetStore.share({
         type: 'plan_approval',
         from: agent_id,
         to: SERVER_OWNER_ID,
@@ -3890,7 +3891,7 @@ function handleDaemonWsMessage(ws, msg) {
     globalThis._termAttentionDedup.set(dedupKey, now)
     const agent = fleetStore.getAgent(agent_id)
     const label = agent?.friendly_name || agent_id.slice(0, 12)
-    const event = fleetStore.share({
+    const event = await fleetStore.share({
       type: 'terminal_attention',
       from: agent_id,
       to: SERVER_OWNER_ID,

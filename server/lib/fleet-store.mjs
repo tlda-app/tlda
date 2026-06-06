@@ -16,6 +16,7 @@
  */
 
 import Database from 'better-sqlite3';
+import { Worker } from 'node:worker_threads';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -44,11 +45,53 @@ export class FleetStore {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
     this.db = new Database(dbPath);
-    this.db.pragma('journal_mode = DELETE');
-    this.db.pragma('synchronous = OFF');
+    // WAL (set here + by the writer worker; it's a persistent property of the
+    // file): lets THIS main connection READ concurrently while the worker holds
+    // the write lock during a slow FTS merge. NORMAL is durable across an app
+    // crash — only a power loss can lose the last txn, never corrupts.
+    this.db.pragma('journal_mode = WAL');
+    this.db.pragma('synchronous = NORMAL');
     this._createTables();
     this._prepareStatements();
     this._listeners = []; // SSE broadcast callbacks
+
+    // The writer worker owns the connection that writes the high-frequency
+    // `events` rows (every activity card / chat). better-sqlite3 is synchronous,
+    // so a ~1.5s FTS-merge on an events INSERT would freeze THIS thread's event
+    // loop — dropping fleet chat/health — if it ran here. On the worker it never
+    // touches the loop. (Lower-frequency agent/lineage writes still run
+    // synchronously on this connection; making the worker the SOLE writer for
+    // those too is a flagged follow-up.)
+    this._writeSeq = 0;
+    this._writeWaiters = new Map();
+    this._worker = new Worker(new URL('./db-writer.worker.mjs', import.meta.url), { workerData: { dbPath } });
+    this._worker.on('message', (m) => {
+      if (m && m.ready) return;
+      if (m.id == null) { if (m.error) console.error('[db-writer] fire-and-forget failed:', m.error, m.sql); return; }
+      const w = this._writeWaiters.get(m.id);
+      if (!w) return;
+      this._writeWaiters.delete(m.id);
+      m.error ? w.reject(new Error(m.error)) : w.resolve(m.result);
+    });
+    this._worker.on('error', (e) => console.error('[db-writer] worker crashed:', e));
+  }
+
+  // Fire-and-forget write on the worker (no result awaited). Accepts a prepared
+  // statement (its `.source` SQL is reused) or a raw SQL string.
+  _w(stmtOrSql, params) {
+    const sql = typeof stmtOrSql === 'string' ? stmtOrSql : stmtOrSql.source;
+    this._worker.postMessage({ kind: 'run', sql, params });
+  }
+
+  // Await a write on the worker, resolving to { lastInsertRowid, changes }.
+  // Used where the caller needs the row id (share) or the constraint error.
+  _wAwait(stmtOrSql, params) {
+    const sql = typeof stmtOrSql === 'string' ? stmtOrSql : stmtOrSql.source;
+    const id = ++this._writeSeq;
+    return new Promise((resolve, reject) => {
+      this._writeWaiters.set(id, { resolve, reject });
+      this._worker.postMessage({ id, kind: 'run', sql, params });
+    });
   }
 
   _createTables() {
@@ -501,12 +544,13 @@ export class FleetStore {
    * @param {boolean} [event.unread] - If true, creates an unread entry for the recipient
    * @returns {Object} The inserted event with its ID
    */
-  share(event) {
+  async share(event) {
     const ts = event.timestamp || new Date().toISOString();
     const meta = event.metadata ? JSON.stringify(event.metadata) : null;
 
-    const _t0 = Date.now();
-    const result = this._insertEvent.run(
+    // The events INSERT runs on the writer worker: a slow FTS merge here never
+    // freezes the main event loop. We await it because we need the real row id.
+    const result = await this._wAwait(this._insertEvent, [
       event.type,
       ts,
       event.from || null,
@@ -514,20 +558,20 @@ export class FleetStore {
       event.text || null,
       meta,
       event.taskId || null,
-      event.agentId || null
-    );
+      event.agentId || null,
+    ]);
 
-    const _dt = Date.now() - _t0; if (_dt > 100) process.stderr.write(`[share-slow] ${_dt}ms type=${event.type}\n`);
     const eventId = result.lastInsertRowid;
 
-    // Track unread if this is a message to someone
+    // Track unread if this is a message to someone (fire-and-forget on the
+    // worker — same writer, so it's ordered after the event insert above).
     if (event.unread !== false && event.to && event.type === 'chat') {
-      this._insertUnread.run(eventId, event.to);
+      this._w(this._insertUnread, [eventId, event.to]);
       // Also mark unread for CC recipients
       const cc = event.metadata?.cc;
       if (cc && Array.isArray(cc)) {
         for (const ccId of cc) {
-          this._insertUnread.run(eventId, ccId);
+          this._w(this._insertUnread, [eventId, ccId]);
         }
       }
     }
@@ -1133,12 +1177,14 @@ export class FleetStore {
   resolveWiretaps(senderId, recipientId, eventType) {
     const taps = this.getWiretaps();
     if (taps.length === 0) return [];
-    const agents = this.getAllAgents();
     const matched = new Set();
 
-    // Build label sets for sender and recipient
-    const senderLabels = this._agentLabels(senderId, agents);
-    const recipientLabels = this._agentLabels(recipientId, agents);
+    // Only the sender's and recipient's labels matter here. Look those two up
+    // directly (indexed single-row) instead of hydrating ALL agents — this runs
+    // on the main thread on EVERY event, and getAllAgents() over ~1300 agents
+    // was ~230ms/event, the dominant per-event main-loop stall.
+    const senderLabels = this._agentLabelsById(senderId);
+    const recipientLabels = this._agentLabelsById(recipientId);
 
     for (const tap of taps) {
       if (tap.agent_id === senderId || tap.agent_id === recipientId) continue;
@@ -1157,8 +1203,9 @@ export class FleetStore {
     return [...matched];
   }
 
-  _agentLabels(agentId, agents) {
-    const agent = agents.find(a => a.id === agentId);
+  _agentLabelsById(agentId) {
+    if (!agentId) return [];
+    const agent = this.getAgent(agentId);
     if (!agent) return [agentId];
     return [...(agent.labels || []), agent.friendly_name, agent.id].filter(Boolean);
   }
