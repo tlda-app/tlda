@@ -1111,36 +1111,75 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
               }}>{backingSyncState === 'synced' ? '⇄' : backingSyncState === 'pushing' ? '⇄' : '⇉'}</span>}
               {useVim ? `-- ${vimMode.toUpperCase()} --` : ''}
             </span>
-            <span className="math-note-colors" style={{
-              display: 'flex',
-              gap: '2px',
-              opacity: 0.3,
-              transition: 'opacity 0.15s',
-            }}>
-              {['light-blue', 'light-green', 'yellow', 'violet', 'orange', 'light-red', 'grey'].map(c => (
-                <span
-                  key={c}
-                  onPointerDown={(e) => {
-                    if (editor.getInstanceState().isPenMode && e.pointerType === 'touch') return
-                    e.stopPropagation()
-                    editor.updateShape({
-                      id: shape.id,
-                      type: 'math-note' as any,
-                      props: { color: c },
-                    })
-                  }}
-                  style={{
-                    width: '8px',
-                    height: '8px',
-                    borderRadius: '50%',
-                    backgroundColor: NOTE_COLORS[c],
-                    border: shape.props.color === c ? '1.5px solid rgba(0,0,0,0.5)' : '1px solid rgba(0,0,0,0.12)',
-                    cursor: 'pointer',
-                  }}
-                />
-              ))}
+            <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              {(shape.props.tabs as string[] | undefined)?.length === 3 && (
+                <span className="math-note-fmt" style={{
+                  display: 'flex',
+                  gap: '6px',
+                  opacity: 0.3,
+                  transition: 'opacity 0.15s',
+                }}>
+                  {['tex', 'md', 'outline'].map(label => {
+                    const idx = label === 'tex' ? 1 : label === 'md' ? 0 : 2
+                    const isActive = (shape.props.activeTab as number | undefined) === idx
+                    return (
+                      <span
+                        key={label}
+                        onPointerDown={(e) => {
+                          if (editor.getInstanceState().isPenMode && e.pointerType === 'touch') return
+                          e.stopPropagation()
+                          const tabsArr = shape.props.tabs as string[]
+                          if (!tabsArr?.[idx]) return
+                          editor.updateShape({
+                            id: shape.id,
+                            type: 'math-note' as any,
+                            props: { activeTab: idx, text: tabsArr[idx] },
+                          })
+                        }}
+                        style={{
+                          cursor: 'pointer',
+                          fontWeight: isActive ? 700 : 400,
+                          opacity: isActive ? 1 : 0.6,
+                          borderBottom: isActive ? '1px solid currentColor' : 'none',
+                        }}
+                      >
+                        {label}
+                      </span>
+                    )
+                  })}
+                </span>
+              )}
+              <span className="math-note-colors" style={{
+                display: 'flex',
+                gap: '2px',
+                opacity: 0.3,
+                transition: 'opacity 0.15s',
+              }}>
+                {['light-blue', 'light-green', 'yellow', 'violet', 'orange', 'light-red', 'grey'].map(c => (
+                  <span
+                    key={c}
+                    onPointerDown={(e) => {
+                      if (editor.getInstanceState().isPenMode && e.pointerType === 'touch') return
+                      e.stopPropagation()
+                      editor.updateShape({
+                        id: shape.id,
+                        type: 'math-note' as any,
+                        props: { color: c },
+                      })
+                    }}
+                    style={{
+                      width: '8px',
+                      height: '8px',
+                      borderRadius: '50%',
+                      backgroundColor: NOTE_COLORS[c],
+                      border: shape.props.color === c ? '1.5px solid rgba(0,0,0,0.5)' : '1px solid rgba(0,0,0,0.12)',
+                      cursor: 'pointer',
+                    }}
+                  />
+                ))}
+              </span>
             </span>
-            <style>{`.math-note-statusbar:hover .math-note-colors { opacity: 1 !important; }`}</style>
+            <style>{`.math-note-statusbar:hover .math-note-colors, .math-note-statusbar:hover .math-note-fmt { opacity: 1 !important; }`}</style>
           </div>
         </div>
       )

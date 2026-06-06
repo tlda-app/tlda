@@ -406,6 +406,8 @@ async function handleOutlineSelection(
   if (file) qs.set('file', file)
 
   let markdown = ''
+  let texView = ''
+  let mdView = ''
   let backingFile = ''
   let slug = ''
   try {
@@ -416,6 +418,8 @@ async function handleOutlineSelection(
     if (!resp.ok) { log.warn('outline-hl', 'outline endpoint non-ok', { status: resp.status }); return }
     const data = await resp.json()
     markdown = data?.markdown || ''
+    texView = data?.tex || ''
+    mdView = data?.md || ''
     backingFile = data?.backingFile || ''
     slug = data?.slug || ''
   } catch (e: any) {
@@ -455,7 +459,9 @@ async function handleOutlineSelection(
         // Handle for the token-ops tools: outline_open(doc, slug) / outline_apply.
         ...(slug ? { outlineSlug: slug } : {}),
       },
-      props: { w: 460, h: 200, text: markdown, color: 'light-violet', autoSize: true, ...(backingFile ? { backingFile } : {}) },
+      // tabs are [md, tex, outline] (the order MathNoteShape's switch expects);
+      // default to the outline tab since that's what this slot is for.
+      props: { w: 460, h: 200, text: markdown, color: 'light-violet', autoSize: true, tabs: [mdView, texView, markdown], activeTab: 2, ...(backingFile ? { backingFile } : {}) },
     } as any)
   } catch (e: any) {
     log.error('outline-hl', 'createShape threw', { error: String(e?.message || e) })
