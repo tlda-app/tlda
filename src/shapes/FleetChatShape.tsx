@@ -1067,6 +1067,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Reset older events and scroll state when filter changes
   const filterKey = JSON.stringify(filter)
   useEffect(() => {
+    log.info('filter-empty', 'clear olderEvents (filterKey changed)', { filterKey })
     setOlderEvents([])
     isAtBottomRef.current = true
     setAtBottom(true)
@@ -1131,54 +1132,79 @@ function FleetChatInner({ shape }: { shape: any }) {
   // The global event buffer (MAX_EVENTS=150) is shared across all agents.
   // A quiet agent's messages may not be in the buffer at all, making the
   // chat appear empty. Fix: always fetch agent-specific history from the DB.
+  const virtuosoRef = useRef<VirtuosoHandle | null>(null)
+
+  // Resolve the filter to its fleet-id set ONCE per (filter, agents) change, as a
+  // stable sorted string. The backfill effect below depends on THIS string, not
+  // the churning `agents` array — so it only re-fires when the resolved id-set
+  // actually changes, not on every agent heartbeat (the 6-panels × 600-agents
+  // re-fire that was pegging the browser at 112% CPU).
+  const resolvedFilterIdKey = useMemo(() => {
+    if (!dnfFilter || dnfFilter.length === 0) return ''
+    return [...resolveFilter(dnfFilter)].sort().join(',')
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterKey, agents])
+
   const historyLoadedRef = useRef<string | null>(null)
   useEffect(() => {
     if (!dnfFilter || dnfFilter.length === 0) return
-    // Resolve the filter to the SET of fleet ids using the same logic the live
-    // display uses (resolveFilter → agent label matching, incl. lineage
-    // `name:phase` colon labels). One resolver for live and history. The server
-    // then expands each id to its lineage's full incarnation set.
-    const ids = [...resolveFilter(dnfFilter)]
-    if (ids.length === 0) {
-      // agents not populated yet (async init): the effect re-runs when `agents`
-      // arrives. agents loaded but nothing matched: surface it (no silent
-      // fallback) so an empty scrollback is diagnosable instead of mysterious.
+    if (!resolvedFilterIdKey) {
+      // Filter set but resolved to nothing. Once agents are loaded this is a
+      // genuine no-match; surface it (no silent fallback). Before agents load the
+      // memo re-runs and this effect re-fires when the id-set appears.
       if (agents.length > 0) {
         log.warn('chat', 'filter resolved to no fleet ids; no history will load', { filter: dnfFilter })
       }
       return
     }
-    const loadKey = `${filterKey}:${ids.join(',')}`
-    if (historyLoadedRef.current === loadKey) return
+    const ids = resolvedFilterIdKey.split(',')
+    const loadKey = `${filterKey}:${resolvedFilterIdKey}`
+    if (historyLoadedRef.current === loadKey) {
+      log.info('filter-empty', 'backfill SKIPPED (guard hit — already loaded this filter)', { loadKey, olderLen: olderEvents.length, liveLen: liveEvents.length })
+      return
+    }
     historyLoadedRef.current = loadKey
+    log.info('filter-empty', 'backfill loading', { loadKey, idCount: ids.length })
     loadBefore(ids, new Date().toISOString(), 200).then((older: any[]) => {
-      if (older.length > 0) {
-        // Deduplicate against live events already in the buffer.
-        // convertChatEvent stores DB id in _dbId, not id.
-        setOlderEvents(prev => {
-          const existingIds = new Set([
-            ...prev.map((e: any) => e._dbId || e._tempId),
-            ...liveEvents.map((e: any) => e._dbId || e._tempId),
-          ])
-          const fresh = older.filter((e: any) => !existingIds.has(e._dbId))
-          if (fresh.length > 0) {
-            isAtBottomRef.current = true
-            setAtBottom(true)
-            return [...fresh, ...prev]
-          }
-          return prev
+      log.info('filter-empty', 'backfill loadBefore returned', { older: older.length })
+      if (older.length === 0) return
+      let didPrepend = false
+      // Deduplicate against live events already in the buffer.
+      // convertChatEvent stores DB id in _dbId, not id.
+      setOlderEvents(prev => {
+        const existingIds = new Set([
+          ...prev.map((e: any) => e._dbId || e._tempId),
+          ...liveEvents.map((e: any) => e._dbId || e._tempId),
+        ])
+        const fresh = older.filter((e: any) => !existingIds.has(e._dbId))
+        log.info('filter-empty', 'backfill dedup', { older: older.length, fresh: fresh.length, prevLen: prev.length, liveLen: liveEvents.length, dropped: older.length - fresh.length })
+        if (fresh.length > 0) {
+          isAtBottomRef.current = true
+          setAtBottom(true)
+          didPrepend = true
+          return [...fresh, ...prev]
+        }
+        return prev
+      })
+      // The history lands as an async PREPEND; Virtuoso's followOutput only
+      // follows bottom appends, and initialTopMostItemIndex applied at first mount
+      // (while data was empty). So without this the list stays parked at the top
+      // and a freshly-filtered view renders blank until a live event arrives.
+      // Scroll to the end explicitly once the prepended items have committed.
+      if (didPrepend) {
+        requestAnimationFrame(() => {
+          try { virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end' }) } catch {}
         })
       }
     })
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dnfFilter, filterKey, agents])
+  }, [resolvedFilterIdKey, filterKey])
 
 
   const chatLogRef = useRef<HTMLDivElement>(null)
   // chatLogEl tracks the scroller element in state so effects can attach
   // listeners as soon as Virtuoso mounts its scroll container.
   const [chatLogEl, setChatLogEl] = useState<HTMLDivElement | null>(null)
-  const virtuosoRef = useRef<VirtuosoHandle | null>(null)
 
   // Stable Scroller component for Virtuoso. Owns the .fleet-chat-log class
   // (so CanvasClipPanel's wheel reroute keeps targeting it) and captures the
@@ -1278,6 +1304,11 @@ function FleetChatInner({ shape }: { shape: any }) {
         return ta - tb
       })
 
+    if (events.length > 0 && sorted.length === 0) {
+      const types: Record<string, number> = {}
+      for (const e of events as any[]) { const t = e.type || '(none)'; types[t] = (types[t] || 0) + 1 }
+      log.info('filter-empty', 'chatMessages DROPPED ALL (type filter)', { events: events.length, types })
+    }
     return sorted
   }, [events])
 
@@ -1548,8 +1579,11 @@ function FleetChatInner({ shape }: { shape: any }) {
     if (firstQueuedIdx > 0) {
       items[firstQueuedIdx - 1] = { ...items[firstQueuedIdx - 1], _divider: true }
     }
+    if (chatMessages.length > 0 && items.length === 0) {
+      log.info('filter-empty', 'allItems EMPTY despite chatMessages', { chatMessages: chatMessages.length, rawItems: rawItems.length })
+    }
     return items
-  }, [rawItems])
+  }, [rawItems, chatMessages])
 
   // Virtual scroll — only mount DOM nodes for visible messages.
   // Handle clicks on ref-chip annotations → navigate to canvas bounds
