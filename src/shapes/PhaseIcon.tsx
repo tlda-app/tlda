@@ -49,5 +49,23 @@ export function PhaseIcon({ phase }: { phase: string | null }) {
       </svg>
     )
   }
+  if (phase === 'night') {
+    // crescent moon
+    return (
+      <svg width={size} height={size} viewBox="0 0 16 16" style={style}>
+        <path d="M12 3 a5.5 5.5 0 1 0 0 11 a4.3 4.3 0 0 1 0 -11 Z" stroke="currentColor" fill="none" strokeWidth={1.5} strokeLinejoin="round" />
+      </svg>
+    )
+  }
+  if (phase === 'zombie') {
+    // skull — out-of-rotation, manually resurrected
+    return (
+      <svg width={size} height={size} viewBox="0 0 16 16" style={style}>
+        <path d="M3.5 7.6 a4.5 4.5 0 0 1 9 0 v1.6 a1.5 1.5 0 0 1 -1.5 1.5 v1.3 h-1 v-1.3 h-1 v1.3 h-1 v-1.3 h-1 v1.3 h-1 v-1.3 a1.5 1.5 0 0 1 -1.5 -1.5 Z" stroke="currentColor" fill="none" strokeWidth={1.2} strokeLinejoin="round" />
+        <circle cx="6" cy="7.4" r="1.05" fill="currentColor" stroke="none" />
+        <circle cx="10" cy="7.4" r="1.05" fill="currentColor" stroke="none" />
+      </svg>
+    )
+  }
   return null
 }

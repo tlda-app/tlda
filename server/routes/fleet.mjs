@@ -189,9 +189,9 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   router.post('/api/agents/:id/resurrect', (req, res) => {
     if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
     try {
-      fleetStore.db.prepare('UPDATE agents SET dead = 0 WHERE id = ?').run(req.params.id)
+      const result = fleetStore.resurrectAsZombie(req.params.id)
       broadcastState()
-      res.json({ ok: true })
+      res.json(result)
     } catch (e) { res.status(500).json({ error: e.message }) }
   })
 

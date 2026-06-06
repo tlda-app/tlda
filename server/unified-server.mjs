@@ -42,7 +42,7 @@ import { lookup as mimeLookup } from 'mime-types'
 import { DEFAULT_PORT, hasTls } from '../shared/config.mjs'
 import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
 import { labelsForAgent, evalDnf } from '../shared/fleet-labels.mjs'
-import { phaseFromName } from '../shared/lineage-name.mjs'
+import { phaseFromName, PHASES } from '../shared/lineage-name.mjs'
 import { initProjectStore, listProjects, readProject, getProjectsDir } from './lib/project-store.mjs'
 import { resetStaleBuildStates, killAllBuilds, runBuild } from './lib/build-runner.mjs'
 import projectRoutes, { processProjectPush } from './routes/projects.mjs'
@@ -2785,7 +2785,7 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'lineage-assign') {
     const { agent: agentQuery, phase, lineage: lineageQuery } = msg
     if (!agentQuery || !phase) { error('agent and phase required'); return }
-    if (!['dawn', 'day', 'dusk'].includes(phase)) { error('phase must be dawn, day, or dusk'); return }
+    if (!PHASES.includes(phase)) { error(`phase must be one of: ${PHASES.join(', ')}`); return }
     const agent = fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
     const lineageName = lineageQuery || agent.friendly_name || agentQuery
@@ -2827,7 +2827,7 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'lineage-transition') {
     const { agent: agentQuery, phase } = msg
     if (!agentQuery || !phase) { error('agent and phase required'); return }
-    if (!['dawn', 'day', 'dusk'].includes(phase)) { error('phase must be dawn, day, or dusk'); return }
+    if (!PHASES.includes(phase)) { error(`phase must be one of: ${PHASES.join(', ')}`); return }
     const agent = fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
     if (!agent.lineage_id) { error('agent is not in a lineage'); return }

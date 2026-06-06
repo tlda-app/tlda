@@ -23,7 +23,7 @@ import path from 'path';
 import os from 'os';
 
 import { PSEUDO_LABELS } from '../../shared/fleet-labels.mjs';
-import { baseName, nameForPhase, phaseFromName } from '../../shared/lineage-name.mjs';
+import { baseName, nameForPhase, phaseFromName, ALL_PHASES } from '../../shared/lineage-name.mjs';
 
 // Persistent DB under ~/.config/tlda/ (survives macOS reboots).
 // Previously /tmp/fleet.db which got wiped on reboot — lost all agents/state.
@@ -773,7 +773,7 @@ export class FleetStore {
     if (colonIdx > 0 && !query.startsWith('fleet:')) {
       const lineageName = query.slice(0, colonIdx);
       const phase = query.slice(colonIdx + 1);
-      if (['dawn', 'day', 'dusk'].includes(phase)) {
+      if (ALL_PHASES.includes(phase)) {
         return this.findAgentByLineagePhase(lineageName, phase);
       }
     }
@@ -983,6 +983,38 @@ export class FleetStore {
     })();
   }
 
+  // Resurrect a dead agent. If it was rotated out of a lineage — i.e. it is
+  // still attached to a lineage but lost its slot name (friendly_name NULL) when
+  // it aged out — bring it back as a zombie: in the lineage, out of rotation,
+  // named "<base>:zombie". A plain dead agent (no lineage, or still named) just
+  // comes back as-is. Returns { ok, zombie, name? }.
+  resurrectAsZombie(agentId) {
+    return this.db.transaction(() => {
+      const agent = this._getAgent.get(agentId);
+      if (!agent) return { ok: false, reason: 'not found' };
+      this.db.prepare('UPDATE agents SET dead = 0 WHERE id = ?').run(agentId);
+      if (!agent.lineage_id || agent.friendly_name) return { ok: true, zombie: false };
+      const base = this._lineageBase(agent.lineage_id);
+      if (!base) return { ok: true, zombie: false };
+      const zombieName = nameForPhase(base, 'zombie');
+      // Avoid colliding with an existing live zombie in the lineage.
+      const taken = this.db.prepare(
+        'SELECT id FROM agents WHERE friendly_name = ? AND dead = 0 AND id != ?'
+      ).get(zombieName, agentId);
+      if (taken) return { ok: true, zombie: false, collision: true };
+      this.db.prepare('UPDATE agents SET friendly_name = ? WHERE id = ?').run(zombieName, agentId);
+      const now = Date.now();
+      const prev = this.db.prepare(
+        'SELECT MAX(entered_at) AS m FROM lineage_phase_log WHERE lineage_id = ? AND fleet_id = ?'
+      ).get(agent.lineage_id, agentId);
+      const ts = Math.max(now, (prev?.m || 0) + 1);
+      this.db.prepare(
+        'INSERT INTO lineage_phase_log (lineage_id, fleet_id, phase, entered_at) VALUES (?, ?, ?, ?)'
+      ).run(agent.lineage_id, agentId, 'zombie', ts);
+      return { ok: true, zombie: true, name: zombieName };
+    })();
+  }
+
   // Move an agent to a different phase within its lineage = rename it.
   transitionPhase(agentId, newPhase) {
     const now = Date.now();
@@ -1001,12 +1033,13 @@ export class FleetStore {
     })();
   }
 
-  // One rotation of the lineage's name-triple. The incoming agent takes the
+  // One rotation of the lineage's name-chain. The incoming agent takes the
   // dawn name (bare base); the existing holders each shift up a rung —
-  // dawn → "<base>:day", day → "<base>:dusk", and the old dusk loses its name
-  // (set NULL) and drops out of the triple while staying in the lineage as
-  // nameless history (reachable only by id). Nothing is marked dead. Direct
-  // handoff applies this once; the briefing handoff applies it twice.
+  // dawn → "<base>:day", day → "<base>:dusk", dusk → "<base>:night", and the
+  // old night ages out: it loses its name (set NULL) AND is marked dead
+  // (retired). It stays in the lineage as nameless history (reachable by id),
+  // and can be brought back as a zombie via resurrect. Direct handoff applies
+  // this once; the briefing handoff applies it twice.
   rotateLineageIn(lineageId, incomingAgentId) {
     const now = Date.now();
     const base = this._lineageBase(lineageId);
@@ -1014,11 +1047,13 @@ export class FleetStore {
     const dawnName = nameForPhase(base, 'dawn');
     const dayName = nameForPhase(base, 'day');
     const duskName = nameForPhase(base, 'dusk');
+    const nightName = nameForPhase(base, 'night');
     // Find the current holder of a given name within this lineage.
     const holder = (name) => this.db.prepare(
       'SELECT id FROM agents WHERE lineage_id = ? AND friendly_name = ? AND dead = 0'
     ).get(lineageId, name)?.id || null;
     const rename = (id, name) => this.db.prepare('UPDATE agents SET friendly_name = ? WHERE id = ?').run(name, id);
+    const retire = (id) => this.db.prepare('UPDATE agents SET friendly_name = NULL, dead = 1 WHERE id = ?').run(id);
     const exitLog = (id) => this.db.prepare(
       'UPDATE lineage_phase_log SET exited_at = ? WHERE fleet_id = ? AND exited_at IS NULL'
     ).run(now, id);
@@ -1035,14 +1070,21 @@ export class FleetStore {
       ).run(lineageId, id, phase, ts);
     };
     // Resolve holders BEFORE any rename, then apply in an order that frees each
-    // name before it's reused: dusk name → null, day → dusk, dawn → day, in → dawn.
+    // name before it's reused: night → retired, dusk → night, day → dusk,
+    // dawn → day, in → dawn.
+    const nightId = holder(nightName);
     const duskId = holder(duskName);
     const dayId = holder(dayName);
     const dawnId = holder(dawnName);
     this.db.transaction(() => {
+      if (nightId && nightId !== incomingAgentId) {
+        exitLog(nightId);
+        retire(nightId); // ages out: name rotates off AND the agent is retired (dead)
+      }
       if (duskId && duskId !== incomingAgentId) {
         exitLog(duskId);
-        rename(duskId, null); // ages out: name rotates off, stays in lineage as nameless history
+        rename(duskId, nightName);
+        enterLog(duskId, 'night');
       }
       if (dayId && dayId !== incomingAgentId) {
         exitLog(dayId);
