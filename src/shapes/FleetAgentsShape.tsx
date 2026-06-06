@@ -454,13 +454,31 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     return matches.length > 0 ? matches : []
   }, [activeTasks])
 
+  // Per-agent state for the "Active" sort: the agent's current *displayed* time
+  // bucket ("now"/"1m"/"2m"/…) and WHEN it entered it. The Active sort is a stable
+  // sort keyed on that displayed bucket — agents in the same bucket keep their
+  // order (no reshuffling while everyone reads "now"), and an agent only moves
+  // when its displayed value actually ticks over, jumping to the TOP of the new
+  // bucket.
+  const bandStateRef = useRef<Map<string, { band: string; enteredAt: number }>>(new Map())
+
   const sortedAgents = useMemo(() => {
+    const now = Date.now()
+    const liveIds = new Set<string>()
     const list: any[] = []
     for (const a of agents) {
       if (a.dead) continue
       const ts = a.last_active ? new Date(a.last_active).getTime() : 0
-      list.push({ ...a, _ts: ts })
+      // The band IS the displayed time bucket — same value the row shows.
+      const band = formatRelativeTime(ts)
+      liveIds.add(a.id)
+      const prev = bandStateRef.current.get(a.id)
+      if (!prev || prev.band !== band) bandStateRef.current.set(a.id, { band, enteredAt: now })
+      const enteredAt = bandStateRef.current.get(a.id)!.enteredAt
+      list.push({ ...a, _ts: ts, _band: band, _bandEnteredAt: enteredAt })
     }
+    // Drop state for agents that have left the list so the map doesn't grow.
+    for (const id of bandStateRef.current.keys()) if (!liveIds.has(id)) bandStateRef.current.delete(id)
     const dir = sortAsc ? 1 : -1
     list.sort((a, b) => {
       if (sortKey === 'name') return dir * agentDisplayName(a, agents).localeCompare(agentDisplayName(b, agents))
@@ -470,7 +488,12 @@ function FleetAgentsInner({ shape }: { shape: any }) {
         const cb = order[agentCategory(b)] ?? 2
         return dir * (ca - cb) || b._ts - a._ts
       }
-      return dir * (a._ts - b._ts)
+      // "Active": stable sort keyed on the displayed time bucket. Different
+      // buckets order by recency (the coarse continuum); within the SAME bucket,
+      // keep order stable by entry time, so a freshly-jumped agent lands on top
+      // and nothing else reshuffles while the display is identical.
+      if (a._band !== b._band) return dir * (a._ts - b._ts)
+      return dir * (a._bandEnteredAt - b._bandEnteredAt)
     })
     return list
   }, [agents, sortKey, sortAsc])
