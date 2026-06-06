@@ -2055,6 +2055,32 @@ async function handleFleetWsMessage(ws, msg) {
 
   if (!fleetStore) { error('fleet store unavailable'); return }
 
+  // ---- Timer countdown widget (timer-set / timer-fire / timer-cancel) ----
+  // Bridges the `timer` event the viewer renders as a live ticking bubble. Used
+  // by both the MCP timer() tool and eliza's action countdowns — same wire
+  // format, so bots speak the same language as real agents. timer-set stores +
+  // broadcasts a pending timer; timer-fire/cancel patches it to a terminal state.
+  if (type === 'timer-set') {
+    const { agent, message, fire_at } = msg
+    const from = (agent && fleetStore.findAgent?.(agent)?.id) || agent || SERVER_OWNER_ID
+    const to = SERVER_OWNER_ID
+    const metadata = { pending: true, fire_at, message }
+    const event = await fleetStore.share({ type: 'timer', from, to, text: `⏱ ${message}`, metadata })
+    broadcastEvent('fleet-event', { type: 'timer', from, to, id: event.id, event_id: event.id, text: `⏱ ${message}`, metadata })
+    reply({ ok: true, id: event.id })
+    return
+  }
+  if (type === 'timer-fire' || type === 'timer-cancel') {
+    const eventId = msg.event_id
+    const state = type === 'timer-cancel' ? 'cancelled' : 'fired'
+    if (eventId != null) {
+      try { fleetStore.updateEventMetadata?.(eventId, { pending: false, state }) } catch {}
+      broadcastEvent('event-update', { id: eventId, metadata_patch: { pending: false, state } })
+    }
+    reply({ ok: true })
+    return
+  }
+
   if (type === 'register') {
     // Prefer agent_id over id: the MCP's sendWS() stamps a correlation `id`
     // onto every message, so the real fleet id arrives as agent_id. Falling

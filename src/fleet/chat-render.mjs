@@ -106,16 +106,25 @@ export function agentNameHtml(name) {
 export function renderChatLine(m, ctx) {
   const { agentLabel, getNickClass, isHumanId, getAgents, getTasks, tldaToken, renderMarkdown } = ctx
 
-  // Timer countdown: live countdown for active timers
+  // Timer countdown: live countdown for active timers. Remaining is computed
+  // from data-timer-until at render time and re-ticked each second by the
+  // chat-shape DOM ticker, so the number actually counts down.
   if (m._timerCountdown) {
     const nick = agentLabel(m.from)
     const cls = getNickClass(m.from)
-    const r = m._timerRemaining
+    const r = Math.max(0, Math.ceil((new Date(m._timerUntil) - Date.now()) / 1000))
     const mins = Math.floor(r / 60)
     const secs = r % 60
     const timeStr = mins > 0 ? `${mins}:${String(secs).padStart(2, '0')}` : `${secs}s`
     const msg = esc(m._timerMessage)
     return `<div class="chat-line chat-timer-countdown" data-msg-from="${esc(m.from || '')}" data-timer-until="${esc(m._timerUntil || '')}"><span class="chat-ts">${timeShort(m.timestamp)}</span> <span class="agent-nick ${cls}" data-agent-id="${esc(m.from)}">${esc(nick)}</span> <span class="timer-msg">\u23F1 ${timeStr} \u2192 ${msg}</span></div>`
+  }
+  // Timer cancelled in its grace window \u2014 struck, terminal.
+  if (m._timerCancelled) {
+    const nick = agentLabel(m.from)
+    const cls = getNickClass(m.from)
+    const msg = esc(m._timerMessage)
+    return `<div class="chat-line chat-timer-cancelled" data-msg-from="${esc(m.from || '')}"><span class="chat-ts">${timeShort(m.timestamp)}</span> <span class="agent-nick ${cls}" data-agent-id="${esc(m.from)}">${esc(nick)}</span> <span class="timer-msg">\uD83D\uDEAB ${msg} \u2014 cancelled</span></div>`
   }
   // Compacting indicator
   if (m._compacting) {

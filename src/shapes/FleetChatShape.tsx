@@ -2120,6 +2120,33 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
   }, [chatLogEl])
 
+  // Live countdown ticker: timer-countdown lines render a frozen number, so each
+  // second we recompute remaining from data-timer-until and update the text in
+  // place. Pure DOM — doesn't fight the dangerouslySetInnerHTML items. Terminal
+  // states (cancelled/fired) arrive via event-update and re-render the item.
+  useEffect(() => {
+    const logEl = chatLogEl
+    if (!logEl) return
+    const tick = () => {
+      const nodes = logEl.querySelectorAll<HTMLElement>('.chat-timer-countdown[data-timer-until]')
+      for (const node of nodes) {
+        const until = node.getAttribute('data-timer-until')
+        const span = node.querySelector<HTMLElement>('.timer-msg')
+        if (!until || !span) continue
+        const r = Math.max(0, Math.ceil((new Date(until).getTime() - Date.now()) / 1000))
+        const mins = Math.floor(r / 60)
+        const secs = r % 60
+        const timeStr = mins > 0 ? `${mins}:${String(secs).padStart(2, '0')}` : `${secs}s`
+        const txt = span.textContent || ''
+        const arrowIdx = txt.indexOf('→')
+        const tail = arrowIdx >= 0 ? txt.slice(arrowIdx) : ''
+        span.textContent = `⏱ ${timeStr} ${tail}`.trimEnd()
+      }
+    }
+    const id = setInterval(tick, 1000)
+    return () => clearInterval(id)
+  }, [chatLogEl])
+
   // Hover events on bullet cards → dispatch to AnnotationViewer
   const bulletHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
