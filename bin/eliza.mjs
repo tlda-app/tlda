@@ -271,8 +271,8 @@ const TRIGGERS = [
   },
   {
     pattern: /\bi'?m struggling\b/i,
-    skill: 'partner-not-soloist',
-    message: `⚠️ Skip is telling you he's having trouble following. This is not a cue to explain faster or more confidently — it's a cue to slow down, be more explicit, and check whether your formulation is precise enough to be right or wrong. Read \`partner-not-soloist\`.`,
+    skill: 'confusion-is-evidence',
+    message: `⚠️ Skip is telling you he's having trouble following. This is not a cue to explain faster or more confidently — it's a cue to suspect YOUR argument is wrong or too vague to pin down, then either name the single load-bearing step precisely or admit you don't have it. Do NOT re-explain the same thing more gently. Read \`confusion-is-evidence\`.`,
   },
 
   // Tier 2 — already frustrated (damage control)
@@ -416,6 +416,29 @@ The only correct answer:
 - If the original was incomplete or ill-defined, the honest answer is "here's precisely what I meant" — or "I was hand-waving, here's the gap." Do not bury the dodge in a wall of fresh notation.
 
 Read \`math-report\` before you send: it's the self-review checklist for exactly this — dropped variables, notation drift, unanswered questions.`,
+    cooldown: 300_000,
+  },
+
+  // ---- Tier 3 — Confusion is evidence about YOUR argument ----
+  // Skip can't follow / can't tell why something is true / calls it too vague /
+  // says you're treating him as stupid. His confusion is the gap-detector firing
+  // on an argument that isn't there — not a comprehension failure. The mansplaining
+  // failure mode: the less-informed party re-explaining to the expert who owns the
+  // problem. Phrases chosen so Skip can discuss the phenomenon without tripping it.
+  {
+    pattern: /\bwhy\s+is\s+(?:that|this|it)\s+(?:fucking\s+)?true\b|\bi\s+can'?t\s+tell\s+why\b|\b(?:that'?s|this is|it'?s)\s+too\s+vague\b|\byou\s+(?:aren'?t|are\s+not|'?re\s+not)\s+explaining\b|\bcalling\s+a\s+proof\b|\b(?:acting|treating me)\s+(?:like|as if)\s+(?:i'?m|i am)\s+stupid\b|\bmake\s+me\s+(?:not\s+able\s+to|unable\s+to)\s+understand\s+my\s+own\b|\bdoesn'?t\s+(?:make sense|connect)\b/i,
+    skill: 'confusion-is-evidence',
+    message: `🛑 **Skip can't follow / can't see why it's true — that's evidence about YOUR argument, not about him.** He is the expert who owns this problem and he's hoping you have something real. His confusion is your gap-detector firing on an argument that's wrong or too vague to be pinned down.
+
+Do NOT re-explain the same thing more gently or at greater length — that presumes the deficit is his, and it's the mansplaining tell (the less-informed party talking down to the expert). It makes him angrier each round because each round he's *more* right to be unconvinced.
+
+Do exactly one of:
+1. **Name the single load-bearing step** he's stuck on, stated precisely enough to be checkable — not the whole argument again.
+2. **"I don't actually have that step."** Honest, and worth more than prose.
+
+If Skip already articulated the argument (or a prior agent confirmed his articulation was good), **use his words** — don't substitute a foggier version of your own.
+
+Read \`confusion-is-evidence\`.`,
     cooldown: 300_000,
   },
 ]
