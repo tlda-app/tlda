@@ -1414,12 +1414,29 @@ export class FleetStore {
       const expanded = [...new Set(ids.flatMap(id => this.relatedFleetIds(id)))];
       const ph = expanded.map(() => '?').join(',');
       const E = this._EVT;
+      // OR-across-two-columns can't use an index's sort order, so the naive
+      // `WHERE from_id IN(…) OR to_id IN(…) ORDER BY ts DESC LIMIT n` makes SQLite
+      // materialize + temp-sort EVERY matching row before the limit (125k+ for a
+      // high-volume id like fleet:skip) — synchronously freezing the event loop on
+      // a hot path. Instead pull n from each column's own (col, timestamp DESC)
+      // index in sorted order, then merge: touches ~2n rows, not the whole history.
+      // The global top-n by timestamp of (from ∪ to) is always within (top-n of
+      // from) ∪ (top-n of to), so the result is identical. UNION (not UNION ALL)
+      // dedupes rows where the id is both sender and recipient.
       if (before) {
-        const sql = `SELECT ${E} FROM events WHERE timestamp < ? AND (from_id IN (${ph}) OR to_id IN (${ph})) ORDER BY timestamp DESC LIMIT ?`;
-        rows = this._query(this.db.prepare(sql), before, ...expanded, ...expanded, limit);
+        const sql = `SELECT * FROM (
+            SELECT * FROM (SELECT ${E} FROM events WHERE timestamp < ? AND from_id IN (${ph}) ORDER BY timestamp DESC LIMIT ?)
+            UNION
+            SELECT * FROM (SELECT ${E} FROM events WHERE timestamp < ? AND to_id IN (${ph}) ORDER BY timestamp DESC LIMIT ?)
+          ) ORDER BY timestamp DESC LIMIT ?`;
+        rows = this._query(this.db.prepare(sql), before, ...expanded, limit, before, ...expanded, limit, limit);
       } else {
-        const sql = `SELECT ${E} FROM events WHERE from_id IN (${ph}) OR to_id IN (${ph}) ORDER BY timestamp DESC LIMIT ?`;
-        rows = this._query(this.db.prepare(sql), ...expanded, ...expanded, limit);
+        const sql = `SELECT * FROM (
+            SELECT * FROM (SELECT ${E} FROM events WHERE from_id IN (${ph}) ORDER BY timestamp DESC LIMIT ?)
+            UNION
+            SELECT * FROM (SELECT ${E} FROM events WHERE to_id IN (${ph}) ORDER BY timestamp DESC LIMIT ?)
+          ) ORDER BY timestamp DESC LIMIT ?`;
+        rows = this._query(this.db.prepare(sql), ...expanded, limit, ...expanded, limit, limit);
       }
     } else if (before) {
       rows = this._query(this._queryEventsBefore, before, limit);
