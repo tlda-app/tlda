@@ -87,6 +87,12 @@ const scrollToElementHandle = bus.register<RawScrollToElementSignal>({ key: 'sig
 type RawSetChatTargetSignal = { agent: string; panel?: string; chatShapeId?: string; timestamp: number }
 const setChatTargetHandle = bus.register<RawSetChatTargetSignal>({ key: 'signal:set-chat-target' })
 
+// An agent authored an argument graph (claims + inference steps); materialize it
+// onto this doc's canvas. `replace` clears prior graph shapes first.
+export type GraphDrawSignal = { chain: any; replace?: boolean; timestamp: number }
+const graphDrawHandle = bus.register<GraphDrawSignal>({ key: 'signal:graph-draw' })
+export const onGraphDrawSignal = graphDrawHandle.on
+
 type ForwardSyncCallback = (signal: ForwardSyncSignal) => void
 const forwardSyncCallbacks = new Set<ForwardSyncCallback>()
 scrollHandle.on((s) => { for (const cb of forwardSyncCallbacks) cb({ type: 'scroll', ...s }) })
