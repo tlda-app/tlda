@@ -14,6 +14,7 @@ import { dirname, join } from 'path'
 import { fileURLToPath } from 'url'
 import { DEV_HELP } from './lib/dev-commands.mjs'
 import { cmdPw } from './lib/pw.mjs'
+import { cmdDevServer } from './lib/dev-server.mjs'
 
 const args = process.argv.slice(2)
 const cmd = args[0]
@@ -24,9 +25,13 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
   process.exit(0)
 }
 
-// `pw` lives here (not in tlda.mjs) — it's a developer command, no flat alias.
+// `pw` and `server` live here (not in tlda.mjs) — developer commands, no flat alias.
 if (cmd === 'pw') {
   await cmdPw(args.slice(1), join(cliDir, '..'))
+  process.exit(0)
+}
+if (cmd === 'server') {
+  await cmdDevServer(args.slice(1), join(cliDir, '..'))
   process.exit(0)
 }
 
