@@ -81,13 +81,13 @@ function _runWorker(name, priorityPages) {
 /** Cancel the in-flight build for a doc — killing the worker kills its children. */
 export function killBuild(name) {
   const c = _inFlight.get(name)
-  if (c) { try { c.kill('SIGTERM') } catch { /* worker already gone */ } }
+  if (c) c.kill('SIGTERM') // no-throw if the worker already exited
   _pending.delete(name)
 }
 
 /** Kill every in-flight build worker (server shutdown). */
 export function killAllDispatchedBuilds() {
-  for (const c of _inFlight.values()) { try { c.kill('SIGTERM') } catch { /* worker already gone */ } }
+  for (const c of _inFlight.values()) c.kill('SIGTERM') // no-throw if already exited
   _inFlight.clear()
   _pending.clear()
 }
