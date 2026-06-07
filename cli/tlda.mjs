@@ -2418,8 +2418,9 @@ async function main() {
       case 'book':   await ensureServer(); await cmdBook(); break
       case 'create': await ensureServer(); await cmdCreate(); break
       case 'push':   await ensureServer(); await cmdPush(); break
-      case 'watch':  await ensureServer(); await cmdWatch(); break
-      case 'watch-all': await ensureServer(); await cmdWatchAll(); break
+      case 'daemon': await ensureServer(); await cmdWatch(); break
+      case 'watch':  await ensureServer(); await cmdWatch(); break       // hidden alias for daemon
+      case 'watch-all': await ensureServer(); await cmdWatchAll(); break // hidden alias
       case 'listen': await ensureServer(); await cmdListen(); break
       case 'monitor': await ensureServer(); await cmdMonitor(); break
       case 'open':   await ensureServer(); await cmdOpen(); break
@@ -2474,7 +2475,7 @@ async function main() {
   tlda server <cmd>    run/manage the tlda server   (start/stop/status/log)
   tlda agent <cmd>     fleet agents on this machine (list/spawn/attach/hibernate)
   tlda config <cmd>    configure tlda               (set/get/setup/mcp-setup/auth)
-  tlda watch [start|stop]   fleet daemon (source watch + activity)
+  tlda daemon [start|stop]  fleet daemon (source watch + activity)
   tlda doctor          health check (--fix to repair)
   tlda logs [agent]    unified logs across all sources
 
