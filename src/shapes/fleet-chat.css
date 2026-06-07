@@ -786,6 +786,15 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   color: var(--text-dim);
   text-decoration: line-through;
 }
+/* Fired — terminal but persists in the log (the ✅ marks it ran). More present
+   than the struck "cancelled" line, but quieter than the active countdown. */
+.fleet-chat-shape .chat-timer-fired {
+  font-size: 11px;
+  opacity: 0.7;
+}
+.fleet-chat-shape .chat-timer-fired .timer-msg {
+  color: var(--text-dim);
+}
 .fleet-chat-shape .chat-timer-msg {
   font-size: 11px;
   opacity: 0.5;
