@@ -98,19 +98,50 @@ export async function materializeGraph(docName, chain, { replace = true } = {}) 
 
   const { pos, byId } = computeLayout(chain)
 
+  // --- graph-local bounds + a CONTAINER FRAME placed in the doc's right margin ---
+  const ps = Object.values(pos)
+  const gMinX = Math.min(...ps.map((p) => p.x))
+  const gMinY = Math.min(...ps.map((p) => p.y))
+  const gMaxX = Math.max(...ps.map((p) => p.x + p.w))
+  const gMaxY = Math.max(...ps.map((p) => p.y + p.h))
+  const PAD = 30
+  const frameW = (gMaxX - gMinX) + PAD * 2
+  const frameH = (gMaxY - gMinY) + PAD * 2
+
+  // doc content (the pages) → place the frame to their right
+  const content = records.filter((r) => r.typeName === 'shape' && r.type !== 'graph-node' && !r.meta?.graphEdge && !r.meta?.graphNode && !r.meta?.graphFrame)
+  let FX = 900, FY = 60
+  if (content.length) {
+    FX = Math.max(...content.map((r) => (r.x || 0) + (r.props?.w || 0))) + 140
+    FY = Math.min(...content.map((r) => r.y || 0))
+  }
+
+  const goal = chain.nodes.find((n) => n.kind === 'goal')
+  const frameName = (goal ? goal.claim : 'Argument graph').replace(/\$([^$]*)\$/g, '$1').slice(0, 60)
+
   // records to write
   const shapeIds = {} // chain node id -> TLShapeId
-  const indices = getIndices(chain.nodes.length + chain.edges.length + 1).slice(1)
+  const indices = getIndices(chain.nodes.length + chain.edges.length + 2).slice(1)
   let ix = 0
   const toSet = []
 
+  const frameId = createShapeId()
+  toSet.push({
+    id: frameId, typeName: 'shape', type: 'frame',
+    x: FX, y: FY, rotation: 0, index: indices[ix++], parentId: pageId,
+    isLocked: false, opacity: 1,
+    props: { w: frameW, h: frameH, name: frameName, color: 'grey' },
+    meta: { graphFrame: true },
+  })
+
+  // node + arrow coords are RELATIVE to the frame (children of it)
   for (const n of chain.nodes) {
     const id = createShapeId()
     shapeIds[n.id] = id
     const p = pos[n.id]
     toSet.push({
       id, typeName: 'shape', type: 'graph-node',
-      x: p.x, y: p.y, rotation: 0, index: indices[ix++], parentId: pageId,
+      x: (p.x - gMinX) + PAD, y: (p.y - gMinY) + PAD, rotation: 0, index: indices[ix++], parentId: frameId,
       isLocked: false, opacity: 1,
       props: { w: p.w, h: p.h, claim: n.claim, kind: n.kind },
       meta: { graphNode: true },
@@ -126,7 +157,7 @@ export async function materializeGraph(docName, chain, { replace = true } = {}) 
     const fromAssump = byId[e.from]?.kind === 'assumption'
     toSet.push({
       id: arrowId, typeName: 'shape', type: 'arrow',
-      x: 0, y: 0, rotation: 0, index: indices[ix++], parentId: pageId,
+      x: 0, y: 0, rotation: 0, index: indices[ix++], parentId: frameId,
       isLocked: false, opacity: 1,
       props: {
         kind: 'arc', elbowMidPoint: 0.5, dash: 'solid', size: 's', fill: 'none',
@@ -145,10 +176,10 @@ export async function materializeGraph(docName, chain, { replace = true } = {}) 
     )
   }
 
-  // ids to delete on replace: existing graph shapes + arrows + their bindings
+  // ids to delete on replace: existing graph frames + shapes + arrows + their bindings
   const toDelete = []
   if (replace) {
-    const oldShapeIds = new Set(records.filter((r) => r.typeName === 'shape' && (r.type === 'graph-node' || r.meta?.graphEdge || r.meta?.graphNode)).map((r) => r.id))
+    const oldShapeIds = new Set(records.filter((r) => r.typeName === 'shape' && (r.type === 'graph-node' || r.meta?.graphEdge || r.meta?.graphNode || r.meta?.graphFrame)).map((r) => r.id))
     for (const id of oldShapeIds) toDelete.push(id)
     for (const r of records) if (r.typeName === 'binding' && (oldShapeIds.has(r.fromId) || oldShapeIds.has(r.toId))) toDelete.push(r.id)
   }
@@ -159,5 +190,5 @@ export async function materializeGraph(docName, chain, { replace = true } = {}) 
     for (const bnd of bindings) txn.set(bnd.id, bnd)
   })
 
-  return { nodes: chain.nodes.length, edges: chain.edges.length }
+  return { nodes: chain.nodes.length, edges: chain.edges.length, frame: frameId }
 }
