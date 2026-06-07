@@ -405,6 +405,20 @@ export class FleetStore {
       );
     `);
 
+    // ---- Boot-path index migration ----
+    // These cover the queries that show up as full SCANs in slowquery logs:
+    //   SELECT * FROM agents ORDER BY last_seen DESC          → idx_agents_last_seen
+    //   SELECT * FROM agents WHERE machine_id=? AND dead=0    → idx_agents_machine_alive
+    //   SELECT * FROM agents WHERE dead=0 AND id!=?           → idx_agents_alive
+    //   SELECT * FROM agents WHERE friendly_name=?            → (already covered by idx_agents_live_name for dead=0)
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_agents_last_seen ON agents(last_seen DESC);
+      CREATE INDEX IF NOT EXISTS idx_agents_alive ON agents(dead, last_seen DESC);
+      CREATE INDEX IF NOT EXISTS idx_agents_machine_alive ON agents(machine_id, dead);
+      CREATE INDEX IF NOT EXISTS idx_agents_friendly_name ON agents(friendly_name);
+      CREATE INDEX IF NOT EXISTS idx_unread_unread ON unread(event_id) WHERE read = 0;
+    `);
+
     // ---- Name provenance (name-at-time) ----
     // friendly_name rotates (lineage phases, renames, aging out). To render any
     // PAST event with the name the agent ACTUALLY held then, we keep a span log:

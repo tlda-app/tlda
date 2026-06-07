@@ -355,6 +355,19 @@ async function loadState() {
   }
 }
 
+// Like loadState but the agent roster INCLUDES dead agents. Used for name→id
+// resolution in history tooling (get_thread, search_logs): a dead agent must
+// stay addressable by name — search is the only handle on it.
+async function loadStateAll() {
+  try {
+    const [agents, tasks] = await Promise.all([sendWS('store-agents-all'), sendWS('store-tasks')]);
+    return { agents: agents || [], tasks: tasks || [], messages: [] };
+  } catch (e) {
+    process.stderr.write(`[fleet] loadStateAll failed: ${e.message}\n`);
+    return { tasks: [], messages: [], agents: [] };
+  }
+}
+
 // ---- Report linter ----
 // Runs on task_done() calls. Returns array of violation objects: { id, pattern, location, text, advice }
 function lintReport(reportText, gitDiff, overrides = []) {
@@ -2941,7 +2954,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     // apply the agent filter automatically so "search_logs(query='e2-prereader')" works.
     let agentId;
     let allAgents = [];
-    try { const d = await sendWS('store-agents'); if (Array.isArray(d)) allAgents = d; } catch (e) { process.stderr.write(`[fleet] store-agents fetch for search failed: ${e.message}\n`); }
+    try { const d = await sendWS('store-agents-all'); if (Array.isArray(d)) allAgents = d; } catch (e) { process.stderr.write(`[fleet] store-agents-all fetch for search failed: ${e.message}\n`); }
 
     // Lineage-aware agent resolution for search
     let lineageFleetIds = null;
@@ -3030,8 +3043,8 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       return { content: [{ type: 'text', text: `No results for "${query}".` }] };
     }
 
-    // Format results
-    const state = await loadState();
+    // Format results — full roster (incl. dead) so dead agents' names render.
+    const state = await loadStateAll();
     const resolveName = (id) => id ? (getAgent(state, id)?.friendly_name || id) : '';
 
     // Name-provenance tag: the name the agent held AT the event's time (period
@@ -3151,7 +3164,8 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
 
   // ---- get_thread ----
   if (name === 'get_thread') {
-    const state = await loadState();
+    // Full roster (incl. dead) — a dead agent's thread must stay readable.
+    const state = await loadStateAll();
     const tasks = state.tasks || [];
     let filtered = [];
     let serverTotal = null;
@@ -3167,6 +3181,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       const params = { agent: agentId, limit: pageSize };
       if (resolvedSince) params.since = resolvedSince;
       if (resolvedUntil) params.until = resolvedUntil;
+      if (isBounded) params.count = true;
       if (args.types?.length) params.event_types = args.types;
       const data = await sendWS('store-events', params);
       if (!data) return;
