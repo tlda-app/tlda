@@ -283,25 +283,20 @@ function SvgPageComponent({ shape }: { shape: any }) {
       injectSvgFonts(svgEl)
       const capturedSvgText = svgText
       document.fonts.ready.then(() => {
-        // Pre-warm layout while this page may still be off-screen in the buffer
-        // (this effect runs for pages ±VIEWPORT_BUFFER_PAGES from the viewport).
-        // Laying out a page of math (~700 positioned glyphs) costs ~250-300ms;
-        // once laid out it's cached and scrolling it into view (an ancestor
-        // transform) is free. Forcing the root geometry one frame after the SVG
-        // is injected moves that cost off the moment-of-scroll, so a fast scroll
-        // lands on already-laid-out pages instead of freezing on each. Bounded to
-        // near-viewport pages — nothing beyond the buffer is touched. (Measured:
-        // worst scroll freeze 347ms → 74ms.) The word-space pass still runs
-        // lazily; this just warms layout ahead of it.
-        requestAnimationFrame(() => {
-          if (!containerRef.current || injectedRef.current !== capturedSvgText) return
-          try { svgEl.getBBox() } catch { /* not yet layable (detached) — the word-space pass will warm it */ }
-        })
         enqueueWordSpaces(() => {
           if (!containerRef.current || injectedRef.current !== capturedSvgText) return
           injectWordSpaces(svgEl)
           // Cache the fully-processed HTML so scroll-back re-injection is instant
           processedSvgCache.set(shape.id, { svgText: capturedSvgText, html: el.innerHTML })
+          // Final step of rendering a new page image: force its layout now, on
+          // the FINISHED svg (after the word-space mutation that would otherwise
+          // invalidate an earlier layout). Laying out a page of math (~700
+          // positioned glyphs) costs ~250-300ms; doing it here — as the tail of
+          // the render pipeline, off-screen in the prefetch buffer — means the
+          // result is cached, so scrolling the page into view (an ancestor
+          // transform) is free instead of freezing. Runs once per new image
+          // (this effect only fires when svgText changes).
+          try { svgEl.getBBox() } catch { /* not layable yet — harmless */ }
         })
       })
 
