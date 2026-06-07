@@ -2229,6 +2229,11 @@ async function listPlaywrightBrowsers() {
     const args = m[3]
     if (!args.includes('playwright_chromiumdev_profile') && !args.includes('ms-playwright')) continue
     if (args.includes('--type=')) continue
+    // Never reap the canonical `tlda-dev pw` shared browser. It's a launcher-less
+    // daemon by design (persists until `tlda pw reap`), so the orphan heuristic
+    // always flags it — and under memory pressure the threshold collapses to ~30s,
+    // killing it every minute, which strands agents on a blank data: tab.
+    if (args.includes('ud-shared-chrome')) continue
     browsers.push({ pid, ppid, args })
   }
   return browsers
