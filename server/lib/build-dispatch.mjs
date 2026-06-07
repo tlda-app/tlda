@@ -30,7 +30,7 @@ export async function dispatchBuild(name, { priorityPages } = {}) {
     try {
       const vp = getLastSignal(`doc-${name}`, 'signal:viewport')
       if (vp?.pages?.length > 0) priorityPages = vp.pages
-    } catch {}
+    } catch { priorityPages = priorityPages || undefined } // no viewport signal yet → no priority
   }
 
   // Coalesce: a build is already running for this doc — record the latest
@@ -81,13 +81,13 @@ function _runWorker(name, priorityPages) {
 /** Cancel the in-flight build for a doc — killing the worker kills its children. */
 export function killBuild(name) {
   const c = _inFlight.get(name)
-  if (c) { try { c.kill('SIGTERM') } catch {} }
+  if (c) { try { c.kill('SIGTERM') } catch { /* worker already gone */ } }
   _pending.delete(name)
 }
 
 /** Kill every in-flight build worker (server shutdown). */
 export function killAllDispatchedBuilds() {
-  for (const c of _inFlight.values()) { try { c.kill('SIGTERM') } catch {} }
+  for (const c of _inFlight.values()) { try { c.kill('SIGTERM') } catch { /* worker already gone */ } }
   _inFlight.clear()
   _pending.clear()
 }
