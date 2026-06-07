@@ -2573,17 +2573,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (args?.padding != null) signalData.padding = args.padding;
 
     try {
+      const reqTs = signalData.timestamp;
       await broadcastSignalRest(docName, 'signal:screenshot-request', signalData);
-      const result = await new Promise((resolve) => {
-        const stream = connectSignalStream(docName, (signal) => {
-          if (signal.key === 'signal:screenshot' && signal.data) {
-            clearTimeout(timer);
-            stream.close();
-            resolve(signal);
-          }
-        });
-        const timer = setTimeout(() => { stream.close(); resolve(null); }, 8000);
-      });
+      // The viewer captures and POSTs its reply back to the server, which caches
+      // it (signalCache). Poll that cache for a reply newer than our request,
+      // rather than relying on catching the live SSE signal — the reply can
+      // arrive (~0.8s) before an SSE listener finishes registering, and the cache
+      // is the authoritative copy either way.
+      let result = null;
+      // The viewer's capture can take ~15–20s for a content-heavy region, so the
+      // old 8s timeout gave up before the (cached, valid) reply ever landed.
+      const deadline = Date.now() + 30000;
+      while (Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 350));
+        let cached = null;
+        try {
+          cached = await serverFetch(`/api/projects/${docName}/signal/signal:screenshot`);
+        } catch {
+          cached = null; // 404 until the viewer replies — keep polling
+        }
+        if (cached?.data && (cached.timestamp || 0) >= reqTs) { result = cached; break; }
+      }
       if (result?.data) {
         return {
           content: [
