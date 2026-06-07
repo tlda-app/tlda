@@ -43,7 +43,7 @@ async function health(port) {
         signal: AbortSignal.timeout(1500),
       })
       if (res.ok) return scheme
-    } catch {}
+    } catch { /* not up yet / wrong scheme — try the other, or caller retries */ }
   }
   return null
 }
@@ -72,7 +72,7 @@ export async function cmdDevServer(args, repoRoot) {
   if (sub === 'stop') {
     const pid = readPid()
     if (!pid) { console.log('dev server: not running'); if (existsSync(PID_FILE)) unlinkSync(PID_FILE); return }
-    try { process.kill(pid) } catch {}
+    try { process.kill(pid) } catch { /* already gone — fine */ }
     if (existsSync(PID_FILE)) unlinkSync(PID_FILE)
     console.log(`dev server: stopped (pid ${pid})`)
     return
