@@ -3289,10 +3289,12 @@ async function handleFleetWsMessage(ws, msg) {
           const tsWhere = `${where} AND ${tsClauses.join(' AND ')}`
           const q = `SELECT ${cols} FROM events WHERE ${tsWhere} ORDER BY timestamp ASC LIMIT ?`
           events = fleetStore.db.prepare(q).all(...allBaseParams, ...tsParams, limit)
-          const totalRow = fleetStore.db.prepare(
-            `SELECT COUNT(*) AS c FROM events WHERE ${tsWhere}`
-          ).get(...allBaseParams, ...tsParams)
-          total = totalRow?.c ?? null
+          if (msg.count) {
+            const totalRow = fleetStore.db.prepare(
+              `SELECT COUNT(*) AS c FROM events WHERE ${tsWhere}`
+            ).get(...allBaseParams, ...tsParams)
+            total = totalRow?.c ?? null
+          }
         } else {
           const q = afterId
             ? `SELECT ${cols} FROM events WHERE ${where} AND id > ? ORDER BY id ASC LIMIT ?`
@@ -3303,11 +3305,12 @@ async function handleFleetWsMessage(ws, msg) {
             : beforeId ? fleetStore.db.prepare(q).all(...allBaseParams, beforeId, limit)
             : fleetStore.db.prepare(q).all(...allBaseParams, limit)
           if (beforeId) events.reverse()
-          // total for this agent+type filter so callers see "X of Y"
-          const totalRow = fleetStore.db.prepare(
-            `SELECT COUNT(*) AS c FROM events WHERE ${where}`
-          ).get(...allBaseParams)
-          total = totalRow?.c ?? null
+          if (msg.count) {
+            const totalRow = fleetStore.db.prepare(
+              `SELECT COUNT(*) AS c FROM events WHERE ${where}`
+            ).get(...allBaseParams)
+            total = totalRow?.c ?? null
+          }
         }
       } else if (evtTypes) {
         const typeClause = `type IN (${evtTypes.map(() => '?').join(',')})`

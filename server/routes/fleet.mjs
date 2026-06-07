@@ -138,11 +138,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         if (since) { where += ' AND timestamp >= ?'; baseParams.push(since) }
         if (until) { where += ' AND timestamp <= ?'; baseParams.push(until) }
 
-        // Total count within the filtered window
-        total = fleetStore.db.prepare(
-          `SELECT COUNT(*) as n FROM events WHERE ${where}`
-        ).get(...baseParams)?.n ?? null
-
         const q = afterId
           ? `SELECT ${cols} FROM events WHERE ${where} AND id > ? ORDER BY id ASC LIMIT ?`
           : beforeId
