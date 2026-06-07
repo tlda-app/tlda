@@ -558,6 +558,9 @@ export class FleetStore {
     // subquery, then a grouped index pass); both scanned ~400k events per call
     // and pinned the event loop for seconds-to-tens-of-seconds under load.
     this._getAllAgents = this.db.prepare(`SELECT * FROM agents ORDER BY last_seen DESC`);
+    // Live-only roster (the agents panel never shows dead agents). Indexed by
+    // idx_agents_alive(dead, last_seen DESC) → returns ~tens of rows, not ~1300.
+    this._getAliveAgents = this.db.prepare(`SELECT * FROM agents WHERE dead = 0 ORDER BY last_seen DESC`);
     this._deleteAgent = this.db.prepare('DELETE FROM agents WHERE id = ?');
     this._updateAgentLastSeen = this.db.prepare('UPDATE agents SET last_seen = ?, dead = 0 WHERE id = ?');
     this._markAgentDead = this.db.prepare('UPDATE agents SET dead = 1 WHERE id = ?');
@@ -1012,11 +1015,12 @@ export class FleetStore {
     return this._agentsCache;
   }
 
-  // Force the next getAllAgents() to rebuild. Call after any structural change
-  // (insert/register, dead/alive flip, removal) so it shows up immediately
-  // instead of waiting out the TTL.
+  // Force the next getAllAgents()/getAliveAgents() to rebuild. Call after any
+  // structural change (insert/register, dead/alive flip, removal) so it shows
+  // up immediately instead of waiting out the TTL.
   _bustAgentsCache() {
     this._agentsCacheTs = 0;
+    this._aliveCacheTs = 0;
   }
 
   // Single gate for naming/labeling. Returns [] if all `names` are available.
@@ -1074,7 +1078,18 @@ export class FleetStore {
   }
 
   getAliveAgents() {
-    return this.getAllAgents().filter(a => !a.dead);
+    // Highest-frequency roster read (store-agents / agents panel). Query
+    // dead=0 directly via idx_agents_alive — ~tens of rows — instead of
+    // pulling the full ~1300-row table through getAllAgents and filtering.
+    // Same 1s TTL + structural bust as getAllAgents.
+    const TTL_MS = 1000;
+    const now = Date.now();
+    if (this._aliveCache && (now - this._aliveCacheTs) < TTL_MS) {
+      return this._aliveCache;
+    }
+    this._aliveCache = this._getAliveAgents.all().map(r => this._hydrateAgent(r));
+    this._aliveCacheTs = now;
+    return this._aliveCache;
   }
 
   removeAgent(id) {
@@ -1772,6 +1787,43 @@ export class FleetStore {
 
   getLastEventId() {
     return this._lastRowid.get()?.max_id || 0;
+  }
+
+  // Fetch one agent's thread (events where it is sender OR recipient) as a
+  // UNION of two indexed scans instead of `(from_id=? OR to_id=?)`. The OR
+  // forces SQLite into a MULTI-INDEX-OR + temp-btree sort that measured ~10×
+  // slower (890ms → 80ms for a wide-window, no-type-filter read). Each branch
+  // hits idx_events_from / idx_events_to; UNION (not UNION ALL) dedupes the
+  // from==to==agent row by full-row identity (id is unique). Handles the four
+  // shapes the callers need: timestamp range, afterId, beforeId, plain.
+  // Returns rows in the same order/orientation the old inline query did.
+  queryAgentEvents({ agent, types = null, sinceTs = null, untilTs = null, afterId = 0, beforeId = null, limit = 200 }) {
+    const cols = 'id, type, timestamp, from_id as "from", to_id as "to", text, metadata, task_id, agent_id';
+    const tail = [];
+    const tailParams = [];
+    if (types && types.length) { tail.push(`type IN (${types.map(() => '?').join(',')})`); tailParams.push(...types); }
+    let order;
+    // `id` is the deterministic tiebreaker on equal timestamps — without it the
+    // page boundary at LIMIT is nondeterministic (the old OR query had this
+    // latent bug; the UNION makes it visible, so fix it here).
+    if (sinceTs || untilTs) {
+      if (sinceTs) { tail.push('timestamp > ?'); tailParams.push(sinceTs); }
+      if (untilTs) { tail.push('timestamp <= ?'); tailParams.push(untilTs); }
+      order = 'timestamp ASC, id ASC';
+    } else if (afterId) {
+      tail.push('id > ?'); tailParams.push(afterId); order = 'id ASC';
+    } else if (beforeId) {
+      tail.push('id < ?'); tailParams.push(beforeId); order = 'id DESC';
+    } else {
+      order = 'timestamp ASC, id ASC';
+    }
+    const tailSql = tail.length ? ' AND ' + tail.join(' AND ') : '';
+    const branch = (col) => `SELECT * FROM (SELECT ${cols} FROM events WHERE ${col} = ?${tailSql} ORDER BY ${order} LIMIT ?)`;
+    const sql = `SELECT * FROM (${branch('from_id')} UNION ${branch('to_id')}) ORDER BY ${order} LIMIT ?`;
+    const params = [agent, ...tailParams, limit, agent, ...tailParams, limit, limit];
+    const rows = this.db.prepare(sql).all(...params);
+    if (beforeId) rows.reverse();
+    return rows;
   }
 
   // ---- Search ----
