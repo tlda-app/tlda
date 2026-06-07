@@ -1593,11 +1593,6 @@ async function rpcKillSession({ tmux_session, agent_id: _agent_id }) {
   return { ok: true, tmux_session }
 }
 
-async function rpcRestartMcp({ tmux_session, skipPreflight }) {
-  // No-op: the fleet MCP reconnects automatically via WS retry logic.
-  // Triggering a hard restart via /mcp causes unnecessary SIGTERM churn.
-  return { ok: true, tmux_session, noop: true }
-}
 
 // Live terminal-card watching via PTY streaming.
 // Instead of polling `tmux capture-pane`, we spawn a PTY running
@@ -2417,7 +2412,6 @@ const RPC_HANDLERS = {
   'list-sessions': rpcListSessions,
   'kick': rpcKick,
   'kill-session': rpcKillSession,
-  'restart-mcp': rpcRestartMcp,
   'start-terminal-watch': rpcStartTerminalWatch,
   'stop-terminal-watch': rpcStopTerminalWatch,
   'terminal-resize': rpcTerminalResize,
