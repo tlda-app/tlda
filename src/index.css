@@ -137,7 +137,7 @@ html.hires .tlui-layout {
 .tl-shape[data-shape-type="math-note"],
 .tl-shape[data-shape-type="terminal"],
 .tl-shape[data-shape-type="fleet-chat"] {
-  transition: opacity 0.3s 0.4s;
+  transition: opacity 0.55s ease 0.4s;
 }
 html.is-scrolling .tl-shape[data-shape-type="math-note"],
 html.is-scrolling .tl-shape[data-shape-type="terminal"],
@@ -154,6 +154,6 @@ body.tlda-pan-mode .tl-shape[data-shape-type="fleet-chat"] {
 .tl-shape.tl-shape__is-editing[data-shape-type="math-note"],
 .tl-shape.tl-shape__is-editing[data-shape-type="terminal"],
 .tl-shape.tl-shape__is-editing[data-shape-type="fleet-chat"] {
-  transition: opacity 0.15s;
+  transition: opacity 0.35s ease;
   opacity: 1 !important;
 }
