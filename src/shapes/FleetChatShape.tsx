@@ -712,13 +712,13 @@ function ContextBadge({ percent }: { percent?: number }) {
  * arrives to fill it. Ghost detection uses useEffect — not during-render
  * ref mutation — so the transition is never missed across render batches.
  */
-function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibernatingAgents, ctx, lastItemKey, agents: _agents, escalationState }: {
+function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibernatingAgents, ctx, itemCount, agents: _agents, escalationState }: {
   thinkingAgents: Map<string, number>
   compactingAgents: Map<string, number>
   contextPercent: Map<string, number>
   hibernatingAgents: Set<string>
   ctx: any
-  lastItemKey: string | null
+  itemCount: number
   agents: any[]
   escalationState?: Record<string, { level: number; confirmed: number }>
 }) {
@@ -744,58 +744,56 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
   if (hasActive) lastStatusRef.current = statusAgents
 
   const [ghost, setGhost] = useState(false)
-  // Bottom-row key captured when the slot is reserved; the slot is "absorbed"
-  // (released) only when a genuinely new row lands at the bottom.
-  const ghostKeyRef = useRef<string | null>(null)
-  // Bottom-row key as of the previous render — lets the reserve check tell
-  // whether a new message landed in the same tick the agent went inactive.
-  const prevKeyRef = useRef<string | null>(lastItemKey)
+  // Item count captured when the slot is reserved; the slot is released only
+  // when the chat actually GROWS past it (a real new item filled the space).
+  // Count grows on genuine additions; it's far less noisy than the bottom-row
+  // key, which also changed on dividers / activity regrouping and made the slot
+  // collapse with nothing filling it (the inconsistent reserve = the bounce).
+  const ghostCountRef = useRef(0)
+  // Item count as of the previous render — lets the reserve check tell whether a
+  // new item landed in the same tick the agent went inactive (it already filled
+  // the space, so reserving would leave a leftover gap).
+  const prevCountRef = useRef(itemCount)
 
   // Reserve the slot when the agent goes inactive — in a LAYOUT effect so the
-  // footer never paints a collapsed frame (which itself read as a bounce). Skip
-  // reserving if a new bottom row landed this same tick: that row already
-  // absorbed the space, so reserving would leave a leftover gap.
+  // footer never paints a collapsed frame (which itself read as a bounce).
   useLayoutEffect(() => {
-    const bottomJustChanged = lastItemKey !== prevKeyRef.current
-    if (!hasActive && lastStatusRef.current.size > 0 && !ghost && !bottomJustChanged) {
+    const grewThisTick = itemCount !== prevCountRef.current
+    if (!hasActive && lastStatusRef.current.size > 0 && !ghost && !grewThisTick) {
       setGhost(true)
-      ghostKeyRef.current = lastItemKey
+      ghostCountRef.current = itemCount
     }
     if (hasActive && ghost) {
       setGhost(false)
     }
-  // lastItemKey intentionally omitted — this fires only on the hasActive
-  // transition; prevKeyRef carries the previous render's bottom key.
+  // itemCount intentionally omitted — fires only on the hasActive transition;
+  // prevCountRef carries the previous render's count.
   }, [hasActive]) // eslint-disable-line react-hooks/exhaustive-deps -- intentional: transition-only detection
 
-  // Release the slot only when a NEW row lands at the bottom (its key changes) —
-  // NOT on raw item-count churn (dividers, activity grouping, other agents'
-  // activity), which collapsed the slot with nothing to fill it.
+  // Release the slot only when the chat grows past the reserved count — a real
+  // new item landed and filled the space. Churn that doesn't add an item
+  // (regrouping, dividers) leaves the count unchanged, so the slot holds.
   useEffect(() => {
-    if (ghost && lastItemKey !== ghostKeyRef.current) {
+    if (ghost && itemCount > ghostCountRef.current) {
       setGhost(false)
     }
-  }, [ghost, lastItemKey])
+  }, [ghost, itemCount])
 
-  // Track the bottom key every render (after the reserve check above reads the
-  // previous value) so the same-tick-absorb detection works.
-  useLayoutEffect(() => { prevKeyRef.current = lastItemKey })
+  // Track the count every render (after the reserve check reads the previous
+  // value) so the same-tick-absorb detection works.
+  useLayoutEffect(() => { prevCountRef.current = itemCount })
 
-  const showRows = hasActive || ghost
+  if (!hasActive && !ghost) return null
 
   return (
     <div style={{
       padding: '0 8px',
       fontSize: 11,
       flexShrink: 0,
-      // Always reserve one row of height so the thinking line appearing or
-      // disappearing never shifts the chat stack — that shift was the micro-
-      // bounce. The slot stays put; only its contents fade in/out.
-      minHeight: 'calc(var(--fleet-base-font, 11px) * 1.5 + 4px)',
       opacity: ghost ? 0 : 0.6,
       transition: 'opacity 0.2s',
     }}>
-      {showRows && [...(hasActive ? statusAgents : lastStatusRef.current).entries()].map(([agentId, { status, startTs }]) => {
+      {[...(hasActive ? statusAgents : lastStatusRef.current).entries()].map(([agentId, { status, startTs }]) => {
         const esc = escalationState?.[agentId]
         const escLevel = esc?.level || 0
         const escConfirmed = esc?.confirmed || 0
@@ -4073,7 +4071,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                     contextPercent={contextPercent}
                     hibernatingAgents={hibernatingAgents}
                     ctx={ctx}
-                    lastItemKey={rawItems.length ? rawItems[rawItems.length - 1].key : null}
+                    itemCount={rawItems.length}
                     agents={agents}
                     escalationState={escalationState}
                   />
