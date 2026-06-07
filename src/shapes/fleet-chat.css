@@ -766,17 +766,13 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 }
 
 /* --- Timer messages --- */
-/* Active countdown is an actionable, time-critical control (Skip can cancel it),
-   so it's deliberately more prominent than passive chrome. */
+/* The active countdown reads as normal chat text with a quiet purple timer —
+   it's information, not an alarm. No loud bar, no bold, no orange. */
 .fleet-chat-shape .chat-timer-countdown {
   font-size: 12px;
-  opacity: 0.95;
-  border-left: 2px solid var(--orange, #e08a3c);
-  padding-left: 6px;
 }
 .fleet-chat-shape .chat-timer-countdown .timer-msg {
-  color: var(--orange, #e08a3c);
-  font-weight: 600;
+  color: var(--purple, #9090c0);
 }
 .fleet-chat-shape .chat-timer-cancelled {
   font-size: 11px;
