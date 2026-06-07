@@ -558,6 +558,9 @@ export class FleetStore {
     // subquery, then a grouped index pass); both scanned ~400k events per call
     // and pinned the event loop for seconds-to-tens-of-seconds under load.
     this._getAllAgents = this.db.prepare(`SELECT * FROM agents ORDER BY last_seen DESC`);
+    // Live-only roster (the agents panel never shows dead agents). Indexed by
+    // idx_agents_alive(dead, last_seen DESC) → returns ~tens of rows, not ~1300.
+    this._getAliveAgents = this.db.prepare(`SELECT * FROM agents WHERE dead = 0 ORDER BY last_seen DESC`);
     this._deleteAgent = this.db.prepare('DELETE FROM agents WHERE id = ?');
     this._updateAgentLastSeen = this.db.prepare('UPDATE agents SET last_seen = ?, dead = 0 WHERE id = ?');
     this._markAgentDead = this.db.prepare('UPDATE agents SET dead = 1 WHERE id = ?');
@@ -1012,11 +1015,12 @@ export class FleetStore {
     return this._agentsCache;
   }
 
-  // Force the next getAllAgents() to rebuild. Call after any structural change
-  // (insert/register, dead/alive flip, removal) so it shows up immediately
-  // instead of waiting out the TTL.
+  // Force the next getAllAgents()/getAliveAgents() to rebuild. Call after any
+  // structural change (insert/register, dead/alive flip, removal) so it shows
+  // up immediately instead of waiting out the TTL.
   _bustAgentsCache() {
     this._agentsCacheTs = 0;
+    this._aliveCacheTs = 0;
   }
 
   // Single gate for naming/labeling. Returns [] if all `names` are available.
@@ -1074,7 +1078,18 @@ export class FleetStore {
   }
 
   getAliveAgents() {
-    return this.getAllAgents().filter(a => !a.dead);
+    // Highest-frequency roster read (store-agents / agents panel). Query
+    // dead=0 directly via idx_agents_alive — ~tens of rows — instead of
+    // pulling the full ~1300-row table through getAllAgents and filtering.
+    // Same 1s TTL + structural bust as getAllAgents.
+    const TTL_MS = 1000;
+    const now = Date.now();
+    if (this._aliveCache && (now - this._aliveCacheTs) < TTL_MS) {
+      return this._aliveCache;
+    }
+    this._aliveCache = this._getAliveAgents.all().map(r => this._hydrateAgent(r));
+    this._aliveCacheTs = now;
+    return this._aliveCache;
   }
 
   removeAgent(id) {
