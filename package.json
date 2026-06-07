@@ -4,7 +4,8 @@
   "version": "0.2.0",
   "type": "module",
   "bin": {
-    "tlda": "./cli/tlda.mjs"
+    "tlda": "./cli/tlda.mjs",
+    "tlda-dev": "./cli/tlda-dev.mjs"
   },
   "scripts": {
     "postinstall": "chmod +x node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper 2>/dev/null || true",

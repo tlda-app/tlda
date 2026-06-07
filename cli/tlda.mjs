@@ -2494,13 +2494,16 @@ Commands:
   delete <name>  Delete a project (alias: rm)
   preview <name> [page ...]  Rasterize SVG pages to PNG
   publish [doc ...]  Publish docs to GitHub Pages + Fly
+  agent <list|spawn|attach|hibernate>  Manage fleet agents on this machine
   setup          One-time setup [editor]
-  deploy         Build, restart server, verify SPA renders
   mcp-setup      Write .mcp.json for Claude Code integration (current directory)
   doctor         Check setup (--fix to auto-repair)
   completions    Output zsh completion script
 
 The server auto-starts on first use. Explicit control: tlda server start/stop.
+
+Developer commands (for hacking on tlda itself) live under \`tlda-dev\`:
+  tlda-dev --help   pw · dev · dev-url · deploy
 
 Options:
   --server <url>   Server URL (default: http://localhost:5176)
