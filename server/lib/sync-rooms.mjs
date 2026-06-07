@@ -16,6 +16,7 @@ import { gzipSync, gunzipSync } from 'node:zlib'
 import { emitShapeChangedDebounced } from './webhooks.mjs'
 import { mathNoteProps } from '../../shared/shapes/math-note-schema.mjs'
 import { outlineProps } from '../../shared/shapes/outline-schema.mjs'
+import { graphProps } from '../../shared/shapes/graph-schema.mjs'
 
 // --- Custom shape schemas (prop validators only, no React) ---
 // Props that must mirror the client shape util exactly are imported from
@@ -35,6 +36,13 @@ const customShapeSchemas = {
     props: outlineProps,
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.outline',
+      sequence: [],
+    }),
+  },
+  'graph': {
+    props: graphProps,
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.graph',
       sequence: [],
     }),
   },
