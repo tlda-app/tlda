@@ -132,23 +132,8 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       let total = null
       const cols = 'id, type, timestamp, from_id as "from", to_id as "to", text, metadata, task_id, agent_id'
       if (agent) {
-        // Build WHERE clause with optional time filters
-        let where = '(from_id = ? OR to_id = ?)'
-        const baseParams = [agent, agent]
-        if (since) { where += ' AND timestamp >= ?'; baseParams.push(since) }
-        if (until) { where += ' AND timestamp <= ?'; baseParams.push(until) }
-
-        const q = afterId
-          ? `SELECT ${cols} FROM events WHERE ${where} AND id > ? ORDER BY id ASC LIMIT ?`
-          : beforeId
-          ? `SELECT ${cols} FROM events WHERE ${where} AND id < ? ORDER BY id DESC LIMIT ?`
-          : `SELECT ${cols} FROM events WHERE ${where} ORDER BY timestamp ASC LIMIT ?`
-        events = afterId
-          ? fleetStore.db.prepare(q).all(...baseParams, afterId, limit)
-          : beforeId
-          ? fleetStore.db.prepare(q).all(...baseParams, beforeId, limit)
-          : fleetStore.db.prepare(q).all(...baseParams, limit)
-        if (beforeId) events.reverse()
+        // UNION of two indexed scans — see FleetStore.queryAgentEvents.
+        events = fleetStore.queryAgentEvents({ agent, sinceTs: since, untilTs: until, afterId, beforeId, limit })
       } else if (type) {
         events = fleetStore.db.prepare(
           `SELECT ${cols} FROM events WHERE type = ? AND id > ? ORDER BY id ASC LIMIT ?`
