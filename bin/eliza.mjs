@@ -953,6 +953,13 @@ function extractBaseTopic(name) {
   return base
 }
 
+// Strip a lineage phase suffix to recover the lineage base name.
+// dawn is the bare base; day/dusk/night carry a ":<phase>" suffix.
+// "perff:day" → "perff", "perff" → "perff".
+function stripPhase(name) {
+  return name.replace(/:(?:dawn|day|dusk|night)$/i, '')
+}
+
 // Find the next counter for a topic among existing agents.
 // Returns "topic-Nb" for briefings, "topic-N" for pickups/managers.
 async function nextAgentName(baseTopic, suffix) {
@@ -1491,10 +1498,18 @@ ${triggerText ? `\n**Skip's handoff message:**\n> ${triggerText}\n` : ''}
   sendChat(agentId, `⚠️ Skip is handing off your work to a fresh agent. Stand by — a briefing agent will read your thread.`)
 
   const agentCwd = await resolveAgentCwd(agentId)
-  const briefingName = await nextAgentName(extractBaseTopic(agentName), 'b')
+  // The briefer is spawned directly as "<base>:day" — its name says which lineage
+  // and phase, so register maps it straight in. No temp name, no rotation/switch.
+  // The outgoing agent moves to ":dusk" (it's actually leaving), freeing the bare
+  // name for the eventual pickup. "Lineage" is just the base of the friendly name.
+  const lineageBase = stripPhase(agentName)
+  const briefingName = `${lineageBase}:day`
   try {
-    // (The original is demoted day → dusk by the rotation when the briefer
-    // enters as the new day, below — no separate transition needed.)
+    try {
+      await sendRequest({ type: 'lineage-transition', agent: agentId, phase: 'dusk' })
+    } catch (e) {
+      sendChat(OWNER_ID, `⚠️ Outgoing ${agentName} → :dusk failed: ${e.message}`)
+    }
     let spawnResult = await postJson('/api/spawn', { name: briefingName, cwd: agentCwd })
     if (spawnResult.error && spawnResult.error.includes('already exists')) {
       spawnResult = await postJson('/api/spawn', { agent: briefingName, respawn: true })
@@ -1509,14 +1524,6 @@ ${triggerText ? `\n**Skip's handoff message:**\n> ${triggerText}\n` : ''}
 
     setTimeout(async () => {
       try {
-        // Rotate the briefer into the lineage as the new day (short-lived).
-        // One rotation: original day → dusk, briefer → day.
-        try {
-          await sendRequest({ type: 'lineage-rotate', agent: briefingName, lineage: agentName })
-        } catch (e) {
-          sendChat(OWNER_ID, `⚠️ Lineage rotate (${briefingName} → day in ${agentName}) failed: ${e.message}`)
-        }
-
         await postJson('/api/tasks/delegate', {
           from: AGENT_ID,
           agent: briefingName,
@@ -1596,7 +1603,9 @@ async function handleHandoffReady(fromId, text) {
 
   sendChat(OWNER_ID, `Briefing ready: **${briefingPath}**. Spawning fresh agent…`)
 
-  const pickupName = await nextAgentName(extractBaseTopic(handoffInfo.originalAgent))
+  // The pickup is the new worker — spawn it directly with the bare base name
+  // (dawn). Its name maps it into the lineage on register; no rotation needed.
+  const pickupName = stripPhase(handoffInfo.originalAgent)
   const spawnPickup = async () => {
     try {
       let spawnResult = await postJson('/api/spawn', { name: pickupName, cwd: handoffInfo.originalCwd })
@@ -1610,16 +1619,6 @@ async function handleHandoffReady(fromId, text) {
 
       setTimeout(async () => {
         try {
-          // Rotate the pickup into the lineage as the new day. One rotation:
-          // briefer day → dusk, original (was dusk) loses its name and drops to
-          // nameless history, pickup → day. Nothing is marked dead or unlinked —
-          // the original just fades and hibernates once no one talks to it.
-          try {
-            await sendRequest({ type: 'lineage-rotate', agent: pickupName, lineage: handoffInfo.originalAgent })
-          } catch (e) {
-            sendChat(OWNER_ID, `⚠️ Lineage rotate (${pickupName} → day in ${handoffInfo.originalAgent}) failed: ${e.message}`)
-          }
-
           await postJson('/api/tasks/delegate', {
             from: AGENT_ID,
             agent: pickupName,
