@@ -38,16 +38,20 @@
 }
 
 
-/* Fleet HUD sits above all canvas content (notes, doc pages, etc.) */
-[data-shape-type="fleet-docview"] {
+/* Fleet HUD sits above all canvas content (notes, doc pages, etc.). All fleet
+   shape types share ONE z-index so stacking ORDER among them is decided by
+   DOM/paint order (TLDraw's bringToFront), NOT a fixed CSS layer. With a fixed
+   per-type layer (chat 8210 > agents 8201 …) an overlapped panel could never be
+   raised above another — its move buttons stayed buried and it couldn't be
+   separated. Equal z-index lets pointer-down → bringToFront actually surface the
+   panel you grab. */
+[data-shape-type="fleet-docview"],
+[data-shape-type="fleet-agents"],
+[data-shape-type="fleet-search"],
+[data-shape-type="fleet-chat"] {
   z-index: 8200 !important;
 }
-[data-shape-type="fleet-agents"],
-[data-shape-type="fleet-search"] {
-  z-index: 8201 !important;
-}
 [data-shape-type="fleet-chat"] {
-  z-index: 8210 !important;
   isolation: isolate;
 }
 .fleet-search-shape input::placeholder {
