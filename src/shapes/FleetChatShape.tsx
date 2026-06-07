@@ -725,7 +725,7 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
   // Build status display from server-authoritative agent status field.
   // thinkingAgents/compactingAgents are pre-filtered to chat targets and provide elapsed timestamps.
   // hibernatingAgents is pre-filtered to chat targets.
-  const statusAgents = useMemo(() => {
+  const statusAgentsRaw = useMemo(() => {
     const merged = new Map<string, { status: 'thinking' | 'compacting' | 'hibernating', startTs: number }>()
     for (const [id, ts] of thinkingAgents) {
       merged.set(id, { status: 'thinking', startTs: ts })
@@ -738,6 +738,36 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
     }
     return merged
   }, [thinkingAgents, compactingAgents, hibernatingAgents])
+
+  // Grace-hold to bridge transient "no status" frames. When you chat a
+  // hibernating agent it goes hibernating → awake → thinking, and during the
+  // brief 'awake' frame it's in none of the sets — the line would drop and the
+  // stack would bounce, then snap back when thinking lands. Hold an agent's
+  // last status for a short grace after it leaves all sets, so a quick
+  // transition shows no gap. A genuine exit just drops one grace-window late.
+  const stickyRef = useRef<Map<string, { status: 'thinking' | 'compacting' | 'hibernating', startTs: number, seenAt: number }>>(new Map())
+  const [graceTick, setGraceTick] = useState(0)
+  const statusAgents = useMemo(() => {
+    const GRACE = 600
+    const now = Date.now()
+    const merged = new Map(statusAgentsRaw)
+    for (const [id, v] of statusAgentsRaw) {
+      stickyRef.current.set(id, { status: v.status, startTs: v.startTs, seenAt: now })
+    }
+    for (const [id, v] of [...stickyRef.current]) {
+      if (merged.has(id)) continue
+      if (now - v.seenAt < GRACE) merged.set(id, { status: v.status, startTs: v.startTs })
+      else stickyRef.current.delete(id)
+    }
+    return merged
+  }, [statusAgentsRaw, graceTick])
+
+  // Re-evaluate once the grace window expires so held-over agents actually drop.
+  useEffect(() => {
+    if (stickyRef.current.size === 0) return
+    const t = setTimeout(() => setGraceTick(x => x + 1), 650)
+    return () => clearTimeout(t)
+  }, [statusAgentsRaw])
 
   const hasActive = statusAgents.size > 0
   const lastStatusRef = useRef(statusAgents)
