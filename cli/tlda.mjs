@@ -3,13 +3,13 @@
  * tlda — tlda CLI.
  *
  * Commands:
- *   tlda create <name> [--title "Title"] [--dir /path] [--main main.tex]
- *   tlda push [name] [--dir /path]
- *   tlda watch [/path/to/main.tex] [name]
- *   tlda watch-all
- *   tlda open [name]
- *   tlda list
- *   tlda status [name]
+ *   tlda doc create <name> [--title "Title"] [--dir /path] [--main main.tex]
+ *   tlda doc push [name] [--dir /path]
+ *   tlda daemon [/path/to/main.tex] [name]
+ *   tlda daemon
+ *   tlda doc open [name]
+ *   tlda doc list
+ *   tlda doc status [name]
  *   tlda config set server <url>
  *
  * Server URL resolution:
@@ -67,21 +67,21 @@ const command = args[0]
 
 // Per-command help (shown with --help)
 const COMMAND_HELP = {
-  scratch: 'tlda scratch <file.md> [--title "Title"] [--book fleet-workspace]\n\n  Publish a scratch markdown file as a page in a book.\n  Creates a markdown project, pushes the file, and auto-joins the book.\n  Subsequent edits are auto-pushed by watch-all.\n\n  --title    Display title (default: first heading or filename)\n  --book     Book to join (default: fleet-workspace)',
-  book:    'tlda book <name> --members doc1,doc2,doc3,...\n\n  Create a book that groups existing documents together.\n  Each member keeps its own sync room and annotations.\n  The viewer shows one member at a time with a tab bar to switch.',
-  create:  'tlda create <name> [--title "Title"] [--dir /path] [--main main.tex] [--format slides|html|markdown]\n\n  Create a project and push source files. If the project already exists,\n  pushes files and triggers a rebuild.\n\n  Formats:\n    (default)  LaTeX → SVG pipeline (latexmk → dvisvgm)\n    slides     Reveal.js HTML (from Quarto revealjs or manual)\n    html       Multipage HTML chapters (from Quarto book render)\n    markdown   Markdown with KaTeX math → HTML',
-  push:    'tlda push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
-  watch:   'tlda watch [start|stop|status|log|run]\n\n  Control the per-machine fleet-daemon (bin/fleet-daemon.mjs).\n  The daemon watches Claude Code session JSONLs and project source\n  dirs locally, pushing events to the tlda server over WebSocket.',
-  'watch-all': 'tlda watch-all [start|stop|status|log|run]\n\n  Alias for `tlda watch start/stop/status/log/run` — runs the\n  per-machine fleet-daemon (bin/fleet-daemon.mjs), which watches\n  every project source dir AND every Claude Code session JSONL\n  on this machine and pushes events to the tlda server over WebSocket.',
-  listen:  'tlda listen <doc> [--timeout <seconds>]\n\n  Block until feedback arrives on the document, then print it as JSON\n  and exit. Designed for `bash(run_in_background)` so an agent can\n  keep working while waiting for annotations, pings, or drawn shapes.\n\n  --timeout <seconds>  Max wait time (default: 300)',
-  monitor: 'tlda monitor [add|remove|list|clear] [doc]\n\n  Manage which docs the PostToolUse hook monitors for feedback.\n  The hook runs after every tool call and reports new annotations,\n  pings, and drawn shapes automatically — no polling needed.\n\n  add <doc>     Start monitoring (seeds shape snapshot)\n  remove <doc>  Stop monitoring\n  list          Show monitored docs (default)\n  clear         Stop all monitoring',
-  open:    'tlda open [name]\n\n  Open the viewer in the default browser (RW token = presenter privilege).',
-  share:   'tlda share [name]\n\n  Print a viewer URL with the read-only token.\n  Recipients can annotate but cannot present.',
-  status:  'tlda status [name]\n\n  Show build status for a project.',
-  errors:  'tlda errors [name] [--wait]\n\n  Extract LaTeX errors and warnings from the last build log.\n  With --wait (-w), blocks until the current build finishes.',
+  scratch: 'tlda doc scratch <file.md> [--title "Title"] [--book fleet-workspace]\n\n  Publish a scratch markdown file as a page in a book.\n  Creates a markdown project, pushes the file, and auto-joins the book.\n  Subsequent edits are auto-pushed by watch-all.\n\n  --title    Display title (default: first heading or filename)\n  --book     Book to join (default: fleet-workspace)',
+  book:    'tlda doc book <name> --members doc1,doc2,doc3,...\n\n  Create a book that groups existing documents together.\n  Each member keeps its own sync room and annotations.\n  The viewer shows one member at a time with a tab bar to switch.',
+  create:  'tlda doc create <name> [--title "Title"] [--dir /path] [--main main.tex] [--format slides|html|markdown]\n\n  Create a project and push source files. If the project already exists,\n  pushes files and triggers a rebuild.\n\n  Formats:\n    (default)  LaTeX → SVG pipeline (latexmk → dvisvgm)\n    slides     Reveal.js HTML (from Quarto revealjs or manual)\n    html       Multipage HTML chapters (from Quarto book render)\n    markdown   Markdown with KaTeX math → HTML',
+  push:    'tlda doc push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
+  watch:   'tlda daemon [start|stop|status|log|run]\n\n  Control the per-machine fleet-daemon (bin/fleet-daemon.mjs).\n  The daemon watches Claude Code session JSONLs and project source\n  dirs locally, pushing events to the tlda server over WebSocket.',
+  'watch-all': 'tlda daemon [start|stop|status|log|run]\n\n  Alias for `tlda daemon start/stop/status/log/run` — runs the\n  per-machine fleet-daemon (bin/fleet-daemon.mjs), which watches\n  every project source dir AND every Claude Code session JSONL\n  on this machine and pushes events to the tlda server over WebSocket.',
+  listen:  'tlda doc listen <doc> [--timeout <seconds>]\n\n  Block until feedback arrives on the document, then print it as JSON\n  and exit. Designed for `bash(run_in_background)` so an agent can\n  keep working while waiting for annotations, pings, or drawn shapes.\n\n  --timeout <seconds>  Max wait time (default: 300)',
+  monitor: 'tlda doc monitor [add|remove|list|clear] [doc]\n\n  Manage which docs the PostToolUse hook monitors for feedback.\n  The hook runs after every tool call and reports new annotations,\n  pings, and drawn shapes automatically — no polling needed.\n\n  add <doc>     Start monitoring (seeds shape snapshot)\n  remove <doc>  Stop monitoring\n  list          Show monitored docs (default)\n  clear         Stop all monitoring',
+  open:    'tlda doc open [name]\n\n  Open the viewer in the default browser (RW token = presenter privilege).',
+  share:   'tlda doc share [name]\n\n  Print a viewer URL with the read-only token.\n  Recipients can annotate but cannot present.',
+  status:  'tlda doc status [name]\n\n  Show build status for a project.',
+  errors:  'tlda doc errors [name] [--wait]\n\n  Extract LaTeX errors and warnings from the last build log.\n  With --wait (-w), blocks until the current build finishes.',
   build:   'tlda build [name]\n\n  Trigger a rebuild without pushing files.\n\n  NOTE: Prefer the watcher pipeline. This command bypasses change\n  detection and should only be used for debugging.',
-  delete:  'tlda delete <name>\n\n  Delete a project and all its data.',
-  preview: 'tlda preview <name> [page ...]\n\n  Rasterize SVG pages to PNG for visual inspection.\n  Outputs paths to /tmp/tlda-preview-{name}/.',
+  delete:  'tlda doc delete <name>\n\n  Delete a project and all its data.',
+  preview: 'tlda doc preview <name> [page ...]\n\n  Rasterize SVG pages to PNG for visual inspection.\n  Outputs paths to /tmp/tlda-preview-{name}/.',
   logs:    'tlda logs [agent] [--since 1h|2026-05-23] [--type chat,register] [-n 50] [-f] [--daemon] [--all]\n\n  Unified chronological log across all sources (DB events, daemon log, dead-letters).\n\n  agent      Filter by agent name (fuzzy match)\n  --since    Time range (e.g. 1h, 30m, 2d, or ISO date)\n  --type     Filter by event type (comma-separated)\n  -n N       Number of events (default: 50, or 10000 with --since)\n  -f         Follow mode (tail -f style)\n  --daemon   Include daemon log lines (heartbeats, WS, terminal exits)\n  --all      Include activity and client_error events (excluded by default)',
   server:  'tlda server [start|stop|status|log|install|uninstall]\n\n  start      Start the server (auto-restarts via launchd if installed)\n  stop       Stop the server\n  status     Check if server is running\n  log        Show recent server log\n  install    Install launchd service (macOS)\n  uninstall  Remove launchd service',
   publish: 'tlda publish [--target <name>] [doc ...]\n\n  Publish docs to GitHub Pages (+ optionally Fly).\n\n  With no args, publishes all docs in config.published using the "default" target.\n  With --target, uses the named target config (sync server, repo, etc.).\n  With doc names, publishes those and adds them to the list.\n\n  Config (targets in ~/.config/tlda/config.json):\n    targets.<name>.sync     — sync server WebSocket URL\n    targets.<name>.repo     — git remote for gh-pages (null = same repo)\n    targets.<name>.fly      — deploy to Fly (default: false)\n    targets.<name>.basePath — vite base path (default: /tlda/)',
@@ -226,7 +226,7 @@ async function cmdBook() {
   const name = getPositional(0)
   const membersArg = getFlag('members')
   if (!name || !membersArg) {
-    console.error('Usage: tlda book <name> --members doc1,doc2,doc3,...')
+    console.error('Usage: tlda doc book <name> --members doc1,doc2,doc3,...')
     process.exit(1)
   }
 
@@ -271,7 +271,7 @@ async function cmdBook() {
 async function cmdScratch() {
   const filePath = getPositional(0)
   if (!filePath) {
-    console.error('Usage: tlda scratch <file.md> [--title "Title"] [--book fleet-workspace]')
+    console.error('Usage: tlda doc scratch <file.md> [--title "Title"] [--book fleet-workspace]')
     process.exit(1)
   }
 
@@ -336,7 +336,7 @@ async function cmdScratch() {
 
 async function cmdCreate() {
   const name = getPositional(0)
-  if (!name) { console.error('Usage: tlda create <name> [--title "Title"] [--dir /path] [--main main.tex] [--format slides|html]'); process.exit(1) }
+  if (!name) { console.error('Usage: tlda doc create <name> [--title "Title"] [--dir /path] [--main main.tex] [--format slides|html]'); process.exit(1) }
 
   const format = getFlag('format') || null
   const dir = resolve(getFlag('dir') || '.')
@@ -495,7 +495,7 @@ async function cmdCreate() {
 
 async function cmdPush() {
   const name = getPositional(0) || await inferProjectName()
-  if (!name) { console.error('Usage: tlda push [name] [--dir /path]'); process.exit(1) }
+  if (!name) { console.error('Usage: tlda doc push [name] [--dir /path]'); process.exit(1) }
 
   const dir = resolve(getFlag('dir') || '.')
 
@@ -534,15 +534,15 @@ async function cmdPush() {
   }
 }
 
-// Fleet-daemon control: `tlda watch start | stop | status | log | run`
+// Fleet-daemon control: `tlda daemon start | stop | status | log | run`
 //
 // The fleet-daemon is the per-machine local agent that owns JSONL
 // watching, terminal-chat extraction, and document source watching for
 // the tlda hub server. See bin/fleet-daemon.mjs and the spec at
 // scratch/fleet-daemon-spec.md for the full picture.
 //
-// This command coexists with the older `tlda watch <path>` per-project
-// shorthand and `tlda watch-all start` — Phase 1 doesn't deprecate
+// This command coexists with the older `tlda daemon <path>` per-project
+// shorthand and `tlda daemon start` — Phase 1 doesn't deprecate
 // either. If the first positional is start/stop/status/log/run we
 // route here, otherwise we fall through to the existing watcher.
 const FLEET_DAEMON_LOGFILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.log')
@@ -701,15 +701,15 @@ async function cmdFleetWatch(sub) {
     return
   }
 
-  console.error(`Unknown subcommand: tlda watch ${sub}`)
-  console.error('Usage: tlda watch [start|stop|status|log|run]')
+  console.error(`Unknown subcommand: tlda daemon ${sub}`)
+  console.error('Usage: tlda daemon [start|stop|status|log|run]')
   process.exit(1)
 }
 
 async function cmdWatch() {
   const arg1 = getPositional(0)
 
-  // Fleet-daemon dispatch — `tlda watch start/stop/status/log/run`
+  // Fleet-daemon dispatch — `tlda daemon start/stop/status/log/run`
   if (arg1 === 'start' || arg1 === 'stop' || arg1 === 'status' || arg1 === 'log' || arg1 === 'logs' || arg1 === 'run') {
     return cmdFleetWatch(arg1)
   }
@@ -736,7 +736,7 @@ async function cmdWatch() {
     await api('GET', `/api/projects/${name}`)
   } catch {
     console.error(red(`Project "${name}" not found on server.`))
-    console.error(`  Run \`tlda create ${name}\` first, or did you mean \`tlda watch-all start\`?`)
+    console.error(`  Run \`tlda doc create ${name}\` first, or did you mean \`tlda daemon start\`?`)
     process.exit(1)
   }
 
@@ -752,7 +752,7 @@ async function cmdWatch() {
   await startWatcher({ dir, name, debounceMs, getServer, getToken })
 }
 
-// `tlda watch-all` is now an alias for `tlda watch start/stop/status` —
+// `tlda daemon` is now an alias for `tlda daemon start/stop/status` —
 // the per-machine fleet-daemon watches every project's source dir AND
 // every Claude Code session JSONL. The legacy multi-watcher process
 // (one Node per project, HTTP push, no JSONL handling) is gone.
@@ -787,7 +787,7 @@ async function cmdMonitor() {
     const docs = readDocs()
     if (docs.length === 0) {
       console.log(dim('No docs being monitored.'))
-      console.log(dim('  tlda monitor add <doc>'))
+      console.log(dim('  tlda doc monitor add <doc>'))
     } else {
       console.log(`Monitoring: ${docs.join(', ')}`)
     }
@@ -795,7 +795,7 @@ async function cmdMonitor() {
   }
 
   if (sub === 'add') {
-    if (!doc) { console.error('Usage: tlda monitor add <doc>'); process.exit(1) }
+    if (!doc) { console.error('Usage: tlda doc monitor add <doc>'); process.exit(1) }
     const docs = readDocs()
     if (!docs.includes(doc)) {
       docs.push(doc)
@@ -826,7 +826,7 @@ async function cmdMonitor() {
   }
 
   if (sub === 'remove' || sub === 'rm') {
-    if (!doc) { console.error('Usage: tlda monitor remove <doc>'); process.exit(1) }
+    if (!doc) { console.error('Usage: tlda doc monitor remove <doc>'); process.exit(1) }
     const docs = readDocs().filter(d => d !== doc)
     writeDocs(docs)
     // Clean up state
@@ -843,14 +843,14 @@ async function cmdMonitor() {
     return
   }
 
-  console.error(`Unknown subcommand: ${sub}\nUsage: tlda monitor [add|remove|list|clear] [doc]`)
+  console.error(`Unknown subcommand: ${sub}\nUsage: tlda doc monitor [add|remove|list|clear] [doc]`)
   process.exit(1)
 }
 
 async function cmdListen() {
   const doc = getPositional(0)
   if (!doc) {
-    console.error('Usage: tlda listen <doc> [--timeout <seconds>]')
+    console.error('Usage: tlda doc listen <doc> [--timeout <seconds>]')
     process.exit(1)
   }
   const timeout = parseInt(getFlag('timeout', '300')) || 300
@@ -890,7 +890,7 @@ async function cmdOpen() {
 async function cmdShare() {
   const { execSync } = await import('child_process')
   const name = getPositional(0) || await inferProjectName()
-  if (!name) { console.error('Usage: tlda share [name]'); process.exit(1) }
+  if (!name) { console.error('Usage: tlda doc share [name]'); process.exit(1) }
 
   const config = loadConfig()
   const port = getPort()
@@ -964,7 +964,7 @@ async function cmdList() {
 
 async function cmdStatus() {
   const name = getPositional(0) || await inferProjectName()
-  if (!name) { console.error('Usage: tlda status [name]'); process.exit(1) }
+  if (!name) { console.error('Usage: tlda doc status [name]'); process.exit(1) }
 
   const data = await api('GET', `/api/projects/${name}/build/status`)
   const statusColor = data.status === 'success' ? green : data.status === 'error' ? red : dim
@@ -980,7 +980,7 @@ async function cmdStatus() {
 
 async function cmdErrors() {
   const name = getPositional(0) || await inferProjectName()
-  if (!name) { console.error('Usage: tlda errors [name]'); process.exit(1) }
+  if (!name) { console.error('Usage: tlda doc errors [name]'); process.exit(1) }
 
   const wait = hasFlag('wait') || hasFlag('w')
 
@@ -1028,7 +1028,7 @@ async function cmdErrors() {
 
 async function cmdDelete() {
   const name = getPositional(0)
-  if (!name) { console.error('Usage: tlda delete <name>'); process.exit(1) }
+  if (!name) { console.error('Usage: tlda doc delete <name>'); process.exit(1) }
 
   await api('DELETE', `/api/projects/${name}`)
   console.log(green(`Project "${name}" deleted.`))
@@ -1036,7 +1036,7 @@ async function cmdDelete() {
 
 async function cmdPreview() {
   const name = getPositional(0) || await inferProjectName()
-  if (!name) { console.error('Usage: tlda preview <name> [page ...]'); process.exit(1) }
+  if (!name) { console.error('Usage: tlda doc preview <name> [page ...]'); process.exit(1) }
 
   // Collect page numbers from remaining positional args
   const requestedPages = []
@@ -1214,7 +1214,7 @@ function cmdCompletions() {
 
 _tlda_projects() {
   local -a projects
-  projects=(\${(f)"$(tlda list 2>/dev/null | sed 's/^ *//' | cut -d: -f1)"})
+  projects=(\${(f)"$(tlda doc list 2>/dev/null | sed 's/^ *//' | cut -d: -f1)"})
   _describe 'project' projects
 }
 
@@ -1784,11 +1784,11 @@ async function cmdDoctor() {
       if (existsSync(FLEET_DAEMON_PIDFILE)) {
         ok('fleet daemon started')
       } else {
-        fail('fleet daemon failed to start', `Check log: tlda watch log`)
+        fail('fleet daemon failed to start', `Check log: tlda daemon log`)
         issues++
       }
     } catch (e) {
-      fail(`fleet daemon failed to start: ${e.message}`, 'tlda watch log')
+      fail(`fleet daemon failed to start: ${e.message}`, 'tlda daemon log')
       issues++
     }
   }
@@ -1903,11 +1903,11 @@ async function cmdDoctor() {
       } else {
         for (const { p, kind, detail } of projectIssues) {
           if (kind === 'build-broken') {
-            fail(`Project "${p.name}" build ${detail}`, `tlda errors ${p.name}`)
+            fail(`Project "${p.name}" build ${detail}`, `tlda doc errors ${p.name}`)
           } else if (kind === 'main-missing') {
             fail(`Project "${p.name}" mainFile missing: ${detail}`, `edit ${p.sourceDir.replace(homedir(), '~')}/project.json or recreate project`)
           } else if (kind === 'stale') {
-            fail(`Project "${p.name}" stale: ${detail}`, `tlda push ${p.name} --dir ${p.sourceDir} && tlda build ${p.name}`)
+            fail(`Project "${p.name}" stale: ${detail}`, `tlda doc push ${p.name} --dir ${p.sourceDir} && tlda build ${p.name}`)
           }
           issues++
         }
