@@ -316,25 +316,18 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
       onPointerDown={stopEventPropagation}
       onPointerMove={stopEventPropagation}
     >
-      <div className="fleet-terminal-hover-header">
-        <svg width="8" height="8" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" style={{ opacity: 0.5, flexShrink: 0 }}>
-          <polyline points="2,2 5,5 8,2" />
-          <line x1="2" y1="8" x2="8" y2="8" />
-        </svg>
-        <span className="fleet-terminal-hover-title">{shortId}</span>
-        {status === 'connecting' && <span className="fleet-terminal-hover-status">connecting…</span>}
-        {status === 'error' && <span className="fleet-terminal-hover-status error">error</span>}
-        {pinned && (
-          <button
-            className="fleet-terminal-hover-close"
-            title="Close terminal"
-            onPointerDown={stopEventPropagation}
-            onClick={(e) => { stopEventPropagation(e as any); onDismiss() }}
-          >
-            ×
-          </button>
-        )}
-      </div>
+      {/* No header bar — wasted space. Pinned peeks keep a tiny floating close. */}
+      {pinned && (
+        <button
+          className="fleet-terminal-hover-close"
+          title="Close terminal"
+          onPointerDown={stopEventPropagation}
+          onClick={(e) => { stopEventPropagation(e as any); onDismiss() }}
+          style={{ position: 'absolute', top: 2, right: 4, zIndex: 3 }}
+        >
+          ×
+        </button>
+      )}
       <div ref={bodyRef} className="fleet-terminal-hover-body">
         <div
           className="fleet-terminal-hover-scale"
