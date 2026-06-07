@@ -59,9 +59,16 @@ export function formatMessage(event, agents = []) {
   }
   const from = nameOf(event.from)
   const to = nameOf(event.to)
-  const msgText = (event.text || '').slice(0, 500)
-  const ts = new Date(event.timestamp).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
-  return `[msg] ${from} → ${to}, ${ts}\n> ${msgText.split('\n').join('\n> ')}`
+  const msgText = event.text || ''
+  const d = new Date(event.timestamp)
+  const ts = d.toLocaleString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })
+  const iso = isNaN(d.getTime()) ? null : d.toISOString()
+  // The party whose thread to open for surrounding history: the non-human side.
+  const isHuman = (id) => !!id && id.startsWith('fleet:skip')
+  const threadAgent = isHuman(event.from) ? event.to : event.from
+  const body = `[msg] ${from} → ${to}, ${ts}\n> ${msgText.split('\n').join('\n> ')}`
+  if (!iso || !threadAgent) return body
+  return `${body}\n↳ reference to the conversation history at this point. To read the surrounding thread: get_thread({ agent: "${threadAgent}", until: "${iso}" })`
 }
 
 /**
