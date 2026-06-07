@@ -821,7 +821,12 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 }
 .fleet-chat-shape .tool-ref-type { font-weight: 600; }
 .fleet-chat-shape .tool-ref-preview {
-  display: none;
+  /* Hover-intent: stays hidden until the cursor rests on the ref for 0.3s, so a
+     passthrough never pops it. opacity/visibility (not display) so it's delayable. */
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.12s ease, visibility 0s linear 0.12s;
   position: absolute;
   bottom: calc(100% + 4px);
   left: 0;
@@ -840,7 +845,11 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   box-shadow: 0 4px 12px var(--shadow-lg);
   line-height: 1.5;
 }
-.fleet-chat-shape .tool-ref:hover .tool-ref-preview { display: block; }
+.fleet-chat-shape .tool-ref:hover .tool-ref-preview {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 0.12s ease 0.3s, visibility 0s linear 0.3s;
+}
 
 /* --- Warnings / voicemail / retracted --- */
 .fleet-chat-shape .chat-warning {
@@ -1373,7 +1382,6 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   user-select: none !important;
   -webkit-user-select: none !important;
 }
-.fleet-chat-shape .chat-activity-card:hover { background: rgba(128, 128, 128, 0.05); }
 .fleet-chat-shape .chat-activity-card .activity-header {
   display: flex;
   align-items: center;
@@ -1464,8 +1472,8 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   padding: 2px 4px;
   border-radius: 3px;
 }
-.fleet-chat-shape .diff-old { background: rgba(255, 80, 80, 0.08); }
-.fleet-chat-shape .diff-new { background: rgba(80, 255, 80, 0.08); }
+.fleet-chat-shape .diff-old { background: rgba(190, 95, 95, 0.08); }
+.fleet-chat-shape .diff-new { background: rgba(95, 165, 110, 0.08); }
 .fleet-chat-shape .diff-label {
   font-weight: 600;
   opacity: 0.5;

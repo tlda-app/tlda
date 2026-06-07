@@ -1066,6 +1066,10 @@ function FleetChatInner({ shape }: { shape: any }) {
   const [termCardHoverId, setTermCardHoverId] = useState<string | null>(null)
   const [termCardPinnedId, setTermCardPinnedId] = useState<string | null>(null)
   const termCardHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Hover-intent: cursor must rest on a terminal card before the peek opens, so a
+  // cursor merely passing through never triggers it.
+  const termCardShowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const termCardPendingIdRef = useRef<string | null>(null)
 
   const dismissTermCard = useCallback((agentId: string) => {
     // Mark terminal events from this agent as read when dismissed.
@@ -2486,15 +2490,27 @@ function FleetChatInner({ shape }: { shape: any }) {
     const onOver = (e: MouseEvent) => {
       const card = (e.target as HTMLElement).closest('.lc-terminal-card') as HTMLElement | null
       const agentId = card?.dataset.agentId || null
-      if (agentId) {
-        if (termCardHideTimerRef.current) { clearTimeout(termCardHideTimerRef.current); termCardHideTimerRef.current = null }
-        setTermCardHoverId(agentId)
-      }
+      if (!agentId) return
+      if (termCardHideTimerRef.current) { clearTimeout(termCardHideTimerRef.current); termCardHideTimerRef.current = null }
+      // Already open or already scheduled for this card — let it ride (don't reset the
+      // intent timer on every mouseover bubbling up from child nodes).
+      if (termCardPendingIdRef.current === agentId) return
+      if (termCardShowTimerRef.current) { clearTimeout(termCardShowTimerRef.current); termCardShowTimerRef.current = null }
+      termCardPendingIdRef.current = agentId
+      termCardShowTimerRef.current = setTimeout(() => {
+        termCardShowTimerRef.current = null
+        // Only open if the cursor is still resting on this same card.
+        const overId = (document.querySelector('.lc-terminal-card:hover') as HTMLElement | null)?.dataset.agentId
+        if (overId === agentId) setTermCardHoverId(agentId)
+      }, 300)
     }
     const onOut = (e: MouseEvent) => {
       const leaving = (e.target as HTMLElement).closest('.lc-terminal-card')
       const entering = (e.relatedTarget as HTMLElement | null)?.closest?.('.lc-terminal-card')
       if (leaving && !entering) {
+        // Cancel a pending open so a passthrough never resolves into a popup.
+        if (termCardShowTimerRef.current) { clearTimeout(termCardShowTimerRef.current); termCardShowTimerRef.current = null }
+        termCardPendingIdRef.current = null
         termCardHideTimerRef.current = setTimeout(() => setTermCardHoverId(null), 200)
       }
     }
