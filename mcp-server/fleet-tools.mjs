@@ -3034,6 +3034,18 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     const state = await loadState();
     const resolveName = (id) => id ? (getAgent(state, id)?.friendly_name || id) : '';
 
+    // Name-provenance tag: the name the agent held AT the event's time (period
+    // name, server-resolved as `*Name`) paired with the durable fleet id, plus
+    // `→now:X` when it has since rotated. periodName === undefined means the row
+    // wasn't stamped (fall back to current name); null means nameless then.
+    const tag = (id, periodName, nowName) => {
+      if (!id) return '';
+      const nm = periodName === undefined ? (getAgent(state, id)?.friendly_name || null) : periodName;
+      let s = `${nm || '(nameless)'} ${id}`;
+      if (nowName != null && nowName !== nm) s += ` →now:${nowName}`;
+      return s;
+    };
+
     const fmtTs = (ts) => {
       if (!ts) return '';
       const d = new Date(ts);
@@ -3044,8 +3056,8 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     };
 
     const fmtCtxMsg = (c) => {
-      const cFrom = resolveName(c.from_id || c.from);
-      const cTo = resolveName(c.to_id || c.to);
+      const cFrom = tag(c.from_id || c.from, c.fromName, c.fromNameNow);
+      const cTo = tag(c.to_id || c.to, c.toName, c.toNameNow);
       const cDir = cTo ? `${cFrom} → ${cTo}` : cFrom;
       const text = (c.text || '').length > 300 ? c.text.slice(0, 300) + '...' : (c.text || '');
       return `  [${fmtTs(c.timestamp)}] ${cDir}: ${text}`;
@@ -3055,8 +3067,8 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       const snippet = (r.snippet || '').replace(/⟨⟨/g, '**').replace(/⟩⟩/g, '**');
 
       if (r.source === 'fleet') {
-        const from = resolveName(r.from);
-        const to = resolveName(r.to);
+        const from = tag(r.from, r.fromName, r.fromNameNow);
+        const to = tag(r.to, r.toName, r.toNameNow);
         const direction = to ? `${from} → ${to}` : from;
         let text;
         if (contextWindow > 0 && r.timestamp && contextMap[r.timestamp]) {
@@ -3076,7 +3088,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
         return { timestamp: r.timestamp, text };
       } else {
         // session source
-        const agentName = resolveName(r.agentId) || r.agentId || '';
+        const agentName = tag(r.agentId, r.agentName, r.agentNameNow) || r.agentId || '';
         const parts = [];
         if (r.timestamp) parts.push(new Date(r.timestamp).toLocaleString());
         parts.push(`[session] [${r.role}] ${agentName}`);
@@ -3165,15 +3177,20 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
           : e.type === 'task_done'
           ? `[DONE] ${e.description || ''}`
           : e.text || e.message || '';
-        filtered.push({ from: e.from_id || e.from, to: e.to_id || e.to, text, timestamp: e.timestamp });
+        filtered.push({
+          from: e.from_id || e.from, to: e.to_id || e.to, text, timestamp: e.timestamp,
+          fromName: e.fromName, toName: e.toName, fromNameNow: e.fromNameNow, toNameNow: e.toNameNow,
+        });
       }
     };
 
+    let primaryId = null;
     if (args.task_id) {
       const task = tasks.find(t => t.id === args.task_id);
       if (!task) {
         return { content: [{ type: 'text', text: `Task ${args.task_id} not found.` }], isError: true };
       }
+      primaryId = getAgent(state, task.agent)?.id || task.agent;
       try { await fetchEventsForAgent(task.agent); } catch (e) {
         process.stderr.write(`[fleet] get_thread DB fetch failed: ${e.message}\n`);
       }
@@ -3198,6 +3215,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       if (!agentEntry) {
         return { content: [{ type: 'text', text: `Agent "${args.agent}" not found.` }], isError: true };
       }
+      primaryId = agentEntry.id;
       // Lineage-aware: if the agent is in a lineage, fetch events for all fleet IDs
       let threadFleetIds = [agentEntry.id];
       if (agentEntry.lineage_name && !args.agent.includes(':')) {
@@ -3245,6 +3263,25 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     const newest = filtered[filtered.length - 1]?.timestamp;
     const rangeStr = oldest && newest ? ` (${fmtShort(oldest)} → ${fmtShort(newest)})` : '';
 
+    // Name-provenance trail for the primary agent: the distinct names it held
+    // over the course of THIS thread (from the period names stamped on its own
+    // messages), ending in its current name + durable id. Surfaces a rename like
+    // "conc4 → concentration · fleet:bbc9ad25" so the reader knows the agent the
+    // old name referred to is the same one reachable now by id.
+    let provenanceNote = '';
+    if (primaryId) {
+      const trail = [];
+      for (const m of filtered) {
+        if (m.from !== primaryId) continue;
+        const nm = m.fromName === undefined ? null : m.fromName;
+        const label = nm || '(nameless)';
+        if (trail[trail.length - 1] !== label) trail.push(label);
+      }
+      const current = getAgent(state, primaryId)?.friendly_name || null;
+      if (current && trail[trail.length - 1] !== current) trail.push(current);
+      if (trail.length > 1) provenanceNote = `\n↳ ${trail.join(' → ')} · ${primaryId}`;
+    }
+
     let header;
     const totalKnown = serverTotal ?? filtered.length;
     if (serverTotal !== null && filtered.length < serverTotal) {
@@ -3286,12 +3323,20 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     let totalBytes = 0;
     let truncatedAt = null; // timestamp where we stopped
 
+    // Name-provenance tag: period name (held at the event's time) + durable
+    // fleet id, with `→now:X` when the agent has since rotated. See search_logs.
+    const tag = (id, periodName, nowName) => {
+      if (!id) return '';
+      const nm = periodName === undefined ? (getAgent(state, id)?.friendly_name || null) : periodName;
+      let s = `${nm || '(nameless)'} ${id}`;
+      if (nowName != null && nowName !== nm) s += ` →now:${nowName}`;
+      return s;
+    };
+
     for (const m of filtered) {
       const ts = m.timestamp ? new Date(m.timestamp).toLocaleString() : '';
-      const fromAgent = getAgent(state, m.from);
-      const from = fromAgent?.friendly_name || m.from?.slice?.(0, 8) || m.from;
-      const toAgent = getAgent(state, m.to);
-      const to = toAgent?.friendly_name || m.to?.slice?.(0, 8) || m.to;
+      const from = tag(m.from, m.fromName, m.fromNameNow);
+      const to = tag(m.to, m.toName, m.toNameNow);
       const ver = args.doc ? versionAt(m.timestamp) : null;
       const verStr = ver ? ` @${ver}` : '';
       const line = `[${ts}${verStr}] ${from} → ${to}\n${m.text}`;
@@ -3318,7 +3363,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
         `\`get_thread(${nextPageArg}, since: "${lastShownTs}")\``;
     }
 
-    return { content: [{ type: 'text', text: `${header}\n\n${lines.join(SEP)}` }] };
+    return { content: [{ type: 'text', text: `${header}${provenanceNote}\n\n${lines.join(SEP)}` }] };
   }
 
   // ==== Labels & Interrupts ====

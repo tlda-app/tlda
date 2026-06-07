@@ -113,6 +113,16 @@ export function agentNameHtml(name) {
 export function renderChatLine(m, ctx) {
   const { agentLabel, getNickClass, isHumanId, getAgents, getTasks, tldaToken, renderMarkdown } = ctx
 
+  // Name provenance: the nick a HISTORICAL message shows is the name its sender
+  // held AT send time. The server stamps `fromName`/`toName` (the period name,
+  // possibly null = nameless then) onto history events; live messages aren't
+  // stamped, so they fall back to the current name (which is correct for "now").
+  // `*NameNow` is set when the agent has since rotated → drives a hover tooltip
+  // so the reader can see the current name + reach the agent by its stable id.
+  const periodNick = (id, stamped) => stamped != null ? baseName(stamped) : agentLabel(id)
+  const nowTitle = (id, nowName) => nowName != null
+    ? ` title="now: ${esc(baseName(nowName))} · ${esc(id || '')}"` : ''
+
   // Timer countdown: live countdown for active timers. Remaining is computed
   // from data-timer-until at render time and re-ticked each second by the
   // chat-shape DOM ticker, so the number actually counts down.
@@ -174,7 +184,7 @@ export function renderChatLine(m, ctx) {
     if ((m.text || '').includes('[Request interrupted by user]')) return ''
     if (/^[\s📬]*$/.test(m.text || '')) return ''
     if (m.from && m.from === m.to) return ''
-    const nick = agentLabel(m.from)
+    const nick = periodNick(m.from, m.fromName)
     const fromCls = getNickClass(m.from)
     const ts = timeShort(m.timestamp)
     let rawText = (m.text || '').trim()
@@ -182,14 +192,14 @@ export function renderChatLine(m, ctx) {
     const text = linkifyCodeUrls(renderMarkdown(esc(rawText)))
     const msgAgo = m.timestamp ? (Date.now() - new Date(m.timestamp).getTime()) / 1000 : null
     const dimClass = msgAgo === null ? '' : msgAgo > 1800 ? 'chat-line-old' : msgAgo > 600 ? 'chat-line-mid' : 'chat-line-recent'
-    const toNick = agentLabel(m.to)
+    const toNick = periodNick(m.to, m.toName)
     const toCls = getNickClass(m.to)
     const isFromUser = isHumanId(m.from)
     const fromPhaseIcon = phaseIconHtml(m.from, getAgents)
     const toPhaseIcon = phaseIconHtml(m.to, getAgents)
     const nickHtml = isFromUser
-      ? `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(nick)}:</span></span>`
-      : `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${fromPhaseIcon}${esc(nick)}</span><span class="chat-arrow">&rarr;</span><span class="agent-nick ${toCls}" data-agent-id="${esc(m.to)}">${toPhaseIcon}${esc(toNick)}</span>:</span>`
+      ? `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}"${nowTitle(m.from, m.fromNameNow)}>${esc(nick)}:</span></span>`
+      : `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}"${nowTitle(m.from, m.fromNameNow)}>${fromPhaseIcon}${esc(nick)}</span><span class="chat-arrow">&rarr;</span><span class="agent-nick ${toCls}" data-agent-id="${esc(m.to)}"${nowTitle(m.to, m.toNameNow)}>${toPhaseIcon}${esc(toNick)}</span>:</span>`
     return `<div class="chat-line terminal-msg ${dimClass}${isFromUser ? ' from-user' : ''}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span> <span class="terminal-badge">term</span> ${nickHtml} ${text}</div>`
   }
 
@@ -300,7 +310,7 @@ export function renderChatLine(m, ctx) {
   }
 
   // --- Regular chat messages ---
-  const nick = agentLabel(m.from)
+  const nick = periodNick(m.from, m.fromName)
   const fromCls = getNickClass(m.from)
   const ts = timeShort(m.timestamp)
   // Strip system metadata before rendering
@@ -411,9 +421,9 @@ export function renderChatLine(m, ctx) {
   if (m.cc && m.cc.length > 1) {
     toHtml = m.cc.map(id => `<span class="agent-nick ${getNickClass(id)}" data-agent-id="${esc(id)}">${phaseIconHtml(id, getAgents)}${esc(agentLabel(id))}</span>`).join('<span class="cc-separator">,</span>')
   } else {
-    const toNick = agentLabel(m.to)
+    const toNick = periodNick(m.to, m.toName)
     const toCls = getNickClass(m.to)
-    toHtml = `<span class="agent-nick ${toCls}" data-agent-id="${esc(m.to)}">${phaseIconHtml(m.to, getAgents)}${esc(toNick)}</span>`
+    toHtml = `<span class="agent-nick ${toCls}" data-agent-id="${esc(m.to)}"${nowTitle(m.to, m.toNameNow)}>${phaseIconHtml(m.to, getAgents)}${esc(toNick)}</span>`
   }
 
   // Render attachments as interactive refs
@@ -513,9 +523,10 @@ export function renderChatLine(m, ctx) {
   const planTitle = planModeType === 'outline' ? 'outline mode' : 'plan mode'
   const planBadge = planMode ? `<span class="plan-mode-badge plan-badge-click" data-agent-id="${esc(m.from)}" title="Click to exit ${planTitle}">${planEmoji}</span>` : ''
   const fromPhaseIcon = phaseIconHtml(m.from, getAgents)
+  const fromTitle = nowTitle(m.from, m.fromNameNow)
   const nickHtml = isAmbient
-    ? `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${fromPhaseIcon}${esc(nick)}</span>${planBadge}<span class="chat-arrow">${arrowHtml}</span>${toHtml}:</span>`
-    : `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${fromPhaseIcon}${esc(nick)}</span>${planBadge}:</span>`
+    ? `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}"${fromTitle}>${fromPhaseIcon}${esc(nick)}</span>${planBadge}<span class="chat-arrow">${arrowHtml}</span>${toHtml}:</span>`
+    : `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}"${fromTitle}>${fromPhaseIcon}${esc(nick)}</span>${planBadge}:</span>`
   // Long message: block display
   const rawLineCount = (m.text || '').split('\n').length
   const isLongMsg = rawLineCount > 20

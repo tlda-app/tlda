@@ -81,6 +81,35 @@ resetStaleBuildStates()
 // to isolate from the live /tmp/fleet.db.
 const fleetStore = new FleetStore(process.env.TLDA_FLEET_DB)
 
+// Name provenance: stamp each event/result row with the friendly name its
+// sender/recipient ACTUALLY held at the row's timestamp (via name_history),
+// plus the current name when it has since changed. Resolution lives here on the
+// server where the DB is — the MCP and client just display fromName/toName and
+// always pair them with the durable fleet id. Mutates rows in place and returns
+// them. A null period name means the agent was nameless then (reach it by id).
+function stampNames(rows) {
+  if (!Array.isArray(rows)) return rows
+  for (const r of rows) {
+    const ts = r.timestamp
+    if (r.from) {
+      r.fromName = fleetStore.nameAt(r.from, ts)
+      const cur = fleetStore.getAgent(r.from)?.friendly_name ?? null
+      if (cur !== r.fromName) r.fromNameNow = cur
+    }
+    if (r.to) {
+      r.toName = fleetStore.nameAt(r.to, ts)
+      const cur = fleetStore.getAgent(r.to)?.friendly_name ?? null
+      if (cur !== r.toName) r.toNameNow = cur
+    }
+    if (r.agentId) {
+      r.agentName = fleetStore.nameAt(r.agentId, ts)
+      const cur = fleetStore.getAgent(r.agentId)?.friendly_name ?? null
+      if (cur !== r.agentName) r.agentNameNow = cur
+    }
+  }
+  return rows
+}
+
 // Fleet state: in-memory
 const wsFleetClients = new Set()            // active /ws/fleet connections
 
@@ -2222,13 +2251,15 @@ async function handleFleetWsMessage(ws, msg) {
     try {
       // Support lineage search: agents[] (array of fleet IDs to union)
       const searchAgent = msg.agents?.length ? msg.agents : msg.agent;
-      const results = fleetStore.searchAll(msg.query || '', {
+      const results = stampNames(fleetStore.searchAll(msg.query || '', {
         limit: msg.limit, agent: searchAgent, role: msg.role, since: msg.since, before: msg.before, agentOnly: msg.agentOnly,
-      })
+      }))
       const context = {}
       if (msg.context_timestamps?.length) {
         for (const ts of msg.context_timestamps) {
-          context[ts] = fleetStore.getChatContext(ts, msg.context_window || 3)
+          const ctx = fleetStore.getChatContext(ts, msg.context_window || 3)
+          stampNames(ctx.before); stampNames(ctx.after)
+          context[ts] = ctx
         }
       }
       reply({ results, context })
@@ -2565,6 +2596,10 @@ async function handleFleetWsMessage(ws, msg) {
         fromLabel: agentMap[e.from] || (e.from ? e.from.substring(0, 8) : ''),
         toLabel: agentMap[e.to] || agentMap[e.agent] || (e.to ? e.to.substring(0, 8) : ''),
       }))
+      // Period-correct names: render each historical message with the name its
+      // sender/recipient held AT send time, plus `*NameNow` when since rotated.
+      // The client nick prefers these over the current-name fallback.
+      stampNames(resolved)
       reply({ events: resolved, hasMore })
     } catch (e) {
       error(e.message)
@@ -3284,7 +3319,7 @@ async function handleFleetWsMessage(ws, msg) {
         events = fleetStore.getEventsSince(afterId, limit)
       }
       const lastId = fleetStore.getLastEventId()
-      reply({ events, lastId, total })
+      reply({ events: stampNames(events), lastId, total })
     } catch (e) { error(e.message) }
     return
   }
