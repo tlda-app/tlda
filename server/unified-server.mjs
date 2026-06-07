@@ -44,7 +44,8 @@ import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
 import { labelsForAgent, evalDnf } from '../shared/fleet-labels.mjs'
 import { phaseFromName, baseName, PHASES } from '../shared/lineage-name.mjs'
 import { initProjectStore, listProjects, readProject, getProjectsDir } from './lib/project-store.mjs'
-import { resetStaleBuildStates, killAllBuilds, runBuild } from './lib/build-runner.mjs'
+import { resetStaleBuildStates, killAllBuilds } from './lib/build-runner.mjs'
+import { dispatchBuild, killAllDispatchedBuilds } from './lib/build-dispatch.mjs'
 import projectRoutes, { processProjectPush } from './routes/projects.mjs'
 import { initAuth, isAuthEnabled, validateToken, extractToken, requireRead, loginRoute } from './lib/auth.mjs'
 import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, updateShape, putShape } from './lib/sync-rooms.mjs'
@@ -3674,7 +3675,7 @@ async function checkShadowAhead(projectName) {
     }
 
     console.log(`[shadow-ahead] ${projectName}: ${changedFiles.length} file(s) from agent commit(s) since ${lastBuildHash.slice(0, 7)}, triggering build`)
-    runBuild(projectName).catch(e => console.warn(`[shadow-ahead] build failed for ${projectName}: ${e.message}`))
+    dispatchBuild(projectName).catch(e => console.warn(`[shadow-ahead] build failed for ${projectName}: ${e.message}`))
   } catch (e) {
     console.warn(`[shadow-ahead] ${projectName}: check failed: ${e.message}`)
   }
@@ -4136,6 +4137,7 @@ function shutdown() {
 
   // 1. Kill all active build child processes (latexmk, dvisvgm, etc.)
   killAllBuilds()
+  killAllDispatchedBuilds() // builds now run in forked workers — kill those too
 
   // 3. Flush and close @tldraw/sync rooms
   closeAllRooms()

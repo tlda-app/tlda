@@ -24,7 +24,8 @@ import {
   listSourceFiles, hashSourceFiles, readSourceFile, writeSourceFile, deleteSourceFile, readBuildLog, sourceDir as getSourceDir, outputDir as getOutputDir,
   extractBuildErrors, extractPipelineWarnings, addBookMember, getProjectsDir, projectDir as getProjectDir,
 } from '../lib/project-store.mjs'
-import { runBuild, getBuildStatus } from '../lib/build-runner.mjs'
+import { getBuildStatus } from '../lib/build-runner.mjs'
+import { dispatchBuild } from '../lib/build-dispatch.mjs'
 import { outlineForRegion, regionFromSpan, structuralLeaves } from '../lib/outline/outline.mjs'
 import { buildModel, render as renderModel, check as checkModel, parseEditedOutline, emitModelMarkdown, assertRoundTrip, seedChainFromLeaf } from '../lib/outline/model.mjs'
 import { parseChainMarkdown, emitChainMarkdown, renderChainArrows, validateChain } from '../lib/outline/chain.mjs'
@@ -592,7 +593,7 @@ router.post('/:name/build', requireRw, async (req, res) => {
     if (builder) {
       await builder(req.params.name)
     } else {
-      await runBuild(req.params.name, { priorityPages })
+      await dispatchBuild(req.params.name, { priorityPages })
     }
   } catch (e) {
     console.error(`[api] Build failed for ${req.params.name}: ${e.message}`)

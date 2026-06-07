@@ -51,6 +51,22 @@ import { appendBuildEntry } from './changelog.mjs'
 import { emitBuildComplete } from './webhooks.mjs'
 import { clearSynctexCache } from './synctex-query.mjs'
 
+// --- Side-effect reporter ----------------------------------------------------
+// Everything in the build that reaches the live server — client broadcasts
+// (sync-rooms) and project.json writes — goes through this indirection so the
+// pipeline can run in a separate process. In the server, the default reporter
+// calls the real functions directly. In a forked build-worker, setBuildReporter
+// swaps these for IPC sends back to the server, which performs them there.
+// All four are fire-and-forget (no return value) → clean to ship over IPC.
+const _directReporter = {
+  broadcastSignal: (room, signal, payload) => broadcastSignal(room, signal, payload),
+  putShape: (docName, shape) => putShape(docName, shape),
+  emitGlobalEvent: (type, payload) => emitGlobalEvent(type, payload),
+  updateProject: (name, patch) => updateProject(name, patch),
+}
+let _reporter = _directReporter
+export function setBuildReporter(r) { _reporter = r || _directReporter }
+
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PROJECT_ROOT = join(__dirname, '..', '..')
 const SCRIPTS_DIR = join(PROJECT_ROOT, 'scripts')
@@ -218,7 +234,7 @@ export function resetStaleBuildStates() {
   for (const project of listProjects()) {
     if (project.buildStatus === 'building') {
       console.log(`[build] Resetting stale "building" state for ${project.name}`)
-      updateProject(project.name, { buildStatus: 'stale' })
+      _reporter.updateProject(project.name, { buildStatus: 'stale' })
     }
   }
 }
@@ -1500,7 +1516,7 @@ export function emitDocArrived(name) {
   try {
     const updated = readProject(name)
     if (updated?.buildStatus === 'success') {
-      emitGlobalEvent('doc-arrived', {
+      _reporter.emitGlobalEvent('doc-arrived', {
         name, title: updated.title || name,
         format: updated.format, pages: updated.pages || 0,
       })
@@ -1551,7 +1567,7 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
   buildVersion.set(name, myVersion)
 
   // Set buildStatus early — before any validation that might throw.
-  try { updateProject(name, { buildStatus: 'building', lastBuild: new Date().toISOString() }) } catch (e) { console.error(`[build] failed to set building status for ${name}: ${e.message}`) }
+  try { _reporter.updateProject(name, { buildStatus: 'building', lastBuild: new Date().toISOString() }) } catch (e) { console.error(`[build] failed to set building status for ${name}: ${e.message}`) }
 
   const srcDir = sourceDir(name)
   const outDir = outputDir(name)
@@ -1750,7 +1766,7 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
     // viewer doesn't have to special-case single-target — it just renders
     // a one-element list.
     const lastBuildSuccess = readProject(name)?.lastBuildSuccess || null
-    updateProject(name, {
+    _reporter.updateProject(name, {
       pages: expectedPages,
       buildStatus: 'success',
       lastBuild: new Date().toISOString(),
@@ -1800,7 +1816,7 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
           ctx.addLog(`doc-version sentinel update failed (non-fatal): ${e.message}`)
         })
         recordGitSnapshot(name, { commitHash: result.hash, commitMessage: result.message || `Build at ${new Date().toISOString()}`, pages: expectedPages ?? 0 })
-        emitGlobalEvent('version-committed', { name, hash: result.hash, timestamp: result.timestamp })
+        _reporter.emitGlobalEvent('version-committed', { name, hash: result.hash, timestamp: result.timestamp })
         // Mirror: fetch shadow tags into the working copy and advance the
         // optional refs/tlda/shadow/HEAD pointer. We never touch the user's
         // branches, index, or working tree — their `master` stays under their
@@ -1849,7 +1865,7 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
             // so it doesn't appear in `git branch` or `git log` output unless
             // the user asks for it explicitly.
             await _gitRetryOnLock(() => _execAsync(`git update-ref refs/tlda/shadow/HEAD ${result.hash}`, { cwd, timeout: 5000 }))
-            updateProject(name, { lastMirrorSuccess: new Date().toISOString() })
+            _reporter.updateProject(name, { lastMirrorSuccess: new Date().toISOString() })
             console.log(`[mirror] ${name}@${hash7} ok: tag shadow/${hash7} + refs/tlda/shadow/HEAD updated in ${cwd}`)
           }
         } catch (mirrorErr) {
@@ -1864,7 +1880,7 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
             const relPath = join(projDir, 'output', 'relevant-files.json')
             buildFiles = JSON.parse(readFileSync(relPath, 'utf8'))?.files || null
           } catch {}
-          emitGlobalEvent('build-card', {
+          _reporter.emitGlobalEvent('build-card', {
             name,
             hash: result.hash.slice(0, 7),
             summary: null,
@@ -1886,7 +1902,7 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
             console.log(`[build:${name}] Change summary: ${summary ? summary.split('\n').length + ' lines' : 'null'}`)
             // Broadcast viewer signal regardless of lint
             if (summary) {
-              broadcastSignal(`doc-${name}`, 'signal:build-summary', {
+              _reporter.broadcastSignal(`doc-${name}`, 'signal:build-summary', {
                 hash: result.hash.slice(0, 7),
                 summary,
                 timestamp: Date.now(),
@@ -1932,7 +1948,7 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
                 const relPath = join(projDir, 'output', 'relevant-files.json')
                 buildFiles = JSON.parse(readFileSync(relPath, 'utf8'))?.files || null
               } catch {}
-              emitGlobalEvent('build-card', {
+              _reporter.emitGlobalEvent('build-card', {
                 name,
                 hash: result.hash.slice(0, 7),
                 summary: summary || null,
@@ -1962,7 +1978,7 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
     status.phase = 'failed'
     status.error = e.message
 
-    try { updateProject(name, { buildStatus: 'failed' }) } catch (e2) { console.error(`[build] failed to set failed status for ${name}: ${e2.message}`) }
+    try { _reporter.updateProject(name, { buildStatus: 'failed' }) } catch (e2) { console.error(`[build] failed to set failed status for ${name}: ${e2.message}`) }
     try { writeFileSync(join(projDir, 'build.log'), log.join('\n')) } catch (e2) { console.error(`[build] failed to write build.log for ${name}: ${e2.message}`) }
 
     signalBuildStatus(name, e.message)
@@ -1982,7 +1998,7 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
 // missing", "compiled in 2.1s"). Keep phase to a single word — the pill has min-width 56px.
 function signalBuildProgress(name, phase, detail) {
   try {
-    broadcastSignal(`doc-${name}`, 'signal:build-progress', {
+    _reporter.broadcastSignal(`doc-${name}`, 'signal:build-progress', {
       phase,       // 'compiling' | 'converting' | 'extracting' | 'hot' | 'done' | 'failed'
       detail,      // quiet text beside pill: 'biber' | '3 pages missing' | 'compiled in 2.1s'
       timestamp: Date.now(),
@@ -1995,7 +2011,7 @@ function signalBuildProgress(name, phase, detail) {
 function signalBuildStatus(name, errorMessage) {
   try {
     const { errors, warnings } = extractBuildErrors(name)
-    broadcastSignal(`doc-${name}`, 'signal:build-status', {
+    _reporter.broadcastSignal(`doc-${name}`, 'signal:build-status', {
       error: errorMessage,
       errors,
       warnings,
@@ -2012,7 +2028,7 @@ function signalReload(name, pages) {
     const signal = pages
       ? { type: 'partial', pages, timestamp: Date.now() }
       : { type: 'full', timestamp: Date.now() }
-    broadcastSignal(`doc-${name}`, 'signal:reload', signal)
+    _reporter.broadcastSignal(`doc-${name}`, 'signal:reload', signal)
     const desc = pages ? `pages [${pages.join(',')}]` : 'full'
     console.log(`[build:${name}] Reload signal (${desc}) sent`)
   } catch (e) {
@@ -2055,6 +2071,6 @@ async function updateDocVersionSentinel(name, shadowHash, buildReadyAt, errors, 
     },
   }
 
-  await putShape(docName, sentinel)
+  await _reporter.putShape(docName, sentinel)
   console.log(`[build:${name}] doc-version sentinel updated: ${commitHash.slice(0, 7)} (${errors?.length || 0} errors, ${warnings?.length || 0} warnings)`)
 }
