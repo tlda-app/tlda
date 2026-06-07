@@ -102,6 +102,10 @@ export function materializeChain(editor: Editor, chain: Chain) {
       const id = createShapeId()
       idOf[n.id] = id
       const p = pos[n.id]
+      // `as any` on the type: the generic Editor's createShape union only knows
+      // built-in shape types, not registered custom ones (same reason other call
+      // sites pass custom types loosely). Not hiding a bug — graph-node is a
+      // real registered shape; this is just the type-union gap for custom shapes.
       editor.createShape({ id, type: 'graph-node' as any, x: p.x, y: p.y, props: { w: p.w, h: p.h, claim: n.claim, kind: n.kind } })
     }
 
@@ -135,9 +139,15 @@ export function materializeChain(editor: Editor, chain: Chain) {
     }
   })
 
-  // Fit the skeleton into the viewport, leaving a right gutter for the detail
-  // panel so it never occludes the graph.
-  const b = editor.getCurrentPageBounds()
+  // Fit to the GRAPH's own bounds (not getCurrentPageBounds — on a real doc that
+  // includes the doc's pages and frames the graph off-screen), leaving a right
+  // gutter for the detail panel so it never occludes the graph.
+  const ps = Object.values(pos)
+  const gx0 = Math.min(...ps.map((p) => p.x))
+  const gy0 = Math.min(...ps.map((p) => p.y))
+  const gx1 = Math.max(...ps.map((p) => p.x + p.w))
+  const gy1 = Math.max(...ps.map((p) => p.y + p.h))
+  const b = ps.length ? { x: gx0, y: gy0, w: gx1 - gx0, h: gy1 - gy0 } : null
   const vsb = editor.getViewportScreenBounds()
   if (b && vsb) {
     const pad = 48

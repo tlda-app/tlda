@@ -126,7 +126,8 @@ export function TocDropTargetManager() {
       const topRight = editor.screenToPage({ x: vb.maxX - 40, y: vb.minY })
       const bottomRight = editor.screenToPage({ x: vb.maxX, y: vb.maxY })
 
-      editor.createShape({
+      // Viewport-following UI indicator — never a document edit, keep off undo.
+      editor.run(() => editor.createShape({
         id: TOC_DROP_TARGET_ID,
         type: 'toc-drop-target' as any,
         x: topRight.x,
@@ -136,7 +137,7 @@ export function TocDropTargetManager() {
           w: 80 / editor.getCamera().z,
           h: (bottomRight.y - topRight.y),
         },
-      } as any)
+      } as any), { history: 'ignore' })
     }
   }, [editor])
 
@@ -159,13 +160,14 @@ export function TocDropTargetManager() {
       const ex = existing as any
       if (Math.abs(ex.x - topRight.x) > 1 || Math.abs(ex.y - topRight.y) > 1 ||
           Math.abs(ex.props.w - w) > 1 || Math.abs(ex.props.h - h) > 1) {
-        editor.updateShape({
+        // Repositioning to follow the viewport is UI bookkeeping, not a doc edit.
+        editor.run(() => editor.updateShape({
           id: TOC_DROP_TARGET_ID,
           type: 'toc-drop-target' as any,
           x: topRight.x,
           y: topRight.y,
           props: { w, h },
-        } as any)
+        } as any), { history: 'ignore' })
       }
     })
   }, [editor])

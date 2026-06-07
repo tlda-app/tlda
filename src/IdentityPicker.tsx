@@ -19,17 +19,23 @@ export function IdentityPicker() {
   // Re-render when auth data arrives from the server (isDevMode() updates)
   useEffect(() => subscribeCanPresent(() => setAuthTick(n => n + 1)), [])
 
-  // Auto-login from ?name= query param, or in dev mode use a default (no modal in dev)
+  // Auto-login (no modal) from ?name=, in dev mode, or in an AUTOMATED session.
+  // Automated = navigator.webdriver OR ?pw=1 (the same signal main.tsx uses for
+  // theme/camera). Agents drive the viewer with ?pw=1 and must not be blocked by
+  // the login pop-up — they fall back to a default identity. Human sessions
+  // (no pw=1, not dev) still get the picker; their login is unchanged.
   if (needsIdentity && !autoIdentified) {
-    const urlName = new URLSearchParams(window.location.search).get('name')
+    const params = new URLSearchParams(window.location.search)
+    const urlName = params.get('name')
     const isDev = import.meta.env.DEV || isDevMode()
-    const devFallback = isDev ? 'dev' : null
-    const targetName = urlName?.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '') || devFallback
+    const isAuto = (navigator as any).webdriver || params.get('pw') === '1'
+    const fallback = (isDev || isAuto) ? 'dev' : null
+    const targetName = urlName?.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '') || fallback
     if (targetName) {
       setAutoIdentified(true)
       login(targetName).catch(() => {
-        if (isDev) {
-          // In dev mode, register if login fails (fresh environment)
+        if (isDev || isAuto) {
+          // Fresh env / automated: register the fallback if login fails.
           register(targetName).catch(() => setAutoIdentified(false))
         } else {
           setAutoIdentified(false)
