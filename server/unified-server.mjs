@@ -2590,9 +2590,7 @@ async function handleFleetWsMessage(ws, msg) {
         const t = e.text || ''
         return !t.startsWith('<channel') && !t.startsWith('<task-notification') && !t.startsWith('<system-reminder')
       })
-      const allAgents = fleetStore.getAllAgents()
-      const agentMap = {}
-      for (const a of allAgents) agentMap[a.id] = a.friendly_name || a.name || a.id
+      const agentMap = { ...fleetStore.getAgentNameMap() }
       agentMap['web'] = agentMap[SERVER_OWNER_ID] || SERVER_OWNER_NAME
       const unreadIds = new Set()
       const _evIds = events.map(e => e.id).filter(id => id != null)
@@ -3246,9 +3244,7 @@ async function handleFleetWsMessage(ws, msg) {
       const hasMore = events.length > limit
       if (hasMore) events.shift()
       events = events.filter(e => { const t = e.text || ''; return !t.startsWith('<channel') && !t.startsWith('<task-notification') && !t.startsWith('<system-reminder') })
-      const allAgents = fleetStore.getAllAgents()
-      const agentMap = {}
-      for (const a of allAgents) agentMap[a.id] = a.friendly_name || a.name || a.id
+      const agentMap = fleetStore.getAgentNameMap()
       const unreadIds = new Set()
       const _evIds = events.map(e => e.id).filter(id => id != null)
       if (_evIds.length) {

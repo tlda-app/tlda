@@ -561,6 +561,9 @@ export class FleetStore {
     // Live-only roster (the agents panel never shows dead agents). Indexed by
     // idx_agents_alive(dead, last_seen DESC) → returns ~tens of rows, not ~1300.
     this._getAliveAgents = this.db.prepare(`SELECT * FROM agents WHERE dead = 0 ORDER BY last_seen DESC`);
+    // id→friendly_name only — for labeling chat history without hydrating all
+    // ~1300 agents (parsing labels/metadata/session JSON per row).
+    this._getAgentNames = this.db.prepare(`SELECT id, friendly_name FROM agents`);
     this._deleteAgent = this.db.prepare('DELETE FROM agents WHERE id = ?');
     this._updateAgentLastSeen = this.db.prepare('UPDATE agents SET last_seen = ?, dead = 0 WHERE id = ?');
     this._markAgentDead = this.db.prepare('UPDATE agents SET dead = 1 WHERE id = ?');
@@ -1015,12 +1018,32 @@ export class FleetStore {
     return this._agentsCache;
   }
 
-  // Force the next getAllAgents()/getAliveAgents() to rebuild. Call after any
-  // structural change (insert/register, dead/alive flip, removal) so it shows
-  // up immediately instead of waiting out the TTL.
+  // Plain { id: friendly_name } map for labeling chat history. The hot
+  // chat-history callers only need display names, so this avoids pulling and
+  // hydrating the full ~1300-row roster (the remaining `agents ORDER BY
+  // last_seen` slow query). Cached 1s, busted by the same structural hook.
+  // Returns the cached object directly — callers must not mutate it (spread
+  // it first if they need to add keys).
+  getAgentNameMap() {
+    const TTL_MS = 1000;
+    const now = Date.now();
+    if (this._nameMapCache && (now - this._nameMapCacheTs) < TTL_MS) {
+      return this._nameMapCache;
+    }
+    const map = {};
+    for (const r of this._getAgentNames.all()) map[r.id] = r.friendly_name || r.id;
+    this._nameMapCache = map;
+    this._nameMapCacheTs = now;
+    return map;
+  }
+
+  // Force the next getAllAgents()/getAliveAgents()/getAgentNameMap() to rebuild.
+  // Call after any structural change (insert/register, dead/alive flip, removal)
+  // so it shows up immediately instead of waiting out the TTL.
   _bustAgentsCache() {
     this._agentsCacheTs = 0;
     this._aliveCacheTs = 0;
+    this._nameMapCacheTs = 0;
   }
 
   // Single gate for naming/labeling. Returns [] if all `names` are available.
