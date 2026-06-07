@@ -705,7 +705,7 @@ export class FleetStore {
 
     // Track unread if this is a message to someone (fire-and-forget on the
     // worker — same writer, so it's ordered after the event insert above).
-    if (event.unread !== false && event.to && event.type === 'chat') {
+    if (event.unread !== false && event.to && (event.type === 'chat' || event.type === 'delegate')) {
       this._w(this._insertUnread, [eventId, event.to]);
       // Also mark unread for CC recipients
       const cc = event.metadata?.cc;
@@ -763,7 +763,7 @@ export class FleetStore {
   delegate(from, to, taskId, description, metadata) {
     return this.share({
       type: 'delegate', from, to, text: description,
-      taskId, metadata, unread: false, // lifecycle cards are informational
+      taskId, metadata, unread: true, // a delegate wakes its recipient (counts as awake)
     });
   }
 
@@ -1353,6 +1353,53 @@ export class FleetStore {
       this.db.prepare('UPDATE agents SET lineage_id = ?, friendly_name = ? WHERE id = ?')
         .run(lineageId, dawnName, incomingAgentId);
       enterLog(incomingAgentId, 'dawn');
+    })();
+  }
+
+  // Free a phase slot so a new agent can be placed there, instead of erroring on
+  // "occupied." The current occupant ages one rung toward night, cascading — each
+  // occupied rung from the target down pushes its holder into the rung below, and
+  // whoever would fall off night retires (loses its name, marked dead, kept as
+  // nameless history). No-op if the slot is already free. This is the "free the
+  // names you need, then place" half of a handoff rotation.
+  makeRoomForPhase(lineageId, phase) {
+    const base = this._lineageBase(lineageId);
+    if (!base) return;
+    const ORDER = ['dawn', 'day', 'dusk', 'night'];
+    const startIdx = ORDER.indexOf(phase);
+    if (startIdx < 0) return;
+    const now = Date.now();
+    const holder = (name) => this.db.prepare(
+      'SELECT id FROM agents WHERE lineage_id = ? AND friendly_name = ? AND dead = 0'
+    ).get(lineageId, name)?.id || null;
+    const exitLog = (id) => this.db.prepare(
+      'UPDATE lineage_phase_log SET exited_at = ? WHERE fleet_id = ? AND exited_at IS NULL'
+    ).run(now, id);
+    const enterLog = (id, ph) => {
+      const prev = this.db.prepare(
+        'SELECT MAX(entered_at) AS m FROM lineage_phase_log WHERE lineage_id = ? AND fleet_id = ?'
+      ).get(lineageId, id);
+      const ts = Math.max(now, (prev?.m || 0) + 1);
+      this.db.prepare(
+        'INSERT INTO lineage_phase_log (lineage_id, fleet_id, phase, entered_at) VALUES (?, ?, ?, ?)'
+      ).run(lineageId, id, ph, ts);
+    };
+    this.db.transaction(() => {
+      // Walk bottom-up (night → target): each occupied rung's holder moves into
+      // the rung below (already vacated this pass), and the night holder retires.
+      for (let i = ORDER.length - 1; i >= startIdx; i--) {
+        const id = holder(nameForPhase(base, ORDER[i]));
+        if (!id) continue;
+        exitLog(id);
+        if (i === ORDER.length - 1) {
+          this.db.prepare('UPDATE agents SET friendly_name = NULL, dead = 1 WHERE id = ?').run(id);
+        } else {
+          const downPh = ORDER[i + 1];
+          this.db.prepare('UPDATE agents SET friendly_name = ? WHERE id = ?')
+            .run(nameForPhase(base, downPh), id);
+          enterLog(id, downPh);
+        }
+      }
     })();
   }
 

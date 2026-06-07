@@ -1508,6 +1508,16 @@ ${triggerText ? `\n**Skip's handoff message:**\n> ${triggerText}\n` : ''}
   const lineageBase = stripPhase(agentName)
   const briefingName = `${lineageBase}:day`
   try {
+    // Free :day first (reserve it for the briefer, which registers later), THEN
+    // move the outgoing to :dusk. Order matters: freeing :day ages its occupant
+    // down toward :dusk/:night; doing it before the outgoing lands in :dusk keeps
+    // the cascade from displacing the outgoing. Both ops age the oldest out via
+    // the night slot instead of erroring on a full lineage.
+    try {
+      await sendRequest({ type: 'lineage-make-room', lineage: lineageBase, phase: 'day' })
+    } catch (e) {
+      sendChat(OWNER_ID, `⚠️ Freeing :day in ${lineageBase} failed: ${e.message}`)
+    }
     try {
       await sendRequest({ type: 'lineage-transition', agent: agentId, phase: 'dusk' })
     } catch (e) {

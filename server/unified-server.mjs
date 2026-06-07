@@ -2843,9 +2843,9 @@ async function handleFleetWsMessage(ws, msg) {
     if (!agent) { error('agent not found'); return }
     const lineageName = lineageQuery || agent.friendly_name || agentQuery
     const lineage = fleetStore.getOrCreateLineage(lineageName)
-    const roster = fleetStore.getLineageRoster(lineage.id)
-    const occupied = roster.find(a => phaseFromName(a.friendly_name) === phase)
-    if (occupied) { error(`Phase "${phase}" in lineage "${lineageName}" is occupied by ${occupied.friendly_name || occupied.id}`); return }
+    // Free the slot (age occupants one rung toward night, oldest retires)
+    // instead of erroring on "occupied" — "free the names you need, then place."
+    fleetStore.makeRoomForPhase(lineage.id, phase)
     fleetStore.assignPhase(agent.id, lineage.id, phase)
     broadcastState()
     reply({ ok: true, agent: agent.id, lineage: lineage.id, lineage_name: lineage.friendly_name, phase })
@@ -2884,12 +2884,33 @@ async function handleFleetWsMessage(ws, msg) {
     const agent = fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
     if (!agent.lineage_id) { error('agent is not in a lineage'); return }
-    const roster = fleetStore.getLineageRoster(agent.lineage_id)
-    const occupied = roster.find(a => phaseFromName(a.friendly_name) === phase && a.id !== agent.id)
-    if (occupied) { error(`Phase "${phase}" is occupied by ${occupied.friendly_name || occupied.id}`); return }
+    // Free the target slot (age occupants one rung toward night, oldest retires)
+    // instead of erroring. Handoffs only move an agent DOWN the chain (dawn→day/
+    // dusk), so the moving agent sits above the target and isn't caught in the
+    // cascade.
+    fleetStore.makeRoomForPhase(agent.lineage_id, phase)
     fleetStore.transitionPhase(agent.id, phase)
     broadcastState()
     reply({ ok: true, agent: agent.id, phase })
+    return
+  }
+
+  // ---- lineage-make-room: free a phase slot (age occupants toward night) ----
+  // "Free the names you need, then place." Used by a handoff to reserve a slot
+  // (e.g. :day for the briefer) before the new agent arrives.
+  if (type === 'lineage-make-room') {
+    const { phase, lineage: lineageQuery, agent: agentQuery } = msg
+    if (!phase) { error('phase required'); return }
+    if (!PHASES.includes(phase)) { error(`phase must be one of: ${PHASES.join(', ')}`); return }
+    let lineage = lineageQuery ? fleetStore.getLineage(lineageQuery) : null
+    if (!lineage && agentQuery) {
+      const a = fleetStore.findAgent(agentQuery)
+      if (a?.lineage_id) lineage = fleetStore.getLineage(a.lineage_id)
+    }
+    if (!lineage) { error('lineage not found'); return }
+    fleetStore.makeRoomForPhase(lineage.id, phase)
+    broadcastState()
+    reply({ ok: true, lineage: lineage.id, phase })
     return
   }
 
