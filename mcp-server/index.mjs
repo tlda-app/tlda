@@ -2825,7 +2825,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const claims = chain.nodes.length;
     const infs = chain.edges.length;
     try {
-      await broadcastSignalRest(doc, 'signal:graph-draw', { chain, replace, timestamp: Date.now() });
+      // Server-side store ops: write shapes+bindings into the room so the graph
+      // persists immediately, no connected viewer required.
+      const resp = await serverFetch(`/api/projects/${doc}/graph`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chain, replace }),
+      });
+      if (!resp.ok) {
+        const t = await resp.text().catch(() => '');
+        return { content: [{ type: 'text', text: `Failed to draw graph: ${resp.status} ${t}` }], isError: true };
+      }
     } catch (e) {
       return { content: [{ type: 'text', text: `Failed to draw graph: ${e?.message || e}` }], isError: true };
     }

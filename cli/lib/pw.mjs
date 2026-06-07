@@ -166,22 +166,21 @@ export async function cmdPw(args, repoRoot) {
     process.exit(2)
   }
 
-  // Forwarded verb: must hold the lock. Auto-acquire if it's free.
-  const lk = lockStatus(repoRoot)
-  if (!lk) {
-    const res = lockAcquire(repoRoot, me)
-    if (!res.ok) {
-      console.error(res.msg)
-      process.exit(1)
-    }
-    console.error(`(auto-acquired pw-lock as ${me})`)
-  } else if (lk.holder !== me) {
+  // Forwarded verb: acquire-or-refresh the lock on EVERY verb. pw-lock.sh
+  // acquire() takes a free lock, re-stamps it if it's already mine (so active
+  // use keeps it fresh against the short idle-expiry), and fails if another
+  // agent holds it. So one call does acquire + heartbeat + collision-check.
+  const before = lockStatus(repoRoot)
+  const res = lockAcquire(repoRoot, me)
+  if (!res.ok) {
+    const lk = lockStatus(repoRoot)
     console.error(
-      `pw-lock held by ${lk.holder} (${lk.ageSecs}s ago). ` +
-        `Wait, or: tlda pw status / bin/pw-lock.sh steal ${me}`
+      `pw-lock held by ${lk ? `${lk.holder} (${lk.ageSecs}s ago)` : 'another agent'}. ` +
+        `Wait, or: tlda-dev pw status / bin/pw-lock.sh steal ${me}`
     )
     process.exit(1)
   }
+  if (!before) console.error(`(auto-acquired pw-lock as ${me})`)
 
   ensureOpen()
   process.exit(forward(verb, rest))
