@@ -3168,24 +3168,23 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     const state = await loadStateAll();
     const tasks = state.tasks || [];
     let filtered = [];
-    let serverTotal = null;
+    let overflow = false;
 
     const resolvedSince = parseTimestamp(args.since);
     const resolvedUntil = parseTimestamp(args.until);
-    // When both bounds are set the caller committed to a finite range — fetch
-    // everything rather than silently paginating. Error if it's too large.
+    // When both bounds are set the caller committed to a finite range, so grab
+    // the whole window in one shot; otherwise page in 200s.
     const isBounded = !!(resolvedSince && resolvedUntil);
     const pageSize = isBounded ? 10_000 : (args.page_size || 200);
 
     const fetchEventsForAgent = async (agentId) => {
-      const params = { agent: agentId, limit: pageSize };
+      // Fetch one extra row so we can detect "there's more" without a COUNT.
+      const params = { agent: agentId, limit: pageSize + 1 };
       if (resolvedSince) params.since = resolvedSince;
       if (resolvedUntil) params.until = resolvedUntil;
-      if (isBounded) params.count = true;
       if (args.types?.length) params.event_types = args.types;
       const data = await sendWS('store-events', params);
       if (!data) return;
-      serverTotal = data.total ?? null;
       for (const e of (data.events || [])) {
         const text = e.type === 'delegate'
           ? `[DELEGATE] ${e.description || ''}\n${e.message || e.text || ''}`
@@ -3264,15 +3263,14 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       return { content: [{ type: 'text', text: 'No messages found for the given criteria.' }] };
     }
 
-    // For bounded calls, error rather than silently truncate
-    if (isBounded && serverTotal !== null && serverTotal > filtered.length) {
-      return {
-        content: [{ type: 'text', text: `Bounded query returned ${serverTotal} messages — too large to fetch in one call. Narrow your time range (currently ${resolvedSince} → ${resolvedUntil}) and try again.` }],
-        isError: true,
-      };
+    // We fetched pageSize+1 — if we got more than a page, there's another page.
+    // Trim to the page and flag it so the header tells the caller how to continue.
+    if (filtered.length > pageSize) {
+      overflow = true;
+      filtered = filtered.slice(0, pageSize);
     }
 
-    // Build header with total context and forward-pagination hint
+    // Build header with forward-pagination hint
     const fmtShort = (ts) => ts ? new Date(ts).toLocaleString() : '';
     const oldest = filtered[0]?.timestamp;
     const newest = filtered[filtered.length - 1]?.timestamp;
@@ -3297,12 +3295,16 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       if (trail.length > 1) provenanceNote = `\n↳ ${trail.join(' → ')} · ${primaryId}`;
     }
 
+    const nextPageArg = args.task_id
+      ? `task_id: "${args.task_id}"`
+      : `agent: "${args.agent || ''}"`;
+    const untilHint = resolvedUntil ? `, until: "${args.until}"` : '';
+
     let header;
-    const totalKnown = serverTotal ?? filtered.length;
-    if (serverTotal !== null && filtered.length < serverTotal) {
-      const hidden = serverTotal - filtered.length;
-      header = `Showing messages 1–${filtered.length} of ${serverTotal}${rangeStr}\n` +
-        `⚠️ ${hidden} more message(s) not shown — call again with \`since: "${newest}"\` to get the next page`;
+    if (overflow) {
+      header = `Showing the first ${filtered.length} message(s)${rangeStr}\n` +
+        `⚠️ More messages exist after this page. Continue with ` +
+        `\`get_thread(${nextPageArg}, since: "${newest}"${untilHint})\``;
     } else {
       header = `${filtered.length} messages${rangeStr}`;
     }
@@ -3368,14 +3370,11 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     // Rewrite header if we hit the byte limit
     if (truncatedAt) {
       const shown = lines.length;
-      const remaining = totalKnown - shown;
+      const remaining = filtered.length - shown;
       const lastShownTs = filtered[shown - 1]?.timestamp;
-      const nextPageArg = args.task_id
-        ? `task_id: "${args.task_id}"`
-        : `agent: "${args.agent || ''}"`;
-      header = `Showing messages 1–${shown} of ${totalKnown}${rangeStr}\n` +
+      header = `Showing messages 1–${shown} of ${filtered.length}${overflow ? '+' : ''}${rangeStr}\n` +
         `⚠️ ${remaining}+ more — get the next page:\n` +
-        `\`get_thread(${nextPageArg}, since: "${lastShownTs}")\``;
+        `\`get_thread(${nextPageArg}, since: "${lastShownTs}"${untilHint})\``;
     }
 
     return { content: [{ type: 'text', text: `${header}${provenanceNote}\n\n${lines.join(SEP)}` }] };

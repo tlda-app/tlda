@@ -2233,6 +2233,13 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
+  // Full roster INCLUDING dead agents — history tooling (get_thread,
+  // search_logs) must keep dead agents addressable by name.
+  if (type === 'store-agents-all') {
+    reply(fleetStore.getAllAgents())
+    return
+  }
+
   if (type === 'store-tasks') {
     const active = msg.active !== false
     reply(active ? fleetStore.getActiveTasks() : fleetStore.getAllTasks?.() || [])
@@ -3279,9 +3286,9 @@ async function handleFleetWsMessage(ws, msg) {
         const where = typeClause ? `${agentWhere} AND ${typeClause}` : agentWhere
         const allBaseParams = [...baseParams, ...typeParams]
         if (sinceTs || untilTs) {
-          // Timestamp pagination: filter by timestamp range, return earliest matches in
-          // chronological order. Also report `total` for the matching range so the
-          // caller can show "showing N of M".
+          // Timestamp pagination: filter by timestamp range, return earliest
+          // matches in chronological order. No COUNT — callers detect overflow
+          // by fetching limit+1 and paginating forward.
           const tsClauses = []
           const tsParams = []
           if (sinceTs) { tsClauses.push('timestamp > ?'); tsParams.push(sinceTs) }
@@ -3289,12 +3296,6 @@ async function handleFleetWsMessage(ws, msg) {
           const tsWhere = `${where} AND ${tsClauses.join(' AND ')}`
           const q = `SELECT ${cols} FROM events WHERE ${tsWhere} ORDER BY timestamp ASC LIMIT ?`
           events = fleetStore.db.prepare(q).all(...allBaseParams, ...tsParams, limit)
-          if (msg.count) {
-            const totalRow = fleetStore.db.prepare(
-              `SELECT COUNT(*) AS c FROM events WHERE ${tsWhere}`
-            ).get(...allBaseParams, ...tsParams)
-            total = totalRow?.c ?? null
-          }
         } else {
           const q = afterId
             ? `SELECT ${cols} FROM events WHERE ${where} AND id > ? ORDER BY id ASC LIMIT ?`
@@ -3305,12 +3306,6 @@ async function handleFleetWsMessage(ws, msg) {
             : beforeId ? fleetStore.db.prepare(q).all(...allBaseParams, beforeId, limit)
             : fleetStore.db.prepare(q).all(...allBaseParams, limit)
           if (beforeId) events.reverse()
-          if (msg.count) {
-            const totalRow = fleetStore.db.prepare(
-              `SELECT COUNT(*) AS c FROM events WHERE ${where}`
-            ).get(...allBaseParams)
-            total = totalRow?.c ?? null
-          }
         }
       } else if (evtTypes) {
         const typeClause = `type IN (${evtTypes.map(() => '?').join(',')})`
