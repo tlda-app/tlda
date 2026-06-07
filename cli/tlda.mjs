@@ -31,6 +31,25 @@ import { cmdLogs } from './lib/unified-logs.mjs'
 
 // --- Argument parsing ---
 
+// Noun routing. The CLI is organized under nouns (server / doc / agent / config).
+// `tlda doc <sub> …` and `tlda config <sub> …` forward transparently to the
+// sub's handler by splicing the noun out of argv, so every existing handler runs
+// unchanged. (server/agent self-dispatch and aren't spliced; `doctor` and `logs`
+// are their own top-level commands.) Flat forms still work for now so the
+// feedback hook etc. don't break, but `--help` only advertises the nouns.
+const DOC_SUBS = new Set([
+  'create', 'open', 'push', 'list', 'ls', 'status', 'errors', 'preview',
+  'delete', 'rm', 'share', 'publish', 'scratch', 'book', 'listen', 'monitor',
+  'repo-doctor', 'init-shadow',
+])
+const CONFIG_SUBS = new Set(['setup', 'mcp-setup', 'auth'])  // config subs that map to existing handlers
+{
+  const noun = process.argv[2]
+  const sub = process.argv[3]
+  if (noun === 'doc' && sub && DOC_SUBS.has(sub)) process.argv.splice(2, 1)
+  else if (noun === 'config' && sub && CONFIG_SUBS.has(sub)) process.argv.splice(2, 1)
+}
+
 const args = process.argv.slice(2)
 const command = args[0]
 
@@ -992,45 +1011,6 @@ async function cmdErrors() {
   }
   if (!data.errors?.length && !data.warnings?.length && !data.pipelineWarnings?.length && !data.building) {
     console.log(green('Clean.'))
-  }
-}
-
-async function cmdBuild() {
-  const name = getPositional(0) || await inferProjectName()
-  if (!name) { console.error('Usage: tlda build <name>'); process.exit(1) }
-
-  console.log(dim('Note: prefer the watcher pipeline. tlda build bypasses change detection.'))
-  console.log(`Triggering rebuild for "${name}"...`)
-  await api('POST', `/api/projects/${name}/build`)
-  console.log(green('Build triggered.'))
-}
-
-async function cmdRevert() {
-  const name = getPositional(0) || await inferProjectName()
-  let ref = getPositional(1)
-  if (!name || !ref) {
-    console.error('Usage: tlda revert <name> shadow:<hash>')
-    console.error('  Restores source files from a shadow repo snapshot and rebuilds.')
-    console.error('  Use `doc_version` MCP tool to list versions.')
-    process.exit(1)
-  }
-
-  // Accept both "shadow:abc1234" and bare "abc1234"
-  if (ref.startsWith('shadow:')) ref = ref.slice(7)
-
-  console.log(`Reverting "${name}" to shadow:${ref.slice(0, 7)}...`)
-
-  try {
-    // Restore source from shadow repo + write to author's working copy
-    const result = await api('POST', `/api/projects/${name}/history/shadow/${ref}/revert`)
-    if (result.error) {
-      console.error(red(`Revert failed: ${result.error}`))
-      process.exit(1)
-    }
-    console.log(green(`Reverted to shadow:${ref.slice(0, 7)} — rebuilding...`))
-  } catch (e) {
-    console.error(red(`Revert failed: ${e.message}`))
-    process.exit(1)
   }
 }
 
@@ -2448,15 +2428,12 @@ async function main() {
       case 'ls':     await ensureServer(); await cmdList(); break
       case 'status': await ensureServer(); await cmdStatus(); break
       case 'errors': await ensureServer(); await cmdErrors(); break
-      case 'build':   await ensureServer(); await cmdBuild(); break
       case 'preview': await ensureServer(); await cmdPreview(); break
       case 'delete':  await ensureServer(); await cmdDelete(); break
       case 'rm':      await ensureServer(); await cmdDelete(); break
-      case 'revert':  await ensureServer(); await cmdRevert(); break
       case 'logs':    await cmdLogs(args.slice(1)); break
       case 'log':     await cmdLogs(args.slice(1)); break
       case 'publish': await cmdPublish(); break
-      case 'completions': cmdCompletions(); break
       case 'auth': await cmdAuth(); break
       case 'mcp-setup': await cmdMcpSetup(); break
       case 'config': await cmdConfig(); break
@@ -2464,54 +2441,47 @@ async function main() {
       case 'agent': await cmdAgent(); break
       case 'attach': await cmdAttach(); break
       case 'spawn': await ensureServer(); await cmdSpawn(); break
-      case 'fleet-dev': await ensureServer(); await cmdFleetDev(); break
       case 'dev': await cmdDev(); break
       case 'dev-url': await cmdDevUrl(); break
       case 'deploy': await cmdDeploy(); break
       case 'doctor': await cmdDoctor(); break
       case 'init-shadow': await cmdInitShadow(); break
       case 'repo-doctor': await cmdRepoDoctor(); break
+      case 'doc':
+        console.log(`tlda doc — work on a document project
+
+  create <name>        Create a project, push files, build
+  open [name]          Open the viewer
+  push [name]          Push source, rebuild
+  status [name]        Build status
+  errors [name]        LaTeX errors/warnings
+  preview <name> [p…]  Rasterize pages to PNG
+  list                 List projects
+  share [name]         Print a shareable read-only URL
+  delete <name>        Delete a project
+  publish [doc …]      Publish to GitHub Pages + Fly
+  scratch <file>       Publish a scratch .md
+  book <name>          Group existing docs into a book
+  listen <doc>         Block until feedback arrives (one-shot)
+  monitor <add|remove|list|clear>   Hook-based feedback watching
+  repo-doctor <proj>   Diagnose/repair a project's source repo
+  init-shadow <proj>   Rebuild a project's shadow (version-history) repo`)
+        break
       default:
-        console.log(`tlda — tlda CLI
+        console.log(`tlda — collaborative LaTeX paper review
 
-Commands:
-  server [start|stop|status|log|install|uninstall]  Manage the server
-  create <name>  Create project (or update existing), upload files, build
-  scratch <file> Publish scratch .md to fleet-workspace book
-  book <name>    Create a book grouping existing docs (--members doc1,doc2,...)
-  push [name]    Push source files, trigger rebuild
-  watch [path]   Watch for changes, auto-push to server
-  watch-all      Alias for "tlda watch start" — runs the fleet daemon
-  listen <doc>   Block until feedback arrives, print JSON, exit
-  monitor        Manage hook-based doc monitoring [add|remove|list|clear]
-  open [name]    Open viewer in browser
-  list           List projects
-  status [name]  Show build status
-  errors [name]  Show LaTeX errors/warnings from last build
-  logs [agent]   Unified log across all sources (DB, daemon, dead-letters)
-  delete <name>  Delete a project (alias: rm)
-  preview <name> [page ...]  Rasterize SVG pages to PNG
-  publish [doc ...]  Publish docs to GitHub Pages + Fly
-  agent <list|spawn|attach|hibernate>  Manage fleet agents on this machine
-  setup          One-time setup [editor]
-  mcp-setup      Write .mcp.json for Claude Code integration (current directory)
-  doctor         Check setup (--fix to auto-repair)
-  completions    Output zsh completion script
+  tlda doc <cmd>       work on a document project   (\`tlda doc\` for the list)
+  tlda server <cmd>    run/manage the tlda server   (start/stop/status/log)
+  tlda agent <cmd>     fleet agents on this machine (list/spawn/attach/hibernate)
+  tlda config <cmd>    configure tlda               (set/get/setup/mcp-setup/auth)
+  tlda watch [start|stop]   fleet daemon (source watch + activity)
+  tlda doctor          health check (--fix to repair)
+  tlda logs [agent]    unified logs across all sources
 
-The server auto-starts on first use. Explicit control: tlda server start/stop.
+Run \`tlda <noun>\` (e.g. \`tlda doc\`) to list that group's commands.
+Developer commands (hacking on tlda itself): \`tlda-dev --help\`
 
-Developer commands (for hacking on tlda itself) live under \`tlda-dev\`:
-  tlda-dev --help   pw · dev · dev-url · deploy
-
-Options:
-  --server <url>   Server URL (default: http://localhost:5176)
-  --dir <path>     Source directory (default: .)
-  --title "Title"  Document title (create only)
-  --main file.tex  Main tex file (create only)
-
-Config:
-  tlda config set server <url>
-  TLDA_SERVER=<url>`)
+Options: --server <url> · --dir <path> · --title "…" · --main file.tex`)
     }
   } catch (e) {
     console.error(red(`Error: ${e.message}`))
