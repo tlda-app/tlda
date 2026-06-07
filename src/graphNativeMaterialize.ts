@@ -94,7 +94,7 @@ export function materializeChain(editor: Editor, chain: Chain) {
 
   // any unplaced node — stack far right
   let spare = 0
-  for (const n of chain.nodes) if (!pos[n.id]) { pos[n.id] = { x: SPINE_X + STEP_W + 200, y: TOP_Y + spare * 120, w: STEP_W, h: 80 }; spare++ }
+  for (const n of chain.nodes) if (!pos[n.id]) { pos[n.id] = { x: STEPS_CX + STEP_W, y: TOP_Y + spare * 120, w: STEP_W, h: 80 }; spare++ }
 
   editor.run(() => {
     // node cards
@@ -102,7 +102,7 @@ export function materializeChain(editor: Editor, chain: Chain) {
       const id = createShapeId()
       idOf[n.id] = id
       const p = pos[n.id]
-      editor.createShape({ id, type: 'graph-node', x: p.x, y: p.y, props: { w: p.w, h: p.h, claim: n.claim, kind: n.kind } })
+      editor.createShape({ id, type: 'graph-node' as any, x: p.x, y: p.y, props: { w: p.w, h: p.h, claim: n.claim, kind: n.kind } })
     }
 
     // bound arrows. The inference substance (detail) + tiny rule tag ride in meta.

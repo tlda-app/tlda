@@ -13,7 +13,7 @@
  * ever sees reorder / insert / delete. Promote/demote (re-leveling) is display
  * only for now — the model's apply path doesn't round-trip level yet (see report).
  */
-import { BaseBoxShapeUtil, HTMLContainer, T, stopEventPropagation } from 'tldraw'
+import { BaseBoxShapeUtil, HTMLContainer, stopEventPropagation } from 'tldraw'
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { outlineProps } from '../../shared/shapes/outline-schema.mjs'
 

@@ -344,21 +344,6 @@ function VersionStamp({ docName }: { docName: string }) {
     return onReloadSignal(sig => { lastReloadAtRef.current = sig.timestamp })
   }, [])
 
-  // An agent authored an argument graph → materialize it on this doc's canvas.
-  useEffect(() => {
-    return onGraphDrawSignal((sig) => {
-      const editor = editorRef.current
-      if (!editor || !sig?.chain) return
-      if (sig.replace) {
-        const ids = editor.getCurrentPageShapes()
-          .filter((s: any) => s.type === 'graph-node' || s.meta?.graphEdge || (s.type === 'frame' && s.meta?.graphGroup))
-          .map((s: any) => s.id)
-        if (ids.length) editor.run(() => editor.deleteShapes(ids), { history: 'ignore' })
-      }
-      try { materializeChain(editor, sig.chain) } catch (e) { console.error('[graph] materialize failed', e) }
-    })
-  }, [])
-
   // Watchdog: periodically re-check staleness in case the one-shot guard was consumed
   // without a successful reload (rapid builds, WS reconnect with same hash).
   const sentinelBuildReadyAt = sentinel?.buildReadyAt ?? 0
@@ -431,6 +416,21 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
   const editorRef = useRef<Editor | null>(null)
   const restoredEditorRef = useRef<Editor | null>(null)
+
+  // An agent authored an argument graph → materialize it on this doc's canvas.
+  useEffect(() => {
+    return onGraphDrawSignal((sig) => {
+      const editor = editorRef.current
+      if (!editor || !sig?.chain) return
+      if (sig.replace) {
+        const ids = editor.getCurrentPageShapes()
+          .filter((s: any) => s.type === 'graph-node' || s.meta?.graphEdge)
+          .map((s: any) => s.id)
+        if (ids.length) editor.run(() => editor.deleteShapes(ids), { history: 'ignore' })
+      }
+      try { materializeChain(editor, sig.chain) } catch (e) { console.error('[graph] materialize failed', e) }
+    })
+  }, [])
 
   // --- Cross-cutting refs shared by hooks ---
   const shapeIdSetRef = useRef<Set<TLShapeId>>(new Set())
