@@ -23,28 +23,32 @@ function saveAnchorOffsets(editor: Editor, panOffset: number, cameraY: number) {
   // orphan shared across users.
   if (!getHumanId()) return
   const anchorId = getMyAnchorId()
-  const existing = editor.getShape(anchorId as any)
-  if (existing) {
-    if (existing.isLocked) {
-      editor.updateShape({ id: anchorId as any, type: 'geo', isLocked: false })
+  // Pure UI bookkeeping — the anchor stores pan/camera offsets, not document
+  // content. Keep it off the user's undo stack (run with history:'ignore').
+  editor.run(() => {
+    const existing = editor.getShape(anchorId as any)
+    if (existing) {
+      if (existing.isLocked) {
+        editor.updateShape({ id: anchorId as any, type: 'geo', isLocked: false })
+      }
+      editor.updateShape({
+        id: anchorId as any,
+        type: 'geo',
+        meta: { ...existing.meta, panOffset, cameraY },
+        isLocked: true,
+      })
+    } else {
+      editor.createShape({
+        id: anchorId as any,
+        type: 'geo',
+        x: 0, y: 0,
+        opacity: 0,
+        isLocked: true,
+        props: { w: 1, h: 1, geo: 'rectangle' as const },
+        meta: { panOffset, cameraY },
+      })
     }
-    editor.updateShape({
-      id: anchorId as any,
-      type: 'geo',
-      meta: { ...existing.meta, panOffset, cameraY },
-      isLocked: true,
-    })
-  } else {
-    editor.createShape({
-      id: anchorId as any,
-      type: 'geo',
-      x: 0, y: 0,
-      opacity: 0,
-      isLocked: true,
-      props: { w: 1, h: 1, geo: 'rectangle' as const },
-      meta: { panOffset, cameraY },
-    })
-  }
+  }, { history: 'ignore' })
 }
 
 /** Mutable flag: true when the HUD overlay is expanded. Read by
@@ -296,9 +300,13 @@ export function FleetHUD({
     const fleetShapes = mainEditor.getCurrentPageShapes().filter(isMyFleetShape)
     if (fleetShapes.length > 0) {
       const tick = Date.now()
-      mainEditor.updateShapes(fleetShapes.map(s => ({
-        id: s.id, type: s.type, meta: { ...s.meta, _visTick: tick },
-      })))
+      // Cache-invalidation meta touch on HUD open/close — not a document edit,
+      // keep it off the undo stack.
+      mainEditor.run(() => {
+        mainEditor.updateShapes(fleetShapes.map(s => ({
+          id: s.id, type: s.type, meta: { ...s.meta, _visTick: tick },
+        })))
+      }, { history: 'ignore' })
     }
   }, [expanded, fleetBounds, mainEditor])
 
@@ -443,7 +451,9 @@ export function FleetHUD({
       const fleetSorted = mainEditor.getCurrentPageShapesSorted().filter(s => FLEET_SHAPE_TYPES.has(s.type))
       const frontmost = fleetSorted[fleetSorted.length - 1]
       if (frontmost && frontmost.id === shapeId) return
-      mainEditor.bringToFront([shapeId as any])
+      // Raising on tap is a focus/compositing affordance, not a document edit —
+      // keep it off the undo stack (still source:'user', so it syncs/persists).
+      mainEditor.run(() => mainEditor.bringToFront([shapeId as any]), { history: 'ignore' })
     }
     el.addEventListener('pointerdown', onPointerDownCapture, true)
     return () => el.removeEventListener('pointerdown', onPointerDownCapture, true)
@@ -561,8 +571,11 @@ export function FleetHUD({
           const myAnchorId = getMyAnchorId()
           const anchor = mainEditor.getShape(myAnchorId as any)
           if (anchor) {
-            if (anchor.isLocked) mainEditor.updateShape({ id: myAnchorId as any, type: 'geo', isLocked: false })
-            mainEditor.deleteShape(myAnchorId as any)
+            // Anchor lifecycle is UI bookkeeping — keep off the undo stack.
+            mainEditor.run(() => {
+              if (anchor.isLocked) mainEditor.updateShape({ id: myAnchorId as any, type: 'geo', isLocked: false })
+              mainEditor.deleteShape(myAnchorId as any)
+            }, { history: 'ignore' })
           }
         } catch {}
       }

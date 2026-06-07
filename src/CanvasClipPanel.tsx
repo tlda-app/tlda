@@ -10,7 +10,7 @@
  * buttons and title.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Tldraw, createTLStore, stopEventPropagation } from 'tldraw'
+import { Tldraw, createTLStore, stopEventPropagation, react } from 'tldraw'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor, TLRecord } from 'tldraw'
 import { chatInsertBus } from './shapes/FleetPillShape'
 import { FLEET_SHAPE_TYPES, isMyFleetShape } from './shapes/fleet-utils'
@@ -87,11 +87,34 @@ export function CanvasClipPanel({
   const lockedIdsRef = useRef<Set<string>>(new Set())
   const boundsRef = useRef<ClipBounds | null>(bounds)
   boundsRef.current = bounds
+  // Always-current copy-editor ref (read inside the store listener without
+  // re-subscribing) + whether a move/resize gesture is currently open on it.
+  const copyEditorRef = useRef<Editor | null>(null)
+  copyEditorRef.current = editor
+  const gestureOpenRef = useRef(false)
 
   // Expose editor to parent
   useEffect(() => {
     onEditorMount?.(editor)
   }, [editor, onEditorMount])
+
+  // Gesture boundary: watch the copy editor's drag/resize state. On the rising
+  // edge of a move/resize gesture, place ONE history mark on the main editor and
+  // open the gesture window — every fleet update that follows (including all
+  // shapes in a drag-box multi-select) accumulates into that single undo step.
+  // On the falling edge, close the window so the next gesture is its own step.
+  useEffect(() => {
+    if (!editor) return
+    return react('fleet-gesture-boundary', () => {
+      const inGesture = editor.inputs.isDragging || editor.isIn('select.translating') || editor.isIn('select.resizing')
+      if (inGesture && !gestureOpenRef.current) {
+        mainEditor.markHistoryStoppingPoint()
+        gestureOpenRef.current = true
+      } else if (!inGesture && gestureOpenRef.current) {
+        gestureOpenRef.current = false
+      }
+    })
+  }, [editor, mainEditor])
 
   // Snapping in HUD: non-fleet shapes are already locked (lockNonFleetUnlockFleet),
   // and tldraw's snap manager excludes locked shapes from snap targets. So enabling
@@ -327,25 +350,56 @@ export function CanvasClipPanel({
     const isFleetShape = (r: any) =>
       r.typeName === 'shape' && FLEET_SHAPE_TYPES.has(r.type)
     const unsubCopy = store.listen(({ changes }) => {
-      for (const record of Object.values(changes.added)) {
-        if (isPill(record)) continue
-        if (!isDocRecord(record)) continue
-        if (lockCamera && !isFleetShape(record)) continue
-        mainEditor.store.put([lockCamera ? relockFleetShape(record) : record])
+      // ADDED — a structural op (spawn / paste). store.put with source:'user'
+      // records on the main undo stack; a stopping point *before* it isolates
+      // this op as its own undo step instead of gluing onto the prior edit.
+      const added = Object.values(changes.added).filter(
+        (r) => !isPill(r) && isDocRecord(r) && (!lockCamera || isFleetShape(r)),
+      )
+      if (added.length) {
+        mainEditor.markHistoryStoppingPoint()
+        mainEditor.store.put(added.map((r) => (lockCamera ? relockFleetShape(r) : r)))
       }
-      for (const [, to] of Object.values(changes.updated)) {
-        if (isPill(to)) continue
-        if (!isDocRecord(to) || emphasizedIdsRef.current.has(to.id) || lockedIdsRef.current.has(to.id)) continue
-        if (lockCamera && !isFleetShape(to)) continue
-        mainEditor.store.put([lockCamera ? relockFleetShape(to) : to])
+
+      // UPDATED — two kinds, told apart by whether a pointer gesture is live on
+      // the copy editor (NOT by what changed):
+      //   • a user move/resize gesture → RECORD it, so it's undoable. One mark at
+      //     the gesture's first update makes the whole gesture — including a
+      //     drag-box multi-select — collapse into ONE undo step.
+      //   • live activity (incoming messages, refreshes) or programmatic writes →
+      //     run({history:'ignore'}): still source:'user' so the sync client
+      //     persists it, but the recorder is paused so it never touches undo.
+      const updated = Object.values(changes.updated)
+        .map(([, to]) => to)
+        .filter(
+          (to) =>
+            !isPill(to) &&
+            isDocRecord(to) &&
+            !emphasizedIdsRef.current.has(to.id) &&
+            !lockedIdsRef.current.has(to.id) &&
+            (!lockCamera || isFleetShape(to)),
+        )
+      if (updated.length) {
+        const records = updated.map((to) => (lockCamera ? relockFleetShape(to) : to))
+        // gestureOpenRef is driven by the copy editor's drag/resize state (see
+        // the gesture-boundary reaction below). Inside a gesture we record so the
+        // whole gesture is one undo step; otherwise we suppress history.
+        if (gestureOpenRef.current) {
+          mainEditor.store.put(records)
+        } else {
+          mainEditor.run(() => mainEditor.store.put(records), { history: 'ignore' })
+        }
       }
-      for (const record of Object.values(changes.removed)) {
-        if (isPill(record)) continue
-        if (!isDocRecord(record)) continue
-        // In lockCamera mode: allow all shape deletions (fleet and junk shapes).
-        // We block non-fleet UPDATES above to prevent accidental moves, but explicit
-        // user deletions (e.g. eraser) should always propagate back to main.
-        try { mainEditor.store.remove([record.id]) } catch { /* might not exist */ }
+
+      // REMOVED — a structural delete (eraser / select+delete). Mark before so
+      // it's its own undo step. In lockCamera mode allow all deletions (fleet +
+      // junk); we only block non-fleet *updates* above to prevent accidental moves.
+      const removed = Object.values(changes.removed).filter((r) => !isPill(r) && isDocRecord(r))
+      if (removed.length) {
+        mainEditor.markHistoryStoppingPoint()
+        for (const record of removed) {
+          try { mainEditor.store.remove([record.id]) } catch { /* might not exist */ }
+        }
       }
     }, { source: 'user', scope: 'document' })
 
