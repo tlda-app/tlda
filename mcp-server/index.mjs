@@ -1345,6 +1345,15 @@ async function listAnnotations(doc) {
   for (const record of shapes) {
     if (!record || record.type !== 'math-note') continue;
     const anchor = record.meta?.sourceAnchor;
+    // Document position: prefer the stored source anchor; otherwise derive the
+    // line from the note's canvas position (canvas → tex mapping), the same way
+    // drawn shapes resolve their line. A note with no derivable line stays null.
+    let line = anchor?.line ?? null;
+    if (line == null && record.x != null && record.y != null) {
+      const fakeBBox = { minX: record.x, minY: record.y, maxX: record.x + 10, maxY: record.y + 10 };
+      const nearby = findNearbyLines(doc, fakeBBox);
+      line = nearby?.[0]?.line ?? null;
+    }
     const ann = {
       id: record.id,
       x: Math.round(record.x || 0),
@@ -1353,6 +1362,8 @@ async function listAnnotations(doc) {
       text: record.props?.text || '',
       anchor: anchor ? `${anchor.file}:${anchor.line}` : null,
       content: anchor?.content || null,
+      line,
+      createdAt: record.meta?.createdAt ?? null,
     };
     if (record.props?.choices?.length) {
       ann.choices = record.props.choices;
@@ -2671,8 +2682,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           if (unaddressedOnly && a.addressed) continue;
           if (sinceTs && a.createdAt && a.createdAt < sinceTs) continue;
           const noteLine = a.line || a.sourceLine || null;
-          if (startLine && noteLine && noteLine < startLine) continue;
-          if (endLine && noteLine && noteLine > endLine) continue;
+          // A line-range query asks "what's in this section" — an annotation
+          // with no document line can't be in it, so exclude it from the range.
+          if ((startLine || endLine) && !noteLine) continue;
+          if (startLine && noteLine < startLine) continue;
+          if (endLine && noteLine > endLine) continue;
           items.push({ ...a, annotationType: 'note', sortLine: noteLine || 0, sortTime: a.createdAt || 0 });
         }
       }
@@ -2688,8 +2702,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           if (unaddressedOnly && s.meta?.addressed) continue;
           if (sinceTs && s.createdAt && s.createdAt < sinceTs) continue;
           const shapeLine = s.sourceLine || s.lines?.[0]?.line || 0;
-          if (startLine && shapeLine && shapeLine < startLine) continue;
-          if (endLine && shapeLine && shapeLine > endLine) continue;
+          if ((startLine || endLine) && !shapeLine) continue;
+          if (startLine && shapeLine < startLine) continue;
+          if (endLine && shapeLine > endLine) continue;
           items.push({
             id: s.id,
             annotationType: aType,
