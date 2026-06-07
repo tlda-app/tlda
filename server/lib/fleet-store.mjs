@@ -816,6 +816,7 @@ export class FleetStore {
         agent.metadata ? JSON.stringify(agent.metadata) : null,
         agent.machine_id || null
       );
+      this._bustAgentsCache();
     } catch (e) {
       if (e.code === 'SQLITE_CONSTRAINT_UNIQUE' || e.message?.includes('UNIQUE constraint failed')) {
         throw new Error(`Name "${agent.friendly_name}" is already taken by another live agent`);
@@ -992,7 +993,30 @@ export class FleetStore {
   }
 
   getAllAgents() {
-    return this._getAllAgents.all().map(r => this._hydrateAgent(r));
+    // In-memory roster snapshot. The roster is read constantly (store-agents,
+    // roll_call, the boot path — ~1400 calls per log window) to re-sort a list
+    // that barely changes; re-querying + re-hydrating ~1300 rows on every call
+    // was a top source of lock contention. Serve a hydrated snapshot from
+    // memory, rebuilding only after a short TTL or an explicit structural bust
+    // (register, mark-dead, remove). Heartbeats (last_seen) deliberately do NOT
+    // bust — a ≤1s-stale last_seen is fine for ordering, and busting on every
+    // heartbeat would defeat the cache. Treat the result as read-only: callers
+    // build view models via map/filter, they don't mutate agent objects.
+    const TTL_MS = 1000;
+    const now = Date.now();
+    if (this._agentsCache && (now - this._agentsCacheTs) < TTL_MS) {
+      return this._agentsCache;
+    }
+    this._agentsCache = this._getAllAgents.all().map(r => this._hydrateAgent(r));
+    this._agentsCacheTs = now;
+    return this._agentsCache;
+  }
+
+  // Force the next getAllAgents() to rebuild. Call after any structural change
+  // (insert/register, dead/alive flip, removal) so it shows up immediately
+  // instead of waiting out the TTL.
+  _bustAgentsCache() {
+    this._agentsCacheTs = 0;
   }
 
   // Single gate for naming/labeling. Returns [] if all `names` are available.
@@ -1055,6 +1079,7 @@ export class FleetStore {
 
   removeAgent(id) {
     this._deleteAgent.run(id);
+    this._bustAgentsCache();
   }
 
   updateHeartbeat(id) {
@@ -1065,6 +1090,7 @@ export class FleetStore {
 
   markDead(id) {
     this._markAgentDead.run(id);
+    this._bustAgentsCache();
   }
 
   updateAgentStatus(id, state, tool, ts) {
