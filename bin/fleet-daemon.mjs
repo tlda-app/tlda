@@ -1728,14 +1728,19 @@ async function rpcSpawn({ name, model, cwd, doc, respawn, effort }) {
     const project = projects.find(p => p.name === doc)
     if (project?.sourceDir) resolvedCwd = project.sourceDir
   }
-  const spawnScript = process.env.FLEET_SPAWN || 'fleet-spawn'
   const args = respawn ? [agentName] : ['--fresh', agentName]
   if (model) args.push('--model', model)
   if (effort) args.push('--effort', effort)
   if (resolvedCwd) args.push('--cwd', resolvedCwd)
   args.push('--no-attach')
+  // Route spawn through `tlda` (the on-path installed binary, which resolves the
+  // fleet-spawn script internally) rather than a bare `fleet-spawn` that depends
+  // on PATH. FLEET_SPAWN env still overrides with a direct script path (tests).
+  const override = process.env.FLEET_SPAWN
+  const spawnScript = override || 'tlda'
+  const spawnArgs = override ? args : ['agent', 'spawn', ...args]
   _activeSpawns.set(agentName, Date.now())
-  execFile(spawnScript, args, {
+  execFile(spawnScript, spawnArgs, {
     timeout: 120_000,
     env: { ...process.env, PATH: process.env.PATH, TMUX: '' },
   }, (err, stdout, stderr) => {

@@ -33,6 +33,10 @@ import { getMyAnchorId, isMyFleetShape, FLEET_SHAPE_TYPES } from './shapes/fleet
 import { ClusterShapeUtil } from './shapes/ClusterShape'
 import { TerminalShapeUtil } from './shapes/TerminalShape'
 import { ReaperShapeUtil } from './shapes/ReaperShape'
+import { OutlineShapeUtil } from './shapes/OutlineShape'
+import { GraphNodeShapeUtil } from './shapes/GraphNodeShape'
+import { GraphEdgeLabels } from './GraphEdgeLabels'
+import { materializeChain } from './graphNativeMaterialize'
 import { InlineDocShapeUtil } from './shapes/InlineDocShape'
 import { DocVersionShapeUtil } from './shapes/DocVersionShape'
 import { PlaybackFrameShapeUtil } from './shapes/PlaybackFrameShape'
@@ -56,7 +60,7 @@ import { TaskInboxTool } from './tools/TaskInboxTool'
 import { RibbonEraserTool } from './tools/RibbonEraserTool'
 import { RibbonHighlightTool } from './tools/RibbonHighlightTool'
 import { RibbonLane } from './shapes/RibbonLane'
-import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onBuildStatusSignal, onReloadSignal, onViewPinSignal, onCompareSignal, onFileUpdatedSignal, type BuildError, type BuildWarning } from './useYjsSync'
+import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onBuildStatusSignal, onReloadSignal, onViewPinSignal, onCompareSignal, onFileUpdatedSignal, onGraphDrawSignal, type BuildError, type BuildWarning } from './useYjsSync'
 import { useSync } from '@tldraw/sync'
 import { appendToken } from './authToken'
 import { DocumentPanel, PhoneOverlay, HighlighterButton, SemanticHighlightPill, VoiceNoteButton } from './DocumentPanel'
@@ -412,6 +416,21 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
   const editorRef = useRef<Editor | null>(null)
   const restoredEditorRef = useRef<Editor | null>(null)
+
+  // An agent authored an argument graph → materialize it on this doc's canvas.
+  useEffect(() => {
+    return onGraphDrawSignal((sig) => {
+      const editor = editorRef.current
+      if (!editor || !sig?.chain) return
+      if (sig.replace) {
+        const ids = editor.getCurrentPageShapes()
+          .filter((s: any) => s.type === 'graph-node' || s.meta?.graphEdge)
+          .map((s: any) => s.id)
+        if (ids.length) editor.run(() => editor.deleteShapes(ids), { history: 'ignore' })
+      }
+      try { materializeChain(editor, sig.chain) } catch (e) { console.error('[graph] materialize failed', e) }
+    })
+  }, [])
 
   // --- Cross-cutting refs shared by hooks ---
   const shapeIdSetRef = useRef<Set<TLShapeId>>(new Set())
@@ -821,7 +840,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       MainMenu: null,
       Toolbar: () => <FormatToolbar format={document.format} />,
       HelperButtons: () => <PenHelperButtons format={document.format} />,
-      InFrontOfTheCanvas: () => <><RibbonLane /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /></>,
+      InFrontOfTheCanvas: () => <><RibbonLane /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><GraphEdgeLabels /></>,
     }),
     [document, roomId]
   )
@@ -910,7 +929,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     )
     // Wrap every custom shape util with an error boundary so a single broken shape
     // renders an error placeholder instead of crashing the entire app.
-    const customUtils = [MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetDocViewShapeUtil, DocClipShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, ClusterShapeUtil, TerminalShapeUtil, TaskInboxShapeUtil, PlaybackFrameShapeUtil, ReaperShapeUtil]
+    const customUtils = [MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetDocViewShapeUtil, DocClipShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, ClusterShapeUtil, TerminalShapeUtil, TaskInboxShapeUtil, PlaybackFrameShapeUtil, ReaperShapeUtil, OutlineShapeUtil, GraphNodeShapeUtil]
     const all = [...utils, ...customUtils.map(u => withShapeErrorBoundary(u))];
     (window as any).__tldraw_shape_utils__ = all
     return all

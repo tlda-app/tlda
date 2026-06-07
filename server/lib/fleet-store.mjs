@@ -79,6 +79,7 @@ export class FleetStore {
     this.db.pragma('synchronous = NORMAL');
     this._createTables();
     this._prepareStatements();
+    this._backfillNameHistory();
     this._listeners = []; // SSE broadcast callbacks
 
     // The writer worker owns the connection that writes the high-frequency
@@ -403,6 +404,47 @@ export class FleetStore {
         PRIMARY KEY (agent_id, skill_key)
       );
     `);
+
+    // ---- Name provenance (name-at-time) ----
+    // friendly_name rotates (lineage phases, renames, aging out). To render any
+    // PAST event with the name the agent ACTUALLY held then, we keep a span log:
+    // one row per (agent, name) interval [from_ts, to_ts). to_ts NULL = current;
+    // friendly_name NULL = a nameless span (aged-out, reachable only by id).
+    // Timestamps are ISO-8601 TEXT — directly comparable to events.timestamp.
+    //
+    // The two triggers below are the ENFORCEMENT: every friendly_name write —
+    // from the rename route, lineage rotation, the worker, or an external sweep
+    // script — passes through agents, so no rename can ever skip the history.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS name_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        fleet_id TEXT NOT NULL,
+        friendly_name TEXT,           -- NULL = nameless span
+        from_ts TEXT NOT NULL,        -- ISO-8601, inclusive
+        to_ts TEXT                    -- ISO-8601, exclusive; NULL = still current
+      );
+      CREATE INDEX IF NOT EXISTS idx_name_history_fleet ON name_history(fleet_id, from_ts);
+      CREATE INDEX IF NOT EXISTS idx_name_history_open ON name_history(fleet_id) WHERE to_ts IS NULL;
+
+      -- New agent that registers with a name → open its first span.
+      CREATE TRIGGER IF NOT EXISTS name_history_ai AFTER INSERT ON agents
+      WHEN NEW.friendly_name IS NOT NULL BEGIN
+        INSERT INTO name_history (fleet_id, friendly_name, from_ts, to_ts)
+        VALUES (NEW.id, NEW.friendly_name,
+                COALESCE(NEW.registered_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')), NULL);
+      END;
+
+      -- friendly_name changed (incl. →NULL when aging out, or NULL→ on resurrect):
+      -- close the open span, then open a new one iff the new name is non-NULL.
+      CREATE TRIGGER IF NOT EXISTS name_history_au AFTER UPDATE OF friendly_name ON agents
+      WHEN NEW.friendly_name IS NOT OLD.friendly_name BEGIN
+        UPDATE name_history SET to_ts = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+          WHERE fleet_id = NEW.id AND to_ts IS NULL;
+        INSERT INTO name_history (fleet_id, friendly_name, from_ts, to_ts)
+          SELECT NEW.id, NEW.friendly_name, strftime('%Y-%m-%dT%H:%M:%fZ','now'), NULL
+          WHERE NEW.friendly_name IS NOT NULL;
+      END;
+    `);
   }
 
   // Standard SELECT for events — aliases from_id/to_id so consumers always see `from`/`to`
@@ -481,6 +523,21 @@ export class FleetStore {
     this._getAgent = this.db.prepare('SELECT * FROM agents WHERE id = ?');
     this._getAgentsByMachine = this.db.prepare('SELECT * FROM agents WHERE machine_id = ? AND dead = 0');
     this._getAgentByName = this.db.prepare('SELECT * FROM agents WHERE friendly_name = ?');
+
+    // Name provenance: span covering an instant (newest qualifying span wins).
+    this._nameAtStmt = this.db.prepare(`
+      SELECT friendly_name FROM name_history
+      WHERE fleet_id = ? AND from_ts <= ? AND (to_ts IS NULL OR to_ts > ?)
+      ORDER BY from_ts DESC LIMIT 1
+    `);
+    this._nameEarliestStmt = this.db.prepare(`
+      SELECT friendly_name, from_ts FROM name_history WHERE fleet_id = ?
+      ORDER BY from_ts ASC LIMIT 1
+    `);
+    this._nameHistoryStmt = this.db.prepare(`
+      SELECT friendly_name, from_ts, to_ts FROM name_history WHERE fleet_id = ?
+      ORDER BY from_ts ASC
+    `);
     // last_active is a maintained column on agents (bumped on every event
     // insert — see share()), so this is a plain indexed read that never touches
     // the events table. Earlier versions computed last_active inline (correlated
@@ -763,6 +820,122 @@ export class FleetStore {
   getAgent(id) {
     const row = this._getAgent.get(id);
     return row ? this._hydrateAgent(row) : null;
+  }
+
+  // ---- Name provenance ----
+
+  // The friendly_name this agent held at instant `ts` (ISO string). Returns the
+  // span covering [from_ts, to_ts); a NULL friendly_name (nameless span) yields
+  // null. If `ts` predates all history, falls back to the earliest known name.
+  // If the agent has no history at all, falls back to its current friendly_name.
+  // The ID is always the durable handle — callers pair this name WITH the id.
+  nameAt(fleetId, ts) {
+    if (!fleetId) return null;
+    if (ts) {
+      const span = this._nameAtStmt.get(fleetId, ts, ts);
+      if (span) return span.friendly_name; // may be null (nameless span)
+      // No covering span. Two cases:
+      const earliest = this._nameEarliestStmt.get(fleetId);
+      if (earliest) {
+        // (a) ts predates all recorded history → nearest earlier-known name.
+        if (ts < earliest.from_ts) return earliest.friendly_name;
+        // (b) ts is past the last span → the agent is currently nameless
+        //     (aged out). Genuinely no name then; the id stays reachable.
+        return null;
+      }
+    }
+    // No history at all for this agent → current cache.
+    const a = this._getAgent.get(fleetId);
+    return a ? a.friendly_name : null;
+  }
+
+  // Full span list for an agent, oldest first. Used for the thread-header
+  // provenance trail (e.g. "conc4 → concentration → (current)").
+  nameHistory(fleetId) {
+    if (!fleetId) return [];
+    return this._nameHistoryStmt.all(fleetId);
+  }
+
+  // One-time seed so existing agents (registered before the triggers existed)
+  // resolve correctly. Idempotent: skipped once the table has any rows. Seeds
+  // from two sources, richest first:
+  //   1. lineage_phase_log — every phase an agent held maps to nameForPhase(base,
+  //      phase) over [entered_at, exited_at); the open phase becomes the current
+  //      span. This recovers dawn/day/dusk/night rotation history.
+  //   2. current friendly_name — for every named agent with no span yet, open a
+  //      span from registered_at so nameAt() at least returns the current name.
+  // Pre-history events (before from_ts) fall back to the earliest known name.
+  _backfillNameHistory() {
+    const has = this.db.prepare('SELECT 1 FROM name_history LIMIT 1').get();
+    if (has) return;
+    const msToIso = (ms) => (ms ? new Date(Number(ms)).toISOString() : null);
+    const lineageBase = new Map();
+    const baseOf = (lid) => {
+      if (!lid) return null;
+      if (!lineageBase.has(lid)) {
+        const row = this.db.prepare('SELECT friendly_name FROM lineages WHERE id = ?').get(lid);
+        lineageBase.set(lid, row?.friendly_name || null);
+      }
+      return lineageBase.get(lid);
+    };
+    const insert = this.db.prepare(
+      'INSERT INTO name_history (fleet_id, friendly_name, from_ts, to_ts) VALUES (?, ?, ?, ?)'
+    );
+    const seeded = new Set(); // fleet_ids that got at least one span
+    let spans = 0;
+    // Humans don't rotate through lineage phases; any phase-log rows for a human
+    // are test noise. Excluding them keeps a human's own old messages tagged with
+    // their stable name (e.g. "skip"), not a spurious "skip:day".
+    const humanIds = new Set(
+      this.db.prepare('SELECT id FROM agents WHERE human = 1').all().map(r => r.id)
+    );
+    this.db.transaction(() => {
+      // 1. Phase-log replay (skip humans).
+      const phaseRows = this.db.prepare(
+        'SELECT lineage_id, fleet_id, phase, entered_at, exited_at FROM lineage_phase_log ORDER BY entered_at'
+      ).all();
+      for (const r of phaseRows) {
+        if (humanIds.has(r.fleet_id)) continue;
+        const base = baseOf(r.lineage_id);
+        if (!base) continue;
+        const from = msToIso(r.entered_at);
+        if (!from) continue;
+        const nm = r.phase ? nameForPhase(base, r.phase) : null;
+        insert.run(r.fleet_id, nm, from, msToIso(r.exited_at));
+        seeded.add(r.fleet_id);
+        spans++;
+      }
+      // 2. Reconcile every agent's open span against its CURRENT friendly_name.
+      //    The agents table is the source of truth for the present name; the open
+      //    span must match it. Three cases:
+      //      (a) no open span        → seed current name from registered_at.
+      //      (b) open span agrees    → nothing to do.
+      //      (c) open span disagrees → the agent was renamed OUTSIDE the phase
+      //          log (the /rename route or an admin sweep), so the phase-replay
+      //          span is stale. Close it at last_seen (best estimate of when the
+      //          new name took hold — a precise boundary needs the rename event,
+      //          which a pre-trigger rename never recorded) and open the current
+      //          name there. A dedicated seed script can refine the boundary.
+      const closeOpen = this.db.prepare(
+        'UPDATE name_history SET to_ts = ? WHERE fleet_id = ? AND to_ts IS NULL'
+      );
+      const named = this.db.prepare(
+        'SELECT id, friendly_name, registered_at, last_seen FROM agents WHERE friendly_name IS NOT NULL'
+      ).all();
+      for (const a of named) {
+        const open = this.db.prepare(
+          'SELECT friendly_name FROM name_history WHERE fleet_id = ? AND to_ts IS NULL ORDER BY from_ts DESC LIMIT 1'
+        ).get(a.id);
+        if (open && open.friendly_name === a.friendly_name) continue; // (b)
+        const boundary = a.last_seen || a.registered_at || new Date(0).toISOString();
+        if (open) closeOpen.run(boundary, a.id);                      // (c) close stale
+        const from = open ? boundary : (a.registered_at || new Date(0).toISOString());
+        insert.run(a.id, a.friendly_name, from, null);               // (a)/(c) open current
+        seeded.add(a.id);
+        spans++;
+      }
+    })();
+    if (spans > 0) console.log(`[fleet-store] name_history backfill: ${spans} spans across ${seeded.size} agents`);
   }
 
   findAgent(query) {
