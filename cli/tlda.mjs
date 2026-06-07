@@ -43,15 +43,27 @@ const DOC_SUBS = new Set([
   'repo-doctor', 'init-shadow',
 ])
 const CONFIG_SUBS = new Set(['setup', 'mcp-setup', 'auth'])  // config subs that map to existing handlers
+let _nounUsed = null
 {
   const noun = process.argv[2]
   const sub = process.argv[3]
-  if (noun === 'doc' && sub && DOC_SUBS.has(sub)) process.argv.splice(2, 1)
-  else if (noun === 'config' && sub && CONFIG_SUBS.has(sub)) process.argv.splice(2, 1)
+  if (noun === 'doc' && sub && DOC_SUBS.has(sub)) { process.argv.splice(2, 1); _nounUsed = 'doc' }
+  else if (noun === 'config' && sub && CONFIG_SUBS.has(sub)) { process.argv.splice(2, 1); _nounUsed = 'config' }
 }
 
 const args = process.argv.slice(2)
 const command = args[0]
+
+// Noun-only: a command lives under its noun, not flat. No back-compat aliases —
+// reject the bare form and point at the noun. (Docs/callers use the noun forms.)
+{
+  const REDIRECT = { watch: 'daemon', 'watch-all': 'daemon', spawn: 'agent spawn', attach: 'agent attach' }
+  if (!_nounUsed && command) {
+    if (DOC_SUBS.has(command)) { console.error(`\`tlda ${command}\` moved — use: tlda doc ${command}`); process.exit(1) }
+    if (CONFIG_SUBS.has(command)) { console.error(`\`tlda ${command}\` moved — use: tlda config ${command}`); process.exit(1) }
+    if (REDIRECT[command]) { console.error(`\`tlda ${command}\` moved — use: tlda ${REDIRECT[command]}`); process.exit(1) }
+  }
+}
 
 // Per-command help (shown with --help)
 const COMMAND_HELP = {
@@ -2419,8 +2431,6 @@ async function main() {
       case 'create': await ensureServer(); await cmdCreate(); break
       case 'push':   await ensureServer(); await cmdPush(); break
       case 'daemon': await ensureServer(); await cmdWatch(); break
-      case 'watch':  await ensureServer(); await cmdWatch(); break       // hidden alias for daemon
-      case 'watch-all': await ensureServer(); await cmdWatchAll(); break // hidden alias
       case 'listen': await ensureServer(); await cmdListen(); break
       case 'monitor': await ensureServer(); await cmdMonitor(); break
       case 'open':   await ensureServer(); await cmdOpen(); break
@@ -2440,8 +2450,6 @@ async function main() {
       case 'config': await cmdConfig(); break
       case 'setup': await cmdSetup(); break
       case 'agent': await cmdAgent(); break
-      case 'attach': await cmdAttach(); break
-      case 'spawn': await ensureServer(); await cmdSpawn(); break
       case 'dev': await cmdDev(); break
       case 'dev-url': await cmdDevUrl(); break
       case 'deploy': await cmdDeploy(); break
