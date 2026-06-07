@@ -1996,7 +1996,19 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
       const pid = data.pid ? `, pid ${data.pid}` : ''
       console.log(green(`Server running`) + dim(` (uptime: ${Math.floor(data.uptime)}s${pid})`))
     } catch {
-      console.log(red('Server not running.'))
+      // /health didn't answer in 3s. That is NOT proof the server is down — a
+      // blocked event loop (slow query) times out the same way a dead process
+      // does. If the port is still held the process IS alive; reporting "not
+      // running" here is exactly what makes callers (agents, fleet-spawn) try
+      // to restart a live server, which flaps fleet chat. Only report down when
+      // nothing holds the port.
+      let held = ''
+      try { held = execSync(`lsof -ti:${port} -sTCP:LISTEN`, { stdio: 'pipe' }).toString().trim() } catch {}
+      if (held) {
+        console.log(yellow('Server running') + dim(` but not responding (event loop busy, pid ${held.split('\n')[0]})`))
+      } else {
+        console.log(red('Server not running.'))
+      }
     }
     return
   }
@@ -2082,6 +2094,21 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
           return
         }
       } catch {}
+    }
+    // The wait expired without a 200 from /health. Before declaring failure
+    // (and exiting non-zero, which makes callers retry → restart stampede),
+    // check whether the process is actually up but slow: launchd may have
+    // started it and its event loop may just be busy on a big boot query. A
+    // held port means it's alive — report success, don't trigger a retry.
+    let held = ''
+    try { held = execSync(`lsof -ti:${port} -sTCP:LISTEN`, { stdio: 'pipe' }).toString().trim() } catch {}
+    if (held) {
+      console.log(green(`Server running at ${getServer()}`) + dim(` (pid ${held.split('\n')[0]}, slow to respond — still booting)`))
+      console.log(dim(`  Log: ${LOGFILE}`))
+      if (hasLaunchd) console.log(dim('  Managed by launchd (auto-restarts)'))
+      await ensureFleetDaemonRunning()
+      await ensureElizaRunning()
+      return
     }
     console.error(red('Server failed to start within 30s'))
     console.error(dim(`Check log: ${LOGFILE}`))
