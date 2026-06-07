@@ -157,8 +157,12 @@ body.tlda-pan-mode .tl-shape[data-shape-type="fleet-chat"] {
   transition: opacity 0.15s;
   opacity: 1 !important;
 }
-/* Terminal popover only — go opaque when hovering the popover, not the whole chat shape */
-.tl-shape[data-shape-type="fleet-chat"]:has(.fleet-terminal-hover-pane:hover) {
+/* Terminal popover — go opaque whenever the peek is OPEN (not only when hovering
+   it). The peek lives inside the chat shape, so at the shape's resting (semi-
+   transparent) opacity the peek renders see-through until hovered; making the
+   shape opaque the moment the peek exists keeps the peek solid as soon as it
+   appears. Only the chat shape that owns the open peek is affected. */
+.tl-shape[data-shape-type="fleet-chat"]:has(.fleet-terminal-hover-pane) {
   transition: opacity 0.15s;
   opacity: 1 !important;
 }
