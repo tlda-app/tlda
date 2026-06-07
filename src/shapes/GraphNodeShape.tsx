@@ -6,15 +6,9 @@
  * Compact, KaTeX, kind-tinted (assumption / step / goal). canBind=true so
  * arrows attach to its outline.
  */
-import { BaseBoxShapeUtil, HTMLContainer, T } from 'tldraw'
+import { BaseBoxShapeUtil, HTMLContainer } from 'tldraw'
 import { renderMarkdownMath } from './MathNoteShape'
-
-export const graphNodeProps = {
-  w: T.number,
-  h: T.number,
-  claim: T.string,
-  kind: T.string, // 'assumption' | 'step' | 'goal'
-}
+import { graphNodeProps } from '../../shared/shapes/graph-node-schema.mjs'
 
 function mathHtml(s: string): { __html: string } {
   return { __html: renderMarkdownMath(String(s ?? '')).replace(/^<p>([\s\S]*?)<\/p>\s*$/, '$1') }
