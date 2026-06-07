@@ -63,6 +63,14 @@ export function createFleetShape(
   const myId = getHumanId()
   if (!myId) return null
   const id = createShapeId()
+  // Isolate this creation as its own undo step. createFleetShape is THE choke
+  // point for fleet-shape creation, and it can run on the main editor directly
+  // (e.g. a tool/agent-drag on the main canvas) — without a mark, the new shape
+  // glues onto whatever the user did just before (a move/resize), so one undo
+  // wrongly reverses that prior operation. Mark the main editor (undo routes
+  // there) regardless of which editor this create runs on.
+  const me = (typeof window !== 'undefined' && (window as any).__tldraw_editor__) || editor
+  me.markHistoryStoppingPoint?.()
   editor.createShape({
     id,
     type: type as any,
