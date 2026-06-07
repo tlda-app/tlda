@@ -781,17 +781,21 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
   // previous value) so the same-tick-absorb detection works.
   useLayoutEffect(() => { prevKeyRef.current = lastItemKey })
 
-  if (!hasActive && !ghost) return null
+  const showRows = hasActive || ghost
 
   return (
     <div style={{
       padding: '0 8px',
       fontSize: 11,
       flexShrink: 0,
+      // Always reserve one row of height so the thinking line appearing or
+      // disappearing never shifts the chat stack — that shift was the micro-
+      // bounce. The slot stays put; only its contents fade in/out.
+      minHeight: 'calc(var(--fleet-base-font, 11px) * 1.5 + 4px)',
       opacity: ghost ? 0 : 0.6,
       transition: 'opacity 0.2s',
     }}>
-      {[...(hasActive ? statusAgents : lastStatusRef.current).entries()].map(([agentId, { status, startTs }]) => {
+      {showRows && [...(hasActive ? statusAgents : lastStatusRef.current).entries()].map(([agentId, { status, startTs }]) => {
         const esc = escalationState?.[agentId]
         const escLevel = esc?.level || 0
         const escConfirmed = esc?.confirmed || 0
