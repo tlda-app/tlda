@@ -153,14 +153,12 @@ function selectMyTab() {
 // the tab stays identifiable after the agent navigates. Non-http URLs untouched.
 function rewriteGoto(rest) {
   const i = rest.findIndex(a => /^https?:\/\//i.test(a))
-  if (i === -1) return rest
+  if (i === -1 || !URL.canParse(rest[i])) return rest // malformed URL → forward as-is
   const out = [...rest]
-  try {
-    const u = new URL(out[i])
-    if (!u.searchParams.has('pwtab')) u.searchParams.set('pwtab', myTabKey())
-    if (!u.searchParams.has('pw')) u.searchParams.set('pw', '1')
-    out[i] = u.toString()
-  } catch { /* malformed URL — forward as-is */ }
+  const u = new URL(out[i])
+  if (!u.searchParams.has('pwtab')) u.searchParams.set('pwtab', myTabKey())
+  if (!u.searchParams.has('pw')) u.searchParams.set('pw', '1')
+  out[i] = u.toString()
   return out
 }
 
