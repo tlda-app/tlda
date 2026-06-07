@@ -76,6 +76,12 @@ export function dropPillOnTarget(
   // CanvasClipPanel (HUD) whose readOnly mode locks new shapes.
   const mainEditor = (window as any).__tldraw_editor__ as Editor | undefined
   const createEditor = mainEditor || editor
+  // Isolate this drop as its own undo step. A pill drop creates a chat (or note,
+  // or updates a filter) directly via createEditor.createShape — NOT through
+  // createFleetShape — so without a mark here the new chat glues onto whatever
+  // the user did just before (e.g. a move/resize), and one undo wrongly reverses
+  // that prior operation. Mark before any of the drop's mutations.
+  createEditor.markHistoryStoppingPoint?.()
   // pagePoint was already translated to main-editor page space by
   // onTranslateEnd (it does panel→screen→main when the pill is dragged in
   // a CanvasClipPanel). So hit-test in MAIN coords too. Using `editor`
