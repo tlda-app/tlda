@@ -129,22 +129,33 @@ function listTabs() {
   return tabs
 }
 
-// Find this agent's tab (by URL marker), creating one if absent, and select it.
-// Returns the selected index, or null if it couldn't be resolved.
+// Find this agent's tab (by URL marker), creating one if absent, select it, and
+// CONFIRM the switch took effect before returning. Confirmation matters because
+// `tab-select` runs in its own playwright-cli process and can lag the next
+// process's verb — without the check, a verb could execute against whatever tab
+// was previously current (observed: a screenshot landing on a stray blank tab).
+// Returns the confirmed index, or null if it couldn't be resolved.
 function selectMyTab() {
   const marker = myMarker()
-  let tabs = listTabs()
-  let mine = tabs.find(t => t.url.includes(marker))
+  let mine = listTabs().find(t => t.url.includes(marker))
   if (!mine) {
     // Create a fresh tab (becomes current) and stamp it so future verbs find it
     // even before the agent's first goto.
     pw(['tab-new'], { stdio: 'ignore' })
     pw(['goto', `data:text/html,<title>${marker}</title>`], { stdio: 'ignore' })
-    tabs = listTabs()
-    mine = tabs.find(t => t.url.includes(marker))
+    mine = listTabs().find(t => t.url.includes(marker))
   }
-  if (mine && !mine.current) pw(['tab-select', String(mine.index)], { stdio: 'ignore' })
-  return mine ? mine.index : null
+  if (!mine) return null
+  for (let i = 0; i < 8; i++) {
+    const cur = listTabs().find(t => t.url.includes(marker))
+    if (!cur) return null
+    if (cur.current) return cur.index // confirmed: my tab is the active one
+    pw(['tab-select', String(cur.index)], { stdio: 'ignore' })
+    spawnSync('sleep', ['0.15'])
+  }
+  // Couldn't confirm — return index anyway, but the caller's verb may misfire.
+  const last = listTabs().find(t => t.url.includes(marker))
+  return last ? last.index : null
 }
 
 // ---- verb rewriting ----
