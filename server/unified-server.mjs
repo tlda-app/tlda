@@ -631,7 +631,12 @@ const _lastAgentJson = new Map()
 
 function _broadcastStateNow() {
   if (!fleetStore) return
-  const agents = fleetStore.getAllAgents().map(a => {
+  // Live agents only — the panel never shows dead agents, and store-agents
+  // already returns alive-only, so the broadcast must match. A dying agent
+  // drops out of the alive set → goes in `removed` → vanishes from the panel.
+  // Bonus: this is the cheap indexed read (idx_agents_alive, ~tens of rows)
+  // instead of hydrating the full ~1300-row roster on every state change.
+  const agents = fleetStore.getAliveAgents().map(a => {
     if (_thinkingState.has(a.id)) return { ...a, status: 'thinking' }
     if (_compactingState.has(a.id)) return { ...a, status: 'compacting' }
     return a
@@ -2050,7 +2055,9 @@ server.on('upgrade', async (req, socket, head) => {
       // Send initial state on connect
       if (fleetStore) {
         const initState = {
-          agents: fleetStore.getAllAgents(),
+          // Live agents only (awake + hibernating); dead agents never show in
+          // the panel. Matches store-agents and the agents-delta broadcast.
+          agents: fleetStore.getAliveAgents(),
           tasks: fleetStore.getActiveTasks(),
           thinking: Object.fromEntries(_thinkingState),
           compacting: Object.fromEntries(_compactingState),
