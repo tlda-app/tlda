@@ -11,12 +11,13 @@
 import { createShapeId, type Editor, type TLShapeId } from 'tldraw'
 import type { Chain } from './graphDemoData'
 
-const SPINE_X = 470        // x of the step column (left edge of step cards)
 const STEP_W = 250
+const STEPS_CX = 760       // center x of the step (layered DAG) area
+const COL_DX = 290         // horizontal spacing between siblings in a depth band
+const BAND_DY = 150        // vertical spacing between dependency-depth bands
 const ASSUMP_X = 70        // x of the assumptions column (left edge)
 const ASSUMP_W = 300
 const TOP_Y = 60
-const ROW_GAP = 40         // vertical gap between cards
 
 type Pos = { x: number; y: number; w: number; h: number }
 
@@ -37,35 +38,57 @@ export function materializeChain(editor: Editor, chain: Chain) {
   const stepSet = new Set(steps.map((n) => n.id))
   const assumptions = chain.nodes.filter((n) => n.kind === 'assumption')
 
-  // Spine order = the AUTHORED step order. The author writes steps in proof
-  // order (already dependency-valid), and that reads far more naturally than an
-  // arbitrary Kahn topo sort, which would interleave parallel sub-arguments.
-  const order: string[] = steps.map((n) => n.id)
-
-  // --- place step cards down the spine ---
-  let y = TOP_Y
-  const rowYof: Record<string, number> = {}
-  for (const id of order) {
-    const n = byId[id]
-    const h = estimateH(n.claim, STEP_W)
-    pos[id] = { x: SPINE_X, y, w: STEP_W, h }
-    rowYof[id] = y
-    y += h + ROW_GAP
+  // --- step layout: layered DAG by dependency depth (reveals parallelism &
+  // convergence; arrows become short hops, not one fake spine line) ---
+  const sIncoming: Record<string, string[]> = {}
+  for (const e of chain.edges) if (stepSet.has(e.from) && stepSet.has(e.to)) (sIncoming[e.to] ||= []).push(e.from)
+  const depthMemo: Record<string, number> = {}
+  const depth = (id: string, seen = new Set<string>()): number => {
+    if (id in depthMemo) return depthMemo[id]
+    if (seen.has(id)) return 0
+    seen.add(id)
+    const ps = sIncoming[id] || []
+    const d = ps.length ? Math.max(...ps.map((p) => depth(p, seen))) + 1 : 0
+    return (depthMemo[id] = d)
   }
+  steps.forEach((n) => depth(n.id))
+  const bands: string[][] = []
+  // seed each band in authored order, then barycenter-order deeper bands so a
+  // step sits under the steps it depends on (aligns convergences, cuts crossings)
+  for (const n of steps) (bands[depthMemo[n.id]] ||= []).push(n.id)
+  const cx: Record<string, number> = {}
+  const rowYof: Record<string, number> = {}
+  let bandTop = TOP_Y
+  bands.forEach((band, d) => {
+    if (d > 0) {
+      band.sort((a, b) => {
+        const bc = (id: string) => { const ps = (sIncoming[id] || []).filter((p) => cx[p] != null); return ps.length ? ps.reduce((s, p) => s + cx[p], 0) / ps.length : STEPS_CX }
+        return bc(a) - bc(b)
+      })
+    }
+    const n = band.length
+    band.forEach((id, i) => {
+      const x = STEPS_CX - ((n - 1) * COL_DX) / 2 + i * COL_DX - STEP_W / 2
+      const h = estimateH(byId[id].claim, STEP_W)
+      pos[id] = { x, y: bandTop, w: STEP_W, h }
+      cx[id] = x + STEP_W / 2
+      rowYof[id] = bandTop
+    })
+    bandTop += BAND_DY
+  })
 
-  // --- place assumption cards on the left, beside the step they feed ---
+  // --- assumptions: left column, aligned to the step they feed; de-overlapped ---
   for (const a of assumptions) {
     const fed = chain.edges.find((e) => e.from === a.id && stepSet.has(e.to))
-    const targetY = fed ? rowYof[fed.to] : TOP_Y
+    const targetY = fed && rowYof[fed.to] != null ? rowYof[fed.to] : TOP_Y
     const h = estimateH(a.claim, ASSUMP_W)
     pos[a.id] = { x: ASSUMP_X, y: targetY, w: ASSUMP_W, h }
   }
-  // de-overlap assumption column (they can collide if two feed nearby steps)
   const assumpSorted = assumptions.slice().sort((x, z) => pos[x.id].y - pos[z.id].y)
   for (let i = 1; i < assumpSorted.length; i++) {
     const prev = pos[assumpSorted[i - 1].id]
     const cur = pos[assumpSorted[i].id]
-    const minY = prev.y + prev.h + 24
+    const minY = prev.y + prev.h + 22
     if (cur.y < minY) cur.y = minY
   }
 
