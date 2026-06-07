@@ -2075,6 +2075,27 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'graph_draw',
+      description: 'Draw an ARGUMENT-STRUCTURE graph onto a doc canvas — the skeleton of a proof, BEFORE writing prose. A proof is an argument, not a dependency chart: build its structure here, then write from it. Grammar: a NODE is a clean CLAIM (a proposition that holds); an EDGE is an INFERENCE (a reasoning step) from premise claim(s) to a conclusion claim. The surface stays a clean skeleton (claims + arrows); each inference\'s substance ("why") goes in the edge\'s `detail` and shows in a side panel on hover — never crammed onto the arrow. Use this to externalize structure so the argument is legible and has no place for panicked, structureless prose.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name to draw the graph onto.' },
+          chain: {
+            type: 'object',
+            description: 'The argument structure. { nodes:[{id, kind:"assumption"|"step"|"goal", claim}], edges:[{id, from, to, rule?, detail?, weight?:"load-bearing"|"one-liner"}] }. `claim` is a clean proposition ($…$ for math). `rule` is a tiny tag on the arrow; `detail` is the inference\'s full justification (side-panel only). Assumptions are leaves; the goal is the result.',
+            properties: {
+              nodes: { type: 'array', items: { type: 'object' } },
+              edges: { type: 'array', items: { type: 'object' } },
+            },
+            required: ['nodes', 'edges'],
+          },
+          replace: { type: 'boolean', description: 'Clear any existing graph on the doc first (default true).' },
+        },
+        required: ['doc', 'chain'],
+      },
+    },
+    {
       name: 'outline_open',
       description: 'Open the id-tagged structural outline for a region (created by a violet "outline" highlight). Returns a clause-grain markdown outline where every leaf is a FROZEN token tagged with an [id]. This is the ONLY editing surface for structural work: you may reorder the dash lines (a MOVE) or add a "- [NEW] text" line (an INSERT) — you may NEVER rewrite the words inside a token. Submit changes with outline_apply.',
       inputSchema: {
@@ -2795,6 +2816,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   // signal_reload handler removed — folded into push
+
+  if (name === 'graph_draw') {
+    const { doc, chain, replace = true } = args;
+    if (!doc || !chain || !Array.isArray(chain.nodes) || !Array.isArray(chain.edges)) {
+      return { content: [{ type: 'text', text: 'Missing/invalid params: doc, chain.{nodes,edges}' }], isError: true };
+    }
+    const claims = chain.nodes.length;
+    const infs = chain.edges.length;
+    try {
+      await broadcastSignalRest(doc, 'signal:graph-draw', { chain, replace, timestamp: Date.now() });
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Failed to draw graph: ${e?.message || e}` }], isError: true };
+    }
+    const tok = resolveToken();
+    const viewUrl = `${getServerUrl()}/?doc=${encodeURIComponent(doc)}${tok ? `&token=${tok}` : ''}`;
+    return { content: [{ type: 'text', text: `Drew argument graph on "${doc}": ${claims} claims, ${infs} inferences. Now write the prose from this structure.\nView: ${viewUrl}` }] };
+  }
 
   if (name === 'draw_highlight') {
     const { doc, startLine, endLine: endLineArg, color = 'orange', file, text } = args;

@@ -16,9 +16,10 @@ export const DEV_HELP = `tlda-dev — developer commands for hacking on tlda its
 Commands:
   pw <verb> [args]   Drive the one shared playwright browser (goto, click,
                      screenshot, snapshot, eval, …); acquire/release/status/reap
+  server [start|stop|status]  Isolated test server — own DB + projects + port,
+                     no supervisors — to test new shapes without a prod deploy
   dev                Start a worktree Vite dev server (auto-picks a port)
   dev-url            Print the worktree dev server URL
   deploy             Build, restart the server, verify the SPA renders
 
-These are also reachable as bare \`tlda <cmd>\` for now (back-compat aliases),
-but \`tlda-dev <cmd>\` is the canonical form and keeps \`tlda --help\` clean.`
+These live only under \`tlda-dev\` — they're not in the reviewer-facing \`tlda\`.`

@@ -4203,6 +4203,12 @@ server.listen(PORT, HOST, () => {
     console.log(`  Viewer SPA: not built (run: npm run build)`)
   }
 
+  // An isolated dev/test server (TLDA_DEV_SERVER=1) never runs the fleet
+  // supervisors or the hibernate loop — it exists only to load schemas + serve
+  // a throwaway doc, and must not touch the live fleet.
+  if (process.env.TLDA_DEV_SERVER === '1') {
+    console.log('[dev-server] isolated mode — daemon/eliza supervisors and hibernate loop disabled')
+  } else {
   // Start the local-daemon supervisor. Run an immediate check (so the daemon
   // is up shortly after server start) and then poll on an interval. The
   // daemon's own pidfile + connection-state checks gate actual respawn so
@@ -4235,4 +4241,5 @@ server.listen(PORT, HOST, () => {
     }
     broadcastState()
   }, HIBERNATE_CHECK_MS).unref()
+  }
 })

@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>GraphShape harness</title>
+    <!-- harness-only: load KaTeX fonts from the proxied server (/katex/, served 200).
+         The component also imports katex.min.css for production; in this worktree
+         that import's font URLs 403 (they resolve outside the worktree fs root). -->
+    <link rel="stylesheet" href="/katex/katex.min.css" />
+    <style>
+      body { margin: 0; background: #2a2d31; display: flex; align-items: center; justify-content: center; height: 100vh; font-family: sans-serif; }
+      #host { width: 440px; height: 560px; }
+    </style>
+  </head>
+  <body>
+    <div id="host"></div>
+    <script type="module" src="/src/graph-harness.tsx"></script>
+  </body>
+</html>
