@@ -459,6 +459,33 @@ export function FleetHUD({
     return () => el.removeEventListener('pointerdown', onPointerDownCapture, true)
   }, [expanded, mainEditor])
 
+  // Route undo/redo to the MAIN editor when working inside the HUD. The HUD runs
+  // a second (copy-store) editor with its OWN history that is ephemeral and
+  // unmarked — so a Cmd+Z aimed at it lumps several operations into one step.
+  // The main editor's history is the marked, persistent one (create/delete/move
+  // each their own step), so intercept the key here and drive main.undo/redo
+  // instead of the copy editor's throwaway stack.
+  useEffect(() => {
+    if (!expanded) return
+    const onKeyDownCapture = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return
+      const k = e.key.toLowerCase()
+      if (k !== 'z' && k !== 'y') return
+      const wrap = hudRef.current
+      if (!wrap) return
+      const t = e.target as Node | null
+      const inHud = (t && wrap.contains(t)) || (document.activeElement instanceof Node && wrap.contains(document.activeElement))
+      if (!inHud) return // main-canvas undo keeps its normal path
+      e.preventDefault()
+      e.stopImmediatePropagation()
+      const redo = k === 'y' || (k === 'z' && e.shiftKey)
+      if (redo) mainEditor.redo()
+      else mainEditor.undo()
+    }
+    window.addEventListener('keydown', onKeyDownCapture, true)
+    return () => window.removeEventListener('keydown', onKeyDownCapture, true)
+  }, [expanded, mainEditor])
+
   // Toggle .hud-layout-active on the wrap div when fleet shapes are selected
   // in the HUD editor. This enables pointer-events on .tl-canvas so drag-box
   // select works — but ONLY when the user has already clicked ⊞ to enter layout
