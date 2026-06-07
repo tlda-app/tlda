@@ -42,7 +42,7 @@ import { lookup as mimeLookup } from 'mime-types'
 import { DEFAULT_PORT, hasTls } from '../shared/config.mjs'
 import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
 import { labelsForAgent, evalDnf } from '../shared/fleet-labels.mjs'
-import { phaseFromName, PHASES } from '../shared/lineage-name.mjs'
+import { phaseFromName, baseName, PHASES } from '../shared/lineage-name.mjs'
 import { initProjectStore, listProjects, readProject, getProjectsDir } from './lib/project-store.mjs'
 import { resetStaleBuildStates, killAllBuilds, runBuild } from './lib/build-runner.mjs'
 import projectRoutes, { processProjectPush } from './routes/projects.mjs'
@@ -2187,8 +2187,14 @@ async function handleFleetWsMessage(ws, msg) {
       const stored = fleetStore.getAgent?.(agentId)
       if (stored && !stored.lineage_id) {
         try {
-          const lineage = fleetStore.getOrCreateLineage(agent.friendly_name)
-          fleetStore.assignPhase(agentId, lineage.id, 'dawn')
+          // The name IS the lineage assignment: a "<base>:<phase>" name says which
+          // lineage and which phase. Map straight onto the <base> lineage — don't
+          // build a fresh lineage from the full suffixed name. A bare name → its
+          // own lineage at dawn, exactly as before.
+          const base = baseName(agent.friendly_name)
+          const phase = phaseFromName(agent.friendly_name) || 'dawn'
+          const lineage = fleetStore.getOrCreateLineage(base)
+          fleetStore.assignPhase(agentId, lineage.id, phase)
         } catch (e) { console.error(`[lineage] auto-assign failed for ${agentId}: ${e.message}`) }
       }
     }
