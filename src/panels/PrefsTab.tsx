@@ -56,46 +56,46 @@ export function PrefsTab() {
       <div className="prefs-section">
         <div className="prefs-section-label">Fleet readability</div>
 
-        <div className="prefs-slider-row">
-          <span className="prefs-slider-label">Font size</span>
+        <div className="prefs-num-row">
+          <span className="prefs-num-label">Font size</span>
           <input
-            type="range"
+            type="number"
             min={8}
-            max={16}
+            max={24}
             step={1}
             value={prefs.fontSize}
             onChange={e => setPref('fleet-font-size', Number(e.target.value))}
-            className="prefs-slider"
+            className="prefs-num"
           />
-          <span className="prefs-slider-value">{prefs.fontSize}px</span>
+          <span className="prefs-num-unit">px</span>
         </div>
 
-        <div className="prefs-slider-row">
-          <span className="prefs-slider-label">Chrome opacity</span>
+        <div className="prefs-num-row">
+          <span className="prefs-num-label">Chrome opacity</span>
           <input
-            type="range"
-            min={0.3}
-            max={1.5}
-            step={0.1}
-            value={prefs.chromeOpacity}
-            onChange={e => setPref('fleet-chrome-opacity', Number(e.target.value))}
-            className="prefs-slider"
+            type="number"
+            min={0}
+            max={150}
+            step={5}
+            value={Math.round(prefs.chromeOpacity * 100)}
+            onChange={e => setPref('fleet-chrome-opacity', Number(e.target.value) / 100)}
+            className="prefs-num"
           />
-          <span className="prefs-slider-value">{prefs.chromeOpacity.toFixed(1)}</span>
+          <span className="prefs-num-unit">%</span>
         </div>
 
-        <div className="prefs-slider-row">
-          <span className="prefs-slider-label">Content opacity</span>
+        <div className="prefs-num-row">
+          <span className="prefs-num-label">Content opacity</span>
           <input
-            type="range"
-            min={0.5}
-            max={1.0}
-            step={0.05}
-            value={prefs.contentOpacity}
-            onChange={e => setPref('fleet-content-opacity', Number(e.target.value))}
-            className="prefs-slider"
+            type="number"
+            min={0}
+            max={100}
+            step={5}
+            value={Math.round(prefs.contentOpacity * 100)}
+            onChange={e => setPref('fleet-content-opacity', Number(e.target.value) / 100)}
+            className="prefs-num"
           />
-          <span className="prefs-slider-value">{prefs.contentOpacity.toFixed(2)}</span>
+          <span className="prefs-num-unit">%</span>
         </div>
 
         <label className="prefs-check">
@@ -119,18 +119,17 @@ export function PrefsTab() {
           ['Markdown writes', 'fold-md-lines', prefs.foldMd],
           ['Edit diffs', 'fold-diff-lines', prefs.foldDiff],
         ] as const).map(([label, key, val]) => (
-          <div className="prefs-slider-row" key={key}>
-            <span className="prefs-slider-label">{label}</span>
+          <div className="prefs-num-row" key={key}>
+            <span className="prefs-num-label">{label}</span>
             <input
-              type="range"
+              type="number"
               min={0}
-              max={60}
               step={1}
               value={val}
               onChange={e => setPref(key, Number(e.target.value))}
-              className="prefs-slider"
+              className="prefs-num"
             />
-            <span className="prefs-slider-value">{val === 0 ? 'off' : `${val} ln`}</span>
+            <span className="prefs-num-unit">{val === 0 ? 'off' : 'lines'}</span>
           </div>
         ))}
       </div>
