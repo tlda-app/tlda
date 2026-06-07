@@ -1,36 +1,31 @@
 /**
- * Materialize a chain into native tldraw shapes — spine-primary, readable cards.
- *   - steps        -> a vertical SPINE of cards (topological order), one per row,
- *                     each sized to its claim + justification text.
- *   - assumptions  -> leaf cards on the LEFT, beside the step they feed.
- *   - edges        -> native bound arrows (re-route on drag); a short `via` tag
- *                     renders via the GraphEdgeLabels overlay where present.
- * Layout is computed once for a sane start; then it's native (drag, arrows
- * follow). Content is source of truth; positions are not persisted.
+ * Materialize a chain into native tldraw shapes — the skeleton of implications.
+ *   - steps        -> a vertical SPINE of compact claim-nodes (authored order).
+ *   - assumptions  -> leaf claim-nodes on the LEFT, beside the step they feed.
+ *   - edges        -> native bound arrows (re-route on drag). The inference's
+ *                     substance (`detail`) rides in meta for the side panel; a
+ *                     tiny `rule` tag shows on the arrow via GraphEdgeLabels.
+ * Surface holds NO prose — only claims + arrows. Layout computed once; then it's
+ * native (drag, arrows follow). Content is source of truth; positions aren't saved.
  */
 import { createShapeId, type Editor, type TLShapeId } from 'tldraw'
 import type { Chain } from './graphDemoData'
 
-const SPINE_X = 620        // x of the step column (left edge of step cards)
-const STEP_W = 430
+const SPINE_X = 470        // x of the step column (left edge of step cards)
+const STEP_W = 250
 const ASSUMP_X = 70        // x of the assumptions column (left edge)
 const ASSUMP_W = 300
 const TOP_Y = 60
-const ROW_GAP = 46         // vertical gap between cards
-const CHARS_PER_LINE = 52  // rough wrap width for height estimate
+const ROW_GAP = 40         // vertical gap between cards
 
 type Pos = { x: number; y: number; w: number; h: number }
 
-// Estimate a card's height from its text so it isn't clipped. Inline math eats
-// horizontal room, so wrap conservatively (fewer chars/line) and leave margin.
-function estimateH(claim: string, justification: string, w: number, hasBadge: boolean) {
-  const cpl = Math.max(18, Math.round((w - 32) / 8.8))
-  const lines = (s: string) => s.split('\n').reduce((n, ln) => n + Math.max(1, Math.ceil(ln.length / cpl)), 0)
-  const claimLines = claim ? lines(claim) : 1
-  const justLines = justification ? lines(justification) : 0
-  let h = 30 + claimLines * 22 + (justLines ? justLines * 18 + 8 : 0)
-  if (hasBadge) h += 16
-  return Math.max(60, h)
+// Estimate a claim card's height so it isn't clipped. Inline math eats room, so
+// wrap conservatively.
+function estimateH(claim: string, w: number) {
+  const cpl = Math.max(16, Math.round((w - 28) / 8.6))
+  const lines = String(claim || '').split('\n').reduce((n, ln) => n + Math.max(1, Math.ceil(ln.length / cpl)), 0)
+  return Math.max(46, 22 + lines * 21)
 }
 
 export function materializeChain(editor: Editor, chain: Chain) {
@@ -52,7 +47,7 @@ export function materializeChain(editor: Editor, chain: Chain) {
   const rowYof: Record<string, number> = {}
   for (const id of order) {
     const n = byId[id]
-    const h = estimateH(n.claim, n.justification || '', STEP_W, n.kind === 'goal')
+    const h = estimateH(n.claim, STEP_W)
     pos[id] = { x: SPINE_X, y, w: STEP_W, h }
     rowYof[id] = y
     y += h + ROW_GAP
@@ -62,7 +57,7 @@ export function materializeChain(editor: Editor, chain: Chain) {
   for (const a of assumptions) {
     const fed = chain.edges.find((e) => e.from === a.id && stepSet.has(e.to))
     const targetY = fed ? rowYof[fed.to] : TOP_Y
-    const h = estimateH(a.claim, '', ASSUMP_W, true)
+    const h = estimateH(a.claim, ASSUMP_W)
     pos[a.id] = { x: ASSUMP_X, y: targetY, w: ASSUMP_W, h }
   }
   // de-overlap assumption column (they can collide if two feed nearby steps)
@@ -84,10 +79,10 @@ export function materializeChain(editor: Editor, chain: Chain) {
       const id = createShapeId()
       idOf[n.id] = id
       const p = pos[n.id]
-      editor.createShape({ id, type: 'graph-node', x: p.x, y: p.y, props: { w: p.w, h: p.h, claim: n.claim, justification: n.justification || '', kind: n.kind } })
+      editor.createShape({ id, type: 'graph-node', x: p.x, y: p.y, props: { w: p.w, h: p.h, claim: n.claim, kind: n.kind } })
     }
 
-    // bound arrows (bare spine; short `via` tag carried in meta for the overlay)
+    // bound arrows. The inference substance (detail) + tiny rule tag ride in meta.
     for (const e of chain.edges) {
       const a = idOf[e.from], b = idOf[e.to]
       if (!a || !b) continue
@@ -97,7 +92,7 @@ export function materializeChain(editor: Editor, chain: Chain) {
       const fromAssump = byId[e.from]?.kind === 'assumption'
       editor.createShape({
         id: arrowId, type: 'arrow',
-        meta: { graphEdge: true, via: e.via || '', lb },
+        meta: { graphEdge: true, rule: e.rule || '', detail: e.detail || '', lb, showTag: fromAssump },
         props: {
           start: { x: pa.x + pa.w / 2, y: pa.y + pa.h / 2 },
           end: { x: pb.x + pb.w / 2, y: pb.y + pb.h / 2 },
@@ -117,5 +112,16 @@ export function materializeChain(editor: Editor, chain: Chain) {
     }
   })
 
-  editor.zoomToFit({ animation: { duration: 0 } })
+  // Fit the skeleton into the viewport, leaving a right gutter for the detail
+  // panel so it never occludes the graph.
+  const b = editor.getCurrentPageBounds()
+  const vsb = editor.getViewportScreenBounds()
+  if (b && vsb) {
+    const pad = 48
+    const gutter = 360
+    const z = Math.max(0.1, Math.min((vsb.w - gutter - pad) / b.w, (vsb.h - pad * 2) / b.h, 1))
+    editor.setCamera({ x: pad / z - b.x, y: pad / z - b.y, z }, { animation: { duration: 0 } })
+  } else {
+    editor.zoomToFit({ animation: { duration: 0 } })
+  }
 }
