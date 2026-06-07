@@ -848,7 +848,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .tool-ref:hover .tool-ref-preview {
   opacity: 1;
   visibility: visible;
-  transition: opacity 0.12s ease 0.3s, visibility 0s linear 0.3s;
+  transition: opacity 0.12s ease 0.6s, visibility 0s linear 0.6s;
 }
 
 /* --- Warnings / voicemail / retracted --- */
@@ -1161,6 +1161,13 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 }
 .fleet-chat-shape .code-block-wrap pre.code-collapsed {
   max-height: calc(10 * 1.4em + 12px);
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, #000 70%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, #000 70%, transparent 100%);
+}
+/* Generic fold body (markdown writes, tex writes, edit diffs) — height comes from
+   the inline max-height set per the tool's fold-height pref. */
+.fleet-chat-shape .code-block-wrap .fold-body.code-collapsed {
   overflow: hidden;
   mask-image: linear-gradient(to bottom, #000 70%, transparent 100%);
   -webkit-mask-image: linear-gradient(to bottom, #000 70%, transparent 100%);

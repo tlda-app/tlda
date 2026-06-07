@@ -20,6 +20,10 @@ function readAll() {
     chromeOpacity: getPref('fleet-chrome-opacity'),
     contentOpacity: getPref('fleet-content-opacity'),
     ageFade: getPref('fleet-age-fade'),
+    foldBash: getPref('fold-bash-lines'),
+    foldWrite: getPref('fold-write-lines'),
+    foldMd: getPref('fold-md-lines'),
+    foldDiff: getPref('fold-diff-lines'),
   }
 }
 
@@ -102,6 +106,33 @@ export function PrefsTab() {
           />
           <span>Age fade</span>
         </label>
+      </div>
+
+      <div className="prefs-section">
+        <div className="prefs-section-label">Fold tool output</div>
+        <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 4 }}>
+          Collapse long tool/monitoring output past N lines (0 = never fold). Messages and images are never folded.
+        </div>
+        {([
+          ['Bash', 'fold-bash-lines', prefs.foldBash],
+          ['File writes', 'fold-write-lines', prefs.foldWrite],
+          ['Markdown writes', 'fold-md-lines', prefs.foldMd],
+          ['Edit diffs', 'fold-diff-lines', prefs.foldDiff],
+        ] as const).map(([label, key, val]) => (
+          <div className="prefs-slider-row" key={key}>
+            <span className="prefs-slider-label">{label}</span>
+            <input
+              type="range"
+              min={0}
+              max={60}
+              step={1}
+              value={val}
+              onChange={e => setPref(key, Number(e.target.value))}
+              className="prefs-slider"
+            />
+            <span className="prefs-slider-value">{val === 0 ? 'off' : `${val} ln`}</span>
+          </div>
+        ))}
       </div>
 
       <div className="prefs-section">

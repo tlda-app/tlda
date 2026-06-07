@@ -378,9 +378,25 @@ export function renderEditDiff(input, ctx) {
     }
     return `<div class="diff-tex">${renderTexLines(str, ctx.preambleMacros || {})}</div>`
   }
-  return `<div class="edit-diff${isTeX ? ' tex-diff' : ''}" id="${uid}">
-    <div class="diff-side diff-old"><div class="diff-label">−</div>${renderSide(input.old_string)}</div>
-    <div class="diff-side diff-new"><div class="diff-label">+</div>${renderSide(input.new_string)}</div>
+  const lineCount = Math.max(
+    (input.old_string.match(/\n/g) || []).length + 1,
+    (input.new_string.match(/\n/g) || []).length + 1,
+  )
+  const h = ctx?.foldHeights?.diff ?? 0
+  const shouldFold = h > 0 && lineCount > h
+  const foldCls = shouldFold ? ' code-collapsed' : ''
+  const foldStyle = shouldFold ? ` style="max-height:${(h * 1.4).toFixed(1)}em"` : ''
+  const toggleHtml = shouldFold
+    ? `<span class="code-block-toggle" onclick="(function(e){var w=e.closest('.code-block-wrap'),p=w.querySelector('.fold-body');if(p.classList.contains('code-collapsed')){p.classList.remove('code-collapsed');p.style.maxHeight='';e.textContent='collapse'}else{p.classList.add('code-collapsed');p.style.maxHeight='${(h * 1.4).toFixed(1)}em';e.textContent='${lineCount} lines — show all'}})(this)">${lineCount} lines — show all</span>`
+    : ''
+  const header = shouldFold
+    ? `<div class="code-block-header"><span class="code-block-lang">diff</span>${toggleHtml}</div>`
+    : ''
+  return `<div class="code-block-wrap code-card edit-diff-wrap">${header}
+    <div class="edit-diff fold-body${isTeX ? ' tex-diff' : ''}${foldCls}" id="${uid}"${foldStyle}>
+      <div class="diff-side diff-old"><div class="diff-label">−</div>${renderSide(input.old_string)}</div>
+      <div class="diff-side diff-new"><div class="diff-label">+</div>${renderSide(input.new_string)}</div>
+    </div>
   </div>`
 }
 
@@ -395,14 +411,16 @@ export function renderCodeCard(toolName, input, ctx) {
     if (lines.length < 3 && cmd.length < 120) return ''
     const escaped = esc(cmd)
     const highlighted = highlightSyntax(escaped, 'bash')
-    const shouldFold = lines.length > 10
+    const h = ctx?.foldHeights?.bash ?? 10
+    const shouldFold = h > 0 && lines.length > h
     const foldClass = shouldFold ? ' code-collapsed' : ''
+    const foldStyle = shouldFold ? ` style="max-height:${(h * 1.4).toFixed(1)}em"` : ''
     const toggleHtml = shouldFold
-      ? `<span class="code-block-toggle" onclick="(function(e){var w=e.closest('.code-block-wrap'),p=w.querySelector('pre');if(p.classList.contains('code-collapsed')){p.classList.remove('code-collapsed');e.textContent='collapse'}else{p.classList.add('code-collapsed');e.textContent='${lines.length} lines — show all'}})(this)">${lines.length} lines — show all</span>`
+      ? `<span class="code-block-toggle" onclick="(function(e){var w=e.closest('.code-block-wrap'),p=w.querySelector('pre');if(p.classList.contains('code-collapsed')){p.classList.remove('code-collapsed');p.style.maxHeight='';e.textContent='collapse'}else{p.classList.add('code-collapsed');p.style.maxHeight='${(h * 1.4).toFixed(1)}em';e.textContent='${lines.length} lines — show all'}})(this)">${lines.length} lines — show all</span>`
       : ''
     return `<div class="code-block-wrap code-card">
       <div class="code-block-header"><span class="code-block-lang">bash</span>${toggleHtml}<span class="code-block-copy" title="Copy">⎘</span></div>
-      <pre class="${foldClass}"><code data-lang="bash" data-highlighted="1">${highlighted}</code></pre>
+      <pre class="${foldClass}"${foldStyle}><code data-lang="bash" data-highlighted="1">${highlighted}</code></pre>
     </div>`
   }
 
@@ -416,42 +434,55 @@ export function renderCodeCard(toolName, input, ctx) {
     const lang = langFromFilePath(filePath)
     const escaped = esc(content)
     if (isTex) {
-      const shouldFold = lines.length > 15
+      const h = ctx?.foldHeights?.write ?? 10
+      const shouldFold = h > 0 && lines.length > h
+      const foldStyle = shouldFold ? ` style="max-height:${(h * 1.4).toFixed(1)}em"` : ''
       const name = filePath.split('/').pop() || 'file.tex'
       const uid = 'tex-write-' + Math.random().toString(36).slice(2, 8)
       const toggleHtml = shouldFold
-        ? `<span class="code-block-toggle" onclick="(function(e){var w=e.closest('.code-block-wrap'),p=w.querySelector('.diff-tex');if(p.classList.contains('code-collapsed')){p.classList.remove('code-collapsed');e.textContent='collapse'}else{p.classList.add('code-collapsed');e.textContent='${lines.length} lines — show all'}})(this)">${lines.length} lines — show all</span>`
+        ? `<span class="code-block-toggle" onclick="(function(e){var w=e.closest('.code-block-wrap'),p=w.querySelector('.diff-tex');if(p.classList.contains('code-collapsed')){p.classList.remove('code-collapsed');p.style.maxHeight='';e.textContent='collapse'}else{p.classList.add('code-collapsed');p.style.maxHeight='${(h * 1.4).toFixed(1)}em';e.textContent='${lines.length} lines — show all'}})(this)">${lines.length} lines — show all</span>`
         : ''
       const rendered = renderTexLines(content, ctx.preambleMacros || {})
       return `<div class="code-block-wrap code-card" id="${uid}">
         <div class="code-block-header"><span class="code-block-lang">tex</span><span class="tex-filename">${esc(name)}</span>${toggleHtml}<span class="code-block-copy" title="Copy">⎘</span></div>
-        <div class="diff-tex${shouldFold ? ' code-collapsed' : ''}">${rendered}</div>
+        <div class="diff-tex fold-body${shouldFold ? ' code-collapsed' : ''}"${foldStyle}>${rendered}</div>
       </div>`
     }
     if (isMd) {
-      // Markdown files: never fold (collapse resets on re-render), draggable chip.
-      // Render content with markdown+KaTeX so LaTeX in scratch files is readable.
+      // Markdown writes are monitoring content (a written file), so they're foldable
+      // per the md fold-height pref. Default pref is 0 (never fold). Render with
+      // markdown+KaTeX so LaTeX in scratch files is readable.
       const isScratch = /\/scratch\//.test(filePath)
       const name = filePath.split('/').pop() || 'file.md'
       const chipClass = isScratch ? 'md-file-card scratch-card' : 'md-file-card'
+      const h = ctx?.foldHeights?.md ?? 0
+      const shouldFold = h > 0 && lines.length > h
+      const maxH = shouldFold ? `max-height:${(h * 1.4).toFixed(1)}em;` : ''
+      const foldStyle = shouldFold ? ` style="${maxH}"` : ''
+      const toggleHtml = shouldFold
+        ? `<span class="code-block-toggle" onclick="(function(e){var w=e.closest('.code-block-wrap'),p=w.querySelector('.fold-body');if(p.classList.contains('code-collapsed')){p.classList.remove('code-collapsed');p.style.maxHeight='';e.textContent='collapse'}else{p.classList.add('code-collapsed');p.style.maxHeight='${(h * 1.4).toFixed(1)}em';e.textContent='${lines.length} lines — show all'}})(this)">${lines.length} lines — show all</span>`
+        : ''
+      const foldCls = shouldFold ? ' code-collapsed' : ''
       const body = ctx.renderMarkdown
-        ? `<div class="pretty-msg-body md-write-body">${ctx.renderMarkdown(esc(content))}</div>`
-        : `<pre style="white-space:pre-wrap;word-break:break-word"><code>${escaped}</code></pre>`
+        ? `<div class="pretty-msg-body md-write-body fold-body${foldCls}"${foldStyle}>${ctx.renderMarkdown(esc(content))}</div>`
+        : `<pre class="fold-body${foldCls}" style="${maxH}white-space:pre-wrap;word-break:break-word"><code>${escaped}</code></pre>`
       return `<div class="code-block-wrap code-card">
-      <div class="code-block-header"><span class="${chipClass}" data-path="${esc(filePath)}" draggable="true"><span class="md-file-chip">${esc(name)}</span></span><span class="code-block-copy" title="Copy">⎘</span></div>
+      <div class="code-block-header"><span class="${chipClass}" data-path="${esc(filePath)}" draggable="true"><span class="md-file-chip">${esc(name)}</span></span>${toggleHtml}<span class="code-block-copy" title="Copy">⎘</span></div>
       ${body}
     </div>`
     }
-    const shouldFold = lines.length > 10
+    const h = ctx?.foldHeights?.write ?? 10
+    const shouldFold = h > 0 && lines.length > h
     const highlighted = (!shouldFold && lang) ? highlightSyntax(escaped, lang) : escaped
     const foldClass = shouldFold ? ' code-collapsed' : ''
+    const foldStyle = shouldFold ? ` style="max-height:${(h * 1.4).toFixed(1)}em"` : ''
     const langLabel = lang || filePath.split('.').pop() || ''
     const toggleHtml = shouldFold
-      ? `<span class="code-block-toggle" onclick="(function(e){var w=e.closest('.code-block-wrap'),p=w.querySelector('pre'),c=p.querySelector('code');if(p.classList.contains('code-collapsed')){p.classList.remove('code-collapsed');e.textContent='collapse';if(c.dataset.lang&&!c.dataset.highlighted){c.innerHTML=window._highlightSyntax(c.textContent,c.dataset.lang);c.dataset.highlighted='1'}}else{p.classList.add('code-collapsed');e.textContent='${lines.length} lines — show all'}})(this)">${lines.length} lines — show all</span>`
+      ? `<span class="code-block-toggle" onclick="(function(e){var w=e.closest('.code-block-wrap'),p=w.querySelector('pre'),c=p.querySelector('code');if(p.classList.contains('code-collapsed')){p.classList.remove('code-collapsed');p.style.maxHeight='';e.textContent='collapse';if(c.dataset.lang&&!c.dataset.highlighted){c.innerHTML=window._highlightSyntax(c.textContent,c.dataset.lang);c.dataset.highlighted='1'}}else{p.classList.add('code-collapsed');p.style.maxHeight='${(h * 1.4).toFixed(1)}em';e.textContent='${lines.length} lines — show all'}})(this)">${lines.length} lines — show all</span>`
       : ''
     return `<div class="code-block-wrap code-card">
       <div class="code-block-header">${langLabel ? `<span class="code-block-lang">${esc(langLabel)}</span>` : ''}${toggleHtml}<span class="code-block-copy" title="Copy">⎘</span></div>
-      <pre class="${foldClass}"><code${lang ? ` data-lang="${esc(lang)}"` : ''}${!shouldFold && lang ? ' data-highlighted="1"' : ''}>${highlighted}</code></pre>
+      <pre class="${foldClass}"${foldStyle}><code${lang ? ` data-lang="${esc(lang)}"` : ''}${!shouldFold && lang ? ' data-highlighted="1"' : ''}>${highlighted}</code></pre>
     </div>`
   }
 

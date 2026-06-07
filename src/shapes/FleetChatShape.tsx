@@ -68,6 +68,14 @@ function useFleetStyleVars() {
   return vars
 }
 
+// Bumps on any pref change so memoized values (e.g. the render ctx, which bakes
+// fold heights) rebuild when the user changes a preference.
+function usePrefTick() {
+  const [tick, setTick] = useState(0)
+  useEffect(() => subscribePref(() => setTick(t => t + 1)), [])
+  return tick
+}
+
 // ---- Terminal hover pane ----
 
 const TERM_HOVER_WS_HOST = typeof window !== 'undefined'
@@ -922,6 +930,13 @@ function makeCtx(agents: any[], tasks: any[], preambleMacros: Record<string, str
     highlightSyntax,
     langFromFilePath,
     preambleMacros,
+    // Per-tool fold heights (lines; 0 = never fold). Monitoring/tool content only.
+    foldHeights: {
+      bash: getPref('fold-bash-lines'),
+      write: getPref('fold-write-lines'),
+      md: getPref('fold-md-lines'),
+      diff: getPref('fold-diff-lines'),
+    },
   }
 }
 
@@ -975,8 +990,8 @@ const ChatMessageRow = memo(function ChatMessageRow({
     // Restore code-block expand state (each block keyed by index within the row)
     el.querySelectorAll('.code-block-wrap').forEach((wrap, i) => {
       if (expanded.has(`${itemKey}:code:${i}`)) {
-        const pre = wrap.querySelector('pre')
-        if (pre) pre.classList.remove('code-collapsed')
+        const body = wrap.querySelector('.fold-body, pre') as HTMLElement | null
+        if (body) { body.classList.remove('code-collapsed'); body.style.maxHeight = '' }
         const toggle = wrap.querySelector('.code-block-toggle') as HTMLElement | null
         if (toggle) toggle.textContent = 'collapse'
       }
@@ -1327,7 +1342,8 @@ function FleetChatInner({ shape }: { shape: any }) {
   }, [doc?.docName])
 
   // Build context and render messages
-  const ctx = useMemo(() => makeCtx(agents, tasks, preambleMacros), [agents, tasks, preambleMacros])
+  const prefTick = usePrefTick()
+  const ctx = useMemo(() => makeCtx(agents, tasks, preambleMacros), [agents, tasks, preambleMacros, prefTick])
   const ctxRef = useRef(ctx)
   ctxRef.current = ctx
 
@@ -2502,7 +2518,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         // Only open if the cursor is still resting on this same card.
         const overId = (document.querySelector('.lc-terminal-card:hover') as HTMLElement | null)?.dataset.agentId
         if (overId === agentId) setTermCardHoverId(agentId)
-      }, 300)
+      }, 600)
     }
     const onOut = (e: MouseEvent) => {
       const leaving = (e.target as HTMLElement).closest('.lc-terminal-card')
@@ -2864,7 +2880,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           const allWraps = Array.from(itemRow.querySelectorAll('.code-block-wrap'))
           const idx = allWraps.indexOf(wrap)
           const key = `${itemKey}:code:${idx}`
-          const pre = wrap.querySelector('pre')
+          const pre = wrap.querySelector('.fold-body, pre')
           if (pre) {
             // Inline onclick already toggled the class, so check current state
             const isNowExpanded = !pre.classList.contains('code-collapsed')
