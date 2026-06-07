@@ -2003,7 +2003,7 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
       // to restart a live server, which flaps fleet chat. Only report down when
       // nothing holds the port.
       let held = ''
-      try { held = execSync(`lsof -ti:${port} -sTCP:LISTEN`, { stdio: 'pipe' }).toString().trim() } catch {}
+      try { held = execSync(`lsof -ti:${port} -sTCP:LISTEN`, { stdio: 'pipe' }).toString().trim() } catch { held = '' } // lsof exits non-zero when nothing is listening → port not held
       if (held) {
         console.log(yellow('Server running') + dim(` but not responding (event loop busy, pid ${held.split('\n')[0]})`))
       } else {
@@ -2101,7 +2101,7 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
     // started it and its event loop may just be busy on a big boot query. A
     // held port means it's alive — report success, don't trigger a retry.
     let held = ''
-    try { held = execSync(`lsof -ti:${port} -sTCP:LISTEN`, { stdio: 'pipe' }).toString().trim() } catch {}
+    try { held = execSync(`lsof -ti:${port} -sTCP:LISTEN`, { stdio: 'pipe' }).toString().trim() } catch { held = '' } // lsof exits non-zero when nothing is listening → port not held
     if (held) {
       console.log(green(`Server running at ${getServer()}`) + dim(` (pid ${held.split('\n')[0]}, slow to respond — still booting)`))
       console.log(dim(`  Log: ${LOGFILE}`))
