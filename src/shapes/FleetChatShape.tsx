@@ -725,8 +725,16 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
   // Build status display from server-authoritative agent status field.
   // thinkingAgents/compactingAgents are pre-filtered to chat targets and provide elapsed timestamps.
   // hibernatingAgents is pre-filtered to chat targets.
-  const statusAgentsRaw = useMemo(() => {
-    const merged = new Map<string, { status: 'thinking' | 'compacting' | 'hibernating', startTs: number }>()
+  // Tracks the hibernating set from the previous render + which agents are
+  // currently "waking" (left hibernating, alive, not yet thinking). This closes
+  // the hibernating→awake→thinking gap WITHOUT a timer: an agent wakes because
+  // it has work, so it always proceeds to thinking — we just hold a 'waking'
+  // status from the moment it leaves hibernating until thinking lands (or it
+  // hibernates again). No arbitrary duration; the real thinking event ends it.
+  const prevHibRef = useRef<Set<string>>(new Set())
+  const wakingRef = useRef<Set<string>>(new Set())
+  const statusAgents = useMemo(() => {
+    const merged = new Map<string, { status: 'thinking' | 'compacting' | 'hibernating' | 'waking', startTs: number }>()
     for (const [id, ts] of thinkingAgents) {
       merged.set(id, { status: 'thinking', startTs: ts })
     }
@@ -736,38 +744,20 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
     for (const id of hibernatingAgents) {
       if (!merged.has(id)) merged.set(id, { status: 'hibernating', startTs: 0 })
     }
+    // An agent present last render's hibernating set but gone from it now (and
+    // not already thinking/compacting) just woke → mark it waking.
+    for (const id of prevHibRef.current) {
+      if (!hibernatingAgents.has(id) && !merged.has(id)) wakingRef.current.add(id)
+    }
+    // Clear waking once the agent reaches a real status (thinking/compacting) or
+    // goes back to hibernating; otherwise keep showing it through the gap.
+    for (const id of [...wakingRef.current]) {
+      if (merged.has(id)) wakingRef.current.delete(id)
+      else merged.set(id, { status: 'waking', startTs: 0 })
+    }
+    prevHibRef.current = new Set(hibernatingAgents)
     return merged
   }, [thinkingAgents, compactingAgents, hibernatingAgents])
-
-  // Grace-hold to bridge transient "no status" frames. When you chat a
-  // hibernating agent it goes hibernating → awake → thinking, and during the
-  // brief 'awake' frame it's in none of the sets — the line would drop and the
-  // stack would bounce, then snap back when thinking lands. Hold an agent's
-  // last status for a short grace after it leaves all sets, so a quick
-  // transition shows no gap. A genuine exit just drops one grace-window late.
-  const stickyRef = useRef<Map<string, { status: 'thinking' | 'compacting' | 'hibernating', startTs: number, seenAt: number }>>(new Map())
-  const [graceTick, setGraceTick] = useState(0)
-  const statusAgents = useMemo(() => {
-    const GRACE = 600
-    const now = Date.now()
-    const merged = new Map(statusAgentsRaw)
-    for (const [id, v] of statusAgentsRaw) {
-      stickyRef.current.set(id, { status: v.status, startTs: v.startTs, seenAt: now })
-    }
-    for (const [id, v] of [...stickyRef.current]) {
-      if (merged.has(id)) continue
-      if (now - v.seenAt < GRACE) merged.set(id, { status: v.status, startTs: v.startTs })
-      else stickyRef.current.delete(id)
-    }
-    return merged
-  }, [statusAgentsRaw, graceTick])
-
-  // Re-evaluate once the grace window expires so held-over agents actually drop.
-  useEffect(() => {
-    if (stickyRef.current.size === 0) return
-    const t = setTimeout(() => setGraceTick(x => x + 1), 650)
-    return () => clearTimeout(t)
-  }, [statusAgentsRaw])
 
   const hasActive = statusAgents.size > 0
   const lastStatusRef = useRef(statusAgents)
@@ -833,6 +823,7 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
           return 0.55
         }
         const statusText = status === 'hibernating' ? 'is hibernating'
+          : status === 'waking' ? 'waking up…'
           : status === 'compacting' ? 'compacting…'
           : 'thinking…'
         return (
@@ -842,7 +833,7 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
                 <PhaseIcon phase={phaseFromName(ctx.agentFullName(agentId))} />{baseName(ctx.agentFullName(agentId)).replace('fleet:', '')}
               </span>
               {' '}<span className="thinking-text">{statusText}</span>
-              {status !== 'hibernating' && <>{' '}<ElapsedTime startMs={startTs} /></>}
+              {status !== 'hibernating' && status !== 'waking' && <>{' '}<ElapsedTime startMs={startTs} /></>}
               {escLevel > 0 && (
                 <span className="escalation-meter" style={{ marginLeft: 6, letterSpacing: 2, fontSize: '0.9em' }}>
                   <span style={{ opacity: tierOpacity(1), transition: 'opacity 0.15s' }}>↑</span>
