@@ -39,7 +39,7 @@ import { cmdLogs } from './lib/unified-logs.mjs'
 // feedback hook etc. don't break, but `--help` only advertises the nouns.
 const DOC_SUBS = new Set([
   'create', 'open', 'push', 'list', 'ls', 'status', 'errors', 'preview',
-  'delete', 'rm', 'share', 'publish', 'scratch', 'book', 'listen', 'monitor',
+  'delete', 'rm', 'share', 'publish', 'scratch', 'book',
   'repo-doctor', 'init-shadow',
 ])
 const CONFIG_SUBS = new Set(['setup', 'mcp-setup', 'auth'])  // config subs that map to existing handlers
@@ -73,8 +73,6 @@ const COMMAND_HELP = {
   push:    'tlda doc push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
   watch:   'tlda daemon [start|stop|status|log|run]\n\n  Control the per-machine fleet-daemon (bin/fleet-daemon.mjs).\n  The daemon watches Claude Code session JSONLs and project source\n  dirs locally, pushing events to the tlda server over WebSocket.',
   'watch-all': 'tlda daemon [start|stop|status|log|run]\n\n  Alias for `tlda daemon start/stop/status/log/run` — runs the\n  per-machine fleet-daemon (bin/fleet-daemon.mjs), which watches\n  every project source dir AND every Claude Code session JSONL\n  on this machine and pushes events to the tlda server over WebSocket.',
-  listen:  'tlda doc listen <doc> [--timeout <seconds>]\n\n  Block until feedback arrives on the document, then print it as JSON\n  and exit. Designed for `bash(run_in_background)` so an agent can\n  keep working while waiting for annotations, pings, or drawn shapes.\n\n  --timeout <seconds>  Max wait time (default: 300)',
-  monitor: 'tlda doc monitor [add|remove|list|clear] [doc]\n\n  Manage which docs the PostToolUse hook monitors for feedback.\n  The hook runs after every tool call and reports new annotations,\n  pings, and drawn shapes automatically — no polling needed.\n\n  add <doc>     Start monitoring (seeds shape snapshot)\n  remove <doc>  Stop monitoring\n  list          Show monitored docs (default)\n  clear         Stop all monitoring',
   open:    'tlda doc open [name]\n\n  Open the viewer in the default browser (RW token = presenter privilege).',
   share:   'tlda doc share [name]\n\n  Print a viewer URL with the read-only token.\n  Recipients can annotate but cannot present.',
   status:  'tlda doc status [name]\n\n  Show build status for a project.',
@@ -761,112 +759,6 @@ async function cmdWatchAll() {
   return cmdFleetWatch(sub)
 }
 
-
-async function cmdMonitor() {
-  const sub = getPositional(0) // add, remove, list, clear
-  const doc = getPositional(1)
-  const agentId = getFlag('id') || process.env.AGENT_WIN || process.env.KITTY_WINDOW_ID
-  if (!agentId) {
-    console.error('No agent ID. Pass --id <name> (or set $AGENT_WIN).')
-    process.exit(1)
-  }
-  const agentDir = `/tmp/tlda-listen-${agentId}`
-  const watchFile = join(agentDir, 'docs')
-  const stateDir = join(agentDir, 'state')
-
-  function readDocs() {
-    if (!existsSync(watchFile)) return []
-    return readFileSync(watchFile, 'utf8').split('\n').filter(Boolean)
-  }
-  function writeDocs(docs) {
-    mkdirSync(agentDir, { recursive: true })
-    writeFileSync(watchFile, docs.join('\n') + (docs.length ? '\n' : ''))
-  }
-
-  if (!sub || sub === 'list') {
-    const docs = readDocs()
-    if (docs.length === 0) {
-      console.log(dim('No docs being monitored.'))
-      console.log(dim('  tlda doc monitor add <doc>'))
-    } else {
-      console.log(`Monitoring: ${docs.join(', ')}`)
-    }
-    return
-  }
-
-  if (sub === 'add') {
-    if (!doc) { console.error('Usage: tlda doc monitor add <doc>'); process.exit(1) }
-    const docs = readDocs()
-    if (!docs.includes(doc)) {
-      docs.push(doc)
-      writeDocs(docs)
-    }
-    // Seed the snapshot so the hook doesn't fire on existing shapes
-    mkdirSync(agentDir, { recursive: true })
-    mkdirSync(stateDir, { recursive: true })
-    try {
-      const server = getServer()
-      const token = getToken()
-      const headers = token ? { 'Authorization': `Bearer ${token}` } : {}
-      const res = await fetch(`${server}/api/projects/${doc}/shapes`, { headers })
-      if (res.ok) {
-        const shapes = await res.json()
-        writeFileSync(join(stateDir, `shapes-${doc}.json`), JSON.stringify(shapes))
-      }
-      // Seed ping timestamp
-      const pingRes = await fetch(`${server}/api/projects/${doc}/signal/signal:ping`, { headers })
-      if (pingRes.ok) {
-        const ping = await pingRes.json()
-        if (ping?.timestamp) writeFileSync(join(stateDir, `signal-ts-${doc}`), String(ping.timestamp))
-      }
-    } catch {}
-    console.log(green(`Monitoring ${doc}`) + dim(' (hook will check between tool calls)'))
-    console.log(dim(`  When idle, call wait_for_feedback("${doc}") to block until feedback arrives.`))
-    return
-  }
-
-  if (sub === 'remove' || sub === 'rm') {
-    if (!doc) { console.error('Usage: tlda doc monitor remove <doc>'); process.exit(1) }
-    const docs = readDocs().filter(d => d !== doc)
-    writeDocs(docs)
-    // Clean up state
-    try { unlinkSync(join(stateDir, `shapes-${doc}.json`)) } catch {}
-    try { unlinkSync(join(stateDir, `signal-ts-${doc}`)) } catch {}
-    console.log(dim(`Stopped monitoring ${doc}`))
-    return
-  }
-
-  if (sub === 'clear') {
-    writeDocs([])
-    try { unlinkSync(join(stateDir, 'last-check')) } catch {}
-    console.log(dim(`Cleared all monitored docs (agent ${agentId})`))
-    return
-  }
-
-  console.error(`Unknown subcommand: ${sub}\nUsage: tlda doc monitor [add|remove|list|clear] [doc]`)
-  process.exit(1)
-}
-
-async function cmdListen() {
-  const doc = getPositional(0)
-  if (!doc) {
-    console.error('Usage: tlda doc listen <doc> [--timeout <seconds>]')
-    process.exit(1)
-  }
-  const timeout = parseInt(getFlag('timeout', '300')) || 300
-  const { listen } = await import('./lib/listener.mjs')
-  try {
-    const result = await listen(doc, { timeout })
-    console.log(JSON.stringify(result))
-  } catch (e) {
-    if (e.message === 'timeout') {
-      console.error(`[listen] No feedback within ${timeout}s`)
-      process.exit(1)
-    }
-    console.error(`[listen] Error: ${e.message}`)
-    process.exit(1)
-  }
-}
 
 async function cmdOpen() {
   const name = getPositional(0) || await inferProjectName()
@@ -2366,11 +2258,21 @@ async function cmdDev() {
   // Pick port
   const port = portArg ? parseInt(portArg) : await findFreePort(5180)
 
-  // Start Vite in background
+  // Start Vite in background. Call the vite binary DIRECTLY — `npx vite` adds a
+  // wrapper process that gets reaped when the spawning shell exits, so the dev
+  // server "dies" between commands. Prefer the worktree's install, fall back to
+  // the main repo's binary.
   const viteLogFile = join(worktreeDir, '.dev-vite.log')
   const logFd = fsOpenSync(viteLogFile, 'a')
 
-  const viteChild = spawn('npx', ['vite', '--port', String(port)], {
+  const mainRepoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const viteBin = [
+    join(worktreeDir, 'node_modules', '.bin', 'vite'),
+    join(mainRepoRoot, 'node_modules', '.bin', 'vite'),
+  ].find(p => existsSync(p))
+  if (!viteBin) throw new Error('vite binary not found (worktree or main repo node_modules)')
+
+  const viteChild = spawn(viteBin, ['--port', String(port)], {
     cwd: worktreeDir,
     detached: true,
     stdio: ['ignore', logFd, logFd],
@@ -2431,8 +2333,6 @@ async function main() {
       case 'create': await ensureServer(); await cmdCreate(); break
       case 'push':   await ensureServer(); await cmdPush(); break
       case 'daemon': await ensureServer(); await cmdWatch(); break
-      case 'listen': await ensureServer(); await cmdListen(); break
-      case 'monitor': await ensureServer(); await cmdMonitor(); break
       case 'open':   await ensureServer(); await cmdOpen(); break
       case 'share':  await cmdShare(); break
       case 'list':   await ensureServer(); await cmdList(); break
@@ -2471,8 +2371,6 @@ async function main() {
   publish [doc …]      Publish to GitHub Pages + Fly
   scratch <file>       Publish a scratch .md
   book <name>          Group existing docs into a book
-  listen <doc>         Block until feedback arrives (one-shot)
-  monitor <add|remove|list|clear>   Hook-based feedback watching
   repo-doctor <proj>   Diagnose/repair a project's source repo
   init-shadow <proj>   Rebuild a project's shadow (version-history) repo`)
         break
