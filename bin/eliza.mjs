@@ -1454,7 +1454,17 @@ async function handleHandoff(agentId, triggerText) {
     sendChat(OWNER_ID, `Direct handoff from **${agentName}** — promoting it to manager and bringing in a fresh worker.`)
     sendChat(agentId, `⚠️ Skip is handing your work off directly. You're being promoted to manager; a fresh worker is coming in.`)
     const agentCwd = await resolveAgentCwd(agentId)
-    const workerName = await nextAgentName(extractBaseTopic(agentName))
+    // Promote the original to manager (:day), freeing the bare name, then spawn
+    // the new worker directly as the bare base name (dawn). Its name maps it into
+    // the lineage on register — no temp "-1" name, no rotation, no stray lineage.
+    const lineageBase = stripPhase(agentName)
+    const workerName = lineageBase
+    const managerName = `${lineageBase}:day`
+    try {
+      await sendRequest({ type: 'lineage-transition', agent: agentId, phase: 'day' })
+    } catch (e) {
+      sendChat(OWNER_ID, `⚠️ Promoting ${agentName} → :day failed: ${e.message}`)
+    }
     let spawnResult = await postJson('/api/spawn', { name: workerName, cwd: agentCwd })
     if (spawnResult.error && spawnResult.error.includes('already exists')) {
       spawnResult = await postJson('/api/spawn', { agent: workerName, respawn: true })
@@ -1465,27 +1475,20 @@ async function handleHandoff(agentId, triggerText) {
     }
     setTimeout(async () => {
       try {
-        // One rotation: new worker → dawn, original → day (manager),
-        // old manager → dusk, old dusk → fades.
-        try {
-          await sendRequest({ type: 'lineage-rotate', agent: workerName, lineage: agentName })
-        } catch (e) {
-          sendChat(OWNER_ID, `⚠️ Lineage rotate (${workerName} → dawn in ${agentName}) failed: ${e.message}`)
-        }
         await postJson('/api/tasks/delegate', {
           from: AGENT_ID,
           agent: workerName,
-          description: `Pick up work from ${agentName}`,
+          description: `Pick up work from ${managerName}`,
           message: `**Read these skills first:** \`pickup\`
 
-You're taking over the work directly from **${agentName}**, who is now your manager. There's no separate briefing — orient from the thread and check in with your manager.
+You're taking over as the worker; **${managerName}** (the agent you're replacing) is now your manager. There's no separate briefing — orient from the thread and check in with your manager.
 ${triggerText ? `\n**Skip's handoff message:**\n> ${triggerText}\n` : ''}
 **Steps:**
 1. Read the recent thread to understand where things stand.
 2. Check in with Skip — 3 sentences max: what you understand, what's open, what you'll start on.
 3. Wait for Skip's confirmation before diving in.`,
         })
-        sendChat(OWNER_ID, `Direct handoff complete. **${workerName}** is the new worker; **${agentName}** is now its manager.`)
+        sendChat(OWNER_ID, `Direct handoff complete. **${workerName}** is the new worker; **${managerName}** is now its manager.`)
       } catch (e) {
         console.error(`[eliza] direct handoff delegate failed: ${e.message}`)
       }
