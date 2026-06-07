@@ -1382,6 +1382,47 @@ async function cmdAgent() {
   }
 }
 
+// Restart the fleet MCP for agents by driving Claude Code's /mcp menu via the
+// bin/fleet-mcp-restart script (path resolved here, not relying on PATH).
+// Dev-only — surfaced as `tlda-dev restart-mcp`, kept out of `tlda --help`.
+//   tlda-dev restart-mcp                  → your own MCP (current tmux session)
+//   tlda-dev restart-mcp foo bar          → those agents
+//   tlda-dev restart-mcp --all [--except foo bar]
+async function restartMcpAgents(rest) {
+  const { spawnSync } = await import('child_process')
+  const script = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'fleet-mcp-restart')
+  if (!existsSync(script)) { console.error(red(`fleet-mcp-restart not found: ${script}`)); process.exit(1) }
+
+  // No args → restart own MCP (script defaults the session to the current tmux session).
+  if (rest.length === 0) {
+    const r = spawnSync('bash', [script, '--skip-preflight'], { stdio: 'inherit' })
+    process.exit(r.status ?? 0)
+  }
+
+  let targets
+  if (rest.includes('--all')) {
+    const ei = rest.indexOf('--except')
+    const except = new Set((ei >= 0 ? rest.slice(ei + 1) : []).map(n => n.replace(/^fleet-/, '')))
+    const res = spawnSync('tmux', [...tmuxBase(), 'list-sessions', '-F', '#{session_name}'], { encoding: 'utf8' })
+    const all = (res.status === 0 ? res.stdout.trim().split('\n') : [])
+      .filter(n => n.startsWith('fleet-')).map(n => n.replace(/^fleet-/, ''))
+    targets = all.filter(n => !except.has(n))
+  } else {
+    targets = rest.filter(a => !a.startsWith('--'))
+  }
+
+  if (targets.length === 0) { console.log('No agents to restart.'); process.exit(0) }
+  let ok = 0, fail = 0
+  for (const name of targets) {
+    process.stdout.write(`restart-mcp ${name} … `)
+    const r = spawnSync('bash', [script, agentSessionName(name)], { encoding: 'utf8' })
+    if (r.status === 0) { console.log('ok'); ok++ }
+    else { console.log(`FAILED: ${((r.stderr || '') + (r.stdout || '')).trim().split('\n').filter(Boolean).pop() || 'error'}`); fail++ }
+  }
+  console.log(`Done: ${ok} ok${fail ? `, ${fail} failed` : ''}.`)
+  process.exit(fail ? 1 : 0)
+}
+
 // Top-level spawn/attach kept working so the existing spawn path isn't broken;
 // `tlda agent …` is the canonical form.
 async function cmdAttach() { await attachToAgent(getPositional(0)) }
@@ -2382,6 +2423,7 @@ async function main() {
       case 'config': await cmdConfig(); break
       case 'setup': await cmdSetup(); break
       case 'agent': await cmdAgent(); break
+      case 'restart-mcp': await restartMcpAgents(process.argv.slice(3)); break // dev-only; surfaced via `tlda-dev restart-mcp`
       case 'dev': await cmdDev(); break
       case 'dev-url': await cmdDevUrl(); break
       case 'deploy': await cmdDeploy(); break

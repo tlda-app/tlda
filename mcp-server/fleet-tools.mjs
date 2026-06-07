@@ -1008,16 +1008,6 @@ export function getFleetTools() {
         required: ['agent'],
       },
     },
-    {
-      name: 'restart_mcp',
-      description: 'BEST-EFFORT: send /mcp and menu-navigation keystrokes to a target agent\'s tmux session in an attempt to restart their MCP. The keystrokes get typed into their terminal; whether the menu actually navigates and reconnects is unreliable and unobservable from here. This tool does NOT confirm restart. The target may still be running old code. Do not infer success from a successful tool return — and never assume your own MCP got restarted just because /mcp text appeared in your terminal.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          agent: { type: 'string', description: 'Agent identifier (UUID, name, or friendly name). Omit to restart all agents.' },
-        },
-      },
-    },
     // ---- Fleet Operations ----
     {
       name: 'roll_call',
@@ -3405,40 +3395,6 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       return { content: [{ type: 'text', text: `${data.agent || agent}: ${status}.` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Interrupt failed (server unreachable): ${e.message}` }], isError: true };
-    }
-  }
-
-  // ---- restart_mcp ----
-  if (name === 'restart_mcp') {
-    // Restart another agent's fleet MCP by routing through the tlda server's
-    // /api/restart-mcp endpoint, which delegates to the fleet-daemon's
-    // rpcRestartMcp handler on the target agent's machine. The daemon runs
-    // the fleet-mcp-restart script to navigate the /mcp menu via tmux.
-    //
-    // NOTE: can't restart YOUR OWN MCP this way — if your MCP is
-    // disconnected you can't call this tool. For that, bash the
-    // fleet-mcp-restart script directly.
-    if (!args.agent) return { content: [{ type: 'text', text: 'Specify an agent to restart.' }], isError: true };
-    if (args.agent === AGENT_ID) return { content: [{ type: 'text', text: 'Cannot restart your own MCP via this tool (if your MCP is disconnected, calling the tool is impossible). Bash ~/work/fleet/bin/fleet-mcp-restart directly.' }], isError: true };
-    try {
-      const res = await fleetFetch(`${TLDA_SERVER}/api/restart-mcp`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agent: args.agent }),
-      });
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        return { content: [{ type: 'text', text: `Restart failed: HTTP ${res.status}${text ? ' — ' + text.slice(0, 200) : ''}` }], isError: true };
-      }
-      const data = await res.json();
-      if (data.error) return { content: [{ type: 'text', text: `Restart failed: ${data.error}` }], isError: true };
-      const details = [];
-      if (data.tmux_session) details.push(`tmux:${data.tmux_session}`);
-      if (data.stdout) details.push(`stdout:${String(data.stdout).slice(0, 200)}`);
-      if (data.stderr) details.push(`stderr:${String(data.stderr).slice(0, 200)}`);
-      return { content: [{ type: 'text', text: `Restart sent to ${args.agent}${details.length ? ' (' + details.join(' | ') + ')' : ''}` }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Restart failed (server unreachable): ${e.message}` }], isError: true };
     }
   }
 

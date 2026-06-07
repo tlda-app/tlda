@@ -586,42 +586,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     if (result !== null) res.json(result)
   })
 
-  // --- POST /api/restart-mcp ---
-  router.post('/api/restart-mcp', async (req, res) => {
-    const { agent: agentQuery } = req.body || {}
-    const agent = fleetStore?.findAgent(agentQuery)
-    if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
-    if (!agent.tmux_session) { res.status(400).json({ error: 'no tmux session' }); return }
-    const result = await rpcAgent(res, agent, 'restart-mcp', { tmux_session: agent.tmux_session })
-    if (result !== null) res.json(result)
-  })
-
-  // --- POST /api/restart-my-mcp ---
-  // Developer tool: restart an agent's own fleet MCP (e.g. after updating fleet.mjs).
-  // Returns 202 immediately; daemon triggers the restart ~1.5s later.
-  // body: { agent: <id|name> }
-  router.post('/api/restart-my-mcp', async (req, res) => {
-    const { agent: agentQuery } = req.body || {}
-    const agent = fleetStore?.findAgent(agentQuery)
-    if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
-    if (!agent.tmux_session) { res.status(400).json({ error: 'no tmux session' }); return }
-    res.status(202).json({ ok: true, message: 'restart scheduled' })
-    await new Promise(r => setTimeout(r, 1500))
-    const route = resolveRpc('restart-mcp', agent)
-    if (route.via === 'none') {
-      console.error(`restart-my-mcp: no daemon route for ${agent.id}: ${route.error}`)
-      return
-    }
-    try {
-      await sendRpc(route.machine_id, 'restart-mcp', {
-        tmux_session: agent.tmux_session,
-        skipPreflight: true,
-      })
-    } catch (e) {
-      console.error(`restart-my-mcp daemon call failed: ${e.message}`)
-    }
-  })
-
   // --- POST /api/plan-mode-respond ---
   // Responds to a plan-mode approval prompt for an agent.
   // body: { agent: <id|name>, response: 'approve' | 'reject' }
