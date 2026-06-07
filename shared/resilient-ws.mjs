@@ -14,7 +14,7 @@ export class ResilientWS {
    * @param {() => string}  options.url          — called on each connect (URL may change)
    * @param {string}        options.label        — log prefix (e.g. 'daemon', 'fleet-channel')
    * @param {number}        [options.initialBackoffMs=1000]
-   * @param {number}        [options.maxBackoffMs=30000]
+   * @param {number}        [options.maxBackoffMs=3000]
    * @param {number}        [options.heartbeatTimeoutMs=0] — 0 = disabled
    * @param {(ws) => void}  [options.onOpen]     — called after connection opens
    * @param {(msg) => void} options.onMessage    — called with parsed JSON message
@@ -25,7 +25,13 @@ export class ResilientWS {
     this._getUrl = options.url
     this._label = options.label
     this._initialBackoff = options.initialBackoffMs ?? 1000
-    this._maxBackoff = options.maxBackoffMs ?? 30_000
+    // Cap reconnect backoff at 3s. Both consumers (the fleet daemon and the
+    // MCP fleet-channel) are realtime channels: after a stall or restart the
+    // server is back within seconds, so a 30s backoff just leaves the client
+    // dark — dropping agent activity / chat — long after the server recovered,
+    // which agents misread as the server being down. 3s recovers promptly
+    // without hammering a restarting server.
+    this._maxBackoff = options.maxBackoffMs ?? 3_000
     this._heartbeatTimeoutMs = options.heartbeatTimeoutMs ?? 0
     this._onOpen = options.onOpen
     this._onMessage = options.onMessage
