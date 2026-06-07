@@ -12,7 +12,7 @@ function App() {
     <Tldraw
       shapeUtils={[GraphNodeShapeUtil]}
       onMount={(editor: Editor) => {
-        ;(window as any).__tldraw_editor__ = editor
+        ;(window as unknown as { __tldraw_editor__: Editor }).__tldraw_editor__ = editor
         try { materializeChain(editor, biasChain) }
         catch (e) { console.error('materialize failed', e) }
       }}
