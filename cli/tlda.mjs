@@ -28,6 +28,7 @@ import {
 } from '../shared/config.mjs'
 import { tldaFetch } from '../shared/http-client.mjs'
 import { cmdLogs } from './lib/unified-logs.mjs'
+import { cmdPw } from './lib/pw.mjs'
 
 // --- Argument parsing ---
 
@@ -2465,6 +2466,7 @@ async function main() {
       case 'attach': await cmdAttach(); break
       case 'spawn': await ensureServer(); await cmdSpawn(); break
       case 'fleet-dev': await ensureServer(); await cmdFleetDev(); break
+      case 'pw': await cmdPw(args.slice(1), join(_cliDir, '..')); break
       case 'dev': await cmdDev(); break
       case 'dev-url': await cmdDevUrl(); break
       case 'deploy': await cmdDeploy(); break
