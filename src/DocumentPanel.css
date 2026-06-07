@@ -465,6 +465,32 @@ html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-stale {
   color: rgba(255, 255, 255, 0.5);
 }
 
+/* Number-input pref rows (font size, opacity %, fold heights) */
+.prefs-num-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.prefs-num-label {
+  width: 110px;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.prefs-num {
+  width: 56px;
+  font-size: 11px;
+  padding: 2px 4px;
+  text-align: right;
+}
+.prefs-num-unit {
+  font-size: 10px;
+  color: rgba(0, 0, 0, 0.5);
+}
+[data-theme="dark"] .prefs-num-unit {
+  color: rgba(255, 255, 255, 0.5);
+}
+
 /* Pen double-tap zones — fixed squares at bottom-right (touch devices only) */
 .tool-toggle-zones {
   display: none;
