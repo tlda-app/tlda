@@ -1373,7 +1373,6 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   user-select: none !important;
   -webkit-user-select: none !important;
 }
-.fleet-chat-shape .chat-activity-card:hover { background: rgba(128, 128, 128, 0.05); }
 .fleet-chat-shape .chat-activity-card .activity-header {
   display: flex;
   align-items: center;
@@ -1464,8 +1463,8 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   padding: 2px 4px;
   border-radius: 3px;
 }
-.fleet-chat-shape .diff-old { background: rgba(255, 80, 80, 0.08); }
-.fleet-chat-shape .diff-new { background: rgba(80, 255, 80, 0.08); }
+.fleet-chat-shape .diff-old { background: rgba(190, 95, 95, 0.08); }
+.fleet-chat-shape .diff-new { background: rgba(95, 165, 110, 0.08); }
 .fleet-chat-shape .diff-label {
   font-weight: 600;
   opacity: 0.5;
