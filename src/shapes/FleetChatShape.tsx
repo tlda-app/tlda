@@ -14,6 +14,7 @@ import {
   useValue,
 } from 'tldraw'
 import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, useContext, memo, useSyncExternalStore, forwardRef } from 'react'
+import { createPortal } from 'react-dom'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 
 // @ts-ignore — vanilla JS module
@@ -95,13 +96,34 @@ const LIGHTBOX_H = 480
 
 // Hover mode: read-only snapshot that resets on each server push.
 // Pinned mode: stays open, shows input bar for sending commands, resizable.
-function TerminalHoverPane({ agentId, pinned, onDismiss, onMouseEnter, onMouseLeave }: {
+function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter, onMouseLeave }: {
   agentId: string
   pinned: boolean
+  anchorRef: React.RefObject<HTMLElement | null>
   onDismiss: () => void
   onMouseEnter: () => void
   onMouseLeave: () => void
 }) {
+  // The pane is portaled to <body> so it's OUTSIDE the chat shape's opacity group
+  // (the chat sits at a semi-transparent resting opacity; a child can't be more
+  // opaque than its parent). Rendered fixed, anchored to the chat input's bottom
+  // edge, re-measured each frame so it tracks the panel as the canvas pans/zooms.
+  const [anchor, setAnchor] = useState<{ left: number; top: number; width: number } | null>(null)
+  useEffect(() => {
+    let raf = 0
+    const measure = () => {
+      const el = anchorRef.current
+      if (el) {
+        const r = el.getBoundingClientRect()
+        setAnchor(prev => (prev && prev.left === r.left && prev.top === r.bottom && prev.width === r.width)
+          ? prev
+          : { left: r.left, top: r.bottom, width: r.width })
+      }
+      raf = requestAnimationFrame(measure)
+    }
+    raf = requestAnimationFrame(measure)
+    return () => cancelAnimationFrame(raf)
+  }, [anchorRef])
   const containerRef = useRef<HTMLDivElement>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
@@ -273,12 +295,22 @@ function TerminalHoverPane({ agentId, pinned, onDismiss, onMouseEnter, onMouseLe
     )
   }
 
-  return (
+  return createPortal((
+    // Carrier provides the .fleet-chat-shape scoped CSS + custom properties the
+    // pane styles depend on (it's portaled out of the real chat shape). display:
+    // contents so it adds no box and no opacity group — the pane stays fully opaque.
+    <div className="fleet-chat-shape" style={{ display: 'contents' }}>
     <div
       className={`fleet-terminal-hover-pane${pinned ? ' fleet-terminal-hover-pane-pinned' : ''}${lightboxed ? ' fleet-terminal-hover-pane-lightboxed' : ''}`}
-      style={lightboxed
-        ? { top: 'auto', bottom: -height, height: LIGHTBOX_H }
-        : { height }}
+      style={{
+        position: 'fixed',
+        left: anchor?.left ?? 0,
+        top: anchor?.top ?? 0,
+        width: anchor?.width ?? 0,
+        right: 'auto',
+        visibility: anchor ? 'visible' : 'hidden',
+        height: lightboxed ? LIGHTBOX_H : height,
+      }}
       onMouseEnter={onMouseEnter}
       onMouseLeave={pinned ? undefined : onMouseLeave}
       onPointerDown={stopEventPropagation}
@@ -363,7 +395,8 @@ function TerminalHoverPane({ agentId, pinned, onDismiss, onMouseEnter, onMouseLe
         />
       )}
     </div>
-  )
+    </div>
+  ), document.body)
 }
 
 // Recursively read a FileSystemDirectoryEntry, returning { file, path } pairs
@@ -4085,6 +4118,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             <TerminalHoverPane
               agentId={hoverTargetAgentId}
               pinned={termHoverPinned}
+              anchorRef={inputAreaRef}
               onDismiss={() => { setTermHoverPinned(false); setTermHoverVisible(false) }}
               onMouseEnter={() => {
                 if (termHideTimerRef.current) {
