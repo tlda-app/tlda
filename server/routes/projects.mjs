@@ -780,6 +780,25 @@ router.post('/:name/signal', requireRw, async (req, res) => {
   res.json({ ok: true })
 })
 
+// POST /:name/graph — materialize an argument graph into the room (server-side
+// store ops, so it persists with no viewer connected). body: { chain, replace? }
+router.post('/:name/graph', requireRw, async (req, res) => {
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+  const { chain, replace } = req.body || {}
+  if (!chain || !Array.isArray(chain.nodes) || !Array.isArray(chain.edges)) {
+    return res.status(400).json({ error: 'chain.{nodes,edges} required' })
+  }
+  try {
+    const { materializeGraph } = await import('../lib/graph-materialize.mjs')
+    const result = await materializeGraph(syncRoomName(req.params.name), chain, { replace: replace !== false })
+    res.json({ ok: true, ...result })
+  } catch (e) {
+    console.error('[graph] materialize failed:', e)
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
 // GET /:name/signal/stream — SSE stream of signal broadcasts (must be before :key route)
 router.get('/:name/signal/stream', requireRead, (req, res) => {
   const project = readProject(req.params.name)

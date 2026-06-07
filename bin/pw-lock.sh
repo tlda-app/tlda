@@ -19,7 +19,10 @@ set -euo pipefail
 # Lock lives inside the project tree so the fleet-agent rm shim (which
 # blocks deletes outside ~/work) can clean it up. Override with TLDA_PW_LOCK.
 LOCK="${TLDA_PW_LOCK:-$HOME/work/tlda/.pw.lock}"
-STALE_SECS="${TLDA_PW_LOCK_STALE:-600}"
+# Short stale window: a forgotten lock frees itself in ~90s. An agent actively
+# driving the browser re-acquires (refreshes the timestamp) on every `tlda-dev
+# pw` verb, so its lock stays alive while in use; only an idle lock expires.
+STALE_SECS="${TLDA_PW_LOCK_STALE:-90}"
 
 mkdir -p "$(dirname "$LOCK")"
 

@@ -2064,8 +2064,10 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
       child.unref()
     }
 
-    // Wait for it to come up
-    for (let i = 0; i < 20; i++) {
+    // Wait for it to come up. The server can boot slowly (large fleet-DB query
+    // on a big roster), so give it ~30s before declaring failure — a too-short
+    // wait made agents falsely think they'd killed prod fleet chat.
+    for (let i = 0; i < 120; i++) {
       await new Promise(r => setTimeout(r, 250))
       try {
         const res = await fetch(`${getServer()}/health`)
@@ -2081,7 +2083,7 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
         }
       } catch {}
     }
-    console.error(red('Server failed to start within 5s'))
+    console.error(red('Server failed to start within 30s'))
     console.error(dim(`Check log: ${LOGFILE}`))
     process.exit(1)
   }
@@ -2272,7 +2274,10 @@ async function cmdDev() {
   ].find(p => existsSync(p))
   if (!viteBin) throw new Error('vite binary not found (worktree or main repo node_modules)')
 
-  const viteChild = spawn(viteBin, ['--port', String(port)], {
+  // Bind IPv4 explicitly — without --host, vite binds IPv6 [::1] only, so a
+  // browser hitting `localhost` (which resolves to 127.0.0.1) gets "can't be
+  // found." 127.0.0.1 makes the printed localhost URL actually load.
+  const viteChild = spawn(viteBin, ['--port', String(port), '--host', '127.0.0.1'], {
     cwd: worktreeDir,
     detached: true,
     stdio: ['ignore', logFd, logFd],
