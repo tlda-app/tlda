@@ -38,17 +38,22 @@
 }
 
 
-/* Fleet HUD sits above all canvas content (notes, doc pages, etc.). All fleet
-   shape types share ONE z-index so stacking ORDER among them is decided by
-   DOM/paint order (TLDraw's bringToFront), NOT a fixed CSS layer. With a fixed
-   per-type layer (chat 8210 > agents 8201 …) an overlapped panel could never be
-   raised above another — its move buttons stayed buried and it couldn't be
-   separated. Equal z-index lets pointer-down → bringToFront actually surface the
-   panel you grab. */
-[data-shape-type="fleet-docview"],
-[data-shape-type="fleet-agents"],
-[data-shape-type="fleet-search"],
-[data-shape-type="fleet-chat"] {
+/* Lift fleet shapes above doc/canvas content (notes, pages, drawings) — but
+   ONLY in the main canvas. TLDraw writes an inline `z-index` on each shape's
+   container from its sort order, so this needs `!important` to win there.
+
+   The HUD overlay (.fleet-hud-wrap) is deliberately EXCLUDED: it's a separate
+   full-viewport layer that already sits above all canvas content and renders
+   ONLY fleet panels. Inside it, a flat per-type z-index would pin every panel
+   to the same layer and defeat TLDraw's bringToFront — so an overlapped panel
+   could never be raised and its move/close buttons stayed buried (the bug Skip
+   hit). By NOT overriding z-index there, TLDraw's own per-shape z-index governs
+   inter-panel stacking, so pointer-down → bringToFront actually surfaces the
+   panel you grab. (`:not(.fleet-hud-wrap *)` = "not inside the HUD overlay".) */
+[data-shape-type="fleet-docview"]:not(.fleet-hud-wrap *),
+[data-shape-type="fleet-agents"]:not(.fleet-hud-wrap *),
+[data-shape-type="fleet-search"]:not(.fleet-hud-wrap *),
+[data-shape-type="fleet-chat"]:not(.fleet-hud-wrap *) {
   z-index: 8200 !important;
 }
 [data-shape-type="fleet-chat"] {
