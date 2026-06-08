@@ -2000,14 +2000,20 @@ server.on('upgrade', async (req, socket, head) => {
       }
 
       // Seed with current terminal content so the card isn't blank on open.
+      // The live attach stream only repaints on a fresh attach (and the daemon
+      // skips the repaint if a watch already exists), so without this seed an
+      // idle awake agent shows nothing. capture-pane takes `lines` and returns
+      // the screen as `pane` (see rpcCapturePane in fleet-daemon.mjs).
       try {
-        const { text } = await sendRpc(agent.machine_id, 'capture-pane', {
-          tmux_session: agent.tmux_session, start: -80, ansi: true,
+        const { pane } = await sendRpc(agent.machine_id, 'capture-pane', {
+          tmux_session: agent.tmux_session, lines: 80,
         })
-        if (text && ws.readyState === 1) {
-          ws.send(JSON.stringify({ type: 'output', data: Buffer.from(text).toString('base64'), encoding: 'base64' }))
+        if (pane && ws.readyState === 1) {
+          ws.send(JSON.stringify({ type: 'output', data: Buffer.from(pane).toString('base64'), encoding: 'base64' }))
         }
-      } catch {}
+      } catch (e) {
+        console.warn(`[terminal] seed capture failed for ${agent.id} (${agent.tmux_session}): ${e.message}`)
+      }
 
       ws.on('message', async (raw) => {
         let msg
