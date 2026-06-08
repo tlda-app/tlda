@@ -782,27 +782,38 @@ function ContextBadge({ percent }: { percent?: number }) {
  * - The blank is never permanent: it's released by the next row. With nothing
  *   active and nothing held, the slot doesn't exist (no dead space hoarded).
  *
- * `itemCount` is the chat's rendered-row count. Computed during render
- * (idempotent under StrictMode double-invoke) so the first render after a status
- * ends already reserves — no collapsed frame.
+ * `itemCount` is the chat's rendered-row count. The hold engages in a LAYOUT
+ * effect (runs after render, before paint) so the collapsed frame between
+ * "status ended" and "hold engaged" is never painted — no flicker, no bounce —
+ * while staying safe under React's concurrent rendering (no ref mutation during
+ * render, which is silently dropped and was why an earlier version never held).
  */
 function useReservedSlot(hasActive: boolean, itemCount: number): boolean {
-  const prevActiveRef = useRef(false)
-  const holdingRef = useRef(false)
+  const [holding, setHolding] = useState(false)
+  const wasActiveRef = useRef(false)
   const heldCountRef = useRef(0)
-  if (hasActive) {
-    holdingRef.current = false
-  } else {
-    if (prevActiveRef.current && !holdingRef.current) {
-      holdingRef.current = true
-      heldCountRef.current = itemCount   // mark the row count; release when it grows
+
+  // Engage/clear the hold on the active→inactive (and back) transition.
+  useLayoutEffect(() => {
+    if (hasActive) {
+      wasActiveRef.current = true
+      setHolding(false)
+    } else if (wasActiveRef.current) {
+      // Status just ended with no row yet — hold the empty space so we never
+      // collapse to nothing (the bounce). Mark the row count; release when it grows.
+      wasActiveRef.current = false
+      heldCountRef.current = itemCount
+      setHolding(true)
     }
-    if (holdingRef.current && itemCount > heldCountRef.current) {
-      holdingRef.current = false          // a row landed → it consumed the space
-    }
-  }
-  prevActiveRef.current = hasActive
-  return hasActive || holdingRef.current
+  }, [hasActive]) // eslint-disable-line react-hooks/exhaustive-deps -- transition-only; itemCount captured at engage time via the ref
+
+  // The instant a row is available to use the held slot, use it: collapse into
+  // that row (same commit it lands → height-neutral, the row takes the space).
+  useLayoutEffect(() => {
+    if (holding && itemCount > heldCountRef.current) setHolding(false)
+  }, [holding, itemCount])
+
+  return hasActive || holding
 }
 
 /**
