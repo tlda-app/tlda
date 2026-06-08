@@ -550,6 +550,15 @@ export function useSuggestions(): Suggestion[] {
     let unsub: (() => void) | null = null
     let cancelled = false
 
+    // Fetch the current set on mount. The broadcast only carries *new* posts, so
+    // without this a chip already pending when the chat loads (or after a reload)
+    // never shows until the next post. Subscribe first so a post arriving during
+    // the fetch isn't lost; the fetch result is the baseline.
+    fetch('/api/suggestions')
+      .then(r => r.json())
+      .then(j => { if (!cancelled) setPending(prev => prev.length ? prev : (j.suggestions || [])) })
+      .catch(() => {})
+
     ensureInit().then(() => {
       if (cancelled) return
       unsub = subscribe('suggestions', null, (data: any) => {

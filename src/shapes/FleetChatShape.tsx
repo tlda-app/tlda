@@ -777,7 +777,7 @@ function ContextBadge({ percent }: { percent?: number }) {
  * row in the same commit). So this component just draws the current statuses —
  * no ghost slot, no item-count heuristic.
  */
-function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibernatingAgents, ctx, agents: _agents, escalationState }: {
+function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibernatingAgents, ctx, agents: _agents, escalationState, suggestions }: {
   thinkingAgents: Map<string, number>
   compactingAgents: Map<string, number>
   contextPercent: Map<string, number>
@@ -785,6 +785,7 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
   ctx: any
   agents: any[]
   escalationState?: Record<string, { level: number; confirmed: number }>
+  suggestions: Suggestion[]
 }) {
   // Build status display from server-authoritative agent status field.
   // thinkingAgents/compactingAgents are pre-filtered to chat targets and provide elapsed timestamps.
@@ -823,6 +824,27 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
     return merged
   }, [thinkingAgents, compactingAgents, hibernatingAgents])
 
+  // Suggestions live in the per-agent status row, keyed by the agent that
+  // posted them. An agent with no thinking/compacting status (e.g. a bot like
+  // todd) still gets a row the moment it has a suggestion — the suggestion IS
+  // its status. The row set is the union of agents-with-status and
+  // agents-with-suggestions.
+  const suggestionsByAgent = useMemo(() => {
+    const m = new Map<string, Suggestion[]>()
+    for (const s of suggestions) {
+      const key = s.from || s.targetId || ''
+      if (!key) continue
+      if (!m.has(key)) m.set(key, [])
+      m.get(key)!.push(s)
+    }
+    return m
+  }, [suggestions])
+  const rowAgentIds = useMemo(() => {
+    const ids = new Set<string>(statusAgents.keys())
+    for (const k of suggestionsByAgent.keys()) ids.add(k)
+    return [...ids]
+  }, [statusAgents, suggestionsByAgent])
+
   // Skip's design: the slot ALWAYS reserves one row of height, so a status line
   // appearing or disappearing never shifts the chat stack — that shift is the
   // bounce. The slot stays put; only its contents fade in/out. No ghost, no
@@ -850,7 +872,11 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
       opacity: 0.6,
       transition: 'opacity 0.2s',
     }}>
-      {[...statusAgents.entries()].map(([agentId, { status, startTs }]) => {
+      {rowAgentIds.map((agentId) => {
+        const statusEntry = statusAgents.get(agentId)
+        const status = statusEntry?.status
+        const startTs = statusEntry?.startTs ?? 0
+        const chips = suggestionsByAgent.get(agentId) || []
         const esc = escalationState?.[agentId]
         const escLevel = esc?.level || 0
         const escConfirmed = esc?.confirmed || 0
@@ -862,15 +888,16 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
         const statusText = status === 'hibernating' ? 'is hibernating'
           : status === 'waking' ? 'waking up…'
           : status === 'compacting' ? 'compacting…'
-          : 'thinking…'
+          : status === 'thinking' ? 'thinking…'
+          : null
         return (
           <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
             <span>
               <span className="thinking-text">
                 <PhaseIcon phase={phaseFromName(ctx.agentFullName(agentId))} />{baseName(ctx.agentFullName(agentId)).replace('fleet:', '')}
               </span>
-              {' '}<span className="thinking-text">{statusText}</span>
-              {status !== 'hibernating' && status !== 'waking' && <>{' '}<ElapsedTime startMs={startTs} /></>}
+              {statusText && <>{' '}<span className="thinking-text">{statusText}</span></>}
+              {status && status !== 'hibernating' && status !== 'waking' && <>{' '}<ElapsedTime startMs={startTs} /></>}
               {escLevel > 0 && (
                 <span className="escalation-meter" style={{ marginLeft: 6, letterSpacing: 2, fontSize: '0.9em' }}>
                   <span style={{ opacity: tierOpacity(1), transition: 'opacity 0.15s' }}>↑</span>
@@ -878,6 +905,12 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
                   <span style={{ opacity: tierOpacity(3), transition: 'opacity 0.15s' }}>💀</span>
                 </span>
               )}
+              {chips.map((n, i) => (
+                <span key={n.id}>
+                  {(i > 0 || statusText) ? <span className="suggestion-chip-label">{i > 0 ? ', ' : ' '}</span> : ' '}
+                  <SuggestionChip nudge={n} isFirst={i === 0} agentName={ctx.agentLabel(n.targetId || n.from)} />
+                </span>
+              ))}
             </span>
             <ContextBadge percent={contextPercent.get(agentId)} />
           </div>
@@ -914,54 +947,6 @@ function SuggestionChip({ nudge, isFirst, agentName }: { nudge: Suggestion, isFi
         <span className="suggestion-tip-text">{nudge.text}</span>
       </span>
     </span>
-  )
-}
-
-function SuggestionStatus({ pending, ctx, rawItemsLength }: { pending: Suggestion[], ctx: any, rawItemsLength: number }) {
-  const hasActive = pending.length > 0
-  const lastPendingRef = useRef(pending)
-  if (hasActive) lastPendingRef.current = pending
-
-  const [ghost, setGhost] = useState(false)
-  const ghostRawItemsRef = useRef(rawItemsLength)
-
-  useEffect(() => {
-    if (!hasActive && lastPendingRef.current.length > 0 && !ghost) {
-      setGhost(true)
-      ghostRawItemsRef.current = rawItemsLength
-    }
-    if (hasActive && ghost) setGhost(false)
-  }, [hasActive]) // eslint-disable-line react-hooks/exhaustive-deps -- intentional: transition-only detection
-
-  useEffect(() => {
-    if (ghost && rawItemsLength > ghostRawItemsRef.current) setGhost(false)
-  }, [ghost, rawItemsLength])
-
-  if (!hasActive && !ghost) return null
-
-  return (
-    <div style={{
-      padding: '2px 8px',
-      fontSize: 11,
-      flexShrink: 0,
-      opacity: ghost ? 0 : 1,
-      transition: 'opacity 0.2s',
-    }}
-    className="suggestion-status"
-    >
-      {!ghost && (
-        <div className="chat-line" style={{ padding: '2px 0' }}>
-          <span className="suggestion-status-prefix">{ctx.agentLabel(pending[0]?.from || pending[0]?.targetId)}:</span>{' '}
-          {pending.map((n, i) => (
-            <span key={n.id}>
-              {i > 0 ? <span className="suggestion-chip-label">, </span> : null}
-              <SuggestionChip nudge={n} isFirst={i === 0} agentName={ctx.agentLabel(n.targetId || n.from)} />
-            </span>
-          ))}
-        </div>
-      )}
-      {ghost && <div style={{ padding: '2px 0', visibility: 'hidden' }}>placeholder</div>}
-    </div>
   )
 }
 
@@ -4124,7 +4109,6 @@ function FleetChatInner({ shape }: { shape: any }) {
               // the virtualized list.
               Footer: () => (
                 <div>
-                  <SuggestionStatus pending={suggestionsPending} ctx={ctx} rawItemsLength={rawItems.length} />
                   <ThinkingStatus
                     thinkingAgents={thinkingAgents}
                     compactingAgents={compactingAgents}
@@ -4133,6 +4117,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                     ctx={ctx}
                     agents={agents}
                     escalationState={escalationState}
+                    suggestions={suggestionsPending}
                   />
                 </div>
               ),
