@@ -649,8 +649,11 @@ function currentDocVersion(panel: any, editor?: Editor | null): string | null {
   // doc-version sentinel, which the build writes on every build. Never the lazy
   // historyEntries list — it only refreshes on a full reload / text-changing
   // rebuild, so it drifts out of date.
-  if (editor) {
-    const s = editor.store.get('shape:doc-version--sentinel' as TLShapeId)
+  // Read from the MAIN editor: the chat shape can render in the HUD's copy
+  // store, which does not contain the doc-room sentinel shape.
+  const mainEd = (typeof window !== 'undefined' && (window as any).__tldraw_editor__) || editor
+  if (mainEd) {
+    const s = mainEd.store.get('shape:doc-version--sentinel' as TLShapeId)
     const hash = (s as any)?.props?.commitHash
     if (hash && hash !== 'unknown') return String(hash).slice(0, 7)
   }
