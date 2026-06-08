@@ -2,6 +2,9 @@
 // Mirrors ~/work/dot-claude/spellbook/lints/agent-parentheticals/runner/run.mjs
 // but as a library: takes text or a unified diff, returns lint findings.
 
+import { realpathSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+
 const ENV_BLOCK_NAMES = [
   'equation', 'equation\\*',
   'align', 'align\\*',
@@ -122,7 +125,7 @@ export function lintDiff(diffText, readFile) {
 // Standalone CLI
 // Mode 1 (direct): node lint-parens.mjs <file.tex> [--lines START:END]
 // Mode 2 (BYOL):   pipe diff to stdin, set TLDA_SRCDIR to post-state source dir
-if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const { readFileSync, statSync } = await import('fs')
   const { join } = await import('path')
 
