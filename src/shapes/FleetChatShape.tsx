@@ -769,58 +769,14 @@ function ContextBadge({ percent }: { percent?: number }) {
 }
 
 /**
- * Reserve-then-consume slot discipline, shared by every status type (thinking,
- * suggestions, …) — see scratch/status-line-spec.md.
- *
- * Returns whether the slot should reserve its row of height right now.
- * - While a status is active → reserved (the caller draws the status).
- * - The moment the status ends → still reserved, but blank ("holding"): the row
- *   of space is kept so the stack doesn't collapse to nothing (that's the bounce).
- * - The next chat row to land consumes that space — we stop reserving on the
- *   same commit the row appears, so the row drops INTO the slot (height-neutral)
- *   rather than stacking on top of a leftover blank.
- * - The blank is never permanent: it's released by the next row. With nothing
- *   active and nothing held, the slot doesn't exist (no dead space hoarded).
- *
- * `itemCount` is the chat's rendered-row count. The hold engages in a LAYOUT
- * effect (runs after render, before paint) so the collapsed frame between
- * "status ended" and "hold engaged" is never painted — no flicker, no bounce —
- * while staying safe under React's concurrent rendering (no ref mutation during
- * render, which is silently dropped and was why an earlier version never held).
- */
-function useReservedSlot(hasActive: boolean, itemCount: number): boolean {
-  const [holding, setHolding] = useState(false)
-  const wasActiveRef = useRef(false)
-  const heldCountRef = useRef(0)
-
-  // Engage/clear the hold on the active→inactive (and back) transition.
-  useLayoutEffect(() => {
-    if (hasActive) {
-      wasActiveRef.current = true
-      setHolding(false)
-    } else if (wasActiveRef.current) {
-      // Status just ended with no row yet — hold the empty space so we never
-      // collapse to nothing (the bounce). Mark the row count; release when it grows.
-      wasActiveRef.current = false
-      heldCountRef.current = itemCount
-      setHolding(true)
-    }
-  }, [hasActive]) // eslint-disable-line react-hooks/exhaustive-deps -- transition-only; itemCount captured at engage time via the ref
-
-  // The instant a row is available to use the held slot, use it: collapse into
-  // that row (same commit it lands → height-neutral, the row takes the space).
-  useLayoutEffect(() => {
-    if (holding && itemCount > heldCountRef.current) setHolding(false)
-  }, [holding, itemCount])
-
-  return hasActive || holding
-}
-
-/**
  * ThinkingStatus — one status line per agent (thinking / compacting / waking /
- * hibernating), using the shared reserve-then-consume slot.
+ * hibernating). The slot reserves one row of height unconditionally so the line
+ * fading in/out never shifts the stack (no bounce); content shows when a status
+ * is active, blank otherwise. (A reserve-then-consume variant was tried but
+ * fought the virtualized chat layout — flashed on every message — and was
+ * reverted; see scratch/status-line-spec.md.)
  */
-function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibernatingAgents, ctx, agents: _agents, itemCount, escalationState }: {
+function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibernatingAgents, ctx, agents: _agents, itemCount: _itemCount, escalationState }: {
   thinkingAgents: Map<string, number>
   compactingAgents: Map<string, number>
   contextPercent: Map<string, number>
@@ -867,31 +823,23 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
     return merged
   }, [thinkingAgents, compactingAgents, hibernatingAgents])
 
-  const hasActive = statusAgents.size > 0
-  const reserved = useReservedSlot(hasActive, itemCount)
-
-  const slotRef = useRef<HTMLDivElement>(null)
   const statusKeysStr = [...statusAgents.keys()].join(',')
   useEffect(() => {
+    // Log only when the set of shown statuses changes — NOT per message. (A
+    // previous version read offsetHeight on every itemCount change, forcing a
+    // layout reflow on each keystroke → the screen flash.)
     log.info('thinking-line', 'render', {
       keys: statusKeysStr ? statusKeysStr.split(',') : [],
       rows: statusAgents.size,
-      holding: reserved && !hasActive,
-      reserved,
-      itemCount,
-      offsetHeight: slotRef.current?.offsetHeight ?? null,
     })
-  }, [statusKeysStr, reserved, itemCount]) // eslint-disable-line react-hooks/exhaustive-deps -- log fires on slot identity/reservation/row-count change; statusAgents.size is read only for the snapshot, not a trigger
-
-  // Not permanent, not created for nothing: no status and nothing held → no slot.
-  if (!reserved) return null
+  }, [statusKeysStr])
 
   return (
-    <div ref={slotRef} style={{
+    <div style={{
       padding: '0 8px',
       fontSize: 11,
       flexShrink: 0,
-      // One row of reserved height while shown or holding — the anti-bounce floor.
+      // One row of reserved height, always — the anti-bounce floor.
       minHeight: 'calc(var(--fleet-base-font, 11px) * 1.5 + 4px)',
       opacity: 0.6,
       transition: 'opacity 0.2s',
@@ -963,36 +911,29 @@ function SuggestionChip({ nudge, isFirst, agentName }: { nudge: Suggestion, isFi
   )
 }
 
-function SuggestionStatus({ pending, ctx, rawItemsLength }: { pending: Suggestion[], ctx: any, rawItemsLength: number }) {
-  const hasActive = pending.length > 0
-  const reserved = useReservedSlot(hasActive, rawItemsLength)
-
-  // Not permanent, not created for nothing: no suggestions and nothing held → no slot.
-  if (!reserved) return null
+function SuggestionStatus({ pending, ctx, rawItemsLength: _rawItemsLength }: { pending: Suggestion[], ctx: any, rawItemsLength: number }) {
+  // Suggestions are rare; render only when present (no permanent blank row).
+  if (pending.length === 0) return null
 
   return (
     <div style={{
       padding: '2px 8px',
       fontSize: 11,
       flexShrink: 0,
-      // One row of reserved height while shown or holding — the anti-bounce floor.
-      minHeight: 'calc(var(--fleet-base-font, 11px) * 1.5 + 4px)',
       opacity: 1,
       transition: 'opacity 0.2s',
     }}
     className="suggestion-status"
     >
-      {hasActive && (
-        <div className="chat-line" style={{ padding: '2px 0' }}>
-          <span className="suggestion-status-prefix">{ctx.agentLabel(pending[0]?.from || pending[0]?.targetId)}:</span>{' '}
-          {pending.map((n, i) => (
-            <span key={n.id}>
-              {i > 0 ? <span className="suggestion-chip-label">, </span> : null}
-              <SuggestionChip nudge={n} isFirst={i === 0} agentName={ctx.agentLabel(n.targetId || n.from)} />
-            </span>
-          ))}
-        </div>
-      )}
+      <div className="chat-line" style={{ padding: '2px 0' }}>
+        <span className="suggestion-status-prefix">{ctx.agentLabel(pending[0]?.from || pending[0]?.targetId)}:</span>{' '}
+        {pending.map((n, i) => (
+          <span key={n.id}>
+            {i > 0 ? <span className="suggestion-chip-label">, </span> : null}
+            <SuggestionChip nudge={n} isFirst={i === 0} agentName={ctx.agentLabel(n.targetId || n.from)} />
+          </span>
+        ))}
+      </div>
     </div>
   )
 }
