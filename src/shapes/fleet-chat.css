@@ -2438,7 +2438,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 }
 .chat-thinking .thinking-elapsed {
   color: var(--text-dim, #888);
-  opacity: 0.5;
+  opacity: 0.75;
   font-size: 10px;
 }
 
