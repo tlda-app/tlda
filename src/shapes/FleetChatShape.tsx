@@ -1419,6 +1419,12 @@ function FleetChatInner({ shape }: { shape: any }) {
       .catch(e => console.warn('[fleet-chat] macros fetch failed:', e.message))
   }, [doc?.docName])
 
+  // Per-sender preamble: each message carries metadata.preambleRef.doc (the
+  // sender's preamble document). We render that message's math with that doc's
+  // macros so it looks the same for everyone, regardless of what the viewer has
+  // loaded. Cache macros per doc; fetch any referenced doc we haven't seen yet.
+  const [macrosByDoc, setMacrosByDoc] = useState<Record<string, Record<string, string>>>({})
+
   // Build context and render messages
   const prefTick = usePrefTick()
   const ctx = useMemo(() => makeCtx(agents, tasks, preambleMacros), [agents, tasks, preambleMacros, prefTick])
@@ -1458,6 +1464,22 @@ function FleetChatInner({ shape }: { shape: any }) {
 
     return sorted
   }, [events])
+
+  // Fetch macros for any preamble doc referenced by a message we haven't cached.
+  useEffect(() => {
+    const needed = new Set<string>()
+    for (const m of chatMessages as any[]) {
+      const d = m?.metadata?.preambleRef?.doc
+      if (d && !(d in macrosByDoc)) needed.add(d)
+    }
+    if (needed.size === 0) return
+    for (const d of needed) {
+      fetch(`/api/projects/${encodeURIComponent(d)}/macros`)
+        .then(r => r.ok ? r.json() : null)
+        .then(data => setMacrosByDoc(prev => (d in prev ? prev : { ...prev, [d]: data?.macros || {} })))
+        .catch(() => setMacrosByDoc(prev => (d in prev ? prev : { ...prev, [d]: {} })))
+    }
+  }, [chatMessages, macrosByDoc])
 
   // Amend events (type 'amend', metadata.amends = original id) are folded into
   // their original message as version history — they never render standalone
@@ -1607,7 +1629,17 @@ function FleetChatInner({ shape }: { shape: any }) {
           const v = versions[viewIdx]
           renderM = { ...m, text: v.text, metadata: { ...(m.metadata || {}), source: v.source }, _amendStepper: stepper }
         }
-        const html = renderChatLine(renderM, renderCtx)
+        // Render this message's math with the SENDER's preamble (preambleRef.doc),
+        // not the viewer's. Fall back to the viewer's preamble for messages with no
+        // ref, or while the referenced doc's macros are still loading.
+        const senderPreambleDoc = m?.metadata?.preambleRef?.doc
+        const lineMacros = (senderPreambleDoc && senderPreambleDoc in macrosByDoc)
+          ? macrosByDoc[senderPreambleDoc]
+          : preambleMacros
+        const lineCtx = lineMacros === preambleMacros
+          ? renderCtx
+          : { ...renderCtx, renderMarkdown: (input: string) => tldaRenderMarkdown(input, lineMacros) }
+        const html = renderChatLine(renderM, lineCtx)
         if (html) {
           const item: RawItem = { key: m._dbId || m._tempId || `${m.timestamp}:${m.from}`, html }
           // Tag interrupt system_notices so they jump ahead of queued messages
@@ -1625,7 +1657,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     flushActivity()
     return items
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatMessages, ctx, thinkingAgents, unqueuedAt, viewingVersion, doc, amendsByOrig, amendView])
+  }, [chatMessages, ctx, thinkingAgents, unqueuedAt, viewingVersion, doc, amendsByOrig, amendView, macrosByDoc, preambleMacros])
 
   // Per-item post-processing: applies chip replacement, URL linkification, and
   // doc-link resolution to a single item's HTML. Called by ChatMessageRow only
@@ -4475,6 +4507,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                     const refAttachments = buildRefAttachments(text, editor)
                     const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
                     if (refAttachments.length > 0) sendOpts.attachments = refAttachments
+                    if (doc?.docName) sendOpts.preambleRef = { doc: doc.docName, version: currentDocVersion(panel, editor) || null }
                     const sendWithRetry = (attempt: number) => {
                       Promise.all(
                         sendTargets.map(t => sendMessage(t, text, sendOpts))
@@ -4537,6 +4570,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                   const refAttachments = buildRefAttachments(text, editor)
                   const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
                   if (refAttachments.length > 0) sendOpts.attachments = refAttachments
+                  if (doc?.docName) sendOpts.preambleRef = { doc: doc.docName, version: currentDocVersion(panel, editor) || null }
                   const sendWithRetry = (attempt: number) => {
                     Promise.all(
                       targets.map(t => sendMessage(t, text, sendOpts))
@@ -4578,6 +4612,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                   const refAttachments = buildRefAttachments(text, editor)
                   const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
                   if (refAttachments.length > 0) sendOpts.attachments = refAttachments
+                  if (doc?.docName) sendOpts.preambleRef = { doc: doc.docName, version: currentDocVersion(panel, editor) || null }
                   const sendWithRetry = (attempt: number) => {
                     Promise.all(
                       targets.map(t => sendMessage(t, text, sendOpts))

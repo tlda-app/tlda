@@ -14,7 +14,6 @@
 // Writes go to server → DB → SSE → subscriber. One path.
 
 import { toolContentDetail } from './activity-render.mjs'
-import { setActiveMacros } from '../katexMacros'
 import { labelsForAgent, evalDnf } from '../../shared/fleet-labels.mjs'
 import { makeEventStore } from './event-store.mjs'
 import { log } from '../logger'
@@ -176,6 +175,10 @@ export async function sendMessage(to, text, opts = {}) {
   if (opts.attachments) body.attachments = opts.attachments
   if (opts.cc) body.cc = opts.cc
   if (opts.context) body.context = opts.context
+  // The human's preamble is the document they're viewing — stamp it so readers
+  // render this message's math with that doc's macros (mirrors how agents stamp
+  // their working-dir doc). { doc, version }; version captured, not yet resolved.
+  if (opts.preambleRef) body.preambleRef = opts.preambleRef
   const _t0 = performance.now()
   try {
     const d = await wsSend(body)
@@ -426,11 +429,6 @@ export function connect() {
         if (!data || !data.type) return
         if (data.type === 'open-doc' && data.url) {
           notify('open-doc', data)
-          return
-        }
-        // Preamble macros for KaTeX rendering — set_preamble broadcasts these
-        if (data.type === 'preamble' && data.macros) {
-          setActiveMacros(data.macros)
           return
         }
         // upsert dedups by db id and binds our optimistic send: if the echo
@@ -698,6 +696,11 @@ export function convertChatEvent(e) {
   }
   if (e.metadata?.context?.bullets) {
     msg._bullets = e.metadata.context.bullets
+  }
+  // Carry the sender's preamble reference so the chat shape renders this message's
+  // math with the sender's macros (its preambleRef.doc), not the viewer's.
+  if (e.metadata?.preambleRef) {
+    msg.metadata = { ...(msg.metadata || {}), preambleRef: e.metadata.preambleRef }
   }
   return msg
 }

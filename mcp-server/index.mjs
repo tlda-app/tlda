@@ -9,7 +9,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { getFleetTools, handleFleetTool, initFleet, TLDA_INSTRUCTIONS } from './fleet-tools.mjs';
+import { getFleetTools, handleFleetTool, initFleet, TLDA_INSTRUCTIONS, setAgentPreambleDoc } from './fleet-tools.mjs';
 import http from 'http';
 import fs from 'fs';
 import os from 'os';
@@ -24,7 +24,6 @@ import { findRenderedText } from './svg-text.mjs';
 import { initDataSource, readJsonSync, readJson, readManifestSync, readManifest, localDocDir, isRemote } from './data-source.mjs';
 import { resolveToken } from './resolve-token.mjs';
 import { formatHighlight, formatNote } from './format-annotation.mjs';
-import { extractMacrosFromFile } from '../scripts/extract-preamble.js';
 import {
   isHtmlDoc, docToCanvas, canvasToDoc, getPageWidth,
   pdfToCanvas, canvasToPdf, htmlToCanvas, canvasToHtml, loadHtmlLayout,
@@ -2150,14 +2149,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'set_preamble',
-      description: 'Set KaTeX macros for math rendering in chat. Reads a .tex file, extracts \\newcommand/\\DeclareMathOperator definitions, and stores them for the dashboard to use when rendering $math$ in chat messages.',
+      description: 'Point your chat preamble at a document. Your math in chat is rendered (and linted) with that document\'s macros, and every message you send carries the reference so readers see it rendered with your preamble — not theirs. By default your preamble is the project in your working directory; use this to override it to any document (e.g. when you are not working inside a paper\'s source dir). Physics-package commands (\\norm, \\qty, …) are always available regardless.',
       inputSchema: {
         type: 'object',
         properties: {
-          tex_file: { type: 'string', description: 'Path to a .tex file to extract macros from' },
-          target: { type: 'string', description: 'Chat room or context name (default: "default"). Use to set different macros per project.' },
+          doc: { type: 'string', description: 'Document/project name whose macros to use (e.g. "bregman").' },
+          version: { type: 'string', description: 'Optional shadow version (build hash). Accepted and stored for future use; macro resolution currently uses the document\'s latest macros regardless.' },
         },
-        required: ['tex_file'],
+        required: ['doc'],
       },
     },
     // suggest tool definition removed — functionality merged into add_note
@@ -3892,26 +3891,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'set_preamble') {
-    const texFile = args.tex_file;
-    const target = args.target || 'default';
-    const resolved = path.resolve(texFile);
-    if (!fs.existsSync(resolved)) {
-      return { content: [{ type: 'text', text: `Cannot read file: ${resolved} does not exist` }], isError: true };
+    const doc = args.doc;
+    const version = args.version || null;
+    if (!doc) {
+      return { content: [{ type: 'text', text: 'doc is required (the document/project name whose macros to use).' }], isError: true };
     }
-    // Use the same brace-aware extractor as the build pipeline — one macro
-    // parser, so the explicit setter (dashboard) and the linter never disagree.
-    const macros = extractMacrosFromFile(resolved);
+    // Verify the document exists and see how many macros it exposes.
+    let macros = {};
+    try {
+      const res = await fetch(`${TLDA_SERVER}/api/projects/${encodeURIComponent(doc)}/macros`, { headers: TLDA_AUTH_HEADERS });
+      if (res.ok) macros = (await res.json())?.macros || {};
+    } catch {}
+    // Point this agent's preamble at the document. From now on this agent's chat
+    // math is linted with `doc`'s macros, and every message it sends carries
+    // preambleRef:{doc,version} so readers render it with `doc`'s preamble.
+    setAgentPreambleDoc(doc, version);
     const count = Object.keys(macros).length;
-    if (count === 0) {
-      return { content: [{ type: 'text', text: `No macros found in ${resolved}. Looked for \\newcommand, \\renewcommand, \\DeclareMathOperator.` }] };
-    }
-    await fetch(`${TLDA_SERVER}/api/fleet-event`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...TLDA_AUTH_HEADERS },
-      body: JSON.stringify({ type: 'preamble', target, macros, source: resolved, timestamp: new Date().toISOString() }),
-    }).catch(e => process.stderr.write(`[mcp] preamble event push failed: ${e.message}\n`));
-    const examples = Object.entries(macros).slice(0, 5).map(([k, v]) => `  ${k} → ${v}`).join('\n');
-    return { content: [{ type: 'text', text: `Set ${count} macro(s) for "${target}" from ${resolved}.\n\nExamples:\n${examples}${count > 5 ? `\n  ... and ${count - 5} more` : ''}` }] };
+    const vnote = version ? ` (version "${version}" stored but not yet used for resolution)` : '';
+    return { content: [{ type: 'text', text: `Preamble set to document "${doc}"${vnote} — ${count} macro(s) available. Your chat math now renders and lints with ${doc}'s preamble; physics-package commands are always available too.` }] };
   }
 
   if (name === 'suggest') {
