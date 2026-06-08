@@ -30,7 +30,7 @@ import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRe
 // @ts-ignore — vanilla JS module
 import { getHumanId, getHumanName, updateEventById, sendViewingContext, setViewingEnrichFn } from '../fleet/fleet-data.mjs'
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
-import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useSuggestions, sendMessage, loadBefore, resolveFilter, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useSuggestions, clearSuggestionGroup, sendMessage, loadBefore, resolveFilter, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
 import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
 import { agentDisplayName } from './fleet-utils'
@@ -974,9 +974,19 @@ function SuggestionChip({ nudge, isFirst, agentName }: { nudge: Suggestion, isFi
     setSuggestionTip({ left: r.left, bottom: window.innerHeight - r.top + 6, command, canSayIt, text: nudge.text || '', agentName, vars })
   }
   const hideTip = () => setSuggestionTip(null)
+  const groupAgent = nudge.from || nudge.targetId || ''
+  // Taking a chip resolves the whole group: send its command, then clear the group.
   const fire = (e: React.SyntheticEvent) => {
     stopEventPropagation(e as any)
     if (command) sendMessage(nudge.targetId || nudge.from || '', command)
+    hideTip()
+    clearSuggestionGroup(groupAgent)
+  }
+  // ✕ dismisses the group without acting.
+  const dismiss = (e: React.SyntheticEvent) => {
+    stopEventPropagation(e as any)
+    hideTip()
+    clearSuggestionGroup(groupAgent)
   }
   return (
     <span
@@ -990,6 +1000,12 @@ function SuggestionChip({ nudge, isFirst, agentName }: { nudge: Suggestion, isFi
         onMouseEnter={showTip}
         onMouseLeave={hideTip}
       >{nudge.label}</span>
+      <span
+        className="suggestion-chip-x"
+        title="Dismiss"
+        onPointerDown={stopEventPropagation}
+        onClick={dismiss}
+      >✕</span>
     </span>
   )
 }

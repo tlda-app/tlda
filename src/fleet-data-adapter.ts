@@ -572,6 +572,21 @@ export function useSuggestions(): Suggestion[] {
   return pending
 }
 
+// A `suggest` call is one atomic group: taking a chip (click) or dismissing (✕)
+// resolves the WHOLE group. So clear the agent's set entirely by re-posting it
+// empty (replace-semantics — no dedicated endpoint needed).
+export async function clearSuggestionGroup(agentId: string) {
+  try {
+    await fetch('/api/suggestions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agentId, suggestions: [] }),
+    })
+  } catch (e) {
+    console.warn('clearSuggestionGroup failed', e)
+  }
+}
+
 /**
  * Subscribe to context-percent events for agents matching the filter.
  * Returns a Map of agentId → percent remaining (0–100).

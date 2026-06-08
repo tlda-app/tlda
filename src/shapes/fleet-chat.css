@@ -3589,6 +3589,20 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .suggestion-chip-label:hover {
   opacity: 0.85;
 }
+/* Dismiss ✕ — invisible at rest, fades in when you're on the chip. */
+.fleet-chat-shape .suggestion-chip-x {
+  margin-left: 4px;
+  font-size: 9px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.fleet-chat-shape .suggestion-chip:hover .suggestion-chip-x {
+  opacity: 0.5;
+}
+.fleet-chat-shape .suggestion-chip-x:hover {
+  opacity: 1;
+}
 
 /* The tooltip is its own object rendered ABOVE the shapes in the HUD layer
    (<SuggestionTip/> in FleetHUD), NOT nested in the dimmed fleet-chat shape and
