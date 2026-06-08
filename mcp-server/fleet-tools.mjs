@@ -863,7 +863,7 @@ export function getFleetTools() {
     },
     {
       name: 'suggest',
-      description: 'Push your current set of clickable suggestion chips to the bottom of the user\'s chat — actionable "you might want to do X" affordances. Use for the "I need you to decide" moment instead of a chat line that scrolls away. Replace-semantics: each call overwrites your WHOLE set; pass an empty array to clear. Chips with the same `group` tag form one disjunctive group (rendered `A | B | C`, one dismiss ✕, taking any one clears the whole group); untagged chips are standalone. Each suggestion: { label, text (optional longer description), command (optional — sent when clicked), group (optional — shared tag for disjunctive alternatives) }.',
+      description: 'Push your current set of clickable suggestion chips to the bottom of the user\'s chat — actionable "you might want to do X" affordances. Use for the "I need you to decide" moment instead of a chat line that scrolls away. Replace-semantics: each call overwrites your WHOLE set; pass an empty array to clear. Chips with the same `group` tag form one disjunctive group (rendered `A | B | C`, one dismiss ✕, taking any one clears the whole group); untagged chips are standalone. Each suggestion: { label, text (optional longer description), command (optional — sent when clicked), group (optional — shared tag for disjunctive alternatives) }.\n\nKEEP LABELS TERSE — a word or two (e.g. "ship it", "revert"). The chip sits inline in a status row and a long label is ellipsized; put the full explanation in `text`, which shows on hover.',
       inputSchema: {
         type: 'object',
         properties: {

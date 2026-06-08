@@ -96,6 +96,23 @@ const PEEK_ROWS = 40
 // Lightbox height. When lightboxed the pane is bottom-anchored so it grows
 // UPWARD from the (fixed) input bar instead of pushing the input off-screen.
 const LIGHTBOX_H = 480
+// Lines of real tmux scrollback to fetch for lightbox backscroll.
+const HISTORY_LINES = 500
+
+const TERM_FONT = "'SF Mono', 'Fira Code', Menlo, monospace"
+const TERM_THEME = {
+  background: '#0d0d14',
+  foreground: '#c8c8d8',
+  cursor: '#c8c8d8',
+  black: '#1e1e1e', brightBlack: '#555',
+  red: '#f44747', brightRed: '#f44747',
+  green: '#6a9955', brightGreen: '#6a9955',
+  yellow: '#dcdcaa', brightYellow: '#dcdcaa',
+  blue: '#569cd6', brightBlue: '#569cd6',
+  magenta: '#c678dd', brightMagenta: '#c678dd',
+  cyan: '#4ec9b0', brightCyan: '#4ec9b0',
+  white: '#d4d4d4', brightWhite: '#ffffff',
+}
 
 // Hover mode: read-only snapshot that resets on each server push.
 // Pinned mode: stays open, shows input bar for sending commands, resizable.
@@ -122,6 +139,11 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
           ? prev
           : { left: r.left, top: r.bottom, width: r.width })
       }
+      // Track the pinned pane's bottom edge while NOT lightboxed so the lightbox
+      // can anchor its bottom-left there (keeping it fixed as it grows up + right).
+      if (!lightboxedRef.current && paneRef.current) {
+        paneBottomRef.current = paneRef.current.getBoundingClientRect().bottom
+      }
       raf = requestAnimationFrame(measure)
     }
     raf = requestAnimationFrame(measure)
@@ -138,8 +160,72 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
   const [lightboxed, setLightboxed] = useState(false)
   const [scale, setScale] = useState(1)
   const dragRef = useRef<{ startY: number; startH: number } | null>(null)
+  const paneRef = useRef<HTMLDivElement>(null)
+  // Viewport-y of the pinned pane's bottom edge, frozen as the lightbox anchor so
+  // the bottom-left corner stays put when the lightbox grows up + right.
+  const paneBottomRef = useRef(0)
+  const lightboxedRef = useRef(lightboxed)
+  // Real tmux scrollback shown above the live screen when lightboxed.
+  const [historyText, setHistoryText] = useState<string | null>(null)
+  const historyContainerRef = useRef<HTMLDivElement>(null)
+  const historyTermRef = useRef<Terminal | null>(null)
 
   useEffect(() => { pinnedRef.current = pinned }, [pinned])
+  useEffect(() => { lightboxedRef.current = lightboxed }, [lightboxed])
+
+  // On lightbox open, fetch the agent's real tmux scrollback (capture-pane via
+  // the daemon). The live attach stream only carries the current screen, so this
+  // is what makes backscroll meaningful. Snapshot — refetched each time you open.
+  useEffect(() => {
+    if (!lightboxed) { setHistoryText(null); return }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const r = await fetch(`${FLEET_API}/api/capture-pane`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ agent: agentId, lines: HISTORY_LINES }),
+        })
+        if (!r.ok) return
+        const { pane } = await r.json()
+        if (!cancelled && typeof pane === 'string') setHistoryText(pane)
+      } catch {}
+    })()
+    return () => { cancelled = true }
+  }, [lightboxed, agentId])
+
+  // Render the scrollback snapshot into a static, full-height xterm stacked above
+  // the live screen. The body scrolls through [history][live] natively, so the
+  // wheel moves smoothly (no xterm line-stepping), and the live screen stays live.
+  useEffect(() => {
+    const host = historyContainerRef.current
+    if (!lightboxed || !historyText || !host) {
+      if (historyTermRef.current) { historyTermRef.current.dispose(); historyTermRef.current = null }
+      return
+    }
+    const text = historyText.replace(/\r?\n/g, '\r\n')
+    const rows = Math.max(1, Math.min(historyText.split('\n').length, HISTORY_LINES))
+    const term = new Terminal({
+      cols: PEEK_COLS,
+      rows,
+      fontSize: 11,
+      fontFamily: TERM_FONT,
+      theme: TERM_THEME,
+      scrollback: 0,
+      cursorBlink: false,
+      disableStdin: true,
+    })
+    term.open(host)
+    term.write(text)
+    historyTermRef.current = term
+    // After the history renders, drop the body to the bottom so the live screen
+    // is what's showing; scroll up to read history.
+    requestAnimationFrame(() => {
+      const body = bodyRef.current
+      if (body) body.scrollTop = body.scrollHeight
+    })
+    return () => { term.dispose(); historyTermRef.current = null }
+  }, [lightboxed, historyText])
 
   // Render at a FIXED grid that matches the daemon's tmux-attach PTY
   // (PEEK_COLS × PEEK_ROWS == fleet-daemon.mjs rpcStartTerminalWatch). The two
@@ -153,20 +239,8 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
       cols: PEEK_COLS,
       rows: PEEK_ROWS,
       fontSize: 11,
-      fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace",
-      theme: {
-        background: '#0d0d14',
-        foreground: '#c8c8d8',
-        cursor: '#c8c8d8',
-        black: '#1e1e1e', brightBlack: '#555',
-        red: '#f44747', brightRed: '#f44747',
-        green: '#6a9955', brightGreen: '#6a9955',
-        yellow: '#dcdcaa', brightYellow: '#dcdcaa',
-        blue: '#569cd6', brightBlue: '#569cd6',
-        magenta: '#c678dd', brightMagenta: '#c678dd',
-        cyan: '#4ec9b0', brightCyan: '#4ec9b0',
-        white: '#d4d4d4', brightWhite: '#ffffff',
-      },
+      fontFamily: TERM_FONT,
+      theme: TERM_THEME,
       scrollback: 200,
       cursorBlink: false,
       disableStdin: true,
@@ -209,6 +283,24 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
       if (body) body.scrollTop = body.scrollHeight
     })
   }, [lightboxed])
+
+  // xterm installs its own wheel handler and preventDefault()s it, and its
+  // viewport is overflow:hidden — so the wheel never reaches the scroll
+  // container. Intercept it in the CAPTURE phase (before either xterm sees it)
+  // and scroll the container ourselves, so backscroll works over both the
+  // history block and the live screen.
+  useEffect(() => {
+    if (!lightboxed) return
+    const body = bodyRef.current
+    if (!body) return
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      body.scrollTop += e.deltaY
+    }
+    body.addEventListener('wheel', onWheel, { capture: true, passive: false })
+    return () => body.removeEventListener('wheel', onWheel, { capture: true } as any)
+  }, [lightboxed, historyText])
 
   useEffect(() => {
     if (!agentId) return
@@ -304,15 +396,28 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
     // contents so it adds no box and no opacity group — the pane stays fully opaque.
     <div className="fleet-chat-shape" style={{ display: 'contents' }}>
     <div
+      ref={paneRef}
       className={`fleet-terminal-hover-pane${pinned ? ' fleet-terminal-hover-pane-pinned' : ''}${lightboxed ? ' fleet-terminal-hover-pane-lightboxed' : ''}`}
       style={{
         position: 'fixed',
         left: anchor?.left ?? 0,
-        top: anchor?.top ?? 0,
-        width: anchor?.width ?? 0,
-        right: 'auto',
         visibility: anchor ? 'visible' : 'hidden',
-        height: lightboxed ? LIGHTBOX_H : height,
+        ...(lightboxed
+          // Grow UP + RIGHT from the pinned pane's bottom-left, which stays put.
+          // Width comes from the lightbox CSS (min(840px,92vw)); height is fixed.
+          ? {
+              top: 'auto',
+              bottom: (typeof window !== 'undefined' ? window.innerHeight : 0) - paneBottomRef.current,
+              height: LIGHTBOX_H,
+            }
+          // Peek/pinned: top-anchored to the input's bottom edge at the chat's
+          // width. Height is auto, so pinning ADDS the input bar below and the
+          // terminal you saw on hover stays in place (pane grows downward).
+          : {
+              top: anchor?.top ?? 0,
+              width: anchor?.width ?? 0,
+              right: 'auto',
+            }),
       }}
       onMouseEnter={onMouseEnter}
       onMouseLeave={pinned ? undefined : onMouseLeave}
@@ -331,10 +436,19 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
           ×
         </button>
       )}
-      <div ref={bodyRef} className="fleet-terminal-hover-body">
+      <div
+        ref={bodyRef}
+        className="fleet-terminal-hover-body"
+        style={lightboxed ? undefined : { height, flex: 'none' }}
+      >
+        {lightboxed && historyText && (
+          <div ref={historyContainerRef} className="fleet-terminal-hover-history" />
+        )}
         <div
           className="fleet-terminal-hover-scale"
-          style={{ transform: `scale(${scale})`, transformOrigin: 'top left' }}
+          style={lightboxed
+            ? { transform: `scale(${scale})`, transformOrigin: 'top left' }
+            : { transform: `scale(${scale})`, transformOrigin: 'bottom left', position: 'absolute', left: 0, bottom: 0 }}
         >
           <div ref={containerRef} />
         </div>
@@ -883,7 +997,7 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
           : status === 'thinking' ? 'thinking…'
           : null
         return (
-          <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0', display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'baseline', gap: 6 }}>
+          <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0', display: 'grid', gridTemplateColumns: 'auto minmax(0, 1fr) auto', alignItems: 'baseline', gap: 6 }}>
             {/* left: agent + status */}
             <span style={{ justifySelf: 'start', minWidth: 0 }}>
               <span className="thinking-text">
@@ -899,8 +1013,10 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
                 </span>
               )}
             </span>
-            {/* center: suggestion groups (space-separated; each group is its own unit) */}
-            <span style={{ justifySelf: 'center', display: 'flex', gap: 14, alignItems: 'baseline', flexWrap: 'wrap', justifyContent: 'center' }}>
+            {/* center: suggestion groups. The grid track (minmax(0,1fr)) is the
+                bound — this span fills it and clips/wraps within, so wide
+                suggestions can never crowd the agent-status / context columns. */}
+            <span style={{ display: 'flex', gap: 14, alignItems: 'baseline', flexWrap: 'wrap', justifyContent: 'center', minWidth: 0, overflow: 'hidden' }}>
               {[...groupChips(chips)].map(([gkey, items]) => (
                 <SuggestionGroup key={gkey} chips={items} agentName={ctx.agentLabel(items[0].targetId || items[0].from)} />
               ))}
@@ -1670,6 +1786,23 @@ function FleetChatInner({ shape }: { shape: any }) {
         const targetName = targetAgent?.friendly_name || targetId.replace('fleet:', '')
         const html = `<div class="kill-session-card"><span class="kill-session-icon">⏸</span><span class="kill-session-text">Interrupted: <strong>${esc(targetName)}</strong></span></div>`
         items.push({ key: m._dbId || m._tempId || `${m.timestamp}:${m.from}:interrupt`, html })
+      } else if (m.type === 'chat' && (m.text || '').trim().startsWith('[Request interrupted by user')) {
+        // Confirmed interrupt. When an agent is interrupted, Claude Code writes
+        // "[Request interrupted by user]" (or "…for tool use" mid-tool-call) as
+        // a user line in its session JSONL; the daemon ingests that as a
+        // terminal chat (from=user, to=agent, source=terminal). This is the
+        // only ground-truth that an interrupt actually landed — an interrupt is
+        // not an MCP tool call, so nothing else reports it. Render a confirmed
+        // card off it instead of letting chat-render drop the line. Prefix
+        // match (no closing bracket) catches both the plain and "for tool use"
+        // variants.
+        flushActivity()
+        const agentObjs: any[] = renderCtx.getAgents()
+        const targetId = m.to || ''
+        const targetAgent = agentObjs.find((a: any) => a.id === targetId)
+        const targetName = targetAgent?.friendly_name || targetId.replace('fleet:', '')
+        const html = `<div class="kill-session-card"><span class="kill-session-icon">⏸</span><span class="kill-session-text">Interrupted: <strong>${esc(targetName)}</strong></span></div>`
+        items.push({ key: m._dbId || m._tempId || `${m.timestamp}:${m.to}:interrupt-confirmed`, html })
       } else {
         flushActivity()
         // Fold amends: if this message has amend events, show the viewed

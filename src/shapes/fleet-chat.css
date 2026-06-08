@@ -291,7 +291,7 @@ html.mousemove .fleet-reaper-shape:hover .fleet-btn-group {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  align-items: flex-start;
+  align-items: center;
   padding: 0 10px;
   transition: background 0.15s;
 }
@@ -2918,6 +2918,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   padding: 2px;
   overflow: hidden;
   box-sizing: border-box;
+  position: relative;
 }
 
 /* The terminal renders at a fixed grid (PEEK_COLS × PEEK_ROWS) and is shrunk to
@@ -2925,6 +2926,13 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
    xterm's own viewport must NOT scroll — we always show the live screen. */
 .fleet-chat-shape .fleet-terminal-hover-scale {
   width: max-content;
+}
+
+/* Lightbox backscroll: real tmux history stacked above the live screen, divided
+   by a faint rule. Static (write-once) so the body scrolls it natively. */
+.fleet-chat-shape .fleet-terminal-hover-history {
+  width: max-content;
+  border-bottom: 1px solid rgba(80, 80, 110, 0.35);
 }
 
 .fleet-chat-shape .fleet-terminal-hover-body .xterm-viewport {
@@ -3586,6 +3594,14 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   opacity: 0.4;
   cursor: pointer;
   transition: opacity 0.2s;
+  /* Cap each label so a long one can't blow out the row — the full label +
+     text always show in the hover tooltip. */
+  display: inline-block;
+  max-width: 16ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
 }
 .fleet-chat-shape .suggestion-chip-label:hover {
   opacity: 0.85;
