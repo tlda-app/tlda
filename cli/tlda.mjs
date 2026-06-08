@@ -789,7 +789,7 @@ async function cmdShare() {
   const readToken = config.tokenRead || null
 
   if (!readToken) {
-    console.error('No read token configured. Run `tlda config init` to generate tokens.')
+    console.error('No read token configured. Run `tlda config auth init` to generate tokens.')
     process.exit(1)
   }
 
