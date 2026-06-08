@@ -14,11 +14,14 @@ import { join } from 'path'
 import { homedir } from 'os'
 import http from 'http'
 import https from 'https'
+import { getServerUrl } from '../shared/config.mjs'
 
 const FLEET_ID = process.env.FLEET_ID
 if (!FLEET_ID) process.exit(0)
 
-const SERVER = process.env.TLDA_SERVER || 'http://localhost:5176'
+// getServerUrl() returns https when the mkcert certs exist (and its import sets
+// NODE_TLS_REJECT_UNAUTHORIZED for the localhost self-signed cert). Honors TLDA_SERVER.
+const SERVER = getServerUrl()
 
 setTimeout(() => process.exit(0), 1500)
 

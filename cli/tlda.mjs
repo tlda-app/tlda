@@ -13,7 +13,8 @@
  *   tlda config set server <url>
  *
  * Server URL resolution:
- *   TLDA_SERVER env → --server flag → ~/.config/tlda/config.json → http://localhost:5176
+ *   TLDA_SERVER env → --server flag → ~/.config/tlda/config.json → <proto>://localhost:5176
+ *   (<proto> = https when the mkcert certs exist, else http — see getServerUrl in shared/config.mjs)
  */
 
 import { resolve, basename, dirname, join } from 'path'

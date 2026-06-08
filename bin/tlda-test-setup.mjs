@@ -31,8 +31,11 @@ import { chromium } from 'playwright'
 import { readFileSync, existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { getServerUrl } from '../shared/config.mjs'
 
-const SERVER = process.env.TLDA_SERVER || 'http://localhost:5176'
+// getServerUrl() returns https when the mkcert certs exist (and its import sets
+// NODE_TLS_REJECT_UNAUTHORIZED for the localhost self-signed cert). Honors TLDA_SERVER.
+const SERVER = getServerUrl()
 const PROJECT = (() => {
   const i = process.argv.indexOf('--doc')
   return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : 'test-fleet'
