@@ -823,19 +823,20 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
     return merged
   }, [thinkingAgents, compactingAgents, hibernatingAgents])
 
-  // No ghost / no item-count heuristic. The slot is reserved whenever there is
-  // a held status, and `useFleetThinking` keeps an agent's status held until a
-  // row that actually renders replaces it (or the server's thinking-sync swaps
-  // it to a hibernating row in the same commit). So the line is only ever
-  // replaced row-for-row — never removed-then-refilled — and there's nothing to
-  // reserve "around": when there's a status we draw it, otherwise we draw nothing.
-  if (statusAgents.size === 0) return null
-
+  // Skip's design: the slot ALWAYS reserves one row of height, so a status line
+  // appearing or disappearing never shifts the chat stack — that shift is the
+  // bounce. The slot stays put; only its contents fade in/out. No ghost, no
+  // item-count heuristic — the reservation is unconditional. `useFleetThinking`
+  // separately holds an agent's status until a rendered row replaces it, so the
+  // visible text doesn't blank mid-thought; but even with nothing to show, the
+  // reserved row keeps the stack from collapsing.
   return (
     <div style={{
       padding: '0 8px',
       fontSize: 11,
       flexShrink: 0,
+      // One row of height, always — the anti-bounce reservation.
+      minHeight: 'calc(var(--fleet-base-font, 11px) * 1.5 + 4px)',
       opacity: 0.6,
       transition: 'opacity 0.2s',
     }}>
