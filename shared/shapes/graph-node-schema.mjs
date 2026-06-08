@@ -9,3 +9,11 @@ export const graphNodeProps = {
   claim: T.string,
   kind: T.string, // 'assumption' | 'step' | 'goal'
 }
+
+// The explanation zone at the bottom of the argument-graph container. Carries no
+// content of its own — it reactively displays the hovered/selected arrow's `detail`
+// (the long reason). Just a sized canvas region. Mirror exactly on the client util.
+export const graphExplainProps = {
+  w: T.number,
+  h: T.number,
+}

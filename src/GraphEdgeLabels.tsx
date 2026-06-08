@@ -21,24 +21,9 @@ function inlineHtml(s: string): { __html: string } {
 export function GraphEdgeLabels() {
   const editor = useEditor()
 
-  // tiny rule tags at each arrow's midpoint (only where a rule is set)
-  const tags = useValue(
-    'graph-rule-tags',
-    () => {
-      const out: { id: string; x: number; y: number; html: { __html: string }; lb: boolean }[] = []
-      for (const s of editor.getCurrentPageShapes()) {
-        if (s.type !== 'arrow' || !s.meta?.graphEdge) continue
-        if (!s.meta.showTag) continue // surface tags only where they sit cleanly (assumption edges)
-        const rule = String(s.meta.rule ?? '')
-        if (!rule) continue
-        const b = editor.getShapePageBounds(s.id)
-        if (!b) continue
-        out.push({ id: s.id, x: b.midX, y: b.midY, html: inlineHtml(rule), lb: !!s.meta.lb })
-      }
-      return out
-    },
-    [editor],
-  )
+  // The short verb lives ON the arrow as a native canvas label (set in graph-materialize),
+  // NOT as a screen overlay — so it pans with the canvas. This component only renders the
+  // screen-fixed hover DETAIL panel (the "long reason"), which is meant to be a side panel.
 
   // detail of the hovered (or selected) graph edge/node — for the side panel
   const detail = useValue(
@@ -57,20 +42,6 @@ export function GraphEdgeLabels() {
 
   return (
     <>
-      {tags.map((t) => (
-        <div
-          key={t.id}
-          style={{
-            position: 'absolute', left: t.x, top: t.y, transform: 'translate(-50%,-50%)',
-            pointerEvents: 'none', whiteSpace: 'nowrap',
-            background: 'var(--note-bg,#fbfbfa)', padding: '0 3px', borderRadius: 3,
-            fontSize: 10.5, lineHeight: 1.1,
-            color: t.lb ? '#7c3aed' : 'rgba(110,110,110,0.9)', fontWeight: t.lb ? 600 : 400,
-          }}
-          dangerouslySetInnerHTML={t.html}
-        />
-      ))}
-
       {/* fixed, non-occluding detail panel */}
       <div
         style={{
