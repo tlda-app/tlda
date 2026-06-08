@@ -71,7 +71,7 @@ function copyAttachment(srcPath) {
   } catch { return null }
 }
 
-export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, clearEphemeralState, suppressEchoFor, sendRpc, resolveRpc, daemonConnections }) {
+export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, clearEphemeralState, suppressEchoFor, sendRpc, resolveRpc, daemonConnections, resolveSpawnTarget }) {
   // Helper: route an agent op through the daemon, or 503 cleanly. The
   // op-name is whatever the daemon's rpc dispatcher expects (kebab-case
   // matches the spec: 'send-key', 'capture-pane', etc.).
@@ -441,12 +441,15 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       return
     }
     try {
+      const resolved = resolveSpawnTarget
+        ? await resolveSpawnTarget(spawnName, !!respawn)
+        : { name: spawnName, respawn: !!respawn }
       const result = await sendRpc(machineIds[0], 'spawn', {
-        name: spawnName || undefined,
+        name: resolved.name || undefined,
         model: model || undefined,
         doc: doc || undefined,
         cwd: cwd || undefined,
-        respawn: !!respawn,
+        respawn: resolved.respawn,
       })
       broadcastState()
       res.json(result)

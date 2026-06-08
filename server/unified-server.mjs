@@ -681,6 +681,30 @@ function broadcastState() {
   _broadcastTimer = setTimeout(() => { _broadcastTimer = null; _broadcastStateNow() }, 50)
 }
 
+// Spawning a name that already belongs to a live agent isn't an error — the user
+// "meant that one." Coerce it to a respawn (resume if hibernating, no-op if it's
+// already running, both handled by fleet-spawn) and emit a synthetic activity
+// event so the agent floats to the top of the panel's Active sort. Mirrors what
+// `tlda agent spawn <name>` already does on the CLI. Explicit respawns skip this
+// (they raise themselves when the resumed agent re-registers).
+async function resolveSpawnTarget(name, respawn) {
+  if (respawn || !name || !fleetStore) return { name, respawn }
+  let existing = null
+  try { existing = fleetStore.findAgent(name) } catch { /* >1 live same-name: leave as fresh */ }
+  if (!existing || existing.dead) return { name, respawn }
+  try {
+    await fleetStore.share({
+      type: 'activity', from: existing.id, to: existing.id,
+      text: 'spawn', metadata: { tool: 'spawn', synthetic: true }, unread: false,
+    })
+    fleetStore._bustAgentsCache?.()
+    broadcastState()
+  } catch (e) {
+    console.error(`[spawn] raise failed for ${existing.id}: ${e.message}`)
+  }
+  return { name: existing.friendly_name || name, respawn: true }
+}
+
 // Wire fleet store events → WS broadcast
 if (fleetStore) {
   fleetStore.onEvent?.((event) => broadcastEvent('fleet-event', event))
@@ -1775,7 +1799,7 @@ function clearEphemeralState(agentId) {
 const fleetRouter = createFleetRouter({
   fleetStore, broadcastEvent, broadcastState, clearEphemeralState,
   suppressEchoFor: () => {},
-  sendRpc, resolveRpc, daemonConnections,
+  sendRpc, resolveRpc, daemonConnections, resolveSpawnTarget,
 })
 app.use(fleetRouter)
 
@@ -3044,9 +3068,10 @@ async function handleFleetWsMessage(ws, msg) {
     const machineIds = [...daemonConnections.keys()]
     if (machineIds.length === 0) { error('No fleet daemon connected — cannot spawn agents'); return }
     try {
+      const resolved = await resolveSpawnTarget(spawnName, !!respawn)
       const result = await sendRpc(machineIds[0], 'spawn', {
-        name: spawnName || undefined, model: model || undefined,
-        doc: doc || undefined, respawn: !!respawn, effort: effort || undefined,
+        name: resolved.name || undefined, model: model || undefined,
+        doc: doc || undefined, respawn: resolved.respawn, effort: effort || undefined,
       })
       broadcastState()
       reply(result)
