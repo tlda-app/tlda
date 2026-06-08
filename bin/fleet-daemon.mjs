@@ -1721,7 +1721,13 @@ async function rpcSpawn({ name, model, cwd, doc, respawn, effort }) {
   let resolvedCwd = cwd
   if (!resolvedCwd && doc) {
     const project = projects.find(p => p.name === doc)
-    if (project?.sourceDir) resolvedCwd = project.sourceDir
+    if (!project) {
+      // An unresolvable project used to drop --cwd silently → the agent launched
+      // in launchd's cwd (`/`) and died as a ghost row. Reject loud instead.
+      const known = projects.map(p => p.name).sort().join(', ')
+      return { ok: false, error: `no project '${doc}'${known ? ` — known: ${known}` : ''}` }
+    }
+    if (project.sourceDir) resolvedCwd = project.sourceDir
   }
   const args = respawn ? [agentName] : ['--fresh', agentName]
   if (model) args.push('--model', model)
@@ -2102,6 +2108,12 @@ async function attributeViteByCwd(pid) {
 
 // ─── Vite reaper — kill dev servers nobody's using ──────────────────
 const VITE_IDLE_THRESHOLD_MS = parseInt(process.env.REAPER_VITE_MS, 10) || 10 * 60 * 1000
+// Floor the pressure-scaled timeout: even at 99% memory the threshold collapsed
+// to ~1 min, which SIGKILLed dev servers during a normal edit pause (the "idle"
+// signal is just "no browser currently on the port" — true for most of an agent's
+// edit loop). Never reap a dev server with less than this much idle, so a brief
+// pause can't lose an in-use server; a genuinely abandoned one still gets reaped.
+const VITE_MIN_IDLE_MS = parseInt(process.env.REAPER_VITE_MIN_MS, 10) || 5 * 60 * 1000
 const VITE_SWEEP_INTERVAL_MS = parseInt(process.env.REAPER_VITE_INTERVAL_MS, 10) || 60 * 1000
 const _viteLastClient = new Map()
 const BROWSER_NAME_RE = /Google|Chrome|Chromium|Firefox|Safari|WebKit/i
@@ -2186,7 +2198,8 @@ async function reapVites() {
     }
     if (!_viteLastClient.has(v.pid)) _viteLastClient.set(v.pid, now)
     const idleMs = now - _viteLastClient.get(v.pid)
-    if (idleMs > pressureScaledTimeout(VITE_IDLE_THRESHOLD_MS)) {
+    const threshold = Math.max(VITE_MIN_IDLE_MS, pressureScaledTimeout(VITE_IDLE_THRESHOLD_MS))
+    if (idleMs > threshold) {
       try {
         process.kill(v.pid, 'SIGKILL')
         console.log(`[vite-reaper] killed pid=${v.pid} ports=${v.ports.join(',')} idle=${Math.round(idleMs / 60000)}m pressure=${(getMemoryPressure() * 100).toFixed(0)}%`)
@@ -2224,6 +2237,13 @@ async function listPlaywrightBrowsers() {
     const args = m[3]
     if (!args.includes('playwright_chromiumdev_profile') && !args.includes('ms-playwright')) continue
     if (args.includes('--type=')) continue
+    // Skip the playwright-cli session DAEMON itself (`run-cli-server`). Its
+    // --daemon-session path lives under .../ms-playwright/..., so it matches the
+    // browser filter above — but it's a node daemon, not a browser. It's detached
+    // (ppid=1) so the orphan heuristic always flags it, and killing it orphans
+    // the Chrome it owns and closes the session — the recurring "shared browser
+    // keeps dying / nobody can use pw" bug. The reaper still reaps real orphan Chrome.
+    if (args.includes('run-cli-server')) continue
     // Never reap the canonical `tlda-dev pw` shared browser. It's a launcher-less
     // daemon by design (persists until `tlda pw reap`), so the orphan heuristic
     // always flags it — and under memory pressure the threshold collapses to ~30s,

@@ -1940,11 +1940,25 @@ const PW_TOUCH_DIR = path.join(CONFIG_DIR, 'pw-touch')
 const _pwWarned = new Set()       // keys warned this idle stretch
 const _pwFirstSeen = new Map()    // key → first time we saw it (fallback if no touch file)
 
+// Is the shared session's daemon actually up? `playwright-cli list` only reports
+// status — it never launches. We MUST gate tab-list on this: calling tab-list on
+// a closed session makes playwright-cli try to launch a browser, which collides
+// with any orphaned Chrome on the profile and fails. When closed there's no pool
+// to reap anyway, so we just no-op.
+async function pwSessionOpen() {
+  try {
+    const out = (await execFileP('playwright-cli', ['list'], { timeout: 5000 })).stdout || ''
+    const m = out.match(new RegExp(`- ${PW_REAP_SESSION}:\\s*\\n\\s*- status: (\\w+)`, 'm'))
+    return !!m && m[1] === 'open'
+  } catch { return false }
+}
+
 async function pwSharedWindows() {
-  // Windows in the shared session carrying a pwtab marker. Empty if browser down.
+  // Windows in the shared session carrying a pwtab marker. Caller gates on
+  // pwSessionOpen(), so a throw here is a real error worth surfacing.
   let out
   try { out = (await execFileP('playwright-cli', [`-s=${PW_REAP_SESSION}`, 'tab-list'], { timeout: 5000 })).stdout || '' }
-  catch { return [] }
+  catch (e) { console.error(`[pw-reap] tab-list failed: ${String(e.message).split('\n')[0]}`); return [] }
   const wins = []
   for (const line of out.split('\n')) {
     const m = line.match(/^- (\d+):\s*(\(current\)\s*)?\[([^\]]*)\]\(([^)]*)\)/)
@@ -1968,6 +1982,7 @@ async function pwIsAwake(agentId) {
 }
 
 async function reapPwWindows() {
+  if (!(await pwSessionOpen())) return // browser down → nothing to reap, don't trigger a launch
   const wins = await pwSharedWindows()
   const now = Date.now()
   const seen = new Set()

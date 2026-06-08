@@ -1592,12 +1592,12 @@ export async function handleFleetTool(name, args) {
       const tldaRes = await fleetFetch(`${TLDA_SERVER}/api/projects`, { signal: AbortSignal.timeout(2000) });
       health.push((tldaRes.ok || tldaRes.status === 401) ? 'tlda: ✔' : 'tlda: ✘ (not responding)');
     } catch {
-      health.push('tlda: ✘ (unreachable)');
+      health.push('tlda: ✘ (not reachable right now)');
     }
     health.push(_channelRWS?.connected ? 'fleet WS: ✔' : 'fleet WS: ✘ (not connected)');
     msg += `\n\nHealth: ${health.join(', ')}`;
     if (health.some(h => h.includes('✘'))) {
-      msg += '\n⚠ Some services are down. If tlda is down, Skip cannot see fleet chat — use terminal output instead.';
+      msg += '\nA channel is down right now. This happens and it is not yours to fix — tell ops and keep working. If tlda is down Skip cannot see fleet chat, so fall back to terminal output until it returns; you will still get 📬 when it is back.';
     }
 
     // Start channel WS for direct message injection (replaces tmux send-keys)
@@ -1715,7 +1715,7 @@ export async function handleFleetTool(name, args) {
       }
       return { content: [{ type: 'text', text: `Delegated to ${agent} [${data.task_id}]: ${description}` }] };
     } catch (e) {
-      return { content: [{ type: 'text', text: `Delegate failed (server unreachable): ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `Delegate failed (tlda backend not answering — tell ops if it persists): ${e.message}` }], isError: true };
     }
   }
 
@@ -1744,7 +1744,7 @@ export async function handleFleetTool(name, args) {
       const names = data.dismissed.map(d => d.skill).join(', ');
       return { content: [{ type: 'text', text: `Dismissed ${names}. The block is lifted; you can proceed. (Logged for Skip with your reason.)` }] };
     } catch (e) {
-      return { content: [{ type: 'text', text: `Dismiss failed (server unreachable): ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `Dismiss failed (tlda backend not answering — tell ops if it persists): ${e.message}` }], isError: true };
     }
   }
 
@@ -1802,7 +1802,7 @@ export async function handleFleetTool(name, args) {
     } catch (e) {
       serverDown = true;
     }
-    if (serverDown) return { content: [{ type: 'text', text: '⚠ Fleet server is unreachable — message NOT sent. Check if the server is running (fleet-spawn auto-starts it, or: cd ~/work/fleet && node dashboard/server.mjs).' }], isError: true };
+    if (serverDown) return { content: [{ type: 'text', text: "⚠ Message NOT sent — fleet chat isn't reachable right now. This isn't yours to fix or restart. Surface it to Skip in your terminal output (he can read it) and keep working; chat will come back." }], isError: true };
     if (recipients.length === 0) return { content: [{ type: 'text', text: 'No agents matched filter.' }], isError: true };
     const maxRecipients = args.max_recipients ?? 5;
     if (recipients.length > maxRecipients) {
@@ -1915,9 +1915,9 @@ export async function handleFleetTool(name, args) {
     }
   }
 
-  // ---- suggest ----
+  // ---- suggest_action ----
   // Push this agent's current set of clickable suggestion chips to the chat.
-  // Generic capability — any agent can use it (the Todd example bot posts to the
+  // Generic capability — any agent can use it (the todd example bot posts to the
   // same /api/suggestions route directly). Replace-semantics: overwrites this
   // agent's set; an empty array clears it.
   if (name === 'suggest') {
@@ -1958,7 +1958,7 @@ export async function handleFleetTool(name, args) {
       if (agents.error) return { content: [{ type: 'text', text: `task_list failed: ${agents.error}` }], isError: true };
       if (active.error) return { content: [{ type: 'text', text: `task_list failed: ${active.error}` }], isError: true };
     } catch (e) {
-      return { content: [{ type: 'text', text: `task_list failed (server unreachable): ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `task_list failed (tlda backend not answering — tell ops if it persists): ${e.message}` }], isError: true };
     }
 
     let text = '';
@@ -2031,7 +2031,7 @@ export async function handleFleetTool(name, args) {
       if (!res?.ok) return { content: [{ type: 'text', text: `Delete failed: ${res?.error || 'unknown'}` }], isError: true };
       return { content: [{ type: 'text', text: `Deleted task ${task_id}.` }] };
     } catch (e) {
-      return { content: [{ type: 'text', text: `Server unreachable: ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `tlda backend not answering — tell ops if it persists. (${e.message})` }], isError: true };
     }
   }
 
@@ -2045,7 +2045,7 @@ export async function handleFleetTool(name, args) {
     try {
       taskRes = await sendWS('my-task', { agent, peek: true });
     } catch (e) {
-      return { content: [{ type: 'text', text: `Server unreachable: ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `tlda backend not answering — tell ops if it persists. (${e.message})` }], isError: true };
     }
     const task = taskRes.task;
     if (!task) return { content: [{ type: 'text', text: `No active task for ${agent}.` }] };
@@ -2111,7 +2111,7 @@ export async function handleFleetTool(name, args) {
       }
       return { content: [{ type: 'text', text: msg }] };
     } catch (e) {
-      return { content: [{ type: 'text', text: `task_done failed (server unreachable): ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `task_done failed (tlda backend not answering — tell ops if it persists): ${e.message}` }], isError: true };
     }
   }
 
@@ -2123,7 +2123,7 @@ export async function handleFleetTool(name, args) {
     try {
       taskData = await sendWS('my-task', { agent: AGENT_ID, peek: true });
     } catch (e) {
-      return { content: [{ type: 'text', text: `Server unreachable: ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `tlda backend not answering — tell ops if it persists. (${e.message})` }], isError: true };
     }
     const task = taskData.task;
     if (!task) return { content: [{ type: 'text', text: 'No active task to report on.' }], isError: true };
@@ -2280,7 +2280,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
       agents = await sendWS('store-agents');
       if (!agents || agents.error) return { content: [{ type: 'text', text: `task_check failed: ${agents?.error || 'no response'}` }], isError: true };
     } catch (e) {
-      return { content: [{ type: 'text', text: `task_check failed (server unreachable): ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `task_check failed (tlda backend not answering — tell ops if it persists): ${e.message}` }], isError: true };
     }
 
     const agentEntry = agents.find(a =>
@@ -2639,10 +2639,10 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
     try {
       data = await sendWS('my-task', { agent: AGENT_ID });
     } catch (e) {
-      return { content: [{ type: 'text', text: `Server unreachable: ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `tlda backend didn't answer (it may be restarting). Not yours to debug — tell ops if it persists, then retry shortly. (${e.message})` }], isError: true };
     }
 
-    if (!data) return { content: [{ type: 'text', text: 'Server unreachable (WS not connected).' }], isError: true };
+    if (!data) return { content: [{ type: 'text', text: `tlda backend didn't answer (it may be restarting). Not yours to debug — tell ops if it persists, then retry shortly.` }], isError: true };
     const task = data.task;
     const unread = data.messages || [];
 
@@ -2720,7 +2720,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
     if (!args?.doc) return { content: [{ type: 'text', text: 'Missing doc argument.' }], isError: true };
     try {
       const data = await sendWS('tlda-monitor-add', { agentId: AGENT_ID, doc: args.doc });
-      if (!data) return { content: [{ type: 'text', text: 'Server unreachable (WS not connected).' }], isError: true };
+      if (!data) return { content: [{ type: 'text', text: `tlda backend didn't answer (it may be restarting). Not yours to debug — tell ops if it persists, then retry shortly.` }], isError: true };
       const subs = Array.isArray(data.subscriptions) ? data.subscriptions : [];
       // Remember the most recent doc this agent is watching so chat() can
       // stamp outgoing messages with a docContext (doc + version) without
@@ -2736,7 +2736,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
     if (!args?.doc) return { content: [{ type: 'text', text: 'Missing doc argument.' }], isError: true };
     try {
       const data = await sendWS('tlda-monitor-remove', { agentId: AGENT_ID, doc: args.doc });
-      if (!data) return { content: [{ type: 'text', text: 'Server unreachable (WS not connected).' }], isError: true };
+      if (!data) return { content: [{ type: 'text', text: `tlda backend didn't answer (it may be restarting). Not yours to debug — tell ops if it persists, then retry shortly.` }], isError: true };
       const subs = Array.isArray(data.subscriptions) ? data.subscriptions : [];
       return { content: [{ type: 'text', text: `Stopped monitoring "${args.doc}". Remaining subscriptions: ${subs.join(', ') || '(none)'}.` }] };
     } catch (e) {
@@ -2747,7 +2747,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
     if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not registered.' }], isError: true };
     try {
       const data = await sendWS('tlda-monitor-list', { agentId: AGENT_ID });
-      if (!data) return { content: [{ type: 'text', text: 'Server unreachable (WS not connected).' }], isError: true };
+      if (!data) return { content: [{ type: 'text', text: `tlda backend didn't answer (it may be restarting). Not yours to debug — tell ops if it persists, then retry shortly.` }], isError: true };
       const subs = Array.isArray(data.subscriptions) ? data.subscriptions : [];
       return { content: [{ type: 'text', text: subs.length ? `Monitoring: ${subs.join(', ')}` : 'Not monitoring any documents.' }] };
     } catch (e) {
@@ -3455,7 +3455,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       if (data.error) return { content: [{ type: 'text', text: `Label failed: ${data.error}` }], isError: true };
       return { content: [{ type: 'text', text: `Labels for ${data.agent}: ${(data.labels || []).join(', ') || '(none)'}` }] };
     } catch (e) {
-      return { content: [{ type: 'text', text: `Label failed (server unreachable): ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `Label failed (tlda backend not answering — tell ops if it persists): ${e.message}` }], isError: true };
     }
   }
 
@@ -3470,7 +3470,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       const status = data.stopped ? 'confirmed stopped' : `not confirmed after ${data.attempts} attempts`;
       return { content: [{ type: 'text', text: `${data.agent || agent}: ${status}.` }] };
     } catch (e) {
-      return { content: [{ type: 'text', text: `Interrupt failed (server unreachable): ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `Interrupt failed (tlda backend not answering — tell ops if it persists): ${e.message}` }], isError: true };
     }
   }
 
@@ -3539,7 +3539,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
 
       return { content: [{ type: 'text', text: lines.join('\n') || 'No agents, no roster entries, no tmux sessions.' }] };
     } catch (e) {
-      return { content: [{ type: 'text', text: `Roll call failed (server unreachable): ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `Roll call failed (tlda backend not answering — tell ops if it persists): ${e.message}` }], isError: true };
     }
   }
 

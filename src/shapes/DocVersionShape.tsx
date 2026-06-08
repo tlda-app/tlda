@@ -16,6 +16,10 @@ export class DocVersionShapeUtil extends BaseBoxShapeUtil<any> {
     commitHash: T.string,
     timestamp: T.number,
     buildReadyAt: T.optional(T.number),
+    // sourceVersion = the source.stamp mtime the build was for; monotonic per
+    // source change. Used server-side to guard the sentinel write against
+    // out-of-order (racy) writes so the version never jumps backward.
+    sourceVersion: T.optional(T.number),
     // Build errors/warnings for the current build (JSON arrays). Persistent,
     // convergent state — the build-error/warning badges read these directly.
     warningsJson: T.optional(T.string),
@@ -23,7 +27,7 @@ export class DocVersionShapeUtil extends BaseBoxShapeUtil<any> {
   }
 
   getDefaultProps() {
-    return { w: 1, h: 1, commitHash: 'unknown', timestamp: 0, buildReadyAt: 0, warningsJson: '', errorsJson: '' }
+    return { w: 1, h: 1, commitHash: 'unknown', timestamp: 0, buildReadyAt: 0, sourceVersion: 0, warningsJson: '', errorsJson: '' }
   }
 
   override canEdit = () => false

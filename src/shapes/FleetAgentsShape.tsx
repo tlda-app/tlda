@@ -78,8 +78,10 @@ function completeSegment(typed: string, candidates: string[]): string {
   return match ? match.slice(typed.length) : ''
 }
 
-function getGhostCompletion(input: string, projects: string[], catName: string): string {
-  const defaults = [projects[0] || 'doc', catName, DEFAULT_MODEL, DEFAULT_EFFORT]
+function getGhostCompletion(input: string, projects: string[], catName: string, defaultDoc: string): string {
+  // Empty-state default is the doc the user is currently viewing, not the
+  // alphabetically-first project — so an empty field implies "spawn here".
+  const defaults = [defaultDoc || projects[0] || 'doc', catName, DEFAULT_MODEL, DEFAULT_EFFORT]
   if (!input) return defaults.join(':')
 
   const parts = input.split(':')
@@ -131,6 +133,35 @@ function applyCandidate(input: string, candidate: string): string {
   const parts = input.split(':')
   parts[parts.length - 1] = candidate
   return parts.join(':')
+}
+
+// The project that will actually be used: the typed first segment, or — when
+// the field is empty — the doc currently being viewed.
+function effectiveDoc(input: string, currentDoc: string): string {
+  return input.split(':')[0] || currentDoc
+}
+
+// True when a project is named but won't resolve to a known project. Used to
+// flag the field and block submit, so a non-existent project (the `dot-claude`
+// bug) can't silently produce a dead agent. Returns false while the project
+// list is still loading, or while the typed prefix could still complete to a
+// real project (so mid-typing doesn't flash red).
+function projectUnresolvable(input: string, projects: string[], currentDoc: string): boolean {
+  if (!projects.length) return false
+  const doc = effectiveDoc(input, currentDoc)
+  if (!doc) return false
+  if (projects.includes(doc)) return false
+  const lower = doc.toLowerCase()
+  const hasPrefixMatch = projects.some(p => p.toLowerCase().startsWith(lower))
+  return !hasPrefixMatch
+}
+
+// Submit is allowed only when the effective project is empty (spawn with no
+// cwd) or resolves exactly to a known project.
+function canSubmitSpawn(input: string, projects: string[], currentDoc: string): boolean {
+  if (!projects.length) return true
+  const doc = effectiveDoc(input, currentDoc)
+  return !doc || projects.includes(doc)
 }
 
 // --- Nick color system (shared with FleetChatShape) ---
@@ -411,9 +442,11 @@ function FleetAgentsInner({ shape }: { shape: any }) {
   const [sortKey, setSortKey] = useState<SortKey>('active')
   const [sortAsc, setSortAsc] = useState(false)
 
-  // Spawn input — always visible, fetches projects for autocomplete
+  // Spawn input — always visible, fetches projects for autocomplete.
+  // Starts empty/ghosted; the ghost shows the current doc as the implied
+  // project, so an empty submit spawns into the doc being viewed.
   const currentDoc = useMemo(() => new URLSearchParams(window.location.search).get('doc') || '', [])
-  const [spawnDoc, setSpawnDoc] = useState(currentDoc)
+  const [spawnDoc, setSpawnDoc] = useState('')
   const [projectList, setProjectList] = useState<string[]>([])
   const [catName] = useState(() => CAT_NAMES[Math.floor(Math.random() * CAT_NAMES.length)])
   const spawnInputRef = useRef<HTMLInputElement>(null)
@@ -424,6 +457,18 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     () => getSegmentCandidates(spawnDoc, projectList),
     [spawnDoc, projectList],
   )
+  const projectInvalid = useMemo(
+    () => projectUnresolvable(spawnDoc, projectList, currentDoc),
+    [spawnDoc, projectList, currentDoc],
+  )
+  const submitSpawn = useCallback(() => {
+    if (!canSubmitSpawn(spawnDoc, projectList, currentDoc)) {
+      spawnInputRef.current?.focus()
+      return
+    }
+    const { doc, name, model, effort } = parseSpawnInput(spawnDoc)
+    spawnAgent(model || DEFAULT_MODEL, doc || currentDoc || undefined, name, effort || DEFAULT_EFFORT)
+  }, [spawnDoc, projectList, currentDoc])
   const dropdownOpen = spawnFocused && !dropdownDismissed && segCandidates.length > 0
   const acceptCandidate = useCallback((candidate: string) => {
     setSpawnDoc(applyCandidate(spawnDoc, candidate))
@@ -630,7 +675,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
             <span className="fleet-agents-spawn-input-wrap">
               <input
                 ref={spawnInputRef}
-                className="fleet-agents-spawn-search"
+                className={'fleet-agents-spawn-search' + (projectInvalid ? ' is-invalid' : '')}
                 value={spawnDoc}
                 onFocus={() => setSpawnFocused(true)}
                 onBlur={() => { setSpawnFocused(false); setDropdownIdx(-1) }}
@@ -651,7 +696,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                       e.preventDefault()
                       acceptCandidate(segCandidates[dropdownIdx])
                     } else {
-                      const ghost = getGhostCompletion(spawnDoc, projectList, catName)
+                      const ghost = getGhostCompletion(spawnDoc, projectList, catName, currentDoc)
                       if (ghost) { e.preventDefault(); setSpawnDoc(spawnDoc + ghost); setDropdownDismissed(true) }
                     }
                   } else if (e.key === 'Enter') {
@@ -659,14 +704,13 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                     if (dropdownOpen && dropdownIdx >= 0) {
                       acceptCandidate(segCandidates[dropdownIdx])
                     } else {
-                      const { doc, name, model, effort } = parseSpawnInput(spawnDoc)
-                      spawnAgent(model || DEFAULT_MODEL, doc || undefined, name, effort || DEFAULT_EFFORT)
+                      submitSpawn()
                     }
                   }
                 }}
                 placeholder=""
               />
-              <span className="fleet-agents-spawn-ghost"><span style={{ visibility: 'hidden' }}>{spawnDoc}</span>{getGhostCompletion(spawnDoc, projectList, catName)}</span>
+              <span className="fleet-agents-spawn-ghost"><span style={{ visibility: 'hidden' }}>{spawnDoc}</span>{getGhostCompletion(spawnDoc, projectList, catName, currentDoc)}</span>
               {dropdownOpen && (
                 <ul className="fleet-agents-spawn-dropdown" onPointerDown={(e) => e.stopPropagation()}>
                   <li className="fleet-agents-spawn-dropdown-label">{SEG_LABELS[segPos - 1]}</li>
@@ -682,12 +726,11 @@ function FleetAgentsInner({ shape }: { shape: any }) {
               )}
             </span>
             <button
-              className="fleet-agents-spawn-btn"
-              title="Spawn agent"
+              className={'fleet-agents-spawn-btn' + (projectInvalid ? ' is-disabled' : '')}
+              title={projectInvalid ? `No project '${effectiveDoc(spawnDoc, currentDoc)}'` : 'Spawn agent'}
               onPointerUp={(e) => {
                 e.stopPropagation()
-                const { doc, name, model, effort } = parseSpawnInput(spawnDoc)
-                spawnAgent(model || DEFAULT_MODEL, doc || undefined, name, effort || DEFAULT_EFFORT)
+                submitSpawn()
               }}
             >+</button>
           </span>
