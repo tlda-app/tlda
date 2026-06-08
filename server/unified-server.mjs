@@ -586,32 +586,6 @@ function broadcastFleet(msg) {
 function broadcastEvent(type, data) {
   broadcastFleet({ event: type, data })
 }
-
-// Build cards: build-runner emits a 'build-card' global event on every build
-// with a tex diff (and on mirror failure). Turn it into a chat card addressed
-// to the agent whose edit triggered the build (edit attribution, carried as
-// `editedBy`), so it lands in that agent's fleet chat — and in the view of
-// anyone watching that agent. Renders via the build_result branch in
-// FleetChatShape; an empty editedBy posts unaddressed.
-onGlobalEvent(async (event) => {
-  if (event?.type !== 'build-card') return
-  const { name, hash, summary = null, lintFindings = [], mirrorFailed = null, editedBy = null } = event
-  const label = mirrorFailed ? `🔨 Build failed — ${name}` : `🔨 Build ${hash} — ${name}`
-  const metadata = { type: 'build_result', name, hash, summary, lintFindings, ...(mirrorFailed ? { mirrorFailed } : {}) }
-  try {
-    const saved = await fleetStore.share({
-      type: 'chat', from: 'fleet:tlda', to: editedBy || null,
-      text: label, metadata, unread: !!editedBy,
-    })
-    broadcastEvent('fleet-event', {
-      type: 'chat', from: 'fleet:tlda', to: editedBy || null,
-      id: saved?.id, event_id: saved?.id, text: label, metadata,
-    })
-  } catch (e) {
-    console.error(`[build-card] failed to post build_result chat: ${e.message}`)
-  }
-})
-
 // Server-authoritative thinking/compacting state.
 // Populated from agent-thinking / agent-compacting events, included in
 // broadcastState() so state pushes never wipe client indicators.
@@ -828,22 +802,19 @@ onGlobalEvent((event) => {
     }
   }
   if (event?.type === 'build-card' && fleetStore && event.name) {
-    const { name: docName, hash, summary, lintFindings = [], mirrorFailed, lastMirrorSuccess, lastBuildSuccess, buildFiles } = event
+    const { name: docName, hash, summary, lintFindings = [], mirrorFailed, editedBy } = event
     const text = mirrorFailed
       ? `⚠️ Mirror failed — ${docName} (${hash}): ${mirrorFailed}`
       : `Build ${hash} — ${docName}`
     const metadata = { type: 'build_result', name: docName, hash, summary: summary || null, lintFindings, mirrorFailed: mirrorFailed || null }
 
-    // Notify monitoring subscribers
+    // Address the card to the agent whose edit triggered this build (resolved by
+    // the daemon at source-change time — robust, no time-window cross-reference)
+    // plus any monitor subscribers. recentDocAgents was dropped: it required an
+    // exact abspath+window match against build files and resolved empty in
+    // practice, so build cards were never created at all.
     const subs = new Set(tldaFeedback.subscribers(docName))
-
-    // Also notify agents who recently edited the build files — they need build cards
-    // regardless of whether they remembered to subscribe via `tlda monitor`.
-    // Use last successful build as the cutoff; fall back to last mirror, then 2 hours ago.
-    if (buildFiles?.length) {
-      const since = lastBuildSuccess ?? lastMirrorSuccess ?? (Date.now() - 2 * 60 * 60 * 1000)
-      for (const id of fleetStore.recentDocAgents(buildFiles, since)) subs.add(id)
-    }
+    if (editedBy) subs.add(editedBy)
 
     for (const agentId of subs) {
       fleetStore.chat('fleet:tlda', agentId, text, metadata)
