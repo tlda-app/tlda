@@ -2035,7 +2035,9 @@ function resolveEditedBy(name) {
         Date.now() - proj.lastEditedByAt < EDIT_ATTRIBUTION_WINDOW_MS) {
       return proj.lastEditedBy
     }
-  } catch {}
+  } catch (e) {
+    console.error(`[build:${name}] resolveEditedBy failed: ${e.message}`)
+  }
   return null
 }
 
