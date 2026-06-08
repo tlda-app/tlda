@@ -1468,10 +1468,10 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Fetch macros for any preamble doc referenced by a message we haven't cached.
   useEffect(() => {
     const needed = new Set<string>()
-    for (const m of chatMessages as any[]) {
+    chatMessages.forEach((m: any) => {
       const d = m?.metadata?.preambleRef?.doc
       if (d && !(d in macrosByDoc)) needed.add(d)
-    }
+    })
     if (needed.size === 0) return
     for (const d of needed) {
       fetch(`/api/projects/${encodeURIComponent(d)}/macros`)

@@ -3896,12 +3896,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (!doc) {
       return { content: [{ type: 'text', text: 'doc is required (the document/project name whose macros to use).' }], isError: true };
     }
-    // Verify the document exists and see how many macros it exposes.
+    // Best-effort: fetch the doc's macros only to report the count back to the
+    // agent. A network failure here is non-fatal — we still set the preamble doc;
+    // the count just shows 0. (True boundary: the macros endpoint may be down.)
     let macros = {};
     try {
       const res = await fetch(`${TLDA_SERVER}/api/projects/${encodeURIComponent(doc)}/macros`, { headers: TLDA_AUTH_HEADERS });
       if (res.ok) macros = (await res.json())?.macros || {};
-    } catch {}
+    } catch (e) {
+      process.stderr.write(`[mcp] set_preamble macro count fetch failed for ${doc}: ${e.message}\n`);
+    }
     // Point this agent's preamble at the document. From now on this agent's chat
     // math is linted with `doc`'s macros, and every message it sends carries
     // preambleRef:{doc,version} so readers render it with `doc`'s preamble.
