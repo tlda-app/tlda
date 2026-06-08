@@ -830,8 +830,18 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
   // separately holds an agent's status until a rendered row replaces it, so the
   // visible text doesn't blank mid-thought; but even with nothing to show, the
   // reserved row keeps the stack from collapsing.
+  const slotRef = useRef<HTMLDivElement>(null)
+  const statusKeysStr = [...statusAgents.keys()].join(',')
+  useEffect(() => {
+    log.info('thinking-line', 'render', {
+      keys: statusKeysStr ? statusKeysStr.split(',') : [],
+      rows: statusAgents.size,
+      offsetHeight: slotRef.current?.offsetHeight ?? null,
+      parentHeight: slotRef.current?.parentElement?.offsetHeight ?? null,
+    })
+  }, [statusKeysStr]) // eslint-disable-line react-hooks/exhaustive-deps
   return (
-    <div style={{
+    <div ref={slotRef} style={{
       padding: '0 8px',
       fontSize: 11,
       flexShrink: 0,

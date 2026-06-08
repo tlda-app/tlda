@@ -1721,7 +1721,13 @@ async function rpcSpawn({ name, model, cwd, doc, respawn, effort }) {
   let resolvedCwd = cwd
   if (!resolvedCwd && doc) {
     const project = projects.find(p => p.name === doc)
-    if (project?.sourceDir) resolvedCwd = project.sourceDir
+    if (!project) {
+      // An unresolvable project used to drop --cwd silently → the agent launched
+      // in launchd's cwd (`/`) and died as a ghost row. Reject loud instead.
+      const known = projects.map(p => p.name).sort().join(', ')
+      return { ok: false, error: `no project '${doc}'${known ? ` — known: ${known}` : ''}` }
+    }
+    if (project.sourceDir) resolvedCwd = project.sourceDir
   }
   const args = respawn ? [agentName] : ['--fresh', agentName]
   if (model) args.push('--model', model)
@@ -2224,6 +2230,13 @@ async function listPlaywrightBrowsers() {
     const args = m[3]
     if (!args.includes('playwright_chromiumdev_profile') && !args.includes('ms-playwright')) continue
     if (args.includes('--type=')) continue
+    // Skip the playwright-cli session DAEMON itself (`run-cli-server`). Its
+    // --daemon-session path lives under .../ms-playwright/..., so it matches the
+    // browser filter above — but it's a node daemon, not a browser. It's detached
+    // (ppid=1) so the orphan heuristic always flags it, and killing it orphans
+    // the Chrome it owns and closes the session — the recurring "shared browser
+    // keeps dying / nobody can use pw" bug. The reaper still reaps real orphan Chrome.
+    if (args.includes('run-cli-server')) continue
     // Never reap the canonical `tlda-dev pw` shared browser. It's a launcher-less
     // daemon by design (persists until `tlda pw reap`), so the orphan heuristic
     // always flags it — and under memory pressure the threshold collapses to ~30s,

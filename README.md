@@ -47,14 +47,17 @@ npm install -g github:qtm285/tlda
 ### Quick start
 
 ```bash
-tlda config init                                   # generate auth tokens (one time)
+tlda config auth init                              # generate auth tokens (one time)
 tlda server start                                  # start the server
-tlda create my-paper --dir /path/to/paper --main paper.tex
-tlda open my-paper                                 # open the viewer for this doc
-tlda open                                          # open the index (lists all docs)
+tlda daemon start                                  # watch source dirs → rebuild on save
+tlda doc create my-paper --dir /path/to/paper --main paper.tex
+tlda doc open my-paper                             # open the viewer for this doc
+tlda doc open                                      # open the index (lists all docs)
 ```
 
-`tlda config init` generates a read-write token (for you) and a read-only token (for sharing). Your tokens are stored in `~/.config/tlda/config.json` and used automatically.
+`tlda config auth init` generates a read-write token (for you) and a read-only token (for sharing). Your tokens are stored in `~/.config/tlda/config.json` and used automatically.
+
+`tlda daemon start` runs the per-machine daemon that watches your project source directories and pushes changes to the server — this is what rebuilds the document when you save. Leave it running.
 
 Run `tlda doctor` to check that all dependencies are installed and the server is healthy.
 
@@ -171,20 +174,20 @@ Cmd-click (Mac) or Ctrl-click (Linux) on any rendered text to open the source fi
 One-time setup:
 
 ```bash
-tlda setup editor                  # Zed (default)
-tlda setup editor --editor code    # VS Code
-tlda setup editor --editor cursor  # Cursor
-tlda setup editor --editor nvim    # Neovim
+tlda config setup editor                  # Zed (default)
+tlda config setup editor --editor code    # VS Code
+tlda config setup editor --editor cursor  # Cursor
+tlda config setup editor --editor nvim    # Neovim
 ```
 
 ## Project setup
 
 ### Existing repos
 
-If your paper already lives in a git repo (Overleaf, GitHub, local), point `tlda create` at it:
+If your paper already lives in a git repo (Overleaf, GitHub, local), point `tlda doc create` at it:
 
 ```bash
-tlda create my-paper --dir ~/overleaf/my-paper --main paper.tex
+tlda doc create my-paper --dir ~/overleaf/my-paper --main paper.tex
 ```
 
 The `--dir` path becomes the project's `sourceDir`. The daemon watches it for changes and pushes to the server on save — you keep editing in your normal workflow.
@@ -208,8 +211,8 @@ rm /path/to/sourceDir/.git/index.lock
 **Nuclear option.** If the project state is unsalvageable:
 
 ```bash
-tlda delete my-paper
-tlda create my-paper --dir /path/to/source --main paper.tex
+tlda doc delete my-paper
+tlda doc create my-paper --dir /path/to/source --main paper.tex
 ```
 
 Annotations survive in the Yjs room (keyed by project name). Source files are untouched.
@@ -224,9 +227,9 @@ LaTeX is the primary format. tlda also supports:
 
 | Format | Command |
 |--------|---------|
-| **Markdown** | `tlda create notes --format markdown --dir /path` |
-| **HTML** (Quarto) | `tlda create book --format html --dir _book-tlda` |
-| **Slides** (reveal.js) | `tlda create deck --format slides --dir /path` |
+| **Markdown** | `tlda doc create notes --format markdown --dir /path` |
+| **HTML** (Quarto) | `tlda doc create book --format html --dir _book-tlda` |
+| **Slides** (reveal.js) | `tlda doc create deck --format slides --dir /path` |
 
 ### Figures
 
@@ -241,7 +244,7 @@ LaTeX runs in DVI mode, so `\includegraphics` produces placeholder boxes that ge
 tlda integrates with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) via an MCP server. In your paper directory, run:
 
 ```bash
-tlda mcp-setup
+tlda config mcp-setup
 ```
 
 This writes `.mcp.json` so Claude Code can see tlda's tools. Open Claude Code in that directory and the `tlda` tool set is available. Agents can see your highlights, drop anchored notes and questions on the document, read the text you're pointing at, monitor for changes, and edit your LaTeX source directly.
@@ -252,15 +255,17 @@ You talk to agents via voice or text in chat panels that live on the canvas. The
 
 tlda is the coordination layer for running multiple Claude Code agents simultaneously. Each agent runs in its own tmux session with a persistent identity.
 
+**Spawn from the canvas.** The agents panel is the primary way to start and manage agents — spawn a new one, see who's awake, and chat with any of them, all without leaving the viewer. The CLI is the scripting/secondary path:
+
 ```bash
-tlda spawn proof-writer                            # respawn an existing agent (resume session)
-tlda spawn --fresh reviewer --cwd /path/to/paper   # spawn a brand new agent
-tlda spawn --fresh writer --model claude-opus-4-6   # specify a model
+tlda agent spawn proof-writer                            # resume an existing agent (its session)
+tlda agent spawn --fresh reviewer --cwd /path/to/paper   # spawn a brand new agent
+tlda agent spawn --fresh writer --model claude-opus-4-6  # specify a model
 ```
 
-Each agent gets its own tmux session (`fleet-<name>`) that persists across restarts — `tlda spawn reviewer` without `--fresh` resumes where that agent left off.
+Each agent gets its own tmux session (`fleet-<name>`) that persists across restarts — `tlda agent spawn reviewer` without `--fresh` resumes where that agent left off.
 
-**Hibernation:** Agents hibernate after 20 minutes of inactivity instead of dying. Send a chat message to a hibernating agent and it wakes up automatically — no `tlda spawn` needed. Just talk to them. The agents panel shows who's awake and who's hibernating.
+**Hibernation:** Agents hibernate after 20 minutes of inactivity instead of dying. Send a chat message to a hibernating agent and it wakes up automatically — no `tlda agent spawn` needed. Just talk to them. The agents panel shows who's awake and who's hibernating.
 
 **Permission prompts:** When an agent hits a Claude Code permission prompt, it surfaces as an approve/deny card in chat. You can authorize work without switching to the terminal.
 
@@ -268,7 +273,7 @@ Agents coordinate using tlda MCP tools: `chat()` to message each other or you, `
 
 The HUD in the viewer shows all active agents, their current activity (tool calls, file edits), and lets you chat with any of them. Drag an agent's name onto a chat panel to filter to that conversation.
 
-<img src="docs/images/tlda-spawn-terminal.png" alt="Spawning a new agent from the terminal with tlda spawn" width="100%">
+<img src="docs/images/tlda-spawn-terminal.png" alt="Spawning a new agent from the terminal with tlda agent spawn" width="100%">
 
 <img src="docs/images/tlda-drag-to-filter.png" alt="Dragging an agent label onto a chat panel to filter" width="49%"> <img src="docs/images/tlda-chat-filter-hover.png" alt="Hovering over the chat filter selector" width="49%">
 
@@ -368,29 +373,27 @@ delegate(agent: "writer", description: "rewrite §3", requires_approval: true)
 
 The agent does the work, reports in chat, and you respond with approval. The agent then calls `task_done(approval_id: <id>)` using the message ID shown in brackets (e.g. `id:332656`). Without the ID, the task stays open.
 
-### Agent succession
+### Agent families and succession
 
-When an agent needs to be replaced (context-poisoned, drifted, fresh start needed), the lineage system preserves identity across brains. A shared friendly name persists — the new agent inherits the role, the old one phases out.
+When an agent needs to be replaced (context-poisoned, drifted, fresh start needed), you don't lose its identity — you hand off to a fresh brain that keeps the same name. The thing that makes this work is the **lineage**: a *family* of agents that share one base name across brains. `conc5`, `conc5:day`, `conc5:dusk` are all the same family — the same role, carried by different brains over time.
 
-Each lineage has up to three phase slots:
+**It's a naming convention, not a server data model.** The server stores only an agent's friendly name; it has no concept of "phase" or "lineage." The phase is simply *encoded in the name's suffix*, and a little pretty-printing turns that suffix into an icon and strips it off to show the clean family name. Only three things ever read the suffix: search (group a family), handoff (rotate the names), and display (suffix → icon). Everything else — storage, chat routing, lifecycle — treats the name as an opaque atom.
 
-| Phase | Icon | Role |
-|-------|------|------|
-| **day** | <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cg stroke='%23333' fill='none' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='8' cy='8' r='2.5'/%3E%3Cline x1='8' y1='2.5' x2='8' y2='0.5'/%3E%3Cline x1='8' y1='15.5' x2='8' y2='13.5'/%3E%3Cline x1='2.5' y1='8' x2='0.5' y2='8'/%3E%3Cline x1='15.5' y1='8' x2='13.5' y2='8'/%3E%3Cline x1='4.3' y1='4.3' x2='2.9' y2='2.9'/%3E%3Cline x1='11.7' y1='4.3' x2='13.1' y2='2.9'/%3E%3Cline x1='4.3' y1='11.7' x2='2.9' y2='13.1'/%3E%3Cline x1='11.7' y1='11.7' x2='13.1' y2='13.1'/%3E%3C/g%3E%3C/svg%3E" height="16"> | Primary actor. Default chat target. |
-| **dawn** | <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cg stroke='%23333' fill='none' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cline x1='0.5' y1='11' x2='15.5' y2='11'/%3E%3Cpath d='M9 11 a3 3 0 0 1 6 0'/%3E%3Cline x1='12' y1='6' x2='12' y2='4'/%3E%3Cline x1='15' y1='9' x2='16.5' y2='8'/%3E%3C/g%3E%3C/svg%3E" height="16"> | Helper or successor-in-training. Sun rising on the east horizon. |
-| **dusk** | <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cg stroke='%23333' fill='none' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cline x1='0.5' y1='11' x2='15.5' y2='11'/%3E%3Cpath d='M1 11 a3 3 0 0 1 6 0'/%3E%3Cline x1='4' y1='6' x2='4' y2='4'/%3E%3Cline x1='1' y1='9' x2='-0.5' y2='8'/%3E%3C/g%3E%3C/svg%3E" height="16"> | Previous primary, handing off. Sun setting on the west horizon. |
+A family has four phases in its rotation, plus one out-of-rotation phase:
 
-Address agents by lineage name (`writing-A` → resolves to day) or by explicit phase (`writing-A:dusk`). Search and thread history unions across all brains that ever held a lineage.
+| Phase | Name form | Role | Icon |
+|-------|-----------|------|------|
+| **dawn** | `conc5` (bare) | The default worker — the one you talk to. | *(none)* |
+| **day** | `conc5:day` | The manager. | <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='3' stroke='%23333' fill='none' stroke-width='1.5'/%3E%3Cline x1='8' y1='1' x2='8' y2='2.5' stroke='%23333' stroke-width='1.5' stroke-linecap='round'/%3E%3Cline x1='8' y1='13.5' x2='8' y2='15' stroke='%23333' stroke-width='1.5' stroke-linecap='round'/%3E%3Cline x1='1' y1='8' x2='2.5' y2='8' stroke='%23333' stroke-width='1.5' stroke-linecap='round'/%3E%3Cline x1='13.5' y1='8' x2='15' y2='8' stroke='%23333' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E" height="16"> midday sun |
+| **dusk** | `conc5:dusk` | The consultant on the way out. | <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cline x1='0.5' y1='11' x2='15.5' y2='11' stroke='%23333' fill='none' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M1 11 a3 3 0 0 1 6 0' stroke='%23333' fill='none' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cline x1='4' y1='6' x2='4' y2='4' stroke='%23333' fill='none' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cline x1='1' y1='9' x2='-0.5' y2='8' stroke='%23333' fill='none' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" height="16"> horizon sun |
+| **night** | `conc5:night` | Last rung before aging out. | <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cpath d='M12 3 a5.5 5.5 0 1 0 0 11 a4.3 4.3 0 0 1 0 -11 Z' stroke='%23333' fill='none' stroke-width='1.5' stroke-linejoin='round'/%3E%3C/svg%3E" height="16"> crescent moon |
+| **zombie** | `conc5:zombie` | *Out of rotation* — an agent manually resurrected after it rotated out and died. | <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 7.6 a4.5 4.5 0 0 1 9 0 v1.6 a1.5 1.5 0 0 1 -1.5 1.5 v1.3 h-1 v-1.3 h-1 v1.3 h-1 v-1.3 h-1 v1.3 h-1 v-1.3 a1.5 1.5 0 0 1 -1.5 -1.5 Z' stroke='%23333' fill='none' stroke-width='1.2' stroke-linejoin='round'/%3E%3Ccircle cx='6' cy='7.4' r='1.05' fill='%23333'/%3E%3Ccircle cx='10' cy='7.4' r='1.05' fill='%23333'/%3E%3C/svg%3E" height="16"> skull |
 
-### Chatbot commands
+Address an agent by its bare family name (`writing-A` → the dawn worker) or by explicit phase (`writing-A:dusk`). **Thread history unions across the whole family** — `get_thread` on a family name returns events from every brain that ever held it, so an agent spawned today can read what any past member of its lineage said.
 
-Drive succession from the in-app chatbot:
+### Handoff
 
-| Command | What it does |
-|---------|-------------|
-| "hand off writing-A" | Spawn briefer (→ day) + pickup (→ dawn), rotate old day → dusk, retire old dusk |
-| "add a dawn to writing-A" | Spawn a helper into the dawn slot without rotation |
-| "hand off to dawn" | Dawn → day, day → dusk, old dusk retires |
+Handoff is driven by **Eliza** (below) — you just say it in chat. Phrases like "hand this off", "let's do a handoff", or "time for a handoff" trigger it. Eliza spawns a briefer + pickup pair and rotates the family: the new agent enters as **dawn**, and everyone ages one step — dawn → day → dusk → night → retired.
 
 Handoff always spawns a briefer/pickup pair — the outgoing agent can't be trusted to brief its own successor (context poisoning is why you're replacing it).
 
@@ -479,7 +482,7 @@ Two desaturated cool-gray themes — Fog Light and Fog Dark. UI elements fade to
 
 ## Sharing
 
-`tlda share my-paper` prints a shareable URL with your read-only token embedded. Anyone with that URL can view and annotate. It checks for Tailscale and Tailscale Funnel automatically — if either is running, you get a network-reachable URL instead of localhost.
+`tlda doc share my-paper` prints a shareable URL with your read-only token embedded. Anyone with that URL can view and annotate. It checks for Tailscale and Tailscale Funnel automatically — if either is running, you get a network-reachable URL instead of localhost.
 
 ## Configuration
 
@@ -541,26 +544,27 @@ Each line has `ts`, `level`, `ns` (namespace), `msg`, `data`, and `session` (per
 
 ### CLI
 
+The CLI is organized under nouns — `tlda doc`, `tlda agent`, `tlda server`, `tlda config`, `tlda daemon`. Run `tlda <noun>` (e.g. `tlda doc`) to list a group's commands.
+
 | Command | What it does |
 |---------|-------------|
-| `tlda config init` | Generate auth tokens (run once) |
-| `tlda server start` | Start the server (port 5176) |
-| `tlda server stop` | Stop the server |
-| `tlda create <name> --dir /path` | Create a project, push files, build |
-| `tlda push [name]` | Push source files, trigger rebuild |
-| `tlda watch-all start` | Watch all projects for changes, auto-rebuild on save |
-| `tlda open [name]` | Open viewer for a doc; omit name to open the index |
-| `tlda list` | List projects |
-| `tlda status [name]` | Show build status |
-| `tlda errors [name]` | Show LaTeX errors/warnings |
-| `tlda spawn <name>` | Spawn or resume an agent in tmux |
-| `tlda setup editor` | Install editor integration (Cmd-click → open source) |
-| `tlda share [name]` | Print shareable read-only URL (Tailscale/Funnel aware) |
-| `tlda mcp-setup` | Write `.mcp.json` for Claude Code integration |
-| `tlda doctor` | Health check + dependency verification |
-| `tlda attach <name>` | Attach to an agent's tmux session |
+| `tlda config auth init` | Generate auth tokens (run once) |
 | `tlda config set <key> <val>` | Persistent configuration |
-| `tlda delete <name>` | Delete a project |
+| `tlda config setup editor` | Install editor integration (Cmd-click → open source) |
+| `tlda config mcp-setup` | Write `.mcp.json` for Claude Code integration |
+| `tlda server start` / `tlda server stop` | Start / stop the server (port 5176) |
+| `tlda daemon start` | Watch source dirs, rebuild on save |
+| `tlda doc create <name> --dir /path` | Create a project, push files, build |
+| `tlda doc push [name]` | Push source files, trigger rebuild |
+| `tlda doc open [name]` | Open viewer for a doc; omit name to open the index |
+| `tlda doc list` | List projects |
+| `tlda doc status [name]` | Show build status |
+| `tlda doc errors [name]` | Show LaTeX errors/warnings |
+| `tlda doc share [name]` | Print shareable read-only URL (Tailscale/Funnel aware) |
+| `tlda doc delete <name>` | Delete a project |
+| `tlda agent spawn <name>` | Spawn or resume an agent in tmux |
+| `tlda agent attach <name>` | Attach to an agent's tmux session |
+| `tlda doctor` | Health check + dependency verification |
 
 ## Third-party licenses
 

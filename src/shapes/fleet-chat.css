@@ -1895,6 +1895,11 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-agents-shape .fleet-agents-spawn-search:focus {
   border-color: rgba(128,128,128,0.5);
 }
+.fleet-agents-shape .fleet-agents-spawn-search.is-invalid,
+.fleet-agents-shape .fleet-agents-spawn-search.is-invalid:focus {
+  border-color: rgba(200,90,90,0.6);
+  color: #c85a5a;
+}
 .fleet-agents-shape .fleet-agents-spawn-ghost {
   position: absolute;
   top: 0;
@@ -1967,6 +1972,11 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-agents-shape .fleet-agents-spawn-btn:hover {
   opacity: 1;
   border-color: rgba(128,128,128,0.4);
+}
+.fleet-agents-shape .fleet-agents-spawn-btn.is-disabled {
+  opacity: 0.25;
+  cursor: not-allowed;
+  border-color: rgba(200,90,90,0.4);
 }
 
 /* --- Search shape enhancements --- */

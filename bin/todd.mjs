@@ -20,6 +20,9 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import https from 'https'
 import http from 'http'
+import { execFile } from 'child_process'
+import { promisify } from 'util'
+const execFileP = promisify(execFile)
 
 import { getServerUrl, CONFIG_DIR } from '../shared/config.mjs'
 import { labelsForAgent } from '../shared/fleet-labels.mjs'
@@ -1922,6 +1925,100 @@ async function checkTriggers(targetId, text) {
     }
   }
 }
+
+// ─── pw window idle reaper ──────────────────────────────────────────
+// Each agent drives its own window in the shared `tlda-dev pw` browser; windows
+// live in a pool. This loop frees windows that agents stop using: it warns an
+// awake owner ~2 min before parking (so agents stay responsive instead of
+// maintaining their own timer), then parks the window (returns it to the pool).
+// Idle is read from the per-agent last-touch files the pw wrapper writes.
+const PW_WARN_MS = parseInt(process.env.PW_REAP_WARN_MS, 10) || 13 * 60 * 1000
+const PW_PARK_MS = parseInt(process.env.PW_REAP_PARK_MS, 10) || 15 * 60 * 1000
+const PW_REAP_INTERVAL_MS = parseInt(process.env.PW_REAP_INTERVAL_MS, 10) || 60_000
+const PW_REAP_SESSION = process.env.PW_REAP_SESSION || 'shared'
+const PW_TOUCH_DIR = path.join(CONFIG_DIR, 'pw-touch')
+const _pwWarned = new Set()       // keys warned this idle stretch
+const _pwFirstSeen = new Map()    // key → first time we saw it (fallback if no touch file)
+
+// Is the shared session's daemon actually up? `playwright-cli list` only reports
+// status — it never launches. We MUST gate tab-list on this: calling tab-list on
+// a closed session makes playwright-cli try to launch a browser, which collides
+// with any orphaned Chrome on the profile and fails. When closed there's no pool
+// to reap anyway, so we just no-op.
+async function pwSessionOpen() {
+  try {
+    const out = (await execFileP('playwright-cli', ['list'], { timeout: 5000 })).stdout || ''
+    const m = out.match(new RegExp(`- ${PW_REAP_SESSION}:\\s*\\n\\s*- status: (\\w+)`, 'm'))
+    return !!m && m[1] === 'open'
+  } catch { return false }
+}
+
+async function pwSharedWindows() {
+  // Windows in the shared session carrying a pwtab marker. Caller gates on
+  // pwSessionOpen(), so a throw here is a real error worth surfacing.
+  let out
+  try { out = (await execFileP('playwright-cli', [`-s=${PW_REAP_SESSION}`, 'tab-list'], { timeout: 5000 })).stdout || '' }
+  catch (e) { console.error(`[pw-reap] tab-list failed: ${String(e.message).split('\n')[0]}`); return [] }
+  const wins = []
+  for (const line of out.split('\n')) {
+    const m = line.match(/^- (\d+):\s*(\(current\)\s*)?\[([^\]]*)\]\(([^)]*)\)/)
+    if (!m) continue
+    const mk = (m[4].match(/pwtab=([a-zA-Z0-9_.-]+)/) || m[3].match(/pwtab=([a-zA-Z0-9_.-]+)/))
+    if (mk) wins.push({ index: parseInt(m[1], 10), key: mk[1] })
+  }
+  return wins
+}
+
+function pwReadTouch(key) {
+  try { return JSON.parse(fs.readFileSync(path.join(PW_TOUCH_DIR, `${key}.json`), 'utf8')) } catch { return null }
+}
+
+async function pwIsAwake(agentId) {
+  if (!agentId) return false
+  const data = await getJson('/api/store/agents', [])
+  const list = Array.isArray(data) ? data : (data.agents || [])
+  const a = list.find(x => x.id === agentId)
+  return !!a && !a.dead
+}
+
+async function reapPwWindows() {
+  if (!(await pwSessionOpen())) return // browser down → nothing to reap, don't trigger a launch
+  const wins = await pwSharedWindows()
+  const now = Date.now()
+  const seen = new Set()
+  for (const w of wins) {
+    seen.add(w.key)
+    const touch = pwReadTouch(w.key)
+    let lastTs = touch?.ts
+    if (!lastTs) {
+      if (!_pwFirstSeen.has(w.key)) _pwFirstSeen.set(w.key, now)
+      lastTs = _pwFirstSeen.get(w.key)
+    } else {
+      _pwFirstSeen.delete(w.key)
+      if (now - lastTs < PW_WARN_MS) _pwWarned.delete(w.key) // active again → re-arm warning
+    }
+    const idle = now - lastTs
+    if (idle >= PW_PARK_MS) {
+      try {
+        await execFileP('tlda-dev', ['pw', 'release'], { env: { ...process.env, TLDA_PW_AS: touch?.id || w.key, TLDA_PW_SESSION: PW_REAP_SESSION }, timeout: 20000 })
+        console.log(`[pw-reap] parked idle window key=${w.key} idle=${Math.round(idle / 60000)}m`)
+      } catch (e) { console.error(`[pw-reap] park failed key=${w.key}: ${e.message}`) }
+      _pwWarned.delete(w.key); _pwFirstSeen.delete(w.key)
+    } else if (idle >= PW_WARN_MS && !_pwWarned.has(w.key)) {
+      const agentId = touch?.id || null
+      if (await pwIsAwake(agentId)) {
+        sendChat(agentId, `⏱ Your \`tlda-dev pw\` window has been idle ~${Math.round(idle / 60000)} min and will be **parked** back to the shared pool at 15 min. Run any \`tlda-dev pw\` verb to keep it — otherwise just re-\`goto\` your URL later (no page state is preserved).`)
+        _pwWarned.add(w.key)
+        console.log(`[pw-reap] warned awake ${agentId} key=${w.key}`)
+      }
+      // hibernating/dead → no warning; parked silently at the 15 min mark
+    }
+  }
+  for (const k of [..._pwWarned]) if (!seen.has(k)) _pwWarned.delete(k)
+  for (const k of [..._pwFirstSeen.keys()]) if (!seen.has(k)) _pwFirstSeen.delete(k)
+}
+
+setInterval(() => { reapPwWindows().catch(e => console.error('[pw-reap]', e.message)) }, PW_REAP_INTERVAL_MS)
 
 // ---- Start ----
 // Check for existing instance

@@ -44,7 +44,7 @@ import { join, basename, dirname } from 'path'
 import { tmpdir, homedir } from 'os'
 import { fileURLToPath } from 'url'
 import { updateProject, sourceDir, outputDir, projectDir, readProject, listProjects, extractBuildErrors } from './project-store.mjs'
-import { broadcastSignal, putShape, emitGlobalEvent } from './sync-rooms.mjs'
+import { broadcastSignal, putShape, updateShape, emitGlobalEvent } from './sync-rooms.mjs'
 import { snapshotBeforeBuild, recordGitSnapshot } from './history-store.mjs'
 import { commitSnapshot, initShadowFromProjectRepo } from './shadow-repo.mjs'
 import { appendBuildEntry } from './changelog.mjs'
@@ -1557,6 +1557,13 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
   const outDir = outputDir(name)
   const projDir = projectDir(name)
 
+  // Source-version this build is for: the source.stamp mtime captured at start.
+  // The daemon touches source.stamp on every source change, so this is monotonic
+  // per change. It's stamped onto the doc-version sentinel and used to guard the
+  // (non-blocking, racy) sentinel write so an older build can't clobber it.
+  let sourceVersion
+  try { sourceVersion = statSync(join(projDir, 'source.stamp')).mtimeMs } catch { sourceVersion = undefined }
+
   const project = readProject(name)
   if (!project) throw new Error(`Project "${name}" not found`)
 
@@ -1796,7 +1803,7 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
       if (result) {
         // Update doc-version sentinel with shadow hash (the build's version identity)
         // plus the build's errors/warnings (persistent, convergent).
-        updateDocVersionSentinel(name, result.hash, svgsReadyAt, buildErrSnapshot, buildWarnSnapshot).catch(e => {
+        updateDocVersionSentinel(name, result.hash, svgsReadyAt, buildErrSnapshot, buildWarnSnapshot, sourceVersion).catch(e => {
           ctx.addLog(`doc-version sentinel update failed (non-fatal): ${e.message}`)
         })
         recordGitSnapshot(name, { commitHash: result.hash, commitMessage: result.message || `Build at ${new Date().toISOString()}`, pages: expectedPages ?? 0 })
@@ -2024,10 +2031,10 @@ function signalReload(name, pages) {
  * Update the doc-version sentinel shape in the Yjs room with the current
  * source git commit hash. Fire-and-forget — call without await.
  */
-async function updateDocVersionSentinel(name, shadowHash, buildReadyAt, errors, warnings) {
+async function updateDocVersionSentinel(name, shadowHash, buildReadyAt, errors, warnings, sourceVersion) {
   const commitHash = shadowHash || 'unknown'
-
   const docName = `doc-${name}`
+  const sv = typeof sourceVersion === 'number' ? sourceVersion : 0
   const sentinel = {
     id: 'shape:doc-version--sentinel',
     typeName: 'shape',
@@ -2046,6 +2053,13 @@ async function updateDocVersionSentinel(name, shadowHash, buildReadyAt, errors, 
       commitHash,
       timestamp: Date.now(),
       buildReadyAt: buildReadyAt || Date.now(),
+      // sourceVersion = the source.stamp mtime this build was for, monotonic per
+      // source change. The sentinel write fires non-blocking after each build, so
+      // an older build's write can race a newer one's; the guard below (atomic
+      // read-modify-write) drops any write whose source is ≤ what's already
+      // committed, so the version can never jump backward. Carried IN the sentinel
+      // so it survives restart with no side state.
+      sourceVersion: sv,
       // Build errors/warnings live HERE — convergent Yjs state, not a
       // fire-and-forget signal. A build's error status is a stable property
       // that must survive reconnect/restart, so the viewer reads it straight
@@ -2055,6 +2069,22 @@ async function updateDocVersionSentinel(name, shadowHash, buildReadyAt, errors, 
     },
   }
 
-  await putShape(docName, sentinel)
-  console.log(`[build:${name}] doc-version sentinel updated: ${commitHash.slice(0, 7)} (${errors?.length || 0} errors, ${warnings?.length || 0} warnings)`)
+  // Atomic monotonicity guard: keep the existing sentinel if its source is newer.
+  try {
+    let skipped = false
+    await updateShape(docName, 'shape:doc-version--sentinel', (cur) => {
+      const prev = cur?.props?.sourceVersion
+      if (typeof prev === 'number' && sv <= prev) { skipped = true; return cur }
+      return sentinel
+    })
+    if (skipped) {
+      console.log(`[build:${name}] skipped out-of-order sentinel write: source ${sv} ≤ committed`)
+      return
+    }
+  } catch (e) {
+    // No sentinel yet (first build for this room) → create it.
+    if (/not found/i.test(e?.message || '')) await putShape(docName, sentinel)
+    else throw e
+  }
+  console.log(`[build:${name}] doc-version sentinel updated: ${commitHash.slice(0, 7)} src=${sv} (${errors?.length || 0} errors, ${warnings?.length || 0} warnings)`)
 }

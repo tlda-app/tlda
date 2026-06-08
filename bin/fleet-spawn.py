@@ -119,6 +119,35 @@ def resolve_model(model):
     raise ValueError(f"Unknown model: {model!r}. Valid: {', '.join(sorted(MODEL_ALIASES))}")
 
 
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+
+def resolve_effort(effort):
+    """Validate an effort level, mirroring resolve_model's resolve-or-reject.
+    Returns the level unchanged, or None when none was supplied. A typo used to
+    pass straight to --effort and silently break the launch."""
+    if not effort:
+        return None
+    if effort in EFFORT_LEVELS:
+        return effort
+    raise ValueError(f"Unknown effort: {effort!r}. Valid: {', '.join(EFFORT_LEVELS)}")
+
+
+def resolve_spawn_cwd(cwd):
+    """Resolve the directory a fresh agent launches in. Never `/`.
+
+    The fleet-daemon runs under launchd with cwd `/`. When a spawn's project
+    doesn't resolve, the daemon drops `--cwd`, and a bare `cwd or os.getcwd()`
+    would then launch Claude in `/` — it hits the "trust this folder?" prompt,
+    the pane exits, and the agent dies as a ghost row. Refuse `/` and fall back
+    to the tlda repo so a spawn always lands somewhere real."""
+    resolved = cwd or os.getcwd()
+    resolved = os.path.abspath(resolved)
+    if resolved == "/":
+        return REPO_DIR
+    return resolved
+
+
 # ---- Server communication ----
 
 def api_get(path):
@@ -500,6 +529,14 @@ def spawn_tmux(session, cwd, cmd, auto_dismiss=True):
     r = subprocess.run(tmux("respawn-pane", "-t", session, "-c", cwd, cmd),
                        capture_output=True, timeout=5, env=spawn_env)
     if r.returncode != 0:
+        # respawn-pane failed. On the refresh/respawn path the stored session
+        # name is reused, and a dead pane (status 1, remain-on-exit) that tmux
+        # won't revive leaves the session present — so new-session would collide
+        # with "duplicate session" and the spawn never recovers (observed when
+        # re-spawning agent-ui). Kill the stale session first so the fallback
+        # actually starts fresh. kill-session on a missing session is a no-op.
+        subprocess.run(tmux("kill-session", "-t", session),
+                       capture_output=True, timeout=5, env=spawn_env)
         subprocess.run(tmux("new-session", "-d", "-s", session, "-c", cwd, cmd),
                        check=True, env=spawn_env)
         subprocess.run(tmux("set-option", "-t", session, "remain-on-exit", "on"),
@@ -578,7 +615,7 @@ def fresh(name, model, cwd, effort, mode):
     server_up = ensure_server()
     fleet_id = f"fleet:{uuid.uuid4().hex[:8]}"
     sess = unique_session_name(f"fleet-{sanitize_session_name(name)}")
-    cwd = cwd or os.getcwd()
+    cwd = resolve_spawn_cwd(cwd)
     model = resolve_model(model)
 
     if server_up:
@@ -803,6 +840,7 @@ def main():
     mode = args.mode or read_config().get("spawnMode")
 
     try:
+        args.effort = resolve_effort(args.effort)
         if args.session and (not args.name or args.enroll):
             sess = respawn_session(args.session, args.name, args.model, args.cwd,
                                    args.effort, mode, args.enroll, args.dry_run)
