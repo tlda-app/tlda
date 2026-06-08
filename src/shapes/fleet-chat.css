@@ -3575,29 +3575,33 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
    a tooltip describing the trigger phrase + the text that will be sent; clicking
    fires the release. The label text and the tooltip carry their own opacity so
    the tooltip stays fully readable while the resting label stays faint. */
-.fleet-chat-shape .suggestion-chip {
-  position: relative;
-  cursor: pointer;
-  /* The status row is pointer-events:none (so it never blocks the chat behind);
-     the chip opts back in so it's hoverable + clickable. */
+/* A disjunctive group: ✕ on the left, options `|`-separated. The status row is
+   pointer-events:none (never blocks the chat behind); the group opts back in. */
+.fleet-chat-shape .suggestion-group {
   pointer-events: auto;
+  cursor: default;
+  white-space: nowrap;
 }
 .fleet-chat-shape .suggestion-chip-label {
   opacity: 0.4;
+  cursor: pointer;
   transition: opacity 0.2s;
 }
 .fleet-chat-shape .suggestion-chip-label:hover {
   opacity: 0.85;
 }
-/* Dismiss ✕ — invisible at rest, fades in when you're on the chip. */
+.fleet-chat-shape .suggestion-group-sep {
+  opacity: 0.35;
+}
+/* Dismiss ✕ on the LEFT of the group — invisible at rest, fades in on group hover. */
 .fleet-chat-shape .suggestion-chip-x {
-  margin-left: 4px;
+  margin-right: 4px;
   font-size: 9px;
   cursor: pointer;
   opacity: 0;
   transition: opacity 0.15s;
 }
-.fleet-chat-shape .suggestion-chip:hover .suggestion-chip-x {
+.fleet-chat-shape .suggestion-group:hover .suggestion-chip-x {
   opacity: 0.5;
 }
 .fleet-chat-shape .suggestion-chip-x:hover {

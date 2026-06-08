@@ -30,7 +30,7 @@ import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRe
 // @ts-ignore — vanilla JS module
 import { getHumanId, getHumanName, updateEventById, sendViewingContext, setViewingEnrichFn } from '../fleet/fleet-data.mjs'
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
-import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useSuggestions, clearSuggestionGroup, sendMessage, loadBefore, resolveFilter, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useSuggestions, clearGroup, sendMessage, loadBefore, resolveFilter, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
 import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
 import { agentDisplayName } from './fleet-utils'
@@ -899,13 +899,10 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
                 </span>
               )}
             </span>
-            {/* center: suggestions */}
-            <span style={{ justifySelf: 'center' }}>
-              {chips.map((n, i) => (
-                <span key={n.id}>
-                  {i > 0 ? <span className="suggestion-chip-label">, </span> : null}
-                  <SuggestionChip nudge={n} isFirst={i === 0} agentName={ctx.agentLabel(n.targetId || n.from)} />
-                </span>
+            {/* center: suggestion groups (space-separated; each group is its own unit) */}
+            <span style={{ justifySelf: 'center', display: 'flex', gap: 14, alignItems: 'baseline', flexWrap: 'wrap', justifyContent: 'center' }}>
+              {[...groupChips(chips)].map(([gkey, items]) => (
+                <SuggestionGroup key={gkey} chips={items} agentName={ctx.agentLabel(items[0].targetId || items[0].from)} />
               ))}
             </span>
             {/* right: context info */}
@@ -925,15 +922,29 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
 // is its OWN object, rendered ABOVE the shapes in the HUD layer (see
 // <SuggestionTip/> mounted in FleetHUD) via this tiny shared store. The chip
 // publishes what/where on label-hover; the HUD-level tip renders it crisp.
+type TipOption = { label: string; text: string }
 type TipData = {
-  left: number; bottom: number
-  command: string | null; canSayIt: boolean; text: string; agentName: string
+  left: number; bottom: number; agentName: string
   vars: Record<string, string>
+  options: TipOption[]
 } | null
 let _tipData: TipData = null
 const _tipSubs = new Set<() => void>()
 function setSuggestionTip(d: TipData) { _tipData = d; _tipSubs.forEach(f => f()) }
 const TIP_VARS = ['--surface', '--border', '--shadow-lg', '--text', '--text-bright', '--accent', '--text-dim']
+
+// groupKey: suggestions sharing a `group` tag are one disjunctive group; an
+// untagged suggestion is its own singleton group (keyed by its id).
+function groupKeyOf(s: Suggestion): string { return s.group || String(s.id) }
+function groupChips(chips: Suggestion[]): Map<string, Suggestion[]> {
+  const m = new Map<string, Suggestion[]>()
+  for (const c of chips) {
+    const k = groupKeyOf(c)
+    if (!m.has(k)) m.set(k, [])
+    m.get(k)!.push(c)
+  }
+  return m
+}
 
 export function SuggestionTip() {
   const tip = useSyncExternalStore(
@@ -946,66 +957,62 @@ export function SuggestionTip() {
       className="suggestion-chip-tip"
       style={{ position: 'fixed', left: tip.left, bottom: tip.bottom, ...tip.vars } as React.CSSProperties}
     >
-      <span className="suggestion-tip-trigger">
-        {tip.command
-          ? <>Say <b>"{tip.command}"</b>{tip.canSayIt ? <> or <b>"say it"</b></> : null} — or click to send now</>
-          : <>{tip.text}</>}
-      </span>
-      <span className="suggestion-tip-target">→ {tip.agentName}</span>
-      {tip.text && <span className="suggestion-tip-text">{tip.text}</span>}
+      {tip.options.map((o, i) => (
+        <span key={i} className="suggestion-tip-trigger">
+          <b>{o.label}</b>{o.text ? <> — {o.text}</> : null}
+        </span>
+      ))}
+      <span className="suggestion-tip-target">→ {tip.agentName} · click an option to pick it</span>
     </span>
   )
 }
 
-function SuggestionChip({ nudge, isFirst, agentName }: { nudge: Suggestion, isFirst: boolean, agentName: string }) {
-  // The posting agent supplies the command verbatim; clicking sends it as a real
-  // message, which keeps a visible record of what fired and routes back to that
-  // agent. A chip with no command is informational (click is a no-op).
-  const command = nudge.command || null
-  const canSayIt = isFirst && nudge.kind !== 'action' && !!command
-  const labelRef = useRef<HTMLSpanElement>(null)
+// One disjunctive group: ✕ on the left (dismiss the group), then the options
+// `|`-separated (each clickable to pick → sends its command + clears the group).
+// One shared hover on the whole group → a single tooltip listing the options.
+function SuggestionGroup({ chips, agentName }: { chips: Suggestion[], agentName: string }) {
+  const ref = useRef<HTMLSpanElement>(null)
+  const fromAgent = chips[0]?.from || chips[0]?.targetId || ''
+  const key = groupKeyOf(chips[0])
   const showTip = () => {
-    const el = labelRef.current
+    const el = ref.current
     if (!el) return
     const r = el.getBoundingClientRect()
     const cs = getComputedStyle(el)
     const vars: Record<string, string> = {}
     for (const v of TIP_VARS) vars[v] = cs.getPropertyValue(v)
-    setSuggestionTip({ left: r.left, bottom: window.innerHeight - r.top + 6, command, canSayIt, text: nudge.text || '', agentName, vars })
+    setSuggestionTip({
+      left: r.left, bottom: window.innerHeight - r.top + 6, agentName, vars,
+      options: chips.map(c => ({ label: c.label, text: c.text || '' })),
+    })
   }
   const hideTip = () => setSuggestionTip(null)
-  const groupAgent = nudge.from || nudge.targetId || ''
-  // Taking a chip resolves the whole group: send its command, then clear the group.
-  const fire = (e: React.SyntheticEvent) => {
+  const pick = (c: Suggestion) => (e: React.SyntheticEvent) => {
     stopEventPropagation(e as any)
-    if (command) sendMessage(nudge.targetId || nudge.from || '', command)
+    if (c.command) sendMessage(c.targetId || c.from || '', c.command)
     hideTip()
-    clearSuggestionGroup(groupAgent)
+    clearGroup(fromAgent, key)
   }
-  // ✕ dismisses the group without acting.
   const dismiss = (e: React.SyntheticEvent) => {
     stopEventPropagation(e as any)
     hideTip()
-    clearSuggestionGroup(groupAgent)
+    clearGroup(fromAgent, key)
   }
   return (
     <span
-      className="suggestion-chip"
+      className="suggestion-group"
+      ref={ref}
       onPointerDown={stopEventPropagation}
-      onClick={fire}
+      onMouseEnter={showTip}
+      onMouseLeave={hideTip}
     >
-      <span
-        className="suggestion-chip-label"
-        ref={labelRef}
-        onMouseEnter={showTip}
-        onMouseLeave={hideTip}
-      >{nudge.label}</span>
-      <span
-        className="suggestion-chip-x"
-        title="Dismiss"
-        onPointerDown={stopEventPropagation}
-        onClick={dismiss}
-      >✕</span>
+      <span className="suggestion-chip-x" title="Dismiss" onClick={dismiss}>✕</span>
+      {chips.map((c, i) => (
+        <span key={c.id}>
+          {i > 0 ? <span className="suggestion-group-sep"> | </span> : ' '}
+          <span className="suggestion-chip-label" onClick={pick(c)}>{c.label}</span>
+        </span>
+      ))}
     </span>
   )
 }

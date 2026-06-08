@@ -863,7 +863,7 @@ export function getFleetTools() {
     },
     {
       name: 'suggest',
-      description: 'Push your current set of clickable suggestion chips to the bottom of the user\'s chat — actionable "you might want to do X" affordances. Use for the "I need you to decide" moment instead of a chat line that scrolls away. Replace-semantics: each call overwrites your WHOLE set; pass an empty array to clear. Each suggestion: { label (short chip text), text (optional longer description), command (optional — a chat/command string that runs when the user clicks the chip) }.',
+      description: 'Push your current set of clickable suggestion chips to the bottom of the user\'s chat — actionable "you might want to do X" affordances. Use for the "I need you to decide" moment instead of a chat line that scrolls away. Replace-semantics: each call overwrites your WHOLE set; pass an empty array to clear. Chips with the same `group` tag form one disjunctive group (rendered `A | B | C`, one dismiss ✕, taking any one clears the whole group); untagged chips are standalone. Each suggestion: { label, text (optional longer description), command (optional — sent when clicked), group (optional — shared tag for disjunctive alternatives) }.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -876,6 +876,7 @@ export function getFleetTools() {
                 label: { type: 'string', description: 'Short chip text the user sees and clicks.' },
                 text: { type: 'string', description: 'Optional longer description shown with the chip.' },
                 command: { type: 'string', description: 'Optional command/chat string sent when the user clicks the chip.' },
+                group: { type: 'string', description: 'Optional. Chips sharing a group tag are one disjunctive group (pick one → clears all of them).' },
               },
               required: ['label'],
             },
@@ -1980,6 +1981,7 @@ export async function handleFleetTool(name, args) {
       text: s.text || '',
       command: s.command || null,
       kind: s.command ? 'action' : 'info',
+      group: s.group || undefined,
       targetId: AGENT_ID,
       ts,
     }));

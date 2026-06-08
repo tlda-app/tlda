@@ -541,7 +541,7 @@ export function useFleetCompacting(dnfFilter?: string[][] | [string,string][][] 
 // A suggestion chip any agent can push to the bottom of the chat (see the
 // server's /api/suggestions channel + the `suggest` MCP tool). `from` is the
 // posting agent; `command`, if set, is sent as a chat when the chip is clicked.
-export type Suggestion = { id: string | number, label: string, targetId?: string, from?: string, text: string, kind?: string, command?: string | null, ts: number, msgCount?: number }
+export type Suggestion = { id: string | number, label: string, targetId?: string, from?: string, text: string, kind?: string, command?: string | null, group?: string, ts: number, msgCount?: number }
 
 export function useSuggestions(): Suggestion[] {
   const [pending, setPending] = useState<Suggestion[]>([])
@@ -572,18 +572,22 @@ export function useSuggestions(): Suggestion[] {
   return pending
 }
 
-// A `suggest` call is one atomic group: taking a chip (click) or dismissing (✕)
-// resolves the WHOLE group. So clear the agent's set entirely by re-posting it
-// empty (replace-semantics — no dedicated endpoint needed).
-export async function clearSuggestionGroup(agentId: string) {
+// Taking an option (click) or dismissing (✕) resolves ONE group. Clear just that
+// group by re-posting the agent's set minus the group's options (replace-
+// semantics — no dedicated endpoint). Other groups from the same agent stay.
+// A group is the shared `group` tag, or a lone suggestion's own id.
+export async function clearGroup(agentId: string, groupKey: string) {
   try {
+    const j = await fetch('/api/suggestions').then(r => r.json())
+    const remaining = (j.suggestions || []).filter((s: Suggestion) =>
+      (s.from || s.targetId) === agentId && (s.group || String(s.id)) !== groupKey)
     await fetch('/api/suggestions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ agentId, suggestions: [] }),
+      body: JSON.stringify({ agentId, suggestions: remaining }),
     })
   } catch (e) {
-    console.warn('clearSuggestionGroup failed', e)
+    console.warn('clearGroup failed', e)
   }
 }
 
