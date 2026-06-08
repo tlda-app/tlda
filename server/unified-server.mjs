@@ -2477,7 +2477,7 @@ async function handleFleetWsMessage(ws, msg) {
   }
 
   if (type === 'chat') {
-    const { message: text, to: rawTo, from: rawFrom, metadata, inline_attachments, attachments, cc, context, source } = msg
+    const { message: text, to: rawTo, from: rawFrom, metadata, inline_attachments, attachments, cc, context, preambleRef, source } = msg
     if (!rawTo || !text) { error('missing to or message'); return }
     // Idempotency: if the client retries with the same _tempId, return the
     // previously inserted event IDs instead of creating duplicates.
@@ -2572,6 +2572,7 @@ async function handleFleetWsMessage(ws, msg) {
         ...(inline_attachments ? { inline_attachments } : {}),
         ...(wiretapRecipients.length ? { wiretap_cc: wiretapRecipients } : {}),
         ...(context ? { context } : {}),
+        ...(preambleRef ? { preambleRef } : {}),
         ...(chatReminder ? { chatReminder } : {}),
         ...(source ? { source } : {}),
       }
