@@ -29,7 +29,8 @@
 
 import { spawnSync } from 'child_process'
 import { join, dirname } from 'path'
-import { readFileSync, writeFileSync, existsSync, realpathSync, rmSync } from 'fs'
+import { readFileSync, writeFileSync, existsSync, realpathSync, rmSync, mkdirSync } from 'fs'
+import { homedir } from 'os'
 
 // Default to the one canonical session; overridable for isolated testing.
 const SESSION = process.env.TLDA_PW_SESSION || 'shared'
@@ -75,6 +76,22 @@ function myTabKey() {
 }
 function myMarker() {
   return `pwtab=${myTabKey()}`
+}
+
+// Per-agent last-touch files so eliza's idle reaper can tell how long an agent's
+// window has sat unused. Each verb refreshes it; release/park removes it. The
+// raw `id` (fleet id) is recorded so eliza can map the window back to an agent
+// to check liveness and warn it before parking.
+const TOUCH_DIR = join(homedir(), '.config', 'tlda', 'pw-touch')
+function touchFile() { return join(TOUCH_DIR, `${myTabKey()}.json`) }
+function touchMine() {
+  try {
+    mkdirSync(TOUCH_DIR, { recursive: true })
+    writeFileSync(touchFile(), JSON.stringify({ id: who(), key: myTabKey(), session: SESSION, ts: Date.now() }))
+  } catch (e) { console.error(`pw: WARN last-touch stamp failed: ${e.message}`) }
+}
+function clearTouch() {
+  try { rmSync(touchFile(), { force: true }) } catch (e) { console.error(`pw: WARN clearing last-touch failed: ${e.message}`) }
 }
 
 function lockScript(repoRoot) {
@@ -260,6 +277,7 @@ function isMine(t) {
 // whatever page was previously current (observed: a screenshot landing on a
 // stray blank tab). Returns the confirmed index, or null if unresolved.
 function selectMyTab() {
+  touchMine() // refresh idle clock — every verb runs through here
   let mine = listTabs().find(isMine)
   if (!mine) {
     const tabs = listTabs()
@@ -413,6 +431,7 @@ export async function cmdPw(args, repoRoot) {
         // to the pool for the next agent to claim — no churn, no new raise.
         pw(['tab-select', String(mine.index)], { stdio: 'ignore' })
         pw(['goto', 'about:blank'], { stdio: 'ignore' })
+        clearTouch()
         console.log(`parked my window (#${mine.index}) back to the pool`)
       } else console.log('no window of mine to park')
     } finally {
