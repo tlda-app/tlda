@@ -200,6 +200,20 @@ function expireNudge(nudge) {
   broadcastPendingStatus()
 }
 
+// Once Skip acts on an agent (handoff / QA dispatch), its offered action chips
+// are stale — drop them so they don't re-broadcast and re-appear.
+function dequeueActions(targetId) {
+  let removed = false
+  for (let i = pendingNudgeQueue.length - 1; i >= 0; i--) {
+    const n = pendingNudgeQueue[i]
+    if (n.targetId === targetId && n.kind === 'action') {
+      pendingNudgeQueue.splice(i, 1)
+      removed = true
+    }
+  }
+  if (removed) broadcastPendingStatus()
+}
+
 function tickNudgeMessages(agentId) {
   const toExpire = []
   for (const nudge of pendingNudgeQueue) {
@@ -249,17 +263,38 @@ function tryReleaseFromSkip(text) {
   return false
 }
 
-// KILL SWITCH (2026-06-05, re-applied 2026-06-06 after a `git reset --hard`
-// wiped the original uncommitted version): the clickable/hover suggestion
-// footer has an unresolved bug where the hover card fires across the whole
-// chat surface, which makes fleet chat unusable. Fleet chat is Skip's only
-// comms channel (RSI, voice-first) — accessibility-critical, priority zero —
-// so until the hover bug is root-caused todd must NEVER push any pending to
-// the footer. It always broadcasts an empty list. Re-enable (restore the
-// pendingNudgeQueue.map below) only once the hover trigger bug is fixed and
-// verified on Skip's actual screen.
+// Re-enabled 2026-06-08. The footer hover bug that forced the old kill switch
+// (the hover card fired across the whole chat surface) is fixed: the suggestion
+// tooltip now renders in the HUD overlay layer (<SuggestionTip/> in FleetHUD),
+// so only the chip label is a hover/click target. todd now publishes its
+// pending queue as suggestion chips on its own row.
+//
+// `from` is todd (the caller), so the chips group under todd's row and the
+// viewer's optimistic clear posts back under todd's own set. `targetId` is the
+// agent the nudge concerns, which is where a clicked `command` is routed.
+// Clicking an ACTION chip sends its routing command (e.g. "todd hand this off")
+// to the target — todd snoops Skip's message and runs the handoff/QA. Clicking
+// a gated NUDGE chip sends "todd <label>", releasing it exactly as if Skip had
+// typed it. The two action items per target share a disjunctive group (pick one
+// → both clear); gated nudges are singleton groups so each releases on its own.
+function toddSuggestion(n) {
+  const isAction = n.kind === 'action'
+  return {
+    id: `${BOT_KEY}:${n.id}`,
+    label: n.label,
+    text: n.text || '',
+    command: isAction ? n.command : `${VERB} ${n.label}`,
+    targetId: n.targetId,
+    from: AGENT_ID,
+    group: isAction ? `${n.targetId}:actions` : undefined,
+    kind: n.kind,
+    ts: n.ts,
+    msgCount: n.msgCount,
+  }
+}
 function broadcastPendingStatus() {
-  postJson('/api/suggestions', { agentId: AGENT_ID, suggestions: [] }).catch(e =>
+  const suggestions = pendingNudgeQueue.map(toddSuggestion)
+  postJson('/api/suggestions', { agentId: AGENT_ID, suggestions }).catch(e =>
     console.error(`[todd] status broadcast failed: ${e.message}`)
   )
 }
@@ -1238,6 +1273,7 @@ function cancelScheduledActions(reason = 'skip-cancel') {
 
 async function handleQaDispatch(targetIds, instruction, filterDesc) {
   const targets = Array.isArray(targetIds) ? targetIds : [targetIds]
+  targets.forEach(dequeueActions)
   const targetNames = await Promise.all(targets.map(id => resolveAgentName(id)))
 
   const qaPayload = JSON.stringify({
@@ -1461,6 +1497,7 @@ async function handleHandoff(agentId, triggerText) {
   if (now - lastHandoff < HANDOFF_COOLDOWN_MS) return
   handoffCooldowns.set(agentId, now)
 
+  dequeueActions(agentId)
   const agentName = await resolveAgentName(agentId)
   console.log(`[todd] handoff triggered for ${agentName} (${agentId})`)
 
