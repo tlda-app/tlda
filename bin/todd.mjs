@@ -1096,17 +1096,22 @@ async function handleRegistration(fromId, text) {
 }
 
 // ---- Context-discard guard ----
-// Fires when an agent proposes throwing away an agent's session/context/threads/etc.
-// (respawning "fresh", spawning a replacement agent, "start over", "lose its threads").
-// Skip never wants to be told to talk to a fresh "impostor" or to abandon a real session;
-// the recovery path is `spawn refresh=true`, which keeps identity + threads.
-// NOTE: \bfresh\b does NOT match inside "refresh" (no word boundary mid-word), so legit
-// `spawn refresh=true` talk never trips this. Tuned + tested in bin/discard-guard-test.mjs.
-const _DISCARD_LOSS_VERB = String.raw`(?:los[et]s?|losing|discard(?:ed|ing)?|throw(?:ing)?\s+away|thrown\s+away|abandon(?:ed|ing)?|wip(?:e[ds]?|ing)|nuk(?:e[ds]?|ing)|ditch(?:ed|ing)?|drop(?:ped|ping)?|blow(?:n)?\s+away|throw\s+out|thrown\s+out)`
-const _DISCARD_CTX_NOUN = String.raw`(?:context|threads?|sessions?|memor(?:y|ies)|histor(?:y|ies)|conversations?|prior\s+(?:work|state)|its?\s+(?:state|identity))`
+// Fires when an agent proposes throwing away a session via an UNAMBIGUOUS phrase
+// ("respawn fresh", "talk to a fresh/different agent", "spawn a new agent
+// instead", "impostor", "start over"). Skip never wants to be told to talk to a
+// fresh impostor or abandon a real session; the recovery path is `spawn
+// refresh=true`, which keeps identity + threads.
+//
+// Tightened 2026-06-08 (Skip: agent-trigger-0 fired "all the time when it's
+// completely irrelevant"): the old broad branches — loss-verb↔context-noun
+// proximity ("lose … context", "wipe … session") and bare "replace … agent" —
+// matched normal fleet/infra chatter, since agents building the spawn/session
+// machinery use that vocabulary innocuously. Removed. This trigger also no
+// longer interrupts (interrupt:false below) — a stray match just queues a
+// dismissible nudge instead of disrupting the working agent.
+// NOTE: \bfresh\b does NOT match inside "refresh" (no word boundary mid-word),
+// so legit `spawn refresh=true` talk never trips this.
 const CONTEXT_DISCARD_PATTERN = new RegExp([
-  String.raw`\b${_DISCARD_LOSS_VERB}\b[^.!?\n]{0,40}\b${_DISCARD_CTX_NOUN}\b`,
-  String.raw`\b${_DISCARD_CTX_NOUN}\b[^.!?\n]{0,40}\b(?:would\s+be\s+|will\s+be\s+|gets?\s+|get\s+|are\s+|is\s+)?(?:lost|gone|wiped|discarded|thrown\s+away|abandoned|nuked)\b`,
   String.raw`\b(?:re-?spawn)\b[^.!?\n]{0,25}\bfresh\b`,
   String.raw`\bfresh\b[^.!?\n]{0,15}\b(?:re-?spawn)\b`,
   String.raw`\bstart(?:ing)?\b[^.!?\n]{0,15}\bfresh\b[^.!?\n]{0,15}\b(?:agent|session)\b`,
@@ -1114,7 +1119,6 @@ const CONTEXT_DISCARD_PATTERN = new RegExp([
   String.raw`\b(?:agent|session|context|threads?|memory|history|conversation)\b[^.!?\n]{0,30}\bstart(?:ing)?\s+over\b`,
   String.raw`\b(?:spawn|start|create|launch|bring\s+up|stand\s+up)\b[^.!?\n]{0,25}\b(?:new|fresh|different|another)\s+agent\b[^.!?\n]{0,25}\b(?:instead|rather|replace|loses?|losing|discard)`,
   String.raw`\b(?:new|fresh|different|another)\s+agent\b[^.!?\n]{0,10}\b(?:instead|rather\s+than)\b`,
-  String.raw`\breplac(?:e|ing)\b[^.!?\n]{0,30}\bagent\b`,
   String.raw`\bimpostor\b`,
   String.raw`\btalk(?:ing)?\s+to\s+(?:a\s+|the\s+)?(?:new|fresh|different)\s+agent\b`,
 ].join('|'), 'i')
@@ -1127,7 +1131,7 @@ const AGENT_TO_SKIP_TRIGGERS = [
   {
     pattern: CONTEXT_DISCARD_PATTERN,
     message: `🛑 **Don't propose discarding a session.** Never tell Skip to respawn fresh, spawn a replacement agent, "start over", or otherwise lose an agent's context / threads / history — and never silently do it. The recovery path is \`spawn refresh=true\` (or restoring the real session/transcript): it keeps the agent's identity AND its threads. If an agent is hibernating, wake it — don't replace it with an impostor. Go recover the real session instead.`,
-    interrupt: true,
+    interrupt: false,
     cooldown: 120_000,
   },
   {
