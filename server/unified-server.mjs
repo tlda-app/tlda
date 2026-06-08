@@ -3100,6 +3100,18 @@ async function handleFleetWsMessage(ws, msg) {
       const a = fleetStore.findAgent(agent)
       spawnName = a?.friendly_name || agent
     }
+    // Resolve-or-reject: validate args before anything else so an unresolvable
+    // one fails loud here instead of silently producing a dead agent.
+    const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
+    if (effort && !EFFORT_LEVELS.includes(effort)) {
+      error(`Unknown effort '${effort}' — valid: ${EFFORT_LEVELS.join(', ')}`); return
+    }
+    if (doc) {
+      const known = listProjects().map(p => p.name)
+      if (!known.includes(doc)) {
+        error(`no project '${doc}'${known.length ? ` — known: ${known.sort().join(', ')}` : ''}`); return
+      }
+    }
     const machineIds = [...daemonConnections.keys()]
     if (machineIds.length === 0) { error('No fleet daemon connected — cannot spawn agents'); return }
     try {
@@ -3109,6 +3121,7 @@ async function handleFleetWsMessage(ws, msg) {
         doc: doc || undefined, respawn: resolved.respawn, effort: effort || undefined,
       })
       broadcastState()
+      if (result && result.ok === false) { error(result.error || 'spawn failed'); return }
       reply(result)
     } catch (e) { error(e.message) }
     return
