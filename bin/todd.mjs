@@ -26,13 +26,13 @@ import { labelsForAgent } from '../shared/fleet-labels.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // Identity is config-driven: the supervisor passes TLDA_BOT_NAME (and the pidfile
-// path it owns). This is the shipped EXAMPLE bot — Todd — but it reads its own
-// name so anyone can run the same script under a different name. The lowercase
-// key drives the fleet id, pidfile, and the address verb Skip speaks; the display
-// name is the capitalized form.
+// path it owns). This is the shipped EXAMPLE bot — todd — but it reads its own
+// name so anyone can run the same script under a different name. The key drives
+// the fleet id, pidfile, the display name, and the address verb Skip speaks.
+// Names are lowercase by fleet convention (fleet:skip, fleet:todd, …).
 const BOT_KEY = (process.env.TLDA_BOT_NAME || 'todd').toLowerCase()
 const AGENT_ID = 'fleet:' + BOT_KEY
-const AGENT_NAME = BOT_KEY.charAt(0).toUpperCase() + BOT_KEY.slice(1)
+const AGENT_NAME = BOT_KEY
 const VERB = BOT_KEY  // what Skip says to address this bot, e.g. "todd cancel"
 const PID_FILE = process.env.TLDA_BOT_PIDFILE || path.join(CONFIG_DIR, `${BOT_KEY}.pid`)
 const SERVER = getServerUrl()
