@@ -2102,6 +2102,12 @@ async function attributeViteByCwd(pid) {
 
 // ─── Vite reaper — kill dev servers nobody's using ──────────────────
 const VITE_IDLE_THRESHOLD_MS = parseInt(process.env.REAPER_VITE_MS, 10) || 10 * 60 * 1000
+// Floor the pressure-scaled timeout: even at 99% memory the threshold collapsed
+// to ~1 min, which SIGKILLed dev servers during a normal edit pause (the "idle"
+// signal is just "no browser currently on the port" — true for most of an agent's
+// edit loop). Never reap a dev server with less than this much idle, so a brief
+// pause can't lose an in-use server; a genuinely abandoned one still gets reaped.
+const VITE_MIN_IDLE_MS = parseInt(process.env.REAPER_VITE_MIN_MS, 10) || 5 * 60 * 1000
 const VITE_SWEEP_INTERVAL_MS = parseInt(process.env.REAPER_VITE_INTERVAL_MS, 10) || 60 * 1000
 const _viteLastClient = new Map()
 const BROWSER_NAME_RE = /Google|Chrome|Chromium|Firefox|Safari|WebKit/i
@@ -2186,7 +2192,8 @@ async function reapVites() {
     }
     if (!_viteLastClient.has(v.pid)) _viteLastClient.set(v.pid, now)
     const idleMs = now - _viteLastClient.get(v.pid)
-    if (idleMs > pressureScaledTimeout(VITE_IDLE_THRESHOLD_MS)) {
+    const threshold = Math.max(VITE_MIN_IDLE_MS, pressureScaledTimeout(VITE_IDLE_THRESHOLD_MS))
+    if (idleMs > threshold) {
       try {
         process.kill(v.pid, 'SIGKILL')
         console.log(`[vite-reaper] killed pid=${v.pid} ports=${v.ports.join(',')} idle=${Math.round(idleMs / 60000)}m pressure=${(getMemoryPressure() * 100).toFixed(0)}%`)
