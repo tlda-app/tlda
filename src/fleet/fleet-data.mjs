@@ -345,10 +345,12 @@ export function connect() {
       fetch(`${FLEET}/api/store/events?after=${_lastEventId}&limit=500`)
         .then(r => r.json())
         .then(data => {
-          const missed = (data.events || []).filter(e => {
-            const t = e.type || e.event_type
-            return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_attention' || t === 'terminal_card' || t === 'plan_approval'
-          })
+          // One path: ingest EVERYTHING the live stream would (it upserts any
+          // typed fleet-event — the render whitelist is the sole display gate).
+          // A separate type-allowlist here drifts from that whitelist; that drift
+          // is the bug where a reconnect silently dropped `activity` (and amend/
+          // interrupt/timer/kill-session) while chats survived. Don't add one back.
+          const missed = (data.events || []).filter(e => (e.type || e.event_type))
           const newEvents = []
           let boundAny = false
           for (const raw of missed) {
@@ -530,11 +532,10 @@ export async function init() {
   updateTasks(stateRes.tasks || [])
 
   // Populate chat events and notify subscribers
+  // One path: ingest everything (matching the live stream); the render whitelist
+  // is the single gate for what displays. Mirrors the reconnect catch-up in connect().
   const chatEvents = (historyRes.events || [])
-    .filter(e => {
-      const t = e.event_type || e.type
-      return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_user' || t === 'terminal_assistant' || t === 'timer' || t === 'compacting' || t === 'activity' || t === 'terminal_attention' || t === 'terminal_card' || t === 'plan_approval' || t === 'kill-session' || t === 'interrupt'
-    })
+    .filter(e => (e.event_type || e.type))
     .map(convertChatEvent)
   for (const ev of chatEvents) _store.upsert(ev)
   // Track highest event ID for reconnect catch-up
