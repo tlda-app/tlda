@@ -350,14 +350,33 @@ function FleetSearchInner({ shape }: { shape: any }) {
     setSearched(true)
     closeChat()
 
-    // Build search — pass FTS query to API, filter results client-side
+    // Push qualifier filters to the server so matches aren't capped out by the
+    // 100-row recency window before the filter is applied. agent/role/time go
+    // server-side; `from` (sender-only) is refined client-side below.
+    // Resolve a typed agent name to its fleet id — only a resolved id can be
+    // filtered server-side (the index keys on ids). An unresolvable name falls
+    // through to the client-side substring match below (no worse than before).
+    const toServerId = (n?: string): string | undefined => {
+      if (!n) return undefined
+      const mapped = agentIdByName.get(n.toLowerCase())
+      if (mapped) return mapped
+      if (n.includes(':')) return n // already an id (e.g. fleet:skip)
+      return undefined
+    }
+    const serverFilters = {
+      agent: toServerId(filters.agent) ?? toServerId(filters.from),
+      role: filters.role,
+      since: filters.after ? (resolveTimeFilter(filters.after) || undefined) : undefined,
+      before: filters.before ? (resolveTimeFilter(filters.before) || undefined) : undefined,
+    }
     const searchQuery = ftsQuery || '*'
     const [res, allDocs] = await Promise.all([
-      searchFleet(searchQuery.length >= 2 ? searchQuery : 'message', 100),
+      searchFleet(searchQuery.length >= 2 ? searchQuery : 'message', 100, serverFilters),
       fetchSharedDocs(),
     ])
 
-    // Apply client-side filters
+    // `from:` is sender-only; the server narrows by agent in both directions,
+    // so refine to messages this agent actually sent.
     let filtered = res
     if (filters.from) {
       const fromLower = filters.from.toLowerCase()
@@ -367,30 +386,15 @@ function FleetSearchInner({ shape }: { shape: any }) {
         return name === fromLower || name.includes(fromLower) || r.from === fromId
       })
     }
-    if (filters.agent) {
+    // Fallback for an agent name we couldn't resolve to an id: the server
+    // couldn't filter it, so match by name substring against the result set.
+    if (filters.agent && !toServerId(filters.agent)) {
       const agentLower = filters.agent.toLowerCase()
-      const aId = agentIdByName.get(agentLower)
       filtered = filtered.filter((r: any) => {
         const fromName = agentName(r.from).toLowerCase()
         const toName = agentName(r.to).toLowerCase()
-        return fromName.includes(agentLower) || toName.includes(agentLower) ||
-               r.from === aId || r.to === aId
+        return fromName.includes(agentLower) || toName.includes(agentLower)
       })
-    }
-    if (filters.role) {
-      filtered = filtered.filter((r: any) => r.role === filters.role)
-    }
-    if (filters.after) {
-      const afterTs = resolveTimeFilter(filters.after)
-      if (afterTs) {
-        filtered = filtered.filter((r: any) => r.timestamp && r.timestamp >= afterTs)
-      }
-    }
-    if (filters.before) {
-      const beforeTs = resolveTimeFilter(filters.before)
-      if (beforeTs) {
-        filtered = filtered.filter((r: any) => r.timestamp && r.timestamp <= beforeTs)
-      }
     }
 
     setResults(filtered.slice(0, 50))

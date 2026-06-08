@@ -71,7 +71,7 @@ function copyAttachment(srcPath) {
   } catch { return null }
 }
 
-export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, clearEphemeralState, suppressEchoFor, sendRpc, resolveRpc, daemonConnections }) {
+export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, clearEphemeralState, suppressEchoFor, sendRpc, resolveRpc, daemonConnections, resolveSpawnTarget }) {
   // Helper: route an agent op through the daemon, or 503 cleanly. The
   // op-name is whatever the daemon's rpc dispatcher expects (kebab-case
   // matches the spec: 'send-key', 'capture-pane', etc.).
@@ -132,23 +132,8 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       let total = null
       const cols = 'id, type, timestamp, from_id as "from", to_id as "to", text, metadata, task_id, agent_id'
       if (agent) {
-        // Build WHERE clause with optional time filters
-        let where = '(from_id = ? OR to_id = ?)'
-        const baseParams = [agent, agent]
-        if (since) { where += ' AND timestamp >= ?'; baseParams.push(since) }
-        if (until) { where += ' AND timestamp <= ?'; baseParams.push(until) }
-
-        const q = afterId
-          ? `SELECT ${cols} FROM events WHERE ${where} AND id > ? ORDER BY id ASC LIMIT ?`
-          : beforeId
-          ? `SELECT ${cols} FROM events WHERE ${where} AND id < ? ORDER BY id DESC LIMIT ?`
-          : `SELECT ${cols} FROM events WHERE ${where} ORDER BY timestamp ASC LIMIT ?`
-        events = afterId
-          ? fleetStore.db.prepare(q).all(...baseParams, afterId, limit)
-          : beforeId
-          ? fleetStore.db.prepare(q).all(...baseParams, beforeId, limit)
-          : fleetStore.db.prepare(q).all(...baseParams, limit)
-        if (beforeId) events.reverse()
+        // UNION of two indexed scans — see FleetStore.queryAgentEvents.
+        events = fleetStore.queryAgentEvents({ agent, sinceTs: since, untilTs: until, afterId, beforeId, limit })
       } else if (type) {
         events = fleetStore.db.prepare(
           `SELECT ${cols} FROM events WHERE type = ? AND id > ? ORDER BY id ASC LIMIT ?`
@@ -456,12 +441,15 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       return
     }
     try {
+      const resolved = resolveSpawnTarget
+        ? await resolveSpawnTarget(spawnName, !!respawn)
+        : { name: spawnName, respawn: !!respawn }
       const result = await sendRpc(machineIds[0], 'spawn', {
-        name: spawnName || undefined,
+        name: resolved.name || undefined,
         model: model || undefined,
         doc: doc || undefined,
         cwd: cwd || undefined,
-        respawn: !!respawn,
+        respawn: resolved.respawn,
       })
       broadcastState()
       res.json(result)
@@ -599,42 +587,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       tmux_session: agent.tmux_session, lines: lines || 50,
     })
     if (result !== null) res.json(result)
-  })
-
-  // --- POST /api/restart-mcp ---
-  router.post('/api/restart-mcp', async (req, res) => {
-    const { agent: agentQuery } = req.body || {}
-    const agent = fleetStore?.findAgent(agentQuery)
-    if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
-    if (!agent.tmux_session) { res.status(400).json({ error: 'no tmux session' }); return }
-    const result = await rpcAgent(res, agent, 'restart-mcp', { tmux_session: agent.tmux_session })
-    if (result !== null) res.json(result)
-  })
-
-  // --- POST /api/restart-my-mcp ---
-  // Developer tool: restart an agent's own fleet MCP (e.g. after updating fleet.mjs).
-  // Returns 202 immediately; daemon triggers the restart ~1.5s later.
-  // body: { agent: <id|name> }
-  router.post('/api/restart-my-mcp', async (req, res) => {
-    const { agent: agentQuery } = req.body || {}
-    const agent = fleetStore?.findAgent(agentQuery)
-    if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
-    if (!agent.tmux_session) { res.status(400).json({ error: 'no tmux session' }); return }
-    res.status(202).json({ ok: true, message: 'restart scheduled' })
-    await new Promise(r => setTimeout(r, 1500))
-    const route = resolveRpc('restart-mcp', agent)
-    if (route.via === 'none') {
-      console.error(`restart-my-mcp: no daemon route for ${agent.id}: ${route.error}`)
-      return
-    }
-    try {
-      await sendRpc(route.machine_id, 'restart-mcp', {
-        tmux_session: agent.tmux_session,
-        skipPreflight: true,
-      })
-    } catch (e) {
-      console.error(`restart-my-mcp daemon call failed: ${e.message}`)
-    }
   })
 
   // --- POST /api/plan-mode-respond ---

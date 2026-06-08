@@ -288,6 +288,15 @@ function SvgPageComponent({ shape }: { shape: any }) {
           injectWordSpaces(svgEl)
           // Cache the fully-processed HTML so scroll-back re-injection is instant
           processedSvgCache.set(shape.id, { svgText: capturedSvgText, html: el.innerHTML })
+          // Final step of rendering a new page image: force its layout now, on
+          // the FINISHED svg (after the word-space mutation that would otherwise
+          // invalidate an earlier layout). Laying out a page of math (~700
+          // positioned glyphs) costs ~250-300ms; doing it here — as the tail of
+          // the render pipeline, off-screen in the prefetch buffer — means the
+          // result is cached, so scrolling the page into view (an ancestor
+          // transform) is free instead of freezing. Runs once per new image
+          // (this effect only fires when svgText changes).
+          try { svgEl.getBBox() } catch { /* not layable yet — harmless */ }
         })
       })
 

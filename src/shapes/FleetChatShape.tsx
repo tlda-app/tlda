@@ -12,6 +12,8 @@ import {
   stopEventPropagation,
   useEditor,
   useValue,
+  type Editor,
+  type TLShapeId,
 } from 'tldraw'
 import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, useContext, memo, useSyncExternalStore, forwardRef } from 'react'
 import { createPortal } from 'react-dom'
@@ -36,6 +38,7 @@ import { AgentName, PhaseIcon } from './PhaseIcon'
 import { baseName, phaseFromName } from '../../shared/lineage-name.mjs'
 import { dragCoordinator } from './dragCoordinator'
 import { DocContext, PanelContext } from '../PanelContext'
+import { getPageRenderHash, getBuiltPageCount } from '../stores'
 import { loadLookup, type LookupData } from '../synctexLookup'
 import { getSourceAnchor } from '../synctexAnchor'
 import { log } from '../logger'
@@ -528,7 +531,7 @@ function gatherViewerContext(editor: any, doc: any, chatShapeId?: string, versio
     })
   }
   const compareRef = (window as any).__tlda_compare_ref__ || null
-  const ctx = {
+  const ctx: any = {
     doc: doc.docName || null,
     version: version || null,
     compareRef,
@@ -538,8 +541,60 @@ function gatherViewerContext(editor: any, doc: any, chatShapeId?: string, versio
     browser: /Chrome/.test(navigator.userAgent) ? 'chrome' : /Safari/.test(navigator.userAgent) ? 'safari' : /Firefox/.test(navigator.userAgent) ? 'firefox' : 'unknown',
     _viewportEdges: viewportEdges,
   }
+  const stale = computeStaleness(mainEd, doc, version, visiblePages, viewport)
+  if (stale) ctx.stale = stale
   sendViewingContext(ctx)
   return ctx
+}
+
+/**
+ * Detect whether the pages under the camera have drifted from the current build
+ * (Built). The version stamp is always Built; this is the *exceptional* flag
+ * that rides on the location only when Displayed != Built. Returns null in the
+ * normal (caught-up) case. Skips entirely when the user has scrubbed to another
+ * version (the stamp won't equal Built then) — drift-vs-Built isn't meaningful.
+ */
+function computeStaleness(
+  editor: any, doc: any, version: string | null | undefined,
+  visiblePages: number[], viewport: any,
+): { kinds: string[]; pages?: number[]; builtHash: string; note: string } | null {
+  const sent = editor?.store?.get?.('shape:doc-version--sentinel' as TLShapeId)
+  const rawHash = (sent as any)?.props?.commitHash
+  const builtHash = rawHash && rawHash !== 'unknown' ? String(rawHash).slice(0, 7) : null
+  if (!builtHash) return null
+  // Scrubbed to a non-Built version → drift-vs-Built doesn't apply.
+  if (version && version !== builtHash) return null
+
+  const builtCount = getBuiltPageCount()
+  const laidOutCount = doc?.pages?.length ?? 0
+  const kinds = new Set<string>()
+  const stalePages: number[] = []
+
+  for (const pn of visiblePages) {
+    const idx0 = pn - 1
+    if (builtCount != null && idx0 >= builtCount) {        // doc shrank: page past the built end
+      kinds.add('phantom'); stalePages.push(pn); continue
+    }
+    const shapeId = doc?.pages?.[idx0]?.shapeId
+    const rh = shapeId ? getPageRenderHash(shapeId) : undefined
+    if (rh == null) { kinds.add('unrendered'); stalePages.push(pn) }     // never rendered in this viewer yet
+    else if (rh !== builtHash) { kinds.add('stale'); stalePages.push(pn) } // showing an older render
+  }
+
+  // doc grew: more built pages than are laid out, and the camera sits past the last laid-out page.
+  if (builtCount != null && builtCount > laidOutCount && viewport) {
+    const lb = doc?.pages?.[laidOutCount - 1]?.bounds
+    const lastBottom = lb ? lb.y + (lb.h ?? lb.height ?? 0) : 0
+    if (viewport.maxY > lastBottom) kinds.add('missing')
+  }
+
+  if (kinds.size === 0) return null
+  return {
+    kinds: [...kinds],
+    pages: stalePages.length ? stalePages : undefined,
+    builtHash,
+    note: 'pages under the camera have not caught up to the build; source anchor is provisional until reload',
+  }
 }
 
 async function enrichContextWithSourceLines(context: any): Promise<void> {
@@ -571,29 +626,36 @@ setViewingEnrichFn(async (ctx: any) => {
 })
 
 /**
- * Resolve the document version the user is currently viewing. Prefer the
- * shadow-repo version since that's what the MCP build pipeline considers
- * authoritative. If the user has scrubbed the shadow slider, use the active
- * snapshot; otherwise use the latest. Falls back to historyEntries for git
- * commits if no shadow data is available. Returns a short hash that travels
- * well in chat metadata.
+ * Resolve the document version the user is currently viewing, as a short hash
+ * for chat metadata. If the user has scrubbed back (shadow slider or git-history
+ * slider) the stamp reflects that historical version. Otherwise — the common
+ * case, viewing the live build — it reads the version straight from the
+ * doc-version sentinel, the convergent source that also drives the rendered
+ * pages and corner timestamp, so the stamp can't lag behind the actual build.
  */
-function currentDocVersion(panel: any): string | null {
-  // If user has scrubbed to a historical version, stamp that version's hash
+function currentDocVersion(panel: any, editor?: Editor | null): string | null {
+  // Scrubbed back via the shadow slider → the historical version you're comparing against.
   const sav = panel?.shadowActiveVersion
   if (sav?.hash) return String(sav.hash).slice(0, 7)
-  const entries = panel?.historyEntries
-  if (entries && entries.length > 0) {
-    const idx = (typeof panel.activeHistoryIdx === 'number' && panel.activeHistoryIdx >= 0)
-      ? panel.activeHistoryIdx
-      : entries.length - 1  // entries are oldest-first; -1/default = current = newest
-    // Prefer the scrubbed entry if it has a real git hash; otherwise find most recent git entry
-    const scrubbed = entries[idx]
-    if (scrubbed?.commitHash) return String(scrubbed.commitHash).slice(0, 7)
-    // Fall back to most recent entry that has a real commitHash (skip build-type entries)
-    for (let i = entries.length - 1; i >= 0; i--) {
-      if (entries[i]?.commitHash) return String(entries[i].commitHash).slice(0, 7)
-    }
+
+  // Scrubbed back via the git-history slider → the entry you scrubbed to.
+  const idx = panel?.activeHistoryIdx
+  if (typeof idx === 'number' && idx >= 0) {
+    const e = panel?.historyEntries?.[idx]
+    return e?.commitHash ? String(e.commitHash).slice(0, 7) : null
+  }
+
+  // Not scrubbed → the current build (Built). Single canonical source: the
+  // doc-version sentinel, which the build writes on every build. Never the lazy
+  // historyEntries list — it only refreshes on a full reload / text-changing
+  // rebuild, so it drifts out of date.
+  // Read from the MAIN editor: the chat shape can render in the HUD's copy
+  // store, which does not contain the doc-room sentinel shape.
+  const mainEd = (typeof window !== 'undefined' && (window as any).__tldraw_editor__) || editor
+  if (mainEd) {
+    const s = mainEd.store.get('shape:doc-version--sentinel' as TLShapeId)
+    const hash = (s as any)?.props?.commitHash
+    if (hash && hash !== 'unknown') return String(hash).slice(0, 7)
   }
   return null
 }
@@ -1382,9 +1444,9 @@ function FleetChatInner({ shape }: { shape: any }) {
     const sorted = events
       .filter((m: any) => {
         const t = m.type
-        return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'activity' || t === 'kill-session' || t === 'interrupt' || t === 'terminal_attention' || t === 'terminal_card' || t === 'plan_approval'
+        return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'activity' || t === 'kill-session' || t === 'interrupt' || t === 'terminal_attention' || t === 'terminal_card' || t === 'plan_approval' || t === 'timer'
       })
-      .filter((m: any) => !m._timer) // skip timer-fired messages
+      .filter((m: any) => !m._timer) // skip legacy timer-expired messages (fired→_timerFired and cancelled→_timerCancelled still render)
       .sort((a: any, b: any) => {
         const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0
         const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0
@@ -1422,7 +1484,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Short hash of the version currently shown in the viewer (accounts for
   // scrubbing to a historical version). Build cards compare against this to
   // style themselves green (you're viewing this build) vs gray (stale).
-  const viewingVersion = currentDocVersion(panel)
+  const viewingVersion = currentDocVersion(panel, editor)
   const rawItems = useMemo(() => {
     // Extend ctx with thinking state so renderChatLine can apply queued styling
     const renderCtx = { ...ctx, thinkingAgents }
@@ -4341,7 +4403,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                     sentHistoryRef.current = [...sentHistoryRef.current, text]
                     historyIndexRef.current = -1
                     // Now resolve viewer context (may hit the network) off the critical path.
-                    const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel))
+                    const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel, editor))
                     if (context) await enrichContextWithSourceLines(context)
                     const bullets = consumeBulletContexts()
                     if (bullets.length > 0 && context) {
@@ -4451,7 +4513,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                 stopEventPropagation(e)
                 // Register voice target on pointerdown — onFocus can be unreliable in tldraw
                 setVoiceTarget(e.currentTarget, sendTargets, agentNames, async (targets: string[], text: string) => {
-                  const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel))
+                  const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel, editor))
                   if (context) await enrichContextWithSourceLines(context)
                   const bullets = consumeBulletContexts()
                   if (bullets.length > 0 && context) {
@@ -4492,7 +4554,7 @@ function FleetChatInner({ shape }: { shape: any }) {
               onFocus={(e) => {
                 stopEventPropagation(e)
                 setVoiceTarget(e.currentTarget, sendTargets, agentNames, async (targets: string[], text: string) => {
-                  const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel))
+                  const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel, editor))
                   if (context) await enrichContextWithSourceLines(context)
                   const bullets = consumeBulletContexts()
                   if (bullets.length > 0 && context) {

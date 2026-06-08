@@ -59,6 +59,12 @@ interface CanvasClipPanelProps {
   /** Current fleet identity id — when this changes (e.g. identity resolves after
    *  initial load), fleet shapes are re-evaluated through the ownership gate. */
   identityId?: string | null
+  /** When either is set (used by the screenshot capture), the panel renders ONLY
+   *  shapes whose id is in requestedShapeIds or whose type is in requestedShapeTypes,
+   *  bypassing the doc/fleet/viewport filters. Lets an agent capture just the fleet
+   *  chat without re-rendering the heavy svg-page shapes. */
+  requestedShapeIds?: string[]
+  requestedShapeTypes?: string[]
   children?: React.ReactNode
 }
 
@@ -80,6 +86,8 @@ export function CanvasClipPanel({
   cameraOverride,
   fullViewport = false,
   identityId,
+  requestedShapeIds,
+  requestedShapeTypes,
   children,
 }: CanvasClipPanelProps) {
   const [editor, setEditor] = useState<Editor | null>(null)
@@ -157,8 +165,21 @@ export function CanvasClipPanel({
       pb.y + pb.h > vr.minY && pb.y < vr.maxY
   }
 
+  // Explicit requested-shape filter (screenshot capture): when set, render ONLY
+  // the named shapes/types and skip everything else — including the heavy svg-page
+  // shapes. Non-shape records (page/camera/asset) still sync so the editor is valid.
+  const requestedIdSet = new Set(requestedShapeIds || [])
+  const requestedTypeSet = new Set(requestedShapeTypes || [])
+  const hasShapeRequest = requestedIdSet.size > 0 || requestedTypeSet.size > 0
+  const matchesShapeRequest = (r: TLRecord): boolean =>
+    r.typeName === 'shape' &&
+    (requestedIdSet.has(r.id as string) || requestedTypeSet.has((r as any).type))
+
   const shouldSyncToCopy = (r: TLRecord): boolean => {
     if (!isDocRecord(r)) return false
+    if (hasShapeRequest) {
+      return r.typeName === 'shape' ? matchesShapeRequest(r) : true
+    }
     if (lockCamera && r.typeName === 'shape') {
       if (!FLEET_SHAPE_TYPES.has((r as any).type)) return false
       if (!isMyFleetShape(r)) return false

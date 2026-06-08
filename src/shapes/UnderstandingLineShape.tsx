@@ -126,6 +126,7 @@ export class UnderstandingLineShapeUtil extends BaseBoxShapeUtil<any> {
 
       const point = editor.inputs.currentPagePoint
       if (point.x > shape.x + shape.props.w + RIBBON_HIT_MARGIN) return null
+      if (point.x < shape.x - RIBBON_HIT_MARGIN) return null
 
       const color = (editor.getInstanceState().stylesForNextShape?.['tldraw:color'] as string) || 'green'
       const status = HIGHLIGHT_TO_STATUS[color]
@@ -165,6 +166,7 @@ export class UnderstandingLineShapeUtil extends BaseBoxShapeUtil<any> {
 
       const point = editor.inputs.currentPagePoint
       if (point.x > shape.x + shape.props.w + RIBBON_HIT_MARGIN) return null
+      if (point.x < shape.x - RIBBON_HIT_MARGIN) return null
 
       const isDrawing = editor.inputs.isDragging || editor.inputs.isPointing
       if (isDrawing) {

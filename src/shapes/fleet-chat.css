@@ -38,17 +38,22 @@
 }
 
 
-/* Fleet HUD sits above all canvas content (notes, doc pages, etc.). All fleet
-   shape types share ONE z-index so stacking ORDER among them is decided by
-   DOM/paint order (TLDraw's bringToFront), NOT a fixed CSS layer. With a fixed
-   per-type layer (chat 8210 > agents 8201 …) an overlapped panel could never be
-   raised above another — its move buttons stayed buried and it couldn't be
-   separated. Equal z-index lets pointer-down → bringToFront actually surface the
-   panel you grab. */
-[data-shape-type="fleet-docview"],
-[data-shape-type="fleet-agents"],
-[data-shape-type="fleet-search"],
-[data-shape-type="fleet-chat"] {
+/* Lift fleet shapes above doc/canvas content (notes, pages, drawings) — but
+   ONLY in the main canvas. TLDraw writes an inline `z-index` on each shape's
+   container from its sort order, so this needs `!important` to win there.
+
+   The HUD overlay (.fleet-hud-wrap) is deliberately EXCLUDED: it's a separate
+   full-viewport layer that already sits above all canvas content and renders
+   ONLY fleet panels. Inside it, a flat per-type z-index would pin every panel
+   to the same layer and defeat TLDraw's bringToFront — so an overlapped panel
+   could never be raised and its move/close buttons stayed buried (the bug Skip
+   hit). By NOT overriding z-index there, TLDraw's own per-shape z-index governs
+   inter-panel stacking, so pointer-down → bringToFront actually surfaces the
+   panel you grab. (`:not(.fleet-hud-wrap *)` = "not inside the HUD overlay".) */
+[data-shape-type="fleet-docview"]:not(.fleet-hud-wrap *),
+[data-shape-type="fleet-agents"]:not(.fleet-hud-wrap *),
+[data-shape-type="fleet-search"]:not(.fleet-hud-wrap *),
+[data-shape-type="fleet-chat"]:not(.fleet-hud-wrap *) {
   z-index: 8200 !important;
 }
 [data-shape-type="fleet-chat"] {
@@ -761,17 +766,13 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 }
 
 /* --- Timer messages --- */
-/* Active countdown is an actionable, time-critical control (Skip can cancel it),
-   so it's deliberately more prominent than passive chrome. */
+/* The active countdown reads as normal chat text with a quiet purple timer —
+   it's information, not an alarm. No loud bar, no bold, no orange. */
 .fleet-chat-shape .chat-timer-countdown {
   font-size: 12px;
-  opacity: 0.95;
-  border-left: 2px solid var(--orange, #e08a3c);
-  padding-left: 6px;
 }
 .fleet-chat-shape .chat-timer-countdown .timer-msg {
-  color: var(--orange, #e08a3c);
-  font-weight: 600;
+  color: var(--purple, #9090c0);
 }
 .fleet-chat-shape .chat-timer-cancelled {
   font-size: 11px;
@@ -780,6 +781,15 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .chat-timer-cancelled .timer-msg {
   color: var(--text-dim);
   text-decoration: line-through;
+}
+/* Fired — terminal but persists in the log (the ✅ marks it ran). More present
+   than the struck "cancelled" line, but quieter than the active countdown. */
+.fleet-chat-shape .chat-timer-fired {
+  font-size: 11px;
+  opacity: 0.7;
+}
+.fleet-chat-shape .chat-timer-fired .timer-msg {
+  color: var(--text-dim);
 }
 .fleet-chat-shape .chat-timer-msg {
   font-size: 11px;

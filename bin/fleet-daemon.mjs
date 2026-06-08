@@ -1593,11 +1593,6 @@ async function rpcKillSession({ tmux_session, agent_id: _agent_id }) {
   return { ok: true, tmux_session }
 }
 
-async function rpcRestartMcp({ tmux_session, skipPreflight }) {
-  // No-op: the fleet MCP reconnects automatically via WS retry logic.
-  // Triggering a hard restart via /mcp causes unnecessary SIGTERM churn.
-  return { ok: true, tmux_session, noop: true }
-}
 
 // Live terminal-card watching via PTY streaming.
 // Instead of polling `tmux capture-pane`, we spawn a PTY running
@@ -2229,6 +2224,11 @@ async function listPlaywrightBrowsers() {
     const args = m[3]
     if (!args.includes('playwright_chromiumdev_profile') && !args.includes('ms-playwright')) continue
     if (args.includes('--type=')) continue
+    // Never reap the canonical `tlda-dev pw` shared browser. It's a launcher-less
+    // daemon by design (persists until `tlda pw reap`), so the orphan heuristic
+    // always flags it — and under memory pressure the threshold collapses to ~30s,
+    // killing it every minute, which strands agents on a blank data: tab.
+    if (args.includes('ud-shared-chrome')) continue
     browsers.push({ pid, ppid, args })
   }
   return browsers
@@ -2417,7 +2417,6 @@ const RPC_HANDLERS = {
   'list-sessions': rpcListSessions,
   'kick': rpcKick,
   'kill-session': rpcKillSession,
-  'restart-mcp': rpcRestartMcp,
   'start-terminal-watch': rpcStartTerminalWatch,
   'stop-terminal-watch': rpcStopTerminalWatch,
   'terminal-resize': rpcTerminalResize,

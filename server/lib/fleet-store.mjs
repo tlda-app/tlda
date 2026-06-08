@@ -558,6 +558,12 @@ export class FleetStore {
     // subquery, then a grouped index pass); both scanned ~400k events per call
     // and pinned the event loop for seconds-to-tens-of-seconds under load.
     this._getAllAgents = this.db.prepare(`SELECT * FROM agents ORDER BY last_seen DESC`);
+    // Live-only roster (the agents panel never shows dead agents). Indexed by
+    // idx_agents_alive(dead, last_seen DESC) → returns ~tens of rows, not ~1300.
+    this._getAliveAgents = this.db.prepare(`SELECT * FROM agents WHERE dead = 0 ORDER BY last_seen DESC`);
+    // id→friendly_name only — for labeling chat history without hydrating all
+    // ~1300 agents (parsing labels/metadata/session JSON per row).
+    this._getAgentNames = this.db.prepare(`SELECT id, friendly_name FROM agents`);
     this._deleteAgent = this.db.prepare('DELETE FROM agents WHERE id = ?');
     this._updateAgentLastSeen = this.db.prepare('UPDATE agents SET last_seen = ?, dead = 0 WHERE id = ?');
     this._markAgentDead = this.db.prepare('UPDATE agents SET dead = 1 WHERE id = ?');
@@ -699,7 +705,7 @@ export class FleetStore {
 
     // Track unread if this is a message to someone (fire-and-forget on the
     // worker — same writer, so it's ordered after the event insert above).
-    if (event.unread !== false && event.to && event.type === 'chat') {
+    if (event.unread !== false && event.to && (event.type === 'chat' || event.type === 'delegate')) {
       this._w(this._insertUnread, [eventId, event.to]);
       // Also mark unread for CC recipients
       const cc = event.metadata?.cc;
@@ -757,7 +763,7 @@ export class FleetStore {
   delegate(from, to, taskId, description, metadata) {
     return this.share({
       type: 'delegate', from, to, text: description,
-      taskId, metadata, unread: false, // lifecycle cards are informational
+      taskId, metadata, unread: true, // a delegate wakes its recipient (counts as awake)
     });
   }
 
@@ -816,6 +822,7 @@ export class FleetStore {
         agent.metadata ? JSON.stringify(agent.metadata) : null,
         agent.machine_id || null
       );
+      this._bustAgentsCache();
     } catch (e) {
       if (e.code === 'SQLITE_CONSTRAINT_UNIQUE' || e.message?.includes('UNIQUE constraint failed')) {
         throw new Error(`Name "${agent.friendly_name}" is already taken by another live agent`);
@@ -992,7 +999,51 @@ export class FleetStore {
   }
 
   getAllAgents() {
-    return this._getAllAgents.all().map(r => this._hydrateAgent(r));
+    // In-memory roster snapshot. The roster is read constantly (store-agents,
+    // roll_call, the boot path — ~1400 calls per log window) to re-sort a list
+    // that barely changes; re-querying + re-hydrating ~1300 rows on every call
+    // was a top source of lock contention. Serve a hydrated snapshot from
+    // memory, rebuilding only after a short TTL or an explicit structural bust
+    // (register, mark-dead, remove). Heartbeats (last_seen) deliberately do NOT
+    // bust — a ≤1s-stale last_seen is fine for ordering, and busting on every
+    // heartbeat would defeat the cache. Treat the result as read-only: callers
+    // build view models via map/filter, they don't mutate agent objects.
+    const TTL_MS = 1000;
+    const now = Date.now();
+    if (this._agentsCache && (now - this._agentsCacheTs) < TTL_MS) {
+      return this._agentsCache;
+    }
+    this._agentsCache = this._getAllAgents.all().map(r => this._hydrateAgent(r));
+    this._agentsCacheTs = now;
+    return this._agentsCache;
+  }
+
+  // Plain { id: friendly_name } map for labeling chat history. The hot
+  // chat-history callers only need display names, so this avoids pulling and
+  // hydrating the full ~1300-row roster (the remaining `agents ORDER BY
+  // last_seen` slow query). Cached 1s, busted by the same structural hook.
+  // Returns the cached object directly — callers must not mutate it (spread
+  // it first if they need to add keys).
+  getAgentNameMap() {
+    const TTL_MS = 1000;
+    const now = Date.now();
+    if (this._nameMapCache && (now - this._nameMapCacheTs) < TTL_MS) {
+      return this._nameMapCache;
+    }
+    const map = {};
+    for (const r of this._getAgentNames.all()) map[r.id] = r.friendly_name || r.id;
+    this._nameMapCache = map;
+    this._nameMapCacheTs = now;
+    return map;
+  }
+
+  // Force the next getAllAgents()/getAliveAgents()/getAgentNameMap() to rebuild.
+  // Call after any structural change (insert/register, dead/alive flip, removal)
+  // so it shows up immediately instead of waiting out the TTL.
+  _bustAgentsCache() {
+    this._agentsCacheTs = 0;
+    this._aliveCacheTs = 0;
+    this._nameMapCacheTs = 0;
   }
 
   // Single gate for naming/labeling. Returns [] if all `names` are available.
@@ -1050,11 +1101,23 @@ export class FleetStore {
   }
 
   getAliveAgents() {
-    return this.getAllAgents().filter(a => !a.dead);
+    // Highest-frequency roster read (store-agents / agents panel). Query
+    // dead=0 directly via idx_agents_alive — ~tens of rows — instead of
+    // pulling the full ~1300-row table through getAllAgents and filtering.
+    // Same 1s TTL + structural bust as getAllAgents.
+    const TTL_MS = 1000;
+    const now = Date.now();
+    if (this._aliveCache && (now - this._aliveCacheTs) < TTL_MS) {
+      return this._aliveCache;
+    }
+    this._aliveCache = this._getAliveAgents.all().map(r => this._hydrateAgent(r));
+    this._aliveCacheTs = now;
+    return this._aliveCache;
   }
 
   removeAgent(id) {
     this._deleteAgent.run(id);
+    this._bustAgentsCache();
   }
 
   updateHeartbeat(id) {
@@ -1065,6 +1128,7 @@ export class FleetStore {
 
   markDead(id) {
     this._markAgentDead.run(id);
+    this._bustAgentsCache();
   }
 
   updateAgentStatus(id, state, tool, ts) {
@@ -1289,6 +1353,53 @@ export class FleetStore {
       this.db.prepare('UPDATE agents SET lineage_id = ?, friendly_name = ? WHERE id = ?')
         .run(lineageId, dawnName, incomingAgentId);
       enterLog(incomingAgentId, 'dawn');
+    })();
+  }
+
+  // Free a phase slot so a new agent can be placed there, instead of erroring on
+  // "occupied." The current occupant ages one rung toward night, cascading — each
+  // occupied rung from the target down pushes its holder into the rung below, and
+  // whoever would fall off night retires (loses its name, marked dead, kept as
+  // nameless history). No-op if the slot is already free. This is the "free the
+  // names you need, then place" half of a handoff rotation.
+  makeRoomForPhase(lineageId, phase) {
+    const base = this._lineageBase(lineageId);
+    if (!base) return;
+    const ORDER = ['dawn', 'day', 'dusk', 'night'];
+    const startIdx = ORDER.indexOf(phase);
+    if (startIdx < 0) return;
+    const now = Date.now();
+    const holder = (name) => this.db.prepare(
+      'SELECT id FROM agents WHERE lineage_id = ? AND friendly_name = ? AND dead = 0'
+    ).get(lineageId, name)?.id || null;
+    const exitLog = (id) => this.db.prepare(
+      'UPDATE lineage_phase_log SET exited_at = ? WHERE fleet_id = ? AND exited_at IS NULL'
+    ).run(now, id);
+    const enterLog = (id, ph) => {
+      const prev = this.db.prepare(
+        'SELECT MAX(entered_at) AS m FROM lineage_phase_log WHERE lineage_id = ? AND fleet_id = ?'
+      ).get(lineageId, id);
+      const ts = Math.max(now, (prev?.m || 0) + 1);
+      this.db.prepare(
+        'INSERT INTO lineage_phase_log (lineage_id, fleet_id, phase, entered_at) VALUES (?, ?, ?, ?)'
+      ).run(lineageId, id, ph, ts);
+    };
+    this.db.transaction(() => {
+      // Walk bottom-up (night → target): each occupied rung's holder moves into
+      // the rung below (already vacated this pass), and the night holder retires.
+      for (let i = ORDER.length - 1; i >= startIdx; i--) {
+        const id = holder(nameForPhase(base, ORDER[i]));
+        if (!id) continue;
+        exitLog(id);
+        if (i === ORDER.length - 1) {
+          this.db.prepare('UPDATE agents SET friendly_name = NULL, dead = 1 WHERE id = ?').run(id);
+        } else {
+          const downPh = ORDER[i + 1];
+          this.db.prepare('UPDATE agents SET friendly_name = ? WHERE id = ?')
+            .run(nameForPhase(base, downPh), id);
+          enterLog(id, downPh);
+        }
+      }
     })();
   }
 
@@ -1746,6 +1857,43 @@ export class FleetStore {
 
   getLastEventId() {
     return this._lastRowid.get()?.max_id || 0;
+  }
+
+  // Fetch one agent's thread (events where it is sender OR recipient) as a
+  // UNION of two indexed scans instead of `(from_id=? OR to_id=?)`. The OR
+  // forces SQLite into a MULTI-INDEX-OR + temp-btree sort that measured ~10×
+  // slower (890ms → 80ms for a wide-window, no-type-filter read). Each branch
+  // hits idx_events_from / idx_events_to; UNION (not UNION ALL) dedupes the
+  // from==to==agent row by full-row identity (id is unique). Handles the four
+  // shapes the callers need: timestamp range, afterId, beforeId, plain.
+  // Returns rows in the same order/orientation the old inline query did.
+  queryAgentEvents({ agent, types = null, sinceTs = null, untilTs = null, afterId = 0, beforeId = null, limit = 200 }) {
+    const cols = 'id, type, timestamp, from_id as "from", to_id as "to", text, metadata, task_id, agent_id';
+    const tail = [];
+    const tailParams = [];
+    if (types && types.length) { tail.push(`type IN (${types.map(() => '?').join(',')})`); tailParams.push(...types); }
+    let order;
+    // `id` is the deterministic tiebreaker on equal timestamps — without it the
+    // page boundary at LIMIT is nondeterministic (the old OR query had this
+    // latent bug; the UNION makes it visible, so fix it here).
+    if (sinceTs || untilTs) {
+      if (sinceTs) { tail.push('timestamp > ?'); tailParams.push(sinceTs); }
+      if (untilTs) { tail.push('timestamp <= ?'); tailParams.push(untilTs); }
+      order = 'timestamp ASC, id ASC';
+    } else if (afterId) {
+      tail.push('id > ?'); tailParams.push(afterId); order = 'id ASC';
+    } else if (beforeId) {
+      tail.push('id < ?'); tailParams.push(beforeId); order = 'id DESC';
+    } else {
+      order = 'timestamp ASC, id ASC';
+    }
+    const tailSql = tail.length ? ' AND ' + tail.join(' AND ') : '';
+    const branch = (col) => `SELECT * FROM (SELECT ${cols} FROM events WHERE ${col} = ?${tailSql} ORDER BY ${order} LIMIT ?)`;
+    const sql = `SELECT * FROM (${branch('from_id')} UNION ${branch('to_id')}) ORDER BY ${order} LIMIT ?`;
+    const params = [agent, ...tailParams, limit, agent, ...tailParams, limit, limit];
+    const rows = this.db.prepare(sql).all(...params);
+    if (beforeId) rows.reverse();
+    return rows;
   }
 
   // ---- Search ----

@@ -13,6 +13,7 @@ export {
 export { subscribeSearchFilter, getSearchFilter, setSearchFilter, clearSearchFilter } from './searchFilterStore'
 export { addBulletContext, removeBulletContext, getBulletContexts, subscribeBulletContext, consumeBulletContexts, clearBulletContexts, genBulletId, type BulletContext } from './bulletContextStore'
 export { getPageUrl, getPageFilename, setPageUrl, clearPageUrls } from './pageUrlStore'
+export { setPageRenderHash, getPageRenderHash, setBuiltPageCount, getBuiltPageCount, clearRenderHashes } from './renderHashStore'
 
 import { clearSvgTextStore } from './svgTextStore'
 import { svgViewBoxStore } from './svgViewBoxStore'
@@ -20,6 +21,7 @@ import { anchorIndex } from './anchorIndex'
 import { changeStore, changedPages } from './changeStore'
 import { clearSearchFilter } from './searchFilterStore'
 import { clearPageUrls } from './pageUrlStore'
+import { clearRenderHashes } from './renderHashStore'
 
 /** Clear all module-level stores — call on document switch to prevent stale data. */
 export function clearDocumentStores() {
@@ -30,4 +32,5 @@ export function clearDocumentStores() {
   changedPages.clear()
   clearSearchFilter()
   clearPageUrls()
+  clearRenderHashes()
 }

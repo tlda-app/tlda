@@ -472,10 +472,14 @@ export function connect() {
               ev._promptResponse = 'rejected'
             }
             // Timer countdown reaching a terminal state: flip the derived flags
-            // so the line re-renders as cancelled (struck) or vanishes (fired).
+            // so the line re-renders as cancelled (struck) or fired (persists,
+            // showing it ran). Neither state hides the line.
             if (ev.type === 'timer' || ev._timerCountdown || ev._timerCancelled) {
               if (ev.metadata.state === 'cancelled') {
                 ev._timerCancelled = true; ev._timerCountdown = false
+              } else if (ev.metadata.state === 'fired') {
+                ev._timerFired = true; ev._timerCountdown = false
+                if (!ev._timerMessage) ev._timerMessage = ev.metadata.message || (ev.text || '').replace(/^[⏱⏰]\s*/, '')
               } else if (ev.metadata.pending === false) {
                 ev._timer = true; ev._timerCountdown = false
               }
@@ -647,8 +651,13 @@ export function convertChatEvent(e) {
       msg._timerUntil = e.metadata.fire_at
       msg._timerMessage = tmsg
       msg._timerRemaining = Math.max(0, Math.ceil((new Date(e.metadata.fire_at) - Date.now()) / 1000))
+    } else if (e.metadata?.state === 'fired') {
+      // Fired — keep it as a terminal line so the timer stays in the log
+      // showing it ran. A timer is a chat event; it shouldn't vanish on fire.
+      msg._timerFired = true
+      msg._timerMessage = tmsg
     } else {
-      // Fired/expired — hidden; the action's own result message follows.
+      // Expired with no terminal state recorded — legacy/dim line.
       msg._timer = true
     }
   } else if (type === 'compacting') {

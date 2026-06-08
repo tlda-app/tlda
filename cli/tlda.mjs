@@ -1382,6 +1382,47 @@ async function cmdAgent() {
   }
 }
 
+// Restart the fleet MCP for agents by driving Claude Code's /mcp menu via the
+// bin/fleet-mcp-restart script (path resolved here, not relying on PATH).
+// Dev-only — surfaced as `tlda-dev restart-mcp`, kept out of `tlda --help`.
+//   tlda-dev restart-mcp                  → your own MCP (current tmux session)
+//   tlda-dev restart-mcp foo bar          → those agents
+//   tlda-dev restart-mcp --all [--except foo bar]
+async function restartMcpAgents(rest) {
+  const { spawnSync } = await import('child_process')
+  const script = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'fleet-mcp-restart')
+  if (!existsSync(script)) { console.error(red(`fleet-mcp-restart not found: ${script}`)); process.exit(1) }
+
+  // No args → restart own MCP (script defaults the session to the current tmux session).
+  if (rest.length === 0) {
+    const r = spawnSync('bash', [script, '--skip-preflight'], { stdio: 'inherit' })
+    process.exit(r.status ?? 0)
+  }
+
+  let targets
+  if (rest.includes('--all')) {
+    const ei = rest.indexOf('--except')
+    const except = new Set((ei >= 0 ? rest.slice(ei + 1) : []).map(n => n.replace(/^fleet-/, '')))
+    const res = spawnSync('tmux', [...tmuxBase(), 'list-sessions', '-F', '#{session_name}'], { encoding: 'utf8' })
+    const all = (res.status === 0 ? res.stdout.trim().split('\n') : [])
+      .filter(n => n.startsWith('fleet-')).map(n => n.replace(/^fleet-/, ''))
+    targets = all.filter(n => !except.has(n))
+  } else {
+    targets = rest.filter(a => !a.startsWith('--'))
+  }
+
+  if (targets.length === 0) { console.log('No agents to restart.'); process.exit(0) }
+  let ok = 0, fail = 0
+  for (const name of targets) {
+    process.stdout.write(`restart-mcp ${name} … `)
+    const r = spawnSync('bash', [script, agentSessionName(name)], { encoding: 'utf8' })
+    if (r.status === 0) { console.log('ok'); ok++ }
+    else { console.log(`FAILED: ${((r.stderr || '') + (r.stdout || '')).trim().split('\n').filter(Boolean).pop() || 'error'}`); fail++ }
+  }
+  console.log(`Done: ${ok} ok${fail ? `, ${fail} failed` : ''}.`)
+  process.exit(fail ? 1 : 0)
+}
+
 // Top-level spawn/attach kept working so the existing spawn path isn't broken;
 // `tlda agent …` is the canonical form.
 async function cmdAttach() { await attachToAgent(getPositional(0)) }
@@ -1996,7 +2037,19 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
       const pid = data.pid ? `, pid ${data.pid}` : ''
       console.log(green(`Server running`) + dim(` (uptime: ${Math.floor(data.uptime)}s${pid})`))
     } catch {
-      console.log(red('Server not running.'))
+      // /health didn't answer in 3s. That is NOT proof the server is down — a
+      // blocked event loop (slow query) times out the same way a dead process
+      // does. If the port is still held the process IS alive; reporting "not
+      // running" here is exactly what makes callers (agents, fleet-spawn) try
+      // to restart a live server, which flaps fleet chat. Only report down when
+      // nothing holds the port.
+      let held = ''
+      try { held = execSync(`lsof -ti:${port} -sTCP:LISTEN`, { stdio: 'pipe' }).toString().trim() } catch { held = '' } // lsof exits non-zero when nothing is listening → port not held
+      if (held) {
+        console.log(yellow('Server running') + dim(` but not responding (event loop busy, pid ${held.split('\n')[0]})`))
+      } else {
+        console.log(red('Server not running.'))
+      }
     }
     return
   }
@@ -2082,6 +2135,21 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
           return
         }
       } catch {}
+    }
+    // The wait expired without a 200 from /health. Before declaring failure
+    // (and exiting non-zero, which makes callers retry → restart stampede),
+    // check whether the process is actually up but slow: launchd may have
+    // started it and its event loop may just be busy on a big boot query. A
+    // held port means it's alive — report success, don't trigger a retry.
+    let held = ''
+    try { held = execSync(`lsof -ti:${port} -sTCP:LISTEN`, { stdio: 'pipe' }).toString().trim() } catch { held = '' } // lsof exits non-zero when nothing is listening → port not held
+    if (held) {
+      console.log(green(`Server running at ${getServer()}`) + dim(` (pid ${held.split('\n')[0]}, slow to respond — still booting)`))
+      console.log(dim(`  Log: ${LOGFILE}`))
+      if (hasLaunchd) console.log(dim('  Managed by launchd (auto-restarts)'))
+      await ensureFleetDaemonRunning()
+      await ensureElizaRunning()
+      return
     }
     console.error(red('Server failed to start within 30s'))
     console.error(dim(`Check log: ${LOGFILE}`))
@@ -2355,6 +2423,7 @@ async function main() {
       case 'config': await cmdConfig(); break
       case 'setup': await cmdSetup(); break
       case 'agent': await cmdAgent(); break
+      case 'restart-mcp': await restartMcpAgents(process.argv.slice(3)); break // dev-only; surfaced via `tlda-dev restart-mcp`
       case 'dev': await cmdDev(); break
       case 'dev-url': await cmdDevUrl(); break
       case 'deploy': await cmdDeploy(); break

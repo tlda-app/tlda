@@ -42,7 +42,7 @@ import { lookup as mimeLookup } from 'mime-types'
 import { DEFAULT_PORT, hasTls } from '../shared/config.mjs'
 import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
 import { labelsForAgent, evalDnf } from '../shared/fleet-labels.mjs'
-import { phaseFromName, PHASES } from '../shared/lineage-name.mjs'
+import { phaseFromName, baseName, PHASES } from '../shared/lineage-name.mjs'
 import { initProjectStore, listProjects, readProject, getProjectsDir } from './lib/project-store.mjs'
 import { resetStaleBuildStates, killAllBuilds, runBuild } from './lib/build-runner.mjs'
 import projectRoutes, { processProjectPush } from './routes/projects.mjs'
@@ -631,7 +631,12 @@ const _lastAgentJson = new Map()
 
 function _broadcastStateNow() {
   if (!fleetStore) return
-  const agents = fleetStore.getAllAgents().map(a => {
+  // Live agents only — the panel never shows dead agents, and store-agents
+  // already returns alive-only, so the broadcast must match. A dying agent
+  // drops out of the alive set → goes in `removed` → vanishes from the panel.
+  // Bonus: this is the cheap indexed read (idx_agents_alive, ~tens of rows)
+  // instead of hydrating the full ~1300-row roster on every state change.
+  const agents = fleetStore.getAliveAgents().map(a => {
     if (_thinkingState.has(a.id)) return { ...a, status: 'thinking' }
     if (_compactingState.has(a.id)) return { ...a, status: 'compacting' }
     return a
@@ -674,6 +679,38 @@ let _broadcastTimer = null
 function broadcastState() {
   if (_broadcastTimer) return
   _broadcastTimer = setTimeout(() => { _broadcastTimer = null; _broadcastStateNow() }, 50)
+}
+
+// Spawning a name that already belongs to a live agent isn't an error — the user
+// "meant that one." Coerce it to a respawn (resume if hibernating, no-op if it's
+// already running, both handled by fleet-spawn) and emit a synthetic activity
+// event so the agent floats to the top of the panel's Active sort. Mirrors what
+// `tlda agent spawn <name>` already does on the CLI. Explicit respawns skip this
+// (they raise themselves when the resumed agent re-registers).
+async function resolveSpawnTarget(name, respawn) {
+  if (respawn || !name || !fleetStore) return { name, respawn }
+  let existing = null
+  try {
+    existing = fleetStore.findAgent(name)
+  } catch (e) {
+    // findAgent throws when >1 live agents already share this name — a pre-existing
+    // pathology, not something this spawn caused. Leave it as a fresh spawn, but
+    // don't swallow it: surface the duplicate so it gets noticed.
+    console.warn(`[spawn] name "${name}" matches multiple live agents — spawning fresh: ${e.message}`)
+    return { name, respawn }
+  }
+  if (!existing || existing.dead) return { name, respawn }
+  try {
+    await fleetStore.share({
+      type: 'activity', from: existing.id, to: existing.id,
+      text: 'spawn', metadata: { tool: 'spawn', synthetic: true }, unread: false,
+    })
+    fleetStore._bustAgentsCache?.()
+    broadcastState()
+  } catch (e) {
+    console.error(`[spawn] raise failed for ${existing.id}: ${e.message}`)
+  }
+  return { name: existing.friendly_name || name, respawn: true }
 }
 
 // Wire fleet store events → WS broadcast
@@ -1770,7 +1807,7 @@ function clearEphemeralState(agentId) {
 const fleetRouter = createFleetRouter({
   fleetStore, broadcastEvent, broadcastState, clearEphemeralState,
   suppressEchoFor: () => {},
-  sendRpc, resolveRpc, daemonConnections,
+  sendRpc, resolveRpc, daemonConnections, resolveSpawnTarget,
 })
 app.use(fleetRouter)
 
@@ -2050,7 +2087,9 @@ server.on('upgrade', async (req, socket, head) => {
       // Send initial state on connect
       if (fleetStore) {
         const initState = {
-          agents: fleetStore.getAllAgents(),
+          // Live agents only (awake + hibernating); dead agents never show in
+          // the panel. Matches store-agents and the agents-delta broadcast.
+          agents: fleetStore.getAliveAgents(),
           tasks: fleetStore.getActiveTasks(),
           thinking: Object.fromEntries(_thinkingState),
           compacting: Object.fromEntries(_compactingState),
@@ -2100,9 +2139,13 @@ async function handleFleetWsMessage(ws, msg) {
   // format, so bots speak the same language as real agents. timer-set stores +
   // broadcasts a pending timer; timer-fire/cancel patches it to a terminal state.
   if (type === 'timer-set') {
-    const { agent, message, fire_at } = msg
+    const { agent, message, fire_at, to: toAgent } = msg
     const from = (agent && fleetStore.findAgent?.(agent)?.id) || agent || SERVER_OWNER_ID
-    const to = SERVER_OWNER_ID
+    // Address the countdown to the conversation it belongs to (e.g. the agent
+    // being handed off). A chat panel only renders events whose from/to matches
+    // its target agent, so a countdown hardcoded to the owner never appears in
+    // the panel the user triggered it from. Falls back to the owner.
+    const to = (toAgent && fleetStore.findAgent?.(toAgent)?.id) || toAgent || SERVER_OWNER_ID
     const metadata = { pending: true, fire_at, message }
     const event = await fleetStore.share({ type: 'timer', from, to, text: `⏱ ${message}`, metadata })
     broadcastEvent('fleet-event', { type: 'timer', from, to, id: event.id, event_id: event.id, text: `⏱ ${message}`, metadata })
@@ -2187,8 +2230,14 @@ async function handleFleetWsMessage(ws, msg) {
       const stored = fleetStore.getAgent?.(agentId)
       if (stored && !stored.lineage_id) {
         try {
-          const lineage = fleetStore.getOrCreateLineage(agent.friendly_name)
-          fleetStore.assignPhase(agentId, lineage.id, 'dawn')
+          // The name IS the lineage assignment: a "<base>:<phase>" name says which
+          // lineage and which phase. Map straight onto the <base> lineage — don't
+          // build a fresh lineage from the full suffixed name. A bare name → its
+          // own lineage at dawn, exactly as before.
+          const base = baseName(agent.friendly_name)
+          const phase = phaseFromName(agent.friendly_name) || 'dawn'
+          const lineage = fleetStore.getOrCreateLineage(base)
+          fleetStore.assignPhase(agentId, lineage.id, phase)
         } catch (e) { console.error(`[lineage] auto-assign failed for ${agentId}: ${e.message}`) }
       }
     }
@@ -2584,9 +2633,7 @@ async function handleFleetWsMessage(ws, msg) {
         const t = e.text || ''
         return !t.startsWith('<channel') && !t.startsWith('<task-notification') && !t.startsWith('<system-reminder')
       })
-      const allAgents = fleetStore.getAllAgents()
-      const agentMap = {}
-      for (const a of allAgents) agentMap[a.id] = a.friendly_name || a.name || a.id
+      const agentMap = { ...fleetStore.getAgentNameMap() }
       agentMap['web'] = agentMap[SERVER_OWNER_ID] || SERVER_OWNER_NAME
       const unreadIds = new Set()
       const _evIds = events.map(e => e.id).filter(id => id != null)
@@ -2832,9 +2879,9 @@ async function handleFleetWsMessage(ws, msg) {
     if (!agent) { error('agent not found'); return }
     const lineageName = lineageQuery || agent.friendly_name || agentQuery
     const lineage = fleetStore.getOrCreateLineage(lineageName)
-    const roster = fleetStore.getLineageRoster(lineage.id)
-    const occupied = roster.find(a => phaseFromName(a.friendly_name) === phase)
-    if (occupied) { error(`Phase "${phase}" in lineage "${lineageName}" is occupied by ${occupied.friendly_name || occupied.id}`); return }
+    // Free the slot (age occupants one rung toward night, oldest retires)
+    // instead of erroring on "occupied" — "free the names you need, then place."
+    fleetStore.makeRoomForPhase(lineage.id, phase)
     fleetStore.assignPhase(agent.id, lineage.id, phase)
     broadcastState()
     reply({ ok: true, agent: agent.id, lineage: lineage.id, lineage_name: lineage.friendly_name, phase })
@@ -2873,12 +2920,33 @@ async function handleFleetWsMessage(ws, msg) {
     const agent = fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
     if (!agent.lineage_id) { error('agent is not in a lineage'); return }
-    const roster = fleetStore.getLineageRoster(agent.lineage_id)
-    const occupied = roster.find(a => phaseFromName(a.friendly_name) === phase && a.id !== agent.id)
-    if (occupied) { error(`Phase "${phase}" is occupied by ${occupied.friendly_name || occupied.id}`); return }
+    // Free the target slot (age occupants one rung toward night, oldest retires)
+    // instead of erroring. Handoffs only move an agent DOWN the chain (dawn→day/
+    // dusk), so the moving agent sits above the target and isn't caught in the
+    // cascade.
+    fleetStore.makeRoomForPhase(agent.lineage_id, phase)
     fleetStore.transitionPhase(agent.id, phase)
     broadcastState()
     reply({ ok: true, agent: agent.id, phase })
+    return
+  }
+
+  // ---- lineage-make-room: free a phase slot (age occupants toward night) ----
+  // "Free the names you need, then place." Used by a handoff to reserve a slot
+  // (e.g. :day for the briefer) before the new agent arrives.
+  if (type === 'lineage-make-room') {
+    const { phase, lineage: lineageQuery, agent: agentQuery } = msg
+    if (!phase) { error('phase required'); return }
+    if (!PHASES.includes(phase)) { error(`phase must be one of: ${PHASES.join(', ')}`); return }
+    let lineage = lineageQuery ? fleetStore.getLineage(lineageQuery) : null
+    if (!lineage && agentQuery) {
+      const a = fleetStore.findAgent(agentQuery)
+      if (a?.lineage_id) lineage = fleetStore.getLineage(a.lineage_id)
+    }
+    if (!lineage) { error('lineage not found'); return }
+    fleetStore.makeRoomForPhase(lineage.id, phase)
+    broadcastState()
+    reply({ ok: true, lineage: lineage.id, phase })
     return
   }
 
@@ -3008,9 +3076,10 @@ async function handleFleetWsMessage(ws, msg) {
     const machineIds = [...daemonConnections.keys()]
     if (machineIds.length === 0) { error('No fleet daemon connected — cannot spawn agents'); return }
     try {
+      const resolved = await resolveSpawnTarget(spawnName, !!respawn)
       const result = await sendRpc(machineIds[0], 'spawn', {
-        name: spawnName || undefined, model: model || undefined,
-        doc: doc || undefined, respawn: !!respawn, effort: effort || undefined,
+        name: resolved.name || undefined, model: model || undefined,
+        doc: doc || undefined, respawn: resolved.respawn, effort: effort || undefined,
       })
       broadcastState()
       reply(result)
@@ -3240,9 +3309,7 @@ async function handleFleetWsMessage(ws, msg) {
       const hasMore = events.length > limit
       if (hasMore) events.shift()
       events = events.filter(e => { const t = e.text || ''; return !t.startsWith('<channel') && !t.startsWith('<task-notification') && !t.startsWith('<system-reminder') })
-      const allAgents = fleetStore.getAllAgents()
-      const agentMap = {}
-      for (const a of allAgents) agentMap[a.id] = a.friendly_name || a.name || a.id
+      const agentMap = fleetStore.getAgentNameMap()
       const unreadIds = new Set()
       const _evIds = events.map(e => e.id).filter(id => id != null)
       if (_evIds.length) {
@@ -3278,35 +3345,10 @@ async function handleFleetWsMessage(ws, msg) {
       let total = null
       const cols = 'id, type, timestamp, from_id as "from", to_id as "to", text, metadata, task_id, agent_id'
       if (evtAgent) {
-        const agentWhere = '(from_id = ? OR to_id = ?)'
-        const baseParams = [evtAgent, evtAgent]
-        // Build optional type filter clause
-        const typeClause = evtTypes ? `type IN (${evtTypes.map(() => '?').join(',')})` : null
-        const typeParams = evtTypes || []
-        const where = typeClause ? `${agentWhere} AND ${typeClause}` : agentWhere
-        const allBaseParams = [...baseParams, ...typeParams]
-        if (sinceTs || untilTs) {
-          // Timestamp pagination: filter by timestamp range, return earliest
-          // matches in chronological order. No COUNT — callers detect overflow
-          // by fetching limit+1 and paginating forward.
-          const tsClauses = []
-          const tsParams = []
-          if (sinceTs) { tsClauses.push('timestamp > ?'); tsParams.push(sinceTs) }
-          if (untilTs) { tsClauses.push('timestamp <= ?'); tsParams.push(untilTs) }
-          const tsWhere = `${where} AND ${tsClauses.join(' AND ')}`
-          const q = `SELECT ${cols} FROM events WHERE ${tsWhere} ORDER BY timestamp ASC LIMIT ?`
-          events = fleetStore.db.prepare(q).all(...allBaseParams, ...tsParams, limit)
-        } else {
-          const q = afterId
-            ? `SELECT ${cols} FROM events WHERE ${where} AND id > ? ORDER BY id ASC LIMIT ?`
-            : beforeId
-            ? `SELECT ${cols} FROM events WHERE ${where} AND id < ? ORDER BY id DESC LIMIT ?`
-            : `SELECT ${cols} FROM events WHERE ${where} ORDER BY timestamp ASC LIMIT ?`
-          events = afterId ? fleetStore.db.prepare(q).all(...allBaseParams, afterId, limit)
-            : beforeId ? fleetStore.db.prepare(q).all(...allBaseParams, beforeId, limit)
-            : fleetStore.db.prepare(q).all(...allBaseParams, limit)
-          if (beforeId) events.reverse()
-        }
+        // UNION of two indexed scans (see FleetStore.queryAgentEvents) — far
+        // faster than `(from_id=? OR to_id=?)`. No COUNT: callers detect
+        // overflow by fetching limit+1 and paginating forward.
+        events = fleetStore.queryAgentEvents({ agent: evtAgent, types: evtTypes, sinceTs, untilTs, afterId, beforeId, limit })
       } else if (evtTypes) {
         const typeClause = `type IN (${evtTypes.map(() => '?').join(',')})`
         events = fleetStore.db.prepare(`SELECT ${cols} FROM events WHERE ${typeClause} AND id > ? ORDER BY id ASC LIMIT ?`).all(...evtTypes, afterId, limit)

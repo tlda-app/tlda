@@ -166,35 +166,6 @@ const PROJECT_ROOT = path.resolve(__dirname, '..');
 const SNAPSHOT_PATH = '/tmp/tldraw-snapshot.json';
 const SCREENSHOT_PATH = '/tmp/annotated-view.png';
 
-// ---- Headless screenshot fallback ----
-
-let _browser = null;
-let _browserIdleTimer = null;
-const BROWSER_IDLE_MS = 120_000; // close after 2min idle
-
-async function getHeadlessBrowser() {
-  if (_browser && _browser.connected) {
-    clearTimeout(_browserIdleTimer);
-    return _browser;
-  }
-  const puppeteer = await import('puppeteer');
-  _browser = await puppeteer.default.launch({
-    headless: true,
-    args: ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'],
-  });
-  return _browser;
-}
-
-function scheduleBrowserClose() {
-  clearTimeout(_browserIdleTimer);
-  _browserIdleTimer = setTimeout(async () => {
-    if (_browser) {
-      await _browser.close().catch(e => process.stderr.write(`[mcp] browser close failed: ${e.message}\n`));
-      _browser = null;
-    }
-  }, BROWSER_IDLE_MS);
-}
-
 /** Check if a document has built pages. Returns { ok, pages, buildStatus } or { ok: false, reason }. */
 async function checkDocBuildStatus(docName) {
   const sUrl = getServerUrl();
@@ -238,130 +209,6 @@ function checkDocBuildStatusDisk(docName) {
     return { ok: true, pages: info.pages, buildStatus: info.buildStatus };
   } catch {
     return { ok: false, reason: `Project "${docName}" not found on server. Run "tlda errors ${docName}" or "tlda build ${docName}" to investigate.` };
-  }
-}
-
-async function headlessScreenshot(docName, targetPage) {
-  const serverUrl = getServerUrl();
-  const tokenParam = TLDA_TOKEN ? `&token=${TLDA_TOKEN}` : '';
-  const url = `${serverUrl}/?doc=${docName}${tokenParam}`;
-  const browser = await getHeadlessBrowser();
-  const page = await browser.newPage();
-  try {
-    await page.setViewport({ width: 1280, height: 960 });
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
-    // Wait for TLDraw to render shapes
-    await page.waitForSelector('.tl-shapes', { timeout: 15000 });
-    // Let annotations sync from Yjs
-    await new Promise(r => setTimeout(r, 3000));
-
-    if (targetPage) {
-      await page.evaluate((pg) => {
-        const pageHeight = 792 * (800 / 612); // PDF_HEIGHT * (TARGET_WIDTH / PDF_WIDTH)
-        const pageGap = 32;
-        const y = (pg - 1) * (pageHeight + pageGap) + pageHeight / 2;
-        const editor = window.__tldraw_editor__;
-        if (editor) {
-          editor.centerOnPoint({ x: 400, y });
-        }
-      }, targetPage);
-      await new Promise(r => setTimeout(r, 500));
-    }
-
-    const buf = await page.screenshot({ type: 'png' });
-    const base64 = buf.toString('base64');
-    return base64;
-  } finally {
-    await page.close();
-    scheduleBrowserClose();
-  }
-}
-
-/**
- * Take a cropped screenshot of a specific canvas region.
- * Centers the viewport on the given canvas bounds, then clips to the exact region.
- * @param {string} docName - document name
- * @param {{ x: number, y: number, w: number, h: number }} bounds - canvas bounds to capture
- * @param {number} [padding=200] - extra pixels around the bounds (generous for context)
- * @param {string} [focusShapeId] - if provided, desaturate other annotations to highlight this one
- */
-async function headlessScreenshotCrop(docName, bounds, padding = 200, focusShapeId = null) {
-  const serverUrl = getServerUrl();
-  const tokenParam = TLDA_TOKEN ? `&token=${TLDA_TOKEN}` : '';
-  const url = `${serverUrl}/?doc=${docName}${tokenParam}`;
-  const browser = await getHeadlessBrowser();
-  const page = await browser.newPage();
-  try {
-    await page.setViewport({ width: 1280, height: 960 });
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
-    await page.waitForSelector('.tl-shapes', { timeout: 15000 });
-    await new Promise(r => setTimeout(r, 3000));
-
-    // Center on the bounds and zoom to fit
-    const clip = await page.evaluate((b, pad) => {
-      const editor = window.__tldraw_editor__;
-      if (!editor) return null;
-      // Zoom to fit the bounds with padding
-      const cx = b.x + b.w / 2;
-      const cy = b.y + b.h / 2;
-      editor.centerOnPoint({ x: cx, y: cy });
-      // Calculate zoom to fit bounds in viewport
-      const vw = 1280, vh = 960;
-      const zoomX = vw / (b.w + pad * 2);
-      const zoomY = vh / (b.h + pad * 2);
-      const zoom = Math.min(zoomX, zoomY, 2); // cap at 2x for readability
-      editor.setCamera({ x: -(cx - vw / (2 * zoom)), y: -(cy - vh / (2 * zoom)), z: zoom });
-      // Convert canvas bounds to screen coords
-      const tl = editor.pageToScreen({ x: b.x, y: b.y });
-      const br = editor.pageToScreen({ x: b.x + b.w, y: b.y + b.h });
-      return {
-        x: Math.max(0, Math.floor(tl.x - pad)),
-        y: Math.max(0, Math.floor(tl.y - pad)),
-        width: Math.min(vw, Math.ceil(br.x - tl.x + pad * 2)),
-        height: Math.min(vh, Math.ceil(br.y - tl.y + pad * 2)),
-      };
-    }, bounds, padding);
-
-    // Force light theme and hide fleet UI shapes for clean document screenshots
-    await page.evaluate(() => {
-      document.documentElement.classList.remove('tl-theme__dark');
-      document.documentElement.classList.add('tl-theme__light');
-      document.body.classList.remove('tl-theme__dark');
-      document.body.classList.add('tl-theme__light');
-      const editor = window.__tldraw_editor__;
-      if (!editor) return;
-      const fleetTypes = new Set(['fleet-chat', 'fleet-agents', 'fleet-pill', 'fleet-status']);
-      for (const shape of editor.getCurrentPageShapes()) {
-        if (!fleetTypes.has(shape.type)) continue;
-        const el = document.querySelector(`[data-shape-id="${shape.id}"]:not(.tl-shape-background)`);
-        if (el) el.style.display = 'none';
-      }
-    });
-
-    // Fade non-target annotations (keep colors recognizable, just lower salience)
-    if (focusShapeId) {
-      await page.evaluate((targetId) => {
-        const editor = window.__tldraw_editor__;
-        if (!editor) return;
-        const annotationTypes = new Set(['highlight', 'draw', 'dot-annotation']);
-        for (const shape of editor.getCurrentPageShapes()) {
-          if (!annotationTypes.has(shape.type)) continue;
-          if (shape.id === targetId) continue;
-          const el = document.querySelector(`[data-shape-id="${shape.id}"]:not(.tl-shape-background)`);
-          if (el) el.style.opacity = '0.4';
-        }
-      }, focusShapeId);
-    }
-
-    await new Promise(r => setTimeout(r, 500)); // let render settle
-
-    const buf = clip
-      ? await page.screenshot({ type: 'png', clip })
-      : await page.screenshot({ type: 'png' });
-    return buf.toString('base64');
-  } finally {
-    await page.close();
-    scheduleBrowserClose();
   }
 }
 
@@ -1910,6 +1757,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           h: { type: 'number', description: 'Height of crop region.' },
           padding: { type: 'number', description: 'Extra pixels around the region (default: 200). Applied to ref or x/y/w/h captures.' },
           shapeId: { type: 'string', description: 'Shape ID of target annotation — other annotations desaturated to make this one stand out.' },
+          shapeTypes: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Render ONLY shapes of these types and frame them (e.g. ["fleet-chat"] to capture the fleet chat). The document pages are not rendered unless you include "svg-page" — this is also what makes the capture fast. Combine with shapeIds.',
+          },
+          shapeIds: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Render ONLY these specific shapes (by id) and frame them. Combine with shapeTypes.',
+          },
         },
         required: ['doc'],
       },
@@ -2570,20 +2427,32 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (mode) signalData.mode = mode;
     if (args?.page) signalData.page = args.page;
     if (args?.shapeId) signalData.shapeId = args.shapeId;
+    if (Array.isArray(args?.shapeTypes) && args.shapeTypes.length) signalData.shapeTypes = args.shapeTypes;
+    if (Array.isArray(args?.shapeIds) && args.shapeIds.length) signalData.shapeIds = args.shapeIds;
     if (args?.padding != null) signalData.padding = args.padding;
 
     try {
+      const reqTs = signalData.timestamp;
       await broadcastSignalRest(docName, 'signal:screenshot-request', signalData);
-      const result = await new Promise((resolve) => {
-        const stream = connectSignalStream(docName, (signal) => {
-          if (signal.key === 'signal:screenshot' && signal.data) {
-            clearTimeout(timer);
-            stream.close();
-            resolve(signal);
-          }
-        });
-        const timer = setTimeout(() => { stream.close(); resolve(null); }, 8000);
-      });
+      // The viewer captures and POSTs its reply back to the server, which caches
+      // it (signalCache). Poll that cache for a reply newer than our request,
+      // rather than relying on catching the live SSE signal — the reply can
+      // arrive (~0.8s) before an SSE listener finishes registering, and the cache
+      // is the authoritative copy either way.
+      let result = null;
+      // The viewer's capture can take ~15–20s for a content-heavy region, so the
+      // old 8s timeout gave up before the (cached, valid) reply ever landed.
+      const deadline = Date.now() + 30000;
+      while (Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 350));
+        let cached = null;
+        try {
+          cached = await serverFetch(`/api/projects/${docName}/signal/signal:screenshot`);
+        } catch {
+          cached = null; // 404 until the viewer replies — keep polling
+        }
+        if (cached?.data && (cached.timestamp || 0) >= reqTs) { result = cached; break; }
+      }
       if (result?.data) {
         return {
           content: [

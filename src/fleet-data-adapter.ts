@@ -594,10 +594,22 @@ export function useFleetContext(dnfFilter?: string[][] | [string,string][][] | n
 
 const DASHBOARD_URL = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5176'
 
-export async function searchFleet(query: string, limit = 50): Promise<any[]> {
+export interface FleetSearchFilters {
+  agent?: string
+  role?: string
+  since?: string
+  before?: string
+}
+
+export async function searchFleet(query: string, limit = 50, filters: FleetSearchFilters = {}): Promise<any[]> {
   await ensureInit()
   try {
-    const data = await _fleetWS('fleet-search', { query, limit })
+    const payload: Record<string, any> = { query, limit }
+    if (filters.agent) payload.agent = filters.agent
+    if (filters.role) payload.role = filters.role
+    if (filters.since) payload.since = filters.since
+    if (filters.before) payload.before = filters.before
+    const data = await _fleetWS('fleet-search', payload)
     return data?.results || []
   } catch (e) { console.warn('[fleet] search failed:', (e as Error).message); return [] }
 }
