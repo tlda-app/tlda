@@ -2,6 +2,7 @@ import katex from 'katex'
 import 'katex/dist/katex.min.css'
 import { getAgents, getAgent } from './fleet-data.mjs'
 import { getActiveMacros } from '../katexMacros'
+import { baseMacros } from '../../shared/katex-base-macros.mjs'
 import { myTldaUrl } from './tldaUrl.mjs'
 import { baseName } from '../../shared/lineage-name.mjs'
 // Utility functions. Agent lookups read from fleet-data directly.
@@ -318,10 +319,13 @@ export function renderMarkdown(html, extraMacros) {
     return ph(`<div class="code-block-wrap">${header}<pre${shouldFold ? ' class="code-collapsed"' : ''}><code${dataAttrs}>${highlighted}</code></pre></div>`, true)
   })
 
-  // KaTeX macros — always start from getActiveMacros() (which includes defaultMacros),
-  // then merge project-specific extraMacros on top so they can override but defaults
-  // (like \griesz) are always available regardless of which doc is loaded.
-  const preambleMacros = { ...getActiveMacros(), ...(extraMacros || {}) }
+  // KaTeX macros. When extraMacros is provided it is AUTHORITATIVE — the message
+  // is rendered with the sender's preamble: physics base + exactly those macros,
+  // never the viewer's active set (so a message renders the same for everyone). The
+  // per-message sender macros are resolved from the message's preambleRef.doc by the
+  // chat shape. With no extraMacros (the human's own composing surface, notes), fall
+  // back to getActiveMacros() — the doc the viewer currently has loaded.
+  const preambleMacros = extraMacros ? { ...baseMacros, ...extraMacros } : getActiveMacros()
   // throwOnError: true so unparseable LaTeX falls through to the catch and
   // renders as raw escaped text. With throwOnError: false KaTeX returns its
   // own giant error-HTML structure, which we don't want dumped into chat.

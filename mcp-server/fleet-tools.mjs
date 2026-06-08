@@ -20,6 +20,7 @@ import { processMessageText } from '../shared/message-processing.mjs';
 import { resolveFilePath } from '../shared/chat-file-processing.mjs';
 import { extractMarkdownSection } from '../shared/markdown-section.mjs';
 import { baseName, nameForPhase, phaseFromName } from '../shared/lineage-name.mjs';
+import { baseMacros } from '../shared/katex-base-macros.mjs';
 import { normalizeRefNumber as _normalizeRefNumber, refTypeForName as _refTypeForName, buildTheoremRefRegex as _buildTheoremRefRegex } from '../shared/doc-refs.mjs';
 import WebSocket from 'ws';
 import { ResilientWS } from '../shared/resilient-ws.mjs';
@@ -207,13 +208,39 @@ async function getAgentDoc() {
   } catch { return null; }
 }
 
-// Macros for the document the calling agent is working on (folder-based).
+// An agent's preamble is a *document reference*: by default the project in its
+// working folder, but it can point at any document via `set_preamble`. This MCP
+// process is per-agent, so a module-level override is per-agent state. (A shadow
+// version can be set too; we store it but ignore it on resolution for now — the
+// "really fancy" upgrade is to resolve macros from that shadow version with a
+// cache. See setAgentPreambleDoc.)
+let _agentPreambleDoc = null;        // { doc, version } | null
+export function setAgentPreambleDoc(doc, version = null) {
+  _agentPreambleDoc = doc ? { doc, version: version || null } : null;
+}
+
+// The document whose preamble applies to this agent's chat: an explicit
+// set_preamble wins; otherwise the agent's working folder. Used both to lint the
+// agent's outgoing math and to stamp `preambleRef` on its messages so every
+// reader renders that math with the sender's macros.
+async function getAgentPreambleDoc() {
+  if (_agentPreambleDoc) return _agentPreambleDoc.doc;
+  return getAgentDoc();
+}
+
+// Macros for the document the calling agent's preamble points at.
 async function getMacrosForAgent() {
-  return getMacrosForDoc(await getAgentDoc());
+  return getMacrosForDoc(await getAgentPreambleDoc());
 }
 
 function lintChatMessage(message, macros = {}) {
   const issues = [];
+  // Render with the universal physics base + this doc's extracted paper macros
+  // (paper wins). `macros` is the paper-specific set; when it's empty the agent
+  // isn't scoped to a project, so an undefined-macro error means "go set them".
+  const hasPaperMacros = Object.keys(macros).length > 0;
+  const renderMacros = { ...baseMacros, ...macros };
+  let suggestedSetMacros = false;
   const displayBlocks = (message.match(/\$\$[\s\S]*?\$\$/g) || []);
   if (displayBlocks.length > 1) {
     issues.push(`${displayBlocks.length} separate display blocks — consider combining into one \\begin{aligned} block so all steps are visible together.`);
@@ -234,10 +261,20 @@ function lintChatMessage(message, macros = {}) {
   for (const m of message.matchAll(/(?<!\$)\$(?!\$)((?:[^$\\]|\\.)+)\$/g)) allMath.push({ tex: m[1], display: false, pos: m.index });
   for (const { tex, display, pos } of allMath) {
     try {
-      katex.renderToString(tex, { displayMode: display, throwOnError: true, macros });
+      katex.renderToString(tex, { displayMode: display, throwOnError: true, macros: renderMacros });
     } catch (e) {
-      const snippet = tex.length > 40 ? tex.slice(0, 40) + '…' : tex;
-      issues.push(`LaTeX parse error in \`${display ? '$$' : '$'}${snippet}${display ? '$$' : '$'}\`: ${e.message}`);
+      const undefinedMacro = /Undefined control sequence/.test(e.message);
+      if (undefinedMacro && !hasPaperMacros) {
+        // No project macros loaded — the renderer can't know paper macros either.
+        // One actionable nudge beats a pile of cryptic per-macro parse errors.
+        if (!suggestedSetMacros) {
+          suggestedSetMacros = true;
+          issues.push(`Math uses macros that aren't loaded, and you have no project preamble set — so the chat renderer can't display them either. Set your paper's macros once with the \`set_preamble\` tool (point it at the project's main .tex), or include the macro definitions in the message. (Physics-package commands like \\norm, \\qty are always available.)`);
+        }
+      } else {
+        const snippet = tex.length > 40 ? tex.slice(0, 40) + '…' : tex;
+        issues.push(`LaTeX parse error in \`${display ? '$$' : '$'}${snippet}${display ? '$$' : '$'}\`: ${e.message}`);
+      }
     }
     if (!display) {
       const before = pos > 0 ? message[pos - 1] : ' ';
@@ -1838,6 +1875,17 @@ export async function handleFleetTool(name, args) {
       docContext = { doc: _currentDoc, version: version || null };
     }
 
+    // Sender's preamble reference: the document whose macros this agent's math
+    // should render with, stamped on every message so each reader renders it with
+    // the sender's preamble (not the reader's). { doc, version } — version is
+    // captured for the future but ignored on resolution today.
+    let preambleRef = null;
+    const preambleDoc = await getAgentPreambleDoc();
+    if (preambleDoc) {
+      const pv = await fetchCurrentDocVersion(preambleDoc);
+      preambleRef = { doc: preambleDoc, version: pv || null };
+    }
+
     // Single write: send to dashboard server via WS.
     const sent = [];
     const failed = [];
@@ -1847,6 +1895,7 @@ export async function handleFleetTool(name, args) {
       if (inlineAttachments.length) chatBody.inline_attachments = inlineAttachments;
       if (refAttachments.length) chatBody.attachments = refAttachments;
       if (docContext) chatBody.context = docContext;
+      if (preambleRef) chatBody.preambleRef = preambleRef;
       if (source) chatBody.source = source;
       try {
         const data = await sendWS('chat', chatBody);

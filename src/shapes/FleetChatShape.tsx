@@ -770,20 +770,20 @@ function ContextBadge({ percent }: { percent?: number }) {
 
 /**
  * ThinkingStatus — one status line per agent (thinking / compacting / waking /
- * hibernating). The slot holds its height for as long as an agent has a status
- * and is only ever replaced row-for-row, never removed-then-refilled: the hold
- * lives in `useFleetThinking`, which keeps "thinking…" until a rendered row
- * lands for that agent (or the server's thinking-sync swaps it to a hibernating
- * row in the same commit). So this component just draws the current statuses —
- * no ghost slot, no item-count heuristic.
+ * hibernating). The slot reserves one row of height unconditionally so the line
+ * fading in/out never shifts the stack (no bounce); content shows when a status
+ * is active, blank otherwise. (A reserve-then-consume variant was tried but
+ * fought the virtualized chat layout — flashed on every message — and was
+ * reverted; see scratch/status-line-spec.md.)
  */
-function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibernatingAgents, ctx, agents: _agents, escalationState, suggestions }: {
+function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibernatingAgents, ctx, agents: _agents, itemCount: _itemCount, escalationState, suggestions }: {
   thinkingAgents: Map<string, number>
   compactingAgents: Map<string, number>
   contextPercent: Map<string, number>
   hibernatingAgents: Set<string>
   ctx: any
   agents: any[]
+  itemCount: number
   escalationState?: Record<string, { level: number; confirmed: number }>
   suggestions: Suggestion[]
 }) {
@@ -845,29 +845,23 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
     return [...ids]
   }, [statusAgents, suggestionsByAgent])
 
-  // Skip's design: the slot ALWAYS reserves one row of height, so a status line
-  // appearing or disappearing never shifts the chat stack — that shift is the
-  // bounce. The slot stays put; only its contents fade in/out. No ghost, no
-  // item-count heuristic — the reservation is unconditional. `useFleetThinking`
-  // separately holds an agent's status until a rendered row replaces it, so the
-  // visible text doesn't blank mid-thought; but even with nothing to show, the
-  // reserved row keeps the stack from collapsing.
-  const slotRef = useRef<HTMLDivElement>(null)
   const statusKeysStr = [...statusAgents.keys()].join(',')
   useEffect(() => {
+    // Log only when the set of shown statuses changes — NOT per message. (A
+    // previous version read offsetHeight on every itemCount change, forcing a
+    // layout reflow on each keystroke → the screen flash.)
     log.info('thinking-line', 'render', {
       keys: statusKeysStr ? statusKeysStr.split(',') : [],
       rows: statusAgents.size,
-      offsetHeight: slotRef.current?.offsetHeight ?? null,
-      parentHeight: slotRef.current?.parentElement?.offsetHeight ?? null,
     })
-  }, [statusKeysStr]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [statusKeysStr])
+
   return (
-    <div ref={slotRef} style={{
+    <div style={{
       padding: '0 8px',
       fontSize: 11,
       flexShrink: 0,
-      // One row of height, always — the anti-bounce reservation.
+      // One row of reserved height, always — the anti-bounce floor.
       minHeight: 'calc(var(--fleet-base-font, 11px) * 1.5 + 4px)',
       opacity: 0.6,
       transition: 'opacity 0.2s',
@@ -1414,6 +1408,12 @@ function FleetChatInner({ shape }: { shape: any }) {
       .catch(e => console.warn('[fleet-chat] macros fetch failed:', e.message))
   }, [doc?.docName])
 
+  // Per-sender preamble: each message carries metadata.preambleRef.doc (the
+  // sender's preamble document). We render that message's math with that doc's
+  // macros so it looks the same for everyone, regardless of what the viewer has
+  // loaded. Cache macros per doc; fetch any referenced doc we haven't seen yet.
+  const [macrosByDoc, setMacrosByDoc] = useState<Record<string, Record<string, string>>>({})
+
   // Build context and render messages
   const prefTick = usePrefTick()
   const ctx = useMemo(() => makeCtx(agents, tasks, preambleMacros), [agents, tasks, preambleMacros, prefTick])
@@ -1453,6 +1453,22 @@ function FleetChatInner({ shape }: { shape: any }) {
 
     return sorted
   }, [events])
+
+  // Fetch macros for any preamble doc referenced by a message we haven't cached.
+  useEffect(() => {
+    const needed = new Set<string>()
+    chatMessages.forEach((m: any) => {
+      const d = m?.metadata?.preambleRef?.doc
+      if (d && !(d in macrosByDoc)) needed.add(d)
+    })
+    if (needed.size === 0) return
+    for (const d of needed) {
+      fetch(`/api/projects/${encodeURIComponent(d)}/macros`)
+        .then(r => r.ok ? r.json() : null)
+        .then(data => setMacrosByDoc(prev => (d in prev ? prev : { ...prev, [d]: data?.macros || {} })))
+        .catch(() => setMacrosByDoc(prev => (d in prev ? prev : { ...prev, [d]: {} })))
+    }
+  }, [chatMessages, macrosByDoc])
 
   // Amend events (type 'amend', metadata.amends = original id) are folded into
   // their original message as version history — they never render standalone
@@ -1602,7 +1618,17 @@ function FleetChatInner({ shape }: { shape: any }) {
           const v = versions[viewIdx]
           renderM = { ...m, text: v.text, metadata: { ...(m.metadata || {}), source: v.source }, _amendStepper: stepper }
         }
-        const html = renderChatLine(renderM, renderCtx)
+        // Render this message's math with the SENDER's preamble (preambleRef.doc),
+        // not the viewer's. Fall back to the viewer's preamble for messages with no
+        // ref, or while the referenced doc's macros are still loading.
+        const senderPreambleDoc = m?.metadata?.preambleRef?.doc
+        const lineMacros = (senderPreambleDoc && senderPreambleDoc in macrosByDoc)
+          ? macrosByDoc[senderPreambleDoc]
+          : preambleMacros
+        const lineCtx = lineMacros === preambleMacros
+          ? renderCtx
+          : { ...renderCtx, renderMarkdown: (input: string) => tldaRenderMarkdown(input, lineMacros) }
+        const html = renderChatLine(renderM, lineCtx)
         if (html) {
           const item: RawItem = { key: m._dbId || m._tempId || `${m.timestamp}:${m.from}`, html }
           // Tag interrupt system_notices so they jump ahead of queued messages
@@ -1620,7 +1646,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     flushActivity()
     return items
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatMessages, ctx, thinkingAgents, unqueuedAt, viewingVersion, doc, amendsByOrig, amendView])
+  }, [chatMessages, ctx, thinkingAgents, unqueuedAt, viewingVersion, doc, amendsByOrig, amendView, macrosByDoc, preambleMacros])
 
   // Per-item post-processing: applies chip replacement, URL linkification, and
   // doc-link resolution to a single item's HTML. Called by ChatMessageRow only
@@ -4116,6 +4142,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                     hibernatingAgents={hibernatingAgents}
                     ctx={ctx}
                     agents={agents}
+                    itemCount={rawItems.length}
                     escalationState={escalationState}
                     suggestions={suggestionsPending}
                   />
@@ -4470,6 +4497,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                     const refAttachments = buildRefAttachments(text, editor)
                     const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
                     if (refAttachments.length > 0) sendOpts.attachments = refAttachments
+                    if (doc?.docName) sendOpts.preambleRef = { doc: doc.docName, version: currentDocVersion(panel, editor) || null }
                     const sendWithRetry = (attempt: number) => {
                       Promise.all(
                         sendTargets.map(t => sendMessage(t, text, sendOpts))
@@ -4532,6 +4560,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                   const refAttachments = buildRefAttachments(text, editor)
                   const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
                   if (refAttachments.length > 0) sendOpts.attachments = refAttachments
+                  if (doc?.docName) sendOpts.preambleRef = { doc: doc.docName, version: currentDocVersion(panel, editor) || null }
                   const sendWithRetry = (attempt: number) => {
                     Promise.all(
                       targets.map(t => sendMessage(t, text, sendOpts))
@@ -4573,6 +4602,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                   const refAttachments = buildRefAttachments(text, editor)
                   const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
                   if (refAttachments.length > 0) sendOpts.attachments = refAttachments
+                  if (doc?.docName) sendOpts.preambleRef = { doc: doc.docName, version: currentDocVersion(panel, editor) || null }
                   const sendWithRetry = (attempt: number) => {
                     Promise.all(
                       targets.map(t => sendMessage(t, text, sendOpts))
