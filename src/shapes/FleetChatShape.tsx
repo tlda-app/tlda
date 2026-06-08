@@ -769,21 +769,54 @@ function ContextBadge({ percent }: { percent?: number }) {
 }
 
 /**
- * ThinkingStatus — one status line per agent (thinking / compacting / waking /
- * hibernating). The slot holds its height for as long as an agent has a status
- * and is only ever replaced row-for-row, never removed-then-refilled: the hold
- * lives in `useFleetThinking`, which keeps "thinking…" until a rendered row
- * lands for that agent (or the server's thinking-sync swaps it to a hibernating
- * row in the same commit). So this component just draws the current statuses —
- * no ghost slot, no item-count heuristic.
+ * Reserve-then-consume slot discipline, shared by every status type (thinking,
+ * suggestions, …) — see scratch/status-line-spec.md.
+ *
+ * Returns whether the slot should reserve its row of height right now.
+ * - While a status is active → reserved (the caller draws the status).
+ * - The moment the status ends → still reserved, but blank ("holding"): the row
+ *   of space is kept so the stack doesn't collapse to nothing (that's the bounce).
+ * - The next chat row to land consumes that space — we stop reserving on the
+ *   same commit the row appears, so the row drops INTO the slot (height-neutral)
+ *   rather than stacking on top of a leftover blank.
+ * - The blank is never permanent: it's released by the next row. With nothing
+ *   active and nothing held, the slot doesn't exist (no dead space hoarded).
+ *
+ * `itemCount` is the chat's rendered-row count. Computed during render
+ * (idempotent under StrictMode double-invoke) so the first render after a status
+ * ends already reserves — no collapsed frame.
  */
-function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibernatingAgents, ctx, agents: _agents, escalationState }: {
+function useReservedSlot(hasActive: boolean, itemCount: number): boolean {
+  const prevActiveRef = useRef(false)
+  const holdingRef = useRef(false)
+  const heldCountRef = useRef(0)
+  if (hasActive) {
+    holdingRef.current = false
+  } else {
+    if (prevActiveRef.current && !holdingRef.current) {
+      holdingRef.current = true
+      heldCountRef.current = itemCount   // mark the row count; release when it grows
+    }
+    if (holdingRef.current && itemCount > heldCountRef.current) {
+      holdingRef.current = false          // a row landed → it consumed the space
+    }
+  }
+  prevActiveRef.current = hasActive
+  return hasActive || holdingRef.current
+}
+
+/**
+ * ThinkingStatus — one status line per agent (thinking / compacting / waking /
+ * hibernating), using the shared reserve-then-consume slot.
+ */
+function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibernatingAgents, ctx, agents: _agents, itemCount, escalationState }: {
   thinkingAgents: Map<string, number>
   compactingAgents: Map<string, number>
   contextPercent: Map<string, number>
   hibernatingAgents: Set<string>
   ctx: any
   agents: any[]
+  itemCount: number
   escalationState?: Record<string, { level: number; confirmed: number }>
 }) {
   // Build status display from server-authoritative agent status field.
@@ -823,29 +856,31 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
     return merged
   }, [thinkingAgents, compactingAgents, hibernatingAgents])
 
-  // Skip's design: the slot ALWAYS reserves one row of height, so a status line
-  // appearing or disappearing never shifts the chat stack — that shift is the
-  // bounce. The slot stays put; only its contents fade in/out. No ghost, no
-  // item-count heuristic — the reservation is unconditional. `useFleetThinking`
-  // separately holds an agent's status until a rendered row replaces it, so the
-  // visible text doesn't blank mid-thought; but even with nothing to show, the
-  // reserved row keeps the stack from collapsing.
+  const hasActive = statusAgents.size > 0
+  const reserved = useReservedSlot(hasActive, itemCount)
+
   const slotRef = useRef<HTMLDivElement>(null)
   const statusKeysStr = [...statusAgents.keys()].join(',')
   useEffect(() => {
     log.info('thinking-line', 'render', {
       keys: statusKeysStr ? statusKeysStr.split(',') : [],
       rows: statusAgents.size,
+      holding: reserved && !hasActive,
+      reserved,
+      itemCount,
       offsetHeight: slotRef.current?.offsetHeight ?? null,
-      parentHeight: slotRef.current?.parentElement?.offsetHeight ?? null,
     })
-  }, [statusKeysStr]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [statusKeysStr, reserved, itemCount]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Not permanent, not created for nothing: no status and nothing held → no slot.
+  if (!reserved) return null
+
   return (
     <div ref={slotRef} style={{
       padding: '0 8px',
       fontSize: 11,
       flexShrink: 0,
-      // One row of height, always — the anti-bounce reservation.
+      // One row of reserved height while shown or holding — the anti-bounce floor.
       minHeight: 'calc(var(--fleet-base-font, 11px) * 1.5 + 4px)',
       opacity: 0.6,
       transition: 'opacity 0.2s',
@@ -919,37 +954,24 @@ function SuggestionChip({ nudge, isFirst, agentName }: { nudge: Suggestion, isFi
 
 function SuggestionStatus({ pending, ctx, rawItemsLength }: { pending: Suggestion[], ctx: any, rawItemsLength: number }) {
   const hasActive = pending.length > 0
-  const lastPendingRef = useRef(pending)
-  if (hasActive) lastPendingRef.current = pending
+  const reserved = useReservedSlot(hasActive, rawItemsLength)
 
-  const [ghost, setGhost] = useState(false)
-  const ghostRawItemsRef = useRef(rawItemsLength)
-
-  useEffect(() => {
-    if (!hasActive && lastPendingRef.current.length > 0 && !ghost) {
-      setGhost(true)
-      ghostRawItemsRef.current = rawItemsLength
-    }
-    if (hasActive && ghost) setGhost(false)
-  }, [hasActive]) // eslint-disable-line react-hooks/exhaustive-deps -- intentional: transition-only detection
-
-  useEffect(() => {
-    if (ghost && rawItemsLength > ghostRawItemsRef.current) setGhost(false)
-  }, [ghost, rawItemsLength])
-
-  if (!hasActive && !ghost) return null
+  // Not permanent, not created for nothing: no suggestions and nothing held → no slot.
+  if (!reserved) return null
 
   return (
     <div style={{
       padding: '2px 8px',
       fontSize: 11,
       flexShrink: 0,
-      opacity: ghost ? 0 : 1,
+      // One row of reserved height while shown or holding — the anti-bounce floor.
+      minHeight: 'calc(var(--fleet-base-font, 11px) * 1.5 + 4px)',
+      opacity: 1,
       transition: 'opacity 0.2s',
     }}
     className="suggestion-status"
     >
-      {!ghost && (
+      {hasActive && (
         <div className="chat-line" style={{ padding: '2px 0' }}>
           <span className="suggestion-status-prefix">{ctx.agentLabel(pending[0]?.from || pending[0]?.targetId)}:</span>{' '}
           {pending.map((n, i) => (
@@ -960,7 +982,6 @@ function SuggestionStatus({ pending, ctx, rawItemsLength }: { pending: Suggestio
           ))}
         </div>
       )}
-      {ghost && <div style={{ padding: '2px 0', visibility: 'hidden' }}>placeholder</div>}
     </div>
   )
 }
@@ -4132,6 +4153,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                     hibernatingAgents={hibernatingAgents}
                     ctx={ctx}
                     agents={agents}
+                    itemCount={rawItems.length}
                     escalationState={escalationState}
                   />
                 </div>
