@@ -186,6 +186,21 @@ function openMyWindow() {
   return out.includes('PWWIN_OK')
 }
 
+// A parked, claimable window: about:blank with no agent marker in its title.
+// `release` (and the daemon reaper) park a window by navigating it here, which
+// both tears down its TLDraw page (reclaiming ~all of its memory) and clears
+// the marker — returning it to the pool for the next agent to reuse.
+function freeParkedWindow(tabs) {
+  return tabs.find(t => /^about:blank/i.test(t.url || '') && !/pwtab=/.test(t.title || ''))
+}
+
+// Claim the daemon's CURRENT page as mine by stamping the marker into its title
+// (same-origin about:blank → settable). Lets isMine find it before first goto.
+function claimCurrentWindow() {
+  const out = pw(['eval', `() => { document.title = 'pwtab=${myTabKey()}'; return 'PWCLAIM_OK'; }`]).stdout || ''
+  return out.includes('PWCLAIM_OK')
+}
+
 // Parse `tab-list` → [{ index, current, title, url }]. Format per line:
 //   - 0: [title](https://…)
 //   - 1: (current) [title](about:blank)
@@ -216,16 +231,26 @@ function isMine(t) {
 function selectMyTab() {
   let mine = listTabs().find(isMine)
   if (!mine) {
-    // window.open needs an existing page to run from; the persistent context
-    // always has its initial blank page, but guard the empty case anyway.
-    if (listTabs().length === 0) pw(['tab-new'], { stdio: 'ignore' })
-    if (!openMyWindow()) {
-      // Popup blocked (shouldn't happen under automation) — fall back to a tab
-      // in the shared window, stamped via title. Renders only while selected,
-      // but better than failing outright.
-      console.error('pw: WARN window.open was blocked — falling back to a shared-window tab')
-      pw(['tab-new'], { stdio: 'ignore' })
-      pw(['goto', `data:text/html,<title>${myMarker()}</title>`], { stdio: 'ignore' })
+    const tabs = listTabs()
+    const free = freeParkedWindow(tabs)
+    if (free) {
+      // Reuse a parked window from the pool — no window.open, so NO raise. This
+      // is the common path once the fleet has warmed up: agents recycle windows
+      // freed by agents that finished or were reaped.
+      pw(['tab-select', String(free.index)], { stdio: 'ignore' })
+      claimCurrentWindow()
+    } else {
+      // Pool exhausted — open a fresh window (the only path that raises, once).
+      // window.open needs an existing page to run from; guard the empty case.
+      if (tabs.length === 0) pw(['tab-new'], { stdio: 'ignore' })
+      if (!openMyWindow()) {
+        // Popup blocked (shouldn't happen under automation) — fall back to a tab
+        // in the shared window, stamped via title. Renders only while selected,
+        // but better than failing outright.
+        console.error('pw: WARN window.open was blocked — falling back to a shared-window tab')
+        pw(['tab-new'], { stdio: 'ignore' })
+        pw(['goto', `data:text/html,<title>${myMarker()}</title>`], { stdio: 'ignore' })
+      }
     }
     mine = listTabs().find(isMine)
   }
@@ -348,11 +373,17 @@ export async function cmdPw(args, repoRoot) {
 
   if (verb === 'release') {
     if (!sessionOpen()) { console.log('browser already down'); return }
-    if (!lockWithWait(repoRoot, me)) { console.error('lock busy; tab not closed'); process.exit(1) }
+    if (!lockWithWait(repoRoot, me)) { console.error('lock busy; window not parked'); process.exit(1) }
     try {
       const mine = listTabs().find(isMine)
-      if (mine) { pw(['tab-select', String(mine.index)], { stdio: 'ignore' }); pw(['tab-close'], { stdio: 'ignore' }); console.log(`closed my window (#${mine.index})`) }
-      else console.log('no window of mine to close')
+      if (mine) {
+        // Park, don't close: navigating to about:blank tears down the TLDraw
+        // page (reclaims its memory) and clears the marker, returning the window
+        // to the pool for the next agent to claim — no churn, no new raise.
+        pw(['tab-select', String(mine.index)], { stdio: 'ignore' })
+        pw(['goto', 'about:blank'], { stdio: 'ignore' })
+        console.log(`parked my window (#${mine.index}) back to the pool`)
+      } else console.log('no window of mine to park')
     } finally {
       unlock(repoRoot, me)
     }
