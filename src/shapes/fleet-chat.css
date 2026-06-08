@@ -2440,14 +2440,11 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .chat-thinking {
   font-style: italic;
   font-size: var(--fleet-base-font, 11px);
+  opacity: calc(0.6 * var(--fleet-chrome-alpha, 1));
   pointer-events: none;
 }
-/* Faintness lives on the status TEXT, not the whole row — otherwise CSS opacity
-   cascades onto a suggestion chip's tooltip (a descendant) and makes it
-   semi-transparent / unreadable. Chips re-enable pointer-events for themselves. */
 .chat-thinking .thinking-text {
   color: var(--text-dim, #888);
-  opacity: calc(0.6 * var(--fleet-chrome-alpha, 1));
 }
 .chat-thinking .thinking-elapsed {
   color: var(--text-dim, #888);
