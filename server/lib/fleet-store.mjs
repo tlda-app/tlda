@@ -1212,9 +1212,21 @@ export class FleetStore {
   assignPhase(agentId, lineageId, phase) {
     const now = Date.now();
     const base = this._lineageBase(lineageId);
+    // No base name = nothing to name the agent. Attach it to the lineage but
+    // leave its existing name alone rather than NULLing it — a NULL name on a
+    // live agent is exactly the nameless phantom row we must never create.
+    if (!base) {
+      this.db.transaction(() => {
+        this.db.prepare('UPDATE agents SET lineage_id = ? WHERE id = ?').run(lineageId, agentId);
+        this.db.prepare(
+          'INSERT INTO lineage_phase_log (lineage_id, fleet_id, phase, entered_at) VALUES (?, ?, ?, ?)'
+        ).run(lineageId, agentId, phase, now);
+      })();
+      return;
+    }
     this.db.transaction(() => {
       this.db.prepare('UPDATE agents SET lineage_id = ?, friendly_name = ? WHERE id = ?')
-        .run(lineageId, base ? nameForPhase(base, phase) : null, agentId);
+        .run(lineageId, nameForPhase(base, phase), agentId);
       this.db.prepare(
         'INSERT INTO lineage_phase_log (lineage_id, fleet_id, phase, entered_at) VALUES (?, ?, ?, ?)'
       ).run(lineageId, agentId, phase, now);
@@ -1248,13 +1260,17 @@ export class FleetStore {
       const base = this._lineageBase(agent.lineage_id);
       if (!base) return { ok: true, zombie: false };
       const zombieName = nameForPhase(base, 'zombie');
-      // Avoid colliding with an existing live zombie in the lineage.
-      const taken = this.db.prepare(
-        'SELECT id FROM agents WHERE friendly_name = ? AND dead = 0 AND id != ?'
-      ).get(zombieName, agentId);
-      if (taken) return { ok: true, zombie: false, collision: true };
-      this.db.prepare('UPDATE agents SET friendly_name = ? WHERE id = ?').run(zombieName, agentId);
       const now = Date.now();
+      // At most one zombie per lineage: raising this one ages out any existing
+      // live zombie (name off, marked dead), freeing the name for this agent.
+      const existing = this.db.prepare(
+        'SELECT id FROM agents WHERE lineage_id = ? AND friendly_name = ? AND dead = 0 AND id != ?'
+      ).all(agent.lineage_id, zombieName, agentId);
+      for (const z of existing) {
+        this.db.prepare('UPDATE lineage_phase_log SET exited_at = ? WHERE fleet_id = ? AND exited_at IS NULL').run(now, z.id);
+        this.db.prepare('UPDATE agents SET friendly_name = NULL, dead = 1 WHERE id = ?').run(z.id);
+      }
+      this.db.prepare('UPDATE agents SET friendly_name = ? WHERE id = ?').run(zombieName, agentId);
       const prev = this.db.prepare(
         'SELECT MAX(entered_at) AS m FROM lineage_phase_log WHERE lineage_id = ? AND fleet_id = ?'
       ).get(agent.lineage_id, agentId);
@@ -1273,11 +1289,14 @@ export class FleetStore {
       const agent = this._getAgent.get(agentId);
       if (!agent || !agent.lineage_id) return;
       const base = this._lineageBase(agent.lineage_id);
+      // No base name = nothing to rename to. Bail rather than NULLing the name,
+      // which would leave an alive-but-nameless phantom row off any lineage.
+      if (!base) return;
       this.db.prepare(
         'UPDATE lineage_phase_log SET exited_at = ? WHERE fleet_id = ? AND exited_at IS NULL'
       ).run(now, agentId);
       this.db.prepare('UPDATE agents SET friendly_name = ? WHERE id = ?')
-        .run(base ? nameForPhase(base, newPhase) : null, agentId);
+        .run(nameForPhase(base, newPhase), agentId);
       this.db.prepare(
         'INSERT INTO lineage_phase_log (lineage_id, fleet_id, phase, entered_at) VALUES (?, ?, ?, ?)'
       ).run(agent.lineage_id, agentId, newPhase, now);
@@ -1287,10 +1306,12 @@ export class FleetStore {
   // One rotation of the lineage's name-chain. The incoming agent takes the
   // dawn name (bare base); the existing holders each shift up a rung —
   // dawn → "<base>:day", day → "<base>:dusk", dusk → "<base>:night", and the
-  // old night ages out: it loses its name (set NULL) AND is marked dead
-  // (retired). It stays in the lineage as nameless history (reachable by id),
-  // and can be brought back as a zombie via resurrect. Direct handoff applies
-  // this once; the briefing handoff applies it twice.
+  // old night ages OUT OF EXISTENCE: its name rotates off (NULL) and it is
+  // marked dead, so it drops off the live roster (all roster queries filter
+  // dead = 0) — no nameless phantom row. Its name is preserved in name_history,
+  // and it can be brought back later as a zombie (out of rotation) via
+  // resurrect. Zombie is NOT assigned here — that phase is reserved for manual
+  // resurrection. Direct handoff applies this once; briefing applies it twice.
   rotateLineageIn(lineageId, incomingAgentId) {
     const now = Date.now();
     const base = this._lineageBase(lineageId);
@@ -1304,6 +1325,9 @@ export class FleetStore {
       'SELECT id FROM agents WHERE lineage_id = ? AND friendly_name = ? AND dead = 0'
     ).get(lineageId, name)?.id || null;
     const rename = (id, name) => this.db.prepare('UPDATE agents SET friendly_name = ? WHERE id = ?').run(name, id);
+    // Ages out of existence: name rotates off (NULL) AND the agent is marked
+    // dead, so it drops off the live roster (no nameless phantom row). The name
+    // lives on in name_history; resurrect can bring it back as a zombie.
     const retire = (id) => this.db.prepare('UPDATE agents SET friendly_name = NULL, dead = 1 WHERE id = ?').run(id);
     const exitLog = (id) => this.db.prepare(
       'UPDATE lineage_phase_log SET exited_at = ? WHERE fleet_id = ? AND exited_at IS NULL'
@@ -1330,7 +1354,7 @@ export class FleetStore {
     this.db.transaction(() => {
       if (nightId && nightId !== incomingAgentId) {
         exitLog(nightId);
-        retire(nightId); // ages out: name rotates off AND the agent is retired (dead)
+        retire(nightId); // ages out of existence: marked dead, drops off the roster
       }
       if (duskId && duskId !== incomingAgentId) {
         exitLog(duskId);
@@ -1359,9 +1383,10 @@ export class FleetStore {
   // Free a phase slot so a new agent can be placed there, instead of erroring on
   // "occupied." The current occupant ages one rung toward night, cascading — each
   // occupied rung from the target down pushes its holder into the rung below, and
-  // whoever would fall off night retires (loses its name, marked dead, kept as
-  // nameless history). No-op if the slot is already free. This is the "free the
-  // names you need, then place" half of a handoff rotation.
+  // whoever would fall off night ages OUT OF EXISTENCE (name rotates off to NULL
+  // AND marked dead, so it drops off the live roster — no nameless phantom row;
+  // name preserved in name_history). No-op if the slot is already free. This is
+  // the "free the names you need, then place" half of a handoff rotation.
   makeRoomForPhase(lineageId, phase) {
     const base = this._lineageBase(lineageId);
     if (!base) return;
@@ -1386,7 +1411,8 @@ export class FleetStore {
     };
     this.db.transaction(() => {
       // Walk bottom-up (night → target): each occupied rung's holder moves into
-      // the rung below (already vacated this pass), and the night holder retires.
+      // the rung below (already vacated this pass), and the night holder ages out
+      // of existence (name → NULL, marked dead, drops off the live roster).
       for (let i = ORDER.length - 1; i >= startIdx; i--) {
         const id = holder(nameForPhase(base, ORDER[i]));
         if (!id) continue;
