@@ -989,6 +989,38 @@ function handleActivity(agentId, tool) {
 const agentPatternArms = new Map()
 // agentId → [{ pattern: RegExp, message: string, cooldownMs: number, lastFired: number }]
 
+// ---- Global activity rules ----
+// Unlike per-agent pattern arms (above, self-registered, matched on chat to Skip),
+// these fire for ANY agent and match against the agent's tool-call command text
+// (activity events). Use for footguns every agent trips over regardless of who
+// they are. Match port 5176 specifically so legitimate http dev servers
+// (vite on :5173/:5181/etc.) don't trigger it.
+const GLOBAL_ACTIVITY_RULES = [
+  {
+    name: 'http-localhost-5176',
+    pattern: /http:\/\/(?:localhost|127\.0\.0\.1):5176\b/i,
+    cooldownMs: 5 * 60_000,
+    message: `🔌 I see you did something with \`http://localhost:5176\` — that's not a thing. The tlda server is **https**. Use \`https://localhost:5176\`. A plaintext \`http://\` request to the TLS port returns an empty reply / \`HTTP/0.9\` garbage — that's the wrong scheme, **not** an outage. (\`getServerUrl()\` already picks https automatically; don't hardcode http.)`,
+  },
+]
+const globalRuleCooldowns = new Map() // `${ruleName}:${agentId}` → lastFired ms
+
+function checkGlobalActivityRules(agentId, commandText) {
+  if (!commandText) return
+  const now = Date.now()
+  for (const rule of GLOBAL_ACTIVITY_RULES) {
+    if (!rule.pattern.test(commandText)) continue
+    const key = `${rule.name}:${agentId}`
+    const last = globalRuleCooldowns.get(key) || 0
+    if (now - last < rule.cooldownMs) continue
+    globalRuleCooldowns.set(key, now)
+    console.log(`[todd] global activity rule "${rule.name}" fired → ${agentId}`)
+    sendChat(agentId, rule.message)
+    logDecision(agentId, `global-rule:${rule.name}`, String(rule.pattern), {}, commandText)
+    break
+  }
+}
+
 const DEFAULT_ARM_NUDGE = (terms) =>
   `💭 Your message contains a term you flagged for self-review (${terms}). Check: is this the shortcut/pattern you were watching for? If so, stop and address it explicitly before Skip sees it.`
 
@@ -1933,7 +1965,9 @@ function handleMessage(msg) {
     if (!from_id || from_id === OWNER_ID || from_id === AGENT_ID) return
     const meta = typeof metadata === 'string' ? (() => { try { return JSON.parse(metadata) } catch { return {} } })() : (metadata || {})
     const tool = meta.tool || text || ''
+    const arg = typeof meta.arg === 'string' ? meta.arg : ''
     handleActivity(from_id, tool)
+    checkGlobalActivityRules(from_id, `${tool} ${arg}`)
   }
 }
 
