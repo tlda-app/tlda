@@ -4582,6 +4582,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                 position: 'relative',
                 zIndex: 1,
                 fieldSizing: 'content',
+                minHeight: 'calc(1.4em + 10px)',
                 maxHeight: 200,
               } as any}
               onDrop={async (e) => {
