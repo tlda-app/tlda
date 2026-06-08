@@ -863,8 +863,6 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
       flexShrink: 0,
       // One row of reserved height, always — the anti-bounce floor.
       minHeight: 'calc(var(--fleet-base-font, 11px) * 1.5 + 4px)',
-      opacity: 0.6,
-      transition: 'opacity 0.2s',
     }}>
       {rowAgentIds.map((agentId) => {
         const statusEntry = statusAgents.get(agentId)

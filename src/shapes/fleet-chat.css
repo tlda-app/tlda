@@ -2440,11 +2440,14 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .chat-thinking {
   font-style: italic;
   font-size: var(--fleet-base-font, 11px);
-  opacity: calc(0.6 * var(--fleet-chrome-alpha, 1));
   pointer-events: none;
 }
+/* Faintness lives on the status TEXT, not the whole row — otherwise CSS opacity
+   cascades onto a suggestion chip's tooltip (a descendant) and makes it
+   semi-transparent / unreadable. Chips re-enable pointer-events for themselves. */
 .chat-thinking .thinking-text {
   color: var(--text-dim, #888);
+  opacity: calc(0.6 * var(--fleet-chrome-alpha, 1));
 }
 .chat-thinking .thinking-elapsed {
   color: var(--text-dim, #888);
@@ -3578,12 +3581,15 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .suggestion-chip {
   position: relative;
   cursor: pointer;
+  /* The status row is pointer-events:none (so it never blocks the chat behind);
+     the chip opts back in so it's hoverable + clickable. */
+  pointer-events: auto;
 }
 .fleet-chat-shape .suggestion-chip-label {
   opacity: 0.4;
   transition: opacity 0.2s;
 }
-.fleet-chat-shape .suggestion-chip:hover .suggestion-chip-label {
+.fleet-chat-shape .suggestion-chip-label:hover {
   opacity: 0.85;
 }
 
@@ -3615,7 +3621,11 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   transition-delay: 0s;
   z-index: 8300;
 }
-.fleet-chat-shape .suggestion-chip:hover .suggestion-chip-tip {
+/* Trigger off the LABEL only, not the whole chip. Keying on .suggestion-chip
+   made the chip's hover region (which spans up to the absolutely-positioned
+   tooltip) hot — so the empty area under the tooltip kept it open. The label
+   span's box is just the text, which is the intended target. */
+.fleet-chat-shape .suggestion-chip-label:hover ~ .suggestion-chip-tip {
   opacity: 1;
   transform: translateY(0);
   /* Hover-intent: only engage after resting ~0.7s, so sweeping the cursor
