@@ -2107,9 +2107,13 @@ async function handleFleetWsMessage(ws, msg) {
   // format, so bots speak the same language as real agents. timer-set stores +
   // broadcasts a pending timer; timer-fire/cancel patches it to a terminal state.
   if (type === 'timer-set') {
-    const { agent, message, fire_at } = msg
+    const { agent, message, fire_at, to: toAgent } = msg
     const from = (agent && fleetStore.findAgent?.(agent)?.id) || agent || SERVER_OWNER_ID
-    const to = SERVER_OWNER_ID
+    // Address the countdown to the conversation it belongs to (e.g. the agent
+    // being handed off). A chat panel only renders events whose from/to matches
+    // its target agent, so a countdown hardcoded to the owner never appears in
+    // the panel the user triggered it from. Falls back to the owner.
+    const to = (toAgent && fleetStore.findAgent?.(toAgent)?.id) || toAgent || SERVER_OWNER_ID
     const metadata = { pending: true, fire_at, message }
     const event = await fleetStore.share({ type: 'timer', from, to, text: `⏱ ${message}`, metadata })
     broadcastEvent('fleet-event', { type: 'timer', from, to, id: event.id, event_id: event.id, text: `⏱ ${message}`, metadata })
