@@ -3593,11 +3593,13 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   opacity: 0.85;
 }
 
-.fleet-chat-shape .suggestion-chip-tip {
-  position: absolute;
-  bottom: 100%;
-  left: 0;
-  margin-bottom: 6px;
+/* The tooltip is its own object rendered ABOVE the shapes in the HUD layer
+   (<SuggestionTip/> in FleetHUD), NOT nested in the dimmed fleet-chat shape and
+   NOT a portal. So: a global selector (it lives in .fleet-hud-wrap, not
+   .fleet-chat-shape), positioned via inline position:fixed, theme vars passed
+   inline off the chip. Mounted only while hovered → always visible (no opacity
+   transition needed). Card styling only. */
+.suggestion-chip-tip {
   width: max-content;
   max-width: 320px;
   display: flex;
@@ -3613,37 +3615,21 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   line-height: 1.45;
   text-align: left;
   white-space: normal;
-  opacity: 0;
   pointer-events: none;
-  transform: translateY(2px);
-  /* Fast hide, no delay — vanishes the instant the cursor leaves the name. */
-  transition: opacity 0.12s ease, transform 0.12s ease;
-  transition-delay: 0s;
   z-index: 8300;
 }
-/* Trigger off the LABEL only, not the whole chip. Keying on .suggestion-chip
-   made the chip's hover region (which spans up to the absolutely-positioned
-   tooltip) hot — so the empty area under the tooltip kept it open. The label
-   span's box is just the text, which is the intended target. */
-.fleet-chat-shape .suggestion-chip-label:hover ~ .suggestion-chip-tip {
-  opacity: 1;
-  transform: translateY(0);
-  /* Hover-intent: only engage after resting ~0.7s, so sweeping the cursor
-     through the names doesn't pop the card. */
-  transition-delay: 0.7s;
-}
-.fleet-chat-shape .suggestion-tip-trigger {
+.suggestion-chip-tip .suggestion-tip-trigger {
   color: var(--text-bright);
 }
-.fleet-chat-shape .suggestion-tip-trigger b {
+.suggestion-chip-tip .suggestion-tip-trigger b {
   color: var(--accent);
   font-weight: 600;
 }
-.fleet-chat-shape .suggestion-tip-target {
+.suggestion-chip-tip .suggestion-tip-target {
   color: var(--text-dim);
   font-size: 10px;
 }
-.fleet-chat-shape .suggestion-tip-text {
+.suggestion-chip-tip .suggestion-tip-text {
   margin-top: 2px;
   padding-top: 6px;
   border-top: 1px solid var(--border);

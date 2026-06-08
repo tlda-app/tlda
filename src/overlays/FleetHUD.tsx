@@ -15,6 +15,7 @@ import { useFleetAgents, useFleetIdentity } from '../fleet-data-adapter'
 // @ts-ignore — vanilla JS module
 import { getHumanId } from '../fleet/fleet-data.mjs'
 import { getMyAnchorId, isMyFleetShape, FLEET_SHAPE_TYPES } from '../shapes/fleet-utils'
+import { SuggestionTip } from '../shapes/FleetChatShape'
 import './FleetHUD.css'
 
 function saveAnchorOffsets(editor: Editor, panOffset: number, cameraY: number) {
@@ -712,6 +713,10 @@ export function FleetHUD({
           onEditorMount={(e) => { overlayEditorRef.current = e; (window as any).__tldraw_hud_editor__ = e }}
           className="fleet-hud"
         />
+        {/* Suggestion-chip tooltip: rendered here, ABOVE the shapes and outside
+            any (dimmed) shape, so it stays fully opaque. Driven by the chip's
+            hover store. Not a portal. */}
+        <SuggestionTip />
       </div>
     </>
   )

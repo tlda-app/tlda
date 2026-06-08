@@ -883,7 +883,7 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
           : status === 'thinking' ? 'thinking…'
           : null
         return (
-          <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+          <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0', display: 'flex', justifyContent: chips.length > 0 ? 'center' : 'space-between', alignItems: 'baseline' }}>
             <span>
               <span className="thinking-text">
                 <PhaseIcon phase={phaseFromName(ctx.agentFullName(agentId))} />{baseName(ctx.agentFullName(agentId)).replace('fleet:', '')}
@@ -912,12 +912,61 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
   )
 }
 
+// The suggestion tooltip can't live inside the chip: the fleet-chat shape is
+// dimmed (opacity < 1) and CSS opacity caps every descendant, so a nested tip
+// renders see-through. It also must not be a portal (breaks TLDraw). So the tip
+// is its OWN object, rendered ABOVE the shapes in the HUD layer (see
+// <SuggestionTip/> mounted in FleetHUD) via this tiny shared store. The chip
+// publishes what/where on label-hover; the HUD-level tip renders it crisp.
+type TipData = {
+  left: number; bottom: number
+  command: string | null; canSayIt: boolean; text: string; agentName: string
+  vars: Record<string, string>
+} | null
+let _tipData: TipData = null
+const _tipSubs = new Set<() => void>()
+function setSuggestionTip(d: TipData) { _tipData = d; _tipSubs.forEach(f => f()) }
+const TIP_VARS = ['--surface', '--border', '--shadow-lg', '--text', '--text-bright', '--accent', '--text-dim']
+
+export function SuggestionTip() {
+  const tip = useSyncExternalStore(
+    (cb) => { _tipSubs.add(cb); return () => _tipSubs.delete(cb) },
+    () => _tipData,
+  )
+  if (!tip) return null
+  return (
+    <span
+      className="suggestion-chip-tip"
+      style={{ position: 'fixed', left: tip.left, bottom: tip.bottom, ...tip.vars } as React.CSSProperties}
+    >
+      <span className="suggestion-tip-trigger">
+        {tip.command
+          ? <>Say <b>"{tip.command}"</b>{tip.canSayIt ? <> or <b>"say it"</b></> : null} — or click to send now</>
+          : <>{tip.text}</>}
+      </span>
+      <span className="suggestion-tip-target">→ {tip.agentName}</span>
+      {tip.text && <span className="suggestion-tip-text">{tip.text}</span>}
+    </span>
+  )
+}
+
 function SuggestionChip({ nudge, isFirst, agentName }: { nudge: Suggestion, isFirst: boolean, agentName: string }) {
   // The posting agent supplies the command verbatim; clicking sends it as a real
   // message, which keeps a visible record of what fired and routes back to that
   // agent. A chip with no command is informational (click is a no-op).
   const command = nudge.command || null
   const canSayIt = isFirst && nudge.kind !== 'action' && !!command
+  const labelRef = useRef<HTMLSpanElement>(null)
+  const showTip = () => {
+    const el = labelRef.current
+    if (!el) return
+    const r = el.getBoundingClientRect()
+    const cs = getComputedStyle(el)
+    const vars: Record<string, string> = {}
+    for (const v of TIP_VARS) vars[v] = cs.getPropertyValue(v)
+    setSuggestionTip({ left: r.left, bottom: window.innerHeight - r.top + 6, command, canSayIt, text: nudge.text || '', agentName, vars })
+  }
+  const hideTip = () => setSuggestionTip(null)
   const fire = (e: React.SyntheticEvent) => {
     stopEventPropagation(e as any)
     if (command) sendMessage(nudge.targetId || nudge.from || '', command)
@@ -928,16 +977,12 @@ function SuggestionChip({ nudge, isFirst, agentName }: { nudge: Suggestion, isFi
       onPointerDown={stopEventPropagation}
       onClick={fire}
     >
-      <span className="suggestion-chip-label">{nudge.label}</span>
-      <span className="suggestion-chip-tip" onPointerDown={stopEventPropagation}>
-        <span className="suggestion-tip-trigger">
-          {command
-            ? <>Say <b>"{command}"</b>{canSayIt ? <> or <b>"say it"</b></> : null} — or click to send now</>
-            : <>{nudge.text || nudge.label}</>}
-        </span>
-        <span className="suggestion-tip-target">→ {agentName}</span>
-        <span className="suggestion-tip-text">{nudge.text}</span>
-      </span>
+      <span
+        className="suggestion-chip-label"
+        ref={labelRef}
+        onMouseEnter={showTip}
+        onMouseLeave={hideTip}
+      >{nudge.label}</span>
     </span>
   )
 }
