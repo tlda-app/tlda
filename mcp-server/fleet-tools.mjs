@@ -263,6 +263,25 @@ function lintChatMessage(message, macros = {}) {
   return issues;
 }
 
+/**
+ * Format the exceptional staleness flag for a viewing-context. The version is
+ * always Built; this rides on the location only when the viewer's pages have
+ * drifted from the build (`ctx.stale` set by the client). Returns '' normally.
+ */
+function staleHint(ctx) {
+  const s = ctx?.stale;
+  if (!s || !Array.isArray(s.kinds) || s.kinds.length === 0) return '';
+  const labels = {
+    stale: 'older render',
+    phantom: 'past end of build',
+    unrendered: 'not yet rendered',
+    missing: 'page not yet loaded',
+  };
+  const desc = s.kinds.map(k => labels[k] || k).join(', ');
+  const pg = Array.isArray(s.pages) && s.pages.length ? ` p${s.pages.join(',')}` : '';
+  return ` ⚠ stale${pg}: ${desc} — source anchor provisional`;
+}
+
 async function fetchCurrentDocVersion(doc) {
   if (!doc) return null;
   const now = Date.now();
@@ -2600,7 +2619,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
           } else {
             const sl = ctx.sourceLine
             const srcHint = sl ? ` ${sl.file}:${sl.startLine}${sl.endLine && sl.endLine !== sl.startLine ? '-' + sl.endLine : ''}` : ''
-            docHint = ` [viewing ${ctx.doc}${ctx.version ? '@' + ctx.version : ''}${ctx.page ? ' p' + (Array.isArray(ctx.page) ? ctx.page.join(',') : ctx.page) : ''}${srcHint}]`
+            docHint = ` [viewing ${ctx.doc}${ctx.version ? '@' + ctx.version : ''}${ctx.page ? ' p' + (Array.isArray(ctx.page) ? ctx.page.join(',') : ctx.page) : ''}${srcHint}${staleHint(ctx)}]`
           }
         }
         const { text: chipResolvedText, images: chipImages } = await resolveChipTokens(m.text, m.metadata)
@@ -4097,7 +4116,7 @@ async function handleChannelMessage(msg) {
         if (ctx.compareRef) {
           docHint = ` [viewing ${ctx.doc} — comparing old@${ctx.compareRef} vs current@${ctx.version || 'latest'}]`
         } else {
-          docHint = ` [viewing ${ctx.doc}${ctx.version ? '@' + ctx.version : ''}]`
+          docHint = ` [viewing ${ctx.doc}${ctx.version ? '@' + ctx.version : ''}${staleHint(ctx)}]`
         }
       }
       const truncNote = isTruncated(rawText) ? `\n(TRUNCATED — showing ${PREVIEW_MAX}/${rawText.length} chars. You MUST call my_task() for the full text before responding)` : '';
