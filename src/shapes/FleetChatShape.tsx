@@ -707,18 +707,20 @@ function ContextBadge({ percent }: { percent?: number }) {
 }
 
 /**
- * ThinkingStatus — one status line per agent (thinking / compacting).
- * When all agents stop, the space persists (ghost) until a new chat item
- * arrives to fill it. Ghost detection uses useEffect — not during-render
- * ref mutation — so the transition is never missed across render batches.
+ * ThinkingStatus — one status line per agent (thinking / compacting / waking /
+ * hibernating). The slot holds its height for as long as an agent has a status
+ * and is only ever replaced row-for-row, never removed-then-refilled: the hold
+ * lives in `useFleetThinking`, which keeps "thinking…" until a rendered row
+ * lands for that agent (or the server's thinking-sync swaps it to a hibernating
+ * row in the same commit). So this component just draws the current statuses —
+ * no ghost slot, no item-count heuristic.
  */
-function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibernatingAgents, ctx, itemCount, agents: _agents, escalationState }: {
+function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibernatingAgents, ctx, agents: _agents, escalationState }: {
   thinkingAgents: Map<string, number>
   compactingAgents: Map<string, number>
   contextPercent: Map<string, number>
   hibernatingAgents: Set<string>
   ctx: any
-  itemCount: number
   agents: any[]
   escalationState?: Record<string, { level: number; confirmed: number }>
 }) {
@@ -759,61 +761,23 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
     return merged
   }, [thinkingAgents, compactingAgents, hibernatingAgents])
 
-  const hasActive = statusAgents.size > 0
-  const lastStatusRef = useRef(statusAgents)
-  if (hasActive) lastStatusRef.current = statusAgents
-
-  const [ghost, setGhost] = useState(false)
-  // Item count captured when the slot is reserved; the slot is released only
-  // when the chat actually GROWS past it (a real new item filled the space).
-  // Count grows on genuine additions; it's far less noisy than the bottom-row
-  // key, which also changed on dividers / activity regrouping and made the slot
-  // collapse with nothing filling it (the inconsistent reserve = the bounce).
-  const ghostCountRef = useRef(0)
-  // Item count as of the previous render — lets the reserve check tell whether a
-  // new item landed in the same tick the agent went inactive (it already filled
-  // the space, so reserving would leave a leftover gap).
-  const prevCountRef = useRef(itemCount)
-
-  // Reserve the slot when the agent goes inactive — in a LAYOUT effect so the
-  // footer never paints a collapsed frame (which itself read as a bounce).
-  useLayoutEffect(() => {
-    const grewThisTick = itemCount !== prevCountRef.current
-    if (!hasActive && lastStatusRef.current.size > 0 && !ghost && !grewThisTick) {
-      setGhost(true)
-      ghostCountRef.current = itemCount
-    }
-    if (hasActive && ghost) {
-      setGhost(false)
-    }
-  // itemCount intentionally omitted — fires only on the hasActive transition;
-  // prevCountRef carries the previous render's count.
-  }, [hasActive]) // eslint-disable-line react-hooks/exhaustive-deps -- intentional: transition-only detection
-
-  // Release the slot only when the chat grows past the reserved count — a real
-  // new item landed and filled the space. Churn that doesn't add an item
-  // (regrouping, dividers) leaves the count unchanged, so the slot holds.
-  useEffect(() => {
-    if (ghost && itemCount > ghostCountRef.current) {
-      setGhost(false)
-    }
-  }, [ghost, itemCount])
-
-  // Track the count every render (after the reserve check reads the previous
-  // value) so the same-tick-absorb detection works.
-  useLayoutEffect(() => { prevCountRef.current = itemCount })
-
-  if (!hasActive && !ghost) return null
+  // No ghost / no item-count heuristic. The slot is reserved whenever there is
+  // a held status, and `useFleetThinking` keeps an agent's status held until a
+  // row that actually renders replaces it (or the server's thinking-sync swaps
+  // it to a hibernating row in the same commit). So the line is only ever
+  // replaced row-for-row — never removed-then-refilled — and there's nothing to
+  // reserve "around": when there's a status we draw it, otherwise we draw nothing.
+  if (statusAgents.size === 0) return null
 
   return (
     <div style={{
       padding: '0 8px',
       fontSize: 11,
       flexShrink: 0,
-      opacity: ghost ? 0 : 0.6,
+      opacity: 0.6,
       transition: 'opacity 0.2s',
     }}>
-      {[...(hasActive ? statusAgents : lastStatusRef.current).entries()].map(([agentId, { status, startTs }]) => {
+      {[...statusAgents.entries()].map(([agentId, { status, startTs }]) => {
         const esc = escalationState?.[agentId]
         const escLevel = esc?.level || 0
         const escConfirmed = esc?.confirmed || 0
@@ -4092,7 +4056,6 @@ function FleetChatInner({ shape }: { shape: any }) {
                     contextPercent={contextPercent}
                     hibernatingAgents={hibernatingAgents}
                     ctx={ctx}
-                    itemCount={rawItems.length}
                     agents={agents}
                     escalationState={escalationState}
                   />

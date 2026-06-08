@@ -356,7 +356,17 @@ export function useFleetThinking(dnfFilter?: string[][] | [string,string][][] | 
     let cancelled = false
     const filter = dnfFilter && dnfFilter.length > 0 ? dnfFilter : null
     const pendingRemoval = new Set<string>()
-    const fallbackTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+    // A "messages" event surrenders the held thinking slot only if it renders a
+    // visible chat row. Fired timers and compacting pings carry a `from` but
+    // draw nothing; 📬/<channel infrastructure text renders to an empty string.
+    // Releasing on those leaves the slot empty with nothing to fill it.
+    function producesRow(ev: any): boolean {
+      if (ev._timer || ev._compacting) return false
+      const text = ev.text || ''
+      if (text.startsWith('📬') || text.startsWith('<channel') || text.includes('[Request interrupted by user]')) return false
+      return true
+    }
 
     ensureInit().then(() => {
       if (cancelled) return
@@ -371,8 +381,6 @@ export function useFleetThinking(dnfFilter?: string[][] | [string,string][][] | 
         if (!inFilter(data.agent)) return
         if (data.thinking) {
           pendingRemoval.delete(data.agent)
-          const ft = fallbackTimers.get(data.agent)
-          if (ft) { clearTimeout(ft); fallbackTimers.delete(data.agent) }
           const ts = data.startTs || data.ts || Date.now()
           setThinking(prev => {
             if (prev.has(data.agent)) return prev
@@ -381,25 +389,23 @@ export function useFleetThinking(dnfFilter?: string[][] | [string,string][][] | 
             return next
           })
         } else {
-          // Don't remove yet — wait for the message to arrive (fallback: 3s)
+          // Don't remove yet — hold "thinking…" until either a row that actually
+          // renders lands for this agent (clearPending below) or the server's
+          // authoritative thinking-sync drops it (which, on an agent going quiet,
+          // arrives in the same agents-delta that marks it hibernating — so the
+          // footer swaps "thinking…" → "is hibernating" in one commit instead of
+          // blanking). No bare timer: a timer-driven drop is exactly the early
+          // vanish the status line must never do.
           pendingRemoval.add(data.agent)
-          fallbackTimers.set(data.agent, setTimeout(() => {
-            fallbackTimers.delete(data.agent)
-            pendingRemoval.delete(data.agent)
-            setThinking(prev => {
-              const next = new Map(prev)
-              next.delete(data.agent)
-              return next
-            })
-          }, 3000))
         }
       })
 
-      // When a message arrives from an agent with pending removal, clear their thinking indicator
+      // A message clears the held "thinking…" — but only when it's a row that
+      // actually renders in the chat. No-op events (fired timers, compacting
+      // pings, channel/📬 infrastructure noise) render nothing, so surrendering
+      // the slot for them leaves it empty and bounces the stack.
       function clearPending(agentId: string) {
         pendingRemoval.delete(agentId)
-        const ft = fallbackTimers.get(agentId)
-        if (ft) { clearTimeout(ft); fallbackTimers.delete(agentId) }
         setThinking(prev => {
           const next = new Map(prev)
           next.delete(agentId)
@@ -409,7 +415,7 @@ export function useFleetThinking(dnfFilter?: string[][] | [string,string][][] | 
       unsubMessages = subscribe('messages', null, (event: any) => {
         if (!event) return
         const from = event.from || event.agent
-        if (from && pendingRemoval.has(from)) clearPending(from)
+        if (from && pendingRemoval.has(from) && producesRow(event)) clearPending(from)
       })
 
       // Status events: only 'idle' should clear thinking. 'tool_call' happens mid-thought.
@@ -417,24 +423,15 @@ export function useFleetThinking(dnfFilter?: string[][] | [string,string][][] | 
         if (!inFilter(data.agent)) return
         if (data.state === 'thinking') {
           pendingRemoval.delete(data.agent)
-          const ft = fallbackTimers.get(data.agent)
-          if (ft) { clearTimeout(ft); fallbackTimers.delete(data.agent) }
           setThinking(prev => {
             const next = new Map(prev)
             if (!next.has(data.agent)) next.set(data.agent, data.startTs || data.ts || Date.now())
             return next
           })
         } else if (data.state === 'idle') {
+          // Hold, same as thinking:false — release on a rendered row or the
+          // authoritative thinking-sync, never on a bare timer.
           pendingRemoval.add(data.agent)
-          fallbackTimers.set(data.agent, setTimeout(() => {
-            fallbackTimers.delete(data.agent)
-            pendingRemoval.delete(data.agent)
-            setThinking(prev => {
-              const next = new Map(prev)
-              next.delete(data.agent)
-              return next
-            })
-          }, 3000))
         }
         // 'tool_call' — agent is working, don't touch thinking state
       })
@@ -448,8 +445,6 @@ export function useFleetThinking(dnfFilter?: string[][] | [string,string][][] | 
             if (!serverSet.has(id)) {
               next.delete(id)
               pendingRemoval.delete(id)
-              const ft = fallbackTimers.get(id)
-              if (ft) { clearTimeout(ft); fallbackTimers.delete(id) }
               changed = true
             }
           }
@@ -465,8 +460,6 @@ export function useFleetThinking(dnfFilter?: string[][] | [string,string][][] | 
       unsubMessages?.()
       unsubStatus?.()
       unsubSync?.()
-      for (const t of fallbackTimers.values()) clearTimeout(t)
-      fallbackTimers.clear()
       setThinking(new Map())
     }
   }, [filterKey])
