@@ -883,8 +883,9 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
           : status === 'thinking' ? 'thinking…'
           : null
         return (
-          <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0', display: 'flex', justifyContent: chips.length > 0 ? 'center' : 'space-between', alignItems: 'baseline' }}>
-            <span>
+          <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0', display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'baseline', gap: 6 }}>
+            {/* left: agent + status */}
+            <span style={{ justifySelf: 'start', minWidth: 0 }}>
               <span className="thinking-text">
                 <PhaseIcon phase={phaseFromName(ctx.agentFullName(agentId))} />{baseName(ctx.agentFullName(agentId)).replace('fleet:', '')}
               </span>
@@ -897,14 +898,20 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
                   <span style={{ opacity: tierOpacity(3), transition: 'opacity 0.15s' }}>💀</span>
                 </span>
               )}
+            </span>
+            {/* center: suggestions */}
+            <span style={{ justifySelf: 'center' }}>
               {chips.map((n, i) => (
                 <span key={n.id}>
-                  {(i > 0 || statusText) ? <span className="suggestion-chip-label">{i > 0 ? ', ' : ' '}</span> : ' '}
+                  {i > 0 ? <span className="suggestion-chip-label">, </span> : null}
                   <SuggestionChip nudge={n} isFirst={i === 0} agentName={ctx.agentLabel(n.targetId || n.from)} />
                 </span>
               ))}
             </span>
-            <ContextBadge percent={contextPercent.get(agentId)} />
+            {/* right: context info */}
+            <span style={{ justifySelf: 'end' }}>
+              <ContextBadge percent={contextPercent.get(agentId)} />
+            </span>
           </div>
         )
       })}
