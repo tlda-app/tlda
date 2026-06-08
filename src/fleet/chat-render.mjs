@@ -193,11 +193,11 @@ export function renderChatLine(m, ctx) {
   // Kick messages and channel notifications — infrastructure noise, filter from chat UI
   if ((m.text || '').startsWith('📬')) return ''
   if ((m.text || '').startsWith('<channel')) return ''
-  if ((m.text || '').includes('[Request interrupted by user]')) return ''
+  if ((m.text || '').includes('[Request interrupted by user')) return ''
 
   // --- Terminal messages (from JSONL session logs) ---
   if (m._evType === 'terminal_user' || m._evType === 'terminal_assistant') {
-    if ((m.text || '').includes('[Request interrupted by user]')) return ''
+    if ((m.text || '').includes('[Request interrupted by user')) return ''
     if (/^[\s📬]*$/.test(m.text || '')) return ''
     if (m.from && m.from === m.to) return ''
     const nick = periodNick(m.from, m.fromName)

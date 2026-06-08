@@ -1531,28 +1531,98 @@ async function rpcCapturePane({ tmux_session, lines, agent_id }) {
   return { ok: true, pane: stdout }
 }
 
+async function capturePaneTail(tmux_session, lines = 50) {
+  const cap = await execFileP('tmux',
+    [...TMUX_ARGS, 'capture-pane', '-t', tmux_session, '-p', '-S', `-${lines}`],
+    { timeout: 3000, encoding: 'utf8' })
+  return cap.stdout
+}
+
+// True while Claude Code is mid-turn: it shows a "…ing" spinner and/or the
+// "esc to interrupt" hint. Both vanish the moment the agent goes idle. Same
+// signal the liveness sweep trusts (THINKING_SPINNER_RE / INTERRUPT_HINT_RE).
+function paneIsWorking(pane) {
+  const tail = pane.split('\n').slice(-THINKING_SCAN_LINES).join('\n')
+  return THINKING_SPINNER_RE.test(tail) || INTERRUPT_HINT_RE.test(tail)
+}
+
 async function rpcInterrupt({ tmux_session, agent_id }) {
   checkSession(tmux_session)
-  // Synchronous first-shot Escape Escape so the caller can return fast.
-  try { await tmux('send-keys', '-t', tmux_session, 'Escape', 'Escape') } catch {}
-  // Background poll loop — the daemon owns this so the server can move on.
-  ;(async () => {
-    for (let i = 0; i < 5; i++) {
-      await new Promise(r => setTimeout(r, 2500))
-      try {
-        const cap = await execFileP('tmux',
-          [...TMUX_ARGS, 'capture-pane', '-t', tmux_session, '-p', '-S', '-50'],
-          { timeout: 3000, encoding: 'utf8' })
-        const pane = cap.stdout
-        const linesArr = pane.split('\n').filter(l => l.trim())
-        const last = linesArr.length ? linesArr[linesArr.length - 1] : ''
-        if (!pane.includes('esc to interrupt') &&
-            (/^[\s]*[❯>][\s📬]*$/.test(last) || pane.includes('Enter to continue'))) break
-      } catch {}
-      try { await tmux('send-keys', '-t', tmux_session, 'Escape', 'Escape') } catch {}
-    }
-  })()
-  return { ok: true }
+  // Hard interrupt. A SINGLE Escape stops a working agent (verified directly).
+  // The critical invariant: never send a second Escape once the agent is idle —
+  // two gapped escapes on an idle Claude Code open the Rewind menu. So send one
+  // Escape, then poll; the instant the working indicators are gone, STOP. Only
+  // re-send a single Escape while the agent is still visibly working.
+  //
+  // (The old code sent `Escape Escape` and retried that pair every 2.5s × 5.
+  // The first pair stopped the agent; every later pair landed on an idle agent
+  // with a gap → Rewind menu + a pile of spurious interrupt cards.)
+  //
+  // We AWAIT confirmation and return `stopped` so the server can render the
+  // interrupt card only when the agent actually halted. A soft-promote also
+  // writes "[Request interrupted by user]" to the pane but the agent resumes —
+  // so "did it stop?" is the only signal that distinguishes a real hard
+  // interrupt (card) from a soft promote (no card).
+  try { await tmux('send-keys', '-t', tmux_session, 'Escape') } catch {}
+  let stopped = false
+  for (let i = 0; i < 3; i++) {
+    await new Promise(r => setTimeout(r, 1200))
+    let pane = ''
+    try { pane = await capturePaneTail(tmux_session) } catch {}
+    if (!paneIsWorking(pane)) { stopped = true; break }  // idle — do NOT send another escape
+    try { await tmux('send-keys', '-t', tmux_session, 'Escape') } catch {}
+  }
+  return { ok: true, stopped }
+}
+
+// Soft interrupt: promote a QUEUED channel message without stopping the agent's
+// work. A single Escape does this — but ONLY when there's something queued. With
+// nothing queued, that same Escape hard-interrupts, which is exactly what soft
+// must never do.
+//
+// Anchor on the INPUT BOX (`❯`), not the spinner: the spinner word (`…ing`) only
+// shows during the *thinking* phase — while the agent is streaming output there
+// is no spinner line, just the "esc to interrupt" hint. The input prompt is the
+// one landmark present in every phase. A pending queued message renders as a
+// `← …` line sitting a couple of lines above the input box. Once promoted, the
+// agent picks it up and new content appears below it, so it's no longer adjacent
+// to the box — that's how we confirm.
+const QUEUED_LINE_RE = /^\s*←\s/
+// Index of a PENDING `← …` queued marker, or -1. The rule (Skip's): a queued
+// marker is one that sits ANYWHERE BELOW the spinner. The message the agent is
+// already answering has its `←` marker ABOVE the spinner (its output/spinner
+// renders below it), so it's excluded automatically — only genuinely-queued
+// messages, which land below the current activity line, count. Robust to todo
+// lists / status panels, since we only ever match `←` markers. No spinner line
+// (idle, or pure text streaming) → nothing to be "below" → no pending queue,
+// which fails safe: soft never fires an escape it can't justify.
+function pendingQueuedIdx(lines) {
+  let s = -1
+  for (let i = lines.length - 1; i >= 0; i--) { if (THINKING_SPINNER_RE.test(lines[i])) { s = i; break } }
+  if (s < 0) return -1
+  for (let i = s + 1; i < lines.length; i++) if (QUEUED_LINE_RE.test(lines[i])) return i
+  return -1
+}
+async function rpcSoftInterrupt({ tmux_session, agent_id }) {
+  checkSession(tmux_session)
+  let pane = ''
+  try { pane = await capturePaneTail(tmux_session) } catch {}
+  let lines = pane.split('\n').slice(-THINKING_SCAN_LINES)
+  // Only fire when the agent is working AND a queued message is pending just
+  // above the input box. Otherwise the escape would hard-interrupt — no-op.
+  if (!paneIsWorking(pane) || pendingQueuedIdx(lines) < 0) {
+    return { ok: true, promoted: false, reason: 'nothing-queued' }
+  }
+  try { await tmux('send-keys', '-t', tmux_session, 'Escape') } catch {}
+  for (let i = 0; i < 5; i++) {
+    await new Promise(r => setTimeout(r, 700))
+    try { pane = await capturePaneTail(tmux_session) } catch {}
+    lines = pane.split('\n').slice(-THINKING_SCAN_LINES)
+    // Promoted = the queued line is no longer pending just above the input box
+    // (the agent consumed it; new content/turn now sits below it).
+    if (pendingQueuedIdx(lines) < 0) return { ok: true, promoted: true }
+  }
+  return { ok: true, promoted: false, reason: 'timeout' }
 }
 
 async function rpcListSessions() {
@@ -2433,6 +2503,7 @@ const RPC_HANDLERS = {
   'send-text': rpcSendText,
   'capture-pane': rpcCapturePane,
   'interrupt': rpcInterrupt,
+  'soft-interrupt': rpcSoftInterrupt,
   'check-alive': rpcCheckAlive,
   'list-sessions': rpcListSessions,
   'kick': rpcKick,

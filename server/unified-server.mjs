@@ -1481,9 +1481,34 @@ app.post('/api/interrupt', requireRead, async (req, res) => {
   if (route.via === 'none') return res.status(503).json({ error: route.error })
   try {
     const result = await sendRpc(route.machine_id, 'interrupt', { agent_id: agent.id, tmux_session: agent.tmux_session })
-    const interruptEvent = { type: 'interrupt', from: SERVER_OWNER_ID, to: agent.id, text: `Interrupted ${agent.friendly_name || agent.id}` }
-    await fleetStore.share(interruptEvent)
+    // Only emit the interrupt card when the agent actually halted. A soft promote
+    // also produces a "[Request interrupted by user]" marker but the agent resumes;
+    // `stopped` is what tells a real hard interrupt (card) from a soft one (no card).
+    if (result?.stopped) {
+      const interruptEvent = { type: 'interrupt', from: SERVER_OWNER_ID, to: agent.id, text: `Interrupted ${agent.friendly_name || agent.id}` }
+      await fleetStore.share(interruptEvent)
+    }
     broadcastState()
+    res.json({ ok: true, agent: agent.friendly_name || agent.id, ...result })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+// Soft interrupt: promote a queued message above the spinner without stopping
+// the agent. The daemon only acts if there's queued content; otherwise it's a
+// no-op (we must NOT send an escape that would hard-interrupt). The result
+// ({ promoted, reason }) is returned so the client can render a CONFIRMED card —
+// no optimistic event is emitted here.
+app.post('/api/soft-interrupt', requireRead, async (req, res) => {
+  const { agent: agentQuery } = req.body || {}
+  if (!agentQuery) return res.status(400).json({ error: 'Missing agent' })
+  if (!fleetStore) return res.status(503).json({ error: 'Fleet not initialized' })
+  const agent = fleetStore.findAgent(agentQuery)
+  if (!agent) return res.status(404).json({ error: 'agent not found' })
+  if (!agent.tmux_session) return res.status(400).json({ error: 'no tmux session' })
+  const route = resolveRpc('soft-interrupt', agent)
+  if (route.via === 'none') return res.status(503).json({ error: route.error })
+  try {
+    const result = await sendRpc(route.machine_id, 'soft-interrupt', { agent_id: agent.id, tmux_session: agent.tmux_session })
     res.json({ ok: true, agent: agent.friendly_name || agent.id, ...result })
   } catch (e) { res.status(500).json({ error: e.message }) }
 })

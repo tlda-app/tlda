@@ -2928,11 +2928,10 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   width: max-content;
 }
 
-/* Lightbox backscroll: real tmux history stacked above the live screen, divided
-   by a faint rule. Static (write-once) so the body scrolls it natively. */
+/* Lightbox backscroll: one continuous capture (real tmux history flowing into
+   the current screen). Static (write-once) so the body scrolls it natively. */
 .fleet-chat-shape .fleet-terminal-hover-history {
   width: max-content;
-  border-bottom: 1px solid rgba(80, 80, 110, 0.35);
 }
 
 .fleet-chat-shape .fleet-terminal-hover-body .xterm-viewport {

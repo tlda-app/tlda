@@ -22,7 +22,7 @@ import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 // @ts-ignore — vanilla JS module
 import { renderChatLine, resolveInlineAttachments, esc } from '../fleet/chat-render.mjs'
 // @ts-ignore — vanilla JS module
-import { renderActivityGroup } from '../fleet/activity-render.mjs'
+import { renderActivityGroup, scheduleTimeLabel } from '../fleet/activity-render.mjs'
 // @ts-ignore — vanilla JS module
 import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil } from '../fleet/utils.mjs'
 // @ts-ignore — vanilla JS module
@@ -165,10 +165,18 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
   // the bottom-left corner stays put when the lightbox grows up + right.
   const paneBottomRef = useRef(0)
   const lightboxedRef = useRef(lightboxed)
-  // Real tmux scrollback shown above the live screen when lightboxed.
+  // Real tmux scrollback shown as one continuous capture when lightboxed.
   const [historyText, setHistoryText] = useState<string | null>(null)
+  // Bumped to re-pull the capture (e.g. after sending a command) since the
+  // lightbox capture is a snapshot, not the live attach stream.
+  const [historyTick, setHistoryTick] = useState(0)
   const historyContainerRef = useRef<HTMLDivElement>(null)
   const historyTermRef = useRef<Terminal | null>(null)
+  const refreshHistory = useCallback(() => {
+    if (!lightboxedRef.current) return
+    setTimeout(() => setHistoryTick(t => t + 1), 400)
+    setTimeout(() => setHistoryTick(t => t + 1), 1200)
+  }, [])
 
   useEffect(() => { pinnedRef.current = pinned }, [pinned])
   useEffect(() => { lightboxedRef.current = lightboxed }, [lightboxed])
@@ -192,7 +200,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
       } catch {}
     })()
     return () => { cancelled = true }
-  }, [lightboxed, agentId])
+  }, [lightboxed, agentId, historyTick])
 
   // Render the scrollback snapshot into a static, full-height xterm stacked above
   // the live screen. The body scrolls through [history][live] natively, so the
@@ -204,7 +212,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
       return
     }
     const text = historyText.replace(/\r?\n/g, '\r\n')
-    const rows = Math.max(1, Math.min(historyText.split('\n').length, HISTORY_LINES))
+    const rows = Math.max(1, Math.min(historyText.split('\n').length, 2000))
     const term = new Terminal({
       cols: PEEK_COLS,
       rows,
@@ -335,6 +343,9 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: 'input', data }))
     }
+    // Lightbox shows a capture snapshot, not the live stream — re-pull it so the
+    // command's effect shows up.
+    refreshHistory()
   }
 
   const shortId = agentId.replace('fleet:', '')
@@ -444,11 +455,17 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
         {lightboxed && historyText && (
           <div ref={historyContainerRef} className="fleet-terminal-hover-history" />
         )}
+        {/* Live scaled screen for the hover/pinned peek. In the lightbox we show
+            the single continuous capture instead (history + current screen as one
+            block), so the live wrapper is hidden once the capture has loaded —
+            but stays mounted so the live term resumes when you leave the lightbox. */}
         <div
           className="fleet-terminal-hover-scale"
-          style={lightboxed
-            ? { transform: `scale(${scale})`, transformOrigin: 'top left' }
-            : { transform: `scale(${scale})`, transformOrigin: 'bottom left', position: 'absolute', left: 0, bottom: 0 }}
+          style={
+            lightboxed && historyText ? { display: 'none' }
+            : lightboxed ? { transform: `scale(${scale})`, transformOrigin: 'top left' }
+            : { transform: `scale(${scale})`, transformOrigin: 'bottom left', position: 'absolute', left: 0, bottom: 0 }
+          }
         >
           <div ref={containerRef} />
         </div>
@@ -956,8 +973,15 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
   const rowAgentIds = useMemo(() => {
     const ids = new Set<string>(statusAgents.keys())
     for (const k of suggestionsByAgent.keys()) ids.add(k)
-    return [...ids]
-  }, [statusAgents, suggestionsByAgent])
+    // A row with suggestions but no status and no context% is a bot (e.g. todd) —
+    // float it above the working agents. Order within each group is preserved.
+    const isBot = (id: string) =>
+      (suggestionsByAgent.get(id)?.length ?? 0) > 0 &&
+      !statusAgents.has(id) &&
+      contextPercent.get(id) === undefined
+    const all = [...ids]
+    return [...all.filter(isBot), ...all.filter((id) => !isBot(id))]
+  }, [statusAgents, suggestionsByAgent, contextPercent])
 
   const statusKeysStr = [...statusAgents.keys()].join(',')
   useEffect(() => {
@@ -1786,23 +1810,6 @@ function FleetChatInner({ shape }: { shape: any }) {
         const targetName = targetAgent?.friendly_name || targetId.replace('fleet:', '')
         const html = `<div class="kill-session-card"><span class="kill-session-icon">⏸</span><span class="kill-session-text">Interrupted: <strong>${esc(targetName)}</strong></span></div>`
         items.push({ key: m._dbId || m._tempId || `${m.timestamp}:${m.from}:interrupt`, html })
-      } else if (m.type === 'chat' && (m.text || '').trim().startsWith('[Request interrupted by user')) {
-        // Confirmed interrupt. When an agent is interrupted, Claude Code writes
-        // "[Request interrupted by user]" (or "…for tool use" mid-tool-call) as
-        // a user line in its session JSONL; the daemon ingests that as a
-        // terminal chat (from=user, to=agent, source=terminal). This is the
-        // only ground-truth that an interrupt actually landed — an interrupt is
-        // not an MCP tool call, so nothing else reports it. Render a confirmed
-        // card off it instead of letting chat-render drop the line. Prefix
-        // match (no closing bracket) catches both the plain and "for tool use"
-        // variants.
-        flushActivity()
-        const agentObjs: any[] = renderCtx.getAgents()
-        const targetId = m.to || ''
-        const targetAgent = agentObjs.find((a: any) => a.id === targetId)
-        const targetName = targetAgent?.friendly_name || targetId.replace('fleet:', '')
-        const html = `<div class="kill-session-card"><span class="kill-session-icon">⏸</span><span class="kill-session-text">Interrupted: <strong>${esc(targetName)}</strong></span></div>`
-        items.push({ key: m._dbId || m._tempId || `${m.timestamp}:${m.to}:interrupt-confirmed`, html })
       } else {
         flushActivity()
         // Fold amends: if this message has amend events, show the viewed
@@ -2519,6 +2526,15 @@ function FleetChatInner({ shape }: { shape: any }) {
         const arrowIdx = txt.indexOf('→')
         const tail = arrowIdx >= 0 ? txt.slice(arrowIdx) : ''
         span.textContent = `⏱ ${timeStr} ${tail}`.trimEnd()
+      }
+      // ScheduleWakeup cards: same idea — recompute the "in Xm Ys" countdown each
+      // second from the absolute fire epoch baked into data-fire-at.
+      const schedNodes = logEl.querySelectorAll<HTMLElement>('.tool-pretty-schedule[data-fire-at]')
+      for (const node of schedNodes) {
+        const fireAt = parseInt(node.getAttribute('data-fire-at') || '0', 10)
+        const span = node.querySelector<HTMLElement>('.schedule-time')
+        if (!fireAt || !span) continue
+        span.textContent = scheduleTimeLabel(fireAt)
       }
     }
     const id = setInterval(tick, 1000)
@@ -3356,8 +3372,9 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   // Esc interrupt — document-level listener, scoped to fire only when the user
   // last clicked inside this fleet chat shape (chatActiveRef).
-  // Three tiers: 1×Esc = soft (single Escape to tmux), 2×Esc = hard (Escape+poll loop),
-  // 3×Esc = kill session (tmux kill-session, agent dies immediately).
+  // Three tiers: 1×Esc = soft (promote a queued message above the spinner; the
+  // daemon no-ops if nothing is queued, so a single Esc never hard-interrupts),
+  // 2×Esc = hard (one Escape that stops the agent), 3×Esc = kill session.
   useEffect(() => {
     let escTempCounter = 0
     function onEscKey(e: KeyboardEvent) {
@@ -3401,14 +3418,20 @@ function FleetChatInner({ shape }: { shape: any }) {
           })
           .catch(() => { injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', _isInterrupt: true, from: 'system', to: agent, text: `⚠ Interrupt failed (server unreachable)`, timestamp: ts }) })
       } else {
-        injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', _isInterrupt: true, from: 'system', to: agent, text: `⏸ Escape → ${agentLabel}…`, timestamp: ts })
-        fetch(`${FLEET_API}/api/send-key`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent, key: 'Escape' }) })
+        // Soft interrupt: promote a queued message above the spinner without
+        // stopping the agent. The daemon no-ops when nothing is queued — a single
+        // Esc must never hard-interrupt. Confirm the card off the real result
+        // (promoted / nothing-queued), not optimistically.
+        injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', _isInterrupt: true, from: 'system', to: agent, text: `⏸ Soft interrupt → ${agentLabel}…`, timestamp: ts })
+        fetch(`${FLEET_API}/api/soft-interrupt`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent }) })
           .then(r => r.json())
           .then(d => {
-            if (d.error) { updateOptimisticEvent(tempId, { text: `⚠ Escape failed: ${d.error}` }) }
-            else { updateOptimisticEvent(tempId, { text: `⏸ Escape → ${agentLabel}` }); confirmEscLevel(agent, 1) }
+            if (d.error) { updateOptimisticEvent(tempId, { text: `⚠ Soft interrupt failed: ${d.error}` }) }
+            else if (d.promoted) { updateOptimisticEvent(tempId, { text: `⏸ Promoted queued message → ${agentLabel}` }); confirmEscLevel(agent, 1) }
+            else if (d.reason === 'nothing-queued') { updateOptimisticEvent(tempId, { text: `· nothing queued for ${agentLabel} — no-op` }) }
+            else { updateOptimisticEvent(tempId, { text: `⏸ Soft interrupt → ${agentLabel} (unconfirmed)` }) }
           })
-          .catch(() => { updateOptimisticEvent(tempId, { text: `⚠ Escape failed (server unreachable)` }) })
+          .catch(() => { updateOptimisticEvent(tempId, { text: `⚠ Soft interrupt failed (server unreachable)` }) })
       }
     }
     function resetEscState() {
