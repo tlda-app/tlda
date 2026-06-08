@@ -367,6 +367,26 @@ async function ensureFormat(ctx) {
  * No source file copying — pdflatex reads .tex from source, writes .dvi/.log/.aux
  * to the build dir. Cached .aux/.bbl/.fmt seeded into build dir from build-cache.
  */
+// Biber ships as a PAR-packed binary that unpacks its Perl runtime + Unicode
+// tables into a cache dir. That cache can corrupt, after which biber crashes
+// silently (exit 2) mid-decode and emits a 0-byte .bbl — so every \cite renders
+// undefined. We point PAR_GLOBAL_TEMP at a per-project dir (see biberParCacheDir)
+// so each doc gets its own isolated cache: a corrupt cache can be cleared for
+// that one doc without touching any other in-flight build's cache. Removing the
+// dir forces biber to re-extract a fresh copy on the next run (~10s one-time;
+// warm reuse is the same speed as a shared global cache).
+function biberParCacheDir(projDir) {
+  return join(projDir, '.biber-par-cache')
+}
+function clearBiberParCache(parCacheDir, addLog) {
+  try {
+    rmSync(parCacheDir, { recursive: true, force: true })
+    addLog('Cleared this project’s biber PAR cache (biber will re-extract)')
+  } catch (e) {
+    addLog(`Could not clear biber PAR cache ${parCacheDir}: ${e.message}`)
+  }
+}
+
 async function compileLaTeX(ctx) {
   const { name, srcDir, buildDir, projDir, texBase, texDir, addLog, run } = ctx
   const cacheDir = join(projDir, 'build-cache')
@@ -398,6 +418,13 @@ async function compileLaTeX(ctx) {
     TEXMFOUTPUT: buildDir,
     TEXINPUTS: `${buildDir}:${texDir}:${srcDir}:`,
   }
+
+  // Per-project biber PAR cache. PAR_GLOBAL_TEMP makes biber unpack its runtime
+  // into this doc's own dir, so a corrupt cache is isolated to one project and
+  // recovery can clear it without disturbing concurrent builds of other docs.
+  const parCacheDir = biberParCacheDir(projDir)
+  mkdirSync(parCacheDir, { recursive: true })
+  const biberEnv = { ...process.env, PAR_GLOBAL_TEMP: parCacheDir }
 
   // Override the scratch-template for THIS build. The user's source dir has
   // the marker version of \inputscratch (so local vanilla-latex builds show
@@ -480,7 +507,7 @@ async function compileLaTeX(ctx) {
       signalBuildProgress(name, 'compiling', bibTool)
       let bibFailed = false
       try {
-        await run(bibCmd, { cwd: buildDir, timeout: 60000 })
+        await run(bibCmd, { cwd: buildDir, timeout: 60000, env: biberEnv })
         addLog(`${bibTool} done — recompiling`)
       } catch (e) {
         const errMsg = e.message || ''
@@ -493,36 +520,20 @@ async function compileLaTeX(ctx) {
           // (Unicode::UCD error). Also fails with XML/malformed errors on bad .bcf.
           const isCorrupt = true // Always retry on biber failure — cleaning is safe
           if (isCorrupt) {
-            addLog('Biber failed — cleaning state files and PAR cache, retrying')
-            const cleanExts = ['.bcf', '.bbl', '.blg', '.run.xml']
-            for (const ext of cleanExts) {
+            addLog('Biber failed — clearing PAR cache and retrying')
+            // Clear stale biber outputs. Keep the .bcf: it's pdflatex's control
+            // file (biber's required input, regenerated every compile) — deleting
+            // it would make the retry fail with "cannot find control file".
+            for (const ext of ['.bbl', '.blg', '.run.xml']) {
               const f = join(buildDir, `${texBase}${ext}`)
               if (existsSync(f)) { try { unlinkSync(f) } catch {} }
-              // Also clean from build cache so corruption doesn't persist
               const cacheF = join(projDir, 'build-cache', `${texBase}${ext}`)
               if (existsSync(cacheF)) { try { unlinkSync(cacheF) } catch {} }
             }
-            // Clean biber's PAR cache — delete only the corrupt unicore/ dir
-            try {
-              const tmpDir = process.env.TMPDIR || '/tmp'
-              for (const d of readdirSync(tmpDir)) {
-                if (!d.startsWith('par-')) continue
-                const parDir = join(tmpDir, d)
-                for (const sub of readdirSync(parDir)) {
-                  if (!sub.startsWith('cache-')) continue
-                  const unicorePath = join(parDir, sub, 'inc', 'lib', 'unicore')
-                  if (existsSync(unicorePath)) {
-                    try {
-                      for (const f of readdirSync(unicorePath)) unlinkSync(join(unicorePath, f))
-                      addLog('Cleaned corrupt biber unicore cache')
-                    } catch {}
-                  }
-                }
-              }
-            } catch {}
+            clearBiberParCache(parCacheDir, addLog)
             // Retry biber
             try {
-              await run(bibCmd, { cwd: buildDir, timeout: 60000 })
+              await run(bibCmd, { cwd: buildDir, timeout: 60000, env: biberEnv })
               addLog('Biber retry succeeded')
               bibFailed = false
             } catch (e2) {
@@ -565,36 +576,18 @@ async function compileLaTeX(ctx) {
       const finalLog = readFileSync(logPath, 'utf8')
       const stillUndefined = (finalLog.match(/Citation .* undefined/g) || []).length
       if (stillUndefined > 5 && existsSync(bcfPath)) {
-        addLog(`${stillUndefined} citations still undefined — cleaning biber state and retrying`)
-        const cleanExts = ['.bcf', '.bbl', '.blg', '.run.xml']
-        for (const ext of cleanExts) {
+        addLog(`${stillUndefined} citations still undefined — clearing PAR cache and retrying`)
+        // Keep the .bcf (biber's input); clear only stale biber outputs.
+        for (const ext of ['.bbl', '.blg', '.run.xml']) {
           const f = join(buildDir, `${texBase}${ext}`)
           if (existsSync(f)) { try { unlinkSync(f) } catch {} }
           const cacheF = join(projDir, 'build-cache', `${texBase}${ext}`)
           if (existsSync(cacheF)) { try { unlinkSync(cacheF) } catch {} }
         }
-        // Clean biber PAR cache — delete the specific unicore/ dir that corrupts
-        try {
-          const tmpDir = process.env.TMPDIR || '/tmp'
-          for (const d of readdirSync(tmpDir)) {
-            if (!d.startsWith('par-')) continue
-            const parDir = join(tmpDir, d)
-            for (const sub of readdirSync(parDir)) {
-              if (!sub.startsWith('cache-')) continue
-              const unicorePath = join(parDir, sub, 'inc', 'lib', 'unicore')
-              if (existsSync(unicorePath)) {
-                // Only delete the corrupted unicore dir, not the whole cache
-                try {
-                  for (const f of readdirSync(unicorePath)) unlinkSync(join(unicorePath, f))
-                  addLog('Cleaned corrupt biber unicore cache')
-                } catch {}
-              }
-            }
-          }
-        } catch {}
+        clearBiberParCache(parCacheDir, addLog)
         const bibCmd2 = `biber --input-directory="${texDir}" --output-directory="${buildDir}" "${join(buildDir, texBase)}"`
         try {
-          await run(bibCmd2, { cwd: buildDir, timeout: 60000 })
+          await run(bibCmd2, { cwd: buildDir, timeout: 60000, env: biberEnv })
           await run(cmd, { cwd: texDir, timeout: 120000, env })
           addLog('Citation recovery succeeded')
         } catch (e) {
