@@ -602,7 +602,9 @@ export function useFleetContext(dnfFilter?: string[][] | [string,string][][] | n
 const DASHBOARD_URL = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5176'
 
 export interface FleetSearchFilters {
-  agent?: string
+  agent?: string       // explicit fleet id (or array) — exact match
+  agentQuery?: string  // typed name fragment — server resolves to ids (substring, dawn-aware)
+  fromOnly?: boolean   // agentQuery refers to the SENDER only (from:)
   role?: string
   since?: string
   before?: string
@@ -613,6 +615,8 @@ export async function searchFleet(query: string, limit = 50, filters: FleetSearc
   try {
     const payload: Record<string, any> = { query, limit }
     if (filters.agent) payload.agent = filters.agent
+    if (filters.agentQuery) payload.agentQuery = filters.agentQuery
+    if (filters.fromOnly) payload.fromOnly = true
     if (filters.role) payload.role = filters.role
     if (filters.since) payload.since = filters.since
     if (filters.before) payload.before = filters.before
