@@ -466,7 +466,7 @@ Be specific. Quote Skip's words. APPROVE or REJECT."""
 
 
 def run_scoped_review(targets, instruction):
-    """Run a QA review scoped by Eliza dispatch."""
+    """Run a QA review scoped by a bot dispatch (e.g. Todd)."""
     target_list = ', '.join(f"**{t['name']}** ({t['id']})" for t in targets)
     target_ids = [t['id'] for t in targets]
 
@@ -534,7 +534,7 @@ def watch_ws(agents_map):
             watching_names = [agents_map.get(a, a) for a in watched] if watched else ["all"]
             log(f"Connected. Watching: {', '.join(watching_names)}")
             if not greeted:
-                fleet_chat(SKIP_ID, f"**QA gate online.** Model: `{QA_MODEL}`. Say *eliza, get qa* in any agent chat to trigger a review.")
+                fleet_chat(SKIP_ID, f"**QA gate online.** Model: `{QA_MODEL}`. Say *todd, get qa* in any agent chat to trigger a review.")
                 greeted = True
 
             while True:
@@ -557,14 +557,14 @@ def watch_ws(agents_map):
                 etype = data.get('type', '')
                 text = data.get('text') or data.get('message', '')
 
-                # Handle Eliza-dispatched QA requests
+                # Handle bot-dispatched QA requests (e.g. from Todd)
                 if (etype == 'chat' and FLEET_ID in to_id and from_id != FLEET_ID):
                     try:
                         payload = json.loads(text)
                         if payload.get('type') == 'qa-request':
                             targets = payload.get('targets', [])
                             instruction = payload.get('instruction', '')
-                            log(f"QA request from Eliza: {len(targets)} target(s), instruction: {instruction[:100]}")
+                            log(f"QA request from bot: {len(targets)} target(s), instruction: {instruction[:100]}")
                             threading.Thread(target=run_scoped_review,
                                 args=(targets, instruction), daemon=True).start()
                             continue

@@ -5,7 +5,7 @@
  * Before this module the label-expansion logic was hand-copied in six places
  * (client display `agentMatchesLabel`, client history `resolveFilter`, client
  * send `resolveToFleetId(s)`, the server chat router, the server wiretap
- * matcher, and eliza). The copies had already drifted — e.g. `resolveFilter`
+ * matcher, and bots). The copies had already drifted — e.g. `resolveFilter`
  * dropped the `human`/`human-away` pseudo-labels, so a chat scoped to `human`
  * showed live messages but returned empty backfilled history (the same class
  * of bug as the lineage-agent scrollback issue). One resolver kills that.
