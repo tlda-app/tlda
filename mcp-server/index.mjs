@@ -3914,55 +3914,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     return { content: [{ type: 'text', text: `Set ${count} macro(s) for "${target}" from ${resolved}.\n\nExamples:\n${examples}${count > 5 ? `\n  ... and ${count - 5} more` : ''}` }] };
   }
 
-  if (name === 'suggest') {
-    const { doc, text } = args;
-    if (!doc || !text) return { content: [{ type: 'text', text: 'Doc and text are required.' }], isError: true };
-    const choices = args.choices || ['Accept', 'Reject', 'Modify'];
-    const color = args.color || 'orange';
-    const line = args.line || null;
-    const replyTo = args.reply_to || null;
-    const MARGIN_X = 810;
-    try {
-      if (replyTo) {
-        let noteY = 100;
-        let inheritedColor = color;
-        try {
-          const parent = await serverFetch(`/api/projects/${doc}/shapes/${encodeURIComponent(replyTo.startsWith('shape:') ? replyTo : `shape:${replyTo}`)}`);
-          noteY = parent.y ?? parent.meta?.anchorCanvasY ?? 100;
-          if (parent.props?.color) inheritedColor = parent.props.color;
-        } catch (e) { process.stderr.write(`[mcp] parent shape fetch for reply failed: ${e.message}\n`); }
-        const replyId = `shape:claude-${crypto.randomUUID().slice(0, 12)}`;
-        await serverFetch(`/api/projects/${doc}/shapes`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            id: replyId, type: 'math-note', typeName: 'shape', parentId: 'page:page', index: 'a1',
-            x: MARGIN_X, y: noteY, rotation: 0, isLocked: false, opacity: 1,
-            props: { w: 10, h: 10, text, color: inheritedColor, collapsed: true },
-            meta: { createdBy: 'claude', replyTo, choices: choices || [], sourceAnchor: line ? { line } : undefined },
-          }),
-        });
-        return { content: [{ type: 'text', text: `Posted reply on "${doc}" ${line ? 'at L' + line : ''} (replying to ${replyTo}). Choices: ${choices.join(', ')}` }] };
-      } else {
-        const noteY = line ? Math.max(60, 60 + (line - 1) * 18) : 100;
-        const noteId = `shape:claude-${crypto.randomUUID().slice(0, 12)}`;
-        await serverFetch(`/api/projects/${doc}/shapes`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            id: noteId, type: 'math-note', typeName: 'shape', parentId: 'page:page', index: 'a1',
-            x: MARGIN_X, y: noteY, rotation: 0, isLocked: false, opacity: 1,
-            props: { w: 10, h: 10, text, color, collapsed: true },
-            meta: { createdBy: 'claude', choices: choices || [], sourceAnchor: line ? { line } : undefined },
-          }),
-        });
-        return { content: [{ type: 'text', text: `Posted suggestion on "${doc}" ${line ? 'at L' + line : ''}. Choices: ${choices.join(', ')}` }] };
-      }
-    } catch (e) {
-      return { content: [{ type: 'text', text: `tlda server error: ${e.message}` }], isError: true };
-    }
-  }
-
   if (name === 'propose_edit') {
     const { file, old_string, new_string } = args;
     if (!file || !old_string || !new_string) {

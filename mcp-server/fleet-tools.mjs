@@ -825,7 +825,7 @@ export function getFleetTools() {
       },
     },
     {
-      name: 'suggest_action',
+      name: 'suggest',
       description: 'Push your current set of clickable suggestion chips to the bottom of the user\'s chat — actionable "you might want to do X" affordances. Use for the "I need you to decide" moment instead of a chat line that scrolls away. Replace-semantics: each call overwrites your WHOLE set; pass an empty array to clear. Each suggestion: { label (short chip text), text (optional longer description), command (optional — a chat/command string that runs when the user clicks the chip) }.',
       inputSchema: {
         type: 'object',
@@ -1919,9 +1919,8 @@ export async function handleFleetTool(name, args) {
   // Push this agent's current set of clickable suggestion chips to the chat.
   // Generic capability — any agent can use it (the todd example bot posts to the
   // same /api/suggestions route directly). Replace-semantics: overwrites this
-  // agent's set; an empty array clears it. (Named suggest_action to avoid the
-  // existing doc multiple-choice `suggest` annotation tool.)
-  if (name === 'suggest_action') {
+  // agent's set; an empty array clears it.
+  if (name === 'suggest') {
     if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not registered. Call register() first.' }], isError: true };
     const { suggestions } = args || {};
     if (!Array.isArray(suggestions)) return { content: [{ type: 'text', text: 'suggest requires a `suggestions` array (empty to clear).' }], isError: true };
