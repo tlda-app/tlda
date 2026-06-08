@@ -65,6 +65,10 @@ html[data-theme="dark"] .fleet-icon-pill-badge {
   color: var(--pill-icon-color, rgba(255, 255, 255, 1));
 }
 
+html[data-theme="dark"] .fleet-icon-pill-container:hover .fleet-icon-pill-badge {
+  color: var(--pill-icon-color-hover, rgba(255, 255, 255, 1));
+}
+
 html[data-theme="dark"] .fleet-icon-pill-fan-item {
   opacity: 0.4;
 }

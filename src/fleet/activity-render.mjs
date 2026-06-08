@@ -44,7 +44,7 @@ export const CHAT_TOOLS = new Set([
 
 // --- Pretty-print tool results ---
 
-function renderPrettyResult(toolName, text, ctx, input) {
+function renderPrettyResult(toolName, text, ctx, input, ts) {
   const tool = (toolName || '').toLowerCase()
   if (tool.includes('get_thread') || tool.includes('thread')) {
     return renderThreadResult(text, ctx)
@@ -56,26 +56,45 @@ function renderPrettyResult(toolName, text, ctx, input) {
     return renderScreenshotResult(text)
   }
   if (tool === 'schedulewakeup') {
-    return renderScheduleResult(text, input)
+    return renderScheduleResult(text, input, ts)
   }
   // Fallback: render as markdown
   const md = ctx.renderMarkdown ? ctx.renderMarkdown(text) : esc(text)
   return `<div class="tool-pretty-result">${md}</div>`
 }
 
-function renderScheduleResult(text, input) {
+// Format remaining ms-until-fire as "in Xm Ys" / "in Ys" / "fired". Shared shape
+// with the chat-shape ticker that re-ticks the card each second.
+export function scheduleTimeLabel(fireAt) {
+  const r = Math.ceil((fireAt - Date.now()) / 1000)
+  if (r <= 0) return 'fired'
+  const min = Math.floor(r / 60)
+  const sec = r % 60
+  return min > 0 ? `in ${min}m ${sec}s` : `in ${sec}s`
+}
+
+function renderScheduleResult(text, input, ts) {
   const timeMatch = text.match(/scheduled for ([\d:]+)\s*\(in (\d+)s\)/)
   const fireTime = timeMatch ? timeMatch[1] : ''
   const delaySec = timeMatch ? parseInt(timeMatch[2], 10) : 0
-  let relativeStr = ''
+  // Absolute fire epoch = when the tool ran (the event timestamp) + the delay.
+  // Anchoring on the event timestamp keeps it correct and date-aware across
+  // re-renders; the clock-time string alone can't tell today from tomorrow.
+  let fireAt = 0
   if (delaySec > 0) {
-    const min = Math.floor(delaySec / 60)
-    const sec = delaySec % 60
-    relativeStr = min > 0 ? `${min}m ${sec}s` : `${sec}s`
+    // timestamps come through as epoch ms (number/numeric-string) or ISO.
+    let base = Date.now()
+    if (ts != null) {
+      const n = typeof ts === 'number' ? ts
+        : /^\d+$/.test(String(ts)) ? Number(ts)
+        : Date.parse(ts)
+      if (Number.isFinite(n)) base = n
+    }
+    fireAt = base + delaySec * 1000
   }
-  const timeLabel = relativeStr ? `in ${relativeStr}` : (fireTime || 'scheduled')
+  const timeLabel = fireAt ? scheduleTimeLabel(fireAt) : 'scheduled'
   const reason = input?.reason || ''
-  return `<div class="tool-pretty-result tool-pretty-schedule">
+  return `<div class="tool-pretty-result tool-pretty-schedule"${fireAt ? ` data-fire-at="${fireAt}"` : ''}>
     <span class="schedule-icon">⏱</span>
     <span class="schedule-time">${esc(timeLabel)}</span>
     ${fireTime ? `<span class="schedule-at">@ ${esc(fireTime)}</span>` : ''}
@@ -616,7 +635,7 @@ export function renderActivityGroup(group, ctx) {
       const copyBtn = cmd ? `<span class="tool-copy" title="Copy command">⎘</span>` : ''
       const showArg = arg && !codeCardHtml
       const prettyHtml = t._prettyResult
-        ? renderPrettyResult(t._toolName, t._prettyResult, ctx, t._toolInput)
+        ? renderPrettyResult(t._toolName, t._prettyResult, ctx, t._toolInput, t.timestamp)
         : ''
       return `<div class="tool-line${hasDiff}"${cmdAttr} data-line="${num}" data-tool-name="${esc(t._toolName || '')}" data-tool-arg="${esc(t._toolArg || '')}">`
         + `<span class="drag-handle" title="Drag tool call"></span>`

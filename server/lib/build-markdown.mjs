@@ -13,7 +13,7 @@ import MarkdownIt from 'markdown-it'
 import markdownItAnchor from 'markdown-it-anchor'
 import katex from 'katex'
 import { readFileSync, writeFileSync, mkdirSync, cpSync, existsSync, readdirSync } from 'fs'
-import { join, basename } from 'path'
+import { join, basename, dirname } from 'path'
 import { injectBridge } from './html-injector.mjs'
 import { updateProject, readProject, listProjects, aggregateBookToc, sourceDir as getSourceDir, outputDir as getOutputDir } from './project-store.mjs'
 import { broadcastSignal } from './sync-rooms.mjs'
@@ -364,6 +364,21 @@ ${content}
       }
     }
   } catch {}
+
+  // Copy every locally-referenced image at its own relative subpath, so nested
+  // refs like docs/images/x.png or public/logo.svg land at the matching path
+  // under output/ (the dir allowlist above only catches top-level img dirs).
+  const copyRef = (raw) => {
+    const rel = raw.split(/[#?]/)[0].trim()
+    if (!rel || /^(https?:|data:|\/\/)/i.test(rel)) return
+    const from = join(srcDir, rel)
+    if (!existsSync(from)) return
+    const to = join(outDir, rel)
+    mkdirSync(dirname(to), { recursive: true })
+    cpSync(from, to)
+  }
+  for (const m of source.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)) copyRef(m[1])
+  for (const m of source.matchAll(/<img\s[^>]*\bsrc=["']([^"']+)["']/g)) copyRef(m[1])
 
 
   // Write relevant-files.json — the markdown analog of .fls.

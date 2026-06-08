@@ -26,6 +26,7 @@ const execFileP = promisify(execFile)
 
 import { getServerUrl, CONFIG_DIR } from '../shared/config.mjs'
 import { labelsForAgent } from '../shared/fleet-labels.mjs'
+import { commitMdShare } from './md-share-commit.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // Identity is config-driven: the supervisor passes TLDA_BOT_NAME (and the pidfile
@@ -1827,6 +1828,9 @@ function handleMessage(msg) {
 
   if (type === 'chat') {
     if (!text) return
+
+    // Per-share md versioning → ~/work/md-versions (fire-and-forget, never throws)
+    commitMdShare(msg.data)
 
     // Messages sent directly to Todd from agents: handoff-ready signal or pattern arm registration
     if (to_id === AGENT_ID && from_id && from_id !== OWNER_ID) {
