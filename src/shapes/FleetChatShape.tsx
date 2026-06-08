@@ -870,7 +870,7 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
       itemCount,
       offsetHeight: slotRef.current?.offsetHeight ?? null,
     })
-  }, [statusKeysStr, reserved, itemCount]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [statusKeysStr, reserved, itemCount]) // eslint-disable-line react-hooks/exhaustive-deps -- log fires on slot identity/reservation/row-count change; statusAgents.size is read only for the snapshot, not a trigger
 
   // Not permanent, not created for nothing: no status and nothing held → no slot.
   if (!reserved) return null
