@@ -41,6 +41,7 @@ import {
   getPlaybackChatEvents,
   getPlaybackAgents,
 } from './playback-context'
+import { log } from './logger'
 import { loadPrefs } from './preferences'
 
 // Load prefs whenever the user's fleet identity is established
@@ -386,9 +387,11 @@ export function useFleetThinking(dnfFilter?: string[][] | [string,string][][] | 
             if (prev.has(data.agent)) return prev
             const next = new Map(prev)
             next.set(data.agent, ts)
+            log.info('thinking-line', 'add (thinking:true)', { agent: data.agent, keys: [...next.keys()] })
             return next
           })
         } else {
+          log.info('thinking-line', 'hold (thinking:false) — pendingRemoval', { agent: data.agent })
           // Don't remove yet — hold "thinking…" until either a row that actually
           // renders lands for this agent (clearPending below) or the server's
           // authoritative thinking-sync drops it (which, on an agent going quiet,
@@ -404,18 +407,24 @@ export function useFleetThinking(dnfFilter?: string[][] | [string,string][][] | 
       // actually renders in the chat. No-op events (fired timers, compacting
       // pings, channel/📬 infrastructure noise) render nothing, so surrendering
       // the slot for them leaves it empty and bounces the stack.
-      function clearPending(agentId: string) {
+      function clearPending(agentId: string, reason: string) {
         pendingRemoval.delete(agentId)
         setThinking(prev => {
+          if (!prev.has(agentId)) return prev
           const next = new Map(prev)
           next.delete(agentId)
+          log.info('thinking-line', `remove (${reason})`, { agent: agentId, keys: [...next.keys()] })
           return next
         })
       }
       unsubMessages = subscribe('messages', null, (event: any) => {
         if (!event) return
         const from = event.from || event.agent
-        if (from && pendingRemoval.has(from) && producesRow(event)) clearPending(from)
+        if (from && pendingRemoval.has(from)) {
+          const rowy = producesRow(event)
+          log.info('thinking-line', 'message from held agent', { agent: from, producesRow: rowy, type: event.type || event._evType, text: (event.text || '').slice(0, 40) })
+          if (rowy) clearPending(from, 'message-row')
+        }
       })
 
       // Status events: only 'idle' should clear thinking. 'tool_call' happens mid-thought.
@@ -431,6 +440,7 @@ export function useFleetThinking(dnfFilter?: string[][] | [string,string][][] | 
         } else if (data.state === 'idle') {
           // Hold, same as thinking:false — release on a rendered row or the
           // authoritative thinking-sync, never on a bare timer.
+          log.info('thinking-line', 'hold (status:idle) — pendingRemoval', { agent: data.agent })
           pendingRemoval.add(data.agent)
         }
         // 'tool_call' — agent is working, don't touch thinking state
@@ -441,13 +451,16 @@ export function useFleetThinking(dnfFilter?: string[][] | [string,string][][] | 
         setThinking(prev => {
           let changed = false
           const next = new Map(prev)
+          const dropped: string[] = []
           for (const id of next.keys()) {
             if (!serverSet.has(id)) {
               next.delete(id)
               pendingRemoval.delete(id)
+              dropped.push(id)
               changed = true
             }
           }
+          if (changed) log.info('thinking-line', 'thinking-sync drop', { dropped, serverSet: [...serverSet], keys: [...next.keys()] })
           return changed ? next : prev
         })
       })
@@ -598,7 +611,9 @@ export function useFleetContext(dnfFilter?: string[][] | [string,string][][] | n
 const DASHBOARD_URL = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5176'
 
 export interface FleetSearchFilters {
-  agent?: string
+  agent?: string       // explicit fleet id (or array) — exact match
+  agentQuery?: string  // typed name fragment — server resolves to ids (substring, dawn-aware)
+  fromOnly?: boolean   // agentQuery refers to the SENDER only (from:)
   role?: string
   since?: string
   before?: string
@@ -609,6 +624,8 @@ export async function searchFleet(query: string, limit = 50, filters: FleetSearc
   try {
     const payload: Record<string, any> = { query, limit }
     if (filters.agent) payload.agent = filters.agent
+    if (filters.agentQuery) payload.agentQuery = filters.agentQuery
+    if (filters.fromOnly) payload.fromOnly = true
     if (filters.role) payload.role = filters.role
     if (filters.since) payload.since = filters.since
     if (filters.before) payload.before = filters.before

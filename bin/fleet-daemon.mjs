@@ -1721,7 +1721,13 @@ async function rpcSpawn({ name, model, cwd, doc, respawn, effort }) {
   let resolvedCwd = cwd
   if (!resolvedCwd && doc) {
     const project = projects.find(p => p.name === doc)
-    if (project?.sourceDir) resolvedCwd = project.sourceDir
+    if (!project) {
+      // An unresolvable project used to drop --cwd silently → the agent launched
+      // in launchd's cwd (`/`) and died as a ghost row. Reject loud instead.
+      const known = projects.map(p => p.name).sort().join(', ')
+      return { ok: false, error: `no project '${doc}'${known ? ` — known: ${known}` : ''}` }
+    }
+    if (project.sourceDir) resolvedCwd = project.sourceDir
   }
   const args = respawn ? [agentName] : ['--fresh', agentName]
   if (model) args.push('--model', model)
