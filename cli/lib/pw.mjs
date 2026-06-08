@@ -29,7 +29,7 @@
 
 import { spawnSync } from 'child_process'
 import { join, dirname } from 'path'
-import { readFileSync, writeFileSync, existsSync, realpathSync } from 'fs'
+import { readFileSync, writeFileSync, existsSync, realpathSync, rmSync } from 'fs'
 
 // Default to the one canonical session; overridable for isolated testing.
 const SESSION = process.env.TLDA_PW_SESSION || 'shared'
@@ -159,13 +159,44 @@ function ensureNoRaisePatch() {
   return true
 }
 
+// The session's Chrome profile dir, parsed from `playwright-cli list`.
+function sessionUserDataDir() {
+  const out = spawnSync('playwright-cli', ['list'], { encoding: 'utf8' }).stdout || ''
+  const m = out.match(new RegExp(`- ${SESSION}:[\\s\\S]*?- user-data-dir:\\s*(\\S+)`, 'm'))
+  return m ? m[1] : null
+}
+
+// Recover from the stuck state that blocks EVERY launch: a zombie shared Chrome
+// (its daemon dead, so the session reads "closed") is still alive holding the
+// profile's SingletonLock, so a fresh `open` can't take the profile and fails.
+// Only called after sessionOpen()===false AND `open` already failed — i.e. no
+// live daemon owns this session, so any surviving ud-<session>-chrome is an
+// orphan that's safe to kill. Kills it and clears the stale singleton locks.
+function recoverStaleSharedBrowser() {
+  const udir = `ud-${SESSION}-chrome`
+  const dir = sessionUserDataDir()
+  console.error(`pw: launch failed — clearing orphaned "${udir}" (zombie holding the profile lock)`)
+  spawnSync('pkill', ['-9', '-f', udir], { encoding: 'utf8' })
+  if (dir) {
+    for (const f of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
+      try { rmSync(join(dir, f), { force: true }) } catch (e) { console.error(`pw: WARN could not clear ${f}: ${e.message}`) }
+    }
+  }
+  spawnSync('sleep', ['0.5'])
+}
+
 // Open the shared browser if it isn't already up (lazy pop-up). Patch the
 // daemon's tab-select before launch so the freshly-loaded code never raises.
+// If the launch fails on a closed session, it's almost always a zombie Chrome
+// holding the profile lock — recover and retry once before giving up.
 function ensureOpen() {
   if (sessionOpen()) return false
   ensureNoRaisePatch()
-  const r = pw(['open', '--headed', '--persistent'], { stdio: 'inherit' })
-  if (r.status !== 0) throw new Error('failed to open shared browser')
+  if (pw(['open', '--headed', '--persistent'], { stdio: 'inherit' }).status === 0) return true
+  recoverStaleSharedBrowser()
+  if (pw(['open', '--headed', '--persistent'], { stdio: 'inherit' }).status !== 0) {
+    throw new Error('failed to open shared browser (even after clearing a stale profile lock)')
+  }
   return true
 }
 
