@@ -17,6 +17,10 @@ function readAll() {
     spawnMode: getPref('spawn-mode'),
     voiceBackend: getPref('voice-backend'),
     fontSize: getPref('fleet-font-size'),
+    heightFrac: getPref('layout-height-frac'),
+    railWidth: getPref('layout-rail-width'),
+    chatWidth: getPref('layout-chat-width'),
+    marginGap: getPref('layout-margin-gap'),
     chromeOpacity: getPref('fleet-chrome-opacity'),
     contentOpacity: getPref('fleet-content-opacity'),
     ageFade: getPref('fleet-age-fade'),
@@ -53,6 +57,11 @@ export function PrefsTab() {
 
   return (
     <div className="prefs-tab">
+      <div className="prefs-section">
+        <div className="prefs-section-label">Theme</div>
+        <DarkModeToggle />
+      </div>
+
       <div className="prefs-section">
         <div className="prefs-section-label">Fleet readability</div>
 
@@ -106,6 +115,65 @@ export function PrefsTab() {
           />
           <span>Age fade</span>
         </label>
+      </div>
+
+      <div className="prefs-section">
+        <div className="prefs-section-label">Default layout size</div>
+        <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 4 }}>
+          Applied when you pick a layout preset. Re-pick a layout to apply changes.
+        </div>
+        <div className="prefs-num-row">
+          <span className="prefs-num-label">Height</span>
+          <input
+            type="number"
+            min={10}
+            max={100}
+            step={5}
+            value={Math.round(prefs.heightFrac * 100)}
+            onChange={e => setPref('layout-height-frac', Number(e.target.value) / 100)}
+            className="prefs-num"
+          />
+          <span className="prefs-num-unit">% of view</span>
+        </div>
+        <div className="prefs-num-row">
+          <span className="prefs-num-label">Rail width</span>
+          <input
+            type="number"
+            min={200}
+            max={800}
+            step={5}
+            value={prefs.railWidth}
+            onChange={e => setPref('layout-rail-width', Number(e.target.value))}
+            className="prefs-num"
+          />
+          <span className="prefs-num-unit">px</span>
+        </div>
+        <div className="prefs-num-row">
+          <span className="prefs-num-label">Chat width</span>
+          <input
+            type="number"
+            min={200}
+            max={1000}
+            step={5}
+            value={prefs.chatWidth}
+            onChange={e => setPref('layout-chat-width', Number(e.target.value))}
+            className="prefs-num"
+          />
+          <span className="prefs-num-unit">px</span>
+        </div>
+        <div className="prefs-num-row">
+          <span className="prefs-num-label">Margin gap</span>
+          <input
+            type="number"
+            min={0}
+            max={300}
+            step={5}
+            value={prefs.marginGap}
+            onChange={e => setPref('layout-margin-gap', Number(e.target.value))}
+            className="prefs-num"
+          />
+          <span className="prefs-num-unit">px</span>
+        </div>
       </div>
 
       <div className="prefs-section">
@@ -194,11 +262,6 @@ export function PrefsTab() {
           />
           <span>Spawn in plan mode</span>
         </label>
-      </div>
-
-      <div className="prefs-section">
-        <div className="prefs-section-label">Theme</div>
-        <DarkModeToggle />
       </div>
 
       <div className="prefs-section">

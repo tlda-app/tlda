@@ -476,10 +476,13 @@ export async function processProjectPush(name, body) {
   const project = readProject(name)
   if (!project) return { status: 404, ok: false, error: 'Project not found' }
 
-  const { files, deletedFiles, priorityPages, sourceDir, members, session, sessionAt } = body || {}
+  const { files, deletedFiles, priorityPages, sourceDir, members, session, sessionAt, editedBy } = body || {}
 
   if (sourceDir && !project.sourceDir) updateProject(name, { sourceDir })
   if (session) updateProject(name, { session, sessionAt: sessionAt || Date.now() })
+  // Edit attribution: the daemon resolves which agent's Edit/Write triggered
+  // this change; persist it so the build runner can address the build card.
+  if (editedBy) updateProject(name, { lastEditedBy: editedBy, lastEditedByAt: Date.now() })
 
   if (members && Array.isArray(members)) {
     updateProject(name, { members })

@@ -4,6 +4,7 @@ import { createShapeId } from 'tldraw'
 import { getHumanId } from '../fleet/fleet-data.mjs'
 // @ts-ignore — vanilla JS module
 import { baseName } from '../../shared/lineage-name.mjs'
+import { getPref } from '../preferences'
 
 /** Canonical list of fleet shape types — the single source of truth for
  *  ownership filtering, visibility, copy gating, and hit-test exclusion.
@@ -168,37 +169,54 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
     const filter3 = makeFilter(2)
     const filter4 = makeFilter(3)
 
-    const leftW = 340
+    const leftW = getPref('layout-rail-width')
     const gap = 10
-    const chatW3 = 410
+    const chatW3 = getPref('layout-chat-width')
+    const marginGap = getPref('layout-margin-gap')
     const rightW = chatW3 * 2 + gap
     const vp = editor.getViewportScreenBounds()
-    const totalH = Math.round((vp.h / editor.getCamera().z) * 0.7)
+    // HUD renders fleet shapes via a z=1 camera (see FleetHUD.tsx), so page units
+    // map 1:1 to screen px — size off the raw viewport, not the main-camera zoom.
+    const totalH = Math.round(vp.h * getPref('layout-height-frac'))
     const agentsH = 330
     const searchH = totalH - gap - agentsH
-    const totalW = leftW + gap + rightW
     const rightChatH = Math.round(totalH * 0.75)
     const docviewH = totalH - gap - rightChatH
+
+    // Width of the content that sits in the LEFT margin (rail + its chat
+    // columns). Its right edge is anchored marginGap to the left of the
+    // document; the rest stacks outward (further left). The 2-col layout also
+    // places one chat in the RIGHT margin, at docRight + marginGap (below).
+    // Everything is laid out relative to the document edges — never relative to
+    // the HUD position, which is a separate offset (the anchor shape).
+    const leftContentW =
+      variant === 'wide' ? leftW + gap + Math.round(chatW3 * 2)
+      : variant === '2col' ? leftW + gap + Math.round(chatW3 * 1.5)
+      : leftW + gap + rightW
 
     const pageShapes = editor.getCurrentPageShapes().filter(s =>
       (s.type as string) === 'html-page' || (s.type as string) === 'svg-page')
     let anchorX = 0, anchorY = 0
+    let docMaxRight = 0
     if (pageShapes.length > 0) {
-      let minLeft = Infinity, minTop = Infinity
+      let minLeft = Infinity, minTop = Infinity, maxRight = -Infinity
       for (const ps of pageShapes) {
         const b = editor.getShapePageBounds(ps.id)
         if (b) {
           if (b.x < minLeft) minLeft = b.x
           if (b.y < minTop) minTop = b.y
+          if (b.x + b.w > maxRight) maxRight = b.x + b.w
         }
       }
-      anchorX = minLeft - 40 - totalW
+      anchorX = minLeft - marginGap - leftContentW
       anchorY = minTop - 1200
+      docMaxRight = maxRight
     } else {
       const vb = editor.getViewportScreenBounds()
       const cam = editor.getCamera()
-      anchorX = (-cam.x + (vb.x + vb.w / 2) / cam.z) - totalW / 2
+      anchorX = (-cam.x + (vb.x + vb.w / 2) / cam.z) - leftContentW / 2
       anchorY = -cam.y + (vb.y + vb.h / 2) / cam.z
+      docMaxRight = anchorX + leftContentW
     }
 
     const shapes: any[] = [
@@ -303,28 +321,10 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
       )
     } else {
       const chatWide = Math.round(chatW3 * 1.5)
-      const leftGroupRight = anchorX + leftW + gap + chatWide
-      const MARGIN_GAP = 20
-      let docRightScreen = window.innerWidth / 2
-      if (pageShapes.length > 0) {
-        let maxPageRight = -Infinity
-        for (const ps of pageShapes) {
-          const b = editor.getShapePageBounds(ps.id)
-          if (b) { const r = b.x + b.w; if (r > maxPageRight) maxPageRight = r }
-        }
-        docRightScreen = editor.pageToScreen({ x: maxPageRight, y: 0 }).x
-      }
-      let docLeftScreen = window.innerWidth / 2
-      if (pageShapes.length > 0) {
-        let minPageX = Infinity
-        for (const ps of pageShapes) {
-          const b = editor.getShapePageBounds(ps.id)
-          if (b && b.x < minPageX) minPageX = b.x
-        }
-        docLeftScreen = editor.pageToScreen({ x: minPageX, y: 0 }).x
-      }
-      const camX = docLeftScreen - MARGIN_GAP - leftGroupRight
-      const rightChatX = docRightScreen + MARGIN_GAP - camX
+      // Left group's right edge already sits marginGap left of the document
+      // (via anchorX). The right-margin chat's left edge sits marginGap right
+      // of the document — both in page coords, so the HUD maps them 1:1.
+      const rightChatX = docMaxRight + marginGap
 
       shapes.push(
         {

@@ -1872,6 +1872,7 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
             mirrorFailed: mirrorErr.message,
             lastMirrorSuccess,
             buildFiles,
+            editedBy: resolveEditedBy(name),
           })
         }
         // Build change summary: diff against previous shadow commit
@@ -1939,7 +1940,15 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
                 lintFindings,
                 buildFiles,
                 lastBuildSuccess,
+                editedBy: resolveEditedBy(name),
               })
+              // Surface lint findings as warnings on the build pill too, alongside
+              // tex/remap warnings (re-broadcast preserves the existing tex warnings).
+              if (lintFindings.length > 0) {
+                signalBuildStatus(name, null, lintFindings.map(f => ({
+                  message: f.text, file: null, line: null, category: 'lint',
+                })))
+              }
             }
           } else {
             console.log(`[build:${name}] No tex diff between shadow commits`)
@@ -1992,19 +2001,37 @@ function signalBuildProgress(name, phase, detail) {
   }
 }
 
-function signalBuildStatus(name, errorMessage) {
+function signalBuildStatus(name, errorMessage, extraWarnings = []) {
   try {
     const { errors, warnings } = extractBuildErrors(name)
+    const allWarnings = extraWarnings.length ? [...warnings, ...extraWarnings] : warnings
     broadcastSignal(`doc-${name}`, 'signal:build-status', {
       error: errorMessage,
       errors,
-      warnings,
+      warnings: allWarnings,
       timestamp: Date.now(),
     })
-    console.log(`[build:${name}] Build status signal sent (${errors.length} errors, ${warnings.length} warnings)`)
+    console.log(`[build:${name}] Build status signal sent (${errors.length} errors, ${allWarnings.length} warnings)`)
   } catch (e) {
     console.error(`[build:${name}] Failed to send build status signal: ${e.message}`)
   }
+}
+
+// Edit attribution: the daemon records who last Edited/Wrote a source file and
+// stamps lastEditedBy/lastEditedByAt on the project when it pushes a change.
+// Return that agent if the edit is recent enough to plausibly be the trigger.
+const EDIT_ATTRIBUTION_WINDOW_MS = 10 * 60 * 1000
+function resolveEditedBy(name) {
+  try {
+    const proj = readProject(name)
+    if (proj?.lastEditedBy && proj.lastEditedByAt &&
+        Date.now() - proj.lastEditedByAt < EDIT_ATTRIBUTION_WINDOW_MS) {
+      return proj.lastEditedBy
+    }
+  } catch (e) {
+    console.error(`[build:${name}] resolveEditedBy failed: ${e.message}`)
+  }
+  return null
 }
 
 function signalReload(name, pages) {

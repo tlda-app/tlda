@@ -640,12 +640,14 @@ export function FleetHUD({
   // Camera offsets: computed once on first expand from the document's
   // current screen position, then frozen. X tracks pan only (no zoom).
   // Y is fixed after initial layout.
-  const MARGIN_GAP = 20
   const TOP_PAD = 80
 
   if (panOffsetRef.current === null) {
-    // Compute initial X: fleet right edge sits MARGIN_GAP px left of
-    // the document's left margin at the current camera position.
+    // Position the overlay so the page-space placement set by createFleetLayout
+    // shows through 1:1. The whole layout (margins, widths, gaps) lives in those
+    // page coords; the HUD offset is purely "where the document's left edge sits
+    // on screen" and reads NO layout parameter — layout sizing and HUD position
+    // are completely independent.
     // Guard: if SVG/HTML page shapes haven't loaded yet (browser restore path),
     // defer until docShapesReady — avoids the window.innerWidth/2 fallback that
     // placed fleet shapes in the middle of the document text.
@@ -659,22 +661,7 @@ export function FleetHUD({
       if (b && b.x < minPageX) minPageX = b.x
     }
     const docLeftScreen = mainEditor.pageToScreen({ x: minPageX, y: 0 }).x
-    // Use the left group's right edge for camera positioning — not the full
-    // fleet bounds, which may include a right-margin chat far to the right.
-    // "Left group" = shapes within 1200px of the leftmost fleet shape.
-    const fleetShapes = mainEditor.getCurrentPageShapes().filter(isMyFleetShape)
-    let leftGroupRight = fleetBounds.x + fleetBounds.w
-    if (fleetShapes.length > 0) {
-      const rights = fleetShapes.map(s => {
-        const b = mainEditor.getShapePageBounds(s.id)
-        return b ? b.x + b.w : 0
-      }).sort((a, b) => a - b)
-      // Find the right edge of the "left group" — shapes whose right edge
-      // is within 1200px of the leftmost shape's left edge
-      const leftGroupShapes = rights.filter(r => r - fleetBounds.x < 1500)
-      if (leftGroupShapes.length > 0) leftGroupRight = Math.max(...leftGroupShapes)
-    }
-    panOffsetRef.current = docLeftScreen - MARGIN_GAP - leftGroupRight
+    panOffsetRef.current = docLeftScreen - minPageX
     cameraYRef.current = TOP_PAD - fleetBounds.y
     // This is a *derived default*, not a user-chosen position. Do NOT persist it:
     // a saved anchor may simply be unsynced (large multi-machine rooms deliver it

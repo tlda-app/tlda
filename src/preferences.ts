@@ -19,6 +19,15 @@ const DEFAULTS = {
   'spawn-mode': '' as string,
   'voice-backend': 'chrome' as string,
   'fleet-font-size': 11 as number,
+  // Default fleet layout sizing (used by createFleetLayout). margin-gap is the
+  // distance from each document edge to the near edge of the fleet shapes in
+  // that margin; everything else stacks outward from there. Height is a fraction
+  // of the raw viewport; the rest are px (HUD renders at z=1, so page == screen
+  // px). These only shape how layouts are CREATED — never HUD position (anchor).
+  'layout-height-frac': 0.7 as number,
+  'layout-rail-width': 375 as number,
+  'layout-chat-width': 460 as number,
+  'layout-margin-gap': 40 as number,
   'fleet-chrome-opacity': 1.0 as number,
   'fleet-content-opacity': 1.0 as number,
   'fleet-age-fade': true as boolean,
