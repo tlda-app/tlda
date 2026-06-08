@@ -2036,7 +2036,30 @@ export class FleetStore {
   }
 
   // Unified search across fleet events (events_fts) and session JSONL text (session_entries_fts).
-  searchAll(query, { limit = 50, agent, role, since, before, agentOnly } = {}) {
+  // Resolve a typed agent-name fragment to the set of fleet ids it refers to.
+  // Pure substring over the agent's SEARCHABLE name, where a bare (dawn) name is
+  // treated as if it carried an explicit ":dawn" suffix — so `bear` matches the
+  // whole family (bear, bear:day, …), `bear:` pins to just that family, `bear:dawn`
+  // reaches the otherwise-bare dawn incarnation, and `:dawn` matches every dawn.
+  // Matches against the current friendly_name AND every name an agent ever held
+  // (name_history), so a name an agent USED to hold still finds it. Distinct ids.
+  resolveAgentQuery(fragment) {
+    const q = (fragment || '').trim().toLowerCase();
+    if (!q) return [];
+    const like = `%${q}%`;
+    // A bare name (no ':') gets a virtual ":dawn" so substring is uniform.
+    const synth = "CASE WHEN instr(friendly_name, ':') > 0 THEN lower(friendly_name) ELSE lower(friendly_name) || ':dawn' END";
+    const rows = this.db.prepare(`
+      SELECT id FROM agents
+        WHERE friendly_name IS NOT NULL AND (${synth}) LIKE ?
+      UNION
+      SELECT fleet_id AS id FROM name_history
+        WHERE friendly_name IS NOT NULL AND (${synth}) LIKE ?
+    `).all(like, like);
+    return rows.map(r => r.id);
+  }
+
+  searchAll(query, { limit = 50, agent, role, since, before, agentOnly, fromOnly } = {}) {
     const ftsQuery = query.replace(/"/g, '""');
     const runQuery = (sql, params) => {
       try { return this.db.prepare(sql).all(...params); } catch { return []; }
@@ -2048,6 +2071,11 @@ export class FleetStore {
     const agentPlaceholders = agentIds.map(() => '?').join(',');
 
     function agentClause(fromCol, toCol, agentCol) {
+      // `from:` semantics — restrict to messages the agent SENT (from_id only).
+      if (fromOnly) {
+        if (agentIds.length === 1) return { clause: `${fromCol} = ?`, params: [agentIds[0]] };
+        return { clause: `${fromCol} IN (${agentPlaceholders})`, params: [...agentIds] };
+      }
       if (agentIds.length === 1) {
         return { clause: `(${fromCol} = ? OR ${toCol} = ? OR ${agentCol} = ?)`, params: [agentIds[0], agentIds[0], agentIds[0]] };
       }

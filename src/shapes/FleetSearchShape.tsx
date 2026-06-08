@@ -310,16 +310,6 @@ function FleetSearchInner({ shape }: { shape: any }) {
     return id.replace('fleet:', '')
   }, [agents])
 
-  // Agent name → ID lookup (for from: filter matching)
-  const agentIdByName = useMemo(() => {
-    const map = new Map<string, string>()
-    for (const a of agents) {
-      const name = a.friendly_name || (a.id || '').replace('fleet:', '')
-      map.set(name.toLowerCase(), a.id)
-    }
-    return map
-  }, [agents])
-
   const closeChat = useCallback(() => {
     if (chatShapeId) {
       try { editor.run(() => { editor.deleteShapes([chatShapeId as any]) }, { history: 'ignore' }) } catch {}
@@ -350,54 +340,27 @@ function FleetSearchInner({ shape }: { shape: any }) {
     setSearched(true)
     closeChat()
 
-    // Push qualifier filters to the server so matches aren't capped out by the
-    // 100-row recency window before the filter is applied. agent/role/time go
-    // server-side; `from` (sender-only) is refined client-side below.
-    // Resolve a typed agent name to its fleet id — only a resolved id can be
-    // filtered server-side (the index keys on ids). An unresolvable name falls
-    // through to the client-side substring match below (no worse than before).
-    const toServerId = (n?: string): string | undefined => {
-      if (!n) return undefined
-      const mapped = agentIdByName.get(n.toLowerCase())
-      if (mapped) return mapped
-      if (n.includes(':')) return n // already an id (e.g. fleet:skip)
-      return undefined
-    }
+    // Agent qualifiers resolve on the SERVER. An explicit `fleet:` id is sent as
+    // `agent` (exact); any other typed text is a name fragment sent as `agentQuery`
+    // — the server substring-matches it (dawn-aware) against current AND historical
+    // names, with no recency cap. `from:` narrows to the sender. When there's an
+    // agent filter and no keyword, the server returns that agent's whole history.
+    const nameSel = filters.agent ?? filters.from
+    const isExplicitId = !!nameSel && nameSel.startsWith('fleet:')
     const serverFilters = {
-      agent: toServerId(filters.agent) ?? toServerId(filters.from),
+      agent: isExplicitId ? nameSel : undefined,
+      agentQuery: !isExplicitId ? nameSel : undefined,
+      fromOnly: !filters.agent && !!filters.from,
       role: filters.role,
       since: filters.after ? (resolveTimeFilter(filters.after) || undefined) : undefined,
       before: filters.before ? (resolveTimeFilter(filters.before) || undefined) : undefined,
     }
-    const searchQuery = ftsQuery || '*'
     const [res, allDocs] = await Promise.all([
-      searchFleet(searchQuery.length >= 2 ? searchQuery : 'message', 100, serverFilters),
+      searchFleet(ftsQuery || '', 100, serverFilters),
       fetchSharedDocs(),
     ])
 
-    // `from:` is sender-only; the server narrows by agent in both directions,
-    // so refine to messages this agent actually sent.
-    let filtered = res
-    if (filters.from) {
-      const fromLower = filters.from.toLowerCase()
-      const fromId = agentIdByName.get(fromLower)
-      filtered = filtered.filter((r: any) => {
-        const name = agentName(r.from).toLowerCase()
-        return name === fromLower || name.includes(fromLower) || r.from === fromId
-      })
-    }
-    // Fallback for an agent name we couldn't resolve to an id: the server
-    // couldn't filter it, so match by name substring against the result set.
-    if (filters.agent && !toServerId(filters.agent)) {
-      const agentLower = filters.agent.toLowerCase()
-      filtered = filtered.filter((r: any) => {
-        const fromName = agentName(r.from).toLowerCase()
-        const toName = agentName(r.to).toLowerCase()
-        return fromName.includes(agentLower) || toName.includes(agentLower)
-      })
-    }
-
-    setResults(filtered.slice(0, 50))
+    setResults(res.slice(0, 50))
 
     // Filter shared docs by title match (only if there's an FTS query)
     if (ftsQuery) {
@@ -408,7 +371,7 @@ function FleetSearchInner({ shape }: { shape: any }) {
     }
 
     setLoading(false)
-  }, [agentIdByName, agentName, closeChat])
+  }, [closeChat])
 
   // Create a real fleet-chat shape on top of this search shape, filtered to the result's agent
   const openChatForResult = useCallback((result: any) => {

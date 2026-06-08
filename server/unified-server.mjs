@@ -2333,9 +2333,22 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'fleet-search') {
     try {
       // Support lineage search: agents[] (array of fleet IDs to union)
-      const searchAgent = msg.agents?.length ? msg.agents : msg.agent;
+      let searchAgent = msg.agents?.length ? msg.agents : msg.agent;
+      // A typed name fragment (agent:/from:) resolves on the SERVER to the set of
+      // fleet ids it refers to — substring over current + historical names,
+      // dawn-aware. An empty match yields an impossible id (an empty result set),
+      // NOT an unfiltered search.
+      if (msg.agentQuery) {
+        const ids = fleetStore.resolveAgentQuery(msg.agentQuery);
+        searchAgent = ids.length ? ids : [' __no_match__'];
+      }
+      const hasText = (msg.query || '').trim().length > 0;
       const results = stampNames(fleetStore.searchAll(msg.query || '', {
-        limit: msg.limit, agent: searchAgent, role: msg.role, since: msg.since, before: msg.before, agentOnly: msg.agentOnly,
+        limit: msg.limit, agent: searchAgent, role: msg.role, since: msg.since, before: msg.before,
+        // No keyword + an agent filter → return that agent's whole history
+        // instead of FTS-matching the literal query text.
+        agentOnly: msg.agentOnly ?? (!hasText && !!searchAgent),
+        fromOnly: msg.fromOnly,
       }))
       const context = {}
       if (msg.context_timestamps?.length) {
