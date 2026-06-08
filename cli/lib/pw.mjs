@@ -179,7 +179,9 @@ function ensureOpen() {
 function openMyWindow() {
   const key = myTabKey()
   const feat = `popup=yes,width=${WIN_RECT.width},height=${WIN_RECT.height},left=${WIN_RECT.left},top=${WIN_RECT.top}`
-  const snippet = `() => { try { var w = window.open('about:blank', 'pw_${key}', '${feat}'); if (!w) return 'PWWIN_BLOCKED'; try { w.document.title = 'pwtab=${key}'; } catch (e) {} return 'PWWIN_OK'; } catch (e) { return 'PWWIN_ERR:' + e.message; } }`
+  // w is a same-origin about:blank window, so the opener can set its title
+  // synchronously — used as the pre-goto identity marker (see isMine).
+  const snippet = `() => { try { var w = window.open('about:blank', 'pw_${key}', '${feat}'); if (!w) return 'PWWIN_BLOCKED'; w.document.title = 'pwtab=${key}'; return 'PWWIN_OK'; } catch (e) { return 'PWWIN_ERR:' + e.message; } }`
   const out = pw(['eval', snippet]).stdout || ''
   return out.includes('PWWIN_OK')
 }
