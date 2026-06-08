@@ -3560,27 +3560,27 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   color: var(--text-bright);
 }
 
-/* --- Eliza pending-nudge suggestions (clickable + hover tooltip) --- */
+/* --- Agent suggestion chips (clickable + hover tooltip) --- */
 /* At rest the line looks identical to the old faint status line. Hover reveals
    a tooltip describing the trigger phrase + the text that will be sent; clicking
    fires the release. The label text and the tooltip carry their own opacity so
    the tooltip stays fully readable while the resting label stays faint. */
-.fleet-chat-shape .eliza-status-prefix {
+.fleet-chat-shape .suggestion-status-prefix {
   opacity: 0.28;
 }
-.fleet-chat-shape .eliza-suggestion {
+.fleet-chat-shape .suggestion-chip {
   position: relative;
   cursor: pointer;
 }
-.fleet-chat-shape .eliza-suggestion-label {
+.fleet-chat-shape .suggestion-chip-label {
   opacity: 0.4;
   transition: opacity 0.2s;
 }
-.fleet-chat-shape .eliza-suggestion:hover .eliza-suggestion-label {
+.fleet-chat-shape .suggestion-chip:hover .suggestion-chip-label {
   opacity: 0.85;
 }
 
-.fleet-chat-shape .eliza-suggestion-tip {
+.fleet-chat-shape .suggestion-chip-tip {
   position: absolute;
   bottom: 100%;
   left: 0;
@@ -3608,25 +3608,25 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   transition-delay: 0s;
   z-index: 8300;
 }
-.fleet-chat-shape .eliza-suggestion:hover .eliza-suggestion-tip {
+.fleet-chat-shape .suggestion-chip:hover .suggestion-chip-tip {
   opacity: 1;
   transform: translateY(0);
   /* Hover-intent: only engage after resting ~0.7s, so sweeping the cursor
      through the names doesn't pop the card. */
   transition-delay: 0.7s;
 }
-.fleet-chat-shape .eliza-tip-trigger {
+.fleet-chat-shape .suggestion-tip-trigger {
   color: var(--text-bright);
 }
-.fleet-chat-shape .eliza-tip-trigger b {
+.fleet-chat-shape .suggestion-tip-trigger b {
   color: var(--accent);
   font-weight: 600;
 }
-.fleet-chat-shape .eliza-tip-target {
+.fleet-chat-shape .suggestion-tip-target {
   color: var(--text-dim);
   font-size: 10px;
 }
-.fleet-chat-shape .eliza-tip-text {
+.fleet-chat-shape .suggestion-tip-text {
   margin-top: 2px;
   padding-top: 6px;
   border-top: 1px solid var(--border);

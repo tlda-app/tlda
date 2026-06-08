@@ -24,7 +24,7 @@ import { randomBytes } from 'crypto'
 import { collectSourceFiles, collectSourceHashes, collectSpecificFiles } from './lib/source-files.mjs'
 import {
   loadConfig, saveConfig, getServerUrl, getRwToken, DEFAULT_PORT,
-  CONFIG_DIR, CONFIG_FILE, hasTls, TLS_CA_PATH,
+  CONFIG_DIR, CONFIG_FILE, hasTls, TLS_CA_PATH, getManagedBots,
 } from '../shared/config.mjs'
 import { tldaFetch } from '../shared/http-client.mjs'
 import { cmdLogs } from './lib/unified-logs.mjs'
@@ -550,11 +550,10 @@ const _cliWorktreeMatch = _cliDir.match(/^(.+?)\/\.claude\/worktrees\//)
 const FLEET_DAEMON_SCRIPT = _cliWorktreeMatch
   ? join(_cliWorktreeMatch[1], 'bin', 'fleet-daemon.mjs')
   : join(_cliDir, '..', 'bin', 'fleet-daemon.mjs')
-const ELIZA_LOGFILE = join(homedir(), '.config', 'tlda', 'eliza.log')
-const ELIZA_PIDFILE = join(homedir(), '.config', 'tlda', 'eliza.pid')
-const ELIZA_SCRIPT = _cliWorktreeMatch
-  ? join(_cliWorktreeMatch[1], 'bin', 'eliza.mjs')
-  : join(_cliDir, '..', 'bin', 'eliza.mjs')
+const _cliRepoRoot = _cliWorktreeMatch ? _cliWorktreeMatch[1] : join(_cliDir, '..')
+function resolveBotScript(script) {
+  return script.startsWith('/') ? script : join(_cliRepoRoot, script)
+}
 
 // Idempotent daemon start — no-op if already running, spawns if not.
 // Used by `tlda server start` to make sure the daemon comes up alongside
@@ -586,28 +585,37 @@ async function ensureFleetDaemonRunning() {
   }
 }
 
-async function ensureElizaRunning() {
-  if (existsSync(ELIZA_PIDFILE)) {
-    const pid = parseInt(readFileSync(ELIZA_PIDFILE, 'utf8').trim(), 10)
-    try { process.kill(pid, 0); return } catch {} // stale pid → fall through
-  }
-  if (!existsSync(ELIZA_SCRIPT)) return // not installed; silently skip
+// Start each configured bot (the shipped example is Todd). Mirrors the server's
+// managed-bot supervisor; the server keeps them alive thereafter. The supervisor
+// owns the pidfile/log location and passes them to the bot via env.
+async function ensureManagedBotsRunning() {
   const { spawn: cpSpawn } = await import('child_process')
   const { openSync: fsOpenSync } = await import('fs')
-  if (!existsSync(dirname(ELIZA_LOGFILE))) mkdirSync(dirname(ELIZA_LOGFILE), { recursive: true })
-  const logFd = fsOpenSync(ELIZA_LOGFILE, 'a')
-  const child = cpSpawn(process.execPath, [ELIZA_SCRIPT], {
-    detached: true,
-    stdio: ['ignore', logFd, logFd],
-    env: { ...process.env },
-  })
-  child.unref()
-  await new Promise(r => setTimeout(r, 800))
-  if (existsSync(ELIZA_PIDFILE)) {
-    const pid = readFileSync(ELIZA_PIDFILE, 'utf8').trim()
-    console.log(green('Eliza started') + dim(` (pid ${pid})`))
-  } else {
-    console.log(dim('Eliza failed to start — see ' + ELIZA_LOGFILE))
+  for (const spec of getManagedBots()) {
+    if (!spec?.name || !spec.script) continue
+    const pidFile = join(homedir(), '.config', 'tlda', `${spec.name}.pid`)
+    const logFile = join(homedir(), '.config', 'tlda', `${spec.name}.log`)
+    const scriptPath = resolveBotScript(spec.script)
+    if (existsSync(pidFile)) {
+      const pid = parseInt(readFileSync(pidFile, 'utf8').trim(), 10)
+      try { process.kill(pid, 0); continue } catch {} // stale pid → fall through
+    }
+    if (!existsSync(scriptPath)) continue // not installed; silently skip
+    if (!existsSync(dirname(logFile))) mkdirSync(dirname(logFile), { recursive: true })
+    const logFd = fsOpenSync(logFile, 'a')
+    const child = cpSpawn(process.execPath, [scriptPath], {
+      detached: true,
+      stdio: ['ignore', logFd, logFd],
+      env: { ...process.env, TLDA_BOT_NAME: spec.name, TLDA_BOT_PIDFILE: pidFile },
+    })
+    child.unref()
+    await new Promise(r => setTimeout(r, 800))
+    if (existsSync(pidFile)) {
+      const pid = readFileSync(pidFile, 'utf8').trim()
+      console.log(green(`${spec.name} started`) + dim(` (pid ${pid})`))
+    } else {
+      console.log(dim(`${spec.name} failed to start — see ` + logFile))
+    }
   }
 }
 
@@ -789,7 +797,7 @@ async function cmdShare() {
   const readToken = config.tokenRead || null
 
   if (!readToken) {
-    console.error('No read token configured. Run `tlda config init` to generate tokens.')
+    console.error('No read token configured. Run `tlda config auth init` to generate tokens.')
     process.exit(1)
   }
 
@@ -2129,9 +2137,9 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
           console.log(green(`Server running at ${getServer()}`) + dim(` (pid ${data.pid})`))
           console.log(dim(`  Log: ${LOGFILE}`))
           if (hasLaunchd) console.log(dim('  Managed by launchd (auto-restarts)'))
-          // Also ensure the fleet daemon and eliza are up.
+          // Also ensure the fleet daemon and configured bots are up.
           await ensureFleetDaemonRunning()
-          await ensureElizaRunning()
+          await ensureManagedBotsRunning()
           return
         }
       } catch {}
@@ -2148,7 +2156,7 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
       console.log(dim(`  Log: ${LOGFILE}`))
       if (hasLaunchd) console.log(dim('  Managed by launchd (auto-restarts)'))
       await ensureFleetDaemonRunning()
-      await ensureElizaRunning()
+      await ensureManagedBotsRunning()
       return
     }
     console.error(red('Server failed to start within 30s'))

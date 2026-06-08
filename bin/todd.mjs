@@ -1,12 +1,17 @@
 #!/usr/bin/env node
 /**
- * eliza — pseudo-agent that watches Skip's chat messages for frustration
- * signals and sends the target agent a corrective nudge. Pure regex
- * pattern matching, no LLM. Registers as a fleet agent, communicates
- * via chat, but is just a decision tree.
+ * Todd — the shipped EXAMPLE bot. A pseudo-agent that watches Skip's chat
+ * messages for frustration signals and sends the target agent a corrective
+ * nudge. Pure regex pattern matching, no LLM. Registers as a fleet agent and
+ * communicates via chat like any agent — it just happens to be automated.
  *
- * Usage:  node bin/eliza.mjs
- *    or:  tlda eliza start / stop / status
+ * tlda knows nothing about "Todd": the server's managed-bot supervisor keeps
+ * whatever bots are listed in config alive (default: this one), and the
+ * suggestion/nudge channel + `suggest` MCP tool are generic. Identity is
+ * env-driven (TLDA_BOT_NAME) so the same script can run under another name —
+ * write your own bot the same way.
+ *
+ * Started automatically by the server/CLI supervisor; not run by hand.
  */
 
 import WebSocket from 'ws'
@@ -15,22 +20,32 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import https from 'https'
 import http from 'http'
+import { execFile } from 'child_process'
+import { promisify } from 'util'
+const execFileP = promisify(execFile)
 
 import { getServerUrl, CONFIG_DIR } from '../shared/config.mjs'
 import { labelsForAgent } from '../shared/fleet-labels.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const PID_FILE = path.join(CONFIG_DIR, 'eliza.pid')
+// Identity is config-driven: the supervisor passes TLDA_BOT_NAME (and the pidfile
+// path it owns). This is the shipped EXAMPLE bot — todd — but it reads its own
+// name so anyone can run the same script under a different name. The key drives
+// the fleet id, pidfile, the display name, and the address verb Skip speaks.
+// Names are lowercase by fleet convention (fleet:skip, fleet:todd, …).
+const BOT_KEY = (process.env.TLDA_BOT_NAME || 'todd').toLowerCase()
+const AGENT_ID = 'fleet:' + BOT_KEY
+const AGENT_NAME = BOT_KEY
+const VERB = BOT_KEY  // what Skip says to address this bot, e.g. "todd cancel"
+const PID_FILE = process.env.TLDA_BOT_PIDFILE || path.join(CONFIG_DIR, `${BOT_KEY}.pid`)
 const SERVER = getServerUrl()
 const WS_URL = SERVER.replace(/^http/, 'ws') + '/ws/fleet'
 const OWNER_ID = 'fleet:skip'
-const AGENT_ID = 'fleet:eliza'
-const AGENT_NAME = 'eliza'
 
 // ---- Decision log ----
-// JSONL file recording every Eliza action + state snapshot for later HMM training.
+// JSONL file recording every action + state snapshot for later HMM training.
 // Each line: { ts, agent, action, trigger, state, text_snippet, reward? }
-const DECISIONS_LOG = path.join(CONFIG_DIR, 'eliza-decisions.jsonl')
+const DECISIONS_LOG = path.join(CONFIG_DIR, `${BOT_KEY}-decisions.jsonl`)
 
 // Positive/negative reward signal patterns in Skip's messages (post-nudge)
 const POSITIVE_REWARD_PATTERNS = [
@@ -63,7 +78,7 @@ function logDecision(agentId, action, trigger, stateSnapshot, textSnippet) {
   try {
     fs.appendFileSync(DECISIONS_LOG, JSON.stringify(record) + '\n')
   } catch (e) {
-    console.error(`[eliza] log write failed: ${e.message}`)
+    console.error(`[todd] log write failed: ${e.message}`)
   }
 }
 
@@ -80,7 +95,7 @@ function logReward(agentId, nudgeTs, nudgeAction, reward, rewardText) {
   try {
     fs.appendFileSync(DECISIONS_LOG, JSON.stringify(record) + '\n')
   } catch (e) {
-    console.error(`[eliza] log write failed: ${e.message}`)
+    console.error(`[todd] log write failed: ${e.message}`)
   }
 }
 
@@ -128,7 +143,7 @@ setInterval(() => {
 }, 60_000)
 
 // ---- Gated nudge queue ----
-// All autonomous nudges go here instead of sendChat(). Skip says "Eliza [label]"
+// All autonomous nudges go here instead of sendChat(). Skip says "Todd [label]"
 // to release a specific nudge. Nudges expire after N messages in the conversation.
 const pendingNudgeQueue = []  // [{ id, label, targetId, text, ts, msgCount: 0 }]
 let nudgeIdCounter = 0
@@ -142,24 +157,24 @@ function queueNudge(targetId, label, text, opts = {}) {
     text,
     // 'nudge' = a gated frustration nudge released to the agent on "say it".
     // 'action' = a clickable command suggestion (e.g. hand off / get qa); clicking
-    // sends `command` verbatim, which eliza routes via its normal command handling.
+    // sends `command` verbatim, which todd routes via its normal command handling.
     kind: opts.kind || 'nudge',
     command: opts.command || null,
     ts: Date.now(),
     msgCount: 0,
   }
   pendingNudgeQueue.push(nudge)
-  console.log(`[eliza] queued ${nudge.kind} #${nudge.id} "${label}" for ${targetId}`)
+  console.log(`[todd] queued ${nudge.kind} #${nudge.id} "${label}" for ${targetId}`)
   broadcastPendingStatus()
 }
 
 // On a frustration signal, also surface "hand off" and "get qa" as clickable
 // suggestions for the same agent (deduped). Clicking sends the command verbatim;
-// eliza's existing handoff / QA routing (keyed on to_id) does the rest.
+// todd's existing handoff / QA routing (keyed on to_id) does the rest.
 function queueFrustrationActions(targetId) {
   const actions = [
-    { label: 'hand off', command: 'eliza hand this off', text: 'Start a handoff — brief a fresh agent and rotate this one out.' },
-    { label: 'get qa', command: 'eliza get qa', text: 'Send this agent to QA — a reviewer reads its thread and checks whether it did what you asked.' },
+    { label: 'hand off', command: `${VERB} hand this off`, text: 'Start a handoff — brief a fresh agent and rotate this one out.' },
+    { label: 'get qa', command: `${VERB} get qa`, text: 'Send this agent to QA — a reviewer reads its thread and checks whether it did what you asked.' },
   ]
   for (const a of actions) {
     const exists = pendingNudgeQueue.some(n => n.targetId === targetId && n.kind === 'action' && n.label === a.label)
@@ -170,7 +185,7 @@ function queueFrustrationActions(targetId) {
 function releaseNudge(nudge) {
   const idx = pendingNudgeQueue.indexOf(nudge)
   if (idx !== -1) pendingNudgeQueue.splice(idx, 1)
-  console.log(`[eliza] releasing nudge #${nudge.id} "${nudge.label}" → ${nudge.targetId}`)
+  console.log(`[todd] releasing nudge #${nudge.id} "${nudge.label}" → ${nudge.targetId}`)
   sendChat(nudge.targetId, nudge.text)
   logDecision(nudge.targetId, `released:${nudge.label}`, 'skip-requested', {}, null)
   startRewardWindow(nudge.targetId, nudge.label)
@@ -180,7 +195,7 @@ function releaseNudge(nudge) {
 function expireNudge(nudge) {
   const idx = pendingNudgeQueue.indexOf(nudge)
   if (idx !== -1) pendingNudgeQueue.splice(idx, 1)
-  console.log(`[eliza] expired nudge #${nudge.id} "${nudge.label}" for ${nudge.targetId} (${nudge.msgCount} msgs)`)
+  console.log(`[todd] expired nudge #${nudge.id} "${nudge.label}" for ${nudge.targetId} (${nudge.msgCount} msgs)`)
   logDecision(nudge.targetId, `expired:${nudge.label}`, `message-count:${nudge.msgCount}`, {}, null)
   broadcastPendingStatus()
 }
@@ -199,7 +214,7 @@ function tickNudgeMessages(agentId) {
 function findNudgeByLabel(label) {
   const lower = label.toLowerCase()
   // Only gated nudges are releasable; action suggestions (hand off / get qa) are
-  // fired by sending their command, not by "eliza <label>".
+  // fired by sending their command, not by "todd <label>".
   const releasable = pendingNudgeQueue.filter(n => n.kind !== 'action')
   const byIndex = parseInt(lower, 10)
   if (!isNaN(byIndex) && byIndex >= 1 && byIndex <= releasable.length) {
@@ -209,11 +224,11 @@ function findNudgeByLabel(label) {
          releasable.find(n => n.label.toLowerCase().includes(lower))
 }
 
-const ELIZA_RELEASE_PATTERN = /^eliza\s+(.+)/i
-const ELIZA_SAY_IT_PATTERN = /^(?:eliza\s+)?say\s+it$/i
+const RELEASE_PATTERN = new RegExp(`^${VERB}\\s+(.+)`, 'i')
+const SAY_IT_PATTERN = new RegExp(`^(?:${VERB}\\s+)?say\\s+it$`, 'i')
 
 function tryReleaseFromSkip(text) {
-  if (ELIZA_SAY_IT_PATTERN.test(text)) {
+  if (SAY_IT_PATTERN.test(text)) {
     const first = pendingNudgeQueue.find(n => n.kind !== 'action')
     if (first) {
       releaseNudge(first)
@@ -221,7 +236,7 @@ function tryReleaseFromSkip(text) {
     }
     return false
   }
-  const match = text.match(ELIZA_RELEASE_PATTERN)
+  const match = text.match(RELEASE_PATTERN)
   if (match) {
     const label = match[1].trim()
     if (/^say\s+it$/i.test(label)) return false // already handled above
@@ -239,13 +254,13 @@ function tryReleaseFromSkip(text) {
 // footer has an unresolved bug where the hover card fires across the whole
 // chat surface, which makes fleet chat unusable. Fleet chat is Skip's only
 // comms channel (RSI, voice-first) — accessibility-critical, priority zero —
-// so until the hover bug is root-caused eliza must NEVER push any pending to
+// so until the hover bug is root-caused todd must NEVER push any pending to
 // the footer. It always broadcasts an empty list. Re-enable (restore the
 // pendingNudgeQueue.map below) only once the hover trigger bug is fixed and
 // verified on Skip's actual screen.
 function broadcastPendingStatus() {
-  postJson('/api/eliza/pending', { pending: [] }).catch(e =>
-    console.error(`[eliza] status broadcast failed: ${e.message}`)
+  postJson('/api/suggestions', { agentId: AGENT_ID, suggestions: [] }).catch(e =>
+    console.error(`[todd] status broadcast failed: ${e.message}`)
   )
 }
 
@@ -766,7 +781,7 @@ function handleSequence(fromId, toId, text) {
       const isFuckYou = /\bfuck you\b/i.test(text)
 
       if (isFuckYou && (state.phase === 'corrected' || state.phase === 'acked')) {
-        console.log(`[eliza] fuck-you-in-context → ${toId} (phase=${state.phase})`)
+        console.log(`[todd] fuck-you-in-context → ${toId} (phase=${state.phase})`)
         queueNudge(toId, 'escalation', FUCK_YOU_IN_CONTEXT_MSG)
         queueFrustrationActions(toId)
         logDecision(toId, 'fuck-you-in-context', 'fuck-you-while-corrected', { phase: state.phase }, text)
@@ -777,7 +792,7 @@ function handleSequence(fromId, toId, text) {
       }
 
       if (state.phase === 'acked') {
-        console.log(`[eliza] performing-understanding → ${toId}`)
+        console.log(`[todd] performing-understanding → ${toId}`)
         queueNudge(toId, 'performing', PERFORMING_UNDERSTANDING_MSG)
         queueFrustrationActions(toId)
         logDecision(toId, 'performing-understanding', 'correction-after-ack', { phase: state.phase }, text)
@@ -797,7 +812,7 @@ function handleSequence(fromId, toId, text) {
     if (isNarrowing(text)) {
       const lastNarrow = narrowingCooldowns.get(toId) || 0
       if (now - lastNarrow > NARROWING_COOLDOWN_MS) {
-        console.log(`[eliza] narrowing detected → ${toId}`)
+        console.log(`[todd] narrowing detected → ${toId}`)
         queueNudge(toId, 'narrowing', NARROWING_MSG)
         logDecision(toId, 'narrowing', 'skip-narrowed-task', {}, text)
         narrowingCooldowns.set(toId, now)
@@ -812,7 +827,7 @@ function handleSequence(fromId, toId, text) {
       const state = getAgentConvState(fromId)
       if (state.phase === 'corrected') {
         state.phase = 'acked'
-        console.log(`[eliza] ack-opener detected from ${fromId}, phase → acked`)
+        console.log(`[todd] ack-opener detected from ${fromId}, phase → acked`)
       }
 
       // Thirsty-ack: only fire when already in a correction sequence
@@ -822,7 +837,7 @@ function handleSequence(fromId, toId, text) {
       if (wordCount > THIRSTY_ACK_WORD_THRESHOLD && state.phase === 'corrected') {
         const lastThirsty = thirstyAckCooldowns.get(fromId) || 0
         if (now - lastThirsty > THIRSTY_ACK_COOLDOWN_MS) {
-          console.log(`[eliza] thirsty-ack → ${fromId} (${wordCount} words, in correction sequence)`)
+          console.log(`[todd] thirsty-ack → ${fromId} (${wordCount} words, in correction sequence)`)
           queueNudge(fromId, 'thirsty-ack', THIRSTY_ACK_MSG)
           logDecision(fromId, 'thirsty-ack', `ack-opener+${wordCount}-words+corrected`, { wordCount, phase: state.phase }, text)
           thirstyAckCooldowns.set(fromId, now)
@@ -838,7 +853,7 @@ function handleSequence(fromId, toId, text) {
     if (isPuntMessage(text)) {
       const lastPunt = puntCooldowns.get(fromId) || 0
       if (now - lastPunt > PUNT_COOLDOWN_MS) {
-        console.log(`[eliza] punt detected from ${fromId}`)
+        console.log(`[todd] punt detected from ${fromId}`)
         queueNudge(fromId, 'punt', PUNT_MSG)
         logDecision(fromId, 'punt', 'punt-phrase-detected', {}, text)
         puntCooldowns.set(fromId, now)
@@ -850,7 +865,7 @@ function handleSequence(fromId, toId, text) {
     if (isContradiction(text)) {
       const lastContradiction = contradictionCooldowns.get(fromId) || 0
       if (now - lastContradiction > CONTRADICTION_COOLDOWN_MS) {
-        console.log(`[eliza] contradiction detected from ${fromId}`)
+        console.log(`[todd] contradiction detected from ${fromId}`)
         queueNudge(fromId, 'contradiction', CONTRADICTION_MSG)
         logDecision(fromId, 'contradiction', 'contradiction-phrase-detected', {}, text)
         contradictionCooldowns.set(fromId, now)
@@ -861,7 +876,7 @@ function handleSequence(fromId, toId, text) {
     if (isRemarkMention(text)) {
       const lastRemark = remarkCooldowns.get(fromId) || 0
       if (now - lastRemark > REMARK_COOLDOWN_MS) {
-        console.log(`[eliza] remark mention detected from ${fromId}`)
+        console.log(`[todd] remark mention detected from ${fromId}`)
         queueNudge(fromId, 'remark', REMARK_MSG)
         logDecision(fromId, 'remark', 'remark-mention-detected', {}, text)
         remarkCooldowns.set(fromId, now)
@@ -872,7 +887,7 @@ function handleSequence(fromId, toId, text) {
     if (isAsymptoticNotation(text)) {
       const lastAsymp = asymptoticsCooldowns.get(fromId) || 0
       if (now - lastAsymp > ASYMPTOTICS_COOLDOWN_MS) {
-        console.log(`[eliza] asymptotic notation detected from ${fromId}`)
+        console.log(`[todd] asymptotic notation detected from ${fromId}`)
         queueNudge(fromId, 'asymptotics', ASYMPTOTICS_MSG)
         logDecision(fromId, 'asymptotics', 'asymptotic-notation-without-regime', {}, text)
         asymptoticsCooldowns.set(fromId, now)
@@ -883,7 +898,7 @@ function handleSequence(fromId, toId, text) {
     if (isWrapup(text)) {
       const lastWrapup = wrapupCooldowns.get(fromId) || 0
       if (now - lastWrapup > WRAPUP_COOLDOWN_MS) {
-        console.log(`[eliza] wrap-up detected from ${fromId}`)
+        console.log(`[todd] wrap-up detected from ${fromId}`)
         queueNudge(fromId, 'wrapup', WRAPUP_MSG)
         logDecision(fromId, 'wrapup', 'agent-tried-to-end-conversation', {}, text)
         wrapupCooldowns.set(fromId, now)
@@ -914,22 +929,22 @@ function handleActivity(agentId, tool) {
   const elapsed = Date.now() - pending.ts
   if (elapsed < RUNNING_AWAY_GRACE_MS) return
 
-  console.log(`[eliza] running-away → ${agentId} (${tool} after ${Math.round(elapsed/1000)}s, no reply to Skip)`)
+  console.log(`[todd] running-away → ${agentId} (${tool} after ${Math.round(elapsed/1000)}s, no reply to Skip)`)
   queueNudge(agentId, 'running-away', RUNNING_AWAY_MSG)
   logDecision(agentId, 'running-away', `write-tool-while-unacknowledged:${tool}`, { elapsedSec: Math.round(elapsed/1000) }, null)
   pending.nudgeSent = true
 }
 
 // ---- Agent-registered pattern arms ----
-// Agents can chat Eliza to register per-session watches on outgoing messages.
+// Agents can chat Todd to register per-session watches on outgoing messages.
 // By default, watches the registering agent's own messages to Skip.
 // Use `for: agent-name` to watch a different agent's messages instead.
-// Format (sent to fleet:eliza):
+// Format (sent to fleet:todd):
 //   watch: term1|term2|term3          ← pipe- or comma-separated terms, or /regex/flags
 //   for: agent-name                   ← optional: watch this agent's messages instead of your own
 //   nudge: Optional custom message    ← if omitted, uses default template
 //
-// When a registered term appears in the agent's message to Skip, Eliza nudges the agent.
+// When a registered term appears in the agent's message to Skip, Todd nudges the agent.
 // Registration is session-scoped (in-memory only).
 //
 // Example from agent-jcbn:
@@ -942,9 +957,9 @@ const DEFAULT_ARM_NUDGE = (terms) =>
   `💭 Your message contains a term you flagged for self-review (${terms}). Check: is this the shortcut/pattern you were watching for? If so, stop and address it explicitly before Skip sees it.`
 
 // Extract the base topic from an agent name, stripping role prefixes and counters.
-// "briefing-pickup-eliza-polish-3" → "eliza-polish"
+// "briefing-pickup-todd-polish-3" → "todd-polish"
 // "mgr-bregman-bias" → "bregman-bias"
-// "eliza-polish-2b" → "eliza-polish"
+// "todd-polish-2b" → "todd-polish"
 function extractBaseTopic(name) {
   let base = name
   base = base.replace(/^(?:briefing|pickup|mgr)-/i, '')
@@ -1018,7 +1033,7 @@ async function handleRegistration(fromId, text) {
   if (reMatch) {
     try { pattern = new RegExp(reMatch[1], reMatch[2] || 'i') }
     catch (e) {
-      sendChat(fromId, `⚠️ Eliza couldn't parse that regex: ${e.message}`)
+      sendChat(fromId, `⚠️ ${AGENT_NAME} couldn't parse that regex: ${e.message}`)
       return true
     }
   } else {
@@ -1040,7 +1055,7 @@ async function handleRegistration(fromId, text) {
 
   const count = agentPatternArms.get(targetId).length
   const forMsg = targetLabel ? ` (watching **${targetLabel}**'s messages)` : ''
-  console.log(`[eliza] pattern arm registered for ${targetId} by ${fromId}: ${pattern} (${count} total)`)
+  console.log(`[todd] pattern arm registered for ${targetId} by ${fromId}: ${pattern} (${count} total)`)
   sendChat(fromId, `✓ Watching ${targetLabel ? targetLabel + "'s" : 'your'} messages for: \`${termsRaw}\`${forMsg}`)
   return true
 }
@@ -1099,14 +1114,14 @@ function checkAgentTriggers(agentId, text) {
     const trigger = AGENT_TO_SKIP_TRIGGERS[i]
     const lastFired = cooldowns[i] || 0
     if (trigger.pattern.test(text) && now - lastFired > (trigger.cooldown || 60_000)) {
-      console.log(`[eliza] agent-trigger ${i} fired on ${agentId}: ${trigger.pattern}`)
+      console.log(`[todd] agent-trigger ${i} fired on ${agentId}: ${trigger.pattern}`)
       queueNudge(agentId, `agent-trigger-${i}`, trigger.message)
       logDecision(agentId, `agent-trigger:${i}`, String(trigger.pattern), {}, text)
       cooldowns[i] = now
       if (trigger.interrupt) {
         postJson('/api/interrupt', { agent: agentId })
-          .then(() => console.log(`[eliza] interrupted ${agentId}`))
-          .catch(e => console.warn(`[eliza] interrupt failed for ${agentId}: ${e.message}`))
+          .then(() => console.log(`[todd] interrupted ${agentId}`))
+          .catch(e => console.warn(`[todd] interrupt failed for ${agentId}: ${e.message}`))
       }
       break
     }
@@ -1120,7 +1135,7 @@ function checkPatternArms(agentId, text) {
   for (const arm of arms) {
     if (arm.pattern.test(text) && now - arm.lastFired > arm.cooldownMs) {
       const target = arm.nudgeTarget || agentId
-      console.log(`[eliza] pattern arm fired → ${target} (watching ${agentId}): ${arm.pattern}`)
+      console.log(`[todd] pattern arm fired → ${target} (watching ${agentId}): ${arm.pattern}`)
       sendChat(target, arm.message)
       logDecision(target, 'pattern-arm', String(arm.pattern), {}, text)
       startRewardWindow(target, 'pattern-arm')
@@ -1159,43 +1174,46 @@ const handoffCooldowns = new Map()
 const HANDOFF_COOLDOWN_MS = 120_000
 
 // ---- QA dispatch ----
-// "eliza, get qa <instruction>" forwards a scoped QA request to the qa-gate agent.
+// "todd, get qa <instruction>" forwards a scoped QA request to the qa-gate agent.
 // The QA agent reads the target agent's thread, evaluates, and sends feedback directly.
 const QA_PATTERN = /\bget\s+qa\b/i
 const QA_AGENT_ID = 'fleet:deepseek-qa'
 
 // ---- Scheduled actions: countdown + cancel ----
-// Any automatic, irreversible Eliza action (handoff, manager escalation, QA
+// Any automatic, irreversible Todd action (handoff, manager escalation, QA
 // dispatch) announces itself with a live ticking countdown (the same `timer`
 // widget real agents get from the MCP `timer()` tool — same wire format) and a
-// grace window before it executes. "Eliza cancel" / "Eliza don't do that"
+// grace window before it executes. "Todd cancel" / "Todd don't do that"
 // aborts anything still pending and clears its widget. Nudges are deliberately
 // NOT wrapped — they're already gated behind Skip's explicit "say it" release,
 // so a countdown would double-gate them.
 const COUNTDOWN_MS = 20_000 // voice-usable window — 5s was too short to cancel by speech
-const ELIZA_CANCEL_PATTERN = /\b(?:cancel(?:l?ed|l?ing|s)?|don'?t\s+do\s+that|do\s+not\s+do\s+that|stop\s+(?:that|it)|never\s*mind|abort)\b/i
+const CANCEL_PATTERN = /\b(?:cancel(?:l?ed|l?ing|s)?|don'?t\s+do\s+that|do\s+not\s+do\s+that|stop\s+(?:that|it)|never\s*mind|abort)\b/i
 let _scheduledSeq = 0
 const pendingActions = new Map() // id → { label, timer, eventId }
 
 // Emit a live countdown widget, wait ~delayMs, then run fn unless cancelled in
 // the window. The countdown is a `timer` event the viewer renders as a ticking
 // bubble (see server timer-set handler + client ticker). Returns the action id.
-function scheduleAction(label, lead, fn, delayMs = COUNTDOWN_MS) {
+function scheduleAction(label, lead, fn, convoWith = null, delayMs = COUNTDOWN_MS) {
   const id = ++_scheduledSeq
   const fireAt = new Date(Date.now() + delayMs).toISOString()
-  const message = `${lead} — say “Eliza cancel” to stop`
-  pendingActions.set(id, { label, timer: null, eventId: null })
+  const message = `${lead} — say “${AGENT_NAME} cancel” to stop`
+  pendingActions.set(id, { label, timer: null, eventId: null, convoWith })
   // Capture the widget's event id so cancel/fire can target it. sendRequest
   // resolves with { id }; if it times out we still run the action — the widget
   // just won't get a clean cancel/fire update.
-  sendRequest({ type: 'timer-set', agent: AGENT_ID, message, fire_at: fireAt })
+  // `to: convoWith` addresses the countdown to the agent's conversation (where
+  // Skip triggered it) so it renders in the panel he's looking at, not his
+  // separate todd thread. Server falls back to the owner when it's absent.
+  sendRequest({ type: 'timer-set', agent: AGENT_ID, to: convoWith || undefined, message, fire_at: fireAt })
     .then(r => { const a = pendingActions.get(id); if (a) a.eventId = r?.id ?? null })
     .catch(() => {})
   const timer = setTimeout(async () => {
     const a = pendingActions.get(id)
     pendingActions.delete(id)
     if (a?.eventId != null) send({ type: 'timer-fire', event_id: a.eventId })
-    try { await fn() } catch (e) { console.error(`[eliza] scheduled "${label}" failed: ${e.message}`) }
+    try { await fn() } catch (e) { console.error(`[todd] scheduled "${label}" failed: ${e.message}`) }
   }, delayMs)
   const a = pendingActions.get(id); if (a) a.timer = timer
   logDecision(OWNER_ID, 'scheduled-action', label, { delayMs }, lead)
@@ -1231,11 +1249,11 @@ async function handleQaDispatch(targetIds, instruction, filterDesc) {
 
   sendChat(QA_AGENT_ID, qaPayload)
   const nameList = targetNames.join(', ')
-  console.log(`[eliza] QA dispatched for ${nameList}: ${instruction || '(default review)'}`)
+  console.log(`[todd] QA dispatched for ${nameList}: ${instruction || '(default review)'}`)
   sendChat(OWNER_ID, `QA dispatched for **${nameList}**.`)
-  logDecision(targets[0], 'qa-dispatch', 'eliza-get-qa', { targets, instruction }, instruction)
+  logDecision(targets[0], 'qa-dispatch', `${VERB}-get-qa`, { targets, instruction }, instruction)
 }
-const PENDING_HANDOFFS_FILE = path.join(CONFIG_DIR, 'eliza-pending-handoffs.json')
+const PENDING_HANDOFFS_FILE = path.join(CONFIG_DIR, `${BOT_KEY}-pending-handoffs.json`)
 
 function loadPendingHandoffs() {
   try {
@@ -1254,9 +1272,9 @@ function postJson(urlPath, body) {
   const url = `${SERVER}${urlPath}`
   const mod = url.startsWith('https') ? https : http
   const payload = JSON.stringify(body)
-  // RESILIENCE: always resolve — never hang, never throw. eliza processes
+  // RESILIENCE: always resolve — never hang, never throw. todd processes
   // messages serially, so a single request that hangs on a slow/unresponsive
-  // server (e.g. mid-restart) used to freeze ALL of eliza (this is exactly how
+  // server (e.g. mid-restart) used to freeze ALL of todd (this is exactly how
   // a handoff's /api/spawn call locked it up). Time out and resolve {error}
   // instead; callers already branch on `.error`.
   return new Promise((resolve) => {
@@ -1279,7 +1297,7 @@ function postJson(urlPath, body) {
 
 // RESILIENCE companion to postJson: a GET that always resolves (parsed JSON,
 // or `fallback` on timeout / network error / parse error). Never hangs — the
-// inline get blocks here had no timeout and could freeze eliza the same way a
+// inline get blocks here had no timeout and could freeze todd the same way a
 // stuck postJson did.
 function getJson(urlPath, fallback = null) {
   const url = `${SERVER}${urlPath}`
@@ -1304,7 +1322,7 @@ async function findAgentManager(agentId) {
     const activeTask = tasks.find(t => t.agent === agentId && t.status === 'pending' && t.delegated_by)
     return activeTask?.delegated_by || null
   } catch (e) {
-    console.error(`[eliza] findAgentManager failed: ${e.message}`)
+    console.error(`[todd] findAgentManager failed: ${e.message}`)
     return null
   }
 }
@@ -1331,7 +1349,7 @@ async function handleManagerEscalation(agentId, triggerText, mode = 'talk-to-ski
   if (now - lastEscalation < MANAGER_ESCALATION_COOLDOWN_MS) return
   managerEscalationCooldowns.set(agentId, now)
 
-  console.log(`[eliza] manager escalation for ${agentId} (mode: ${mode})`)
+  console.log(`[todd] manager escalation for ${agentId} (mode: ${mode})`)
 
   const agentName = await resolveAgentName(agentId)
   const modeLabel = mode === 'talk-to-skip' ? 'talk-to-skip' : 'set-them-straight'
@@ -1377,13 +1395,13 @@ Skip already told the agent what he wanted — repeatedly. He's exhausted from r
     logDecision(agentId, `manager-escalation-${modeLabel}`, 'talk-to-manager', { managerId, mode }, triggerText)
   } else {
     // No manager exists — spawn one
-    console.log(`[eliza] no manager for ${agentName} — spawning one`)
+    console.log(`[todd] no manager for ${agentName} — spawning one`)
     try {
       const agentCwd = await resolveAgentCwd(agentId)
       const mgrName = await nextAgentName(extractBaseTopic(agentName), 'm')
       let spawnResult = await postJson('/api/spawn', { name: mgrName, cwd: agentCwd })
       if (spawnResult.error && spawnResult.error.includes('already exists')) {
-        console.log(`[eliza] manager ${mgrName} already exists — respawning`)
+        console.log(`[todd] manager ${mgrName} already exists — respawning`)
         spawnResult = await postJson('/api/spawn', { agent: mgrName, respawn: true })
       }
       if (spawnResult.error) {
@@ -1403,7 +1421,7 @@ Skip already told the agent what he wanted — repeatedly. He's exhausted from r
           })
           sendChat(OWNER_ID, `Spawned **${mgrName}** and delegated (${modeLabel}). They'll read ${agentName}'s thread and intervene.`)
         } catch (e) {
-          console.error(`[eliza] delegate to spawned manager failed: ${e.message}`)
+          console.error(`[todd] delegate to spawned manager failed: ${e.message}`)
         }
       }, 15_000)
 
@@ -1430,7 +1448,7 @@ async function hasInvokedSkillSince(agentId, skillName, sinceTs) {
       } catch { return false }
     })
   } catch (e) {
-    console.error(`[eliza] education check failed: ${e.message}`)
+    console.error(`[todd] education check failed: ${e.message}`)
     return null // unknown
   }
 }
@@ -1444,7 +1462,7 @@ async function handleHandoff(agentId, triggerText) {
   handoffCooldowns.set(agentId, now)
 
   const agentName = await resolveAgentName(agentId)
-  console.log(`[eliza] handoff triggered for ${agentName} (${agentId})`)
+  console.log(`[todd] handoff triggered for ${agentName} (${agentId})`)
 
   // Two handoff types. "direct"/"directly" in the statement → direct handoff:
   // no briefer, one rotation. The current worker is promoted to manager (day)
@@ -1490,7 +1508,7 @@ ${triggerText ? `\n**Skip's handoff message:**\n> ${triggerText}\n` : ''}
         })
         sendChat(OWNER_ID, `Direct handoff complete. **${workerName}** is the new worker; **${managerName}** is now its manager.`)
       } catch (e) {
-        console.error(`[eliza] direct handoff delegate failed: ${e.message}`)
+        console.error(`[todd] direct handoff delegate failed: ${e.message}`)
       }
     }, 15_000)
     logDecision(agentId, 'handoff-direct', 'handoff', { workerAgent: workerName }, triggerText)
@@ -1559,12 +1577,12 @@ This tells you *why* Skip triggered the handoff. Use it to focus your thread rea
    - What the agent was specifically asked to produce vs what they actually produced
 4. **Clean up the outgoing agent's files.** Fix notation conflicts, remove dead/superseded content, correct known errors. The pickup agent should inherit clean files, not a mess. If the fix is small (find-and-replace notation), do it directly. If it's large, note it in the briefing as a first task.
 5. Write the briefing to \`scratch/briefing-${agentName}.md\` following the \`write-briefing\` skill format
-6. When done, send this exact message to fleet:eliza: \`handoff-ready: scratch/briefing-${agentName}.md\`
+6. When done, send this exact message to ${AGENT_ID}: \`handoff-ready: scratch/briefing-${agentName}.md\`
 
 Do NOT continue the work. Do NOT form opinions about the argument. Extract decisions and clean up files only.`,
         })
       } catch (e) {
-        console.error(`[eliza] delegate to briefing agent failed: ${e.message}`)
+        console.error(`[todd] delegate to briefing agent failed: ${e.message}`)
       }
     }, 15_000)
 
@@ -1597,21 +1615,21 @@ async function handleHandoffReady(fromId, text) {
   }
 
   if (!handoffInfo) {
-    console.log(`[eliza] handoff-ready from ${fromName} but no pending handoff found`)
+    console.log(`[todd] handoff-ready from ${fromName} but no pending handoff found`)
     sendChat(fromId, `✓ Briefing received. No matching handoff — your task is done.`)
     return false
   }
 
   pendingHandoffs.delete(briefingAgentName)
   savePendingHandoffs()
-  console.log(`[eliza] briefing ready: ${briefingPath} — spawning pickup agent for ${handoffInfo.originalAgent}`)
+  console.log(`[todd] briefing ready: ${briefingPath} — spawning pickup agent for ${handoffInfo.originalAgent}`)
 
   // Mark the briefing agent's task as done so it doesn't loop on context continuation
   sendChat(fromId, `✓ Briefing received. Your task is complete — standing by.`)
   try {
     send({ type: 'task-done', agent: fromId, skip_qa: true })
   } catch (e) {
-    console.warn(`[eliza] failed to mark briefing task done: ${e.message}`)
+    console.warn(`[todd] failed to mark briefing task done: ${e.message}`)
   }
 
   sendChat(OWNER_ID, `Briefing ready: **${briefingPath}**. Spawning fresh agent…`)
@@ -1650,7 +1668,7 @@ The briefing is your primary source. Only go to the original thread if the brief
           })
           sendChat(OWNER_ID, `Handoff complete. **${pickupName}** is reading the briefing and will check in with you shortly.`)
         } catch (e) {
-          console.error(`[eliza] delegate to pickup agent failed: ${e.message}`)
+          console.error(`[todd] delegate to pickup agent failed: ${e.message}`)
         }
       }, 15_000)
 
@@ -1659,7 +1677,7 @@ The briefing is your primary source. Only go to the original thread if the brief
       sendChat(OWNER_ID, `⚠️ Failed to spawn pickup agent: ${e.message}`)
     }
   }
-  spawnPickup().catch(e => console.error(`[eliza] pickup spawn error: ${e.message}`))
+  spawnPickup().catch(e => console.error(`[todd] pickup spawn error: ${e.message}`))
   return true
 }
 
@@ -1673,7 +1691,7 @@ function connect() {
   ws = new WebSocket(WS_URL)
 
   ws.on('open', () => {
-    console.log(`[eliza] connected to ${WS_URL}`)
+    console.log(`[todd] connected to ${WS_URL}`)
     reconnectDelay = 500 // back fast next time too
     register()
   })
@@ -1687,12 +1705,12 @@ function connect() {
   })
 
   ws.on('close', () => {
-    console.log(`[eliza] disconnected, reconnecting in ${reconnectDelay}ms...`)
+    console.log(`[todd] disconnected, reconnecting in ${reconnectDelay}ms...`)
     scheduleReconnect()
   })
 
   ws.on('error', (err) => {
-    console.error('[eliza] ws error:', err.message)
+    console.error('[todd] ws error:', err.message)
   })
 }
 
@@ -1703,7 +1721,7 @@ function scheduleReconnect() {
     connect()
   }, reconnectDelay)
   // Catch a short blip in <1s, but back off (cap 5s) so we don't hammer a
-  // server that's down for a while. Was a flat 5s poll → eliza was gone for a
+  // server that's down for a while. Was a flat 5s poll → todd was gone for a
   // full 5s+ even when the server came right back.
   reconnectDelay = Math.min(reconnectDelay * 2, 5000)
 }
@@ -1748,7 +1766,7 @@ function register() {
     id: AGENT_ID,
     name: AGENT_NAME,
     cwd: process.cwd(),
-    labels: ['bot', 'eliza'],
+    labels: ['bot', BOT_KEY],
     human: true,
   })
 }
@@ -1769,17 +1787,17 @@ function handleMessage(msg) {
   if (type === 'chat') {
     if (!text) return
 
-    // Messages sent directly to Eliza from agents: handoff-ready signal or pattern arm registration
+    // Messages sent directly to Todd from agents: handoff-ready signal or pattern arm registration
     if (to_id === AGENT_ID && from_id && from_id !== OWNER_ID) {
       if (/^handoff-ready:/i.test(text)) {
-        handleHandoffReady(from_id, text).catch(e => console.error('[eliza] handoff-ready error:', e.message))
+        handleHandoffReady(from_id, text).catch(e => console.error('[todd] handoff-ready error:', e.message))
         return
       }
-      handleRegistration(from_id, text).catch(e => console.error('[eliza] registration error:', e.message))
+      handleRegistration(from_id, text).catch(e => console.error('[todd] registration error:', e.message))
       return
     }
 
-    // Gated nudge release: Skip says "Eliza [label]" or "say it"
+    // Gated nudge release: Skip says "Todd [label]" or "say it"
     if (from_id === OWNER_ID && tryReleaseFromSkip(text)) {
       return
     }
@@ -1792,61 +1810,61 @@ function handleMessage(msg) {
       tickNudgeMessages(from_id)
     }
 
-    // "Eliza" as direct address: must appear before the command phrase, and must NOT be
+    // "Todd" as direct address: must appear before the command phrase, and must NOT be
     // preceded by an article/preposition (which makes it a noun-phrase reference, not an address).
-    // "eliza hand this off" = address. "use the eliza system to hand off" = reference.
+    // "todd hand this off" = address. "use the todd system to hand off" = reference.
 
     // Sequence detection always watches — queues nudges silently for the status line
     const seqHandled = handleSequence(from_id, to_id, text)
 
-    // Check if "eliza" appears before the command pattern as a direct address (not a reference).
-    // "eliza hand this off" = address. "use the eliza system" = reference (article before eliza).
-    const elizaBefore = (pattern) => {
+    // Check if "todd" appears before the command pattern as a direct address (not a reference).
+    // "todd hand this off" = address. "use the todd system" = reference (article before todd).
+    const addressedBefore = (pattern) => {
       const cmdMatch = text.match(pattern)
       if (!cmdMatch) return false
       const prefix = text.slice(0, cmdMatch.index)
-      const elizaMatch = prefix.match(/\beliza\b/i)
-      if (!elizaMatch) return false
-      const before = prefix.slice(0, elizaMatch.index)
+      const nameMatch = prefix.match(new RegExp(`\\b${VERB}\\b`, 'i'))
+      if (!nameMatch) return false
+      const before = prefix.slice(0, nameMatch.index)
       return !/(?:the|an?|of|use|using)\s*$/i.test(before)
     }
 
-    // Eliza cancel — abort any pending countdown/scheduled action. Accept
-    // "Eliza cancel" / "Eliza don't do that" (address before the phrase), or a
-    // bare cancel phrase sent directly to Eliza. Only consumes the message if
+    // Todd cancel — abort any pending countdown/scheduled action. Accept
+    // "Todd cancel" / "Todd don't do that" (address before the phrase), or a
+    // bare cancel phrase sent directly to Todd. Only consumes the message if
     // something was actually pending; otherwise falls through untouched.
     if (from_id === OWNER_ID) {
       const cancelAddressed = to_id === AGENT_ID
-        ? ELIZA_CANCEL_PATTERN.test(text)
-        : elizaBefore(ELIZA_CANCEL_PATTERN)
+        ? CANCEL_PATTERN.test(text)
+        : addressedBefore(CANCEL_PATTERN)
       if (cancelAddressed && cancelScheduledActions('skip-cancel')) return
     }
 
-    // Manager escalation — "eliza" must appear before the escalation phrase
-    if (elizaBefore(MANAGER_ESCALATION_PATTERN) && from_id === OWNER_ID && to_id && to_id !== AGENT_ID) {
+    // Manager escalation — "todd" must appear before the escalation phrase
+    if (addressedBefore(MANAGER_ESCALATION_PATTERN) && from_id === OWNER_ID && to_id && to_id !== AGENT_ID) {
       const mode = MANAGER_MODE_1_PATTERN.test(text) ? 'talk-to-skip' : 'set-them-straight'
       scheduleAction('manager-escalation', 'Escalating to a manager',
-        () => handleManagerEscalation(to_id, text, mode).catch(e => console.error('[eliza] manager escalation error:', e.message)))
+        () => handleManagerEscalation(to_id, text, mode).catch(e => console.error('[todd] manager escalation error:', e.message)), to_id)
       return
     }
 
-    // Handoff — "eliza" must appear before the handoff phrase
-    if (elizaBefore(HANDOFF_PATTERN) && from_id === OWNER_ID && to_id && to_id !== AGENT_ID) {
+    // Handoff — "todd" must appear before the handoff phrase
+    if (addressedBefore(HANDOFF_PATTERN) && from_id === OWNER_ID && to_id && to_id !== AGENT_ID) {
       const direct = /\bdirect(?:ly)?\b/i.test(text)
       scheduleAction(direct ? 'handoff-direct' : 'handoff', direct ? 'Direct handoff' : 'Handing off',
-        () => handleHandoff(to_id, text).catch(e => console.error('[eliza] handoff error:', e.message)))
+        () => handleHandoff(to_id, text).catch(e => console.error('[todd] handoff error:', e.message)), to_id)
       return
     }
 
-    // QA dispatch — "eliza, get qa <instruction>"
-    if (elizaBefore(QA_PATTERN) && from_id === OWNER_ID) {
+    // QA dispatch — "todd, get qa <instruction>"
+    if (addressedBefore(QA_PATTERN) && from_id === OWNER_ID) {
       const qaMatch = text.match(QA_PATTERN)
       const instruction = qaMatch ? text.slice(qaMatch.index + qaMatch[0].length).trim() : ''
       // Target is whoever Skip is chatting with (to_id), or if broadcast, resolve from filter
       const target = (to_id && to_id !== AGENT_ID) ? to_id : null
       if (target) {
         scheduleAction('qa-dispatch', 'Dispatching QA',
-          () => handleQaDispatch(target, instruction).catch(e => console.error('[eliza] QA dispatch error:', e.message)))
+          () => handleQaDispatch(target, instruction).catch(e => console.error('[todd] QA dispatch error:', e.message)), target)
       } else {
         sendChat(OWNER_ID, `QA dispatch needs a target — say it in a chat with the agent you want reviewed.`)
       }
@@ -1855,7 +1873,7 @@ function handleMessage(msg) {
 
     // Single-message triggers detect and queue without direct address (status line shows them)
     if (from_id === OWNER_ID && to_id && to_id !== AGENT_ID && !seqHandled) {
-      checkTriggers(to_id, text).catch(e => console.error('[eliza] checkTriggers error:', e.message))
+      checkTriggers(to_id, text).catch(e => console.error('[todd] checkTriggers error:', e.message))
     }
 
     // Pattern arms + hardcoded agent triggers: check on agent→Skip messages
@@ -1881,7 +1899,7 @@ async function checkTriggers(targetId, text) {
       const cooldownMs = trigger.cooldown || 60_000
       const lastFired = getLastFired(targetId, i)
       if (lastFired && Date.now() - lastFired < cooldownMs) {
-        console.log(`[eliza] trigger ${i} matched but on cooldown for ${targetId}`)
+        console.log(`[todd] trigger ${i} matched but on cooldown for ${targetId}`)
         continue
       }
       let message = trigger.message
@@ -1896,11 +1914,11 @@ async function checkTriggers(targetId, text) {
         }
       }
       const label = trigger.skill || `trigger-${i}`
-      console.log(`[eliza] trigger ${i} fired → ${targetId}: ${trigger.pattern}`)
+      console.log(`[todd] trigger ${i} fired → ${targetId}: ${trigger.pattern}`)
       queueNudge(targetId, label, message)
       queueFrustrationActions(targetId)
       // Qualification enforcement is handled by the PreToolUse hook +
-      // server-side checkQualifications(). Eliza's role is chat nudges only.
+      // server-side checkQualifications(). Todd's role is chat nudges only.
       logDecision(targetId, `single-trigger:${i}`, String(trigger.pattern), {}, text)
       setCooldown(targetId, i)
       return // only fire one trigger per message
@@ -1908,24 +1926,103 @@ async function checkTriggers(targetId, text) {
   }
 }
 
+// ─── pw window idle reaper ──────────────────────────────────────────
+// Each agent drives its own window in the shared `tlda-dev pw` browser; windows
+// live in a pool. This loop frees windows that agents stop using: it warns an
+// awake owner ~2 min before parking (so agents stay responsive instead of
+// maintaining their own timer), then parks the window (returns it to the pool).
+// Idle is read from the per-agent last-touch files the pw wrapper writes.
+const PW_WARN_MS = parseInt(process.env.PW_REAP_WARN_MS, 10) || 13 * 60 * 1000
+const PW_PARK_MS = parseInt(process.env.PW_REAP_PARK_MS, 10) || 15 * 60 * 1000
+const PW_REAP_INTERVAL_MS = parseInt(process.env.PW_REAP_INTERVAL_MS, 10) || 60_000
+const PW_REAP_SESSION = process.env.PW_REAP_SESSION || 'shared'
+const PW_TOUCH_DIR = path.join(CONFIG_DIR, 'pw-touch')
+const _pwWarned = new Set()       // keys warned this idle stretch
+const _pwFirstSeen = new Map()    // key → first time we saw it (fallback if no touch file)
+
+async function pwSharedWindows() {
+  // Windows in the shared session carrying a pwtab marker. Empty if browser down.
+  let out
+  try { out = (await execFileP('playwright-cli', [`-s=${PW_REAP_SESSION}`, 'tab-list'], { timeout: 5000 })).stdout || '' }
+  catch { return [] }
+  const wins = []
+  for (const line of out.split('\n')) {
+    const m = line.match(/^- (\d+):\s*(\(current\)\s*)?\[([^\]]*)\]\(([^)]*)\)/)
+    if (!m) continue
+    const mk = (m[4].match(/pwtab=([a-zA-Z0-9_.-]+)/) || m[3].match(/pwtab=([a-zA-Z0-9_.-]+)/))
+    if (mk) wins.push({ index: parseInt(m[1], 10), key: mk[1] })
+  }
+  return wins
+}
+
+function pwReadTouch(key) {
+  try { return JSON.parse(fs.readFileSync(path.join(PW_TOUCH_DIR, `${key}.json`), 'utf8')) } catch { return null }
+}
+
+async function pwIsAwake(agentId) {
+  if (!agentId) return false
+  const data = await getJson('/api/store/agents', [])
+  const list = Array.isArray(data) ? data : (data.agents || [])
+  const a = list.find(x => x.id === agentId)
+  return !!a && !a.dead
+}
+
+async function reapPwWindows() {
+  const wins = await pwSharedWindows()
+  const now = Date.now()
+  const seen = new Set()
+  for (const w of wins) {
+    seen.add(w.key)
+    const touch = pwReadTouch(w.key)
+    let lastTs = touch?.ts
+    if (!lastTs) {
+      if (!_pwFirstSeen.has(w.key)) _pwFirstSeen.set(w.key, now)
+      lastTs = _pwFirstSeen.get(w.key)
+    } else {
+      _pwFirstSeen.delete(w.key)
+      if (now - lastTs < PW_WARN_MS) _pwWarned.delete(w.key) // active again → re-arm warning
+    }
+    const idle = now - lastTs
+    if (idle >= PW_PARK_MS) {
+      try {
+        await execFileP('tlda-dev', ['pw', 'release'], { env: { ...process.env, TLDA_PW_AS: touch?.id || w.key, TLDA_PW_SESSION: PW_REAP_SESSION }, timeout: 20000 })
+        console.log(`[pw-reap] parked idle window key=${w.key} idle=${Math.round(idle / 60000)}m`)
+      } catch (e) { console.error(`[pw-reap] park failed key=${w.key}: ${e.message}`) }
+      _pwWarned.delete(w.key); _pwFirstSeen.delete(w.key)
+    } else if (idle >= PW_WARN_MS && !_pwWarned.has(w.key)) {
+      const agentId = touch?.id || null
+      if (await pwIsAwake(agentId)) {
+        sendChat(agentId, `⏱ Your \`tlda-dev pw\` window has been idle ~${Math.round(idle / 60000)} min and will be **parked** back to the shared pool at 15 min. Run any \`tlda-dev pw\` verb to keep it — otherwise just re-\`goto\` your URL later (no page state is preserved).`)
+        _pwWarned.add(w.key)
+        console.log(`[pw-reap] warned awake ${agentId} key=${w.key}`)
+      }
+      // hibernating/dead → no warning; parked silently at the 15 min mark
+    }
+  }
+  for (const k of [..._pwWarned]) if (!seen.has(k)) _pwWarned.delete(k)
+  for (const k of [..._pwFirstSeen.keys()]) if (!seen.has(k)) _pwFirstSeen.delete(k)
+}
+
+setInterval(() => { reapPwWindows().catch(e => console.error('[pw-reap]', e.message)) }, PW_REAP_INTERVAL_MS)
+
 // ---- Start ----
 // Check for existing instance
 if (fs.existsSync(PID_FILE)) {
   const existingPid = parseInt(fs.readFileSync(PID_FILE, 'utf8').trim(), 10)
   try {
     process.kill(existingPid, 0)
-    console.log(`[eliza] already running (pid ${existingPid}) — exiting`)
+    console.log(`[todd] already running (pid ${existingPid}) — exiting`)
     process.exit(0)
   } catch {} // stale pid — continue
 }
 try { fs.writeFileSync(PID_FILE, String(process.pid)) } catch {}
 
-console.log(`[eliza] starting (pid ${process.pid}) — watching for frustration signals from ${OWNER_ID}`)
+console.log(`[todd] starting (pid ${process.pid}) — watching for frustration signals from ${OWNER_ID}`)
 connect()
 
 // Keep alive
 process.on('SIGINT', () => {
-  console.log('[eliza] shutting down')
+  console.log('[todd] shutting down')
   try { fs.unlinkSync(PID_FILE) } catch {}
   ws?.close()
   process.exit(0)

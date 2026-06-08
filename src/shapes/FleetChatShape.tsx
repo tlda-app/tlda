@@ -30,8 +30,8 @@ import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRe
 // @ts-ignore — vanilla JS module
 import { getHumanId, getHumanName, updateEventById, sendViewingContext, setViewingEnrichFn } from '../fleet/fleet-data.mjs'
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
-import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useElizaPending, sendMessage, loadBefore, resolveFilter, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
-import type { ElizaNudge } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useSuggestions, sendMessage, loadBefore, resolveFilter, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
+import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
 import { agentDisplayName } from './fleet-utils'
 import { AgentName, PhaseIcon } from './PhaseIcon'
@@ -887,35 +887,37 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
   )
 }
 
-function ElizaSuggestion({ nudge, isFirst, agentName }: { nudge: ElizaNudge, isFirst: boolean, agentName: string }) {
-  // Release nudges fire via "eliza <label>"; action suggestions (hand off / get qa)
-  // carry an explicit command. Either way, sending it as a real message keeps a
-  // visible record of what fired and reuses eliza's existing routing.
-  const command = nudge.command || `eliza ${nudge.label}`
-  const canSayIt = isFirst && nudge.kind !== 'action'
+function SuggestionChip({ nudge, isFirst, agentName }: { nudge: Suggestion, isFirst: boolean, agentName: string }) {
+  // The posting agent supplies the command verbatim; clicking sends it as a real
+  // message, which keeps a visible record of what fired and routes back to that
+  // agent. A chip with no command is informational (click is a no-op).
+  const command = nudge.command || null
+  const canSayIt = isFirst && nudge.kind !== 'action' && !!command
   const fire = (e: React.SyntheticEvent) => {
     stopEventPropagation(e as any)
-    sendMessage(nudge.targetId, command)
+    if (command) sendMessage(nudge.targetId || nudge.from || '', command)
   }
   return (
     <span
-      className="eliza-suggestion"
+      className="suggestion-chip"
       onPointerDown={stopEventPropagation}
       onClick={fire}
     >
-      <span className="eliza-suggestion-label">{nudge.label}</span>
-      <span className="eliza-suggestion-tip" onPointerDown={stopEventPropagation}>
-        <span className="eliza-tip-trigger">
-          Say <b>"{command}"</b>{canSayIt ? <> or <b>"say it"</b></> : null} — or click to send now
+      <span className="suggestion-chip-label">{nudge.label}</span>
+      <span className="suggestion-chip-tip" onPointerDown={stopEventPropagation}>
+        <span className="suggestion-tip-trigger">
+          {command
+            ? <>Say <b>"{command}"</b>{canSayIt ? <> or <b>"say it"</b></> : null} — or click to send now</>
+            : <>{nudge.text || nudge.label}</>}
         </span>
-        <span className="eliza-tip-target">→ {agentName}</span>
-        <span className="eliza-tip-text">{nudge.text}</span>
+        <span className="suggestion-tip-target">→ {agentName}</span>
+        <span className="suggestion-tip-text">{nudge.text}</span>
       </span>
     </span>
   )
 }
 
-function ElizaStatus({ pending, ctx, rawItemsLength }: { pending: ElizaNudge[], ctx: any, rawItemsLength: number }) {
+function SuggestionStatus({ pending, ctx, rawItemsLength }: { pending: Suggestion[], ctx: any, rawItemsLength: number }) {
   const hasActive = pending.length > 0
   const lastPendingRef = useRef(pending)
   if (hasActive) lastPendingRef.current = pending
@@ -945,15 +947,15 @@ function ElizaStatus({ pending, ctx, rawItemsLength }: { pending: ElizaNudge[], 
       opacity: ghost ? 0 : 1,
       transition: 'opacity 0.2s',
     }}
-    className="eliza-status"
+    className="suggestion-status"
     >
       {!ghost && (
         <div className="chat-line" style={{ padding: '2px 0' }}>
-          <span className="eliza-status-prefix">eliza:</span>{' '}
+          <span className="suggestion-status-prefix">{ctx.agentLabel(pending[0]?.from || pending[0]?.targetId)}:</span>{' '}
           {pending.map((n, i) => (
             <span key={n.id}>
-              {i > 0 ? <span className="eliza-suggestion-label">, </span> : null}
-              <ElizaSuggestion nudge={n} isFirst={i === 0} agentName={ctx.agentLabel(n.targetId)} />
+              {i > 0 ? <span className="suggestion-chip-label">, </span> : null}
+              <SuggestionChip nudge={n} isFirst={i === 0} agentName={ctx.agentLabel(n.targetId || n.from)} />
             </span>
           ))}
         </div>
@@ -1135,7 +1137,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const thinkingAgents = useFleetThinking(dnfFilter, frameId)
   const compactingAgents = useFleetCompacting(dnfFilter, frameId)
   const contextPercent = useFleetContext(dnfFilter, frameId)
-  const elizaPendingAll = useElizaPending()
+  const suggestionsAll = useSuggestions()
 
   // When an agent renames itself, auto-update any filter terms that used the old name.
   useEffect(() => {
@@ -1284,8 +1286,8 @@ function FleetChatInner({ shape }: { shape: any }) {
     return result
   }, [agents, dnfFilter, resolveToFleetIds])
 
-  const elizaPending = useMemo(() => {
-    let filtered = elizaPendingAll
+  const suggestionsPending = useMemo(() => {
+    let filtered = suggestionsAll
     if (dnfFilter && dnfFilter.length > 0) {
       const targetIds = new Set<string>()
       for (const andGroup of dnfFilter) {
@@ -1293,18 +1295,18 @@ function FleetChatInner({ shape }: { shape: any }) {
           for (const id of resolveToFleetIds(label)) targetIds.add(id)
         }
       }
-      filtered = filtered.filter(n => targetIds.has(n.targetId))
+      filtered = filtered.filter(n => targetIds.has(n.targetId || n.from || ''))
     }
     const seen = new Set<string>()
     return filtered.filter(n => {
       // Key on target too: the same label (e.g. "hand off") can be pending for
       // multiple agents at once, and each must stay clickable against its own target.
-      const key = `${n.targetId}::${n.label}`
+      const key = `${n.targetId || n.from || ''}::${n.label}`
       if (seen.has(key)) return false
       seen.add(key)
       return true
     })
-  }, [elizaPendingAll, dnfFilter, resolveToFleetIds])
+  }, [suggestionsAll, dnfFilter, resolveToFleetIds])
 
   // Fetch per-agent history on mount / filter change.
   // The global event buffer (MAX_EVENTS=150) is shared across all agents.
@@ -2403,7 +2405,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   //    (virtualization-aware); without it the raw scrollTop undershoots while
   //    the tail is unmeasured.
   //  - raw scrollTop = scrollHeight reaches the ABSOLUTE bottom past the Virtuoso
-  //    Footer (eliza/thinking status). scrollToIndex(LAST, 'end') only aligns the
+  //    Footer (suggestion/thinking status). scrollToIndex(LAST, 'end') only aligns the
   //    last DATA item, stopping ~the footer's height above true bottom — that was
   //    the consistent ~514px residual gap when raw was removed.
   // The bounded loop re-runs as height settles. The standing watchdog below is
@@ -4040,7 +4042,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             // reaches the TRUE list bottom); our scroll-intent just gates WHEN it
             // follows. Follow on new content unless the user deliberately scrolled up.
             followOutput={() => (!userScrolledUpRef.current || hardLockedRef.current) ? 'auto' : false}
-            // Generous enough to absorb the Virtuoso Footer (eliza/thinking
+            // Generous enough to absorb the Virtuoso Footer (suggestion/thinking
             // status, ~40px): scrollToIndex(LAST) aligns the last DATA item, so
             // the footer sits just below the viewport and "true bottom" is ~40px
             // past the last item. With the tight 24px value, that residual read
@@ -4117,12 +4119,12 @@ function FleetChatInner({ shape }: { shape: any }) {
             computeItemKey={(_index, item) => item?.key ?? _index}
             components={{
               Scroller: ChatLogScroller,
-              // Eliza/thinking status as Footer so they sit inside Virtuoso's
+              // Suggestion/thinking status as Footer so they sit inside Virtuoso's
               // tracked layout — sibling rendering would float over/under
               // the virtualized list.
               Footer: () => (
                 <div>
-                  <ElizaStatus pending={elizaPending} ctx={ctx} rawItemsLength={rawItems.length} />
+                  <SuggestionStatus pending={suggestionsPending} ctx={ctx} rawItemsLength={rawItems.length} />
                   <ThinkingStatus
                     thinkingAgents={thinkingAgents}
                     compactingAgents={compactingAgents}
