@@ -1180,15 +1180,18 @@ const pendingActions = new Map() // id → { label, timer, eventId }
 // Emit a live countdown widget, wait ~delayMs, then run fn unless cancelled in
 // the window. The countdown is a `timer` event the viewer renders as a ticking
 // bubble (see server timer-set handler + client ticker). Returns the action id.
-function scheduleAction(label, lead, fn, delayMs = COUNTDOWN_MS) {
+function scheduleAction(label, lead, fn, convoWith = null, delayMs = COUNTDOWN_MS) {
   const id = ++_scheduledSeq
   const fireAt = new Date(Date.now() + delayMs).toISOString()
   const message = `${lead} — say “Eliza cancel” to stop`
-  pendingActions.set(id, { label, timer: null, eventId: null })
+  pendingActions.set(id, { label, timer: null, eventId: null, convoWith })
   // Capture the widget's event id so cancel/fire can target it. sendRequest
   // resolves with { id }; if it times out we still run the action — the widget
   // just won't get a clean cancel/fire update.
-  sendRequest({ type: 'timer-set', agent: AGENT_ID, message, fire_at: fireAt })
+  // `to: convoWith` addresses the countdown to the agent's conversation (where
+  // Skip triggered it) so it renders in the panel he's looking at, not his
+  // separate eliza thread. Server falls back to the owner when it's absent.
+  sendRequest({ type: 'timer-set', agent: AGENT_ID, to: convoWith || undefined, message, fire_at: fireAt })
     .then(r => { const a = pendingActions.get(id); if (a) a.eventId = r?.id ?? null })
     .catch(() => {})
   const timer = setTimeout(async () => {
@@ -1826,7 +1829,7 @@ function handleMessage(msg) {
     if (elizaBefore(MANAGER_ESCALATION_PATTERN) && from_id === OWNER_ID && to_id && to_id !== AGENT_ID) {
       const mode = MANAGER_MODE_1_PATTERN.test(text) ? 'talk-to-skip' : 'set-them-straight'
       scheduleAction('manager-escalation', 'Escalating to a manager',
-        () => handleManagerEscalation(to_id, text, mode).catch(e => console.error('[eliza] manager escalation error:', e.message)))
+        () => handleManagerEscalation(to_id, text, mode).catch(e => console.error('[eliza] manager escalation error:', e.message)), to_id)
       return
     }
 
@@ -1834,7 +1837,7 @@ function handleMessage(msg) {
     if (elizaBefore(HANDOFF_PATTERN) && from_id === OWNER_ID && to_id && to_id !== AGENT_ID) {
       const direct = /\bdirect(?:ly)?\b/i.test(text)
       scheduleAction(direct ? 'handoff-direct' : 'handoff', direct ? 'Direct handoff' : 'Handing off',
-        () => handleHandoff(to_id, text).catch(e => console.error('[eliza] handoff error:', e.message)))
+        () => handleHandoff(to_id, text).catch(e => console.error('[eliza] handoff error:', e.message)), to_id)
       return
     }
 
@@ -1846,7 +1849,7 @@ function handleMessage(msg) {
       const target = (to_id && to_id !== AGENT_ID) ? to_id : null
       if (target) {
         scheduleAction('qa-dispatch', 'Dispatching QA',
-          () => handleQaDispatch(target, instruction).catch(e => console.error('[eliza] QA dispatch error:', e.message)))
+          () => handleQaDispatch(target, instruction).catch(e => console.error('[eliza] QA dispatch error:', e.message)), target)
       } else {
         sendChat(OWNER_ID, `QA dispatch needs a target — say it in a chat with the agent you want reviewed.`)
       }
