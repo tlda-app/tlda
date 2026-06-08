@@ -19,7 +19,7 @@
  * display (parse phase → icon, strip suffix → pretty name). Everything general
  * — storage, chat routing, lifecycle — stays blind to it.
  *
- * Imported by the client (Vite), the server (Node), the MCP server, and eliza —
+ * Imported by the client (Vite), the server (Node), the MCP server, and bots —
  * keep it dependency-free.
  */
 

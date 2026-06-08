@@ -37,7 +37,7 @@ export function timeShort(ts) {
   return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })
 }
 
-// A pending countdown's message carries a "— say "Eliza cancel" to stop" hint.
+// A pending countdown's message carries a "— say "<bot> cancel" to stop" hint.
 // Once the timer has fired that hint is moot, so strip it for the terminal line.
 export function timerDoneLabel(s) {
   return String(s || '').replace(/\s*—\s*say\b[^]*$/i, '')
@@ -151,7 +151,7 @@ export function renderChatLine(m, ctx) {
   }
   // Timer fired \u2014 terminal, but stays in the log so the countdown's outcome
   // remains visible. A timer is a chat event: it counts to zero and then sits
-  // there showing it fired, rather than vanishing. The "say Eliza cancel" hint
+  // there showing it fired, rather than vanishing. The "say <bot> cancel" hint
   // is stripped since it's moot once the action has run.
   if (m._timerFired) {
     const nick = agentLabel(m.from)

@@ -1,7 +1,7 @@
 /**
  * Shared configuration — single source of truth for server URL, tokens, and config loading.
  *
- * Every entry point (CLI, daemon, MCP server, eliza, bridges) imports from here.
+ * Every entry point (CLI, daemon, MCP server, bots, bridges) imports from here.
  * No more 6 independent implementations of getServerUrl() with different fallback chains.
  */
 
@@ -82,4 +82,17 @@ export function getReadToken(config = null) {
   if (process.env.TLDA_TOKEN_READ) return process.env.TLDA_TOKEN_READ
   const cfg = config ?? loadConfig()
   return cfg.tokenRead || null
+}
+
+/**
+ * Background bots the server keeps alive — a configurable list of managed
+ * processes. Each is just a script that talks to the fleet API; tlda doesn't
+ * special-case any of them. Each entry: { name, script } where `script` is
+ * absolute or repo-relative (the supervisor resolves it). config.bots overrides;
+ * the default is the shipped example bot, Todd. Write your own by adding an entry.
+ */
+export function getManagedBots(config = null) {
+  const cfg = config ?? loadConfig()
+  if (Array.isArray(cfg.bots)) return cfg.bots
+  return [{ name: 'todd', script: 'bin/todd.mjs' }]
 }

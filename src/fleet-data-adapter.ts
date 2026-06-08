@@ -525,10 +525,13 @@ export function useFleetCompacting(dnfFilter?: string[][] | [string,string][][] 
   return compacting
 }
 
-export type ElizaNudge = { id: number, label: string, targetId: string, text: string, kind?: string, command?: string | null, ts: number, msgCount: number }
+// A suggestion chip any agent can push to the bottom of the chat (see the
+// server's /api/suggestions channel + the `suggest` MCP tool). `from` is the
+// posting agent; `command`, if set, is sent as a chat when the chip is clicked.
+export type Suggestion = { id: string | number, label: string, targetId?: string, from?: string, text: string, kind?: string, command?: string | null, ts: number, msgCount?: number }
 
-export function useElizaPending(): ElizaNudge[] {
-  const [pending, setPending] = useState<ElizaNudge[]>([])
+export function useSuggestions(): Suggestion[] {
+  const [pending, setPending] = useState<Suggestion[]>([])
 
   useEffect(() => {
     let unsub: (() => void) | null = null
@@ -536,8 +539,8 @@ export function useElizaPending(): ElizaNudge[] {
 
     ensureInit().then(() => {
       if (cancelled) return
-      unsub = subscribe('eliza-pending', null, (data: any) => {
-        setPending(data.pending || [])
+      unsub = subscribe('suggestions', null, (data: any) => {
+        setPending(data.suggestions || [])
       })
     })
 

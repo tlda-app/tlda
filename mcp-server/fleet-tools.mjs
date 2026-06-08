@@ -825,6 +825,29 @@ export function getFleetTools() {
       },
     },
     {
+      name: 'suggest',
+      description: 'Push your current set of clickable suggestion chips to the bottom of the user\'s chat — actionable "you might want to do X" affordances. Use for the "I need you to decide" moment instead of a chat line that scrolls away. Replace-semantics: each call overwrites your WHOLE set; pass an empty array to clear. Each suggestion: { label (short chip text), text (optional longer description), command (optional — a chat/command string that runs when the user clicks the chip) }.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          suggestions: {
+            type: 'array',
+            description: 'Your full current set of chips (replaces your previous set). Empty array clears your chips.',
+            items: {
+              type: 'object',
+              properties: {
+                label: { type: 'string', description: 'Short chip text the user sees and clicks.' },
+                text: { type: 'string', description: 'Optional longer description shown with the chip.' },
+                command: { type: 'string', description: 'Optional command/chat string sent when the user clicks the chip.' },
+              },
+              required: ['label'],
+            },
+          },
+        },
+        required: ['suggestions'],
+      },
+    },
+    {
       name: 'task_list',
       description: 'List all active (non-done) tasks and registered agents. Call at session start.',
       inputSchema: { type: 'object', properties: {} },
@@ -1889,6 +1912,40 @@ export async function handleFleetTool(name, args) {
       return { content: [{ type: 'text', text: `Terminal card opened for Skip${reason ? ` (reason: ${reason})` : ''}.` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `request_terminal failed: ${e.message}` }], isError: true };
+    }
+  }
+
+  // ---- suggest ----
+  // Push this agent's current set of clickable suggestion chips to the chat.
+  // Generic capability — any agent can use it (the Todd example bot posts to the
+  // same /api/suggestions route directly). Replace-semantics: overwrites this
+  // agent's set; an empty array clears it.
+  if (name === 'suggest') {
+    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not registered. Call register() first.' }], isError: true };
+    const { suggestions } = args || {};
+    if (!Array.isArray(suggestions)) return { content: [{ type: 'text', text: 'suggest requires a `suggestions` array (empty to clear).' }], isError: true };
+    const ts = Date.now();
+    const stamped = suggestions.map((s, i) => ({
+      id: `${AGENT_ID}:${i}`,
+      label: s.label,
+      text: s.text || '',
+      command: s.command || null,
+      kind: s.command ? 'action' : 'info',
+      targetId: AGENT_ID,
+      ts,
+    }));
+    try {
+      const res = await fleetFetch(`${TLDA_SERVER}/api/suggestions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agentId: AGENT_ID, suggestions: stamped }),
+        signal: AbortSignal.timeout(3000),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return { content: [{ type: 'text', text: `suggest failed: ${data.error || res.statusText}` }], isError: true };
+      return { content: [{ type: 'text', text: stamped.length ? `Posted ${stamped.length} suggestion chip(s) to chat.` : 'Cleared your suggestion chips.' }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `suggest failed: ${e.message}` }], isError: true };
     }
   }
 

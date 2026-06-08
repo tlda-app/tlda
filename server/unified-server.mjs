@@ -39,7 +39,7 @@ import os from 'os'
 const { homedir, hostname } = os
 import { spawn as cpSpawn } from 'child_process'
 import { lookup as mimeLookup } from 'mime-types'
-import { DEFAULT_PORT, hasTls } from '../shared/config.mjs'
+import { DEFAULT_PORT, hasTls, getManagedBots } from '../shared/config.mjs'
 import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
 import { labelsForAgent, evalDnf } from '../shared/fleet-labels.mjs'
 import { phaseFromName, baseName, PHASES } from '../shared/lineage-name.mjs'
@@ -407,70 +407,82 @@ function ensureLocalDaemon() {
   }
 }
 
-// ---- Eliza supervisor ----
-// Eliza (bin/eliza.mjs, the frustration-watcher pseudo-agent) has no supervisor
-// of its own; if it crashes it stays dead until the next `tlda server start`,
-// which is exactly how it silently went missing. Keep it alive the same way we
-// keep the fleet daemon alive: check its pidfile each tick and respawn it
-// (detached, logging to its own file) when the process is gone, with the same
-// crash-loop backoff so a startup crash doesn't hot-loop.
-const ELIZA_LOG_FILE = join(homedir(), '.config', 'tlda', 'eliza.log')
-const ELIZA_PID_FILE = join(homedir(), '.config', 'tlda', 'eliza.pid')
-const ELIZA_SCRIPT = (() => {
+// ---- Managed-bot supervisor ----
+// tlda keeps a configurable list of background "bots" alive — each is just a
+// script that talks to the fleet API (the shipped example is Todd). No bot is
+// special-cased; the list comes from config (getManagedBots). Each tick we check
+// a bot's pidfile and respawn it (detached, own log) when its process is gone,
+// with crash-loop backoff so a startup crash doesn't hot-loop. The supervisor
+// owns the pidfile/log location and hands them to the bot via env, so the bot
+// stays agnostic about where it lives.
+function resolveBotScript(script) {
+  if (script.startsWith('/')) return script
+  // repo-relative — resolve against the repo root, accounting for a worktree.
   const d = dirname(fileURLToPath(import.meta.url))
   const m = d.match(/^(.+?)\/\.claude\/worktrees\//)
-  return m ? join(m[1], 'bin', 'eliza.mjs') : join(d, '..', 'bin', 'eliza.mjs')
-})()
-let _elizaSpawnInFlight = false
-let _elizaLastSpawnAt = 0
-let _elizaRapidFails = 0
-let _elizaBackoffUntil = 0
-let _elizaGivingUpLogged = false
+  const root = m ? m[1] : join(d, '..')
+  return join(root, script)
+}
 
-function ensureEliza() {
-  if (_elizaSpawnInFlight) return
+const _botState = new Map() // name → { spawnInFlight, lastSpawnAt, rapidFails, backoffUntil, givingUpLogged }
+
+function ensureManagedBot(spec) {
+  const name = spec?.name
+  if (!name || !spec.script) return
+  const scriptPath = resolveBotScript(spec.script)
+  const pidFile = join(homedir(), '.config', 'tlda', `${name}.pid`)
+  const logFile = join(homedir(), '.config', 'tlda', `${name}.log`)
+  let st = _botState.get(name)
+  if (!st) { st = { spawnInFlight: false, lastSpawnAt: 0, rapidFails: 0, backoffUntil: 0, givingUpLogged: false }; _botState.set(name, st) }
+  if (st.spawnInFlight) return
   const now = Date.now()
-  if (now < _elizaBackoffUntil) return
-  // Already running? (pidfile process alive — eliza writes its own pid on start)
-  if (existsSync(ELIZA_PID_FILE)) {
+  if (now < st.backoffUntil) return
+  // Already running? (pidfile process alive — the bot writes its own pid on start)
+  if (existsSync(pidFile)) {
     try {
-      const pid = parseInt(readFileSync(ELIZA_PID_FILE, 'utf8').trim(), 10)
+      const pid = parseInt(readFileSync(pidFile, 'utf8').trim(), 10)
       if (pid > 0) { try { process.kill(pid, 0); return } catch {} } // not alive → respawn
-    } catch (e) { console.warn(`[eliza-supervisor] stale pid file: ${e.message}`) }
+    } catch (e) { console.warn(`[bot-supervisor:${name}] stale pid file: ${e.message}`) }
   }
-  if (!existsSync(ELIZA_SCRIPT)) return
+  if (!existsSync(scriptPath)) return
   // Crash-loop guard — same shape/budget as the daemon supervisor.
-  if (_elizaLastSpawnAt > 0 && now - _elizaLastSpawnAt < DAEMON_FAST_DEATH_MS) {
-    _elizaRapidFails++
-    if (_elizaRapidFails >= DAEMON_MAX_RAPID_RESPAWNS) {
-      _elizaBackoffUntil = now + DAEMON_BACKOFF_MS
-      if (!_elizaGivingUpLogged) {
-        console.error(`[eliza-supervisor] eliza crashed ${_elizaRapidFails}× in <${DAEMON_FAST_DEATH_MS}ms each — backing off ${DAEMON_BACKOFF_MS / 1000}s. Tail ${ELIZA_LOG_FILE} for the cause.`)
-        _elizaGivingUpLogged = true
+  if (st.lastSpawnAt > 0 && now - st.lastSpawnAt < DAEMON_FAST_DEATH_MS) {
+    st.rapidFails++
+    if (st.rapidFails >= DAEMON_MAX_RAPID_RESPAWNS) {
+      st.backoffUntil = now + DAEMON_BACKOFF_MS
+      if (!st.givingUpLogged) {
+        console.error(`[bot-supervisor:${name}] crashed ${st.rapidFails}× in <${DAEMON_FAST_DEATH_MS}ms each — backing off ${DAEMON_BACKOFF_MS / 1000}s. Tail ${logFile} for the cause.`)
+        st.givingUpLogged = true
       }
-      _elizaRapidFails = 0
+      st.rapidFails = 0
       return
     }
-  } else if (_elizaLastSpawnAt > 0) {
-    _elizaRapidFails = 0
+  } else if (st.lastSpawnAt > 0) {
+    st.rapidFails = 0
   }
-  _elizaSpawnInFlight = true
+  st.spawnInFlight = true
   try {
-    if (!existsSync(dirname(ELIZA_LOG_FILE))) mkdirSync(dirname(ELIZA_LOG_FILE), { recursive: true })
-    const logFd = openSync(ELIZA_LOG_FILE, 'a')
-    const child = cpSpawn(process.execPath, [ELIZA_SCRIPT], {
+    if (!existsSync(dirname(logFile))) mkdirSync(dirname(logFile), { recursive: true })
+    const logFd = openSync(logFile, 'a')
+    const child = cpSpawn(process.execPath, [scriptPath], {
       detached: true,
       stdio: ['ignore', logFd, logFd],
-      env: { ...process.env, TMUX: undefined, TMUX_PANE: undefined },
+      env: { ...process.env, TMUX: undefined, TMUX_PANE: undefined, TLDA_BOT_NAME: name, TLDA_BOT_PIDFILE: pidFile },
     })
     child.unref()
-    _elizaLastSpawnAt = now
-    _elizaGivingUpLogged = false
-    console.log('[eliza-supervisor] respawned eliza')
+    st.lastSpawnAt = now
+    st.givingUpLogged = false
+    console.log(`[bot-supervisor:${name}] respawned`)
   } catch (e) {
-    console.error(`[eliza-supervisor] spawn failed: ${e.message}`)
+    console.error(`[bot-supervisor:${name}] spawn failed: ${e.message}`)
   } finally {
-    setTimeout(() => { _elizaSpawnInFlight = false }, 3000)
+    setTimeout(() => { st.spawnInFlight = false }, 3000)
+  }
+}
+
+function ensureManagedBots() {
+  for (const spec of getManagedBots()) {
+    try { ensureManagedBot(spec) } catch (e) { console.error(`[bot-supervisor] ${spec?.name || '?'}: ${e.message}`) }
   }
 }
 
@@ -1284,19 +1296,34 @@ async function emitSkillDismissCard(agentId, dismissed, reason) {
   }
 }
 
-// ---------- Eliza gated nudge status ----------
-let _elizaPending = []
+// ---------- Agent suggestion chips ----------
+// Any agent can push its CURRENT set of clickable suggestion chips — actionable
+// "you might want to do X" affordances rendered at the bottom of the chat. This
+// is a generic fleet capability, not tied to any one agent: a Claude session
+// uses the `suggest` MCP tool; a bot (e.g. the Todd example) hits this route
+// directly. Replace-semantics PER agent — posting overwrites that agent's set,
+// an empty array clears it — so agents never clobber each other. The broadcast
+// carries the flattened set across all agents.
+const _suggestions = new Map() // agentId → Suggestion[]
 
-app.post('/api/eliza/pending', (req, res) => {
-  const { pending } = req.body
-  if (!Array.isArray(pending)) return res.status(400).json({ error: 'Missing pending array' })
-  _elizaPending = pending
-  broadcastEvent('eliza-pending', { pending })
+function flattenSuggestions() {
+  const out = []
+  for (const list of _suggestions.values()) out.push(...list)
+  return out
+}
+
+app.post('/api/suggestions', (req, res) => {
+  const { agentId, suggestions } = req.body || {}
+  if (!agentId) return res.status(400).json({ error: 'Missing agentId' })
+  if (!Array.isArray(suggestions)) return res.status(400).json({ error: 'Missing suggestions array' })
+  if (suggestions.length === 0) _suggestions.delete(agentId)
+  else _suggestions.set(agentId, suggestions.map(s => ({ ...s, from: agentId })))
+  broadcastEvent('suggestions', { suggestions: flattenSuggestions() })
   res.json({ ok: true })
 })
 
-app.get('/api/eliza/pending', (_req, res) => {
-  res.json({ pending: _elizaPending })
+app.get('/api/suggestions', (_req, res) => {
+  res.json({ suggestions: flattenSuggestions() })
 })
 
 // ---------- Local image serving ----------
@@ -2135,7 +2162,7 @@ async function handleFleetWsMessage(ws, msg) {
 
   // ---- Timer countdown widget (timer-set / timer-fire / timer-cancel) ----
   // Bridges the `timer` event the viewer renders as a live ticking bubble. Used
-  // by both the MCP timer() tool and eliza's action countdowns — same wire
+  // by both the MCP timer() tool and a bot's action countdowns — same wire
   // format, so bots speak the same language as real agents. timer-set stores +
   // broadcasts a pending timer; timer-fire/cancel patches it to a terminal state.
   if (type === 'timer-set') {
@@ -2454,7 +2481,7 @@ async function handleFleetWsMessage(ws, msg) {
     // Normalize `to` to DNF: a single string becomes [[string]] (a singleton DNF).
     const dnf = Array.isArray(rawTo) ? rawTo : [[rawTo]]
     // Resolve DNF over all agents (including dead) so messages to dead agents
-    // still get stored and broadcast — Eliza needs to see handoff commands.
+    // still get stored and broadcast — the bot needs to see handoff commands.
     const allAgents = fleetStore.getAllAgents?.() || []
     const recipients = []
     for (const a of allAgents) {
@@ -4247,7 +4274,7 @@ server.listen(PORT, HOST, () => {
   // supervisors or the hibernate loop — it exists only to load schemas + serve
   // a throwaway doc, and must not touch the live fleet.
   if (process.env.TLDA_DEV_SERVER === '1') {
-    console.log('[dev-server] isolated mode — daemon/eliza supervisors and hibernate loop disabled')
+    console.log('[dev-server] isolated mode — daemon/bot supervisors and hibernate loop disabled')
   } else {
   // Start the local-daemon supervisor. Run an immediate check (so the daemon
   // is up shortly after server start) and then poll on an interval. The
@@ -4257,10 +4284,10 @@ server.listen(PORT, HOST, () => {
   ensureLocalDaemon()
   setInterval(ensureLocalDaemon, DAEMON_SUPERVISOR_INTERVAL_MS).unref()
 
-  // Keep Eliza alive too — same cadence as the daemon supervisor.
-  console.log('[eliza-supervisor] watching for eliza')
-  ensureEliza()
-  setInterval(ensureEliza, DAEMON_SUPERVISOR_INTERVAL_MS).unref()
+  // Keep the configured bots alive too — same cadence as the daemon supervisor.
+  console.log(`[bot-supervisor] watching ${getManagedBots().map(b => b.name).join(', ') || '(none)'}`)
+  ensureManagedBots()
+  setInterval(ensureManagedBots, DAEMON_SUPERVISOR_INTERVAL_MS).unref()
 
   const HIBERNATE_CHECK_MS = 60_000
   setInterval(async () => {
