@@ -35,22 +35,14 @@ import { homedir } from 'os'
 // Default to the one canonical session; overridable for isolated testing.
 const SESSION = process.env.TLDA_PW_SESSION || 'shared'
 
-// Each agent gets its OWN browser WINDOW (not a tab in a shared window). Why:
-// only the *active tab* of a window paints — a background tab is suspended, so
-// it can't be screenshotted. Giving each agent a one-tab window means that tab
-// is always the active one, so it renders even while the whole window sits
-// buried behind Skip's window — and we never call bringToFront (which is what
-// yanked the window to the foreground over him). Windows stack at one rect so
-// they read as a single parked region. Override the rect with TLDA_PW_RECT.
-const WIN_RECT = (() => {
-  const d = { left: 0, top: 0, width: 1280, height: 900 }
-  const env = process.env.TLDA_PW_RECT
-  if (env) {
-    const p = env.split(',').map(n => parseInt(n, 10))
-    if (p.length === 4 && p.every(Number.isFinite)) return { left: p[0], top: p[1], width: p[2], height: p[3] }
-  }
-  return d
-})()
+// Each agent gets its own TAB in the one shared window. An earlier design gave
+// each agent its own window.open() popup so a background tab couldn't suspend
+// its paint — but under automation window.open is popup-BLOCKED, and the
+// fallback then stranded the agent on a `data:`/`about:blank` tab that every
+// verb misfired onto (blank screenshots, editor:false). Tabs are safe because
+// the pw lock serializes verbs: selectMyTab() makes an agent's tab the current
+// (painting) tab before its verb runs, so "only the active tab paints" never
+// bites. We never call bringToFront, so no tab raises over Skip.
 
 // Verbs the wrapper owns — agents must not drive browser/tab lifecycle directly.
 const BLOCKED_VERBS = new Set([
@@ -206,32 +198,28 @@ function recoverStaleSharedBrowser() {
 // daemon's tab-select before launch so the freshly-loaded code never raises.
 // If the launch fails on a closed session, it's almost always a zombie Chrome
 // holding the profile lock — recover and retry once before giving up.
-function ensureOpen() {
+// The repo's playwright-cli config carries the HTTPS-ignore flags
+// (--ignore-certificate-errors + ignoreHTTPSErrors) the shared browser needs to
+// trust the server's mkcert cert — Chromium has its own cert store and ignores
+// the macOS keychain, so without this every https://localhost goto lands on
+// chrome-error://. `open` only reads --config at launch, so it must be passed on
+// every (re)open or a fresh `acquire` silently drops the flags.
+function openArgs(repoRoot) {
+  const args = ['open', '--headed', '--persistent']
+  const cfg = join(repoRoot, '.playwright', 'cli.config.json')
+  if (existsSync(cfg)) args.push('--config', cfg)
+  return args
+}
+
+function ensureOpen(repoRoot) {
   if (sessionOpen()) return false
   ensureNoRaisePatch()
-  if (pw(['open', '--headed', '--persistent'], { stdio: 'inherit' }).status === 0) return true
+  if (pw(openArgs(repoRoot), { stdio: 'inherit' }).status === 0) return true
   recoverStaleSharedBrowser()
-  if (pw(['open', '--headed', '--persistent'], { stdio: 'inherit' }).status !== 0) {
+  if (pw(openArgs(repoRoot), { stdio: 'inherit' }).status !== 0) {
     throw new Error('failed to open shared browser (even after clearing a stale profile lock)')
   }
   return true
-}
-
-// Open a brand-new OS WINDOW for this agent (window.open with a size → Chromium
-// makes it a separate window, not a tab in the shared one). Run from whatever
-// page the daemon currently has; the new window is same-origin about:blank so
-// its opener can stamp the marker into its title for pre-goto identification.
-// `eval` wraps its return in a multi-line "### Result" block, so we signal
-// success with a distinctive token and test for its presence rather than
-// equality. Returns true if a window was opened.
-function openMyWindow() {
-  const key = myTabKey()
-  const feat = `popup=yes,width=${WIN_RECT.width},height=${WIN_RECT.height},left=${WIN_RECT.left},top=${WIN_RECT.top}`
-  // w is a same-origin about:blank window, so the opener can set its title
-  // synchronously — used as the pre-goto identity marker (see isMine).
-  const snippet = `() => { try { var w = window.open('about:blank', 'pw_${key}', '${feat}'); if (!w) return 'PWWIN_BLOCKED'; w.document.title = 'pwtab=${key}'; return 'PWWIN_OK'; } catch (e) { return 'PWWIN_ERR:' + e.message; } }`
-  const out = pw(['eval', snippet]).stdout || ''
-  return out.includes('PWWIN_OK')
 }
 
 // A parked, claimable window: about:blank with no agent marker in its title.
@@ -270,17 +258,40 @@ function isMine(t) {
   return (!!t.url && t.url.includes(marker)) || (!!t.title && t.title.includes(marker))
 }
 
-// Find this agent's page, creating its own WINDOW if absent, make it the
-// daemon's current page, and CONFIRM the switch before returning. Confirmation
-// matters because `tab-select` runs in its own playwright-cli process and can
-// lag the next process's verb — without the check, a verb could execute against
+// `tab-list` can come back EMPTY during the intermittent snapshot hang even
+// though tabs exist. selectMyTab must never read that transient empty as "no
+// tab of mine — spawn one" (that's how an about:blank stray is born). Returns a
+// non-empty list when the session is up; returns [] only when the session is
+// genuinely DOWN (crashed context → caller re-opens, don't retry) or the daemon
+// stays wedged past the retry budget (→ caller fails clean, never spawns).
+// Bounded retries so the wrapper never piles onto a wedged daemon.
+function stableTabs(retries = 5) {
+  for (let i = 0; i < retries; i++) {
+    const tabs = listTabs()
+    if (tabs.length > 0) return tabs
+    if (!sessionOpen()) return [] // genuinely down — re-open path, not retry
+    spawnSync('sleep', ['0.2'])
+  }
+  return [] // session up but tab-list stayed empty — wedged; fail clean
+}
+
+// Find this agent's page, creating its own TAB if absent, make it the daemon's
+// current page, and CONFIRM the switch before returning. Confirmation matters
+// because `tab-select` runs in its own playwright-cli process and can lag the
+// next process's verb — without the check, a verb could execute against
 // whatever page was previously current (observed: a screenshot landing on a
-// stray blank tab). Returns the confirmed index, or null if unresolved.
+// stray blank tab). Returns the confirmed index, or null if unresolved (the
+// caller must NOT forward on null — see the forwarded-verb path).
 function selectMyTab() {
   touchMine() // refresh idle clock — every verb runs through here
-  let mine = listTabs().find(isMine)
+  const tabs = stableTabs()
+  let mine = tabs.find(isMine)
   if (!mine) {
-    const tabs = listTabs()
+    // Never spawn off an empty list. stableTabs() returns [] only when the
+    // session is genuinely down (crashed context — caller re-opens) or the
+    // daemon stayed wedged past its budget. Reading that as "pool exhausted" is
+    // exactly what spawned the stray. Fail clean; the agent retries when idle.
+    if (tabs.length === 0) return null
     const free = freeParkedWindow(tabs)
     if (free) {
       // Reuse a parked window from the pool — no window.open, so NO raise. This
@@ -289,17 +300,12 @@ function selectMyTab() {
       pw(['tab-select', String(free.index)], { stdio: 'ignore' })
       claimCurrentWindow()
     } else {
-      // Pool exhausted — open a fresh window (the only path that raises, once).
-      // window.open needs an existing page to run from; guard the empty case.
-      if (tabs.length === 0) pw(['tab-new'], { stdio: 'ignore' })
-      if (!openMyWindow()) {
-        // Popup blocked (shouldn't happen under automation) — fall back to a tab
-        // in the shared window, stamped via title. Renders only while selected,
-        // but better than failing outright.
-        console.error('pw: WARN window.open was blocked — falling back to a shared-window tab')
-        pw(['tab-new'], { stdio: 'ignore' })
-        pw(['goto', `data:text/html,<title>${myMarker()}</title>`], { stdio: 'ignore' })
-      }
+      // Pool exhausted — open a fresh TAB. `tab-new` can't be popup-blocked the
+      // way window.open was; it becomes the current tab, so stamp my marker into
+      // its title exactly as the parked-window-reuse path above does. The confirm
+      // loop below re-selects by marker if tab-new's focus lagged.
+      pw(['tab-new'], { stdio: 'ignore' })
+      claimCurrentWindow()
     }
     mine = listTabs().find(isMine)
   }
@@ -406,14 +412,15 @@ export async function cmdPw(args, repoRoot) {
   }
 
   if (verb === 'acquire') {
-    ensureOpen()
+    ensureOpen(repoRoot)
     if (!lockWithWait(repoRoot, me)) {
       console.error('could not take the pw lock — another agent is mid-verb; try again')
       process.exit(1)
     }
     try {
       const idx = selectMyTab()
-      console.log(`browser up; my tab #${idx} (key ${myTabKey()})`)
+      if (idx == null) console.error("pw: couldn't resolve a tab (daemon wedged or session down) — try again when the page is idle")
+      else console.log(`browser up; my tab #${idx} (key ${myTabKey()})`)
     } finally {
       unlock(repoRoot, me)
     }
@@ -459,7 +466,7 @@ export async function cmdPw(args, repoRoot) {
   }
 
   // ---- forwarded verb: short lock → select my tab → (rewrite) → forward ----
-  ensureOpen()
+  ensureOpen(repoRoot)
   if (!lockWithWait(repoRoot, me)) {
     const lk = lockStatus(repoRoot)
     console.error(`pw busy — ${lk ? `${lk.holder} holding (${lk.ageSecs}s)` : 'another agent'}. Try again.`)
@@ -467,9 +474,14 @@ export async function cmdPw(args, repoRoot) {
   }
   let code = 0
   try {
-    selectMyTab()
-
-    if (verb === 'center') {
+    const idx = selectMyTab()
+    if (idx == null) {
+      // selectMyTab couldn't resolve my tab (daemon wedged or session down). Do
+      // NOT forward — the verb would run on whatever tab is currently selected
+      // (a stray or another agent's tab). Fail clean; retry when the page is idle.
+      console.error("pw: couldn't resolve my tab (daemon wedged or session down); not forwarding — try again when the page is idle")
+      code = 1
+    } else if (verb === 'center') {
       const region = (rest[0] || 'doc').toLowerCase()
       const ev = CENTER_EVALS[region]
       if (!ev) { console.error(`center: unknown region "${region}" (use: doc | chat | fleet)`); code = 2 }
