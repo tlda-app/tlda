@@ -379,7 +379,11 @@ def find_agent(name):
     agents = api_get("/api/store/agents")
     if name.startswith("fleet:"):
         return next((a for a in agents if a.get("id") == name), None)
-    return next((a for a in agents if a.get("friendly_name") == name), None)
+    # Ignore dead agents: a killed agent must not claim its name and block a
+    # fresh spawn. Matches /api/check-name and the server's findAgent, which
+    # both filter dead — find_agent was the lone holdout, so a stale dead row
+    # made `fresh()` refuse with "already exists".
+    return next((a for a in agents if a.get("friendly_name") == name and not a.get("dead")), None)
 
 
 def check_name_collisions(name):
