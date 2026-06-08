@@ -690,7 +690,15 @@ function broadcastState() {
 async function resolveSpawnTarget(name, respawn) {
   if (respawn || !name || !fleetStore) return { name, respawn }
   let existing = null
-  try { existing = fleetStore.findAgent(name) } catch { /* >1 live same-name: leave as fresh */ }
+  try {
+    existing = fleetStore.findAgent(name)
+  } catch (e) {
+    // findAgent throws when >1 live agents already share this name — a pre-existing
+    // pathology, not something this spawn caused. Leave it as a fresh spawn, but
+    // don't swallow it: surface the duplicate so it gets noticed.
+    console.warn(`[spawn] name "${name}" matches multiple live agents — spawning fresh: ${e.message}`)
+    return { name, respawn }
+  }
   if (!existing || existing.dead) return { name, respawn }
   try {
     await fleetStore.share({
