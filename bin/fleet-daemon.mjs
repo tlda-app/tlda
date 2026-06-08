@@ -252,6 +252,32 @@ function trackRead(agentId, filePath) {
   _agentReads.get(agentId).add(filePath)
 }
 
+// Edit attribution: remember which agent most recently Edited/Wrote each file
+// (by canonical absolute path), so a source-change can be attributed to the
+// agent whose edit triggered the build. Keyed by realpath where resolvable.
+/** @type {Map<string, { agentId: string, ts: number }>} absPath → editor */
+const _lastEditor = new Map()
+function canonPath(p) {
+  try { return fs.realpathSync(p) } catch { return p }
+}
+function recordEdit(agentId, filePath) {
+  if (!agentId || !filePath) return
+  _lastEditor.set(canonPath(filePath), { agentId, ts: Date.now() })
+}
+// Resolve the most-recent agent who edited one of the given absolute paths
+// within the recency window. Returns null if none match.
+const EDIT_ATTRIBUTION_WINDOW_MS = 10 * 60 * 1000
+function resolveEditor(absPaths) {
+  let best = null
+  const now = Date.now()
+  for (const p of absPaths) {
+    const rec = _lastEditor.get(canonPath(p))
+    if (!rec || now - rec.ts > EDIT_ATTRIBUTION_WINDOW_MS) continue
+    if (!best || rec.ts > best.ts) best = rec
+  }
+  return best?.agentId || null
+}
+
 loadQualifications()
 
 // ---------- JSONL parsing (mirrors fleet/dashboard/search-index.mjs) ----------
@@ -931,8 +957,9 @@ function readNewSessionLines(agentId, jsonlPath, sessionId) {
         const filePath = input.file_path || input.path || ''
         if (block.name === 'Read' && filePath) trackRead(agentId, filePath)
         if (block.name === 'Skill' && input.skill) trackRead(agentId, 'skill:' + input.skill)
-        if ((block.name === 'Edit' || block.name === 'Write') && filePath) {
+        if ((block.name === 'Edit' || block.name === 'Write' || block.name === 'MultiEdit') && filePath) {
           checkQualification(agentId, block.name, filePath)
+          recordEdit(agentId, filePath)
         }
       }
     }
@@ -1332,11 +1359,15 @@ function flushSourceChanges(projectName) {
 
   if (files.length === 0 && deleted.length === 0) return
 
+  // Edit attribution: which agent's recent Edit/Write touched a changed file.
+  const editedBy = resolveEditor(filePaths.map(rel => path.join(state.sourceDir, rel)))
+
   sendMsg({
     type: 'source-change',
     project: projectName,
     files,
     ...(deleted.length > 0 && { deletedFiles: deleted }),
+    ...(editedBy && { editedBy }),
   })
 }
 

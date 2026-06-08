@@ -586,6 +586,32 @@ function broadcastFleet(msg) {
 function broadcastEvent(type, data) {
   broadcastFleet({ event: type, data })
 }
+
+// Build cards: build-runner emits a 'build-card' global event on every build
+// with a tex diff (and on mirror failure). Turn it into a chat card addressed
+// to the agent whose edit triggered the build (edit attribution, carried as
+// `editedBy`), so it lands in that agent's fleet chat — and in the view of
+// anyone watching that agent. Renders via the build_result branch in
+// FleetChatShape; an empty editedBy posts unaddressed.
+onGlobalEvent(async (event) => {
+  if (event?.type !== 'build-card') return
+  const { name, hash, summary = null, lintFindings = [], mirrorFailed = null, editedBy = null } = event
+  const label = mirrorFailed ? `🔨 Build failed — ${name}` : `🔨 Build ${hash} — ${name}`
+  const metadata = { type: 'build_result', name, hash, summary, lintFindings, ...(mirrorFailed ? { mirrorFailed } : {}) }
+  try {
+    const saved = await fleetStore.share({
+      type: 'chat', from: 'fleet:tlda', to: editedBy || null,
+      text: label, metadata, unread: !!editedBy,
+    })
+    broadcastEvent('fleet-event', {
+      type: 'chat', from: 'fleet:tlda', to: editedBy || null,
+      id: saved?.id, event_id: saved?.id, text: label, metadata,
+    })
+  } catch (e) {
+    console.error(`[build-card] failed to post build_result chat: ${e.message}`)
+  }
+})
+
 // Server-authoritative thinking/compacting state.
 // Populated from agent-thinking / agent-compacting events, included in
 // broadcastState() so state pushes never wipe client indicators.
@@ -4182,10 +4208,10 @@ async function handleDaemonWsMessage(ws, msg) {
   }
 
   if (type === 'source-change') {
-    const { project, files, deletedFiles } = msg
+    const { project, files, deletedFiles, editedBy } = msg
     if (!project) return
     // Hand off to the same pipeline used by HTTP /api/projects/:name/push.
-    processProjectPush(project, { files, deletedFiles }).then(result => {
+    processProjectPush(project, { files, deletedFiles, editedBy }).then(result => {
       if (!result.ok) {
         console.error(`[fleet-daemon] source-change ${project}: ${result.error || 'unknown'}`)
       }
