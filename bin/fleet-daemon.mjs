@@ -2723,32 +2723,52 @@ async function handleVersionCommitted(msg) {
     }
   }
 
-  // Fetch from shadow repo, stash local changes, fast-forward merge, unstash
+  // Advance the source repo to the shadow snapshot WITHOUT ever mutating the
+  // working tree. An agent's (or your) uncommitted edits to the source are the
+  // source of truth; the shadow snapshot is built downstream from them, so it
+  // never carries anything the source doesn't already have.
+  //
+  // The old code here did `git stash → merge --ff-only → stash pop`. When the
+  // pop conflicted, it aborted and stranded the edits in a stash while the file
+  // reverted to the snapshot — silent data loss (it stranded edits for weeks;
+  // see the recurring "stash pop failed" history). The pop conflicts *by
+  // construction*: the snapshot is a byte-exact copy of the source, so it
+  // already contains the edit, and re-applying the same edit on top conflicts.
+  //
+  // New rule: never stash, and only fast-forward when the working tree is CLEAN
+  // (nothing to clobber). If the tree is dirty (mid-edit), leave it completely
+  // untouched. If a clean tree can't fast-forward, that's a genuine foreign
+  // divergence — refuse and surface it loudly rather than force anything.
   try {
     await execFileP('git', ['fetch', 'tlda-shadow'], { cwd: sourceDir, timeout: 15000 })
-    // Determine the branch name in the shadow repo
     const { stdout: refOut } = await execFileP('git', ['rev-parse', '--verify', 'tlda-shadow/main'], { cwd: sourceDir, timeout: 5000 }).catch(() => ({ stdout: '' }))
     const ref = refOut.trim() ? 'tlda-shadow/main' : 'FETCH_HEAD'
 
-    // Stash any local changes (may fail on repos with symlink-traversing paths)
-    let didStash = false
-    try {
-      const { stdout: stashOut } = await execFileP('git', ['stash', 'push', '-m', 'tlda-sync-stash'], { cwd: sourceDir, timeout: 10000 })
-      didStash = !stashOut.includes('No local changes')
-    } catch (stashErr) {
-      log.warn(`stash failed for ${projectName} (continuing without stash): ${stashErr.message.split('\n')[0]}`)
+    // Are there uncommitted edits to tracked files? Those are the edits at risk.
+    // (Ignore untracked files — build artifacts, etc. — they aren't "edits".)
+    const { stdout: dirtyOut } = await execFileP('git', ['status', '--porcelain', '--untracked-files=no'], { cwd: sourceDir, timeout: 10000 })
+    if (dirtyOut.trim()) {
+      // Mid-edit: the working tree is the truth. Never touch it. The shadow is
+      // downstream of these edits, so there is nothing to bring in.
+      return
     }
 
+    // Clean tree: a fast-forward can't clobber anything. `--ff-only` refuses on
+    // divergence, which is exactly the signal we want — we never force.
     try {
       await execFileP('git', ['merge', '--ff-only', ref], { cwd: sourceDir, timeout: 15000 })
       log.info(`synced ${projectName}: ${hash?.slice(0, 7)}`)
-    } finally {
-      // Always unstash, even if merge fails
-      if (didStash) {
-        await execFileP('git', ['stash', 'pop'], { cwd: sourceDir, timeout: 10000 }).catch(e => {
-          log.warn(`stash pop failed for ${projectName}: ${e.message}`)
-        })
-      }
+    } catch {
+      // Clean tree but not a fast-forward = a genuine divergence: the shadow has
+      // content this source's lineage doesn't. Do NOT force, do NOT stash.
+      // Refuse and surface loudly so it gets merged before anything else.
+      log.error(`unmerged divergence on ${projectName}: shadow diverged from source — refusing to auto-merge (working copy left untouched)`)
+      sendMsg({
+        type: 'daemon-warning',
+        severity: 'critical',
+        project: projectName,
+        message: `⚠ Unmerged divergence on ${projectName}: the build snapshot diverged from your source and was NOT merged. Your working copy is untouched — but the two versions must be merged before edits sync again.`,
+      })
     }
   } catch (e) {
     log.warn(`sync failed for ${projectName}: ${e.message}`)
