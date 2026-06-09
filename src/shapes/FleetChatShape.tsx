@@ -1707,7 +1707,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   // This replaces the old joined renderedHtml string and enables virtualization.
   // Items tagged _queued render below the thinking indicator; _interrupt items
   // render between the indicator and the queue (they "jump the line").
-  type RawItem = { key: string; html: string; _queued?: boolean; _interrupt?: boolean; _divider?: boolean }
+  type RawItem = { key: string; html: string; _queued?: boolean; _interrupt?: boolean; _divider?: boolean; _status?: boolean }
   // Short hash of the version currently shown in the viewer (accounts for
   // scrubbing to a historical version). Build cards compare against this to
   // style themselves green (you're viewing this build) vs gray (stale).
@@ -1960,6 +1960,11 @@ function FleetChatInner({ shape }: { shape: any }) {
     if (firstQueuedIdx > 0) {
       items[firstQueuedIdx - 1] = { ...items[firstQueuedIdx - 1], _divider: true }
     }
+    // Status row is a real trailing item (not a Virtuoso Footer) so its height
+    // enters totalListHeight — a Footer's height leaks into scrollHeight without
+    // Virtuoso knowing, which makes the pin loop re-solve the sizer paddingBottom
+    // and flicker whenever the status height changes.
+    items.push({ key: '__status__', html: '', _status: true })
     return items
   }, [rawItems])
 
@@ -4352,17 +4357,7 @@ function FleetChatInner({ shape }: { shape: any }) {
               }
             }}
             itemContent={(_index, item) => (
-              <div className={item?._divider ? 'queue-divider' : undefined}>
-                <ChatMessageRow html={item.html} postProcess={postProcess} itemKey={item.key} expandedRowsRef={expandedRowsRef} />
-              </div>
-            )}
-            computeItemKey={(_index, item) => item?.key ?? _index}
-            components={{
-              Scroller: ChatLogScroller,
-              // Suggestion/thinking status as Footer so they sit inside Virtuoso's
-              // tracked layout — sibling rendering would float over/under
-              // the virtualized list.
-              Footer: () => (
+              item?._status ? (
                 <div>
                   <ThinkingStatus
                     thinkingAgents={thinkingAgents}
@@ -4376,7 +4371,15 @@ function FleetChatInner({ shape }: { shape: any }) {
                     suggestions={suggestionsPending}
                   />
                 </div>
-              ),
+              ) : (
+                <div className={item?._divider ? 'queue-divider' : undefined}>
+                  <ChatMessageRow html={item.html} postProcess={postProcess} itemKey={item.key} expandedRowsRef={expandedRowsRef} />
+                </div>
+              )
+            )}
+            computeItemKey={(_index, item) => item?.key ?? _index}
+            components={{
+              Scroller: ChatLogScroller,
             }}
           />
         )}
