@@ -643,12 +643,14 @@ const _lastAgentJson = new Map()
 
 function _broadcastStateNow() {
   if (!fleetStore) return
-  // Live agents only — the panel never shows dead agents, and store-agents
-  // already returns alive-only, so the broadcast must match. A dying agent
-  // drops out of the alive set → goes in `removed` → vanishes from the panel.
-  // Bonus: this is the cheap indexed read (idx_agents_alive, ~tens of rows)
-  // instead of hydrating the full ~1300-row roster on every state change.
-  const agents = fleetStore.getAliveAgents().map(a => {
+  // Live churn is ALIVE-only — we never re-diff the full ~1300-row roster on
+  // every state change. Dead agents are delivered once via initState and stay
+  // in the client as static, un-polled filter/chat targets (the panel hides
+  // them client-side: FleetAgentsShape `if (a.dead) continue`). A dying agent
+  // gets ONE final dead-flagged delta below, then drops out of the churn
+  // forever — it is NOT `removed` (that would delete it from the client and
+  // make it impossible to chat with / resurrect).
+  const aliveAgents = fleetStore.getAliveAgents().map(a => {
     if (_thinkingState.has(a.id)) return { ...a, status: 'thinking' }
     if (_compactingState.has(a.id)) return { ...a, status: 'compacting' }
     return a
@@ -656,7 +658,7 @@ function _broadcastStateNow() {
   // Diff against the last broadcast: only changed/new agents go on the wire.
   const changed = []
   const seen = new Set()
-  for (const a of agents) {
+  for (const a of aliveAgents) {
     seen.add(a.id)
     const json = JSON.stringify(a)
     if (_lastAgentJson.get(a.id) !== json) {
@@ -664,9 +666,17 @@ function _broadcastStateNow() {
       _lastAgentJson.set(a.id, json)
     }
   }
+  // An agent that left the alive set since the last broadcast either DIED
+  // (send one final dead-flagged update so the panel drops it but the client
+  // keeps it as a target) or was DELETED from the DB (truly `removed`). Either
+  // way, stop churning it.
   const removed = []
   for (const id of _lastAgentJson.keys()) {
-    if (!seen.has(id)) { removed.push(id); _lastAgentJson.delete(id) }
+    if (seen.has(id)) continue
+    _lastAgentJson.delete(id)
+    const rec = fleetStore.getAgent(id)
+    if (rec && rec.dead) changed.push(rec)
+    else if (!rec) removed.push(id)
   }
   // tasks + ephemeral maps (thinking/compacting/context) are bounded by the
   // active agent set, so they stay small — send them whole each time.
@@ -2142,9 +2152,9 @@ server.on('upgrade', async (req, socket, head) => {
       // Send initial state on connect
       if (fleetStore) {
         const initState = {
-          // Live agents only (awake + hibernating); dead agents never show in
-          // the panel. Matches store-agents and the agents-delta broadcast.
-          agents: fleetStore.getAliveAgents(),
+          // Full roster incl. dead. Panel filters dead client-side, but the
+          // client needs dead agents present to chat them + show "resurrect?".
+          agents: fleetStore.getAllAgents(),
           tasks: fleetStore.getActiveTasks(),
           thinking: Object.fromEntries(_thinkingState),
           compacting: Object.fromEntries(_compactingState),
