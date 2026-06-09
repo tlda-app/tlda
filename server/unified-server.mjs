@@ -2531,12 +2531,17 @@ async function handleFleetWsMessage(ws, msg) {
     const from = rawFrom ? (resolveSingle(rawFrom) || rawFrom) : null
     // Normalize `to` to DNF: a single string becomes [[string]] (a singleton DNF).
     const dnf = Array.isArray(rawTo) ? rawTo : [[rawTo]]
-    // Resolve DNF over all agents (including dead) so messages to dead agents
-    // still get stored and broadcast — the bot needs to see handoff commands.
+    // Resolve DNF over agents, NEVER delivering to dead ones. A dead agent
+    // isn't running and can't act on a message; delivering to it also
+    // double-fans a filter when a dead twin shares a live agent's name (e.g.
+    // an old `preread` row + the live `preread`) → the sender sees their
+    // message twice. To reach a dead agent, resurrect it first (it goes live,
+    // then matches here). No "prefer the live one" — dead is simply excluded.
     const allAgents = fleetStore.getAllAgents?.() || []
     const recipients = []
     for (const a of allAgents) {
       if (a.id === from) continue
+      if (a.dead) continue
       // labelsForAgent (shared with the client filters) covers pseudo-labels,
       // friendly_name, id, and lineage tags. getAllAgents() hydrates
       // lineage_name + status, so no per-agent lineage lookup is needed here.
