@@ -2638,17 +2638,24 @@ function FleetChatInner({ shape }: { shape: any }) {
     localStorage.setItem(HARD_LOCKED_KEY, String(hardLocked))
   }, [hardLocked])
 
-  // pin-to-bottom: two complementary mechanisms, each needed.
-  //  - scrollToIndex(LAST) forces Virtuoso to render+measure the last items
-  //    (virtualization-aware); without it the raw scrollTop undershoots while
-  //    the tail is unmeasured.
-  //  - raw scrollTop = scrollHeight reaches the ABSOLUTE bottom past the Virtuoso
-  //    Footer (suggestion/thinking status). scrollToIndex(LAST, 'end') only aligns the
-  //    last DATA item, stopping ~the footer's height above true bottom — that was
-  //    the consistent ~514px residual gap when raw was removed.
-  // The bounded loop re-runs as height settles. The standing watchdog below is
-  // what guarantees convergence after this loop's frame budget — the original
-  // bug was that nothing re-applied this once events stopped firing.
+  // pin-to-bottom: Virtuoso's own scrollToIndex(LAST, 'end') is the single
+  // source of truth. It is virtualization-aware — it renders + measures the
+  // last items and lands the true last item flush against the viewport bottom.
+  //
+  // We deliberately do NOT also slam `el.scrollTop = el.scrollHeight`. That used
+  // to exist to "reach past the thinking/suggestion FOOTER" — but the status row
+  // is now a measured list item, not a footer, so there is nothing below the last
+  // item to clear. With the footer gone, the raw slam became actively harmful:
+  // when the status item's height shrinks (an agent stops thinking), Virtuoso's
+  // totalListHeight lags one frame, so scrollHeight is transiently TALLER than the
+  // real content. `scrollTop = scrollHeight` then locks the view into that stale
+  // tail — the last message strands at the TOP of the viewport with ~a screenful
+  // of blank below it, and it persists because no later event re-pins. scrollToIndex
+  // doesn't have this failure mode: it targets the last ITEM, re-measuring it, so
+  // it can never scroll into space that isn't really there.
+  //
+  // The bounded loop re-runs as height settles; the standing watchdog below
+  // guarantees convergence after this loop's frame budget.
   const pinHard = useCallback(() => {
     programmaticUntilRef.current = performance.now() + 400
     let frames = 0
@@ -2657,7 +2664,6 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (userScrolledUpRef.current && !hardLockedRef.current) return
       virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
       const el = chatLogEl
-      if (el) el.scrollTop = el.scrollHeight
       programmaticUntilRef.current = performance.now() + 120
       const gap = el ? (el.scrollHeight - (el.scrollTop + el.clientHeight)) : 0
       if (gap > 8 && ++frames < 12) requestAnimationFrame(step)
