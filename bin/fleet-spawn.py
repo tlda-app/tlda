@@ -19,12 +19,14 @@ Options:
 
 import argparse
 import json
+import fcntl
 import os
 import re
 import shlex
 import ssl
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from urllib.request import urlopen, Request
@@ -487,6 +489,39 @@ def _session_has_claude(session):
     except Exception:
         return False
 
+
+def acquire_wake_lock(session):
+    """Single-flight the wake path per tmux session.
+
+    Wakes arrive from several sources (chat, keepalive, the user, other agents)
+    and the daemon's dedupe clears when fleet-spawn exits (~15s) — before claude
+    finishes booting. Two wakes can then both pass the 'is it alive?' check and
+    both launch, and the loser's respawn-pane lands on the winner's booting
+    claude. Holding an exclusive, non-blocking flock for the WHOLE respawn
+    (check → launch → inject → boot) makes that impossible: a second wake that
+    can't grab the lock bails immediately instead of clobbering.
+
+    Returns the open file object (keep it alive to hold the lock; it releases
+    when this process exits) or None if another wake already holds it."""
+    lock_dir = os.path.join(tempfile.gettempdir(), "fleet-spawn-locks")
+    try:
+        os.makedirs(lock_dir, exist_ok=True)
+    except Exception:
+        return _SENTINEL_NO_LOCK  # can't make the dir → don't block the spawn
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", session)
+    fd = open(os.path.join(lock_dir, f"{safe}.lock"), "w")
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        fd.close()
+        return None  # another wake for this session is in flight
+    return fd
+
+
+# Returned when locking is unavailable (e.g. can't create the lock dir): a
+# truthy non-lock so the caller proceeds rather than treating it as "held".
+_SENTINEL_NO_LOCK = object()
+
 def dismiss_devchannels(session, timeout=30):
     """Poll the pane and dismiss the dev-channels confirmation dialog (option 1)
     the moment it appears. Bounded by `timeout` so it can't loop forever — that
@@ -529,12 +564,21 @@ def spawn_tmux(session, cwd, cmd, auto_dismiss=True):
     r = subprocess.run(tmux("respawn-pane", "-t", session, "-c", cwd, cmd),
                        capture_output=True, timeout=5, env=spawn_env)
     if r.returncode != 0:
-        # respawn-pane failed. On the refresh/respawn path the stored session
-        # name is reused, and a dead pane (status 1, remain-on-exit) that tmux
-        # won't revive leaves the session present — so new-session would collide
-        # with "duplicate session" and the spawn never recovers (observed when
-        # re-spawning agent-ui). Kill the stale session first so the fallback
-        # actually starts fresh. kill-session on a missing session is a no-op.
+        # respawn-pane (no -k) only succeeds on a pane whose command has EXITED.
+        # It fails for two very different reasons:
+        #   (a) the pane has a LIVE claude — respawn-pane refuses to replace a
+        #       running process. Killing it here was the death-loop bug: a wake
+        #       that lands on a running agent would murder it and restart. NEVER
+        #       do that — a live claude means the agent is already up, which is
+        #       success. Bail and leave it alone.
+        #   (b) a dead pane (status 1, remain-on-exit) that tmux won't revive
+        #       leaves the session present — so new-session would collide with
+        #       "duplicate session" and the spawn never recovers (observed when
+        #       re-spawning agent-ui). That stale session we DO clear.
+        if _session_has_claude(session):
+            return False  # already alive — do not restart, do not inject
+        # Dead pane / stale session: kill it so the fallback starts fresh.
+        # kill-session on a missing session is a no-op.
         subprocess.run(tmux("kill-session", "-t", session),
                        capture_output=True, timeout=5, env=spawn_env)
         subprocess.run(tmux("new-session", "-d", "-s", session, "-c", cwd, cmd),
@@ -549,6 +593,7 @@ def spawn_tmux(session, cwd, cmd, auto_dismiss=True):
             [sys.executable, __file__, "--_dismiss-devch", session],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
+    return True  # (re)started in this session
 
 
 def verify_session(session, context=""):
@@ -664,6 +709,15 @@ def respawn(name, model, cwd, effort, mode, session_override=None):
     model = resolve_model(model or meta.get("model"))
     sess = agent.get("tmux_session") or f"fleet-{name}"
 
+    # Single-flight: hold a per-session lock across the WHOLE wake (check →
+    # launch → inject → boot). A concurrent wake that can't grab it bails
+    # instead of clobbering the booting claude. _lock must stay referenced for
+    # the lifetime of this process so the flock is held until we exit.
+    _lock = acquire_wake_lock(sess)
+    if _lock is None:
+        print(f"  another wake for {name} is already in flight — bailing", file=sys.stderr)
+        return sess
+
     if subprocess.run(tmux("has-session", "-t", sess), capture_output=True).returncode == 0:
         if _session_has_claude(sess):
             return sess
@@ -688,7 +742,12 @@ def respawn(name, model, cwd, effort, mode, session_override=None):
 
     cmd = build_claude_cmd(fleet_id, sess, model, effort, mode,
                            resume_id=resume_id, include_prompt=False, name=name)
-    spawn_tmux(sess, cwd, cmd, auto_dismiss=False)
+    started = spawn_tmux(sess, cwd, cmd, auto_dismiss=False)
+    if not started:
+        # spawn_tmux found a live claude (a wake raced past the check above) and
+        # left it running. Don't verify/inject into the already-running agent.
+        print(f"{sess} ({fleet_id}) already alive — left running", file=sys.stderr)
+        return sess
     verify_session(sess, f"session {resume_id}")
     inject_prompt(sess, register_prompt(name))
     print(f"{sess} ({fleet_id}) resumed {resume_id}")

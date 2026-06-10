@@ -614,6 +614,14 @@ function getWouldHibernate() {
   const now = Date.now()
   const result = {}
   for (const agentId of _aliveAgents) {
+    // A dead/removed row can linger in this in-memory set: it's only pruned by
+    // the daemon's agent-liveness reconciliation, which queries dead=0 rows and
+    // therefore can never evict a row already flipped to dead. Such a ghost
+    // would otherwise be hibernated on its ancient _lastActivityAt — and since
+    // lineage twins share a tmux_session, that kill-session would take down the
+    // LIVE agent occupying the session. Skip anything not currently alive.
+    const agent = fleetStore?.getAgent(agentId)
+    if (!agent || agent.dead) continue
     if (_thinkingState.has(agentId)) continue
     if (_compactingState.has(agentId)) continue
     const lastActive = _lastActivityAt.get(agentId)
@@ -625,7 +633,7 @@ function getWouldHibernate() {
     // window. If the daemon (re)connected within the window, activity events were
     // dropped during the gap — the agent may have been active the entire time, its
     // events just never arrived. Don't hibernate on an unreliable reading.
-    const machineId = fleetStore?.getAgent(agentId)?.machine_id
+    const machineId = agent.machine_id
     if (machineId) {
       const connectedSince = _daemonConnectedSince.get(machineId)
       if (!connectedSince || (now - connectedSince) < HIBERNATE_IDLE_MS) continue
