@@ -2114,3 +2114,20 @@ html[data-theme="dark"] .voice-note-btn {
   color: var(--pill-icon-color, rgba(255, 255, 255, 1));
 }
 
+/* iPad / tablet: touch device but too wide to be flagged a phone, so it never
+   gets body.phone-mode and its safe-area treatment. Without the inset, these
+   corner buttons sit at the literal screen edge, underneath the iOS
+   home-indicator / browser chrome — off-screen and untappable. Apply the same
+   safe-area inset phones get so the bottom-right corner is the *usable* corner.
+   (Requires viewport-fit=cover on the viewport meta for env() to be non-zero.) */
+@media (pointer: coarse) and (min-width: 601px) {
+  .phone-hl-btn {
+    bottom: calc(16px + env(safe-area-inset-bottom));
+    right: calc(16px + env(safe-area-inset-right));
+  }
+  .voice-note-btn {
+    bottom: calc(49px + env(safe-area-inset-bottom));
+    right: calc(16px + env(safe-area-inset-right));
+  }
+}
+
