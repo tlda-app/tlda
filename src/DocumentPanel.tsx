@@ -184,11 +184,6 @@ const IS_PHONE = typeof window !== 'undefined' && window.matchMedia('(max-width:
 
 import { HL_SLOTS, TLDRAW_ICON_BASE } from './highlighterSlots'
 
-// Options accessible via upward drag — toggles and settings
-const OPTIONS_SLOTS: { id: string; color: string; label: string; svgIcon?: string }[] = [
-  { id: 'zone-toggle', color: '#666', label: 'zone', svgIcon: `${TLDRAW_ICON_BASE}#tool-frame` },
-]
-
 function PhoneHighlighterButton() {
   const editor = useEditor()
   // Derive mode and colorIdx reactively from editor state — shared source of truth with zone-slider
@@ -207,23 +202,17 @@ function PhoneHighlighterButton() {
   const mode = activeToolId === 'highlight' ? 'highlight' : activeToolId === 'eraser' ? 'eraser' : 'hand'
 
   const [dragging, setDragging] = useState(false)
-  const [dragMode, setDragMode] = useState<'color' | 'options' | null>(null)
+  const [dragMode, setDragMode] = useState<'color' | null>(null)
   const [dragSlot, setDragSlot] = useState<number | null>(null)
-  const [optionsSlot, setOptionsSlot] = useState<number | null>(null)
   const [dragBtnRect, setDragBtnRect] = useState<DOMRect | null>(null)
   // Refs mirror the above for reliable reads in pointer handlers (state updates are async)
-  const dragModeRef = useRef<'color' | 'options' | null>(null)
+  const dragModeRef = useRef<'color' | null>(null)
   const dragSlotRef = useRef<number | null>(null)
-  const optionsSlotRef = useRef<number | null>(null)
   const dragBtnRectRef = useRef<DOMRect | null>(null)
   const colorIdxRef = useRef(0)
   const btnRef = useRef<HTMLButtonElement>(null)
   const lastTapRef = useRef(0)
   colorIdxRef.current = colorIdx // keep ref current on every render — used in handlePointerMove
-
-  const [zoneEnabled, setZoneEnabled] = useState(() =>
-    typeof localStorage !== 'undefined' && localStorage.getItem('hl-zone-mode') !== '0'
-  )
 
   const activateSlot = useCallback((idx: number) => {
     const slot = HL_SLOTS[idx]
@@ -237,7 +226,7 @@ function PhoneHighlighterButton() {
       editor.setStyleForNextShapes(DefaultColorStyle, slot.id)
       editor.setCurrentTool('highlight')
     }
-  }, [editor, zoneEnabled])
+  }, [editor])
 
   // Undo last highlight: find most recent highlight shape and delete it
   const undoLastHighlight = useCallback(() => {
@@ -274,7 +263,7 @@ function PhoneHighlighterButton() {
     }
   }, [editor, mode, colorIdx, activateSlot, undoLastHighlight])
 
-  // Drag handling — horizontal L/R for colors, vertical up for options
+  // Drag handling — horizontal L/R for colors. Tap (no drag) toggles the tool.
   const dragStartX = useRef(0)
   const dragStartY = useRef(0)
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
@@ -288,25 +277,16 @@ function PhoneHighlighterButton() {
     setDragging(false)
     dragModeRef.current = null; setDragMode(null)
     dragSlotRef.current = null; setDragSlot(null)
-    optionsSlotRef.current = null; setOptionsSlot(null)
     ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
   }, [])
 
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
     const dx = e.clientX - dragStartX.current
-    const dy = e.clientY - dragStartY.current // positive = down
 
     // Determine drag mode if not yet set — read ref (always current, state update may not have committed)
     let currentMode = dragModeRef.current
     if (currentMode === null) {
-      const absDx = Math.abs(dx), absDy = Math.abs(dy)
-      // Up-drag: within ~6° of vertical (|dx| < 10% of |dy|) and moving upward
-      if (absDy > 15 && dy < 0 && absDx < 0.1 * absDy) {
-        currentMode = 'options'
-        dragModeRef.current = 'options'; setDragMode('options')
-        setDragging(true)
-        optionsSlotRef.current = 0; setOptionsSlot(0)
-      } else if (absDx > 10) {
+      if (Math.abs(dx) > 10) {
         currentMode = 'color'
         dragModeRef.current = 'color'; setDragMode('color')
         setDragging(true)
@@ -333,7 +313,6 @@ function PhoneHighlighterButton() {
       const origIdx = filteredIndices[filteredIndices.length - 1 - clampedPos] ?? activeOrigIdx
       dragSlotRef.current = origIdx; setDragSlot(origIdx)
     }
-    // options mode: optionsSlot already set to 0 on mode entry (single option)
   }, [])
 
   const handlePointerUp = useCallback((e: React.PointerEvent) => {
@@ -341,38 +320,27 @@ function PhoneHighlighterButton() {
     // Read refs — always current even if state update hasn't committed yet
     const currentMode = dragModeRef.current
     const currentSlot = dragSlotRef.current
-    const currentOptions = optionsSlotRef.current
     if (currentMode === 'color' && currentSlot !== null) {
       activateSlot(currentSlot)
-    } else if (currentMode === 'options' && currentOptions !== null) {
-      const slot = OPTIONS_SLOTS[currentOptions]
-      if (slot?.id === 'zone-toggle') {
-        setZoneEnabled(prev => {
-          const next = !prev
-          localStorage.setItem('hl-zone-mode', next ? '1' : '0')
-          return next
-        })
-      }
     } else if (currentMode === null) {
       handleTap()
     }
     dragModeRef.current = null; setDragging(false); setDragMode(null)
     dragSlotRef.current = null; setDragSlot(null)
-    optionsSlotRef.current = null; setOptionsSlot(null)
     setDragBtnRect(null)
   }, [activateSlot, handleTap])
 
   const handlePointerCancel = useCallback((e: React.PointerEvent) => {
     ;(e.target as HTMLElement).releasePointerCapture(e.pointerId)
-    dragModeRef.current = null; dragSlotRef.current = null; optionsSlotRef.current = null
-    setDragging(false); setDragMode(null); setDragSlot(null); setOptionsSlot(null); setDragBtnRect(null)
+    dragModeRef.current = null; dragSlotRef.current = null
+    setDragging(false); setDragMode(null); setDragSlot(null); setDragBtnRect(null)
   }, [])
 
   // Clear slider if window loses focus (app switch, cmd-tab, tab hide, etc.)
   useEffect(() => {
     const reset = () => {
-      dragModeRef.current = null; dragSlotRef.current = null; optionsSlotRef.current = null
-      setDragging(false); setDragMode(null); setDragSlot(null); setOptionsSlot(null); setDragBtnRect(null)
+      dragModeRef.current = null; dragSlotRef.current = null
+      setDragging(false); setDragMode(null); setDragSlot(null); setDragBtnRect(null)
       toolNameHud.hide()
     }
     window.addEventListener('blur', reset)
@@ -441,38 +409,6 @@ function PhoneHighlighterButton() {
       )}
       {/* Color label is rendered by the shared ToolNameHud component;
           driven via the toolNameHud bus in the effect below. */}
-      {/* Options popup — vertical up drag */}
-      {dragging && dragMode === 'options' && dragBtnRect && (
-        <div
-          className="phone-hl-options"
-          style={{
-            bottom: `${window.innerHeight - dragBtnRect.top + 6}px`,
-            right: `${window.innerWidth - dragBtnRect.right}px`,
-
-          }}
-          onPointerDown={stopEventPropagation}
-          onTouchStart={stopEventPropagation}
-        >
-          {OPTIONS_SLOTS.map((slot, i) => (
-            <div key={slot.id} className={`phone-hl-option${i === optionsSlot ? ' active' : ''}`}>
-              {slot.svgIcon && (
-                <span style={{
-                  display: 'block', width: 15, height: 15,
-                  WebkitMaskImage: `url("${slot.svgIcon}")`,
-                  maskImage: `url("${slot.svgIcon}")`,
-                  WebkitMaskSize: '100%', maskSize: '100%',
-                  WebkitMaskRepeat: 'no-repeat', maskRepeat: 'no-repeat',
-                  WebkitMaskPosition: 'center', maskPosition: 'center',
-                  backgroundColor: 'currentColor',
-                }} />
-              )}
-              <span className="phone-hl-option-label">
-                {slot.id === 'zone-toggle' ? (zoneEnabled ? 'Zone: off' : 'Zone: on') : slot.label}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
       <button
         ref={btnRef}
         className={`phone-hl-btn${isActive ? ' active' : ''}`}
@@ -836,31 +772,21 @@ export function VoiceNoteButton() {
 // bottom-right corner stack directly above the voice-note button.
 
 function MicToggleButtonInner() {
-  const [recording, setRecording] = useState(isRecording())
-
-  // voice.mjs emits no recording-change event (toggling also happens via Right
-  // Shift), so poll the global flag to keep the indicator honest.
-  useEffect(() => {
-    const id = setInterval(() => setRecording(isRecording()), 250)
-    return () => clearInterval(id)
-  }, [])
-
+  // No recording-state indicator — the voice HUD already signals when dictation
+  // is live, so the button stays visually neutral and just toggles.
   const handleClick = useCallback(() => {
     toggleRecording()
-    setRecording(isRecording())
   }, [])
-
-  const cls = `mic-toggle-btn${recording ? ' recording' : ''}`
 
   return (
     <button
-      className={cls}
+      className="mic-toggle-btn"
       onClick={handleClick}
       onPointerDown={stopEventPropagation}
       onPointerUp={stopEventPropagation}
       onTouchStart={stopEventPropagation}
       onTouchEnd={stopEventPropagation}
-      title={recording ? 'Stop dictation' : 'Start dictation'}
+      title="Toggle dictation"
     >
       {/* Mic with sound waves — distinguishes dictation-toggle from the plain
           mic of the voice-note button directly below it. */}

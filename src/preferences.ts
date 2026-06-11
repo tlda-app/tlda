@@ -37,6 +37,8 @@ const DEFAULTS = {
   'fold-write-lines': 10 as number,
   'fold-md-lines': 0 as number,
   'fold-diff-lines': 0 as number,
+  // Highlighter edge-zone (the HighlighterSlider). Toggled from the prefs menu.
+  'hl-zone-enabled': true as boolean,
 }
 
 export type PrefKey = keyof typeof DEFAULTS

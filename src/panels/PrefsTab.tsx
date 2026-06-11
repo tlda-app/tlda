@@ -28,6 +28,7 @@ function readAll() {
     foldWrite: getPref('fold-write-lines'),
     foldMd: getPref('fold-md-lines'),
     foldDiff: getPref('fold-diff-lines'),
+    hlZone: getPref('hl-zone-enabled'),
   }
 }
 
@@ -261,6 +262,18 @@ export function PrefsTab() {
             onChange={handleSpawnMode}
           />
           <span>Spawn in plan mode</span>
+        </label>
+      </div>
+
+      <div className="prefs-section">
+        <div className="prefs-section-label">Highlighter</div>
+        <label className="prefs-check">
+          <input
+            type="checkbox"
+            checked={prefs.hlZone}
+            onChange={e => setPref('hl-zone-enabled', e.target.checked)}
+          />
+          <span>Edge zone</span>
         </label>
       </div>
 

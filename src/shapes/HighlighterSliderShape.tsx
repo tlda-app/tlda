@@ -16,6 +16,7 @@ import {
   DefaultColorStyle,
 } from 'tldraw'
 import { toolNameHud } from '../overlays/ToolNameHud'
+import { getPref, subscribePref } from '../preferences'
 
 
 const highlightColors: Record<string, string> = {
@@ -34,23 +35,14 @@ const DOT_GAP = 6
 export function HighlighterSlider() {
   // Hide in embed mode (fleet shared doc iframe)
   const isEmbed = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('embed')
-  // Default ON. The toggle in DocumentPanel can hide it
-  // by setting hl-zone-mode='0' explicitly.
-  const [zoneEnabled, setZoneEnabled] = useState(() =>
-    typeof localStorage !== 'undefined' && localStorage.getItem('hl-zone-mode') !== '0'
-  )
+  // Default ON. Toggled from the prefs menu (server-backed pref).
+  const [zoneEnabled, setZoneEnabled] = useState(() => getPref('hl-zone-enabled'))
   const [zoneWidth, setZoneWidth] = useState(() => {
     const stored = parseInt(typeof localStorage !== 'undefined' ? (localStorage.getItem('zone-width') || '') : '')
     return isNaN(stored) ? 60 : Math.max(20, Math.min(250, stored))
   })
-  // Listen for storage changes (toggled from the button component)
-  useEffect(() => {
-    const handler = () => setZoneEnabled(localStorage.getItem('hl-zone-mode') === '1')
-    window.addEventListener('storage', handler)
-    // Also poll since storage event doesn't fire in same tab
-    const interval = setInterval(handler, 500)
-    return () => { window.removeEventListener('storage', handler); clearInterval(interval) }
-  }, [])
+  // subscribePref fires synchronously in-tab the instant the pref changes — no polling.
+  useEffect(() => subscribePref(() => setZoneEnabled(getPref('hl-zone-enabled'))), [])
   useEffect(() => {
     const handler = (e: Event) => setZoneWidth((e as CustomEvent).detail)
     window.addEventListener('zone-width-change', handler)
