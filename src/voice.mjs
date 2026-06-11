@@ -11,10 +11,16 @@
 //   setVoiceTarget(textarea, sendTargets, agentNames)
 
 import { appendToken } from './authToken.ts'
+import { log } from './logger.ts'
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
 const _isSafari = !navigator.userAgent.includes('Chrome') && navigator.userAgent.includes('Safari')
-const _isTouchDevice = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches
+// Touch-device test = has a touchscreen. Must use maxTouchPoints, NOT
+// matchMedia('(pointer: coarse)'): with a Magic Keyboard / trackpad attached the
+// iPad's *primary* pointer is "fine", so (pointer: coarse) is false and the iPad
+// would wrongly fall back to iOS speech (the beeping). maxTouchPoints stays true
+// on any iPad and is 0 on the Mac.
+const _isTouchDevice = typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0
 
 // --- Backend selection ---
 const WHISPER_BRIDGE_URL = location.protocol === 'https:' ? 'wss://127.0.0.1:8179' : 'ws://127.0.0.1:8179'
@@ -1670,6 +1676,18 @@ export async function initVoice() {
       }
     }
   }
+
+  // Ground-truth diagnostic — lands in ~/.config/tlda/client.log so we can see
+  // exactly which backend a device chose (and why) without a console.
+  log.info('voice', 'backend selected', {
+    backend: _backend,
+    prefBackend,
+    urlVoice,
+    isTouch: _isTouchDevice,
+    maxTouchPoints: typeof navigator !== 'undefined' ? navigator.maxTouchPoints : null,
+    onServerHost: _onServerHost,
+    hostname: location.hostname,
+  })
 
   if (!SpeechRecognition && _backend === 'chrome') {
     console.warn('voice: no backend available')

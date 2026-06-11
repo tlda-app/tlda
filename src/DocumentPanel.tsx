@@ -771,7 +771,9 @@ export function VoiceNoteButton() {
 // tap to start dictating into the focused chat, tap again to stop. Lives in the
 // bottom-right corner stack directly above the voice-note button.
 
-const _isTouchDevice = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches
+// maxTouchPoints (not pointer:coarse) — a Magic Keyboard/trackpad makes the
+// iPad's primary pointer "fine", which would wrongly disable note dictation.
+const _isTouchDevice = typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0
 
 function MicToggleButtonInner() {
   // No recording-state indicator — the voice HUD already signals when dictation

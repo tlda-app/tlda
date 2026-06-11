@@ -174,7 +174,9 @@ export function setReplyContext(text: string | null) { pendingReplyContext = tex
 // the editable element with inputmode="none" so iOS does NOT raise the on-screen
 // keyboard when a voice note enters edit mode — focus + programmatic transcript
 // insertion still work, the keyboard just stays down.
-const _isTouchDevice = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches
+// maxTouchPoints (not pointer:coarse) — a Magic Keyboard/trackpad makes the
+// iPad's primary pointer "fine", which would wrongly drop the no-keyboard rule.
+const _isTouchDevice = typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0
 const noKeyboardOnTouch = _isTouchDevice ? [EditorView.contentAttributes.of({ inputmode: 'none' })] : []
 
 // CodeMirror theme: minimal, transparent, monospace
