@@ -827,3 +827,56 @@ export function VoiceNoteButton() {
   return <VoiceNoteButtonInner />
 }
 
+// ======================
+// Mic Toggle Button
+// ======================
+// Dictation is normally toggled by tapping Right Shift (voice.mjs). The iPad
+// keyboard has no Right Shift, so this button exposes the same tap-to-toggle:
+// tap to start dictating into the focused chat, tap again to stop. Lives in the
+// bottom-right corner stack directly above the voice-note button.
+
+function MicToggleButtonInner() {
+  const [recording, setRecording] = useState(isRecording())
+
+  // voice.mjs emits no recording-change event (toggling also happens via Right
+  // Shift), so poll the global flag to keep the indicator honest.
+  useEffect(() => {
+    const id = setInterval(() => setRecording(isRecording()), 250)
+    return () => clearInterval(id)
+  }, [])
+
+  const handleClick = useCallback(() => {
+    toggleRecording()
+    setRecording(isRecording())
+  }, [])
+
+  const cls = `mic-toggle-btn${recording ? ' recording' : ''}`
+
+  return (
+    <button
+      className={cls}
+      onClick={handleClick}
+      onPointerDown={stopEventPropagation}
+      onPointerUp={stopEventPropagation}
+      onTouchStart={stopEventPropagation}
+      onTouchEnd={stopEventPropagation}
+      title={recording ? 'Stop dictation' : 'Start dictation'}
+    >
+      {/* Mic with sound waves — distinguishes dictation-toggle from the plain
+          mic of the voice-note button directly below it. */}
+      <svg width="18" height="18" viewBox="0 0 18 18" fill="currentColor">
+        <rect x="7" y="2" width="4" height="7" rx="2" />
+        <path d="M4.5 8.5a4.5 4.5 0 0 0 9 0" stroke="currentColor" strokeWidth="1.3" fill="none" strokeLinecap="round" />
+        <line x1="9" y1="13" x2="9" y2="15.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+        <path d="M2 6a3.2 3.2 0 0 1 0 5" stroke="currentColor" strokeWidth="1.1" fill="none" strokeLinecap="round" />
+        <path d="M16 6a3.2 3.2 0 0 0 0 5" stroke="currentColor" strokeWidth="1.1" fill="none" strokeLinecap="round" />
+      </svg>
+    </button>
+  )
+}
+
+export function MicToggleButton() {
+  if (typeof window === 'undefined') return null
+  return <MicToggleButtonInner />
+}
+
