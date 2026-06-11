@@ -170,6 +170,13 @@ export function setMathNoteEntryMode(mode: 'i' | ':' | null) { pendingEntryMode 
 let pendingReplyContext: string | null = null
 export function setReplyContext(text: string | null) { pendingReplyContext = text }
 
+// On a touch device (iPad) the note is dictated into by voice, not typed. Tag
+// the editable element with inputmode="none" so iOS does NOT raise the on-screen
+// keyboard when a voice note enters edit mode — focus + programmatic transcript
+// insertion still work, the keyboard just stays down.
+const _isTouchDevice = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches
+const noKeyboardOnTouch = _isTouchDevice ? [EditorView.contentAttributes.of({ inputmode: 'none' })] : []
+
 // CodeMirror theme: minimal, transparent, monospace
 const cmTheme = EditorView.theme({
   '&': {
@@ -656,6 +663,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         doc: shape.props.text || '',
         extensions: [
           ...(useVim ? [vim()] : []),
+          ...noKeyboardOnTouch,
           latex(),
           // Auto-expand $$: typing second $ after first opens display math block
           EditorView.inputHandler.of((view, from, to, text) => {

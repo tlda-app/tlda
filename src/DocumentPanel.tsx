@@ -771,12 +771,32 @@ export function VoiceNoteButton() {
 // tap to start dictating into the focused chat, tap again to stop. Lives in the
 // bottom-right corner stack directly above the voice-note button.
 
+const _isTouchDevice = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches
+
 function MicToggleButtonInner() {
   // No recording-state indicator — the voice HUD already signals when dictation
   // is live, so the button stays visually neutral and just toggles.
+  const editor = useEditor()
   const handleClick = useCallback(() => {
+    // Touch (iPad): if a single non-collapsed note is selected, dictate into it.
+    // A note becomes the voice sink by entering edit mode — that mounts its
+    // CodeMirror editor, which registers the voice accumulator. inputmode="none"
+    // keeps the iOS keyboard down, so this reads as "tap a note, talk into it"
+    // rather than "open the keyboard to edit". Defer the toggle so the
+    // accumulator is registered before recording starts.
+    if (_isTouchDevice && !isRecording()) {
+      const sel = editor.getSelectedShapeIds()
+      if (sel.length === 1) {
+        const s = editor.getShape(sel[0]) as any
+        if (s && s.type === 'math-note' && !s.props?.collapsed) {
+          editor.setEditingShape(sel[0])
+          setTimeout(() => toggleRecording(), 80)
+          return
+        }
+      }
+    }
     toggleRecording()
-  }, [])
+  }, [editor])
 
   return (
     <button

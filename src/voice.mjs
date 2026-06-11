@@ -10,11 +10,27 @@
 //   // When user focuses a chat input:
 //   setVoiceTarget(textarea, sendTargets, agentNames)
 
+import { appendToken } from './authToken.ts'
+
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
 const _isSafari = !navigator.userAgent.includes('Chrome') && navigator.userAgent.includes('Safari')
+const _isTouchDevice = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches
 
 // --- Backend selection ---
 const WHISPER_BRIDGE_URL = location.protocol === 'https:' ? 'wss://127.0.0.1:8179' : 'ws://127.0.0.1:8179'
+
+// Deepgram bridge URL. On the server's own machine we reach the bridge directly
+// at 127.0.0.1:8179. From another device (the iPad over Tailscale/LAN) localhost
+// is the iPad itself — no bridge there — so relay through a same-origin WS proxy
+// on the tlda server (/voice/deepgram), reusing the page's TLS + token. This is
+// what keeps the iPad off iOS Web Speech, whose restart earcon causes the beeping.
+const _onServerHost = ['localhost', '127.0.0.1', '::1'].includes(location.hostname)
+function deepgramBridgeUrl() {
+  if (_onServerHost) return WHISPER_BRIDGE_URL
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws'
+  return appendToken(`${proto}://${location.host}/voice/deepgram`)
+}
+
 let _backend = 'deepgram'       // 'deepgram' | 'chrome' | 'whisper-stream'
 let _whisperAvailable = false   // true if whisper bridge WebSocket connected at init
 let _deepgramAvailable = false  // true if deepgram bridge WebSocket connected at init
@@ -1154,7 +1170,7 @@ function connectDeepgramBridge() {
     _deepgramWs = null
   }
   try {
-    _deepgramWs = new WebSocket(WHISPER_BRIDGE_URL)
+    _deepgramWs = new WebSocket(deepgramBridgeUrl())
     _deepgramWs.onopen = () => {
       _deepgramConnected = true
       hideDontSpeak()
@@ -1581,7 +1597,14 @@ export async function initVoice() {
   if (!urlVoice) {
     await Promise.race([whenPrefsLoaded(), new Promise(r => setTimeout(r, 2000))])
   }
-  const prefBackend = urlVoice || getPref('voice-backend') || 'chrome'
+  // A remote touch device is the iPad: force it onto Deepgram (reached via the
+  // server proxy) because its only other option, Chrome Web Speech, is iOS
+  // speech recognition — whose restart earcon is the beeping we're killing.
+  // Explicit ?voice= still wins; same-machine sessions keep using the pref.
+  const _preferProxyDeepgram = _isTouchDevice && !_onServerHost
+  const prefBackend = urlVoice
+    || (_preferProxyDeepgram ? 'deepgram' : null)
+    || getPref('voice-backend') || 'chrome'
   if (prefBackend === 'chrome') {
     _backend = 'chrome'
     console.log(`voice: using Chrome Web Speech API (${urlVoice ? 'URL param' : 'pref'})`)
@@ -1619,24 +1642,32 @@ export async function initVoice() {
     } catch (err) {
       console.warn('voice: deepgram lazy-start request failed', err)
     }
-    try {
-      const testWs = new WebSocket(WHISPER_BRIDGE_URL)
-      await new Promise((resolve, reject) => {
-        testWs.onopen = () => {
-          testWs.close()
-          _deepgramAvailable = true
-          console.log('voice: using deepgram backend (default)')
-          resolve()
-        }
-        testWs.onerror = () => {
-          testWs.close()
-          reject()
-        }
-        setTimeout(reject, 2000)
-      })
-    } catch {
-      _backend = 'chrome'
-      console.log('voice: deepgram bridge not available, falling back to Chrome')
+    if (!_onServerHost) {
+      // iPad/remote: the bridge is reached through the same-origin server proxy,
+      // which lazy-starts it. Don't probe-and-fall-back to chrome (iOS speech =
+      // the beeping). Connect lazily when recording starts.
+      _deepgramAvailable = true
+      console.log('voice: using deepgram via server proxy (remote device)')
+    } else {
+      try {
+        const testWs = new WebSocket(deepgramBridgeUrl())
+        await new Promise((resolve, reject) => {
+          testWs.onopen = () => {
+            testWs.close()
+            _deepgramAvailable = true
+            console.log('voice: using deepgram backend (default)')
+            resolve()
+          }
+          testWs.onerror = () => {
+            testWs.close()
+            reject()
+          }
+          setTimeout(reject, 2000)
+        })
+      } catch {
+        _backend = 'chrome'
+        console.log('voice: deepgram bridge not available, falling back to Chrome')
+      }
     }
   }
 
