@@ -30,7 +30,7 @@ async function _gitRetryOnLock(fn, retries = 3, delayMs = 500) {
   for (let i = 0; i < retries; i++) {
     try { return await fn() }
     catch (err) {
-      if (i < retries - 1 && /index\.lock|Unable to create.*lock/i.test(err.message)) {
+      if (i < retries - 1 && /index\.lock|Unable to create.*lock|cannot lock ref|unable to update local ref/i.test(err.message)) {
         await new Promise(r => setTimeout(r, delayMs))
         continue
       }
