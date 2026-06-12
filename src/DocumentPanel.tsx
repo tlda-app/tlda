@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useContext, useMemo, useSyncE
 import { useClickActions } from './hooks/useClickActions'
 import { subscribeInputModes, getClicksEnabled } from './inputModes'
 import { setStopRecordingCallback } from './tools/VoiceNoteTool'
-import { setVoiceTarget, clearVoiceTarget, stopRecording, isRecording, toggleRecording, onRecordingChange, voiceTap } from './voice.mjs'
+import { setVoiceTarget, clearVoiceTarget, setVoiceAccumulator, stopRecording, isRecording, toggleRecording, voiceTap } from './voice.mjs'
 import { getPref } from './preferences'
 import { createPortal } from 'react-dom'
 import { useEditor, useValue, stopEventPropagation, DefaultColorStyle, createShapeId } from 'tldraw'
@@ -762,24 +762,49 @@ function VoiceNoteButtonInner() {
   )
 }
 
-// Target-follows-selection: while recording is on, the currently-selected note
-// becomes the dictation sink (entering edit mode registers its voice
-// accumulator; inputmode="none" keeps the iOS keyboard down). Selecting a
-// different note moves the target. Mirrors how selecting a chat retargets voice
-// on the Mac. Touch-only; desktop keeps its existing behavior.
+// Target-follows-tap: tapping a note makes it the voice/dictation target —
+// exactly like tapping a chat. The sink is a shape-prop accumulator: spoken
+// text is written to the note's `text` prop via editor.updateShape, which
+// re-renders the note live. NO edit mode is forced and selection is left
+// untouched — the only thing a tap changes is where voice goes. Independent of
+// recording state (the mic button owns on/off). When a note IS open in edit
+// mode, its CodeMirror owns the sink instead (MathNoteShape), so we skip it
+// here. Touch-only; desktop keeps its hidden-textarea placement flow.
 function VoiceTargetFollowsSelection() {
   const editor = useEditor()
   const selectedIds = useValue('voice-sel', () => editor.getSelectedShapeIds(), [editor])
-  const [recording, setRecording] = useState(() => isRecording())
-  useEffect(() => onRecordingChange(setRecording), [])
+  const editingId = useValue('voice-editing', () => editor.getEditingShapeId(), [editor])
+  // Stable accumulator callbacks per note id. A stable callback lets
+  // setVoiceAccumulator's same-ref guard no-op on re-render (so it never resets
+  // an in-progress dictation), while still re-registering after a chat focus
+  // stole the sink, and switching notes registers the other note's callback.
+  const accumsRef = useRef<Map<string, { onUpdate: (t: string) => void; onStop: () => void }>>(new Map())
   useEffect(() => {
-    if (!_isTouchDevice || !recording) return
+    if (!_isTouchDevice) return
     if (selectedIds.length !== 1) return
-    const s = editor.getShape(selectedIds[0]) as any
-    if (!s || s.type !== 'math-note' || s.props?.collapsed) return
-    if (editor.getEditingShapeId() === s.id) return
-    editor.setEditingShape(s.id)
-  }, [editor, selectedIds, recording])
+    const id = selectedIds[0]
+    const s = editor.getShape(id) as any
+    if (!s || s.type !== 'math-note') return
+    if (editingId === id) return // edit mode: CodeMirror owns the sink
+    let a = accumsRef.current.get(id)
+    if (!a) {
+      // `base` = the note's text at the start of each recording session; spoken
+      // text is appended after it. Snapshotted once per session (base===null),
+      // reset on stop so the next session appends after the committed text.
+      let base: string | null = null
+      const onUpdate = (text: string) => {
+        if (base === null) {
+          const cur = ((editor.getShape(id) as any)?.props?.text as string) || ''
+          base = cur ? cur + (/\s$/.test(cur) ? '' : ' ') : ''
+        }
+        editor.updateShape({ id, type: 'math-note' as any, props: { text: base + text } })
+      }
+      const onStop = () => { base = null }
+      a = { onUpdate, onStop }
+      accumsRef.current.set(id, a)
+    }
+    setVoiceAccumulator(a.onUpdate, null, a.onStop, 'note')
+  }, [editor, selectedIds, editingId])
   return null
 }
 
