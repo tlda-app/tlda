@@ -2,10 +2,10 @@ import { useState, useEffect, useRef, useCallback, useContext, useMemo, useSyncE
 import { useClickActions } from './hooks/useClickActions'
 import { subscribeInputModes, getClicksEnabled } from './inputModes'
 import { setStopRecordingCallback } from './tools/VoiceNoteTool'
-import { setVoiceTarget, clearVoiceTarget, stopRecording, isRecording, toggleRecording } from './voice.mjs'
-import { log } from './logger'
+import { setVoiceTarget, clearVoiceTarget, stopRecording, isRecording, toggleRecording, onRecordingChange } from './voice.mjs'
+import { getPref } from './preferences'
 import { createPortal } from 'react-dom'
-import { useEditor, useValue, stopEventPropagation, DefaultColorStyle } from 'tldraw'
+import { useEditor, useValue, stopEventPropagation, DefaultColorStyle, createShapeId } from 'tldraw'
 import { toolNameHud } from './overlays/ToolNameHud'
 import type { Editor } from 'tldraw'
 import { DocContext } from './PanelContext'
@@ -681,13 +681,13 @@ export function SemanticHighlightPill() { return null }
 
 function VoiceNoteButtonInner() {
   const editor = useEditor()
-  const [recording, setRecording] = useState(false)
   const clicksEnabled = useSyncExternalStore(subscribeInputModes, getClicksEnabled)
   useClickActions(editor, clicksEnabled)
   const hiddenTARef = useRef<HTMLTextAreaElement | null>(null)
-
+  const [recording, setRecording] = useState(false)
   const isPlacing = useValue('voice-placing', () => editor.getCurrentToolId() === 'voice-note', [editor])
 
+  // Desktop (Mac): original placement flow — unchanged.
   const cancelRecording = useCallback(() => {
     if (isRecording()) stopRecording()
     if (hiddenTARef.current) {
@@ -700,22 +700,14 @@ function VoiceNoteButtonInner() {
     editor.setCurrentTool('select')
   }, [editor])
 
-  const startRecording = useCallback(() => {
-    // Create a hidden textarea as the voice system's transcription target.
-    // voice.mjs handles all error recovery, restarts, and interim results.
+  const startPlacement = useCallback(() => {
     const ta = document.createElement('textarea')
     ta.style.cssText = 'position:fixed;opacity:0;pointer-events:none;width:1px;height:1px;top:-9999px'
     document.body.appendChild(ta)
     hiddenTARef.current = ta
-
     setVoiceTarget(ta, [], {}, null, null)
     if (!isRecording()) toggleRecording()
-    log.debug('voice', 'note recording started via voice system')
-
-    // The stop callback is called by VoiceNoteTool.onPointerUp (commit) or ESC.
-    // VoiceNoteTool reads getTranscript() before calling this, so we just stop and clean up.
     setStopRecordingCallback(() => {
-      log.debug('voice', 'note placement — stop callback fired')
       if (isRecording()) stopRecording()
       clearVoiceTarget(ta)
       ta.remove()
@@ -726,13 +718,28 @@ function VoiceNoteButtonInner() {
     editor.setCurrentTool('voice-note')
   }, [editor])
 
+  // Touch (iPad): drop a new note + select it (the target-follows-selection
+  // listener makes it the dictation sink). Turn recording on if off; never stop.
+  const dropAndTarget = useCallback(() => {
+    const id = createShapeId()
+    const vb = editor.getViewportPageBounds()
+    editor.createShape({
+      id,
+      type: 'math-note' as any,
+      x: vb.center.x - 150,
+      y: vb.center.y - 25,
+      props: { w: 300, h: 50, text: '', color: getPref('voice-note-color'), autoSize: true, collapsed: false },
+      meta: { createdAt: Date.now(), voiceNote: true },
+    })
+    if (!isRecording()) toggleRecording()
+    reassertSelection(editor, [id])
+  }, [editor])
+
   const handleClick = useCallback(() => {
-    if (recording || isPlacing) {
-      cancelRecording()
-    } else {
-      startRecording()
-    }
-  }, [recording, isPlacing, cancelRecording, startRecording])
+    if (_isTouchDevice) { dropAndTarget(); return }
+    if (recording || isPlacing) cancelRecording()
+    else startPlacement()
+  }, [recording, isPlacing, cancelRecording, startPlacement, dropAndTarget])
 
   const cls = `voice-note-btn${recording ? ' recording' : ''}${isPlacing ? ' placing' : ''}`
 
@@ -744,7 +751,7 @@ function VoiceNoteButtonInner() {
       onPointerUp={stopEventPropagation}
       onTouchStart={stopEventPropagation}
       onTouchEnd={stopEventPropagation}
-      title={recording ? 'Stop recording' : isPlacing ? 'Cancel placement' : 'Voice note'}
+      title={_isTouchDevice ? 'New voice note' : (recording ? 'Stop recording' : isPlacing ? 'Cancel placement' : 'Voice note')}
     >
       <svg width="18" height="18" viewBox="0 0 18 18" fill="currentColor">
         <rect x="6.5" y="1" width="5" height="8" rx="2.5" />
@@ -753,6 +760,32 @@ function VoiceNoteButtonInner() {
       </svg>
     </button>
   )
+}
+
+// Target-follows-selection: while recording is on, the currently-selected note
+// becomes the dictation sink (entering edit mode registers its voice
+// accumulator; inputmode="none" keeps the iOS keyboard down). Selecting a
+// different note moves the target. Mirrors how selecting a chat retargets voice
+// on the Mac. Touch-only; desktop keeps its existing behavior.
+function VoiceTargetFollowsSelection() {
+  const editor = useEditor()
+  const selectedIds = useValue('voice-sel', () => editor.getSelectedShapeIds(), [editor])
+  const [recording, setRecording] = useState(() => isRecording())
+  useEffect(() => onRecordingChange(setRecording), [])
+  useEffect(() => {
+    if (!_isTouchDevice || !recording) return
+    if (selectedIds.length !== 1) return
+    const s = editor.getShape(selectedIds[0]) as any
+    if (!s || s.type !== 'math-note' || s.props?.collapsed) return
+    if (editor.getEditingShapeId() === s.id) return
+    editor.setEditingShape(s.id)
+  }, [editor, selectedIds, recording])
+  return null
+}
+
+export function VoiceTargetFollower() {
+  if (typeof window === 'undefined') return null
+  return <VoiceTargetFollowsSelection />
 }
 
 export function VoiceNoteButton() {
@@ -773,31 +806,40 @@ export function VoiceNoteButton() {
 
 // maxTouchPoints (not pointer:coarse) — a Magic Keyboard/trackpad makes the
 // iPad's primary pointer "fine", which would wrongly disable note dictation.
-const _isTouchDevice = typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0
+const _isTouchDevice = (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
+  || (typeof location !== 'undefined' && new URLSearchParams(location.search).has('forcetouch'))
+
+// tldraw clears the selection when an InFrontOfTheCanvas button is clicked — it
+// reads the tap as an empty-canvas click, and the clear is deferred so it lands
+// AFTER our onClick handler. Re-assert the selection we want across a few frames
+// so it wins that race. Without this, tapping the mic / voice-note button
+// deselects the targeted note.
+function reassertSelection(editor: Editor, ids: string[]) {
+  // tldraw's post-click deselect lands within a couple hundred ms, so re-assert
+  // immediately and again past that window (a select at ~250ms reliably sticks).
+  const apply = () => editor.setSelectedShapes(ids as any)
+  apply()
+  requestAnimationFrame(apply)
+  setTimeout(apply, 150)
+  setTimeout(apply, 300)
+}
 
 function MicToggleButtonInner() {
-  // No recording-state indicator — the voice HUD already signals when dictation
-  // is live, so the button stays visually neutral and just toggles.
+  // Pure on/off for recording. Recording is meant to run continuously — only
+  // this button stops it. The dictation target follows selection separately
+  // (VoiceTargetFollowsSelection). tldraw clears the selection on the button's
+  // *pointerdown* (before onClick), so capture the selection in a document
+  // capture-phase listener (which fires before tldraw's) and re-assert it after.
   const editor = useEditor()
+  const keepRef = useRef<string[]>([])
+  useEffect(() => {
+    const onDown = () => { keepRef.current = editor.getSelectedShapeIds() }
+    document.addEventListener('pointerdown', onDown, true)
+    return () => document.removeEventListener('pointerdown', onDown, true)
+  }, [editor])
   const handleClick = useCallback(() => {
-    // Touch (iPad): if a single non-collapsed note is selected, dictate into it.
-    // A note becomes the voice sink by entering edit mode — that mounts its
-    // CodeMirror editor, which registers the voice accumulator. inputmode="none"
-    // keeps the iOS keyboard down, so this reads as "tap a note, talk into it"
-    // rather than "open the keyboard to edit". Defer the toggle so the
-    // accumulator is registered before recording starts.
-    if (_isTouchDevice && !isRecording()) {
-      const sel = editor.getSelectedShapeIds()
-      if (sel.length === 1) {
-        const s = editor.getShape(sel[0]) as any
-        if (s && s.type === 'math-note' && !s.props?.collapsed) {
-          editor.setEditingShape(sel[0])
-          setTimeout(() => toggleRecording(), 80)
-          return
-        }
-      }
-    }
     toggleRecording()
+    reassertSelection(editor, keepRef.current)
   }, [editor])
 
   return (

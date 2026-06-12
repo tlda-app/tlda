@@ -198,6 +198,12 @@ let _hud = null
 let _recognition = null
 let _recording = false
 
+// Recording on/off listeners — lets the viewer react when recording starts/stops
+// (e.g. to re-aim the dictation target at the currently-selected note).
+const _recordingListeners = new Set()
+function emitRecordingChange() { for (const cb of _recordingListeners) { try { cb(_recording) } catch {} } }
+export function onRecordingChange(cb) { _recordingListeners.add(cb); return () => { _recordingListeners.delete(cb) } }
+
 // --- State machine: 'edit' | 'speech' ---
 // edit:   Chrome buffer clean, user may be typing. onresult events ignored.
 // speech: Chrome active, voice fills textarea at cursor.
@@ -1427,6 +1433,7 @@ function startRecording() {
   _micChannel?.postMessage('mic-start')
 
   _recording = true
+  emitRecordingChange()
   _state = 'edit'
   _generation++
   _left = _interim = _right = ''
@@ -1473,6 +1480,7 @@ function startRecording() {
 function stopRecording() {
   if (!_recording) return
   _recording = false
+  emitRecordingChange()
 
   hideHealthDot()
 
