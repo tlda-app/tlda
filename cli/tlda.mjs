@@ -1204,7 +1204,7 @@ async function cmdDeploy() {
 
   step('Starting server')
   try {
-    execSync('node ' + JSON.stringify(join(tldaRoot, 'cli', 'tlda.mjs')) + ' server start', { stdio: 'pipe', timeout: 15_000 })
+    execSync('node ' + JSON.stringify(join(tldaRoot, 'cli', 'tlda.mjs')) + ' server start', { stdio: 'pipe', timeout: 40_000 })
   } catch (e) {
     die('Server failed to start: ' + e.message)
   }
