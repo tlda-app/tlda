@@ -625,7 +625,13 @@ export function setVoiceAccumulator(onUpdate, onSend, onStop, label) {
 export function clearVoiceAccumulator(onUpdate) {
   if (_accumulator && _accumulator.onUpdate === onUpdate) {
     _accumulator = null
-    if (_recording) stopRecording()
+    // On touch, recording is continuous — only the user (mic button / Right
+    // Shift) stops it. Deselecting a note (or switching to another) must NOT
+    // stop dictation; it just leaves the target empty until the next note or
+    // chat is touched. Desktop keeps the old behavior (a note losing focus ends
+    // its placement dictation).
+    const isTouch = typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0
+    if (_recording && !isTouch) stopRecording()
   }
 }
 
