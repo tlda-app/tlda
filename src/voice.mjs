@@ -994,6 +994,7 @@ let _deepgramConnected = false
 let _deepgramStream = null      // MediaStream from getUserMedia
 let _deepgramContext = null      // AudioContext
 let _deepgramProcessor = null    // ScriptProcessorNode (bridge to WS)
+let _deepgramSilentGain = null   // zero-gain node so the processor reaches destination silently
 let _deepgramInterim = ''        // current interim result (replaced on each interim)
 let _dgHasSeenInterim = false   // true after first interim in current session; guards against post-send final bleed
 let _lastAudioChunkTime = 0     // timestamp of last audio chunk sent to bridge (for heartbeat logging)
@@ -1249,6 +1250,12 @@ async function startDeepgramMic() {
 
   _deepgramProcessor = _deepgramContext.createScriptProcessor(4096, 1, 1)
   _deepgramProcessor.onaudioprocess = (e) => {
+    // Silence the output EVERY frame, before any early return. The node is wired
+    // to the AudioContext destination (required for onaudioprocess to keep
+    // firing), and iOS WebKit does NOT reliably zero a ScriptProcessor's output
+    // buffer — so leaving it unwritten plays recycled garbage through the iPad
+    // speaker. That is the beeping. We only ever READ the input.
+    e.outputBuffer.getChannelData(0).fill(0)
     if (!_deepgramWs || !_deepgramConnected || !_recording) return
     _lastAudioChunkTime = Date.now()
     const float32 = e.inputBuffer.getChannelData(0)
@@ -1274,7 +1281,13 @@ async function startDeepgramMic() {
   }
 
   source.connect(_deepgramProcessor)
-  _deepgramProcessor.connect(_deepgramContext.destination)
+  // Route the processor to destination through a zero-gain node: it must reach
+  // the destination for onaudioprocess to fire, but the gain of 0 guarantees no
+  // sound leaves it — belt-and-suspenders with the output-buffer zeroing above.
+  _deepgramSilentGain = _deepgramContext.createGain()
+  _deepgramSilentGain.gain.value = 0
+  _deepgramProcessor.connect(_deepgramSilentGain)
+  _deepgramSilentGain.connect(_deepgramContext.destination)
 
   _lastAudioChunkTime = 0
   _audioHeartbeatInterval = setInterval(() => {
@@ -1311,6 +1324,10 @@ function stopDeepgramMic() {
   if (_deepgramProcessor) {
     _deepgramProcessor.disconnect()
     _deepgramProcessor = null
+  }
+  if (_deepgramSilentGain) {
+    try { _deepgramSilentGain.disconnect() } catch {}
+    _deepgramSilentGain = null
   }
   if (_deepgramContext) {
     _deepgramContext.close().catch(e => console.warn('[voice] AudioContext close failed:', e.message))
