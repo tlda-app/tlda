@@ -101,7 +101,7 @@ export interface TocEntry {
 
 export function parseHeadings(lines: Record<string, LookupEntry>, meta?: { appendixLine?: { line: number; file?: string } }, opts?: { skipAppendixDivider?: boolean }): TocEntry[] {
   const headings: TocEntry[] = []
-  const sectionRe = /\\(sub)*section\*?\{([^}]*)\}/
+  const sectionRe = /\\((?:sub)+)?section\*?\{([^}]*)\}/
 
   // Find appendix boundary — use metadata from synctex extraction (scans source files)
   // The \appendix and \begin{appendix} commands produce no typeset output, so they
@@ -157,7 +157,8 @@ export function parseHeadings(lines: Record<string, LookupEntry>, meta?: { appen
 
     const m = entry.content.match(sectionRe)
     if (!m) continue
-    let level: TocLevel = m[1] ? 'subsection' : 'section'
+    const subDepth = m[1] ? m[1].length / 3 : 0
+    let level: TocLevel = subDepth >= 2 ? 'subsubsection' : subDepth === 1 ? 'subsection' : 'section'
     // No demotion — appendix \sections stay at section level
     // Clean title: preserve $...$ math, strip other TeX
     let title = m[2]
