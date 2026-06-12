@@ -204,6 +204,39 @@ const _recordingListeners = new Set()
 function emitRecordingChange() { for (const cb of _recordingListeners) { try { cb(_recording) } catch {} } }
 export function onRecordingChange(cb) { _recordingListeners.add(cb); return () => { _recordingListeners.delete(cb) } }
 
+// Voice tap dispatcher — the single source of truth for the Right-Shift gesture,
+// shared by the keydown handler AND the on-screen mic button so they behave
+// identically: 1 tap = toggle recording, 2 taps = soft reset (mic cycle +
+// restart), 3 taps = kill Chrome and reopen. Tap counting uses a 300ms window.
+let _voiceTapCount = 0
+let _voiceTapTimer = null
+export function voiceTap() {
+  _voiceTapCount++
+  clearTimeout(_voiceTapTimer)
+  if (_voiceTapCount >= 3) {
+    // Triple tap: kill Chrome and reopen via the tlda:// URL scheme (an iframe
+    // bypasses Chrome's JS restrictions on custom protocols).
+    _voiceTapCount = 0
+    showHud('restarting Chrome…', '#c87070')
+    const iframe = document.createElement('iframe')
+    iframe.style.display = 'none'
+    iframe.src = 'tlda://voice-reset'
+    document.body.appendChild(iframe)
+    setTimeout(() => iframe.remove(), 2000)
+    return
+  }
+  _voiceTapTimer = setTimeout(() => {
+    const taps = _voiceTapCount
+    _voiceTapCount = 0
+    if (taps === 1) {
+      if (_recording) { stopRecording() } else { startRecording() }
+    } else if (taps === 2) {
+      showHud('voice reset', '#9370db')
+      hardResetVoice().then(() => startRecording())
+    }
+  }, 300)
+}
+
 // --- State machine: 'edit' | 'speech' ---
 // edit:   Chrome buffer clean, user may be typing. onresult events ignored.
 // speech: Chrome active, voice fills textarea at cursor.
@@ -1726,47 +1759,11 @@ export async function initVoice() {
   //
   // The handler is installed on document AND on any iframe contentDocuments
   // (via MutationObserver) so shift works regardless of where focus is.
-  let _shiftTapCount = 0
-  let _shiftTapTimer = null
   function shiftHandler(e) {
     if (e.code !== 'ShiftRight') return
     e.preventDefault()
     e.stopImmediatePropagation()
-
-    _shiftTapCount++
-    clearTimeout(_shiftTapTimer)
-
-    if (_shiftTapCount >= 3) {
-      // Triple tap: kill Chrome and reopen.
-      // Try iframe approach to trigger tlda:// URL scheme (bypasses Chrome's
-      // JS restrictions on custom protocols). Falls back to server endpoint.
-      _shiftTapCount = 0
-      showHud('restarting Chrome…', '#c87070')
-      const iframe = document.createElement('iframe')
-      iframe.style.display = 'none'
-      iframe.src = 'tlda://voice-reset'
-      document.body.appendChild(iframe)
-      setTimeout(() => iframe.remove(), 2000)
-      return
-    }
-
-    // Wait 300ms to see if more taps are coming
-    _shiftTapTimer = setTimeout(() => {
-      const taps = _shiftTapCount
-      _shiftTapCount = 0
-      if (taps === 1) {
-        // Single tap: toggle
-        if (_recording) {
-          stopRecording()
-        } else {
-          startRecording()
-        }
-      } else if (taps === 2) {
-        // Double tap: soft reset (getUserMedia cycle + restart)
-        showHud('voice reset', '#9370db')
-        hardResetVoice().then(() => startRecording())
-      }
-    }, 300)
+    voiceTap()
   }
   document.addEventListener('keydown', shiftHandler, true)
 

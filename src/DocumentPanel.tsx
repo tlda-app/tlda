@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useContext, useMemo, useSyncE
 import { useClickActions } from './hooks/useClickActions'
 import { subscribeInputModes, getClicksEnabled } from './inputModes'
 import { setStopRecordingCallback } from './tools/VoiceNoteTool'
-import { setVoiceTarget, clearVoiceTarget, stopRecording, isRecording, toggleRecording, onRecordingChange } from './voice.mjs'
+import { setVoiceTarget, clearVoiceTarget, stopRecording, isRecording, toggleRecording, onRecordingChange, voiceTap } from './voice.mjs'
 import { getPref } from './preferences'
 import { createPortal } from 'react-dom'
 import { useEditor, useValue, stopEventPropagation, DefaultColorStyle, createShapeId } from 'tldraw'
@@ -838,7 +838,9 @@ function MicToggleButtonInner() {
     return () => document.removeEventListener('pointerdown', onDown, true)
   }, [editor])
   const handleClick = useCallback(() => {
-    toggleRecording()
+    // Same gesture as Right Shift: 1 tap toggles, 2 = soft reset, 3 = Chrome
+    // restart. voiceTap() owns the tap-counting (shared with the key handler).
+    voiceTap()
     reassertSelection(editor, keepRef.current)
   }, [editor])
 
