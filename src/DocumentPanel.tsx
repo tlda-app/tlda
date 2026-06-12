@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useContext, useMemo, useSyncE
 import { useClickActions } from './hooks/useClickActions'
 import { subscribeInputModes, getClicksEnabled } from './inputModes'
 import { setStopRecordingCallback } from './tools/VoiceNoteTool'
-import { setVoiceTarget, clearVoiceTarget, stopRecording, isRecording, toggleRecording, voiceTap } from './voice.mjs'
+import { setVoiceTarget, clearVoiceTarget, stopRecording, isRecording, toggleRecording, onRecordingChange, voiceTap } from './voice.mjs'
 import { getPref } from './preferences'
 import { createPortal } from 'react-dom'
 import { useEditor, useValue, stopEventPropagation, DefaultColorStyle, createShapeId } from 'tldraw'
@@ -762,26 +762,24 @@ function VoiceNoteButtonInner() {
   )
 }
 
-// Target-follows-selection: the currently-selected note becomes the dictation
-// sink (entering edit mode registers its voice accumulator; inputmode="none"
-// keeps the iOS keyboard down). Selecting a different note moves the target.
-// Mirrors how selecting a chat retargets voice on the Mac.
-//
-// Independent of recording state: touching a note makes it the target whether or
-// not recording is on, so the target is set the moment you touch a sticky
-// (recording is continuous — only the mic button stops it). Touch-only; desktop
-// keeps its existing behavior.
+// Target-follows-selection: while recording is on, the currently-selected note
+// becomes the dictation sink (entering edit mode registers its voice
+// accumulator; inputmode="none" keeps the iOS keyboard down). Selecting a
+// different note moves the target. Mirrors how selecting a chat retargets voice
+// on the Mac. Touch-only; desktop keeps its existing behavior.
 function VoiceTargetFollowsSelection() {
   const editor = useEditor()
   const selectedIds = useValue('voice-sel', () => editor.getSelectedShapeIds(), [editor])
+  const [recording, setRecording] = useState(() => isRecording())
+  useEffect(() => onRecordingChange(setRecording), [])
   useEffect(() => {
-    if (!_isTouchDevice) return
+    if (!_isTouchDevice || !recording) return
     if (selectedIds.length !== 1) return
     const s = editor.getShape(selectedIds[0]) as any
     if (!s || s.type !== 'math-note' || s.props?.collapsed) return
     if (editor.getEditingShapeId() === s.id) return
     editor.setEditingShape(s.id)
-  }, [editor, selectedIds])
+  }, [editor, selectedIds, recording])
   return null
 }
 
