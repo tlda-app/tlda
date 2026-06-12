@@ -612,20 +612,28 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     }, [isEditing])
 
     // Auto-size: use ResizeObserver to track content height changes reliably.
-    // Only allow shrinking when the element is actually visible (not culled by TLDraw).
+    // Both grow AND shrink are guarded against measuring an unsettled element.
+    // On reload the element can briefly report a bogus scrollHeight (e.g. text
+    // wrapping at width≈0 before layout settles, or before fonts/KaTeX lay out),
+    // which previously grew the note to a giant height that persisted to Yjs and
+    // never shrank back. Only trust a measurement when the element is genuinely
+    // on-screen (non-zero rect) AND its layout width has settled to props.w.
     useEffect(() => {
       if (isEditing || !shape.props.autoSize) return
       const el = contentRef.current
       if (!el) return
       const measure = () => {
-        const contentH = el.scrollHeight
-        const target = Math.max(40, contentH)
-        const diff = target - shape.props.h
-        if (Math.abs(diff) > 2) {
-          if (diff < 0) {
-            const rect = el.getBoundingClientRect()
-            if (rect.height < 1) return // culled — skip shrink
-          }
+        const node = contentRef.current
+        if (!node) return
+        // On-screen and not culled by TLDraw (culled → 0-size rect).
+        const rect = node.getBoundingClientRect()
+        if (rect.width < 1 || rect.height < 1) return
+        // clientWidth is layout px (unaffected by camera zoom) and must match the
+        // note's set width; if it hasn't, the text is wrapping at the wrong width
+        // and scrollHeight is unreliable.
+        if (Math.abs(node.clientWidth - shape.props.w) > 2) return
+        const target = Math.max(40, node.scrollHeight)
+        if (Math.abs(target - shape.props.h) > 2) {
           editor.updateShape({
             id: shape.id,
             type: 'math-note' as any,
@@ -633,11 +641,34 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           })
         }
       }
-      const ro = new ResizeObserver(measure)
-      ro.observe(el)
-      measure()
-      return () => ro.disconnect()
-    }, [isEditing, shape.props.autoSize, shape.props.text, shape.props.w, shape.props.collapsed])
+      let raf1 = 0
+      let raf2 = 0
+      let cancelled = false
+      let ro: ResizeObserver | null = null
+      const start = () => {
+        if (cancelled) return
+        ro = new ResizeObserver(measure)
+        ro.observe(el)
+        // Defer the first measure two frames so layout has actually settled
+        // before we trust the height (prevents the reload giant-resize).
+        raf1 = requestAnimationFrame(() => {
+          raf2 = requestAnimationFrame(measure)
+        })
+      }
+      // Fonts/KaTeX glyphs change content height — wait for them before measuring.
+      const fonts = (document as any).fonts
+      if (fonts?.ready) {
+        fonts.ready.then(start)
+      } else {
+        start()
+      }
+      return () => {
+        cancelled = true
+        cancelAnimationFrame(raf1)
+        cancelAnimationFrame(raf2)
+        ro?.disconnect()
+      }
+    }, [isEditing, shape.props.autoSize, shape.props.text, shape.props.w, shape.props.h, shape.props.collapsed])
 
     // Create/destroy CodeMirror when editing state changes
     useEffect(() => {
