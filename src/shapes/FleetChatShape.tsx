@@ -1658,10 +1658,23 @@ function FleetChatInner({ shape }: { shape: any }) {
         return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'activity' || t === 'kill-session' || t === 'interrupt' || t === 'terminal_attention' || t === 'terminal_card' || t === 'plan_approval' || t === 'timer'
       })
       .filter((m: any) => !m._timer) // skip legacy timer-expired messages (fired→_timerFired and cancelled→_timerCancelled still render)
+      // Order by arrival (DB insert id), NOT wall-clock timestamp. The daemon
+      // delivers activity/terminal events carrying their original JSONL ts, but
+      // it delivers them late (buffer flush + poll fallback). Sorting by ts would
+      // insert a late event *back in the past*, behind rows already on screen —
+      // that backward jump is the "bounce". _dbId is the monotonic server insert
+      // order, so a late event always appends at the bottom and nothing already
+      // rendered ever moves. Un-persisted optimistic sends (no _dbId yet) sort
+      // last (they're the newest), tie-broken by timestamp.
       .sort((a: any, b: any) => {
-        const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0
-        const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0
-        return ta - tb
+        const ida = a._dbId, idb = b._dbId
+        if (ida != null && idb != null) return ida - idb
+        if (ida == null && idb == null) {
+          const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0
+          const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0
+          return ta - tb
+        }
+        return ida == null ? 1 : -1
       })
 
     return sorted
