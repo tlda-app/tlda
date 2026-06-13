@@ -72,6 +72,7 @@ const VERSION = '0.1.1'
 import { createLogger } from '../shared/logger.mjs'
 import { makeActivityThrottle } from './lib/activity-throttle.mjs'
 import { maybeKickGoose, GOOSE_WORKING_RE } from './lib/goose-kick.mjs'
+import { gooseActivityTick } from './lib/goose-activity.mjs'
 const log = createLogger('daemon')
 // CONFIG_DIR holds config.json, cursors, PID and log files. Defaults to
 // ~/.config/tlda. TLDA_DAEMON_CONFIG_DIR lets the E2E test start a second
@@ -1928,6 +1929,13 @@ const _reconciledSession = new Map()
 // the side-effecting deps (rpcSendText, execFileP, log) and this state map.
 const _gooseKickState = new Map()
 
+// Goose activity-card source state (see ./lib/goose-activity.mjs). Polls the
+// goose sqlite for new messages and feeds bufferActivity(); lastSeen tracks the
+// last message id emitted per goose agent.
+let _gooseActivityInterval = null
+const GOOSE_ACTIVITY_MS = 3000
+const _gooseActivityLastSeen = new Map()
+
 // Read an agent's *actual* live Claude session from the PID-keyed metadata
 // Claude Code writes at ~/.claude/sessions/<pid>.json. This is the same
 // authoritative source the MCP uses at startup (no birthtime guessing, no
@@ -2803,6 +2811,19 @@ function handleServerMessage(msg) {
     if (!_deathCheckInterval) {
       _deathCheckInterval = setInterval(checkAgentLiveness, DEATH_CHECK_MS)
       setTimeout(checkAgentLiveness, 5000)
+    }
+    // Goose activity-card source: goose agents write to a sqlite db, not the
+    // Claude JSONLs, so the JSONL watcher produces no cards for them. Poll the
+    // goose sqlite for new messages and feed the same bufferActivity() path.
+    // (_isGoose is set by checkAgentLiveness, so cards begin within a sweep of
+    // an agent being classified.) A no-op when there are no awake goose agents.
+    if (!_gooseActivityInterval) {
+      _gooseActivityInterval = setInterval(() => {
+        gooseActivityTick(agents, {
+          bufferActivity, log, lastSeen: _gooseActivityLastSeen,
+          isNoise: (base) => ACTIVITY_NOISE.has(base),
+        })
+      }, GOOSE_ACTIVITY_MS)
     }
     if (!_autoAcceptStarted) {
       _autoAcceptStarted = true
