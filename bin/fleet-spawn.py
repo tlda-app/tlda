@@ -760,6 +760,15 @@ def spawn_tmux(session, cwd, cmd, auto_dismiss=True):
                        check=True, env=spawn_env)
         subprocess.run(tmux("set-option", "-t", session, "remain-on-exit", "on"),
                        capture_output=True, timeout=5, env=spawn_env)
+    # Pin the window to a fixed width so the agent always paints at one size. The
+    # global window-size=latest makes the window follow whatever client last
+    # attached; an idle agent's frame is then painted at one width and shown in the
+    # terminal peek's grid at a different (current) width -> absolute-position
+    # garble. Manual + a fixed size removes the reflow at the source.
+    subprocess.run(tmux("set-option", "-t", session, "window-size", "manual"),
+                   capture_output=True, timeout=5, env=spawn_env)
+    subprocess.run(tmux("resize-window", "-t", session, "-x", "120", "-y", "40"),
+                   capture_output=True, timeout=5, env=spawn_env)
     if auto_dismiss:
         # Background the bounded poll-and-dismiss (see dismiss_devchannels).
         # Detached so spawn_tmux returns immediately and the dismiss survives
