@@ -1532,6 +1532,21 @@ async function rpcSendText({ tmux_session, text, enter }) {
   return { ok: true, via: 'tmux' }
 }
 
+// Deliver a turn-end kick to a goose agent's TUI. rpcSendText prefers the PTY,
+// but goose reads a bare PTY `\r` as a literal newline-in-field ("Ctrl+J
+// newline"), NOT submit ("Enter to send") — so a kick written that way lands in
+// the input un-submitted and the agent just sits there (observed on ds-v4b
+// 2026-06-13). tmux's discrete `Enter` key IS submitted (it's how the MCP chat
+// delivery reaches goose), so the kick uses send-keys text + a short gap +
+// Enter. Same reliable path, no PTY.
+async function gooseKickSend({ tmux_session, text }) {
+  checkSession(tmux_session)
+  if (text) await tmux('send-keys', '-t', tmux_session, '--', text)
+  await new Promise(r => setTimeout(r, 300))
+  await tmux('send-keys', '-t', tmux_session, 'Enter')
+  return { ok: true, via: 'tmux-sendkeys' }
+}
+
 async function rpcCapturePane({ tmux_session, lines, agent_id }) {
   checkSession(tmux_session)
   const start = `-${Math.max(1, Math.min(parseInt(lines, 10) || 50, 5000))}`
@@ -2161,7 +2176,7 @@ async function checkAgentLiveness() {
         sendMsg({ type: 'agent-thinking', agentId: agent.id, thinking: gWorking })
         if (gWorking !== _prevThinking.get(agent.id)) _prevThinking.set(agent.id, gWorking)
         await maybeKickGoose(agent, paneBottom, {
-          sendText: rpcSendText, execFileP, log, stateMap: _gooseKickState,
+          sendText: gooseKickSend, execFileP, log, stateMap: _gooseKickState,
         })
         continue
       }
