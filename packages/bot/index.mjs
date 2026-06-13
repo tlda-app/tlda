@@ -88,13 +88,16 @@ export function createBot({ name = 'bot', labels = ['bot'], human = false, allow
 
   function dispatch(msg) {
     fire('message', msg);
-    if (msg.type !== 'chat') return;
-    const from = msg.from_id ?? msg.from;
+    // The server wraps chats in a fleet-event envelope: { event, data: { type, from_id, to_id, text } }.
+    if (msg.event !== 'fleet-event') return;
+    const data = msg.data || {};
+    if (data.type !== 'chat') return;
+    const from = data.from_id ?? data.from;
     if (from === id) return; // ignore our own echoes
-    const cmd = addressedText(msg);
+    const cmd = addressedText(data);
     if (cmd === null) return;
     if (allowSet && !allowSet.has(from)) return; // not authorized to command this bot
-    fire('command', { text: cmd, from, to: msg.to_id, raw: msg, reply: (m) => chat(from, m) });
+    fire('command', { text: cmd, from, to: data.to_id, raw: msg, reply: (m) => chat(from, m) });
   }
 
   function start() {
