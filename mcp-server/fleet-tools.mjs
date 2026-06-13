@@ -2,7 +2,7 @@
  * Fleet tools module — imported by the unified MCP server (index.mjs).
  * Exports: getFleetTools(), handleFleetTool(), initFleet()
  */
-import { execSync, exec } from 'child_process';
+import { execSync, execFileSync, exec } from 'child_process';
 import fs from 'fs';
 import http from 'http';
 import os from 'os';
@@ -708,6 +708,25 @@ function tmuxRead(sessionName) {
     return { ok: true, text: out };
   } catch (e) {
     return { ok: false, error: e.message };
+  }
+}
+
+// Wake a goose-backed fleet agent by typing a nudge into its tmux pane.
+// Goose doesn't act on the Claude-only `notifications/claude/channel`, so for a
+// goose agent we deliver the message nudge straight into its interactive prompt
+// via send-keys; the agent then calls my_task() and replies. Single-lined so an
+// embedded newline can't submit the prompt early. execFileSync (args array)
+// avoids any shell-escaping of the message content.
+function tmuxSendText(sessionName, text) {
+  try {
+    const line = String(text || '').replace(/\s*\n\s*/g, ' · ').trim();
+    if (!line) return false;
+    execFileSync('tmux', ['send-keys', '-t', sessionName, '--', line], { timeout: 5000 });
+    execFileSync('tmux', ['send-keys', '-t', sessionName, 'Enter'], { timeout: 5000 });
+    return true;
+  } catch (e) {
+    process.stderr.write(`[fleet-goose-nudge] send-keys failed for ${sessionName}: ${e.message}\n`);
+    return false;
   }
 }
 
@@ -4257,6 +4276,15 @@ async function handleChannelMessage(msg) {
       },
     });
     process.stderr.write(`[fleet-channel] Delivered ${eventType} from ${fromId} via channel (event ${data.id})\n`);
+    // Goose agents don't act on the Claude-only `notifications/claude/channel`,
+    // so a goose agent never wakes from the notification above. For a direct
+    // message to a goose agent, also nudge its tmux pane via send-keys with the
+    // same summary content — it then calls my_task() and replies. (FLEET_HARNESS
+    // is set to 'goose' by fleet-spawn's build_goose_cmd.)
+    if (isDirectTarget && process.env.FLEET_HARNESS === 'goose') {
+      const sess = process.env.FLEET_TMUX_SESSION;
+      if (sess) tmuxSendText(sess, content);
+    }
     // Mark as delivered so dupes are suppressed
     if (data.id) {
       _deliveredChannelIds.add(data.id);

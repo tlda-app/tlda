@@ -1978,6 +1978,23 @@ function reconcileAgentSession(agent, panePids, childrenByPpid) {
   return true
 }
 
+// Walk a pane's process subtree (the pane pid plus all descendants) and return
+// true if any process is an agent runtime. Handles BOTH claude (a direct child
+// of the pane shell) and goose (nested under a `zsh -lc` login wrapper, so its
+// ppid is the inner shell, not the pane) — a flat pane-pid check misses goose.
+function _paneSubtreeHasAgent(panePid, childrenByPpid, agentProcPids) {
+  const stack = [panePid], seen = new Set()
+  while (stack.length) {
+    const pid = stack.pop()
+    if (seen.has(pid)) continue
+    seen.add(pid)
+    if (agentProcPids.has(pid)) return true
+    const kids = childrenByPpid.get(pid)
+    if (kids) for (const k of kids) stack.push(k)
+  }
+  return false
+}
+
 async function checkAgentLiveness() {
   if (!agents.length) return
   let sessions
@@ -2023,9 +2040,14 @@ async function checkAgentLiveness() {
   } catch { /* tmux unavailable */ }
 
   // One ps call: get all processes with their args and PPIDs. We build both
-  // the set of claude PIDs (liveness) and a full ppid→children map (so session
-  // reconciliation can walk a pane's process subtree to its claude child).
-  const claudePids = new Set()
+  // the set of agent-runtime PIDs (liveness) and a full ppid→children map (so
+  // both the subtree liveness walk and session reconciliation can traverse a
+  // pane's process subtree). An agent runs either `claude` (Claude Code) or
+  // `goose run` (sandboxed DeepSeek agents). We record only the agent process's
+  // OWN pid — the subtree walk below finds it under the pane, which is essential
+  // for goose (nested under a `zsh -lc` login wrapper, so its ppid is the inner
+  // shell, not the pane).
+  const agentProcPids = new Set()
   const childrenByPpid = new Map()
   try {
     const { stdout } = await execFileP('ps', ['-eo', 'pid,ppid,args'],
@@ -2037,11 +2059,9 @@ async function checkAgentLiveness() {
         if (!childrenByPpid.has(ppid)) childrenByPpid.set(ppid, [])
         childrenByPpid.get(ppid).push(pid)
       }
-      if (line.includes('claude')) {
+      if (line.includes('claude') || line.includes('goose run')) {
         const pid = line.trim().split(/\s+/)[0]
-        const ppid = line.trim().split(/\s+/)[1]
-        if (pid) claudePids.add(pid)
-        if (ppid) claudePids.add(ppid)
+        if (pid) agentProcPids.add(pid)
       }
     }
   } catch (e) {
@@ -2053,13 +2073,13 @@ async function checkAgentLiveness() {
   let healedAny = false
   for (const agent of candidateAgents) {
     const panes = sessionToPanes.get(agent.tmux_session) || []
-    const claudeAlive = panes.some(pid => claudePids.has(pid))
+    const agentAlive = panes.some(pid => _paneSubtreeHasAgent(pid, childrenByPpid, agentProcPids))
 
-    _alivenessCache.set(agent.tmux_session, claudeAlive)
+    _alivenessCache.set(agent.tmux_session, agentAlive)
 
-    if (!claudeAlive) {
+    if (!agentAlive) {
       if (!agent.hibernating) {
-        log.info(`agent ${agent.friendly_name || agent.id} is hibernating (no claude in session ${agent.tmux_session})`)
+        log.info(`agent ${agent.friendly_name || agent.id} is hibernating (no agent process in session ${agent.tmux_session})`)
         // Capture last lines of tmux for crash diagnosis
         try {
           const { stdout: lastLines } = await execFileP('tmux',

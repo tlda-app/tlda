@@ -1,0 +1,104 @@
+# Fleet DeepSeek agent — a generic, hard-sandboxed fleet agent that runs on Goose.
+#
+# Phase-2 of the 5/29 agent-panel-guy decision: a DeepSeek-backed agent that
+# "reads chat, sends chat, reads markdown like the rest of us" and is locked
+# down so it can only act through the fleet (tlda) MCP tools — no shell, no raw
+# filesystem. The agent's ROLE (adversary, QA, reviewer, …) is briefed in chat
+# via my_task; nothing role-specific is baked in here.
+#
+# ── LAUNCH REQUIREMENT (sandbox-critical) ────────────────────────────────────
+# Run this recipe with --no-profile so the global ~/.config/goose/config.yaml
+# extensions (developer = shell+edit, tom = per-turn context injection, apps,
+# summon, todo, …) are NOT loaded. Only this recipe's `extensions` block loads.
+#
+#     goose run --no-profile --recipe recipes/fleet-deepseek.yaml \
+#       --params provider=<openrouter|openai> --params model=<model> ...
+#
+# The launch env (set by the fleet-spawn branch) supplies the identity + key:
+#   FLEET_ID, FLEET_NAME              — fleet identity for the MCP server
+#   TLDA_SERVER (+ TLDA_SYNC_SERVER)  — tlda server URL (https://localhost:5176)
+#   OPENROUTER_API_KEY  → provider=openrouter   (https://openrouter.ai/api/v1)
+#   OPENAI_API_KEY + OPENAI_HOST=https://api.deepseek.com → provider=openai (DeepSeek-direct)
+# (Provider/key selection mirrors bin/qa-watcher.py: prefer OpenRouter, else DeepSeek-direct.)
+# ─────────────────────────────────────────────────────────────────────────────
+
+version: "1.0.0"
+title: "Fleet DeepSeek agent"
+description: "Generic hard-sandboxed fleet agent on Goose: fleet MCP tools only, role briefed in chat."
+
+instructions: |
+  You are a fleet agent running on Goose. You collaborate with Skip and the
+  other agents entirely through the tlda fleet tools — that is your ONLY
+  interface. You have no shell and no general file editing; everything you can
+  do, you do through the fleet (`tlda`) MCP tools.
+
+  At the start of every session:
+  1. Call `register()` with NO name argument — your identity is configured in
+     your environment, and the server names you from it. Passing a name would
+     override that with the wrong one.
+  2. Call `my_task` to read your assignment. YOUR ROLE AND INSTRUCTIONS COME
+     FROM CHAT, not from this prompt — `my_task` tells you what you are here to
+     do. If nothing is pending, wait; you will be messaged.
+
+  While working:
+  - Talk to Skip and other agents ONLY via `chat` (markdown supported). Anything
+    you print to the terminal is NOT seen by anyone — `chat` is the channel.
+  - When you receive a message (a 📬 marker), call `my_task` to read it in full,
+    then respond with `chat`.
+  - Read documents, source, and markdown with `read_file` (read-only, restricted
+    to ~/work) and the annotation/doc tools. Read before you answer.
+  - You cannot edit arbitrary files or run shell commands. If you need to produce
+    written output, put it in a scratch file via the scratch tools, or say it in
+    `chat`. Never claim to have changed something you cannot change.
+
+  Be direct and concrete. Do the task your `my_task` describes — nothing else.
+
+# Initial kickoff message. `goose run --recipe` forbids --text, so the launch
+# sequence lives here. register() takes no name — the server names the agent
+# from FLEET_NAME in the environment (set by fleet-spawn).
+prompt: |
+  Call register() now (no name argument — your name comes from the
+  environment). Then call my_task() to check for a pending assignment. If
+  nothing is pending, wait quietly; you will be messaged.
+
+extensions:
+  - type: stdio
+    name: tlda
+    cmd: /opt/homebrew/bin/node
+    args:
+      - /Users/skip/work/tlda/mcp-server/index.mjs
+    timeout: 300
+    # NOTE: do NOT list FLEET_ID/FLEET_NAME/TLDA_SERVER/TLDA_SYNC_SERVER under
+    # `env_keys`. goose treats env_keys as goose-managed *secrets* — when they're
+    # not configured in goose's keychain (they aren't; they're per-spawn env),
+    # `goose run` SKIPS loading the whole extension non-interactively, so the
+    # agent boots with NO tlda tools and just narrates tool calls as text. The
+    # stdio MCP subprocess already inherits goose's process environment, and
+    # fleet-spawn sets all four vars in that environment, so the tools get what
+    # they need without env_keys.
+    description: "Fleet/tlda tools (register, my_task, chat, read_file, read_annotations, scratch). The agent's only capability surface."
+
+settings:
+  goose_provider: "{{ provider }}"
+  goose_model: "{{ model }}"
+  temperature: 0.3
+
+parameters:
+  - key: provider
+    input_type: string
+    requirement: optional
+    default: "openrouter"
+    description: >
+      Goose provider, chosen by the launch env from which key is present
+      (mirrors qa-watcher.py): "openrouter" (uses OPENROUTER_API_KEY) or
+      "openai" for DeepSeek-direct (DeepSeek key as OPENAI_API_KEY +
+      OPENAI_HOST=https://api.deepseek.com).
+  - key: model
+    input_type: string
+    requirement: optional
+    default: "deepseek/deepseek-chat"
+    description: >
+      Cheap chat model is the generic default. Role overrides: an adversary
+      role should pass the reasoner — "deepseek/deepseek-r1" (openrouter) or
+      "deepseek-reasoner" (deepseek-direct). For the openai/DeepSeek-direct
+      provider the chat model id is "deepseek-chat".

@@ -63,9 +63,45 @@ MODEL_ALIASES = {
     "opus46": "claude-opus-4-6[1m]",
     "opus47": "claude-opus-4-7[1m]",
     "opus48": "claude-opus-4-8[1m]",
+    "fable": "claude-fable-5[1m]",
+    "fable5": "claude-fable-5[1m]",
     "sonnet": "claude-sonnet-4-6",
     "haiku": "claude-haiku-4-5",
 }
+
+# Goose-backed (non-Claude) models. Selecting one of these makes fleet-spawn
+# launch the hard-sandboxed goose recipe instead of `claude` — same tmux,
+# identity, register/my_task, and wake machinery; only the engine differs.
+#
+# Routed through OpenRouter (provider=openrouter), NOT DeepSeek-direct: goose's
+# generic openai provider pointed at api.deepseek.com does not negotiate
+# structured tool-calls with DeepSeek (the model emits them as text), so the
+# agent can't invoke its tools. OpenRouter handles tool-calling correctly.
+# Hence the OpenRouter-style model ids below.
+GOOSE_MODELS = {
+    "deepseek": "deepseek/deepseek-chat",
+    "deepseek-chat": "deepseek/deepseek-chat",
+    "deepseek-v3": "deepseek/deepseek-v3.2",
+    "deepseek-r1": "deepseek/deepseek-r1",
+    "deepseek-reasoner": "deepseek/deepseek-r1",
+}
+GOOSE_BIN = "/opt/homebrew/bin/goose"
+DEEPSEEK_RECIPE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "recipes", "fleet-deepseek.yaml")
+
+
+def resolve_goose_model(model):
+    """Return the concrete DeepSeek model id if `model` selects a goose-backed
+    agent, else None (meaning: a normal Claude agent). Accepts the aliases above
+    or a raw OpenRouter id (deepseek/…) so a respawn whose stored meta.model is
+    already resolved still routes to goose."""
+    if not model:
+        return None
+    if model in GOOSE_MODELS:
+        return GOOSE_MODELS[model]
+    if model.startswith("deepseek/"):
+        return model
+    return None
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_DIR = os.path.dirname(SCRIPT_DIR)
@@ -473,8 +509,72 @@ def build_claude_cmd(fleet_id, tmux_session, model, effort=None, mode=None,
 
 
 
+def build_goose_cmd(fleet_id, tmux_session, model, name=None):
+    """Build the shell command for a Goose-backed DeepSeek fleet agent.
+
+    Mirrors build_claude_cmd's identity env (FLEET_ID/FLEET_NAME/TMUX) but
+    launches the hard-sandboxed goose recipe instead of claude:
+      - SANDBOX via an isolated `XDG_CONFIG_HOME` (recipes/goose-sandbox/) whose
+        config.yaml disables ALL bundled platform extensions (developer=shell+fs,
+        tom, apps, summon, …). So the recipe's tlda MCP is the agent's ONLY
+        capability. We do NOT use `--no-profile`: verified 2026-06-13 that
+        `--no-profile` ALSO disables the recipe's own extensions (the agent boots
+        with zero tools and narrates tool calls as text — looked like "deepseek
+        can't tool-call" but was really no-tools-loaded). The isolated-config
+        approach keeps the sandbox while letting the recipe's extension load.
+      - provider=openrouter: goose's OpenRouter provider reads OPENROUTER_API_KEY
+        from the env and negotiates structured tool-calls correctly. (We do NOT
+        use DeepSeek-direct via the openai provider: verified 2026-06-13 that
+        deepseek-v4-{flash,pro} through goose's openai→api.deepseek.com path emit
+        tool calls as TEXT instead of invoking them, so the agent can't act. And
+        goose has no native `deepseek` provider — "Unknown provider" at runtime.)
+      - --interactive keeps the session alive after the kickoff so the wake
+        machinery (tmux send-keys) can drive it like a claude agent.
+      - The register()+my_task kickoff lives in the recipe's `prompt:` field —
+        goose forbids --text alongside --recipe. register() takes no name; the
+        server names the agent from FLEET_NAME (set below), so the identity is
+        correct without baking a name into a prompt.
+
+    Key plumbing: the whole thing is wrapped in `zsh -lc` so it runs under a
+    LOGIN shell. tmux's default-command is a non-login `/bin/zsh`, which sources
+    neither ~/.zprofile nor ~/.zshrc — so OPENROUTER_API_KEY (which lives in
+    ~/.zprofile) would otherwise be absent from the pane. The login wrapper
+    sources the profile so goose finds the key in its env; the secret value
+    never appears in this command string.
+    """
+    recipe = os.path.abspath(DEEPSEEK_RECIPE)
+    sandbox_cfg = os.path.join(os.path.dirname(recipe), "goose-sandbox")
+    parts = [
+        f"FLEET_ID={fleet_id}",
+        f"FLEET_TMUX_SESSION={tmux_session}",
+        # FLEET_HARNESS=goose tells the tlda MCP this agent runs on goose, which
+        # ignores the Claude-only channel notification — so the MCP delivers
+        # incoming messages by send-keys'ing a nudge into this pane instead.
+        "FLEET_HARNESS=goose",
+        f"TLDA_SERVER={shlex.quote(API)}",
+        f"TLDA_SYNC_SERVER={shlex.quote(API)}",
+        f"XDG_CONFIG_HOME={shlex.quote(sandbox_cfg)}",
+        "GOOSE_DISABLE_KEYRING=1",
+    ]
+    if name:
+        parts.append(f"FLEET_NAME={shlex.quote(name)}")
+    parts.append(shlex.quote(GOOSE_BIN))
+    parts.append("run")
+    parts.append(f"--recipe {shlex.quote(recipe)}")
+    parts.append("--params provider=openrouter")
+    parts.append(f"--params model={shlex.quote(model)}")
+    parts.append("--interactive")
+    inner = " ".join(parts)
+    return f"zsh -lc {shlex.quote(inner)}"
+
+
 def _session_has_claude(session):
-    """Check if a tmux session has a running claude process."""
+    """Check if a tmux session has a running agent process (claude OR goose).
+
+    Named for the common case but goose-aware: a goose-backed DeepSeek agent
+    runs `goose`, not `claude`. Without the goose check, a stray wake/respawn
+    would see "no claude here", treat the live goose agent as a dead pane, and
+    kill-session it — the death-loop bug, reborn for goose."""
     try:
         r = subprocess.run(tmux("list-panes", "-t", session, "-F", "#{pane_pid}"),
                            capture_output=True, text=True, timeout=5)
@@ -483,7 +583,7 @@ def _session_has_claude(session):
         for pid in r.stdout.strip().split():
             ps = subprocess.run(["ps", "-p", pid, "-o", "args="],
                                 capture_output=True, text=True, timeout=5)
-            if ps.returncode == 0 and "claude" in ps.stdout:
+            if ps.returncode == 0 and ("claude" in ps.stdout or "goose" in ps.stdout):
                 return True
         return False
     except Exception:
@@ -661,7 +761,10 @@ def fresh(name, model, cwd, effort, mode):
     fleet_id = f"fleet:{uuid.uuid4().hex[:8]}"
     sess = unique_session_name(f"fleet-{sanitize_session_name(name)}")
     cwd = resolve_spawn_cwd(cwd)
-    model = resolve_model(model)
+    goose_model = resolve_goose_model(model)
+    # Store the resolved model id in meta either way so a later respawn knows
+    # which engine to use (resolve_goose_model recognizes the deepseek-v4-* id).
+    model = goose_model or resolve_model(model)
 
     if server_up:
         existing = find_agent(name)
@@ -690,7 +793,10 @@ def fresh(name, model, cwd, effort, mode):
             sys.exit(1)
         ws_register(fleet_id, name, sess, cwd, model, effort, refresh=True)
 
-    cmd = build_claude_cmd(fleet_id, sess, model, effort, mode, name=name)
+    if goose_model:
+        cmd = build_goose_cmd(fleet_id, sess, goose_model, name=name)
+    else:
+        cmd = build_claude_cmd(fleet_id, sess, model, effort, mode, name=name)
     spawn_tmux(sess, cwd, cmd)
     print(f"{sess} ({fleet_id}) spawned in {cwd}")
     return sess
@@ -706,7 +812,9 @@ def respawn(name, model, cwd, effort, mode, session_override=None):
     fleet_id = agent["id"]
     meta = agent_meta(agent)
     cwd = cwd or agent.get("cwd") or os.getcwd()
-    model = resolve_model(model or meta.get("model"))
+    raw_model = model or meta.get("model")
+    goose_model = resolve_goose_model(raw_model)
+    model = goose_model or resolve_model(raw_model)
     sess = agent.get("tmux_session") or f"fleet-{name}"
 
     # Single-flight: hold a per-session lock across the WHOLE wake (check →
@@ -721,6 +829,19 @@ def respawn(name, model, cwd, effort, mode, session_override=None):
     if subprocess.run(tmux("has-session", "-t", sess), capture_output=True).returncode == 0:
         if _session_has_claude(sess):
             return sess
+
+    if goose_model:
+        # Goose agents are stateless-role-from-chat: there is no resumable claude
+        # transcript, so "respawn" is a fresh goose launch with the SAME fleet_id
+        # — the recipe re-briefs the agent via my_task. spawn_tmux's alive-check
+        # is goose-aware, so a live goose agent is left running, not clobbered.
+        cmd = build_goose_cmd(fleet_id, sess, goose_model, name=name)
+        started = spawn_tmux(sess, cwd, cmd, auto_dismiss=False)
+        if not started:
+            print(f"{sess} ({fleet_id}) already alive — left running", file=sys.stderr)
+        else:
+            print(f"{sess} ({fleet_id}) relaunched (goose)")
+        return sess
 
     result = None
     if session_override:
@@ -764,13 +885,18 @@ def refresh(name, model, cwd, effort, mode):
     fleet_id = agent["id"]
     meta = agent_meta(agent)
     cwd = cwd or agent.get("cwd") or os.getcwd()
-    model = resolve_model(model or meta.get("model"))
+    raw_model = model or meta.get("model")
+    goose_model = resolve_goose_model(raw_model)
+    model = goose_model or resolve_model(raw_model)
     if not effort:
         effort = meta.get("effort")
     sess = agent.get("tmux_session") or f"fleet-{name}"
 
     ws_register(fleet_id, name, sess, cwd, model, effort, refresh=True)
-    cmd = build_claude_cmd(fleet_id, sess, model, effort, mode, name=name)
+    if goose_model:
+        cmd = build_goose_cmd(fleet_id, sess, goose_model, name=name)
+    else:
+        cmd = build_claude_cmd(fleet_id, sess, model, effort, mode, name=name)
     spawn_tmux(sess, cwd, cmd)
     print(f"{sess} ({fleet_id}) refreshed in {cwd}")
     return sess
