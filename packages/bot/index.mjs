@@ -101,10 +101,12 @@ export function createBot({ name = 'bot', labels = ['bot'], human = false, allow
     // Singleton: if a live pidfile exists, bail (the supervisor runs exactly one).
     if (existsSync(PID_FILE)) {
       const existing = parseInt(readFileSync(PID_FILE, 'utf8').trim(), 10);
-      try { process.kill(existing, 0); log(`already running (pid ${existing}) — exiting`); process.exit(0); } catch {}
+      // kill(pid, 0) throws iff the process is gone → stale pidfile, so we fall
+      // through and take over. It only reaches exit() when a live instance owns it.
+      try { process.kill(existing, 0); log(`already running (pid ${existing}) — exiting`); process.exit(0); } catch { /* stale pid — take over */ }
     }
-    try { writeFileSync(PID_FILE, String(process.pid)); } catch {}
-    const cleanup = () => { try { unlinkSync(PID_FILE); } catch {} };
+    try { writeFileSync(PID_FILE, String(process.pid)); } catch { /* pidfile is best-effort; running without one only loses the singleton guard */ }
+    const cleanup = () => { try { unlinkSync(PID_FILE); } catch { /* already gone */ } };
     process.on('SIGINT', () => { log('shutting down'); cleanup(); ws?.close(); process.exit(0); });
     process.on('exit', cleanup);
     log(`starting (pid ${process.pid}) on ${SERVER}`);
