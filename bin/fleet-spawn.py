@@ -1096,17 +1096,23 @@ def main():
     parser.add_argument("--no-attach", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--list-models", action="store_true",
-                        help="Print the goose model aliases + verified ids as JSON and exit")
+                        help="Print all spawnable model aliases (Claude + goose) + verified ids as JSON and exit")
     parser.add_argument("--_dismiss-devch", default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
 
-    # Single source of truth for the UI's model autocomplete/validation: dump the
-    # goose model aliases, their resolved OpenRouter ids, and which are verified
-    # to emit structured tool-calls. The server serves this so the spawn UI never
-    # drifts from what fleet-spawn actually accepts.
+    # Single source of truth for the UI's model autocomplete/validation: dump
+    # every spawnable alias, its resolved id, and whether it's verified. The
+    # server serves this so the spawn UI never drifts from what fleet-spawn
+    # actually accepts — both families, so the UI derives its WHOLE model pool
+    # from here rather than re-listing aliases. `kind` lets the UI group/badge;
+    # Claude aliases are always tool-capable, so verified; goose aliases are
+    # verified per the probe. `default` stays the goose default.
     if args.list_models:
         models = [
-            {"alias": a, "id": mid, "verified": goose_model_verified(mid)}
+            {"alias": a, "id": mid, "verified": True, "kind": "claude"}
+            for a, mid in sorted(MODEL_ALIASES.items())
+        ] + [
+            {"alias": a, "id": mid, "verified": goose_model_verified(mid), "kind": "goose"}
             for a, mid in sorted(GOOSE_MODELS.items())
         ]
         print(json.dumps({

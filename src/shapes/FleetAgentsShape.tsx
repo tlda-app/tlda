@@ -36,12 +36,43 @@ const MODEL_SHORTHANDS: Record<string, string> = {
   'ds': 'deepseek',
 }
 
-// Goose-backed (non-Claude) models. MUST stay in sync with GOOSE_MODELS in
-// bin/fleet-spawn.py (the source of truth) — that's where these resolve to the
-// concrete OpenRouter ids and route to the goose recipe. (TODO: derive both from
-// one shared list so they're not written twice.)
-const DEEPSEEK_MODELS = ['deepseek', 'deepseek-chat', 'deepseek-v3', 'deepseek-r1', 'deepseek-reasoner']
-const ALL_MODELS = ['opus', 'opus45', 'opus46', 'opus47', 'opus48', 'sonnet', 'haiku', ...DEEPSEEK_MODELS]
+// The model-alias pool for autocomplete/validation is fetched live from
+// /api/fleet/models (served from `fleet-spawn --list-models` — the single source
+// of truth for every spawnable alias, Claude AND goose). Nothing is hardcoded
+// per-family here; this fallback is used only before the fetch resolves or if it
+// fails, so an offline panel still completes the common aliases.
+const MODEL_FALLBACK = [
+  'opus', 'opus45', 'opus46', 'opus47', 'opus48', 'sonnet', 'haiku',
+  'deepseek', 'deepseek-chat', 'deepseek-v3', 'deepseek-r1', 'deepseek-reasoner',
+]
+
+// Live alias list, shared across all FleetAgents shapes: one fetch, cached, with
+// subscribers re-rendered when it lands.
+let _modelCache: string[] | null = null
+let _modelFetchStarted = false
+const _modelSubs = new Set<() => void>()
+function ensureModelFetch() {
+  if (_modelFetchStarted) return
+  _modelFetchStarted = true
+  fetch('/api/fleet/models')
+    .then(r => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+    .then(d => {
+      const aliases: string[] = (d?.models ?? []).map((m: any) => m.alias).filter(Boolean)
+      if (aliases.length) { _modelCache = aliases; _modelSubs.forEach(f => f()) }
+    })
+    .catch(() => { _modelFetchStarted = false }) // allow a retry on the next mount
+}
+function useSpawnModels(): string[] {
+  const [, bump] = useState(0)
+  useEffect(() => {
+    if (_modelCache) return
+    const cb = () => bump(n => n + 1)
+    _modelSubs.add(cb)
+    ensureModelFetch()
+    return () => { _modelSubs.delete(cb) }
+  }, [])
+  return _modelCache ?? MODEL_FALLBACK
+}
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
 const EFFORT_SHORTHANDS: Record<string, string> = {
   'lo': 'low', 'low': 'low', 'l': 'low',
@@ -73,8 +104,10 @@ function parseSpawnInput(raw: string): { doc: string; name: string | undefined; 
   return { doc, name, model, effort }
 }
 
-const ALL_COMPLETABLE = [...ALL_MODELS, ...Object.keys(MODEL_SHORTHANDS)]
-  .filter((v, i, a) => a.indexOf(v) === i)
+// Tab-completable model tokens = the live aliases plus the typing-shorthand keys.
+function completableFrom(models: string[]): string[] {
+  return [...models, ...Object.keys(MODEL_SHORTHANDS)].filter((v, i, a) => a.indexOf(v) === i)
+}
 const ALL_EFFORT_COMPLETABLE = [...EFFORT_LEVELS, ...Object.keys(EFFORT_SHORTHANDS)]
   .filter((v, i, a) => a.indexOf(v) === i)
 
@@ -84,7 +117,7 @@ function completeSegment(typed: string, candidates: string[]): string {
   return match ? match.slice(typed.length) : ''
 }
 
-function getGhostCompletion(input: string, projects: string[], catName: string, defaultDoc: string): string {
+function getGhostCompletion(input: string, projects: string[], catName: string, defaultDoc: string, models: string[]): string {
   // Empty-state default is the doc the user is currently viewing, not the
   // alphabetically-first project — so an empty field implies "spawn here".
   const defaults = [defaultDoc || projects[0] || 'doc', catName, DEFAULT_MODEL, DEFAULT_EFFORT]
@@ -102,7 +135,7 @@ function getGhostCompletion(input: string, projects: string[], catName: string, 
   } else if (pos === 2) {
     segCompletion = completeSegment(lastPart, CAT_NAMES)
   } else if (pos === 3) {
-    segCompletion = completeSegment(lastPart, ALL_COMPLETABLE)
+    segCompletion = completeSegment(lastPart, completableFrom(models))
   } else if (pos === 4) {
     segCompletion = completeSegment(lastPart, ALL_EFFORT_COMPLETABLE)
   }
@@ -120,7 +153,7 @@ function getGhostCompletion(input: string, projects: string[], catName: string, 
 // ends with ':' so the cursor lands at the start of the next segment; the final
 // (effort) segment has no trailing colon. Returns '' when there's nothing to add
 // (already past the last segment).
-function getStagedTabCompletion(input: string, projects: string[], catName: string, defaultDoc: string): string {
+function getStagedTabCompletion(input: string, projects: string[], catName: string, defaultDoc: string, models: string[]): string {
   const defaults = [defaultDoc || projects[0] || 'doc', catName, DEFAULT_MODEL, DEFAULT_EFFORT]
   const parts = input.split(':')
   const pos = parts.length // 1-based: 1=project, 2=name, 3=model, 4=effort
@@ -135,7 +168,7 @@ function getStagedTabCompletion(input: string, projects: string[], catName: stri
   } else if (pos === 2) {
     segCompletion = completeSegment(lastPart, CAT_NAMES)
   } else if (pos === 3) {
-    segCompletion = completeSegment(lastPart, ALL_COMPLETABLE)
+    segCompletion = completeSegment(lastPart, completableFrom(models))
   } else if (pos === 4) {
     segCompletion = completeSegment(lastPart, ALL_EFFORT_COMPLETABLE)
   }
@@ -148,14 +181,14 @@ const SEG_LABELS = ['project', 'name', 'model', 'effort']
 
 // Candidate list for the segment the cursor is currently in (the last colon-part).
 // Shows canonical values only (not shorthand aliases) so the dropdown stays readable.
-function getSegmentCandidates(input: string, projects: string[]): { pos: number; prefix: string; candidates: string[] } {
+function getSegmentCandidates(input: string, projects: string[], models: string[]): { pos: number; prefix: string; candidates: string[] } {
   const parts = input.split(':')
   const pos = parts.length // 1=project, 2=name, 3=model, 4=effort
   const prefix = parts[parts.length - 1]
   let pool: string[] = []
   if (pos === 1) pool = projects
   else if (pos === 2) pool = CAT_NAMES
-  else if (pos === 3) pool = ALL_MODELS
+  else if (pos === 3) pool = models
   else if (pos === 4) pool = EFFORT_LEVELS
   const lower = prefix.toLowerCase()
   const candidates = prefix
@@ -486,14 +519,15 @@ function FleetAgentsInner({ shape }: { shape: any }) {
   // Live project list — re-fetches on the server's `projects-updated` event so a
   // newly-created project shows up here without a manual reload.
   const projectList = useFleetProjects()
+  const spawnModels = useSpawnModels()
   const [catName] = useState(() => CAT_NAMES[Math.floor(Math.random() * CAT_NAMES.length)])
   const spawnInputRef = useRef<HTMLInputElement>(null)
   const [spawnFocused, setSpawnFocused] = useState(false)
   const [dropdownIdx, setDropdownIdx] = useState(-1) // -1 = nothing highlighted
   const [dropdownDismissed, setDropdownDismissed] = useState(false)
   const { pos: segPos, candidates: segCandidates } = useMemo(
-    () => getSegmentCandidates(spawnDoc, projectList),
-    [spawnDoc, projectList],
+    () => getSegmentCandidates(spawnDoc, projectList, spawnModels),
+    [spawnDoc, projectList, spawnModels],
   )
   const projectInvalid = useMemo(
     () => projectUnresolvable(spawnDoc, projectList, currentDoc),
@@ -733,7 +767,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                     } else {
                       // Staged: complete one segment (to the next colon) per Tab,
                       // not the whole spec at once.
-                      const seg = getStagedTabCompletion(spawnDoc, projectList, catName, currentDoc)
+                      const seg = getStagedTabCompletion(spawnDoc, projectList, catName, currentDoc, spawnModels)
                       if (seg) { e.preventDefault(); setSpawnDoc(spawnDoc + seg); setDropdownDismissed(true) }
                     }
                   } else if (e.key === 'Enter') {
@@ -747,7 +781,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                 }}
                 placeholder=""
               />
-              <span className="fleet-agents-spawn-ghost"><span style={{ visibility: 'hidden' }}>{spawnDoc}</span>{getGhostCompletion(spawnDoc, projectList, catName, currentDoc)}</span>
+              <span className="fleet-agents-spawn-ghost"><span style={{ visibility: 'hidden' }}>{spawnDoc}</span>{getGhostCompletion(spawnDoc, projectList, catName, currentDoc, spawnModels)}</span>
               {dropdownOpen && (
                 <ul className="fleet-agents-spawn-dropdown" onPointerDown={(e) => e.stopPropagation()}>
                   <li className="fleet-agents-spawn-dropdown-label">{SEG_LABELS[segPos - 1]}</li>
