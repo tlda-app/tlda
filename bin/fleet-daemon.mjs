@@ -1772,12 +1772,23 @@ async function rpcStartTerminalWatch({ tmux_session, agent_id, poll_ms }) {
   // Disable tmux status bar — it generates escape code noise in the PTY stream
   try { await execFileP('tmux', [...TMUX_ARGS, 'set-option', '-t', tmux_session, 'status', 'off'], { timeout: 3000 }) } catch {}
 
-  // Attach the watch PTY at the session's CURRENT window size, not a fixed guess.
-  // tmux renders the window at the window size (set by window-size policy across
-  // all attached clients); a PTY narrower than the window receives garbled,
-  // absolute-positioned frames. Matching the window keeps the stream clean and
-  // does not resize the agent's real terminal (we follow the window, never lead).
-  const size = await queryWindowSize(tmux_session) || { cols: 120, rows: 40 }
+  // Pin the window to a fixed width before attaching. The global window-size=latest
+  // makes the window follow whatever client last attached, so an idle agent's frame
+  // (painted at one width) gets shown in the peek grid at a different width ->
+  // absolute-position garble. Pinning (manual + a fixed size) removes the reflow at
+  // the source; the resize also forces a one-time repaint that cleans any stale frame
+  // left over from a previous width. New agents are already pinned at spawn
+  // (fleet-spawn.py) — this also covers agents that predate that.
+  const PINNED_COLS = 120, PINNED_ROWS = 40
+  try {
+    await execFileP('tmux', [...TMUX_ARGS, 'set-option', '-t', tmux_session, 'window-size', 'manual'], { timeout: 3000 })
+    await execFileP('tmux', [...TMUX_ARGS, 'resize-window', '-t', tmux_session, '-x', String(PINNED_COLS), '-y', String(PINNED_ROWS)], { timeout: 3000 })
+  } catch (e) { log.warn(`terminal-watch: failed to pin window for ${tmux_session}: ${e?.message || e}`) }
+
+  // Attach the watch PTY at the (now pinned) window size. tmux renders the window at
+  // the window size; a PTY narrower than the window receives garbled, absolute-
+  // positioned frames, so the PTY must match it.
+  const size = await queryWindowSize(tmux_session) || { cols: PINNED_COLS, rows: PINNED_ROWS }
 
   const nodePty = await getPty()
   const pty = nodePty.spawn('tmux', [...TMUX_ARGS, 'attach-session', '-t', tmux_session], {
