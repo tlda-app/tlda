@@ -33,9 +33,15 @@ const MODEL_SHORTHANDS: Record<string, string> = {
   '45': 'opus45', '46': 'opus46', '47': 'opus47', '48': 'opus48',
   's': 'sonnet', 'h': 'haiku',
   'o45': 'opus45', 'o46': 'opus46', 'o47': 'opus47', 'o48': 'opus48',
+  'ds': 'deepseek',
 }
 
-const ALL_MODELS = ['opus', 'opus45', 'opus46', 'opus47', 'opus48', 'sonnet', 'haiku']
+// Goose-backed (non-Claude) models. MUST stay in sync with GOOSE_MODELS in
+// bin/fleet-spawn.py (the source of truth) — that's where these resolve to the
+// concrete OpenRouter ids and route to the goose recipe. (TODO: derive both from
+// one shared list so they're not written twice.)
+const DEEPSEEK_MODELS = ['deepseek', 'deepseek-chat', 'deepseek-v3', 'deepseek-r1', 'deepseek-reasoner']
+const ALL_MODELS = ['opus', 'opus45', 'opus46', 'opus47', 'opus48', 'sonnet', 'haiku', ...DEEPSEEK_MODELS]
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
 const EFFORT_SHORTHANDS: Record<string, string> = {
   'lo': 'low', 'low': 'low', 'l': 'low',
@@ -703,6 +709,9 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                 ref={spawnInputRef}
                 className={'fleet-agents-spawn-search' + (projectInvalid ? ' is-invalid' : '')}
                 value={spawnDoc}
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
                 onFocus={() => setSpawnFocused(true)}
                 onBlur={() => { setSpawnFocused(false); setDropdownIdx(-1) }}
                 onChange={(e) => { setSpawnDoc(e.target.value); setDropdownIdx(-1); setDropdownDismissed(false) }}

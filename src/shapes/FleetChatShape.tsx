@@ -587,7 +587,12 @@ function SkillHoverPane({ agentId, agentName, anchorRect, onMouseEnter, onMouseL
   const dismissed = data?.dismissed || []
   const empty = !loading && read.length === 0 && owed.length === 0 && dismissed.length === 0
 
-  return (
+  // Portal to <body>: the pane is position:fixed, but a fixed element inside the
+  // TLDraw canvas's CSS transform is positioned relative to that transform, not
+  // the viewport — so it lands far from the hovered name (whose rect is in
+  // viewport coords). Portaling out of the transformed tree makes fixed coords
+  // viewport-relative again (same fix as TerminalHoverPane).
+  return createPortal((
     <div
       className="fleet-skill-hover-pane"
       style={style}
@@ -626,7 +631,7 @@ function SkillHoverPane({ agentId, agentName, anchorRect, onMouseEnter, onMouseL
         </div>
       )}
     </div>
-  )
+  ), document.body)
 }
 
 // Recursively read a FileSystemDirectoryEntry, returning { file, path } pairs
