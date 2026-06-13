@@ -89,7 +89,11 @@ MODEL_ALIASES = {
 # hardening step is forcing `provider:{require_parameters:true}` — not needed so
 # far.)
 GOOSE_MODELS = {
-    "deepseek": "deepseek/deepseek-chat",
+    # Bare `deepseek` → the current flagship (v4-pro). Verified 2026-06-13 to
+    # emit structured tool-calls through goose/OpenRouter and read/reason over a
+    # doc end-to-end — Skip's pick for the default goose/adversary model. The
+    # cheaper deepseek-chat is still selectable by its explicit alias.
+    "deepseek": "deepseek/deepseek-v4-pro",
     "deepseek-chat": "deepseek/deepseek-chat",
     "deepseek-v3": "deepseek/deepseek-v3.2",
     "deepseek-r1": "deepseek/deepseek-r1-0528",
