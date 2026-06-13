@@ -40,6 +40,54 @@ let _humanId = null
 let _humanName = null
 let _identifyPending = false   // true while waiting for identify response
 let _lastEventId = 0
+// Buffer for event-updates that arrive before their target event is in the
+// store (e.g. an async file-upload's `event-update` racing ahead of the chat
+// event it patches). Without this, the update is dropped and its change — most
+// visibly a late `inline_attachments` → file chip — is lost until reload. Keyed
+// by db event id; drained when the matching fleet-event arrives.
+const _pendingEventUpdates = new Map()
+const _MAX_PENDING_UPDATES = 200
+
+// Apply an `event-update` payload's fields onto an already-stored event. Shared
+// by the live handler and the buffered-apply path so a buffered update behaves
+// identically to one that arrived after its event.
+function applyEventUpdateFields(ev, data) {
+  if (data.text !== undefined) ev.text = data.text
+  if (data.inline_attachments) ev._inlineAttachments = data.inline_attachments
+  // Amend can set or clear file-section provenance. A file-form amend
+  // sends source = { file, section }; a string-form amend sends
+  // source = null to clear it. Updating ev.metadata.source makes the
+  // provenance chip appear/disappear in place on the amended message.
+  if (data.source !== undefined) {
+    if (!ev.metadata) ev.metadata = {}
+    ev.metadata.source = data.source
+  }
+  if (data.metadata_patch) {
+    if (!ev.metadata) ev.metadata = {}
+    Object.assign(ev.metadata, data.metadata_patch)
+    if (data.metadata_patch.approvedAt) {
+      ev._planResponse = data.metadata_patch.mode === 'supervised' ? 'supervised' : 'approved'
+      ev._promptResponse = 'approved'
+    }
+    if (data.metadata_patch.rejectedAt) {
+      ev._planResponse = 'rejected'
+      ev._promptResponse = 'rejected'
+    }
+    // Timer countdown reaching a terminal state: flip the derived flags
+    // so the line re-renders as cancelled (struck) or fired (persists,
+    // showing it ran). Neither state hides the line.
+    if (ev.type === 'timer' || ev._timerCountdown || ev._timerCancelled) {
+      if (ev.metadata.state === 'cancelled') {
+        ev._timerCancelled = true; ev._timerCountdown = false
+      } else if (ev.metadata.state === 'fired') {
+        ev._timerFired = true; ev._timerCountdown = false
+        if (!ev._timerMessage) ev._timerMessage = ev.metadata.message || (ev.text || '').replace(/^[⏱⏰]\s*/, '')
+      } else if (ev.metadata.pending === false) {
+        ev._timer = true; ev._timerCountdown = false
+      }
+    }
+  }
+}
 
 // --- Subscribers ---
 const _subs = []  // { channel, filter, callback }
@@ -439,6 +487,13 @@ export function connect() {
         // id — no content matching.
         const converted = convertChatEvent(data)
         const { event, isNew } = _store.upsert(converted)
+        // Drain any event-updates that arrived before this event (e.g. a late
+        // file-upload's inline_attachments). Applying them now, before notify,
+        // means the first render already shows the patched line.
+        if (data.id != null && _pendingEventUpdates.has(data.id)) {
+          for (const u of _pendingEventUpdates.get(data.id)) applyEventUpdateFields(event, u)
+          _pendingEventUpdates.delete(data.id)
+        }
         if (data.id && data.id > _lastEventId) _lastEventId = data.id
         if (data.type === 'chat') {
           console.log(`[chat-recv] id=${data.id} from=${data.from_id||data.from} text=${(data.text||'').substring(0,30)}`)
@@ -450,42 +505,19 @@ export function connect() {
       } else if (eventType === 'event-update') {
         const ev = _store.get('db:' + data.id)
         if (ev) {
-          if (data.text !== undefined) ev.text = data.text
-          if (data.inline_attachments) ev._inlineAttachments = data.inline_attachments
-          // Amend can set or clear file-section provenance. A file-form amend
-          // sends source = { file, section }; a string-form amend sends
-          // source = null to clear it. Updating ev.metadata.source makes the
-          // provenance chip appear/disappear in place on the amended message.
-          if (data.source !== undefined) {
-            if (!ev.metadata) ev.metadata = {}
-            ev.metadata.source = data.source
-          }
-          if (data.metadata_patch) {
-            if (!ev.metadata) ev.metadata = {}
-            Object.assign(ev.metadata, data.metadata_patch)
-            if (data.metadata_patch.approvedAt) {
-              ev._planResponse = data.metadata_patch.mode === 'supervised' ? 'supervised' : 'approved'
-              ev._promptResponse = 'approved'
-            }
-            if (data.metadata_patch.rejectedAt) {
-              ev._planResponse = 'rejected'
-              ev._promptResponse = 'rejected'
-            }
-            // Timer countdown reaching a terminal state: flip the derived flags
-            // so the line re-renders as cancelled (struck) or fired (persists,
-            // showing it ran). Neither state hides the line.
-            if (ev.type === 'timer' || ev._timerCountdown || ev._timerCancelled) {
-              if (ev.metadata.state === 'cancelled') {
-                ev._timerCancelled = true; ev._timerCountdown = false
-              } else if (ev.metadata.state === 'fired') {
-                ev._timerFired = true; ev._timerCountdown = false
-                if (!ev._timerMessage) ev._timerMessage = ev.metadata.message || (ev.text || '').replace(/^[⏱⏰]\s*/, '')
-              } else if (ev.metadata.pending === false) {
-                ev._timer = true; ev._timerCountdown = false
-              }
-            }
-          }
+          applyEventUpdateFields(ev, data)
           notify('messages', null)
+        } else if (data.id != null) {
+          // The event isn't in the store yet (the update raced ahead of its
+          // event). Buffer it; the fleet-event ingest drains this on arrival so
+          // the change isn't lost until reload. Bound the buffer so orphaned
+          // updates (for events that never come) can't leak.
+          const list = _pendingEventUpdates.get(data.id) || []
+          list.push(data)
+          _pendingEventUpdates.set(data.id, list)
+          while (_pendingEventUpdates.size > _MAX_PENDING_UPDATES) {
+            _pendingEventUpdates.delete(_pendingEventUpdates.keys().next().value)
+          }
         }
       } else if (eventType === 'read-receipt') {
         const ids = new Set(data.event_ids || [])

@@ -1,8 +1,7 @@
 import { StateNode } from 'tldraw'
-import { placeFleetShapeAtCursor } from '../shapes/fleet-utils'
+import { placeFleetShapeAtCursor, FLEET_TOOL_DIMS } from '../shapes/fleet-utils'
 
-const W = 360
-const H = 560
+const { w: W, h: H } = FLEET_TOOL_DIMS['fleet-inbox']
 
 export class FleetInboxTool extends StateNode {
   static override id = 'fleet-inbox'
