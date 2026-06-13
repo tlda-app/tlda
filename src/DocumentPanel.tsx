@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useContext, useMemo, useSyncE
 import { useClickActions } from './hooks/useClickActions'
 import { subscribeInputModes, getClicksEnabled } from './inputModes'
 import { setStopRecordingCallback } from './tools/VoiceNoteTool'
-import { setVoiceTarget, clearVoiceTarget, setVoiceAccumulator, stopRecording, isRecording, toggleRecording, voiceTap } from './voice.mjs'
+import { setVoiceTarget, clearVoiceTarget, setVoiceAccumulator, stopRecording, isRecording, toggleRecording, voiceTap, onRecordingChange } from './voice.mjs'
 import { getPref } from './preferences'
 import { createPortal } from 'react-dom'
 import { useEditor, useValue, stopEventPropagation, DefaultColorStyle, createShapeId } from 'tldraw'
@@ -182,7 +182,15 @@ export function DocumentPanel() {
 
 const IS_PHONE = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches
 
-import { HL_SLOTS, TLDRAW_ICON_BASE } from './highlighterSlots'
+import { HL_SLOTS, TLDRAW_ICON_BASE, OUTLINE_HL_ICON_URL, type HlSlot } from './highlighterSlots'
+
+// The light-violet "outline" slot gets a highlighter-with-peeling-note glyph;
+// every other color slot falls back to the generic tldraw highlight mask.
+function hlMaskUrl(slot: HlSlot): string {
+  if (slot.svgIcon) return slot.svgIcon
+  if (slot.id === 'light-violet') return OUTLINE_HL_ICON_URL
+  return `${TLDRAW_ICON_BASE}#tool-highlight`
+}
 
 function PhoneHighlighterButton() {
   const editor = useEditor()
@@ -396,8 +404,8 @@ function PhoneHighlighterButton() {
             >
               <span style={{
                 display: 'block', width: 20, height: 20,
-                WebkitMaskImage: `url("${slot.svgIcon ?? `${TLDRAW_ICON_BASE}#tool-highlight`}")`,
-                maskImage: `url("${slot.svgIcon ?? `${TLDRAW_ICON_BASE}#tool-highlight`}")`,
+                WebkitMaskImage: `url("${hlMaskUrl(slot)}")`,
+                maskImage: `url("${hlMaskUrl(slot)}")`,
                 WebkitMaskSize: '100%', maskSize: '100%',
                 WebkitMaskRepeat: 'no-repeat', maskRepeat: 'no-repeat',
                 WebkitMaskPosition: 'center', maskPosition: 'center',
@@ -427,7 +435,10 @@ function PhoneHighlighterButton() {
             (s.id === 'select' && (toolId === 'browse' || toolId === 'select')) ||
             (s.id === 'draw' && toolId === 'draw')
           )
-          const iconUrl = iconSlot?.svgIcon ?? `${TLDRAW_ICON_BASE}#tool-highlight`
+          // When a color (not a tool) is active, key off the active color so the
+          // light-violet "outline" highlighter shows its peeling-note glyph.
+          const iconSlot2 = iconSlot ?? HL_SLOTS.find(s => s.id === activeColorName)
+          const iconUrl = iconSlot2 ? hlMaskUrl(iconSlot2) : `${TLDRAW_ICON_BASE}#tool-highlight`
           return <span style={{
             display: 'block', width: 20, height: 20,
             WebkitMaskImage: `url("${iconUrl}")`,
@@ -753,10 +764,16 @@ function VoiceNoteButtonInner() {
       onTouchEnd={stopEventPropagation}
       title={_isTouchDevice ? 'New voice note' : (recording ? 'Stop recording' : isPlacing ? 'Cancel placement' : 'Voice note')}
     >
-      <svg width="18" height="18" viewBox="0 0 18 18" fill="currentColor">
-        <rect x="6.5" y="1" width="5" height="8" rx="2.5" />
-        <path d="M3 9a6 6 0 0 0 12 0" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" />
-        <line x1="9" y1="15" x2="9" y2="17" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      {/* Mic inside a sticky-note silhouette — "voice → note". The note shape is
+          the noun, the mic the modifier, so it reads as a note-maker not a plain mic. */}
+      <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+        {/* note card with a folded top-right corner */}
+        <path d="M11.5 2.5H4.2A1.7 1.7 0 0 0 2.5 4.2V13.8A1.7 1.7 0 0 0 4.2 15.5H13.8A1.7 1.7 0 0 0 15.5 13.8V6.5Z" />
+        <path d="M11.5 2.5V6.5H15.5" />
+        {/* mic centered in the note */}
+        <rect x="7.6" y="6" width="2.8" height="4" rx="1.4" fill="currentColor" stroke="none" />
+        <path d="M6.3 9.2a2.7 2.7 0 0 0 5.4 0" strokeWidth="1.1" />
+        <line x1="9" y1="11.9" x2="9" y2="13.2" strokeWidth="1.1" />
       </svg>
     </button>
   )
@@ -869,24 +886,25 @@ function MicToggleButtonInner() {
     reassertSelection(editor, keepRef.current)
   }, [editor])
 
+  // Live recording state drives the glyph: filled mic = on (the usual state),
+  // outline mic = off. Opacity stays constant — the HUD carries the aliveness
+  // signal, so this toggle stays chill and just shows armed-vs-not via fill.
+  const on = useSyncExternalStore(onRecordingChange, isRecording, isRecording)
+
   return (
     <button
-      className="mic-toggle-btn"
+      className={`mic-toggle-btn${on ? ' on' : ''}`}
       onClick={handleClick}
       onPointerDown={stopEventPropagation}
       onPointerUp={stopEventPropagation}
       onTouchStart={stopEventPropagation}
       onTouchEnd={stopEventPropagation}
-      title="Toggle dictation"
+      title={on ? 'Dictation on — tap to stop' : 'Dictation off — tap to start'}
     >
-      {/* Mic with sound waves — distinguishes dictation-toggle from the plain
-          mic of the voice-note button directly below it. */}
-      <svg width="18" height="18" viewBox="0 0 18 18" fill="currentColor">
-        <rect x="7" y="2" width="4" height="7" rx="2" />
-        <path d="M4.5 8.5a4.5 4.5 0 0 0 9 0" stroke="currentColor" strokeWidth="1.3" fill="none" strokeLinecap="round" />
-        <line x1="9" y1="13" x2="9" y2="15.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-        <path d="M2 6a3.2 3.2 0 0 1 0 5" stroke="currentColor" strokeWidth="1.1" fill="none" strokeLinecap="round" />
-        <path d="M16 6a3.2 3.2 0 0 0 0 5" stroke="currentColor" strokeWidth="1.1" fill="none" strokeLinecap="round" />
+      <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="6.5" y="2" width="5" height="8" rx="2.5" fill={on ? 'currentColor' : 'none'} />
+        <path d="M3.5 8.5a5.5 5.5 0 0 0 11 0" />
+        <line x1="9" y1="14" x2="9" y2="16" />
       </svg>
     </button>
   )

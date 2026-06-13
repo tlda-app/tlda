@@ -15,6 +15,24 @@ export const BROWSE_ICON_URL = `data:image/svg+xml,${encodeURIComponent(
   `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18"><path d="M2 4.5l1 11 2.8-3.5 4.2 1.8L2 4.5z" fill="currentColor"/><polygon points="${_browseStarburst}" fill="currentColor"/></svg>`
 )}`
 
+// The light-violet "outline" highlighter isn't a marking color — it extracts the
+// highlighted region into a sticky note. Its glyph says exactly that: a highlighter
+// with a little note card peeling off the corner. Rendered as a CSS mask, so it's a
+// solid silhouette tinted lilac like the rest. A gap separates the card from the
+// marker so the two read as distinct (mask alpha can't draw an outline between them).
+export const OUTLINE_HL_ICON_URL = `data:image/svg+xml,${encodeURIComponent(
+  `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">` +
+  `<g transform="rotate(-42 11 13)">` +
+  `<rect x="8.2" y="9" width="5.6" height="8" rx="1.3" fill="currentColor"/>` +
+  `<rect x="8.2" y="6.9" width="5.6" height="2.4" rx="0.8" fill="currentColor"/>` +
+  `<polygon points="8.2,17 13.8,17 11,21" fill="currentColor"/>` +
+  `</g>` +
+  `<g transform="rotate(14 18 6)">` +
+  `<rect x="14.3" y="2.6" width="7.4" height="7.4" rx="1.4" fill="currentColor"/>` +
+  `</g>` +
+  `</svg>`
+)}`
+
 export type HlSlot = { id: string; color: string; label: string; svgIcon?: string }
 
 export const HL_SLOTS: HlSlot[] = [
