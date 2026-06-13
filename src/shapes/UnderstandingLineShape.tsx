@@ -42,6 +42,10 @@ export const HIGHLIGHT_TO_STATUS: Record<string, LineStatus | undefined> = {
 export type RibbonSegment = {
   startLine: number
   endLine: number
+  // Source file each endpoint anchors to ('' = main/bare-keyed file). Required to
+  // disambiguate the same line number across \input files when remapping.
+  startFile?: string
+  endFile?: string
   status: LineStatus
   y1: number
   y2: number
@@ -155,36 +159,23 @@ export class UnderstandingLineShapeUtil extends BaseBoxShapeUtil<any> {
       }
     }, [editor, shape])
 
-    const eraseExtent = useRef<{ minY: number; maxY: number } | null>(null)
-
+    // Eraser preview: only ever the eraser head at the current pointer — never
+    // an accumulated gesture extent. Accumulating min/max made the dimmed/erased
+    // band grow with total cursor travel (and never shrink back), so the mark
+    // looked like it was resizing down as you moved. The actual erase removes the
+    // swept band live (setupRibbonEraser), so the head indicator is all we show.
+    const ERASE_HEAD = 6
     const eraseRange = useValue('ribbon-erase-ghost', () => {
       const toolId = editor.getCurrentToolId()
-      if (toolId !== 'eraser') {
-        eraseExtent.current = null
-        return null
-      }
+      if (toolId !== 'eraser') return null
 
       const point = editor.inputs.currentPagePoint
       if (point.x > shape.x + shape.props.w + RIBBON_HIT_MARGIN) return null
       if (point.x < shape.x - RIBBON_HIT_MARGIN) return null
 
-      const isDrawing = editor.inputs.isDragging || editor.inputs.isPointing
-      if (isDrawing) {
-        if (!eraseExtent.current) {
-          eraseExtent.current = { minY: point.y, maxY: point.y }
-        }
-        eraseExtent.current.minY = Math.min(eraseExtent.current.minY, point.y)
-        eraseExtent.current.maxY = Math.max(eraseExtent.current.maxY, point.y)
-        return {
-          y1: Math.max(0, eraseExtent.current.minY - shape.y),
-          y2: Math.min(shape.props.h, eraseExtent.current.maxY - shape.y),
-        }
-      }
-
-      eraseExtent.current = null
       return {
-        y1: Math.max(0, point.y - shape.y - 4),
-        y2: Math.min(shape.props.h, point.y - shape.y + 4),
+        y1: Math.max(0, point.y - shape.y - ERASE_HEAD),
+        y2: Math.min(shape.props.h, point.y - shape.y + ERASE_HEAD),
       }
     }, [editor, shape])
 
