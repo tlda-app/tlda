@@ -768,6 +768,20 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
 
     let { resolvedMessage, inlineAttachments } = result
 
+    // Warn the path's agent if the unquote resolved to a missing file on its machine.
+    // The broken ref was masked at send time (backticked) and only surfaced when Skip
+    // unquoted it — without this the agent never learns its path is dead; it just
+    // renders a silent ⚠ chip in chat.
+    const brokenAtts = (inlineAttachments || []).filter(a => a && a.broken)
+    if (brokenAtts.length && typeof fleetStore?.chat === 'function') {
+      const paths = brokenAtts.map(a => a.path).join(', ')
+      fleetStore.chat(
+        SERVER_OWNER_ID,
+        agentId,
+        `⚠ ${SERVER_OWNER_NAME} unquoted a file path that isn't on your machine: ${paths}. Fix the reference (the file may be at a different path) and re-send — that link is rendering dead in chat.`
+      )
+    }
+
     // Patch the stored event: replace `rawText` (with or without backticks) in the text,
     // and merge new inline_attachments into the event's metadata.
     const evId = parseInt(eventId, 10)
