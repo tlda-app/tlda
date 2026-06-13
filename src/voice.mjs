@@ -625,7 +625,10 @@ export function setVoiceAccumulator(onUpdate, onSend, onStop, label) {
 export function clearVoiceAccumulator(onUpdate) {
   if (_accumulator && _accumulator.onUpdate === onUpdate) {
     _accumulator = null
-    if (_recording) stopRecording()
+    // Deselecting a note clears the target but never stops the recorder —
+    // mirrors clearVoiceTarget. The stream is simply discarded (fillTextarea
+    // returns early with no accumulator/textarea) until a new target is set.
+    // Only the mic button stops recording.
   }
 }
 
