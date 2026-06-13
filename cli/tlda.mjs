@@ -2127,9 +2127,11 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
     }
 
     // Wait for it to come up. The server can boot slowly (large fleet-DB query
-    // on a big roster), so give it ~30s before declaring failure — a too-short
-    // wait made agents falsely think they'd killed prod fleet chat.
-    for (let i = 0; i < 120; i++) {
+    // on a big roster — measured ~50s on a ~1500-row agents table), so give it
+    // ~90s before declaring failure. A too-short wait (was 30s) made `tlda deploy`
+    // falsely report "Server failed to start" while the server was still booting,
+    // tempting a panic rollback. (Real cure: speed the boot — see the startup scan.)
+    for (let i = 0; i < 360; i++) {
       await new Promise(r => setTimeout(r, 250))
       try {
         const res = await fetch(`${getServer()}/health`)
