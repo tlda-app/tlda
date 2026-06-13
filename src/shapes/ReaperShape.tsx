@@ -4,8 +4,9 @@ import {
   T,
   stopEventPropagation,
   useEditor,
+  useValue,
 } from 'tldraw'
-import { useState, useCallback, useMemo } from 'react'
+import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
 import { useReaperStatus } from '../fleet-data-adapter'
 
 const DEFAULT_W = 480
@@ -95,6 +96,26 @@ function ReaperComponent({ shape }: { shape: any }) {
   const [sortKey, setSortKey] = useState<SortKey>('memory')
   const [sortAsc, setSortAsc] = useState(false)
   const status = useReaperStatus()
+
+  // Capture-phase pointerdown so clicks inside the panel (the ×/⊞ buttons, sort
+  // headers, kill buttons) aren't hijacked by tldraw's setPointerCapture before
+  // they reach the controls. Mirrors FleetInboxShape / FleetSearchShape — bare
+  // e.stopPropagation() in React can't cancel tldraw's native capture listener.
+  const containerRef = useRef<HTMLDivElement>(null)
+  const isSelectedRef = useRef(false)
+  isSelectedRef.current = useValue('isSelected', () => editor.getSelectedShapeIds().includes(shape.id), [editor, shape.id])
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    function onPointerDown(e: PointerEvent) {
+      const target = e.target as HTMLElement
+      if (!el!.contains(target)) return
+      if (isSelectedRef.current) return
+      editor.markEventAsHandled(e)
+    }
+    document.addEventListener('pointerdown', onPointerDown, true)
+    return () => document.removeEventListener('pointerdown', onPointerDown, true)
+  }, [editor])
 
   const handleKill = useCallback(async (pid: number) => {
     setKilling(prev => new Set(prev).add(pid))
@@ -240,6 +261,7 @@ function ReaperComponent({ shape }: { shape: any }) {
       }}
     >
       <div
+        ref={containerRef}
         className="fleet-shape fleet-reaper-shape fleet-chat-shape"
         style={{
           width: '100%',
@@ -318,6 +340,7 @@ function ReaperComponent({ shape }: { shape: any }) {
           </div>
         ) : (
           <div
+            className="fleet-reaper-body"
             style={{ flex: 1, overflow: 'auto', padding: '6px 10px', minHeight: 0 }}
             onPointerDown={stopEventPropagation}
             onWheel={stopEventPropagation}
