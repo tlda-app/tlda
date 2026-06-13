@@ -10,7 +10,7 @@ import { getPref } from '../preferences'
  *  ownership filtering, visibility, copy gating, and hit-test exclusion.
  *  Import this everywhere instead of defining local copies. */
 export const FLEET_SHAPE_TYPES = new Set([
-  'fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview', 'fleet-reaper',
+  'fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview', 'fleet-reaper', 'fleet-inbox',
 ])
 
 /**

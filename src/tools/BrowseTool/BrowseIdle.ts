@@ -34,7 +34,7 @@ import { getOnSourceClick } from '../../stores'
 import { getHumanId } from '../../fleet/fleet-data.mjs'
 
 // --- Fleet shape types that get DOM interaction ---
-const FLEET_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview', 'fleet-reaper'])
+const FLEET_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-inbox', 'fleet-docview', 'fleet-reaper'])
 
 // --- Inlined helpers (not exported from tldraw) ---
 
@@ -173,7 +173,7 @@ export class BrowseIdle extends StateNode {
     // This is the ONLY place layout mode is turned off — never from store
     // listeners, which race with TLDraw's state machine.
     if (fleetLayoutActiveRef.current && this.editor.getContainer().closest('.fleet-hud-wrap')) {
-      const FLEET_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview', 'fleet-reaper'])
+      const FLEET_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-inbox', 'fleet-docview', 'fleet-reaper'])
       const hasFleetSelected = this.editor.getSelectedShapeIds().some(id => {
         const s = this.editor.getShape(id)
         return s && FLEET_TYPES.has(s.type)

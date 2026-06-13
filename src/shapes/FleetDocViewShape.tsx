@@ -391,7 +391,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
 
   const shapeUtils = useMemo(() => {
     const all = (window as any).__tldraw_shape_utils__ || []
-    const FLEET_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview', 'fleet-pill'])
+    const FLEET_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-inbox', 'fleet-docview', 'fleet-pill'])
     return all.filter((u: any) => !FLEET_TYPES.has(u.type))
   }, [])
   const licenseKey = 'tldraw-2027-01-19/WyJhUGMwcWRBayIsWyIqLnF0bTI4NS5naXRodWIuaW8iXSw5LCIyMDI3LTAxLTE5Il0.Hq9z1V8oTLsZKgpB0pI3o/RXCoLOsh5Go7Co53YGqHNmtEO9Lv/iuyBPzwQwlxQoREjwkkFbpflOOPmQMwvQSQ'

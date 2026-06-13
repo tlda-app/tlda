@@ -810,7 +810,7 @@ export function CanvasClipPanel({
       // In fullViewport mode, only handle wheel events over fleet shapes.
       // Events over empty areas should pass through to the main canvas.
       if (fullViewport) {
-        const fleetShape = target?.closest('[data-shape-type="fleet-chat"], [data-shape-type="fleet-agents"], [data-shape-type="fleet-search"], [data-shape-type="fleet-docview"]')
+        const fleetShape = target?.closest('[data-shape-type="fleet-chat"], [data-shape-type="fleet-agents"], [data-shape-type="fleet-search"], [data-shape-type="fleet-inbox"], [data-shape-type="fleet-docview"]')
         if (!fleetShape) return // let event pass through
       }
       e.preventDefault()
@@ -991,7 +991,7 @@ export function CanvasClipPanel({
     if (!fullViewport) return
     const el = canvasRef.current
     if (!el) return
-    const FLEET_SELECTOR = '[data-shape-type="fleet-chat"], [data-shape-type="fleet-agents"], [data-shape-type="fleet-search"], [data-shape-type="fleet-docview"]'
+    const FLEET_SELECTOR = '[data-shape-type="fleet-chat"], [data-shape-type="fleet-agents"], [data-shape-type="fleet-search"], [data-shape-type="fleet-inbox"], [data-shape-type="fleet-docview"]'
     const handler = (e: DragEvent) => {
       const target = document.elementFromPoint(e.clientX, e.clientY)
       if (target?.closest(FLEET_SELECTOR)) return // let fleet shapes handle it

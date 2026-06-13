@@ -56,6 +56,7 @@ const SVG_TOOLS = [
   'fleet-chat',
   'fleet-agents',
   'fleet-search',
+  'fleet-inbox',
   'playback-frame',
   'terminal',
 ]
@@ -81,6 +82,7 @@ const HTML_TOOLS = [
   'fleet-chat',
   'fleet-agents',
   'fleet-search',
+  'fleet-inbox',
   'playback-frame',
 ]
 

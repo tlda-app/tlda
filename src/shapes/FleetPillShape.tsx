@@ -23,7 +23,7 @@ const PILL_H = 18
 const CHAT_W = 400
 const CHAT_H = 600
 
-const FLEET_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview']
+const FLEET_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-inbox', 'fleet-docview']
 
 // Module-level snap state — written by drag handler, read by the component.
 // The component re-renders on every translate frame, so it picks up changes.

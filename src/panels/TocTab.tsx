@@ -754,7 +754,7 @@ export function ZoneWidthSlider() {
 
 const FLEET_STATES = ['off', '3col', '2col'] as const
 type FleetState = typeof FLEET_STATES[number]
-const FLEET_SHAPE_TYPES_TOC = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview']
+const FLEET_SHAPE_TYPES_TOC = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-inbox', 'fleet-docview']
 
 function detectFleetState(editor: any): FleetState {
   const fleet = editor.getCurrentPageShapes().filter((s: any) =>

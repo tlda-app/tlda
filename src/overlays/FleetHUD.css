@@ -66,6 +66,8 @@
 .fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-agents"] *,
 .fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-search"],
 .fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-search"] *,
+.fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-inbox"],
+.fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-inbox"] *,
 .fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-docview"],
 .fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-docview"] * {
   pointer-events: auto !important;
@@ -109,6 +111,8 @@
 .fleet-hud-wrap.tool-passes-through:not(.hud-layout-active) .clip-panel-fullvp .tl-shape[data-shape-type="fleet-agents"] *,
 .fleet-hud-wrap.tool-passes-through:not(.hud-layout-active) .clip-panel-fullvp .tl-shape[data-shape-type="fleet-search"],
 .fleet-hud-wrap.tool-passes-through:not(.hud-layout-active) .clip-panel-fullvp .tl-shape[data-shape-type="fleet-search"] *,
+.fleet-hud-wrap.tool-passes-through:not(.hud-layout-active) .clip-panel-fullvp .tl-shape[data-shape-type="fleet-inbox"],
+.fleet-hud-wrap.tool-passes-through:not(.hud-layout-active) .clip-panel-fullvp .tl-shape[data-shape-type="fleet-inbox"] *,
 .fleet-hud-wrap.tool-passes-through:not(.hud-layout-active) .clip-panel-fullvp .tl-shape[data-shape-type="fleet-docview"],
 .fleet-hud-wrap.tool-passes-through:not(.hud-layout-active) .clip-panel-fullvp .tl-shape[data-shape-type="fleet-docview"] * {
   pointer-events: none !important;

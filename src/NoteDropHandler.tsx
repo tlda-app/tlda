@@ -52,7 +52,7 @@ export function NoteDropHandler() {
       // fleet shape element — not the HUD bounding rect (which is the whole screen).
       const target = document.elementFromPoint(e.clientX, e.clientY)
       if (!target) return false
-      return !!target.closest('[data-shape-type="fleet-chat"], [data-shape-type="fleet-agents"], [data-shape-type="fleet-search"], [data-shape-type="fleet-docview"]')
+      return !!target.closest('[data-shape-type="fleet-chat"], [data-shape-type="fleet-agents"], [data-shape-type="fleet-search"], [data-shape-type="fleet-inbox"], [data-shape-type="fleet-docview"]')
     }
 
     function handleDrop(e: DragEvent) {
