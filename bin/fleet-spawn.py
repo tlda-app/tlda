@@ -760,6 +760,15 @@ def spawn_tmux(session, cwd, cmd, auto_dismiss=True):
                        check=True, env=spawn_env)
         subprocess.run(tmux("set-option", "-t", session, "remain-on-exit", "on"),
                        capture_output=True, timeout=5, env=spawn_env)
+    # Pin the window to a fixed width so the agent always paints at one size. The
+    # global window-size=latest makes the window follow whatever client last
+    # attached; an idle agent's frame is then painted at one width and shown in the
+    # terminal peek's grid at a different (current) width -> absolute-position
+    # garble. Manual + a fixed size removes the reflow at the source.
+    subprocess.run(tmux("set-option", "-t", session, "window-size", "manual"),
+                   capture_output=True, timeout=5, env=spawn_env)
+    subprocess.run(tmux("resize-window", "-t", session, "-x", "120", "-y", "40"),
+                   capture_output=True, timeout=5, env=spawn_env)
     if auto_dismiss:
         # Background the bounded poll-and-dismiss (see dismiss_devchannels).
         # Detached so spawn_tmux returns immediately and the dismiss survives
@@ -1086,8 +1095,26 @@ def main():
     parser.add_argument("--enroll", action="store_true")
     parser.add_argument("--no-attach", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--list-models", action="store_true",
+                        help="Print the goose model aliases + verified ids as JSON and exit")
     parser.add_argument("--_dismiss-devch", default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
+
+    # Single source of truth for the UI's model autocomplete/validation: dump the
+    # goose model aliases, their resolved OpenRouter ids, and which are verified
+    # to emit structured tool-calls. The server serves this so the spawn UI never
+    # drifts from what fleet-spawn actually accepts.
+    if args.list_models:
+        models = [
+            {"alias": a, "id": mid, "verified": goose_model_verified(mid)}
+            for a, mid in sorted(GOOSE_MODELS.items())
+        ]
+        print(json.dumps({
+            "default": GOOSE_MODELS.get("deepseek"),
+            "models": models,
+            "verified": sorted(GOOSE_VERIFIED),
+        }, indent=2))
+        return
 
     # Internal: backgrounded dev-channels dialog dismisser (spawned by spawn_tmux).
     if args._dismiss_devch:

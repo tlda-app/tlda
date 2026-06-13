@@ -1532,6 +1532,21 @@ async function rpcSendText({ tmux_session, text, enter }) {
   return { ok: true, via: 'tmux' }
 }
 
+// Deliver a turn-end kick to a goose agent's TUI. rpcSendText prefers the PTY,
+// but goose reads a bare PTY `\r` as a literal newline-in-field ("Ctrl+J
+// newline"), NOT submit ("Enter to send") — so a kick written that way lands in
+// the input un-submitted and the agent just sits there (observed on ds-v4b
+// 2026-06-13). tmux's discrete `Enter` key IS submitted (it's how the MCP chat
+// delivery reaches goose), so the kick uses send-keys text + a short gap +
+// Enter. Same reliable path, no PTY.
+async function gooseKickSend({ tmux_session, text }) {
+  checkSession(tmux_session)
+  if (text) await tmux('send-keys', '-t', tmux_session, '--', text)
+  await new Promise(r => setTimeout(r, 300))
+  await tmux('send-keys', '-t', tmux_session, 'Enter')
+  return { ok: true, via: 'tmux-sendkeys' }
+}
+
 async function rpcCapturePane({ tmux_session, lines, agent_id }) {
   checkSession(tmux_session)
   const start = `-${Math.max(1, Math.min(parseInt(lines, 10) || 50, 5000))}`
@@ -1757,12 +1772,23 @@ async function rpcStartTerminalWatch({ tmux_session, agent_id, poll_ms }) {
   // Disable tmux status bar — it generates escape code noise in the PTY stream
   try { await execFileP('tmux', [...TMUX_ARGS, 'set-option', '-t', tmux_session, 'status', 'off'], { timeout: 3000 }) } catch {}
 
-  // Attach the watch PTY at the session's CURRENT window size, not a fixed guess.
-  // tmux renders the window at the window size (set by window-size policy across
-  // all attached clients); a PTY narrower than the window receives garbled,
-  // absolute-positioned frames. Matching the window keeps the stream clean and
-  // does not resize the agent's real terminal (we follow the window, never lead).
-  const size = await queryWindowSize(tmux_session) || { cols: 120, rows: 40 }
+  // Pin the window to a fixed width before attaching. The global window-size=latest
+  // makes the window follow whatever client last attached, so an idle agent's frame
+  // (painted at one width) gets shown in the peek grid at a different width ->
+  // absolute-position garble. Pinning (manual + a fixed size) removes the reflow at
+  // the source; the resize also forces a one-time repaint that cleans any stale frame
+  // left over from a previous width. New agents are already pinned at spawn
+  // (fleet-spawn.py) — this also covers agents that predate that.
+  const PINNED_COLS = 120, PINNED_ROWS = 40
+  try {
+    await execFileP('tmux', [...TMUX_ARGS, 'set-option', '-t', tmux_session, 'window-size', 'manual'], { timeout: 3000 })
+    await execFileP('tmux', [...TMUX_ARGS, 'resize-window', '-t', tmux_session, '-x', String(PINNED_COLS), '-y', String(PINNED_ROWS)], { timeout: 3000 })
+  } catch (e) { log.warn(`terminal-watch: failed to pin window for ${tmux_session}: ${e?.message || e}`) }
+
+  // Attach the watch PTY at the (now pinned) window size. tmux renders the window at
+  // the window size; a PTY narrower than the window receives garbled, absolute-
+  // positioned frames, so the PTY must match it.
+  const size = await queryWindowSize(tmux_session) || { cols: PINNED_COLS, rows: PINNED_ROWS }
 
   const nodePty = await getPty()
   const pty = nodePty.spawn('tmux', [...TMUX_ARGS, 'attach-session', '-t', tmux_session], {
@@ -2161,7 +2187,7 @@ async function checkAgentLiveness() {
         sendMsg({ type: 'agent-thinking', agentId: agent.id, thinking: gWorking })
         if (gWorking !== _prevThinking.get(agent.id)) _prevThinking.set(agent.id, gWorking)
         await maybeKickGoose(agent, paneBottom, {
-          sendText: rpcSendText, execFileP, log, stateMap: _gooseKickState,
+          sendText: gooseKickSend, execFileP, log, stateMap: _gooseKickState,
         })
         continue
       }
