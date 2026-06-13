@@ -470,6 +470,20 @@ Read \`math-report\` before you send: it's the self-review checklist for exactly
     cooldown: 300_000,
   },
 
+  // ---- Tier 3 — Writing: the "magician" tell ----
+  {
+    pattern: /\bmagician/i,
+    skill: 'read-support',
+    message: `🛑 **Magician.** Your paragraph springs its result as a surprise — you could say "abracadabra" at the end. A magician surprises the audience with the results of their actions; don't do that to the reader.
+
+Fix: **don't surprise the reader.** Say where you're going, keep every step, and let the conclusion be *earned* by the actions the reader watched — not conjured at the end.
+
+The trap: "don't be a magician" does **NOT** mean cut the steps. Keep every step — just stop withholding the destination so the reader sees the result coming.
+
+Read the "magician" tell in \`read-support\`.`,
+    cooldown: 120_000,
+  },
+
   // ---- Tier 3 — Confusion is evidence about YOUR argument ----
   // Skip can't follow / can't tell why something is true / calls it too vague /
   // says you're treating him as stupid. His confusion is the gap-detector firing
