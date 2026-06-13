@@ -94,10 +94,13 @@ GOOSE_MODELS = {
     "deepseek-v3": "deepseek/deepseek-v3.2",
     "deepseek-r1": "deepseek/deepseek-r1-0528",
     "deepseek-reasoner": "deepseek/deepseek-r1-0528",
+    "deepseek-v4": "deepseek/deepseek-v4-pro",
+    "deepseek-v4-pro": "deepseek/deepseek-v4-pro",
+    "deepseek-v4-flash": "deepseek/deepseek-v4-flash",
 }
 GOOSE_BIN = "/opt/homebrew/bin/goose"
 DEEPSEEK_RECIPE = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", "recipes", "fleet-deepseek.yaml")
+    os.path.dirname(os.path.realpath(__file__)), "..", "recipes", "fleet-deepseek.yaml")
 
 
 def resolve_goose_model(model):
@@ -113,7 +116,7 @@ def resolve_goose_model(model):
         return model
     return None
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 REPO_DIR = os.path.dirname(SCRIPT_DIR)
 TLDA_CLI = os.path.join(REPO_DIR, "cli", "tlda.mjs")
 CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".config", "tlda", "config.json")
@@ -565,6 +568,11 @@ def build_goose_cmd(fleet_id, tmux_session, model, name=None):
         f"TLDA_SYNC_SERVER={shlex.quote(API)}",
         f"XDG_CONFIG_HOME={shlex.quote(sandbox_cfg)}",
         "GOOSE_DISABLE_KEYRING=1",
+        # Force telemetry off non-interactively. goose's first interactive run
+        # otherwise blocks on a "share anonymous usage data?" consent prompt that
+        # hangs boot (the config's GOOSE_TELEMETRY_ENABLED:false doesn't suppress
+        # the PROMPT). GOOSE_TELEMETRY_OFF overrides the config and skips the ask.
+        "GOOSE_TELEMETRY_OFF=1",
     ]
     if name:
         parts.append(f"FLEET_NAME={shlex.quote(name)}")
