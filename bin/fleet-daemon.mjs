@@ -1878,6 +1878,66 @@ const APPROVAL_PROMPT_SCAN_LINES = 15
 const _prevThinking = new Map()   // agent_id → boolean
 const _prevCompacting = new Map() // agent_id → boolean
 const _prevApprovalFP = new Map() // agent_id → string (fingerprint)
+// agent_id → session_id we last reconciled into the registry, so we don't
+// re-emit agent-session-observed every 30s once the heal has landed.
+const _reconciledSession = new Map()
+
+// Read an agent's *actual* live Claude session from the PID-keyed metadata
+// Claude Code writes at ~/.claude/sessions/<pid>.json. This is the same
+// authoritative source the MCP uses at startup (no birthtime guessing, no
+// shared-cwd collisions). Given the agent's tmux pane PIDs and the full
+// process tree, scan the pane PIDs plus their descendants and return the
+// session from the most-recently-updated sessions file. Returns
+// { sessionId, cwd } or null.
+function liveSessionForPids(rootPids, childrenByPpid) {
+  const subtree = new Set()
+  const stack = [...rootPids]
+  while (stack.length) {
+    const pid = stack.pop()
+    if (subtree.has(pid)) continue
+    subtree.add(pid)
+    for (const c of (childrenByPpid.get(pid) || [])) stack.push(c)
+  }
+  const sessionsDir = path.join(os.homedir(), '.claude', 'sessions')
+  let best = null
+  for (const pid of subtree) {
+    let data
+    try { data = JSON.parse(fs.readFileSync(path.join(sessionsDir, `${pid}.json`), 'utf8')) }
+    catch { continue } // most PIDs have no sessions file — that's the common case, not an error
+    if (!data || typeof data.sessionId !== 'string' || !data.sessionId) continue
+    const ts = data.updatedAt || data.startedAt || 0
+    if (!best || ts > best.ts) best = { sessionId: data.sessionId, cwd: data.cwd || null, ts }
+  }
+  return best ? { sessionId: best.sessionId, cwd: best.cwd } : null
+}
+
+// If a live agent's true session isn't its registered primary session_id, heal
+// the daemon's local agent record (so syncSessionWatchers attaches the real
+// JSONL this sweep) and tell the server to persist it. This is the automated
+// form of the manual re-map that fixes "alive agent, dead activity cards".
+// Returns true if a heal was applied (caller re-runs syncSessionWatchers).
+function reconcileAgentSession(agent, panePids, childrenByPpid) {
+  if (!agent || !agent.id || !panePids?.length) return false
+  const live = liveSessionForPids(panePids, childrenByPpid)
+  if (!live) return false
+  if (agent.session_id === live.sessionId) {
+    // Already correct — record it so we don't keep checking the message guard.
+    _reconciledSession.set(agent.id, live.sessionId)
+    return false
+  }
+  const known = [agent.session_id, ...(agent.session_ids || [])].filter(Boolean)
+  // Heal locally: make the live session primary and ensure it's in the list.
+  agent.session_id = live.sessionId
+  if (!agent.session_ids) agent.session_ids = []
+  if (!agent.session_ids.includes(live.sessionId)) agent.session_ids.push(live.sessionId)
+  // Persist once per (agent, live session) — avoid re-emitting every sweep.
+  if (_reconciledSession.get(agent.id) !== live.sessionId) {
+    _reconciledSession.set(agent.id, live.sessionId)
+    log.info(`reconciled live session for ${agent.friendly_name || agent.id}: ${live.sessionId} (was registered as ${known.join(',') || 'none'})`)
+    sendMsg({ type: 'agent-session-observed', agent_id: agent.id, session_id: live.sessionId, cwd: live.cwd })
+  }
+  return true
+}
 
 async function checkAgentLiveness() {
   if (!agents.length) return
@@ -1923,12 +1983,21 @@ async function checkAgentLiveness() {
     }
   } catch { /* tmux unavailable */ }
 
-  // One ps call: get all processes with their args and PPIDs.
+  // One ps call: get all processes with their args and PPIDs. We build both
+  // the set of claude PIDs (liveness) and a full ppid→children map (so session
+  // reconciliation can walk a pane's process subtree to its claude child).
   const claudePids = new Set()
+  const childrenByPpid = new Map()
   try {
     const { stdout } = await execFileP('ps', ['-eo', 'pid,ppid,args'],
       { timeout: 5000, encoding: 'utf8' })
     for (const line of stdout.split('\n')) {
+      const m = line.trim().match(/^(\d+)\s+(\d+)\s/)
+      if (m) {
+        const pid = m[1], ppid = m[2]
+        if (!childrenByPpid.has(ppid)) childrenByPpid.set(ppid, [])
+        childrenByPpid.get(ppid).push(pid)
+      }
       if (line.includes('claude')) {
         const pid = line.trim().split(/\s+/)[0]
         const ppid = line.trim().split(/\s+/)[1]
@@ -1942,6 +2011,7 @@ async function checkAgentLiveness() {
   }
 
   const aliveAgentIds = []
+  let healedAny = false
   for (const agent of candidateAgents) {
     const panes = sessionToPanes.get(agent.tmux_session) || []
     const claudeAlive = panes.some(pid => claudePids.has(pid))
@@ -1977,7 +2047,18 @@ async function checkAgentLiveness() {
       agent.hibernating = false
     }
     aliveAgentIds.push(agent.id)
+
+    // Reconcile: an alive agent's true live JSONL session may have diverged
+    // from what's registered (long-lived/resumed agents roll session UUIDs;
+    // the MCP only stamps session_id once at startup). Without this, the daemon
+    // never finds the live JSONL → activity cards die though the agent is alive.
+    if (reconcileAgentSession(agent, panes, childrenByPpid)) healedAny = true
   }
+
+  // A heal changed an agent's session_id/session_ids locally; re-point the JSONL
+  // watchers immediately so attribution resumes this sweep (the server persists
+  // independently from the agent-session-observed message).
+  if (healedAny) syncSessionWatchers(agents)
 
   // Scan alive agents for thinking/compacting/approval state
   for (const agent of candidateAgents) {

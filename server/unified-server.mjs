@@ -4156,6 +4156,29 @@ async function handleDaemonWsMessage(ws, msg) {
     return
   }
 
+  if (type === 'agent-session-observed') {
+    // The daemon observed an alive agent's true live Claude session (from the
+    // PID-keyed ~/.claude/sessions file) and it wasn't the registered primary.
+    // Persist it: make it the primary session_id and merge into session_ids so
+    // JSONL→agent attribution self-heals and survives restarts. This is the
+    // automated form of the manual re-map that fixes dead activity cards.
+    const { agent_id, session_id, cwd } = msg
+    if (!fleetStore || !agent_id || !session_id) return
+    const agent = fleetStore.getAgent(agent_id)
+    if (!agent) return
+    const ids = Array.isArray(agent.session_ids) ? [...agent.session_ids] : []
+    const alreadyListed = ids.includes(session_id)
+    if (!alreadyListed) ids.push(session_id)
+    if (agent.session_id === session_id && alreadyListed) return // already current
+    agent.session_id = session_id
+    agent.session_ids = ids
+    if (cwd && !agent.cwd) agent.cwd = cwd
+    fleetStore.upsertAgent(agent)
+    console.log(`[fleet-daemon] reconciled session for ${agent_id}: primary=${session_id} (${ids.length} known)`)
+    broadcastDaemonAgentsUpdated()
+    return
+  }
+
   if (type === 'activity-event') {
     if (!fleetStore) return
     const { agent_id, tool, arg, input, ts, usage, prettyResult, origTool } = msg
