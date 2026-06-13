@@ -248,6 +248,32 @@ function _lookupLineInData(lookup, lineNum, file) {
   return { page: entry.page, x: entry.x, y: entry.y, content: entry.content, texFile: lookup.meta?.texFile };
 }
 
+// Find the source (file, 1-based line) where `\label{label}` is written. The
+// .aux-derived source map has the label's page/number but not its line; the
+// label's true line is its definition site in the .tex. Scans the doc's real
+// build files — the distinct .tex files synctex recorded in the source map's
+// `pages` index (so junk/old .tex in the source dir are ignored) — plus the
+// main file. Returns { file, line } or null. `\label{ }` whitespace tolerated.
+function findLabelLine(sourceDir, sourceMap, mainFile, label) {
+  const files = new Set();
+  for (const entries of Object.values(sourceMap?.pages || {})) {
+    for (const e of entries) if (e?.file && e.file.endsWith('.tex')) files.add(e.file);
+  }
+  if (mainFile) files.add(mainFile);
+  const exact = `\\label{${label}}`;
+  const reLabel = new RegExp('\\\\label\\{\\s*' + label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*\\}');
+  for (const rel of files) {
+    let text;
+    try { text = fs.readFileSync(path.join(sourceDir, rel), 'utf8'); } catch { continue; }
+    let idx = text.indexOf(exact);
+    if (idx === -1) { const m = text.match(reLabel); if (m) idx = m.index; }
+    if (idx === -1) continue;
+    const line = text.slice(0, idx).split('\n').length;
+    return { file: rel, line };
+  }
+  return null;
+}
+
 // ---- @label cross-reference validation ----
 
 const AT_REF_PATTERN = /(?<![\\@\w])@([\w:.-]+)/g
@@ -2404,22 +2430,32 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const mainFile = cfg.mainFile || cfg.main;
     const file = args.file || mainFile;
     if (!file) return { content: [{ type: 'text', text: `read_doc: no file given and doc "${doc}" has no mainFile.` }], isError: true };
-    const relFile = (path.basename(file) === file) ? file : path.relative(sourceDir, path.resolve(sourceDir, file));
+    let relFile = (path.basename(file) === file) ? file : path.relative(sourceDir, path.resolve(sourceDir, file));
 
-    // ref/label shorthand → anchor line via the source map (same data lookup_theorem uses).
+    // ref/label shorthand → anchor line. The source map's labels come from the
+    // .aux file, which records page/number/title but NOT the source line — so we
+    // resolve the line from ground truth: the actual `\label{...}` location in
+    // the doc's source. We scan the doc's real build files (the distinct .tex
+    // files synctex recorded in the source map's `pages` index, which excludes
+    // junk/old .tex lying around the source dir). This also resolves a ref that
+    // lives in an \input'd file to the right file to read.
     let anchorLine = 0;
     let refNote = '';
     if (args.ref && !(args.startLine > 0)) {
       const texBase = String(mainFile || 'main').replace(/\.tex$/, '');
       const smPath = path.join(projDir, 'output', `${texBase}-source-map.json`);
-      try {
-        const sm = JSON.parse(fs.readFileSync(smPath, 'utf8'));
-        const q = String(args.ref).trim();
-        const e = (sm.labels || []).find(x => x.label === q || x.number === q)
-              || (sm.labels || []).find(x => x.label?.includes(q) || x.number?.includes(q));
-        if (e?.line) { anchorLine = e.line; refNote = ` (ref "${q}" → ${e.number || e.label} @ line ${e.line})`; }
-        else return { content: [{ type: 'text', text: `read_doc: ref "${q}" not found in ${doc}'s source map.` }], isError: true };
-      } catch { return { content: [{ type: 'text', text: `read_doc: ref lookup unavailable for ${doc} (no source map — build the doc first).` }], isError: true }; }
+      let sm;
+      try { sm = JSON.parse(fs.readFileSync(smPath, 'utf8')); }
+      catch { return { content: [{ type: 'text', text: `read_doc: ref lookup unavailable for ${doc} (no source map — build the doc first).` }], isError: true }; }
+      const q = String(args.ref).trim();
+      const e = (sm.labels || []).find(x => x.label === q || x.number === q)
+            || (sm.labels || []).find(x => x.label?.includes(q) || x.number?.includes(q));
+      if (!e) return { content: [{ type: 'text', text: `read_doc: ref "${q}" not found in ${doc}'s source map.` }], isError: true };
+      const found = findLabelLine(sourceDir, sm, mainFile, e.label);
+      if (!found) return { content: [{ type: 'text', text: `read_doc: ref "${q}" matched label ${e.label} (p.${e.page}) but its \\label{} line wasn't found in the source files — the doc may need a rebuild.` }], isError: true };
+      anchorLine = found.line;
+      relFile = found.file;   // read the file the label actually lives in
+      refNote = ` (ref "${q}" → ${e.number || e.label} @ ${found.file}:${found.line})`;
     }
 
     // Read content — current version (fs) or a past version (git show).
