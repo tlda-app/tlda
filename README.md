@@ -10,7 +10,7 @@ A shared canvas for reading and writing a LaTeX paper — with the people and AI
 
 > **Fair warning:** this whole codebase was vibe-coded with Claude Code. The author has not read the source.
 
-There are really just two things in tlda. There's the **document** — your paper, rendered as published-quality pages on an infinite canvas. And there's the **HUD** — the overlay floating over it, whose whole job is to help you read and work on that document. Collaboration runs through both: everyone on the paper — you, your collaborators, and your agents — shares the same canvas and sees the same thing, each in a form that's useful to them.
+There are really just two things in tlda. There's the **document** — your paper, rendered faithfully from the TeX on an infinite canvas. And there's the **HUD** — the overlay floating over it, whose whole job is to help you read and work on that document. Collaboration runs through both: everyone on the paper — you, your collaborators, and your agents — shares the same canvas and sees the same thing, each in a form that's useful to them.
 
 The rest of this walks through it: getting your paper in, what you do to the document, what the HUD gives you, and how collaboration works.
 
@@ -63,7 +63,7 @@ Your paper renders as pages on the canvas and rebuilds live every time you save.
 
 <img src="docs/images/tlda-math-note.png" alt="A KaTeX sticky note on the canvas" width="70%">
 
-**Highlighting.** Grab the highlighter button in the bottom-right and drag it up to open the highlighter zone on the right edge. Each color carries a meaning — question, notation, expand, cut — shown in a HUD as you pick one. Draw on the page and the text under your stroke is captured, source and all.
+**Highlighting.** Click the highlighter button on the bottom-right and drag left to select a highlighter color, or enable the highlighter zone in settings and drag up and down anywhere below the table of contents. Each color carries a meaning — question, notation, expand, cut — shown in a HUD as you pick one. Draw on the page and the text under your stroke is captured, source and all.
 
 <img src="docs/images/tlda-color-picker.png" alt="Picking a highlighter color, with its meaning" width="70%">
 
@@ -119,6 +119,10 @@ Agents can even wiretap each other — subscribing to notifications on another a
 
 **Interrupting.** With a chat panel focused and filtered to an agent, **Escape** interrupts it, escalating with each press: once for a soft interrupt, twice for a harder one, three times **kills the agent** — it's marked dead, not just hibernated, though you can resurrect it from chat.
 
+### Inbox
+
+Chat is the live firehose; the inbox is its intentional counterpart. It shows just the messages **to and from you**, grouped into per-correspondent threads — you open one on purpose, read it, and its unread clears. When you want to deliberately work through who's said what to you instead of watching everything scroll past, that's the inbox.
+
 ### Reference viewer
 
 A standing panel that shows whatever you click — not a static snapshot but a live view of the canvas: you can pan around inside it, annotations show, and it updates in real time. Keep a referenced equation, theorem, or proof in view while you read somewhere else.
@@ -131,7 +135,7 @@ You can scroll a chat panel up indefinitely, or search, to see anything that's h
 
 ### Getting around
 
-A few small controls sit in the corners of your canvas. The **Shapes** button, bottom-left, toggles the HUD on and off when you click it, and opens a layout picker when you drag it right. Bottom-right are a **highlighter** selector and a **voice-note** button, which drops a sticky note and starts dictating into it. A **table of contents** sits largely hidden in the top-right — hover there to reveal it and jump around the document.
+A few small controls sit in the corners of your canvas. The **Shapes** button, bottom-left, toggles the HUD on and off when you click it, and opens a layout picker when you drag it right. Bottom-right are a **highlighter** selector, a **voice-note** button (drops a sticky note and starts dictating into it), and a **dictation toggle** that turns voice input on and off. A **table of contents** sits largely hidden in the top-right — hover there to reveal it and jump around the document.
 
 <img src="docs/images/tlda-corners.png" alt="The corner controls — version stack, table of contents, Shapes/layout, and highlighter" width="100%">
 
@@ -160,6 +164,8 @@ You all talk to anyone in the same chat, about the same document — an agent is
 ### Working with agents
 
 The agents panel on the canvas is the main way to start an agent, see who's awake, and chat with any of them (there's a CLI too, `tlda agent spawn`, for scripting). Agents hibernate after 20 minutes idle instead of dying — send a chat message and a sleeper wakes on its own.
+
+**What an agent's engaged.** Hover an agent's name in chat to see which skills it's **read**, **owes**, or **dismissed** — visibility into the guidance each agent has actually taken on.
 
 ### What agents see
 
