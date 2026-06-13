@@ -82,6 +82,43 @@ export function createFleetShape(
   return id as unknown as string
 }
 
+/**
+ * Drop a fleet shape at the cursor, HUD-aware, then select it.
+ *
+ * When the HUD is active the shape must land in HUD space (where the user
+ * clicked), not main-document space — the doc canvas is panned far off to the
+ * side, so a page-coord placement drops the panel off-screen and it "vanishes."
+ * Translate the screen point through the HUD camera so it lands under the
+ * cursor. Falls back to page coords when there's no HUD. Centers the shape on
+ * the cursor (matching ReaperTool). Returns the new shape id, or null if
+ * identity is unresolved (no shape created).
+ */
+export function placeFleetShapeAtCursor(
+  editor: Editor,
+  type: string,
+  w: number,
+  h: number,
+  extraProps: Record<string, any> = {},
+): string | null {
+  const hudEditor = (typeof window !== 'undefined' && (window as any).__tldraw_hud_editor__) || null
+  let x: number, y: number
+  if (hudEditor) {
+    const screen = editor.inputs.currentScreenPoint
+    const cam = hudEditor.getCamera()
+    x = screen.x / cam.z - cam.x - w / 2
+    y = screen.y / cam.z - cam.y - h / 2
+  } else {
+    const point = editor.inputs.currentPagePoint
+    x = point.x - w / 2
+    y = point.y - h / 2
+  }
+  const id = createFleetShape(editor, type, x, y, { w, h, ...extraProps })
+  if (!id) return null
+  editor.setCurrentTool('select')
+  editor.select(id as any)
+  return id
+}
+
 /** Delete shapes even if locked (unlock first, then delete). */
 export function forceDeleteShapes(editor: Editor, ids: string[]) {
   for (const id of ids) {
