@@ -1,8 +1,7 @@
 import { StateNode } from 'tldraw'
-import { placeFleetShapeAtCursor } from '../shapes/fleet-utils'
+import { placeFleetShapeAtCursor, FLEET_TOOL_DIMS } from '../shapes/fleet-utils'
 
-const W = 400
-const H = 300
+const { w: W, h: H } = FLEET_TOOL_DIMS['fleet-search']
 
 export class FleetSearchTool extends StateNode {
   static override id = 'fleet-search'

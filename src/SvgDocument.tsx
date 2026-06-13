@@ -67,6 +67,7 @@ import { useSync } from '@tldraw/sync'
 import { appendToken } from './authToken'
 import { DocumentPanel, PhoneOverlay, HighlighterButton, SemanticHighlightPill, VoiceNoteButton, MicToggleButton, VoiceTargetFollower } from './DocumentPanel'
 import { AgentAttentionOverlay } from './overlays/AgentAttentionOverlay'
+import { FleetToolGhost } from './overlays/FleetToolGhost'
 import { RecognizeButton } from './overlays/RecognizeButton'
 import { PenHelperButtons, DarkModeSync } from './toolbar/ToolbarComponents'
 import { FormatToolbar } from './toolbar/FormatToolbar'
@@ -842,7 +843,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       MainMenu: null,
       Toolbar: () => <FormatToolbar format={document.format} />,
       HelperButtons: () => <PenHelperButtons format={document.format} />,
-      InFrontOfTheCanvas: () => <><RibbonLane /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /></>,
+      InFrontOfTheCanvas: () => <><RibbonLane /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /></>,
     }),
     [document, roomId]
   )

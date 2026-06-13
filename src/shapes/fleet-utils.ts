@@ -82,6 +82,16 @@ export function createFleetShape(
   return id as unknown as string
 }
 
+/** Panel dimensions per fleet tool — the single source of truth shared by the
+ *  tools (what they create) and the cursor ghost preview (what it previews). */
+export const FLEET_TOOL_DIMS: Record<string, { w: number; h: number }> = {
+  'fleet-chat': { w: 400, h: 600 },
+  'fleet-agents': { w: 400, h: 500 },
+  'fleet-search': { w: 400, h: 300 },
+  'fleet-inbox': { w: 360, h: 560 },
+  'fleet-reaper': { w: 480, h: 360 },
+}
+
 /**
  * Drop a fleet shape at the cursor, HUD-aware, then select it.
  *

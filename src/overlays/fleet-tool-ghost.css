@@ -1,0 +1,12 @@
+/* Cursor-following placement guide for fleet panel tools. Deliberately faint —
+   a dashed outline + barely-there fill, matching the app's near-invisible
+   chrome convention. Never intercepts pointer events. */
+.fleet-tool-ghost {
+  position: fixed;
+  z-index: 9999;
+  pointer-events: none;
+  box-sizing: border-box;
+  border: 1px dashed rgba(150, 160, 200, 0.45);
+  border-radius: 2px;
+  background: rgba(150, 160, 200, 0.05);
+}
