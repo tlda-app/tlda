@@ -3498,8 +3498,11 @@ async function handleFleetWsMessage(ws, msg) {
   }
 
   // ---- wiretap-remove ----
+  // Field is `tap_id`, NOT `id`: sendWS() stamps a correlation `id` onto every
+  // RPC message, which would clobber a payload `id` (same reason task_id /
+  // agent_id are used elsewhere).
   if (type === 'wiretap-remove') {
-    const { id: tapId } = msg
+    const { tap_id: tapId } = msg
     if (!tapId || isNaN(parseInt(tapId))) { error('invalid id'); return }
     fleetStore.removeWiretap(parseInt(tapId))
     reply({ ok: true })

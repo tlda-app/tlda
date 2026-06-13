@@ -3833,14 +3833,15 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
 
     if (args.remove) {
       if (typeof args.remove === 'number' || (typeof args.remove === 'string' && !isNaN(args.remove))) {
-        // Remove specific wiretap by ID
-        await sendWS('wiretap-remove', { id: args.remove });
+        // Remove specific wiretap by ID. Field is `tap_id`, not `id`: sendWS()
+        // stamps a correlation `id` onto every RPC, which would clobber `id`.
+        await sendWS('wiretap-remove', { tap_id: args.remove });
         return { content: [{ type: 'text', text: `Removed wiretap #${args.remove}.` }] };
       }
       // Remove all wiretaps for this agent
       const existing = await sendWS('wiretap-list', { agent: myId });
       for (const tap of existing) {
-        await sendWS('wiretap-remove', { id: tap.id });
+        await sendWS('wiretap-remove', { tap_id: tap.id });
       }
       return { content: [{ type: 'text', text: `Removed ${existing.length} wiretap(s).` }] };
     }
