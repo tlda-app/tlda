@@ -526,6 +526,91 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
   ), document.body)
 }
 
+// ---- Skill-state hover popover ----
+// Hovering an agent's name in chat shows what skills they've read / owe /
+// dismissed (with the reason). Data comes from /api/education/skills/:id.
+type SkillState = {
+  read: string[]
+  owed: { skill: string; scope: string; trigger: string | null }[]
+  dismissed: { skill: string; reason: string; scope: string; trigger: string | null }[]
+}
+
+function SkillHoverPane({ agentId, agentName, anchorRect, onMouseEnter, onMouseLeave }: {
+  agentId: string
+  agentName: string
+  anchorRect: { left: number; bottom: number; top: number }
+  onMouseEnter: () => void
+  onMouseLeave: () => void
+}) {
+  const [data, setData] = useState<SkillState | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    fetch(`/api/education/skills/${encodeURIComponent(agentId)}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (!cancelled) { setData(d); setLoading(false) } })
+      .catch(() => { if (!cancelled) { setData(null); setLoading(false) } })
+    return () => { cancelled = true }
+  }, [agentId])
+
+  // Anchor below the name, clamped into the viewport.
+  const PANE_W = 240
+  const left = Math.max(6, Math.min(anchorRect.left, window.innerWidth - PANE_W - 6))
+  const spaceBelow = window.innerHeight - anchorRect.bottom
+  const placeAbove = spaceBelow < 160
+  const style: React.CSSProperties = placeAbove
+    ? { left, bottom: Math.max(6, window.innerHeight - anchorRect.top + 4), width: PANE_W }
+    : { left, top: anchorRect.bottom + 4, width: PANE_W }
+
+  const read = data?.read || []
+  const owed = data?.owed || []
+  const dismissed = data?.dismissed || []
+  const empty = !loading && read.length === 0 && owed.length === 0 && dismissed.length === 0
+
+  return (
+    <div
+      className="fleet-skill-hover-pane"
+      style={style}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+      onPointerDown={stopEventPropagation}
+    >
+      <div className="fleet-skill-hover-head">{agentName} · skills</div>
+      {loading && <div className="fleet-skill-hover-empty">…</div>}
+      {empty && <div className="fleet-skill-hover-empty">no skill activity yet</div>}
+      {owed.length > 0 && (
+        <div className="fleet-skill-hover-section">
+          <div className="fleet-skill-hover-label owed">owes ({owed.length})</div>
+          <div className="fleet-skill-hover-chips">
+            {owed.map(o => <span key={o.skill} className="fleet-skill-chip owed">{o.skill}</span>)}
+          </div>
+        </div>
+      )}
+      {dismissed.length > 0 && (
+        <div className="fleet-skill-hover-section">
+          <div className="fleet-skill-hover-label dismissed">dismissed ({dismissed.length})</div>
+          {dismissed.map(d => (
+            <div key={d.skill} className="fleet-skill-dismissed-row">
+              <span className="fleet-skill-chip dismissed">{d.skill}</span>
+              {d.reason && <span className="fleet-skill-reason">“{d.reason}”</span>}
+            </div>
+          ))}
+        </div>
+      )}
+      {read.length > 0 && (
+        <div className="fleet-skill-hover-section">
+          <div className="fleet-skill-hover-label read">read ({read.length})</div>
+          <div className="fleet-skill-hover-chips">
+            {read.map(s => <span key={s} className="fleet-skill-chip read">{s}</span>)}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // Recursively read a FileSystemDirectoryEntry, returning { file, path } pairs
 // where path is relative to the dropped folder root (e.g. "figures/foo.png")
 async function traverseDirectory(entry: FileSystemEntry, prefix = ''): Promise<{ file: File, path: string }[]> {
@@ -2523,6 +2608,38 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
   }, [chatLogEl])
 
+  // Hover an agent's name in chat → show their skill state (read / owed / dismissed).
+  useEffect(() => {
+    const logEl = chatLogEl
+    if (!logEl) return
+    let showTimer: ReturnType<typeof setTimeout> | null = null
+    function onNickOver(e: MouseEvent) {
+      const nick = (e.target as HTMLElement).closest('.agent-nick[data-agent-id]') as HTMLElement | null
+      if (!nick) return
+      const agentId = nick.dataset.agentId
+      if (!agentId) return
+      if (skillHideTimerRef.current) { clearTimeout(skillHideTimerRef.current); skillHideTimerRef.current = null }
+      if (showTimer) clearTimeout(showTimer)
+      showTimer = setTimeout(() => {
+        if (!nick.matches(':hover')) return
+        const r = nick.getBoundingClientRect()
+        setSkillHover({ agentId: agentId!, agentName: nick.textContent?.trim() || agentId!, rect: { left: r.left, bottom: r.bottom, top: r.top } })
+      }, 450)
+    }
+    function onNickOut(e: MouseEvent) {
+      if (!(e.target as HTMLElement).closest?.('.agent-nick[data-agent-id]')) return
+      if (showTimer) { clearTimeout(showTimer); showTimer = null }
+      skillHideTimerRef.current = setTimeout(() => setSkillHover(null), 220)
+    }
+    logEl.addEventListener('mouseover', onNickOver)
+    logEl.addEventListener('mouseout', onNickOut)
+    return () => {
+      if (showTimer) clearTimeout(showTimer)
+      logEl.removeEventListener('mouseover', onNickOver)
+      logEl.removeEventListener('mouseout', onNickOut)
+    }
+  }, [chatLogEl])
+
   // Live countdown ticker: timer-countdown lines render a frozen number, so each
   // second we recompute remaining from data-timer-until and update the text in
   // place. Pure DOM — doesn't fight the dangerouslySetInnerHTML items. Terminal
@@ -2636,6 +2753,9 @@ function FleetChatInner({ shape }: { shape: any }) {
   const [termHoverPinned, setTermHoverPinned] = useState(false)
   const termHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const termAutoPinnedRef = useRef(false)
+  // Skill-state hover popover (hovering an agent name in chat)
+  const [skillHover, setSkillHover] = useState<{ agentId: string; agentName: string; rect: { left: number; bottom: number; top: number } } | null>(null)
+  const skillHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastAttentionTsRef = useRef<string | null>(null)
   // Tracks which chat rows have been expanded (by item key) so the state
   // survives dangerouslySetInnerHTML re-renders.
@@ -4444,6 +4564,16 @@ function FleetChatInner({ shape }: { shape: any }) {
                 }
               }}
               onMouseLeave={() => setTermHoverVisible(false)}
+            />
+          )}
+          {/* Skill-state hover popover — viewport-fixed, anchored to the hovered agent name */}
+          {skillHover && (
+            <SkillHoverPane
+              agentId={skillHover.agentId}
+              agentName={skillHover.agentName}
+              anchorRect={skillHover.rect}
+              onMouseEnter={() => { if (skillHideTimerRef.current) { clearTimeout(skillHideTimerRef.current); skillHideTimerRef.current = null } }}
+              onMouseLeave={() => setSkillHover(null)}
             />
           )}
           <SendHint

@@ -70,6 +70,7 @@ const execFileP = promisify(execFile)
 
 const VERSION = '0.1.1'
 import { createLogger } from '../shared/logger.mjs'
+import { makeActivityThrottle } from './lib/activity-throttle.mjs'
 const log = createLogger('daemon')
 // CONFIG_DIR holds config.json, cursors, PID and log files. Defaults to
 // ~/.config/tlda. TLDA_DAEMON_CONFIG_DIR lets the E2E test start a second
@@ -685,36 +686,28 @@ function scheduleCheckForPlanModePrompt(agentId) {
 
 // ---------- activity event buffer ----------
 
-// Activity event buffer — flush at bounded rate (max 1 push per 2s) to
-// avoid spamming the server during a chatty agent. Mirrors the original
-// inline server's `_activityBuffer` / `_activityFlushTimer`.
-let activityBuffer = {}          // { agentId: [{tool, arg, input, ts}, ...] }
-let activityFlushTimer = null
+// Per-agent leading-edge throttle (see bin/lib/activity-throttle.mjs). The first
+// activity after an agent has been quiet flushes immediately so its card lands
+// in fleet chat the moment it acts; bursts within the window batch to one push.
+// Replaces the old single trailing 2s timer that delayed EVERY event — the
+// chat-lags-terminal bug.
+const _activityThrottle = makeActivityThrottle({
+  windowMs: 2000,
+  send: (agentId, evt) => sendMsg({
+    type: 'activity-event',
+    agent_id: agentId,
+    tool: evt.tool,
+    arg: evt.arg || '',
+    input: evt.input || null,
+    ts: evt.ts,
+    ...(evt.usage ? { usage: evt.usage } : {}),
+    ...(evt.prettyResult ? { prettyResult: evt.prettyResult } : {}),
+    ...(evt.origTool ? { origTool: evt.origTool } : {}),
+  }),
+})
 
 function bufferActivity(agentId, evts) {
-  if (!activityBuffer[agentId]) activityBuffer[agentId] = []
-  activityBuffer[agentId].push(...evts)
-  if (activityFlushTimer) return
-  activityFlushTimer = setTimeout(() => {
-    const buf = activityBuffer
-    activityBuffer = {}
-    activityFlushTimer = null
-    for (const [aid, list] of Object.entries(buf)) {
-      for (const evt of list) {
-        sendMsg({
-          type: 'activity-event',
-          agent_id: aid,
-          tool: evt.tool,
-          arg: evt.arg || '',
-          input: evt.input || null,
-          ts: evt.ts,
-          ...(evt.usage ? { usage: evt.usage } : {}),
-          ...(evt.prettyResult ? { prettyResult: evt.prettyResult } : {}),
-          ...(evt.origTool ? { origTool: evt.origTool } : {}),
-        })
-      }
-    }
-  }, 2000)
+  _activityThrottle.buffer(agentId, evts)
 }
 
 // ---------- JSONL watching ----------

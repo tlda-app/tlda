@@ -1320,11 +1320,13 @@ app.post('/api/education/dismiss/:agentId', (req, res) => {
   if (toDismiss.length === 0) return res.json({ ok: true, dismissed: [], note: 'nothing currently owed' })
 
   let dset = _qualAgentDismissed.get(agentId)
-  if (!dset) { dset = new Set(); _qualAgentDismissed.set(agentId, dset) }
+  if (!dset) { dset = new Map(); _qualAgentDismissed.set(agentId, dset) }
   const done = []
   for (const skillName of toDismiss) {
     const detail = owedDetail?.get(skillName) || { scope: 'session', trigger: '', triggerShort: '' }
-    dset.add(qualDismissKey(skillName, detail.scope, detail.trigger))
+    dset.set(qualDismissKey(skillName, detail.scope, detail.trigger), {
+      skill: skillName, reason, scope: detail.scope, trigger: detail.triggerShort || null, ts: Date.now(),
+    })
     owedDetail?.delete(skillName)
     done.push({ skill: skillName, scope: detail.scope, trigger: detail.triggerShort || null })
   }
@@ -1332,6 +1334,22 @@ app.post('/api/education/dismiss/:agentId', (req, res) => {
   emitSkillDismissCard(agentId, done, reason)
   console.log(`[qualification] ${agentId} DISMISSED ${done.map(d => d.skill).join(', ')} — "${reason}"`)
   res.json({ ok: true, dismissed: done })
+})
+
+// Per-agent skill state — read vs owed vs dismissed (with reason). Powers the
+// name-hover popover in fleet chat.
+app.get('/api/education/skills/:agentId', (req, res) => {
+  const agentId = req.params.agentId
+  const readsSet = (fleetStore?.getSkillReads?.(agentId)) || _qualAgentReads.get(agentId) || new Set()
+  const read = [...readsSet]
+    .filter(k => typeof k === 'string' && k.startsWith('skill:'))
+    .map(k => k.slice('skill:'.length))
+    .sort()
+  const owed = [...(_qualAgentOwed.get(agentId) || new Map()).entries()]
+    .map(([skill, d]) => ({ skill, scope: d.scope, trigger: d.triggerShort || null }))
+  const dismissed = [...(_qualAgentDismissed.get(agentId) || new Map()).values()]
+    .map(d => ({ skill: d.skill, reason: d.reason, scope: d.scope, trigger: d.trigger || null }))
+  res.json({ id: agentId, read, owed, dismissed })
 })
 
 // Post a single merged activity card for one or more dismissed skills.
@@ -3602,7 +3620,7 @@ async function handleFleetWsMessage(ws, msg) {
 const QUALIFICATIONS_FILE = process.env.TLDA_QUALIFICATIONS_FILE || path.join(os.homedir(), '.claude', 'qualifications.json')
 let _qualRules = []
 const _qualAgentReads = new Map()     // agentId → Set of skill keys + file paths
-const _qualAgentDismissed = new Map() // agentId → Set of dismiss keys (skillName | skillName@filepath)
+const _qualAgentDismissed = new Map() // agentId → Map<dismissKey, {skill, reason, scope, trigger, ts}> (dismissKey = skillName | skillName@filepath)
 const _qualAgentOwed = new Map()      // agentId → Map<skillName, {scope, trigger, triggerShort}> — latest context per owed skill, for dismiss lookup
 
 // Dismiss scope: dispositional skills (the `*` rule) and tool-triggered skills
@@ -3724,7 +3742,7 @@ function checkQualifications(agentId, tool, arg, input) {
   if (_qualRules.length === 0 || !fleetStore) return
 
   const reads = _qualAgentReads.get(agentId) || new Set()
-  const dismissed = _qualAgentDismissed.get(agentId) || new Set()
+  const dismissed = _qualAgentDismissed.get(agentId) || new Map()
 
   const matchingRules = []
 
