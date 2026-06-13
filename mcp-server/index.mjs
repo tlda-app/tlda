@@ -14,7 +14,7 @@ import http from 'http';
 import fs from 'fs';
 import os from 'os';
 import crypto from 'crypto';
-import { spawn, execSync } from 'child_process';
+import { spawn, execSync, execFileSync } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { connectSSE } from '../shared/sse-parser.mjs';
@@ -24,6 +24,7 @@ import { findRenderedText } from './svg-text.mjs';
 import { initDataSource, readJsonSync, readJson, readManifestSync, readManifest, localDocDir, isRemote } from './data-source.mjs';
 import { resolveToken } from './resolve-token.mjs';
 import { formatHighlight, formatNote } from './format-annotation.mjs';
+import { stageNote, stageHighlight } from './lib/annotate.mjs';
 import {
   isHtmlDoc, docToCanvas, canvasToDoc, getPageWidth,
   pdfToCanvas, canvasToPdf, htmlToCanvas, canvasToHtml, loadHtmlLayout,
@@ -245,6 +246,109 @@ function _lookupLineInData(lookup, lineNum, file) {
   if (!entry) entry = lookup.lines[lineNum.toString()];
   if (!entry) return null;
   return { page: entry.page, x: entry.x, y: entry.y, content: entry.content, texFile: lookup.meta?.texFile };
+}
+
+// Find the source (file, 1-based line) where `\label{label}` is written. The
+// .aux-derived source map has the label's page/number but not its line; the
+// label's true line is its definition site in the .tex. Scans the doc's real
+// build files — the distinct .tex files synctex recorded in the source map's
+// `pages` index (so junk/old .tex in the source dir are ignored) — plus the
+// main file. Returns { file, line } or null. `\label{ }` whitespace tolerated.
+function findLabelLine(sourceDir, sourceMap, mainFile, label) {
+  const files = new Set();
+  for (const entries of Object.values(sourceMap?.pages || {})) {
+    for (const e of entries) if (e?.file && e.file.endsWith('.tex')) files.add(e.file);
+  }
+  if (mainFile) files.add(mainFile);
+  const exact = `\\label{${label}}`;
+  const reLabel = new RegExp('\\\\label\\{\\s*' + label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*\\}');
+  for (const rel of files) {
+    let text;
+    try { text = fs.readFileSync(path.join(sourceDir, rel), 'utf8'); } catch { continue; }
+    let idx = text.indexOf(exact);
+    if (idx === -1) { const m = text.match(reLabel); if (m) idx = m.index; }
+    if (idx === -1) continue;
+    const line = text.slice(0, idx).split('\n').length;
+    return { file: rel, line };
+  }
+  return null;
+}
+
+// ---- skill reading + harness-aware section filtering ----
+
+const SKILLS_DIR = path.join(os.homedir(), 'work', 'dot-claude', 'skills');
+
+// Parse a markdown heading line → { level, text, classes } or null. Recognizes
+// a trailing pandoc attribute block, e.g. `## Driving the browser {.claude-only}`.
+function _parseHeading(line) {
+  const m = /^(#{1,6})\s+(.*?)\s*$/.exec(line);
+  if (!m) return null;
+  const level = m[1].length;
+  let text = m[2];
+  const classes = [];
+  const attr = /\{([^}]*)\}\s*$/.exec(text);
+  if (attr) {
+    for (const tok of attr[1].split(/\s+/)) {
+      if (tok.startsWith('.')) classes.push(tok.slice(1));
+    }
+    text = text.slice(0, attr.index).trimEnd();
+  }
+  return { level, text, classes };
+}
+
+// Filter a skill's markdown for a requesting agent type. A section whose heading
+// carries a `<type>-only` class is kept ONLY for that agent type; a `not-<type>`
+// class drops it for that type. Dropping a heading drops its whole section — down
+// to the next heading of the same or higher level (subsections go with it).
+// Headings with no harness class are universal. `agentTags` is the set the
+// requester matches (e.g. {'goose'} or {'claude'}). Kept headings have their
+// attribute block stripped so the agent sees clean markdown.
+function filterSkillByHarness(md, agentTags) {
+  const lines = md.split('\n');
+  const out = [];
+  let dropUntilLevel = 0;   // >0 while inside a dropped section; drop until a heading of level <= this
+  for (const line of lines) {
+    const h = _parseHeading(line);
+    if (h) {
+      if (dropUntilLevel > 0 && h.level > dropUntilLevel) continue;  // still inside dropped section
+      dropUntilLevel = 0;
+      const onlyBases = h.classes.filter(c => c.endsWith('-only')).map(c => c.slice(0, -5));
+      const notBases = h.classes.filter(c => c.startsWith('not-')).map(c => c.slice(4));
+      const dropByOnly = onlyBases.length > 0 && !onlyBases.some(b => agentTags.has(b));
+      const dropByNot = notBases.some(b => agentTags.has(b));
+      if (dropByOnly || dropByNot) { dropUntilLevel = h.level; continue; }
+      // kept heading — strip the attribute block for clean output
+      out.push('#'.repeat(h.level) + ' ' + h.text);
+      continue;
+    }
+    if (dropUntilLevel > 0) continue;
+    out.push(line);
+  }
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
+}
+
+// List available skills as { name, description } from each SKILL.md frontmatter.
+function listSkills() {
+  const out = [];
+  let dirs;
+  try { dirs = fs.readdirSync(SKILLS_DIR, { withFileTypes: true }); } catch { return out; }
+  for (const d of dirs) {
+    if (!d.isDirectory()) continue;
+    const p = path.join(SKILLS_DIR, d.name, 'SKILL.md');
+    let text;
+    try { text = fs.readFileSync(p, 'utf8'); } catch { continue; }
+    const fm = /^---\n([\s\S]*?)\n---/.exec(text);
+    let name = d.name, description = '';
+    if (fm) {
+      const nm = /^name:\s*(.+)$/m.exec(fm[1]);
+      const dm = /^description:\s*(.+)$/m.exec(fm[1]);
+      if (nm) name = nm[1].trim();
+      if (dm) description = dm[1].trim();
+    }
+    out.push({ name, description });
+  }
+  out.sort((a, b) => a.name.localeCompare(b.name));
+  return out;
 }
 
 // ---- @label cross-reference validation ----
@@ -1102,75 +1206,11 @@ function resolveSize({ size, width, height }) {
   }
 }
 
-async function addAnnotation(doc, line, text, { color = 'orange', size, width, height, side = 'right', file, choices, page: pageNum } = {}) {
-  const dims = resolveSize({ size, width, height })
-  width = dims.width
-  height = dims.height
-  let linePos;
-  if (line) {
-    linePos = lookupLine(doc, line, file);
-    if (!linePos) return { ok: false, error: `Line ${line}${file ? ' in ' + path.basename(file) : ''} not found in lookup.json for doc "${doc}"` };
-  } else if (pageNum) {
-    // Position near top of the given page when no source line is available
-    linePos = { page: pageNum, x: 0, y: 150, texFile: null, content: '' };
-  } else {
-    return { ok: false, error: 'Either line or page is required' };
-  }
-
-  const canvasPos = docToCanvas(doc, linePos.page, linePos.x, linePos.y);
-  // Position note at left or right margin of the page
-  let x;
-  if (isHtmlDoc(doc)) {
-    const layout = loadHtmlLayout(doc);
-    const p = layout?.pages?.[linePos.page - 1];
-    const pageRight = p ? p.x + p.width : canvasPos.x + 800;
-    const pageLeft = p ? p.x : 0;
-    x = side === 'left' ? pageLeft - width - 20 : pageRight + 10;
-  } else {
-    x = side === 'left' ? -width - 20 : 690;
-  }
-  const y = canvasPos.y - height / 2;
-
-  const shapeId = generateShapeId();
-
-  // Find the highest index among existing shapes so the note renders on top
-  let maxIndex = 'a1';
-  try {
-    const allShapes = await fetchShapes(doc);
-    for (const s of allShapes) {
-      if (s.typeName === 'shape' && s.index && s.index > maxIndex) {
-        maxIndex = s.index;
-      }
-    }
-  } catch (e) { process.stderr.write(`[mcp] shape index scan failed for add_note: ${e.message}\n`); }
-  const noteIndex = getIndexAbove(maxIndex);
-
-  const shape = {
-    id: shapeId,
-    type: 'math-note',
-    typeName: 'shape',
-    x, y,
-    rotation: 0,
-    isLocked: false,
-    opacity: 1,
-    props: { w: width, h: height, text, color, autoSize: true, ...(choices?.length ? { choices, selectedChoice: -1 } : {}) },
-    meta: {
-      sourceAnchor: {
-        file: `./${linePos.texFile || doc + '.tex'}`,
-        line,
-        column: -1,
-        content: linePos.content,
-      },
-      ...(process.env.FLEET_ID ? { fleet_id: process.env.FLEET_ID } : {}),
-      ...(process.env.FLEET_NAME ? { friendly_name: process.env.FLEET_NAME } : {}),
-    },
-    parentId: 'page:page',
-    index: noteIndex,
-  };
-
-  await createShapeRest(doc, shape);
-
-  return { ok: true, shapeId, page: linePos.page, x, y };
+// Note staging now lives in the shared lib (mcp-server/lib/annotate.mjs) so the
+// drill teacher bot stages notes through the same code path — one source of
+// truth. This stays a thin wrapper pinned to TLDA_SYNC_SERVER (the room target).
+async function addAnnotation(doc, line, text, opts = {}) {
+  return stageNote(doc, line, text, { ...opts, server: TLDA_SYNC_SERVER });
 }
 
 async function sendNote(doc, line, text, color = 'orange', file, choices) {
@@ -1816,6 +1856,48 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'read_file',
+      description: 'Read a file (read-only) from your machine, restricted to ~/work. Use this to read raw source files, scratch notes, markdown, etc. (For tlda document content/annotations, prefer doc_view / read_annotations.) Optional offset (1-based start line) and lines (count) to page through large files.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Absolute path to the file. Must be inside ~/work.' },
+          offset: { type: 'number', description: '1-based line number to start from (optional).' },
+          lines: { type: 'number', description: 'Number of lines to read from offset (optional).' },
+        },
+        required: ['path'],
+      },
+    },
+    {
+      name: 'read_doc',
+      description: 'Read a tlda document\'s SOURCE (read-only) — document- and version-aware. Resolves the doc name to its source file and reads a paginated line window (default 400 lines). Pass `version` (a git hash) to read a PAST version from the doc\'s history, or `ref` (a label/theorem number like "thm:main" or "2.1") to jump straight to that location. Header reports the window + total lines, with a hint to page. (For raw non-doc files use read_file; for annotations use read_annotations.)',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name (e.g. "bregman").' },
+          file: { type: 'string', description: 'Source file within the doc (default: the doc\'s main file).' },
+          startLine: { type: 'number', description: '1-based start line for a plain read (optional).' },
+          endLine: { type: 'number', description: 'Explicit end line (optional; otherwise a window of `lines` is read).' },
+          lines: { type: 'number', description: 'Window height: how many lines to read (default 400 for a plain read, 80 for a ref).' },
+          version: { type: 'string', description: 'Git hash to read a past version of the source (optional).' },
+          ref: { type: 'string', description: 'Label or theorem number to jump to, e.g. "thm:main" or "2.1" (optional).' },
+          before: { type: 'number', description: 'With `ref`: how many lines above the anchor to start (default 3).' },
+        },
+        required: ['doc'],
+      },
+    },
+    {
+      name: 'read_skill',
+      description: 'Read a fleet SKILL (process/role guidance) by name, or list available skills. Skills describe how to do a job — adversary method, proof discipline, writing register, etc. Call with no `skill` to LIST what is available (name + one-line description); call with `skill` to READ that skill\'s guidance. Sections that don\'t apply to your harness are stripped automatically, so what you get is the guidance you can actually act on. This is how a sandboxed (non-Claude) agent consumes the same playbooks Claude agents use.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          skill: { type: 'string', description: 'Skill name to read (e.g. "adversarial-proof-process"). Omit to list all available skills.' },
+          raw: { type: 'boolean', description: 'Return the full skill unfiltered (no harness-section stripping). Default false.' },
+        },
+      },
+    },
+    {
       name: 'read_annotations',
       description: 'Read all annotations in a document: math notes, highlighter strokes, pen strokes, arrows, rectangles/ellipses. Returns formatted text with highlighted regions marked using ⟦⟧ brackets. Sorted by document position (default) or time.',
       inputSchema: {
@@ -2387,6 +2469,150 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: `${buildCheck.reason}. Run "tlda errors ${docName}" or "tlda build ${docName}" to investigate.` }], isError: true };
       }
     }
+  }
+
+  if (name === 'read_file') {
+    // Generic read-only file reader, fenced to ~/work. Exists so sandboxed
+    // agents (e.g. goose/DeepSeek, which have no shell or developer extension)
+    // can read raw source + scratch files — the doc tools only cover annotations.
+    if (!args?.path) {
+      return { content: [{ type: 'text', text: 'read_file: `path` is required.' }], isError: true };
+    }
+    const workRoot = path.join(os.homedir(), 'work');
+    const abs = path.resolve(args.path);
+    if (abs !== workRoot && !abs.startsWith(workRoot + path.sep)) {
+      return { content: [{ type: 'text', text: `read_file: path must be inside ~/work (got ${abs}).` }], isError: true };
+    }
+    let data;
+    try {
+      data = fs.readFileSync(abs, 'utf8');
+    } catch (e) {
+      const why = e.code === 'ENOENT' ? 'no such file' : e.code === 'EISDIR' ? 'is a directory' : e.message;
+      return { content: [{ type: 'text', text: `read_file: ${why}: ${abs}` }], isError: true };
+    }
+    const allLines = data.split('\n');
+    const offset = args.offset > 0 ? (args.offset - 1) : 0;
+    const limit = args.lines > 0 ? args.lines : allLines.length;
+    const slice = allLines.slice(offset, offset + limit);
+    const MAX = 60000;
+    let body = slice.join('\n');
+    let trunc = '';
+    if (body.length > MAX) { body = body.slice(0, MAX); trunc = `\n…(truncated at ${MAX} chars — pass offset/lines to page)`; }
+    const shown = (offset > 0 || limit < allLines.length) ? `, lines ${offset + 1}–${offset + slice.length}` : '';
+    const header = `${abs} (${allLines.length} lines${shown}):\n`;
+    return { content: [{ type: 'text', text: header + body + trunc }] };
+  }
+
+  if (name === 'read_skill') {
+    // Harness-aware skill reader. Lets a sandboxed agent (goose/DeepSeek, etc.)
+    // consume the same process/role playbooks Claude agents use. The requesting
+    // agent's harness (FLEET_HARNESS, default 'claude') decides which sections
+    // survive: a `## … {.claude-only}` section is stripped for a goose agent and
+    // vice-versa, so the agent only sees guidance it can actually act on.
+    const harness = process.env.FLEET_HARNESS || 'claude';
+    const agentTags = new Set([harness]);
+    if (!args?.skill) {
+      const skills = listSkills();
+      if (!skills.length) return { content: [{ type: 'text', text: `read_skill: no skills found at ${SKILLS_DIR}.` }], isError: true };
+      const body = skills.map(s => `• ${s.name} — ${s.description}`).join('\n');
+      return { content: [{ type: 'text', text: `Available skills (${skills.length}) — call read_skill({ skill: "<name>" }) to read one:\n\n${body}` }] };
+    }
+    const skillName = String(args.skill).trim().replace(/^\/+/, '');
+    if (skillName.includes('/') || skillName.includes('..')) {
+      return { content: [{ type: 'text', text: `read_skill: invalid skill name "${args.skill}".` }], isError: true };
+    }
+    const p = path.join(SKILLS_DIR, skillName, 'SKILL.md');
+    let md;
+    try { md = fs.readFileSync(p, 'utf8'); }
+    catch {
+      const names = listSkills().map(s => s.name);
+      const near = names.filter(n => n.includes(skillName) || skillName.includes(n)).slice(0, 5);
+      const hint = near.length ? ` Did you mean: ${near.join(', ')}?` : ' Call read_skill() with no args to list available skills.';
+      return { content: [{ type: 'text', text: `read_skill: no skill "${skillName}".${hint}` }], isError: true };
+    }
+    if (args.raw) {
+      return { content: [{ type: 'text', text: md }] };
+    }
+    const filtered = filterSkillByHarness(md, agentTags);
+    const note = harness !== 'claude' ? `\n\n— (filtered for harness "${harness}"; sections that don't apply to you were removed. Pass raw:true for the full text.)` : '';
+    return { content: [{ type: 'text', text: filtered + note }] };
+  }
+
+  if (name === 'read_doc') {
+    // Document- and version-aware source read. Resolves a doc to its source
+    // file, reads a paginated line window, supports reading a past version (git
+    // show) and jumping to a label/theorem via the source map.
+    const doc = args?.doc;
+    if (!doc) return { content: [{ type: 'text', text: 'read_doc: `doc` is required.' }], isError: true };
+    const projDir = path.join(os.homedir(), 'work', 'tlda', 'server', 'projects', doc);
+    let cfg;
+    try { cfg = JSON.parse(fs.readFileSync(path.join(projDir, 'project.json'), 'utf8')); }
+    catch { return { content: [{ type: 'text', text: `read_doc: unknown doc "${doc}" (no project.json).` }], isError: true }; }
+    const sourceDir = cfg.sourceDir;
+    if (!sourceDir || !fs.existsSync(sourceDir)) return { content: [{ type: 'text', text: `read_doc: doc "${doc}" has no source dir on this machine.` }], isError: true };
+    const mainFile = cfg.mainFile || cfg.main;
+    const file = args.file || mainFile;
+    if (!file) return { content: [{ type: 'text', text: `read_doc: no file given and doc "${doc}" has no mainFile.` }], isError: true };
+    let relFile = (path.basename(file) === file) ? file : path.relative(sourceDir, path.resolve(sourceDir, file));
+
+    // ref/label shorthand → anchor line. The source map's labels come from the
+    // .aux file, which records page/number/title but NOT the source line — so we
+    // resolve the line from ground truth: the actual `\label{...}` location in
+    // the doc's source. We scan the doc's real build files (the distinct .tex
+    // files synctex recorded in the source map's `pages` index, which excludes
+    // junk/old .tex lying around the source dir). This also resolves a ref that
+    // lives in an \input'd file to the right file to read.
+    let anchorLine = 0;
+    let refNote = '';
+    if (args.ref && !(args.startLine > 0)) {
+      const texBase = String(mainFile || 'main').replace(/\.tex$/, '');
+      const smPath = path.join(projDir, 'output', `${texBase}-source-map.json`);
+      let sm;
+      try { sm = JSON.parse(fs.readFileSync(smPath, 'utf8')); }
+      catch { return { content: [{ type: 'text', text: `read_doc: ref lookup unavailable for ${doc} (no source map — build the doc first).` }], isError: true }; }
+      const q = String(args.ref).trim();
+      const e = (sm.labels || []).find(x => x.label === q || x.number === q)
+            || (sm.labels || []).find(x => x.label?.includes(q) || x.number?.includes(q));
+      if (!e) return { content: [{ type: 'text', text: `read_doc: ref "${q}" not found in ${doc}'s source map.` }], isError: true };
+      const found = findLabelLine(sourceDir, sm, mainFile, e.label);
+      if (!found) return { content: [{ type: 'text', text: `read_doc: ref "${q}" matched label ${e.label} (p.${e.page}) but its \\label{} line wasn't found in the source files — the doc may need a rebuild.` }], isError: true };
+      anchorLine = found.line;
+      relFile = found.file;   // read the file the label actually lives in
+      refNote = ` (ref "${q}" → ${e.number || e.label} @ ${found.file}:${found.line})`;
+    }
+
+    // Read content — current version (fs) or a past version (git show).
+    let data, versionNote = '';
+    if (args.version) {
+      if (!fs.existsSync(path.join(sourceDir, '.git'))) return { content: [{ type: 'text', text: `read_doc: "${doc}" source has no git history for versioned reads.` }], isError: true };
+      try { data = execFileSync('git', ['show', `${args.version}:${relFile}`], { cwd: sourceDir, encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 }); versionNote = ` @${args.version}`; }
+      catch (e) { return { content: [{ type: 'text', text: `read_doc: couldn't read ${relFile} @${args.version}: ${String(e.message).split('\n')[0]}` }], isError: true }; }
+    } else {
+      try { data = fs.readFileSync(path.join(sourceDir, relFile), 'utf8'); }
+      catch (e) { return { content: [{ type: 'text', text: `read_doc: ${e.code === 'ENOENT' ? 'no such file' : e.message}: ${relFile}` }], isError: true }; }
+    }
+
+    const allLines = data.split('\n');
+    const total = allLines.length;
+    // Window: a ref anchors a focused window (a few lines above + ~80 tall); a
+    // plain read uses startLine + a 400-line page. `before`/`lines` override.
+    let off, count;
+    if (anchorLine > 0) {
+      const before = args.before >= 0 ? args.before : 3;
+      off = Math.max(0, anchorLine - 1 - before);
+      count = args.lines > 0 ? args.lines : 80;
+    } else {
+      off = args.startLine > 0 ? args.startLine - 1 : 0;
+      count = args.lines > 0 ? args.lines : 400;
+    }
+    const end = args.endLine > 0 ? Math.min(args.endLine, total) : Math.min(off + count, total);
+    let body = allLines.slice(off, end).join('\n');
+    let capNote = '';
+    const MAX = 60000;
+    if (body.length > MAX) { body = body.slice(0, MAX); capNote = `\n→ output capped at ${MAX} chars — narrow the range with endLine.`; }
+    const pageNote = end < total ? `\n→ ${total - end} more lines — call again with startLine=${end + 1}.` : '';
+    const header = `${doc}/${relFile}${versionNote}${refNote} — lines ${off + 1}–${end} of ${total}:`;
+    return { content: [{ type: 'text', text: `${header}\n${body}${capNote}${pageNote}` }] };
   }
 
   if (name === 'screenshot') {
@@ -2961,80 +3187,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       // --- Full-line highlighting (original behavior) ---
-      // Look up canvas positions for start and end lines
-      const startPos = await lookupLineAsync(doc, startLine, file);
-      const endPos = await lookupLineAsync(doc, endLine, file);
-      if (!startPos) return { content: [{ type: 'text', text: `Line ${startLine} not found in lookup` }], isError: true };
-      if (!endPos) return { content: [{ type: 'text', text: `Line ${endLine} not found in lookup` }], isError: true };
-
-      const startCanvas = pdfToCanvas(startPos.page, startPos.x, startPos.y);
-      const endCanvas = pdfToCanvas(endPos.page, endPos.x, endPos.y);
-
-      const pageW = getPageWidth(doc);
-      // Highlight spans from text start to near-right edge
-      const hlLeft = Math.min(startCanvas.x, endCanvas.x);
-      const hlRight = pageW * 0.9; // stop before right margin
-      const hlTop = Math.min(startCanvas.y, endCanvas.y) - 3;
-      const hlBottom = Math.max(startCanvas.y, endCanvas.y) + 3;
-
-      // Create one horizontal segment per text line
-      const width = hlRight - hlLeft;
-      const height = hlBottom - hlTop;
-      const numLines = endLine - startLine + 1;
-      const lineH = numLines > 1 ? height / numLines : 0;
-
-      const segments = [];
-      if (numLines <= 1) {
-        // Single line: one horizontal sweep
-        segments.push({ type: 'free', path: encodeB64Path([
-          { x: 0, y: 0, z: 0.5 },
-          { x: width, y: 0, z: 0.5 },
-        ])});
-      } else {
-        // One horizontal sweep per line
-        for (let i = 0; i < numLines; i++) {
-          const y = i * lineH;
-          segments.push({ type: 'free', path: encodeB64Path([
-            { x: 0, y, z: 0.5 },
-            { x: width, y, z: 0.5 },
-          ])});
-        }
-      }
-
-      const shapeId = generateShapeId();
-      const shapeIndex = await getNextShapeIndex(doc);
-      const shape = {
-        id: shapeId,
-        type: 'highlight',
-        x: hlLeft,
-        y: hlTop,
-        index: shapeIndex,
-        rotation: 0,
-        isLocked: false,
-        opacity: 0.7,
-        props: {
-          segments,
-          color,
-          size: 's',
-          isComplete: true,
-          isPen: false,
-          scale: 1,
-          scaleX: 1,
-          scaleY: 1,
-        },
-        meta: {
-          createdAt: Date.now(),
-          createdBy: 'claude',
-          sourceAnchor: { file: file || './' + (startPos.texFile || 'main.tex'), line: startLine },
-          ...(process.env.FLEET_ID ? { fleet_id: process.env.FLEET_ID } : {}),
-          ...(process.env.FLEET_NAME ? { friendly_name: process.env.FLEET_NAME } : {}),
-        },
-        parentId: 'page:page',
-        typeName: 'shape',
-      };
-
-      await createShapeRest(doc, shape);
-      return { content: [{ type: 'text', text: `Highlight drawn: lines ${startLine}–${endLine}, page ${startPos.page}, ${color} (${shapeId})` }] };
+      // Staging now lives in the shared lib (mcp-server/lib/annotate.mjs) so the
+      // drill teacher stages line-range highlights through the same code path.
+      const r = await stageHighlight(doc, startLine, endLine, { color, file, server: TLDA_SYNC_SERVER });
+      if (!r.ok) return { content: [{ type: 'text', text: r.error }], isError: true };
+      return { content: [{ type: 'text', text: `Highlight drawn: lines ${startLine}–${endLine}, page ${r.page}, ${color} (${r.shapeId})` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }

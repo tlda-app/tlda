@@ -1,0 +1,88 @@
+// Goose activity-card source — emit the same activity events for DeepSeek/goose
+// agents that the Claude-JSONL path emits for claude agents.
+//
+// Claude agents write ~/.claude/projects/*.jsonl, which the daemon watches and
+// turns into activity cards. Goose agents write their turns to a sqlite db
+// (~/.local/share/goose/sessions/sessions.db) instead, so without this source a
+// goose agent shows awake/thinking (pane-based) but produces NO activity cards.
+//
+// This taps the SAME sqlite the kick uses (via goose-kick's gooseDb +
+// gooseSessionId session map) and maps each new message's content blocks to the
+// `{ tool, arg, ts, id, input }` activity-event shape, then hands them to the
+// daemon's existing bufferActivity() so they flow through the same throttle +
+// `activity-event` WS message — no new card pipeline, no pane-scraping.
+
+import { gooseDb, gooseSessionId } from './goose-kick.mjs'
+
+// Map one goose message row (content_json = array of blocks) to activity events
+// matching extractActivityEvents in fleet-daemon.mjs:
+//   toolRequest block        → { tool, arg, ts, id, input }
+//   assistant text (>20 chars) → { tool: '_text', arg: text, ts }
+// reasoning (r1 thinking), toolResponse, and user-role text are skipped — the
+// claude path likewise skips tool results (except pretty-print) and user text.
+// `isNoise(baseName)` filters chat/my_task/register/etc. (the daemon's
+// ACTIVITY_NOISE), keyed on the tool's base name after the `tlda__` prefix.
+export function gooseMessageEvents(row, isNoise) {
+  const events = []
+  let blocks
+  try { blocks = JSON.parse(row.content_json) } catch { return events }
+  if (!Array.isArray(blocks)) return events
+  const ts = new Date((row.created_timestamp || 0) * 1000).toISOString()
+  for (const b of blocks) {
+    if (!b || typeof b !== 'object') continue
+    if (b.type === 'toolRequest') {
+      const name = b.toolCall?.value?.name || ''
+      if (!name) continue
+      const base = name.split('__').pop()
+      if (isNoise && isNoise(base)) continue
+      const humanName = name.replace(/^mcp__/, '').replace(/__/g, '/')  // tlda__read_doc → tlda/read_doc
+      const input = b.toolCall?.value?.arguments || {}
+      const arg = input.file_path || input.path || input.command || input.pattern ||
+        input.message || input.query || input.description || input.reason ||
+        input.doc || input.ref || input.text || ''
+      const evt = { tool: humanName, arg: String(arg), ts, id: b.id }
+      if (input && Object.keys(input).length > 0) evt.input = input
+      events.push(evt)
+    } else if (b.type === 'text' && typeof b.text === 'string' && b.text.length > 20) {
+      if (row.role === 'user') continue   // inbound nudges / terminal input — not activity
+      events.push({ tool: '_text', arg: b.text, ts })
+    }
+    // reasoning (r1) and toolResponse intentionally skipped for v1
+  }
+  return events
+}
+
+// One activity tick: for each awake goose agent, read messages newer than what
+// we've seen and emit their events. On first sight of an agent we record its
+// current max id WITHOUT backfilling (cards start from "now", like the claude
+// path starting a fresh JSONL watch at EOF). `lastSeen` is a Map(agentId → id)
+// the caller owns and persists across ticks.
+//   deps: { bufferActivity, log, lastSeen, isNoise }
+export function gooseActivityTick(agents, deps) {
+  const { bufferActivity, log = console, lastSeen, isNoise } = deps
+  const db = gooseDb(log)
+  if (!db) return
+  for (const agent of agents) {
+    if (!agent || !agent._isGoose || agent.hibernating) continue
+    const sid = gooseSessionId(agent.id, log)
+    if (!sid) continue
+    try {
+      if (!lastSeen.has(agent.id)) {
+        const m = db.prepare('SELECT MAX(id) AS m FROM messages WHERE session_id = ?').get(sid)
+        lastSeen.set(agent.id, (m && m.m) || 0)
+        continue
+      }
+      const since = lastSeen.get(agent.id)
+      const rows = db.prepare(
+        'SELECT id, role, content_json, created_timestamp FROM messages WHERE session_id = ? AND id > ? ORDER BY id ASC'
+      ).all(sid, since)
+      if (!rows.length) continue
+      const events = []
+      for (const r of rows) events.push(...gooseMessageEvents(r, isNoise))
+      if (events.length) bufferActivity(agent.id, events)
+      lastSeen.set(agent.id, rows[rows.length - 1].id)
+    } catch (e) {
+      log.warn?.(`goose activity tick failed for ${agent.id}: ${e.message}`)
+    }
+  }
+}

@@ -78,32 +78,93 @@ MODEL_ALIASES = {
 # structured tool-calls with DeepSeek (the model emits them as text), so the
 # agent can't invoke its tools. OpenRouter handles tool-calling correctly.
 # Hence the OpenRouter-style model ids below.
+# The reasoner (Skip's pick for the adversary seat) maps to the **r1-0528**
+# snapshot, NOT plain `deepseek-r1`: verified 2026-06-13 that `deepseek/deepseek-
+# r1` through goose emitted tool calls as TEXT in DeepSeek's native format
+# (`function<｜tool▁sep｜>…`) — its OpenRouter provider didn't negotiate
+# structured tool-calls — so the agent stalled. `deepseek/deepseek-r1-0528`
+# routes to a tool-capable provider and emits real structured tool-calls through
+# goose (verified live: register/my_task/read_doc/lookup_theorem all executed as
+# tool calls). (If OpenRouter ever routes 0528 to a non-tool provider, the next
+# hardening step is forcing `provider:{require_parameters:true}` — not needed so
+# far.)
+# Friendly alias → concrete OpenRouter `vendor/model` id. These are the curated
+# names; any raw `vendor/model` id also works (see resolve_goose_model), so this
+# table is convenience, not a whitelist. Add a family's newest tool-capable
+# snapshot here once it PASSES the probe (bin/verify-goose-toolcalls.mjs).
 GOOSE_MODELS = {
-    "deepseek": "deepseek/deepseek-chat",
+    # Bare `deepseek` → the current flagship (v4-pro). Verified 2026-06-13 to
+    # emit structured tool-calls through goose/OpenRouter and read/reason over a
+    # doc end-to-end — Skip's pick for the default goose/adversary model. The
+    # cheaper deepseek-chat is still selectable by its explicit alias.
+    "deepseek": "deepseek/deepseek-v4-pro",
     "deepseek-chat": "deepseek/deepseek-chat",
     "deepseek-v3": "deepseek/deepseek-v3.2",
-    "deepseek-r1": "deepseek/deepseek-r1",
-    "deepseek-reasoner": "deepseek/deepseek-r1",
+    "deepseek-r1": "deepseek/deepseek-r1-0528",
+    "deepseek-reasoner": "deepseek/deepseek-r1-0528",
+    "deepseek-v4": "deepseek/deepseek-v4-pro",
+    "deepseek-v4-pro": "deepseek/deepseek-v4-pro",
+    "deepseek-v4-flash": "deepseek/deepseek-v4-flash",
+    # Other families — aliases registered; each is confirmed/denied by the probe
+    # and the verified set below. An UNVERIFIED alias still resolves (warn only),
+    # so you can probe it; it just isn't trusted for tool-using roles yet.
+    "kimi": "moonshotai/kimi-k2.7-code",
+    "qwen": "qwen/qwen3.7-max",
+    "glm": "z-ai/glm-5.1",
+    "minimax": "minimax/minimax-m3",
+    "gemini": "google/gemini-3.5-flash",
+    "mistral": "mistralai/mistral-medium-3-5",
+}
+
+# OpenRouter ids VERIFIED to emit STRUCTURED tool-calls through goose
+# (bin/verify-goose-toolcalls.mjs). Advertising OpenRouter "tools" support is
+# necessary but NOT sufficient — some models narrate tool-calls as text
+# (deepseek-r1 did), which leaves the agent unable to act. Only ids here are
+# known-good for tool-using fleet agents; resolving to anything else warns.
+GOOSE_VERIFIED = {
+    "deepseek/deepseek-v4-pro",
+    "deepseek/deepseek-v4-flash",
+    "deepseek/deepseek-chat",
+    "deepseek/deepseek-v3.2",
+    "deepseek/deepseek-r1-0528",
+    # Probed 2026-06-13 via bin/verify-goose-toolcalls.mjs — all emitted
+    # structured tool-calls (register+my_task) through goose, zero text-format.
+    # (google/gemini-3.5-flash was INCONCLUSIVE — no tool-calls in the window;
+    #  left off until it's re-probed and confirmed.)
+    "moonshotai/kimi-k2.7-code",
+    "qwen/qwen3.7-max",
+    "z-ai/glm-5.1",
+    "minimax/minimax-m3",
+    "mistralai/mistral-medium-3-5",
 }
 GOOSE_BIN = "/opt/homebrew/bin/goose"
 DEEPSEEK_RECIPE = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", "recipes", "fleet-deepseek.yaml")
+    os.path.dirname(os.path.realpath(__file__)), "..", "recipes", "fleet-deepseek.yaml")
 
 
 def resolve_goose_model(model):
-    """Return the concrete DeepSeek model id if `model` selects a goose-backed
-    agent, else None (meaning: a normal Claude agent). Accepts the aliases above
-    or a raw OpenRouter id (deepseek/…) so a respawn whose stored meta.model is
-    already resolved still routes to goose."""
+    """Return the concrete OpenRouter model id if `model` selects a goose-backed
+    agent, else None (meaning: a normal Claude agent).
+
+    Accepts a curated alias (GOOSE_MODELS) or any raw `vendor/model` OpenRouter
+    id. The discriminator is the `/`: Claude model specs (`opus`, `sonnet`,
+    `claude-opus-4-7`, …) never contain one, while every OpenRouter id does. So a
+    respawn whose stored meta.model is an already-resolved id still routes to
+    goose, and any new OpenRouter model works without a code change."""
     if not model:
         return None
     if model in GOOSE_MODELS:
         return GOOSE_MODELS[model]
-    if model.startswith("deepseek/"):
+    if "/" in model:   # any OpenRouter vendor/model id → goose
         return model
     return None
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+def goose_model_verified(resolved_id):
+    """True if this concrete OpenRouter id is on the verified-tool-calling list."""
+    return resolved_id in GOOSE_VERIFIED
+
+SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 REPO_DIR = os.path.dirname(SCRIPT_DIR)
 TLDA_CLI = os.path.join(REPO_DIR, "cli", "tlda.mjs")
 CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".config", "tlda", "config.json")
@@ -555,6 +616,11 @@ def build_goose_cmd(fleet_id, tmux_session, model, name=None):
         f"TLDA_SYNC_SERVER={shlex.quote(API)}",
         f"XDG_CONFIG_HOME={shlex.quote(sandbox_cfg)}",
         "GOOSE_DISABLE_KEYRING=1",
+        # Force telemetry off non-interactively. goose's first interactive run
+        # otherwise blocks on a "share anonymous usage data?" consent prompt that
+        # hangs boot (the config's GOOSE_TELEMETRY_ENABLED:false doesn't suppress
+        # the PROMPT). GOOSE_TELEMETRY_OFF overrides the config and skips the ask.
+        "GOOSE_TELEMETRY_OFF=1",
     ]
     if name:
         parts.append(f"FLEET_NAME={shlex.quote(name)}")
@@ -563,6 +629,15 @@ def build_goose_cmd(fleet_id, tmux_session, model, name=None):
     parts.append(f"--recipe {shlex.quote(recipe)}")
     parts.append("--params provider=openrouter")
     parts.append(f"--params model={shlex.quote(model)}")
+    # Stamp the goose session with a fleet-derived NAME so the daemon can map a
+    # fleet agent to its goose sqlite session exactly (sessions otherwise carry
+    # no fleet identity — auto name + shared working_dir = ambiguous with >1
+    # goose agent per dir). Drives the turn-end auto-kick's done-signal and the
+    # activity-card source. `--name` is a freeform label (safe + queryable);
+    # `--session-id` is avoided because goose expects its own id format there.
+    # Sanitize the colon: FLEET_ID is `fleet:<hex>`, goose --name may choke on `:`.
+    session_label = "fleet-" + str(fleet_id).split(":")[-1]
+    parts.append(f"--name {shlex.quote(session_label)}")
     parts.append("--interactive")
     inner = " ".join(parts)
     return f"zsh -lc {shlex.quote(inner)}"
@@ -685,6 +760,15 @@ def spawn_tmux(session, cwd, cmd, auto_dismiss=True):
                        check=True, env=spawn_env)
         subprocess.run(tmux("set-option", "-t", session, "remain-on-exit", "on"),
                        capture_output=True, timeout=5, env=spawn_env)
+    # Pin the window to a fixed width so the agent always paints at one size. The
+    # global window-size=latest makes the window follow whatever client last
+    # attached; an idle agent's frame is then painted at one width and shown in the
+    # terminal peek's grid at a different (current) width -> absolute-position
+    # garble. Manual + a fixed size removes the reflow at the source.
+    subprocess.run(tmux("set-option", "-t", session, "window-size", "manual"),
+                   capture_output=True, timeout=5, env=spawn_env)
+    subprocess.run(tmux("resize-window", "-t", session, "-x", "120", "-y", "40"),
+                   capture_output=True, timeout=5, env=spawn_env)
     if auto_dismiss:
         # Background the bounded poll-and-dismiss (see dismiss_devchannels).
         # Detached so spawn_tmux returns immediately and the dismiss survives
@@ -762,6 +846,11 @@ def fresh(name, model, cwd, effort, mode):
     sess = unique_session_name(f"fleet-{sanitize_session_name(name)}")
     cwd = resolve_spawn_cwd(cwd)
     goose_model = resolve_goose_model(model)
+    if goose_model and not goose_model_verified(goose_model):
+        print(f"  Warning: '{goose_model}' is not on the verified tool-calling "
+              f"list — it may narrate tool-calls as text instead of invoking "
+              f"them. Probe it with: bin/verify-goose-toolcalls.mjs {goose_model}",
+              file=sys.stderr)
     # Store the resolved model id in meta either way so a later respawn knows
     # which engine to use (resolve_goose_model recognizes the deepseek-v4-* id).
     model = goose_model or resolve_model(model)
@@ -1006,8 +1095,26 @@ def main():
     parser.add_argument("--enroll", action="store_true")
     parser.add_argument("--no-attach", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--list-models", action="store_true",
+                        help="Print the goose model aliases + verified ids as JSON and exit")
     parser.add_argument("--_dismiss-devch", default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
+
+    # Single source of truth for the UI's model autocomplete/validation: dump the
+    # goose model aliases, their resolved OpenRouter ids, and which are verified
+    # to emit structured tool-calls. The server serves this so the spawn UI never
+    # drifts from what fleet-spawn actually accepts.
+    if args.list_models:
+        models = [
+            {"alias": a, "id": mid, "verified": goose_model_verified(mid)}
+            for a, mid in sorted(GOOSE_MODELS.items())
+        ]
+        print(json.dumps({
+            "default": GOOSE_MODELS.get("deepseek"),
+            "models": models,
+            "verified": sorted(GOOSE_VERIFIED),
+        }, indent=2))
+        return
 
     # Internal: backgrounded dev-channels dialog dismisser (spawned by spawn_tmux).
     if args._dismiss_devch:

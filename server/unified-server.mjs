@@ -1224,6 +1224,35 @@ app.get('/api/fleet/viewing', requireRead, (req, res) => {
   res.json(result)
 })
 
+// Goose model list for the spawn UI's autocomplete + validation. Single source
+// of truth is `fleet-spawn --list-models` (GOOSE_MODELS/GOOSE_VERIFIED), so the
+// UI never drifts from what fleet-spawn actually accepts. Cached 60s since it
+// only changes when a model is verified. Shape: { default, models:[{alias,id,
+// verified}], verified:[id…] }.
+let _gooseModelsCache = null
+let _gooseModelsCacheAt = 0
+app.get('/api/fleet/models', requireRead, (req, res) => {
+  if (_gooseModelsCache && Date.now() - _gooseModelsCacheAt < 60_000) return res.json(_gooseModelsCache)
+  const script = join(__dirname, '..', 'bin', 'fleet-spawn.py')
+  const child = cpSpawn('python3', [script, '--list-models'], { timeout: 10_000 })
+  let out = '', err = '', done = false
+  const fail = (msg) => { if (!done) { done = true; res.status(500).json({ error: msg }) } }
+  child.stdout.on('data', d => { out += d })
+  child.stderr.on('data', d => { err += d })
+  child.on('error', e => fail(`model list failed: ${e.message}`))
+  child.on('close', code => {
+    if (done) return
+    if (code !== 0) return fail(`model list exited ${code}: ${err.slice(0, 200)}`)
+    try {
+      const data = JSON.parse(out)
+      _gooseModelsCache = data
+      _gooseModelsCacheAt = Date.now()
+      done = true
+      res.json(data)
+    } catch (e) { fail(`model list parse error: ${e.message}`) }
+  })
+})
+
 app.get('/api/fleet/prefs', requireRead, (req, res) => {
   const userId = req.query.user
   if (!userId || typeof userId !== 'string') return res.status(400).json({ error: 'Missing ?user= param' })
