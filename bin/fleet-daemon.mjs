@@ -1733,23 +1733,60 @@ function detectPromptFromPty(agentId, tmuxSession, state) {
   }
 }
 
+// Query a tmux session's current window size. The agent's TUI repaints at this
+// width using absolute cursor moves, so the viewer's xterm grid MUST match it or
+// every frame garbles — see the peek's grid sizing in FleetChatShape.tsx.
+async function queryWindowSize(tmux_session) {
+  try {
+    const { stdout } = await tmux('display-message', '-p', '-t', tmux_session, '#{window_width} #{window_height}')
+    const [w, h] = stdout.trim().split(/\s+/).map(n => parseInt(n, 10))
+    if (Number.isFinite(w) && w > 0 && Number.isFinite(h) && h > 0) return { cols: w, rows: h }
+  } catch {}
+  return null
+}
+
 async function rpcStartTerminalWatch({ tmux_session, agent_id, poll_ms }) {
   checkSession(tmux_session)
-  if (terminalWatchPtys.has(tmux_session)) return { ok: true, already: true }
+  {
+    const existing = terminalWatchPtys.get(tmux_session)
+    if (existing) return { ok: true, already: true, cols: existing.cols, rows: existing.rows }
+  }
 
   // Disable tmux status bar — it generates escape code noise in the PTY stream
   try { await execFileP('tmux', [...TMUX_ARGS, 'set-option', '-t', tmux_session, 'status', 'off'], { timeout: 3000 }) } catch {}
 
+  // Attach the watch PTY at the session's CURRENT window size, not a fixed guess.
+  // tmux renders the window at the window size (set by window-size policy across
+  // all attached clients); a PTY narrower than the window receives garbled,
+  // absolute-positioned frames. Matching the window keeps the stream clean and
+  // does not resize the agent's real terminal (we follow the window, never lead).
+  const size = await queryWindowSize(tmux_session) || { cols: 120, rows: 40 }
+
   const nodePty = await getPty()
   const pty = nodePty.spawn('tmux', [...TMUX_ARGS, 'attach-session', '-t', tmux_session], {
     name: 'xterm-256color',
-    cols: 120,
-    rows: 40,
+    cols: size.cols,
+    rows: size.rows,
     env: { ...process.env, TERM: 'xterm-256color' },
   })
 
-  const state = { pty, alive: true, recentOutput: '', lastPromptSurfaced: '' }
+  const state = { pty, alive: true, recentOutput: '', lastPromptSurfaced: '', cols: size.cols, rows: size.rows, sizePoll: null }
   terminalWatchPtys.set(tmux_session, state)
+
+  sendMsg({ type: 'terminal-size', agent_id, tmux_session, cols: size.cols, rows: size.rows })
+
+  // The window can change while we watch (a real terminal client attaches,
+  // detaches, or resizes). Poll and follow it: resize our PTY to match so the
+  // stream stays clean, and tell the viewer the new grid width.
+  state.sizePoll = setInterval(async () => {
+    if (!state.alive) return
+    const cur = await queryWindowSize(tmux_session)
+    if (!cur || (cur.cols === state.cols && cur.rows === state.rows)) return
+    state.cols = cur.cols
+    state.rows = cur.rows
+    try { state.pty.resize(Math.max(1, cur.cols), Math.max(1, cur.rows)) } catch {}
+    sendMsg({ type: 'terminal-size', agent_id, tmux_session, cols: cur.cols, rows: cur.rows })
+  }, 1500)
 
   pty.onData((data) => {
     if (!state.alive) return
@@ -1767,18 +1804,20 @@ async function rpcStartTerminalWatch({ tmux_session, agent_id, poll_ms }) {
 
   pty.onExit(({ exitCode }) => {
     state.alive = false
+    if (state.sizePoll) { clearInterval(state.sizePoll); state.sizePoll = null }
     terminalWatchPtys.delete(tmux_session)
     log.info(`terminal exited: agent=${agent_id} session=${tmux_session} exitCode=${exitCode}`)
     sendMsg({ type: 'terminal-dead', agent_id, tmux_session, exitCode })
   })
 
-  return { ok: true, streaming: true }
+  return { ok: true, streaming: true, cols: size.cols, rows: size.rows }
 }
 
 function rpcStopTerminalWatch({ tmux_session }) {
   const state = terminalWatchPtys.get(tmux_session)
   if (!state) return { ok: true, already: true }
   state.alive = false
+  if (state.sizePoll) { clearInterval(state.sizePoll); state.sizePoll = null }
   try { state.pty.kill() } catch {}
   terminalWatchPtys.delete(tmux_session)
   return { ok: true }

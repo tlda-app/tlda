@@ -2005,6 +2005,21 @@ const voiceWss = new WebSocketServer({ noServer: true })
 // daemon; when the last one drops we send `stop-terminal-watch`. State
 // is server-held so the daemon can resume cleanly after a reconnect.
 const terminalWatchers = new Map() // agentId -> Set<ws>
+// Last-known tmux window size per agent, reported by the daemon. The viewer
+// renders its peek grid at this width so the live stream doesn't garble; cached
+// so a late-joining watcher (the daemon won't re-send on a duplicate watch) can
+// be told the size on connect.
+const terminalSizes = new Map() // agentId -> { cols, rows }
+
+function fanOutTerminalSize(agentId, cols, rows) {
+  terminalSizes.set(agentId, { cols, rows })
+  const set = terminalWatchers.get(agentId)
+  if (!set) return
+  const payload = JSON.stringify({ type: 'size', cols, rows })
+  for (const w of set) {
+    if (w.readyState === 1) { try { w.send(payload) } catch {} }
+  }
+}
 
 function fanOutTerminalData(agentId, base64Data) {
   const set = terminalWatchers.get(agentId)
@@ -2102,12 +2117,20 @@ server.on('upgrade', async (req, socket, head) => {
 
       if (isFirst) {
         try {
-          await sendRpc(agent.machine_id, 'start-terminal-watch', {
+          const res = await sendRpc(agent.machine_id, 'start-terminal-watch', {
             agent_id: agent.id, tmux_session: agent.tmux_session, poll_ms: 500,
           })
+          if (res && res.cols && res.rows) terminalSizes.set(agent.id, { cols: res.cols, rows: res.rows })
         } catch (e) {
           try { ws.send(JSON.stringify({ type: 'error', message: e.message })) } catch {}
         }
+      }
+
+      // Tell the viewer the agent's real tmux window size BEFORE seeding content,
+      // so the peek grid is created at the right width and the seed doesn't wrap.
+      const cachedSize = terminalSizes.get(agent.id)
+      if (cachedSize && ws.readyState === 1) {
+        try { ws.send(JSON.stringify({ type: 'size', cols: cachedSize.cols, rows: cachedSize.rows })) } catch {}
       }
 
       // Seed with current terminal content so the card isn't blank on open.
@@ -2152,6 +2175,7 @@ server.on('upgrade', async (req, socket, head) => {
         set.delete(ws)
         if (set.size === 0) {
           terminalWatchers.delete(agent.id)
+          terminalSizes.delete(agent.id)
           try {
             await sendRpc(agent.machine_id, 'stop-terminal-watch', {
               tmux_session: agent.tmux_session,
@@ -4228,6 +4252,11 @@ async function handleDaemonWsMessage(ws, msg) {
     } catch (e) {
       console.error(`[fleet-daemon] terminal-chat write: ${e.message}`)
     }
+    return
+  }
+
+  if (type === 'terminal-size') {
+    if (msg.agent_id && msg.cols && msg.rows) fanOutTerminalSize(msg.agent_id, msg.cols, msg.rows)
     return
   }
 

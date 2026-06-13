@@ -159,6 +159,16 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
   const [height, setHeight] = useState(210)
   const [lightboxed, setLightboxed] = useState(false)
   const [scale, setScale] = useState(1)
+  // The peek renders a fixed grid sized to the agent's REAL tmux window width
+  // (reported by the daemon via a 'size' message), then CSS-scales it to fit the
+  // panel. PEEK_COLS/ROWS are only the fallback until the first 'size' arrives —
+  // a grid narrower than the window would garble the absolute-positioned stream.
+  const [gridCols, setGridCols] = useState(PEEK_COLS)
+  const [gridRows, setGridRows] = useState(PEEK_ROWS)
+  const gridColsRef = useRef(gridCols)
+  const gridRowsRef = useRef(gridRows)
+  useEffect(() => { gridColsRef.current = gridCols }, [gridCols])
+  useEffect(() => { gridRowsRef.current = gridRows }, [gridRows])
   const dragRef = useRef<{ startY: number; startH: number } | null>(null)
   const paneRef = useRef<HTMLDivElement>(null)
   // Viewport-y of the pinned pane's bottom edge, frozen as the lightbox anchor so
@@ -214,7 +224,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
     const text = historyText.replace(/\r?\n/g, '\r\n')
     const rows = Math.max(1, Math.min(historyText.split('\n').length, 2000))
     const term = new Terminal({
-      cols: PEEK_COLS,
+      cols: gridCols,
       rows,
       fontSize: 11,
       fontFamily: TERM_FONT,
@@ -233,13 +243,13 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
       if (body) body.scrollTop = body.scrollHeight
     })
     return () => { term.dispose(); historyTermRef.current = null }
-  }, [lightboxed, historyText])
+  }, [lightboxed, historyText, gridCols])
 
-  // Render at a FIXED grid that matches the daemon's tmux-attach PTY
-  // (PEEK_COLS × PEEK_ROWS == fleet-daemon.mjs rpcStartTerminalWatch). The two
-  // MUST agree: the agent's TUI repaints at the PTY's column count using
-  // absolute cursor positioning, so a mismatched xterm grid garbles every
-  // frame. We never reflow the grid to fit the popup — instead we scale the
+  // Create at the PEEK_COLS×PEEK_ROWS fallback, then resize to the agent's real
+  // tmux window size when the 'size' message arrives (see the WS handler below).
+  // The grid MUST match the window: the agent's TUI repaints at the window's
+  // column count using absolute cursor positioning, so a mismatched grid garbles
+  // every frame. We never reflow the grid to fit the popup — instead we scale the
   // rendered terminal visually (see the scale effect below).
   useEffect(() => {
     if (!containerRef.current) return
@@ -255,6 +265,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
     })
     term.open(containerRef.current)
     termRef.current = term
+    try { term.resize(gridColsRef.current, gridRowsRef.current) } catch {}
     return () => {
       term.dispose()
       termRef.current = null
@@ -277,7 +288,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
     const ro = new ResizeObserver(() => measure())
     if (bodyRef.current) ro.observe(bodyRef.current)
     return () => { cancelAnimationFrame(raf); ro.disconnect() }
-  }, [lightboxed, height, status])
+  }, [lightboxed, height, status, gridCols])
 
   // Leaving pinned mode also leaves the lightbox.
   useEffect(() => { if (!pinned) setLightboxed(false) }, [pinned])
@@ -322,7 +333,14 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
     ws.onmessage = (evt) => {
       try {
         const msg = JSON.parse(evt.data)
-        if (msg.type === 'output' && msg.data && termRef.current) {
+        if (msg.type === 'size' && msg.cols && msg.rows) {
+          // The daemon reports the agent's real tmux window size. Resize the live
+          // grid to match so the absolute-positioned stream renders cleanly; the
+          // scale effect then re-fits it to the panel width.
+          setGridCols(msg.cols)
+          setGridRows(msg.rows)
+          try { termRef.current?.resize(msg.cols, msg.rows) } catch {}
+        } else if (msg.type === 'output' && msg.data && termRef.current) {
           if (msg.encoding === 'base64') {
             const bytes = Uint8Array.from(atob(msg.data), c => c.charCodeAt(0))
             termRef.current.write(bytes)
