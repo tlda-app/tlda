@@ -13,6 +13,7 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import { DEFAULT_PORT, getFleetServerUrl } from '../../shared/config.mjs'
+import { evalDnf, labelsForAgent } from '../../shared/fleet-labels.mjs'
 
 // Server owner — the human running this server process. Browser users
 // log in via the WS 'login' message or register via 'register'.
@@ -276,66 +277,58 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     }
   })
 
-  // --- GET /api/roll-call ---
-  // Aggregates tmux session lists from every connected fleet-daemon and
-  // joins against the agent registry. If a daemon is down, its agents
-  // are reported as `tmux_alive: null` (unknown), not dead — we don't
-  // mark something dead because we can't reach it.
-  router.get('/api/roll-call', async (req, res) => {
+  // --- GET /api/fleet-table ---
+  // Passive fleet roster for agents (replaces the old roll-call blob). Reads the
+  // hydrated agent registry — the SAME source as the agents panel and the `awake`
+  // pseudo-label (liveness via the installed oracle) — so it wakes no one and
+  // costs a cached registry read. Returns whole-fleet totals plus a
+  // DNF-filterable, capped slice of rows.
+  //   ?filter=<json DNF>  scope rows (e.g. [[["awake"]]], a label, a name)
+  //   ?limit=<n>          cap rows (default 50); totals are always whole-fleet
+  router.get('/api/fleet-table', (req, res) => {
     try {
-      const agents = fleetStore ? fleetStore.getAllAgents() : []
-      const ALIVE_MS = 10 * 60 * 1000
+      if (!fleetStore) { res.json({ totals: { awake: 0, hibernating: 0, dead: 0, total: 0 }, agents: [], shown: 0, matched: 0 }); return }
       const now = Date.now()
-      const rosterDir = path.join(os.homedir(), '.claude', 'fleet-roster')
-      let roster = []
-      try {
-        if (fs.existsSync(rosterDir)) {
-          roster = fs.readdirSync(rosterDir)
-            .filter(f => f.endsWith('.json'))
-            .map(f => { try { return JSON.parse(fs.readFileSync(path.join(rosterDir, f), 'utf8')) } catch { return null } })
-            .filter(Boolean)
-        }
-      } catch {}
+      // Agent roster only — humans are not fleet agents (excluded from the view).
+      const roster = fleetStore.getAllAgents().filter(a => !a.human)
 
-      // Per-machine list-sessions via daemon RPC. Concurrency-safe: each
-      // daemon answers its own machine; aggregate the union.
-      const tmuxByMachine = new Map() // machine_id -> Set<sessionName>
-      const probes = []
-      for (const [mid] of daemonConnections) {
-        probes.push(
-          sendRpc(mid, 'list-sessions', {}).then(r => {
-            const sessions = (r?.sessions || []).filter(s => s.startsWith('fleet-'))
-            tmuxByMachine.set(mid, new Set(sessions))
-          }).catch(() => { tmuxByMachine.set(mid, null) }) // null = unreachable
-        )
+      // Whole-fleet totals (independent of the filter) — the at-a-glance load.
+      const totals = { awake: 0, hibernating: 0, dead: 0, total: roster.length }
+      for (const a of roster) {
+        if (a.dead) totals.dead++
+        else if (a.status === 'awake') totals.awake++
+        else totals.hibernating++
       }
-      await Promise.all(probes)
 
-      const registryIds = new Set(agents.map(a => a.id))
-      const allTmuxSessions = new Set()
-      for (const set of tmuxByMachine.values()) if (set) for (const s of set) allTmuxSessions.add(s)
+      // Optional DNF filter, parsed from the query. Same matcher chat uses, so
+      // `awake` / a label / a name all work and compose.
+      let filter = null
+      if (req.query.filter) {
+        try { filter = JSON.parse(req.query.filter) } catch { res.status(400).json({ error: 'filter must be JSON (a DNF array)' }); return }
+      }
+      const matched = roster.filter(a => !filter || evalDnf(filter, labelsForAgent(a)))
 
-      const agentStatus = agents.map(a => {
-        const lastSeenMs = a.last_seen ? now - new Date(a.last_seen).getTime() : Infinity
-        const heartbeat = lastSeenMs < ALIVE_MS
-        let tmuxUp = null
-        if (a.tmux_session && a.machine_id) {
-          const set = tmuxByMachine.get(a.machine_id)
-          tmuxUp = set ? set.has(a.tmux_session) : null
+      // Awake first, then most-recently-seen.
+      const rank = (a) => (a.dead ? 2 : a.status === 'awake' ? 0 : 1)
+      matched.sort((x, y) => rank(x) - rank(y) || (new Date(y.last_seen || 0) - new Date(x.last_seen || 0)))
+
+      const limit = Math.max(1, Math.min(parseInt(req.query.limit) || 50, 500))
+      const rows = matched.slice(0, limit).map(a => {
+        const lastSeenMs = a.last_seen ? now - new Date(a.last_seen).getTime() : null
+        const act = a.metadata?.status || null
+        return {
+          id: a.id,
+          name: a.friendly_name || a.id,
+          status: a.dead ? 'dead' : a.status,
+          last_seen_ago_s: lastSeenMs == null ? null : Math.round(lastSeenMs / 1000),
+          cwd: a.cwd || null,
+          tmux_session: a.tmux_session || null,
+          activity: act?.state || null,
+          tool: act?.tool || null,
         }
-        // `dead` is a deliberate terminal state, only set by explicit kills.
-        // A non-running, non-dead agent is hibernating — computed, not stored.
-        let status
-        if (a.dead) status = 'dead'
-        else if (heartbeat && tmuxUp !== false) status = 'alive'
-        else if (heartbeat || tmuxUp) status = 'stale'
-        else status = 'hibernating'
-        return { ...a, status, heartbeat_alive: heartbeat, tmux_alive: tmuxUp, last_seen_ago_s: lastSeenMs === Infinity ? null : Math.round(lastSeenMs / 1000) }
       })
-      const missing = roster.filter(r => !registryIds.has(r.fleet_id))
-      const registeredTmux = new Set(agents.filter(a => a.tmux_session).map(a => a.tmux_session))
-      const unmatchedTmux = [...allTmuxSessions].filter(s => !registeredTmux.has(s))
-      res.json({ agents: agentStatus, missing_from_roster: missing, unregistered_tmux: unmatchedTmux })
+
+      res.json({ totals, agents: rows, shown: rows.length, matched: matched.length })
     } catch (e) { res.status(500).json({ error: e.message }) }
   })
 

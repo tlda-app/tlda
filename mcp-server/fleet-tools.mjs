@@ -1117,11 +1117,17 @@ export function getFleetTools() {
     },
     // ---- Fleet Operations ----
     {
-      name: 'roll_call',
-      description: 'Show fleet status: who is alive, who is missing. Reads identity ledger + scans tmux sessions. Use before rehydrate to see what needs recovery.',
+      name: 'fleet_table',
+      description: "Fleet roster: whole-fleet awake/hibernating/dead totals plus a row per agent (name, status, last-seen, cwd, current activity). Passive read — reads the registry, wakes no one. Filter to a slice with a DNF expression (the same one chat uses) so you don't pull the whole fleet: e.g. awake agents, a label, or a name.",
       inputSchema: {
         type: 'object',
-        properties: {},
+        properties: {
+          filter: {
+            description: 'Optional DNF filter — OR of AND-groups of label strings — to scope rows. Labels include the `awake`/`hibernating` pseudo-labels, agent names, and explicit labels. Examples: [["awake"]] = awake agents; [["awake","pickup"]] = awake AND labelled pickup (one group, ANDed); [["awake"],["pickup"]] = awake OR pickup. Omit to list all agents.',
+            type: 'array',
+          },
+          limit: { description: 'Max rows to return (default 50, max 500). Totals are always whole-fleet regardless of limit.', type: 'number' },
+        },
       },
     },
     {
@@ -3396,7 +3402,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
         return {
           content: [{
             type: 'text',
-            text: `"${args.agent}" looks like a Claude Code session UUID. Session IDs are not accepted in fleet — use the agent identifier (name like "pb" or "fleet:UUID"). If you don't know which agent ran a session, look at the JSONL's first message or use roll_call.`,
+            text: `"${args.agent}" looks like a Claude Code session UUID. Session IDs are not accepted in fleet — use the agent identifier (name like "pb" or "fleet:UUID"). If you don't know which agent ran a session, look at the JSONL's first message or use fleet_table.`,
           }],
           isError: true,
         };
@@ -3608,48 +3614,43 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     }
   }
 
-  // ---- roll_call ----
-  if (name === 'roll_call') {
+  // ---- fleet_table ----
+  if (name === 'fleet_table') {
     try {
-      const res = await fleetFetch(`${TLDA_FLEET_SERVER}/api/roll-call`);
+      const qs = new URLSearchParams();
+      if (args.filter) qs.set('filter', JSON.stringify(args.filter));
+      if (args.limit) qs.set('limit', String(args.limit));
+      const res = await fleetFetch(`${TLDA_FLEET_SERVER}/api/fleet-table${qs.toString() ? `?${qs}` : ''}`);
       const data = await res.json();
-      if (data.error) return { content: [{ type: 'text', text: `Roll call failed: ${data.error}` }], isError: true };
+      if (data.error) return { content: [{ type: 'text', text: `fleet_table failed: ${data.error}` }], isError: true };
 
-      const agentStatus = data.agents || [];
-      const missing = data.missing_from_roster || [];
-      const unmatchedTmux = data.unregistered_tmux || [];
+      const t = data.totals || { awake: 0, hibernating: 0, dead: 0, total: 0 };
+      const rows = data.agents || [];
+      const header = `Fleet: ${t.awake} awake · ${t.hibernating} hibernating · ${t.dead} dead · ${t.total} total`;
+      const scope = data.matched != null && data.matched !== t.total
+        ? `  (filter matched ${data.matched}${data.shown < data.matched ? `, showing ${data.shown}` : ''})`
+        : '';
 
-      const lines = [];
-      const alive = [], stale = [], dead = [];
-      for (const a of agentStatus) {
-        const label = a.friendly_name || a.id;
-        const transport = a.tmux_session ? `tmux:${a.tmux_session}` : 'no session';
-        const seenAgo = a.last_seen_ago_s == null ? 'never' : `${a.last_seen_ago_s}s ago`;
-        const info = `${label} (${a.id}) — ${transport}, cwd: ${a.cwd || '?'}, seen ${seenAgo}`;
-        if (a.status === 'alive') alive.push(info);
-        else if (a.status === 'stale') stale.push(info);
-        else dead.push(info);
+      if (rows.length === 0) {
+        return { content: [{ type: 'text', text: `${header}${scope}\n(no agents match)` }] };
       }
 
-      if (alive.length) lines.push(`Alive (${alive.length}):\n  ${alive.join('\n  ')}`);
-      if (stale.length) lines.push(`Stale (${stale.length}):\n  ${stale.join('\n  ')}`);
-      if (dead.length) lines.push(`Dead (${dead.length}):\n  ${dead.join('\n  ')}`);
-
-      if (missing.length) {
-        lines.push(`\nIn roster but gone (${missing.length}):`);
-        for (const m of missing) {
-          const label = m.name || m.fleet_id;
-          lines.push(`  ${label} (${m.fleet_id}) — cwd: ${m.cwd || '?'}, session: ${m.session || '?'}`);
-        }
-      }
-
-      if (unmatchedTmux.length) {
-        lines.push(`\nUnregistered tmux sessions (${unmatchedTmux.length}): ${unmatchedTmux.join(', ')}`);
-      }
-
-      return { content: [{ type: 'text', text: lines.join('\n') || 'No agents, no roster entries, no tmux sessions.' }] };
+      // Compact aligned table.
+      const fmt = (a) => {
+        const seen = a.last_seen_ago_s == null ? 'never' : a.last_seen_ago_s < 90 ? `${a.last_seen_ago_s}s` : a.last_seen_ago_s < 5400 ? `${Math.round(a.last_seen_ago_s / 60)}m` : `${Math.round(a.last_seen_ago_s / 3600)}h`;
+        const act = a.activity ? `${a.activity}${a.tool ? `:${a.tool}` : ''}` : '';
+        return { name: a.name, status: a.status, seen, cwd: a.cwd || '', act };
+      };
+      const f = rows.map(fmt);
+      const w = (k) => Math.max(k.length, ...f.map(r => String(r[k]).length));
+      const wn = w('name'), ws = w('status'), wsa = Math.max(4, ...f.map(r => r.seen.length));
+      const lines = f.map(r =>
+        `${r.name.padEnd(wn)}  ${r.status.padEnd(ws)}  ${r.seen.padStart(wsa)}  ${r.act ? r.act.padEnd(14) : '              '}  ${r.cwd}`.trimEnd()
+      );
+      const colHead = `${'agent'.padEnd(wn)}  ${'status'.padEnd(ws)}  ${'seen'.padStart(wsa)}  ${'activity'.padEnd(14)}  cwd`;
+      return { content: [{ type: 'text', text: `${header}${scope}\n\n${colHead}\n${lines.join('\n')}` }] };
     } catch (e) {
-      return { content: [{ type: 'text', text: `Roll call failed (tlda backend not answering — tell ops if it persists): ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `fleet_table failed (tlda backend not answering — tell ops if it persists): ${e.message}` }], isError: true };
     }
   }
 
