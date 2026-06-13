@@ -701,6 +701,41 @@ export function useFleetUnreadCounts(): Record<string, number> {
   return counts
 }
 
+// --- Projects hook ---
+
+/**
+ * Returns the sorted list of project names, kept live. The server broadcasts a
+ * `projects-updated` fleet event whenever a project is created or its sourceDir
+ * changes; this re-fetches `/api/projects` on that event so the spawn form's
+ * project list updates without a manual reload.
+ */
+export function useFleetProjects(): string[] {
+  const [projects, setProjects] = useState<string[]>([])
+
+  const refetch = useCallback(() => {
+    fetch('/api/projects')
+      .then(r => r.ok ? r.json() : { projects: [] })
+      .then((data: any) => {
+        const list = Array.isArray(data) ? data : (data.projects || [])
+        setProjects(list.map((p: any) => p.name).sort())
+      })
+      .catch(e => console.warn('[fleet] projects fetch failed:', e.message))
+  }, [])
+
+  useEffect(() => {
+    refetch()
+    let unsub: (() => void) | null = null
+    let cancelled = false
+    ensureInit().then(() => {
+      if (cancelled) return
+      unsub = subscribe('projects', null, refetch)
+    })
+    return () => { cancelled = true; unsub?.() }
+  }, [refetch])
+
+  return projects
+}
+
 // --- Connection state hook ---
 
 export function useFleetConnection(): boolean {

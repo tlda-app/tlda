@@ -785,9 +785,13 @@ function deliverTldaFeedbackChat({ from, to, text, metadata }) {
 
 // When a project is created or its sourceDir changes, push the new
 // project list to all connected fleet-daemons so they can start
-// watching its source files.
+// watching its source files, and tell browsers to refresh their project
+// list (the spawn form / agents panel) so it stays live without a reload.
 onGlobalEvent((event) => {
-  if (event?.type === 'project-changed') broadcastDaemonProjectsUpdated()
+  if (event?.type === 'project-changed') {
+    broadcastDaemonProjectsUpdated()
+    broadcastEvent('projects-updated', { name: event.name })
+  }
   if (event?.type === 'version-committed') {
     broadcastDaemonVersionCommitted(event.name, event.hash)
     // Auto-spawn a QA watcher agent when new content is committed to the shadow repo.

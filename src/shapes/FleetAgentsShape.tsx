@@ -16,7 +16,7 @@ import {
   createShapeId,
 } from 'tldraw'
 import { useState, useCallback, useMemo, useRef, useEffect, memo } from 'react'
-import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, useFleetContext, searchFleet, hibernateSession, spawnAgent } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, useFleetContext, useFleetProjects, searchFleet, hibernateSession, spawnAgent } from '../fleet-data-adapter'
 import { dropPillOnTarget } from './FleetPillShape'
 import { agentDisplayName } from './fleet-utils'
 import { AgentName } from './PhaseIcon'
@@ -106,6 +106,36 @@ function getGhostCompletion(input: string, projects: string[], catName: string, 
     return segCompletion + ':' + remaining.join(':')
   }
   return segCompletion
+}
+
+// Staged Tab completion: fill in ONLY the current segment (up to the next colon)
+// and advance to the next one, rather than expanding the whole 4-part spec at
+// once. Returns the string to APPEND to the input. On a non-final segment it
+// ends with ':' so the cursor lands at the start of the next segment; the final
+// (effort) segment has no trailing colon. Returns '' when there's nothing to add
+// (already past the last segment).
+function getStagedTabCompletion(input: string, projects: string[], catName: string, defaultDoc: string): string {
+  const defaults = [defaultDoc || projects[0] || 'doc', catName, DEFAULT_MODEL, DEFAULT_EFFORT]
+  const parts = input.split(':')
+  const pos = parts.length // 1-based: 1=project, 2=name, 3=model, 4=effort
+  if (pos > defaults.length) return ''
+  const lastPart = parts[parts.length - 1]
+
+  let segCompletion = ''
+  if (!lastPart) {
+    segCompletion = defaults[pos - 1] || ''
+  } else if (pos === 1) {
+    segCompletion = completeSegment(lastPart, projects)
+  } else if (pos === 2) {
+    segCompletion = completeSegment(lastPart, CAT_NAMES)
+  } else if (pos === 3) {
+    segCompletion = completeSegment(lastPart, ALL_COMPLETABLE)
+  } else if (pos === 4) {
+    segCompletion = completeSegment(lastPart, ALL_EFFORT_COMPLETABLE)
+  }
+
+  // Advance to the next segment on every segment but the last.
+  return pos < defaults.length ? segCompletion + ':' : segCompletion
 }
 
 const SEG_LABELS = ['project', 'name', 'model', 'effort']
@@ -447,7 +477,9 @@ function FleetAgentsInner({ shape }: { shape: any }) {
   // project, so an empty submit spawns into the doc being viewed.
   const currentDoc = useMemo(() => new URLSearchParams(window.location.search).get('doc') || '', [])
   const [spawnDoc, setSpawnDoc] = useState('')
-  const [projectList, setProjectList] = useState<string[]>([])
+  // Live project list — re-fetches on the server's `projects-updated` event so a
+  // newly-created project shows up here without a manual reload.
+  const projectList = useFleetProjects()
   const [catName] = useState(() => CAT_NAMES[Math.floor(Math.random() * CAT_NAMES.length)])
   const spawnInputRef = useRef<HTMLInputElement>(null)
   const [spawnFocused, setSpawnFocused] = useState(false)
@@ -476,12 +508,6 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     setDropdownDismissed(true)
     spawnInputRef.current?.focus()
   }, [spawnDoc])
-  useEffect(() => {
-    fetch('/api/projects').then(r => r.ok ? r.json() : { projects: [] }).then((data: any) => {
-      const projects = Array.isArray(data) ? data : (data.projects || [])
-      setProjectList(projects.map((p: any) => p.name).sort())
-    }).catch(e => console.warn('[fleet-agents] projects fetch failed:', e.message))
-  }, [])
 
   // Build task lookup: agent id → active task
   const activeTasks = useMemo(() => {
@@ -696,8 +722,10 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                       e.preventDefault()
                       acceptCandidate(segCandidates[dropdownIdx])
                     } else {
-                      const ghost = getGhostCompletion(spawnDoc, projectList, catName, currentDoc)
-                      if (ghost) { e.preventDefault(); setSpawnDoc(spawnDoc + ghost); setDropdownDismissed(true) }
+                      // Staged: complete one segment (to the next colon) per Tab,
+                      // not the whole spec at once.
+                      const seg = getStagedTabCompletion(spawnDoc, projectList, catName, currentDoc)
+                      if (seg) { e.preventDefault(); setSpawnDoc(spawnDoc + seg); setDropdownDismissed(true) }
                     }
                   } else if (e.key === 'Enter') {
                     e.preventDefault()

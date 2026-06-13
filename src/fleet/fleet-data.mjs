@@ -530,6 +530,8 @@ export function connect() {
         notify('reaper', data)
       } else if (eventType === 'suggestions') {
         notify('suggestions', data)
+      } else if (eventType === 'projects-updated') {
+        notify('projects', data)
       } else if (eventType === 'agent-thinking') {
         if (data.agent) notify('thinking', data)
       } else if (eventType === 'agent-compacting') {
