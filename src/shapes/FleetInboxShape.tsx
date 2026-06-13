@@ -322,9 +322,29 @@ function FleetInboxInner({ shape }: { shape: any }) {
   )
 }
 
+// Scroll like a chat: TLDraw grabs the wheel in the capture phase for canvas
+// pan/zoom, so a panel's overflow div never scrolls on its own. Intercept the
+// wheel on the container in the capture phase and scroll it ourselves — same
+// pattern FleetChatShape uses for its backscroll.
+function useWheelScroll(ref: { current: HTMLDivElement | null }) {
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      el.scrollTop += e.deltaY
+    }
+    el.addEventListener('wheel', onWheel, { capture: true, passive: false })
+    return () => el.removeEventListener('wheel', onWheel, { capture: true } as any)
+  }, [ref])
+}
+
 function ThreadList({ threads, onOpen }: { threads: Thread[]; onOpen: (t: Thread) => void }) {
+  const listRef = useRef<HTMLDivElement>(null)
+  useWheelScroll(listRef)
   return (
-    <div className="fleet-inbox-list">
+    <div ref={listRef} className="fleet-inbox-list">
       {threads.length === 0 && (
         <div className="fleet-inbox-empty">no messages yet</div>
       )}
@@ -348,6 +368,7 @@ function ThreadList({ threads, onOpen }: { threads: Thread[]; onOpen: (t: Thread
 
 function ConversationView({ thread, ctx, myId }: { thread: Thread; ctx: any; myId: string | null }) {
   const scrollRef = useRef<HTMLDivElement>(null)
+  useWheelScroll(scrollRef)
   // Pin to bottom when the thread opens (newest message visible, like a chat).
   useEffect(() => {
     const el = scrollRef.current
