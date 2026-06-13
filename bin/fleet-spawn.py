@@ -88,6 +88,10 @@ MODEL_ALIASES = {
 # tool calls). (If OpenRouter ever routes 0528 to a non-tool provider, the next
 # hardening step is forcing `provider:{require_parameters:true}` — not needed so
 # far.)
+# Friendly alias → concrete OpenRouter `vendor/model` id. These are the curated
+# names; any raw `vendor/model` id also works (see resolve_goose_model), so this
+# table is convenience, not a whitelist. Add a family's newest tool-capable
+# snapshot here once it PASSES the probe (bin/verify-goose-toolcalls.mjs).
 GOOSE_MODELS = {
     # Bare `deepseek` → the current flagship (v4-pro). Verified 2026-06-13 to
     # emit structured tool-calls through goose/OpenRouter and read/reason over a
@@ -101,6 +105,37 @@ GOOSE_MODELS = {
     "deepseek-v4": "deepseek/deepseek-v4-pro",
     "deepseek-v4-pro": "deepseek/deepseek-v4-pro",
     "deepseek-v4-flash": "deepseek/deepseek-v4-flash",
+    # Other families — aliases registered; each is confirmed/denied by the probe
+    # and the verified set below. An UNVERIFIED alias still resolves (warn only),
+    # so you can probe it; it just isn't trusted for tool-using roles yet.
+    "kimi": "moonshotai/kimi-k2.7-code",
+    "qwen": "qwen/qwen3.7-max",
+    "glm": "z-ai/glm-5.1",
+    "minimax": "minimax/minimax-m3",
+    "gemini": "google/gemini-3.5-flash",
+    "mistral": "mistralai/mistral-medium-3-5",
+}
+
+# OpenRouter ids VERIFIED to emit STRUCTURED tool-calls through goose
+# (bin/verify-goose-toolcalls.mjs). Advertising OpenRouter "tools" support is
+# necessary but NOT sufficient — some models narrate tool-calls as text
+# (deepseek-r1 did), which leaves the agent unable to act. Only ids here are
+# known-good for tool-using fleet agents; resolving to anything else warns.
+GOOSE_VERIFIED = {
+    "deepseek/deepseek-v4-pro",
+    "deepseek/deepseek-v4-flash",
+    "deepseek/deepseek-chat",
+    "deepseek/deepseek-v3.2",
+    "deepseek/deepseek-r1-0528",
+    # Probed 2026-06-13 via bin/verify-goose-toolcalls.mjs — all emitted
+    # structured tool-calls (register+my_task) through goose, zero text-format.
+    # (google/gemini-3.5-flash was INCONCLUSIVE — no tool-calls in the window;
+    #  left off until it's re-probed and confirmed.)
+    "moonshotai/kimi-k2.7-code",
+    "qwen/qwen3.7-max",
+    "z-ai/glm-5.1",
+    "minimax/minimax-m3",
+    "mistralai/mistral-medium-3-5",
 }
 GOOSE_BIN = "/opt/homebrew/bin/goose"
 DEEPSEEK_RECIPE = os.path.join(
@@ -108,17 +143,26 @@ DEEPSEEK_RECIPE = os.path.join(
 
 
 def resolve_goose_model(model):
-    """Return the concrete DeepSeek model id if `model` selects a goose-backed
-    agent, else None (meaning: a normal Claude agent). Accepts the aliases above
-    or a raw OpenRouter id (deepseek/…) so a respawn whose stored meta.model is
-    already resolved still routes to goose."""
+    """Return the concrete OpenRouter model id if `model` selects a goose-backed
+    agent, else None (meaning: a normal Claude agent).
+
+    Accepts a curated alias (GOOSE_MODELS) or any raw `vendor/model` OpenRouter
+    id. The discriminator is the `/`: Claude model specs (`opus`, `sonnet`,
+    `claude-opus-4-7`, …) never contain one, while every OpenRouter id does. So a
+    respawn whose stored meta.model is an already-resolved id still routes to
+    goose, and any new OpenRouter model works without a code change."""
     if not model:
         return None
     if model in GOOSE_MODELS:
         return GOOSE_MODELS[model]
-    if model.startswith("deepseek/"):
+    if "/" in model:   # any OpenRouter vendor/model id → goose
         return model
     return None
+
+
+def goose_model_verified(resolved_id):
+    """True if this concrete OpenRouter id is on the verified-tool-calling list."""
+    return resolved_id in GOOSE_VERIFIED
 
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 REPO_DIR = os.path.dirname(SCRIPT_DIR)
@@ -793,6 +837,11 @@ def fresh(name, model, cwd, effort, mode):
     sess = unique_session_name(f"fleet-{sanitize_session_name(name)}")
     cwd = resolve_spawn_cwd(cwd)
     goose_model = resolve_goose_model(model)
+    if goose_model and not goose_model_verified(goose_model):
+        print(f"  Warning: '{goose_model}' is not on the verified tool-calling "
+              f"list — it may narrate tool-calls as text instead of invoking "
+              f"them. Probe it with: bin/verify-goose-toolcalls.mjs {goose_model}",
+              file=sys.stderr)
     # Store the resolved model id in meta either way so a later respawn knows
     # which engine to use (resolve_goose_model recognizes the deepseek-v4-* id).
     model = goose_model or resolve_model(model)

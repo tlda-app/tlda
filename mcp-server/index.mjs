@@ -274,6 +274,83 @@ function findLabelLine(sourceDir, sourceMap, mainFile, label) {
   return null;
 }
 
+// ---- skill reading + harness-aware section filtering ----
+
+const SKILLS_DIR = path.join(os.homedir(), 'work', 'dot-claude', 'skills');
+
+// Parse a markdown heading line → { level, text, classes } or null. Recognizes
+// a trailing pandoc attribute block, e.g. `## Driving the browser {.claude-only}`.
+function _parseHeading(line) {
+  const m = /^(#{1,6})\s+(.*?)\s*$/.exec(line);
+  if (!m) return null;
+  const level = m[1].length;
+  let text = m[2];
+  const classes = [];
+  const attr = /\{([^}]*)\}\s*$/.exec(text);
+  if (attr) {
+    for (const tok of attr[1].split(/\s+/)) {
+      if (tok.startsWith('.')) classes.push(tok.slice(1));
+    }
+    text = text.slice(0, attr.index).trimEnd();
+  }
+  return { level, text, classes };
+}
+
+// Filter a skill's markdown for a requesting agent type. A section whose heading
+// carries a `<type>-only` class is kept ONLY for that agent type; a `not-<type>`
+// class drops it for that type. Dropping a heading drops its whole section — down
+// to the next heading of the same or higher level (subsections go with it).
+// Headings with no harness class are universal. `agentTags` is the set the
+// requester matches (e.g. {'goose'} or {'claude'}). Kept headings have their
+// attribute block stripped so the agent sees clean markdown.
+function filterSkillByHarness(md, agentTags) {
+  const lines = md.split('\n');
+  const out = [];
+  let dropUntilLevel = 0;   // >0 while inside a dropped section; drop until a heading of level <= this
+  for (const line of lines) {
+    const h = _parseHeading(line);
+    if (h) {
+      if (dropUntilLevel > 0 && h.level > dropUntilLevel) continue;  // still inside dropped section
+      dropUntilLevel = 0;
+      const onlyBases = h.classes.filter(c => c.endsWith('-only')).map(c => c.slice(0, -5));
+      const notBases = h.classes.filter(c => c.startsWith('not-')).map(c => c.slice(4));
+      const dropByOnly = onlyBases.length > 0 && !onlyBases.some(b => agentTags.has(b));
+      const dropByNot = notBases.some(b => agentTags.has(b));
+      if (dropByOnly || dropByNot) { dropUntilLevel = h.level; continue; }
+      // kept heading — strip the attribute block for clean output
+      out.push('#'.repeat(h.level) + ' ' + h.text);
+      continue;
+    }
+    if (dropUntilLevel > 0) continue;
+    out.push(line);
+  }
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
+}
+
+// List available skills as { name, description } from each SKILL.md frontmatter.
+function listSkills() {
+  const out = [];
+  let dirs;
+  try { dirs = fs.readdirSync(SKILLS_DIR, { withFileTypes: true }); } catch { return out; }
+  for (const d of dirs) {
+    if (!d.isDirectory()) continue;
+    const p = path.join(SKILLS_DIR, d.name, 'SKILL.md');
+    let text;
+    try { text = fs.readFileSync(p, 'utf8'); } catch { continue; }
+    const fm = /^---\n([\s\S]*?)\n---/.exec(text);
+    let name = d.name, description = '';
+    if (fm) {
+      const nm = /^name:\s*(.+)$/m.exec(fm[1]);
+      const dm = /^description:\s*(.+)$/m.exec(fm[1]);
+      if (nm) name = nm[1].trim();
+      if (dm) description = dm[1].trim();
+    }
+    out.push({ name, description });
+  }
+  out.sort((a, b) => a.name.localeCompare(b.name));
+  return out;
+}
+
 // ---- @label cross-reference validation ----
 
 const AT_REF_PATTERN = /(?<![\\@\w])@([\w:.-]+)/g
@@ -1810,6 +1887,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'read_skill',
+      description: 'Read a fleet SKILL (process/role guidance) by name, or list available skills. Skills describe how to do a job — adversary method, proof discipline, writing register, etc. Call with no `skill` to LIST what is available (name + one-line description); call with `skill` to READ that skill\'s guidance. Sections that don\'t apply to your harness are stripped automatically, so what you get is the guidance you can actually act on. This is how a sandboxed (non-Claude) agent consumes the same playbooks Claude agents use.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          skill: { type: 'string', description: 'Skill name to read (e.g. "adversarial-proof-process"). Omit to list all available skills.' },
+          raw: { type: 'boolean', description: 'Return the full skill unfiltered (no harness-section stripping). Default false.' },
+        },
+      },
+    },
+    {
       name: 'read_annotations',
       description: 'Read all annotations in a document: math notes, highlighter strokes, pen strokes, arrows, rectangles/ellipses. Returns formatted text with highlighted regions marked using ⟦⟧ brackets. Sorted by document position (default) or time.',
       inputSchema: {
@@ -2413,6 +2501,41 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const shown = (offset > 0 || limit < allLines.length) ? `, lines ${offset + 1}–${offset + slice.length}` : '';
     const header = `${abs} (${allLines.length} lines${shown}):\n`;
     return { content: [{ type: 'text', text: header + body + trunc }] };
+  }
+
+  if (name === 'read_skill') {
+    // Harness-aware skill reader. Lets a sandboxed agent (goose/DeepSeek, etc.)
+    // consume the same process/role playbooks Claude agents use. The requesting
+    // agent's harness (FLEET_HARNESS, default 'claude') decides which sections
+    // survive: a `## … {.claude-only}` section is stripped for a goose agent and
+    // vice-versa, so the agent only sees guidance it can actually act on.
+    const harness = process.env.FLEET_HARNESS || 'claude';
+    const agentTags = new Set([harness]);
+    if (!args?.skill) {
+      const skills = listSkills();
+      if (!skills.length) return { content: [{ type: 'text', text: `read_skill: no skills found at ${SKILLS_DIR}.` }], isError: true };
+      const body = skills.map(s => `• ${s.name} — ${s.description}`).join('\n');
+      return { content: [{ type: 'text', text: `Available skills (${skills.length}) — call read_skill({ skill: "<name>" }) to read one:\n\n${body}` }] };
+    }
+    const skillName = String(args.skill).trim().replace(/^\/+/, '');
+    if (skillName.includes('/') || skillName.includes('..')) {
+      return { content: [{ type: 'text', text: `read_skill: invalid skill name "${args.skill}".` }], isError: true };
+    }
+    const p = path.join(SKILLS_DIR, skillName, 'SKILL.md');
+    let md;
+    try { md = fs.readFileSync(p, 'utf8'); }
+    catch {
+      const names = listSkills().map(s => s.name);
+      const near = names.filter(n => n.includes(skillName) || skillName.includes(n)).slice(0, 5);
+      const hint = near.length ? ` Did you mean: ${near.join(', ')}?` : ' Call read_skill() with no args to list available skills.';
+      return { content: [{ type: 'text', text: `read_skill: no skill "${skillName}".${hint}` }], isError: true };
+    }
+    if (args.raw) {
+      return { content: [{ type: 'text', text: md }] };
+    }
+    const filtered = filterSkillByHarness(md, agentTags);
+    const note = harness !== 'claude' ? `\n\n— (filtered for harness "${harness}"; sections that don't apply to you were removed. Pass raw:true for the full text.)` : '';
+    return { content: [{ type: 'text', text: filtered + note }] };
   }
 
   if (name === 'read_doc') {
