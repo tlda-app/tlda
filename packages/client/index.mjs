@@ -30,7 +30,19 @@ export function connect({ server, token, root } = {}) {
     server: resolvedServer,
     token: resolvedToken,
     doc: (name) => makeDoc(name, resolvedServer),
+    // Post a drill report card to an agent's education record (and optionally its chat).
+    postCard: (agentId, body) => postCard(resolvedServer, resolvedToken, agentId, body),
   };
+}
+
+export async function postCard(server, token, agentId, { drill, gradient = null, pass = null, card = {}, chat = null }) {
+  const res = await fetch(`${server}/api/education/card/${encodeURIComponent(agentId)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ drill, gradient, pass, card, chat }),
+  });
+  if (!res.ok) throw new Error(`postCard → ${res.status} ${(await res.text()).slice(0, 200)}`);
+  return res.json();
 }
 
 function makeDoc(name, server) {
