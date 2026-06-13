@@ -24,6 +24,7 @@ import { findRenderedText } from './svg-text.mjs';
 import { initDataSource, readJsonSync, readJson, readManifestSync, readManifest, localDocDir, isRemote } from './data-source.mjs';
 import { resolveToken } from './resolve-token.mjs';
 import { formatHighlight, formatNote } from './format-annotation.mjs';
+import { stageNote, stageHighlight } from './lib/annotate.mjs';
 import {
   isHtmlDoc, docToCanvas, canvasToDoc, getPageWidth,
   pdfToCanvas, canvasToPdf, htmlToCanvas, canvasToHtml, loadHtmlLayout,
@@ -1102,75 +1103,11 @@ function resolveSize({ size, width, height }) {
   }
 }
 
-async function addAnnotation(doc, line, text, { color = 'orange', size, width, height, side = 'right', file, choices, page: pageNum } = {}) {
-  const dims = resolveSize({ size, width, height })
-  width = dims.width
-  height = dims.height
-  let linePos;
-  if (line) {
-    linePos = lookupLine(doc, line, file);
-    if (!linePos) return { ok: false, error: `Line ${line}${file ? ' in ' + path.basename(file) : ''} not found in lookup.json for doc "${doc}"` };
-  } else if (pageNum) {
-    // Position near top of the given page when no source line is available
-    linePos = { page: pageNum, x: 0, y: 150, texFile: null, content: '' };
-  } else {
-    return { ok: false, error: 'Either line or page is required' };
-  }
-
-  const canvasPos = docToCanvas(doc, linePos.page, linePos.x, linePos.y);
-  // Position note at left or right margin of the page
-  let x;
-  if (isHtmlDoc(doc)) {
-    const layout = loadHtmlLayout(doc);
-    const p = layout?.pages?.[linePos.page - 1];
-    const pageRight = p ? p.x + p.width : canvasPos.x + 800;
-    const pageLeft = p ? p.x : 0;
-    x = side === 'left' ? pageLeft - width - 20 : pageRight + 10;
-  } else {
-    x = side === 'left' ? -width - 20 : 690;
-  }
-  const y = canvasPos.y - height / 2;
-
-  const shapeId = generateShapeId();
-
-  // Find the highest index among existing shapes so the note renders on top
-  let maxIndex = 'a1';
-  try {
-    const allShapes = await fetchShapes(doc);
-    for (const s of allShapes) {
-      if (s.typeName === 'shape' && s.index && s.index > maxIndex) {
-        maxIndex = s.index;
-      }
-    }
-  } catch (e) { process.stderr.write(`[mcp] shape index scan failed for add_note: ${e.message}\n`); }
-  const noteIndex = getIndexAbove(maxIndex);
-
-  const shape = {
-    id: shapeId,
-    type: 'math-note',
-    typeName: 'shape',
-    x, y,
-    rotation: 0,
-    isLocked: false,
-    opacity: 1,
-    props: { w: width, h: height, text, color, autoSize: true, ...(choices?.length ? { choices, selectedChoice: -1 } : {}) },
-    meta: {
-      sourceAnchor: {
-        file: `./${linePos.texFile || doc + '.tex'}`,
-        line,
-        column: -1,
-        content: linePos.content,
-      },
-      ...(process.env.FLEET_ID ? { fleet_id: process.env.FLEET_ID } : {}),
-      ...(process.env.FLEET_NAME ? { friendly_name: process.env.FLEET_NAME } : {}),
-    },
-    parentId: 'page:page',
-    index: noteIndex,
-  };
-
-  await createShapeRest(doc, shape);
-
-  return { ok: true, shapeId, page: linePos.page, x, y };
+// Note staging now lives in the shared lib (mcp-server/lib/annotate.mjs) so the
+// drill teacher bot stages notes through the same code path — one source of
+// truth. This stays a thin wrapper pinned to TLDA_SYNC_SERVER (the room target).
+async function addAnnotation(doc, line, text, opts = {}) {
+  return stageNote(doc, line, text, { ...opts, server: TLDA_SYNC_SERVER });
 }
 
 async function sendNote(doc, line, text, color = 'orange', file, choices) {
@@ -1816,6 +1753,19 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'read_file',
+      description: 'Read a file (read-only) from your machine, restricted to ~/work. Use this to read raw source files, scratch notes, markdown, etc. (For tlda document content/annotations, prefer doc_view / read_annotations.) Optional offset (1-based start line) and lines (count) to page through large files.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Absolute path to the file. Must be inside ~/work.' },
+          offset: { type: 'number', description: '1-based line number to start from (optional).' },
+          lines: { type: 'number', description: 'Number of lines to read from offset (optional).' },
+        },
+        required: ['path'],
+      },
+    },
+    {
       name: 'read_annotations',
       description: 'Read all annotations in a document: math notes, highlighter strokes, pen strokes, arrows, rectangles/ellipses. Returns formatted text with highlighted regions marked using ⟦⟧ brackets. Sorted by document position (default) or time.',
       inputSchema: {
@@ -2387,6 +2337,38 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: `${buildCheck.reason}. Run "tlda errors ${docName}" or "tlda build ${docName}" to investigate.` }], isError: true };
       }
     }
+  }
+
+  if (name === 'read_file') {
+    // Generic read-only file reader, fenced to ~/work. Exists so sandboxed
+    // agents (e.g. goose/DeepSeek, which have no shell or developer extension)
+    // can read raw source + scratch files — the doc tools only cover annotations.
+    if (!args?.path) {
+      return { content: [{ type: 'text', text: 'read_file: `path` is required.' }], isError: true };
+    }
+    const workRoot = path.join(os.homedir(), 'work');
+    const abs = path.resolve(args.path);
+    if (abs !== workRoot && !abs.startsWith(workRoot + path.sep)) {
+      return { content: [{ type: 'text', text: `read_file: path must be inside ~/work (got ${abs}).` }], isError: true };
+    }
+    let data;
+    try {
+      data = fs.readFileSync(abs, 'utf8');
+    } catch (e) {
+      const why = e.code === 'ENOENT' ? 'no such file' : e.code === 'EISDIR' ? 'is a directory' : e.message;
+      return { content: [{ type: 'text', text: `read_file: ${why}: ${abs}` }], isError: true };
+    }
+    const allLines = data.split('\n');
+    const offset = args.offset > 0 ? (args.offset - 1) : 0;
+    const limit = args.lines > 0 ? args.lines : allLines.length;
+    const slice = allLines.slice(offset, offset + limit);
+    const MAX = 60000;
+    let body = slice.join('\n');
+    let trunc = '';
+    if (body.length > MAX) { body = body.slice(0, MAX); trunc = `\n…(truncated at ${MAX} chars — pass offset/lines to page)`; }
+    const shown = (offset > 0 || limit < allLines.length) ? `, lines ${offset + 1}–${offset + slice.length}` : '';
+    const header = `${abs} (${allLines.length} lines${shown}):\n`;
+    return { content: [{ type: 'text', text: header + body + trunc }] };
   }
 
   if (name === 'screenshot') {
@@ -2961,80 +2943,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       // --- Full-line highlighting (original behavior) ---
-      // Look up canvas positions for start and end lines
-      const startPos = await lookupLineAsync(doc, startLine, file);
-      const endPos = await lookupLineAsync(doc, endLine, file);
-      if (!startPos) return { content: [{ type: 'text', text: `Line ${startLine} not found in lookup` }], isError: true };
-      if (!endPos) return { content: [{ type: 'text', text: `Line ${endLine} not found in lookup` }], isError: true };
-
-      const startCanvas = pdfToCanvas(startPos.page, startPos.x, startPos.y);
-      const endCanvas = pdfToCanvas(endPos.page, endPos.x, endPos.y);
-
-      const pageW = getPageWidth(doc);
-      // Highlight spans from text start to near-right edge
-      const hlLeft = Math.min(startCanvas.x, endCanvas.x);
-      const hlRight = pageW * 0.9; // stop before right margin
-      const hlTop = Math.min(startCanvas.y, endCanvas.y) - 3;
-      const hlBottom = Math.max(startCanvas.y, endCanvas.y) + 3;
-
-      // Create one horizontal segment per text line
-      const width = hlRight - hlLeft;
-      const height = hlBottom - hlTop;
-      const numLines = endLine - startLine + 1;
-      const lineH = numLines > 1 ? height / numLines : 0;
-
-      const segments = [];
-      if (numLines <= 1) {
-        // Single line: one horizontal sweep
-        segments.push({ type: 'free', path: encodeB64Path([
-          { x: 0, y: 0, z: 0.5 },
-          { x: width, y: 0, z: 0.5 },
-        ])});
-      } else {
-        // One horizontal sweep per line
-        for (let i = 0; i < numLines; i++) {
-          const y = i * lineH;
-          segments.push({ type: 'free', path: encodeB64Path([
-            { x: 0, y, z: 0.5 },
-            { x: width, y, z: 0.5 },
-          ])});
-        }
-      }
-
-      const shapeId = generateShapeId();
-      const shapeIndex = await getNextShapeIndex(doc);
-      const shape = {
-        id: shapeId,
-        type: 'highlight',
-        x: hlLeft,
-        y: hlTop,
-        index: shapeIndex,
-        rotation: 0,
-        isLocked: false,
-        opacity: 0.7,
-        props: {
-          segments,
-          color,
-          size: 's',
-          isComplete: true,
-          isPen: false,
-          scale: 1,
-          scaleX: 1,
-          scaleY: 1,
-        },
-        meta: {
-          createdAt: Date.now(),
-          createdBy: 'claude',
-          sourceAnchor: { file: file || './' + (startPos.texFile || 'main.tex'), line: startLine },
-          ...(process.env.FLEET_ID ? { fleet_id: process.env.FLEET_ID } : {}),
-          ...(process.env.FLEET_NAME ? { friendly_name: process.env.FLEET_NAME } : {}),
-        },
-        parentId: 'page:page',
-        typeName: 'shape',
-      };
-
-      await createShapeRest(doc, shape);
-      return { content: [{ type: 'text', text: `Highlight drawn: lines ${startLine}–${endLine}, page ${startPos.page}, ${color} (${shapeId})` }] };
+      // Staging now lives in the shared lib (mcp-server/lib/annotate.mjs) so the
+      // drill teacher stages line-range highlights through the same code path.
+      const r = await stageHighlight(doc, startLine, endLine, { color, file, server: TLDA_SYNC_SERVER });
+      if (!r.ok) return { content: [{ type: 'text', text: r.error }], isError: true };
+      return { content: [{ type: 'text', text: `Highlight drawn: lines ${startLine}–${endLine}, page ${r.page}, ${color} (${r.shapeId})` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
