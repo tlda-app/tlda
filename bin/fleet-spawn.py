@@ -563,6 +563,15 @@ def build_goose_cmd(fleet_id, tmux_session, model, name=None):
     parts.append(f"--recipe {shlex.quote(recipe)}")
     parts.append("--params provider=openrouter")
     parts.append(f"--params model={shlex.quote(model)}")
+    # Stamp the goose session with a fleet-derived NAME so the daemon can map a
+    # fleet agent to its goose sqlite session exactly (sessions otherwise carry
+    # no fleet identity — auto name + shared working_dir = ambiguous with >1
+    # goose agent per dir). Drives the turn-end auto-kick's done-signal and the
+    # activity-card source. `--name` is a freeform label (safe + queryable);
+    # `--session-id` is avoided because goose expects its own id format there.
+    # Sanitize the colon: FLEET_ID is `fleet:<hex>`, goose --name may choke on `:`.
+    session_label = "fleet-" + str(fleet_id).split(":")[-1]
+    parts.append(f"--name {shlex.quote(session_label)}")
     parts.append("--interactive")
     inner = " ".join(parts)
     return f"zsh -lc {shlex.quote(inner)}"

@@ -71,6 +71,7 @@ const execFileP = promisify(execFile)
 const VERSION = '0.1.1'
 import { createLogger } from '../shared/logger.mjs'
 import { makeActivityThrottle } from './lib/activity-throttle.mjs'
+import { maybeKickGoose, GOOSE_WORKING_RE } from './lib/goose-kick.mjs'
 const log = createLogger('daemon')
 // CONFIG_DIR holds config.json, cursors, PID and log files. Defaults to
 // ~/.config/tlda. TLDA_DAEMON_CONFIG_DIR lets the E2E test start a second
@@ -1921,6 +1922,12 @@ const _prevApprovalFP = new Map() // agent_id → string (fingerprint)
 // re-emit agent-session-observed every 30s once the heal has landed.
 const _reconciledSession = new Map()
 
+// Goose turn-end auto-kick state: agent_id → kick state, owned by
+// checkAgentLiveness's sweep. The detection/decision logic lives in
+// ./lib/goose-kick.mjs (pure decideKick + sqlite reads); the daemon supplies
+// the side-effecting deps (rpcSendText, execFileP, log) and this state map.
+const _gooseKickState = new Map()
+
 // Read an agent's *actual* live Claude session from the PID-keyed metadata
 // Claude Code writes at ~/.claude/sessions/<pid>.json. This is the same
 // authoritative source the MCP uses at startup (no birthtime guessing, no
@@ -2048,6 +2055,7 @@ async function checkAgentLiveness() {
   // for goose (nested under a `zsh -lc` login wrapper, so its ppid is the inner
   // shell, not the pane).
   const agentProcPids = new Set()
+  const gooseProcPids = new Set()   // subset: only `goose run` agents
   const childrenByPpid = new Map()
   try {
     const { stdout } = await execFileP('ps', ['-eo', 'pid,ppid,args'],
@@ -2059,9 +2067,14 @@ async function checkAgentLiveness() {
         if (!childrenByPpid.has(ppid)) childrenByPpid.set(ppid, [])
         childrenByPpid.get(ppid).push(pid)
       }
-      if (line.includes('claude') || line.includes('goose run')) {
+      const isClaude = line.includes('claude')
+      const isGoose = line.includes('goose run')
+      if (isClaude || isGoose) {
         const pid = line.trim().split(/\s+/)[0]
-        if (pid) agentProcPids.add(pid)
+        if (pid) {
+          agentProcPids.add(pid)
+          if (isGoose) gooseProcPids.add(pid)
+        }
       }
     }
   } catch (e) {
@@ -2074,6 +2087,9 @@ async function checkAgentLiveness() {
   for (const agent of candidateAgents) {
     const panes = sessionToPanes.get(agent.tmux_session) || []
     const agentAlive = panes.some(pid => _paneSubtreeHasAgent(pid, childrenByPpid, agentProcPids))
+    // Classify goose-backed agents (DeepSeek) so the thinking-scan loop can run
+    // the goose turn-end auto-kick on them and skip the claude path.
+    agent._isGoose = agentAlive && panes.some(pid => _paneSubtreeHasAgent(pid, childrenByPpid, gooseProcPids))
 
     _alivenessCache.set(agent.tmux_session, agentAlive)
 
@@ -2128,6 +2144,20 @@ async function checkAgentLiveness() {
         { timeout: 3000, encoding: 'utf8' })
 
       const paneBottom = pane.split('\n').slice(-THINKING_SCAN_LINES).join('\n')
+
+      // Goose agents have a different TUI — the claude spinner/compacting/approval
+      // regexes don't apply. Derive thinking from goose's own working marker and
+      // run the turn-end auto-kick, then skip the claude-specific detection.
+      if (agent._isGoose) {
+        const gWorking = GOOSE_WORKING_RE.test(paneBottom)
+        sendMsg({ type: 'agent-thinking', agentId: agent.id, thinking: gWorking })
+        if (gWorking !== _prevThinking.get(agent.id)) _prevThinking.set(agent.id, gWorking)
+        await maybeKickGoose(agent, paneBottom, {
+          sendText: rpcSendText, execFileP, log, stateMap: _gooseKickState,
+        })
+        continue
+      }
+
       const isThinking = THINKING_SPINNER_RE.test(paneBottom) || INTERRUPT_HINT_RE.test(paneBottom)
       sendMsg({ type: 'agent-thinking', agentId: agent.id, thinking: isThinking })
       if (isThinking !== _prevThinking.get(agent.id)) {
