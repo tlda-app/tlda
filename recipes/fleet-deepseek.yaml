@@ -99,6 +99,8 @@ parameters:
     default: "deepseek/deepseek-chat"
     description: >
       Cheap chat model is the generic default. Role overrides: an adversary
-      role should pass the reasoner — "deepseek/deepseek-r1" (openrouter) or
-      "deepseek-reasoner" (deepseek-direct). For the openai/DeepSeek-direct
+      role should pass the reasoner — "deepseek/deepseek-r1-0528" (openrouter).
+      The plain "deepseek/deepseek-r1" snapshot emits tool calls as TEXT through
+      goose (its provider doesn't negotiate structured tool-calls), so use the
+      0528 snapshot, which tool-calls correctly. For the openai/DeepSeek-direct
       provider the chat model id is "deepseek-chat".

@@ -78,12 +78,22 @@ MODEL_ALIASES = {
 # structured tool-calls with DeepSeek (the model emits them as text), so the
 # agent can't invoke its tools. OpenRouter handles tool-calling correctly.
 # Hence the OpenRouter-style model ids below.
+# The reasoner (Skip's pick for the adversary seat) maps to the **r1-0528**
+# snapshot, NOT plain `deepseek-r1`: verified 2026-06-13 that `deepseek/deepseek-
+# r1` through goose emitted tool calls as TEXT in DeepSeek's native format
+# (`function<｜tool▁sep｜>…`) — its OpenRouter provider didn't negotiate
+# structured tool-calls — so the agent stalled. `deepseek/deepseek-r1-0528`
+# routes to a tool-capable provider and emits real structured tool-calls through
+# goose (verified live: register/my_task/read_doc/lookup_theorem all executed as
+# tool calls). (If OpenRouter ever routes 0528 to a non-tool provider, the next
+# hardening step is forcing `provider:{require_parameters:true}` — not needed so
+# far.)
 GOOSE_MODELS = {
     "deepseek": "deepseek/deepseek-chat",
     "deepseek-chat": "deepseek/deepseek-chat",
     "deepseek-v3": "deepseek/deepseek-v3.2",
-    "deepseek-r1": "deepseek/deepseek-r1",
-    "deepseek-reasoner": "deepseek/deepseek-r1",
+    "deepseek-r1": "deepseek/deepseek-r1-0528",
+    "deepseek-reasoner": "deepseek/deepseek-r1-0528",
 }
 GOOSE_BIN = "/opt/homebrew/bin/goose"
 DEEPSEEK_RECIPE = os.path.join(
