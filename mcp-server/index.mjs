@@ -14,7 +14,7 @@ import http from 'http';
 import fs from 'fs';
 import os from 'os';
 import crypto from 'crypto';
-import { spawn, execSync } from 'child_process';
+import { spawn, execSync, execFileSync } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { connectSSE } from '../shared/sse-parser.mjs';
@@ -1766,6 +1766,24 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'read_doc',
+      description: 'Read a tlda document\'s SOURCE (read-only) — document- and version-aware. Resolves the doc name to its source file and reads a paginated line window (default 400 lines). Pass `version` (a git hash) to read a PAST version from the doc\'s history, or `ref` (a label/theorem number like "thm:main" or "2.1") to jump straight to that location. Header reports the window + total lines, with a hint to page. (For raw non-doc files use read_file; for annotations use read_annotations.)',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name (e.g. "bregman").' },
+          file: { type: 'string', description: 'Source file within the doc (default: the doc\'s main file).' },
+          startLine: { type: 'number', description: '1-based start line for a plain read (optional).' },
+          endLine: { type: 'number', description: 'Explicit end line (optional; otherwise a window of `lines` is read).' },
+          lines: { type: 'number', description: 'Window height: how many lines to read (default 400 for a plain read, 80 for a ref).' },
+          version: { type: 'string', description: 'Git hash to read a past version of the source (optional).' },
+          ref: { type: 'string', description: 'Label or theorem number to jump to, e.g. "thm:main" or "2.1" (optional).' },
+          before: { type: 'number', description: 'With `ref`: how many lines above the anchor to start (default 3).' },
+        },
+        required: ['doc'],
+      },
+    },
+    {
       name: 'read_annotations',
       description: 'Read all annotations in a document: math notes, highlighter strokes, pen strokes, arrows, rectangles/ellipses. Returns formatted text with highlighted regions marked using ⟦⟧ brackets. Sorted by document position (default) or time.',
       inputSchema: {
@@ -2369,6 +2387,73 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const shown = (offset > 0 || limit < allLines.length) ? `, lines ${offset + 1}–${offset + slice.length}` : '';
     const header = `${abs} (${allLines.length} lines${shown}):\n`;
     return { content: [{ type: 'text', text: header + body + trunc }] };
+  }
+
+  if (name === 'read_doc') {
+    // Document- and version-aware source read. Resolves a doc to its source
+    // file, reads a paginated line window, supports reading a past version (git
+    // show) and jumping to a label/theorem via the source map.
+    const doc = args?.doc;
+    if (!doc) return { content: [{ type: 'text', text: 'read_doc: `doc` is required.' }], isError: true };
+    const projDir = path.join(os.homedir(), 'work', 'tlda', 'server', 'projects', doc);
+    let cfg;
+    try { cfg = JSON.parse(fs.readFileSync(path.join(projDir, 'project.json'), 'utf8')); }
+    catch { return { content: [{ type: 'text', text: `read_doc: unknown doc "${doc}" (no project.json).` }], isError: true }; }
+    const sourceDir = cfg.sourceDir;
+    if (!sourceDir || !fs.existsSync(sourceDir)) return { content: [{ type: 'text', text: `read_doc: doc "${doc}" has no source dir on this machine.` }], isError: true };
+    const mainFile = cfg.mainFile || cfg.main;
+    const file = args.file || mainFile;
+    if (!file) return { content: [{ type: 'text', text: `read_doc: no file given and doc "${doc}" has no mainFile.` }], isError: true };
+    const relFile = (path.basename(file) === file) ? file : path.relative(sourceDir, path.resolve(sourceDir, file));
+
+    // ref/label shorthand → anchor line via the source map (same data lookup_theorem uses).
+    let anchorLine = 0;
+    let refNote = '';
+    if (args.ref && !(args.startLine > 0)) {
+      const texBase = String(mainFile || 'main').replace(/\.tex$/, '');
+      const smPath = path.join(projDir, 'output', `${texBase}-source-map.json`);
+      try {
+        const sm = JSON.parse(fs.readFileSync(smPath, 'utf8'));
+        const q = String(args.ref).trim();
+        const e = (sm.labels || []).find(x => x.label === q || x.number === q)
+              || (sm.labels || []).find(x => x.label?.includes(q) || x.number?.includes(q));
+        if (e?.line) { anchorLine = e.line; refNote = ` (ref "${q}" → ${e.number || e.label} @ line ${e.line})`; }
+        else return { content: [{ type: 'text', text: `read_doc: ref "${q}" not found in ${doc}'s source map.` }], isError: true };
+      } catch { return { content: [{ type: 'text', text: `read_doc: ref lookup unavailable for ${doc} (no source map — build the doc first).` }], isError: true }; }
+    }
+
+    // Read content — current version (fs) or a past version (git show).
+    let data, versionNote = '';
+    if (args.version) {
+      if (!fs.existsSync(path.join(sourceDir, '.git'))) return { content: [{ type: 'text', text: `read_doc: "${doc}" source has no git history for versioned reads.` }], isError: true };
+      try { data = execFileSync('git', ['show', `${args.version}:${relFile}`], { cwd: sourceDir, encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 }); versionNote = ` @${args.version}`; }
+      catch (e) { return { content: [{ type: 'text', text: `read_doc: couldn't read ${relFile} @${args.version}: ${String(e.message).split('\n')[0]}` }], isError: true }; }
+    } else {
+      try { data = fs.readFileSync(path.join(sourceDir, relFile), 'utf8'); }
+      catch (e) { return { content: [{ type: 'text', text: `read_doc: ${e.code === 'ENOENT' ? 'no such file' : e.message}: ${relFile}` }], isError: true }; }
+    }
+
+    const allLines = data.split('\n');
+    const total = allLines.length;
+    // Window: a ref anchors a focused window (a few lines above + ~80 tall); a
+    // plain read uses startLine + a 400-line page. `before`/`lines` override.
+    let off, count;
+    if (anchorLine > 0) {
+      const before = args.before >= 0 ? args.before : 3;
+      off = Math.max(0, anchorLine - 1 - before);
+      count = args.lines > 0 ? args.lines : 80;
+    } else {
+      off = args.startLine > 0 ? args.startLine - 1 : 0;
+      count = args.lines > 0 ? args.lines : 400;
+    }
+    const end = args.endLine > 0 ? Math.min(args.endLine, total) : Math.min(off + count, total);
+    let body = allLines.slice(off, end).join('\n');
+    let capNote = '';
+    const MAX = 60000;
+    if (body.length > MAX) { body = body.slice(0, MAX); capNote = `\n→ output capped at ${MAX} chars — narrow the range with endLine.`; }
+    const pageNote = end < total ? `\n→ ${total - end} more lines — call again with startLine=${end + 1}.` : '';
+    const header = `${doc}/${relFile}${versionNote}${refNote} — lines ${off + 1}–${end} of ${total}:`;
+    return { content: [{ type: 'text', text: `${header}\n${body}${capNote}${pageNote}` }] };
   }
 
   if (name === 'screenshot') {
