@@ -1086,8 +1086,26 @@ def main():
     parser.add_argument("--enroll", action="store_true")
     parser.add_argument("--no-attach", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--list-models", action="store_true",
+                        help="Print the goose model aliases + verified ids as JSON and exit")
     parser.add_argument("--_dismiss-devch", default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
+
+    # Single source of truth for the UI's model autocomplete/validation: dump the
+    # goose model aliases, their resolved OpenRouter ids, and which are verified
+    # to emit structured tool-calls. The server serves this so the spawn UI never
+    # drifts from what fleet-spawn actually accepts.
+    if args.list_models:
+        models = [
+            {"alias": a, "id": mid, "verified": goose_model_verified(mid)}
+            for a, mid in sorted(GOOSE_MODELS.items())
+        ]
+        print(json.dumps({
+            "default": GOOSE_MODELS.get("deepseek"),
+            "models": models,
+            "verified": sorted(GOOSE_VERIFIED),
+        }, indent=2))
+        return
 
     # Internal: backgrounded dev-channels dialog dismisser (spawned by spawn_tmux).
     if args._dismiss_devch:
