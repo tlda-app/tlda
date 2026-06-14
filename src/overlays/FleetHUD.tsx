@@ -15,6 +15,7 @@ import { useFleetAgents, useFleetIdentity } from '../fleet-data-adapter'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getDeviceId } from '../fleet/fleet-data.mjs'
 import { getMyAnchorId, isMyFleetShape, FLEET_SHAPE_TYPES, adoptLegacyFleetShapes, layoutOffset } from '../shapes/fleet-utils'
+import { useFleetGestures } from './useFleetGestures'
 import { SuggestionTip } from '../shapes/FleetChatShape'
 import { log } from '../logger'
 import './FleetHUD.css'
@@ -198,6 +199,10 @@ export function FleetHUD({
   const hudRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
   const overlayEditorRef = useRef<Editor | null>(null)
+
+  // Touch gesture vocabulary on the HUD (move/resize shapes, pass-through pan/zoom).
+  useFleetGestures({ hudRef, overlayEditorRef, mainEditor, expanded })
+
   // Track whether any fleet shapes are selected in the HUD editor (layout mode).
   // When active, the HUD canvas gets pointer-events: auto so drag-box select works.
   // Toggled via CSS class on the wrap div — see .fleet-hud-wrap.hud-layout-active in FleetHUD.css.
