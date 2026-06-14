@@ -581,6 +581,8 @@ export function clearVoiceTarget(textarea) {
     _activeSendTargets = []
     _activeAgentNames = {}
     _activeSendFn = null
+    // Keep recording; just refresh the HUD to the targetless label.
+    if (_recording) showRecordingHud()
   }
 }
 
@@ -628,7 +630,9 @@ export function clearVoiceAccumulator(onUpdate) {
     // Deselecting a note clears the target but never stops the recorder —
     // mirrors clearVoiceTarget. The stream is simply discarded (fillTextarea
     // returns early with no accumulator/textarea) until a new target is set.
-    // Only the mic button stops recording.
+    // Only the mic button stops recording. Refresh the HUD so it drops the
+    // stale "→ note" label and shows the targetless "recording" state.
+    if (_recording) showRecordingHud()
   }
 }
 
