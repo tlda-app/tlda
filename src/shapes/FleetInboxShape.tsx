@@ -19,8 +19,10 @@ import {
   useValue,
 } from 'tldraw'
 import { agentDisplayName } from './fleet-utils'
+import { usePillDrag } from './FleetAgentsShape'
+import { ChatComposer } from './ChatComposer'
 import { useState, useCallback, useRef, useMemo, useEffect, memo } from 'react'
-import { useFleetAgents, useFleetTasks, useFleetEvents, useFleetUnreadCounts, useFleetIdentity } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetTasks, useFleetEvents, useFleetUnreadCounts, useFleetIdentity, sendMessage, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
 import katex from 'katex'
 import { getActiveMacros } from '../katexMacros'
 import MarkdownIt from 'markdown-it'
@@ -114,6 +116,8 @@ function makeChatCtx(agents: any[], tasks: any[]) {
 interface Thread {
   partnerId: string
   partnerName: string
+  friendly: string      // stable filter value for drag-to-chat (friendly name)
+  color: string         // nick hex for the drag pill
   nickClass: string
   messages: any[]       // chat events in this thread, oldest → newest
   last: any             // newest message
@@ -178,6 +182,8 @@ function FleetInboxInner({ shape }: { shape: any }) {
       const target = e.target as HTMLElement
       if (!el!.contains(target)) return
       if (isSelectedRef.current) return
+      // Let draggable names handle their own pointerdown (they start a pill drag).
+      if (target.closest('.fleet-inbox-pill')) return
       editor.markEventAsHandled(e)
     }
     document.addEventListener('pointerdown', onPointerDown, true)
@@ -191,6 +197,8 @@ function FleetInboxInner({ shape }: { shape: any }) {
   const agents = useFleetAgents()
   const tasks = useFleetTasks()
   const ctx = useMemo(() => makeChatCtx(agents, tasks), [agents, tasks])
+  // Drag a partner name → spawn a filtered chat (same pill drag as the agents panel).
+  const { startDrag } = usePillDrag()
 
   // Scope to messages to/from me. The DNF filter resolves my labels (name + id).
   const filter = useMemo<[string, string][][] | null>(
@@ -225,10 +233,15 @@ function FleetInboxInner({ shape }: { shape: any }) {
       msgs.sort((a, b) => ((a.timestamp || '') < (b.timestamp || '') ? -1 : 1))
       const last = msgs[msgs.length - 1]
       const a = agents.find((x: any) => x.id === partnerId)
+      const partnerName = a ? agentDisplayName(a) : partnerId.replace('fleet:', '')
       out.push({
         partnerId,
-        partnerName: a ? agentDisplayName(a) : partnerId.replace('fleet:', ''),
+        partnerName,
+        // Filters resolve friendly names, never IDs (see app-development), so the
+        // drag value is the friendly name, falling back to the display name.
+        friendly: (a?.friendly_name as string) || partnerName,
         nickClass: ctx.getNickClass(partnerId),
+        color: ctx.getAgentColor(partnerId),
         messages: msgs,
         last,
         lastTs: last?.timestamp || '',
@@ -306,7 +319,11 @@ function FleetInboxInner({ shape }: { shape: any }) {
             <span className="fleet-inbox-title">Inbox</span>
           )}
           {activeThread ? (
-            <span className={`fleet-inbox-thread-name ${activeThread.nickClass}`}>{activeThread.partnerName}</span>
+            <span
+              className={`fleet-inbox-thread-name fleet-inbox-pill ${activeThread.nickClass}`}
+              style={{ cursor: 'grab', touchAction: 'none' }}
+              onPointerDown={(e) => { e.stopPropagation(); startDrag(e, 'agent', activeThread.friendly, activeThread.partnerName, activeThread.color) }}
+            >{activeThread.partnerName}</span>
           ) : (
             totalUnread > 0 && <span className="fleet-inbox-unread-total">{totalUnread}</span>
           )}
@@ -314,9 +331,9 @@ function FleetInboxInner({ shape }: { shape: any }) {
 
         {/* Body */}
         {activeThread ? (
-          <ConversationView thread={activeThread} ctx={ctx} myId={myId} />
+          <ConversationView thread={activeThread} ctx={ctx} myId={myId} myName={myName} />
         ) : (
-          <ThreadList threads={threads} onOpen={openThread} />
+          <ThreadList threads={threads} onOpen={openThread} onStartDrag={startDrag} />
         )}
       </div>
     </HTMLContainer>
@@ -327,21 +344,33 @@ function FleetInboxInner({ shape }: { shape: any }) {
 // pan/zoom, so a panel's overflow div never scrolls on its own. Intercept the
 // wheel on the container in the capture phase and scroll it ourselves — same
 // pattern FleetChatShape uses for its backscroll.
-function useWheelScroll(ref: { current: HTMLDivElement | null }) {
+// TLDraw grabs the wheel in the capture phase for canvas pan/zoom, so a panel's
+// overflow div never scrolls on its own — this intercepts the wheel and scrolls
+// it ourselves. `innerSelector`: when the pointer is over a NESTED scroller that
+// matches it (e.g. an open mini-chat's body inside the thread), scroll THAT
+// element instead of this one. One reliable handler (this outer one is the one
+// that actually fires) rather than relying on a fragile nested-listener hand-off.
+function useWheelScroll(ref: { current: HTMLDivElement | null }, innerSelector?: string) {
   useEffect(() => {
     const el = ref.current
     if (!el) return
     const onWheel = (e: WheelEvent) => {
       e.preventDefault()
       e.stopPropagation()
-      el.scrollTop += e.deltaY
+      const inner = innerSelector && e.target instanceof Element
+        ? (e.target.closest(innerSelector) as HTMLElement | null)
+        : null
+      if (inner && inner.scrollHeight > inner.clientHeight) inner.scrollTop += e.deltaY
+      else el.scrollTop += e.deltaY
     }
     el.addEventListener('wheel', onWheel, { capture: true, passive: false })
     return () => el.removeEventListener('wheel', onWheel, { capture: true } as any)
-  }, [ref])
+  }, [ref, innerSelector])
 }
 
-function ThreadList({ threads, onOpen }: { threads: Thread[]; onOpen: (t: Thread) => void }) {
+type StartDrag = (e: React.PointerEvent, pillType: 'agent' | 'label', value: string, displayName: string, color: string) => void
+
+function ThreadList({ threads, onOpen, onStartDrag }: { threads: Thread[]; onOpen: (t: Thread) => void; onStartDrag: StartDrag }) {
   const listRef = useRef<HTMLDivElement>(null)
   useWheelScroll(listRef)
   return (
@@ -356,7 +385,11 @@ function ThreadList({ threads, onOpen }: { threads: Thread[]; onOpen: (t: Thread
           onPointerUp={(e) => { stopEventPropagation(e); onOpen(t) }}
         >
           <div className="fleet-inbox-thread-row">
-            <span className={`fleet-inbox-thread-partner ${t.nickClass}`}>{t.partnerName}</span>
+            <span
+              className={`fleet-inbox-thread-partner fleet-inbox-pill ${t.nickClass}`}
+              style={{ cursor: 'grab', touchAction: 'none' }}
+              onPointerDown={(e) => { e.stopPropagation(); onStartDrag(e, 'agent', t.friendly, t.partnerName, t.color) }}
+            >{t.partnerName}</span>
             <span className="fleet-inbox-thread-time">{timeShort(t.lastTs)}</span>
             {t.unread > 0 && <span className="fleet-inbox-thread-badge">{t.unread}</span>}
           </div>
@@ -367,25 +400,55 @@ function ThreadList({ threads, onOpen }: { threads: Thread[]; onOpen: (t: Thread
   )
 }
 
-function ConversationView({ thread, ctx, myId }: { thread: Thread; ctx: any; myId: string | null }) {
+function ConversationView({ thread, ctx, myId, myName }: { thread: Thread; ctx: any; myId: string | null; myName: string }) {
   const scrollRef = useRef<HTMLDivElement>(null)
-  useWheelScroll(scrollRef)
+  // Outer thread scroll — and when the pointer's over an open mini-chat's body,
+  // scroll THAT instead (the mini-chat's own scroll → dual context).
+  useWheelScroll(scrollRef, '.fleet-inbox-inline-body')
+  // Which message has its inline chat open (one at a time — opening a new one
+  // replaces the old, per Skip's design).
+  const [inlineOpenId, setInlineOpenId] = useState<string | null>(null)
   // Pin to bottom when the thread opens (newest message visible, like a chat).
   useEffect(() => {
     const el = scrollRef.current
     if (el) el.scrollTop = el.scrollHeight
   }, [thread.partnerId, thread.messages.length])
+  // Close the inline chat when switching threads.
+  useEffect(() => { setInlineOpenId(null) }, [thread.partnerId])
 
   return (
     <>
       <div ref={scrollRef} className="fleet-inbox-conv fleet-chat-shape">
         {thread.messages.map((m, i) => {
+          const key = m._dbId || m.id || String(i)
+          // Open: the clicked message is REPLACED in place by the chat, anchored
+          // on that line (not a chat inserted below).
+          if (inlineOpenId === key) {
+            return (
+              <InlineConvoChat
+                key={key}
+                thread={thread}
+                ctx={ctx}
+                myId={myId}
+                myName={myName}
+                anchorKey={key}
+                onClose={() => setInlineOpenId(null)}
+              />
+            )
+          }
           const lineHtml = renderChatLine(m, ctx)
           if (!lineHtml) return null
           const mine = m.from === myId
           return (
-            <div key={m._dbId || m.id || i} className={`fleet-inbox-msg${mine ? ' mine' : ''}`}>
+            <div key={key} className={`fleet-inbox-msg${mine ? ' mine' : ''}`}>
               <div dangerouslySetInnerHTML={{ __html: lineHtml }} />
+              {/* ↗ — open a chat in place of this message. Bottom-right so it's
+                  reachable on a long message (hidden until the message is hovered). */}
+              <span
+                className="fleet-inbox-open-arrow"
+                title="Open chat here"
+                onPointerUp={(e) => { stopEventPropagation(e); setInlineOpenId(key) }}
+              >↗</span>
             </div>
           )
         })}
@@ -393,6 +456,133 @@ function ConversationView({ thread, ctx, myId }: { thread: Thread; ctx: any; myI
       {/* Composer slot — read-only in v1; a reply box drops in here. */}
       <div className="fleet-inbox-composer-slot" />
     </>
+  )
+}
+
+// A live chat for this conversation, rendered inline in the flow as a
+// message-shaped block (Piece 3, model A). It's Skip's primary send surface: a
+// live message list (renderChatLine over the convo events) + the shared
+// ChatComposer (same textarea + voice registration + send-on-enter the fleet
+// chat shape uses). The drag handle detaches it onto the canvas as a real,
+// persistent fleet-chat — reusing the same pill-drag → fleet-chat path the
+// partner names use, so the dropped chat is owned + filtered to this convo.
+const COMPOSER_STYLE: React.CSSProperties = {
+  width: '100%',
+  background: 'transparent',
+  border: '1px solid rgba(128, 128, 128, 0.15)',
+  borderRadius: 4,
+  padding: '4px 8px',
+  fontSize: 11,
+  color: 'inherit',
+  outline: 'none',
+  resize: 'none',
+  lineHeight: 1.4,
+  fontFamily: 'inherit',
+  fieldSizing: 'content',
+  minHeight: 'calc(1.4em + 10px)',
+  maxHeight: 200,
+} as any
+const _isTouchDevice = (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
+
+function InlineConvoChat({ thread, ctx, myId, myName, anchorKey, onClose }: {
+  thread: Thread
+  ctx: any
+  myId: string | null
+  myName: string
+  anchorKey: string
+  onClose: () => void
+}) {
+  const bodyRef = useRef<HTMLDivElement>(null)
+  // (Wheel scroll for this body is handled by the parent ConversationView's
+  // single delegating handler — see useWheelScroll(innerSelector) — so there's
+  // no competing nested listener here.)
+  // Anchor on the message the chat opened from: scroll so that line sits at the
+  // top of the window (the message you clicked is what you see), and the
+  // "back to the message" control re-runs this.
+  const scrollToAnchor = useCallback(() => {
+    const el = bodyRef.current
+    if (!el) return
+    const target = el.querySelector(`[data-msg-key="${CSS.escape(anchorKey)}"]`) as HTMLElement | null
+    el.scrollTop = target ? Math.max(0, target.offsetTop - 4) : el.scrollHeight
+  }, [anchorKey])
+  useEffect(() => { scrollToAnchor() }, [scrollToAnchor])
+
+  // Sending in this conversation goes to the partner. (Matches the chat shape's
+  // sendTargets = the filter's "to" labels; here that's the partner's name.)
+  const sendTargets = useMemo(() => [thread.friendly], [thread.friendly])
+  const agentNames = useMemo(() => {
+    const map: Record<string, string> = { [thread.partnerId]: thread.partnerName }
+    if (myId) map[myId] = myName || 'user'
+    return map
+  }, [thread.partnerId, thread.partnerName, myId, myName])
+
+  // The send executor — optimistic echo + retrying send via the same primitives
+  // the fleet chat uses (sendMessage). Keyboard and voice share it (the inline
+  // chat has none of the chat shape's keyboard/voice divergence).
+  const send = useCallback((text: string, targets: string[]) => {
+    if (!text || targets.length === 0) return
+    const tempId = `opt-inbox-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    injectOptimisticEvent({
+      _tempId: tempId,
+      type: 'chat',
+      event_type: 'chat',
+      from: getHumanId(),
+      to: targets[0],
+      text,
+      timestamp: new Date().toISOString(),
+      read: false,
+    })
+    const sendWithRetry = (attempt: number) => {
+      Promise.all(targets.map((t) => sendMessage(t, text, { _tempId: tempId })))
+        .then((results: { ok: boolean; event_id: number }[]) => {
+          if (!results.every((r) => r.ok)) throw new Error('send failed')
+        })
+        .catch(() => {
+          if (attempt < 3) setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
+          else updateOptimisticEvent(tempId, { _failed: true })
+        })
+    }
+    sendWithRetry(1)
+  }, [])
+
+  return (
+    <div className="fleet-inbox-inline-chat fleet-chat-shape" onPointerDown={(e) => stopEventPropagation(e)}>
+      <div ref={bodyRef} className="fleet-inbox-inline-body">
+        {thread.messages.map((m, i) => {
+          const lineHtml = renderChatLine(m, ctx)
+          if (!lineHtml) return null
+          const mine = m.from === myId
+          const key = m._dbId || m.id || String(i)
+          return (
+            <div key={key} data-msg-key={key} className={`fleet-inbox-msg${mine ? ' mine' : ''}${key === anchorKey ? ' anchor' : ''}`}>
+              <div dangerouslySetInnerHTML={{ __html: lineHtml }} />
+            </div>
+          )
+        })}
+      </div>
+      <div className="fleet-inbox-inline-composer">
+        <ChatComposer
+          sendTargets={sendTargets}
+          agentNames={agentNames}
+          onKeyboardSend={send}
+          onVoiceSend={(targets, text) => send(text, targets)}
+          isTouchDevice={_isTouchDevice}
+          style={COMPOSER_STYLE}
+        />
+      </div>
+      {/* Tiny, faint controls in the bottom corners (Skip: same size as the ×,
+          undistracting). Left = back to the message; right = close. */}
+      <span
+        className="fleet-inbox-inline-reset"
+        title="Back to the message"
+        onPointerUp={(e) => { stopEventPropagation(e); scrollToAnchor() }}
+      >⤺</span>
+      <span
+        className="fleet-inbox-inline-close"
+        title="Close"
+        onPointerUp={(e) => { stopEventPropagation(e); onClose() }}
+      >×</span>
+    </div>
   )
 }
 

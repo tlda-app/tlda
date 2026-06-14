@@ -30,8 +30,9 @@
   height: 14px;
   padding: 0 4px;
   border-radius: 7px;
-  background: rgba(120, 160, 220, 0.25);
+  background: rgba(120, 160, 220, 0.1);
   color: var(--text, #cdd);
+  opacity: 0.75;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -107,8 +108,9 @@
   height: 14px;
   padding: 0 4px;
   border-radius: 7px;
-  background: rgba(120, 160, 220, 0.25);
+  background: rgba(120, 160, 220, 0.1);
   color: var(--text, #cdd);
+  opacity: 0.75;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -136,10 +138,81 @@
 }
 .fleet-inbox-msg {
   padding: 2px 10px;
+  position: relative;
 }
 .fleet-inbox-msg.mine {
   opacity: 0.85;
 }
+/* Per-message ↗ — bottom-right of the message so it's reachable on a long line;
+   invisible until the message is hovered, faint on hover. */
+.fleet-inbox-msg > div:first-child .chat-line {
+  padding-right: 16px;
+}
+.fleet-inbox-open-arrow {
+  position: absolute;
+  bottom: 2px;
+  right: 6px;
+  font-size: 9px;
+  line-height: 1;
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 0.15s;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.fleet-inbox-msg:hover > .fleet-inbox-open-arrow {
+  opacity: 0.6;
+}
+
+/* Inline chat (Piece 3) — REPLACES the clicked message in place. It's just a
+   small, FRAMELESS embedded chat (no box, no header): exactly the normal chat,
+   shrunk. The only chrome is two tiny, faint controls in the bottom corners. */
+.fleet-inbox-inline-chat {
+  position: relative;
+  margin: 2px 4px;
+  max-height: 260px;
+  display: flex;
+  flex-direction: column;
+  /* Just enough frame to read as a chat (not a plain message) without the heavy
+     window look — a subtle border + the faintest inset background. */
+  border: 1px solid rgba(128, 128, 128, 0.25);
+  border-radius: 6px;
+  background: rgba(128, 128, 128, 0.03);
+}
+/* The scroll window keeps a floor height so a short conversation can't collapse
+   it — the text field always sits BELOW it (adds space), never occluding it. */
+.fleet-inbox-inline-body {
+  overflow-y: auto;
+  flex: 1;
+  min-height: 90px;
+  padding: 2px 0;
+}
+.fleet-inbox-inline-composer {
+  flex-shrink: 0;
+  padding: 4px 4px 8px;
+}
+/* Tiny, faint bottom-corner controls — same size as a little ×, undistracting,
+   but with a generous transparent hit zone (padding) so they're easy to hit. */
+.fleet-inbox-inline-reset,
+.fleet-inbox-inline-close {
+  position: absolute;
+  bottom: -3px;
+  padding: 7px;
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0.18;
+  cursor: pointer;
+  transition: opacity 0.15s;
+  user-select: none;
+  -webkit-user-select: none;
+  z-index: 2;
+}
+.fleet-inbox-inline-reset { left: -2px; }
+.fleet-inbox-inline-close { right: -2px; }
+.fleet-inbox-inline-chat:hover .fleet-inbox-inline-reset,
+.fleet-inbox-inline-chat:hover .fleet-inbox-inline-close { opacity: 0.4; }
+.fleet-inbox-inline-reset:hover,
+.fleet-inbox-inline-close:hover { opacity: 0.7; }
 
 /* Composer slot — empty in v1; reserves the row so a reply box drops in
    without reflowing the conversation pane. */
