@@ -332,7 +332,7 @@ interface DragState {
 
 const DRAG_THRESHOLD = 5
 
-function usePillDrag() {
+export function usePillDrag() {
   const editor = useEditor()
   const dragRef = useRef<DragState | null>(null)
 

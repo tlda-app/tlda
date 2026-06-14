@@ -19,6 +19,7 @@ import {
   useValue,
 } from 'tldraw'
 import { agentDisplayName } from './fleet-utils'
+import { usePillDrag } from './FleetAgentsShape'
 import { useState, useCallback, useRef, useMemo, useEffect, memo } from 'react'
 import { useFleetAgents, useFleetTasks, useFleetEvents, useFleetUnreadCounts, useFleetIdentity } from '../fleet-data-adapter'
 import katex from 'katex'
@@ -114,6 +115,8 @@ function makeChatCtx(agents: any[], tasks: any[]) {
 interface Thread {
   partnerId: string
   partnerName: string
+  friendly: string      // stable filter value for drag-to-chat (friendly name)
+  color: string         // nick hex for the drag pill
   nickClass: string
   messages: any[]       // chat events in this thread, oldest → newest
   last: any             // newest message
@@ -178,6 +181,8 @@ function FleetInboxInner({ shape }: { shape: any }) {
       const target = e.target as HTMLElement
       if (!el!.contains(target)) return
       if (isSelectedRef.current) return
+      // Let draggable names handle their own pointerdown (they start a pill drag).
+      if (target.closest('.fleet-inbox-pill')) return
       editor.markEventAsHandled(e)
     }
     document.addEventListener('pointerdown', onPointerDown, true)
@@ -191,6 +196,8 @@ function FleetInboxInner({ shape }: { shape: any }) {
   const agents = useFleetAgents()
   const tasks = useFleetTasks()
   const ctx = useMemo(() => makeChatCtx(agents, tasks), [agents, tasks])
+  // Drag a partner name → spawn a filtered chat (same pill drag as the agents panel).
+  const { startDrag } = usePillDrag()
 
   // Scope to messages to/from me. The DNF filter resolves my labels (name + id).
   const filter = useMemo<[string, string][][] | null>(
@@ -225,10 +232,15 @@ function FleetInboxInner({ shape }: { shape: any }) {
       msgs.sort((a, b) => ((a.timestamp || '') < (b.timestamp || '') ? -1 : 1))
       const last = msgs[msgs.length - 1]
       const a = agents.find((x: any) => x.id === partnerId)
+      const partnerName = a ? agentDisplayName(a) : partnerId.replace('fleet:', '')
       out.push({
         partnerId,
-        partnerName: a ? agentDisplayName(a) : partnerId.replace('fleet:', ''),
+        partnerName,
+        // Filters resolve friendly names, never IDs (see app-development), so the
+        // drag value is the friendly name, falling back to the display name.
+        friendly: (a?.friendly_name as string) || partnerName,
         nickClass: ctx.getNickClass(partnerId),
+        color: ctx.getAgentColor(partnerId),
         messages: msgs,
         last,
         lastTs: last?.timestamp || '',
@@ -306,7 +318,11 @@ function FleetInboxInner({ shape }: { shape: any }) {
             <span className="fleet-inbox-title">Inbox</span>
           )}
           {activeThread ? (
-            <span className={`fleet-inbox-thread-name ${activeThread.nickClass}`}>{activeThread.partnerName}</span>
+            <span
+              className={`fleet-inbox-thread-name fleet-inbox-pill ${activeThread.nickClass}`}
+              style={{ cursor: 'grab', touchAction: 'none' }}
+              onPointerDown={(e) => { e.stopPropagation(); startDrag(e, 'agent', activeThread.friendly, activeThread.partnerName, activeThread.color) }}
+            >{activeThread.partnerName}</span>
           ) : (
             totalUnread > 0 && <span className="fleet-inbox-unread-total">{totalUnread}</span>
           )}
@@ -316,7 +332,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
         {activeThread ? (
           <ConversationView thread={activeThread} ctx={ctx} myId={myId} />
         ) : (
-          <ThreadList threads={threads} onOpen={openThread} />
+          <ThreadList threads={threads} onOpen={openThread} onStartDrag={startDrag} />
         )}
       </div>
     </HTMLContainer>
@@ -341,7 +357,9 @@ function useWheelScroll(ref: { current: HTMLDivElement | null }) {
   }, [ref])
 }
 
-function ThreadList({ threads, onOpen }: { threads: Thread[]; onOpen: (t: Thread) => void }) {
+type StartDrag = (e: React.PointerEvent, pillType: 'agent' | 'label', value: string, displayName: string, color: string) => void
+
+function ThreadList({ threads, onOpen, onStartDrag }: { threads: Thread[]; onOpen: (t: Thread) => void; onStartDrag: StartDrag }) {
   const listRef = useRef<HTMLDivElement>(null)
   useWheelScroll(listRef)
   return (
@@ -356,7 +374,11 @@ function ThreadList({ threads, onOpen }: { threads: Thread[]; onOpen: (t: Thread
           onPointerUp={(e) => { stopEventPropagation(e); onOpen(t) }}
         >
           <div className="fleet-inbox-thread-row">
-            <span className={`fleet-inbox-thread-partner ${t.nickClass}`}>{t.partnerName}</span>
+            <span
+              className={`fleet-inbox-thread-partner fleet-inbox-pill ${t.nickClass}`}
+              style={{ cursor: 'grab', touchAction: 'none' }}
+              onPointerDown={(e) => { e.stopPropagation(); onStartDrag(e, 'agent', t.friendly, t.partnerName, t.color) }}
+            >{t.partnerName}</span>
             <span className="fleet-inbox-thread-time">{timeShort(t.lastTs)}</span>
             {t.unread > 0 && <span className="fleet-inbox-thread-badge">{t.unread}</span>}
           </div>
