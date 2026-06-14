@@ -371,6 +371,19 @@ async function applyLayoutAndCamera(page) {
   })
   console.log('✓ fleet shapes:', counts)
 
+  // Report ownership — the render-wall is an ownership mismatch (a foreign userId
+  // fails isMyFleetShape for the verifying session, so the HUD never paints). If
+  // these aren't all owned by fleet:tester, the identity/login resolution is wrong.
+  const ownership = await page.evaluate(() => {
+    const ed = (window).__tldraw_editor__
+    const fleet = ed.getCurrentPageShapes().filter(s => String(s.type).startsWith('fleet-'))
+    return {
+      identity: localStorage.getItem('tlda-identity'),
+      owners: [...new Set(fleet.map(s => s.props && s.props.userId))],
+    }
+  })
+  console.log('✓ ownership:', JSON.stringify(ownership))
+
   // Frame the camera on the doc page first via tldraw's built-in zoom-to-fit
   // (this is what a user gets with the "zoom to fit" keyboard shortcut, not
   // a programmatic backdoor — it computes the same camera state).
@@ -439,8 +452,15 @@ async function main() {
       }
     } catch {}
     try { sessionStorage.clear() } catch {}
-    // Set the ONE piece of state we actually want: HUD expanded.
+    // Set the state we want: HUD expanded + a DETERMINISTIC identity. connect()
+    // logs in from localStorage['tlda-identity'] (fleet-data.mjs), not the ?name=
+    // URL param — without this the headless session's identity is undefined, so
+    // getHumanId() is null/ambiguous and createFleetLayout stamps shapes to the
+    // wrong owner (or bails). Pin it to 'tester' so login resolves to fleet:tester
+    // and the rebuilt layout is owned by the same id a verifying ?name=tester
+    // session gets. (tlda-identity isn't fleet-*/tldraw*, so the clear above skips it.)
     try { localStorage.setItem('fleet-hud-expanded', '1') } catch {}
+    try { localStorage.setItem('tlda-identity', 'tester') } catch {}
   })
   await page.goto(url, { waitUntil: 'domcontentloaded' })
 
