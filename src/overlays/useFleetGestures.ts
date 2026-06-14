@@ -60,20 +60,23 @@ function fleetShapeAtScreen(overlay: Editor, clientX: number, clientY: number): 
   return null
 }
 
-// All my fleet shapes that share a cluster with `seed` — same horizontal
-// margin. We split by whether the shape's center-x is left or right of the
-// owned-shapes' overall center, so the two margins move independently.
+// My fleet shapes that share a margin with the seed shapes. We split on the
+// DOCUMENT's horizontal midpoint — the margins live on either side of the doc —
+// so the two margins move independently regardless of how panels are arranged.
 function clusterOf(main: Editor, seedIds: Set<string>): TLShape[] {
   const fleet = main.getCurrentPageShapes().filter(s => FLEET_SHAPE_TYPES.has(s.type as string))
-  const bounds = fleet.map(s => ({ s, b: main.getShapePageBounds(s.id) })).filter(x => x.b)
-  if (bounds.length === 0) return []
-  const minX = Math.min(...bounds.map(x => x.b!.minX))
-  const maxX = Math.max(...bounds.map(x => x.b!.maxX))
-  const mid = (minX + maxX) / 2
-  const sideOf = (b: any) => (b.minX + b.maxX) / 2 < mid ? 'L' : 'R'
-  // Which side(s) the seed shapes are on
-  const seedSides = new Set(bounds.filter(x => seedIds.has(x.s.id)).map(x => sideOf(x.b)))
-  return bounds.filter(x => seedSides.has(sideOf(x.b))).map(x => x.s)
+  const items = fleet.map(s => ({ s, b: main.getShapePageBounds(s.id) })).filter(x => x.b)
+  if (items.length === 0) return []
+  const pageBounds = main.getCurrentPageShapes()
+    .filter(s => (s.type as string) === 'svg-page' || (s.type as string) === 'html-page')
+    .map(s => main.getShapePageBounds(s.id))
+    .filter(Boolean) as any[]
+  const docMid = pageBounds.length
+    ? (Math.min(...pageBounds.map(b => b.minX)) + Math.max(...pageBounds.map(b => b.maxX))) / 2
+    : (Math.min(...items.map(x => x.b!.minX)) + Math.max(...items.map(x => x.b!.maxX))) / 2
+  const sideOf = (b: any) => ((b.minX + b.maxX) / 2 < docMid ? 'L' : 'R')
+  const seedSides = new Set(items.filter(x => seedIds.has(x.s.id)).map(x => sideOf(x.b)))
+  return items.filter(x => seedSides.has(sideOf(x.b))).map(x => x.s)
 }
 
 // A 2-finger gesture on one shape commits to EITHER move or resize — never both
@@ -85,10 +88,11 @@ const LOCK_THRESHOLD = 12 // screen px of travel before we commit to a mode
 type GestureState =
   | { kind: 'none' }
   | { kind: 'shape'; mode: 'pending' | 'move' | 'resize'; id: string; type: string; x0: number; y0: number; w0: number; h0: number; d0: number; c0: { x: number; y: number } }
-  | { kind: 'cluster'; shapes: { id: string; type: string; x0: number; y0: number }[]; c0: { x: number; y: number } }
-  // 3-finger is parked for now: we intercept it (so the shapes don't grab it) but
-  // do nothing, until the pass-through-to-canvas can be done without side effects.
-  | { kind: 'inert' }
+  | { kind: 'cluster'; mode: 'pending' | 'move' | 'resize'; shapes: { id: string; type: string; x0: number; y0: number; w0: number; h0: number }[]; anchor: { x: number; y: number }; d0: number; c0: { x: number; y: number } }
+  // 3-finger: pan the main canvas from anywhere (even over the panels). Drive the
+  // main camera; the HUD's camera-poll mirrors a main-camera pan onto the HUD.
+  // Keep z byte-identical — a z wobble makes the poll skip the HUD update.
+  | { kind: 'pan'; camX0: number; camY0: number; z0: number; c0: { x: number; y: number } }
 
 export function useFleetGestures(opts: {
   hudRef: React.RefObject<HTMLDivElement | null>
@@ -112,9 +116,10 @@ export function useFleetGestures(opts: {
       const ts = Array.from(e.touches)
 
       if (ts.length === 3) {
-        // Parked: swallow it so it doesn't reach the shapes, but do nothing else.
+        // Pan the doc from anywhere — even over the panels.
         e.preventDefault(); e.stopPropagation()
-        state = { kind: 'inert' }
+        const cam = main.getCamera()
+        state = { kind: 'pan', camX0: cam.x, camY0: cam.y, z0: cam.z, c0: touchCenter(ts) }
         return
       }
 
@@ -137,14 +142,21 @@ export function useFleetGestures(opts: {
             w0: b.width, h0: b.height, d0: touchDist(ts[0], ts[1]), c0: touchCenter(ts),
           }
         } else {
-          // Fingers span >1 shape → move that cluster
+          // Fingers span >1 shape → move OR pinch-resize that margin's cluster.
           e.preventDefault(); e.stopPropagation()
           main.markHistoryStoppingPoint()
           const shapes = clusterOf(main, ids).map(s => {
             const m = main.getShape(s.id as any) as any
-            return { id: s.id, type: s.type as string, x0: m.x, y0: m.y }
+            const b = main.getShapePageBounds(s.id)
+            return { id: s.id, type: s.type as string, x0: m.x, y0: m.y, w0: b ? b.width : 0, h0: b ? b.height : 0 }
           })
-          state = { kind: 'cluster', shapes, c0: touchCenter(ts) }
+          if (shapes.length === 0) return
+          // Scale pivot = centroid of the panels' own positions+sizes. Computed
+          // from the shapes (never a {0,0} fallback) — these page coords can be
+          // huge, so a wrong pivot would fling them off into space.
+          const cx = shapes.reduce((a, s) => a + s.x0 + s.w0 / 2, 0) / shapes.length
+          const cy = shapes.reduce((a, s) => a + s.y0 + s.h0 / 2, 0) / shapes.length
+          state = { kind: 'cluster', mode: 'pending', shapes, anchor: { x: cx, y: cy }, d0: touchDist(ts[0], ts[1]), c0: touchCenter(ts) }
         }
       }
       // 1 finger: not intercepted — the shape's own scroll handling runs.
@@ -158,8 +170,14 @@ export function useFleetGestures(opts: {
       const ts = Array.from(e.touches)
       const zoom = overlay.getCamera().z || 1
 
-      if (state.kind === 'inert') {
+      if (state.kind === 'pan') {
         e.preventDefault(); e.stopPropagation()
+        const c = touchCenter(ts)
+        // Absolute target from gesture start; z byte-identical; no animation.
+        main.setCamera(
+          { x: state.camX0 - (c.x - state.c0.x) / state.z0, y: state.camY0 - (c.y - state.c0.y) / state.z0, z: state.z0 },
+          { animation: { duration: 0 } },
+        )
         return
       }
 
@@ -189,10 +207,31 @@ export function useFleetGestures(opts: {
       if (state.kind === 'cluster' && ts.length >= 2) {
         e.preventDefault(); e.stopPropagation()
         const c = touchCenter(ts)
-        const dx = (c.x - state.c0.x) / zoom
-        const dy = (c.y - state.c0.y) / zoom
-        for (const s of state.shapes) {
-          main.updateShape({ id: s.id as any, type: s.type as any, x: s.x0 + dx, y: s.y0 + dy })
+        const d = touchDist(ts[0], ts[1])
+        const travel = Math.hypot(c.x - state.c0.x, c.y - state.c0.y)
+        const spread = Math.abs(d - state.d0)
+        if (state.mode === 'pending' && Math.max(travel, spread) >= LOCK_THRESHOLD) {
+          state.mode = spread > travel ? 'resize' : 'move'
+        }
+        if (state.mode === 'move') {
+          const dx = (c.x - state.c0.x) / zoom
+          const dy = (c.y - state.c0.y) / zoom
+          for (const s of state.shapes) {
+            main.updateShape({ id: s.id as any, type: s.type as any, x: s.x0 + dx, y: s.y0 + dy })
+          }
+        } else if (state.mode === 'resize') {
+          // Scale the whole cluster about its pivot — clamp so a wild pinch can't
+          // fling the panels (their page coords are large).
+          const raw = state.d0 > 0 ? d / state.d0 : 1
+          const scale = Math.max(0.3, Math.min(3, raw))
+          for (const s of state.shapes) {
+            main.updateShape({
+              id: s.id as any, type: s.type as any,
+              x: state.anchor.x + (s.x0 - state.anchor.x) * scale,
+              y: state.anchor.y + (s.y0 - state.anchor.y) * scale,
+              props: { w: Math.max(80, s.w0 * scale), h: Math.max(60, s.h0 * scale) } as any,
+            })
+          }
         }
         return
       }
