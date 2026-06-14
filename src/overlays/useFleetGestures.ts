@@ -60,23 +60,34 @@ function fleetShapeAtScreen(overlay: Editor, clientX: number, clientY: number): 
   return null
 }
 
-// My fleet shapes that share a margin with the seed shapes. We split on the
-// DOCUMENT's horizontal midpoint — the margins live on either side of the doc —
-// so the two margins move independently regardless of how panels are arranged.
+// My fleet shapes that share a margin with the seed shapes. The catch: the
+// document lives in the MAIN-camera frame while the HUD panels are drawn by the
+// overlay's OVERRIDE camera — different coordinate systems whose page coords
+// don't line up. So we split on what the user actually sees: each panel's
+// on-SCREEN center-x vs the document's on-SCREEN center-x.
 function clusterOf(main: Editor, seedIds: Set<string>): TLShape[] {
   const fleet = main.getCurrentPageShapes().filter(s => FLEET_SHAPE_TYPES.has(s.type as string))
-  const items = fleet.map(s => ({ s, b: main.getShapePageBounds(s.id) })).filter(x => x.b)
-  if (items.length === 0) return []
-  const pageBounds = main.getCurrentPageShapes()
-    .filter(s => (s.type as string) === 'svg-page' || (s.type as string) === 'html-page')
-    .map(s => main.getShapePageBounds(s.id))
-    .filter(Boolean) as any[]
-  const docMid = pageBounds.length
-    ? (Math.min(...pageBounds.map(b => b.minX)) + Math.max(...pageBounds.map(b => b.maxX))) / 2
-    : (Math.min(...items.map(x => x.b!.minX)) + Math.max(...items.map(x => x.b!.maxX))) / 2
-  const sideOf = (b: any) => ((b.minX + b.maxX) / 2 < docMid ? 'L' : 'R')
-  const seedSides = new Set(items.filter(x => seedIds.has(x.s.id)).map(x => sideOf(x.b)))
-  return items.filter(x => seedSides.has(sideOf(x.b))).map(x => x.s)
+  if (fleet.length === 0) return []
+  // Document's screen center-x, read from the doc page's actual rendered DOM rect
+  // on the main canvas — the SAME getBoundingClientRect frame as the panels below
+  // (pageToScreen doesn't line up with where the doc actually paints under the HUD).
+  const docEls = Array.from(document.querySelectorAll('[data-shape-type="svg-page"], [data-shape-type="html-page"]'))
+    .filter(el => !el.closest('.fleet-hud-wrap'))
+  let docScreenMidX = window.innerWidth / 2
+  if (docEls.length) {
+    const rs = docEls.map(el => el.getBoundingClientRect())
+    docScreenMidX = (Math.min(...rs.map(r => r.left)) + Math.max(...rs.map(r => r.right))) / 2
+  }
+  // Each panel's screen center-x, read from its rendered DOM element (which the
+  // override camera has already positioned), so both sides are in screen space.
+  const sideOf = (id: string): 'L' | 'R' => {
+    const el = document.querySelector(`.fleet-hud-wrap [data-shape-id="${id}"]`)
+    if (!el) return 'L'
+    const r = el.getBoundingClientRect()
+    return (r.left + r.right) / 2 < docScreenMidX ? 'L' : 'R'
+  }
+  const seedSides = new Set([...seedIds].map(id => sideOf(id)))
+  return fleet.filter(s => seedSides.has(sideOf(s.id)))
 }
 
 // A 2-finger gesture on one shape commits to EITHER move or resize — never both
@@ -175,7 +186,7 @@ export function useFleetGestures(opts: {
         const c = touchCenter(ts)
         // Absolute target from gesture start; z byte-identical; no animation.
         main.setCamera(
-          { x: state.camX0 - (c.x - state.c0.x) / state.z0, y: state.camY0 - (c.y - state.c0.y) / state.z0, z: state.z0 },
+          { x: state.camX0 + (c.x - state.c0.x) / state.z0, y: state.camY0 + (c.y - state.c0.y) / state.z0, z: state.z0 },
           { animation: { duration: 0 } },
         )
         return
