@@ -16,7 +16,7 @@ import type { Editor, TLShape, TLShapeId } from 'tldraw'
 // @ts-ignore — vanilla JS module
 import { myTldaUrl } from '../fleet/tldaUrl.mjs'
 // @ts-ignore — vanilla JS module
-import { getHumanId } from '../fleet/fleet-data.mjs'
+import { getHumanId, getDeviceId } from '../fleet/fleet-data.mjs'
 
 const PILL_W = 70
 const PILL_H = 18
@@ -336,8 +336,9 @@ export function dropPillOnTarget(
         filter: [[['to', value]], [['from', value]]],
         // Stamp ownership — without this the chat has userId '' and the
         // ownership rule (isMyFleetShape) never renders it, so the drop looked
-        // like it did nothing.
+        // like it did nothing. deviceId is the other half of the key.
         userId: getHumanId(),
+        deviceId: getDeviceId(),
       },
     })
   }
