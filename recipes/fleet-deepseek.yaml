@@ -51,6 +51,25 @@ instructions: |
     written output, put it in a scratch file via the scratch tools, or say it in
     `chat`. Never claim to have changed something you cannot change.
 
+  Skills — the same playbooks Claude agents use:
+  - The fleet keeps shared playbooks called "skills." Claude agents are REQUIRED
+    to read the relevant ones before certain work, and you are held to the SAME
+    standard — it's enforced, not a suggestion. When you call a gated tool
+    (`propose_edit`, `report`, a scratch tool) without having cleared the required
+    skill, the tool is blocked and tells you which skill(s) you owe. You have two
+    ways forward for each, then you retry the tool:
+      - Read it: `skill("<name>")` — returns the skill (filtered for you) and
+        credits it.
+      - Or, if it genuinely does not apply to what you are doing, decline it:
+        `dismiss_skill(skills: ["<name>"], reason: "<why it does not apply>")` —
+        a reason is required and is shown to Skip. (Don't dismiss to dodge work;
+        dismiss only when the skill truly isn't relevant.)
+    The block lifts once every owed skill is read or dismissed.
+  - You can also read proactively: call `skill` with NO argument to LIST the
+    available skills, or `skill(skill: "<name>")` to read one. If `my_task` gives
+    you a role (reviewer, adversary, manager, …) and names a skill, read it with
+    `skill(skill: "<name>")` before you start.
+
   Be direct and concrete. Do the task your `my_task` describes — nothing else.
 
 # Initial kickoff message. `goose run --recipe` forbids --text, so the launch
@@ -76,7 +95,7 @@ extensions:
     # stdio MCP subprocess already inherits goose's process environment, and
     # fleet-spawn sets all four vars in that environment, so the tools get what
     # they need without env_keys.
-    description: "Fleet/tlda tools (register, my_task, chat, read_file, read_annotations, scratch). The agent's only capability surface."
+    description: "Fleet/tlda tools (register, my_task, chat, read_file, read_annotations, skill, scratch). The agent's only capability surface."
 
 settings:
   goose_provider: "{{ provider }}"

@@ -129,9 +129,34 @@ export class FleetTouchInboxShapeUtil extends BaseBoxShapeUtil<any> {
 
 function FleetTouchInboxInner({ shape }: { shape: any }) {
   const editor = useEditor()
+  // In the HUD overlay, useEditor() is the COPY editor — shapes created/updated
+  // there are clobbered by the main→copy mirror. The child chat must live on the
+  // MAIN editor (set once in SvgDocument) so its id resolves there and the
+  // click-to-filter write actually sticks. Route ALL child-shape ops through it.
+  const mainEd = (typeof window !== 'undefined' && (window as any).__tldraw_editor__) || editor
   const { w, h } = shape.props
   const myW = w as number
   const myH = h as number
+
+  // Capture-phase pointerdown so a tap inside the strip isn't hijacked by
+  // tldraw's setPointerCapture (which would steal the pointerup and make the
+  // first tap only select the shape). Mirrors FleetInboxShape / FleetSearchShape
+  // — this is what makes the rows tappable on a single tap.
+  const containerRef = useRef<HTMLDivElement>(null)
+  const isSelectedRef = useRef(false)
+  isSelectedRef.current = useValue('isSelected', () => editor.getSelectedShapeIds().includes(shape.id), [editor, shape.id])
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    function onPointerDown(e: PointerEvent) {
+      const target = e.target as HTMLElement
+      if (!el!.contains(target)) return
+      if (isSelectedRef.current) return
+      editor.markEventAsHandled(e)
+    }
+    document.addEventListener('pointerdown', onPointerDown, true)
+    return () => document.removeEventListener('pointerdown', onPointerDown, true)
+  }, [editor, shape.id])
 
   const identity = useFleetIdentity()
   const myId = identity.id || getHumanId()
@@ -177,33 +202,34 @@ function FleetTouchInboxInner({ shape }: { shape: any }) {
     return out
   }, [events, myId, agents, unreadCounts])
 
-  // The child fleet-chat shape (created below). Its filter tells us the active partner.
+  // The child fleet-chat shape (created below), read from the MAIN editor so its
+  // id matches what selectThread writes to. Its filter tells us the active partner.
   const childChat = useValue<any>(
     'childChat',
-    () => editor.getSortedChildIdsForParent(shape.id)
-      .map((id: any) => editor.getShape(id))
+    () => mainEd.getSortedChildIdsForParent(shape.id)
+      .map((id: any) => mainEd.getShape(id))
       .find((s: any) => s?.type === 'fleet-chat'),
-    [editor, shape.id],
+    [mainEd, shape.id],
   )
 
-  // Auto-populate the child chat once, below the strip.
+  // Auto-populate the child chat once, below the strip — on the MAIN editor.
   useEffect(() => {
-    const existing = editor.getSortedChildIdsForParent(shape.id)
-      .map((id: any) => editor.getShape(id))
+    const existing = mainEd.getSortedChildIdsForParent(shape.id)
+      .map((id: any) => mainEd.getShape(id))
       .find((s: any) => s?.type === 'fleet-chat')
     if (existing) return
     const uid = getHumanId()
     if (!uid) return
     const dev = getDeviceId()
     if (!dev) return
-    editor.createShape({
+    mainEd.createShape({
       type: 'fleet-chat' as any,
       parentId: shape.id,
       x: 0,
       y: STRIP_H,
       props: { w: myW, h: Math.max(80, myH - STRIP_H), filter: [], userId: uid, deviceId: dev },
     })
-  }, [editor, shape.id, myW, myH])
+  }, [mainEd, shape.id, myW, myH])
 
   // Active partner = the agent the child chat is currently filtered to.
   const activePartnerName = useMemo(() => {
@@ -215,7 +241,9 @@ function FleetTouchInboxInner({ shape }: { shape: any }) {
 
   const selectThread = useCallback((t: Thread) => {
     if (!childChat) return
-    editor.updateShape({
+    // Persist the filter on the MAIN shape (childChat is read from mainEd, so its
+    // id resolves there) — the main→copy mirror then reflects it into the HUD.
+    mainEd.updateShape({
       id: childChat.id,
       type: 'fleet-chat' as any,
       props: { ...childChat.props, filter: partnerFilter(t.partnerName) },
@@ -232,7 +260,7 @@ function FleetTouchInboxInner({ shape }: { shape: any }) {
         body: JSON.stringify({ event_id: e._dbId || e.id, agent: myId }),
       }).catch(() => {})
     }
-  }, [childChat, editor, myId, events])
+  }, [childChat, mainEd, myId, events])
 
   const stripRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -248,6 +276,7 @@ function FleetTouchInboxInner({ shape }: { shape: any }) {
   return (
     <HTMLContainer style={{ width: myW, height: myH, pointerEvents: 'none', overflow: 'visible' }}>
       <div
+        ref={containerRef}
         className="fleet-shape fleet-inbox-shape fleet-touch-inbox-strip-wrap"
         style={{
           width: myW,

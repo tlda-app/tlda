@@ -49,6 +49,13 @@ export type RibbonSegment = {
   status: LineStatus
   y1: number
   y2: number
+  // Shadow-repo commit this span was vetted against. The span's line numbers are
+  // relative to this commit, so on rebuild the server diffs it forward to decide
+  // whether the underlying source moved (→ stale). Absent on pre-anchor segments.
+  approvedAtCommit?: string
+  // Set by the staleness check after a rebuild: the source under this span changed
+  // since approvedAtCommit, so the vetting no longer covers what's there now.
+  stale?: boolean
 }
 
 function StatusBadge({ status, arrow }: { status: LineStatus; arrow?: boolean }) {
@@ -264,12 +271,18 @@ export class UnderstandingLineShapeUtil extends BaseBoxShapeUtil<any> {
         {/* Committed segments — split into pieces around erase zone */}
         {segments.filter(s => s.status !== 'unchecked').flatMap((seg, i) => {
           const color = STATUS_COLORS[seg.status] || STATUS_COLORS.unchecked
+          // Stale spans (source moved since vetted) render dimmed with a faint
+          // diagonal hatch so they read as "weakened — needs revalidation".
+          // Provisional look, pending Skip's sign-off on the exact treatment.
+          const staleStyle: React.CSSProperties = seg.stale
+            ? { opacity: 0.3, backgroundImage: 'repeating-linear-gradient(45deg, rgba(130,130,130,0.5) 0, rgba(130,130,130,0.5) 1px, transparent 1px, transparent 3px)' }
+            : { opacity: 0.5 }
           if (!eraseRange || seg.y2 <= eraseRange.y1 || seg.y1 >= eraseRange.y2) {
             return [(
               <div key={i} style={{
                 position: 'absolute', left: 0, width: '100%',
                 top: seg.y1, height: Math.max(2, seg.y2 - seg.y1),
-                backgroundColor: color, opacity: 0.5, borderRadius: 1,
+                backgroundColor: color, borderRadius: 1, ...staleStyle,
               }} />
             )]
           }
@@ -278,7 +291,7 @@ export class UnderstandingLineShapeUtil extends BaseBoxShapeUtil<any> {
             parts.push(<div key={`${i}-above`} style={{
               position: 'absolute', left: 0, width: '100%',
               top: seg.y1, height: eraseRange.y1 - seg.y1,
-              backgroundColor: color, opacity: 0.5, borderRadius: 1,
+              backgroundColor: color, borderRadius: 1, ...staleStyle,
             }} />)
           }
           const overlapY1 = Math.max(seg.y1, eraseRange.y1)
@@ -292,7 +305,7 @@ export class UnderstandingLineShapeUtil extends BaseBoxShapeUtil<any> {
             parts.push(<div key={`${i}-below`} style={{
               position: 'absolute', left: 0, width: '100%',
               top: eraseRange.y2, height: seg.y2 - eraseRange.y2,
-              backgroundColor: color, opacity: 0.5, borderRadius: 1,
+              backgroundColor: color, borderRadius: 1, ...staleStyle,
             }} />)
           }
           return parts

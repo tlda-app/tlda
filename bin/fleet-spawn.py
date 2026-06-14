@@ -697,7 +697,7 @@ def acquire_wake_lock(session):
 # truthy non-lock so the caller proceeds rather than treating it as "held".
 _SENTINEL_NO_LOCK = object()
 
-def dismiss_devchannels(session, timeout=30):
+def dismiss_devchannels(session, timeout=60):
     """Poll the pane and dismiss the dev-channels confirmation dialog (option 1)
     the moment it appears. Bounded by `timeout` so it can't loop forever — that
     was the original over-correction. Returns early once the ❯ prompt is up with
@@ -707,6 +707,16 @@ def dismiss_devchannels(session, timeout=30):
     Claude Code was slow the dialog appeared later and the agent hung. This polls
     instead, the same way the resume path (inject_prompt) already does."""
     deadline = time.time() + timeout
+    # Don't trust a "no dialog" pane in the first few seconds. The no-dialog
+    # early-return below keys off a ❯ with no 'Enter to confirm', but a ❯ can be
+    # on screen BEFORE the dev-channels dialog renders — Claude Code's early
+    # welcome/hint paint, or (on the respawn-pane path) stale content from the
+    # prior pane that hasn't repainted yet. Bailing then leaves the real dialog
+    # unattended and the agent hangs at boot (the intermittent drill-subject
+    # hang). The dialog reliably shows within the first seconds, so a short grace
+    # window before trusting a no-dialog prompt closes that race; the timeout
+    # bump (above) separately covers a dialog that appears late under spawn load.
+    no_dialog_ok_at = time.time() + 8
     while time.time() < deadline:
         try:
             r = subprocess.run(tmux("capture-pane", "-t", session, "-p"),
@@ -718,8 +728,12 @@ def dismiss_devchannels(session, timeout=30):
                     time.sleep(0.5)
                     subprocess.run(tmux("send-keys", "-t", session, "Enter"), capture_output=True, timeout=5)
                     return True
-                # ❯ prompt up and no dialog pending — nothing to dismiss.
-                if 'Enter to confirm' not in pane and any('❯' in l for l in pane.splitlines()[-3:]):
+                # ❯ prompt up and no dialog pending — nothing to dismiss. Only
+                # trust this after the grace window, so stale pre-repaint pane
+                # content can't trigger a premature bail (see above).
+                if (time.time() > no_dialog_ok_at
+                        and 'Enter to confirm' not in pane
+                        and any('❯' in l for l in pane.splitlines()[-3:])):
                     return False
         except Exception:
             pass
