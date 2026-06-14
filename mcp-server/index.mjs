@@ -357,10 +357,13 @@ function listSkills() {
 // are gated by their harness hook and never reach this path. Goose/DeepSeek
 // agents have no such hook, so we enforce the SAME qualifications rules here,
 // against the tlda server's existing /api/education/check endpoint. On a gated
-// call we hand the agent the required skill text inline and ask it to retry —
-// and we credit the owed skills so the retry proceeds (no sticky loop, which a
-// weaker model could spin on). The skill lands in the agent's context exactly
-// as Claude's Skill injection does.
+// call we BLOCK and name the owed skill(s), giving the agent the same two ways
+// forward a Claude has — read each one with `skill("<name>")` (which credits it),
+// or `dismiss_skill(skills:[…], reason:"…")` if it judges one irrelevant (which
+// records the dismissal + shows Skip the reason) — then retry the tool. The block
+// is sticky (no auto-credit): the server re-derives the owed set each call, so it
+// lifts only once the agent has read or dismissed every required skill, exactly
+// like the Claude gate.
 //
 // Fail-OPEN by design: if the endpoint is down/unreachable the gate returns null
 // so a tool is never broken by it. That is not a silent fallback — the gate is
@@ -405,14 +408,8 @@ async function eduCreditSkillRead(skillName) {
   }
 }
 
-function eduReadSkillText(skillName, agentTags) {
-  try {
-    const md = fs.readFileSync(path.join(SKILLS_DIR, skillName, 'SKILL.md'), 'utf8');
-    return filterSkillByHarness(md, agentTags);
-  } catch { return null; }
-}
-
-// Returns a blocked-tool result (skill text + retry instruction) or null to proceed.
+// Returns a blocked-tool result (named owed skills + read-or-dismiss instructions)
+// or null to proceed.
 async function educationGate(name, args) {
   const harness = process.env.FLEET_HARNESS || 'claude';
   if (harness === 'claude') return null;            // claude has its own hook; never double-gate
@@ -421,15 +418,22 @@ async function educationGate(name, args) {
   const input = { file: spec.file ? spec.file(args) : '', content: spec.content ? spec.content(args) : '' };
   const owed = await eduCheckOwedSkills(spec.tool, input);
   if (!owed.length) return null;
-  const agentTags = new Set([harness]);
-  const parts = [];
-  for (const skillName of owed) {
-    const text = eduReadSkillText(skillName, agentTags);
-    if (text) parts.push(`## Skill: ${skillName}\n\n${text}`);
-    await eduCreditSkillRead(skillName);            // credit so the retry proceeds (no loop)
-  }
-  const header = `⚠️ This action requires reading ${owed.length} skill(s) first — the same playbook(s) a Claude agent is force-gated into here. They are included below. Read them, then call \`${name}\` again to proceed.`;
-  return { content: [{ type: 'text', text: header + '\n\n' + parts.join('\n\n---\n\n') }], isError: true };
+  const list = owed.map(s => `\`${s}\``).join(', ');
+  const readCmds = owed.map(s => `skill("${s}")`).join(', ');
+  const dismissArg = owed.map(s => `"${s}"`).join(', ');
+  const text = [
+    `⚠️ Before \`${name}\`, you must clear ${owed.length} required skill(s): ${list}.`,
+    `These are the same playbook(s) a Claude agent is force-gated into here.`,
+    ``,
+    `Do ONE of these for each, then call \`${name}\` again:`,
+    `• Read it — ${readCmds}. Each returns the skill (filtered for you) and credits it.`,
+    `• Or, if it genuinely does not apply to what you are doing, decline it —`,
+    `  dismiss_skill(skills: [${dismissArg}], reason: "<why it does not apply>").`,
+    `  A reason is required and is shown to Skip.`,
+    ``,
+    `The block lifts once every required skill is read or dismissed.`,
+  ].join('\n');
+  return { content: [{ type: 'text', text }], isError: true };
 }
 
 // ---- @label cross-reference validation ----

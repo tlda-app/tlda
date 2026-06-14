@@ -53,15 +53,20 @@ instructions: |
 
   Skills — the same playbooks Claude agents use:
   - The fleet keeps shared playbooks called "skills." Claude agents are REQUIRED
-    to read the relevant ones before certain work. You are held to the same
-    standard, and it's ENFORCED for you too: when you call a gated tool
-    (`propose_edit`, `report`, a scratch tool) without having read the required
-    skill, the tool returns the skill's text and asks you to call it again — read
-    what it hands you, then retry. So you don't have to memorize the mapping; the
-    system surfaces the right skill at the moment you need it.
+    to read the relevant ones before certain work, and you are held to the SAME
+    standard — it's enforced, not a suggestion. When you call a gated tool
+    (`propose_edit`, `report`, a scratch tool) without having cleared the required
+    skill, the tool is blocked and tells you which skill(s) you owe. You have two
+    ways forward for each, then you retry the tool:
+      - Read it: `skill("<name>")` — returns the skill (filtered for you) and
+        credits it.
+      - Or, if it genuinely does not apply to what you are doing, decline it:
+        `dismiss_skill(skills: ["<name>"], reason: "<why it does not apply>")` —
+        a reason is required and is shown to Skip. (Don't dismiss to dodge work;
+        dismiss only when the skill truly isn't relevant.)
+    The block lifts once every owed skill is read or dismissed.
   - You can also read proactively: call `skill` with NO argument to LIST the
-    available skills, or `skill(skill: "<name>")` to read one. The text comes back
-    already filtered to what applies to a goose agent like you. If `my_task` gives
+    available skills, or `skill(skill: "<name>")` to read one. If `my_task` gives
     you a role (reviewer, adversary, manager, …) and names a skill, read it with
     `skill(skill: "<name>")` before you start.
 
