@@ -1,7 +1,7 @@
 import type { Editor } from 'tldraw'
 import { createShapeId } from 'tldraw'
 // @ts-ignore — vanilla JS module
-import { getHumanId } from '../fleet/fleet-data.mjs'
+import { getHumanId, getDeviceId } from '../fleet/fleet-data.mjs'
 // @ts-ignore — vanilla JS module
 import { baseName } from '../../shared/lineage-name.mjs'
 import { getPref } from '../preferences'
@@ -30,16 +30,24 @@ export const FLEET_HUD_ANCHOR_ID = 'shape:fleet-hud-anchor' as const
 
 export function getMyAnchorId(): string {
   const uid = getHumanId()
-  return uid ? `shape:fleet-hud-anchor--${uid.replace('fleet:', '')}` : FLEET_HUD_ANCHOR_ID
+  if (!uid) return FLEET_HUD_ANCHOR_ID
+  // Per-(identity, device): the anchor stores this device's pan/camera offsets,
+  // so the same identity on two devices doesn't share — and fight over — one
+  // anchor.
+  const dev = getDeviceId()
+  return `shape:fleet-hud-anchor--${uid.replace('fleet:', '')}--${dev}`
 }
 
 /**
- * A fleet shape belongs to the current user iff its userId matches.
- * Shapes with an empty/missing userId belong to NO ONE — they are orphans
- * created before identity resolved (or by a session with no identity), and
- * must never be shown to or claimed by anyone. Treating empty userId as
- * "global/legacy" is what let orphan shapes pollute every user's layout while
- * no layout-switch would clean them up.
+ * A fleet shape belongs to the current session iff BOTH its userId (identity)
+ * and deviceId match this browser. The layout is keyed by (identity, device):
+ * the same human on two devices (Mac + iPad) gets two distinct layouts, and
+ * each session only renders/manages its own — so two devices never stack on or
+ * fight over one shared set of shapes.
+ *
+ * Shapes with an empty/missing userId OR deviceId belong to NO ONE — orphans
+ * created before identity resolved (or by a pre-(identity,device) session) —
+ * and must never be shown to or claimed by anyone.
  *
  * Single source of truth for fleet-shape ownership — both the HUD (what to
  * render) and createFleetLayout (what to delete/replace) use it, so the two
@@ -48,7 +56,52 @@ export function getMyAnchorId(): string {
 export function isMyFleetShape(s: any): boolean {
   if (!FLEET_SHAPE_TYPES.has(s.type as string)) return false
   const uid = s.props?.userId
-  return !!uid && uid === getHumanId()
+  const dev = s.props?.deviceId
+  return !!uid && uid === getHumanId() && !!dev && dev === getDeviceId()
+}
+
+/**
+ * One-time migration to the (identity, device) key. Fleet shapes created before
+ * this scheme have my userId but NO deviceId, so the device-scoped
+ * isMyFleetShape would orphan them — wiping a user's hand-built layout (filters,
+ * positions) on first load after the upgrade. Claim them for THIS device by
+ * stamping deviceId, preserving every other prop. Also carry the legacy HUD
+ * anchor's pan/camera meta onto the per-device anchor id so the HUD doesn't
+ * visibly shift. Run once when identity resolves; history-ignored (not an undo
+ * step). This is a real migration, NOT an "empty deviceId means mine" shim —
+ * after adoption the shapes carry a concrete deviceId, so a second device sees
+ * them as not-its and builds its own layout (no cross-device stacking).
+ */
+export function adoptLegacyFleetShapes(editor: Editor): number {
+  const myId = getHumanId()
+  const myDevice = getDeviceId()
+  if (!myId || !myDevice) return 0
+  const legacy = editor.getCurrentPageShapes().filter(
+    (s: any) => FLEET_SHAPE_TYPES.has(s.type as string) && s.props?.userId === myId && !s.props?.deviceId,
+  )
+  const legacyAnchorId = `shape:fleet-hud-anchor--${myId.replace('fleet:', '')}`
+  const newAnchorId = getMyAnchorId()
+  const legacyAnchor = legacyAnchorId !== newAnchorId ? (editor.getShape(legacyAnchorId as any) as any) : null
+  if (legacy.length === 0 && !legacyAnchor) return 0
+
+  editor.run(() => {
+    for (const s of legacy) {
+      editor.updateShape({ id: s.id, type: s.type, props: { ...(s as any).props, deviceId: myDevice } } as any)
+    }
+    if (legacyAnchor) {
+      const m = legacyAnchor.meta || {}
+      if (!editor.getShape(newAnchorId as any)) {
+        editor.createShape({
+          id: newAnchorId as any, type: 'geo', x: 0, y: 0, opacity: 0, isLocked: true,
+          props: { w: 1, h: 1, geo: 'rectangle' as const },
+          meta: { panOffset: m.panOffset, cameraY: m.cameraY },
+        })
+      }
+      if (legacyAnchor.isLocked) editor.updateShape({ id: legacyAnchorId as any, type: 'geo', isLocked: false })
+      editor.deleteShape(legacyAnchorId as any)
+    }
+  }, { history: 'ignore' })
+  return legacy.length
 }
 
 /** Create a fleet shape with ownership stamped. Returns the shape id, or null
@@ -63,6 +116,7 @@ export function createFleetShape(
 ): string | null {
   const myId = getHumanId()
   if (!myId) return null
+  const myDevice = getDeviceId()
   const id = createShapeId()
   // Isolate this creation as its own undo step. createFleetShape is THE choke
   // point for fleet-shape creation, and it can run on the main editor directly
@@ -77,7 +131,7 @@ export function createFleetShape(
     type: type as any,
     x,
     y,
-    props: { ...props, userId: myId },
+    props: { ...props, userId: myId, deviceId: myDevice },
   })
   return id as unknown as string
 }
@@ -150,26 +204,53 @@ export function forceDeleteShapes(editor: Editor, ids: string[]) {
  */
 let _layoutInFlight = false
 
-/** Deterministic shape ID for a fleet layout slot. Same user + same slot
- *  always produces the same ID, so concurrent creates are idempotent. */
-function slotId(userId: string, slot: string) {
-  return createShapeId(`fleet-${slot}-${userId.replace('fleet:', '')}`)
+/** Deterministic shape ID for a fleet layout slot. Same (user, device, slot)
+ *  always produces the same ID, so concurrent creates are idempotent AND two
+ *  devices of the same identity get distinct IDs (no shared/contested shapes). */
+function slotId(userId: string, deviceId: string, slot: string) {
+  return createShapeId(`fleet-${slot}-${userId.replace('fleet:', '')}-${deviceId}`)
+}
+
+/** Deterministic canvas offset for an (identity, device) layout, so no two
+ *  sessions' shapes stack on the same spot. The HUD camera follows my own
+ *  shapes' bounds (getFleetBounds filters to isMyFleetShape), so shifting my
+ *  shapes by a constant just moves the underlying canvas position — my HUD view
+ *  is unchanged. Nobody looks at the raw canvas shapes; this only keeps foreign
+ *  layouts from physically overlapping.
+ *
+ *  The offset tiles into a 2D grid (columns extend left into the margin, rows
+ *  extend down) keyed on a hash of (identity, device). The grid is large (32
+ *  rows × 16 cols = 512 cells) so a collision — two distinct (identity,device)
+ *  pairs landing on the same cell — is rare for realistic session counts. A
+ *  collision is only cosmetic regardless: ownership (isMyFleetShape) is an exact
+ *  (identity,device) match, so even fully-overlapping foreign shapes never enter
+ *  a viewer's HUD or intercept their filtering. */
+function layoutOffset(userId: string, deviceId: string, bandW: number, bandH: number): { dx: number; dy: number } {
+  const key = `${userId}|${deviceId}`
+  let hash = 0
+  for (let i = 0; i < key.length; i++) hash = ((hash << 5) - hash + key.charCodeAt(i)) | 0
+  const h = Math.abs(hash)
+  const row = h % 32
+  const col = (h >> 5) % 16
+  return { dx: -col * (bandW + 100), dy: row * (bandH + 100) }
 }
 
 export function createFleetLayout(editor: Editor, agents: any[], variant: '2col' | '3col' | 'wide' | 'grid' | 'touch' = '3col') {
   const myId = getHumanId()
   if (!myId) return
+  const myDevice = getDeviceId()
+  if (!myDevice) return
   if (_layoutInFlight) return
   _layoutInFlight = true
 
   try {
-    _createFleetLayoutInner(editor, agents, variant, myId)
+    _createFleetLayoutInner(editor, agents, variant, myId, myDevice)
   } finally {
     _layoutInFlight = false
   }
 }
 
-function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string, myId: string) {
+function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string, myId: string, myDevice: string) {
   const existing = editor.getCurrentPageShapes().filter(isMyFleetShape)
   const existingChatFilters = existing
     .filter(s => (s.type as string) === 'fleet-chat')
@@ -267,37 +348,46 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
       docMaxRight = anchorX + leftContentW
     }
 
+    // Push this (identity, device)'s whole layout to its own canvas slot so two
+    // sessions never stack on the same spot. dx is 0 (layouts share the margin
+    // column); dy bands them vertically. My HUD view is unaffected — its camera
+    // follows my own shapes' bounds — so this only separates the underlying
+    // canvas shapes, which is what keeps a foreign layout from overlapping mine.
+    const { dx, dy } = layoutOffset(myId, myDevice, leftContentW + rightW, totalH)
+    anchorX += dx
+    anchorY += dy
+
     // Touch layout: a single container (inbox strip + nested chat), one column.
     // The container auto-creates its own fleet-chat child, so no other shapes.
     if (variant === 'touch') {
       const touchW = chatW3
       editor.createShapes([{
-        id: slotId(myId, 'touch-inbox'),
+        id: slotId(myId, myDevice, 'touch-inbox'),
         type: 'fleet-touch-inbox' as any,
         x: anchorX + leftW + gap, y: anchorY,
         isLocked: false,
-        props: { w: touchW, h: totalH, userId: myId },
+        props: { w: touchW, h: totalH, userId: myId, deviceId: myDevice },
       }])
       return
     }
 
     const shapes: any[] = [
       {
-        id: slotId(myId, 'inbox'),
+        id: slotId(myId, myDevice, 'inbox'),
         type: 'fleet-inbox' as any,
         x: anchorX - leftW - gap, y: anchorY,
         isLocked: false,
         props: { w: leftW, h: agentsH + gap + searchH },
       },
       {
-        id: slotId(myId, 'agents'),
+        id: slotId(myId, myDevice, 'agents'),
         type: 'fleet-agents' as any,
         x: anchorX, y: anchorY,
         isLocked: false,
         props: { w: leftW, h: agentsH },
       },
       {
-        id: slotId(myId, 'search'),
+        id: slotId(myId, myDevice, 'search'),
         type: 'fleet-search' as any,
         x: anchorX, y: anchorY + agentsH + gap,
         isLocked: false,
@@ -308,14 +398,14 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
       const chatWide = Math.round(chatW3 * 2)
       shapes.push(
         {
-          id: slotId(myId, 'chat-0'),
+          id: slotId(myId, myDevice, 'chat-0'),
           type: 'fleet-chat' as any,
           x: anchorX + leftW + gap, y: anchorY,
           isLocked: false,
           props: { w: chatWide, h: rightChatH, filter: filter1 },
         },
         {
-          id: slotId(myId, 'docview'),
+          id: slotId(myId, myDevice, 'docview'),
           type: 'fleet-docview' as any,
           x: anchorX + leftW + gap, y: anchorY + rightChatH + gap,
           isLocked: false,
@@ -329,35 +419,35 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
       const gridDocviewH = gridChatH - gap - gridRightChatH
       shapes.push(
         {
-          id: slotId(myId, 'chat-0'),
+          id: slotId(myId, myDevice, 'chat-0'),
           type: 'fleet-chat' as any,
           x: anchorX + leftW + gap, y: anchorY,
           isLocked: false,
           props: { w: gridChatW, h: gridChatH, filter: filter1 },
         },
         {
-          id: slotId(myId, 'chat-1'),
+          id: slotId(myId, myDevice, 'chat-1'),
           type: 'fleet-chat' as any,
           x: anchorX + leftW + gap + gridChatW + gap, y: anchorY,
           isLocked: false,
           props: { w: gridChatW, h: gridChatH, filter: filter2 },
         },
         {
-          id: slotId(myId, 'chat-2'),
+          id: slotId(myId, myDevice, 'chat-2'),
           type: 'fleet-chat' as any,
           x: anchorX + leftW + gap, y: anchorY + gridChatH + gap,
           isLocked: false,
           props: { w: gridChatW, h: gridChatH, filter: filter3 },
         },
         {
-          id: slotId(myId, 'chat-3'),
+          id: slotId(myId, myDevice, 'chat-3'),
           type: 'fleet-chat' as any,
           x: anchorX + leftW + gap + gridChatW + gap, y: anchorY + gridChatH + gap,
           isLocked: false,
           props: { w: gridChatW, h: gridRightChatH, filter: filter4 },
         },
         {
-          id: slotId(myId, 'docview'),
+          id: slotId(myId, myDevice, 'docview'),
           type: 'fleet-docview' as any,
           x: anchorX + leftW + gap + gridChatW + gap, y: anchorY + gridChatH + gap + gridRightChatH + gap,
           isLocked: false,
@@ -367,21 +457,21 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
     } else if (variant === '3col') {
       shapes.push(
         {
-          id: slotId(myId, 'chat-0'),
+          id: slotId(myId, myDevice, 'chat-0'),
           type: 'fleet-chat' as any,
           x: anchorX + leftW + gap, y: anchorY,
           isLocked: false,
           props: { w: chatW3, h: totalH, filter: filter1 },
         },
         {
-          id: slotId(myId, 'chat-1'),
+          id: slotId(myId, myDevice, 'chat-1'),
           type: 'fleet-chat' as any,
           x: anchorX + leftW + gap + chatW3 + gap, y: anchorY,
           isLocked: false,
           props: { w: chatW3, h: rightChatH, filter: filter2 },
         },
         {
-          id: slotId(myId, 'docview'),
+          id: slotId(myId, myDevice, 'docview'),
           type: 'fleet-docview' as any,
           x: anchorX + leftW + gap + chatW3 + gap, y: anchorY + rightChatH + gap,
           isLocked: false,
@@ -397,21 +487,21 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
 
       shapes.push(
         {
-          id: slotId(myId, 'chat-0'),
+          id: slotId(myId, myDevice, 'chat-0'),
           type: 'fleet-chat' as any,
           x: anchorX + leftW + gap, y: anchorY,
           isLocked: false,
           props: { w: chatWide, h: rightChatH, filter: filter1 },
         },
         {
-          id: slotId(myId, 'docview'),
+          id: slotId(myId, myDevice, 'docview'),
           type: 'fleet-docview' as any,
           x: anchorX + leftW + gap, y: anchorY + rightChatH + gap,
           isLocked: false,
           props: { w: chatWide, h: docviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '' },
         },
         {
-          id: slotId(myId, 'chat-1'),
+          id: slotId(myId, myDevice, 'chat-1'),
           type: 'fleet-chat' as any,
           x: rightChatX, y: anchorY,
           isLocked: false,
@@ -419,7 +509,7 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
         },
       )
     }
-    for (const s of shapes) s.props.userId = myId
+    for (const s of shapes) { s.props.userId = myId; s.props.deviceId = myDevice }
     editor.createShapes(shapes)
   })
 

@@ -985,10 +985,11 @@ export class FleetChatShapeUtil extends BaseBoxShapeUtil<any> {
     h: T.number,
     filter: T.arrayOf(T.arrayOf(T.arrayOf(T.string))),  // DNF of [role, label] tuples
     userId: T.optional(T.string),
+    deviceId: T.optional(T.string),
   }
 
   getDefaultProps() {
-    return { w: DEFAULT_W, h: DEFAULT_H, filter: [], userId: '' }
+    return { w: DEFAULT_W, h: DEFAULT_H, filter: [], userId: '', deviceId: '' }
   }
 
   override canEdit = () => false

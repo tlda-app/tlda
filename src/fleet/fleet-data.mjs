@@ -167,6 +167,26 @@ export function getEvents() { return _store.all() }
 export function getActivity(agentId) { return _store.all().filter(e => e._activity && e.agent === agentId) }
 export function getHumanId() { return _humanId }
 export function getHumanName() { return _humanName }
+
+// A stable per-browser id, generated once and persisted. This is the "device"
+// half of the (identity, device) fleet-layout key: the same human identity open
+// on two devices (Mac + iPad) gets two distinct device ids, so each device owns
+// and lays out its own fleet shapes instead of fighting over one shared set.
+// Purely local — never sent to the server as an identity, only stamped on shapes.
+let _deviceId = null
+export function getDeviceId() {
+  if (_deviceId) return _deviceId
+  if (typeof localStorage === 'undefined') return ''
+  let id = localStorage.getItem('tlda-device-id')
+  if (!id) {
+    id = (typeof crypto !== 'undefined' && crypto.randomUUID)
+      ? crypto.randomUUID().slice(0, 8)
+      : Math.random().toString(36).slice(2, 10)
+    localStorage.setItem('tlda-device-id', id)
+  }
+  _deviceId = id
+  return id
+}
 export function needsIdentity() { return !_humanId && _identifyPending }
 
 /** Log in as an existing agent. Used by returning users and ?name= auto-login. */

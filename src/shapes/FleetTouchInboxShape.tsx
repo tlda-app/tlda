@@ -23,7 +23,7 @@ import { useFleetAgents, useFleetEvents, useFleetUnreadCounts, useFleetIdentity 
 // @ts-ignore — vanilla JS module
 import { timeShort } from '../fleet/chat-render.mjs'
 // @ts-ignore — vanilla JS module
-import { getHumanId } from '../fleet/fleet-data.mjs'
+import { getHumanId, getDeviceId } from '../fleet/fleet-data.mjs'
 import { useIsInViewport } from './useIsInViewport'
 import './fleet-inbox.css'
 import './fleet-touch-inbox.css'
@@ -80,10 +80,11 @@ export class FleetTouchInboxShapeUtil extends BaseBoxShapeUtil<any> {
     w: T.number,
     h: T.number,
     userId: T.optional(T.string),
+    deviceId: T.optional(T.string),
   }
 
   getDefaultProps() {
-    return { w: DEFAULT_W, h: DEFAULT_H, userId: '' }
+    return { w: DEFAULT_W, h: DEFAULT_H, userId: '', deviceId: '' }
   }
 
   override canEdit = () => false
@@ -193,12 +194,14 @@ function FleetTouchInboxInner({ shape }: { shape: any }) {
     if (existing) return
     const uid = getHumanId()
     if (!uid) return
+    const dev = getDeviceId()
+    if (!dev) return
     editor.createShape({
       type: 'fleet-chat' as any,
       parentId: shape.id,
       x: 0,
       y: STRIP_H,
-      props: { w: myW, h: Math.max(80, myH - STRIP_H), filter: [], userId: uid },
+      props: { w: myW, h: Math.max(80, myH - STRIP_H), filter: [], userId: uid, deviceId: dev },
     })
   }, [editor, shape.id, myW, myH])
 

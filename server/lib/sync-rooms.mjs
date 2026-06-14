@@ -170,6 +170,7 @@ const customShapeSchemas = {
       h: T.number,
       filter: T.arrayOf(T.arrayOf(T.arrayOf(T.string))),  // DNF of [role, label] tuples
       userId: T.optional(T.string),
+      deviceId: T.optional(T.string),
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.fleet-chat',
@@ -181,6 +182,7 @@ const customShapeSchemas = {
       w: T.number,
       h: T.number,
       userId: T.optional(T.string),
+      deviceId: T.optional(T.string),
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.fleet-agents',
@@ -206,6 +208,7 @@ const customShapeSchemas = {
       w: T.number,
       h: T.number,
       userId: T.optional(T.string),
+      deviceId: T.optional(T.string),
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.fleet-search',
@@ -217,6 +220,7 @@ const customShapeSchemas = {
       w: T.number,
       h: T.number,
       userId: T.optional(T.string),
+      deviceId: T.optional(T.string),
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.fleet-inbox',
@@ -228,6 +232,7 @@ const customShapeSchemas = {
       w: T.number,
       h: T.number,
       userId: T.optional(T.string),
+      deviceId: T.optional(T.string),
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.fleet-touch-inbox',
@@ -246,6 +251,7 @@ const customShapeSchemas = {
       title: T.string,
       sources: T.optional(T.string),
       userId: T.optional(T.string),
+      deviceId: T.optional(T.string),
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.fleet-docview',
@@ -342,6 +348,7 @@ const customShapeSchemas = {
       w: T.number,
       h: T.number,
       userId: T.optional(T.string),
+      deviceId: T.optional(T.string),
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.fleet-reaper',

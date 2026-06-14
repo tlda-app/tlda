@@ -296,10 +296,11 @@ export class FleetAgentsShapeUtil extends BaseBoxShapeUtil<any> {
     w: T.number,
     h: T.number,
     userId: T.optional(T.string),
+    deviceId: T.optional(T.string),
   }
 
   getDefaultProps() {
-    return { w: DEFAULT_W, h: DEFAULT_H, userId: '' }
+    return { w: DEFAULT_W, h: DEFAULT_H, userId: '', deviceId: '' }
   }
 
   override canEdit = () => false

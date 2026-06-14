@@ -24,12 +24,13 @@ const ITEM_W = 40          // px width of each preset tile
 const ITEM_H = 22          // px height
 const ITEM_GAP = 4         // px between tiles
 
-type LayoutId = '3col' | '2col' | 'wide' | 'grid'
+type LayoutId = '3col' | '2col' | 'wide' | 'grid' | 'touch'
 const LAYOUT_PRESETS: { id: LayoutId; title: string }[] = [
   { id: '3col', title: 'Three-column: agents + search | chat | chat + docview' },
   { id: '2col', title: 'Two-column: left margin + right margin chat' },
   { id: 'wide', title: 'Wide: agents + search | one large chat' },
   { id: 'grid', title: 'Grid: agents + search | 2×2 chat grid' },
+  { id: 'touch', title: 'Touch: single-column inbox + chat (iPad)' },
 ]
 
 /** Mini SVG diagram showing the layout arrangement */
@@ -100,6 +101,14 @@ function LayoutIcon({ id, size = 20 }: { id: LayoutId; size?: number }) {
         <rect x={s*0.38+g} y={0} width={s*0.22-g} height={s*0.5-g/2} rx={r} fill={ch} />
         <rect x={s*0.16+g} y={s*0.5+g/2} width={s*0.22-g} height={s*0.5-g/2} rx={r} fill={ch} />
         <rect x={s*0.38+g} y={s*0.5+g/2} width={s*0.22-g} height={s*0.5-g/2} rx={r} fill={ch} />
+        {docEl()}
+      </>
+    ),
+    'touch': (
+      // [single column: inbox strip + chat] | DOC
+      <>
+        <rect x={0} y={0} width={s*0.5} height={s*0.16} rx={r} fill={sr} />
+        <rect x={0} y={s*0.16+g} width={s*0.5} height={s*0.84-g} rx={r} fill={ch} />
         {docEl()}
       </>
     ),

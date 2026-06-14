@@ -14,7 +14,7 @@ import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { useFleetAgents, useFleetIdentity } from '../fleet-data-adapter'
 // @ts-ignore — vanilla JS module
 import { getHumanId } from '../fleet/fleet-data.mjs'
-import { getMyAnchorId, isMyFleetShape, FLEET_SHAPE_TYPES } from '../shapes/fleet-utils'
+import { getMyAnchorId, isMyFleetShape, FLEET_SHAPE_TYPES, adoptLegacyFleetShapes } from '../shapes/fleet-utils'
 import { SuggestionTip } from '../shapes/FleetChatShape'
 import { log } from '../logger'
 import './FleetHUD.css'
@@ -178,7 +178,12 @@ export function FleetHUD({
   const [expanded, setExpanded] = useState(() => localStorage.getItem('fleet-hud-expanded') === '1')
   const [fleetBounds, setFleetBounds] = useState<ClipBounds | null>(() => identityId ? getFleetBounds(mainEditor) : null)
   useEffect(() => {
-    if (identityId) setFleetBounds(getFleetBounds(mainEditor))
+    if (!identityId) return
+    // Claim any pre-(identity,device) fleet shapes for this device BEFORE
+    // computing bounds, else the device-scoped isMyFleetShape would orphan a
+    // user's existing hand-built layout on first load after the upgrade.
+    adoptLegacyFleetShapes(mainEditor)
+    setFleetBounds(getFleetBounds(mainEditor))
   }, [identityId, mainEditor])
   // Camera tick used to recompute canvas→screen for the render on camera change
   const [cameraTick, setCameraTick] = useState(0)
@@ -484,7 +489,11 @@ export function FleetHUD({
       if (!FLEET_SHAPE_TYPES.has(type)) return
       const shapeId = shapeEl.getAttribute('data-shape-id')
       if (!shapeId) return
-      const fleetSorted = mainEditor.getCurrentPageShapesSorted().filter(s => FLEET_SHAPE_TYPES.has(s.type))
+      // Only ever raise MY OWN fleet shapes. Scoping by type alone would let a
+      // foreign (identity, device)'s panel — present in the shared store but not
+      // in my HUD — be the frontmost and get raised into my interaction, which
+      // is the click/filter hijack this fix exists to kill.
+      const fleetSorted = mainEditor.getCurrentPageShapesSorted().filter(isMyFleetShape)
       const frontmost = fleetSorted[fleetSorted.length - 1]
       if (frontmost && frontmost.id === shapeId) return
       // Raising on tap is a focus/compositing affordance, not a document edit —
