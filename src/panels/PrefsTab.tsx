@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect } from 'react'
 import { getPref, setPref, subscribePref } from '../preferences'
 import { NOTE_COLORS } from '../shapes/MathNoteShape'
 import { CurveEditor } from '../components/CurveEditor'
-import { DarkModeToggle, VimModeToggle } from './TocTab'
+import { SchemeToggle, ThemeFamilyToggle, VimModeToggle } from './TocTab'
 
 const ALL_SOURCES = ['ref', 'proof', 'errors', 'shared'] as const
 
@@ -60,7 +60,8 @@ export function PrefsTab() {
     <div className="prefs-tab">
       <div className="prefs-section">
         <div className="prefs-section-label">Theme</div>
-        <DarkModeToggle />
+        <SchemeToggle />
+        <ThemeFamilyToggle />
       </div>
 
       <div className="prefs-section">

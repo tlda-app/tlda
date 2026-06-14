@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo, useContext, useSyncExternalStore, type DragEvent as ReactDragEvent } from 'react'
 import { useBook } from '../BookContext'
-import { useEditor, useValue } from 'tldraw'
+import { useEditor } from 'tldraw'
 import type { TLShape } from 'tldraw'
 import { loadLookup, clearLookupCache, loadHtmlSearch, loadHtmlToc, type LookupEntry, type HtmlTocEntry, type HtmlSearchEntry } from '../synctexLookup'
 import { pdfToCanvas } from '../synctexAnchor'
@@ -8,6 +8,11 @@ import { DocContext, PanelContext } from '../PanelContext'
 import { getLiveUrl, onReloadSignal } from '../useYjsSync'
 import { canPresent, subscribeCanPresent } from '../authToken'
 import { getVimMode, toggleVimMode, subscribeVimMode } from '../vimMode'
+import {
+  type ThemeFamily, type ColorScheme,
+  getStoredFamily, setStoredFamily, getStoredScheme, setStoredScheme,
+  applyThemeClass,
+} from '../hooks/useFleetTheme'
 import { getCameraLinked, toggleCameraLinked, subscribeCameraLinked } from '../cameraLink'
 import { getSemanticHighlight, toggleSemanticHighlight, subscribeSemanticHighlight } from '../semanticHighlight'
 import { navigateTo, navigateToPage, navigateToAnchor, parseHeadings, renderTocTitle, stripTex, getShapeText, type TocLevel, type TocEntry } from './helpers'
@@ -660,56 +665,63 @@ export function SemanticHighlightToggle() {
   )
 }
 
-type ThemeStep = {
-  theme: 'warm' | 'fog-dark' | 'fog-light' | null
-  scheme: 'system' | 'dark' | 'light'
-  label: string
-  icon: string
-  bodyClass?: string
-}
-
-const THEME_STEPS: ThemeStep[] = [
-  { theme: null,        scheme: 'dark',   label: 'Dark',      icon: '☾' },
-  { theme: 'fog-dark',  scheme: 'dark',   label: 'Fog Dark',  icon: '\u{1F30A}', bodyClass: 'fog-dark-mode' },
-  { theme: null,        scheme: 'light',  label: 'Light',     icon: '☀' },
-  { theme: null,        scheme: 'system', label: 'System',    icon: '◑' },
-  { theme: 'fog-light', scheme: 'light',  label: 'Fog Light', icon: '\u{1F9CA}', bodyClass: 'fog-light-mode' },
-  { theme: 'warm',      scheme: 'light',  label: 'Warm',      icon: '☀︎',        bodyClass: 'warm-mode' },
+const SCHEME_STEPS: { value: ColorScheme; icon: string; label: string }[] = [
+  { value: 'dark',   icon: '☾', label: 'Dark' },
+  { value: 'light',  icon: '☀', label: 'Light' },
+  { value: 'system', icon: '◑', label: 'System' },
 ]
 
-const BODY_CLASSES = THEME_STEPS.map(s => s.bodyClass).filter(Boolean) as string[]
+const FAMILY_STEPS: { value: ThemeFamily; icon: string; label: string }[] = [
+  { value: null,   icon: '○',      label: 'Default' },
+  { value: 'fog',  icon: '\u{1F30A}', label: 'Fog' },
+  { value: 'warm', icon: '☀︎',     label: 'Warm' },
+]
 
-export function DarkModeToggle() {
+export function SchemeToggle() {
   const editor = useEditor()
-  const scheme = useValue('colorScheme', () => editor.user.getUserPreferences().colorScheme || 'system', [editor])
-  const [theme, setTheme] = useState<'warm' | 'fog-dark' | 'fog-light' | null>(() => {
-    const stored = localStorage.getItem('tlda-theme')
-    if (stored === 'warm' || stored === 'fog-dark' || stored === 'fog-light') return stored
-    if (localStorage.getItem('tlda-warm-mode') === 'true') return 'warm'
-    return null
-  })
+  const [scheme, setSchemeState] = useState<ColorScheme>(getStoredScheme)
 
-  const cur = THEME_STEPS.findIndex(s => s.theme === theme && s.scheme === scheme)
-  const step = cur >= 0 ? THEME_STEPS[cur] : THEME_STEPS[0]
-
-  const applyStep = useCallback((s: ThemeStep) => {
-    for (const cls of BODY_CLASSES) document.body.classList.remove(cls)
-    if (s.bodyClass) document.body.classList.add(s.bodyClass)
-    localStorage.setItem('tlda-theme', s.theme || '')
-    localStorage.setItem('tlda-warm-mode', s.theme === 'warm' ? 'true' : 'false')
-    setTheme(s.theme)
-    editor.user.updateUserPreferences({ colorScheme: s.scheme })
-  }, [editor])
+  const cur = Math.max(0, SCHEME_STEPS.findIndex(s => s.value === scheme))
+  const step = SCHEME_STEPS[cur]
 
   const cycle = useCallback(() => {
-    applyStep(THEME_STEPS[(cur + 1) % THEME_STEPS.length])
-  }, [cur, applyStep])
+    const next = SCHEME_STEPS[(cur + 1) % SCHEME_STEPS.length]
+    setStoredScheme(next.value)
+    setSchemeState(next.value)
+    applyThemeClass(getStoredFamily(), next.value)
+    editor.user.updateUserPreferences({ colorScheme: next.value })
+  }, [cur, editor])
 
   return (
     <div className="toc-diff-hint" onClick={cycle}>
       <span className="toc-toggle-icon">{step.icon}</span> {step.label}
     </div>
   )
+}
+
+export function ThemeFamilyToggle() {
+  const [family, setFamilyState] = useState<ThemeFamily>(getStoredFamily)
+
+  const cur = Math.max(0, FAMILY_STEPS.findIndex(s => s.value === family))
+  const step = FAMILY_STEPS[cur]
+
+  const cycle = useCallback(() => {
+    const next = FAMILY_STEPS[(cur + 1) % FAMILY_STEPS.length]
+    setStoredFamily(next.value)
+    setFamilyState(next.value)
+    applyThemeClass(next.value, getStoredScheme())
+  }, [cur])
+
+  return (
+    <div className="toc-diff-hint" onClick={cycle}>
+      <span className="toc-toggle-icon">{step.icon}</span> {step.label}
+    </div>
+  )
+}
+
+/** @deprecated Use SchemeToggle + ThemeFamilyToggle */
+export function DarkModeToggle() {
+  return null
 }
 
 const ZONE_WIDTH_KEY = 'zone-width'

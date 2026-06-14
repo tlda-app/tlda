@@ -106,7 +106,7 @@ import { useDiffToggle } from './hooks/useDiffToggle'
 import { useProofToggle } from './hooks/useProofToggle'
 import { useYjsSignals } from './hooks/useYjsSignals'
 import { useSyncedPlayback } from './hooks/useSyncedPlayback'
-import { useFleetTheme, THEME_FAMILY } from './hooks/useFleetTheme'
+import { useFleetTheme, getStoredScheme } from './hooks/useFleetTheme'
 import { useTimelineOverlay } from './hooks/useTimelineOverlay'
 import { useDocAutoOpen } from './hooks/useDocAutoOpen'
 import { useFootControl } from './hooks/useFootControl'
@@ -1238,10 +1238,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           editorRef.current = editor
           setEditorMounted(v => v + 1)
 
-          const storedTheme = localStorage.getItem('tlda-theme')
-          if (storedTheme && THEME_FAMILY[storedTheme]) {
-            editor.user.updateUserPreferences({ colorScheme: THEME_FAMILY[storedTheme] })
-          }
+          editor.user.updateUserPreferences({ colorScheme: getStoredScheme() })
 
           // Patch isInAny NARROWLY for SelectionFg only.
           // tldraw's SelectionFg checks isInAny("select.idle","select.pointing_selection",
