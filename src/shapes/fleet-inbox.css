@@ -174,21 +174,25 @@
   display: flex;
   flex-direction: column;
 }
+/* The scroll window keeps a floor height so a short conversation can't collapse
+   it — the text field always sits BELOW it (adds space), never occluding it. */
 .fleet-inbox-inline-body {
   overflow-y: auto;
   flex: 1;
-  min-height: 0;
+  min-height: 90px;
   padding: 2px 0;
 }
 .fleet-inbox-inline-composer {
   flex-shrink: 0;
-  padding: 4px 4px 6px;
+  padding: 4px 4px 8px;
 }
-/* Tiny, faint bottom-corner controls — same size as a little ×, undistracting. */
+/* Tiny, faint bottom-corner controls — same size as a little ×, undistracting,
+   but with a generous transparent hit zone (padding) so they're easy to hit. */
 .fleet-inbox-inline-reset,
 .fleet-inbox-inline-close {
   position: absolute;
-  bottom: 2px;
+  bottom: -3px;
+  padding: 7px;
   font-size: 11px;
   line-height: 1;
   opacity: 0.18;
@@ -198,8 +202,8 @@
   -webkit-user-select: none;
   z-index: 2;
 }
-.fleet-inbox-inline-reset { left: 5px; }
-.fleet-inbox-inline-close { right: 5px; }
+.fleet-inbox-inline-reset { left: -2px; }
+.fleet-inbox-inline-close { right: -2px; }
 .fleet-inbox-inline-chat:hover .fleet-inbox-inline-reset,
 .fleet-inbox-inline-chat:hover .fleet-inbox-inline-close { opacity: 0.4; }
 .fleet-inbox-inline-reset:hover,
