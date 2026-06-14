@@ -20,8 +20,9 @@ import {
 } from 'tldraw'
 import { agentDisplayName } from './fleet-utils'
 import { usePillDrag } from './FleetAgentsShape'
+import { ChatComposer } from './ChatComposer'
 import { useState, useCallback, useRef, useMemo, useEffect, memo } from 'react'
-import { useFleetAgents, useFleetTasks, useFleetEvents, useFleetUnreadCounts, useFleetIdentity } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetTasks, useFleetEvents, useFleetUnreadCounts, useFleetIdentity, sendMessage, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
 import katex from 'katex'
 import { getActiveMacros } from '../katexMacros'
 import MarkdownIt from 'markdown-it'
@@ -330,7 +331,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
 
         {/* Body */}
         {activeThread ? (
-          <ConversationView thread={activeThread} ctx={ctx} myId={myId} onStartDrag={startDrag} />
+          <ConversationView thread={activeThread} ctx={ctx} myId={myId} myName={myName} onStartDrag={startDrag} />
         ) : (
           <ThreadList threads={threads} onOpen={openThread} onStartDrag={startDrag} />
         )}
@@ -389,7 +390,7 @@ function ThreadList({ threads, onOpen, onStartDrag }: { threads: Thread[]; onOpe
   )
 }
 
-function ConversationView({ thread, ctx, myId, onStartDrag }: { thread: Thread; ctx: any; myId: string | null; onStartDrag: StartDrag }) {
+function ConversationView({ thread, ctx, myId, myName, onStartDrag }: { thread: Thread; ctx: any; myId: string | null; myName: string; onStartDrag: StartDrag }) {
   const scrollRef = useRef<HTMLDivElement>(null)
   useWheelScroll(scrollRef)
   // Which message has its inline message-shaped chat open (one at a time).
@@ -426,6 +427,7 @@ function ConversationView({ thread, ctx, myId, onStartDrag }: { thread: Thread; 
                   thread={thread}
                   ctx={ctx}
                   myId={myId}
+                  myName={myName}
                   onStartDrag={onStartDrag}
                   onClose={() => setInlineOpenId(null)}
                 />
@@ -440,16 +442,36 @@ function ConversationView({ thread, ctx, myId, onStartDrag }: { thread: Thread; 
   )
 }
 
-// A chat for this conversation, rendered inline in the flow as a message-shaped
-// block (Piece 3, model A). The drag handle detaches it onto the canvas as a
-// real, persistent fleet-chat — reusing the same pill-drag → fleet-chat path the
+// A live chat for this conversation, rendered inline in the flow as a
+// message-shaped block (Piece 3, model A). It's Skip's primary send surface: a
+// live message list (renderChatLine over the convo events) + the shared
+// ChatComposer (same textarea + voice registration + send-on-enter the fleet
+// chat shape uses). The drag handle detaches it onto the canvas as a real,
+// persistent fleet-chat — reusing the same pill-drag → fleet-chat path the
 // partner names use, so the dropped chat is owned + filtered to this convo.
-// NOTE: the inner content (live composer vs read-only) is pending Skip's call;
-// this renders the read-only conversation base both forms share.
-function InlineConvoChat({ thread, ctx, myId, onStartDrag, onClose }: {
+const COMPOSER_STYLE: React.CSSProperties = {
+  width: '100%',
+  background: 'transparent',
+  border: '1px solid rgba(128, 128, 128, 0.15)',
+  borderRadius: 4,
+  padding: '4px 8px',
+  fontSize: 11,
+  color: 'inherit',
+  outline: 'none',
+  resize: 'none',
+  lineHeight: 1.4,
+  fontFamily: 'inherit',
+  fieldSizing: 'content',
+  minHeight: 'calc(1.4em + 10px)',
+  maxHeight: 200,
+} as any
+const _isTouchDevice = (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
+
+function InlineConvoChat({ thread, ctx, myId, myName, onStartDrag, onClose }: {
   thread: Thread
   ctx: any
   myId: string | null
+  myName: string
   onStartDrag: StartDrag
   onClose: () => void
 }) {
@@ -468,6 +490,45 @@ function InlineConvoChat({ thread, ctx, myId, onStartDrag, onClose }: {
     if (!el) return
     pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24
   }, [])
+
+  // Sending in this conversation goes to the partner. (Matches the chat shape's
+  // sendTargets = the filter's "to" labels; here that's the partner's name.)
+  const sendTargets = useMemo(() => [thread.friendly], [thread.friendly])
+  const agentNames = useMemo(() => {
+    const map: Record<string, string> = { [thread.partnerId]: thread.partnerName }
+    if (myId) map[myId] = myName || 'user'
+    return map
+  }, [thread.partnerId, thread.partnerName, myId, myName])
+
+  // The send executor — optimistic echo + retrying send via the same primitives
+  // the fleet chat uses (sendMessage). Keyboard and voice share it (the inline
+  // chat has none of the chat shape's keyboard/voice divergence).
+  const send = useCallback((text: string, targets: string[]) => {
+    if (!text || targets.length === 0) return
+    const tempId = `opt-inbox-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    injectOptimisticEvent({
+      _tempId: tempId,
+      type: 'chat',
+      event_type: 'chat',
+      from: getHumanId(),
+      to: targets[0],
+      text,
+      timestamp: new Date().toISOString(),
+      read: false,
+    })
+    const sendWithRetry = (attempt: number) => {
+      Promise.all(targets.map((t) => sendMessage(t, text, { _tempId: tempId })))
+        .then((results: { ok: boolean; event_id: number }[]) => {
+          if (!results.every((r) => r.ok)) throw new Error('send failed')
+        })
+        .catch(() => {
+          if (attempt < 3) setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
+          else updateOptimisticEvent(tempId, { _failed: true })
+        })
+    }
+    sendWithRetry(1)
+  }, [])
+
   return (
     <div className="fleet-inbox-inline-chat fleet-chat-shape" onPointerDown={(e) => stopEventPropagation(e)}>
       <div className="fleet-inbox-inline-head">
@@ -492,6 +553,16 @@ function InlineConvoChat({ thread, ctx, myId, onStartDrag, onClose }: {
             </div>
           )
         })}
+      </div>
+      <div className="fleet-inbox-inline-composer">
+        <ChatComposer
+          sendTargets={sendTargets}
+          agentNames={agentNames}
+          onKeyboardSend={send}
+          onVoiceSend={(targets, text) => send(text, targets)}
+          isTouchDevice={_isTouchDevice}
+          style={COMPOSER_STYLE}
+        />
       </div>
     </div>
   )
