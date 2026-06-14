@@ -351,6 +351,91 @@ function listSkills() {
   return out;
 }
 
+// ---- education gate for sandboxed (non-claude) agents ----
+//
+// Mirrors Claude's PreToolUse skill mandate at the MCP boundary. Claude agents
+// are gated by their harness hook and never reach this path. Goose/DeepSeek
+// agents have no such hook, so we enforce the SAME qualifications rules here,
+// against the tlda server's existing /api/education/check endpoint. On a gated
+// call we BLOCK and name the owed skill(s), giving the agent the same two ways
+// forward a Claude has — read each one with `skill("<name>")` (which credits it),
+// or `dismiss_skill(skills:[…], reason:"…")` if it judges one irrelevant (which
+// records the dismissal + shows Skip the reason) — then retry the tool. The block
+// is sticky (no auto-credit): the server re-derives the owed set each call, so it
+// lifts only once the agent has read or dismissed every required skill, exactly
+// like the Claude gate.
+//
+// Fail-OPEN by design: if the endpoint is down/unreachable the gate returns null
+// so a tool is never broken by it. That is not a silent fallback — the gate is
+// advisory infrastructure, not the tool's output — and every fail-open is logged
+// to stderr so an outage is visible rather than swallowed.
+//
+// `chat` is deliberately NOT gated: it is the accessibility-critical channel to
+// Skip, and a dropped retry there would lose a message. Only the producing tools
+// (propose_edit/report/input_scratch), where a missed retry is harmless, gate.
+const GATED_MCP_TOOLS = {
+  propose_edit:  { tool: 'tlda/propose_edit',  file: a => a?.file || '' },
+  report:        { tool: 'tlda/report' },
+  input_scratch: { tool: 'tlda/input_scratch' },
+};
+
+async function eduCheckOwedSkills(toolNorm, { file = '', content = '' } = {}) {
+  const agentId = process.env.FLEET_ID;
+  if (!agentId || !TLDA_SERVER) return [];
+  try {
+    const qs = new URLSearchParams({ tool: toolNorm });
+    if (file) qs.set('file', file);
+    if (content) qs.set('content', content.slice(0, 2000));
+    const res = await fetch(`${TLDA_SERVER}/api/education/check/${encodeURIComponent(agentId)}?${qs}`, { headers: TLDA_AUTH_HEADERS, signal: AbortSignal.timeout(3000) });
+    if (!res.ok) { process.stderr.write(`[education-gate] check returned ${res.status} for ${toolNorm} — failing open\n`); return []; }
+    const j = await res.json();
+    if (Array.isArray(j?.skills) && j.skills.length) return j.skills;
+    if (j?.skill) return [j.skill];
+    return [];
+  } catch (e) {
+    process.stderr.write(`[education-gate] check unreachable for ${toolNorm} (${e.message}) — failing open\n`);
+    return [];
+  }
+}
+
+async function eduCreditSkillRead(skillName) {
+  const agentId = process.env.FLEET_ID;
+  if (!agentId || !TLDA_SERVER || !skillName) return;
+  try {
+    await fetch(`${TLDA_SERVER}/api/education/check/${encodeURIComponent(agentId)}?tool=Skill&skill=${encodeURIComponent(skillName)}`, { headers: TLDA_AUTH_HEADERS, signal: AbortSignal.timeout(3000) });
+  } catch (e) {
+    process.stderr.write(`[education-gate] credit failed for ${skillName} (${e.message})\n`);
+  }
+}
+
+// Returns a blocked-tool result (named owed skills + read-or-dismiss instructions)
+// or null to proceed.
+async function educationGate(name, args) {
+  const harness = process.env.FLEET_HARNESS || 'claude';
+  if (harness === 'claude') return null;            // claude has its own hook; never double-gate
+  const spec = GATED_MCP_TOOLS[name];
+  if (!spec) return null;
+  const input = { file: spec.file ? spec.file(args) : '', content: spec.content ? spec.content(args) : '' };
+  const owed = await eduCheckOwedSkills(spec.tool, input);
+  if (!owed.length) return null;
+  const list = owed.map(s => `\`${s}\``).join(', ');
+  const readCmds = owed.map(s => `skill("${s}")`).join(', ');
+  const dismissArg = owed.map(s => `"${s}"`).join(', ');
+  const text = [
+    `⚠️ Before \`${name}\`, you must clear ${owed.length} required skill(s): ${list}.`,
+    `These are the same playbook(s) a Claude agent is force-gated into here.`,
+    ``,
+    `Do ONE of these for each, then call \`${name}\` again:`,
+    `• Read it — ${readCmds}. Each returns the skill (filtered for you) and credits it.`,
+    `• Or, if it genuinely does not apply to what you are doing, decline it —`,
+    `  dismiss_skill(skills: [${dismissArg}], reason: "<why it does not apply>").`,
+    `  A reason is required and is shown to Skip.`,
+    ``,
+    `The block lifts once every required skill is read or dismissed.`,
+  ].join('\n');
+  return { content: [{ type: 'text', text }], isError: true };
+}
+
 // ---- @label cross-reference validation ----
 
 const AT_REF_PATTERN = /(?<![\\@\w])@([\w:.-]+)/g
@@ -1887,7 +1972,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
-      name: 'read_skill',
+      name: 'skill',
       description: 'Read a fleet SKILL (process/role guidance) by name, or list available skills. Skills describe how to do a job — adversary method, proof discipline, writing register, etc. Call with no `skill` to LIST what is available (name + one-line description); call with `skill` to READ that skill\'s guidance. Sections that don\'t apply to your harness are stripped automatically, so what you get is the guidance you can actually act on. This is how a sandboxed (non-Claude) agent consumes the same playbooks Claude agents use.',
       inputSchema: {
         type: 'object',
@@ -2471,6 +2556,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
+  // Education gate for sandboxed (non-claude) agents — no-op for claude.
+  {
+    const gated = await educationGate(name, args);
+    if (gated) return gated;
+  }
+
   if (name === 'read_file') {
     // Generic read-only file reader, fenced to ~/work. Exists so sandboxed
     // agents (e.g. goose/DeepSeek, which have no shell or developer extension)
@@ -2503,23 +2594,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     return { content: [{ type: 'text', text: header + body + trunc }] };
   }
 
-  if (name === 'read_skill') {
+  if (name === 'skill') {
     // Harness-aware skill reader. Lets a sandboxed agent (goose/DeepSeek, etc.)
-    // consume the same process/role playbooks Claude agents use. The requesting
-    // agent's harness (FLEET_HARNESS, default 'claude') decides which sections
-    // survive: a `## … {.claude-only}` section is stripped for a goose agent and
-    // vice-versa, so the agent only sees guidance it can actually act on.
+    // consume the same process/role playbooks Claude agents use — named `skill`
+    // to mirror the Claude harness `Skill` tool (same primitive, both deliver the
+    // skill's text into the agent's context). The requesting agent's harness
+    // (FLEET_HARNESS, default 'claude') decides which sections survive: a
+    // `## … {.claude-only}` section is stripped for a goose agent and vice-versa,
+    // so the agent only sees guidance it can actually act on.
     const harness = process.env.FLEET_HARNESS || 'claude';
     const agentTags = new Set([harness]);
     if (!args?.skill) {
       const skills = listSkills();
-      if (!skills.length) return { content: [{ type: 'text', text: `read_skill: no skills found at ${SKILLS_DIR}.` }], isError: true };
+      if (!skills.length) return { content: [{ type: 'text', text: `skill: no skills found at ${SKILLS_DIR}.` }], isError: true };
       const body = skills.map(s => `• ${s.name} — ${s.description}`).join('\n');
-      return { content: [{ type: 'text', text: `Available skills (${skills.length}) — call read_skill({ skill: "<name>" }) to read one:\n\n${body}` }] };
+      return { content: [{ type: 'text', text: `Available skills (${skills.length}) — call skill({ skill: "<name>" }) to read one:\n\n${body}` }] };
     }
     const skillName = String(args.skill).trim().replace(/^\/+/, '');
     if (skillName.includes('/') || skillName.includes('..')) {
-      return { content: [{ type: 'text', text: `read_skill: invalid skill name "${args.skill}".` }], isError: true };
+      return { content: [{ type: 'text', text: `skill: invalid skill name "${args.skill}".` }], isError: true };
     }
     const p = path.join(SKILLS_DIR, skillName, 'SKILL.md');
     let md;
@@ -2527,9 +2620,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     catch {
       const names = listSkills().map(s => s.name);
       const near = names.filter(n => n.includes(skillName) || skillName.includes(n)).slice(0, 5);
-      const hint = near.length ? ` Did you mean: ${near.join(', ')}?` : ' Call read_skill() with no args to list available skills.';
-      return { content: [{ type: 'text', text: `read_skill: no skill "${skillName}".${hint}` }], isError: true };
+      const hint = near.length ? ` Did you mean: ${near.join(', ')}?` : ' Call skill() with no args to list available skills.';
+      return { content: [{ type: 'text', text: `skill: no skill "${skillName}".${hint}` }], isError: true };
     }
+    // Reading a skill credits it against the education gate (same as a Claude
+    // agent invoking the Skill tool), so a subsequently gated action proceeds.
+    await eduCreditSkillRead(skillName);
     if (args.raw) {
       return { content: [{ type: 'text', text: md }] };
     }
