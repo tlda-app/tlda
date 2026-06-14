@@ -551,6 +551,15 @@ type SkillState = {
   read: string[]
   owed: { skill: string; scope: string; trigger: string | null }[]
   dismissed: { skill: string; reason: string; scope: string; trigger: string | null }[]
+  cards?: { drill: string; gradient: string | null; pass: boolean | null; gradedAt?: string }[]
+}
+
+// The orientation gradient → a colored dot, matching teacher's report-card icons.
+function drillGradeIcon(g: string | null): string {
+  if (g === 'oriented') return '🟢'
+  if (g === 'recovers') return '🟡'
+  if (g == null) return '⚪️'
+  return '🔴' // drifts / drifts-at-<stage> / anything else
 }
 
 function SkillHoverPane({ agentId, agentName, anchorRect, onMouseEnter, onMouseLeave }: {
@@ -585,7 +594,8 @@ function SkillHoverPane({ agentId, agentName, anchorRect, onMouseEnter, onMouseL
   const read = data?.read || []
   const owed = data?.owed || []
   const dismissed = data?.dismissed || []
-  const empty = !loading && read.length === 0 && owed.length === 0 && dismissed.length === 0
+  const cards = data?.cards || []
+  const empty = !loading && read.length === 0 && owed.length === 0 && dismissed.length === 0 && cards.length === 0
 
   // Portal to <body>: the pane is position:fixed, but a fixed element inside the
   // TLDraw canvas's CSS transform is positioned relative to that transform, not
@@ -603,6 +613,16 @@ function SkillHoverPane({ agentId, agentName, anchorRect, onMouseEnter, onMouseL
       <div className="fleet-skill-hover-head">{agentName} · skills</div>
       {loading && <div className="fleet-skill-hover-empty">…</div>}
       {empty && <div className="fleet-skill-hover-empty">no skill activity yet</div>}
+      {cards.length > 0 && (
+        <div className="fleet-skill-hover-section">
+          <div className="fleet-skill-hover-label read">drills ({cards.length})</div>
+          <div className="fleet-skill-hover-chips">
+            {cards.map(c => (
+              <span key={c.drill} className="fleet-skill-chip read">{drillGradeIcon(c.gradient)} {c.drill}</span>
+            ))}
+          </div>
+        </div>
+      )}
       {owed.length > 0 && (
         <div className="fleet-skill-hover-section">
           <div className="fleet-skill-hover-label owed">owes ({owed.length})</div>

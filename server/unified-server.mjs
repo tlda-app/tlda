@@ -1378,7 +1378,29 @@ app.get('/api/education/skills/:agentId', (req, res) => {
     .map(([skill, d]) => ({ skill, scope: d.scope, trigger: d.triggerShort || null }))
   const dismissed = [...(_qualAgentDismissed.get(agentId) || new Map()).values()]
     .map(d => ({ skill: d.skill, reason: d.reason, scope: d.scope, trigger: d.trigger || null }))
-  res.json({ id: agentId, read, owed, dismissed })
+  const cards = (fleetStore?.getDrillCards?.(agentId)) || []
+  res.json({ id: agentId, read, owed, dismissed, cards })
+})
+
+// Store a drill report card for an agent (the "how they performed" half of the
+// education record), and post it to the agent's chat so they see their own card.
+app.post('/api/education/card/:agentId', async (req, res) => {
+  const agentId = req.params.agentId
+  const { drill, gradient = null, pass = null, card = {}, chat = null } = req.body || {}
+  if (!drill) return res.status(400).json({ error: 'Missing drill in body' })
+  if (!fleetStore) return res.status(503).json({ error: 'fleet store unavailable' })
+  fleetStore.addDrillCard(agentId, drill, { gradient, pass, card })
+  // Post the card to the agent's chat (markdown), the same channel as any message.
+  if (chat) {
+    try {
+      await fleetStore.share({
+        type: 'chat', from: 'fleet:teacher', to: agentId, text: chat,
+        metadata: { kind: 'drill-card', drill, gradient, pass },
+      })
+    } catch (e) { console.error('[education] card chat failed:', e.message) }
+  }
+  console.log(`[education] card: ${agentId} ${drill} → ${gradient}${pass != null ? (pass ? ' PASS' : ' FAIL') : ''}`)
+  res.json({ ok: true })
 })
 
 // Post a single merged activity card for one or more dismissed skills.
