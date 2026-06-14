@@ -1,5 +1,5 @@
 /**
- * tlda pw — one shared playwright-cli browser any agent can drive, with a
+ * tlda-dev pw — one shared playwright-cli browser any agent can drive, with a
  * PER-AGENT TAB so agents never blank each other out.
  *
  * The problem this solves, in two layers:
@@ -16,12 +16,12 @@
  *      whole browser and locking everyone else out.
  *
  * Usage:
- *   tlda pw <verb> [args...]   forward a playwright-cli verb to MY tab
- *   tlda pw acquire            open the shared browser (lazy) + ensure my tab
- *   tlda pw release            close my tab (browser stays up for others)
- *   tlda pw status             session state + my tab + current URL
- *   tlda pw reap               close the whole shared browser (the reaper)
- *   tlda pw center <region>    center the camera on doc | chat | fleet
+ *   tlda-dev pw <verb> [args...]   forward a playwright-cli verb to MY tab
+ *   tlda-dev pw acquire            open the shared browser (lazy) + ensure my tab
+ *   tlda-dev pw release            close my tab (browser stays up for others)
+ *   tlda-dev pw status             session state + my tab + current URL
+ *   tlda-dev pw reap               close the whole shared browser (the reaper)
+ *   tlda-dev pw center <region>    center the camera on doc | chat | fleet
  *
  * Identity (which tab is "mine") comes from TLDA_PW_AS → AGENT_WIN → FLEET_ID →
  * $USER@local, sanitized into a marker stamped on the tab's URL (`pwtab=<key>`).
@@ -92,12 +92,12 @@ function lockScript(repoRoot) {
 
 // ---- hard disable (Skip's kill switch) ----
 //
-// A sentinel file that, while present, makes `tlda pw` REFUSE to open or drive
+// A sentinel file that, while present, makes `tlda-dev pw` REFUSE to open or drive
 // the shared browser for ANYONE. This is the "no windows on my screen" lock:
 // agents (and eliza's reaper) all reach the browser through this wrapper, so
 // gating every launch/drive path here is a single chokepoint. Only `status`,
-// `unlock`, `reap`, and `help` work while disabled. Created by `tlda pw lock`,
-// removed by `tlda pw unlock`.
+// `unlock`, `reap`, and `help` work while disabled. Created by `tlda-dev pw lock`,
+// removed by `tlda-dev pw unlock`.
 const DISABLE_FILE = join(homedir(), '.config', 'tlda', 'pw-disabled')
 function isDisabled() {
   return existsSync(DISABLE_FILE)
@@ -407,14 +407,14 @@ export async function cmdPw(args, repoRoot) {
   if (!verb || verb === 'help' || verb === '--help') {
     console.log(
       [
-        'tlda pw — one shared browser, a private tab per agent',
+        'tlda-dev pw — one shared browser, a private tab per agent',
         '',
-        '  tlda pw acquire           open the shared browser + ensure my tab',
-        '  tlda pw release           close my tab (browser stays up for others)',
-        '  tlda pw status            session state + my tab + URL',
-        '  tlda pw reap              close the whole shared browser',
-        '  tlda pw center <region>   center camera on: doc | chat | fleet',
-        '  tlda pw <verb> [args]     forward a playwright-cli verb to MY tab',
+        '  tlda-dev pw acquire           open the shared browser + ensure my tab',
+        '  tlda-dev pw release           close my tab (browser stays up for others)',
+        '  tlda-dev pw status            session state + my tab + URL',
+        '  tlda-dev pw reap              close the whole shared browser',
+        '  tlda-dev pw center <region>   center camera on: doc | chat | fleet',
+        '  tlda-dev pw <verb> [args]     forward a playwright-cli verb to MY tab',
         '                            (goto, click, snapshot, screenshot, eval, …)',
         '',
         `  my tab key: ${myTabKey()}   (override identity with TLDA_PW_AS)`,
@@ -430,13 +430,13 @@ export async function cmdPw(args, repoRoot) {
     if (sessionOpen()) { pw(['close'], { stdio: 'inherit' }); console.log('browser reaped') }
     spawnSync('bash', [lockScript(repoRoot), 'steal', `lock:${me}`], { encoding: 'utf8' })
     spawnSync('bash', [lockScript(repoRoot), 'release', `lock:${me}`], { encoding: 'utf8' })
-    console.log('playwright LOCKED — `tlda pw` will not open a browser for anyone. Unlock: tlda pw unlock')
+    console.log('playwright LOCKED — `tlda-dev pw` will not open a browser for anyone. Unlock: tlda-dev pw unlock')
     return
   }
   if (verb === 'unlock') {
     if (!isDisabled()) { console.log('playwright was not locked'); return }
     clearDisable()
-    console.log('playwright unlocked — `tlda pw` can open the shared browser again')
+    console.log('playwright unlocked — `tlda-dev pw` can open the shared browser again')
     return
   }
 
@@ -448,7 +448,7 @@ export async function cmdPw(args, repoRoot) {
     console.error(
       `playwright is LOCKED by ${info.by || 'Skip'} (${ago})${info.reason ? ` — "${info.reason}"` : ''}.\n` +
         '  No browser will open. This is deliberate — Skip turned playwright off.\n' +
-        '  Do NOT work around it. To re-enable: tlda pw unlock'
+        '  Do NOT work around it. To re-enable: tlda-dev pw unlock'
     )
     process.exit(3)
   }
@@ -458,7 +458,7 @@ export async function cmdPw(args, repoRoot) {
     const open = sessionOpen()
     if (isDisabled()) {
       const info = disableInfo()
-      console.log(`DISABLED: playwright is LOCKED by ${info.by || 'Skip'}${info.reason ? ` — "${info.reason}"` : ''} (unlock: tlda pw unlock)`)
+      console.log(`DISABLED: playwright is LOCKED by ${info.by || 'Skip'}${info.reason ? ` — "${info.reason}"` : ''} (unlock: tlda-dev pw unlock)`)
     }
     console.log(`lock:    ${lk ? `${lk.holder} (${lk.ageSecs}s ago)` : 'unlocked'}`)
     console.log(`browser: ${open ? 'up' : 'down'} (session "${SESSION}")`)
@@ -519,8 +519,8 @@ export async function cmdPw(args, repoRoot) {
   if (BLOCKED_VERBS.has(verb)) {
     console.error(
       `"${verb}" is managed for you — you get your own tab automatically.\n` +
-        `  • start:  tlda pw acquire\n` +
-        `  • stop:   tlda pw release   (or  tlda pw reap  to close the browser)`
+        `  • start:  tlda-dev pw acquire\n` +
+        `  • stop:   tlda-dev pw release   (or  tlda-dev pw reap  to close the browser)`
     )
     process.exit(2)
   }
