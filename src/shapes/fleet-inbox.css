@@ -59,6 +59,38 @@
   white-space: nowrap;
 }
 
+/* --- Sort toggle (time / type) — tiny, faint segmented control in the header.
+   Same near-invisible chrome convention: low opacity until hovered/active. */
+.fleet-inbox-sort {
+  display: inline-flex;
+  gap: 1px;
+  font-size: 9px;
+  opacity: 0.5;
+  transition: opacity 0.15s;
+}
+.fleet-inbox-header:hover .fleet-inbox-sort {
+  opacity: 0.8;
+}
+.fleet-inbox-sort-btn {
+  background: none;
+  border: none;
+  padding: 1px 4px;
+  font-family: inherit;
+  font-size: 9px;
+  color: inherit;
+  opacity: 0.55;
+  cursor: pointer;
+  border-radius: 3px;
+  transition: opacity 0.12s, background 0.12s;
+}
+.fleet-inbox-sort-btn:hover {
+  opacity: 0.85;
+}
+.fleet-inbox-sort-btn.active {
+  opacity: 1;
+  background: rgba(128, 128, 128, 0.14);
+}
+
 /* --- Thread list --- */
 .fleet-inbox-list {
   flex: 1;
@@ -230,6 +262,11 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Messages group wrapper (only used in type-sort; matches Tasks/Notes spacing) */
+.fleet-inbox-messages {
+  border-bottom: 1px solid rgba(128, 128, 128, 0.12);
+}
+
 .fleet-inbox-note-total {
   font-size: 9px;
   min-width: 14px;

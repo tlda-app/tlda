@@ -120,6 +120,7 @@ interface RibbonTask {
   hi: number
   pageY1: number
   pageY2: number
+  staleAt: number       // when the span went stale (0 if unknown) — sort key
 }
 
 interface DocNote {
@@ -128,7 +129,17 @@ interface DocNote {
   file: string
   line: number | null
   color: string
+  createdAt: number     // note creation time (0 if undated) — sort key
 }
+
+// One row of the inbox, regardless of kind. The unified model behind both the
+// time-interleaved stream and the grouped-by-type view.
+type InboxItem =
+  | { kind: 'task'; key: string; time: number; task: RibbonTask }
+  | { kind: 'note'; key: string; time: number; note: DocNote }
+  | { kind: 'message'; key: string; time: number; thread: Thread }
+
+type SortMode = 'time' | 'type'
 
 interface Thread {
   partnerId: string
@@ -228,6 +239,16 @@ function FleetInboxInner({ shape }: { shape: any }) {
   // Which thread is open (partnerId), or null = thread list.
   const [openPartner, setOpenPartner] = useState<string | null>(null)
 
+  // Sort mode — time (one interleaved stream, newest first) or type (grouped
+  // sections). Persisted so it sticks across reloads. Default: time.
+  const [sortMode, setSortMode] = useState<SortMode>(() => {
+    try { return (localStorage.getItem('fleet-inbox-sort') as SortMode) || 'time' } catch { return 'time' }
+  })
+  const setSort = useCallback((m: SortMode) => {
+    setSortMode(m)
+    try { localStorage.setItem('fleet-inbox-sort', m) } catch { /* private mode */ }
+  }, [])
+
   // Group chat messages into per-correspondent threads.
   const threads = useMemo<Thread[]>(() => {
     if (!myId) return []
@@ -298,7 +319,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
           const lo = Math.min(s.startLine, s.endLine)
           const hi = Math.max(s.startLine, s.endLine)
           const file = (s.startFile as string) || ''
-          return { id: `${file}:${lo}-${hi}`, file, lo, hi, pageY1: ribbonY + s.y1, pageY2: ribbonY + s.y2 } as RibbonTask
+          return { id: `${file}:${lo}-${hi}`, file, lo, hi, pageY1: ribbonY + s.y1, pageY2: ribbonY + s.y2, staleAt: typeof s.staleAt === 'number' ? s.staleAt : 0 } as RibbonTask
         })
         // Stable order: topmost span first.
         .sort((a, b) => a.pageY1 - b.pageY1)
@@ -358,6 +379,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
             file: (anchor?.file as string) || '',
             line: (anchor?.line as number) ?? null,
             color: (s.props?.color as string) || '',
+            createdAt: typeof s.meta?.createdAt === 'number' ? s.meta.createdAt : 0,
             _y: typeof s.y === 'number' ? s.y : 0,
           }
         })
@@ -409,6 +431,18 @@ function FleetInboxInner({ shape }: { shape: any }) {
     [openPartner, threads],
   )
 
+  // The interleaved stream: every row as a typed item, newest first. Items with
+  // no usable time (undated notes, tasks with no staleAt) sink to the bottom but
+  // keep their relative order. Messages use last-activity time.
+  const timeItems = useMemo<InboxItem[]>(() => {
+    const items: InboxItem[] = [
+      ...ribbonTasks.map((t): InboxItem => ({ kind: 'task', key: `task:${t.id}`, time: t.staleAt, task: t })),
+      ...docNotes.map((n): InboxItem => ({ kind: 'note', key: `note:${n.id}`, time: n.createdAt, note: n })),
+      ...threads.map((t): InboxItem => ({ kind: 'message', key: `msg:${t.partnerId}`, time: Date.parse(t.lastTs) || 0, thread: t })),
+    ]
+    return items.sort((a, b) => b.time - a.time)
+  }, [ribbonTasks, docNotes, threads])
+
   return (
     <HTMLContainer style={{ width: w, height: h, pointerEvents: 'all', overflow: 'visible' }}>
       <div
@@ -458,7 +492,18 @@ function FleetInboxInner({ shape }: { shape: any }) {
               onPointerDown={(e) => { e.stopPropagation(); startDrag(e, 'agent', activeThread.friendly, activeThread.partnerName, activeThread.color) }}
             >{activeThread.partnerName}</span>
           ) : (
-            <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 4 }}>
+            <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+              {/* Sort toggle — time (interleaved) ↔ type (grouped). */}
+              <span className="fleet-inbox-sort" title="Sort by">
+                <button
+                  className={`fleet-inbox-sort-btn${sortMode === 'time' ? ' active' : ''}`}
+                  onPointerUp={(e) => { stopEventPropagation(e); setSort('time') }}
+                >time</button>
+                <button
+                  className={`fleet-inbox-sort-btn${sortMode === 'type' ? ' active' : ''}`}
+                  onPointerUp={(e) => { stopEventPropagation(e); setSort('type') }}
+                >type</button>
+              </span>
               {ribbonTasks.length > 0 && (
                 <span className="fleet-inbox-task-total" title="Revalidation tasks">{ribbonTasks.length}</span>
               )}
@@ -474,7 +519,18 @@ function FleetInboxInner({ shape }: { shape: any }) {
         {activeThread ? (
           <ConversationView thread={activeThread} ctx={ctx} myId={myId} myName={myName} />
         ) : (
-          <ThreadList threads={threads} tasks={ribbonTasks} notes={docNotes} onTaskHover={showTaskPreview} onNoteHover={showNotePreview} onItemLeave={hideTaskPreview} onOpen={openThread} onStartDrag={startDrag} />
+          <InboxList
+            sortMode={sortMode}
+            timeItems={timeItems}
+            threads={threads}
+            tasks={ribbonTasks}
+            notes={docNotes}
+            onTaskHover={showTaskPreview}
+            onNoteHover={showNotePreview}
+            onItemLeave={hideTaskPreview}
+            onOpen={openThread}
+            onStartDrag={startDrag}
+          />
         )}
       </div>
     </HTMLContainer>
@@ -511,74 +567,109 @@ function useWheelScroll(ref: { current: HTMLDivElement | null }, innerSelector?:
 
 type StartDrag = (e: React.PointerEvent, pillType: 'agent' | 'label', value: string, displayName: string, color: string) => void
 
-function ThreadList({ threads, tasks, notes, onTaskHover, onNoteHover, onItemLeave, onOpen, onStartDrag }: { threads: Thread[]; tasks: RibbonTask[]; notes: DocNote[]; onTaskHover: (t: RibbonTask, el: HTMLElement) => void; onNoteHover: (n: DocNote, el: HTMLElement) => void; onItemLeave: (e: React.MouseEvent) => void; onOpen: (t: Thread) => void; onStartDrag: StartDrag }) {
+// --- Row components — one per kind, shared by both the grouped and the
+// interleaved renderers so the two views can't visually drift. ---
+
+function TaskRow({ t, onHover, onLeave }: { t: RibbonTask; onHover: (t: RibbonTask, el: HTMLElement) => void; onLeave: (e: React.MouseEvent) => void }) {
+  return (
+    <div className="fleet-inbox-task" onMouseEnter={(e) => onHover(t, e.currentTarget)} onMouseLeave={onLeave}>
+      <div className="fleet-inbox-task-row">
+        <span className="fleet-inbox-task-icon">⟳</span>
+        <span className="fleet-inbox-task-text">Re-vet lines {t.lo}–{t.hi}</span>
+      </div>
+      <div className="fleet-inbox-task-sub">changed since you approved{t.file ? ` · ${t.file}` : ''}</div>
+    </div>
+  )
+}
+
+function NoteRow({ n, onHover, onLeave }: { n: DocNote; onHover: (n: DocNote, el: HTMLElement) => void; onLeave: (e: React.MouseEvent) => void }) {
+  return (
+    <div className="fleet-inbox-note" onMouseEnter={(e) => onHover(n, e.currentTarget)} onMouseLeave={onLeave}>
+      <div className="fleet-inbox-note-row">
+        <span className="fleet-inbox-note-dot" style={n.color ? { color: n.color } : undefined}>●</span>
+        <span className="fleet-inbox-note-text">{n.preview || '(empty note)'}</span>
+      </div>
+      <div className="fleet-inbox-note-sub">open{n.line != null ? ` · line ${n.line}` : ''}{n.file ? ` · ${n.file}` : ''}</div>
+    </div>
+  )
+}
+
+function MessageRow({ t, onOpen, onStartDrag }: { t: Thread; onOpen: (t: Thread) => void; onStartDrag: StartDrag }) {
+  return (
+    <div
+      className={`fleet-inbox-thread${t.unread > 0 ? ' unread' : ''}`}
+      onPointerUp={(e) => { stopEventPropagation(e); onOpen(t) }}
+    >
+      <div className="fleet-inbox-thread-row">
+        <span
+          className={`fleet-inbox-thread-partner fleet-inbox-pill ${t.nickClass}`}
+          style={{ cursor: 'grab', touchAction: 'none' }}
+          onPointerDown={(e) => { e.stopPropagation(); onStartDrag(e, 'agent', t.friendly, t.partnerName, t.color) }}
+        >{t.partnerName}</span>
+        <span className="fleet-inbox-thread-time">{timeShort(t.lastTs)}</span>
+        {t.unread > 0 && <span className="fleet-inbox-thread-badge">{t.unread}</span>}
+      </div>
+      <div className="fleet-inbox-thread-preview">{t.preview || '…'}</div>
+    </div>
+  )
+}
+
+interface InboxListProps {
+  sortMode: SortMode
+  timeItems: InboxItem[]
+  threads: Thread[]
+  tasks: RibbonTask[]
+  notes: DocNote[]
+  onTaskHover: (t: RibbonTask, el: HTMLElement) => void
+  onNoteHover: (n: DocNote, el: HTMLElement) => void
+  onItemLeave: (e: React.MouseEvent) => void
+  onOpen: (t: Thread) => void
+  onStartDrag: StartDrag
+}
+
+function InboxList(props: InboxListProps) {
+  const { sortMode, timeItems, threads, tasks, notes, onTaskHover, onNoteHover, onItemLeave, onOpen, onStartDrag } = props
   const listRef = useRef<HTMLDivElement>(null)
   useWheelScroll(listRef)
+
+  const empty = threads.length === 0 && tasks.length === 0 && notes.length === 0
+
+  const renderItem = (it: InboxItem) => {
+    if (it.kind === 'task') return <TaskRow key={it.key} t={it.task} onHover={onTaskHover} onLeave={onItemLeave} />
+    if (it.kind === 'note') return <NoteRow key={it.key} n={it.note} onHover={onNoteHover} onLeave={onItemLeave} />
+    return <MessageRow key={it.key} t={it.thread} onOpen={onOpen} onStartDrag={onStartDrag} />
+  }
+
   return (
     <div ref={listRef} className="fleet-inbox-list">
-      {tasks.length > 0 && (
-        <div className="fleet-inbox-tasks">
-          <div className="fleet-inbox-group-label">Tasks</div>
-          {tasks.map((t) => (
-            <div
-              key={t.id}
-              className="fleet-inbox-task"
-              onMouseEnter={(e) => onTaskHover(t, e.currentTarget)}
-              onMouseLeave={onItemLeave}
-            >
-              <div className="fleet-inbox-task-row">
-                <span className="fleet-inbox-task-icon">⟳</span>
-                <span className="fleet-inbox-task-text">Re-vet lines {t.lo}–{t.hi}</span>
-              </div>
-              <div className="fleet-inbox-task-sub">
-                changed since you approved{t.file ? ` · ${t.file}` : ''}
-              </div>
+      {empty && <div className="fleet-inbox-empty">no messages yet</div>}
+
+      {sortMode === 'time' ? (
+        // Interleaved stream — every kind, newest first.
+        timeItems.map(renderItem)
+      ) : (
+        // Grouped by type — Tasks, Notes, then Messages.
+        <>
+          {tasks.length > 0 && (
+            <div className="fleet-inbox-tasks">
+              <div className="fleet-inbox-group-label">Tasks</div>
+              {tasks.map((t) => <TaskRow key={t.id} t={t} onHover={onTaskHover} onLeave={onItemLeave} />)}
             </div>
-          ))}
-        </div>
-      )}
-      {notes.length > 0 && (
-        <div className="fleet-inbox-notes">
-          <div className="fleet-inbox-group-label">Notes</div>
-          {notes.map((n) => (
-            <div
-              key={n.id}
-              className="fleet-inbox-note"
-              onMouseEnter={(e) => onNoteHover(n, e.currentTarget)}
-              onMouseLeave={onItemLeave}
-            >
-              <div className="fleet-inbox-note-row">
-                <span className="fleet-inbox-note-dot" style={n.color ? { color: n.color } : undefined}>●</span>
-                <span className="fleet-inbox-note-text">{n.preview || '(empty note)'}</span>
-              </div>
-              <div className="fleet-inbox-note-sub">
-                open{n.line != null ? ` · line ${n.line}` : ''}{n.file ? ` · ${n.file}` : ''}
-              </div>
+          )}
+          {notes.length > 0 && (
+            <div className="fleet-inbox-notes">
+              <div className="fleet-inbox-group-label">Notes</div>
+              {notes.map((n) => <NoteRow key={n.id} n={n} onHover={onNoteHover} onLeave={onItemLeave} />)}
             </div>
-          ))}
-        </div>
+          )}
+          {threads.length > 0 && (
+            <div className="fleet-inbox-messages">
+              <div className="fleet-inbox-group-label">Messages</div>
+              {threads.map((t) => <MessageRow key={t.partnerId} t={t} onOpen={onOpen} onStartDrag={onStartDrag} />)}
+            </div>
+          )}
+        </>
       )}
-      {threads.length === 0 && tasks.length === 0 && notes.length === 0 && (
-        <div className="fleet-inbox-empty">no messages yet</div>
-      )}
-      {threads.map((t) => (
-        <div
-          key={t.partnerId}
-          className={`fleet-inbox-thread${t.unread > 0 ? ' unread' : ''}`}
-          onPointerUp={(e) => { stopEventPropagation(e); onOpen(t) }}
-        >
-          <div className="fleet-inbox-thread-row">
-            <span
-              className={`fleet-inbox-thread-partner fleet-inbox-pill ${t.nickClass}`}
-              style={{ cursor: 'grab', touchAction: 'none' }}
-              onPointerDown={(e) => { e.stopPropagation(); onStartDrag(e, 'agent', t.friendly, t.partnerName, t.color) }}
-            >{t.partnerName}</span>
-            <span className="fleet-inbox-thread-time">{timeShort(t.lastTs)}</span>
-            {t.unread > 0 && <span className="fleet-inbox-thread-badge">{t.unread}</span>}
-          </div>
-          <div className="fleet-inbox-thread-preview">{t.preview || '…'}</div>
-        </div>
-      ))}
     </div>
   )
 }

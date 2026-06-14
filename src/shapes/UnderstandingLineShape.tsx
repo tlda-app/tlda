@@ -56,6 +56,10 @@ export type RibbonSegment = {
   // Set by the staleness check after a rebuild: the source under this span changed
   // since approvedAtCommit, so the vetting no longer covers what's there now.
   stale?: boolean
+  // When the span first flipped stale (the build-ready time of the build that
+  // introduced the change). Lets the inbox sort revalidation tasks by when they
+  // went stale. Cleared when the span is re-approved / heals back to fresh.
+  staleAt?: number
 }
 
 function StatusBadge({ status, arrow }: { status: LineStatus; arrow?: boolean }) {
