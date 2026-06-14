@@ -1837,30 +1837,59 @@ export async function handleFleetTool(name, args) {
       }
     }
 
-    // Resolve recipients from filter
-    if (!args.filter?.to) return { content: [{ type: 'text', text: 'Missing filter.to — specify recipients as DNF expression.' }], isError: true };
+    // Resolve recipients from filter.
+    // Structural validator (sync, no I/O): filter.to must be DNF string[][]. Coerce only
+    // the unambiguous single slip (bare string / goose { item }); reject the rest with a
+    // teaching error so a malformed `to` fails honestly instead of looking like "server down".
+    if (!args.filter?.to) return { content: [{ type: 'text', text: 'Missing filter.to — specify recipients as DNF, e.g. [["fleet:skip"]].' }], isError: true };
+    const _struct = normalizeRecipientFilter(args.filter.to);
+    if (!_struct.ok) return { content: [{ type: 'text', text: `⚠ Message NOT sent — malformed filter.to: ${_struct.error}. (This is your input shape, not a server problem.)` }], isError: true };
+    const toDnf = _struct.dnf;
     let recipients = [];
-    let serverDown = false;
     let agents = [];
-    try {
-      agents = await sendWS('store-agents');
-      for (const a of agents) {
-        if (a.id === AGENT_ID) continue;
-        const virtualLabels = a.status === 'awake' ? ['awake'] : a.status === 'hibernating' ? ['hibernating'] : [];
-        const labels = [...(a.labels || []), ...virtualLabels, a.friendly_name, a.id].filter(Boolean);
-        // Lineage members also answer to the bare base name (for lineage search);
-        // the phase-qualified name is already covered by friendly_name above.
-        const _base = baseName(a.friendly_name);
-        if (_base && _base !== a.friendly_name) labels.push(_base);
-        if (args.filter.to.some(andGroup => andGroup.every(term => labels.includes(term)))) {
-          recipients.push(a.id);
-        }
+    // Short-circuit: AND-groups that are a single literal agent id (fleet:…) need no
+    // roster lookup — send straight to the id (avoids fetching the whole fleet for the
+    // common { to: [["fleet:<id>"]] } case).
+    const labelGroups = [];
+    for (const andGroup of toDnf) {
+      if (andGroup.length === 1 && /^fleet:/.test(andGroup[0])) {
+        if (andGroup[0] !== AGENT_ID) recipients.push(andGroup[0]);
+      } else {
+        labelGroups.push(andGroup);
       }
-    } catch (e) {
-      serverDown = true;
     }
-    if (serverDown) return { content: [{ type: 'text', text: "⚠ Message NOT sent — fleet chat isn't reachable right now. This isn't yours to fix or restart. Surface it to Skip in your terminal output (he can read it) and keep working; chat will come back." }], isError: true };
-    if (recipients.length === 0) return { content: [{ type: 'text', text: 'No agents matched filter.' }], isError: true };
+    let rosterUnavailable = false;
+    if (labelGroups.length > 0) {
+      try {
+        agents = (await sendWS('store-agents')) || [];
+        if (agents.length === 0) {
+          rosterUnavailable = true;
+        } else {
+          for (const a of agents) {
+            if (a.id === AGENT_ID) continue;
+            const virtualLabels = a.status === 'awake' ? ['awake'] : a.status === 'hibernating' ? ['hibernating'] : [];
+            const labels = [...(a.labels || []), ...virtualLabels, a.friendly_name, a.id].filter(Boolean);
+            // Lineage members also answer to the bare base name (for lineage search);
+            // the phase-qualified name is already covered by friendly_name above.
+            const _base = baseName(a.friendly_name);
+            if (_base && _base !== a.friendly_name) labels.push(_base);
+            if (labelGroups.some(andGroup => andGroup.every(term => labels.includes(term)))) {
+              recipients.push(a.id);
+            }
+          }
+        }
+      } catch (e) {
+        rosterUnavailable = true;
+      }
+    }
+    recipients = [...new Set(recipients)];
+    // Target validator: report empty/unresolved honestly and distinctly from "server down".
+    // A transient roster miss must never block a direct (exact-id) send.
+    if (recipients.length === 0) {
+      if (rosterUnavailable) return { content: [{ type: 'text', text: "⚠ Message NOT sent — couldn't fetch the agent roster to resolve a label filter (transient). Retry shortly." }], isError: true };
+      const want = (labelGroups.length ? labelGroups : toDnf).map(g => g.join('+')).join(', ');
+      return { content: [{ type: 'text', text: `⚠ Message NOT sent — no agent matched ${want}. Check the name/label — this is a targeting miss, not a server problem.` }], isError: true };
+    }
     const maxRecipients = args.max_recipients ?? 5;
     if (recipients.length > maxRecipients) {
       const names = recipients.map(id => { const a = agents?.find(x => x.id === id); return a?.friendly_name || id; });
@@ -1941,6 +1970,9 @@ export async function handleFleetTool(name, args) {
     let warning = '';
     if (tldaDown) {
       warning = '\n\n⚠ **tlda is down — Skip cannot see this message.** Use terminal output to communicate until tlda is back up.';
+    }
+    if (_struct.coerced) {
+      warning += '\n\n_(Normalized your `filter.to` to DNF. Next time pass it as `[["fleet:id"]]`.)_';
     }
 
     const brokenFiles = inlineAttachments.filter(a => a.broken).map(a => a.path);
@@ -4078,6 +4110,36 @@ function _sendWSOnce(type, params = {}) {
 // reconnect. A genuine in-flight request timeout (WS_TIMEOUT_MS = a real stall)
 // is NOT retried; it surfaces as before. Contract preserved: resolves with data
 // when up, returns null only when still not connected after the retries.
+// Structural validator (sync, no I/O) for recipient filters (chat / wiretap / delegate).
+// filter.to must be DNF: string[][] (OR of AND-groups). We coerce ONLY the unambiguous
+// single-recipient slip (a bare string, or goose-style { item: "id" }) and reject anything
+// whose AND-vs-OR meaning we'd have to guess — a malformed filter must fail honestly, not
+// get silently reinterpreted (silent reinterpretation is what made a wrong `to` read as
+// "server down"). Returns { ok:true, dnf, coerced? } or { ok:false, error }.
+function normalizeRecipientFilter(to) {
+  const unwrap = (v) => (v && typeof v === 'object' && !Array.isArray(v) && 'item' in v) ? v.item : v;
+  to = unwrap(to);
+  if (typeof to === 'string') return { ok: true, dnf: [[to]], coerced: true };
+  if (!Array.isArray(to)) return { ok: false, error: `expected DNF string[][] like [["fleet:skip"]], got ${typeof to}` };
+  if (to.length === 0) return { ok: false, error: 'empty filter.to' };
+  // Proper DNF — every element is an AND-group array.
+  if (to.every(g => Array.isArray(g))) {
+    const dnf = [];
+    for (const g of to) {
+      const terms = g.map(unwrap).filter(t => typeof t === 'string');
+      if (terms.length === 0) return { ok: false, error: 'an AND-group has no string terms' };
+      dnf.push(terms);
+    }
+    return { ok: true, dnf };
+  }
+  // Flat array of strings: a lone element is unambiguous; multiple is the AND/OR fork we won't guess.
+  if (to.every(t => typeof unwrap(t) === 'string')) {
+    if (to.length === 1) return { ok: true, dnf: [[unwrap(to[0])]], coerced: true };
+    return { ok: false, error: `flat array is ambiguous — for multiple recipients pass OR-of-singletons [["a"],["b"]], or one AND-group [["a","b"]]. Got ${JSON.stringify(to)}` };
+  }
+  return { ok: false, error: `mixed/invalid shape — expected DNF string[][], got ${JSON.stringify(to)}` };
+}
+
 async function sendWS(type, params = {}) {
   const MAX_ATTEMPTS = 4;
   const RETRY_DELAY_MS = 700;
