@@ -820,9 +820,15 @@ export function CanvasClipPanel({
         // forceMobile=true disables hover tracking so getHoveredShapeId() always
         // returns null — use elementFromPoint instead.
         if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
-          const target = document.elementFromPoint(e.clientX, e.clientY)
+          const target = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null
           const shapeEl = target?.closest('[data-shape-id]')
-          const scrollable = (shapeEl?.querySelector('.fleet-chat-log') ??
+          // An open inbox mini-chat has its OWN scroller nested inside the thread.
+          // This handler is the single wheel chokepoint for the HUD, so resolve the
+          // innermost scroller under the pointer FIRST: if we're over a mini-chat,
+          // scroll it (dual context); otherwise fall back to the thread/panel.
+          const innerChat = target?.closest('.fleet-inbox-inline-body') as HTMLElement | null
+          const scrollable = (innerChat ??
+            shapeEl?.querySelector('.fleet-chat-log') ??
             shapeEl?.querySelector('.fleet-agents-body') ??
             shapeEl?.querySelector('.fleet-search-results') ??
             shapeEl?.querySelector('.fleet-inbox-conv') ??
