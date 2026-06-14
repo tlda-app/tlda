@@ -63,14 +63,16 @@ export function isMyFleetShape(s: any): boolean {
 /**
  * One-time migration to the (identity, device) key. Fleet shapes created before
  * this scheme have my userId but NO deviceId, so the device-scoped
- * isMyFleetShape would orphan them — wiping a user's hand-built layout (filters,
- * positions) on first load after the upgrade. Claim them for THIS device by
- * stamping deviceId, preserving every other prop. Also carry the legacy HUD
- * anchor's pan/camera meta onto the per-device anchor id so the HUD doesn't
- * visibly shift. Run once when identity resolves; history-ignored (not an undo
- * step). This is a real migration, NOT an "empty deviceId means mine" shim —
- * after adoption the shapes carry a concrete deviceId, so a second device sees
- * them as not-its and builds its own layout (no cross-device stacking).
+ * isMyFleetShape would orphan them — wiping a user's hand-built layout on first
+ * load after the upgrade. Claim them for THIS device by stamping deviceId
+ * (preserving every other prop, incl. filters) AND translating them by this
+ * (identity, device)'s layoutOffset, so adopted shapes share the exact same
+ * offset as freshly-created ones. That uniformity is what lets the HUD undo the
+ * offset with a single camera compensation and render every own shape — adopted
+ * or created — in its canonical screen position. The legacy pre-device anchor is
+ * dropped (the HUD recomputes the correct camera; carrying its stale pan/cameraY
+ * would override the offset compensation). Run once on identity resolve;
+ * history-ignored. A real migration, NOT an "empty deviceId means mine" shim.
  */
 export function adoptLegacyFleetShapes(editor: Editor): number {
   const myId = getHumanId()
@@ -84,19 +86,15 @@ export function adoptLegacyFleetShapes(editor: Editor): number {
   const legacyAnchor = legacyAnchorId !== newAnchorId ? (editor.getShape(legacyAnchorId as any) as any) : null
   if (legacy.length === 0 && !legacyAnchor) return 0
 
+  const { dx, dy } = layoutOffset(myId, myDevice)
   editor.run(() => {
     for (const s of legacy) {
-      editor.updateShape({ id: s.id, type: s.type, props: { ...(s as any).props, deviceId: myDevice } } as any)
+      editor.updateShape({
+        id: s.id, type: s.type, x: (s as any).x + dx, y: (s as any).y + dy,
+        props: { ...(s as any).props, deviceId: myDevice },
+      } as any)
     }
     if (legacyAnchor) {
-      const m = legacyAnchor.meta || {}
-      if (!editor.getShape(newAnchorId as any)) {
-        editor.createShape({
-          id: newAnchorId as any, type: 'geo', x: 0, y: 0, opacity: 0, isLocked: true,
-          props: { w: 1, h: 1, geo: 'rectangle' as const },
-          meta: { panOffset: m.panOffset, cameraY: m.cameraY },
-        })
-      }
       if (legacyAnchor.isLocked) editor.updateShape({ id: legacyAnchorId as any, type: 'geo', isLocked: false })
       editor.deleteShape(legacyAnchorId as any)
     }
@@ -225,14 +223,20 @@ function slotId(userId: string, deviceId: string, slot: string) {
  *  collision is only cosmetic regardless: ownership (isMyFleetShape) is an exact
  *  (identity,device) match, so even fully-overlapping foreign shapes never enter
  *  a viewer's HUD or intercept their filtering. */
-function layoutOffset(userId: string, deviceId: string, bandW: number, bandH: number): { dx: number; dy: number } {
+export function layoutOffset(userId: string, deviceId: string): { dx: number; dy: number } {
+  if (!userId || !deviceId) return { dx: 0, dy: 0 }
   const key = `${userId}|${deviceId}`
   let hash = 0
   for (let i = 0; i < key.length; i++) hash = ((hash << 5) - hash + key.charCodeAt(i)) | 0
   const h = Math.abs(hash)
-  const row = h % 32
-  const col = (h >> 5) % 16
-  return { dx: -col * (bandW + 100), dy: row * (bandH + 100) }
+  // Fixed cell steps (NOT derived from layout/viewport) so the HUD can recompute
+  // the identical offset from (identity, device) alone and compensate it — the
+  // viewer's own layout then renders in its canonical screen position regardless
+  // of which zone its shapes physically occupy. Steps are large enough to clear
+  // any layout's footprint. 16 cols × 32 rows = 512 cells → collisions rare.
+  const col = h % 16
+  const row = (h >> 4) % 32
+  return { dx: -col * 4000, dy: row * 2500 }
 }
 
 export function createFleetLayout(editor: Editor, agents: any[], variant: '2col' | '3col' | 'wide' | 'grid' | 'touch' = '3col') {
@@ -353,7 +357,7 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
     // column); dy bands them vertically. My HUD view is unaffected — its camera
     // follows my own shapes' bounds — so this only separates the underlying
     // canvas shapes, which is what keeps a foreign layout from overlapping mine.
-    const { dx, dy } = layoutOffset(myId, myDevice, leftContentW + rightW, totalH)
+    const { dx, dy } = layoutOffset(myId, myDevice)
     anchorX += dx
     anchorY += dy
 
@@ -482,8 +486,10 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
       const chatWide = Math.round(chatW3 * 1.5)
       // Left group's right edge already sits marginGap left of the document
       // (via anchorX). The right-margin chat's left edge sits marginGap right
-      // of the document — both in page coords, so the HUD maps them 1:1.
-      const rightChatX = docMaxRight + marginGap
+      // of the document — both in page coords, so the HUD maps them 1:1. Add the
+      // same dx so the WHOLE layout translates as one rigid unit (the HUD then
+      // compensates that dx, rendering every shape in its canonical position).
+      const rightChatX = docMaxRight + marginGap + dx
 
       shapes.push(
         {

@@ -13,8 +13,8 @@ import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from '
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { useFleetAgents, useFleetIdentity } from '../fleet-data-adapter'
 // @ts-ignore — vanilla JS module
-import { getHumanId } from '../fleet/fleet-data.mjs'
-import { getMyAnchorId, isMyFleetShape, FLEET_SHAPE_TYPES, adoptLegacyFleetShapes } from '../shapes/fleet-utils'
+import { getHumanId, getDeviceId } from '../fleet/fleet-data.mjs'
+import { getMyAnchorId, isMyFleetShape, FLEET_SHAPE_TYPES, adoptLegacyFleetShapes, layoutOffset } from '../shapes/fleet-utils'
 import { SuggestionTip } from '../shapes/FleetChatShape'
 import { log } from '../logger'
 import './FleetHUD.css'
@@ -705,7 +705,15 @@ export function FleetHUD({
       if (b && b.x < minPageX) minPageX = b.x
     }
     const docLeftScreen = mainEditor.pageToScreen({ x: minPageX, y: 0 }).x
-    panOffsetRef.current = docLeftScreen - minPageX
+    // Compensate this (identity, device)'s layout offset so the viewer's OWN
+    // shapes render in their canonical doc-relative position no matter which
+    // canvas zone they physically occupy. createFleetLayout (and adoption)
+    // translate the whole own-layout by exactly layoutOffset(id, device); undoing
+    // its dx here — and dy via cameraY below (which derives from fleetBounds.y) —
+    // pins the HUD to the left margin regardless of the offset. Without this the
+    // offset drags the HUD off into the hash zone and out of the margin.
+    const off = layoutOffset(getHumanId(), getDeviceId())
+    panOffsetRef.current = docLeftScreen - minPageX - off.dx
     cameraYRef.current = TOP_PAD - fleetBounds.y
     // This is a *derived default*, not a user-chosen position. Do NOT persist it:
     // a saved anchor may simply be unsynced (large multi-machine rooms deliver it
