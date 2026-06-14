@@ -551,6 +551,15 @@ type SkillState = {
   read: string[]
   owed: { skill: string; scope: string; trigger: string | null }[]
   dismissed: { skill: string; reason: string; scope: string; trigger: string | null }[]
+  cards?: { drill: string; gradient: string | null; pass: boolean | null; gradedAt?: string }[]
+}
+
+// The orientation gradient → a colored dot, matching teacher's report-card icons.
+function drillGradeIcon(g: string | null): string {
+  if (g === 'oriented') return '🟢'
+  if (g === 'recovers') return '🟡'
+  if (g == null) return '⚪️'
+  return '🔴' // drifts / drifts-at-<stage> / anything else
 }
 
 function SkillHoverPane({ agentId, agentName, anchorRect, onMouseEnter, onMouseLeave }: {
@@ -585,9 +594,15 @@ function SkillHoverPane({ agentId, agentName, anchorRect, onMouseEnter, onMouseL
   const read = data?.read || []
   const owed = data?.owed || []
   const dismissed = data?.dismissed || []
-  const empty = !loading && read.length === 0 && owed.length === 0 && dismissed.length === 0
+  const cards = data?.cards || []
+  const empty = !loading && read.length === 0 && owed.length === 0 && dismissed.length === 0 && cards.length === 0
 
-  return (
+  // Portal to <body>: the pane is position:fixed, but a fixed element inside the
+  // TLDraw canvas's CSS transform is positioned relative to that transform, not
+  // the viewport — so it lands far from the hovered name (whose rect is in
+  // viewport coords). Portaling out of the transformed tree makes fixed coords
+  // viewport-relative again (same fix as TerminalHoverPane).
+  return createPortal((
     <div
       className="fleet-skill-hover-pane"
       style={style}
@@ -595,12 +610,22 @@ function SkillHoverPane({ agentId, agentName, anchorRect, onMouseEnter, onMouseL
       onMouseLeave={onMouseLeave}
       onPointerDown={stopEventPropagation}
     >
-      <div className="fleet-skill-hover-head">{agentName} · skills</div>
+      <div className="fleet-skill-hover-head">{agentName}</div>
       {loading && <div className="fleet-skill-hover-empty">…</div>}
       {empty && <div className="fleet-skill-hover-empty">no skill activity yet</div>}
+      {cards.length > 0 && (
+        <div className="fleet-skill-hover-section">
+          <div className="fleet-skill-hover-label read">drills ({cards.length})</div>
+          <div className="fleet-skill-hover-chips">
+            {cards.map(c => (
+              <span key={c.drill} className="fleet-skill-chip read">{drillGradeIcon(c.gradient)} {c.drill}</span>
+            ))}
+          </div>
+        </div>
+      )}
       {owed.length > 0 && (
         <div className="fleet-skill-hover-section">
-          <div className="fleet-skill-hover-label owed">owes ({owed.length})</div>
+          <div className="fleet-skill-hover-label owed">skills owed ({owed.length})</div>
           <div className="fleet-skill-hover-chips">
             {owed.map(o => <span key={o.skill} className="fleet-skill-chip owed">{o.skill}</span>)}
           </div>
@@ -608,7 +633,7 @@ function SkillHoverPane({ agentId, agentName, anchorRect, onMouseEnter, onMouseL
       )}
       {dismissed.length > 0 && (
         <div className="fleet-skill-hover-section">
-          <div className="fleet-skill-hover-label dismissed">dismissed ({dismissed.length})</div>
+          <div className="fleet-skill-hover-label dismissed">skills dismissed ({dismissed.length})</div>
           {dismissed.map(d => (
             <div key={d.skill} className="fleet-skill-dismissed-row">
               <span className="fleet-skill-chip dismissed">{d.skill}</span>
@@ -619,14 +644,14 @@ function SkillHoverPane({ agentId, agentName, anchorRect, onMouseEnter, onMouseL
       )}
       {read.length > 0 && (
         <div className="fleet-skill-hover-section">
-          <div className="fleet-skill-hover-label read">read ({read.length})</div>
+          <div className="fleet-skill-hover-label read">skills read ({read.length})</div>
           <div className="fleet-skill-hover-chips">
             {read.map(s => <span key={s} className="fleet-skill-chip read">{s}</span>)}
           </div>
         </div>
       )}
     </div>
-  )
+  ), document.body)
 }
 
 // Recursively read a FileSystemDirectoryEntry, returning { file, path } pairs
@@ -1782,6 +1807,30 @@ function FleetChatInner({ shape }: { shape: any }) {
 
     return sorted
   }, [events])
+
+  // Standing diagnostic — does the message list momentarily empty? When
+  // chatMessages hits 0 the render swaps the Virtuoso list for the "No messages"
+  // div (a different DOM node), which remounts the scroller and can read as a
+  // flash/blank. These two transitions are the fingerprint to look for if the
+  // history ever vanishes-and-returns. warn (notable); grep `chat-scroll`.
+  const _prevMsgLen = useRef(chatMessages.length)
+  useEffect(() => {
+    if (chatMessages.length === 0 && _prevMsgLen.current !== 0) {
+      log.warn('chat-scroll', 'message list emptied → "No messages" branch (scroller will remount)', { prev: _prevMsgLen.current })
+    } else if (chatMessages.length !== 0 && _prevMsgLen.current === 0) {
+      log.warn('chat-scroll', 'message list refilled 0→N (Virtuoso remounts)', { now: chatMessages.length })
+    }
+    _prevMsgLen.current = chatMessages.length
+  }, [chatMessages.length])
+
+  // Standing diagnostic — the scroll container's DOM node identity. A change
+  // here means the scroller was mounted or REPLACED (e.g. the empty-branch swap
+  // above, or a Virtuoso remount). A replacement mid-session is the signature of
+  // a flash; routine on first mount. debug.
+  useEffect(() => {
+    log.debug('chat-scroll', 'scroll node mounted/replaced', { hasEl: !!chatLogEl, msgCount: chatMessages.length })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatLogEl])
 
   // Fetch macros for any preamble doc referenced by a message we haven't cached.
   useEffect(() => {
@@ -4472,6 +4521,22 @@ function FleetChatInner({ shape }: { shape: any }) {
                 log.warn('chat-scroll', 'TRACE content grew', { prev, h, gapNow, follow, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
               }
               if (grew && follow) {
+                // Glue to the true bottom SYNCHRONOUSLY, in the same frame the
+                // height grew, so late in-place growth (math/links/multiline
+                // rendering a second pass) extends the content downward with no
+                // visible gap. Without this the gap opened first and pinHard()'s
+                // scrollToIndex snapped it shut a frame later — the visible
+                // "kick"/bounce. Guarded to grew (never shrink), so the
+                // stale-tall-tail failure pinHard's comment warns about cannot
+                // bite here. pinHard stays as the convergence backstop.
+                const gapBeforeGlue = el ? Math.round(el.scrollHeight - (el.scrollTop + el.clientHeight)) : null
+                if (el) el.scrollTop = el.scrollHeight
+                const gapAfterGlue = el ? Math.round(el.scrollHeight - (el.scrollTop + el.clientHeight)) : null
+                // The kick-fix signature: gapBeforeGlue is how far the view would
+                // have jumped (the old "kick"); gapAfterGlue should be ~0 because
+                // we glued synchronously this frame. A large gapBeforeGlue with
+                // ~0 gapAfterGlue = the fix absorbed a kick.
+                log.debug('chat-scroll', 'growth bottom-glue', { gapBeforeGlue, gapAfterGlue })
                 pinHard()
                 requestAnimationFrame(() => {
                   const el2 = chatLogEl

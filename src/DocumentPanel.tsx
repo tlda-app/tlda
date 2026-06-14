@@ -765,15 +765,18 @@ function VoiceNoteButtonInner() {
       title={_isTouchDevice ? 'New voice note' : (recording ? 'Stop recording' : isPlacing ? 'Cancel placement' : 'Voice note')}
     >
       {/* Mic inside a sticky-note silhouette — "voice → note". The note shape is
-          the noun, the mic the modifier, so it reads as a note-maker not a plain mic. */}
-      <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-        {/* note card with a folded top-right corner */}
-        <path d="M11.5 2.5H4.2A1.7 1.7 0 0 0 2.5 4.2V13.8A1.7 1.7 0 0 0 4.2 15.5H13.8A1.7 1.7 0 0 0 15.5 13.8V6.5Z" />
-        <path d="M11.5 2.5V6.5H15.5" />
-        {/* mic centered in the note */}
-        <rect x="7.6" y="6" width="2.8" height="4" rx="1.4" fill="currentColor" stroke="none" />
-        <path d="M6.3 9.2a2.7 2.7 0 0 0 5.4 0" strokeWidth="1.1" />
-        <line x1="9" y1="11.9" x2="9" y2="13.2" strokeWidth="1.1" />
+          the noun, the mic the modifier, so it reads as a note-maker not a plain mic.
+          20px + a 1.18 fill-scale match the highlighter button's visual size. */}
+      <svg width="20" height="20" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+        <g transform="translate(9 9) scale(1.18) translate(-9 -9)">
+          {/* note card with a folded top-right corner */}
+          <path d="M11.5 2.5H4.2A1.7 1.7 0 0 0 2.5 4.2V13.8A1.7 1.7 0 0 0 4.2 15.5H13.8A1.7 1.7 0 0 0 15.5 13.8V6.5Z" />
+          <path d="M11.5 2.5V6.5H15.5" />
+          {/* mic centered in the note */}
+          <rect x="7.6" y="6" width="2.8" height="4" rx="1.4" fill="currentColor" stroke="none" />
+          <path d="M6.3 9.2a2.7 2.7 0 0 0 5.4 0" strokeWidth="1.1" />
+          <line x1="9" y1="11.9" x2="9" y2="13.2" strokeWidth="1.1" />
+        </g>
       </svg>
     </button>
   )
@@ -901,10 +904,13 @@ function MicToggleButtonInner() {
       onTouchEnd={stopEventPropagation}
       title={on ? 'Dictation on — tap to stop' : 'Dictation off — tap to start'}
     >
-      <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-        <rect x="6.5" y="2" width="5" height="8" rx="2.5" fill={on ? 'currentColor' : 'none'} />
-        <path d="M3.5 8.5a5.5 5.5 0 0 0 11 0" />
-        <line x1="9" y1="14" x2="9" y2="16" />
+      {/* 20px + a 1.15 fill-scale match the highlighter button's visual size. */}
+      <svg width="20" height="20" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+        <g transform="translate(9 9) scale(1.15) translate(-9 -9)">
+          <rect x="6.5" y="2" width="5" height="8" rx="2.5" fill={on ? 'currentColor' : 'none'} />
+          <path d="M3.5 8.5a5.5 5.5 0 0 0 11 0" />
+          <line x1="9" y1="14" x2="9" y2="16" />
+        </g>
       </svg>
     </button>
   )

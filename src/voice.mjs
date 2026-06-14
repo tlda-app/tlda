@@ -581,6 +581,8 @@ export function clearVoiceTarget(textarea) {
     _activeSendTargets = []
     _activeAgentNames = {}
     _activeSendFn = null
+    // Keep recording; just refresh the HUD to the targetless label.
+    if (_recording) showRecordingHud()
   }
 }
 
@@ -625,7 +627,12 @@ export function setVoiceAccumulator(onUpdate, onSend, onStop, label) {
 export function clearVoiceAccumulator(onUpdate) {
   if (_accumulator && _accumulator.onUpdate === onUpdate) {
     _accumulator = null
-    if (_recording) stopRecording()
+    // Deselecting a note clears the target but never stops the recorder —
+    // mirrors clearVoiceTarget. The stream is simply discarded (fillTextarea
+    // returns early with no accumulator/textarea) until a new target is set.
+    // Only the mic button stops recording. Refresh the HUD so it drops the
+    // stale "→ note" label and shows the targetless "recording" state.
+    if (_recording) showRecordingHud()
   }
 }
 
@@ -1457,11 +1464,9 @@ function startRecording() {
   if (_recording) return
   if (_backend === 'chrome' && !SpeechRecognition) return
 
-  if (!_activeTextarea && !_accumulator) {
-    showHud('no chat focused', '#c8956a')
-    fadeHud(2000)
-    return
-  }
+  // No guard on having a target: recording can run targetless. With no
+  // accumulator/textarea, fillTextarea discards the stream until a target is
+  // selected. The mic stays live regardless — only the mic button stops it.
 
   _micChannel?.postMessage('mic-start')
 

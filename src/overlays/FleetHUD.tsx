@@ -16,6 +16,7 @@ import { useFleetAgents, useFleetIdentity } from '../fleet-data-adapter'
 import { getHumanId } from '../fleet/fleet-data.mjs'
 import { getMyAnchorId, isMyFleetShape, FLEET_SHAPE_TYPES } from '../shapes/fleet-utils'
 import { SuggestionTip } from '../shapes/FleetChatShape'
+import { log } from '../logger'
 import './FleetHUD.css'
 
 function saveAnchorOffsets(editor: Editor, panOffset: number, cameraY: number) {
@@ -119,21 +120,44 @@ export function repackFleetShapes(editor: Editor, targetBounds?: { x: number; y:
   editor.updateShapes(updates)
 }
 
+// Returns the page-space bounding box of all of MY fleet shapes, or null when
+// there are none. A null return makes the HUD render nothing (FleetHUD `if
+// (!fleetBounds) return null`), so a *transient* null — shapes present but their
+// page bounds momentarily uncomputable mid-update — would blank/remount the whole
+// HUD. We log both null reasons (kept permanently): they're the signal to look
+// for if the fleet panels ever flash/blank. `fleet-hud` namespace; grep
+// client.log for it.
 function getFleetBounds(editor: Editor): ClipBounds | null {
   const shapes = editor.getCurrentPageShapes()
     .filter(isMyFleetShape)
-  if (shapes.length === 0) return null
+  if (shapes.length === 0) {
+    log.debug('fleet-hud', 'getFleetBounds → null: no fleet shapes on page', {})
+    return null
+  }
 
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  const noBounds: string[] = []
   for (const s of shapes) {
     const bounds = editor.getShapePageBounds(s.id)
-    if (!bounds) continue
+    if (!bounds) { noBounds.push(`${s.type}:${s.id}`); continue }
     minX = Math.min(minX, bounds.x)
     minY = Math.min(minY, bounds.y)
     maxX = Math.max(maxX, bounds.x + bounds.w)
     maxY = Math.max(maxY, bounds.y + bounds.h)
   }
-  if (!isFinite(minX)) return null
+  if (!isFinite(minX)) {
+    // Transient-null: shapes exist but NONE had computable page bounds this
+    // frame. This is the dangerous case — it blanks/remounts the HUD. warn.
+    log.warn('fleet-hud', 'getFleetBounds → null despite present shapes (uncomputable bounds — HUD will blank)', {
+      shapeCount: shapes.length,
+      shapes: shapes.map(s => `${s.type}:${s.id}`),
+      noBounds,
+    })
+    return null
+  }
+  if (noBounds.length > 0) {
+    log.debug('fleet-hud', 'getFleetBounds ok; some shapes lacked bounds (excluded)', { noBounds, shapeCount: shapes.length })
+  }
 
   const PAD = 20
   return {
@@ -212,6 +236,10 @@ export function FleetHUD({
       const hasAddOrRemove = hasAddition || hasRemoval
 
       if (hasAddOrRemove) {
+        log.debug('fleet-hud', 'bounds recompute (fleet shape add/remove)', {
+          added: Object.values(changes.added).filter(isFleetChange).map((r: any) => `${r.type}:${r.id}`),
+          removed: Object.values(changes.removed).filter(isFleetChange).map((r: any) => `${r.type}:${r.id}`),
+        })
         draggingRef.current = false
         setFleetBounds(getFleetBounds(mainEditor))
         // Auto-reflow disabled — it was making things worse, not better.
@@ -233,6 +261,13 @@ export function FleetHUD({
       if (isUserDragging) {
         draggingRef.current = true
       } else {
+        const updatedFleet = Object.values(changes.updated)
+          .filter(([from, to]: any) => isFleetChange(from) || isFleetChange(to))
+          .map(([from, to]: any) => {
+            const changedProps = Object.keys(to.props || {}).filter(k => (from.props || {})[k] !== to.props[k])
+            return { id: to.id, type: to.type, moved: from.x !== to.x || from.y !== to.y, changedProps }
+          })
+        log.debug('fleet-hud', 'bounds recompute (fleet shape update)', { updatedFleet })
         draggingRef.current = false
         setFleetBounds(getFleetBounds(mainEditor))
       }

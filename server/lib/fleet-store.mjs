@@ -405,6 +405,21 @@ export class FleetStore {
       );
     `);
 
+    // Drill report cards — the graded result of a drill, the "how they performed"
+    // half of the education record (skill_reads is the "what they know" half).
+    // One row per (agent, drill); a re-run replaces the prior card.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS drill_cards (
+        agent_id TEXT NOT NULL,
+        drill_id TEXT NOT NULL,
+        gradient TEXT,
+        pass INTEGER,
+        card_json TEXT NOT NULL,
+        graded_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (agent_id, drill_id)
+      );
+    `);
+
     // ---- Boot-path index migration ----
     // These cover the queries that show up as full SCANs in slowquery logs:
     //   SELECT * FROM agents ORDER BY last_seen DESC          → idx_agents_last_seen
@@ -2352,6 +2367,29 @@ export class FleetStore {
     return new Set(
       this.db.prepare('SELECT skill_key FROM skill_reads WHERE agent_id = ?').all(agentId).map(r => r.skill_key)
     );
+  }
+
+  // Store (or replace) a drill report card for an agent.
+  addDrillCard(agentId, drillId, { gradient = null, pass = null, card = {} } = {}) {
+    this.db.prepare(
+      `INSERT INTO drill_cards (agent_id, drill_id, gradient, pass, card_json, graded_at)
+       VALUES (?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(agent_id, drill_id) DO UPDATE SET
+         gradient = excluded.gradient, pass = excluded.pass,
+         card_json = excluded.card_json, graded_at = excluded.graded_at`
+    ).run(agentId, drillId, gradient, pass == null ? null : (pass ? 1 : 0), JSON.stringify(card));
+  }
+
+  // All drill cards for an agent, newest first.
+  getDrillCards(agentId) {
+    return this.db.prepare(
+      'SELECT drill_id, gradient, pass, card_json, graded_at FROM drill_cards WHERE agent_id = ? ORDER BY graded_at DESC'
+    ).all(agentId).map(r => ({
+      drill: r.drill_id, gradient: r.gradient,
+      pass: r.pass == null ? null : !!r.pass,
+      gradedAt: r.graded_at,
+      card: (() => { try { return JSON.parse(r.card_json); } catch { return {}; } })(),
+    }));
   }
 
   close() {

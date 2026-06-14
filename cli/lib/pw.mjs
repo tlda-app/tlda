@@ -1,5 +1,5 @@
 /**
- * tlda pw — one shared playwright-cli browser any agent can drive, with a
+ * tlda-dev pw — one shared playwright-cli browser any agent can drive, with a
  * PER-AGENT TAB so agents never blank each other out.
  *
  * The problem this solves, in two layers:
@@ -16,12 +16,12 @@
  *      whole browser and locking everyone else out.
  *
  * Usage:
- *   tlda pw <verb> [args...]   forward a playwright-cli verb to MY tab
- *   tlda pw acquire            open the shared browser (lazy) + ensure my tab
- *   tlda pw release            close my tab (browser stays up for others)
- *   tlda pw status             session state + my tab + current URL
- *   tlda pw reap               close the whole shared browser (the reaper)
- *   tlda pw center <region>    center the camera on doc | chat | fleet
+ *   tlda-dev pw <verb> [args...]   forward a playwright-cli verb to MY tab
+ *   tlda-dev pw acquire            open the shared browser (lazy) + ensure my tab
+ *   tlda-dev pw release            close my tab (browser stays up for others)
+ *   tlda-dev pw status             session state + my tab + current URL
+ *   tlda-dev pw reap               close the whole shared browser (the reaper)
+ *   tlda-dev pw center <region>    center the camera on doc | chat | fleet
  *
  * Identity (which tab is "mine") comes from TLDA_PW_AS → AGENT_WIN → FLEET_ID →
  * $USER@local, sanitized into a marker stamped on the tab's URL (`pwtab=<key>`).
@@ -88,6 +88,32 @@ function clearTouch() {
 
 function lockScript(repoRoot) {
   return join(repoRoot, 'bin', 'pw-lock.sh')
+}
+
+// ---- hard disable (Skip's kill switch) ----
+//
+// A sentinel file that, while present, makes `tlda-dev pw` REFUSE to open or drive
+// the shared browser for ANYONE. This is the "no windows on my screen" lock:
+// agents (and eliza's reaper) all reach the browser through this wrapper, so
+// gating every launch/drive path here is a single chokepoint. Only `status`,
+// `unlock`, `reap`, and `help` work while disabled. Created by `tlda-dev pw lock`,
+// removed by `tlda-dev pw unlock`.
+const DISABLE_FILE = join(homedir(), '.config', 'tlda', 'pw-disabled')
+function isDisabled() {
+  return existsSync(DISABLE_FILE)
+}
+function disableInfo() {
+  try { return JSON.parse(readFileSync(DISABLE_FILE, 'utf8')) } catch { return {} }
+}
+function writeDisable(by, reason) {
+  try {
+    mkdirSync(dirname(DISABLE_FILE), { recursive: true })
+    writeFileSync(DISABLE_FILE, JSON.stringify({ by, reason: reason || null, ts: Date.now() }))
+    return true
+  } catch (e) { console.error(`pw: WARN could not write disable sentinel: ${e.message}`); return false }
+}
+function clearDisable() {
+  try { rmSync(DISABLE_FILE, { force: true }) } catch (e) { console.error(`pw: WARN could not clear disable sentinel: ${e.message}`) }
 }
 
 function pw(args, opts = {}) {
@@ -381,14 +407,14 @@ export async function cmdPw(args, repoRoot) {
   if (!verb || verb === 'help' || verb === '--help') {
     console.log(
       [
-        'tlda pw — one shared browser, a private tab per agent',
+        'tlda-dev pw — one shared browser, a private tab per agent',
         '',
-        '  tlda pw acquire           open the shared browser + ensure my tab',
-        '  tlda pw release           close my tab (browser stays up for others)',
-        '  tlda pw status            session state + my tab + URL',
-        '  tlda pw reap              close the whole shared browser',
-        '  tlda pw center <region>   center camera on: doc | chat | fleet',
-        '  tlda pw <verb> [args]     forward a playwright-cli verb to MY tab',
+        '  tlda-dev pw acquire           open the shared browser + ensure my tab',
+        '  tlda-dev pw release           close my tab (browser stays up for others)',
+        '  tlda-dev pw status            session state + my tab + URL',
+        '  tlda-dev pw reap              close the whole shared browser',
+        '  tlda-dev pw center <region>   center camera on: doc | chat | fleet',
+        '  tlda-dev pw <verb> [args]     forward a playwright-cli verb to MY tab',
         '                            (goto, click, snapshot, screenshot, eval, …)',
         '',
         `  my tab key: ${myTabKey()}   (override identity with TLDA_PW_AS)`,
@@ -397,9 +423,43 @@ export async function cmdPw(args, repoRoot) {
     return
   }
 
+  // Skip's kill switch: lock / unlock the whole shared browser for everyone.
+  if (verb === 'lock') {
+    writeDisable(me, rest.join(' '))
+    // Take the browser down too, so a lock issued while it's up clears the screen.
+    if (sessionOpen()) { pw(['close'], { stdio: 'inherit' }); console.log('browser reaped') }
+    spawnSync('bash', [lockScript(repoRoot), 'steal', `lock:${me}`], { encoding: 'utf8' })
+    spawnSync('bash', [lockScript(repoRoot), 'release', `lock:${me}`], { encoding: 'utf8' })
+    console.log('playwright LOCKED — `tlda-dev pw` will not open a browser for anyone. Unlock: tlda-dev pw unlock')
+    return
+  }
+  if (verb === 'unlock') {
+    if (!isDisabled()) { console.log('playwright was not locked'); return }
+    clearDisable()
+    console.log('playwright unlocked — `tlda-dev pw` can open the shared browser again')
+    return
+  }
+
+  // While locked, refuse anything that could open or drive the browser. Only
+  // status / unlock / reap / help / lock are allowed through.
+  if (isDisabled() && !['status', 'unlock', 'reap', 'help', '--help', 'lock'].includes(verb)) {
+    const info = disableInfo()
+    const ago = info.ts ? `${Math.round((Date.now() - info.ts) / 1000)}s ago` : 'unknown when'
+    console.error(
+      `playwright is LOCKED by ${info.by || 'Skip'} (${ago})${info.reason ? ` — "${info.reason}"` : ''}.\n` +
+        '  No browser will open. This is deliberate — Skip turned playwright off.\n' +
+        '  Do NOT work around it. To re-enable: tlda-dev pw unlock'
+    )
+    process.exit(3)
+  }
+
   if (verb === 'status') {
     const lk = lockStatus(repoRoot)
     const open = sessionOpen()
+    if (isDisabled()) {
+      const info = disableInfo()
+      console.log(`DISABLED: playwright is LOCKED by ${info.by || 'Skip'}${info.reason ? ` — "${info.reason}"` : ''} (unlock: tlda-dev pw unlock)`)
+    }
     console.log(`lock:    ${lk ? `${lk.holder} (${lk.ageSecs}s ago)` : 'unlocked'}`)
     console.log(`browser: ${open ? 'up' : 'down'} (session "${SESSION}")`)
     if (open) {
@@ -412,12 +472,16 @@ export async function cmdPw(args, repoRoot) {
   }
 
   if (verb === 'acquire') {
-    ensureOpen(repoRoot)
     if (!lockWithWait(repoRoot, me)) {
       console.error('could not take the pw lock — another agent is mid-verb; try again')
       process.exit(1)
     }
     try {
+      // ensureOpen runs INSIDE the lock so concurrent agents can't each launch /
+      // recover the browser at once. That race is what produced the kill+reopen
+      // thrash — every reopen raises a headed window over Skip. Serialized, only
+      // the first agent opens; the rest find it up and reuse it (no raise).
+      ensureOpen(repoRoot)
       const idx = selectMyTab()
       if (idx == null) console.error("pw: couldn't resolve a tab (daemon wedged or session down) — try again when the page is idle")
       else console.log(`browser up; my tab #${idx} (key ${myTabKey()})`)
@@ -459,14 +523,17 @@ export async function cmdPw(args, repoRoot) {
   if (BLOCKED_VERBS.has(verb)) {
     console.error(
       `"${verb}" is managed for you — you get your own tab automatically.\n` +
-        `  • start:  tlda pw acquire\n` +
-        `  • stop:   tlda pw release   (or  tlda pw reap  to close the browser)`
+        `  • start:  tlda-dev pw acquire\n` +
+        `  • stop:   tlda-dev pw release   (or  tlda-dev pw reap  to close the browser)`
     )
     process.exit(2)
   }
 
-  // ---- forwarded verb: short lock → select my tab → (rewrite) → forward ----
-  ensureOpen(repoRoot)
+  // ---- forwarded verb: short lock → ensure open → select my tab → forward ----
+  // ensureOpen runs INSIDE the lock (not before it) so two agents arriving at
+  // once can't both launch/recover the browser — that race is what kill+reopened
+  // the window and raised it over Skip. The first holder opens; the rest wait,
+  // then find it up and just reuse their tab.
   if (!lockWithWait(repoRoot, me)) {
     const lk = lockStatus(repoRoot)
     console.error(`pw busy — ${lk ? `${lk.holder} holding (${lk.ageSecs}s)` : 'another agent'}. Try again.`)
@@ -474,6 +541,7 @@ export async function cmdPw(args, repoRoot) {
   }
   let code = 0
   try {
+    ensureOpen(repoRoot)
     const idx = selectMyTab()
     if (idx == null) {
       // selectMyTab couldn't resolve my tab (daemon wedged or session down). Do
