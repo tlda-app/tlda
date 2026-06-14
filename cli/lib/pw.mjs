@@ -90,6 +90,32 @@ function lockScript(repoRoot) {
   return join(repoRoot, 'bin', 'pw-lock.sh')
 }
 
+// ---- hard disable (Skip's kill switch) ----
+//
+// A sentinel file that, while present, makes `tlda pw` REFUSE to open or drive
+// the shared browser for ANYONE. This is the "no windows on my screen" lock:
+// agents (and eliza's reaper) all reach the browser through this wrapper, so
+// gating every launch/drive path here is a single chokepoint. Only `status`,
+// `unlock`, `reap`, and `help` work while disabled. Created by `tlda pw lock`,
+// removed by `tlda pw unlock`.
+const DISABLE_FILE = join(homedir(), '.config', 'tlda', 'pw-disabled')
+function isDisabled() {
+  return existsSync(DISABLE_FILE)
+}
+function disableInfo() {
+  try { return JSON.parse(readFileSync(DISABLE_FILE, 'utf8')) } catch { return {} }
+}
+function writeDisable(by, reason) {
+  try {
+    mkdirSync(dirname(DISABLE_FILE), { recursive: true })
+    writeFileSync(DISABLE_FILE, JSON.stringify({ by, reason: reason || null, ts: Date.now() }))
+    return true
+  } catch (e) { console.error(`pw: WARN could not write disable sentinel: ${e.message}`); return false }
+}
+function clearDisable() {
+  try { rmSync(DISABLE_FILE, { force: true }) } catch (e) { console.error(`pw: WARN could not clear disable sentinel: ${e.message}`) }
+}
+
 function pw(args, opts = {}) {
   return spawnSync('playwright-cli', [`-s=${SESSION}`, ...args], { encoding: 'utf8', ...opts })
 }
@@ -397,9 +423,43 @@ export async function cmdPw(args, repoRoot) {
     return
   }
 
+  // Skip's kill switch: lock / unlock the whole shared browser for everyone.
+  if (verb === 'lock') {
+    writeDisable(me, rest.join(' '))
+    // Take the browser down too, so a lock issued while it's up clears the screen.
+    if (sessionOpen()) { pw(['close'], { stdio: 'inherit' }); console.log('browser reaped') }
+    spawnSync('bash', [lockScript(repoRoot), 'steal', `lock:${me}`], { encoding: 'utf8' })
+    spawnSync('bash', [lockScript(repoRoot), 'release', `lock:${me}`], { encoding: 'utf8' })
+    console.log('playwright LOCKED — `tlda pw` will not open a browser for anyone. Unlock: tlda pw unlock')
+    return
+  }
+  if (verb === 'unlock') {
+    if (!isDisabled()) { console.log('playwright was not locked'); return }
+    clearDisable()
+    console.log('playwright unlocked — `tlda pw` can open the shared browser again')
+    return
+  }
+
+  // While locked, refuse anything that could open or drive the browser. Only
+  // status / unlock / reap / help / lock are allowed through.
+  if (isDisabled() && !['status', 'unlock', 'reap', 'help', '--help', 'lock'].includes(verb)) {
+    const info = disableInfo()
+    const ago = info.ts ? `${Math.round((Date.now() - info.ts) / 1000)}s ago` : 'unknown when'
+    console.error(
+      `playwright is LOCKED by ${info.by || 'Skip'} (${ago})${info.reason ? ` — "${info.reason}"` : ''}.\n` +
+        '  No browser will open. This is deliberate — Skip turned playwright off.\n' +
+        '  Do NOT work around it. To re-enable: tlda pw unlock'
+    )
+    process.exit(3)
+  }
+
   if (verb === 'status') {
     const lk = lockStatus(repoRoot)
     const open = sessionOpen()
+    if (isDisabled()) {
+      const info = disableInfo()
+      console.log(`DISABLED: playwright is LOCKED by ${info.by || 'Skip'}${info.reason ? ` — "${info.reason}"` : ''} (unlock: tlda pw unlock)`)
+    }
     console.log(`lock:    ${lk ? `${lk.holder} (${lk.ageSecs}s ago)` : 'unlocked'}`)
     console.log(`browser: ${open ? 'up' : 'down'} (session "${SESSION}")`)
     if (open) {
