@@ -1816,9 +1816,9 @@ function FleetChatInner({ shape }: { shape: any }) {
   const _prevMsgLen = useRef(chatMessages.length)
   useEffect(() => {
     if (chatMessages.length === 0 && _prevMsgLen.current !== 0) {
-      log.warn('chat-scroll', 'message list emptied → "No messages" branch (scroller will remount)', { prev: _prevMsgLen.current })
+      log.debug('chat-scroll', 'message list emptied → "No messages" branch (scroller will remount)', { prev: _prevMsgLen.current })
     } else if (chatMessages.length !== 0 && _prevMsgLen.current === 0) {
-      log.warn('chat-scroll', 'message list refilled 0→N (Virtuoso remounts)', { now: chatMessages.length })
+      log.debug('chat-scroll', 'message list refilled 0→N (Virtuoso remounts)', { now: chatMessages.length })
     }
     _prevMsgLen.current = chatMessages.length
   }, [chatMessages.length])
@@ -2873,7 +2873,7 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   // Imperative scroll-to-bottom for the floating ⇣ button.
   const scrollToBottom = useCallback(() => {
-    log.warn('chat-scroll', 'scrollToBottom (user click ⇣)')
+    log.debug('chat-scroll', 'scrollToBottom (user click ⇣)')
     // Clear the scroll-up flag BEFORE pinHard: pinHard's step() bails
     // immediately when userScrolledUp is set (and we're not hard-locked), so
     // calling it first made the click a no-op — that was the "click twice to
@@ -2897,7 +2897,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       const h = el.clientHeight
       if (h !== prevH) {
         const pin = !userScrolledUpRef.current || hardLockedRef.current
-        log.warn('chat-scroll', 'container resize', { prevH, h, atBottom: isAtBottomRef.current, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current, action: pin ? 'pin' : 'skip' })
+        log.debug('chat-scroll', 'container resize', { prevH, h, atBottom: isAtBottomRef.current, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current, action: pin ? 'pin' : 'skip' })
         if (pin) pinHard()
       }
       prevH = h
@@ -2919,7 +2919,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     const prev = prevItemCountRef.current
     prevItemCountRef.current = allItems.length
     if (allItems.length > prev && (!userScrolledUpRef.current || hardLockedRef.current)) {
-      log.warn('chat-scroll', 'force-pin on item grow', { prev, now: allItems.length, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
+      log.debug('chat-scroll', 'force-pin on item grow', { prev, now: allItems.length, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
       requestAnimationFrame(pinHard)
     }
   }, [allItems.length, pinHard])
@@ -2952,7 +2952,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (!hardLockedRef.current) {
         userScrolledUpRef.current = gap > FOLLOW_THRESHOLD
       }
-      log.warn('chat-scroll', 'user scroll', { gap, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
+      log.debug('chat-scroll', 'user scroll', { gap, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
     }
     el.addEventListener('fleet-user-scroll', onUserScroll as EventListener)
     return () => el.removeEventListener('fleet-user-scroll', onUserScroll as EventListener)
@@ -3007,8 +3007,8 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Logs the chat's mount/unmount (to confirm or rule out remount-resets) and
   // every scroll event with its attributed cause (our pin vs. anything else).
   useEffect(() => {
-    log.warn('chat-scroll', 'TRACE mount')
-    return () => log.warn('chat-scroll', 'TRACE unmount')
+    log.debug('chat-scroll', 'TRACE mount')
+    return () => log.debug('chat-scroll', 'TRACE unmount')
   }, [])
   useEffect(() => {
     const el = chatLogEl
@@ -3020,7 +3020,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       const gap = Math.round(el.scrollHeight - (el.scrollTop + el.clientHeight))
       const dir = top > prevTop ? 'down' : top < prevTop ? 'up' : 'same'
       const cause = now < programmaticUntilRef.current ? 'pin' : 'other'
-      log.warn('chat-scroll', 'TRACE scroll', {
+      log.debug('chat-scroll', 'TRACE scroll', {
         top, sh: el.scrollHeight, ch: el.clientHeight, gap, dir, cause,
         scrolledUp: userScrolledUpRef.current, atBottom: isAtBottomRef.current,
       })
@@ -4518,7 +4518,7 @@ function FleetChatInner({ shape }: { shape: any }) {
               const el = chatLogEl
               const gapNow = el ? Math.round(el.scrollHeight - (el.scrollTop + el.clientHeight)) : null
               if (grew) {
-                log.warn('chat-scroll', 'TRACE content grew', { prev, h, gapNow, follow, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
+                log.debug('chat-scroll', 'TRACE content grew', { prev, h, gapNow, follow, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
               }
               if (grew && follow) {
                 // Glue to the true bottom SYNCHRONOUSLY, in the same frame the
@@ -4541,7 +4541,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                 requestAnimationFrame(() => {
                   const el2 = chatLogEl
                   const gapAfter = el2 ? Math.round(el2.scrollHeight - (el2.scrollTop + el2.clientHeight)) : null
-                  log.warn('chat-scroll', 'TRACE after pin', { gapAfter })
+                  log.debug('chat-scroll', 'TRACE after pin', { gapAfter })
                 })
               }
             }}
@@ -4549,7 +4549,7 @@ function FleetChatInner({ shape }: { shape: any }) {
               const el = chatLogEl
               const gap = el ? (el.scrollHeight - (el.scrollTop + el.clientHeight)) : null
               if (isAtBottomRef.current !== atBottom) {
-                log.warn('chat-scroll', atBottom ? 'pinned to bottom' : 'left bottom', {
+                log.debug('chat-scroll', atBottom ? 'pinned to bottom' : 'left bottom', {
                   scrollTop: el?.scrollTop,
                   scrollHeight: el?.scrollHeight,
                   clientHeight: el?.clientHeight,
