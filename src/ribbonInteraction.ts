@@ -135,16 +135,49 @@ function getSegments(editor: Editor): RibbonSegment[] {
   catch { return [] }
 }
 
+// Largest vertical gap (canvas px) across which two same-status segments are
+// still considered "touching" and get coalesced. Smaller than the eraser band
+// (2*ERASE_RADIUS) so an erased gap always survives — erase visibly clears.
+const COALESCE_GAP_PX = 1.5
+
+// Collapse the segment list to its minimal form: drop empty/unchecked spans,
+// then merge any run of contiguous same-status segments into one. This is what
+// bounds the count — without it, every mark and every erase-split adds a
+// fragment that never merges back (the 43k-segment bloat). Run on every write.
+export function normalizeSegments(segments: RibbonSegment[]): RibbonSegment[] {
+  const colored = segments
+    .filter(s => s.status !== 'unchecked' && s.y2 - s.y1 > 0)
+    .sort((a, b) => a.y1 - b.y1 || a.y2 - b.y2)
+
+  const out: RibbonSegment[] = []
+  for (const seg of colored) {
+    const last = out[out.length - 1]
+    if (last && last.status === seg.status && seg.y1 <= last.y2 + COALESCE_GAP_PX) {
+      // Same status and touching/overlapping — extend the run. Take the union
+      // span and carry the lower endpoint's line/file so remap stays anchored.
+      if (seg.y2 > last.y2) {
+        last.y2 = seg.y2
+        last.endLine = seg.endLine
+        last.endFile = seg.endFile
+      }
+    } else {
+      out.push({ ...seg })
+    }
+  }
+  return out
+}
+
 function setSegments(editor: Editor, segments: RibbonSegment[]) {
   const shape = getRibbonShape(editor)
   if (!shape) return
+  const normalized = normalizeSegments(segments)
   editor.store.update(RIBBON_SHAPE_ID, (s: any) => ({
     ...s,
-    props: { ...s.props, segments: JSON.stringify(segments) },
+    props: { ...s.props, segments: JSON.stringify(normalized) },
   }))
 }
 
-function mergeSegment(
+export function mergeSegment(
   existing: RibbonSegment[],
   newSeg: RibbonSegment
 ): RibbonSegment[] {
@@ -347,10 +380,15 @@ export async function remapRibbonSegments(
     updated.push({ ...seg, y1, y2 })
   }
 
-  if (updated.length !== segments.length ||
-      updated.some((s, i) => Math.abs(s.y1 - segments[i].y1) > 0.5 || Math.abs(s.y2 - segments[i].y2) > 0.5)) {
+  // Write if the remap moved anything OR if coalescing would shrink the set
+  // (this is the self-heal path: a bloated doc collapses on its next reload,
+  // even when every segment's y is unchanged).
+  const normalized = normalizeSegments(updated)
+  const positionsChanged = updated.length !== segments.length ||
+    updated.some((s, i) => Math.abs(s.y1 - segments[i].y1) > 0.5 || Math.abs(s.y2 - segments[i].y2) > 0.5)
+  if (positionsChanged || normalized.length !== segments.length) {
     setSegments(editor, updated)
-    console.log(`[Ribbon] Remapped ${updated.length} segment(s) after rebuild`)
+    console.log(`[Ribbon] Remapped ${segments.length} → ${normalized.length} segment(s) after rebuild`)
   }
 }
 
