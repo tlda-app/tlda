@@ -57,6 +57,15 @@ const DEFAULT_W = 400
 const DEFAULT_H = 600
 const FLEET_API = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5176'
 
+// On touch devices the chat input is voice-only: tapping it focuses the field
+// for dictation, and iOS must NOT raise the on-screen keyboard (it eats half the
+// screen). inputmode="none" reliably suppresses the soft keyboard on a <textarea>
+// while keeping focus + programmatic/hardware-keyboard input working.
+// maxTouchPoints (not pointer:coarse) — a Magic Keyboard/trackpad makes the
+// iPad's primary pointer "fine", which would wrongly drop the no-keyboard rule.
+const _isTouchDevice = (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
+  || (typeof location !== 'undefined' && new URLSearchParams(location.search).has('forcetouch'))
+
 function getFleetStyleVars(): React.CSSProperties {
   return {
     '--fleet-base-font': `${getPref('fleet-font-size')}px`,
@@ -2337,9 +2346,11 @@ function FleetChatInner({ shape }: { shape: any }) {
       window.dispatchEvent(new CustomEvent('annotation-viewer-hide'))
     }
 
-    // Chip hover — show popover for msg/activity/tool reference chips
+    // Chip hover — show popover for msg/activity/tool reference chips. The
+    // apply-line's proposal ref (.apply-ref) opts into this same machinery via a
+    // data-token, so we don't maintain a second hover handler.
     async function onChipOver(e: MouseEvent) {
-      const chip = (e.target as HTMLElement).closest('.ref-chip[data-token]') as HTMLElement | null
+      const chip = (e.target as HTMLElement).closest('.ref-chip[data-token], .apply-ref[data-token]') as HTMLElement | null
       if (!chip) return
       // Don't handle annotation chips here (they use AnnotationViewer)
       if (chip.classList.contains('ref-chip-annotation')) return
@@ -2349,6 +2360,28 @@ function FleetChatInner({ shape }: { shape: any }) {
       const token = chip.getAttribute('data-token') || ''
       const refId = token.replace(/^«/, '').replace(/»$/, '').split('#')[1]
       if (!refId) return
+      // Proposal ref (apply line): the full diff is on the propose card already in
+      // the chat DOM, stamped with data-proposal-id. Clone it into the standard
+      // chip-hover popover — the proposal store itself is in-process in the MCP
+      // server, not reachable from the browser, so there's nothing to fetch.
+      if (refId.startsWith('proposal:')) {
+        const pid = refId.slice('proposal:'.length)
+        if (!logEl) return
+        const card = logEl.querySelector(`.edit-diff-wrap[data-proposal-id="${pid}"]`) as HTMLElement | null
+        if (!card) return
+        document.querySelector('.chip-hover-popover')?.remove()
+        const popover = document.createElement('div')
+        popover.className = 'chip-hover-popover fleet-chat-shape'
+        popover.innerHTML = `<div class="chat-activity-inline-wrap">${card.outerHTML}</div>`
+        const chipRect = chip.getBoundingClientRect()
+        popover.style.position = 'fixed'
+        popover.style.left = `${chipRect.left}px`
+        popover.style.bottom = `${window.innerHeight - chipRect.top + 4}px`
+        popover.style.zIndex = '10000'
+        popover.style.maxWidth = `${w}px`
+        document.body.appendChild(popover)
+        return
+      }
       // Find matching event by timestamp embedded in the refId
       // New format: msg:<dbId> or activity:<dbId> or activity:<dbId>:line<N>
       // Legacy format: msg:fleet:skip:2026-04-18T... or activity:fleet:xxx:ISO
@@ -2483,7 +2516,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
 
     function onChipOut(e: MouseEvent) {
-      const chip = (e.target as HTMLElement).closest('.ref-chip[data-token]')
+      const chip = (e.target as HTMLElement).closest('.ref-chip[data-token], .apply-ref[data-token]')
       if (!chip) return
       const related = e.relatedTarget as HTMLElement | null
       if (related?.closest('.chip-hover-popover')) return
@@ -4784,6 +4817,7 @@ function FleetChatInner({ shape }: { shape: any }) {
               ref={inputRef as any}
               placeholder=""
               rows={1}
+              inputMode={_isTouchDevice ? 'none' : undefined}
               autoCorrect="off"
               autoCapitalize="off"
               autoComplete="off"

@@ -347,7 +347,7 @@ const ACTIVITY_NOISE = new Set([
 ])
 
 // Tools whose results should be captured and forwarded as pretty-printed cards
-const PRETTY_PRINT_TOOLS = new Set(['mcp__tlda__search_logs', 'mcp__tlda__get_thread', 'ScheduleWakeup', 'mcp__tlda__screenshot'])
+const PRETTY_PRINT_TOOLS = new Set(['mcp__tlda__search_logs', 'mcp__tlda__get_thread', 'ScheduleWakeup', 'mcp__tlda__screenshot', 'mcp__tlda__propose_edit'])
 
 function truncatePrettyResult(text, toolName) {
   if (text.length <= 5000) return text

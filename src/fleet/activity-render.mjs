@@ -384,12 +384,14 @@ function renderTexLines(content, macros) {
   }).join('<br>')
 }
 
-export function renderEditDiff(input, ctx) {
+export function renderEditDiff(input, ctx, opts = {}) {
   if (!input?.old_string || !input?.new_string) return ''
   const { langFromFilePath, highlightSyntax } = ctx
+  // propose_edit names its target `file`; the Edit tool uses `file_path`.
+  const filePath = input.file_path || input.file || ''
   const uid = 'diff-' + Math.random().toString(36).slice(2, 8)
-  const isTeX = input.file_path && /\.tex$/i.test(input.file_path)
-  const lang = !isTeX ? langFromFilePath(input.file_path) : ''
+  const isTeX = filePath && /\.tex$/i.test(filePath)
+  const lang = !isTeX ? langFromFilePath(filePath) : ''
   const renderSide = (str) => {
     if (!isTeX) {
       const escaped = esc(str)
@@ -411,7 +413,18 @@ export function renderEditDiff(input, ctx) {
   const header = shouldFold
     ? `<div class="code-block-header"><span class="code-block-lang">diff</span>${toggleHtml}</div>`
     : ''
-  return `<div class="code-block-wrap code-card edit-diff-wrap">${header}
+  // Location + scope header: which file (and line, when known), how many lines
+  // change. For a propose, a "tentative" badge marks the edit as not-yet-applied.
+  const addCount = (input.new_string.match(/\n/g) || []).length + 1
+  const delCount = (input.old_string.match(/\n/g) || []).length + 1
+  const base = filePath ? filePath.split('/').pop() : ''
+  const locText = base ? `${base}${opts.line ? ':' + opts.line : ''}` : ''
+  const tentativeBadge = opts.isPropose ? `<span class="edit-diff-badge edit-diff-tentative">tentative</span>` : ''
+  const locHeader = (locText || tentativeBadge)
+    ? `<div class="edit-diff-loc">${tentativeBadge}${locText ? `<span class="edit-diff-path">${esc(locText)}</span>` : ''}<span class="edit-diff-stat">+${addCount} −${delCount}</span></div>`
+    : ''
+  const propIdAttr = opts.proposalId ? ` data-proposal-id="${esc(opts.proposalId)}"` : ''
+  return `<div class="code-block-wrap code-card edit-diff-wrap${opts.isPropose ? ' edit-diff-propose' : ''}"${propIdAttr}>${locHeader}${header}
     <div class="edit-diff fold-body${isTeX ? ' tex-diff' : ''}${foldCls}" id="${uid}"${foldStyle}>
       <div class="diff-side diff-old"><div class="diff-label">−</div>${renderSide(input.old_string)}</div>
       <div class="diff-side diff-new"><div class="diff-label">+</div>${renderSide(input.new_string)}</div>
@@ -530,6 +543,16 @@ export function dedupTools(toolItems) {
       prev._count++
       continue
     }
+    // A pretty-print result can arrive as a SEPARATE follow-up event after its
+    // tool_use (e.g. propose_edit's result lands a batch later, with an unrelated
+    // tool call in between). It carries the same tool+arg as the original, so
+    // without folding it in here we'd render a duplicate card and only the
+    // follow-up would carry the result. Merge onto the first matching tool item
+    // regardless of adjacency, then drop the follow-up.
+    if (t._prettyResult) {
+      const host = result.find(r => r._key === key && !r._prettyResult)
+      if (host) { host._prettyResult = t._prettyResult; host._count++; continue }
+    }
     if (prev && prev._key === key) {
       prev._count++
       // Merge prettyResult from follow-up event (e.g. _prettyResult events arriving after the tool_use)
@@ -611,6 +634,18 @@ export function renderActivityGroup(group, ctx) {
     const deduped = dedupTools(seg.items)
     const toolLines = deduped.map(t => {
       const num = lineNum++
+      // apply_proposal: don't redraw the whole diff (the propose card already
+      // showed it). A compact "✓ edit applied" line + a reference to the
+      // proposal keeps chat light; hover the reference to see what landed.
+      if ((t._toolName || '').toLowerCase().endsWith('apply_proposal')) {
+        const pid = t._toolInput?.id || ''
+        return `<div class="tool-line tool-apply-line" data-line="${num}" data-tool-name="${esc(t._toolName || '')}">`
+          + `<span class="tool-linenum">${num}</span>`
+          + `<span class="apply-check">✓</span>`
+          + `<span class="apply-text">edit applied</span>`
+          + (pid ? `<span class="apply-ref" data-token="«${esc(pid)}#proposal:${esc(pid)}»">${esc(pid)}</span>` : '')
+          + `</div>`
+      }
       const countHtml = t._count > 1 ? `<span class="tool-count">×${t._count}</span>` : ''
       const toolNameRaw = t._toolName || ''
       const isSkill = toolNameRaw === 'Skill'
@@ -626,15 +661,28 @@ export function renderActivityGroup(group, ctx) {
         arg = skillName ? esc(skillName) : arg
         detail = skillArgs ? `<div class="tool-detail">${esc(skillArgs)}</div>` : ''
       }
-      const isEdit = (t._toolName || '').toLowerCase() === 'edit' && t._toolInput?.old_string && t._toolInput?.new_string
+      const tnLower = (t._toolName || '').toLowerCase()
+      // A propose_edit carries the same {old_string,new_string} triple as Edit,
+      // so it renders as the same diff card — flagged tentative (not yet applied).
+      const isPropose = tnLower.endsWith('propose_edit') && t._toolInput?.old_string && t._toolInput?.new_string
+      const isEdit = (tnLower === 'edit' || isPropose) && t._toolInput?.old_string && t._toolInput?.new_string
       const hasDiff = isEdit ? ' has-diff' : ''
-      const diffHtml = isEdit ? renderEditDiff(t._toolInput, ctx) : ''
+      // The propose result text ("**Proposal proposal-1** …") carries the id the
+      // matching apply_proposal references; stamp it on the card so the apply
+      // line's hover can find this card in the DOM by `data-proposal-id`.
+      const proposalId = isPropose
+        ? (String(t._prettyResult || '').match(/proposal-[\w-]+/)?.[0] || '')
+        : ''
+      const diffHtml = isEdit ? renderEditDiff(t._toolInput, ctx, { isPropose, proposalId }) : ''
       const codeCardHtml = renderCodeCard(t._toolName, t._toolInput, ctx)
       const cmd = toolToCommand(t._toolName, t._toolInput)
       const cmdAttr = cmd ? ` data-cmd="${esc(cmd)}"` : ''
       const copyBtn = cmd ? `<span class="tool-copy" title="Copy command">⎘</span>` : ''
       const showArg = arg && !codeCardHtml
-      const prettyHtml = t._prettyResult
+      // For a propose_edit the diff card already shows the change; its result text
+      // ("**Proposal proposal-N**…") is only consumed to extract the id above, so
+      // don't also render it as a raw result block under the card.
+      const prettyHtml = (t._prettyResult && !isPropose)
         ? renderPrettyResult(t._toolName, t._prettyResult, ctx, t._toolInput, t.timestamp)
         : ''
       return `<div class="tool-line${hasDiff}"${cmdAttr} data-line="${num}" data-tool-name="${esc(t._toolName || '')}" data-tool-arg="${esc(t._toolArg || '')}">`
