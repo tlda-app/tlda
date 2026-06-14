@@ -752,9 +752,9 @@ export function ZoneWidthSlider() {
   )
 }
 
-const FLEET_STATES = ['off', '3col', '2col'] as const
+const FLEET_STATES = ['off', '3col', '2col', 'touch'] as const
 type FleetState = typeof FLEET_STATES[number]
-const FLEET_SHAPE_TYPES_TOC = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-inbox', 'fleet-docview']
+const FLEET_SHAPE_TYPES_TOC = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-inbox', 'fleet-touch-inbox', 'fleet-docview']
 
 function detectFleetState(editor: any): FleetState {
   const fleet = editor.getCurrentPageShapes().filter((s: any) =>
@@ -782,7 +782,8 @@ export function FleetToggle() {
       window.dispatchEvent(new CustomEvent('fleet-hud-reset'))
     } else {
       localStorage.setItem('fleet-hud-expanded', '1')
-      createFleetLayout(editor, allAgents, next === '3col' ? '3col' : '2col')
+      const variant = next === '3col' ? '3col' : next === 'touch' ? 'touch' : '2col'
+      createFleetLayout(editor, allAgents, variant)
     }
   }, [editor, allAgents])
 
@@ -795,6 +796,8 @@ export function FleetToggle() {
     label = <>Fleet|</>
   } else if (nextState === '2col') {
     label = <>Flee|t</>
+  } else if (nextState === 'touch') {
+    label = <>Fleet▯</>
   } else {
     // Next: off → strikethrough
     label = <span style={{ textDecoration: 'line-through' }}>Fleet</span>

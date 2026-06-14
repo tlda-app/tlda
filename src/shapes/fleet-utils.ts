@@ -10,7 +10,7 @@ import { getPref } from '../preferences'
  *  ownership filtering, visibility, copy gating, and hit-test exclusion.
  *  Import this everywhere instead of defining local copies. */
 export const FLEET_SHAPE_TYPES = new Set([
-  'fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview', 'fleet-reaper', 'fleet-inbox',
+  'fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview', 'fleet-reaper', 'fleet-inbox', 'fleet-touch-inbox',
 ])
 
 /**
@@ -89,6 +89,7 @@ export const FLEET_TOOL_DIMS: Record<string, { w: number; h: number }> = {
   'fleet-agents': { w: 400, h: 500 },
   'fleet-search': { w: 400, h: 300 },
   'fleet-inbox': { w: 360, h: 560 },
+  'fleet-touch-inbox': { w: 380, h: 680 },
   'fleet-reaper': { w: 480, h: 360 },
 }
 
@@ -155,7 +156,7 @@ function slotId(userId: string, slot: string) {
   return createShapeId(`fleet-${slot}-${userId.replace('fleet:', '')}`)
 }
 
-export function createFleetLayout(editor: Editor, agents: any[], variant: '2col' | '3col' | 'wide' | 'grid' = '3col') {
+export function createFleetLayout(editor: Editor, agents: any[], variant: '2col' | '3col' | 'wide' | 'grid' | 'touch' = '3col') {
   const myId = getHumanId()
   if (!myId) return
   if (_layoutInFlight) return
@@ -264,6 +265,20 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
       anchorX = (-cam.x + (vb.x + vb.w / 2) / cam.z) - leftContentW / 2
       anchorY = -cam.y + (vb.y + vb.h / 2) / cam.z
       docMaxRight = anchorX + leftContentW
+    }
+
+    // Touch layout: a single container (inbox strip + nested chat), one column.
+    // The container auto-creates its own fleet-chat child, so no other shapes.
+    if (variant === 'touch') {
+      const touchW = chatW3
+      editor.createShapes([{
+        id: slotId(myId, 'touch-inbox'),
+        type: 'fleet-touch-inbox' as any,
+        x: anchorX + leftW + gap, y: anchorY,
+        isLocked: false,
+        props: { w: touchW, h: totalH, userId: myId },
+      }])
+      return
     }
 
     const shapes: any[] = [

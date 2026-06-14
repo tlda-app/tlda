@@ -223,6 +223,17 @@ const customShapeSchemas = {
       sequence: [],
     }),
   },
+  'fleet-touch-inbox': {
+    props: {
+      w: T.number,
+      h: T.number,
+      userId: T.optional(T.string),
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.fleet-touch-inbox',
+      sequence: [],
+    }),
+  },
   'fleet-docview': {
     props: {
       w: T.number,
