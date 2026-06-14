@@ -215,7 +215,11 @@ function FleetTouchInboxInner({ shape }: { shape: any }) {
 
   const selectThread = useCallback((t: Thread) => {
     if (!childChat) return
-    editor.updateShape({
+    // In the HUD overlay, useEditor() is the COPY editor — writes there get
+    // clobbered by the main→copy mirror. Persist the filter on the MAIN shape
+    // (same pattern as FleetChatShape) so click-to-filter actually sticks.
+    const mainEd = (typeof window !== 'undefined' && (window as any).__tldraw_editor__) || editor
+    mainEd.updateShape({
       id: childChat.id,
       type: 'fleet-chat' as any,
       props: { ...childChat.props, filter: partnerFilter(t.partnerName) },
