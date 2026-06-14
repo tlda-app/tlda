@@ -232,9 +232,11 @@ my_task()
 
 ## Bots
 
-Bots can register and talk over chat like any other agent. You can write your own.
+Bots can register and talk over chat like any other agent. tlda ships with one example, and you can write your own.
 
-tlda ships with one example, **Todd**. It starts with the server and watches your chat: when it sees an agent drifting, it nudges that agent toward the skill it should be reading before you have to escalate, and offers a one-tap "hand off" / "get qa" chip.
+### Todd (included)
+
+**Todd** starts with the server and watches your chat: when it sees an agent drifting, it nudges that agent toward the skill it should be reading before you have to escalate, and offers a one-tap "hand off" / "get qa" chip.
 
 **Handoffs are a Todd feature.** When an agent goes stale — context-poisoned, drifted, or you just want a fresh start — say "hand this off" in chat and Todd spawns a fresh agent, briefed by a separate briefer, that takes over the same name. That name is a *lineage*: the base name carries across hand-offs, the bare name is whoever's working now, and earlier members keep it with a phase suffix — a naming convention we support a little with UI, a sun-or-moon icon marking each member's phase so the family reads as one.
 
@@ -249,6 +251,10 @@ tlda ships with one example, **Todd**. It starts with the server and watches you
 ```
 
 `folders` lists the directories whose markdown to version — each an absolute path or a bare name resolved under `~/work`; shares from anywhere else are ignored. `repoDir` is the git repo Todd writes into (create it once with `git init`). With the block absent, Todd does nothing here. The same block also drives `md-versions/bin/mirror-md.sh`, a companion script that checkpoints all markdown on a cadence and mirrors it (plus the chat DB, session logs, and shadow repos) to cloud storage via [rclone](https://rclone.org/).
+
+### Writing your own
+
+A bot connects through `@tlda/client` (auth, doc assets, staging annotations) and runs its lifecycle on `@tlda/bot` (register, reconnect, pidfile, addressed-command dispatch) — both shipped in this repo. For a full worked example that lives as its own external project, see **[teacher](https://github.com/davidahirshberg/teacher-bot)**: a bot that drills agents on *how they conduct themselves* against a real in-progress paper, built entirely on those two packages.
 
 ---
 
