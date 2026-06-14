@@ -607,7 +607,7 @@ async function ensureManagedBotsRunning() {
     const child = cpSpawn(process.execPath, [scriptPath], {
       detached: true,
       stdio: ['ignore', logFd, logFd],
-      env: { ...process.env, TLDA_BOT_NAME: spec.name, TLDA_BOT_PIDFILE: pidFile },
+      env: { ...process.env, ...(spec.env || {}), TLDA_BOT_NAME: spec.name, TLDA_BOT_PIDFILE: pidFile },
     })
     child.unref()
     await new Promise(r => setTimeout(r, 800))
