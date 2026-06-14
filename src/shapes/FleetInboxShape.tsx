@@ -455,6 +455,19 @@ function InlineConvoChat({ thread, ctx, myId, onStartDrag, onClose }: {
 }) {
   const bodyRef = useRef<HTMLDivElement>(null)
   useWheelScroll(bodyRef)
+  // Pin to bottom like a chat: on open and whenever a new message lands while
+  // pinned, keep the newest message visible. (The list is live — thread.messages
+  // is recomputed from the inbox's useFleetEvents stream on every new event.)
+  const pinnedRef = useRef(true)
+  useEffect(() => {
+    const el = bodyRef.current
+    if (el && pinnedRef.current) el.scrollTop = el.scrollHeight
+  }, [thread.messages.length])
+  const onScroll = useCallback(() => {
+    const el = bodyRef.current
+    if (!el) return
+    pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24
+  }, [])
   return (
     <div className="fleet-inbox-inline-chat fleet-chat-shape" onPointerDown={(e) => stopEventPropagation(e)}>
       <div className="fleet-inbox-inline-head">
@@ -468,7 +481,7 @@ function InlineConvoChat({ thread, ctx, myId, onStartDrag, onClose }: {
         <span className={`fleet-inbox-inline-name ${thread.nickClass}`}>{thread.partnerName}</span>
         <span className="fleet-inbox-inline-close" onPointerUp={(e) => { stopEventPropagation(e); onClose() }}>×</span>
       </div>
-      <div ref={bodyRef} className="fleet-inbox-inline-body">
+      <div ref={bodyRef} className="fleet-inbox-inline-body" onScroll={onScroll}>
         {thread.messages.map((m, i) => {
           const lineHtml = renderChatLine(m, ctx)
           if (!lineHtml) return null
