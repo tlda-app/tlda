@@ -26,7 +26,7 @@ import os from 'os'
 import Database from 'better-sqlite3'
 
 export const GOOSE_IDLE_RE = /Enter to send/
-export const GOOSE_WORKING_RE = /Ctrl\+C to interrupt/
+export const GOOSE_WORKING_RE = /Ctrl\+C to interrupt|is compacting/
 export const GOOSE_KICK_SCAN_LINES = 40
 export const GOOSE_KICK_CAP = 4   // consecutive NO-PROGRESS kicks before we give up
 export const GOOSE_KICK_TEXT = 'Continue — your assignment is not finished. Work through the remaining steps, and when you are fully done deliver your result to the requester with chat(). If you are genuinely blocked, say so via chat().'
