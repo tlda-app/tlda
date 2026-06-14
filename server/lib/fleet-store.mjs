@@ -821,6 +821,23 @@ export class FleetStore {
 
   upsertAgent(agent) {
     try {
+      // An agent must not hold a label equal to a live agent's friendly_name —
+      // DNF chat routing treats friendly_names and labels equivalently, so a
+      // colliding label shadows the named agent and breaks filter-by-label.
+      // Strip such labels at write time (only when labels are actually being set).
+      if (Array.isArray(agent.labels) && agent.labels.length) {
+        const taken = new Set(
+          this.db.prepare(
+            'SELECT friendly_name FROM agents WHERE dead = 0 AND friendly_name IS NOT NULL AND id != ?'
+          ).all(agent.id || '').map(r => r.friendly_name)
+        );
+        const filtered = agent.labels.filter(l => !taken.has(l));
+        if (filtered.length !== agent.labels.length) {
+          const dropped = agent.labels.filter(l => taken.has(l));
+          console.log(`[fleet-store] stripped friendly-name-colliding label(s) from ${agent.id}: ${dropped.join(', ')}`);
+          agent = { ...agent, labels: filtered };
+        }
+      }
       this._upsertAgent.run(
         agent.id,
         agent.friendly_name || null,
