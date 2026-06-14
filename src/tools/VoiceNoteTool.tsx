@@ -35,9 +35,12 @@ export class VoiceNoteTool extends StateNode {
     }
   }
 
-  override onEnter = () => {
+  // info.initialPoint (page coords) seeds the ghost when there's no cursor to
+  // start from — the touch button passes a point just left of itself. Mouse
+  // entry passes nothing and uses the live cursor position.
+  override onEnter = (info?: { initialPoint?: { x: number; y: number } }) => {
     const { editor } = this
-    const point = editor.inputs.currentPagePoint
+    const point = info?.initialPoint ?? editor.inputs.currentPagePoint
     const id = createShapeId()
     this._shapeId = id
     editor.createShape({

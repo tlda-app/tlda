@@ -3,9 +3,8 @@ import { useClickActions } from './hooks/useClickActions'
 import { subscribeInputModes, getClicksEnabled } from './inputModes'
 import { setStopRecordingCallback } from './tools/VoiceNoteTool'
 import { setVoiceTarget, clearVoiceTarget, setVoiceAccumulator, stopRecording, isRecording, toggleRecording, voiceTap, onRecordingChange } from './voice.mjs'
-import { getPref } from './preferences'
 import { createPortal } from 'react-dom'
-import { useEditor, useValue, stopEventPropagation, DefaultColorStyle, createShapeId } from 'tldraw'
+import { useEditor, useValue, stopEventPropagation, DefaultColorStyle } from 'tldraw'
 import { toolNameHud } from './overlays/ToolNameHud'
 import type { Editor } from 'tldraw'
 import { DocContext } from './PanelContext'
@@ -711,7 +710,9 @@ function VoiceNoteButtonInner() {
     editor.setCurrentTool('select')
   }, [editor])
 
-  const startPlacement = useCallback(() => {
+  // initialPoint (page coords) seeds the ghost when there's no cursor — touch
+  // passes a point just left of the button; mouse omits it and uses the cursor.
+  const startPlacement = useCallback((initialPoint?: { x: number; y: number }) => {
     const ta = document.createElement('textarea')
     ta.style.cssText = 'position:fixed;opacity:0;pointer-events:none;width:1px;height:1px;top:-9999px'
     document.body.appendChild(ta)
@@ -726,31 +727,22 @@ function VoiceNoteButtonInner() {
       setRecording(false)
     })
     setRecording(true)
-    editor.setCurrentTool('voice-note')
+    editor.setCurrentTool('voice-note', initialPoint ? { initialPoint } : undefined)
   }, [editor])
 
-  // Touch (iPad): drop a new note + select it (the target-follows-selection
-  // listener makes it the dictation sink). Turn recording on if off; never stop.
-  const dropAndTarget = useCallback(() => {
-    const id = createShapeId()
-    const vb = editor.getViewportPageBounds()
-    editor.createShape({
-      id,
-      type: 'math-note' as any,
-      x: vb.center.x - 150,
-      y: vb.center.y - 25,
-      props: { w: 300, h: 50, text: '', color: getPref('voice-note-color'), autoSize: true, collapsed: false },
-      meta: { createdAt: Date.now(), voiceNote: true },
-    })
-    if (!isRecording()) toggleRecording()
-    reassertSelection(editor, [id])
-  }, [editor])
-
-  const handleClick = useCallback(() => {
-    if (_isTouchDevice) { dropAndTarget(); return }
-    if (recording || isPlacing) cancelRecording()
-    else startPlacement()
-  }, [recording, isPlacing, cancelRecording, startPlacement, dropAndTarget])
+  const handleClick = useCallback((e: React.MouseEvent) => {
+    if (recording || isPlacing) { cancelRecording(); return }
+    if (_isTouchDevice) {
+      // No cursor on touch — seed the ghost just left of the button, in page
+      // coords. The voice-note tool then tracks pencil hover and commits where
+      // the pen taps (instead of dumping a note at viewport center).
+      const r = e.currentTarget.getBoundingClientRect()
+      const seed = editor.screenToPage({ x: r.left - 20, y: r.top + r.height / 2 })
+      startPlacement(seed)
+      return
+    }
+    startPlacement()
+  }, [recording, isPlacing, cancelRecording, startPlacement, editor])
 
   const cls = `voice-note-btn${recording ? ' recording' : ''}${isPlacing ? ' placing' : ''}`
 
