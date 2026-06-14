@@ -1483,8 +1483,10 @@ app.get('/api/local-image', requireRead, (req, res) => {
 /** @type {Map<string, Set<string>>} filePath → Set<docName> */
 const backingFileRegistry = new Map()
 function backingRegistryPath() { return join(getProjectsDir(), '..', 'data', 'backing-registry.json') }
-loadBackingRegistry()
-// Supplement persisted registry with shapes from active rooms (async, non-blocking)
+// The registry is derived from live room shapes (self-healing): rebuild clears any
+// stale entries and repopulates from the notes currently in active rooms, so a
+// deleted/gone note can't keep its file-watch alive across a restart. Backed notes
+// also re-register on mount, so rooms that load later repopulate themselves.
 rebuildBackingFileRegistry().catch(e => console.error('[CRITICAL] backing registry rebuild failed:', e.message))
 
 function backingFileRegister(filePath, docName) {
@@ -1494,7 +1496,13 @@ function backingFileRegister(filePath, docName) {
   persistBackingRegistry()
 }
 
-function backingFileUnregister(filePath) {
+function backingFileUnregister(filePath, docName) {
+  const docNames = backingFileRegistry.get(filePath)
+  if (!docNames) return
+  if (docName) {
+    docNames.delete(docName)
+    if (docNames.size > 0) { persistBackingRegistry(); return }
+  }
   backingFileRegistry.delete(filePath)
   sendWatchBackingFiles()
   persistBackingRegistry()
@@ -1520,22 +1528,13 @@ function persistBackingRegistry() {
   } catch (e) { console.error(`[CRITICAL] failed to persist backing registry — file watches will be lost on restart: ${e.message}`) }
 }
 
-function loadBackingRegistry() {
-  try {
-    const raw = readFileSync(backingRegistryPath(), 'utf8')
-    const entries = JSON.parse(raw)
-    backingFileRegistry.clear()
-    for (const { filePath, docNames } of entries) {
-      backingFileRegistry.set(filePath, new Set(docNames))
-    }
-    console.log(`[backing] loaded ${backingFileRegistry.size} file(s) from registry`)
-  } catch (e) {
-    if (e.code !== 'ENOENT') console.error(`[backing] load registry failed: ${e.message}`)
-  }
-}
-
-// Rebuild from active rooms (supplement persisted registry).
+// Rebuild the registry purely from the notes currently in active rooms. Clearing
+// first is what makes it self-healing: stale entries (notes since deleted) are
+// dropped instead of surviving forever. At boot listActiveRooms() is typically
+// empty, so the registry starts clean and fills in as rooms load and backed notes
+// re-register on mount.
 async function rebuildBackingFileRegistry() {
+  backingFileRegistry.clear()
   for (const docName of listActiveRooms()) {
     try {
       const shapes = await getRoomRecords(docName, 'math-note')
@@ -1547,6 +1546,7 @@ async function rebuildBackingFileRegistry() {
       }
     } catch (e) { console.warn(`[server] failed to scan backing files for ${docName}: ${e.message}`) }
   }
+  sendWatchBackingFiles()
   persistBackingRegistry()
 }
 
@@ -1557,6 +1557,17 @@ app.post('/api/backing-file-register', requireRead, (req, res) => {
   const expanded = filePath.startsWith('~/') ? join(homedir(), filePath.slice(2)) : filePath
   const roomName = docName.startsWith('doc-') ? docName : `doc-${docName}`
   backingFileRegister(expanded, roomName)
+  res.json({ ok: true })
+})
+
+// POST /api/backing-file-unregister — client drops a backing file watch when its
+// note is deleted, so the daemon stops watching a file no note is backed by.
+app.post('/api/backing-file-unregister', requireRead, (req, res) => {
+  const { filePath, docName } = req.body || {}
+  if (!filePath) return res.status(400).json({ error: 'Missing filePath' })
+  const expanded = filePath.startsWith('~/') ? join(homedir(), filePath.slice(2)) : filePath
+  const roomName = docName ? (docName.startsWith('doc-') ? docName : `doc-${docName}`) : undefined
+  backingFileUnregister(expanded, roomName)
   res.json({ ok: true })
 })
 

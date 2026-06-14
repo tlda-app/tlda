@@ -226,19 +226,6 @@ const diffSummariesHandle = bus.register<{ summaries: Record<number, string>; ti
 })
 export const onDiffSummaries = diffSummariesHandle.on
 
-// Shared doc — agent shared a markdown file, auto-display in doc viewer
-export type SharedDocSignal = {
-  shapeId: string    // ID of the math-note sticky holding the content
-  filePath: string   // original file path
-  timestamp: number
-}
-const sharedDocHandle = bus.register<SharedDocSignal>({
-  key: 'signal:shared-doc',
-  initBehavior: 'fire-if-recent',
-  recentMs: 86_400_000,
-})
-export const onSharedDocSignal = sharedDocHandle.on
-
 export type FileUpdatedSignal = {
   filePath: string   // absolute path on the author's machine
   content: string    // current file contents
@@ -291,11 +278,6 @@ export function broadcastPresenter(active: boolean) {
 
 export function broadcastCamera(x: number, y: number, z: number) {
   writeSignal('signal:camera-link', { x, y, z, viewerId: localViewerId })
-}
-
-
-export function broadcastSharedDoc(shapeId: string, filePath: string) {
-  writeSignal('signal:shared-doc', { shapeId, filePath })
 }
 
 /**

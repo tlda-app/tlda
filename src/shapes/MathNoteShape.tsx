@@ -459,37 +459,23 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         .catch(() => setBackingSyncState('stale'))
     }, [isEditing])
 
-    // Backing file conflict: when the file changes externally while the note
-    // has different content, split into two notes (file version + canvas version).
+    // Backing file changed externally: the file is the source of truth for a
+    // file-backed note, so update the note in place. (We must NOT spawn a sibling
+    // on every divergence — with many actively-edited backing files that floods
+    // the room with orphan notes.) Don't clobber while the user is editing.
     useEffect(() => {
       if (!backingFile) return
       return onFileUpdatedSignal((signal) => {
         if (signal.filePath !== backingFile) return
         const current = (editor.getShape(shape.id) as any)?.props?.text ?? ''
         if (signal.content === current) { setBackingSyncState('synced'); return }
-        setBackingSyncState('stale')
-        // Divergence detected — split: update this note with the file version,
-        // create a sibling with the canvas version.
-        const bounds = editor.getShapePageBounds(shape.id)
-        const x = bounds ? bounds.x + bounds.w + 20 : 0
-        const y = bounds ? bounds.y : 0
-        editor.createShape({
-          type: 'math-note' as any,
-          x,
-          y,
-          props: {
-            text: current,
-            color: shape.props.color || 'yellow',
-            w: (shape.props as any).w || 450,
-            h: (shape.props as any).h || 200,
-          },
-          meta: { ...shape.meta, splitFrom: shape.id, splitAt: Date.now() },
-        })
+        if (editor.getEditingShapeId() === shape.id) { setBackingSyncState('stale'); return }
         editor.updateShape({
           id: shape.id,
           type: 'math-note' as any,
           props: { text: signal.content },
         })
+        setBackingSyncState('synced')
       })
     }, [backingFile, shape.id, editor])
 
