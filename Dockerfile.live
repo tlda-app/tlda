@@ -44,6 +44,10 @@ COPY server/lib/ ./server/lib/
 COPY server/routes/ ./server/routes/
 COPY server/unified-server.mjs ./server/
 COPY shared/ ./shared/
+# Build pipeline shells out to /app/scripts/*.mjs (extract-synctex-lookup,
+# compute-proof-pairing, patch-svg-images, …). Without these the synctex lookup
+# never generates → highlights don't resolve to source lines.
+COPY scripts/ ./scripts/
 
 # NOTE: we deliberately do NOT build or serve the tldraw SPA here. Per the tldraw
 # license, the tldraw JS must run from the GitHub Pages origin — the SPA is served
