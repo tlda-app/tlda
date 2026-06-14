@@ -330,7 +330,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
 
         {/* Body */}
         {activeThread ? (
-          <ConversationView thread={activeThread} ctx={ctx} myId={myId} />
+          <ConversationView thread={activeThread} ctx={ctx} myId={myId} onStartDrag={startDrag} />
         ) : (
           <ThreadList threads={threads} onOpen={openThread} onStartDrag={startDrag} />
         )}
@@ -389,18 +389,86 @@ function ThreadList({ threads, onOpen, onStartDrag }: { threads: Thread[]; onOpe
   )
 }
 
-function ConversationView({ thread, ctx, myId }: { thread: Thread; ctx: any; myId: string | null }) {
+function ConversationView({ thread, ctx, myId, onStartDrag }: { thread: Thread; ctx: any; myId: string | null; onStartDrag: StartDrag }) {
   const scrollRef = useRef<HTMLDivElement>(null)
   useWheelScroll(scrollRef)
+  // Which message has its inline message-shaped chat open (one at a time).
+  const [inlineOpenId, setInlineOpenId] = useState<string | null>(null)
   // Pin to bottom when the thread opens (newest message visible, like a chat).
   useEffect(() => {
     const el = scrollRef.current
     if (el) el.scrollTop = el.scrollHeight
   }, [thread.partnerId, thread.messages.length])
+  // Close the inline chat when switching threads.
+  useEffect(() => { setInlineOpenId(null) }, [thread.partnerId])
 
   return (
     <>
       <div ref={scrollRef} className="fleet-inbox-conv fleet-chat-shape">
+        {thread.messages.map((m, i) => {
+          const lineHtml = renderChatLine(m, ctx)
+          if (!lineHtml) return null
+          const mine = m.from === myId
+          const key = m._dbId || m.id || String(i)
+          const open = inlineOpenId === key
+          return (
+            <div key={key} className={`fleet-inbox-msg${mine ? ' mine' : ''}`}>
+              <div dangerouslySetInnerHTML={{ __html: lineHtml }} />
+              {/* ↗ → open a message-shaped chat inline, in place (Piece 3).
+                  Reuses the search arrow's exact look (hidden until hover). */}
+              <span
+                className="search-result-open"
+                title={open ? 'Close chat' : 'Open chat here'}
+                onPointerUp={(e) => { stopEventPropagation(e); setInlineOpenId(open ? null : key) }}
+              >↗</span>
+              {open && (
+                <InlineConvoChat
+                  thread={thread}
+                  ctx={ctx}
+                  myId={myId}
+                  onStartDrag={onStartDrag}
+                  onClose={() => setInlineOpenId(null)}
+                />
+              )}
+            </div>
+          )
+        })}
+      </div>
+      {/* Composer slot — read-only in v1; a reply box drops in here. */}
+      <div className="fleet-inbox-composer-slot" />
+    </>
+  )
+}
+
+// A chat for this conversation, rendered inline in the flow as a message-shaped
+// block (Piece 3, model A). The drag handle detaches it onto the canvas as a
+// real, persistent fleet-chat — reusing the same pill-drag → fleet-chat path the
+// partner names use, so the dropped chat is owned + filtered to this convo.
+// NOTE: the inner content (live composer vs read-only) is pending Skip's call;
+// this renders the read-only conversation base both forms share.
+function InlineConvoChat({ thread, ctx, myId, onStartDrag, onClose }: {
+  thread: Thread
+  ctx: any
+  myId: string | null
+  onStartDrag: StartDrag
+  onClose: () => void
+}) {
+  const bodyRef = useRef<HTMLDivElement>(null)
+  useWheelScroll(bodyRef)
+  return (
+    <div className="fleet-inbox-inline-chat fleet-chat-shape" onPointerDown={(e) => stopEventPropagation(e)}>
+      <div className="fleet-inbox-inline-head">
+        {/* Drag handle — pull the chat out onto the canvas to keep it. */}
+        <span
+          className="fleet-inbox-inline-grip fleet-inbox-pill"
+          style={{ cursor: 'grab', touchAction: 'none' }}
+          title="Drag onto the canvas to keep"
+          onPointerDown={(e) => { e.stopPropagation(); onStartDrag(e, 'agent', thread.friendly, thread.partnerName, thread.color) }}
+        >⠿</span>
+        <span className={`fleet-inbox-inline-name ${thread.nickClass}`}>{thread.partnerName}</span>
+        <span className="fleet-inbox-inline-close" onPointerUp={(e) => { stopEventPropagation(e); onClose() }}>×</span>
+      </div>
+      <div ref={bodyRef} className="fleet-inbox-inline-body">
         {thread.messages.map((m, i) => {
           const lineHtml = renderChatLine(m, ctx)
           if (!lineHtml) return null
@@ -412,9 +480,7 @@ function ConversationView({ thread, ctx, myId }: { thread: Thread; ctx: any; myI
           )
         })}
       </div>
-      {/* Composer slot — read-only in v1; a reply box drops in here. */}
-      <div className="fleet-inbox-composer-slot" />
-    </>
+    </div>
   )
 }
 
