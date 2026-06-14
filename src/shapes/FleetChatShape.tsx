@@ -49,7 +49,6 @@ import { PDF_HEIGHT } from '../layoutConstants'
 import { TerminalCard } from './TerminalCard'
 import { Terminal } from 'xterm'
 import { useIsInViewport } from './useIsInViewport'
-import { broadcastSharedDoc } from '../useYjsSync'
 import { consumeBulletContexts, subscribeBulletContext, getBulletContexts } from '../stores/bulletContextStore'
 import { getPref, subscribePref } from '../preferences'
 import './fleet-chat.css'
@@ -3098,127 +3097,6 @@ function FleetChatInner({ shape }: { shape: any }) {
     el.addEventListener('mouseout', onOut)
     return () => { el.removeEventListener('mouseover', onOver); el.removeEventListener('mouseout', onOut) }
   }, [chatLogEl])
-
-  // --- Shared doc: auto-create sticky when a .md file chip appears in chat ---
-  // Track which messages we've already processed to avoid duplicates.
-  const sharedDocProcessed = useRef<Set<string>>(new Set())
-  useEffect(() => {
-    if (chatMessages.length === 0) return
-    const mainEditor = (window as any).__tldraw_editor__ as any
-    if (!mainEditor) return
-
-    for (const m of chatMessages) {
-      const msgKey = m._dbId != null ? `db${m._dbId}` : m._tempId ? `tmp${m._tempId}` : `${m.timestamp}:${m.from}`
-      if (sharedDocProcessed.current.has(msgKey)) continue
-      sharedDocProcessed.current.add(msgKey)
-
-      // Skip messages from the human user — only auto-display agent-shared files
-      if (m.from && !m.from.startsWith('fleet:')) continue
-
-      // Extract .md file attachments (the chipifier already replaced raw paths
-      // with {{att:N}} tokens — inline_attachments metadata is the sole source)
-      const mdAtts: Array<{ path: string; url?: string }> = []
-      if (m._inlineAttachments) {
-        for (const att of m._inlineAttachments) {
-          if (att?.path && /\.md$/i.test(att.path)) {
-            mdAtts.push(att)
-          }
-        }
-      }
-
-      if (mdAtts.length === 0) continue
-
-      // Create a sticky for each .md file found
-      for (const att of mdAtts) {
-        const filePath = att.path
-        ;(async () => {
-          try {
-            // Prefer the uploaded copy (works cross-machine), fall back to direct path
-            const fetchUrl = att.url || `/api/read-file?path=${encodeURIComponent(filePath)}`
-            const res = await fetch(fetchUrl)
-            if (!res.ok) return
-            const content = await res.text()
-            if (!content.trim()) return
-
-            // Check if a shared sticky for this file already exists — update it instead
-            const allShapes = mainEditor.getCurrentPageShapes()
-            let existingId: string | null = null
-            for (const s of allShapes) {
-              if ((s as any).type === 'math-note' && (s as any).meta?.sharedDocPath === filePath) {
-                existingId = s.id
-                break
-              }
-            }
-
-            if (existingId) {
-              // Update existing sticky content + ensure backingFile and authorId are set
-              const existing = mainEditor.getShape(existingId) as any
-              mainEditor.updateShape({
-                id: existingId,
-                type: 'math-note',
-                props: { text: content, backingFile: filePath },
-                meta: { ...existing?.meta, authorId: existing?.meta?.authorId || m.from },
-              })
-              broadcastSharedDoc(existingId, filePath)
-            } else {
-              // Find open canvas space for the new sticky (2D grid search)
-              const noteW = 550, noteH = 400, gap = 30
-              const startX = 2000, startY = 100
-              const blockers = allShapes.filter((s: any) =>
-                s.type === 'math-note' ||
-                s.type === 'fleet-docview'
-              ).map((s: any) => mainEditor.getShapePageBounds(s.id)).filter(Boolean)
-
-              let newX = startX, newY = startY
-              const maxX = startX + (noteW + gap) * 4
-              let placed = false
-              for (let y = startY; !placed; y += noteH + gap) {
-                for (let x = startX; x < maxX; x += noteW + gap) {
-                  const collides = blockers.some((sb: any) =>
-                    x < sb.x + sb.w + gap && x + noteW > sb.x - gap &&
-                    y < sb.y + sb.h + gap && y + noteH > sb.y - gap
-                  )
-                  if (!collides) {
-                    newX = x
-                    newY = y
-                    placed = true
-                    break
-                  }
-                }
-              }
-              const stickyId = createShapeId()
-              mainEditor.createShape({
-                id: stickyId,
-                type: 'math-note' as any,
-                x: newX,
-                y: newY,
-                isLocked: false,
-                props: {
-                  w: 550,
-                  h: 400,
-                  text: content,
-                  color: 'light-violet',
-                  autoSize: true,
-                  backingFile: filePath,
-                },
-                meta: {
-                  sharedDocPath: filePath,
-                  sharedDoc: true,
-                  fromAgent: m.from,
-                  authorId: m.from,
-                  createdAt: Date.now(),
-                },
-              })
-              broadcastSharedDoc(stickyId, filePath)
-            }
-          } catch (e) {
-            console.error('[fleet] Failed to create shared doc sticky:', e)
-          }
-        })()
-      }
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatMessages])
 
   // Lightbox: click on chat-image opens full-size overlay
   useEffect(() => {

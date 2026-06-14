@@ -618,6 +618,21 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
       if (shape?.typeName === 'shape' && shape?.type === 'html-page') {
         cleanupHtmlShapeData(shape.id)
       }
+      // File-backed note deleted: drop its backing-file watch so the daemon stops
+      // watching a file no note references. Skip if another note still backs it.
+      if (shape?.typeName === 'shape' && shape?.type === 'math-note' && shape?.props?.backingFile) {
+        const filePath = shape.props.backingFile
+        const stillUsed = editor.getCurrentPageShapes().some(
+          (s: any) => s.type === 'math-note' && s.props?.backingFile === filePath
+        )
+        if (!stillUsed) {
+          fetch('/api/backing-file-unregister', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filePath, docName: document.name }),
+          }).catch(e => log.warn('backing', 'unregister failed', { error: String(e?.message || e) }))
+        }
+      }
     }
   }, { scope: 'document' })
 
