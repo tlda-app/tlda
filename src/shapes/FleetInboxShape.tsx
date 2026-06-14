@@ -21,8 +21,13 @@ import {
 import { agentDisplayName } from './fleet-utils'
 import { usePillDrag } from './FleetAgentsShape'
 import { ChatComposer } from './ChatComposer'
-import { useState, useCallback, useRef, useMemo, useEffect, memo } from 'react'
+import { useState, useCallback, useRef, useMemo, useEffect, useContext, memo } from 'react'
 import { useFleetAgents, useFleetTasks, useFleetEvents, useFleetUnreadCounts, useFleetIdentity, sendMessage, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
+import { DocContext } from '../PanelContext'
+import { fetchProofInfo } from '../docInfoCache'
+import { onReloadSignal } from '../useYjsSync'
+import { invalidationFromRanges } from '../invalidationGraph'
+import type { DirectNode, CascadeNode } from '../invalidationGraph'
 import katex from 'katex'
 import { getActiveMacros } from '../katexMacros'
 import MarkdownIt from 'markdown-it'
@@ -132,10 +137,32 @@ interface DocNote {
   createdAt: number     // note creation time (0 if undated) — sort key
 }
 
+// A revalidation task derived from the proof-dependency graph (structural
+// invalidation). `direct` = the node's own statement source changed (it has its
+// own stale ribbon span you can re-approve). `cascade` = a node it depends on
+// changed, so its vetting rests on something that moved — it has no stale span
+// of its own and clears when its upstream `via` node is re-approved.
+interface NodeTask {
+  id: string                  // proof pair id (e.g. "prop:matching-cost")
+  title: string               // human title (e.g. "Proposition 8.2")
+  stale: 'direct' | 'cascade'
+  lo: number                  // statement start line
+  hi: number                  // statement end line
+  time: number                // staleAt of the originating change (sort key)
+  // direct only — the stale ribbon span(s) over this node's statement, which the
+  // approve action re-vets. (A node's statement can be covered by >1 span.)
+  spans?: RibbonTask[]
+  // cascade only — the upstream node that reached this one, and the hop count.
+  via?: string
+  viaTitle?: string
+  depth?: number
+}
+
 // One row of the inbox, regardless of kind. The unified model behind both the
 // time-interleaved stream and the grouped-by-type view.
 type InboxItem =
   | { kind: 'task'; key: string; time: number; task: RibbonTask }
+  | { kind: 'node'; key: string; time: number; node: NodeTask }
   | { kind: 'note'; key: string; time: number; note: DocNote }
   | { kind: 'message'; key: string; time: number; thread: Thread }
 
@@ -195,7 +222,22 @@ export class FleetInboxShapeUtil extends BaseBoxShapeUtil<any> {
 
 function FleetInboxInner({ shape }: { shape: any }) {
   const editor = useEditor()
+  const docCtx = useContext(DocContext)
+  const docName = docCtx?.docName || ''
   const { w, h } = shape.props
+
+  // Proof-dependency graph for this doc (proof-info.json `pairs[]`). The cascade
+  // engine runs over it client-side, so structural invalidation needs no server
+  // round-trip. Reloaded on a rebuild (the shared cache clears on signal:reload).
+  const [proofInfo, setProofInfo] = useState<{ pairs?: any[] } | null>(null)
+  useEffect(() => {
+    if (!docName) return
+    let live = true
+    const load = () => { fetchProofInfo(docName).then((d) => { if (live) setProofInfo(d || null) }) }
+    load()
+    const off = onReloadSignal(load)
+    return () => { live = false; if (typeof off === 'function') off() }
+  }, [docName])
   void useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
   const containerRef = useRef<HTMLDivElement>(null)
   const isSelectedRef = useRef(false)
@@ -327,6 +369,83 @@ function FleetInboxInner({ shape }: { shape: any }) {
     [editor],
   )
 
+  // Structural invalidation — project the proof-dependency graph onto the live
+  // stale spans. A directly-stale node is one whose own statement a stale span
+  // covers; a cascade-stale node (transitively) depends on a directly-stale one,
+  // so its vetting rests on something that moved. Derived, so it auto-resolves:
+  // re-approving a span un-stales its node AND clears the cascade beneath it (the
+  // cascade recomputes from whatever spans are still stale).
+  const proofTasks = useMemo(() => {
+    const ranges = ribbonTasks.map((t) => ({ lo: t.lo, hi: t.hi }))
+    const { directlyStale, cascadeStale } = invalidationFromRanges(proofInfo, ranges)
+    const titleOf = (n: { id: string; title?: string }) => n.title || n.id
+    const titleById = new Map((proofInfo?.pairs || []).map((p: any) => [p.id, p.title || p.id]))
+
+    const direct: NodeTask[] = directlyStale.map((n: DirectNode) => {
+      const lo = n.statementLines?.[0] ?? 0
+      const hi = n.statementLines?.[1] ?? 0
+      // The stale span(s) over this statement — what the approve action re-vets.
+      const spans = ribbonTasks.filter((t) => t.lo <= Math.max(lo, hi) && t.hi >= Math.min(lo, hi))
+      const time = spans.reduce((m, s) => Math.max(m, s.staleAt), 0)
+      return { id: n.id, title: titleOf(n), stale: 'direct', lo, hi, time, spans }
+    })
+    const timeByNode = new Map(direct.map((d) => [d.id, d.time]))
+    const cascade: NodeTask[] = cascadeStale.map((n: CascadeNode) => ({
+      id: n.id,
+      title: titleOf(n),
+      stale: 'cascade',
+      lo: n.statementLines?.[0] ?? 0,
+      hi: n.statementLines?.[1] ?? 0,
+      via: n.via,
+      viaTitle: titleById.get(n.via) || n.via,
+      depth: n.depth,
+      // Sort a cascade node next to the change that caused it.
+      time: timeByNode.get(n.via) ?? 0,
+    }))
+
+    // Stale spans that map to no proof node stay as plain line-range tasks — they
+    // are real un-vetted regions, just not a named theorem/lemma/prop statement.
+    const covered = (t: RibbonTask) =>
+      direct.some((d) => d.lo <= Math.max(t.lo, t.hi) && d.hi >= Math.min(t.lo, t.hi))
+    const spanTasks = ribbonTasks.filter((t) => !covered(t))
+
+    return { direct, cascade, spanTasks }
+  }, [ribbonTasks, proofInfo])
+
+  // Re-vet a directly-stale node: clear the stale flag on its originating span(s)
+  // and re-anchor them to the version currently shown. Because the cascade is
+  // derived, this clears the node AND every cascade node beneath it in one act —
+  // Skip's approve-upstream-clears-downstream. Written through the MAIN editor
+  // (fleet panels live in the HUD editor) so it persists via Yjs.
+  const approveNode = useCallback((task: NodeTask) => {
+    if (task.stale !== 'direct' || !task.spans?.length) return
+    const me = (typeof window !== 'undefined' && (window as any).__tldraw_editor__) || editor
+    const ribbon = me.getShape('shape:understanding-ribbon')
+    if (!ribbon?.props?.segments) return
+    const sentinel = me.getShape('shape:doc-version--sentinel')
+    const commit = sentinel?.props?.commitHash && sentinel.props.commitHash !== 'unknown'
+      ? String(sentinel.props.commitHash) : null
+    let segs: any[]
+    try { segs = JSON.parse(ribbon.props.segments) } catch { return }
+    const lo = Math.min(task.lo, task.hi)
+    const hi = Math.max(task.lo, task.hi)
+    let changed = false
+    const next = segs.map((s) => {
+      if (!(s.stale && s.status === 'approved')) return s
+      const slo = Math.min(s.startLine, s.endLine)
+      const shi = Math.max(s.startLine, s.endLine)
+      if (slo <= hi && shi >= lo) {
+        changed = true
+        return { ...s, stale: false, staleAt: undefined, ...(commit ? { approvedAtCommit: commit } : {}) }
+      }
+      return s
+    })
+    if (!changed) return
+    me.store.update('shape:understanding-ribbon', (sh: any) => ({
+      ...sh, props: { ...sh.props, segments: JSON.stringify(next) },
+    }))
+  }, [editor])
+
   // Hover a task → preview the span in the annotation viewer (the same hover→
   // pin→go mechanism chat references use); the viewer handles pin/navigation
   // itself when clicked. A task click never moves the main doc.
@@ -358,6 +477,18 @@ function FleetInboxInner({ shape }: { shape: any }) {
     if (related?.closest?.('.annotation-viewer')) return
     window.dispatchEvent(new CustomEvent('annotation-viewer-hide'))
   }, [])
+
+  // Hover a directly-stale node → preview the stale span over its statement (the
+  // same hover→pin→go path the line-range tasks use). Cascade nodes have no span
+  // of their own, so they don't preview here — navigating the cascade is the
+  // graph render's job.
+  const showNodePreview = useCallback(
+    (task: NodeTask, el: HTMLElement) => {
+      const span = task.spans?.[0]
+      if (span) showTaskPreview(span, el)
+    },
+    [showTaskPreview],
+  )
 
   // Notes group — a live projection of the doc's open (unaddressed) annotations.
   // Same pattern as the ribbon tasks: read math-note shapes from the MAIN editor
@@ -436,12 +567,17 @@ function FleetInboxInner({ shape }: { shape: any }) {
   // keep their relative order. Messages use last-activity time.
   const timeItems = useMemo<InboxItem[]>(() => {
     const items: InboxItem[] = [
-      ...ribbonTasks.map((t): InboxItem => ({ kind: 'task', key: `task:${t.id}`, time: t.staleAt, task: t })),
-      ...docNotes.map((n): InboxItem => ({ kind: 'note', key: `note:${n.id}`, time: n.createdAt, note: n })),
+      ...proofTasks.direct.map((n): InboxItem => ({ kind: 'node', key: `node:${n.id}`, time: n.time, node: n })),
+      ...proofTasks.cascade.map((n): InboxItem => ({ kind: 'node', key: `node:${n.id}`, time: n.time, node: n })),
+      ...proofTasks.spanTasks.map((t): InboxItem => ({ kind: 'task', key: `task:${t.id}`, time: t.staleAt, task: t })),
+      ...docNotes.map((n: DocNote): InboxItem => ({ kind: 'note', key: `note:${n.id}`, time: n.createdAt, note: n })),
       ...threads.map((t): InboxItem => ({ kind: 'message', key: `msg:${t.partnerId}`, time: Date.parse(t.lastTs) || 0, thread: t })),
     ]
     return items.sort((a, b) => b.time - a.time)
-  }, [ribbonTasks, docNotes, threads])
+  }, [proofTasks, docNotes, threads])
+
+  // Total revalidation tasks (node + plain-span) — drives the header badge.
+  const taskCount = proofTasks.direct.length + proofTasks.cascade.length + proofTasks.spanTasks.length
 
   return (
     <HTMLContainer style={{ width: w, height: h, pointerEvents: 'all', overflow: 'visible' }}>
@@ -504,8 +640,8 @@ function FleetInboxInner({ shape }: { shape: any }) {
                   onPointerUp={(e) => { stopEventPropagation(e); setSort('type') }}
                 >type</button>
               </span>
-              {ribbonTasks.length > 0 && (
-                <span className="fleet-inbox-task-total" title="Revalidation tasks">{ribbonTasks.length}</span>
+              {taskCount > 0 && (
+                <span className="fleet-inbox-task-total" title="Revalidation tasks">{taskCount}</span>
               )}
               {docNotes.length > 0 && (
                 <span className="fleet-inbox-note-total" title="Open notes">{docNotes.length}</span>
@@ -523,9 +659,13 @@ function FleetInboxInner({ shape }: { shape: any }) {
             sortMode={sortMode}
             timeItems={timeItems}
             threads={threads}
-            tasks={ribbonTasks}
+            directNodes={proofTasks.direct}
+            cascadeNodes={proofTasks.cascade}
+            spanTasks={proofTasks.spanTasks}
             notes={docNotes}
             onTaskHover={showTaskPreview}
+            onNodeHover={showNodePreview}
+            onApprove={approveNode}
             onNoteHover={showNotePreview}
             onItemLeave={hideTaskPreview}
             onOpen={openThread}
@@ -582,6 +722,46 @@ function TaskRow({ t, onHover, onLeave }: { t: RibbonTask; onHover: (t: RibbonTa
   )
 }
 
+// A proof-graph revalidation task. Direct = its own statement changed (offers an
+// approve action that re-vets it and clears its cascade); cascade = it depends on
+// a changed node (shows the `via` link, resolves when the upstream is approved).
+function NodeRow({ task, onApprove, onHover, onLeave }: {
+  task: NodeTask
+  onApprove: (t: NodeTask) => void
+  onHover: (t: NodeTask, el: HTMLElement) => void
+  onLeave: (e: React.MouseEvent) => void
+}) {
+  if (task.stale === 'cascade') {
+    return (
+      <div className="fleet-inbox-node fleet-inbox-node-cascade">
+        <div className="fleet-inbox-node-row">
+          <span className="fleet-inbox-node-icon cascade">↯</span>
+          <span className="fleet-inbox-node-title">{task.title}</span>
+        </div>
+        <div className="fleet-inbox-node-sub">depends on {task.viaTitle}{task.depth && task.depth > 1 ? ` · ${task.depth} hops` : ''}</div>
+      </div>
+    )
+  }
+  return (
+    <div
+      className="fleet-inbox-node fleet-inbox-node-direct"
+      onMouseEnter={(e) => onHover(task, e.currentTarget)}
+      onMouseLeave={onLeave}
+    >
+      <div className="fleet-inbox-node-row">
+        <span className="fleet-inbox-node-icon">⟳</span>
+        <span className="fleet-inbox-node-title">{task.title}</span>
+        <button
+          className="fleet-inbox-node-approve"
+          title="Re-vet — clears this and everything downstream"
+          onPointerUp={(e) => { stopEventPropagation(e); onApprove(task) }}
+        >approve</button>
+      </div>
+      <div className="fleet-inbox-node-sub">statement changed · lines {task.lo}–{task.hi}</div>
+    </div>
+  )
+}
+
 function NoteRow({ n, onHover, onLeave }: { n: DocNote; onHover: (n: DocNote, el: HTMLElement) => void; onLeave: (e: React.MouseEvent) => void }) {
   return (
     <div className="fleet-inbox-note" onMouseEnter={(e) => onHover(n, e.currentTarget)} onMouseLeave={onLeave}>
@@ -618,9 +798,13 @@ interface InboxListProps {
   sortMode: SortMode
   timeItems: InboxItem[]
   threads: Thread[]
-  tasks: RibbonTask[]
+  directNodes: NodeTask[]
+  cascadeNodes: NodeTask[]
+  spanTasks: RibbonTask[]
   notes: DocNote[]
   onTaskHover: (t: RibbonTask, el: HTMLElement) => void
+  onNodeHover: (t: NodeTask, el: HTMLElement) => void
+  onApprove: (t: NodeTask) => void
   onNoteHover: (n: DocNote, el: HTMLElement) => void
   onItemLeave: (e: React.MouseEvent) => void
   onOpen: (t: Thread) => void
@@ -628,14 +812,15 @@ interface InboxListProps {
 }
 
 function InboxList(props: InboxListProps) {
-  const { sortMode, timeItems, threads, tasks, notes, onTaskHover, onNoteHover, onItemLeave, onOpen, onStartDrag } = props
+  const { sortMode, timeItems, threads, directNodes, cascadeNodes, spanTasks, notes, onTaskHover, onNodeHover, onApprove, onNoteHover, onItemLeave, onOpen, onStartDrag } = props
   const listRef = useRef<HTMLDivElement>(null)
   useWheelScroll(listRef)
 
-  const empty = threads.length === 0 && tasks.length === 0 && notes.length === 0
+  const empty = threads.length === 0 && directNodes.length === 0 && cascadeNodes.length === 0 && spanTasks.length === 0 && notes.length === 0
 
   const renderItem = (it: InboxItem) => {
     if (it.kind === 'task') return <TaskRow key={it.key} t={it.task} onHover={onTaskHover} onLeave={onItemLeave} />
+    if (it.kind === 'node') return <NodeRow key={it.key} task={it.node} onApprove={onApprove} onHover={onNodeHover} onLeave={onItemLeave} />
     if (it.kind === 'note') return <NoteRow key={it.key} n={it.note} onHover={onNoteHover} onLeave={onItemLeave} />
     return <MessageRow key={it.key} t={it.thread} onOpen={onOpen} onStartDrag={onStartDrag} />
   }
@@ -648,12 +833,19 @@ function InboxList(props: InboxListProps) {
         // Interleaved stream — every kind, newest first.
         timeItems.map(renderItem)
       ) : (
-        // Grouped by type — Tasks, Notes, then Messages.
+        // Grouped by type — Tasks (direct + plain spans), Cascade, Notes, Messages.
         <>
-          {tasks.length > 0 && (
+          {(directNodes.length > 0 || spanTasks.length > 0) && (
             <div className="fleet-inbox-tasks">
               <div className="fleet-inbox-group-label">Tasks</div>
-              {tasks.map((t) => <TaskRow key={t.id} t={t} onHover={onTaskHover} onLeave={onItemLeave} />)}
+              {directNodes.map((t) => <NodeRow key={t.id} task={t} onApprove={onApprove} onHover={onNodeHover} onLeave={onItemLeave} />)}
+              {spanTasks.map((t) => <TaskRow key={t.id} t={t} onHover={onTaskHover} onLeave={onItemLeave} />)}
+            </div>
+          )}
+          {cascadeNodes.length > 0 && (
+            <div className="fleet-inbox-cascade">
+              <div className="fleet-inbox-group-label">Cascade</div>
+              {cascadeNodes.map((t) => <NodeRow key={t.id} task={t} onApprove={onApprove} onHover={onNodeHover} onLeave={onItemLeave} />)}
             </div>
           )}
           {notes.length > 0 && (

@@ -220,6 +220,81 @@
   justify-content: center;
 }
 
+/* --- Proof-graph revalidation nodes (structural invalidation) ---
+   A directly-stale node (own statement changed) carries the amber "needs your
+   attention" tint and an approve action. A cascade-stale node (a dependency
+   changed) gets a violet tint — it's a *consequence*, not a direct ask, and it
+   resolves when its upstream is approved. Both auto-resolve: the projection is
+   derived from the live ribbon, so re-approving clears the node and its cascade. */
+.fleet-inbox-cascade {
+  border-bottom: 1px solid rgba(128, 128, 128, 0.12);
+}
+.fleet-inbox-node {
+  padding: 4px 10px 6px;
+  transition: background 0.1s;
+}
+.fleet-inbox-node-direct {
+  cursor: pointer;
+}
+.fleet-inbox-node-direct:hover {
+  background: rgba(200, 150, 70, 0.07);
+}
+.fleet-inbox-node-cascade:hover {
+  background: rgba(150, 120, 200, 0.06);
+}
+.fleet-inbox-node-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.fleet-inbox-node-icon {
+  font-size: 10px;
+  opacity: 0.7;
+  color: #c8965a;
+  flex-shrink: 0;
+}
+.fleet-inbox-node-icon.cascade {
+  color: #9a86c8;
+}
+.fleet-inbox-node-title {
+  font-size: 11px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fleet-inbox-node-sub {
+  font-size: 10px;
+  opacity: 0.45;
+  margin-top: 1px;
+  padding-left: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Approve — faint until the row is hovered, in keeping with the subtle chrome. */
+.fleet-inbox-node-approve {
+  margin-left: auto;
+  flex-shrink: 0;
+  background: none;
+  border: 1px solid rgba(200, 150, 70, 0.4);
+  color: #c8965a;
+  font-family: inherit;
+  font-size: 9px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.12s;
+}
+.fleet-inbox-node-direct:hover .fleet-inbox-node-approve {
+  opacity: 0.75;
+}
+.fleet-inbox-node-approve:hover {
+  opacity: 1;
+  background: rgba(200, 150, 70, 0.14);
+}
+
 /* --- Notes group (open/unaddressed annotations projected from the doc) ---
    Same subtle structure as Tasks; a cool slate tint distinguishes "open note"
    from the amber "needs re-vetting". Auto-resolves: reply_note sets
