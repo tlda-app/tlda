@@ -30,8 +30,9 @@
   height: 14px;
   padding: 0 4px;
   border-radius: 7px;
-  background: rgba(120, 160, 220, 0.25);
+  background: rgba(120, 160, 220, 0.1);
   color: var(--text, #cdd);
+  opacity: 0.75;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -107,8 +108,9 @@
   height: 14px;
   padding: 0 4px;
   border-radius: 7px;
-  background: rgba(120, 160, 220, 0.25);
+  background: rgba(120, 160, 220, 0.1);
   color: var(--text, #cdd);
+  opacity: 0.75;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -141,62 +143,36 @@
 .fleet-inbox-msg.mine {
   opacity: 0.85;
 }
-/* Per-message ↗ — reuses the search arrow's exact look/behavior (invisible
-   until the message is hovered, 0.6 opacity on hover). */
+/* Per-message ↗ — bottom-right of the message so it's reachable on a long line;
+   invisible until the message is hovered, faint on hover. */
 .fleet-inbox-msg > div:first-child .chat-line {
   padding-right: 16px;
 }
-.fleet-inbox-msg:hover > .search-result-open {
+.fleet-inbox-open-arrow {
+  position: absolute;
+  bottom: 2px;
+  right: 6px;
+  font-size: 9px;
+  line-height: 1;
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 0.15s;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.fleet-inbox-msg:hover > .fleet-inbox-open-arrow {
   opacity: 0.6;
 }
 
-/* Inline message-shaped chat (Piece 3) — opens in the conversation flow at the
-   message; a drag handle pulls it out onto the canvas to keep it. Subtle chrome
-   matching the app convention. */
+/* Inline chat (Piece 3) — REPLACES the clicked message in place. It's just a
+   small, FRAMELESS embedded chat (no box, no header): exactly the normal chat,
+   shrunk. The only chrome is two tiny, faint controls in the bottom corners. */
 .fleet-inbox-inline-chat {
-  margin: 4px 6px 6px;
-  max-height: 240px;
+  position: relative;
+  margin: 0;
+  max-height: 260px;
   display: flex;
   flex-direction: column;
-  border: 1px solid rgba(128, 128, 128, 0.14);
-  border-radius: 6px;
-  overflow: hidden;
-  background: rgba(128, 128, 128, 0.04);
-}
-.fleet-inbox-inline-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 6px;
-  border-bottom: 1px solid rgba(128, 128, 128, 0.1);
-  flex-shrink: 0;
-}
-.fleet-inbox-inline-grip {
-  font-size: 10px;
-  line-height: 1;
-  opacity: 0.4;
-  user-select: none;
-  -webkit-user-select: none;
-}
-.fleet-inbox-inline-grip:hover {
-  opacity: 0.7;
-}
-.fleet-inbox-inline-name {
-  font-size: 10px;
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.fleet-inbox-inline-close {
-  font-size: 11px;
-  opacity: 0.3;
-  cursor: pointer;
-  user-select: none;
-  -webkit-user-select: none;
-}
-.fleet-inbox-inline-close:hover {
-  opacity: 0.7;
 }
 .fleet-inbox-inline-body {
   overflow-y: auto;
@@ -206,9 +182,28 @@
 }
 .fleet-inbox-inline-composer {
   flex-shrink: 0;
-  padding: 4px;
-  border-top: 1px solid rgba(128, 128, 128, 0.1);
+  padding: 4px 4px 6px;
 }
+/* Tiny, faint bottom-corner controls — same size as a little ×, undistracting. */
+.fleet-inbox-inline-reset,
+.fleet-inbox-inline-close {
+  position: absolute;
+  bottom: 2px;
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0.18;
+  cursor: pointer;
+  transition: opacity 0.15s;
+  user-select: none;
+  -webkit-user-select: none;
+  z-index: 2;
+}
+.fleet-inbox-inline-reset { left: 5px; }
+.fleet-inbox-inline-close { right: 5px; }
+.fleet-inbox-inline-chat:hover .fleet-inbox-inline-reset,
+.fleet-inbox-inline-chat:hover .fleet-inbox-inline-close { opacity: 0.4; }
+.fleet-inbox-inline-reset:hover,
+.fleet-inbox-inline-close:hover { opacity: 0.7; }
 
 /* Composer slot — empty in v1; reserves the row so a reply box drops in
    without reflowing the conversation pane. */

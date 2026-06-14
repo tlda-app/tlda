@@ -331,7 +331,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
 
         {/* Body */}
         {activeThread ? (
-          <ConversationView thread={activeThread} ctx={ctx} myId={myId} myName={myName} onStartDrag={startDrag} />
+          <ConversationView thread={activeThread} ctx={ctx} myId={myId} myName={myName} />
         ) : (
           <ThreadList threads={threads} onOpen={openThread} onStartDrag={startDrag} />
         )}
@@ -344,18 +344,23 @@ function FleetInboxInner({ shape }: { shape: any }) {
 // pan/zoom, so a panel's overflow div never scrolls on its own. Intercept the
 // wheel on the container in the capture phase and scroll it ourselves — same
 // pattern FleetChatShape uses for its backscroll.
-function useWheelScroll(ref: { current: HTMLDivElement | null }) {
+// `skipSelector`: when set, wheel events whose target is inside that selector are
+// left alone so a NESTED scroller (e.g. an open mini-chat inside the thread) can
+// capture them. Without this, the outer thread's capture-phase handler fires
+// first (it's an ancestor) and eats the wheel before the mini-chat ever sees it.
+function useWheelScroll(ref: { current: HTMLDivElement | null }, skipSelector?: string) {
   useEffect(() => {
     const el = ref.current
     if (!el) return
     const onWheel = (e: WheelEvent) => {
+      if (skipSelector && e.target instanceof Element && e.target.closest(skipSelector)) return
       e.preventDefault()
       e.stopPropagation()
       el.scrollTop += e.deltaY
     }
     el.addEventListener('wheel', onWheel, { capture: true, passive: false })
     return () => el.removeEventListener('wheel', onWheel, { capture: true } as any)
-  }, [ref])
+  }, [ref, skipSelector])
 }
 
 type StartDrag = (e: React.PointerEvent, pillType: 'agent' | 'label', value: string, displayName: string, color: string) => void
@@ -390,10 +395,13 @@ function ThreadList({ threads, onOpen, onStartDrag }: { threads: Thread[]; onOpe
   )
 }
 
-function ConversationView({ thread, ctx, myId, myName, onStartDrag }: { thread: Thread; ctx: any; myId: string | null; myName: string; onStartDrag: StartDrag }) {
+function ConversationView({ thread, ctx, myId, myName }: { thread: Thread; ctx: any; myId: string | null; myName: string }) {
   const scrollRef = useRef<HTMLDivElement>(null)
-  useWheelScroll(scrollRef)
-  // Which message has its inline message-shaped chat open (one at a time).
+  // Outer thread scroll, but YIELD the wheel when it's over an open mini-chat so
+  // the mini-chat scrolls itself (it's a nested scroller).
+  useWheelScroll(scrollRef, '.fleet-inbox-inline-chat')
+  // Which message has its inline chat open (one at a time — opening a new one
+  // replaces the old, per Skip's design).
   const [inlineOpenId, setInlineOpenId] = useState<string | null>(null)
   // Pin to bottom when the thread opens (newest message visible, like a chat).
   useEffect(() => {
@@ -407,31 +415,35 @@ function ConversationView({ thread, ctx, myId, myName, onStartDrag }: { thread: 
     <>
       <div ref={scrollRef} className="fleet-inbox-conv fleet-chat-shape">
         {thread.messages.map((m, i) => {
+          const key = m._dbId || m.id || String(i)
+          // Open: the clicked message is REPLACED in place by the chat, anchored
+          // on that line (not a chat inserted below).
+          if (inlineOpenId === key) {
+            return (
+              <InlineConvoChat
+                key={key}
+                thread={thread}
+                ctx={ctx}
+                myId={myId}
+                myName={myName}
+                anchorKey={key}
+                onClose={() => setInlineOpenId(null)}
+              />
+            )
+          }
           const lineHtml = renderChatLine(m, ctx)
           if (!lineHtml) return null
           const mine = m.from === myId
-          const key = m._dbId || m.id || String(i)
-          const open = inlineOpenId === key
           return (
             <div key={key} className={`fleet-inbox-msg${mine ? ' mine' : ''}`}>
               <div dangerouslySetInnerHTML={{ __html: lineHtml }} />
-              {/* ↗ → open a message-shaped chat inline, in place (Piece 3).
-                  Reuses the search arrow's exact look (hidden until hover). */}
+              {/* ↗ — open a chat in place of this message. Bottom-right so it's
+                  reachable on a long message (hidden until the message is hovered). */}
               <span
-                className="search-result-open"
-                title={open ? 'Close chat' : 'Open chat here'}
-                onPointerUp={(e) => { stopEventPropagation(e); setInlineOpenId(open ? null : key) }}
+                className="fleet-inbox-open-arrow"
+                title="Open chat here"
+                onPointerUp={(e) => { stopEventPropagation(e); setInlineOpenId(key) }}
               >↗</span>
-              {open && (
-                <InlineConvoChat
-                  thread={thread}
-                  ctx={ctx}
-                  myId={myId}
-                  myName={myName}
-                  onStartDrag={onStartDrag}
-                  onClose={() => setInlineOpenId(null)}
-                />
-              )}
             </div>
           )
         })}
@@ -467,29 +479,26 @@ const COMPOSER_STYLE: React.CSSProperties = {
 } as any
 const _isTouchDevice = (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
 
-function InlineConvoChat({ thread, ctx, myId, myName, onStartDrag, onClose }: {
+function InlineConvoChat({ thread, ctx, myId, myName, anchorKey, onClose }: {
   thread: Thread
   ctx: any
   myId: string | null
   myName: string
-  onStartDrag: StartDrag
+  anchorKey: string
   onClose: () => void
 }) {
   const bodyRef = useRef<HTMLDivElement>(null)
   useWheelScroll(bodyRef)
-  // Pin to bottom like a chat: on open and whenever a new message lands while
-  // pinned, keep the newest message visible. (The list is live — thread.messages
-  // is recomputed from the inbox's useFleetEvents stream on every new event.)
-  const pinnedRef = useRef(true)
-  useEffect(() => {
-    const el = bodyRef.current
-    if (el && pinnedRef.current) el.scrollTop = el.scrollHeight
-  }, [thread.messages.length])
-  const onScroll = useCallback(() => {
+  // Anchor on the message the chat opened from: scroll so that line sits at the
+  // top of the window (the message you clicked is what you see), and the
+  // "back to the message" control re-runs this.
+  const scrollToAnchor = useCallback(() => {
     const el = bodyRef.current
     if (!el) return
-    pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24
-  }, [])
+    const target = el.querySelector(`[data-msg-key="${(window as any).CSS?.escape ? CSS.escape(anchorKey) : anchorKey}"]`) as HTMLElement | null
+    el.scrollTop = target ? Math.max(0, target.offsetTop - 4) : el.scrollHeight
+  }, [anchorKey])
+  useEffect(() => { scrollToAnchor() }, [scrollToAnchor])
 
   // Sending in this conversation goes to the partner. (Matches the chat shape's
   // sendTargets = the filter's "to" labels; here that's the partner's name.)
@@ -531,24 +540,14 @@ function InlineConvoChat({ thread, ctx, myId, myName, onStartDrag, onClose }: {
 
   return (
     <div className="fleet-inbox-inline-chat fleet-chat-shape" onPointerDown={(e) => stopEventPropagation(e)}>
-      <div className="fleet-inbox-inline-head">
-        {/* Drag handle — pull the chat out onto the canvas to keep it. */}
-        <span
-          className="fleet-inbox-inline-grip fleet-inbox-pill"
-          style={{ cursor: 'grab', touchAction: 'none' }}
-          title="Drag onto the canvas to keep"
-          onPointerDown={(e) => { e.stopPropagation(); onStartDrag(e, 'agent', thread.friendly, thread.partnerName, thread.color) }}
-        >⠿</span>
-        <span className={`fleet-inbox-inline-name ${thread.nickClass}`}>{thread.partnerName}</span>
-        <span className="fleet-inbox-inline-close" onPointerUp={(e) => { stopEventPropagation(e); onClose() }}>×</span>
-      </div>
-      <div ref={bodyRef} className="fleet-inbox-inline-body" onScroll={onScroll}>
+      <div ref={bodyRef} className="fleet-inbox-inline-body">
         {thread.messages.map((m, i) => {
           const lineHtml = renderChatLine(m, ctx)
           if (!lineHtml) return null
           const mine = m.from === myId
+          const key = m._dbId || m.id || String(i)
           return (
-            <div key={m._dbId || m.id || i} className={`fleet-inbox-msg${mine ? ' mine' : ''}`}>
+            <div key={key} data-msg-key={key} className={`fleet-inbox-msg${mine ? ' mine' : ''}${key === anchorKey ? ' anchor' : ''}`}>
               <div dangerouslySetInnerHTML={{ __html: lineHtml }} />
             </div>
           )
@@ -564,6 +563,18 @@ function InlineConvoChat({ thread, ctx, myId, myName, onStartDrag, onClose }: {
           style={COMPOSER_STYLE}
         />
       </div>
+      {/* Tiny, faint controls in the bottom corners (Skip: same size as the ×,
+          undistracting). Left = back to the message; right = close. */}
+      <span
+        className="fleet-inbox-inline-reset"
+        title="Back to the message"
+        onPointerUp={(e) => { stopEventPropagation(e); scrollToAnchor() }}
+      >⤺</span>
+      <span
+        className="fleet-inbox-inline-close"
+        title="Close"
+        onPointerUp={(e) => { stopEventPropagation(e); onClose() }}
+      >×</span>
     </div>
   )
 }
