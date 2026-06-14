@@ -1808,6 +1808,30 @@ function FleetChatInner({ shape }: { shape: any }) {
     return sorted
   }, [events])
 
+  // Standing diagnostic — does the message list momentarily empty? When
+  // chatMessages hits 0 the render swaps the Virtuoso list for the "No messages"
+  // div (a different DOM node), which remounts the scroller and can read as a
+  // flash/blank. These two transitions are the fingerprint to look for if the
+  // history ever vanishes-and-returns. warn (notable); grep `chat-scroll`.
+  const _prevMsgLen = useRef(chatMessages.length)
+  useEffect(() => {
+    if (chatMessages.length === 0 && _prevMsgLen.current !== 0) {
+      log.warn('chat-scroll', 'message list emptied → "No messages" branch (scroller will remount)', { prev: _prevMsgLen.current })
+    } else if (chatMessages.length !== 0 && _prevMsgLen.current === 0) {
+      log.warn('chat-scroll', 'message list refilled 0→N (Virtuoso remounts)', { now: chatMessages.length })
+    }
+    _prevMsgLen.current = chatMessages.length
+  }, [chatMessages.length])
+
+  // Standing diagnostic — the scroll container's DOM node identity. A change
+  // here means the scroller was mounted or REPLACED (e.g. the empty-branch swap
+  // above, or a Virtuoso remount). A replacement mid-session is the signature of
+  // a flash; routine on first mount. debug.
+  useEffect(() => {
+    log.debug('chat-scroll', 'scroll node mounted/replaced', { hasEl: !!chatLogEl, msgCount: chatMessages.length })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatLogEl])
+
   // Fetch macros for any preamble doc referenced by a message we haven't cached.
   useEffect(() => {
     const needed = new Set<string>()
@@ -4497,6 +4521,22 @@ function FleetChatInner({ shape }: { shape: any }) {
                 log.warn('chat-scroll', 'TRACE content grew', { prev, h, gapNow, follow, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
               }
               if (grew && follow) {
+                // Glue to the true bottom SYNCHRONOUSLY, in the same frame the
+                // height grew, so late in-place growth (math/links/multiline
+                // rendering a second pass) extends the content downward with no
+                // visible gap. Without this the gap opened first and pinHard()'s
+                // scrollToIndex snapped it shut a frame later — the visible
+                // "kick"/bounce. Guarded to grew (never shrink), so the
+                // stale-tall-tail failure pinHard's comment warns about cannot
+                // bite here. pinHard stays as the convergence backstop.
+                const gapBeforeGlue = el ? Math.round(el.scrollHeight - (el.scrollTop + el.clientHeight)) : null
+                if (el) el.scrollTop = el.scrollHeight
+                const gapAfterGlue = el ? Math.round(el.scrollHeight - (el.scrollTop + el.clientHeight)) : null
+                // The kick-fix signature: gapBeforeGlue is how far the view would
+                // have jumped (the old "kick"); gapAfterGlue should be ~0 because
+                // we glued synchronously this frame. A large gapBeforeGlue with
+                // ~0 gapAfterGlue = the fix absorbed a kick.
+                log.debug('chat-scroll', 'growth bottom-glue', { gapBeforeGlue, gapAfterGlue })
                 pinHard()
                 requestAnimationFrame(() => {
                   const el2 = chatLogEl
