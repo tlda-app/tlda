@@ -21,6 +21,7 @@ import { listCommits, buildAtRef, getGitBuildStatus } from '../lib/git-history.m
 import { listVersions, versionAt, checkoutSource, getShadowRepoDir, getTimeBounds, adjacentVersion, ensureShadowDvi } from '../lib/shadow-repo.mjs'
 import { ensure, historicalCtx } from '../lib/ensure.mjs'
 import { broadcastSignal, putShape } from '../lib/sync-rooms.mjs'
+import { loadProofInfo, dryRunInvalidation } from '../lib/invalidation-graph.mjs'
 
 // ---- Diff highlight helpers (mirrored from mcp-server draw_highlight logic) ----
 const _PDF_WIDTH = 612, _TARGET_WIDTH = 800, _PDF_HEIGHT = 792, _PAGE_GAP = 32
@@ -1142,6 +1143,37 @@ router.post('/ribbon-stale', requireRead, async (req, res) => {
   }
 
   res.json({ results })
+})
+
+/**
+ * POST /invalidation/dry-run — structural (dependency-graph) invalidation of a
+ * PROPOSED edit, without committing it.
+ *
+ * Body: { fromLine, toLine, file? }  — the source line range the edit would touch.
+ * Response: { directlyStale: [...], cascadeStale: [...] }
+ *   directlyStale: proof nodes whose own statement the edit changes
+ *   cascadeStale:  nodes that transitively depend on a changed node (with depth + via)
+ *
+ * Pure graph + interval logic over proof-info.json — no git needed, because the
+ * proposed range IS the change. (file is accepted but v1 treats statementLines as
+ * main-file-relative; multi-file anchoring is a follow-up.)
+ */
+router.post('/invalidation/dry-run', requireRead, (req, res) => {
+  const { name } = req.params
+  const { fromLine, toLine } = req.body ?? {}
+
+  const project = readProject(name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+  const lo = Number(fromLine)
+  const hi = Number(toLine)
+  if (!Number.isInteger(lo) || !Number.isInteger(hi) || lo < 1 || hi < 1) {
+    return res.status(400).json({ error: 'fromLine and toLine must be positive integers' })
+  }
+
+  const proofInfo = loadProofInfo(outputDir(name))
+  if (!proofInfo) return res.json({ directlyStale: [], cascadeStale: [], reason: 'no-proof-info' })
+
+  res.json(dryRunInvalidation(proofInfo, lo, hi))
 })
 
 export default router
