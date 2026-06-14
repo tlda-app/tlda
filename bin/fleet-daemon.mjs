@@ -1783,7 +1783,13 @@ async function rpcStartTerminalWatch({ tmux_session, agent_id, poll_ms }) {
   try {
     await execFileP('tmux', [...TMUX_ARGS, 'set-option', '-t', tmux_session, 'window-size', 'manual'], { timeout: 3000 })
     await execFileP('tmux', [...TMUX_ARGS, 'resize-window', '-t', tmux_session, '-x', String(PINNED_COLS), '-y', String(PINNED_ROWS)], { timeout: 3000 })
-  } catch (e) { log.warn(`terminal-watch: failed to pin window for ${tmux_session}: ${e?.message || e}`) }
+    // Force the foreground TUI to repaint at the pinned width. resize-window is a
+    // NO-OP when the window is already 120 (no SIGWINCH → no repaint), so an idle
+    // agent's stale buffer (last painted at an old width, e.g. 80) would otherwise
+    // be reflowed garbled into the 120 peek grid. C-l = redraw-screen: the TUI
+    // repaints cleanly at the current width, with no input side-effect.
+    await execFileP('tmux', [...TMUX_ARGS, 'send-keys', '-t', tmux_session, 'C-l'], { timeout: 3000 })
+  } catch (e) { log.warn(`terminal-watch: failed to pin/repaint window for ${tmux_session}: ${e?.message || e}`) }
 
   // Attach the watch PTY at the (now pinned) window size. tmux renders the window at
   // the window size; a PTY narrower than the window receives garbled, absolute-
