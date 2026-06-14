@@ -122,6 +122,14 @@ interface RibbonTask {
   pageY2: number
 }
 
+interface DocNote {
+  id: string            // the math-note shape id (also the annotation-viewer target)
+  preview: string       // one-line text preview
+  file: string
+  line: number | null
+  color: string
+}
+
 interface Thread {
   partnerId: string
   partnerName: string
@@ -330,6 +338,57 @@ function FleetInboxInner({ shape }: { shape: any }) {
     window.dispatchEvent(new CustomEvent('annotation-viewer-hide'))
   }, [])
 
+  // Notes group — a live projection of the doc's open (unaddressed) annotations.
+  // Same pattern as the ribbon tasks: read math-note shapes from the MAIN editor
+  // (fleet panels render in a separate HUD editor), keep it inside useValue so it
+  // stays reactive, and let it auto-resolve — reply_note sets meta.addressed, so
+  // an answered note drops out with no separate store. Doc-scoped: the inbox lives
+  // in this doc's room, so these are this doc's open notes.
+  const docNotes = useValue(
+    'doc-notes',
+    () => {
+      const me = (typeof window !== 'undefined' && (window as any).__tldraw_editor__) || editor
+      const shapes = me.getCurrentPageShapes().filter((s: any) => s.type === 'math-note' && s.meta?.addressed !== true)
+      return shapes
+        .map((s: any) => {
+          const anchor = s.meta?.sourceAnchor
+          return {
+            id: s.id,
+            preview: previewText(s.props?.text || ''),
+            file: (anchor?.file as string) || '',
+            line: (anchor?.line as number) ?? null,
+            color: (s.props?.color as string) || '',
+            _y: typeof s.y === 'number' ? s.y : 0,
+          }
+        })
+        // Stable order: topmost note first.
+        .sort((a: any, b: any) => a._y - b._y)
+        .map(({ _y, ...n }: any) => n as DocNote)
+    },
+    [editor],
+  )
+
+  // Hover a note → preview it in the annotation viewer (same hover→pin→go path as
+  // the tasks and as chat references). The viewer targets the note shape itself,
+  // so it frames the note in place; a note click never moves the main doc.
+  const showNotePreview = useCallback(
+    (n: DocNote, el: HTMLElement) => {
+      const me = (typeof window !== 'undefined' && (window as any).__tldraw_editor__) || editor
+      const b = me.getShapePageBounds(n.id)
+      if (!b) return
+      const PAD = 40
+      const bounds = { x: b.x - PAD, y: b.y - PAD, w: b.w + PAD * 2, h: b.h + PAD * 2 }
+      const r = el.getBoundingClientRect()
+      window.dispatchEvent(new CustomEvent('annotation-viewer-show', {
+        detail: {
+          bounds, shapeIds: [n.id], label: n.line != null ? `note · line ${n.line}` : 'note',
+          chipRect: { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height },
+        },
+      }))
+    },
+    [editor],
+  )
+
   const openThread = useCallback((t: Thread) => {
     setOpenPartner(t.partnerId)
     // Mark-as-read: clear unread for incoming messages in this thread.
@@ -403,6 +462,9 @@ function FleetInboxInner({ shape }: { shape: any }) {
               {ribbonTasks.length > 0 && (
                 <span className="fleet-inbox-task-total" title="Revalidation tasks">{ribbonTasks.length}</span>
               )}
+              {docNotes.length > 0 && (
+                <span className="fleet-inbox-note-total" title="Open notes">{docNotes.length}</span>
+              )}
               {totalUnread > 0 && <span className="fleet-inbox-unread-total">{totalUnread}</span>}
             </span>
           )}
@@ -412,7 +474,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
         {activeThread ? (
           <ConversationView thread={activeThread} ctx={ctx} myId={myId} myName={myName} />
         ) : (
-          <ThreadList threads={threads} tasks={ribbonTasks} onTaskHover={showTaskPreview} onTaskLeave={hideTaskPreview} onOpen={openThread} onStartDrag={startDrag} />
+          <ThreadList threads={threads} tasks={ribbonTasks} notes={docNotes} onTaskHover={showTaskPreview} onNoteHover={showNotePreview} onItemLeave={hideTaskPreview} onOpen={openThread} onStartDrag={startDrag} />
         )}
       </div>
     </HTMLContainer>
@@ -449,7 +511,7 @@ function useWheelScroll(ref: { current: HTMLDivElement | null }, innerSelector?:
 
 type StartDrag = (e: React.PointerEvent, pillType: 'agent' | 'label', value: string, displayName: string, color: string) => void
 
-function ThreadList({ threads, tasks, onTaskHover, onTaskLeave, onOpen, onStartDrag }: { threads: Thread[]; tasks: RibbonTask[]; onTaskHover: (t: RibbonTask, el: HTMLElement) => void; onTaskLeave: (e: React.MouseEvent) => void; onOpen: (t: Thread) => void; onStartDrag: StartDrag }) {
+function ThreadList({ threads, tasks, notes, onTaskHover, onNoteHover, onItemLeave, onOpen, onStartDrag }: { threads: Thread[]; tasks: RibbonTask[]; notes: DocNote[]; onTaskHover: (t: RibbonTask, el: HTMLElement) => void; onNoteHover: (n: DocNote, el: HTMLElement) => void; onItemLeave: (e: React.MouseEvent) => void; onOpen: (t: Thread) => void; onStartDrag: StartDrag }) {
   const listRef = useRef<HTMLDivElement>(null)
   useWheelScroll(listRef)
   return (
@@ -462,7 +524,7 @@ function ThreadList({ threads, tasks, onTaskHover, onTaskLeave, onOpen, onStartD
               key={t.id}
               className="fleet-inbox-task"
               onMouseEnter={(e) => onTaskHover(t, e.currentTarget)}
-              onMouseLeave={onTaskLeave}
+              onMouseLeave={onItemLeave}
             >
               <div className="fleet-inbox-task-row">
                 <span className="fleet-inbox-task-icon">⟳</span>
@@ -475,7 +537,28 @@ function ThreadList({ threads, tasks, onTaskHover, onTaskLeave, onOpen, onStartD
           ))}
         </div>
       )}
-      {threads.length === 0 && tasks.length === 0 && (
+      {notes.length > 0 && (
+        <div className="fleet-inbox-notes">
+          <div className="fleet-inbox-group-label">Notes</div>
+          {notes.map((n) => (
+            <div
+              key={n.id}
+              className="fleet-inbox-note"
+              onMouseEnter={(e) => onNoteHover(n, e.currentTarget)}
+              onMouseLeave={onItemLeave}
+            >
+              <div className="fleet-inbox-note-row">
+                <span className="fleet-inbox-note-dot" style={n.color ? { color: n.color } : undefined}>●</span>
+                <span className="fleet-inbox-note-text">{n.preview || '(empty note)'}</span>
+              </div>
+              <div className="fleet-inbox-note-sub">
+                open{n.line != null ? ` · line ${n.line}` : ''}{n.file ? ` · ${n.file}` : ''}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {threads.length === 0 && tasks.length === 0 && notes.length === 0 && (
         <div className="fleet-inbox-empty">no messages yet</div>
       )}
       {threads.map((t) => (

@@ -188,6 +188,62 @@
   justify-content: center;
 }
 
+/* --- Notes group (open/unaddressed annotations projected from the doc) ---
+   Same subtle structure as Tasks; a cool slate tint distinguishes "open note"
+   from the amber "needs re-vetting". Auto-resolves: reply_note sets
+   meta.addressed, so an answered note drops out of the list. */
+.fleet-inbox-notes {
+  border-bottom: 1px solid rgba(128, 128, 128, 0.12);
+}
+.fleet-inbox-note {
+  padding: 4px 10px 6px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.fleet-inbox-note:hover {
+  background: rgba(120, 160, 220, 0.07);
+}
+.fleet-inbox-note-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.fleet-inbox-note-dot {
+  font-size: 8px;
+  opacity: 0.65;
+  color: #7a9ec8;
+  flex-shrink: 0;
+}
+.fleet-inbox-note-text {
+  font-size: 11px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fleet-inbox-note-sub {
+  font-size: 10px;
+  opacity: 0.45;
+  margin-top: 1px;
+  padding-left: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fleet-inbox-note-total {
+  font-size: 9px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 4px;
+  border-radius: 7px;
+  background: rgba(120, 160, 220, 0.14);
+  color: #7a9ec8;
+  opacity: 0.85;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 /* --- Conversation view --- */
 .fleet-inbox-conv {
   flex: 1;
