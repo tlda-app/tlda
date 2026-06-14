@@ -495,7 +495,7 @@ function InlineConvoChat({ thread, ctx, myId, myName, anchorKey, onClose }: {
   const scrollToAnchor = useCallback(() => {
     const el = bodyRef.current
     if (!el) return
-    const target = el.querySelector(`[data-msg-key="${(window as any).CSS?.escape ? CSS.escape(anchorKey) : anchorKey}"]`) as HTMLElement | null
+    const target = el.querySelector(`[data-msg-key="${CSS.escape(anchorKey)}"]`) as HTMLElement | null
     el.scrollTop = target ? Math.max(0, target.offsetTop - 4) : el.scrollHeight
   }, [anchorKey])
   useEffect(() => { scrollToAnchor() }, [scrollToAnchor])
