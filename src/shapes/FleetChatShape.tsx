@@ -610,7 +610,7 @@ function SkillHoverPane({ agentId, agentName, anchorRect, onMouseEnter, onMouseL
       onMouseLeave={onMouseLeave}
       onPointerDown={stopEventPropagation}
     >
-      <div className="fleet-skill-hover-head">{agentName} · skills</div>
+      <div className="fleet-skill-hover-head">{agentName}</div>
       {loading && <div className="fleet-skill-hover-empty">…</div>}
       {empty && <div className="fleet-skill-hover-empty">no skill activity yet</div>}
       {cards.length > 0 && (
@@ -625,7 +625,7 @@ function SkillHoverPane({ agentId, agentName, anchorRect, onMouseEnter, onMouseL
       )}
       {owed.length > 0 && (
         <div className="fleet-skill-hover-section">
-          <div className="fleet-skill-hover-label owed">owes ({owed.length})</div>
+          <div className="fleet-skill-hover-label owed">skills owed ({owed.length})</div>
           <div className="fleet-skill-hover-chips">
             {owed.map(o => <span key={o.skill} className="fleet-skill-chip owed">{o.skill}</span>)}
           </div>
@@ -633,7 +633,7 @@ function SkillHoverPane({ agentId, agentName, anchorRect, onMouseEnter, onMouseL
       )}
       {dismissed.length > 0 && (
         <div className="fleet-skill-hover-section">
-          <div className="fleet-skill-hover-label dismissed">dismissed ({dismissed.length})</div>
+          <div className="fleet-skill-hover-label dismissed">skills dismissed ({dismissed.length})</div>
           {dismissed.map(d => (
             <div key={d.skill} className="fleet-skill-dismissed-row">
               <span className="fleet-skill-chip dismissed">{d.skill}</span>
@@ -644,7 +644,7 @@ function SkillHoverPane({ agentId, agentName, anchorRect, onMouseEnter, onMouseL
       )}
       {read.length > 0 && (
         <div className="fleet-skill-hover-section">
-          <div className="fleet-skill-hover-label read">read ({read.length})</div>
+          <div className="fleet-skill-hover-label read">skills read ({read.length})</div>
           <div className="fleet-skill-hover-chips">
             {read.map(s => <span key={s} className="fleet-skill-chip read">{s}</span>)}
           </div>
