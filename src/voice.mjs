@@ -1460,11 +1460,9 @@ function startRecording() {
   if (_recording) return
   if (_backend === 'chrome' && !SpeechRecognition) return
 
-  if (!_activeTextarea && !_accumulator) {
-    showHud('no chat focused', '#c8956a')
-    fadeHud(2000)
-    return
-  }
+  // No guard on having a target: recording can run targetless. With no
+  // accumulator/textarea, fillTextarea discards the stream until a target is
+  // selected. The mic stays live regardless — only the mic button stops it.
 
   _micChannel?.postMessage('mic-start')
 
