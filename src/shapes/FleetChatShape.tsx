@@ -597,7 +597,12 @@ function SkillHoverPane({ agentId, agentName, anchorRect, onMouseEnter, onMouseL
   const cards = data?.cards || []
   const empty = !loading && read.length === 0 && owed.length === 0 && dismissed.length === 0 && cards.length === 0
 
-  return (
+  // Portal to <body>: the pane is position:fixed, but a fixed element inside the
+  // TLDraw canvas's CSS transform is positioned relative to that transform, not
+  // the viewport — so it lands far from the hovered name (whose rect is in
+  // viewport coords). Portaling out of the transformed tree makes fixed coords
+  // viewport-relative again (same fix as TerminalHoverPane).
+  return createPortal((
     <div
       className="fleet-skill-hover-pane"
       style={style}
@@ -605,7 +610,7 @@ function SkillHoverPane({ agentId, agentName, anchorRect, onMouseEnter, onMouseL
       onMouseLeave={onMouseLeave}
       onPointerDown={stopEventPropagation}
     >
-      <div className="fleet-skill-hover-head">{agentName} · skills</div>
+      <div className="fleet-skill-hover-head">{agentName}</div>
       {loading && <div className="fleet-skill-hover-empty">…</div>}
       {empty && <div className="fleet-skill-hover-empty">no skill activity yet</div>}
       {cards.length > 0 && (
@@ -620,7 +625,7 @@ function SkillHoverPane({ agentId, agentName, anchorRect, onMouseEnter, onMouseL
       )}
       {owed.length > 0 && (
         <div className="fleet-skill-hover-section">
-          <div className="fleet-skill-hover-label owed">owes ({owed.length})</div>
+          <div className="fleet-skill-hover-label owed">skills owed ({owed.length})</div>
           <div className="fleet-skill-hover-chips">
             {owed.map(o => <span key={o.skill} className="fleet-skill-chip owed">{o.skill}</span>)}
           </div>
@@ -628,7 +633,7 @@ function SkillHoverPane({ agentId, agentName, anchorRect, onMouseEnter, onMouseL
       )}
       {dismissed.length > 0 && (
         <div className="fleet-skill-hover-section">
-          <div className="fleet-skill-hover-label dismissed">dismissed ({dismissed.length})</div>
+          <div className="fleet-skill-hover-label dismissed">skills dismissed ({dismissed.length})</div>
           {dismissed.map(d => (
             <div key={d.skill} className="fleet-skill-dismissed-row">
               <span className="fleet-skill-chip dismissed">{d.skill}</span>
@@ -639,14 +644,14 @@ function SkillHoverPane({ agentId, agentName, anchorRect, onMouseEnter, onMouseL
       )}
       {read.length > 0 && (
         <div className="fleet-skill-hover-section">
-          <div className="fleet-skill-hover-label read">read ({read.length})</div>
+          <div className="fleet-skill-hover-label read">skills read ({read.length})</div>
           <div className="fleet-skill-hover-chips">
             {read.map(s => <span key={s} className="fleet-skill-chip read">{s}</span>)}
           </div>
         </div>
       )}
     </div>
-  )
+  ), document.body)
 }
 
 // Recursively read a FileSystemDirectoryEntry, returning { file, path } pairs
