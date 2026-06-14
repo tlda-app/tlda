@@ -342,6 +342,59 @@
   border-bottom: 1px solid rgba(128, 128, 128, 0.12);
 }
 
+/* --- Cascade graph view (structural invalidation rendered as a DAG) ---
+   Amber root boxes (directly-stale, approvable) feed violet cascade boxes via
+   thin arrows, laid out in dependency bands. Subtle like the rest of the chrome;
+   the approve hint only shows on hover. */
+.fleet-inbox-graph-wrap {
+  padding: 8px 6px 14px;
+}
+.cascade-graph-empty {
+  padding: 24px 12px;
+  text-align: center;
+  font-size: 10px;
+  opacity: 0.4;
+}
+.cascade-graph-node {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  padding: 3px 6px;
+  border: 1px solid;
+  border-radius: 6px;
+  background: rgba(128, 128, 128, 0.06);
+  text-align: center;
+  transition: background 0.12s, box-shadow 0.12s;
+}
+.cascade-graph-node.root {
+  cursor: pointer;
+}
+.cascade-graph-node.root:hover {
+  background: rgba(200, 150, 70, 0.1);
+  box-shadow: 0 0 0 1px rgba(200, 150, 70, 0.35);
+}
+.cascade-graph-node-title {
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.cascade-graph-node-approve {
+  font-size: 8.5px;
+  color: #c8965a;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.cascade-graph-node.root:hover .cascade-graph-node-approve {
+  opacity: 0.85;
+}
+
 .fleet-inbox-note-total {
   font-size: 9px;
   min-width: 14px;

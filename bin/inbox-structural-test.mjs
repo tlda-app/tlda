@@ -119,12 +119,27 @@ const shot = async (name) => {
 }
 await shot('inbox-structural-before.png')
 
-// VERIFY 2: approve ONLY Prop 8.2 → it and its cascade (Prop 8.3) clear, while the
-// independent Prop 7.1 task remains (the clear is scoped to one dependency chain).
-await page.locator('.fleet-inbox-node-direct', { hasText: 'Proposition 8.2' }).locator('.fleet-inbox-node-approve').click()
-await page.waitForTimeout(1000)
+// VERIFY 1.5: the cascade rendered as an actual graph — switch to the graph view,
+// assert the root nodes, the cascade node, and the dependency edge.
+await page.click('.fleet-inbox-sort-btn:has-text("graph")')
+await page.waitForTimeout(500)
+const graph = await page.evaluate(() => ({
+  roots: [...document.querySelectorAll('.cascade-graph-node.root')].map(e => e.querySelector('.cascade-graph-node-title')?.textContent).sort(),
+  cascade: [...document.querySelectorAll('.cascade-graph-node.cascade')].map(e => e.querySelector('.cascade-graph-node-title')?.textContent),
+  edges: [...document.querySelectorAll('.cascade-graph-edge')].map(e => ({ from: e.getAttribute('data-from'), to: e.getAttribute('data-to') })),
+}))
+log('VERIFY 1.5 (cascade graph):', JSON.stringify(graph, null, 1))
+await shot('inbox-structural-graph.png')
+
+// VERIFY 2: approve Prop 8.2 FROM THE GRAPH (click its root node) → it and its
+// cascade (Prop 8.3) clear, while the independent Prop 7.1 root remains. Then
+// switch back to the type view to read the resulting task state.
+await page.locator('.cascade-graph-node.root', { hasText: 'Proposition 8.2' }).click()
+await page.waitForTimeout(800)
+await page.click('.fleet-inbox-sort-btn:has-text("type")')
+await page.waitForTimeout(700)
 const after = await readRows()
-log('VERIFY 2 (approve-upstream-clears-downstream):', JSON.stringify(after, null, 1))
+log('VERIFY 2 (approve-upstream-clears-downstream, from graph):', JSON.stringify(after, null, 1))
 const seg = await page.evaluate(() => {
   try {
     const segs = JSON.parse(window.__tldraw_editor__.getShape('shape:understanding-ribbon').props.segments)
@@ -153,8 +168,14 @@ const clearedOK = after.cascade.length === 0
 const segOK = seg && seg.stale === false && seg.staleAt == null
   && !!seg.approvedAtCommit && seg.approvedAtCommit !== 'old-commit'
 
-const pass = directOK && cascadeOK && groupsOK && clearedOK && segOK
-log('\nchecks:', JSON.stringify({ directOK, cascadeOK, groupsOK, clearedOK, segOK }))
+// Graph view: two roots (the directly-stale props), one cascade node (Prop 8.3),
+// and the dependency edge prop:matching-cost → prop:matching-achievable.
+const graphOK = JSON.stringify(graph.roots) === JSON.stringify(['Proposition 7.1', 'Proposition 8.2'])
+  && graph.cascade.length === 1 && graph.cascade[0] === 'Proposition 8.3'
+  && graph.edges.some((e) => e.from === 'prop:matching-cost' && e.to === 'prop:matching-achievable')
+
+const pass = directOK && cascadeOK && groupsOK && graphOK && clearedOK && segOK
+log('\nchecks:', JSON.stringify({ directOK, cascadeOK, groupsOK, graphOK, clearedOK, segOK }))
 log(pass ? '\n✅ ALL CHECKS PASSED' : '\n❌ SOME CHECK FAILED')
 if (!process.argv.includes('--keep-open')) await browser.close()
 process.exit(pass ? 0 : 1)

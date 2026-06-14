@@ -28,6 +28,7 @@ import { fetchProofInfo } from '../docInfoCache'
 import { onReloadSignal } from '../useYjsSync'
 import { invalidationFromRanges } from '../invalidationGraph'
 import type { DirectNode, CascadeNode } from '../invalidationGraph'
+import { CascadeGraph } from './CascadeGraph'
 import katex from 'katex'
 import { getActiveMacros } from '../katexMacros'
 import MarkdownIt from 'markdown-it'
@@ -166,7 +167,7 @@ type InboxItem =
   | { kind: 'note'; key: string; time: number; note: DocNote }
   | { kind: 'message'; key: string; time: number; thread: Thread }
 
-type SortMode = 'time' | 'type'
+type SortMode = 'time' | 'type' | 'graph'
 
 interface Thread {
   partnerId: string
@@ -639,6 +640,11 @@ function FleetInboxInner({ shape }: { shape: any }) {
                   className={`fleet-inbox-sort-btn${sortMode === 'type' ? ' active' : ''}`}
                   onPointerUp={(e) => { stopEventPropagation(e); setSort('type') }}
                 >type</button>
+                <button
+                  className={`fleet-inbox-sort-btn${sortMode === 'graph' ? ' active' : ''}`}
+                  title="Cascade graph — the invalidated proof nodes and their dependency edges"
+                  onPointerUp={(e) => { stopEventPropagation(e); setSort('graph') }}
+                >graph</button>
               </span>
               {taskCount > 0 && (
                 <span className="fleet-inbox-task-total" title="Revalidation tasks">{taskCount}</span>
@@ -827,9 +833,20 @@ function InboxList(props: InboxListProps) {
 
   return (
     <div ref={listRef} className="fleet-inbox-list">
-      {empty && <div className="fleet-inbox-empty">no messages yet</div>}
+      {empty && sortMode !== 'graph' && <div className="fleet-inbox-empty">no messages yet</div>}
 
-      {sortMode === 'time' ? (
+      {sortMode === 'graph' ? (
+        // The cascade rendered as an actual dependency graph — directly-stale
+        // roots up top, the nodes that rest on them below, edges following the
+        // cascade. Approve a root to re-vet it and clear everything beneath it.
+        <div className="fleet-inbox-graph-wrap">
+          <CascadeGraph
+            nodes={[...directNodes, ...cascadeNodes]}
+            width={336}
+            onApprove={(id) => { const t = directNodes.find((d) => d.id === id); if (t) onApprove(t) }}
+          />
+        </div>
+      ) : sortMode === 'time' ? (
         // Interleaved stream — every kind, newest first.
         timeItems.map(renderItem)
       ) : (
