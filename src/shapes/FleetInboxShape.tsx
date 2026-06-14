@@ -279,7 +279,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
     'ribbon-tasks',
     () => {
       const me = (typeof window !== 'undefined' && (window as any).__tldraw_editor__) || editor
-      const r = me.getShape('shape:understanding-ribbon' as any) as any
+      const r = me.getShape('shape:understanding-ribbon')
       if (!r?.props?.segments) return [] as RibbonTask[]
       let segs: any[]
       try { segs = JSON.parse(r.props.segments) } catch { return [] as RibbonTask[] }
