@@ -472,12 +472,16 @@ export async function cmdPw(args, repoRoot) {
   }
 
   if (verb === 'acquire') {
-    ensureOpen(repoRoot)
     if (!lockWithWait(repoRoot, me)) {
       console.error('could not take the pw lock — another agent is mid-verb; try again')
       process.exit(1)
     }
     try {
+      // ensureOpen runs INSIDE the lock so concurrent agents can't each launch /
+      // recover the browser at once. That race is what produced the kill+reopen
+      // thrash — every reopen raises a headed window over Skip. Serialized, only
+      // the first agent opens; the rest find it up and reuse it (no raise).
+      ensureOpen(repoRoot)
       const idx = selectMyTab()
       if (idx == null) console.error("pw: couldn't resolve a tab (daemon wedged or session down) — try again when the page is idle")
       else console.log(`browser up; my tab #${idx} (key ${myTabKey()})`)
@@ -525,8 +529,11 @@ export async function cmdPw(args, repoRoot) {
     process.exit(2)
   }
 
-  // ---- forwarded verb: short lock → select my tab → (rewrite) → forward ----
-  ensureOpen(repoRoot)
+  // ---- forwarded verb: short lock → ensure open → select my tab → forward ----
+  // ensureOpen runs INSIDE the lock (not before it) so two agents arriving at
+  // once can't both launch/recover the browser — that race is what kill+reopened
+  // the window and raised it over Skip. The first holder opens; the rest wait,
+  // then find it up and just reuse their tab.
   if (!lockWithWait(repoRoot, me)) {
     const lk = lockStatus(repoRoot)
     console.error(`pw busy — ${lk ? `${lk.holder} holding (${lk.ageSecs}s)` : 'another agent'}. Try again.`)
@@ -534,6 +541,7 @@ export async function cmdPw(args, repoRoot) {
   }
   let code = 0
   try {
+    ensureOpen(repoRoot)
     const idx = selectMyTab()
     if (idx == null) {
       // selectMyTab couldn't resolve my tab (daemon wedged or session down). Do
