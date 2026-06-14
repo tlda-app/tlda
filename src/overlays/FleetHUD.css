@@ -70,6 +70,8 @@
 .fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-inbox"] *,
 .fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-docview"],
 .fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-docview"] *,
+.fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-touch-inbox"],
+.fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-touch-inbox"] *,
 .fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-reaper"],
 .fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-reaper"] * {
   pointer-events: auto !important;
@@ -117,6 +119,8 @@
 .fleet-hud-wrap.tool-passes-through:not(.hud-layout-active) .clip-panel-fullvp .tl-shape[data-shape-type="fleet-inbox"] *,
 .fleet-hud-wrap.tool-passes-through:not(.hud-layout-active) .clip-panel-fullvp .tl-shape[data-shape-type="fleet-docview"],
 .fleet-hud-wrap.tool-passes-through:not(.hud-layout-active) .clip-panel-fullvp .tl-shape[data-shape-type="fleet-docview"] *,
+.fleet-hud-wrap.tool-passes-through:not(.hud-layout-active) .clip-panel-fullvp .tl-shape[data-shape-type="fleet-touch-inbox"],
+.fleet-hud-wrap.tool-passes-through:not(.hud-layout-active) .clip-panel-fullvp .tl-shape[data-shape-type="fleet-touch-inbox"] *,
 .fleet-hud-wrap.tool-passes-through:not(.hud-layout-active) .clip-panel-fullvp .tl-shape[data-shape-type="fleet-reaper"],
 .fleet-hud-wrap.tool-passes-through:not(.hud-layout-active) .clip-panel-fullvp .tl-shape[data-shape-type="fleet-reaper"] * {
   pointer-events: none !important;
