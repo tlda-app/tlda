@@ -42,8 +42,9 @@ const MODEL_SHORTHANDS: Record<string, string> = {
 // per-family here; this fallback is used only before the fetch resolves or if it
 // fails, so an offline panel still completes the common aliases.
 const MODEL_FALLBACK = [
-  'opus', 'opus45', 'opus46', 'opus47', 'opus48', 'sonnet', 'haiku',
+  'opus', 'opus45', 'opus46', 'opus47', 'opus48', 'sonnet', 'haiku', 'fable',
   'deepseek', 'deepseek-chat', 'deepseek-v3', 'deepseek-r1', 'deepseek-reasoner',
+  'kimi', 'qwen', 'glm', 'minimax', 'mistral',
 ]
 
 // Live alias list, shared across all FleetAgents shapes: one fetch, cached, with
@@ -57,7 +58,10 @@ function ensureModelFetch() {
   fetch('/api/fleet/models')
     .then(r => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
     .then(d => {
-      const aliases: string[] = (d?.models ?? []).map((m: any) => m.alias).filter(Boolean)
+      // Verified-only: a model flagged verified:false (e.g. one that can't emit
+      // structured tool-calls through goose) is unusable as an agent, so we keep
+      // it out of the picker entirely — it won't surface even when you type.
+      const aliases: string[] = (d?.models ?? []).filter((m: any) => m.verified !== false).map((m: any) => m.alias).filter(Boolean)
       if (aliases.length) { _modelCache = aliases; _modelSubs.forEach(f => f()) }
     })
     .catch(() => { _modelFetchStarted = false }) // allow a retry on the next mount
@@ -83,6 +87,18 @@ const EFFORT_SHORTHANDS: Record<string, string> = {
 }
 const DEFAULT_MODEL = 'opus48'
 const DEFAULT_EFFORT = 'medium'
+
+// Empty-state model picks (shown before you type a model segment): the curated,
+// diverse set we actively test — a few headline Claude families + the goose
+// models teacher-dev runs in the manners-course sweep. Everything else (older
+// versions, untested variants) still completes once you start typing letters,
+// so the full alias list stays reachable; this just keeps the no-prefix list
+// short and representative instead of a wall of Claude aliases. Goose subset
+// confirmed with teacher-dev (the leaderboard set).
+const CURATED_SPAWN_MODELS = [
+  'opus', 'sonnet', 'haiku', 'fable',
+  'deepseek', 'kimi', 'qwen', 'glm', 'minimax', 'mistral',
+]
 const CAT_NAMES = [
   'whiskers', 'mittens', 'shadow', 'luna', 'mochi', 'pepper', 'nugget', 'biscuit',
   'pickles', 'waffles', 'noodle', 'tofu', 'gizmo', 'beans', 'ziggy', 'cleo',
@@ -181,7 +197,7 @@ const SEG_LABELS = ['project', 'name', 'model', 'effort']
 
 // Candidate list for the segment the cursor is currently in (the last colon-part).
 // Shows canonical values only (not shorthand aliases) so the dropdown stays readable.
-function getSegmentCandidates(input: string, projects: string[], models: string[]): { pos: number; prefix: string; candidates: string[] } {
+function getSegmentCandidates(input: string, projects: string[], models: string[], curatedModels: string[]): { pos: number; prefix: string; candidates: string[] } {
   const parts = input.split(':')
   const pos = parts.length // 1=project, 2=name, 3=model, 4=effort
   const prefix = parts[parts.length - 1]
@@ -191,9 +207,12 @@ function getSegmentCandidates(input: string, projects: string[], models: string[
   else if (pos === 3) pool = models
   else if (pos === 4) pool = EFFORT_LEVELS
   const lower = prefix.toLowerCase()
+  // Model segment with nothing typed: show the curated/diverse set, not every
+  // alias. Once a prefix is typed, fall through to the full model pool so any
+  // model is still reachable by name.
   const candidates = prefix
     ? pool.filter(c => c.toLowerCase().startsWith(lower) && c !== prefix)
-    : pool
+    : (pos === 3 ? curatedModels : pool)
   return { pos, prefix, candidates }
 }
 
@@ -521,14 +540,21 @@ function FleetAgentsInner({ shape }: { shape: any }) {
   // newly-created project shows up here without a manual reload.
   const projectList = useFleetProjects()
   const spawnModels = useSpawnModels()
+  // Curated empty-state picks, intersected with what's actually available (and
+  // verified) so a removed/renamed alias never shows a dead entry; curated order
+  // preserved.
+  const curatedSpawnModels = useMemo(
+    () => CURATED_SPAWN_MODELS.filter(a => spawnModels.includes(a)),
+    [spawnModels],
+  )
   const [catName] = useState(() => CAT_NAMES[Math.floor(Math.random() * CAT_NAMES.length)])
   const spawnInputRef = useRef<HTMLInputElement>(null)
   const [spawnFocused, setSpawnFocused] = useState(false)
   const [dropdownIdx, setDropdownIdx] = useState(-1) // -1 = nothing highlighted
   const [dropdownDismissed, setDropdownDismissed] = useState(false)
   const { pos: segPos, candidates: segCandidates } = useMemo(
-    () => getSegmentCandidates(spawnDoc, projectList, spawnModels),
-    [spawnDoc, projectList, spawnModels],
+    () => getSegmentCandidates(spawnDoc, projectList, spawnModels, curatedSpawnModels),
+    [spawnDoc, projectList, spawnModels, curatedSpawnModels],
   )
   const projectInvalid = useMemo(
     () => projectUnresolvable(spawnDoc, projectList, currentDoc),

@@ -1898,6 +1898,14 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   display: flex;
   gap: 3px;
   align-items: center;
+  /* Wide enough to show a full project:name:model:effort spec, but capped so it
+     sits right-of-center with a clear gap from the awake/hibernating count on the
+     left (the footer's space-between pushes the capped input toward the right
+     edge) — not crowding the whole row. */
+  flex: 1;
+  min-width: 0;
+  max-width: 50%;
+  margin-left: 10px;
 }
 .fleet-agents-shape .fleet-agents-spawn-input-wrap {
   position: relative;

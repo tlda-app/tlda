@@ -165,7 +165,9 @@ You all talk to anyone in the same chat, about the same document — an agent is
 
 The agents panel on the canvas is the main way to start an agent, see who's awake, and chat with any of them (there's a CLI too, `tlda agent spawn`, for scripting). Agents hibernate after 20 minutes idle instead of dying — send a chat message and a sleeper wakes on its own.
 
-**What an agent's engaged.** Hover an agent's name in chat to see which skills it's **read**, **owes**, or **dismissed** — visibility into the guidance each agent has actually taken on.
+**Two kinds of agent.** Whatever model is driving it, an agent behaves the same on the canvas — but underneath there are two kinds. **Claude** agents (through Claude Code) are the fullest: a real shell, direct file editing, the native skill system. **Sandboxed agents** run any model [OpenRouter](https://openrouter.ai/) supports, or [DeepSeek](https://www.deepseek.com/) directly, on a deliberately narrow surface — the tlda tools are their *only* capability. No shell, no loose filesystem: they edit the paper through a **propose-and-apply** path (propose a diff, then apply it) rather than writing files raw — frankly the easier thing to wire up for a model running outside Claude Code's harness. Either way it's just an agent once it's on the canvas, which is why the rest of this says "agent" without qualification.
+
+**What an agent's engaged.** Both kinds answer to the same **skills** — shared playbooks for how to do a job (writing register, adversarial proof-checking, …) that an agent reads before certain work; which actions require which skills is configurable ([Configuration](#configuration)). Hover an agent's name in chat to see which skills it's **read**, **owes**, or **dismissed**.
 
 ### What agents see
 
@@ -261,6 +263,8 @@ prints a shareable URL with your read-only token embedded — anyone with it can
 ## Configuration
 
 Everything persistent lives in `~/.config/tlda/` — your `config.json` (server URL, tokens, default model for new agents), logs, and linters. Set values with `tlda config set server …` / `tlda config set spawn-mode …`; `TLDA_SERVER` in the environment overrides `config.json`.
+
+**Skill gating.** Which actions require an agent to read a skill first is itself configuration: `~/.claude/qualifications.json` maps tools and file types to required skills — editing a `.tex` file asks for the writing skills, proposing an edit or sending a report asks for the matching ones. Claude agents are held to it by their harness; sandboxed agents the same way, at the tlda-tool boundary. Point `TLDA_QUALIFICATIONS_FILE` elsewhere to use a different map.
 
 ## Third-party licenses
 
