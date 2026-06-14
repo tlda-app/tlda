@@ -264,3 +264,28 @@ export async function fetchShadowMeta(docName: string, hash: string): Promise<{ 
     return { pages: null }
   }
 }
+
+export interface RibbonStaleResult { stale: boolean; reason?: string }
+
+/**
+ * Ask the server which approved ribbon segments went stale since they were vetted.
+ * Returns results in the same order as `segments`, or null if the call failed.
+ */
+export async function checkRibbonStale(
+  docName: string,
+  segments: Array<{ file: string; startLine: number; endLine: number; approvedAtCommit: string }>,
+  currentCommit: string,
+): Promise<RibbonStaleResult[] | null> {
+  try {
+    const res = await fetch(`${serverBase}/api/projects/${docName}/history/ribbon-stale`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ segments, currentCommit }),
+    })
+    if (!res.ok) return null
+    const data = await res.json()
+    return Array.isArray(data.results) ? data.results : null
+  } catch {
+    return null
+  }
+}

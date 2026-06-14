@@ -3336,7 +3336,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const segments = JSON.parse(ribbon.props?.segments || '[]');
       const y1 = Math.min(startCanvas.y, endCanvas.y) - ribbonY;
       const y2 = Math.max(startCanvas.y, endCanvas.y) - ribbonY;
-      const newSeg = { startLine, endLine, status, y1, y2 };
+
+      // Anchor the stamp to the build currently in the room (doc-version sentinel),
+      // so the server can later diff it forward and decide if the source moved.
+      let approvedAtCommit;
+      try {
+        const dvShapes = await fetchShapes(doc, 'doc-version');
+        const sentinel = dvShapes.find(s => s.id === 'shape:doc-version--sentinel');
+        const h = sentinel?.props?.commitHash;
+        if (h && h !== 'unknown') approvedAtCommit = String(h);
+      } catch (e) { process.stderr.write(`[mcp] doc-version fetch failed: ${e.message}\n`); }
+
+      const newSeg = { startLine, endLine, status, y1, y2, ...(approvedAtCommit ? { approvedAtCommit } : {}) };
 
       // Merge: remove overlapping portions, insert new segment
       const merged = [];
