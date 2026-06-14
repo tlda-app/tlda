@@ -36,7 +36,8 @@ function mergeSegment(existing, newSeg) {
 function normalizeSegments(segments) {
   const colored = segments
     .filter(s => s.status !== 'unchecked' && s.y2 - s.y1 > 0)
-    .sort((a, b) => a.y1 - b.y1 || a.y2 - b.y2)
+    .sort((a, b) => a.y1 - b.y1 || a.y2 - b.y2 ||
+      (a.status < b.status ? -1 : a.status > b.status ? 1 : 0))
   const out = []
   for (const seg of colored) {
     const last = out[out.length - 1]
@@ -159,6 +160,25 @@ console.log('(a2) adjacent-fragment bloat — the 43k mechanism:')
   assert(raw.length === N, `without coalescing, ${N} adjacent bands → ${N} segments (the bloat)`)
   assert(fixed.length === 1, `with coalescing, ${N} adjacent same-status bands → 1 segment (got ${fixed.length})`)
   assert(fixed[0].y1 === 0 && fixed[0].y2 === N * 4, `single merged span covers the whole run`)
+}
+
+// ---------------------------------------------------------------------------
+// The ACTUAL bregman pathology: exact-overlapping duplicates of the same line
+// range, alternating status (uncertain/approved/uncertain/…). The real shape
+// had 25,842 segments that were only ~109 distinct (y1,y2,status) tuples. A
+// sort that ignores status leaves them interleaved and nothing collapses; the
+// status tiebreaker groups same-status duplicates so they absorb to one.
+console.log('(a3) exact-duplicate / alternating-status overlap — the real bregman bloat:')
+{
+  const segs = []
+  // 5000 copies of [456,514], alternating uncertain/approved (2 distinct tuples).
+  for (let i = 0; i < 5000; i++) {
+    segs.push(seg(456, 514, i % 2 === 0 ? 'uncertain' : 'approved'))
+  }
+  const out = normalizeSegments(segs)
+  assert(out.length === 2, `5000 alternating-status duplicates of one range → 2 segments (got ${out.length})`)
+  const statuses = new Set(out.map(s => s.status))
+  assert(statuses.has('uncertain') && statuses.has('approved'), `both statuses preserved`)
 }
 
 console.log('')

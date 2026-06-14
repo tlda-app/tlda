@@ -145,16 +145,23 @@ const COALESCE_GAP_PX = 1.5
 // bounds the count — without it, every mark and every erase-split adds a
 // fragment that never merges back (the 43k-segment bloat). Run on every write.
 export function normalizeSegments(segments: RibbonSegment[]): RibbonSegment[] {
+  // Sort by position AND status. The status tiebreaker is load-bearing: without
+  // it, exact-overlapping duplicates of alternating status (the same line marked
+  // uncertain/approved/uncertain/… — the actual shape of the bregman bloat) stay
+  // interleaved, so no two consecutive entries share a status and none collapse.
+  // Grouping same-status duplicates makes the absorb-step below fold them to one.
   const colored = segments
     .filter(s => s.status !== 'unchecked' && s.y2 - s.y1 > 0)
-    .sort((a, b) => a.y1 - b.y1 || a.y2 - b.y2)
+    .sort((a, b) => a.y1 - b.y1 || a.y2 - b.y2 ||
+      (a.status < b.status ? -1 : a.status > b.status ? 1 : 0))
 
   const out: RibbonSegment[] = []
   for (const seg of colored) {
     const last = out[out.length - 1]
     if (last && last.status === seg.status && seg.y1 <= last.y2 + COALESCE_GAP_PX) {
-      // Same status and touching/overlapping — extend the run. Take the union
-      // span and carry the lower endpoint's line/file so remap stays anchored.
+      // Same status and touching/overlapping/duplicate — absorb into the run.
+      // Take the union span and carry the lower endpoint's line/file so remap
+      // stays anchored. A contained/duplicate segment (y2 <= last.y2) is dropped.
       if (seg.y2 > last.y2) {
         last.y2 = seg.y2
         last.endLine = seg.endLine
