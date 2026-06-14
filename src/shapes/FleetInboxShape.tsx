@@ -113,6 +113,15 @@ function makeChatCtx(agents: any[], tasks: any[]) {
   }
 }
 
+interface RibbonTask {
+  id: string
+  file: string
+  lo: number
+  hi: number
+  pageY1: number
+  pageY2: number
+}
+
 interface Thread {
   partnerId: string
   partnerName: string
@@ -256,6 +265,71 @@ function FleetInboxInner({ shape }: { shape: any }) {
 
   const totalUnread = useMemo(() => threads.reduce((n, t) => n + t.unread, 0), [threads])
 
+  // Tasks group — a live projection of the understanding-ribbon's stale spans.
+  // Reading the ribbon shape inside useValue keeps this reactive: re-approving a
+  // span un-stales it (the ribbon shape updates), so its task auto-resolves with
+  // no separate store, dedup, or clear logic. Doc-scoped: the inbox lives in this
+  // doc's room, so it shows this doc's revalidation tasks.
+  // Fleet panels render in a SEPARATE HUD editor, so useEditor() here is NOT the
+  // doc editor. The understanding-ribbon lives in the main doc editor — read it
+  // (and scroll it) via the global main editor, the same pattern FleetChatShape
+  // uses. tldraw signals are reactive across editors, so useValue still re-runs
+  // when the main-editor ribbon changes → tasks auto-resolve on re-approve.
+  const ribbonTasks = useValue(
+    'ribbon-tasks',
+    () => {
+      const me = (typeof window !== 'undefined' && (window as any).__tldraw_editor__) || editor
+      const r = me.getShape('shape:understanding-ribbon' as any) as any
+      if (!r?.props?.segments) return [] as RibbonTask[]
+      let segs: any[]
+      try { segs = JSON.parse(r.props.segments) } catch { return [] as RibbonTask[] }
+      const ribbonY = r.y
+      return segs
+        .filter((s) => s.stale && s.status === 'approved')
+        .map((s) => {
+          const lo = Math.min(s.startLine, s.endLine)
+          const hi = Math.max(s.startLine, s.endLine)
+          const file = (s.startFile as string) || ''
+          return { id: `${file}:${lo}-${hi}`, file, lo, hi, pageY1: ribbonY + s.y1, pageY2: ribbonY + s.y2 } as RibbonTask
+        })
+        // Stable order: topmost span first.
+        .sort((a, b) => a.pageY1 - b.pageY1)
+    },
+    [editor],
+  )
+
+  // Hover a task → preview the span in the annotation viewer (the same hover→
+  // pin→go mechanism chat references use); the viewer handles pin/navigation
+  // itself when clicked. A task click never moves the main doc.
+  const showTaskPreview = useCallback(
+    (t: RibbonTask, el: HTMLElement) => {
+      const me = (typeof window !== 'undefined' && (window as any).__tldraw_editor__) || editor
+      const pages = me.getCurrentPageShapes().filter((s: any) => s.type === 'svg-page')
+      let pb: any = null
+      for (const p of pages) {
+        const b = me.getShapePageBounds(p.id)
+        if (b && t.pageY1 >= b.minY - 4 && t.pageY1 <= b.maxY + 4) { pb = b; break }
+      }
+      if (!pb && pages.length) pb = me.getShapePageBounds(pages[0].id)
+      if (!pb) return
+      const PAD = 40
+      const bounds = { x: pb.x, y: t.pageY1 - PAD, w: pb.w, h: Math.max(t.pageY2 - t.pageY1, 20) + PAD * 2 }
+      const r = el.getBoundingClientRect()
+      window.dispatchEvent(new CustomEvent('annotation-viewer-show', {
+        detail: {
+          bounds, shapeIds: [], label: `lines ${t.lo}–${t.hi}`,
+          chipRect: { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height },
+        },
+      }))
+    },
+    [editor],
+  )
+  const hideTaskPreview = useCallback((e: React.MouseEvent) => {
+    const related = e.relatedTarget as HTMLElement | null
+    if (related?.closest?.('.annotation-viewer')) return
+    window.dispatchEvent(new CustomEvent('annotation-viewer-hide'))
+  }, [])
+
   const openThread = useCallback((t: Thread) => {
     setOpenPartner(t.partnerId)
     // Mark-as-read: clear unread for incoming messages in this thread.
@@ -325,7 +399,12 @@ function FleetInboxInner({ shape }: { shape: any }) {
               onPointerDown={(e) => { e.stopPropagation(); startDrag(e, 'agent', activeThread.friendly, activeThread.partnerName, activeThread.color) }}
             >{activeThread.partnerName}</span>
           ) : (
-            totalUnread > 0 && <span className="fleet-inbox-unread-total">{totalUnread}</span>
+            <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 4 }}>
+              {ribbonTasks.length > 0 && (
+                <span className="fleet-inbox-task-total" title="Revalidation tasks">{ribbonTasks.length}</span>
+              )}
+              {totalUnread > 0 && <span className="fleet-inbox-unread-total">{totalUnread}</span>}
+            </span>
           )}
         </div>
 
@@ -333,7 +412,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
         {activeThread ? (
           <ConversationView thread={activeThread} ctx={ctx} myId={myId} myName={myName} />
         ) : (
-          <ThreadList threads={threads} onOpen={openThread} onStartDrag={startDrag} />
+          <ThreadList threads={threads} tasks={ribbonTasks} onTaskHover={showTaskPreview} onTaskLeave={hideTaskPreview} onOpen={openThread} onStartDrag={startDrag} />
         )}
       </div>
     </HTMLContainer>
@@ -370,12 +449,33 @@ function useWheelScroll(ref: { current: HTMLDivElement | null }, innerSelector?:
 
 type StartDrag = (e: React.PointerEvent, pillType: 'agent' | 'label', value: string, displayName: string, color: string) => void
 
-function ThreadList({ threads, onOpen, onStartDrag }: { threads: Thread[]; onOpen: (t: Thread) => void; onStartDrag: StartDrag }) {
+function ThreadList({ threads, tasks, onTaskHover, onTaskLeave, onOpen, onStartDrag }: { threads: Thread[]; tasks: RibbonTask[]; onTaskHover: (t: RibbonTask, el: HTMLElement) => void; onTaskLeave: (e: React.MouseEvent) => void; onOpen: (t: Thread) => void; onStartDrag: StartDrag }) {
   const listRef = useRef<HTMLDivElement>(null)
   useWheelScroll(listRef)
   return (
     <div ref={listRef} className="fleet-inbox-list">
-      {threads.length === 0 && (
+      {tasks.length > 0 && (
+        <div className="fleet-inbox-tasks">
+          <div className="fleet-inbox-group-label">Tasks</div>
+          {tasks.map((t) => (
+            <div
+              key={t.id}
+              className="fleet-inbox-task"
+              onMouseEnter={(e) => onTaskHover(t, e.currentTarget)}
+              onMouseLeave={onTaskLeave}
+            >
+              <div className="fleet-inbox-task-row">
+                <span className="fleet-inbox-task-icon">⟳</span>
+                <span className="fleet-inbox-task-text">Re-vet lines {t.lo}–{t.hi}</span>
+              </div>
+              <div className="fleet-inbox-task-sub">
+                changed since you approved{t.file ? ` · ${t.file}` : ''}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {threads.length === 0 && tasks.length === 0 && (
         <div className="fleet-inbox-empty">no messages yet</div>
       )}
       {threads.map((t) => (
