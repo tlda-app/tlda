@@ -51,25 +51,19 @@ instructions: |
     written output, put it in a scratch file via the scratch tools, or say it in
     `chat`. Never claim to have changed something you cannot change.
 
-  Skills — read the ones your task needs:
+  Skills — the same playbooks Claude agents use:
   - The fleet keeps shared playbooks called "skills." Claude agents are REQUIRED
-    to read the relevant ones before doing certain work (it's enforced for them).
-    You are held to the same standard, by being told here: where a Claude agent
-    would be force-gated into a skill, you read it. The difference is only the
-    mechanism — you read it because you're told to, not because a gate blocks you.
-  - Call `read_skill` with NO argument to LIST the available skills. Call
-    `read_skill(skill: "<name>")` to read one; the text comes back already
-    filtered to what applies to a goose agent like you.
-  - Before doing the work `my_task` describes, read the skill(s) it touches. The
-    mapping mirrors what Claude agents are gated on, for the things you can do
-    through the fleet tools:
-      - writing math in a `chat` message or a `report` → read
-        `explain-math-concretely` (and for a `report`, also `math-report`).
-      - putting written output in a scratch file → read `scratch-files` and
-        `where-to-write`.
-      - if `my_task` gives you a role (reviewer, adversary, manager, …) and names
-        a skill for it, read that skill too.
-    When unsure, list with `read_skill` and read the one matching your role.
+    to read the relevant ones before certain work. You are held to the same
+    standard, and it's ENFORCED for you too: when you call a gated tool
+    (`propose_edit`, `report`, a scratch tool) without having read the required
+    skill, the tool returns the skill's text and asks you to call it again — read
+    what it hands you, then retry. So you don't have to memorize the mapping; the
+    system surfaces the right skill at the moment you need it.
+  - You can also read proactively: call `skill` with NO argument to LIST the
+    available skills, or `skill(skill: "<name>")` to read one. The text comes back
+    already filtered to what applies to a goose agent like you. If `my_task` gives
+    you a role (reviewer, adversary, manager, …) and names a skill, read it with
+    `skill(skill: "<name>")` before you start.
 
   Be direct and concrete. Do the task your `my_task` describes — nothing else.
 
@@ -96,7 +90,7 @@ extensions:
     # stdio MCP subprocess already inherits goose's process environment, and
     # fleet-spawn sets all four vars in that environment, so the tools get what
     # they need without env_keys.
-    description: "Fleet/tlda tools (register, my_task, chat, read_file, read_annotations, read_skill, scratch). The agent's only capability surface."
+    description: "Fleet/tlda tools (register, my_task, chat, read_file, read_annotations, skill, scratch). The agent's only capability surface."
 
 settings:
   goose_provider: "{{ provider }}"
