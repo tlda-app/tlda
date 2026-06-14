@@ -169,10 +169,15 @@
    shrunk. The only chrome is two tiny, faint controls in the bottom corners. */
 .fleet-inbox-inline-chat {
   position: relative;
-  margin: 0;
+  margin: 2px 4px;
   max-height: 260px;
   display: flex;
   flex-direction: column;
+  /* Just enough frame to read as a chat (not a plain message) without the heavy
+     window look — a subtle border + the faintest inset background. */
+  border: 1px solid rgba(128, 128, 128, 0.25);
+  border-radius: 6px;
+  background: rgba(128, 128, 128, 0.03);
 }
 /* The scroll window keeps a floor height so a short conversation can't collapse
    it — the text field always sits BELOW it (adds space), never occluding it. */

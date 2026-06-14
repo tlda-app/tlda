@@ -344,23 +344,28 @@ function FleetInboxInner({ shape }: { shape: any }) {
 // pan/zoom, so a panel's overflow div never scrolls on its own. Intercept the
 // wheel on the container in the capture phase and scroll it ourselves — same
 // pattern FleetChatShape uses for its backscroll.
-// `skipSelector`: when set, wheel events whose target is inside that selector are
-// left alone so a NESTED scroller (e.g. an open mini-chat inside the thread) can
-// capture them. Without this, the outer thread's capture-phase handler fires
-// first (it's an ancestor) and eats the wheel before the mini-chat ever sees it.
-function useWheelScroll(ref: { current: HTMLDivElement | null }, skipSelector?: string) {
+// TLDraw grabs the wheel in the capture phase for canvas pan/zoom, so a panel's
+// overflow div never scrolls on its own — this intercepts the wheel and scrolls
+// it ourselves. `innerSelector`: when the pointer is over a NESTED scroller that
+// matches it (e.g. an open mini-chat's body inside the thread), scroll THAT
+// element instead of this one. One reliable handler (this outer one is the one
+// that actually fires) rather than relying on a fragile nested-listener hand-off.
+function useWheelScroll(ref: { current: HTMLDivElement | null }, innerSelector?: string) {
   useEffect(() => {
     const el = ref.current
     if (!el) return
     const onWheel = (e: WheelEvent) => {
-      if (skipSelector && e.target instanceof Element && e.target.closest(skipSelector)) return
       e.preventDefault()
       e.stopPropagation()
-      el.scrollTop += e.deltaY
+      const inner = innerSelector && e.target instanceof Element
+        ? (e.target.closest(innerSelector) as HTMLElement | null)
+        : null
+      if (inner && inner.scrollHeight > inner.clientHeight) inner.scrollTop += e.deltaY
+      else el.scrollTop += e.deltaY
     }
     el.addEventListener('wheel', onWheel, { capture: true, passive: false })
     return () => el.removeEventListener('wheel', onWheel, { capture: true } as any)
-  }, [ref, skipSelector])
+  }, [ref, innerSelector])
 }
 
 type StartDrag = (e: React.PointerEvent, pillType: 'agent' | 'label', value: string, displayName: string, color: string) => void
@@ -397,9 +402,9 @@ function ThreadList({ threads, onOpen, onStartDrag }: { threads: Thread[]; onOpe
 
 function ConversationView({ thread, ctx, myId, myName }: { thread: Thread; ctx: any; myId: string | null; myName: string }) {
   const scrollRef = useRef<HTMLDivElement>(null)
-  // Outer thread scroll, but YIELD the wheel when it's over an open mini-chat so
-  // the mini-chat scrolls itself (it's a nested scroller).
-  useWheelScroll(scrollRef, '.fleet-inbox-inline-chat')
+  // Outer thread scroll — and when the pointer's over an open mini-chat's body,
+  // scroll THAT instead (the mini-chat's own scroll → dual context).
+  useWheelScroll(scrollRef, '.fleet-inbox-inline-body')
   // Which message has its inline chat open (one at a time — opening a new one
   // replaces the old, per Skip's design).
   const [inlineOpenId, setInlineOpenId] = useState<string | null>(null)
@@ -488,7 +493,9 @@ function InlineConvoChat({ thread, ctx, myId, myName, anchorKey, onClose }: {
   onClose: () => void
 }) {
   const bodyRef = useRef<HTMLDivElement>(null)
-  useWheelScroll(bodyRef)
+  // (Wheel scroll for this body is handled by the parent ConversationView's
+  // single delegating handler — see useWheelScroll(innerSelector) — so there's
+  // no competing nested listener here.)
   // Anchor on the message the chat opened from: scroll so that line sits at the
   // top of the window (the message you clicked is what you see), and the
   // "back to the message" control re-runs this.
