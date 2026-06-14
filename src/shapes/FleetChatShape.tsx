@@ -34,6 +34,7 @@ import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFle
 import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
 import { agentDisplayName } from './fleet-utils'
+import { ChatComposer } from './ChatComposer'
 import { AgentName, PhaseIcon } from './PhaseIcon'
 import { baseName, phaseFromName } from '../../shared/lineage-name.mjs'
 import { dragCoordinator } from './dragCoordinator'
@@ -1524,9 +1525,6 @@ function FleetChatInner({ shape }: { shape: any }) {
     setTermCardHoverId(null)
   }, [liveEvents])
 
-  // Input history (up/down arrow navigation like terminal)
-  const sentHistoryRef = useRef<string[]>([])
-  const historyIndexRef = useRef<number>(-1)
   // Esc interrupt: track last Esc timestamp for soft/hard distinction
   const escCountRef = useRef<number>(0)
   // Track whether the user last clicked inside this fleet chat shape.
@@ -3762,6 +3760,247 @@ function FleetChatInner({ shape }: { shape: any }) {
   }, [filterKey])
   sendTargetsRef.current = sendTargets
 
+  // --- Composer host callbacks ---------------------------------------------
+  // The shared ChatComposer owns the textarea + voice registration + send-on-
+  // enter; everything chat-specific (viewer context, ref attachments, plan-mode,
+  // /terminal, file-drop, escalation reset) lives here and is passed back in.
+  // Defined as plain closures (recreated each render, like the old inline
+  // handlers) so there's no memoization-induced staleness. Keyboard and voice
+  // send remain DISTINCT — the original had two genuinely-different inline paths
+  // (keyboard: inject→…→plan→send; voice: context→inject→send, no plan).
+  const composerKeyboardSend = (text: string, targets: string[]) => {
+    const tempId = `opt-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    injectOptimisticEvent({
+      _tempId: tempId,
+      type: 'chat',
+      event_type: 'chat',
+      from: getHumanId(),
+      to: targets[0],
+      text,
+      timestamp: new Date().toISOString(),
+      read: false,
+    })
+    void (async () => {
+      const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel, editor))
+      if (context) await enrichContextWithSourceLines(context)
+      const bullets = consumeBulletContexts()
+      if (bullets.length > 0 && context) {
+        ;(context as any).bullets = bullets
+      }
+      const lc = text.toLowerCase().replace(/[.,!?]+$/, '').trim()
+      const APPROVE_PHRASES = new Set([
+        'go for it', 'do it', 'proceed', 'implement it', 'implement', 'approve',
+        'yes', 'yes do it', "let's go", 'lets go', 'sounds good', 'looks good',
+        'go ahead', 'yeah go for it', 'yep', 'yeah', 'ok', 'okay', 'ship it',
+      ])
+      const REJECT_PHRASES = new Set([
+        'stop', 'abort', "don't do it", 'cancel', 'no', 'reject', 'hold off',
+        'wait', 'hold on', 'never mind', 'nevermind', 'nope', 'nah',
+      ])
+      if (APPROVE_PHRASES.has(lc) || REJECT_PHRASES.has(lc)) {
+        const planResponse = APPROVE_PHRASES.has(lc) ? 'approve' : 'reject'
+        for (const agentId of targets) {
+          const chatLog = chatLogRef.current
+          const hasCard = chatLog
+            ? Array.from(chatLog.querySelectorAll(`.plan-card[data-agent-id="${CSS.escape(agentId)}"]`))
+                .some(el => !el.classList.contains('plan-card-approved') && !el.classList.contains('plan-card-rejected'))
+            : false
+          if (hasCard) {
+            fetch(`${FLEET_API}/api/plan-mode-respond`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ agent: agentId, response: planResponse }),
+            }).catch(e => console.warn('[fleet-chat] plan-mode-respond failed:', e.message))
+          }
+        }
+      }
+      const ENTER_PLAN_RE = /^\/plan\b|\blet'?s plan\b|\bplan mode\b|\bplanning mode\b|\bchat in planning\b|\bstay in planning\b|\bplan first\b|\bthink before\b/i
+      if (ENTER_PLAN_RE.test(text)) {
+        for (const agentId of targets) {
+          const agentName = agentNames[agentId] || agentId
+          fetch(`${FLEET_API}/api/plan-mode-toggle`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ agent: agentId }),
+          })
+            .then(r => r.json().then((data: any) => ({ ok: r.ok, data })))
+            .then(({ ok, data }: { ok: boolean; data: any }) => {
+              if (!ok || data?.error) {
+                sendMessage(getHumanId(), `⚠️ plan mode failed for ${agentName}: ${data?.error || 'unknown error'}`, {})
+              } else if (data?.mode) {
+                const modeLabel = data.mode === 'plan' ? 'plan mode ✓' : data.mode
+                sendMessage(getHumanId(), `📋 ${agentName} → ${modeLabel}`, {})
+              }
+            })
+            .catch((err: any) => sendMessage(getHumanId(), `⚠️ plan mode failed for ${agentName}: ${err.message}`, {}))
+        }
+      }
+      const refAttachments = buildRefAttachments(text, editor)
+      const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
+      if (refAttachments.length > 0) sendOpts.attachments = refAttachments
+      if (doc?.docName) sendOpts.preambleRef = { doc: doc.docName, version: currentDocVersion(panel, editor) || null }
+      const sendWithRetry = (attempt: number) => {
+        Promise.all(
+          targets.map(t => sendMessage(t, text, sendOpts))
+        ).then((results: {ok: boolean, event_id: number}[]) => {
+          if (!results.every(r => r.ok)) throw new Error('send failed')
+        }).catch(() => {
+          if (attempt < 3) {
+            setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
+          } else {
+            updateOptimisticEvent(tempId, { _failed: true })
+          }
+        })
+      }
+      sendWithRetry(1)
+    })()
+  }
+
+  const composerVoiceSend = async (targets: string[], text: string) => {
+    const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel, editor))
+    if (context) await enrichContextWithSourceLines(context)
+    const bullets = consumeBulletContexts()
+    if (bullets.length > 0 && context) {
+      ;(context as any).bullets = bullets
+    }
+    const tempId = `opt-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    injectOptimisticEvent({
+      _tempId: tempId,
+      type: 'chat',
+      event_type: 'chat',
+      from: getHumanId(),
+      to: targets[0],
+      text,
+      timestamp: new Date().toISOString(),
+      read: false,
+    })
+    const refAttachments = buildRefAttachments(text, editor)
+    const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
+    if (refAttachments.length > 0) sendOpts.attachments = refAttachments
+    if (doc?.docName) sendOpts.preambleRef = { doc: doc.docName, version: currentDocVersion(panel, editor) || null }
+    const sendWithRetry = (attempt: number) => {
+      Promise.all(
+        targets.map(t => sendMessage(t, text, sendOpts))
+      ).then((results: {ok: boolean, event_id: number}[]) => {
+        if (!results.every(r => r.ok)) throw new Error('send failed')
+      }).catch(() => {
+        if (attempt < 3) {
+          setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
+        } else {
+          updateOptimisticEvent(tempId, { _failed: true })
+        }
+      })
+    }
+    sendWithRetry(1)
+  }
+
+  const composerCommand = (text: string, targets: string[], ta: HTMLTextAreaElement): boolean => {
+    const termMatch = text.match(/^\/terminal\s*(.*)$/i)
+    if (!termMatch) return false
+    const arg = termMatch[1].trim()
+    let targetId = ''
+    if (arg) {
+      const match = agents.find((a: any) =>
+        a.friendly_name === arg || a.id === arg || a.id?.endsWith(arg)
+      )
+      targetId = match?.id || arg
+    } else if (targets.length > 0) {
+      targetId = targets[0]
+    }
+    if (targetId) {
+      setTermCardPinnedId(targetId)
+      ta.value = ''
+      ta.style.height = ''
+    }
+    return true
+  }
+
+  const composerKeyActivity = () => {
+    if (escCountRef.current > 0) {
+      escCountRef.current = 0
+      setEscalationState({})
+    }
+  }
+
+  const composerDragOver = (e: React.DragEvent<HTMLTextAreaElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+  }
+
+  const composerDrop = async (e: React.DragEvent<HTMLTextAreaElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const ta = e.currentTarget
+
+    // External file drops — upload to fleet server, insert markdown link
+    const dtItems = e.dataTransfer?.items ? [...e.dataTransfer.items] : []
+    let entries: { file: File, path: string }[] = []
+    let isFlat = true
+
+    if (dtItems.length > 0 && typeof dtItems[0].webkitGetAsEntry === 'function') {
+      for (const item of dtItems) {
+        const entry = item.webkitGetAsEntry()
+        if (entry) {
+          if (entry.isDirectory) isFlat = false
+          entries.push(...await traverseDirectory(entry))
+        }
+      }
+    } else {
+      for (const f of [...(e.dataTransfer?.files || [])]) {
+        entries.push({ file: f, path: f.name })
+      }
+    }
+
+    if (entries.length > 0) {
+      const mdEntries = entries.filter(({ file: f }) => f.name.endsWith('.md') || f.type === 'text/markdown')
+      const otherEntries = entries.filter(({ file: f }) => !f.name.endsWith('.md') && f.type !== 'text/markdown')
+
+      for (const { file, path } of mdEntries) {
+        try {
+          const companions = entries.filter(en => en.path !== path)
+          const link = await uploadMarkdownWithImages(file, companions, path, isFlat)
+          const pos = ta.selectionStart || ta.value.length
+          ta.value = ta.value.slice(0, pos) + link + ta.value.slice(pos)
+          ta.dispatchEvent(new Event('input', { bubbles: true }))
+        } catch (err) {
+          console.error('[fleet-chat] file upload failed:', err)
+          const pos = ta.selectionStart || ta.value.length
+          ta.value = ta.value.slice(0, pos) + `[${file.name}]` + ta.value.slice(pos)
+          ta.dispatchEvent(new Event('input', { bubbles: true }))
+        }
+      }
+      for (const { file } of otherEntries) {
+        if (mdEntries.length > 0 && /\.(png|jpg|jpeg|gif|svg|webp)$/i.test(file.name)) continue
+        try {
+          const formData = new FormData()
+          formData.append('file', file, file.name)
+          const resp = await fetch(`${FLEET_API}/api/upload`, { method: 'POST', body: formData })
+          if (!resp.ok) throw new Error(`upload failed: ${resp.status}`)
+          const { url, name } = await resp.json()
+          const link = file.type.startsWith('image/')
+            ? `![${name}](${FLEET_API}${url})`
+            : `[${name}](${FLEET_API}${url})`
+          const pos = ta.selectionStart || ta.value.length
+          ta.value = ta.value.slice(0, pos) + link + ta.value.slice(pos)
+          ta.dispatchEvent(new Event('input', { bubbles: true }))
+        } catch (err) {
+          console.error('[fleet-chat] file upload failed:', err)
+          const pos = ta.selectionStart || ta.value.length
+          ta.value = ta.value.slice(0, pos) + `[${file.name}]` + ta.value.slice(pos)
+          ta.dispatchEvent(new Event('input', { bubbles: true }))
+        }
+      }
+      return
+    }
+
+    // Text/attachment drops (from other chat elements)
+    const text = e.dataTransfer?.getData('text/plain') || ''
+    if (text) {
+      const pos = ta.selectionStart || ta.value.length
+      ta.value = ta.value.slice(0, pos) + text + ta.value.slice(pos)
+    }
+  }
+
   // Resolve a send-target label to an agent. The friendly name is an opaque
   // atom — you address an agent by its exact full name (or id, or a label it
   // carries). No suffix games: dawn is "base", day is "base:day", etc.
@@ -4814,311 +5053,18 @@ function FleetChatInner({ shape }: { shape: any }) {
                 </svg>
               </button>
             )}
-            <textarea
-              ref={inputRef as any}
+            <ChatComposer
+              sendTargets={sendTargets}
+              agentNames={agentNames}
+              onKeyboardSend={composerKeyboardSend}
+              onVoiceSend={composerVoiceSend}
+              onCommand={composerCommand}
+              onKeyActivity={composerKeyActivity}
+              onDrop={composerDrop}
+              onDragOver={composerDragOver}
+              inputRef={inputRef as any}
+              isTouchDevice={_isTouchDevice}
               placeholder=""
-              rows={1}
-              inputMode={_isTouchDevice ? 'none' : undefined}
-              autoCorrect="off"
-              autoCapitalize="off"
-              autoComplete="off"
-              spellCheck={false}
-              onKeyDown={(e) => {
-                stopEventPropagation(e)
-                const ta = e.currentTarget
-                if (e.key === 'Escape') {
-                  e.preventDefault()
-                  if (ta.value !== '') {
-                    ta.value = ''
-                    ta.style.height = ''
-                  }
-                  return
-                }
-                if (escCountRef.current > 0) {
-                  escCountRef.current = 0
-                  setEscalationState({})
-                }
-                if (e.key === 'ArrowUp') {
-                  const history = sentHistoryRef.current
-                  if (history.length === 0) return
-                  if (historyIndexRef.current === -1 && ta.value !== '') return
-                  e.preventDefault()
-                  const nextIdx = historyIndexRef.current + 1
-                  if (nextIdx < history.length) {
-                    historyIndexRef.current = nextIdx
-                    ta.value = history[history.length - 1 - nextIdx]
-                    // field-sizing: content handles auto-resize
-                    ta.setSelectionRange(ta.value.length, ta.value.length)
-                  }
-                  return
-                }
-                if (e.key === 'ArrowDown') {
-                  if (historyIndexRef.current === -1) return
-                  e.preventDefault()
-                  const nextIdx = historyIndexRef.current - 1
-                  historyIndexRef.current = nextIdx
-                  if (nextIdx < 0) {
-                    ta.value = ''
-                    ta.style.height = ''
-                  } else {
-                    const history = sentHistoryRef.current
-                    ta.value = history[history.length - 1 - nextIdx]
-                    // field-sizing: content handles auto-resize
-                    ta.setSelectionRange(ta.value.length, ta.value.length)
-                  }
-                  return
-                }
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  const val = ta.value
-                  if (val.trim() === '') {
-                    e.preventDefault() // suppress on empty
-                    return
-                  }
-                  // /terminal command — open terminal card for target agent
-                  const termMatch = val.trim().match(/^\/terminal\s*(.*)$/i)
-                  if (termMatch) {
-                    e.preventDefault()
-                    const arg = termMatch[1].trim()
-                    // Find agent by name or ID
-                    let targetId = ''
-                    if (arg) {
-                      const match = agents.find((a: any) =>
-                        a.friendly_name === arg || a.id === arg || a.id?.endsWith(arg)
-                      )
-                      targetId = match?.id || arg
-                    } else if (sendTargets.length > 0) {
-                      targetId = sendTargets[0]
-                    }
-                    if (targetId) {
-                      setTermCardPinnedId(targetId)
-                      ta.value = ''
-                      ta.style.height = ''
-                    }
-                    return
-                  }
-                  // Get text before cursor on current line
-                  const before = val.substring(0, ta.selectionStart || val.length)
-                  const lastNewline = before.lastIndexOf('\n')
-                  const lineText = before.substring(lastNewline + 1)
-
-                  const doSend = async () => {
-                    const text = val.trim()
-                    if (!text || sendTargets.length === 0) return
-                    // Echo the message and clear the box synchronously, BEFORE any awaited
-                    // work. The source-line context lookup below can hit the network; if the
-                    // echo/clear waited on it, the message looked unsent and a second Enter
-                    // queued another send — one Enter-mash → many duplicate rows.
-                    const tempId = `opt-${Date.now()}-${Math.random().toString(36).slice(2)}`
-                    injectOptimisticEvent({
-                      _tempId: tempId,
-                      type: 'chat',
-                      event_type: 'chat',
-                      from: getHumanId(),
-                      to: sendTargets[0],
-                      text,
-                      timestamp: new Date().toISOString(),
-                      read: false,
-                    })
-                    ta.value = ''
-                    ta.style.height = ''
-                    ta.dispatchEvent(new Event('input', { bubbles: true }))
-                    resetTranscript()
-                    restartRecording()
-                    sentHistoryRef.current = [...sentHistoryRef.current, text]
-                    historyIndexRef.current = -1
-                    // Now resolve viewer context (may hit the network) off the critical path.
-                    const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel, editor))
-                    if (context) await enrichContextWithSourceLines(context)
-                    const bullets = consumeBulletContexts()
-                    if (bullets.length > 0 && context) {
-                      ;(context as any).bullets = bullets
-                    }
-
-                    // Plan mode verbal approval: detect approval/rejection phrases and
-                    // forward them to the agent's terminal as plan-mode-respond calls.
-                    // We still send the message normally so the agent sees the text in context.
-                    const lc = text.toLowerCase().replace(/[.,!?]+$/, '').trim()
-                    const APPROVE_PHRASES = new Set([
-                      'go for it', 'do it', 'proceed', 'implement it', 'implement', 'approve',
-                      'yes', 'yes do it', "let's go", 'lets go', 'sounds good', 'looks good',
-                      'go ahead', 'yeah go for it', 'yep', 'yeah', 'ok', 'okay', 'ship it',
-                    ])
-                    const REJECT_PHRASES = new Set([
-                      'stop', 'abort', "don't do it", 'cancel', 'no', 'reject', 'hold off',
-                      'wait', 'hold on', 'never mind', 'nevermind', 'nope', 'nah',
-                    ])
-                    if (APPROVE_PHRASES.has(lc) || REJECT_PHRASES.has(lc)) {
-                      const planResponse = APPROVE_PHRASES.has(lc) ? 'approve' : 'reject'
-                      for (const agentId of sendTargets) {
-                        // Only respond if this agent has a visible plan card
-                        const chatLog = chatLogRef.current
-                        const hasCard = chatLog
-                          ? Array.from(chatLog.querySelectorAll(`.plan-card[data-agent-id="${CSS.escape(agentId)}"]`))
-                              .some(el => !el.classList.contains('plan-card-approved') && !el.classList.contains('plan-card-rejected'))
-                          : false
-                        if (hasCard) {
-                          fetch(`${FLEET_API}/api/plan-mode-respond`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ agent: agentId, response: planResponse }),
-                          }).catch(e => console.warn('[fleet-chat] plan-mode-respond failed:', e.message))
-                        }
-                      }
-                    }
-
-                    // Plan mode toggle: enter only ("let's plan", "planning mode", etc.).
-                    // Exit is handled by clicking the plan badge or approving the plan card.
-                    const ENTER_PLAN_RE = /^\/plan\b|\blet'?s plan\b|\bplan mode\b|\bplanning mode\b|\bchat in planning\b|\bstay in planning\b|\bplan first\b|\bthink before\b/i
-                    if (ENTER_PLAN_RE.test(text)) {
-                      for (const agentId of sendTargets) {
-                        const agentName = agentNames[agentId] || agentId
-                        fetch(`${FLEET_API}/api/plan-mode-toggle`, {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ agent: agentId }),
-                        })
-                          .then(r => r.json().then(data => ({ ok: r.ok, data })))
-                          .then(({ ok, data }) => {
-                            if (!ok || data?.error) {
-                              sendMessage(getHumanId(), `⚠️ plan mode failed for ${agentName}: ${data?.error || 'unknown error'}`, {})
-                            } else if (data?.mode) {
-                              const modeLabel = data.mode === 'plan' ? 'plan mode ✓' : data.mode
-                              sendMessage(getHumanId(), `📋 ${agentName} → ${modeLabel}`, {})
-                            }
-                          })
-                          .catch(err => sendMessage(getHumanId(), `⚠️ plan mode failed for ${agentName}: ${err.message}`, {}))
-                      }
-                    }
-
-                    // No explicit scroll on send — Virtuoso's followOutput
-                    // handles this: if the user was at bottom, the new
-                    // message gets followed; if scrolled up, position holds.
-                    const refAttachments = buildRefAttachments(text, editor)
-                    const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
-                    if (refAttachments.length > 0) sendOpts.attachments = refAttachments
-                    if (doc?.docName) sendOpts.preambleRef = { doc: doc.docName, version: currentDocVersion(panel, editor) || null }
-                    const sendWithRetry = (attempt: number) => {
-                      Promise.all(
-                        sendTargets.map(t => sendMessage(t, text, sendOpts))
-                      ).then((results: {ok: boolean, event_id: number}[]) => {
-                        if (!results.every(r => r.ok)) throw new Error('send failed')
-                        // reconcileOptimistic already called synchronously in the WS reply handler
-                      }).catch(() => {
-                        if (attempt < 3) {
-                          setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
-                        } else {
-                          updateOptimisticEvent(tempId, { _failed: true })
-                        }
-                      })
-                    }
-                    sendWithRetry(1)
-                  }
-
-                  if (lineText.trim() === '') {
-                    // Blank line (double-enter) = send
-                    e.preventDefault()
-                    doSend()
-                  } else if (lineText.endsWith(' ')) {
-                    // Trailing space = newline (let default happen)
-                    return
-                  } else {
-                    // Non-blank, no trailing space = send
-                    e.preventDefault()
-                    doSend()
-                  }
-                }
-              }}
-              onInput={() => {
-                if (escCountRef.current > 0) {
-                  escCountRef.current = 0
-                  setEscalationState({})
-                }
-              }}
-              onPointerDown={(e) => {
-                stopEventPropagation(e)
-                // Register voice target on pointerdown — onFocus can be unreliable in tldraw
-                setVoiceTarget(e.currentTarget, sendTargets, agentNames, async (targets: string[], text: string) => {
-                  const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel, editor))
-                  if (context) await enrichContextWithSourceLines(context)
-                  const bullets = consumeBulletContexts()
-                  if (bullets.length > 0 && context) {
-                    ;(context as any).bullets = bullets
-                  }
-                  const tempId = `opt-${Date.now()}-${Math.random().toString(36).slice(2)}`
-                  injectOptimisticEvent({
-                    _tempId: tempId,
-                    type: 'chat',
-                    event_type: 'chat',
-                    from: getHumanId(),
-                    to: targets[0],
-                    text,
-                    timestamp: new Date().toISOString(),
-                    read: false,
-                  })
-                  // No explicit scroll on send — Virtuoso's followOutput handles it.
-                  const refAttachments = buildRefAttachments(text, editor)
-                  const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
-                  if (refAttachments.length > 0) sendOpts.attachments = refAttachments
-                  if (doc?.docName) sendOpts.preambleRef = { doc: doc.docName, version: currentDocVersion(panel, editor) || null }
-                  const sendWithRetry = (attempt: number) => {
-                    Promise.all(
-                      targets.map(t => sendMessage(t, text, sendOpts))
-                    ).then((results: {ok: boolean, event_id: number}[]) => {
-                      if (!results.every(r => r.ok)) throw new Error('send failed')
-                      // reconcileOptimistic already called synchronously in the WS reply handler
-                    }).catch(() => {
-                      if (attempt < 3) {
-                        setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
-                      } else {
-                        updateOptimisticEvent(tempId, { _failed: true })
-                      }
-                    })
-                  }
-                  sendWithRetry(1)
-                })
-              }}
-              onFocus={(e) => {
-                stopEventPropagation(e)
-                setVoiceTarget(e.currentTarget, sendTargets, agentNames, async (targets: string[], text: string) => {
-                  const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel, editor))
-                  if (context) await enrichContextWithSourceLines(context)
-                  const bullets = consumeBulletContexts()
-                  if (bullets.length > 0 && context) {
-                    ;(context as any).bullets = bullets
-                  }
-                  const tempId = `opt-${Date.now()}-${Math.random().toString(36).slice(2)}`
-                  injectOptimisticEvent({
-                    _tempId: tempId,
-                    type: 'chat',
-                    event_type: 'chat',
-                    from: getHumanId(),
-                    to: targets[0],
-                    text,
-                    timestamp: new Date().toISOString(),
-                    read: false,
-                  })
-                  // No explicit scroll on send — Virtuoso's followOutput handles it.
-                  const refAttachments = buildRefAttachments(text, editor)
-                  const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
-                  if (refAttachments.length > 0) sendOpts.attachments = refAttachments
-                  if (doc?.docName) sendOpts.preambleRef = { doc: doc.docName, version: currentDocVersion(panel, editor) || null }
-                  const sendWithRetry = (attempt: number) => {
-                    Promise.all(
-                      targets.map(t => sendMessage(t, text, sendOpts))
-                    ).then((results: {ok: boolean, event_id: number}[]) => {
-                      if (!results.every(r => r.ok)) throw new Error('send failed')
-                      // reconcileOptimistic already called synchronously in the WS reply handler
-                    }).catch(() => {
-                      if (attempt < 3) {
-                        setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
-                      } else {
-                        updateOptimisticEvent(tempId, { _failed: true })
-                      }
-                    })
-                  }
-                  sendWithRetry(1)
-                })
-              }}
               style={{
                 width: '100%',
                 background: 'transparent',
@@ -5137,84 +5083,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                 minHeight: 'calc(1.4em + 10px)',
                 maxHeight: 200,
               } as any}
-              onDrop={async (e) => {
-                e.preventDefault()
-                e.stopPropagation()
-                const ta = e.currentTarget
-
-                // External file drops — upload to fleet server, insert markdown link
-                const dtItems = e.dataTransfer?.items ? [...e.dataTransfer.items] : []
-                let entries: { file: File, path: string }[] = []
-                let isFlat = true
-
-                if (dtItems.length > 0 && typeof dtItems[0].webkitGetAsEntry === 'function') {
-                  for (const item of dtItems) {
-                    const entry = item.webkitGetAsEntry()
-                    if (entry) {
-                      if (entry.isDirectory) isFlat = false
-                      entries.push(...await traverseDirectory(entry))
-                    }
-                  }
-                } else {
-                  for (const f of [...(e.dataTransfer?.files || [])]) {
-                    entries.push({ file: f, path: f.name })
-                  }
-                }
-
-                if (entries.length > 0) {
-                  const mdEntries = entries.filter(({ file: f }) => f.name.endsWith('.md') || f.type === 'text/markdown')
-                  const otherEntries = entries.filter(({ file: f }) => !f.name.endsWith('.md') && f.type !== 'text/markdown')
-
-                  for (const { file, path } of mdEntries) {
-                    try {
-                      const companions = entries.filter(en => en.path !== path)
-                      const link = await uploadMarkdownWithImages(file, companions, path, isFlat)
-                      const pos = ta.selectionStart || ta.value.length
-                      ta.value = ta.value.slice(0, pos) + link + ta.value.slice(pos)
-                      ta.dispatchEvent(new Event('input', { bubbles: true }))
-                    } catch (err) {
-                      console.error('[fleet-chat] file upload failed:', err)
-                      const pos = ta.selectionStart || ta.value.length
-                      ta.value = ta.value.slice(0, pos) + `[${file.name}]` + ta.value.slice(pos)
-                      ta.dispatchEvent(new Event('input', { bubbles: true }))
-                    }
-                  }
-                  for (const { file } of otherEntries) {
-                    if (mdEntries.length > 0 && /\.(png|jpg|jpeg|gif|svg|webp)$/i.test(file.name)) continue
-                    try {
-                      const formData = new FormData()
-                      formData.append('file', file, file.name)
-                      const resp = await fetch(`${FLEET_API}/api/upload`, { method: 'POST', body: formData })
-                      if (!resp.ok) throw new Error(`upload failed: ${resp.status}`)
-                      const { url, name } = await resp.json()
-                      const link = file.type.startsWith('image/')
-                        ? `![${name}](${FLEET_API}${url})`
-                        : `[${name}](${FLEET_API}${url})`
-                      const pos = ta.selectionStart || ta.value.length
-                      ta.value = ta.value.slice(0, pos) + link + ta.value.slice(pos)
-                      ta.dispatchEvent(new Event('input', { bubbles: true }))
-                    } catch (err) {
-                      console.error('[fleet-chat] file upload failed:', err)
-                      const pos = ta.selectionStart || ta.value.length
-                      ta.value = ta.value.slice(0, pos) + `[${file.name}]` + ta.value.slice(pos)
-                      ta.dispatchEvent(new Event('input', { bubbles: true }))
-                    }
-                  }
-                  return
-                }
-
-                // Text/attachment drops (from other chat elements)
-                const text = e.dataTransfer?.getData('text/plain') || ''
-                if (text) {
-                  const pos = ta.selectionStart || ta.value.length
-                  ta.value = ta.value.slice(0, pos) + text + ta.value.slice(pos)
-                }
-              }}
-              onDragOver={(e) => {
-                e.preventDefault()
-                e.stopPropagation()
-              }}
-          />
+            />
           </div>
         </div>
 
