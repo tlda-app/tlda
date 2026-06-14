@@ -133,6 +133,26 @@ function FleetTouchInboxInner({ shape }: { shape: any }) {
   const myW = w as number
   const myH = h as number
 
+  // Capture-phase pointerdown so a tap inside the strip isn't hijacked by
+  // tldraw's setPointerCapture (which would steal the pointerup and make the
+  // first tap only select the shape). Mirrors FleetInboxShape / FleetSearchShape
+  // — this is what makes the rows tappable on a single tap.
+  const containerRef = useRef<HTMLDivElement>(null)
+  const isSelectedRef = useRef(false)
+  isSelectedRef.current = useValue('isSelected', () => editor.getSelectedShapeIds().includes(shape.id), [editor, shape.id])
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    function onPointerDown(e: PointerEvent) {
+      const target = e.target as HTMLElement
+      if (!el!.contains(target)) return
+      if (isSelectedRef.current) return
+      editor.markEventAsHandled(e)
+    }
+    document.addEventListener('pointerdown', onPointerDown, true)
+    return () => document.removeEventListener('pointerdown', onPointerDown, true)
+  }, [editor, shape.id])
+
   const identity = useFleetIdentity()
   const myId = identity.id || getHumanId()
   const myName = identity.name || ''
@@ -252,6 +272,7 @@ function FleetTouchInboxInner({ shape }: { shape: any }) {
   return (
     <HTMLContainer style={{ width: myW, height: myH, pointerEvents: 'none', overflow: 'visible' }}>
       <div
+        ref={containerRef}
         className="fleet-shape fleet-inbox-shape fleet-touch-inbox-strip-wrap"
         style={{
           width: myW,
