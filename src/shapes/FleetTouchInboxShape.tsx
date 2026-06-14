@@ -264,7 +264,6 @@ function FleetTouchInboxInner({ shape }: { shape: any }) {
           color: 'var(--text, #8888a0)',
           pointerEvents: 'all',
         }}
-        onPointerDown={(e) => stopEventPropagation(e)}
       >
         <div className="fleet-inbox-header">
           <span className="fleet-inbox-title">Inbox</span>
