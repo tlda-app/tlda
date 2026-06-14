@@ -296,16 +296,22 @@ async function applyLayoutAndCamera(page) {
   // Wait for the FleetIconPill (and the fleet agent list) to be ready.
   await page.waitForSelector('.fleet-icon-pill-container', { timeout: 15000 })
 
-  // Clear the room: delete every non-page shape so we start from a known state.
-  // Accumulated shapes from prior sessions (stale fleet layouts, old annotations,
-  // stale HUD anchor) cause the HUD camera to miss fleet shapes on fresh opens.
+  // Clear the room: remove every non-page shape so we start from a known state.
+  // Accumulated shapes from prior sessions (stale fleet layouts owned by OTHER
+  // identities — e.g. the junk `2.0`/classroom-test human — old annotations, a
+  // stale HUD anchor) cause the HUD to miss fleet shapes on fresh opens: a shape
+  // scoped to a foreign userId fails isMyFleetShape for the verifying session and
+  // never paints (the render-wall). Use `store.remove`, NOT `deleteShapes`:
+  // deleteShapes on fleet/anchor shapes in a synced room can tear the page down
+  // and not flush the delete to the server (observed in automation), leaving the
+  // foreign shapes behind. store.remove deletes cleanly and persists.
   await page.evaluate(() => {
     const ed = (window).__tldraw_editor__
     const PAGE_TYPES = new Set(['svg-page', 'html-page', 'doc-version', 'toc-drop-target'])
-    const toDelete = ed.getCurrentPageShapes()
+    const toRemove = ed.getCurrentPageShapes()
       .filter(s => !PAGE_TYPES.has(s.type))
       .map(s => s.id)
-    if (toDelete.length > 0) ed.deleteShapes(toDelete)
+    if (toRemove.length > 0) ed.store.remove(toRemove)
     // Wipe stale HUD localStorage from prior sessions.
     try { localStorage.removeItem('fleet-hud-panOffset') } catch {}
     try { localStorage.removeItem('fleet-hud-cameraY') } catch {}
