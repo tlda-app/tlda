@@ -1,0 +1,22 @@
+# Keep the Fly build context small. Dockerfile.live only COPYs src/, shared/,
+# server/lib, server/routes, unified-server.mjs, package + vite config, index.html,
+# and scripts/. Everything below is excluded from the upload context.
+node_modules
+.git
+dist
+.worktrees
+server/projects
+server/data
+server/persist
+**/__pycache__
+**/.biber-par-cache
+**/build-cache
+**/*.log
+*.aux
+*.fls
+*.fdb_latexmk
+*.tex
+*.tex.tex
+webkit-peek
+.DS_Store
+recipes
