@@ -28,6 +28,7 @@ import 'xterm/css/xterm.css'
 import './TerminalShape.css'
 import { getPref, subscribePref } from '../preferences'
 import { getFleetWsBase } from '../fleet/fleet-data.mjs'
+import { appendToken } from '../authToken'
 
 // Terminal PTY is daemon-routed through the global fleet server (not the serving
 // origin) — on the hosted Pages site window.location.origin has no /ws/terminal,
@@ -217,7 +218,7 @@ function TerminalComponent({ shape }: { shape: any }) {
     setStatus('connecting')
     wsRef.current?.close()
 
-    const ws = new WebSocket(`${getFleetWsBase()}/ws/terminal?agent=${encodeURIComponent(agentId)}`)
+    const ws = new WebSocket(appendToken(`${getFleetWsBase()}/ws/terminal?agent=${encodeURIComponent(agentId)}`))
     wsRef.current = ws
 
     ws.onopen = () => {

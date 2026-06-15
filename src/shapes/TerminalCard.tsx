@@ -16,6 +16,7 @@ import 'xterm/css/xterm.css'
 import './TerminalCard.css'
 import { log } from '../logger'
 import { getFleetWsBase } from '../fleet/fleet-data.mjs'
+import { appendToken } from '../authToken'
 
 // Terminal PTY is daemon-routed through the global fleet server, not the serving
 // origin (the hosted Pages host has no /ws/terminal). Derive from the resolved
@@ -108,7 +109,7 @@ export function TerminalCard({ agentId, agentName, pinned, onDismiss, onMouseEnt
       setStatus('connecting')
       wsRef.current?.close()
 
-      const ws = new WebSocket(`${getFleetWsBase()}/ws/terminal?agent=${encodeURIComponent(agentId)}`)
+      const ws = new WebSocket(appendToken(`${getFleetWsBase()}/ws/terminal?agent=${encodeURIComponent(agentId)}`))
       wsRef.current = ws
 
       ws.onopen = () => {
