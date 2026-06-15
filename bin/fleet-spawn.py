@@ -652,6 +652,66 @@ def build_goose_cmd(fleet_id, tmux_session, model, name=None):
     return f"zsh -lc {shlex.quote(inner)}"
 
 
+def build_codex_cmd(fleet_id, tmux_session, model=None, resume_id=None,
+                    include_prompt=True, name=None, cwd=None):
+    """Build the shell command for an OpenAI Codex CLI fleet agent.
+
+    Mirrors build_claude_cmd: same identity env (FLEET_ID/FLEET_NAME/TMUX) on
+    EVERY launch including resume (spec K.1 — the resumed process recovers its
+    fleet id from the re-injected env, never by parsing the transcript), then
+    launches `codex` interactively in the tmux pane so the wake machinery
+    (send-keys) drives it like a claude agent.
+
+    Auth: Codex authenticates from ~/.codex/auth.json (ChatGPT subscription
+    sign-in), NOT from the environment — so unlike goose there's no API key to
+    source from a login shell, and no zsh -lc wrapper is needed.
+
+    MCP: the tlda fleet tools come from ~/.codex/config.toml ([mcp_servers.tlda]),
+    the Codex analog of claude's --dangerously-load-development-channels. That's
+    one-time machine setup, not per-spawn.
+
+    Flags:
+      -m <model>        the Codex model (omit to use the subscription default)
+      -s workspace-write let the agent edit files in its cwd (parity with claude)
+      -a never          don't pause for shell-command approval (autonomous)
+
+    TWO ITEMS NEED LIVE INTERACTIVE VERIFICATION (with ops, daemon auto-accept):
+      1. MCP tool-call approval — Codex raises an *elicitation* for MCP tools that
+         `codex exec` auto-cancels; interactively it surfaces as a prompt the
+         daemon's autoAcceptPrompt path must learn to answer (fleet-daemon.mjs:566).
+      2. Project trust — first interactive run in an untrusted dir prompts to
+         trust; either pre-seed `[projects.<cwd>] trust_level="trusted"` in config
+         or let the daemon auto-accept answer it.
+    These don't change this command's shape; they're daemon-side and tracked
+    separately.
+    """
+    parts = [
+        f"FLEET_ID={fleet_id}",
+        f"FLEET_TMUX_SESSION={tmux_session}",
+        # FLEET_HARNESS=codex tells the tlda MCP this agent runs on Codex (not
+        # claude), so it delivers incoming messages via a send-keys nudge into
+        # the pane rather than the Claude-only channel notification — same as goose.
+        "FLEET_HARNESS=codex",
+        f"TLDA_SERVER={shlex.quote(API)}",
+        f"TLDA_SYNC_SERVER={shlex.quote(API)}",
+    ]
+    if name:
+        parts.append(f"FLEET_NAME={shlex.quote(name)}")
+    parts.append("codex")
+    if resume_id:
+        # Resume keeps the same fleet id (env above) and continues the prior
+        # rollout. The register prompt is injected via send-keys after boot, so
+        # include_prompt is False on this path (mirrors build_claude_cmd).
+        parts.append(f"resume {shlex.quote(resume_id)}")
+    if model:
+        parts.append(f"-m {shlex.quote(model)}")
+    parts.append("-s workspace-write")
+    parts.append("-a never")
+    if include_prompt and not resume_id:
+        parts.append(shlex.quote(register_prompt(name)))
+    return " ".join(parts)
+
+
 def _session_has_claude(session):
     """Check if a tmux session has a running agent process (claude OR goose).
 
