@@ -437,7 +437,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
   const timeItems = useMemo<InboxItem[]>(() => {
     const items: InboxItem[] = [
       ...ribbonTasks.map((t): InboxItem => ({ kind: 'task', key: `task:${t.id}`, time: t.staleAt, task: t })),
-      ...docNotes.map((n): InboxItem => ({ kind: 'note', key: `note:${n.id}`, time: n.createdAt, note: n })),
+      ...docNotes.map((n: DocNote): InboxItem => ({ kind: 'note', key: `note:${n.id}`, time: n.createdAt, note: n })),
       ...threads.map((t): InboxItem => ({ kind: 'message', key: `msg:${t.partnerId}`, time: Date.parse(t.lastTs) || 0, thread: t })),
     ]
     return items.sort((a, b) => b.time - a.time)
