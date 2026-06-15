@@ -26,6 +26,12 @@ import os from 'os'
 import Database from 'better-sqlite3'
 
 export const GOOSE_IDLE_RE = /Enter to send/
+// The goose input-prompt marker 🪿 — present on the live bottom line in every
+// non-active state. `🪿 Enter to send` = empty input (idle); `🪿 <anything else>`
+// (e.g. `🪿 📬 Message from teacher: …`, or a queued `Continue —` kick text) = a
+// message sitting unsubmitted at the prompt. With NO spinner above it, that's the
+// `pending` wedge — goose received the message but never started processing it.
+export const GOOSE_PROMPT_RE = /🪿/
 // Spinner glyph ◐◑◒◓ (U+25D0–U+25D3) animates on both the work line ("◒ Processing
 // user intent…") and the compaction line ("◓ goose is compacting…"), and vanishes the
 // instant goose goes idle — so it's the true live-state marker. Do NOT match the
@@ -135,7 +141,14 @@ export function newKickState() {
 //                  scrollback `Enter to send` can't false-idle a working agent.
 //   'compacting' — a live spinner-glyph line carries the compaction phrase.
 //   'working'    — a glyph and/or the `Ctrl+C to interrupt` hint is present.
-//   'unknown'    — nothing live (boot / transition frame); NOT kick-eligible.
+//   'pending'    — at the `🪿` prompt with a queued/unsubmitted message (NOT the
+//                  empty `Enter to send`) and NO live spinner: goose received a
+//                  message but never started processing it. The most common
+//                  between-turns wedge; recovered with a bare Enter (flush), same
+//                  as 'stuck'. Checked AFTER the glyph branches so a `🪿 📬` line
+//                  WITH a spinner above reads 'working', not 'pending'.
+//   'unknown'    — nothing live, not even a `🪿` prompt (boot / transition frame);
+//                  NOT kick-eligible.
 // Note: a frozen agent showing a stale glyph reads 'working'/'compacting' here —
 // `resolveGooseStatus` adds the cross-sweep liveness that escalates it to 'stuck'.
 export function gooseStatus(paneTail) {
@@ -145,6 +158,7 @@ export function gooseStatus(paneTail) {
   const glyph = GOOSE_GLYPH_RE.test(paneTail)
   if (glyph && GOOSE_COMPACTING_RE.test(paneTail)) return 'compacting'
   if (glyph || GOOSE_INTERRUPT_RE.test(paneTail)) return 'working'
+  if (GOOSE_PROMPT_RE.test(bottom)) return 'pending'   // queued msg at prompt, no spinner — scoped to live bottom
   return 'unknown'
 }
 
@@ -186,25 +200,26 @@ export function resolveGooseStatus(paneTail, prevLive, now, stuckMs = GOOSE_STUC
 // and the agent's prior kick state, decide whether to kick and how. No I/O —
 // fully table-testable.
 //
-//   status : 'idle' | 'working' | 'compacting' | 'stuck' | 'unknown'
-//            'idle' (done at empty prompt) and 'stuck' (frozen mid-turn) are the
-//            only kick-eligible statuses; 'unknown' is never kicked (boot safety).
+//   status : 'idle' | 'working' | 'compacting' | 'stuck' | 'pending' | 'unknown'
+//            kick-eligible: 'idle' (done at empty prompt), 'stuck' (frozen
+//            mid-turn), and 'pending' (queued message unsubmitted at the prompt).
+//            'unknown' is never kicked (boot safety).
 //   info   : { lastInboundId, chatAfterInbound, lastToolReqId } | null
 //   state  : prior kick state (from newKickState / a previous decision)
 // Returns { kick, state, reason, action } where action is 'nudge' (append the
 // Continue text, for an idle-done agent) or 'enter' (bare Enter to flush a queued
-// input, for a stuck agent — piling Continue text onto an already-queued message
-// is what kept minimax3 wedged).
+// input, for a 'stuck' or 'pending' agent — piling Continue text onto an
+// already-queued message is what kept minimax3 wedged).
 export function decideKick(status, info, state) {
   const k = { ...state }
-  const kickEligible = (status === 'idle' || status === 'stuck')
+  const kickEligible = (status === 'idle' || status === 'stuck' || status === 'pending')
   if (!kickEligible) {
     // working / compacting = live progress → reset the no-progress run. 'unknown'
     // is a boot/transition frame — leave it alone, don't reset. Never kick here.
     if (status === 'working' || status === 'compacting') k.deadKicks = 0
     return { kick: false, state: k, reason: status, action: null }
   }
-  const action = status === 'stuck' ? 'enter' : 'nudge'
+  const action = (status === 'stuck' || status === 'pending') ? 'enter' : 'nudge'
   if (!info || info.lastInboundId === 0) {
     return { kick: false, state: k, reason: 'nothing-owed', action: null }   // unreadable or no inbound
   }

@@ -28,6 +28,13 @@ const STUCK = [
   '  ━━━━ 39% 50k/128k',
   '🪿 Continue — your assignment is not finished. …',
 ].join('\n')
+// Pending: a queued message sits unsubmitted at the `🪿` prompt with NO spinner —
+// goose received it but never started processing (mistral2 sat here 9 min). NOT
+// `Enter to send` (input isn't empty), NO glyph → the most common between-turns wedge.
+const PENDING = [
+  '  some earlier output line',
+  '🪿 📬 Message from teacher: We aren\'t doing regression here… · Call my_task()…',
+].join('\n')
 const BOOT = ['', '  some transient boot frame', ''].join('\n')
 
 let pass = 0, fail = 0
@@ -41,7 +48,11 @@ check('idle prompt → idle', gooseStatus(IDLE) === 'idle')
 check('working line → working', gooseStatus(WORKING) === 'working')
 check('compacting line → compacting', gooseStatus(COMPACTING) === 'compacting')
 check('stale glyph + queued prompt → working (pre-liveness)', gooseStatus(STUCK) === 'working')
-check('no glyph / no prompt → unknown', gooseStatus(BOOT) === 'unknown')
+check('🪿 queued msg, no glyph → pending', gooseStatus(PENDING) === 'pending')
+check('no 🪿 prompt at all → unknown (boot)', gooseStatus(BOOT) === 'unknown')
+// A `🪿 📬` prompt WITH a live spinner above is working, NOT pending.
+check('🪿 📬 + spinner above → working (not pending)',
+  gooseStatus(['◐  Taming tensors…  (Ctrl+C to interrupt)', '🪿 📬 Message from teacher: …'].join('\n')) === 'working')
 // Scrollback `Enter to send` above a live working line must NOT read idle.
 check('scrollback Enter-to-send + live work → working',
   gooseStatus(['🪿 Enter to send · Ctrl+J newline', '◐  Taming tensors…  (Ctrl+C to interrupt)', '🪿 📬 Message from teacher: …'].join('\n')) === 'working')
@@ -179,6 +190,23 @@ let s = newKickState()
 {
   const r = decideKick('stuck', { lastInboundId: 10, chatAfterInbound: true, lastToolReqId: 12 }, { lastInboundId: 10, deadKicks: 0, lastKickToolReqId: null })
   check('stuck + delivered → no kick', r.kick === false && r.reason === 'delivered')
+}
+// 12. PENDING (queued msg at prompt, no glyph) with owed work → kick, bare-'enter'
+//     action (flush the queued input), same recovery as stuck — NOT the nudge.
+{
+  const r = decideKick('pending', { lastInboundId: 10, chatAfterInbound: false, lastToolReqId: 12 }, newKickState())
+  check('pending + owed → kick', r.kick === true)
+  check('pending → enter action (flush queued, not Continue text)', r.action === 'enter')
+}
+// 13. pending but already delivered → no kick (don't Enter a done agent)
+{
+  const r = decideKick('pending', { lastInboundId: 10, chatAfterInbound: true, lastToolReqId: 12 }, { lastInboundId: 10, deadKicks: 0, lastKickToolReqId: null })
+  check('pending + delivered → no kick', r.kick === false && r.reason === 'delivered')
+}
+// 14. unknown (boot, no 🪿) is NOT kick-eligible
+{
+  const r = decideKick('unknown', { lastInboundId: 10, chatAfterInbound: false, lastToolReqId: 12 }, newKickState())
+  check('unknown → no kick (boot safety)', r.kick === false && r.reason === 'unknown' && r.action === null)
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)
