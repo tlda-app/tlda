@@ -666,9 +666,15 @@ def build_codex_cmd(fleet_id, tmux_session, model=None, resume_id=None,
     sign-in), NOT from the environment — so unlike goose there's no API key to
     source from a login shell, and no zsh -lc wrapper is needed.
 
-    MCP: the tlda fleet tools come from ~/.codex/config.toml ([mcp_servers.tlda]),
-    the Codex analog of claude's --dangerously-load-development-channels. That's
-    one-time machine setup, not per-spawn.
+    MCP env — THE KEY DIFFERENCE FROM CLAUDE (verified 2026-06-15): Codex does
+    NOT pass the launch process env down to its MCP subprocess (Claude does). So
+    setting FLEET_ID/TLDA_SERVER as a process-env prefix would NOT reach the tlda
+    MCP server — it'd register under a random id and hit the wrong server. We
+    inject the MCP env via Codex's `-c mcp_servers.tlda.env.<KEY>=<val>` config
+    override instead (confirmed: the MCP subprocess sees exactly these, and a
+    process-env value does NOT leak in). Per-invocation, so no shared-config race.
+    The `[mcp_servers.tlda]` server entry itself (command/args) is one-time setup
+    in ~/.codex/config.toml; only the per-agent env is injected here.
 
     Flags:
       -m <model>        the Codex model (omit to use the subscription default)
@@ -685,24 +691,32 @@ def build_codex_cmd(fleet_id, tmux_session, model=None, resume_id=None,
     These don't change this command's shape; they're daemon-side and tracked
     separately.
     """
+    # Identity in process env: FLEET_ID/TMUX/NAME so `ps` (the daemon's liveness
+    # + classification scan) can see which fleet agent a codex process is. These
+    # do NOT reach the MCP subprocess (see docstring) — that's the -c block below.
     parts = [
         f"FLEET_ID={fleet_id}",
         f"FLEET_TMUX_SESSION={tmux_session}",
-        # FLEET_HARNESS=codex tells the tlda MCP this agent runs on Codex (not
-        # claude), so it delivers incoming messages via a send-keys nudge into
-        # the pane rather than the Claude-only channel notification — same as goose.
-        "FLEET_HARNESS=codex",
-        f"TLDA_SERVER={shlex.quote(API)}",
-        f"TLDA_SYNC_SERVER={shlex.quote(API)}",
     ]
     if name:
         parts.append(f"FLEET_NAME={shlex.quote(name)}")
     parts.append("codex")
     if resume_id:
-        # Resume keeps the same fleet id (env above) and continues the prior
-        # rollout. The register prompt is injected via send-keys after boot, so
-        # include_prompt is False on this path (mirrors build_claude_cmd).
+        # Resume keeps the same fleet id (re-injected below) and continues the
+        # prior rollout. The register prompt is injected via send-keys after boot,
+        # so include_prompt is False on this path (mirrors build_claude_cmd).
         parts.append(f"resume {shlex.quote(resume_id)}")
+    # MCP env via -c overrides — the ONLY channel that reaches the tlda MCP server.
+    def _cenv(key, val):
+        return f"-c {shlex.quote(f'mcp_servers.tlda.env.{key}={val}')}"
+    parts.append(_cenv("FLEET_ID", fleet_id))
+    if name:
+        parts.append(_cenv("FLEET_NAME", name))
+    # FLEET_HARNESS=codex → the MCP delivers incoming messages via a send-keys
+    # nudge into the pane (like goose), not the Claude-only channel notification.
+    parts.append(_cenv("FLEET_HARNESS", "codex"))
+    parts.append(_cenv("TLDA_SERVER", API))
+    parts.append(_cenv("TLDA_SYNC_SERVER", API))
     if model:
         parts.append(f"-m {shlex.quote(model)}")
     parts.append("-s workspace-write")
