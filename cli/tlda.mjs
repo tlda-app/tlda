@@ -28,6 +28,7 @@ import {
   CONFIG_DIR, CONFIG_FILE, hasTls, TLS_CA_PATH, getManagedBots,
 } from '../shared/config.mjs'
 import { tldaFetch } from '../shared/http-client.mjs'
+import { DEV_COMMANDS } from './lib/dev-commands.mjs'
 import { cmdLogs } from './lib/unified-logs.mjs'
 
 // --- Argument parsing ---
@@ -2285,7 +2286,8 @@ async function cmdDev() {
   const { execSync, spawn } = await import('child_process')
   const { openSync: fsOpenSync } = await import('fs')
 
-  const worktreeName = getFlag('worktree')
+  // `tlda-dev worktree <branch>` — branch is positional; --worktree still accepted.
+  const worktreeName = getPositional(0) || getFlag('worktree')
   const portArg = getFlag('port')
 
   // Find main repo root (works whether we're in a worktree or the main repo).
@@ -2365,25 +2367,31 @@ async function cmdDev() {
 
   console.log(dim(`Vite starting on port ${port} (pid ${viteChild.pid})...`))
 
-  // Wait for Vite to be ready (poll up to 30s)
-  let ready = false
-  for (let i = 0; i < 60; i++) {
+  // Wait for Vite to be ready (poll up to 30s). vite.config serves HTTPS when the
+  // mkcert certs exist (hasTls) — so probe https first, fall back to http; the
+  // scheme that answers is the one we hand back. Polling only http (the old bug)
+  // hung forever on a cert'd machine, where vite is https-only.
+  let scheme = null
+  for (let i = 0; i < 60 && !scheme; i++) {
     await new Promise(r => setTimeout(r, 500))
-    try {
-      const res = await fetch(`http://localhost:${port}/`, { signal: AbortSignal.timeout(1000) })
-      if (res.ok || res.status === 404) { ready = true; break }
-    } catch {}
+    for (const s of (hasTls ? ['https', 'http'] : ['http'])) {
+      try {
+        const res = await fetch(`${s}://localhost:${port}/`, { signal: AbortSignal.timeout(1000) })
+        if (res.ok || res.status === 404) { scheme = s; break }
+      } catch { /* not up yet / wrong scheme — try the other, or next poll */ }
+    }
   }
 
-  if (!ready) {
+  if (!scheme) {
     throw new Error(`Vite failed to start on port ${port} within 30s. Check log: ${viteLogFile}`)
   }
 
-  // Write .dev-url
+  // Write .dev-url with the scheme that actually answered. Chat/fleet resolves to
+  // the global store (Fly) via /api/fleet-config regardless; only doc-sync + assets
+  // ride this local proxy, so the worktree shares your room without extra wiring.
   const token = getToken()
-  const url = token
-    ? `http://localhost:${port}/?token=${token}`
-    : `http://localhost:${port}/`
+  const base = `${scheme}://localhost:${port}/`
+  const url = token ? `${base}?token=${token}` : base
   const devUrlPath = join(worktreeDir, '.dev-url')
   writeFileSync(devUrlPath, url)
 
@@ -2397,19 +2405,29 @@ async function cmdDev() {
 }
 
 async function cmdDevUrl() {
+  // Prefer the .dev-url that `tlda-dev worktree` wrote (correct scheme + token).
+  const devUrlPath = join(process.cwd(), '.dev-url')
+  if (existsSync(devUrlPath)) { console.log(readFileSync(devUrlPath, 'utf8').trim()); return }
   const portArg = getFlag('port')
   const port = portArg ? parseInt(portArg) : 5180
   const token = getToken()
-  const url = token
-    ? `http://localhost:${port}/?token=${token}`
-    : `http://localhost:${port}/`
-  console.log(url)
+  const scheme = hasTls ? 'https' : 'http'
+  const base = `${scheme}://localhost:${port}/`
+  console.log(token ? `${base}?token=${token}` : base)
 }
 
 // --- Main ---
 
 async function main() {
   try {
+    // Developer commands live on the `tlda-dev` binary (the developer app), not
+    // on plain `tlda` (the user app). When reached directly as `tlda <devcmd>`,
+    // point the user at tlda-dev instead of silently running it. tlda-dev sets
+    // TLDA_DEV_CLI=1 when it forwards, so it still works through that path.
+    if (DEV_COMMANDS.includes(command) && !process.env.TLDA_DEV_CLI) {
+      console.error(`'${command}' is a developer command — run: tlda-dev ${command}`)
+      process.exit(1)
+    }
     switch (command) {
       case 'server': await cmdServer(); break
       case 'scratch': await ensureServer(); await cmdScratch(); break
@@ -2435,7 +2453,7 @@ async function main() {
       case 'setup': await cmdSetup(); break
       case 'agent': await cmdAgent(); break
       case 'restart-mcp': await restartMcpAgents(process.argv.slice(3)); break // dev-only; surfaced via `tlda-dev restart-mcp`
-      case 'dev': await cmdDev(); break
+      case 'worktree': await cmdDev(); break // dev-only; surfaced via `tlda-dev worktree`
       case 'dev-url': await cmdDevUrl(); break
       case 'deploy': await cmdDeploy(); break
       case 'doctor': await cmdDoctor(); break
