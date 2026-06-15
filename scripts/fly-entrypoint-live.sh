@@ -42,6 +42,27 @@ if [ -n "$TS_AUTHKEY" ]; then
     || echo "[entrypoint] tailscale serve failed — continuing"
 fi
 
+# --- Run-once: merge pre-cutover chat history into fleet.db ---
+# Runs here, BEFORE the server opens the DB, so the merge has exclusive access
+# (zero event loss, no SQLite corruption). Guarded: only runs if the history file
+# is staged on the volume and the merge hasn't already happened. The merge script
+# takes a consistent backup first; on any failure we restore it and start anyway.
+HIST_DB=/root/.config/tlda/local-history.db
+MERGED_FLAG=/root/.config/tlda/.history-merged
+if [ -f "$HIST_DB" ] && [ ! -f "$MERGED_FLAG" ]; then
+  echo "[entrypoint] one-time history merge starting..."
+  if node /app/scripts/merge-history.mjs /root/.config/tlda/fleet.db "$HIST_DB"; then
+    touch "$MERGED_FLAG"
+    echo "[entrypoint] history merge complete."
+  else
+    echo "[entrypoint] history merge FAILED — restoring pre-merge backup, starting without it"
+    if [ -f /root/.config/tlda/fleet.db.pre-history-merge.bak ]; then
+      cp /root/.config/tlda/fleet.db.pre-history-merge.bak /root/.config/tlda/fleet.db || true
+    fi
+    rm -f /root/.config/tlda/fleet.db-wal /root/.config/tlda/fleet.db-shm || true
+  fi
+fi
+
 cd /app/server
 # --i-am-tlda-cli authorizes launching the server directly (the guard otherwise
 # refuses and tells you to use `tlda server start`). This is how the CLI launches it.

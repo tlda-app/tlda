@@ -130,6 +130,11 @@ const SYNC_SERVER = import.meta.env.VITE_SYNC_SERVER ||
 
 const LICENSE_KEY = 'tldraw-2027-01-19/WyJhUGMwcWRBayIsWyIqLnF0bTI4NS5naXRodWIuaW8iXSw5LCIyMDI3LTAxLTE5Il0.Hq9z1V8oTLsZKgpB0pI3o/RXCoLOsh5Go7Co53YGqHNmtEO9Lv/iuyBPzwQwlxQoREjwkkFbpflOOPmQMwvQSQ'
 
+// Phone = the narrow touch layout (matches isPhone in the component + the
+// other phone checks). Module-level so render-time component overrides (e.g.
+// hiding the TLDraw toolbar) can read it without prop threading.
+const IS_PHONE = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches
+
 // Agent attention overlay wrapper (needs useEditor context)
 function AgentAttentionCanvas() {
   const editor = useEditor()
@@ -843,7 +848,10 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       PageMenu: null,
       SharePanel: null,
       MainMenu: null,
-      Toolbar: () => <FormatToolbar format={document.format} />,
+      // Phone: drop the TLDraw/Format toolbar entirely — most tools aren't usable
+      // on a phone (Skip's call). The phone control scheme is the bottom-right
+      // button cluster instead.
+      Toolbar: () => IS_PHONE ? null : <FormatToolbar format={document.format} />,
       HelperButtons: () => <PenHelperButtons format={document.format} />,
       InFrontOfTheCanvas: () => <><RibbonLane /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /></>,
     }),
