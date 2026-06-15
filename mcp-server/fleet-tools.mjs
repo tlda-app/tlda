@@ -1792,7 +1792,7 @@ export async function handleFleetTool(name, args) {
     if (!reason) return { content: [{ type: 'text', text: 'A reason is required to dismiss a skill. Say why it does not apply — or read the skill instead.' }], isError: true };
     const skills = Array.isArray(args.skills) ? args.skills.filter(Boolean) : null;
     try {
-      const res = await fleetFetch(`${TLDA_SERVER}/api/education/dismiss/${encodeURIComponent(AGENT_ID)}`, {
+      const res = await fleetFetch(`${TLDA_FLEET_SERVER}/api/education/dismiss/${encodeURIComponent(AGENT_ID)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ reason, ...(skills ? { skills } : {}) }),
@@ -2045,7 +2045,7 @@ export async function handleFleetTool(name, args) {
       ts,
     }));
     try {
-      const res = await fleetFetch(`${TLDA_SERVER}/api/suggestions`, {
+      const res = await fleetFetch(`${TLDA_FLEET_SERVER}/api/suggestions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ agentId: AGENT_ID, suggestions: stamped }),

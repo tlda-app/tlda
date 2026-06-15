@@ -14,14 +14,16 @@ import { join } from 'path'
 import { homedir } from 'os'
 import http from 'http'
 import https from 'https'
-import { getServerUrl } from '../shared/config.mjs'
+import { getFleetServerUrl } from '../shared/config.mjs'
 
 const FLEET_ID = process.env.FLEET_ID
 if (!FLEET_ID) process.exit(0)
 
-// getServerUrl() returns https when the mkcert certs exist (and its import sets
-// NODE_TLS_REJECT_UNAUTHORIZED for the localhost self-signed cert). Honors TLDA_SERVER.
-const SERVER = getServerUrl()
+// Education/skill-gate state is GLOBAL — it follows the agent onto the fleet
+// (todd/eliza watch fleet chat, set owed skills; the agent dismisses). So check
+// against the fleet server (config.fleetServer → Fly), the same place dismiss_skill
+// writes. Using the local server here while dismiss went to Fly was the re-fire bug.
+const SERVER = getFleetServerUrl()
 
 setTimeout(() => process.exit(0), 1500)
 
