@@ -61,6 +61,7 @@ import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { resolveFilePath, uploadFileToServer } from '../shared/chat-file-processing.mjs'
 import { processMessageText } from '../shared/message-processing.mjs'
+import { scanMarkdownDeps } from '../shared/markdown-deps.mjs'
 import {
   loadConfig as _loadSharedConfig, saveConfig as _saveSharedConfig,
   getServerUrl, getFleetServerUrl, getRwToken, DEFAULT_PORT, hasTls,
@@ -1123,6 +1124,33 @@ function scanTexInputs(sourceDir, mainFile, extraCommands = []) {
   scan(mainFile)
   return result
 }
+
+// A markdown doc is NOT a single file — it's the main .md PLUS the images it
+// references. This is the markdown analog of scanTexInputs: returns a Set of
+// sourceDir-relative paths (main + referenced images that live under sourceDir),
+// computed locally on the agent's machine via the shared scanner. Mirrors the
+// server's ref-scan in build-markdown.mjs.
+function scanMarkdownInputs(sourceDir, mainFile) {
+  const result = new Set([mainFile])
+  const full = path.join(sourceDir, mainFile)
+  let content
+  try { content = fs.readFileSync(full, 'utf8') } catch { return result }
+  for (const { abs } of scanMarkdownDeps(content, path.dirname(full))) {
+    if (!abs) continue
+    const rel = path.relative(sourceDir, abs)
+    if (rel.startsWith('..') || path.isAbsolute(rel)) continue
+    result.add(rel)
+  }
+  return result
+}
+
+// A markdown doc bundles only its dependency graph (main + images), never the
+// rest of sourceDir — so the "any source file always passes" escape hatch must
+// not apply to it.
+function isMarkdownDoc(format, mainFile) {
+  return format === 'markdown' || (mainFile?.toLowerCase().endsWith('.md') ?? false)
+}
+
 function isSourceFile(name) {
   if (JUNK_PATTERNS.some(r => r.test(name))) return false
   if (name.includes('node_modules') || name.includes('.git/')) return false
@@ -1162,9 +1190,12 @@ function syncSourceWatchers(projectList, activeViewers) {
     if (!fs.existsSync(p.sourceDir)) continue
     activeNames.add(p.name)
 
+    const isMarkdown = isMarkdownDoc(p.format, p.mainFile)
     const hasFlsWatchList = p.watchFiles?.length > 0
     const watchSet = new Set(
-      hasFlsWatchList ? p.watchFiles : p.mainFile ? [p.mainFile] : []
+      hasFlsWatchList ? p.watchFiles
+        : isMarkdown && p.mainFile ? scanMarkdownInputs(p.sourceDir, p.mainFile)
+        : p.mainFile ? [p.mainFile] : []
     )
 
     if (sourceWatchers.has(p.name)) {
@@ -1175,10 +1206,18 @@ function syncSourceWatchers(projectList, activeViewers) {
       continue
     }
 
-    const state = { sourceDir: p.sourceDir, debounce: null, pending: new Set(), watchSet, onFileChange: null, projectName: p.name, mainFile: p.mainFile, extraInputCommands: p.extraInputCommands || [], watchSeen: new Map() }
+    const state = { sourceDir: p.sourceDir, debounce: null, pending: new Set(), watchSet, onFileChange: null, projectName: p.name, mainFile: p.mainFile, extraInputCommands: p.extraInputCommands || [], watchSeen: new Map(), isMarkdown }
 
     const onFileChange = (filename, fromPoll) => {
       if (!filename) return
+      if (state.isMarkdown) {
+        // A markdown doc bundles exactly its dependency graph (main + referenced
+        // images). Enforce the watchSet strictly — do NOT let arbitrary source
+        // files in sourceDir through, or the doc eats the whole dir's churn.
+        // Newly-referenced images are discovered by rescanning when the main .md
+        // changes (see flushSourceChanges), not via the escape hatch below.
+        if (!state.watchSet.has(filename)) return
+      } else {
       const isScratch = filename.includes('.tlda/scratch/')
       if (!isScratch) {
         // Source files (.tex, .bib, .sty, etc.) always pass — even if not in the watchSet.
@@ -1193,6 +1232,7 @@ function syncSourceWatchers(projectList, activeViewers) {
             return
           }
         }
+      }
       }
       if (!fromPoll) {
         state.watchSeen.set(filename, Date.now())
@@ -1214,7 +1254,7 @@ function syncSourceWatchers(projectList, activeViewers) {
       for (const rel of watchSet) startPolling(state, rel)
       sourceWatchers.set(p.name, state)
       log.info(`watching source ${p.name}: ${p.sourceDir} (${watchSet.size} files${hasFlsWatchList ? '' : ', bootstrap'})`)
-      pushWatchedFiles(p.name, p.sourceDir, watchSet, hasFlsWatchList ? null : p.mainFile, p.extraInputCommands)
+      pushWatchedFiles(p.name, p.sourceDir, watchSet, hasFlsWatchList ? null : p.mainFile, p.extraInputCommands, isMarkdown)
     } catch (e) {
       log.error(`source watcher failed for ${p.name}: ${e.message}`)
     }
@@ -1255,11 +1295,14 @@ function syncFsWatchers() {
  * commands and push all discovered dependencies — the bootstrap path.
  * Otherwise push the .fls-derived watchSet.
  */
-function pushWatchedFiles(projectName, sourceDir, watchSet, mainFile, extraInputCommands) {
+function pushWatchedFiles(projectName, sourceDir, watchSet, mainFile, extraInputCommands, isMarkdown) {
   const files = []
   if (mainFile) {
-    // Bootstrap mode: no .fls yet, scan main .tex for \input-like commands
-    const deps = scanTexInputs(sourceDir, mainFile, extraInputCommands || [])
+    // Bootstrap mode: no .fls yet. Scan the main file for its deps — \input-like
+    // commands for tex, referenced images for markdown — and push main + deps.
+    const deps = isMarkdown
+      ? scanMarkdownInputs(sourceDir, mainFile)
+      : scanTexInputs(sourceDir, mainFile, extraInputCommands || [])
     log.info(`bootstrap scan for ${projectName}: ${deps.size} files from ${mainFile}`)
     for (const rel of deps) {
       const full = path.join(sourceDir, rel)
@@ -1333,6 +1376,27 @@ function flushSourceChanges(projectName) {
       try {
         files.push({ path: rel, ...readFileForUpload(full) })
         log.info(`rescan discovered new dep: ${rel}`)
+      } catch (e) { log.error(`read ${full}: ${e.message}`) }
+    }
+  }
+
+  // When the main .md of a markdown doc changes, rescan its image refs. A newly-
+  // referenced image must be pushed now (the build will otherwise 404 it) and
+  // added to the watchSet + poller so later edits to it pass the strict filter.
+  if (state.isMarkdown && state.mainFile && filePaths.includes(state.mainFile)) {
+    const alreadyPushed = new Set(filePaths)
+    const deps = scanMarkdownInputs(state.sourceDir, state.mainFile)
+    for (const rel of deps) {
+      if (!state.watchSet.has(rel)) {
+        state.watchSet.add(rel)
+        startPolling(state, rel)
+      }
+      if (alreadyPushed.has(rel)) continue
+      const full = path.join(state.sourceDir, rel)
+      if (!fs.existsSync(full)) continue
+      try {
+        files.push({ path: rel, ...readFileForUpload(full) })
+        log.info(`md rescan discovered dep: ${rel}`)
       } catch (e) { log.error(`read ${full}: ${e.message}`) }
     }
   }
