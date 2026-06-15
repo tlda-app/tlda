@@ -77,6 +77,13 @@ COPY shared/ ./shared/
 # never generates → highlights don't resolve to source lines.
 COPY scripts/ ./scripts/
 
+# Voice transcription bridge: /voice/deepgram (unified-server) lazily spawns
+# /app/bin/deepgram-bridge.mjs, which relays browser PCM audio → Deepgram cloud
+# (wss://api.deepgram.com) using DEEPGRAM_API_KEY (set via `fly secrets`). It's a
+# stateless relay (no local audio access), so it runs fine on Fly. Only this one
+# bin/ file is needed — it imports just `ws` (in node_modules) + shared/config.mjs.
+COPY bin/deepgram-bridge.mjs ./bin/deepgram-bridge.mjs
+
 # Serve the tldraw SPA from this server too. For the PRIVATE tailnet deployment
 # (server gated behind Tailscale, not the open internet), Skip's tldraw license
 # allows self-hosting — so SPA + API + WS become ONE same-origin server, dropping
