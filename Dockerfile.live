@@ -28,8 +28,16 @@ RUN latexmk --version && dvisvgm --version && biber --version && gs --version
 # Build tools for native npm modules (better-sqlite3 compiles via node-gyp when no
 # prebuilt binary is fetched). Separate layer so the TeXLive layer above stays cached.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      build-essential python3 \
+      build-essential python3 python3-pip \
     && rm -rf /var/lib/apt/lists/*
+
+# spaCy + small English model power the outline highlighter (server/lib/outline/
+# clause-split.py does clause-grain sentence splitting). Without these the
+# /outline endpoint fails with ModuleNotFoundError and the outline highlighter
+# silently no-ops. Debian bookworm pip is PEP-668 externally-managed; in a
+# container --break-system-packages is the right escape hatch.
+RUN pip3 install --no-cache-dir --break-system-packages spacy \
+    && python3 -m spacy download en_core_web_sm
 
 # --- runtime deps ---
 # Install at /app (not server/) so BOTH server/*.mjs and shared/*.mjs resolve up to
