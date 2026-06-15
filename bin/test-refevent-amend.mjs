@@ -55,7 +55,7 @@ async function main() {
     .filter(r => { try { return JSON.parse(r.metadata).amends === origId } catch { return false } })
 
   // chat (original)
-  const c = await send('chat', { from: 'fleet:re-sender', to: [['re-rcpt']], message: 'version one' })
+  const c = await send('chat', { from: 'fleet:re-sender', to: 're-rcpt', message: 'version one' })
   const origId = c?.event_ids?.[0]
   T('chat created original', !!origId && ev(origId).text === 'version one' && ev(origId).type === 'chat')
 

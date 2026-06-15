@@ -13,7 +13,7 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import { DEFAULT_PORT, getFleetServerUrl } from '../../shared/config.mjs'
-import { evalDnf, labelsForAgent } from '../../shared/fleet-labels.mjs'
+import { parseFilter, evalExpr, labelsForAgent } from '../../shared/fleet-labels.mjs'
 
 // Server owner — the human running this server process. Browser users
 // log in via the WS 'login' message or register via 'register'.
@@ -300,13 +300,14 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         else totals.hibernating++
       }
 
-      // Optional DNF filter, parsed from the query. Same matcher chat uses, so
-      // `awake` / a label / a name all work and compose.
-      let filter = null
+      // Optional filter expression from the query (e.g. "awake & reviewers").
+      // Same matcher chat uses, so `awake` / a label / a name all work and
+      // compose with & | ! and parens.
+      let filterAst = null
       if (req.query.filter) {
-        try { filter = JSON.parse(req.query.filter) } catch { res.status(400).json({ error: 'filter must be JSON (a DNF array)' }); return }
+        try { filterAst = parseFilter(req.query.filter) } catch (e) { res.status(400).json({ error: `bad filter: ${e.message}` }); return }
       }
-      const matched = roster.filter(a => !filter || evalDnf(filter, labelsForAgent(a)))
+      const matched = roster.filter(a => evalExpr(filterAst, labelsForAgent(a)))
 
       // Awake first, then most-recently-seen.
       const rank = (a) => (a.dead ? 2 : a.status === 'awake' ? 0 : 1)

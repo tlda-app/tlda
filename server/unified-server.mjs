@@ -41,7 +41,7 @@ import { spawn as cpSpawn } from 'child_process'
 import { lookup as mimeLookup } from 'mime-types'
 import { DEFAULT_PORT, hasTls, getManagedBots } from '../shared/config.mjs'
 import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
-import { labelsForAgent, evalDnf } from '../shared/fleet-labels.mjs'
+import { labelsForAgent, parseFilter, evalExpr } from '../shared/fleet-labels.mjs'
 import { phaseFromName, baseName, PHASES } from '../shared/lineage-name.mjs'
 import { initProjectStore, listProjects, readProject, getProjectsDir } from './lib/project-store.mjs'
 import { resetStaleBuildStates, killAllBuilds, runBuild } from './lib/build-runner.mjs'
@@ -2762,9 +2762,11 @@ async function handleFleetWsMessage(ws, msg) {
       const a = fleetStore?.findAgent(id); return a ? a.id : null
     }
     const from = rawFrom ? (resolveSingle(rawFrom) || rawFrom) : null
-    // Normalize `to` to DNF: a single string becomes [[string]] (a singleton DNF).
-    const dnf = Array.isArray(rawTo) ? rawTo : [[rawTo]]
-    // Resolve DNF over agents, NEVER delivering to dead ones. A dead agent
+    // `to` is a filter expression (e.g. "fleet:skip", "awake & reviewers",
+    // "mathy & !goose"). Parse once, then test each agent's label set.
+    let filterAst
+    try { filterAst = parseFilter(rawTo) } catch (e) { error(`bad filter "${rawTo}": ${e.message}`); return }
+    // Resolve over agents, NEVER delivering to dead ones. A dead agent
     // isn't running and can't act on a message; delivering to it also
     // double-fans a filter when a dead twin shares a live agent's name (e.g.
     // an old `preread` row + the live `preread`) → the sender sees their
@@ -2778,12 +2780,14 @@ async function handleFleetWsMessage(ws, msg) {
       // labelsForAgent (shared with the client filters) covers pseudo-labels,
       // friendly_name, id, and lineage tags. getAllAgents() hydrates
       // lineage_name + status, so no per-agent lineage lookup is needed here.
-      if (evalDnf(dnf, labelsForAgent(a))) {
+      if (evalExpr(filterAst, labelsForAgent(a))) {
         recipients.push(a.id)
       }
     }
-    // Server-owner pseudo-recipient: matched by literal id/name only, no label index.
-    if (dnf.some(andGroup => andGroup.length === 1 && (andGroup[0] === SERVER_OWNER_ID || andGroup[0] === SERVER_OWNER_NAME))) {
+    // Server-owner pseudo-recipient: not in the roster, so evaluate the filter
+    // against its literal id/name label set. An empty filter (null) does NOT
+    // fan out to the owner.
+    if (filterAst && evalExpr(filterAst, [SERVER_OWNER_ID, SERVER_OWNER_NAME])) {
       if (!recipients.includes(SERVER_OWNER_ID)) recipients.push(SERVER_OWNER_ID)
     }
     if (recipients.length === 0) { error(`No recipients matched: ${JSON.stringify(rawTo)}`); return }
