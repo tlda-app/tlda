@@ -96,6 +96,16 @@ function clusterOf(main: Editor, seedIds: Set<string>): TLShape[] {
 // sliding-together → move, spreading/pinching → resize.
 const LOCK_THRESHOLD = 12 // screen px of travel before we commit to a mode
 
+// 3-finger pan soft axis lock (Skip's "soft/breakable" choice — cf. the hard-snap
+// variant in src/hooks/usePanMode.ts). Engage after a little travel, bias hard to
+// the dominant axis but leave a sliver of off-axis motion (soft, not rigid), and
+// let a decisive off-axis push re-pick the axis mid-drag (breakable — no pause
+// needed). The accumulators decay each move so the axis tracks RECENT travel.
+const PAN_LOCK_INITIAL = 8    // px of (decayed) travel before the lock engages
+const PAN_BREAK_RATIO = 1.6   // off-axis must out-travel the locked axis by this to flip it
+const PAN_OFFAXIS_DAMP = 0.12 // residual off-axis fraction while locked (0 would be a hard lock)
+const PAN_AXIS_DECAY = 0.8    // per-move decay of the axis accumulators (recent-motion weighting)
+
 type GestureState =
   | { kind: 'none' }
   | { kind: 'shape'; mode: 'pending' | 'move' | 'resize'; id: string; type: string; x0: number; y0: number; w0: number; h0: number; d0: number; c0: { x: number; y: number } }
@@ -103,7 +113,9 @@ type GestureState =
   // 3-finger: pan the main canvas from anywhere (even over the panels). Drive the
   // main camera; the HUD's camera-poll mirrors a main-camera pan onto the HUD.
   // Keep z byte-identical — a z wobble makes the poll skip the HUD update.
-  | { kind: 'pan'; camX0: number; camY0: number; z0: number; c0: { x: number; y: number } }
+  // Integrates incremental deltas (lastC) so a soft axis lock can damp the
+  // off-axis without the camera jumping when the lock breaks mid-drag.
+  | { kind: 'pan'; z0: number; lastC: { x: number; y: number }; axis: 'x' | 'y' | null; accX: number; accY: number }
 
 export function useFleetGestures(opts: {
   hudRef: React.RefObject<HTMLDivElement | null>
@@ -130,7 +142,7 @@ export function useFleetGestures(opts: {
         // Pan the doc from anywhere — even over the panels.
         e.preventDefault(); e.stopPropagation()
         const cam = main.getCamera()
-        state = { kind: 'pan', camX0: cam.x, camY0: cam.y, z0: cam.z, c0: touchCenter(ts) }
+        state = { kind: 'pan', z0: cam.z, lastC: touchCenter(ts), axis: null, accX: 0, accY: 0 }
         return
       }
 
@@ -184,9 +196,29 @@ export function useFleetGestures(opts: {
       if (state.kind === 'pan') {
         e.preventDefault(); e.stopPropagation()
         const c = touchCenter(ts)
-        // Absolute target from gesture start; z byte-identical; no animation.
+        const idx = c.x - state.lastC.x // incremental delta since last move
+        const idy = c.y - state.lastC.y
+        state.lastC = c
+        // Soft, breakable axis lock. Decay the accumulators so the axis is chosen
+        // from RECENT travel: once past the threshold, lock to the dominant axis;
+        // a decisive off-axis push (the other axis out-travels the locked one by
+        // PAN_BREAK_RATIO) flips the lock mid-drag, no pause needed.
+        state.accX = state.accX * PAN_AXIS_DECAY + Math.abs(idx)
+        state.accY = state.accY * PAN_AXIS_DECAY + Math.abs(idy)
+        if (state.accX + state.accY >= PAN_LOCK_INITIAL) {
+          if (state.axis === null) state.axis = state.accY >= state.accX ? 'y' : 'x'
+          else if (state.axis === 'y' && state.accX > state.accY * PAN_BREAK_RATIO) state.axis = 'x'
+          else if (state.axis === 'x' && state.accY > state.accX * PAN_BREAK_RATIO) state.axis = 'y'
+        }
+        // Damp (not zero) the off-axis component — soft, not rigid.
+        let mx = idx, my = idy
+        if (state.axis === 'y') mx *= PAN_OFFAXIS_DAMP
+        else if (state.axis === 'x') my *= PAN_OFFAXIS_DAMP
+        // Integrate into the live camera. z written byte-identical (z0) every
+        // frame — a z wobble makes the HUD camera-poll skip the pan mirror.
+        const cam = main.getCamera()
         main.setCamera(
-          { x: state.camX0 + (c.x - state.c0.x) / state.z0, y: state.camY0 + (c.y - state.c0.y) / state.z0, z: state.z0 },
+          { x: cam.x + mx / state.z0, y: cam.y + my / state.z0, z: state.z0 },
           { animation: { duration: 0 } },
         )
         return
