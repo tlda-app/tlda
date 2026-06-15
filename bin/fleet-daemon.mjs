@@ -2184,7 +2184,12 @@ async function checkAgentLiveness() {
   // shell, not the pane).
   const agentProcPids = new Set()
   const gooseProcPids = new Set()   // subset: only `goose run` agents
+  const codexProcPids = new Set()   // subset: only `codex` (OpenAI Codex CLI) agents
   const childrenByPpid = new Map()
+  // Match the `codex` executable as a command token without false-matching paths
+  // that merely contain "codex" (e.g. a worktree named codex-adapter): codex must
+  // be at a word/path boundary AND followed by whitespace or end-of-string.
+  const CODEX_PROC_RE = /(?:^|\s|\/)codex(?:\s|$)/
   try {
     const { stdout } = await execFileP('ps', ['-eo', 'pid,ppid,args'],
       { timeout: 5000, encoding: 'utf8' })
@@ -2197,11 +2202,13 @@ async function checkAgentLiveness() {
       }
       const isClaude = line.includes('claude')
       const isGoose = line.includes('goose run')
-      if (isClaude || isGoose) {
+      const isCodex = CODEX_PROC_RE.test(line)
+      if (isClaude || isGoose || isCodex) {
         const pid = line.trim().split(/\s+/)[0]
         if (pid) {
           agentProcPids.add(pid)
           if (isGoose) gooseProcPids.add(pid)
+          if (isCodex) codexProcPids.add(pid)
         }
       }
     }
@@ -2218,6 +2225,10 @@ async function checkAgentLiveness() {
     // Classify goose-backed agents (DeepSeek) so the thinking-scan loop can run
     // the goose turn-end auto-kick on them and skip the claude path.
     agent._isGoose = agentAlive && panes.some(pid => _paneSubtreeHasAgent(pid, childrenByPpid, gooseProcPids))
+    // Classify Codex (OpenAI Codex CLI) agents so the session-watch path can pick
+    // parseCodexLine + pass kind:'codex' to resolveTranscript. _isCodex feeds the
+    // `kind` the resolver/parser dispatch reads (see bin/lib/resolve-transcript.mjs).
+    agent._isCodex = agentAlive && panes.some(pid => _paneSubtreeHasAgent(pid, childrenByPpid, codexProcPids))
 
     _alivenessCache.set(agent.tmux_session, agentAlive)
 
