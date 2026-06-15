@@ -28,6 +28,7 @@ import {
   CONFIG_DIR, CONFIG_FILE, hasTls, TLS_CA_PATH, getManagedBots,
 } from '../shared/config.mjs'
 import { tldaFetch } from '../shared/http-client.mjs'
+import { scanMarkdownDeps } from '../shared/markdown-deps.mjs'
 import { cmdLogs } from './lib/unified-logs.mjs'
 
 // --- Argument parsing ---
@@ -456,16 +457,10 @@ async function cmdCreate() {
     const mdSource = readFileSync(join(dir, mainFile), 'utf8')
     const files = [{ path: mainFile, content: Buffer.from(mdSource).toString('base64'), encoding: 'base64' }]
 
-    const refs = new Set()
-    for (const m of mdSource.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)) refs.add(m[1])
-    for (const m of mdSource.matchAll(/<img\s[^>]*\bsrc=["']([^"']+)["']/g)) refs.add(m[1])
     const missing = []
-    for (const raw of refs) {
-      const rel = raw.split(/[#?]/)[0].trim()
-      if (!rel || /^(https?:|data:|\/\/)/i.test(rel)) continue
-      const abs = join(dir, rel)
-      if (!existsSync(abs)) { missing.push(rel); continue }
-      files.push({ path: rel, content: readFileSync(abs).toString('base64'), encoding: 'base64' })
+    for (const { ref, abs } of scanMarkdownDeps(mdSource, dir)) {
+      if (!abs || !existsSync(abs)) { missing.push(ref); continue }
+      files.push({ path: ref, content: readFileSync(abs).toString('base64'), encoding: 'base64' })
     }
     const assetCount = files.length - 1
 
