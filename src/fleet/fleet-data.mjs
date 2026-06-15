@@ -48,6 +48,14 @@ async function resolveFleetBase() {
     if (!res.ok) return
     const { fleetServer } = await res.json()
     if (!fleetServer) return
+    // Guard: a server that doesn't know its own public URL falls back to
+    // localhost. If this page isn't actually on localhost, trusting that would
+    // point chat at an unreachable host — keep API_BASE instead.
+    const onLocalhost = typeof window !== 'undefined' && /^(localhost|127\.0\.0\.1|\[::1\])$/.test(window.location.hostname)
+    if (/(localhost|127\.0\.0\.1|\[::1\])/.test(fleetServer) && !onLocalhost) {
+      log.warn('fleet-data', 'fleet-config returned localhost but page is remote; keeping serving origin', { fleetServer })
+      return
+    }
     FLEET = fleetServer.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/+$/, '')
     FLEET_WS = FLEET.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:')
     log.info('fleet-data', 'fleet store resolved', { FLEET })

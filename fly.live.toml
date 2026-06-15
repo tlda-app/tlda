@@ -11,6 +11,10 @@ primary_region = "sjc"
 [env]
   PORT = "5176"
   NODE_ENV = "production"
+  # Fly is the global fleet/event store, so it must report its own public URL from
+  # /api/fleet-config (otherwise getServerUrl() falls back to localhost and the
+  # Pages SPA would point chat at localhost). This is the canonical fleet server.
+  TLDA_FLEET_SERVER = "https://tldraw-sync-skip.fly.dev"
   # Auth posture for a co-author-facing live backend — confirm with Skip before deploy.
   # The published/sync app ran TLDA_NO_AUTH=1 (fully open). For live + co-authors you
   # likely want token auth instead; left unset here pending that decision.
