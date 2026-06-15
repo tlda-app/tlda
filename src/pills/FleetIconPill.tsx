@@ -39,12 +39,13 @@ const ITEM_GAP = 4         // px between tiles
 // landed (the filter write no-ops in the HUD overlay) and the shape is being
 // retired for the normal-inbox evolution. The shape code/schema stay for the
 // inbox-evolve dead-code cut; this just makes the broken layout unreachable.
-type LayoutId = '3col' | '2col' | 'wide' | 'grid'
+type LayoutId = '3col' | '2col' | 'wide' | 'grid' | 'phone'
 const LAYOUT_PRESETS: { id: LayoutId; title: string }[] = [
   { id: '3col', title: 'Three-column: agents + search | chat | chat + docview' },
   { id: '2col', title: 'Two-column: left margin + right margin chat' },
   { id: 'wide', title: 'Wide: agents + search | one large chat' },
   { id: 'grid', title: 'Grid: agents + search | 2×2 chat grid' },
+  { id: 'phone', title: 'Phone: chat fills the screen + agents strip' },
 ]
 
 /** Mini SVG diagram showing the layout arrangement */
@@ -118,6 +119,13 @@ function LayoutIcon({ id, size = 20 }: { id: LayoutId; size?: number }) {
         {docEl()}
       </>
     ),
+    'phone': (
+      // Phone: agents strip on top, one chat filling the rest. No doc column.
+      <>
+        <rect x={s*0.18} y={0} width={s*0.64} height={s*0.18} rx={r} fill={ap} />
+        <rect x={s*0.18} y={s*0.18+g} width={s*0.64} height={s*0.82-g} rx={r} fill={ch} />
+      </>
+    ),
   }
 
   return (
@@ -186,9 +194,11 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
         setDragAnchor({ x: s.x, y: s.y })
       }
       if (isDragRef.current) {
-        const idx = ev.clientX < s.x
+        // Fan opens leftward from the bottom-right corner, so dragging LEFT
+        // slides through the presets; dragging right (wrong way) selects the 0th.
+        const idx = ev.clientX > s.x
           ? 0
-          : Math.max(0, Math.min(LAYOUT_PRESETS.length - 1, Math.floor((ev.clientX - s.x) / (ITEM_W + ITEM_GAP))))
+          : Math.max(0, Math.min(LAYOUT_PRESETS.length - 1, Math.floor((s.x - ev.clientX) / (ITEM_W + ITEM_GAP))))
         selectedIdxRef.current = idx
         setSelectedIdx(idx)
       }
@@ -211,6 +221,14 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
         const idx = selectedIdxRef.current
         if (idx !== null) {
           createFleetLayout(mainEditor, agentsRef.current, LAYOUT_PRESETS[idx].id as any)
+          // Applying a layout while the HUD is toggled off would create shapes
+          // you can't see (and gestures stay gated off). So setting a layout
+          // shows the HUD if it's hidden.
+          if (isFleetHidden()) {
+            localStorage.setItem('fleet-hud-expanded', '1')
+            setHidden(false)
+            window.dispatchEvent(new CustomEvent('fleet-hud-toggle'))
+          }
         }
         justDraggedRef.current = true  // suppress the upcoming onClick
       }

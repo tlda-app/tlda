@@ -66,6 +66,11 @@ const FLEET_API = typeof window !== 'undefined' ? window.location.origin : 'http
 const _isTouchDevice = (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
   || (typeof location !== 'undefined' && new URLSearchParams(location.search).has('forcetouch'))
 
+// Phone (narrow screen). iOS Safari auto-zooms any focused input under 16px, so
+// the composer font must be ≥16px on phone — and it's set as an INLINE style
+// (below), which CSS can't override, so the value is chosen here.
+const _isPhone = typeof window !== 'undefined' && !!window.matchMedia?.('(max-width: 600px)').matches
+
 function getFleetStyleVars(): React.CSSProperties {
   return {
     '--fleet-base-font': `${getPref('fleet-font-size')}px`,
@@ -4949,7 +4954,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                 border: '1px solid rgba(128, 128, 128, 0.15)',
                 borderRadius: 4,
                 padding: '4px 8px',
-                fontSize: 11,
+                fontSize: _isPhone ? 16 : 11,
                 color: 'inherit',
                 outline: 'none',
                 resize: 'none',

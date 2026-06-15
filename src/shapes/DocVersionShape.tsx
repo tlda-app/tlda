@@ -24,10 +24,6 @@ export class DocVersionShapeUtil extends BaseBoxShapeUtil<any> {
     // convergent state — the build-error/warning badges read these directly.
     warningsJson: T.optional(T.string),
     errorsJson: T.optional(T.string),
-    // Mirror/shadow sync failure for this doc (JSON array). Convergent Yjs state,
-    // not a fire-and-forget signal — a sync failure means the working copy may be
-    // out of step with the build, which must stay visible across reconnect until
-    // the next successful sync clears it. The SyncErrorPill reads this directly.
     syncErrorJson: T.optional(T.string),
   }
 

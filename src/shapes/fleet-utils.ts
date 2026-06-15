@@ -239,7 +239,7 @@ export function layoutOffset(userId: string, deviceId: string): { dx: number; dy
   return { dx: -col * 4000, dy: row * 2500 }
 }
 
-export function createFleetLayout(editor: Editor, agents: any[], variant: '2col' | '3col' | 'wide' | 'grid' | 'touch' = '3col') {
+export function createFleetLayout(editor: Editor, agents: any[], variant: '2col' | '3col' | 'wide' | 'grid' | 'touch' | 'phone' = '3col') {
   const myId = getHumanId()
   if (!myId) return
   const myDevice = getDeviceId()
@@ -360,6 +360,57 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
     const { dx, dy } = layoutOffset(myId, myDevice)
     anchorX += dx
     anchorY += dy
+
+    // Phone layout: the simplest usable thing — a short agents strip (to filter
+    // the chat) on top, and one chat filling the rest of the screen. No inbox,
+    // search, or docview. Sized to the viewport so it fills the phone; positions
+    // are a first cut and meant to be hand-adjusted (anisotropic resize). Early
+    // return — these two shapes are the whole layout.
+    if (variant === 'phone') {
+      // Size to ONE document page at its CURRENT on-screen size (Skip's
+      // principle: everything relative to the page's current size). The page's
+      // on-screen size = its page-coord bounds × the current camera zoom, so the
+      // layout scales with the page — zoom the page small, the layout is small.
+      // (HUD shapes render at z=1 / screen px, so we pre-multiply by the zoom.)
+      const camZ = editor.getCamera().z || 1
+      const pb = pageShapes[0] ? editor.getShapePageBounds(pageShapes[0].id) : null
+      const w = pb ? pb.width * camZ : Math.max(160, vp.w - 12)
+      const pageH = pb ? pb.height * camZ : Math.max(200, vp.h - 12)
+      const agentsHp = Math.min(150, Math.round(pageH * 0.14))
+      // Right edge sits marginGap to the left of the page — same gap the other
+      // layouts use. anchorX + leftContentW == page-left - marginGap, so place
+      // the shape so its right edge lands there.
+      const phoneX = anchorX + leftContentW - w
+      editor.createShapes([
+        {
+          id: slotId(myId, myDevice, 'agents'),
+          type: 'fleet-agents' as any,
+          x: phoneX, y: anchorY,
+          isLocked: false,
+          props: { w, h: agentsHp, userId: myId, deviceId: myDevice },
+        },
+        {
+          id: slotId(myId, myDevice, 'chat-0'),
+          type: 'fleet-chat' as any,
+          x: phoneX, y: anchorY + agentsHp + gap,
+          isLocked: false,
+          props: { w, h: Math.max(200, pageH - agentsHp - gap), filter: filter1, userId: myId, deviceId: myDevice },
+        },
+        // Reference pane: a ¾-page docview hung off the RIGHT margin — mirror of
+        // the chat on the left, same marginGap from the page edge, scaled to ¾ so
+        // it reads as secondary. The phone pans between chat (left) / doc (center)
+        // / reference (right); only one is on screen at a time.
+        {
+          id: slotId(myId, myDevice, 'docview'),
+          type: 'fleet-docview' as any,
+          x: docMaxRight + marginGap + dx, y: anchorY,
+          isLocked: false,
+          props: { w: Math.round(w * 0.75), h: Math.round(pageH * 0.75), mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '', userId: myId, deviceId: myDevice },
+        },
+      ])
+      try { window.dispatchEvent(new CustomEvent('fleet-hud-reset')) } catch {}
+      return
+    }
 
     // Touch layout: a single container (inbox strip + nested chat), one column.
     // The container auto-creates its own fleet-chat child, so no other shapes.

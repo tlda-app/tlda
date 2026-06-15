@@ -60,13 +60,16 @@ function fleetShapeAtScreen(overlay: Editor, clientX: number, clientY: number): 
   return null
 }
 
-// My fleet shapes that share a margin with the seed shapes. The catch: the
-// document lives in the MAIN-camera frame while the HUD panels are drawn by the
-// overlay's OVERRIDE camera — different coordinate systems whose page coords
-// don't line up. So we split on what the user actually sees: each panel's
-// on-SCREEN center-x vs the document's on-SCREEN center-x.
-function clusterOf(main: Editor, seedIds: Set<string>): TLShape[] {
-  const fleet = main.getCurrentPageShapes().filter(s => FLEET_SHAPE_TYPES.has(s.type as string))
+// My fleet shapes that share a margin with the seed shapes. Source the set from
+// the OVERLAY editor, not the main store: the overlay holds only my current
+// (identity, device) shapes, so other devices' sets and junk-identity orphans —
+// which live in the shared room but are NOT in the HUD — can't pollute the
+// cluster (the bug where foreign shapes with no HUD element defaulted to "left").
+// The split itself is on what the user sees: each panel's on-SCREEN center-x vs
+// the document's on-SCREEN center-x (page coords don't line up — the doc is in
+// the main-camera frame, the panels in the overlay's override-camera frame).
+function clusterOf(overlay: Editor, seedIds: Set<string>): TLShape[] {
+  const fleet = overlay.getCurrentPageShapes().filter(s => FLEET_SHAPE_TYPES.has(s.type as string))
   if (fleet.length === 0) return []
   // Document's screen center-x, read from the doc page's actual rendered DOM rect
   // on the main canvas — the SAME getBoundingClientRect frame as the panels below
@@ -168,7 +171,7 @@ export function useFleetGestures(opts: {
           // Fingers span >1 shape → move OR pinch-resize that margin's cluster.
           e.preventDefault(); e.stopPropagation()
           main.markHistoryStoppingPoint()
-          const shapes = clusterOf(main, ids).map(s => {
+          const shapes = clusterOf(overlay, ids).map(s => {
             const m = main.getShape(s.id as any) as any
             const b = main.getShapePageBounds(s.id)
             return { id: s.id, type: s.type as string, x0: m.x, y0: m.y, w0: b ? b.width : 0, h0: b ? b.height : 0 }
