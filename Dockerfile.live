@@ -1,0 +1,64 @@
+# Dockerfile.live — the LIVE tlda server (builds LaTeX), for the `tlda-live` Fly app.
+# Differs from the published/snapshot image by adding a TeXLive layer so latexmk
+# and dvisvgm actually run. Heavy TeXLive layer is first so it stays cached across
+# frequent app-code redeploys.
+FROM node:20-slim
+WORKDIR /app
+
+# --- TeXLive layer (heavy, ~2-3 GB, cached — changes rarely) ---
+# Generous install for build reliability across the paper package tail seen in the
+# scan (physics, mathtools, tikz, biblatex, algorithm2e, tcolorbox, subcaption,
+# cleveref, fontspec/xetex, ...). Conference styles (icml/neurips) are project-local.
+# NOTE: recommends are ON here (no --no-install-recommends). TeX collections list
+# many real dependencies as *recommends* (lmodern, dvisvgm, font packages, …);
+# stripping them caused build failures (dvisvgm-not-found, then lmodern.sty-not-found).
+# Recommends-on pulls the companions real papers need. Bigger image, but image size
+# doesn't affect runtime cost — build reliability does.
+RUN apt-get update && apt-get install -y \
+      texlive-latex-recommended texlive-latex-extra texlive-science \
+      texlive-fonts-recommended texlive-fonts-extra texlive-bibtex-extra \
+      texlive-pictures texlive-plain-generic texlive-xetex \
+      lmodern dvisvgm biber latexmk ghostscript git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+# Fail the build early if any build-pipeline binary is missing or too old.
+# NOTE: the SVG pipeline uses `dvisvgm --font-format=woff2` — verify this dvisvgm
+# supports woff2 on first real build (Debian bookworm texlive should).
+RUN latexmk --version && dvisvgm --version && biber --version && gs --version
+
+# Build tools for native npm modules (better-sqlite3 compiles via node-gyp when no
+# prebuilt binary is fetched). Separate layer so the TeXLive layer above stays cached.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- runtime deps ---
+# Install at /app (not server/) so BOTH server/*.mjs and shared/*.mjs resolve up to
+# one /app/node_modules. shared/ imports @tldraw/* too, and from /app/shared it can't
+# see /app/server/node_modules — installing at the root covers both trees.
+COPY server/package.json ./package.json
+COPY server/package-lock.json* ./
+RUN npm install --production
+
+# --- server code ---
+COPY server/lib/ ./server/lib/
+COPY server/routes/ ./server/routes/
+COPY server/unified-server.mjs ./server/
+COPY shared/ ./shared/
+# Build pipeline shells out to /app/scripts/*.mjs (extract-synctex-lookup,
+# compute-proof-pairing, patch-svg-images, …). Without these the synctex lookup
+# never generates → highlights don't resolve to source lines.
+COPY scripts/ ./scripts/
+
+# NOTE: we deliberately do NOT build or serve the tldraw SPA here. Per the tldraw
+# license, the tldraw JS must run from the GitHub Pages origin — the SPA is served
+# from GitHub Pages and points at this server (TLDA_SERVER / TLDA_SYNC_SERVER) for
+# API, Yjs sync, doc assets, and builds. This Fly server is headless: content + data
+# only, no SPA. (express.static for the SPA simply 404s when server/public is absent;
+# all /api and /ws routes work.)
+
+# --- entrypoint: wire mutable data (projects, fleet.db, yjs) to the volume ---
+COPY scripts/fly-entrypoint-live.sh ./
+RUN chmod +x fly-entrypoint-live.sh
+WORKDIR /app/server
+EXPOSE 5176
+CMD ["/app/fly-entrypoint-live.sh"]

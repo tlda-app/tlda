@@ -4745,7 +4745,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                   />
                 </div>
               ) : (
-                <div className={item?._divider ? 'queue-divider' : undefined}>
+                <div className={'chat-row-wrap' + (item?._divider ? ' queue-divider' : '')}>
                   <ChatMessageRow html={item.html} postProcess={postProcess} itemKey={item.key} expandedRowsRef={expandedRowsRef} />
                 </div>
               )

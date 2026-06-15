@@ -12,6 +12,17 @@
 
 import { createShapeId, type Editor } from 'tldraw'
 import { canvasToPdf } from './synctexAnchor'
+
+// Server base for API calls. Hosted (GitHub Pages → Fly): the SPA origin is a
+// static Pages site with no /api, so derive from VITE_SYNC_SERVER (where doc-sync
+// + assets already point). Without this, highlight resolution (/synctex-path) and
+// outline fetches hit the dead Pages origin and silently fail (highlights show
+// unresolved). Local/embedded falls back to __tlda_server or same-origin.
+function serverBase(): string {
+  const ws = (import.meta as any).env?.VITE_SYNC_SERVER as string | undefined
+  if (ws) return ws.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/+$/, '')
+  return (window as any).__tlda_server || window.location.origin
+}
 import { openInEditor } from './texsync'
 import { dropPillOnTarget } from './shapes/FleetPillShape'
 import { dragCoordinator } from './shapes/dragCoordinator'
@@ -398,7 +409,7 @@ async function handleOutlineSelection(
   const file = ordered.find(l => l.file)?.file
   log.info('outline-hl', 'span computed', { file, startLine, startCol, endLine, endCol, withCols: withCols.length })
 
-  const serverUrl = (window as any).__tlda_server || window.location.origin
+  const serverUrl = serverBase()
   const qs = new URLSearchParams({
     startLine: String(startLine), startCol: String(startCol),
     endLine: String(endLine), endCol: String(endCol),
@@ -648,7 +659,7 @@ export async function findSourceLinesFromBounds(
   const sampled = pathPoints.length <= 20 ? pathPoints
     : pathPoints.filter((_, i) => i % Math.ceil(pathPoints.length / 20) === 0)
 
-  const serverUrl = (window as any).__tlda_server || window.location.origin
+  const serverUrl = serverBase()
   try {
     const resp = await fetch(`${serverUrl}/api/projects/${docName}/synctex-path`, {
       method: 'POST',

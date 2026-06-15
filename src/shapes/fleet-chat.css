@@ -2501,9 +2501,14 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   color: var(--text-dim, #888);
 }
 
-/* Queue divider — border on the last message before queued messages */
+/* Queue divider. Every chat row reserves a 1px bottom border (transparent), so
+   the divider can never change layout height — only the barrier row colors its
+   border in. Toggling/moving the barrier just darkens a line; it never grows. */
+.chat-row-wrap {
+  border-bottom: 1px solid transparent;
+}
 .queue-divider {
-  border-bottom: 1px solid rgba(128, 128, 128, 0.25);
+  border-bottom-color: rgba(128, 128, 128, 0.25);
 }
 
 /* Escalation badges in thinking indicator */

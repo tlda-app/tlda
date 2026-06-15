@@ -1,0 +1,33 @@
+# fly.live.toml — the LIVE tlda backend (takes over the existing tldraw-sync-skip app).
+# Headless: API + Yjs sync + LaTeX builds + content/data. The tldraw SPA is NOT served
+# here — it runs from GitHub Pages (license-tied) and points at this backend.
+# Deploy with:  fly deploy -c fly.live.toml
+app = "tldraw-sync-skip"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "Dockerfile.live"
+
+[env]
+  PORT = "5176"
+  NODE_ENV = "production"
+  # Auth posture for a co-author-facing live backend — confirm with Skip before deploy.
+  # The published/sync app ran TLDA_NO_AUTH=1 (fully open). For live + co-authors you
+  # likely want token auth instead; left unset here pending that decision.
+
+[http_service]
+  internal_port = 5176
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[vm]]
+  size = "performance-2x"
+  memory = "4096"
+
+# 10 GB volume for mutable content/data: projects (~3.7G), fleet.db (~568M), yjs data.
+# If reusing the existing sync_data volume, extend it to 10G:  fly volumes extend <id> -s 10
+[mounts]
+  source = "sync_data"
+  destination = "/app/server/persist"

@@ -24,14 +24,10 @@
   opacity: 0.5;
 }
 
-/* Dimmer when fleet shapes are hidden */
-.fleet-icon-pill--hidden .fleet-icon-pill-badge {
-  opacity: 0.05;
-}
-
-.fleet-icon-pill--hidden:hover .fleet-icon-pill-badge {
-  opacity: 0.35;
-}
+/* Minimized state is signalled by the hollow (outline) basestar, not by
+   dimming — brightness stays equal to the open state so the form difference
+   is what reads. (Opacity has no reference point; a fainter icon just looks
+   faint, not "off".) */
 
 /* Layout preset fan — appears to the right of the icon during drag */
 .fleet-icon-pill-fan {
