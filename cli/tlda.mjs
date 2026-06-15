@@ -569,7 +569,15 @@ async function cmdLink() {
   if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true })
   const f = join(CONFIG_DIR, 'source-bindings.json')
   let bindings = {}
-  try { if (existsSync(f)) bindings = JSON.parse(readFileSync(f, 'utf8')) || {} } catch {}
+  if (existsSync(f)) {
+    try {
+      bindings = JSON.parse(readFileSync(f, 'utf8')) || {}
+    } catch (e) {
+      // Surface, don't swallow: a corrupt file would otherwise be silently
+      // replaced, dropping other projects' bindings.
+      console.error(red(`Warning: ${f} is unreadable (${e.message}); recreating with just this binding.`))
+    }
+  }
   bindings[name] = dir
   writeFileSync(f, JSON.stringify(bindings, null, 2))
   console.log(green(`Linked "${name}" → ${dir}`))
