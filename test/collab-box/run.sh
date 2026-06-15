@@ -13,6 +13,12 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+# The container daemon reaches the Mac host's tlda server at host.docker.internal:5176.
+# The host-side CLI MUST target that SAME physical server (localhost:5176) — NOT the
+# default config server, which is Fly. If they differ, the project is created on one
+# server while the collaborator daemon connects to another, so it never shows up in the
+# daemon's welcome list and the binding can't be exercised.
+export TLDA_SERVER="${COLLAB_HOST_SERVER:-https://localhost:5176}"
 HOST_CLI="node $REPO_ROOT/cli/tlda.mjs"
 SERVER="${COLLAB_TEST_SERVER:-https://host.docker.internal:5176}"   # container → Mac host
 PROJECT="linktest-$(date +%s)"                                       # throwaway, unique
