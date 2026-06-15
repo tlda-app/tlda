@@ -71,7 +71,7 @@ const execFileP = promisify(execFile)
 const VERSION = '0.1.1'
 import { createLogger } from '../shared/logger.mjs'
 import { makeActivityThrottle } from './lib/activity-throttle.mjs'
-import { maybeKickGoose, GOOSE_WORKING_RE } from './lib/goose-kick.mjs'
+import { maybeKickGoose, resolveGooseStatus } from './lib/goose-kick.mjs'
 import { gooseActivityTick } from './lib/goose-activity.mjs'
 const log = createLogger('daemon')
 // CONFIG_DIR holds config.json, cursors, PID and log files. Defaults to
@@ -1950,6 +1950,7 @@ const APPROVAL_PROMPT_RE = /[\u25CB\u25CF]\s*Allow once|Allow this .{0,30}\?\s*\
 const APPROVAL_PROMPT_SCAN_LINES = 15
 const _prevThinking = new Map()   // agent_id → boolean
 const _prevCompacting = new Map() // agent_id → boolean
+const _prevGooseLive = new Map()  // agent_id → { fingerprint, since } (goose freeze tracking)
 const _prevApprovalFP = new Map() // agent_id → string (fingerprint)
 // agent_id → session_id we last reconciled into the registry, so we don't
 // re-emit agent-session-observed every 30s once the heal has landed.
@@ -2189,10 +2190,22 @@ async function checkAgentLiveness() {
       // regexes don't apply. Derive thinking from goose's own working marker and
       // run the turn-end auto-kick, then skip the claude-specific detection.
       if (agent._isGoose) {
-        const gWorking = GOOSE_WORKING_RE.test(paneBottom)
-        sendMsg({ type: 'agent-thinking', agentId: agent.id, thinking: gWorking })
-        if (gWorking !== _prevThinking.get(agent.id)) _prevThinking.set(agent.id, gWorking)
-        await maybeKickGoose(agent, paneBottom, {
+        // One resolved status per sweep feeds BOTH the emit and the kick — no
+        // second code path. A frozen spinner resolves to 'stuck' (not 'working'),
+        // so thinking=false (turn-timeout fires) AND the kick is un-suppressed.
+        const { status, live } = resolveGooseStatus(paneBottom, _prevGooseLive.get(agent.id), Date.now())
+        if (live) _prevGooseLive.set(agent.id, live)
+        else _prevGooseLive.delete(agent.id)
+
+        const gThinking = status === 'working'
+        sendMsg({ type: 'agent-thinking', agentId: agent.id, thinking: gThinking })
+        if (gThinking !== _prevThinking.get(agent.id)) _prevThinking.set(agent.id, gThinking)
+
+        const gCompacting = status === 'compacting'
+        sendMsg({ type: 'agent-compacting', agentId: agent.id, compacting: gCompacting })
+        if (gCompacting !== _prevCompacting.get(agent.id)) _prevCompacting.set(agent.id, gCompacting)
+
+        await maybeKickGoose(agent, status, {
           sendText: gooseKickSend, execFileP, log, stateMap: _gooseKickState,
         })
         continue
