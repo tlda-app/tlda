@@ -63,7 +63,7 @@ import { resolveFilePath, uploadFileToServer } from '../shared/chat-file-process
 import { processMessageText } from '../shared/message-processing.mjs'
 import {
   loadConfig as _loadSharedConfig, saveConfig as _saveSharedConfig,
-  getServerUrl, getRwToken, DEFAULT_PORT, hasTls,
+  getServerUrl, getFleetServerUrl, getRwToken, DEFAULT_PORT, hasTls,
   CONFIG_DIR as _SHARED_CONFIG_DIR,
 } from '../shared/config.mjs'
 const execFileP = promisify(execFile)
@@ -119,9 +119,13 @@ function deriveMachineId() {
 }
 
 const config = loadConfig()
+// The daemon is the local relay to THE server. There is one server (Fly); the
+// daemon watches local things (files, agents, terminals) and relays everything
+// to it — source-change → server builds in its shadow, activity/terminal/RPC →
+// fleet. Resolve the fleet server (config.fleetServer → Fly), not a local one.
 const SERVER = _usingCustomConfigDir
-  ? (process.env.TLDA_SERVER || config.server || `${hasTls ? 'https' : 'http'}://localhost:${DEFAULT_PORT}`)
-  : getServerUrl(config)
+  ? (process.env.TLDA_SERVER || config.fleetServer || config.server || `${hasTls ? 'https' : 'http'}://localhost:${DEFAULT_PORT}`)
+  : getFleetServerUrl(config)
 const TOKEN = _usingCustomConfigDir
   ? (process.env.TLDA_TOKEN || config.tokenRw || config.token || null)
   : getRwToken(config)
