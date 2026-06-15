@@ -340,9 +340,21 @@ async function cmdCreate() {
   const name = getPositional(0)
   if (!name) { console.error('Usage: tlda doc create <name> [--title "Title"] [--dir /path] [--main main.tex] [--format slides|html]'); process.exit(1) }
 
-  const format = getFlag('format') || null
+  let format = getFlag('format') || null
   const dir = resolve(getFlag('dir') || '.')
   const title = getFlag('title') || name
+
+  // Infer the format from --main's extension when --format is omitted. Without
+  // this, `tlda doc create x --main README.md` falls through to the LaTeX/svg
+  // path, which uploads the ENTIRE directory — gigabytes if --dir is a code repo.
+  // Explicit --format always wins; .tex/unknown keep the existing LaTeX default.
+  if (!format) {
+    const mainHint = getFlag('main')
+    const ext = mainHint ? mainHint.toLowerCase().split('.').pop() : null
+    if (ext === 'md') format = 'markdown'
+    else if (ext === 'html' || ext === 'htm') format = 'html'
+    if (format) console.log(dim(`  Inferred format: ${format} (from --main ${mainHint})`))
+  }
 
   // Slides format: push HTML files, no TeX
   if (format === 'slides') {
@@ -474,6 +486,20 @@ async function cmdCreate() {
     const server = getServer()
     console.log(`\nViewer: ${cyan(`${server}/?doc=${name}`)}`)
     return
+  }
+
+  // Guard: this path uploads the WHOLE directory tree. A real paper source dir
+  // never contains node_modules/.git — their presence means --dir points at a
+  // code repo (or --format markdown was forgotten), and the upload would be
+  // gigabytes. Refuse loudly instead of hanging on "Pushing source files...".
+  for (const junk of ['node_modules', '.git']) {
+    if (existsSync(join(dir, junk))) {
+      console.error(red(`Refusing to create an svg/LaTeX project from ${dir}`))
+      console.error(red(`  — it contains ${junk}/, and the LaTeX path uploads the entire directory.`))
+      console.error(`  If this is a LaTeX paper, point --dir at just the paper's source folder.`)
+      console.error(`  If you meant a markdown doc, add --format markdown (uploads only --main + its images).`)
+      process.exit(1)
+    }
   }
 
   const mainFile = getFlag('main') || findMainTex(dir)
