@@ -43,7 +43,7 @@ import { cmdLogs } from './lib/unified-logs.mjs'
 // feedback hook etc. don't break, but `--help` only advertises the nouns.
 const DOC_SUBS = new Set([
   'create', 'open', 'push', 'list', 'ls', 'status', 'errors', 'preview',
-  'delete', 'rm', 'share', 'publish', 'scratch', 'book',
+  'delete', 'rm', 'share', 'publish', 'scratch', 'book', 'link',
   'repo-doctor', 'init-shadow',
 ])
 const CONFIG_SUBS = new Set(['setup', 'mcp-setup', 'auth'])  // config subs that map to existing handlers
@@ -546,6 +546,37 @@ async function cmdPush() {
       }
     }
   }
+}
+
+// `tlda doc link <name> --dir <localdir>` — bind a project name to THIS machine's
+// local source clone. Per-machine fact ("where my copy lives"), stored on the
+// daemon side, so a collaborator joining someone else's server watches/pushes
+// their own clone instead of the server's (host's) sourceDir.
+async function cmdLink() {
+  const name = getPositional(0)
+  const dir = resolve(getFlag('dir') || '.')
+  if (!name) {
+    console.error('Usage: tlda doc link <name> --dir /path/to/local/clone')
+    process.exit(1)
+  }
+  if (!existsSync(dir)) { console.error(red(`Directory not found: ${dir}`)); process.exit(1) }
+  if (!existsSync(join(dir, '.git'))) {
+    console.error(red(`${dir} is not a git repository.`))
+    console.error(dim('  The local copy must be a git clone that shares history with the'))
+    console.error(dim('  project\'s shadow repo — otherwise edits won\'t reconcile (git).'))
+    process.exit(1)
+  }
+  if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true })
+  const f = join(CONFIG_DIR, 'source-bindings.json')
+  let bindings = {}
+  try { if (existsSync(f)) bindings = JSON.parse(readFileSync(f, 'utf8')) || {} } catch {}
+  bindings[name] = dir
+  writeFileSync(f, JSON.stringify(bindings, null, 2))
+  console.log(green(`Linked "${name}" → ${dir}`))
+  console.log(dim('  This machine\'s daemon will watch/push this dir for the project.'))
+  console.log(dim('  Restart the daemon to pick it up:  tlda daemon start'))
+  // TODO (follow-up): verify the local repo shares git history with the project's
+  // shadow (merge-base) before binding — needs the shadow ref from the server.
 }
 
 // Fleet-daemon control: `tlda daemon start | stop | status | log | run`
@@ -2343,6 +2374,7 @@ async function main() {
       case 'book':   await ensureServer(); await cmdBook(); break
       case 'create': await ensureServer(); await cmdCreate(); break
       case 'push':   await ensureServer(); await cmdPush(); break
+      case 'link':   await cmdLink(); break
       case 'daemon': await ensureServer(); await cmdWatch(); break
       case 'open':   await ensureServer(); await cmdOpen(); break
       case 'share':  await cmdShare(); break

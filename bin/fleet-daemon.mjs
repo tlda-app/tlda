@@ -81,6 +81,21 @@ const log = createLogger('daemon')
 const CONFIG_DIR = process.env.TLDA_DAEMON_CONFIG_DIR || _SHARED_CONFIG_DIR
 const CURSORS_FILE = path.join(CONFIG_DIR, 'daemon-cursors.json')
 const PID_FILE = path.join(CONFIG_DIR, 'fleet-daemon.pid')
+const SOURCE_BINDINGS_FILE = path.join(CONFIG_DIR, 'source-bindings.json')
+
+// Per-machine source bindings: { projectName -> absolute local source dir }.
+// This is the per-machine fact "where MY copy of project X lives" — it belongs
+// on the daemon, not on the server (whose single project.sourceDir is the host's
+// path). With a binding present, this daemon watches/pushes its OWN local clone
+// for a shared project name; with none, it falls back to the server's sourceDir,
+// so the single-host case is unchanged. Read fresh each sync so `tlda doc link`
+// takes effect without a daemon restart.
+function loadSourceBindings() {
+  try {
+    if (!fs.existsSync(SOURCE_BINDINGS_FILE)) return {}
+    return JSON.parse(fs.readFileSync(SOURCE_BINDINGS_FILE, 'utf8')) || {}
+  } catch (e) { log.warn(`corrupt source-bindings file, ignoring: ${e.message}`); return {} }
+}
 const LOG_FILE = path.join(CONFIG_DIR, 'fleet-daemon.log')
 const DEAD_LETTER_FILE = path.join(CONFIG_DIR, 'daemon-dead-letters.jsonl')
 const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects')
@@ -1185,16 +1200,20 @@ let _activeViewerSet = new Set()
 function syncSourceWatchers(projectList, activeViewers) {
   if (activeViewers) _activeViewerSet = new Set(activeViewers)
   const activeNames = new Set()
+  const bindings = loadSourceBindings()
   for (const p of projectList) {
-    if (!p.sourceDir) continue
-    if (!fs.existsSync(p.sourceDir)) continue
+    // Per-machine binding wins over the server-provided sourceDir (the host's
+    // path). No binding → fall back to the server's sourceDir (single-host case).
+    const sourceDir = bindings[p.name] || p.sourceDir
+    if (!sourceDir) continue
+    if (!fs.existsSync(sourceDir)) continue
     activeNames.add(p.name)
 
     const isMarkdown = isMarkdownDoc(p.format, p.mainFile)
     const hasFlsWatchList = p.watchFiles?.length > 0
     const watchSet = new Set(
       hasFlsWatchList ? p.watchFiles
-        : isMarkdown && p.mainFile ? scanMarkdownInputs(p.sourceDir, p.mainFile)
+        : isMarkdown && p.mainFile ? scanMarkdownInputs(sourceDir, p.mainFile)
         : p.mainFile ? [p.mainFile] : []
     )
 
@@ -1206,7 +1225,7 @@ function syncSourceWatchers(projectList, activeViewers) {
       continue
     }
 
-    const state = { sourceDir: p.sourceDir, debounce: null, pending: new Set(), watchSet, onFileChange: null, projectName: p.name, mainFile: p.mainFile, extraInputCommands: p.extraInputCommands || [], watchSeen: new Map(), isMarkdown }
+    const state = { sourceDir, debounce: null, pending: new Set(), watchSet, onFileChange: null, projectName: p.name, mainFile: p.mainFile, extraInputCommands: p.extraInputCommands || [], watchSeen: new Map(), isMarkdown }
 
     const onFileChange = (filename, fromPoll) => {
       if (!filename) return
@@ -1253,8 +1272,8 @@ function syncSourceWatchers(projectList, activeViewers) {
     try {
       for (const rel of watchSet) startPolling(state, rel)
       sourceWatchers.set(p.name, state)
-      log.info(`watching source ${p.name}: ${p.sourceDir} (${watchSet.size} files${hasFlsWatchList ? '' : ', bootstrap'})`)
-      pushWatchedFiles(p.name, p.sourceDir, watchSet, hasFlsWatchList ? null : p.mainFile, p.extraInputCommands, isMarkdown)
+      log.info(`watching source ${p.name}: ${sourceDir}${bindings[p.name] ? ' (local binding)' : ''} (${watchSet.size} files${hasFlsWatchList ? '' : ', bootstrap'})`)
+      pushWatchedFiles(p.name, sourceDir, watchSet, hasFlsWatchList ? null : p.mainFile, p.extraInputCommands, isMarkdown)
     } catch (e) {
       log.error(`source watcher failed for ${p.name}: ${e.message}`)
     }
