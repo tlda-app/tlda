@@ -27,7 +27,7 @@ Open the URL they gave you and pick a name — you're on their canvas. Nothing t
 To put *your own* local agents to work on the paper there, run this in your paper's directory:
 
 ```bash
-npm install -g github:qtm285/tlda          # if you don't already have the CLI
+brew tap qtm285/tlda && brew install tlda   # if you don't already have the CLI
 TLDA_SERVER=<their-url> tlda config mcp-setup
 ```
 
