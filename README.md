@@ -18,6 +18,23 @@ The rest of this walks through it: getting your paper in, what you do to the doc
 
 ## Getting started
 
+Two ways you end up in tlda: someone is **hosting it for you**, or you're **running your own**.
+
+### Joining someone's tlda
+
+Open the URL they gave you and pick a name — you're on their canvas. Nothing to install.
+
+To put *your own* local agents to work on the paper there, run this in your paper's directory:
+
+```bash
+npm install -g github:qtm285/tlda          # if you don't already have the CLI
+TLDA_SERVER=<their-url> tlda config mcp-setup
+```
+
+Claude Code in that directory now has tlda's tools, pointed at their server.
+
+### Running your own
+
 **Install** — macOS:
 
 ```bash
@@ -28,13 +45,7 @@ brew install --cask mactex-no-gui   # LaTeX — skip if you already have it
 
 Linux / manual: install [Node.js](https://nodejs.org/) (v18+) and a TeX distribution with `latexmk` and `dvisvgm` ([TeX Live](https://tug.org/texlive/)), then `npm install -g github:qtm285/tlda`.
 
-Generate your tokens once — this finishes setup:
-
-```bash
-tlda config auth init
-```
-
-From then on, to work:
+Then:
 
 ```bash
 tlda server start                                        # run when it's down and you want to edit
@@ -48,6 +59,8 @@ tlda doc open my-paper                                   # opens it on the canva
 Running `tlda doc open` once opens the doc on the canvas and stores your authorization — from then on you just go back to the page in your browser.
 
 Run `tlda doctor` to check things and `tlda help` (or `tlda doc`, `tlda agent`, …) for commands.
+
+That gets you working on your own machine. To reach it from other devices — your iPad, your collaborators, or hosting it for other people — see [Access & security](#access--security).
 
 > Server on one machine, agents on another? Run `tlda daemon start` on the agents' machine and point it at the server with `TLDA_SERVER`. On a single machine you never need this.
 
@@ -135,13 +148,13 @@ You can scroll a chat panel up indefinitely, or search, to see anything that's h
 
 ### Getting around
 
-A few small controls sit in the corners of your canvas. The **Shapes** button, bottom-left, toggles the HUD on and off when you click it, and opens a layout picker when you drag it right. Bottom-right are a **highlighter** selector, a **voice-note** button (drops a sticky note and starts dictating into it), and a **dictation toggle** that turns voice input on and off. A **table of contents** sits largely hidden in the top-right — hover there to reveal it and jump around the document.
+A few small controls sit in the corners of your canvas. The **bottom-right** holds a small stack — a **highlighter** selector, a **voice-note** button (drops a sticky note and starts dictating into it), a **mic toggle** that turns voice input on and off, and the **Shapes** button, which toggles the HUD on and off when you click it and opens a layout picker when you drag it. A **table of contents** sits largely hidden in the top-right — hover there to reveal it and jump around the document.
 
-<img src="docs/images/tlda-corners.png" alt="The corner controls — version stack, table of contents, Shapes/layout, and highlighter" width="100%">
+<img src="docs/images/tlda-corners.png" alt="The corner controls — the version stack (top-left), the table of contents (top-right), and the bottom-right stack: highlighter, voice-note, mic toggle, and Shapes/layout" width="100%">
 
 ### Layout
 
-Lay out the HUD however you like. Click a shape's little **layout button** to get drag handles; from there you can **brush** — drag a box to select other shapes too — then move or resize the whole group at once. The Shapes button (bottom-left) opens a layout picker with presets to start from.
+Lay out the HUD however you like. Click a shape's little **layout button** to get drag handles; from there you can **brush** — drag a box to select other shapes too — then move or resize the whole group at once. The Shapes button (in the bottom-right stack) opens a layout picker with presets to start from.
 
 <img src="docs/images/tlda-layout-location.png" alt="The layout button — the control panel on a shape's edge" width="40%"> <img src="docs/images/tlda-layout-brush.png" alt="Brushing to select multiple shapes into a group, with drag handles" width="58%">
 
@@ -258,7 +271,7 @@ A bot connects through `@tlda/client` (auth, doc assets, staging annotations) an
 
 ---
 
-## Sharing
+## Sharing & hosting
 
 ```bash
 tlda doc share my-paper
@@ -266,9 +279,47 @@ tlda doc share my-paper
 
 prints a shareable URL with your read-only token embedded — anyone with it can view and annotate. It detects [Tailscale](https://tailscale.com/) and [Tailscale Funnel](https://tailscale.com/kb/1223/funnel) automatically, so you get a network-reachable URL instead of `localhost` when one's available.
 
+### Hosting it for others
+
+You can run tlda on a box other people reach — an always-on machine at home, a VPS, a container host — so they just open a URL and join (the "Joining someone's tlda" path above). It's the same as running your own, with two additions: put a **boundary** around it (next section), and point clients at the server's URL rather than `localhost` by setting `TLDA_SERVER` (and `TLDA_FLEET_SERVER`) to that URL.
+
+<details>
+<summary>Worked example: a container host behind Tailscale</summary>
+
+This is roughly how the project's own deployment runs — a container that joins a private [Tailscale](https://tailscale.com/) network and serves only over it:
+
+- Run the server in a container (Node + a TeX distribution for builds; the SPA is served from the same process, so it's one origin — no separate static host).
+- Inside the container, bring up `tailscaled` with an auth key (supplied as a secret), then `tailscale serve` the app over the tailnet's HTTPS. Don't expose a public port.
+- Set `TLDA_FLEET_SERVER` to the container's tailnet name so clients resolve chat/agents to it, and `TLDA_NO_AUTH=1` (the tailnet is the boundary — see below).
+- Mount a volume for the mutable data (`projects/`, `data/`, the fleet database) so it survives redeploys.
+
+Anyone you add to the tailnet opens the `.ts.net` URL and they're in; nobody else can reach it at all.
+
+</details>
+
+### Access & security
+
+tlda runs **real terminals** on the server — that's remote code execution by design. So the server has to sit behind a boundary. Pick one:
+
+- **Network-gate it (recommended).** Put it on a private network — [Tailscale](https://tailscale.com/), a VPN, or a reverse proxy that authenticates — and run the app open inside it with `TLDA_NO_AUTH=1`. There are no tokens to manage; the network *is* the boundary. This is how the project's own deployment runs — it leans on battle-tested network crypto instead of an auth layer we'd have to get right ourselves.
+- **Token-gate it.** `tlda config auth init` generates a read token and an RW token; the server then requires a token on every request, and `tlda doc share` hands out URLs with the read token embedded. Use this if you want to expose a port directly without a private network.
+
+On `localhost` you need neither — your own machine is the boundary, and with no tokens configured the app simply runs open locally. The **one thing not to do** is expose the standard port to the internet with no tokens *and* no network boundary: that's an open terminal for anyone who finds it.
+
 ## Configuration
 
-Everything persistent lives in `~/.config/tlda/` — your `config.json` (server URL, tokens, default model for new agents), logs, and linters. Set values with `tlda config set server …` / `tlda config set spawn-mode …`; `TLDA_SERVER` in the environment overrides `config.json`.
+Everything persistent lives in `~/.config/tlda/` — your `config.json` (server URL, tokens, default model for new agents), logs, and linters. Set values with `tlda config set server …` / `tlda config set spawn-mode …`.
+
+**Environment variables** override the config file and are how you configure a hosted server:
+
+| Variable | What it does |
+|----------|--------------|
+| `TLDA_SERVER` | The server clients and the daemon talk to (doc assets, builds). Overrides `config.json`. |
+| `TLDA_FLEET_SERVER` | Where clients resolve fleet chat / agents / activity — set this to your server's URL when hosting. |
+| `TLDA_NO_AUTH=1` | Run the app open (no per-request token). Use only when the server is behind a network boundary. |
+| `TLDA_TOKEN_READ` / `TLDA_TOKEN_RW` | The read / read-write tokens, when token-gating instead of using `config.json`. |
+| `DEEPGRAM_API_KEY` | Enables server-side voice transcription (the [Deepgram](https://deepgram.com/) bridge) for everyone on the server. |
+| `PORT` | The port to serve on (default `5176`). A non-default port also disables auth, for dev/worktree servers. |
 
 **Skill gating.** Which actions require an agent to read a skill first is itself configuration: `~/.claude/qualifications.json` maps tools and file types to required skills — editing a `.tex` file asks for the writing skills, proposing an edit or sending a report asks for the matching ones. Claude agents are held to it by their harness; sandboxed agents the same way, at the tlda-tool boundary. Point `TLDA_QUALIFICATIONS_FILE` elsewhere to use a different map.
 
