@@ -3069,7 +3069,7 @@ async function handleVersionCommitted(msg) {
     }
   } catch (e) {
     log.warn(`sync failed for ${projectName}: ${e.message}`)
-    sendMsg({ type: 'daemon-warning', project: projectName, message: `git sync failed: ${e.message.split('\n')[0]}` })
+    sendMsg({ type: 'daemon-warning', severity: 'critical', project: projectName, message: `git sync failed: ${e.message.split('\n')[0]}` })
   }
 }
 

@@ -4485,24 +4485,50 @@ async function handleDaemonWsMessage(ws, msg) {
   }
 
   if (type === 'daemon-warning') {
-    const { project, message } = msg
+    const { project, message, severity } = msg
     const baseText = project ? `⚠️ daemon sync error on **${project}**: ${message}` : `⚠️ daemon warning: ${message}`
-    const key = project || ''
     const now = Date.now()
-    const existing = _daemonWarnDedup.get(key)
-    if (existing && (now - existing.lastSeen) < DAEMON_WARN_DEDUP_MS) {
-      existing.count++
-      existing.lastSeen = now
-      const updatedText = `${existing.baseText} (×${existing.count})`
-      fleetStore?.updateEventText(existing.eventId, updatedText)
-      broadcastEvent('event-update', { id: existing.eventId, text: updatedText })
-    } else {
-      const metadataJson = JSON.stringify({ type: 'daemon_warning', docName: project })
-      const event = fleetStore?.share?.({ type: 'chat', from: 'fleet:tlda', to: SERVER_OWNER_ID, text: baseText, metadata: metadataJson })
-      if (event) {
-        fleetStore?.addUnread?.(event.id, SERVER_OWNER_ID)
-        broadcastEvent('fleet-event', { type: 'chat', from: 'fleet:tlda', to: SERVER_OWNER_ID, id: event.id, text: baseText, event_id: event.id })
-        _daemonWarnDedup.set(key, { eventId: event.id, count: 1, lastSeen: now, baseText })
+    const metadata = { type: 'daemon_warning', docName: project, severity: severity || 'warning' }
+
+    // Recipients: the server owner ALWAYS, plus any non-human agent currently
+    // editing this project (cwd under its sourceDir). A sync/mirror failure has
+    // to reach the affected agent too, not just Skip — otherwise it's silent
+    // for the one who's about to lose work.
+    const recipients = new Set([SERVER_OWNER_ID])
+    if (project && fleetStore) {
+      try {
+        const sd = readProject(project)?.sourceDir
+        if (sd) {
+          // getAliveAgents() is ordered last_seen DESC, so the first cwd match is
+          // the most-recently-active agent in that working copy = the one most
+          // likely editing it. Alert that one, not every alive agent sharing the
+          // cwd (a busy project can have a dozen, and flooding them all is its
+          // own kind of silent — the signal drowns).
+          for (const a of fleetStore.getAliveAgents()) {
+            if (a.human || !a.cwd) continue
+            if (a.cwd === sd || a.cwd.startsWith(sd + '/')) { recipients.add(a.id); break }
+          }
+        }
+      } catch {}
+    }
+
+    // Per-(project, recipient) dedup so the ×N counter is correct for each.
+    for (const to of recipients) {
+      const key = `${project || ''}|${to}`
+      const existing = _daemonWarnDedup.get(key)
+      if (existing && (now - existing.lastSeen) < DAEMON_WARN_DEDUP_MS) {
+        existing.count++
+        existing.lastSeen = now
+        const updatedText = `${existing.baseText} (×${existing.count})`
+        fleetStore?.updateEventText(existing.eventId, updatedText)
+        broadcastEvent('event-update', { id: existing.eventId, text: updatedText })
+      } else {
+        const event = fleetStore?.share?.({ type: 'chat', from: 'fleet:tlda', to, text: baseText, metadata })
+        if (event) {
+          fleetStore?.addUnread?.(event.id, to)
+          broadcastEvent('fleet-event', { type: 'chat', from: 'fleet:tlda', to, id: event.id, text: baseText, event_id: event.id })
+          _daemonWarnDedup.set(key, { eventId: event.id, count: 1, lastSeen: now, baseText })
+        }
       }
     }
     return
