@@ -156,6 +156,16 @@ try {
     mkdirSync(dest, { recursive: true })
     execSync(`rsync -a --delete ${src} ${dest}`, { stdio: 'inherit' })
   }
+  // public/ holds static build assets vite copies into dist (e.g. the Deepgram
+  // AudioWorklet processor). It was previously omitted, so new public/ files
+  // (worklet, etc.) 404'd on Pages. Sync it too, excluding docs/ which has its
+  // own dedicated copy step below.
+  {
+    const src = join(PROJECT_ROOT, 'public') + '/'
+    const dest = join(PUBLISHED_ROOT, 'public') + '/'
+    mkdirSync(dest, { recursive: true })
+    execSync(`rsync -a --delete --exclude=docs ${src} ${dest}`, { stdio: 'inherit' })
+  }
   for (const f of ['package.json', 'vite.config.ts', 'index.html', 'server/unified-server.mjs',
                     'server/package.json', 'Dockerfile', 'fly.toml', 'scripts/fly-entrypoint.sh',
                     'cli/tlda.mjs']) {
