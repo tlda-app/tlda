@@ -18,9 +18,18 @@ import { labelsForAgent, evalDnf } from '../../shared/fleet-labels.mjs'
 import { makeEventStore } from './event-store.mjs'
 import { log } from '../logger'
 
-// Fleet is embedded in tlda — use same-origin (no separate server)
-const FLEET = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5176'
-const FLEET_WS = typeof window !== 'undefined' ? window.location.origin.replace(/^http/, 'ws') : 'ws://localhost:5176'
+// Fleet server base. Local/embedded: same-origin. Hosted (GitHub Pages → Fly):
+// the SPA origin is a static Pages site with no /ws/fleet, so derive the base from
+// VITE_SYNC_SERVER (where the doc-sync + assets already point). Without this the
+// fleet WS connects to the Pages origin, never connects, login never runs, and
+// getHumanId() stays null → the fleet HUD bails.
+const _syncWs = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_SYNC_SERVER) || null
+const FLEET = _syncWs
+  ? _syncWs.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/+$/, '')
+  : (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5176')
+const FLEET_WS = _syncWs
+  ? _syncWs.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:').replace(/\/+$/, '')
+  : (typeof window !== 'undefined' ? window.location.origin.replace(/^http/, 'ws') : 'ws://localhost:5176')
 
 // --- Stores ---
 let _agents = []
