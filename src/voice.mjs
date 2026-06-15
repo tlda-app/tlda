@@ -1039,8 +1039,7 @@ let _deepgramWs = null
 let _deepgramConnected = false
 let _deepgramStream = null      // MediaStream from getUserMedia
 let _deepgramContext = null      // AudioContext
-let _deepgramProcessor = null    // ScriptProcessorNode (bridge to WS)
-let _deepgramSilentGain = null   // zero-gain node so the processor reaches destination silently
+let _deepgramWorklet = null      // AudioWorkletNode — captures mic on the audio thread, posts Int16 PCM
 let _deepgramInterim = ''        // current interim result (replaced on each interim)
 let _dgHasSeenInterim = false   // true after first interim in current session; guards against post-send final bleed
 let _lastAudioChunkTime = 0     // timestamp of last audio chunk sent to bridge (for heartbeat logging)
@@ -1290,50 +1289,34 @@ async function startDeepgramMic() {
   if (_deepgramContext.state === 'suspended') {
     await _deepgramContext.resume()
   }
-  const nativeSr = _deepgramContext.sampleRate
-  const targetSr = 16000
   const source = _deepgramContext.createMediaStreamSource(_deepgramStream)
 
-  _deepgramProcessor = _deepgramContext.createScriptProcessor(4096, 1, 1)
-  _deepgramProcessor.onaudioprocess = (e) => {
-    // Silence the output EVERY frame, before any early return. The node is wired
-    // to the AudioContext destination (required for onaudioprocess to keep
-    // firing), and iOS WebKit does NOT reliably zero a ScriptProcessor's output
-    // buffer — so leaving it unwritten plays recycled garbage through the iPad
-    // speaker. That is the beeping. We only ever READ the input.
-    e.outputBuffer.getChannelData(0).fill(0)
+  // Capture on the audio thread via an AudioWorklet. Unlike ScriptProcessor it
+  // does NOT need to be connected to the destination to run, so there's no
+  // silent-gain hack and nothing can leak recycled garbage to the iPad speaker.
+  // The worklet downsamples to 16k and posts Int16 PCM back here; we relay it to
+  // the bridge. AudioWorklet is also far more robust under iOS audio-session
+  // interruptions than ScriptProcessor (the source of the constant mic restarts).
+  try {
+    await _deepgramContext.audioWorklet.addModule(`${import.meta.env.BASE_URL}deepgram-capture-worklet.js`)
+  } catch (err) {
+    vlog('audioWorklet.addModule failed', { err: err?.message })
+    showHud('mic init failed — tap to retry', '#c87070')
+    fadeHud(5000)
+    stopDeepgramMic()
+    return
+  }
+  // addModule is async — a stop or backend switch may have torn the context
+  // down while we awaited. Bail rather than build a node on a dead context.
+  if (!_deepgramContext || !_deepgramStream) return
+
+  _deepgramWorklet = new AudioWorkletNode(_deepgramContext, 'deepgram-capture')
+  _deepgramWorklet.port.onmessage = (e) => {
     if (!_deepgramWs || !_deepgramConnected || !_recording) return
     _lastAudioChunkTime = Date.now()
-    const float32 = e.inputBuffer.getChannelData(0)
-
-    // Downsample if needed (e.g. 48000 → 16000)
-    let samples = float32
-    if (nativeSr !== targetSr) {
-      const ratio = nativeSr / targetSr
-      const newLen = Math.floor(float32.length / ratio)
-      samples = new Float32Array(newLen)
-      for (let i = 0; i < newLen; i++) {
-        samples[i] = float32[Math.floor(i * ratio)]
-      }
-    }
-
-    // Convert Float32 [-1,1] to Int16
-    const int16 = new Int16Array(samples.length)
-    for (let i = 0; i < samples.length; i++) {
-      const s = Math.max(-1, Math.min(1, samples[i]))
-      int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF
-    }
-    try { _deepgramWs.send(int16.buffer) } catch {}
+    try { _deepgramWs.send(e.data) } catch {}
   }
-
-  source.connect(_deepgramProcessor)
-  // Route the processor to destination through a zero-gain node: it must reach
-  // the destination for onaudioprocess to fire, but the gain of 0 guarantees no
-  // sound leaves it — belt-and-suspenders with the output-buffer zeroing above.
-  _deepgramSilentGain = _deepgramContext.createGain()
-  _deepgramSilentGain.gain.value = 0
-  _deepgramProcessor.connect(_deepgramSilentGain)
-  _deepgramSilentGain.connect(_deepgramContext.destination)
+  source.connect(_deepgramWorklet)
 
   _lastAudioChunkTime = 0
   _audioHeartbeatInterval = setInterval(() => {
@@ -1353,8 +1336,8 @@ async function startDeepgramMic() {
       }).catch(err => vlog('audio heartbeat: resume failed', { err: err.message }))
     }
     // If audio stopped flowing for >2s despite recording, restart the mic pipeline.
-    // onaudioprocess fires even during silence, so stale lastChunkMs means the
-    // AudioContext or ScriptProcessor died without us noticing.
+    // The worklet posts frames even during silence, so a stale lastChunkMs means
+    // the AudioContext or worklet died without us noticing.
     if (ago !== null && ago > 2000) {
       vlog('audio heartbeat: no audio for 2s — restarting mic pipeline')
       showDontSpeak()
@@ -1367,13 +1350,9 @@ async function startDeepgramMic() {
 function stopDeepgramMic() {
   clearInterval(_audioHeartbeatInterval)
   _audioHeartbeatInterval = null
-  if (_deepgramProcessor) {
-    _deepgramProcessor.disconnect()
-    _deepgramProcessor = null
-  }
-  if (_deepgramSilentGain) {
-    try { _deepgramSilentGain.disconnect() } catch {}
-    _deepgramSilentGain = null
+  if (_deepgramWorklet) {
+    try { _deepgramWorklet.port.onmessage = null; _deepgramWorklet.disconnect() } catch {}
+    _deepgramWorklet = null
   }
   if (_deepgramContext) {
     _deepgramContext.close().catch(e => console.warn('[voice] AudioContext close failed:', e.message))
