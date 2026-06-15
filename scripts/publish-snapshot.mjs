@@ -180,9 +180,12 @@ try {
 
     console.log(`[publish] ${doc.name}: ${doc.projectJson.pages} pages (${doc.projectJson.format || 'svg'})`)
     mkdirSync(pubDocsDir, { recursive: true })
-    cpSync(doc.outputDir, pubDocsDir, { recursive: true })
+    // dereference: output dirs contain symlinks (e.g. lookup.json -> main-lookup.json);
+    // a plain recursive copy of a sibling-pointing symlink throws EINVAL ("copy to a
+    // subdirectory of self"). Following symlinks copies the real file content instead.
+    cpSync(doc.outputDir, pubDocsDir, { recursive: true, dereference: true })
     mkdirSync(join(pubProjectDir, 'output'), { recursive: true })
-    cpSync(doc.outputDir, join(pubProjectDir, 'output'), { recursive: true })
+    cpSync(doc.outputDir, join(pubProjectDir, 'output'), { recursive: true, dereference: true })
     // Write project.json without archived/sourceDir (archived hides from manifest; sourceDir is local)
     const pubProject = { ...doc.projectJson }
     delete pubProject.archived

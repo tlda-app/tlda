@@ -73,6 +73,15 @@ const _session = (() => {
   return Math.random().toString(36).slice(2, 10)
 })()
 
+// HTTP base for the log sink. Empty = same-origin (local dev). When the SPA is
+// hosted cross-origin (GitHub Pages → Fly), derive https base from VITE_SYNC_SERVER
+// so logs reach the actual server instead of 404ing on the static Pages origin.
+function logBase(): string {
+  const ws = (import.meta as any).env?.VITE_SYNC_SERVER as string | undefined
+  if (!ws) return ''
+  return ws.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/+$/, '')
+}
+
 function enqueue(entry: LogEntry) {
   if (typeof window === 'undefined') return
   _queue.push(entry)
@@ -87,14 +96,19 @@ function flush() {
   const batch = _queue.splice(0, _queue.length)
   try {
     const body = JSON.stringify(batch)
-    // sendBeacon survives page unload; falls back to fetch when not available
-    // (e.g. typeof navigator undefined in some test runtimes).
-    if (typeof navigator !== 'undefined' && navigator.sendBeacon) {
+    // Hosted (GitHub Pages → Fly): the SPA origin has no /api/log, so derive the
+    // HTTP base from VITE_SYNC_SERVER and POST there. Cross-origin MUST use fetch
+    // (not sendBeacon) so the authToken fetch-patch can inject the Authorization
+    // header — sendBeacon can't set headers. Same-origin (local) keeps sendBeacon
+    // for page-unload survival.
+    const base = logBase()
+    const url = base + '/api/log'
+    if (!base && typeof navigator !== 'undefined' && navigator.sendBeacon) {
       const blob = new Blob([body], { type: 'application/json' })
-      const ok = navigator.sendBeacon('/api/log', blob)
-      if (!ok) void fetch('/api/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true })
+      const ok = navigator.sendBeacon(url, blob)
+      if (!ok) void fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true })
     } else {
-      void fetch('/api/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true })
+      void fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true })
     }
   } catch { /* never let logging crash the app */ }
 }
