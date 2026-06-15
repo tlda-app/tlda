@@ -88,6 +88,14 @@ import { getRwToken, getServerUrl } from '../shared/config.mjs';
 import { tldaFetch as _sharedFetch } from '../shared/http-client.mjs';
 const TLDA_SERVER = getServerUrl();
 const TLDA_WS_SERVER = TLDA_SERVER.replace(/^http/, 'ws');
+// Fleet/event ops (chat, register, my-task, store-agents, fleet-event, roll-call,
+// viewing, terminal-card, suggestions, education) target the GLOBAL event store.
+// Doc/source ops (/api/projects/*) stay on TLDA_SERVER (per-resource, local via
+// the daemon on the owning machine). When TLDA_FLEET_SERVER is unset this is
+// identical to the single-endpoint behavior — set it to the Fly backend to put an
+// agent's fleet presence on the shared store while doc work stays local.
+const TLDA_FLEET_SERVER = process.env.TLDA_FLEET_SERVER || TLDA_SERVER;
+const TLDA_FLEET_WS_SERVER = TLDA_FLEET_SERVER.replace(/^http/, 'ws');
 const _tldaToken = getRwToken();
 
 async function tldaFetch(apiPath, opts = {}) {
@@ -1784,7 +1792,7 @@ export async function handleFleetTool(name, args) {
     if (!reason) return { content: [{ type: 'text', text: 'A reason is required to dismiss a skill. Say why it does not apply — or read the skill instead.' }], isError: true };
     const skills = Array.isArray(args.skills) ? args.skills.filter(Boolean) : null;
     try {
-      const res = await fleetFetch(`${TLDA_SERVER}/api/education/dismiss/${encodeURIComponent(AGENT_ID)}`, {
+      const res = await fleetFetch(`${TLDA_FLEET_SERVER}/api/education/dismiss/${encodeURIComponent(AGENT_ID)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ reason, ...(skills ? { skills } : {}) }),
@@ -2000,7 +2008,7 @@ export async function handleFleetTool(name, args) {
     if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not registered. Call register() first.' }], isError: true };
     const { reason } = args || {};
     try {
-      const res = await fleetFetch(`${TLDA_SERVER}/api/terminal-card`, {
+      const res = await fleetFetch(`${TLDA_FLEET_SERVER}/api/terminal-card`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ from: AGENT_ID, reason: reason || null }),
@@ -2037,7 +2045,7 @@ export async function handleFleetTool(name, args) {
       ts,
     }));
     try {
-      const res = await fleetFetch(`${TLDA_SERVER}/api/suggestions`, {
+      const res = await fleetFetch(`${TLDA_FLEET_SERVER}/api/suggestions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ agentId: AGENT_ID, suggestions: stamped }),
@@ -3583,7 +3591,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     try {
       const userId = args.user
       if (!userId) return { content: [{ type: 'text', text: 'Missing user — pass the fleet ID of the person whose viewport you want (e.g. "fleet:skip").' }], isError: true }
-      const url = `${TLDA_SERVER}/api/fleet/viewing?user=${encodeURIComponent(userId)}`
+      const url = `${TLDA_FLEET_SERVER}/api/fleet/viewing?user=${encodeURIComponent(userId)}`
       const res = await fleetFetch(url)
       const data = await res.json()
       if (data.error) return { content: [{ type: 'text', text: `No viewing context for ${userId}. They may not have scrolled recently.` }] }
@@ -3603,7 +3611,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
   // ---- roll_call ----
   if (name === 'roll_call') {
     try {
-      const res = await fleetFetch(`${TLDA_SERVER}/api/roll-call`);
+      const res = await fleetFetch(`${TLDA_FLEET_SERVER}/api/roll-call`);
       const data = await res.json();
       if (data.error) return { content: [{ type: 'text', text: `Roll call failed: ${data.error}` }], isError: true };
 
@@ -4174,7 +4182,7 @@ function startChannelWS() {
   if (_channelRWS) return;
 
   _channelRWS = new ResilientWS({
-    url: () => `${TLDA_WS_SERVER}/ws/fleet?agent=${encodeURIComponent(AGENT_ID)}`,
+    url: () => `${TLDA_FLEET_WS_SERVER}/ws/fleet?agent=${encodeURIComponent(AGENT_ID)}`,
     label: 'fleet-channel',
     heartbeatTimeoutMs: 45000,
     log: (s) => process.stderr.write(s + '\n'),
