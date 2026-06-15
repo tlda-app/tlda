@@ -97,10 +97,11 @@ export function gooseSessionId(agentId, log = console) {
 // Read the turn state for a goose session from its sqlite:
 //   lastInboundId   — id of the most recent inbound fleet message (the agent
 //                     was asked to do something); 0 = nothing owed.
-//   chatAfterInbound— did the agent emit a tlda__chat tool-call after that
-//                     inbound? (= it reported → done).
-//   lastToolReqId   — id of the most recent assistant tool-call (any tool); used
-//                     to tell a productive continuation from a no-progress stall.
+//   chatAfterInbound— did the agent deliver a tlda__chat tool-call after that
+//                     inbound? This is the ONLY signal that counts as progress
+//                     (= it reported → done). Tool reads (docs, greps) are NOT
+//                     progress: a goose that reads then stalls without chatting is
+//                     still stalled, so we no longer track a generic tool-call id.
 // Returns null on any read error (caller treats as "don't kick").
 export function gooseTurnInfo(sessionId, log = console) {
   const db = gooseDb(log)
@@ -117,20 +118,18 @@ export function gooseTurnInfo(sessionId, log = console) {
       ).get(sessionId, lastInboundId)
       chatAfterInbound = !!chatRow
     }
-    const tr = db.prepare(
-      "SELECT MAX(id) AS id FROM messages WHERE session_id = ? AND role = 'assistant' AND content_json LIKE '%\"toolRequest\"%'"
-    ).get(sessionId)
-    const lastToolReqId = tr && tr.id ? tr.id : 0
-    return { lastInboundId, chatAfterInbound, lastToolReqId }
+    return { lastInboundId, chatAfterInbound }
   } catch (e) {
     log.warn?.(`goose turn-info query failed: ${e.message}`)
     return null
   }
 }
 
-// Fresh per-agent kick state.
+// Fresh per-agent kick state. `kicked` is "have we kicked at least once this
+// turn" — it keeps the first kick free (it can't have failed yet) and only counts
+// subsequent undelivered kicks toward the cap.
 export function newKickState() {
-  return { lastInboundId: 0, deadKicks: 0, lastKickToolReqId: null }
+  return { lastInboundId: 0, deadKicks: 0, kicked: false }
 }
 
 // Instantaneous goose status from a single pane tail — PURE, no history.
@@ -204,12 +203,18 @@ export function resolveGooseStatus(paneTail, prevLive, now, stuckMs = GOOSE_STUC
 //            kick-eligible: 'idle' (done at empty prompt), 'stuck' (frozen
 //            mid-turn), and 'pending' (queued message unsubmitted at the prompt).
 //            'unknown' is never kicked (boot safety).
-//   info   : { lastInboundId, chatAfterInbound, lastToolReqId } | null
+//   info   : { lastInboundId, chatAfterInbound } | null
 //   state  : prior kick state (from newKickState / a previous decision)
 // Returns { kick, state, reason, action } where action is 'nudge' (append the
 // Continue text, for an idle-done agent) or 'enter' (bare Enter to flush a queued
 // input, for a 'stuck' or 'pending' agent — piling Continue text onto an
 // already-queued message is what kept minimax3 wedged).
+//
+// PROGRESS == a delivered chat. A slow goose that reads docs / greps but never
+// chats back is NOT making progress — only `chatAfterInbound` resets the cap, so
+// undelivered work keeps getting re-kicked and eventually caps. (We used to treat
+// any advancing tool-call id as progress, which let a doc-reading-but-silent goose
+// reset the counter every sweep, kick forever, and false-silence a drill turn.)
 export function decideKick(status, info, state) {
   const k = { ...state }
   const kickEligible = (status === 'idle' || status === 'stuck' || status === 'pending')
@@ -227,22 +232,24 @@ export function decideKick(status, info, state) {
   if (info.lastInboundId > k.lastInboundId) {
     k.lastInboundId = info.lastInboundId
     k.deadKicks = 0
-    k.lastKickToolReqId = null
+    k.kicked = false
   }
+  // The ONLY progress/done signal: a chat delivered to the requester after the
+  // inbound. Tool reads don't count.
   if (info.chatAfterInbound) {
     k.deadKicks = 0
+    k.kicked = false
     return { kick: false, state: k, reason: 'delivered', action: null }   // reported → done
   }
-  // Stalled with undelivered work. Did the last kick produce a real tool-call?
-  const progressed = (k.lastKickToolReqId != null && info.lastToolReqId > k.lastKickToolReqId)
-  if (progressed) k.deadKicks = 0
+  // Stalled with undelivered work.
   if (k.deadKicks >= GOOSE_KICK_CAP) {
     return { kick: false, state: k, reason: 'capped', action: null }   // truly stuck — stop nagging
   }
-  // KICK.
-  if (!progressed && k.lastKickToolReqId != null) k.deadKicks += 1
-  k.lastKickToolReqId = info.lastToolReqId
-  return { kick: true, state: k, reason: progressed ? 'kick-after-progress' : 'kick', action }
+  // KICK. The first kick is free; once we've kicked and still no delivery, each
+  // further undelivered kick counts toward the cap.
+  if (k.kicked) k.deadKicks += 1
+  k.kicked = true
+  return { kick: true, state: k, reason: 'kick', action }
 }
 
 // Is a fleet-spawn wake/respawn in flight for this tmux session? fleet-spawn

@@ -101,22 +101,22 @@ check('unknown → unknown, no tracker', resolveGooseStatus(BOOT, null, 0).live 
   check('token-count advance resets freeze clock → working', r.status === 'working')
 }
 
-console.log('decideKick (drives on resolved status):')
+console.log('decideKick (progress == delivered chat):')
 // 1. working pane → never kick, clears a stale no-progress run
 {
-  const r = decideKick('working', { lastInboundId: 5, chatAfterInbound: false, lastToolReqId: 9 }, { lastInboundId: 5, deadKicks: 3, lastKickToolReqId: 9 })
+  const r = decideKick('working', { lastInboundId: 5, chatAfterInbound: false }, { lastInboundId: 5, deadKicks: 3, kicked: true })
   check('working → no kick', r.kick === false && r.reason === 'working')
   check('working → resets deadKicks', r.state.deadKicks === 0)
 }
 // 1b. compacting → never kick, also resets no-progress run
 {
-  const r = decideKick('compacting', { lastInboundId: 5, chatAfterInbound: false, lastToolReqId: 9 }, { lastInboundId: 5, deadKicks: 2, lastKickToolReqId: 9 })
+  const r = decideKick('compacting', { lastInboundId: 5, chatAfterInbound: false }, { lastInboundId: 5, deadKicks: 2, kicked: true })
   check('compacting → no kick', r.kick === false && r.reason === 'compacting')
   check('compacting → resets deadKicks', r.state.deadKicks === 0)
 }
 // 1c. unknown (boot/transition) → never kick, does NOT reset deadKicks
 {
-  const r = decideKick('unknown', { lastInboundId: 5, chatAfterInbound: false, lastToolReqId: 9 }, { lastInboundId: 5, deadKicks: 2, lastKickToolReqId: 9 })
+  const r = decideKick('unknown', { lastInboundId: 5, chatAfterInbound: false }, { lastInboundId: 5, deadKicks: 2, kicked: true })
   check('unknown → no kick', r.kick === false && r.reason === 'unknown')
   check('unknown → leaves deadKicks alone', r.state.deadKicks === 2)
 }
@@ -127,85 +127,111 @@ console.log('decideKick (drives on resolved status):')
 }
 // 3. idle, nothing owed (no inbound) → never kick (boot/no-task case)
 {
-  const r = decideKick('idle', { lastInboundId: 0, chatAfterInbound: false, lastToolReqId: 0 }, newKickState())
+  const r = decideKick('idle', { lastInboundId: 0, chatAfterInbound: false }, newKickState())
   check('idle + nothing owed → no kick', r.kick === false && r.reason === 'nothing-owed')
 }
 // 4. idle, delivered (chat after inbound) → never kick
 {
-  const r = decideKick('idle', { lastInboundId: 10, chatAfterInbound: true, lastToolReqId: 12 }, { lastInboundId: 10, deadKicks: 2, lastKickToolReqId: 11 })
+  const r = decideKick('idle', { lastInboundId: 10, chatAfterInbound: true }, { lastInboundId: 10, deadKicks: 2, kicked: true })
   check('idle + delivered → no kick', r.kick === false && r.reason === 'delivered')
   check('delivered → resets deadKicks', r.state.deadKicks === 0)
+  check('delivered → clears kicked flag', r.state.kicked === false)
 }
-// 5. idle, stalled, first kick → kick with the 'nudge' (Continue text) action
+// 5. idle, stalled, first kick → kick with the 'nudge' (Continue text) action.
+//    The first kick is free (deadKicks stays 0) but marks `kicked`.
 let s = newKickState()
 {
-  const r = decideKick('idle', { lastInboundId: 10, chatAfterInbound: false, lastToolReqId: 12 }, s)
+  const r = decideKick('idle', { lastInboundId: 10, chatAfterInbound: false }, s)
   check('first stall → kick', r.kick === true && r.reason === 'kick')
   check('idle stall → nudge action', r.action === 'nudge')
   check('first kick → deadKicks 0', r.state.deadKicks === 0)
-  check('first kick → records toolReqId', r.state.lastKickToolReqId === 12)
+  check('first kick → marks kicked', r.state.kicked === true)
   s = r.state
 }
-// 6. still stalled, NO progress (toolReqId unchanged) → kick, deadKicks climbs
+// 6. still stalled, no delivery → kick, deadKicks climbs
 {
-  const r = decideKick('idle', { lastInboundId: 10, chatAfterInbound: false, lastToolReqId: 12 }, s)
-  check('no-progress stall → kick', r.kick === true)
-  check('no-progress → deadKicks 1', r.state.deadKicks === 1)
+  const r = decideKick('idle', { lastInboundId: 10, chatAfterInbound: false }, s)
+  check('no-delivery stall → kick', r.kick === true)
+  check('no-delivery → deadKicks 1', r.state.deadKicks === 1)
   s = r.state
 }
-// 7. keep stalling with no progress until the cap, then stop
+// 7. keep stalling with no delivery until the cap, then stop
 {
   for (let i = 0; i < 10 && s.deadKicks < GOOSE_KICK_CAP; i++) {
-    const r = decideKick('idle', { lastInboundId: 10, chatAfterInbound: false, lastToolReqId: 12 }, s)
+    const r = decideKick('idle', { lastInboundId: 10, chatAfterInbound: false }, s)
     s = r.state
   }
   check(`reaches cap (deadKicks=${s.deadKicks})`, s.deadKicks === GOOSE_KICK_CAP)
-  const r = decideKick('idle', { lastInboundId: 10, chatAfterInbound: false, lastToolReqId: 12 }, s)
+  const r = decideKick('idle', { lastInboundId: 10, chatAfterInbound: false }, s)
   check('at cap → no kick (capped)', r.kick === false && r.reason === 'capped')
+  // capping STOPS the kicks (ends the wedge loop) — it does not kill the agent.
+  check('capped → kick false', r.kick === false)
+  check('capped → state preserved (not torn down)', r.state.lastInboundId === 10)
 }
-// 8. progress (toolReqId advanced) resets the cap — long multi-step never cut off
+// 8. THE REFINEMENT: a slow goose making non-chat tool calls (reads/greps) but
+//    never delivering is NOT progress. Tool activity isn't even represented in
+//    `info` anymore — only `chatAfterInbound` matters — so the no-delivery run
+//    climbs straight to the cap and re-kicks the whole way. (Before the fix, an
+//    advancing tool-call id reset deadKicks every sweep → kick forever, never cap,
+//    false-silencing the drill turn.)
 {
-  let s2 = { lastInboundId: 10, deadKicks: GOOSE_KICK_CAP - 1, lastKickToolReqId: 12 }
-  const r = decideKick('idle', { lastInboundId: 10, chatAfterInbound: false, lastToolReqId: 20 }, s2)
-  check('progress → kick (after-progress)', r.kick === true && r.reason === 'kick-after-progress')
-  check('progress → deadKicks reset to 0', r.state.deadKicks === 0)
-  check('progress → toolReqId advanced', r.state.lastKickToolReqId === 20)
+  let s8 = newKickState()
+  let kicks = 0
+  let capped = false
+  for (let i = 0; i < 12; i++) {
+    // simulate the goose doing tool work each sweep but never chatting back
+    const r = decideKick('idle', { lastInboundId: 10, chatAfterInbound: false }, s8)
+    s8 = r.state
+    if (r.kick) kicks += 1
+    if (r.reason === 'capped') { capped = true; break }
+  }
+  check('doc-reader-never-delivers → still re-kicked', kicks >= 1)
+  check('doc-reader-never-delivers → eventually caps', capped === true)
+  check('doc-reader → cap budget exactly GOOSE_KICK_CAP+1 kicks', kicks === GOOSE_KICK_CAP + 1)
+}
+// 8b. ...and the moment that same goose finally delivers a chat, the cap resets.
+{
+  let s8b = { lastInboundId: 10, deadKicks: GOOSE_KICK_CAP - 1, kicked: true }
+  const r = decideKick('idle', { lastInboundId: 10, chatAfterInbound: true }, s8b)
+  check('delivery after stall → no kick (done)', r.kick === false && r.reason === 'delivered')
+  check('delivery after stall → deadKicks reset', r.state.deadKicks === 0)
 }
 // 9. a fresh inbound resets the whole kick state
 {
-  let s3 = { lastInboundId: 10, deadKicks: GOOSE_KICK_CAP, lastKickToolReqId: 12 }
-  const r = decideKick('idle', { lastInboundId: 30, chatAfterInbound: false, lastToolReqId: 31 }, s3)
+  let s3 = { lastInboundId: 10, deadKicks: GOOSE_KICK_CAP, kicked: true }
+  const r = decideKick('idle', { lastInboundId: 30, chatAfterInbound: false }, s3)
   check('new inbound → kick again', r.kick === true)
   check('new inbound → deadKicks reset', r.state.deadKicks === 0)
+  check('new inbound → kicked reset then re-marked', r.state.kicked === true)
   check('new inbound → lastInboundId advanced', r.state.lastInboundId === 30)
 }
 // 10. STUCK (frozen) with undelivered work → kick with the bare-'enter' action,
 //     NOT the nudge — the recovery is to flush the already-queued input.
 {
-  const r = decideKick('stuck', { lastInboundId: 10, chatAfterInbound: false, lastToolReqId: 12 }, newKickState())
+  const r = decideKick('stuck', { lastInboundId: 10, chatAfterInbound: false }, newKickState())
   check('stuck + owed → kick', r.kick === true)
   check('stuck → enter action (bare Enter, not Continue text)', r.action === 'enter')
 }
 // 11. stuck but already delivered → no kick (don't Enter a done agent)
 {
-  const r = decideKick('stuck', { lastInboundId: 10, chatAfterInbound: true, lastToolReqId: 12 }, { lastInboundId: 10, deadKicks: 0, lastKickToolReqId: null })
+  const r = decideKick('stuck', { lastInboundId: 10, chatAfterInbound: true }, { lastInboundId: 10, deadKicks: 0, kicked: false })
   check('stuck + delivered → no kick', r.kick === false && r.reason === 'delivered')
 }
 // 12. PENDING (queued msg at prompt, no glyph) with owed work → kick, bare-'enter'
 //     action (flush the queued input), same recovery as stuck — NOT the nudge.
 {
-  const r = decideKick('pending', { lastInboundId: 10, chatAfterInbound: false, lastToolReqId: 12 }, newKickState())
+  const r = decideKick('pending', { lastInboundId: 10, chatAfterInbound: false }, newKickState())
   check('pending + owed → kick', r.kick === true)
   check('pending → enter action (flush queued, not Continue text)', r.action === 'enter')
 }
 // 13. pending but already delivered → no kick (don't Enter a done agent)
 {
-  const r = decideKick('pending', { lastInboundId: 10, chatAfterInbound: true, lastToolReqId: 12 }, { lastInboundId: 10, deadKicks: 0, lastKickToolReqId: null })
+  const r = decideKick('pending', { lastInboundId: 10, chatAfterInbound: true }, { lastInboundId: 10, deadKicks: 0, kicked: false })
   check('pending + delivered → no kick', r.kick === false && r.reason === 'delivered')
 }
 // 14. unknown (boot, no 🪿) is NOT kick-eligible
 {
-  const r = decideKick('unknown', { lastInboundId: 10, chatAfterInbound: false, lastToolReqId: 12 }, newKickState())
+  const r = decideKick('unknown', { lastInboundId: 10, chatAfterInbound: false }, newKickState())
   check('unknown → no kick (boot safety)', r.kick === false && r.reason === 'unknown' && r.action === null)
 }
 
