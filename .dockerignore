@@ -3,7 +3,6 @@
 # and scripts/. Everything below is excluded from the upload context.
 node_modules
 .git
-dist
 .worktrees
 server/projects
 server/data
@@ -20,3 +19,4 @@ server/persist
 webkit-peek
 .DS_Store
 recipes
+!dist

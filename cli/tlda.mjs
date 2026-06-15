@@ -30,6 +30,7 @@ import {
 import { tldaFetch } from '../shared/http-client.mjs'
 import { DEV_COMMANDS } from './lib/dev-commands.mjs'
 import { resolveRepoRoot, ensureWorktree, startWorktreeVite, findFreePort } from './lib/dev-vite.mjs'
+import { scanMarkdownDeps } from '../shared/markdown-deps.mjs'
 import { cmdLogs } from './lib/unified-logs.mjs'
 
 // --- Argument parsing ---
@@ -449,12 +450,24 @@ async function cmdCreate() {
       }
     }
 
-    // Push just the main file as a build trigger — the server reads from
-    // sourceDir directly, so we don't need to send the whole directory.
-    const content = readFileSync(join(dir, mainFile))
-    const files = [{ path: mainFile, content: content.toString('base64'), encoding: 'base64' }]
+    // Push the main file PLUS every locally-referenced image. A remote server
+    // (e.g. hosted) can't read the author's disk, and build-markdown.mjs copies
+    // referenced images from the PUSHED source mirror — so if we only send the
+    // .md, every image 404s off-machine. Scan with the same ref patterns the
+    // server uses (build-markdown.mjs) and upload each referenced local file at
+    // its relative path, so it lands where the server's copyRef looks for it.
+    const mdSource = readFileSync(join(dir, mainFile), 'utf8')
+    const files = [{ path: mainFile, content: Buffer.from(mdSource).toString('base64'), encoding: 'base64' }]
 
-    console.log(`Pushing ${mainFile}...`)
+    const missing = []
+    for (const { ref, abs } of scanMarkdownDeps(mdSource, dir)) {
+      if (!abs || !existsSync(abs)) { missing.push(ref); continue }
+      files.push({ path: ref, content: readFileSync(abs).toString('base64'), encoding: 'base64' })
+    }
+    const assetCount = files.length - 1
+
+    console.log(`Pushing ${mainFile}${assetCount ? ` + ${assetCount} image(s)` : ''}...`)
+    if (missing.length) console.log(dim(`  Skipped ${missing.length} unresolved image ref(s): ${missing.slice(0, 5).join(', ')}${missing.length > 5 ? '…' : ''}`))
     await api('POST', `/api/projects/${name}/push`, { files, sourceDir: dir })
     console.log(green('Markdown project processed.'))
 

@@ -48,6 +48,17 @@ RUN python3 -m venv /opt/venv \
     && pip install --no-cache-dir "spacy>=3.8,<3.9" "click>=8.1" \
        "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
 
+# --- Tailscale (official Debian repo) ---
+# The Fly machine joins Skip's tailnet (see fly-entrypoint-live.sh, gated on
+# TS_AUTHKEY) so the server is reachable privately over the tailnet rather than the
+# open internet. Installs tailscaled (/usr/sbin) + tailscale (/usr/bin), both on
+# the root PATH. Separate layer so it caches across app-code redeploys.
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.noarmor.gpg -o /usr/share/keyrings/tailscale-archive-keyring.gpg \
+    && curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.tailscale-keyring.list -o /etc/apt/sources.list.d/tailscale.list \
+    && apt-get update && apt-get install -y --no-install-recommends tailscale \
+    && rm -rf /var/lib/apt/lists/*
+
 # --- runtime deps ---
 # Install at /app (not server/) so BOTH server/*.mjs and shared/*.mjs resolve up to
 # one /app/node_modules. shared/ imports @tldraw/* too, and from /app/shared it can't
@@ -66,12 +77,21 @@ COPY shared/ ./shared/
 # never generates → highlights don't resolve to source lines.
 COPY scripts/ ./scripts/
 
-# NOTE: we deliberately do NOT build or serve the tldraw SPA here. Per the tldraw
-# license, the tldraw JS must run from the GitHub Pages origin — the SPA is served
-# from GitHub Pages and points at this server (TLDA_SERVER / TLDA_SYNC_SERVER) for
-# API, Yjs sync, doc assets, and builds. This Fly server is headless: content + data
-# only, no SPA. (express.static for the SPA simply 404s when server/public is absent;
-# all /api and /ws routes work.)
+# Voice transcription bridge: /voice/deepgram (unified-server) lazily spawns
+# /app/bin/deepgram-bridge.mjs, which relays browser PCM audio → Deepgram cloud
+# (wss://api.deepgram.com) using DEEPGRAM_API_KEY (set via `fly secrets`). It's a
+# stateless relay (no local audio access), so it runs fine on Fly. Only this one
+# bin/ file is needed — it imports just `ws` (in node_modules) + shared/config.mjs.
+COPY bin/deepgram-bridge.mjs ./bin/deepgram-bridge.mjs
+
+# Serve the tldraw SPA from this server too. For the PRIVATE tailnet deployment
+# (server gated behind Tailscale, not the open internet), Skip's tldraw license
+# allows self-hosting — so SPA + API + WS become ONE same-origin server, dropping
+# the GitHub Pages split and the whole cross-origin URL/auth gymnastics. The server
+# serves /app/dist (distDir = join(__dirname,'..','dist')) via express.static + an
+# index.html catch-all. Built plain (no VITE_SYNC_SERVER) so the client is origin-
+# relative. (Off the *.qtm285.github.io domain the tldraw watermark shows — accepted.)
+COPY dist/ ./dist/
 
 # --- entrypoint: wire mutable data (projects, fleet.db, yjs) to the volume ---
 COPY scripts/fly-entrypoint-live.sh ./

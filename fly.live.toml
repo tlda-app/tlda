@@ -11,21 +11,18 @@ primary_region = "sjc"
 [env]
   PORT = "5176"
   NODE_ENV = "production"
-  # Fly is the global fleet/event store, so it must report its own public URL from
-  # /api/fleet-config (otherwise getServerUrl() falls back to localhost and the
-  # Pages SPA would point chat at localhost). This is the canonical fleet server.
-  TLDA_FLEET_SERVER = "https://tldraw-sync-skip.fly.dev"
-  # Auth posture for a co-author-facing live backend — confirm with Skip before deploy.
-  # The published/sync app ran TLDA_NO_AUTH=1 (fully open). For live + co-authors you
-  # likely want token auth instead; left unset here pending that decision.
+  # The canonical fleet server URL reported from /api/fleet-config. Now the private
+  # TAILNET name (the server is gated behind Tailscale): the SPA is served from this
+  # same origin, so clients resolve fleet/chat to the tailnet name = their own origin.
+  TLDA_FLEET_SERVER = "https://tlda-fly.cormorant-matrix.ts.net"
+  # Auth posture: the server is gated at the NETWORK layer by Tailscale (only tailnet
+  # devices can reach it), so the app runs open INSIDE the tailnet — no per-request
+  # token, terminal works tokenless. The tailnet IS the auth (Skip's chosen model).
+  TLDA_NO_AUTH = "1"
 
-[http_service]
-  internal_port = 5176
-  force_https = true
-  auto_stop_machines = false
-  auto_start_machines = true
-  min_machines_running = 1
-
+# No [http_service] — the server is NOT exposed on the public internet. Access is
+# tailnet-only via `tailscale serve` (see fly-entrypoint-live.sh). The machine stays
+# running on its CMD + the persistent volume mount (no public service = no autostop).
 [[vm]]
   size = "performance-2x"
   memory = "4096"

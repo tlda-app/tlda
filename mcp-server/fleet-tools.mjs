@@ -17,7 +17,8 @@ import { ledger } from './identity.mjs';
 import { formatMessage, formatActivity, formatAnnotationRef } from './format-annotation.mjs';
 import { parseTimestamp } from './lib/parse-timestamp.mjs';
 import { processMessageText } from '../shared/message-processing.mjs';
-import { resolveFilePath } from '../shared/chat-file-processing.mjs';
+import { resolveFilePath, uploadFileToServer } from '../shared/chat-file-processing.mjs';
+import { scanMarkdownDeps } from '../shared/markdown-deps.mjs';
 import { extractMarkdownSection } from '../shared/markdown-section.mjs';
 import { baseName, nameForPhase, phaseFromName } from '../shared/lineage-name.mjs';
 import { baseMacros } from '../shared/katex-base-macros.mjs';
@@ -78,6 +79,36 @@ function resolveChatBody(args, agentCwd) {
   }
   if (hasMessage) return { body: args.message, source: null };
   return { error: 'Missing message: provide `message`, or `file`+`section`.' };
+}
+
+// A shared markdown file's images are includes that travel WITH it. They don't
+// otherwise exist on the (possibly remote) server, so the renderer 404s them.
+// Upload each locally-referenced image to the fleet server (where chat is
+// viewed — NOT the doc server, which may be a different machine) and rewrite the
+// body's refs to the served URL so they render inline. Resolution is relative to
+// the FILE's own directory (its includes are written relative to it), via the
+// shared scanMarkdownDeps detector. Returns { body, uploaded, missing }.
+async function bundleSharedMarkdownImages(body, sourceFile, fleetServerUrl) {
+  const baseDir = path.dirname(sourceFile);
+  const deps = scanMarkdownDeps(body, baseDir);
+  let out = body;
+  const missing = [];
+  let uploaded = 0;
+  for (const { ref, abs } of deps) {
+    if (!abs || !fs.existsSync(abs)) { missing.push(ref); continue; }
+    let url;
+    try { ({ url } = await uploadFileToServer(abs, fleetServerUrl)); }
+    catch { missing.push(ref); continue; }
+    // /api/upload returns a server-relative url; make it absolute against the
+    // fleet origin so it resolves the same from any viewer (iPad, phone, laptop).
+    if (url && !/^https?:/i.test(url)) url = `${fleetServerUrl.replace(/\/$/, '')}${url}`;
+    const esc = ref.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // Rewrite only in image contexts: `](ref...)` and `<img ... src="ref...">`.
+    out = out.replace(new RegExp(`\\]\\(\\s*${esc}(?:[#?][^)]*)?\\s*\\)`, 'g'), `](${url})`);
+    out = out.replace(new RegExp(`(<img\\s[^>]*\\bsrc=)(["'])${esc}(?:[#?][^"']*)?\\2`, 'g'), `$1$2${url}$2`);
+    uploaded++;
+  }
+  return { body: out, uploaded, missing };
 }
 
 // State file eliminated — all data through server REST API
@@ -1834,7 +1865,13 @@ export async function handleFleetTool(name, args) {
     // same keep/clear-`source` semantics) instead of posting a new message.
     if (args.amend_id != null) {
       try {
-        const { resolvedMessage, inlineAttachments } = await processMessageText(message, agentCwd, `${TLDA_SERVER}`);
+        let resolvedMessage, inlineAttachments = [];
+        if (source?.file) {
+          const r = await bundleSharedMarkdownImages(message, source.file, `${TLDA_FLEET_SERVER}`);
+          resolvedMessage = r.body;
+        } else {
+          ({ resolvedMessage, inlineAttachments } = await processMessageText(message, agentCwd, `${TLDA_FLEET_SERVER}`));
+        }
         const body = { from: AGENT_ID, message: resolvedMessage, event_id: args.amend_id };
         if (inlineAttachments?.length) body.inline_attachments = inlineAttachments;
         if (source) body.source = source;
@@ -1910,10 +1947,22 @@ export async function handleFleetTool(name, args) {
       return { content: [{ type: 'text', text: `Broadcast to ${recipients.length} agents exceeds max_recipients=${maxRecipients}. Matched: ${names.join(', ')}. Pass max_recipients=${recipients.length} to confirm.` }], isError: true };
     }
 
-    // Resolve file paths in message text → inline attachments.
-    const { resolvedMessage, inlineAttachments, brokenPaths } = await processMessageText(
-      message, agentCwd, `${TLDA_SERVER}`
-    );
+    // Resolve the body's file references → uploads. Two modes:
+    //  - file-share (source.file): the body is a markdown file's content; bundle
+    //    its image includes (upload + rewrite refs inline) so they render for
+    //    every viewer. Don't chipify a shared file's prose.
+    //  - inline message: detect bare file paths / image URLs → inline attachments.
+    // Uploads target the FLEET server (where chat is viewed), not the doc server
+    // (TLDA_SERVER), which post-cutover may be a different machine.
+    let resolvedMessage, inlineAttachments = [], brokenPaths = [];
+    if (source?.file) {
+      const r = await bundleSharedMarkdownImages(message, source.file, `${TLDA_FLEET_SERVER}`);
+      resolvedMessage = r.body;
+    } else {
+      ({ resolvedMessage, inlineAttachments, brokenPaths } = await processMessageText(
+        message, agentCwd, `${TLDA_FLEET_SERVER}`
+      ));
+    }
 
     if (brokenPaths.length > 0) {
       return { content: [{ type: 'text', text: `Message NOT sent — ${brokenPaths.length} broken file reference(s):\n${brokenPaths.map(p => `  • ${p}`).join('\n')}\nFix the paths and resend.` }], isError: true };

@@ -1011,13 +1011,21 @@ app.post('/api/voice/whisper/stop', async (req, res) => {
 })
 
 // Lazy-start the deepgram bridge. Browser hits this when voice=deepgram is selected.
+// The deepgram bridge listens on TLS (wss) only when the mkcert localhost certs
+// exist — the SAME condition bin/deepgram-bridge.mjs uses to choose its server.
+// On Fly there are no mkcert certs, so the bridge runs on plain ws; matching the
+// scheme here is what lets the proxy actually reach it off Skip's local machine.
+const _dgCert = path.join(homedir(), '.config/tlda/localhost+2.pem')
+const _dgKey = path.join(homedir(), '.config/tlda/localhost+2-key.pem')
+const DEEPGRAM_BRIDGE_URL = (existsSync(_dgCert) && existsSync(_dgKey) ? 'wss' : 'ws') + '://127.0.0.1:8179'
+
 app.post('/api/voice/deepgram/start', async (req, res) => {
   try {
     const WS = (await import('ws')).default
     const alreadyUp = await new Promise(resolve => {
       let done = false
       try {
-        const ws = new WS('ws://127.0.0.1:8179')
+        const ws = new WS(DEEPGRAM_BRIDGE_URL, { rejectUnauthorized: false })
         ws.on('open', () => { done = true; ws.close(); resolve(true) })
         ws.on('error', () => { if (!done) { done = true; resolve(false) } })
         setTimeout(() => { if (!done) { done = true; try { ws.close() } catch {}; resolve(false) } }, 800)
@@ -1069,7 +1077,7 @@ async function probeDeepgramBridge() {
     let ws
     const finish = (v) => { if (!done) { done = true; try { ws?.close() } catch {}; resolve(v) } }
     try {
-      ws = new WS('wss://127.0.0.1:8179', { rejectUnauthorized: false })
+      ws = new WS(DEEPGRAM_BRIDGE_URL, { rejectUnauthorized: false })
       ws.on('open', () => finish(true))
       ws.on('error', () => finish(false))
       setTimeout(() => finish(false), 800)
@@ -2385,7 +2393,7 @@ server.on('upgrade', async (req, socket, head) => {
         return
       }
 
-      upstream = new WS('wss://127.0.0.1:8179', { rejectUnauthorized: false })
+      upstream = new WS(DEEPGRAM_BRIDGE_URL, { rejectUnauthorized: false })
       upstream.on('open', () => {
         for (const { data, isBinary } of pending) {
           try { upstream.send(data, { binary: isBinary }) } catch {}
