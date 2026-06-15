@@ -1875,11 +1875,19 @@ export function isMathMode() { return _mathMode }
 export function getGeneration() { return _generation }
 export function getBackend() { return _backend }
 export function isWhisperAvailable() { return _whisperAvailable }
-export function setBackend(be) {
+export async function setBackend(be) {
+  if (be === 'whisper') be = 'whisper-stream' // prefs dropdown uses the short name
   if (be !== 'chrome' && be !== 'whisper-stream' && be !== 'deepgram') return
-  if (be === 'whisper-stream' && !_whisperAvailable) return
-  if (be === 'deepgram' && !_deepgramAvailable) return
   if (be === _backend) return
+  if (be === 'chrome' && !SpeechRecognition) return
+  // Lazy-start the target backend on demand. init only probes the backend it
+  // commits to, so without this a live switch to the other one would hit a stale
+  // availability flag and silently no-op. (whisper is legacy — left guarded.)
+  if (be === 'deepgram' && !_deepgramAvailable) {
+    try { await fetch('/api/voice/deepgram/start', { method: 'POST' }) } catch {}
+    _deepgramAvailable = true
+  }
+  if (be === 'whisper-stream' && !_whisperAvailable) return
   const wasRecording = _recording
   if (wasRecording) stopRecording()
   _backend = be

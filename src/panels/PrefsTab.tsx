@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from 'react'
 import { getPref, setPref, subscribePref } from '../preferences'
+import { setBackend as setVoiceBackend } from '../voice.mjs'
 import { NOTE_COLORS } from '../shapes/MathNoteShape'
 import { CurveEditor } from '../components/CurveEditor'
 import { SchemeToggle, ThemeFamilyToggle, VimModeToggle } from './TocTab'
@@ -244,13 +245,13 @@ export function PrefsTab() {
 
       <div className="prefs-section">
         <div className="prefs-section-label">Voice backend</div>
-        <select value={prefs.voiceBackend} onChange={e => setPref('voice-backend', e.target.value)} className="prefs-select">
+        <select value={prefs.voiceBackend} onChange={e => { setPref('voice-backend', e.target.value); setVoiceBackend(e.target.value) }} className="prefs-select">
           <option value="chrome">Chrome Web Speech</option>
           <option value="deepgram">Deepgram</option>
           <option value="whisper">Whisper</option>
         </select>
         <div style={{ fontSize: 10, color: '#6b7280', marginTop: 2 }}>
-          Reload to apply. URL param &voice= overrides.
+          Switches live. URL param &voice= overrides.
         </div>
       </div>
 
