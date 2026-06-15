@@ -77,12 +77,14 @@ COPY shared/ ./shared/
 # never generates → highlights don't resolve to source lines.
 COPY scripts/ ./scripts/
 
-# NOTE: we deliberately do NOT build or serve the tldraw SPA here. Per the tldraw
-# license, the tldraw JS must run from the GitHub Pages origin — the SPA is served
-# from GitHub Pages and points at this server (TLDA_SERVER / TLDA_SYNC_SERVER) for
-# API, Yjs sync, doc assets, and builds. This Fly server is headless: content + data
-# only, no SPA. (express.static for the SPA simply 404s when server/public is absent;
-# all /api and /ws routes work.)
+# Serve the tldraw SPA from this server too. For the PRIVATE tailnet deployment
+# (server gated behind Tailscale, not the open internet), Skip's tldraw license
+# allows self-hosting — so SPA + API + WS become ONE same-origin server, dropping
+# the GitHub Pages split and the whole cross-origin URL/auth gymnastics. The server
+# serves /app/dist (distDir = join(__dirname,'..','dist')) via express.static + an
+# index.html catch-all. Built plain (no VITE_SYNC_SERVER) so the client is origin-
+# relative. (Off the *.qtm285.github.io domain the tldraw watermark shows — accepted.)
+COPY dist/ ./dist/
 
 # --- entrypoint: wire mutable data (projects, fleet.db, yjs) to the volume ---
 COPY scripts/fly-entrypoint-live.sh ./
