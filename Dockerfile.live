@@ -48,6 +48,17 @@ RUN python3 -m venv /opt/venv \
     && pip install --no-cache-dir "spacy>=3.8,<3.9" "click>=8.1" \
        "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
 
+# --- Tailscale (official Debian repo) ---
+# The Fly machine joins Skip's tailnet (see fly-entrypoint-live.sh, gated on
+# TS_AUTHKEY) so the server is reachable privately over the tailnet rather than the
+# open internet. Installs tailscaled (/usr/sbin) + tailscale (/usr/bin), both on
+# the root PATH. Separate layer so it caches across app-code redeploys.
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.noarmor.gpg -o /usr/share/keyrings/tailscale-archive-keyring.gpg \
+    && curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.tailscale-keyring.list -o /etc/apt/sources.list.d/tailscale.list \
+    && apt-get update && apt-get install -y --no-install-recommends tailscale \
+    && rm -rf /var/lib/apt/lists/*
+
 # --- runtime deps ---
 # Install at /app (not server/) so BOTH server/*.mjs and shared/*.mjs resolve up to
 # one /app/node_modules. shared/ imports @tldraw/* too, and from /app/shared it can't
