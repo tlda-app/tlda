@@ -24,12 +24,37 @@ import { log } from '../logger'
 // fleet WS connects to the Pages origin, never connects, login never runs, and
 // getHumanId() stays null → the fleet HUD bails.
 const _syncWs = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_SYNC_SERVER) || null
-const FLEET = _syncWs
+// API_BASE: the server that served this SPA. Pages (static): VITE_SYNC_SERVER
+// (Fly). Local/dev: the page origin. We fetch /api/fleet-config from here to
+// learn the GLOBAL fleet/event-store URL.
+const API_BASE = _syncWs
   ? _syncWs.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/+$/, '')
   : (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5176')
-const FLEET_WS = _syncWs
-  ? _syncWs.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:').replace(/\/+$/, '')
-  : (typeof window !== 'undefined' ? window.location.origin.replace(/^http/, 'ws') : 'ws://localhost:5176')
+// FLEET / FLEET_WS: the global fleet/event store (chat, agents, activity). Mutable
+// because they're resolved at init() from API_BASE/api/fleet-config, so any serving
+// origin (Pages, main app, an agent's dev server) points chat at the same store
+// while doc/shapes stay per-server. Default to API_BASE until resolved — identical
+// to the old single-endpoint behavior, so this is a no-op until a server reports a
+// distinct fleetServer (the Fly cutover).
+let FLEET = API_BASE
+let FLEET_WS = API_BASE.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:')
+
+// Resolve the global fleet store from the serving server's /api/fleet-config.
+// Falls back to API_BASE on any failure so chat still works against the local
+// server if the endpoint is missing/unreachable.
+async function resolveFleetBase() {
+  try {
+    const res = await fetch(`${API_BASE}/api/fleet-config`)
+    if (!res.ok) return
+    const { fleetServer } = await res.json()
+    if (!fleetServer) return
+    FLEET = fleetServer.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/+$/, '')
+    FLEET_WS = FLEET.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:')
+    log.info('fleet-data', 'fleet store resolved', { FLEET })
+  } catch (e) {
+    log.warn('fleet-data', 'fleet-config fetch failed; using serving origin', { error: e.message })
+  }
+}
 
 // --- Stores ---
 let _agents = []
@@ -583,6 +608,10 @@ export async function init() {
   // Human identity is established via WS 'login' on connect.
   // If localStorage has a stored name, login is sent automatically.
   // If not, the UI shows a picker with login/register options.
+
+  // Resolve the global fleet store before any fleet fetch/connect, so chat/agents
+  // point at the shared event store regardless of which server served this SPA.
+  await resolveFleetBase()
 
   // Fetch initial state + history in parallel.
   const [stateRes, historyRes] = await Promise.all([

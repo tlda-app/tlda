@@ -12,7 +12,7 @@ import { Router } from 'express'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
-import { DEFAULT_PORT } from '../../shared/config.mjs'
+import { DEFAULT_PORT, getFleetServerUrl } from '../../shared/config.mjs'
 
 // Server owner — the human running this server process. Browser users
 // log in via the WS 'login' message or register via 'register'.
@@ -115,6 +115,17 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   // to know who the "local human" is. Browser users log in via WS 'login'.
   router.get('/api/human', (req, res) => {
     res.json({ id: SERVER_OWNER_ID, host: SERVER_OWNER_HOST, name: SERVER_OWNER_NAME })
+  })
+
+  // --- GET /api/fleet-config ---
+  // The global fleet/event-store URL this server points at (env → config.json
+  // fleetServer → this server). The SPA fetches this from whatever server served
+  // it, then connects its chat/fleet to the returned URL — so any UI (the Pages
+  // site, the main app, or an agent's dev server) resolves chat to the same
+  // global store while doc/shapes stay per-server. Unauthenticated: it's just a
+  // public URL the client needs before it can authenticate.
+  router.get('/api/fleet-config', (req, res) => {
+    res.json({ fleetServer: getFleetServerUrl() })
   })
 
   // --- GET /api/store/events ---
