@@ -18,8 +18,8 @@
 class Tlda < Formula
   desc "Paper review and annotation system for LaTeX papers"
   homepage "https://github.com/qtm285/tlda"
-  url "https://github.com/qtm285/tlda/releases/download/v0.1.0/tlda-v0.1.0.tar.gz"
-  sha256 "PLACEHOLDER_SHA256"
+  url "https://github.com/qtm285/tlda/releases/download/v0.3.1/tlda-v0.3.1.tar.gz"
+  sha256 "821056ad9f578550816960e03c188ccbf75928c379118332d8569fa1f306f928"
   license "MIT"
 
   depends_on "node"
