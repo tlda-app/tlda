@@ -290,7 +290,7 @@ def ensure_server():
     return False
 
 
-def ws_register(fleet_id, name, tmux_session, cwd, model=None, effort=None, refresh=False):
+def ws_register(fleet_id, name, tmux_session, cwd, model=None, effort=None, refresh=False, kind="claude"):
     _ws_scheme = "wss" if _scheme == "https" else "ws"
     ws_url = f"{_ws_scheme}://{DASH_HOST}:{DASH_PORT}/ws/fleet?agent={fleet_id}"
     try:
@@ -299,7 +299,7 @@ def ws_register(fleet_id, name, tmux_session, cwd, model=None, effort=None, refr
             ws_opts["sslopt"] = {"context": _ssl_ctx}
         ws = websocket.create_connection(ws_url, **ws_opts)
         msg = {"type": "register", "id": fleet_id, "name": name,
-               "tmux_session": tmux_session, "cwd": cwd}
+               "tmux_session": tmux_session, "cwd": cwd, "kind": kind}
         meta = {}
         if model:
             meta["model"] = model
@@ -652,13 +652,91 @@ def build_goose_cmd(fleet_id, tmux_session, model, name=None):
     return f"zsh -lc {shlex.quote(inner)}"
 
 
-def _session_has_claude(session):
-    """Check if a tmux session has a running agent process (claude OR goose).
+def build_codex_cmd(fleet_id, tmux_session, model=None, resume_id=None,
+                    include_prompt=True, name=None, cwd=None):
+    """Build the shell command for an OpenAI Codex CLI fleet agent.
 
-    Named for the common case but goose-aware: a goose-backed DeepSeek agent
-    runs `goose`, not `claude`. Without the goose check, a stray wake/respawn
-    would see "no claude here", treat the live goose agent as a dead pane, and
-    kill-session it — the death-loop bug, reborn for goose."""
+    Mirrors build_claude_cmd: same identity env (FLEET_ID/FLEET_NAME/TMUX) on
+    EVERY launch including resume (spec K.1 — the resumed process recovers its
+    fleet id from the re-injected env, never by parsing the transcript), then
+    launches `codex` interactively in the tmux pane so the wake machinery
+    (send-keys) drives it like a claude agent.
+
+    Auth: Codex authenticates from ~/.codex/auth.json (ChatGPT subscription
+    sign-in), NOT from the environment — so unlike goose there's no API key to
+    source from a login shell, and no zsh -lc wrapper is needed.
+
+    MCP env — THE KEY DIFFERENCE FROM CLAUDE (verified 2026-06-15): Codex does
+    NOT pass the launch process env down to its MCP subprocess (Claude does). So
+    setting FLEET_ID/TLDA_SERVER as a process-env prefix would NOT reach the tlda
+    MCP server — it'd register under a random id and hit the wrong server. We
+    inject the MCP env via Codex's `-c mcp_servers.tlda.env.<KEY>=<val>` config
+    override instead (confirmed: the MCP subprocess sees exactly these, and a
+    process-env value does NOT leak in). Per-invocation, so no shared-config race.
+    The `[mcp_servers.tlda]` server entry itself (command/args) is one-time setup
+    in ~/.codex/config.toml; only the per-agent env is injected here.
+
+    Flags:
+      -m <model>        the Codex model (omit to use the subscription default)
+      -s workspace-write let the agent edit files in its cwd (parity with claude)
+      -a never          don't pause for shell-command approval (autonomous)
+
+    TWO ITEMS NEED LIVE INTERACTIVE VERIFICATION (with ops, daemon auto-accept):
+      1. MCP tool-call approval — Codex raises an *elicitation* for MCP tools that
+         `codex exec` auto-cancels; interactively it surfaces as a prompt the
+         daemon's autoAcceptPrompt path must learn to answer (fleet-daemon.mjs:566).
+      2. Project trust — first interactive run in an untrusted dir prompts to
+         trust; either pre-seed `[projects.<cwd>] trust_level="trusted"` in config
+         or let the daemon auto-accept answer it.
+    These don't change this command's shape; they're daemon-side and tracked
+    separately.
+    """
+    # Identity in process env: FLEET_ID/TMUX/NAME so `ps` (the daemon's liveness
+    # + classification scan) can see which fleet agent a codex process is. These
+    # do NOT reach the MCP subprocess (see docstring) — that's the -c block below.
+    parts = [
+        f"FLEET_ID={fleet_id}",
+        f"FLEET_TMUX_SESSION={tmux_session}",
+    ]
+    if name:
+        parts.append(f"FLEET_NAME={shlex.quote(name)}")
+    parts.append("codex")
+    if resume_id:
+        # Resume keeps the same fleet id (re-injected below) and continues the
+        # prior rollout. The register prompt is injected via send-keys after boot,
+        # so include_prompt is False on this path (mirrors build_claude_cmd).
+        parts.append(f"resume {shlex.quote(resume_id)}")
+    # MCP env via -c overrides — the ONLY channel that reaches the tlda MCP server.
+    def _cenv(key, val):
+        return f"-c {shlex.quote(f'mcp_servers.tlda.env.{key}={val}')}"
+    parts.append(_cenv("FLEET_ID", fleet_id))
+    if name:
+        parts.append(_cenv("FLEET_NAME", name))
+    # FLEET_HARNESS=codex → the MCP delivers incoming messages via a send-keys
+    # nudge into the pane (like goose), not the Claude-only channel notification.
+    parts.append(_cenv("FLEET_HARNESS", "codex"))
+    parts.append(_cenv("TLDA_SERVER", API))
+    parts.append(_cenv("TLDA_SYNC_SERVER", API))
+    if model:
+        parts.append(f"-m {shlex.quote(model)}")
+    parts.append("-s workspace-write")
+    parts.append("-a never")
+    if include_prompt and not resume_id:
+        parts.append(shlex.quote(register_prompt(name)))
+    return " ".join(parts)
+
+
+def _session_has_claude(session):
+    """Check if a tmux session has a running agent process (claude OR goose OR codex).
+
+    Named for the common case but harness-aware: a goose-backed DeepSeek agent
+    runs `goose` and an OpenAI Codex agent runs `codex`, not `claude`. Without
+    these checks a stray wake/respawn would see "no claude here", treat the live
+    goose/codex agent as a dead pane, kill-session it, and relaunch it as a
+    claude impostor — the death-loop bug. (Codex variant observed 2026-06-15:
+    codexpg got clobbered into a claude impostor.) The codex match is
+    boundary-anchored so a path containing "codex" (e.g. a worktree) doesn't
+    false-positive — only the `codex` executable token counts."""
     try:
         r = subprocess.run(tmux("list-panes", "-t", session, "-F", "#{pane_pid}"),
                            capture_output=True, text=True, timeout=5)
@@ -667,7 +745,10 @@ def _session_has_claude(session):
         for pid in r.stdout.strip().split():
             ps = subprocess.run(["ps", "-p", pid, "-o", "args="],
                                 capture_output=True, text=True, timeout=5)
-            if ps.returncode == 0 and ("claude" in ps.stdout or "goose" in ps.stdout):
+            if ps.returncode == 0 and (
+                "claude" in ps.stdout or "goose" in ps.stdout
+                or re.search(r'(?:^|\s|/)codex(?:\s|$)', ps.stdout)
+            ):
                 return True
         return False
     except Exception:
@@ -863,11 +944,31 @@ def inject_prompt(session, prompt, timeout=60):
 
 # ---- Spawn modes ----
 
-def fresh(name, model, cwd, effort, mode):
+def fresh(name, model, cwd, effort, mode, kind="claude"):
     server_up = ensure_server()
     fleet_id = f"fleet:{uuid.uuid4().hex[:8]}"
     sess = unique_session_name(f"fleet-{sanitize_session_name(name)}")
     cwd = resolve_spawn_cwd(cwd)
+    # Codex agents select by explicit kind, not model-alias. Skip the
+    # claude/goose model resolution; codex uses its subscription default unless
+    # an explicit --model is passed (forwarded verbatim to `codex -m`).
+    if kind == "codex":
+        codex_model = model  # may be None → codex picks the plan default
+        if server_up:
+            existing = find_agent(name)
+            if existing:
+                print(f"Error: '{name}' already exists ({existing['id']}). "
+                      f"Use: fleet-spawn {name}", file=sys.stderr)
+                sys.exit(1)
+            collisions = check_name_collisions(name)
+            if collisions:
+                print(f"Error: '{name}' is not available.", file=sys.stderr)
+                sys.exit(1)
+            ws_register(fleet_id, name, sess, cwd, codex_model, effort, refresh=True, kind="codex")
+        cmd = build_codex_cmd(fleet_id, sess, model=codex_model, name=name, cwd=cwd)
+        spawn_tmux(sess, cwd, cmd)
+        print(f"{sess} ({fleet_id}) spawned in {cwd} (codex)")
+        return sess
     goose_model = resolve_goose_model(model)
     if goose_model and not goose_model_verified(goose_model):
         print(f"  Warning: '{goose_model}' is not on the verified tool-calling "
@@ -925,8 +1026,17 @@ def respawn(name, model, cwd, effort, mode, session_override=None):
     meta = agent_meta(agent)
     cwd = cwd or agent.get("cwd") or os.getcwd()
     raw_model = model or meta.get("model")
-    goose_model = resolve_goose_model(raw_model)
-    model = goose_model or resolve_model(raw_model)
+    # Harness is recorded on the agent row (kind). Codex skips the claude/goose
+    # model resolution — it uses its subscription default unless an explicit
+    # model was stored. (Reading kind here is what stops a codex agent's wake
+    # from falling through to the claude relaunch — the impostor bug.)
+    kind = agent.get("kind") or "claude"
+    if kind == "codex":
+        goose_model = None
+        model = raw_model  # codex model id or None; do NOT claude-resolve
+    else:
+        goose_model = resolve_goose_model(raw_model)
+        model = goose_model or resolve_model(raw_model)
     sess = agent.get("tmux_session") or f"fleet-{name}"
 
     # Single-flight: hold a per-session lock across the WHOLE wake (check →
@@ -941,6 +1051,20 @@ def respawn(name, model, cwd, effort, mode, session_override=None):
     if subprocess.run(tmux("has-session", "-t", sess), capture_output=True).returncode == 0:
         if _session_has_claude(sess):
             return sess
+
+    if kind == "codex":
+        # Codex relaunch with the SAME fleet_id (env re-injected via build_codex_cmd
+        # incl. the -c MCP env). For now this is a fresh launch re-briefed via the
+        # register prompt + my_task (like goose); a true rollout-resume is a
+        # follow-up on the S2 session path. spawn_tmux's alive-check is now
+        # codex-aware (_session_has_claude), so a live codex agent is left running.
+        cmd = build_codex_cmd(fleet_id, sess, model=model, name=name)
+        started = spawn_tmux(sess, cwd, cmd, auto_dismiss=False)
+        if not started:
+            print(f"{sess} ({fleet_id}) already alive — left running", file=sys.stderr)
+        else:
+            print(f"{sess} ({fleet_id}) relaunched (codex)")
+        return sess
 
     if goose_model:
         # Goose agents are stateless-role-from-chat: there is no resumable claude
@@ -998,14 +1122,21 @@ def refresh(name, model, cwd, effort, mode):
     meta = agent_meta(agent)
     cwd = cwd or agent.get("cwd") or os.getcwd()
     raw_model = model or meta.get("model")
-    goose_model = resolve_goose_model(raw_model)
-    model = goose_model or resolve_model(raw_model)
+    kind = agent.get("kind") or "claude"
+    if kind == "codex":
+        goose_model = None
+        model = raw_model  # codex model id or None; do NOT claude-resolve
+    else:
+        goose_model = resolve_goose_model(raw_model)
+        model = goose_model or resolve_model(raw_model)
     if not effort:
         effort = meta.get("effort")
     sess = agent.get("tmux_session") or f"fleet-{name}"
 
-    ws_register(fleet_id, name, sess, cwd, model, effort, refresh=True)
-    if goose_model:
+    ws_register(fleet_id, name, sess, cwd, model, effort, refresh=True, kind=kind)
+    if kind == "codex":
+        cmd = build_codex_cmd(fleet_id, sess, model=model, name=name)
+    elif goose_model:
         cmd = build_goose_cmd(fleet_id, sess, goose_model, name=name)
     else:
         cmd = build_claude_cmd(fleet_id, sess, model, effort, mode, name=name)
@@ -1114,6 +1245,10 @@ def main():
     parser.add_argument("--cwd", default=None)
     parser.add_argument("--effort", default=None)
     parser.add_argument("--mode", default=None)
+    parser.add_argument("--kind", default="claude", choices=["claude", "codex"],
+                        help="Agent runtime/harness (default: claude). 'codex' launches "
+                             "OpenAI Codex CLI via build_codex_cmd. (goose is still selected "
+                             "by model alias for now.)")
     parser.add_argument("--session", default=None)
     parser.add_argument("--enroll", action="store_true")
     parser.add_argument("--no-attach", action="store_true")
@@ -1166,7 +1301,7 @@ def main():
             sess = respawn_session(args.session, args.name, args.model, args.cwd,
                                    args.effort, mode, args.enroll, args.dry_run)
         elif args.fresh:
-            sess = fresh(args.name, args.model, args.cwd, args.effort, mode)
+            sess = fresh(args.name, args.model, args.cwd, args.effort, mode, kind=args.kind)
         elif args.refresh:
             sess = refresh(args.name, args.model, args.cwd, args.effort, mode)
         else:
