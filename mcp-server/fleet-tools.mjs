@@ -84,7 +84,7 @@ function resolveChatBody(args, agentCwd) {
 const LOG_FILE = `${os.homedir()}/.claude/agent-messages.jsonl`;
 
 // --- tlda integration ---
-import { getRwToken, getServerUrl } from '../shared/config.mjs';
+import { getRwToken, getServerUrl, getFleetServerUrl } from '../shared/config.mjs';
 import { tldaFetch as _sharedFetch } from '../shared/http-client.mjs';
 const TLDA_SERVER = getServerUrl();
 const TLDA_WS_SERVER = TLDA_SERVER.replace(/^http/, 'ws');
@@ -94,7 +94,7 @@ const TLDA_WS_SERVER = TLDA_SERVER.replace(/^http/, 'ws');
 // the daemon on the owning machine). When TLDA_FLEET_SERVER is unset this is
 // identical to the single-endpoint behavior — set it to the Fly backend to put an
 // agent's fleet presence on the shared store while doc work stays local.
-const TLDA_FLEET_SERVER = process.env.TLDA_FLEET_SERVER || TLDA_SERVER;
+const TLDA_FLEET_SERVER = getFleetServerUrl();
 const TLDA_FLEET_WS_SERVER = TLDA_FLEET_SERVER.replace(/^http/, 'ws');
 const _tldaToken = getRwToken();
 

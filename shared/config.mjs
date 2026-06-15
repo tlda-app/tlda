@@ -65,6 +65,21 @@ export function getServerUrl(config = null) {
 }
 
 /**
+ * Fleet/event-store URL resolution.
+ * TLDA_FLEET_SERVER env → config.fleetServer → getServerUrl() (same host).
+ *
+ * The fleet/event store (chat, agents, activity, tasks) is the one global,
+ * non-room-scoped resource; an agent can point it at a shared backend (e.g. Fly)
+ * while doc/source ops stay on getServerUrl() per-resource. Read from config so
+ * an MCP restart picks up a change without relaunching the agent's session.
+ */
+export function getFleetServerUrl(config = null) {
+  if (process.env.TLDA_FLEET_SERVER) return process.env.TLDA_FLEET_SERVER
+  const cfg = config ?? loadConfig()
+  return cfg.fleetServer || getServerUrl(cfg)
+}
+
+/**
  * RW token resolution. Used by agents, daemon, CLI — anything that writes.
  * TLDA_TOKEN env → config.tokenRw → config.token → null
  */
