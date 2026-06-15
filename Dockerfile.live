@@ -39,9 +39,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # transitive deps (missing click). The venv is first on PATH so both node-gyp
 # (npm install below) and the runtime `python3 clause-split.py` resolve to it.
 ENV PATH="/opt/venv/bin:$PATH"
+# Install spaCy + the en_core_web_sm model in one pip call, fetching the model
+# WHEEL directly rather than via `spacy download` — the CLI path pulls typer/click
+# and broke the build (typer installed without click). Direct wheel install needs
+# no CLI; clause-split.py just does spacy.load("en_core_web_sm"). Model 3.8.x
+# matches spaCy 3.8.x.
 RUN python3 -m venv /opt/venv \
-    && pip install --no-cache-dir spacy \
-    && python -m spacy download en_core_web_sm
+    && pip install --no-cache-dir "spacy>=3.8,<3.9" \
+       "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
 
 # --- runtime deps ---
 # Install at /app (not server/) so BOTH server/*.mjs and shared/*.mjs resolve up to
