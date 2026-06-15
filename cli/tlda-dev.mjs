@@ -34,14 +34,6 @@ if (cmd === 'sandbox') {
   await cmdDevServer(args.slice(1), join(cliDir, '..'))
   process.exit(0)
 }
-// Guard: the isolated test server was renamed `server` → `sandbox`. Without this,
-// `tlda-dev server stop` would forward to the REAL `tlda server` and stop the
-// live local server — surprising and wrong. Point, don't forward.
-if (cmd === 'server') {
-  console.error('`tlda-dev server` was renamed → `tlda-dev sandbox` (isolated test server).')
-  console.error('For the real local server use `tlda server`.')
-  process.exit(1)
-}
 
 // Other dev commands (worktree/dev-url/deploy/restart-mcp) still live in tlda.mjs
 // — forward them, with TLDA_DEV_CLI=1 so tlda.mjs lets them past its
