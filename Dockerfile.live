@@ -45,7 +45,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 # no CLI; clause-split.py just does spacy.load("en_core_web_sm"). Model 3.8.x
 # matches spaCy 3.8.x.
 RUN python3 -m venv /opt/venv \
-    && pip install --no-cache-dir "spacy>=3.8,<3.9" \
+    && pip install --no-cache-dir "spacy>=3.8,<3.9" "click>=8.1" \
        "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
 
 # --- runtime deps ---
