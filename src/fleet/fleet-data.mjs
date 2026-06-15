@@ -39,6 +39,13 @@ const API_BASE = _syncWs
 let FLEET = API_BASE
 let FLEET_WS = API_BASE.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:')
 
+// The resolved global fleet WS/HTTP base, for other modules (e.g. TerminalShape's
+// /ws/terminal socket) that must target the same global server, not the serving
+// origin. Call AFTER init()/resolveFleetBase() — by the time a shape mounts and
+// connects, the value is resolved.
+export function getFleetWsBase() { return FLEET_WS }
+export function getFleetHttpBase() { return FLEET }
+
 // Resolve the global fleet store from the serving server's /api/fleet-config.
 // Falls back to API_BASE on any failure so chat still works against the local
 // server if the endpoint is missing/unreachable.
