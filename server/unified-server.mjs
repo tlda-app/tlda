@@ -4115,6 +4115,27 @@ async function syncSentinelFromShadow(projectName) {
   }
 }
 
+// Set (or clear, with syncError=null) the mirror/shadow sync-failure state on a
+// doc's version sentinel. Convergent Yjs state, so the SyncErrorPill shows it on
+// every connected viewer and it survives reconnect until a successful sync clears
+// it. Merges into the sentinel so build state (commitHash, errorsJson) is kept.
+async function setSentinelSyncError(projectName, syncError) {
+  const docName = `doc-${projectName}`
+  const json = syncError ? JSON.stringify(syncError) : ''
+  try {
+    await updateShape(docName, 'shape:doc-version--sentinel', (cur) => ({
+      ...cur,
+      props: { ...cur.props, syncErrorJson: json },
+    }))
+  } catch (e) {
+    // No sentinel yet = the doc has never built; there's nothing to annotate and
+    // no viewer reading it. Skip quietly; any other failure is worth logging.
+    if (!/not found/i.test(e?.message || '')) {
+      console.warn(`[sync-error] ${projectName}: failed to update sentinel: ${e.message}`)
+    }
+  }
+}
+
 function broadcastDaemonVersionCommitted(projectName, hash) {
   if (daemonConnections.size === 0) return
   const project = readProject(projectName)
@@ -4516,6 +4537,13 @@ async function handleDaemonWsMessage(ws, msg) {
       }
     }
 
+    // Critical, project-scoped warnings (mirror/shadow sync failure, divergence)
+    // also raise the per-doc visual indicator via the version sentinel — the
+    // enlarged sibling of the build-error badge.
+    if (project && (severity || 'warning') === 'critical') {
+      setSentinelSyncError(project, [{ message }])
+    }
+
     // Per-(project, recipient) dedup so the ×N counter is correct for each.
     for (const to of recipients) {
       const key = `${project || ''}|${to}`
@@ -4534,6 +4562,17 @@ async function handleDaemonWsMessage(ws, msg) {
           _daemonWarnDedup.set(key, { eventId: event.id, count: 1, lastSeen: now, baseText })
         }
       }
+    }
+    return
+  }
+
+  if (type === 'daemon-sync-ok') {
+    // The daemon reports a clean shadow sync — clear the per-doc sync-failure
+    // indicator. (No chat: success is not news; it just lowers the alarm.)
+    const { project } = msg
+    if (project) {
+      setSentinelSyncError(project, null)
+      _daemonWarnDedup.delete(`${project}|${SERVER_OWNER_ID}`)
     }
     return
   }

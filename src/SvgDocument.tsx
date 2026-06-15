@@ -82,6 +82,7 @@ import { FleetHUD, fleetHudOpenRef } from './overlays/FleetHUD'
 
 import { BuildWarningPill } from './pills/BuildWarningPill'
 import { BuildErrorPill } from './pills/BuildErrorPill'
+import { SyncErrorPill } from './pills/SyncErrorPill'
 import { BuildProgressPill } from './pills/BuildProgressPill'
 import { AnnotationVisibilityPill } from './pills/AnnotationVisibilityPill'
 import { DraftPill } from './pills/DraftPill'
@@ -1195,6 +1196,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
         {isPresentation && <DraftPill />}{isPresentation && role === 'presenter' && <AnnotationVisibilityPill />}<FollowingBadge />
         <ViewPinBadge docName={document.name} />
         <PlaybackPill state={playbackState} />
+        <SyncErrorPill />
         <BuildErrorPill />
         <BuildWarningPill warnings={buildWarnings}>
           <BuildProgressPill />

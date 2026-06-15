@@ -294,6 +294,7 @@ const customShapeSchemas = {
       sourceVersion: T.optional(T.number),
       warningsJson: T.optional(T.string),
       errorsJson: T.optional(T.string),
+      syncErrorJson: T.optional(T.string),
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.doc-version',

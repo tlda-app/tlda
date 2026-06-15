@@ -2095,7 +2095,10 @@ async function updateDocVersionSentinel(name, shadowHash, buildReadyAt, errors, 
     await updateShape(docName, 'shape:doc-version--sentinel', (cur) => {
       const prev = cur?.props?.sourceVersion
       if (typeof prev === 'number' && sv <= prev) { skipped = true; return cur }
-      return sentinel
+      // Preserve a standing mirror sync-failure indicator across build writes —
+      // a successful build doesn't mean the working-copy mirror sync recovered;
+      // only daemon-sync-ok clears it.
+      return { ...sentinel, props: { ...sentinel.props, syncErrorJson: cur?.props?.syncErrorJson ?? '' } }
     })
     if (skipped) {
       console.log(`[build:${name}] skipped out-of-order sentinel write: source ${sv} ≤ committed`)

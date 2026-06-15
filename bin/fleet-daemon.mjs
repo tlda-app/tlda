@@ -3055,6 +3055,8 @@ async function handleVersionCommitted(msg) {
     try {
       await execFileP('git', ['merge', '--ff-only', ref], { cwd: sourceDir, timeout: 15000 })
       log.info(`synced ${projectName}: ${hash?.slice(0, 7)}`)
+      // Clean sync — clear any standing sync-failure indicator for this doc.
+      sendMsg({ type: 'daemon-sync-ok', project: projectName })
     } catch {
       // Clean tree but not a fast-forward = a genuine divergence: the shadow has
       // content this source's lineage doesn't. Do NOT force, do NOT stash.
