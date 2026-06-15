@@ -4510,10 +4510,9 @@ async function handleDaemonWsMessage(ws, msg) {
           }
         }
       } catch (e) {
-        // Best-effort enrichment: if we can't resolve the editing agent, still
-        // deliver to the owner below — but never swallow it silently in the
-        // very code whose job is to surface failures.
         console.warn(`[daemon-warning] editing-agent lookup failed for ${project}: ${e.message}`)
+        // Fall through to owner delivery — best-effort enrichment must never
+        // silence the alert it's trying to enrich.
       }
     }
 
