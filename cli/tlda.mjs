@@ -29,6 +29,7 @@ import {
 } from '../shared/config.mjs'
 import { tldaFetch } from '../shared/http-client.mjs'
 import { DEV_COMMANDS } from './lib/dev-commands.mjs'
+import { resolveRepoRoot, ensureWorktree, startWorktreeVite, findFreePort } from './lib/dev-vite.mjs'
 import { cmdLogs } from './lib/unified-logs.mjs'
 
 // --- Argument parsing ---
@@ -2268,144 +2269,39 @@ async function cmdFleetDev() {
   }
 }
 
-// --- Dev worktree setup ---
-
-async function findFreePort(startPort) {
-  const net = await import('net')
-  return new Promise((resolve) => {
-    const server = net.default.createServer()
-    server.listen(startPort, () => {
-      const { port } = server.address()
-      server.close(() => resolve(port))
-    })
-    server.on('error', () => resolve(findFreePort(startPort + 1)))
-  })
-}
+// --- `tlda-dev serve <branch>` — vite dev server for a branch ---
 
 async function cmdDev() {
-  const { execSync, spawn } = await import('child_process')
-  const { openSync: fsOpenSync } = await import('fs')
-
-  // `tlda-dev worktree <branch>` — branch is positional; --worktree still accepted.
-  const worktreeName = getPositional(0) || getFlag('worktree')
+  // branch is positional (`tlda-dev serve <branch>`); --worktree still accepted.
+  const branch = getPositional(0) || getFlag('worktree')
   const portArg = getFlag('port')
 
-  // Find main repo root (works whether we're in a worktree or the main repo).
-  // git rev-parse --git-common-dir returns the shared .git dir — parent is the main repo.
-  const scriptDir = dirname(fileURLToPath(import.meta.url))
-  let repoRoot
-  try {
-    const gitCommonDir = execSync('git rev-parse --git-common-dir', { cwd: scriptDir, stdio: 'pipe' }).toString().trim()
-    // In main repo: '.git' (relative). In worktree: absolute path like /path/to/repo/.git
-    repoRoot = gitCommonDir === '.git'
-      ? join(scriptDir, '..')
-      : dirname(gitCommonDir)
-  } catch {
-    repoRoot = join(scriptDir, '..')
-  }
+  const worktreeDir = ensureWorktree(resolveRepoRoot(), branch)
+  console.log(dim(branch ? `Worktree: .worktrees/${branch}` : 'Serving current checkout'))
 
-  let worktreeDir = repoRoot  // default: current repo if no --worktree
-  if (worktreeName) {
-    worktreeDir = join(repoRoot, '.worktrees', worktreeName)
-
-    if (!existsSync(worktreeDir)) {
-      console.log(dim(`Creating worktree .worktrees/${worktreeName}...`))
-      try {
-        execSync(`git worktree add -b "${worktreeName}" ".worktrees/${worktreeName}"`, {
-          cwd: repoRoot,
-          stdio: 'pipe',
-        })
-      } catch (e1) {
-        // Branch already exists — check it out without -b
-        try {
-          execSync(`git worktree add ".worktrees/${worktreeName}" "${worktreeName}"`, {
-            cwd: repoRoot,
-            stdio: 'pipe',
-          })
-        } catch (e2) {
-          throw new Error(`Failed to create worktree: ${e2.message}`)
-        }
-      }
-      console.log(green(`Worktree created: ${worktreeDir}`))
-    } else {
-      console.log(dim(`Using existing worktree: ${worktreeDir}`))
-    }
-  }
-
-  // npm install if needed (--ignore-scripts skips `prepare` vite build)
-  if (!existsSync(join(worktreeDir, 'node_modules'))) {
-    console.log(dim('Running npm install...'))
-    execSync('npm install --ignore-scripts', { cwd: worktreeDir, stdio: 'inherit' })
-  }
-
-  // Pick port
-  const port = portArg ? parseInt(portArg) : await findFreePort(5180)
-
-  // Start Vite in background. Call the vite binary DIRECTLY — `npx vite` adds a
-  // wrapper process that gets reaped when the spawning shell exits, so the dev
-  // server "dies" between commands. Prefer the worktree's install, fall back to
-  // the main repo's binary.
-  const viteLogFile = join(worktreeDir, '.dev-vite.log')
-  const logFd = fsOpenSync(viteLogFile, 'a')
-
-  const mainRepoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
-  const viteBin = [
-    join(worktreeDir, 'node_modules', '.bin', 'vite'),
-    join(mainRepoRoot, 'node_modules', '.bin', 'vite'),
-  ].find(p => existsSync(p))
-  if (!viteBin) throw new Error('vite binary not found (worktree or main repo node_modules)')
-
-  // Bind IPv4 explicitly — without --host, vite binds IPv6 [::1] only, so a
-  // browser hitting `localhost` (which resolves to 127.0.0.1) gets "can't be
-  // found." 127.0.0.1 makes the printed localhost URL actually load.
-  const viteChild = spawn(viteBin, ['--port', String(port), '--host', '127.0.0.1'], {
-    cwd: worktreeDir,
-    detached: true,
-    stdio: ['ignore', logFd, logFd],
+  const { scheme, port, pid, logFile } = await startWorktreeVite({
+    worktreeDir,
+    port: portArg ? parseInt(portArg) : await findFreePort(5180),
+    hasTls,
   })
-  viteChild.unref()
 
-  console.log(dim(`Vite starting on port ${port} (pid ${viteChild.pid})...`))
-
-  // Wait for Vite to be ready (poll up to 30s). vite.config serves HTTPS when the
-  // mkcert certs exist (hasTls) — so probe https first, fall back to http; the
-  // scheme that answers is the one we hand back. Polling only http (the old bug)
-  // hung forever on a cert'd machine, where vite is https-only.
-  let scheme = null
-  for (let i = 0; i < 60 && !scheme; i++) {
-    await new Promise(r => setTimeout(r, 500))
-    for (const s of (hasTls ? ['https', 'http'] : ['http'])) {
-      try {
-        const res = await fetch(`${s}://localhost:${port}/`, { signal: AbortSignal.timeout(1000) })
-        if (res.ok || res.status === 404) { scheme = s; break }
-      } catch { /* not up yet / wrong scheme — try the other, or next poll */ }
-    }
-  }
-
-  if (!scheme) {
-    throw new Error(`Vite failed to start on port ${port} within 30s. Check log: ${viteLogFile}`)
-  }
-
-  // Write .dev-url with the scheme that actually answered. Chat/fleet resolves to
-  // the global store (Fly) via /api/fleet-config regardless; only doc-sync + assets
-  // ride this local proxy, so the worktree shares your room without extra wiring.
+  // Chat/fleet resolves to the global store via /api/fleet-config; only doc-sync +
+  // assets ride this local proxy, so the worktree shares your room with no extra wiring.
   const token = getToken()
   const base = `${scheme}://localhost:${port}/`
   const url = token ? `${base}?token=${token}` : base
-  const devUrlPath = join(worktreeDir, '.dev-url')
-  writeFileSync(devUrlPath, url)
+  writeFileSync(join(worktreeDir, '.dev-url'), url)
 
-  // Print summary
   console.log(green(`\nVite dev server ready`))
-  if (worktreeName) console.log(`  Worktree: ${worktreeDir}`)
+  if (branch) console.log(`  Worktree: ${worktreeDir}`)
   console.log(`  Port:     ${port}`)
-  console.log(`  PID:      ${viteChild.pid}`)
-  console.log(`  Log:      ${viteLogFile}`)
+  console.log(`  PID:      ${pid}`)
+  console.log(`  Log:      ${logFile}`)
   console.log(bold(`\n  ${url}\n`))
 }
 
 async function cmdDevUrl() {
-  // Prefer the .dev-url that `tlda-dev worktree` wrote (correct scheme + token).
+  // Prefer the .dev-url that `tlda-dev serve` wrote (correct scheme + token).
   const devUrlPath = join(process.cwd(), '.dev-url')
   if (existsSync(devUrlPath)) { console.log(readFileSync(devUrlPath, 'utf8').trim()); return }
   const portArg = getFlag('port')
@@ -2453,7 +2349,7 @@ async function main() {
       case 'setup': await cmdSetup(); break
       case 'agent': await cmdAgent(); break
       case 'restart-mcp': await restartMcpAgents(process.argv.slice(3)); break // dev-only; surfaced via `tlda-dev restart-mcp`
-      case 'worktree': await cmdDev(); break // dev-only; surfaced via `tlda-dev worktree`
+      case 'serve': await cmdDev(); break // dev-only; surfaced via `tlda-dev serve`
       case 'dev-url': await cmdDevUrl(); break
       case 'deploy': await cmdDeploy(); break
       case 'doctor': await cmdDoctor(); break

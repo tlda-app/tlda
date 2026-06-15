@@ -9,18 +9,19 @@
  * Re-sorting a command between user-facing and developer is a one-line edit here.
  */
 
-export const DEV_COMMANDS = ['pw', 'worktree', 'sandbox', 'dev-url', 'deploy', 'restart-mcp']
+export const DEV_COMMANDS = ['pw', 'serve', 'sandbox', 'dev-url', 'deploy', 'restart-mcp']
 
 export const DEV_HELP = `tlda-dev — developer commands for hacking on tlda itself
 
-Three dev-environment modes (the user app is just \`tlda server start\`):
-  worktree <branch> [--port N]  Worktree Vite dev server — free port, https,
+Two dev-environment modes (the user app is just \`tlda server start\`):
+  serve <branch> [--port N]   Vite dev server for a branch — free port, https,
                      off .worktrees/<branch> (creates it if missing). Chat/fleet
-                     resolves to your global store (Fly) via /api/fleet-config;
-                     docs + shapes stay on your local server. Your room, your code.
-  sandbox [start|stop|status]   Fully isolated test server — own DB + projects +
-                     port, no supervisors, not on the global store — to test new
-                     shapes without touching a live room.
+                     resolves to your global store via /api/fleet-config; docs +
+                     shapes stay on your local server. Your room, your code.
+  sandbox <branch>            A complete throwaway environment for a branch — its
+                     own backend + DB + projects + chat + a Vite pointed at it,
+                     nothing shared. For server/shape changes that would crash a
+                     live room. (\`sandbox stop|status\` to manage it.)
 
 Other commands:
   pw <verb> [args]   Drive the one shared playwright browser (goto, click,
