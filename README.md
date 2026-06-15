@@ -156,6 +156,8 @@ A few small controls sit in the corners of your canvas. The **bottom-right** hol
 
 Lay out the HUD however you like. Click a shape's little **layout button** to get drag handles; from there you can **brush** — drag a box to select other shapes too — then move or resize the whole group at once. The Shapes button (in the bottom-right stack) opens a layout picker with presets to start from.
 
+**Touch and multitouch.** On an iPad or phone the HUD is direct: one finger scrolls the content under it, **two fingers on a panel** move and pinch-resize it at once, two fingers spanning panels move that whole margin group, and **three fingers** anywhere pan the canvas.
+
 <img src="docs/images/tlda-layout-location.png" alt="The layout button — the control panel on a shape's edge" width="40%"> <img src="docs/images/tlda-layout-brush.png" alt="Brushing to select multiple shapes into a group, with drag handles" width="58%">
 
 ### Voice
