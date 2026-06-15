@@ -727,12 +727,16 @@ def build_codex_cmd(fleet_id, tmux_session, model=None, resume_id=None,
 
 
 def _session_has_claude(session):
-    """Check if a tmux session has a running agent process (claude OR goose).
+    """Check if a tmux session has a running agent process (claude OR goose OR codex).
 
-    Named for the common case but goose-aware: a goose-backed DeepSeek agent
-    runs `goose`, not `claude`. Without the goose check, a stray wake/respawn
-    would see "no claude here", treat the live goose agent as a dead pane, and
-    kill-session it — the death-loop bug, reborn for goose."""
+    Named for the common case but harness-aware: a goose-backed DeepSeek agent
+    runs `goose` and an OpenAI Codex agent runs `codex`, not `claude`. Without
+    these checks a stray wake/respawn would see "no claude here", treat the live
+    goose/codex agent as a dead pane, kill-session it, and relaunch it as a
+    claude impostor — the death-loop bug. (Codex variant observed 2026-06-15:
+    codexpg got clobbered into a claude impostor.) The codex match is
+    boundary-anchored so a path containing "codex" (e.g. a worktree) doesn't
+    false-positive — only the `codex` executable token counts."""
     try:
         r = subprocess.run(tmux("list-panes", "-t", session, "-F", "#{pane_pid}"),
                            capture_output=True, text=True, timeout=5)
@@ -741,7 +745,10 @@ def _session_has_claude(session):
         for pid in r.stdout.strip().split():
             ps = subprocess.run(["ps", "-p", pid, "-o", "args="],
                                 capture_output=True, text=True, timeout=5)
-            if ps.returncode == 0 and ("claude" in ps.stdout or "goose" in ps.stdout):
+            if ps.returncode == 0 and (
+                "claude" in ps.stdout or "goose" in ps.stdout
+                or re.search(r'(?:^|\s|/)codex(?:\s|$)', ps.stdout)
+            ):
                 return True
         return False
     except Exception:
@@ -1019,8 +1026,17 @@ def respawn(name, model, cwd, effort, mode, session_override=None):
     meta = agent_meta(agent)
     cwd = cwd or agent.get("cwd") or os.getcwd()
     raw_model = model or meta.get("model")
-    goose_model = resolve_goose_model(raw_model)
-    model = goose_model or resolve_model(raw_model)
+    # Harness is recorded on the agent row (kind). Codex skips the claude/goose
+    # model resolution — it uses its subscription default unless an explicit
+    # model was stored. (Reading kind here is what stops a codex agent's wake
+    # from falling through to the claude relaunch — the impostor bug.)
+    kind = agent.get("kind") or "claude"
+    if kind == "codex":
+        goose_model = None
+        model = raw_model  # codex model id or None; do NOT claude-resolve
+    else:
+        goose_model = resolve_goose_model(raw_model)
+        model = goose_model or resolve_model(raw_model)
     sess = agent.get("tmux_session") or f"fleet-{name}"
 
     # Single-flight: hold a per-session lock across the WHOLE wake (check →
@@ -1035,6 +1051,20 @@ def respawn(name, model, cwd, effort, mode, session_override=None):
     if subprocess.run(tmux("has-session", "-t", sess), capture_output=True).returncode == 0:
         if _session_has_claude(sess):
             return sess
+
+    if kind == "codex":
+        # Codex relaunch with the SAME fleet_id (env re-injected via build_codex_cmd
+        # incl. the -c MCP env). For now this is a fresh launch re-briefed via the
+        # register prompt + my_task (like goose); a true rollout-resume is a
+        # follow-up on the S2 session path. spawn_tmux's alive-check is now
+        # codex-aware (_session_has_claude), so a live codex agent is left running.
+        cmd = build_codex_cmd(fleet_id, sess, model=model, name=name)
+        started = spawn_tmux(sess, cwd, cmd, auto_dismiss=False)
+        if not started:
+            print(f"{sess} ({fleet_id}) already alive — left running", file=sys.stderr)
+        else:
+            print(f"{sess} ({fleet_id}) relaunched (codex)")
+        return sess
 
     if goose_model:
         # Goose agents are stateless-role-from-chat: there is no resumable claude
@@ -1092,14 +1122,21 @@ def refresh(name, model, cwd, effort, mode):
     meta = agent_meta(agent)
     cwd = cwd or agent.get("cwd") or os.getcwd()
     raw_model = model or meta.get("model")
-    goose_model = resolve_goose_model(raw_model)
-    model = goose_model or resolve_model(raw_model)
+    kind = agent.get("kind") or "claude"
+    if kind == "codex":
+        goose_model = None
+        model = raw_model  # codex model id or None; do NOT claude-resolve
+    else:
+        goose_model = resolve_goose_model(raw_model)
+        model = goose_model or resolve_model(raw_model)
     if not effort:
         effort = meta.get("effort")
     sess = agent.get("tmux_session") or f"fleet-{name}"
 
-    ws_register(fleet_id, name, sess, cwd, model, effort, refresh=True)
-    if goose_model:
+    ws_register(fleet_id, name, sess, cwd, model, effort, refresh=True, kind=kind)
+    if kind == "codex":
+        cmd = build_codex_cmd(fleet_id, sess, model=model, name=name)
+    elif goose_model:
         cmd = build_goose_cmd(fleet_id, sess, goose_model, name=name)
     else:
         cmd = build_claude_cmd(fleet_id, sess, model, effort, mode, name=name)
