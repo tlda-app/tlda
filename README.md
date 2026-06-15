@@ -150,7 +150,7 @@ You can scroll a chat panel up indefinitely, or search, to see anything that's h
 
 A few small controls sit in the corners of your canvas. The **bottom-right** holds a small stack — a **highlighter** selector, a **voice-note** button (drops a sticky note and starts dictating into it), a **mic toggle** that turns voice input on and off, and the **Shapes** button, which toggles the HUD on and off when you click it and opens a layout picker when you drag it. A **table of contents** sits largely hidden in the top-right — hover there to reveal it and jump around the document.
 
-<img src="docs/images/tlda-corners.png" alt="The corner controls — the version stack (top-left), the table of contents (top-right), and the bottom-right stack: highlighter, voice-note, mic toggle, and Shapes/layout" width="100%">
+<img src="docs/images/tlda-corners.png" alt="The corner controls — the version stack and toolbar (left edge), the table of contents (top-right), and the bottom-right stack: highlighter colors, voice-note, mic toggle, and Shapes/layout" width="55%">
 
 ### Layout
 
