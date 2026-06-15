@@ -4509,7 +4509,12 @@ async function handleDaemonWsMessage(ws, msg) {
             if (a.cwd === sd || a.cwd.startsWith(sd + '/')) { recipients.add(a.id); break }
           }
         }
-      } catch {}
+      } catch (e) {
+        // Best-effort enrichment: if we can't resolve the editing agent, still
+        // deliver to the owner below — but never swallow it silently in the
+        // very code whose job is to surface failures.
+        console.warn(`[daemon-warning] editing-agent lookup failed for ${project}: ${e.message}`)
+      }
     }
 
     // Per-(project, recipient) dedup so the ×N counter is correct for each.
