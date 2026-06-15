@@ -33,6 +33,15 @@ TLDA_SERVER=<their-url> tlda config mcp-setup
 
 Claude Code in that directory now has tlda's tools, pointed at their server.
 
+To **edit the source yourself** and have your saves rebuild on their canvas, bind a local clone of the paper to the project so your own daemon watches it:
+
+```bash
+tlda doc link <name> --dir /path/to/your/clone   # <name> is the project on their server
+tlda daemon start                                 # your saves now rebuild there
+```
+
+Your clone has to share git history with the paper — otherwise edits won't reconcile. Everyone works in their own clone and syncs with plain git (push, pull, resolve conflicts as usual); the daemon keeps each person's rendered view current but doesn't merge source for you, so reach for a collaborative editor (Zed, VS Code Live Share) when you're in the same file at once.
+
 ### Running your own
 
 **Install** — macOS:
