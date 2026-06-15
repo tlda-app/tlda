@@ -290,7 +290,7 @@ def ensure_server():
     return False
 
 
-def ws_register(fleet_id, name, tmux_session, cwd, model=None, effort=None, refresh=False):
+def ws_register(fleet_id, name, tmux_session, cwd, model=None, effort=None, refresh=False, kind="claude"):
     _ws_scheme = "wss" if _scheme == "https" else "ws"
     ws_url = f"{_ws_scheme}://{DASH_HOST}:{DASH_PORT}/ws/fleet?agent={fleet_id}"
     try:
@@ -299,7 +299,7 @@ def ws_register(fleet_id, name, tmux_session, cwd, model=None, effort=None, refr
             ws_opts["sslopt"] = {"context": _ssl_ctx}
         ws = websocket.create_connection(ws_url, **ws_opts)
         msg = {"type": "register", "id": fleet_id, "name": name,
-               "tmux_session": tmux_session, "cwd": cwd}
+               "tmux_session": tmux_session, "cwd": cwd, "kind": kind}
         meta = {}
         if model:
             meta["model"] = model
@@ -923,11 +923,31 @@ def inject_prompt(session, prompt, timeout=60):
 
 # ---- Spawn modes ----
 
-def fresh(name, model, cwd, effort, mode):
+def fresh(name, model, cwd, effort, mode, kind="claude"):
     server_up = ensure_server()
     fleet_id = f"fleet:{uuid.uuid4().hex[:8]}"
     sess = unique_session_name(f"fleet-{sanitize_session_name(name)}")
     cwd = resolve_spawn_cwd(cwd)
+    # Codex agents select by explicit kind, not model-alias. Skip the
+    # claude/goose model resolution; codex uses its subscription default unless
+    # an explicit --model is passed (forwarded verbatim to `codex -m`).
+    if kind == "codex":
+        codex_model = model  # may be None → codex picks the plan default
+        if server_up:
+            existing = find_agent(name)
+            if existing:
+                print(f"Error: '{name}' already exists ({existing['id']}). "
+                      f"Use: fleet-spawn {name}", file=sys.stderr)
+                sys.exit(1)
+            collisions = check_name_collisions(name)
+            if collisions:
+                print(f"Error: '{name}' is not available.", file=sys.stderr)
+                sys.exit(1)
+            ws_register(fleet_id, name, sess, cwd, codex_model, effort, refresh=True, kind="codex")
+        cmd = build_codex_cmd(fleet_id, sess, model=codex_model, name=name, cwd=cwd)
+        spawn_tmux(sess, cwd, cmd)
+        print(f"{sess} ({fleet_id}) spawned in {cwd} (codex)")
+        return sess
     goose_model = resolve_goose_model(model)
     if goose_model and not goose_model_verified(goose_model):
         print(f"  Warning: '{goose_model}' is not on the verified tool-calling "
@@ -1174,6 +1194,10 @@ def main():
     parser.add_argument("--cwd", default=None)
     parser.add_argument("--effort", default=None)
     parser.add_argument("--mode", default=None)
+    parser.add_argument("--kind", default="claude", choices=["claude", "codex"],
+                        help="Agent runtime/harness (default: claude). 'codex' launches "
+                             "OpenAI Codex CLI via build_codex_cmd. (goose is still selected "
+                             "by model alias for now.)")
     parser.add_argument("--session", default=None)
     parser.add_argument("--enroll", action="store_true")
     parser.add_argument("--no-attach", action="store_true")
@@ -1226,7 +1250,7 @@ def main():
             sess = respawn_session(args.session, args.name, args.model, args.cwd,
                                    args.effort, mode, args.enroll, args.dry_run)
         elif args.fresh:
-            sess = fresh(args.name, args.model, args.cwd, args.effort, mode)
+            sess = fresh(args.name, args.model, args.cwd, args.effort, mode, kind=args.kind)
         elif args.refresh:
             sess = refresh(args.name, args.model, args.cwd, args.effort, mode)
         else:
