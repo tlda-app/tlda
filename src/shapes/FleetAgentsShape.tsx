@@ -45,7 +45,8 @@ const MODEL_FALLBACK = [
   'opus', 'opus45', 'opus46', 'opus47', 'opus48', 'sonnet', 'haiku', 'fable',
   'deepseek', 'deepseek-v4-pro', 'deepseek-v4', 'deepseek-v4-flash',
   'deepseek-chat', 'deepseek-v3', 'deepseek-r1', 'deepseek-reasoner',
-  'kimi', 'qwen', 'glm', 'minimax', 'mistral', 'gemini',
+  'kimi', 'kimi-k2.7', 'qwen', 'qwen3.7-max', 'glm', 'glm-5.1',
+  'minimax', 'minimax-m3', 'mistral', 'mistral-medium-3-5', 'gemini', 'gemini-3.5-flash',
 ]
 
 // Live alias list, shared across all FleetAgents shapes: one fetch, cached, with

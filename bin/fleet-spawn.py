@@ -108,12 +108,21 @@ GOOSE_MODELS = {
     # Other families — aliases registered; each is confirmed/denied by the probe
     # and the verified set below. An UNVERIFIED alias still resolves (warn only),
     # so you can probe it; it just isn't trusted for tool-using roles yet.
+    # Each family: a bare alias (the default version we use) AND an explicit
+    # version alias, so both resolve and both show in completions — mirroring
+    # opus/opus48 and deepseek/deepseek-v4-pro.
     "kimi": "moonshotai/kimi-k2.7-code",
+    "kimi-k2.7": "moonshotai/kimi-k2.7-code",
     "qwen": "qwen/qwen3.7-max",
+    "qwen3.7-max": "qwen/qwen3.7-max",
     "glm": "z-ai/glm-5.1",
+    "glm-5.1": "z-ai/glm-5.1",
     "minimax": "minimax/minimax-m3",
+    "minimax-m3": "minimax/minimax-m3",
     "gemini": "google/gemini-3.5-flash",
+    "gemini-3.5-flash": "google/gemini-3.5-flash",
     "mistral": "mistralai/mistral-medium-3-5",
+    "mistral-medium-3-5": "mistralai/mistral-medium-3-5",
 }
 
 # OpenRouter ids VERIFIED to emit STRUCTURED tool-calls through goose
