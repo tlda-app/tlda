@@ -17,7 +17,11 @@ const DEFAULTS = {
   'math-note-color': 'light-blue' as string,
   'response-curve': DEFAULT_CURVE as CurveHandles,
   'spawn-mode': '' as string,
-  'voice-backend': 'chrome' as string,
+  // Default on, but to the SILENT backend (deepgram) — never chrome. Chrome
+  // (the only backend whose earcon can beep) is opt-in only. There is NO
+  // fallback: if the selected backend is unreachable, voice goes quiet, it
+  // never switches to another backend.
+  'voice-backend': 'deepgram' as string,
   'fleet-font-size': 11 as number,
   // Default fleet layout sizing (used by createFleetLayout). margin-gap is the
   // distance from each document edge to the near edge of the fleet shapes in
