@@ -246,12 +246,13 @@ export function PrefsTab() {
       <div className="prefs-section">
         <div className="prefs-section-label">Voice backend</div>
         <select value={prefs.voiceBackend} onChange={e => { setPref('voice-backend', e.target.value); setVoiceBackend(e.target.value) }} className="prefs-select">
+          <option value="">Off</option>
           <option value="chrome">Chrome Web Speech</option>
           <option value="deepgram">Deepgram</option>
           <option value="whisper">Whisper</option>
         </select>
         <div style={{ fontSize: 10, color: '#6b7280', marginTop: 2 }}>
-          Switches live. URL param &voice= overrides.
+          Off until you pick one. No default, no fallback — the chosen backend is the only one that ever runs.
         </div>
       </div>
 

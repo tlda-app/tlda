@@ -1441,6 +1441,7 @@ if (typeof window !== 'undefined') {
 function startRecording() {
   vlog('startRecording', { backend: _backend, recording: _recording, hasTextarea: !!_activeTextarea, hasAccumulator: !!_accumulator })
   if (_recording) return
+  if (_backend === 'none') return   // no backend enabled — voice is off
   if (_backend === 'chrome' && !SpeechRecognition) return
 
   // No guard on having a target: recording can run targetless. With no
@@ -1635,27 +1636,22 @@ export async function initVoice() {
 
   _initialized = true
 
-  // Voice backend: URL param overrides pref. Default pref is 'chrome'.
-  const urlVoice = new URLSearchParams(window.location.search).get('voice')
+  // Voice backend selection is EXPLICIT ONLY. The backend is whatever the user
+  // enabled in Preferences — there is no URL override, no implicit default, no
+  // auto-selection (not even the protective iPad→deepgram one), and no fallback.
+  // If nothing is enabled, voice stays OFF and silent. This is the rule that
+  // keeps any backend the user didn't choose — in particular iOS/Chrome Web
+  // Speech, whose start/stop earcon ignores the silent switch — from ever
+  // running unbidden.
   const { getPref, whenPrefsLoaded } = await import('./preferences.ts')
-  // Don't race the async pref load — initVoice runs at module-load time but
-  // loadPrefs is triggered by the identity event. Without this wait, voice
-  // would commit to the chrome default even when the user's saved pref is
-  // deepgram. Cap at 2s so a never-resolving identity doesn't block voice.
-  if (!urlVoice) {
-    await Promise.race([whenPrefsLoaded(), new Promise(r => setTimeout(r, 2000))])
-  }
-  // A remote touch device is the iPad: force it onto Deepgram (reached via the
-  // server proxy) because its only other option, Chrome Web Speech, is iOS
-  // speech recognition — whose restart earcon is the beeping we're killing.
-  // Explicit ?voice= still wins; same-machine sessions keep using the pref.
-  const _preferProxyDeepgram = _isTouchDevice && !_onServerHost
-  const prefBackend = urlVoice
-    || (_preferProxyDeepgram ? 'deepgram' : null)
-    || getPref('voice-backend') || 'chrome'
+  // Wait for the saved pref to load before committing — never pick a backend
+  // before we know what the user actually selected. Cap at 2s.
+  await Promise.race([whenPrefsLoaded(), new Promise(r => setTimeout(r, 2000))])
+  const prefBackend = getPref('voice-backend')   // 'deepgram' | 'whisper' | 'chrome' | '' (off)
+
   if (prefBackend === 'chrome') {
     _backend = 'chrome'
-    console.log(`voice: using Chrome Web Speech API (${urlVoice ? 'URL param' : 'pref'})`)
+    console.log('voice: using Chrome Web Speech API (explicitly enabled)')
   } else if (prefBackend === 'whisper') {
     _backend = 'whisper-stream'
     try {
@@ -1663,60 +1659,26 @@ export async function initVoice() {
     } catch (err) {
       console.warn('voice: whisper lazy-start request failed', err)
     }
-    try {
-      const testWs = new WebSocket(WHISPER_BRIDGE_URL)
-      testWs.onopen = () => {
-        testWs.close()
-        _whisperAvailable = true
-        console.log('voice: using whisper-stream backend (via URL param)')
-        connectWhisperBridge()
-        if (_recording) showRecordingHud()
-      }
-      testWs.onerror = () => {
-        testWs.close()
-        if (!_whisperAvailable) {
-          _backend = 'chrome'
-          console.log('voice: whisper bridge not available, falling back to Chrome')
-        }
-      }
-    } catch {
-      _backend = 'chrome'
-    }
-  } else {
-    // Deepgram (explicit pref or URL param)
+    // Connect lazily. If the bridge never comes up, voice is simply unavailable
+    // — we do NOT fall back to anything that could make a sound.
+    _whisperAvailable = true
+    connectWhisperBridge()
+    console.log('voice: using whisper-stream backend (explicitly enabled)')
+  } else if (prefBackend === 'deepgram') {
     _backend = 'deepgram'
     try {
       await fetch('/api/voice/deepgram/start', { method: 'POST' })
     } catch (err) {
       console.warn('voice: deepgram lazy-start request failed', err)
     }
-    if (!_onServerHost) {
-      // iPad/remote: the bridge is reached through the same-origin server proxy,
-      // which lazy-starts it. Don't probe-and-fall-back to chrome (iOS speech =
-      // the beeping). Connect lazily when recording starts.
-      _deepgramAvailable = true
-      console.log('voice: using deepgram via server proxy (remote device)')
-    } else {
-      try {
-        const testWs = new WebSocket(deepgramBridgeUrl())
-        await new Promise((resolve, reject) => {
-          testWs.onopen = () => {
-            testWs.close()
-            _deepgramAvailable = true
-            console.log('voice: using deepgram backend (default)')
-            resolve()
-          }
-          testWs.onerror = () => {
-            testWs.close()
-            reject()
-          }
-          setTimeout(reject, 2000)
-        })
-      } catch {
-        _backend = 'chrome'
-        console.log('voice: deepgram bridge not available, falling back to Chrome')
-      }
-    }
+    // Connect lazily when recording starts. No probe-and-fallback: if the bridge
+    // is unreachable, recording just does nothing — never a fallback.
+    _deepgramAvailable = true
+    console.log('voice: using deepgram backend (explicitly enabled)')
+  } else {
+    // No backend enabled → voice is OFF. Nothing runs, nothing makes a sound.
+    _backend = 'none'
+    console.log('voice: no backend enabled — voice off (select one in Preferences)')
   }
 
   // Ground-truth diagnostic — lands in ~/.config/tlda/client.log so we can see
@@ -1724,15 +1686,16 @@ export async function initVoice() {
   log.info('voice', 'backend selected', {
     backend: _backend,
     prefBackend,
-    urlVoice,
     isTouch: _isTouchDevice,
     maxTouchPoints: typeof navigator !== 'undefined' ? navigator.maxTouchPoints : null,
     onServerHost: _onServerHost,
     hostname: location.hostname,
   })
 
-  if (!SpeechRecognition && _backend === 'chrome') {
-    console.warn('voice: no backend available')
+  if (_backend === 'none') return false
+  if (_backend === 'chrome' && !SpeechRecognition) {
+    console.warn('voice: chrome selected but SpeechRecognition unavailable — voice off')
+    _backend = 'none'
     return false
   }
 
@@ -1877,6 +1840,14 @@ export function getBackend() { return _backend }
 export function isWhisperAvailable() { return _whisperAvailable }
 export async function setBackend(be) {
   if (be === 'whisper') be = 'whisper-stream' // prefs dropdown uses the short name
+  // Explicit "off": no backend enabled. Stop any recording and go silent.
+  if (be === '' || be === 'none') {
+    if (_recording) stopRecording()
+    _backend = 'none'
+    showHud('voice: off', '#9370db')
+    fadeHud(2000)
+    return
+  }
   if (be !== 'chrome' && be !== 'whisper-stream' && be !== 'deepgram') return
   if (be === _backend) return
   if (be === 'chrome' && !SpeechRecognition) return

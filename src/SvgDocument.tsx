@@ -110,10 +110,7 @@ import { useSyncedPlayback } from './hooks/useSyncedPlayback'
 import { useFleetTheme, getStoredScheme } from './hooks/useFleetTheme'
 import { useTimelineOverlay } from './hooks/useTimelineOverlay'
 import { useDocAutoOpen } from './hooks/useDocAutoOpen'
-import { useFootControl } from './hooks/useFootControl'
 import { usePanMode } from './hooks/usePanMode'
-import { FootControlDebug } from './footControlDebug'
-import { subscribeInputModes, getFootEnabled, getClicksEnabled, getWhistleEnabled, getHissEnabled } from './inputModes'
 import { useShadowOverlay } from './hooks/useShadowOverlay'
 import { useDividerDiff } from './hooks/useDividerDiff'
 import { ShadowHistoryOverlay } from './overlays/ShadowHistoryOverlay'
@@ -593,20 +590,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
   // Auto-open shared docs pushed via fleet
   useDocAutoOpen(editorRef, document, docName)
-
-  // Input mode toggles (localStorage-persisted, per-feature on/off)
-  const footEnabled = useSyncExternalStore(subscribeInputModes, getFootEnabled)
-  const clicksEnabled = useSyncExternalStore(subscribeInputModes, getClicksEnabled)
-  const whistleEnabled = useSyncExternalStore(subscribeInputModes, getWhistleEnabled)
-  const hissEnabled = useSyncExternalStore(subscribeInputModes, getHissEnabled)
-
-  // Foot pedal control (rudder + toe brakes → cursor/pan, tongue click/lip pop → click/enter)
-  const { footInstance, clickInstance } = useFootControl(editorMounted ? editorRef.current : null, {
-    enabled: footEnabled || clicksEnabled,
-    clicksEnabled,
-    whistleEnabled,
-    hissEnabled,
-  })
 
   // Auxiliary mouse button (3 or 4) toggles pan mode: move mouse to pan canvas / scroll chat
   usePanMode(editorRef)
@@ -1630,9 +1613,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     </BottomPanelsContext.Provider>
     </PanelContext.Provider>
     </DocContext.Provider>
-    {new URLSearchParams(window.location.search).has('input') && (
-      <FootControlDebug footController={footInstance} clickDetector={clickInstance} />
-    )}
     </>
   )
 }

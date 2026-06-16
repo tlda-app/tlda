@@ -1,6 +1,4 @@
 import { useState, useEffect, useRef, useCallback, useContext, useMemo, useSyncExternalStore } from 'react'
-import { useClickActions } from './hooks/useClickActions'
-import { subscribeInputModes, getClicksEnabled } from './inputModes'
 import { setStopRecordingCallback } from './tools/VoiceNoteTool'
 import { setVoiceTarget, clearVoiceTarget, setVoiceAccumulator, stopRecording, isRecording, toggleRecording, voiceTap, onRecordingChange } from './voice.mjs'
 import { createPortal } from 'react-dom'
@@ -691,8 +689,6 @@ export function SemanticHighlightPill() { return null }
 
 function VoiceNoteButtonInner() {
   const editor = useEditor()
-  const clicksEnabled = useSyncExternalStore(subscribeInputModes, getClicksEnabled)
-  useClickActions(editor, clicksEnabled)
   const hiddenTARef = useRef<HTMLTextAreaElement | null>(null)
   const [recording, setRecording] = useState(false)
   const isPlacing = useValue('voice-placing', () => editor.getCurrentToolId() === 'voice-note', [editor])

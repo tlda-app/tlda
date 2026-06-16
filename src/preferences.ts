@@ -17,7 +17,9 @@ const DEFAULTS = {
   'math-note-color': 'light-blue' as string,
   'response-curve': DEFAULT_CURVE as CurveHandles,
   'spawn-mode': '' as string,
-  'voice-backend': 'chrome' as string,
+  // Empty = no backend enabled = voice OFF. A backend is NEVER used unless the
+  // user explicitly selects it in Preferences — no implicit default, no fallback.
+  'voice-backend': '' as string,
   'fleet-font-size': 11 as number,
   // Default fleet layout sizing (used by createFleetLayout). margin-gap is the
   // distance from each document edge to the near edge of the fleet shapes in

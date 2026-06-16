@@ -1,24 +1,16 @@
 /**
- * Input mode preferences — per-feature enable/disable toggles.
- * Each mode persists independently in localStorage. Default: off.
+ * Input mode preferences.
  *
- * Modes:
- *   foot     — gamepad pedal cursor control
- *   clicks   — tongue click / lip pop detection (mic)
- *   whistle  — whistle gesture detection (mic)
- *   hiss     — hiss gesture detection (mic)
- *   voice    — speech recognition for voice notes
+ * Voice is the only input mode: a single on/off setting. There are no
+ * gesture/mic backends to select, no overrides, no fallbacks — it's on or off.
+ * Persisted in localStorage.
  */
 
-export type InputMode = 'foot' | 'clicks' | 'whistle' | 'hiss' | 'voice'
+export type InputMode = 'voice'
 
 const STORAGE_PREFIX = 'tlda-input-'
 
 const state: Record<InputMode, boolean> = {
-  foot: localStorage.getItem(`${STORAGE_PREFIX}foot`) === 'true',
-  clicks: localStorage.getItem(`${STORAGE_PREFIX}clicks`) === 'true',
-  whistle: localStorage.getItem(`${STORAGE_PREFIX}whistle`) === 'true',
-  hiss: localStorage.getItem(`${STORAGE_PREFIX}hiss`) === 'true',
   voice: localStorage.getItem(`${STORAGE_PREFIX}voice`) === 'true',
 }
 
@@ -40,9 +32,4 @@ export function subscribeInputModes(fn: () => void): () => void {
   return () => { listeners.delete(fn) }
 }
 
-// Stable getter refs for useSyncExternalStore (one per mode, avoids re-render churn)
-export const getFootEnabled = () => state.foot
-export const getClicksEnabled = () => state.clicks
-export const getWhistleEnabled = () => state.whistle
-export const getHissEnabled = () => state.hiss
 export const getVoiceEnabled = () => state.voice
