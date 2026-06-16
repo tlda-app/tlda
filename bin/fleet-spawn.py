@@ -715,6 +715,11 @@ def build_codex_cmd(fleet_id, tmux_session, model=None, resume_id=None,
     # FLEET_HARNESS=codex → the MCP delivers incoming messages via a send-keys
     # nudge into the pane (like goose), not the Claude-only channel notification.
     parts.append(_cenv("FLEET_HARNESS", "codex"))
+    # The send-keys nudge targets process.env.FLEET_TMUX_SESSION. The process-level
+    # FLEET_TMUX_SESSION above does NOT reach the MCP subprocess (codex passes only
+    # the -c overrides), so inject it here too — without it the nudge silently
+    # no-ops and the agent never wakes on an incoming chat.
+    parts.append(_cenv("FLEET_TMUX_SESSION", tmux_session))
     parts.append(_cenv("TLDA_SERVER", API))
     parts.append(_cenv("TLDA_SYNC_SERVER", API))
     if model:
