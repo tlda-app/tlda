@@ -26,6 +26,7 @@ if (!process.argv.includes('--i-am-tlda-cli')) {
 import express from 'express'
 import { createServer } from 'http'
 import { createServer as createHttpsServer } from 'https'
+import { createSecureContext } from 'tls'
 import { WebSocketServer } from 'ws'
 import { spawn } from 'child_process'
 // Runtime guard: warn on execSync in server process (tmux commands still use it)
@@ -2057,12 +2058,35 @@ app.get('/{*path}', (req, res) => {
 
 // ---------- HTTP(S) + WebSocket server ----------
 
-const TLS_CERT = join(homedir(), '.config/tlda/localhost+2.pem')
-const TLS_KEY  = join(homedir(), '.config/tlda/localhost+2-key.pem')
+const TLS_CERT = process.env.TLDA_TLS_CERT || join(homedir(), '.config/tlda/localhost+2.pem')
+const TLS_KEY  = process.env.TLDA_TLS_KEY  || join(homedir(), '.config/tlda/localhost+2-key.pem')
 const useTls = existsSync(TLS_CERT) && existsSync(TLS_KEY)
-const server = useTls
-  ? createHttpsServer({ cert: readFileSync(TLS_CERT), key: readFileSync(TLS_KEY) }, app)
-  : createServer(app)
+
+// Optional second cert pair for off-laptop access. The mkcert cert above is only
+// trusted on machines holding the mkcert root CA (this laptop), so iPad/phone get
+// cert errors. A Tailscale-issued cert (publicly trusted, tailnet-hostname SANs)
+// fixes that. When present, SNI serves it for any non-localhost hostname while
+// localhost keeps the mkcert cert — so one server/port answers both links.
+const TLS_CERT_TAILNET = process.env.TLDA_TLS_CERT_TAILNET || join(homedir(), '.config/tlda/tailnet.pem')
+const TLS_KEY_TAILNET  = process.env.TLDA_TLS_KEY_TAILNET  || join(homedir(), '.config/tlda/tailnet-key.pem')
+const hasTailnetCert = existsSync(TLS_CERT_TAILNET) && existsSync(TLS_KEY_TAILNET)
+
+let server
+if (useTls) {
+  const tlsOptions = { cert: readFileSync(TLS_CERT), key: readFileSync(TLS_KEY) }
+  if (hasTailnetCert) {
+    const localCtx = createSecureContext({ cert: readFileSync(TLS_CERT), key: readFileSync(TLS_KEY) })
+    const tailnetCtx = createSecureContext({ cert: readFileSync(TLS_CERT_TAILNET), key: readFileSync(TLS_KEY_TAILNET) })
+    tlsOptions.SNICallback = (servername, cb) => {
+      const isLocal = servername === 'localhost' || servername === '127.0.0.1' || servername === '::1'
+      cb(null, isLocal ? localCtx : tailnetCtx)
+    }
+    console.log(`[tls] SNI enabled — localhost→mkcert, others→tailnet cert (${TLS_CERT_TAILNET})`)
+  }
+  server = createHttpsServer(tlsOptions, app)
+} else {
+  server = createServer(app)
+}
 
 const syncWss = new WebSocketServer({ noServer: true })
 const fleetWss = new WebSocketServer({ noServer: true })
