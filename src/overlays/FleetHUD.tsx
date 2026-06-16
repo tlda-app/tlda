@@ -14,7 +14,7 @@ import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { useFleetAgents, useFleetIdentity } from '../fleet-data-adapter'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getDeviceId } from '../fleet/fleet-data.mjs'
-import { getMyAnchorId, isMyFleetShape, FLEET_SHAPE_TYPES, adoptLegacyFleetShapes, layoutOffset } from '../shapes/fleet-utils'
+import { getMyAnchorId, isMyFleetShape, FLEET_SHAPE_TYPES, adoptLegacyFleetShapes, layoutOffset, ensureMyLaneDisjoint } from '../shapes/fleet-utils'
 import { useFleetGestures } from './useFleetGestures'
 import { SuggestionTip } from '../shapes/FleetChatShape'
 import { log } from '../logger'
@@ -184,6 +184,10 @@ export function FleetHUD({
     // computing bounds, else the device-scoped isMyFleetShape would orphan a
     // user's existing hand-built layout on first load after the upgrade.
     adoptLegacyFleetShapes(mainEditor)
+    // Self-heal accumulation: if my layout overlaps another owner (e.g. shapes
+    // placed under the old hash that collided), slide my whole layout into a free
+    // lane so different owners' shapes never overlap. Only moves MY shapes.
+    ensureMyLaneDisjoint(mainEditor, getHumanId(), getDeviceId())
     setFleetBounds(getFleetBounds(mainEditor))
   }, [identityId, mainEditor])
   // Camera tick used to recompute canvas→screen for the render on camera change
@@ -710,13 +714,12 @@ export function FleetHUD({
       if (b && b.x < minPageX) minPageX = b.x
     }
     const docLeftScreen = mainEditor.pageToScreen({ x: minPageX, y: 0 }).x
-    // Compensate this (identity, device)'s layout offset so the viewer's OWN
-    // shapes render in their canonical doc-relative position no matter which
-    // canvas zone they physically occupy. createFleetLayout (and adoption)
-    // translate the whole own-layout by exactly layoutOffset(id, device); undoing
-    // its dx here — and dy via cameraY below (which derives from fleetBounds.y) —
-    // pins the HUD to the left margin regardless of the offset. Without this the
-    // offset drags the HUD off into the hash zone and out of the margin.
+    // Compensate this (identity, device)'s horizontal layout offset so the
+    // viewer's OWN shapes render in their canonical doc-relative position no
+    // matter which horizontal zone they physically occupy. The VERTICAL offset
+    // (the disjoint lane that keeps owners from overlapping) needs no
+    // compensation here — cameraY below derives from fleetBounds.y (this layout's
+    // actual top), so the HUD pins my layout to TOP_PAD regardless of its lane.
     const off = layoutOffset(getHumanId(), getDeviceId())
     panOffsetRef.current = docLeftScreen - minPageX - off.dx
     cameraYRef.current = TOP_PAD - fleetBounds.y

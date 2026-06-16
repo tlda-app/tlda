@@ -66,7 +66,7 @@ export function isMyFleetShape(s: any): boolean {
  * isMyFleetShape would orphan them — wiping a user's hand-built layout on first
  * load after the upgrade. Claim them for THIS device by stamping deviceId
  * (preserving every other prop, incl. filters) AND translating them by this
- * (identity, device)'s layoutOffset, so adopted shapes share the exact same
+ * (identity, device)'s laneOffset, so adopted shapes share the exact same
  * offset as freshly-created ones. That uniformity is what lets the HUD undo the
  * offset with a single camera compensation and render every own shape — adopted
  * or created — in its canonical screen position. The legacy pre-device anchor is
@@ -86,7 +86,8 @@ export function adoptLegacyFleetShapes(editor: Editor): number {
   const legacyAnchor = legacyAnchorId !== newAnchorId ? (editor.getShape(legacyAnchorId as any) as any) : null
   if (legacy.length === 0 && !legacyAnchor) return 0
 
-  const { dx, dy } = layoutOffset(myId, myDevice)
+  const { dx } = layoutOffset(myId, myDevice)
+  const dy = laneDy(editor, myId, myDevice)
   editor.run(() => {
     for (const s of legacy) {
       editor.updateShape({
@@ -209,34 +210,137 @@ function slotId(userId: string, deviceId: string, slot: string) {
   return createShapeId(`fleet-${slot}-${userId.replace('fleet:', '')}-${deviceId}`)
 }
 
-/** Deterministic canvas offset for an (identity, device) layout, so no two
- *  sessions' shapes stack on the same spot. The HUD camera follows my own
- *  shapes' bounds (getFleetBounds filters to isMyFleetShape), so shifting my
- *  shapes by a constant just moves the underlying canvas position — my HUD view
- *  is unchanged. Nobody looks at the raw canvas shapes; this only keeps foreign
- *  layouts from physically overlapping.
- *
- *  The offset tiles into a 2D grid (columns extend left into the margin, rows
- *  extend down) keyed on a hash of (identity, device). The grid is large (32
- *  rows × 16 cols = 512 cells) so a collision — two distinct (identity,device)
- *  pairs landing on the same cell — is rare for realistic session counts. A
- *  collision is only cosmetic regardless: ownership (isMyFleetShape) is an exact
- *  (identity,device) match, so even fully-overlapping foreign shapes never enter
- *  a viewer's HUD or intercept their filtering. */
+/** Horizontal offset for an (identity, device) layout. PURE (no room context) so
+ *  the HUD can recompute the identical dx from (identity, device) alone and
+ *  compensate it — the viewer's own layout then renders in its canonical
+ *  horizontal screen position regardless of which zone it physically occupies.
+ *  This handles only X (cosmetic horizontal spreading); the spatial *non-overlap*
+ *  guarantee between owners is enforced entirely by the vertical lane (laneDy),
+ *  which is unique per owner — so two owners can never overlap regardless of dx.
+ *  dy is 0 here: vertical placement is owned by laneDy, not this function. */
 export function layoutOffset(userId: string, deviceId: string): { dx: number; dy: number } {
   if (!userId || !deviceId) return { dx: 0, dy: 0 }
   const key = `${userId}|${deviceId}`
   let hash = 0
   for (let i = 0; i < key.length; i++) hash = ((hash << 5) - hash + key.charCodeAt(i)) | 0
-  const h = Math.abs(hash)
-  // Fixed cell steps (NOT derived from layout/viewport) so the HUD can recompute
-  // the identical offset from (identity, device) alone and compensate it — the
-  // viewer's own layout then renders in its canonical screen position regardless
-  // of which zone its shapes physically occupy. Steps are large enough to clear
-  // any layout's footprint. 16 cols × 32 rows = 512 cells → collisions rare.
-  const col = h % 16
-  const row = (h >> 4) % 32
-  return { dx: -col * 4000, dy: row * 2500 }
+  const col = Math.abs(hash) % 16
+  return { dx: -col * 4000, dy: 0 }
+}
+
+/** Vertical spacing between two owners' fleet layouts. Far larger than any
+ *  single layout's height — even heavily resized — so two different owners can
+ *  never occupy the same vertical band. This is the spatial guarantee that keeps
+ *  a foreign owner's shapes from ever sitting under this viewer's fingers,
+ *  independent of visibility and independent of which touch system (TLDraw
+ *  hit-testing, the HUD gesture handler, raw DOM) processes the gesture. */
+const LANE_STEP = 20000
+
+/** The y a lane-0 layout would anchor at: doc top minus the standard top pad.
+ *  All sessions compute the same value from the shared document pages, so every
+ *  owner's lane index maps to the same absolute band. */
+function canonicalBaseY(editor: Editor): number {
+  const pages = editor.getCurrentPageShapes().filter(
+    s => (s.type as string) === 'svg-page' || (s.type as string) === 'html-page')
+  let minTop = Infinity
+  for (const p of pages) {
+    const b = editor.getShapePageBounds(p.id)
+    if (b && b.y < minTop) minTop = b.y
+  }
+  return isFinite(minTop) ? minTop - 1200 : 0
+}
+
+/** Lane indices currently occupied by OTHER owners' fleet shapes, plus the
+ *  shared base. "Mine" (this identity+device, AND my pre-device legacy shapes
+ *  about to be claimed) is excluded so it never blocks itself; a different
+ *  device of the same identity IS a distinct owner and counts as occupied. */
+function occupiedLanes(editor: Editor, myId: string, myDevice: string): { base: number; occupied: Set<number> } {
+  const base = canonicalBaseY(editor)
+  const isMineOrLegacy = (s: any) =>
+    s.props?.userId === myId && (s.props?.deviceId === myDevice || !s.props?.deviceId)
+  const ownerMinY = new Map<string, number>()
+  for (const s of editor.getCurrentPageShapes()) {
+    if (!FLEET_SHAPE_TYPES.has(s.type as string)) continue
+    if (isMineOrLegacy(s)) continue
+    const uid = (s as any).props?.userId, dev = (s as any).props?.deviceId
+    if (!uid || !dev) continue // unowned orphan — belongs to no lane
+    const key = `${uid}::${dev}`
+    const y = (s as any).y
+    const cur = ownerMinY.get(key)
+    if (cur === undefined || y < cur) ownerMinY.set(key, y)
+  }
+  const occupied = new Set<number>()
+  for (const y of ownerMinY.values()) occupied.add(Math.round((y - base) / LANE_STEP))
+  return { base, occupied }
+}
+
+/** Guaranteed-disjoint VERTICAL offset (dy) for THIS (identity, device) layout.
+ *  The lane is the lowest index not already occupied by another owner present in
+ *  the room, so as owners accumulate they pack into distinct bands and their
+ *  shapes can never overlap — collision-free by construction, not a hash that
+ *  "rarely" collides. The HUD needs no knowledge of the lane: cameraY derives
+ *  from this layout's actual shape bounds, so any dy renders canonically. */
+export function laneDy(editor: Editor, myId: string, myDevice: string): number {
+  if (!myId || !myDevice) return 0
+  const { occupied } = occupiedLanes(editor, myId, myDevice)
+  let lane = 0
+  while (occupied.has(lane)) lane++
+  return lane * LANE_STEP
+}
+
+/** Shift my whole layout to a free lane if it currently overlaps another owner.
+ *  Runs on load (after legacy adoption) so a room that accumulated overlapping
+ *  layouts under the old hash self-heals: each session, when it opens, slides
+ *  its own shapes out of any collision into the lowest free lane. Only ever
+ *  moves MY shapes; other owners are untouched. Returns the number moved. */
+export function ensureMyLaneDisjoint(editor: Editor, myId: string, myDevice: string): number {
+  if (!myId || !myDevice) return 0
+  const mine = editor.getCurrentPageShapes().filter(isMyFleetShape)
+  if (mine.length === 0) return 0
+  const bbox = (shapes: any[]) => {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    for (const s of shapes) {
+      const b = editor.getShapePageBounds(s.id)
+      if (!b) continue
+      minX = Math.min(minX, b.x); minY = Math.min(minY, b.y)
+      maxX = Math.max(maxX, b.x + b.w); maxY = Math.max(maxY, b.y + b.h)
+    }
+    return isFinite(minX) ? { minX, minY, maxX, maxY } : null
+  }
+  const myBox = bbox(mine)
+  if (!myBox) return 0
+  // Other owners' boxes.
+  const others = new Map<string, any[]>()
+  for (const s of editor.getCurrentPageShapes()) {
+    if (!FLEET_SHAPE_TYPES.has(s.type as string)) continue
+    if (isMyFleetShape(s)) continue
+    const uid = (s as any).props?.userId, dev = (s as any).props?.deviceId
+    if (!uid || !dev) continue
+    const key = `${uid}::${dev}`
+    if (!others.has(key)) others.set(key, [])
+    others.get(key)!.push(s)
+  }
+  const intersects = (a: any, b: any) =>
+    a.minX < b.maxX && a.maxX > b.minX && a.minY < b.maxY && a.maxY > b.minY
+  // Yield only to lower-sorting owners: if two owners load at once and overlap,
+  // exactly one (the higher key) moves, so they can't both jump and re-collide.
+  const myKey = `${myId}::${myDevice}`
+  let collides = false
+  for (const [key, arr] of others) {
+    const ob = bbox(arr)
+    if (ob && intersects(myBox, ob) && key < myKey) { collides = true; break }
+  }
+  if (!collides) return 0
+  const { base } = occupiedLanes(editor, myId, myDevice)
+  const targetDy = laneDy(editor, myId, myDevice)
+  const currentDy = Math.round((myBox.minY - base) / LANE_STEP) * LANE_STEP
+  const delta = targetDy - currentDy
+  if (delta === 0) return 0
+  editor.run(() => {
+    for (const s of mine) {
+      editor.updateShape({ id: s.id, type: s.type, x: (s as any).x, y: (s as any).y + delta } as any)
+    }
+  }, { history: 'ignore' })
+  return mine.length
 }
 
 export function createFleetLayout(editor: Editor, agents: any[], variant: '2col' | '3col' | 'wide' | 'grid' | 'touch' | 'phone' = '3col') {
@@ -352,12 +456,15 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
       docMaxRight = anchorX + leftContentW
     }
 
-    // Push this (identity, device)'s whole layout to its own canvas slot so two
-    // sessions never stack on the same spot. dx is 0 (layouts share the margin
-    // column); dy bands them vertically. My HUD view is unaffected — its camera
-    // follows my own shapes' bounds — so this only separates the underlying
-    // canvas shapes, which is what keeps a foreign layout from overlapping mine.
-    const { dx, dy } = layoutOffset(myId, myDevice)
+    // Push this (identity, device)'s whole layout into its own guaranteed-free
+    // vertical lane so two owners' shapes can never overlap. dy bands owners
+    // vertically by a lane index chosen to miss every other owner present in the
+    // room (laneDy); dx is a cosmetic horizontal spread the HUD compensates. My
+    // HUD view is unaffected — its camera follows my own shapes' bounds — so this
+    // only separates the underlying canvas shapes, which is what keeps a foreign
+    // layout from overlapping mine.
+    const { dx } = layoutOffset(myId, myDevice)
+    const dy = laneDy(editor, myId, myDevice)
     anchorX += dx
     anchorY += dy
 
