@@ -252,7 +252,7 @@ export function PrefsTab() {
           <option value="whisper">Whisper</option>
         </select>
         <div style={{ fontSize: 10, color: '#6b7280', marginTop: 2 }}>
-          Off until you pick one. No default, no fallback — the chosen backend is the only one that ever runs.
+          Defaults to Deepgram. No fallback — the chosen backend is the only one that ever runs; Chrome (can beep) is opt-in only.
         </div>
       </div>
 
