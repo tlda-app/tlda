@@ -28,7 +28,8 @@ import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil
 // @ts-ignore — vanilla JS module
 import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText, isRecording } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
-import { getHumanId, getHumanName, updateEventById, sendViewingContext, setViewingEnrichFn } from '../fleet/fleet-data.mjs'
+import { getHumanId, getHumanName, updateEventById, sendViewingContext, setViewingEnrichFn, getFleetWsBase } from '../fleet/fleet-data.mjs'
+import { appendToken } from '../authToken'
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useSuggestions, clearGroup, sendMessage, loadBefore, resolveFilter, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
 import type { Suggestion } from '../fleet-data-adapter'
@@ -95,10 +96,6 @@ function usePrefTick() {
 }
 
 // ---- Terminal hover pane ----
-
-const TERM_HOVER_WS_HOST = typeof window !== 'undefined'
-  ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`
-  : 'ws://localhost:5176'
 
 // Terminal peek overlay — shown when hovering the terminal icon on a chat shape.
 // Fixed grid for the peek. MUST match the daemon's tmux-attach PTY size in
@@ -339,7 +336,10 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
     if (!agentId) return
     wsRef.current?.close()
     setStatus('connecting')
-    const ws = new WebSocket(`${TERM_HOVER_WS_HOST}/ws/terminal?agent=${encodeURIComponent(agentId)}`)
+    // /ws/terminal must hit the fleet server (where the daemon is connected),
+    // NOT the page origin — on the local copy the page is served from 5176 but
+    // the daemon talks to Fly, so the page-origin socket had no daemon behind it.
+    const ws = new WebSocket(appendToken(`${getFleetWsBase()}/ws/terminal?agent=${encodeURIComponent(agentId)}`))
     wsRef.current = ws
     ws.onopen = () => {
       setStatus('connected')
@@ -2991,7 +2991,28 @@ function FleetChatInner({ shape }: { shape: any }) {
       log.debug('chat-scroll', 'user scroll', { gap, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
     }
     el.addEventListener('fleet-user-scroll', onUserScroll as EventListener)
-    return () => el.removeEventListener('fleet-user-scroll', onUserScroll as EventListener)
+
+    // Touch devices generate no wheel events, so the wheel-driven
+    // fleet-user-scroll signal above never fires on iPad — the user drags up,
+    // intent is never recorded, and the pin watchdog slams the view back to the
+    // bottom ("can't scroll up on iPad"). Treat native scrolling during an
+    // active touch (and its short momentum tail) as the same user-scroll intent.
+    // Programmatic pins happen when no touch is active, so they don't trip this.
+    let touchScrolling = false
+    let momentumUntil = 0
+    const onTouchStart = () => { touchScrolling = true; momentumUntil = 0 }
+    const onTouchEnd = () => { touchScrolling = false; momentumUntil = Date.now() + 600 }
+    const onNativeScroll = () => { if (touchScrolling || Date.now() < momentumUntil) onUserScroll() }
+    el.addEventListener('touchstart', onTouchStart, { passive: true })
+    el.addEventListener('touchend', onTouchEnd, { passive: true })
+    el.addEventListener('scroll', onNativeScroll, { passive: true })
+
+    return () => {
+      el.removeEventListener('fleet-user-scroll', onUserScroll as EventListener)
+      el.removeEventListener('touchstart', onTouchStart)
+      el.removeEventListener('touchend', onTouchEnd)
+      el.removeEventListener('scroll', onNativeScroll)
+    }
   }, [chatLogEl])
 
   // Convergence watchdog — the reconciler of last resort. scrollToIndex(LAST)
