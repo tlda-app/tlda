@@ -4,6 +4,56 @@ import { setBackend as setVoiceBackend } from '../voice.mjs'
 import { NOTE_COLORS } from '../shapes/MathNoteShape'
 import { CurveEditor } from '../components/CurveEditor'
 import { SchemeToggle, ThemeFamilyToggle, VimModeToggle } from './TocTab'
+import { useFleetIdentity } from '../fleet-data-adapter'
+
+// Identity switcher — touch devices can't edit localStorage, so this is the only
+// way to change who you are on a server that auto-assigned a wrong/cached id
+// (e.g. the no-auth local copy that used to log everyone in as "dev").
+function IdentitySection() {
+  const { name, login, register } = useFleetIdentity()
+  const [val, setVal] = useState('')
+  const [err, setErr] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const switchTo = useCallback(async () => {
+    const n = val.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
+    if (!n) { setErr('Enter a name (letters, numbers, dashes)'); return }
+    setBusy(true); setErr(null)
+    try {
+      await login(n)
+      setVal('')
+    } catch (e) {
+      // Not a known human yet → create it, so a first-time name still works.
+      try { await register(n); setVal('') }
+      catch (e2) { setErr((e2 as Error).message) }
+    } finally {
+      setBusy(false)
+    }
+  }, [val, login, register])
+
+  return (
+    <div className="prefs-section">
+      <div className="prefs-section-label">Identity</div>
+      <div style={{ fontSize: 11, marginBottom: 4 }}>
+        You are <strong>{name || '(none)'}</strong>
+      </div>
+      <div className="prefs-num-row">
+        <input
+          className="prefs-num"
+          style={{ width: 120, textAlign: 'left' }}
+          placeholder="switch to…"
+          value={val}
+          onChange={e => setVal(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') switchTo() }}
+        />
+        <button className="prefs-btn" onClick={switchTo} disabled={busy}>
+          {busy ? '…' : 'Switch'}
+        </button>
+      </div>
+      {err && <div style={{ fontSize: 10, color: '#b91c1c', marginTop: 2 }}>{err}</div>}
+    </div>
+  )
+}
 
 const ALL_SOURCES = ['ref', 'proof', 'errors', 'shared'] as const
 
@@ -59,6 +109,8 @@ export function PrefsTab() {
 
   return (
     <div className="prefs-tab">
+      <IdentitySection />
+
       <div className="prefs-section">
         <div className="prefs-section-label">Theme</div>
         <SchemeToggle />

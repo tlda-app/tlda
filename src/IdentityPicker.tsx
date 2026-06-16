@@ -5,7 +5,7 @@
  */
 import { useState, useEffect } from 'react'
 import { useFleetIdentity } from './fleet-data-adapter'
-import { isDevMode, subscribeCanPresent } from './authToken'
+import { subscribeCanPresent } from './authToken'
 
 export function IdentityPicker() {
   const { needsIdentity, login, register } = useFleetIdentity()
@@ -27,14 +27,18 @@ export function IdentityPicker() {
   if (needsIdentity && !autoIdentified) {
     const params = new URLSearchParams(window.location.search)
     const urlName = params.get('name')
-    const isDev = import.meta.env.DEV || isDevMode()
+    // A no-auth server is NOT a reason to force everyone to "dev". Humans on the
+    // tokenless local copy must still pick their own name (e.g. skip), not get
+    // silently logged in as dev. Only a real vite dev build or an automated
+    // session (webdriver / ?pw=1) gets the no-modal "dev" fallback.
     const isAuto = (navigator as any).webdriver || params.get('pw') === '1'
-    const fallback = (isDev || isAuto) ? 'dev' : null
+    const isAutoFallback = import.meta.env.DEV || isAuto
+    const fallback = isAutoFallback ? 'dev' : null
     const targetName = urlName?.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '') || fallback
     if (targetName) {
       setAutoIdentified(true)
       login(targetName).catch(() => {
-        if (isDev || isAuto) {
+        if (isAutoFallback) {
           // Fresh env / automated: register the fallback if login fails.
           register(targetName).catch(() => setAutoIdentified(false))
         } else {
