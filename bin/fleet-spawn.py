@@ -1770,7 +1770,20 @@ def spawn_tmux(session, cwd, cmd, auto_dismiss=True, send_keys=False):
     subprocess.run(tmux("resize-window", "-t", session, "-x", "120", "-y", "40"),
                    capture_output=True, timeout=5, env=spawn_env)
     if send_keys:
-        subprocess.run(tmux("send-keys", "-t", session, "--", cmd),
+        # The freshly-spawned login shell may still be sourcing its rc files when
+        # these keys arrive. Pasting the full (~1KB) launch command then races the
+        # shell's tty read: the canonical input buffer (MAX_CANON ≈ 1024 bytes)
+        # overflows and the TAIL is dropped, truncating the `zsh -lc '…codex…'`
+        # mid-single-quote. The shell then sits at `quote>` forever, codex never
+        # launches, and the agent never registers ("spawn started, never
+        # registered"). Stage the command in a launch script and paste only a
+        # short `source <path>` line: a tiny paste can't overflow the buffer and
+        # is safely buffered even mid-startup, so the full command always runs.
+        import tempfile
+        fd, _launch = tempfile.mkstemp(prefix='tlda-launch-', suffix='.sh')
+        with os.fdopen(fd, 'w') as _f:
+            _f.write(cmd + '\n')
+        subprocess.run(tmux("send-keys", "-t", session, "--", f"source {_launch}"),
                        check=True, timeout=5, env=spawn_env)
         subprocess.run(tmux("send-keys", "-t", session, "Enter"),
                        check=True, timeout=5, env=spawn_env)
