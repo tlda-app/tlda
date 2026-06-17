@@ -1,6 +1,38 @@
 import { StateNode, Vec, type Editor, type TLStateNodeConstructor } from 'tldraw'
+import { log } from '../logger'
 
 const AXIS_THRESHOLD = 5 // px before locking axis
+const LOG_NS = 'fleet-gesture'
+
+function describeElement(el: Element | null) {
+  if (!el) return null
+  let pointerEvents: string | null = null
+  try {
+    pointerEvents = window.getComputedStyle(el).pointerEvents
+  } catch {
+    pointerEvents = null
+  }
+  return {
+    tag: el.tagName.toLowerCase(),
+    id: el.id || undefined,
+    classes: el instanceof HTMLElement || el instanceof SVGElement ? Array.from(el.classList).slice(0, 8) : [],
+    shapeId: el.getAttribute('data-shape-id') || undefined,
+    shapeType: el.getAttribute('data-shape-type') || undefined,
+    role: el.getAttribute('role') || undefined,
+    pointerEvents,
+  }
+}
+
+function elementChainFrom(el: Element | null) {
+  const chain: ReturnType<typeof describeElement>[] = []
+  let cur = el
+  for (let i = 0; cur && i < 10; i++) {
+    chain.push(describeElement(cur))
+    if (cur.classList.contains('fleet-hud-wrap')) break
+    cur = cur.parentElement
+  }
+  return chain
+}
 
 /**
  * True when the current pointer is over a fleet panel. The panels live in the
@@ -11,11 +43,24 @@ const AXIS_THRESHOLD = 5 // px before locking axis
  * camera, so their page coords don't line up with where they actually render.
  */
 function pointerOnFleetPanel(editor: Editor): boolean {
-  if (typeof document === 'undefined') return false
+  if (typeof document === 'undefined') {
+    log.debug(LOG_NS, 'phone panel gate: no document', {})
+    return false
+  }
   const sp = editor.inputs.getCurrentScreenPoint()
   const rect = editor.getContainer().getBoundingClientRect()
-  const el = document.elementFromPoint(rect.left + sp.x, rect.top + sp.y)
-  return !!el?.closest('.fleet-hud-wrap')
+  const clientX = rect.left + sp.x
+  const clientY = rect.top + sp.y
+  const el = document.elementFromPoint(clientX, clientY)
+  const onFleetPanel = !!el?.closest('.fleet-hud-wrap')
+  log.debug(LOG_NS, 'phone panel gate', {
+    onFleetPanel,
+    screenPoint: { x: Math.round(sp.x), y: Math.round(sp.y) },
+    clientPoint: { x: Math.round(clientX), y: Math.round(clientY) },
+    target: describeElement(el),
+    elementChain: log.isEnabled(LOG_NS, 'debug') ? elementChainFrom(el) : undefined,
+  })
+  return onFleetPanel
 }
 
 /**
@@ -50,7 +95,11 @@ class PhoneIdle extends StateNode {
   override onPointerDown() {
     // Touch on a fleet panel → stand down so the panel's own scroll + the
     // 2-finger move/resize gesture run without this axis-locked pan racing them.
-    if (pointerOnFleetPanel(this.editor)) return
+    if (pointerOnFleetPanel(this.editor)) {
+      log.debug(LOG_NS, 'phone hand tool stand down', {})
+      return
+    }
+    log.debug(LOG_NS, 'phone hand tool enter pointing', {})
     this.parent.transition('pointing')
   }
 

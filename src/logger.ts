@@ -141,6 +141,11 @@ export const log = {
   warn: makeLogger('warn', console.warn),
   error: makeLogger('error', console.error),
 
+  /** True when a namespace would emit at this level; use to guard expensive diagnostics. */
+  isEnabled(ns: string, level: Level = 'debug') {
+    return shouldLog(ns, level)
+  },
+
   /** Change console level at runtime: log.setLevel('debug') or log.setLevel('fleet', 'debug') */
   setLevel(nsOrLevel: string, level?: Level) {
     if (level) {

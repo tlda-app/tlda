@@ -24,7 +24,10 @@
  */
 import { useEffect } from 'react'
 import type { Editor, TLShape } from 'tldraw'
+import { log } from '../logger'
 import { FLEET_SHAPE_TYPES } from '../shapes/fleet-utils'
+
+const LOG_NS = 'fleet-gesture'
 
 function getMainEditor(fallback: Editor): Editor {
   if (typeof window !== 'undefined') {
@@ -39,6 +42,37 @@ function touchCenter(ts: Touch[]) {
   let x = 0, y = 0
   for (const t of ts) { x += t.clientX; y += t.clientY }
   return { x: x / ts.length, y: y / ts.length }
+}
+
+function describeElement(el: Element | null) {
+  if (!el) return null
+  let pointerEvents: string | null = null
+  try {
+    pointerEvents = window.getComputedStyle(el).pointerEvents
+  } catch {
+    pointerEvents = null
+  }
+  return {
+    tag: el.tagName.toLowerCase(),
+    id: el.id || undefined,
+    classes: el instanceof HTMLElement || el instanceof SVGElement ? Array.from(el.classList).slice(0, 8) : [],
+    shapeId: el.getAttribute('data-shape-id') || undefined,
+    shapeType: el.getAttribute('data-shape-type') || undefined,
+    role: el.getAttribute('role') || undefined,
+    pointerEvents,
+  }
+}
+
+function elementChainAt(clientX: number, clientY: number) {
+  const first = document.elementFromPoint(clientX, clientY)
+  const chain: ReturnType<typeof describeElement>[] = []
+  let cur: Element | null = first
+  for (let i = 0; cur && i < 10; i++) {
+    chain.push(describeElement(cur))
+    if (cur.classList.contains('fleet-hud-wrap')) break
+    cur = cur.parentElement
+  }
+  return chain
 }
 
 // The fleet shape (if any) under a screen point, using the overlay editor's
@@ -58,6 +92,40 @@ function fleetShapeAtScreen(overlay: Editor, clientX: number, clientY: number): 
     cur = parent
   }
   return null
+}
+
+function touchDiagnostics(overlay: Editor | null, touches: Touch[]) {
+  return touches.map((t, index) => {
+    const shape = overlay ? fleetShapeAtScreen(overlay, t.clientX, t.clientY) : null
+    return {
+      index,
+      identifier: t.identifier,
+      clientX: Math.round(t.clientX),
+      clientY: Math.round(t.clientY),
+      fleetShapeId: shape?.id ?? null,
+      fleetShapeType: shape?.type ?? null,
+      elementChain: elementChainAt(t.clientX, t.clientY),
+    }
+  })
+}
+
+function logTouchSnapshot(
+  phase: 'touchstart' | 'touchmove' | 'touchend' | 'touchcancel',
+  e: TouchEvent,
+  overlay: Editor | null,
+  hudEl: HTMLDivElement,
+  stateKind: GestureState['kind'],
+) {
+  if (!log.isEnabled(LOG_NS, 'debug')) return
+  log.debug(LOG_NS, phase, {
+    touchesLength: e.touches.length,
+    changedTouchesLength: e.changedTouches.length,
+    stateKind,
+    target: describeElement(e.target instanceof Element ? e.target : null),
+    hudPointerEvents: describeElement(hudEl)?.pointerEvents ?? null,
+    touches: touchDiagnostics(overlay, Array.from(e.touches)),
+    changedTouches: touchDiagnostics(overlay, Array.from(e.changedTouches)),
+  })
 }
 
 // My fleet shapes that share a margin with the seed shapes. Source the set from
@@ -137,29 +205,41 @@ export function useFleetGestures(opts: {
 
     const onTouchStart = (e: TouchEvent) => {
       const overlay = overlayEditorRef.current
+      const ts = Array.from(e.touches)
+      logTouchSnapshot('touchstart', e, overlay, el, state.kind)
       if (!overlay) return
       const main = getMainEditor(mainEditor)
-      const ts = Array.from(e.touches)
 
       if (ts.length === 3) {
         // Pan the doc from anywhere — even over the panels.
         e.preventDefault(); e.stopPropagation()
         const cam = main.getCamera()
         state = { kind: 'pan', z0: cam.z, lastC: touchCenter(ts), axis: null, accX: 0, accY: 0 }
+        log.debug(LOG_NS, 'gesture start: pan', { touchesLength: ts.length, z: cam.z })
         return
       }
 
       if (ts.length === 2) {
         const s0 = fleetShapeAtScreen(overlay, ts[0].clientX, ts[0].clientY)
         const s1 = fleetShapeAtScreen(overlay, ts[1].clientX, ts[1].clientY)
-        if (!s0 && !s1) return // not on a fleet shape → let TLDraw pan/zoom
+        log.debug(LOG_NS, 'two-touch hit-test', {
+          first: s0 ? { id: s0.id, type: s0.type } : null,
+          second: s1 ? { id: s1.id, type: s1.type } : null,
+        })
+        if (!s0 && !s1) {
+          log.debug(LOG_NS, 'gesture pass-through: no fleet shape under either touch', {})
+          return // not on a fleet shape → let TLDraw pan/zoom
+        }
         const ids = new Set([s0?.id, s1?.id].filter(Boolean) as string[])
 
         if (ids.size === 1 && s0 && s1) {
           // Both fingers on one shape → move + pinch-resize that shape
           const shape = s0
           const b = main.getShapePageBounds(shape.id)
-          if (!b) return
+          if (!b) {
+            log.debug(LOG_NS, 'gesture abort: no main bounds for shape', { id: shape.id, type: shape.type })
+            return
+          }
           e.preventDefault(); e.stopPropagation()
           main.markHistoryStoppingPoint() // whole gesture = one undo step
           state = {
@@ -167,6 +247,13 @@ export function useFleetGestures(opts: {
             x0: (main.getShape(shape.id as any) as any).x, y0: (main.getShape(shape.id as any) as any).y,
             w0: b.width, h0: b.height, d0: touchDist(ts[0], ts[1]), c0: touchCenter(ts),
           }
+          log.debug(LOG_NS, 'gesture start: shape', {
+            id: shape.id,
+            type: shape.type,
+            bounds: { w: b.width, h: b.height },
+            distance: touchDist(ts[0], ts[1]),
+            center: touchCenter(ts),
+          })
         } else {
           // Fingers span >1 shape → move OR pinch-resize that margin's cluster.
           e.preventDefault(); e.stopPropagation()
@@ -176,21 +263,32 @@ export function useFleetGestures(opts: {
             const b = main.getShapePageBounds(s.id)
             return { id: s.id, type: s.type as string, x0: m.x, y0: m.y, w0: b ? b.width : 0, h0: b ? b.height : 0 }
           })
-          if (shapes.length === 0) return
+          if (shapes.length === 0) {
+            log.debug(LOG_NS, 'gesture abort: empty cluster', { seedIds: [...ids] })
+            return
+          }
           // Scale pivot = centroid of the panels' own positions+sizes. Computed
           // from the shapes (never a {0,0} fallback) — these page coords can be
           // huge, so a wrong pivot would fling them off into space.
           const cx = shapes.reduce((a, s) => a + s.x0 + s.w0 / 2, 0) / shapes.length
           const cy = shapes.reduce((a, s) => a + s.y0 + s.h0 / 2, 0) / shapes.length
           state = { kind: 'cluster', mode: 'pending', shapes, anchor: { x: cx, y: cy }, d0: touchDist(ts[0], ts[1]), c0: touchCenter(ts) }
+          log.debug(LOG_NS, 'gesture start: cluster', {
+            seedIds: [...ids],
+            shapeIds: shapes.map(s => s.id),
+            anchor: { x: cx, y: cy },
+            distance: touchDist(ts[0], ts[1]),
+            center: touchCenter(ts),
+          })
         }
       }
       // 1 finger: not intercepted — the shape's own scroll handling runs.
     }
 
     const onTouchMove = (e: TouchEvent) => {
-      if (state.kind === 'none') return
       const overlay = overlayEditorRef.current
+      logTouchSnapshot('touchmove', e, overlay, el, state.kind)
+      if (state.kind === 'none') return
       if (!overlay) return
       const main = getMainEditor(mainEditor)
       const ts = Array.from(e.touches)
@@ -236,6 +334,13 @@ export function useFleetGestures(opts: {
         // Commit to a mode once either motion is deliberate enough.
         if (state.mode === 'pending' && Math.max(travel, spread) >= LOCK_THRESHOLD) {
           state.mode = spread > travel ? 'resize' : 'move'
+          log.debug(LOG_NS, 'shape mode locked', {
+            id: state.id,
+            mode: state.mode,
+            travel,
+            spread,
+            threshold: LOCK_THRESHOLD,
+          })
         }
         if (state.mode === 'move') {
           const dx = (c.x - state.c0.x) / zoom
@@ -258,6 +363,13 @@ export function useFleetGestures(opts: {
         const spread = Math.abs(d - state.d0)
         if (state.mode === 'pending' && Math.max(travel, spread) >= LOCK_THRESHOLD) {
           state.mode = spread > travel ? 'resize' : 'move'
+          log.debug(LOG_NS, 'cluster mode locked', {
+            shapeIds: state.shapes.map(s => s.id),
+            mode: state.mode,
+            travel,
+            spread,
+            threshold: LOCK_THRESHOLD,
+          })
         }
         if (state.mode === 'move') {
           const dx = (c.x - state.c0.x) / zoom
@@ -284,6 +396,10 @@ export function useFleetGestures(opts: {
     }
 
     const reset = (e: TouchEvent) => {
+      logTouchSnapshot(e.type === 'touchcancel' ? 'touchcancel' : 'touchend', e, overlayEditorRef.current, el, state.kind)
+      if (state.kind !== 'none' && e.touches.length < 2) {
+        log.debug(LOG_NS, 'gesture reset', { previousKind: state.kind, remainingTouches: e.touches.length, eventType: e.type })
+      }
       if (e.touches.length < 2) state = { kind: 'none' }
     }
 
