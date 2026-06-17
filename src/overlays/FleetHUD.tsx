@@ -204,7 +204,7 @@ export function FleetHUD({
   const draggingRef = useRef(false)
   const overlayEditorRef = useRef<Editor | null>(null)
   const lastHudDiagSigRef = useRef('')
-  const gesturesEnabled = expanded && !!fleetBounds
+  const gesturesEnabled = expanded && !!fleetBounds && docShapesReady
 
   useEffect(() => {
     const shapes = mainEditor.getCurrentPageShapes()
