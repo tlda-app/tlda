@@ -782,6 +782,15 @@ FENCE_COMMAND_DENY = [
 ]
 FENCE_CODE_ALLOWED_DOMAINS = [
     "api.openai.com",
+    # Codex CLI with ChatGPT auth talks to chatgpt.com/backend-api (model
+    # responses + the codex_apps MCP), NOT api.openai.com. Without this a
+    # sandboxed codex agent boots but every model call 403s at the fence proxy
+    # ("Proxy connection failed: HTTP CONNECT 403"), so it never reasons, never
+    # registers. This is the model-API allowlist (always allowed, like
+    # *.anthropic.com for Claude) — distinct from policy.network, which only
+    # gates LOCAL binding/outbound. So no-net codex now reaches its model.
+    "chatgpt.com",
+    "*.chatgpt.com",
     "*.anthropic.com",
     "api.githubcopilot.com",
     "generativelanguage.googleapis.com",
