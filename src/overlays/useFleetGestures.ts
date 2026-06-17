@@ -109,6 +109,20 @@ function touchDiagnostics(overlay: Editor | null, touches: Touch[]) {
   })
 }
 
+function touchHitSummary(overlay: Editor | null, touches: Touch[]) {
+  return touches.map((t, index) => {
+    const shape = overlay ? fleetShapeAtScreen(overlay, t.clientX, t.clientY) : null
+    return {
+      index,
+      identifier: t.identifier,
+      clientX: Math.round(t.clientX),
+      clientY: Math.round(t.clientY),
+      fleetShapeId: shape?.id ?? null,
+      fleetShapeType: shape?.type ?? null,
+    }
+  })
+}
+
 function logTouchSnapshot(
   phase: 'touchstart' | 'touchmove' | 'touchend' | 'touchcancel',
   e: TouchEvent,
@@ -116,6 +130,14 @@ function logTouchSnapshot(
   hudEl: HTMLDivElement,
   stateKind: GestureState['kind'],
 ) {
+  if (phase === 'touchstart' || phase === 'touchmove') {
+    log.warn(LOG_NS, phase, {
+      touchesLength: e.touches.length,
+      changedTouchesLength: e.changedTouches.length,
+      stateKind,
+      touches: touchHitSummary(overlay, Array.from(e.touches)),
+    })
+  }
   if (!log.isEnabled(LOG_NS, 'debug')) return
   log.debug(LOG_NS, phase, {
     touchesLength: e.touches.length,
@@ -215,19 +237,19 @@ export function useFleetGestures(opts: {
         e.preventDefault(); e.stopPropagation()
         const cam = main.getCamera()
         state = { kind: 'pan', z0: cam.z, lastC: touchCenter(ts), axis: null, accX: 0, accY: 0 }
-        log.debug(LOG_NS, 'gesture start: pan', { touchesLength: ts.length, z: cam.z })
+        log.warn(LOG_NS, 'gesture start: pan', { touchesLength: ts.length, z: cam.z })
         return
       }
 
       if (ts.length === 2) {
         const s0 = fleetShapeAtScreen(overlay, ts[0].clientX, ts[0].clientY)
         const s1 = fleetShapeAtScreen(overlay, ts[1].clientX, ts[1].clientY)
-        log.debug(LOG_NS, 'two-touch hit-test', {
+        log.warn(LOG_NS, 'two-touch hit-test', {
           first: s0 ? { id: s0.id, type: s0.type } : null,
           second: s1 ? { id: s1.id, type: s1.type } : null,
         })
         if (!s0 && !s1) {
-          log.debug(LOG_NS, 'gesture pass-through: no fleet shape under either touch', {})
+          log.warn(LOG_NS, 'gesture pass-through: no fleet shape under either touch', {})
           return // not on a fleet shape → let TLDraw pan/zoom
         }
         const ids = new Set([s0?.id, s1?.id].filter(Boolean) as string[])
@@ -237,7 +259,7 @@ export function useFleetGestures(opts: {
           const shape = s0
           const b = main.getShapePageBounds(shape.id)
           if (!b) {
-            log.debug(LOG_NS, 'gesture abort: no main bounds for shape', { id: shape.id, type: shape.type })
+            log.warn(LOG_NS, 'gesture abort: no main bounds for shape', { id: shape.id, type: shape.type })
             return
           }
           e.preventDefault(); e.stopPropagation()
@@ -247,7 +269,7 @@ export function useFleetGestures(opts: {
             x0: (main.getShape(shape.id as any) as any).x, y0: (main.getShape(shape.id as any) as any).y,
             w0: b.width, h0: b.height, d0: touchDist(ts[0], ts[1]), c0: touchCenter(ts),
           }
-          log.debug(LOG_NS, 'gesture start: shape', {
+          log.warn(LOG_NS, 'gesture start: shape', {
             id: shape.id,
             type: shape.type,
             bounds: { w: b.width, h: b.height },
@@ -264,7 +286,7 @@ export function useFleetGestures(opts: {
             return { id: s.id, type: s.type as string, x0: m.x, y0: m.y, w0: b ? b.width : 0, h0: b ? b.height : 0 }
           })
           if (shapes.length === 0) {
-            log.debug(LOG_NS, 'gesture abort: empty cluster', { seedIds: [...ids] })
+            log.warn(LOG_NS, 'gesture abort: empty cluster', { seedIds: [...ids] })
             return
           }
           // Scale pivot = centroid of the panels' own positions+sizes. Computed
@@ -273,7 +295,7 @@ export function useFleetGestures(opts: {
           const cx = shapes.reduce((a, s) => a + s.x0 + s.w0 / 2, 0) / shapes.length
           const cy = shapes.reduce((a, s) => a + s.y0 + s.h0 / 2, 0) / shapes.length
           state = { kind: 'cluster', mode: 'pending', shapes, anchor: { x: cx, y: cy }, d0: touchDist(ts[0], ts[1]), c0: touchCenter(ts) }
-          log.debug(LOG_NS, 'gesture start: cluster', {
+          log.warn(LOG_NS, 'gesture start: cluster', {
             seedIds: [...ids],
             shapeIds: shapes.map(s => s.id),
             anchor: { x: cx, y: cy },
