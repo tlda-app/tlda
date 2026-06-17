@@ -290,7 +290,8 @@ def ensure_server():
     return False
 
 
-def ws_register(fleet_id, name, tmux_session, cwd, model=None, effort=None, refresh=False, kind="claude"):
+def ws_register(fleet_id, name, tmux_session, cwd, model=None, effort=None, refresh=False,
+                kind="claude", spawn_capability=None, session_id=None):
     _ws_scheme = "wss" if _scheme == "https" else "ws"
     ws_url = f"{_ws_scheme}://{DASH_HOST}:{DASH_PORT}/ws/fleet?agent={fleet_id}"
     try:
@@ -298,8 +299,13 @@ def ws_register(fleet_id, name, tmux_session, cwd, model=None, effort=None, refr
         if _ssl_ctx:
             ws_opts["sslopt"] = {"context": _ssl_ctx}
         ws = websocket.create_connection(ws_url, **ws_opts)
+        machine_id = read_config().get("machineId")
         msg = {"type": "register", "id": fleet_id, "name": name,
                "tmux_session": tmux_session, "cwd": cwd, "kind": kind}
+        if machine_id:
+            msg["machine_id"] = machine_id
+        if session_id:
+            msg["session_id"] = session_id
         meta = {}
         if model:
             meta["model"] = model
@@ -307,6 +313,8 @@ def ws_register(fleet_id, name, tmux_session, cwd, model=None, effort=None, refr
             meta["effort"] = effort
         if refresh:
             meta["refresh"] = True
+        if spawn_capability:
+            meta["spawnPolicy"] = {"capability": spawn_capability}
         if meta:
             msg["metadata"] = meta
         ws.send(json.dumps(msg))
@@ -776,8 +784,45 @@ def build_goose_cmd(fleet_id, tmux_session, model, name=None):
     return f"zsh -lc {shlex.quote(inner)}"
 
 
+def codex_sandbox_for_capability(capability):
+    """Map a fleet spawn capability to a Codex `-s` sandbox mode.
+
+    Mirrors projectCapabilityToMode in server/lib/spawn-policy.mjs. Without this,
+    build_codex_cmd hardcoded `-s workspace-write`, so a `full-access` codex agent
+    launched sandboxed at workspace-write — the grant was recorded in
+    meta.spawnPolicy but never reached the codex process (it then couldn't bind
+    sockets / launch a browser). full-access → danger-full-access closes that gap."""
+    if capability == "full-access":
+        return "danger-full-access"
+    if capability == "read-only":
+        return "read-only"
+    # workspace-write-no-net / workspace-write+net / unset → codex's middle tier
+    return "workspace-write"
+
+
+def codex_workspace_write_config_args(capability, cwd=None):
+    """Extra Codex sandbox config for fleet capability levels.
+
+    `-s workspace-write` alone only gives file-write access inside the checkout.
+    Codex keeps `.git` read-only unless it is an explicit writable root, and the
+    TLDA daemon/server controls live under ~/.config/tlda. A manager-capable
+    `workspace-write+net` agent needs both: commit checkpoints and inspect/control
+    the local TLDA service without escalating all the way to danger-full-access.
+    """
+    if capability != "workspace-write+net":
+        return []
+    args = ["-c " + shlex.quote("sandbox_workspace_write.network_access=true")]
+    workdir = cwd or os.getcwd()
+    roots = [
+        os.path.expanduser("~/.config/tlda"),
+        os.path.join(workdir, ".git"),
+    ]
+    args.append("-c " + shlex.quote(f"sandbox_workspace_write.writable_roots={json.dumps(roots, separators=(',', ':'))}"))
+    return args
+
+
 def build_codex_cmd(fleet_id, tmux_session, model=None, resume_id=None,
-                    include_prompt=True, name=None, cwd=None):
+                    include_prompt=True, name=None, cwd=None, capability=None):
     """Build the shell command for an OpenAI Codex CLI fleet agent.
 
     Mirrors build_claude_cmd: same identity env (FLEET_ID/FLEET_NAME/TMUX) on
@@ -827,10 +872,10 @@ def build_codex_cmd(fleet_id, tmux_session, model=None, resume_id=None,
     parts.append("codex")
     if resume_id:
         # Resume keeps the same fleet id (re-injected below) and continues the
-        # prior rollout WITH context. `codex resume <id> [OPTIONS] [PROMPT]` takes
-        # an optional trailing prompt, so the register prompt is passed inline as
-        # that PROMPT (see include_prompt below) — no Claude-style send-keys
-        # injection needed (Claude's inject_prompt is TUI-specific, not portable).
+        # prior rollout WITH context. Do not pass the bootstrap as the optional
+        # trailing PROMPT here: Codex treats a positional prompt as a one-shot
+        # turn and may exit after completing it. fleet-spawn starts the TUI
+        # first, then injects register/my_task with tmux send-keys.
         parts.append(f"resume {shlex.quote(resume_id)}")
     # MCP env via -c overrides — the ONLY channel that reaches the tlda MCP server.
     def _cenv(key, val):
@@ -850,13 +895,16 @@ def build_codex_cmd(fleet_id, tmux_session, model=None, resume_id=None,
     parts.append(_cenv("TLDA_SYNC_SERVER", API))
     if model:
         parts.append(f"-m {shlex.quote(model)}")
-    parts.append("-s workspace-write")
+    parts.append(f"-s {codex_sandbox_for_capability(capability)}")
+    parts.extend(codex_workspace_write_config_args(capability, cwd))
+    # Let a sandboxed (workspace-write) codex agent drive the shared Playwright
+    # browser without needing danger-full-access: `tlda-dev pw` writes lock /
+    # session files under the ms-playwright cache, which sits OUTSIDE the
+    # workspace, so add it as a writable root. It's just caches — safe to widen.
+    # (Skip, 2026-06-17: "it's just caches" — GPT-5.5 codex agents do Playwright
+    # while staying sandboxed; no-sandbox is reserved for the rare real need.)
+    parts.append(f"--add-dir {shlex.quote(os.path.expanduser('~/Library/Caches/ms-playwright'))}")
     parts.append("-a never")
-    if include_prompt:
-        # Fresh: codex's initial prompt. Resume: the trailing [PROMPT] positional
-        # of `codex resume`. Either way codex runs it as the first turn, which
-        # re-registers the agent (same fleet id) and pulls my_task.
-        parts.append(shlex.quote(register_prompt(name)))
     return " ".join(parts)
 
 
@@ -876,7 +924,8 @@ class HarnessAdapter:
         return None
 
     def build_cmd(self, fleet_id, sess, model, effort=None, mode=None,
-                  resume_id=None, include_prompt=True, name=None, cwd=None):
+                  resume_id=None, include_prompt=True, name=None, cwd=None,
+                  capability=None):
         raise NotImplementedError
 
     def fresh_label(self):
@@ -921,7 +970,8 @@ class ClaudeHarness(HarnessAdapter):
         return resolve_model(model)
 
     def build_cmd(self, fleet_id, sess, model, effort=None, mode=None,
-                  resume_id=None, include_prompt=True, name=None, cwd=None):
+                  resume_id=None, include_prompt=True, name=None, cwd=None,
+                  capability=None):
         return build_claude_cmd(
             fleet_id, sess, model, effort, mode,
             resume_id=resume_id, include_prompt=include_prompt, name=name)
@@ -981,7 +1031,8 @@ class GooseHarness(HarnessAdapter):
         return None
 
     def build_cmd(self, fleet_id, sess, model, effort=None, mode=None,
-                  resume_id=None, include_prompt=True, name=None, cwd=None):
+                  resume_id=None, include_prompt=True, name=None, cwd=None,
+                  capability=None):
         return build_goose_cmd(fleet_id, sess, model, name=name)
 
     def no_resume_message(self):
@@ -999,13 +1050,15 @@ class CodexHarness(HarnessAdapter):
     process_re = re.compile(r"(?:^|\s|/)codex(?:\s|$)")
 
     def resolve_model(self, model):
-        return model
+        return model or "gpt-5.5"
 
     def build_cmd(self, fleet_id, sess, model, effort=None, mode=None,
-                  resume_id=None, include_prompt=True, name=None, cwd=None):
+                  resume_id=None, include_prompt=True, name=None, cwd=None,
+                  capability=None):
         return build_codex_cmd(
             fleet_id, sess, model=model, resume_id=resume_id,
-            include_prompt=include_prompt, name=name, cwd=cwd)
+            include_prompt=include_prompt, name=name, cwd=cwd,
+            capability=capability)
 
     def find_resume(self, agent, session_override=None):
         if session_override:
@@ -1035,7 +1088,22 @@ HARNESS_ADAPTERS = {
 }
 
 
+def infer_harness_kind(kind, model):
+    """Keep stale callers from routing Codex models through Claude.
+
+    Older MCP/server processes may omit --kind while still passing a Codex model.
+    fleet-spawn.py is re-exec'd for every spawn, so this lowest-layer inference
+    makes the dispatch robust until all upstream processes are reloaded.
+    """
+    if kind and kind != "claude":
+        return kind
+    if model and re.match(r"^gpt(?:[-_.]|$)", model):
+        return "codex"
+    return kind or "claude"
+
+
 def harness_for_spawn(kind, model):
+    kind = infer_harness_kind(kind, model)
     if kind and kind != "claude":
         if kind not in HARNESS_ADAPTERS:
             raise ValueError(f"Unknown harness kind: {kind!r}")
@@ -1067,14 +1135,33 @@ def _session_has_runtime(session):
                            capture_output=True, text=True, timeout=5)
         if r.returncode != 0:
             return False
-        for pid in r.stdout.strip().split():
-            ps = subprocess.run(["ps", "-p", pid, "-o", "args="],
-                                capture_output=True, text=True, timeout=5)
-            if ps.returncode == 0 and any(
-                adapter.process_re.search(ps.stdout)
-                for adapter in HARNESS_ADAPTERS.values()
-            ):
+        pane_pids = [p for p in r.stdout.strip().split() if p]
+        if not pane_pids:
+            return False
+        ps = subprocess.run(["ps", "-eo", "pid,ppid,args"],
+                            capture_output=True, text=True, timeout=5)
+        if ps.returncode != 0:
+            return False
+        children_by_ppid = {}
+        args_by_pid = {}
+        for line in ps.stdout.splitlines():
+            m = re.match(r"\s*(\d+)\s+(\d+)\s+(.+)$", line)
+            if not m:
+                continue
+            pid, ppid, args = m.groups()
+            children_by_ppid.setdefault(ppid, []).append(pid)
+            args_by_pid[pid] = args
+        stack = list(pane_pids)
+        seen = set()
+        while stack:
+            pid = stack.pop()
+            if pid in seen:
+                continue
+            seen.add(pid)
+            args = args_by_pid.get(pid, "")
+            if any(adapter.process_re.search(args) for adapter in HARNESS_ADAPTERS.values()):
                 return True
+            stack.extend(children_by_ppid.get(pid, []))
         return False
     except Exception:
         return False
@@ -1282,6 +1369,40 @@ def inject_prompt(session, prompt, timeout=60):
     return False
 
 
+def inject_codex_prompt(session, prompt, timeout=60):
+    """Wait for the Codex TUI input prompt, then inject the fleet bootstrap.
+
+    Passing the bootstrap as `codex [PROMPT]` / `codex resume [PROMPT]` makes
+    Codex behave like a one-shot turn in some cases. Keeping the launch command
+    prompt-free and typing into the live TUI preserves the interactive agent.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            r = subprocess.run(
+                tmux("capture-pane", "-t", session, "-p"),
+                capture_output=True, text=True, timeout=5)
+            if r.returncode != 0:
+                time.sleep(1)
+                continue
+            pane = r.stdout.rstrip()
+            lines = pane.split('\n')
+            prompt_ready = any('›' in l for l in lines[-5:])
+            busy = any(marker in pane for marker in ('Working', 'Transmuting', 'Thinking'))
+            if prompt_ready and not busy:
+                subprocess.run(tmux("send-keys", "-t", session, "C-u"), capture_output=True, timeout=5)
+                time.sleep(0.2)
+                subprocess.run(tmux("send-keys", "-t", session, prompt), capture_output=True, timeout=5)
+                time.sleep(0.3)
+                subprocess.run(tmux("send-keys", "-t", session, "Enter"), capture_output=True, timeout=5)
+                return True
+        except Exception:
+            pass
+        time.sleep(1)
+    print(f"  Warning: timed out waiting for Codex prompt in {session}", file=sys.stderr)
+    return False
+
+
 # ---- Spawn modes ----
 
 def _check_fresh_name_available(name, server_up):
@@ -1314,7 +1435,7 @@ def _check_fresh_name_available(name, server_up):
     sys.exit(1)
 
 
-def fresh(name, model, cwd, effort, mode, kind="claude"):
+def fresh(name, model, cwd, effort, mode, kind="claude", spawn_capability=None):
     server_up = ensure_server()
     fleet_id = f"fleet:{uuid.uuid4().hex[:8]}"
     sess = unique_session_name(f"fleet-{sanitize_session_name(name)}")
@@ -1326,10 +1447,13 @@ def fresh(name, model, cwd, effort, mode, kind="claude"):
         print(warning, file=sys.stderr)
     _check_fresh_name_available(name, server_up)
     if server_up:
-        ws_register(fleet_id, name, sess, cwd, model, effort, refresh=True, kind=adapter.kind)
+        ws_register(fleet_id, name, sess, cwd, model, effort, refresh=True, kind=adapter.kind, spawn_capability=spawn_capability)
 
-    cmd = adapter.build_cmd(fleet_id, sess, model, effort, mode, name=name, cwd=cwd)
+    cmd = adapter.build_cmd(fleet_id, sess, model, effort, mode, name=name, cwd=cwd,
+                            capability=spawn_capability)
     spawn_tmux(sess, cwd, cmd, send_keys=adapter.spawn_send_keys())
+    if adapter.kind == "codex":
+        inject_codex_prompt(sess, register_prompt(name))
     suffix = "" if adapter.kind == "claude" else f" ({adapter.kind})"
     print(f"{sess} ({fleet_id}) spawned in {cwd}{suffix}")
     return sess
@@ -1346,6 +1470,8 @@ def respawn(name, model, cwd, effort, mode, session_override=None):
     meta = agent_meta(agent)
     cwd = cwd or agent.get("cwd") or os.getcwd()
     raw_model = model or meta.get("model")
+    spawn_policy = meta.get("spawnPolicy") if isinstance(meta, dict) else None
+    spawn_capability = spawn_policy.get("capability") if isinstance(spawn_policy, dict) else None
     adapter = harness_for_agent(agent)
     model = adapter.resolve_model(raw_model)
     sess = agent.get("tmux_session") or f"fleet-{name}"
@@ -1382,7 +1508,12 @@ def respawn(name, model, cwd, effort, mode, session_override=None):
 
     cmd = adapter.build_cmd(
         fleet_id, sess, model, effort, mode, resume_id=resume_id,
-        include_prompt=(adapter.kind != "claude" or not resume_id), name=name, cwd=cwd)
+        include_prompt=(adapter.kind != "claude" or not resume_id), name=name, cwd=cwd,
+        capability=spawn_capability)
+    if adapter.kind == "codex" and resume_id:
+        ws_register(
+            fleet_id, name, sess, cwd, model, effort,
+            kind=adapter.kind, session_id=resume_id)
     started = spawn_tmux(
         sess, cwd, cmd, auto_dismiss=adapter.respawn_auto_dismiss(),
         send_keys=adapter.spawn_send_keys())
@@ -1395,10 +1526,12 @@ def respawn(name, model, cwd, effort, mode, session_override=None):
         print(f"{sess} ({fleet_id}) resumed {noun} {resume_id}")
     else:
         print(f"{sess} ({fleet_id}) relaunched ({adapter.kind}, {adapter.no_resume_message()})")
+    if adapter.kind == "codex":
+        inject_codex_prompt(sess, register_prompt(name))
     return sess
 
 
-def refresh(name, model, cwd, effort, mode):
+def refresh(name, model, cwd, effort, mode, spawn_capability=None):
     ensure_server()
     agent = find_agent(name)
     if not agent:
@@ -1415,9 +1548,12 @@ def refresh(name, model, cwd, effort, mode):
         effort = meta.get("effort")
     sess = agent.get("tmux_session") or f"fleet-{name}"
 
-    ws_register(fleet_id, name, sess, cwd, model, effort, refresh=True, kind=adapter.kind)
-    cmd = adapter.build_cmd(fleet_id, sess, model, effort, mode, name=name, cwd=cwd)
+    ws_register(fleet_id, name, sess, cwd, model, effort, refresh=True, kind=adapter.kind, spawn_capability=spawn_capability)
+    cmd = adapter.build_cmd(fleet_id, sess, model, effort, mode, name=name, cwd=cwd,
+                            capability=spawn_capability)
     spawn_tmux(sess, cwd, cmd, send_keys=adapter.spawn_send_keys())
+    if adapter.kind == "codex":
+        inject_codex_prompt(sess, register_prompt(name))
     print(f"{sess} ({fleet_id}) refreshed in {cwd}")
     return sess
 
@@ -1465,10 +1601,12 @@ def _respawn_codex_session(rollout_id, fpath, name_override, model, cwd,
         return sess
 
     ensure_server()
-    ws_register(own_id, agent_name, sess, cwd, model, effort, kind="codex")
+    ws_register(own_id, agent_name, sess, cwd, model, effort,
+                kind="codex", session_id=rollout_id)
     cmd = build_codex_cmd(own_id, sess, model=model, resume_id=rollout_id,
                           name=agent_name)
     spawn_tmux(sess, cwd, cmd, send_keys=HARNESS_ADAPTERS["codex"].spawn_send_keys())
+    inject_codex_prompt(sess, register_prompt(agent_name))
     action = "enrolled" if enroll else "resumed"
     print(f"{sess} ({own_id}) {action} codex rollout {rollout_id} in {cwd}")
     return sess
@@ -1585,6 +1723,7 @@ def main():
     parser.add_argument("--cwd", default=None)
     parser.add_argument("--effort", default=None)
     parser.add_argument("--mode", default=None)
+    parser.add_argument("--spawn-capability", default=None)
     parser.add_argument("--kind", default="claude", choices=sorted(HARNESS_ADAPTERS),
                         help="Agent runtime/harness (default: claude). Goose can also "
                              "be selected by its model aliases for compatibility.")
@@ -1636,9 +1775,9 @@ def main():
             sess = respawn_session(args.session, args.name, args.model, args.cwd,
                                    args.effort, mode, args.enroll, args.dry_run)
         elif args.fresh:
-            sess = fresh(args.name, args.model, args.cwd, args.effort, mode, kind=args.kind)
+            sess = fresh(args.name, args.model, args.cwd, args.effort, mode, kind=args.kind, spawn_capability=args.spawn_capability)
         elif args.refresh:
-            sess = refresh(args.name, args.model, args.cwd, args.effort, mode)
+            sess = refresh(args.name, args.model, args.cwd, args.effort, mode, spawn_capability=args.spawn_capability)
         else:
             sess = respawn(args.name, args.model, args.cwd, args.effort, mode, args.session)
     except ValueError as e:

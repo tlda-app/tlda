@@ -23,7 +23,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { readdirSync, statSync } from 'node:fs'
+import { closeSync, openSync, readSync, readdirSync, statSync } from 'node:fs'
 
 const execFileP = promisify(execFile)
 const HOME = homedir()
@@ -81,6 +81,22 @@ function newestUnder(dirs, matches, sinceMs) {
   return best
 }
 
+function readFilePrefix(path, maxBytes = 128 * 1024) {
+  let fd
+  try {
+    fd = openSync(path, 'r')
+    const buf = Buffer.alloc(maxBytes)
+    const n = readSync(fd, buf, 0, maxBytes, 0)
+    return buf.toString('utf8', 0, n)
+  } catch {
+    return ''
+  } finally {
+    if (fd != null) {
+      try { closeSync(fd) } catch {}
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Adapter: Claude Code
 // ---------------------------------------------------------------------------
@@ -100,12 +116,33 @@ const claudeAdapter = {
 }
 
 // ---------------------------------------------------------------------------
-// Adapter: OpenAI Codex CLI   — STUB for oai (fleet:a7f28763) to complete in place.
+// Adapter: OpenAI Codex CLI
 // ---------------------------------------------------------------------------
 // Path scheme (confirmed): ~/.codex/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>.jsonl
 // PRIMARY (open-fd) already works via the shared resolver + isTranscriptPath below.
-// oai: refine findByLaunchWindow if the generic newest-after-ts isn't precise enough
-// (e.g. cross-check session_meta.id against the launch, per K.40).
+// The launch-window fallback must prove ownership from the rollout contents.
+// A global "newest rollout" fallback misroutes live agents whenever several
+// Codex sessions start close together.
+function codexRolloutBelongsToAgent(path, agent) {
+  if (!agent) return false
+  const text = readFilePrefix(path)
+  if (!text) return false
+
+  const ids = [agent.id, agent.fleet_id, agent.fleetId]
+    .filter(id => typeof id === 'string' && id.length > 0)
+  if (ids.some(id => text.includes(id))) return true
+
+  const name = agent.friendly_name || agent.name
+  if (typeof name !== 'string' || !name) return false
+  const quoted = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`(?:register\\(name=\\\\?"${quoted}\\\\?"\\)|Your name:\\s*\\\\?"${quoted}\\\\?")`).test(text)
+}
+
+function codexRolloutHasOwnerEvidence(path) {
+  const text = readFilePrefix(path)
+  return /\bRegistered fleet:[a-f0-9]+\b/.test(text) || /\bYour name:\s*\\?"/.test(text)
+}
+
 const codexAdapter = {
   label: 'codex',
   isTranscriptPath(p) {
@@ -113,8 +150,16 @@ const codexAdapter = {
   },
   findByLaunchWindow({ agent, launchTs }) {
     const root = join(HOME, '.codex', 'sessions')
-    return newestUnder([root], (p) => codexAdapter.isTranscriptPath(p), launchTs)
-    // TODO(oai): if needed, cross-check the rollout's session_meta.id; see K.40.
+    const knownIds = []
+    if (agent?.session_id) knownIds.push(agent.session_id)
+    for (const sid of (agent?.session_ids || [])) {
+      if (sid && !knownIds.includes(sid)) knownIds.push(sid)
+    }
+    const matches = knownIds.length
+      ? (p) => knownIds.some(id => p.endsWith(`-${id}.jsonl`))
+          && (!codexRolloutHasOwnerEvidence(p) || codexRolloutBelongsToAgent(p, agent))
+      : (p) => this.isTranscriptPath(p) && codexRolloutBelongsToAgent(p, agent)
+    return newestUnder([root], matches, launchTs)
   },
 }
 
@@ -142,4 +187,4 @@ export async function resolveTranscript({ pid, kind, agent, launchTs }) {
   return adapter.findByLaunchWindow({ agent, launchTs }) // FALLBACK
 }
 
-export { claudeAdapter, codexAdapter, findOpenTranscriptFd }
+export { claudeAdapter, codexAdapter, codexRolloutBelongsToAgent, codexRolloutHasOwnerEvidence, findOpenTranscriptFd }

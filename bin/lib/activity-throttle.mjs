@@ -13,7 +13,9 @@
 //
 // Dependencies are injected so the timing can be exercised with a fake clock in
 // tests without real timers. `send(agentId, evt)` is called once per buffered
-// event at flush time.
+// event at flush time. `buffer()` returns false if an immediate flush attempted
+// a send and any send failed; delayed flushes are reported when their timer
+// fires, not at buffer time.
 export function makeActivityThrottle({
   send,
   windowMs = 2000,
@@ -31,8 +33,12 @@ export function makeActivityThrottle({
     lastFlush.set(agentId, now())
     const list = buf.get(agentId)
     buf.delete(agentId)
-    if (!list || list.length === 0) return
-    for (const evt of list) send(agentId, evt)
+    if (!list || list.length === 0) return true
+    let ok = true
+    for (const evt of list) {
+      if (send(agentId, evt) === false) ok = false
+    }
+    return ok
   }
 
   function buffer(agentId, evts) {
@@ -43,11 +49,12 @@ export function makeActivityThrottle({
     if (timer.has(agentId)) return
     const sinceLast = now() - (lastFlush.get(agentId) || 0)
     if (sinceLast >= windowMs) {
-      flush(agentId)  // leading edge: agent was quiet, send now
+      return flush(agentId)  // leading edge: agent was quiet, send now
     } else {
       // Inside the window after a recent flush — schedule the trailing batch at
       // the window boundary so the push rate stays bounded.
       timer.set(agentId, setTimer(() => flush(agentId), windowMs - sinceLast))
+      return true
     }
   }
 

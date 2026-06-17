@@ -75,6 +75,7 @@ import { makeActivityThrottle } from './lib/activity-throttle.mjs'
 import { maybeKickGoose, resolveGooseStatus } from './lib/goose-kick.mjs'
 import { gooseActivityTick } from './lib/goose-activity.mjs'
 import { parseCodexLine } from './lib/codex-activity.mjs'
+import { buildFleetSpawnArgs, harnessKindForAgent, isPlaywrightBrowserArgs, shouldClaimCodexWatcher, unlinkPidfileIfOwnPid } from './lib/daemon-guards.mjs'
 import { resolveTranscript } from './lib/resolve-transcript.mjs'
 const log = createLogger('daemon')
 // CONFIG_DIR holds config.json, cursors, PID and log files. Defaults to
@@ -745,16 +746,14 @@ const _activityThrottle = makeActivityThrottle({
 })
 
 function bufferActivity(agentId, evts) {
-  _activityThrottle.buffer(agentId, evts)
+  return _activityThrottle.buffer(agentId, evts)
 }
 
 // ---------- JSONL watching ----------
 
-function runtimeKind(agent) {
-  return agent?.metadata?.kind || agent?.kind || (agent?._isCodex ? 'codex' : 'claude')
-}
-
 async function findRuntimePidForAgent(agent, kind) {
+  const adapter = HARNESS_ADAPTERS[kind]
+  if (!adapter) return null
   if (!agent?.tmux_session) return null
   let paneOut = ''
   try {
@@ -777,15 +776,13 @@ async function findRuntimePidForAgent(agent, kind) {
 
   const childrenByPpid = new Map()
   const runtimePids = new Set()
-  const codexRe = /(?:^|\s|\/)codex(?:\s|$)/
   for (const line of psOut.split('\n')) {
     const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/)
     if (!m) continue
     const [, pid, ppid, args] = m
     if (!childrenByPpid.has(ppid)) childrenByPpid.set(ppid, [])
     childrenByPpid.get(ppid).push(pid)
-    if (kind === 'codex' && codexRe.test(args)) runtimePids.add(pid)
-    else if (kind === 'claude' && args.includes('claude')) runtimePids.add(pid)
+    if (adapter.processRe.test(args)) runtimePids.add(pid)
   }
 
   const stack = [...panePids]
@@ -802,31 +799,111 @@ async function findRuntimePidForAgent(agent, kind) {
 
 async function resolveCodexJsonl(agent) {
   const pid = await findRuntimePidForAgent(agent, 'codex')
-  if (!pid) return null
+  const hasKnownRollout = !!(agent?.session_id || (agent?.session_ids || []).length)
+  if (!pid && !hasKnownRollout) return null
   const launchTs = Date.parse(agent.registered_at || agent.last_seen || '') || 0
   return resolveTranscript({ pid, kind: 'codex', agent, launchTs })
 }
 
-const ACTIVITY_HARNESSES = {
+const HARNESS_ADAPTERS = {
   claude: {
     kind: 'claude',
-    parseLine: parseSessionLine,
-    usesClaudeSessionIds: true,
-    backfillSearch: true,
-    terminalChat: true,
+    processRe: /(?:^|\s|\/)claude(?:\s|$)/,
+    activity: {
+      kind: 'claude',
+      parseLine: parseSessionLine,
+      usesClaudeSessionIds: true,
+      backfillSearch: true,
+      terminalChat: true,
+    },
   },
   codex: {
     kind: 'codex',
-    parseLine: parseCodexLine,
-    resolveJsonl: resolveCodexJsonl,
-    usesClaudeSessionIds: false,
-    backfillSearch: false,
-    terminalChat: false,
+    processRe: /(?:^|\s|\/)codex(?:\s|$)/,
+    activity: {
+      kind: 'codex',
+      parseLine: parseCodexLine,
+      resolveJsonl: resolveCodexJsonl,
+      usesClaudeSessionIds: false,
+      backfillSearch: false,
+      terminalChat: false,
+    },
+  },
+  goose: {
+    kind: 'goose',
+    processRe: /(?:^|\s|\/)goose(?:\s|$).*?\brun\b|\bgoose run\b/,
+    activity: {
+      kind: 'goose',
+      source: 'sqlite',
+      poll(agents, deps) { gooseActivityTick(agents, deps) },
+      usesClaudeSessionIds: false,
+      backfillSearch: false,
+      terminalChat: false,
+    },
   },
 }
 
+function harnessForAgent(agent) {
+  const kind = harnessKindForAgent(agent, log)
+  const adapter = HARNESS_ADAPTERS[kind]
+  if (!adapter) throw new Error(`unknown harness kind "${kind}" for ${agent?.friendly_name || agent?.id}`)
+  return adapter
+}
+
 function activityHarnessForAgent(agent) {
-  return ACTIVITY_HARNESSES[runtimeKind(agent)] || ACTIVITY_HARNESSES.claude
+  return harnessForAgent(agent).activity
+}
+
+// Resolve an agent's harness kind from its LIVE pane process when the stored
+// metadata.kind is absent or stale. resolve-transcript's contract is that kind
+// comes from process classification, not trusted metadata: a codex agent whose
+// metadata.kind never propagated (roster split / pre-refactor row) must NOT be
+// defaulted to claude — that points the watcher at ~/.claude/projects, finds no
+// JSONL, and the agent silently gets zero activity cards. Mirrors the pane-
+// subtree scan in findRuntimePidForAgent, but matches ALL adapters' processRe.
+async function resolveAgentKind(agent) {
+  const stored = agent?.metadata?.kind
+  if (stored && HARNESS_ADAPTERS[stored]) return stored
+  if (!agent?.tmux_session) return 'claude'
+  let paneOut = ''
+  try {
+    ;({ stdout: paneOut } = await execFileP('tmux',
+      [...TMUX_ARGS, 'list-panes', '-t', agent.tmux_session, '-F', '#{pane_pid}'],
+      { timeout: 3000, encoding: 'utf8' }))
+  } catch { return 'claude' }
+  const panePids = paneOut.trim().split('\n').filter(Boolean)
+  if (!panePids.length) return 'claude'
+  let psOut = ''
+  try {
+    ;({ stdout: psOut } = await execFileP('ps', ['-eo', 'pid,ppid,args'], { timeout: 5000, encoding: 'utf8' }))
+  } catch { return 'claude' }
+  const childrenByPpid = new Map()
+  const argsByPid = new Map()
+  for (const line of psOut.split('\n')) {
+    const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/)
+    if (!m) continue
+    const [, pid, ppid, args] = m
+    if (!childrenByPpid.has(ppid)) childrenByPpid.set(ppid, [])
+    childrenByPpid.get(ppid).push(pid)
+    argsByPid.set(pid, args)
+  }
+  const stack = [...panePids], seen = new Set()
+  while (stack.length) {
+    const pid = stack.pop()
+    if (seen.has(pid)) continue
+    seen.add(pid)
+    const args = argsByPid.get(pid)
+    // Check codex/goose before claude: a codex/goose runtime is the specific
+    // signal; claude's regex is the broad default. (processRes are word-bounded
+    // so this is belt-and-suspenders, not load-bearing.)
+    if (args) {
+      if (HARNESS_ADAPTERS.codex.processRe.test(args)) return 'codex'
+      if (HARNESS_ADAPTERS.goose.processRe.test(args)) return 'goose'
+      if (HARNESS_ADAPTERS.claude.processRe.test(args)) return 'claude'
+    }
+    for (const child of (childrenByPpid.get(pid) || [])) stack.push(child)
+  }
+  return 'claude'
 }
 
 async function syncSessionWatchers(agentList) {
@@ -834,7 +911,16 @@ async function syncSessionWatchers(agentList) {
 
   for (const agent of agentList) {
     if (agent.dead) continue
-    const harness = activityHarnessForAgent(agent)
+    let harness
+    try {
+      const kind = await resolveAgentKind(agent)
+      const adapter = HARNESS_ADAPTERS[kind]
+      if (!adapter) throw new Error(`unknown harness kind "${kind}" for ${agent?.friendly_name || agent?.id}`)
+      harness = adapter.activity
+    } catch (e) {
+      log.error(`activity harness selection failed: ${e.message}`)
+      continue
+    }
     const cwd = agent.cwd ?? ''
     // Strip worktree suffixes so the project hash matches where Claude Code
     // stores the JSONL (at the original project root, not the worktree).
@@ -895,7 +981,13 @@ async function syncSessionWatchers(agentList) {
       const fileSessionId = path.basename(jsonlPath, '.jsonl')
       // Whichever agent's session_id matches the JSONL filename is the
       // active session — others are historical sharers (post-inhabit).
-      if (!harness.usesClaudeSessionIds || agent.session_id === fileSessionId) pw.primaryAgentId = agent.id
+      if (harness.kind === 'codex') {
+        if (shouldClaimCodexWatcher({ currentPrimaryId: pw.primaryAgentId, agent, jsonlPath })) {
+          pw.primaryAgentId = agent.id
+        }
+      } else if (!harness.usesClaudeSessionIds || agent.session_id === fileSessionId) {
+        pw.primaryAgentId = agent.id
+      }
       pw.harnessKind = harness.kind
       continue
     }
@@ -1011,12 +1103,14 @@ function readNewSessionLines(agentId, jsonlPath, sessionId, harnessKind = 'claud
     log.error(`read ${jsonlPath}: ${e.message}`)
     return
   }
-  cursors[sessionId].offset = stat.size
-  scheduleCursorSave()
-
   const lines = buf.toString('utf8').split('\n').filter(l => l.trim())
   const parsedEvents = []
-  const harness = ACTIVITY_HARNESSES[harnessKind] || ACTIVITY_HARNESSES.claude
+  let delivered = true
+  const harness = HARNESS_ADAPTERS[harnessKind]?.activity
+  if (!harness) {
+    log.error(`readNewSessionLines: unknown harness kind ${harnessKind}`)
+    return
+  }
 
   for (const line of lines) {
     const ev = harness.parseLine(line)
@@ -1045,19 +1139,22 @@ function readNewSessionLines(agentId, jsonlPath, sessionId, harnessKind = 'claud
         /^Call register\([^)]*\) with the fleet MCP server\b/.test(text)) continue
     const ts = parsed.timestamp || null
     if (!ts) continue
-    sendMsg({
+    if (!sendMsg({
       type: 'terminal-chat',
       agent_id: agentId,
       from: `fleet:${os.userInfo?.()?.username || 'user'}`,
       text,
       ts,
       session_id: sessionId,
-    })
+    })) delivered = false
   }
 
   if (parsedEvents.length > 0) {
     const activity = extractActivityEvents(parsedEvents)
-    if (activity.length > 0) bufferActivity(agentId, activity)
+    if (activity.length > 0) {
+      log.info(`activity extracted for ${agentId}: ${activity.length} event(s) from ${path.basename(jsonlPath)}`)
+      if (bufferActivity(agentId, activity) === false) delivered = false
+    }
 
     // Context-percent: find the latest usage data and compute remaining %
     const lastUsage = [...parsedEvents].reverse().find(ev => ev.usage)
@@ -1065,7 +1162,7 @@ function readNewSessionLines(agentId, jsonlPath, sessionId, harnessKind = 'claud
       const MAX_CONTEXT = 200_000
       const used = lastUsage.usage.input
       const pct = Math.max(0, Math.round((1 - used / MAX_CONTEXT) * 100))
-      sendMsg({ type: 'agent-context', agentId, contextPercent: pct, inputTokens: used })
+      if (!sendMsg({ type: 'agent-context', agentId, contextPercent: pct, inputTokens: used })) delivered = false
     }
 
     // Qualification checking: track reads, check edits/writes
@@ -1091,6 +1188,13 @@ function readNewSessionLines(agentId, jsonlPath, sessionId, harnessKind = 'claud
 
     // Check for tool approval prompts — these appear when Claude wants to
     // use a tool that requires permission.
+  }
+
+  if (delivered) {
+    cursors[sessionId].offset = stat.size
+    scheduleCursorSave()
+  } else {
+    log.warn(`not advancing cursor for ${path.basename(jsonlPath)}; activity delivery failed`)
   }
 
   // Extract text content for unified search and send to server.
@@ -2069,7 +2173,7 @@ function rpcTerminalInput({ tmux_session, data }) {
 
 
 const _activeSpawns = new Map()
-async function rpcSpawn({ name, model, cwd, doc, respawn, effort }) {
+async function rpcSpawn({ name, model, kind, cwd, doc, respawn, refresh, effort, mode, spawnPolicy }) {
   const agentName = name || `agent-${Date.now().toString(36).slice(-4)}`
   if (_activeSpawns.has(agentName)) {
     const age = Date.now() - _activeSpawns.get(agentName)
@@ -2090,11 +2194,17 @@ async function rpcSpawn({ name, model, cwd, doc, respawn, effort }) {
     }
     if (project.sourceDir) resolvedCwd = project.sourceDir
   }
-  const args = respawn ? [agentName] : ['--fresh', agentName]
-  if (model) args.push('--model', model)
-  if (effort) args.push('--effort', effort)
-  if (resolvedCwd) args.push('--cwd', resolvedCwd)
-  args.push('--no-attach')
+  const { args } = buildFleetSpawnArgs({
+    name: agentName,
+    model,
+    kind,
+    cwd: resolvedCwd,
+    respawn,
+    refresh,
+    effort,
+    mode,
+    spawnPolicy,
+  })
   // Route spawn through `tlda` (the on-path installed binary, which resolves the
   // fleet-spawn script internally) rather than a bare `fleet-spawn` that depends
   // on PATH. FLEET_SPAWN env still overrides with a direct script path (tests).
@@ -2281,22 +2391,14 @@ async function checkAgentLiveness() {
     }
   } catch { /* tmux unavailable */ }
 
-  // One ps call: get all processes with their args and PPIDs. We build both
-  // the set of agent-runtime PIDs (liveness) and a full ppid→children map (so
-  // both the subtree liveness walk and session reconciliation can traverse a
-  // pane's process subtree). An agent runs either `claude` (Claude Code) or
-  // `goose run` (sandboxed DeepSeek agents). We record only the agent process's
-  // OWN pid — the subtree walk below finds it under the pane, which is essential
-  // for goose (nested under a `zsh -lc` login wrapper, so its ppid is the inner
-  // shell, not the pane).
-  const agentProcPids = new Set()
-  const gooseProcPids = new Set()   // subset: only `goose run` agents
-  const codexProcPids = new Set()   // subset: only `codex` (OpenAI Codex CLI) agents
+  // One ps call: get all processes with their args and PPIDs. Each harness
+  // adapter declares what its runtime process looks like; the daemon owns the
+  // hibernating/dead state transition and only asks "is this adapter's runtime
+  // alive under this tmux pane?".
+  const runtimePidsByKind = new Map(
+    Object.keys(HARNESS_ADAPTERS).map(kind => [kind, new Set()])
+  )
   const childrenByPpid = new Map()
-  // Match the `codex` executable as a command token without false-matching paths
-  // that merely contain "codex" (e.g. a worktree named codex-adapter): codex must
-  // be at a word/path boundary AND followed by whitespace or end-of-string.
-  const CODEX_PROC_RE = /(?:^|\s|\/)codex(?:\s|$)/
   try {
     const { stdout } = await execFileP('ps', ['-eo', 'pid,ppid,args'],
       { timeout: 5000, encoding: 'utf8' })
@@ -2307,15 +2409,11 @@ async function checkAgentLiveness() {
         if (!childrenByPpid.has(ppid)) childrenByPpid.set(ppid, [])
         childrenByPpid.get(ppid).push(pid)
       }
-      const isClaude = line.includes('claude')
-      const isGoose = line.includes('goose run')
-      const isCodex = CODEX_PROC_RE.test(line)
-      if (isClaude || isGoose || isCodex) {
-        const pid = line.trim().split(/\s+/)[0]
-        if (pid) {
-          agentProcPids.add(pid)
-          if (isGoose) gooseProcPids.add(pid)
-          if (isCodex) codexProcPids.add(pid)
+      const pid = line.trim().split(/\s+/)[0]
+      if (!pid) continue
+      for (const adapter of Object.values(HARNESS_ADAPTERS)) {
+        if (adapter.processRe.test(line)) {
+          runtimePidsByKind.get(adapter.kind)?.add(pid)
         }
       }
     }
@@ -2326,19 +2424,32 @@ async function checkAgentLiveness() {
 
   const aliveAgentIds = []
   let healedAny = false
-  let codexClassificationChanged = false
+  let watcherNeedsSync = false
   for (const agent of candidateAgents) {
     const panes = sessionToPanes.get(agent.tmux_session) || []
-    const agentAlive = panes.some(pid => _paneSubtreeHasAgent(pid, childrenByPpid, agentProcPids))
-    // Classify goose-backed agents (DeepSeek) so the thinking-scan loop can run
-    // the goose turn-end auto-kick on them and skip the claude path.
-    agent._isGoose = agentAlive && panes.some(pid => _paneSubtreeHasAgent(pid, childrenByPpid, gooseProcPids))
-    // Classify Codex (OpenAI Codex CLI) agents so the session-watch path can pick
-    // parseCodexLine + pass kind:'codex' to resolveTranscript. _isCodex feeds the
-    // `kind` the resolver/parser dispatch reads (see bin/lib/resolve-transcript.mjs).
-    const wasCodex = !!agent._isCodex
-    agent._isCodex = agentAlive && panes.some(pid => _paneSubtreeHasAgent(pid, childrenByPpid, codexProcPids))
-    if (agent._isCodex && !wasCodex) codexClassificationChanged = true
+    // Liveness + true kind from the ACTUAL pane process, not the (often
+    // absent/stale) metadata.kind. The previous code resolved kind via
+    // harnessForAgent → defaulted codex agents to claude → checked the codex
+    // pane for a *claude* runtime, found none, and wrongly marked the live
+    // codex agent hibernating (so it never got a JSONL watcher → no cards).
+    // An agent is alive if its pane subtree holds ANY harness runtime; its kind
+    // is whichever matched. Prefer the claimed kind only if its runtime is
+    // actually present, so a parent that spawned a child of another kind isn't
+    // misclassified.
+    const claimed = agent?.metadata?.kind
+    let matchedKind = null
+    if (claimed && runtimePidsByKind.has(claimed) &&
+        panes.some(pid => _paneSubtreeHasAgent(pid, childrenByPpid, runtimePidsByKind.get(claimed)))) {
+      matchedKind = claimed
+    } else {
+      for (const [kind, pids] of runtimePidsByKind) {
+        if (panes.some(pid => _paneSubtreeHasAgent(pid, childrenByPpid, pids))) { matchedKind = kind; break }
+      }
+    }
+    const agentAlive = matchedKind !== null
+    const priorRuntimeKind = agent.runtimeKind
+    agent.runtimeKind = matchedKind || (runtimePidsByKind.has(claimed) ? claimed : 'claude')
+    if (matchedKind && priorRuntimeKind && priorRuntimeKind !== matchedKind) watcherNeedsSync = true
 
     _alivenessCache.set(agent.tmux_session, agentAlive)
 
@@ -2369,6 +2480,10 @@ async function checkAgentLiveness() {
     if (agent.hibernating) {
       log.info(`agent ${agent.friendly_name || agent.id} is awake`)
       agent.hibernating = false
+      watcherNeedsSync = true
+    }
+    if (matchedKind && matchedKind !== 'claude' && !agentPaths.has(agent.id)) {
+      watcherNeedsSync = true
     }
     aliveAgentIds.push(agent.id)
 
@@ -2382,7 +2497,7 @@ async function checkAgentLiveness() {
   // A heal changed an agent's session_id/session_ids locally; re-point the JSONL
   // watchers immediately so attribution resumes this sweep (the server persists
   // independently from the agent-session-observed message).
-  if (healedAny || codexClassificationChanged) {
+  if (healedAny || watcherNeedsSync) {
     void syncSessionWatchers(agents).catch(e => log.error(`syncSessionWatchers failed: ${e.stack || e.message}`))
   }
 
@@ -2396,10 +2511,12 @@ async function checkAgentLiveness() {
 
       const paneBottom = pane.split('\n').slice(-THINKING_SCAN_LINES).join('\n')
 
+      const adapter = harnessForAgent(agent)
+
       // Goose agents have a different TUI — the claude spinner/compacting/approval
       // regexes don't apply. Derive thinking from goose's own working marker and
       // run the turn-end auto-kick, then skip the claude-specific detection.
-      if (agent._isGoose) {
+      if (adapter.kind === 'goose') {
         // One resolved status per sweep feeds BOTH the emit and the kick — no
         // second code path. A frozen spinner resolves to 'stuck' (not 'working'),
         // so thinking=false (turn-timeout fires) AND the kick is un-suppressed.
@@ -2762,7 +2879,7 @@ async function listPlaywrightBrowsers() {
     const pid = parseInt(m[1], 10)
     const ppid = parseInt(m[2], 10)
     const args = m[3]
-    if (!args.includes('playwright_chromiumdev_profile') && !args.includes('ms-playwright')) continue
+    if (!isPlaywrightBrowserArgs(args)) continue
     if (args.includes('--type=')) continue
     // Skip the playwright-cli session DAEMON itself (`run-cli-server`). Its
     // --daemon-session path lives under .../ms-playwright/..., so it matches the
@@ -3067,14 +3184,11 @@ function handleServerMessage(msg) {
       _deathCheckInterval = setInterval(checkAgentLiveness, DEATH_CHECK_MS)
       setTimeout(checkAgentLiveness, 5000)
     }
-    // Goose activity-card source: goose agents write to a sqlite db, not the
-    // Claude JSONLs, so the JSONL watcher produces no cards for them. Poll the
-    // goose sqlite for new messages and feed the same bufferActivity() path.
-    // (_isGoose is set by checkAgentLiveness, so cards begin within a sweep of
-    // an agent being classified.) A no-op when there are no awake goose agents.
+    // Non-JSONL activity sources. Goose writes to sqlite instead of a Claude/Codex
+    // JSONL, so its adapter polls and feeds the same bufferActivity() path.
     if (!_gooseActivityInterval) {
       _gooseActivityInterval = setInterval(() => {
-        gooseActivityTick(agents, {
+        HARNESS_ADAPTERS.goose.activity.poll(agents, {
           bufferActivity, log, lastSeen: _gooseActivityLastSeen,
           isNoise: (base) => ACTIVITY_NOISE.has(base),
         })
@@ -3239,7 +3353,7 @@ function shutdown(signal) {
   // Log WHY we're dying so the next post-mortem isn't a scavenger hunt.
   log.info(`shutdown via ${signal || 'unknown'} signal; saving cursors and exiting`)
   saveCursors()
-  try { fs.unlinkSync(PID_FILE) } catch {}
+  unlinkPidfileIfOwnPid(PID_FILE, process.pid)
   _rws?.close()
   process.exit(0)
 }

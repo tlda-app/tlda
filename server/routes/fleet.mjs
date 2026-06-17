@@ -12,8 +12,9 @@ import { Router } from 'express'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
-import { DEFAULT_PORT, resolveConfig } from '../../shared/config.mjs'
+import { DEFAULT_PORT, loadConfig, resolveConfig } from '../../shared/config.mjs'
 import { parseFilter, evalExpr, labelsForAgent } from '../../shared/fleet-labels.mjs'
+import { authorizeSpawn, projectCapabilityToMode } from '../lib/spawn-policy.mjs'
 
 // Server owner — the human running this server process. Browser users
 // log in via the WS 'login' message or register via 'register'.
@@ -436,7 +437,17 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   // doc: project name — daemon resolves to sourceDir for the cwd
   // For respawn: { agent: "fleet:xxx" or "name", respawn: true }
   router.post('/api/spawn', async (req, res) => {
-    const { name, model, doc, cwd, agent, respawn } = req.body || {}
+    const { name, model, doc, cwd, agent, respawn, capability, spawnCapability, kind, mode, effort } = req.body || {}
+    // HTTP auth currently proves only bearer-token level, not which fleet agent or
+    // human browser session made the request. Spawning is authority-sensitive, so
+    // fail closed here instead of treating all HTTP callers as the server owner.
+    // MCP/agent spawns use the /ws/fleet `spawn` operation, where the caller is
+    // bound to the registered WebSocket identity.
+    const caller = req.fleetCallerId ? fleetStore?.getAgent?.(req.fleetCallerId) : null
+    if (!caller) {
+      res.status(403).json({ error: 'spawn requires authenticated caller identity; HTTP /api/spawn has no per-caller identity. Use the fleet WS spawn path.' })
+      return
+    }
     // For respawn, resolve agent to a name
     let spawnName = name
     if (respawn && agent) {
@@ -450,14 +461,27 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       return
     }
     try {
+      const authorized = authorizeSpawn({
+        caller,
+        requestedCapability: capability || spawnCapability,
+        model,
+        kind,
+        config: loadConfig(),
+        serverOwnerId: SERVER_OWNER_ID,
+      })
+      const launchMode = projectCapabilityToMode(authorized.requestedCapability, mode)
       const resolved = resolveSpawnTarget
         ? await resolveSpawnTarget(spawnName, !!respawn)
         : { name: spawnName, respawn: !!respawn }
       const result = await sendRpc(machineIds[0], 'spawn', {
         name: resolved.name || undefined,
         model: model || undefined,
+        kind: kind || undefined,
         doc: doc || undefined,
         cwd: cwd || undefined,
+        effort: effort || undefined,
+        mode: launchMode || undefined,
+        spawnPolicy: { capability: authorized.requestedCapability },
         respawn: resolved.respawn,
       })
       broadcastState()

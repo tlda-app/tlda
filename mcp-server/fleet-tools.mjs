@@ -24,6 +24,7 @@ import { baseName, nameForPhase, phaseFromName } from '../shared/lineage-name.mj
 import { parseFilter, evalExpr } from '../shared/fleet-labels.mjs';
 import { baseMacros } from '../shared/katex-base-macros.mjs';
 import { normalizeRefNumber as _normalizeRefNumber, refTypeForName as _refTypeForName, buildTheoremRefRegex as _buildTheoremRefRegex } from '../shared/doc-refs.mjs';
+import { harnessFromEnv } from './lib/harness-adapters.mjs';
 import WebSocket from 'ws';
 import { ResilientWS } from '../shared/resilient-ws.mjs';
 
@@ -751,28 +752,24 @@ function tmuxRead(sessionName) {
   }
 }
 
-// Wake a goose-backed fleet agent by typing a nudge into its tmux pane.
-// Goose doesn't act on the Claude-only `notifications/claude/channel`, so for a
-// goose agent we deliver the message nudge straight into its interactive prompt
-// via send-keys; the agent then calls my_task() and replies. Single-lined so an
-// embedded newline can't submit the prompt early. execFileSync (args array)
-// avoids any shell-escaping of the message content.
+// Wake a non-Claude fleet agent by typing a nudge into its tmux pane. Those
+// harnesses don't act on Claude's `notifications/claude/channel`, so the adapter
+// decides whether to also deliver via send-keys and whether Enter needs a settle
+// delay. Single-lined so an embedded newline can't submit the prompt early.
+// execFileSync (args array) avoids any shell-escaping of the message content.
 function tmuxSendText(sessionName, text) {
   try {
     const line = String(text || '').replace(/\s*\n\s*/g, ' · ').trim();
     if (!line) return false;
     execFileSync('tmux', ['send-keys', '-t', sessionName, '--', line], { timeout: 5000 });
-    // Codex's TUI drops an Enter sent immediately after the text paste, leaving the
-    // nudge sitting unsubmitted in its input box. A short settle delay before the
-    // Enter fixes it. Goose submits fine back-to-back, so only delay for codex to
-    // avoid changing the goose path. Atomics.wait = a dependency-free sync sleep.
-    if (process.env.FLEET_HARNESS === 'codex') {
-      try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 400); } catch {}
+    const settleMs = harnessFromEnv().nudgeSettleMs || 0;
+    if (settleMs > 0) {
+      try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, settleMs); } catch {}
     }
     execFileSync('tmux', ['send-keys', '-t', sessionName, 'Enter'], { timeout: 5000 });
     return true;
   } catch (e) {
-    process.stderr.write(`[fleet-goose-nudge] send-keys failed for ${sessionName}: ${e.message}\n`);
+    process.stderr.write(`[fleet-harness-nudge] send-keys failed for ${sessionName}: ${e.message}\n`);
     return false;
   }
 }
@@ -876,8 +873,10 @@ export function getFleetTools() {
               cwd: { type: 'string', description: 'Working directory (inherits from caller if omitted)' },
               model: { type: 'string', description: 'Model override (omit to use fleet-spawn\'s default)' },
               effort: { type: 'string', description: 'Effort level: low|medium|high|xhigh|max (default: inherit global config)' },
+              kind: { type: 'string', description: 'Agent runtime/harness (claude, goose, codex).' },
+              capability: { type: 'string', description: 'Requested sandbox capability: read-only, workspace-write-no-net, workspace-write+net, or full-access.' },
             },
-          },
+	          },
           description: { type: 'string', description: 'Short human-readable description (5-10 words). Auto-derived from message if omitted.' },
           message: { type: 'string', description: 'Full task message for the agent' },
           after: { description: 'Task ID or array of IDs — deferred until all complete.', oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }] },
@@ -1042,7 +1041,7 @@ export function getFleetTools() {
     },
     {
       name: 'spawn',
-      description: 'Spawn or respawn a fleet agent via fleet-spawn. Default: respawn existing agent (resume session). Pass fresh=true to create a new agent. Pass refresh=true to start a fresh session for an existing agent (same fleet ID — breaks compaction loops). Supports lineage: set phase to join/create a lineage (auto-created from the agent name on first spawn).',
+      description: 'Spawn or respawn a fleet agent via the server-authorized spawn path. Default: respawn existing agent (resume session). Pass fresh=true to create a new agent. Pass refresh=true to start a fresh session for an existing agent (same fleet ID — rejected for Codex). Supports lineage: set phase to join/create a lineage (auto-created from the agent name on first spawn).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -1053,7 +1052,9 @@ export function getFleetTools() {
           model: { type: 'string', description: 'Model override. Omit to use fleet-spawn\'s default.' },
           cwd: { type: 'string', description: 'Working directory (fresh mode only).' },
           effort: { type: 'string', description: 'Effort level: low|medium|high|xhigh|max (default: inherit global config).' },
-          mode: { type: 'string', description: 'Permission mode for claude (e.g. plan, default, auto). Falls back to spawnMode in ~/.config/tlda/config.json.' },
+          kind: { type: 'string', description: 'Agent runtime/harness (claude, goose, codex).' },
+          capability: { type: 'string', description: 'Requested sandbox capability: read-only, workspace-write-no-net, workspace-write+net, or full-access.' },
+          mode: { type: 'string', description: 'Harness-specific launch mode projection for claude (e.g. plan, default, auto). Capability remains the durable authority.' },
           phase: { type: 'string', enum: ['dawn', 'day', 'dusk'], description: 'Phase slot in the lineage. Rejects if slot is occupied. Default: day for fresh agents joining a lineage.' },
         },
       },
@@ -1639,9 +1640,7 @@ export async function handleFleetTool(name, args) {
     // the tlda server route RPCs (interrupt / send-key / capture-pane /
     // restart-mcp) to the right per-machine fleet-daemon.
     const machineId = os.hostname().split('.')[0];
-    const harnessKind = process.env.FLEET_HARNESS && process.env.FLEET_HARNESS !== 'claude'
-      ? process.env.FLEET_HARNESS
-      : null;
+    const currentHarness = harnessFromEnv();
     const regBody = {
       // agent_id (not id): sendWS() stamps a correlation `id` onto every
       // message, which would clobber a payload `id`. Sending the real fleet
@@ -1654,7 +1653,7 @@ export async function handleFleetTool(name, args) {
       cwd: entry.cwd,
       labels: entry.labels,
       machine_id: machineId,
-      ...(harnessKind ? { metadata: { kind: harnessKind } } : {}),
+      metadata: { kind: currentHarness.kind },
     };
     // Wait up to 2s for WS to connect (it should be fast — localhost)
     if (!_channelRWS?.connected) {
@@ -1694,7 +1693,7 @@ export async function handleFleetTool(name, args) {
       msg += `\nYour name: "${entry.friendly_name}" — other agents and the user know you by this name.`;
     }
 
-    if (!CLAUDE_SESSION) {
+    if (currentHarness.kind === 'claude' && !CLAUDE_SESSION) {
       msg += '\n\n⚠️ No session ID detected — activity cards will NOT appear for this agent. Pass session_id to register() to fix.';
       process.stderr.write(`[fleet] WARNING: agent ${AGENT_ID} registered with no session_id — no activity tracking\n`);
     }
@@ -1763,34 +1762,36 @@ export async function handleFleetTool(name, args) {
       const agentName = spawnOpts.name || `agent-${Date.now().toString(36).slice(-4)}`;
       const agentCwd = spawnOpts.cwd || getAgentCwd();
 
-      // Resolve mode for inline spawn: explicit > config file default
-      let delegateSpawnMode = spawnOpts.mode || null;
-      if (!delegateSpawnMode) {
-        try {
-          const cfg = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.config', 'tlda', 'config.json'), 'utf8'));
-          delegateSpawnMode = cfg.spawnMode || null;
-        } catch (e) { process.stderr.write(`[fleet] spawn mode config read failed: ${e.message}\n`); }
-      }
-
-      let spawnOutput;
       try {
-        spawnOutput = runFleetSpawn(agentName, {
+        await sendWS('spawn', {
           fresh: true,
-          model: spawnOpts.model, effort: spawnOpts.effort,
-          cwd: agentCwd, mode: delegateSpawnMode,
+          name: agentName,
+          model: spawnOpts.model,
+          effort: spawnOpts.effort,
+          kind: spawnOpts.kind,
+          cwd: agentCwd,
+          capability: spawnOpts.capability,
         });
       } catch (e) {
-        const msg = (e.stderr || e.stdout || e.message || '').trim();
+        const msg = (e.message || '').trim();
         return { content: [{ type: 'text', text: `spawn failed: ${msg}` }], isError: true };
       }
 
-      // fleet-spawn prints: "fleet-agentname (fleet:xxxxxxxx) spawned in /path"
-      const fleetIdMatch = spawnOutput.match(/\((fleet:[a-f0-9]+)\)/);
-      if (!fleetIdMatch) {
-        return { content: [{ type: 'text', text: `spawn output not parseable: ${spawnOutput}` }], isError: true };
+      let spawned = null;
+      for (let i = 0; i < 20; i++) {
+        try {
+          const agents = await sendWS('store-agents');
+          spawned = agents?.find(a => a.friendly_name === agentName || a.id === agentName);
+          if (spawned) break;
+        } catch {}
+        await new Promise(r => setTimeout(r, 250));
       }
 
-      agent = fleetIdMatch[1];
+      if (!spawned?.id) {
+        return { content: [{ type: 'text', text: `spawn started for ${agentName}, but the agent did not register within 5s` }], isError: true };
+      }
+
+      agent = spawned.id;
       spawnedInfo = { agent_id: agent, friendly_name: agentName };
     }
 
@@ -2968,20 +2969,20 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
       } catch {}
     }
 
-    // Resolve mode: explicit arg > config file default
-    let spawnMode = args.mode || null;
-    if (!spawnMode) {
-      try {
-        const cfg = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.config', 'tlda', 'config.json'), 'utf8'));
-        spawnMode = cfg.spawnMode || null;
-      } catch {}
-    }
-
     try {
-      const output = runFleetSpawn(agentName, {
-        fresh: isFresh, refresh: isRefresh,
-        model: args.model, effort: args.effort,
-        cwd: args.cwd, mode: spawnMode,
+      const isRespawn = !isFresh && !isRefresh;
+      const result = await sendWS('spawn', {
+        fresh: isFresh,
+        respawn: isRespawn,
+        refresh: isRefresh,
+        agent: args.agent,
+        name: args.name,
+        model: args.model,
+        kind: args.kind,
+        effort: args.effort,
+        cwd: args.cwd,
+        mode: args.mode,
+        capability: args.capability,
       });
 
       // Assign lineage/phase after spawn
@@ -2989,16 +2990,16 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
         try {
           const result = await sendWS('lineage-assign', { agent: agentName, phase });
           if (result?.error) {
-            return { content: [{ type: 'text', text: `Spawned but lineage assignment failed: ${result.error}\n${output}` }], isError: true };
+            return { content: [{ type: 'text', text: `Spawned but lineage assignment failed: ${result.error}` }], isError: true };
           }
         } catch (e) {
           process.stderr.write(`[fleet] lineage-assign after spawn failed: ${e.message}\n`);
         }
       }
 
-      return { content: [{ type: 'text', text: output }] };
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     } catch (e) {
-      const msg = (e.stderr || e.stdout || e.message || '').trim();
+      const msg = (e.message || '').trim();
       return { content: [{ type: 'text', text: `spawn failed: ${msg}` }], isError: true };
     }
   }
@@ -4373,13 +4374,8 @@ async function handleChannelMessage(msg) {
       },
     });
     process.stderr.write(`[fleet-channel] Delivered ${eventType} from ${fromId} via channel (event ${data.id})\n`);
-    // Non-Claude harnesses (goose, codex) don't act on the Claude-only
-    // `notifications/claude/channel`, so they never wake from the notification
-    // above. For a direct message to such an agent, also nudge its tmux pane via
-    // send-keys with the same summary content — it then calls my_task() and replies.
-    // FLEET_HARNESS is set by fleet-spawn (build_goose_cmd / build_codex_cmd); any
-    // value other than the default Claude path needs the send-keys fallback.
-    if (isDirectTarget && process.env.FLEET_HARNESS && process.env.FLEET_HARNESS !== 'claude') {
+    // Harness adapter decides whether Claude-channel delivery needs a tmux nudge.
+    if (isDirectTarget && harnessFromEnv().channelNudge) {
       const sess = process.env.FLEET_TMUX_SESSION;
       if (sess) tmuxSendText(sess, content);
     }
