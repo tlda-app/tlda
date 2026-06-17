@@ -57,26 +57,56 @@ if (hasTls && !process.env.NODE_EXTRA_CA_CERTS) {
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
 }
 
-export function getServerUrl(config = null) {
-  if (process.env.TLDA_SERVER) return process.env.TLDA_SERVER
+/**
+ * THE config resolver — single source of truth for "what does this instance
+ * talk to." There is exactly one selection rule and one derivation; outside this
+ * function nothing computes or branches on config.
+ *
+ * Model (git-style): config.configs is a map of named configs, each a COMPLETE
+ * { database, store, licenseKey }. config.defaultConfig names the active one
+ * unless TLDA_CONFIG overrides it. That single selector is the only choice.
+ *
+ *   database — fleet/chat/registry/agents (the one global event store)
+ *   store    — shapes + doc assets sync (per-room/per-doc state)
+ *   licenseKey — tldraw license ("" = explicitly unlicensed, written out)
+ *
+ * NO fallbacks: a missing config name or any missing field THROWS. There are no
+ * legacy flat keys, no localhost default, no per-axis env overrides. A bad config
+ * fails loud at startup instead of silently guessing — that unpredictability is
+ * exactly what this design exists to remove.
+ *
+ * Returns the fully-derived config: http+ws forms computed once for each axis.
+ */
+function _httpForm(u) { return u.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/+$/, '') }
+function _wsForm(u) { return u.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:').replace(/\/+$/, '') }
+
+export function resolveConfig(config = null) {
   const cfg = config ?? loadConfig()
-  const proto = hasTls ? 'https' : 'http'
-  return cfg.server || `${proto}://localhost:${DEFAULT_PORT}`
+  const name = process.env.TLDA_CONFIG || cfg.defaultConfig
+  if (!name) throw new Error('tlda config: no active config — set "defaultConfig" in config.json (or TLDA_CONFIG)')
+  const raw = cfg.configs && cfg.configs[name]
+  if (!raw) throw new Error(`tlda config: no config named "${name}" — known: ${Object.keys(cfg.configs || {}).join(', ') || '(none)'}`)
+  for (const field of ['database', 'store', 'licenseKey']) {
+    if (typeof raw[field] !== 'string') {
+      throw new Error(`tlda config "${name}": field "${field}" must be a string (got ${typeof raw[field]}). Configs are complete — no field is optional.`)
+    }
+  }
+  return {
+    name,
+    database: { http: _httpForm(raw.database), ws: _wsForm(raw.database) },
+    store: { http: _httpForm(raw.store), ws: _wsForm(raw.store) },
+    licenseKey: raw.licenseKey,
+  }
 }
 
-/**
- * Fleet/event-store URL resolution.
- * TLDA_FLEET_SERVER env → config.fleetServer → getServerUrl() (same host).
- *
- * The fleet/event store (chat, agents, activity, tasks) is the one global,
- * non-room-scoped resource; an agent can point it at a shared backend (e.g. Fly)
- * while doc/source ops stay on getServerUrl() per-resource. Read from config so
- * an MCP restart picks up a change without relaunching the agent's session.
- */
+/** Server URL = the active config's STORE (doc assets + shape sync) over http. */
+export function getServerUrl(config = null) {
+  return resolveConfig(config).store.http
+}
+
+/** Fleet/event-store URL = the active config's DATABASE (chat/agents) over http. */
 export function getFleetServerUrl(config = null) {
-  if (process.env.TLDA_FLEET_SERVER) return process.env.TLDA_FLEET_SERVER
-  const cfg = config ?? loadConfig()
-  return cfg.fleetServer || getServerUrl(cfg)
+  return resolveConfig(config).database.http
 }
 
 /**

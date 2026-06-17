@@ -17,59 +17,19 @@ import { toolContentDetail } from './activity-render.mjs'
 import { labelsForAgent, evalDnf } from '../../shared/fleet-labels.mjs'
 import { makeEventStore } from './event-store.mjs'
 import { log } from '../logger'
+import { DATABASE_HTTP, DATABASE_WS } from '../activeConfig'
 
-// Fleet server base. Local/embedded: same-origin. Hosted (GitHub Pages → Fly):
-// the SPA origin is a static Pages site with no /ws/fleet, so derive the base from
-// VITE_SYNC_SERVER (where the doc-sync + assets already point). Without this the
-// fleet WS connects to the Pages origin, never connects, login never runs, and
-// getHumanId() stays null → the fleet HUD bails.
-const _syncWs = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_SYNC_SERVER) || null
-// API_BASE: the server that served this SPA. Pages (static): VITE_SYNC_SERVER
-// (Fly). Local/dev: the page origin. We fetch /api/fleet-config from here to
-// learn the GLOBAL fleet/event-store URL.
-const API_BASE = _syncWs
-  ? _syncWs.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/+$/, '')
-  : (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5176')
-// FLEET / FLEET_WS: the global fleet/event store (chat, agents, activity). Mutable
-// because they're resolved at init() from API_BASE/api/fleet-config, so any serving
-// origin (Pages, main app, an agent's dev server) points chat at the same store
-// while doc/shapes stay per-server. Default to API_BASE until resolved — identical
-// to the old single-endpoint behavior, so this is a no-op until a server reports a
-// distinct fleetServer (the Fly cutover).
-let FLEET = API_BASE
-let FLEET_WS = API_BASE.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:')
+// The global fleet/event store (chat, agents, activity, tasks) = the active
+// config's DATABASE, read directly from the server-injected config. No fetch, no
+// resolution step, no fallback — the value is fixed for the life of the page.
+const FLEET = DATABASE_HTTP
+const FLEET_WS = DATABASE_WS
 
-// The resolved global fleet WS/HTTP base, for other modules (e.g. TerminalShape's
-// /ws/terminal socket) that must target the same global server, not the serving
-// origin. Call AFTER init()/resolveFleetBase() — by the time a shape mounts and
-// connects, the value is resolved.
+// For modules that open their own fleet socket (e.g. TerminalShape's /ws/terminal):
+// the same global database base. Doc/shape (store) bases come from activeConfig
+// directly, not from here.
 export function getFleetWsBase() { return FLEET_WS }
 export function getFleetHttpBase() { return FLEET }
-
-// Resolve the global fleet store from the serving server's /api/fleet-config.
-// Falls back to API_BASE on any failure so chat still works against the local
-// server if the endpoint is missing/unreachable.
-async function resolveFleetBase() {
-  try {
-    const res = await fetch(`${API_BASE}/api/fleet-config`)
-    if (!res.ok) return
-    const { fleetServer } = await res.json()
-    if (!fleetServer) return
-    // Guard: a server that doesn't know its own public URL falls back to
-    // localhost. If this page isn't actually on localhost, trusting that would
-    // point chat at an unreachable host — keep API_BASE instead.
-    const onLocalhost = typeof window !== 'undefined' && /^(localhost|127\.0\.0\.1|\[::1\])$/.test(window.location.hostname)
-    if (/(localhost|127\.0\.0\.1|\[::1\])/.test(fleetServer) && !onLocalhost) {
-      log.warn('fleet-data', 'fleet-config returned localhost but page is remote; keeping serving origin', { fleetServer })
-      return
-    }
-    FLEET = fleetServer.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/+$/, '')
-    FLEET_WS = FLEET.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:')
-    log.info('fleet-data', 'fleet store resolved', { FLEET })
-  } catch (e) {
-    log.warn('fleet-data', 'fleet-config fetch failed; using serving origin', { error: e.message })
-  }
-}
 
 // --- Stores ---
 let _agents = []
@@ -624,9 +584,8 @@ export async function init() {
   // If localStorage has a stored name, login is sent automatically.
   // If not, the UI shows a picker with login/register options.
 
-  // Resolve the global fleet store before any fleet fetch/connect, so chat/agents
-  // point at the shared event store regardless of which server served this SPA.
-  await resolveFleetBase()
+  // FLEET/FLEET_WS come straight from the injected active config — no resolution
+  // step needed before the fetches below.
 
   // Fetch initial state + history in parallel.
   const [stateRes, historyRes] = await Promise.all([

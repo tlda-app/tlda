@@ -12,7 +12,7 @@ import { Router } from 'express'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
-import { DEFAULT_PORT, getFleetServerUrl } from '../../shared/config.mjs'
+import { DEFAULT_PORT, resolveConfig } from '../../shared/config.mjs'
 import { parseFilter, evalExpr, labelsForAgent } from '../../shared/fleet-labels.mjs'
 
 // Server owner — the human running this server process. Browser users
@@ -126,7 +126,11 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   // global store while doc/shapes stay per-server. Unauthenticated: it's just a
   // public URL the client needs before it can authenticate.
   router.get('/api/fleet-config', (req, res) => {
-    res.json({ fleetServer: getFleetServerUrl() })
+    // The active named config decides what this instance talks to:
+    //   database — fleet/chat/registry (what the SPA connects chat to)
+    //   store    — shapes + doc-asset sync (per-room state)
+    // `fleetServer` is kept as an alias for `database` so existing clients work.
+    res.json(resolveConfig())
   })
 
   // --- GET /api/store/events ---

@@ -8,6 +8,8 @@
  * on same-origin requests, so no other viewer code needs changes.
  */
 
+import { STORE_HTTP, DATABASE_HTTP } from './activeConfig'
+
 let _token: string | null = null
 
 export function initToken() {
@@ -22,20 +24,15 @@ export function initToken() {
   }
 
   if (_token) {
-    // When SPA is on a different origin than the sync server (e.g. GitHub Pages → Fly.io),
-    // also inject auth for requests to the sync/asset server.
-    const syncServer = (import.meta.env.VITE_SYNC_SERVER as string | undefined)
-      ?.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/+$/, '')
-
     const originalFetch = window.fetch
     window.fetch = function (input: RequestInfo | URL, init?: RequestInit) {
-      // Inject auth for same-origin AND sync server requests
+      // Inject auth for same-origin AND the active config's database/store servers.
       const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url
       const isRelative = url.startsWith('/') || url.startsWith('./') || url.startsWith('../')
       const isSameOrigin = isRelative || url.startsWith(window.location.origin)
-      const isSyncServer = syncServer ? url.startsWith(syncServer) : false
+      const isConfigServer = url.startsWith(STORE_HTTP) || url.startsWith(DATABASE_HTTP)
 
-      if (isSameOrigin || isSyncServer) {
+      if (isSameOrigin || isConfigServer) {
         const headers = new Headers(init?.headers)
         if (!headers.has('Authorization')) {
           headers.set('Authorization', `Bearer ${_token}`)

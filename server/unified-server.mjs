@@ -40,7 +40,7 @@ import os from 'os'
 const { homedir, hostname } = os
 import { spawn as cpSpawn } from 'child_process'
 import { lookup as mimeLookup } from 'mime-types'
-import { DEFAULT_PORT, hasTls, getManagedBots } from '../shared/config.mjs'
+import { DEFAULT_PORT, hasTls, getManagedBots, resolveConfig } from '../shared/config.mjs'
 import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
 import { labelsForAgent, parseFilter, evalExpr } from '../shared/fleet-labels.mjs'
 import { phaseFromName, baseName, PHASES } from '../shared/lineage-name.mjs'
@@ -2032,6 +2032,10 @@ if (existsSync(katexDir)) {
 const distDir = join(__dirname, '..', 'dist')
 if (existsSync(distDir)) {
   app.use(express.static(distDir, {
+    // Never auto-serve index.html (for "/" or directly): it MUST go through the
+    // SPA catch-all below so the active config gets injected. Hashed assets are
+    // still served here.
+    index: false,
     setHeaders: (res, filePath) => {
       if (filePath.endsWith('index.html')) {
         res.set('Cache-Control', 'no-cache')
@@ -2050,7 +2054,16 @@ app.get('/{*path}', (req, res) => {
   const indexPath = join(distDir, 'index.html')
   if (existsSync(indexPath)) {
     res.set('Cache-Control', 'no-cache')
-    return res.sendFile(indexPath)
+    // Inject the resolved active config so the SPA reads database/store/licenseKey
+    // synchronously at startup — no build-time baking, no async race, no guessing.
+    // resolveConfig() is validated at boot (server won't start on a bad config),
+    // so this can't throw here; if config.json were edited to something invalid
+    // while running, the page erroring loud is the correct, predictable behavior.
+    const cfg = resolveConfig()
+    const cfgScript = `<script>window.__TLDA_CONFIG__=${JSON.stringify(cfg)}</script>`
+    const html = readFileSync(indexPath, 'utf8').replace('</head>', `${cfgScript}\n</head>`)
+    res.set('Content-Type', 'text/html; charset=utf-8')
+    return res.send(html)
   }
 
   res.status(404).send('Viewer not built. Run: npm run build')
@@ -4689,6 +4702,14 @@ process.on('unhandledRejection', (err) => {
 })
 
 // ---------- Start ----------
+
+// Fail loud on a bad config rather than booting into unpredictable behavior:
+// resolve the active config once at startup. A missing config or field throws
+// here and the server refuses to start, with a clear message.
+{
+  const cfg = resolveConfig()
+  console.log(`[config] active="${cfg.name}" database=${cfg.database.http} store=${cfg.store.http} license=${cfg.licenseKey ? 'set' : 'none'}`)
+}
 
 server.listen(PORT, HOST, () => {
   const proto = useTls ? 'https' : 'http'

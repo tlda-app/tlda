@@ -73,13 +73,11 @@ const _session = (() => {
   return Math.random().toString(36).slice(2, 10)
 })()
 
-// HTTP base for the log sink. Empty = same-origin (local dev). When the SPA is
-// hosted cross-origin (GitHub Pages → Fly), derive https base from VITE_SYNC_SERVER
-// so logs reach the actual server instead of 404ing on the static Pages origin.
+// Logs go to the server that served this SPA (same-origin, relative). That's the
+// instance you're actually debugging, and every tlda server has /api/log — so
+// this is a deterministic fact, not a guess. (Empty string = same-origin.)
 function logBase(): string {
-  const ws = (import.meta as any).env?.VITE_SYNC_SERVER as string | undefined
-  if (!ws) return ''
-  return ws.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/+$/, '')
+  return ''
 }
 
 function enqueue(entry: LogEntry) {

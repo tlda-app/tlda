@@ -12,16 +12,12 @@
 
 import { createShapeId, type Editor } from 'tldraw'
 import { canvasToPdf } from './synctexAnchor'
+import { STORE_HTTP } from './activeConfig'
 
-// Server base for API calls. Hosted (GitHub Pages → Fly): the SPA origin is a
-// static Pages site with no /api, so derive from VITE_SYNC_SERVER (where doc-sync
-// + assets already point). Without this, highlight resolution (/synctex-path) and
-// outline fetches hit the dead Pages origin and silently fail (highlights show
-// unresolved). Local/embedded falls back to __tlda_server or same-origin.
+// API calls (synctex-path, outline) go to the active config's STORE (the doc
+// server), injected by the server.
 function serverBase(): string {
-  const ws = (import.meta as any).env?.VITE_SYNC_SERVER as string | undefined
-  if (ws) return ws.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/+$/, '')
-  return (window as any).__tlda_server || window.location.origin
+  return STORE_HTTP
 }
 import { openInEditor } from './texsync'
 import { dropPillOnTarget } from './shapes/FleetPillShape'

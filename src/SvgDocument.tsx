@@ -111,21 +111,17 @@ import { useFleetTheme, getStoredScheme } from './hooks/useFleetTheme'
 import { useTimelineOverlay } from './hooks/useTimelineOverlay'
 import { useDocAutoOpen } from './hooks/useDocAutoOpen'
 import { usePanMode } from './hooks/usePanMode'
+import { STORE_WS, LICENSE_KEY as CFG_LICENSE_KEY } from './activeConfig'
 import { useShadowOverlay } from './hooks/useShadowOverlay'
 import { useDividerDiff } from './hooks/useDividerDiff'
 import { ShadowHistoryOverlay } from './overlays/ShadowHistoryOverlay'
 import { PlaybackPill } from './pills/PlaybackPill'
 import { SlidesNavigator } from './SlidesNavigator'
 
-// Sync server URL - use env var, or derive from window.location
-// Dev mode (Vite on 5173): connect to sync server on 5176
-// Production (unified server): same host, ws/wss based on protocol
-const SYNC_SERVER = import.meta.env.VITE_SYNC_SERVER ||
-  (import.meta.env.DEV
-    ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.hostname}:5176`
-    : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`)
-
-const LICENSE_KEY = 'tldraw-2027-01-19/WyJhUGMwcWRBayIsWyIqLnF0bTI4NS5naXRodWIuaW8iXSw5LCIyMDI3LTAxLTE5Il0.Hq9z1V8oTLsZKgpB0pI3o/RXCoLOsh5Go7Co53YGqHNmtEO9Lv/iuyBPzwQwlxQoREjwkkFbpflOOPmQMwvQSQ'
+// Shape sync server = the active config's STORE (ws); tldraw license = the active
+// config's licenseKey. Both come from the server-injected config (activeConfig).
+const SYNC_SERVER = STORE_WS
+const LICENSE_KEY = CFG_LICENSE_KEY
 
 // Phone = the narrow touch layout (matches isPhone in the component + the
 // other phone checks). Module-level so render-time component overrides (e.g.
