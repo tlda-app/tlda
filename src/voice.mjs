@@ -504,11 +504,7 @@ function enterEdit() {
     setTextareaGlow(GLOW_AMBER)
   }
   if (_backend === 'deepgram') {
-    _deepgramInterim = ''
-    _dgHasSeenInterim = false
-    _dgTrickleFlush()
-    _dgTrickleWords = []
-    _dgTrickleShown = 0
+    resetDeepgramTextState()
     setTextareaGlow(GLOW_AMBER)
   }
   _state = 'edit'
@@ -530,7 +526,7 @@ export function setVoiceTarget(textarea, sendTargets, agentNames, sendFn, agentC
     wasRecording = _recording
     vlog('setVoiceTarget: switching chat', { wasRecording, backend: _backend, wsOpen: _deepgramConnected, hasMic: !!_deepgramStream })
     if (_backend === 'whisper-stream') flushWhisperBridge()
-    if (_backend === 'deepgram') _deepgramInterim = ''
+    if (_backend === 'deepgram') resetDeepgramTextState()
     hardResetVoice({ keepDeepgramMic: true })
     // Remove old listeners
     if (_inputListeners && _activeTextarea) {
@@ -793,33 +789,8 @@ function _setupRecognition() {
         }
       }
 
-      // Voice-send: "send" / "send it" / "sent" at end of text
-      const sendMatch = leftTrimmed.match(/(send\s*it|send|sent)\s*[.!,]?\s*$/i)
-      if (sendMatch) {
-        const cleanText = leftTrimmed.slice(0, sendMatch.index).trim()
-        if (cleanText && _accumulator && _accumulator.onSend) {
-          _accumulator.onSend(cleanText)
-          showHud('sent', '#7ab8a0')
-          fadeHud(2500)
-          afterSend()
-          return
-        }
-        if (cleanText && _activeSendTargets.length > 0 && _activeSendFn) {
-          const who = targetLabel()
-          const wordCount = cleanText.split(/\s+/).length
-          _filling = true
-          if (_activeTextarea) {
-            _activeTextarea.value = ''
-            _activeTextarea.style.height = 'auto'
-          }
-          _filling = false
-          _activeSendFn(_activeSendTargets, cleanText)
-          showHud(`sent ${wordCount} words → ${who}`, '#7ab8a0')
-          fadeHud(2500)
-          afterSend()
-          return
-        }
-      }
+      // Voice-send: saying the magic word submits exactly like pressing Enter.
+      if (handleSendMagicWord(leftTrimmed)) return
     }
 
     fillTextarea(_left + _interim + _right)
@@ -992,33 +963,8 @@ function onWhisperMessage(event) {
       }
     }
 
-    // Voice-send: "send" / "send it" / "sent"
-    const sendMatch = leftTrimmed.match(/(send\s*it|send|sent)\s*[.!,]?\s*$/i)
-    if (sendMatch) {
-      const cleanText = leftTrimmed.slice(0, sendMatch.index).trim()
-      if (cleanText && _accumulator && _accumulator.onSend) {
-        _accumulator.onSend(cleanText)
-        showHud('sent', '#7ab8a0')
-        fadeHud(2500)
-        afterSend()
-        return
-      }
-      if (cleanText && _activeSendTargets.length > 0 && _activeSendFn) {
-        const who = targetLabel()
-        const wordCount = cleanText.split(/\s+/).length
-        _filling = true
-        if (_activeTextarea) {
-          _activeTextarea.value = ''
-          _activeTextarea.style.height = 'auto'
-        }
-        _filling = false
-        _activeSendFn(_activeSendTargets, cleanText)
-        showHud(`sent ${wordCount} words → ${who}`, '#7ab8a0')
-        fadeHud(2500)
-        afterSend()
-        return
-      }
-    }
+    // Voice-send: saying the magic word submits exactly like pressing Enter.
+    if (handleSendMagicWord(leftTrimmed)) return
 
     fillTextarea(_left + _interim + _right)
   } catch (err) {
@@ -1087,10 +1033,89 @@ let _dgTrickleWords = []         // words currently being trickled in
 let _dgTrickleShown = 0          // how many trickle words are visible
 let _dgTrickleTimer = null       // setTimeout id for next trickle step
 let _dgTrickleDelay = 40         // ms between words (adjusted per burst)
+let _dgIgnoreUntilUtteranceEnd = false // true after voice-send; drops trailing old-utterance results
 
 function _dgTrickleFlush() {
   clearTimeout(_dgTrickleTimer)
   _dgTrickleTimer = null
+}
+
+function resetDeepgramTextState({ ignoreUntilUtteranceEnd = false } = {}) {
+  _deepgramInterim = ''
+  _dgHasSeenInterim = false
+  _dgIgnoreUntilUtteranceEnd = ignoreUntilUtteranceEnd
+  _dgTrickleFlush()
+  _dgTrickleWords = []
+  _dgTrickleShown = 0
+}
+
+const SEND_MAGIC_WORD_RE = /(send\s*it|send|sent)\s*[.!,]?\s*$/i
+
+function splitSendMagicWord(text) {
+  const match = text.trim().match(SEND_MAGIC_WORD_RE)
+  if (!match) return null
+  return text.trim().slice(0, match.index).trim()
+}
+
+function replaceTextareaValue(text) {
+  const ta = _activeTextarea
+  if (!ta) return false
+  _filling = true
+  ta.value = text
+  ta.style.height = text && ta.scrollHeight ? Math.min(ta.scrollHeight, 200) + 'px' : 'auto'
+  ta.dispatchEvent(new Event('input', { bubbles: true }))
+  _filling = false
+  return true
+}
+
+function pressEnterOnActiveTextarea() {
+  const ta = _activeTextarea
+  if (!ta) {
+    showHud('no chat focused', '#c8956a')
+    fadeHud(2000)
+    return false
+  }
+  if (typeof KeyboardEvent === 'undefined') {
+    throw new Error('voice send magic word requires KeyboardEvent')
+  }
+  return ta.dispatchEvent(new KeyboardEvent('keydown', {
+    key: 'Enter',
+    code: 'Enter',
+    bubbles: true,
+    cancelable: true,
+  }))
+}
+
+function submitTextareaViaMagicWord(cleanText) {
+  replaceTextareaValue(cleanText)
+  pressEnterOnActiveTextarea()
+  if (_backend === 'deepgram') resetDeepgramTextState({ ignoreUntilUtteranceEnd: true })
+}
+
+function handleSendMagicWord(leftTrimmed) {
+  const cleanText = splitSendMagicWord(leftTrimmed)
+  if (cleanText === null) return false
+
+  if (_accumulator && _accumulator.onSend) {
+    if (!cleanText) return false
+    _accumulator.onSend(cleanText)
+    showHud('sent', '#7ab8a0')
+    fadeHud(2500)
+    afterSend()
+    if (_backend === 'deepgram') resetDeepgramTextState({ ignoreUntilUtteranceEnd: true })
+    return true
+  }
+
+  if (_activeTextarea) {
+    submitTextareaViaMagicWord(cleanText)
+    return true
+  }
+
+  showHud('no chat focused', '#c8956a')
+  fadeHud(2000)
+  afterSend()
+  if (_backend === 'deepgram') resetDeepgramTextState({ ignoreUntilUtteranceEnd: true })
+  return true
 }
 
 function _dgTrickleStep() {
@@ -1122,18 +1147,21 @@ function onDeepgramMessage(event) {
     }
 
     if (msg.type === 'utterance_end') {
-      _dgTrickleFlush()
-      if (_deepgramInterim) {
-        _deepgramInterim = ''
+      _dgIgnoreUntilUtteranceEnd = false
+      if (_deepgramInterim || _interim) {
+        resetDeepgramTextState()
         _interim = ''
-        _dgTrickleWords = []
-        _dgTrickleShown = 0
         fillTextarea(_left + _right)
       }
       return
     }
 
     if (msg.type !== 'transcript' || !msg.text) return
+
+    if (_dgIgnoreUntilUtteranceEnd) {
+      vlog('DROPPED transcript (waiting for utterance end)', { final: !!msg.is_final, text: msg.text.slice(0, 30) })
+      return
+    }
 
     // Discard finals that arrive after afterSend() cleared the session but before
     // the user speaks again. Without this, the last utterance of the previous
@@ -1149,10 +1177,7 @@ function onDeepgramMessage(event) {
       const cursor = ta?.selectionStart ?? (ta?.value?.length ?? 0)
       _left = ta?.value?.slice(0, cursor) ?? ''
       _right = ta?.value?.slice(cursor) ?? ''
-      _deepgramInterim = ''
-      _dgTrickleFlush()
-      _dgTrickleWords = []
-      _dgTrickleShown = 0
+      resetDeepgramTextState()
     }
 
     const text = msg.text
@@ -1162,11 +1187,8 @@ function onDeepgramMessage(event) {
       _dgTrickleFlush()
       const processed = postProcessTranscript(text)
       _left += (_left.length && !_left.endsWith(' ') ? ' ' : '') + processed
-      _deepgramInterim = ''
+      resetDeepgramTextState()
       _interim = ''
-      _dgTrickleWords = []
-      _dgTrickleShown = 0
-      _dgHasSeenInterim = false  // reset for next utterance
     } else {
       // Interim — trickle new words in one at a time, smoothed
       _deepgramInterim = text
@@ -1208,42 +1230,15 @@ function onDeepgramMessage(event) {
         _state = 'edit'
         _generation++
         _left = _interim = _right = ''
-        _deepgramInterim = ''
-        _dgTrickleFlush()
-        _dgTrickleWords = []
-        _dgTrickleShown = 0
+        resetDeepgramTextState({ ignoreUntilUtteranceEnd: true })
         setTimeout(() => { if (_recording) showRecordingHud() }, 1600)
         return
       }
     }
 
-    // Voice-send
-    const sendMatch = leftTrimmed.match(/(send\s*it|send|sent)\s*[.!,]?\s*$/i)
-    if (sendMatch) {
-      const cleanText = leftTrimmed.slice(0, sendMatch.index).trim()
-      if (cleanText && _accumulator && _accumulator.onSend) {
-        _accumulator.onSend(cleanText)
-        showHud('sent', '#7ab8a0')
-        fadeHud(2500)
-        afterSend()
-        return
-      }
-      if (cleanText && _activeSendTargets.length > 0 && _activeSendFn) {
-        const who = targetLabel()
-        const wordCount = cleanText.split(/\s+/).length
-        _filling = true
-        if (_activeTextarea) {
-          _activeTextarea.value = ''
-          _activeTextarea.style.height = 'auto'
-        }
-        _filling = false
-        _activeSendFn(_activeSendTargets, cleanText)
-        showHud(`sent ${wordCount} words → ${who}`, '#7ab8a0')
-        fadeHud(2500)
-        afterSend()
-        return
-      }
-    }
+    // Voice-send: only final Deepgram results may submit. Interim "send" text
+    // is displayed but never fires, so the following final cannot double-send.
+    if (msg.is_final && handleSendMagicWord(leftTrimmed)) return
 
     // Display: committed text + space + interim
     const display = _left + (_interim ? ' ' + _interim : '') + _right
@@ -1412,25 +1407,12 @@ function stopDeepgramMic() {
 function afterSend() {
   _state = 'edit'
   _left = _interim = _right = ''
-  _deepgramInterim = ''
-  _dgHasSeenInterim = false
   if (_backend === 'whisper-stream') {
     flushWhisperBridge()
     return
   }
   if (_backend === 'deepgram') {
-    _dgTrickleFlush()
-    _dgTrickleWords = []
-    _dgTrickleShown = 0
-    // Deepgram: close and reopen the session for a clean slate
-    if (_deepgramWs && _deepgramConnected) {
-      _deepgramWs.send(JSON.stringify({ type: 'stop' }))
-      setTimeout(() => {
-        if (_recording && _deepgramWs && _deepgramConnected) {
-          _deepgramWs.send(JSON.stringify({ type: 'start' }))
-        }
-      }, 200)
-    }
+    resetDeepgramTextState()
     return
   }
   if (!_recording) return
@@ -1587,22 +1569,13 @@ async function hardResetVoice({ keepDeepgramMic = false } = {}) {
   }
   disconnectWhisperBridge()
   if (_backend === 'deepgram' && keepDeepgramMic) {
-    // Lightweight reset for chat switch — cycle the bridge session, keep mic alive.
-    // This avoids the getUserMedia teardown/reacquire that causes intermittent failures.
-    vlog('hardReset/dg: keeping mic, cycling session', { wsOpen: _deepgramConnected, hasMic: !!_deepgramStream })
-    _deepgramInterim = ''
-    _dgHasSeenInterim = false
-    _dgTrickleFlush()
-    _dgTrickleWords = []
-    _dgTrickleShown = 0
-    if (_deepgramWs && _deepgramConnected) {
-      try { _deepgramWs.send(JSON.stringify({ type: 'stop' })) } catch {}
-    }
+    // Lightweight reset for chat switch — keep the warm bridge/mic and drop
+    // trailing transcripts from the old utterance until Deepgram ends it.
+    vlog('hardReset/dg: keeping mic warm', { wsOpen: _deepgramConnected, hasMic: !!_deepgramStream })
   } else {
     disconnectDeepgramBridge()
   }
-  _deepgramInterim = ''
-  _dgHasSeenInterim = false
+  resetDeepgramTextState({ ignoreUntilUtteranceEnd: _backend === 'deepgram' && keepDeepgramMic })
   _recording = false
   _state = 'edit'
   _accumulator = null
@@ -1853,6 +1826,10 @@ export function toggleRecording() {
 
 export function restartRecording() {
   if (!_recording) return
+  if (_backend === 'deepgram') {
+    showRecordingHud()
+    return
+  }
   stopRecording()
   startRecording()
 }
@@ -1909,7 +1886,7 @@ export function resetTranscript() {
   _state = 'edit'
   _generation++
   _left = _interim = _right = ''
-  _deepgramInterim = ''
+  if (_backend === 'deepgram') resetDeepgramTextState()
   if (_backend === 'whisper-stream') flushWhisperBridge()
   if (_recording && _recognition) {
     try { _recognition.stop() } catch {}

@@ -47,7 +47,25 @@ function tick(ms) {
 }
 
 global.requestAnimationFrame = fn => { fn(); return 0 }
-global.Event = class Event { constructor(type) { this.type = type } }
+global.Event = class Event {
+  constructor(type, opts = {}) {
+    this.type = type
+    this.bubbles = !!opts.bubbles
+    this.cancelable = !!opts.cancelable
+    this.defaultPrevented = false
+  }
+  preventDefault() {
+    if (this.cancelable) this.defaultPrevented = true
+  }
+}
+global.KeyboardEvent = class KeyboardEvent extends Event {
+  constructor(type, opts = {}) {
+    super(type, opts)
+    this.key = opts.key || ''
+    this.code = opts.code || ''
+    this.shiftKey = !!opts.shiftKey
+  }
+}
 
 // ---- Mock SpeechRecognition ----
 let mockRec = null
@@ -86,7 +104,47 @@ global.window = { SpeechRecognition: MockSpeechRecognition }
 const { initVoice, setVoiceTarget, toggleRecording, isRecording, getGeneration } = await import('./voice.mjs')
 
 function makeTextarea() {
-  return { value: '', style: {}, dispatchEvent() {}, addEventListener() {}, removeEventListener() {} }
+  const listeners = new Map()
+  const ta = {
+    value: '',
+    style: {},
+    scrollHeight: 20,
+    selectionStart: 0,
+    selectionEnd: 0,
+    setSelectionRange(start, end) {
+      this.selectionStart = start
+      this.selectionEnd = end
+    },
+    dispatchEvent(event) {
+      event.target = this
+      event.currentTarget = this
+      for (const fn of listeners.get(event.type) || []) fn(event)
+      return !event.defaultPrevented
+    },
+    addEventListener(type, fn) {
+      if (!listeners.has(type)) listeners.set(type, [])
+      listeners.get(type).push(fn)
+    },
+    removeEventListener(type, fn) {
+      const list = listeners.get(type) || []
+      const i = list.indexOf(fn)
+      if (i !== -1) list.splice(i, 1)
+    },
+  }
+  return ta
+}
+
+function attachComposerEnter(ta, sendFn, targets = ['fleet:abc']) {
+  ta.addEventListener('keydown', e => {
+    if (e.key !== 'Enter' || e.shiftKey) return
+    e.preventDefault()
+    const text = ta.value.trim()
+    if (!text) return
+    sendFn(targets, text)
+    ta.value = ''
+    ta.style.height = 'auto'
+    ta.dispatchEvent(new Event('input', { bubbles: true }))
+  })
 }
 
 function reset() {
@@ -234,6 +292,7 @@ function reset() {
   const ta = makeTextarea()
   let sentText = null
   const sendFn = (targets, text) => { sentText = text }
+  attachComposerEnter(ta, sendFn)
   setVoiceTarget(ta, ['fleet:abc'], { 'fleet:abc': 'agent' }, sendFn)
   reset()
 
@@ -271,7 +330,34 @@ function reset() {
   console.log('✓ Test 7: Generation counter discards stale onresult after send')
 }
 
-// ---- Test 8: Poisoning detection — 3 identical finals trigger restart ----
+// ---- Test 8: Deepgram magic-word hits Enter once, not direct send twice ----
+{
+  const ta = makeTextarea()
+  const sent = []
+  const sendFn = (targets, text) => { sent.push(text) }
+  attachComposerEnter(ta, sendFn)
+  setVoiceTarget(ta, ['fleet:abc'], { 'fleet:abc': 'agent' }, sendFn)
+  window.__voiceTest.fakeRecord(ta)
+
+  // Interim may contain the magic word, but Deepgram must only submit on final.
+  window.__voiceTest.injectTranscript('hello world send', false)
+  assert.equal(sent.length, 0, 'interim magic word should not send')
+
+  window.__voiceTest.injectTranscript('hello world send', true)
+  assert.deepEqual(sent, ['hello world'], 'final magic word should press Enter once with cleaned text')
+
+  // Racing duplicate results from the same Deepgram utterance are ignored until
+  // Deepgram says the utterance ended.
+  window.__voiceTest.injectTranscript('hello world send', false)
+  window.__voiceTest.injectTranscript('hello world send', true)
+  assert.deepEqual(sent, ['hello world'], 'same utterance should not send twice')
+
+  window.__voiceTest.fakeStop()
+  reset()
+  console.log('✓ Test 8: Deepgram magic-word submits once via Enter')
+}
+
+// ---- Test 9: Poisoning detection — 3 identical finals trigger restart ----
 {
   const ta = makeTextarea()
   setVoiceTarget(ta, [], {})
@@ -295,10 +381,10 @@ function reset() {
   assert.ok(isRecording(), 'should still be recording after poison restart')
 
   reset()
-  console.log('✓ Test 8: Poisoning detection — 3 identical finals trigger restart')
+  console.log('✓ Test 9: Poisoning detection — 3 identical finals trigger restart')
 }
 
-// ---- Test 9: Generation bump in onend respawns fresh session (chat-switch regression) ----
+// ---- Test 10: Generation bump in onend respawns fresh session (chat-switch regression) ----
 // Regression: after "left chat" command, _generation is bumped before onend fires.
 // onend must call _setupRecognition() so the new session has an updated myGeneration
 // snapshot — otherwise every onresult is discarded and voice appears dead.
@@ -345,7 +431,7 @@ function reset() {
   assert.ok(ta2.value.includes('hello after switch'), 'new session should accept results after target switch')
 
   reset()
-  console.log('✓ Test 9: onend with stale generation creates fresh session (chat-switch regression)')
+  console.log('✓ Test 10: onend with stale generation creates fresh session (chat-switch regression)')
 }
 
-console.log('\nAll 9 tests passed.')
+console.log('\nAll 10 tests passed.')
