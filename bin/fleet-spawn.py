@@ -425,10 +425,18 @@ def find_valid_session(agent):
                 mtime = os.path.getmtime(fpath)
             except OSError:
                 continue
-            last_registered_id = None
+            # The session's OWN identity is its FIRST "Registered fleet:…"
+            # result: a fleet agent registers itself at session start, before
+            # it can spawn or read_terminal any other agent. Later
+            # registrations in the same transcript belong to agents this one
+            # spawned/inspected (e.g. logaudit spawning codexwake) — matching
+            # the LAST one mis-attributes the session and skips it on resume.
+            own_registered_id = None
             try:
                 with open(fpath, "r", errors="replace") as f:
                     for line in f:
+                        if own_registered_id:
+                            break
                         if "Registered fleet:" not in line:
                             continue
                         try:
@@ -441,12 +449,13 @@ def find_valid_session(agent):
                                 text = item.get("text", "") if isinstance(item, dict) else str(item)
                                 m = register_pattern.search(text)
                                 if m:
-                                    last_registered_id = m.group(1)
+                                    own_registered_id = m.group(1)
+                                    break
                         except (json.JSONDecodeError, AttributeError):
                             continue
             except OSError:
                 continue
-            if last_registered_id == fleet_id:
+            if own_registered_id == fleet_id:
                 candidates.append((sid, mtime, fpath))
     if candidates:
         candidates.sort(key=lambda x: x[1], reverse=True)
@@ -455,6 +464,121 @@ def find_valid_session(agent):
         return (best_sid, _jsonl_path_to_cwd(best_path))
 
     return None
+
+
+# ---- Codex rollout resume ----
+#
+# Codex agents don't have a resumable Claude JSONL; they store interactive
+# rollouts at ~/.codex/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>.jsonl, and
+# `codex resume <uuid>` continues one with full context. fleet-spawn never knows
+# the rollout uuid ahead of time (codex mints it at launch), so — exactly like
+# Claude's step-3 content scan — we recover it by scanning rollouts for the
+# agent's OWN fleet id.
+
+
+def _codex_rollout_path(rollout_id):
+    """Return the on-disk path of a codex rollout by its uuid, or None."""
+    import glob as _glob
+
+    sessions_base = os.path.expanduser("~/.codex/sessions")
+    if not rollout_id or not os.path.isdir(sessions_base):
+        return None
+    hits = _glob.glob(
+        os.path.join(sessions_base, "**", f"rollout-*-{rollout_id}.jsonl"),
+        recursive=True,
+    )
+    return hits[0] if hits else None
+
+
+def _scan_codex_rollout_identity(fpath):
+    """Read a codex rollout's OWN fleet identity + session_meta.
+
+    Returns (own_fleet_id, agent_name, session_meta_dict). Mirrors
+    find_valid_session: the agent's own id is the FIRST 'Registered fleet:…' in
+    the rollout — later registrations belong to agents this one spawned/inspected
+    (the spawned-others mis-attribution bug). Codex rollout records use a
+    different schema than Claude JSONL, so we match the register text on the raw
+    line rather than via a fixed toolUseResult shape."""
+    import re as _re
+
+    reg_re = _re.compile(r"Registered (fleet:\w+)")
+    name_re = _re.compile(r'Your name: "([^"]+)"')
+    own_id = None
+    agent_name = None
+    meta = None
+    try:
+        with open(fpath, "r", errors="replace") as f:
+            for line in f:
+                if meta is None and '"session_meta"' in line:
+                    try:
+                        meta = json.loads(line).get("payload") or {}
+                    except json.JSONDecodeError:
+                        meta = {}
+                if own_id is None and "Registered fleet:" in line:
+                    m = reg_re.search(line)
+                    if m:
+                        own_id = m.group(1)
+                        nm = name_re.search(line)
+                        if nm:
+                            agent_name = nm.group(1)
+                if own_id is not None and meta is not None:
+                    break
+    except OSError:
+        pass
+    return own_id, agent_name, (meta or {})
+
+
+def find_codex_rollout(agent):
+    """Find the agent's latest codex rollout → resume handle, or None.
+
+    Mirrors find_valid_session: match by the agent's OWN fleet id, newest mtime
+    wins. cwd is recorded on the handle (for cwd recovery on resume), not used as
+    a selector — recency is the tiebreak. The handle is the shape the daemon /
+    harness adapter consume: { kind, rolloutId, jsonlPath, cwd, sessionMeta }."""
+    import glob as _glob
+    import re as _re
+
+    sessions_base = os.path.expanduser("~/.codex/sessions")
+    fleet_id = agent.get("id")
+    if not fleet_id or not os.path.isdir(sessions_base):
+        return None
+    print(f"  scanning codex rollouts for {fleet_id}...", file=sys.stderr)
+    uuid_re = _re.compile(
+        r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
+    )
+    candidates = []
+    for fpath in _glob.glob(
+        os.path.join(sessions_base, "**", "rollout-*.jsonl"), recursive=True
+    ):
+        try:
+            mtime = os.path.getmtime(fpath)
+        except OSError:
+            continue
+        own_id, _name, meta = _scan_codex_rollout_identity(fpath)
+        if own_id != fleet_id:
+            continue
+        rollout_id = meta.get("id")
+        if not rollout_id:
+            m = uuid_re.search(os.path.basename(fpath))
+            rollout_id = m.group(1) if m else None
+        if not rollout_id:
+            continue
+        candidates.append((mtime, rollout_id, fpath, meta))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    _mtime, rollout_id, fpath, meta = candidates[0]
+    print(
+        f"  found {len(candidates)} codex rollout(s), using {rollout_id}",
+        file=sys.stderr,
+    )
+    return {
+        "kind": "codex",
+        "rolloutId": rollout_id,
+        "jsonlPath": fpath,
+        "cwd": meta.get("cwd"),
+        "sessionMeta": meta,
+    }
 
 
 def strip_synthetic_tail(session_id):
@@ -703,8 +827,10 @@ def build_codex_cmd(fleet_id, tmux_session, model=None, resume_id=None,
     parts.append("codex")
     if resume_id:
         # Resume keeps the same fleet id (re-injected below) and continues the
-        # prior rollout. The register prompt is injected via send-keys after boot,
-        # so include_prompt is False on this path (mirrors build_claude_cmd).
+        # prior rollout WITH context. `codex resume <id> [OPTIONS] [PROMPT]` takes
+        # an optional trailing prompt, so the register prompt is passed inline as
+        # that PROMPT (see include_prompt below) — no Claude-style send-keys
+        # injection needed (Claude's inject_prompt is TUI-specific, not portable).
         parts.append(f"resume {shlex.quote(resume_id)}")
     # MCP env via -c overrides — the ONLY channel that reaches the tlda MCP server.
     def _cenv(key, val):
@@ -726,7 +852,10 @@ def build_codex_cmd(fleet_id, tmux_session, model=None, resume_id=None,
         parts.append(f"-m {shlex.quote(model)}")
     parts.append("-s workspace-write")
     parts.append("-a never")
-    if include_prompt and not resume_id:
+    if include_prompt:
+        # Fresh: codex's initial prompt. Resume: the trailing [PROMPT] positional
+        # of `codex resume`. Either way codex runs it as the first turn, which
+        # re-registers the agent (same fleet id) and pulls my_task.
         parts.append(shlex.quote(register_prompt(name)))
     return " ".join(parts)
 
@@ -1059,16 +1188,34 @@ def respawn(name, model, cwd, effort, mode, session_override=None):
 
     if kind == "codex":
         # Codex relaunch with the SAME fleet_id (env re-injected via build_codex_cmd
-        # incl. the -c MCP env). For now this is a fresh launch re-briefed via the
-        # register prompt + my_task (like goose); a true rollout-resume is a
-        # follow-up on the S2 session path. spawn_tmux's alive-check is now
-        # codex-aware (_session_has_claude), so a live codex agent is left running.
-        cmd = build_codex_cmd(fleet_id, sess, model=model, name=name)
+        # incl. the -c MCP env). We resume the agent's prior rollout WITH context
+        # when one exists, so a chat-wake / `fleet-spawn <name>` revives a codex
+        # agent with its history instead of a blank fresh start. If no rollout is
+        # found we fall through to a fresh re-briefed launch (like goose).
+        # spawn_tmux's alive-check is codex-aware (_session_has_claude), so a live
+        # codex agent is left running.
+        resume_id = None
+        if session_override:
+            # Explicit rollout id: fail loud if it doesn't exist rather than
+            # silently launching fresh and dropping the requested context.
+            if not _codex_rollout_path(session_override):
+                print(f"Error: No codex rollout {session_override} for {name} ({fleet_id}). Use --refresh to start fresh.", file=sys.stderr)
+                sys.exit(1)
+            resume_id = session_override
+        else:
+            handle = find_codex_rollout(agent)
+            if handle:
+                resume_id = handle["rolloutId"]
+                if handle.get("cwd") and os.path.isdir(handle["cwd"]):
+                    cwd = handle["cwd"]
+        cmd = build_codex_cmd(fleet_id, sess, model=model, resume_id=resume_id, name=name)
         started = spawn_tmux(sess, cwd, cmd, auto_dismiss=False)
         if not started:
             print(f"{sess} ({fleet_id}) already alive — left running", file=sys.stderr)
+        elif resume_id:
+            print(f"{sess} ({fleet_id}) resumed codex rollout {resume_id}")
         else:
-            print(f"{sess} ({fleet_id}) relaunched (codex)")
+            print(f"{sess} ({fleet_id}) relaunched (codex, no rollout found — fresh)")
         return sess
 
     if goose_model:
@@ -1150,11 +1297,74 @@ def refresh(name, model, cwd, effort, mode):
     return sess
 
 
+def _respawn_codex_session(rollout_id, fpath, name_override, model, cwd,
+                           effort, enroll, dry_run):
+    """Resume (or enroll) a codex agent by rollout id — the codex --session path.
+
+    Parallels the Claude flow in respawn_session but reads identity from the
+    codex rollout and launches via build_codex_cmd(resume_id=…). model is passed
+    through verbatim (codex picks its subscription default when None) — never
+    Claude-resolved."""
+    own_id, agent_name, meta = _scan_codex_rollout_identity(fpath)
+
+    if enroll and own_id:
+        print(f"Error: Rollout already has {own_id}. Drop --enroll.", file=sys.stderr)
+        sys.exit(1)
+    if not own_id and not enroll:
+        print(f"Error: No fleet ID in codex rollout {rollout_id}", file=sys.stderr)
+        sys.exit(1)
+
+    if not cwd:
+        cwd = meta.get("cwd") or os.getcwd()
+
+    if enroll and not own_id:
+        ensure_server()
+        own_id = f"fleet:{uuid.uuid4().hex[:8]}"
+        agent_name = name_override or os.path.basename(cwd.rstrip("/")) or "agent"
+        try:
+            agents = api_get("/api/store/agents")
+            taken = {a.get("friendly_name") for a in agents}
+            base = agent_name
+            n = 2
+            while agent_name in taken:
+                agent_name = f"{base}-{n}"
+                n += 1
+        except Exception:
+            pass
+
+    agent_name = name_override or agent_name or own_id.replace("fleet:", "agent-")
+    sess = f"fleet-{sanitize_session_name(agent_name)}"
+
+    if dry_run:
+        print(f"[dry-run] {sess} ({own_id}) — codex rollout {rollout_id}, cwd {cwd}")
+        return sess
+
+    ensure_server()
+    ws_register(own_id, agent_name, sess, cwd, model, effort, kind="codex")
+    cmd = build_codex_cmd(own_id, sess, model=model, resume_id=rollout_id,
+                          name=agent_name)
+    spawn_tmux(sess, cwd, cmd)
+    action = "enrolled" if enroll else "resumed"
+    print(f"{sess} ({own_id}) {action} codex rollout {rollout_id} in {cwd}")
+    return sess
+
+
 def respawn_session(session_uuid, name_override, model, cwd, effort, mode,
                     enroll=False, dry_run=False):
-    """Respawn by session UUID — scans JSONL for fleet identity."""
+    """Respawn by session UUID — scans the transcript for fleet identity.
+
+    Claude sessions live in ~/.claude/projects/*.jsonl; codex rollouts live in
+    ~/.codex/sessions/**/rollout-*-<uuid>.jsonl. We dispatch on which one the id
+    resolves to so `--session`/`--enroll` work for codex agents too."""
     import glob as globmod
     import re
+
+    # Codex agents store rollouts under ~/.codex/sessions (not ~/.claude/projects).
+    # If this id resolves to a codex rollout, resume that with context.
+    codex_rollout = _codex_rollout_path(session_uuid)
+    if codex_rollout:
+        return _respawn_codex_session(session_uuid, codex_rollout, name_override,
+                                      model, cwd, effort, enroll, dry_run)
 
     matches = globmod.glob(os.path.join(
         os.path.expanduser("~/.claude/projects"), "*", f"{session_uuid}.jsonl"))
