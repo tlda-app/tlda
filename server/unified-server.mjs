@@ -2507,7 +2507,7 @@ async function handleFleetWsMessage(ws, msg) {
     // back to id keeps python fleet-spawn's ws_register (which sends id=fleet_id
     // directly, no correlation) working. Reading the bare `id` here was the
     // root cause of phantom UUID-keyed agent rows.
-    const { agent_id, id: msgId, name, tmux_session, cwd, labels, manager, session_id, metadata, machine_id } = msg
+    const { agent_id, id: msgId, name, tmux_session, cwd, labels, manager, session_id, metadata, machine_id, kind } = msg
     const agentId = agent_id || msgId
     if (!agentId) { error('missing id'); return }
     // Remember which agent owns this WS so we can clean up their tlda-feedback
@@ -2541,7 +2541,9 @@ async function handleFleetWsMessage(ws, msg) {
       dead: false,
       human: !!msg.human,
       is_manager: !!manager,
-      metadata: metadata || existing?.metadata || null,
+      metadata: (metadata || existing?.metadata || kind)
+        ? { ...(existing?.metadata || {}), ...(metadata || {}), ...(kind ? { kind } : {}) }
+        : null,
       machine_id: machine_id || existing?.machine_id || null,
     }
     if (session_id && !agent.session_ids.includes(session_id)) {

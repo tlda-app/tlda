@@ -74,6 +74,8 @@ import { createLogger } from '../shared/logger.mjs'
 import { makeActivityThrottle } from './lib/activity-throttle.mjs'
 import { maybeKickGoose, resolveGooseStatus } from './lib/goose-kick.mjs'
 import { gooseActivityTick } from './lib/goose-activity.mjs'
+import { parseCodexLine } from './lib/codex-activity.mjs'
+import { resolveTranscript } from './lib/resolve-transcript.mjs'
 const log = createLogger('daemon')
 // CONFIG_DIR holds config.json, cursors, PID and log files. Defaults to
 // ~/.config/tlda. TLDA_DAEMON_CONFIG_DIR lets the E2E test start a second
@@ -467,7 +469,7 @@ function extractActivityEvents(events) {
 let _rws = null  // ResilientWS instance, created at startup
 let agents = []                   // current agent list (from welcome / updates)
 let projects = []                 // current project list
-const pathWatchers = new Map()    // jsonlPath -> { watcher, primaryAgentId, sessionId }
+const pathWatchers = new Map()    // jsonlPath -> { watcher, primaryAgentId, sessionId, harnessKind }
 const agentPaths = new Map()      // agentId -> jsonlPath
 const sourceWatchers = new Map()  // projectName -> { watcher, sourceDir, debounce, pending }
 
@@ -538,8 +540,22 @@ function extractPromptBody(stripped) {
   return bodyLines.join('\n').slice(0, 1000)
 }
 
+// Codex raises its own per-tool MCP approval prompt (distinct from Claude's
+// radio prompt): `Allow the tlda MCP server to run tool "<X>"?` with a 1–4
+// option list (1 Allow / 2 session / 3 Always allow / 4 Cancel). Codex's
+// "Always allow" is per-TOOL, so this fires once for each new tool the agent
+// calls; we send `3` so that tool never prompts again. Scoped to the `tlda`
+// MCP server (the agent's own fleet ops) — we don't blanket-accept arbitrary MCP.
+const CODEX_MCP_PROMPT_RE = /Allow the tlda MCP server to run tool ["']?([^"'?\n]+?)["']?\?/
+
 function detectPrompt(paneText) {
   const stripped = typeof paneText === 'string' ? stripAnsi(paneText) : ''
+
+  // Codex MCP tool-approval prompt → auto-accept with "Always allow" (key 3).
+  const codexMatch = stripped.match(CODEX_MCP_PROMPT_RE)
+  if (codexMatch && /Always allow/.test(stripped)) {
+    return { type: 'auto-accept', reason: `codex mcp tool: ${codexMatch[1]}`, acceptKey: '3' }
+  }
 
   // Radio-button TUI prompt (Create/Edit file, self-edit)
   if ((stripped.includes('Do you want to') || stripped.includes('Allow this')) && RADIO_PROMPT_RE.test(stripped)) {
@@ -563,17 +579,17 @@ function detectPrompt(paneText) {
   return { type: 'none' }
 }
 
-async function autoAcceptPrompt(tmuxSession, reason) {
+async function autoAcceptPrompt(tmuxSession, reason, acceptKey = '1') {
   try {
     const ptyState = terminalWatchPtys.get(tmuxSession)
     if (ptyState?.alive) {
-      ptyState.pty.write('1\r')
+      ptyState.pty.write(`${acceptKey}\r`)
     } else {
-      await tmux('send-keys', '-t', tmuxSession, '1')
+      await tmux('send-keys', '-t', tmuxSession, acceptKey)
       await new Promise(r => setTimeout(r, 100))
       await tmux('send-keys', '-t', tmuxSession, 'Enter')
     }
-    log.info(`auto-accepted prompt (${reason}) in ${tmuxSession}`)
+    log.info(`auto-accepted prompt (${reason}, key=${acceptKey}) in ${tmuxSession}`)
     return true
   } catch (e) {
     log.error(`auto-accept failed in ${tmuxSession}: ${e.message}`)
@@ -602,7 +618,7 @@ function startAutoAcceptSweep() {
           if (lastAccept && Date.now() - lastAccept < 10_000) continue
           promptCooldowns.set(agent.tmux_session, Date.now())
           surfacedPrompts.delete(agent.tmux_session)
-          await autoAcceptPrompt(agent.tmux_session, result.reason)
+          await autoAcceptPrompt(agent.tmux_session, result.reason, result.acceptKey)
           sendMsg({ type: 'prompt-auto-accepted', agent_id: agent.id, reason: result.reason, ts: new Date().toISOString() })
         } else if (result.type === 'surface') {
           if (surfacedPrompts.get(agent.tmux_session) === result.reason) continue
@@ -734,11 +750,91 @@ function bufferActivity(agentId, evts) {
 
 // ---------- JSONL watching ----------
 
-function syncSessionWatchers(agentList) {
+function runtimeKind(agent) {
+  return agent?.metadata?.kind || agent?.kind || (agent?._isCodex ? 'codex' : 'claude')
+}
+
+async function findRuntimePidForAgent(agent, kind) {
+  if (!agent?.tmux_session) return null
+  let paneOut = ''
+  try {
+    ;({ stdout: paneOut } = await execFileP('tmux',
+      [...TMUX_ARGS, 'list-panes', '-t', agent.tmux_session, '-F', '#{pane_pid}'],
+      { timeout: 3000, encoding: 'utf8' }))
+  } catch {
+    return null
+  }
+  const panePids = paneOut.trim().split('\n').filter(Boolean)
+  if (!panePids.length) return null
+
+  let psOut = ''
+  try {
+    ;({ stdout: psOut } = await execFileP('ps', ['-eo', 'pid,ppid,args'],
+      { timeout: 5000, encoding: 'utf8' }))
+  } catch {
+    return null
+  }
+
+  const childrenByPpid = new Map()
+  const runtimePids = new Set()
+  const codexRe = /(?:^|\s|\/)codex(?:\s|$)/
+  for (const line of psOut.split('\n')) {
+    const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/)
+    if (!m) continue
+    const [, pid, ppid, args] = m
+    if (!childrenByPpid.has(ppid)) childrenByPpid.set(ppid, [])
+    childrenByPpid.get(ppid).push(pid)
+    if (kind === 'codex' && codexRe.test(args)) runtimePids.add(pid)
+    else if (kind === 'claude' && args.includes('claude')) runtimePids.add(pid)
+  }
+
+  const stack = [...panePids]
+  const seen = new Set()
+  while (stack.length) {
+    const pid = stack.pop()
+    if (seen.has(pid)) continue
+    seen.add(pid)
+    if (runtimePids.has(pid)) return pid
+    for (const child of (childrenByPpid.get(pid) || [])) stack.push(child)
+  }
+  return null
+}
+
+async function resolveCodexJsonl(agent) {
+  const pid = await findRuntimePidForAgent(agent, 'codex')
+  if (!pid) return null
+  const launchTs = Date.parse(agent.registered_at || agent.last_seen || '') || 0
+  return resolveTranscript({ pid, kind: 'codex', agent, launchTs })
+}
+
+const ACTIVITY_HARNESSES = {
+  claude: {
+    kind: 'claude',
+    parseLine: parseSessionLine,
+    usesClaudeSessionIds: true,
+    backfillSearch: true,
+    terminalChat: true,
+  },
+  codex: {
+    kind: 'codex',
+    parseLine: parseCodexLine,
+    resolveJsonl: resolveCodexJsonl,
+    usesClaudeSessionIds: false,
+    backfillSearch: false,
+    terminalChat: false,
+  },
+}
+
+function activityHarnessForAgent(agent) {
+  return ACTIVITY_HARNESSES[runtimeKind(agent)] || ACTIVITY_HARNESSES.claude
+}
+
+async function syncSessionWatchers(agentList) {
   const activePaths = new Set()
 
   for (const agent of agentList) {
     if (agent.dead) continue
+    const harness = activityHarnessForAgent(agent)
     const cwd = agent.cwd ?? ''
     // Strip worktree suffixes so the project hash matches where Claude Code
     // stores the JSONL (at the original project root, not the worktree).
@@ -754,7 +850,6 @@ function syncSessionWatchers(agentList) {
     for (const sid of (agent.session_ids || [])) {
       if (!candidateIds.includes(sid)) candidateIds.push(sid)
     }
-    if (candidateIds.length === 0) continue
 
     const otherAgentSessions = new Set(
       agentList.filter(a => a.id !== agent.id && a.session_id).map(a => a.session_id)
@@ -762,26 +857,32 @@ function syncSessionWatchers(agentList) {
 
     let jsonlPath = null
     let bestMtime = 0
-    for (const sid of candidateIds) {
-      if (otherAgentSessions.has(sid)) continue
-      let p = path.join(PROJECTS_DIR, projectHash, sid + '.jsonl')
-      let foundStat = null
-      try {
-        foundStat = fs.statSync(p)
-      } catch {
-        // Not in cwd-derived dir — global search across all project dirs.
-        // Needed when agent's JSONL is in a worktree-specific project dir
-        // that doesn't match the stripped canonical cwd.
+    if (harness.resolveJsonl) {
+      jsonlPath = await harness.resolveJsonl(agent)
+      if (!jsonlPath) continue
+    } else {
+      if (!harness.usesClaudeSessionIds || candidateIds.length === 0) continue
+      for (const sid of candidateIds) {
+        if (otherAgentSessions.has(sid)) continue
+        let p = path.join(PROJECTS_DIR, projectHash, sid + '.jsonl')
+        let foundStat = null
         try {
-          for (const dir of fs.readdirSync(PROJECTS_DIR)) {
-            const candidate = path.join(PROJECTS_DIR, dir, sid + '.jsonl')
-            try { foundStat = fs.statSync(candidate); p = candidate; break } catch {}
-          }
-        } catch {}
-      }
-      if (foundStat && foundStat.mtimeMs > bestMtime) {
-        bestMtime = foundStat.mtimeMs
-        jsonlPath = p
+          foundStat = fs.statSync(p)
+        } catch {
+          // Not in cwd-derived dir — global search across all project dirs.
+          // Needed when agent's JSONL is in a worktree-specific project dir
+          // that doesn't match the stripped canonical cwd.
+          try {
+            for (const dir of fs.readdirSync(PROJECTS_DIR)) {
+              const candidate = path.join(PROJECTS_DIR, dir, sid + '.jsonl')
+              try { foundStat = fs.statSync(candidate); p = candidate; break } catch {}
+            }
+          } catch {}
+        }
+        if (foundStat && foundStat.mtimeMs > bestMtime) {
+          bestMtime = foundStat.mtimeMs
+          jsonlPath = p
+        }
       }
     }
     if (!jsonlPath) continue
@@ -794,7 +895,8 @@ function syncSessionWatchers(agentList) {
       const fileSessionId = path.basename(jsonlPath, '.jsonl')
       // Whichever agent's session_id matches the JSONL filename is the
       // active session — others are historical sharers (post-inhabit).
-      if (agent.session_id === fileSessionId) pw.primaryAgentId = agent.id
+      if (!harness.usesClaudeSessionIds || agent.session_id === fileSessionId) pw.primaryAgentId = agent.id
+      pw.harnessKind = harness.kind
       continue
     }
 
@@ -811,7 +913,7 @@ function syncSessionWatchers(agentList) {
       if (!stored.searchBackfilled) {
         stored.searchBackfilled = true
         scheduleCursorSave()
-        backfillSearchEntries(agent.id, jsonlPath, sessionId)
+        if (harness.backfillSearch) backfillSearchEntries(agent.id, jsonlPath, sessionId)
       }
     } else {
       // New file (or rotated): start at EOF for activity cards, but backfill
@@ -819,10 +921,10 @@ function syncSessionWatchers(agentList) {
       offset = stat.size
       cursors[sessionId] = { inode, offset, searchBackfilled: true }
       scheduleCursorSave()
-      backfillSearchEntries(agent.id, jsonlPath, sessionId)
+      if (harness.backfillSearch) backfillSearchEntries(agent.id, jsonlPath, sessionId)
       // Also backfill all prior sessions for this agent (other JSONLs that
       // contain a registration line for this fleet ID).
-      backfillAllPriorSessions(agent.id, agent.id)
+      if (harness.backfillSearch) backfillAllPriorSessions(agent.id, agent.id)
     }
 
     try {
@@ -832,7 +934,7 @@ function syncSessionWatchers(agentList) {
         const pw = pathWatchers.get(jsonlPath)
         if (!pw) return
         pw.watchSeenAt = Date.now()
-        debounce = setTimeout(() => readNewSessionLines(pw.primaryAgentId, jsonlPath, pw.sessionId), 150)
+        debounce = setTimeout(() => readNewSessionLines(pw.primaryAgentId, jsonlPath, pw.sessionId, pw.harnessKind), 150)
       }
       const createWatcher = () => fs.watch(jsonlPath, onWatchFired)
       const watcher = createWatcher()
@@ -846,18 +948,18 @@ function syncSessionWatchers(agentList) {
         log.warn(`fs.watch missed ${path.basename(jsonlPath)} — recreating`)
         try { pw.watcher.close() } catch {}
         pw.watcher = createWatcher()
-        readNewSessionLines(pw.primaryAgentId, jsonlPath, pw.sessionId)
+        readNewSessionLines(pw.primaryAgentId, jsonlPath, pw.sessionId, pw.harnessKind)
       })
 
-      pathWatchers.set(jsonlPath, { watcher, primaryAgentId: agent.id, sessionId, watchSeenAt: 0 })
-      log.info(`watching JSONL for ${agent.friendly_name || agent.id}: ${path.basename(jsonlPath)} @ offset=${offset}`)
+      pathWatchers.set(jsonlPath, { watcher, primaryAgentId: agent.id, sessionId, harnessKind: harness.kind, watchSeenAt: 0 })
+      log.info(`watching ${harness.kind} JSONL for ${agent.friendly_name || agent.id}: ${path.basename(jsonlPath)} @ offset=${offset}`)
 
       // Drain any backlog immediately rather than waiting for the next write to
       // fire the watcher. This is what makes reconnect lossless: on a resumed
       // cursor (daemon was disconnected while the agent kept working), the bytes
       // written during the gap stream in now. Self-guards — for a fresh session
       // the cursor is at EOF, so this returns without replaying history.
-      readNewSessionLines(agent.id, jsonlPath, sessionId)
+      readNewSessionLines(agent.id, jsonlPath, sessionId, harness.kind)
     } catch (e) {
       log.error(`watcher creation failed for ${jsonlPath}: ${e.message}`)
     }
@@ -876,7 +978,7 @@ function syncSessionWatchers(agentList) {
   }
 }
 
-function readNewSessionLines(agentId, jsonlPath, sessionId) {
+function readNewSessionLines(agentId, jsonlPath, sessionId, harnessKind = 'claude') {
   // The cursor is a high-water mark of *delivered* bytes. If the WS is down we
   // can't push, so don't read+advance past it — leave the bytes for the next
   // read. Otherwise the cursor would skip over activity cards whose send was
@@ -914,10 +1016,13 @@ function readNewSessionLines(agentId, jsonlPath, sessionId) {
 
   const lines = buf.toString('utf8').split('\n').filter(l => l.trim())
   const parsedEvents = []
+  const harness = ACTIVITY_HARNESSES[harnessKind] || ACTIVITY_HARNESSES.claude
 
   for (const line of lines) {
-    const ev = parseSessionLine(line)
+    const ev = harness.parseLine(line)
     if (ev) parsedEvents.push(ev)
+
+    if (!harness.terminalChat) continue
 
     // Terminal-chat extraction: user-typed text in the terminal. Same
     // shape the inline server used: from='fleet:<user>', to=agentId,
@@ -989,6 +1094,8 @@ function readNewSessionLines(agentId, jsonlPath, sessionId) {
   }
 
   // Extract text content for unified search and send to server.
+  if (!harness.backfillSearch) return
+
   const searchEntries = []
   for (const line of lines) {
     if (!line.trim()) continue
@@ -1645,7 +1752,7 @@ async function rpcCapturePane({ tmux_session, lines, agent_id }) {
     const lastAction = promptCooldowns.get(tmux_session)
     if (!lastAction || Date.now() - lastAction >= 10_000) {
       promptCooldowns.set(tmux_session, Date.now())
-      autoAcceptPrompt(tmux_session, prompt.reason)
+      autoAcceptPrompt(tmux_session, prompt.reason, prompt.acceptKey)
       if (agent_id) sendMsg({ type: 'prompt-auto-accepted', agent_id, reason: prompt.reason, ts: new Date().toISOString() })
     }
   } else if (prompt.type === 'surface' && agent_id) {
@@ -2219,6 +2326,7 @@ async function checkAgentLiveness() {
 
   const aliveAgentIds = []
   let healedAny = false
+  let codexClassificationChanged = false
   for (const agent of candidateAgents) {
     const panes = sessionToPanes.get(agent.tmux_session) || []
     const agentAlive = panes.some(pid => _paneSubtreeHasAgent(pid, childrenByPpid, agentProcPids))
@@ -2228,7 +2336,9 @@ async function checkAgentLiveness() {
     // Classify Codex (OpenAI Codex CLI) agents so the session-watch path can pick
     // parseCodexLine + pass kind:'codex' to resolveTranscript. _isCodex feeds the
     // `kind` the resolver/parser dispatch reads (see bin/lib/resolve-transcript.mjs).
+    const wasCodex = !!agent._isCodex
     agent._isCodex = agentAlive && panes.some(pid => _paneSubtreeHasAgent(pid, childrenByPpid, codexProcPids))
+    if (agent._isCodex && !wasCodex) codexClassificationChanged = true
 
     _alivenessCache.set(agent.tmux_session, agentAlive)
 
@@ -2272,7 +2382,9 @@ async function checkAgentLiveness() {
   // A heal changed an agent's session_id/session_ids locally; re-point the JSONL
   // watchers immediately so attribution resumes this sweep (the server persists
   // independently from the agent-session-observed message).
-  if (healedAny) syncSessionWatchers(agents)
+  if (healedAny || codexClassificationChanged) {
+    void syncSessionWatchers(agents).catch(e => log.error(`syncSessionWatchers failed: ${e.stack || e.message}`))
+  }
 
   // Scan alive agents for thinking/compacting/approval state
   for (const agent of candidateAgents) {
@@ -2947,7 +3059,7 @@ function handleServerMessage(msg) {
     agents = msg.agents || []
     projects = msg.projects || []
     log.info(`welcome: ${agents.length} agents, ${projects.length} projects`)
-    syncSessionWatchers(agents)
+    void syncSessionWatchers(agents).catch(e => log.error(`syncSessionWatchers failed: ${e.stack || e.message}`))
     syncSourceWatchers(projects, msg.activeViewers)
     flushPendingSourceChanges()
     // Periodic death detection — O(1) spawns per cycle (one tmux list-sessions).
@@ -2976,7 +3088,7 @@ function handleServerMessage(msg) {
   }
   if (msg.type === 'agents-updated') {
     agents = msg.agents || []
-    syncSessionWatchers(agents)
+    void syncSessionWatchers(agents).catch(e => log.error(`syncSessionWatchers failed: ${e.stack || e.message}`))
     return
   }
   if (msg.type === 'projects-updated') {

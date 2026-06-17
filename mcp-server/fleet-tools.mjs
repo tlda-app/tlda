@@ -762,6 +762,13 @@ function tmuxSendText(sessionName, text) {
     const line = String(text || '').replace(/\s*\n\s*/g, ' · ').trim();
     if (!line) return false;
     execFileSync('tmux', ['send-keys', '-t', sessionName, '--', line], { timeout: 5000 });
+    // Codex's TUI drops an Enter sent immediately after the text paste, leaving the
+    // nudge sitting unsubmitted in its input box. A short settle delay before the
+    // Enter fixes it. Goose submits fine back-to-back, so only delay for codex to
+    // avoid changing the goose path. Atomics.wait = a dependency-free sync sleep.
+    if (process.env.FLEET_HARNESS === 'codex') {
+      try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 400); } catch {}
+    }
     execFileSync('tmux', ['send-keys', '-t', sessionName, 'Enter'], { timeout: 5000 });
     return true;
   } catch (e) {
@@ -1596,15 +1603,11 @@ export async function handleFleetTool(name, args) {
     }
     if (labels.size > 0) entry.labels = [...labels];
 
-    // Uniqueness: name must be unique among non-dead agents (matches server's dead=0 criterion)
-    if (entry.friendly_name) {
-      const nameConflict = state.agents.find(a =>
-        a.id !== entry.id && (a.friendly_name === entry.friendly_name) && !a.dead
-      );
-      if (nameConflict) {
-        return { content: [{ type: 'text', text: `Name collision: "${entry.friendly_name}" is already used by live agent ${nameConflict.id}. Use a different name or respawn the existing agent.` }], isError: true };
-      }
-    }
+    // Name uniqueness is the SERVER's job (single authority — registration-core):
+    // it rotates a colliding requested name to a free one, never errors. Do NOT gate
+    // locally on the stale ledger/state file — that left a freshly-spawned agent stuck
+    // on "respawn the old one or register new?". The server's reply carries the granted
+    // (possibly rotated) name, adopted below.
 
     // Clear compacting flag unless just inherited from a stale entry.
     // Inherited compacting persists for one SSE cycle, then the heartbeat clears it.
@@ -1636,6 +1639,9 @@ export async function handleFleetTool(name, args) {
     // the tlda server route RPCs (interrupt / send-key / capture-pane /
     // restart-mcp) to the right per-machine fleet-daemon.
     const machineId = os.hostname().split('.')[0];
+    const harnessKind = process.env.FLEET_HARNESS && process.env.FLEET_HARNESS !== 'claude'
+      ? process.env.FLEET_HARNESS
+      : null;
     const regBody = {
       // agent_id (not id): sendWS() stamps a correlation `id` onto every
       // message, which would clobber a payload `id`. Sending the real fleet
@@ -1648,6 +1654,7 @@ export async function handleFleetTool(name, args) {
       cwd: entry.cwd,
       labels: entry.labels,
       machine_id: machineId,
+      ...(harnessKind ? { metadata: { kind: harnessKind } } : {}),
     };
     // Wait up to 2s for WS to connect (it should be fast — localhost)
     if (!_channelRWS?.connected) {
@@ -1669,6 +1676,13 @@ export async function handleFleetTool(name, args) {
     }
     if (serverResult?.error) {
       return { content: [{ type: 'text', text: `Registration rejected by server: ${serverResult.error}` }], isError: true };
+    }
+
+    // Adopt the identity the SERVER granted (single authority): it may have rotated a
+    // colliding name to a free one, so the agent learns its real name from the reply.
+    if (serverResult?.agent?.friendly_name && serverResult.agent.friendly_name !== entry.friendly_name) {
+      entry.friendly_name = serverResult.agent.friendly_name;
+      ledger.upsertAgent(AGENT_ID, claudeSession, cwd, entry.friendly_name);
     }
 
     const agentCount = state.agents.length;
@@ -4359,12 +4373,13 @@ async function handleChannelMessage(msg) {
       },
     });
     process.stderr.write(`[fleet-channel] Delivered ${eventType} from ${fromId} via channel (event ${data.id})\n`);
-    // Goose agents don't act on the Claude-only `notifications/claude/channel`,
-    // so a goose agent never wakes from the notification above. For a direct
-    // message to a goose agent, also nudge its tmux pane via send-keys with the
-    // same summary content — it then calls my_task() and replies. (FLEET_HARNESS
-    // is set to 'goose' by fleet-spawn's build_goose_cmd.)
-    if (isDirectTarget && process.env.FLEET_HARNESS === 'goose') {
+    // Non-Claude harnesses (goose, codex) don't act on the Claude-only
+    // `notifications/claude/channel`, so they never wake from the notification
+    // above. For a direct message to such an agent, also nudge its tmux pane via
+    // send-keys with the same summary content — it then calls my_task() and replies.
+    // FLEET_HARNESS is set by fleet-spawn (build_goose_cmd / build_codex_cmd); any
+    // value other than the default Claude path needs the send-keys fallback.
+    if (isDirectTarget && process.env.FLEET_HARNESS && process.env.FLEET_HARNESS !== 'claude') {
       const sess = process.env.FLEET_TMUX_SESSION;
       if (sess) tmuxSendText(sess, content);
     }
