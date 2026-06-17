@@ -20,16 +20,6 @@ import { SuggestionTip } from '../shapes/FleetChatShape'
 import { log } from '../logger'
 import './FleetHUD.css'
 
-function fleetGesturesOptInEnabled() {
-  if (typeof window === 'undefined') return false
-  try {
-    const params = new URLSearchParams(window.location.search)
-    return params.get('fleetGestures') === '1' || window.localStorage.getItem('__fleetGesturesEnabled') === 'true'
-  } catch {
-    return false
-  }
-}
-
 function saveAnchorOffsets(editor: Editor, panOffset: number, cameraY: number) {
   // Never persist a HUD anchor without a resolved identity — getMyAnchorId()
   // falls back to the bare `shape:fleet-hud-anchor` id, which becomes a global
@@ -214,7 +204,7 @@ export function FleetHUD({
   const draggingRef = useRef(false)
   const overlayEditorRef = useRef<Editor | null>(null)
   const lastHudDiagSigRef = useRef('')
-  const gesturesEnabled = expanded && !!fleetBounds && fleetGesturesOptInEnabled()
+  const gesturesEnabled = expanded && !!fleetBounds
 
   useEffect(() => {
     const shapes = mainEditor.getCurrentPageShapes()
@@ -225,7 +215,7 @@ export function FleetHUD({
       hasIdentity: !!identityId,
       hasFleetBounds: !!fleetBounds,
       gesturesEnabled,
-      fleetGesturesOptIn: fleetGesturesOptInEnabled(),
+      fleetGesturesOptIn: true,
       fleetBounds,
       docShapesReady,
       shapeCount: shapes.length,
@@ -234,7 +224,7 @@ export function FleetHUD({
       hasHudRef: !!hudRef.current,
       hasOverlayEditor: !!overlayEditorRef.current,
       localExpanded: typeof window !== 'undefined' ? window.localStorage.getItem('fleet-hud-expanded') : null,
-      localGestures: typeof window !== 'undefined' ? window.localStorage.getItem('__fleetGesturesEnabled') : null,
+      localGestures: null,
     }
     const sig = JSON.stringify({
       expanded: state.expanded,

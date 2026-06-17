@@ -37,7 +37,7 @@ try {
   TOKEN = cfg.tokenRw || cfg.token || ''
 } catch {}
 
-const URL = `${BASE}/?doc=${encodeURIComponent(DOC)}&fleetGestures=1&name=${encodeURIComponent(NAME)}&gateRun=${RUN_ID}${TOKEN ? '&token=' + encodeURIComponent(TOKEN) : ''}`
+const URL = `${BASE}/?doc=${encodeURIComponent(DOC)}&name=${encodeURIComponent(NAME)}&gateRun=${RUN_ID}${TOKEN ? '&token=' + encodeURIComponent(TOKEN) : ''}`
 
 function runPw(args, opts = {}) {
   const res = spawnSync('tlda-dev', ['pw', ...args], {
@@ -70,7 +70,6 @@ const setupAndAssert = String.raw`async () => {
 
   await waitFor(() => !!(window.editor || window.__tldraw_editor__), 'editor')
   localStorage.setItem('fleet-hud-expanded', '1')
-  localStorage.setItem('__fleetGesturesEnabled', 'true')
   localStorage.removeItem('fleet-hud-override')
 
   const editor = window.editor || window.__tldraw_editor__
