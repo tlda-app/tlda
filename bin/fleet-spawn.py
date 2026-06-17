@@ -860,17 +860,208 @@ def build_codex_cmd(fleet_id, tmux_session, model=None, resume_id=None,
     return " ".join(parts)
 
 
-def _session_has_claude(session):
-    """Check if a tmux session has a running agent process (claude OR goose OR codex).
+class HarnessAdapter:
+    """Per-harness spawn behavior. Keep existing command builders intact; route
+    call sites through one adapter selected by metadata.kind / spawn kind."""
+    kind = None
+    process_re = None
 
-    Named for the common case but harness-aware: a goose-backed DeepSeek agent
-    runs `goose` and an OpenAI Codex agent runs `codex`, not `claude`. Without
-    these checks a stray wake/respawn would see "no claude here", treat the live
-    goose/codex agent as a dead pane, kill-session it, and relaunch it as a
-    claude impostor — the death-loop bug. (Codex variant observed 2026-06-15:
-    codexpg got clobbered into a claude impostor.) The codex match is
-    boundary-anchored so a path containing "codex" (e.g. a worktree) doesn't
-    false-positive — only the `codex` executable token counts."""
+    def owns_model(self, model):
+        return False
+
+    def resolve_model(self, model):
+        raise NotImplementedError
+
+    def warn_model(self, model):
+        return None
+
+    def build_cmd(self, fleet_id, sess, model, effort=None, mode=None,
+                  resume_id=None, include_prompt=True, name=None, cwd=None):
+        raise NotImplementedError
+
+    def fresh_label(self):
+        return self.kind
+
+    def refresh_auto_dismiss(self):
+        return True
+
+    def respawn_auto_dismiss(self):
+        return False
+
+    def spawn_send_keys(self):
+        return False
+
+    def find_resume(self, agent, session_override=None):
+        return None
+
+    def adjust_resume_cwd(self, cwd, handle):
+        return cwd
+
+    def resume_id(self, handle):
+        return None
+
+    def after_resume_started(self, sess, name, resume_id):
+        return
+
+    def resume_not_found_is_error(self):
+        return False
+
+    def no_resume_message(self):
+        return "no resume handle found — fresh"
+
+    def list_models(self):
+        return []
+
+
+class ClaudeHarness(HarnessAdapter):
+    kind = "claude"
+    process_re = re.compile(r"(?:^|\s|/)claude(?:\s|$)")
+
+    def resolve_model(self, model):
+        return resolve_model(model)
+
+    def build_cmd(self, fleet_id, sess, model, effort=None, mode=None,
+                  resume_id=None, include_prompt=True, name=None, cwd=None):
+        return build_claude_cmd(
+            fleet_id, sess, model, effort, mode,
+            resume_id=resume_id, include_prompt=include_prompt, name=name)
+
+    def find_resume(self, agent, session_override=None):
+        if session_override:
+            return {"sessionId": session_override}
+        result = find_valid_session(agent)
+        if not result:
+            return None
+        session_id, jsonl_cwd = result
+        return {"sessionId": session_id, "cwd": jsonl_cwd}
+
+    def adjust_resume_cwd(self, cwd, handle):
+        return handle.get("cwd") or cwd
+
+    def resume_id(self, handle):
+        return handle["sessionId"]
+
+    def after_resume_started(self, sess, name, resume_id):
+        verify_session(sess, f"session {resume_id}")
+        inject_prompt(sess, register_prompt(name))
+
+    def resume_not_found_is_error(self):
+        return True
+
+    def no_resume_message(self):
+        return "No valid session to resume"
+
+    def list_models(self):
+        return [
+            {"alias": a, "id": mid, "verified": True, "kind": self.kind}
+            for a, mid in sorted(MODEL_ALIASES.items())
+        ]
+
+
+class GooseHarness(HarnessAdapter):
+    kind = "goose"
+    process_re = re.compile(r"(?:^|\s|/)goose(?:\s|$)")
+
+    def owns_model(self, model):
+        return resolve_goose_model(model) is not None
+
+    def resolve_model(self, model):
+        resolved = resolve_goose_model(model)
+        if resolved:
+            return resolved
+        if not model:
+            return GOOSE_MODELS["deepseek"]
+        raise ValueError(f"Unknown goose model: {model!r}. Valid: {', '.join(sorted(GOOSE_MODELS))} or vendor/model")
+
+    def warn_model(self, model):
+        if not goose_model_verified(model):
+            return ("  Warning: '{model}' is not on the verified tool-calling "
+                    "list — it may narrate tool-calls as text instead of invoking "
+                    "them. Probe it with: bin/verify-goose-toolcalls.mjs {model}").format(model=model)
+        return None
+
+    def build_cmd(self, fleet_id, sess, model, effort=None, mode=None,
+                  resume_id=None, include_prompt=True, name=None, cwd=None):
+        return build_goose_cmd(fleet_id, sess, model, name=name)
+
+    def no_resume_message(self):
+        return "goose fresh re-brief"
+
+    def list_models(self):
+        return [
+            {"alias": a, "id": mid, "verified": goose_model_verified(mid), "kind": self.kind}
+            for a, mid in sorted(GOOSE_MODELS.items())
+        ]
+
+
+class CodexHarness(HarnessAdapter):
+    kind = "codex"
+    process_re = re.compile(r"(?:^|\s|/)codex(?:\s|$)")
+
+    def resolve_model(self, model):
+        return model
+
+    def build_cmd(self, fleet_id, sess, model, effort=None, mode=None,
+                  resume_id=None, include_prompt=True, name=None, cwd=None):
+        return build_codex_cmd(
+            fleet_id, sess, model=model, resume_id=resume_id,
+            include_prompt=include_prompt, name=name, cwd=cwd)
+
+    def find_resume(self, agent, session_override=None):
+        if session_override:
+            if not _codex_rollout_path(session_override):
+                return None
+            return {"kind": "codex", "rolloutId": session_override}
+        return find_codex_rollout(agent)
+
+    def adjust_resume_cwd(self, cwd, handle):
+        handle_cwd = handle.get("cwd") if handle else None
+        return handle_cwd if handle_cwd and os.path.isdir(handle_cwd) else cwd
+
+    def resume_id(self, handle):
+        return handle.get("rolloutId") if handle else None
+
+    def no_resume_message(self):
+        return "no rollout found — fresh"
+
+    def spawn_send_keys(self):
+        return True
+
+
+HARNESS_ADAPTERS = {
+    "claude": ClaudeHarness(),
+    "goose": GooseHarness(),
+    "codex": CodexHarness(),
+}
+
+
+def harness_for_spawn(kind, model):
+    if kind and kind != "claude":
+        if kind not in HARNESS_ADAPTERS:
+            raise ValueError(f"Unknown harness kind: {kind!r}")
+        return HARNESS_ADAPTERS[kind]
+    if HARNESS_ADAPTERS["goose"].owns_model(model):
+        return HARNESS_ADAPTERS["goose"]
+    return HARNESS_ADAPTERS["claude"]
+
+
+def harness_for_agent(agent):
+    meta = agent_meta(agent)
+    kind = meta.get("kind")
+    if not kind:
+        name = agent.get("friendly_name") or agent.get("id") or "<unknown>"
+        raise ValueError(f"Agent {name} has no metadata.kind; run the harness-kind backfill before respawn/refresh")
+    adapter = HARNESS_ADAPTERS.get(kind)
+    if not adapter:
+        raise ValueError(f"Unknown harness kind for {agent.get('id')}: {kind!r}")
+    return adapter
+
+
+def _session_has_runtime(session):
+    """Check if a tmux session has any registered harness runtime process.
+
+    This is the spawn-side hibernation guard: if a live Claude/Codex/Goose
+    runtime is already in the pane, do not clobber it with respawn-pane."""
     try:
         r = subprocess.run(tmux("list-panes", "-t", session, "-F", "#{pane_pid}"),
                            capture_output=True, text=True, timeout=5)
@@ -879,9 +1070,9 @@ def _session_has_claude(session):
         for pid in r.stdout.strip().split():
             ps = subprocess.run(["ps", "-p", pid, "-o", "args="],
                                 capture_output=True, text=True, timeout=5)
-            if ps.returncode == 0 and (
-                "claude" in ps.stdout or "goose" in ps.stdout
-                or re.search(r'(?:^|\s|/)codex(?:\s|$)', ps.stdout)
+            if ps.returncode == 0 and any(
+                adapter.process_re.search(ps.stdout)
+                for adapter in HARNESS_ADAPTERS.values()
             ):
                 return True
         return False
@@ -965,17 +1156,25 @@ def dismiss_devchannels(session, timeout=60):
     return False
 
 
-def spawn_tmux(session, cwd, cmd, auto_dismiss=True):
+def spawn_tmux(session, cwd, cmd, auto_dismiss=True, send_keys=False):
     """Start a tmux session running cmd. When auto_dismiss=True, backgrounds
-    a process to dismiss the dev-channels confirmation dialog."""
+    a process to dismiss the dev-channels confirmation dialog.
+
+    Some TUIs, notably Codex resume, fail when tmux launches them as the pane's
+    direct command but work when pasted into an interactive shell. send_keys=True
+    keeps the same stale-session/alive-runtime guard, then starts a shell pane and
+    submits cmd through it.
+    """
     # Try respawn-pane first — handles dead panes left by remain-on-exit.
     # Falls back to new-session when no session exists.
     # TMUX is cleared in env so tmux doesn't print the "sessions should be
     # nested with care" warning when fleet-spawn is invoked from inside an
     # existing tmux session (e.g. an agent calling mcp__tlda__spawn).
     spawn_env = {**os.environ, "TMUX": ""}
-    r = subprocess.run(tmux("respawn-pane", "-t", session, "-c", cwd, cmd),
-                       capture_output=True, timeout=5, env=spawn_env)
+    respawn_args = tmux("respawn-pane", "-t", session, "-c", cwd)
+    if not send_keys:
+        respawn_args.append(cmd)
+    r = subprocess.run(respawn_args, capture_output=True, timeout=5, env=spawn_env)
     if r.returncode != 0:
         # respawn-pane (no -k) only succeeds on a pane whose command has EXITED.
         # It fails for two very different reasons:
@@ -988,14 +1187,16 @@ def spawn_tmux(session, cwd, cmd, auto_dismiss=True):
         #       leaves the session present — so new-session would collide with
         #       "duplicate session" and the spawn never recovers (observed when
         #       re-spawning agent-ui). That stale session we DO clear.
-        if _session_has_claude(session):
+        if _session_has_runtime(session):
             return False  # already alive — do not restart, do not inject
         # Dead pane / stale session: kill it so the fallback starts fresh.
         # kill-session on a missing session is a no-op.
         subprocess.run(tmux("kill-session", "-t", session),
                        capture_output=True, timeout=5, env=spawn_env)
-        subprocess.run(tmux("new-session", "-d", "-s", session, "-c", cwd, cmd),
-                       check=True, env=spawn_env)
+        new_args = tmux("new-session", "-d", "-s", session, "-c", cwd)
+        if not send_keys:
+            new_args.append(cmd)
+        subprocess.run(new_args, check=True, env=spawn_env)
         subprocess.run(tmux("set-option", "-t", session, "remain-on-exit", "on"),
                        capture_output=True, timeout=5, env=spawn_env)
     # Pin the window to a fixed width so the agent always paints at one size. The
@@ -1007,6 +1208,11 @@ def spawn_tmux(session, cwd, cmd, auto_dismiss=True):
                    capture_output=True, timeout=5, env=spawn_env)
     subprocess.run(tmux("resize-window", "-t", session, "-x", "120", "-y", "40"),
                    capture_output=True, timeout=5, env=spawn_env)
+    if send_keys:
+        subprocess.run(tmux("send-keys", "-t", session, "--", cmd),
+                       check=True, timeout=5, env=spawn_env)
+        subprocess.run(tmux("send-keys", "-t", session, "Enter"),
+                       check=True, timeout=5, env=spawn_env)
     if auto_dismiss:
         # Background the bounded poll-and-dismiss (see dismiss_devchannels).
         # Detached so spawn_tmux returns immediately and the dismiss survives
@@ -1078,74 +1284,54 @@ def inject_prompt(session, prompt, timeout=60):
 
 # ---- Spawn modes ----
 
+def _check_fresh_name_available(name, server_up):
+    if not server_up:
+        return
+    existing = find_agent(name)
+    if existing:
+        print(f"Error: '{name}' already exists ({existing['id']}). "
+              f"Use: fleet-spawn {name}", file=sys.stderr)
+        sys.exit(1)
+    collisions = check_name_collisions(name)
+    if not collisions:
+        return
+    lines = [f"Error: '{name}' is not available:"]
+    kinds = {}
+    for c in collisions:
+        kinds.setdefault(c.get("kind"), []).append(c.get("agent_id"))
+    if "pseudo_label" in kinds:
+        lines.append(f"  • reserved routing label (awake / hibernating / human / human-away)")
+    if "friendly_name" in kinds:
+        lines.append(f"  • already the friendly_name of {kinds['friendly_name'][0]}")
+    if "label" in kinds:
+        ids = kinds["label"]
+        shown = ", ".join(ids[:5])
+        more = f" (+{len(ids) - 5} more)" if len(ids) > 5 else ""
+        lines.append(f"  • collides with a label on {len(ids)} live agent(s): {shown}{more}")
+    lines.append("")
+    lines.append("  Pick a different name, or drop the conflicting label first.")
+    print("\n".join(lines), file=sys.stderr)
+    sys.exit(1)
+
+
 def fresh(name, model, cwd, effort, mode, kind="claude"):
     server_up = ensure_server()
     fleet_id = f"fleet:{uuid.uuid4().hex[:8]}"
     sess = unique_session_name(f"fleet-{sanitize_session_name(name)}")
     cwd = resolve_spawn_cwd(cwd)
-    # Codex agents select by explicit kind, not model-alias. Skip the
-    # claude/goose model resolution; codex uses its subscription default unless
-    # an explicit --model is passed (forwarded verbatim to `codex -m`).
-    if kind == "codex":
-        codex_model = model  # may be None → codex picks the plan default
-        if server_up:
-            existing = find_agent(name)
-            if existing:
-                print(f"Error: '{name}' already exists ({existing['id']}). "
-                      f"Use: fleet-spawn {name}", file=sys.stderr)
-                sys.exit(1)
-            collisions = check_name_collisions(name)
-            if collisions:
-                print(f"Error: '{name}' is not available.", file=sys.stderr)
-                sys.exit(1)
-            ws_register(fleet_id, name, sess, cwd, codex_model, effort, refresh=True, kind="codex")
-        cmd = build_codex_cmd(fleet_id, sess, model=codex_model, name=name, cwd=cwd)
-        spawn_tmux(sess, cwd, cmd)
-        print(f"{sess} ({fleet_id}) spawned in {cwd} (codex)")
-        return sess
-    goose_model = resolve_goose_model(model)
-    if goose_model and not goose_model_verified(goose_model):
-        print(f"  Warning: '{goose_model}' is not on the verified tool-calling "
-              f"list — it may narrate tool-calls as text instead of invoking "
-              f"them. Probe it with: bin/verify-goose-toolcalls.mjs {goose_model}",
-              file=sys.stderr)
-    # Store the resolved model id in meta either way so a later respawn knows
-    # which engine to use (resolve_goose_model recognizes the deepseek-v4-* id).
-    model = goose_model or resolve_model(model)
-
+    adapter = harness_for_spawn(kind, model)
+    model = adapter.resolve_model(model)
+    warning = adapter.warn_model(model)
+    if warning:
+        print(warning, file=sys.stderr)
+    _check_fresh_name_available(name, server_up)
     if server_up:
-        existing = find_agent(name)
-        if existing:
-            print(f"Error: '{name}' already exists ({existing['id']}). "
-                  f"Use: fleet-spawn {name}", file=sys.stderr)
-            sys.exit(1)
-        collisions = check_name_collisions(name)
-        if collisions:
-            lines = [f"Error: '{name}' is not available:"]
-            kinds = {}
-            for c in collisions:
-                kinds.setdefault(c.get("kind"), []).append(c.get("agent_id"))
-            if "pseudo_label" in kinds:
-                lines.append(f"  • reserved routing label (awake / hibernating / human / human-away)")
-            if "friendly_name" in kinds:
-                lines.append(f"  • already the friendly_name of {kinds['friendly_name'][0]}")
-            if "label" in kinds:
-                ids = kinds["label"]
-                shown = ", ".join(ids[:5])
-                more = f" (+{len(ids) - 5} more)" if len(ids) > 5 else ""
-                lines.append(f"  • collides with a label on {len(ids)} live agent(s): {shown}{more}")
-            lines.append("")
-            lines.append("  Pick a different name, or drop the conflicting label first.")
-            print("\n".join(lines), file=sys.stderr)
-            sys.exit(1)
-        ws_register(fleet_id, name, sess, cwd, model, effort, refresh=True)
+        ws_register(fleet_id, name, sess, cwd, model, effort, refresh=True, kind=adapter.kind)
 
-    if goose_model:
-        cmd = build_goose_cmd(fleet_id, sess, goose_model, name=name)
-    else:
-        cmd = build_claude_cmd(fleet_id, sess, model, effort, mode, name=name)
-    spawn_tmux(sess, cwd, cmd)
-    print(f"{sess} ({fleet_id}) spawned in {cwd}")
+    cmd = adapter.build_cmd(fleet_id, sess, model, effort, mode, name=name, cwd=cwd)
+    spawn_tmux(sess, cwd, cmd, send_keys=adapter.spawn_send_keys())
+    suffix = "" if adapter.kind == "claude" else f" ({adapter.kind})"
+    print(f"{sess} ({fleet_id}) spawned in {cwd}{suffix}")
     return sess
 
 
@@ -1160,17 +1346,8 @@ def respawn(name, model, cwd, effort, mode, session_override=None):
     meta = agent_meta(agent)
     cwd = cwd or agent.get("cwd") or os.getcwd()
     raw_model = model or meta.get("model")
-    # Harness is recorded on the agent row (kind). Codex skips the claude/goose
-    # model resolution — it uses its subscription default unless an explicit
-    # model was stored. (Reading kind here is what stops a codex agent's wake
-    # from falling through to the claude relaunch — the impostor bug.)
-    kind = agent.get("kind") or "claude"
-    if kind == "codex":
-        goose_model = None
-        model = raw_model  # codex model id or None; do NOT claude-resolve
-    else:
-        goose_model = resolve_goose_model(raw_model)
-        model = goose_model or resolve_model(raw_model)
+    adapter = harness_for_agent(agent)
+    model = adapter.resolve_model(raw_model)
     sess = agent.get("tmux_session") or f"fleet-{name}"
 
     # Single-flight: hold a per-session lock across the WHOLE wake (check →
@@ -1183,83 +1360,41 @@ def respawn(name, model, cwd, effort, mode, session_override=None):
         return sess
 
     if subprocess.run(tmux("has-session", "-t", sess), capture_output=True).returncode == 0:
-        if _session_has_claude(sess):
+        if _session_has_runtime(sess):
             return sess
 
-    if kind == "codex":
-        # Codex relaunch with the SAME fleet_id (env re-injected via build_codex_cmd
-        # incl. the -c MCP env). We resume the agent's prior rollout WITH context
-        # when one exists, so a chat-wake / `fleet-spawn <name>` revives a codex
-        # agent with its history instead of a blank fresh start. If no rollout is
-        # found we fall through to a fresh re-briefed launch (like goose).
-        # spawn_tmux's alive-check is codex-aware (_session_has_claude), so a live
-        # codex agent is left running.
-        resume_id = None
-        if session_override:
-            # Explicit rollout id: fail loud if it doesn't exist rather than
-            # silently launching fresh and dropping the requested context.
-            if not _codex_rollout_path(session_override):
-                print(f"Error: No codex rollout {session_override} for {name} ({fleet_id}). Use --refresh to start fresh.", file=sys.stderr)
-                sys.exit(1)
-            resume_id = session_override
-        else:
-            handle = find_codex_rollout(agent)
-            if handle:
-                resume_id = handle["rolloutId"]
-                if handle.get("cwd") and os.path.isdir(handle["cwd"]):
-                    cwd = handle["cwd"]
-        cmd = build_codex_cmd(fleet_id, sess, model=model, resume_id=resume_id, name=name)
-        started = spawn_tmux(sess, cwd, cmd, auto_dismiss=False)
-        if not started:
-            print(f"{sess} ({fleet_id}) already alive — left running", file=sys.stderr)
-        elif resume_id:
-            print(f"{sess} ({fleet_id}) resumed codex rollout {resume_id}")
-        else:
-            print(f"{sess} ({fleet_id}) relaunched (codex, no rollout found — fresh)")
-        return sess
+    handle = adapter.find_resume(agent, session_override)
+    if not handle and session_override:
+        print(f"Error: No {adapter.kind} resume handle {session_override} for {name} ({fleet_id}). Use --refresh to start fresh.", file=sys.stderr)
+        sys.exit(1)
+    if not handle and adapter.resume_not_found_is_error():
+        print(f"Error: {adapter.no_resume_message()} for {name} ({fleet_id}). Use --refresh to start fresh.", file=sys.stderr)
+        sys.exit(1)
 
-    if goose_model:
-        # Goose agents are stateless-role-from-chat: there is no resumable claude
-        # transcript, so "respawn" is a fresh goose launch with the SAME fleet_id
-        # — the recipe re-briefs the agent via my_task. spawn_tmux's alive-check
-        # is goose-aware, so a live goose agent is left running, not clobbered.
-        cmd = build_goose_cmd(fleet_id, sess, goose_model, name=name)
-        started = spawn_tmux(sess, cwd, cmd, auto_dismiss=False)
-        if not started:
-            print(f"{sess} ({fleet_id}) already alive — left running", file=sys.stderr)
-        else:
-            print(f"{sess} ({fleet_id}) relaunched (goose)")
-        return sess
+    resume_id = adapter.resume_id(handle)
+    cwd = adapter.adjust_resume_cwd(cwd, handle or {})
 
-    result = None
-    if session_override:
-        resume_id = session_override
-    else:
-        result = find_valid_session(agent)
-        if not result:
-            print(f"Error: No valid session to resume for {name} ({fleet_id}). Use --refresh to start fresh.", file=sys.stderr)
-            sys.exit(1)
-        resume_id, jsonl_cwd = result
-        if jsonl_cwd:
-            cwd = jsonl_cwd
+    if adapter.kind == "claude" and resume_id:
+        # NEVER fall back to --refresh here. --refresh spawns an imposter agent
+        # with no real context. If --resume is stuck in a death loop, let it fail
+        # visibly so someone can diagnose — don't silently replace the agent.
+        strip_synthetic_tail(resume_id)
 
-    # NEVER fall back to --refresh here. --refresh spawns an imposter agent
-    # with no real context. If --resume is stuck in a death loop, let it fail
-    # visibly so someone can diagnose — don't silently replace the agent.
-
-    strip_synthetic_tail(resume_id)
-
-    cmd = build_claude_cmd(fleet_id, sess, model, effort, mode,
-                           resume_id=resume_id, include_prompt=False, name=name)
-    started = spawn_tmux(sess, cwd, cmd, auto_dismiss=False)
+    cmd = adapter.build_cmd(
+        fleet_id, sess, model, effort, mode, resume_id=resume_id,
+        include_prompt=(adapter.kind != "claude" or not resume_id), name=name, cwd=cwd)
+    started = spawn_tmux(
+        sess, cwd, cmd, auto_dismiss=adapter.respawn_auto_dismiss(),
+        send_keys=adapter.spawn_send_keys())
     if not started:
-        # spawn_tmux found a live claude (a wake raced past the check above) and
-        # left it running. Don't verify/inject into the already-running agent.
         print(f"{sess} ({fleet_id}) already alive — left running", file=sys.stderr)
         return sess
-    verify_session(sess, f"session {resume_id}")
-    inject_prompt(sess, register_prompt(name))
-    print(f"{sess} ({fleet_id}) resumed {resume_id}")
+    if resume_id:
+        adapter.after_resume_started(sess, name, resume_id)
+        noun = "codex rollout" if adapter.kind == "codex" else "session"
+        print(f"{sess} ({fleet_id}) resumed {noun} {resume_id}")
+    else:
+        print(f"{sess} ({fleet_id}) relaunched ({adapter.kind}, {adapter.no_resume_message()})")
     return sess
 
 
@@ -1274,25 +1409,15 @@ def refresh(name, model, cwd, effort, mode):
     meta = agent_meta(agent)
     cwd = cwd or agent.get("cwd") or os.getcwd()
     raw_model = model or meta.get("model")
-    kind = agent.get("kind") or "claude"
-    if kind == "codex":
-        goose_model = None
-        model = raw_model  # codex model id or None; do NOT claude-resolve
-    else:
-        goose_model = resolve_goose_model(raw_model)
-        model = goose_model or resolve_model(raw_model)
+    adapter = harness_for_agent(agent)
+    model = adapter.resolve_model(raw_model)
     if not effort:
         effort = meta.get("effort")
     sess = agent.get("tmux_session") or f"fleet-{name}"
 
-    ws_register(fleet_id, name, sess, cwd, model, effort, refresh=True, kind=kind)
-    if kind == "codex":
-        cmd = build_codex_cmd(fleet_id, sess, model=model, name=name)
-    elif goose_model:
-        cmd = build_goose_cmd(fleet_id, sess, goose_model, name=name)
-    else:
-        cmd = build_claude_cmd(fleet_id, sess, model, effort, mode, name=name)
-    spawn_tmux(sess, cwd, cmd)
+    ws_register(fleet_id, name, sess, cwd, model, effort, refresh=True, kind=adapter.kind)
+    cmd = adapter.build_cmd(fleet_id, sess, model, effort, mode, name=name, cwd=cwd)
+    spawn_tmux(sess, cwd, cmd, send_keys=adapter.spawn_send_keys())
     print(f"{sess} ({fleet_id}) refreshed in {cwd}")
     return sess
 
@@ -1343,7 +1468,7 @@ def _respawn_codex_session(rollout_id, fpath, name_override, model, cwd,
     ws_register(own_id, agent_name, sess, cwd, model, effort, kind="codex")
     cmd = build_codex_cmd(own_id, sess, model=model, resume_id=rollout_id,
                           name=agent_name)
-    spawn_tmux(sess, cwd, cmd)
+    spawn_tmux(sess, cwd, cmd, send_keys=HARNESS_ADAPTERS["codex"].spawn_send_keys())
     action = "enrolled" if enroll else "resumed"
     print(f"{sess} ({own_id}) {action} codex rollout {rollout_id} in {cwd}")
     return sess
@@ -1460,10 +1585,9 @@ def main():
     parser.add_argument("--cwd", default=None)
     parser.add_argument("--effort", default=None)
     parser.add_argument("--mode", default=None)
-    parser.add_argument("--kind", default="claude", choices=["claude", "codex"],
-                        help="Agent runtime/harness (default: claude). 'codex' launches "
-                             "OpenAI Codex CLI via build_codex_cmd. (goose is still selected "
-                             "by model alias for now.)")
+    parser.add_argument("--kind", default="claude", choices=sorted(HARNESS_ADAPTERS),
+                        help="Agent runtime/harness (default: claude). Goose can also "
+                             "be selected by its model aliases for compatibility.")
     parser.add_argument("--session", default=None)
     parser.add_argument("--enroll", action="store_true")
     parser.add_argument("--no-attach", action="store_true")
@@ -1481,13 +1605,9 @@ def main():
     # Claude aliases are always tool-capable, so verified; goose aliases are
     # verified per the probe. `default` stays the goose default.
     if args.list_models:
-        models = [
-            {"alias": a, "id": mid, "verified": True, "kind": "claude"}
-            for a, mid in sorted(MODEL_ALIASES.items())
-        ] + [
-            {"alias": a, "id": mid, "verified": goose_model_verified(mid), "kind": "goose"}
-            for a, mid in sorted(GOOSE_MODELS.items())
-        ]
+        models = []
+        for adapter in HARNESS_ADAPTERS.values():
+            models.extend(adapter.list_models())
         print(json.dumps({
             "default": GOOSE_MODELS.get("deepseek"),
             "models": models,
