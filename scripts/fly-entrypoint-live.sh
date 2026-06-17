@@ -21,6 +21,31 @@ ln -sfn "$PERSIST/tlda-config" /root/.config/tlda
 ln -sfn "$PERSIST/projects" /app/server/projects
 ln -sfn "$PERSIST/data" /app/server/data
 
+# Ensure an active tlda config exists. Commit d04a0eef ("one named-config, zero
+# fallbacks") makes the server resolveConfig() at startup and THROW — crashing
+# during module evaluation, before it binds :5176 and before any log line — if
+# there is no active config (this caused the v59 silent outage: the volume had no
+# config.json). The Fly server's config is deterministic: it tells browsers to
+# sync against this very machine's tailnet URL. Write it if the volume lacks one.
+# (A tldraw license key is a client-side value shipped in window.__TLDA_CONFIG__
+# to every browser — not a secret — so it lives here, not in `fly secrets`.)
+CONFIG_JSON=/root/.config/tlda/config.json
+if [ ! -f "$CONFIG_JSON" ]; then
+  echo "[entrypoint] no config.json on volume — writing canonical Fly config"
+  cat > "$CONFIG_JSON" <<'EOF'
+{
+  "defaultConfig": "default",
+  "configs": {
+    "default": {
+      "database": "https://tlda-fly.cormorant-matrix.ts.net",
+      "store": "https://tlda-fly.cormorant-matrix.ts.net",
+      "licenseKey": "tldraw-2026-06-30/WyJRY2VnNHQzTSIsWyIqIl0sMTYsIjIwMjYtMDYtMzAiXQ.zL6mO6UG+rGUbpu4hYL9/Na+XX0jLRY35nx20ElD9mK+m6OStCMf1q8IUmjVqBd9Fw1JuaxplRHP8Q37bFefxQ"
+    }
+  }
+}
+EOF
+fi
+
 # --- Tailscale: join Skip's tailnet so the server is reachable privately ---
 # When TS_AUTHKEY is set (via `fly secrets`), this Fly machine joins the tailnet
 # as a node and serves the app over the tailnet's HTTPS (valid cert on the
