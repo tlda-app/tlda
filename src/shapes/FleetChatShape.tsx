@@ -2177,6 +2177,30 @@ function FleetChatInner({ shape }: { shape: any }) {
     // Markdown chip → lightbox overlay (ref-chip-doc chips AND md-file-card chips in activity cards)
     const mdChip = (e.target as HTMLElement).closest('.ref-chip-doc, .md-file-card') as HTMLElement | null
     if (mdChip) {
+      const openRenderedMarkdownLightbox = (title: string, renderedHtml: string) => {
+        const existing = document.querySelector('.chat-lightbox-md')
+        if (existing) { existing.remove(); return }
+        const overlay = document.createElement('div')
+        overlay.className = 'chat-lightbox-md'
+        overlay.innerHTML = '<div class="chat-lightbox-md-card"><div class="chat-lightbox-md-header"><span></span><button class="chat-lightbox-md-close" title="Close">✕</button></div><div class="chat-lightbox-md-body"></div></div>'
+        overlay.addEventListener('click', (ev) => {
+          if (ev.target === overlay) overlay.remove()
+        })
+        const titleEl = overlay.querySelector('.chat-lightbox-md-header span')
+        if (titleEl) titleEl.textContent = title
+        const bodyEl = overlay.querySelector('.chat-lightbox-md-body')
+        if (bodyEl) bodyEl.innerHTML = renderedHtml
+        overlay.querySelector('.chat-lightbox-md-close')?.addEventListener('click', () => overlay.remove())
+        document.body.appendChild(overlay)
+      }
+      if (mdChip.classList.contains('src-chip')) {
+        e.stopPropagation()
+        const line = mdChip.closest('.chat-line')
+        const body = line?.querySelector('.message-body') as HTMLElement | null
+        const title = mdChip.getAttribute('title') || mdChip.textContent || 'source'
+        openRenderedMarkdownLightbox(title, body?.innerHTML || '')
+        return
+      }
       const chipUrl = mdChip.dataset.url || ''
       const chipPath = mdChip.dataset.path || ''
       const isMd = /\.md$/i.test(chipUrl || chipPath)

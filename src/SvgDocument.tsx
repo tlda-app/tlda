@@ -66,7 +66,7 @@ import { RibbonLane } from './shapes/RibbonLane'
 import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onBuildStatusSignal, onReloadSignal, onViewPinSignal, onCompareSignal, onFileUpdatedSignal, onGraphDrawSignal, type BuildError, type BuildWarning } from './useYjsSync'
 import { useSync } from '@tldraw/sync'
 import { appendToken } from './authToken'
-import { DocumentPanel, PhoneOverlay, HighlighterButton, SemanticHighlightPill, VoiceNoteButton, MicToggleButton, VoiceTargetFollower } from './DocumentPanel'
+import { DocumentPanel, PhoneOverlay, HighlighterButton, SemanticHighlightPill, VoiceNoteButton, MicToggleButton, DumpVoiceButton, VoiceTargetFollower } from './DocumentPanel'
 import { AgentAttentionOverlay } from './overlays/AgentAttentionOverlay'
 import { FleetToolGhost } from './overlays/FleetToolGhost'
 import { RecognizeButton } from './overlays/RecognizeButton'
@@ -832,7 +832,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       // button cluster instead.
       Toolbar: () => IS_PHONE ? null : <FormatToolbar format={document.format} />,
       HelperButtons: () => <PenHelperButtons format={document.format} />,
-      InFrontOfTheCanvas: () => <><RibbonLane /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /></>,
+      InFrontOfTheCanvas: () => <><RibbonLane /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><DumpVoiceButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /></>,
     }),
     [document, roomId]
   )
@@ -1612,4 +1612,3 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     </>
   )
 }
-

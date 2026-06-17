@@ -74,12 +74,15 @@ body.fog-dark-mode {
 /* Fog dark — bottom-row buttons need higher opacity on dark canvas */
 body.fog-dark-mode .phone-hl-btn,
 body.fog-dark-mode .voice-note-btn,
-body.fog-dark-mode .mic-toggle-btn {
+body.fog-dark-mode .mic-toggle-btn,
+body.fog-dark-mode .voice-dump-btn {
   opacity: 0.35;
 }
 body.fog-dark-mode .phone-hl-btn:hover,
 body.fog-dark-mode .voice-note-btn:hover,
-body.fog-dark-mode .mic-toggle-btn:hover {
+body.fog-dark-mode .mic-toggle-btn:hover,
+body.fog-dark-mode .voice-dump-btn:hover,
+body.fog-dark-mode .voice-dump-btn.active {
   opacity: 0.7;
 }
 

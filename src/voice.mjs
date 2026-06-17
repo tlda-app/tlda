@@ -203,6 +203,10 @@ let _recording = false
 const _recordingListeners = new Set()
 function emitRecordingChange() { for (const cb of _recordingListeners) { try { cb(_recording) } catch {} } }
 export function onRecordingChange(cb) { _recordingListeners.add(cb); return () => { _recordingListeners.delete(cb) } }
+const _targetListeners = new Set()
+function emitVoiceTargetChange() { for (const cb of _targetListeners) { try { cb() } catch {} } }
+export function onVoiceTargetChange(cb) { _targetListeners.add(cb); return () => { _targetListeners.delete(cb) } }
+export function isVoiceDumping() { return _voiceDumping }
 
 // Voice tap dispatcher — the single source of truth for the Right-Shift gesture,
 // shared by the keydown handler AND the on-screen mic button so they behave
@@ -270,6 +274,7 @@ let _activeSendTargets = []
 let _activeAgentNames = {}
 let _activeAgentColor = null
 let _activeSendFn = null
+let _voiceDumping = false
 
 // Accumulator target — alternative to _activeTextarea for code editors etc.
 // When set, fillTextarea() calls onUpdate instead of writing to a DOM element.
@@ -517,6 +522,7 @@ function enterEdit() {
 
 export function setVoiceTarget(textarea, sendTargets, agentNames, sendFn, agentColor) {
   let wasRecording = false
+  _voiceDumping = false
   if (textarea !== _activeTextarea) {
     // Hard reset voice on chat switch — same as double-shift-right.
     // Without this, the old recognition session keeps running with a stale
@@ -573,16 +579,19 @@ export function setVoiceTarget(textarea, sendTargets, agentNames, sendFn, agentC
   } else if (_recording) {
     showRecordingHud()
   }
+  emitVoiceTargetChange()
 }
 
 export function clearVoiceTarget(textarea) {
   if (_activeTextarea === textarea) {
+    _voiceDumping = false
     _activeTextarea = null
     _activeSendTargets = []
     _activeAgentNames = {}
     _activeSendFn = null
     // Keep recording; just refresh the HUD to the targetless label.
     if (_recording) showRecordingHud()
+    emitVoiceTargetChange()
   }
 }
 
@@ -597,6 +606,7 @@ export function setVoiceAccumulator(onUpdate, onSend, onStop, label) {
   // active recording session when focus re-fires (e.g. clicking within CodeMirror).
   if (_accumulator && _accumulator.onUpdate === onUpdate) return
   const wasRecording = _recording
+  _voiceDumping = false
   // Sync teardown — no getUserMedia cycle needed (accumulator switch is cheap)
   if (_recognition) {
     try {
@@ -622,10 +632,12 @@ export function setVoiceAccumulator(onUpdate, onSend, onStop, label) {
   _left = _interim = _right = ''
   _accumulator = { onUpdate, onSend: onSend || null, onStop: onStop || null, label: label || 'note' }
   if (wasRecording) startRecording()
+  emitVoiceTargetChange()
 }
 
 export function clearVoiceAccumulator(onUpdate) {
   if (_accumulator && _accumulator.onUpdate === onUpdate) {
+    _voiceDumping = false
     _accumulator = null
     // Deselecting a note clears the target but never stops the recorder —
     // mirrors clearVoiceTarget. The stream is simply discarded (fillTextarea
@@ -633,6 +645,7 @@ export function clearVoiceAccumulator(onUpdate) {
     // Only the mic button stops recording. Refresh the HUD so it drops the
     // stale "→ note" label and shows the targetless "recording" state.
     if (_recording) showRecordingHud()
+    emitVoiceTargetChange()
   }
 }
 
@@ -644,7 +657,33 @@ export function notifyAccumulatorCursorMoved() {
   enterEdit()
 }
 
+export function dumpVoiceTarget() {
+  if (_inputListeners && _activeTextarea) {
+    _activeTextarea.removeEventListener('input', _inputListeners.input)
+    _activeTextarea.removeEventListener('click', _inputListeners.click)
+    _activeTextarea.removeEventListener('keydown', _inputListeners.keydown)
+    _inputListeners = null
+  }
+  _activeTextarea = null
+  _activeSendTargets = []
+  _activeAgentNames = {}
+  _activeAgentColor = null
+  _activeSendFn = null
+  _accumulator = null
+  _voiceDumping = true
+  _state = 'edit'
+  _generation++
+  _left = _interim = _right = ''
+  if (_recording) showRecordingHud()
+  else {
+    showHud('voice → dump', '#9370db')
+    fadeHud(2000)
+  }
+  emitVoiceTargetChange()
+}
+
 function targetLabel() {
+  if (_voiceDumping) return 'dump'
   if (_accumulator) return _accumulator.label || 'note'
   if (_activeSendTargets.length === 0) return null
   return _activeSendTargets

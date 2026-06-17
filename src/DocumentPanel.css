@@ -2085,12 +2085,12 @@ html[data-theme="dark"] .voice-note-btn {
   color: var(--pill-icon-color, rgba(255, 255, 255, 1));
 }
 
-/* Mic toggle — sits in the corner stack directly above the voice-note button
-   (highlighter 16px → voice-note 49px → mic 82px). Same subtle treatment. */
-.mic-toggle-btn {
+/* Mic controls — bottom-right stack above the voice-note button
+   (highlighter 16px → voice-note 49px → mic 82px → dump 115px). */
+.mic-toggle-btn,
+.voice-dump-btn {
   display: flex;
   position: fixed;
-  bottom: 82px;
   right: 16px;
   z-index: 10001;
   width: 27px;
@@ -2108,15 +2108,24 @@ html[data-theme="dark"] .voice-note-btn {
   touch-action: none;
   opacity: 0.15;
 }
-.mic-toggle-btn:hover { opacity: 0.5; }
+.mic-toggle-btn { bottom: 82px; }
+.voice-dump-btn { bottom: 115px; }
+.mic-toggle-btn:hover,
+.voice-dump-btn:hover,
+.voice-dump-btn.active { opacity: 0.5; }
 
-body.phone-mode .mic-toggle-btn {
+body.phone-mode .mic-toggle-btn,
+body.phone-mode .voice-dump-btn {
   bottom: calc(90px + env(safe-area-inset-bottom));
   right: calc(16px + env(safe-area-inset-right));
   opacity: 0.5;
 }
+body.phone-mode .voice-dump-btn {
+  bottom: calc(123px + env(safe-area-inset-bottom));
+}
 
-html[data-theme="dark"] .mic-toggle-btn {
+html[data-theme="dark"] .mic-toggle-btn,
+html[data-theme="dark"] .voice-dump-btn {
   color: var(--pill-icon-color, rgba(255, 255, 255, 1));
 }
 
@@ -2139,5 +2148,8 @@ html[data-theme="dark"] .mic-toggle-btn {
     bottom: calc(82px + env(safe-area-inset-bottom));
     right: calc(16px + env(safe-area-inset-right));
   }
+  .voice-dump-btn {
+    bottom: calc(115px + env(safe-area-inset-bottom));
+    right: calc(16px + env(safe-area-inset-right));
+  }
 }
-

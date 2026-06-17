@@ -546,7 +546,7 @@ export function renderChatLine(m, ctx) {
   // Long message: block display
   const rawLineCount = (m.text || '').split('\n').length
   const isLongMsg = rawLineCount > 20
-  let bodyText = isLongMsg ? `<span class="message-body message-long">${displayText}</span>` : displayText
+  let bodyText = `<span class="message-body${isLongMsg ? ' message-long' : ''}">${displayText}</span>`
   // Provenance chip: a message body baked from a file section (chat/amend with
   // file+section) carries metadata.source = { file, section }. Show a subtle
   // "from <file> §<section>" chip so the reader can see/open the source. Reuses
