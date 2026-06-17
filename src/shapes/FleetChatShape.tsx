@@ -2246,9 +2246,12 @@ function FleetChatInner({ shape }: { shape: any }) {
     // Copy button on code blocks
     const copyBtn = (e.target as HTMLElement).closest('.code-block-copy') as HTMLElement | null
     if (copyBtn) {
-      const pre = copyBtn.closest('.code-block-wrap')?.querySelector('pre')
-      if (pre) {
-        navigator.clipboard.writeText(pre.textContent || '').then(() => {
+      const wrap = copyBtn.closest('.code-block-wrap')
+      const source = wrap?.querySelector('template.code-block-copy-source') as HTMLTemplateElement | null
+      const fallback = wrap?.querySelector('pre, .fold-body, .diff-tex') as HTMLElement | null
+      const text = source?.content.textContent ?? fallback?.innerText ?? fallback?.textContent
+      if (text != null) {
+        navigator.clipboard.writeText(text).then(() => {
           copyBtn.textContent = '✓'
           copyBtn.classList.add('code-block-copy-success')
           setTimeout(() => { copyBtn.textContent = '⎘'; copyBtn.classList.remove('code-block-copy-success') }, 1500)

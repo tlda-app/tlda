@@ -13,6 +13,35 @@
 // `activity-event` WS message — no new card pipeline, no pane-scraping.
 
 import { gooseDb, gooseSessionId } from './goose-kick.mjs'
+import { parseApplyPatchFiles } from './codex-activity.mjs'
+
+function gooseApplyPatchEvents(input, blockId, ts) {
+  const patch = typeof input === 'string'
+    ? input
+    : (input?.input || input?.patch || input?.arguments || input?._raw || '')
+  const files = parseApplyPatchFiles(patch)
+  if (!files.length) {
+    return [{
+      tool: 'Edit',
+      arg: '',
+      ts,
+      id: blockId,
+      input: { _raw: patch },
+    }]
+  }
+  return files.map((f, i) => ({
+    tool: 'Edit',
+    arg: f.path,
+    ts,
+    id: `${blockId || 'patch'}#${i}`,
+    input: {
+      file_path: f.path,
+      op: f.op,
+      diff: f.diff,
+      ...(f.movedTo ? { movedTo: f.movedTo } : {}),
+    },
+  }))
+}
 
 // Map one goose message row (content_json = array of blocks) to activity events
 // matching extractActivityEvents in fleet-daemon.mjs:
@@ -33,10 +62,14 @@ export function gooseMessageEvents(row, isNoise) {
     if (b.type === 'toolRequest') {
       const name = b.toolCall?.value?.name || ''
       if (!name) continue
+      const input = b.toolCall?.value?.arguments || {}
+      if (name === 'apply_patch') {
+        events.push(...gooseApplyPatchEvents(input, b.id, ts))
+        continue
+      }
       const base = name.split('__').pop()
       if (isNoise && isNoise(base)) continue
       const humanName = name.replace(/^mcp__/, '').replace(/__/g, '/')  // tlda__read_doc → tlda/read_doc
-      const input = b.toolCall?.value?.arguments || {}
       const arg = input.file_path || input.path || input.command || input.pattern ||
         input.message || input.query || input.description || input.reason ||
         input.doc || input.ref || input.text || ''
@@ -63,7 +96,8 @@ export function gooseActivityTick(agents, deps) {
   const db = gooseDb(log)
   if (!db) return
   for (const agent of agents) {
-    if (!agent || !agent._isGoose || agent.hibernating) continue
+    const kind = agent?.metadata?.kind
+    if (!agent || kind !== 'goose' || agent.hibernating) continue
     const sid = gooseSessionId(agent.id, log)
     if (!sid) continue
     try {

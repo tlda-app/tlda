@@ -67,6 +67,8 @@ function readAll() {
     curve: getPref('response-curve'),
     spawnMode: getPref('spawn-mode'),
     voiceBackend: getPref('voice-backend'),
+    voiceSubmitWords: getPref('voice-submit-words'),
+    voiceSinkShapeTypes: getPref('voice-sink-shape-types'),
     fontSize: getPref('fleet-font-size'),
     heightFrac: getPref('layout-height-frac'),
     railWidth: getPref('layout-rail-width'),
@@ -305,6 +307,30 @@ export function PrefsTab() {
         </select>
         <div style={{ fontSize: 10, color: '#6b7280', marginTop: 2 }}>
           Defaults to Deepgram. No fallback — the chosen backend is the only one that ever runs; Chrome (can beep) is opt-in only.
+        </div>
+      </div>
+
+      <div className="prefs-section">
+        <div className="prefs-section-label">Voice commands</div>
+        <div className="prefs-num-row">
+          <span className="prefs-color-label">Submit</span>
+          <input
+            className="prefs-num"
+            style={{ width: 170, textAlign: 'left' }}
+            value={prefs.voiceSubmitWords}
+            onChange={e => setPref('voice-submit-words', e.target.value)}
+            placeholder="send, send it"
+          />
+        </div>
+        <div className="prefs-num-row">
+          <span className="prefs-color-label">&lt;nowhere&gt; shapes</span>
+          <input
+            className="prefs-num"
+            style={{ width: 170, textAlign: 'left' }}
+            value={prefs.voiceSinkShapeTypes}
+            onChange={e => setPref('voice-sink-shape-types', e.target.value)}
+            placeholder="fleet-agents"
+          />
         </div>
       </div>
 

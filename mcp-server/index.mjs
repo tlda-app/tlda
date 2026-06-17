@@ -30,6 +30,7 @@ import {
   pdfToCanvas, canvasToPdf, htmlToCanvas, canvasToHtml, loadHtmlLayout,
   PDF_WIDTH, PDF_HEIGHT, PAGE_WIDTH, PAGE_HEIGHT, PAGE_GAP,
 } from './lib/formatCoords.mjs';
+import { harnessFromEnv } from './lib/harness-adapters.mjs';
 
 import { getServerUrl, DEFAULT_PORT } from '../shared/config.mjs'
 import { tldaFetch as _tldaFetch } from '../shared/http-client.mjs'
@@ -411,8 +412,8 @@ async function eduCreditSkillRead(skillName) {
 // Returns a blocked-tool result (named owed skills + read-or-dismiss instructions)
 // or null to proceed.
 async function educationGate(name, args) {
-  const harness = process.env.FLEET_HARNESS || 'claude';
-  if (harness === 'claude') return null;            // claude has its own hook; never double-gate
+  const harness = harnessFromEnv();
+  if (!harness.educationGate) return null;          // claude has its own hook; never double-gate
   const spec = GATED_MCP_TOOLS[name];
   if (!spec) return null;
   const input = { file: spec.file ? spec.file(args) : '', content: spec.content ? spec.content(args) : '' };
@@ -2602,8 +2603,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // (FLEET_HARNESS, default 'claude') decides which sections survive: a
     // `## … {.claude-only}` section is stripped for a goose agent and vice-versa,
     // so the agent only sees guidance it can actually act on.
-    const harness = process.env.FLEET_HARNESS || 'claude';
-    const agentTags = new Set([harness]);
+    const harness = harnessFromEnv();
+    const agentTags = new Set([harness.kind]);
     if (!args?.skill) {
       const skills = listSkills();
       if (!skills.length) return { content: [{ type: 'text', text: `skill: no skills found at ${SKILLS_DIR}.` }], isError: true };
@@ -2630,7 +2631,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text: md }] };
     }
     const filtered = filterSkillByHarness(md, agentTags);
-    const note = harness !== 'claude' ? `\n\n— (filtered for harness "${harness}"; sections that don't apply to you were removed. Pass raw:true for the full text.)` : '';
+    const note = harness.kind !== 'claude' ? `\n\n— (filtered for harness "${harness.kind}"; sections that don't apply to you were removed. Pass raw:true for the full text.)` : '';
     return { content: [{ type: 'text', text: filtered + note }] };
   }
 

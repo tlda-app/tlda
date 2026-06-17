@@ -35,6 +35,10 @@ export function esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
 }
 
+export function copySourceTemplate(text) {
+  return `<template class="code-block-copy-source">${esc(text)}</template>`
+}
+
 // Require a value — report error and return placeholder if missing
 export function requireVal(val, name) {
   if (val == null) {
@@ -316,7 +320,7 @@ export function renderMarkdown(html, extraMacros) {
       + `</div>`
 
     const dataAttrs = shouldFold && lang ? ` data-lang="${esc(lang)}"` : ''
-    return ph(`<div class="code-block-wrap">${header}<pre${shouldFold ? ' class="code-collapsed"' : ''}><code${dataAttrs}>${highlighted}</code></pre></div>`, true)
+    return ph(`<div class="code-block-wrap">${header}${copySourceTemplate(code)}<pre${shouldFold ? ' class="code-collapsed"' : ''}><code${dataAttrs}>${highlighted}</code></pre></div>`, true)
   })
 
   // KaTeX macros. When extraMacros is provided it is AUTHORITATIVE — the message

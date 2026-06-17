@@ -15,10 +15,20 @@ import { useFleetAgents, useFleetIdentity } from '../fleet-data-adapter'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getDeviceId } from '../fleet/fleet-data.mjs'
 import { getMyAnchorId, isMyFleetShape, FLEET_SHAPE_TYPES, adoptLegacyFleetShapes, layoutOffset, ensureMyLaneDisjoint } from '../shapes/fleet-utils'
-import { useFleetGestures } from './useFleetGestures'
+import { fleetTouchGestureActiveRef, postTouchTelemetry, setTouchDiagStatus, useFleetGestures } from './useFleetGestures'
 import { SuggestionTip } from '../shapes/FleetChatShape'
 import { log } from '../logger'
 import './FleetHUD.css'
+
+function fleetGesturesOptInEnabled() {
+  if (typeof window === 'undefined') return false
+  try {
+    const params = new URLSearchParams(window.location.search)
+    return params.get('fleetGestures') === '1' || window.localStorage.getItem('__fleetGesturesEnabled') === 'true'
+  } catch {
+    return false
+  }
+}
 
 function saveAnchorOffsets(editor: Editor, panOffset: number, cameraY: number) {
   // Never persist a HUD anchor without a resolved identity — getMyAnchorId()
@@ -203,9 +213,81 @@ export function FleetHUD({
   const hudRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
   const overlayEditorRef = useRef<Editor | null>(null)
+  const lastHudDiagSigRef = useRef('')
+  const gesturesEnabled = expanded && !!fleetBounds && fleetGesturesOptInEnabled()
+
+  useEffect(() => {
+    const shapes = mainEditor.getCurrentPageShapes()
+    const fleetShapes = shapes.filter(isMyFleetShape)
+    const docShapes = shapes.filter(s => (s.type as string) === 'svg-page' || (s.type as string) === 'html-page')
+    const state = {
+      expanded,
+      hasIdentity: !!identityId,
+      hasFleetBounds: !!fleetBounds,
+      gesturesEnabled,
+      fleetGesturesOptIn: fleetGesturesOptInEnabled(),
+      fleetBounds,
+      docShapesReady,
+      shapeCount: shapes.length,
+      myFleetShapeCount: fleetShapes.length,
+      docShapeCount: docShapes.length,
+      hasHudRef: !!hudRef.current,
+      hasOverlayEditor: !!overlayEditorRef.current,
+      localExpanded: typeof window !== 'undefined' ? window.localStorage.getItem('fleet-hud-expanded') : null,
+      localGestures: typeof window !== 'undefined' ? window.localStorage.getItem('__fleetGesturesEnabled') : null,
+    }
+    const sig = JSON.stringify({
+      expanded: state.expanded,
+      hasIdentity: state.hasIdentity,
+      hasFleetBounds: state.hasFleetBounds,
+      gesturesEnabled: state.gesturesEnabled,
+      fleetGesturesOptIn: state.fleetGesturesOptIn,
+      docShapesReady: state.docShapesReady,
+      myFleetShapeCount: state.myFleetShapeCount,
+      docShapeCount: state.docShapeCount,
+      hasHudRef: state.hasHudRef,
+      hasOverlayEditor: state.hasOverlayEditor,
+      localExpanded: state.localExpanded,
+      localGestures: state.localGestures,
+    })
+    if (sig === lastHudDiagSigRef.current) return
+    lastHudDiagSigRef.current = sig
+    setTouchDiagStatus('fleet hud state', state)
+    postTouchTelemetry('fleet hud state', state)
+  }, [mainEditor, expanded, identityId, fleetBounds, docShapesReady, gesturesEnabled])
 
   // Touch gesture vocabulary on the HUD (move/resize shapes, pass-through pan/zoom).
-  useFleetGestures({ hudRef, overlayEditorRef, mainEditor, expanded })
+  useFleetGestures({ hudRef, overlayEditorRef, mainEditor, expanded: gesturesEnabled })
+
+  useEffect(() => {
+    const shapes = mainEditor.getCurrentPageShapes()
+    const fleetShapes = shapes.filter(isMyFleetShape)
+    const docShapes = shapes.filter(s => (s.type as string) === 'svg-page' || (s.type as string) === 'html-page')
+    log.debug('fleet-gesture', 'fleet hud load state', {
+      expanded,
+      hasIdentity: !!identityId,
+      hasFleetBounds: !!fleetBounds,
+      gesturesEnabled,
+      fleetBounds,
+      docShapesReady,
+      shapeCount: shapes.length,
+      myFleetShapeCount: fleetShapes.length,
+      docShapeCount: docShapes.length,
+      panOffset: panOffsetRef.current,
+      cameraY: cameraYRef.current,
+      mainCamera: mainEditor.getCamera(),
+      devicePixelRatio: typeof window !== 'undefined' ? window.devicePixelRatio : null,
+      visualViewport: typeof window !== 'undefined' && window.visualViewport
+        ? {
+            width: window.visualViewport.width,
+            height: window.visualViewport.height,
+            scale: window.visualViewport.scale,
+            offsetLeft: window.visualViewport.offsetLeft,
+            offsetTop: window.visualViewport.offsetTop,
+          }
+        : null,
+    })
+  }, [mainEditor, expanded, identityId, fleetBounds, docShapesReady, gesturesEnabled])
 
   // Track whether any fleet shapes are selected in the HUD editor (layout mode).
   // When active, the HUD canvas gets pointer-events: auto so drag-box select works.
@@ -273,6 +355,16 @@ export function FleetHUD({
       // HUD reflects the new bounds at the moment they change.
       const isUserDragging = !!mainEditor.inputs?.isPointing
       if (isUserDragging) {
+        const updatedFleet = Object.values(changes.updated)
+          .filter(([from, to]: any) => isFleetChange(from) || isFleetChange(to))
+          .map(([from, to]: any) => ({
+            id: to.id,
+            type: to.type,
+            from: { x: from.x, y: from.y },
+            to: { x: to.x, y: to.y },
+            changedProps: Object.keys(to.props || {}).filter(k => (from.props || {})[k] !== to.props[k]),
+          }))
+        log.debug('fleet-gesture', 'fleet update deferred during user drag', { updatedFleet })
         draggingRef.current = true
       } else {
         const updatedFleet = Object.values(changes.updated)
@@ -281,6 +373,12 @@ export function FleetHUD({
             const changedProps = Object.keys(to.props || {}).filter(k => (from.props || {})[k] !== to.props[k])
             return { id: to.id, type: to.type, moved: from.x !== to.x || from.y !== to.y, changedProps }
           })
+        log.debug('fleet-gesture', 'fleet bounds recompute after shape update', {
+          isUserDragging,
+          updatedFleet,
+          previousBounds: fleetBounds,
+          nextBounds: getFleetBounds(mainEditor),
+        })
         log.debug('fleet-hud', 'bounds recompute (fleet shape update)', { updatedFleet })
         draggingRef.current = false
         setFleetBounds(getFleetBounds(mainEditor))
@@ -757,6 +855,7 @@ export function FleetHUD({
           cameraOverride={overlayCam}
           fullViewport={true}
           identityId={identityId}
+          customGestureActiveRef={fleetTouchGestureActiveRef}
           onEditorMount={(e) => { overlayEditorRef.current = e; (window as any).__tldraw_hud_editor__ = e }}
           className="fleet-hud"
         />

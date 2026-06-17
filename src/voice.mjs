@@ -12,6 +12,7 @@
 
 import { appendToken } from './authToken.ts'
 import { log } from './logger.ts'
+import { getPref } from './preferences.ts'
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
 const _isSafari = !navigator.userAgent.includes('Chrome') && navigator.userAgent.includes('Safari')
@@ -528,6 +529,7 @@ export function setVoiceTarget(textarea, sendTargets, agentNames, sendFn, agentC
     if (_backend === 'whisper-stream') flushWhisperBridge()
     if (_backend === 'deepgram') resetDeepgramTextState()
     hardResetVoice({ keepDeepgramMic: true })
+    _recording = false
     // Remove old listeners
     if (_inputListeners && _activeTextarea) {
       _activeTextarea.removeEventListener('input', _inputListeners.input)
@@ -536,6 +538,7 @@ export function setVoiceTarget(textarea, sendTargets, agentNames, sendFn, agentC
       _inputListeners = null
     }
     _state = 'edit'
+    _generation++
     _left = _interim = _right = ''
     if (textarea) {
       const onEdit = () => { if (!_filling) enterEdit() }
@@ -654,6 +657,59 @@ export function notifyAccumulatorCursorMoved() {
 }
 
 export function dumpVoiceTarget() {
+  enterVoiceSink()
+}
+
+function targetLabel() {
+  if (_voiceDumping) return '<nowhere>'
+  if (_accumulator) return _accumulator.label || 'note'
+  if (_activeSendTargets.length === 0) return null
+  return _activeSendTargets
+    .map(id => _activeAgentNames[id] || id.replace('fleet:', ''))
+    .join(', ')
+}
+
+function parseCsvPref(value) {
+  return String(value || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean)
+}
+
+function interactiveSinkChild(target) {
+  if (!target || !target.closest) return false
+  return !!target.closest('button, input, textarea, select, option, a, [role="button"], [contenteditable="true"], .cm-editor')
+}
+
+export function isVoiceSinkShapeType(shapeType) {
+  if (!shapeType) return false
+  return parseCsvPref(getPref('voice-sink-shape-types')).includes(shapeType)
+}
+
+export function maybeHandleVoiceSinkPointerDown(event) {
+  const target = event?.target
+  if (interactiveSinkChild(target)) return false
+  const shapeEl = target?.closest?.('[data-shape-type]')
+  const shapeType = shapeEl?.getAttribute?.('data-shape-type')
+  if (!isVoiceSinkShapeType(shapeType)) return false
+  enterVoiceSink()
+  return true
+}
+
+function clearCurrentSinkInterim() {
+  _state = 'edit'
+  _left = _interim = _right = ''
+  if (_backend === 'deepgram') resetDeepgramTextState()
+  if (_backend === 'whisper-stream') flushWhisperBridge()
+  showHud('<nowhere> cleared', '#9370db')
+  fadeHud(1500)
+}
+
+export function enterVoiceSink() {
+  if (_voiceDumping) {
+    clearCurrentSinkInterim()
+    return
+  }
   if (_inputListeners && _activeTextarea) {
     _activeTextarea.removeEventListener('input', _inputListeners.input)
     _activeTextarea.removeEventListener('click', _inputListeners.click)
@@ -668,23 +724,15 @@ export function dumpVoiceTarget() {
   _accumulator = null
   _voiceDumping = true
   _state = 'edit'
-  _generation++
   _left = _interim = _right = ''
+  if (_backend === 'deepgram') resetDeepgramTextState()
+  if (_backend === 'whisper-stream') flushWhisperBridge()
   if (_recording) showRecordingHud()
   else {
-    showHud('voice → dump', '#9370db')
+    showHud('voice → <nowhere>', '#9370db')
     fadeHud(2000)
   }
   emitVoiceTargetChange()
-}
-
-function targetLabel() {
-  if (_voiceDumping) return 'dump'
-  if (_accumulator) return _accumulator.label || 'note'
-  if (_activeSendTargets.length === 0) return null
-  return _activeSendTargets
-    .map(id => _activeAgentNames[id] || id.replace('fleet:', ''))
-    .join(', ')
 }
 
 // --- Fill textarea with transcription ---
@@ -1049,10 +1097,24 @@ function resetDeepgramTextState({ ignoreUntilUtteranceEnd = false } = {}) {
   _dgTrickleShown = 0
 }
 
-const SEND_MAGIC_WORD_RE = /(send\s*it|send|sent)\s*[.!,]?\s*$/i
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function sendMagicWordRe() {
+  const words = parseCsvPref(getPref('voice-submit-words'))
+  if (words.length === 0) return null
+  const body = words
+    .sort((a, b) => b.length - a.length)
+    .map(escapeRegExp)
+    .join('|')
+  return new RegExp(`(?:${body})\\s*[.!,]?\\s*$`, 'i')
+}
 
 function splitSendMagicWord(text) {
-  const match = text.trim().match(SEND_MAGIC_WORD_RE)
+  const re = sendMagicWordRe()
+  if (!re) return null
+  const match = text.trim().match(re)
   if (!match) return null
   return text.trim().slice(0, match.index).trim()
 }
@@ -1449,10 +1511,10 @@ function vlog(msg, data) {
 if (typeof window !== 'undefined') {
   window.__voiceLogs = _voiceLogs
   window.__voiceTest = {
-    fakeRecord: (ta) => { _recording = true; _state = 'edit'; _backend = 'deepgram'; if (ta) _activeTextarea = ta; },
-    fakeStop: () => { _recording = false; },
+    fakeRecord: (ta) => { _recording = true; _state = 'edit'; _backend = 'deepgram'; _voiceDumping = false; resetDeepgramTextState(); if (ta) _activeTextarea = ta; },
+    fakeStop: () => { _recording = false; stopDeepgramMic(); resetDeepgramTextState(); },
     switchTarget: (ta) => setVoiceTarget(ta, [], {}, null, null),
-    getState: () => ({ recording: _recording, backend: _backend, state: _state, connected: _deepgramConnected, hasMic: !!_deepgramStream, left: _left, interim: _interim, hasTextarea: !!_activeTextarea }),
+    getState: () => ({ recording: _recording, backend: _backend, state: _state, connected: _deepgramConnected, hasMic: !!_deepgramStream, left: _left, interim: _interim, dumping: _voiceDumping, hasTextarea: !!_activeTextarea }),
     injectTranscript: (text, isFinal) => onDeepgramMessage({ data: JSON.stringify({ type: 'transcript', text, is_final: isFinal, speech_final: false }) }),
     afterSend: () => afterSend(),
     getTrickle: () => ({ words: _dgTrickleWords.slice(), shown: _dgTrickleShown, hasTimer: _dgTrickleTimer !== null }),

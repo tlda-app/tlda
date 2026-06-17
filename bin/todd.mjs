@@ -1362,7 +1362,7 @@ function postJson(urlPath, body) {
   // RESILIENCE: always resolve — never hang, never throw. todd processes
   // messages serially, so a single request that hangs on a slow/unresponsive
   // server (e.g. mid-restart) used to freeze ALL of todd (this is exactly how
-  // a handoff's /api/spawn call locked it up). Time out and resolve {error}
+  // a handoff spawn request locked it up). Time out and resolve {error}
   // instead; callers already branch on `.error`.
   return new Promise((resolve) => {
     let done = false
@@ -1380,6 +1380,14 @@ function postJson(urlPath, body) {
     req.write(payload)
     req.end()
   })
+}
+
+async function spawnAgent(body) {
+  try {
+    return await sendRequest({ type: 'spawn', ...body }, 15_000)
+  } catch (e) {
+    return { error: e.message }
+  }
 }
 
 // RESILIENCE companion to postJson: a GET that always resolves (parsed JSON,
@@ -1486,10 +1494,10 @@ Skip already told the agent what he wanted — repeatedly. He's exhausted from r
     try {
       const agentCwd = await resolveAgentCwd(agentId)
       const mgrName = await nextAgentName(extractBaseTopic(agentName), 'm')
-      let spawnResult = await postJson('/api/spawn', { name: mgrName, cwd: agentCwd })
+      let spawnResult = await spawnAgent({ name: mgrName, cwd: agentCwd })
       if (spawnResult.error && spawnResult.error.includes('already exists')) {
         console.log(`[todd] manager ${mgrName} already exists — respawning`)
-        spawnResult = await postJson('/api/spawn', { agent: mgrName, respawn: true })
+        spawnResult = await spawnAgent({ agent: mgrName, respawn: true })
       }
       if (spawnResult.error) {
         sendChat(OWNER_ID, `⚠️ Failed to spawn manager: ${spawnResult.error}`)
@@ -1571,9 +1579,9 @@ async function handleHandoff(agentId, triggerText) {
     } catch (e) {
       sendChat(OWNER_ID, `⚠️ Promoting ${agentName} → :day failed: ${e.message}`)
     }
-    let spawnResult = await postJson('/api/spawn', { name: workerName, cwd: agentCwd })
+    let spawnResult = await spawnAgent({ name: workerName, cwd: agentCwd })
     if (spawnResult.error && spawnResult.error.includes('already exists')) {
-      spawnResult = await postJson('/api/spawn', { agent: workerName, respawn: true })
+      spawnResult = await spawnAgent({ agent: workerName, respawn: true })
     }
     if (spawnResult.error) {
       sendChat(OWNER_ID, `⚠️ Failed to spawn worker: ${spawnResult.error}`)
@@ -1629,9 +1637,9 @@ ${triggerText ? `\n**Skip's handoff message:**\n> ${triggerText}\n` : ''}
     } catch (e) {
       sendChat(OWNER_ID, `⚠️ Outgoing ${agentName} → :dusk failed: ${e.message}`)
     }
-    let spawnResult = await postJson('/api/spawn', { name: briefingName, cwd: agentCwd })
+    let spawnResult = await spawnAgent({ name: briefingName, cwd: agentCwd })
     if (spawnResult.error && spawnResult.error.includes('already exists')) {
-      spawnResult = await postJson('/api/spawn', { agent: briefingName, respawn: true })
+      spawnResult = await spawnAgent({ agent: briefingName, respawn: true })
     }
     if (spawnResult.error) {
       sendChat(OWNER_ID, `⚠️ Failed to spawn briefing agent: ${spawnResult.error}`)
@@ -1727,9 +1735,9 @@ async function handleHandoffReady(fromId, text) {
   const pickupName = stripPhase(handoffInfo.originalAgent)
   const spawnPickup = async () => {
     try {
-      let spawnResult = await postJson('/api/spawn', { name: pickupName, cwd: handoffInfo.originalCwd })
+      let spawnResult = await spawnAgent({ name: pickupName, cwd: handoffInfo.originalCwd })
       if (spawnResult.error && spawnResult.error.includes('already exists')) {
-        spawnResult = await postJson('/api/spawn', { agent: pickupName, respawn: true })
+        spawnResult = await spawnAgent({ agent: pickupName, respawn: true })
       }
       if (spawnResult.error) {
         sendChat(OWNER_ID, `⚠️ Failed to spawn pickup agent: ${spawnResult.error}`)

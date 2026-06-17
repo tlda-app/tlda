@@ -59,6 +59,10 @@ interface CanvasClipPanelProps {
   /** Current fleet identity id — when this changes (e.g. identity resolves after
    *  initial load), fleet shapes are re-evaluated through the ownership gate. */
   identityId?: string | null
+  /** External gesture bridge used while migrating custom fleet touch handling
+   *  into TLDraw state nodes. When true, HUD copy-store updates are treated like
+   *  a single user gesture instead of programmatic live activity. */
+  customGestureActiveRef?: { current: boolean }
   /** When either is set (used by the screenshot capture), the panel renders ONLY
    *  shapes whose id is in requestedShapeIds or whose type is in requestedShapeTypes,
    *  bypassing the doc/fleet/viewport filters. Lets an agent capture just the fleet
@@ -86,6 +90,7 @@ export function CanvasClipPanel({
   cameraOverride,
   fullViewport = false,
   identityId,
+  customGestureActiveRef,
   requestedShapeIds,
   requestedShapeTypes,
   children,
@@ -100,6 +105,7 @@ export function CanvasClipPanel({
   const copyEditorRef = useRef<Editor | null>(null)
   copyEditorRef.current = editor
   const gestureOpenRef = useRef(false)
+  const customGestureOpenRef = useRef(false)
 
   // Expose editor to parent
   useEffect(() => {
@@ -123,6 +129,15 @@ export function CanvasClipPanel({
       }
     })
   }, [editor, mainEditor])
+
+  useEffect(() => {
+    if (!customGestureActiveRef) return
+    const closeCustomGesture = () => {
+      if (!customGestureActiveRef.current) customGestureOpenRef.current = false
+    }
+    window.addEventListener('fleet-gesture-active-change', closeCustomGesture)
+    return () => window.removeEventListener('fleet-gesture-active-change', closeCustomGesture)
+  }, [customGestureActiveRef])
 
   // Snapping in HUD: non-fleet shapes are already locked (lockNonFleetUnlockFleet),
   // and tldraw's snap manager excludes locked shapes from snap targets. So enabling
@@ -405,7 +420,12 @@ export function CanvasClipPanel({
         // gestureOpenRef is driven by the copy editor's drag/resize state (see
         // the gesture-boundary reaction below). Inside a gesture we record so the
         // whole gesture is one undo step; otherwise we suppress history.
-        if (gestureOpenRef.current) {
+        const customGestureOpen = !!customGestureActiveRef?.current
+        if (customGestureOpen && !customGestureOpenRef.current) {
+          mainEditor.markHistoryStoppingPoint()
+          customGestureOpenRef.current = true
+        }
+        if (gestureOpenRef.current || customGestureOpen) {
           mainEditor.store.put(records)
         } else {
           mainEditor.run(() => mainEditor.store.put(records), { history: 'ignore' })
@@ -425,7 +445,7 @@ export function CanvasClipPanel({
     }, { source: 'user', scope: 'document' })
 
     return () => { unsubMain(); unsubCopy() }
-  }, [mainEditor.store, store, lockCamera, readOnly])
+  }, [mainEditor, mainEditor.store, store, lockCamera, readOnly, customGestureActiveRef])
 
   // Identity-resolved resync: when the fleet identity changes (null → real id,
   // or id switch), re-evaluate all fleet shapes through shouldSyncToCopy and

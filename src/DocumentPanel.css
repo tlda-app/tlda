@@ -2086,9 +2086,8 @@ html[data-theme="dark"] .voice-note-btn {
 }
 
 /* Mic controls — bottom-right stack above the voice-note button
-   (highlighter 16px → voice-note 49px → mic 82px → dump 115px). */
-.mic-toggle-btn,
-.voice-dump-btn {
+   (highlighter 16px → voice-note 49px → mic 82px). */
+.mic-toggle-btn {
   display: flex;
   position: fixed;
   right: 16px;
@@ -2109,23 +2108,15 @@ html[data-theme="dark"] .voice-note-btn {
   opacity: 0.15;
 }
 .mic-toggle-btn { bottom: 82px; }
-.voice-dump-btn { bottom: 115px; }
-.mic-toggle-btn:hover,
-.voice-dump-btn:hover,
-.voice-dump-btn.active { opacity: 0.5; }
+.mic-toggle-btn:hover { opacity: 0.5; }
 
-body.phone-mode .mic-toggle-btn,
-body.phone-mode .voice-dump-btn {
+body.phone-mode .mic-toggle-btn {
   bottom: calc(90px + env(safe-area-inset-bottom));
   right: calc(16px + env(safe-area-inset-right));
   opacity: 0.5;
 }
-body.phone-mode .voice-dump-btn {
-  bottom: calc(123px + env(safe-area-inset-bottom));
-}
 
-html[data-theme="dark"] .mic-toggle-btn,
-html[data-theme="dark"] .voice-dump-btn {
+html[data-theme="dark"] .mic-toggle-btn {
   color: var(--pill-icon-color, rgba(255, 255, 255, 1));
 }
 
@@ -2146,10 +2137,6 @@ html[data-theme="dark"] .voice-dump-btn {
   }
   .mic-toggle-btn {
     bottom: calc(82px + env(safe-area-inset-bottom));
-    right: calc(16px + env(safe-area-inset-right));
-  }
-  .voice-dump-btn {
-    bottom: calc(115px + env(safe-area-inset-bottom));
     right: calc(16px + env(safe-area-inset-right));
   }
 }

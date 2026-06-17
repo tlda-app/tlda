@@ -37,6 +37,10 @@ import './fleet-chat.css'
 const DEFAULT_W = 360
 const DEFAULT_H = 500
 
+function copySourceTemplate(text: string): string {
+  return `<template class="code-block-copy-source">${esc(text)}</template>`
+}
+
 // --- Markdown renderer (shared with FleetChatShape) ---
 const md = new MarkdownIt({ html: true, breaks: true, linkify: true })
 md.renderer.rules.fence = (tokens: any[], idx: number) => {
@@ -45,7 +49,7 @@ md.renderer.rules.fence = (tokens: any[], idx: number) => {
   const code = token.content
   const langLabel = lang ? `<span class="code-block-lang">${lang}</span>` : ''
   const escaped = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-  return `<div class="code-block-wrap"><div class="code-block-header">${langLabel}<span class="code-block-copy" title="Copy">⎘</span></div><pre><code>${escaped}</code></pre></div>`
+  return `<div class="code-block-wrap"><div class="code-block-header">${langLabel}<span class="code-block-copy" title="Copy">⎘</span></div>${copySourceTemplate(code)}<pre><code>${escaped}</code></pre></div>`
 }
 
 function searchRenderMarkdown(escapedHtml: string): string {

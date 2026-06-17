@@ -1503,6 +1503,18 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .diff-side pre { margin: 0; white-space: pre-wrap; }
 .fleet-chat-shape .diff-side code { font-size: 10px; }
 .fleet-chat-shape .diff-tex-raw { font-family: monospace; opacity: 0.6; font-size: 10px; }
+.fleet-chat-shape .edit-unified-diff {
+  margin: 0;
+  padding: 4px 6px;
+  font-size: 10px;
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+.fleet-chat-shape .edit-unified-diff code { font-size: 10px; }
+.fleet-chat-shape .edit-unified-diff .diff-line { display: block; min-height: 1.2em; }
+.fleet-chat-shape .edit-unified-diff .diff-add { background: rgba(95, 165, 110, 0.12); }
+.fleet-chat-shape .edit-unified-diff .diff-del { background: rgba(190, 95, 95, 0.12); }
+.fleet-chat-shape .edit-unified-diff .diff-hunk { opacity: 0.7; font-weight: 600; }
 
 /* Location + scope header above an edit diff (which file, line, ± size).
    Mirrors the dim, small .code-block-header convention. */
@@ -3758,4 +3770,3 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-skill-chip.read { color: rgba(150, 210, 175, 0.85); }
 .fleet-skill-dismissed-row { display: flex; align-items: baseline; gap: 4px; margin-bottom: 2px; flex-wrap: wrap; }
 .fleet-skill-reason { font-style: italic; opacity: 0.55; font-size: 9px; }
-

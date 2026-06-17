@@ -545,7 +545,11 @@ export class FleetStore {
         dead = excluded.dead,
         human = excluded.human,
         is_manager = excluded.is_manager,
-        metadata = COALESCE(excluded.metadata, agents.metadata),
+        metadata = CASE
+          WHEN excluded.metadata IS NULL THEN agents.metadata
+          WHEN agents.metadata IS NULL THEN excluded.metadata
+          ELSE json_patch(agents.metadata, excluded.metadata)
+        END,
         machine_id = COALESCE(excluded.machine_id, agents.machine_id)
     `);
 
@@ -2410,6 +2414,7 @@ export class FleetStore {
   }
 
   close() {
+    this._worker?.terminate?.();
     this.db.close();
   }
 }

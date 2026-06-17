@@ -40,7 +40,7 @@ import os from 'os'
 const { homedir, hostname } = os
 import { spawn as cpSpawn } from 'child_process'
 import { lookup as mimeLookup } from 'mime-types'
-import { DEFAULT_PORT, hasTls, getManagedBots, resolveConfig } from '../shared/config.mjs'
+import { DEFAULT_PORT, hasTls, getManagedBots, loadConfig, resolveConfig } from '../shared/config.mjs'
 import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
 import { labelsForAgent, parseFilter, evalExpr } from '../shared/fleet-labels.mjs'
 import { phaseFromName, baseName, PHASES } from '../shared/lineage-name.mjs'
@@ -53,6 +53,7 @@ import * as tldaFeedback from './lib/tlda-feedback.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
 import { FleetStore } from './lib/fleet-store.mjs'
 import { createFleetRouter } from './routes/fleet.mjs'
+import { authorizeSpawn, projectCapabilityToMode } from './lib/spawn-policy.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -744,6 +745,56 @@ async function resolveSpawnTarget(name, respawn) {
   return { name: existing.friendly_name || name, respawn: true }
 }
 
+async function performAuthorizedSpawn(caller, msg) {
+  if (!caller?.id) throw new Error('spawn caller identity is required')
+  const {
+    name, agent, model, doc, cwd, respawn, fresh, refresh, effort, kind, mode,
+    capability, spawnCapability,
+  } = msg || {}
+  const shouldRespawn = !!respawn || (!fresh && !refresh && !!agent)
+  let spawnName = fresh ? name : (agent || name)
+  let refreshTarget = null
+  if ((shouldRespawn || refresh) && agent) {
+    const existing = fleetStore?.findAgent(agent)
+    spawnName = existing?.friendly_name || agent
+    if (refresh) refreshTarget = existing
+  }
+  if (!spawnName) throw new Error(fresh ? 'fresh spawn requires name' : 'agent name required')
+  if (refresh && !refreshTarget) refreshTarget = fleetStore?.findAgent(spawnName)
+  const spawnKind = kind || refreshTarget?.metadata?.kind
+  if (refresh && spawnKind === 'codex') {
+    throw new Error('codex refresh is not supported through MCP spawn; use respawn with a real resume handle')
+  }
+  const authorized = authorizeSpawn({
+    caller,
+    requestedCapability: capability || spawnCapability,
+    model,
+    kind: spawnKind,
+    config: loadConfig(),
+    serverOwnerId: SERVER_OWNER_ID,
+  })
+  const machineIds = [...daemonConnections.keys()]
+  if (machineIds.length === 0) throw new Error('No fleet daemon connected — cannot spawn agents')
+  const resolved = resolveSpawnTarget
+    ? await resolveSpawnTarget(spawnName, shouldRespawn && !refresh)
+    : { name: spawnName, respawn: shouldRespawn && !refresh }
+  const launchMode = projectCapabilityToMode(authorized.requestedCapability, mode)
+  const result = await sendRpc(machineIds[0], 'spawn', {
+    name: resolved.name || undefined,
+    model: model || undefined,
+    kind: spawnKind || undefined,
+    doc: doc || undefined,
+    cwd: cwd || undefined,
+    effort: effort || undefined,
+    mode: launchMode || undefined,
+    spawnPolicy: { capability: authorized.requestedCapability },
+    respawn: refresh ? false : resolved.respawn,
+    refresh: !!refresh,
+  })
+  broadcastState()
+  return { ...result, spawnPolicy: { capability: authorized.requestedCapability } }
+}
+
 // Wire fleet store events → WS broadcast
 if (fleetStore) {
   fleetStore.onEvent?.((event) => broadcastEvent('fleet-event', event))
@@ -1163,6 +1214,20 @@ app.get('/api/auth/me', (req, res) => {
 // the browser via src/logger.ts — every log.{debug,info,warn,error} call
 // gets forwarded here automatically. See CLAUDE.md "Client logging".
 const CLIENT_LOG_FILE = join(homedir(), '.config', 'tlda', 'client.log')
+function appendClientLogEntry(entry) {
+  const obj = {
+    ts: entry.ts || new Date().toISOString(),
+    level: entry.level || 'info',
+    ns: entry.ns || 'unknown',
+    msg: entry.msg ?? '',
+    ...(entry.data !== undefined ? { data: entry.data } : {}),
+    ...(entry.session ? { session: entry.session } : {}),
+  }
+  fs.appendFile(CLIENT_LOG_FILE, JSON.stringify(obj) + '\n', (err) => {
+    if (err) console.log(`[client-log] append failed: ${err.message}`)
+  })
+}
+
 app.post('/api/log', (req, res) => {
   const body = req.body
   const entries = Array.isArray(body) ? body : [body]
@@ -2031,6 +2096,32 @@ if (existsSync(katexDir)) {
 // Assets use content-hashed filenames (long cache). index.html must be no-cache.
 const distDir = join(__dirname, '..', 'dist')
 if (existsSync(distDir)) {
+  app.use((req, res, next) => {
+    try {
+      const wantsTouchDiag = req.query?.fleetGestures != null || req.query?.touchDiag != null
+      const isIndex = req.method === 'GET' && (req.path === '/' || req.path === '/index.html')
+      const isBundle = req.method === 'GET' && /^\/assets\/index-[^/]+\.js$/.test(req.path)
+      if (wantsTouchDiag && (isIndex || isBundle)) {
+        appendClientLogEntry({
+          level: 'warn',
+          ns: 'fleet-gesture-server',
+          msg: isIndex ? 'viewer request' : 'bundle request',
+          data: {
+            path: req.path,
+            query: req.query,
+            ip: req.ip,
+            remoteAddress: req.socket?.remoteAddress,
+            userAgent: req.get('user-agent') || null,
+            referer: req.get('referer') || null,
+          },
+        })
+      }
+    } catch (e) {
+      console.log(`[fleet-gesture-server] access diagnostic failed: ${e.message}`)
+    }
+    next()
+  })
+
   app.use(express.static(distDir, {
     // Never auto-serve index.html (for "/" or directly): it MUST go through the
     // SPA catch-all below so the active config gets injected. Hashed assets are
@@ -2611,6 +2702,19 @@ async function handleFleetWsMessage(ws, msg) {
     ws._tldaHumanId = agent.id
     broadcastState()
     reply({ id: agent.id, name: agent.friendly_name, human: !!agent.human })
+    return
+  }
+
+  if (type === 'spawn') {
+    const callerId = ws._tldaAgentId || ws._tldaHumanId
+    if (!callerId) { error('spawn requires an authenticated fleet WS identity; call register() or login first'); return }
+    const caller = fleetStore.getAgent?.(callerId)
+    if (!caller) { error(`spawn caller ${callerId} is not registered`); return }
+    try {
+      reply(await performAuthorizedSpawn(caller, msg))
+    } catch (e) {
+      error(e.message)
+    }
     return
   }
 

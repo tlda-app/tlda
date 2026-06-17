@@ -8,7 +8,7 @@
  * on same-origin requests, so no other viewer code needs changes.
  */
 
-import { STORE_HTTP, DATABASE_HTTP } from './activeConfig'
+import { STORE_HTTP, DATABASE_HTTP } from './activeConfig.ts'
 
 let _token: string | null = null
 

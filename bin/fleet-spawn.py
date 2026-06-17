@@ -18,11 +18,13 @@ Options:
 """
 
 import argparse
+import copy
 import json
 import fcntl
 import os
 import re
 import shlex
+import shutil
 import ssl
 import subprocess
 import sys
@@ -179,6 +181,18 @@ TLDA_CLI = os.path.join(REPO_DIR, "cli", "tlda.mjs")
 CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".config", "tlda", "config.json")
 
 
+def _deep_merge(base, overlay):
+    if not isinstance(base, dict) or not isinstance(overlay, dict):
+        return copy.deepcopy(overlay)
+    out = copy.deepcopy(base)
+    for key, val in overlay.items():
+        if isinstance(val, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge(out[key], val)
+        else:
+            out[key] = copy.deepcopy(val)
+    return out
+
+
 def read_config():
     try:
         with open(CONFIG_FILE) as f:
@@ -291,7 +305,8 @@ def ensure_server():
 
 
 def ws_register(fleet_id, name, tmux_session, cwd, model=None, effort=None, refresh=False,
-                kind="claude", spawn_capability=None, session_id=None):
+                kind="claude", spawn_capability=None, session_id=None,
+                metadata=None):
     _ws_scheme = "wss" if _scheme == "https" else "ws"
     ws_url = f"{_ws_scheme}://{DASH_HOST}:{DASH_PORT}/ws/fleet?agent={fleet_id}"
     try:
@@ -306,7 +321,7 @@ def ws_register(fleet_id, name, tmux_session, cwd, model=None, effort=None, refr
             msg["machine_id"] = machine_id
         if session_id:
             msg["session_id"] = session_id
-        meta = {}
+        meta = dict(metadata or {})
         if model:
             meta["model"] = model
         if effort:
@@ -679,6 +694,466 @@ def agent_meta(agent):
     return meta if isinstance(meta, dict) else {}
 
 
+# ---- Sandbox / native developer policy ----
+
+SANDBOX_CONFIG_KEY = "agentSandbox"
+SANDBOX_POLICIES = {"no-dev", "cwd", "tlda-projects", "unsandboxed"}
+DEFAULT_SANDBOX_POLICY = "cwd"
+DEFAULT_SANDBOX_READ_ROOTS = ["~/work"]
+DEFAULT_SANDBOX_OPTIONS = {
+    "network": False,
+    "git": "read",
+    "artifacts": True,
+}
+DEFAULT_TRUSTED_MCP_SERVERS = {
+    "tlda": {
+        "defaultToolsApprovalMode": "approve",
+    },
+}
+DEFAULT_CLAUDE_PERMISSION_MODES = {
+    "cwd": "auto",
+    "tlda-projects": "auto",
+}
+FENCE_AGENT_WRITE_ROOTS = [
+    "/tmp",
+    "~/.cache/**",
+    "~/.codex/**",
+    "~/.claude*",
+    "~/.claude/**",
+    "~/.opencode/**",
+    "~/.cursor/**",
+    "~/.local/state/**",
+    "~/.local/share/**",
+    "~/.npm/_cacache",
+    "~/.npm/_npx",
+    "~/.zcompdump*",
+]
+FENCE_AGENT_READ_ROOTS = [
+    "~/.codex",
+    "~/.claude",
+    "~/.claude.json",
+    "~/.config/tlda",
+    "~/.config/fence",
+    "~/Library/Application Support/mkcert",
+    "~/Library/Preferences",
+]
+FENCE_DENY_READ = [
+    "~/.ssh/id_*",
+    "~/.ssh/config",
+    "~/.ssh/*.pem",
+    "~/.gnupg/**",
+    "~/.aws/**",
+    "~/.config/gcloud/**",
+    "~/.kube/**",
+    "~/.docker/**",
+    "~/.pypirc",
+    "~/.netrc",
+    "~/.git-credentials",
+    "~/.cargo/credentials",
+    "~/.cargo/credentials.toml",
+]
+FENCE_DENY_WRITE = [
+    "**/.env",
+    "**/.env.*",
+    "**/*.key",
+    "**/*.pem",
+    "**/*.p12",
+    "**/*.pfx",
+]
+FENCE_GIT_READONLY_DENY = [
+    "**/.git/**",
+    "**/.git",
+    "**/.git/worktrees/**",
+]
+FENCE_COMMAND_DENY = [
+    "git push",
+    "git reset",
+    "git clean",
+    "git checkout --",
+    "git rebase",
+    "git merge",
+    "npm publish",
+    "pnpm publish",
+    "yarn publish",
+    "cargo publish",
+    "twine upload",
+    "gem push",
+    "sudo",
+]
+FENCE_CODE_ALLOWED_DOMAINS = [
+    "api.openai.com",
+    "*.anthropic.com",
+    "api.githubcopilot.com",
+    "generativelanguage.googleapis.com",
+    "api.mistral.ai",
+    "api.cohere.ai",
+    "api.together.xyz",
+    "openrouter.ai",
+    "api.morphllm.com",
+    "*.amazonaws.com",
+    "opencode.ai",
+    "api.opencode.ai",
+    "ampcode.com",
+    "*.ampcode.com",
+    "*.factory.ai",
+    "api.workos.com",
+    "*.cursor.sh",
+    "data.charm.land",
+    "catwalk.charm.sh",
+    "*.githubcopilot.com",
+    "github.com",
+    "api.github.com",
+    "raw.githubusercontent.com",
+    "codeload.github.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+    "gitlab.com",
+    "registry.npmjs.org",
+    "*.npmjs.org",
+    "registry.yarnpkg.com",
+    "pypi.org",
+    "files.pythonhosted.org",
+    "crates.io",
+    "static.crates.io",
+    "index.crates.io",
+    "proxy.golang.org",
+    "sum.golang.org",
+    "formulae.brew.sh",
+    "models.dev",
+]
+
+
+def _as_bool(val):
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.lower() in ("1", "true", "yes", "on", "allow", "allowed")
+    return bool(val)
+
+
+def _match_default(patterns, value):
+    if not value or not isinstance(patterns, dict):
+        return None
+    for pattern, profile in patterns.items():
+        if fnmatch.fnmatch(value, pattern):
+            return profile
+    return None
+
+
+def _validate_sandbox_policy(policy):
+    if policy not in SANDBOX_POLICIES:
+        allowed = ", ".join(sorted(SANDBOX_POLICIES))
+        raise ValueError(f'agentSandbox policy "{policy}" is not valid; expected one of: {allowed}')
+    return policy
+
+
+def _sandbox_config(required=False):
+    full_cfg = read_config()
+    cfg = full_cfg.get(SANDBOX_CONFIG_KEY)
+    if not isinstance(cfg, dict):
+        if SANDBOX_CONFIG_KEY in full_cfg:
+            raise ValueError("agentSandbox must be an object")
+        cfg = {}
+    runner = cfg.get("runner") if isinstance(cfg.get("runner"), dict) else None
+    if required and not runner and not shutil.which("fence"):
+        raise ValueError(
+            "Developer tools require agentSandbox.runner or an installed fence binary. "
+            "Refusing to launch native file/shell tools without an outer sandbox."
+        )
+    return cfg
+
+
+def _runner_from_config(cfg, required=True):
+    runner = cfg.get("runner")
+    if isinstance(runner, dict):
+        if not isinstance(runner.get("command"), str) or not runner["command"]:
+            raise ValueError("agentSandbox.runner.command is required")
+        args = runner.get("args", [])
+        if not isinstance(args, list):
+            raise ValueError("agentSandbox.runner.args must be an array")
+        return runner
+    if shutil.which("fence"):
+        return {"command": "fence"}
+    if required:
+        raise ValueError("agentSandbox.runner must be an object with command/args")
+    return None
+
+
+def _config_path_list(cfg, key, default=None):
+    val = cfg.get(key, default or [])
+    if isinstance(val, str):
+        val = [val]
+    if not isinstance(val, list):
+        raise ValueError(f"agentSandbox.{key} must be a string or array")
+    return [os.path.abspath(os.path.expanduser(p)) for p in val if isinstance(p, str) and p]
+
+
+def _trusted_mcp_servers(cfg=None):
+    cfg = cfg if isinstance(cfg, dict) else _sandbox_config(required=False)
+    val = cfg.get("trustedMcpServers", DEFAULT_TRUSTED_MCP_SERVERS)
+    if not isinstance(val, dict):
+        raise ValueError("agentSandbox.trustedMcpServers must be an object")
+    return _deep_merge(DEFAULT_TRUSTED_MCP_SERVERS, val)
+
+
+def _claude_permission_mode(policy_name, explicit_mode=None):
+    if explicit_mode:
+        return explicit_mode
+    cfg = _sandbox_config(required=False)
+    raw = cfg.get("claudePermissionModes", DEFAULT_CLAUDE_PERMISSION_MODES)
+    if not isinstance(raw, dict):
+        raise ValueError("agentSandbox.claudePermissionModes must be an object")
+    modes = _deep_merge(DEFAULT_CLAUDE_PERMISSION_MODES, raw)
+    mode = modes.get(policy_name)
+    if mode is not None and not isinstance(mode, str):
+        raise ValueError(f"agentSandbox.claudePermissionModes.{policy_name} must be a string")
+    return mode
+
+
+def resolve_sandbox_policy_name(harness, model, explicit_policy=None):
+    cfg = _sandbox_config(required=False)
+    policy = (
+        explicit_policy
+        or _match_default(cfg.get("modelDefaults"), model)
+        or _match_default(cfg.get("harnessDefaults"), harness)
+        or cfg.get("defaultPolicy")
+        or DEFAULT_SANDBOX_POLICY
+    )
+    return _validate_sandbox_policy(policy)
+
+
+def _project_source_dirs_from_server():
+    try:
+        data = api_get("/api/projects")
+    except SystemExit:
+        return []
+    projects = data.get("projects", []) if isinstance(data, dict) else []
+    roots = []
+    for p in projects:
+        src = p.get("sourceDir") if isinstance(p, dict) else None
+        if src and os.path.isdir(os.path.expanduser(src)):
+            roots.append(os.path.abspath(os.path.expanduser(src)))
+    return roots
+
+
+def _project_source_dirs_from_disk():
+    roots = []
+    for pj in glob.glob(os.path.join(REPO_DIR, "server", "projects", "*", "project.json")):
+        try:
+            with open(pj) as f:
+                p = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        src = p.get("sourceDir") if isinstance(p, dict) else None
+        if src and os.path.isdir(os.path.expanduser(src)):
+            roots.append(os.path.abspath(os.path.expanduser(src)))
+    return roots
+
+
+def tlda_project_source_dirs():
+    roots = _project_source_dirs_from_server() or _project_source_dirs_from_disk()
+    cfg = read_config().get(SANDBOX_CONFIG_KEY) or {}
+    extra = cfg.get("extraProjectWriteRoots", []) if isinstance(cfg, dict) else []
+    if isinstance(extra, str):
+        extra = [extra]
+    for src in extra:
+        p = os.path.abspath(os.path.expanduser(src))
+        if os.path.isdir(p):
+            roots.append(p)
+    return sorted(set(roots))
+
+
+def path_inside(path, root):
+    path = os.path.abspath(path)
+    root = os.path.abspath(root)
+    return path == root or path.startswith(root + os.path.sep)
+
+
+def project_roots_for_cwd(cwd):
+    roots = tlda_project_source_dirs()
+    return roots, next((r for r in roots if path_inside(cwd, r)), None)
+
+
+def sandbox_roots_for_policy(policy, cwd):
+    policy = _validate_sandbox_policy(policy)
+    cwd = os.path.abspath(cwd)
+    if policy == "no-dev":
+        return False, [], None
+    if policy == "cwd":
+        return True, [cwd], cwd
+    if policy == "unsandboxed":
+        return True, [], None
+    roots, matched = project_roots_for_cwd(cwd)
+    return bool(matched), roots, matched
+
+
+def resolve_sandbox_policy(harness, model, cwd, write_roots, policy_name):
+    policy_name = _validate_sandbox_policy(policy_name)
+    if policy_name == "unsandboxed":
+        raise ValueError("unsandboxed launches do not have a sandbox lease")
+    cfg = _sandbox_config(required=True)
+    policy_options = cfg.get("policyOptions") if isinstance(cfg.get("policyOptions"), dict) else {}
+    options = _deep_merge(DEFAULT_SANDBOX_OPTIONS, policy_options.get(policy_name, {}))
+    runner = _runner_from_config(cfg, required=True)
+    workspace = os.path.abspath(cwd)
+    configured_read_roots = _config_path_list(cfg, "readRoots", DEFAULT_SANDBOX_READ_ROOTS)
+    read_roots = sorted({workspace, *configured_read_roots, *[os.path.abspath(p) for p in write_roots]})
+    write_roots = sorted({os.path.abspath(p) for p in write_roots})
+    return {
+        "schema": 1,
+        "policy": policy_name,
+        "harness": harness,
+        "model": model,
+        "workspace": workspace,
+        "read_roots": read_roots,
+        "write_roots": write_roots,
+        "network": _as_bool(options.get("network", False)),
+        "git": options.get("git", "read"),
+        "artifacts": _as_bool(options.get("artifacts", True)),
+        "trusted_mcp_servers": _trusted_mcp_servers(cfg),
+        "runner": runner,
+    }
+
+
+def resolve_harness_sandbox(harness, model, cwd, explicit_policy=None):
+    policy_name = resolve_sandbox_policy_name(harness, model, explicit_policy=explicit_policy)
+    dev_tools, write_roots, matched_root = sandbox_roots_for_policy(policy_name, cwd)
+    policy = None
+    if dev_tools and policy_name != "unsandboxed":
+        policy = resolve_sandbox_policy(harness, model, cwd, write_roots, policy_name)
+    return policy_name, dev_tools, write_roots, matched_root, policy
+
+
+def _require_native_tools(harness, policy_name, dev_tools):
+    if dev_tools:
+        return
+    raise ValueError(
+        f'{harness} cannot satisfy sandbox policy "{policy_name}" without native '
+        "developer tools. Use policy cwd/tlda-projects from an allowed root, "
+        "or choose a harness with a no-dev mode."
+    )
+
+
+def _format_sandbox_arg(arg, policy, cmd):
+    vals = {
+        "workspace": policy["workspace"],
+        "profile": policy["policy"],
+        "policy": policy["policy"],
+        "harness": policy["harness"],
+        "model": policy["model"] or "",
+        "network": "allow" if policy["network"] else "deny",
+        "git": str(policy["git"]),
+        "read_roots": os.pathsep.join(policy.get("read_roots", [])),
+        "write_roots": os.pathsep.join(policy.get("write_roots", [])),
+        "lease_json": json.dumps({k: v for k, v in policy.items() if k != "runner"}, sort_keys=True),
+        "cmd": cmd,
+    }
+    return str(arg).format(**vals)
+
+
+def _expand_paths(paths):
+    return [os.path.abspath(os.path.expanduser(p)) if not any(ch in p for ch in "*?[]") else os.path.expanduser(p)
+            for p in paths]
+
+
+def _fence_settings(policy):
+    allow_read = sorted(set(_expand_paths([
+        *policy.get("read_roots", []),
+        *FENCE_AGENT_READ_ROOTS,
+    ])))
+    allow_write = sorted(set(_expand_paths([
+        *policy.get("write_roots", []),
+        *FENCE_AGENT_WRITE_ROOTS,
+    ])))
+    deny_write = list(FENCE_DENY_WRITE)
+    if str(policy.get("git", "read")) != "write":
+        deny_write.extend(FENCE_GIT_READONLY_DENY)
+    network = {
+        "allowedDomains": FENCE_CODE_ALLOWED_DOMAINS,
+        "deniedDomains": [
+            "169.254.169.254",
+            "metadata.google.internal",
+            "instance-data.ec2.internal",
+            "statsig.anthropic.com",
+            "*.sentry.io",
+        ],
+        "allowLocalBinding": bool(policy.get("network")),
+        "allowLocalOutbound": bool(policy.get("network")),
+    }
+    return {
+        "allowPty": True,
+        "network": network,
+        "filesystem": {
+            "defaultDenyRead": True,
+            "allowRead": allow_read,
+            "denyRead": FENCE_DENY_READ,
+            "allowWrite": allow_write,
+            "denyWrite": deny_write,
+        },
+        "command": {
+            "deny": [] if str(policy.get("git")) == "write" else FENCE_COMMAND_DENY,
+            "useDefaults": True,
+        },
+    }
+
+
+def _write_fence_settings(policy):
+    lease = {k: v for k, v in policy.items() if k != "runner"}
+    settings = _fence_settings(policy)
+    settings["_tldaLease"] = lease
+    lease_dir = os.path.join(tempfile.gettempdir(), "tlda-fence-leases")
+    os.makedirs(lease_dir, exist_ok=True)
+    name = f"{policy['harness']}-{policy['policy']}-{uuid.uuid4().hex}.json"
+    path = os.path.join(lease_dir, name)
+    with open(path, "w") as f:
+        json.dump(settings, f, indent=2, sort_keys=True)
+        f.write("\n")
+    return path
+
+
+def _wrap_fence_cmd(cmd, policy, runner):
+    settings_path = _write_fence_settings(policy)
+    argv = [
+        runner.get("command") or "fence",
+        "--settings",
+        settings_path,
+        "--",
+        runner.get("shell", "zsh"),
+        "-lc",
+        cmd,
+    ]
+    return shlex.join(argv)
+
+
+def wrap_sandbox_cmd(cmd, policy):
+    runner = policy["runner"]
+    command = runner.get("command")
+    if not command:
+        raise ValueError("agentSandbox.runner.command is required")
+    if os.path.basename(command) == "fence" and not runner.get("args"):
+        wrapped = _wrap_fence_cmd(cmd, policy, runner)
+    else:
+        args = [_format_sandbox_arg(a, policy, cmd) for a in runner.get("args", [])]
+        argv = [command, *args]
+        if "{cmd}" not in " ".join(map(str, runner.get("args", []))):
+            shell = runner.get("shell", "zsh")
+            argv.extend(["--", shell, "-lc", cmd])
+        wrapped = shlex.join(argv)
+    env = {
+        "TLDA_SANDBOX_PROFILE": policy["policy"],
+        "TLDA_SANDBOX_POLICY": policy["policy"],
+        "TLDA_SANDBOX_LEASE": json.dumps({k: v for k, v in policy.items() if k != "runner"}, sort_keys=True),
+    }
+    prefix = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
+    return f"{prefix} {wrapped}"
+
+
+def sandbox_metadata(policy):
+    if not policy:
+        return {}
+    return {"sandbox": {k: v for k, v in policy.items() if k != "runner"}}
+
+
 # ---- Tmux ----
 
 def build_claude_cmd(fleet_id, tmux_session, model, effort=None, mode=None,
@@ -896,7 +1371,6 @@ def build_codex_cmd(fleet_id, tmux_session, model=None, resume_id=None,
     if model:
         parts.append(f"-m {shlex.quote(model)}")
     parts.append(f"-s {codex_sandbox_for_capability(capability)}")
-    parts.extend(codex_workspace_write_config_args(capability, cwd))
     # Let a sandboxed (workspace-write) codex agent drive the shared Playwright
     # browser without needing danger-full-access: `tlda-dev pw` writes lock /
     # session files under the ms-playwright cache, which sits OUTSIDE the
@@ -1435,22 +1909,34 @@ def _check_fresh_name_available(name, server_up):
     sys.exit(1)
 
 
-def fresh(name, model, cwd, effort, mode, kind="claude", spawn_capability=None):
+def fresh(name, model, cwd, effort, mode, kind="claude", spawn_capability=None,
+          sandbox_policy=None):
     server_up = ensure_server()
     fleet_id = f"fleet:{uuid.uuid4().hex[:8]}"
     sess = unique_session_name(f"fleet-{sanitize_session_name(name)}")
     cwd = resolve_spawn_cwd(cwd)
     adapter = harness_for_spawn(kind, model)
     model = adapter.resolve_model(model)
+    policy_name, dev_tools, _write_roots, _matched_root, policy = resolve_harness_sandbox(
+        adapter.kind, model, cwd, explicit_policy=sandbox_policy)
+    if adapter.kind in ("claude", "codex"):
+        _require_native_tools(adapter.kind, policy_name, dev_tools)
+    if adapter.kind == "claude":
+        mode = _claude_permission_mode(policy_name, explicit_mode=mode)
     warning = adapter.warn_model(model)
     if warning:
         print(warning, file=sys.stderr)
     _check_fresh_name_available(name, server_up)
     if server_up:
-        ws_register(fleet_id, name, sess, cwd, model, effort, refresh=True, kind=adapter.kind, spawn_capability=spawn_capability)
+        ws_register(
+            fleet_id, name, sess, cwd, model, effort, refresh=True,
+            kind=adapter.kind, spawn_capability=spawn_capability,
+            metadata=sandbox_metadata(policy))
 
     cmd = adapter.build_cmd(fleet_id, sess, model, effort, mode, name=name, cwd=cwd,
                             capability=spawn_capability)
+    if policy:
+        cmd = wrap_sandbox_cmd(cmd, policy)
     spawn_tmux(sess, cwd, cmd, send_keys=adapter.spawn_send_keys())
     if adapter.kind == "codex":
         inject_codex_prompt(sess, register_prompt(name))
@@ -1459,7 +1945,8 @@ def fresh(name, model, cwd, effort, mode, kind="claude", spawn_capability=None):
     return sess
 
 
-def respawn(name, model, cwd, effort, mode, session_override=None):
+def respawn(name, model, cwd, effort, mode, session_override=None,
+            sandbox_policy=None):
     ensure_server()
     agent = find_agent(name)
     if not agent:
@@ -1474,6 +1961,12 @@ def respawn(name, model, cwd, effort, mode, session_override=None):
     spawn_capability = spawn_policy.get("capability") if isinstance(spawn_policy, dict) else None
     adapter = harness_for_agent(agent)
     model = adapter.resolve_model(raw_model)
+    policy_name, dev_tools, _write_roots, _matched_root, policy = resolve_harness_sandbox(
+        adapter.kind, model, cwd, explicit_policy=sandbox_policy)
+    if adapter.kind in ("claude", "codex"):
+        _require_native_tools(adapter.kind, policy_name, dev_tools)
+    if adapter.kind == "claude":
+        mode = _claude_permission_mode(policy_name, explicit_mode=mode)
     sess = agent.get("tmux_session") or f"fleet-{name}"
 
     # Single-flight: hold a per-session lock across the WHOLE wake (check →
@@ -1510,10 +2003,13 @@ def respawn(name, model, cwd, effort, mode, session_override=None):
         fleet_id, sess, model, effort, mode, resume_id=resume_id,
         include_prompt=(adapter.kind != "claude" or not resume_id), name=name, cwd=cwd,
         capability=spawn_capability)
+    if policy:
+        cmd = wrap_sandbox_cmd(cmd, policy)
     if adapter.kind == "codex" and resume_id:
         ws_register(
             fleet_id, name, sess, cwd, model, effort,
-            kind=adapter.kind, session_id=resume_id)
+            kind=adapter.kind, session_id=resume_id,
+            metadata=sandbox_metadata(policy))
     started = spawn_tmux(
         sess, cwd, cmd, auto_dismiss=adapter.respawn_auto_dismiss(),
         send_keys=adapter.spawn_send_keys())
@@ -1531,7 +2027,8 @@ def respawn(name, model, cwd, effort, mode, session_override=None):
     return sess
 
 
-def refresh(name, model, cwd, effort, mode, spawn_capability=None):
+def refresh(name, model, cwd, effort, mode, spawn_capability=None,
+            sandbox_policy=None):
     ensure_server()
     agent = find_agent(name)
     if not agent:
@@ -1544,13 +2041,24 @@ def refresh(name, model, cwd, effort, mode, spawn_capability=None):
     raw_model = model or meta.get("model")
     adapter = harness_for_agent(agent)
     model = adapter.resolve_model(raw_model)
+    policy_name, dev_tools, _write_roots, _matched_root, policy = resolve_harness_sandbox(
+        adapter.kind, model, cwd, explicit_policy=sandbox_policy)
+    if adapter.kind in ("claude", "codex"):
+        _require_native_tools(adapter.kind, policy_name, dev_tools)
+    if adapter.kind == "claude":
+        mode = _claude_permission_mode(policy_name, explicit_mode=mode)
     if not effort:
         effort = meta.get("effort")
     sess = agent.get("tmux_session") or f"fleet-{name}"
 
-    ws_register(fleet_id, name, sess, cwd, model, effort, refresh=True, kind=adapter.kind, spawn_capability=spawn_capability)
+    ws_register(
+        fleet_id, name, sess, cwd, model, effort, refresh=True,
+        kind=adapter.kind, spawn_capability=spawn_capability,
+        metadata=sandbox_metadata(policy))
     cmd = adapter.build_cmd(fleet_id, sess, model, effort, mode, name=name, cwd=cwd,
                             capability=spawn_capability)
+    if policy:
+        cmd = wrap_sandbox_cmd(cmd, policy)
     spawn_tmux(sess, cwd, cmd, send_keys=adapter.spawn_send_keys())
     if adapter.kind == "codex":
         inject_codex_prompt(sess, register_prompt(name))
@@ -1724,6 +2232,9 @@ def main():
     parser.add_argument("--effort", default=None)
     parser.add_argument("--mode", default=None)
     parser.add_argument("--spawn-capability", default=None)
+    parser.add_argument("--policy", default=None,
+                        choices=sorted(SANDBOX_POLICIES),
+                        help="Harness-agnostic native-tools sandbox policy")
     parser.add_argument("--kind", default="claude", choices=sorted(HARNESS_ADAPTERS),
                         help="Agent runtime/harness (default: claude). Goose can also "
                              "be selected by its model aliases for compatibility.")
@@ -1775,11 +2286,16 @@ def main():
             sess = respawn_session(args.session, args.name, args.model, args.cwd,
                                    args.effort, mode, args.enroll, args.dry_run)
         elif args.fresh:
-            sess = fresh(args.name, args.model, args.cwd, args.effort, mode, kind=args.kind, spawn_capability=args.spawn_capability)
+            sess = fresh(args.name, args.model, args.cwd, args.effort, mode,
+                         kind=args.kind, spawn_capability=args.spawn_capability,
+                         sandbox_policy=args.policy)
         elif args.refresh:
-            sess = refresh(args.name, args.model, args.cwd, args.effort, mode, spawn_capability=args.spawn_capability)
+            sess = refresh(args.name, args.model, args.cwd, args.effort, mode,
+                           spawn_capability=args.spawn_capability,
+                           sandbox_policy=args.policy)
         else:
-            sess = respawn(args.name, args.model, args.cwd, args.effort, mode, args.session)
+            sess = respawn(args.name, args.model, args.cwd, args.effort, mode,
+                           args.session, sandbox_policy=args.policy)
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(2)

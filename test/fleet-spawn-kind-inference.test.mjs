@@ -26,9 +26,20 @@ cmd = mod.build_codex_cmd(
     capability="workspace-write+net",
 )
 assert "-s workspace-write" in cmd
-assert "sandbox_workspace_write.network_access=true" in cmd
-assert "/Users/skip/.config/tlda" in cmd
-assert "/Users/skip/work/tlda/.git" in cmd
+
+policy_name, dev_tools, write_roots, matched, policy = mod.resolve_harness_sandbox(
+    "codex", "gpt-5.5", "/Users/skip/work/tlda")
+wrapped = mod.wrap_sandbox_cmd(cmd, policy)
+assert policy_name == "cwd"
+assert dev_tools is True
+assert write_roots == ["/Users/skip/work/tlda"]
+assert "fence --settings" in wrapped
+assert " codex " in wrapped
+settings_path = wrapped.split("--settings ", 1)[1].split(" ", 1)[0]
+with open(settings_path) as f:
+    settings = mod.json.load(f)
+assert "/Users/skip/work/tlda" in settings["filesystem"]["allowWrite"]
+assert "**/.git/**" in settings["filesystem"]["denyWrite"]
 
 class FakeResult:
     def __init__(self, returncode=0, stdout=""):

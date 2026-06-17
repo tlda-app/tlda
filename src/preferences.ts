@@ -8,8 +8,8 @@
  * Local cache makes getPref() synchronous; loadPrefs() populates it async.
  */
 
-import type { CurveHandles } from './curveEditor'
-import { DEFAULT_CURVE } from './curveEditor'
+import type { CurveHandles } from './curveEditor.ts'
+import { DEFAULT_CURVE } from './curveEditor.ts'
 
 const DEFAULTS = {
   'docview-sources': ['ref'] as string[],
@@ -22,6 +22,8 @@ const DEFAULTS = {
   // fallback: if the selected backend is unreachable, voice goes quiet, it
   // never switches to another backend.
   'voice-backend': 'deepgram' as string,
+  'voice-submit-words': 'send, send it, sent' as string,
+  'voice-sink-shape-types': 'fleet-agents' as string,
   'fleet-font-size': 11 as number,
   // Default fleet layout sizing (used by createFleetLayout). margin-gap is the
   // distance from each document edge to the near edge of the fleet shapes in

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useContext, useMemo, useSyncExternalStore } from 'react'
 import { setStopRecordingCallback } from './tools/VoiceNoteTool'
-import { setVoiceTarget, clearVoiceTarget, setVoiceAccumulator, stopRecording, isRecording, toggleRecording, voiceTap, onRecordingChange, dumpVoiceTarget, isVoiceDumping, onVoiceTargetChange } from './voice.mjs'
+import { setVoiceTarget, clearVoiceTarget, setVoiceAccumulator, stopRecording, isRecording, toggleRecording, voiceTap, onRecordingChange, maybeHandleVoiceSinkPointerDown } from './voice.mjs'
 import { createPortal } from 'react-dom'
 import { useEditor, useValue, stopEventPropagation, DefaultColorStyle } from 'tldraw'
 import { toolNameHud } from './overlays/ToolNameHud'
@@ -816,9 +816,20 @@ function VoiceTargetFollowsSelection() {
   return null
 }
 
+function VoiceSinkShapeTapTarget() {
+  useEffect(() => {
+    const onPointerDown = (event: PointerEvent) => {
+      maybeHandleVoiceSinkPointerDown(event)
+    }
+    document.addEventListener('pointerdown', onPointerDown, true)
+    return () => document.removeEventListener('pointerdown', onPointerDown, true)
+  }, [])
+  return null
+}
+
 export function VoiceTargetFollower() {
   if (typeof window === 'undefined') return null
-  return <VoiceTargetFollowsSelection />
+  return <><VoiceTargetFollowsSelection /><VoiceSinkShapeTapTarget /></>
 }
 
 export function VoiceNoteButton() {
@@ -827,47 +838,6 @@ export function VoiceNoteButton() {
   const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
   if (!SR) return null
   return <VoiceNoteButtonInner />
-}
-
-function DumpVoiceButtonInner() {
-  const editor = useEditor()
-  const keepRef = useRef<string[]>([])
-  useEffect(() => {
-    const onDown = () => { keepRef.current = editor.getSelectedShapeIds() }
-    document.addEventListener('pointerdown', onDown, true)
-    return () => document.removeEventListener('pointerdown', onDown, true)
-  }, [editor])
-  const dumping = useSyncExternalStore(onVoiceTargetChange, isVoiceDumping, isVoiceDumping)
-  const handleClick = useCallback(() => {
-    dumpVoiceTarget()
-    reassertSelection(editor, keepRef.current)
-  }, [editor])
-  return (
-    <button
-      className={`voice-dump-btn${dumping ? ' active' : ''}`}
-      onClick={handleClick}
-      onPointerDown={stopEventPropagation}
-      onPointerUp={stopEventPropagation}
-      onTouchStart={stopEventPropagation}
-      onTouchEnd={stopEventPropagation}
-      title={dumping ? 'Voice target: dump' : 'Send voice to dump'}
-    >
-      <svg width="20" height="20" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-        <g transform="translate(9 9) scale(1.12) translate(-9 -9)">
-          <rect x="6.5" y="2" width="5" height="8" rx="2.5" fill={dumping ? 'currentColor' : 'none'} />
-          <path d="M3.5 8.5a5.5 5.5 0 0 0 11 0" />
-          <line x1="9" y1="14" x2="9" y2="16" />
-          <path d="M4 15.5h10" />
-          <path d="M5.5 15.5l.8-2.4h5.4l.8 2.4" />
-        </g>
-      </svg>
-    </button>
-  )
-}
-
-export function DumpVoiceButton() {
-  if (typeof window === 'undefined') return null
-  return <DumpVoiceButtonInner />
 }
 
 // ======================
