@@ -52,11 +52,12 @@ import { Terminal } from 'xterm'
 import { useIsInViewport } from './useIsInViewport'
 import { consumeBulletContexts, subscribeBulletContext, getBulletContexts } from '../stores/bulletContextStore'
 import { getPref, subscribePref } from '../preferences'
+import { DATABASE_HTTP } from '../activeConfig'
 import './fleet-chat.css'
 
 const DEFAULT_W = 400
 const DEFAULT_H = 600
-const FLEET_API = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5176'
+const FLEET_API = DATABASE_HTTP
 
 // On touch devices the chat input is voice-only: tapping it focuses the field
 // for dictation, and iOS must NOT raise the on-screen keyboard (it eats half the

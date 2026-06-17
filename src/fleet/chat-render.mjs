@@ -391,9 +391,22 @@ export function renderChatLine(m, ctx) {
     </div>` + text
   }
 
-  // Convert uploaded file links into chips — <a href="/api/files/name.ext">name.ext</a> → ref-chip
-  // This handles files drag-dropped from Finder (uploaded, inserted as markdown links)
-  text = text.replace(/<a\s[^>]*href="((?:https?:\/\/[^"]*)?\/api\/files\/([^"]+))"[^>]*>([^<]*)<\/a>/gi, (_match, url, fileName, label) => {
+  // Convert uploaded file links into chips. Supports the old named route
+  // (/api/files/name.ext) and the current upload route (/api/file?path=...).
+  text = text.replace(/<a\s[^>]*href="((?:https?:\/\/[^"]*)?\/api\/(?:files\/[^"]+|file\?path=[^"]+))"[^>]*>([^<]*)<\/a>/gi, (_match, url, label) => {
+    const normalizedUrl = url.replace(/&amp;/g, '&')
+    let fileName = ''
+    const oldRoute = normalizedUrl.match(/\/api\/files\/([^?#]+)/)
+    if (oldRoute) {
+      fileName = decodeURIComponent(oldRoute[1])
+    } else {
+      try {
+        const parsed = new URL(normalizedUrl, 'http://tlda.local')
+        fileName = decodeURIComponent(parsed.searchParams.get('path') || '').split('/').pop() || label
+      } catch {
+        fileName = label
+      }
+    }
     const ext = fileName.split('.').pop()?.toLowerCase() || ''
     const isImage = /^(png|jpg|jpeg|gif|webp|svg)$/.test(ext)
     if (isImage) {

@@ -25,13 +25,14 @@ import { timeShort } from '../fleet/chat-render.mjs'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getDeviceId } from '../fleet/fleet-data.mjs'
 import { useIsInViewport } from './useIsInViewport'
+import { DATABASE_HTTP } from '../activeConfig'
 import './fleet-inbox.css'
 import './fleet-touch-inbox.css'
 
 const DEFAULT_W = 380
 const DEFAULT_H = 680
 const STRIP_H = 200 // inbox thread-strip height; chat fills the rest
-const FLEET_API = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5176'
+const FLEET_API = DATABASE_HTTP
 
 // Nick color system (mirrors FleetInboxShape's)
 const nickColors = ['nick-agent-0','nick-agent-1','nick-agent-2','nick-agent-3','nick-agent-4','nick-agent-5']

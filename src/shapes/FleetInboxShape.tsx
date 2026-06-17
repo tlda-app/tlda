@@ -39,12 +39,13 @@ import { highlightSyntax, langFromFilePath } from '../fleet/utils.mjs'
 // @ts-ignore — vanilla JS module
 import { getHumanId } from '../fleet/fleet-data.mjs'
 import { useIsInViewport } from './useIsInViewport'
+import { DATABASE_HTTP } from '../activeConfig'
 import './fleet-chat.css'
 import './fleet-inbox.css'
 
 const DEFAULT_W = 360
 const DEFAULT_H = 560
-const FLEET_API = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5176'
+const FLEET_API = DATABASE_HTTP
 
 // --- Markdown renderer (same shape as FleetSearchShape's) ---
 const md = new MarkdownIt({ html: true, breaks: true, linkify: true })
