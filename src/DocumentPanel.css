@@ -1284,7 +1284,10 @@ html[data-theme="dark"] .doc-panel-open .notes-table-section td {
 /* iPad / touch-device overrides */
 @media (pointer: coarse) {
   .doc-panel {
+    top: env(safe-area-inset-top);
+    right: env(safe-area-inset-right);
     width: 300px;
+    max-height: calc(85vh - env(safe-area-inset-top));
     font-size: 14px;
     color: rgba(0, 0, 0, 0.25);
   }
@@ -1295,9 +1298,14 @@ html[data-theme="dark"] .doc-panel-open .notes-table-section td {
   }
 
   .doc-panel-tab {
+    min-height: 44px;
     padding: 10px 0;
     font-size: 13px;
     color: rgba(0, 0, 0, 0.25);
+  }
+
+  .doc-panel-tab--gear {
+    flex-basis: 44px;
   }
 
   .doc-panel:hover .doc-panel-tab,
@@ -1761,8 +1769,8 @@ body.phone-mode .phone-toc-btn {
   top: calc(10px + env(safe-area-inset-top));
   right: calc(10px + env(safe-area-inset-right));
   z-index: 10001;
-  width: 36px;
-  height: 36px;
+  width: 44px;
+  height: 44px;
   align-items: center;
   justify-content: center;
   background: none;
@@ -1807,13 +1815,36 @@ body.phone-mode .phone-toc-backdrop {
   font-family: system-ui, -apple-system, sans-serif;
   font-size: 14px;
   color: rgba(0, 0, 0, 0.6);
-  padding-top: env(safe-area-inset-top);
+  padding-top: calc(54px + env(safe-area-inset-top));
 }
 
 /* Override ghost opacity — modal content should be fully visible */
+.phone-toc-modal .doc-panel-tabs,
 .phone-toc-modal .doc-panel-content,
 .phone-toc-modal .search-input-wrap {
   opacity: 1;
+}
+
+.phone-toc-modal .phone-panel-tabs {
+  position: sticky;
+  top: 0;
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.phone-toc-modal .doc-panel-tab {
+  min-height: 44px;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.phone-toc-modal .doc-panel-tab--gear {
+  flex-basis: 44px;
+}
+
+.phone-toc-modal .doc-panel-tab.active {
+  color: rgba(0, 0, 0, 0.7);
+  border-bottom-color: rgba(0, 0, 0, 0.3);
 }
 
 .phone-toc-modal .toc-item {
@@ -1844,6 +1875,19 @@ html[data-theme="dark"] .phone-toc-btn {
 html[data-theme="dark"] .phone-toc-modal {
   background: rgba(0, 0, 0, 0.75);
   color: rgba(255, 255, 255, 0.6);
+}
+
+html[data-theme="dark"] .phone-toc-modal .phone-panel-tabs {
+  background: rgba(0, 0, 0, 0.85);
+}
+
+html[data-theme="dark"] .phone-toc-modal .doc-panel-tab {
+  color: rgba(255, 255, 255, 0.45);
+}
+
+html[data-theme="dark"] .phone-toc-modal .doc-panel-tab.active {
+  color: rgba(255, 255, 255, 0.7);
+  border-bottom-color: rgba(255, 255, 255, 0.3);
 }
 
 html[data-theme="dark"] .phone-toc-modal .toc-item {
@@ -2130,6 +2174,10 @@ html[data-theme="dark"] .mic-toggle-btn {
    safe-area inset phones get so the bottom-right corner is the *usable* corner.
    (Requires viewport-fit=cover on the viewport meta for env() to be non-zero.) */
 @media (pointer: coarse) and (min-width: 601px) {
+  .phone-toc-btn {
+    top: calc(10px + env(safe-area-inset-top));
+    right: calc(10px + env(safe-area-inset-right));
+  }
   .phone-hl-btn {
     bottom: calc(16px + env(safe-area-inset-bottom));
     right: calc(16px + env(safe-area-inset-right));

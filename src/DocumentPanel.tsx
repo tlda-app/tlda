@@ -495,6 +495,7 @@ function PhonePageIndicator() {
 
 export function PhoneOverlay() {
   const [menuOpen, setMenuOpen] = useState(false)
+  const [tab, setTab] = useState<Tab>('toc')
 
   useEffect(() => {
     if (!IS_PHONE) return
@@ -553,7 +554,20 @@ export function PhoneOverlay() {
             onPointerDown={stopEventPropagation}
             onTouchStart={stopEventPropagation}
           >
-            <TocTab />
+            <div className="doc-panel-tabs phone-panel-tabs">
+              <button className={`doc-panel-tab ${tab === 'toc' ? 'active' : ''}`} onClick={() => setTab('toc')}>
+                TOC
+              </button>
+              <button className={`doc-panel-tab ${tab === 'notes' ? 'active' : ''}`} onClick={() => setTab('notes')}>
+                Notes
+              </button>
+              <button className={`doc-panel-tab doc-panel-tab--gear ${tab === 'prefs' ? 'active' : ''}`} onClick={() => setTab('prefs')} aria-label="Settings">
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M8 4.5a3.5 3.5 0 100 7 3.5 3.5 0 000-7zM6 8a2 2 0 114 0 2 2 0 01-4 0z"/><path d="M9.4 1.2a1.5 1.5 0 00-2.8 0l-.3.9a.5.5 0 01-.7.3l-.8-.5a1.5 1.5 0 00-2 2l.5.8a.5.5 0 01-.3.7l-.9.3a1.5 1.5 0 000 2.8l.9.3a.5.5 0 01.3.7l-.5.8a1.5 1.5 0 002 2l.8-.5a.5.5 0 01.7.3l.3.9a1.5 1.5 0 002.8 0l.3-.9a.5.5 0 01.7-.3l.8.5a1.5 1.5 0 002-2l-.5-.8a.5.5 0 01.3-.7l.9-.3a1.5 1.5 0 000-2.8l-.9-.3a.5.5 0 01-.3-.7l.5-.8a1.5 1.5 0 00-2-2l-.8.5a.5.5 0 01-.7-.3l-.3-.9z"/></svg>
+              </button>
+            </div>
+            {tab === 'toc' && <TocTab />}
+            {tab === 'notes' && <NotesTab />}
+            {tab === 'prefs' && <PrefsTab />}
           </div>
         </div>
       )}
