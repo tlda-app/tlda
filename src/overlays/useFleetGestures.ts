@@ -505,10 +505,40 @@ const PAN_LOCK_INITIAL = 8    // px of (decayed) travel before the lock engages
 const PAN_BREAK_RATIO = 1.6   // off-axis must out-travel the locked axis by this to flip it
 const PAN_OFFAXIS_DAMP = 0.12 // residual off-axis fraction while locked (0 would be a hard lock)
 const PAN_AXIS_DECAY = 0.8    // per-move decay of the axis accumulators (recent-motion weighting)
+const RESIZE_AXIS_LOCK_INITIAL = 12
+const RESIZE_AXIS_BREAK_RATIO = 1.6
+const RESIZE_AXIS_OFFAXIS_DAMP = 0.12
+const RESIZE_AXIS_DECAY = 0.8
+
+export function applyShapeResizeAxisLock(input: {
+  enabled: boolean
+  axis: 'x' | 'y' | null
+  accX: number
+  accY: number
+  spanDx: number
+  spanDy: number
+  scaleX: number
+  scaleY: number
+}) {
+  let { axis, accX, accY, scaleX, scaleY } = input
+  if (!input.enabled) return { axis, accX, accY, scaleX, scaleY }
+
+  accX = accX * RESIZE_AXIS_DECAY + Math.abs(input.spanDx)
+  accY = accY * RESIZE_AXIS_DECAY + Math.abs(input.spanDy)
+  if (accX + accY >= RESIZE_AXIS_LOCK_INITIAL) {
+    if (axis === null) axis = accY >= accX ? 'y' : 'x'
+    else if (axis === 'y' && accX > accY * RESIZE_AXIS_BREAK_RATIO) axis = 'x'
+    else if (axis === 'x' && accY > accX * RESIZE_AXIS_BREAK_RATIO) axis = 'y'
+  }
+
+  if (axis === 'x') scaleY = 1 + (scaleY - 1) * RESIZE_AXIS_OFFAXIS_DAMP
+  else if (axis === 'y') scaleX = 1 + (scaleX - 1) * RESIZE_AXIS_OFFAXIS_DAMP
+  return { axis, accX, accY, scaleX, scaleY }
+}
 
 type GestureState =
   | { kind: 'none' }
-  | { kind: 'shape'; mode: 'pending' | 'combined'; moveActive: boolean; resizeActive: boolean; id: string; type: string; x0: number; y0: number; w0: number; h0: number; d0: number; sx0: number; sy0: number; relX: number; relY: number; c0: { x: number; y: number }; p0: { x: number; y: number }; writeCount: number }
+  | { kind: 'shape'; mode: 'pending' | 'combined'; moveActive: boolean; resizeActive: boolean; id: string; type: string; x0: number; y0: number; w0: number; h0: number; d0: number; sx0: number; sy0: number; relX: number; relY: number; c0: { x: number; y: number }; p0: { x: number; y: number }; resizeAxis: 'x' | 'y' | null; resizeAccX: number; resizeAccY: number; writeCount: number }
   | { kind: 'cluster'; mode: 'pending' | 'combined'; moveActive: boolean; resizeActive: boolean; shapes: { id: string; type: string; x0: number; y0: number; w0: number; h0: number }[]; anchor: { x: number; y: number }; d0: number; sx0: number; sy0: number; c0: { x: number; y: number }; p0: { x: number; y: number }; writeCount: number }
   // 3-finger: pan the main canvas from anywhere (even over the panels). Drive the
   // main camera; the HUD's camera-poll mirrors a main-camera pan onto the HUD.
@@ -1421,7 +1451,8 @@ export function useFleetGestures(opts: {
           state = {
             kind: 'shape', mode: 'pending', moveActive: false, resizeActive: false, id: shape.id, type: shape.type as string,
             x0: mainShape.x, y0: mainShape.y,
-            w0, h0: height0, d0: touchDist(ts[0], ts[1]), sx0: span0.x, sy0: span0.y, relX, relY, c0, p0: pivotPage, writeCount: 0,
+            w0, h0: height0, d0: touchDist(ts[0], ts[1]), sx0: span0.x, sy0: span0.y, relX, relY, c0, p0: pivotPage,
+            resizeAxis: null, resizeAccX: 0, resizeAccY: 0, writeCount: 0,
           }
           log.warn(LOG_NS, 'gesture start: shape', {
             id: shape.id,
@@ -1580,8 +1611,25 @@ export function useFleetGestures(opts: {
         const dx = state.moveActive ? pageCenter.x - state.p0.x : 0
         const dy = state.moveActive ? pageCenter.y - state.p0.y : 0
         const scale = state.resizeActive && state.d0 > 0 ? d / state.d0 : 1
-        const scaleX = state.resizeActive ? (state.sx0 >= 8 ? span.x / state.sx0 : scale) : 1
-        const scaleY = state.resizeActive ? (state.sy0 >= 8 ? span.y / state.sy0 : scale) : 1
+        let scaleX = state.resizeActive ? (state.sx0 >= 8 ? span.x / state.sx0 : scale) : 1
+        let scaleY = state.resizeActive ? (state.sy0 >= 8 ? span.y / state.sy0 : scale) : 1
+        if (state.resizeActive) {
+          const locked = applyShapeResizeAxisLock({
+            enabled: state.sx0 >= 8 && state.sy0 >= 8,
+            axis: state.resizeAxis,
+            accX: state.resizeAccX,
+            accY: state.resizeAccY,
+            spanDx,
+            spanDy,
+            scaleX,
+            scaleY,
+          })
+          state.resizeAxis = locked.axis
+          state.resizeAccX = locked.accX
+          state.resizeAccY = locked.accY
+          scaleX = locked.scaleX
+          scaleY = locked.scaleY
+        }
         const pivotX = state.x0 + state.relX + dx
         const pivotY = state.y0 + state.relY + dy
         const nextX = state.resizeActive ? pivotX - state.relX * scaleX : state.x0 + dx
