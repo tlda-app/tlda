@@ -125,3 +125,32 @@ second message`,
   assert.match(html, /first message/)
   assert.doesNotMatch(html, /2 messages[\s\S]*first message[\s\S]*2 messages/)
 })
+
+test('get_thread pretty result unwraps MCP text envelope before rendering', () => {
+  const prettyText = `2 messages (6/18/2026, 8:00:00 AM -> 8:01:00 AM)
+
+[6/18/2026, 8:00:00 AM] skip → agent-1
+first message
+
+---
+
+[6/18/2026, 8:01:00 AM] agent-1 → skip
+second message`
+  const html = renderActivityGroup([{
+    from: 'agent-1',
+    timestamp: '2026-06-18T12:00:00.000Z',
+    _activity: true,
+    _toolName: 'mcp__tlda__get_thread',
+    _toolArg: 'agent-1',
+    _prettyResult: JSON.stringify([{ type: 'text', text: prettyText }]),
+  }], ctx)
+
+  assert.match(html, /tool-pretty-thread/)
+  assert.match(html, /pretty-result-header/)
+  assert.match(html, /2 messages/)
+  assert.match(html, /data-msg-from="skip"/)
+  assert.match(html, /first message/)
+  assert.match(html, /second message/)
+  assert.doesNotMatch(html, /\[\{&quot;type&quot;:&quot;text&quot;/)
+  assert.doesNotMatch(html, /\\n\\n/)
+})
