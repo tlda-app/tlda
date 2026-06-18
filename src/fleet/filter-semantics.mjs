@@ -60,3 +60,54 @@ export function resolveFleetFilter(filter, { agents = [], humanId = null, humanN
   }
   return ids
 }
+
+export function buildFleetDmFilter(humanLabel, agentLabel) {
+  if (!humanLabel || !agentLabel) return []
+  return [
+    [['from', humanLabel], ['to', agentLabel]],
+    [['from', agentLabel], ['to', humanLabel]],
+  ]
+}
+
+export function buildFleetAgentFilter(agentLabel) {
+  if (!agentLabel) return []
+  return [
+    [['from', agentLabel]],
+    [['to', agentLabel]],
+  ]
+}
+
+function canonicalFilter(filter) {
+  if (!Array.isArray(filter)) return ''
+  return filter
+    .map(clause => Array.isArray(clause)
+      ? clause.map(term => Array.isArray(term) ? `${term[0]}\0${term[1]}` : `any\0${term}`).sort().join('\u0001')
+      : '')
+    .sort()
+    .join('\u0002')
+}
+
+export function sameFleetFilter(a, b) {
+  return canonicalFilter(a) === canonicalFilter(b)
+}
+
+export function classifyFleetComposerTrafficMode(filter, trafficMode, humanLabel, agentLabel) {
+  if (!agentLabel) return 'custom'
+  if (sameFleetFilter(filter, buildFleetDmFilter(humanLabel, agentLabel))) {
+    return trafficMode === 'quiet' ? 'dm-quiet' : 'dm'
+  }
+  if (sameFleetFilter(filter, buildFleetAgentFilter(agentLabel))) return 'agent'
+  return 'custom'
+}
+
+export function nextFleetComposerTrafficMode(currentMode) {
+  if (currentMode === 'dm-quiet') return 'dm'
+  if (currentMode === 'dm') return 'agent'
+  return 'dm-quiet'
+}
+
+export function filterForFleetComposerTrafficMode(mode, humanLabel, agentLabel) {
+  return mode === 'agent'
+    ? buildFleetAgentFilter(agentLabel)
+    : buildFleetDmFilter(humanLabel, agentLabel)
+}

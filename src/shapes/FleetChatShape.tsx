@@ -31,6 +31,14 @@ import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRe
 import { getHumanId, getHumanName, updateEventById, sendViewingContext, setViewingEnrichFn, getFleetWsBase } from '../fleet/fleet-data.mjs'
 // @ts-ignore — vanilla JS module
 import { installChatImageRetry } from '../fleet/chat-image-retry.mjs'
+// @ts-ignore — vanilla JS module
+import {
+  buildFleetAgentFilter,
+  buildFleetDmFilter,
+  classifyFleetComposerTrafficMode,
+  filterForFleetComposerTrafficMode,
+  nextFleetComposerTrafficMode,
+} from '../fleet/filter-semantics.mjs'
 import { appendToken } from '../authToken'
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useSuggestions, clearGroup, sendMessage, loadBefore, resolveFilter, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
@@ -61,6 +69,7 @@ const DEFAULT_W = 400
 const DEFAULT_H = 600
 const FLEET_API = DATABASE_HTTP
 type ChatTrafficMode = 'normal' | 'quiet'
+type ComposerTrafficFilterMode = 'dm-quiet' | 'dm' | 'agent' | 'custom'
 
 // On touch devices the chat input is voice-only: tapping it focuses the field
 // for dictation, and iOS must NOT raise the on-screen keyboard (it eats half the
@@ -97,6 +106,23 @@ function usePrefTick() {
   const [tick, setTick] = useState(0)
   useEffect(() => subscribePref(() => setTick(t => t + 1)), [])
   return tick
+}
+
+function isNonHumanAgentLabel(agents: any[], label: string) {
+  const agent = agents.find((a: any) => labelsForAgent(a).includes(label))
+  return !!agent && !agent.human
+}
+
+function activeComposerAgentLabel(filter: [string, string][][], sendTargets: string[], agents: any[]) {
+  for (const clause of filter) {
+    for (const [, label] of clause) {
+      if (isNonHumanAgentLabel(agents, label)) return label
+    }
+  }
+  for (const label of sendTargets) {
+    if (isNonHumanAgentLabel(agents, label)) return label
+  }
+  return ''
 }
 
 // ---- Terminal hover pane ----
@@ -3747,6 +3773,28 @@ function FleetChatInner({ shape }: { shape: any }) {
   }, [filterKey])
   sendTargetsRef.current = sendTargets
 
+  const humanFilterLabel = getHumanName() || getHumanId() || 'user'
+  const composerAgentLabel = useMemo(
+    () => activeComposerAgentLabel(filter, sendTargets, agents),
+    [filterKey, sendTargets, agents],
+  )
+  const composerTrafficMode = useMemo<ComposerTrafficFilterMode>(
+    () => classifyFleetComposerTrafficMode(filter, trafficMode, humanFilterLabel, composerAgentLabel),
+    [filterKey, trafficMode, humanFilterLabel, composerAgentLabel],
+  )
+  const cycleComposerTrafficMode = useCallback(() => {
+    if (!composerAgentLabel) return
+    const nextMode = nextFleetComposerTrafficMode(composerTrafficMode)
+    editor.updateShape({
+      id: shape.id,
+      type: shape.type,
+      props: {
+        filter: filterForFleetComposerTrafficMode(nextMode, humanFilterLabel, composerAgentLabel),
+        trafficMode: nextMode === 'dm-quiet' ? 'quiet' : 'normal',
+      },
+    })
+  }, [composerAgentLabel, composerTrafficMode, editor, humanFilterLabel, shape.id, shape.type])
+
   // --- Composer host callbacks ---------------------------------------------
   // The shared ChatComposer owns the textarea + voice registration + send-on-
   // enter; everything chat-specific (viewer context, ref attachments, plan-mode,
@@ -5057,6 +5105,33 @@ function FleetChatInner({ shape }: { shape: any }) {
                 </svg>
               </button>
             )}
+            <button
+              className={`fleet-composer-traffic-toggle fleet-composer-traffic-toggle-${composerTrafficMode}`}
+              onPointerDown={stopEventPropagation}
+              onClick={(e) => {
+                stopEventPropagation(e)
+                cycleComposerTrafficMode()
+              }}
+              disabled={!composerAgentLabel}
+              title={!composerAgentLabel
+                ? 'Choose an agent filter first'
+                : composerTrafficMode === 'dm-quiet'
+                  ? 'DM, tools hidden'
+                  : composerTrafficMode === 'dm'
+                    ? 'DM, tools visible'
+                    : composerTrafficMode === 'agent'
+                      ? 'All traffic for this agent'
+                      : 'Custom filter; tap to switch to DM without tools'}
+              aria-label="Cycle chat traffic filter"
+            >
+              {composerTrafficMode === 'dm-quiet'
+                ? 'DM q'
+                : composerTrafficMode === 'dm'
+                  ? 'DM'
+                  : composerTrafficMode === 'agent'
+                    ? 'All'
+                    : 'Filter'}
+            </button>
             <ChatComposer
               sendTargets={sendTargets}
               agentNames={agentNames}
@@ -5074,7 +5149,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                 background: 'transparent',
                 border: '1px solid rgba(128, 128, 128, 0.15)',
                 borderRadius: 4,
-                padding: '4px 8px',
+                padding: '4px 58px 4px 78px',
                 fontSize: _isPhone ? 16 : 11,
                 color: 'inherit',
                 outline: 'none',
@@ -5253,32 +5328,22 @@ function FilterOverlay({
   filterRef.current = filter
   const humanLabel = getHumanName() || getHumanId() || 'user'
   const activeAgentLabel = useMemo(() => {
-    const isNonHumanAgentLabel = (label: string) => {
-      const agent = agents.find((a: any) => labelsForAgent(a).includes(label))
-      return agent && !agent.human
-    }
     for (const clause of filter) {
       for (const [, label] of clause) {
-        if (isNonHumanAgentLabel(label)) return label
+        if (isNonHumanAgentLabel(agents, label)) return label
       }
     }
     for (const label of sendTargets) {
-      if (isNonHumanAgentLabel(label)) return label
+      if (isNonHumanAgentLabel(agents, label)) return label
     }
     return ''
   }, [agents, filter, sendTargets])
   const applyPreset = useCallback((preset: 'all' | 'dm' | 'agent') => {
     let nextFilter: [string, string][][] = []
     if (preset === 'dm' && activeAgentLabel) {
-      nextFilter = [
-        [['from', humanLabel], ['to', activeAgentLabel]],
-        [['from', activeAgentLabel], ['to', humanLabel]],
-      ]
+      nextFilter = buildFleetDmFilter(humanLabel, activeAgentLabel) as [string, string][][]
     } else if (preset === 'agent' && activeAgentLabel) {
-      nextFilter = [
-        [['from', activeAgentLabel]],
-        [['to', activeAgentLabel]],
-      ]
+      nextFilter = buildFleetAgentFilter(activeAgentLabel) as [string, string][][]
     }
     editor.updateShape({
       id: shapeId,
