@@ -2263,6 +2263,11 @@ const _alivenessCache = new Map()  // tmux_session → boolean
 const HIBERNATE_GRACE_MS = Number(process.env.TLDA_HIBERNATE_GRACE_MS || 120_000)
 const _missingSessionSince = new Map()  // agent_id → ms timestamp
 const _missingRuntimeSince = new Map()  // agent_id → ms timestamp
+// Grace windows are only valid after this daemon process has seen the session
+// or runtime alive at least once. On reconnect/restart, server state is stale
+// until proven locally; do not publish "awake" for unknown sessions.
+const _observedLiveSessions = new Set() // tmux_session
+const _observedLiveRuntimes = new Set() // agent_id
 
 // Thinking/compacting/approval detection — moved from MCP to daemon so it
 // survives MCP restarts and the hibernate sweep can trust it.
@@ -2400,6 +2405,12 @@ async function checkAgentLiveness() {
     if (!agent.tmux_session) continue
     if (!sessions.has(agent.tmux_session)) {
       if (!agent.hibernating) {
+        if (!_observedLiveSessions.has(agent.tmux_session)) {
+          log.info(`agent ${agent.friendly_name || agent.id} is hibernating (tmux session ${agent.tmux_session} absent on first local observation)`)
+          agent.hibernating = true
+          _alivenessCache.set(agent.tmux_session, false)
+          continue
+        }
         const since = _missingSessionSince.get(agent.id) || now
         _missingSessionSince.set(agent.id, since)
         if (now - since < HIBERNATE_GRACE_MS) {
@@ -2413,6 +2424,7 @@ async function checkAgentLiveness() {
       _alivenessCache.set(agent.tmux_session, false)
       continue
     }
+    _observedLiveSessions.add(agent.tmux_session)
     _missingSessionSince.delete(agent.id)
     candidateAgents.push(agent)
   }
@@ -2500,6 +2512,12 @@ async function checkAgentLiveness() {
 
     if (!agentAlive) {
       if (!agent.hibernating) {
+        if (!_observedLiveRuntimes.has(agent.id)) {
+          log.info(`agent ${agent.friendly_name || agent.id} is hibernating (no agent process in session ${agent.tmux_session} on first local observation)`)
+          agent.hibernating = true
+          _alivenessCache.set(agent.tmux_session, false)
+          continue
+        }
         const since = _missingRuntimeSince.get(agent.id) || now
         _missingRuntimeSince.set(agent.id, since)
         if (now - since < HIBERNATE_GRACE_MS) {
@@ -2529,6 +2547,7 @@ async function checkAgentLiveness() {
       _alivenessCache.set(agent.tmux_session, false)
       continue
     }
+    _observedLiveRuntimes.add(agent.id)
     _missingRuntimeSince.delete(agent.id)
 
     if (agent.hibernating) {
