@@ -33,7 +33,7 @@ test('DM filter matches only direct human-agent chat', () => {
   assert.equal(matchesFleetFilter(dmFilter, {
     type: 'chat',
     from: 'fleet:worker',
-  }, context), false)
+  }, context), true)
 
   assert.equal(matchesFleetFilter(dmFilter, {
     type: 'chat',

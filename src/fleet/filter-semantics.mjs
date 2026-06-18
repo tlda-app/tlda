@@ -29,6 +29,7 @@ function isDmWithTarget(event, targetLabel, context) {
 
   if (fromHuman && toTarget) return true
   if (fromTarget && toHuman) return true
+  if (fromTarget && !to) return true
   return false
 }
 
