@@ -3,14 +3,15 @@ const ROLE_PACK_MARKER = '<!-- fleet-role-pack:v1 -->';
 export const NON_CLAUDE_ROLE_PACKS = {
   math: {
     title: 'Math/proof role pack',
-    skills: ['argument-outline', 'proof-smells', 'math-commit-gate'],
+    skills: ['writing-process', 'argument-outline', 'proof-smells', 'math-commit-gate'],
     checks: [
       'Treat proof obligations as required, not optional suggestions.',
       'Verify the edited proof or argument on the document surface before reporting done.',
     ],
     workflow: [
-      'For tlda paper/source edits, write; do not run local LaTeX builds, `tlda push`, or `tlda build` as routine verification.',
-      'If watcher/build feedback is absent, stale, or inconsistent with citation/build state, route that to a tlda/build owner instead of working around it manually.',
+      'For paper-writing/source-edit tasks, read the relevant current skills: `writing-process` when writing, and `tooling` only when interpreting tlda errors is actually the task surface.',
+      'Do not run `latexmk`, `tlda push`, `tlda build`, or git as routine writing verification; automatic build, push, and versioning should handle it.',
+      'If automatic build feedback is missing, stale, or reports success while biber/citations failed, route to a tlda/build owner rather than working around it inside the writing task.',
     ],
   },
   app: {
@@ -22,6 +23,7 @@ export const NON_CLAUDE_ROLE_PACKS = {
     ],
     workflow: [
       'For tlda viewer/app work, prefer the project tools named in CLAUDE.md, including tlda-dev pw for browser checks and fleet-visible artifacts for evidence.',
+      'Use `tooling` or `tlda-debugging` when build, viewer, or infrastructure behavior is the task surface; do not make those workflows defaults for paper-writing delegates.',
     ],
   },
   guidance: {
@@ -32,7 +34,7 @@ export const NON_CLAUDE_ROLE_PACKS = {
       'If corrected, stop and change course before continuing the prior plan.',
     ],
     workflow: [
-      'When guidance describes a project workflow, preserve it as an operational hint in the task brief rather than converting it into only a behavioral rule.',
+      'Project CLAUDE.md can provide context, but if it conflicts with current skills, the current skill wins and stale project guidance should be flagged for cleanup.',
     ],
   },
 };

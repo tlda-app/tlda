@@ -41,8 +41,10 @@ test('routes math templates to math skills for goose delegates', () => {
     template: 'math-edit',
   })
   assert.match(routed, /Non-Claude Math\/proof role pack/)
-  assert.match(routed, /`argument-outline`, `proof-smells`, `math-commit-gate`/)
-  assert.match(routed, /do not run local LaTeX builds, `tlda push`, or `tlda build` as routine verification/)
-  assert.match(routed, /route that to a tlda\/build owner/)
+  assert.match(routed, /`writing-process`, `argument-outline`, `proof-smells`, `math-commit-gate`/)
+  assert.match(routed, /`writing-process` when writing, and `tooling` only when interpreting tlda errors/)
+  assert.match(routed, /Do not run `latexmk`, `tlda push`, `tlda build`, or git as routine writing verification/)
+  assert.match(routed, /route to a tlda\/build owner/)
   assert.doesNotMatch(routed, /use the tlda push\/build feedback path/)
+  assert.doesNotMatch(routed, /project guidance file names the expected edit\/build workflow/)
 })
