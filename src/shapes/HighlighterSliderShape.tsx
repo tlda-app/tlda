@@ -26,7 +26,7 @@ const highlightColors: Record<string, string> = {
   'light-green': '#c5e8c5', 'light-red': '#f5c5c5', red: '#ff6b6b',
 }
 
-import { HL_SLOTS, TLDRAW_ICON_BASE } from '../highlighterSlots'
+import { HL_SLOTS, hlMaskUrl } from '../highlighterSlots'
 
 const isTouch = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches
 const DOT_SIZE = 14
@@ -287,8 +287,8 @@ export function HighlighterSlider() {
               <span style={{
                 display: 'block',
                 width: dotW * 0.7, height: dotW * 0.7,
-                WebkitMaskImage: `url("${slot.svgIcon ?? `${TLDRAW_ICON_BASE}#tool-highlight`}")`,
-                maskImage: `url("${slot.svgIcon ?? `${TLDRAW_ICON_BASE}#tool-highlight`}")`,
+                WebkitMaskImage: `url("${hlMaskUrl(slot)}")`,
+                maskImage: `url("${hlMaskUrl(slot)}")`,
                 WebkitMaskSize: '100%', maskSize: '100%',
                 WebkitMaskRepeat: 'no-repeat', maskRepeat: 'no-repeat',
                 WebkitMaskPosition: 'center', maskPosition: 'center',

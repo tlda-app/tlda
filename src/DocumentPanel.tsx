@@ -179,15 +179,7 @@ export function DocumentPanel() {
 
 const IS_PHONE = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches
 
-import { HL_SLOTS, TLDRAW_ICON_BASE, OUTLINE_HL_ICON_URL, type HlSlot } from './highlighterSlots'
-
-// The light-violet "outline" slot gets a highlighter-with-peeling-note glyph;
-// every other color slot falls back to the generic tldraw highlight mask.
-function hlMaskUrl(slot: HlSlot): string {
-  if (slot.svgIcon) return slot.svgIcon
-  if (slot.id === 'light-violet') return OUTLINE_HL_ICON_URL
-  return `${TLDRAW_ICON_BASE}#tool-highlight`
-}
+import { HL_SLOTS, TLDRAW_ICON_BASE, hlMaskUrl } from './highlighterSlots'
 
 function PhoneHighlighterButton() {
   const editor = useEditor()
