@@ -665,9 +665,10 @@ export function CanvasClipPanel({
     // Set extremely wide constraints so nothing gets culled or clamped.
     if (cameraOverride) {
       cancelAnimationFrame(animFrameRef.current)
+      const constraintSize = 10_000_000
       editor.setCameraOptions({
         constraints: {
-          bounds: { x: -100000, y: -100000, w: 200000, h: 200000 },
+          bounds: { x: -constraintSize / 2, y: -constraintSize / 2, w: constraintSize, h: constraintSize },
           behavior: 'inside',
           origin: { x: 0.5, y: 0.5 },
           padding: { x: 0, y: 0 },
