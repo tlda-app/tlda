@@ -796,6 +796,8 @@ export function FleetToggle() {
       localStorage.setItem('fleet-hud-expanded', '1')
       const variant = next === '3col' ? '3col' : next === 'touch' ? 'touch' : '2col'
       createFleetLayout(editor, allAgents, variant)
+      window.dispatchEvent(new CustomEvent('fleet-hud-toggle', { detail: { expanded: true } }))
+      requestAnimationFrame(() => window.dispatchEvent(new CustomEvent('fleet-hud-reset')))
     }
   }, [editor, allAgents])
 

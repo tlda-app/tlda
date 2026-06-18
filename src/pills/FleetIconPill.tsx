@@ -228,8 +228,9 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
           if (isFleetHidden()) {
             localStorage.setItem('fleet-hud-expanded', '1')
             setHidden(false)
-            window.dispatchEvent(new CustomEvent('fleet-hud-toggle'))
+            window.dispatchEvent(new CustomEvent('fleet-hud-toggle', { detail: { expanded: true } }))
           }
+          requestAnimationFrame(() => window.dispatchEvent(new CustomEvent('fleet-hud-reset')))
         }
         justDraggedRef.current = true  // suppress the upcoming onClick
       }
