@@ -10,7 +10,7 @@
 
 import { execSync, spawn } from 'child_process'
 import { existsSync, openSync } from 'fs'
-import { join, dirname } from 'path'
+import { join, dirname, resolve } from 'path'
 import { fileURLToPath } from 'url'
 
 export async function findFreePort(startPort) {
@@ -31,10 +31,9 @@ export async function findFreePort(startPort) {
 export function resolveRepoRoot() {
   const here = dirname(fileURLToPath(import.meta.url))
   try {
-    const gitCommonDir = execSync('git rev-parse --git-common-dir', { cwd: here, stdio: 'pipe' }).toString().trim()
-    return gitCommonDir === '.git' ? join(here, '..', '..') : dirname(gitCommonDir)
+    return execSync('git rev-parse --show-toplevel', { cwd: here, stdio: 'pipe' }).toString().trim()
   } catch {
-    return join(here, '..', '..')
+    return resolve(here, '..', '..')
   }
 }
 

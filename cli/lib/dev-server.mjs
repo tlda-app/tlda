@@ -12,6 +12,7 @@
  *   tlda-dev sandbox start      same, for the current checkout
  *   tlda-dev sandbox stop       stop it (backend + viewer)
  *   tlda-dev sandbox status     is it up? + the viewer/backend URLs
+ *   tlda-dev sandbox url        print the verified viewer URL without starting
  */
 
 import { spawn } from 'child_process'
@@ -40,6 +41,12 @@ function readPid() {
   return Number.isInteger(pid) && alive(pid) ? pid : null
 }
 
+function readRawPid(file) {
+  if (!existsSync(file)) return null
+  const pid = parseInt(readFileSync(file, 'utf8').trim(), 10)
+  return Number.isInteger(pid) ? pid : null
+}
+
 async function health(port) {
   for (const scheme of ['https', 'http']) {
     try {
@@ -56,6 +63,16 @@ function readVitePid() {
   if (!existsSync(VITE_PID_FILE)) return null
   const pid = parseInt(readFileSync(VITE_PID_FILE, 'utf8').trim(), 10)
   return Number.isInteger(pid) && alive(pid) ? pid : null
+}
+
+async function viewerHealth(url) {
+  if (!url) return false
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(1500) })
+    return res.ok || res.status === 404
+  } catch {
+    return false
+  }
 }
 
 const VITE_URL_FILE = join(DATA_DIR, 'vite-url')
@@ -92,6 +109,55 @@ function readManifest() {
   try { return JSON.parse(readFileSync(MANIFEST_FILE, 'utf8')) } catch { return null }
 }
 
+function manifestPort(manifest) {
+  return Number.isInteger(manifest?.ports?.backend) ? manifest.ports.backend : DEV_PORT
+}
+
+function viewerUrlWithDoc(url, doc) {
+  if (!url || !doc) return url
+  const parsed = new URL(url)
+  parsed.searchParams.set('doc', doc)
+  return parsed.toString()
+}
+
+async function sandboxState({ port = null, doc = null } = {}) {
+  const manifest = readManifest()
+  const backendPort = port || manifestPort(manifest)
+  const backendPid = readPid()
+  const staleBackendPid = backendPid ? null : readRawPid(PID_FILE)
+  const backendScheme = backendPid ? await health(backendPort) : null
+  const backend = backendScheme ? `${backendScheme}://localhost:${backendPort}` : null
+
+  const viewerPid = readVitePid()
+  const staleViewerPid = viewerPid ? null : readRawPid(VITE_PID_FILE)
+  const recordedViewer = existsSync(VITE_URL_FILE) ? readFileSync(VITE_URL_FILE, 'utf8').trim() : manifest?.viewer
+  const viewerOk = viewerPid ? await viewerHealth(recordedViewer) : false
+  const viewer = viewerOk ? viewerUrlWithDoc(recordedViewer, doc || manifest?.doc) : null
+
+  const status = backendPid && backendScheme && viewerOk
+    ? 'up'
+    : backendPid && backendScheme
+      ? 'backend-only'
+      : backendPid
+        ? 'starting-or-wedged'
+        : 'down'
+
+  return {
+    status,
+    viewer,
+    url: viewer,
+    backend,
+    backendPid,
+    viewerPid: viewerOk ? viewerPid : null,
+    staleBackendPid,
+    staleViewerPid,
+    db: FLEET_DB,
+    projectsDir: PROJECTS_DIR,
+    manifest: MANIFEST_FILE,
+    rig: manifest,
+  }
+}
+
 function writeManifest(manifest, worktreeDir = null) {
   mkdirSync(DATA_DIR, { recursive: true })
   writeFileSync(MANIFEST_FILE, JSON.stringify(manifest, null, 2))
@@ -112,42 +178,53 @@ export async function cmdDevServer(args, repoRoot) {
   const parsed = parseArgs(args)
   const json = parsed.flags.has('json') || parsed.flags.has('print-json')
   const first = parsed.positionals[0]
-  const isVerb = ['start', 'stop', 'status'].includes(first)
+  const isVerb = ['start', 'stop', 'status', 'url'].includes(first)
   const sub = isVerb ? first : 'start'
   const branch = (!isVerb && first) ? first : null
   const portArg = parsed.values.get('port')
-  const port = portArg ? parseInt(portArg, 10) : DEV_PORT
+  const doc = parsed.values.get('doc') || null
+  const port = portArg ? parseInt(portArg, 10) : manifestPort(readManifest())
 
   if (sub === 'status') {
-    const pid = readPid()
-    const scheme = pid ? await health(port) : null
-    const viteUrl = readVitePid() && existsSync(VITE_URL_FILE) ? readFileSync(VITE_URL_FILE, 'utf8').trim() : null
-    const manifest = readManifest()
+    const state = await sandboxState({ port, doc })
     if (json) {
-      printJson({
-        status: pid && scheme ? 'up' : pid ? 'starting-or-wedged' : 'down',
-        viewer: viteUrl,
-        backend: scheme ? `${scheme}://localhost:${port}` : null,
-        backendPid: pid,
-        viewerPid: readVitePid(),
-        db: FLEET_DB,
-        manifest: MANIFEST_FILE,
-        rig: manifest,
-      })
+      printJson(state)
       return
     }
-    if (pid && scheme) {
+    if (state.status === 'up') {
       console.log(`sandbox: up — complete isolated env`)
-      if (viteUrl) console.log(`  viewer:  ${viteUrl}`)
-      console.log(`  backend: ${scheme}://localhost:${port}  (own DB + projects + chat)`)
+      console.log(`  viewer:  ${state.viewer}`)
+      console.log(`  backend: ${state.backend}  (own DB + projects + chat)`)
       console.log(`  DB:      ${FLEET_DB}`)
       console.log(`  manifest: ${MANIFEST_FILE}`)
-    } else if (pid) {
-      console.log(`sandbox: backend pid ${pid} alive but not answering on :${port} (starting or wedged)`)
+    } else if (state.status === 'backend-only') {
+      console.log(`sandbox: backend up, viewer down or stale`)
+      console.log(`  backend: ${state.backend}  (own DB + projects + chat)`)
+      console.log(`  manifest: ${MANIFEST_FILE}`)
+    } else if (state.backendPid) {
+      console.log(`sandbox: backend pid ${state.backendPid} alive but not answering on :${port} (starting or wedged)`)
     } else {
       console.log('sandbox: down')
+      if (state.staleBackendPid || state.staleViewerPid) {
+        console.log(`  stale pid files: backend ${state.staleBackendPid ?? '—'}, viewer ${state.staleViewerPid ?? '—'}`)
+      }
     }
     return
+  }
+
+  if (sub === 'url') {
+    const state = await sandboxState({ port, doc })
+    if (json) {
+      printJson(state)
+      return
+    }
+    if (state.viewer) {
+      console.log(state.viewer)
+      return
+    }
+    console.error(`sandbox URL unavailable: ${state.status}`)
+    if (state.backend) console.error(`  backend: ${state.backend}`)
+    process.exit(1)
   }
 
   if (sub === 'stop') {
@@ -169,15 +246,13 @@ export async function cmdDevServer(args, repoRoot) {
   // start (idempotent — one sandbox at a time; stop to switch branch)
   const existing = readPid()
   if (existing) {
+    const state = await sandboxState({ port, doc })
     if (json) {
-      printJson({
-        status: 'already-running',
-        backendPid: existing,
-        manifest: MANIFEST_FILE,
-        rig: readManifest(),
-      })
+      printJson({ ...state, status: state.status === 'up' ? 'already-running' : state.status })
     } else {
       console.log(`sandbox already running (backend pid ${existing}) — \`tlda-dev sandbox stop\` first to switch branch`)
+      if (state.viewer) console.log(`  viewer:  ${state.viewer}`)
+      if (state.backend) console.log(`  backend: ${state.backend}`)
     }
     return
   }
@@ -185,6 +260,7 @@ export async function cmdDevServer(args, repoRoot) {
   // Run THAT branch's server code (so server/shape changes are what's tested),
   // isolated from anything real.
   const worktreeDir = branch ? ensureWorktree(resolveRepoRoot(), branch) : repoRoot
+  const startPort = portArg ? port : await findFreePort(DEV_PORT)
 
   mkdirSync(DATA_DIR, { recursive: true })
   mkdirSync(PROJECTS_DIR, { recursive: true })
@@ -196,25 +272,25 @@ export async function cmdDevServer(args, repoRoot) {
     stdio: ['ignore', logFd, logFd],
     env: {
       ...process.env,
-      PORT: String(port),
+      PORT: String(startPort),
       PROJECTS_DIR,
       TLDA_FLEET_DB: FLEET_DB,
       TLDA_DEV_SERVER: '1',     // disables fleet supervisors + hibernate loop
       TLDA_NO_AUTH: '1',        // dev convenience — no token needed
       // Self-report as the fleet store so /api/fleet-config returns THIS server,
       // not the global one (Fly) — so the sandbox's chat is its own, fully isolated.
-      TLDA_FLEET_SERVER: process.env.TLDA_FLEET_SERVER || `${hasTls ? 'https' : 'http'}://localhost:${port}`,
+      TLDA_FLEET_SERVER: process.env.TLDA_FLEET_SERVER || `${hasTls ? 'https' : 'http'}://localhost:${startPort}`,
     },
   })
   child.unref()
   writeFileSync(PID_FILE, String(child.pid))
-  console.log(`sandbox backend starting (pid ${child.pid}) on :${port}${branch ? ` [${branch}]` : ''} …`)
+  if (!json) console.log(`sandbox backend starting (pid ${child.pid}) on :${startPort}${branch ? ` [${branch}]` : ''} …`)
 
   // Wait for the backend to be healthy (up to ~30s)
   let backendScheme = null
   for (let i = 0; i < 60 && !backendScheme; i++) {
     await new Promise(r => setTimeout(r, 500))
-    backendScheme = await health(port)
+    backendScheme = await health(startPort)
     if (!backendScheme && !alive(child.pid)) {
       console.error(`sandbox backend exited during startup — see ${LOG_FILE}`)
       process.exit(1)
@@ -231,24 +307,26 @@ export async function cmdDevServer(args, repoRoot) {
   const { scheme: viteScheme, port: vitePort, pid: vitePid } = await startWorktreeVite({
     worktreeDir,
     port: await findFreePort(5180),
-    serverPort: port,
+    serverPort: startPort,
     hasTls,
   })
   const viewerUrl = `${viteScheme}://localhost:${vitePort}/`   // no token — sandbox is NO_AUTH
+  const docUrl = viewerUrlWithDoc(viewerUrl, doc)
   writeFileSync(VITE_PID_FILE, String(vitePid))
   writeFileSync(VITE_URL_FILE, viewerUrl)
   const manifest = {
     rig: branch || 'current',
     cwd: worktreeDir,
     viewer: viewerUrl,
-    backend: `${backendScheme}://localhost:${port}`,
-    doc: null,
+    url: docUrl,
+    backend: `${backendScheme}://localhost:${startPort}`,
+    doc,
     health: 'ok',
     playwrightReady: false,
     teacherReady: false,
     isolated: true,
     noAuth: true,
-    ports: { backend: port, viewer: vitePort },
+    ports: { backend: startPort, viewer: vitePort },
     pids: { backend: child.pid, viewer: vitePid },
     db: FLEET_DB,
     projectsDir: PROJECTS_DIR,

@@ -21,7 +21,7 @@ Two dev-environment modes (the user app is just \`tlda server start\`):
   sandbox <branch>            A complete throwaway environment for a branch — its
                      own backend + DB + projects + chat + a Vite pointed at it,
                      nothing shared. For server/shape changes that would crash a
-                     live room. (\`sandbox stop|status\` to manage it; add
+                     live room. (\`sandbox stop|status|url\` to manage it; add
                      \`--json\` or \`--print-json\` for machine-readable rig info.)
 
 Other commands:
