@@ -169,6 +169,7 @@ const customShapeSchemas = {
       w: T.number,
       h: T.number,
       filter: T.arrayOf(T.arrayOf(T.arrayOf(T.string))),  // DNF of [role, label] tuples
+      trafficMode: T.optional(T.string),
       userId: T.optional(T.string),
       deviceId: T.optional(T.string),
     },

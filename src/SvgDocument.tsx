@@ -950,47 +950,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     onCustomMessageReceived: onCustomMessage,
   })
 
-  // --- Sync error handling ---
-  // When the sync store hits an error (e.g. ValidationError from unknown shape types),
-  // show an error screen instead of an infinite spinner.
-  if (storeWithStatus.status === 'error') {
-    const err = storeWithStatus.error
-    const errMsg = err?.message || String(err) || 'Unknown sync error'
-    const isValidation = errMsg.includes('Validation') || errMsg.includes('validation') || errMsg.includes('INVALID_RECORD')
-    return (
-      <div className="App">
-        <div className="ErrorScreen">
-          <div className="error-icon">⚠</div>
-          <h2 className="error-title">Document sync failed</h2>
-          <p className="error-message" style={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: '0.8rem' }}>{errMsg}</p>
-          {isValidation && (
-            <p className="error-message" style={{ marginTop: 8 }}>
-              Schema validation error — a shape prop type mismatch between client and server.
-              Check server logs for the specific field that failed validation.
-            </p>
-          )}
-          <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
-            <button
-              className="error-clear-btn"
-              onClick={async () => {
-                try {
-                  const resp = await fetch(`/api/projects/${document.name}/sync/clear`, { method: 'POST' })
-                  if (resp.ok) window.location.reload()
-                  else alert(`Failed to clear: ${resp.statusText}`)
-                } catch (e) {
-                  alert(`Failed to clear: ${(e as Error).message}`)
-                }
-              }}
-            >
-              Clear broken shapes
-            </button>
-            <a className="error-home-link" href="/">← All documents</a>
-          </div>
-        </div>
-      </div>
-    )
-  }
-
   // Override toolbar to replace note with math-note
   const overrides = useMemo(() => ({
     tools: (_editor: Editor, tools: any) => {
@@ -1127,6 +1086,48 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       return tools
     },
   }), [])
+
+  // --- Sync error handling ---
+  // When the sync store hits an error (e.g. ValidationError from unknown shape types),
+  // show an error screen instead of an infinite spinner. Keep this after all hooks
+  // in SvgDocumentEditor so a later sync error does not change the hook count.
+  if (storeWithStatus.status === 'error') {
+    const err = storeWithStatus.error
+    const errMsg = err?.message || String(err) || 'Unknown sync error'
+    const isValidation = errMsg.includes('Validation') || errMsg.includes('validation') || errMsg.includes('INVALID_RECORD')
+    return (
+      <div className="App">
+        <div className="ErrorScreen">
+          <div className="error-icon">⚠</div>
+          <h2 className="error-title">Document sync failed</h2>
+          <p className="error-message" style={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: '0.8rem' }}>{errMsg}</p>
+          {isValidation && (
+            <p className="error-message" style={{ marginTop: 8 }}>
+              Schema validation error — a shape prop type mismatch between client and server.
+              Check server logs for the specific field that failed validation.
+            </p>
+          )}
+          <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
+            <button
+              className="error-clear-btn"
+              onClick={async () => {
+                try {
+                  const resp = await fetch(`/api/projects/${document.name}/sync/clear`, { method: 'POST' })
+                  if (resp.ok) window.location.reload()
+                  else alert(`Failed to clear: ${resp.statusText}`)
+                } catch (e) {
+                  alert(`Failed to clear: ${(e as Error).message}`)
+                }
+              }}
+            >
+              Clear broken shapes
+            </button>
+            <a className="error-home-link" href="/">← All documents</a>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   // Bottom panels content — passed via context into InFrontOfTheCanvas
   const bottomPanelsContent = (
