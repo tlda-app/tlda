@@ -2118,6 +2118,24 @@ async function rpcStartTerminalWatch({ tmux_session, agent_id, poll_ms }) {
   terminalWatchPtys.set(tmux_session, state)
 
   sendMsg({ type: 'terminal-size', agent_id, tmux_session, cols: size.cols, rows: size.rows })
+  try {
+    const { stdout } = await execFileP('tmux',
+      [...TMUX_ARGS, 'capture-pane', '-t', tmux_session, '-p', '-S', `-${size.rows}`],
+      { timeout: 3000, encoding: 'utf8' })
+    const snapshot = stdout.replace(/\n/g, '\r\n')
+    if (snapshot.trim()) {
+      sendMsg({
+        type: 'terminal-data',
+        agent_id,
+        tmux_session,
+        data: Buffer.from(snapshot).toString('base64'),
+      })
+      state.recentOutput = stripAnsi(snapshot).slice(-4000)
+      detectPromptFromPty(agent_id, tmux_session, state)
+    }
+  } catch (e) {
+    log.warn(`terminal-watch: initial capture failed for ${tmux_session}: ${e?.message || e}`)
+  }
 
   // The window can change while we watch (a real terminal client attaches,
   // detaches, or resizes). Poll and follow it: resize our PTY to match so the
