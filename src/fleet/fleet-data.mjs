@@ -14,7 +14,7 @@
 // Writes go to server → DB → SSE → subscriber. One path.
 
 import { toolContentDetail } from './activity-render.mjs'
-import { labelsForAgent, evalDnf } from '../../shared/fleet-labels.mjs'
+import { matchesFleetFilter, resolveFleetFilter } from './filter-semantics.mjs'
 import { makeEventStore } from './event-store.mjs'
 import { log } from '../logger'
 import { DATABASE_HTTP, DATABASE_WS } from '../activeConfig'
@@ -118,52 +118,12 @@ function notify(channel, event) {
   }
 }
 
-// Filter is DNF of terms: [[["to","skip"],["from","math"]]] or plain [["label"]] or null (match all).
-// Term formats: [role, label] tuple (directional) or plain string (matches from OR to).
 export function matchesFilter(filter, event) {
-  if (!event) return true  // broadcast (e.g. read-receipt refresh)
-  if (!filter || filter.length === 0) return true
-  if ((event.from_id === 'system' || event.from === 'system') && !event.to) return true
-  return filter.some(clause =>
-    clause.every(term => {
-      if (Array.isArray(term)) {
-        const [role, label] = term
-        const agentId = role === 'from' ? (event.from || event.agent) : (event.to || event.agent)
-        return agentMatchesLabel(agentId, label)
-      }
-      // Plain string — match from OR to
-      return agentMatchesLabel(event.from || event.agent, term) ||
-             agentMatchesLabel(event.to || event.agent, term)
-    })
-  )
+  return matchesFleetFilter(filter, event, { agents: _agents, humanId: _humanId, humanName: _humanName })
 }
 
-function agentMatchesLabel(agentId, label) {
-  if (!agentId) return false
-  if (agentId === label) return true
-  let agent = _agents.find(a => a.id === agentId)
-  if (!agent && _humanId && agentId === _humanId) {
-    // Human not in the agents list yet — synthesize so pseudo-labels resolve.
-    agent = { id: _humanId, friendly_name: _humanName || 'user', status: 'human', labels: [] }
-  }
-  if (!agent) return false
-  return labelsForAgent(agent).includes(label)
-}
-
-// Resolve a DNF filter to set of agent IDs that match any clause. Uses the
-// shared labelsForAgent/evalDnf so the history id-set matches the live display
-// filter (matchesFilter) — they must agree or scrollback diverges from live.
 function resolveFilter(filter) {
-  if (!filter) return new Set()
-  const ids = new Set()
-  const allAgents = [..._agents]
-  if (_humanId && !allAgents.some(a => a.id === _humanId)) {
-    allAgents.push({ id: _humanId, friendly_name: _humanName || 'user', status: 'human', labels: [] })
-  }
-  for (const a of allAgents) {
-    if (evalDnf(filter, labelsForAgent(a))) ids.add(a.id)
-  }
-  return ids
+  return resolveFleetFilter(filter, { agents: _agents, humanId: _humanId, humanName: _humanName })
 }
 
 export { resolveFilter }
