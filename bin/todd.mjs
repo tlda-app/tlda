@@ -151,6 +151,20 @@ let nudgeIdCounter = 0
 const NUDGE_EXPIRY_MESSAGES = 10
 
 function queueNudge(targetId, label, text, opts = {}) {
+  const kind = opts.kind || 'nudge'
+  const existing = pendingNudgeQueue.find(n =>
+    n.targetId === targetId &&
+    n.kind === kind &&
+    n.label.toLowerCase() === label.toLowerCase()
+  )
+  if (existing) {
+    // Keep pending nudges as singletons. Repeated trigger detections should not
+    // stack duplicate chips or make Skip release the same warning multiple times.
+    existing.text = text
+    existing.command = opts.command || null
+    console.log(`[todd] suppressed duplicate ${kind} "${label}" for ${targetId}`)
+    return existing
+  }
   const nudge = {
     id: ++nudgeIdCounter,
     label,
@@ -159,7 +173,7 @@ function queueNudge(targetId, label, text, opts = {}) {
     // 'nudge' = a gated frustration nudge released to the agent on "say it".
     // 'action' = a clickable command suggestion (e.g. hand off / get qa); clicking
     // sends `command` verbatim, which todd routes via its normal command handling.
-    kind: opts.kind || 'nudge',
+    kind,
     command: opts.command || null,
     ts: Date.now(),
     msgCount: 0,
