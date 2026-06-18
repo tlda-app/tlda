@@ -30,25 +30,40 @@ cmd = mod.build_codex_cmd(
 )
 assert "-s workspace-write" in cmd
 
-policy_name, dev_tools, write_roots, matched, policy = mod.resolve_harness_sandbox(
-    "codex", "gpt-5.5", "/Users/skip/work/tlda")
+def resolve_capability(capability):
+    policy_name, dev_tools, write_roots, matched, policy = mod.resolve_harness_sandbox(
+        "codex", "gpt-5.5", "/Users/skip/work/tlda",
+        explicit_policy=mod.sandbox_policy_for_spawn_capability(capability))
+    policy = mod.apply_spawn_capability_to_policy(policy, capability, "/Users/skip/work/tlda")
+    cmd = mod.build_codex_cmd(
+        "fleet:test123",
+        "fleet-canary",
+        model="gpt-5.5",
+        name="canary",
+        cwd="/Users/skip/work/tlda",
+        capability=capability,
+        outer_sandbox=bool(policy),
+    )
+    return policy_name, dev_tools, write_roots, matched, policy, cmd
+
+policy_name, dev_tools, write_roots, matched, policy, role_cmd = resolve_capability("full-access")
 assert policy_name == "unsandboxed"
 assert dev_tools is True
 assert write_roots == []
 assert matched is None
 assert policy is None
-assert "fence --settings" not in cmd
+assert "-s danger-full-access" in role_cmd
+assert "fence --settings" not in role_cmd
 
-mod.os.environ["TLDA_ENABLE_AGENT_FENCE"] = "1"
-try:
-    policy_name, dev_tools, write_roots, matched, policy = mod.resolve_harness_sandbox(
-        "codex", "gpt-5.5", "/Users/skip/work/tlda", explicit_policy="cwd")
-finally:
-    del mod.os.environ["TLDA_ENABLE_AGENT_FENCE"]
-wrapped = mod.wrap_sandbox_cmd(cmd, policy)
+policy_name, dev_tools, write_roots, matched, policy, role_cmd = resolve_capability("workspace-write-no-net")
 assert policy_name == "cwd"
 assert dev_tools is True
 assert write_roots == ["/Users/skip/work/tlda"]
+assert matched == "/Users/skip/work/tlda"
+assert policy["write_roots"] == ["/Users/skip/work/tlda"]
+assert policy["network"] is False
+assert "-s danger-full-access" in role_cmd
+wrapped = mod.wrap_sandbox_cmd(role_cmd, policy)
 assert "fence --settings" in wrapped
 assert " codex " in wrapped
 settings_path = wrapped.split("--settings ", 1)[1].split(" ", 1)[0]
@@ -56,6 +71,34 @@ with open(settings_path) as f:
     settings = mod.json.load(f)
 assert "/Users/skip/work/tlda" in settings["filesystem"]["allowWrite"]
 assert "**/.git/**" in settings["filesystem"]["denyWrite"]
+
+policy_name, dev_tools, write_roots, matched, policy, role_cmd = resolve_capability("workspace-write+net")
+assert policy_name == "cwd"
+assert dev_tools is True
+assert write_roots == ["/Users/skip/work/tlda"]
+assert matched == "/Users/skip/work/tlda"
+assert policy["network"] is True
+assert "/Users/skip/work/tlda" in policy["write_roots"]
+assert "/Users/skip/work/tlda/.git" in policy["write_roots"]
+assert mod.os.path.expanduser("~/.config/tlda") in policy["write_roots"]
+assert "-s danger-full-access" in role_cmd
+
+policy_name, dev_tools, write_roots, matched, policy, role_cmd = resolve_capability("read-only")
+assert policy_name == "cwd"
+assert dev_tools is True
+assert write_roots == ["/Users/skip/work/tlda"]
+assert matched == "/Users/skip/work/tlda"
+assert policy["write_roots"] == []
+assert policy["network"] is False
+assert "-s danger-full-access" in role_cmd
+
+policy_name, dev_tools, write_roots, matched, policy = mod.resolve_harness_sandbox(
+    "codex", "gpt-5.5", "/Users/skip/work/tlda")
+assert policy_name == "cwd"
+assert dev_tools is True
+assert write_roots == ["/Users/skip/work/tlda"]
+assert matched == "/Users/skip/work/tlda"
+assert policy is not None
 
 class FakeResult:
     def __init__(self, returncode=0, stdout=""):

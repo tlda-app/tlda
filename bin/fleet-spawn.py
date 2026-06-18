@@ -734,7 +734,7 @@ def agent_meta(agent):
 
 SANDBOX_CONFIG_KEY = "agentSandbox"
 SANDBOX_POLICIES = {"no-dev", "cwd", "tlda-projects", "unsandboxed"}
-DEFAULT_SANDBOX_POLICY = "unsandboxed"
+DEFAULT_SANDBOX_POLICY = "cwd"
 DEFAULT_SANDBOX_READ_ROOTS = ["~/work"]
 DEFAULT_SANDBOX_OPTIONS = {
     "network": False,
@@ -893,10 +893,6 @@ def _validate_sandbox_policy(policy):
     return policy
 
 
-def _agent_fence_enabled():
-    return os.environ.get("TLDA_ENABLE_AGENT_FENCE") == "1"
-
-
 def _sandbox_config(required=False):
     full_cfg = read_config()
     cfg = full_cfg.get(SANDBOX_CONFIG_KEY)
@@ -969,8 +965,6 @@ def resolve_sandbox_policy_name(harness, model, explicit_policy=None):
         or cfg.get("defaultPolicy")
         or DEFAULT_SANDBOX_POLICY
     )
-    if policy != "unsandboxed" and not _agent_fence_enabled():
-        return "unsandboxed"
     return _validate_sandbox_policy(policy)
 
 
@@ -1437,6 +1431,14 @@ def apply_spawn_capability_to_policy(policy, capability, cwd):
     policy["write_roots"] = sorted(roots)
     policy["read_roots"] = sorted(set(policy.get("read_roots") or []) | roots)
     return policy
+
+
+def sandbox_policy_for_spawn_capability(capability):
+    if capability == "full-access":
+        return "unsandboxed"
+    if capability in ("read-only", "workspace-write-no-net", "workspace-write+net"):
+        return "cwd"
+    return None
 
 
 def build_codex_cmd(fleet_id, tmux_session, model=None, resume_id=None,
@@ -2087,7 +2089,7 @@ def fresh(name, model, cwd, effort, mode, kind="claude", spawn_capability=None,
     cwd = resolve_spawn_cwd(cwd)
     adapter = harness_for_spawn(kind, model)
     model = adapter.resolve_model(model)
-    effective_policy = sandbox_policy or ("unsandboxed" if spawn_capability == "full-access" else None)
+    effective_policy = sandbox_policy or sandbox_policy_for_spawn_capability(spawn_capability)
     policy_name, dev_tools, _write_roots, _matched_root, policy = resolve_harness_sandbox(
         adapter.kind, model, cwd, explicit_policy=effective_policy)
     policy = apply_spawn_capability_to_policy(policy, spawn_capability, cwd)
@@ -2134,7 +2136,7 @@ def respawn(name, model, cwd, effort, mode, session_override=None,
     spawn_capability = spawn_policy.get("capability") if isinstance(spawn_policy, dict) else None
     adapter = harness_for_agent(agent)
     model = adapter.resolve_model(raw_model)
-    effective_policy = sandbox_policy or ("unsandboxed" if spawn_capability == "full-access" else None)
+    effective_policy = sandbox_policy or sandbox_policy_for_spawn_capability(spawn_capability)
     policy_name, dev_tools, _write_roots, _matched_root, policy = resolve_harness_sandbox(
         adapter.kind, model, cwd, explicit_policy=effective_policy)
     policy = apply_spawn_capability_to_policy(policy, spawn_capability, cwd)
@@ -2217,7 +2219,7 @@ def refresh(name, model, cwd, effort, mode, spawn_capability=None,
     raw_model = model or meta.get("model")
     adapter = harness_for_agent(agent)
     model = adapter.resolve_model(raw_model)
-    effective_policy = sandbox_policy or ("unsandboxed" if spawn_capability == "full-access" else None)
+    effective_policy = sandbox_policy or sandbox_policy_for_spawn_capability(spawn_capability)
     policy_name, dev_tools, _write_roots, _matched_root, policy = resolve_harness_sandbox(
         adapter.kind, model, cwd, explicit_policy=effective_policy)
     policy = apply_spawn_capability_to_policy(policy, spawn_capability, cwd)
