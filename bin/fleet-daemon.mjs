@@ -75,6 +75,7 @@ import { makeActivityThrottle } from './lib/activity-throttle.mjs'
 import { maybeKickGoose, resolveGooseStatus } from './lib/goose-kick.mjs'
 import { gooseActivityTick } from './lib/goose-activity.mjs'
 import { parseCodexLine } from './lib/codex-activity.mjs'
+import { truncatePrettyResult } from '../shared/activity-pretty-result.mjs'
 import {
   buildFleetSpawnArgs,
   decideMissingLiveness,
@@ -376,23 +377,31 @@ const ACTIVITY_NOISE = new Set([
   'ToolSearch',
 ])
 
-// Tools whose results should be captured and forwarded as pretty-printed cards
-const PRETTY_PRINT_TOOLS = new Set(['mcp__tlda__search_logs', 'mcp__tlda__get_thread', 'ScheduleWakeup', 'mcp__tlda__screenshot', 'mcp__tlda__propose_edit'])
+// Tools whose results should be captured and forwarded as pretty-printed cards.
+// Keep the accepted names broad: Claude/Codex use mcp__tlda__get_thread, while
+// Goose and stored activity can use tlda__get_thread or get_thread.
+const PRETTY_PRINT_TOOLS = new Set([
+  'mcp__tlda__search_logs',
+  'mcp__tlda__get_thread',
+  'tlda__search_logs',
+  'tlda__get_thread',
+  'search_logs',
+  'get_thread',
+  'ScheduleWakeup',
+  'mcp__tlda__screenshot',
+  'tlda__screenshot',
+  'screenshot',
+  'mcp__tlda__propose_edit',
+  'tlda__propose_edit',
+  'propose_edit',
+])
 
-function truncatePrettyResult(text, toolName) {
-  if (text.length <= 5000) return text
-  const tool = (toolName || '').toLowerCase()
-  if (tool.includes('get_thread') || tool.includes('thread')) {
-    const SEP = '\n\n---\n\n'
-    const msgs = text.split(SEP)
-    if (msgs.length > 8) {
-      const front = msgs.slice(0, 3)
-      const tail = msgs.slice(-5)
-      const hidden = msgs.length - 8
-      return front.join(SEP) + SEP + `… ${hidden} messages …` + SEP + tail.join(SEP)
-    }
-  }
-  return text.slice(0, 5000) + '\n\n… (truncated)'
+function toolBaseName(name) {
+  return String(name || '').split('__').pop()
+}
+
+function isPrettyPrintTool(name) {
+  return PRETTY_PRINT_TOOLS.has(name) || PRETTY_PRINT_TOOLS.has(toolBaseName(name))
 }
 
 // Pending pretty-print tool_uses waiting for their results. Keyed by tool_use_id.
@@ -435,11 +444,12 @@ function extractActivityEvents(events) {
         const input = block.input || {}
         const arg = input.file_path || input.path ||
           input.command || input.pattern || input.message ||
-          input.query || input.description || input.reason || ''
+          input.query || input.description || input.reason ||
+          input.agent || input.doc || input.ref || input.text || ''
         const evt = { tool: humanName, arg, ts: ev.timestamp, id: block.id }
         if (Object.keys(input).length > 0) evt.input = input
         // Attach result for pretty-printed tools
-        if (PRETTY_PRINT_TOOLS.has(name) && block.id) {
+        if (isPrettyPrintTool(name) && block.id) {
           if (toolResults.has(block.id)) {
             const raw = toolResults.get(block.id)
             evt.prettyResult = truncatePrettyResult(raw, name)

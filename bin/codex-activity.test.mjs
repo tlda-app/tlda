@@ -27,13 +27,30 @@ const ACTIVITY_NOISE = new Set([
 const PRETTY_PRINT_TOOLS = new Set([
   'mcp__tlda__search_logs',
   'mcp__tlda__get_thread',
+  'tlda__search_logs',
+  'tlda__get_thread',
+  'search_logs',
+  'get_thread',
   'ScheduleWakeup',
   'mcp__tlda__screenshot',
+  'tlda__screenshot',
+  'screenshot',
   'mcp__tlda__propose_edit',
+  'tlda__propose_edit',
+  'propose_edit',
 ])
 const humanToolName = name => name.replace(/^mcp__/, '').replace(/__/g, '/')
+const toolBaseName = name => String(name || '').split('__').pop()
+const isPrettyPrintTool = name => PRETTY_PRINT_TOOLS.has(name) || PRETTY_PRINT_TOOLS.has(toolBaseName(name))
 function extractCards(events) {
   const cards = []
+  const toolResults = new Map()
+  for (const ev of events) {
+    if (!ev.blocks) continue
+    for (const b of ev.blocks) {
+      if (b.type === 'tool_result' && b.id) toolResults.set(b.id, b.text || '')
+    }
+  }
   for (const ev of events) {
     if (ev.usage) cards.push({ tool: '_usage', usage: ev.usage })
     if (!ev.blocks) continue
@@ -44,8 +61,13 @@ function extractCards(events) {
         const humanName = humanToolName(b.name)
         const input = b.input || {}
         const arg = input.file_path || input.path || input.command || input.pattern ||
-          input.message || input.query || input.description || input.reason || ''
-        cards.push({ tool: humanName, arg: String(arg).slice(0, 80) })
+          input.message || input.query || input.description || input.reason ||
+          input.agent || input.doc || input.ref || input.text || ''
+        const card = { tool: humanName, arg: String(arg).slice(0, 80) }
+        if (isPrettyPrintTool(b.name) && b.id && toolResults.has(b.id)) {
+          card.prettyResult = toolResults.get(b.id)
+        }
+        cards.push(card)
       } else if (b.type === 'text' && b.text?.length > 20) {
         cards.push({ tool: '_text', arg: b.text.slice(0, 60) })
       }
@@ -82,6 +104,26 @@ console.log('\n=== unit fixtures ===')
 {
   const original = 'not a transcript envelope: [{"type":"text","text":'
   assert(unwrapCodexToolOutput(original) === original, 'non-envelope parse failures preserve original text')
+}
+{
+  const events = [
+    parseCodexLine(JSON.stringify({
+      type: 'response_item',
+      timestamp: '2026-06-17T00:00:00.000Z',
+      payload: {
+        type: 'function_call',
+        name: 'get_thread',
+        namespace: 'mcp__tlda',
+        arguments: JSON.stringify({ agent: 'bhist' }),
+        call_id: 'call-thread',
+      },
+    })),
+    parseCodexLine(codexOutputLine('Wall time: 0.123 seconds\nOutput:\n[{"type":"text","text":"2 messages\\n\\n[6/18/2026, 8:00:00 AM] skip → bhist\\nhello"}]', 'function_call_output').replace('call-test', 'call-thread')),
+  ].filter(Boolean)
+  const cards = extractCards(events)
+  const threadCard = cards.find(c => c.tool === 'tlda/get_thread')
+  assert(threadCard?.arg === 'bhist', 'get_thread activity card keeps the requested agent as arg')
+  assert(threadCard?.prettyResult?.includes('skip → bhist'), 'get_thread activity card attaches readable pretty result')
 }
 
 function findRollouts() {
