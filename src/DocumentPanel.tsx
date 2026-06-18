@@ -4,7 +4,7 @@ import { setVoiceTarget, clearVoiceTarget, setVoiceAccumulator, stopRecording, i
 import { createPortal } from 'react-dom'
 import { useEditor, useValue, stopEventPropagation, DefaultColorStyle } from 'tldraw'
 import { toolNameHud } from './overlays/ToolNameHud'
-import type { Editor } from 'tldraw'
+import type { Editor, TLShapeId } from 'tldraw'
 import { DocContext } from './PanelContext'
 import { isSignalConnected, writeSignal, onAgentHeartbeat } from './useYjsSync'
 import type { AgentHeartbeatSignal } from './useYjsSync'
@@ -682,12 +682,19 @@ export function SemanticHighlightPill() { return null }
 function VoiceNoteButtonInner() {
   const editor = useEditor()
   const hiddenTARef = useRef<HTMLTextAreaElement | null>(null)
+  const keepRef = useRef<TLShapeId[]>([])
   const [recording, setRecording] = useState(false)
   const isPlacing = useValue('voice-placing', () => editor.getCurrentToolId() === 'voice-note', [editor])
 
-  // Desktop (Mac): original placement flow — unchanged.
-  const cancelRecording = useCallback(() => {
-    if (isRecording()) stopRecording()
+  useEffect(() => {
+    if (!_isTouchDevice) return
+    const onDown = () => { keepRef.current = editor.getSelectedShapeIds() }
+    document.addEventListener('pointerdown', onDown, true)
+    return () => document.removeEventListener('pointerdown', onDown, true)
+  }, [editor])
+
+  const cleanupPlacement = useCallback(({ stopVoice, resetTool }: { stopVoice: boolean; resetTool: boolean }) => {
+    if (stopVoice && isRecording()) stopRecording()
     if (hiddenTARef.current) {
       clearVoiceTarget(hiddenTARef.current)
       hiddenTARef.current.remove()
@@ -695,12 +702,13 @@ function VoiceNoteButtonInner() {
     }
     setStopRecordingCallback(null)
     setRecording(false)
-    editor.setCurrentTool('select')
+    if (resetTool) editor.setCurrentTool('select')
   }, [editor])
 
   // initialPoint (page coords) seeds the ghost when there's no cursor — touch
   // passes a point just left of the button; mouse omits it and uses the cursor.
   const startPlacement = useCallback((initialPoint?: { x: number; y: number }) => {
+    cleanupPlacement({ stopVoice: false, resetTool: false })
     const ta = document.createElement('textarea')
     ta.style.cssText = 'position:fixed;opacity:0;pointer-events:none;width:1px;height:1px;top:-9999px'
     document.body.appendChild(ta)
@@ -708,19 +716,34 @@ function VoiceNoteButtonInner() {
     setVoiceTarget(ta, [], {}, null, null)
     if (!isRecording()) toggleRecording()
     setStopRecordingCallback(() => {
-      if (isRecording()) stopRecording()
-      clearVoiceTarget(ta)
-      ta.remove()
-      hiddenTARef.current = null
-      setRecording(false)
+      cleanupPlacement({ stopVoice: true, resetTool: false })
     })
     setRecording(true)
     editor.setCurrentTool('voice-note', initialPoint ? { initialPoint } : undefined)
-  }, [editor])
+  }, [cleanupPlacement, editor])
+
+  // Desktop keeps the historical "voice-note button cancels/stops placement"
+  // behavior. Touch uses the button as a note target as well, so stale
+  // post-commit placement state must not turn the next tap into a pause.
+  const cancelRecording = useCallback(() => {
+    cleanupPlacement({ stopVoice: true, resetTool: true })
+  }, [cleanupPlacement])
 
   const handleClick = useCallback((e: React.MouseEvent) => {
-    if (recording || isPlacing) { cancelRecording(); return }
     if (_isTouchDevice) {
+      if (isPlacing) { cancelRecording(); return }
+      if (recording) cleanupPlacement({ stopVoice: false, resetTool: false })
+
+      const selectedIds = keepRef.current.length ? keepRef.current : editor.getSelectedShapeIds()
+      if (selectedIds.length === 1) {
+        const selected = editor.getShape(selectedIds[0]) as { type?: string } | undefined
+        if (selected?.type === 'math-note') {
+          reassertSelection(editor, selectedIds)
+          if (!isRecording()) toggleRecording()
+          return
+        }
+      }
+
       // No cursor on touch — seed the ghost just left of the button, in page
       // coords. The voice-note tool then tracks pencil hover and commits where
       // the pen taps (instead of dumping a note at viewport center).
@@ -729,8 +752,9 @@ function VoiceNoteButtonInner() {
       startPlacement(seed)
       return
     }
+    if (recording || isPlacing) { cancelRecording(); return }
     startPlacement()
-  }, [recording, isPlacing, cancelRecording, startPlacement, editor])
+  }, [recording, isPlacing, cancelRecording, cleanupPlacement, startPlacement, editor])
 
   const cls = `voice-note-btn${recording ? ' recording' : ''}${isPlacing ? ' placing' : ''}`
 
@@ -850,10 +874,10 @@ const _isTouchDevice = (typeof navigator !== 'undefined' && navigator.maxTouchPo
 // AFTER our onClick handler. Re-assert the selection we want across a few frames
 // so it wins that race. Without this, tapping the mic / voice-note button
 // deselects the targeted note.
-function reassertSelection(editor: Editor, ids: string[]) {
+function reassertSelection(editor: Editor, ids: TLShapeId[]) {
   // tldraw's post-click deselect lands within a couple hundred ms, so re-assert
   // immediately and again past that window (a select at ~250ms reliably sticks).
-  const apply = () => editor.setSelectedShapes(ids as any)
+  const apply = () => editor.setSelectedShapes(ids)
   apply()
   requestAnimationFrame(apply)
   setTimeout(apply, 150)
@@ -867,7 +891,7 @@ function MicToggleButtonInner() {
   // *pointerdown* (before onClick), so capture the selection in a document
   // capture-phase listener (which fires before tldraw's) and re-assert it after.
   const editor = useEditor()
-  const keepRef = useRef<string[]>([])
+  const keepRef = useRef<TLShapeId[]>([])
   useEffect(() => {
     const onDown = () => { keepRef.current = editor.getSelectedShapeIds() }
     document.addEventListener('pointerdown', onDown, true)
