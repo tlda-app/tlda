@@ -169,6 +169,77 @@ function getFleetBounds(editor: Editor): ClipBounds | null {
   }
 }
 
+function getFleetHudDiagnostic(editor: Editor) {
+  const humanId = getHumanId()
+  const deviceId = getDeviceId()
+  const myAnchorId = getMyAnchorId()
+  const shapes = editor.getCurrentPageShapes()
+  const fleetShapes = shapes.filter(s => FLEET_SHAPE_TYPES.has(s.type as string)) as any[]
+  const myFleetShapes = fleetShapes.filter(isMyFleetShape)
+  const sameUserOtherDevice = fleetShapes.filter(s =>
+    !!humanId &&
+    s.props?.userId === humanId &&
+    !!s.props?.deviceId &&
+    s.props.deviceId !== deviceId
+  )
+  const sameUserDevices = [...new Set(sameUserOtherDevice.map(s => String(s.props.deviceId)))].sort()
+  const orphanFleetShapes = fleetShapes.filter(s => !s.props?.userId || !s.props?.deviceId)
+  const anchors = shapes.filter((s: any) => s.id === myAnchorId || String(s.id).startsWith(`shape:fleet-hud-anchor--${humanId?.replace('fleet:', '') || ''}--`))
+
+  return {
+    humanId: humanId || '',
+    deviceId: deviceId || '',
+    myAnchorId,
+    anchorExists: !!editor.getShape(myAnchorId as any),
+    sameUserAnchorCount: anchors.length,
+    totalFleetShapeCount: fleetShapes.length,
+    myFleetShapeCount: myFleetShapes.length,
+    sameUserOtherDeviceCount: sameUserOtherDevice.length,
+    sameUserDevices,
+    orphanFleetShapeCount: orphanFleetShapes.length,
+    docShapeCount: shapes.filter(s => (s.type as string) === 'svg-page' || (s.type as string) === 'html-page').length,
+  }
+}
+
+function FleetHudEmptyDiagnostic({
+  diagnostic,
+}: {
+  diagnostic: ReturnType<typeof getFleetHudDiagnostic>
+}) {
+  const devices = diagnostic.sameUserDevices.length > 0
+    ? diagnostic.sameUserDevices.join(', ')
+    : 'none'
+
+  return (
+    <div className="fleet-hud-diagnostic-wrap">
+      <div className="fleet-hud-diagnostic" role="status" aria-live="polite">
+        <div className="fleet-hud-diagnostic-title">Fleet shapes are not visible on this device</div>
+        <div className="fleet-hud-diagnostic-body">
+          <p>
+            This browser has no owned fleet layout. TLDraw is loaded, but fleet
+            shapes are scoped by identity and device so another device's panels
+            are hidden instead of sharing touch targets.
+          </p>
+          <p>
+            Choose a default fleet layout from the fleet button to create panels
+            for this device.
+          </p>
+          <dl>
+            <div><dt>identity</dt><dd>{diagnostic.humanId || 'unresolved'}</dd></div>
+            <div><dt>device</dt><dd>{diagnostic.deviceId || 'unresolved'}</dd></div>
+            <div><dt>owned fleet shapes</dt><dd>{diagnostic.myFleetShapeCount}</dd></div>
+            <div><dt>same-user other-device shapes</dt><dd>{diagnostic.sameUserOtherDeviceCount}</dd></div>
+            <div><dt>other devices</dt><dd>{devices}</dd></div>
+            <div><dt>anchor exists</dt><dd>{diagnostic.anchorExists ? 'yes' : 'no'}</dd></div>
+            <div><dt>same-user anchors</dt><dd>{diagnostic.sameUserAnchorCount}</dd></div>
+            <div><dt>orphan fleet shapes</dt><dd>{diagnostic.orphanFleetShapeCount}</dd></div>
+          </dl>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function FleetHUD({
   mainEditor,
   shapeUtils,
@@ -199,12 +270,17 @@ export function FleetHUD({
     const s = mainEditor.getCurrentPageShapes()
     return s.some(s => (s.type as string) === 'svg-page' || (s.type as string) === 'html-page')
   })
+  const [diagnosticTick, setDiagnosticTick] = useState(0)
   const agents = useFleetAgents()
   const hudRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
   const overlayEditorRef = useRef<Editor | null>(null)
   const lastHudDiagSigRef = useRef('')
   const gesturesEnabled = expanded && !!fleetBounds && docShapesReady
+  const emptyDiagnostic = useMemo(
+    () => getFleetHudDiagnostic(mainEditor),
+    [mainEditor, identityId, fleetBounds, docShapesReady, cameraTick, diagnosticTick],
+  )
 
   useEffect(() => {
     const shapes = mainEditor.getCurrentPageShapes()
@@ -315,6 +391,16 @@ export function FleetHUD({
     const unsub = mainEditor.store.listen(({ changes }) => {
       const isFleetChange = (record: any) =>
         record.typeName === 'shape' && isMyFleetShape(record)
+      const humanId = getHumanId()
+      const anchorPrefix = humanId ? `shape:fleet-hud-anchor--${humanId.replace('fleet:', '')}--` : ''
+      const isFleetDiagnosticChange = (record: any) =>
+        record.typeName === 'shape' &&
+        (FLEET_SHAPE_TYPES.has(record.type as string) || (anchorPrefix && String(record.id).startsWith(anchorPrefix)))
+      const diagnosticChanged =
+        Object.values(changes.added).some(isFleetDiagnosticChange) ||
+        Object.values(changes.removed).some(isFleetDiagnosticChange) ||
+        Object.values(changes.updated).some(([from, to]: any) => isFleetDiagnosticChange(from) || isFleetDiagnosticChange(to))
+      if (diagnosticChanged) setDiagnosticTick(t => t + 1)
 
       // Immediate: add/remove always recalculates
       const hasAddition = Object.values(changes.added).some(isFleetChange)
@@ -766,8 +852,20 @@ export function FleetHUD({
     }
   }, [mainEditor])
 
-  // Don't render if no fleet shapes
-  if (!fleetBounds) return null
+  // Fail loud instead of silently rendering an empty HUD. A common phi/iPad
+  // failure mode is a new browser device id: same-user fleet shapes exist in
+  // the room, but none are owned by this (identity, device), so the main canvas
+  // hides them and the HUD has no bounds to render.
+  if (!fleetBounds) {
+    if (expanded) {
+      return (
+        <FleetHudEmptyDiagnostic
+          diagnostic={emptyDiagnostic}
+        />
+      )
+    }
+    return null
+  }
 
   // Collapsed: nothing — FleetIconPill in the build-pills-row handles show/hide
   if (!expanded) {
