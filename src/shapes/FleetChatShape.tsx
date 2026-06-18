@@ -29,6 +29,8 @@ import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil
 import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText, isRecording } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getHumanName, updateEventById, sendViewingContext, setViewingEnrichFn, getFleetWsBase } from '../fleet/fleet-data.mjs'
+// @ts-ignore — vanilla JS module
+import { installChatImageRetry } from '../fleet/chat-image-retry.mjs'
 import { appendToken } from '../authToken'
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useSuggestions, clearGroup, sendMessage, loadBefore, resolveFilter, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
@@ -3198,6 +3200,11 @@ function FleetChatInner({ shape }: { shape: any }) {
     el.addEventListener('mouseover', onOver)
     el.addEventListener('mouseout', onOut)
     return () => { el.removeEventListener('mouseover', onOver); el.removeEventListener('mouseout', onOut) }
+  }, [chatLogEl])
+
+  useEffect(() => {
+    if (!chatLogEl) return
+    return installChatImageRetry(chatLogEl)
   }, [chatLogEl])
 
   // Lightbox: click on chat-image opens full-size overlay
