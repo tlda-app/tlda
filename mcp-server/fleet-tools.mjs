@@ -83,6 +83,111 @@ function resolveChatBody(args, agentCwd) {
   return { error: 'Missing message: provide `message`, or `file`+`section`.' };
 }
 
+function isInInlineCode(line, index) {
+  let ticks = 0;
+  for (let i = 0; i < index; i++) {
+    if (line[i] === '`') ticks++;
+  }
+  return ticks % 2 === 1;
+}
+
+export function parseChatAuthoredSuggestions(body) {
+  const text = String(body || '');
+  const lines = text.split('\n');
+  const stripped = [];
+  const suggestions = [];
+  let inFence = false;
+  let inBlock = false;
+  let sawBlock = false;
+  let blockStart = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    if (/^(```|~~~)/.test(trimmed)) {
+      if (!inBlock) stripped.push(line);
+      inFence = !inFence;
+      continue;
+    }
+
+    const openIdx = line.indexOf('<suggestions>');
+    const closeIdx = line.indexOf('</suggestions>');
+    const hasOpen = openIdx >= 0 && !inFence && !isInInlineCode(line, openIdx);
+    const hasClose = closeIdx >= 0 && !inFence && !isInInlineCode(line, closeIdx);
+
+    if (!inBlock) {
+      if (!hasOpen) {
+        stripped.push(line);
+        continue;
+      }
+      if (sawBlock) return { error: 'Only one <suggestions> block is allowed per chat message.' };
+      if (trimmed !== '<suggestions>') return { error: '<suggestions> must appear on its own line.' };
+      if (hasClose) return { error: '<suggestions> and </suggestions> must be on separate lines.' };
+      inBlock = true;
+      sawBlock = true;
+      blockStart = i + 1;
+      continue;
+    }
+
+    if (hasOpen) return { error: `Nested <suggestions> block at line ${i + 1}.` };
+    if (hasClose) {
+      if (trimmed !== '</suggestions>') return { error: '</suggestions> must appear on its own line.' };
+      inBlock = false;
+      continue;
+    }
+
+    if (!trimmed) continue;
+    if (!trimmed.startsWith('- ')) return { error: `Malformed suggestion at line ${i + 1}: expected "- label | text | command | group:name".` };
+    const parts = trimmed.slice(2).split('|').map(p => p.trim());
+    const label = parts[0] || '';
+    if (!label) return { error: `Suggestion at line ${i + 1} is missing a label.` };
+    const suggestion = { label };
+    if (parts[1]) suggestion.text = parts[1];
+    if (parts[2]) suggestion.command = parts[2];
+    for (const extra of parts.slice(3)) {
+      if (!extra) continue;
+      const m = extra.match(/^([a-zA-Z_][\w-]*)\s*:\s*(.+)$/);
+      if (!m) return { error: `Malformed suggestion metadata at line ${i + 1}: "${extra}".` };
+      const key = m[1].toLowerCase();
+      const value = m[2].trim();
+      if (!value) return { error: `Suggestion metadata "${key}" at line ${i + 1} needs a value.` };
+      if (key === 'group') suggestion.group = value;
+      else if (key === 'target' || key === 'targetid') suggestion.targetId = value;
+      else return { error: `Unknown suggestion metadata "${key}" at line ${i + 1}.` };
+    }
+    suggestions.push(suggestion);
+  }
+
+  if (inBlock) return { error: `Unclosed <suggestions> block starting at line ${blockStart}.` };
+  if (!sawBlock) return { body: text, suggestions: [] };
+  if (suggestions.length === 0) return { error: '<suggestions> block must contain at least one suggestion.' };
+  return { body: stripped.join('\n').replace(/\n{3,}/g, '\n\n').trim(), suggestions };
+}
+
+async function postChatAuthoredSuggestions(suggestions, recipients) {
+  const ts = Date.now();
+  const targetId = recipients.length === 1 ? recipients[0] : null;
+  const stamped = suggestions.map((s, i) => ({
+    id: `${AGENT_ID}:chat:${i}`,
+    label: s.label,
+    text: s.text || '',
+    command: s.command || null,
+    kind: s.command ? 'action' : 'info',
+    group: s.group || undefined,
+    targetId: s.targetId || targetId,
+    ts,
+  }));
+  const res = await fleetFetch(`${TLDA_FLEET_SERVER}/api/suggestions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agentId: AGENT_ID, suggestions: stamped }),
+    signal: AbortSignal.timeout(3000),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return stamped.length;
+}
+
 // A shared markdown file's images are includes that travel WITH it. They don't
 // otherwise exist on the (possibly remote) server, so the renderer 404s them.
 // Upload each locally-referenced image to the fleet server (where chat is
@@ -891,7 +996,7 @@ export function getFleetTools() {
     // ---- Messaging ----
     {
       name: 'chat',
-      description: 'Send a message — or, with `amend_id`, edit one you already sent. Filter is { to?: string } — a filter EXPRESSION matching agent name/ID/labels: `|` = or, `&` = and, `!` = not, parens group (e.g. "fleet:skip", "awake & reviewers", "mathy & !goose"). A bare name/id sends to that one agent. Omit filter to send to your manager. Format with markdown.\n\nTwo ways to give the message body: (1) `message` — an inline string (filenames in it auto-become clickable chips); or (2) `file` + `section` — render a section of a markdown file as the message. Use the file form for a report or any longer, proofread-worthy message: write it in a file, then chat the section. The referenced section is the message; the rest of the file is your workspace / extended detail.\n\nPass `amend_id` (the id returned by a previous chat()) to edit that message IN PLACE in Skip\'s view instead of posting a new one — fix a lint issue or revise wording rather than sending a follow-up correction. The original text is kept in the message\'s history. With the file form you can edit the section in the file, then chat the same `file`+`section` with its `amend_id` to re-render the update in place. Amend honestly: an amend is for fixing the SAME message, not slipping in a different one.',
+      description: 'Send a message — or, with `amend_id`, edit one you already sent. Filter is { to?: string } — a filter EXPRESSION matching agent name/ID/labels: `|` = or, `&` = and, `!` = not, parens group (e.g. "fleet:skip", "awake & reviewers", "mathy & !goose"). A bare name/id sends to that one agent. Omit filter to send to your manager. Format with markdown.\n\nTwo ways to give the message body: (1) `message` — an inline string (filenames in it auto-become clickable chips); or (2) `file` + `section` — render a section of a markdown file as the message. Use the file form for a report or any longer, proofread-worthy message: write it in a file, then chat the section. The referenced section is the message; the rest of the file is your workspace / extended detail.\n\nTo author clickable choice chips with the chat, add a final `<suggestions>` block. Each entry is `- label | optional hover text | optional command | group:name`. The block is stripped from the rendered chat and posted via the suggestion channel. This first slice supports exactly one resolved chat recipient and is rejected with `amend_id`.\n\nPass `amend_id` (the id returned by a previous chat()) to edit that message IN PLACE in Skip\'s view instead of posting a new one — fix a lint issue or revise wording rather than sending a follow-up correction. The original text is kept in the message\'s history. With the file form you can edit the section in the file, then chat the same `file`+`section` with its `amend_id` to re-render the update in place. Amend honestly: an amend is for fixing the SAME message, not slipping in a different one.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -1874,12 +1979,18 @@ export async function handleFleetTool(name, args) {
     const agentCwd = getAgentCwd();
     const resolvedBody = resolveChatBody(args, agentCwd);
     if (resolvedBody.error) return { content: [{ type: 'text', text: resolvedBody.error }], isError: true };
-    const { body: message, source } = resolvedBody;
+    const parsedSuggestions = parseChatAuthoredSuggestions(resolvedBody.body);
+    if (parsedSuggestions.error) return { content: [{ type: 'text', text: `Message NOT sent — ${parsedSuggestions.error}` }], isError: true };
+    const { body: message, source } = { body: parsedSuggestions.body, source: resolvedBody.source };
+    const authoredSuggestions = parsedSuggestions.suggestions || [];
 
     // ---- amend branch: edit an already-sent message in place ----
     // `amend_id` present → route to the server's amend handler (same body forms,
     // same keep/clear-`source` semantics) instead of posting a new message.
     if (args.amend_id != null) {
+      if (authoredSuggestions.length) {
+        return { content: [{ type: 'text', text: 'Message NOT amended — <suggestions> blocks are not supported with amend_id. Send a new chat or use suggest().' }], isError: true };
+      }
       try {
         let resolvedMessage, inlineAttachments = [];
         if (source?.file) {
@@ -1957,6 +2068,12 @@ export async function handleFleetTool(name, args) {
       const names = recipients.map(id => { const a = agents?.find(x => x.id === id); return a?.friendly_name || id; });
       return { content: [{ type: 'text', text: `Broadcast to ${recipients.length} agents exceeds max_recipients=${maxRecipients}. Matched: ${names.join(', ')}. Pass max_recipients=${recipients.length} to confirm.` }], isError: true };
     }
+    if (authoredSuggestions.length && recipients.length !== 1) {
+      return { content: [{ type: 'text', text: '<suggestions> blocks currently require exactly one resolved chat recipient. Narrow filter.to to one agent, or send the message without suggestions.' }], isError: true };
+    }
+    if (authoredSuggestions.some(s => s.targetId && !recipients.includes(s.targetId))) {
+      return { content: [{ type: 'text', text: '<suggestions> block has a target that is not one of this chat\'s resolved recipients.' }], isError: true };
+    }
 
     // Resolve the body's file references → uploads. Two modes:
     //  - file-share (source.file): the body is a markdown file's content; bundle
@@ -2031,6 +2148,17 @@ export async function handleFleetTool(name, args) {
 
     if (sent.length === 0) return { content: [{ type: 'text', text: `⚠ Send failed — fleet server may be down. No messages delivered. Failed: ${failed.join(', ')}` }], isError: true };
 
+    let warning = '';
+    let suggestionNotice = '';
+    if (authoredSuggestions.length) {
+      try {
+        const count = await postChatAuthoredSuggestions(authoredSuggestions, sent);
+        suggestionNotice = ` Posted ${count} suggestion chip(s).`;
+      } catch (e) {
+        warning += `\n\n⚠ **Suggestion chips were not posted:** ${e.message}`;
+      }
+    }
+
     // Check if tlda is up — if not, Skip can't see the message even though it was delivered
     let tldaDown = false;
     try {
@@ -2041,9 +2169,8 @@ export async function handleFleetTool(name, args) {
       tldaDown = true;
     }
 
-    let warning = '';
     if (tldaDown) {
-      warning = '\n\n⚠ **tlda is down — Skip cannot see this message.** Use terminal output to communicate until tlda is back up.';
+      warning += '\n\n⚠ **tlda is down — Skip cannot see this message.** Use terminal output to communicate until tlda is back up.';
     }
 
     const brokenFiles = inlineAttachments.filter(a => a.broken).map(a => a.path);
@@ -2059,7 +2186,7 @@ export async function handleFleetTool(name, args) {
     }
 
     const amendHint = lastEventId != null ? ` (message id ${lastEventId} — chat({ amend_id: ${lastEventId} }) to edit it in place)` : '';
-    return { content: [{ type: 'text', text: `Message queued for ${sent.join(', ')}.${amendHint}${warning}` }] };
+    return { content: [{ type: 'text', text: `Message queued for ${sent.join(', ')}.${suggestionNotice}${amendHint}${warning}` }] };
   }
 
   // ---- request_terminal ----
