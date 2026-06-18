@@ -495,7 +495,7 @@ export function FleetHUD({
       unsub()
       window.removeEventListener('pointerup', handlePointerUp, true)
     }
-  }, [mainEditor])
+  }, [mainEditor, recenterHudForBounds])
 
   // Watch for SVG/HTML page shapes to arrive (async on browser restore).
   // If no saved panOffset exists, reset so it recomputes with real shape bounds.
@@ -923,6 +923,8 @@ export function FleetHUD({
     return null
   }
 
+  const activeFleetBounds = getFleetBounds(mainEditor) || fleetBounds
+
   // Fleet shapes rendered at z=1 (fixed size). X position computed dynamically
   // from document's screen position each render. Y frozen on first expand.
   void cameraTick
@@ -957,13 +959,36 @@ export function FleetHUD({
     // actual top), so the HUD pins my layout to TOP_PAD regardless of its lane.
     const off = layoutOffset(getHumanId(), getDeviceId())
     panOffsetRef.current = docLeftScreen - minPageX - off.dx
-    cameraYRef.current = TOP_PAD - fleetBounds.y
+    cameraYRef.current = TOP_PAD - activeFleetBounds.y
     // This is a *derived default*, not a user-chosen position. Do NOT persist it:
     // a saved anchor may simply be unsynced (large multi-machine rooms deliver it
     // in a later chunk), and saving the default here would overwrite the real
     // position. The anchor is persisted only on a real user pan (see pan tracking
     // above); if a saved anchor arrives late, the adopt-on-arrival listener picks
     // it up and replaces this provisional value.
+  }
+
+  if (panOffsetRef.current !== null && cameraYRef.current !== null) {
+    const projectedTop = activeFleetBounds.y + cameraYRef.current
+    const projectedBottom = projectedTop + activeFleetBounds.h
+    const verticallyVisible = projectedBottom > 0 && projectedTop < window.innerHeight
+    if (!verticallyVisible) {
+      const docShapes = mainEditor.getCurrentPageShapes().filter(s =>
+        (s.type as string) === 'html-page' || (s.type as string) === 'svg-page')
+      let minPageX = Infinity
+      for (const s of docShapes) {
+        const b = mainEditor.getShapePageBounds(s.id)
+        if (b && b.x < minPageX) minPageX = b.x
+      }
+      if (isFinite(minPageX)) {
+        const docLeftScreen = mainEditor.pageToScreen({ x: minPageX, y: 0 }).x
+        const off = layoutOffset(getHumanId(), getDeviceId())
+        panOffsetRef.current = docLeftScreen - minPageX - off.dx
+        cameraYRef.current = TOP_PAD - activeFleetBounds.y
+        ignoreSavedAnchorRef.current = true
+        userPannedRef.current = false
+      }
+    }
   }
 
   const overlayCam = {
@@ -981,7 +1006,7 @@ export function FleetHUD({
       >
         <CanvasClipPanel
           mainEditor={mainEditor}
-          bounds={fleetBounds}
+          bounds={activeFleetBounds}
           shapeUtils={shapeUtils}
           tools={tools}
           licenseKey={licenseKey}
