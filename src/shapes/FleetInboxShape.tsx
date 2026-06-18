@@ -4,8 +4,8 @@
  * Unlike the all-agent chat firehose, this panel is scoped to messages to/from
  * the logged-in human (getHumanId), grouped into per-correspondent threads. You
  * open a thread on purpose (master/detail drill-in), read it, and its unread
- * clears. Read-only in v1; the conversation view reserves a composer slot so a
- * reply box drops in cleanly later.
+ * clears. The conversation view keeps one reply composer pinned below the
+ * thread.
  *
  * Reuses renderChatLine (identical chip/math/link rendering to FleetChatShape)
  * and the fleet-data event store via useFleetEvents.
@@ -890,71 +890,98 @@ function InboxList(props: InboxListProps) {
 
 function ConversationView({ thread, ctx, myId, myName }: { thread: Thread; ctx: any; myId: string | null; myName: string }) {
   const scrollRef = useRef<HTMLDivElement>(null)
-  // Outer thread scroll — and when the pointer's over an open mini-chat's body,
-  // scroll THAT instead (the mini-chat's own scroll → dual context).
-  useWheelScroll(scrollRef, '.fleet-inbox-inline-body')
-  // Which message has its inline chat open (one at a time — opening a new one
-  // replaces the old, per Skip's design).
-  const [inlineOpenId, setInlineOpenId] = useState<string | null>(null)
-  // Pin to bottom when the thread opens (newest message visible, like a chat).
-  useEffect(() => {
+  const wasNearBottomRef = useRef(true)
+  useWheelScroll(scrollRef)
+
+  const updateNearBottom = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    wasNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48
+  }, [])
+
+  const scrollToBottom = useCallback(() => {
     const el = scrollRef.current
     if (el) el.scrollTop = el.scrollHeight
-  }, [thread.partnerId, thread.messages.length])
-  // Close the inline chat when switching threads.
-  useEffect(() => { setInlineOpenId(null) }, [thread.partnerId])
+  }, [])
+
+  // Pin to bottom when switching threads.
+  useEffect(() => {
+    wasNearBottomRef.current = true
+    scrollToBottom()
+  }, [thread.partnerId, scrollToBottom])
+
+  // Follow new/local messages only while the user is already reading the bottom.
+  useEffect(() => {
+    if (wasNearBottomRef.current) scrollToBottom()
+  }, [thread.messages.length, scrollToBottom])
+
+  const sendTargets = useMemo(() => [thread.friendly], [thread.friendly])
+  const agentNames = useMemo(() => {
+    const map: Record<string, string> = { [thread.partnerId]: thread.partnerName }
+    if (myId) map[myId] = myName || 'user'
+    return map
+  }, [thread.partnerId, thread.partnerName, myId, myName])
+
+  const send = useCallback((text: string, targets: string[]) => {
+    if (!text || targets.length === 0) return
+    const tempId = `opt-inbox-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    injectOptimisticEvent({
+      _tempId: tempId,
+      type: 'chat',
+      event_type: 'chat',
+      from: getHumanId(),
+      to: targets[0],
+      text,
+      timestamp: new Date().toISOString(),
+      read: false,
+    })
+    wasNearBottomRef.current = true
+    setTimeout(scrollToBottom, 0)
+    const sendWithRetry = (attempt: number) => {
+      Promise.all(targets.map((t) => sendMessage(t, text, { _tempId: tempId })))
+        .then((results: { ok: boolean; event_id: number }[]) => {
+          if (!results.every((r) => r.ok)) throw new Error('send failed')
+        })
+        .catch(() => {
+          if (attempt < 3) setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
+          else updateOptimisticEvent(tempId, { _failed: true })
+        })
+    }
+    sendWithRetry(1)
+  }, [scrollToBottom])
 
   return (
     <>
-      <div ref={scrollRef} className="fleet-inbox-conv fleet-chat-shape">
+      <div ref={scrollRef} className="fleet-inbox-conv fleet-chat-shape" onScroll={updateNearBottom}>
         {thread.messages.map((m, i) => {
           const key = m._dbId || m.id || String(i)
-          // Open: the clicked message is REPLACED in place by the chat, anchored
-          // on that line (not a chat inserted below).
-          if (inlineOpenId === key) {
-            return (
-              <InlineConvoChat
-                key={key}
-                thread={thread}
-                ctx={ctx}
-                myId={myId}
-                myName={myName}
-                anchorKey={key}
-                onClose={() => setInlineOpenId(null)}
-              />
-            )
-          }
           const lineHtml = renderChatLine(m, ctx)
           if (!lineHtml) return null
           const mine = m.from === myId
           return (
             <div key={key} className={`fleet-inbox-msg${mine ? ' mine' : ''}`}>
               <div dangerouslySetInnerHTML={{ __html: lineHtml }} />
-              {/* ↗ — open a chat in place of this message. Bottom-right so it's
-                  reachable on a long message (hidden until the message is hovered). */}
-              <span
-                className="fleet-inbox-open-arrow"
-                title="Open chat here"
-                onPointerUp={(e) => { stopEventPropagation(e); setInlineOpenId(key) }}
-              >↗</span>
             </div>
           )
         })}
       </div>
-      {/* Composer slot — read-only in v1; a reply box drops in here. */}
-      <div className="fleet-inbox-composer-slot" />
+      <div className="fleet-inbox-composer-slot" onPointerDown={(e) => stopEventPropagation(e)}>
+        <ChatComposer
+          sendTargets={sendTargets}
+          agentNames={agentNames}
+          onKeyboardSend={send}
+          onVoiceSend={(targets, text) => send(text, targets)}
+          isTouchDevice={_isTouchDevice}
+          style={COMPOSER_STYLE}
+        />
+      </div>
     </>
   )
 }
 
-// A live chat for this conversation, rendered inline in the flow as a
-// message-shaped block (Piece 3, model A). It's Skip's primary send surface: a
-// live message list (renderChatLine over the convo events) + the shared
-// ChatComposer (same textarea + voice registration + send-on-enter the fleet
-// chat shape uses). The drag handle detaches it onto the canvas as a real,
-// persistent fleet-chat — reusing the same pill-drag → fleet-chat path the
-// partner names use, so the dropped chat is owned + filtered to this convo.
-const COMPOSER_STYLE: React.CSSProperties = {
+type ComposerStyle = React.CSSProperties & { fieldSizing?: 'content' }
+
+const COMPOSER_STYLE: ComposerStyle = {
   width: '100%',
   background: 'transparent',
   border: '1px solid rgba(128, 128, 128, 0.15)',
@@ -969,110 +996,8 @@ const COMPOSER_STYLE: React.CSSProperties = {
   fieldSizing: 'content',
   minHeight: 'calc(1.4em + 10px)',
   maxHeight: 200,
-} as any
-const _isTouchDevice = (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
-
-function InlineConvoChat({ thread, ctx, myId, myName, anchorKey, onClose }: {
-  thread: Thread
-  ctx: any
-  myId: string | null
-  myName: string
-  anchorKey: string
-  onClose: () => void
-}) {
-  const bodyRef = useRef<HTMLDivElement>(null)
-  // (Wheel scroll for this body is handled by the parent ConversationView's
-  // single delegating handler — see useWheelScroll(innerSelector) — so there's
-  // no competing nested listener here.)
-  // Anchor on the message the chat opened from: scroll so that line sits at the
-  // top of the window (the message you clicked is what you see), and the
-  // "back to the message" control re-runs this.
-  const scrollToAnchor = useCallback(() => {
-    const el = bodyRef.current
-    if (!el) return
-    const target = el.querySelector(`[data-msg-key="${CSS.escape(anchorKey)}"]`) as HTMLElement | null
-    el.scrollTop = target ? Math.max(0, target.offsetTop - 4) : el.scrollHeight
-  }, [anchorKey])
-  useEffect(() => { scrollToAnchor() }, [scrollToAnchor])
-
-  // Sending in this conversation goes to the partner. (Matches the chat shape's
-  // sendTargets = the filter's "to" labels; here that's the partner's name.)
-  const sendTargets = useMemo(() => [thread.friendly], [thread.friendly])
-  const agentNames = useMemo(() => {
-    const map: Record<string, string> = { [thread.partnerId]: thread.partnerName }
-    if (myId) map[myId] = myName || 'user'
-    return map
-  }, [thread.partnerId, thread.partnerName, myId, myName])
-
-  // The send executor — optimistic echo + retrying send via the same primitives
-  // the fleet chat uses (sendMessage). Keyboard and voice share it (the inline
-  // chat has none of the chat shape's keyboard/voice divergence).
-  const send = useCallback((text: string, targets: string[]) => {
-    if (!text || targets.length === 0) return
-    const tempId = `opt-inbox-${Date.now()}-${Math.random().toString(36).slice(2)}`
-    injectOptimisticEvent({
-      _tempId: tempId,
-      type: 'chat',
-      event_type: 'chat',
-      from: getHumanId(),
-      to: targets[0],
-      text,
-      timestamp: new Date().toISOString(),
-      read: false,
-    })
-    const sendWithRetry = (attempt: number) => {
-      Promise.all(targets.map((t) => sendMessage(t, text, { _tempId: tempId })))
-        .then((results: { ok: boolean; event_id: number }[]) => {
-          if (!results.every((r) => r.ok)) throw new Error('send failed')
-        })
-        .catch(() => {
-          if (attempt < 3) setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
-          else updateOptimisticEvent(tempId, { _failed: true })
-        })
-    }
-    sendWithRetry(1)
-  }, [])
-
-  return (
-    <div className="fleet-inbox-inline-chat fleet-chat-shape" onPointerDown={(e) => stopEventPropagation(e)}>
-      <div ref={bodyRef} className="fleet-inbox-inline-body">
-        {thread.messages.map((m, i) => {
-          const lineHtml = renderChatLine(m, ctx)
-          if (!lineHtml) return null
-          const mine = m.from === myId
-          const key = m._dbId || m.id || String(i)
-          return (
-            <div key={key} data-msg-key={key} className={`fleet-inbox-msg${mine ? ' mine' : ''}${key === anchorKey ? ' anchor' : ''}`}>
-              <div dangerouslySetInnerHTML={{ __html: lineHtml }} />
-            </div>
-          )
-        })}
-      </div>
-      <div className="fleet-inbox-inline-composer">
-        <ChatComposer
-          sendTargets={sendTargets}
-          agentNames={agentNames}
-          onKeyboardSend={send}
-          onVoiceSend={(targets, text) => send(text, targets)}
-          isTouchDevice={_isTouchDevice}
-          style={COMPOSER_STYLE}
-        />
-      </div>
-      {/* Tiny, faint controls in the bottom corners (Skip: same size as the ×,
-          undistracting). Left = back to the message; right = close. */}
-      <span
-        className="fleet-inbox-inline-reset"
-        title="Back to the message"
-        onPointerUp={(e) => { stopEventPropagation(e); scrollToAnchor() }}
-      >⤺</span>
-      <span
-        className="fleet-inbox-inline-close"
-        title="Close"
-        onPointerUp={(e) => { stopEventPropagation(e); onClose() }}
-      >×</span>
-    </div>
-  )
 }
+const _isTouchDevice = (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
 
 const FleetInboxComponent = memo(function FleetInboxComponent({ shape }: { shape: any }) {
   const { w, h } = shape.props as { w: number; h: number }
