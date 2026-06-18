@@ -17,6 +17,7 @@ import { ledger } from './identity.mjs';
 import { formatMessage, formatActivity, formatAnnotationRef } from './format-annotation.mjs';
 import { parseTimestamp } from './lib/parse-timestamp.mjs';
 import { processMessageText } from '../shared/message-processing.mjs';
+import { unwrapMcpTextEnvelope } from '../shared/activity-pretty-result.mjs';
 import { resolveFilePath, uploadFileToServer } from '../shared/chat-file-processing.mjs';
 import { scanMarkdownDeps } from '../shared/markdown-deps.mjs';
 import { extractMarkdownSection } from '../shared/markdown-section.mjs';
@@ -2925,7 +2926,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
               meta = meta || {}
               const tool = meta.tool || ev.text || displayLabel
               const arg = meta.arg || ''
-              const prettyResult = meta.prettyResult || ''
+              const prettyResult = meta.prettyResult ? unwrapMcpTextEnvelope(meta.prettyResult) : ''
 
               // Resolve agent name
               let agentName = (ev.from || '').replace('fleet:', '')
@@ -3491,8 +3492,9 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       const lines = [`[activity${r.id ? ` #${r.id}` : ''}] ${tool}${description ? ` — ${description}` : ''}`];
       if (arg) lines.push(indentForSearch(arg));
       if (metadata.prettyResult) {
+        const prettyResult = unwrapMcpTextEnvelope(metadata.prettyResult);
         lines.push('  result:');
-        lines.push(indentForSearch(compactForSearch(metadata.prettyResult, 600), '    '));
+        lines.push(indentForSearch(compactForSearch(prettyResult, 600), '    '));
       }
       return lines.join('\n');
     };
@@ -3630,8 +3632,9 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       const lines = [`[activity${e.id ? ` #${e.id}` : ''}] ${tool}${description ? ` — ${description}` : ''}`];
       if (arg) lines.push(indentForThread(arg));
       if (metadata.prettyResult) {
+        const prettyResult = unwrapMcpTextEnvelope(metadata.prettyResult);
         lines.push('  result:');
-        lines.push(indentForThread(compactForThread(metadata.prettyResult, 1000), '    '));
+        lines.push(indentForThread(compactForThread(prettyResult, 1000), '    '));
       }
       return lines.join('\n');
     };

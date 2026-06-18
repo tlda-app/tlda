@@ -14,6 +14,63 @@
 
 import { gooseDb, gooseSessionId } from './goose-kick.mjs'
 import { parseApplyPatchFiles } from './codex-activity.mjs'
+import { truncatePrettyResult, unwrapMcpTextEnvelope } from '../../shared/activity-pretty-result.mjs'
+
+const PRETTY_PRINT_TOOLS = new Set([
+  'mcp__tlda__search_logs',
+  'mcp__tlda__get_thread',
+  'tlda__search_logs',
+  'tlda__get_thread',
+  'search_logs',
+  'get_thread',
+  'ScheduleWakeup',
+  'mcp__tlda__screenshot',
+  'tlda__screenshot',
+  'screenshot',
+  'mcp__tlda__propose_edit',
+  'tlda__propose_edit',
+  'propose_edit',
+])
+
+const pendingPrettyPrint = new Map()
+
+function humanToolName(name) {
+  return String(name || '').replace(/^mcp__/, '').replace(/__/g, '/')
+}
+
+function toolBaseName(name) {
+  return String(name || '').split('__').pop()
+}
+
+function isPrettyTool(name) {
+  return PRETTY_PRINT_TOOLS.has(name) || PRETTY_PRINT_TOOLS.has(toolBaseName(name))
+}
+
+function toolResponseId(block) {
+  return block.id || block.toolCallId || block.tool_call_id || block.toolRequestId ||
+    block.tool_request_id || block.requestId || block.request_id || block.callId ||
+    block.call_id || block.toolCall?.id || block.toolCall?.value?.id || ''
+}
+
+function textFromToolResponse(value) {
+  if (value == null) return ''
+  if (typeof value === 'string') return unwrapMcpTextEnvelope(value)
+  if (Array.isArray(value)) {
+    if (value.every(part => part && part.type === 'text' && typeof part.text === 'string')) {
+      return value.map(part => part.text).join('\n')
+    }
+    return value.map(textFromToolResponse).filter(Boolean).join('\n')
+  }
+  if (typeof value === 'object') {
+    if (typeof value.text === 'string') return unwrapMcpTextEnvelope(value.text)
+    if (typeof value.output === 'string') return unwrapMcpTextEnvelope(value.output)
+    if (typeof value.result === 'string') return unwrapMcpTextEnvelope(value.result)
+    if (value.content != null) return textFromToolResponse(value.content)
+    if (value.value != null) return textFromToolResponse(value.value)
+    if (value.toolResult != null) return textFromToolResponse(value.toolResult)
+  }
+  return ''
+}
 
 function gooseApplyPatchEvents(input, blockId, ts) {
   const patch = typeof input === 'string'
@@ -47,8 +104,8 @@ function gooseApplyPatchEvents(input, blockId, ts) {
 // matching extractActivityEvents in fleet-daemon.mjs:
 //   toolRequest block        → { tool, arg, ts, id, input }
 //   assistant text (>20 chars) → { tool: '_text', arg: text, ts }
-// reasoning (r1 thinking), toolResponse, and user-role text are skipped — the
-// claude path likewise skips tool results (except pretty-print) and user text.
+// reasoning (r1 thinking) and user-role text are skipped — the claude path
+// likewise skips tool results except pretty-print and user text.
 // `isNoise(baseName)` filters chat/my_task/register/etc. (the daemon's
 // ACTIVITY_NOISE), keyed on the tool's base name after the `tlda__` prefix.
 export function gooseMessageEvents(row, isNoise) {
@@ -67,20 +124,42 @@ export function gooseMessageEvents(row, isNoise) {
         events.push(...gooseApplyPatchEvents(input, b.id, ts))
         continue
       }
-      const base = name.split('__').pop()
+      const base = toolBaseName(name)
       if (isNoise && isNoise(base)) continue
-      const humanName = name.replace(/^mcp__/, '').replace(/__/g, '/')  // tlda__read_doc → tlda/read_doc
+      const humanName = humanToolName(name)  // tlda__read_doc → tlda/read_doc
       const arg = input.file_path || input.path || input.command || input.pattern ||
         input.message || input.query || input.description || input.reason ||
         input.doc || input.ref || input.text || ''
       const evt = { tool: humanName, arg: String(arg), ts, id: b.id }
       if (input && Object.keys(input).length > 0) evt.input = input
+      if (isPrettyTool(name) && b.id) {
+        pendingPrettyPrint.set(b.id, { evt: { ...evt }, name, expiresAt: Date.now() + 30000 })
+      }
       events.push(evt)
+    } else if (b.type === 'toolResponse') {
+      const id = toolResponseId(b)
+      if (!id || !pendingPrettyPrint.has(id)) continue
+      const pending = pendingPrettyPrint.get(id)
+      pendingPrettyPrint.delete(id)
+      const raw = textFromToolResponse(b.toolResult?.value ?? b.toolResult ?? b.result ?? b.output ?? b.content ?? b.value ?? b.text)
+      if (!raw) continue
+      const prettyResult = truncatePrettyResult(raw, pending.name)
+      events.push({
+        ...pending.evt,
+        origTool: pending.evt.tool,
+        tool: '_prettyResult',
+        prettyResult,
+        ts,
+      })
     } else if (b.type === 'text' && typeof b.text === 'string' && b.text.length > 20) {
       if (row.role === 'user') continue   // inbound nudges / terminal input — not activity
       events.push({ tool: '_text', arg: b.text, ts })
     }
-    // reasoning (r1) and toolResponse intentionally skipped for v1
+    // reasoning (r1) intentionally skipped
+  }
+  const now = Date.now()
+  for (const [id, entry] of pendingPrettyPrint) {
+    if (now > entry.expiresAt) pendingPrettyPrint.delete(id)
   }
   return events
 }

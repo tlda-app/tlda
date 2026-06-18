@@ -3,6 +3,8 @@ import test from 'node:test'
 import { renderActivityGroup } from '../src/fleet/activity-render.mjs'
 import { parseCodexLine } from '../bin/lib/codex-activity.mjs'
 import { gooseMessageEvents } from '../bin/lib/goose-activity.mjs'
+import { formatActivity } from '../mcp-server/format-annotation.mjs'
+import { unwrapMcpTextEnvelope } from '../shared/activity-pretty-result.mjs'
 
 const ctx = {
   agentLabel: id => id,
@@ -99,6 +101,63 @@ test('Goose apply_patch tool request normalizes to Edit events with diff', () =>
   assert.equal(events[0].arg, '/tmp/example.js')
   assert.equal(events[0].input.file_path, '/tmp/example.js')
   assert.match(events[0].input.diff, /const x = 2/)
+})
+
+test('Goose get_thread tool response emits unwrapped pretty result event', () => {
+  const prettyText = `2 messages (6/18/2026, 8:00:00 AM -> 8:01:00 AM)
+
+[6/18/2026, 8:00:00 AM] skip → agent-1
+first message`
+  const events = gooseMessageEvents({
+    role: 'assistant',
+    created_timestamp: 1770000000,
+    content_json: JSON.stringify([
+      {
+        id: 'goose-thread-1',
+        type: 'toolRequest',
+        toolCall: { value: { name: 'tlda__get_thread', arguments: { agent: 'agent-1' } } },
+      },
+      {
+        id: 'goose-thread-1',
+        type: 'toolResponse',
+        toolResult: {
+          value: `Wall time: 0.123 seconds\nOutput:\n${JSON.stringify([{ type: 'text', text: prettyText }])}`,
+        },
+      },
+    ]),
+  })
+
+  assert.equal(events.length, 2)
+  assert.equal(events[0].tool, 'tlda/get_thread')
+  assert.equal(events[0].arg, '')
+  assert.equal(events[1].tool, '_prettyResult')
+  assert.equal(events[1].origTool, 'tlda/get_thread')
+  assert.match(events[1].prettyResult, /2 messages/)
+  assert.match(events[1].prettyResult, /first message/)
+  assert.doesNotMatch(events[1].prettyResult, /\[\{"type":"text"/)
+  assert.doesNotMatch(events[1].prettyResult, /Wall time:/)
+})
+
+test('shared pretty-result unwrap handles Codex and MCP envelopes', () => {
+  const wrapped = 'Wall time: 0.123 seconds\nOutput:\n[{"type":"text","text":"first"},{"type":"text","text":"second"}]'
+  assert.equal(unwrapMcpTextEnvelope(wrapped), 'first\nsecond')
+})
+
+test('annotation activity formatter unwraps pretty result envelopes', () => {
+  const text = 'thread line one\nthread line two'
+  const formatted = formatActivity([{
+    from: 'fleet:agent-1',
+    timestamp: '2026-06-18T12:00:00.000Z',
+    text: 'tlda/get_thread',
+    metadata: {
+      tool: 'tlda/get_thread',
+      prettyResult: JSON.stringify([{ type: 'text', text }]),
+    },
+  }], [{ id: 'fleet:agent-1', friendly_name: 'agent-1' }])
+
+  assert.match(formatted, /thread line one/)
+  assert.match(formatted, /thread line two/)
+  assert.doesNotMatch(formatted, /\[\{"type":"text"/)
 })
 
 test('get_thread pretty result strips summary header before parsing first row', () => {
