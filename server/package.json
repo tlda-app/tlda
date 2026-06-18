@@ -6,6 +6,7 @@
     "start": "node unified-server.mjs"
   },
   "dependencies": {
+    "@deepgram/sdk": "^5.4.0",
     "@tldraw/store": "^4.3.1",
     "@tldraw/sync-core": "^4.3.1",
     "@tldraw/tlschema": "^4.3.1",
