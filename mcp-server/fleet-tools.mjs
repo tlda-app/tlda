@@ -790,6 +790,87 @@ function agentAlive(agent) {
   return false;
 }
 
+export function classifyTaskAgentHealth(task, agent, options = {}) {
+  if (!task || task.synthetic) return null;
+  const nowMs = options.nowMs ?? Date.now();
+  const aliveThresholdMs = options.aliveThresholdMs ?? ALIVE_THRESHOLD_MS;
+  const pickupGraceMs = options.pickupGraceMs ?? 2 * 60 * 1000;
+  const delegatedMs = task.delegated_at ? Date.parse(task.delegated_at) : NaN;
+  const taskAgeMs = Number.isFinite(delegatedMs) ? Math.max(0, nowMs - delegatedMs) : null;
+  const ageMin = taskAgeMs == null ? null : Math.round(taskAgeMs / 60000);
+
+  if (!agent) {
+    return {
+      level: 'error',
+      code: 'missing-agent',
+      text: '⚠ target agent is not in the roster',
+      managerAction: 'Fix the task target or redelegate.',
+    };
+  }
+
+  const name = agent.friendly_name || agent.id || task.agent;
+  const status = String(agent.status || '').toLowerCase();
+  if (agent.dead || status === 'dead') {
+    return {
+      level: 'error',
+      code: 'dead-agent',
+      text: `⚠ ${name} is marked dead`,
+      managerAction: 'Respawn or redelegate; do not wait for this task to finish silently.',
+    };
+  }
+
+  if (status === 'hibernating') {
+    return {
+      level: 'warning',
+      code: 'hibernating-agent',
+      text: `⚠ ${name} is hibernating with an active task`,
+      managerAction: 'Wake/respawn the agent or redelegate.',
+    };
+  }
+
+  const lastSeenMs = agent.last_seen ? Date.parse(agent.last_seen) : NaN;
+  if (Number.isFinite(lastSeenMs)) {
+    const heartbeatAgeMs = nowMs - lastSeenMs;
+    if (heartbeatAgeMs > aliveThresholdMs) {
+      return {
+        level: 'warning',
+        code: 'stale-heartbeat',
+        text: `⚠ no heartbeat from ${name} for ${Math.round(heartbeatAgeMs / 60000)}m`,
+        managerAction: 'Check terminal/get_thread; respawn or redelegate if the agent is stalled.',
+      };
+    }
+  } else if (taskAgeMs != null && taskAgeMs > pickupGraceMs) {
+    return {
+      level: 'warning',
+      code: 'no-heartbeat',
+      text: `⚠ ${name} has no recorded heartbeat`,
+      managerAction: 'Registration may have failed; check terminal/get_thread before waiting.',
+    };
+  }
+
+  if (task.status === 'pending' && taskAgeMs != null && taskAgeMs > pickupGraceMs) {
+    return {
+      level: 'warning',
+      code: 'pending-pickup',
+      text: `⚠ task still pending ${ageMin}m after delegation`,
+      managerAction: 'The agent may not have called my_task(); nudge, inspect, or redelegate.',
+    };
+  }
+
+  return {
+    level: 'ok',
+    code: 'healthy',
+    text: `ok${Number.isFinite(lastSeenMs) ? `; heartbeat ${Math.max(0, Math.round((nowMs - lastSeenMs) / 60000))}m ago` : ''}`,
+  };
+}
+
+function formatTaskHealth(health, { includeOk = false, includeAction = false } = {}) {
+  if (!health || (health.level === 'ok' && !includeOk)) return '';
+  let text = health.text;
+  if (includeAction && health.managerAction) text += ` — ${health.managerAction}`;
+  return text;
+}
+
 // ---- Task context helpers ----
 
 /** Build a context block showing the original delegation + criteria for a task */
@@ -2334,6 +2415,9 @@ export async function handleFleetTool(name, args) {
     const agentMap = new Map(agents.map(a => [a.id, a]));
     const lines = active.map(t => {
       const age = Math.round((Date.now() - new Date(t.delegated_at)) / 60000);
+      const taskAgent = agentMap.get(t.agent);
+      const health = classifyTaskAgentHealth(t, taskAgent);
+      const healthNote = formatTaskHealth(health, { includeAction: true });
       let status = t.status;
       if (t.synthetic) status = `📬 ${t.priority || 'normal'}`;
       if (t.status === 'blocked' && t.blockedBy) {
@@ -2348,7 +2432,7 @@ export async function handleFleetTool(name, args) {
         const ownerLabel = ownerAgent?.friendly_name || t.delegated_by;
         owner = ` | by:${ownerLabel}`;
       }
-      return `[${t.id}] ${t.agent} | ${status} | ${t.description} | ${age}m ago${owner}`;
+      return `[${t.id}] ${t.agent} | ${status} | ${t.description} | ${age}m ago${owner}${healthNote ? ` | ${healthNote}` : ''}`;
     });
 
     text += lines.join('\n');
@@ -2357,6 +2441,9 @@ export async function handleFleetTool(name, args) {
     const pending = active.filter(t => t.status === 'pending');
     const idle = active.filter(t => t.status === 'idle');
     const blocked = active.filter(t => t.status === 'blocked');
+    const unhealthy = active
+      .map(t => classifyTaskAgentHealth(t, agentMap.get(t.agent)))
+      .filter(h => h && h.level !== 'ok');
 
     const unread = AGENT_ID ? await getUnread(null, AGENT_ID) : [];
 
@@ -2366,6 +2453,7 @@ export async function handleFleetTool(name, args) {
     if (working.length > 0) nudge += `\n\n${working.length} working.`;
     if (pending.length > 0) nudge += ` ${pending.length} pending (awaiting agent pickup).`;
     if (blocked.length > 0) nudge += ` ${blocked.length} blocked.`;
+    if (unhealthy.length > 0) nudge += `\n\n⚠ ${unhealthy.length} active task(s) have agent-health warnings — inspect or redelegate instead of waiting silently.`;
     return { content: [{ type: 'text', text: text + nudge }] };
   }
 
@@ -3005,6 +3093,15 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
     if (task) {
       const age = Math.round((Date.now() - new Date(task.delegated_at)) / 60000);
       text = `Your task [${task.id}]: ${task.description}\nStatus: ${task.status} | ${age}m ago`;
+      try {
+        const agents = await sendWS('store-agents');
+        const agent = Array.isArray(agents) ? agents.find(a => a.id === AGENT_ID) : null;
+        const health = classifyTaskAgentHealth(task, agent);
+        const healthNote = formatTaskHealth(health, { includeOk: true, includeAction: true });
+        if (healthNote) text += `\nAgent health: ${healthNote}`;
+      } catch (e) {
+        text += `\nAgent health: unavailable (${e.message})`;
+      }
       if (task.message) {
         text += `\n\n${task.message}`;
         if (task.success_criteria?.length) {
