@@ -107,11 +107,12 @@ const CAT_NAMES = [
   'pebble', 'sage', 'jinx', 'kiwi', 'marble', 'rumble',
 ]
 
-function parseSpawnInput(raw: string): { doc: string; name: string | undefined; model: string | undefined; effort: string | undefined } {
+function parseSpawnInput(raw: string, models: string[] = MODEL_FALLBACK): { doc: string; name: string | undefined; model: string | undefined; effort: string | undefined } {
   const parts = raw.split(':')
   const doc = parts[0]
-  if (parts.length === 2 && MODEL_SHORTHANDS[parts[1]]) {
-    return { doc, name: undefined, model: MODEL_SHORTHANDS[parts[1]], effort: undefined }
+  if (parts.length === 2) {
+    const model = MODEL_SHORTHANDS[parts[1]] || (models.includes(parts[1]) ? parts[1] : undefined)
+    if (model) return { doc, name: undefined, model, effort: undefined }
   }
   const name = parts[1] || undefined
   const modelRaw = parts[2] || undefined
@@ -567,9 +568,9 @@ function FleetAgentsInner({ shape }: { shape: any }) {
       spawnInputRef.current?.focus()
       return
     }
-    const { doc, name, model, effort } = parseSpawnInput(spawnDoc)
+    const { doc, name, model, effort } = parseSpawnInput(spawnDoc, spawnModels)
     spawnAgent(model || DEFAULT_MODEL, doc || currentDoc || undefined, name, effort)
-  }, [spawnDoc, projectList, currentDoc])
+  }, [spawnDoc, projectList, currentDoc, spawnModels])
   const dropdownOpen = spawnFocused && !dropdownDismissed && segCandidates.length > 0
   const acceptCandidate = useCallback((candidate: string) => {
     setSpawnDoc(applyCandidate(spawnDoc, candidate))

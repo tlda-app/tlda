@@ -19,6 +19,10 @@ assert mod.infer_harness_kind("claude", "gpt-5.5-codex") == "codex"
 assert mod.infer_harness_kind("claude", "opus46") == "claude"
 assert mod.infer_harness_kind("goose", "gpt-5.5") == "goose"
 assert mod.harness_for_spawn("claude", "gpt-5.5").kind == "codex"
+assert mod.harness_for_spawn("claude", "gpt").kind == "codex"
+assert mod.harness_for_spawn("claude", "gpt").resolve_model("gpt") == "gpt-5.5"
+assert any(m["alias"] == "gpt" and m["id"] == "gpt-5.5" and m["kind"] == "codex"
+           for m in mod.HARNESS_ADAPTERS["codex"].list_models())
 
 cmd = mod.build_codex_cmd(
     "fleet:test123",

@@ -46,6 +46,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 # matches spaCy 3.8.x.
 RUN python3 -m venv /opt/venv \
     && pip install --no-cache-dir "spacy>=3.8,<3.9" "click>=8.1" \
+       "websocket-client>=1.8,<2" \
        "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
 
 # --- Tailscale (official Debian repo) ---
@@ -83,6 +84,10 @@ COPY scripts/ ./scripts/
 # stateless relay (no local audio access), so it runs fine on Fly. Only this one
 # bin/ file is needed — it imports just `ws` (in node_modules) + shared/config.mjs.
 COPY bin/deepgram-bridge.mjs ./bin/deepgram-bridge.mjs
+
+# /api/fleet/models shells out to fleet-spawn.py --list-models so the spawn UI's
+# picker is generated from the same aliases the daemon accepts.
+COPY bin/fleet-spawn.py ./bin/fleet-spawn.py
 
 # Serve the tldraw SPA from this server too. For the PRIVATE tailnet deployment
 # (server gated behind Tailscale, not the open internet), Skip's tldraw license

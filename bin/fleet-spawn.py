@@ -197,6 +197,15 @@ GOOSE_BIN = "/opt/homebrew/bin/goose"
 DEEPSEEK_RECIPE = os.path.join(
     os.path.dirname(os.path.realpath(__file__)), "..", "recipes", "fleet-deepseek.yaml")
 
+CODEX_MODELS = {
+    # `codex -m gpt` is not accepted for ChatGPT-authenticated Codex accounts.
+    # Keep the short UI alias, but resolve it to the supported subscription
+    # model id so `doc:name:gpt` and `doc:gpt` spawn a usable Codex agent.
+    "gpt": "gpt-5.5",
+    "codex": "gpt-5.5",
+    "gpt-5.5": "gpt-5.5",
+}
+
 
 def resolve_goose_model(model):
     """Return the concrete OpenRouter model id if `model` selects a goose-backed
@@ -1683,7 +1692,9 @@ class CodexHarness(HarnessAdapter):
     process_re = re.compile(r"(?:^|\s|/)codex(?:\s|$)")
 
     def resolve_model(self, model):
-        return model or "gpt-5.5"
+        if not model:
+            return CODEX_MODELS["gpt"]
+        return CODEX_MODELS.get(model, model)
 
     def build_cmd(self, fleet_id, sess, model, effort=None, mode=None,
                   resume_id=None, include_prompt=True, name=None, cwd=None,
@@ -1712,6 +1723,12 @@ class CodexHarness(HarnessAdapter):
 
     def spawn_send_keys(self):
         return True
+
+    def list_models(self):
+        return [
+            {"alias": a, "id": mid, "verified": True, "kind": self.kind}
+            for a, mid in sorted(CODEX_MODELS.items())
+        ]
 
 
 HARNESS_ADAPTERS = {
