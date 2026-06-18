@@ -38,6 +38,7 @@ import {
   classifyFleetComposerTrafficMode,
   filterForFleetComposerTrafficMode,
   nextFleetComposerTrafficMode,
+  quietTrafficSuppressesActivity,
 } from '../fleet/filter-semantics.mjs'
 import { appendToken } from '../authToken'
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
@@ -1507,9 +1508,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const fleetStyleVars = useFleetStyleVars()
   const { w, h, filter, trafficMode = 'normal' } = shape.props as { w: number; h: number; filter: [string, string][][]; trafficMode?: ChatTrafficMode }
   const quietTraffic = trafficMode === 'quiet'
-  const quietDmTraffic = quietTraffic && Array.isArray(filter) && filter.some((clause: any) =>
-    Array.isArray(clause) && clause.some((term: any) => Array.isArray(term) && term[0] === 'dm')
-  )
+  const quietDmTraffic = quietTrafficSuppressesActivity(filter, trafficMode)
   void useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
   const [filterOpen, setFilterOpen] = useState(false)
   const [filterOpenByPill, setFilterOpenByPill] = useState(false)

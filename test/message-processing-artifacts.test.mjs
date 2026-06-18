@@ -4,8 +4,10 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import http from 'node:http'
+import { JSDOM } from 'jsdom'
 
 import { detectAttachments, processMessageText } from '../shared/message-processing.mjs'
+import { renderChatLine, resolveInlineAttachments } from '../src/fleet/chat-render.mjs'
 
 function withTempDir(fn) {
   return async () => {
@@ -47,6 +49,22 @@ function startUploadStub() {
   })
 }
 
+function renderMarkdownStub(text) {
+  return text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img class="chat-image" src="$2" alt="$1">')
+}
+
+function renderCtx() {
+  return {
+    agentLabel: id => id,
+    getNickClass: () => '',
+    isHumanId: () => false,
+    getAgents: () => [],
+    getTasks: () => [],
+    tldaToken: null,
+    renderMarkdown: renderMarkdownStub,
+  }
+}
+
 test('bare local image path uploads and rewrites to an attachment token', withTempDir(async (dir) => {
   const img = path.join(dir, 'activity-card.png')
   fs.writeFileSync(img, Buffer.from([0x89, 0x50, 0x4e, 0x47]))
@@ -61,6 +79,48 @@ test('bare local image path uploads and rewrites to an attachment token', withTe
     assert.match(result.inlineAttachments[0].url, /^\/api\/file\?path=/)
     assert.equal(stub.uploads.length, 1)
     assert.equal(stub.uploads[0].name, 'activity-card.png')
+  } finally {
+    await stub.close()
+  }
+}))
+
+test('uploaded local image token renders as a visible chat image', withTempDir(async (dir) => {
+  const img = path.join(dir, 'activity-card.png')
+  fs.writeFileSync(img, Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+  const stub = await startUploadStub()
+  try {
+    const result = await processMessageText(`Artifact: ${img}`, dir, stub.baseUrl)
+    const html = renderChatLine({
+      type: 'chat',
+      from: 'fleet:agent',
+      to: 'fleet:skip',
+      text: result.resolvedMessage,
+      _inlineAttachments: result.inlineAttachments,
+      timestamp: '2026-06-18T00:00:00.000Z',
+    }, renderCtx())
+    const dom = new JSDOM(`<div id="root">${html}</div>`)
+    const rendered = dom.window.document.querySelector('img.chat-image')
+    assert.ok(rendered)
+    assert.match(rendered.getAttribute('src'), /^\/api\/file\?path=/)
+    assert.equal(rendered.getAttribute('alt'), 'activity-card.png')
+    assert.equal(dom.window.document.getElementById('root').textContent.includes(img), false)
+  } finally {
+    await stub.close()
+  }
+}))
+
+test('uploaded local image token in markdown image syntax renders with server URL', withTempDir(async (dir) => {
+  const img = path.join(dir, 'activity-card.png')
+  fs.writeFileSync(img, Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+  const stub = await startUploadStub()
+  try {
+    const result = await processMessageText(`![proof](${img})`, dir, stub.baseUrl)
+    const html = resolveInlineAttachments(result.resolvedMessage, result.inlineAttachments, renderMarkdownStub)
+    const dom = new JSDOM(`<div id="root">${html}</div>`)
+    const rendered = dom.window.document.querySelector('img.chat-image')
+    assert.ok(rendered)
+    assert.match(rendered.getAttribute('src'), /^\/api\/file\?path=/)
+    assert.equal(rendered.getAttribute('alt'), 'proof')
   } finally {
     await stub.close()
   }

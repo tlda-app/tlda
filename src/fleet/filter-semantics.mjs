@@ -111,6 +111,13 @@ export function sameFleetFilter(a, b) {
   return canonicalFilter(a) === canonicalFilter(b)
 }
 
+export function quietTrafficSuppressesActivity(filter, trafficMode) {
+  if (trafficMode !== 'quiet') return false
+  return Array.isArray(filter) && filter.some((clause) =>
+    Array.isArray(clause) && clause.some((term) => Array.isArray(term) && term[0] === 'dm')
+  )
+}
+
 export function classifyFleetComposerTrafficMode(filter, trafficMode, humanLabel, agentLabel) {
   if (!agentLabel) return 'custom'
   if (sameFleetFilter(filter, buildFleetDmFilter(humanLabel, agentLabel))) {

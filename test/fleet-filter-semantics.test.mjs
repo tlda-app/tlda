@@ -8,6 +8,7 @@ import {
   filterForFleetComposerTrafficMode,
   matchesFleetFilter,
   nextFleetComposerTrafficMode,
+  quietTrafficSuppressesActivity,
   resolveFleetFilter,
   sameFleetFilter,
 } from '../src/fleet/filter-semantics.mjs'
@@ -97,4 +98,12 @@ test('composer traffic presets classify and cycle DM quiet, DM, all agent traffi
   assert.equal(sameFleetFilter(filterForFleetComposerTrafficMode('dm-quiet', 'dmitry', 'worker'), dmFilter), true)
   assert.equal(sameFleetFilter(filterForFleetComposerTrafficMode('dm', 'dmitry', 'worker'), dmFilter), true)
   assert.equal(sameFleetFilter(filterForFleetComposerTrafficMode('agent', 'dmitry', 'worker'), agentFilter), true)
+})
+
+test('quiet traffic suppresses activity only for direct-message mode', () => {
+  assert.equal(quietTrafficSuppressesActivity(dmFilter, 'quiet'), true)
+  assert.equal(quietTrafficSuppressesActivity(dmFilter, 'normal'), false)
+  assert.equal(quietTrafficSuppressesActivity(agentFilter, 'quiet'), false)
+  assert.equal(quietTrafficSuppressesActivity([], 'quiet'), false)
+  assert.equal(quietTrafficSuppressesActivity(null, 'quiet'), false)
 })
