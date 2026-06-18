@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { renderActivityGroup } from '../src/fleet/activity-render.mjs'
+import { parseCodexLine } from '../bin/lib/codex-activity.mjs'
 import { gooseMessageEvents } from '../bin/lib/goose-activity.mjs'
 
 const ctx = {
@@ -33,6 +34,45 @@ test('Codex-style Edit activity with unified diff renders side-by-side diff card
   assert.match(html, /diff-old/)
   assert.match(html, /diff-new/)
   assert.doesNotMatch(html, /edit-unified-diff-wrap/)
+  assert.match(html, /const x = 1/)
+  assert.match(html, /const x = 2/)
+})
+
+test('Codex apply_patch parser output renders as useful diff card', () => {
+  const patch = `*** Begin Patch
+*** Update File: /tmp/example.js
+@@
+-const x = 1
++const x = 2
+*** End Patch`
+  const ev = parseCodexLine(JSON.stringify({
+    type: 'response_item',
+    timestamp: '2026-06-17T00:00:00.000Z',
+    payload: {
+      type: 'custom_tool_call',
+      name: 'apply_patch',
+      call_id: 'codex-patch-1',
+      input: patch,
+    },
+  }))
+  const block = ev.blocks[0]
+  const html = renderActivityGroup([{
+    from: 'agent-1',
+    timestamp: ev.timestamp,
+    _activity: true,
+    _toolName: block.name,
+    _toolArg: block.input.file_path,
+    _toolInput: block.input,
+  }], ctx)
+
+  assert.equal(block.name, 'Edit')
+  assert.equal(block.input.file_path, '/tmp/example.js')
+  assert.match(block.input.diff, /const x = 2/)
+  assert.match(html, /tool-name">Edit/)
+  assert.match(html, /edit-unified-side-by-side-wrap/)
+  assert.match(html, /example\.js/)
+  assert.match(html, /diff-old/)
+  assert.match(html, /diff-new/)
   assert.match(html, /const x = 1/)
   assert.match(html, /const x = 2/)
 })
