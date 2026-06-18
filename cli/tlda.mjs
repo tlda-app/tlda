@@ -1506,6 +1506,7 @@ function usageAgent() {
 Usage:
   tlda agent list
   tlda agent spawn <agent>
+  tlda agent check-ready <agent> [--timeout seconds]
   tlda agent attach <agent>
   tlda agent hibernate <agent>
   tlda agent capability <agent> <capability> [--no-net] [--dry-run]
@@ -1520,7 +1521,8 @@ Network:
   network is on by default
   --no-net    rare explicit network-off modifier
 
-The capability command is operator-only: it refuses from fleet agent env/tmux context.`)
+The capability command is operator-only: it refuses from fleet agent env/tmux context.
+check-ready verifies registry + local tmux/runtime + recent register/my_task evidence.`)
 }
 
 function capabilityNamesForError() {
@@ -1538,6 +1540,138 @@ function applyNetworkModifier(policyOption) {
 
 function normalizeAgentMetadata(meta) {
   return meta && typeof meta === 'object' && !Array.isArray(meta) ? meta : {}
+}
+
+function parseJsonMaybe(value) {
+  if (!value) return null
+  if (typeof value === 'object') return value
+  try { return JSON.parse(value) } catch { return null }
+}
+
+function agentMatchesQuery(agent, query) {
+  return agent?.id === query ||
+    agent?.friendly_name === query ||
+    agent?.tmux_session === query ||
+    agent?.tmux_session === agentSessionName(query)
+}
+
+function processTreeHasRuntime(spawnSync, panePids, expectedKind = null) {
+  const ps = spawnSync('ps', ['-eo', 'pid,ppid,args'], { encoding: 'utf8' })
+  if (ps.status !== 0) return { ok: false, kind: null, pid: null }
+  const children = new Map()
+  const argsByPid = new Map()
+  for (const line of ps.stdout.split('\n')) {
+    const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/)
+    if (!m) continue
+    const [, pid, ppid, procArgs] = m
+    argsByPid.set(pid, procArgs)
+    if (!children.has(ppid)) children.set(ppid, [])
+    children.get(ppid).push(pid)
+  }
+  const runtimeRes = [
+    ['codex', /(?:^|\s|\/)codex(?:\s|$)/],
+    ['goose', /(?:^|\s|\/)goose(?:\s|$).*?\brun\b|\bgoose run\b/],
+    ['claude', /(?:^|\s|\/)claude(?:\s|$)/],
+  ]
+  const ordered = expectedKind
+    ? [...runtimeRes.filter(([k]) => k === expectedKind), ...runtimeRes.filter(([k]) => k !== expectedKind)]
+    : runtimeRes
+  const stack = [...panePids]
+  const seen = new Set()
+  while (stack.length) {
+    const pid = stack.pop()
+    if (seen.has(pid)) continue
+    seen.add(pid)
+    const procArgs = argsByPid.get(pid) || ''
+    for (const [kind, re] of ordered) {
+      if (re.test(procArgs)) return { ok: true, kind, pid }
+    }
+    for (const child of children.get(pid) || []) stack.push(child)
+  }
+  return { ok: false, kind: null, pid: null }
+}
+
+async function cmdAgentCheckReady() {
+  const query = getPositional(1)
+  if (!query) {
+    console.error('Usage: tlda agent check-ready <agent> [--timeout seconds]')
+    process.exit(1)
+  }
+  const { spawnSync } = await import('child_process')
+  await ensureServer()
+  const timeoutSec = Math.max(0, Number(getFlag('timeout', '0') || 0))
+  const deadline = Date.now() + timeoutSec * 1000
+  let final = null
+  do {
+    final = await collectAgentReadiness(query, spawnSync)
+    if (final.ok) break
+    if (Date.now() >= deadline) break
+    await new Promise(resolve => setTimeout(resolve, 2000))
+  } while (true)
+
+  printAgentReadiness(final)
+  process.exit(final.ok ? 0 : 1)
+}
+
+async function collectAgentReadiness(query, spawnSync) {
+  const state = await api('GET', '/api/state')
+  const agents = Array.isArray(state?.agents) ? state.agents : []
+  const matches = agents.filter(a => agentMatchesQuery(a, query))
+  if (matches.length !== 1) {
+    return { ok: false, query, error: matches.length ? `multiple agents matched (${matches.length})` : 'agent not found' }
+  }
+  const agent = matches[0]
+  const meta = normalizeAgentMetadata(agent.metadata)
+  const expectedKind = meta.kind || null
+  const sess = agent.tmux_session || agentSessionName(agent.friendly_name || query)
+  const hasSession = spawnSync('tmux', [...tmuxBase(), 'has-session', '-t', sess], { stdio: 'ignore' }).status === 0
+  let panes = []
+  if (hasSession) {
+    const r = spawnSync('tmux', [...tmuxBase(), 'list-panes', '-t', sess, '-F', '#{pane_pid}'], { encoding: 'utf8' })
+    if (r.status === 0) panes = r.stdout.trim().split(/\s+/).filter(Boolean)
+  }
+  const runtime = hasSession ? processTreeHasRuntime(spawnSync, panes, expectedKind) : { ok: false, kind: null, pid: null }
+  const table = await api('GET', `/api/fleet-table?filter=${encodeURIComponent(agent.id)}&limit=5`)
+  const row = (table.agents || []).find(a => a.id === agent.id) || null
+  const eventsData = await api('GET', `/api/store/events?agent=${encodeURIComponent(agent.id)}&limit=200`)
+  const events = Array.isArray(eventsData?.events) ? eventsData.events : []
+  const recentRegister = [...events].reverse().find(e => e.type === 'register')
+  const recentMyTask = [...events].reverse().find(e => {
+    if (e.type !== 'activity') return false
+    const m = parseJsonMaybe(e.metadata) || {}
+    return String(m.tool || e.text || '').includes('my_task')
+  })
+  const incoming = [...events].reverse().find(e => e.to === agent.id && e.from !== agent.id && ['chat', 'delegate'].includes(e.type))
+  const replyAfterIncoming = incoming
+    ? events.find(e => e.from === agent.id && e.to !== agent.id && Date.parse(e.timestamp) > Date.parse(incoming.timestamp))
+    : null
+  const ok = !agent.dead && hasSession && runtime.ok && !!recentRegister
+  return {
+    ok, query, agent, tableRow: row, session: sess, hasSession, panes, runtime,
+    recentRegister, recentMyTask, incoming, replyAfterIncoming,
+  }
+}
+
+function printAgentReadiness(r) {
+  if (r.error) {
+    console.error(`spawn readiness: FAIL — ${r.error}`)
+    return
+  }
+  const agent = r.agent
+  const row = r.tableRow
+  console.log(`spawn readiness for ${agent.friendly_name || agent.id} (${agent.id})`)
+  console.log(`  registry: ${agent.dead ? 'dead' : 'live row'}; status=${row?.status || agent.status || 'unknown'}; machine=${agent.machine_id || 'unknown'}`)
+  console.log(`  tmux: ${r.hasSession ? `ok ${r.session} panes=${r.panes.join(',') || 'none'}` : `missing ${r.session}`}`)
+  console.log(`  runtime: ${r.runtime.ok ? `ok ${r.runtime.kind} pid=${r.runtime.pid}` : 'missing under tmux pane'}`)
+  console.log(`  register event: ${r.recentRegister ? `${r.recentRegister.timestamp} #${r.recentRegister.id}` : 'missing'}`)
+  console.log(`  recent my_task activity: ${r.recentMyTask ? `${r.recentMyTask.timestamp} #${r.recentMyTask.id}` : 'not observed (my_task is often filtered as infrastructure)'}`)
+  if (r.incoming) {
+    const reply = r.replyAfterIncoming ? `${r.replyAfterIncoming.timestamp} #${r.replyAfterIncoming.id}` : 'no later outbound reply observed'
+    console.log(`  chat/task roundtrip: incoming #${r.incoming.id}; reply=${reply}`)
+  } else {
+    console.log('  chat/task roundtrip: no recent inbound chat/delegate to evaluate')
+  }
+  console.log(`  result: ${r.ok ? 'READY' : 'NOT READY'}`)
 }
 
 async function findAgentForCapability(agentQuery) {
@@ -1649,11 +1783,12 @@ async function cmdAgent() {
     case 'list':
     case 'ls':        await listLocalAgents(); break
     case 'spawn':     await ensureServer(); await runFleetSpawn(process.argv.slice(4)); break // after "tlda agent spawn"
+    case 'check-ready': await cmdAgentCheckReady(); break
     case 'attach':    await attachToAgent(getPositional(1)); break
     case 'hibernate': await hibernateAgent(getPositional(1)); break
     case 'capability': await cmdAgentCapability(); break
     default:
-      console.error('Usage: tlda agent <list|spawn|attach|hibernate|capability> [name]')
+      console.error('Usage: tlda agent <list|spawn|check-ready|attach|hibernate|capability> [name]')
       process.exit(1)
   }
 }
