@@ -1082,16 +1082,22 @@ let _dgTrickleShown = 0          // how many trickle words are visible
 let _dgTrickleTimer = null       // setTimeout id for next trickle step
 let _dgTrickleDelay = 40         // ms between words (adjusted per burst)
 let _dgIgnoreUntilUtteranceEnd = false // true after voice-send; drops trailing old-utterance results
+let _dgIgnoredSubmittedText = null // normalized utterance submitted before waiting for utterance_end
 
 function _dgTrickleFlush() {
   clearTimeout(_dgTrickleTimer)
   _dgTrickleTimer = null
 }
 
-function resetDeepgramTextState({ ignoreUntilUtteranceEnd = false } = {}) {
+function normalizeDeepgramText(text) {
+  return String(text || '').replace(/\s+/g, ' ').trim().toLowerCase()
+}
+
+function resetDeepgramTextState({ ignoreUntilUtteranceEnd = false, submittedText = null } = {}) {
   _deepgramInterim = ''
   _dgHasSeenInterim = false
   _dgIgnoreUntilUtteranceEnd = ignoreUntilUtteranceEnd
+  _dgIgnoredSubmittedText = ignoreUntilUtteranceEnd ? normalizeDeepgramText(submittedText) : null
   _dgTrickleFlush()
   _dgTrickleWords = []
   _dgTrickleShown = 0
@@ -1148,10 +1154,10 @@ function pressEnterOnActiveTextarea() {
   }))
 }
 
-function submitTextareaViaMagicWord(cleanText) {
+function submitTextareaViaMagicWord(cleanText, submittedText) {
   replaceTextareaValue(cleanText)
   pressEnterOnActiveTextarea()
-  if (_backend === 'deepgram') resetDeepgramTextState({ ignoreUntilUtteranceEnd: true })
+  if (_backend === 'deepgram') resetDeepgramTextState({ ignoreUntilUtteranceEnd: true, submittedText })
 }
 
 function handleSendMagicWord(leftTrimmed) {
@@ -1164,19 +1170,19 @@ function handleSendMagicWord(leftTrimmed) {
     showHud('sent', '#7ab8a0')
     fadeHud(2500)
     afterSend()
-    if (_backend === 'deepgram') resetDeepgramTextState({ ignoreUntilUtteranceEnd: true })
+    if (_backend === 'deepgram') resetDeepgramTextState({ ignoreUntilUtteranceEnd: true, submittedText: leftTrimmed })
     return true
   }
 
   if (_activeTextarea) {
-    submitTextareaViaMagicWord(cleanText)
+    submitTextareaViaMagicWord(cleanText, leftTrimmed)
     return true
   }
 
   showHud('no chat focused', '#c8956a')
   fadeHud(2000)
   afterSend()
-  if (_backend === 'deepgram') resetDeepgramTextState({ ignoreUntilUtteranceEnd: true })
+  if (_backend === 'deepgram') resetDeepgramTextState({ ignoreUntilUtteranceEnd: true, submittedText: leftTrimmed })
   return true
 }
 
@@ -1210,6 +1216,7 @@ function onDeepgramMessage(event) {
 
     if (msg.type === 'utterance_end') {
       _dgIgnoreUntilUtteranceEnd = false
+      _dgIgnoredSubmittedText = null
       if (_deepgramInterim || _interim) {
         resetDeepgramTextState()
         _interim = ''
@@ -1221,8 +1228,13 @@ function onDeepgramMessage(event) {
     if (msg.type !== 'transcript' || !msg.text) return
 
     if (_dgIgnoreUntilUtteranceEnd) {
-      vlog('DROPPED transcript (waiting for utterance end)', { final: !!msg.is_final, text: msg.text.slice(0, 30) })
-      return
+      const normalized = normalizeDeepgramText(msg.text)
+      if (!_dgIgnoredSubmittedText || _dgIgnoredSubmittedText.includes(normalized) || normalized.includes(_dgIgnoredSubmittedText)) {
+        vlog('DROPPED transcript (waiting for utterance end)', { final: !!msg.is_final, text: msg.text.slice(0, 30) })
+        return
+      }
+      _dgIgnoreUntilUtteranceEnd = false
+      _dgIgnoredSubmittedText = null
     }
 
     // Discard finals that arrive after afterSend() cleared the session but before

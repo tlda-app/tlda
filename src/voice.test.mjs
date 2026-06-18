@@ -404,10 +404,19 @@ function reset() {
   assert.deepEqual(sent, ['hello world'], 'final magic word should press Enter once with cleaned text')
 
   // Racing duplicate results from the same Deepgram utterance are ignored until
-  // Deepgram says the utterance ended.
+  // Deepgram says the utterance ended. Duplicate finals can arrive without a
+  // fresh interim on the old utterance too.
+  window.__voiceTest.injectTranscript('hello world send', true)
   window.__voiceTest.injectTranscript('hello world send', false)
   window.__voiceTest.injectTranscript('hello world send', true)
   assert.deepEqual(sent, ['hello world'], 'same utterance should not send twice')
+
+  // If Deepgram misses utterance_end entirely, a different new utterance should
+  // release the duplicate guard instead of leaving dictation stuck forever.
+  window.__voiceTest.injectTranscript('second message send', false)
+  assert.deepEqual(sent, ['hello world'], 'new interim magic word still should not send')
+  window.__voiceTest.injectTranscript('second message send', true)
+  assert.deepEqual(sent, ['hello world', 'second message'], 'new utterance should submit even without prior utterance_end')
 
   window.__voiceTest.fakeStop()
   reset()
