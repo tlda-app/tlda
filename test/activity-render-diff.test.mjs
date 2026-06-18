@@ -247,6 +247,36 @@ second message`
   assert.doesNotMatch(html, /\\n\\n/)
 })
 
+test('get_thread pretty result handles provenance header and spaced agent tags', () => {
+  const prettyText = `4 messages (6/18/2026, 5:40:48 AM → 6/18/2026, 5:41:02 AM)
+↳ agent-7lpi → get-thread-render-fix · fleet:d5aa87a8
+
+[6/18/2026, 5:40:48 AM] agent-7lpi fleet:d5aa87a8 →now:get-thread-render-fix → agent-7lpi fleet:d5aa87a8 →now:get-thread-render-fix
+agent-7lpi registered
+
+---
+
+[6/18/2026, 5:40:50 AM] todo-rollout-manager fleet:65412ad1 → agent-7lpi fleet:d5aa87a8 →now:get-thread-render-fix
+[DELEGATE]
+Fix get_thread rendering`
+  const html = renderActivityGroup([{
+    from: 'agent-1',
+    timestamp: '2026-06-18T12:00:00.000Z',
+    _activity: true,
+    _toolName: 'mcp__tlda__get_thread',
+    _toolArg: 'get-thread-render-fix',
+    _prettyResult: JSON.stringify([{ type: 'text', text: prettyText }]),
+  }], ctx)
+
+  assert.match(html, /tool-pretty-thread/)
+  assert.match(html, /pretty-result-header/)
+  assert.match(html, /agent-7lpi → get-thread-render-fix/)
+  assert.match(html, /data-msg-from="agent-7lpi fleet:d5aa87a8 →now:get-thread-render-fix"/)
+  assert.match(html, /data-msg-from="todo-rollout-manager fleet:65412ad1"/)
+  assert.match(html, /Fix get_thread rendering/)
+  assert.doesNotMatch(html, /<div class="pretty-msg-body">4 messages/)
+})
+
 test('get_thread pretty result strips Codex wall-time output wrapper before rendering', () => {
   const prettyText = `2 messages (6/18/2026, 8:00:00 AM -> 8:01:00 AM)
 

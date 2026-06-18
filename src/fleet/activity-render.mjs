@@ -127,11 +127,11 @@ function renderScreenshotResult(text) {
 
 function renderThreadResult(text, ctx) {
   // Format: "[timestamp] from → to\nmessage\n\n---\n\n[timestamp] from → to\n..."
-  // Parse the optional summary header before splitting messages. Leaving it in
-  // the first chunk makes the first message miss the row parser and render raw.
-  const headerLine = text.match(/^((?:Showing \d+ of \d+[^\n]*|⚠️[^\n]*|\d+ messages[^\n]*)(?:\n|$))+/)
-  const headerText = headerLine ? headerLine[0].trim() : ''
-  const bodyText = headerLine ? text.slice(headerLine[0].length).replace(/^\n+/, '') : text
+  // Parse the optional summary/provenance header before splitting messages.
+  // Leaving it in the first chunk makes the first message miss the row parser.
+  const firstMsg = /(?:^|\n)(\[[^\]\n]+\]\s+)/.exec(text)
+  const headerText = firstMsg && firstMsg.index > 0 ? text.slice(0, firstMsg.index).trim() : ''
+  const bodyText = firstMsg ? text.slice(firstMsg.index).replace(/^\n+/, '') : text
   // Split on --- separators
   const msgs = bodyText.split(/\n\n---\n\n/)
   if (msgs.length <= 1) {
@@ -142,7 +142,7 @@ function renderThreadResult(text, ctx) {
   const THREAD_PREVIEW = THREAD_FRONT + THREAD_TAIL
   const hasMoreMsgs = msgs.length > THREAD_PREVIEW
   const renderMsg = (msg) => {
-    const headerMatch = msg.match(/^\[([^\]]*)\]\s*(\S+)\s*→\s*(\S+)\n([\s\S]*)$/)
+    const headerMatch = msg.match(/^\[([^\]]*)\]\s*(.+?)\s+→\s+(.+?)\n([\s\S]*)$/)
     if (!headerMatch) return `<div class="chat-line"><div class="pretty-msg-body">${ctx.renderMarkdown ? ctx.renderMarkdown(esc(msg)) : esc(msg)}</div></div>`
     const [, ts, from, to, body] = headerMatch
     const fromCls = ctx.getNickClass ? ctx.getNickClass(from) : 'chat-nick'
