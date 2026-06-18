@@ -127,6 +127,11 @@ const TERM_THEME = {
   white: '#d4d4d4', brightWhite: '#ffffff',
 }
 
+type TerminalOutputFrame = {
+  data: string
+  encoding?: string
+}
+
 // Hover mode: read-only snapshot that resets on each server push.
 // Pinned mode: stays open, shows input bar for sending commands, resizable.
 function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter, onMouseLeave }: {
@@ -338,6 +343,30 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
     if (!agentId) return
     wsRef.current?.close()
     setStatus('connecting')
+    let sawAuthoritativeSize = false
+    let fallbackFlushed = false
+    let fallbackTimer: ReturnType<typeof setTimeout> | null = null
+    const pendingOutput: TerminalOutputFrame[] = []
+    const writeOutput = (msg: TerminalOutputFrame) => {
+      const term = termRef.current
+      if (!term) return
+      if (msg.encoding === 'base64') {
+        const bytes = Uint8Array.from(atob(msg.data), c => c.charCodeAt(0))
+        term.write(bytes)
+      } else {
+        term.write(msg.data)
+      }
+    }
+    const flushPendingOutput = () => {
+      if (!termRef.current) return
+      for (const msg of pendingOutput) writeOutput(msg)
+      pendingOutput.length = 0
+    }
+    fallbackTimer = setTimeout(() => {
+      if (sawAuthoritativeSize) return
+      fallbackFlushed = true
+      for (const msg of pendingOutput) writeOutput(msg)
+    }, 1500)
     // /ws/terminal must hit the fleet server (where the daemon is connected),
     // NOT the page origin — on the local copy the page is served from 5176 but
     // the daemon talks to Fly, so the page-origin socket had no daemon behind it.
@@ -355,13 +384,25 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
           // scale effect then re-fits it to the panel width.
           setGridCols(msg.cols)
           setGridRows(msg.rows)
-          try { termRef.current?.resize(msg.cols, msg.rows) } catch {}
+          try {
+            const term = termRef.current
+            term?.resize(msg.cols, msg.rows)
+            if (fallbackTimer) {
+              clearTimeout(fallbackTimer)
+              fallbackTimer = null
+            }
+            if (!sawAuthoritativeSize) {
+              sawAuthoritativeSize = true
+              term?.clear()
+              flushPendingOutput()
+            }
+          } catch { void 0 }
         } else if (msg.type === 'output' && msg.data && termRef.current) {
-          if (msg.encoding === 'base64') {
-            const bytes = Uint8Array.from(atob(msg.data), c => c.charCodeAt(0))
-            termRef.current.write(bytes)
+          if (sawAuthoritativeSize) {
+            writeOutput(msg)
           } else {
-            termRef.current.write(msg.data)
+            pendingOutput.push(msg)
+            if (fallbackFlushed) writeOutput(msg)
           }
         } else if (msg.type === 'error') {
           setStatus('error')
@@ -370,7 +411,10 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
     }
     ws.onerror = () => setStatus('error')
     ws.onclose = () => {}
-    return () => { ws.close() }
+    return () => {
+      if (fallbackTimer) clearTimeout(fallbackTimer)
+      ws.close()
+    }
   }, [agentId])
 
   const sendInput = (data: string) => {
