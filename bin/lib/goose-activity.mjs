@@ -14,7 +14,7 @@
 
 import { gooseDb, gooseSessionId } from './goose-kick.mjs'
 import { parseApplyPatchFiles } from './codex-activity.mjs'
-import { truncatePrettyResult, unwrapMcpTextEnvelope } from '../../shared/activity-pretty-result.mjs'
+import { normalizePrettyResult, truncatePrettyResult } from '../../shared/activity-pretty-result.mjs'
 
 const PRETTY_PRINT_TOOLS = new Set([
   'mcp__tlda__search_logs',
@@ -53,23 +53,7 @@ function toolResponseId(block) {
 }
 
 function textFromToolResponse(value) {
-  if (value == null) return ''
-  if (typeof value === 'string') return unwrapMcpTextEnvelope(value)
-  if (Array.isArray(value)) {
-    if (value.every(part => part && part.type === 'text' && typeof part.text === 'string')) {
-      return value.map(part => part.text).join('\n')
-    }
-    return value.map(textFromToolResponse).filter(Boolean).join('\n')
-  }
-  if (typeof value === 'object') {
-    if (typeof value.text === 'string') return unwrapMcpTextEnvelope(value.text)
-    if (typeof value.output === 'string') return unwrapMcpTextEnvelope(value.output)
-    if (typeof value.result === 'string') return unwrapMcpTextEnvelope(value.result)
-    if (value.content != null) return textFromToolResponse(value.content)
-    if (value.value != null) return textFromToolResponse(value.value)
-    if (value.toolResult != null) return textFromToolResponse(value.toolResult)
-  }
-  return ''
+  return normalizePrettyResult(value)
 }
 
 function gooseApplyPatchEvents(input, blockId, ts) {

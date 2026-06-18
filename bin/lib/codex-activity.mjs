@@ -27,6 +27,8 @@
 // to what extractActivityEvents expects (a flat 'mcp__tlda__x' name; an `input.command`
 // for shell), so the noise filter and arg extraction work unchanged.
 
+import { normalizePrettyResult } from '../../shared/activity-pretty-result.mjs'
+
 // Native Codex tool name → Claude vocabulary, so a Codex agent's activity
 // stream reads identically to a Claude agent's (Skip's call, 2026-06-15:
 // "use the Claude vocabulary, it's so much easier to understand").
@@ -88,27 +90,7 @@ export function aliasNativeArgs(name, input) {
 // useful result, not the transport envelope. If anything is ambiguous, return
 // the original text.
 export function unwrapCodexToolOutput(text) {
-  if (typeof text !== 'string' || !text) return text
-  let body = text
-  const outputMatch = /(?:^|\n)Output:\n([\s\S]*)$/.exec(body)
-  if (outputMatch && /^Wall time:/m.test(body.slice(0, outputMatch.index))) {
-    body = outputMatch[1]
-  }
-  const trimmed = body.trim()
-  if (!trimmed) return body
-  try {
-    const parsed = JSON.parse(trimmed)
-    if (Array.isArray(parsed) && parsed.every(part => part && part.type === 'text' && typeof part.text === 'string')) {
-      return parsed.map(part => part.text).join('\n')
-    }
-    if (parsed && parsed.type === 'text' && typeof parsed.text === 'string') {
-      return parsed.text
-    }
-  } catch (err) {
-    // Plain command output, or a non-JSON tool result. Keep the stripped body.
-    if (!(err instanceof SyntaxError)) throw err
-  }
-  return body
+  return normalizePrettyResult(text)
 }
 
 // Parse a Codex `apply_patch` body into the files it touches + their hunks.

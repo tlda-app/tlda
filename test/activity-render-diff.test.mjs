@@ -4,7 +4,7 @@ import { renderActivityGroup } from '../src/fleet/activity-render.mjs'
 import { parseCodexLine } from '../bin/lib/codex-activity.mjs'
 import { gooseMessageEvents } from '../bin/lib/goose-activity.mjs'
 import { formatActivity } from '../mcp-server/format-annotation.mjs'
-import { unwrapMcpTextEnvelope } from '../shared/activity-pretty-result.mjs'
+import { normalizePrettyResult, unwrapMcpTextEnvelope } from '../shared/activity-pretty-result.mjs'
 
 const ctx = {
   agentLabel: id => id,
@@ -176,6 +176,16 @@ test('shared pretty-result unwrap handles Codex and MCP envelopes', () => {
   assert.equal(unwrapMcpTextEnvelope(wrapped), 'first\nsecond')
 })
 
+test('shared pretty-result normalizer handles Claude, Codex, and Goose envelopes', () => {
+  const claude = [{ type: 'text', text: 'claude text' }]
+  const codex = 'Wall time: 0.123 seconds\nOutput:\n[{"type":"text","text":"codex text"}]'
+  const goose = { content: [{ type: 'text', text: 'goose text' }] }
+
+  assert.equal(normalizePrettyResult(claude), 'claude text')
+  assert.equal(normalizePrettyResult(codex), 'codex text')
+  assert.equal(normalizePrettyResult(goose), 'goose text')
+})
+
 test('annotation activity formatter unwraps pretty result envelopes', () => {
   const text = 'thread line one\nthread line two'
   const formatted = formatActivity([{
@@ -190,6 +200,25 @@ test('annotation activity formatter unwraps pretty result envelopes', () => {
 
   assert.match(formatted, /thread line one/)
   assert.match(formatted, /thread line two/)
+  assert.doesNotMatch(formatted, /\[\{"type":"text"/)
+})
+
+test('annotation activity formatter strips Codex wall-time output wrappers', () => {
+  const wrapped = 'Wall time: 0.123 seconds\nOutput:\n[{"type":"text","text":"thread line one\\nthread line two"}]'
+  const formatted = formatActivity([{
+    from: 'fleet:agent-1',
+    timestamp: '2026-06-18T12:00:00.000Z',
+    text: 'tlda/get_thread',
+    metadata: {
+      tool: 'tlda/get_thread',
+      prettyResult: wrapped,
+    },
+  }], [{ id: 'fleet:agent-1', friendly_name: 'agent-1' }])
+
+  assert.match(formatted, /thread line one/)
+  assert.match(formatted, /thread line two/)
+  assert.doesNotMatch(formatted, /Wall time:/)
+  assert.doesNotMatch(formatted, /Output:/)
   assert.doesNotMatch(formatted, /\[\{"type":"text"/)
 })
 
@@ -305,4 +334,28 @@ second message`
   assert.doesNotMatch(html, /Output:/)
   assert.doesNotMatch(html, /\[\{&quot;type&quot;:&quot;text&quot;/)
   assert.doesNotMatch(html, /\\n\\n/)
+})
+
+test('search pretty result strips Codex wall-time output wrapper before rendering', () => {
+  const prettyText = `2 results (1 fleet, 1 session)
+
+6/18/2026, 8:00:00 AM | [fleet] [activity] agent-1 | **match** one
+
+6/18/2026, 8:01:00 AM | [session] [assistant] agent-1 | **match** two`
+  const html = renderActivityGroup([{
+    from: 'agent-1',
+    timestamp: '2026-06-18T12:00:00.000Z',
+    _activity: true,
+    _toolName: 'mcp__tlda__search_logs',
+    _toolArg: 'match',
+    _prettyResult: `Wall time: 0.123 seconds\nOutput:\n${JSON.stringify([{ type: 'text', text: prettyText }])}`,
+  }], ctx)
+
+  assert.match(html, /tool-pretty-search/)
+  assert.match(html, /2 results/)
+  assert.match(html, /<mark>match<\/mark> one/)
+  assert.match(html, /<mark>match<\/mark> two/)
+  assert.doesNotMatch(html, /Wall time:/)
+  assert.doesNotMatch(html, /Output:/)
+  assert.doesNotMatch(html, /\[\{&quot;type&quot;:&quot;text&quot;/)
 })

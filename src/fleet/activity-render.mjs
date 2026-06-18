@@ -19,7 +19,7 @@
 
 import katex from 'katex'
 import { agentNameHtml } from './chat-render.mjs'
-import { unwrapMcpTextEnvelope } from '../../shared/activity-pretty-result.mjs'
+import { normalizePrettyResult } from '../../shared/activity-pretty-result.mjs'
 
 // --- Pure helpers (copied from utils.mjs) ---
 
@@ -50,7 +50,7 @@ export const CHAT_TOOLS = new Set([
 // --- Pretty-print tool results ---
 
 function renderPrettyResult(toolName, text, ctx, input, ts) {
-  text = unwrapMcpTextEnvelope(text)
+  text = normalizePrettyResult(text)
   const tool = (toolName || '').toLowerCase()
   if (tool.includes('get_thread') || tool.includes('thread')) {
     return renderThreadResult(text, ctx)
