@@ -9,8 +9,8 @@ export const NON_CLAUDE_ROLE_PACKS = {
       'Verify the edited proof or argument on the document surface before reporting done.',
     ],
     workflow: [
-      'For tlda paper/source edits, use the tlda push/build feedback path; do not run repeated local LaTeX build loops unless the task gives a specific reason.',
-      'If a project guidance file names the expected edit/build workflow, follow that workflow instead of substituting a familiar manual habit.',
+      'For tlda paper/source edits, write; do not run local LaTeX builds, `tlda push`, or `tlda build` as routine verification.',
+      'If watcher/build feedback is absent, stale, or inconsistent with citation/build state, route that to a tlda/build owner instead of working around it manually.',
     ],
   },
   app: {
