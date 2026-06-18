@@ -364,6 +364,7 @@ export function FleetHUD({
   // cameraYRef (Y): set once, never updated by shape moves.
   // Persisted via an invisible anchor shape in Yjs (survives across sessions/devices).
   const TOP_PAD = 80
+  const LEFT_PAD = 20
   const panOffsetRef = useRef<number | null>(null)
   const cameraYRef = useRef<number | null>(null)
   const ignoreSavedAnchorRef = useRef(false)
@@ -393,6 +394,11 @@ export function FleetHUD({
     const docLeftScreen = mainEditor.pageToScreen({ x: minPageX, y: 0 }).x
     const off = layoutOffset(getHumanId(), getDeviceId())
     panOffsetRef.current = docLeftScreen - minPageX - off.dx
+    const projectedLeft = bounds.x + panOffsetRef.current
+    const projectedRight = projectedLeft + bounds.w
+    if (projectedRight < window.innerWidth * 0.25 || projectedLeft > window.innerWidth * 0.75) {
+      panOffsetRef.current = LEFT_PAD - bounds.x
+    }
     cameraYRef.current = TOP_PAD - bounds.y
     userPannedRef.current = false
     setCameraTick(t => t + 1)
@@ -971,8 +977,11 @@ export function FleetHUD({
   if (panOffsetRef.current !== null && cameraYRef.current !== null) {
     const projectedTop = activeFleetBounds.y + cameraYRef.current
     const projectedBottom = projectedTop + activeFleetBounds.h
+    const projectedLeft = activeFleetBounds.x + panOffsetRef.current
+    const projectedRight = projectedLeft + activeFleetBounds.w
     const verticallyVisible = projectedBottom > 0 && projectedTop < window.innerHeight
-    if (!verticallyVisible) {
+    const horizontallyVisible = projectedRight > 0 && projectedLeft < window.innerWidth
+    if (!verticallyVisible || !horizontallyVisible) {
       const docShapes = mainEditor.getCurrentPageShapes().filter(s =>
         (s.type as string) === 'html-page' || (s.type as string) === 'svg-page')
       let minPageX = Infinity
@@ -984,6 +993,11 @@ export function FleetHUD({
         const docLeftScreen = mainEditor.pageToScreen({ x: minPageX, y: 0 }).x
         const off = layoutOffset(getHumanId(), getDeviceId())
         panOffsetRef.current = docLeftScreen - minPageX - off.dx
+        const nextProjectedLeft = activeFleetBounds.x + panOffsetRef.current
+        const nextProjectedRight = nextProjectedLeft + activeFleetBounds.w
+        if (nextProjectedRight < window.innerWidth * 0.25 || nextProjectedLeft > window.innerWidth * 0.75) {
+          panOffsetRef.current = LEFT_PAD - activeFleetBounds.x
+        }
         cameraYRef.current = TOP_PAD - activeFleetBounds.y
         ignoreSavedAnchorRef.current = true
         userPannedRef.current = false
