@@ -11,12 +11,27 @@ import { parseCodexLine } from './lib/codex-activity.mjs'
 // (kept in sync with fleet-daemon.mjs; this test exists to prove the Codex
 // parser feeds those functions the right shape.)
 const ACTIVITY_NOISE = new Set([
-  'wait_for_task', 'my_task', 'task_list', 'register', 'task_done', 'timer',
-  'chat', 'delegate', 'report', 'spawn', 'respawn', 'interrupt',
-  'mcp__tlda__my_task', 'mcp__tlda__register', 'mcp__tlda__chat',
-  'mcp__tlda__delegate', 'mcp__tlda__report', 'mcp__tlda__spawn',
+  'wait_for_task', 'my_task', 'task_list', 'register', 'register_manager',
+  'task_check', 'unregister_manager', 'task_done', 'timer',
+  'chat', 'delegate', 'report', 'share', 'spawn', 'respawn', 'interrupt',
+  'name_agent', 'label_agent', 'observe', 'promote', 'cleanup',
+  'mcp__tlda__wait_for_task', 'mcp__tlda__my_task', 'mcp__tlda__task_list',
+  'mcp__tlda__register', 'mcp__tlda__register_manager', 'mcp__tlda__task_check',
   'mcp__tlda__task_done', 'mcp__tlda__timer',
+  'mcp__tlda__chat', 'mcp__tlda__delegate', 'mcp__tlda__report',
+  'mcp__tlda__share', 'mcp__tlda__spawn', 'mcp__tlda__respawn',
+  'mcp__tlda__interrupt', 'mcp__tlda__name_agent', 'mcp__tlda__label_agent',
+  'mcp__tlda__observe', 'mcp__tlda__promote', 'mcp__tlda__cleanup',
+  'ToolSearch',
 ])
+const PRETTY_PRINT_TOOLS = new Set([
+  'mcp__tlda__search_logs',
+  'mcp__tlda__get_thread',
+  'ScheduleWakeup',
+  'mcp__tlda__screenshot',
+  'mcp__tlda__propose_edit',
+])
+const humanToolName = name => name.replace(/^mcp__/, '').replace(/__/g, '/')
 function extractCards(events) {
   const cards = []
   for (const ev of events) {
@@ -26,7 +41,7 @@ function extractCards(events) {
       if (ev.type === 'user' && b.type === 'text') continue
       if (b.type === 'tool_use') {
         if (ACTIVITY_NOISE.has(b.name)) continue
-        const humanName = b.name.replace(/^mcp__/, '').replace(/__/g, '/')
+        const humanName = humanToolName(b.name)
         const input = b.input || {}
         const arg = input.file_path || input.path || input.command || input.pattern ||
           input.message || input.query || input.description || input.reason || ''
@@ -75,12 +90,24 @@ for (const f of files) {
   console.log(`  lines=${lines.length} events=${events.length} toolUses=${toolUses.length}` +
     ` (fleet=${fleetCalls.length} native=${nativeCalls.length}) cards=${cards.length}`)
 
-  // 1. fleet tool calls normalize to mcp__tlda__<name> and are filtered as noise
+  // 1. fleet tool calls normalize to mcp__tlda__<name>. Infrastructure tools
+  //    are filtered as noise; selected tools are allowed through for
+  //    pretty-printed result cards.
   if (fleetCalls.length) {
     assert(fleetCalls.every(b => /^mcp__tlda__/.test(b.name)),
       'fleet tools normalized to mcp__tlda__<name>')
-    assert(!visibleCards.some(c => c.tool.startsWith('tlda/')),
-      'fleet tool calls suppressed as activity noise')
+    const noisyFleetNames = fleetCalls
+      .filter(b => ACTIVITY_NOISE.has(b.name))
+      .map(b => humanToolName(b.name))
+    assert(!visibleCards.some(c => noisyFleetNames.includes(c.tool)),
+      'fleet infrastructure calls suppressed as activity noise')
+    const prettyFleetNames = fleetCalls
+      .filter(b => PRETTY_PRINT_TOOLS.has(b.name))
+      .map(b => humanToolName(b.name))
+    if (prettyFleetNames.length) {
+      assert(prettyFleetNames.some(name => visibleCards.some(c => c.tool === name)),
+        'pretty-print fleet tools can produce tlda/* cards')
+    }
   }
   // 2. native shell (Codex exec_command) relabels to Claude 'Bash' and carries
   //    a non-empty command arg into the card

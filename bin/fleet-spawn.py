@@ -19,12 +19,14 @@ Options:
 
 import argparse
 import copy
+import ipaddress
 import json
 import fcntl
 import os
 import re
 import shlex
 import shutil
+import socket
 import ssl
 import subprocess
 import sys
@@ -33,18 +35,61 @@ import time
 import uuid
 from urllib.request import urlopen, Request
 from urllib.error import URLError
+from urllib.parse import urlparse
 import websocket
 
-DASH_PORT = os.environ.get("FLEET_DASH_PORT", "5176")
-DASH_HOST = os.environ.get("FLEET_DASH_HOST", "127.0.0.1")
+CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".config", "tlda", "config.json")
+
+
+def read_config():
+    try:
+        with open(CONFIG_FILE) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _http_form(url):
+    return re.sub(r"/+$", "", url.replace("wss:", "https:", 1).replace("ws:", "http:", 1))
+
+
+def resolve_api():
+    if os.environ.get("TLDA_SERVER"):
+        return _http_form(os.environ["TLDA_SERVER"])
+    cfg = read_config()
+    name = os.environ.get("TLDA_CONFIG") or cfg.get("defaultConfig")
+    raw = (cfg.get("configs") or {}).get(name or "")
+    if isinstance(raw, dict):
+        endpoint = raw.get("database") or raw.get("store")
+        if isinstance(endpoint, str) and endpoint:
+            return _http_form(endpoint)
+    if cfg.get("fleetServer"):
+        return _http_form(cfg["fleetServer"])
+    if cfg.get("server"):
+        return _http_form(cfg["server"])
+    dash_port = os.environ.get("FLEET_DASH_PORT", "5176")
+    dash_host = os.environ.get("FLEET_DASH_HOST", "127.0.0.1")
+    tls_cert = os.path.expanduser("~/.config/tlda/localhost+2.pem")
+    scheme = "https" if os.path.exists(tls_cert) else "http"
+    return f"{scheme}://{dash_host}:{dash_port}"
+
+
+API = resolve_api()
 _tls_cert = os.path.expanduser("~/.config/tlda/localhost+2.pem")
-_scheme = "https" if os.path.exists(_tls_cert) else "http"
-API = f"{_scheme}://{DASH_HOST}:{DASH_PORT}"
+_scheme = "https" if API.startswith("https://") else "http"
 _ca_path = os.path.expanduser("~/Library/Application Support/mkcert/rootCA.pem")
 _ssl_ctx = None
-if _scheme == "https" and os.path.exists(_ca_path):
+if API.startswith("https://127.0.0.1") and os.path.exists(_ca_path):
     _ssl_ctx = ssl.create_default_context()
     _ssl_ctx.load_verify_locations(_ca_path)
+
+
+def _is_local_api():
+    return bool(re.match(r"^https?://(127\.0\.0\.1|localhost)(:\d+)?$", API))
+
+
+def _ws_api():
+    return API.replace("https://", "wss://", 1).replace("http://", "ws://", 1)
 DEFAULT_MODEL = "claude-opus-4-8[1m]"
 REGISTER_PROMPT = "Call register() with the fleet MCP server. Then call my_task() to check for a pending task."
 
@@ -178,7 +223,7 @@ def goose_model_verified(resolved_id):
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 REPO_DIR = os.path.dirname(SCRIPT_DIR)
 TLDA_CLI = os.path.join(REPO_DIR, "cli", "tlda.mjs")
-CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".config", "tlda", "config.json")
+NODE_DNS_ALIAS_PRELOAD = os.path.join(REPO_DIR, "shared", "node-dns-alias.cjs")
 
 
 def _deep_merge(base, overlay):
@@ -191,14 +236,6 @@ def _deep_merge(base, overlay):
         else:
             out[key] = copy.deepcopy(val)
     return out
-
-
-def read_config():
-    try:
-        with open(CONFIG_FILE) as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
 
 
 def tmux(*args):
@@ -286,7 +323,7 @@ def ensure_server():
         return True
     except URLError:
         pass
-    if DASH_HOST not in ("127.0.0.1", "localhost"):
+    if not _is_local_api():
         print(f"Warning: server unreachable at {API}", file=sys.stderr)
         return False
     print("Starting tlda server...", file=sys.stderr)
@@ -307,8 +344,7 @@ def ensure_server():
 def ws_register(fleet_id, name, tmux_session, cwd, model=None, effort=None, refresh=False,
                 kind="claude", spawn_capability=None, session_id=None,
                 metadata=None):
-    _ws_scheme = "wss" if _scheme == "https" else "ws"
-    ws_url = f"{_ws_scheme}://{DASH_HOST}:{DASH_PORT}/ws/fleet?agent={fleet_id}"
+    ws_url = f"{_ws_api()}/ws/fleet?agent={fleet_id}"
     try:
         ws_opts = {"timeout": 5}
         if _ssl_ctx:
@@ -729,6 +765,7 @@ FENCE_AGENT_WRITE_ROOTS = [
     "~/.zcompdump*",
 ]
 FENCE_AGENT_READ_ROOTS = [
+    "/tmp",
     "~/.codex",
     "~/.claude",
     "~/.claude.json",
@@ -1077,8 +1114,13 @@ def _fence_settings(policy):
     deny_write = list(FENCE_DENY_WRITE)
     if str(policy.get("git", "read")) != "write":
         deny_write.extend(FENCE_GIT_READONLY_DENY)
+    allowed_domains = list(FENCE_CODE_ALLOWED_DOMAINS)
+    api_host = urlparse(API).hostname
+    if api_host and api_host not in allowed_domains:
+        allowed_domains.append(api_host)
+    api_local_outbound = _api_needs_local_outbound()
     network = {
-        "allowedDomains": FENCE_CODE_ALLOWED_DOMAINS,
+        "allowedDomains": allowed_domains,
         "deniedDomains": [
             "169.254.169.254",
             "metadata.google.internal",
@@ -1086,8 +1128,8 @@ def _fence_settings(policy):
             "statsig.anthropic.com",
             "*.sentry.io",
         ],
-        "allowLocalBinding": bool(policy.get("network")),
-        "allowLocalOutbound": bool(policy.get("network")),
+        "allowLocalBinding": bool(policy.get("network")) or api_local_outbound,
+        "allowLocalOutbound": bool(policy.get("network")) or api_local_outbound,
     }
     return {
         "allowPty": True,
@@ -1139,21 +1181,44 @@ def wrap_sandbox_cmd(cmd, policy):
     command = runner.get("command")
     if not command:
         raise ValueError("agentSandbox.runner.command is required")
-    if os.path.basename(command) == "fence" and not runner.get("args"):
-        wrapped = _wrap_fence_cmd(cmd, policy, runner)
-    else:
-        args = [_format_sandbox_arg(a, policy, cmd) for a in runner.get("args", [])]
-        argv = [command, *args]
-        if "{cmd}" not in " ".join(map(str, runner.get("args", []))):
-            shell = runner.get("shell", "zsh")
-            argv.extend(["--", shell, "-lc", cmd])
-        wrapped = shlex.join(argv)
+    tmp_root = "/tmp/tlda-fence-env"
+    os.makedirs(tmp_root, exist_ok=True)
+    xdg_config_home = os.path.join(tmp_root, "xdg")
+    os.makedirs(os.path.join(xdg_config_home, "git"), exist_ok=True)
+    empty_gitconfig = os.path.join(tmp_root, "empty-gitconfig")
+    empty_gitignore = os.path.join(xdg_config_home, "git", "ignore")
+    open(empty_gitconfig, "a").close()
+    open(empty_gitignore, "a").close()
+
     env = {
         "TLDA_SANDBOX_PROFILE": policy["policy"],
         "TLDA_SANDBOX_POLICY": policy["policy"],
         "TLDA_SANDBOX_LEASE": json.dumps({k: v for k, v in policy.items() if k != "runner"}, sort_keys=True),
+        # Keep common Git reads inside fence's existing /tmp allowance. macOS
+        # /usr/bin/git otherwise asks xcrun to read /var/folders/.../xcrun_db,
+        # then Git tries ~/.gitconfig, both outside a cwd-scoped fence.
+        "TMPDIR": tmp_root,
+        "GIT_CONFIG_GLOBAL": empty_gitconfig,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "XDG_CONFIG_HOME": xdg_config_home,
+        "xcrun_nocache": "1",
     }
+    xcode_usr_bin = "/Applications/Xcode.app/Contents/Developer/usr/bin"
+    if os.path.exists(os.path.join(xcode_usr_bin, "git")):
+        env["PATH"] = f"{xcode_usr_bin}:{os.environ.get('PATH', '')}"
+        env["DEVELOPER_DIR"] = "/Applications/Xcode.app/Contents/Developer"
     prefix = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
+    inner_cmd = f"{prefix} {cmd}"
+
+    if os.path.basename(command) == "fence" and not runner.get("args"):
+        wrapped = _wrap_fence_cmd(inner_cmd, policy, runner)
+    else:
+        args = [_format_sandbox_arg(a, policy, inner_cmd) for a in runner.get("args", [])]
+        argv = [command, *args]
+        if "{cmd}" not in " ".join(map(str, runner.get("args", []))):
+            shell = runner.get("shell", "zsh")
+            argv.extend(["--", shell, "-lc", inner_cmd])
+        wrapped = shlex.join(argv)
     return f"{prefix} {wrapped}"
 
 
@@ -1268,7 +1333,7 @@ def build_goose_cmd(fleet_id, tmux_session, model, name=None):
     return f"zsh -lc {shlex.quote(inner)}"
 
 
-def codex_sandbox_for_capability(capability):
+def codex_sandbox_for_capability(capability, outer_sandbox=False):
     """Map a fleet spawn capability to a Codex `-s` sandbox mode.
 
     Mirrors projectCapabilityToMode in server/lib/spawn-policy.mjs. Without this,
@@ -1276,6 +1341,10 @@ def codex_sandbox_for_capability(capability):
     launched sandboxed at workspace-write — the grant was recorded in
     meta.spawnPolicy but never reached the codex process (it then couldn't bind
     sockets / launch a browser). full-access → danger-full-access closes that gap."""
+    if outer_sandbox:
+        # Fence is the fleet permission model. Avoid nesting Codex's macOS
+        # sandbox inside fence; nested sandbox-exec fails before commands run.
+        return "danger-full-access"
     if capability == "full-access":
         return "danger-full-access"
     if capability == "read-only":
@@ -1305,8 +1374,68 @@ def codex_workspace_write_config_args(capability, cwd=None):
     return args
 
 
+def _resolve_api_dns_alias():
+    host = urlparse(API).hostname
+    if not host or host in ("localhost", "127.0.0.1", "::1"):
+        return None
+    try:
+        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+    except OSError as e:
+        print(f"  warning: could not pre-resolve {host} for fenced Node MCP DNS: {e}", file=sys.stderr)
+        return None
+    addresses = []
+    for family, _type, _proto, _canon, sockaddr in infos:
+        if family not in (socket.AF_INET, socket.AF_INET6):
+            continue
+        address = sockaddr[0]
+        if address not in addresses:
+            addresses.append(address)
+    if not addresses:
+        return None
+    # Prefer IPv4: the Fly tailnet route is verified on the 100.x address, and
+    # Node callers that request a scalar lookup need one deterministic answer.
+    address = next((addr for addr in addresses if "." in addr), addresses[0])
+    return host, address
+
+
+def _api_needs_local_outbound():
+    alias = _resolve_api_dns_alias()
+    if not alias:
+        return False
+    _host, address = alias
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    return (
+        ip.is_loopback
+        or ip.is_link_local
+        or ip.is_private
+        or ip in ipaddress.ip_network("100.64.0.0/10")
+    )
+
+
+def apply_spawn_capability_to_policy(policy, capability, cwd):
+    if not policy:
+        return policy
+    if capability == "read-only":
+        policy["write_roots"] = []
+        return policy
+    if capability != "workspace-write+net":
+        return policy
+    policy["network"] = True
+    roots = set(policy.get("write_roots") or [])
+    roots.add(os.path.abspath(os.path.expanduser("~/.config/tlda")))
+    if cwd:
+        roots.add(os.path.abspath(os.path.join(cwd, ".git")))
+    policy["write_roots"] = sorted(roots)
+    policy["read_roots"] = sorted(set(policy.get("read_roots") or []) | roots)
+    return policy
+
+
 def build_codex_cmd(fleet_id, tmux_session, model=None, resume_id=None,
-                    include_prompt=True, name=None, cwd=None, capability=None):
+                    include_prompt=True, name=None, cwd=None, capability=None,
+                    outer_sandbox=False):
     """Build the shell command for an OpenAI Codex CLI fleet agent.
 
     Mirrors build_claude_cmd: same identity env (FLEET_ID/FLEET_NAME/TMUX) on
@@ -1347,12 +1476,19 @@ def build_codex_cmd(fleet_id, tmux_session, model=None, resume_id=None,
     # Identity in process env: FLEET_ID/TMUX/NAME so `ps` (the daemon's liveness
     # + classification scan) can see which fleet agent a codex process is. These
     # do NOT reach the MCP subprocess (see docstring) — that's the -c block below.
-    parts = [
+    dns_alias = _resolve_api_dns_alias()
+    process_env = [
         f"FLEET_ID={fleet_id}",
         f"FLEET_TMUX_SESSION={tmux_session}",
     ]
     if name:
-        parts.append(f"FLEET_NAME={shlex.quote(name)}")
+        process_env.append(f"FLEET_NAME={shlex.quote(name)}")
+    if dns_alias and os.path.exists(NODE_DNS_ALIAS_PRELOAD):
+        host, address = dns_alias
+        process_env.append(f"NODE_OPTIONS={shlex.quote(f'--require={NODE_DNS_ALIAS_PRELOAD}')}")
+        process_env.append(f"TLDA_NODE_DNS_ALIAS_HOST={shlex.quote(host)}")
+        process_env.append(f"TLDA_NODE_DNS_ALIAS_ADDR={shlex.quote(address)}")
+    parts = list(process_env)
     parts.append("codex")
     if resume_id:
         # Resume keeps the same fleet id (re-injected below) and continues the
@@ -1377,9 +1513,15 @@ def build_codex_cmd(fleet_id, tmux_session, model=None, resume_id=None,
     parts.append(_cenv("FLEET_TMUX_SESSION", tmux_session))
     parts.append(_cenv("TLDA_SERVER", API))
     parts.append(_cenv("TLDA_SYNC_SERVER", API))
+    if dns_alias and os.path.exists(NODE_DNS_ALIAS_PRELOAD):
+        host, address = dns_alias
+        parts.append(_cenv("NODE_OPTIONS", f"--require={NODE_DNS_ALIAS_PRELOAD}"))
+        parts.append(_cenv("TLDA_NODE_DNS_ALIAS_HOST", host))
+        parts.append(_cenv("TLDA_NODE_DNS_ALIAS_ADDR", address))
+    parts.extend(codex_workspace_write_config_args(capability, cwd=cwd))
     if model:
         parts.append(f"-m {shlex.quote(model)}")
-    parts.append(f"-s {codex_sandbox_for_capability(capability)}")
+    parts.append(f"-s {codex_sandbox_for_capability(capability, outer_sandbox=outer_sandbox)}")
     # Let a sandboxed (workspace-write) codex agent drive the shared Playwright
     # browser without needing danger-full-access: `tlda-dev pw` writes lock /
     # session files under the ms-playwright cache, which sits OUTSIDE the
@@ -1408,7 +1550,7 @@ class HarnessAdapter:
 
     def build_cmd(self, fleet_id, sess, model, effort=None, mode=None,
                   resume_id=None, include_prompt=True, name=None, cwd=None,
-                  capability=None):
+                  capability=None, outer_sandbox=False):
         raise NotImplementedError
 
     def fresh_label(self):
@@ -1454,7 +1596,7 @@ class ClaudeHarness(HarnessAdapter):
 
     def build_cmd(self, fleet_id, sess, model, effort=None, mode=None,
                   resume_id=None, include_prompt=True, name=None, cwd=None,
-                  capability=None):
+                  capability=None, outer_sandbox=False):
         return build_claude_cmd(
             fleet_id, sess, model, effort, mode,
             resume_id=resume_id, include_prompt=include_prompt, name=name)
@@ -1515,7 +1657,7 @@ class GooseHarness(HarnessAdapter):
 
     def build_cmd(self, fleet_id, sess, model, effort=None, mode=None,
                   resume_id=None, include_prompt=True, name=None, cwd=None,
-                  capability=None):
+                  capability=None, outer_sandbox=False):
         return build_goose_cmd(fleet_id, sess, model, name=name)
 
     def no_resume_message(self):
@@ -1537,11 +1679,11 @@ class CodexHarness(HarnessAdapter):
 
     def build_cmd(self, fleet_id, sess, model, effort=None, mode=None,
                   resume_id=None, include_prompt=True, name=None, cwd=None,
-                  capability=None):
+                  capability=None, outer_sandbox=False):
         return build_codex_cmd(
             fleet_id, sess, model=model, resume_id=resume_id,
             include_prompt=include_prompt, name=name, cwd=cwd,
-            capability=capability)
+            capability=capability, outer_sandbox=outer_sandbox)
 
     def find_resume(self, agent, session_override=None):
         if session_override:
@@ -1939,8 +2081,10 @@ def fresh(name, model, cwd, effort, mode, kind="claude", spawn_capability=None,
     cwd = resolve_spawn_cwd(cwd)
     adapter = harness_for_spawn(kind, model)
     model = adapter.resolve_model(model)
+    effective_policy = sandbox_policy or ("unsandboxed" if spawn_capability == "full-access" else None)
     policy_name, dev_tools, _write_roots, _matched_root, policy = resolve_harness_sandbox(
-        adapter.kind, model, cwd, explicit_policy=sandbox_policy)
+        adapter.kind, model, cwd, explicit_policy=effective_policy)
+    policy = apply_spawn_capability_to_policy(policy, spawn_capability, cwd)
     if adapter.kind in ("claude", "codex"):
         _require_native_tools(adapter.kind, policy_name, dev_tools)
     if adapter.kind == "claude":
@@ -1956,7 +2100,8 @@ def fresh(name, model, cwd, effort, mode, kind="claude", spawn_capability=None,
             metadata=sandbox_metadata(policy))
 
     cmd = adapter.build_cmd(fleet_id, sess, model, effort, mode, name=name, cwd=cwd,
-                            capability=spawn_capability)
+                            capability=spawn_capability,
+                            outer_sandbox=bool(policy))
     if policy:
         cmd = wrap_sandbox_cmd(cmd, policy)
     spawn_tmux(sess, cwd, cmd, send_keys=adapter.spawn_send_keys())
@@ -1983,8 +2128,10 @@ def respawn(name, model, cwd, effort, mode, session_override=None,
     spawn_capability = spawn_policy.get("capability") if isinstance(spawn_policy, dict) else None
     adapter = harness_for_agent(agent)
     model = adapter.resolve_model(raw_model)
+    effective_policy = sandbox_policy or ("unsandboxed" if spawn_capability == "full-access" else None)
     policy_name, dev_tools, _write_roots, _matched_root, policy = resolve_harness_sandbox(
-        adapter.kind, model, cwd, explicit_policy=sandbox_policy)
+        adapter.kind, model, cwd, explicit_policy=effective_policy)
+    policy = apply_spawn_capability_to_policy(policy, spawn_capability, cwd)
     if adapter.kind in ("claude", "codex"):
         _require_native_tools(adapter.kind, policy_name, dev_tools)
     if adapter.kind == "claude":
@@ -2024,7 +2171,8 @@ def respawn(name, model, cwd, effort, mode, session_override=None,
     cmd = adapter.build_cmd(
         fleet_id, sess, model, effort, mode, resume_id=resume_id,
         include_prompt=(adapter.kind != "claude" or not resume_id), name=name, cwd=cwd,
-        capability=spawn_capability)
+        capability=spawn_capability,
+        outer_sandbox=bool(policy))
     if policy:
         cmd = wrap_sandbox_cmd(cmd, policy)
     if adapter.kind == "codex" and resume_id:
@@ -2063,8 +2211,10 @@ def refresh(name, model, cwd, effort, mode, spawn_capability=None,
     raw_model = model or meta.get("model")
     adapter = harness_for_agent(agent)
     model = adapter.resolve_model(raw_model)
+    effective_policy = sandbox_policy or ("unsandboxed" if spawn_capability == "full-access" else None)
     policy_name, dev_tools, _write_roots, _matched_root, policy = resolve_harness_sandbox(
-        adapter.kind, model, cwd, explicit_policy=sandbox_policy)
+        adapter.kind, model, cwd, explicit_policy=effective_policy)
+    policy = apply_spawn_capability_to_policy(policy, spawn_capability, cwd)
     if adapter.kind in ("claude", "codex"):
         _require_native_tools(adapter.kind, policy_name, dev_tools)
     if adapter.kind == "claude":
@@ -2078,7 +2228,8 @@ def refresh(name, model, cwd, effort, mode, spawn_capability=None,
         kind=adapter.kind, spawn_capability=spawn_capability,
         metadata=sandbox_metadata(policy))
     cmd = adapter.build_cmd(fleet_id, sess, model, effort, mode, name=name, cwd=cwd,
-                            capability=spawn_capability)
+                            capability=spawn_capability,
+                            outer_sandbox=bool(policy))
     if policy:
         cmd = wrap_sandbox_cmd(cmd, policy)
     spawn_tmux(sess, cwd, cmd, send_keys=adapter.spawn_send_keys())

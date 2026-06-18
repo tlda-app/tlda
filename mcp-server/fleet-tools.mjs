@@ -2614,7 +2614,16 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
         localPath = decodeURIComponent(pathMatch[1])
       }
 
-      // If server is local, download remote images to temp
+      // If the referenced file is not readable locally (common with Fly-hosted
+      // /api/file?path=/tmp/... links), download the image into a local temp.
+      if (localPath) {
+        try {
+          const fs = await import('fs')
+          if (!fs.existsSync(localPath)) localPath = null
+        } catch {
+          localPath = null
+        }
+      }
       if (!localPath && url.startsWith('http')) {
         try {
           const fs = await import('fs')
@@ -2633,8 +2642,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
         const ext = localPath.split('.').pop()?.toLowerCase() || 'png'
         const mimeMap = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml' }
         images.push({ path: localPath, mimeType: mimeMap[ext] || 'image/png', alt: alt || '' })
-        // Replace markdown image with text reference
-        cleaned = cleaned.replace(full, `[image: ${localPath}]`)
+        cleaned = cleaned.replace(full, alt ? `[image attached: ${alt}]` : '[image attached]')
       }
     }
     return { text: cleaned, images }
@@ -3315,6 +3323,44 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       return `  [${fmtTs(c.timestamp)}] ${cDir}: ${text}`;
     };
 
+    const parseEventMetadata = (metadata) => {
+      if (!metadata) return {};
+      if (typeof metadata === 'object') return metadata;
+      if (typeof metadata === 'string') {
+        try { return JSON.parse(metadata) || {}; } catch { return {}; }
+      }
+      return {};
+    };
+
+    const compactForSearch = (value, max = 600) => {
+      if (value == null || value === '') return '';
+      const text = typeof value === 'string' ? value : JSON.stringify(value);
+      return text.length > max ? `${text.slice(0, max)}... [truncated ${text.length - max} chars]` : text;
+    };
+
+    const indentForSearch = (value, prefix = '  ') =>
+      String(value).split('\n').map(line => `${prefix}${line}`).join('\n');
+
+    const formatActivityForSearch = (r, fallbackSnippet) => {
+      const metadata = parseEventMetadata(r.metadata);
+      const tool = metadata.tool || r.text || fallbackSnippet || 'activity';
+      if (tool === '_text') return r.text || metadata.arg || fallbackSnippet || '';
+
+      const description = metadata.input?.description || metadata.description || '';
+      let arg = '';
+      if (metadata.arg != null && metadata.arg !== '') arg = compactForSearch(metadata.arg);
+      else if (metadata.input?.command) arg = compactForSearch(metadata.input.command);
+      else if (metadata.input != null) arg = compactForSearch(metadata.input);
+
+      const lines = [`[activity${r.id ? ` #${r.id}` : ''}] ${tool}${description ? ` — ${description}` : ''}`];
+      if (arg) lines.push(indentForSearch(arg));
+      if (metadata.prettyResult) {
+        lines.push('  result:');
+        lines.push(indentForSearch(compactForSearch(metadata.prettyResult, 600), '    '));
+      }
+      return lines.join('\n');
+    };
+
     const formatted = results.map(r => {
       const snippet = (r.snippet || '').replace(/⟨⟨/g, '**').replace(/⟩⟩/g, '**');
 
@@ -3322,10 +3368,11 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
         const from = tag(r.from, r.fromName, r.fromNameNow);
         const to = tag(r.to, r.toName, r.toNameNow);
         const direction = to ? `${from} → ${to}` : from;
+        const display = r.type === 'activity' ? formatActivityForSearch(r, snippet) : snippet;
         let text;
         if (contextWindow > 0 && r.timestamp && contextMap[r.timestamp]) {
           const ctx = contextMap[r.timestamp];
-          const matchLine = `  [${fmtTs(r.timestamp)}] ${direction}: ${snippet}  ← MATCH`;
+          const matchLine = `  [${fmtTs(r.timestamp)}] ${direction}: ${display.replace(/\n/g, '\n    ')}  ← MATCH`;
           text = `=== Match ===\n${ctx.before.map(fmtCtxMsg).join('\n')}`;
           if (ctx.before.length > 0) text += '\n';
           text += matchLine;
@@ -3334,7 +3381,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
           const parts = [];
           if (r.timestamp) parts.push(new Date(r.timestamp).toLocaleString());
           parts.push(`[fleet] [${r.type}] ${direction}`);
-          parts.push(snippet);
+          parts.push(display);
           text = parts.join(' | ');
         }
         return { timestamp: r.timestamp, text };
@@ -3416,6 +3463,43 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     const isBounded = !!(resolvedSince && resolvedUntil);
     const pageSize = isBounded ? 10_000 : (args.page_size || 200);
 
+    const parseEventMetadata = (metadata) => {
+      if (!metadata) return {};
+      if (typeof metadata === 'object') return metadata;
+      if (typeof metadata === 'string') {
+        try { return JSON.parse(metadata) || {}; } catch { return {}; }
+      }
+      return {};
+    };
+
+    const compactForThread = (value, max = 1200) => {
+      if (value == null || value === '') return '';
+      const text = typeof value === 'string' ? value : JSON.stringify(value);
+      return text.length > max ? `${text.slice(0, max)}... [truncated ${text.length - max} chars]` : text;
+    };
+
+    const indentForThread = (value, prefix = '  ') =>
+      String(value).split('\n').map(line => `${prefix}${line}`).join('\n');
+
+    const formatActivityForThread = (e, metadata) => {
+      const tool = metadata.tool || e.text || 'activity';
+      if (tool === '_text') return e.text || metadata.arg || '';
+
+      const description = metadata.input?.description || metadata.description || '';
+      let arg = '';
+      if (metadata.arg != null && metadata.arg !== '') arg = compactForThread(metadata.arg);
+      else if (metadata.input?.command) arg = compactForThread(metadata.input.command);
+      else if (metadata.input != null) arg = compactForThread(metadata.input);
+
+      const lines = [`[activity${e.id ? ` #${e.id}` : ''}] ${tool}${description ? ` — ${description}` : ''}`];
+      if (arg) lines.push(indentForThread(arg));
+      if (metadata.prettyResult) {
+        lines.push('  result:');
+        lines.push(indentForThread(compactForThread(metadata.prettyResult, 1000), '    '));
+      }
+      return lines.join('\n');
+    };
+
     const fetchEventsForAgent = async (agentId) => {
       // Fetch one extra row so we can detect "there's more" without a COUNT.
       const params = { agent: agentId, limit: pageSize + 1 };
@@ -3425,12 +3509,16 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       const data = await sendWS('store-events', params);
       if (!data) return;
       for (const e of (data.events || [])) {
-        const text = e.type === 'delegate'
+        const metadata = parseEventMetadata(e.metadata);
+        const text = e.type === 'activity'
+          ? formatActivityForThread(e, metadata)
+          : e.type === 'delegate'
           ? `[DELEGATE] ${e.description || ''}\n${e.message || e.text || ''}`
           : e.type === 'task_done'
           ? `[DONE] ${e.description || ''}`
           : e.text || e.message || '';
         filtered.push({
+          id: e.id, type: e.type, metadata,
           from: e.from_id || e.from, to: e.to_id || e.to, text, timestamp: e.timestamp,
           fromName: e.fromName, toName: e.toName, fromNameNow: e.fromNameNow, toNameNow: e.toNameNow,
         });
@@ -3492,7 +3580,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     filtered.sort((a, b) => (a.timestamp ?? '').localeCompare(b.timestamp ?? ''));
     const seen = new Set();
     filtered = filtered.filter(m => {
-      const key = `${m.timestamp}|${m.from}|${(m.text ?? '')}`;
+      const key = m.id != null ? `id:${m.id}` : `${m.timestamp}|${m.from}|${m.type || ''}|${(m.text ?? '')}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -4198,10 +4286,18 @@ async function _flushUnread() {
     const lines = [];
     if (task) lines.push(`📬 You have a pending task: ${(task.description || '').slice(0, 80)}`);
     if (msgs.length > 0) lines.push(`📬 ${msgs.length} unread message(s). Call my_task().`);
-    await server.notification({
-      method: 'notifications/claude/channel',
-      params: { content: lines.join('\n'), meta: { event_type: 'flush' } },
-    });
+    const content = lines.join('\n');
+    if (harnessFromEnv().channelNudge) {
+      const sess = process.env.FLEET_TMUX_SESSION;
+      if (sess) tmuxSendText(sess, content);
+    }
+    await Promise.race([
+      server.notification({
+        method: 'notifications/claude/channel',
+        params: { content, meta: { event_type: 'flush' } },
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('notification timeout')), 1000)),
+    ]);
   } catch {}
 }
 
@@ -4362,23 +4458,40 @@ async function handleChannelMessage(msg) {
   handleChannelMessage._lastContent = content;
   handleChannelMessage._lastTs = now;
 
-  try {
-    await server.notification({
-      method: 'notifications/claude/channel',
-      params: {
-        content,
-        meta: {
-          event_type: isWiretapTarget && !isDirectTarget ? 'wiretap' : eventType,
-          from: fromId,
-        },
-      },
-    });
-    process.stderr.write(`[fleet-channel] Delivered ${eventType} from ${fromId} via channel (event ${data.id})\n`);
-    // Harness adapter decides whether Claude-channel delivery needs a tmux nudge.
-    if (isDirectTarget && harnessFromEnv().channelNudge) {
-      const sess = process.env.FLEET_TMUX_SESSION;
-      if (sess) tmuxSendText(sess, content);
+  let delivered = false;
+  // Harness adapter decides whether Claude-channel delivery needs a tmux nudge.
+  // Do this before the Claude notification: Codex/Goose may not support that
+  // notification method, and some clients can leave the notification pending.
+  if (isDirectTarget && harnessFromEnv().channelNudge) {
+    const sess = process.env.FLEET_TMUX_SESSION;
+    if (sess) {
+      delivered = tmuxSendText(sess, content) || delivered;
+    } else {
+      process.stderr.write('[fleet-channel] no FLEET_TMUX_SESSION for harness nudge\n');
     }
+  }
+
+  try {
+    await Promise.race([
+      server.notification({
+        method: 'notifications/claude/channel',
+        params: {
+          content,
+          meta: {
+            event_type: isWiretapTarget && !isDirectTarget ? 'wiretap' : eventType,
+            from: fromId,
+          },
+        },
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('notification timeout')), 1000)),
+    ]);
+    delivered = true;
+    process.stderr.write(`[fleet-channel] Delivered ${eventType} from ${fromId} via channel (event ${data.id})\n`);
+  } catch (e) {
+    process.stderr.write(`[fleet-channel] notification failed: ${e.message}\n`);
+  }
+
+  if (delivered) {
     // Mark as delivered so dupes are suppressed
     if (data.id) {
       _deliveredChannelIds.add(data.id);
@@ -4389,8 +4502,6 @@ async function handleChannelMessage(msg) {
       const signalFile = path.join(os.homedir(), '.fleet', 'signals', AGENT_ID);
       if (fs.existsSync(signalFile)) fs.unlinkSync(signalFile);
     } catch {}
-  } catch (e) {
-    process.stderr.write(`[fleet-channel] notification failed: ${e.message}\n`);
   }
 }
 

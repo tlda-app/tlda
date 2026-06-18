@@ -1063,6 +1063,9 @@ async function syncSessionWatchers(agentList) {
       try { pw.watcher.close() } catch {}
       fs.unwatchFile(p)
       pathWatchers.delete(p)
+      for (const [aid, watchedPath] of agentPaths) {
+        if (watchedPath === p) agentPaths.delete(aid)
+      }
     }
   }
   for (const aid of [...agentPaths.keys()]) {
@@ -1807,7 +1810,7 @@ function teardownEphemeral(tmuxSession) {
   try { state.pty.kill() } catch {}
 }
 
-async function rpcSendText({ tmux_session, text, enter }) {
+async function rpcSendText({ tmux_session, text, enter, enter_delay_ms }) {
   checkSession(tmux_session)
   // Prefer long-lived PTY watcher, then ephemeral PTY, never tmux send-keys
   let pty = terminalWatchPtys.get(tmux_session)?.alive
@@ -1822,11 +1825,19 @@ async function rpcSendText({ tmux_session, text, enter }) {
   }
   if (pty) {
     if (text) pty.write(text)
-    if (enter !== false) pty.write('\r')
+    if (enter !== false) {
+      const delay = Number(enter_delay_ms || 0)
+      if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay))
+      pty.write('\r')
+    }
     return { ok: true, via: 'pty' }
   }
   if (text) await tmux('send-keys', '-t', tmux_session, '--', text)
-  if (enter !== false) await tmux('send-keys', '-t', tmux_session, 'Enter')
+  if (enter !== false) {
+    const delay = Number(enter_delay_ms || 0)
+    if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay))
+    await tmux('send-keys', '-t', tmux_session, 'Enter')
+  }
   return { ok: true, via: 'tmux' }
 }
 
@@ -2482,8 +2493,18 @@ async function checkAgentLiveness() {
       agent.hibernating = false
       watcherNeedsSync = true
     }
-    if (matchedKind && matchedKind !== 'claude' && !agentPaths.has(agent.id)) {
-      watcherNeedsSync = true
+    if (matchedKind && matchedKind !== 'claude') {
+      const watchedPath = agentPaths.get(agent.id)
+      const watcher = watchedPath ? pathWatchers.get(watchedPath) : null
+      if (!watchedPath || !watcher) {
+        watcherNeedsSync = true
+      } else if (watcher.harnessKind === matchedKind) {
+        // fs.watch can go quiet on macOS even while the transcript keeps
+        // growing. The read path is cursor-based, so this is a cheap heartbeat
+        // drain for live non-Claude agents and closes the "alive agent, dead
+        // activity cards" gap without replaying old history.
+        readNewSessionLines(agent.id, watchedPath, watcher.sessionId, watcher.harnessKind)
+      }
     }
     aliveAgentIds.push(agent.id)
 

@@ -2777,36 +2777,54 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
-  // Interacting with a hibernating (non-dead, no live process) agent wakes
-  // Idempotent waker: chat/delegate adds agent IDs to a Set.
+  // Interacting with a hibernating (non-dead, no live process) agent wakes.
+  // Live non-Claude TUI agents also need a terminal nudge: their MCP channel can
+  // record the event without submitting a new turn.
+  // Idempotent waker: chat/delegate adds agent IDs to a Map.
   // A serial loop drains it — one spawn at a time, naturally deduped.
-  const _wakeQueue = new Set()
+  const _wakeQueue = new Map()
   let _wakeDraining = false
   // Per-agent throttle so a repeatedly-failing wake doesn't spam Skip's chat.
   const _wakeFailWarned = new Map() // agentId → last-warned ms
   const WAKE_FAIL_WARN_MS = 5 * 60 * 1000
-  function requestWake(agentId) {
+  function terminalNudgeKind(agent) {
+    const kind = agent?.metadata?.kind || agent?.kind
+    return kind === 'codex' || kind === 'goose'
+  }
+  function requestWake(agentId, nudgeText = null) {
     const agent = fleetStore.getAgent?.(agentId)
     if (!agent || agent.dead || agent.human) return
-    _wakeQueue.add(agentId)
+    const prev = _wakeQueue.get(agentId)
+    _wakeQueue.set(agentId, nudgeText || prev || null)
     if (!_wakeDraining) drainWakeQueue()
   }
 
   async function drainWakeQueue() {
     _wakeDraining = true
     while (_wakeQueue.size > 0) {
-      const agentId = _wakeQueue.values().next().value
+      const [agentId, nudgeText] = _wakeQueue.entries().next().value
       _wakeQueue.delete(agentId)
       const agent = fleetStore.getAgent?.(agentId)
       if (!agent || agent.dead || agent.human) continue
       const machineIds = [...daemonConnections.keys()]
       if (machineIds.length === 0) continue
+      const machineId = agent.machine_id || machineIds[0]
       try {
-        const { alive } = await sendRpc(machineIds[0], 'check-alive', { tmux_session: agent.tmux_session })
+        const { alive } = await sendRpc(machineId, 'check-alive', { tmux_session: agent.tmux_session })
           .catch(() => ({ alive: false }))
-        if (alive) continue
+        if (alive) {
+          if (nudgeText && agent.tmux_session && terminalNudgeKind(agent)) {
+            await sendRpc(machineId, 'send-text', {
+              tmux_session: agent.tmux_session,
+              text: nudgeText,
+              enter: true,
+              enter_delay_ms: agent?.metadata?.kind === 'codex' ? 400 : 0,
+            }).catch(e => console.warn(`[wake-nudge] failed for ${agentId}: ${e.message}`))
+          }
+          continue
+        }
         console.log(`[respawn] waking ${agent.friendly_name || agentId} (${agentId})`)
-        await sendRpc(machineIds[0], 'spawn', { name: agent.friendly_name || agentId, respawn: true })
+        await sendRpc(machineId, 'spawn', { name: agent.friendly_name || agentId, respawn: true })
         const wakeTs = new Date().toISOString()
         fleetStore.db.prepare(
           'INSERT INTO events (type, timestamp, from_id, to_id, text, metadata) VALUES (?, ?, ?, ?, ?, ?)'
@@ -2833,6 +2851,13 @@ async function handleFleetWsMessage(ws, msg) {
     }
     _wakeDraining = false
   }
+
+  const previewForWake = (raw, max = 120) => {
+    const s = String(raw || '')
+    return s.length > max ? `${s.slice(0, max)}…` : s
+  }
+  const chatWakeText = (text) => `📬 Message arrived: ${previewForWake(text)}\nCall my_task() to read and respond.`
+  const delegateWakeText = (description) => `📬 New task assigned: ${previewForWake(description)}\nCall my_task() to see it.`
 
   if (type === 'amend') {
     // Amend = a NEW event of type 'amend' that REFERENCES the original chat
@@ -3016,7 +3041,7 @@ async function handleFleetWsMessage(ws, msg) {
     // Reply FIRST so the client can reconcile optimistic events before broadcasts arrive.
     reply({ ok: true, event_ids: eventIds, recipients, _tempId: msg._tempId || null })
     for (const ev of insertedEvents) broadcastEvent('fleet-event', ev)
-    for (const to of recipients) requestWake(to)
+    for (const to of recipients) requestWake(to, chatWakeText(text))
 
     // Plan mode approval routing: if Skip sends an affirmative/negative and
     // there's a pending plan approval for the targeted agent (or any agent),
@@ -3152,7 +3177,7 @@ async function handleFleetWsMessage(ws, msg) {
     })
     broadcastState()
     reply({ ok: true, task_id: taskId })
-    requestWake(resolved.id)
+    requestWake(resolved.id, delegateWakeText(description))
     return
   }
 
