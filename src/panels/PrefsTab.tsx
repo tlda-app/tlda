@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, type ReactNode } from 'react'
 import { getPref, setPref, subscribePref } from '../preferences'
 import { setBackend as setVoiceBackend } from '../voice.mjs'
 import { NOTE_COLORS } from '../shapes/MathNoteShape'
@@ -9,7 +9,7 @@ import { useFleetIdentity } from '../fleet-data-adapter'
 // Identity switcher — touch devices can't edit localStorage, so this is the only
 // way to change who you are on a server that auto-assigned a wrong/cached id
 // (e.g. the no-auth local copy that used to log everyone in as "dev").
-function IdentitySection() {
+function IdentitySectionBody() {
   const { name, login, register } = useFleetIdentity()
   const [val, setVal] = useState('')
   const [err, setErr] = useState<string | null>(null)
@@ -32,8 +32,7 @@ function IdentitySection() {
   }, [val, login, register])
 
   return (
-    <div className="prefs-section">
-      <div className="prefs-section-label">Identity</div>
+    <>
       <div style={{ fontSize: 11, marginBottom: 4 }}>
         You are <strong>{name || '(none)'}</strong>
       </div>
@@ -51,7 +50,7 @@ function IdentitySection() {
         </button>
       </div>
       {err && <div style={{ fontSize: 10, color: '#b91c1c', marginTop: 2 }}>{err}</div>}
-    </div>
+    </>
   )
 }
 
@@ -59,8 +58,65 @@ const ALL_SOURCES = ['ref', 'proof', 'errors'] as const
 
 const COLOR_OPTIONS = Object.keys(NOTE_COLORS)
 
+type PrefsSectionId =
+  | 'identity'
+  | 'theme'
+  | 'readability'
+  | 'layout'
+  | 'folding'
+  | 'sources'
+  | 'notes'
+  | 'voice-backend'
+  | 'voice-commands'
+  | 'spawn'
+  | 'highlighter'
+  | 'editor'
+  | 'curve'
+
+function CollapsiblePrefsSection({
+  id,
+  title,
+  summary,
+  open,
+  onToggle,
+  children,
+}: {
+  id: PrefsSectionId
+  title: string
+  summary?: ReactNode
+  open: boolean
+  onToggle: (id: PrefsSectionId) => void
+  children: ReactNode
+}) {
+  const bodyId = `prefs-section-${id}`
+
+  return (
+    <section className={`prefs-section ${open ? 'prefs-section--open' : 'prefs-section--closed'}`}>
+      <button
+        type="button"
+        className="prefs-section-toggle"
+        aria-expanded={open}
+        aria-controls={bodyId}
+        onClick={() => onToggle(id)}
+      >
+        <span className="prefs-section-chevron" aria-hidden="true">{open ? '▾' : '▸'}</span>
+        <span className="prefs-section-heading">
+          <span className="prefs-section-label">{title}</span>
+          {summary && <span className="prefs-section-summary">{summary}</span>}
+        </span>
+      </button>
+      {open && (
+        <div id={bodyId} className="prefs-section-body">
+          {children}
+        </div>
+      )}
+    </section>
+  )
+}
+
 function readAll() {
   return {
+    openSections: getPref('prefs-open-sections') as PrefsSectionId[],
     sources: getPref('docview-sources'),
     voiceColor: getPref('voice-note-color'),
     mathColor: getPref('math-note-color'),
@@ -110,19 +166,51 @@ export function PrefsTab() {
     setPref('spawn-mode', e.target.checked ? 'plan' : '')
   }, [])
 
+  const toggleSection = useCallback((id: PrefsSectionId) => {
+    const isOpen = prefs.openSections.includes(id)
+    const next = isOpen
+      ? prefs.openSections.filter(sectionId => sectionId !== id)
+      : [...prefs.openSections, id]
+    setPref('prefs-open-sections', next)
+  }, [prefs.openSections])
+
+  const foldSummary = [
+    `Bash ${prefs.foldBash || 'off'}`,
+    `Writes ${prefs.foldWrite || 'off'}`,
+    `MD ${prefs.foldMd || 'off'}`,
+    `Diff ${prefs.foldDiff || 'off'}`,
+  ].join(' / ')
+
   return (
     <div className="prefs-tab">
-      <IdentitySection />
+      <CollapsiblePrefsSection
+        id="identity"
+        title="Identity"
+        summary="Current user and switcher"
+        open={prefs.openSections.includes('identity')}
+        onToggle={toggleSection}
+      >
+        <IdentitySectionBody />
+      </CollapsiblePrefsSection>
 
-      <div className="prefs-section">
-        <div className="prefs-section-label">Theme</div>
+      <CollapsiblePrefsSection
+        id="theme"
+        title="Theme"
+        summary="Scheme and color family"
+        open={prefs.openSections.includes('theme')}
+        onToggle={toggleSection}
+      >
         <SchemeToggle />
         <ThemeFamilyToggle />
-      </div>
+      </CollapsiblePrefsSection>
 
-      <div className="prefs-section">
-        <div className="prefs-section-label">Fleet readability</div>
-
+      <CollapsiblePrefsSection
+        id="readability"
+        title="Fleet readability"
+        summary={`${prefs.fontSize}px / chrome ${Math.round(prefs.chromeOpacity * 100)}% / content ${Math.round(prefs.contentOpacity * 100)}%`}
+        open={prefs.openSections.includes('readability')}
+        onToggle={toggleSection}
+      >
         <div className="prefs-num-row">
           <span className="prefs-num-label">Font size</span>
           <input
@@ -173,10 +261,15 @@ export function PrefsTab() {
           />
           <span>Age fade</span>
         </label>
-      </div>
+      </CollapsiblePrefsSection>
 
-      <div className="prefs-section">
-        <div className="prefs-section-label">Default layout size</div>
+      <CollapsiblePrefsSection
+        id="layout"
+        title="Default layout size"
+        summary={`${Math.round(prefs.heightFrac * 100)}% high / rail ${prefs.railWidth}px / chat ${prefs.chatWidth}px`}
+        open={prefs.openSections.includes('layout')}
+        onToggle={toggleSection}
+      >
         <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 4 }}>
           Applied when you pick a layout preset. Re-pick a layout to apply changes.
         </div>
@@ -232,10 +325,15 @@ export function PrefsTab() {
           />
           <span className="prefs-num-unit">px</span>
         </div>
-      </div>
+      </CollapsiblePrefsSection>
 
-      <div className="prefs-section">
-        <div className="prefs-section-label">Fold tool output</div>
+      <CollapsiblePrefsSection
+        id="folding"
+        title="Fold tool output"
+        summary={foldSummary}
+        open={prefs.openSections.includes('folding')}
+        onToggle={toggleSection}
+      >
         <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 4 }}>
           Collapse long tool/monitoring output past N lines (0 = never fold). Messages and images are never folded.
         </div>
@@ -258,10 +356,15 @@ export function PrefsTab() {
             <span className="prefs-num-unit">{val === 0 ? 'off' : 'lines'}</span>
           </div>
         ))}
-      </div>
+      </CollapsiblePrefsSection>
 
-      <div className="prefs-section">
-        <div className="prefs-section-label">Doc viewer sources</div>
+      <CollapsiblePrefsSection
+        id="sources"
+        title="Doc viewer sources"
+        summary={prefs.sources.length ? prefs.sources.join(', ') : 'none'}
+        open={prefs.openSections.includes('sources')}
+        onToggle={toggleSection}
+      >
         <div className="prefs-source-checks">
           {ALL_SOURCES.map(src => (
             <label key={src} className="prefs-check">
@@ -274,10 +377,15 @@ export function PrefsTab() {
             </label>
           ))}
         </div>
-      </div>
+      </CollapsiblePrefsSection>
 
-      <div className="prefs-section">
-        <div className="prefs-section-label">Note colors</div>
+      <CollapsiblePrefsSection
+        id="notes"
+        title="Note colors"
+        summary={`Voice ${prefs.voiceColor} / math ${prefs.mathColor} / ${Math.round(prefs.mathOpacity * 100)}%`}
+        open={prefs.openSections.includes('notes')}
+        onToggle={toggleSection}
+      >
         <div className="prefs-color-row">
           <span className="prefs-color-label">Voice</span>
           <select value={prefs.voiceColor} onChange={handleVoiceColor} className="prefs-select">
@@ -309,10 +417,15 @@ export function PrefsTab() {
           />
           <span className="prefs-num-unit">%</span>
         </div>
-      </div>
+      </CollapsiblePrefsSection>
 
-      <div className="prefs-section">
-        <div className="prefs-section-label">Voice backend</div>
+      <CollapsiblePrefsSection
+        id="voice-backend"
+        title="Voice backend"
+        summary={prefs.voiceBackend || 'Off'}
+        open={prefs.openSections.includes('voice-backend')}
+        onToggle={toggleSection}
+      >
         <select value={prefs.voiceBackend} onChange={e => { setPref('voice-backend', e.target.value); setVoiceBackend(e.target.value) }} className="prefs-select">
           <option value="">Off</option>
           <option value="chrome">Chrome Web Speech</option>
@@ -322,10 +435,15 @@ export function PrefsTab() {
         <div style={{ fontSize: 10, color: '#6b7280', marginTop: 2 }}>
           Defaults to Deepgram. No fallback — the chosen backend is the only one that ever runs; Chrome (can beep) is opt-in only.
         </div>
-      </div>
+      </CollapsiblePrefsSection>
 
-      <div className="prefs-section">
-        <div className="prefs-section-label">Voice commands</div>
+      <CollapsiblePrefsSection
+        id="voice-commands"
+        title="Voice commands"
+        summary={`Submit: ${prefs.voiceSubmitWords || 'off'}`}
+        open={prefs.openSections.includes('voice-commands')}
+        onToggle={toggleSection}
+      >
         <div className="prefs-num-row">
           <span className="prefs-color-label">Submit</span>
           <input
@@ -346,10 +464,15 @@ export function PrefsTab() {
             placeholder="fleet-agents"
           />
         </div>
-      </div>
+      </CollapsiblePrefsSection>
 
-      <div className="prefs-section">
-        <div className="prefs-section-label">Spawn</div>
+      <CollapsiblePrefsSection
+        id="spawn"
+        title="Spawn"
+        summary={prefs.spawnMode === 'plan' ? 'Plan mode' : 'Default mode'}
+        open={prefs.openSections.includes('spawn')}
+        onToggle={toggleSection}
+      >
         <label className="prefs-check">
           <input
             type="checkbox"
@@ -358,10 +481,15 @@ export function PrefsTab() {
           />
           <span>Spawn in plan mode</span>
         </label>
-      </div>
+      </CollapsiblePrefsSection>
 
-      <div className="prefs-section">
-        <div className="prefs-section-label">Highlighter</div>
+      <CollapsiblePrefsSection
+        id="highlighter"
+        title="Highlighter"
+        summary={prefs.hlZone ? 'Edge zone on' : 'Edge zone off'}
+        open={prefs.openSections.includes('highlighter')}
+        onToggle={toggleSection}
+      >
         <label className="prefs-check">
           <input
             type="checkbox"
@@ -370,20 +498,30 @@ export function PrefsTab() {
           />
           <span>Edge zone</span>
         </label>
-      </div>
+      </CollapsiblePrefsSection>
 
-      <div className="prefs-section">
-        <div className="prefs-section-label">Editor</div>
+      <CollapsiblePrefsSection
+        id="editor"
+        title="Editor"
+        summary="Vim mode"
+        open={prefs.openSections.includes('editor')}
+        onToggle={toggleSection}
+      >
         <VimModeToggle />
-      </div>
+      </CollapsiblePrefsSection>
 
-      <div className="prefs-section">
-        <div className="prefs-section-label">Edge-zone response curve</div>
+      <CollapsiblePrefsSection
+        id="curve"
+        title="Edge-zone response curve"
+        summary="Scroll and pan velocity"
+        open={prefs.openSections.includes('curve')}
+        onToggle={toggleSection}
+      >
         <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 4 }}>
           Drag handles to shape scroll/pan velocity near viewport edges
         </div>
         <CurveEditor value={prefs.curve} onChange={h => setPref('response-curve', h)} />
-      </div>
+      </CollapsiblePrefsSection>
     </div>
   )
 }

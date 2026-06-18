@@ -46,6 +46,9 @@ const DEFAULTS = {
   'fold-diff-lines': 0 as number,
   // Highlighter edge-zone (the HighlighterSlider). Toggled from the prefs menu.
   'hl-zone-enabled': true as boolean,
+  // Preferences panel disclosure state. Kept server-backed so touch-only
+  // devices don't need localStorage access to recover usable panel space.
+  'prefs-open-sections': ['identity', 'theme', 'readability'] as string[],
 }
 
 export type PrefKey = keyof typeof DEFAULTS
