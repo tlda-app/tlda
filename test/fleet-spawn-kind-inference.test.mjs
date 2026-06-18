@@ -6,6 +6,9 @@ import { spawnSync } from 'node:child_process'
 
 const PY = `
 import importlib.util
+import types
+import sys
+sys.modules["websocket"] = types.SimpleNamespace(create_connection=lambda *args, **kwargs: None)
 spec = importlib.util.spec_from_file_location("fleet_spawn", "bin/fleet-spawn.py")
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
@@ -29,6 +32,19 @@ assert "-s workspace-write" in cmd
 
 policy_name, dev_tools, write_roots, matched, policy = mod.resolve_harness_sandbox(
     "codex", "gpt-5.5", "/Users/skip/work/tlda")
+assert policy_name == "unsandboxed"
+assert dev_tools is True
+assert write_roots == []
+assert matched is None
+assert policy is None
+assert "fence --settings" not in cmd
+
+mod.os.environ["TLDA_ENABLE_AGENT_FENCE"] = "1"
+try:
+    policy_name, dev_tools, write_roots, matched, policy = mod.resolve_harness_sandbox(
+        "codex", "gpt-5.5", "/Users/skip/work/tlda", explicit_policy="cwd")
+finally:
+    del mod.os.environ["TLDA_ENABLE_AGENT_FENCE"]
 wrapped = mod.wrap_sandbox_cmd(cmd, policy)
 assert policy_name == "cwd"
 assert dev_tools is True

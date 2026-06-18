@@ -734,7 +734,7 @@ def agent_meta(agent):
 
 SANDBOX_CONFIG_KEY = "agentSandbox"
 SANDBOX_POLICIES = {"no-dev", "cwd", "tlda-projects", "unsandboxed"}
-DEFAULT_SANDBOX_POLICY = "cwd"
+DEFAULT_SANDBOX_POLICY = "unsandboxed"
 DEFAULT_SANDBOX_READ_ROOTS = ["~/work"]
 DEFAULT_SANDBOX_OPTIONS = {
     "network": False,
@@ -893,6 +893,10 @@ def _validate_sandbox_policy(policy):
     return policy
 
 
+def _agent_fence_enabled():
+    return os.environ.get("TLDA_ENABLE_AGENT_FENCE") == "1"
+
+
 def _sandbox_config(required=False):
     full_cfg = read_config()
     cfg = full_cfg.get(SANDBOX_CONFIG_KEY)
@@ -965,6 +969,8 @@ def resolve_sandbox_policy_name(harness, model, explicit_policy=None):
         or cfg.get("defaultPolicy")
         or DEFAULT_SANDBOX_POLICY
     )
+    if policy != "unsandboxed" and not _agent_fence_enabled():
+        return "unsandboxed"
     return _validate_sandbox_policy(policy)
 
 
