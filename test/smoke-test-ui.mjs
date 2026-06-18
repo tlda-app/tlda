@@ -16,7 +16,7 @@
  * Each test prints PASS/FAIL with the relevant numbers. Exit code 1 if
  * any failed.
  *
- * Usage: node test/smoke-test-ui.mjs [--doc=DOC] [--url=BASE]
+ * Usage: node test/smoke-test-ui.mjs [--doc=DOC] [--url=BASE] [--rig=rig.json]
  */
 
 import { chromium } from 'playwright'
@@ -24,6 +24,7 @@ import { readFileSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import { hasTls } from '../shared/config.mjs'
+import { resolveRigEnv } from './rig-env.mjs'
 
 const args = Object.fromEntries(
   process.argv.slice(2)
@@ -33,16 +34,21 @@ const args = Object.fromEntries(
       return [k, v.join('=') || true]
     })
 )
-const DOC = args.doc || 'bregman'
-const BASE = args.url || `${hasTls ? 'https' : 'http'}://localhost:5176`
+const rigEnv = resolveRigEnv({ rig: args.rig, doc: args.doc })
+const DOC = rigEnv.doc
+const BASE = (args.url || rigEnv.viewer || `${hasTls ? 'https' : 'http'}://localhost:5176`).replace(/\/+$/, '')
 
 // Pull the rw token from config.json so headless requests pass auth.
-let TOKEN = ''
-try {
-  const cfg = JSON.parse(readFileSync(join(homedir(), '.config/tlda/config.json'), 'utf8'))
-  TOKEN = cfg.tokenRw || cfg.token || ''
-} catch {}
-const URL = `${BASE}/?doc=${DOC}${TOKEN ? '&token=' + TOKEN : ''}`
+let TOKEN = rigEnv.token
+if (!TOKEN && !rigEnv.noAuth) {
+  try {
+    const cfg = JSON.parse(readFileSync(join(homedir(), '.config/tlda/config.json'), 'utf8'))
+    TOKEN = cfg.tokenRw || cfg.token || ''
+  } catch (e) {
+    if (e?.code !== 'ENOENT') console.warn(`  [config] unable to read auth token: ${e.message}`)
+  }
+}
+const URL = `${BASE}/?doc=${encodeURIComponent(DOC)}${TOKEN ? '&token=' + encodeURIComponent(TOKEN) : ''}`
 
 const results = []
 function step(name, ok, detail = '') {
@@ -52,7 +58,7 @@ function step(name, ok, detail = '') {
 }
 
 async function main() {
-  console.log(`smoke-test-ui  doc=${DOC}  url=${URL}`)
+  console.log(`smoke-test-ui  doc=${DOC}  url=${URL}${rigEnv.manifestPath ? `  rig=${rigEnv.manifestPath}` : ''}`)
   const browser = await chromium.launch({ headless: true })
   const ctx = await browser.newContext()
   const page = await ctx.newPage()
