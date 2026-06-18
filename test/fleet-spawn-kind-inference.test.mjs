@@ -27,6 +27,7 @@ assert mod.harness_for_agent({"id": "fleet:stale", "metadata": {"kind": "claude"
 assert mod.harness_for_agent({"id": "fleet:stale", "metadata": {"kind": "claude"}}, "gpt-5.5").kind == "codex"
 assert any(m["alias"] == "gpt" and m["id"] == "gpt-5.5" and m["kind"] == "codex"
            for m in mod.HARNESS_ADAPTERS["codex"].list_models())
+assert mod.DEFAULT_SPAWN_CAPABILITY == "workspace-write+net"
 assert "CLAUDE.md" not in mod.register_prompt("canary")
 codex_prompt = mod.codex_register_prompt("canary")
 assert 'register(name="canary")' in codex_prompt
@@ -198,5 +199,24 @@ describe('fleet-spawn harness kind inference', () => {
       env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
     })
     assert.equal(result.status, 0, result.stderr || result.stdout)
+  })
+
+  it('does not create an agent for direct spawn dry-run', () => {
+    const result = spawnSync('python3', [
+      'bin/fleet-spawn.py',
+      '--fresh', 'dryrun-canary',
+      '--model', 'gpt-5.5',
+      '--kind', 'codex',
+      '--cwd', '/Users/skip/work/tlda',
+      '--dry-run',
+      '--no-attach',
+    ], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
+    })
+    assert.equal(result.status, 0, result.stderr || result.stdout)
+    assert.match(result.stdout, /would fresh spawn dryrun-canary with capability workspace-write\+net/)
+    assert.doesNotMatch(result.stdout, /spawned in/)
   })
 })

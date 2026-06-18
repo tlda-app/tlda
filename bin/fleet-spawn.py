@@ -40,6 +40,7 @@ import websocket
 
 CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".config", "tlda", "config.json")
 CODEX_CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".codex", "config.toml")
+DEFAULT_SPAWN_CAPABILITY = "workspace-write+net"
 
 
 def read_config():
@@ -2225,6 +2226,7 @@ def fresh(name, model, cwd, effort, mode, kind="claude", spawn_capability=None,
 
 
 def respawn(name, model, cwd, effort, mode, session_override=None,
+            spawn_capability_override=None,
             sandbox_policy=None):
     ensure_server()
     agent = find_agent(name)
@@ -2237,7 +2239,7 @@ def respawn(name, model, cwd, effort, mode, session_override=None,
     cwd = cwd or agent.get("cwd") or os.getcwd()
     raw_model = model or meta.get("model")
     spawn_policy = meta.get("spawnPolicy") if isinstance(meta, dict) else None
-    spawn_capability = spawn_policy.get("capability") if isinstance(spawn_policy, dict) else None
+    spawn_capability = spawn_capability_override or (spawn_policy.get("capability") if isinstance(spawn_policy, dict) else None) or DEFAULT_SPAWN_CAPABILITY
     spawn_policy_name = spawn_policy.get("policy") if isinstance(spawn_policy, dict) else None
     adapter = harness_for_agent(agent, raw_model)
     model = adapter.resolve_model(raw_model)
@@ -2573,20 +2575,28 @@ def main():
 
     try:
         args.effort = resolve_effort(args.effort)
+        default_capability = args.spawn_capability or DEFAULT_SPAWN_CAPABILITY
+        if args.dry_run and not (args.session and (not args.name or args.enroll)):
+            action = "fresh spawn" if args.fresh else ("refresh" if args.refresh else "respawn")
+            name = args.name or args.session
+            print(f"[dry-run] would {action} {name} with capability {default_capability}")
+            return
         if args.session and (not args.name or args.enroll):
             sess = respawn_session(args.session, args.name, args.model, args.cwd,
                                    args.effort, mode, args.enroll, args.dry_run)
         elif args.fresh:
             sess = fresh(args.name, args.model, args.cwd, args.effort, mode,
-                         kind=args.kind, spawn_capability=args.spawn_capability,
+                         kind=args.kind, spawn_capability=default_capability,
                          sandbox_policy=args.policy)
         elif args.refresh:
             sess = refresh(args.name, args.model, args.cwd, args.effort, mode,
-                           spawn_capability=args.spawn_capability,
+                           spawn_capability=default_capability,
                            sandbox_policy=args.policy)
         else:
             sess = respawn(args.name, args.model, args.cwd, args.effort, mode,
-                           args.session, sandbox_policy=args.policy)
+                           args.session,
+                           spawn_capability_override=args.spawn_capability,
+                           sandbox_policy=args.policy)
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(2)
