@@ -53,6 +53,25 @@ test('clears retry state after a successful load', async () => {
   cleanup()
 })
 
+test('unhides images hidden by inline onerror handlers before retry', async () => {
+  const dom = setupDom('<div id="log"><img class="chat-image" src="/api/file?path=%2Ftmp%2Ffleet-uploads%2Frace.png" style="display:none"></div>')
+  const log = dom.window.document.getElementById('log')
+  const img = log.querySelector('img')
+  const cleanup = installChatImageRetry(log, { baseDelayMs: 1, maxRetries: 2, baseHref: dom.window.location.href })
+
+  img.dispatchEvent(new dom.window.Event('error'))
+  await delay(10)
+
+  assert.equal(img.style.display, '')
+  assert.match(new URL(img.src).searchParams.get('chat_img_retry'), /^1-\d+$/)
+
+  img.style.display = 'none'
+  img.dispatchEvent(new dom.window.Event('load'))
+  assert.equal(img.style.display, '')
+
+  cleanup()
+})
+
 test('does not stack duplicate retry timers for the same failed image', async () => {
   const dom = setupDom('<div id="log"><img class="chat-image" src="/api/file?path=%2Ftmp%2Ffleet-uploads%2Frace.png"></div>')
   const log = dom.window.document.getElementById('log')

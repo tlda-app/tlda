@@ -36,6 +36,7 @@ function scheduleRetry(img, opts = {}) {
     if (!img.isConnected) return
     const current = img.currentSrc || img.src || img.getAttribute('src') || ''
     if (img.dataset.chatImageRetrySrc !== failedSrc) return
+    if (img.style?.display === 'none') img.style.display = ''
     img.src = retryImageUrl(failedSrc, attempt, opts.baseHref)
   }, retryDelay(attempt, baseDelayMs))
   return true
@@ -61,6 +62,7 @@ export function installChatImageRetry(root, opts = {}) {
     delete img.dataset.chatImageRetryCount
     delete img.dataset.chatImageRetryPending
     delete img.dataset.chatImageRetrySrc
+    if (img.style?.display === 'none') img.style.display = ''
   }
 
   root.addEventListener('error', onError, true)
