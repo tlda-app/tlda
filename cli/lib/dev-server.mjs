@@ -22,34 +22,13 @@ import { hasTls } from '../../shared/config.mjs'
 import { resolveRepoRoot, ensureWorktree, startWorktreeVite, findFreePort } from './dev-vite.mjs'
 
 const DEV_PORT = 5280
-const DEFAULT_DATA_DIR = join(homedir(), '.config', 'tlda', 'dev-server')
-const FALLBACK_DATA_DIR = join(resolveRepoRoot(), '.tlda-dev', 'sandbox')
-
-function canWriteDir(dir) {
-  try {
-    mkdirSync(dir, { recursive: true })
-    const probe = join(dir, `.write-check-${process.pid}`)
-    writeFileSync(probe, 'ok')
-    unlinkSync(probe)
-    return true
-  } catch {
-    return false
-  }
-}
-
-function resolveDataDir() {
-  if (process.env.TLDA_DEV_SERVER_DIR) return process.env.TLDA_DEV_SERVER_DIR
-  return canWriteDir(DEFAULT_DATA_DIR) ? DEFAULT_DATA_DIR : FALLBACK_DATA_DIR
-}
-
-const DATA_DIR = resolveDataDir()
+const DATA_DIR = join(homedir(), '.config', 'tlda', 'dev-server')
 const PID_FILE = join(DATA_DIR, 'server.pid')
 const VITE_PID_FILE = join(DATA_DIR, 'vite.pid')
 const LOG_FILE = join(DATA_DIR, 'server.log')
 const PROJECTS_DIR = join(DATA_DIR, 'projects')
 const FLEET_DB = join(DATA_DIR, 'fleet.db')
 const MANIFEST_FILE = join(DATA_DIR, 'rig.json')
-const SANDBOX_CONFIG_FILE = join(DATA_DIR, 'config.json')
 
 function alive(pid) {
   try { process.kill(pid, 0); return true } catch { return false }
@@ -121,28 +100,6 @@ function writeManifest(manifest, worktreeDir = null) {
     mkdirSync(dir, { recursive: true })
     writeFileSync(join(dir, 'rig.json'), JSON.stringify(manifest, null, 2))
   }
-}
-
-function writeSandboxConfig(port) {
-  const proto = hasTls ? 'https' : 'http'
-  const self = `${proto}://localhost:${port}`
-  const config = {
-    defaultConfig: 'sandbox',
-    configs: {
-      sandbox: {
-        database: self,
-        store: self,
-        licenseKey: '',
-      },
-    },
-    token: '',
-    tokenRw: '',
-    tokenRead: '',
-    bots: [],
-  }
-  mkdirSync(DATA_DIR, { recursive: true })
-  writeFileSync(SANDBOX_CONFIG_FILE, JSON.stringify(config, null, 2))
-  return SANDBOX_CONFIG_FILE
 }
 
 function printJson(obj) {
@@ -231,7 +188,6 @@ export async function cmdDevServer(args, repoRoot) {
 
   mkdirSync(DATA_DIR, { recursive: true })
   mkdirSync(PROJECTS_DIR, { recursive: true })
-  const sandboxConfigFile = writeSandboxConfig(port)
   const logFd = openSync(LOG_FILE, 'a')
   const serverScript = join(worktreeDir, 'server', 'unified-server.mjs')
 
@@ -243,8 +199,6 @@ export async function cmdDevServer(args, repoRoot) {
       PORT: String(port),
       PROJECTS_DIR,
       TLDA_FLEET_DB: FLEET_DB,
-      TLDA_CONFIG: 'sandbox',
-      TLDA_CONFIG_FILE: sandboxConfigFile,
       TLDA_DEV_SERVER: '1',     // disables fleet supervisors + hibernate loop
       TLDA_NO_AUTH: '1',        // dev convenience — no token needed
       // Self-report as the fleet store so /api/fleet-config returns THIS server,
@@ -279,7 +233,6 @@ export async function cmdDevServer(args, repoRoot) {
     port: await findFreePort(5180),
     serverPort: port,
     hasTls,
-    host: '0.0.0.0',
   })
   const viewerUrl = `${viteScheme}://localhost:${vitePort}/`   // no token — sandbox is NO_AUTH
   writeFileSync(VITE_PID_FILE, String(vitePid))
@@ -300,7 +253,6 @@ export async function cmdDevServer(args, repoRoot) {
     db: FLEET_DB,
     projectsDir: PROJECTS_DIR,
     manifest: MANIFEST_FILE,
-    config: sandboxConfigFile,
   }
   writeManifest(manifest, worktreeDir)
 

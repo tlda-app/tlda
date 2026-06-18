@@ -53,7 +53,6 @@ public/assets/
 
 # Working directories
 .worktrees/
-.tlda-dev/
 .claude/
 .playwright-cli/
 .playwright-mcp/
