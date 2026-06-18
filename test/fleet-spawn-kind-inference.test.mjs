@@ -8,6 +8,8 @@ const PY = `
 import importlib.util
 import types
 import sys
+import tempfile
+import os
 sys.modules["websocket"] = types.SimpleNamespace(create_connection=lambda *args, **kwargs: None)
 spec = importlib.util.spec_from_file_location("fleet_spawn", "bin/fleet-spawn.py")
 mod = importlib.util.module_from_spec(spec)
@@ -40,6 +42,7 @@ cmd = mod.build_codex_cmd(
     capability="workspace-write+net",
 )
 assert "-s workspace-write" in cmd
+assert "-C /Users/skip/work/tlda" in cmd
 
 def resolve_capability(capability):
     policy_name, dev_tools, write_roots, matched, policy = mod.resolve_harness_sandbox(
@@ -109,6 +112,15 @@ assert matched == "/Users/skip/work/tlda"
 assert policy["write_roots"] == []
 assert policy["network"] is False
 assert "-s danger-full-access" in role_cmd
+
+with tempfile.TemporaryDirectory() as td:
+    cfg = os.path.join(td, "config.toml")
+    assert mod.ensure_codex_project_trusted("/Users/skip/work/balancing-act", cfg) is True
+    first = open(cfg).read()
+    assert '[projects."/Users/skip/work/balancing-act"]' in first
+    assert 'trust_level = "trusted"' in first
+    assert mod.ensure_codex_project_trusted("/Users/skip/work/balancing-act", cfg) is False
+    assert open(cfg).read() == first
 
 policy_name, dev_tools, write_roots, matched, policy = mod.resolve_harness_sandbox(
     "codex", "gpt-5.5", "/Users/skip/work/tlda")

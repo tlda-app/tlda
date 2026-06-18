@@ -39,6 +39,7 @@ from urllib.parse import urlparse
 import websocket
 
 CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".config", "tlda", "config.json")
+CODEX_CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".codex", "config.toml")
 
 
 def read_config():
@@ -1398,6 +1399,47 @@ def codex_workspace_write_config_args(capability, cwd=None):
     return args
 
 
+def _toml_basic_string(value):
+    return '"' + str(value).replace('\\', '\\\\').replace('"', '\\"') + '"'
+
+
+def ensure_codex_project_trusted(cwd, config_file=CODEX_CONFIG_FILE):
+    """Pre-seed Codex project trust for UI/fleet spawned agents."""
+    if not cwd:
+        return False
+    project = os.path.realpath(os.path.expanduser(cwd))
+    section = f'[projects.{_toml_basic_string(project)}]'
+    try:
+        with open(config_file) as f:
+            text = f.read()
+    except FileNotFoundError:
+        text = ""
+
+    section_re = re.compile(
+        rf'(?ms)^(?P<header>{re.escape(section)}\s*\n)(?P<body>.*?)(?=^\[|\Z)'
+    )
+    match = section_re.search(text)
+    if match:
+        body = match.group("body")
+        if re.search(r'(?m)^\s*trust_level\s*=\s*"trusted"\s*(?:#.*)?$', body):
+            return False
+        if re.search(r'(?m)^\s*trust_level\s*=', body):
+            body = re.sub(r'(?m)^\s*trust_level\s*=.*$', 'trust_level = "trusted"', body, count=1)
+        else:
+            body = f'trust_level = "trusted"\n{body}'
+        text = text[:match.start("body")] + body + text[match.end("body"):]
+    else:
+        prefix = "" if not text or text.endswith("\n") else "\n"
+        text = f'{text}{prefix}\n{section}\ntrust_level = "trusted"\n'
+
+    os.makedirs(os.path.dirname(config_file), exist_ok=True)
+    tmp = f"{config_file}.tmp-{os.getpid()}"
+    with open(tmp, "w") as f:
+        f.write(text)
+    os.replace(tmp, config_file)
+    return True
+
+
 def _resolve_api_dns_alias():
     host = urlparse(API).hostname
     if not host or host in ("localhost", "127.0.0.1", "::1"):
@@ -1553,6 +1595,8 @@ def build_codex_cmd(fleet_id, tmux_session, model=None, resume_id=None,
     parts.extend(codex_workspace_write_config_args(capability, cwd=cwd))
     if model:
         parts.append(f"-m {shlex.quote(model)}")
+    if cwd:
+        parts.append(f"-C {shlex.quote(cwd)}")
     parts.append(f"-s {codex_sandbox_for_capability(capability, outer_sandbox=outer_sandbox)}")
     # Let a sandboxed (workspace-write) codex agent drive the shared Playwright
     # browser without needing danger-full-access: `tlda-dev pw` writes lock /
@@ -2065,6 +2109,10 @@ def inject_codex_prompt(session, prompt, timeout=60):
                 continue
             pane = r.stdout.rstrip()
             lines = pane.split('\n')
+            if 'Do you trust the contents of this directory?' in pane:
+                subprocess.run(tmux("send-keys", "-t", session, "Enter"), capture_output=True, timeout=5)
+                time.sleep(1)
+                continue
             prompt_ready = any('›' in l for l in lines[-5:])
             busy = any(marker in pane for marker in ('Working', 'Transmuting', 'Thinking'))
             if prompt_ready and not busy:
@@ -2144,6 +2192,8 @@ def fresh(name, model, cwd, effort, mode, kind="claude", spawn_capability=None,
                             outer_sandbox=bool(policy))
     if policy:
         cmd = wrap_sandbox_cmd(cmd, policy)
+    if adapter.kind == "codex":
+        ensure_codex_project_trusted(cwd)
     spawn_tmux(sess, cwd, cmd, send_keys=adapter.spawn_send_keys())
     if adapter.kind == "codex":
         inject_codex_prompt(sess, codex_register_prompt(name))
@@ -2216,6 +2266,8 @@ def respawn(name, model, cwd, effort, mode, session_override=None,
         outer_sandbox=bool(policy))
     if policy:
         cmd = wrap_sandbox_cmd(cmd, policy)
+    if adapter.kind == "codex":
+        ensure_codex_project_trusted(cwd)
     if adapter.kind == "codex" and resume_id:
         ws_register(
             fleet_id, name, sess, cwd, model, effort,
@@ -2273,6 +2325,8 @@ def refresh(name, model, cwd, effort, mode, spawn_capability=None,
                             outer_sandbox=bool(policy))
     if policy:
         cmd = wrap_sandbox_cmd(cmd, policy)
+    if adapter.kind == "codex":
+        ensure_codex_project_trusted(cwd)
     spawn_tmux(sess, cwd, cmd, send_keys=adapter.spawn_send_keys())
     if adapter.kind == "codex":
         inject_codex_prompt(sess, codex_register_prompt(name))
@@ -2326,7 +2380,8 @@ def _respawn_codex_session(rollout_id, fpath, name_override, model, cwd,
     ws_register(own_id, agent_name, sess, cwd, model, effort,
                 kind="codex", session_id=rollout_id)
     cmd = build_codex_cmd(own_id, sess, model=model, resume_id=rollout_id,
-                          name=agent_name)
+                          name=agent_name, cwd=cwd)
+    ensure_codex_project_trusted(cwd)
     spawn_tmux(sess, cwd, cmd, send_keys=HARNESS_ADAPTERS["codex"].spawn_send_keys())
     inject_codex_prompt(sess, codex_register_prompt(agent_name))
     action = "enrolled" if enroll else "resumed"
