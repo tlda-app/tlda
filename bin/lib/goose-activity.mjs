@@ -149,7 +149,7 @@ export function gooseMessageEvents(row, isNoise) {
         origTool: pending.evt.tool,
         tool: '_prettyResult',
         prettyResult,
-        ts,
+        ts: pending.evt.ts,
       })
     } else if (b.type === 'text' && typeof b.text === 'string' && b.text.length > 20) {
       if (row.role === 'user') continue   // inbound nudges / terminal input — not activity

@@ -138,6 +138,39 @@ first message`
   assert.doesNotMatch(events[1].prettyResult, /Wall time:/)
 })
 
+test('Goose split-row pretty result preserves original tool request timestamp', () => {
+  const requestEvents = gooseMessageEvents({
+    role: 'assistant',
+    created_timestamp: 1770000048,
+    content_json: JSON.stringify([{
+      id: 'goose-search-1',
+      type: 'toolRequest',
+      toolCall: { value: { name: 'tlda__search_logs', arguments: { query: 'activity parity' } } },
+    }]),
+  })
+
+  assert.equal(requestEvents.length, 1)
+  assert.equal(requestEvents[0].tool, 'tlda/search_logs')
+
+  const responseEvents = gooseMessageEvents({
+    role: 'user',
+    created_timestamp: 1770000039,
+    content_json: JSON.stringify([{
+      id: 'goose-search-1',
+      type: 'toolResponse',
+      toolResult: {
+        value: { content: [{ type: 'text', text: 'No results for "activity parity".' }] },
+      },
+    }]),
+  })
+
+  assert.equal(responseEvents.length, 1)
+  assert.equal(responseEvents[0].tool, '_prettyResult')
+  assert.equal(responseEvents[0].origTool, 'tlda/search_logs')
+  assert.equal(responseEvents[0].prettyResult, 'No results for "activity parity".')
+  assert.equal(responseEvents[0].ts, requestEvents[0].ts)
+})
+
 test('shared pretty-result unwrap handles Codex and MCP envelopes', () => {
   const wrapped = 'Wall time: 0.123 seconds\nOutput:\n[{"type":"text","text":"first"},{"type":"text","text":"second"}]'
   assert.equal(unwrapMcpTextEnvelope(wrapped), 'first\nsecond')
