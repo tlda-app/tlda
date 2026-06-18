@@ -247,6 +247,32 @@ export async function commitSnapshot(name) {
 }
 
 /**
+ * Return the current shadow HEAD version, or null if the shadow repo has no
+ * committed version yet.
+ */
+export async function currentVersion(name) {
+  const repoDir = shadowRepoDir(name)
+  if (!existsSync(join(repoDir, '.git'))) return null
+
+  try {
+    const { stdout } = await execAsync(
+      'git log --format="%H %at %s" -n 1',
+      { cwd: repoDir, timeout: 10000 },
+    )
+    if (!stdout.trim()) return null
+
+    const [hash, unixTime, ...msgParts] = stdout.trim().split(' ')
+    return {
+      hash,
+      timestamp: parseInt(unixTime, 10) * 1000,
+      message: msgParts.join(' '),
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
  * Find the active version at a given time (latest commit before that time).
  * time can be ISO string, unix ms, or relative like "20 minutes ago".
  */

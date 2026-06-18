@@ -46,7 +46,7 @@ import { fileURLToPath } from 'url'
 import { updateProject, sourceDir, outputDir, projectDir, readProject, listProjects, extractBuildErrors } from './project-store.mjs'
 import { broadcastSignal, putShape, updateShape, emitGlobalEvent } from './sync-rooms.mjs'
 import { snapshotBeforeBuild, recordGitSnapshot } from './history-store.mjs'
-import { commitSnapshot, initShadowFromProjectRepo } from './shadow-repo.mjs'
+import { commitSnapshot, currentVersion, initShadowFromProjectRepo } from './shadow-repo.mjs'
 import { appendBuildEntry } from './changelog.mjs'
 import { emitBuildComplete } from './webhooks.mjs'
 import { clearSynctexCache } from './synctex-query.mjs'
@@ -1793,6 +1793,19 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
 
     // Commit source snapshot to shadow repo (non-blocking)
     commitSnapshot(name).then(async result => {
+      if (!result) {
+        // Rebuilds with unchanged source do not create a new shadow commit, but
+        // the published SVGs did become ready again. Keep the Yjs sentinel's
+        // buildReadyAt in sync so reconnecting viewers do not show an old build
+        // timestamp beside fresh project/build state.
+        const current = await currentVersion(name)
+        if (current?.hash) {
+          updateDocVersionSentinel(name, current.hash, svgsReadyAt, buildErrSnapshot, buildWarnSnapshot, sourceVersion).catch(e => {
+            ctx.addLog(`doc-version sentinel update failed (non-fatal): ${e.message}`)
+          })
+        }
+        return
+      }
       if (result) {
         // Update doc-version sentinel with shadow hash (the build's version identity)
         // plus the build's errors/warnings (persistent, convergent).
@@ -2094,7 +2107,11 @@ async function updateDocVersionSentinel(name, shadowHash, buildReadyAt, errors, 
     let skipped = false
     await updateShape(docName, 'shape:doc-version--sentinel', (cur) => {
       const prev = cur?.props?.sourceVersion
-      if (typeof prev === 'number' && sv <= prev) { skipped = true; return cur }
+      const prevReadyAt = cur?.props?.buildReadyAt || cur?.props?.timestamp || 0
+      if (
+        (typeof prev === 'number' && sv < prev) ||
+        (typeof prev === 'number' && sv === prev && prevReadyAt >= sentinel.props.buildReadyAt)
+      ) { skipped = true; return cur }
       // Preserve a standing mirror sync-failure indicator across build writes —
       // a successful build doesn't mean the working-copy mirror sync recovered;
       // only daemon-sync-ok clears it.
