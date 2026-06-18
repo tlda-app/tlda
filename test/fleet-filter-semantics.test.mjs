@@ -86,6 +86,7 @@ test('composer traffic presets classify and cycle DM quiet, DM, all agent traffi
   assert.equal(classifyFleetComposerTrafficMode(dmFilter, 'quiet', 'dmitry', 'worker'), 'dm-quiet')
   assert.equal(classifyFleetComposerTrafficMode(dmFilter, 'normal', 'dmitry', 'worker'), 'dm')
   assert.equal(classifyFleetComposerTrafficMode(agentFilter, 'normal', 'dmitry', 'worker'), 'agent')
+  assert.equal(classifyFleetComposerTrafficMode(agentFilter, 'quiet', 'dmitry', 'worker'), 'agent')
   assert.equal(classifyFleetComposerTrafficMode([[['to', 'worker']]], 'normal', 'dmitry', 'worker'), 'custom')
 
   assert.equal(nextFleetComposerTrafficMode('dm-quiet'), 'dm')

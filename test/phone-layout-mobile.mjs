@@ -28,6 +28,8 @@ try {
 }
 
 const QA_NAME = `phone-layout-qa-${Date.now().toString(36)}`
+const QA_ID = `fleet:${QA_NAME}`
+const QA_DEVICE_ID = `phone-layout-device-${Date.now().toString(36)}`
 const qs = new URLSearchParams({ doc: DOC, pw: '1', name: QA_NAME })
 if (token) qs.set('token', token)
 const URL = `${BASE}/?${qs.toString()}`
@@ -42,6 +44,10 @@ async function main() {
     hasTouch: true,
     ignoreHTTPSErrors: true,
   })
+  await context.addInitScript(({ name, deviceId }) => {
+    localStorage.setItem('tlda-identity', name)
+    localStorage.setItem('tlda-device-id', deviceId)
+  }, { name: QA_NAME, deviceId: QA_DEVICE_ID })
   const page = await context.newPage()
   page.on('pageerror', e => console.log(`[pageerror] ${e.message}`))
   page.on('console', m => {
@@ -59,9 +65,15 @@ async function main() {
     const until = Number(window.__tldaPhoneCameraSettlingUntil || 0)
     return !until || Date.now() >= until
   }, null, { timeout: 15000 })
+  await page.waitForFunction(async (name) => {
+    const res = await fetch('/api/state')
+    if (!res.ok) return false
+    const state = await res.json()
+    return (state.agents || []).some(a => a.friendly_name === name && a.human)
+  }, QA_NAME, { timeout: 15000 })
   await page.waitForTimeout(100)
 
-  await page.evaluate(async ({ width, height, clip }) => {
+  await page.evaluate(async ({ width, height, clip, qaId }) => {
     const ed = window.__tldraw_editor__
     const pageShape = ed.getCurrentPageShapes().find(s => s.type === 'svg-page' || s.type === 'html-page')
     if (!pageShape) throw new Error('no document page shape')
@@ -98,27 +110,8 @@ async function main() {
       h: Math.max(0, Math.min(docScreen.y + docScreen.h, height) - Math.max(docScreen.y, 0)),
     }
 
-    const fleetData = await import('/src/fleet/fleet-data.mjs')
-    const startedConnection = Date.now()
-    while (!fleetData.isConnected?.() && Date.now() - startedConnection < 8000) {
-      await new Promise(r => setTimeout(r, 100))
-    }
-    if (!fleetData.isConnected?.()) throw new Error('fleet websocket did not connect')
-
-    const started = Date.now()
-    while (!fleetData.getHumanId() && Date.now() - started < 8000) {
-      await new Promise(r => setTimeout(r, 100))
-    }
-    if (!fleetData.getHumanId()) {
-      const qaName = `phone-layout-qa-${Date.now().toString(36)}`
-      try {
-        await fleetData.registerHuman(qaName)
-      } catch {
-        await fleetData.login(qaName)
-      }
-    }
-    if (!fleetData.getHumanId()) throw new Error('test identity did not resolve')
-    const myDeviceId = fleetData.getDeviceId?.()
+    const humanId = qaId
+    const myDeviceId = localStorage.getItem('tlda-device-id')
     if (!myDeviceId) throw new Error('test device id did not resolve')
     const alienDeviceId = `${myDeviceId}-alien`
     const alienId = `shape:phone-layout-alien-${Date.now().toString(36)}`
@@ -131,7 +124,7 @@ async function main() {
         w: 180,
         h: 180,
         filter: [],
-        userId: fleetData.getHumanId(),
+        userId: humanId,
         deviceId: alienDeviceId,
       },
     })
@@ -144,11 +137,11 @@ async function main() {
       docScreen,
       clippedDocScreen,
       cameraZ: z,
-      humanId: fleetData.getHumanId(),
+      humanId,
       myDeviceId,
       alienId,
     }
-  }, { width: WIDTH, height: HEIGHT, clip: CLIP })
+  }, { width: WIDTH, height: HEIGHT, clip: CLIP, qaId: QA_ID })
 
   const pill = page.locator('.fleet-icon-pill-badge')
   await pill.waitFor({ state: 'visible', timeout: 15000 })

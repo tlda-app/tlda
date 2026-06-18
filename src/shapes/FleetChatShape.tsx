@@ -1507,6 +1507,9 @@ function FleetChatInner({ shape }: { shape: any }) {
   const fleetStyleVars = useFleetStyleVars()
   const { w, h, filter, trafficMode = 'normal' } = shape.props as { w: number; h: number; filter: [string, string][][]; trafficMode?: ChatTrafficMode }
   const quietTraffic = trafficMode === 'quiet'
+  const quietDmTraffic = quietTraffic && Array.isArray(filter) && filter.some((clause: any) =>
+    Array.isArray(clause) && clause.some((term: any) => Array.isArray(term) && term[0] === 'dm')
+  )
   void useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
   const [filterOpen, setFilterOpen] = useState(false)
   const [filterOpenByPill, setFilterOpenByPill] = useState(false)
@@ -1871,7 +1874,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     const sorted = events
       .filter((m: any) => {
         const t = m.type
-        if (quietTraffic && (t === 'activity' || m._activity)) return false
+        if (quietDmTraffic && (t === 'activity' || m._activity)) return false
         return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'activity' || t === 'kill-session' || t === 'interrupt' || t === 'terminal_attention' || t === 'terminal_card' || t === 'plan_approval' || t === 'timer'
       })
       .filter((m: any) => !m._timer) // skip legacy timer-expired messages (fired→_timerFired and cancelled→_timerCancelled still render)
@@ -1895,7 +1898,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       })
 
     return sorted
-  }, [events, quietTraffic])
+  }, [events, quietDmTraffic])
 
   // Standing diagnostic — does the message list momentarily empty? When
   // chatMessages hits 0 the render swaps the Virtuoso list for the "No messages"

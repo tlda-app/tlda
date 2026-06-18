@@ -175,7 +175,7 @@ export async function login(name) {
 export async function registerHuman(name) {
   const sanitized = name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
   const humanId = `fleet:${sanitized}`
-  const res = await wsSend({ type: 'register', id: humanId, name: sanitized, human: true })
+  const res = await wsSend({ type: 'register', agent_id: humanId, name: sanitized, human: true })
   _humanId = res.agent?.id || humanId
   _humanName = sanitized
   _identifyPending = false
