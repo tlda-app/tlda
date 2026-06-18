@@ -391,18 +391,17 @@ html.mousemove .fleet-reaper-shape:hover .fleet-btn-group {
   scrollbar-width: thin;
   scrollbar-color: rgba(255,255,255,0.1) transparent;
   scrollbar-gutter: stable;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
 }
 
 /* --- Draggable elements in chat --- */
 /* Only timestamps and attachment-type elements are drag handles.
    Nick spans and message text are selectable/copyable. */
 .fleet-chat-shape .chat-ts,
-.fleet-chat-shape .chat-activity-card,
-/* Large draggable items now only drag from their .drag-handle */
-.fleet-chat-shape .code-block-header,
 .fleet-chat-shape .tool-ref,
-.fleet-chat-shape .md-file-card,
-.fleet-chat-shape .tlda-card {
+.fleet-chat-shape .md-file-card {
   cursor: default;
   touch-action: none;
   user-select: none;
@@ -414,6 +413,7 @@ html.mousemove .fleet-reaper-shape:hover .fleet-btn-group {
    transparent surface, like a very slightly textured area. */
 .fleet-chat-shape .drag-handle {
   cursor: grab;
+  touch-action: none;
   opacity: 0;
   transition: opacity 2s;
   flex-shrink: 0;
@@ -1135,7 +1135,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   width: 100%;
   max-height: 150px;
   cursor: grab;
-  touch-action: none;
+  touch-action: pan-y;
 }
 .fleet-chat-shape .tlda-card-header {
   display: flex;

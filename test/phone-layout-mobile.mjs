@@ -257,6 +257,33 @@ async function main() {
       throw new Error(`panned phone chat does not fit vertically: ${JSON.stringify(screenChat)}`)
     }
 
+    const touchProbe = document.createElement('div')
+    touchProbe.className = 'fleet-chat-shape'
+    touchProbe.style.cssText = 'position:absolute;left:-10000px;top:-10000px;width:320px;height:200px;'
+    touchProbe.innerHTML = [
+      '<div class="fleet-chat-log">',
+      '<div class="chat-activity-card"><span class="drag-handle"></span>activity</div>',
+      '<div class="code-block-header">code</div>',
+      '<div class="tlda-card">doc card</div>',
+      '</div>',
+    ].join('')
+    document.body.appendChild(touchProbe)
+    const chatLog = touchProbe.querySelector('.fleet-chat-log')
+    if (!(chatLog instanceof HTMLElement)) throw new Error('phone chat touch fixture did not render')
+    const touchStyles = {
+      chatLog: window.getComputedStyle(chatLog).touchAction,
+      activityCard: window.getComputedStyle(touchProbe.querySelector('.chat-activity-card')).touchAction,
+      codeHeader: window.getComputedStyle(touchProbe.querySelector('.code-block-header')).touchAction,
+      tldaCard: window.getComputedStyle(touchProbe.querySelector('.tlda-card')).touchAction,
+      dragHandle: window.getComputedStyle(touchProbe.querySelector('.drag-handle')).touchAction,
+    }
+    touchProbe.remove()
+    if (touchStyles.chatLog === 'none') throw new Error(`chat scroller blocks touch scroll: ${JSON.stringify(touchStyles)}`)
+    for (const key of ['activityCard', 'codeHeader', 'tldaCard']) {
+      if (touchStyles[key] === 'none') throw new Error(`chat ${key} blocks touch scroll: ${JSON.stringify(touchStyles)}`)
+    }
+    if (touchStyles.dragHandle !== 'none') throw new Error(`drag handle should still own touch drag: ${JSON.stringify(touchStyles)}`)
+
     return {
       viewport: { w: width, h: height },
       clip,
@@ -286,6 +313,7 @@ async function main() {
         h: Math.round(screenChat.h),
       },
       extraPanels: fleet.filter(s => s.type !== 'fleet-agents' && s.type !== 'fleet-inbox' && s.type !== 'fleet-chat').map(s => s.type),
+      touchStyles,
     }
   })
 
