@@ -15,6 +15,7 @@ const DEFAULTS = {
   'docview-sources': ['ref'] as string[],
   'voice-note-color': 'yellow' as string,
   'math-note-color': 'light-blue' as string,
+  'math-note-opacity': 1.0 as number,
   'response-curve': DEFAULT_CURVE as CurveHandles,
   'spawn-mode': '' as string,
   // Default on, but to the SILENT backend (deepgram) — never chrome. Chrome

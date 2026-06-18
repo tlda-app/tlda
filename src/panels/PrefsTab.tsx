@@ -55,7 +55,7 @@ function IdentitySection() {
   )
 }
 
-const ALL_SOURCES = ['ref', 'proof', 'errors', 'shared'] as const
+const ALL_SOURCES = ['ref', 'proof', 'errors'] as const
 
 const COLOR_OPTIONS = Object.keys(NOTE_COLORS)
 
@@ -64,6 +64,7 @@ function readAll() {
     sources: getPref('docview-sources'),
     voiceColor: getPref('voice-note-color'),
     mathColor: getPref('math-note-color'),
+    mathOpacity: getPref('math-note-opacity'),
     curve: getPref('response-curve'),
     spawnMode: getPref('spawn-mode'),
     voiceBackend: getPref('voice-backend'),
@@ -294,6 +295,19 @@ export function PrefsTab() {
             ))}
           </select>
           <span className="prefs-color-swatch" style={{ background: NOTE_COLORS[prefs.mathColor] }} />
+        </div>
+        <div className="prefs-num-row">
+          <span className="prefs-num-label">Note opacity</span>
+          <input
+            type="number"
+            min={20}
+            max={100}
+            step={5}
+            value={Math.round(prefs.mathOpacity * 100)}
+            onChange={e => setPref('math-note-opacity', Number(e.target.value) / 100)}
+            className="prefs-num"
+          />
+          <span className="prefs-num-unit">%</span>
         </div>
       </div>
 
