@@ -4036,27 +4036,66 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
   }
 
-  // Resolve a send-target label to an agent. The friendly name is an opaque
+  // Resolve a send-target label to one agent. The friendly name is an opaque
   // atom — you address an agent by its exact full name (or id, or a label it
   // carries). No suffix games: dawn is "base", day is "base:day", etc.
+  //
+  // Terminal peek needs a concrete tmux owner. Broadcast/group labels such as
+  // "awake" can match many agents, so only return label matches that identify a
+  // single non-human agent. Group panels fall back to the most recent visible
+  // event below instead of picking an arbitrary first match.
   const resolveTargetAgent = useCallback((label: string, agentList: any[]) => {
     if (label.startsWith('fleet:')) return agentList.find((a: any) => a.id === label) || null
-    return agentList.find((a: any) => a.friendly_name === label || a.id === label || (a.labels || []).includes(label)) || null
+    const exact = agentList.find((a: any) => a.friendly_name === label || a.id === label)
+    if (exact) return exact
+    const matched = agentList.filter((a: any) => !a.human && labelsForAgent(a).includes(label))
+    return matched.length === 1 ? matched[0] : null
   }, [])
+
+  const isTerminalReadyAgent = useCallback((agent: any) => {
+    return !!agent?.tmux_session && !agent?.dead && !agent?.hibernating && agent?.status !== 'hibernating'
+  }, [])
+
+  const terminalAgentIdFromEvent = useCallback((event: any) => {
+    const ids = [event?.from, event?.agent, event?.to, event?._agent, event?._agentId]
+    for (const id of ids) {
+      if (!id || id === getHumanId()) continue
+      const agent = resolveTargetAgent(id, agents)
+      if (agent && !agent.human && isTerminalReadyAgent(agent)) return agent.id
+    }
+    return null
+  }, [agents, resolveTargetAgent, isTerminalReadyAgent])
 
   const hoverTargetAgentId = useMemo(() => {
     const diag: any[] = []
+    const candidateLabels: string[] = []
+    const addLabel = (label: string) => {
+      if (label && !candidateLabels.includes(label)) candidateLabels.push(label)
+    }
     for (const label of sendTargets) {
+      addLabel(label)
+    }
+    for (const clause of filter) {
+      for (const [, label] of clause) addLabel(label)
+    }
+    for (const label of candidateLabels) {
       const agent = resolveTargetAgent(label, agents)
       diag.push({ label, fleetId: agent?.id || label, found: !!agent, tmux: agent?.tmux_session || null, dead: agent?.dead ?? null })
-      if (agent?.tmux_session && !agent?.dead) {
-        log.info('terminal-icon', 'resolved target', { sendTargets, fleetId: agent.id, diag, agentCount: agents.length })
+      if (isTerminalReadyAgent(agent)) {
+        log.info('terminal-icon', 'resolved target', { sendTargets, filter, source: 'label', fleetId: agent.id, diag, agentCount: agents.length })
         return agent.id
       }
     }
-    log.info('terminal-icon', 'no terminal target', { sendTargets, diag, agentCount: agents.length })
+    for (let i = liveEvents.length - 1; i >= 0; i--) {
+      const eventAgentId = terminalAgentIdFromEvent(liveEvents[i])
+      if (eventAgentId) {
+        log.info('terminal-icon', 'resolved target', { sendTargets, filter, source: 'recent-event', fleetId: eventAgentId, diag, agentCount: agents.length })
+        return eventAgentId
+      }
+    }
+    log.info('terminal-icon', 'no terminal target', { sendTargets, filter, diag, agentCount: agents.length, visibleEvents: liveEvents.length })
     return null
-  }, [sendTargets, agents, resolveTargetAgent])
+  }, [sendTargets, filterKey, agents, liveEvents, resolveTargetAgent, isTerminalReadyAgent, terminalAgentIdFromEvent])
 
   const deadTargetAgent = useMemo(() => {
     for (const label of sendTargets) {
