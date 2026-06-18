@@ -143,6 +143,7 @@ export function buildFleetSpawnArgs({
   if (effort) args.push('--effort', effort)
   if (mode) args.push('--mode', mode)
   if (spawnPolicy?.capability) args.push('--spawn-capability', spawnPolicy.capability)
+  if (spawnPolicy?.policy) args.push('--policy', spawnPolicy.policy)
   if (cwd) args.push('--cwd', cwd)
   args.push('--no-attach')
   return { agentName, args }

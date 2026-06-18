@@ -23,12 +23,16 @@ function temporaryName() {
 }
 
 export function IdentityPicker() {
-  const { needsIdentity, login, register } = useFleetIdentity()
+  const { id, name, needsIdentity, login, register } = useFleetIdentity()
   const [notice, setNotice] = useState<string | null>(null)
   const [, setAuthTick] = useState(0)
 
   // Re-render when auth data arrives from the server (isDevMode() updates)
   useEffect(() => subscribeCanPresent(() => setAuthTick(n => n + 1)), [])
+
+  useEffect(() => {
+    if (!needsIdentity || id || name) setNotice(null)
+  }, [id, name, needsIdentity])
 
   useEffect(() => {
     if (!needsIdentity) return
@@ -49,7 +53,9 @@ export function IdentityPicker() {
             await register(candidate)
           }
           if (!cancelled) {
-            setNotice(`Using temporary identity "${candidate}". Switch identity in Settings > Preferences.`)
+            setNotice(requestedName
+              ? `Using identity "${candidate}".`
+              : `Using temporary identity "${candidate}". Switch identity in Settings > Preferences.`)
             window.setTimeout(() => {
               if (!cancelled) setNotice(null)
             }, 9000)

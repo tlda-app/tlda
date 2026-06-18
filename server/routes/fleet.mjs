@@ -481,7 +481,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         cwd: cwd || undefined,
         effort: effort || undefined,
         mode: launchMode || undefined,
-        spawnPolicy: { capability: authorized.requestedCapability },
+        spawnPolicy: authorized.requestedPolicy,
         respawn: resolved.respawn,
       })
       broadcastState()

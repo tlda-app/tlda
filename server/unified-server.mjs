@@ -808,12 +808,12 @@ async function performAuthorizedSpawn(caller, msg) {
     cwd: cwd || undefined,
     effort: effort || undefined,
     mode: launchMode || undefined,
-    spawnPolicy: { capability: authorized.requestedCapability },
+    spawnPolicy: authorized.requestedPolicy,
     respawn: refresh ? false : resolved.respawn,
     refresh: !!refresh,
   })
   broadcastState()
-  return { ...result, spawnPolicy: { capability: authorized.requestedCapability } }
+  return { ...result, spawnPolicy: authorized.requestedPolicy }
 }
 
 // Wire fleet store events → WS broadcast

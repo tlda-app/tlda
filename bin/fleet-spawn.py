@@ -391,7 +391,9 @@ def ws_register(fleet_id, name, tmux_session, cwd, model=None, effort=None, refr
         if refresh:
             meta["refresh"] = True
         if spawn_capability:
-            meta["spawnPolicy"] = {"capability": spawn_capability}
+            spawn_policy = dict(meta.get("spawnPolicy") or {})
+            spawn_policy["capability"] = spawn_capability
+            meta["spawnPolicy"] = spawn_policy
         if meta:
             msg["metadata"] = meta
         ws.send(json.dumps(msg))
@@ -1252,6 +1254,15 @@ def sandbox_metadata(policy):
     if not policy:
         return {}
     return {"sandbox": {k: v for k, v in policy.items() if k != "runner"}}
+
+
+def spawn_policy_metadata(spawn_capability, policy_name):
+    if not spawn_capability:
+        return {}
+    return {"spawnPolicy": {
+        "capability": spawn_capability,
+        "policy": policy_name,
+    }}
 
 
 # ---- Tmux ----
@@ -2196,7 +2207,7 @@ def fresh(name, model, cwd, effort, mode, kind="claude", spawn_capability=None,
         ws_register(
             fleet_id, name, sess, cwd, model, effort, refresh=True,
             kind=adapter.kind, spawn_capability=spawn_capability,
-            metadata=sandbox_metadata(policy))
+            metadata={**sandbox_metadata(policy), **spawn_policy_metadata(spawn_capability, policy_name)})
 
     cmd = adapter.build_cmd(fleet_id, sess, model, effort, mode, name=name, cwd=cwd,
                             capability=spawn_capability,
@@ -2283,7 +2294,7 @@ def respawn(name, model, cwd, effort, mode, session_override=None,
         ws_register(
             fleet_id, name, sess, cwd, model, effort,
             kind=adapter.kind, session_id=resume_id,
-            metadata=sandbox_metadata(policy))
+            metadata={**sandbox_metadata(policy), **spawn_policy_metadata(spawn_capability, policy_name)})
     started = spawn_tmux(
         sess, cwd, cmd, auto_dismiss=adapter.respawn_auto_dismiss(),
         send_keys=adapter.spawn_send_keys())
@@ -2330,7 +2341,7 @@ def refresh(name, model, cwd, effort, mode, spawn_capability=None,
     ws_register(
         fleet_id, name, sess, cwd, model, effort, refresh=True,
         kind=adapter.kind, spawn_capability=spawn_capability,
-        metadata=sandbox_metadata(policy))
+        metadata={**sandbox_metadata(policy), **spawn_policy_metadata(spawn_capability, policy_name)})
     cmd = adapter.build_cmd(fleet_id, sess, model, effort, mode, name=name, cwd=cwd,
                             capability=spawn_capability,
                             outer_sandbox=bool(policy))

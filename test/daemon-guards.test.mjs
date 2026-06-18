@@ -46,7 +46,7 @@ test('daemon spawn args preserve codex kind and capability on fresh spawn', () =
     cwd: '/tmp/project',
     effort: 'high',
     mode: 'default',
-    spawnPolicy: { capability: 'workspace-write+net' },
+    spawnPolicy: { capability: 'workspace-write+net', policy: 'tlda-projects' },
   })
 
   assert.equal(agentName, 'codexrel55')
@@ -57,6 +57,7 @@ test('daemon spawn args preserve codex kind and capability on fresh spawn', () =
     '--effort', 'high',
     '--mode', 'default',
     '--spawn-capability', 'workspace-write+net',
+    '--policy', 'tlda-projects',
     '--cwd', '/tmp/project',
     '--no-attach',
   ])
