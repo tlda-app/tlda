@@ -321,9 +321,12 @@ html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-stale {
 }
 
 .doc-panel-tabs {
+  position: relative;
+  z-index: 1;
   display: flex;
   border-bottom: 1px solid rgba(0, 0, 0, 0.04);
   flex-shrink: 0;
+  pointer-events: all;
 }
 
 .doc-panel:hover .doc-panel-tabs,
