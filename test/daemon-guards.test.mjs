@@ -7,6 +7,7 @@ import path from 'node:path'
 import {
   buildFleetSpawnArgs,
   decideMissingLiveness,
+  detectSpawnStartupFailureTranscript,
   harnessKindForAgent,
   isPlaywrightBrowserArgs,
   shouldClaimCodexWatcher,
@@ -181,4 +182,30 @@ test('already-hibernating agent remains hibernating on liveness miss', () => {
     hibernate: true,
     since: 5_000,
   })
+})
+
+test('spawn startup detector catches unsupported Codex model transcript', () => {
+  const pane = `
+Codex CLI v0.52.0
+Working directory: /Users/skip/work/tlda
+
+Error: unsupported model "gpt-5" for this account. Try a supported model.
+`
+
+  const failure = detectSpawnStartupFailureTranscript(pane, { harness: 'codex' })
+  assert.equal(failure?.code, 'codex-unsupported-model')
+  assert.match(failure?.reason || '', /unsupported model "gpt-5"/)
+  assert.match(failure?.snippet || '', /Codex CLI/)
+})
+
+test('spawn startup detector catches Goose wrong-provider startup transcript', () => {
+  const pane = `
+starting session | provider=deepseek model=deepseek/deepseek-v4-pro
+Error: Unknown provider "deepseek"
+goose failed to initialize provider
+`
+
+  const failure = detectSpawnStartupFailureTranscript(pane, { harness: 'goose' })
+  assert.equal(failure?.code, 'goose-startup-error')
+  assert.match(failure?.reason || '', /goose failed to initialize provider|Unknown provider/)
 })

@@ -4633,6 +4633,75 @@ async function handleDaemonWsMessage(ws, msg) {
     return
   }
 
+  if (type === 'spawn-startup-failed') {
+    if (!fleetStore) return
+    const { agent_id, agent_name, tmux_session, harness, model, respawn, code, reason, snippet } = msg
+    if (!agent_id) return
+    const agent = fleetStore.getAgent?.(agent_id)
+    const label = agent?.friendly_name || agent_name || agent_id.slice(0, 12)
+    const text = `Spawn startup failed for ${label}: ${reason || code || 'startup error'}`
+    const metadata = {
+      type: 'spawn_startup_failed',
+      agentId: agent_id,
+      agentLabel: label,
+      tmux_session: tmux_session || null,
+      harness: harness || agent?.metadata?.kind || null,
+      model: model || agent?.metadata?.model || null,
+      respawn: !!respawn,
+      code: code || null,
+      reason: reason || null,
+      snippet: snippet || null,
+    }
+    try {
+      markAgentNotAlive(agent_id)
+      fleetStore.updateAgentMeta?.(agent_id, {
+        startupFailure: {
+          ts: new Date().toISOString(),
+          code: metadata.code,
+          reason: metadata.reason,
+          tmux_session: metadata.tmux_session,
+          harness: metadata.harness,
+          model: metadata.model,
+        },
+      })
+      const task = fleetStore.getTaskByAgent?.(agent_id)
+      if (task) {
+        task.status = 'failed'
+        task.last_checked = new Date().toISOString()
+        task.metadata = { ...(task.metadata || {}), startupFailure: metadata }
+        fleetStore.upsertTask(task)
+        await fleetStore.taskUpdate?.(agent_id, task.id, 'failed', metadata)
+      } else {
+        await fleetStore.share?.({
+          type: 'lifecycle',
+          from: agent_id,
+          to: SERVER_OWNER_ID,
+          agentId: agent_id,
+          text,
+          metadata,
+          unread: false,
+        })
+      }
+      const recipients = new Set([SERVER_OWNER_ID])
+      if (task?.delegated_by) recipients.add(task.delegated_by)
+      for (const to of recipients) {
+        await fleetStore.share?.({
+          type: 'chat',
+          from: 'fleet:tlda',
+          to,
+          text: `**Spawn startup failed** for \`${label}\`\n\n${reason || 'The harness printed a fatal startup error before the agent registered.'}`,
+          metadata,
+          unread: true,
+        })
+      }
+      broadcastEvent('spawn-startup-failed', metadata)
+      broadcastState()
+    } catch (e) {
+      console.error(`[fleet-daemon] spawn startup failure write: ${e.message}`)
+    }
+    return
+  }
+
   if (type === 'agent-context') {
     if (msg.agentId != null && msg.contextPercent != null) {
       _contextState.set(msg.agentId, { percent: msg.contextPercent, inputTokens: msg.inputTokens || 0 })

@@ -79,6 +79,7 @@ import { truncatePrettyResult } from '../shared/activity-pretty-result.mjs'
 import {
   buildFleetSpawnArgs,
   decideMissingLiveness,
+  detectSpawnStartupFailureTranscript,
   harnessKindForAgent,
   isPlaywrightBrowserArgs,
   shouldClaimCodexWatcher,
@@ -2226,6 +2227,45 @@ function rpcTerminalInput({ tmux_session, data }) {
 
 
 const _activeSpawns = new Map()
+const STARTUP_FAILURE_PROBE_MS = Number(process.env.TLDA_SPAWN_STARTUP_FAILURE_PROBE_MS || 2500)
+const _reportedStartupFailures = new Set()
+
+function parseSpawnLaunch(stdout = '', fallbackName = null) {
+  const text = String(stdout || '')
+  const m = text.match(/(fleet-[^\s()]+)\s+\((fleet:[^)]+)\)/)
+  if (!m) return null
+  return { tmux_session: m[1], agent_id: m[2], name: fallbackName }
+}
+
+async function probeSpawnStartupFailure({ agentName, agent_id, tmux_session, harness, model, respawn }) {
+  if (!agent_id || !tmux_session) return
+  const dedupKey = `${agent_id}:${tmux_session}`
+  if (_reportedStartupFailures.has(dedupKey)) return
+  try {
+    await new Promise(resolve => setTimeout(resolve, STARTUP_FAILURE_PROBE_MS))
+    const { stdout } = await execFileP('tmux',
+      [...TMUX_ARGS, 'capture-pane', '-t', tmux_session, '-p', '-e', '-S', '-120'],
+      { timeout: 5000, encoding: 'utf8' })
+    const failure = detectSpawnStartupFailureTranscript(stdout, { harness })
+    if (!failure) return
+    _reportedStartupFailures.add(dedupKey)
+    sendMsg({
+      type: 'spawn-startup-failed',
+      agent_id,
+      agent_name: agentName || null,
+      tmux_session,
+      harness: harness || null,
+      model: model || null,
+      respawn: !!respawn,
+      code: failure.code,
+      reason: failure.reason,
+      snippet: failure.snippet,
+    })
+  } catch (e) {
+    log.warn(`startup failure probe failed for ${agentName || agent_id}: ${e.message}`)
+  }
+}
+
 async function rpcSpawn({ name, model, kind, cwd, doc, respawn, refresh, effort, mode, spawnPolicy }) {
   const agentName = name || `agent-${Date.now().toString(36).slice(-4)}`
   if (_activeSpawns.has(agentName)) {
@@ -2279,6 +2319,17 @@ async function rpcSpawn({ name, model, kind, cwd, doc, respawn, refresh, effort,
       sendMsg({ type: 'daemon-warning', message: `couldn't ${respawn ? 'wake' : 'spawn'} ${agentName} — ${detail}` })
     } else {
       log.info(`fleet-spawn finished: ${agentName}: ${stdout.trim()}`)
+      const launched = parseSpawnLaunch(stdout, agentName)
+      if (launched) {
+        probeSpawnStartupFailure({
+          agentName,
+          agent_id: launched.agent_id,
+          tmux_session: launched.tmux_session,
+          harness: kind || null,
+          model: model || null,
+          respawn,
+        })
+      }
     }
   })
   return { ok: true, name: agentName, async: true }

@@ -88,6 +88,43 @@ export function decideMissingLiveness({
   return { alive: false, hibernate: true, since }
 }
 
+const STARTUP_FAILURE_PATTERNS = [
+  {
+    code: 'codex-unsupported-model',
+    harness: 'codex',
+    pattern: /(?:unsupported|unknown|invalid)\s+model|model\s+[`"']?gpt-5[`"']?\s+(?:is\s+)?(?:not\s+)?(?:supported|available)|model_not_found/i,
+  },
+  {
+    code: 'goose-startup-error',
+    harness: 'goose',
+    pattern: /(?:unknown|unsupported|invalid)\s+(?:provider|model|recipe)|provider .*not found|failed to (?:initialize|load).*provider|goose.*(?:error|failed)/i,
+  },
+  {
+    code: 'account-auth-startup-error',
+    harness: null,
+    pattern: /(?:not logged in|authentication required|invalid api key|missing api key|account .*required|subscription .*required|permission denied|HTTP CONNECT 403|status code:?\s*40[13])/i,
+  },
+]
+
+export function detectSpawnStartupFailureTranscript(text = '', { harness = null } = {}) {
+  const normalized = String(text || '').replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
+  if (!normalized.trim()) return null
+  const lines = normalized.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
+  const snippet = lines.slice(-12).join('\n').slice(-2000)
+  const wantedHarness = harness ? String(harness).toLowerCase() : null
+  for (const rule of STARTUP_FAILURE_PATTERNS) {
+    if (rule.harness && wantedHarness && rule.harness !== wantedHarness) continue
+    if (!rule.pattern.test(normalized)) continue
+    const line = [...lines].reverse().find(l => rule.pattern.test(l)) || lines[lines.length - 1] || 'startup failed'
+    return {
+      code: rule.code,
+      reason: line.slice(0, 500),
+      snippet,
+    }
+  }
+  return null
+}
+
 export function buildFleetSpawnArgs({
   name,
   model,
