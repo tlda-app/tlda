@@ -9,7 +9,7 @@ The primary policy axis is write scope: who can write, and where.
 - `no-dev`: no native developer surface. The agent may use safe MCP/context tools, but should not get shell/file-edit tools that can mutate the machine.
 - `cwd`: the agent may write inside its launch working directory.
 - `tlda-projects`: the agent may write configured tlda project/source roots. This is a TLDA-specific mode: broader than one working directory, but still bounded to frequently versioned project material.
-- `full-access`: no fence write restriction. This is for trusted owner/operator lanes, not ordinary spawned work.
+- `unsandboxed`: no fence write restriction. This is for trusted owner/operator lanes, not ordinary spawned work. The current public spawn label for this is `full-access`; that label should map to this policy explicitly.
 
 These names are the policy vocabulary. Harness-specific permission modes and tool prompts are projections of this policy, not the authority.
 
@@ -34,13 +34,23 @@ Write scope is the core policy. Other grants are secondary knobs attached to the
 
 Network may be part of the capability model, but it should not obscure the write-scope vocabulary. For example, a `cwd` agent may need local/Fly control-plane access so `my_task()` works; that does not mean it gets broader write authority.
 
+### Git Rights
+
+Git rights are an orthogonal lease axis:
+
+- `git: none`: do not rely on git commands being available.
+- `git: read`: workspace writes may be allowed, but git metadata writes must be denied. Agents can inspect status, diffs, logs, and history, but they cannot stage, commit, move branches, update refs, or mutate the index.
+- `git: write`: the lease may write git metadata. This should be reserved for lanes that are explicitly allowed to manage commits.
+
+For `git: read`, enforcement should happen at the filesystem boundary, not by prompt text. The denied write set must include repository `.git/` directories, linked-worktree gitdirs, submodule gitdirs, common git dirs discovered from git, and other ref/index/reflog storage. Set `GIT_OPTIONAL_LOCKS=0` where possible so read-only git commands do not attempt unnecessary index refreshes.
+
 ## Spawn Capability Labels
 
 Current MCP/API labels such as `read-only`, `workspace-write-no-net`, and `workspace-write+net` are implementation labels. They should be reconciled against the policy vocabulary above:
 
 - `read-only` should map to a fence lease with no workspace write roots.
 - `workspace-write-*` should map to `cwd` write scope, with network as a secondary knob.
-- `full-access` is a reasonable name for the trusted escape hatch. If the goal is "everything goes through fence," then it should become a permissive fence lease rather than bypassing fence.
+- `full-access` should map to explicit `unsandboxed` while that escape hatch exists. If the goal is "everything goes through fence," then it should become a permissive fence lease rather than bypassing fence.
 
 Until this reconciliation is complete, do not present the implementation labels as the product spec.
 
