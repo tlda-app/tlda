@@ -468,26 +468,28 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
     anchorX += dx
     anchorY += dy
 
-    // Phone layout: the simplest usable thing — a short agents strip (to filter
-    // the chat) on top, and one chat filling the rest of the screen. No inbox,
-    // search, or docview. Sized to the viewport so it fills the phone; positions
-    // are a first cut and meant to be hand-adjusted (anisotropic resize). Early
-    // return — these two shapes are the whole layout.
+    // Phone layout: a short agents strip (to filter chat), one chat pane, and a
+    // docview reference pane. The stacked agents+chat footprint follows the
+    // page's current on-screen size; the panes still sit in the page margins so
+    // the phone can pan between chat / page / reference.
     if (variant === 'phone') {
-      // Size to ONE document page at its CURRENT on-screen size (Skip's
-      // principle: everything relative to the page's current size). The page's
-      // on-screen size = its page-coord bounds × the current camera zoom, so the
-      // layout scales with the page — zoom the page small, the layout is small.
-      // (HUD shapes render at z=1 / screen px, so we pre-multiply by the zoom.)
+      // Size to one document page at its current on-screen size. HUD shapes
+      // render at z=1 / screen px, so page-coordinate bounds are pre-multiplied
+      // by the main camera zoom. The stacked phone pieces (agents + chat) must
+      // together match this footprint; zooming the page before creation is how
+      // the user controls the created phone layout size.
       const camZ = editor.getCamera().z || 1
       const pb = pageShapes[0] ? editor.getShapePageBounds(pageShapes[0].id) : null
-      const w = pb ? pb.width * camZ : Math.max(160, vp.w - 12)
-      const pageH = pb ? pb.height * camZ : Math.max(200, vp.h - 12)
-      const agentsHp = Math.min(150, Math.round(pageH * 0.14))
+      const pageScreenW = pb ? ((pb.w ?? pb.width) * camZ) : Math.max(160, vp.w - 12)
+      const pageScreenH = pb ? ((pb.h ?? pb.height) * camZ) : Math.max(200, vp.h - 12)
+      const w = Math.round(pageScreenW)
+      const pageH = Math.round(pageScreenH)
+      const agentsHp = Math.min(120, Math.max(72, Math.round(pageH * 0.16)))
       // Right edge sits marginGap to the left of the page — same gap the other
       // layouts use. anchorX + leftContentW == page-left - marginGap, so place
       // the shape so its right edge lands there.
       const phoneX = anchorX + leftContentW - w
+      const chatH = Math.max(1, pageH - agentsHp - gap)
       editor.createShapes([
         {
           id: slotId(myId, myDevice, 'agents'),
@@ -501,7 +503,7 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
           type: 'fleet-chat' as any,
           x: phoneX, y: anchorY + agentsHp + gap,
           isLocked: false,
-          props: { w, h: Math.max(200, pageH - agentsHp - gap), filter: filter1, userId: myId, deviceId: myDevice },
+          props: { w, h: chatH, filter: filter1, userId: myId, deviceId: myDevice },
         },
         // Reference pane: a ¾-page docview hung off the RIGHT margin — mirror of
         // the chat on the left, same marginGap from the page edge, scaled to ¾ so
