@@ -1909,6 +1909,7 @@ export async function initVoice() {
 
   const backend = _backend === 'deepgram' ? 'deepgram' : _backend === 'whisper-stream' ? 'whisper' : 'Web Speech API'
   console.log(`voice: initialized v8 — ${backend} — BroadcastChannel: ${!!_micChannel}`)
+  if (_isTouchDevice) startRecording()
   return true
 }
 

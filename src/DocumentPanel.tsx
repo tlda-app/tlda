@@ -209,6 +209,7 @@ function PhoneHighlighterButton() {
   const colorIdxRef = useRef(0)
   const btnRef = useRef<HTMLButtonElement>(null)
   const lastTapRef = useRef(0)
+  const singleTapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   colorIdxRef.current = colorIdx // keep ref current on every render — used in handlePointerMove
 
   const activateSlot = useCallback((idx: number) => {
@@ -225,32 +226,12 @@ function PhoneHighlighterButton() {
     }
   }, [editor])
 
-  // Undo last highlight: find most recent highlight shape and delete it
-  const undoLastHighlight = useCallback(() => {
-    const allShapes = editor.getCurrentPageShapes()
-    const highlights = allShapes
-      .filter((s: any) => s.type === 'highlight')
-      .sort((a: any, b: any) => {
-        // Sort by index descending — highest index = most recently created
-        return (b.index || '').localeCompare(a.index || '')
-      })
-    if (highlights.length > 0) {
-      editor.deleteShape(highlights[0].id)
-    }
+  // Phone undo gesture: quick double-tap on the highlighter button.
+  const undoLastAction = useCallback(() => {
+    editor.undo()
   }, [editor])
 
-  const handleTap = useCallback(() => {
-    const now = Date.now()
-    const elapsed = now - lastTapRef.current
-    lastTapRef.current = now
-
-    // Double-tap: undo last highlight
-    if (elapsed < 400) {
-      lastTapRef.current = 0 // reset so triple-tap doesn't re-trigger
-      undoLastHighlight()
-      return
-    }
-
+  const performSingleTap = useCallback(() => {
     if (mode === 'hand') {
       // Switch to highlight with current color
       activateSlot(colorIdx)
@@ -258,7 +239,31 @@ function PhoneHighlighterButton() {
       // Switch back to phone-hand (axis-locked scroll)
       editor.setCurrentTool('phone-hand')
     }
-  }, [editor, mode, colorIdx, activateSlot, undoLastHighlight])
+  }, [editor, mode, colorIdx, activateSlot])
+
+  const handleTap = useCallback(() => {
+    const now = Date.now()
+    const elapsed = now - lastTapRef.current
+    lastTapRef.current = now
+
+    // Double-tap: undo. Defer single-tap behavior so the first tap does not add
+    // a competing tool-change history entry before the undo gesture lands.
+    if (elapsed < 400) {
+      if (singleTapTimerRef.current) {
+        clearTimeout(singleTapTimerRef.current)
+        singleTapTimerRef.current = null
+      }
+      lastTapRef.current = 0 // reset so triple-tap doesn't re-trigger
+      undoLastAction()
+      return
+    }
+
+    if (singleTapTimerRef.current) clearTimeout(singleTapTimerRef.current)
+    singleTapTimerRef.current = setTimeout(() => {
+      singleTapTimerRef.current = null
+      performSingleTap()
+    }, 260)
+  }, [performSingleTap, undoLastAction])
 
   // Drag handling — horizontal L/R for colors. Tap (no drag) toggles the tool.
   const dragStartX = useRef(0)
@@ -338,6 +343,10 @@ function PhoneHighlighterButton() {
     const reset = () => {
       dragModeRef.current = null; dragSlotRef.current = null
       setDragging(false); setDragMode(null); setDragSlot(null); setDragBtnRect(null)
+      if (singleTapTimerRef.current) {
+        clearTimeout(singleTapTimerRef.current)
+        singleTapTimerRef.current = null
+      }
       toolNameHud.hide()
     }
     window.addEventListener('blur', reset)

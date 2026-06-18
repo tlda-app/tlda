@@ -45,7 +45,7 @@ const LAYOUT_PRESETS: { id: LayoutId; title: string }[] = [
   { id: '2col', title: 'Two-column: left margin + right margin chat' },
   { id: 'wide', title: 'Wide: agents + search | one large chat' },
   { id: 'grid', title: 'Grid: agents + search | 2×2 chat grid' },
-  { id: 'phone', title: 'Phone: chat fills the screen + agents strip' },
+  { id: 'phone', title: 'Phone: agents + inbox | page-sized chat' },
 ]
 
 /** Mini SVG diagram showing the layout arrangement */
@@ -120,10 +120,11 @@ function LayoutIcon({ id, size = 20 }: { id: LayoutId; size?: number }) {
       </>
     ),
     'phone': (
-      // Phone: agents strip on top, one chat filling the rest. No doc column.
+      // Phone: agents/inbox column beside one page-sized chat. No doc column.
       <>
-        <rect x={s*0.18} y={0} width={s*0.64} height={s*0.18} rx={r} fill={ap} />
-        <rect x={s*0.18} y={s*0.18+g} width={s*0.64} height={s*0.82-g} rx={r} fill={ch} />
+        <rect x={0} y={0} width={s*0.22} height={s*0.5-g/2} rx={r} fill={ap} />
+        <rect x={0} y={s*0.5+g/2} width={s*0.22} height={s*0.5-g/2} rx={r} fill={sr} />
+        <rect x={s*0.22+g} y={0} width={s*0.62-g} height={s} rx={r} fill={ch} />
       </>
     ),
   }
