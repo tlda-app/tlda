@@ -4448,13 +4448,24 @@ async function handleDaemonWsMessage(ws, msg) {
     // from the alive set (it's hibernating now).
     if (Array.isArray(msg.agent_ids)) {
       const incoming = new Set(msg.agent_ids)
-      const agentsOnThisMachine = fleetStore?.getAgentsByMachine?.(ws._machineId) || []
-      for (const a of agentsOnThisMachine) {
-        if (incoming.has(a.id)) {
-          _aliveAgents.add(a.id)
-        } else {
-          _aliveAgents.delete(a.id)
-          clearEphemeralState(a.id)
+      if (Array.isArray(msg.checked_agent_ids)) {
+        for (const id of msg.checked_agent_ids) {
+          if (incoming.has(id)) {
+            _aliveAgents.add(id)
+          } else {
+            _aliveAgents.delete(id)
+            clearEphemeralState(id)
+          }
+        }
+      } else {
+        const agentsOnThisMachine = fleetStore?.getAgentsByMachine?.(ws._machineId) || []
+        for (const a of agentsOnThisMachine) {
+          if (incoming.has(a.id)) {
+            _aliveAgents.add(a.id)
+          } else {
+            _aliveAgents.delete(a.id)
+            clearEphemeralState(a.id)
+          }
         }
       }
       broadcastState()

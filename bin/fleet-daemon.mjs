@@ -2406,6 +2406,7 @@ async function checkAgentLiveness() {
   }
   const now = Date.now()
   const aliveAgentIds = []
+  const checkedAgentIds = []
   let sessions
   try {
     const r = await rpcListSessions()
@@ -2420,6 +2421,7 @@ async function checkAgentLiveness() {
   for (const agent of agents) {
     if (agent.dead || agent.human) continue
     if (!agent.tmux_session) continue
+    checkedAgentIds.push(agent.id)
     if (!sessions.has(agent.tmux_session)) {
       if (!agent.hibernating) {
         if (!_observedLiveSessions.has(agent.tmux_session)) {
@@ -2447,7 +2449,7 @@ async function checkAgentLiveness() {
   }
 
   if (!candidateAgents.length) {
-    sendMsg({ type: 'agent-liveness', agent_ids: aliveAgentIds })
+    sendMsg({ type: 'agent-liveness', agent_ids: aliveAgentIds, checked_agent_ids: checkedAgentIds })
     return
   }
 
@@ -2663,7 +2665,7 @@ async function checkAgentLiveness() {
     } catch {}
   }
 
-  sendMsg({ type: 'agent-liveness', agent_ids: aliveAgentIds })
+  sendMsg({ type: 'agent-liveness', agent_ids: aliveAgentIds, checked_agent_ids: checkedAgentIds })
 }
 
 async function rpcResolveFile({ path: filePath, cwd, server_url }) {
