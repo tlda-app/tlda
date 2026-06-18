@@ -5,7 +5,7 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { parseCodexLine } from './lib/codex-activity.mjs'
+import { parseCodexLine, unwrapCodexToolOutput } from './lib/codex-activity.mjs'
 
 // --- faithful copy of the bits of extractActivityEvents we exercise ---
 // (kept in sync with fleet-daemon.mjs; this test exists to prove the Codex
@@ -54,6 +54,36 @@ function extractCards(events) {
   return cards
 }
 
+let pass = true
+const assert = (cond, msg) => { if (!cond) { pass = false; console.error('  ✗ FAIL:', msg) } else console.log('  ✓', msg) }
+
+function codexOutputLine(output, type = 'function_call_output') {
+  return JSON.stringify({
+    type: 'response_item',
+    timestamp: '2026-06-17T00:00:00.000Z',
+    payload: { type, call_id: 'call-test', output },
+  })
+}
+
+console.log('\n=== unit fixtures ===')
+{
+  const ev = parseCodexLine(codexOutputLine('Wall time: 0.123 seconds\nOutput:\nhello\n'))
+  assert(ev.blocks[0].text === 'hello\n', 'tool result strips Codex Wall time/Output envelope')
+}
+{
+  const wrapped = 'Wall time: 0.123 seconds\nOutput:\n[{"type":"text","text":"first"},{"type":"text","text":"second"}]'
+  const ev = parseCodexLine(codexOutputLine(wrapped, 'custom_tool_call_output'))
+  assert(ev.blocks[0].text === 'first\nsecond', 'MCP text-block JSON output unwraps to readable text')
+}
+{
+  const original = 'Wall time: 0.123 seconds\nOutput:\n[{"type":"image","data":"x"}]'
+  assert(unwrapCodexToolOutput(original) === '[{"type":"image","data":"x"}]', 'non-text JSON preserves stripped payload without guessing')
+}
+{
+  const original = 'not a transcript envelope: [{"type":"text","text":'
+  assert(unwrapCodexToolOutput(original) === original, 'non-envelope parse failures preserve original text')
+}
+
 function findRollouts() {
   const base = path.join(os.homedir(), '.codex', 'sessions')
   const out = []
@@ -71,16 +101,18 @@ function findRollouts() {
 }
 
 const files = process.argv.slice(2).length ? process.argv.slice(2) : findRollouts()
-if (!files.length) { console.error('no rollout files found'); process.exit(1) }
-
-let pass = true
-const assert = (cond, msg) => { if (!cond) { pass = false; console.error('  ✗ FAIL:', msg) } else console.log('  ✓', msg) }
+if (!files.length) {
+  console.log('\n(no rollout files found; unit fixtures only)')
+  console.log(pass ? '\nALL PASS' : '\nSOME FAILURES')
+  process.exit(pass ? 0 : 1)
+}
 
 for (const f of files) {
   console.log(`\n=== ${path.basename(f)} ===`)
   const lines = fs.readFileSync(f, 'utf8').trim().split('\n')
   const events = lines.map(parseCodexLine).filter(Boolean)
   const cards = extractCards(events)
+  const hasToolOutput = lines.some(line => line.includes('function_call_output') || line.includes('custom_tool_call_output'))
 
   const toolUses = events.flatMap(e => (e.blocks || []).filter(b => b.type === 'tool_use'))
   const fleetCalls = toolUses.filter(b => b.name.startsWith('mcp__tlda__'))
@@ -135,12 +167,16 @@ for (const f of files) {
 
   // 3. tool outputs become tool_result blocks matched by call_id
   const results = events.flatMap(e => (e.blocks || []).filter(b => b.type === 'tool_result'))
-  if (toolUses.length) {
+  if (hasToolOutput) {
     assert(results.length > 0, 'tool outputs parsed as tool_result blocks')
   }
-  // 4. usage parsed from token_count
+  // 4. usage parsed from complete token_count records when present. Historical
+  // rollout files can contain partial token_count-looking records, so do not
+  // make the opportunistic scan fail on absent usage.
   const usage = events.find(e => e.usage)
-  assert(!!usage && usage.usage.output >= 0, 'token usage parsed')
+  if (usage) {
+    assert(!!usage && usage.usage.output >= 0, 'token usage parsed')
+  }
 
   // show a few representative cards
   const sample = visibleCards.slice(0, 4).map(c => `${c.tool}(${c.arg})`).join('  |  ')

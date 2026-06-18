@@ -79,6 +79,38 @@ export function aliasNativeArgs(name, input) {
   }
 }
 
+// Codex sometimes stores tool output as a transcript wrapper instead of the
+// actual payload:
+//   Wall time: ...
+//   Output:
+//   [{"type":"text","text":"..."}]
+// Normalize that at parse time so downstream chat/search/render paths see the
+// useful result, not the transport envelope. If anything is ambiguous, return
+// the original text.
+export function unwrapCodexToolOutput(text) {
+  if (typeof text !== 'string' || !text) return text
+  let body = text
+  const outputMatch = /(?:^|\n)Output:\n([\s\S]*)$/.exec(body)
+  if (outputMatch && /^Wall time:/m.test(body.slice(0, outputMatch.index))) {
+    body = outputMatch[1]
+  }
+  const trimmed = body.trim()
+  if (!trimmed) return body
+  try {
+    const parsed = JSON.parse(trimmed)
+    if (Array.isArray(parsed) && parsed.every(part => part && part.type === 'text' && typeof part.text === 'string')) {
+      return parsed.map(part => part.text).join('\n')
+    }
+    if (parsed && parsed.type === 'text' && typeof parsed.text === 'string') {
+      return parsed.text
+    }
+  } catch (err) {
+    // Plain command output, or a non-JSON tool result. Keep the stripped body.
+    if (!(err instanceof SyntaxError)) throw err
+  }
+  return body
+}
+
 // Parse a Codex `apply_patch` body into the files it touches + their hunks.
 // The patch format (verified):
 //   *** Begin Patch
@@ -173,9 +205,10 @@ export function parseCodexLine(jsonStr) {
     }
     if (p.type === 'function_call_output' || p.type === 'custom_tool_call_output') {
       // output is a string (may carry a "Wall time:\n…Output:\n" preamble).
-      const text = typeof p.output === 'string' ? p.output
+      const rawText = typeof p.output === 'string' ? p.output
         : (p.output && typeof p.output.content === 'string' ? p.output.content : '')
-      const is_error = /Process exited with code [1-9]/.test(text) || /\berror\b/i.test(text.slice(0, 60))
+      const text = unwrapCodexToolOutput(rawText)
+      const is_error = /Process exited with code [1-9]/.test(rawText) || /\berror\b/i.test(text.slice(0, 60))
       return { type: 'user', timestamp: ts, blocks: [{ type: 'tool_result', id: p.call_id, text, is_error }] }
     }
     if (p.type === 'message') {
