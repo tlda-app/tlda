@@ -12,9 +12,10 @@
 import { describe, it, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
@@ -22,6 +23,9 @@ const ROOT = join(__dirname, '..')
 const SERVER_SCRIPT = join(ROOT, 'server', 'unified-server.mjs')
 
 const PORT = 15177
+const hasLocalTls = existsSync(join(homedir(), '.config', 'tlda', 'localhost+2.pem')) &&
+  existsSync(join(homedir(), '.config', 'tlda', 'localhost+2-key.pem'))
+if (hasLocalTls) process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
 
 // ---------------------------------------------------------------------------
 // Server lifecycle
@@ -32,7 +36,7 @@ function startServer() {
   const projectsDir = mkdtempSync(join(tmpdir(), 'tlda-test-projects-'))
 
   return new Promise((resolve, reject) => {
-    const proc = spawn('node', [SERVER_SCRIPT], {
+    const proc = spawn('node', [SERVER_SCRIPT, '--i-am-tlda-cli'], {
       env: {
         ...process.env,
         PORT: String(PORT),
@@ -74,7 +78,7 @@ function startServer() {
   })
 }
 
-const BASE = `http://localhost:${PORT}`
+const BASE = `${hasLocalTls ? 'https' : 'http'}://localhost:${PORT}`
 
 async function api(method, path, body = null) {
   const opts = {
@@ -285,6 +289,28 @@ describe('server', { timeout: 30000 }, () => {
       const { data } = await api('GET', '/api/projects/test-errors/build/errors')
       assert.ok(Array.isArray(data.errors))
       assert.ok(Array.isArray(data.warnings))
+    })
+
+    it('surfaces biblatex and undefined reference warnings on status endpoints', async () => {
+      await api('POST', '/api/projects', { name: 'test-biblatex-warnings', mainFile: 'main.tex' })
+      const projectDir = join(server.projectsDir, 'test-biblatex-warnings')
+      mkdirSync(join(projectDir, 'source'), { recursive: true })
+      writeFileSync(join(projectDir, 'latex.log'), [
+        'LaTeX Warning: There were undefined references.',
+        '',
+        'Package biblatex Warning: Please (re)run Biber on the file:',
+        '(biblatex)                main',
+        '(biblatex)                and rerun LaTeX afterwards.',
+        '',
+      ].join('\n'))
+
+      const statusResp = await api('GET', '/api/projects/test-biblatex-warnings/build/status')
+      assert.equal(statusResp.data.warnings.length, 2)
+      assert.match(statusResp.data.warnings[0].message, /undefined references/)
+      assert.match(statusResp.data.warnings[1].message, /Biber/)
+
+      const errorsResp = await api('GET', '/api/projects/test-biblatex-warnings/build/errors')
+      assert.equal(errorsResp.data.warnings.length, 2)
     })
   })
 

@@ -609,12 +609,17 @@ router.get('/:name/build/status', requireRead, (req, res) => {
 
   const activeBuild = getBuildStatus(req.params.name)
   const buildLog = readBuildLog(req.params.name)
+  const { errors, warnings } = extractBuildErrors(req.params.name)
+  const pipelineWarnings = extractPipelineWarnings(req.params.name)
 
   res.json({
     status: activeBuild?.building ? 'building' : project.buildStatus,
     phase: activeBuild?.phase || null,
     lastBuild: project.lastBuild,
     log: buildLog,
+    errors,
+    warnings,
+    pipelineWarnings,
   })
 })
 

@@ -1186,7 +1186,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
         <PlaybackPill state={playbackState} />
         <SyncErrorPill />
         <BuildErrorPill />
-        <BuildWarningPill warnings={buildWarnings}>
+        <BuildWarningPill warnings={remapWarnings}>
           <BuildProgressPill />
         </BuildWarningPill>
         {editorRef.current && <FleetIconPill mainEditor={editorRef.current} />}
