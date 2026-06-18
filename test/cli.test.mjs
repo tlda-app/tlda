@@ -59,7 +59,7 @@ describe('argument parser', () => {
   })
 
   it('shows per-command help', () => {
-    for (const cmd of ['doc', 'server', 'config']) {
+    for (const cmd of ['doc', 'server', 'agent', 'config']) {
       const { stdout, exitCode } = tlda(cmd, '--help')
       assert.equal(exitCode, 0, `${cmd} --help should exit 0`)
       assert.ok(stdout.includes('tlda'), `${cmd} --help should show usage`)
@@ -78,14 +78,22 @@ describe('argument parser', () => {
 // ---------------------------------------------------------------------------
 
 describe('agent capability CLI', () => {
-  it('dry-runs without contacting the server from user context', () => {
-    const { stdout, exitCode } = tlda('agent', 'capability', 'alice', 'read-only', '--dry-run', {
+  it('dry-runs friendly names without contacting the server from user context', () => {
+    const { stdout, exitCode } = tlda('agent', 'capability', 'alice', 'write', '--dry-run', {
       env: scrubAgentEnv(process.env),
     })
 
     assert.equal(exitCode, 0)
-    assert.ok(stdout.includes('[dry-run] would set alice capability to read-only'))
+    assert.ok(stdout.includes('[dry-run] would set alice capability to workspace-write+net'))
     assert.ok(stdout.includes('update metadata.spawnPolicy.capability'))
+  })
+
+  it('shows capability-specific help', () => {
+    const { stdout, exitCode } = tlda('agent', 'capability', '--help')
+
+    assert.equal(exitCode, 0)
+    assert.ok(stdout.includes('write      workspace-write+net'))
+    assert.ok(stdout.includes('offline    workspace-write-no-net'))
   })
 
   it('rejects unknown capabilities', () => {

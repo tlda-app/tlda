@@ -19,16 +19,22 @@ describe('spawn policy', () => {
 
   it('derives caller capability from metadata.spawnPolicy', () => {
     assert.equal(callerCapability({ id: 'fleet:a', metadata: { spawnPolicy: { capability: 'read-only' } } }), 'read-only')
-    assert.equal(callerCapability({ id: 'fleet:a', metadata: {} }), 'workspace-write-no-net')
+    assert.equal(callerCapability({ id: 'fleet:a', metadata: {} }), 'workspace-write+net')
     assert.equal(callerCapability({ id: 'fleet:skip', human: true }), 'full-access')
   })
 
-  it('caps OpenRouter/goose-style models conservatively by default', () => {
-    assert.equal(modelCeiling({}, { model: 'deepseek/deepseek-v4-pro' }), 'workspace-write-no-net')
-    assert.equal(modelCeiling({}, { model: 'deepseek' }), 'workspace-write-no-net')
-    assert.equal(modelCeiling({}, { kind: 'goose' }), 'workspace-write-no-net')
+  it('defaults non-root model ceilings to net-enabled workspace write', () => {
+    assert.equal(modelCeiling({}, { model: 'deepseek/deepseek-v4-pro' }), 'workspace-write+net')
+    assert.equal(modelCeiling({}, { model: 'deepseek' }), 'workspace-write+net')
+    assert.equal(modelCeiling({}, { kind: 'goose' }), 'workspace-write+net')
     assert.equal(modelCeiling({}, { model: 'opus46' }), 'full-access')
     assert.equal(modelCeiling({}, { kind: 'codex' }), 'full-access')
+  })
+
+  it('normalizes operator-friendly capability names', () => {
+    assert.equal(callerCapability({ id: 'fleet:a', metadata: { spawnPolicy: { capability: 'write' } } }), 'workspace-write+net')
+    assert.equal(callerCapability({ id: 'fleet:a', metadata: { spawnPolicy: { capability: 'offline' } } }), 'workspace-write-no-net')
+    assert.equal(callerCapability({ id: 'fleet:a', metadata: { spawnPolicy: { capability: 'full' } } }), 'full-access')
   })
 
   it('rejects requests above caller capability', () => {
@@ -42,7 +48,7 @@ describe('spawn policy', () => {
   it('rejects requests above model ceiling', () => {
     assert.throws(() => authorizeSpawn({
       caller: { id: 'fleet:skip', human: true },
-      requestedCapability: 'workspace-write+net',
+      requestedCapability: 'full-access',
       model: 'deepseek/deepseek-v4-pro',
     }), /exceeds model ceiling/)
   })

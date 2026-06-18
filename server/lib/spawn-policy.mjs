@@ -5,8 +5,26 @@ export const SPAWN_CAPABILITIES = [
   'full-access',
 ]
 
+export const CAPABILITY_ALIASES = {
+  read: 'read-only',
+  readonly: 'read-only',
+  'read-only': 'read-only',
+  write: 'workspace-write+net',
+  'workspace-write': 'workspace-write+net',
+  net: 'workspace-write+net',
+  'write-net': 'workspace-write+net',
+  'workspace-write+net': 'workspace-write+net',
+  offline: 'workspace-write-no-net',
+  'no-net': 'workspace-write-no-net',
+  'workspace-write-no-net': 'workspace-write-no-net',
+  full: 'full-access',
+  root: 'full-access',
+  unfenced: 'full-access',
+  'full-access': 'full-access',
+}
+
 const CAPABILITY_RANK = new Map(SPAWN_CAPABILITIES.map((cap, idx) => [cap, idx]))
-export const DEFAULT_AGENT_CAPABILITY = 'workspace-write-no-net'
+export const DEFAULT_AGENT_CAPABILITY = 'workspace-write+net'
 export const ROOT_CAPABILITY = 'full-access'
 
 export function normalizeCapability(value, fallback = null) {
@@ -14,7 +32,8 @@ export function normalizeCapability(value, fallback = null) {
     if (fallback == null) return null
     return normalizeCapability(fallback)
   }
-  const cap = String(value).trim()
+  const raw = String(value).trim().toLowerCase()
+  const cap = CAPABILITY_ALIASES[raw] || raw
   if (!CAPABILITY_RANK.has(cap)) {
     throw new Error(`unknown spawn capability "${value}"`)
   }

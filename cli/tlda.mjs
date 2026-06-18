@@ -32,7 +32,7 @@ import { DEV_COMMANDS } from './lib/dev-commands.mjs'
 import { resolveRepoRoot, ensureWorktree, startWorktreeVite, findFreePort } from './lib/dev-vite.mjs'
 import { scanMarkdownDeps } from '../shared/markdown-deps.mjs'
 import { cmdLogs } from './lib/unified-logs.mjs'
-import { SPAWN_CAPABILITIES } from '../server/lib/spawn-policy.mjs'
+import { CAPABILITY_ALIASES, SPAWN_CAPABILITIES, normalizeCapability } from '../server/lib/spawn-policy.mjs'
 
 // --- Argument parsing ---
 
@@ -1485,9 +1485,49 @@ async function hibernateLocalAgent(name, { allowMissing = false } = {}) {
 }
 
 function usageAgentCapability() {
-  console.error(`Usage: tlda agent capability <agent> <capability> [--dry-run]
+  const out = `Usage: tlda agent capability <agent> <capability> [--dry-run]
 
-Capabilities: ${SPAWN_CAPABILITIES.join(', ')}`)
+Common names:
+  write      workspace-write+net (default normal agent)
+  read       read-only
+  full       full-access
+  offline    workspace-write-no-net (rare)
+
+Canonical capabilities: ${SPAWN_CAPABILITIES.join(', ')}`
+  if (hasFlag('help')) console.log(out)
+  else console.error(out)
+}
+
+function usageAgent() {
+  console.log(`tlda agent — manage local fleet agents
+
+Usage:
+  tlda agent list
+  tlda agent spawn <agent>
+  tlda agent attach <agent>
+  tlda agent hibernate <agent>
+  tlda agent capability <agent> <capability> [--dry-run]
+
+Capability names:
+  write      normal workspace-write agent with network
+  read       read-only
+  full       full access
+  offline    workspace-write without network
+
+The capability command is operator-only: it refuses from fleet agent env/tmux context.`)
+}
+
+function parseCapabilityName(value) {
+  try {
+    return normalizeCapability(value)
+  } catch {
+    return null
+  }
+}
+
+function capabilityNamesForError() {
+  const names = Object.keys(CAPABILITY_ALIASES).filter(name => !SPAWN_CAPABILITIES.includes(name))
+  return `${SPAWN_CAPABILITIES.join(', ')} (aliases: ${names.join(', ')})`
 }
 
 function normalizeAgentMetadata(meta) {
@@ -1529,13 +1569,18 @@ function hibernateNameForAgent(agent, fallback) {
 
 async function cmdAgentCapability() {
   const agentQuery = getPositional(1)
-  const capability = getPositional(2)
-  if (!agentQuery || !capability) {
+  const capabilityArg = getPositional(2)
+  if (hasFlag('help')) {
+    usageAgentCapability()
+    return
+  }
+  if (!agentQuery || !capabilityArg) {
     usageAgentCapability()
     process.exit(1)
   }
-  if (!SPAWN_CAPABILITIES.includes(capability)) {
-    console.error(`Unknown capability "${capability}". Supported capabilities: ${SPAWN_CAPABILITIES.join(', ')}`)
+  const capability = parseCapabilityName(capabilityArg)
+  if (!capability) {
+    console.error(`Unknown capability "${capabilityArg}". Supported capabilities: ${capabilityNamesForError()}`)
     process.exit(1)
   }
 
@@ -1580,6 +1625,10 @@ async function cmdAgentCapability() {
 
 async function cmdAgent() {
   const sub = getPositional(0)
+  if (!sub || (hasFlag('help') && !['capability', 'escalate'].includes(sub))) {
+    usageAgent()
+    return
+  }
   switch (sub) {
     case 'list':
     case 'ls':        await listLocalAgents(); break
