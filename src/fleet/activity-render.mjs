@@ -19,6 +19,7 @@
 
 import katex from 'katex'
 import { agentNameHtml } from './chat-render.mjs'
+import { unwrapMcpTextEnvelope } from '../../shared/activity-pretty-result.mjs'
 
 // --- Pure helpers (copied from utils.mjs) ---
 
@@ -66,22 +67,6 @@ function renderPrettyResult(toolName, text, ctx, input, ts) {
   // Fallback: render as markdown
   const md = ctx.renderMarkdown ? ctx.renderMarkdown(text) : esc(text)
   return `<div class="tool-pretty-result">${md}</div>`
-}
-
-function unwrapMcpTextEnvelope(text) {
-  if (typeof text !== 'string') return text
-  const trimmed = text.trim()
-  if (!trimmed) return text
-  try {
-    const parsed = JSON.parse(trimmed)
-    if (Array.isArray(parsed) && parsed.every(part => part && part.type === 'text' && typeof part.text === 'string')) {
-      return parsed.map(part => part.text).join('\n')
-    }
-    if (parsed && parsed.type === 'text' && typeof parsed.text === 'string') return parsed.text
-  } catch {
-    return text
-  }
-  return text
 }
 
 // Format remaining ms-until-fire as "in Xm Ys" / "in Ys" / "fired". Shared shape
