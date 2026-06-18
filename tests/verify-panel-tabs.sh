@@ -16,7 +16,7 @@ echo "=== Panel Tab Test (doc=$DOC) ==="
 # 1. Open browser + navigate
 echo "Step 1: Open browser + navigate..."
 playwright-cli open > /dev/null 2>&1 || true
-playwright-cli goto "http://localhost:5176/?doc=$DOC&token=$TOKEN" > /dev/null
+playwright-cli goto "http://localhost:5176/?doc=$DOC&token=$TOKEN&pw=1" > /dev/null
 
 # 2. Wait for load + initial screenshot
 sleep 2

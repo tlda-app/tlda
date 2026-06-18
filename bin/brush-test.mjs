@@ -45,7 +45,7 @@ await page.addInitScript(() => {
   sessionStorage.clear()
   localStorage.setItem('fleet-hud-expanded', '1')
 })
-const url = `${hasTls ? 'https' : 'http'}://localhost:5176/?doc=test-fleet&name=tester&token=${token}`
+const url = `${hasTls ? 'https' : 'http'}://localhost:5176/?doc=test-fleet&name=tester&token=${token}&pw=1`
 await page.goto(url, { waitUntil: 'domcontentloaded' })
 
 // Wait for editor + fleet shapes

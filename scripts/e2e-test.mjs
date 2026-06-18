@@ -163,7 +163,7 @@ describe('e2e: viewer', async () => {
     })
     p.on('pageerror', err => consoleErrors.push(err.message.slice(0, 300)))
 
-    await p.goto(`${SERVER}/?doc=${doc.name}`, {
+    await p.goto(`${SERVER}/?doc=${doc.name}&pw=1`, {
       waitUntil: 'networkidle2',
       timeout: 20000,
     })

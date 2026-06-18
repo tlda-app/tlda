@@ -424,7 +424,7 @@ async function main() {
   await ensureProject(token)
 
   // 2. Open the viewer.
-  const url = `${SERVER}/?doc=${PROJECT}&name=tester&token=${token}`
+  const url = `${SERVER}/?doc=${PROJECT}&name=tester&token=${token}&pw=1`
   console.log(`opening ${url}`)
   const browser = await chromium.launch({ headless: !HEADED })
   const context = await browser.newContext({ viewport: VIEWPORT })
@@ -461,6 +461,7 @@ async function main() {
     // session gets. (tlda-identity isn't fleet-*/tldraw*, so the clear above skips it.)
     try { localStorage.setItem('fleet-hud-expanded', '1') } catch {}
     try { localStorage.setItem('tlda-identity', 'tester') } catch {}
+    try { localStorage.setItem('tlda-camera-linked', 'false') } catch { void 0 }
   })
   await page.goto(url, { waitUntil: 'domcontentloaded' })
 
