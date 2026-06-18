@@ -10,7 +10,7 @@
 
 import { execSync, spawn } from 'child_process'
 import { existsSync, openSync } from 'fs'
-import { join, dirname } from 'path'
+import { join, dirname, resolve } from 'path'
 import { fileURLToPath } from 'url'
 
 export async function findFreePort(startPort) {
@@ -32,9 +32,9 @@ export function resolveRepoRoot() {
   const here = dirname(fileURLToPath(import.meta.url))
   try {
     const gitCommonDir = execSync('git rev-parse --git-common-dir', { cwd: here, stdio: 'pipe' }).toString().trim()
-    return gitCommonDir === '.git' ? join(here, '..', '..') : dirname(gitCommonDir)
+    return gitCommonDir === '.git' ? resolve(here, '..', '..') : dirname(resolve(here, gitCommonDir))
   } catch {
-    return join(here, '..', '..')
+    return resolve(here, '..', '..')
   }
 }
 
@@ -65,7 +65,7 @@ export function ensureWorktree(repoRoot, branch) {
 // the printed URL matches what Vite actually serves. `serverPort`, when set, is
 // exported as VITE_SERVER_PORT so Vite proxies /api+/sync to that backend (used by
 // the sandbox to point the frontend at its isolated server).
-export async function startWorktreeVite({ worktreeDir, port, serverPort = null, hasTls = false }) {
+export async function startWorktreeVite({ worktreeDir, port, serverPort = null, hasTls = false, host = '127.0.0.1' }) {
   const repoRoot = resolveRepoRoot()
   const logFile = join(worktreeDir, '.dev-vite.log')
   const logFd = openSync(logFile, 'a')
@@ -79,8 +79,9 @@ export async function startWorktreeVite({ worktreeDir, port, serverPort = null, 
   if (!viteBin) throw new Error('vite binary not found (worktree or main repo node_modules)')
 
   // Bind IPv4 explicitly — without --host vite binds IPv6 [::1] only, so a browser
-  // hitting `localhost` (→ 127.0.0.1) can't connect.
-  const child = spawn(viteBin, ['--port', String(port), '--host', '127.0.0.1'], {
+  // hitting `localhost` (→ 127.0.0.1) can't connect. Sandbox can pass 0.0.0.0
+  // when a phone/tablet on the LAN needs to hit the viewer.
+  const child = spawn(viteBin, ['--port', String(port), '--host', host], {
     cwd: worktreeDir,
     detached: true,
     stdio: ['ignore', logFd, logFd],

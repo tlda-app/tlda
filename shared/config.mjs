@@ -10,7 +10,7 @@ import { join } from 'path'
 import { homedir } from 'os'
 
 const CONFIG_DIR = join(homedir(), '.config', 'tlda')
-const CONFIG_FILE = join(CONFIG_DIR, 'config.json')
+const CONFIG_FILE = process.env.TLDA_CONFIG_FILE || join(CONFIG_DIR, 'config.json')
 
 export const DEFAULT_PORT = 5176
 
