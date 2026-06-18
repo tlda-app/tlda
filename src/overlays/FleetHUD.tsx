@@ -544,13 +544,20 @@ export function FleetHUD({
   useEffect(() => {
     if (!expanded || !fleetBounds || !docShapesReady) return
     if (panOffsetRef.current === null || cameraYRef.current === null) return
-    const projectedTop = fleetBounds.y + cameraYRef.current
-    const projectedBottom = projectedTop + fleetBounds.h
+    const latestBounds = getFleetBounds(mainEditor) || fleetBounds
+    const hasFreshBounds =
+      latestBounds.x !== fleetBounds.x ||
+      latestBounds.y !== fleetBounds.y ||
+      latestBounds.w !== fleetBounds.w ||
+      latestBounds.h !== fleetBounds.h
+    if (hasFreshBounds) setFleetBounds(latestBounds)
+    const projectedTop = latestBounds.y + cameraYRef.current
+    const projectedBottom = projectedTop + latestBounds.h
     const verticallyVisible = projectedBottom > 0 && projectedTop < window.innerHeight
     if (verticallyVisible) return
     ignoreSavedAnchorRef.current = true
-    recenterHudForBounds(fleetBounds)
-  }, [expanded, fleetBounds?.x, fleetBounds?.y, fleetBounds?.w, fleetBounds?.h, docShapesReady, recenterHudForBounds])
+    recenterHudForBounds(latestBounds)
+  }, [expanded, fleetBounds?.x, fleetBounds?.y, fleetBounds?.w, fleetBounds?.h, docShapesReady, mainEditor, recenterHudForBounds])
 
   // Touch fleet shapes to invalidate getShapeVisibility cache — only when
   // expanded state actually changes, not on every fleetBounds update.
@@ -637,7 +644,7 @@ export function FleetHUD({
       }
     }, { source: 'all', scope: 'document' })
     return unsub
-  }, [mainEditor])
+  }, [mainEditor, recenterHudForBounds])
 
   // Block HTML5 file/chip drops on fleet shapes (except chat input areas).
   // With the full-viewport overlay, we check if the drop target is inside
