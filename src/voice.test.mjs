@@ -158,7 +158,7 @@ global.AudioWorkletNode = class AudioWorkletNode {
 }
 
 // ---- Import module ----
-const { initVoice, setVoiceTarget, toggleRecording, isRecording, getGeneration, enterVoiceSink, setBackend } = await import('./voice.mjs')
+const { initVoice, setVoiceTarget, setVoiceAccumulator, clearVoiceAccumulator, toggleRecording, isRecording, getGeneration, enterVoiceSink, setBackend } = await import('./voice.mjs')
 const { setPref, loadPrefs } = await import('./preferences.ts')
 await loadPrefs('voice-test')
 setPref('voice-backend', 'chrome')
@@ -482,6 +482,52 @@ function reset() {
   window.__voiceTest.fakeStop()
   reset()
   console.log('✓ Test 8c: sink escalation clears only live sink interim')
+}
+
+// ---- Test 8d: Accumulator target switches preserve committed note text ----
+{
+  function makeNoteAccumulator(getText, setText) {
+    let base = null
+    const onUpdate = text => {
+      if (base === null) {
+        const cur = getText()
+        base = cur ? cur + (/\s$/.test(cur) ? '' : ' ') : ''
+      }
+      setText(base + text)
+    }
+    const onStop = () => { base = null }
+    return { onUpdate, onStop }
+  }
+
+  let noteA = 'alpha'
+  let noteB = 'beta'
+  const a = makeNoteAccumulator(() => noteA, text => { noteA = text })
+  const b = makeNoteAccumulator(() => noteB, text => { noteB = text })
+
+  setVoiceAccumulator(a.onUpdate, null, a.onStop, 'note A')
+  window.__voiceTest.fakeRecord()
+  window.__voiceTest.injectTranscript('first phrase', false)
+  tick(500)
+  assert.equal(noteA, 'alpha first phrase', 'note A should append live accumulator text')
+
+  setVoiceAccumulator(b.onUpdate, null, b.onStop, 'note B')
+  window.__voiceTest.fakeRecord()
+  window.__voiceTest.injectTranscript('second phrase', false)
+  tick(500)
+  assert.equal(noteA, 'alpha first phrase', 'switching target should preserve note A committed text')
+  assert.equal(noteB, 'beta second phrase', 'note B should receive its own live accumulator text')
+
+  enterVoiceSink()
+  window.__voiceTest.injectTranscript('television noise', false)
+  tick(500)
+  assert.equal(noteA, 'alpha first phrase', 'sink should not mutate note A')
+  assert.equal(noteB, 'beta second phrase', 'sink should not mutate note B')
+
+  clearVoiceAccumulator(a.onUpdate)
+  clearVoiceAccumulator(b.onUpdate)
+  window.__voiceTest.fakeStop()
+  reset()
+  console.log('✓ Test 8d: accumulator switches preserve committed note text')
 }
 
 await setBackend('chrome')
