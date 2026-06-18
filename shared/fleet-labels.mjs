@@ -203,3 +203,57 @@ export function evalDnf(filter, labels) {
     ),
   )
 }
+
+function dnfPath(clauseIndex, termIndex) {
+  if (termIndex == null) return `filter[${clauseIndex}]`
+  return `filter[${clauseIndex}][${termIndex}]`
+}
+
+/**
+ * Validate the role-aware DNF shape used by wiretap and fleet-chat display
+ * filters. Returns the original filter for easy inline use; throws with a path
+ * to the malformed term so callers can surface a useful "bad filter" message.
+ */
+export function validateDnfFilter(filter, { directional = false } = {}) {
+  if (!Array.isArray(filter)) throw new Error('filter must be a DNF array')
+  for (let i = 0; i < filter.length; i++) {
+    const clause = filter[i]
+    if (!Array.isArray(clause)) throw new Error(`${dnfPath(i)} must be an array clause`)
+    for (let j = 0; j < clause.length; j++) {
+      const term = clause[j]
+      if (directional) {
+        if (!Array.isArray(term) || term.length !== 2) {
+          throw new Error(`${dnfPath(i, j)} must be [role, label]`)
+        }
+        const [role, label] = term
+        if (role !== 'from' && role !== 'to') {
+          throw new Error(`${dnfPath(i, j)} role must be "from" or "to"`)
+        }
+        if (typeof label !== 'string' || !label) {
+          throw new Error(`${dnfPath(i, j)} label must be a non-empty string`)
+        }
+      } else if (Array.isArray(term)) {
+        if (term.length !== 2 || typeof term[1] !== 'string' || !term[1]) {
+          throw new Error(`${dnfPath(i, j)} tuple label must be a non-empty string`)
+        }
+      } else if (typeof term !== 'string' || !term) {
+        throw new Error(`${dnfPath(i, j)} must be a non-empty label string`)
+      }
+    }
+  }
+  return filter
+}
+
+/**
+ * Evaluate directional DNF against sender/recipient labels.
+ * Empty DNF matches everything, matching evalDnf's legacy behavior.
+ */
+export function evalDirectionalDnf(filter, { fromLabels = [], toLabels = [] } = {}) {
+  const dnf = validateDnfFilter(filter || [], { directional: true })
+  if (dnf.length === 0) return true
+  const from = new Set(fromLabels)
+  const to = new Set(toLabels)
+  return dnf.some(clause =>
+    clause.every(([role, label]) => role === 'from' ? from.has(label) : to.has(label)),
+  )
+}

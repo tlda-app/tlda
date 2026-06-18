@@ -92,12 +92,14 @@ async function main() {
 
   // add a wiretap
   const f1 = [[["from", "fleet:skip"]]]
-  const tap = await c.rpc('wiretap-add', { agent: AGENT, filter: f1 })
+  const tap = await c.rpc('wiretap-add', { agent: AGENT, filter: f1, types: ['chat'] })
   check('wiretap-add returns a numeric id', tap && Number.isFinite(tap.id), `got ${JSON.stringify(tap)}`)
+  check('wiretap-add preserves event types over WS', Array.isArray(tap.types) && tap.types[0] === 'chat', `got ${JSON.stringify(tap)}`)
 
   // list shows it
   let list = await c.rpc('wiretap-list', { agent: AGENT })
   check('wiretap-list shows the added tap', Array.isArray(list) && list.some(t => t.id === tap.id), `got ${JSON.stringify(list)}`)
+  check('wiretap-list preserves event types', list.some(t => t.id === tap.id && Array.isArray(t.types) && t.types[0] === 'chat'), `got ${JSON.stringify(list)}`)
 
   // remove it by tap_id (THE FIX — previously rejected as 'invalid id')
   let removeErr = null
@@ -120,6 +122,10 @@ async function main() {
   let valErr = null
   try { await c.rpc('wiretap-remove', {}) } catch (e) { valErr = e.message }
   check('wiretap-remove with no tap_id is rejected', valErr === 'invalid id', `got ${valErr}`)
+
+  let filterErr = null
+  try { await c.rpc('wiretap-add', { agent: AGENT, filter: [[["sender", "fleet:skip"]]] }) } catch (e) { filterErr = e.message }
+  check('wiretap-add rejects malformed directional DNF', filterErr?.startsWith('bad filter:'), `got ${filterErr}`)
 
   try { c.ws.close() } catch {}
   console.log(`\n[wiretap-itest] === ${pass} pass / ${fail} fail ===`)

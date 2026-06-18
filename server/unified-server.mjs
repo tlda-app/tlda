@@ -42,7 +42,7 @@ import { spawn as cpSpawn } from 'child_process'
 import { lookup as mimeLookup } from 'mime-types'
 import { DEFAULT_PORT, hasTls, getManagedBots, loadConfig, resolveConfig } from '../shared/config.mjs'
 import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
-import { labelsForAgent, parseFilter, evalExpr } from '../shared/fleet-labels.mjs'
+import { labelsForAgent, parseFilter, evalExpr, validateDnfFilter } from '../shared/fleet-labels.mjs'
 import { phaseFromName, baseName, PHASES } from '../shared/lineage-name.mjs'
 import { initProjectStore, listProjects, readProject, getProjectsDir } from './lib/project-store.mjs'
 import { resetStaleBuildStates, killAllBuilds, runBuild } from './lib/build-runner.mjs'
@@ -3732,9 +3732,12 @@ async function handleFleetWsMessage(ws, msg) {
 
   // ---- wiretap-add ----
   if (type === 'wiretap-add') {
-    const { agent, filter } = msg
+    const { agent, filter, types } = msg
     if (!agent || !filter) { error('missing agent or filter'); return }
-    const tap = fleetStore.addWiretap(agent, filter)
+    let validFilter
+    try { validFilter = validateDnfFilter(filter, { directional: true }) }
+    catch (e) { error(`bad filter: ${e.message}`); return }
+    const tap = fleetStore.addWiretap(agent, validFilter, types)
     reply(tap)
     return
   }

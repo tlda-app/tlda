@@ -22,7 +22,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 
-import { PSEUDO_LABELS } from '../../shared/fleet-labels.mjs';
+import { PSEUDO_LABELS, evalDirectionalDnf, labelsForAgent, validateDnfFilter } from '../../shared/fleet-labels.mjs';
 import { baseName, nameForPhase, phaseFromName, ALL_PHASES } from '../../shared/lineage-name.mjs';
 
 // Persistent DB under ~/.config/tlda/ (survives macOS reboots).
@@ -1682,8 +1682,11 @@ export class FleetStore {
   // ---- Wiretap management ----
 
   addWiretap(agentId, filter, types) {
-    const info = this._addWiretap.run(agentId, JSON.stringify(filter), types ? JSON.stringify(types) : null);
-    return { id: info.lastInsertRowid, agent_id: agentId, filter, types: types || null };
+    const validFilter = validateDnfFilter(filter, { directional: true });
+    if (types != null && !Array.isArray(types)) throw new Error('types must be an array');
+    const validTypes = types && types.length > 0 ? types : null;
+    const info = this._addWiretap.run(agentId, JSON.stringify(validFilter), validTypes ? JSON.stringify(validTypes) : null);
+    return { id: info.lastInsertRowid, agent_id: agentId, filter: validFilter, types: validTypes };
   }
 
   getWiretaps() {
@@ -1720,14 +1723,8 @@ export class FleetStore {
       if (tap.agent_id === senderId || tap.agent_id === recipientId) continue;
       // Type filter: if wiretap specifies types, skip events that don't match
       if (tap.types && tap.types.length > 0 && eventType && !tap.types.includes(eventType)) continue;
-      // DNF: any clause matches → wiretap fires
-      const matches = tap.filter.some(clause =>
-        clause.every(([role, label]) => {
-          if (role === 'from') return senderLabels.includes(label);
-          if (role === 'to') return recipientLabels.includes(label);
-          return false;
-        })
-      );
+      // Directional DNF: any clause matches → wiretap fires.
+      const matches = evalDirectionalDnf(tap.filter, { fromLabels: senderLabels, toLabels: recipientLabels });
       if (matches) matched.add(tap.agent_id);
     }
     return [...matched];
@@ -1737,7 +1734,7 @@ export class FleetStore {
     if (!agentId) return [];
     const agent = this.getAgent(agentId);
     if (!agent) return [agentId];
-    return [...(agent.labels || []), agent.friendly_name, agent.id].filter(Boolean);
+    return labelsForAgent(agent);
   }
 
   _hydrateWiretap(row) {

@@ -13,7 +13,7 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import { DEFAULT_PORT, loadConfig, resolveConfig } from '../../shared/config.mjs'
-import { parseFilter, evalExpr, labelsForAgent } from '../../shared/fleet-labels.mjs'
+import { parseFilter, evalExpr, labelsForAgent, validateDnfFilter } from '../../shared/fleet-labels.mjs'
 import { authorizeSpawn, projectCapabilityToMode } from '../lib/spawn-policy.mjs'
 
 // Server owner — the human running this server process. Browser users
@@ -974,7 +974,10 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const { agent, filter, types } = req.body || {}
     if (!agent) { res.status(400).send('missing agent'); return }
     if (!filter) { res.status(400).send('missing filter'); return }
-    const tap = fleetStore.addWiretap(agent, filter, types)
+    let validFilter
+    try { validFilter = validateDnfFilter(filter, { directional: true }) }
+    catch (e) { res.status(400).json({ error: `bad filter: ${e.message}` }); return }
+    const tap = fleetStore.addWiretap(agent, validFilter, types)
     res.json(tap)
   })
 

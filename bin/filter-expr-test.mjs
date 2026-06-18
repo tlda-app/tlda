@@ -3,7 +3,7 @@
 // parseFilter (string -> AST) + evalExpr (AST + label set -> bool).
 // Run: node bin/filter-expr-test.mjs
 
-import { parseFilter, evalExpr, matchFilter } from '../shared/fleet-labels.mjs'
+import { parseFilter, evalExpr, matchFilter, validateDnfFilter, evalDirectionalDnf } from '../shared/fleet-labels.mjs'
 
 let pass = 0, fail = 0
 const L = (...a) => a
@@ -16,6 +16,14 @@ function t(filter, labels, want) {
 }
 function terr(filter) {
   try { parseFilter(filter); fail++; console.log(`FAIL  expected throw for ${JSON.stringify(filter)}`) }
+  catch { pass++ }
+}
+function dnfOk(filter, opts = {}) {
+  try { validateDnfFilter(filter, opts); pass++ }
+  catch (e) { fail++; console.log(`FAIL  expected DNF ok for ${JSON.stringify(filter)}: ${e.message}`) }
+}
+function dnfErr(filter, opts = {}) {
+  try { validateDnfFilter(filter, opts); fail++; console.log(`FAIL  expected DNF throw for ${JSON.stringify(filter)}`) }
   catch { pass++ }
 }
 
@@ -66,6 +74,20 @@ terr('(a | b')
 terr(') a')
 terr('a b')      // two literals, no operator
 terr(['fleet:skip'])  // a stray array must fail loud, not be mishandled
+
+// --- DNF validation / directional eval ---
+dnfOk([[['from', 'fleet:skip']]], { directional: true })
+dnfOk([[['from', 'fleet:skip'], ['to', 'awake']]], { directional: true })
+dnfErr('fleet:skip', { directional: true })
+dnfErr([[['sender', 'fleet:skip']]], { directional: true })
+dnfErr([[['from', '']]], { directional: true })
+dnfErr([[['from']]], { directional: true })
+if (evalDirectionalDnf([[['from', 'math'], ['to', 'human']]], { fromLabels: ['math'], toLabels: ['human', 'fleet:skip'] }) !== true) {
+  fail++; console.log('FAIL  directional DNF should match from/to labels')
+} else pass++
+if (evalDirectionalDnf([[['from', 'math'], ['to', 'goose']]], { fromLabels: ['math'], toLabels: ['human'] }) !== false) {
+  fail++; console.log('FAIL  directional DNF should reject missing to label')
+} else pass++
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)
