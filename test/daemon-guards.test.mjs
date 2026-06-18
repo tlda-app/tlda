@@ -115,6 +115,36 @@ test('codex watcher ownership is not stolen without a matching rollout id', () =
   }), true)
 })
 
+test('codex watcher ownership is not stolen by stale matching rollout id when file has another owner', () => {
+  const ownedPath = '/Users/skip/.codex/sessions/2026/06/17/rollout-2026-06-17T02-15-50-019ed438-c2ee-7f72-a2c4-9708b6f04679.jsonl'
+  const hasOwner = path => path === ownedPath
+  const belongs = (_path, agent) => agent?.id === 'fleet:real-owner'
+
+  assert.equal(shouldClaimCodexWatcher({
+    currentPrimaryId: 'fleet:real-owner',
+    agent: {
+      id: 'fleet:stale-agent',
+      session_id: '019ed438-c2ee-7f72-a2c4-9708b6f04679',
+      session_ids: [],
+    },
+    jsonlPath: ownedPath,
+    rolloutHasOwnerEvidence: hasOwner,
+    rolloutBelongsToAgent: belongs,
+  }), false)
+
+  assert.equal(shouldClaimCodexWatcher({
+    currentPrimaryId: 'fleet:stale-agent',
+    agent: {
+      id: 'fleet:stale-agent',
+      session_id: '019ed438-c2ee-7f72-a2c4-9708b6f04679',
+      session_ids: [],
+    },
+    jsonlPath: ownedPath,
+    rolloutHasOwnerEvidence: hasOwner,
+    rolloutBelongsToAgent: belongs,
+  }), true)
+})
+
 test('first runtime liveness miss stays awake within hibernate grace', () => {
   const now = 10_000
   const graceMs = 120_000

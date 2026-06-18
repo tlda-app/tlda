@@ -84,7 +84,7 @@ import {
   shouldClaimCodexWatcher,
   unlinkPidfileIfOwnPid,
 } from './lib/daemon-guards.mjs'
-import { resolveTranscript } from './lib/resolve-transcript.mjs'
+import { codexRolloutBelongsToAgent, codexRolloutHasOwnerEvidence, resolveTranscript } from './lib/resolve-transcript.mjs'
 const log = createLogger('daemon')
 // CONFIG_DIR holds config.json, cursors, PID and log files. Defaults to
 // ~/.config/tlda. TLDA_DAEMON_CONFIG_DIR lets the E2E test start a second
@@ -1000,7 +1000,13 @@ async function syncSessionWatchers(agentList) {
       // Whichever agent's session_id matches the JSONL filename is the
       // active session — others are historical sharers (post-inhabit).
       if (harness.kind === 'codex') {
-        if (shouldClaimCodexWatcher({ currentPrimaryId: pw.primaryAgentId, agent, jsonlPath })) {
+        if (shouldClaimCodexWatcher({
+          currentPrimaryId: pw.primaryAgentId,
+          agent,
+          jsonlPath,
+          rolloutHasOwnerEvidence: codexRolloutHasOwnerEvidence,
+          rolloutBelongsToAgent: codexRolloutBelongsToAgent,
+        })) {
           pw.primaryAgentId = agent.id
         }
       } else if (!harness.usesClaudeSessionIds || agent.session_id === fileSessionId) {
