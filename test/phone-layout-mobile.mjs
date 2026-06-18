@@ -202,7 +202,7 @@ async function main() {
       w: agents.props.w,
       h: agents.props.h + 10 + inbox.props.h,
     }
-    const expectedRect = clip ? clippedDocScreen : docScreen
+    const expectedRect = docScreen
     const expectedW = Math.round(expectedRect.w)
     const expectedH = Math.round(expectedRect.h)
     if (Math.abs(chat.props.w - expectedW) > 1) {
@@ -315,6 +315,20 @@ async function main() {
       extraPanels: fleet.filter(s => s.type !== 'fleet-agents' && s.type !== 'fleet-inbox' && s.type !== 'fleet-chat').map(s => s.type),
       touchStyles,
     }
+  })
+
+  await page.evaluate(() => {
+    const ed = window.__tldraw_editor__
+    const setup = window.__phoneLayoutExpected
+    if (!ed || !setup) return
+    const ids = ed.getCurrentPageShapes()
+      .filter(s => s.props?.userId === setup.humanId && s.props?.deviceId === setup.myDeviceId)
+      .map(s => s.id)
+    if (setup.alienId) ids.push(setup.alienId)
+    const anchorId = `shape:fleet-hud-anchor--${String(setup.humanId).replace('fleet:', '')}--${setup.myDeviceId}`
+    if (ed.getShape(anchorId)) ids.push(anchorId)
+    const unique = [...new Set(ids)].filter(id => ed.getShape(id))
+    if (unique.length > 0) ed.deleteShapes(unique)
   })
 
   console.log(JSON.stringify(report, null, 2))

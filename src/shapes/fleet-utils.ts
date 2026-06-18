@@ -479,9 +479,9 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
     anchorY += dy
 
     // Phone layout: short agents filter panel over inbox in a left column,
-    // dominant chat to its right. The chat footprint follows one page's current
-    // on-screen size; if that page is clipped by the viewport, use the clipped
-    // visible region so landscape / zoomed views create a landscape-shaped chat.
+    // dominant chat to its right. The chat footprint is the selected page's
+    // current on-screen size. Visibility only chooses which page to follow; it
+    // must never shrink the chat to the clipped viewport.
     if (variant === 'phone') {
       let target: { x: number; y: number; w: number; h: number; pageX: number } | null = null
       let bestArea = -1
@@ -508,13 +508,7 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
         const area = clipped.w * clipped.h
         if (area > bestArea) {
           bestArea = area
-          // If the whole page is comfortably visible, use the full single-page
-          // footprint; otherwise emulate the clipped region Skip sees on phone.
-          const clippedByViewport =
-            pageRect.x < vp.x || pageRect.y < vp.y ||
-            pageRect.x + pageRect.w > vp.x + vp.w ||
-            pageRect.y + pageRect.h > vp.y + vp.h
-          target = clippedByViewport && clipped.w > 0 && clipped.h > 0 ? clipped : pageRect
+          target = pageRect
         }
       }
       if (!target) {
