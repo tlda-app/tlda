@@ -16,6 +16,12 @@ interface BuildWarningPillProps {
   children?: React.ReactNode
 }
 
+type DocVersionWarningShape = {
+  props?: {
+    warningsJson?: string
+  }
+}
+
 /** Strip the LaTeX Warning: / Package ... Warning: prefix. */
 function cleanMessage(msg: string): string {
   return msg.replace(/^LaTeX Warning:\s*|^Package \S+ Warning:\s*/i, '')
@@ -46,8 +52,8 @@ export function BuildWarningPill({ warnings, children }: BuildWarningPillProps) 
   useEffect(() => {
     if (!editor) return
     const read = (): BuildWarning[] => {
-      const s = editor.store.get('shape:doc-version--sentinel' as TLShapeId)
-      const json = (s as any)?.props?.warningsJson
+      const s = editor.store.get('shape:doc-version--sentinel' as TLShapeId) as DocVersionWarningShape | undefined
+      const json = s?.props?.warningsJson
       if (!json) return []
       try {
         const arr = JSON.parse(json)
