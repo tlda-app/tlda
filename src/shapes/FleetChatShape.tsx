@@ -5382,7 +5382,7 @@ function FilterOverlay({
       lastGroupRef.current = null
     }
 
-    // Check replace zone first (bottom-left corner)
+    // Check replace zone first (left third)
     const replaceEl = replaceZoneRef.current
     if (replaceEl) {
       const r = replaceEl.getBoundingClientRect()
@@ -5562,7 +5562,7 @@ function FilterOverlay({
   return (
     <div ref={overlayRef} className="fleet-filter-overlay" onPointerDown={stopEventPropagation}>
       {pillOver ? (
-        /* Two-pane drop preview: top = to, bottom = from, with replace zone in bottom-left */
+        /* Drop preview: left third = only/to+from, right side stacks to/from */
         <div className="fleet-filter-drop-panes">
           <div
             ref={replaceZoneRef}

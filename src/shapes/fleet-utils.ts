@@ -1,9 +1,11 @@
 import type { Editor } from 'tldraw'
 import { createShapeId } from 'tldraw'
 // @ts-ignore — vanilla JS module
-import { getHumanId, getDeviceId } from '../fleet/fleet-data.mjs'
+import { getHumanId, getHumanName, getDeviceId, getEvents } from '../fleet/fleet-data.mjs'
 // @ts-ignore — vanilla JS module
 import { baseName } from '../../shared/lineage-name.mjs'
+// @ts-ignore — vanilla JS module
+import { recentChatTargetAgents } from '../fleet/layout-targets.mjs'
 import { getPref } from '../preferences'
 
 /** Canonical list of fleet shape types — the single source of truth for
@@ -395,7 +397,12 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
       return true
     })
     const panelCount = variant === 'grid' ? 4 : variant === 'wide' ? 1 : 2
-    const topAgents = deduped.slice(0, panelCount)
+    const recentChatAgents = recentChatTargetAgents(getEvents(), deduped, humanId, getHumanName(), panelCount)
+    const recentIds = new Set(recentChatAgents.map((a: any) => a.id || a.friendly_name))
+    const topAgents = [
+      ...recentChatAgents,
+      ...deduped.filter((a: any) => !recentIds.has(a.id || a.friendly_name)),
+    ].slice(0, panelCount)
     const makeFilter = (i: number): [string, string][][] => {
       if (existingChatFilters[i]) return existingChatFilters[i]!
       const name = topAgents[i]?.friendly_name as string | undefined

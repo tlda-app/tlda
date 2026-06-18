@@ -278,30 +278,27 @@ html.mousemove .fleet-reaper-shape:hover .fleet-btn-group {
 /* --- Filter drop panes (pill hover: to/from preview) --- */
 .fleet-chat-shape .fleet-filter-drop-panes {
   flex: 1;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: minmax(86px, 33%) 1fr;
+  grid-template-rows: 1fr 1fr;
   gap: 0;
   position: relative;
 }
 
-/* Replace zone — bottom-left corner, replaces entire filter with to+from this agent */
+/* Replace zone — full left third, replaces entire filter with to+from this agent */
 .fleet-chat-shape .fleet-filter-replace-zone {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  width: 28%;
-  aspect-ratio: 1;
+  grid-column: 1;
+  grid-row: 1 / span 2;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 2px;
-  padding: 4px;
-  border-top: 1px solid rgba(128, 128, 128, 0.12);
+  min-width: 0;
+  padding: 6px;
   border-right: 1px solid rgba(128, 128, 128, 0.12);
   background: rgba(128, 128, 128, 0.03);
   transition: background 0.15s;
-  z-index: 2;
 }
 .fleet-chat-shape .fleet-filter-replace-zone-active {
   background: rgba(180, 140, 220, 0.12);
@@ -319,16 +316,22 @@ html.mousemove .fleet-reaper-shape:hover .fleet-btn-group {
   opacity: 0.35;
 }
 .fleet-chat-shape .fleet-filter-drop-pane {
-  flex: 1;
   display: flex;
   flex-direction: column;
   justify-content: center;
   align-items: center;
   padding: 0 10px;
+  min-width: 0;
   transition: background 0.15s;
 }
 .fleet-chat-shape .fleet-filter-pane-to {
+  grid-column: 2;
+  grid-row: 1;
   border-bottom: 1px solid rgba(128, 128, 128, 0.1);
+}
+.fleet-chat-shape .fleet-filter-pane-from {
+  grid-column: 2;
+  grid-row: 2;
 }
 .fleet-chat-shape .fleet-filter-pane-active.fleet-filter-pane-to {
   background: rgba(122, 158, 200, 0.08);
