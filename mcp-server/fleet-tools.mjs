@@ -22,6 +22,7 @@ import { resolveFilePath, uploadFileToServer } from '../shared/chat-file-process
 import { scanMarkdownDeps } from '../shared/markdown-deps.mjs';
 import { extractMarkdownSection } from '../shared/markdown-section.mjs';
 import { baseName, nameForPhase, phaseFromName } from '../shared/lineage-name.mjs';
+import { formatSpawnModelSummary, validateSpawnModelSelection } from '../shared/spawn-model-validation.mjs';
 import { parseFilter, evalExpr } from '../shared/fleet-labels.mjs';
 import { baseMacros } from '../shared/katex-base-macros.mjs';
 import { normalizeRefNumber as _normalizeRefNumber, refTypeForName as _refTypeForName, buildTheoremRefRegex as _buildTheoremRefRegex } from '../shared/doc-refs.mjs';
@@ -257,6 +258,29 @@ function fleetFetch(url, opts = {}) {
   const timeoutMs = 10_000;
   if (!opts.signal) opts.signal = AbortSignal.timeout(timeoutMs);
   return fetch(url, opts);
+}
+
+let _spawnModelCatalog = null;
+let _spawnModelCatalogAt = 0;
+async function getSpawnModelCatalog({ maxAgeMs = 60_000 } = {}) {
+  if (_spawnModelCatalog && Date.now() - _spawnModelCatalogAt < maxAgeMs) return _spawnModelCatalog;
+  const headers = _tldaToken ? { Authorization: `Bearer ${_tldaToken}` } : {};
+  const res = await fleetFetch(`${TLDA_SERVER}/api/fleet/models`, { headers, signal: AbortSignal.timeout(5000) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  _spawnModelCatalog = data;
+  _spawnModelCatalogAt = Date.now();
+  return data;
+}
+
+async function validateSpawnRequest(opts = {}) {
+  const model = opts.model;
+  const kind = opts.kind;
+  if (!model && !kind) return null;
+  const catalog = await getSpawnModelCatalog();
+  const result = validateSpawnModelSelection({ model, kind }, catalog);
+  if (!result.ok) return result.error;
+  return null;
 }
 
 // Append-only message log (backup). Fleet store writes are handled by
@@ -978,7 +1002,7 @@ export function getFleetTools() {
             properties: {
               name: { type: 'string', description: 'Agent name (auto-generated if omitted)' },
               cwd: { type: 'string', description: 'Working directory (inherits from caller if omitted)' },
-              model: { type: 'string', description: 'Model override (omit to use fleet-spawn\'s default)' },
+              model: { type: 'string', description: 'Model alias/id. Call spawn_models() for valid values. Common aliases: opus48/sonnet/haiku for Claude, gpt-5.5 or gpt for Codex, deepseek for Goose deepseek/deepseek-v4-pro.' },
               effort: { type: 'string', description: 'Effort level: low|medium|high|xhigh|max (default: inherit global config)' },
               kind: { type: 'string', description: 'Agent runtime/harness (claude, goose, codex).' },
               capability: { type: 'string', description: 'Requested sandbox capability: read-only, workspace-write-no-net, workspace-write+net, or full-access.' },
@@ -1147,6 +1171,17 @@ export function getFleetTools() {
       },
     },
     {
+      name: 'spawn_models',
+      description: 'List valid fleet spawn model aliases grouped by harness/kind. Use before spawn/delegate when choosing a model; aliases include Claude (opus48, sonnet, haiku), Codex (gpt-5.5, gpt), and Goose/OpenRouter (deepseek -> deepseek/deepseek-v4-pro).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          kind: { type: 'string', description: 'Optional harness filter: claude, codex, or goose.' },
+          verified_only: { type: 'boolean', description: 'Only show verified tool-calling models. Default false.' },
+        },
+      },
+    },
+    {
       name: 'spawn',
       description: 'Spawn or respawn a fleet agent via the server-authorized spawn path. Default: respawn existing agent (resume session). Pass fresh=true to create a new agent. Pass refresh=true to start a fresh session for an existing agent (same fleet ID — rejected for Codex). Supports lineage: set phase to join/create a lineage (auto-created from the agent name on first spawn).',
       inputSchema: {
@@ -1156,7 +1191,7 @@ export function getFleetTools() {
           fresh: { type: 'boolean', description: 'Create a fresh agent instead of respawning.' },
           refresh: { type: 'boolean', description: 'Fresh session for existing agent (same fleet ID, breaks compaction loops).' },
           name: { type: 'string', description: 'Name for the new agent (fresh mode only).' },
-          model: { type: 'string', description: 'Model override. Omit to use fleet-spawn\'s default.' },
+          model: { type: 'string', description: 'Model alias/id. Call spawn_models() for valid values. Common aliases: opus48/sonnet/haiku for Claude, gpt-5.5 or gpt for Codex, deepseek for Goose deepseek/deepseek-v4-pro.' },
           cwd: { type: 'string', description: 'Working directory (fresh mode only).' },
           effort: { type: 'string', description: 'Effort level: low|medium|high|xhigh|max (default: inherit global config).' },
           kind: { type: 'string', description: 'Agent runtime/harness (claude, goose, codex).' },
@@ -1878,6 +1913,8 @@ export async function handleFleetTool(name, args) {
       const agentCwd = spawnOpts.cwd || getAgentCwd();
 
       try {
+        const modelError = await validateSpawnRequest(spawnOpts);
+        if (modelError) return { content: [{ type: 'text', text: modelError }], isError: true };
         await sendWS('spawn', {
           fresh: true,
           name: agentName,
@@ -1889,7 +1926,7 @@ export async function handleFleetTool(name, args) {
         });
       } catch (e) {
         const msg = (e.message || '').trim();
-        return { content: [{ type: 'text', text: `spawn failed: ${msg}` }], isError: true };
+        return { content: [{ type: 'text', text: `spawn failed before delegation: ${msg}` }], isError: true };
       }
 
       let spawned = null;
@@ -3086,6 +3123,21 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
     }
   }
 
+  // ---- spawn_models ----
+  if (name === 'spawn_models') {
+    try {
+      const catalog = await getSpawnModelCatalog({ maxAgeMs: 0 });
+      const text = formatSpawnModelSummary(catalog, {
+        verifiedOnly: !!args.verified_only,
+        kind: args.kind || null,
+      });
+      const defaultModel = catalog?.default ? `\nDefault: ${catalog.default}` : '';
+      return { content: [{ type: 'text', text: `${text}${defaultModel}` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `spawn_models failed: ${e.message}` }], isError: true };
+    }
+  }
+
   // ---- spawn (respawn or fresh) ----
   if (name === 'spawn') {
     const guard = requireManager();
@@ -3115,6 +3167,9 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
     }
 
     try {
+      const modelError = await validateSpawnRequest(args);
+      if (modelError) return { content: [{ type: 'text', text: modelError }], isError: true };
+
       const isRespawn = !isFresh && !isRefresh;
       const result = await sendWS('spawn', {
         fresh: isFresh,

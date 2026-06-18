@@ -285,9 +285,8 @@ function agentCategory(agent: any): 'awake' | 'hibernating' {
   return agent.status === 'awake' ? 'awake' : 'hibernating'
 }
 
-function formatModel(model: string | null | undefined, kind: string | null | undefined): string {
+function formatModel(model: string | null | undefined): string {
   if (!model) return ''
-  if (kind === 'codex' || /^gpt(?:[-_.]|$)/.test(model)) return ''
   const m = model.match(/claude-(\w+)-(\d+)-(\d+)/)
   if (!m) return model.replace('claude-', '')
   return `${m[1]}${m[2]}${m[3]}`
@@ -881,7 +880,7 @@ function AgentRow({
   const labels: string[] = agent.labels || []
   const ago = formatRelativeTime(agent._ts)
   const meta = agent.metadata || {}
-  const modelStr = formatModel(meta.model, meta.kind)
+  const modelStr = formatModel(meta.model)
   const effortStr = formatEffort(meta.effort, meta.kind)
   const taskTitle = [modelStr, taskDesc].filter(Boolean).join(' · ')
 
