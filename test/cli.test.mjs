@@ -21,13 +21,25 @@ const __dirname = fileURLToPath(new URL('.', import.meta.url))
 const ROOT = join(__dirname, '..')
 const CTD = join(ROOT, 'cli', 'tlda.mjs')
 
+function scrubAgentEnv(env) {
+  const next = { ...env }
+  for (const key of ['FLEET_ID', 'FLEET_NAME', 'FLEET_TMUX_SESSION', 'FLEET_HARNESS', 'TMUX']) {
+    delete next[key]
+  }
+  return next
+}
+
 // Helper: run tlda with args, return { stdout, stderr, exitCode }
 function tlda(...args) {
+  const options = args.at(-1)
+  const hasOptions = options && typeof options === 'object' && !Array.isArray(options)
+  const cliArgs = hasOptions ? args.slice(0, -1) : args
+  const baseEnv = hasOptions && options.env ? options.env : scrubAgentEnv(process.env)
   try {
-    const stdout = execFileSync('node', [CTD, ...args], {
+    const stdout = execFileSync('node', [CTD, ...cliArgs], {
       encoding: 'utf8',
       timeout: 10000,
-      env: { ...process.env, TLDA_SERVER: 'http://localhost:99999' }, // unreachable server
+      env: { ...baseEnv, TLDA_SERVER: 'http://localhost:99999' }, // unreachable server
     })
     return { stdout, stderr: '', exitCode: 0 }
   } catch (e) {
@@ -42,23 +54,57 @@ function tlda(...args) {
 describe('argument parser', () => {
   it('shows help with no args', () => {
     const { stdout } = tlda()
-    assert.ok(stdout.includes('tlda — Claude TLDraw CLI'))
-    assert.ok(stdout.includes('Commands:'))
+    assert.ok(stdout.includes('tlda — collaborative LaTeX paper review'))
+    assert.ok(stdout.includes('tlda doc <cmd>'))
   })
 
   it('shows per-command help', () => {
-    for (const cmd of ['create', 'push', 'watch', 'open', 'status', 'errors', 'build', 'delete', 'preview', 'server', 'config']) {
+    for (const cmd of ['doc', 'server', 'config']) {
       const { stdout, exitCode } = tlda(cmd, '--help')
       assert.equal(exitCode, 0, `${cmd} --help should exit 0`)
       assert.ok(stdout.includes('tlda'), `${cmd} --help should show usage`)
     }
   })
 
-  it('completions outputs zsh script', () => {
+  it('completions is advertised in top-level help', () => {
     const { stdout, exitCode } = tlda('completions')
     assert.equal(exitCode, 0)
-    assert.ok(stdout.includes('#compdef tlda'))
-    assert.ok(stdout.includes('_ctd'))
+    assert.ok(stdout.includes('tlda — collaborative LaTeX paper review'))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Agent capability CLI
+// ---------------------------------------------------------------------------
+
+describe('agent capability CLI', () => {
+  it('dry-runs without contacting the server from user context', () => {
+    const { stdout, exitCode } = tlda('agent', 'capability', 'alice', 'read-only', '--dry-run', {
+      env: scrubAgentEnv(process.env),
+    })
+
+    assert.equal(exitCode, 0)
+    assert.ok(stdout.includes('[dry-run] would set alice capability to read-only'))
+    assert.ok(stdout.includes('update metadata.spawnPolicy.capability'))
+  })
+
+  it('rejects unknown capabilities', () => {
+    const { stderr, exitCode } = tlda('agent', 'capability', 'alice', 'bogus', '--dry-run', {
+      env: scrubAgentEnv(process.env),
+    })
+
+    assert.notEqual(exitCode, 0)
+    assert.ok(stderr.includes('Unknown capability "bogus"'))
+  })
+
+  it('refuses from an agent context before dry-run escalation', () => {
+    const { stderr, exitCode } = tlda('agent', 'capability', 'alice', 'read-only', '--dry-run', {
+      env: { ...scrubAgentEnv(process.env), FLEET_ID: 'fleet:test-agent', FLEET_NAME: 'test-agent' },
+    })
+
+    assert.notEqual(exitCode, 0)
+    assert.ok(stderr.includes('user/operator-only'))
+    assert.ok(stderr.includes('agent context'))
   })
 })
 

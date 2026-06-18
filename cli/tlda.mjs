@@ -32,6 +32,7 @@ import { DEV_COMMANDS } from './lib/dev-commands.mjs'
 import { resolveRepoRoot, ensureWorktree, startWorktreeVite, findFreePort } from './lib/dev-vite.mjs'
 import { scanMarkdownDeps } from '../shared/markdown-deps.mjs'
 import { cmdLogs } from './lib/unified-logs.mjs'
+import { SPAWN_CAPABILITIES } from '../server/lib/spawn-policy.mjs'
 
 // --- Argument parsing ---
 
@@ -1396,6 +1397,22 @@ function tmuxBase() {
   return sock ? ['-L', sock] : []
 }
 
+async function assertNotAgentContext() {
+  const agentEnv = ['FLEET_ID', 'FLEET_HARNESS', 'FLEET_TMUX_SESSION', 'FLEET_NAME'].filter(k => process.env[k])
+  if (agentEnv.length) {
+    throw new Error(`Refusing: tlda agent capability is user/operator-only and cannot run from an agent context (${agentEnv.join(', ')} set).`)
+  }
+
+  if (process.env.TMUX) {
+    const { spawnSync } = await import('child_process')
+    const res = spawnSync('tmux', [...tmuxBase(), 'display-message', '-p', '#S'], { encoding: 'utf8' })
+    const session = res.status === 0 ? res.stdout.trim() : ''
+    if (session.startsWith('fleet-')) {
+      throw new Error(`Refusing: tlda agent capability is user/operator-only and cannot run from fleet tmux session "${session}".`)
+    }
+  }
+}
+
 async function attachToAgent(name) {
   if (!name) {
     console.error('Usage: tlda agent attach <name>')
@@ -1442,19 +1459,123 @@ async function hibernateAgent(name) {
     console.error('Usage: tlda agent hibernate <name>')
     process.exit(1)
   }
+  const res = await hibernateLocalAgent(name)
+  process.exit(res.status)
+}
+
+async function hibernateLocalAgent(name, { allowMissing = false } = {}) {
   const { spawnSync } = await import('child_process')
   const sess = agentSessionName(name)
   const has = spawnSync('tmux', [...tmuxBase(), 'has-session', '-t', sess], { stdio: 'ignore' })
   if (has.status !== 0) {
-    console.error(`No live session "${sess}" on this machine — already hibernating, or it lives on another box.`)
-    process.exit(1)
+    const message = `No live session "${sess}" on this machine — already hibernating, or it lives on another box.`
+    if (!allowMissing) {
+      console.error(message)
+      return { status: 1, hibernated: false, session: sess }
+    }
+    console.log(`${message} Continuing with metadata update and respawn.`)
+    return { status: 0, hibernated: false, session: sess }
   }
   const res = spawnSync('tmux', [...tmuxBase(), 'kill-session', '-t', sess], { stdio: 'inherit' })
   const short = name.replace(/^fleet-/, '')
   if (res.status === 0) {
     console.log(`Hibernated ${short} — its thread is intact; \`tlda agent spawn ${short}\` brings it back.`)
   }
-  process.exit(res.status ?? 0)
+  return { status: res.status ?? 0, hibernated: res.status === 0, session: sess }
+}
+
+function usageAgentCapability() {
+  console.error(`Usage: tlda agent capability <agent> <capability> [--dry-run]
+
+Capabilities: ${SPAWN_CAPABILITIES.join(', ')}`)
+}
+
+function normalizeAgentMetadata(meta) {
+  return meta && typeof meta === 'object' && !Array.isArray(meta) ? meta : {}
+}
+
+async function findAgentForCapability(agentQuery) {
+  const state = await api('GET', '/api/state')
+  const agents = Array.isArray(state?.agents) ? state.agents : []
+  const matches = agents.filter(a => (
+    a?.id === agentQuery ||
+    a?.friendly_name === agentQuery ||
+    a?.tmux_session === agentSessionName(agentQuery)
+  ))
+  if (matches.length === 0) {
+    throw new Error(`No existing agent found for "${agentQuery}". Use an existing fleet id, friendly name, or tmux session name.`)
+  }
+  if (matches.length > 1) {
+    throw new Error(`Multiple agents matched "${agentQuery}". Use the fleet id instead.`)
+  }
+  const agent = matches[0]
+  if (agent.status === 'dead') {
+    throw new Error(`Agent ${agent.id} is marked dead; refusing to create an impostor identity.`)
+  }
+  const localMachine = loadConfig().machineId
+  if (agent.machine_id && localMachine && agent.machine_id !== localMachine) {
+    throw new Error(`Agent ${agent.id} belongs to machine ${agent.machine_id}; run this command on that machine.`)
+  }
+  return agent
+}
+
+function spawnNameForAgent(agent, fallback) {
+  return agent.friendly_name || agent.id || fallback
+}
+
+function hibernateNameForAgent(agent, fallback) {
+  return agent.tmux_session ? agent.tmux_session.replace(/^fleet-/, '') : spawnNameForAgent(agent, fallback)
+}
+
+async function cmdAgentCapability() {
+  const agentQuery = getPositional(1)
+  const capability = getPositional(2)
+  if (!agentQuery || !capability) {
+    usageAgentCapability()
+    process.exit(1)
+  }
+  if (!SPAWN_CAPABILITIES.includes(capability)) {
+    console.error(`Unknown capability "${capability}". Supported capabilities: ${SPAWN_CAPABILITIES.join(', ')}`)
+    process.exit(1)
+  }
+
+  try {
+    await assertNotAgentContext()
+  } catch (e) {
+    console.error(e.message)
+    process.exit(1)
+  }
+
+  if (hasFlag('dry-run')) {
+    console.log(`[dry-run] would set ${agentQuery} capability to ${capability}`)
+    console.log('  1. look up existing agent identity')
+    console.log('  2. hibernate local tmux session if live')
+    console.log('  3. update metadata.spawnPolicy.capability')
+    console.log(`  4. run: tlda agent spawn ${agentQuery}`)
+    return
+  }
+
+  await ensureServer()
+  const agent = await findAgentForCapability(agentQuery)
+  const spawnName = spawnNameForAgent(agent, agentQuery)
+  const hibernateName = hibernateNameForAgent(agent, agentQuery)
+  const hibernate = await hibernateLocalAgent(hibernateName, { allowMissing: true })
+  if (hibernate.status !== 0) {
+    console.error(`Failed to hibernate ${spawnName}; metadata was not changed.`)
+    process.exit(hibernate.status)
+  }
+
+  const meta = normalizeAgentMetadata(agent.metadata)
+  const currentSpawnPolicy = normalizeAgentMetadata(meta.spawnPolicy)
+  const nextSpawnPolicy = { ...currentSpawnPolicy, capability }
+  await api('POST', '/api/set-metadata', {
+    agent: agent.id,
+    spawnPolicy: nextSpawnPolicy,
+    spawnPolicyChangedBy: 'tlda-agent-capability-cli',
+    spawnPolicyChangedAt: new Date().toISOString(),
+  })
+  console.log(`Updated ${agent.id} spawnPolicy.capability to ${capability}. Resuming ${spawnName}...`)
+  await runFleetSpawn([spawnName])
 }
 
 async function cmdAgent() {
@@ -1465,8 +1586,10 @@ async function cmdAgent() {
     case 'spawn':     await ensureServer(); await runFleetSpawn(process.argv.slice(4)); break // after "tlda agent spawn"
     case 'attach':    await attachToAgent(getPositional(1)); break
     case 'hibernate': await hibernateAgent(getPositional(1)); break
+    case 'capability':
+    case 'escalate':  await cmdAgentCapability(); break
     default:
-      console.error('Usage: tlda agent <list|spawn|attach|hibernate> [name]')
+      console.error('Usage: tlda agent <list|spawn|attach|hibernate|capability|escalate> [name]')
       process.exit(1)
   }
 }
@@ -2457,7 +2580,7 @@ async function main() {
 
   tlda doc <cmd>       work on a document project   (\`tlda doc\` for the list)
   tlda server <cmd>    run/manage the tlda server   (start/stop/status/log)
-  tlda agent <cmd>     fleet agents on this machine (list/spawn/attach/hibernate)
+  tlda agent <cmd>     fleet agents on this machine (list/spawn/attach/hibernate/capability)
   tlda config <cmd>    configure tlda               (set/get/setup/mcp-setup/auth)
   tlda daemon [start|stop]  fleet daemon (source watch + activity)
   tlda doctor          health check (--fix to repair)
