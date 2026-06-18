@@ -94,12 +94,19 @@ def _ws_api():
     return API.replace("https://", "wss://", 1).replace("http://", "ws://", 1)
 DEFAULT_MODEL = "claude-opus-4-8[1m]"
 REGISTER_PROMPT = "Call register() with the fleet MCP server. Then call my_task() to check for a pending task."
+NON_CLAUDE_GUIDANCE_CONTRACT = (
+    "Non-Claude guidance contract: respond in the visible channel before acting when the user is waiting; "
+    "browser-visible or user-visible reports are ground truth; do not claim fixed or done without checking "
+    "the right surface; do not ask the user to verify routine fixes you can verify; if corrected, stop and "
+    "change course before continuing; proof obligations are requirements, not optional suggestions."
+)
 CODEX_GUIDANCE_PROMPT = (
     "Then, before task work, read the same project guidance Claude agents receive here: "
     "read CLAUDE.md in the workspace if it exists, and read AGENTS.md if it exists. "
     "Follow the guidance you find. If a tlda MCP tool blocks on required skill(s), "
     "read each named skill with skill(\"<name>\") or dismiss it with a specific reason, "
-    "then retry the blocked tool."
+    "then retry the blocked tool. "
+    + NON_CLAUDE_GUIDANCE_CONTRACT
 )
 
 

@@ -23,6 +23,7 @@ import { scanMarkdownDeps } from '../shared/markdown-deps.mjs';
 import { extractMarkdownSection } from '../shared/markdown-section.mjs';
 import { baseName, nameForPhase, phaseFromName } from '../shared/lineage-name.mjs';
 import { formatSpawnModelSummary, validateSpawnModelSelection } from '../shared/spawn-model-validation.mjs';
+import { applyNonClaudeRolePack, inferHarnessKind } from '../shared/task-role-routing.mjs';
 import { parseFilter, evalExpr } from '../shared/fleet-labels.mjs';
 import { baseMacros } from '../shared/katex-base-macros.mjs';
 import { normalizeRefNumber as _normalizeRefNumber, refTypeForName as _refTypeForName, buildTheoremRefRegex as _buildTheoremRefRegex } from '../shared/doc-refs.mjs';
@@ -1970,6 +1971,25 @@ export async function handleFleetTool(name, args) {
     ],
   };
 
+  async function harnessKindForDelegateTarget(agent, spawnOpts) {
+    const fromSpawn = inferHarnessKind(spawnOpts || {});
+    if (fromSpawn) return fromSpawn;
+    if (!agent) return null;
+    try {
+      const agents = await sendWS('store-agents');
+      const target = Array.isArray(agents)
+        ? agents.find(a => a.id === agent || a.friendly_name === agent)
+        : null;
+      return inferHarnessKind({
+        kind: target?.metadata?.kind,
+        model: target?.metadata?.model || target?.model,
+      });
+    } catch (e) {
+      process.stderr.write(`[fleet] could not resolve delegate target harness: ${e.message}\n`);
+      return null;
+    }
+  }
+
   // ==== Task Management ====
 
   // ---- delegate ----
@@ -2046,9 +2066,16 @@ export async function handleFleetTool(name, args) {
     const criteria = [...templateCriteria, ...(args.success_criteria || [])];
     const afterRaw = args.after;
     const blockedBy = afterRaw ? (Array.isArray(afterRaw) ? afterRaw : [afterRaw]) : [];
+    const harnessKind = await harnessKindForDelegateTarget(agent, args.spawn);
+    const routedMessage = applyNonClaudeRolePack(message, {
+      template: args.template,
+      description,
+      successCriteria: criteria,
+      harnessKind,
+    });
 
     try {
-      const delegateBody = { from: AGENT_ID, agent, description, message, success_criteria: criteria.length ? criteria : undefined, blocked_by: blockedBy.length ? blockedBy : undefined, requires_approval: args.requires_approval || undefined };
+      const delegateBody = { from: AGENT_ID, agent, description, message: routedMessage, success_criteria: criteria.length ? criteria : undefined, blocked_by: blockedBy.length ? blockedBy : undefined, requires_approval: args.requires_approval || undefined };
       const data = await sendWS('delegate', delegateBody);
       if (data.event_id) {
         _originatedEventIds.add(data.event_id);

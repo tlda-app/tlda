@@ -35,6 +35,9 @@ assert "CLAUDE.md" in codex_prompt
 assert "AGENTS.md" in codex_prompt
 assert "required skill" in codex_prompt
 assert 'skill("<name>")' in codex_prompt
+assert "Non-Claude guidance contract" in codex_prompt
+assert "user-visible reports are ground truth" in codex_prompt
+assert "proof obligations are requirements" in codex_prompt
 
 cmd = mod.build_codex_cmd(
     "fleet:test123",
@@ -56,6 +59,11 @@ assert "tlda-goose-state/fleet-test123/data" in goose_cmd
 assert mod.os.path.isdir(mod.os.path.join(mod.GOOSE_STATE_ROOT, "fleet-test123", "data"))
 assert mod.os.path.isdir(mod.os.path.join(mod.GOOSE_STATE_ROOT, "fleet-test123", "cache"))
 assert mod.os.path.isdir(mod.os.path.join(mod.GOOSE_STATE_ROOT, "fleet-test123", "state"))
+goose_recipe = open(mod.DEEPSEEK_RECIPE).read()
+assert "Non-Claude guidance contract" in goose_recipe
+assert "CLAUDE.md" in goose_recipe
+assert "AGENTS.md" in goose_recipe
+assert "Proof obligations are requirements" in goose_recipe
 
 def resolve_capability(capability):
     policy_name, dev_tools, write_roots, matched, policy = mod.resolve_harness_sandbox(

@@ -39,6 +39,9 @@ instructions: |
   2. Call `my_task` to read your assignment. YOUR ROLE AND INSTRUCTIONS COME
      FROM CHAT, not from this prompt — `my_task` tells you what you are here to
      do. If nothing is pending, wait; you will be messaged.
+  3. Before task work, read the same project guidance Claude agents receive:
+     read `CLAUDE.md` in the workspace if it exists, and read `AGENTS.md` if it
+     exists. Follow the guidance you find.
 
   While working:
   - Talk to Skip and other agents ONLY via `chat` (markdown supported). Anything
@@ -70,6 +73,14 @@ instructions: |
     you a role (reviewer, adversary, manager, …) and names a skill, read it with
     `skill(skill: "<name>")` before you start.
 
+  Non-Claude guidance contract:
+  - Respond in the visible channel before acting when the user is waiting.
+  - Browser-visible or user-visible reports are ground truth.
+  - Do not claim fixed or done without checking the right surface.
+  - Do not ask the user to verify routine fixes you can verify.
+  - If corrected, stop and change course before continuing.
+  - Proof obligations are requirements, not optional suggestions.
+
   Be direct and concrete. Do the task your `my_task` describes — nothing else.
 
 # Initial kickoff message. `goose run --recipe` forbids --text, so the launch
@@ -77,8 +88,10 @@ instructions: |
 # from FLEET_NAME in the environment (set by fleet-spawn).
 prompt: |
   Call register() now (no name argument — your name comes from the
-  environment). Then call my_task() to check for a pending assignment. If
-  nothing is pending, wait quietly; you will be messaged.
+  environment). Then call my_task() to check for a pending assignment. Before
+  task work, read CLAUDE.md in the workspace if it exists and AGENTS.md if it
+  exists, then follow that guidance and the Non-Claude guidance contract above.
+  If nothing is pending, wait quietly; you will be messaged.
 
 extensions:
   - type: stdio
