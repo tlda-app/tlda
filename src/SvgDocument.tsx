@@ -1422,6 +1422,12 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
               } else if (session?.camera) {
                 editor.setCamera(session.camera)
               }
+              const readinessWindow = window as Window & {
+                __tldaCameraRestoredAt?: number
+                __tldaPhoneCameraSettlingUntil?: number
+                __tldaPhoneCameraReadyAt?: number
+              }
+              readinessWindow.__tldaCameraRestoredAt = Date.now()
               window.dispatchEvent(new Event('camera-restored'))
               // Recompute HUD panOffset ONLY if no saved position exists.
               // With a saved panOffset (anchor shape from a previous session),
@@ -1477,9 +1483,18 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
                     const z = vp.width / b.width
                     editor.setCamera({ x: -b.minX, y: -b.minY, z })
                   }
+                  readinessWindow.__tldaPhoneCameraSettlingUntil = Date.now() + 700
+                  const markPhoneCameraReady = () => {
+                    readinessWindow.__tldaPhoneCameraSettlingUntil = 0
+                    readinessWindow.__tldaPhoneCameraReadyAt = Date.now()
+                    window.dispatchEvent(new Event('phone-camera-ready'))
+                  }
                   // Try immediately, retry after SVG injection
                   fitToContent()
-                  setTimeout(fitToContent, 500)
+                  setTimeout(() => {
+                    fitToContent()
+                    markPhoneCameraReady()
+                  }, 500)
                 }
                 // Phone: always start in phone-hand tool for axis-locked scroll
                 editor.setCurrentTool('phone-hand')

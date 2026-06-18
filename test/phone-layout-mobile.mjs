@@ -54,7 +54,12 @@ async function main() {
     const ed = window.__tldraw_editor__
     return ed?.getCurrentPageShapes().some(s => s.type === 'svg-page' || s.type === 'html-page')
   }, null, { timeout: 45000 })
-  await page.waitForTimeout(1000)
+  await page.waitForFunction(() => !!window.__tldaCameraRestoredAt, null, { timeout: 15000 })
+  await page.waitForFunction(() => {
+    const until = Number(window.__tldaPhoneCameraSettlingUntil || 0)
+    return !until || Date.now() >= until
+  }, null, { timeout: 15000 })
+  await page.waitForTimeout(100)
 
   await page.evaluate(async ({ width, height, clip }) => {
     const ed = window.__tldraw_editor__
@@ -93,7 +98,6 @@ async function main() {
       h: Math.max(0, Math.min(docScreen.y + docScreen.h, height) - Math.max(docScreen.y, 0)),
     }
 
-    localStorage.setItem('fleet-hud-expanded', '1')
     const fleetData = await import('/src/fleet/fleet-data.mjs')
     const startedConnection = Date.now()
     while (!fleetData.isConnected?.() && Date.now() - startedConnection < 8000) {
@@ -171,7 +175,9 @@ async function main() {
   }, { x: presetBox.x + presetBox.width / 2, y: presetBox.y + presetBox.height / 2 })
   if (!hit.hit) throw new Error(`phone preset is visually present but not touch-hit-testable: ${JSON.stringify(hit)}`)
   await phonePreset.tap()
-  await page.waitForTimeout(1000)
+  await page.waitForFunction(() => !!window.__tldraw_hud_editor__, null, { timeout: 10000 })
+  await page.waitForFunction(() => !!document.querySelector('.fleet-hud-wrap .fleet-chat-shape .fleet-chat-input-area textarea'), null, { timeout: 10000 })
+  await page.waitForTimeout(500)
 
   const report = await page.evaluate(async () => {
     const ed = window.__tldraw_editor__
@@ -206,10 +212,10 @@ async function main() {
     const expectedW = Math.round(expectedRect.w)
     const expectedH = Math.round(expectedRect.h)
     if (Math.abs(chat.props.w - expectedW) > 1) {
-      throw new Error(`chat width ${chat.props.w} != expected page/clipped width ${expectedW}`)
+      throw new Error(`chat width ${chat.props.w} != expected page width ${expectedW}`)
     }
     if (Math.abs(chat.props.h - expectedH) > 1) {
-      throw new Error(`chat height ${chat.props.h} != expected page/clipped height ${expectedH}`)
+      throw new Error(`chat height ${chat.props.h} != expected page height ${expectedH}`)
     }
     if (agents.props.h >= chat.props.h * 0.5) {
       throw new Error(`agents panel is too tall for phone layout: agents=${agents.props.h}, chat=${chat.props.h}`)
@@ -255,6 +261,20 @@ async function main() {
     }
     if (!clip && (screenChat.y < 70 || screenChat.y + screenChat.h > height - 16)) {
       throw new Error(`panned phone chat does not fit vertically: ${JSON.stringify(screenChat)}`)
+    }
+    const chatEl = document.querySelector(`.fleet-hud-wrap [data-shape-id="${chat.id}"] .fleet-chat-shape`)
+      || document.querySelector(`.fleet-hud-wrap [data-shape-id="${chat.id}"]`)
+    if (!(chatEl instanceof HTMLElement)) throw new Error(`HUD did not render phone chat shape ${chat.id}`)
+    const chatBox = chatEl.getBoundingClientRect()
+    if (Math.abs(chatBox.width - chat.props.w) > 2 || Math.abs(chatBox.height - chat.props.h) > 2) {
+      throw new Error(`HUD chat DOM size does not match shape props: dom=${JSON.stringify({ w: chatBox.width, h: chatBox.height })} props=${JSON.stringify({ w: chat.props.w, h: chat.props.h })}`)
+    }
+    const textarea = chatEl.querySelector('.fleet-chat-input-area textarea')
+    if (!(textarea instanceof HTMLTextAreaElement)) throw new Error('HUD phone chat textarea did not render')
+    const taBox = textarea.getBoundingClientRect()
+    const hitEl = document.elementFromPoint(taBox.left + taBox.width / 2, taBox.top + taBox.height / 2)
+    if (!hitEl || !hitEl.closest('.fleet-chat-input-area textarea')) {
+      throw new Error(`HUD phone chat textarea is not hit-testable: hit=${hitEl instanceof HTMLElement ? hitEl.className : String(hitEl)} chatBox=${JSON.stringify({ x: chatBox.x, y: chatBox.y, w: chatBox.width, h: chatBox.height })} textarea=${JSON.stringify({ x: taBox.x, y: taBox.y, w: taBox.width, h: taBox.height })}`)
     }
 
     const touchProbe = document.createElement('div')
@@ -311,6 +331,18 @@ async function main() {
         y: Math.round(screenChat.y),
         w: Math.round(screenChat.w),
         h: Math.round(screenChat.h),
+      },
+      hudChatBox: {
+        x: Math.round(chatBox.x),
+        y: Math.round(chatBox.y),
+        w: Math.round(chatBox.width),
+        h: Math.round(chatBox.height),
+      },
+      textarea: {
+        x: Math.round(taBox.x),
+        y: Math.round(taBox.y),
+        w: Math.round(taBox.width),
+        h: Math.round(taBox.height),
       },
       extraPanels: fleet.filter(s => s.type !== 'fleet-agents' && s.type !== 'fleet-inbox' && s.type !== 'fleet-chat').map(s => s.type),
       touchStyles,

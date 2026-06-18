@@ -169,6 +169,25 @@ function getFleetBounds(editor: Editor): ClipBounds | null {
   }
 }
 
+function isPhoneFleetLayout(editor: Editor): boolean {
+  type FleetLayoutShape = {
+    type: string
+    x: number
+    props?: { w?: number; h?: number }
+  }
+  const shapes = editor.getCurrentPageShapes().filter(isMyFleetShape) as unknown as FleetLayoutShape[]
+  const agents = shapes.find(s => s.type === 'fleet-agents')
+  const inbox = shapes.find(s => s.type === 'fleet-inbox')
+  const chat = shapes.find(s => s.type === 'fleet-chat')
+  if (!agents || !inbox || !chat) return false
+  if (shapes.some(s => s.type === 'fleet-search' || s.type === 'fleet-docview' || s.type === 'fleet-touch-inbox')) return false
+  const gap = 10
+  const stackedHeight = (agents.props?.h || 0) + gap + (inbox.props?.h || 0)
+  const chatH = chat.props?.h || 0
+  const chatX = (agents.x || 0) + (agents.props?.w || 0) + gap
+  return Math.abs(stackedHeight - chatH) <= 2 && Math.abs((chat.x || 0) - chatX) <= 2
+}
+
 function getFleetHudDiagnostic(editor: Editor) {
   const humanId = getHumanId()
   const deviceId = getDeviceId()
@@ -396,7 +415,7 @@ export function FleetHUD({
     panOffsetRef.current = docLeftScreen - minPageX - off.dx
     const projectedLeft = bounds.x + panOffsetRef.current
     const projectedRight = projectedLeft + bounds.w
-    if (projectedRight < window.innerWidth * 0.25 || projectedLeft > window.innerWidth * 0.75) {
+    if (!isPhoneFleetLayout(mainEditor) && (projectedRight < window.innerWidth * 0.25 || projectedLeft > window.innerWidth * 0.75)) {
       panOffsetRef.current = LEFT_PAD - bounds.x
     }
     cameraYRef.current = TOP_PAD - bounds.y
@@ -594,16 +613,21 @@ export function FleetHUD({
     let rafId: number
     let lastCamX = mainEditor.getCamera().x
     let lastCamZ = mainEditor.getCamera().z
-    let cameraRestored = false
-    const mountTime = Date.now()
+    const readinessWindow = window as Window & {
+      __tldaCameraRestoredAt?: number
+      __tldaPhoneCameraSettlingUntil?: number
+    }
+    let cameraRestored = !!readinessWindow.__tldaCameraRestoredAt
     const onCameraRestored = () => { cameraRestored = true }
     window.addEventListener('camera-restored', onCameraRestored)
     const fallbackTimer = setTimeout(() => { cameraRestored = true }, 5000)
     const poll = () => {
       const cam = mainEditor.getCamera()
       if (cam.x !== lastCamX || cam.z !== lastCamZ) {
-        if (!cameraRestored || Date.now() - mountTime < 2000) {
-          // Wait for both camera restore AND 2s minimum settling
+        const phoneSettlingUntil = Number(readinessWindow.__tldaPhoneCameraSettlingUntil || 0)
+        if (!cameraRestored || (phoneSettlingUntil && Date.now() < phoneSettlingUntil)) {
+          // Wait for camera restore / phone startup fit, then treat later
+          // same-zoom camera changes as deliberate pan.
         } else if (cam.z === lastCamZ && panOffsetRef.current !== null) {
           panOffsetRef.current += (cam.x - lastCamX) * cam.z
           userPannedRef.current = true
@@ -995,7 +1019,7 @@ export function FleetHUD({
         panOffsetRef.current = docLeftScreen - minPageX - off.dx
         const nextProjectedLeft = activeFleetBounds.x + panOffsetRef.current
         const nextProjectedRight = nextProjectedLeft + activeFleetBounds.w
-        if (nextProjectedRight < window.innerWidth * 0.25 || nextProjectedLeft > window.innerWidth * 0.75) {
+        if (!isPhoneFleetLayout(mainEditor) && (nextProjectedRight < window.innerWidth * 0.25 || nextProjectedLeft > window.innerWidth * 0.75)) {
           panOffsetRef.current = LEFT_PAD - activeFleetBounds.x
         }
         cameraYRef.current = TOP_PAD - activeFleetBounds.y

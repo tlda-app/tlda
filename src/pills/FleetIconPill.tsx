@@ -152,6 +152,14 @@ function stopControlEvent(e: React.SyntheticEvent | Event) {
   stopEventPropagation(e)
 }
 
+function getPhoneCameraSettlingDelay() {
+  if (typeof window === 'undefined') return 0
+  const readinessWindow = window as Window & { __tldaPhoneCameraSettlingUntil?: number }
+  const until = Number(readinessWindow.__tldaPhoneCameraSettlingUntil || 0)
+  if (!Number.isFinite(until)) return 0
+  return Math.max(0, until - Date.now())
+}
+
 // ── FleetIconPill ────────────────────────────────────────────────────────────
 
 interface FleetIconPillProps { mainEditor: Editor }
@@ -178,15 +186,29 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
     const preset = LAYOUT_PRESETS[idx]
     const deadline = Date.now() + 5000
     let rafId: number | null = null
+    let timeoutId: ReturnType<typeof setTimeout> | null = null
     let unsub: (() => void) | null = null
     let completed = false
     const cleanup = () => {
       if (rafId !== null) cancelAnimationFrame(rafId)
       rafId = null
+      if (timeoutId !== null) clearTimeout(timeoutId)
+      timeoutId = null
       unsub?.()
       unsub = null
     }
     const applyWhenReady = () => {
+      if (preset.id === 'phone') {
+        const delay = getPhoneCameraSettlingDelay()
+        if (delay > 0) {
+          if (timeoutId !== null) return
+          timeoutId = setTimeout(() => {
+            timeoutId = null
+            applyWhenReady()
+          }, Math.min(delay + 50, 1000))
+          return
+        }
+      }
       const created = createFleetLayout(mainEditor, agentsRef.current, preset.id)
       if (created) {
         completed = true
