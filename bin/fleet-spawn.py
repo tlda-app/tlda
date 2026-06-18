@@ -1822,9 +1822,9 @@ def harness_for_spawn(kind, model):
     return HARNESS_ADAPTERS["claude"]
 
 
-def harness_for_agent(agent):
+def harness_for_agent(agent, model=None):
     meta = agent_meta(agent)
-    kind = meta.get("kind")
+    kind = infer_harness_kind(meta.get("kind"), model or meta.get("model"))
     if not kind:
         name = agent.get("friendly_name") or agent.get("id") or "<unknown>"
         raise ValueError(f"Agent {name} has no metadata.kind; run the harness-kind backfill before respawn/refresh")
@@ -2217,7 +2217,7 @@ def respawn(name, model, cwd, effort, mode, session_override=None,
     spawn_policy = meta.get("spawnPolicy") if isinstance(meta, dict) else None
     spawn_capability = spawn_policy.get("capability") if isinstance(spawn_policy, dict) else None
     spawn_policy_name = spawn_policy.get("policy") if isinstance(spawn_policy, dict) else None
-    adapter = harness_for_agent(agent)
+    adapter = harness_for_agent(agent, raw_model)
     model = adapter.resolve_model(raw_model)
     effective_policy = sandbox_policy or spawn_policy_name or sandbox_policy_for_spawn_capability(spawn_capability)
     policy_name, dev_tools, _write_roots, _matched_root, policy = resolve_harness_sandbox(
@@ -2302,7 +2302,7 @@ def refresh(name, model, cwd, effort, mode, spawn_capability=None,
     meta = agent_meta(agent)
     cwd = cwd or agent.get("cwd") or os.getcwd()
     raw_model = model or meta.get("model")
-    adapter = harness_for_agent(agent)
+    adapter = harness_for_agent(agent, raw_model)
     model = adapter.resolve_model(raw_model)
     effective_policy = sandbox_policy or sandbox_policy_for_spawn_capability(spawn_capability)
     policy_name, dev_tools, _write_roots, _matched_root, policy = resolve_harness_sandbox(

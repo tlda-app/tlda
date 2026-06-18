@@ -23,6 +23,8 @@ assert mod.infer_harness_kind("goose", "gpt-5.5") == "goose"
 assert mod.harness_for_spawn("claude", "gpt-5.5").kind == "codex"
 assert mod.harness_for_spawn("claude", "gpt").kind == "codex"
 assert mod.harness_for_spawn("claude", "gpt").resolve_model("gpt") == "gpt-5.5"
+assert mod.harness_for_agent({"id": "fleet:stale", "metadata": {"kind": "claude", "model": "gpt-5.5"}}).kind == "codex"
+assert mod.harness_for_agent({"id": "fleet:stale", "metadata": {"kind": "claude"}}, "gpt-5.5").kind == "codex"
 assert any(m["alias"] == "gpt" and m["id"] == "gpt-5.5" and m["kind"] == "codex"
            for m in mod.HARNESS_ADAPTERS["codex"].list_models())
 assert "CLAUDE.md" not in mod.register_prompt("canary")
