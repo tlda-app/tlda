@@ -468,6 +468,8 @@ function extractActivityEvents(events) {
 // ---------- daemon state ----------
 
 let _rws = null  // ResilientWS instance, created at startup
+let _serverReady = false
+let _lastLivenessDisconnectWarnAt = 0
 let agents = []                   // current agent list (from welcome / updates)
 let projects = []                 // current project list
 const pathWatchers = new Map()    // jsonlPath -> { watcher, primaryAgentId, sessionId, harnessKind }
@@ -2367,6 +2369,19 @@ function _paneSubtreeHasAgent(panePid, childrenByPpid, agentProcPids) {
 
 async function checkAgentLiveness() {
   if (!agents.length) return
+  if (!_serverReady || !_rws?.connected) {
+    // A server/Fly redeploy can drop the daemon websocket while local tmux
+    // sessions are still fine. During that window liveness is unknown, not
+    // hibernating; do not let disconnect time consume the grace period.
+    _missingSessionSince.clear()
+    _missingRuntimeSince.clear()
+    const now = Date.now()
+    if (now - _lastLivenessDisconnectWarnAt > 30_000) {
+      log.warn('skipping agent liveness check while daemon websocket is not ready')
+      _lastLivenessDisconnectWarnAt = now
+    }
+    return
+  }
   const now = Date.now()
   const aliveAgentIds = []
   let sessions
@@ -3215,13 +3230,19 @@ function connect() {
       })
     },
     onMessage: handleServerMessage,
-    onClose: teardownWatchers,
+    onClose: () => {
+      _serverReady = false
+      _missingSessionSince.clear()
+      _missingRuntimeSince.clear()
+      teardownWatchers()
+    },
   })
   _rws.connect()
 }
 
 function handleServerMessage(msg) {
   if (msg.type === 'daemon-welcome') {
+    _serverReady = true
     agents = msg.agents || []
     projects = msg.projects || []
     log.info(`welcome: ${agents.length} agents, ${projects.length} projects`)
