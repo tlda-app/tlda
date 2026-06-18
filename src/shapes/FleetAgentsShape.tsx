@@ -88,7 +88,6 @@ const EFFORT_SHORTHANDS: Record<string, string> = {
   'max': 'max',
 }
 const DEFAULT_MODEL = 'opus48'
-const DEFAULT_EFFORT = 'medium'
 
 // Empty-state model picks (shown before you type a model segment): the curated,
 // diverse set we actively test — a few headline Claude families + the goose
@@ -138,7 +137,7 @@ function completeSegment(typed: string, candidates: string[]): string {
 function getGhostCompletion(input: string, projects: string[], catName: string, defaultDoc: string, models: string[]): string {
   // Empty-state default is the doc the user is currently viewing, not the
   // alphabetically-first project — so an empty field implies "spawn here".
-  const defaults = [defaultDoc || projects[0] || 'doc', catName, DEFAULT_MODEL, DEFAULT_EFFORT]
+  const defaults = [defaultDoc || projects[0] || 'doc', catName, DEFAULT_MODEL]
   if (!input) return defaults.join(':')
 
   const parts = input.split(':')
@@ -172,7 +171,7 @@ function getGhostCompletion(input: string, projects: string[], catName: string, 
 // (effort) segment has no trailing colon. Returns '' when there's nothing to add
 // (already past the last segment).
 function getStagedTabCompletion(input: string, projects: string[], catName: string, defaultDoc: string, models: string[]): string {
-  const defaults = [defaultDoc || projects[0] || 'doc', catName, DEFAULT_MODEL, DEFAULT_EFFORT]
+  const defaults = [defaultDoc || projects[0] || 'doc', catName, DEFAULT_MODEL]
   const parts = input.split(':')
   const pos = parts.length // 1-based: 1=project, 2=name, 3=model, 4=effort
   if (pos > defaults.length) return ''
@@ -292,8 +291,8 @@ function formatModel(model: string | null | undefined): string {
   return `${m[1]}${m[2]}${m[3]}`
 }
 
-function formatEffort(effort: string | null | undefined): string {
-  if (!effort) return ''
+function formatEffort(effort: string | null | undefined, kind: string | null | undefined): string {
+  if (!effort || kind !== 'claude') return ''
   return `${effort} effort`
 }
 
@@ -569,7 +568,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
       return
     }
     const { doc, name, model, effort } = parseSpawnInput(spawnDoc)
-    spawnAgent(model || DEFAULT_MODEL, doc || currentDoc || undefined, name, effort || DEFAULT_EFFORT)
+    spawnAgent(model || DEFAULT_MODEL, doc || currentDoc || undefined, name, effort)
   }, [spawnDoc, projectList, currentDoc])
   const dropdownOpen = spawnFocused && !dropdownDismissed && segCandidates.length > 0
   const acceptCandidate = useCallback((candidate: string) => {
@@ -881,7 +880,7 @@ function AgentRow({
   const ago = formatRelativeTime(agent._ts)
   const meta = agent.metadata || {}
   const modelStr = formatModel(meta.model)
-  const effortStr = formatEffort(meta.effort)
+  const effortStr = formatEffort(meta.effort, meta.kind)
   const taskTitle = [modelStr, taskDesc].filter(Boolean).join(' · ')
 
   const secsAgo = agent._ts ? (Date.now() - agent._ts) / 1000 : Infinity
