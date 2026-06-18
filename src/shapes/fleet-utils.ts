@@ -345,22 +345,45 @@ export function ensureMyLaneDisjoint(editor: Editor, myId: string, myDevice: str
   return mine.length
 }
 
-export function createFleetLayout(editor: Editor, agents: any[], variant: '2col' | '3col' | 'wide' | 'grid' | 'touch' | 'phone' = '3col') {
+export function createFleetLayout(editor: Editor, agents: any[], variant: '2col' | '3col' | 'wide' | 'grid' | 'touch' | 'phone' = '3col'): boolean {
   const myId = getHumanId()
-  if (!myId) return
+  if (!myId) return false
   const myDevice = getDeviceId()
-  if (!myDevice) return
-  if (_layoutInFlight) return
+  if (!myDevice) return false
+  if (_layoutInFlight) return false
   _layoutInFlight = true
 
   try {
-    _createFleetLayoutInner(editor, agents, variant, myId, myDevice)
+    return _createFleetLayoutInner(editor, agents, variant, myId, myDevice)
   } finally {
     _layoutInFlight = false
   }
 }
 
-function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string, myId: string, myDevice: string) {
+function getDocumentPageBounds(editor: Editor) {
+  const pageShapes = editor.getCurrentPageShapes().filter(s =>
+    (s.type as string) === 'html-page' || (s.type as string) === 'svg-page')
+  let minLeft = Infinity, minTop = Infinity, maxRight = -Infinity
+  const pagesWithBounds: any[] = []
+  for (const ps of pageShapes) {
+    const b = editor.getShapePageBounds(ps.id)
+    if (!b) continue
+    pagesWithBounds.push(ps)
+    if (b.x < minLeft) minLeft = b.x
+    if (b.y < minTop) minTop = b.y
+    if (b.x + b.w > maxRight) maxRight = b.x + b.w
+  }
+  if (pagesWithBounds.length === 0 || !isFinite(minLeft) || !isFinite(minTop) || !isFinite(maxRight)) return null
+  return { pageShapes: pagesWithBounds, minLeft, minTop, maxRight }
+}
+
+function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string, myId: string, myDevice: string): boolean {
+  const docBounds = getDocumentPageBounds(editor)
+  if (!docBounds) {
+    console.warn('[FleetLayout] Refusing to create default layout before document page bounds are ready')
+    return false
+  }
+
   const existing = editor.getCurrentPageShapes().filter(isMyFleetShape)
   const existingChatFilters = existing
     .filter(s => (s.type as string) === 'fleet-chat')
@@ -438,30 +461,10 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
       : variant === '2col' ? leftW + gap + Math.round(chatW3 * 1.5)
       : leftW + gap + rightW
 
-    const pageShapes = editor.getCurrentPageShapes().filter(s =>
-      (s.type as string) === 'html-page' || (s.type as string) === 'svg-page')
-    let anchorX = 0, anchorY = 0
-    let docMaxRight = 0
-    if (pageShapes.length > 0) {
-      let minLeft = Infinity, minTop = Infinity, maxRight = -Infinity
-      for (const ps of pageShapes) {
-        const b = editor.getShapePageBounds(ps.id)
-        if (b) {
-          if (b.x < minLeft) minLeft = b.x
-          if (b.y < minTop) minTop = b.y
-          if (b.x + b.w > maxRight) maxRight = b.x + b.w
-        }
-      }
-      anchorX = minLeft - marginGap - leftContentW
-      anchorY = minTop - 1200
-      docMaxRight = maxRight
-    } else {
-      const vb = editor.getViewportScreenBounds()
-      const cam = editor.getCamera()
-      anchorX = (-cam.x + (vb.x + vb.w / 2) / cam.z) - leftContentW / 2
-      anchorY = -cam.y + (vb.y + vb.h / 2) / cam.z
-      docMaxRight = anchorX + leftContentW
-    }
+    const { pageShapes, minLeft, minTop, maxRight } = docBounds
+    let anchorX = minLeft - marginGap - leftContentW
+    let anchorY = minTop - 1200
+    const docMaxRight = maxRight
 
     // Push this (identity, device)'s whole layout into its own guaranteed-free
     // vertical lane so two owners' shapes can never overlap. dy bands owners
@@ -480,8 +483,7 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
     // on-screen size; if that page is clipped by the viewport, use the clipped
     // visible region so landscape / zoomed views create a landscape-shaped chat.
     if (variant === 'phone') {
-      const fallbackRect = { x: vp.x, y: vp.y, w: Math.max(160, vp.w - 12), h: Math.max(200, vp.h - 12), pageX: 0 }
-      let target = fallbackRect
+      let target: { x: number; y: number; w: number; h: number; pageX: number } | null = null
       let bestArea = -1
       const sortedPages = [...pageShapes].sort((a: any, b: any) => (a.y ?? 0) - (b.y ?? 0))
       for (const ps of sortedPages) {
@@ -514,6 +516,10 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
             pageRect.y + pageRect.h > vp.y + vp.h
           target = clippedByViewport && clipped.w > 0 && clipped.h > 0 ? clipped : pageRect
         }
+      }
+      if (!target) {
+        console.warn('[FleetLayout] Refusing to create phone layout before document page bounds are usable')
+        return
       }
 
       const chatW = Math.round(target.w)
@@ -714,4 +720,5 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
   })
 
   try { window.dispatchEvent(new CustomEvent('fleet-hud-reset')) } catch {}
+  return true
 }

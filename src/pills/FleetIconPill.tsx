@@ -175,16 +175,53 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
   agentsRef.current = agents
 
   const applyPreset = useCallback((idx: number) => {
-    createFleetLayout(mainEditor, agentsRef.current, LAYOUT_PRESETS[idx].id)
-    // Applying a layout while the HUD is toggled off would create shapes you
-    // can't see. Setting a layout always shows the HUD.
-    if (isFleetHidden()) {
-      localStorage.setItem('fleet-hud-expanded', '1')
-      setHidden(false)
-      window.dispatchEvent(new CustomEvent('fleet-hud-toggle', { detail: { expanded: true } }))
+    const preset = LAYOUT_PRESETS[idx]
+    const deadline = Date.now() + 5000
+    let rafId: number | null = null
+    let unsub: (() => void) | null = null
+    let completed = false
+    const cleanup = () => {
+      if (rafId !== null) cancelAnimationFrame(rafId)
+      rafId = null
+      unsub?.()
+      unsub = null
     }
-    setPickerOpen(false)
-    requestAnimationFrame(() => window.dispatchEvent(new CustomEvent('fleet-hud-reset')))
+    const applyWhenReady = () => {
+      const created = createFleetLayout(mainEditor, agentsRef.current, preset.id)
+      if (created) {
+        completed = true
+        cleanup()
+        // Applying a layout while the HUD is toggled off would create shapes you
+        // can't see. Setting a layout always shows the HUD.
+        if (isFleetHidden()) {
+          localStorage.setItem('fleet-hud-expanded', '1')
+          setHidden(false)
+          window.dispatchEvent(new CustomEvent('fleet-hud-toggle', { detail: { expanded: true } }))
+        }
+        setPickerOpen(false)
+        requestAnimationFrame(() => window.dispatchEvent(new CustomEvent('fleet-hud-reset')))
+        return
+      }
+      if (Date.now() >= deadline) {
+        completed = true
+        cleanup()
+        console.warn('[FleetLayout] Timed out waiting for document page bounds')
+        return
+      }
+      rafId = requestAnimationFrame(applyWhenReady)
+    }
+    applyWhenReady()
+    if (!completed && !unsub) {
+      unsub = mainEditor.store.listen(({ changes }) => {
+        const hasPageChange =
+          Object.values(changes.added).some((r: any) => r.typeName === 'shape' && (r.type === 'svg-page' || r.type === 'html-page')) ||
+          Object.values(changes.updated).some((pair: any) => {
+            const r = pair[1]
+            return r?.typeName === 'shape' && (r.type === 'svg-page' || r.type === 'html-page')
+          })
+        if (hasPageChange) applyWhenReady()
+      }, { source: 'all', scope: 'document' })
+    }
   }, [mainEditor])
 
   /** Click handler — desktop toggles HUD; touch opens the reachable layout fan. */
