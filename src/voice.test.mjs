@@ -634,4 +634,20 @@ await setBackend('chrome')
   console.log('✓ Test 10: onend with stale generation creates fresh session (chat-switch regression)')
 }
 
-console.log('\nAll 12 tests passed.')
+// ---- Test 11: Deepgram mic-frame recovery clears don't-speak banner ----
+{
+  reset()
+  window.__voiceTest.fakeDeepgramConnected()
+  window.__voiceTest.showDontSpeak()
+  assert.equal(window.__voiceTest.isDontSpeakVisible(), true, 'test starts with banner visible')
+
+  const sent = window.__voiceTest.simulateDeepgramAudioFrame()
+  assert.equal(sent, true, 'connected Deepgram frame should be sent')
+  assert.equal(window.__voiceTest.isDontSpeakVisible(), false, 'audio recovery should hide banner before transcript arrives')
+
+  window.__voiceTest.fakeStop()
+  reset()
+  console.log('✓ Test 11: Deepgram mic-frame recovery clears don’t-speak banner')
+}
+
+console.log('\nAll 13 tests passed.')

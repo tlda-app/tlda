@@ -453,6 +453,19 @@ function hideDontSpeak() {
   if (_dontSpeakOverlay) _dontSpeakOverlay.style.display = 'none'
 }
 
+function sendDeepgramAudioChunk(data) {
+  if (!_deepgramWs || !_deepgramConnected || !_recording) return false
+  try {
+    _deepgramWs.send(data)
+  } catch (err) {
+    console.warn('voice: deepgram audio send failed', err)
+    return false
+  }
+  _lastAudioChunkTime = Date.now()
+  hideDontSpeak()
+  return true
+}
+
 function showHud(text, stateColor) {
   const hud = ensureHud()
   clearTimeout(_fadeTimer)
@@ -1420,9 +1433,7 @@ async function startDeepgramMic() {
 
   _deepgramWorklet = new AudioWorkletNode(_deepgramContext, 'deepgram-capture')
   _deepgramWorklet.port.onmessage = (e) => {
-    if (!_deepgramWs || !_deepgramConnected || !_recording) return
-    _lastAudioChunkTime = Date.now()
-    try { _deepgramWs.send(e.data) } catch {}
+    sendDeepgramAudioChunk(e.data)
   }
   source.connect(_deepgramWorklet)
 
@@ -1530,6 +1541,15 @@ if (typeof window !== 'undefined') {
     injectTranscript: (text, isFinal) => onDeepgramMessage({ data: JSON.stringify({ type: 'transcript', text, is_final: isFinal, speech_final: false }) }),
     afterSend: () => afterSend(),
     getTrickle: () => ({ words: _dgTrickleWords.slice(), shown: _dgTrickleShown, hasTimer: _dgTrickleTimer !== null }),
+    showDontSpeak: () => showDontSpeak(),
+    isDontSpeakVisible: () => !!_dontSpeakOverlay && _dontSpeakOverlay.style.display === 'block',
+    fakeDeepgramConnected: () => {
+      _recording = true
+      _backend = 'deepgram'
+      _deepgramConnected = true
+      _deepgramWs = { readyState: 1, send: () => {} }
+    },
+    simulateDeepgramAudioFrame: (data = new Int16Array([1]).buffer) => sendDeepgramAudioChunk(data),
   }
 }
 
