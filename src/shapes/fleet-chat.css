@@ -136,6 +136,14 @@ html.mousemove .fleet-reaper-shape:hover .fleet-btn-group {
 .fleet-btn-group .fleet-filter-btn svg {
   display: block;
 }
+.fleet-btn-group .fleet-traffic-mode-btn {
+  font-size: 9px;
+  text-transform: uppercase;
+}
+.fleet-btn-group .fleet-traffic-mode-btn-active {
+  color: var(--accent);
+  opacity: 0.9;
+}
 
 /* --- Layout/resize button (inside fleet-btn-group flex column) --- */
 .fleet-shape .fleet-layout-btn {
@@ -165,6 +173,30 @@ html.mousemove .fleet-reaper-shape:hover .fleet-btn-group {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 8px;
+}
+.fleet-chat-shape .fleet-filter-presets {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.fleet-chat-shape .fleet-filter-preset {
+  border: 1px solid rgba(128, 128, 128, 0.18);
+  background: rgba(128, 128, 128, 0.06);
+  color: var(--text-dim);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font: inherit;
+  font-size: 9px;
+  line-height: 14px;
+  cursor: pointer;
+}
+.fleet-chat-shape .fleet-filter-preset:hover:not(:disabled) {
+  color: var(--text-bright);
+  border-color: rgba(128, 128, 128, 0.32);
+}
+.fleet-chat-shape .fleet-filter-preset:disabled {
+  cursor: default;
+  opacity: 0.28;
 }
 /* --- Filter AND group boxes (ported from dashboard .filter-and-group) --- */
 .fleet-chat-shape .fleet-filter-group-container {

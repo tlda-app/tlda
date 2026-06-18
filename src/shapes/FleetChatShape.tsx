@@ -58,6 +58,7 @@ import './fleet-chat.css'
 const DEFAULT_W = 400
 const DEFAULT_H = 600
 const FLEET_API = DATABASE_HTTP
+type ChatTrafficMode = 'normal' | 'quiet'
 
 // On touch devices the chat input is voice-only: tapping it focuses the field
 // for dictation, and iOS must NOT raise the on-screen keyboard (it eats half the
@@ -999,12 +1000,13 @@ export class FleetChatShapeUtil extends BaseBoxShapeUtil<any> {
     w: T.number,
     h: T.number,
     filter: T.arrayOf(T.arrayOf(T.arrayOf(T.string))),  // DNF of [role, label] tuples
+    trafficMode: T.optional(T.string),
     userId: T.optional(T.string),
     deviceId: T.optional(T.string),
   }
 
   getDefaultProps() {
-    return { w: DEFAULT_W, h: DEFAULT_H, filter: [], userId: '', deviceId: '' }
+    return { w: DEFAULT_W, h: DEFAULT_H, filter: [], trafficMode: 'normal', userId: '', deviceId: '' }
   }
 
   override canEdit = () => false
@@ -1431,7 +1433,8 @@ function FleetChatInner({ shape }: { shape: any }) {
   const doc = useContext(DocContext)
   const panel = useContext(PanelContext)
   const fleetStyleVars = useFleetStyleVars()
-  const { w, h, filter } = shape.props as { w: number; h: number; filter: [string, string][][] }
+  const { w, h, filter, trafficMode = 'normal' } = shape.props as { w: number; h: number; filter: [string, string][][]; trafficMode?: ChatTrafficMode }
+  const quietTraffic = trafficMode === 'quiet'
   void useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
   const [filterOpen, setFilterOpen] = useState(false)
   const [filterOpenByPill, setFilterOpenByPill] = useState(false)
@@ -1796,6 +1799,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     const sorted = events
       .filter((m: any) => {
         const t = m.type
+        if (quietTraffic && (t === 'activity' || m._activity)) return false
         return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'activity' || t === 'kill-session' || t === 'interrupt' || t === 'terminal_attention' || t === 'terminal_card' || t === 'plan_approval' || t === 'timer'
       })
       .filter((m: any) => !m._timer) // skip legacy timer-expired messages (fired→_timerFired and cancelled→_timerCancelled still render)
@@ -1819,7 +1823,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       })
 
     return sorted
-  }, [events])
+  }, [events, quietTraffic])
 
   // Standing diagnostic — does the message list momentarily empty? When
   // chatMessages hits 0 the render swaps the Virtuoso list for the "No messages"
@@ -4646,11 +4650,26 @@ function FleetChatInner({ shape }: { shape: any }) {
           <button
             className="fleet-filter-btn"
             onClick={() => setFilterOpen(prev => !prev)}
+            title="Edit traffic filter"
           >
             {filterOpen
               ? <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M2 2h12v9H6l-4 3v-3z"/></svg>
               : <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M1 2h14M3 7h10M6 12h4"/></svg>
             }
+          </button>
+          <button
+            className={`fleet-traffic-mode-btn${quietTraffic ? ' fleet-traffic-mode-btn-active' : ''}`}
+            onClick={(e) => {
+              e.stopPropagation()
+              editor.updateShape({
+                id: shape.id,
+                type: shape.type,
+                props: { trafficMode: quietTraffic ? 'normal' : 'quiet' },
+              })
+            }}
+            title={quietTraffic ? 'Quiet traffic: tools hidden' : 'Normal traffic: tools visible'}
+          >
+            {quietTraffic ? 'q' : 't'}
           </button>
         </div>
 
@@ -4662,6 +4681,8 @@ function FleetChatInner({ shape }: { shape: any }) {
             editor={editor}
             onClose={() => setFilterOpen(false)}
             externalPillOver={pillOver}
+            agents={agents}
+            sendTargets={sendTargets}
           />
         )}
 
@@ -5164,23 +5185,69 @@ function FilterOverlay({
   editor,
   onClose,
   externalPillOver,
+  agents,
+  sendTargets,
 }: {
   filter: [string, string][][]
   shapeId: any
   editor: any
   onClose: () => void
   externalPillOver?: { role: string; value: string; displayName: string } | null
+  agents: any[]
+  sendTargets: string[]
 }) {
   // Native click delegation on document capture — bypasses tldraw completely
   const overlayRef = useRef<HTMLDivElement>(null)
   const filterRef = useRef(filter)
   filterRef.current = filter
+  const humanLabel = getHumanName() || getHumanId() || 'user'
+  const activeAgentLabel = useMemo(() => {
+    const isNonHumanAgentLabel = (label: string) => {
+      const agent = agents.find((a: any) => labelsForAgent(a).includes(label))
+      return agent && !agent.human
+    }
+    for (const clause of filter) {
+      for (const [, label] of clause) {
+        if (isNonHumanAgentLabel(label)) return label
+      }
+    }
+    for (const label of sendTargets) {
+      if (isNonHumanAgentLabel(label)) return label
+    }
+    return ''
+  }, [agents, filter, sendTargets])
+  const applyPreset = useCallback((preset: 'all' | 'dm' | 'agent') => {
+    let nextFilter: [string, string][][] = []
+    if (preset === 'dm' && activeAgentLabel) {
+      nextFilter = [
+        [['from', humanLabel], ['to', activeAgentLabel]],
+        [['from', activeAgentLabel], ['to', humanLabel]],
+      ]
+    } else if (preset === 'agent' && activeAgentLabel) {
+      nextFilter = [
+        [['from', activeAgentLabel]],
+        [['to', activeAgentLabel]],
+      ]
+    }
+    editor.updateShape({
+      id: shapeId,
+      type: 'fleet-chat',
+      props: { filter: nextFilter },
+    })
+  }, [activeAgentLabel, editor, humanLabel, shapeId])
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
       const target = e.target as HTMLElement
       const overlay = overlayRef.current
       if (!overlay || !overlay.contains(target)) return
+
+      const preset = target.closest('.fleet-filter-preset') as HTMLElement | null
+      if (preset) {
+        const mode = preset.dataset.preset as 'all' | 'dm' | 'agent' | undefined
+        if (mode) applyPreset(mode)
+        return
+      }
 
       // Remove term ×
       const termX = target.closest('.fleet-filter-term-x') as HTMLElement
@@ -5212,7 +5279,7 @@ function FilterOverlay({
     }
     document.addEventListener('click', handleClick, { capture: true })
     return () => document.removeEventListener('click', handleClick, { capture: true })
-  }, [shapeId, editor, onClose])
+  }, [shapeId, editor, onClose, applyPreset])
 
   // Detect pill hovering over the shape — show two-pane drop preview
   const pillOverKey = useValue('filter-pill-over', () => {
@@ -5494,6 +5561,11 @@ function FilterOverlay({
         <>
           <div className="fleet-filter-overlay-header">
             <span style={{ fontSize: 9, opacity: 0.5, textTransform: 'uppercase', letterSpacing: 0.5 }}>Filter</span>
+            <span className="fleet-filter-presets">
+              <button className="fleet-filter-preset" data-preset="all" title="Show all chat traffic">All</button>
+              <button className="fleet-filter-preset" data-preset="dm" disabled={!activeAgentLabel} title={activeAgentLabel ? 'Show only human-agent direct messages' : 'Choose an agent first'}>DM</button>
+              <button className="fleet-filter-preset" data-preset="agent" disabled={!activeAgentLabel} title={activeAgentLabel ? 'Show all traffic involving this agent' : 'Choose an agent first'}>Agent</button>
+            </span>
           </div>
           {filter.length === 0 ? (
             <div className="fleet-filter-empty">
