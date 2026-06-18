@@ -13,7 +13,7 @@ import {
 import type { TLComponents, Editor, TLShapeId } from 'tldraw'
 import 'tldraw/tldraw.css'
 import { MathNoteShapeUtil, setMathNoteEntryMode } from './shapes/MathNoteShape'
-import { TocDropTargetShapeUtil, TocDropTargetManager } from './shapes/TocDropTargetShape'
+import { TocDropTargetShapeUtil } from './shapes/TocDropTargetShape'
 // noteThreading removed — no tabs
 import { HtmlPageShapeUtil } from './shapes/HtmlPageShape'
 import { SvgPageShapeUtil } from './shapes/SvgPageShape'
@@ -1602,7 +1602,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       <DarkModeSync />
       <NoteDropHandler />
       <MarkdownDropHandler />
-      <TocDropTargetManager />
       {isPresentation && <SlideNavWrapper document={document} />}
     </Tldraw>
     </VersionStampContext.Provider>

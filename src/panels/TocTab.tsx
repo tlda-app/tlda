@@ -187,25 +187,6 @@ export function TocTab() {
   const [tocDragOver, setTocDragOver] = useState(false)
   const [tocAdding, setTocAdding] = useState<string | null>(null)
 
-  // TLDraw-native drop target: listen for custom events from TocDropTargetShape
-  useEffect(() => {
-    if (!book) return
-    function onHover(e: Event) {
-      const active = (e as CustomEvent).detail?.active
-      setTocDragOver(!!active)
-    }
-    function onChapter(e: Event) {
-      const { text, title } = (e as CustomEvent).detail || {}
-      if (text && title) addChapterFromContent(title, text)
-    }
-    window.addEventListener('toc-drop-hover', onHover)
-    window.addEventListener('toc-drop-chapter', onChapter)
-    return () => {
-      window.removeEventListener('toc-drop-hover', onHover)
-      window.removeEventListener('toc-drop-chapter', onChapter)
-    }
-  }, [book]) // eslint-disable-line react-hooks/exhaustive-deps
-
   // Shared chapter-add logic: create markdown project from content, add to book
   async function addChapterFromContent(title: string, text: string) {
     if (!book) return
