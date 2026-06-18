@@ -18,6 +18,7 @@ import { matchesFleetFilter, resolveFleetFilter } from './filter-semantics.mjs'
 import { makeEventStore } from './event-store.mjs'
 import { log } from '../logger'
 import { DATABASE_HTTP, DATABASE_WS } from '../activeConfig'
+import { storedIdentityLoginFailureAction } from './identity-persistence.mjs'
 
 // The global fleet/event store (chat, agents, activity, tasks) = the active
 // config's DATABASE, read directly from the server-injected config. No fetch, no
@@ -366,11 +367,23 @@ export function connect() {
         _identifyPending = false
         notify('identity', { type: 'identity', id: _humanId, name: _humanName })
         _startHeartbeat()
-      }).catch(() => {
-        // Login failed — agent may have been removed. Show picker.
-        _identifyPending = true
-        localStorage.removeItem('tlda-identity')
-        notify('identity', { type: 'identity', id: null, name: null, needsIdentity: true })
+      }).catch((err) => {
+        // A deploy/restart can drop or time out this login request. Do not erase
+        // the browser's chosen identity for a transient transport failure; the
+        // next reconnect should retry the same stored name.
+        if (storedIdentityLoginFailureAction(err) !== 'register-stored') {
+          _identifyPending = false
+          notify('identity', { type: 'identity', id: null, name: storedName, needsIdentity: false })
+          _ws?.close()
+          return
+        }
+        // Fresh/test servers may not have the human row yet. Preserve the
+        // browser identity by creating that same human instead of forcing a
+        // manual switch or temporary identity.
+        registerHuman(storedName).catch(() => {
+          _identifyPending = true
+          notify('identity', { type: 'identity', id: null, name: storedName, needsIdentity: true })
+        })
       })
     } else {
       _identifyPending = true
