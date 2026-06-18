@@ -222,8 +222,9 @@ async function bundleSharedMarkdownImages(body, sourceFile, fleetServerUrl) {
 const LOG_FILE = `${os.homedir()}/.claude/agent-messages.jsonl`;
 
 // --- tlda integration ---
-import { getRwToken, getServerUrl, getFleetServerUrl } from '../shared/config.mjs';
+import { getRwToken, getServerUrl, getFleetServerUrl, loadConfig } from '../shared/config.mjs';
 import { tldaFetch as _sharedFetch } from '../shared/http-client.mjs';
+import { formatUsageStatus, normalizeUsageStatus } from '../shared/usage-status.mjs';
 const TLDA_SERVER = getServerUrl();
 const TLDA_WS_SERVER = TLDA_SERVER.replace(/^http/, 'ws');
 // Fleet/event ops (chat, register, my-task, store-agents, fleet-event, roll-call,
@@ -1273,6 +1274,14 @@ export function getFleetTools() {
           },
           limit: { description: 'Max rows to return (default 50, max 500). Totals are always whole-fleet regardless of limit.', type: 'number' },
         },
+      },
+    },
+    {
+      name: 'usage_status',
+      description: 'Read sanitized provider/account usage status configured in tlda config. This is manual/static or explicit API-fed status only; it does not scrape provider websites and never exposes auth refs or tokens. Agents can use this as a spawn/model-choice signal when the user has configured accounts.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
       },
     },
     {
@@ -3923,6 +3932,16 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       return { content: [{ type: 'text', text: `${header}${scope}\n\n${colHead}\n${lines.join('\n')}` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `fleet_table failed (tlda backend not answering — tell ops if it persists): ${e.message}` }], isError: true };
+    }
+  }
+
+  // ---- usage_status ----
+  if (name === 'usage_status') {
+    try {
+      const status = normalizeUsageStatus(loadConfig());
+      return { content: [{ type: 'text', text: formatUsageStatus(status) }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `usage_status failed: ${e.message}` }], isError: true };
     }
   }
 
