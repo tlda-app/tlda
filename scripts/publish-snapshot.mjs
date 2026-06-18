@@ -19,7 +19,7 @@
  *   published             — comma-separated list of doc names to publish
  *
  * Environment:
- *   TLDA_SERVER - Server URL for fetching annotations (default: http://localhost:5176)
+ *   TLDA_SERVER - Server URL for fetching annotations (default: https://localhost:5176 when local TLS exists)
  */
 
 import { writeFileSync, mkdirSync, cpSync, existsSync, readFileSync } from 'fs'
@@ -32,6 +32,8 @@ import { homedir } from 'os'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PROJECT_ROOT = resolve(__dirname, '..')
 const CONFIG_FILE = join(homedir(), '.config', 'tlda', 'config.json')
+const LOCAL_TLS_CERT = join(homedir(), '.config', 'tlda', 'localhost+2.pem')
+const LOCAL_TLS_KEY = join(homedir(), '.config', 'tlda', 'localhost+2-key.pem')
 
 function loadConfig() {
   if (!existsSync(CONFIG_FILE)) return {}
@@ -94,7 +96,8 @@ if (publishedList.length === 0) {
   process.exit(1)
 }
 
-const TLDA_SERVER = process.env.TLDA_SERVER || 'http://localhost:5176'
+const LOCAL_PROTO = existsSync(LOCAL_TLS_CERT) && existsSync(LOCAL_TLS_KEY) ? 'https' : 'http'
+const TLDA_SERVER = process.env.TLDA_SERVER || `${LOCAL_PROTO}://localhost:5176`
 
 // Validate all docs exist before starting
 const docs = []

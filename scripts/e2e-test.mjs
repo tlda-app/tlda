@@ -16,10 +16,11 @@ import assert from 'node:assert/strict'
 import puppeteer from 'puppeteer-core'
 import WebSocket from 'ws'
 import * as Y from 'yjs'
+import { hasTls } from '../shared/config.mjs'
 
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
-const SERVER = 'http://localhost:5176'
-const WS_SERVER = 'ws://localhost:5176'
+const SERVER = `${hasTls ? 'https' : 'http'}://localhost:5176`
+const WS_SERVER = `${hasTls ? 'wss' : 'ws'}://localhost:5176`
 
 // --- Helpers ---
 

@@ -23,6 +23,7 @@ import { chromium } from 'playwright'
 import { readFileSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
+import { hasTls } from '../shared/config.mjs'
 
 const args = Object.fromEntries(
   process.argv.slice(2)
@@ -33,7 +34,7 @@ const args = Object.fromEntries(
     })
 )
 const DOC = args.doc || 'bregman'
-const BASE = args.url || 'http://localhost:5176'
+const BASE = args.url || `${hasTls ? 'https' : 'http'}://localhost:5176`
 
 // Pull the rw token from config.json so headless requests pass auth.
 let TOKEN = ''

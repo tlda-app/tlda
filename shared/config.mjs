@@ -34,7 +34,9 @@ export function saveConfig(config) {
 
 /**
  * Server URL resolution.
- * TLDA_SERVER env → config.server → http://localhost:5176
+ * TLDA_SERVER env → config.server → local default. The local default is
+ * https://localhost:5176 when mkcert localhost certs are present, otherwise
+ * http://localhost:5176.
  *
  * The CLI adds --server flag support on top of this via getFlag().
  */
