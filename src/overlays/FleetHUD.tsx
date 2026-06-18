@@ -561,6 +561,7 @@ export function FleetHUD({
     const projectedBottom = projectedTop + latestBounds.h
     const verticallyVisible = projectedBottom > 0 && projectedTop < window.innerHeight
     if (verticallyVisible) return
+    if (userPannedRef.current) return
     ignoreSavedAnchorRef.current = true
     recenterHudForBounds(latestBounds)
   }, [expanded, fleetBounds?.x, fleetBounds?.y, fleetBounds?.w, fleetBounds?.h, docShapesReady, mainEditor, recenterHudForBounds])
@@ -860,9 +861,8 @@ export function FleetHUD({
   const aliveCount = useMemo(() => agents.filter((a: any) => !a.dead && !a.human).length, [agents])
   void aliveCount
 
-  // Emergency reset: when the Fleet button in the TOC is clicked, it
-  // recreates the fleet shapes AND fires a `fleet-hud-reset` event.
-  // Reset camera refs so the overlay re-centers on the new shapes.
+  // Reset camera refs when fleet layout code recreates shapes and emits
+  // `fleet-hud-reset`, so the overlay re-centers on the new shape bounds.
   useEffect(() => {
     const onReset = (e: Event) => {
       // preserveAnchor (plain reload): a missing anchor may just be unsynced or
@@ -981,7 +981,7 @@ export function FleetHUD({
     const projectedRight = projectedLeft + activeFleetBounds.w
     const verticallyVisible = projectedBottom > 0 && projectedTop < window.innerHeight
     const horizontallyVisible = projectedRight > 0 && projectedLeft < window.innerWidth
-    if (!verticallyVisible || !horizontallyVisible) {
+    if (!userPannedRef.current && (!verticallyVisible || !horizontallyVisible)) {
       const docShapes = mainEditor.getCurrentPageShapes().filter(s =>
         (s.type as string) === 'html-page' || (s.type as string) === 'svg-page')
       let minPageX = Infinity

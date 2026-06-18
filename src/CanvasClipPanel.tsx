@@ -361,6 +361,8 @@ export function CanvasClipPanel({
             } else {
               store.put([lockCamera ? lockNonFleetUnlockFleet(to) : to])
             }
+          } else if (to.typeName === 'shape' && FLEET_SHAPE_TYPES.has((to as { type?: string }).type || '') && store.has(to.id)) {
+            store.remove([to.id])
           }
         }
         for (const record of Object.values(changes.removed)) {

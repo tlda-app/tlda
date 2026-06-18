@@ -10,8 +10,7 @@
  *   4. Chat-log has no nested scrollable elements (the "scroll within scroll" bug)
  *   5. Real wheel scroll on the chat-log moves scrollTop (the chat scrolls)
  *   6. Layout-mode toggle round-trip preserves HUD position
- *   7. TOC Fleet button click resets the HUD without throwing
- *   8. Sending Esc in an empty chat input doesn't throw
+ *   7. Sending Esc in an empty chat input doesn't throw
  *
  * Each test prints PASS/FAIL with the relevant numbers. Exit code 1 if
  * any failed.
@@ -222,24 +221,7 @@ async function main() {
       `before=${JSON.stringify(layoutResult.before)} after=${JSON.stringify(layoutResult.after)}`)
   }
 
-  // 7. TOC Fleet button reset
-  const tocResult = await page.evaluate(() => {
-    const btn = Array.from(document.querySelectorAll('.toc-diff-hint'))
-      .find(e => /Fleet/.test(e.textContent || ''))
-    if (!btn) return { error: 'no TOC Fleet button' }
-    try {
-      btn.click()
-      return { clicked: true, override: localStorage.getItem('fleet-hud-override') }
-    } catch (e) { return { error: e.message } }
-  })
-  if (tocResult.error) {
-    step('7. TOC Fleet button reset', false, tocResult.error)
-  } else {
-    step('7. TOC Fleet button reset', tocResult.clicked && tocResult.override === null,
-      `override=${tocResult.override}`)
-  }
-
-  // 8. Esc on empty chat input doesn't throw (regression we hit before)
+  // 7. Esc on empty chat input doesn't throw (regression we hit before)
   const escResult = await page.evaluate(() => {
     const ta = document.querySelector('.fleet-chat-input, textarea[placeholder*="→"]')
     if (!ta) return { error: 'no chat input found' }
@@ -249,7 +231,7 @@ async function main() {
       return { ok: true }
     } catch (e) { return { error: e.message } }
   })
-  step('8. Esc on empty chat input does not throw',
+  step('7. Esc on empty chat input does not throw',
     !escResult.error, escResult.error || '')
 
   await browser.close()

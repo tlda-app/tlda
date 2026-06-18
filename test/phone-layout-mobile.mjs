@@ -27,7 +27,8 @@ try {
   if (e?.code !== 'ENOENT') console.warn(`[config] unable to read token: ${e.message}`)
 }
 
-const qs = new URLSearchParams({ doc: DOC, pw: '1', name: 'phone-layout-qa' })
+const QA_NAME = `phone-layout-qa-${Date.now().toString(36)}`
+const qs = new URLSearchParams({ doc: DOC, pw: '1', name: QA_NAME })
 if (token) qs.set('token', token)
 const URL = `${BASE}/?${qs.toString()}`
 
@@ -115,6 +116,21 @@ async function main() {
     if (!fleetData.getHumanId()) throw new Error('test identity did not resolve')
     const myDeviceId = fleetData.getDeviceId?.()
     if (!myDeviceId) throw new Error('test device id did not resolve')
+    const alienDeviceId = `${myDeviceId}-alien`
+    const alienId = `shape:phone-layout-alien-${Date.now().toString(36)}`
+    ed.createShape({
+      id: alienId,
+      type: 'fleet-chat',
+      x: pb.x - 700,
+      y: pb.y,
+      props: {
+        w: 180,
+        h: 180,
+        filter: [],
+        userId: fleetData.getHumanId(),
+        deviceId: alienDeviceId,
+      },
+    })
 
     window.__phoneLayoutExpected = {
       width,
@@ -126,6 +142,7 @@ async function main() {
       cameraZ: z,
       humanId: fleetData.getHumanId(),
       myDeviceId,
+      alienId,
     }
   }, { width: WIDTH, height: HEIGHT, clip: CLIP })
 
@@ -160,7 +177,7 @@ async function main() {
     const ed = window.__tldraw_editor__
     const setup = window.__phoneLayoutExpected
     if (!setup) throw new Error('phone layout setup missing')
-    const { width, height, clip, pb, docScreen, clippedDocScreen, cameraZ, humanId, myDeviceId } = setup
+    const { width, height, clip, pb, docScreen, clippedDocScreen, cameraZ, humanId, myDeviceId, alienId } = setup
 
     const fleet = ed.getCurrentPageShapes().filter(s =>
       ['fleet-agents', 'fleet-inbox', 'fleet-chat', 'fleet-docview', 'fleet-search'].includes(s.type) &&
@@ -205,6 +222,12 @@ async function main() {
     }
     if (Math.abs(chat.x - (agents.x + agents.props.w + 10)) > 1) {
       throw new Error('chat is not immediately to the right of agents/inbox column')
+    }
+    const visibleHudIds = Array.from(document.querySelectorAll('.fleet-hud-wrap [data-shape-id]'))
+      .map(el => el.getAttribute('data-shape-id'))
+      .filter(Boolean)
+    if (visibleHudIds.includes(alienId)) {
+      throw new Error(`HUD rendered same-user other-device fleet shape: ${alienId}`)
     }
 
     const layoutW = column.w + 10 + chat.props.w

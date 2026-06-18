@@ -226,6 +226,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
         setDragAnchor({ x: s.x, y: s.y })
       }
       if (isDragRef.current) {
+        stopControlEvent(ev)
         // Fan opens leftward from the bottom-right corner, so dragging LEFT
         // slides through the presets; dragging right (wrong way) selects the 0th.
         const idx = ev.clientX > s.x
@@ -237,9 +238,9 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
     }
 
     const cleanup = () => {
-      window.removeEventListener('pointermove', onMove)
-      window.removeEventListener('pointerup', onUp)
-      window.removeEventListener('pointercancel', onCancel)
+      window.removeEventListener('pointermove', onMove, true)
+      window.removeEventListener('pointerup', onUp, true)
+      window.removeEventListener('pointercancel', onCancel, true)
       isDragRef.current = false
       dragStartRef.current = null
       selectedIdxRef.current = null
@@ -248,7 +249,8 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
       setDragAnchor(null)
     }
 
-    const onUp = (_ev: PointerEvent) => {
+    const onUp = (ev: PointerEvent) => {
+      stopControlEvent(ev)
       if (isDragRef.current) {
         const idx = selectedIdxRef.current
         if (idx !== null) {
@@ -261,9 +263,11 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
 
     const onCancel = () => { cleanup() }
 
-    window.addEventListener('pointermove', onMove)
-    window.addEventListener('pointerup', onUp)
-    window.addEventListener('pointercancel', onCancel)
+    // TLDraw and fleet panels can stop bubble propagation. Capture-phase
+    // listeners keep layout release working when the finger lifts over a panel.
+    window.addEventListener('pointermove', onMove, true)
+    window.addEventListener('pointerup', onUp, true)
+    window.addEventListener('pointercancel', onCancel, true)
   }, [applyPreset])
 
   return (
