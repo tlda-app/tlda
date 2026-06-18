@@ -27,6 +27,7 @@ const execFileP = promisify(execFile)
 import { getServerUrl, CONFIG_DIR } from '../shared/config.mjs'
 import { labelsForAgent } from '../shared/fleet-labels.mjs'
 import { commitMdShare } from './md-share-commit.mjs'
+import { decideTaskKicks } from './lib/todd-kicks.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // Identity is config-driven: the supervisor passes TLDA_BOT_NAME (and the pidfile
@@ -47,6 +48,11 @@ const OWNER_ID = 'fleet:skip'
 // JSONL file recording every action + state snapshot for later HMM training.
 // Each line: { ts, agent, action, trigger, state, text_snippet, reward? }
 const DECISIONS_LOG = path.join(CONFIG_DIR, `${BOT_KEY}-decisions.jsonl`)
+const TASK_KICK_INTERVAL_MS = parseInt(process.env.TODD_TASK_KICK_INTERVAL_MS || '', 10) || 15 * 60_000
+const TASK_KICK_QUIET_MS = parseInt(process.env.TODD_TASK_KICK_QUIET_MS || '', 10) || 5 * 60_000
+const TASK_KICK_MAX_TASK_AGE_MS = parseInt(process.env.TODD_TASK_KICK_MAX_TASK_AGE_MS || '', 10) || 12 * 60 * 60_000
+const TASK_KICK_POLL_MS = parseInt(process.env.TODD_TASK_KICK_POLL_MS || '', 10) || 60_000
+const taskKickLastSent = new Map()
 
 // Positive/negative reward signal patterns in Skip's messages (post-nudge)
 const POSITIVE_REWARD_PATTERNS = [
@@ -1454,6 +1460,36 @@ function resolveAgentCwd(agentId) {
   })
 }
 
+async function taskKickSweep() {
+  const [tasksRaw, agentsRaw] = await Promise.all([
+    getJson('/api/store/tasks', []),
+    getJson('/api/store/agents', []),
+  ])
+  const tasks = Array.isArray(tasksRaw) ? tasksRaw : (tasksRaw?.tasks || [])
+  const agents = Array.isArray(agentsRaw) ? agentsRaw : (agentsRaw?.agents || [])
+  const kicks = decideTaskKicks({
+    tasks,
+    agents,
+    now: Date.now(),
+    lastKicked: taskKickLastSent,
+    maxTaskAgeMs: TASK_KICK_MAX_TASK_AGE_MS,
+    quietMs: TASK_KICK_QUIET_MS,
+    kickIntervalMs: TASK_KICK_INTERVAL_MS,
+  })
+  for (const { task, agent, key, taskAgeMs } of kicks) {
+    taskKickLastSent.set(key, Date.now())
+    const ageMin = Math.max(1, Math.round(taskAgeMs / 60_000))
+    const agentLabel = agent.friendly_name || agent.id
+    console.log(`[todd] task kick → ${agentLabel} (${task.id}, age ${ageMin}m)`)
+    sendChat(agent.id, `📬 Task check-in: you still have pending task **${task.description || task.id}** (${ageMin}m old). Call \`my_task()\`, continue the work, or report/mark it done if it is complete.`)
+    logDecision(agent.id, 'task-kick', task.id || 'active-task', {
+      taskAgeMin: ageMin,
+      taskStatus: task.status,
+      taskDescription: task.description || '',
+    }, null)
+  }
+}
+
 async function handleManagerEscalation(agentId, triggerText, mode = 'talk-to-skip') {
   const now = Date.now()
   const lastEscalation = managerEscalationCooldowns.get(agentId) || 0
@@ -2162,6 +2198,9 @@ try { fs.writeFileSync(PID_FILE, String(process.pid)) } catch {}
 
 console.log(`[todd] starting (pid ${process.pid}) — watching for frustration signals from ${OWNER_ID}`)
 connect()
+setInterval(() => {
+  taskKickSweep().catch(e => console.error('[todd] task-kick sweep failed:', e.message))
+}, TASK_KICK_POLL_MS)
 
 // Keep alive
 process.on('SIGINT', () => {
