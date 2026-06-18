@@ -133,7 +133,8 @@ html.hires .tlui-layout {
    :hover covers real browser; tl-shape__is-hovered is TLDraw's class-based fallback.
    html.is-scrolling is set by SvgDocument while wheel events are active (all input types:
    mouse wheel, Magic Mouse, trackpad). During scroll the fade-out is frozen with a huge delay
-   so a shape that was opaque stays opaque for the duration of the scroll gesture. */
+   so a shape that was opaque stays opaque for the duration of the scroll gesture.
+   Math notes are intentionally excluded: sticky-note opacity should stay stable on hover. */
 .tl-shape[data-shape-type="math-note"],
 .tl-shape[data-shape-type="terminal"],
 .tl-shape[data-shape-type="fleet-chat"] {
@@ -147,11 +148,8 @@ body.tlda-pan-mode .tl-shape[data-shape-type="terminal"],
 body.tlda-pan-mode .tl-shape[data-shape-type="fleet-chat"] {
   transition: opacity 0.3s 9999s;
 }
-.tl-shape[data-shape-type="math-note"]:hover,
 .tl-shape[data-shape-type="terminal"]:hover,
-.tl-shape.tl-shape__is-hovered[data-shape-type="math-note"],
 .tl-shape.tl-shape__is-hovered[data-shape-type="terminal"],
-.tl-shape.tl-shape__is-editing[data-shape-type="math-note"],
 .tl-shape.tl-shape__is-editing[data-shape-type="terminal"],
 .tl-shape.tl-shape__is-editing[data-shape-type="fleet-chat"] {
   transition: opacity 0.15s;

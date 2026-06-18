@@ -161,6 +161,8 @@ const DOT_COLORS: Record<string, string> = {
   'white': '#d4d4d4',
 }
 
+const AUTO_SIZE_Y_BUFFER = 4
+
 // Entry mode: set before entering edit mode to dispatch vim command on mount
 // 'i' = insert mode, ':' = ex command, null = normal mode (default)
 let pendingEntryMode: 'i' | ':' | null = null
@@ -578,7 +580,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           requestAnimationFrame(() => {
             const el = contentRef.current
             if (!el) return
-            const contentH = el.scrollHeight
+            const contentH = Math.ceil(el.scrollHeight + AUTO_SIZE_Y_BUFFER)
             const target = Math.max(40, contentH)
             const diff = target - shape.props.h
             if (Math.abs(diff) > 2) {
@@ -618,7 +620,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         // note's set width; if it hasn't, the text is wrapping at the wrong width
         // and scrollHeight is unreliable.
         if (Math.abs(node.clientWidth - shape.props.w) > 2) return
-        const target = Math.max(40, node.scrollHeight)
+        const target = Math.max(40, Math.ceil(node.scrollHeight + AUTO_SIZE_Y_BUFFER))
         if (Math.abs(target - shape.props.h) > 2) {
           editor.updateShape({
             id: shape.id,
