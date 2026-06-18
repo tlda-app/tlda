@@ -1772,9 +1772,21 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   min-width: 0;
   font-size: 9px;
   opacity: 0.6;
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.fleet-agents-shape .fleet-agents-task-model {
+  flex-shrink: 0;
+  max-width: 72px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #7a9ec8;
+  opacity: 0.9;
 }
 
 .fleet-agents-shape .fleet-agents-col-labels {

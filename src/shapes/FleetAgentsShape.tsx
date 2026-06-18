@@ -292,7 +292,8 @@ function formatModel(model: string | null | undefined): string {
   return `${m[1]}${m[2]}${m[3]}`
 }
 
-function formatEffort(effort: string): string {
+function formatEffort(effort: string | null | undefined): string {
+  if (!effort) return ''
   return `${effort} effort`
 }
 
@@ -880,7 +881,8 @@ function AgentRow({
   const ago = formatRelativeTime(agent._ts)
   const meta = agent.metadata || {}
   const modelStr = formatModel(meta.model)
-  const effortStr = formatEffort(meta.effort || 'medium')
+  const effortStr = formatEffort(meta.effort)
+  const taskTitle = [modelStr, taskDesc].filter(Boolean).join(' · ')
 
   const secsAgo = agent._ts ? (Date.now() - agent._ts) / 1000 : Infinity
   const nameOpacity = secsAgo < 120 ? 1.0 : secsAgo < 600 ? 0.85 : 0.65
@@ -927,8 +929,9 @@ function AgentRow({
           {contextPct != null ? `${contextPct}%` : ''}
         </span>
 
-        <span className="fleet-agents-col-task" title={taskDesc}>
-          {taskDesc ? taskDesc.substring(0, 50) : ''}
+        <span className="fleet-agents-col-task" title={taskTitle}>
+          {modelStr && <span className="fleet-agents-task-model">{modelStr}</span>}
+          <span>{taskDesc ? taskDesc.substring(0, 50) : ''}</span>
         </span>
 
         {/* Labels — draggable chips */}
