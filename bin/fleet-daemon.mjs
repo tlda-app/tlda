@@ -2254,6 +2254,13 @@ const DEATH_CHECK_MS = 30_000   // liveness check every 30s
 // Cache populated by checkAgentLiveness every 30s.
 // rpcCheckAlive reads from here — zero spawns per call.
 const _alivenessCache = new Map()  // tmux_session → boolean
+// Session/process probes can flap briefly during wake, tmux server churn, or
+// platform permission hiccups. Do not park an agent on the first missed probe:
+// keep reporting it live for a short grace window, then hibernate only if the
+// absence persists.
+const HIBERNATE_GRACE_MS = Number(process.env.TLDA_HIBERNATE_GRACE_MS || 120_000)
+const _missingSessionSince = new Map()  // agent_id → ms timestamp
+const _missingRuntimeSince = new Map()  // agent_id → ms timestamp
 
 // Thinking/compacting/approval detection — moved from MCP to daemon so it
 // survives MCP restarts and the hibernate sweep can trust it.
@@ -2360,11 +2367,16 @@ function _paneSubtreeHasAgent(panePid, childrenByPpid, agentProcPids) {
 
 async function checkAgentLiveness() {
   if (!agents.length) return
+  const now = Date.now()
+  const aliveAgentIds = []
   let sessions
   try {
     const r = await rpcListSessions()
     sessions = new Set(r.sessions || [])
-  } catch { return }
+  } catch (e) {
+    log.warn(`tmux session probe failed during liveness check — preserving prior liveness: ${e.message}`)
+    return
+  }
 
   // Collect all candidate sessions in one pass, then batch-query pane PIDs.
   const candidateAgents = []
@@ -2372,18 +2384,26 @@ async function checkAgentLiveness() {
     if (agent.dead || agent.human) continue
     if (!agent.tmux_session) continue
     if (!sessions.has(agent.tmux_session)) {
-      _alivenessCache.set(agent.tmux_session, false)
       if (!agent.hibernating) {
-        log.info(`agent ${agent.friendly_name || agent.id} is hibernating (tmux session ${agent.tmux_session} gone)`)
+        const since = _missingSessionSince.get(agent.id) || now
+        _missingSessionSince.set(agent.id, since)
+        if (now - since < HIBERNATE_GRACE_MS) {
+          _alivenessCache.set(agent.tmux_session, true)
+          aliveAgentIds.push(agent.id)
+          continue
+        }
+        log.info(`agent ${agent.friendly_name || agent.id} is hibernating (tmux session ${agent.tmux_session} gone for ${Math.round((now - since) / 1000)}s)`)
       }
       agent.hibernating = true
+      _alivenessCache.set(agent.tmux_session, false)
       continue
     }
+    _missingSessionSince.delete(agent.id)
     candidateAgents.push(agent)
   }
 
   if (!candidateAgents.length) {
-    sendMsg({ type: 'agent-liveness', agent_ids: [] })
+    sendMsg({ type: 'agent-liveness', agent_ids: aliveAgentIds })
     return
   }
 
@@ -2433,7 +2453,6 @@ async function checkAgentLiveness() {
     return
   }
 
-  const aliveAgentIds = []
   let healedAny = false
   let watcherNeedsSync = false
   for (const agent of candidateAgents) {
@@ -2466,7 +2485,14 @@ async function checkAgentLiveness() {
 
     if (!agentAlive) {
       if (!agent.hibernating) {
-        log.info(`agent ${agent.friendly_name || agent.id} is hibernating (no agent process in session ${agent.tmux_session})`)
+        const since = _missingRuntimeSince.get(agent.id) || now
+        _missingRuntimeSince.set(agent.id, since)
+        if (now - since < HIBERNATE_GRACE_MS) {
+          _alivenessCache.set(agent.tmux_session, true)
+          aliveAgentIds.push(agent.id)
+          continue
+        }
+        log.info(`agent ${agent.friendly_name || agent.id} is hibernating (no agent process in session ${agent.tmux_session} for ${Math.round((now - since) / 1000)}s)`)
         // Capture last lines of tmux for crash diagnosis
         try {
           const { stdout: lastLines } = await execFileP('tmux',
@@ -2485,8 +2511,10 @@ async function checkAgentLiveness() {
         } catch {}
       }
       agent.hibernating = true
+      _alivenessCache.set(agent.tmux_session, false)
       continue
     }
+    _missingRuntimeSince.delete(agent.id)
 
     if (agent.hibernating) {
       log.info(`agent ${agent.friendly_name || agent.id} is awake`)
