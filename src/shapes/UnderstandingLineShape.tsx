@@ -8,10 +8,11 @@ import {
   useValue,
 } from 'tldraw'
 
-export type LineStatus = 'approved' | 'presentation' | 'uncertain' | 'rejected' | 'unchecked'
+export type LineStatus = 'approved' | 'understood' | 'presentation' | 'uncertain' | 'rejected' | 'unchecked'
 
 export const STATUS_COLORS: Record<LineStatus, string> = {
   approved: '#16a34a',
+  understood: '#059669',
   presentation: '#3b82f6',
   uncertain: '#ca8a04',
   rejected: '#dc2626',
@@ -20,6 +21,7 @@ export const STATUS_COLORS: Record<LineStatus, string> = {
 
 export const STATUS_LABELS: Record<LineStatus, string> = {
   approved: 'approved',
+  understood: 'understood',
   presentation: 'presentation',
   uncertain: 'uncertain',
   rejected: 'rejected',
@@ -60,6 +62,15 @@ export type RibbonSegment = {
   // introduced the change). Lets the inbox sort revalidation tasks by when they
   // went stale. Cleared when the span is re-approved / heals back to fresh.
   staleAt?: number
+  // Optional provenance for MCP/server-side checks. Kept on each segment so a
+  // trimmed survivor still says who checked it and why.
+  checkedById?: string
+  checkedByName?: string
+  checkedAt?: number
+  reason?: string
+  method?: string
+  taskId?: string
+  eventId?: string
 }
 
 function StatusBadge({ status, arrow }: { status: LineStatus; arrow?: boolean }) {

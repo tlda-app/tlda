@@ -120,6 +120,141 @@ async function readSignalRest(docName, key) {
   }
 }
 
+const UNDERSTANDING_RIBBON_ID = 'shape:understanding-ribbon';
+const UNDERSTANDING_COALESCE_GAP_PX = 1.5;
+
+function shortText(value, max = 160) {
+  if (value == null) return undefined;
+  const text = String(value).replace(/\s+/g, ' ').trim();
+  if (!text) return undefined;
+  return text.length > max ? `${text.slice(0, max - 3)}...` : text;
+}
+
+function understandingIdentityKey(seg) {
+  return [
+    seg.status,
+    seg.approvedAtCommit ?? '',
+    seg.stale ? 1 : 0,
+    seg.staleAt ?? '',
+    seg.checkedById ?? '',
+    seg.checkedByName ?? '',
+    seg.checkedAt ?? '',
+    seg.reason ?? '',
+    seg.method ?? '',
+    seg.taskId ?? '',
+    seg.eventId ?? '',
+  ].join('\u0000');
+}
+
+function normalizeUnderstandingSegments(segments) {
+  const colored = segments
+    .filter(s => s.status !== 'unchecked' && s.y2 - s.y1 > 0)
+    .sort((a, b) => a.y1 - b.y1 || a.y2 - b.y2 ||
+      (understandingIdentityKey(a) < understandingIdentityKey(b) ? -1 :
+        understandingIdentityKey(a) > understandingIdentityKey(b) ? 1 : 0));
+
+  const out = [];
+  for (const seg of colored) {
+    const last = out[out.length - 1];
+    if (last && understandingIdentityKey(last) === understandingIdentityKey(seg) &&
+        seg.y1 <= last.y2 + UNDERSTANDING_COALESCE_GAP_PX) {
+      if (seg.y2 > last.y2) {
+        last.y2 = seg.y2;
+        last.endLine = seg.endLine;
+        last.endFile = seg.endFile;
+      }
+    } else {
+      out.push({ ...seg });
+    }
+  }
+  return out;
+}
+
+function mergeUnderstandingSegment(existing, newSeg) {
+  const result = [];
+  for (const seg of existing) {
+    if (seg.y2 <= newSeg.y1 || seg.y1 >= newSeg.y2) {
+      result.push(seg);
+      continue;
+    }
+    if (seg.y1 < newSeg.y1) {
+      result.push({ ...seg, y2: newSeg.y1, endLine: newSeg.startLine, endFile: newSeg.startFile });
+    }
+    if (seg.y2 > newSeg.y2) {
+      result.push({ ...seg, y1: newSeg.y2, startLine: newSeg.endLine, startFile: newSeg.endFile });
+    }
+  }
+  if (newSeg.status !== 'unchecked') result.push(newSeg);
+  result.sort((a, b) => a.y1 - b.y1);
+  return normalizeUnderstandingSegments(result);
+}
+
+function understandingProvenanceFromArgs(args) {
+  const checkedById = shortText(args.userId || process.env.FLEET_ID, 120);
+  const checkedByName = shortText(args.displayName || process.env.FLEET_NAME, 120);
+  return {
+    ...(checkedById ? { checkedById } : {}),
+    ...(checkedByName ? { checkedByName } : {}),
+    checkedAt: Date.now(),
+    ...(shortText(args.reason) ? { reason: shortText(args.reason) } : {}),
+    ...(shortText(args.method, 80) ? { method: shortText(args.method, 80) } : {}),
+    ...(shortText(args.taskId, 120) ? { taskId: shortText(args.taskId, 120) } : {}),
+    ...(shortText(args.eventId, 120) ? { eventId: shortText(args.eventId, 120) } : {}),
+  };
+}
+
+function formatUnderstandingRange(seg) {
+  const lo = Math.min(seg.startLine, seg.endLine);
+  const hi = Math.max(seg.startLine, seg.endLine);
+  const file = seg.startFile || seg.endFile || '';
+  return `${file ? `${file}:` : ''}${lo}-${hi}`;
+}
+
+function formatUnderstandingProvenance(seg) {
+  const bits = [];
+  const checker = seg.checkedByName || seg.checkedById;
+  if (checker) bits.push(`checked by ${checker}`);
+  if (typeof seg.checkedAt === 'number') bits.push(new Date(seg.checkedAt).toISOString());
+  if (seg.method) bits.push(`method: ${seg.method}`);
+  if (seg.taskId) bits.push(`task: ${seg.taskId}`);
+  if (seg.eventId) bits.push(`event: ${seg.eventId}`);
+  if (seg.reason) bits.push(`reason: ${shortText(seg.reason, 100)}`);
+  return bits.join('; ');
+}
+
+function formatUnderstandingSummary(segments) {
+  const sorted = [...segments].sort((a, b) =>
+    Math.min(a.startLine, a.endLine) - Math.min(b.startLine, b.endLine));
+  const groups = new Map();
+  for (const seg of sorted) {
+    const checker = seg.checkedByName || seg.checkedById || 'unknown checker';
+    const stale = seg.stale ? 'stale' : 'fresh';
+    const reason = seg.reason ? shortText(seg.reason, 80) : '';
+    const key = `${seg.status}\u0000${stale}\u0000${checker}\u0000${reason}`;
+    const cur = groups.get(key) || { status: seg.status, stale, checker, reason, count: 0 };
+    cur.count += 1;
+    groups.set(key, cur);
+  }
+
+  let summary = `${sorted.length} segment(s)\n`;
+  summary += 'Grouped:\n';
+  for (const g of [...groups.values()].sort((a, b) =>
+    a.status.localeCompare(b.status) || a.stale.localeCompare(b.stale) || a.checker.localeCompare(b.checker))) {
+    summary += `  ${g.status}/${g.stale} by ${g.checker}: ${g.count}`;
+    if (g.reason) summary += ` - ${g.reason}`;
+    summary += '\n';
+  }
+  summary += 'Segments:\n';
+  for (const seg of sorted) {
+    const stale = seg.stale ? 'stale' : 'fresh';
+    const prov = formatUnderstandingProvenance(seg);
+    summary += `  ${formatUnderstandingRange(seg)}: ${seg.status} (${stale})`;
+    if (prov) summary += ` - ${prov}`;
+    summary += '\n';
+  }
+  return summary;
+}
+
 /**
  * Connect to signal SSE stream. Returns { close() }.
  * Calls onSignal(signal) for each signal broadcast ({key, ...data, timestamp}).
@@ -2081,6 +2216,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           status: { type: 'string', enum: ['approved', 'understood', 'unchecked'], description: 'Understanding status' },
           userId: { type: 'string', description: 'User ID (defaults to FLEET_ID env)' },
           displayName: { type: 'string', description: 'Display name (defaults to FLEET_NAME env)' },
+          reason: { type: 'string', description: 'Short reason for this check, stored on the segment' },
+          method: { type: 'string', description: 'Short check method/source, e.g. review, proof-pass, self-check' },
+          taskId: { type: 'string', description: 'Optional fleet task ID that prompted this check' },
+          eventId: { type: 'string', description: 'Optional fleet event/message ID linked to this check' },
+          file: { type: 'string', description: 'Source file path or name for the range. Omit for main file.' },
         },
         required: ['doc', 'startLine', 'endLine', 'status'],
       },
@@ -3386,16 +3526,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'set_understanding') {
-    const { doc, startLine, endLine, status } = args;
+    const { doc, startLine, endLine, status, file } = args;
     if (!doc || startLine == null || endLine == null || !status) {
       return { content: [{ type: 'text', text: 'Missing required parameters: doc, startLine, endLine, status' }], isError: true };
     }
     try {
-      const RIBBON_ID = 'shape:understanding-ribbon';
-
       // Look up canvas positions for start and end lines
-      const startPos = await lookupLineAsync(doc, startLine);
-      const endPos = await lookupLineAsync(doc, endLine);
+      const startPos = await lookupLineAsync(doc, startLine, file);
+      const endPos = await lookupLineAsync(doc, endLine, file);
       if (!startPos) return { content: [{ type: 'text', text: `Line ${startLine} not found in lookup` }], isError: true };
       if (!endPos) return { content: [{ type: 'text', text: `Line ${endLine} not found in lookup` }], isError: true };
 
@@ -3406,14 +3544,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       let ribbon;
       try {
         const shapes = await fetchShapes(doc, 'understanding-line');
-        ribbon = shapes.find(s => s.id === RIBBON_ID);
+        ribbon = shapes.find(s => s.id === UNDERSTANDING_RIBBON_ID);
       } catch (e) { process.stderr.write(`[mcp] ribbon shape fetch failed: ${e.message}\n`); }
 
       if (!ribbon) {
         // Create the ribbon shape — the viewer will resize it on load
         const shapeIndex = await getNextShapeIndex(doc);
         ribbon = {
-          id: RIBBON_ID,
+          id: UNDERSTANDING_RIBBON_ID,
           type: 'understanding-line',
           typeName: 'shape',
           x: 0,
@@ -3444,25 +3582,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (h && h !== 'unknown') approvedAtCommit = String(h);
       } catch (e) { process.stderr.write(`[mcp] doc-version fetch failed: ${e.message}\n`); }
 
-      const newSeg = { startLine, endLine, status, y1, y2, ...(approvedAtCommit ? { approvedAtCommit } : {}) };
+      const fileKey = file || '';
+      const newSeg = {
+        startLine,
+        endLine,
+        startFile: fileKey,
+        endFile: fileKey,
+        status,
+        y1,
+        y2,
+        ...(approvedAtCommit ? { approvedAtCommit } : {}),
+        ...(status !== 'unchecked' ? understandingProvenanceFromArgs(args) : {}),
+      };
+      const merged = mergeUnderstandingSegment(segments, newSeg);
 
-      // Merge: remove overlapping portions, insert new segment
-      const merged = [];
-      for (const seg of segments) {
-        if (seg.y2 <= newSeg.y1 || seg.y1 >= newSeg.y2) {
-          merged.push(seg);
-          continue;
-        }
-        if (seg.y1 < newSeg.y1) merged.push({ ...seg, y2: newSeg.y1, endLine: newSeg.startLine });
-        if (seg.y2 > newSeg.y2) merged.push({ ...seg, y1: newSeg.y2, startLine: newSeg.endLine });
-      }
-      if (status !== 'unchecked') merged.push(newSeg);
-      merged.sort((a, b) => a.y1 - b.y1);
+      await updateShapeRest(doc, UNDERSTANDING_RIBBON_ID, { props: { ...ribbon.props, segments: JSON.stringify(merged) } });
 
-      await updateShapeRest(doc, RIBBON_ID, { props: { ...ribbon.props, segments: JSON.stringify(merged) } });
-
-      const lineCount = endLine - startLine + 1;
-      return { content: [{ type: 'text', text: `Understanding: ${lineCount} line(s) ${startLine}–${endLine} → "${status}"` }] };
+      const lineCount = Math.abs(endLine - startLine) + 1;
+      const checker = newSeg.checkedByName || newSeg.checkedById;
+      const reason = newSeg.reason ? `; reason: ${newSeg.reason}` : '';
+      const by = checker ? ` by ${checker}` : '';
+      return { content: [{ type: 'text', text: `Understanding: ${lineCount} line(s) ${fileKey ? `${fileKey}:` : ''}${startLine}-${endLine} -> "${status}"${by}${reason}` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
@@ -3472,9 +3612,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { doc } = args;
     if (!doc) return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
     try {
-      const RIBBON_ID = 'shape:understanding-ribbon';
       const shapes = await fetchShapes(doc, 'understanding-line');
-      const ribbon = shapes.find(s => s.id === RIBBON_ID);
+      const ribbon = shapes.find(s => s.id === UNDERSTANDING_RIBBON_ID);
       if (!ribbon) {
         return { content: [{ type: 'text', text: 'No understanding map data.' }] };
       }
@@ -3482,11 +3621,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (segments.length === 0) {
         return { content: [{ type: 'text', text: 'No understanding map data.' }] };
       }
-      let summary = `${segments.length} segment(s):\n`;
-      for (const seg of segments.sort((a, b) => a.startLine - b.startLine)) {
-        summary += `  lines ${seg.startLine}–${seg.endLine}: ${seg.status}\n`;
-      }
-      return { content: [{ type: 'text', text: summary }] };
+      return { content: [{ type: 'text', text: formatUnderstandingSummary(segments) }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }

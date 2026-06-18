@@ -34,14 +34,27 @@ function mergeSegment(existing, newSeg) {
 }
 
 function normalizeSegments(segments) {
+  const anchorKey = (s) => [
+    s.status,
+    s.approvedAtCommit ?? '',
+    s.stale ? 1 : 0,
+    s.staleAt ?? '',
+    s.checkedById ?? '',
+    s.checkedByName ?? '',
+    s.checkedAt ?? '',
+    s.reason ?? '',
+    s.method ?? '',
+    s.taskId ?? '',
+    s.eventId ?? '',
+  ].join('\u0000')
   const colored = segments
     .filter(s => s.status !== 'unchecked' && s.y2 - s.y1 > 0)
     .sort((a, b) => a.y1 - b.y1 || a.y2 - b.y2 ||
-      (a.status < b.status ? -1 : a.status > b.status ? 1 : 0))
+      (anchorKey(a) < anchorKey(b) ? -1 : anchorKey(a) > anchorKey(b) ? 1 : 0))
   const out = []
   for (const seg of colored) {
     const last = out[out.length - 1]
-    if (last && last.status === seg.status && seg.y1 <= last.y2 + COALESCE_GAP_PX) {
+    if (last && anchorKey(last) === anchorKey(seg) && seg.y1 <= last.y2 + COALESCE_GAP_PX) {
       if (seg.y2 > last.y2) {
         last.y2 = seg.y2
         last.endLine = seg.endLine
@@ -82,6 +95,15 @@ console.log('different-status adjacent stay separate:')
   segs = normalizeSegments(mergeSegment(segs, seg(0, 50, 'uncertain')))
   segs = normalizeSegments(mergeSegment(segs, seg(50, 100, 'approved')))
   assert(segs.length === 2, `uncertain then approved → 2 segments (got ${segs.length})`)
+}
+
+console.log('different provenance adjacent stays separate:')
+{
+  let segs = []
+  segs = normalizeSegments(mergeSegment(segs, { ...seg(0, 50, 'approved'), checkedById: 'agent-a', checkedAt: 10, reason: 'pass 1' }))
+  segs = normalizeSegments(mergeSegment(segs, { ...seg(50, 100, 'approved'), checkedById: 'agent-b', checkedAt: 20, reason: 'pass 2' }))
+  assert(segs.length === 2, `approved spans with different provenance → 2 segments (got ${segs.length})`)
+  assert(segs[0].checkedById === 'agent-a' && segs[1].checkedById === 'agent-b', `both checker IDs preserved`)
 }
 
 // ---------------------------------------------------------------------------
