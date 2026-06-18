@@ -59,6 +59,18 @@ export function shouldClaimCodexWatcher({ currentPrimaryId, agent, jsonlPath } =
   return currentPrimaryId === agent?.id || codexPathMatchesKnownRollout(jsonlPath || '', agent)
 }
 
+export function decideMissingLiveness({
+  now,
+  missingSince,
+  graceMs,
+  alreadyHibernating = false,
+} = {}) {
+  if (alreadyHibernating) return { alive: false, hibernate: true, since: missingSince || now }
+  const since = missingSince || now
+  if ((now - since) < graceMs) return { alive: true, hibernate: false, since }
+  return { alive: false, hibernate: true, since }
+}
+
 export function buildFleetSpawnArgs({
   name,
   model,

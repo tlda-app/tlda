@@ -4,7 +4,14 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
-import { buildFleetSpawnArgs, harnessKindForAgent, isPlaywrightBrowserArgs, shouldClaimCodexWatcher, unlinkPidfileIfOwnPid } from '../bin/lib/daemon-guards.mjs'
+import {
+  buildFleetSpawnArgs,
+  decideMissingLiveness,
+  harnessKindForAgent,
+  isPlaywrightBrowserArgs,
+  shouldClaimCodexWatcher,
+  unlinkPidfileIfOwnPid,
+} from '../bin/lib/daemon-guards.mjs'
 
 test('missing metadata.kind defaults to claude once', () => {
   const warnings = []
@@ -106,4 +113,42 @@ test('codex watcher ownership is not stolen without a matching rollout id', () =
     agent: { id: 'fleet:takeover', session_id: '019ed438-c2ee-7f72-a2c4-9708b6f04679', session_ids: [] },
     jsonlPath: takeoverPath,
   }), true)
+})
+
+test('first runtime liveness miss stays awake within hibernate grace', () => {
+  const now = 10_000
+  const graceMs = 120_000
+
+  assert.deepEqual(decideMissingLiveness({ now, graceMs }), {
+    alive: true,
+    hibernate: false,
+    since: now,
+  })
+})
+
+test('liveness miss hibernates only after grace expires', () => {
+  const graceMs = 120_000
+
+  assert.deepEqual(decideMissingLiveness({
+    now: 130_001,
+    missingSince: 10_000,
+    graceMs,
+  }), {
+    alive: false,
+    hibernate: true,
+    since: 10_000,
+  })
+})
+
+test('already-hibernating agent remains hibernating on liveness miss', () => {
+  assert.deepEqual(decideMissingLiveness({
+    now: 10_000,
+    missingSince: 5_000,
+    graceMs: 120_000,
+    alreadyHibernating: true,
+  }), {
+    alive: false,
+    hibernate: true,
+    since: 5_000,
+  })
 })

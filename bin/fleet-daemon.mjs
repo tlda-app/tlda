@@ -75,7 +75,14 @@ import { makeActivityThrottle } from './lib/activity-throttle.mjs'
 import { maybeKickGoose, resolveGooseStatus } from './lib/goose-kick.mjs'
 import { gooseActivityTick } from './lib/goose-activity.mjs'
 import { parseCodexLine } from './lib/codex-activity.mjs'
-import { buildFleetSpawnArgs, harnessKindForAgent, isPlaywrightBrowserArgs, shouldClaimCodexWatcher, unlinkPidfileIfOwnPid } from './lib/daemon-guards.mjs'
+import {
+  buildFleetSpawnArgs,
+  decideMissingLiveness,
+  harnessKindForAgent,
+  isPlaywrightBrowserArgs,
+  shouldClaimCodexWatcher,
+  unlinkPidfileIfOwnPid,
+} from './lib/daemon-guards.mjs'
 import { resolveTranscript } from './lib/resolve-transcript.mjs'
 const log = createLogger('daemon')
 // CONFIG_DIR holds config.json, cursors, PID and log files. Defaults to
@@ -2280,9 +2287,9 @@ const _alivenessCache = new Map()  // tmux_session → boolean
 const HIBERNATE_GRACE_MS = Number(process.env.TLDA_HIBERNATE_GRACE_MS || 120_000)
 const _missingSessionSince = new Map()  // agent_id → ms timestamp
 const _missingRuntimeSince = new Map()  // agent_id → ms timestamp
-// Grace windows are only valid after this daemon process has seen the session
-// or runtime alive at least once. On reconnect/restart, server state is stale
-// until proven locally; do not publish "awake" for unknown sessions.
+// Be conservative about transient runtime probe misses inside an existing tmux
+// session. A missing tmux session itself is not evidence of a live agent, so do
+// not publish "awake" for first-observed absent sessions.
 const _observedLiveSessions = new Set() // tmux_session
 const _observedLiveRuntimes = new Set() // agent_id
 
@@ -2423,21 +2430,26 @@ async function checkAgentLiveness() {
     if (!agent.tmux_session) continue
     checkedAgentIds.push(agent.id)
     if (!sessions.has(agent.tmux_session)) {
+      if (!_observedLiveSessions.has(agent.tmux_session)) {
+        log.info(`agent ${agent.friendly_name || agent.id} is hibernating (tmux session ${agent.tmux_session} absent on first local observation)`)
+        agent.hibernating = true
+        _alivenessCache.set(agent.tmux_session, false)
+        continue
+      }
+      const decision = decideMissingLiveness({
+        now,
+        missingSince: _missingSessionSince.get(agent.id),
+        graceMs: HIBERNATE_GRACE_MS,
+        alreadyHibernating: agent.hibernating,
+      })
+      _missingSessionSince.set(agent.id, decision.since)
+      if (decision.alive) {
+        _alivenessCache.set(agent.tmux_session, true)
+        aliveAgentIds.push(agent.id)
+        continue
+      }
       if (!agent.hibernating) {
-        if (!_observedLiveSessions.has(agent.tmux_session)) {
-          log.info(`agent ${agent.friendly_name || agent.id} is hibernating (tmux session ${agent.tmux_session} absent on first local observation)`)
-          agent.hibernating = true
-          _alivenessCache.set(agent.tmux_session, false)
-          continue
-        }
-        const since = _missingSessionSince.get(agent.id) || now
-        _missingSessionSince.set(agent.id, since)
-        if (now - since < HIBERNATE_GRACE_MS) {
-          _alivenessCache.set(agent.tmux_session, true)
-          aliveAgentIds.push(agent.id)
-          continue
-        }
-        log.info(`agent ${agent.friendly_name || agent.id} is hibernating (tmux session ${agent.tmux_session} gone for ${Math.round((now - since) / 1000)}s)`)
+        log.info(`agent ${agent.friendly_name || agent.id} is hibernating (tmux session ${agent.tmux_session} gone for ${Math.round((now - decision.since) / 1000)}s)`)
       }
       agent.hibernating = true
       _alivenessCache.set(agent.tmux_session, false)
@@ -2530,21 +2542,23 @@ async function checkAgentLiveness() {
     _alivenessCache.set(agent.tmux_session, agentAlive)
 
     if (!agentAlive) {
-      if (!agent.hibernating) {
+      const decision = decideMissingLiveness({
+        now,
+        missingSince: _missingRuntimeSince.get(agent.id),
+        graceMs: HIBERNATE_GRACE_MS,
+        alreadyHibernating: agent.hibernating,
+      })
+      _missingRuntimeSince.set(agent.id, decision.since)
+      if (decision.alive) {
         if (!_observedLiveRuntimes.has(agent.id)) {
-          log.info(`agent ${agent.friendly_name || agent.id} is hibernating (no agent process in session ${agent.tmux_session} on first local observation)`)
-          agent.hibernating = true
-          _alivenessCache.set(agent.tmux_session, false)
-          continue
+          log.info(`preserving awake status for ${agent.friendly_name || agent.id}: no agent process in session ${agent.tmux_session} on first local observation, within grace`)
         }
-        const since = _missingRuntimeSince.get(agent.id) || now
-        _missingRuntimeSince.set(agent.id, since)
-        if (now - since < HIBERNATE_GRACE_MS) {
-          _alivenessCache.set(agent.tmux_session, true)
-          aliveAgentIds.push(agent.id)
-          continue
-        }
-        log.info(`agent ${agent.friendly_name || agent.id} is hibernating (no agent process in session ${agent.tmux_session} for ${Math.round((now - since) / 1000)}s)`)
+        _alivenessCache.set(agent.tmux_session, true)
+        aliveAgentIds.push(agent.id)
+        continue
+      }
+      if (!agent.hibernating) {
+        log.info(`agent ${agent.friendly_name || agent.id} is hibernating (no agent process in session ${agent.tmux_session} for ${Math.round((now - decision.since) / 1000)}s)`)
         // Capture last lines of tmux for crash diagnosis
         try {
           const { stdout: lastLines } = await execFileP('tmux',

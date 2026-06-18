@@ -124,11 +124,25 @@ const daemonConnections = new Map()         // machine_id -> ws
 // Populated by `agent-liveness` messages from each machine's daemon (every
 // ~30s checkAgentLiveness pass) and seeded on register. The fleet store reads
 // this via an installed oracle when computing each agent's awake/hibernating
-// status. An agent leaves the set when (a) the daemon's next sweep reports
-// it gone, (b) that machine's daemon disconnects, or (c) the agent is killed.
+// status. An agent leaves the set when (a) a stable daemon sweep reports it
+// gone, or (b) the agent is killed. Daemon disconnect/reconnect windows are
+// explicitly not proof of hibernation: after a deploy or local restart, stale
+// "awake" is safer than hiding every working agent on the machine.
 const _aliveAgents = new Set()              // Set<agent_id>
+const _aliveSince = new Map()               // agent_id -> first ms in current alive run
 
 function isAgentAlive(agentId) { return _aliveAgents.has(agentId) }
+
+function markAgentAlive(agentId, now = Date.now()) {
+  if (!_aliveAgents.has(agentId) || !_aliveSince.has(agentId)) _aliveSince.set(agentId, now)
+  _aliveAgents.add(agentId)
+}
+
+function markAgentNotAlive(agentId) {
+  _aliveAgents.delete(agentId)
+  _aliveSince.delete(agentId)
+  clearEphemeralState(agentId)
+}
 
 if (fleetStore?.setLivenessOracle) fleetStore.setLivenessOracle(isAgentAlive)
 
@@ -607,6 +621,7 @@ const DAEMON_WARN_DEDUP_MS = 5 * 60 * 1000
 const _daemonConnectedSince = new Map()
 
 const HIBERNATE_IDLE_MS = 20 * 60 * 1000
+const LIVENESS_RECONNECT_GRACE_MS = 120_000
 
 function touchActivity(agentId) {
   _lastActivityAt.set(agentId, Date.now())
@@ -626,6 +641,12 @@ function getWouldHibernate() {
     if (!agent || agent.dead) continue
     if (_thinkingState.has(agentId)) continue
     if (_compactingState.has(agentId)) continue
+    // An "idle for 20 minutes" reading is only meaningful after this specific
+    // agent has been continuously observed alive for the same window. Without
+    // this, a freshly rediscovered agent can inherit stale _lastActivityAt and
+    // get killed almost immediately.
+    const aliveSince = _aliveSince.get(agentId)
+    if (!aliveSince || (now - aliveSince) < HIBERNATE_IDLE_MS) continue
     const lastActive = _lastActivityAt.get(agentId)
     if (!lastActive) continue
     const idleMs = now - lastActive
@@ -2474,11 +2495,9 @@ server.on('upgrade', async (req, socket, head) => {
       ws.on('close', () => {
         if (ws._machineId && daemonConnections.get(ws._machineId) === ws) {
           daemonConnections.delete(ws._machineId)
-          // The daemon is gone; we no longer have process-level visibility
-          // on its machine's agents. Drop them from the alive set; they'll
-          // appear hibernating until a daemon reconnects.
-          const onMachine = fleetStore?.getAgentsByMachine?.(ws._machineId) || []
-          for (const a of onMachine) _aliveAgents.delete(a.id)
+          // The daemon is gone; process-level visibility is unknown, not false.
+          // Preserve prior liveness so a server/Fly redeploy or daemon restart
+          // cannot make every working agent on that machine vanish.
           failPendingRpcsForMachine(ws._machineId, 'daemon disconnected')
           broadcastState()
           console.log(`[fleet-daemon] disconnected: machine_id=${ws._machineId}`)
@@ -2487,8 +2506,6 @@ server.on('upgrade', async (req, socket, head) => {
       ws.on('error', () => {
         if (ws._machineId && daemonConnections.get(ws._machineId) === ws) {
           daemonConnections.delete(ws._machineId)
-          const onMachine = fleetStore?.getAgentsByMachine?.(ws._machineId) || []
-          for (const a of onMachine) _aliveAgents.delete(a.id)
           failPendingRpcsForMachine(ws._machineId, 'daemon ws error')
           broadcastState()
         }
@@ -2735,7 +2752,7 @@ async function handleFleetWsMessage(ws, msg) {
     // the agent shows "awake" right away. The daemon's next sweep confirms
     // or evicts within 30s.
     if (!agent.human) {
-      _aliveAgents.add(agentId)
+      markAgentAlive(agentId)
       touchActivity(agentId)
     }
     broadcastState()
@@ -3576,6 +3593,7 @@ async function handleFleetWsMessage(ws, msg) {
     try {
       const result = await sendRpc(route.machine_id, 'kill-session', { agent_id: agent.id, tmux_session: agent.tmux_session })
       fleetStore.markDead(agent.id)
+      markAgentNotAlive(agent.id)
       const killEvent = { type: 'kill-session', from: SERVER_OWNER_ID, to: agent.id, text: `Killed ${agent.friendly_name || agent.id}` }
       await fleetStore.share(killEvent)
       broadcastState()
@@ -3594,7 +3612,7 @@ async function handleFleetWsMessage(ws, msg) {
     if (route.via === 'none') { error(route.error); return }
     try {
       const result = await sendRpc(route.machine_id, 'kill-session', { agent_id: agent.id, tmux_session: agent.tmux_session })
-      clearEphemeralState(agent.id)
+      markAgentNotAlive(agent.id)
       broadcastState()
       reply({ ok: true, agent: agent.friendly_name || agent.id, ...result })
     } catch (e) { error(e.message) }
@@ -4493,29 +4511,30 @@ async function handleDaemonWsMessage(ws, msg) {
   if (!ws._machineId) return
 
   if (type === 'agent-liveness') {
-    // Daemon's list of its machine's agents whose claude processes are
-    // currently running. Treated as a full replacement for that machine:
-    // any agent on this machine that the daemon didn't mention is dropped
-    // from the alive set (it's hibernating now).
+    // Daemon's list of its machine's agents whose harness processes are
+    // currently running. Treat a stable checked list as authoritative, but be
+    // conservative immediately after daemon reconnect: a first sweep can race
+    // tmux/proc visibility, and hiding a working agent is worse than keeping a
+    // stale awake bit until the grace window expires.
     if (Array.isArray(msg.agent_ids)) {
       const incoming = new Set(msg.agent_ids)
+      const connectedSince = _daemonConnectedSince.get(ws._machineId)
+      const inReconnectGrace = !!connectedSince && (Date.now() - connectedSince) < LIVENESS_RECONNECT_GRACE_MS
       if (Array.isArray(msg.checked_agent_ids)) {
         for (const id of msg.checked_agent_ids) {
           if (incoming.has(id)) {
-            _aliveAgents.add(id)
-          } else {
-            _aliveAgents.delete(id)
-            clearEphemeralState(id)
+            markAgentAlive(id)
+          } else if (!(inReconnectGrace && _aliveAgents.has(id))) {
+            markAgentNotAlive(id)
           }
         }
       } else {
         const agentsOnThisMachine = fleetStore?.getAgentsByMachine?.(ws._machineId) || []
         for (const a of agentsOnThisMachine) {
           if (incoming.has(a.id)) {
-            _aliveAgents.add(a.id)
-          } else {
-            _aliveAgents.delete(a.id)
-            clearEphemeralState(a.id)
+            markAgentAlive(a.id)
+          } else if (!(inReconnectGrace && _aliveAgents.has(a.id))) {
+            markAgentNotAlive(a.id)
           }
         }
       }
@@ -4962,7 +4981,7 @@ server.listen(PORT, HOST, () => {
       console.log(`[hibernate] auto-hibernating ${agent.friendly_name || agent.id} (idle ${wouldHib[agentId]}s)`)
       try {
         await sendRpc(route.machine_id, 'kill-session', { agent_id: agent.id, tmux_session: agent.tmux_session })
-        clearEphemeralState(agent.id)
+        markAgentNotAlive(agent.id)
       } catch (e) {
         console.error(`[hibernate] failed to hibernate ${agent.friendly_name || agent.id}: ${e.message}`)
       }
