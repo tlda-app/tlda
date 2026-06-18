@@ -72,6 +72,7 @@ RUN npm install --production
 COPY server/lib/ ./server/lib/
 COPY server/routes/ ./server/routes/
 COPY server/unified-server.mjs ./server/
+COPY server/qualifications-default.json ./server/qualifications-default.json
 COPY shared/ ./shared/
 # Build pipeline shells out to /app/scripts/*.mjs (extract-synctex-lookup,
 # compute-proof-pairing, patch-svg-images, …). Without these the synctex lookup

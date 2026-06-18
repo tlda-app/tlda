@@ -3901,6 +3901,7 @@ async function handleFleetWsMessage(ws, msg) {
 // TLDA_QUALIFICATIONS_FILE overrides the default path — used by integration
 // tests to exercise new rules without touching the live ~/.claude config.
 const QUALIFICATIONS_FILE = process.env.TLDA_QUALIFICATIONS_FILE || path.join(os.homedir(), '.claude', 'qualifications.json')
+const DEFAULT_QUALIFICATIONS_FILE = path.join(__dirname, 'qualifications-default.json')
 let _qualRules = []
 const _qualAgentReads = new Map()     // agentId → Set of skill keys + file paths
 const _qualAgentDismissed = new Map() // agentId → Map<dismissKey, {skill, reason, scope, trigger, ts}> (dismissKey = skillName | skillName@filepath)
@@ -3915,8 +3916,9 @@ function qualDismissKey(skillName, scope, trigger) {
 
 function loadQualifications() {
   try {
-    if (!fs.existsSync(QUALIFICATIONS_FILE)) return
-    const data = JSON.parse(fs.readFileSync(QUALIFICATIONS_FILE, 'utf8'))
+    const qualPath = fs.existsSync(QUALIFICATIONS_FILE) ? QUALIFICATIONS_FILE : DEFAULT_QUALIFICATIONS_FILE
+    if (!fs.existsSync(qualPath)) return
+    const data = JSON.parse(fs.readFileSync(qualPath, 'utf8'))
     _qualRules = (data.rules || []).map(r => {
       const rule = { requires: r.requires || [] }
       if (r.edit) {
