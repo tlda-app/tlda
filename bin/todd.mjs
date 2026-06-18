@@ -1018,6 +1018,8 @@ const GLOBAL_ACTIVITY_RULES = [
   },
 ]
 const globalRuleCooldowns = new Map() // `${ruleName}:${agentId}` → lastFired ms
+const recentChatSends = new Map() // `${to}\0${text}` → lastSent ms
+const CHAT_DEDUPE_MS = 10 * 60_000
 
 function checkGlobalActivityRules(agentId, commandText) {
   if (!commandText) return
@@ -1868,6 +1870,17 @@ function register() {
 }
 
 function sendChat(to, text) {
+  const now = Date.now()
+  const key = `${to}\0${text}`
+  const lastSent = recentChatSends.get(key) || 0
+  if (now - lastSent < CHAT_DEDUPE_MS) {
+    console.log(`[todd] suppressed duplicate chat → ${to}`)
+    return
+  }
+  recentChatSends.set(key, now)
+  for (const [k, ts] of recentChatSends) {
+    if (now - ts > CHAT_DEDUPE_MS) recentChatSends.delete(k)
+  }
   send({
     type: 'chat',
     from: AGENT_ID,
