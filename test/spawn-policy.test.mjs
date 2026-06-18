@@ -33,7 +33,6 @@ describe('spawn policy', () => {
 
   it('normalizes operator-friendly capability names', () => {
     assert.equal(callerCapability({ id: 'fleet:a', metadata: { spawnPolicy: { capability: 'write' } } }), 'workspace-write+net')
-    assert.equal(callerCapability({ id: 'fleet:a', metadata: { spawnPolicy: { capability: 'offline' } } }), 'workspace-write-no-net')
     assert.equal(callerCapability({ id: 'fleet:a', metadata: { spawnPolicy: { capability: 'full' } } }), 'full-access')
   })
 

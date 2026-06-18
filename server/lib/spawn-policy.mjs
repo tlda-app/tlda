@@ -5,27 +5,23 @@ export const SPAWN_CAPABILITIES = [
   'full-access',
 ]
 
-export const CAPABILITY_ALIASES = {
-  read: 'read-only',
-  readonly: 'read-only',
-  'read-only': 'read-only',
-  write: 'workspace-write+net',
-  'workspace-write': 'workspace-write+net',
-  net: 'workspace-write+net',
-  'write-net': 'workspace-write+net',
-  'workspace-write+net': 'workspace-write+net',
-  offline: 'workspace-write-no-net',
-  'no-net': 'workspace-write-no-net',
-  'workspace-write-no-net': 'workspace-write-no-net',
-  full: 'full-access',
-  root: 'full-access',
-  unfenced: 'full-access',
-  'full-access': 'full-access',
+export const SPAWN_POLICY_OPTIONS = {
+  read: { capability: 'read-only', policy: 'cwd', category: 'write-scope' },
+  write: { capability: 'workspace-write+net', policy: 'cwd', category: 'write-scope' },
+  'tlda-write': { capability: 'workspace-write+net', policy: 'tlda-projects', category: 'write-scope' },
+  full: { capability: 'full-access', policy: 'unsandboxed', category: 'write-scope' },
 }
 
 const CAPABILITY_RANK = new Map(SPAWN_CAPABILITIES.map((cap, idx) => [cap, idx]))
 export const DEFAULT_AGENT_CAPABILITY = 'workspace-write+net'
 export const ROOT_CAPABILITY = 'full-access'
+
+export function resolveSpawnPolicyOption(value) {
+  if (value == null || value === '') return null
+  const raw = String(value).trim().toLowerCase()
+  if (SPAWN_POLICY_OPTIONS[raw]) return { name: raw, ...SPAWN_POLICY_OPTIONS[raw] }
+  return null
+}
 
 export function normalizeCapability(value, fallback = null) {
   if (value == null || value === '') {
@@ -33,7 +29,7 @@ export function normalizeCapability(value, fallback = null) {
     return normalizeCapability(fallback)
   }
   const raw = String(value).trim().toLowerCase()
-  const cap = CAPABILITY_ALIASES[raw] || raw
+  const cap = resolveSpawnPolicyOption(raw)?.capability || raw
   if (!CAPABILITY_RANK.has(cap)) {
     throw new Error(`unknown spawn capability "${value}"`)
   }

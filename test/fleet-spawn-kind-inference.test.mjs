@@ -87,6 +87,13 @@ assert "/Users/skip/work/tlda/.git" in policy["write_roots"]
 assert mod.os.path.expanduser("~/.config/tlda") in policy["write_roots"]
 assert "-s danger-full-access" in role_cmd
 
+policy_name, dev_tools, write_roots, matched, policy = mod.resolve_harness_sandbox(
+    "codex", "gpt-5.5", "/Users/skip/work/tlda",
+    explicit_policy="tlda-projects")
+policy = mod.apply_spawn_capability_to_policy(policy, "workspace-write+net", "/Users/skip/work/tlda")
+assert policy_name == "tlda-projects"
+assert policy["network"] is True
+
 policy_name, dev_tools, write_roots, matched, policy, role_cmd = resolve_capability("read-only")
 assert policy_name == "cwd"
 assert dev_tools is True

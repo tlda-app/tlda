@@ -32,7 +32,7 @@ import { DEV_COMMANDS } from './lib/dev-commands.mjs'
 import { resolveRepoRoot, ensureWorktree, startWorktreeVite, findFreePort } from './lib/dev-vite.mjs'
 import { scanMarkdownDeps } from '../shared/markdown-deps.mjs'
 import { cmdLogs } from './lib/unified-logs.mjs'
-import { CAPABILITY_ALIASES, SPAWN_CAPABILITIES, normalizeCapability } from '../server/lib/spawn-policy.mjs'
+import { SPAWN_POLICY_OPTIONS, resolveSpawnPolicyOption } from '../server/lib/spawn-policy.mjs'
 
 // --- Argument parsing ---
 
@@ -1485,15 +1485,17 @@ async function hibernateLocalAgent(name, { allowMissing = false } = {}) {
 }
 
 function usageAgentCapability() {
-  const out = `Usage: tlda agent capability <agent> <capability> [--dry-run]
+  const out = `Usage: tlda agent capability <agent> <capability> [--no-net] [--dry-run]
 
-Common names:
-  write      workspace-write+net (default normal agent)
-  read       read-only
-  full       full-access
-  offline    workspace-write-no-net (rare)
+Write scope:
+  read        no workspace writes
+  write       write launch working directory
+  tlda-write  write configured TLDA project/source roots
+  full        unfenced operator access
 
-Canonical capabilities: ${SPAWN_CAPABILITIES.join(', ')}`
+Network:
+  network is on by default
+  --no-net    rare explicit network-off modifier`
   if (hasFlag('help')) console.log(out)
   else console.error(out)
 }
@@ -1506,28 +1508,32 @@ Usage:
   tlda agent spawn <agent>
   tlda agent attach <agent>
   tlda agent hibernate <agent>
-  tlda agent capability <agent> <capability> [--dry-run]
+  tlda agent capability <agent> <capability> [--no-net] [--dry-run]
 
-Capability names:
-  write      normal workspace-write agent with network
-  read       read-only
-  full       full access
-  offline    workspace-write without network
+Write scope:
+  read        no workspace writes
+  write       write launch working directory
+  tlda-write  write configured TLDA project/source roots
+  full        unfenced operator access
+
+Network:
+  network is on by default
+  --no-net    rare explicit network-off modifier
 
 The capability command is operator-only: it refuses from fleet agent env/tmux context.`)
 }
 
-function parseCapabilityName(value) {
-  try {
-    return normalizeCapability(value)
-  } catch {
-    return null
-  }
+function capabilityNamesForError() {
+  return Object.keys(SPAWN_POLICY_OPTIONS).join(', ')
 }
 
-function capabilityNamesForError() {
-  const names = Object.keys(CAPABILITY_ALIASES).filter(name => !SPAWN_CAPABILITIES.includes(name))
-  return `${SPAWN_CAPABILITIES.join(', ')} (aliases: ${names.join(', ')})`
+function applyNetworkModifier(policyOption) {
+  if (!hasFlag('no-net')) return { ...policyOption, network: true }
+  if (policyOption.name === 'full') {
+    throw new Error('--no-net cannot modify full; full is unfenced operator access.')
+  }
+  const capability = policyOption.name === 'read' ? policyOption.capability : 'workspace-write-no-net'
+  return { ...policyOption, capability, network: false }
 }
 
 function normalizeAgentMetadata(meta) {
@@ -1578,11 +1584,19 @@ async function cmdAgentCapability() {
     usageAgentCapability()
     process.exit(1)
   }
-  const capability = parseCapabilityName(capabilityArg)
-  if (!capability) {
+  const policyOption = resolveSpawnPolicyOption(capabilityArg)
+  if (!policyOption) {
     console.error(`Unknown capability "${capabilityArg}". Supported capabilities: ${capabilityNamesForError()}`)
     process.exit(1)
   }
+  let resolvedPolicy
+  try {
+    resolvedPolicy = applyNetworkModifier(policyOption)
+  } catch (e) {
+    console.error(e.message)
+    process.exit(1)
+  }
+  const { capability, policy, network } = resolvedPolicy
 
   try {
     await assertNotAgentContext()
@@ -1592,10 +1606,11 @@ async function cmdAgentCapability() {
   }
 
   if (hasFlag('dry-run')) {
-    console.log(`[dry-run] would set ${agentQuery} capability to ${capability}`)
+    const net = network === false ? 'no network' : 'network'
+    console.log(`[dry-run] would set ${agentQuery} capability to ${policyOption.name} (${policy} / ${capability} / ${net})`)
     console.log('  1. look up existing agent identity')
     console.log('  2. hibernate local tmux session if live')
-    console.log('  3. update metadata.spawnPolicy.capability')
+    console.log('  3. update metadata.spawnPolicy policy/category')
     console.log(`  4. run: tlda agent spawn ${agentQuery}`)
     return
   }
@@ -1612,20 +1627,21 @@ async function cmdAgentCapability() {
 
   const meta = normalizeAgentMetadata(agent.metadata)
   const currentSpawnPolicy = normalizeAgentMetadata(meta.spawnPolicy)
-  const nextSpawnPolicy = { ...currentSpawnPolicy, capability }
+  const nextSpawnPolicy = { ...currentSpawnPolicy, name: policyOption.name, capability, policy, network }
   await api('POST', '/api/set-metadata', {
     agent: agent.id,
     spawnPolicy: nextSpawnPolicy,
     spawnPolicyChangedBy: 'tlda-agent-capability-cli',
     spawnPolicyChangedAt: new Date().toISOString(),
   })
-  console.log(`Updated ${agent.id} spawnPolicy.capability to ${capability}. Resuming ${spawnName}...`)
+  const net = network === false ? 'no network' : 'network'
+  console.log(`Updated ${agent.id} spawn policy to ${policyOption.name} (${policy} / ${capability} / ${net}). Resuming ${spawnName}...`)
   await runFleetSpawn([spawnName])
 }
 
 async function cmdAgent() {
   const sub = getPositional(0)
-  if (!sub || (hasFlag('help') && !['capability', 'escalate'].includes(sub))) {
+  if (!sub || (hasFlag('help') && sub !== 'capability')) {
     usageAgent()
     return
   }
@@ -1635,10 +1651,9 @@ async function cmdAgent() {
     case 'spawn':     await ensureServer(); await runFleetSpawn(process.argv.slice(4)); break // after "tlda agent spawn"
     case 'attach':    await attachToAgent(getPositional(1)); break
     case 'hibernate': await hibernateAgent(getPositional(1)); break
-    case 'capability':
-    case 'escalate':  await cmdAgentCapability(); break
+    case 'capability': await cmdAgentCapability(); break
     default:
-      console.error('Usage: tlda agent <list|spawn|attach|hibernate|capability|escalate> [name]')
+      console.error('Usage: tlda agent <list|spawn|attach|hibernate|capability> [name]')
       process.exit(1)
   }
 }

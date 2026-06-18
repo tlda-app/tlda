@@ -84,29 +84,54 @@ describe('agent capability CLI', () => {
     })
 
     assert.equal(exitCode, 0)
-    assert.ok(stdout.includes('[dry-run] would set alice capability to workspace-write+net'))
-    assert.ok(stdout.includes('update metadata.spawnPolicy.capability'))
+    assert.ok(stdout.includes('[dry-run] would set alice capability to write (cwd / workspace-write+net / network)'))
+    assert.ok(stdout.includes('update metadata.spawnPolicy policy/category'))
+  })
+
+  it('uses no-net as a modifier, not a capability type', () => {
+    const dryRun = tlda('agent', 'capability', 'alice', 'write', '--no-net', '--dry-run', {
+      env: scrubAgentEnv(process.env),
+    })
+    assert.equal(dryRun.exitCode, 0)
+    assert.ok(dryRun.stdout.includes('write (cwd / workspace-write-no-net / no network)'))
+
+    const asType = tlda('agent', 'capability', 'alice', 'no-net', '--dry-run', {
+      env: scrubAgentEnv(process.env),
+    })
+    assert.notEqual(asType.exitCode, 0)
+    assert.ok(asType.stderr.includes('Unknown capability "no-net"'))
   })
 
   it('shows capability-specific help', () => {
     const { stdout, exitCode } = tlda('agent', 'capability', '--help')
 
     assert.equal(exitCode, 0)
-    assert.ok(stdout.includes('write      workspace-write+net'))
-    assert.ok(stdout.includes('offline    workspace-write-no-net'))
+    assert.ok(stdout.includes('Write scope:'))
+    assert.ok(stdout.includes('tlda-write  write configured TLDA project/source roots'))
+    assert.ok(stdout.includes('--no-net    rare explicit network-off modifier'))
   })
 
   it('rejects unknown capabilities', () => {
-    const { stderr, exitCode } = tlda('agent', 'capability', 'alice', 'bogus', '--dry-run', {
+    const { stderr, exitCode } = tlda('agent', 'capability', 'alice', 'workspace-write+net', '--dry-run', {
       env: scrubAgentEnv(process.env),
     })
 
     assert.notEqual(exitCode, 0)
-    assert.ok(stderr.includes('Unknown capability "bogus"'))
+    assert.ok(stderr.includes('Unknown capability "workspace-write+net"'))
+    assert.ok(stderr.includes('read, write, tlda-write, full'))
+  })
+
+  it('does not expose an escalate alias', () => {
+    const { stderr, exitCode } = tlda('agent', 'escalate', 'alice', 'write', '--dry-run', {
+      env: scrubAgentEnv(process.env),
+    })
+
+    assert.notEqual(exitCode, 0)
+    assert.ok(stderr.includes('Usage: tlda agent <list|spawn|attach|hibernate|capability>'))
   })
 
   it('refuses from an agent context before dry-run escalation', () => {
-    const { stderr, exitCode } = tlda('agent', 'capability', 'alice', 'read-only', '--dry-run', {
+    const { stderr, exitCode } = tlda('agent', 'capability', 'alice', 'read', '--dry-run', {
       env: { ...scrubAgentEnv(process.env), FLEET_ID: 'fleet:test-agent', FLEET_NAME: 'test-agent' },
     })
 
