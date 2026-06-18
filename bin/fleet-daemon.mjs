@@ -865,20 +865,19 @@ function activityHarnessForAgent(agent) {
 // subtree scan in findRuntimePidForAgent, but matches ALL adapters' processRe.
 async function resolveAgentKind(agent) {
   const stored = agent?.metadata?.kind
-  if (stored && HARNESS_ADAPTERS[stored]) return stored
-  if (!agent?.tmux_session) return 'claude'
+  if (!agent?.tmux_session) return (stored && HARNESS_ADAPTERS[stored]) ? stored : 'claude'
   let paneOut = ''
   try {
     ;({ stdout: paneOut } = await execFileP('tmux',
       [...TMUX_ARGS, 'list-panes', '-t', agent.tmux_session, '-F', '#{pane_pid}'],
       { timeout: 3000, encoding: 'utf8' }))
-  } catch { return 'claude' }
+  } catch { return (stored && HARNESS_ADAPTERS[stored]) ? stored : 'claude' }
   const panePids = paneOut.trim().split('\n').filter(Boolean)
-  if (!panePids.length) return 'claude'
+  if (!panePids.length) return (stored && HARNESS_ADAPTERS[stored]) ? stored : 'claude'
   let psOut = ''
   try {
     ;({ stdout: psOut } = await execFileP('ps', ['-eo', 'pid,ppid,args'], { timeout: 5000, encoding: 'utf8' }))
-  } catch { return 'claude' }
+  } catch { return (stored && HARNESS_ADAPTERS[stored]) ? stored : 'claude' }
   const childrenByPpid = new Map()
   const argsByPid = new Map()
   for (const line of psOut.split('\n')) {
@@ -905,7 +904,7 @@ async function resolveAgentKind(agent) {
     }
     for (const child of (childrenByPpid.get(pid) || [])) stack.push(child)
   }
-  return 'claude'
+  return (stored && HARNESS_ADAPTERS[stored]) ? stored : 'claude'
 }
 
 async function syncSessionWatchers(agentList) {
