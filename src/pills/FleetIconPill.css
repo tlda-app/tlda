@@ -16,7 +16,7 @@
    basestar 123px above it). */
 body.phone-mode .fleet-icon-pill-container {
   bottom: calc(123px + env(safe-area-inset-bottom));
-  right: calc(16px + env(safe-area-inset-right));
+  right: max(4px, env(safe-area-inset-right));
 }
 
 /* Tablet (coarse pointer, too wide for phone-mode) gets the same safe-area
@@ -24,7 +24,7 @@ body.phone-mode .fleet-icon-pill-container {
 @media (pointer: coarse) and (min-width: 601px) {
   .fleet-icon-pill-container {
     bottom: calc(115px + env(safe-area-inset-bottom));
-    right: calc(16px + env(safe-area-inset-right));
+    right: max(4px, env(safe-area-inset-right));
   }
 }
 
@@ -39,7 +39,12 @@ body.phone-mode .fleet-icon-pill-container {
   user-select: none;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 1px;
+  min-width: 32px;
+  min-height: 32px;
+  pointer-events: all;
+  touch-action: none;
 }
 
 .fleet-icon-pill-container:hover .fleet-icon-pill-badge {
@@ -62,8 +67,18 @@ body.phone-mode .fleet-icon-pill-container {
   display: flex;
   flex-direction: row-reverse;
   gap: 4px;
-  pointer-events: none;
+  pointer-events: all;
   z-index: 10002;
+}
+
+body.phone-mode .fleet-icon-pill-fan {
+  margin-right: 8px;
+}
+
+@media (pointer: coarse) {
+  .fleet-icon-pill-fan {
+    margin-right: 8px;
+  }
 }
 
 .fleet-icon-pill-fan-item {
@@ -71,9 +86,11 @@ body.phone-mode .fleet-icon-pill-container {
   align-items: center;
   justify-content: center;
   white-space: nowrap;
-  pointer-events: none;
+  pointer-events: all;
   opacity: 0.3;
   transition: opacity 0.2s;
+  cursor: pointer;
+  touch-action: none;
 }
 
 .fleet-icon-pill-fan-item.hovered {

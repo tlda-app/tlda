@@ -396,7 +396,7 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
       seenNames.add(name)
       return true
     })
-    const panelCount = variant === 'grid' ? 4 : variant === 'wide' ? 1 : 2
+    const panelCount = variant === 'grid' ? 4 : (variant === 'wide' || variant === 'phone') ? 1 : 2
     const recentChatAgents = recentChatTargetAgents(getEvents(), deduped, humanId, getHumanName(), panelCount)
     const recentIds = new Set(recentChatAgents.map((a: any) => a.id || a.friendly_name))
     const topAgents = [
@@ -475,10 +475,11 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
     anchorX += dx
     anchorY += dy
 
-    // Phone layout: agents+inbox in a left column, chat to their right. The
-    // chat footprint follows one page's current on-screen size; if that page is
-    // clipped by the viewport, use the clipped visible region so landscape /
-    // zoomed views create a landscape-shaped chat.
+    // Phone layout: agents filter panel in a left column, chat to its right.
+    // No inbox, search, or docview on phone. The chat footprint follows one
+    // page's current on-screen size; if that page is clipped by the viewport,
+    // use the clipped visible region so landscape / zoomed views create a
+    // landscape-shaped chat.
     if (variant === 'phone') {
       const fallbackRect = { x: vp.x, y: vp.y, w: Math.max(160, vp.w - 12), h: Math.max(200, vp.h - 12), pageX: 0 }
       let target = fallbackRect
@@ -519,8 +520,6 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
       const chatW = Math.round(target.w)
       const chatH = Math.round(target.h)
       const colW = Math.min(320, Math.max(180, Math.round(chatW * 0.45)))
-      const agentsHp = Math.max(72, Math.round((chatH - gap) / 2))
-      const inboxH = Math.max(72, chatH - gap - agentsHp)
       // Chat right edge sits marginGap to the left of the selected page/visible
       // region. Convert that region's screen-left offset back into the page-space
       // layout coordinate used by the HUD's z=1 camera.
@@ -534,14 +533,7 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
           type: 'fleet-agents' as any,
           x: colX, y: anchorY,
           isLocked: false,
-          props: { w: colW, h: agentsHp, userId: myId, deviceId: myDevice },
-        },
-        {
-          id: slotId(myId, myDevice, 'inbox'),
-          type: 'fleet-inbox' as const,
-          x: colX, y: anchorY + agentsHp + gap,
-          isLocked: false,
-          props: { w: colW, h: inboxH, userId: myId, deviceId: myDevice },
+          props: { w: colW, h: chatH, userId: myId, deviceId: myDevice },
         },
         {
           id: slotId(myId, myDevice, 'chat-0'),
@@ -549,17 +541,6 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
           x: chatX, y: anchorY,
           isLocked: false,
           props: { w: chatW, h: chatH, filter: filter1, userId: myId, deviceId: myDevice },
-        },
-        // Reference pane: a ¾-page docview hung off the RIGHT margin — mirror of
-        // the chat on the left, same marginGap from the page edge, scaled to ¾ so
-        // it reads as secondary. The phone pans between chat (left) / doc (center)
-        // / reference (right); only one is on screen at a time.
-        {
-          id: slotId(myId, myDevice, 'docview'),
-          type: 'fleet-docview' as any,
-          x: docMaxRight + marginGap + dx, y: anchorY,
-          isLocked: false,
-          props: { w: Math.round(chatW * 0.75), h: Math.round(chatH * 0.75), mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '', userId: myId, deviceId: myDevice },
         },
       ])
       try { window.dispatchEvent(new CustomEvent('fleet-hud-reset')) } catch {}

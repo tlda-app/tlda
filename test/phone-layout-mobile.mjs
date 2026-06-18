@@ -55,7 +55,7 @@ async function main() {
   }, null, { timeout: 45000 })
   await page.waitForTimeout(1000)
 
-  const report = await page.evaluate(async ({ width, height, clip }) => {
+  await page.evaluate(async ({ width, height, clip }) => {
     const ed = window.__tldraw_editor__
     const pageShape = ed.getCurrentPageShapes().find(s => s.type === 'svg-page' || s.type === 'html-page')
     if (!pageShape) throw new Error('no document page shape')
@@ -110,29 +110,74 @@ async function main() {
     const myDeviceId = fleetData.getDeviceId?.()
     if (!myDeviceId) throw new Error('test device id did not resolve')
 
-    const { createFleetLayout } = await import('/src/shapes/fleet-utils.ts')
-    createFleetLayout(ed, [], 'phone')
-    await new Promise(r => setTimeout(r, 1000))
+    window.__phoneLayoutExpected = {
+      width,
+      height,
+      clip,
+      pb: { x: pb.x, y: pb.y, w: pb.w, h: pb.h },
+      docScreen,
+      clippedDocScreen,
+      cameraZ: z,
+      humanId: fleetData.getHumanId(),
+      myDeviceId,
+    }
+  }, { width: WIDTH, height: HEIGHT, clip: CLIP })
+
+  const pill = page.locator('.fleet-icon-pill-badge')
+  await pill.waitFor({ state: 'visible', timeout: 15000 })
+  const pillBox = await pill.boundingBox()
+  if (!pillBox) throw new Error('fleet layout pill has no bounding box')
+  const pillRightGap = WIDTH - (pillBox.x + pillBox.width)
+  if (pillRightGap < 3 || pillRightGap > 8) {
+    throw new Error(`fleet layout pill is not at reachable right edge: ${JSON.stringify(pillBox)}`)
+  }
+  await pill.tap()
+
+  const phonePreset = page.locator('.fleet-icon-pill-fan-item[title^="Phone reset"]')
+  await phonePreset.waitFor({ state: 'visible', timeout: 5000 })
+  const presetBox = await phonePreset.boundingBox()
+  if (!presetBox || presetBox.width < 40 || presetBox.height < 30) {
+    throw new Error(`phone preset touch target is too small: ${JSON.stringify(presetBox)}`)
+  }
+  const hit = await page.evaluate(({ x, y }) => {
+    const el = document.elementFromPoint(x, y)
+    return {
+      hit: !!el?.closest?.('.fleet-icon-pill-fan-item[title^="Phone reset"]'),
+      className: el instanceof HTMLElement ? el.className : String(el),
+    }
+  }, { x: presetBox.x + presetBox.width / 2, y: presetBox.y + presetBox.height / 2 })
+  if (!hit.hit) throw new Error(`phone preset is visually present but not touch-hit-testable: ${JSON.stringify(hit)}`)
+  await phonePreset.tap()
+  await page.waitForTimeout(1000)
+
+  const report = await page.evaluate(async () => {
+    const ed = window.__tldraw_editor__
+    const setup = window.__phoneLayoutExpected
+    if (!setup) throw new Error('phone layout setup missing')
+    const { width, height, clip, pb, docScreen, clippedDocScreen, cameraZ, humanId, myDeviceId } = setup
 
     const fleet = ed.getCurrentPageShapes().filter(s =>
-      ['fleet-agents', 'fleet-inbox', 'fleet-chat', 'fleet-docview'].includes(s.type) &&
-      s.props?.userId === fleetData.getHumanId() &&
+      ['fleet-agents', 'fleet-inbox', 'fleet-chat', 'fleet-docview', 'fleet-search'].includes(s.type) &&
+      s.props?.userId === humanId &&
       s.props?.deviceId === myDeviceId,
     )
     const agents = fleet.find(s => s.type === 'fleet-agents')
     const inbox = fleet.find(s => s.type === 'fleet-inbox')
     const chat = fleet.find(s => s.type === 'fleet-chat')
     const docview = fleet.find(s => s.type === 'fleet-docview')
-    if (!agents || !inbox || !chat || !docview) {
+    const search = fleet.find(s => s.type === 'fleet-search')
+    if (!agents || !chat) {
       throw new Error(`missing phone layout shapes: ${fleet.map(s => s.type).join(',')}`)
     }
+    if (inbox || docview || search) {
+      throw new Error(`phone layout should only create agents + chat, got: ${fleet.map(s => s.type).join(',')}`)
+    }
 
-    const gap = Math.round(inbox.y - agents.y - agents.props.h)
     const column = {
       x: agents.x,
       y: agents.y,
       w: agents.props.w,
-      h: agents.props.h + gap + inbox.props.h,
+      h: agents.props.h,
     }
     const expectedRect = clip ? clippedDocScreen : docScreen
     const expectedW = Math.round(expectedRect.w)
@@ -143,14 +188,11 @@ async function main() {
     if (Math.abs(chat.props.h - expectedH) > 1) {
       throw new Error(`chat height ${chat.props.h} != expected page/clipped height ${expectedH}`)
     }
-    if (Math.abs(column.h - chat.props.h) > 1) {
-      throw new Error(`agents+inbox column height ${column.h} != chat height ${chat.props.h}`)
-    }
-    if (Math.abs(inbox.x - agents.x) > 1 || Math.abs(inbox.props.w - agents.props.w) > 1) {
-      throw new Error('agents and inbox are not aligned as one left column')
+    if (Math.abs(agents.props.h - chat.props.h) > 1) {
+      throw new Error(`agents panel height ${agents.props.h} != chat height ${chat.props.h}`)
     }
     if (Math.abs(chat.x - (agents.x + agents.props.w + 10)) > 1) {
-      throw new Error('chat is not immediately to the right of agents/inbox column')
+      throw new Error('chat is not immediately to the right of agents panel')
     }
 
     const layoutW = column.w + 10 + chat.props.w
@@ -195,11 +237,11 @@ async function main() {
         w: Math.round(clippedDocScreen.w),
         h: Math.round(clippedDocScreen.h),
       },
-      camera: { z: Number(z.toFixed(4)) },
+      camera: { z: Number(cameraZ.toFixed(4)) },
+      control: { pill: 'tapped', preset: 'tapped' },
       agents: { w: agents.props.w, h: agents.props.h },
-      inbox: { w: inbox.props.w, h: inbox.props.h },
       chat: { w: chat.props.w, h: chat.props.h },
-      column: { w: column.w, h: column.h, gap },
+      column: { w: column.w, h: column.h },
       layout: { w: layoutW, h: chat.props.h },
       screenChat: {
         x: Math.round(screenChat.x),
@@ -207,9 +249,9 @@ async function main() {
         w: Math.round(screenChat.w),
         h: Math.round(screenChat.h),
       },
-      docview: { w: docview.props.w, h: docview.props.h },
+      extraPanels: fleet.filter(s => s.type !== 'fleet-agents' && s.type !== 'fleet-chat').map(s => s.type),
     }
-  }, { width: WIDTH, height: HEIGHT, clip: CLIP })
+  })
 
   console.log(JSON.stringify(report, null, 2))
   await browser.close()

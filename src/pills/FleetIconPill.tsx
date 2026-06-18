@@ -14,6 +14,7 @@
  * matching the single-color approach of .build-warning-badge.
  */
 import React, { useState, useCallback, useRef } from 'react'
+import { stopEventPropagation } from 'tldraw'
 import type { Editor } from 'tldraw'
 import { useFleetAgents } from '../fleet-data-adapter'
 import { createFleetLayout } from '../shapes/fleet-utils'
@@ -31,8 +32,8 @@ const BASESTAR_PATHS = (
 )
 
 const DRAG_THRESHOLD = 6   // px before drag activates
-const ITEM_W = 40          // px width of each preset tile
-const ITEM_H = 22          // px height
+const ITEM_W = 44          // px width of each preset tile
+const ITEM_H = 32          // px height
 const ITEM_GAP = 4         // px between tiles
 
 // 'touch' preset removed: the fleet-touch-inbox shape's click-to-filter never
@@ -45,7 +46,7 @@ const LAYOUT_PRESETS: { id: LayoutId; title: string }[] = [
   { id: '2col', title: 'Two-column: left margin + right margin chat' },
   { id: 'wide', title: 'Wide: agents + search | one large chat' },
   { id: 'grid', title: 'Grid: agents + search | 2×2 chat grid' },
-  { id: 'phone', title: 'Phone: agents + inbox | page-sized chat' },
+  { id: 'phone', title: 'Phone reset: agents filter + dominant chat' },
 ]
 
 /** Mini SVG diagram showing the layout arrangement */
@@ -120,11 +121,10 @@ function LayoutIcon({ id, size = 20 }: { id: LayoutId; size?: number }) {
       </>
     ),
     'phone': (
-      // Phone: agents/inbox column beside one page-sized chat. No doc column.
+      // Phone: agents filter panel beside one dominant chat. No inbox/doc column.
       <>
-        <rect x={0} y={0} width={s*0.22} height={s*0.5-g/2} rx={r} fill={ap} />
-        <rect x={0} y={s*0.5+g/2} width={s*0.22} height={s*0.5-g/2} rx={r} fill={sr} />
-        <rect x={s*0.22+g} y={0} width={s*0.62-g} height={s} rx={r} fill={ch} />
+        <rect x={0} y={0} width={s*0.24} height={s} rx={r} fill={ap} />
+        <rect x={s*0.24+g} y={0} width={s*0.6-g} height={s} rx={r} fill={ch} />
       </>
     ),
   }
@@ -140,6 +140,17 @@ function isFleetHidden() {
   return localStorage.getItem('fleet-hud-expanded') !== '1'
 }
 
+function isTouchLayoutControl() {
+  if (typeof window === 'undefined') return false
+  return document.body.classList.contains('phone-mode') ||
+    window.matchMedia?.('(pointer: coarse)').matches ||
+    navigator.maxTouchPoints > 0
+}
+
+function stopControlEvent(e: React.SyntheticEvent | Event) {
+  stopEventPropagation(e)
+}
+
 // ── FleetIconPill ────────────────────────────────────────────────────────────
 
 interface FleetIconPillProps { mainEditor: Editor }
@@ -148,6 +159,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
   const agents = useFleetAgents()
   const [hidden, setHidden] = useState(() => isFleetHidden())
   const [dragging, setDragging] = useState(false)
+  const [pickerOpen, setPickerOpen] = useState(false)
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
   const [, setDragAnchor] = useState<{ x: number; y: number } | null>(null)
 
@@ -161,10 +173,28 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
   const agentsRef = useRef(agents)
   agentsRef.current = agents
 
-  /** Click handler — toggle HUD expanded state (suppressed after a drag). */
-  const handleClick = useCallback(() => {
+  const applyPreset = useCallback((idx: number) => {
+    createFleetLayout(mainEditor, agentsRef.current, LAYOUT_PRESETS[idx].id)
+    // Applying a layout while the HUD is toggled off would create shapes you
+    // can't see. Setting a layout always shows the HUD.
+    if (isFleetHidden()) {
+      localStorage.setItem('fleet-hud-expanded', '1')
+      setHidden(false)
+      window.dispatchEvent(new CustomEvent('fleet-hud-toggle', { detail: { expanded: true } }))
+    }
+    setPickerOpen(false)
+    requestAnimationFrame(() => window.dispatchEvent(new CustomEvent('fleet-hud-reset')))
+  }, [mainEditor])
+
+  /** Click handler — desktop toggles HUD; touch opens the reachable layout fan. */
+  const handleClick = useCallback((e: React.MouseEvent) => {
+    stopControlEvent(e)
     if (justDraggedRef.current) {
       justDraggedRef.current = false
+      return
+    }
+    if (isTouchLayoutControl()) {
+      setPickerOpen(open => !open)
       return
     }
     const wasHidden = isFleetHidden()
@@ -176,7 +206,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
 
   /** Pointer down — stop propagation (prevents TLDraw interference) and set up drag listeners. */
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
-    e.stopPropagation()
+    stopControlEvent(e)
 
     const start = { x: e.clientX, y: e.clientY }
     dragStartRef.current = start
@@ -221,16 +251,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
       if (isDragRef.current) {
         const idx = selectedIdxRef.current
         if (idx !== null) {
-          createFleetLayout(mainEditor, agentsRef.current, LAYOUT_PRESETS[idx].id as any)
-          // Applying a layout while the HUD is toggled off would create shapes
-          // you can't see (and gestures stay gated off). So setting a layout
-          // shows the HUD if it's hidden.
-          if (isFleetHidden()) {
-            localStorage.setItem('fleet-hud-expanded', '1')
-            setHidden(false)
-            window.dispatchEvent(new CustomEvent('fleet-hud-toggle', { detail: { expanded: true } }))
-          }
-          requestAnimationFrame(() => window.dispatchEvent(new CustomEvent('fleet-hud-reset')))
+          applyPreset(idx)
         }
         justDraggedRef.current = true  // suppress the upcoming onClick
       }
@@ -242,7 +263,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
     window.addEventListener('pointercancel', onCancel)
-  }, [mainEditor])
+  }, [applyPreset])
 
   return (
     <div
@@ -253,6 +274,9 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
         className="fleet-icon-pill-badge"
         onClick={handleClick}
         onPointerDown={handlePointerDown}
+        onPointerUp={stopControlEvent}
+        onTouchStart={stopControlEvent}
+        onTouchEnd={stopControlEvent}
         role="button"
         aria-label={`Fleet: ${aliveCount} agent${aliveCount !== 1 ? 's' : ''}`}
         style={{ touchAction: 'none' }}
@@ -298,10 +322,13 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
       </span>
 
       {/* Layout preset fan — positioned above the icon */}
-      {dragging && (
+      {(dragging || pickerOpen) && (
         <div
           className="fleet-icon-pill-fan"
-          onPointerDown={e => e.stopPropagation()}
+          onPointerDown={stopControlEvent}
+          onPointerUp={stopControlEvent}
+          onTouchStart={stopControlEvent}
+          onTouchEnd={stopControlEvent}
         >
           {LAYOUT_PRESETS.map((preset, i) => (
             <div
@@ -309,6 +336,8 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
               className={'fleet-icon-pill-fan-item' + (selectedIdx === i ? ' hovered' : '')}
               style={{ width: ITEM_W, height: ITEM_H, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
               title={preset.title}
+              onClick={(e) => { stopControlEvent(e); applyPreset(i) }}
+              onPointerDown={stopControlEvent}
             >
               <LayoutIcon id={preset.id} size={ITEM_H - 4} />
             </div>
