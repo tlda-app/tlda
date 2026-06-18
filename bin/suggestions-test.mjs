@@ -3,11 +3,11 @@
 //   1. exercises POST/GET /api/suggestions + the 'suggestions' WS broadcast,
 //      including per-agent replace semantics and multi-agent flattening;
 //   2. spawns bin/todd.mjs the way the supervisor does (TLDA_BOT_NAME +
-//      TLDA_BOT_PIDFILE env) and asserts it registers as fleet:todd / "Todd"
+//      TLDA_BOT_PIDFILE env) and asserts it registers as fleet:todd / "todd"
 //      and writes its pidfile.
 import WebSocket from 'ws'
 import { spawn } from 'child_process'
-import { existsSync, rmSync, readFileSync } from 'fs'
+import { existsSync, mkdirSync, rmSync, readFileSync, writeFileSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 
@@ -16,6 +16,8 @@ const ROOT = join(__dirname, '..')
 const PORT = 5194
 const DB = `/tmp/suggestions-test-${process.pid}.db`
 const TODD_PID = `/tmp/suggestions-test-todd-${process.pid}.pid`
+const TODD_HOME = `/tmp/suggestions-test-home-${process.pid}`
+const TODD_CONFIG = 'suggestions-test'
 const useTls = existsSync(`${process.env.HOME}/.config/tlda/localhost+2.pem`)
 const proto = useTls ? 'https' : 'http'
 const wsProto = useTls ? 'wss' : 'ws'
@@ -24,9 +26,10 @@ const base = `${proto}://localhost:${PORT}`
 
 let srv, todd
 function cleanup(code) {
-  try { todd?.kill('SIGKILL') } catch {}
-  try { srv?.kill('SIGKILL') } catch {}
-  for (const f of [DB, `${DB}-wal`, `${DB}-shm`, TODD_PID]) { try { rmSync(f, { force: true }) } catch {} }
+  todd?.kill('SIGKILL')
+  srv?.kill('SIGKILL')
+  for (const f of [DB, `${DB}-wal`, `${DB}-shm`, TODD_PID]) rmSync(f, { force: true })
+  rmSync(TODD_HOME, { recursive: true, force: true })
   process.exit(code)
 }
 const fail = (m) => { console.error('FAIL:', m); cleanup(1) }
@@ -55,6 +58,15 @@ const getAll = () => fetch(`${base}/api/suggestions`).then(r => r.json()).then(j
 
 async function run() {
   if (!await waitHealth()) fail(`server never healthy.\n${log}`)
+  const toddConfigDir = join(TODD_HOME, '.config', 'tlda')
+  mkdirSync(toddConfigDir, { recursive: true })
+  writeFileSync(join(toddConfigDir, 'config.json'), JSON.stringify({
+    defaultConfig: TODD_CONFIG,
+    configs: {
+      [TODD_CONFIG]: { database: base, store: base, licenseKey: '' },
+    },
+    bots: [],
+  }, null, 2))
 
   // WS client to capture the 'suggestions' broadcast.
   let lastBroadcast = null
@@ -91,7 +103,7 @@ async function run() {
   // 4. Spawn the Todd bot the way the supervisor does.
   todd = spawn('node', ['bin/todd.mjs'], {
     cwd: ROOT,
-    env: { ...process.env, TLDA_SERVER: base, TLDA_BOT_NAME: 'todd', TLDA_BOT_PIDFILE: TODD_PID,
+    env: { ...process.env, HOME: TODD_HOME, TLDA_CONFIG: TODD_CONFIG, TLDA_BOT_NAME: 'todd', TLDA_BOT_PIDFILE: TODD_PID,
            NODE_TLS_REJECT_UNAUTHORIZED: '0' },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -106,11 +118,11 @@ async function run() {
     if (registered) break
   }
   if (!registered) fail(`Todd never registered as fleet:todd.\nTodd log:\n${toddLog}`)
-  if (registered.friendly_name !== 'Todd') fail(`Todd friendly_name should be "Todd", got "${registered.friendly_name}"`)
+  if (registered.friendly_name !== 'todd') fail(`Todd friendly_name should be "todd", got "${registered.friendly_name}"`)
   if (!existsSync(TODD_PID)) fail('Todd did not write its pidfile at TLDA_BOT_PIDFILE')
   const pid = readFileSync(TODD_PID, 'utf8').trim()
   if (!pid || isNaN(parseInt(pid, 10))) fail(`Todd pidfile content invalid: "${pid}"`)
-  console.log(`PASS: Todd registered as fleet:todd ("Todd"), wrote pidfile (pid ${pid})`)
+  console.log(`PASS: Todd registered as fleet:todd ("todd"), wrote pidfile (pid ${pid})`)
 
   console.log('\nALL CHECKS PASSED')
   cleanup(0)
