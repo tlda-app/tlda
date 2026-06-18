@@ -28,6 +28,7 @@
     "@codemirror/search": "^6.6.0",
     "@codemirror/state": "^6.5.4",
     "@codemirror/view": "^6.39.12",
+    "@deepgram/sdk": "^5.4.0",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@replit/codemirror-vim": "^6.3.0",
     "@tanstack/react-virtual": "^3.13.23",

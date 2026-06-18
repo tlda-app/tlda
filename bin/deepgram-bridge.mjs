@@ -2,13 +2,15 @@
 // deepgram-bridge.mjs — Bridges browser mic audio to Deepgram's streaming API.
 // Browser connects to ws://localhost:8179, sends raw PCM audio, receives transcripts.
 //
-// Usage: node bin/deepgram-bridge.mjs [--port 8179] [--key DEEPGRAM_API_KEY]
+// Usage:
+//   node bin/deepgram-bridge.mjs [--port 8179] [--key DEEPGRAM_API_KEY]
+//   node bin/deepgram-bridge.mjs --validate-audio [--port 8179] [--capture-dir DIR]
 //
 // The API key is resolved in order: --key flag > DEEPGRAM_API_KEY env > ~/.config/tlda/config.json
 
 import { WebSocketServer, WebSocket } from 'ws'
 import { createServer as createHttpsServer } from 'https'
-import { readFileSync, existsSync } from 'fs'
+import { mkdirSync, readFileSync, existsSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { loadConfig } from '../shared/config.mjs'
@@ -16,6 +18,10 @@ import { loadConfig } from '../shared/config.mjs'
 const PORT = process.argv.includes('--port')
   ? parseInt(process.argv[process.argv.indexOf('--port') + 1])
   : 8179
+const VALIDATE_AUDIO = process.argv.includes('--validate-audio')
+const CAPTURE_DIR = process.argv.includes('--capture-dir')
+  ? process.argv[process.argv.indexOf('--capture-dir') + 1]
+  : join(process.env.HOME || homedir(), '.config', 'tlda', 'voice-captures')
 
 function resolveApiKey() {
   if (process.argv.includes('--key')) {
@@ -32,7 +38,7 @@ function resolveApiKey() {
 }
 
 const API_KEY = resolveApiKey()
-if (!API_KEY) {
+if (!API_KEY && !VALIDATE_AUDIO) {
   console.error('[deepgram-bridge] No API key found. Set DEEPGRAM_API_KEY, use --key, or add deepgramApiKey to ~/.config/tlda/config.json')
   process.exit(1)
 }
@@ -55,6 +61,7 @@ function buildDeepgramUrl() {
     smart_format: 'true',
     punctuate: 'true',
     interim_results: 'true',
+    endpointing: '300',
     utterance_end_ms: '1000',
     vad_events: 'true',
     encoding: 'linear16',
@@ -89,6 +96,10 @@ if (useTls) {
   console.log(`[deepgram-bridge] WebSocket server on ws://localhost:${PORT}`)
 }
 console.log(`[deepgram-bridge] Using ${KEYWORDS.length} keyword boosts`)
+if (VALIDATE_AUDIO) {
+  mkdirSync(CAPTURE_DIR, { recursive: true })
+  console.log(`[deepgram-bridge] validate-audio mode; saving captures to ${CAPTURE_DIR}`)
+}
 
 function broadcast(msg) {
   const str = typeof msg === 'string' ? msg : JSON.stringify(msg)
@@ -97,11 +108,76 @@ function broadcast(msg) {
   }
 }
 
+function wavHeader({ byteLength, sampleRate = 16000, channels = 1, bitsPerSample = 16 }) {
+  const header = Buffer.alloc(44)
+  const byteRate = sampleRate * channels * bitsPerSample / 8
+  const blockAlign = channels * bitsPerSample / 8
+  header.write('RIFF', 0)
+  header.writeUInt32LE(36 + byteLength, 4)
+  header.write('WAVE', 8)
+  header.write('fmt ', 12)
+  header.writeUInt32LE(16, 16)
+  header.writeUInt16LE(1, 20)
+  header.writeUInt16LE(channels, 22)
+  header.writeUInt32LE(sampleRate, 24)
+  header.writeUInt32LE(byteRate, 28)
+  header.writeUInt16LE(blockAlign, 32)
+  header.writeUInt16LE(bitsPerSample, 34)
+  header.write('data', 36)
+  header.writeUInt32LE(byteLength, 40)
+  return header
+}
+
+function timestampForFilename() {
+  return new Date().toISOString().replace(/[:.]/g, '-')
+}
+
 wss.on('connection', (browserWs) => {
   console.log(`[deepgram-bridge] browser connected (${wss.clients.size} total)`)
 
   let dgWs = null
   let keepAliveInterval = null
+  let audioStartedAt = 0
+  let audioLastAt = 0
+  let audioBytes = 0
+  let audioChunks = 0
+  let audioMaxGapMs = 0
+  let audioGapCount = 0
+  let audioEmptyFrames = 0
+  const audioBuffers = []
+
+  function audioStats(extra = {}) {
+    const elapsedMs = audioStartedAt ? Math.max(1, audioLastAt - audioStartedAt) : 0
+    const expectedBytes = elapsedMs ? Math.round(16000 * 2 * elapsedMs / 1000) : 0
+    return {
+      type: 'audio_stats',
+      bytes: audioBytes,
+      chunks: audioChunks,
+      elapsed_ms: elapsedMs,
+      expected_bytes: expectedBytes,
+      ratio_to_realtime: expectedBytes ? audioBytes / expectedBytes : null,
+      max_gap_ms: audioMaxGapMs,
+      gaps_over_250ms: audioGapCount,
+      empty_frames: audioEmptyFrames,
+      ...extra,
+    }
+  }
+
+  function saveValidationCapture(reason) {
+    if (!VALIDATE_AUDIO || audioBytes === 0) return null
+    mkdirSync(CAPTURE_DIR, { recursive: true })
+    const base = join(CAPTURE_DIR, `voice-${timestampForFilename()}`)
+    const raw = Buffer.concat(audioBuffers, audioBytes)
+    const rawPath = `${base}.raw`
+    const wavPath = `${base}.wav`
+    writeFileSync(rawPath, raw)
+    writeFileSync(wavPath, Buffer.concat([wavHeader({ byteLength: raw.length }), raw]))
+    const stats = audioStats({ reason, raw_path: rawPath, wav_path: wavPath })
+    writeFileSync(`${base}.json`, JSON.stringify(stats, null, 2) + '\n')
+    console.log(`[deepgram-bridge] validate saved ${audioBytes} bytes (${audioChunks} chunks) to ${wavPath}`)
+    try { browserWs.send(JSON.stringify({ ...stats, type: 'validation_saved' })) } catch {}
+    return stats
+  }
 
   function connectDeepgram() {
     if (dgWs && (dgWs.readyState === WebSocket.OPEN || dgWs.readyState === WebSocket.CONNECTING)) return
@@ -119,7 +195,7 @@ wss.on('connection', (browserWs) => {
         if (dgWs?.readyState === WebSocket.OPEN) {
           dgWs.send(JSON.stringify({ type: 'KeepAlive' }))
         }
-      }, 8000)
+      }, 3000)
     })
 
     dgWs.on('message', (data) => {
@@ -142,6 +218,11 @@ wss.on('connection', (browserWs) => {
             speech_final: msg.speech_final || false,
             timestamp: Date.now(),
           })
+        }
+
+        if (msg.type === 'SpeechStarted') {
+          console.log('[deepgram-bridge] speech started')
+          broadcast({ type: 'speech_started', timestamp: Date.now() })
         }
 
         if (msg.type === 'UtteranceEnd') {
@@ -197,6 +278,34 @@ wss.on('connection', (browserWs) => {
     // out of the audio path so things mostly looked right, but log + stop +
     // flush never worked.
     if (isBinary) {
+      if (VALIDATE_AUDIO) {
+        const chunk = Buffer.from(data)
+        if (chunk.length === 0) {
+          audioEmptyFrames++
+          console.warn('[deepgram-bridge] validate received empty audio frame')
+          return
+        }
+        const now = Date.now()
+        if (audioLastAt) {
+          const gap = now - audioLastAt
+          audioMaxGapMs = Math.max(audioMaxGapMs, gap)
+          if (gap > 250) {
+            audioGapCount++
+            console.warn(`[deepgram-bridge] validate audio gap ${gap}ms`)
+          }
+        }
+        if (!audioStartedAt) audioStartedAt = now
+        audioLastAt = now
+        audioBytes += chunk.length
+        audioChunks++
+        audioBuffers.push(chunk)
+        if (audioChunks === 1 || audioChunks % 50 === 0) {
+          const stats = audioStats()
+          console.log(`[deepgram-bridge] validate audio bytes=${stats.bytes} chunks=${stats.chunks} ratio=${stats.ratio_to_realtime?.toFixed?.(2) ?? 'n/a'}`)
+          try { browserWs.send(JSON.stringify(stats)) } catch {}
+        }
+        return
+      }
       if (!dgWs || dgWs.readyState !== WebSocket.OPEN) {
         connectDeepgram()
         const pending = Buffer.from(data)
@@ -218,14 +327,18 @@ wss.on('connection', (browserWs) => {
     try {
       const msg = JSON.parse(data.toString())
       if (msg.type === 'start') {
+        if (VALIDATE_AUDIO) {
+          browserWs.send(JSON.stringify({ type: 'status', status: 'validating_audio', capture_dir: CAPTURE_DIR }))
+          return
+        }
         connectDeepgram()
-      } else if (msg.type === 'stop' || msg.type === 'flush') {
-        // Voice client sends these on pause/hardReset cycles, originally
-        // expecting the pre-isBinary-fix behavior (silent no-op — the text
-        // branch was unreachable). Honoring them here actually tears down
-        // Deepgram mid-utterance, which drops in-flight interim text and
-        // causes "transcripts vanish." Keep the session warm; rely on the
-        // browserWs close to end it.
+      } else if (msg.type === 'finalize' || msg.type === 'flush') {
+        if (dgWs?.readyState === WebSocket.OPEN) {
+          try { dgWs.send(JSON.stringify({ type: 'Finalize' })) } catch {}
+        }
+      } else if (msg.type === 'stop') {
+        if (VALIDATE_AUDIO) saveValidationCapture('stop')
+        // Keep the session warm; rely on the browserWs close to end it.
       } else if (msg.type === 'log') {
         console.log(`[voice] ${msg.text}`)
       }
@@ -234,6 +347,7 @@ wss.on('connection', (browserWs) => {
 
   browserWs.on('close', () => {
     console.log(`[deepgram-bridge] browser disconnected (${wss.clients.size} total)`)
+    saveValidationCapture('browser-close')
     disconnectDeepgram()
   })
 

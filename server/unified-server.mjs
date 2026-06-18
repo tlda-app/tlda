@@ -1069,41 +1069,71 @@ app.post('/api/voice/whisper/stop', async (req, res) => {
 // scheme here is what lets the proxy actually reach it off Skip's local machine.
 const _dgCert = path.join(homedir(), '.config/tlda/localhost+2.pem')
 const _dgKey = path.join(homedir(), '.config/tlda/localhost+2-key.pem')
-const DEEPGRAM_BRIDGE_URL = (existsSync(_dgCert) && existsSync(_dgKey) ? 'wss' : 'ws') + '://127.0.0.1:8179'
+const _dgWsScheme = existsSync(_dgCert) && existsSync(_dgKey) ? 'wss' : 'ws'
+const DEEPGRAM_BRIDGE_URL = `${_dgWsScheme}://127.0.0.1:8179`
+const DEEPGRAM_SDK_BRIDGE_URL = `${_dgWsScheme}://127.0.0.1:8180`
+
+async function isBridgeUp(bridgeUrl) {
+  const WS = (await import('ws')).default
+  return new Promise(resolve => {
+    let done = false
+    let ws
+    const finish = (v) => { if (!done) { done = true; try { ws?.close() } catch {}; resolve(v) } }
+    try {
+      ws = new WS(bridgeUrl, { rejectUnauthorized: false })
+      ws.on('open', () => finish(true))
+      ws.on('error', () => finish(false))
+      setTimeout(() => finish(false), 800)
+    } catch { resolve(false) }
+  })
+}
+
+async function spawnVoiceBridge({ bridgeUrl, scriptName, logName, label }) {
+  if (await isBridgeUp(bridgeUrl)) return { ok: true, started: false }
+
+  const { spawn } = await import('child_process')
+  const { openSync } = await import('fs')
+  const { dirname, join } = await import('path')
+  const { fileURLToPath } = await import('url')
+  const here = dirname(fileURLToPath(import.meta.url))
+  const tldaRoot = dirname(here)
+  const bridgeScript = join(tldaRoot, 'bin', scriptName)
+  const logPath = join(process.env.HOME || '', '.config', 'tlda', logName)
+  const fd = openSync(logPath, 'a')
+  const child = spawn('node', [bridgeScript], {
+    detached: true,
+    stdio: ['ignore', fd, fd],
+    cwd: tldaRoot,
+  })
+  child.unref()
+  console.log(`[voice] ${label} bridge spawned (pid ${child.pid})`)
+  return { ok: true, started: true, pid: child.pid }
+}
 
 app.post('/api/voice/deepgram/start', async (req, res) => {
   try {
-    const WS = (await import('ws')).default
-    const alreadyUp = await new Promise(resolve => {
-      let done = false
-      try {
-        const ws = new WS(DEEPGRAM_BRIDGE_URL, { rejectUnauthorized: false })
-        ws.on('open', () => { done = true; ws.close(); resolve(true) })
-        ws.on('error', () => { if (!done) { done = true; resolve(false) } })
-        setTimeout(() => { if (!done) { done = true; try { ws.close() } catch {}; resolve(false) } }, 800)
-      } catch { resolve(false) }
-    })
-    if (alreadyUp) return res.json({ ok: true, started: false })
-
-    const { spawn } = await import('child_process')
-    const { openSync } = await import('fs')
-    const { dirname, join } = await import('path')
-    const { fileURLToPath } = await import('url')
-    const here = dirname(fileURLToPath(import.meta.url))
-    const tldaRoot = dirname(here)
-    const bridgeScript = join(tldaRoot, 'bin', 'deepgram-bridge.mjs')
-    const logPath = join(process.env.HOME || '', '.config', 'tlda', 'deepgram-bridge.log')
-    const fd = openSync(logPath, 'a')
-    const child = spawn('node', [bridgeScript], {
-      detached: true,
-      stdio: ['ignore', fd, fd],
-      cwd: tldaRoot,
-    })
-    child.unref()
-    console.log('[voice] deepgram bridge spawned (lazy-start, pid', child.pid, ')')
-    res.json({ ok: true, started: true, pid: child.pid })
+    res.json(await spawnVoiceBridge({
+      bridgeUrl: DEEPGRAM_BRIDGE_URL,
+      scriptName: 'deepgram-bridge.mjs',
+      logName: 'deepgram-bridge.log',
+      label: 'deepgram raw',
+    }))
   } catch (err) {
     console.error('[voice] deepgram/start failed:', err.message)
+    res.status(500).json({ ok: false, error: err.message })
+  }
+})
+
+app.post('/api/voice/deepgram-sdk/start', async (req, res) => {
+  try {
+    res.json(await spawnVoiceBridge({
+      bridgeUrl: DEEPGRAM_SDK_BRIDGE_URL,
+      scriptName: 'deepgram-sdk-bridge.mjs',
+      logName: 'deepgram-sdk-bridge.log',
+      label: 'deepgram sdk',
+    }))
+  } catch (err) {
+    console.error('[voice] deepgram-sdk/start failed:', err.message)
     res.status(500).json({ ok: false, error: err.message })
   }
 })
@@ -1119,22 +1149,22 @@ app.post('/api/voice/deepgram/stop', async (req, res) => {
   }
 })
 
+app.post('/api/voice/deepgram-sdk/stop', async (req, res) => {
+  try {
+    const { execSync } = await import('child_process')
+    try { execSync('pkill -f "deepgram-sdk-bridge.mjs" 2>/dev/null', { timeout: 3000 }) } catch {}
+    console.log('[voice] deepgram sdk bridge stopped')
+    res.json({ ok: true })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message })
+  }
+})
+
 // Probe the local deepgram bridge over TLS (the bridge runs an HTTPS WSS server
 // when the mkcert certs exist — see bin/deepgram-bridge.mjs). The self-signed
 // localhost cert is fine here, so rejectUnauthorized is off.
 async function probeDeepgramBridge() {
-  const WS = (await import('ws')).default
-  return new Promise(resolve => {
-    let done = false
-    let ws
-    const finish = (v) => { if (!done) { done = true; try { ws?.close() } catch {}; resolve(v) } }
-    try {
-      ws = new WS(DEEPGRAM_BRIDGE_URL, { rejectUnauthorized: false })
-      ws.on('open', () => finish(true))
-      ws.on('error', () => finish(false))
-      setTimeout(() => finish(false), 800)
-    } catch { resolve(false) }
-  })
+  return isBridgeUp(DEEPGRAM_BRIDGE_URL)
 }
 
 // Ensure the deepgram bridge is running, spawning it if needed. Used by the
@@ -1165,6 +1195,27 @@ async function ensureDeepgramBridge() {
   }
   await _deepgramBridgeStarting
   return probeDeepgramBridge()
+}
+
+let _deepgramSdkBridgeStarting = null
+async function ensureDeepgramSdkBridge() {
+  if (await isBridgeUp(DEEPGRAM_SDK_BRIDGE_URL)) return true
+  if (!_deepgramSdkBridgeStarting) {
+    _deepgramSdkBridgeStarting = (async () => {
+      await spawnVoiceBridge({
+        bridgeUrl: DEEPGRAM_SDK_BRIDGE_URL,
+        scriptName: 'deepgram-sdk-bridge.mjs',
+        logName: 'deepgram-sdk-bridge.log',
+        label: 'deepgram sdk',
+      })
+      for (let i = 0; i < 24; i++) {
+        await new Promise(r => setTimeout(r, 250))
+        if (await isBridgeUp(DEEPGRAM_SDK_BRIDGE_URL)) return
+      }
+    })().finally(() => { _deepgramSdkBridgeStarting = null })
+  }
+  await _deepgramSdkBridgeStarting
+  return isBridgeUp(DEEPGRAM_SDK_BRIDGE_URL)
 }
 
 // Services health — checks tlda server (self), fleet server, Yjs sync
@@ -2493,14 +2544,14 @@ server.on('upgrade', async (req, socket, head) => {
     return
   }
 
-  // /voice/deepgram — same-origin relay to the local deepgram bridge. A device
-  // that can't reach 127.0.0.1:8179 (the iPad, where localhost is the iPad
-  // itself) connects here over the TLS the page is already authenticated on; we
-  // pipe frames to/from the bridge. This keeps the iPad off iOS Web Speech,
-  // whose restart earcon is the source of the constant beeping. The browser
-  // sends binary PCM + text control messages and receives transcript JSON, so
-  // the binary/text framing is preserved in both directions.
-  if (url.pathname === '/voice/deepgram') {
+  // /voice/deepgram and /voice/deepgram-sdk — same-origin relays to local
+  // Deepgram bridges. A device that can't reach 127.0.0.1 (the iPad, where
+  // localhost is the iPad itself) connects here over the TLS the page is already
+  // authenticated on; we preserve binary PCM + text control framing both ways.
+  if (url.pathname === '/voice/deepgram' || url.pathname === '/voice/deepgram-sdk') {
+    const sdkMode = url.pathname === '/voice/deepgram-sdk'
+    const bridgeUrl = sdkMode ? DEEPGRAM_SDK_BRIDGE_URL : DEEPGRAM_BRIDGE_URL
+    const ensureBridge = sdkMode ? ensureDeepgramSdkBridge : ensureDeepgramBridge
     voiceWss.handleUpgrade(req, socket, head, async (browserWs) => {
       const WS = (await import('ws')).default
       let upstream = null
@@ -2524,7 +2575,7 @@ server.on('upgrade', async (req, socket, head) => {
       browserWs.on('close', closeBoth)
       browserWs.on('error', closeBoth)
 
-      const ready = await ensureDeepgramBridge()
+      const ready = await ensureBridge()
       if (closed) return
       if (!ready) {
         try { browserWs.send(JSON.stringify({ type: 'status', status: 'error', error: 'bridge unavailable' })) } catch {}
@@ -2532,7 +2583,7 @@ server.on('upgrade', async (req, socket, head) => {
         return
       }
 
-      upstream = new WS(DEEPGRAM_BRIDGE_URL, { rejectUnauthorized: false })
+      upstream = new WS(bridgeUrl, { rejectUnauthorized: false })
       upstream.on('open', () => {
         for (const { data, isBinary } of pending) {
           try { upstream.send(data, { binary: isBinary }) } catch {}
@@ -2546,7 +2597,7 @@ server.on('upgrade', async (req, socket, head) => {
       })
       upstream.on('close', closeBoth)
       upstream.on('error', (err) => {
-        console.warn('[voice-proxy] upstream error:', err.message)
+        console.warn(`[voice-proxy:${sdkMode ? 'sdk' : 'raw'}] upstream error:`, err.message)
         closeBoth()
       })
     })

@@ -558,6 +558,28 @@ function reset() {
   console.log('✓ Test 8d: accumulator switches preserve committed note text')
 }
 
+// ---- Test 8e: Deepgram duplicate final without fresh interim is stale ----
+{
+  const ta = makeTextarea()
+  setVoiceTarget(ta, [], {})
+  window.__voiceTest.fakeRecord(ta)
+
+  window.__voiceTest.injectTranscript('shows up again', false)
+  window.__voiceTest.injectTranscript('shows up again', true)
+  assert.equal(ta.value, 'shows up again', 'first final should commit text')
+
+  window.__voiceTest.injectTranscript('shows up again', true)
+  assert.equal(ta.value, 'shows up again', 'duplicate final without fresh interim should be dropped')
+
+  window.__voiceTest.injectTranscript('shows up again', false)
+  window.__voiceTest.injectTranscript('shows up again', true)
+  assert.equal(ta.value, 'shows up again shows up again', 'same words after fresh interim should still be allowed')
+
+  window.__voiceTest.fakeStop()
+  reset()
+  console.log('✓ Test 8e: Deepgram duplicate stale final is dropped')
+}
+
 await setBackend('chrome')
 
 // ---- Test 9: Identical finals append as ordinary final text ----
@@ -650,4 +672,4 @@ await setBackend('chrome')
   console.log('✓ Test 11: Deepgram mic-frame recovery clears don’t-speak banner')
 }
 
-console.log('\nAll 13 tests passed.')
+console.log('\nAll 14 tests passed.')

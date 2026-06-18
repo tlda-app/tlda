@@ -18,11 +18,11 @@ const DEFAULTS = {
   'math-note-opacity': 1.0 as number,
   'response-curve': DEFAULT_CURVE as CurveHandles,
   'spawn-mode': '' as string,
-  // Default on, but to the SILENT backend (deepgram) — never chrome. Chrome
+  // Default on, but to the SILENT backend (Deepgram SDK) — never chrome. Chrome
   // (the only backend whose earcon can beep) is opt-in only. There is NO
   // fallback: if the selected backend is unreachable, voice goes quiet, it
   // never switches to another backend.
-  'voice-backend': 'deepgram' as string,
+  'voice-backend': 'deepgram-sdk' as string,
   'voice-submit-words': 'send, send it, sent' as string,
   'voice-sink-shape-types': 'fleet-agents' as string,
   'fleet-font-size': 11 as number,

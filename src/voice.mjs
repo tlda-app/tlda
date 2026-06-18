@@ -32,10 +32,13 @@ const WHISPER_BRIDGE_URL = location.protocol === 'https:' ? 'wss://127.0.0.1:817
 // on the tlda server (/voice/deepgram), reusing the page's TLS + token. This is
 // what keeps the iPad off iOS Web Speech, whose restart earcon causes the beeping.
 const _onServerHost = ['localhost', '127.0.0.1', '::1'].includes(location.hostname)
+let _deepgramBridgeImpl = 'sdk'
 function deepgramBridgeUrl() {
-  if (_onServerHost) return WHISPER_BRIDGE_URL
+  const directPort = _deepgramBridgeImpl === 'sdk' ? 8180 : 8179
+  if (_onServerHost) return `${location.protocol === 'https:' ? 'wss' : 'ws'}://127.0.0.1:${directPort}`
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-  return appendToken(`${proto}://${location.host}/voice/deepgram`)
+  const path = _deepgramBridgeImpl === 'sdk' ? '/voice/deepgram-sdk' : '/voice/deepgram'
+  return appendToken(`${proto}://${location.host}${path}`)
 }
 
 let _backend = 'deepgram'       // 'deepgram' | 'chrome' | 'whisper-stream'
@@ -334,6 +337,7 @@ const DOT_AMBER_OPACITY = '0.4'
 const AUDIO_FLOWING_MS = 3000  // switch to amber after this long without a result
 let _healthDot = null
 let _healthDotTimer = null
+let _voiceHealthLabel = ''
 
 function ensureHealthDot() {
   if (_healthDot) return _healthDot
@@ -372,6 +376,8 @@ function setTextareaGlow(color) {
 function dotAudioFlowing() {
   if (!_recording) return
   hideDontSpeak()
+  _voiceHealthLabel = 'speech detected'
+  showRecordingHud()
   const dot = ensureHealthDot()
   dot.style.display = 'inline-block'
   dot.style.backgroundColor = DOT_GREEN
@@ -385,6 +391,8 @@ function dotAudioFlowing() {
 // Audio went stale — no results for AUDIO_FLOWING_MS
 function dotAudioStale() {
   if (!_recording) return
+  _voiceHealthLabel = _deepgramConnected ? 'mic live; waiting for speech' : 'waiting for recognizer'
+  showRecordingHud()
   const dot = ensureHealthDot()
   dot.style.backgroundColor = DOT_AMBER
   dot.style.opacity = DOT_AMBER_OPACITY
@@ -393,6 +401,7 @@ function dotAudioStale() {
 
 // Show amber dot immediately (recording started, no audio yet)
 function dotRecordingStart() {
+  _voiceHealthLabel = 'starting voice'
   const dot = ensureHealthDot()
   dot.style.display = 'inline-block'
   dot.style.backgroundColor = DOT_AMBER
@@ -410,6 +419,7 @@ function hideHealthDot() {
   clearTimeout(_glowTimer)
   _glowTimer = null
   hideDontSpeak()
+  _voiceHealthLabel = ''
   setTextareaGlow(null)
   if (_healthDot) {
     _healthDot.style.opacity = '0'
@@ -417,7 +427,7 @@ function hideHealthDot() {
   }
 }
 
-// --- Giant "DON'T SPEAK" overlay when voice is dead ---
+// --- Pause overlay when voice is dead ---
 let _dontSpeakOverlay = null
 
 function ensureDontSpeakOverlay() {
@@ -438,14 +448,17 @@ function ensureDontSpeakOverlay() {
     padding: '20px',
     pointerEvents: 'none',
   })
-  _dontSpeakOverlay.textContent = '\u{1F507} DON’T SPEAK'
+  _dontSpeakOverlay.textContent = 'Pause — voice is reconnecting'
   document.body.appendChild(_dontSpeakOverlay)
   return _dontSpeakOverlay
 }
 
-function showDontSpeak() {
+function showDontSpeak(reason = 'voice is reconnecting') {
   if (!_recording) return
+  _voiceHealthLabel = reason
+  showRecordingHud()
   const el = ensureDontSpeakOverlay()
+  el.textContent = `Pause — ${reason}`
   el.style.display = 'block'
 }
 
@@ -463,7 +476,16 @@ function sendDeepgramAudioChunk(data) {
   }
   _lastAudioChunkTime = Date.now()
   hideDontSpeak()
+  if (_voiceHealthLabel === 'starting voice' || _voiceHealthLabel === 'connecting to recognizer' || _voiceHealthLabel === 'recognizer connected') {
+    _voiceHealthLabel = 'mic live; waiting for speech'
+    showRecordingHud()
+  }
   return true
+}
+
+function finalizeDeepgramBridge() {
+  if (!_deepgramWs || !_deepgramConnected) return
+  try { _deepgramWs.send(JSON.stringify({ type: 'finalize' })) } catch {}
 }
 
 function showHud(text, stateColor) {
@@ -483,11 +505,21 @@ function showHud(text, stateColor) {
 }
 
 // Show recording status — text uses agent color, dot shows health separately
+function voiceStatusLabel() {
+  const label = _voiceHealthLabel || ''
+  if (label.startsWith('mic stalled') || label.startsWith('mic stopped') || label.startsWith('connection lost')) {
+    return `paused: ${label}`
+  }
+  if (label === 'speech detected') return 'speaking'
+  if (label === 'starting voice' || label === 'connecting to recognizer' || label === 'recognizer connected') return 'mic live'
+  if (label.startsWith('mic live') || label === 'waiting for recognizer') return 'mic live'
+  return label || 'mic live'
+}
+
 function showRecordingHud() {
-  const who = targetLabel()
+  const who = targetLabel() || 'nowhere'
   const mode = _mathMode ? ' [math]' : ''
-  const be = _backend === 'deepgram' ? ' [deepgram]' : _backend === 'whisper-stream' ? ' [whisper]' : ''
-  const text = who ? `recording → ${who}${mode}${be}` : `recording${mode}${be}`
+  const text = `${voiceStatusLabel()} -> ${who}${mode}`
   showHud(text, '#c87070')
 }
 
@@ -1096,6 +1128,7 @@ let _dgTrickleTimer = null       // setTimeout id for next trickle step
 let _dgTrickleDelay = 40         // ms between words (adjusted per burst)
 let _dgIgnoreUntilUtteranceEnd = false // true after voice-send; drops trailing old-utterance results
 let _dgIgnoredSubmittedText = null // normalized utterance submitted before waiting for utterance_end
+let _dgLastFinalNorm = ''        // last committed final; used to drop duplicate stale finals
 
 function _dgTrickleFlush() {
   clearTimeout(_dgTrickleTimer)
@@ -1106,11 +1139,12 @@ function normalizeDeepgramText(text) {
   return String(text || '').replace(/\s+/g, ' ').trim().toLowerCase()
 }
 
-function resetDeepgramTextState({ ignoreUntilUtteranceEnd = false, submittedText = null } = {}) {
+function resetDeepgramTextState({ ignoreUntilUtteranceEnd = false, submittedText = null, preserveLastFinal = false } = {}) {
   _deepgramInterim = ''
   _dgHasSeenInterim = false
   _dgIgnoreUntilUtteranceEnd = ignoreUntilUtteranceEnd
   _dgIgnoredSubmittedText = ignoreUntilUtteranceEnd ? normalizeDeepgramText(submittedText) : null
+  if (!preserveLastFinal) _dgLastFinalNorm = ''
   _dgTrickleFlush()
   _dgTrickleWords = []
   _dgTrickleShown = 0
@@ -1227,6 +1261,13 @@ function onDeepgramMessage(event) {
       return
     }
 
+    if (msg.type === 'speech_started') {
+      _lastResultTime = Date.now()
+      dotAudioFlowing()
+      vlog('speech started')
+      return
+    }
+
     if (msg.type === 'utterance_end') {
       _dgIgnoreUntilUtteranceEnd = false
       _dgIgnoredSubmittedText = null
@@ -1242,10 +1283,11 @@ function onDeepgramMessage(event) {
 
     if (_dgIgnoreUntilUtteranceEnd) {
       const normalized = normalizeDeepgramText(msg.text)
-      if (!_dgIgnoredSubmittedText || _dgIgnoredSubmittedText.includes(normalized) || normalized.includes(_dgIgnoredSubmittedText)) {
+      if (_dgIgnoredSubmittedText && (_dgIgnoredSubmittedText.includes(normalized) || normalized.includes(_dgIgnoredSubmittedText))) {
         vlog('DROPPED transcript (waiting for utterance end)', { final: !!msg.is_final, text: msg.text.slice(0, 30) })
         return
       }
+      vlog('released utterance-end guard on fresh transcript', { final: !!msg.is_final, text: msg.text.slice(0, 30) })
       _dgIgnoreUntilUtteranceEnd = false
       _dgIgnoredSubmittedText = null
     }
@@ -1273,13 +1315,20 @@ function onDeepgramMessage(event) {
       // Final result — append to committed text, clear interim
       _dgTrickleFlush()
       const processed = postProcessTranscript(text)
+      const normalizedFinal = normalizeDeepgramText(processed)
+      if (normalizedFinal && normalizedFinal === _dgLastFinalNorm && !_dgHasSeenInterim) {
+        vlog('DROPPED transcript (duplicate final)', { text: text.slice(0, 30) })
+        return
+      }
       _left += (_left.length && !_left.endsWith(' ') ? ' ' : '') + processed
-      resetDeepgramTextState()
+      _dgLastFinalNorm = normalizedFinal
+      resetDeepgramTextState({ preserveLastFinal: true })
       _interim = ''
     } else {
       // Interim — trickle new words in one at a time, smoothed
       _deepgramInterim = text
       _dgHasSeenInterim = true   // saw an interim → finals for this utterance are valid
+      _dgLastFinalNorm = ''
       const newWords = text.split(/\s+/).filter(Boolean)
       const prevLen = _dgTrickleWords.length
       _dgTrickleWords = newWords
@@ -1343,10 +1392,14 @@ function connectDeepgramBridge() {
     _deepgramWs = null
   }
   try {
+    _voiceHealthLabel = 'connecting to recognizer'
+    if (_recording) showRecordingHud()
     _deepgramWs = new WebSocket(deepgramBridgeUrl())
     _deepgramWs.onopen = () => {
       _deepgramConnected = true
       hideDontSpeak()
+      _voiceHealthLabel = 'recognizer connected'
+      showRecordingHud()
       vlog('bridge WS open')
       _deepgramWs.send(JSON.stringify({ type: 'start' }))
     }
@@ -1355,7 +1408,7 @@ function connectDeepgramBridge() {
       _deepgramConnected = false
       _deepgramWs = null
       vlog('bridge WS closed', { recording: _recording })
-      showDontSpeak()
+      showDontSpeak('connection lost; reconnecting')
       if (_recording && _backend === 'deepgram') {
         vlog('bridge auto-reconnect in 1s')
         setTimeout(connectDeepgramBridge, 1000)
@@ -1399,6 +1452,7 @@ async function startDeepgramMic() {
   if (track) {
     track.onended = () => {
       vlog('mic track ended — OS killed mic', { recording: _recording, backend: _backend })
+      showDontSpeak('mic stopped; restarting')
       stopDeepgramMic()
       if (_recording && _backend === 'deepgram') {
         setTimeout(() => startDeepgramMic(), 500)
@@ -1436,6 +1490,8 @@ async function startDeepgramMic() {
     sendDeepgramAudioChunk(e.data)
   }
   source.connect(_deepgramWorklet)
+  _voiceHealthLabel = _deepgramConnected ? 'mic live; waiting for speech' : 'mic live; waiting for recognizer'
+  if (_recording) showRecordingHud()
 
   _lastAudioChunkTime = 0
   _audioHeartbeatInterval = setInterval(() => {
@@ -1459,7 +1515,7 @@ async function startDeepgramMic() {
     // the AudioContext or worklet died without us noticing.
     if (ago !== null && ago > 2000) {
       vlog('audio heartbeat: no audio for 2s — restarting mic pipeline')
-      showDontSpeak()
+      showDontSpeak('mic stalled; restarting')
       stopDeepgramMic()
       startDeepgramMic()
     }
@@ -1497,6 +1553,7 @@ function afterSend() {
     return
   }
   if (_backend === 'deepgram') {
+    finalizeDeepgramBridge()
     resetDeepgramTextState()
     return
   }
@@ -1753,7 +1810,7 @@ export async function initVoice() {
   // Wait for the saved pref to load before committing — never pick a backend
   // before we know what the user actually selected. Cap at 2s.
   await Promise.race([whenPrefsLoaded(), new Promise(r => setTimeout(r, 2000))])
-  const prefBackend = getPref('voice-backend')   // 'deepgram' | 'whisper' | 'chrome' | '' (off)
+  const prefBackend = getPref('voice-backend')   // 'deepgram-sdk' | 'whisper' | 'chrome' | '' (off)
 
   if (prefBackend === 'chrome') {
     _backend = 'chrome'
@@ -1770,17 +1827,19 @@ export async function initVoice() {
     _whisperAvailable = true
     connectWhisperBridge()
     console.log('voice: using whisper-stream backend (explicitly enabled)')
-  } else if (prefBackend === 'deepgram') {
+  } else if (prefBackend === 'deepgram' || prefBackend === 'deepgram-sdk') {
     _backend = 'deepgram'
+    _deepgramBridgeImpl = 'sdk'
+    const startPath = '/api/voice/deepgram-sdk/start'
     try {
-      await fetch('/api/voice/deepgram/start', { method: 'POST' })
+      await fetch(startPath, { method: 'POST' })
     } catch (err) {
       console.warn('voice: deepgram lazy-start request failed', err)
     }
     // Connect lazily when recording starts. No probe-and-fallback: if the bridge
     // is unreachable, recording just does nothing — never a fallback.
     _deepgramAvailable = true
-    console.log('voice: using deepgram backend (explicitly enabled)')
+    console.log(`voice: using deepgram ${_deepgramBridgeImpl} backend (explicitly enabled)`)
   } else {
     // No backend enabled → voice is OFF. Nothing runs, nothing makes a sound.
     _backend = 'none'
@@ -1907,7 +1966,7 @@ export async function initVoice() {
     }
   })
 
-  const backend = _backend === 'deepgram' ? 'deepgram' : _backend === 'whisper-stream' ? 'whisper' : 'Web Speech API'
+  const backend = _backend === 'deepgram' ? (_deepgramBridgeImpl === 'sdk' ? 'deepgram-sdk' : 'deepgram') : _backend === 'whisper-stream' ? 'whisper' : 'Web Speech API'
   console.log(`voice: initialized v8 — ${backend} — BroadcastChannel: ${!!_micChannel}`)
   if (_isTouchDevice) startRecording()
   return true
@@ -1951,6 +2010,8 @@ export function getBackend() { return _backend }
 export function isWhisperAvailable() { return _whisperAvailable }
 export async function setBackend(be) {
   if (be === 'whisper') be = 'whisper-stream' // prefs dropdown uses the short name
+  const nextDeepgramImpl = 'sdk'
+  if (be === 'deepgram' || be === 'deepgram-sdk') be = 'deepgram'
   // Explicit "off": no backend enabled. Stop any recording and go silent.
   if (be === '' || be === 'none') {
     if (_recording) stopRecording()
@@ -1960,13 +2021,16 @@ export async function setBackend(be) {
     return
   }
   if (be !== 'chrome' && be !== 'whisper-stream' && be !== 'deepgram') return
-  if (be === _backend) return
+  if (be === _backend && (be !== 'deepgram' || nextDeepgramImpl === _deepgramBridgeImpl)) return
   if (be === 'chrome' && !SpeechRecognition) return
   // Lazy-start the target backend on demand. init only probes the backend it
   // commits to, so without this a live switch to the other one would hit a stale
   // availability flag and silently no-op. (whisper is legacy — left guarded.)
-  if (be === 'deepgram' && !_deepgramAvailable) {
-    try { await fetch('/api/voice/deepgram/start', { method: 'POST' }) } catch {}
+  if (be === 'deepgram') {
+    _deepgramBridgeImpl = nextDeepgramImpl
+  }
+  if (be === 'deepgram') {
+    try { await fetch('/api/voice/deepgram-sdk/start', { method: 'POST' }) } catch {}
     _deepgramAvailable = true
   }
   if (be === 'whisper-stream' && !_whisperAvailable) return
@@ -1974,7 +2038,7 @@ export async function setBackend(be) {
   if (wasRecording) stopRecording()
   _backend = be
   if (wasRecording) startRecording()
-  showHud(`voice: ${be}`, '#9370db')
+  showHud(`voice: ${be === 'deepgram' && _deepgramBridgeImpl === 'sdk' ? 'deepgram-sdk' : be}`, '#9370db')
   fadeHud(2000)
 }
 export function resetTranscript() {
