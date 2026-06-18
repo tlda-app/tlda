@@ -46,6 +46,16 @@ cmd = mod.build_codex_cmd(
 assert "-s workspace-write" in cmd
 assert "-C /Users/skip/work/tlda" in cmd
 
+goose_cmd = mod.build_goose_cmd("fleet:test123", "fleet-goose-canary", "deepseek/deepseek-chat", name="goose-canary")
+assert "XDG_CONFIG_HOME=" in goose_cmd
+assert "XDG_DATA_HOME=" in goose_cmd
+assert "XDG_CACHE_HOME=" in goose_cmd
+assert "XDG_STATE_HOME=" in goose_cmd
+assert "tlda-goose-state/fleet-test123/data" in goose_cmd
+assert mod.os.path.isdir(mod.os.path.join(mod.GOOSE_STATE_ROOT, "fleet-test123", "data"))
+assert mod.os.path.isdir(mod.os.path.join(mod.GOOSE_STATE_ROOT, "fleet-test123", "cache"))
+assert mod.os.path.isdir(mod.os.path.join(mod.GOOSE_STATE_ROOT, "fleet-test123", "state"))
+
 def resolve_capability(capability):
     policy_name, dev_tools, write_roots, matched, policy = mod.resolve_harness_sandbox(
         "codex", "gpt-5.5", "/Users/skip/work/tlda",

@@ -212,6 +212,7 @@ GOOSE_VERIFIED = {
 GOOSE_BIN = "/opt/homebrew/bin/goose"
 DEEPSEEK_RECIPE = os.path.join(
     os.path.dirname(os.path.realpath(__file__)), "..", "recipes", "fleet-deepseek.yaml")
+GOOSE_STATE_ROOT = "/tmp/tlda-goose-state"
 
 CODEX_MODELS = {
     # `codex -m gpt` is not accepted for ChatGPT-authenticated Codex accounts.
@@ -1320,6 +1321,13 @@ def build_goose_cmd(fleet_id, tmux_session, model, name=None):
     """
     recipe = os.path.abspath(DEEPSEEK_RECIPE)
     sandbox_cfg = os.path.join(os.path.dirname(recipe), "goose-sandbox")
+    state_dir = os.path.join(GOOSE_STATE_ROOT, str(fleet_id).replace(":", "-"))
+    data_dir = os.path.join(state_dir, "data")
+    cache_dir = os.path.join(state_dir, "cache")
+    xdg_state_dir = os.path.join(state_dir, "state")
+    os.makedirs(data_dir, exist_ok=True)
+    os.makedirs(cache_dir, exist_ok=True)
+    os.makedirs(xdg_state_dir, exist_ok=True)
     parts = [
         f"FLEET_ID={fleet_id}",
         f"FLEET_TMUX_SESSION={tmux_session}",
@@ -1330,6 +1338,9 @@ def build_goose_cmd(fleet_id, tmux_session, model, name=None):
         f"TLDA_SERVER={shlex.quote(API)}",
         f"TLDA_SYNC_SERVER={shlex.quote(API)}",
         f"XDG_CONFIG_HOME={shlex.quote(sandbox_cfg)}",
+        f"XDG_DATA_HOME={shlex.quote(data_dir)}",
+        f"XDG_CACHE_HOME={shlex.quote(cache_dir)}",
+        f"XDG_STATE_HOME={shlex.quote(xdg_state_dir)}",
         "GOOSE_DISABLE_KEYRING=1",
         # Force telemetry off non-interactively. goose's first interactive run
         # otherwise blocks on a "share anonymous usage data?" consent prompt that
