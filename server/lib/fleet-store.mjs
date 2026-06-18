@@ -148,11 +148,76 @@ export class FleetStore {
         content_rowid='id',
         tokenize='unicode61'
       );
-      CREATE TRIGGER IF NOT EXISTS events_ai AFTER INSERT ON events BEGIN
-        INSERT INTO events_fts(rowid, text) VALUES (new.id, new.text);
+      DROP TRIGGER IF EXISTS events_ai;
+      DROP TRIGGER IF EXISTS events_ad;
+      DROP TRIGGER IF EXISTS events_au;
+      CREATE TRIGGER events_ai AFTER INSERT ON events BEGIN
+        INSERT INTO events_fts(rowid, text) VALUES (
+          new.id,
+          CASE
+            WHEN new.type = 'activity' THEN trim(
+              coalesce(new.text, '') || ' ' ||
+              coalesce(json_extract(new.metadata, '$.tool'), '') || ' ' ||
+              coalesce(json_extract(new.metadata, '$.description'), '') || ' ' ||
+              coalesce(json_extract(new.metadata, '$.input.description'), '') || ' ' ||
+              coalesce(json_extract(new.metadata, '$.arg'), '') || ' ' ||
+              coalesce(json_extract(new.metadata, '$.input.command'), '') || ' ' ||
+              coalesce(json_extract(new.metadata, '$.prettyResult'), '')
+            )
+            ELSE new.text
+          END
+        );
       END;
-      CREATE TRIGGER IF NOT EXISTS events_ad AFTER DELETE ON events BEGIN
-        INSERT INTO events_fts(events_fts, rowid, text) VALUES('delete', old.id, old.text);
+      CREATE TRIGGER events_ad AFTER DELETE ON events BEGIN
+        INSERT INTO events_fts(events_fts, rowid, text) VALUES(
+          'delete',
+          old.id,
+          CASE
+            WHEN old.type = 'activity' THEN trim(
+              coalesce(old.text, '') || ' ' ||
+              coalesce(json_extract(old.metadata, '$.tool'), '') || ' ' ||
+              coalesce(json_extract(old.metadata, '$.description'), '') || ' ' ||
+              coalesce(json_extract(old.metadata, '$.input.description'), '') || ' ' ||
+              coalesce(json_extract(old.metadata, '$.arg'), '') || ' ' ||
+              coalesce(json_extract(old.metadata, '$.input.command'), '') || ' ' ||
+              coalesce(json_extract(old.metadata, '$.prettyResult'), '')
+            )
+            ELSE old.text
+          END
+        );
+      END;
+      CREATE TRIGGER events_au AFTER UPDATE OF type, text, metadata ON events BEGIN
+        INSERT INTO events_fts(events_fts, rowid, text) VALUES(
+          'delete',
+          old.id,
+          CASE
+            WHEN old.type = 'activity' THEN trim(
+              coalesce(old.text, '') || ' ' ||
+              coalesce(json_extract(old.metadata, '$.tool'), '') || ' ' ||
+              coalesce(json_extract(old.metadata, '$.description'), '') || ' ' ||
+              coalesce(json_extract(old.metadata, '$.input.description'), '') || ' ' ||
+              coalesce(json_extract(old.metadata, '$.arg'), '') || ' ' ||
+              coalesce(json_extract(old.metadata, '$.input.command'), '') || ' ' ||
+              coalesce(json_extract(old.metadata, '$.prettyResult'), '')
+            )
+            ELSE old.text
+          END
+        );
+        INSERT INTO events_fts(rowid, text) VALUES (
+          new.id,
+          CASE
+            WHEN new.type = 'activity' THEN trim(
+              coalesce(new.text, '') || ' ' ||
+              coalesce(json_extract(new.metadata, '$.tool'), '') || ' ' ||
+              coalesce(json_extract(new.metadata, '$.description'), '') || ' ' ||
+              coalesce(json_extract(new.metadata, '$.input.description'), '') || ' ' ||
+              coalesce(json_extract(new.metadata, '$.arg'), '') || ' ' ||
+              coalesce(json_extract(new.metadata, '$.input.command'), '') || ' ' ||
+              coalesce(json_extract(new.metadata, '$.prettyResult'), '')
+            )
+            ELSE new.text
+          END
+        );
       END;
 
       -- Materialized agent state (cache, rebuilt from events)
