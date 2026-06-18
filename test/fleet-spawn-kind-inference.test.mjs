@@ -23,6 +23,13 @@ assert mod.harness_for_spawn("claude", "gpt").kind == "codex"
 assert mod.harness_for_spawn("claude", "gpt").resolve_model("gpt") == "gpt-5.5"
 assert any(m["alias"] == "gpt" and m["id"] == "gpt-5.5" and m["kind"] == "codex"
            for m in mod.HARNESS_ADAPTERS["codex"].list_models())
+assert "CLAUDE.md" not in mod.register_prompt("canary")
+codex_prompt = mod.codex_register_prompt("canary")
+assert 'register(name="canary")' in codex_prompt
+assert "CLAUDE.md" in codex_prompt
+assert "AGENTS.md" in codex_prompt
+assert "required skill" in codex_prompt
+assert 'skill("<name>")' in codex_prompt
 
 cmd = mod.build_codex_cmd(
     "fleet:test123",

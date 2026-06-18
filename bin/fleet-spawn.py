@@ -92,17 +92,32 @@ def _ws_api():
     return API.replace("https://", "wss://", 1).replace("http://", "ws://", 1)
 DEFAULT_MODEL = "claude-opus-4-8[1m]"
 REGISTER_PROMPT = "Call register() with the fleet MCP server. Then call my_task() to check for a pending task."
+CODEX_GUIDANCE_PROMPT = (
+    "Then, before task work, read the same project guidance Claude agents receive here: "
+    "read CLAUDE.md in the workspace if it exists, and read AGENTS.md if it exists. "
+    "Follow the guidance you find. If a tlda MCP tool blocks on required skill(s), "
+    "read each named skill with skill(\"<name>\") or dismiss it with a specific reason, "
+    "then retry the blocked tool."
+)
 
 
-def register_prompt(name=None):
+def register_prompt(name=None, harness=None):
     """The register prompt, with the friendly name baked in so the agent
     registers under the name it was spawned with. Without this the agent has
     no clean source for its name and derives it from the tmux window
     (FLEET_TMUX_SESSION), which carries slot suffixes like ``-1b`` — that's how
     the friendly name gets corrupted to ``leverage?-1b``."""
     if name:
-        return f'Call register(name="{name}") with the fleet MCP server. Then call my_task() to check for a pending task.'
-    return REGISTER_PROMPT
+        prompt = f'Call register(name="{name}") with the fleet MCP server. Then call my_task() to check for a pending task.'
+    else:
+        prompt = REGISTER_PROMPT
+    if harness == "codex":
+        prompt = f"{prompt} {CODEX_GUIDANCE_PROMPT}"
+    return prompt
+
+
+def codex_register_prompt(name=None):
+    return register_prompt(name, harness="codex")
 
 MODEL_ALIASES = {
     "opus": DEFAULT_MODEL,
@@ -2131,7 +2146,7 @@ def fresh(name, model, cwd, effort, mode, kind="claude", spawn_capability=None,
         cmd = wrap_sandbox_cmd(cmd, policy)
     spawn_tmux(sess, cwd, cmd, send_keys=adapter.spawn_send_keys())
     if adapter.kind == "codex":
-        inject_codex_prompt(sess, register_prompt(name))
+        inject_codex_prompt(sess, codex_register_prompt(name))
     suffix = "" if adapter.kind == "claude" else f" ({adapter.kind})"
     print(f"{sess} ({fleet_id}) spawned in {cwd}{suffix}")
     return sess
@@ -2219,7 +2234,7 @@ def respawn(name, model, cwd, effort, mode, session_override=None,
     else:
         print(f"{sess} ({fleet_id}) relaunched ({adapter.kind}, {adapter.no_resume_message()})")
     if adapter.kind == "codex":
-        inject_codex_prompt(sess, register_prompt(name))
+        inject_codex_prompt(sess, codex_register_prompt(name))
     return sess
 
 
@@ -2260,7 +2275,7 @@ def refresh(name, model, cwd, effort, mode, spawn_capability=None,
         cmd = wrap_sandbox_cmd(cmd, policy)
     spawn_tmux(sess, cwd, cmd, send_keys=adapter.spawn_send_keys())
     if adapter.kind == "codex":
-        inject_codex_prompt(sess, register_prompt(name))
+        inject_codex_prompt(sess, codex_register_prompt(name))
     print(f"{sess} ({fleet_id}) refreshed in {cwd}")
     return sess
 
@@ -2313,7 +2328,7 @@ def _respawn_codex_session(rollout_id, fpath, name_override, model, cwd,
     cmd = build_codex_cmd(own_id, sess, model=model, resume_id=rollout_id,
                           name=agent_name)
     spawn_tmux(sess, cwd, cmd, send_keys=HARNESS_ADAPTERS["codex"].spawn_send_keys())
-    inject_codex_prompt(sess, register_prompt(agent_name))
+    inject_codex_prompt(sess, codex_register_prompt(agent_name))
     action = "enrolled" if enroll else "resumed"
     print(f"{sess} ({own_id}) {action} codex rollout {rollout_id} in {cwd}")
     return sess
