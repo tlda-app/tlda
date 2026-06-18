@@ -475,11 +475,10 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
     anchorX += dx
     anchorY += dy
 
-    // Phone layout: agents filter panel in a left column, chat to its right.
-    // No inbox, search, or docview on phone. The chat footprint follows one
-    // page's current on-screen size; if that page is clipped by the viewport,
-    // use the clipped visible region so landscape / zoomed views create a
-    // landscape-shaped chat.
+    // Phone layout: short agents filter panel over inbox in a left column,
+    // dominant chat to its right. The chat footprint follows one page's current
+    // on-screen size; if that page is clipped by the viewport, use the clipped
+    // visible region so landscape / zoomed views create a landscape-shaped chat.
     if (variant === 'phone') {
       const fallbackRect = { x: vp.x, y: vp.y, w: Math.max(160, vp.w - 12), h: Math.max(200, vp.h - 12), pageX: 0 }
       let target = fallbackRect
@@ -520,6 +519,8 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
       const chatW = Math.round(target.w)
       const chatH = Math.round(target.h)
       const colW = Math.min(320, Math.max(180, Math.round(chatW * 0.45)))
+      const phoneAgentsH = Math.min(220, Math.max(120, Math.round(chatH * 0.32)))
+      const phoneInboxH = Math.max(160, chatH - gap - phoneAgentsH)
       // Chat right edge sits marginGap to the left of the selected page/visible
       // region. Convert that region's screen-left offset back into the page-space
       // layout coordinate used by the HUD's z=1 camera.
@@ -533,7 +534,14 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
           type: 'fleet-agents' as any,
           x: colX, y: anchorY,
           isLocked: false,
-          props: { w: colW, h: chatH, userId: myId, deviceId: myDevice },
+          props: { w: colW, h: phoneAgentsH, userId: myId, deviceId: myDevice },
+        },
+        {
+          id: slotId(myId, myDevice, 'inbox'),
+          type: 'fleet-inbox' as any,
+          x: colX, y: anchorY + phoneAgentsH + gap,
+          isLocked: false,
+          props: { w: colW, h: phoneInboxH, userId: myId, deviceId: myDevice },
         },
         {
           id: slotId(myId, myDevice, 'chat-0'),

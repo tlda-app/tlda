@@ -31,6 +31,7 @@ import {
   getReaperStatus,
   injectOptimisticEvent as _injectOptimisticEvent,
   updateOptimisticEvent as _updateOptimisticEvent,
+  removeOptimisticEvent as _removeOptimisticEvent,
   reconcileOptimistic as _reconcileOptimistic,
   fleetWS as _fleetWS,
   // @ts-ignore — vanilla JS module
@@ -823,6 +824,7 @@ export const hibernateSession = _hibernateSession
 export const spawnAgent = _spawnAgent
 export const injectOptimisticEvent = _injectOptimisticEvent
 export const updateOptimisticEvent = _updateOptimisticEvent
+export const removeOptimisticEvent = _removeOptimisticEvent
 export const reconcileOptimistic = _reconcileOptimistic
 export const fleetWS = _fleetWS
 export { loadBefore, fetchHistory, resolveFilter }

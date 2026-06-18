@@ -94,6 +94,12 @@ async function main() {
 
     localStorage.setItem('fleet-hud-expanded', '1')
     const fleetData = await import('/src/fleet/fleet-data.mjs')
+    const startedConnection = Date.now()
+    while (!fleetData.isConnected?.() && Date.now() - startedConnection < 8000) {
+      await new Promise(r => setTimeout(r, 100))
+    }
+    if (!fleetData.isConnected?.()) throw new Error('fleet websocket did not connect')
+
     const started = Date.now()
     while (!fleetData.getHumanId() && Date.now() - started < 8000) {
       await new Promise(r => setTimeout(r, 100))
@@ -166,18 +172,18 @@ async function main() {
     const chat = fleet.find(s => s.type === 'fleet-chat')
     const docview = fleet.find(s => s.type === 'fleet-docview')
     const search = fleet.find(s => s.type === 'fleet-search')
-    if (!agents || !chat) {
+    if (!agents || !inbox || !chat) {
       throw new Error(`missing phone layout shapes: ${fleet.map(s => s.type).join(',')}`)
     }
-    if (inbox || docview || search) {
-      throw new Error(`phone layout should only create agents + chat, got: ${fleet.map(s => s.type).join(',')}`)
+    if (docview || search) {
+      throw new Error(`phone layout should only create agents + inbox + chat, got: ${fleet.map(s => s.type).join(',')}`)
     }
 
     const column = {
       x: agents.x,
       y: agents.y,
       w: agents.props.w,
-      h: agents.props.h,
+      h: agents.props.h + 10 + inbox.props.h,
     }
     const expectedRect = clip ? clippedDocScreen : docScreen
     const expectedW = Math.round(expectedRect.w)
@@ -188,11 +194,17 @@ async function main() {
     if (Math.abs(chat.props.h - expectedH) > 1) {
       throw new Error(`chat height ${chat.props.h} != expected page/clipped height ${expectedH}`)
     }
-    if (Math.abs(agents.props.h - chat.props.h) > 1) {
-      throw new Error(`agents panel height ${agents.props.h} != chat height ${chat.props.h}`)
+    if (agents.props.h >= chat.props.h * 0.5) {
+      throw new Error(`agents panel is too tall for phone layout: agents=${agents.props.h}, chat=${chat.props.h}`)
+    }
+    if (Math.abs(inbox.y - (agents.y + agents.props.h + 10)) > 1) {
+      throw new Error('inbox is not stacked directly below agents panel')
+    }
+    if (Math.abs(inbox.props.h + agents.props.h + 10 - chat.props.h) > 1) {
+      throw new Error(`left column height ${agents.props.h + 10 + inbox.props.h} != chat height ${chat.props.h}`)
     }
     if (Math.abs(chat.x - (agents.x + agents.props.w + 10)) > 1) {
-      throw new Error('chat is not immediately to the right of agents panel')
+      throw new Error('chat is not immediately to the right of agents/inbox column')
     }
 
     const layoutW = column.w + 10 + chat.props.w
@@ -240,6 +252,7 @@ async function main() {
       camera: { z: Number(cameraZ.toFixed(4)) },
       control: { pill: 'tapped', preset: 'tapped' },
       agents: { w: agents.props.w, h: agents.props.h },
+      inbox: { w: inbox.props.w, h: inbox.props.h },
       chat: { w: chat.props.w, h: chat.props.h },
       column: { w: column.w, h: column.h },
       layout: { w: layoutW, h: chat.props.h },
@@ -249,7 +262,7 @@ async function main() {
         w: Math.round(screenChat.w),
         h: Math.round(screenChat.h),
       },
-      extraPanels: fleet.filter(s => s.type !== 'fleet-agents' && s.type !== 'fleet-chat').map(s => s.type),
+      extraPanels: fleet.filter(s => s.type !== 'fleet-agents' && s.type !== 'fleet-inbox' && s.type !== 'fleet-chat').map(s => s.type),
     }
   })
 

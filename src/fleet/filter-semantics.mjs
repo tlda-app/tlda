@@ -11,6 +11,27 @@ function agentMatchesLabel(agentId, label, { agents = [], humanId = null, humanN
   return labelsForAgent(agent).includes(label)
 }
 
+function isHumanParticipant(agentId, context) {
+  return agentMatchesLabel(agentId, context.humanId, context) ||
+    (context.humanName ? agentMatchesLabel(agentId, context.humanName, context) : false)
+}
+
+function isDmWithTarget(event, targetLabel, context) {
+  if (!event || !targetLabel) return false
+  if (event._activity || event.type === 'activity') return false
+  const from = event.from || event.from_id || event.agent
+  const to = event.to || event.to_id || null
+  const agent = event.agent || event.agent_id || null
+  const fromHuman = isHumanParticipant(from, context)
+  const toHuman = isHumanParticipant(to, context)
+  const fromTarget = agentMatchesLabel(from, targetLabel, context)
+  const toTarget = agentMatchesLabel(to, targetLabel, context) || agentMatchesLabel(agent, targetLabel, context)
+
+  if (fromHuman && toTarget) return true
+  if (fromTarget && toHuman) return true
+  return false
+}
+
 // Filter is DNF of terms: [[["to","skip"],["from","math"]]] or plain [["label"]] or null (match all).
 // Term formats: [role, label] tuple (directional) or plain string (matches from OR to).
 export function matchesFleetFilter(filter, event, context = {}) {
@@ -21,6 +42,7 @@ export function matchesFleetFilter(filter, event, context = {}) {
     clause.every(term => {
       if (Array.isArray(term)) {
         const [role, label] = term
+        if (role === 'dm') return isDmWithTarget(event, label, context)
         const agentId = role === 'from' ? (event.from || event.agent) : (event.to || event.agent)
         return agentMatchesLabel(agentId, label, context)
       }
@@ -62,11 +84,8 @@ export function resolveFleetFilter(filter, { agents = [], humanId = null, humanN
 }
 
 export function buildFleetDmFilter(humanLabel, agentLabel) {
-  if (!humanLabel || !agentLabel) return []
-  return [
-    [['from', humanLabel], ['to', agentLabel]],
-    [['from', agentLabel], ['to', humanLabel]],
-  ]
+  if (!agentLabel) return []
+  return [[['dm', agentLabel]]]
 }
 
 export function buildFleetAgentFilter(agentLabel) {

@@ -239,6 +239,11 @@ export function updateOptimisticEvent(tempId, updates) {
   if (_store.patchByTempId(tempId, updates)) notify('messages', null)
 }
 
+/** Remove a local optimistic event that never reached the server. */
+export function removeOptimisticEvent(tempId) {
+  if (_store.removeByTempId(tempId)) notify('messages', null)
+}
+
 export function updateEventById(dbId, updates) {
   if (_store.patchByDbId(dbId, updates)) notify('messages', null)
 }

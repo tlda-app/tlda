@@ -41,7 +41,7 @@ import {
 } from '../fleet/filter-semantics.mjs'
 import { appendToken } from '../authToken'
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
-import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useSuggestions, clearGroup, sendMessage, loadBefore, resolveFilter, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useSuggestions, clearGroup, sendMessage, loadBefore, resolveFilter, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
 import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
 import { agentDisplayName } from './fleet-utils'
@@ -3274,6 +3274,13 @@ function FleetChatInner({ shape }: { shape: any }) {
         }
         return
       }
+      const dismissFailedBtn = (e.target as HTMLElement).closest('.chat-dismiss-failed-btn') as HTMLElement
+      if (dismissFailedBtn) {
+        e.stopPropagation()
+        const tempId = dismissFailedBtn.dataset.dismissTempid
+        if (tempId) removeOptimisticEvent(tempId)
+        return
+      }
       // Plan approval buttons
       const approveBtn = (e.target as HTMLElement).closest('.plan-approve-btn') as HTMLElement
       if (approveBtn) {
@@ -3766,7 +3773,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     const seen = new Set<string>()
     for (const clause of filter) {
       for (const [role, label] of clause) {
-        if (role === 'to') seen.add(label)
+        if (role === 'to' || role === 'dm') seen.add(label)
       }
     }
     return [...seen]
@@ -5164,9 +5171,9 @@ function FleetChatInner({ shape }: { shape: any }) {
               aria-label="Cycle chat traffic filter"
             >
               {composerTrafficMode === 'dm-quiet'
-                ? 'DM q'
+                ? 'DM'
                 : composerTrafficMode === 'dm'
-                  ? 'DM'
+                  ? 'DM ⚒'
                   : composerTrafficMode === 'agent'
                     ? 'All'
                     : 'Filter'}
@@ -5188,7 +5195,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                 background: 'transparent',
                 border: '1px solid rgba(128, 128, 128, 0.15)',
                 borderRadius: 4,
-                padding: '4px 58px 4px 78px',
+                padding: '4px 58px 4px 8px',
                 fontSize: _isPhone ? 16 : 11,
                 color: 'inherit',
                 outline: 'none',
