@@ -460,13 +460,41 @@ function clusterOf(overlay: Editor, seedIds: Set<string>): TLShape[] {
   })
 }
 
-// A 2-finger gesture on one shape commits to EITHER move or resize — never both
-// at once — so sliding to reposition doesn't also zoom the shape. Mode locks the
-// first time the fingers move past a small threshold, by whichever dominates:
-// sliding-together → move, spreading/pinching → resize.
-const LOCK_THRESHOLD = 12 // screen px of travel before we commit to a mode
-const RESIZE_LOCK_ON = 12
-const RESIZE_LOCK_OFF = 4
+// Match TLDraw's touch pinch classifier where possible:
+//   not-sure -> resize/zoom after 24px finger-distance change
+//   not-sure -> move/pan after 16px center movement
+//   move/pan -> resize/zoom only after 64px finger-distance change
+// See @tldraw/editor/src/lib/hooks/useGestureEvents.ts. We keep anisotropic
+// resizing as our HUD-specific extension, but use the same commitment ordering.
+const MOVE_LOCK_ON = 16
+const RESIZE_LOCK_ON = 24
+const RESIZE_LOCK_AFTER_MOVE = 64
+
+export function classifyFleetSoftGesture(input: {
+  moveActive: boolean
+  resizeActive: boolean
+  travel: number
+  spread: number
+}) {
+  let moveActive = input.moveActive
+  let resizeActive = input.resizeActive
+
+  if (!resizeActive) {
+    if (!moveActive && input.spread > RESIZE_LOCK_ON) {
+      resizeActive = true
+    } else {
+      if (input.travel > MOVE_LOCK_ON) moveActive = true
+      if (moveActive && input.spread > RESIZE_LOCK_AFTER_MOVE) resizeActive = true
+    }
+  }
+
+  // TLDraw's zooming pinch still dispatches center deltas. Once a HUD pinch has
+  // committed to resize, translate by the finger center too so the pinch center
+  // remains the user's fingers rather than the original shape point.
+  if (resizeActive) moveActive = true
+
+  return { moveActive, resizeActive }
+}
 
 // 3-finger pan soft axis lock (Skip's "soft/breakable" choice — cf. the hard-snap
 // variant in src/hooks/usePanMode.ts). Engage after a little travel, bias hard to
@@ -1515,8 +1543,12 @@ export function useFleetGestures(opts: {
         const spanDx = Math.abs(span.x - state.sx0)
         const spanDy = Math.abs(span.y - state.sy0)
         const spread = Math.max(Math.abs(d - state.d0), spanDx, spanDy) // pinch amount
-        const nextMoveActive = state.moveActive || travel >= LOCK_THRESHOLD
-        const nextResizeActive = state.resizeActive ? spread >= RESIZE_LOCK_OFF : spread >= RESIZE_LOCK_ON
+        const { moveActive: nextMoveActive, resizeActive: nextResizeActive } = classifyFleetSoftGesture({
+          moveActive: state.moveActive,
+          resizeActive: state.resizeActive,
+          travel,
+          spread,
+        })
         if (!nextMoveActive && !nextResizeActive && !state.moveActive && !state.resizeActive) return
         const activationChanged = nextMoveActive !== state.moveActive || nextResizeActive !== state.resizeActive
         state.mode = 'combined'
@@ -1529,7 +1561,9 @@ export function useFleetGestures(opts: {
             resizeActive: state.resizeActive,
             travel,
             spread,
-            threshold: LOCK_THRESHOLD,
+            moveThreshold: MOVE_LOCK_ON,
+            resizeThreshold: RESIZE_LOCK_ON,
+            resizeAfterMoveThreshold: RESIZE_LOCK_AFTER_MOVE,
           })
           postTouchTelemetry('shape soft gesture active', {
             id: state.id,
@@ -1537,7 +1571,9 @@ export function useFleetGestures(opts: {
             resizeActive: state.resizeActive,
             travel,
             spread,
-            threshold: LOCK_THRESHOLD,
+            moveThreshold: MOVE_LOCK_ON,
+            resizeThreshold: RESIZE_LOCK_ON,
+            resizeAfterMoveThreshold: RESIZE_LOCK_AFTER_MOVE,
           })
         }
         const pageCenter = screenPointToOverlayPage(overlay, c.x, c.y)
@@ -1572,8 +1608,12 @@ export function useFleetGestures(opts: {
         const spanDx = Math.abs(span.x - state.sx0)
         const spanDy = Math.abs(span.y - state.sy0)
         const spread = Math.max(Math.abs(d - state.d0), spanDx, spanDy)
-        const nextMoveActive = state.moveActive || travel >= LOCK_THRESHOLD
-        const nextResizeActive = state.resizeActive ? spread >= RESIZE_LOCK_OFF : spread >= RESIZE_LOCK_ON
+        const { moveActive: nextMoveActive, resizeActive: nextResizeActive } = classifyFleetSoftGesture({
+          moveActive: state.moveActive,
+          resizeActive: state.resizeActive,
+          travel,
+          spread,
+        })
         if (!nextMoveActive && !nextResizeActive && !state.moveActive && !state.resizeActive) return
         const activationChanged = nextMoveActive !== state.moveActive || nextResizeActive !== state.resizeActive
         state.mode = 'combined'
@@ -1586,7 +1626,9 @@ export function useFleetGestures(opts: {
             resizeActive: state.resizeActive,
             travel,
             spread,
-            threshold: LOCK_THRESHOLD,
+            moveThreshold: MOVE_LOCK_ON,
+            resizeThreshold: RESIZE_LOCK_ON,
+            resizeAfterMoveThreshold: RESIZE_LOCK_AFTER_MOVE,
           })
           postTouchTelemetry('cluster soft gesture active', {
             shapeIds: state.shapes.map(s => s.id),
@@ -1594,7 +1636,9 @@ export function useFleetGestures(opts: {
             resizeActive: state.resizeActive,
             travel,
             spread,
-            threshold: LOCK_THRESHOLD,
+            moveThreshold: MOVE_LOCK_ON,
+            resizeThreshold: RESIZE_LOCK_ON,
+            resizeAfterMoveThreshold: RESIZE_LOCK_AFTER_MOVE,
           })
         }
         const pageCenter = screenPointToOverlayPage(overlay, c.x, c.y)
