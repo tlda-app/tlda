@@ -24,7 +24,7 @@ import { homedir } from 'os'
 import { randomBytes } from 'crypto'
 import { collectSourceFiles, collectSourceHashes, collectSpecificFiles } from './lib/source-files.mjs'
 import {
-  loadConfig, saveConfig, getServerUrl, getRwToken, DEFAULT_PORT,
+  loadConfig, saveConfig, getServerUrl, getFleetServerUrl, getRwToken, DEFAULT_PORT,
   CONFIG_DIR, CONFIG_FILE, hasTls, TLS_CA_PATH, getManagedBots,
 } from '../shared/config.mjs'
 import { tldaFetch } from '../shared/http-client.mjs'
@@ -637,6 +637,16 @@ function resolveBotScript(script) {
   return script.startsWith('/') ? script : join(_cliRepoRoot, script)
 }
 
+function lastDaemonConnectedTarget() {
+  try {
+    const log = readFileSync(FLEET_DAEMON_LOGFILE, 'utf8')
+    const matches = [...log.matchAll(/\[daemon\] connecting to (wss?:\/\/[^?\s]+)/g)]
+    return matches.length ? matches[matches.length - 1][1] : null
+  } catch {
+    return null
+  }
+}
+
 // Idempotent daemon start — no-op if already running, spawns if not.
 // Used by `tlda server start` to make sure the daemon comes up alongside
 // the server. The daemon dying silently was a recurring source of pain.
@@ -720,6 +730,9 @@ async function cmdFleetWatch(sub) {
       try {
         process.kill(pid, 0)
         console.log(green('Fleet daemon running') + dim(` (pid ${pid})`))
+        console.log(dim(`  Config target: ${getFleetServerUrl()}`))
+        const connectedTarget = lastDaemonConnectedTarget()
+        if (connectedTarget) console.log(dim(`  Last WS target: ${connectedTarget}`))
         console.log(dim(`  Log: ${FLEET_DAEMON_LOGFILE}`))
         return
       } catch {}

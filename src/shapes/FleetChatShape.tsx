@@ -5394,7 +5394,7 @@ function FilterOverlay({
     editor.updateShape({
       id: shapeId,
       type: 'fleet-chat',
-      props: { filter: nextFilter },
+      props: { filter: nextFilter, trafficMode: 'normal' },
     })
   }, [activeAgentLabel, editor, humanLabel, shapeId])
 
