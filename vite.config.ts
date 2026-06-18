@@ -4,11 +4,34 @@ import { createReadStream, existsSync, readFileSync } from 'fs'
 import { homedir } from 'os'
 import { join, resolve } from 'path'
 import { lookup as mimeLookup } from 'mime-types'
+import { resolveConfig } from './shared/config.mjs'
 
 const tlsDir = join(homedir(), '.config/tlda')
 const tlsCert = join(tlsDir, 'localhost+2.pem')
 const tlsKey  = join(tlsDir, 'localhost+2-key.pem')
 const hasTls = existsSync(tlsCert) && existsSync(tlsKey)
+
+function injectedConfig() {
+  const cfg = resolveConfig()
+  const serverPort = process.env.VITE_SERVER_PORT
+  if (!serverPort) return cfg
+
+  const http = `${hasTls ? 'https' : 'http'}://localhost:${serverPort}`
+  const ws = `${hasTls ? 'wss' : 'ws'}://localhost:${serverPort}`
+  return {
+    ...cfg,
+    database: { http, ws },
+    store: { http, ws },
+  }
+}
+
+const activeConfigPlugin = {
+  name: 'tlda-active-config',
+  transformIndexHtml(html: string) {
+    const script = `<script>window.__TLDA_CONFIG__=${JSON.stringify(injectedConfig())}</script>`
+    return html.replace('</head>', `${script}\n</head>`)
+  },
+}
 
 // Dev-only plugin: serve local filesystem images for math notes
 const localImagePlugin = {
@@ -31,7 +54,7 @@ const localImagePlugin = {
 // https://vite.dev/config/
 export default defineConfig({
   base: process.env.VITE_BASE_PATH || '/',
-  plugins: [react(), localImagePlugin],
+  plugins: [activeConfigPlugin, react(), localImagePlugin],
   resolve: {
     dedupe: ['react', 'react-dom'],
   },

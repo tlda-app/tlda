@@ -1283,6 +1283,17 @@ app.post('/api/reaper/sweep', requireRead, async (req, res) => {
   }
 })
 
+app.get('/api/playback/stream', requireRead, (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+  })
+  res.write('data: {"type":"connected"}\n\n')
+  const keepalive = setInterval(() => res.write(':\n\n'), 15000)
+  req.on('close', () => clearInterval(keepalive))
+})
+
 app.get('/api/fleet/viewing', requireRead, (req, res) => {
   const userId = req.query.user
   if (userId) {

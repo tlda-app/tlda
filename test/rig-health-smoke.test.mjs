@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
-import { checkRigHealth, runRigHealthSmoke } from './rig-health-smoke.mjs'
+import { checkRigHealth, inspectRenderSnapshot, runRigHealthSmoke } from './rig-health-smoke.mjs'
 
 function tempDir() {
   return mkdtempSync(join(tmpdir(), 'tlda-rig-health-'))
@@ -153,4 +153,83 @@ test('rig health smoke reports unreadable JSON as health failure', () => {
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test('render snapshot rejects a blank root', () => {
+  const result = inspectRenderSnapshot({
+    rootText: '',
+    rootChildCount: 0,
+    errorScreen: false,
+    loadingScreen: false,
+    editorReady: false,
+    pageShapeCount: 0,
+    svgElementCount: 0,
+    visibleTextCount: 0,
+  })
+
+  assert.equal(result.ok, false)
+  assert.ok(result.problems.includes('root is blank'))
+  assert.ok(result.problems.includes('tldraw editor never became ready'))
+})
+
+test('render snapshot rejects app error and loading screens', () => {
+  const error = inspectRenderSnapshot({
+    rootText: 'Something went wrong',
+    rootChildCount: 1,
+    errorScreen: true,
+    errorText: 'Something went wrong Failed to load',
+    loadingScreen: false,
+    editorReady: true,
+    pageShapeCount: 1,
+    svgElementCount: 1,
+    visibleTextCount: 1,
+  })
+  const loading = inspectRenderSnapshot({
+    rootText: 'Loading document...',
+    rootChildCount: 1,
+    errorScreen: false,
+    loadingScreen: true,
+    loadingText: 'Loading document...',
+    editorReady: true,
+    pageShapeCount: 1,
+    svgElementCount: 1,
+    visibleTextCount: 1,
+  })
+
+  assert.equal(error.ok, false)
+  assert.match(error.problems.join('\n'), /error screen visible/)
+  assert.equal(loading.ok, false)
+  assert.match(loading.problems.join('\n'), /still loading/)
+})
+
+test('render snapshot rejects missing document content', () => {
+  const result = inspectRenderSnapshot({
+    rootText: 'TLDraw mounted',
+    rootChildCount: 1,
+    errorScreen: false,
+    loadingScreen: false,
+    editorReady: true,
+    pageShapeCount: 1,
+    svgElementCount: 0,
+    visibleTextCount: 0,
+  })
+
+  assert.equal(result.ok, false)
+  assert.ok(result.problems.includes('no svg elements rendered inside document page shapes'))
+  assert.ok(result.problems.includes('no visible SVG text rendered'))
+})
+
+test('render snapshot accepts visible document SVG text', () => {
+  const result = inspectRenderSnapshot({
+    rootText: 'canvas',
+    rootChildCount: 1,
+    errorScreen: false,
+    loadingScreen: false,
+    editorReady: true,
+    pageShapeCount: 1,
+    svgElementCount: 1,
+    visibleTextCount: 3,
+  })
+
+  assert.equal(result.ok, true)
 })
