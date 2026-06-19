@@ -52,6 +52,15 @@ assert s["network"]["allowLocalBinding"] is True
 # safety: the irrevocable / destructive commands stay blocked even for app
 for banned in ("git push", "git reset", "git clean", "git rebase", "git merge", "sudo", "npm publish"):
     assert banned in cmd["deny"], (banned, cmd["deny"])
+# job: Claude authenticates from the macOS login Keychain ("Claude Code-
+# credentials"); a read-denied keychain => the agent boots "Not logged in".
+# Regression guard for the 2026-06-19 auth lockout: reads are PERMISSIVE (the
+# fence constrains writes/network, not which dirs an agent may read) and the
+# keychain is explicitly readable -- while the secret FILES stay denied.
+assert fs["defaultDenyRead"] is False, fs["defaultDenyRead"]
+assert any("Keychains" in p for p in fs["allowRead"]), fs["allowRead"]
+assert "~/.ssh/id_*" in fs["denyRead"], fs["denyRead"]
+assert "~/.git-credentials" in fs["denyRead"], fs["denyRead"]
 
 # --- math role: workspace-write+net / tlda-projects ---------------------------
 pn, policy, s = lease_for("workspace-write+net", "tlda-projects")

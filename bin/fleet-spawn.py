@@ -784,6 +784,15 @@ DEFAULT_TRUSTED_MCP_SERVERS = {
 }
 PLAYWRIGHT_CACHE_ROOT = os.path.expanduser("~/Library/Caches/ms-playwright")
 TLDA_FENCE_TMP_ROOT = "/tmp/tlda-fence-env"
+# TEMP global fence kill (Skip 2026-06-19): the fence is OFF for every LIVE
+# spawn until Skip flips it on. Applied ONLY at the launch sites
+# (fresh / respawn / refresh) via _live_spawn_policy -- NOT in the pure policy
+# resolver -- so the lease machinery and the run-through gate still compute real
+# fenced leases (i.e. the fence config stays testable while it's globally off).
+# Flip to False to re-enable; the sensible-reads + keychain fix in
+# _fence_settings / FENCE_AGENT_READ_ROOTS means a re-enabled fence no longer
+# locks Claude out of its OAuth token ("Not logged in").
+FENCE_GLOBALLY_DISABLED = True
 DEFAULT_CLAUDE_PERMISSION_MODES = {
     "cwd": "auto",
     "tlda-projects": "auto",
@@ -811,6 +820,13 @@ FENCE_AGENT_READ_ROOTS = [
     "~/.config/fence",
     "~/Library/Application Support/mkcert",
     "~/Library/Preferences",
+    # Claude's OAuth token is NOT in ~/.claude.json -- on macOS it lives in the
+    # login Keychain item "Claude Code-credentials" and is read via
+    # `security find-generic-password`. A read-denied keychain-db => the agent
+    # boots "Not logged in - Run /login". Keep this explicit so the keychain
+    # stays readable even if defaultDenyRead is ever re-tightened. (Proven
+    # 2026-06-19: fence without this => keychain read fails => Claude unauth'd.)
+    "~/Library/Keychains",
 ]
 FENCE_DENY_READ = [
     "~/.ssh/id_*",
@@ -1006,6 +1022,12 @@ def resolve_sandbox_policy_name(harness, model, explicit_policy=None):
     return _validate_sandbox_policy(policy)
 
 
+def _live_spawn_policy(resolved_policy):
+    # See FENCE_GLOBALLY_DISABLED. Forces unsandboxed for LIVE spawns while the
+    # fence is globally off, without disturbing the pure resolver above.
+    return "unsandboxed" if FENCE_GLOBALLY_DISABLED else resolved_policy
+
+
 def _project_source_dirs_from_server():
     try:
         data = api_get("/api/projects")
@@ -1180,7 +1202,16 @@ def _fence_settings(policy):
         "allowPty": True,
         "network": network,
         "filesystem": {
-            "defaultDenyRead": True,
+            # Reads are PERMISSIVE: the fence constrains WRITES and network, not
+            # which dirs an agent may READ. Read-fencing is what kept blocking
+            # real jobs -- the macOS Keychain (Claude's OAuth token, => "Not
+            # logged in" when denied), the Playwright cache, xcrun's db,
+            # ~/.gitconfig. Skip 2026-06-19: "read whatever the fuck you want...
+            # ideal if you weren't able to read secrets, but whatever." So:
+            # default-allow read, and deny only the explicit secret FILES in
+            # FENCE_DENY_READ (ssh keys, aws/gcloud/kube creds, .netrc,
+            # git-credentials). denyRead takes precedence over the default.
+            "defaultDenyRead": False,
             "allowRead": allow_read,
             "denyRead": FENCE_DENY_READ,
             "allowWrite": allow_write,
@@ -2218,7 +2249,7 @@ def fresh(name, model, cwd, effort, mode, kind="claude", spawn_capability=None,
     cwd = resolve_spawn_cwd(cwd)
     adapter = harness_for_spawn(kind, model)
     model = adapter.resolve_model(model)
-    effective_policy = sandbox_policy or sandbox_policy_for_spawn_capability(spawn_capability)
+    effective_policy = _live_spawn_policy(sandbox_policy or sandbox_policy_for_spawn_capability(spawn_capability))
     policy_name, dev_tools, _write_roots, _matched_root, policy = resolve_harness_sandbox(
         adapter.kind, model, cwd, explicit_policy=effective_policy)
     policy = apply_spawn_capability_to_policy(policy, spawn_capability, cwd)
@@ -2269,7 +2300,7 @@ def respawn(name, model, cwd, effort, mode, session_override=None,
     spawn_policy_name = spawn_policy.get("policy") if isinstance(spawn_policy, dict) else None
     adapter = harness_for_agent(agent, raw_model)
     model = adapter.resolve_model(raw_model)
-    effective_policy = sandbox_policy or spawn_policy_name or sandbox_policy_for_spawn_capability(spawn_capability)
+    effective_policy = _live_spawn_policy(sandbox_policy or spawn_policy_name or sandbox_policy_for_spawn_capability(spawn_capability))
     policy_name, dev_tools, _write_roots, _matched_root, policy = resolve_harness_sandbox(
         adapter.kind, model, cwd, explicit_policy=effective_policy)
     policy = apply_spawn_capability_to_policy(policy, spawn_capability, cwd)
@@ -2354,7 +2385,7 @@ def refresh(name, model, cwd, effort, mode, spawn_capability=None,
     raw_model = model or meta.get("model")
     adapter = harness_for_agent(agent, raw_model)
     model = adapter.resolve_model(raw_model)
-    effective_policy = sandbox_policy or sandbox_policy_for_spawn_capability(spawn_capability)
+    effective_policy = _live_spawn_policy(sandbox_policy or sandbox_policy_for_spawn_capability(spawn_capability))
     policy_name, dev_tools, _write_roots, _matched_root, policy = resolve_harness_sandbox(
         adapter.kind, model, cwd, explicit_policy=effective_policy)
     policy = apply_spawn_capability_to_policy(policy, spawn_capability, cwd)
