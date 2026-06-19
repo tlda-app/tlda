@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { blockingChatLintIssues, lintChatMessage } from '../mcp-server/fleet-tools.mjs'
+import { blockingChatLintIssues, checkChatRender, lintChatMessage } from '../mcp-server/fleet-tools.mjs'
 
 test('chat lint accepts bracket display delimiters supported by fleet renderer', () => {
   const issues = lintChatMessage('Use \\[ x^2 + y^2 \\] for the condition.', {})
@@ -63,9 +63,33 @@ test('chat lint treats KaTeX parse errors as advisory warnings', () => {
   assert.deepEqual(blockingChatLintIssues(issues), [])
 })
 
-test('chat lint leaves completion style claims advisory', () => {
-  const issues = lintChatMessage('Fixed the thing.', {})
+test('chat lint no longer gates on completion-style wording (Skip: never a gate)', () => {
+  // "done / fixed / handled / passing" in ordinary prose must NOT be flagged.
+  const issues = lintChatMessage('Fixed the thing. The test was passing and it is all handled now — done.', {})
 
-  assert.ok(issues.some(issue => /Completion-style claim/.test(issue)))
+  assert.equal(issues.some(issue => /Completion-style claim/.test(issue)), false)
+  assert.deepEqual(issues, [])
   assert.deepEqual(blockingChatLintIssues(issues), [])
+})
+
+test('checkChatRender separates render-validity from style hints', () => {
+  // Multiple display blocks with prose between is a STYLE hint, never validity.
+  const { validity, style } = checkChatRender('$$a^2$$\nthen some text\n$$b^2$$', {})
+  assert.equal(validity.length, 0)
+  assert.ok(style.some(s => /separate display blocks/.test(s)))
+})
+
+test('chat lint flags an unclosed code fence as a render-validity issue', () => {
+  const issues = lintChatMessage('Here is the code:\n```js\nconst x = 1\n', {})
+  assert.ok(issues.some(i => /Unclosed code fence/.test(i)))
+})
+
+test('chat lint flags an unclosed $$ display block as a render-validity issue', () => {
+  const issues = lintChatMessage('The bound is $$ a^2 + b^2 and then we stop.', {})
+  assert.ok(issues.some(i => /Unclosed `\$\$` display-math block/.test(i)))
+})
+
+test('chat lint does not false-flag balanced $$ blocks', () => {
+  const { validity } = checkChatRender('A bound: $$a^2 + b^2 = c^2$$ and that is all.', {})
+  assert.equal(validity.some(i => /Unclosed/.test(i)), false)
 })

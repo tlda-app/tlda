@@ -69,6 +69,46 @@ test('task kick skips recently active agents and respects per-task cooldown', ()
   }).length, 0)
 })
 
+test('task kick suppressed when Skip is live in the room with the agent', () => {
+  const kicks = decideTaskKicks({
+    tasks: [task()],
+    agents: [agent({ last_seen: new Date(now - 30 * 60_000).toISOString() })],
+    now,
+    skipLive: new Set(['fleet:agent-1']),
+  })
+  assert.equal(kicks.length, 0)
+})
+
+test('task kick not repeated when the blocker state is unchanged since last kick', () => {
+  const a = agent({ last_seen: new Date(now - 30 * 60_000).toISOString() })
+  // First sweep: produces a kick carrying a state signature.
+  const first = decideTaskKicks({ tasks: [task()], agents: [a], now })
+  assert.equal(first.length, 1)
+  const sig = first[0].sig
+  assert.ok(sig)
+
+  // Interval elapsed, but task + agent state unchanged → no re-kick.
+  const lastKicked = new Map([['task-1', { ts: now - 20 * 60_000, sig }]])
+  const second = decideTaskKicks({ tasks: [task()], agents: [a], now, lastKicked })
+  assert.equal(second.length, 0)
+
+  // Agent acted (last_seen advanced, still past the quiet window) → state
+  // changed → a kick is allowed again.
+  const a2 = agent({ last_seen: new Date(now - 6 * 60_000).toISOString() })
+  const third = decideTaskKicks({ tasks: [task()], agents: [a2], now, lastKicked })
+  assert.equal(third.length, 1)
+})
+
+test('task kick still honors legacy bare-timestamp lastKicked entries', () => {
+  // Old entries are plain numbers; the cooldown must still apply.
+  assert.equal(decideTaskKicks({
+    tasks: [task()],
+    agents: [agent()],
+    now,
+    lastKicked: new Map([['task-1', now - 60_000]]),
+  }).length, 0)
+})
+
 test('task kick message includes loose-end self-check', () => {
   const message = formatTaskKickMessage({
     task: task(),

@@ -411,13 +411,27 @@ async function getMacrosForAgent() {
   return getMacrosForDoc(await getAgentPreambleDoc());
 }
 
-export function lintChatMessage(message, macros = {}) {
-  const issues = [];
-  const plain = String(message || '').replace(/```[\s\S]*?```/g, '').replace(/`[^`]*`/g, '');
-  if (/\b(done|fixed|handled|all set|implemented|completed|works now|passing)\b/i.test(plain) &&
-      !/\b(Status|Checked|Verified|Verification|Evidence):/i.test(plain)) {
-    issues.push('Completion-style claim without evidence. Use the self-sufficiency report shape: `Status:`, `Checked:`, `Changed:`, `Remaining:`.');
-  }
+// Two distinct lint classes, deliberately kept apart (Skip, 6/19):
+//
+//   VALIDITY — will this message render at all on Skip's screen? KaTeX parse
+//   errors, undefined macros with no preamble, glued `$` delimiters, LaTeX
+//   dumped into a code block, and markdown that won't close (unbalanced ```
+//   fence or `$$` block). A validity failure means Skip sees garbage, so these
+//   are real and get surfaced PROMINENTLY with the amend affordance — "warn
+//   agents that [it] doesn't render properly so they can amend their shit."
+//   The wording is harness-neutral: it points at the `amend_id` chat path,
+//   which every agent has, not at any Claude-Code-specific tool.
+//
+//   STYLE — optional presentation hints (combine display blocks, don't narrate
+//   between equations). Never a gate; surfaced quietly and separately.
+//
+// The completion-style keyword gate ("done/fixed/handled/passing…") was REMOVED
+// entirely — Skip: "that should never be a gate." Report-shape / evidence-before-
+// claims discipline lives in the self-sufficiency and verification-before-
+// completion skills the agent reads, not in a regex that flags the word "done".
+export function checkChatRender(message, macros = {}) {
+  const validity = [];
+  const style = [];
   // Render with the universal physics base + this doc's extracted paper macros
   // (paper wins). `macros` is the paper-specific set; when it's empty the agent
   // isn't scoped to a project, so an undefined-macro error means "go set them".
@@ -425,19 +439,35 @@ export function lintChatMessage(message, macros = {}) {
   const renderMacros = { ...baseMacros, ...macros };
   let suggestedSetMacros = false;
   const normalizedMathMessage = normalizeChatDisplayMathDelimiters(message);
+
+  // ---- markdown render validity (harness-neutral structural checks) ----
+  // An odd number of code fences leaves a block open, so everything after it
+  // renders as code. An odd number of `$$` (counted outside code blocks) leaves
+  // a display-math block open, so the math never renders. Both are silent
+  // garbage on Skip's screen — exactly the "doesn't render" case to warn on.
+  const fenceCount = (String(message).match(/```/g) || []).length;
+  if (fenceCount % 2 !== 0) {
+    validity.push('Unclosed code fence (odd number of ```) — everything after the open fence renders as a code block on Skip\'s screen. Close it, then re-chat with `amend_id` to fix it in place.');
+  }
+  const messageNoCode = String(message).replace(/```[\s\S]*?```/g, '');
+  const displayDollarCount = (normalizeChatDisplayMathDelimiters(messageNoCode).match(/\$\$/g) || []).length;
+  if (displayDollarCount % 2 !== 0) {
+    validity.push('Unclosed `$$` display-math block (odd number of `$$`) — the math will not render. Close the block, then re-chat with `amend_id`.');
+  }
+
   const displayBlocks = (normalizedMathMessage.match(/\$\$[\s\S]*?\$\$/g) || []);
   if (displayBlocks.length > 1) {
-    issues.push(`${displayBlocks.length} separate display blocks — consider combining into one \\begin{aligned} block so all steps are visible together.`);
+    style.push(`${displayBlocks.length} separate display blocks — consider combining into one \\begin{aligned} block so all steps are visible together.`);
   }
   const proseLines = normalizedMathMessage.split(/\$\$[\s\S]*?\$\$/);
   const proseBetween = proseLines.slice(1, -1).filter(p => p.trim().length > 0);
   if (proseBetween.length > 0 && displayBlocks.length > 1) {
-    issues.push(`Prose narration between display equations. If these are sequential algebra steps, put them in one block without interleaved text.`);
+    style.push(`Prose narration between display equations. If these are sequential algebra steps, put them in one block without interleaved text.`);
   }
   if (/\\text\{.*(?:by|since|because|using|from|note|recall).*\}/i.test(message) && displayBlocks.length > 0) {
     const textAnnotations = (message.match(/\\text\{[^}]*\}/g) || []).length;
     if (textAnnotations > 2) {
-      issues.push(`${textAnnotations} \\text{} annotations in display math. Show the steps and let the reader follow — don't narrate each one.`);
+      style.push(`${textAnnotations} \\text{} annotations in display math. Show the steps and let the reader follow — don't narrate each one.`);
     }
   }
   const allMath = [];
@@ -453,11 +483,11 @@ export function lintChatMessage(message, macros = {}) {
         // One actionable nudge beats a pile of cryptic per-macro parse errors.
         if (!suggestedSetMacros) {
           suggestedSetMacros = true;
-          issues.push(`Math uses macros that aren't loaded, and you have no project preamble set — so the chat renderer can't display them either. Set your paper's macros once with the \`set_preamble\` tool (point it at the project's main .tex), or include the macro definitions in the message. (Physics-package commands like \\norm, \\qty are always available.)`);
+          validity.push(`Math uses macros that aren't loaded, and you have no project preamble set — so the chat renderer can't display them either. Set your paper's macros once with the \`set_preamble\` tool (point it at the project's main .tex), or include the macro definitions in the message. (Physics-package commands like \\norm, \\qty are always available.)`);
         }
       } else {
         const snippet = tex.length > 40 ? tex.slice(0, 40) + '…' : tex;
-        issues.push(`LaTeX parse error in \`${display ? '$$' : '$'}${snippet}${display ? '$$' : '$'}\`: ${e.message}`);
+        validity.push(`LaTeX parse error in \`${display ? '$$' : '$'}${snippet}${display ? '$$' : '$'}\`: ${e.message}`);
       }
     }
     if (!display) {
@@ -466,11 +496,11 @@ export function lintChatMessage(message, macros = {}) {
       const after = afterIdx < normalizedMathMessage.length ? normalizedMathMessage[afterIdx] : ' ';
       if (/[a-zA-Z]/.test(before)) {
         const word = normalizedMathMessage.slice(Math.max(0, pos - 20), pos).match(/[a-zA-Z]+$/)?.[0] || '';
-        issues.push(`\`$\` delimiter glued to text "${word}$..." — the chat renderer may not find the math boundary. Add a space before \`$\`.`);
+        validity.push(`\`$\` delimiter glued to text "${word}$..." — the chat renderer may not find the math boundary. Add a space before \`$\`.`);
       }
       if (/[a-zA-Z]/.test(after)) {
         const word = normalizedMathMessage.slice(afterIdx, afterIdx + 20).match(/^[a-zA-Z]+/)?.[0] || '';
-        issues.push(`\`$\` delimiter glued to text "...$${word}" — the chat renderer may not find the math boundary. Add a space after \`$\`.`);
+        validity.push(`\`$\` delimiter glued to text "...$${word}" — the chat renderer may not find the math boundary. Add a space after \`$\`.`);
       }
     }
   }
@@ -478,10 +508,16 @@ export function lintChatMessage(message, macros = {}) {
   for (const block of codeBlocks) {
     const inner = block.slice(3, -3).replace(/^[a-z]*\n/, '');
     if (/\\(?:begin|end|frac|sum|int|prod|hat|bar|tilde|mathbb|mathrm|operatorname|left|right|alpha|beta|gamma|theta|lambda|mu|sigma|phi|psi|omega|infty|partial|nabla|sqrt|over|under)\b/.test(inner)) {
-      issues.push(`Don't put LaTeX in a code block unless you want to show the code itself, not the rendered math. Use $$ delimiters for display math or $ for inline — the chat renderer supports KaTeX. You can fix this in place by re-chatting with amend_id after it sends.`);
+      validity.push(`Don't put LaTeX in a code block unless you want to show the code itself, not the rendered math. Use $$ delimiters for display math or $ for inline — the chat renderer supports KaTeX. You can fix this in place by re-chatting with amend_id after it sends.`);
     }
   }
-  return issues;
+  return { validity, style };
+}
+
+// Backward-compatible flat view: validity issues first, then style hints.
+export function lintChatMessage(message, macros = {}) {
+  const { validity, style } = checkChatRender(message, macros);
+  return [...validity, ...style];
 }
 
 export function blockingChatLintIssues(issues = []) {
@@ -2239,7 +2275,10 @@ export async function handleFleetTool(name, args) {
     const { body: message, source } = { body: parsedSuggestions.body, source: resolvedBody.source };
     const authoredSuggestions = parsedSuggestions.suggestions || [];
     const macros = await getMacrosForAgent();
-    const lint = lintChatMessage(message, macros);
+    // Two classes, surfaced differently: render-VALIDITY prominently with the
+    // amend affordance (Skip will see garbage if it doesn't render), STYLE
+    // hints quietly. No register/completion gate — that was deleted.
+    const { validity: renderIssues, style: styleHints } = checkChatRender(message, macros);
 
     // ---- amend branch: edit an already-sent message in place ----
     // `amend_id` present → route to the server's amend handler (same body forms,
@@ -2261,9 +2300,13 @@ export async function handleFleetTool(name, args) {
         if (source) body.source = source;
         const data = await sendWS('amend', body);
         if (!data?.ok) return { content: [{ type: 'text', text: `Amend failed: ${data?.error || `no message of yours matched id ${args.amend_id}`}` }], isError: true };
-        const extra = lint.length > 0
-          ? `\n\n⚠ Still has ${lint.length} lint issue${lint.length > 1 ? 's' : ''}:\n${lint.map(l => `- ${l}`).join('\n')}`
-          : '';
+        let extra = '';
+        if (renderIssues.length > 0) {
+          extra += `\n\n⚠ **Still won't render (${renderIssues.length}):**\n${renderIssues.map(l => `- ${l}`).join('\n')}\nFix and re-chat \`amend_id: ${data.event_id}\` again — Skip is reading this message.`;
+        }
+        if (styleHints.length > 0) {
+          extra += `\n\nStyle (optional): ${styleHints.join(' ')}`;
+        }
         return { content: [{ type: 'text', text: `Amended message ${data.event_id} in place.${extra}` }] };
       } catch (e) {
         return { content: [{ type: 'text', text: `Amend failed: ${e.message}` }], isError: true };
@@ -2446,9 +2489,15 @@ export async function handleFleetTool(name, args) {
       warning += `\n\n⚠ **File(s) not uploaded** (not found or upload failed — removed from message):\n${brokenFiles.map(p => `- ${p}`).join('\n')}`;
     }
 
-    if (lint.length > 0) {
+    // Render-VALIDITY: prominent — Skip sees broken output unless the agent
+    // amends. This is the "warn so they can amend their shit" check (Skip 6/19).
+    if (renderIssues.length > 0) {
       const target = lastEventId != null ? `chat({ amend_id: ${lastEventId}, message: "…" })` : 'chat({ amend_id: <id>, message: "…" })';
-      warning += `\n\n⚠ **Lint (${lint.length} issue${lint.length > 1 ? 's' : ''}):**\n${lint.map(l => `- ${l}`).join('\n')}\nYour message went out but has these issues — **you are strongly encouraged to fix it in place** with \`${target}\` (it edits the message Skip is reading, no new message).`;
+      warning += `\n\n⚠ **Won't render properly (${renderIssues.length} issue${renderIssues.length > 1 ? 's' : ''}) — Skip will see broken output.** Fix it in place with \`${target}\` (edits the message Skip is reading, no new message):\n${renderIssues.map(l => `- ${l}`).join('\n')}`;
+    }
+    // STYLE: quiet, optional — never a gate.
+    if (styleHints.length > 0) {
+      warning += `\n\nStyle (optional): ${styleHints.join(' ')}`;
     }
 
     const amendHint = lastEventId != null ? ` (message id ${lastEventId} — chat({ amend_id: ${lastEventId} }) to edit it in place)` : '';
