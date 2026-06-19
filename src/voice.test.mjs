@@ -672,22 +672,21 @@ await setBackend('chrome')
   console.log('✓ Test 11: Deepgram mic-frame recovery clears don’t-speak banner')
 }
 
-// ---- Test 12: Deepgram mic-frame health is independent of bridge send ----
+// ---- Test 12: mic watchdog never tears down a live (running) context ----
+// Root-cause regression for the intermittent cut-outs / false "stop talking".
+// The old heartbeat restarted the whole mic pipeline whenever audio chunks paused
+// for >2s — but that gap is a MAIN-THREAD timing artifact (jank, an iOS audio
+// duck, a WS blip), not pipeline death, and the teardown itself manufactured the
+// cut-out. The fix: decide purely from the AudioContext state. A running (or
+// unknown) context is alive → 'none'; 'suspended' → cheap resume; only a genuinely
+// dead 'closed' context → 'rebuild'.
 {
-  reset()
-  window.__voiceTest.fakeDeepgramDisconnected()
-  const before = window.__voiceTest.getDeepgramHeartbeatState()
-
-  const sent = window.__voiceTest.simulateDeepgramAudioFrame()
-  const after = window.__voiceTest.getDeepgramHeartbeatState()
-  assert.equal(sent, false, 'disconnected Deepgram frame should not be sent')
-  assert.equal(after.lastAudioChunkTime, before.lastAudioChunkTime, 'failed bridge send should not update sent timestamp')
-  assert.ok(after.lastMicFrameTime > 0, 'local mic frame should refresh mic-health timestamp')
-  assert.equal(after.micStallBeatCount, 0, 'local mic frame should clear stale mic heartbeat count')
-
-  window.__voiceTest.fakeStop()
-  reset()
-  console.log('✓ Test 12: Deepgram mic-frame health is independent of bridge send')
+  const action = window.__voiceTest.micWatchdogAction
+  assert.equal(action('running'), 'none', 'running context must never be torn down (the 6/19 false-stall case)')
+  assert.equal(action(undefined), 'none', 'unknown state is treated as alive — never a destructive restart')
+  assert.equal(action('suspended'), 'resume', 'suspended context is repaired by resume(), not teardown')
+  assert.equal(action('closed'), 'rebuild', 'only a genuinely dead (closed) context warrants a rebuild')
+  console.log('✓ Test 12: mic watchdog never restarts a running/suspended context')
 }
 
 console.log('\nAll 15 tests passed.')

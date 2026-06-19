@@ -32,13 +32,14 @@ const WHISPER_BRIDGE_URL = location.protocol === 'https:' ? 'wss://127.0.0.1:817
 // on the tlda server (/voice/deepgram), reusing the page's TLS + token. This is
 // what keeps the iPad off iOS Web Speech, whose restart earcon causes the beeping.
 const _onServerHost = ['localhost', '127.0.0.1', '::1'].includes(location.hostname)
-let _deepgramBridgeImpl = 'sdk'
+// Deepgram is SDK-only — one implementation (Skip, 6/19: "we're going with the
+// SDK implementation, it is better"). The bridge is bin/deepgram-sdk-bridge.mjs
+// on port 8180; a device that can't reach 127.0.0.1 (the iPad) relays through the
+// same-origin /voice/deepgram-sdk WS proxy on the tlda server.
 function deepgramBridgeUrl() {
-  const directPort = _deepgramBridgeImpl === 'sdk' ? 8180 : 8179
-  if (_onServerHost) return `${location.protocol === 'https:' ? 'wss' : 'ws'}://127.0.0.1:${directPort}`
+  if (_onServerHost) return `${location.protocol === 'https:' ? 'wss' : 'ws'}://127.0.0.1:8180`
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-  const path = _deepgramBridgeImpl === 'sdk' ? '/voice/deepgram-sdk' : '/voice/deepgram'
-  return appendToken(`${proto}://${location.host}${path}`)
+  return appendToken(`${proto}://${location.host}/voice/deepgram-sdk`)
 }
 
 let _backend = 'deepgram'       // 'deepgram' | 'chrome' | 'whisper-stream'
@@ -481,12 +482,6 @@ function sendDeepgramAudioChunk(data) {
     showRecordingHud()
   }
   return true
-}
-
-function receiveDeepgramAudioFrame(data) {
-  _lastMicFrameTime = Date.now()
-  _micStallBeatCount = 0
-  return sendDeepgramAudioChunk(data)
 }
 
 function finalizeDeepgramBridge() {
@@ -1115,7 +1110,7 @@ function disconnectWhisperBridge() {
 }
 
 // --- Deepgram backend ---
-// Browser captures mic via AudioWorklet, sends raw PCM to deepgram-bridge (ws:8179).
+// Browser captures mic via AudioWorklet, sends raw PCM to deepgram-sdk-bridge (ws:8180).
 // Bridge relays to Deepgram API and returns transcripts with is_final flags.
 // No echo/doubling — Deepgram manages interim vs final results cleanly.
 
@@ -1127,8 +1122,6 @@ let _deepgramWorklet = null      // AudioWorkletNode — captures mic on the aud
 let _deepgramInterim = ''        // current interim result (replaced on each interim)
 let _dgHasSeenInterim = false   // true after first interim in current session; guards against post-send final bleed
 let _lastAudioChunkTime = 0     // timestamp of last audio chunk sent to bridge (for heartbeat logging)
-let _lastMicFrameTime = 0       // timestamp of last AudioWorklet frame from the local mic
-let _micStallBeatCount = 0      // consecutive heartbeat ticks with stale local mic frames
 let _audioHeartbeatInterval = null  // periodic interval that logs audio-flow health
 let _dgTrickleWords = []         // words currently being trickled in
 let _dgTrickleShown = 0          // how many trickle words are visible
@@ -1137,8 +1130,6 @@ let _dgTrickleDelay = 40         // ms between words (adjusted per burst)
 let _dgIgnoreUntilUtteranceEnd = false // true after voice-send; drops trailing old-utterance results
 let _dgIgnoredSubmittedText = null // normalized utterance submitted before waiting for utterance_end
 let _dgLastFinalNorm = ''        // last committed final; used to drop duplicate stale finals
-const MIC_STALL_RESTART_MS = 8000
-const MIC_STALL_RESTART_BEATS = 3
 
 function _dgTrickleFlush() {
   clearTimeout(_dgTrickleTimer)
@@ -1443,6 +1434,19 @@ function disconnectDeepgramBridge() {
   }
 }
 
+// What the audio heartbeat should do, decided ONLY from the AudioContext state.
+// This is the root-cause rule for the intermittent cut-outs / false "stop talking"
+// (see the long comment at the heartbeat call site): a 'running' (or unknown)
+// context is alive — NEVER tear it down on a timing heuristic, because the
+// teardown is itself what manufactures the cut-out. 'suspended' is repaired
+// cheaply by resume(); only a 'closed' context is genuinely dead and warrants a
+// rebuild. Pulled out as a pure function so this rule is unit-testable.
+function micWatchdogAction(ctxState) {
+  if (ctxState === 'suspended') return 'resume'
+  if (ctxState === 'closed') return 'rebuild'
+  return 'none'
+}
+
 async function startDeepgramMic() {
   if (_deepgramStream) return
 
@@ -1497,45 +1501,64 @@ async function startDeepgramMic() {
 
   _deepgramWorklet = new AudioWorkletNode(_deepgramContext, 'deepgram-capture')
   _deepgramWorklet.port.onmessage = (e) => {
-    receiveDeepgramAudioFrame(e.data)
+    sendDeepgramAudioChunk(e.data)
   }
   source.connect(_deepgramWorklet)
   _voiceHealthLabel = _deepgramConnected ? 'mic live; waiting for speech' : 'mic live; waiting for recognizer'
   if (_recording) showRecordingHud()
 
   _lastAudioChunkTime = 0
-  _lastMicFrameTime = Date.now()
-  _micStallBeatCount = 0
   _audioHeartbeatInterval = setInterval(() => {
     if (!_recording) return
-    const now = Date.now()
-    const ago = _lastAudioChunkTime ? now - _lastAudioChunkTime : null
-    const micAgo = _lastMicFrameTime ? now - _lastMicFrameTime : null
+    const ago = _lastAudioChunkTime ? Date.now() - _lastAudioChunkTime : null
+    const ctxState = _deepgramContext?.state
     vlog('audio heartbeat', {
       lastChunkMs: ago,
-      lastMicFrameMs: micAgo,
       wsOpen: _deepgramConnected,
       hasMic: !!_deepgramStream,
-      audioCtxState: _deepgramContext?.state,
+      audioCtxState: ctxState,
     })
-    // Resume AudioContext if it got suspended (tab backgrounded, OS audio pause, etc.)
-    if (_deepgramContext?.state === 'suspended') {
+    const action = micWatchdogAction(ctxState)
+
+    // A suspended context (tab backgrounded, OS audio pause) is the one benign
+    // state we actively repair — resume() is cheap and non-destructive. It does
+    // NOT interrupt an in-flight utterance the way a teardown does.
+    if (action === 'resume') {
       vlog('audio heartbeat: AudioContext suspended — resuming')
-      _deepgramContext.resume().then(() => {
-        vlog('audio heartbeat: AudioContext resumed')
-      }).catch(err => vlog('audio heartbeat: resume failed', { err: err.message }))
+      _deepgramContext.resume()
+        .then(() => vlog('audio heartbeat: AudioContext resumed'))
+        .catch(err => vlog('audio heartbeat: resume failed', { err: err.message }))
+      return
     }
-    // The mic watchdog is about local AudioWorklet frames, not successful bridge
-    // sends. A recognizer reconnect can stop sends while the mic is still healthy.
-    if (micAgo !== null && micAgo > MIC_STALL_RESTART_MS) {
-      _micStallBeatCount += 1
-      vlog('audio heartbeat: mic frame stale', { lastMicFrameMs: micAgo, staleBeats: _micStallBeatCount })
-    } else {
-      _micStallBeatCount = 0
-    }
-    if (_micStallBeatCount >= MIC_STALL_RESTART_BEATS) {
-      vlog('audio heartbeat: mic frame stale — restarting mic pipeline')
-      showDontSpeak('mic stalled; restarting')
+
+    // ROOT CAUSE of the intermittent cut-outs / false "stop talking" (the thing
+    // Skip said WAS the point, and questioned: "2s is a long time — is this even
+    // the problem?"). It is. The old code restarted the whole mic pipeline on any
+    // `ago > 2000`. But `_lastAudioChunkTime` is stamped on the MAIN thread (in
+    // sendDeepgramAudioChunk, and ONLY while the bridge WS is open), and this
+    // interval also runs on the main thread. So `ago` goes stale for reasons that
+    // have NOTHING to do with the audio pipeline being dead:
+    //   1. a long main-thread task (iPad TLDraw render/GC) defers the worklet's
+    //      port.onmessage AND this interval — when they finally run, the interval
+    //      can read a pre-jank timestamp (the 6/19 incident: lastChunkMs:2702 with
+    //      wsOpen, hasMic, audioCtxState all healthy);
+    //   2. a brief iOS audio-session duck: process() runs with empty input, posts
+    //      nothing, context stays "running";
+    //   3. a transient bridge-WS blip: the worklet keeps posting, but
+    //      sendDeepgramAudioChunk early-returns without stamping the timestamp
+    //      while onclose already reconnects.
+    // In every one of these the AudioContext is "running"/"suspended", never dead.
+    // Tearing it down (close ctx + stop tracks + new getUserMedia + async
+    // addModule) GUARANTEES a 1–3s real cut-out and flashes the false "mic stalled"
+    // overlay — it MANUFACTURES the exact symptom it claimed to prevent, and resets
+    // the timer so it can re-arm into a loop. So: never restart on this heuristic.
+    // Genuine death is caught by real events instead — the mic track's `onended`
+    // (OS killed the mic) and the bridge WS `onclose` (reconnect). The only death
+    // those two miss that this heartbeat can see is a context that went "closed"
+    // out from under us; that — and only that — warrants a rebuild.
+    if (action === 'rebuild' && _backend === 'deepgram') {
+      vlog('audio heartbeat: AudioContext closed — rebuilding mic pipeline')
+      showDontSpeak('mic stopped; restarting')
       stopDeepgramMic()
       startDeepgramMic()
     }
@@ -1545,8 +1568,6 @@ async function startDeepgramMic() {
 function stopDeepgramMic() {
   clearInterval(_audioHeartbeatInterval)
   _audioHeartbeatInterval = null
-  _lastMicFrameTime = 0
-  _micStallBeatCount = 0
   if (_deepgramWorklet) {
     try { _deepgramWorklet.port.onmessage = null; _deepgramWorklet.disconnect() } catch {}
     _deepgramWorklet = null
@@ -1597,7 +1618,7 @@ function afterSend() {
 // Remote debug logging — sends voice logs to server so agent can read them.
 // Whisper backend forwards via _whisperWs (see receive site at line 940).
 // Deepgram backend forwards here when the bridge WS is open; the bridge writes
-// `[voice] <text>` to ~/.config/tlda/deepgram-bridge.log so Safari debug is
+// `[voice] <text>` to ~/.config/tlda/deepgram-sdk-bridge.log so Safari debug is
 // observable without Web Inspector / USB pairing.
 const _voiceLogs = []
 function vlog(msg, data) {
@@ -1628,18 +1649,8 @@ if (typeof window !== 'undefined') {
       _deepgramConnected = true
       _deepgramWs = { readyState: 1, send: () => {} }
     },
-    fakeDeepgramDisconnected: () => {
-      _recording = true
-      _backend = 'deepgram'
-      _deepgramConnected = false
-      _deepgramWs = null
-    },
-    simulateDeepgramAudioFrame: (data = new Int16Array([1]).buffer) => receiveDeepgramAudioFrame(data),
-    getDeepgramHeartbeatState: () => ({
-      lastAudioChunkTime: _lastAudioChunkTime,
-      lastMicFrameTime: _lastMicFrameTime,
-      micStallBeatCount: _micStallBeatCount,
-    }),
+    simulateDeepgramAudioFrame: (data = new Int16Array([1]).buffer) => sendDeepgramAudioChunk(data),
+    micWatchdogAction: (ctxState) => micWatchdogAction(ctxState),
   }
 }
 
@@ -1862,17 +1873,15 @@ export async function initVoice() {
     console.log('voice: using whisper-stream backend (explicitly enabled)')
   } else if (prefBackend === 'deepgram' || prefBackend === 'deepgram-sdk') {
     _backend = 'deepgram'
-    _deepgramBridgeImpl = 'sdk'
-    const startPath = '/api/voice/deepgram-sdk/start'
     try {
-      await fetch(startPath, { method: 'POST' })
+      await fetch('/api/voice/deepgram-sdk/start', { method: 'POST' })
     } catch (err) {
       console.warn('voice: deepgram lazy-start request failed', err)
     }
     // Connect lazily when recording starts. No probe-and-fallback: if the bridge
     // is unreachable, recording just does nothing — never a fallback.
     _deepgramAvailable = true
-    console.log(`voice: using deepgram ${_deepgramBridgeImpl} backend (explicitly enabled)`)
+    console.log('voice: using deepgram SDK backend (explicitly enabled)')
   } else {
     // No backend enabled → voice is OFF. Nothing runs, nothing makes a sound.
     _backend = 'none'
@@ -1999,7 +2008,7 @@ export async function initVoice() {
     }
   })
 
-  const backend = _backend === 'deepgram' ? (_deepgramBridgeImpl === 'sdk' ? 'deepgram-sdk' : 'deepgram') : _backend === 'whisper-stream' ? 'whisper' : 'Web Speech API'
+  const backend = _backend === 'deepgram' ? 'deepgram-sdk' : _backend === 'whisper-stream' ? 'whisper' : 'Web Speech API'
   console.log(`voice: initialized v8 — ${backend} — BroadcastChannel: ${!!_micChannel}`)
   if (_isTouchDevice) startRecording()
   return true
@@ -2043,7 +2052,6 @@ export function getBackend() { return _backend }
 export function isWhisperAvailable() { return _whisperAvailable }
 export async function setBackend(be) {
   if (be === 'whisper') be = 'whisper-stream' // prefs dropdown uses the short name
-  const nextDeepgramImpl = 'sdk'
   if (be === 'deepgram' || be === 'deepgram-sdk') be = 'deepgram'
   // Explicit "off": no backend enabled. Stop any recording and go silent.
   if (be === '' || be === 'none') {
@@ -2054,14 +2062,11 @@ export async function setBackend(be) {
     return
   }
   if (be !== 'chrome' && be !== 'whisper-stream' && be !== 'deepgram') return
-  if (be === _backend && (be !== 'deepgram' || nextDeepgramImpl === _deepgramBridgeImpl)) return
+  if (be === _backend) return
   if (be === 'chrome' && !SpeechRecognition) return
   // Lazy-start the target backend on demand. init only probes the backend it
   // commits to, so without this a live switch to the other one would hit a stale
   // availability flag and silently no-op. (whisper is legacy — left guarded.)
-  if (be === 'deepgram') {
-    _deepgramBridgeImpl = nextDeepgramImpl
-  }
   if (be === 'deepgram') {
     try { await fetch('/api/voice/deepgram-sdk/start', { method: 'POST' }) } catch {}
     _deepgramAvailable = true
@@ -2071,7 +2076,7 @@ export async function setBackend(be) {
   if (wasRecording) stopRecording()
   _backend = be
   if (wasRecording) startRecording()
-  showHud(`voice: ${be === 'deepgram' && _deepgramBridgeImpl === 'sdk' ? 'deepgram-sdk' : be}`, '#9370db')
+  showHud(`voice: ${be === 'deepgram' ? 'deepgram-sdk' : be}`, '#9370db')
   fadeHud(2000)
 }
 export function resetTranscript() {

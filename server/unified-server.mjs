@@ -1092,14 +1092,14 @@ app.post('/api/voice/whisper/stop', async (req, res) => {
 })
 
 // Lazy-start the deepgram bridge. Browser hits this when voice=deepgram is selected.
-// The deepgram bridge listens on TLS (wss) only when the mkcert localhost certs
-// exist — the SAME condition bin/deepgram-bridge.mjs uses to choose its server.
-// On Fly there are no mkcert certs, so the bridge runs on plain ws; matching the
-// scheme here is what lets the proxy actually reach it off Skip's local machine.
+// Deepgram is SDK-only (one implementation, Skip 6/19) — bin/deepgram-sdk-bridge.mjs.
+// The bridge listens on TLS (wss) only when the mkcert localhost certs exist — the
+// SAME condition the bridge uses to choose its server. On Fly there are no mkcert
+// certs, so the bridge runs on plain ws; matching the scheme here is what lets the
+// proxy actually reach it off Skip's local machine.
 const _dgCert = path.join(homedir(), '.config/tlda/localhost+2.pem')
 const _dgKey = path.join(homedir(), '.config/tlda/localhost+2-key.pem')
 const _dgWsScheme = existsSync(_dgCert) && existsSync(_dgKey) ? 'wss' : 'ws'
-const DEEPGRAM_BRIDGE_URL = `${_dgWsScheme}://127.0.0.1:8179`
 const DEEPGRAM_SDK_BRIDGE_URL = `${_dgWsScheme}://127.0.0.1:8180`
 
 async function isBridgeUp(bridgeUrl) {
@@ -1139,20 +1139,6 @@ async function spawnVoiceBridge({ bridgeUrl, scriptName, logName, label }) {
   return { ok: true, started: true, pid: child.pid }
 }
 
-app.post('/api/voice/deepgram/start', async (req, res) => {
-  try {
-    res.json(await spawnVoiceBridge({
-      bridgeUrl: DEEPGRAM_BRIDGE_URL,
-      scriptName: 'deepgram-bridge.mjs',
-      logName: 'deepgram-bridge.log',
-      label: 'deepgram raw',
-    }))
-  } catch (err) {
-    console.error('[voice] deepgram/start failed:', err.message)
-    res.status(500).json({ ok: false, error: err.message })
-  }
-})
-
 app.post('/api/voice/deepgram-sdk/start', async (req, res) => {
   try {
     res.json(await spawnVoiceBridge({
@@ -1163,17 +1149,6 @@ app.post('/api/voice/deepgram-sdk/start', async (req, res) => {
     }))
   } catch (err) {
     console.error('[voice] deepgram-sdk/start failed:', err.message)
-    res.status(500).json({ ok: false, error: err.message })
-  }
-})
-
-app.post('/api/voice/deepgram/stop', async (req, res) => {
-  try {
-    const { execSync } = await import('child_process')
-    try { execSync('pkill -f "deepgram-bridge.mjs" 2>/dev/null', { timeout: 3000 }) } catch {}
-    console.log('[voice] deepgram bridge stopped')
-    res.json({ ok: true })
-  } catch (err) {
     res.status(500).json({ ok: false, error: err.message })
   }
 })
@@ -1189,43 +1164,9 @@ app.post('/api/voice/deepgram-sdk/stop', async (req, res) => {
   }
 })
 
-// Probe the local deepgram bridge over TLS (the bridge runs an HTTPS WSS server
-// when the mkcert certs exist — see bin/deepgram-bridge.mjs). The self-signed
-// localhost cert is fine here, so rejectUnauthorized is off.
-async function probeDeepgramBridge() {
-  return isBridgeUp(DEEPGRAM_BRIDGE_URL)
-}
-
-// Ensure the deepgram bridge is running, spawning it if needed. Used by the
-// /voice/deepgram WS proxy so a device that can't reach 127.0.0.1:8179 (the
+// Ensure the (SDK) deepgram bridge is running, spawning it if needed. Used by the
+// /voice/deepgram-sdk WS proxy so a device that can't reach 127.0.0.1:8180 (the
 // iPad) still gets a live bridge. Concurrent callers share one spawn.
-let _deepgramBridgeStarting = null
-async function ensureDeepgramBridge() {
-  if (await probeDeepgramBridge()) return true
-  if (!_deepgramBridgeStarting) {
-    _deepgramBridgeStarting = (async () => {
-      const { spawn } = await import('child_process')
-      const { openSync } = await import('fs')
-      const { dirname, join } = await import('path')
-      const { fileURLToPath } = await import('url')
-      const here = dirname(fileURLToPath(import.meta.url))
-      const tldaRoot = dirname(here)
-      const bridgeScript = join(tldaRoot, 'bin', 'deepgram-bridge.mjs')
-      const logPath = join(process.env.HOME || '', '.config', 'tlda', 'deepgram-bridge.log')
-      const fd = openSync(logPath, 'a')
-      const child = spawn('node', [bridgeScript], { detached: true, stdio: ['ignore', fd, fd], cwd: tldaRoot })
-      child.unref()
-      console.log('[voice] deepgram bridge spawned (proxy ensure, pid', child.pid, ')')
-      for (let i = 0; i < 24; i++) {
-        await new Promise(r => setTimeout(r, 250))
-        if (await probeDeepgramBridge()) return
-      }
-    })().finally(() => { _deepgramBridgeStarting = null })
-  }
-  await _deepgramBridgeStarting
-  return probeDeepgramBridge()
-}
-
 let _deepgramSdkBridgeStarting = null
 async function ensureDeepgramSdkBridge() {
   if (await isBridgeUp(DEEPGRAM_SDK_BRIDGE_URL)) return true
@@ -2569,14 +2510,13 @@ server.on('upgrade', async (req, socket, head) => {
     return
   }
 
-  // /voice/deepgram and /voice/deepgram-sdk — same-origin relays to local
-  // Deepgram bridges. A device that can't reach 127.0.0.1 (the iPad, where
-  // localhost is the iPad itself) connects here over the TLS the page is already
-  // authenticated on; we preserve binary PCM + text control framing both ways.
-  if (url.pathname === '/voice/deepgram' || url.pathname === '/voice/deepgram-sdk') {
-    const sdkMode = url.pathname === '/voice/deepgram-sdk'
-    const bridgeUrl = sdkMode ? DEEPGRAM_SDK_BRIDGE_URL : DEEPGRAM_BRIDGE_URL
-    const ensureBridge = sdkMode ? ensureDeepgramSdkBridge : ensureDeepgramBridge
+  // /voice/deepgram-sdk — same-origin relay to the local (SDK) Deepgram bridge.
+  // A device that can't reach 127.0.0.1 (the iPad, where localhost is the iPad
+  // itself) connects here over the TLS the page is already authenticated on; we
+  // preserve binary PCM + text control framing both ways.
+  if (url.pathname === '/voice/deepgram-sdk') {
+    const bridgeUrl = DEEPGRAM_SDK_BRIDGE_URL
+    const ensureBridge = ensureDeepgramSdkBridge
     voiceWss.handleUpgrade(req, socket, head, async (browserWs) => {
       const WS = (await import('ws')).default
       let upstream = null
@@ -2622,7 +2562,7 @@ server.on('upgrade', async (req, socket, head) => {
       })
       upstream.on('close', closeBoth)
       upstream.on('error', (err) => {
-        console.warn(`[voice-proxy:${sdkMode ? 'sdk' : 'raw'}] upstream error:`, err.message)
+        console.warn('[voice-proxy:sdk] upstream error:', err.message)
         closeBoth()
       })
     })
