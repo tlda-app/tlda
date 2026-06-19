@@ -14,7 +14,8 @@ import path from 'path'
 import os from 'os'
 import { DEFAULT_PORT, loadConfig, resolveConfig } from '../../shared/config.mjs'
 import { parseFilter, evalExpr, labelsForAgent, validateDnfFilter } from '../../shared/fleet-labels.mjs'
-import { authorizeSpawn, projectCapabilityToMode } from '../lib/spawn-policy.mjs'
+import { authorizeSpawn, projectCapabilityToMode, resolveProjectProfile } from '../lib/spawn-policy.mjs'
+import { readProject } from '../lib/project-store.mjs'
 
 // Server owner — the human running this server process. Browser users
 // log in via the WS 'login' message or register via 'register'.
@@ -461,13 +462,18 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       return
     }
     try {
+      const config = loadConfig()
+      // Inherit the target project's default profile (the default fence) when no
+      // capability is requested explicitly; authorizeSpawn caps it by the model
+      // ceiling and the caller.
+      const profile = resolveProjectProfile(config, { doc, project: doc ? readProject(doc) : null })
       const authorized = authorizeSpawn({
         caller,
-        requestedCapability: capability || spawnCapability,
+        requestedCapability: capability || spawnCapability || profile,
         model,
         kind,
         trustOverride,
-        config: loadConfig(),
+        config,
         serverOwnerId: SERVER_OWNER_ID,
       })
       const launchMode = projectCapabilityToMode(authorized.requestedCapability, mode)

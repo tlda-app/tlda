@@ -11,6 +11,8 @@ import {
   modelCeiling,
   modelSpawnCeiling,
   modelTrustTier,
+  resolveProjectProfile,
+  resolveProjectProfileName,
   spawnPolicyLte,
 } from '../server/lib/spawn-policy.mjs'
 
@@ -153,6 +155,46 @@ describe('spawn policy', () => {
     }), /operator-only/)
     assert.equal(isOperator({ id: 'fleet:skip', human: true }), true)
     assert.equal(isOperator({ id: 'fleet:a', metadata: { spawnPolicy: { capability: 'full' } } }), false)
+  })
+
+  it('inherits a project default profile as the spawn fence', () => {
+    // A project record's own profile field wins.
+    assert.equal(resolveProjectProfileName({}, { project: { profile: 'math' } }), 'math')
+    // Else config.spawnPolicy.projectProfiles by name.
+    assert.equal(resolveProjectProfileName(
+      { spawnPolicy: { projectProfiles: { 'host-ops': 'ops' } } }, { doc: 'host-ops' }), 'ops')
+    // Else the config default, else the built-in default.
+    assert.equal(resolveProjectProfileName({ spawnPolicy: { defaultProfile: 'untrusted' } }, {}), 'untrusted')
+    assert.equal(resolveProjectProfileName({}, {}), 'app')
+    // An unknown profile name falls back to the default rather than throwing.
+    assert.equal(resolveProjectProfileName({}, { project: { profile: 'bogus' } }), 'app')
+    // The math profile fences to all tlda projects; ops is machine-level.
+    assert.deepEqual(resolveProjectProfile({}, { project: { profile: 'math' } }), {
+      name: 'math', capability: 'workspace-write+net', policy: 'tlda-projects', category: 'write-scope',
+    })
+    assert.deepEqual(resolveProjectProfile({}, { project: { profile: 'ops' } }), {
+      name: 'ops', capability: 'full-access', policy: 'unsandboxed', category: 'write-scope',
+    })
+  })
+
+  it('caps an inherited profile by the model ceiling — even for Claude', () => {
+    // A Claude spawned into a math project inherits the math profile (fenced to
+    // tlda-projects) even though its model could be trusted with full-access.
+    const claudeInMath = authorizeSpawn({
+      caller: { id: 'fleet:skip', human: true },
+      requestedCapability: resolveProjectProfile({}, { project: { profile: 'math' } }),
+      model: 'opus48',
+    })
+    assert.equal(claudeInMath.requestedPolicy.policy, 'tlda-projects')
+    assert.equal(claudeInMath.requestedCapability, 'workspace-write+net')
+    // A deepseek spawned into the same math project: the profile asks for
+    // tlda-projects, but its narrow model ceiling (cwd) caps it — the project
+    // profile cannot lift an untrusted model above its ceiling.
+    assert.throws(() => authorizeSpawn({
+      caller: { id: 'fleet:skip', human: true },
+      requestedCapability: resolveProjectProfile({}, { project: { profile: 'math' } }),
+      model: 'deepseek/deepseek-v4-pro',
+    }), /exceeds model ceiling/)
   })
 
   it('allows downward choice within both ceilings', () => {

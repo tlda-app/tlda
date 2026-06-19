@@ -184,6 +184,53 @@ export function modelSpawnCeiling(config = {}, { model, kind, trustOverride } = 
   return normalizeSpawnPolicy(configured, defaultModelCeiling({ model, kind }))
 }
 
+// Project-default profiles (Skip 06-19: "reasonable configurations on a
+// project-by-project level… generally set once"). A project carries a profile;
+// spawning into it inherits that profile as the DEFAULT FENCE. The profile is
+// the *default*, the model ceiling is the *cap* — effective authority is the
+// lower of (profile, model ceiling, caller). This default fence applies to
+// EVERYONE including Claude: a Claude in a math project gets the math profile
+// (fenced to math projects) so it stays in its lane, even though its model could
+// be trusted with more. The profile sets the LANE (where you may write); the
+// model tier sets the TRUST (how high the operator could raise you).
+//
+//   ops       — machine-level (the operator's host-work project): full-access.
+//   app       — dev + tester: code, git, dev-server, browser, network, all
+//               inside the worktree (cwd); the fence lease widens cwd to include
+//               the dev caches so the job is never blocked.
+//   math      — write across all tlda/math projects.
+//   untrusted — write only its own project (cwd) + net; never across projects,
+//               never machine-level. Same lane as app; the trust difference is
+//               carried by the model ceiling, not the lane.
+export const SPAWN_PROFILES = {
+  ops: { capability: 'full-access', policy: 'unsandboxed' },
+  app: { capability: 'workspace-write+net', policy: 'cwd' },
+  math: { capability: 'workspace-write+net', policy: 'tlda-projects' },
+  untrusted: { capability: 'workspace-write+net', policy: 'cwd' },
+}
+
+export const DEFAULT_SPAWN_PROFILE = 'app'
+
+// Resolve which profile NAME a spawn into `doc` should inherit. Precedence:
+// the project record's own `profile` field → config.spawnPolicy.projectProfiles
+// keyed by project name → config.spawnPolicy.defaultProfile → DEFAULT_SPAWN_PROFILE.
+export function resolveProjectProfileName(config = {}, { doc, project } = {}) {
+  const policy = config.spawnPolicy || {}
+  const fromProject = project?.profile
+  const fromConfig = doc ? (policy.projectProfiles || {})[doc] : null
+  const name = String(fromProject || fromConfig || policy.defaultProfile || DEFAULT_SPAWN_PROFILE).trim().toLowerCase()
+  return SPAWN_PROFILES[name] ? name : DEFAULT_SPAWN_PROFILE
+}
+
+// The profile a spawn inherits, as a normalized spawn policy. This becomes the
+// requested capability when the caller does not request one explicitly — the
+// default fence. authorizeSpawn still bounds it by the model ceiling and the
+// caller's own authority.
+export function resolveProjectProfile(config = {}, { doc, project } = {}) {
+  const name = resolveProjectProfileName(config, { doc, project })
+  return { ...normalizeSpawnPolicy(SPAWN_PROFILES[name]), name }
+}
+
 // The operator (human, or the server owner identity) is root: never fenced, can
 // confer any capability up to and including destructive full-access, and is the
 // ONLY caller permitted to raise a model's trust ceiling per-agent. Every agent,

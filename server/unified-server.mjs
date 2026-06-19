@@ -53,7 +53,7 @@ import * as tldaFeedback from './lib/tlda-feedback.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
 import { FleetStore } from './lib/fleet-store.mjs'
 import { createFleetRouter } from './routes/fleet.mjs'
-import { authorizeSpawn, projectCapabilityToMode } from './lib/spawn-policy.mjs'
+import { authorizeSpawn, projectCapabilityToMode, resolveProjectProfile } from './lib/spawn-policy.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -786,13 +786,20 @@ async function performAuthorizedSpawn(caller, msg) {
   if (refresh && spawnKind === 'codex') {
     throw new Error('codex refresh is not supported through MCP spawn; use respawn with a real resume handle')
   }
+  const config = loadConfig()
+  // The project a spawn lands in carries a default profile (the default fence).
+  // When the caller doesn't request a capability explicitly, inherit the
+  // project's profile — set-once, per-project, applies to everyone including
+  // Claude. authorizeSpawn still caps it by the model ceiling and the caller.
+  const profile = resolveProjectProfile(config, { doc, project: doc ? readProject(doc) : null })
+  const requestedCapability = capability || spawnCapability || profile
   const authorized = authorizeSpawn({
     caller,
-    requestedCapability: capability || spawnCapability,
+    requestedCapability,
     model,
     kind: spawnKind,
     trustOverride,
-    config: loadConfig(),
+    config,
     serverOwnerId: SERVER_OWNER_ID,
   })
   const machineIds = [...daemonConnections.keys()]
