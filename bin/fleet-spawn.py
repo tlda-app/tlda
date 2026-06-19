@@ -787,8 +787,6 @@ TLDA_FENCE_TMP_ROOT = "/tmp/tlda-fence-env"
 DEFAULT_CLAUDE_PERMISSION_MODES = {
     "cwd": "auto",
     "tlda-projects": "auto",
-    # TEMP (Skip 2026-06-19): full perms for unsandboxed team spawns.
-    "unsandboxed": "bypassPermissions",
 }
 FENCE_AGENT_WRITE_ROOTS = [
     "/tmp",
@@ -1102,10 +1100,6 @@ def resolve_sandbox_policy(harness, model, cwd, write_roots, policy_name):
 
 
 def resolve_harness_sandbox(harness, model, cwd, explicit_policy=None):
-    # TEMP (Skip 2026-06-19): fence disabled globally so a team can spawn with
-    # full perms. Forces every spawn unsandboxed regardless of policy/capability.
-    # REVERT by deleting these two lines.
-    explicit_policy = "unsandboxed"
     policy_name = resolve_sandbox_policy_name(harness, model, explicit_policy=explicit_policy)
     dev_tools, write_roots, matched_root = sandbox_roots_for_policy(policy_name, cwd)
     policy = None
