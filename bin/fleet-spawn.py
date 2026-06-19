@@ -802,7 +802,7 @@ TLDA_PW_SOCKETS_ROOT = "/tmp/tlda-pw-sockets"
 # --dangerously-skip-permissions, memory writes, cold-browser guard), so turning
 # it on no longer breaks an agent's job -- it just removes the unsandboxed
 # default. Flip back to True only to globally disable the fence.
-FENCE_GLOBALLY_DISABLED = False
+FENCE_GLOBALLY_DISABLED = True
 # Permission mode per sandbox policy. THE POINT OF THE FENCE (Skip 2026-06-19):
 # a fenced agent does normal work with ZERO Claude permission prompts -- the
 # fence is the security boundary, so Claude's interactive approvals are redundant
@@ -817,7 +817,10 @@ FENCE_GLOBALLY_DISABLED = False
 DEFAULT_CLAUDE_PERMISSION_MODES = {
     "cwd": "bypassPermissions",
     "tlda-projects": "bypassPermissions",
-    "unsandboxed": "bypassPermissions",
+    # NOTE: no "unsandboxed" entry. bypassPermissions is safe ONLY because the
+    # fence is the guardrail; an UNSANDBOXED agent with no prompts has no
+    # guardrail at all, so unsandboxed keeps its prior behavior (Claude default).
+    # The cwd/tlda-projects entries only take effect when the fence is ON.
 }
 FENCE_AGENT_WRITE_ROOTS = [
     "/tmp",
