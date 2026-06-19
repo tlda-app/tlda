@@ -1150,7 +1150,14 @@ def _fence_settings(policy):
         *FENCE_AGENT_WRITE_ROOTS,
     ])))
     deny_write = list(FENCE_DENY_WRITE)
-    if str(policy.get("git", "read")) != "write":
+    # A write-capable agent's own repo (.git is an explicit write root) needs
+    # local git -- status / add / commit / branch -- as part of its job, so the
+    # fence must not blanket-deny .git for it. The irrevocable and destructive
+    # commands (git push / reset / clean / checkout -- / rebase / merge, the
+    # publishes, sudo) stay blocked via command.deny below regardless. A
+    # read-only agent has no .git write root, so .git stays read-only for it.
+    repo_git_writable = str(policy.get("git", "read")) == "write" or _has_git_write_root(policy)
+    if not repo_git_writable:
         deny_write.extend(FENCE_GIT_READONLY_DENY)
     allowed_domains = list(FENCE_CODE_ALLOWED_DOMAINS)
     api_host = urlparse(API).hostname
@@ -1511,6 +1518,21 @@ def _api_needs_local_outbound():
         or ip.is_private
         or ip in ipaddress.ip_network("100.64.0.0/10")
     )
+
+
+def _has_git_write_root(policy):
+    """True if the policy makes an agent's own .git directory a writable root.
+
+    apply_spawn_capability_to_policy adds <cwd>/.git to write_roots for a
+    project-write capability, so this is how we tell an agent that legitimately
+    needs local git (commit/add/branch) apart from a read-only one. The
+    irrevocable/destructive git commands stay denied via FENCE_COMMAND_DENY
+    regardless of this.
+    """
+    for root in policy.get("write_roots") or []:
+        if os.path.basename(os.path.normpath(str(root))) == ".git":
+            return True
+    return False
 
 
 def apply_spawn_capability_to_policy(policy, capability, cwd):
