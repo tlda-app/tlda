@@ -860,6 +860,15 @@ FENCE_AGENT_READ_ROOTS = [
     "~/Library/Keychains",
 ]
 FENCE_DENY_READ = [
+    # Deny ALL of ~/.ssh, not just id_*/config: a private key with a non-standard
+    # name (e.g. ~/.ssh/mykey) would otherwise slip through (reads are permissive).
+    # Skip 2026-06-19: "deny all ~/.ssh/* except known_hosts -- that'd be smart."
+    # The fence's denyRead beats allowRead, so known_hosts can't be carved back
+    # out; it gets swept in too. That's fine -- known_hosts isn't a secret and
+    # fenced agents use https for git (github.com is allow-listed), so nothing a
+    # fenced agent legitimately does needs to read it.
+    "~/.ssh/*",
+    "~/.ssh/**",
     "~/.ssh/id_*",
     "~/.ssh/config",
     "~/.ssh/*.pem",
