@@ -44,6 +44,7 @@ import { DEFAULT_PORT, hasTls, getManagedBots, loadConfig, resolveConfig } from 
 import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
 import { labelsForAgent, parseFilter, evalExpr, validateDnfFilter } from '../shared/fleet-labels.mjs'
 import { phaseFromName, baseName, PHASES } from '../shared/lineage-name.mjs'
+import { daemonHelloDecision } from '../shared/daemon-identity.mjs'
 import { initProjectStore, listProjects, readProject, getProjectsDir } from './lib/project-store.mjs'
 import { resetStaleBuildStates, killAllBuilds, runBuild } from './lib/build-runner.mjs'
 import projectRoutes, { processProjectPush } from './routes/projects.mjs'
@@ -4343,40 +4344,46 @@ async function handleDaemonWsMessage(ws, msg) {
   const { type } = msg
 
   if (type === 'daemon-hello') {
-    const { machine_id, user, hostname, version, boot_id } = msg
+    const { machine_id, user, hostname, version, boot_id, install_path } = msg
     if (!machine_id) return
-    // Eviction protocol: if another daemon already holds this machine_id,
-    // compare boot_ids. Newer (larger) boot_id wins; older gets evicted
-    // with a `daemon-evict` message and disconnected.
+    // §4b backstop: a machine_id is owned by ONE daemon install. If another
+    // daemon already holds it live, only the SAME install restarting may take
+    // over (newer boot wins); a DIFFERENT install (e.g. a worktree/dev-rig
+    // daemon) is refused — it can never evict the real live daemon. This is the
+    // hard stop for the "two daemons fighting over `air`" leak, independent of
+    // how the rogue daemon was misconfigured.
     const existing = daemonConnections.get(machine_id)
     if (existing && existing !== ws) {
-      const existingBoot = existing._bootId || 0
-      const incomingBoot = boot_id || 0
-      if (incomingBoot >= existingBoot) {
+      const decision = daemonHelloDecision({
+        existing: { open: existing.readyState === 1, bootId: existing._bootId || 0, installPath: existing._installPath },
+        incoming: { bootId: boot_id || 0, installPath: install_path },
+      })
+      if (decision === 'refuse') {
+        const sameInstall = existing._installPath && install_path && existing._installPath === install_path
+        const reason = sameInstall
+          ? 'a newer daemon already holds this machine_id'
+          : `machine_id ${machine_id} is already held live by a different daemon install (${existing._installPath || 'unknown'}); refusing this one (${install_path || 'unknown'})`
+        console.warn(`[fleet-daemon] REFUSED daemon-hello: ${reason}`)
         try {
-          existing.send(JSON.stringify({
-            type: 'daemon-evict',
-            reason: 'another daemon claimed this machine_id',
-            replaced_by_boot_id: incomingBoot,
-          }))
-        } catch {}
-        try { existing.close() } catch {}
-        daemonConnections.delete(machine_id)
-      } else {
-        // Incoming is older — reject it instead.
-        try {
-          ws.send(JSON.stringify({
-            type: 'daemon-evict',
-            reason: 'a newer daemon already holds this machine_id',
-            replaced_by_boot_id: existingBoot,
-          }))
+          ws.send(JSON.stringify({ type: 'daemon-evict', reason, held_by_boot_id: existing._bootId || 0 }))
         } catch {}
         try { ws.close() } catch {}
         return
       }
+      // decision === 'evict-existing': same install restarting with a newer boot.
+      try {
+        existing.send(JSON.stringify({
+          type: 'daemon-evict',
+          reason: 'same install restarted with a newer boot_id',
+          replaced_by_boot_id: boot_id || 0,
+        }))
+      } catch {}
+      try { existing.close() } catch {}
+      daemonConnections.delete(machine_id)
     }
     ws._machineId = machine_id
     ws._bootId = boot_id
+    ws._installPath = install_path
     ws._user = user
     ws._hostname = hostname
     ws._version = version

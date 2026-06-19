@@ -71,6 +71,7 @@ const execFileP = promisify(execFile)
 
 const VERSION = '0.1.1'
 import { createLogger } from '../shared/logger.mjs'
+import { resolveDaemonIsolation } from '../shared/daemon-identity.mjs'
 import { makeActivityThrottle } from './lib/activity-throttle.mjs'
 import { maybeKickGoose, resolveGooseStatus } from './lib/goose-kick.mjs'
 import { gooseActivityTick } from './lib/goose-activity.mjs'
@@ -117,6 +118,28 @@ const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects')
 // When using a custom config dir (E2E tests), read from there instead of shared.
 const _usingCustomConfigDir = !!process.env.TLDA_DAEMON_CONFIG_DIR
 
+// This daemon's own install path — distinguishes a main-tree daemon from a
+// worktree/dev-rig one, both at startup (the isolation guard below) and on the
+// server (the daemon-hello backstop: two distinct installs can't share a
+// machine_id). Resolve symlinks so the comparison is on the real path.
+const INSTALL_PATH = (() => {
+  try { return fs.realpathSync(fileURLToPath(import.meta.url)) }
+  catch { return fileURLToPath(import.meta.url) }
+})()
+
+// §4b guard: a worktree/dev-rig daemon must never silently join the LIVE fleet
+// as the shared machine_id (tonight a worktree daemon claimed "air" and evicted
+// the real one). Refuse to start when an isolation signal is set but isolation
+// is incomplete, instead of falling through to the live config. Fail loud.
+{
+  const { refuseReason } = resolveDaemonIsolation({ env: process.env, scriptPath: INSTALL_PATH })
+  if (refuseReason) {
+    log.error(`refusing to start: ${refuseReason}`)
+    process.stderr.write(`[fleet-daemon] REFUSING TO START — ${refuseReason}\n`)
+    process.exit(1)
+  }
+}
+
 function loadConfig() {
   if (_usingCustomConfigDir) {
     const f = path.join(CONFIG_DIR, 'config.json')
@@ -151,9 +174,15 @@ const config = loadConfig()
 // daemon watches local things (files, agents, terminals) and relays everything
 // to it — source-change → server builds in its shadow, activity/terminal/RPC →
 // fleet. Resolve the fleet server (config.fleetServer → Fly), not a local one.
-const SERVER = _usingCustomConfigDir
-  ? (process.env.TLDA_SERVER || config.fleetServer || config.server || `${hasTls ? 'https' : 'http'}://localhost:${DEFAULT_PORT}`)
-  : getFleetServerUrl(config)
+// Honor TLDA_SERVER on BOTH paths. Previously it was read only when a custom
+// config dir was set, so `TLDA_SERVER=… node fleet-daemon.mjs` silently fell
+// through to getFleetServerUrl(config) = live Fly — a rig that thought it was
+// isolated joined the live fleet. TLDA_SERVER set now always targets that server.
+const SERVER = process.env.TLDA_SERVER
+  ? process.env.TLDA_SERVER
+  : (_usingCustomConfigDir
+      ? (config.fleetServer || config.server || `${hasTls ? 'https' : 'http'}://localhost:${DEFAULT_PORT}`)
+      : getFleetServerUrl(config))
 const TOKEN = _usingCustomConfigDir
   ? (process.env.TLDA_TOKEN || config.tokenRw || config.token || null)
   : getRwToken(config)
@@ -3375,6 +3404,7 @@ function connect() {
         hostname: HOSTNAME,
         version: VERSION,
         boot_id: BOOT_ID,
+        install_path: INSTALL_PATH,
       })
     },
     onMessage: handleServerMessage,
