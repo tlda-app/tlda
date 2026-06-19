@@ -77,7 +77,10 @@ function loadVoiceParamOverrides() {
   try {
     const config = loadConfig()
     if (config.voiceParams && typeof config.voiceParams === 'object') return config.voiceParams
-  } catch {}
+  } catch {
+    // Config is an OPTIONAL tuning surface — if it's missing/unreadable, voice
+    // must still work on the docs-backed defaults. No overrides, no failure.
+  }
   return {}
 }
 
