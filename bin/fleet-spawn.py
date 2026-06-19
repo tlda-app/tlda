@@ -1234,6 +1234,15 @@ def _fence_settings(policy):
     api_host = urlparse(API).hostname
     if api_host and api_host not in allowed_domains:
         allowed_domains.append(api_host)
+    # +net = REAL internet (Skip's spec §1.3: "every agent should use the
+    # Internet"). A write+net agent must reach the whole web -- and cluster SSH
+    # for math/sims, which OUTRANKS app-dev -- not just the curated model-API
+    # allowlist. So when the lease grants network, allow all domains; the
+    # deniedDomains below still block cloud-metadata SSRF + telemetry. The
+    # no-net DEFAULT keeps the curated allowlist (model APIs only): a fenced
+    # no-net agent can still reach its model, but nothing else.
+    if policy.get("network"):
+        allowed_domains = ["*"]
     api_local_outbound = _api_needs_local_outbound()
     network = {
         "allowedDomains": allowed_domains,
