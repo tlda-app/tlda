@@ -2380,7 +2380,15 @@ def respawn(name, model, cwd, effort, mode, session_override=None,
     spawn_policy_name = spawn_policy.get("policy") if isinstance(spawn_policy, dict) else None
     adapter = harness_for_agent(agent, raw_model)
     model = adapter.resolve_model(raw_model)
-    effective_policy = _live_spawn_policy(sandbox_policy or spawn_policy_name or sandbox_policy_for_spawn_capability(spawn_capability), explicit=bool(sandbox_policy or spawn_policy_name))
+    # explicit = ONLY a command-line --policy (sandbox_policy). A STORED
+    # spawn_policy_name from the agent's metadata must NOT count as explicit:
+    # otherwise an agent that once got `cwd` metadata (e.g. spawned during a
+    # fence-on window) gets re-fenced on every respawn even though the fence is
+    # globally OFF -- which silently breaks the agent's job. With the fence off
+    # (FENCE_GLOBALLY_DISABLED), nothing is fenced unless a human passes --policy
+    # for a deliberate manual test. (When the fence is on, the resolved policy
+    # below still honors the stored policy; only the global-off bypass is gated.)
+    effective_policy = _live_spawn_policy(sandbox_policy or spawn_policy_name or sandbox_policy_for_spawn_capability(spawn_capability), explicit=bool(sandbox_policy))
     policy_name, dev_tools, _write_roots, _matched_root, policy = resolve_harness_sandbox(
         adapter.kind, model, cwd, explicit_policy=effective_policy)
     policy = apply_spawn_capability_to_policy(policy, spawn_capability, cwd)
