@@ -22,7 +22,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 
-import { PSEUDO_LABELS, evalDirectionalDnf, labelsForAgent, validateDnfFilter } from '../../shared/fleet-labels.mjs';
+import { PSEUDO_LABELS, parseFilter, evalExprDirectional, labelsForAgent } from '../../shared/fleet-labels.mjs';
 import { baseName, nameForPhase, phaseFromName, ALL_PHASES } from '../../shared/lineage-name.mjs';
 
 // Persistent DB under ~/.config/tlda/ (survives macOS reboots).
@@ -1682,11 +1682,15 @@ export class FleetStore {
   // ---- Wiretap management ----
 
   addWiretap(agentId, filter, types) {
-    const validFilter = validateDnfFilter(filter, { directional: true });
+    // Filter is a string EXPRESSION (same grammar as chat/fleet_table), with
+    // directional `to:`/`from:` leaf prefixes — see evalExprDirectional.
+    // parseFilter throws on malformed input so a typo'd tap fails loud.
+    if (typeof filter !== 'string' || !filter.trim()) throw new Error('filter must be a non-empty string expression');
+    parseFilter(filter); // validate — throws "filter parse error: …" on bad syntax
     if (types != null && !Array.isArray(types)) throw new Error('types must be an array');
     const validTypes = types && types.length > 0 ? types : null;
-    const info = this._addWiretap.run(agentId, JSON.stringify(validFilter), validTypes ? JSON.stringify(validTypes) : null);
-    return { id: info.lastInsertRowid, agent_id: agentId, filter: validFilter, types: validTypes };
+    const info = this._addWiretap.run(agentId, JSON.stringify(filter), validTypes ? JSON.stringify(validTypes) : null);
+    return { id: info.lastInsertRowid, agent_id: agentId, filter, types: validTypes };
   }
 
   getWiretaps() {
@@ -1706,7 +1710,8 @@ export class FleetStore {
   }
 
   // Resolve wiretap matches: given a sender and recipient, return agent IDs that should be CC'd
-  // Filter is DNF of [role, label] tuples: [[["to","skip"],["from","math"]]] = to:skip AND from:math
+  // Filter is a string expression with directional `to:`/`from:` prefixes:
+  // "to:skip & from:math" fires on a message TO skip FROM math.
   resolveWiretaps(senderId, recipientId, eventType) {
     const taps = this.getWiretaps();
     if (taps.length === 0) return [];
@@ -1723,8 +1728,9 @@ export class FleetStore {
       if (tap.agent_id === senderId || tap.agent_id === recipientId) continue;
       // Type filter: if wiretap specifies types, skip events that don't match
       if (tap.types && tap.types.length > 0 && eventType && !tap.types.includes(eventType)) continue;
-      // Directional DNF: any clause matches → wiretap fires.
-      const matches = evalDirectionalDnf(tap.filter, { fromLabels: senderLabels, toLabels: recipientLabels });
+      if (!tap._ast) continue; // unparseable filter (logged at hydrate) — never match-all
+      // Directional expression: matches per to:/from: leaf semantics.
+      const matches = evalExprDirectional(tap._ast, { fromLabels: senderLabels, toLabels: recipientLabels });
       if (matches) matched.add(tap.agent_id);
     }
     return [...matched];
@@ -1738,7 +1744,18 @@ export class FleetStore {
   }
 
   _hydrateWiretap(row) {
-    return { ...row, filter: JSON.parse(row.filter), types: row.types ? JSON.parse(row.types) : null };
+    const filter = JSON.parse(row.filter); // stored as a JSON-encoded string expression
+    // Precompute the AST once here (getWiretaps runs on every event); a row that
+    // somehow fails to parse is logged and left with _ast=null so matchers skip
+    // it rather than crashing event routing or matching everything.
+    let ast = null;
+    try { ast = parseFilter(filter); }
+    catch (e) { console.warn(`[fleet-store] wiretap #${row.id} has unparseable filter ${JSON.stringify(filter)}: ${e.message}`); }
+    const tap = { ...row, filter, types: row.types ? JSON.parse(row.types) : null };
+    // _ast is an internal compiled form — non-enumerable so it never leaks into
+    // JSON responses (GET /api/wiretaps, wiretap-list) but stays usable by matchers.
+    Object.defineProperty(tap, '_ast', { value: ast, enumerable: false });
+    return tap;
   }
 
   // ---- QA system ----
