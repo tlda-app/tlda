@@ -42,7 +42,7 @@ import { spawn as cpSpawn } from 'child_process'
 import { lookup as mimeLookup } from 'mime-types'
 import { DEFAULT_PORT, hasTls, getManagedBots, loadConfig, resolveConfig } from '../shared/config.mjs'
 import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
-import { labelsForAgent, parseFilter, evalExpr, validateDnfFilter } from '../shared/fleet-labels.mjs'
+import { labelsForAgent, parseFilter, evalExpr, evalExprDirectional } from '../shared/fleet-labels.mjs'
 import { phaseFromName, baseName, PHASES } from '../shared/lineage-name.mjs'
 import { daemonHelloDecision } from '../shared/daemon-identity.mjs'
 import { initProjectStore, listProjects, readProject, getProjectsDir } from './lib/project-store.mjs'
@@ -3032,19 +3032,10 @@ async function handleFleetWsMessage(ws, msg) {
       const toLabels = labelsForAgent(fleetStore.findAgent(to) || { id: to })
       const wiretapRecipients = []
       for (const tap of taps) {
-        if (!tap.filter) continue
+        if (!tap._ast) continue // empty/unparseable filter (logged at hydrate) — never match-all
         if (tap.types && tap.types.length > 0 && !tap.types.includes('chat')) continue
-        let matches = false
-        try {
-          const f = typeof tap.filter === 'string' ? JSON.parse(tap.filter) : tap.filter
-          matches = f.some(clause =>
-            clause.every(([role, label]) => {
-              if (role === 'from') return fromLabels.includes(label)
-              if (role === 'to') return toLabels.includes(label)
-              return false
-            })
-          )
-        } catch {}
+        // Directional string expression: to:/from: leaf prefixes select the side.
+        const matches = evalExprDirectional(tap._ast, { fromLabels, toLabels })
         if (matches && tap.agent_id !== from && tap.agent_id !== to) {
           wiretapRecipients.push(tap.agent_id)
         }
@@ -3743,10 +3734,11 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'wiretap-add') {
     const { agent, filter, types } = msg
     if (!agent || !filter) { error('missing agent or filter'); return }
-    let validFilter
-    try { validFilter = validateDnfFilter(filter, { directional: true }) }
+    // Filter is a string expression (same grammar as chat/fleet_table) with
+    // directional to:/from: leaf prefixes. addWiretap validates via parseFilter.
+    let tap
+    try { tap = fleetStore.addWiretap(agent, filter, types) }
     catch (e) { error(`bad filter: ${e.message}`); return }
-    const tap = fleetStore.addWiretap(agent, validFilter, types)
     reply(tap)
     return
   }

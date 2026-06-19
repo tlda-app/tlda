@@ -97,6 +97,51 @@ function StatusBadge({ status, arrow }: { status: LineStatus; arrow?: boolean })
   )
 }
 
+function formatCheckedAt(ts?: number): string | null {
+  if (!ts) return null
+  const diff = Date.now() - ts
+  const mins = Math.round(diff / 60000)
+  if (mins < 1) return 'just now'
+  if (mins < 60) return `${mins}m ago`
+  const hrs = Math.round(mins / 60)
+  if (hrs < 24) return `${hrs}h ago`
+  return new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}
+
+// The who-checked-what-why detail for a vetted span: who vetted it, when, by
+// what method, and why. Shown under the status badge on hover so the ribbon
+// surfaces its provenance, not just a status color. Provenance is optional —
+// renders nothing when a span carries none (e.g. a plain human highlight).
+function ProvenanceDetail({ seg }: { seg: RibbonSegment }) {
+  const when = formatCheckedAt(seg.checkedAt)
+  const rows: { label: string; value: string }[] = []
+  if (seg.checkedByName) rows.push({ label: 'by', value: seg.checkedByName + (when ? ` · ${when}` : '') })
+  else if (when) rows.push({ label: 'when', value: when })
+  if (seg.method) rows.push({ label: 'method', value: seg.method })
+  if (seg.reason) rows.push({ label: 'why', value: seg.reason })
+  if (seg.taskId) rows.push({ label: 'task', value: seg.taskId })
+  if (!rows.length) return null
+  return (
+    <div style={{
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 2,
+      marginTop: 4,
+      paddingTop: 4,
+      borderTop: '1px solid rgba(255,255,255,0.15)',
+      maxWidth: 240,
+      whiteSpace: 'normal',
+    }}>
+      {rows.map((r, i) => (
+        <div key={i} style={{ display: 'flex', gap: 5, fontSize: 10, lineHeight: '13px' }}>
+          <span style={{ color: 'rgba(255,255,255,0.5)', flexShrink: 0, minWidth: 34 }}>{r.label}</span>
+          <span style={{ color: 'rgba(255,255,255,0.92)' }}>{r.value}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function interpolatePath(d: string, targetX: number, t: number): string {
   const re = /([MQTLCS])([^MQTLCSAZ]*)/gi
   let result = ''
@@ -383,7 +428,7 @@ export class UnderstandingLineShapeUtil extends BaseBoxShapeUtil<any> {
             </svg>
           )
         })()}
-        {/* Hover tooltip */}
+        {/* Hover tooltip: status badge(s) on top, who-checked-what-why below. */}
         {hovered && hoveredSegment && (
           <div
             style={{
@@ -392,24 +437,27 @@ export class UnderstandingLineShapeUtil extends BaseBoxShapeUtil<any> {
               top: (hoveredSegment.y1 + hoveredSegment.y2) / 2,
               transform: 'translateY(-50%)',
               display: 'flex',
-              alignItems: 'center',
+              flexDirection: 'column',
+              alignItems: 'flex-start',
               gap: 3,
-              background: 'rgba(30,30,30,0.9)',
-              padding: '3px 6px',
+              background: 'rgba(30,30,30,0.95)',
+              padding: '4px 7px',
               borderRadius: 4,
               pointerEvents: 'none',
-              whiteSpace: 'nowrap',
               zIndex: 100,
             }}
           >
-            {targetStatus && targetStatus !== hoveredSegment.status ? (
-              <>
-                {hoveredSegment.status !== 'unchecked' && <StatusBadge status={hoveredSegment.status} />}
-                <StatusBadge status={targetStatus} arrow />
-              </>
-            ) : (
-              <StatusBadge status={hoveredSegment.status} />
-            )}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 3, whiteSpace: 'nowrap' }}>
+              {targetStatus && targetStatus !== hoveredSegment.status ? (
+                <>
+                  {hoveredSegment.status !== 'unchecked' && <StatusBadge status={hoveredSegment.status} />}
+                  <StatusBadge status={targetStatus} arrow />
+                </>
+              ) : (
+                <StatusBadge status={hoveredSegment.status} />
+              )}
+            </div>
+            <ProvenanceDetail seg={hoveredSegment} />
           </div>
         )}
       </HTMLContainer>

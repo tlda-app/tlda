@@ -184,76 +184,40 @@ export function matchFilter(filter, labels) {
 }
 
 /**
- * Evaluate a DNF filter (array of AND-clauses) against a precomputed label set.
- * A term is either a `[role, label]` tuple or a bare string label; the role is
- * ignored here (directional from/to selection is the caller's responsibility —
- * see `matchesFilter`). An empty/absent filter matches everything.
+ * Evaluate a parsed filter AST (from `parseFilter`) in a DIRECTIONAL context —
+ * a message that has sender labels (`fromLabels`) and recipient labels
+ * (`toLabels`). This is what wiretap uses, so wiretap, chat-send, and
+ * fleet_table all share ONE parser (`parseFilter`) and differ only in how a
+ * leaf token is tested.
  *
- * Distinct from `parseFilter`/`evalExpr` (the chat-send / fleet_table label
- * EXPRESSION): this is the role-aware DNF used by the chat shape's display
- * filter and history resolution (`matchesFilter` / `resolveFilter`), which
- * carries `[role, label]` direction the expression grammar doesn't model.
+ * Leaf token interpretation:
+ *   - `to:LABEL`   → matches iff the RECIPIENT carries LABEL
+ *   - `from:LABEL` → matches iff the SENDER carries LABEL
+ *   - bare `LABEL` → matches iff EITHER side carries LABEL (message involves it)
+ *
+ * `&`/`|`/`!`/parens compose exactly as in `evalExpr`. A `null` AST (empty
+ * filter) matches everything. `fromLabels`/`toLabels` may be arrays or Sets.
+ *
+ * The role prefixes `to:`/`from:` replace the old `[role, label]` DNF tuples:
+ * `to:skip & from:math` is the string form of `[[["to","skip"],["from","math"]]]`.
  */
-export function evalDnf(filter, labels) {
-  if (!filter || filter.length === 0) return true
-  const set = Array.isArray(labels) ? labels : []
-  return filter.some(clause =>
-    Array.isArray(clause) && clause.every(term =>
-      set.includes(Array.isArray(term) ? term[1] : term),
-    ),
-  )
-}
-
-function dnfPath(clauseIndex, termIndex) {
-  if (termIndex == null) return `filter[${clauseIndex}]`
-  return `filter[${clauseIndex}][${termIndex}]`
-}
-
-/**
- * Validate the role-aware DNF shape used by wiretap and fleet-chat display
- * filters. Returns the original filter for easy inline use; throws with a path
- * to the malformed term so callers can surface a useful "bad filter" message.
- */
-export function validateDnfFilter(filter, { directional = false } = {}) {
-  if (!Array.isArray(filter)) throw new Error('filter must be a DNF array')
-  for (let i = 0; i < filter.length; i++) {
-    const clause = filter[i]
-    if (!Array.isArray(clause)) throw new Error(`${dnfPath(i)} must be an array clause`)
-    for (let j = 0; j < clause.length; j++) {
-      const term = clause[j]
-      if (directional) {
-        if (!Array.isArray(term) || term.length !== 2) {
-          throw new Error(`${dnfPath(i, j)} must be [role, label]`)
-        }
-        const [role, label] = term
-        if (role !== 'from' && role !== 'to') {
-          throw new Error(`${dnfPath(i, j)} role must be "from" or "to"`)
-        }
-        if (typeof label !== 'string' || !label) {
-          throw new Error(`${dnfPath(i, j)} label must be a non-empty string`)
-        }
-      } else if (Array.isArray(term)) {
-        if (term.length !== 2 || typeof term[1] !== 'string' || !term[1]) {
-          throw new Error(`${dnfPath(i, j)} tuple label must be a non-empty string`)
-        }
-      } else if (typeof term !== 'string' || !term) {
-        throw new Error(`${dnfPath(i, j)} must be a non-empty label string`)
-      }
+export function evalExprDirectional(ast, { fromLabels = [], toLabels = [] } = {}) {
+  if (!ast) return true
+  const from = fromLabels instanceof Set ? fromLabels : new Set(fromLabels)
+  const to = toLabels instanceof Set ? toLabels : new Set(toLabels)
+  const testLeaf = (tok) => {
+    if (tok.startsWith('to:')) return to.has(tok.slice(3))
+    if (tok.startsWith('from:')) return from.has(tok.slice(5))
+    return from.has(tok) || to.has(tok)
+  }
+  const ev = (n) => {
+    switch (n.t) {
+      case 'lit': return testLeaf(n.v)
+      case 'not': return !ev(n.x)
+      case 'and': return ev(n.l) && ev(n.r)
+      case 'or': return ev(n.l) || ev(n.r)
+      default: return false
     }
   }
-  return filter
-}
-
-/**
- * Evaluate directional DNF against sender/recipient labels.
- * Empty DNF matches everything, matching evalDnf's legacy behavior.
- */
-export function evalDirectionalDnf(filter, { fromLabels = [], toLabels = [] } = {}) {
-  const dnf = validateDnfFilter(filter || [], { directional: true })
-  if (dnf.length === 0) return true
-  const from = new Set(fromLabels)
-  const to = new Set(toLabels)
-  return dnf.some(clause =>
-    clause.every(([role, label]) => role === 'from' ? from.has(label) : to.has(label)),
-  )
+  return ev(ast)
 }

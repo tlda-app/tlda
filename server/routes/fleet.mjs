@@ -13,7 +13,7 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import { DEFAULT_PORT, loadConfig, resolveConfig } from '../../shared/config.mjs'
-import { parseFilter, evalExpr, labelsForAgent, validateDnfFilter } from '../../shared/fleet-labels.mjs'
+import { parseFilter, evalExpr, labelsForAgent } from '../../shared/fleet-labels.mjs'
 import { authorizeSpawn, projectCapabilityToMode, resolveProjectProfile } from '../lib/spawn-policy.mjs'
 import { readProject } from '../lib/project-store.mjs'
 
@@ -981,10 +981,11 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const { agent, filter, types } = req.body || {}
     if (!agent) { res.status(400).send('missing agent'); return }
     if (!filter) { res.status(400).send('missing filter'); return }
-    let validFilter
-    try { validFilter = validateDnfFilter(filter, { directional: true }) }
+    // Filter is a string expression with directional to:/from: prefixes;
+    // addWiretap validates it via parseFilter and throws on bad syntax.
+    let tap
+    try { tap = fleetStore.addWiretap(agent, filter, types) }
     catch (e) { res.status(400).json({ error: `bad filter: ${e.message}` }); return }
-    const tap = fleetStore.addWiretap(agent, validFilter, types)
     res.json(tap)
   })
 
