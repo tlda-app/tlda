@@ -11,8 +11,13 @@
 // authenticate" is answered by evidence, not assumption.
 //
 // It does NOT flip the global fence or spawn fleet agents. It runs bounded local
-// checks through the fence binary and prints PASS/FAIL. Run it before flipping
-// FENCE_GLOBALLY_DISABLED to False.
+// checks through the fence binary and prints PASS/FAIL.
+//
+// THE BAR (Skip, via advocate 2026-06-19): never flip FENCE_GLOBALLY_DISABLED to
+// False until `--harnesses` runs green -- i.e. claude AND codex AND goose each
+// boot, authenticate, and EXECUTE a real task THROUGH the fence. Encode the bar
+// here; don't trust memory. The bare run is only a partial (claude-auth) check
+// and is NOT sufficient to authorize a re-flip.
 //
 // Background: the 2026-06-19 lockout shipped because the gate was unit-only and
 // never booted a real Claude. A fenced Claude failed with "Not logged in"
@@ -20,8 +25,9 @@
 // `security find-generic-password`), which the fence denied. This harness would
 // have caught it.
 //
-// Usage:  node bin/fence-runthrough.mjs            # auth checks (claude + codex + keychain)
-//         node bin/fence-runthrough.mjs --browser  # also probe browser-in-fence (known caveat)
+// Usage:  node bin/fence-runthrough.mjs              # partial: claude-auth + lease structure
+//         node bin/fence-runthrough.mjs --harnesses  # REQUIRED before re-flip: codex+goose execute a task fenced
+//         node bin/fence-runthrough.mjs --browser    # also probe browser-in-fence (known caveat)
 
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs'
@@ -30,6 +36,7 @@ import { join } from 'node:path'
 
 const REPO = process.cwd()
 const wantBrowser = process.argv.includes('--browser')
+const wantHarnesses = process.argv.includes('--harnesses')
 const tmp = mkdtempSync(join(tmpdir(), 'fence-runthrough-'))
 
 function fail(msg) { console.error(`✖ ${msg}`) }
@@ -55,10 +62,13 @@ print(json.dumps(m._fence_settings(policy)))
 }
 
 // Run a command THROUGH the fence with the given settings; return {ok, out}.
-function throughFence(settingsFile, argv) {
+// timeoutMs guards the heavier harness-exec checks so a hung CLI can't stall the
+// gate (a timeout kills the child and surfaces as a non-ok result).
+function throughFence(settingsFile, argv, timeoutMs = 60000) {
   const r = spawnSync('fence', ['--settings', settingsFile, '--', ...argv],
-    { cwd: REPO, encoding: 'utf8' })
-  return { ok: r.status === 0, out: `${r.stdout || ''}${r.stderr || ''}` }
+    { cwd: REPO, encoding: 'utf8', timeout: timeoutMs })
+  const out = `${r.stdout || ''}${r.stderr || ''}`
+  return { ok: r.status === 0, out: r.error ? `${out}\n[runner error: ${r.error.message}]` : out }
 }
 
 const results = []
@@ -143,10 +153,55 @@ if (wantBrowser) {
   console.log(`ℹ in-process browser-in-fence: ${ok ? 'launched' : 'Mach-blocked (expected — fenced agents drive the shared out-of-fence browser, not their own)'}`)
 }
 
+// 7) HARNESS EXECUTION (--harnesses) — each harness must EXECUTE a real task
+// THROUGH the fence, not just reach its model. claude is check (2) above
+// (always-on). codex + goose are heavier (real model calls), so gated behind the
+// flag, but they are HARD checks: green here is the bar for a global re-flip.
+// Proven manually 2026-06-19 (codex exec→FENCE_CODEX_OK, goose run→FENCE_GOOSE_OK,
+// goose baseline==fenced so it's a real pass not a CLI quirk); this codifies it.
+if (wantHarnesses) {
+  const netLease = leaseSettings('cwd', 'workspace-write+net')   // +net = ["*"]
+  // codex: non-interactive exec (gpt-5.5; auth ~/.codex/auth.json; model via the allowlist)
+  {
+    const r = throughFence(netLease,
+      ['codex', 'exec', 'Reply with exactly the token FENCE_CODEX_OK and nothing else.'], 150000)
+    check('codex exec executes a task through the fence',
+      r.out.includes('FENCE_CODEX_OK'),
+      r.out.includes('FENCE_CODEX_OK') ? 'gpt-5.5 ran + replied through the fence'
+        : `did NOT complete: ${r.out.slice(-200)}`)
+  }
+  // goose: bare run via OpenRouter (minimax-m3). Needs OPENROUTER_API_KEY (lives
+  // in ~/.zprofile — run the gate from a login shell). Absent key => cannot
+  // prove goose fenced => HARD FAIL (don't silently pass an unproven harness).
+  if (!process.env.OPENROUTER_API_KEY) {
+    check('goose run executes a task through the fence', false,
+      'UNPROVEN — OPENROUTER_API_KEY not in env (source ~/.zprofile); cannot prove goose fenced')
+  } else {
+    const r = throughFence(netLease, ['env',
+      `OPENROUTER_API_KEY=${process.env.OPENROUTER_API_KEY}`,
+      'GOOSE_PROVIDER=openrouter', 'GOOSE_MODEL=minimax/minimax-m3',
+      'GOOSE_DISABLE_KEYRING=1', 'GOOSE_TELEMETRY_OFF=1',
+      'goose', 'run', '--text', 'Reply with exactly the token FENCE_GOOSE_OK and nothing else.'], 150000)
+    check('goose run executes a task through the fence (minimax-m3/openrouter)',
+      r.out.includes('FENCE_GOOSE_OK'),
+      r.out.includes('FENCE_GOOSE_OK') ? 'minimax-m3 ran + replied through the fence'
+        : `did NOT complete: ${r.out.slice(-200)}`)
+  }
+}
+
 const hardFails = results.filter(r => !r.ok)
 console.log('')
 if (hardFails.length) {
   fail(`run-through FAILED (${hardFails.length}): ${hardFails.map(r => r.name).join(', ')} — do NOT flip the fence on.`)
   process.exit(1)
 }
-console.log('✔ run-through PASSED — a fenced agent boots, authenticates, and reads its creds. Safe to flip FENCE_GLOBALLY_DISABLED.')
+// THE BAR (Skip, via advocate 2026-06-19): a global re-flip
+// (FENCE_GLOBALLY_DISABLED=False) requires the FULL run-through — every harness
+// proven to execute a task through the fence, here, green. The bare run is only
+// a partial check and must NOT be read as authorizing a re-flip.
+if (!wantHarnesses) {
+  console.log('✔ PARTIAL run-through PASSED (claude-auth + keychain + lease structure).')
+  console.log('⚠ NOT sufficient for a global fence re-flip — re-run with --harnesses (claude/codex/goose execute fenced) and require all green first.')
+  process.exit(0)
+}
+console.log('✔ FULL run-through PASSED — claude/codex/goose each boot, authenticate, and EXECUTE a task through the fence. This is the bar; a global re-flip is authorized only on this green.')
