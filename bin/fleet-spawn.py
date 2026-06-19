@@ -782,9 +782,13 @@ DEFAULT_TRUSTED_MCP_SERVERS = {
         "defaultToolsApprovalMode": "approve",
     },
 }
+PLAYWRIGHT_CACHE_ROOT = os.path.expanduser("~/Library/Caches/ms-playwright")
+TLDA_FENCE_TMP_ROOT = "/tmp/tlda-fence-env"
 DEFAULT_CLAUDE_PERMISSION_MODES = {
     "cwd": "auto",
     "tlda-projects": "auto",
+    # TEMP (Skip 2026-06-19): full perms for unsandboxed team spawns.
+    "unsandboxed": "bypassPermissions",
 }
 FENCE_AGENT_WRITE_ROOTS = [
     "/tmp",
@@ -1098,6 +1102,10 @@ def resolve_sandbox_policy(harness, model, cwd, write_roots, policy_name):
 
 
 def resolve_harness_sandbox(harness, model, cwd, explicit_policy=None):
+    # TEMP (Skip 2026-06-19): fence disabled globally so a team can spawn with
+    # full perms. Forces every spawn unsandboxed regardless of policy/capability.
+    # REVERT by deleting these two lines.
+    explicit_policy = "unsandboxed"
     policy_name = resolve_sandbox_policy_name(harness, model, explicit_policy=explicit_policy)
     dev_tools, write_roots, matched_root = sandbox_roots_for_policy(policy_name, cwd)
     policy = None
@@ -1522,6 +1530,8 @@ def apply_spawn_capability_to_policy(policy, capability, cwd):
     policy["network"] = True
     roots = set(policy.get("write_roots") or [])
     roots.add(os.path.abspath(os.path.expanduser("~/.config/tlda")))
+    roots.add(os.path.abspath(PLAYWRIGHT_CACHE_ROOT))
+    roots.add(os.path.abspath(TLDA_FENCE_TMP_ROOT))
     if cwd:
         roots.add(os.path.abspath(os.path.join(cwd, ".git")))
     policy["write_roots"] = sorted(roots)
@@ -1628,13 +1638,6 @@ def build_codex_cmd(fleet_id, tmux_session, model=None, resume_id=None,
     if cwd:
         parts.append(f"-C {shlex.quote(cwd)}")
     parts.append(f"-s {codex_sandbox_for_capability(capability, outer_sandbox=outer_sandbox)}")
-    # Let a sandboxed (workspace-write) codex agent drive the shared Playwright
-    # browser without needing danger-full-access: `tlda-dev pw` writes lock /
-    # session files under the ms-playwright cache, which sits OUTSIDE the
-    # workspace, so add it as a writable root. It's just caches — safe to widen.
-    # (Skip, 2026-06-17: "it's just caches" — GPT-5.5 codex agents do Playwright
-    # while staying sandboxed; no-sandbox is reserved for the rare real need.)
-    parts.append(f"--add-dir {shlex.quote(os.path.expanduser('~/Library/Caches/ms-playwright'))}")
     parts.append("-a never")
     return " ".join(parts)
 
