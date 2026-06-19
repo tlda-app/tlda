@@ -53,7 +53,7 @@ import * as tldaFeedback from './lib/tlda-feedback.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
 import { FleetStore } from './lib/fleet-store.mjs'
 import { createFleetRouter } from './routes/fleet.mjs'
-import { authorizeSpawn, projectCapabilityToMode } from './lib/spawn-policy.mjs'
+import { authorizeSpawn, projectCapabilityToMode, resolveProjectProfile } from './lib/spawn-policy.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -770,7 +770,7 @@ async function performAuthorizedSpawn(caller, msg) {
   if (!caller?.id) throw new Error('spawn caller identity is required')
   const {
     name, agent, model, doc, cwd, respawn, fresh, refresh, effort, kind, mode,
-    capability, spawnCapability,
+    capability, spawnCapability, trustOverride,
   } = msg || {}
   const shouldRespawn = !!respawn || (!fresh && !refresh && !!agent)
   let spawnName = fresh ? name : (agent || name)
@@ -786,12 +786,20 @@ async function performAuthorizedSpawn(caller, msg) {
   if (refresh && spawnKind === 'codex') {
     throw new Error('codex refresh is not supported through MCP spawn; use respawn with a real resume handle')
   }
+  const config = loadConfig()
+  // The project a spawn lands in carries a default profile (the default fence).
+  // When the caller doesn't request a capability explicitly, inherit the
+  // project's profile — set-once, per-project, applies to everyone including
+  // Claude. authorizeSpawn still caps it by the model ceiling and the caller.
+  const profile = resolveProjectProfile(config, { doc, project: doc ? readProject(doc) : null })
+  const requestedCapability = capability || spawnCapability || profile
   const authorized = authorizeSpawn({
     caller,
-    requestedCapability: capability || spawnCapability,
+    requestedCapability,
     model,
     kind: spawnKind,
-    config: loadConfig(),
+    trustOverride,
+    config,
     serverOwnerId: SERVER_OWNER_ID,
   })
   const machineIds = [...daemonConnections.keys()]
@@ -3642,40 +3650,12 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
-  // ---- spawn ----
-  if (type === 'spawn') {
-    const { name, model, doc, agent, respawn, effort } = msg
-    let spawnName = name
-    if (respawn && agent) {
-      const a = fleetStore.findAgent(agent)
-      spawnName = a?.friendly_name || agent
-    }
-    // Resolve-or-reject: validate args before anything else so an unresolvable
-    // one fails loud here instead of silently producing a dead agent.
-    const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
-    if (effort && !EFFORT_LEVELS.includes(effort)) {
-      error(`Unknown effort '${effort}' — valid: ${EFFORT_LEVELS.join(', ')}`); return
-    }
-    if (doc) {
-      const known = listProjects().map(p => p.name)
-      if (!known.includes(doc)) {
-        error(`no project '${doc}'${known.length ? ` — known: ${known.sort().join(', ')}` : ''}`); return
-      }
-    }
-    const machineIds = [...daemonConnections.keys()]
-    if (machineIds.length === 0) { error('No fleet daemon connected — cannot spawn agents'); return }
-    try {
-      const resolved = await resolveSpawnTarget(spawnName, !!respawn)
-      const result = await sendRpc(machineIds[0], 'spawn', {
-        name: resolved.name || undefined, model: model || undefined,
-        doc: doc || undefined, respawn: resolved.respawn, effort: effort || undefined,
-      })
-      broadcastState()
-      if (result && result.ok === false) { error(result.error || 'spawn failed'); return }
-      reply(result)
-    } catch (e) { error(e.message) }
-    return
-  }
+  // (The authoritative `spawn` handler is above — it runs through
+  // performAuthorizedSpawn / authorizeSpawn and returns for every spawn message.
+  // A second, older `if (type === 'spawn')` block used to live here that sent the
+  // daemon RPC WITHOUT capability authorization or a spawnPolicy; it was dead
+  // (unreachable after the first handler's return) and a latent self-escalation
+  // bypass, so it was removed. Do not reintroduce an unauthorized spawn path.)
 
   // ---- send-key ----
   if (type === 'send-key') {

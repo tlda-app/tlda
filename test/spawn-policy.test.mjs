@@ -7,8 +7,12 @@ import {
   capabilityLte,
   callerCapability,
   callerSpawnPolicy,
+  isOperator,
   modelCeiling,
   modelSpawnCeiling,
+  modelTrustTier,
+  resolveProjectProfile,
+  resolveProjectProfileName,
   spawnPolicyLte,
 } from '../server/lib/spawn-policy.mjs'
 
@@ -92,6 +96,105 @@ describe('spawn policy', () => {
       kind: 'goose',
       config: { spawnPolicy: { familyCeilings: { goose: 'write' } } },
     }), /requested spawn policy tlda-projects \/ workspace-write\+net exceeds model ceiling cwd \/ workspace-write\+net/)
+  })
+
+  it('keys the trust tier on the model, not the harness', () => {
+    // goose is just a harness — the model under it decides the tier.
+    assert.equal(modelTrustTier({ model: 'deepseek/deepseek-v4-pro', kind: 'goose' }), 'narrow')
+    assert.equal(modelTrustTier({ model: 'minimax/minimax-m3', kind: 'goose' }), 'elevated')
+    assert.equal(modelTrustTier({ model: 'opus48', kind: 'goose' }), 'full')
+    assert.equal(modelTrustTier({ model: 'gpt-5.5', kind: 'goose' }), 'full')
+    // An unrecognized open model fails safe to narrow.
+    assert.equal(modelTrustTier({ model: 'someorg/mystery-7b' }), 'narrow')
+    // No model string: only the closed harnesses get full; goose → narrow.
+    assert.equal(modelTrustTier({ kind: 'codex' }), 'full')
+    assert.equal(modelTrustTier({ kind: 'goose' }), 'narrow')
+  })
+
+  it('gives minimax a higher filesystem ceiling than deepseek', () => {
+    // deepseek (narrow): own cwd project only.
+    assert.deepEqual(modelSpawnCeiling({}, { model: 'deepseek/deepseek-v4-pro' }), {
+      name: null, capability: 'workspace-write+net', policy: 'cwd', category: 'write-scope',
+    })
+    // minimax (elevated): across all tlda projects — strictly higher than deepseek.
+    assert.deepEqual(modelSpawnCeiling({}, { model: 'minimax/minimax-m3' }), {
+      name: null, capability: 'workspace-write+net', policy: 'tlda-projects', category: 'write-scope',
+    })
+    assert.equal(spawnPolicyLte(modelSpawnCeiling({}, { model: 'deepseek/deepseek-v4-pro' }),
+                               modelSpawnCeiling({}, { model: 'minimax/minimax-m3' })), true)
+    // A deepseek can't be granted machine-level even by the operator.
+    assert.throws(() => authorizeSpawn({
+      caller: { id: 'fleet:skip', human: true },
+      requestedCapability: 'full',
+      model: 'deepseek/deepseek-v4-pro',
+    }), /exceeds model ceiling/)
+  })
+
+  it('lets the operator raise a model ceiling per-agent, but never an agent', () => {
+    // Operator grants a trusted minimax full-access via a per-agent override.
+    const result = authorizeSpawn({
+      caller: { id: 'fleet:skip', human: true },
+      requestedCapability: 'full',
+      model: 'minimax/minimax-m3',
+      trustOverride: 'full',
+    })
+    assert.equal(result.requestedCapability, 'full-access')
+    assert.equal(result.modelCeiling, 'full-access')
+    // Without the override the same request is refused at the model ceiling.
+    assert.throws(() => authorizeSpawn({
+      caller: { id: 'fleet:skip', human: true },
+      requestedCapability: 'full',
+      model: 'minimax/minimax-m3',
+    }), /exceeds model ceiling/)
+    // An agent presenting a trust override is refused outright — no self-escalation.
+    assert.throws(() => authorizeSpawn({
+      caller: { id: 'fleet:a', metadata: { spawnPolicy: { capability: 'full' } } },
+      requestedCapability: 'full',
+      model: 'minimax/minimax-m3',
+      trustOverride: 'full',
+    }), /operator-only/)
+    assert.equal(isOperator({ id: 'fleet:skip', human: true }), true)
+    assert.equal(isOperator({ id: 'fleet:a', metadata: { spawnPolicy: { capability: 'full' } } }), false)
+  })
+
+  it('inherits a project default profile as the spawn fence', () => {
+    // A project record's own profile field wins.
+    assert.equal(resolveProjectProfileName({}, { project: { profile: 'math' } }), 'math')
+    // Else config.spawnPolicy.projectProfiles by name.
+    assert.equal(resolveProjectProfileName(
+      { spawnPolicy: { projectProfiles: { 'host-ops': 'ops' } } }, { doc: 'host-ops' }), 'ops')
+    // Else the config default, else the built-in default.
+    assert.equal(resolveProjectProfileName({ spawnPolicy: { defaultProfile: 'untrusted' } }, {}), 'untrusted')
+    assert.equal(resolveProjectProfileName({}, {}), 'app')
+    // An unknown profile name falls back to the default rather than throwing.
+    assert.equal(resolveProjectProfileName({}, { project: { profile: 'bogus' } }), 'app')
+    // The math profile fences to all tlda projects; ops is machine-level.
+    assert.deepEqual(resolveProjectProfile({}, { project: { profile: 'math' } }), {
+      name: 'math', capability: 'workspace-write+net', policy: 'tlda-projects', category: 'write-scope',
+    })
+    assert.deepEqual(resolveProjectProfile({}, { project: { profile: 'ops' } }), {
+      name: 'ops', capability: 'full-access', policy: 'unsandboxed', category: 'write-scope',
+    })
+  })
+
+  it('caps an inherited profile by the model ceiling — even for Claude', () => {
+    // A Claude spawned into a math project inherits the math profile (fenced to
+    // tlda-projects) even though its model could be trusted with full-access.
+    const claudeInMath = authorizeSpawn({
+      caller: { id: 'fleet:skip', human: true },
+      requestedCapability: resolveProjectProfile({}, { project: { profile: 'math' } }),
+      model: 'opus48',
+    })
+    assert.equal(claudeInMath.requestedPolicy.policy, 'tlda-projects')
+    assert.equal(claudeInMath.requestedCapability, 'workspace-write+net')
+    // A deepseek spawned into the same math project: the profile asks for
+    // tlda-projects, but its narrow model ceiling (cwd) caps it — the project
+    // profile cannot lift an untrusted model above its ceiling.
+    assert.throws(() => authorizeSpawn({
+      caller: { id: 'fleet:skip', human: true },
+      requestedCapability: resolveProjectProfile({}, { project: { profile: 'math' } }),
+      model: 'deepseek/deepseek-v4-pro',
+    }), /exceeds model ceiling/)
   })
 
   it('allows downward choice within both ceilings', () => {

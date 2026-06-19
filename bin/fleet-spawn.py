@@ -782,6 +782,8 @@ DEFAULT_TRUSTED_MCP_SERVERS = {
         "defaultToolsApprovalMode": "approve",
     },
 }
+PLAYWRIGHT_CACHE_ROOT = os.path.expanduser("~/Library/Caches/ms-playwright")
+TLDA_FENCE_TMP_ROOT = "/tmp/tlda-fence-env"
 DEFAULT_CLAUDE_PERMISSION_MODES = {
     "cwd": "auto",
     "tlda-projects": "auto",
@@ -1148,7 +1150,14 @@ def _fence_settings(policy):
         *FENCE_AGENT_WRITE_ROOTS,
     ])))
     deny_write = list(FENCE_DENY_WRITE)
-    if str(policy.get("git", "read")) != "write":
+    # A write-capable agent's own repo (.git is an explicit write root) needs
+    # local git -- status / add / commit / branch -- as part of its job, so the
+    # fence must not blanket-deny .git for it. The irrevocable and destructive
+    # commands (git push / reset / clean / checkout -- / rebase / merge, the
+    # publishes, sudo) stay blocked via command.deny below regardless. A
+    # read-only agent has no .git write root, so .git stays read-only for it.
+    repo_git_writable = str(policy.get("git", "read")) == "write" or _has_git_write_root(policy)
+    if not repo_git_writable:
         deny_write.extend(FENCE_GIT_READONLY_DENY)
     allowed_domains = list(FENCE_CODE_ALLOWED_DOMAINS)
     api_host = urlparse(API).hostname
@@ -1511,6 +1520,21 @@ def _api_needs_local_outbound():
     )
 
 
+def _has_git_write_root(policy):
+    """True if the policy makes an agent's own .git directory a writable root.
+
+    apply_spawn_capability_to_policy adds <cwd>/.git to write_roots for a
+    project-write capability, so this is how we tell an agent that legitimately
+    needs local git (commit/add/branch) apart from a read-only one. The
+    irrevocable/destructive git commands stay denied via FENCE_COMMAND_DENY
+    regardless of this.
+    """
+    for root in policy.get("write_roots") or []:
+        if os.path.basename(os.path.normpath(str(root))) == ".git":
+            return True
+    return False
+
+
 def apply_spawn_capability_to_policy(policy, capability, cwd):
     if not policy:
         return policy
@@ -1522,6 +1546,8 @@ def apply_spawn_capability_to_policy(policy, capability, cwd):
     policy["network"] = True
     roots = set(policy.get("write_roots") or [])
     roots.add(os.path.abspath(os.path.expanduser("~/.config/tlda")))
+    roots.add(os.path.abspath(PLAYWRIGHT_CACHE_ROOT))
+    roots.add(os.path.abspath(TLDA_FENCE_TMP_ROOT))
     if cwd:
         roots.add(os.path.abspath(os.path.join(cwd, ".git")))
     policy["write_roots"] = sorted(roots)
@@ -1628,13 +1654,6 @@ def build_codex_cmd(fleet_id, tmux_session, model=None, resume_id=None,
     if cwd:
         parts.append(f"-C {shlex.quote(cwd)}")
     parts.append(f"-s {codex_sandbox_for_capability(capability, outer_sandbox=outer_sandbox)}")
-    # Let a sandboxed (workspace-write) codex agent drive the shared Playwright
-    # browser without needing danger-full-access: `tlda-dev pw` writes lock /
-    # session files under the ms-playwright cache, which sits OUTSIDE the
-    # workspace, so add it as a writable root. It's just caches — safe to widen.
-    # (Skip, 2026-06-17: "it's just caches" — GPT-5.5 codex agents do Playwright
-    # while staying sandboxed; no-sandbox is reserved for the rare real need.)
-    parts.append(f"--add-dir {shlex.quote(os.path.expanduser('~/Library/Caches/ms-playwright'))}")
     parts.append("-a never")
     return " ".join(parts)
 

@@ -14,7 +14,8 @@ import path from 'path'
 import os from 'os'
 import { DEFAULT_PORT, loadConfig, resolveConfig } from '../../shared/config.mjs'
 import { parseFilter, evalExpr, labelsForAgent, validateDnfFilter } from '../../shared/fleet-labels.mjs'
-import { authorizeSpawn, projectCapabilityToMode } from '../lib/spawn-policy.mjs'
+import { authorizeSpawn, projectCapabilityToMode, resolveProjectProfile } from '../lib/spawn-policy.mjs'
+import { readProject } from '../lib/project-store.mjs'
 
 // Server owner — the human running this server process. Browser users
 // log in via the WS 'login' message or register via 'register'.
@@ -437,7 +438,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   // doc: project name — daemon resolves to sourceDir for the cwd
   // For respawn: { agent: "fleet:xxx" or "name", respawn: true }
   router.post('/api/spawn', async (req, res) => {
-    const { name, model, doc, cwd, agent, respawn, capability, spawnCapability, kind, mode, effort } = req.body || {}
+    const { name, model, doc, cwd, agent, respawn, capability, spawnCapability, kind, mode, effort, trustOverride } = req.body || {}
     // HTTP auth currently proves only bearer-token level, not which fleet agent or
     // human browser session made the request. Spawning is authority-sensitive, so
     // fail closed here instead of treating all HTTP callers as the server owner.
@@ -461,12 +462,18 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       return
     }
     try {
+      const config = loadConfig()
+      // Inherit the target project's default profile (the default fence) when no
+      // capability is requested explicitly; authorizeSpawn caps it by the model
+      // ceiling and the caller.
+      const profile = resolveProjectProfile(config, { doc, project: doc ? readProject(doc) : null })
       const authorized = authorizeSpawn({
         caller,
-        requestedCapability: capability || spawnCapability,
+        requestedCapability: capability || spawnCapability || profile,
         model,
         kind,
-        config: loadConfig(),
+        trustOverride,
+        config,
         serverOwnerId: SERVER_OWNER_ID,
       })
       const launchMode = projectCapabilityToMode(authorized.requestedCapability, mode)
