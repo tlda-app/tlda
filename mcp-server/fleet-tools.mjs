@@ -1093,7 +1093,7 @@ export function getFleetTools() {
           description: { type: 'string', description: 'Short human-readable description (5-10 words). Auto-derived from message if omitted.' },
           message: { type: 'string', description: 'Full task message for the agent' },
           after: { description: 'Task ID or array of IDs — deferred until all complete.', oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }] },
-          friendly_name: { type: 'string', description: 'Set a friendly name for the agent (optional, same as name_agent)' },
+          friendly_name: { type: 'string', description: 'Rename an EXISTING target agent (two-call form, same as name_agent). Not allowed with spawn — a spawned agent\'s only name is spawn.name.' },
           success_criteria: { type: 'array', items: { type: 'string' }, description: 'Verifiable success criteria. Agent must verify each before marking done.' },
           template: { type: 'string', description: 'Task template name (e.g. "math-edit"). Auto-populates success_criteria; explicit criteria are appended.' },
           requires_approval: { type: 'boolean', description: 'If true, task_done requires an approval_id — the event ID of a message from Skip approving the work. Agent cannot close without it.' },
@@ -2002,6 +2002,17 @@ export async function handleFleetTool(name, args) {
 
     if (!args.agent && !args.spawn) {
       return { content: [{ type: 'text', text: 'Missing agent (or spawn).' }], isError: true };
+    }
+
+    // One name, enforced: on the spawn path the spawn name is the single source
+    // of identity (pre-registration, FLEET_NAME, the register prompt, and the
+    // roster all key off it). A separate `friendly_name` would rename the row to
+    // a second string after spawn — the exact desync that produces ghost rows
+    // (a never-seen "math-historian" stub beside a live "math historian"). So
+    // forbid it: put the name in `spawn.name`. friendly_name remains valid only
+    // for the two-call form (delegating to an existing `agent`).
+    if (args.spawn && args.friendly_name) {
+      return { content: [{ type: 'text', text: 'Do not pass friendly_name with spawn — the spawn name is the agent\'s only name. Put the name in spawn.name.' }], isError: true };
     }
 
     let agent = args.agent;
