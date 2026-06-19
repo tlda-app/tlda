@@ -99,6 +99,10 @@ export function spawnPolicyLte(left, right) {
   return POLICY_RANK.get(a.policy) <= POLICY_RANK.get(b.policy)
 }
 
+// Harness inference. The harness (claude / codex / goose) is plumbing — HOW a
+// model is run — and is used only for the optional `familyCeilings` config knob
+// and harness-only fallbacks. It is NOT what governs the trust ceiling; the
+// MODEL does (see modelTrustTier). goose is a harness, not a trust level.
 export function modelFamily({ model, kind } = {}) {
   const k = String(kind || '').toLowerCase()
   const m = String(model || '').toLowerCase()
@@ -111,17 +115,67 @@ export function modelFamily({ model, kind } = {}) {
   return 'unknown'
 }
 
+// Model trust tiers — keyed on the MODEL identity, NOT the harness (Skip 06-19:
+// "ceiling keyed on the model, not the harness"). The harness decides how a
+// model runs; the model decides how much authority an operator could ever grant
+// it. goose running minimax and goose running deepseek share a harness but sit
+// at different tiers, which the old harness-family lumping got wrong.
+//
+//   full     — closed frontier models we trust fully (claude, gpt/openai):
+//              up to full-access / unsandboxed.
+//   elevated — trusted-but-bounded open models (minimax): write across all tlda
+//              projects + net; raisable to full per-agent by the operator.
+//   narrow   — untrusted open models (deepseek, qwen, kimi, glm) and any
+//              unrecognized model: write only their own cwd project + net, never
+//              across projects and never machine-level. Safe by construction —
+//              a tlda project is versioned on build, so any bad write recovers.
+export const MODEL_TRUST_TIERS = {
+  full: { capability: 'full-access', policy: 'unsandboxed' },
+  elevated: { capability: 'workspace-write+net', policy: 'tlda-projects' },
+  narrow: { capability: 'workspace-write+net', policy: 'cwd' },
+}
+
+const CLAUDE_MODEL_NAMES = new Set(['opus', 'opus45', 'opus46', 'opus47', 'opus48', 'fable', 'fable5', 'sonnet', 'haiku'])
+
+function isClaudeModel(m) {
+  return m.startsWith('claude-') || CLAUDE_MODEL_NAMES.has(m)
+}
+
+function isOpenAiModel(m) {
+  return m.startsWith('gpt') || m.startsWith('o1') || m.startsWith('o3') || m.startsWith('o4') || m.includes('openai') || m.includes('codex')
+}
+
+export function modelTrustTier({ model, kind } = {}) {
+  const m = String(model || '').toLowerCase()
+  const k = String(kind || '').toLowerCase()
+  if (m) {
+    if (isClaudeModel(m) || isOpenAiModel(m)) return 'full'
+    if (m.includes('minimax')) return 'elevated'
+    // deepseek / qwen / kimi / glm and any other open or unrecognized model.
+    return 'narrow'
+  }
+  // No model string: lean on the harness, which constrains the model set.
+  // claude / codex / gpt are closed harnesses that only run trusted models;
+  // goose runs arbitrary open models, so fail safe to narrow.
+  if (k === 'claude' || k === 'codex' || k === 'gpt') return 'full'
+  return 'narrow'
+}
+
 export function defaultModelCeiling({ model, kind } = {}) {
-  const family = modelFamily({ model, kind })
-  if (family === 'claude' || family === 'gpt' || family === 'codex') return ROOT_CAPABILITY
-  return DEFAULT_AGENT_CAPABILITY
+  return MODEL_TRUST_TIERS[modelTrustTier({ model, kind })]
 }
 
-export function modelCeiling(config = {}, { model, kind } = {}) {
-  return modelSpawnCeiling(config, { model, kind }).capability
+export function modelCeiling(config = {}, { model, kind, trustOverride } = {}) {
+  return modelSpawnCeiling(config, { model, kind, trustOverride }).capability
 }
 
-export function modelSpawnCeiling(config = {}, { model, kind } = {}) {
+export function modelSpawnCeiling(config = {}, { model, kind, trustOverride } = {}) {
+  // Per-agent operator override (e.g. a trusted minimax raised above its model
+  // default). Operator-gated in authorizeSpawn — this function trusts that the
+  // caller already proved root before a trustOverride reached it.
+  if (trustOverride != null && trustOverride !== '') {
+    return normalizeSpawnPolicy(trustOverride, defaultModelCeiling({ model, kind }))
+  }
   const family = modelFamily({ model, kind })
   const policy = config.spawnPolicy || {}
   const byModel = policy.modelCeilings || {}
@@ -130,15 +184,24 @@ export function modelSpawnCeiling(config = {}, { model, kind } = {}) {
   return normalizeSpawnPolicy(configured, defaultModelCeiling({ model, kind }))
 }
 
+// The operator (human, or the server owner identity) is root: never fenced, can
+// confer any capability up to and including destructive full-access, and is the
+// ONLY caller permitted to raise a model's trust ceiling per-agent. Every agent,
+// no matter how trusted its model, resolves here as non-operator — so an agent
+// can never self-escalate.
+export function isOperator(caller, { serverOwnerId } = {}) {
+  return !!(caller?.human || (serverOwnerId && caller?.id === serverOwnerId))
+}
+
 export function callerCapability(caller, { serverOwnerId } = {}) {
-  if (caller?.human || (serverOwnerId && caller?.id === serverOwnerId)) return ROOT_CAPABILITY
+  if (isOperator(caller, { serverOwnerId })) return ROOT_CAPABILITY
   const policy = caller?.metadata?.spawnPolicy
   if (typeof policy === 'string') return normalizeCapability(policy)
   return normalizeCapability(policy?.capability, DEFAULT_AGENT_CAPABILITY)
 }
 
 export function callerSpawnPolicy(caller, { serverOwnerId } = {}) {
-  if (caller?.human || (serverOwnerId && caller?.id === serverOwnerId)) return normalizeSpawnPolicy(ROOT_CAPABILITY)
+  if (isOperator(caller, { serverOwnerId })) return normalizeSpawnPolicy(ROOT_CAPABILITY)
   const policy = caller?.metadata?.spawnPolicy
   return normalizeSpawnPolicy(policy, DEFAULT_AGENT_CAPABILITY)
 }
@@ -151,8 +214,17 @@ export function projectCapabilityToMode(capability, explicitMode = null) {
   return 'default'
 }
 
-export function authorizeSpawn({ caller, requestedCapability, model, kind, config = {}, serverOwnerId }) {
+export function authorizeSpawn({ caller, requestedCapability, model, kind, trustOverride, config = {}, serverOwnerId }) {
   if (!caller?.id) throw new Error('spawn caller identity is required')
+  // A per-agent trust override raises (or sets) the model ceiling for this one
+  // spawn — the operator-only exception that lets a trusted minimax sit above
+  // its model default. Only the operator may supply it; an agent presenting one
+  // is trying to self-escalate, which is refused outright.
+  if (trustOverride != null && trustOverride !== '' && !isOperator(caller, { serverOwnerId })) {
+    const err = new Error('trust override is operator-only; agents cannot raise their own ceiling')
+    err.code = 'SPAWN_TRUST_OVERRIDE_FORBIDDEN'
+    throw err
+  }
   const requestedPolicy = normalizeSpawnPolicy(requestedCapability, DEFAULT_AGENT_CAPABILITY)
   const callerPolicy = callerSpawnPolicy(caller, { serverOwnerId })
   if (!spawnPolicyLte(requestedPolicy, callerPolicy)) {
@@ -160,7 +232,7 @@ export function authorizeSpawn({ caller, requestedCapability, model, kind, confi
     err.code = 'SPAWN_CALLER_CAPABILITY'
     throw err
   }
-  const ceilingPolicy = modelSpawnCeiling(config, { model, kind })
+  const ceilingPolicy = modelSpawnCeiling(config, { model, kind, trustOverride })
   if (!spawnPolicyLte(requestedPolicy, ceilingPolicy)) {
     const err = new Error(`requested spawn policy ${requestedPolicy.policy} / ${requestedPolicy.capability} exceeds model ceiling ${ceilingPolicy.policy} / ${ceilingPolicy.capability}`)
     err.code = 'SPAWN_MODEL_CEILING'

@@ -770,7 +770,7 @@ async function performAuthorizedSpawn(caller, msg) {
   if (!caller?.id) throw new Error('spawn caller identity is required')
   const {
     name, agent, model, doc, cwd, respawn, fresh, refresh, effort, kind, mode,
-    capability, spawnCapability,
+    capability, spawnCapability, trustOverride,
   } = msg || {}
   const shouldRespawn = !!respawn || (!fresh && !refresh && !!agent)
   let spawnName = fresh ? name : (agent || name)
@@ -791,6 +791,7 @@ async function performAuthorizedSpawn(caller, msg) {
     requestedCapability: capability || spawnCapability,
     model,
     kind: spawnKind,
+    trustOverride,
     config: loadConfig(),
     serverOwnerId: SERVER_OWNER_ID,
   })
@@ -3634,40 +3635,12 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
-  // ---- spawn ----
-  if (type === 'spawn') {
-    const { name, model, doc, agent, respawn, effort } = msg
-    let spawnName = name
-    if (respawn && agent) {
-      const a = fleetStore.findAgent(agent)
-      spawnName = a?.friendly_name || agent
-    }
-    // Resolve-or-reject: validate args before anything else so an unresolvable
-    // one fails loud here instead of silently producing a dead agent.
-    const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
-    if (effort && !EFFORT_LEVELS.includes(effort)) {
-      error(`Unknown effort '${effort}' — valid: ${EFFORT_LEVELS.join(', ')}`); return
-    }
-    if (doc) {
-      const known = listProjects().map(p => p.name)
-      if (!known.includes(doc)) {
-        error(`no project '${doc}'${known.length ? ` — known: ${known.sort().join(', ')}` : ''}`); return
-      }
-    }
-    const machineIds = [...daemonConnections.keys()]
-    if (machineIds.length === 0) { error('No fleet daemon connected — cannot spawn agents'); return }
-    try {
-      const resolved = await resolveSpawnTarget(spawnName, !!respawn)
-      const result = await sendRpc(machineIds[0], 'spawn', {
-        name: resolved.name || undefined, model: model || undefined,
-        doc: doc || undefined, respawn: resolved.respawn, effort: effort || undefined,
-      })
-      broadcastState()
-      if (result && result.ok === false) { error(result.error || 'spawn failed'); return }
-      reply(result)
-    } catch (e) { error(e.message) }
-    return
-  }
+  // (The authoritative `spawn` handler is above — it runs through
+  // performAuthorizedSpawn / authorizeSpawn and returns for every spawn message.
+  // A second, older `if (type === 'spawn')` block used to live here that sent the
+  // daemon RPC WITHOUT capability authorization or a spawnPolicy; it was dead
+  // (unreachable after the first handler's return) and a latent self-escalation
+  // bypass, so it was removed. Do not reintroduce an unauthorized spawn path.)
 
   // ---- send-key ----
   if (type === 'send-key') {

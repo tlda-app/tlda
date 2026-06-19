@@ -7,8 +7,10 @@ import {
   capabilityLte,
   callerCapability,
   callerSpawnPolicy,
+  isOperator,
   modelCeiling,
   modelSpawnCeiling,
+  modelTrustTier,
   spawnPolicyLte,
 } from '../server/lib/spawn-policy.mjs'
 
@@ -92,6 +94,65 @@ describe('spawn policy', () => {
       kind: 'goose',
       config: { spawnPolicy: { familyCeilings: { goose: 'write' } } },
     }), /requested spawn policy tlda-projects \/ workspace-write\+net exceeds model ceiling cwd \/ workspace-write\+net/)
+  })
+
+  it('keys the trust tier on the model, not the harness', () => {
+    // goose is just a harness — the model under it decides the tier.
+    assert.equal(modelTrustTier({ model: 'deepseek/deepseek-v4-pro', kind: 'goose' }), 'narrow')
+    assert.equal(modelTrustTier({ model: 'minimax/minimax-m3', kind: 'goose' }), 'elevated')
+    assert.equal(modelTrustTier({ model: 'opus48', kind: 'goose' }), 'full')
+    assert.equal(modelTrustTier({ model: 'gpt-5.5', kind: 'goose' }), 'full')
+    // An unrecognized open model fails safe to narrow.
+    assert.equal(modelTrustTier({ model: 'someorg/mystery-7b' }), 'narrow')
+    // No model string: only the closed harnesses get full; goose → narrow.
+    assert.equal(modelTrustTier({ kind: 'codex' }), 'full')
+    assert.equal(modelTrustTier({ kind: 'goose' }), 'narrow')
+  })
+
+  it('gives minimax a higher filesystem ceiling than deepseek', () => {
+    // deepseek (narrow): own cwd project only.
+    assert.deepEqual(modelSpawnCeiling({}, { model: 'deepseek/deepseek-v4-pro' }), {
+      name: null, capability: 'workspace-write+net', policy: 'cwd', category: 'write-scope',
+    })
+    // minimax (elevated): across all tlda projects — strictly higher than deepseek.
+    assert.deepEqual(modelSpawnCeiling({}, { model: 'minimax/minimax-m3' }), {
+      name: null, capability: 'workspace-write+net', policy: 'tlda-projects', category: 'write-scope',
+    })
+    assert.equal(spawnPolicyLte(modelSpawnCeiling({}, { model: 'deepseek/deepseek-v4-pro' }),
+                               modelSpawnCeiling({}, { model: 'minimax/minimax-m3' })), true)
+    // A deepseek can't be granted machine-level even by the operator.
+    assert.throws(() => authorizeSpawn({
+      caller: { id: 'fleet:skip', human: true },
+      requestedCapability: 'full',
+      model: 'deepseek/deepseek-v4-pro',
+    }), /exceeds model ceiling/)
+  })
+
+  it('lets the operator raise a model ceiling per-agent, but never an agent', () => {
+    // Operator grants a trusted minimax full-access via a per-agent override.
+    const result = authorizeSpawn({
+      caller: { id: 'fleet:skip', human: true },
+      requestedCapability: 'full',
+      model: 'minimax/minimax-m3',
+      trustOverride: 'full',
+    })
+    assert.equal(result.requestedCapability, 'full-access')
+    assert.equal(result.modelCeiling, 'full-access')
+    // Without the override the same request is refused at the model ceiling.
+    assert.throws(() => authorizeSpawn({
+      caller: { id: 'fleet:skip', human: true },
+      requestedCapability: 'full',
+      model: 'minimax/minimax-m3',
+    }), /exceeds model ceiling/)
+    // An agent presenting a trust override is refused outright — no self-escalation.
+    assert.throws(() => authorizeSpawn({
+      caller: { id: 'fleet:a', metadata: { spawnPolicy: { capability: 'full' } } },
+      requestedCapability: 'full',
+      model: 'minimax/minimax-m3',
+      trustOverride: 'full',
+    }), /operator-only/)
+    assert.equal(isOperator({ id: 'fleet:skip', human: true }), true)
+    assert.equal(isOperator({ id: 'fleet:a', metadata: { spawnPolicy: { capability: 'full' } } }), false)
   })
 
   it('allows downward choice within both ceilings', () => {
