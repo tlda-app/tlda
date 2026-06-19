@@ -792,15 +792,17 @@ TLDA_FENCE_TMP_ROOT = "/tmp/tlda-fence-env"
 # allowLocalOutbound, which only covers TCP loopback). Without this a fenced
 # `tlda-dev pw` reads the live session as "closed" and kills the real browser.
 TLDA_PW_SOCKETS_ROOT = "/tmp/tlda-pw-sockets"
-# TEMP global fence kill (Skip 2026-06-19): the fence is OFF for every LIVE
-# spawn until Skip flips it on. Applied ONLY at the launch sites
-# (fresh / respawn / refresh) via _live_spawn_policy -- NOT in the pure policy
-# resolver -- so the lease machinery and the run-through gate still compute real
-# fenced leases (i.e. the fence config stays testable while it's globally off).
-# Flip to False to re-enable; the sensible-reads + keychain fix in
-# _fence_settings / FENCE_AGENT_READ_ROOTS means a re-enabled fence no longer
-# locks Claude out of its OAuth token ("Not logged in").
-FENCE_GLOBALLY_DISABLED = True
+# Global fence switch (Skip 2026-06-19). When True, every LIVE spawn is forced
+# unsandboxed (applied at the launch sites via _live_spawn_policy, NOT the pure
+# resolver, so leases + the run-through gate still compute real fenced configs).
+# It is now ON (False): fresh spawns are fenced by default. An EXPLICIT --policy
+# still overrides this either way, so the fence stays per-agent testable. The
+# fence was made genuinely usable first (keychain auth, browser drive over the
+# pw daemon socket, fleet WS via the DNS alias, no-prompt via
+# --dangerously-skip-permissions, memory writes, cold-browser guard), so turning
+# it on no longer breaks an agent's job -- it just removes the unsandboxed
+# default. Flip back to True only to globally disable the fence.
+FENCE_GLOBALLY_DISABLED = False
 # Permission mode per sandbox policy. THE POINT OF THE FENCE (Skip 2026-06-19):
 # a fenced agent does normal work with ZERO Claude permission prompts -- the
 # fence is the security boundary, so Claude's interactive approvals are redundant
