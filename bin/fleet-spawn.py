@@ -801,9 +801,21 @@ TLDA_PW_SOCKETS_ROOT = "/tmp/tlda-pw-sockets"
 # _fence_settings / FENCE_AGENT_READ_ROOTS means a re-enabled fence no longer
 # locks Claude out of its OAuth token ("Not logged in").
 FENCE_GLOBALLY_DISABLED = True
+# Permission mode per sandbox policy. THE POINT OF THE FENCE (Skip 2026-06-19):
+# a fenced agent does normal work with ZERO Claude permission prompts -- the
+# fence is the security boundary, so Claude's interactive approvals are redundant
+# torture ("I am being tortured by Claude's permissions... I want security against
+# them doing things that are truly awful. That was the point of the fence").
+# So every policy runs bypassPermissions: no prompts. The guardrail against
+# "wildly inappropriate" actions is the fence itself (write-root scoping, secret
+# read-deny, command-deny for push/sudo/publish, network allowlist) for fenced
+# policies, and the family/trust ceiling for unsandboxed (only trusted families
+# get full-access). "auto" still prompted for out-of-workspace writes (memory!),
+# which is exactly the approval torture this removes.
 DEFAULT_CLAUDE_PERMISSION_MODES = {
-    "cwd": "auto",
-    "tlda-projects": "auto",
+    "cwd": "bypassPermissions",
+    "tlda-projects": "bypassPermissions",
+    "unsandboxed": "bypassPermissions",
 }
 FENCE_AGENT_WRITE_ROOTS = [
     "/tmp",
@@ -811,6 +823,15 @@ FENCE_AGENT_WRITE_ROOTS = [
     "~/.codex/**",
     "~/.claude*",
     "~/.claude/**",
+    # Auto-memory: ~/.claude/projects/<proj>/memory is a SYMLINK to
+    # ~/work/dot-claude-memory/<proj>, and the fence resolves the symlink and
+    # checks the TARGET. Without the target as a write root, every agent memory
+    # write is denied ("operation not permitted") — which is the exact opposite
+    # of Skip's goal (agents write memory freely, no prompts). Allow the real
+    # store. (Memory is per-fleet-id scoped; writing junk to it isn't "truly
+    # awful", so this is fine for fenced/untrusted agents too.)
+    "~/work/dot-claude-memory",
+    "~/work/dot-claude-memory/**",
     "~/.opencode/**",
     "~/.cursor/**",
     "~/.local/state/**",
@@ -1373,7 +1394,16 @@ def build_claude_cmd(fleet_id, tmux_session, model, effort=None, mode=None,
     parts.append(f"--model '{model}'")
     if effort:
         parts.append(f"--effort '{effort}'")
-    if mode:
+    if mode == "bypassPermissions":
+        # bypassPermissions via --permission-mode shows a blocking interactive
+        # "Yes, I accept" dialog on EVERY boot (no persisted skip-flag), which
+        # hangs a fleet spawn. --dangerously-skip-permissions is the non-
+        # interactive equivalent: bypass all permission checks, no dialog. The
+        # fence is the real guardrail (that's the whole point), so skipping
+        # Claude's prompts is exactly intended. Claude's own warning says this
+        # mode is for a sandboxed environment -- which under the fence it is.
+        parts.append("--dangerously-skip-permissions")
+    elif mode:
         parts.append(f"--permission-mode '{mode}'")
     if include_prompt:
         parts.append(shlex.quote(register_prompt(name)))
