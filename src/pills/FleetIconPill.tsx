@@ -349,7 +349,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
             Minimized = hollow outline of the same hull — a form difference, not a
             brightness one, so the toggle state reads at a glance. In the hollow
             state the count is drawn as a solid glyph (no fill to knock it out of). */}
-        <svg viewBox="0 0 960 960" width={27} height={27} aria-hidden="true"
+        <svg viewBox="0 0 960 960" width={20} height={20} aria-hidden="true"
           style={{ display: 'block', flexShrink: 0 }}>
           {hidden ? (
             <>

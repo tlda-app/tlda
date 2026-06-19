@@ -41,8 +41,8 @@ body.phone-mode .fleet-icon-pill-container {
   align-items: center;
   justify-content: center;
   gap: 1px;
-  min-width: 32px;
-  min-height: 32px;
+  min-width: 27px;
+  min-height: 27px;
   pointer-events: all;
   touch-action: none;
 }
