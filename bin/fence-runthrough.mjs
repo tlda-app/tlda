@@ -24,7 +24,7 @@
 //         node bin/fence-runthrough.mjs --browser  # also probe browser-in-fence (known caveat)
 
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -94,15 +94,53 @@ const authLease = leaseSettings('cwd', 'workspace-write+net')
     r.out.includes('CODEX_AUTH_OK') ? 'auth.json readable through fence' : 'NOT readable')
 }
 
-// 4) Browser-in-fence (optional) — known fence-tool Mach caveat, reported not gated.
+// 4) App-role browser path — the REAL workflow. A fenced app agent does NOT
+// launch its own Chromium (that Mach-fails in-fence and is the wrong path); it
+// drives the SHARED, out-of-fence browser through `tlda-dev pw`, which talks to
+// the playwright-cli daemon over a UNIX socket. The macOS sandbox denies AF_UNIX
+// connect even with allowLocalOutbound, so the lease must whitelist that socket
+// dir via network.allowUnixSockets. Assert the lease carries that whitelist —
+// without it a fenced `tlda-dev pw` reads the live session as "closed" and kills
+// the real browser. (Structural gate; the live drive is proven manually with a
+// shared browser up.)
+{
+  const appLease = JSON.parse(readFileSync(leaseSettings('cwd', 'workspace-write+net'), 'utf8'))
+  const unix = appLease?.network?.allowUnixSockets || []
+  const ok = unix.some(p => /tlda-pw-sockets/.test(p))
+  check('app lease whitelists the pw daemon socket (AF_UNIX connect)', ok,
+    ok ? `allowUnixSockets: ${unix.join(', ')}`
+      : 'MISSING — a fenced tlda-dev pw cannot reach the out-of-fence browser')
+}
+
+// 5) Fenced MCP reaches the fleet over WSS. The tlda server host is a Tailscale
+// MagicDNS name the sandbox can't getaddrinfo, so a fenced agent's fleet WS dies
+// ("fleet WS: ✘", my_task fails) unless the node DNS-alias preload is injected.
+// Assert build_claude_cmd injects it (claude passes process env to its MCP).
+{
+  const py = `
+import importlib.util, types, sys
+sys.modules['websocket'] = types.SimpleNamespace(create_connection=lambda *a, **k: None)
+spec = importlib.util.spec_from_file_location('fs', 'bin/fleet-spawn.py')
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print(m.build_claude_cmd('fleet:gate','fleet-gate','opus48',name='gate'))
+`
+  const r = spawnSync('python3', ['-c', py], { cwd: REPO, encoding: 'utf8',
+    env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } })
+  const ok = r.status === 0 && /NODE_OPTIONS/.test(r.stdout) && /TLDA_NODE_DNS_ALIAS_HOST/.test(r.stdout)
+  check('claude cmd injects the fleet-WS DNS alias preload', ok,
+    ok ? 'NODE_OPTIONS + TLDA_NODE_DNS_ALIAS_HOST present'
+      : 'MISSING — fenced fleet WSS will fail getaddrinfo (my_task/chat dead)')
+}
+
+// 6) Browser-in-fence in-process launch (optional) — the WRONG path, kept only to
+// document that it Mach-fails. The real path is checks (4)/(5) above + the shared
+// out-of-fence browser. Never gated.
 if (wantBrowser) {
   const appLease = leaseSettings('cwd', 'workspace-write+net')
   const r = throughFence(appLease, ['node', '-e',
     "const{chromium}=require('playwright');(async()=>{try{const b=await chromium.launch({headless:true});await b.close();console.log('PW_OK')}catch(e){console.log('PW_FAIL:'+e.message.split('\\n')[0])}})()"])
   const ok = r.out.includes('PW_OK')
-  console.log(`${ok ? '✔' : 'ℹ'} browser-in-fence${ok ? ' — launched'
-    : ' — blocked by fence-tool Mach limit (expected; app agents use the shared out-of-fence browser)'}`)
-  // not counted as a hard failure: the real workflow drives the shared browser
+  console.log(`ℹ in-process browser-in-fence: ${ok ? 'launched' : 'Mach-blocked (expected — fenced agents drive the shared out-of-fence browser, not their own)'}`)
 }
 
 const hardFails = results.filter(r => !r.ok)

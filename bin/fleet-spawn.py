@@ -784,6 +784,14 @@ DEFAULT_TRUSTED_MCP_SERVERS = {
 }
 PLAYWRIGHT_CACHE_ROOT = os.path.expanduser("~/Library/Caches/ms-playwright")
 TLDA_FENCE_TMP_ROOT = "/tmp/tlda-fence-env"
+# The shared playwright-cli daemon's client<->daemon UNIX socket. cli/lib/pw.mjs
+# pins PLAYWRIGHT_DAEMON_SOCKETS_DIR here so it lands under /tmp (shared 1:1 with
+# the fence) instead of $TMPDIR (which the fence remaps). A fenced app agent drives
+# the OUT-of-fence browser by connecting to this socket, so the lease must whitelist
+# AF_UNIX connect to it (macOS denies unix-socket connect by default even with
+# allowLocalOutbound, which only covers TCP loopback). Without this a fenced
+# `tlda-dev pw` reads the live session as "closed" and kills the real browser.
+TLDA_PW_SOCKETS_ROOT = "/tmp/tlda-pw-sockets"
 # TEMP global fence kill (Skip 2026-06-19): the fence is OFF for every LIVE
 # spawn until Skip flips it on. Applied ONLY at the launch sites
 # (fresh / respawn / refresh) via _live_spawn_policy -- NOT in the pure policy
@@ -1022,9 +1030,15 @@ def resolve_sandbox_policy_name(harness, model, explicit_policy=None):
     return _validate_sandbox_policy(policy)
 
 
-def _live_spawn_policy(resolved_policy):
+def _live_spawn_policy(resolved_policy, explicit=False):
     # See FENCE_GLOBALLY_DISABLED. Forces unsandboxed for LIVE spawns while the
     # fence is globally off, without disturbing the pure resolver above.
+    # EXCEPTION: an EXPLICIT policy request (--policy / the MCP policy arg) is
+    # always honored, so the fence stays testable on a single agent without
+    # flipping the global default for the whole fleet. The global-off only
+    # governs the DEFAULT (capability-derived) policy.
+    if explicit:
+        return resolved_policy
     return "unsandboxed" if FENCE_GLOBALLY_DISABLED else resolved_policy
 
 
@@ -1197,6 +1211,15 @@ def _fence_settings(policy):
         ],
         "allowLocalBinding": bool(policy.get("network")) or api_local_outbound,
         "allowLocalOutbound": bool(policy.get("network")) or api_local_outbound,
+        # AF_UNIX connect is denied by the macOS sandbox even when
+        # allowLocalOutbound (TCP loopback) is on. A fenced app agent drives the
+        # shared OUT-of-fence browser by connecting to the playwright-cli daemon's
+        # unix socket under TLDA_PW_SOCKETS_ROOT, so whitelist that path. See
+        # TLDA_PW_SOCKETS_ROOT / cli/lib/pw.mjs.
+        "allowUnixSockets": [
+            TLDA_PW_SOCKETS_ROOT,
+            f"{TLDA_PW_SOCKETS_ROOT}/**",
+        ],
     }
     return {
         "allowPty": True,
@@ -1330,6 +1353,19 @@ def build_claude_cmd(fleet_id, tmux_session, model, effort=None, mode=None,
     parts = [f"FLEET_ID={fleet_id}", f"FLEET_TMUX_SESSION={tmux_session}"]
     if name:
         parts.append(f"FLEET_NAME={shlex.quote(name)}")
+    # DNS alias for the tlda server host (same as codex/goose). Claude passes its
+    # process env down to the tlda MCP subprocess, so this reaches the MCP's node.
+    # It matters under the FENCE: the sandbox can't resolve the Tailscale MagicDNS
+    # name (`getaddrinfo ENOTFOUND`), so the MCP's fleet WSS would die ("fleet WS:
+    # ✘") even though HTTPS-via-proxy works. The preload aliases the one API host to
+    # its tailnet IP so node skips getaddrinfo. No-op for unsandboxed agents (the
+    # host resolver already returns that IP).
+    dns_alias = _resolve_api_dns_alias()
+    if dns_alias and os.path.exists(NODE_DNS_ALIAS_PRELOAD):
+        host, address = dns_alias
+        parts.append(f"NODE_OPTIONS={shlex.quote(f'--require={NODE_DNS_ALIAS_PRELOAD}')}")
+        parts.append(f"TLDA_NODE_DNS_ALIAS_HOST={shlex.quote(host)}")
+        parts.append(f"TLDA_NODE_DNS_ALIAS_ADDR={shlex.quote(address)}")
     parts.append("claude")
     if resume_id:
         parts.append(f"--resume {resume_id}")
@@ -2249,7 +2285,7 @@ def fresh(name, model, cwd, effort, mode, kind="claude", spawn_capability=None,
     cwd = resolve_spawn_cwd(cwd)
     adapter = harness_for_spawn(kind, model)
     model = adapter.resolve_model(model)
-    effective_policy = _live_spawn_policy(sandbox_policy or sandbox_policy_for_spawn_capability(spawn_capability))
+    effective_policy = _live_spawn_policy(sandbox_policy or sandbox_policy_for_spawn_capability(spawn_capability), explicit=bool(sandbox_policy))
     policy_name, dev_tools, _write_roots, _matched_root, policy = resolve_harness_sandbox(
         adapter.kind, model, cwd, explicit_policy=effective_policy)
     policy = apply_spawn_capability_to_policy(policy, spawn_capability, cwd)
@@ -2300,7 +2336,7 @@ def respawn(name, model, cwd, effort, mode, session_override=None,
     spawn_policy_name = spawn_policy.get("policy") if isinstance(spawn_policy, dict) else None
     adapter = harness_for_agent(agent, raw_model)
     model = adapter.resolve_model(raw_model)
-    effective_policy = _live_spawn_policy(sandbox_policy or spawn_policy_name or sandbox_policy_for_spawn_capability(spawn_capability))
+    effective_policy = _live_spawn_policy(sandbox_policy or spawn_policy_name or sandbox_policy_for_spawn_capability(spawn_capability), explicit=bool(sandbox_policy or spawn_policy_name))
     policy_name, dev_tools, _write_roots, _matched_root, policy = resolve_harness_sandbox(
         adapter.kind, model, cwd, explicit_policy=effective_policy)
     policy = apply_spawn_capability_to_policy(policy, spawn_capability, cwd)
@@ -2385,7 +2421,7 @@ def refresh(name, model, cwd, effort, mode, spawn_capability=None,
     raw_model = model or meta.get("model")
     adapter = harness_for_agent(agent, raw_model)
     model = adapter.resolve_model(raw_model)
-    effective_policy = _live_spawn_policy(sandbox_policy or sandbox_policy_for_spawn_capability(spawn_capability))
+    effective_policy = _live_spawn_policy(sandbox_policy or sandbox_policy_for_spawn_capability(spawn_capability), explicit=bool(sandbox_policy))
     policy_name, dev_tools, _write_roots, _matched_root, policy = resolve_harness_sandbox(
         adapter.kind, model, cwd, explicit_policy=effective_policy)
     policy = apply_spawn_capability_to_policy(policy, spawn_capability, cwd)

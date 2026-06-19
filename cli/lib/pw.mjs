@@ -35,6 +35,21 @@ import { homedir } from 'os'
 // Default to the one canonical session; overridable for isolated testing.
 const SESSION = process.env.TLDA_PW_SESSION || 'shared'
 
+// Pin the playwright-cli daemon's control SOCKET to a fixed, fence-visible path.
+// By default playwright-cli puts its client<->daemon unix socket under
+// $TMPDIR/playwright-cli. That breaks a FENCED agent driving the shared browser:
+// the fence remaps $TMPDIR (and the macOS sandbox denies AF_UNIX connect to the
+// real temp), so a fenced `tlda-dev pw` can't reach the out-of-fence daemon, sees
+// the live session as "closed", then destructively "recovers" (kills) the real
+// browser. /tmp is shared 1:1 with the fence, and the spawn lease whitelists this
+// dir via network.allowUnixSockets (bin/fleet-spawn.py), so pinning the socket
+// here lets the out-of-fence opener and an in-fence driver agree on one reachable
+// path. Inherited by every playwright-cli child (incl. the daemon it spawns).
+// Override with PLAYWRIGHT_DAEMON_SOCKETS_DIR for isolated testing.
+if (!process.env.PLAYWRIGHT_DAEMON_SOCKETS_DIR) {
+  process.env.PLAYWRIGHT_DAEMON_SOCKETS_DIR = '/tmp/tlda-pw-sockets'
+}
+
 // Each agent gets its own TAB in the one shared window. An earlier design gave
 // each agent its own window.open() popup so a background tab couldn't suspend
 // its paint — but under automation window.open is popup-BLOCKED, and the
