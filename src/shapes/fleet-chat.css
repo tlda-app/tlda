@@ -965,11 +965,6 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   display: block;
   cursor: pointer;
 }
-.fleet-chat-shape .chat-image-shared-doc {
-  width: 75%;
-  max-width: 75%;
-}
-
 /* Lightbox overlay for full-size image viewing (appended to body) */
 .chat-lightbox {
   position: fixed;
@@ -2341,15 +2336,39 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   gap: 3px;
   background: rgba(99, 160, 219, 0.15);
   border-color: rgba(99, 160, 219, 0.25);
-  color: var(--accent);
+  color: var(--text-bright, #c0c0d4);
+  max-width: min(100%, 360px);
+  min-width: 0;
+  overflow: hidden;
 }
 .fleet-chat-shape .ref-chip-doc:hover {
-  background: rgba(99, 160, 219, 0.25);
-  border-color: rgba(99, 160, 219, 0.45);
+  background: rgba(99, 160, 219, 0.28);
+  border-color: rgba(130, 190, 245, 0.55);
+  color: #edf6ff;
 }
 .fleet-chat-shape .ref-chip-doc-icon {
   font-size: 10px;
   line-height: 1;
+  flex: 0 0 auto;
+}
+.fleet-chat-shape .ref-chip-doc-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  color: inherit;
+}
+.fleet-chat-shape .ref-chip-doc-summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  color: var(--text, #a8a8c0);
+  font-weight: 400;
+}
+.fleet-chat-shape .ref-chip-doc-summary::before {
+  content: " — ";
+  color: var(--text-dim, #8888a0);
 }
 .fleet-chat-shape .ref-chip-broken {
   background: rgba(200, 100, 60, 0.12);
@@ -2867,10 +2886,10 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   color: #9370db;
 }
 
-/* Terminal, magnet, then traffic toggle: inline chrome floats over the textfield. */
+/* Terminal, traffic toggle, then magnet: inline chrome floats over the textfield. */
 .fleet-chat-shape .fleet-hardlock-toggle {
   position: absolute;
-  left: 20px;
+  left: 54px;
   top: 50%;
   transform: translateY(-50%);
   border: none;
@@ -2917,7 +2936,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 /* Composer traffic toggle — text-only control in the same chrome as terminal. */
 .fleet-chat-shape .fleet-composer-traffic-toggle {
   position: absolute;
-  left: 36px;
+  left: 20px;
   top: 50%;
   transform: translateY(-50%);
   min-width: 0;
