@@ -41,9 +41,15 @@ export function NoteDropHandler() {
 
     function parseFleetDrop(e: DragEvent): Record<string, any> | null {
       const custom = e.dataTransfer?.getData('application/x-chat-attachment')
-      if (custom) try { return JSON.parse(custom) } catch {}
+      if (custom) try {
+        const p = JSON.parse(custom)
+        return p?.type === 'shared-doc' ? null : p
+      } catch {}
       const plain = e.dataTransfer?.getData('text/plain')
-      if (plain) try { const p = JSON.parse(plain); if (p._fleet) return p; } catch {}
+      if (plain) try {
+        const p = JSON.parse(plain)
+        if (p._fleet && p.type !== 'shared-doc') return p
+      } catch {}
       return null
     }
 
@@ -108,23 +114,9 @@ export function NoteDropHandler() {
           const point = editor.screenToPage({ x: e.clientX, y: e.clientY })
           const shapeId = createShapeId()
 
-          // Shared docs: shift+drop = open as full tlda doc, default = note on canvas
-          const isDoc = item.type === 'shared-doc'
-          if (isDoc && e.shiftKey && item.path) {
-            // Open as a full tlda document via fleet's share endpoint
-            fetch(`${window.location.origin}/api/tlda/share`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ path: item.path })
-            }).then(r => r.json()).then(data => {
-              if (data.openUrl) window.location.href = data.openUrl
-            }).catch(e => console.warn('[note-drop] share failed:', e.message))
-            return
-          }
-
-          const text = isDoc ? (item.text || item.snippet || '') : (item.snippet || '')
-          const w = isDoc ? 400 : 250
-          const h = isDoc ? Math.min(600, Math.max(150, (text.split('\n').length * 16) + 40)) : 150
+          const text = item.snippet || ''
+          const w = 250
+          const h = 150
 
           editor.createShape({
             id: shapeId,
@@ -134,7 +126,7 @@ export function NoteDropHandler() {
             opacity: 1,
             props: {
               text,
-              color: isDoc ? 'violet' : 'blue',
+              color: 'blue',
               w,
               h,
               collapsed: false,
@@ -145,7 +137,6 @@ export function NoteDropHandler() {
               copiedFromShapeId: item.source || item.shareId || '',
               copiedFromTimestamp: Date.now(),
               fleetSource: JSON.stringify(item),
-              ...(isDoc ? { docName: item.name, docPath: item.path } : {}),
             },
           } as any)
         } catch {}

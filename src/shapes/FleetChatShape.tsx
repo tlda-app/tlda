@@ -4264,7 +4264,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       // clicking on their .drag-handle left-edge element. Small inline items
       // (chips, timestamps) are draggable from the whole element.
       const isDraggable = target.closest(
-        '.drag-handle, .chat-ts, .tool-ref, .md-file-card, .ref-chip[data-doc], .tlda-card, .build-result-card, .ref-chip-annotation, .ref-chip:not(.ref-chip-annotation), .pretty-search-ts, .agent-nick'
+        '.drag-handle, .chat-ts, .tool-ref, .md-file-card, .tlda-card, .build-result-card, .ref-chip-annotation, .ref-chip:not(.ref-chip-annotation), .pretty-search-ts, .agent-nick'
       )
 
       if (!isDraggable) {
@@ -4401,19 +4401,16 @@ function FleetChatInner({ shape }: { shape: any }) {
         }
       }
 
-      // MD file card or shared-doc ref-chip → drag as doc reference
+      // MD file card → drag as a doc reference
       if (!drag) {
-        const mdCard = target.closest('.md-file-card, .ref-chip[data-doc]') as HTMLElement
+        const mdCard = target.closest('.md-file-card') as HTMLElement
         if (mdCard) {
           const filePath = mdCard.dataset.path || ''
-          const docName = mdCard.dataset.doc || ''
-          // Prefer data-title (set by renderAttachChip for shared-doc chips), then chip text, then filename
-          const name = mdCard.dataset.title || mdCard.querySelector('.md-file-chip')?.textContent || mdCard.textContent?.trim() || filePath.split('/').pop() || 'file'
-          // Use doc:name for tlda-shared docs so canvas drop creates inline-doc; file: for local files
-          const value = docName ? `doc:${docName}` : `file:${filePath}`
+          const name = mdCard.querySelector('.md-file-chip')?.textContent || mdCard.textContent?.trim() || filePath.split('/').pop() || 'file'
+          const value = `file:${filePath}`
           drag = {
             pillId: null, pillType: 'doc' as any, value,
-            displayName: name, color: '#63a0db', content: filePath || docName,
+            displayName: name, color: '#63a0db', content: filePath,
             startX: e.clientX, startY: e.clientY,
             started: false, captureEl: logEl, pointerId: e.pointerId,
           }

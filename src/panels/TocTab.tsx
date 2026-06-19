@@ -224,7 +224,7 @@ export function TocTab() {
   function handleTocDragOver(e: ReactDragEvent) {
     if (!book) return
     const types = e.dataTransfer?.types
-    if (!types?.includes('text/plain') && !types?.includes('application/x-chat-attachment')) return
+    if (!types?.includes('text/plain')) return
     e.preventDefault()
     e.dataTransfer.dropEffect = 'copy'
     setTocDragOver(true)
@@ -239,48 +239,14 @@ export function TocTab() {
     setTocDragOver(false)
     if (!book) return
 
-    // Parse drop payload: fleet shared-doc OR canvas chapter-note
+    // Parse drop payload from a canvas chapter-note.
     let item: Record<string, any> | null = null
-    const custom = e.dataTransfer?.getData('application/x-chat-attachment')
-    if (custom) try { item = JSON.parse(custom) } catch {}
-    if (!item) {
-      const plain = e.dataTransfer?.getData('text/plain')
-      if (plain) try {
-        const p = JSON.parse(plain)
-        if (p._fleet || p._tlda) item = p
-      } catch {}
-    }
+    const plain = e.dataTransfer?.getData('text/plain')
+    if (plain) try {
+      const p = JSON.parse(plain)
+      if (p._tlda) item = p
+    } catch {}
     if (!item) return
-
-    // Fleet shared-doc: create project via fleet share endpoint
-    if (item.type === 'shared-doc' && item.path) {
-      e.preventDefault()
-      const fileName = item.name || item.path.split('/').pop() || 'untitled'
-      setTocAdding(fileName)
-
-      try {
-        const shareRes = await fetch(`${window.location.origin}/api/tlda/share`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path: item.path }),
-        })
-        if (!shareRes.ok) throw new Error('Failed to create project')
-        const shareData = await shareRes.json()
-
-        const patchRes = await fetch(`/api/projects/${book.bookName}/members`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ add: shareData.project }),
-        })
-        if (!patchRes.ok) throw new Error('Failed to add to book')
-
-        window.location.reload()
-      } catch (err) {
-        console.error('Drop-to-book failed:', err)
-        setTocAdding(null)
-      }
-      return
-    }
 
     // Canvas chapter-note: create markdown project from note content
     if (item.type === 'chapter-note' && item.text) {

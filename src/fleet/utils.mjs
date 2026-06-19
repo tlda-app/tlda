@@ -5,6 +5,8 @@ import { getActiveMacros } from '../katexMacros'
 import { baseMacros } from '../../shared/katex-base-macros.mjs'
 import { myTldaUrl } from './tldaUrl.mjs'
 import { baseName } from '../../shared/lineage-name.mjs'
+import { normalizeChatDisplayMathDelimiters } from '../../shared/chat-math-normalize.mjs'
+import { rewriteBareLocalPaths, rewriteLocalFileAnchors } from '../../shared/chat-local-link-safety.mjs'
 // Utility functions. Agent lookups read from fleet-data directly.
 
 const _tldaToken = null // was from state.mjs (removed)
@@ -334,6 +336,7 @@ export function renderMarkdown(html, extraMacros) {
   // renders as raw escaped text. With throwOnError: false KaTeX returns its
   // own giant error-HTML structure, which we don't want dumped into chat.
   const katexOpts = (displayMode) => ({ displayMode, throwOnError: true, strict: false, macros: { ...preambleMacros } })
+  text = normalizeChatDisplayMathDelimiters(text)
 
   // Display math: $$...$$
   text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_, tex) => {
@@ -378,22 +381,6 @@ export function renderMarkdown(html, extraMacros) {
       </div>
     </div>`, true)
   })
-  // [doc:shareId] meta — render as compact chip, click to expand card
-  const docsExpanded = localStorage.getItem('fleet-docs-expanded') === '1'
-  text = text.replace(/\[doc:([^\]]+)\]\s*([^\n]+)/g, (_, shareId, meta) => {
-    const docId = `doc-${shareId}`
-    const bodyDisplay = docsExpanded ? '' : 'display:none'
-    const toggleChar = docsExpanded ? '▼' : '▶'
-    return ph(`<div class="shared-doc doc-chip" data-share-id="${esc(shareId)}" draggable="true">
-      <div class="shared-doc-header">
-        <span class="shared-doc-toggle">${toggleChar}</span>
-        <span class="shared-doc-name">${esc(meta.trim())}</span>
-        <span class="drag-handle" title="Drag to chat">⠿</span>
-      </div>
-      <div class="shared-doc-body doc-chip-body" id="${esc(docId)}" style="${bodyDisplay}"></div>
-    </div>`, true)
-  })
-
   // Bare image file paths → <img> tags (before marked mangles them)
   // Matches absolute paths (/... or ~/...) ending in image extensions
   // Handles: bare paths, backtick-wrapped paths, paths at end of line
@@ -423,7 +410,7 @@ export function renderMarkdown(html, extraMacros) {
   if (typeof window !== 'undefined' && window.DOMPurify) {
     result = window.DOMPurify.sanitize(result, {
       ADD_TAGS: ['span', 'div', 'img'],
-      ADD_ATTR: ['class', 'data-path', 'data-share-id', 'data-indent', 'data-file',
+      ADD_ATTR: ['class', 'data-path', 'data-indent', 'data-file',
         'data-line', 'data-tlda-src', 'data-tlda-id', 'data-lang', 'data-highlighted',
         'draggable', 'title', 'target', 'style'],
       ALLOW_DATA_ATTR: true,
@@ -450,43 +437,9 @@ export function renderMarkdown(html, extraMacros) {
   // Make links open in new tab (skip links that already have target)
   result = result.replace(/<a(?![^>]*target=)([^>]*href=")/g, '<a target="_blank"$1')
 
-  // File paths: shorten absolute paths + render relative .md paths as scratch cards
-  // Backtick-quoted content (<code> spans) is verbatim — never chipify it.
-  // Prose paths (unquoted text) are handled: absolute paths shortened, relative .md paths chipped.
-  // Second pass: absolute and relative paths in text (skip inside HTML tags and code/pre)
-  let _inCode2 = 0
-  result = result.replace(/((?:<[^>]*>)|(?:[^<]+))/g, (segment) => {
-    if (segment.startsWith('<')) {
-      if (/^<(code|pre)\b/i.test(segment)) _inCode2++
-      else if (/^<\/(code|pre)>/i.test(segment)) _inCode2 = Math.max(0, _inCode2 - 1)
-      return segment
-    }
-    if (_inCode2 > 0) return segment
-    // Absolute paths
-    segment = segment.replace(/\/Users\/\w+\/([\w/._-]+)/g, (fullPath, rel) => {
-      if (fullPath.endsWith('.md')) {
-        const name = rel.split('/').pop()
-        const isScratch = /\/scratch\//.test(fullPath)
-        const cls = isScratch ? 'md-file-card scratch-card' : 'md-file-card'
-        const drag = isScratch ? ' draggable="true"' : ''
-        return `<span class="${cls}" data-path="${fullPath}"${drag}><span class="md-file-chip">${name}</span><span class="md-file-body"></span></span>`
-      }
-      if (/\.(png|jpg|jpeg|gif|webp|svg)$/i.test(fullPath)) {
-        const name = rel.split('/').pop()
-        return `<img class="chat-image" src="/api/file?path=${encodeURIComponent(fullPath)}" alt="${name}" style="max-width:300px;max-height:200px;border-radius:4px;cursor:zoom-in;display:block;margin:4px 0" onerror="this.style.display='none'">`
-      }
-      return `<span class="file-path" title="${fullPath}" style="cursor:pointer;text-decoration:underline dotted">~/${rel}</span>`
-    })
-    // Relative paths ending in .md (word-boundary anchored, not already in a tag)
-    segment = segment.replace(/(?<![/"'>\w])(?:(?:[\w.-]+\/)+[\w.-]+\.md)/g, (relPath) => {
-      const name = relPath.split('/').pop()
-      const isScratch = /scratch\//.test(relPath)
-      const cls = isScratch ? 'md-file-card scratch-card' : 'md-file-card'
-      const drag = isScratch ? ' draggable="true"' : ''
-      return `<span class="${cls}" data-path="${relPath}"${drag}><span class="md-file-chip">${name}</span><span class="md-file-body"></span></span>`
-    })
-    return segment
-  })
+  // Local paths should render as file chips/spans, not clickable `~/...` links.
+  // Also avoid chipifying local path text inside existing anchors.
+  result = rewriteBareLocalPaths(rewriteLocalFileAnchors(result))
 
   // File:line references (skip inside tags)
   result = result.replace(/((?:<[^>]*>)|(?:[^<]+))/g, (segment) => {

@@ -2903,7 +2903,15 @@ async function handleFleetWsMessage(ws, msg) {
           continue
         }
         console.log(`[respawn] waking ${agent.friendly_name || agentId} (${agentId})`)
-        await sendRpc(machineId, 'spawn', { name: agent.friendly_name || agentId, respawn: true })
+        const spawnResult = await sendRpc(machineId, 'spawn', { name: agent.friendly_name || agentId, respawn: true })
+        if (nudgeText && agent.tmux_session && terminalNudgeKind(agent)) {
+          await sendRpc(machineId, 'send-text', {
+            tmux_session: spawnResult?.tmux_session || agent.tmux_session,
+            text: nudgeText,
+            enter: true,
+            enter_delay_ms: agent?.metadata?.kind === 'codex' ? 400 : 0,
+          }).catch(e => console.warn(`[wake-nudge] post-respawn failed for ${agentId}: ${e.message}`))
+        }
         const wakeTs = new Date().toISOString()
         fleetStore.db.prepare(
           'INSERT INTO events (type, timestamp, from_id, to_id, text, metadata) VALUES (?, ?, ?, ?, ?, ?)'

@@ -53,7 +53,11 @@ function renderMarkdownStub(text) {
   return text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img class="chat-image" src="$2" alt="$1">')
 }
 
-function renderCtx() {
+function renderMarkdownWithOrdinaryLinks(text) {
+  return renderMarkdownStub(text).replace(/https?:\/\/[^\s<]+/g, url => `<a href="${url}" target="_blank">${url}</a>`)
+}
+
+function renderCtx(renderMarkdown = renderMarkdownStub) {
   return {
     agentLabel: id => id,
     getNickClass: () => '',
@@ -61,7 +65,7 @@ function renderCtx() {
     getAgents: () => [],
     getTasks: () => [],
     tldaToken: null,
-    renderMarkdown: renderMarkdownStub,
+    renderMarkdown,
   }
 }
 
@@ -149,3 +153,87 @@ test('backticked local path remains literal and does not upload', withTempDir(as
     await stub.close()
   }
 }))
+
+test('legacy shared-doc metadata with path renders as ordinary link, not shared-doc chip UI', () => {
+  const html = renderChatLine({
+    type: 'chat',
+    from: 'fleet:agent',
+    to: 'fleet:skip',
+    text: 'Report attached.',
+    timestamp: '2026-06-18T00:00:00.000Z',
+    attachments: [{
+      type: 'shared-doc',
+      source: 'doc:fleet:agent:agent-report',
+      path: '/tmp/agent-report.md',
+      text: [
+        '# Agent report',
+        '',
+        'This report explains the failed share chip and includes enough detail to identify the content without guessing.',
+      ].join('\n'),
+    }],
+  }, renderCtx())
+  const dom = new JSDOM(`<div id="root">${html}</div>`)
+  const root = dom.window.document.getElementById('root')
+  const sharedChip = dom.window.document.querySelector('.ref-chip-shared-doc, .shared-doc.doc-chip')
+  const refChip = dom.window.document.querySelector('.ref-chip')
+  const link = dom.window.document.querySelector('a')
+
+  assert.equal(sharedChip, null, 'legacy shared-doc metadata should not render shared-doc chip classes')
+  assert.equal(refChip, null, 'legacy shared-doc metadata should not render generated ref-chip UI')
+  assert.ok(link)
+  assert.equal(link.getAttribute('href'), '/api/file?path=%2Ftmp%2Fagent-report.md')
+  assert.equal(link.getAttribute('target'), '_blank')
+  assert.match(root.textContent, /agent-report\.md/)
+  assert.equal(link.hasAttribute('data-doc'), false)
+  assert.equal(link.hasAttribute('data-path'), false)
+  assert.equal(link.hasAttribute('draggable'), false)
+  assert.doesNotMatch(root.innerHTML, /ref-chip-shared-doc|shared-doc|doc-chip|data-share-id|tool-ref-preview/)
+})
+
+test('literal doc token with URL uses ordinary markdown link handling, not shared-doc output', () => {
+  const html = renderChatLine({
+    type: 'chat',
+    from: 'fleet:agent',
+    to: 'fleet:skip',
+    text: '[doc:psc-report] PSC report https://example.test/psc-report.md',
+    timestamp: '2026-06-18T00:00:00.000Z',
+  }, renderCtx(renderMarkdownWithOrdinaryLinks))
+  const dom = new JSDOM(`<div id="root">${html}</div>`)
+  const root = dom.window.document.getElementById('root')
+  const link = dom.window.document.querySelector('a')
+
+  assert.ok(link)
+  assert.equal(link.getAttribute('href'), 'https://example.test/psc-report.md')
+  assert.equal(link.getAttribute('target'), '_blank')
+  assert.equal(dom.window.document.querySelector('.shared-doc.doc-chip'), null)
+  assert.equal(dom.window.document.querySelector('.ref-chip-shared-doc'), null)
+  assert.equal(dom.window.document.querySelector('[data-share-id]'), null)
+  assert.match(root.textContent, /\[doc:psc-report\] PSC report/)
+  assert.doesNotMatch(root.innerHTML, /ref-chip-shared-doc|class="shared-doc|doc-chip|data-share-id|Shared doc:/)
+})
+
+test('literal doc token without link target stays ordinary readable text', () => {
+  const html = renderChatLine({
+    type: 'chat',
+    from: 'fleet:agent',
+    to: 'fleet:skip',
+    text: '[doc:psc-report] PSC report',
+    timestamp: '2026-06-18T00:00:00.000Z',
+  }, renderCtx(renderMarkdownWithOrdinaryLinks))
+  const dom = new JSDOM(`<div id="root">${html}</div>`)
+  const root = dom.window.document.getElementById('root')
+
+  assert.equal(dom.window.document.querySelector('a'), null)
+  assert.equal(dom.window.document.querySelector('.shared-doc.doc-chip'), null)
+  assert.equal(dom.window.document.querySelector('[data-share-id]'), null)
+  assert.match(root.textContent, /\[doc:psc-report\] PSC report/)
+  assert.doesNotMatch(root.innerHTML, /ref-chip-shared-doc|class="shared-doc|doc-chip|data-share-id|Shared doc:/)
+})
+
+test('shared report chip css uses readable title and summary classes', () => {
+  const css = fs.readFileSync(path.join(process.cwd(), 'src', 'shapes', 'fleet-chat.css'), 'utf8')
+
+  assert.match(css, /\.fleet-chat-shape \.ref-chip-doc \{[\s\S]*color: var\(--text-bright/)
+  assert.match(css, /\.fleet-chat-shape \.ref-chip-doc-title \{[\s\S]*text-overflow: ellipsis/)
+  assert.match(css, /\.fleet-chat-shape \.ref-chip-doc-summary \{[\s\S]*color: var\(--text/)
+})

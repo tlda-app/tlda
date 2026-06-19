@@ -27,7 +27,8 @@ const execFileP = promisify(execFile)
 import { getServerUrl, CONFIG_DIR } from '../shared/config.mjs'
 import { labelsForAgent } from '../shared/fleet-labels.mjs'
 import { commitMdShare } from './md-share-commit.mjs'
-import { decideTaskKicks } from './lib/todd-kicks.mjs'
+import { decideTaskKicks, formatTaskKickMessage } from './lib/todd-kicks.mjs'
+import { decideLooseEndNudge, LOOSE_END_COOLDOWN_MS } from './lib/todd-loose-ends.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // Identity is config-driven: the supervisor passes TLDA_BOT_NAME (and the pidfile
@@ -53,6 +54,7 @@ const TASK_KICK_QUIET_MS = parseInt(process.env.TODD_TASK_KICK_QUIET_MS || '', 1
 const TASK_KICK_MAX_TASK_AGE_MS = parseInt(process.env.TODD_TASK_KICK_MAX_TASK_AGE_MS || '', 10) || 12 * 60 * 60_000
 const TASK_KICK_POLL_MS = parseInt(process.env.TODD_TASK_KICK_POLL_MS || '', 10) || 60_000
 const taskKickLastSent = new Map()
+const looseEndLastSent = new Map()
 
 // Positive/negative reward signal patterns in Skip's messages (post-nudge)
 const POSITIVE_REWARD_PATTERNS = [
@@ -835,6 +837,21 @@ const PUNT_COOLDOWN_MS = 5 * 60_000
 
 function handleSequence(fromId, toId, text) {
   const now = Date.now()
+  const looseEndNudge = decideLooseEndNudge({
+    fromId,
+    toId,
+    text,
+    ownerId: OWNER_ID,
+    botId: AGENT_ID,
+    now,
+    lastSent: looseEndLastSent,
+    cooldownMs: LOOSE_END_COOLDOWN_MS,
+  })
+  if (looseEndNudge) {
+    console.log(`[todd] loose-end ${looseEndNudge.kind} → ${looseEndNudge.agentId}`)
+    sendChat(looseEndNudge.agentId, looseEndNudge.message)
+    logDecision(looseEndNudge.agentId, `loose-end:${looseEndNudge.kind}`, 'loose-end-watchdog', {}, text)
+  }
 
   if (fromId === OWNER_ID && toId && toId !== AGENT_ID) {
     // Skip → Agent
@@ -1476,16 +1493,27 @@ async function taskKickSweep() {
     quietMs: TASK_KICK_QUIET_MS,
     kickIntervalMs: TASK_KICK_INTERVAL_MS,
   })
-  for (const { task, agent, key, taskAgeMs } of kicks) {
+  for (const { task, agent, key, taskAgeMs, action, reason } of kicks) {
     taskKickLastSent.set(key, Date.now())
     const ageMin = Math.max(1, Math.round(taskAgeMs / 60_000))
     const agentLabel = agent.friendly_name || agent.id
-    console.log(`[todd] task kick → ${agentLabel} (${task.id}, age ${ageMin}m)`)
-    sendChat(agent.id, `📬 Task check-in: you still have pending task **${task.description || task.id}** (${ageMin}m old). Call \`my_task()\`, continue the work, or report/mark it done if it is complete.`)
+    console.log(`[todd] task kick → ${agentLabel} (${task.id}, age ${ageMin}m, action ${action || 'chat'}, reason ${reason || 'quiet-active-task'})`)
+    if (action === 'respawn') {
+      const res = await spawnAgent({ agent: agent.id, respawn: true })
+      if (res?.error) {
+        console.error(`[todd] task respawn failed for ${agentLabel}: ${res.error}`)
+        continue
+      }
+      sendChat(agent.id, formatTaskKickMessage({ task, taskAgeMs, recovery: true }))
+    } else {
+      sendChat(agent.id, formatTaskKickMessage({ task, taskAgeMs, recovery: false }))
+    }
     logDecision(agent.id, 'task-kick', task.id || 'active-task', {
       taskAgeMin: ageMin,
       taskStatus: task.status,
       taskDescription: task.description || '',
+      action: action || 'chat',
+      reason: reason || 'quiet-active-task',
     }, null)
   }
 }

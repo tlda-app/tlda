@@ -672,4 +672,22 @@ await setBackend('chrome')
   console.log('✓ Test 11: Deepgram mic-frame recovery clears don’t-speak banner')
 }
 
-console.log('\nAll 14 tests passed.')
+// ---- Test 12: Deepgram mic-frame health is independent of bridge send ----
+{
+  reset()
+  window.__voiceTest.fakeDeepgramDisconnected()
+  const before = window.__voiceTest.getDeepgramHeartbeatState()
+
+  const sent = window.__voiceTest.simulateDeepgramAudioFrame()
+  const after = window.__voiceTest.getDeepgramHeartbeatState()
+  assert.equal(sent, false, 'disconnected Deepgram frame should not be sent')
+  assert.equal(after.lastAudioChunkTime, before.lastAudioChunkTime, 'failed bridge send should not update sent timestamp')
+  assert.ok(after.lastMicFrameTime > 0, 'local mic frame should refresh mic-health timestamp')
+  assert.equal(after.micStallBeatCount, 0, 'local mic frame should clear stale mic heartbeat count')
+
+  window.__voiceTest.fakeStop()
+  reset()
+  console.log('✓ Test 12: Deepgram mic-frame health is independent of bridge send')
+}
+
+console.log('\nAll 15 tests passed.')

@@ -17,21 +17,41 @@ export function decideTaskKicks({
     if (!task || task.synthetic) continue
     if (!['pending', 'working', 'idle'].includes(task.status)) continue
     const agent = agentById.get(task.agent)
-    if (!agent || agent.dead || agent.human || agent.status !== 'awake') continue
+    if (!agent || agent.dead || agent.human) continue
+    const status = String(agent.status || '').toLowerCase()
+    if (status !== 'awake' && status !== 'hibernating') continue
 
     const delegatedAt = Date.parse(task.delegated_at || task.created_at || '')
     if (!Number.isFinite(delegatedAt)) continue
     const taskAge = now - delegatedAt
     if (taskAge < quietMs || taskAge > maxTaskAgeMs) continue
 
-    const lastSeen = Date.parse(agent.last_seen || agent.last_active || '')
-    if (Number.isFinite(lastSeen) && now - lastSeen < quietMs) continue
+    if (status === 'awake') {
+      const lastSeen = Date.parse(agent.last_seen || agent.last_active || '')
+      if (Number.isFinite(lastSeen) && now - lastSeen < quietMs) continue
+    }
 
     const key = task.id || `${task.agent}:${task.description || ''}`
     const last = lastKicked.get(key) || 0
     if (now - last < kickIntervalMs) continue
 
-    kicks.push({ task, agent, key, taskAgeMs: taskAge })
+    kicks.push({
+      task,
+      agent,
+      key,
+      taskAgeMs: taskAge,
+      action: status === 'hibernating' ? 'respawn' : 'chat',
+      reason: status === 'hibernating' ? 'hibernating-active-task' : 'quiet-active-task',
+    })
   }
   return kicks
+}
+
+export function formatTaskKickMessage({ task, taskAgeMs, recovery = false } = {}) {
+  const ageMin = Math.max(1, Math.round((taskAgeMs || 0) / 60_000))
+  const description = task?.description || task?.id || 'task'
+  const prefix = recovery
+    ? `📬 Task recovery: you hibernated with unfinished task **${description}** (${ageMin}m old).`
+    : `📬 Task check-in: you still have pending task **${description}** (${ageMin}m old).`
+  return `${prefix} Call \`my_task()\`, continue the work, or report/mark it done if it is complete. Before reporting or waiting: are there loose ends you can track down yourself? Continue, set a timer, or report a true blocker with evidence.`
 }

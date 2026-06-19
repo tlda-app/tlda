@@ -483,6 +483,12 @@ function sendDeepgramAudioChunk(data) {
   return true
 }
 
+function receiveDeepgramAudioFrame(data) {
+  _lastMicFrameTime = Date.now()
+  _micStallBeatCount = 0
+  return sendDeepgramAudioChunk(data)
+}
+
 function finalizeDeepgramBridge() {
   if (!_deepgramWs || !_deepgramConnected) return
   try { _deepgramWs.send(JSON.stringify({ type: 'finalize' })) } catch {}
@@ -1121,6 +1127,8 @@ let _deepgramWorklet = null      // AudioWorkletNode — captures mic on the aud
 let _deepgramInterim = ''        // current interim result (replaced on each interim)
 let _dgHasSeenInterim = false   // true after first interim in current session; guards against post-send final bleed
 let _lastAudioChunkTime = 0     // timestamp of last audio chunk sent to bridge (for heartbeat logging)
+let _lastMicFrameTime = 0       // timestamp of last AudioWorklet frame from the local mic
+let _micStallBeatCount = 0      // consecutive heartbeat ticks with stale local mic frames
 let _audioHeartbeatInterval = null  // periodic interval that logs audio-flow health
 let _dgTrickleWords = []         // words currently being trickled in
 let _dgTrickleShown = 0          // how many trickle words are visible
@@ -1129,6 +1137,8 @@ let _dgTrickleDelay = 40         // ms between words (adjusted per burst)
 let _dgIgnoreUntilUtteranceEnd = false // true after voice-send; drops trailing old-utterance results
 let _dgIgnoredSubmittedText = null // normalized utterance submitted before waiting for utterance_end
 let _dgLastFinalNorm = ''        // last committed final; used to drop duplicate stale finals
+const MIC_STALL_RESTART_MS = 8000
+const MIC_STALL_RESTART_BEATS = 3
 
 function _dgTrickleFlush() {
   clearTimeout(_dgTrickleTimer)
@@ -1487,18 +1497,23 @@ async function startDeepgramMic() {
 
   _deepgramWorklet = new AudioWorkletNode(_deepgramContext, 'deepgram-capture')
   _deepgramWorklet.port.onmessage = (e) => {
-    sendDeepgramAudioChunk(e.data)
+    receiveDeepgramAudioFrame(e.data)
   }
   source.connect(_deepgramWorklet)
   _voiceHealthLabel = _deepgramConnected ? 'mic live; waiting for speech' : 'mic live; waiting for recognizer'
   if (_recording) showRecordingHud()
 
   _lastAudioChunkTime = 0
+  _lastMicFrameTime = Date.now()
+  _micStallBeatCount = 0
   _audioHeartbeatInterval = setInterval(() => {
     if (!_recording) return
-    const ago = _lastAudioChunkTime ? Date.now() - _lastAudioChunkTime : null
+    const now = Date.now()
+    const ago = _lastAudioChunkTime ? now - _lastAudioChunkTime : null
+    const micAgo = _lastMicFrameTime ? now - _lastMicFrameTime : null
     vlog('audio heartbeat', {
       lastChunkMs: ago,
+      lastMicFrameMs: micAgo,
       wsOpen: _deepgramConnected,
       hasMic: !!_deepgramStream,
       audioCtxState: _deepgramContext?.state,
@@ -1510,11 +1525,16 @@ async function startDeepgramMic() {
         vlog('audio heartbeat: AudioContext resumed')
       }).catch(err => vlog('audio heartbeat: resume failed', { err: err.message }))
     }
-    // If audio stopped flowing for >2s despite recording, restart the mic pipeline.
-    // The worklet posts frames even during silence, so a stale lastChunkMs means
-    // the AudioContext or worklet died without us noticing.
-    if (ago !== null && ago > 2000) {
-      vlog('audio heartbeat: no audio for 2s — restarting mic pipeline')
+    // The mic watchdog is about local AudioWorklet frames, not successful bridge
+    // sends. A recognizer reconnect can stop sends while the mic is still healthy.
+    if (micAgo !== null && micAgo > MIC_STALL_RESTART_MS) {
+      _micStallBeatCount += 1
+      vlog('audio heartbeat: mic frame stale', { lastMicFrameMs: micAgo, staleBeats: _micStallBeatCount })
+    } else {
+      _micStallBeatCount = 0
+    }
+    if (_micStallBeatCount >= MIC_STALL_RESTART_BEATS) {
+      vlog('audio heartbeat: mic frame stale — restarting mic pipeline')
       showDontSpeak('mic stalled; restarting')
       stopDeepgramMic()
       startDeepgramMic()
@@ -1525,6 +1545,8 @@ async function startDeepgramMic() {
 function stopDeepgramMic() {
   clearInterval(_audioHeartbeatInterval)
   _audioHeartbeatInterval = null
+  _lastMicFrameTime = 0
+  _micStallBeatCount = 0
   if (_deepgramWorklet) {
     try { _deepgramWorklet.port.onmessage = null; _deepgramWorklet.disconnect() } catch {}
     _deepgramWorklet = null
@@ -1606,7 +1628,18 @@ if (typeof window !== 'undefined') {
       _deepgramConnected = true
       _deepgramWs = { readyState: 1, send: () => {} }
     },
-    simulateDeepgramAudioFrame: (data = new Int16Array([1]).buffer) => sendDeepgramAudioChunk(data),
+    fakeDeepgramDisconnected: () => {
+      _recording = true
+      _backend = 'deepgram'
+      _deepgramConnected = false
+      _deepgramWs = null
+    },
+    simulateDeepgramAudioFrame: (data = new Int16Array([1]).buffer) => receiveDeepgramAudioFrame(data),
+    getDeepgramHeartbeatState: () => ({
+      lastAudioChunkTime: _lastAudioChunkTime,
+      lastMicFrameTime: _lastMicFrameTime,
+      micStallBeatCount: _micStallBeatCount,
+    }),
   }
 }
 

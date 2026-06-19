@@ -116,7 +116,17 @@ assert policy["network"] is True
 assert "/Users/skip/work/tlda" in policy["write_roots"]
 assert "/Users/skip/work/tlda/.git" in policy["write_roots"]
 assert mod.os.path.expanduser("~/.config/tlda") in policy["write_roots"]
+assert mod.PLAYWRIGHT_CACHE_ROOT in policy["write_roots"]
+assert mod.TLDA_FENCE_TMP_ROOT in policy["write_roots"]
 assert "-s danger-full-access" in role_cmd
+assert mod.PLAYWRIGHT_CACHE_ROOT not in role_cmd
+assert mod.TLDA_FENCE_TMP_ROOT not in role_cmd
+wrapped = mod.wrap_sandbox_cmd(role_cmd, policy)
+settings_path = wrapped.split("--settings ", 1)[1].split(" ", 1)[0]
+with open(settings_path) as f:
+    settings = mod.json.load(f)
+assert mod.PLAYWRIGHT_CACHE_ROOT in settings["filesystem"]["allowWrite"]
+assert mod.TLDA_FENCE_TMP_ROOT in settings["filesystem"]["allowWrite"]
 
 policy_name, dev_tools, write_roots, matched, policy = mod.resolve_harness_sandbox(
     "codex", "gpt-5.5", "/Users/skip/work/tlda",

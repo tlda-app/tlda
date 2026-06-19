@@ -17,7 +17,7 @@
  *   (<proto> = https when the mkcert certs exist, else http — see getServerUrl in shared/config.mjs)
  */
 
-import { resolve, basename, dirname, join } from 'path'
+import { resolve, basename, dirname, join, delimiter } from 'path'
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync, appendFileSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { homedir } from 'os'
@@ -665,7 +665,12 @@ async function ensureFleetDaemonRunning() {
   const child = cpSpawn(process.execPath, [daemonScript], {
     detached: true,
     stdio: ['ignore', logFd, logFd],
-    env: { ...process.env, ...(hasTls && !process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: TLS_CA_PATH } : {}) },
+    env: {
+      ...process.env,
+      TMUX: undefined,
+      TMUX_PANE: undefined,
+      ...(hasTls && !process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: TLS_CA_PATH } : {}),
+    },
   })
   child.unref()
   await new Promise(r => setTimeout(r, 800))
@@ -754,7 +759,15 @@ async function cmdFleetWatch(sub) {
   if (sub === 'run') {
     // Foreground — exec the daemon directly so SIGINT etc. work normally.
     const { spawn: cpSpawn } = await import('child_process')
-    const child = cpSpawn(process.execPath, [daemonScript], { stdio: 'inherit', env: { ...process.env, ...(hasTls && !process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: TLS_CA_PATH } : {}) } })
+    const child = cpSpawn(process.execPath, [daemonScript], {
+      stdio: 'inherit',
+      env: {
+        ...process.env,
+        TMUX: undefined,
+        TMUX_PANE: undefined,
+        ...(hasTls && !process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: TLS_CA_PATH } : {}),
+      },
+    })
     child.on('exit', (code) => process.exit(code ?? 0))
     return
   }
@@ -784,7 +797,7 @@ async function cmdFleetWatch(sub) {
     const child = cpSpawn(process.execPath, [daemonScript], {
       detached: true,
       stdio: ['ignore', logFd, logFd],
-      env: { ...process.env },
+      env: { ...process.env, TMUX: undefined, TMUX_PANE: undefined },
     })
     child.unref()
 
@@ -1443,7 +1456,11 @@ async function runFleetSpawn(spawnArgs) {
     console.error(red(`fleet-spawn script not found: ${spawnScript}`))
     process.exit(1)
   }
-  const child = cpSpawn('python3', [spawnScript, ...spawnArgs], { stdio: 'inherit' })
+  const pythonDeps = join(dirname(fileURLToPath(import.meta.url)), '..', '.python-deps')
+  const env = existsSync(pythonDeps)
+    ? { ...process.env, PYTHONPATH: [pythonDeps, process.env.PYTHONPATH].filter(Boolean).join(delimiter) }
+    : process.env
+  const child = cpSpawn('python3', [spawnScript, ...spawnArgs], { stdio: 'inherit', env })
   child.on('exit', (code) => process.exit(code ?? 0))
   await new Promise(() => {}) // keep alive until child exits
 }
