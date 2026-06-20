@@ -1032,6 +1032,11 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   overflow-y: auto;
   font-size: 14px;
   line-height: 1.6;
+  /* Touch: allow vertical scroll-to-read with momentum, and keep the gesture
+     from bubbling to the canvas behind the overlay. */
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  overscroll-behavior: contain;
 }
 .chat-lightbox-md-body p { margin: 0 0 0.8em; }
 .chat-lightbox-md-body p:last-child { margin-bottom: 0; }

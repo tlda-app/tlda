@@ -72,6 +72,23 @@ const FLEET_API = DATABASE_HTTP
 type ChatTrafficMode = 'normal' | 'quiet'
 type ComposerTrafficFilterMode = 'dm-quiet' | 'dm' | 'agent' | 'custom'
 
+// Bind a handler that fires on both mouse click and a touch tap. On touch a tap
+// on a text element (e.g. the lightbox ✕ or a chip) never synthesizes a `click`,
+// so click-only handlers are dead on iPad; add a movement-guarded pointerup so a
+// genuine tap (not a drag) also fires. Handlers used here are idempotent
+// (overlay.remove()), so a redundant mouse/touch double-call is harmless.
+function addTap(el: Element | null | undefined, fn: (e: Event) => void) {
+  if (!el) return
+  let dx = 0, dy = 0
+  el.addEventListener('click', fn)
+  el.addEventListener('pointerdown', (e: any) => { if (e.pointerType === 'touch') { dx = e.clientX; dy = e.clientY } })
+  el.addEventListener('pointerup', (e: any) => {
+    if (e.pointerType !== 'touch') return
+    if (Math.abs(e.clientX - dx) > 10 || Math.abs(e.clientY - dy) > 10) return
+    fn(e)
+  })
+}
+
 // On touch devices the chat input is voice-only: tapping it focuses the field
 // for dictation, and iOS must NOT raise the on-screen keyboard (it eats half the
 // screen). inputmode="none" reliably suppresses the soft keyboard on a <textarea>
@@ -2262,14 +2279,12 @@ function FleetChatInner({ shape }: { shape: any }) {
         const overlay = document.createElement('div')
         overlay.className = 'chat-lightbox-md'
         overlay.innerHTML = '<div class="chat-lightbox-md-card"><div class="chat-lightbox-md-header"><span></span><button class="chat-lightbox-md-close" title="Close">✕</button></div><div class="chat-lightbox-md-body"></div></div>'
-        overlay.addEventListener('click', (ev) => {
-          if (ev.target === overlay) overlay.remove()
-        })
+        addTap(overlay, (ev) => { if (ev.target === overlay) overlay.remove() })
         const titleEl = overlay.querySelector('.chat-lightbox-md-header span')
         if (titleEl) titleEl.textContent = title
         const bodyEl = overlay.querySelector('.chat-lightbox-md-body')
         if (bodyEl) bodyEl.innerHTML = renderedHtml
-        overlay.querySelector('.chat-lightbox-md-close')?.addEventListener('click', () => overlay.remove())
+        addTap(overlay.querySelector('.chat-lightbox-md-close'), () => overlay.remove())
         document.body.appendChild(overlay)
       }
       if (mdChip.classList.contains('src-chip')) {
@@ -2291,9 +2306,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         const overlay = document.createElement('div')
         overlay.className = 'chat-lightbox-md'
         overlay.innerHTML = '<div class="chat-lightbox-md-card"><div class="chat-lightbox-md-loading">Loading…</div></div>'
-        overlay.addEventListener('click', (ev) => {
-          if (ev.target === overlay) overlay.remove()
-        })
+        addTap(overlay, (ev) => { if (ev.target === overlay) overlay.remove() })
         document.body.appendChild(overlay)
         fetch(fetchUrl)
           .then(r => r.ok ? r.text() : Promise.reject(r.status))
@@ -2311,7 +2324,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             }
             const cardEl = overlay.querySelector('.chat-lightbox-md-card')!
             cardEl.innerHTML = `<div class="chat-lightbox-md-header"><span>${title}</span><button class="chat-lightbox-md-close" title="Close">✕</button></div><div class="chat-lightbox-md-body">${renderedHtml}</div>`
-            cardEl.querySelector('.chat-lightbox-md-close')?.addEventListener('click', () => overlay.remove())
+            addTap(cardEl.querySelector('.chat-lightbox-md-close'), () => overlay.remove())
           })
           .catch(() => {
             const cardEl = overlay.querySelector('.chat-lightbox-md-card')
@@ -4179,11 +4192,34 @@ function FleetChatInner({ shape }: { shape: any }) {
     const el = chatLogEl
     if (!el) return
     const onScroll = (e: Event) => handleScroll(e as any)
-    const onClick = (e: Event) => handleDocLinkClick(e as any)
+    // Touch: a tap on a text chip never synthesizes a `click`, so the
+    // click-delegated chip/link handlers below are dead on iPad. Drive them
+    // from a movement-guarded pointerup for touch instead. The movement guard
+    // means a drag-to-scroll that lifts off on a chip does NOT fire an open;
+    // the timestamp dedupe stops a mouse `click` from double-firing.
+    let downX = 0, downY = 0, lastTouchHandled = 0
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.pointerType !== 'touch') return
+      downX = e.clientX; downY = e.clientY
+    }
+    const onPointerUp = (e: PointerEvent) => {
+      if (e.pointerType !== 'touch') return
+      if (Math.abs(e.clientX - downX) > 10 || Math.abs(e.clientY - downY) > 10) return
+      lastTouchHandled = e.timeStamp
+      handleDocLinkClick(e as any)
+    }
+    const onClick = (e: Event) => {
+      if (e.timeStamp - lastTouchHandled < 700) return
+      handleDocLinkClick(e as any)
+    }
     el.addEventListener('scroll', onScroll, { passive: true })
+    el.addEventListener('pointerdown', onPointerDown)
+    el.addEventListener('pointerup', onPointerUp)
     el.addEventListener('click', onClick)
     return () => {
       el.removeEventListener('scroll', onScroll)
+      el.removeEventListener('pointerdown', onPointerDown)
+      el.removeEventListener('pointerup', onPointerUp)
       el.removeEventListener('click', onClick)
     }
   }, [chatLogEl, handleScroll, handleDocLinkClick])
