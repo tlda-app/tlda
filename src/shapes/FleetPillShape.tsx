@@ -208,7 +208,10 @@ export function dropPillOnTarget(
         text: content || pill?.props?.displayName || '',
         color: 'light-violet',
         autoSize: true,
-        collapsed: true,
+        // Drop the file/markdown chip as an OPEN sticky so the shared file is
+        // readable immediately — a collapsed dot is impossible to uncollapse on
+        // touch (iPad). The user can collapse it afterward if they want.
+        collapsed: false,
         ...(filePath ? { backingFile: filePath } : {}),
       },
       meta: {
@@ -259,7 +262,7 @@ export function dropPillOnTarget(
               text,
               color: 'light-violet',
               autoSize: true,
-              collapsed: true,
+              collapsed: false, // open sticky, not a touch-untappable dot
               backingFile: filePath,
             },
           })
@@ -286,7 +289,7 @@ export function dropPillOnTarget(
               text: `# ${displayName}\n\n(Could not read file)`,
               color: 'light-violet',
               autoSize: true,
-              collapsed: true,
+              collapsed: false, // open sticky, not a touch-untappable dot
             },
           })
         }
