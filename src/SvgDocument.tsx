@@ -65,6 +65,8 @@ import { TaskInboxTool } from './tools/TaskInboxTool'
 import { RibbonEraserTool } from './tools/RibbonEraserTool'
 import { RibbonHighlightTool } from './tools/RibbonHighlightTool'
 import { RibbonLane } from './shapes/RibbonLane'
+import { ProvenancePanel } from './shapes/ProvenancePanel'
+import { ProvenanceInline } from './shapes/ProvenanceInline'
 import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onBuildStatusSignal, onReloadSignal, onViewPinSignal, onCompareSignal, onFileUpdatedSignal, onGraphDrawSignal, type BuildError, type BuildWarning } from './useYjsSync'
 import { useSync } from '@tldraw/sync'
 import { appendToken } from './authToken'
@@ -834,7 +836,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       // button cluster instead.
       Toolbar: () => IS_PHONE ? null : <FormatToolbar format={document.format} />,
       HelperButtons: () => <PenHelperButtons format={document.format} />,
-      InFrontOfTheCanvas: () => <><RibbonLane /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /></>,
+      InFrontOfTheCanvas: () => <><RibbonLane /><ProvenancePanel docName={docName} /><ProvenanceInline docName={docName} /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /></>,
     }),
     [document, roomId]
   )
