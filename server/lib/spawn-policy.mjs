@@ -2,26 +2,62 @@ import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-export const SPAWN_CAPABILITIES = [
-  'read-only',
-  'workspace-write-no-net',
-  'workspace-write',
-  'full-access',
-]
+// Skip's ONE capability vocabulary — four named rungs, low → high. This is the
+// only capability vocabulary tlda owns; there is NO machine vocabulary
+// (workspace-*, *-no-net, full-access) on any tlda surface. The filesystem
+// REGION each rung fences to is PART OF THE NAME (tlda-write = write across all
+// tlda projects), not a second axis. "no-net" is not a rung — net is always on
+// (Skip: "literally every type of agent should be able to use the Internet");
+// it survives only as a never-typed `network:false` modifier. The single foreign
+// string that survives is Codex's own sandbox API value, mapped at the
+// fleet-spawn boundary, not here.
+export const CAPABILITIES = ['read', 'write', 'tlda-write', 'full']
+const CAPABILITY_RANK = new Map(CAPABILITIES.map((cap, idx) => [cap, idx]))
+
+// The fence directory-region each rung fences to. These region names
+// (cwd / tlda-projects / unsandboxed) are the FENCE's own vocabulary for
+// directory scopes — not a second capability vocabulary — and are DERIVED from
+// the rung, never typed by anyone. Because the region follows the rung, the four
+// names form a single total chain: there is no separate filesystem-policy axis.
+export const CAPABILITY_REGION = {
+  read: 'cwd',
+  write: 'cwd',
+  'tlda-write': 'tlda-projects',
+  full: 'unsandboxed',
+}
+
+export const DEFAULT_AGENT_CAPABILITY = 'write'
+export const ROOT_CAPABILITY = 'full'
+
+// Interpret an old-vocabulary (capability, region) pair into a four-name rung —
+// the ONE place legacy machine words are read. This is for PERSISTED data and
+// the operator's fence.json (which may still hold old words); it is NOT a
+// user-facing alias. The region disambiguates the legacy write / tlda-write
+// split (both were `workspace-write`). `workspace-write-no-net` → write: net is
+// now always on, so old no-net rows correctly gain net. Returns a rung or null.
+// Removable once every live agent and fence.json use four names.
+function legacyRung(capability, region) {
+  const raw = String(capability ?? '').trim().toLowerCase()
+  if (CAPABILITY_RANK.has(raw)) return raw // already a four-name rung
+  const reg = region == null ? null : String(region).trim().toLowerCase()
+  if (raw === 'read-only') return 'read'
+  if (raw === 'full-access') return 'full'
+  if (raw === 'workspace-write' || raw === 'workspace-write+net' || raw === 'workspace-write-no-net') {
+    return reg === 'tlda-projects' ? 'tlda-write' : 'write'
+  }
+  return null
+}
 
 // The four named fence configurations are the BUILT-IN DEFAULTS. The operator
 // owns them and may override or add to them in the fence config file
 // (~/.config/tlda/fence.json, key "policies"; or $TLDA_FENCE_CONFIG). That FILE
 // is the source of truth — this map is only the fallback when it is absent, so
-// behavior with no file is identical to before. Net (the internet) is ON for
-// every policy via the `workspace-write` capability: there is NO internet
-// sandbox in the defaults. To net-fence a policy, set its capability to
-// `workspace-write-no-net` in the config file — the one opt-in net restriction.
+// behavior with no file is identical to before.
 const BUILTIN_SPAWN_POLICY_OPTIONS = {
-  read: { capability: 'read-only', policy: 'cwd', category: 'write-scope' },
-  write: { capability: 'workspace-write', policy: 'cwd', category: 'write-scope' },
-  'tlda-write': { capability: 'workspace-write', policy: 'tlda-projects', category: 'write-scope' },
-  full: { capability: 'full-access', policy: 'unsandboxed', category: 'write-scope' },
+  read: { capability: 'read', policy: 'cwd', category: 'write-scope' },
+  write: { capability: 'write', policy: 'cwd', category: 'write-scope' },
+  'tlda-write': { capability: 'tlda-write', policy: 'tlda-projects', category: 'write-scope' },
+  full: { capability: 'full', policy: 'unsandboxed', category: 'write-scope' },
 }
 
 function loadFenceConfigPolicies() {
@@ -51,35 +87,19 @@ function buildSpawnPolicyOptions() {
   for (const [name, def] of Object.entries(BUILTIN_SPAWN_POLICY_OPTIONS)) merged[name] = { ...def }
   for (const [name, def] of Object.entries(loadFenceConfigPolicies())) {
     if (!def || typeof def !== 'object' || Array.isArray(def)) continue
-    const base = merged[name] || { category: 'write-scope' }
-    merged[name] = {
-      capability: def.capability ?? base.capability,
-      // `writeScope` is the operator-facing name for the filesystem policy.
-      policy: def.policy ?? def.writeScope ?? base.policy,
-      category: def.category ?? base.category ?? 'write-scope',
-    }
+    // The operator's fence.json may still describe a policy in OLD vocabulary
+    // (capability `full-access`, writeScope `unsandboxed`). Normalize it to a
+    // four-name rung so a stale config can't reintroduce machine vocabulary; the
+    // region is derived from the rung, never from the stale writeScope.
+    const rung = legacyRung(def.capability, def.policy ?? def.writeScope)
+      || (CAPABILITY_RANK.has(name) ? name : merged[name]?.capability)
+    if (!rung || !CAPABILITY_RANK.has(rung)) continue
+    merged[name] = { capability: rung, policy: CAPABILITY_REGION[rung], category: 'write-scope' }
   }
   return merged
 }
 
 export const SPAWN_POLICY_OPTIONS = buildSpawnPolicyOptions()
-
-const CAPABILITY_RANK = new Map(SPAWN_CAPABILITIES.map((cap, idx) => [cap, idx]))
-const POLICY_RANK = new Map([
-  ['cwd', 0],
-  ['tlda-projects', 1],
-  ['unsandboxed', 2],
-])
-
-export const DEFAULT_AGENT_CAPABILITY = 'workspace-write'
-export const ROOT_CAPABILITY = 'full-access'
-
-const CAPABILITY_DEFAULT_POLICY = {
-  'read-only': 'cwd',
-  'workspace-write-no-net': 'cwd',
-  'workspace-write': 'cwd',
-  'full-access': 'unsandboxed',
-}
 
 export function resolveSpawnPolicyOption(value) {
   if (value == null || value === '') return null
@@ -94,20 +114,18 @@ export function normalizeCapability(value, fallback = null) {
     return normalizeCapability(fallback)
   }
   const raw = String(value).trim().toLowerCase()
-  // Migration tolerance: agents spawned before the `+net` rename carry
-  // `workspace-write+net` in their stored metadata. Net is the default now, so
-  // the suffix is meaningless — strip it to the current name. Remove this once
-  // no live agent's metadata still holds the old spelling (they update on
-  // respawn). Without it, callerCapability() throws on those agents and they
-  // can't spawn children.
-  const migrated = raw === 'workspace-write+net' ? 'workspace-write' : raw
-  const cap = resolveSpawnPolicyOption(migrated)?.capability || migrated
+  const cap = resolveSpawnPolicyOption(raw)?.capability || legacyRung(raw, null) || raw
   if (!CAPABILITY_RANK.has(cap)) {
     throw new Error(`unknown spawn capability "${value}"`)
   }
   return cap
 }
 
+// Normalize any input into a coherent spawn policy. The region is DERIVED from
+// the rung (CAPABILITY_REGION), so the result is always coherent — a custom
+// fence.json option may override the region, but the four built-in rungs never
+// disagree with their region. `network:false` (the only modifier) is carried
+// through when explicitly present; otherwise net is on.
 export function normalizeSpawnPolicy(value, fallback = null) {
   if (value == null || value === '') {
     if (fallback == null) return null
@@ -116,14 +134,9 @@ export function normalizeSpawnPolicy(value, fallback = null) {
 
   if (typeof value === 'string') {
     const option = resolveSpawnPolicyOption(value)
-    if (option) return normalizeSpawnPolicy(option)
+    if (option) return { name: option.name, capability: option.capability, policy: option.policy, category: 'write-scope' }
     const capability = normalizeCapability(value)
-    return {
-      name: null,
-      capability,
-      policy: CAPABILITY_DEFAULT_POLICY[capability],
-      category: 'write-scope',
-    }
+    return { name: capability, capability, policy: CAPABILITY_REGION[capability], category: 'write-scope' }
   }
 
   if (typeof value !== 'object' || Array.isArray(value)) {
@@ -132,16 +145,13 @@ export function normalizeSpawnPolicy(value, fallback = null) {
 
   const option = value.name ? resolveSpawnPolicyOption(value.name) : null
   const capability = normalizeCapability(value.capability || option?.capability)
-  const policy = String(value.policy || option?.policy || CAPABILITY_DEFAULT_POLICY[capability] || '').trim().toLowerCase()
-  if (!POLICY_RANK.has(policy)) {
-    throw new Error(`unknown spawn filesystem policy "${value.policy}"`)
-  }
+  const policy = String(option?.policy || CAPABILITY_REGION[capability] || '').trim().toLowerCase()
   return {
-    name: option?.name || value.name || null,
+    name: option?.name || capability,
     capability,
     policy,
-    category: value.category || option?.category || 'write-scope',
-    ...(Object.hasOwn(value, 'network') ? { network: !!value.network } : {}),
+    category: 'write-scope',
+    ...(value.network === false ? { network: false } : {}),
   }
 }
 
@@ -151,40 +161,34 @@ export function capabilityLte(left, right) {
   return CAPABILITY_RANK.get(a) <= CAPABILITY_RANK.get(b)
 }
 
+// One axis: a policy is ≤ another iff its rung is ≤ the other's. The region
+// follows the rung, so there is no separate filesystem-policy comparison.
 export function spawnPolicyLte(left, right) {
-  const a = normalizeSpawnPolicy(left)
-  const b = normalizeSpawnPolicy(right)
-  if (!capabilityLte(a.capability, b.capability)) return false
-  return POLICY_RANK.get(a.policy) <= POLICY_RANK.get(b.policy)
+  return capabilityLte(normalizeSpawnPolicy(left).capability, normalizeSpawnPolicy(right).capability)
 }
 
-// The built-in friendly name (read / write / tlda-write / full) for a
-// (capability, policy) point, or null if a clamp landed between named rungs.
-// Keeps a clamped grant's `name` meaningful so it still travels as a
-// capability-derived spawn rather than an explicit fence (see buildFleetSpawnArgs).
-function nameForPolicy(capability, policy) {
-  for (const [name, def] of Object.entries(SPAWN_POLICY_OPTIONS)) {
-    if (def.capability === capability && def.policy === policy) return name
-  }
-  return null
-}
-
-// The greatest-lower-bound (meet) of a set of spawn policies: componentwise min
-// over the capability ladder AND the filesystem-policy ladder. The result is
-// always ≤ every input on both axes, so it can never confer more than any bound
-// allows. This is how a spawn CLAMPS instead of refusing — Skip's rule: "Every
-// agent should be able to spawn agents with no more privileges than they have."
-// A spawn never fails on capability grounds; it hands down the lower of the
-// bounds. (Every real bound is a coherent rung, so the meet stays coherent.)
+// The greatest-lower-bound (meet) of a set of spawn policies: the min rung over
+// the single capability ladder (the region follows it). The result is always ≤
+// every input, so it can never confer more than any bound allows. This is how a
+// spawn CLAMPS instead of refusing — Skip's rule: "Every agent should be able to
+// spawn agents with no more privileges than they have." A spawn never fails on
+// capability grounds; it hands down the lower of the bounds. If any bound is
+// net-restricted, the child is too.
 export function meetSpawnPolicies(policies) {
   const norm = policies.map((p) => normalizeSpawnPolicy(p))
   let capability = norm[0].capability
-  let policy = norm[0].policy
+  let network = norm[0].network === false ? false : undefined
   for (const p of norm.slice(1)) {
     if (CAPABILITY_RANK.get(p.capability) < CAPABILITY_RANK.get(capability)) capability = p.capability
-    if (POLICY_RANK.get(p.policy) < POLICY_RANK.get(policy)) policy = p.policy
+    if (p.network === false) network = false
   }
-  return { name: nameForPolicy(capability, policy), capability, policy, category: 'write-scope' }
+  return {
+    name: capability,
+    capability,
+    policy: CAPABILITY_REGION[capability],
+    category: 'write-scope',
+    ...(network === false ? { network: false } : {}),
+  }
 }
 
 // Harness inference. The harness (claude / codex / goose) is plumbing — HOW a
@@ -210,17 +214,18 @@ export function modelFamily({ model, kind } = {}) {
 // at different tiers, which the old harness-family lumping got wrong.
 //
 //   full     — closed frontier models we trust fully (claude, gpt/openai):
-//              up to full-access / unsandboxed.
-//   elevated — trusted-but-bounded open models (minimax): write across all tlda
-//              projects + net; raisable to full per-agent by the operator.
+//              up to full / unsandboxed.
+//   elevated — trusted-but-bounded open models (minimax): tlda-write (write
+//              across all tlda projects); raisable to full per-agent by the
+//              operator.
 //   narrow   — untrusted open models (deepseek, qwen, kimi, glm) and any
-//              unrecognized model: write only their own cwd project + net, never
+//              unrecognized model: write only their own cwd project, never
 //              across projects and never machine-level. Safe by construction —
 //              a tlda project is versioned on build, so any bad write recovers.
 export const MODEL_TRUST_TIERS = {
-  full: { capability: 'full-access', policy: 'unsandboxed' },
-  elevated: { capability: 'workspace-write', policy: 'tlda-projects' },
-  narrow: { capability: 'workspace-write', policy: 'cwd' },
+  full: { capability: 'full', policy: 'unsandboxed' },
+  elevated: { capability: 'tlda-write', policy: 'tlda-projects' },
+  narrow: { capability: 'write', policy: 'cwd' },
 }
 
 const CLAUDE_MODEL_NAMES = new Set(['opus', 'opus45', 'opus46', 'opus47', 'opus48', 'fable', 'fable5', 'sonnet', 'haiku'])
@@ -282,19 +287,19 @@ export function modelSpawnCeiling(config = {}, { model, kind, trustOverride } = 
 // be trusted with more. The profile sets the LANE (where you may write); the
 // model tier sets the TRUST (how high the operator could raise you).
 //
-//   ops       — machine-level (the operator's host-work project): full-access.
+//   ops       — machine-level (the operator's host-work project): full.
 //   app       — dev + tester: code, git, dev-server, browser, network, all
 //               inside the worktree (cwd); the fence lease widens cwd to include
 //               the dev caches so the job is never blocked.
-//   math      — write across all tlda/math projects.
-//   untrusted — write only its own project (cwd) + net; never across projects,
-//               never machine-level. Same lane as app; the trust difference is
-//               carried by the model ceiling, not the lane.
+//   math      — write across all tlda/math projects (tlda-write).
+//   untrusted — write only its own project (cwd); never across projects, never
+//               machine-level. Same lane as app; the trust difference is carried
+//               by the model ceiling, not the lane.
 export const SPAWN_PROFILES = {
-  ops: { capability: 'full-access', policy: 'unsandboxed' },
-  app: { capability: 'workspace-write', policy: 'cwd' },
-  math: { capability: 'workspace-write', policy: 'tlda-projects' },
-  untrusted: { capability: 'workspace-write', policy: 'cwd' },
+  ops: { capability: 'full', policy: 'unsandboxed' },
+  app: { capability: 'write', policy: 'cwd' },
+  math: { capability: 'tlda-write', policy: 'tlda-projects' },
+  untrusted: { capability: 'write', policy: 'cwd' },
 }
 
 export const DEFAULT_SPAWN_PROFILE = 'app'
@@ -320,32 +325,67 @@ export function resolveProjectProfile(config = {}, { doc, project } = {}) {
 }
 
 // The operator (human, or the server owner identity) is root: never fenced, can
-// confer any capability up to and including destructive full-access, and is the
-// ONLY caller permitted to raise a model's trust ceiling per-agent. Every agent,
-// no matter how trusted its model, resolves here as non-operator — so an agent
-// can never self-escalate.
+// confer any capability up to and including destructive full, and is the ONLY
+// caller permitted to raise a model's trust ceiling per-agent. Every agent, no
+// matter how trusted its model, resolves here as non-operator — so an agent can
+// never self-escalate.
 export function isOperator(caller, { serverOwnerId } = {}) {
   return !!(caller?.human || (serverOwnerId && caller?.id === serverOwnerId))
 }
 
-export function callerCapability(caller, { serverOwnerId } = {}) {
-  if (isOperator(caller, { serverOwnerId })) return ROOT_CAPABILITY
-  const policy = caller?.metadata?.spawnPolicy
-  if (typeof policy === 'string') return normalizeCapability(policy)
-  return normalizeCapability(policy?.capability, DEFAULT_AGENT_CAPABILITY)
+// Interpret a stored spawnPolicy blob into one of the four rungs. The conferral
+// level is the stored CAPABILITY, not the stored region: the register handler
+// used to shallow-merge spawnPolicy across writers and the global fence-off
+// stamped `unsandboxed` onto many rows, corrupting the REGION — but the
+// capability field still reflects what the agent was spawned with. So we honor
+// the capability and DERIVE the region (CAPABILITY_REGION), which both (a)
+// repairs the corrupted region by tightening it back to the rung's real scope,
+// and (b) never confers above the stored rung — no auto-promotion on a guess.
+//
+// The one place the stored region carries meaning is the legacy write /
+// tlda-write split: both were `workspace-write`, distinguished only by region
+// (`cwd` vs `tlda-projects`). So for a legacy workspace-write blob the region
+// `tlda-projects` (and only that) means tlda-write; any other region (cwd, the
+// corrupted unsandboxed, or absent) means plain write. Returns a rung, or null
+// for an unrecognized capability string.
+//
+// Worked outcomes on the live Fly population: mathchat2 `{read-only, unsandboxed}`
+// → `read` (honor read; the corrupted region is ignored) — Skip's call: a
+// corrupted math agent stays read under the code default and is promoted to
+// write only by the operator-gated sweep. The ~60 `{workspace-write*, unsandboxed}`
+// fence-off rows → `write` (honor write; region repaired to cwd) — NOT demoted
+// to read. A legacy `{workspace-write, tlda-projects}` → `tlda-write` (scope
+// preserved).
+function storedConferralRung(stored) {
+  const blob = typeof stored === 'string' ? { capability: stored } : stored
+  if (!blob || typeof blob !== 'object' || blob.capability == null) return null
+  return legacyRung(blob.capability, blob.policy)
 }
 
+// Conferral resolution. By what the agent's stored spawnPolicy is:
+//   • absent             → DEFAULT_AGENT_CAPABILITY (write). The historical
+//                          default for the ~495 never-assigned agents; unchanged.
+//   • recognized rung    → honored (read reviewers stay read; write agents stay
+//                          write; tlda scope preserved; corrupted region repaired).
+//   • unrecognized blob  → `read`. Never trusted to confer up; the correct
+//                          capability is restored only by the operator-gated,
+//                          role-aware re-projection sweep (Skip's call).
 export function callerSpawnPolicy(caller, { serverOwnerId } = {}) {
   if (isOperator(caller, { serverOwnerId })) return normalizeSpawnPolicy(ROOT_CAPABILITY)
-  const policy = caller?.metadata?.spawnPolicy
-  return normalizeSpawnPolicy(policy, DEFAULT_AGENT_CAPABILITY)
+  const stored = caller?.metadata?.spawnPolicy
+  if (stored == null) return normalizeSpawnPolicy(DEFAULT_AGENT_CAPABILITY)
+  return normalizeSpawnPolicy(storedConferralRung(stored) || 'read')
+}
+
+export function callerCapability(caller, { serverOwnerId } = {}) {
+  return callerSpawnPolicy(caller, { serverOwnerId }).capability
 }
 
 export function projectCapabilityToMode(capability, explicitMode = null) {
   const cap = normalizeCapability(capability)
   if (explicitMode) return explicitMode
-  if (cap === 'read-only') return 'plan'
-  if (cap === 'full-access') return 'auto'
+  if (cap === 'read') return 'plan'
+  if (cap === 'full') return 'auto'
   return 'default'
 }
 
@@ -354,7 +394,8 @@ export function authorizeSpawn({ caller, requestedCapability, model, kind, trust
   // A per-agent trust override raises (or sets) the model ceiling for this one
   // spawn — the operator-only exception that lets a trusted minimax sit above
   // its model default. Only the operator may supply it; an agent presenting one
-  // is trying to self-escalate, which is refused outright.
+  // is trying to self-escalate, which is refused outright. This is the ONLY
+  // refusal authorizeSpawn ever makes.
   if (trustOverride != null && trustOverride !== '' && !isOperator(caller, { serverOwnerId })) {
     const err = new Error('trust override is operator-only; agents cannot raise their own ceiling')
     err.code = 'SPAWN_TRUST_OVERRIDE_FORBIDDEN'
@@ -367,9 +408,8 @@ export function authorizeSpawn({ caller, requestedCapability, model, kind, trust
   // the meet (greatest lower bound) of what was asked for, the caller's own
   // authority, and the model's trust ceiling — clamp down and hand it off, never
   // refuse. A `full` agent spawning a deepseek yields a deepseek-narrow child
-  // (the model ceiling clamps it), not an error — which is exactly "lock down
-  // dangerous agents" expressed as a clamp. The only refusal left is the
-  // self-escalation guard above (an agent presenting a trust override).
+  // (the model ceiling clamps it), not an error — exactly "lock down dangerous
+  // agents" expressed as a clamp.
   const grantedPolicy = meetSpawnPolicies([requestedPolicy, callerPolicy, ceilingPolicy])
   return {
     requestedCapability: grantedPolicy.capability,
