@@ -438,7 +438,12 @@ export function renderMarkdown(html, extraMacros) {
     }
     if (_inTag) return segment
     return segment.replace(/\bhttps?:\/\/[^\s<>"')\]]+/g, url => {
-      return `<a href="${esc(url)}" target="_blank" class="chat-link">${esc(url)}</a>`
+      // `url` is captured from already-rendered HTML, so marked has ALREADY
+      // HTML-escaped it once (e.g. a query string's `&` is `&amp;`). The regex
+      // excludes <>"' so it's safe in both an attribute and text. Re-`esc()`ing
+      // here double-escaped it (`&amp;` -> `&amp;amp;`), giving a broken href and
+      // a visible `&amp;` in the link. Use it as-is.
+      return `<a href="${url}" target="_blank" class="chat-link">${url}</a>`
     })
   })
 
