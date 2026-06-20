@@ -2047,10 +2047,27 @@ async function rpcListSessions() {
 }
 
 async function rpcCheckAlive({ tmux_session }) {
-  // Read from the cache populated by checkAgentLiveness every 30s.
-  // Zero spawns per call — the periodic poll handles the expensive pgrep work.
+  // Liveness for the WAKE path. A cache miss must NOT default to "dead": the
+  // server respawns on dead, and respawning a LIVE agent injects register +
+  // "continue from where you left off" — the costly, user-visible error. Cache
+  // misses are routine (cold cache for ~30s after any daemon bounce; a session
+  // the sweep hasn't reached yet), so defaulting them to dead made every
+  // interaction in that window respawn its (live) target. Instead, on a miss do
+  // one cheap on-demand existence check and only report dead when we actually
+  // confirm the session is gone. Uncertain ≠ dead.
   if (!tmux_session) return { alive: false }
-  return { alive: _alivenessCache.get(tmux_session) ?? false }
+  const cached = _alivenessCache.get(tmux_session)
+  if (cached !== undefined) return { alive: cached }
+  try {
+    const r = await rpcListSessions()
+    const alive = (r.sessions || []).includes(tmux_session)
+    _alivenessCache.set(tmux_session, alive)
+    return { alive }
+  } catch {
+    // Couldn't probe tmux — can't confirm death. Don't trigger a respawn on a
+    // guess; a missed wake self-corrects on the next message.
+    return { alive: true }
+  }
 }
 
 async function rpcKick({ agent_id }) {
