@@ -1564,8 +1564,11 @@ function applyNetworkModifier(policyOption) {
   if (policyOption.name === 'full') {
     throw new Error('--no-net cannot modify full; full is unfenced operator access.')
   }
-  const capability = policyOption.name === 'read' ? policyOption.capability : 'workspace-write-no-net'
-  return { ...policyOption, capability, network: false }
+  // no-net is a MODIFIER, never a capability (Skip: "no-net should be a modifier,
+  // it's not a type"). The rung name (read/write/tlda-write) is unchanged; the
+  // restriction rides as network:false. Net is on for everyone by default, so
+  // this flag is the never-used opt-out.
+  return { ...policyOption, network: false }
 }
 
 function normalizeAgentMetadata(meta) {

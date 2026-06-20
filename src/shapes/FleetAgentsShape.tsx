@@ -298,10 +298,18 @@ function formatModel(model: string | null | undefined): string {
 // Surface the agent's capability / fence in the panel (topic-1: capability
 // discoverable in the agent panel). Derived from metadata.spawnPolicy, which the
 // server stamps at spawn (the resolved capability + filesystem policy).
+// Skip's four names are the only capability labels shown in the UI. Net is
+// always on, so there is no "nonet" capability to surface. Legacy machine words
+// (still in pre-rename agents' metadata until they respawn) map to the four names.
 const CAPABILITY_LABELS: Record<string, string> = {
+  read: 'read',
+  write: 'write',
+  'tlda-write': 'tlda-write',
+  full: 'full',
   'read-only': 'read',
-  'workspace-write-no-net': 'write·nonet',
   'workspace-write': 'write',
+  'workspace-write+net': 'write',
+  'workspace-write-no-net': 'write',
   'full-access': 'full',
 }
 const POLICY_LABELS: Record<string, string> = {

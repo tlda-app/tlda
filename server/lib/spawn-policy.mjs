@@ -381,6 +381,23 @@ export function callerCapability(caller, { serverOwnerId } = {}) {
   return callerSpawnPolicy(caller, { serverOwnerId }).capability
 }
 
+// Coerce a (possibly corrupted or legacy) stored spawnPolicy blob into a
+// coherent four-name rung policy for ATOMIC persistence. The register handler
+// used to shallow-merge spawnPolicy fields across writers, minting incoherent
+// blobs like {read-only, unsandboxed}; persisting the coherent rung instead
+// means no new corruption can form. This repairs the REPRESENTATION only — the
+// conferral level (the rung) is unchanged, so it never promotes or demotes an
+// agent (mathchat2's {read-only, unsandboxed} stores as {read, cwd}, still read;
+// a real change of capability is the operator-gated sweep, not this). Returns
+// the coherent policy, or null when there is nothing storable.
+export function coherentSpawnPolicy(stored) {
+  if (stored == null) return null
+  const rung = storedConferralRung(stored)
+  if (!rung) return null
+  const netOff = typeof stored === 'object' && !Array.isArray(stored) && stored.network === false
+  return { ...normalizeSpawnPolicy(rung), ...(netOff ? { network: false } : {}) }
+}
+
 export function projectCapabilityToMode(capability, explicitMode = null) {
   const cap = normalizeCapability(capability)
   if (explicitMode) return explicitMode

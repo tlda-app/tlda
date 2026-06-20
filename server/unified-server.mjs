@@ -54,7 +54,7 @@ import * as tldaFeedback from './lib/tlda-feedback.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
 import { FleetStore } from './lib/fleet-store.mjs'
 import { createFleetRouter } from './routes/fleet.mjs'
-import { authorizeSpawn, projectCapabilityToMode, resolveProjectProfile } from './lib/spawn-policy.mjs'
+import { authorizeSpawn, coherentSpawnPolicy, projectCapabilityToMode, resolveProjectProfile } from './lib/spawn-policy.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -2664,6 +2664,21 @@ async function handleFleetWsMessage(ws, msg) {
         ? { ...(existing?.metadata || {}), ...(metadata || {}), ...(kind ? { kind } : {}) }
         : null,
       machine_id: machine_id || existing?.machine_id || null,
+    }
+    // Persist spawnPolicy ATOMICALLY as a coherent four-name rung. The shallow
+    // metadata merge above is what let partial spawnPolicy writes corrupt the
+    // blob across re-registrations (e.g. mathchat2's {read-only, unsandboxed});
+    // coercing to a coherent rung here means no new corruption can form. This is
+    // representation-only — the conferral level (the rung) is unchanged, so it
+    // never re-grants (a real capability change is the operator-gated sweep).
+    if (agent.metadata?.spawnPolicy) {
+      const coherent = coherentSpawnPolicy(agent.metadata.spawnPolicy)
+      if (coherent) {
+        agent.metadata = { ...agent.metadata, spawnPolicy: coherent }
+      } else {
+        const { spawnPolicy: _drop, ...rest } = agent.metadata
+        agent.metadata = rest
+      }
     }
     if (session_id && !agent.session_ids.includes(session_id)) {
       agent.session_ids = [...(agent.session_ids || []), session_id].slice(-10)
