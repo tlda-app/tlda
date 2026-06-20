@@ -357,6 +357,16 @@ const customShapeSchemas = {
       sequence: [],
     }),
   },
+  'usage-meter': {
+    props: {
+      w: T.number,
+      h: T.number,
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.usage-meter',
+      sequence: [],
+    }),
+  },
 }
 
 const schema = createTLSchema({

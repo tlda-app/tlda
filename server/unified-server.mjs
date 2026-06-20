@@ -41,6 +41,7 @@ const { homedir, hostname } = os
 import { spawn as cpSpawn } from 'child_process'
 import { lookup as mimeLookup } from 'mime-types'
 import { DEFAULT_PORT, hasTls, getManagedBots, loadConfig, resolveConfig } from '../shared/config.mjs'
+import { normalizeUsageStatus } from '../shared/usage-status.mjs'
 import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
 import { labelsForAgent, parseFilter, evalExpr, evalExprDirectional } from '../shared/fleet-labels.mjs'
 import { phaseFromName, baseName, PHASES } from '../shared/lineage-name.mjs'
@@ -1290,6 +1291,17 @@ app.post('/api/log', (req, res) => {
 
 app.get('/api/reaper/status', requireRead, (req, res) => {
   res.json(_lastReaperStatus || { error: 'no data yet' })
+})
+
+// Sanitized provider/account usage status for the usage-meter shape. Same data
+// as the `usage_status` MCP tool — manual/static config only, no scraping, no
+// tokens. The shape polls this; missing config returns an empty accounts list.
+app.get('/api/usage-status', requireRead, (req, res) => {
+  try {
+    res.json(normalizeUsageStatus(loadConfig()))
+  } catch (e) {
+    res.status(500).json({ error: `usage-status failed: ${e.message}` })
+  }
 })
 
 app.post('/api/reaper/kill', requireRead, async (req, res) => {
