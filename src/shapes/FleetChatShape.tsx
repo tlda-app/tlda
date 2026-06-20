@@ -618,6 +618,12 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
             onFocus={(e) => { stopEventPropagation(e); registerVoice(e.currentTarget) }}
             onBlur={(e) => { clearVoiceTarget(e.currentTarget); e.currentTarget.style.boxShadow = ''; setLightboxed(false) }}
             placeholder="type or speak a command…"
+            // Suppress the iOS soft keyboard on touch (same as the main composer
+            // ChatComposer.tsx + math notes): the field is voice/dictation-first,
+            // and raising the on-screen keyboard shifts visualViewport, which
+            // drags this portaled hover pane out of place (Skip: "the onscreen
+            // keyboard drags the terminal hover somewhere else").
+            inputMode={_isTouchDevice ? 'none' : undefined}
             spellCheck={false}
             autoComplete="off"
             style={{
