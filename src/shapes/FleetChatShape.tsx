@@ -3686,8 +3686,28 @@ function FleetChatInner({ shape }: { shape: any }) {
       }
     }
 
+    // Touch/stylus double-TAP parity: on touch there are no clicks, so the
+    // double-click-to-unquote above is dead. Route a movement-guarded touch/pen
+    // pointerup through the SAME handler — two taps on the same <code> within the
+    // window trigger the unquote exactly like a double-click. Mouse keeps its
+    // native double-click (touch/pen only here, so no double-count).
+    let uqDownX = 0, uqDownY = 0
+    const onUqDown = (e: PointerEvent) => {
+      if (e.pointerType === 'touch' || e.pointerType === 'pen') { uqDownX = e.clientX; uqDownY = e.clientY }
+    }
+    const onUqUp = (e: PointerEvent) => {
+      if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return
+      if (Math.abs(e.clientX - uqDownX) > 16 || Math.abs(e.clientY - uqDownY) > 16) return
+      onClick(e)
+    }
+    logEl.addEventListener('pointerdown', onUqDown)
+    logEl.addEventListener('pointerup', onUqUp)
     logEl.addEventListener('click', onClick)
-    return () => logEl.removeEventListener('click', onClick)
+    return () => {
+      logEl.removeEventListener('pointerdown', onUqDown)
+      logEl.removeEventListener('pointerup', onUqUp)
+      logEl.removeEventListener('click', onClick)
+    }
   }, [chatLogEl])
 
   // Track clicks to determine which fleet chat shape the user is interacting with.
@@ -4366,6 +4386,10 @@ function FleetChatInner({ shape }: { shape: any }) {
     // listener can intercept. We scope to this chat by checking if the target
     // is inside our logEl.
 
+    // The element a drag-claim started on — so a no-move TAP on a draggable
+    // chip/link can re-fire its click on touch/stylus (see onPointerUp).
+    let downTargetEl: HTMLElement | null = null
+
     function onPointerDown(e: PointerEvent) {
       const target = e.target as HTMLElement
       if (!logEl!.contains(target)) return
@@ -4647,6 +4671,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       e.stopImmediatePropagation()
       e.preventDefault()
       dragRef.current = drag
+      downTargetEl = target
 
       // Use shared drag coordinator instead of per-drag capture listeners
       dragCoordinator.claim(onPointerMove, onPointerUp)
@@ -4794,7 +4819,23 @@ function FleetChatInner({ shape }: { shape: any }) {
       const shapeEl = logEl!.closest('.fleet-shape') as HTMLElement | null
       if (shapeEl) shapeEl.style.boxShadow = ''
       dragRef.current = null
-      if (!drag.started || !drag.pillId) return
+      if (!drag.started) {
+        // No drag happened = a TAP on a draggable chip/link. This handler claimed
+        // the pointer (capture-phase stopImmediatePropagation on pointerdown), so
+        // the element's own click handler never ran. On mouse the browser still
+        // synthesizes a `click` afterward (the chip opens); on touch/stylus it
+        // does NOT, so the tap was dead. Re-fire the element's click so a tap does
+        // exactly what a mouse click does — same action, just the touch pointing
+        // device (Skip's pointer-device-parity rule). Touch/pen only: mouse keeps
+        // its native click, so no double-open.
+        if ((e.pointerType === 'touch' || e.pointerType === 'pen') && downTargetEl) {
+          downTargetEl.click()
+        }
+        downTargetEl = null
+        return
+      }
+      downTargetEl = null
+      if (!drag.pillId) return
 
       const onMain = !!(drag as any)._onMain
       const mainEditor = (window as any).__tldraw_editor__ as any
