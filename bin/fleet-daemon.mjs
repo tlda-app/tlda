@@ -2364,24 +2364,22 @@ async function rpcSpawn({ name, model, kind, cwd, doc, respawn, refresh, effort,
         error: `spawn launcher returned but tmux session is not usable: ${detail}`,
       }
     }
-    const startupFailure = await probeSpawnStartupFailure({
+    // Fire the startup-failure probe DETACHED, don't block the reply on it.
+    // The probe self-reports any failure via a `spawn-startup-failed` message,
+    // which the server handles independently of this RPC's result (see
+    // unified-server.mjs `spawn-startup-failed` handler). Awaiting it here only
+    // added its fixed STARTUP_FAILURE_PROBE_MS delay to the round-trip, pushing
+    // spawns past the caller's 10s RPC/WS window — a false-fail that the caller
+    // then retried into duplicate agents, even though the spawn had succeeded.
+    // Reply as soon as the tmux session is verified; surface failures async.
+    probeSpawnStartupFailure({
       agentName,
       agent_id: launched.agent_id,
       tmux_session: launched.tmux_session,
       harness: kind || null,
       model: model || null,
       respawn,
-    })
-    if (startupFailure) {
-      return {
-        ok: false,
-        name: agentName,
-        agent_id: launched.agent_id,
-        tmux_session: launched.tmux_session,
-        error: `spawn startup failed: ${startupFailure.reason || startupFailure.code || 'startup error'}`,
-        startupFailure,
-      }
-    }
+    }).catch(e => log.warn(`detached startup-failure probe errored for ${agentName}: ${e.message}`))
     return { ok: true, name: agentName, agent_id: launched.agent_id, tmux_session: launched.tmux_session }
   } catch (e) {
     const detail = ((e.stderr || e.message || '').trim().split('\n').filter(Boolean).pop()) || 'unknown error'
