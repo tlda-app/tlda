@@ -17,6 +17,7 @@ import { emitShapeChangedDebounced } from './webhooks.mjs'
 import { mathNoteProps } from '../../shared/shapes/math-note-schema.mjs'
 import { outlineProps } from '../../shared/shapes/outline-schema.mjs'
 import { graphNodeProps, graphExplainProps } from '../../shared/shapes/graph-node-schema.mjs'
+import { SIGNAL_REPLAY_WINDOWS } from '../../shared/signals.ts'
 
 // --- Custom shape schemas (prop validators only, no React) ---
 // Props that must mirror the client shape util exactly are imported from
@@ -810,17 +811,6 @@ export function onSignal(docName, callback) {
   return () => signalListeners.get(docName)?.delete(callback)
 }
 
-/** Signal keys and their replay windows (ms). Only these get replayed on connect. */
-const REPLAY_SIGNALS = {
-  'signal:build-status': 600_000,       // 10 min
-  'signal:build-progress': 300_000,     // 5 min
-  'signal:agent-heartbeat': 30_000,     // 30s
-  'signal:diff-review': 86_400_000,     // 24h
-  'signal:diff-summaries': 86_400_000,  // 24h
-  'signal:viewport': 300_000,           // 5 min (for watcher priority rebuild)
-  'signal:presenter': 600_000,          // 10 min — who's presenting
-}
-
 /**
  * Send cached signals to a newly connected session.
  * Call right after handleSocketConnect.
@@ -834,7 +824,7 @@ export function replayCachedSignals(docName, sessionId) {
   if (!room) return
 
   const now = Date.now()
-  for (const [key, maxAge] of Object.entries(REPLAY_SIGNALS)) {
+  for (const [key, maxAge] of Object.entries(SIGNAL_REPLAY_WINDOWS)) {
     const cached = cache.get(key)
     if (cached && (now - (cached.timestamp || 0)) < maxAge) {
       try {

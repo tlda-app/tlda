@@ -4,6 +4,7 @@
 // Shape sync is handled by @tldraw/sync (see SvgDocument.tsx).
 
 import type { TLRecord } from 'tldraw'
+import { getSignalReplayMs } from '../shared/signals.ts'
 import { SignalBus } from './signalBus'
 
 // --- Module-level connection state ---
@@ -50,6 +51,16 @@ export function getViewerId() { return localViewerId }
 
 const bus = new SignalBus()
 
+function replayConfig(key: string): Pick<SignalDefWithTimestamp, 'initBehavior' | 'recentMs'> {
+  const replayMs = getSignalReplayMs(key)
+  return replayMs == null ? {} : { initBehavior: 'fire-if-recent', recentMs: replayMs }
+}
+
+type SignalDefWithTimestamp = {
+  initBehavior?: 'discard' | 'fire-if-recent'
+  recentMs?: number
+}
+
 /** Dispatch a signal directly (for custom messages from @tldraw/sync connection) */
 export function dispatchSignalDirect(key: string, data: Record<string, unknown>) {
   signalCache.set(key, data)
@@ -60,8 +71,7 @@ type ReloadSignal = { type: 'partial', pages: number[], timestamp: number }
   | { type: 'full', timestamp: number }
 const reloadHandle = bus.register<ReloadSignal>({
   key: 'signal:reload',
-  initBehavior: 'fire-if-recent',
-  recentMs: 1_800_000,  // replay last reload signal if < 30 min old (covers new-tab after build)
+  ...replayConfig('signal:reload'),
 })
 export const onReloadSignal = reloadHandle.on
 
@@ -116,8 +126,7 @@ export type ScreenshotRequest = {
 }
 const screenshotHandle = bus.register<ScreenshotRequest>({
   key: 'signal:screenshot-request',
-  initBehavior: 'fire-if-recent',
-  recentMs: 10000,
+  ...replayConfig('signal:screenshot-request'),
 })
 export const onScreenshotRequest = screenshotHandle.on
 
@@ -128,8 +137,7 @@ export type ScreenshotBoundsSignal = {
 }
 const screenshotBoundsHandle = bus.register<ScreenshotBoundsSignal>({
   key: 'signal:screenshot-bounds',
-  initBehavior: 'fire-if-recent',
-  recentMs: 5000,
+  ...replayConfig('signal:screenshot-bounds'),
 })
 export const onScreenshotBounds = screenshotBoundsHandle.on
 
@@ -161,8 +169,7 @@ export type BuildStatusSignal = {
 }
 const buildStatusHandle = bus.register<BuildStatusSignal>({
   key: 'signal:build-status',
-  initBehavior: 'fire-if-recent',
-  recentMs: 600_000,  // show errors from last 10 min on reconnect
+  ...replayConfig('signal:build-status'),
 })
 export const onBuildStatusSignal = buildStatusHandle.on
 
@@ -173,8 +180,7 @@ export type BuildProgressSignal = {
 }
 const buildProgressHandle = bus.register<BuildProgressSignal>({
   key: 'signal:build-progress',
-  initBehavior: 'fire-if-recent',
-  recentMs: 300_000,  // show recent build progress on reconnect
+  ...replayConfig('signal:build-progress'),
 })
 export const onBuildProgressSignal = buildProgressHandle.on
 
@@ -182,8 +188,7 @@ export const onBuildProgressSignal = buildProgressHandle.on
 export type ViewPinSignal = { ref: string | null; timestamp: number }
 const viewPinHandle = bus.register<ViewPinSignal>({
   key: 'signal:view-pin',
-  initBehavior: 'fire-if-recent',
-  recentMs: 3_600_000,  // persist pin indicator across reconnects for up to 1hr
+  ...replayConfig('signal:view-pin'),
 })
 export const onViewPinSignal = viewPinHandle.on
 
@@ -205,8 +210,7 @@ export const onAgentAttention = agentAttentionHandle.on
 export type AgentHeartbeatSignal = { state: string; timestamp: number; agent?: string }
 const agentHeartbeatHandle = bus.register<AgentHeartbeatSignal>({
   key: 'signal:agent-heartbeat',
-  initBehavior: 'fire-if-recent',
-  recentMs: 30_000,
+  ...replayConfig('signal:agent-heartbeat'),
 })
 export const onAgentHeartbeat = agentHeartbeatHandle.on
 
@@ -214,15 +218,13 @@ export const onAgentHeartbeat = agentHeartbeatHandle.on
 // Diff review and summaries — register so callers can subscribe to changes
 const diffReviewHandle = bus.register<{ reviews: Record<number, string>; timestamp: number }>({
   key: 'signal:diff-review',
-  initBehavior: 'fire-if-recent',
-  recentMs: 86_400_000,  // 24h
+  ...replayConfig('signal:diff-review'),
 })
 export const onDiffReview = diffReviewHandle.on
 
 const diffSummariesHandle = bus.register<{ summaries: Record<number, string>; timestamp: number }>({
   key: 'signal:diff-summaries',
-  initBehavior: 'fire-if-recent',
-  recentMs: 86_400_000,  // 24h
+  ...replayConfig('signal:diff-summaries'),
 })
 export const onDiffSummaries = diffSummariesHandle.on
 
@@ -266,8 +268,7 @@ export function readSignal<T = Record<string, unknown>>(key: string): (T & { tim
 export type PresenterSignal = { viewerId: string; active: boolean; timestamp: number }
 const presenterHandle = bus.register<PresenterSignal>({
   key: 'signal:presenter',
-  initBehavior: 'fire-if-recent',
-  recentMs: 600_000, // 10 min — presenter identity persists across brief reconnects
+  ...replayConfig('signal:presenter'),
 })
 export const onPresenterSignal = presenterHandle.on
 
