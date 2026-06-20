@@ -38,7 +38,10 @@ test('pidfile is only removed when it matches our pid', () => {
   rmSync(dir, { recursive: true, force: true })
 })
 
-test('daemon spawn args preserve codex kind and capability on fresh spawn', () => {
+test('daemon spawn args preserve codex kind and capability on fresh spawn (capability-derived policy → no --policy)', () => {
+  // A capability-derived policy (no .name) must travel ONLY via --spawn-capability.
+  // Passing its derived .policy as --policy is what made fleet-spawn treat every UI
+  // spawn as an explicit fence request and fence the daemon — so --policy is omitted.
   const { agentName, args } = buildFleetSpawnArgs({
     name: 'codexrel55',
     model: 'gpt-5.5',
@@ -46,7 +49,7 @@ test('daemon spawn args preserve codex kind and capability on fresh spawn', () =
     cwd: '/tmp/project',
     effort: 'high',
     mode: 'default',
-    spawnPolicy: { capability: 'workspace-write+net', policy: 'tlda-projects' },
+    spawnPolicy: { capability: 'workspace-write', policy: 'tlda-projects' },
   })
 
   assert.equal(agentName, 'codexrel55')
@@ -56,7 +59,30 @@ test('daemon spawn args preserve codex kind and capability on fresh spawn', () =
     '--kind', 'codex',
     '--effort', 'high',
     '--mode', 'default',
-    '--spawn-capability', 'workspace-write+net',
+    '--spawn-capability', 'workspace-write',
+    '--cwd', '/tmp/project',
+    '--no-attach',
+  ])
+})
+
+test('daemon spawn args pass --policy ONLY for a genuinely named policy', () => {
+  // A user-NAMED policy (e.g. `tlda-write`) is an explicit fence request and DOES
+  // carry --policy; this is the one case that fences a single agent on purpose.
+  const { args } = buildFleetSpawnArgs({
+    name: 'mathbot',
+    model: 'opus',
+    kind: 'claude',
+    cwd: '/tmp/project',
+    mode: 'default',
+    spawnPolicy: { name: 'tlda-write', capability: 'workspace-write', policy: 'tlda-projects' },
+  })
+
+  assert.deepEqual(args, [
+    '--fresh', 'mathbot',
+    '--model', 'opus',
+    '--kind', 'claude',
+    '--mode', 'default',
+    '--spawn-capability', 'workspace-write',
     '--policy', 'tlda-projects',
     '--cwd', '/tmp/project',
     '--no-attach',

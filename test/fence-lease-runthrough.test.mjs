@@ -30,8 +30,8 @@ def lease_for(capability, policy_name):
         return pn, None, None
     return pn, policy, mod._fence_settings(policy)
 
-# --- app role: workspace-write+net / cwd --------------------------------------
-pn, policy, s = lease_for("workspace-write+net", "cwd")
+# --- app role: workspace-write / cwd --------------------------------------
+pn, policy, s = lease_for("workspace-write", "cwd")
 assert pn == "cwd", pn
 fs = s["filesystem"]; cmd = s["command"]
 # job: write the worktree + dev caches
@@ -62,14 +62,14 @@ assert any("Keychains" in p for p in fs["allowRead"]), fs["allowRead"]
 assert "~/.ssh/id_*" in fs["denyRead"], fs["denyRead"]
 assert "~/.git-credentials" in fs["denyRead"], fs["denyRead"]
 
-# --- math role: workspace-write+net / tlda-projects ---------------------------
-pn, policy, s = lease_for("workspace-write+net", "tlda-projects")
+# --- math role: workspace-write / tlda-projects ---------------------------
+pn, policy, s = lease_for("workspace-write", "tlda-projects")
 assert pn == "tlda-projects", pn
 assert policy["network"] is True
 assert "**/.git/**" not in s["filesystem"]["denyWrite"]
 
 # --- untrusted role: same lane as app (cwd) -----------------------------------
-pn, policy, s = lease_for("workspace-write+net", "cwd")
+pn, policy, s = lease_for("workspace-write", "cwd")
 assert pn == "cwd"
 
 # --- read-only role: no writes, no broad net, git stays read-only -------------

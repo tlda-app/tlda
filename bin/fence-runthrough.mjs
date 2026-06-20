@@ -78,7 +78,7 @@ function check(name, ok, detail) {
 }
 
 // --- the read-permissive lease (cwd) used for auth checks ---------------------
-const authLease = leaseSettings('cwd', 'workspace-write+net')
+const authLease = leaseSettings('cwd', 'workspace-write')
 
 // 1) Claude OAuth token is in the macOS Keychain — fence must allow that read.
 {
@@ -114,7 +114,7 @@ const authLease = leaseSettings('cwd', 'workspace-write+net')
 // the real browser. (Structural gate; the live drive is proven manually with a
 // shared browser up.)
 {
-  const appLease = JSON.parse(readFileSync(leaseSettings('cwd', 'workspace-write+net'), 'utf8'))
+  const appLease = JSON.parse(readFileSync(leaseSettings('cwd', 'workspace-write'), 'utf8'))
   const unix = appLease?.network?.allowUnixSockets || []
   const ok = unix.some(p => /tlda-pw-sockets/.test(p))
   check('app lease whitelists the pw daemon socket (AF_UNIX connect)', ok,
@@ -146,7 +146,7 @@ print(m.build_claude_cmd('fleet:gate','fleet-gate','opus48',name='gate'))
 // document that it Mach-fails. The real path is checks (4)/(5) above + the shared
 // out-of-fence browser. Never gated.
 if (wantBrowser) {
-  const appLease = leaseSettings('cwd', 'workspace-write+net')
+  const appLease = leaseSettings('cwd', 'workspace-write')
   const r = throughFence(appLease, ['node', '-e',
     "const{chromium}=require('playwright');(async()=>{try{const b=await chromium.launch({headless:true});await b.close();console.log('PW_OK')}catch(e){console.log('PW_FAIL:'+e.message.split('\\n')[0])}})()"])
   const ok = r.out.includes('PW_OK')
@@ -160,7 +160,7 @@ if (wantBrowser) {
 // Proven manually 2026-06-19 (codex exec→FENCE_CODEX_OK, goose run→FENCE_GOOSE_OK,
 // goose baseline==fenced so it's a real pass not a CLI quirk); this codifies it.
 if (wantHarnesses) {
-  const netLease = leaseSettings('cwd', 'workspace-write+net')   // +net = ["*"]
+  const netLease = leaseSettings('cwd', 'workspace-write')   // write = net on => allowedDomains ["*"]
   // codex: non-interactive exec (gpt-5.5; auth ~/.codex/auth.json; model via the allowlist)
   {
     const r = throughFence(netLease,

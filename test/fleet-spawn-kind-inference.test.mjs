@@ -27,7 +27,7 @@ assert mod.harness_for_agent({"id": "fleet:stale", "metadata": {"kind": "claude"
 assert mod.harness_for_agent({"id": "fleet:stale", "metadata": {"kind": "claude"}}, "gpt-5.5").kind == "codex"
 assert any(m["alias"] == "gpt" and m["id"] == "gpt-5.5" and m["kind"] == "codex"
            for m in mod.HARNESS_ADAPTERS["codex"].list_models())
-assert mod.DEFAULT_SPAWN_CAPABILITY == "workspace-write+net"
+assert mod.DEFAULT_SPAWN_CAPABILITY == "workspace-write"
 assert "CLAUDE.md" not in mod.register_prompt("canary")
 codex_prompt = mod.codex_register_prompt("canary")
 assert 'register(name="canary")' in codex_prompt
@@ -45,7 +45,7 @@ cmd = mod.build_codex_cmd(
     model="gpt-5.5",
     name="canary",
     cwd="/Users/skip/work/tlda",
-    capability="workspace-write+net",
+    capability="workspace-write",
 )
 assert "-s workspace-write" in cmd
 assert "-C /Users/skip/work/tlda" in cmd
@@ -107,7 +107,7 @@ with open(settings_path) as f:
 assert "/Users/skip/work/tlda" in settings["filesystem"]["allowWrite"]
 assert "**/.git/**" in settings["filesystem"]["denyWrite"]
 
-policy_name, dev_tools, write_roots, matched, policy, role_cmd = resolve_capability("workspace-write+net")
+policy_name, dev_tools, write_roots, matched, policy, role_cmd = resolve_capability("workspace-write")
 assert policy_name == "cwd"
 assert dev_tools is True
 assert write_roots == ["/Users/skip/work/tlda"]
@@ -131,7 +131,7 @@ assert mod.TLDA_FENCE_TMP_ROOT in settings["filesystem"]["allowWrite"]
 policy_name, dev_tools, write_roots, matched, policy = mod.resolve_harness_sandbox(
     "codex", "gpt-5.5", "/Users/skip/work/tlda",
     explicit_policy="tlda-projects")
-policy = mod.apply_spawn_capability_to_policy(policy, "workspace-write+net", "/Users/skip/work/tlda")
+policy = mod.apply_spawn_capability_to_policy(policy, "workspace-write", "/Users/skip/work/tlda")
 assert policy_name == "tlda-projects"
 assert policy["network"] is True
 
@@ -234,7 +234,7 @@ describe('fleet-spawn harness kind inference', () => {
       env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
     })
     assert.equal(result.status, 0, result.stderr || result.stdout)
-    assert.match(result.stdout, /would fresh spawn dryrun-canary with capability workspace-write\+net/)
+    assert.match(result.stdout, /would fresh spawn dryrun-canary with capability workspace-write/)
     assert.doesNotMatch(result.stdout, /spawned in/)
   })
 })

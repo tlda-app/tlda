@@ -143,7 +143,16 @@ export function buildFleetSpawnArgs({
   if (effort) args.push('--effort', effort)
   if (mode) args.push('--mode', mode)
   if (spawnPolicy?.capability) args.push('--spawn-capability', spawnPolicy.capability)
-  if (spawnPolicy?.policy) args.push('--policy', spawnPolicy.policy)
+  // --policy ONLY for a genuinely user-NAMED policy (spawnPolicy.name set).
+  // spawnPolicy.policy is ALWAYS populated (the capability-derived default,
+  // e.g. workspace-write -> "cwd"), so passing it as --policy made
+  // fleet-spawn treat EVERY capability/UI spawn as an explicit fence request
+  // (sandbox_policy non-None -> explicit=True) and fence it even under
+  // FENCE_GLOBALLY_DISABLED -- which fenced the daemon/tmux and broke all UI
+  // spawns. A capability-derived policy must travel via --spawn-capability
+  // (above) so fleet-spawn derives it non-explicitly; only a real named
+  // --policy fences a single agent. (name:null => derived; name set => explicit.)
+  if (spawnPolicy?.name) args.push('--policy', spawnPolicy.policy)
   if (cwd) args.push('--cwd', cwd)
   args.push('--no-attach')
   return { agentName, args }

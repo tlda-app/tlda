@@ -84,7 +84,7 @@ describe('agent capability CLI', () => {
     })
 
     assert.equal(exitCode, 0)
-    assert.ok(stdout.includes('[dry-run] would set alice capability to write (cwd / workspace-write+net / network)'))
+    assert.ok(stdout.includes('[dry-run] would set alice capability to write (cwd / workspace-write / network)'))
     assert.ok(stdout.includes('update metadata.spawnPolicy policy/category'))
   })
 
@@ -112,12 +112,12 @@ describe('agent capability CLI', () => {
   })
 
   it('rejects unknown capabilities', () => {
-    const { stderr, exitCode } = tlda('agent', 'capability', 'alice', 'workspace-write+net', '--dry-run', {
+    const { stderr, exitCode } = tlda('agent', 'capability', 'alice', 'workspace-write', '--dry-run', {
       env: scrubAgentEnv(process.env),
     })
 
     assert.notEqual(exitCode, 0)
-    assert.ok(stderr.includes('Unknown capability "workspace-write+net"'))
+    assert.ok(stderr.includes('Unknown capability "workspace-write"'))
     assert.ok(stderr.includes('read, write, tlda-write, full'))
   })
 

@@ -40,7 +40,7 @@ import websocket
 
 CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".config", "tlda", "config.json")
 CODEX_CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".codex", "config.toml")
-DEFAULT_SPAWN_CAPABILITY = "workspace-write+net"
+DEFAULT_SPAWN_CAPABILITY = "workspace-write"
 
 
 def read_config():
@@ -1072,6 +1072,24 @@ def _live_spawn_policy(resolved_policy, explicit=False):
     # always honored, so the fence stays testable on a single agent without
     # flipping the global default for the whole fleet. The global-off only
     # governs the DEFAULT (capability-derived) policy.
+    # HISTORY (2026-06-19): the fence blocks the tmux server socket
+    # (/private/tmp/tmux-*/default → "Operation not permitted"), so fencing a
+    # capability/UI spawn fenced the daemon's `tmux new-session` → NO agent could
+    # spawn from the UI. ROOT CAUSE (found + fixed): the daemon
+    # (bin/lib/daemon-guards.mjs) passed the capability-DERIVED policy
+    # (spawnPolicy.policy, which is ALWAYS set) as --policy, so fleet-spawn read
+    # every UI spawn as an explicit fence request (sandbox_policy non-None →
+    # explicit=True) and fenced it even under the global-off. A first
+    # explicit-honoring revert was tested by advocate and FAILED for exactly this
+    # reason (a capability MCP spawn came back fenced); two emergency sledgehammers
+    # (`return "unsandboxed"`) bridged the gap. NOW the root cause is fixed:
+    # daemon-guards gates --policy on spawnPolicy.name (a genuinely NAMED policy),
+    # so capability-derived spawns travel via --spawn-capability only and resolve
+    # NON-explicitly. The explicit-honoring logic below is therefore correct:
+    # default (capability/UI/MCP) → unsandboxed under the global-off; only a real
+    # named --policy fences one agent; the daemon itself never fences. (The two
+    # emergency `return "unsandboxed"` sledgehammers are removed now that the
+    # daemon-guards fix is live — see git history if a regression recurs.)
     if explicit:
         return resolved_policy
     return "unsandboxed" if FENCE_GLOBALLY_DISABLED else resolved_policy
@@ -1234,13 +1252,14 @@ def _fence_settings(policy):
     api_host = urlparse(API).hostname
     if api_host and api_host not in allowed_domains:
         allowed_domains.append(api_host)
-    # +net = REAL internet (Skip's spec §1.3: "every agent should use the
-    # Internet"). A write+net agent must reach the whole web -- and cluster SSH
-    # for math/sims, which OUTRANKS app-dev -- not just the curated model-API
-    # allowlist. So when the lease grants network, allow all domains; the
-    # deniedDomains below still block cloud-metadata SSRF + telemetry. The
-    # no-net DEFAULT keeps the curated allowlist (model APIs only): a fenced
-    # no-net agent can still reach its model, but nothing else.
+    # Network is ON by DEFAULT for every agent (Skip's spec: "every agent should
+    # use the Internet" -- deepseek reads math papers, math/sims reach cluster
+    # SSH). A normal `write` agent reaches the whole web. So when the lease grants
+    # network, allow all domains; the deniedDomains below still block cloud-
+    # metadata SSRF + telemetry. The OPT-IN `-no-net` restriction (which you set
+    # yourself by editing the fence config, never a default) keeps the curated
+    # allowlist (model APIs only): a no-net agent still reaches its model, nothing
+    # else.
     if policy.get("network"):
         allowed_domains = ["*"]
     api_local_outbound = _api_needs_local_outbound()
@@ -1533,7 +1552,7 @@ def codex_sandbox_for_capability(capability, outer_sandbox=False):
         return "danger-full-access"
     if capability == "read-only":
         return "read-only"
-    # workspace-write-no-net / workspace-write+net / unset → codex's middle tier
+    # workspace-write-no-net / workspace-write / unset → codex's middle tier
     return "workspace-write"
 
 
@@ -1543,10 +1562,10 @@ def codex_workspace_write_config_args(capability, cwd=None):
     `-s workspace-write` alone only gives file-write access inside the checkout.
     Codex keeps `.git` read-only unless it is an explicit writable root, and the
     TLDA daemon/server controls live under ~/.config/tlda. A manager-capable
-    `workspace-write+net` agent needs both: commit checkpoints and inspect/control
+    `workspace-write` agent needs both: commit checkpoints and inspect/control
     the local TLDA service without escalating all the way to danger-full-access.
     """
-    if capability != "workspace-write+net":
+    if capability != "workspace-write":
         return []
     args = ["-c " + shlex.quote("sandbox_workspace_write.network_access=true")]
     workdir = cwd or os.getcwd()
@@ -1661,7 +1680,7 @@ def apply_spawn_capability_to_policy(policy, capability, cwd):
     if capability == "read-only":
         policy["write_roots"] = []
         return policy
-    if capability != "workspace-write+net":
+    if capability != "workspace-write":
         return policy
     policy["network"] = True
     roots = set(policy.get("write_roots") or [])
@@ -1678,7 +1697,7 @@ def apply_spawn_capability_to_policy(policy, capability, cwd):
 def sandbox_policy_for_spawn_capability(capability):
     if capability == "full-access":
         return "unsandboxed"
-    if capability in ("read-only", "workspace-write-no-net", "workspace-write+net"):
+    if capability in ("read-only", "workspace-write-no-net", "workspace-write"):
         return "cwd"
     return None
 

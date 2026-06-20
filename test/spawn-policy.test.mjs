@@ -19,27 +19,27 @@ import {
 describe('spawn policy', () => {
   it('orders capabilities by sandbox authority', () => {
     assert.equal(capabilityLte('read-only', 'workspace-write-no-net'), true)
-    assert.equal(capabilityLte('workspace-write-no-net', 'workspace-write+net'), true)
-    assert.equal(capabilityLte('workspace-write+net', 'full-access'), true)
+    assert.equal(capabilityLte('workspace-write-no-net', 'workspace-write'), true)
+    assert.equal(capabilityLte('workspace-write', 'full-access'), true)
     assert.equal(capabilityLte('full-access', 'workspace-write-no-net'), false)
   })
 
   it('derives caller capability from metadata.spawnPolicy', () => {
     assert.equal(callerCapability({ id: 'fleet:a', metadata: { spawnPolicy: { capability: 'read-only' } } }), 'read-only')
-    assert.equal(callerCapability({ id: 'fleet:a', metadata: {} }), 'workspace-write+net')
+    assert.equal(callerCapability({ id: 'fleet:a', metadata: {} }), 'workspace-write')
     assert.equal(callerCapability({ id: 'fleet:skip', human: true }), 'full-access')
   })
 
   it('defaults non-root model ceilings to net-enabled workspace write', () => {
-    assert.equal(modelCeiling({}, { model: 'deepseek/deepseek-v4-pro' }), 'workspace-write+net')
-    assert.equal(modelCeiling({}, { model: 'deepseek' }), 'workspace-write+net')
-    assert.equal(modelCeiling({}, { kind: 'goose' }), 'workspace-write+net')
+    assert.equal(modelCeiling({}, { model: 'deepseek/deepseek-v4-pro' }), 'workspace-write')
+    assert.equal(modelCeiling({}, { model: 'deepseek' }), 'workspace-write')
+    assert.equal(modelCeiling({}, { kind: 'goose' }), 'workspace-write')
     assert.equal(modelCeiling({}, { model: 'opus46' }), 'full-access')
     assert.equal(modelCeiling({}, { kind: 'codex' }), 'full-access')
   })
 
   it('normalizes operator-friendly capability names', () => {
-    assert.equal(callerCapability({ id: 'fleet:a', metadata: { spawnPolicy: { capability: 'write' } } }), 'workspace-write+net')
+    assert.equal(callerCapability({ id: 'fleet:a', metadata: { spawnPolicy: { capability: 'write' } } }), 'workspace-write')
     assert.equal(callerCapability({ id: 'fleet:a', metadata: { spawnPolicy: { capability: 'full' } } }), 'full-access')
   })
 
@@ -48,10 +48,10 @@ describe('spawn policy', () => {
     assert.equal(spawnPolicyLte('tlda-write', 'write'), false)
     assert.deepEqual(callerSpawnPolicy({
       id: 'fleet:a',
-      metadata: { spawnPolicy: { capability: 'workspace-write+net', policy: 'tlda-projects' } },
+      metadata: { spawnPolicy: { capability: 'workspace-write', policy: 'tlda-projects' } },
     }), {
       name: null,
-      capability: 'workspace-write+net',
+      capability: 'workspace-write',
       policy: 'tlda-projects',
       category: 'write-scope',
     })
@@ -60,17 +60,17 @@ describe('spawn policy', () => {
   it('rejects requests above caller capability', () => {
     assert.throws(() => authorizeSpawn({
       caller: { id: 'fleet:a', metadata: { spawnPolicy: { capability: 'workspace-write-no-net' } } },
-      requestedCapability: 'workspace-write+net',
+      requestedCapability: 'workspace-write',
       model: 'opus46',
     }), /exceeds caller capability/)
   })
 
   it('rejects project-scope requests above caller filesystem policy', () => {
     assert.throws(() => authorizeSpawn({
-      caller: { id: 'fleet:a', metadata: { spawnPolicy: { name: 'write', capability: 'workspace-write+net', policy: 'cwd' } } },
+      caller: { id: 'fleet:a', metadata: { spawnPolicy: { name: 'write', capability: 'workspace-write', policy: 'cwd' } } },
       requestedCapability: 'tlda-write',
       model: 'opus46',
-    }), /requested spawn policy tlda-projects \/ workspace-write\+net exceeds caller capability\/policy cwd \/ workspace-write\+net/)
+    }), /requested spawn policy tlda-projects \/ workspace-write exceeds caller capability\/policy cwd \/ workspace-write/)
   })
 
   it('rejects requests above model ceiling', () => {
@@ -86,7 +86,7 @@ describe('spawn policy', () => {
       spawnPolicy: { familyCeilings: { goose: 'write' } },
     }, { kind: 'goose' }), {
       name: 'write',
-      capability: 'workspace-write+net',
+      capability: 'workspace-write',
       policy: 'cwd',
       category: 'write-scope',
     })
@@ -95,7 +95,7 @@ describe('spawn policy', () => {
       requestedCapability: 'tlda-write',
       kind: 'goose',
       config: { spawnPolicy: { familyCeilings: { goose: 'write' } } },
-    }), /requested spawn policy tlda-projects \/ workspace-write\+net exceeds model ceiling cwd \/ workspace-write\+net/)
+    }), /requested spawn policy tlda-projects \/ workspace-write exceeds model ceiling cwd \/ workspace-write/)
   })
 
   it('keys the trust tier on the model, not the harness', () => {
@@ -114,11 +114,11 @@ describe('spawn policy', () => {
   it('gives minimax a higher filesystem ceiling than deepseek', () => {
     // deepseek (narrow): own cwd project only.
     assert.deepEqual(modelSpawnCeiling({}, { model: 'deepseek/deepseek-v4-pro' }), {
-      name: null, capability: 'workspace-write+net', policy: 'cwd', category: 'write-scope',
+      name: null, capability: 'workspace-write', policy: 'cwd', category: 'write-scope',
     })
     // minimax (elevated): across all tlda projects — strictly higher than deepseek.
     assert.deepEqual(modelSpawnCeiling({}, { model: 'minimax/minimax-m3' }), {
-      name: null, capability: 'workspace-write+net', policy: 'tlda-projects', category: 'write-scope',
+      name: null, capability: 'workspace-write', policy: 'tlda-projects', category: 'write-scope',
     })
     assert.equal(spawnPolicyLte(modelSpawnCeiling({}, { model: 'deepseek/deepseek-v4-pro' }),
                                modelSpawnCeiling({}, { model: 'minimax/minimax-m3' })), true)
@@ -170,7 +170,7 @@ describe('spawn policy', () => {
     assert.equal(resolveProjectProfileName({}, { project: { profile: 'bogus' } }), 'app')
     // The math profile fences to all tlda projects; ops is machine-level.
     assert.deepEqual(resolveProjectProfile({}, { project: { profile: 'math' } }), {
-      name: 'math', capability: 'workspace-write+net', policy: 'tlda-projects', category: 'write-scope',
+      name: 'math', capability: 'workspace-write', policy: 'tlda-projects', category: 'write-scope',
     })
     assert.deepEqual(resolveProjectProfile({}, { project: { profile: 'ops' } }), {
       name: 'ops', capability: 'full-access', policy: 'unsandboxed', category: 'write-scope',
@@ -186,7 +186,7 @@ describe('spawn policy', () => {
       model: 'opus48',
     })
     assert.equal(claudeInMath.requestedPolicy.policy, 'tlda-projects')
-    assert.equal(claudeInMath.requestedCapability, 'workspace-write+net')
+    assert.equal(claudeInMath.requestedCapability, 'workspace-write')
     // A deepseek spawned into the same math project: the profile asks for
     // tlda-projects, but its narrow model ceiling (cwd) caps it — the project
     // profile cannot lift an untrusted model above its ceiling.
@@ -214,7 +214,7 @@ describe('spawn policy', () => {
     })
     assert.deepEqual(result.requestedPolicy, {
       name: 'tlda-write',
-      capability: 'workspace-write+net',
+      capability: 'workspace-write',
       policy: 'tlda-projects',
       category: 'write-scope',
     })

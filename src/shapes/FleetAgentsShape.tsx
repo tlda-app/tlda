@@ -301,7 +301,7 @@ function formatModel(model: string | null | undefined): string {
 const CAPABILITY_LABELS: Record<string, string> = {
   'read-only': 'read',
   'workspace-write-no-net': 'write·nonet',
-  'workspace-write+net': 'write',
+  'workspace-write': 'write',
   'full-access': 'full',
 }
 const POLICY_LABELS: Record<string, string> = {
