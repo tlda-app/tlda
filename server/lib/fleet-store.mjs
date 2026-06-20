@@ -1075,12 +1075,16 @@ export class FleetStore {
 
     let row = this._getAgent.get(query);
     if (!row) {
-      // Name lookup — assert uniqueness among live agents
+      // Name lookup — liveness-aware, NEVER throws (Skip's spec S1 / G.22 /
+      // F.16, scratch/registration-rules.md). Among non-dead agents holding
+      // this name, prefer the actually-live holder (daemon oracle), else the
+      // most-recently-active. A dead/corrupted namesake must never shadow the
+      // live holder — that shadowing was the wake bug. The old code THREW on a
+      // >1 collision, which killed the wake outright; resolving deterministically
+      // to the live holder is the fix. Falls back to any row (incl. dead) only
+      // when no live agent holds the name, so resurrect-by-name still resolves.
       const nameRows = this.db.prepare('SELECT * FROM agents WHERE friendly_name = ? AND dead = 0').all(query);
-      if (nameRows.length > 1) {
-        throw new Error(`Name collision: ${nameRows.length} live agents named "${query}": ${nameRows.map(r => r.id).join(', ')}`);
-      }
-      row = nameRows[0] || this._getAgentByName.get(query);
+      row = nameRows.length > 0 ? this._pickLiveHolder(nameRows) : this._getAgentByName.get(query);
     }
     if (!row) {
       // A bare lineage name normally matches its dawn member directly (that
@@ -1097,6 +1101,31 @@ export class FleetStore {
       row = this.db.prepare('SELECT * FROM agents WHERE session_id = ?').get(query);
     }
     return row ? this._hydrateAgent(row) : null;
+  }
+
+  // Among non-dead rows that share a friendly name, pick the live-holder-wins /
+  // most-recently-active one (Skip's spec G.22 / F.16). An actually-live holder
+  // (daemon liveness oracle) beats a hibernating one; within a liveness tier the
+  // most recent last_seen wins; last_active and finally row order break further
+  // ties. This is the S1 resolver: wake reaches the live agent by liveness, not
+  // by an arbitrary name-grep. Deterministic and total — never throws (the old
+  // collision throw broke waking the live holder whenever a dead/corrupted
+  // namesake was still marked alive). Takes raw rows; caller hydrates the result.
+  _pickLiveHolder(rows) {
+    if (rows.length === 1) return rows[0];
+    const ts = (v) => {
+      if (v == null) return 0;
+      const n = new Date(v).getTime();
+      return Number.isFinite(n) ? n : 0;
+    };
+    const awake = (r) => (this._isLiveOracle ? !!this._isLiveOracle(r.id) : false);
+    return rows.slice().sort((a, b) => {
+      const liveDelta = (awake(b) ? 1 : 0) - (awake(a) ? 1 : 0);
+      if (liveDelta !== 0) return liveDelta;
+      const seenDelta = ts(b.last_seen) - ts(a.last_seen);
+      if (seenDelta !== 0) return seenDelta;
+      return ts(b.last_active) - ts(a.last_active);
+    })[0];
   }
 
   getAllAgents() {

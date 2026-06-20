@@ -764,7 +764,12 @@ async function resolveSpawnTarget(name, respawn) {
   } catch (e) {
     console.error(`[spawn] raise failed for ${existing.id}: ${e.message}`)
   }
-  return { name: existing.friendly_name || name, respawn: true }
+  // Carry the resolved fleet-id, NOT the friendly name, into the wake. The name
+  // is re-resolvable to the wrong (dead/corrupted) namesake downstream; the id is
+  // the permanent anchor. fleet-spawn's `fleet:`-prefix branch resumes that exact
+  // identity's session. This is the S2 half of the wake fix (identity, not
+  // name-grep) — see scratch/registration-rules.md.
+  return { name: existing.id, respawn: true }
 }
 
 async function performAuthorizedSpawn(caller, msg) {
@@ -778,7 +783,11 @@ async function performAuthorizedSpawn(caller, msg) {
   let refreshTarget = null
   if ((shouldRespawn || refresh) && agent) {
     const existing = fleetStore?.findAgent(agent)
-    spawnName = existing?.friendly_name || agent
+    // Carry the fleet-id (not the friendly name) so the wake targets that exact
+    // identity's session — fleet-spawn re-resolves a name to the wrong namesake,
+    // but resumes a `fleet:` id directly. findAgent is now liveness-aware, so it
+    // already picked the live holder; pass that choice through, don't re-grep.
+    spawnName = existing?.id || agent
     if (refresh) refreshTarget = existing
   }
   if (!spawnName) throw new Error(fresh ? 'fresh spawn requires name' : 'agent name required')
@@ -2867,7 +2876,14 @@ async function handleFleetWsMessage(ws, msg) {
           continue
         }
         console.log(`[respawn] waking ${agent.friendly_name || agentId} (${agentId})`)
-        const spawnResult = await sendRpc(machineId, 'spawn', { name: agent.friendly_name || agentId, respawn: true })
+        // Wake by IDENTITY, not name. requestWake already resolved the exact
+        // fleet-id we mean (the Map is keyed by id, getAgent fetched that row);
+        // passing agent.friendly_name here would throw that away and force a
+        // name re-grep in fleet-spawn that could land on a different namesake.
+        // agentId is a `fleet:` id, which fleet-spawn resumes directly. This is
+        // the chat-wake entry point — the one that fires when Skip chats a
+        // hibernating agent — so identity must be carried here above all.
+        const spawnResult = await sendRpc(machineId, 'spawn', { name: agentId, respawn: true })
         if (nudgeText && agent.tmux_session && terminalNudgeKind(agent)) {
           await sendRpc(machineId, 'send-text', {
             tmux_session: spawnResult?.tmux_session || agent.tmux_session,

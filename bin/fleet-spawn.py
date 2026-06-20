@@ -761,7 +761,28 @@ def find_agent(name):
     # fresh spawn. Matches /api/check-name and the server's findAgent, which
     # both filter dead — find_agent was the lone holdout, so a stale dead row
     # made `fresh()` refuse with "already exists".
-    return next((a for a in agents if a.get("friendly_name") == name and not a.get("dead")), None)
+    #
+    # Liveness-aware tiebreak (Skip's spec S1 / G.22): when more than one
+    # non-dead agent shares this name, a bare `next()` picks an ARBITRARY one —
+    # which can be a corrupted-but-not-dead-marked namesake shadowing the live
+    # holder. Prefer the most-recently-active. The server (the single authority)
+    # already resolves the live holder and passes a `fleet:` id (handled above),
+    # so this is defense-in-depth for a direct CLI `tlda agent spawn <name>`.
+    matches = [a for a in agents if a.get("friendly_name") == name and not a.get("dead")]
+    if not matches:
+        return None
+    if len(matches) == 1:
+        return matches[0]
+
+    def _last_seen(a):
+        v = a.get("last_seen") or a.get("last_active") or 0
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return 0.0
+
+    matches.sort(key=_last_seen, reverse=True)
+    return matches[0]
 
 
 def check_name_collisions(name):
