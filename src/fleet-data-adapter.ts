@@ -5,7 +5,8 @@
  * subscribe() and re-renders on updates. One SSE connection shared
  * across all fleet shapes.
  */
-import { useState, useEffect, useCallback } from 'react'
+import { useMemo, useState, useEffect, useCallback } from 'react'
+import { useValue } from 'tldraw'
 import {
   init,
   subscribe,
@@ -20,7 +21,6 @@ import {
   sendMessage as _sendMessage,
   fetchHistory,
   loadBefore,
-  getEvents,
   matchesFilter,
   resolveFilter,
   respawnAgent as _respawnAgent,
@@ -36,6 +36,7 @@ import {
   fleetWS as _fleetWS,
   // @ts-ignore — vanilla JS module
 } from './fleet/fleet-data.mjs'
+import { viewFleetEvents, type FleetEvent } from './fleet/fleet-data.ts'
 import {
   getPlaybackData,
   subscribePlayback,
@@ -239,8 +240,17 @@ export function useFleetTasks(frameId?: string): any[] {
  */
 
 export function useFleetEvents(dnfFilter?: [string, string][][] | null, frameId?: string): any[] {
-  const [events, setEvents] = useState<any[]>([])
+  const [playbackEvents, setPlaybackEvents] = useState<any[]>([])
+  const [isPlaybackMode, setIsPlaybackMode] = useState(false)
   const filterKey = dnfFilter ? JSON.stringify(dnfFilter) : ''
+  const filter = useMemo(() => dnfFilter && dnfFilter.length > 0 ? dnfFilter : null, [filterKey])
+  const liveView = useMemo(() => viewFleetEvents(filter, {
+    key: filterKey || 'all',
+    matchesFilter: (f, ev: FleetEvent) => matchesFilter(f as [string, string][][] | null, ev),
+  }), [filter, filterKey])
+  const liveEvents = useValue(`fleet-events:${filterKey || 'all'}`, () => liveView.get(), [liveView])
+
+  useEffect(() => () => liveView.dispose(), [liveView])
 
   // Single effect handles both playback and live modes.
   // If frameId is a shape ID: subscribe to the playback registry first.
@@ -251,53 +261,26 @@ export function useFleetEvents(dnfFilter?: [string, string][][] | null, frameId?
     let playbackUnsub: (() => void) | null = null
     let liveUnsync: (() => void) | null = null
     let cancelled = false
-    let isPlaybackMode = false
-    const filter = dnfFilter && dnfFilter.length > 0 ? dnfFilter : null
 
     // Clear stale state from previous filter immediately
-    setEvents([])
+    setPlaybackEvents([])
+    setIsPlaybackMode(false)
 
     function setupLive() {
       if (cancelled) return
       ensureInit().then(() => {
-        if (cancelled || isPlaybackMode) return
-
-        // Thin filtered VIEW over the single store (fleet-data holds live +
-        // history in one id-keyed buffer). On any 'messages' change we re-derive
-        // the filtered slice from the store rather than accumulating our own
-        // array — so there's no second list to drift from the store, and the
-        // backfilled history (upserted into the store) shows up immediately.
-        let refreshTimer: ReturnType<typeof setTimeout> | null = null
-        const refresh = () => {
-          refreshTimer = null
-          if (cancelled) return
-          setEvents(getEvents().filter((ev: any) => matchesFilter(filter, ev)))
-        }
-        refresh() // initial paint from the store (uncapped — has history + live)
-
-        const rawUnsub = subscribe('messages', filter, () => {
-          if (_tabVisible) { if (!refreshTimer) refreshTimer = setTimeout(refresh, 16) }
-        })
-        // On tab re-show, drop any pending debounce and refresh now.
-        const [, cleanupGate] = visibilityGate(() => {}, () => {
-          if (refreshTimer !== null) { clearTimeout(refreshTimer); refreshTimer = null }
-          refresh()
-        })
-        liveUnsub = () => {
-          rawUnsub()
-          cleanupGate()
-          if (refreshTimer !== null) { clearTimeout(refreshTimer); refreshTimer = null }
-        }
+        if (cancelled) return
+        setIsPlaybackMode(false)
       })
     }
 
     function setupPlayback(pb: ReturnType<typeof getPlaybackData>) {
       if (!pb) return false
-      isPlaybackMode = true
+      setIsPlaybackMode(true)
       // Tear down live subscription if it was running
       liveUnsub?.()
       liveUnsub = null
-      setEvents(getPlaybackChatEvents(pb, filter))
+      setPlaybackEvents(getPlaybackChatEvents(pb, filter))
       return true
     }
 
@@ -319,8 +302,8 @@ export function useFleetEvents(dnfFilter?: [string, string][][] | null, frameId?
           liveUnsub = null
           liveUnsync?.()
           liveUnsync = null
-          setEvents(getPlaybackChatEvents(pb, filter))
-          isPlaybackMode = true
+          setPlaybackEvents(getPlaybackChatEvents(pb, filter))
+          setIsPlaybackMode(true)
         }
       })
     } else {
@@ -333,9 +316,9 @@ export function useFleetEvents(dnfFilter?: [string, string][][] | null, frameId?
       liveUnsync?.()
       playbackUnsub?.()
     }
-  }, [frameId, filterKey])
+  }, [frameId, filter, filterKey])
 
-  return events
+  return isPlaybackMode ? playbackEvents : [...liveEvents]
 }
 
 
