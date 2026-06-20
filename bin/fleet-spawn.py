@@ -40,7 +40,29 @@ import websocket
 
 CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".config", "tlda", "config.json")
 CODEX_CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".codex", "config.toml")
-DEFAULT_SPAWN_CAPABILITY = "workspace-write"
+DEFAULT_SPAWN_CAPABILITY = "write"
+
+
+def normalize_spawn_capability(capability, region=None):
+    """Map any capability (old machine vocabulary or the four names) to one of
+    Skip's four rungs: read / write / tlda-write / full. The region disambiguates
+    the legacy write/tlda-write split (both were `workspace-write`). Mirrors
+    legacyRung() in server/lib/spawn-policy.mjs. The daemon and CLI now emit the
+    four names; this is migration tolerance for any stale old-vocabulary value.
+    `workspace-write-no-net` -> write (net is always on now)."""
+    if capability is None:
+        return None
+    raw = str(capability).strip().lower()
+    if raw in ("read", "write", "tlda-write", "full"):
+        return raw
+    if raw == "read-only":
+        return "read"
+    if raw == "full-access":
+        return "full"
+    if raw in ("workspace-write", "workspace-write+net", "workspace-write-no-net"):
+        reg = None if region is None else str(region).strip().lower()
+        return "tlda-write" if reg == "tlda-projects" else "write"
+    return raw
 
 
 def read_config():
@@ -1548,11 +1570,14 @@ def codex_sandbox_for_capability(capability, outer_sandbox=False):
         # Fence is the fleet permission model. Avoid nesting Codex's macOS
         # sandbox inside fence; nested sandbox-exec fails before commands run.
         return "danger-full-access"
-    if capability == "full-access":
+    cap = normalize_spawn_capability(capability)
+    if cap == "full":
         return "danger-full-access"
-    if capability == "read-only":
+    if cap == "read":
         return "read-only"
-    # workspace-write-no-net / workspace-write / unset → codex's middle tier
+    # write / tlda-write / unset → codex's middle tier. (read-only,
+    # workspace-write, danger-full-access are Codex's OWN API vocabulary — the one
+    # foreign-API boundary where a non-tlda string legitimately survives.)
     return "workspace-write"
 
 
@@ -1565,7 +1590,7 @@ def codex_workspace_write_config_args(capability, cwd=None):
     `workspace-write` agent needs both: commit checkpoints and inspect/control
     the local TLDA service without escalating all the way to danger-full-access.
     """
-    if capability != "workspace-write":
+    if normalize_spawn_capability(capability) not in ("write", "tlda-write"):
         return []
     args = ["-c " + shlex.quote("sandbox_workspace_write.network_access=true")]
     workdir = cwd or os.getcwd()
@@ -1677,10 +1702,15 @@ def _has_git_write_root(policy):
 def apply_spawn_capability_to_policy(policy, capability, cwd):
     if not policy:
         return policy
-    if capability == "read-only":
+    cap = normalize_spawn_capability(capability)
+    if cap == "read":
         policy["write_roots"] = []
         return policy
-    if capability != "workspace-write":
+    # write and tlda-write both get the dev write-roots below; the broader
+    # tlda-projects breadth for tlda-write is added by its sandbox region
+    # (sandbox_roots_for_policy('tlda-projects')), not here. full leaves the
+    # policy unfenced.
+    if cap not in ("write", "tlda-write"):
         return policy
     policy["network"] = True
     roots = set(policy.get("write_roots") or [])
@@ -1695,9 +1725,14 @@ def apply_spawn_capability_to_policy(policy, capability, cwd):
 
 
 def sandbox_policy_for_spawn_capability(capability):
-    if capability == "full-access":
+    # The fence region travels INSIDE the four-name rung now (tlda-write carries
+    # its own tlda-projects region; it is no longer a separate --policy arg).
+    cap = normalize_spawn_capability(capability)
+    if cap == "full":
         return "unsandboxed"
-    if capability in ("read-only", "workspace-write-no-net", "workspace-write"):
+    if cap == "tlda-write":
+        return "tlda-projects"
+    if cap in ("read", "write"):
         return "cwd"
     return None
 
