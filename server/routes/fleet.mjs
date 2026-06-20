@@ -782,13 +782,17 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   })
 
   // --- POST /api/unquote-file ---
-  // Tier 2 unquote: runs the text through the same path-detection + upload pipeline as chat(),
-  // patches the stored event, and re-broadcasts so all clients update in-place.
-  // Body: { eventId, path, agentId }
+  // Unquote = amend the message by removing the backticks around a quoted block,
+  // then re-render it as if it had never been quoted. The full interior is run
+  // through the same path-detection + upload pipeline as chat() (rechat RPC →
+  // processMessageText on the sender's machine), so any file paths inside it get
+  // resolved + uploaded. We patch the stored event and re-broadcast so all clients
+  // re-render the whole message in place.
+  // Body: { eventId, quoted, agentId } — `quoted` is the interior of the block.
   router.post('/api/unquote-file', async (req, res) => {
-    const { eventId, path: rawText, agentId } = req.body || {}
+    const { eventId, quoted: rawText, agentId } = req.body || {}
     if (!eventId || !rawText || !agentId) {
-      return res.status(400).json({ error: 'eventId, path, and agentId required' })
+      return res.status(400).json({ error: 'eventId, quoted, and agentId required' })
     }
     const agent = fleetStore.findAgent?.(agentId) || fleetStore.getAgent?.(agentId)
     if (!agent) return res.status(404).json({ error: `agent not found: ${agentId}` })
@@ -838,12 +842,31 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         )
       }
 
-      const backtickForms = [`\`${rawText}\``, rawText]
+      // Splice out the backticks around the clicked block and substitute the
+      // resolved (path-uploaded) text. Every substitution uses a function replacer
+      // so a resolvedMessage containing `$` (Skip's LaTeX) or `{{att:N}}` is
+      // inserted literally — String.replace's string form would interpret `$&`,
+      // `$1`, etc. and corrupt the message.
+      const sub = () => resolvedMessage
       let newText = event.text
-      for (const form of backtickForms) {
-        if (newText.includes(form)) {
-          newText = newText.replace(form, resolvedMessage)
-          break
+      const inlineForm = '`' + rawText + '`'
+      if (newText.includes(inlineForm)) {
+        // Inline single-backtick span: `interior`
+        newText = newText.replace(inlineForm, sub)
+      } else {
+        // Fenced block: ```[lang]\n interior \n``` — strip the whole fence.
+        let fencedDone = false
+        newText = newText.replace(/```[^\n]*\n([\s\S]*?)```/g, (whole, body) => {
+          if (fencedDone) return whole
+          if (body.replace(/\n$/, '') === rawText || body.trim() === rawText.trim()) {
+            fencedDone = true
+            return resolvedMessage
+          }
+          return whole
+        })
+        // Fallback: bare interior occurrence (e.g. the block markers didn't match).
+        if (!fencedDone && newText.includes(rawText)) {
+          newText = newText.replace(rawText, sub)
         }
       }
       if (newText !== event.text || inlineAttachments?.length) {
