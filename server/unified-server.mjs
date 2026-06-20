@@ -2398,7 +2398,19 @@ server.on('upgrade', async (req, socket, head) => {
               tmux_session: agent.tmux_session, data: msg.data,
             })
           } catch (e) {
-            try { ws.send(JSON.stringify({ type: 'error', message: e.message })) } catch {}
+            if (ws.readyState === 1) {
+              ws.send(JSON.stringify({ type: 'error', message: e.message }))
+            }
+          }
+        } else if (msg.type === 'submit' && typeof msg.text === 'string') {
+          try {
+            await sendRpc(agent.machine_id, 'send-text', {
+              tmux_session: agent.tmux_session, text: msg.text, enter: true,
+            })
+          } catch (e) {
+            if (ws.readyState === 1) {
+              ws.send(JSON.stringify({ type: 'error', message: e.message }))
+            }
           }
         } else if (msg.type === 'resize' && msg.cols && msg.rows) {
           try {

@@ -1884,15 +1884,15 @@ async function rpcSendText({ tmux_session, text, enter, enter_delay_ms }) {
   if (pty) {
     if (text) pty.write(text)
     if (enter !== false) {
-      const delay = Number(enter_delay_ms || 0)
+      const delay = Number(enter_delay_ms ?? 120)
       if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay))
-      pty.write('\r')
+      await tmux('send-keys', '-t', tmux_session, 'Enter')
     }
     return { ok: true, via: 'pty' }
   }
   if (text) await tmux('send-keys', '-t', tmux_session, '--', text)
   if (enter !== false) {
-    const delay = Number(enter_delay_ms || 0)
+    const delay = Number(enter_delay_ms ?? 120)
     if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay))
     await tmux('send-keys', '-t', tmux_session, 'Enter')
   }
@@ -2192,6 +2192,16 @@ async function rpcStartTerminalWatch({ tmux_session, agent_id, poll_ms }) {
   terminalWatchPtys.set(tmux_session, state)
 
   sendMsg({ type: 'terminal-size', agent_id, tmux_session, cols: size.cols, rows: size.rows })
+  // The pre-attach redraw can still leave Claude/goose with a stale old-width
+  // frame until the attached client exists. Redraw once more through the watch
+  // PTY and seed from capture-pane after that repaint window, so the first frame
+  // the browser sees is the tmux screen at the same width as the streamed PTY.
+  try {
+    pty.write('\x0c')
+  } catch (e) {
+    log.warn(`terminal-watch: PTY redraw request failed for ${tmux_session}: ${e?.message || e}`)
+  }
+  await new Promise(resolve => setTimeout(resolve, 120))
   try {
     const { stdout } = await execFileP('tmux',
       [...TMUX_ARGS, 'capture-pane', '-t', tmux_session, '-p', '-S', `-${size.rows}`],
@@ -2259,12 +2269,23 @@ function rpcStopTerminalWatch({ tmux_session }) {
   return { ok: true }
 }
 
-function rpcTerminalResize({ tmux_session, cols, rows }) {
+async function rpcTerminalResize({ tmux_session, cols, rows }) {
   checkSession(tmux_session)
   const state = terminalWatchPtys.get(tmux_session)
   if (!state || !state.alive) return { ok: false, reason: 'no active pty' }
-  try { state.pty.resize(Math.max(1, cols), Math.max(1, rows)) } catch {}
-  return { ok: true }
+  // Browser resize messages must not resize the watcher PTY away from tmux's
+  // real window size; Claude/goose repaint with absolute cursor positions at
+  // the tmux width, so a PTY-only resize recreates the wrapping bug.
+  const size = await queryWindowSize(tmux_session)
+  const target = size || { cols: state.cols, rows: state.rows }
+  state.cols = target.cols
+  state.rows = target.rows
+  try {
+    state.pty.resize(Math.max(1, target.cols), Math.max(1, target.rows))
+  } catch (e) {
+    log.warn(`terminal-watch: failed to resize watcher PTY for ${tmux_session}: ${e?.message || e}`)
+  }
+  return { ok: true, cols: target.cols, rows: target.rows }
 }
 
 function rpcTerminalInput({ tmux_session, data }) {
