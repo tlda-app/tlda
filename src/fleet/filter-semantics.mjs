@@ -18,7 +18,15 @@ function isHumanParticipant(agentId, context) {
 
 function isDmWithTarget(event, targetLabel, context) {
   if (!event || !targetLabel) return false
-  if (event._activity || event.type === 'activity') return false
+  if (event._activity || event.type === 'activity') {
+    // The target agent's OWN activity belongs in the "DM ⚒ / tools visible" rung
+    // (dm, normal traffic). The quiet rung (dm-quiet) hides it via
+    // quietTrafficSuppressesActivity at the render layer, NOT here — so this gate
+    // must let it through, scoped strictly to the target's own activity. Other
+    // agents' activity stays excluded from a DM filter.
+    const actor = event.from || event.from_id || event.agent || event.agent_id || null
+    return agentMatchesLabel(actor, targetLabel, context)
+  }
   const from = event.from || event.from_id || event.agent
   const to = event.to || event.to_id || null
   const agent = event.agent || event.agent_id || null
