@@ -79,11 +79,11 @@ COPY shared/ ./shared/
 # never generates → highlights don't resolve to source lines.
 COPY scripts/ ./scripts/
 
-# Voice transcription bridges: /voice/deepgram and /voice/deepgram-sdk
-# (unified-server) lazily spawn these relays, which forward browser PCM audio to
-# Deepgram cloud using DEEPGRAM_API_KEY (set via `fly secrets`). They are
-# stateless relays (no local audio access), so they run fine on Fly.
-COPY bin/deepgram-bridge.mjs ./bin/deepgram-bridge.mjs
+# Voice transcription bridge: /voice/deepgram-sdk (unified-server) lazily spawns
+# this relay, which forwards browser PCM audio to Deepgram cloud using the
+# Deepgram SDK with DEEPGRAM_API_KEY (set via `fly secrets`). It is a stateless
+# relay (no local audio access), so it runs fine on Fly. Voice is SDK-only
+# (Skip 6/19, one implementation); the old raw bin/deepgram-bridge.mjs is gone.
 COPY bin/deepgram-sdk-bridge.mjs ./bin/deepgram-sdk-bridge.mjs
 
 # /api/fleet/models shells out to fleet-spawn.py --list-models so the spawn UI's

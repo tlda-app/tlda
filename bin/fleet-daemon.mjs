@@ -71,6 +71,7 @@ const execFileP = promisify(execFile)
 
 const VERSION = '0.1.1'
 import { createLogger } from '../shared/logger.mjs'
+import { resolveDaemonIsolation } from '../shared/daemon-identity.mjs'
 import { makeActivityThrottle } from './lib/activity-throttle.mjs'
 import { maybeKickGoose, resolveGooseStatus } from './lib/goose-kick.mjs'
 import { gooseActivityTick } from './lib/goose-activity.mjs'
@@ -117,6 +118,28 @@ const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects')
 // When using a custom config dir (E2E tests), read from there instead of shared.
 const _usingCustomConfigDir = !!process.env.TLDA_DAEMON_CONFIG_DIR
 
+// This daemon's own install path — distinguishes a main-tree daemon from a
+// worktree/dev-rig one, both at startup (the isolation guard below) and on the
+// server (the daemon-hello backstop: two distinct installs can't share a
+// machine_id). Resolve symlinks so the comparison is on the real path.
+const INSTALL_PATH = (() => {
+  try { return fs.realpathSync(fileURLToPath(import.meta.url)) }
+  catch { return fileURLToPath(import.meta.url) }
+})()
+
+// §4b guard: a worktree/dev-rig daemon must never silently join the LIVE fleet
+// as the shared machine_id (tonight a worktree daemon claimed "air" and evicted
+// the real one). Refuse to start when an isolation signal is set but isolation
+// is incomplete, instead of falling through to the live config. Fail loud.
+{
+  const { refuseReason } = resolveDaemonIsolation({ env: process.env, scriptPath: INSTALL_PATH })
+  if (refuseReason) {
+    log.error(`refusing to start: ${refuseReason}`)
+    process.stderr.write(`[fleet-daemon] REFUSING TO START — ${refuseReason}\n`)
+    process.exit(1)
+  }
+}
+
 function loadConfig() {
   if (_usingCustomConfigDir) {
     const f = path.join(CONFIG_DIR, 'config.json')
@@ -151,9 +174,15 @@ const config = loadConfig()
 // daemon watches local things (files, agents, terminals) and relays everything
 // to it — source-change → server builds in its shadow, activity/terminal/RPC →
 // fleet. Resolve the fleet server (config.fleetServer → Fly), not a local one.
-const SERVER = _usingCustomConfigDir
-  ? (process.env.TLDA_SERVER || config.fleetServer || config.server || `${hasTls ? 'https' : 'http'}://localhost:${DEFAULT_PORT}`)
-  : getFleetServerUrl(config)
+// Honor TLDA_SERVER on BOTH paths. Previously it was read only when a custom
+// config dir was set, so `TLDA_SERVER=… node fleet-daemon.mjs` silently fell
+// through to getFleetServerUrl(config) = live Fly — a rig that thought it was
+// isolated joined the live fleet. TLDA_SERVER set now always targets that server.
+const SERVER = process.env.TLDA_SERVER
+  ? process.env.TLDA_SERVER
+  : (_usingCustomConfigDir
+      ? (config.fleetServer || config.server || `${hasTls ? 'https' : 'http'}://localhost:${DEFAULT_PORT}`)
+      : getFleetServerUrl(config))
 const TOKEN = _usingCustomConfigDir
   ? (process.env.TLDA_TOKEN || config.tokenRw || config.token || null)
   : getRwToken(config)
@@ -1782,7 +1811,11 @@ function checkSession(session) {
 }
 
 async function tmux(...args) {
-  return execFileP('tmux', [...TMUX_ARGS, ...args], { timeout: 5000, encoding: 'utf8' })
+  return execFileP('tmux', [...TMUX_ARGS, ...args], {
+    timeout: 5000,
+    encoding: 'utf8',
+    env: { ...process.env, TMUX: '', TMUX_PANE: '' },
+  })
 }
 
 async function rpcSendKey({ tmux_session, key }) {
@@ -1812,7 +1845,7 @@ async function getOrSpawnEphemeralPty(tmuxSession) {
     name: 'xterm-256color',
     cols: 120,
     rows: 40,
-    env: { ...process.env, TERM: 'xterm-256color' },
+    env: { ...process.env, TERM: 'xterm-256color', TMUX: '', TMUX_PANE: '' },
   })
   const state = { pty, alive: true, teardownTimer: null }
   state.teardownTimer = setTimeout(() => teardownEphemeral(tmuxSession), EPHEMERAL_TTL_MS)
@@ -2135,7 +2168,7 @@ async function rpcStartTerminalWatch({ tmux_session, agent_id, poll_ms }) {
     name: 'xterm-256color',
     cols: size.cols,
     rows: size.rows,
-    env: { ...process.env, TERM: 'xterm-256color' },
+    env: { ...process.env, TERM: 'xterm-256color', TMUX: '', TMUX_PANE: '' },
   })
 
   const state = { pty, alive: true, recentOutput: '', lastPromptSurfaced: '', cols: size.cols, rows: size.rows, sizePoll: null }
@@ -2228,6 +2261,7 @@ function rpcTerminalInput({ tmux_session, data }) {
 
 const _activeSpawns = new Map()
 const STARTUP_FAILURE_PROBE_MS = Number(process.env.TLDA_SPAWN_STARTUP_FAILURE_PROBE_MS || 2500)
+const SPAWN_LAUNCH_TIMEOUT_MS = Number(process.env.TLDA_SPAWN_LAUNCH_TIMEOUT_MS || 20000)
 const _reportedStartupFailures = new Set()
 
 function parseSpawnLaunch(stdout = '', fallbackName = null) {
@@ -2238,16 +2272,16 @@ function parseSpawnLaunch(stdout = '', fallbackName = null) {
 }
 
 async function probeSpawnStartupFailure({ agentName, agent_id, tmux_session, harness, model, respawn }) {
-  if (!agent_id || !tmux_session) return
+  if (!agent_id || !tmux_session) return null
   const dedupKey = `${agent_id}:${tmux_session}`
-  if (_reportedStartupFailures.has(dedupKey)) return
+  if (_reportedStartupFailures.has(dedupKey)) return null
   try {
     await new Promise(resolve => setTimeout(resolve, STARTUP_FAILURE_PROBE_MS))
     const { stdout } = await execFileP('tmux',
       [...TMUX_ARGS, 'capture-pane', '-t', tmux_session, '-p', '-e', '-S', '-120'],
       { timeout: 5000, encoding: 'utf8' })
     const failure = detectSpawnStartupFailureTranscript(stdout, { harness })
-    if (!failure) return
+    if (!failure) return null
     _reportedStartupFailures.add(dedupKey)
     sendMsg({
       type: 'spawn-startup-failed',
@@ -2261,8 +2295,10 @@ async function probeSpawnStartupFailure({ agentName, agent_id, tmux_session, har
       reason: failure.reason,
       snippet: failure.snippet,
     })
+    return failure
   } catch (e) {
     log.warn(`startup failure probe failed for ${agentName || agent_id}: ${e.message}`)
+    return null
   }
 }
 
@@ -2272,7 +2308,7 @@ async function rpcSpawn({ name, model, kind, cwd, doc, respawn, refresh, effort,
     const age = Date.now() - _activeSpawns.get(agentName)
     if (age < 90_000) {
       log.info(`spawn deduped: ${agentName} already spawning (${Math.round(age / 1000)}s ago)`)
-      return { ok: true, name: agentName, deduped: true }
+      return { ok: false, name: agentName, deduped: true, error: `${agentName} is already spawning; no new terminal/session has been verified yet` }
     }
     _activeSpawns.delete(agentName)
   }
@@ -2305,34 +2341,54 @@ async function rpcSpawn({ name, model, kind, cwd, doc, respawn, refresh, effort,
   const spawnScript = override || 'tlda'
   const spawnArgs = override ? args : ['agent', 'spawn', ...args]
   _activeSpawns.set(agentName, Date.now())
-  execFile(spawnScript, spawnArgs, {
-    timeout: 120_000,
-    env: { ...process.env, PATH: process.env.PATH, TMUX: '' },
-  }, (err, stdout, stderr) => {
-    _activeSpawns.delete(agentName)
-    if (err) {
-      log.warn(`fleet-spawn finished with error: ${agentName}: ${stderr || err.message}`)
-      // Spawn is fire-and-forget (we already returned ok:true), so this async
-      // failure is invisible to the server unless we report it. Surface it so a
-      // chat-wake that can't resume an agent isn't silently swallowed.
-      const detail = ((stderr || err.message || '').trim().split('\n').filter(Boolean).pop()) || 'unknown error'
-      sendMsg({ type: 'daemon-warning', message: `couldn't ${respawn ? 'wake' : 'spawn'} ${agentName} — ${detail}` })
-    } else {
-      log.info(`fleet-spawn finished: ${agentName}: ${stdout.trim()}`)
-      const launched = parseSpawnLaunch(stdout, agentName)
-      if (launched) {
-        probeSpawnStartupFailure({
-          agentName,
-          agent_id: launched.agent_id,
-          tmux_session: launched.tmux_session,
-          harness: kind || null,
-          model: model || null,
-          respawn,
-        })
+  try {
+    const { stdout, stderr } = await execFileP(spawnScript, spawnArgs, {
+      timeout: SPAWN_LAUNCH_TIMEOUT_MS,
+      env: { ...process.env, PATH: process.env.PATH, TMUX: '' },
+    })
+    log.info(`fleet-spawn finished: ${agentName}: ${stdout.trim()}`)
+    const launched = parseSpawnLaunch(stdout, agentName)
+    if (!launched?.tmux_session) {
+      const detail = (stdout || stderr || '').trim().split('\n').filter(Boolean).pop() || 'launcher did not report a fleet tmux session'
+      return { ok: false, name: agentName, error: `spawn did not produce a verifiable tmux session: ${detail}` }
+    }
+    try {
+      await tmux('has-session', '-t', launched.tmux_session)
+    } catch (e) {
+      const detail = ((e.stderr || e.message || '').trim().split('\n').filter(Boolean).pop()) || 'tmux session check failed'
+      return {
+        ok: false,
+        name: agentName,
+        agent_id: launched.agent_id,
+        tmux_session: launched.tmux_session,
+        error: `spawn launcher returned but tmux session is not usable: ${detail}`,
       }
     }
-  })
-  return { ok: true, name: agentName, async: true }
+    // Fire the startup-failure probe DETACHED, don't block the reply on it.
+    // The probe self-reports any failure via a `spawn-startup-failed` message,
+    // which the server handles independently of this RPC's result (see
+    // unified-server.mjs `spawn-startup-failed` handler). Awaiting it here only
+    // added its fixed STARTUP_FAILURE_PROBE_MS delay to the round-trip, pushing
+    // spawns past the caller's 10s RPC/WS window — a false-fail that the caller
+    // then retried into duplicate agents, even though the spawn had succeeded.
+    // Reply as soon as the tmux session is verified; surface failures async.
+    probeSpawnStartupFailure({
+      agentName,
+      agent_id: launched.agent_id,
+      tmux_session: launched.tmux_session,
+      harness: kind || null,
+      model: model || null,
+      respawn,
+    }).catch(e => log.warn(`detached startup-failure probe errored for ${agentName}: ${e.message}`))
+    return { ok: true, name: agentName, agent_id: launched.agent_id, tmux_session: launched.tmux_session }
+  } catch (e) {
+    const detail = ((e.stderr || e.message || '').trim().split('\n').filter(Boolean).pop()) || 'unknown error'
+    log.warn(`fleet-spawn finished with error: ${agentName}: ${e.stderr || e.message}`)
+    sendMsg({ type: 'daemon-warning', message: `couldn't ${respawn ? 'wake' : 'spawn'} ${agentName} — ${detail}` })
+    return { ok: false, name: agentName, error: detail }
+  } finally {
+    _activeSpawns.delete(agentName)
+  }
 }
 
 // --- Agent death detection ---
@@ -3346,6 +3402,7 @@ function connect() {
         hostname: HOSTNAME,
         version: VERSION,
         boot_id: BOOT_ID,
+        install_path: INSTALL_PATH,
       })
     },
     onMessage: handleServerMessage,

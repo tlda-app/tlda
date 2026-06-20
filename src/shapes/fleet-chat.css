@@ -965,11 +965,6 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   display: block;
   cursor: pointer;
 }
-.fleet-chat-shape .chat-image-shared-doc {
-  width: 75%;
-  max-width: 75%;
-}
-
 /* Lightbox overlay for full-size image viewing (appended to body) */
 .chat-lightbox {
   position: fixed;
@@ -1037,6 +1032,11 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   overflow-y: auto;
   font-size: 14px;
   line-height: 1.6;
+  /* Touch: allow vertical scroll-to-read with momentum, and keep the gesture
+     from bubbling to the canvas behind the overlay. */
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  overscroll-behavior: contain;
 }
 .chat-lightbox-md-body p { margin: 0 0 0.8em; }
 .chat-lightbox-md-body p:last-child { margin-bottom: 0; }
@@ -1793,6 +1793,13 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   border-radius: 2px;
   padding: 0 4px;
 }
+.fleet-agents-shape .fleet-agents-detail-cap {
+  flex-shrink: 0;
+  opacity: 0.55;
+  background: rgba(129, 199, 132, 0.15);
+  border-radius: 2px;
+  padding: 0 4px;
+}
 
 /* --- Column widths --- */
 
@@ -1818,15 +1825,6 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.fleet-agents-shape .fleet-agents-task-model {
-  flex-shrink: 0;
-  max-width: 72px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: #7a9ec8;
-  opacity: 0.9;
 }
 
 .fleet-agents-shape .fleet-agents-col-labels {
@@ -2343,15 +2341,39 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   gap: 3px;
   background: rgba(99, 160, 219, 0.15);
   border-color: rgba(99, 160, 219, 0.25);
-  color: var(--accent);
+  color: var(--text-bright, #c0c0d4);
+  max-width: min(100%, 360px);
+  min-width: 0;
+  overflow: hidden;
 }
 .fleet-chat-shape .ref-chip-doc:hover {
-  background: rgba(99, 160, 219, 0.25);
-  border-color: rgba(99, 160, 219, 0.45);
+  background: rgba(99, 160, 219, 0.28);
+  border-color: rgba(130, 190, 245, 0.55);
+  color: #edf6ff;
 }
 .fleet-chat-shape .ref-chip-doc-icon {
   font-size: 10px;
   line-height: 1;
+  flex: 0 0 auto;
+}
+.fleet-chat-shape .ref-chip-doc-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  color: inherit;
+}
+.fleet-chat-shape .ref-chip-doc-summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  color: var(--text, #a8a8c0);
+  font-weight: 400;
+}
+.fleet-chat-shape .ref-chip-doc-summary::before {
+  content: " — ";
+  color: var(--text-dim, #8888a0);
 }
 .fleet-chat-shape .ref-chip-broken {
   background: rgba(200, 100, 60, 0.12);
@@ -2869,22 +2891,37 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   color: #9370db;
 }
 
-/* Terminal, magnet, then traffic toggle: inline chrome floats over the textfield. */
-.fleet-chat-shape .fleet-hardlock-toggle {
+/* Terminal, traffic toggle, then magnet: inline chrome floats over the textfield.
+   The three controls live in a tight flex cluster (.fleet-composer-gutter) so
+   they sit adjacent regardless of the traffic label width — no dead gap. The
+   container is pointer-events:none so the inter-button gaps fall through to the
+   textarea; each button re-enables pointer events. Every button is the full
+   row height (touch target) with a transparent box, so nothing drawn moves. */
+.fleet-chat-shape .fleet-composer-gutter {
   position: absolute;
-  left: 20px;
-  top: 50%;
-  transform: translateY(-50%);
+  left: 6px;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  z-index: 2;
+  pointer-events: none;
+}
+.fleet-chat-shape .fleet-hardlock-toggle {
+  order: 3;
+  pointer-events: auto;
+  height: 36px;
   border: none;
   background: transparent;
   color: inherit;
   cursor: pointer;
   opacity: 0.05;
   transition: opacity 0.3s;
-  padding: 0;
+  padding: 0 4px;
   display: flex;
   align-items: center;
-  z-index: 2;
+  justify-content: center;
   line-height: 1;
 }
 .fleet-chat-shape .fleet-hardlock-toggle:hover {
@@ -2896,34 +2933,36 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 }
 
 .fleet-chat-shape .fleet-terminal-icon {
-  position: absolute;
-  left: 4px;
-  top: 50%;
-  transform: translateY(-50%);
+  order: 1;
+  pointer-events: auto;
+  height: 36px;
   border: none;
   background: transparent;
   color: inherit;
   cursor: pointer;
   opacity: 0.05;
   transition: opacity 0.3s;
-  padding: 0;
+  padding: 0 4px;
   display: flex;
   align-items: center;
-  z-index: 2;
+  justify-content: center;
   line-height: 1;
 }
 .fleet-chat-shape .fleet-terminal-icon:hover {
   opacity: 0.55;
 }
 
-/* Composer traffic toggle — text-only control in the same chrome as terminal. */
+/* Composer traffic toggle — text-only control, a flex item in the gutter.
+   The box is the full row height (36px) and hugs the glyph with side padding
+   so it is actually tappable on touch — the old glyph-sized 12x20 box was
+   unhittable by hand and impossible on iPad. The box is transparent, so the
+   drawn glyph is unchanged; it just gets a real hit area, and the flex cluster
+   places the magnet button right beside it (no dead gap). */
 .fleet-chat-shape .fleet-composer-traffic-toggle {
-  position: absolute;
-  left: 36px;
-  top: 50%;
-  transform: translateY(-50%);
+  order: 2;
+  pointer-events: auto;
   min-width: 0;
-  height: 20px;
+  height: 36px;
   border: none;
   border-radius: 0;
   background: transparent;
@@ -2931,15 +2970,22 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   cursor: pointer;
   opacity: 0.22;
   transition: opacity 0.3s;
-  padding: 0 2px;
+  padding: 0 6px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  z-index: 2;
   line-height: 1;
   font: inherit;
   font-size: 9px;
   white-space: nowrap;
+  /* Touch hygiene for a tap target whose content is text: don't let a tap or
+     long-press select the "DM"/"All" label, and remove the tap delay. (The
+     actual touch fix is driving the cycle from onPointerUp in the component —
+     on touch this text label never synthesizes a click; see FleetChatShape.) */
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  touch-action: manipulation;
 }
 .fleet-chat-shape .fleet-composer-traffic-toggle:hover,
 .fleet-chat-shape .fleet-composer-traffic-toggle:focus-visible {

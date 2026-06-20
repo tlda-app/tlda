@@ -91,7 +91,7 @@ async function main() {
   await c.rpc('register', { id: AGENT, name: 'wt1' })
 
   // add a wiretap
-  const f1 = [[["from", "fleet:skip"]]]
+  const f1 = 'from:fleet:skip'
   const tap = await c.rpc('wiretap-add', { agent: AGENT, filter: f1, types: ['chat'] })
   check('wiretap-add returns a numeric id', tap && Number.isFinite(tap.id), `got ${JSON.stringify(tap)}`)
   check('wiretap-add preserves event types over WS', Array.isArray(tap.types) && tap.types[0] === 'chat', `got ${JSON.stringify(tap)}`)
@@ -112,8 +112,8 @@ async function main() {
   check('removed tap no longer in list', Array.isArray(list) && !list.some(t => t.id === tap.id), `got ${JSON.stringify(list)}`)
 
   // remove-all path: add two, remove each by tap_id, list empty
-  const a = await c.rpc('wiretap-add', { agent: AGENT, filter: [[["from", "fleet:a"]]] })
-  const b = await c.rpc('wiretap-add', { agent: AGENT, filter: [[["from", "fleet:b"]]] })
+  const a = await c.rpc('wiretap-add', { agent: AGENT, filter: 'from:fleet:a' })
+  const b = await c.rpc('wiretap-add', { agent: AGENT, filter: 'from:fleet:b' })
   for (const t of [a, b]) await c.rpc('wiretap-remove', { tap_id: t.id })
   list = await c.rpc('wiretap-list', { agent: AGENT })
   check('remove-all leaves no taps', Array.isArray(list) && list.length === 0, `got ${JSON.stringify(list)}`)
@@ -124,8 +124,8 @@ async function main() {
   check('wiretap-remove with no tap_id is rejected', valErr === 'invalid id', `got ${valErr}`)
 
   let filterErr = null
-  try { await c.rpc('wiretap-add', { agent: AGENT, filter: [[["sender", "fleet:skip"]]] }) } catch (e) { filterErr = e.message }
-  check('wiretap-add rejects malformed directional DNF', filterErr?.startsWith('bad filter:'), `got ${filterErr}`)
+  try { await c.rpc('wiretap-add', { agent: AGENT, filter: 'from:skip &' }) } catch (e) { filterErr = e.message }
+  check('wiretap-add rejects malformed filter expression', filterErr?.startsWith('bad filter:'), `got ${filterErr}`)
 
   try { c.ws.close() } catch {}
   console.log(`\n[wiretap-itest] === ${pass} pass / ${fail} fail ===`)

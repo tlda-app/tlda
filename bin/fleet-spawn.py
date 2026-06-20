@@ -40,7 +40,29 @@ import websocket
 
 CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".config", "tlda", "config.json")
 CODEX_CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".codex", "config.toml")
-DEFAULT_SPAWN_CAPABILITY = "workspace-write+net"
+DEFAULT_SPAWN_CAPABILITY = "write"
+
+
+def normalize_spawn_capability(capability, region=None):
+    """Map any capability (old machine vocabulary or the four names) to one of
+    Skip's four rungs: read / write / tlda-write / full. The region disambiguates
+    the legacy write/tlda-write split (both were `workspace-write`). Mirrors
+    legacyRung() in server/lib/spawn-policy.mjs. The daemon and CLI now emit the
+    four names; this is migration tolerance for any stale old-vocabulary value.
+    `workspace-write-no-net` -> write (net is always on now)."""
+    if capability is None:
+        return None
+    raw = str(capability).strip().lower()
+    if raw in ("read", "write", "tlda-write", "full"):
+        return raw
+    if raw == "read-only":
+        return "read"
+    if raw == "full-access":
+        return "full"
+    if raw in ("workspace-write", "workspace-write+net", "workspace-write-no-net"):
+        reg = None if region is None else str(region).strip().lower()
+        return "tlda-write" if reg == "tlda-projects" else "write"
+    return raw
 
 
 def read_config():
@@ -739,7 +761,28 @@ def find_agent(name):
     # fresh spawn. Matches /api/check-name and the server's findAgent, which
     # both filter dead — find_agent was the lone holdout, so a stale dead row
     # made `fresh()` refuse with "already exists".
-    return next((a for a in agents if a.get("friendly_name") == name and not a.get("dead")), None)
+    #
+    # Liveness-aware tiebreak (Skip's spec S1 / G.22): when more than one
+    # non-dead agent shares this name, a bare `next()` picks an ARBITRARY one —
+    # which can be a corrupted-but-not-dead-marked namesake shadowing the live
+    # holder. Prefer the most-recently-active. The server (the single authority)
+    # already resolves the live holder and passes a `fleet:` id (handled above),
+    # so this is defense-in-depth for a direct CLI `tlda agent spawn <name>`.
+    matches = [a for a in agents if a.get("friendly_name") == name and not a.get("dead")]
+    if not matches:
+        return None
+    if len(matches) == 1:
+        return matches[0]
+
+    def _last_seen(a):
+        v = a.get("last_seen") or a.get("last_active") or 0
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return 0.0
+
+    matches.sort(key=_last_seen, reverse=True)
+    return matches[0]
 
 
 def check_name_collisions(name):
@@ -782,9 +825,45 @@ DEFAULT_TRUSTED_MCP_SERVERS = {
         "defaultToolsApprovalMode": "approve",
     },
 }
+PLAYWRIGHT_CACHE_ROOT = os.path.expanduser("~/Library/Caches/ms-playwright")
+TLDA_FENCE_TMP_ROOT = "/tmp/tlda-fence-env"
+# The shared playwright-cli daemon's client<->daemon UNIX socket. cli/lib/pw.mjs
+# pins PLAYWRIGHT_DAEMON_SOCKETS_DIR here so it lands under /tmp (shared 1:1 with
+# the fence) instead of $TMPDIR (which the fence remaps). A fenced app agent drives
+# the OUT-of-fence browser by connecting to this socket, so the lease must whitelist
+# AF_UNIX connect to it (macOS denies unix-socket connect by default even with
+# allowLocalOutbound, which only covers TCP loopback). Without this a fenced
+# `tlda-dev pw` reads the live session as "closed" and kills the real browser.
+TLDA_PW_SOCKETS_ROOT = "/tmp/tlda-pw-sockets"
+# Global fence switch (Skip 2026-06-19). When True, every LIVE spawn is forced
+# unsandboxed (applied at the launch sites via _live_spawn_policy, NOT the pure
+# resolver, so leases + the run-through gate still compute real fenced configs).
+# It is now ON (False): fresh spawns are fenced by default. An EXPLICIT --policy
+# still overrides this either way, so the fence stays per-agent testable. The
+# fence was made genuinely usable first (keychain auth, browser drive over the
+# pw daemon socket, fleet WS via the DNS alias, no-prompt via
+# --dangerously-skip-permissions, memory writes, cold-browser guard), so turning
+# it on no longer breaks an agent's job -- it just removes the unsandboxed
+# default. Flip back to True only to globally disable the fence.
+FENCE_GLOBALLY_DISABLED = True
+# Permission mode per sandbox policy. THE POINT OF THE FENCE (Skip 2026-06-19):
+# a fenced agent does normal work with ZERO Claude permission prompts -- the
+# fence is the security boundary, so Claude's interactive approvals are redundant
+# torture ("I am being tortured by Claude's permissions... I want security against
+# them doing things that are truly awful. That was the point of the fence").
+# So every policy runs bypassPermissions: no prompts. The guardrail against
+# "wildly inappropriate" actions is the fence itself (write-root scoping, secret
+# read-deny, command-deny for push/sudo/publish, network allowlist) for fenced
+# policies, and the family/trust ceiling for unsandboxed (only trusted families
+# get full-access). "auto" still prompted for out-of-workspace writes (memory!),
+# which is exactly the approval torture this removes.
 DEFAULT_CLAUDE_PERMISSION_MODES = {
-    "cwd": "auto",
-    "tlda-projects": "auto",
+    "cwd": "bypassPermissions",
+    "tlda-projects": "bypassPermissions",
+    # NOTE: no "unsandboxed" entry. bypassPermissions is safe ONLY because the
+    # fence is the guardrail; an UNSANDBOXED agent with no prompts has no
+    # guardrail at all, so unsandboxed keeps its prior behavior (Claude default).
+    # The cwd/tlda-projects entries only take effect when the fence is ON.
 }
 FENCE_AGENT_WRITE_ROOTS = [
     "/tmp",
@@ -792,6 +871,15 @@ FENCE_AGENT_WRITE_ROOTS = [
     "~/.codex/**",
     "~/.claude*",
     "~/.claude/**",
+    # Auto-memory: ~/.claude/projects/<proj>/memory is a SYMLINK to
+    # ~/work/dot-claude-memory/<proj>, and the fence resolves the symlink and
+    # checks the TARGET. Without the target as a write root, every agent memory
+    # write is denied ("operation not permitted") — which is the exact opposite
+    # of Skip's goal (agents write memory freely, no prompts). Allow the real
+    # store. (Memory is per-fleet-id scoped; writing junk to it isn't "truly
+    # awful", so this is fine for fenced/untrusted agents too.)
+    "~/work/dot-claude-memory",
+    "~/work/dot-claude-memory/**",
     "~/.opencode/**",
     "~/.cursor/**",
     "~/.local/state/**",
@@ -809,8 +897,24 @@ FENCE_AGENT_READ_ROOTS = [
     "~/.config/fence",
     "~/Library/Application Support/mkcert",
     "~/Library/Preferences",
+    # Claude's OAuth token is NOT in ~/.claude.json -- on macOS it lives in the
+    # login Keychain item "Claude Code-credentials" and is read via
+    # `security find-generic-password`. A read-denied keychain-db => the agent
+    # boots "Not logged in - Run /login". Keep this explicit so the keychain
+    # stays readable even if defaultDenyRead is ever re-tightened. (Proven
+    # 2026-06-19: fence without this => keychain read fails => Claude unauth'd.)
+    "~/Library/Keychains",
 ]
 FENCE_DENY_READ = [
+    # Deny ALL of ~/.ssh, not just id_*/config: a private key with a non-standard
+    # name (e.g. ~/.ssh/mykey) would otherwise slip through (reads are permissive).
+    # Skip 2026-06-19: "deny all ~/.ssh/* except known_hosts -- that'd be smart."
+    # The fence's denyRead beats allowRead, so known_hosts can't be carved back
+    # out; it gets swept in too. That's fine -- known_hosts isn't a secret and
+    # fenced agents use https for git (github.com is allow-listed), so nothing a
+    # fenced agent legitimately does needs to read it.
+    "~/.ssh/*",
+    "~/.ssh/**",
     "~/.ssh/id_*",
     "~/.ssh/config",
     "~/.ssh/*.pem",
@@ -1004,6 +1108,36 @@ def resolve_sandbox_policy_name(harness, model, explicit_policy=None):
     return _validate_sandbox_policy(policy)
 
 
+def _live_spawn_policy(resolved_policy, explicit=False):
+    # See FENCE_GLOBALLY_DISABLED. Forces unsandboxed for LIVE spawns while the
+    # fence is globally off, without disturbing the pure resolver above.
+    # EXCEPTION: an EXPLICIT policy request (--policy / the MCP policy arg) is
+    # always honored, so the fence stays testable on a single agent without
+    # flipping the global default for the whole fleet. The global-off only
+    # governs the DEFAULT (capability-derived) policy.
+    # HISTORY (2026-06-19): the fence blocks the tmux server socket
+    # (/private/tmp/tmux-*/default → "Operation not permitted"), so fencing a
+    # capability/UI spawn fenced the daemon's `tmux new-session` → NO agent could
+    # spawn from the UI. ROOT CAUSE (found + fixed): the daemon
+    # (bin/lib/daemon-guards.mjs) passed the capability-DERIVED policy
+    # (spawnPolicy.policy, which is ALWAYS set) as --policy, so fleet-spawn read
+    # every UI spawn as an explicit fence request (sandbox_policy non-None →
+    # explicit=True) and fenced it even under the global-off. A first
+    # explicit-honoring revert was tested by advocate and FAILED for exactly this
+    # reason (a capability MCP spawn came back fenced); two emergency sledgehammers
+    # (`return "unsandboxed"`) bridged the gap. NOW the root cause is fixed:
+    # daemon-guards gates --policy on spawnPolicy.name (a genuinely NAMED policy),
+    # so capability-derived spawns travel via --spawn-capability only and resolve
+    # NON-explicitly. The explicit-honoring logic below is therefore correct:
+    # default (capability/UI/MCP) → unsandboxed under the global-off; only a real
+    # named --policy fences one agent; the daemon itself never fences. (The two
+    # emergency `return "unsandboxed"` sledgehammers are removed now that the
+    # daemon-guards fix is live — see git history if a regression recurs.)
+    if explicit:
+        return resolved_policy
+    return "unsandboxed" if FENCE_GLOBALLY_DISABLED else resolved_policy
+
+
 def _project_source_dirs_from_server():
     try:
         data = api_get("/api/projects")
@@ -1148,12 +1282,29 @@ def _fence_settings(policy):
         *FENCE_AGENT_WRITE_ROOTS,
     ])))
     deny_write = list(FENCE_DENY_WRITE)
-    if str(policy.get("git", "read")) != "write":
+    # A write-capable agent's own repo (.git is an explicit write root) needs
+    # local git -- status / add / commit / branch -- as part of its job, so the
+    # fence must not blanket-deny .git for it. The irrevocable and destructive
+    # commands (git push / reset / clean / checkout -- / rebase / merge, the
+    # publishes, sudo) stay blocked via command.deny below regardless. A
+    # read-only agent has no .git write root, so .git stays read-only for it.
+    repo_git_writable = str(policy.get("git", "read")) == "write" or _has_git_write_root(policy)
+    if not repo_git_writable:
         deny_write.extend(FENCE_GIT_READONLY_DENY)
     allowed_domains = list(FENCE_CODE_ALLOWED_DOMAINS)
     api_host = urlparse(API).hostname
     if api_host and api_host not in allowed_domains:
         allowed_domains.append(api_host)
+    # Network is ON by DEFAULT for every agent (Skip's spec: "every agent should
+    # use the Internet" -- deepseek reads math papers, math/sims reach cluster
+    # SSH). A normal `write` agent reaches the whole web. So when the lease grants
+    # network, allow all domains; the deniedDomains below still block cloud-
+    # metadata SSRF + telemetry. The OPT-IN `-no-net` restriction (which you set
+    # yourself by editing the fence config, never a default) keeps the curated
+    # allowlist (model APIs only): a no-net agent still reaches its model, nothing
+    # else.
+    if policy.get("network"):
+        allowed_domains = ["*"]
     api_local_outbound = _api_needs_local_outbound()
     network = {
         "allowedDomains": allowed_domains,
@@ -1166,12 +1317,30 @@ def _fence_settings(policy):
         ],
         "allowLocalBinding": bool(policy.get("network")) or api_local_outbound,
         "allowLocalOutbound": bool(policy.get("network")) or api_local_outbound,
+        # AF_UNIX connect is denied by the macOS sandbox even when
+        # allowLocalOutbound (TCP loopback) is on. A fenced app agent drives the
+        # shared OUT-of-fence browser by connecting to the playwright-cli daemon's
+        # unix socket under TLDA_PW_SOCKETS_ROOT, so whitelist that path. See
+        # TLDA_PW_SOCKETS_ROOT / cli/lib/pw.mjs.
+        "allowUnixSockets": [
+            TLDA_PW_SOCKETS_ROOT,
+            f"{TLDA_PW_SOCKETS_ROOT}/**",
+        ],
     }
     return {
         "allowPty": True,
         "network": network,
         "filesystem": {
-            "defaultDenyRead": True,
+            # Reads are PERMISSIVE: the fence constrains WRITES and network, not
+            # which dirs an agent may READ. Read-fencing is what kept blocking
+            # real jobs -- the macOS Keychain (Claude's OAuth token, => "Not
+            # logged in" when denied), the Playwright cache, xcrun's db,
+            # ~/.gitconfig. Skip 2026-06-19: "read whatever the fuck you want...
+            # ideal if you weren't able to read secrets, but whatever." So:
+            # default-allow read, and deny only the explicit secret FILES in
+            # FENCE_DENY_READ (ssh keys, aws/gcloud/kube creds, .netrc,
+            # git-credentials). denyRead takes precedence over the default.
+            "defaultDenyRead": False,
             "allowRead": allow_read,
             "denyRead": FENCE_DENY_READ,
             "allowWrite": allow_write,
@@ -1290,6 +1459,19 @@ def build_claude_cmd(fleet_id, tmux_session, model, effort=None, mode=None,
     parts = [f"FLEET_ID={fleet_id}", f"FLEET_TMUX_SESSION={tmux_session}"]
     if name:
         parts.append(f"FLEET_NAME={shlex.quote(name)}")
+    # DNS alias for the tlda server host (same as codex/goose). Claude passes its
+    # process env down to the tlda MCP subprocess, so this reaches the MCP's node.
+    # It matters under the FENCE: the sandbox can't resolve the Tailscale MagicDNS
+    # name (`getaddrinfo ENOTFOUND`), so the MCP's fleet WSS would die ("fleet WS:
+    # ✘") even though HTTPS-via-proxy works. The preload aliases the one API host to
+    # its tailnet IP so node skips getaddrinfo. No-op for unsandboxed agents (the
+    # host resolver already returns that IP).
+    dns_alias = _resolve_api_dns_alias()
+    if dns_alias and os.path.exists(NODE_DNS_ALIAS_PRELOAD):
+        host, address = dns_alias
+        parts.append(f"NODE_OPTIONS={shlex.quote(f'--require={NODE_DNS_ALIAS_PRELOAD}')}")
+        parts.append(f"TLDA_NODE_DNS_ALIAS_HOST={shlex.quote(host)}")
+        parts.append(f"TLDA_NODE_DNS_ALIAS_ADDR={shlex.quote(address)}")
     parts.append("claude")
     if resume_id:
         parts.append(f"--resume {resume_id}")
@@ -1297,7 +1479,16 @@ def build_claude_cmd(fleet_id, tmux_session, model, effort=None, mode=None,
     parts.append(f"--model '{model}'")
     if effort:
         parts.append(f"--effort '{effort}'")
-    if mode:
+    if mode == "bypassPermissions":
+        # bypassPermissions via --permission-mode shows a blocking interactive
+        # "Yes, I accept" dialog on EVERY boot (no persisted skip-flag), which
+        # hangs a fleet spawn. --dangerously-skip-permissions is the non-
+        # interactive equivalent: bypass all permission checks, no dialog. The
+        # fence is the real guardrail (that's the whole point), so skipping
+        # Claude's prompts is exactly intended. Claude's own warning says this
+        # mode is for a sandboxed environment -- which under the fence it is.
+        parts.append("--dangerously-skip-permissions")
+    elif mode:
         parts.append(f"--permission-mode '{mode}'")
     if include_prompt:
         parts.append(shlex.quote(register_prompt(name)))
@@ -1305,7 +1496,71 @@ def build_claude_cmd(fleet_id, tmux_session, model, effort=None, mode=None,
 
 
 
-def build_goose_cmd(fleet_id, tmux_session, model, name=None):
+# Restrictive instruction sentences in the base deepseek recipe that tell a goose
+# it cannot write. For a write-capable goose we swap these for write-positive
+# guidance so it actually USES the developer tool. Kept as exact-match constants
+# so a recipe edit that breaks the match fails loudly in the test, not silently.
+_GOOSE_NOWRITE_LINE = (
+    "interface. You have no shell and no general file editing; everything you can\n"
+    "  do, you do through the fleet (`tlda`) MCP tools."
+)
+_GOOSE_WRITE_LINE = (
+    "interface, plus a developer tool. You CAN write and edit files and run shell\n"
+    "  commands within your sandboxed workspace; the fence constrains WHERE you may\n"
+    "  write (your project lane). You also have the fleet (`tlda`) MCP tools."
+)
+_GOOSE_NOWRITE_BULLET = (
+    "  - You cannot edit arbitrary files or run shell commands. If you need to produce\n"
+    "    written output, put it in a scratch file via the scratch tools, or say it in\n"
+    "    `chat`. Never claim to have changed something you cannot change."
+)
+_GOOSE_WRITE_BULLET = (
+    "  - You CAN edit files and run shell commands within your sandboxed workspace\n"
+    "    via the developer tool. Write real output to disk where the task needs it;\n"
+    "    the fence keeps you in your lane. Never claim to have changed something you\n"
+    "    did not actually change."
+)
+
+
+def goose_capability_launch(base_recipe, state_dir, capability):
+    """Return (recipe_path, extra_goose_args) for a goose spawn at `capability`.
+
+    Skip's fence+harness coupling, BOTH HALVES gated together:
+      * write / tlda-write / full -> the developer (shell+fs) builtin is added via
+        `--with-builtin developer`, AND a per-agent recipe whose instructions tell
+        the agent it MAY write its workspace. A tool with a "don't write"
+        instruction is still no write, so both move as one.
+      * read (or unset) -> the base recipe (tlda-MCP-only instructions) and NO
+        builtin. Neither half.
+
+    `--with-builtin developer` is the only thing that actually loads the tool when
+    goose runs with --recipe — verified live that the recipe's `extensions:` block
+    and the sandbox profile's developer.enabled do NOT. The fence
+    (wrap_sandbox_cmd write_roots) still constrains WHERE; the tool does not bypass
+    it. Dependency: under the global fence-off a write goose is shell+fs
+    unsandboxed (same risk as every other agent tonight, not net-new); the restored
+    fence (#6/D2, operator's gate) makes it dev-tools-on AND fenced — not flipped
+    here.
+    """
+    if normalize_spawn_capability(capability) not in ("write", "tlda-write", "full"):
+        return base_recipe, []
+    try:
+        with open(base_recipe) as f:
+            text = f.read()
+    except OSError:
+        return base_recipe, ["--with-builtin developer"]  # tool at least
+    text = text.replace(_GOOSE_NOWRITE_LINE, _GOOSE_WRITE_LINE, 1)
+    text = text.replace(_GOOSE_NOWRITE_BULLET, _GOOSE_WRITE_BULLET, 1)
+    os.makedirs(state_dir, exist_ok=True)
+    per_recipe = os.path.join(state_dir, "fleet-deepseek.yaml")
+    tmp = per_recipe + f".tmp-{os.getpid()}"
+    with open(tmp, "w") as f:
+        f.write(text)
+    os.replace(tmp, per_recipe)
+    return per_recipe, ["--with-builtin developer"]
+
+
+def build_goose_cmd(fleet_id, tmux_session, model, name=None, capability=None):
     """Build the shell command for a Goose-backed DeepSeek fleet agent.
 
     Mirrors build_claude_cmd's identity env (FLEET_ID/FLEET_NAME/TMUX) but
@@ -1347,6 +1602,12 @@ def build_goose_cmd(fleet_id, tmux_session, model, name=None):
     os.makedirs(data_dir, exist_ok=True)
     os.makedirs(cache_dir, exist_ok=True)
     os.makedirs(xdg_state_dir, exist_ok=True)
+    # Capability decides whether the developer (shell+fs) extension boots and
+    # whether the instructions permit writing: a write/tlda-write/full goose gets
+    # the developer builtin AND a per-agent recipe whose instructions allow
+    # writing its workspace (still fenced by wrap_sandbox_cmd); a read goose gets
+    # neither (tlda-MCP-only). Both halves move together.
+    recipe, dev_args = goose_capability_launch(recipe, state_dir, capability)
     parts = [
         f"FLEET_ID={fleet_id}",
         f"FLEET_TMUX_SESSION={tmux_session}",
@@ -1372,6 +1633,7 @@ def build_goose_cmd(fleet_id, tmux_session, model, name=None):
     parts.append(shlex.quote(GOOSE_BIN))
     parts.append("run")
     parts.append(f"--recipe {shlex.quote(recipe)}")
+    parts.extend(dev_args)  # --with-builtin developer for write-capable goose
     parts.append("--params provider=openrouter")
     parts.append(f"--params model={shlex.quote(model)}")
     # Stamp the goose session with a fleet-derived NAME so the daemon can map a
@@ -1400,11 +1662,14 @@ def codex_sandbox_for_capability(capability, outer_sandbox=False):
         # Fence is the fleet permission model. Avoid nesting Codex's macOS
         # sandbox inside fence; nested sandbox-exec fails before commands run.
         return "danger-full-access"
-    if capability == "full-access":
+    cap = normalize_spawn_capability(capability)
+    if cap == "full":
         return "danger-full-access"
-    if capability == "read-only":
+    if cap == "read":
         return "read-only"
-    # workspace-write-no-net / workspace-write+net / unset → codex's middle tier
+    # write / tlda-write / unset → codex's middle tier. (read-only,
+    # workspace-write, danger-full-access are Codex's OWN API vocabulary — the one
+    # foreign-API boundary where a non-tlda string legitimately survives.)
     return "workspace-write"
 
 
@@ -1414,10 +1679,10 @@ def codex_workspace_write_config_args(capability, cwd=None):
     `-s workspace-write` alone only gives file-write access inside the checkout.
     Codex keeps `.git` read-only unless it is an explicit writable root, and the
     TLDA daemon/server controls live under ~/.config/tlda. A manager-capable
-    `workspace-write+net` agent needs both: commit checkpoints and inspect/control
+    `workspace-write` agent needs both: commit checkpoints and inspect/control
     the local TLDA service without escalating all the way to danger-full-access.
     """
-    if capability != "workspace-write+net":
+    if normalize_spawn_capability(capability) not in ("write", "tlda-write"):
         return []
     args = ["-c " + shlex.quote("sandbox_workspace_write.network_access=true")]
     workdir = cwd or os.getcwd()
@@ -1511,17 +1776,39 @@ def _api_needs_local_outbound():
     )
 
 
+def _has_git_write_root(policy):
+    """True if the policy makes an agent's own .git directory a writable root.
+
+    apply_spawn_capability_to_policy adds <cwd>/.git to write_roots for a
+    project-write capability, so this is how we tell an agent that legitimately
+    needs local git (commit/add/branch) apart from a read-only one. The
+    irrevocable/destructive git commands stay denied via FENCE_COMMAND_DENY
+    regardless of this.
+    """
+    for root in policy.get("write_roots") or []:
+        if os.path.basename(os.path.normpath(str(root))) == ".git":
+            return True
+    return False
+
+
 def apply_spawn_capability_to_policy(policy, capability, cwd):
     if not policy:
         return policy
-    if capability == "read-only":
+    cap = normalize_spawn_capability(capability)
+    if cap == "read":
         policy["write_roots"] = []
         return policy
-    if capability != "workspace-write+net":
+    # write and tlda-write both get the dev write-roots below; the broader
+    # tlda-projects breadth for tlda-write is added by its sandbox region
+    # (sandbox_roots_for_policy('tlda-projects')), not here. full leaves the
+    # policy unfenced.
+    if cap not in ("write", "tlda-write"):
         return policy
     policy["network"] = True
     roots = set(policy.get("write_roots") or [])
     roots.add(os.path.abspath(os.path.expanduser("~/.config/tlda")))
+    roots.add(os.path.abspath(PLAYWRIGHT_CACHE_ROOT))
+    roots.add(os.path.abspath(TLDA_FENCE_TMP_ROOT))
     if cwd:
         roots.add(os.path.abspath(os.path.join(cwd, ".git")))
     policy["write_roots"] = sorted(roots)
@@ -1530,9 +1817,14 @@ def apply_spawn_capability_to_policy(policy, capability, cwd):
 
 
 def sandbox_policy_for_spawn_capability(capability):
-    if capability == "full-access":
+    # The fence region travels INSIDE the four-name rung now (tlda-write carries
+    # its own tlda-projects region; it is no longer a separate --policy arg).
+    cap = normalize_spawn_capability(capability)
+    if cap == "full":
         return "unsandboxed"
-    if capability in ("read-only", "workspace-write-no-net", "workspace-write+net"):
+    if cap == "tlda-write":
+        return "tlda-projects"
+    if cap in ("read", "write"):
         return "cwd"
     return None
 
@@ -1628,13 +1920,6 @@ def build_codex_cmd(fleet_id, tmux_session, model=None, resume_id=None,
     if cwd:
         parts.append(f"-C {shlex.quote(cwd)}")
     parts.append(f"-s {codex_sandbox_for_capability(capability, outer_sandbox=outer_sandbox)}")
-    # Let a sandboxed (workspace-write) codex agent drive the shared Playwright
-    # browser without needing danger-full-access: `tlda-dev pw` writes lock /
-    # session files under the ms-playwright cache, which sits OUTSIDE the
-    # workspace, so add it as a writable root. It's just caches — safe to widen.
-    # (Skip, 2026-06-17: "it's just caches" — GPT-5.5 codex agents do Playwright
-    # while staying sandboxed; no-sandbox is reserved for the rare real need.)
-    parts.append(f"--add-dir {shlex.quote(os.path.expanduser('~/Library/Caches/ms-playwright'))}")
     parts.append("-a never")
     return " ".join(parts)
 
@@ -1764,7 +2049,7 @@ class GooseHarness(HarnessAdapter):
     def build_cmd(self, fleet_id, sess, model, effort=None, mode=None,
                   resume_id=None, include_prompt=True, name=None, cwd=None,
                   capability=None, outer_sandbox=False):
-        return build_goose_cmd(fleet_id, sess, model, name=name)
+        return build_goose_cmd(fleet_id, sess, model, name=name, capability=capability)
 
     def no_resume_message(self):
         return "goose fresh re-brief"
@@ -2199,7 +2484,7 @@ def fresh(name, model, cwd, effort, mode, kind="claude", spawn_capability=None,
     cwd = resolve_spawn_cwd(cwd)
     adapter = harness_for_spawn(kind, model)
     model = adapter.resolve_model(model)
-    effective_policy = sandbox_policy or sandbox_policy_for_spawn_capability(spawn_capability)
+    effective_policy = _live_spawn_policy(sandbox_policy or sandbox_policy_for_spawn_capability(spawn_capability), explicit=bool(sandbox_policy))
     policy_name, dev_tools, _write_roots, _matched_root, policy = resolve_harness_sandbox(
         adapter.kind, model, cwd, explicit_policy=effective_policy)
     policy = apply_spawn_capability_to_policy(policy, spawn_capability, cwd)
@@ -2250,7 +2535,15 @@ def respawn(name, model, cwd, effort, mode, session_override=None,
     spawn_policy_name = spawn_policy.get("policy") if isinstance(spawn_policy, dict) else None
     adapter = harness_for_agent(agent, raw_model)
     model = adapter.resolve_model(raw_model)
-    effective_policy = sandbox_policy or spawn_policy_name or sandbox_policy_for_spawn_capability(spawn_capability)
+    # explicit = ONLY a command-line --policy (sandbox_policy). A STORED
+    # spawn_policy_name from the agent's metadata must NOT count as explicit:
+    # otherwise an agent that once got `cwd` metadata (e.g. spawned during a
+    # fence-on window) gets re-fenced on every respawn even though the fence is
+    # globally OFF -- which silently breaks the agent's job. With the fence off
+    # (FENCE_GLOBALLY_DISABLED), nothing is fenced unless a human passes --policy
+    # for a deliberate manual test. (When the fence is on, the resolved policy
+    # below still honors the stored policy; only the global-off bypass is gated.)
+    effective_policy = _live_spawn_policy(sandbox_policy or spawn_policy_name or sandbox_policy_for_spawn_capability(spawn_capability), explicit=bool(sandbox_policy))
     policy_name, dev_tools, _write_roots, _matched_root, policy = resolve_harness_sandbox(
         adapter.kind, model, cwd, explicit_policy=effective_policy)
     policy = apply_spawn_capability_to_policy(policy, spawn_capability, cwd)
@@ -2335,7 +2628,7 @@ def refresh(name, model, cwd, effort, mode, spawn_capability=None,
     raw_model = model or meta.get("model")
     adapter = harness_for_agent(agent, raw_model)
     model = adapter.resolve_model(raw_model)
-    effective_policy = sandbox_policy or sandbox_policy_for_spawn_capability(spawn_capability)
+    effective_policy = _live_spawn_policy(sandbox_policy or sandbox_policy_for_spawn_capability(spawn_capability), explicit=bool(sandbox_policy))
     policy_name, dev_tools, _write_roots, _matched_root, policy = resolve_harness_sandbox(
         adapter.kind, model, cwd, explicit_policy=effective_policy)
     policy = apply_spawn_capability_to_policy(policy, spawn_capability, cwd)

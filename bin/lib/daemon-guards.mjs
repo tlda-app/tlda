@@ -143,7 +143,18 @@ export function buildFleetSpawnArgs({
   if (effort) args.push('--effort', effort)
   if (mode) args.push('--mode', mode)
   if (spawnPolicy?.capability) args.push('--spawn-capability', spawnPolicy.capability)
-  if (spawnPolicy?.policy) args.push('--policy', spawnPolicy.policy)
+  // --policy ONLY for a genuinely operator-CUSTOM fence policy — a name that is
+  // NOT one of the four standard rungs. The four rungs (read/write/tlda-write/
+  // full) carry their fence region INSIDE the capability name (fleet-spawn's
+  // sandbox_policy_for_spawn_capability derives it), so they travel via
+  // --spawn-capability ONLY and resolve non-explicitly. Passing --policy for a
+  // standard rung would make fleet-spawn read it as an explicit fence request
+  // (sandbox_policy non-None -> explicit=True) and fence it even under
+  // FENCE_GLOBALLY_DISABLED -- which fenced the daemon/tmux and broke all UI
+  // spawns. Only a custom named policy fences a single agent.
+  if (spawnPolicy?.name && !['read', 'write', 'tlda-write', 'full'].includes(spawnPolicy.name)) {
+    args.push('--policy', spawnPolicy.policy)
+  }
   if (cwd) args.push('--cwd', cwd)
   args.push('--no-attach')
   return { agentName, args }

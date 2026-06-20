@@ -41,9 +41,11 @@ const { homedir, hostname } = os
 import { spawn as cpSpawn } from 'child_process'
 import { lookup as mimeLookup } from 'mime-types'
 import { DEFAULT_PORT, hasTls, getManagedBots, loadConfig, resolveConfig } from '../shared/config.mjs'
+import { normalizeUsageStatus } from '../shared/usage-status.mjs'
 import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
-import { labelsForAgent, parseFilter, evalExpr, validateDnfFilter } from '../shared/fleet-labels.mjs'
+import { labelsForAgent, parseFilter, evalExpr, evalExprDirectional } from '../shared/fleet-labels.mjs'
 import { phaseFromName, baseName, PHASES } from '../shared/lineage-name.mjs'
+import { daemonHelloDecision } from '../shared/daemon-identity.mjs'
 import { initProjectStore, listProjects, readProject, getProjectsDir } from './lib/project-store.mjs'
 import { resetStaleBuildStates, killAllBuilds, runBuild } from './lib/build-runner.mjs'
 import projectRoutes, { processProjectPush } from './routes/projects.mjs'
@@ -53,7 +55,7 @@ import * as tldaFeedback from './lib/tlda-feedback.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
 import { FleetStore } from './lib/fleet-store.mjs'
 import { createFleetRouter } from './routes/fleet.mjs'
-import { authorizeSpawn, projectCapabilityToMode } from './lib/spawn-policy.mjs'
+import { authorizeSpawn, coherentSpawnPolicy, projectCapabilityToMode, resolveProjectProfile } from './lib/spawn-policy.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -795,21 +797,30 @@ async function resolveSpawnTarget(name, respawn) {
   } catch (e) {
     console.error(`[spawn] raise failed for ${existing.id}: ${e.message}`)
   }
-  return { name: existing.friendly_name || name, respawn: true }
+  // Carry the resolved fleet-id, NOT the friendly name, into the wake. The name
+  // is re-resolvable to the wrong (dead/corrupted) namesake downstream; the id is
+  // the permanent anchor. fleet-spawn's `fleet:`-prefix branch resumes that exact
+  // identity's session. This is the S2 half of the wake fix (identity, not
+  // name-grep) — see scratch/registration-rules.md.
+  return { name: existing.id, respawn: true }
 }
 
 async function performAuthorizedSpawn(caller, msg) {
   if (!caller?.id) throw new Error('spawn caller identity is required')
   const {
     name, agent, model, doc, cwd, respawn, fresh, refresh, effort, kind, mode,
-    capability, spawnCapability,
+    capability, spawnCapability, trustOverride,
   } = msg || {}
   const shouldRespawn = !!respawn || (!fresh && !refresh && !!agent)
   let spawnName = fresh ? name : (agent || name)
   let refreshTarget = null
   if ((shouldRespawn || refresh) && agent) {
     const existing = fleetStore?.findAgent(agent)
-    spawnName = existing?.friendly_name || agent
+    // Carry the fleet-id (not the friendly name) so the wake targets that exact
+    // identity's session — fleet-spawn re-resolves a name to the wrong namesake,
+    // but resumes a `fleet:` id directly. findAgent is now liveness-aware, so it
+    // already picked the live holder; pass that choice through, don't re-grep.
+    spawnName = existing?.id || agent
     if (refresh) refreshTarget = existing
   }
   if (!spawnName) throw new Error(fresh ? 'fresh spawn requires name' : 'agent name required')
@@ -818,12 +829,20 @@ async function performAuthorizedSpawn(caller, msg) {
   if (refresh && spawnKind === 'codex') {
     throw new Error('codex refresh is not supported through MCP spawn; use respawn with a real resume handle')
   }
+  const config = loadConfig()
+  // The project a spawn lands in carries a default profile (the default fence).
+  // When the caller doesn't request a capability explicitly, inherit the
+  // project's profile — set-once, per-project, applies to everyone including
+  // Claude. authorizeSpawn still caps it by the model ceiling and the caller.
+  const profile = resolveProjectProfile(config, { doc, project: doc ? readProject(doc) : null })
+  const requestedCapability = capability || spawnCapability || profile
   const authorized = authorizeSpawn({
     caller,
-    requestedCapability: capability || spawnCapability,
+    requestedCapability,
     model,
     kind: spawnKind,
-    config: loadConfig(),
+    trustOverride,
+    config,
     serverOwnerId: SERVER_OWNER_ID,
   })
   const machineIds = [...daemonConnections.keys()]
@@ -1116,14 +1135,14 @@ app.post('/api/voice/whisper/stop', async (req, res) => {
 })
 
 // Lazy-start the deepgram bridge. Browser hits this when voice=deepgram is selected.
-// The deepgram bridge listens on TLS (wss) only when the mkcert localhost certs
-// exist — the SAME condition bin/deepgram-bridge.mjs uses to choose its server.
-// On Fly there are no mkcert certs, so the bridge runs on plain ws; matching the
-// scheme here is what lets the proxy actually reach it off Skip's local machine.
+// Deepgram is SDK-only (one implementation, Skip 6/19) — bin/deepgram-sdk-bridge.mjs.
+// The bridge listens on TLS (wss) only when the mkcert localhost certs exist — the
+// SAME condition the bridge uses to choose its server. On Fly there are no mkcert
+// certs, so the bridge runs on plain ws; matching the scheme here is what lets the
+// proxy actually reach it off Skip's local machine.
 const _dgCert = path.join(homedir(), '.config/tlda/localhost+2.pem')
 const _dgKey = path.join(homedir(), '.config/tlda/localhost+2-key.pem')
 const _dgWsScheme = existsSync(_dgCert) && existsSync(_dgKey) ? 'wss' : 'ws'
-const DEEPGRAM_BRIDGE_URL = `${_dgWsScheme}://127.0.0.1:8179`
 const DEEPGRAM_SDK_BRIDGE_URL = `${_dgWsScheme}://127.0.0.1:8180`
 
 async function isBridgeUp(bridgeUrl) {
@@ -1163,20 +1182,6 @@ async function spawnVoiceBridge({ bridgeUrl, scriptName, logName, label }) {
   return { ok: true, started: true, pid: child.pid }
 }
 
-app.post('/api/voice/deepgram/start', async (req, res) => {
-  try {
-    res.json(await spawnVoiceBridge({
-      bridgeUrl: DEEPGRAM_BRIDGE_URL,
-      scriptName: 'deepgram-bridge.mjs',
-      logName: 'deepgram-bridge.log',
-      label: 'deepgram raw',
-    }))
-  } catch (err) {
-    console.error('[voice] deepgram/start failed:', err.message)
-    res.status(500).json({ ok: false, error: err.message })
-  }
-})
-
 app.post('/api/voice/deepgram-sdk/start', async (req, res) => {
   try {
     res.json(await spawnVoiceBridge({
@@ -1187,17 +1192,6 @@ app.post('/api/voice/deepgram-sdk/start', async (req, res) => {
     }))
   } catch (err) {
     console.error('[voice] deepgram-sdk/start failed:', err.message)
-    res.status(500).json({ ok: false, error: err.message })
-  }
-})
-
-app.post('/api/voice/deepgram/stop', async (req, res) => {
-  try {
-    const { execSync } = await import('child_process')
-    try { execSync('pkill -f "deepgram-bridge.mjs" 2>/dev/null', { timeout: 3000 }) } catch {}
-    console.log('[voice] deepgram bridge stopped')
-    res.json({ ok: true })
-  } catch (err) {
     res.status(500).json({ ok: false, error: err.message })
   }
 })
@@ -1213,43 +1207,9 @@ app.post('/api/voice/deepgram-sdk/stop', async (req, res) => {
   }
 })
 
-// Probe the local deepgram bridge over TLS (the bridge runs an HTTPS WSS server
-// when the mkcert certs exist — see bin/deepgram-bridge.mjs). The self-signed
-// localhost cert is fine here, so rejectUnauthorized is off.
-async function probeDeepgramBridge() {
-  return isBridgeUp(DEEPGRAM_BRIDGE_URL)
-}
-
-// Ensure the deepgram bridge is running, spawning it if needed. Used by the
-// /voice/deepgram WS proxy so a device that can't reach 127.0.0.1:8179 (the
+// Ensure the (SDK) deepgram bridge is running, spawning it if needed. Used by the
+// /voice/deepgram-sdk WS proxy so a device that can't reach 127.0.0.1:8180 (the
 // iPad) still gets a live bridge. Concurrent callers share one spawn.
-let _deepgramBridgeStarting = null
-async function ensureDeepgramBridge() {
-  if (await probeDeepgramBridge()) return true
-  if (!_deepgramBridgeStarting) {
-    _deepgramBridgeStarting = (async () => {
-      const { spawn } = await import('child_process')
-      const { openSync } = await import('fs')
-      const { dirname, join } = await import('path')
-      const { fileURLToPath } = await import('url')
-      const here = dirname(fileURLToPath(import.meta.url))
-      const tldaRoot = dirname(here)
-      const bridgeScript = join(tldaRoot, 'bin', 'deepgram-bridge.mjs')
-      const logPath = join(process.env.HOME || '', '.config', 'tlda', 'deepgram-bridge.log')
-      const fd = openSync(logPath, 'a')
-      const child = spawn('node', [bridgeScript], { detached: true, stdio: ['ignore', fd, fd], cwd: tldaRoot })
-      child.unref()
-      console.log('[voice] deepgram bridge spawned (proxy ensure, pid', child.pid, ')')
-      for (let i = 0; i < 24; i++) {
-        await new Promise(r => setTimeout(r, 250))
-        if (await probeDeepgramBridge()) return
-      }
-    })().finally(() => { _deepgramBridgeStarting = null })
-  }
-  await _deepgramBridgeStarting
-  return probeDeepgramBridge()
-}
-
 let _deepgramSdkBridgeStarting = null
 async function ensureDeepgramSdkBridge() {
   if (await isBridgeUp(DEEPGRAM_SDK_BRIDGE_URL)) return true
@@ -1363,6 +1323,17 @@ app.post('/api/log', (req, res) => {
 
 app.get('/api/reaper/status', requireRead, (req, res) => {
   res.json(_lastReaperStatus || { error: 'no data yet' })
+})
+
+// Sanitized provider/account usage status for the usage-meter shape. Same data
+// as the `usage_status` MCP tool — manual/static config only, no scraping, no
+// tokens. The shape polls this; missing config returns an empty accounts list.
+app.get('/api/usage-status', requireRead, (req, res) => {
+  try {
+    res.json(normalizeUsageStatus(loadConfig()))
+  } catch (e) {
+    res.status(500).json({ error: `usage-status failed: ${e.message}` })
+  }
 })
 
 app.post('/api/reaper/kill', requireRead, async (req, res) => {
@@ -2593,14 +2564,13 @@ server.on('upgrade', async (req, socket, head) => {
     return
   }
 
-  // /voice/deepgram and /voice/deepgram-sdk — same-origin relays to local
-  // Deepgram bridges. A device that can't reach 127.0.0.1 (the iPad, where
-  // localhost is the iPad itself) connects here over the TLS the page is already
-  // authenticated on; we preserve binary PCM + text control framing both ways.
-  if (url.pathname === '/voice/deepgram' || url.pathname === '/voice/deepgram-sdk') {
-    const sdkMode = url.pathname === '/voice/deepgram-sdk'
-    const bridgeUrl = sdkMode ? DEEPGRAM_SDK_BRIDGE_URL : DEEPGRAM_BRIDGE_URL
-    const ensureBridge = sdkMode ? ensureDeepgramSdkBridge : ensureDeepgramBridge
+  // /voice/deepgram-sdk — same-origin relay to the local (SDK) Deepgram bridge.
+  // A device that can't reach 127.0.0.1 (the iPad, where localhost is the iPad
+  // itself) connects here over the TLS the page is already authenticated on; we
+  // preserve binary PCM + text control framing both ways.
+  if (url.pathname === '/voice/deepgram-sdk') {
+    const bridgeUrl = DEEPGRAM_SDK_BRIDGE_URL
+    const ensureBridge = ensureDeepgramSdkBridge
     voiceWss.handleUpgrade(req, socket, head, async (browserWs) => {
       const WS = (await import('ws')).default
       let upstream = null
@@ -2646,7 +2616,7 @@ server.on('upgrade', async (req, socket, head) => {
       })
       upstream.on('close', closeBoth)
       upstream.on('error', (err) => {
-        console.warn(`[voice-proxy:${sdkMode ? 'sdk' : 'raw'}] upstream error:`, err.message)
+        console.warn('[voice-proxy:sdk] upstream error:', err.message)
         closeBoth()
       })
     })
@@ -2747,6 +2717,21 @@ async function handleFleetWsMessage(ws, msg) {
         ? { ...(existing?.metadata || {}), ...(metadata || {}), ...(kind ? { kind } : {}) }
         : null,
       machine_id: machine_id || existing?.machine_id || null,
+    }
+    // Persist spawnPolicy ATOMICALLY as a coherent four-name rung. The shallow
+    // metadata merge above is what let partial spawnPolicy writes corrupt the
+    // blob across re-registrations (e.g. mathchat2's {read-only, unsandboxed});
+    // coercing to a coherent rung here means no new corruption can form. This is
+    // representation-only — the conferral level (the rung) is unchanged, so it
+    // never re-grants (a real capability change is the operator-gated sweep).
+    if (agent.metadata?.spawnPolicy) {
+      const coherent = coherentSpawnPolicy(agent.metadata.spawnPolicy)
+      if (coherent) {
+        agent.metadata = { ...agent.metadata, spawnPolicy: coherent }
+      } else {
+        const { spawnPolicy: _drop, ...rest } = agent.metadata
+        agent.metadata = rest
+      }
     }
     if (session_id && !agent.session_ids.includes(session_id)) {
       agent.session_ids = [...(agent.session_ids || []), session_id].slice(-10)
@@ -2935,7 +2920,22 @@ async function handleFleetWsMessage(ws, msg) {
           continue
         }
         console.log(`[respawn] waking ${agent.friendly_name || agentId} (${agentId})`)
-        await sendRpc(machineId, 'spawn', { name: agent.friendly_name || agentId, respawn: true })
+        // Wake by IDENTITY, not name. requestWake already resolved the exact
+        // fleet-id we mean (the Map is keyed by id, getAgent fetched that row);
+        // passing agent.friendly_name here would throw that away and force a
+        // name re-grep in fleet-spawn that could land on a different namesake.
+        // agentId is a `fleet:` id, which fleet-spawn resumes directly. This is
+        // the chat-wake entry point — the one that fires when Skip chats a
+        // hibernating agent — so identity must be carried here above all.
+        const spawnResult = await sendRpc(machineId, 'spawn', { name: agentId, respawn: true })
+        if (nudgeText && agent.tmux_session && terminalNudgeKind(agent)) {
+          await sendRpc(machineId, 'send-text', {
+            tmux_session: spawnResult?.tmux_session || agent.tmux_session,
+            text: nudgeText,
+            enter: true,
+            enter_delay_ms: agent?.metadata?.kind === 'codex' ? 400 : 0,
+          }).catch(e => console.warn(`[wake-nudge] post-respawn failed for ${agentId}: ${e.message}`))
+        }
         const wakeTs = new Date().toISOString()
         fleetStore.db.prepare(
           'INSERT INTO events (type, timestamp, from_id, to_id, text, metadata) VALUES (?, ?, ?, ?, ?, ?)'
@@ -3107,19 +3107,10 @@ async function handleFleetWsMessage(ws, msg) {
       const toLabels = labelsForAgent(fleetStore.findAgent(to) || { id: to })
       const wiretapRecipients = []
       for (const tap of taps) {
-        if (!tap.filter) continue
+        if (!tap._ast) continue // empty/unparseable filter (logged at hydrate) — never match-all
         if (tap.types && tap.types.length > 0 && !tap.types.includes('chat')) continue
-        let matches = false
-        try {
-          const f = typeof tap.filter === 'string' ? JSON.parse(tap.filter) : tap.filter
-          matches = f.some(clause =>
-            clause.every(([role, label]) => {
-              if (role === 'from') return fromLabels.includes(label)
-              if (role === 'to') return toLabels.includes(label)
-              return false
-            })
-          )
-        } catch {}
+        // Directional string expression: to:/from: leaf prefixes select the side.
+        const matches = evalExprDirectional(tap._ast, { fromLabels, toLabels })
         if (matches && tap.agent_id !== from && tap.agent_id !== to) {
           wiretapRecipients.push(tap.agent_id)
         }
@@ -3670,40 +3661,12 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
-  // ---- spawn ----
-  if (type === 'spawn') {
-    const { name, model, doc, agent, respawn, effort } = msg
-    let spawnName = name
-    if (respawn && agent) {
-      const a = fleetStore.findAgent(agent)
-      spawnName = a?.friendly_name || agent
-    }
-    // Resolve-or-reject: validate args before anything else so an unresolvable
-    // one fails loud here instead of silently producing a dead agent.
-    const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
-    if (effort && !EFFORT_LEVELS.includes(effort)) {
-      error(`Unknown effort '${effort}' — valid: ${EFFORT_LEVELS.join(', ')}`); return
-    }
-    if (doc) {
-      const known = listProjects().map(p => p.name)
-      if (!known.includes(doc)) {
-        error(`no project '${doc}'${known.length ? ` — known: ${known.sort().join(', ')}` : ''}`); return
-      }
-    }
-    const machineIds = [...daemonConnections.keys()]
-    if (machineIds.length === 0) { error('No fleet daemon connected — cannot spawn agents'); return }
-    try {
-      const resolved = await resolveSpawnTarget(spawnName, !!respawn)
-      const result = await sendRpc(machineIds[0], 'spawn', {
-        name: resolved.name || undefined, model: model || undefined,
-        doc: doc || undefined, respawn: resolved.respawn, effort: effort || undefined,
-      })
-      broadcastState()
-      if (result && result.ok === false) { error(result.error || 'spawn failed'); return }
-      reply(result)
-    } catch (e) { error(e.message) }
-    return
-  }
+  // (The authoritative `spawn` handler is above — it runs through
+  // performAuthorizedSpawn / authorizeSpawn and returns for every spawn message.
+  // A second, older `if (type === 'spawn')` block used to live here that sent the
+  // daemon RPC WITHOUT capability authorization or a spawnPolicy; it was dead
+  // (unreachable after the first handler's return) and a latent self-escalation
+  // bypass, so it was removed. Do not reintroduce an unauthorized spawn path.)
 
   // ---- send-key ----
   if (type === 'send-key') {
@@ -3850,10 +3813,11 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'wiretap-add') {
     const { agent, filter, types } = msg
     if (!agent || !filter) { error('missing agent or filter'); return }
-    let validFilter
-    try { validFilter = validateDnfFilter(filter, { directional: true }) }
+    // Filter is a string expression (same grammar as chat/fleet_table) with
+    // directional to:/from: leaf prefixes. addWiretap validates via parseFilter.
+    let tap
+    try { tap = fleetStore.addWiretap(agent, filter, types) }
     catch (e) { error(`bad filter: ${e.message}`); return }
-    const tap = fleetStore.addWiretap(agent, validFilter, types)
     reply(tap)
     return
   }
@@ -4461,40 +4425,46 @@ async function handleDaemonWsMessage(ws, msg) {
   const { type } = msg
 
   if (type === 'daemon-hello') {
-    const { machine_id, user, hostname, version, boot_id } = msg
+    const { machine_id, user, hostname, version, boot_id, install_path } = msg
     if (!machine_id) return
-    // Eviction protocol: if another daemon already holds this machine_id,
-    // compare boot_ids. Newer (larger) boot_id wins; older gets evicted
-    // with a `daemon-evict` message and disconnected.
+    // §4b backstop: a machine_id is owned by ONE daemon install. If another
+    // daemon already holds it live, only the SAME install restarting may take
+    // over (newer boot wins); a DIFFERENT install (e.g. a worktree/dev-rig
+    // daemon) is refused — it can never evict the real live daemon. This is the
+    // hard stop for the "two daemons fighting over `air`" leak, independent of
+    // how the rogue daemon was misconfigured.
     const existing = daemonConnections.get(machine_id)
     if (existing && existing !== ws) {
-      const existingBoot = existing._bootId || 0
-      const incomingBoot = boot_id || 0
-      if (incomingBoot >= existingBoot) {
+      const decision = daemonHelloDecision({
+        existing: { open: existing.readyState === 1, bootId: existing._bootId || 0, installPath: existing._installPath },
+        incoming: { bootId: boot_id || 0, installPath: install_path },
+      })
+      if (decision === 'refuse') {
+        const sameInstall = existing._installPath && install_path && existing._installPath === install_path
+        const reason = sameInstall
+          ? 'a newer daemon already holds this machine_id'
+          : `machine_id ${machine_id} is already held live by a different daemon install (${existing._installPath || 'unknown'}); refusing this one (${install_path || 'unknown'})`
+        console.warn(`[fleet-daemon] REFUSED daemon-hello: ${reason}`)
         try {
-          existing.send(JSON.stringify({
-            type: 'daemon-evict',
-            reason: 'another daemon claimed this machine_id',
-            replaced_by_boot_id: incomingBoot,
-          }))
-        } catch {}
-        try { existing.close() } catch {}
-        daemonConnections.delete(machine_id)
-      } else {
-        // Incoming is older — reject it instead.
-        try {
-          ws.send(JSON.stringify({
-            type: 'daemon-evict',
-            reason: 'a newer daemon already holds this machine_id',
-            replaced_by_boot_id: existingBoot,
-          }))
+          ws.send(JSON.stringify({ type: 'daemon-evict', reason, held_by_boot_id: existing._bootId || 0 }))
         } catch {}
         try { ws.close() } catch {}
         return
       }
+      // decision === 'evict-existing': same install restarting with a newer boot.
+      try {
+        existing.send(JSON.stringify({
+          type: 'daemon-evict',
+          reason: 'same install restarted with a newer boot_id',
+          replaced_by_boot_id: boot_id || 0,
+        }))
+      } catch {}
+      try { existing.close() } catch {}
+      daemonConnections.delete(machine_id)
     }
     ws._machineId = machine_id
     ws._bootId = boot_id
+    ws._installPath = install_path
     ws._user = user
     ws._hostname = hostname
     ws._version = version

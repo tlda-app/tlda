@@ -285,11 +285,47 @@ function agentCategory(agent: any): 'awake' | 'hibernating' {
   return agent.status === 'awake' ? 'awake' : 'hibernating'
 }
 
+// Display a model by Skip's convention: no decimals, no dashes, no provider
+// prefix. claude-opus-4-8 -> opus48, gpt-5.5 -> gpt55, deepseek/deepseek-v4-pro
+// -> deepseekv4pro, minimax/minimax-m3 -> minimaxm3.
 function formatModel(model: string | null | undefined): string {
   if (!model) return ''
-  const m = model.match(/claude-(\w+)-(\d+)-(\d+)/)
-  if (!m) return model.replace('claude-', '')
-  return `${m[1]}${m[2]}${m[3]}`
+  let s = model.includes('/') ? model.split('/').pop()! : model
+  s = s.replace(/^claude-/, '')
+  return s.replace(/[.\-]/g, '')
+}
+
+// Surface the agent's capability / fence in the panel (topic-1: capability
+// discoverable in the agent panel). Derived from metadata.spawnPolicy, which the
+// server stamps at spawn (the resolved capability + filesystem policy).
+// Skip's four names are the only capability labels shown in the UI. Net is
+// always on, so there is no "nonet" capability to surface. Legacy machine words
+// (still in pre-rename agents' metadata until they respawn) map to the four names.
+const CAPABILITY_LABELS: Record<string, string> = {
+  read: 'read',
+  write: 'write',
+  'tlda-write': 'tlda-write',
+  full: 'full',
+  'read-only': 'read',
+  'workspace-write': 'write',
+  'workspace-write+net': 'write',
+  'workspace-write-no-net': 'write',
+  'full-access': 'full',
+}
+const POLICY_LABELS: Record<string, string> = {
+  cwd: 'own project',
+  'tlda-projects': 'all projects',
+  unsandboxed: 'machine',
+}
+function formatCapability(meta: any): string {
+  const sp = meta?.spawnPolicy
+  if (!sp) return ''
+  const cap = typeof sp === 'string' ? sp : sp.capability
+  const policy = typeof sp === 'object' ? sp.policy : null
+  if (!cap) return ''
+  const capLabel = CAPABILITY_LABELS[cap] || cap
+  const policyLabel = policy ? (POLICY_LABELS[policy] || policy) : ''
+  return policyLabel ? `${capLabel} · ${policyLabel}` : capLabel
 }
 
 function formatEffort(effort: string | null | undefined, kind: string | null | undefined): string {
@@ -882,7 +918,8 @@ function AgentRow({
   const meta = agent.metadata || {}
   const modelStr = formatModel(meta.model)
   const effortStr = formatEffort(meta.effort, meta.kind)
-  const taskTitle = [modelStr, taskDesc].filter(Boolean).join(' · ')
+  const capStr = formatCapability(meta)
+  const taskTitle = taskDesc
 
   const secsAgo = agent._ts ? (Date.now() - agent._ts) / 1000 : Infinity
   const nameOpacity = secsAgo < 120 ? 1.0 : secsAgo < 600 ? 0.85 : 0.65
@@ -930,7 +967,6 @@ function AgentRow({
         </span>
 
         <span className="fleet-agents-col-task" title={taskTitle}>
-          {modelStr && <span className="fleet-agents-task-model">{modelStr}</span>}
           <span>{taskDesc ? taskDesc.substring(0, 50) : ''}</span>
         </span>
 
@@ -955,6 +991,7 @@ function AgentRow({
           <div className="fleet-agents-detail-task fleet-agents-detail-firstrow">
             {modelStr && <span className="fleet-agents-detail-model">{modelStr}</span>}
             {effortStr && <span className="fleet-agents-detail-effort">{effortStr}</span>}
+            {capStr && <span className="fleet-agents-detail-cap" title="capability / fence">{capStr}</span>}
             <span>
               {tasks.length === 0
                 ? '(no task)'

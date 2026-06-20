@@ -3,7 +3,7 @@
 // parseFilter (string -> AST) + evalExpr (AST + label set -> bool).
 // Run: node bin/filter-expr-test.mjs
 
-import { parseFilter, evalExpr, matchFilter, validateDnfFilter, evalDirectionalDnf } from '../shared/fleet-labels.mjs'
+import { parseFilter, evalExpr, matchFilter, evalExprDirectional } from '../shared/fleet-labels.mjs'
 
 let pass = 0, fail = 0
 const L = (...a) => a
@@ -18,13 +18,12 @@ function terr(filter) {
   try { parseFilter(filter); fail++; console.log(`FAIL  expected throw for ${JSON.stringify(filter)}`) }
   catch { pass++ }
 }
-function dnfOk(filter, opts = {}) {
-  try { validateDnfFilter(filter, opts); pass++ }
-  catch (e) { fail++; console.log(`FAIL  expected DNF ok for ${JSON.stringify(filter)}: ${e.message}`) }
-}
-function dnfErr(filter, opts = {}) {
-  try { validateDnfFilter(filter, opts); fail++; console.log(`FAIL  expected DNF throw for ${JSON.stringify(filter)}`) }
-  catch { pass++ }
+// Directional eval: parse the string expression, eval against from/to label sets.
+function td(filter, ctx, want) {
+  let got
+  try { got = evalExprDirectional(parseFilter(filter), ctx) } catch (e) { got = 'ERR:' + e.message }
+  if (got === want) pass++
+  else { fail++; console.log(`FAIL  dir ${JSON.stringify(filter)} on ${JSON.stringify(ctx)} => ${got} (want ${want})`) }
 }
 
 // --- single token ---
@@ -75,18 +74,29 @@ terr(') a')
 terr('a b')      // two literals, no operator
 terr(['fleet:skip'])  // a stray array must fail loud, not be mishandled
 
-// --- DNF validation / directional eval ---
-dnfOk([[['from', 'fleet:skip']]], { directional: true })
-dnfOk([[['from', 'fleet:skip'], ['to', 'awake']]], { directional: true })
-dnfErr('fleet:skip', { directional: true })
-dnfErr([[['sender', 'fleet:skip']]], { directional: true })
-dnfErr([[['from', '']]], { directional: true })
-dnfErr([[['from']]], { directional: true })
-if (evalDirectionalDnf([[['from', 'math'], ['to', 'human']]], { fromLabels: ['math'], toLabels: ['human', 'fleet:skip'] }) !== true) {
-  fail++; console.log('FAIL  directional DNF should match from/to labels')
+// --- directional string-expression eval (wiretap) ---
+// to:/from: leaf prefixes select the side; bare token matches either side.
+td('to:skip & from:math', { fromLabels: ['math'], toLabels: ['skip'] }, true)
+td('to:skip & from:math', { fromLabels: ['math'], toLabels: ['human'] }, false) // no to:skip
+td('to:skip & from:math', { fromLabels: ['ops'], toLabels: ['skip'] }, false)    // no from:math
+td('from:math', { fromLabels: ['math'], toLabels: [] }, true)
+td('from:math', { fromLabels: [], toLabels: ['math'] }, false)                   // math is recipient, not sender
+td('to:math', { fromLabels: ['math'], toLabels: [] }, false)
+// bare token = involves-either-side
+td('skip', { fromLabels: ['skip'], toLabels: ['x'] }, true)
+td('skip', { fromLabels: ['x'], toLabels: ['skip'] }, true)
+td('skip', { fromLabels: ['x'], toLabels: ['y'] }, false)
+// OR / NOT compose directionally
+td('to:apps | from:ops', { fromLabels: ['ops'], toLabels: ['y'] }, true)
+td('from:goose & !to:skip', { fromLabels: ['goose'], toLabels: ['dmitry'] }, true)
+td('from:goose & !to:skip', { fromLabels: ['goose'], toLabels: ['skip'] }, false)
+// Set label collections work too
+if (evalExprDirectional(parseFilter('to:skip'), { fromLabels: new Set(['m']), toLabels: new Set(['skip']) }) !== true) {
+  fail++; console.log('FAIL  directional Set labels')
 } else pass++
-if (evalDirectionalDnf([[['from', 'math'], ['to', 'goose']]], { fromLabels: ['math'], toLabels: ['human'] }) !== false) {
-  fail++; console.log('FAIL  directional DNF should reject missing to label')
+// null AST (empty filter) matches everything
+if (evalExprDirectional(null, { fromLabels: ['a'], toLabels: ['b'] }) !== true) {
+  fail++; console.log('FAIL  null directional AST should match all')
 } else pass++
 
 console.log(`\n${pass} passed, ${fail} failed`)

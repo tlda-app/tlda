@@ -22,7 +22,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 
-import { PSEUDO_LABELS, evalDirectionalDnf, labelsForAgent, validateDnfFilter } from '../../shared/fleet-labels.mjs';
+import { PSEUDO_LABELS, parseFilter, evalExprDirectional, labelsForAgent } from '../../shared/fleet-labels.mjs';
 import { baseName, nameForPhase, phaseFromName, ALL_PHASES } from '../../shared/lineage-name.mjs';
 
 // Persistent DB under ~/.config/tlda/ (survives macOS reboots).
@@ -1075,12 +1075,16 @@ export class FleetStore {
 
     let row = this._getAgent.get(query);
     if (!row) {
-      // Name lookup — assert uniqueness among live agents
+      // Name lookup — liveness-aware, NEVER throws (Skip's spec S1 / G.22 /
+      // F.16, scratch/registration-rules.md). Among non-dead agents holding
+      // this name, prefer the actually-live holder (daemon oracle), else the
+      // most-recently-active. A dead/corrupted namesake must never shadow the
+      // live holder — that shadowing was the wake bug. The old code THREW on a
+      // >1 collision, which killed the wake outright; resolving deterministically
+      // to the live holder is the fix. Falls back to any row (incl. dead) only
+      // when no live agent holds the name, so resurrect-by-name still resolves.
       const nameRows = this.db.prepare('SELECT * FROM agents WHERE friendly_name = ? AND dead = 0').all(query);
-      if (nameRows.length > 1) {
-        throw new Error(`Name collision: ${nameRows.length} live agents named "${query}": ${nameRows.map(r => r.id).join(', ')}`);
-      }
-      row = nameRows[0] || this._getAgentByName.get(query);
+      row = nameRows.length > 0 ? this._pickLiveHolder(nameRows) : this._getAgentByName.get(query);
     }
     if (!row) {
       // A bare lineage name normally matches its dawn member directly (that
@@ -1097,6 +1101,31 @@ export class FleetStore {
       row = this.db.prepare('SELECT * FROM agents WHERE session_id = ?').get(query);
     }
     return row ? this._hydrateAgent(row) : null;
+  }
+
+  // Among non-dead rows that share a friendly name, pick the live-holder-wins /
+  // most-recently-active one (Skip's spec G.22 / F.16). An actually-live holder
+  // (daemon liveness oracle) beats a hibernating one; within a liveness tier the
+  // most recent last_seen wins; last_active and finally row order break further
+  // ties. This is the S1 resolver: wake reaches the live agent by liveness, not
+  // by an arbitrary name-grep. Deterministic and total — never throws (the old
+  // collision throw broke waking the live holder whenever a dead/corrupted
+  // namesake was still marked alive). Takes raw rows; caller hydrates the result.
+  _pickLiveHolder(rows) {
+    if (rows.length === 1) return rows[0];
+    const ts = (v) => {
+      if (v == null) return 0;
+      const n = new Date(v).getTime();
+      return Number.isFinite(n) ? n : 0;
+    };
+    const awake = (r) => (this._isLiveOracle ? !!this._isLiveOracle(r.id) : false);
+    return rows.slice().sort((a, b) => {
+      const liveDelta = (awake(b) ? 1 : 0) - (awake(a) ? 1 : 0);
+      if (liveDelta !== 0) return liveDelta;
+      const seenDelta = ts(b.last_seen) - ts(a.last_seen);
+      if (seenDelta !== 0) return seenDelta;
+      return ts(b.last_active) - ts(a.last_active);
+    })[0];
   }
 
   getAllAgents() {
@@ -1682,11 +1711,15 @@ export class FleetStore {
   // ---- Wiretap management ----
 
   addWiretap(agentId, filter, types) {
-    const validFilter = validateDnfFilter(filter, { directional: true });
+    // Filter is a string EXPRESSION (same grammar as chat/fleet_table), with
+    // directional `to:`/`from:` leaf prefixes — see evalExprDirectional.
+    // parseFilter throws on malformed input so a typo'd tap fails loud.
+    if (typeof filter !== 'string' || !filter.trim()) throw new Error('filter must be a non-empty string expression');
+    parseFilter(filter); // validate — throws "filter parse error: …" on bad syntax
     if (types != null && !Array.isArray(types)) throw new Error('types must be an array');
     const validTypes = types && types.length > 0 ? types : null;
-    const info = this._addWiretap.run(agentId, JSON.stringify(validFilter), validTypes ? JSON.stringify(validTypes) : null);
-    return { id: info.lastInsertRowid, agent_id: agentId, filter: validFilter, types: validTypes };
+    const info = this._addWiretap.run(agentId, JSON.stringify(filter), validTypes ? JSON.stringify(validTypes) : null);
+    return { id: info.lastInsertRowid, agent_id: agentId, filter, types: validTypes };
   }
 
   getWiretaps() {
@@ -1706,7 +1739,8 @@ export class FleetStore {
   }
 
   // Resolve wiretap matches: given a sender and recipient, return agent IDs that should be CC'd
-  // Filter is DNF of [role, label] tuples: [[["to","skip"],["from","math"]]] = to:skip AND from:math
+  // Filter is a string expression with directional `to:`/`from:` prefixes:
+  // "to:skip & from:math" fires on a message TO skip FROM math.
   resolveWiretaps(senderId, recipientId, eventType) {
     const taps = this.getWiretaps();
     if (taps.length === 0) return [];
@@ -1723,8 +1757,9 @@ export class FleetStore {
       if (tap.agent_id === senderId || tap.agent_id === recipientId) continue;
       // Type filter: if wiretap specifies types, skip events that don't match
       if (tap.types && tap.types.length > 0 && eventType && !tap.types.includes(eventType)) continue;
-      // Directional DNF: any clause matches → wiretap fires.
-      const matches = evalDirectionalDnf(tap.filter, { fromLabels: senderLabels, toLabels: recipientLabels });
+      if (!tap._ast) continue; // unparseable filter (logged at hydrate) — never match-all
+      // Directional expression: matches per to:/from: leaf semantics.
+      const matches = evalExprDirectional(tap._ast, { fromLabels: senderLabels, toLabels: recipientLabels });
       if (matches) matched.add(tap.agent_id);
     }
     return [...matched];
@@ -1738,7 +1773,18 @@ export class FleetStore {
   }
 
   _hydrateWiretap(row) {
-    return { ...row, filter: JSON.parse(row.filter), types: row.types ? JSON.parse(row.types) : null };
+    const filter = JSON.parse(row.filter); // stored as a JSON-encoded string expression
+    // Precompute the AST once here (getWiretaps runs on every event); a row that
+    // somehow fails to parse is logged and left with _ast=null so matchers skip
+    // it rather than crashing event routing or matching everything.
+    let ast = null;
+    try { ast = parseFilter(filter); }
+    catch (e) { console.warn(`[fleet-store] wiretap #${row.id} has unparseable filter ${JSON.stringify(filter)}: ${e.message}`); }
+    const tap = { ...row, filter, types: row.types ? JSON.parse(row.types) : null };
+    // _ast is an internal compiled form — non-enumerable so it never leaks into
+    // JSON responses (GET /api/wiretaps, wiretap-list) but stays usable by matchers.
+    Object.defineProperty(tap, '_ast', { value: ast, enumerable: false });
+    return tap;
   }
 
   // ---- QA system ----

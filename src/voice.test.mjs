@@ -672,4 +672,21 @@ await setBackend('chrome')
   console.log('✓ Test 11: Deepgram mic-frame recovery clears don’t-speak banner')
 }
 
-console.log('\nAll 14 tests passed.')
+// ---- Test 12: mic watchdog never tears down a live (running) context ----
+// Root-cause regression for the intermittent cut-outs / false "stop talking".
+// The old heartbeat restarted the whole mic pipeline whenever audio chunks paused
+// for >2s — but that gap is a MAIN-THREAD timing artifact (jank, an iOS audio
+// duck, a WS blip), not pipeline death, and the teardown itself manufactured the
+// cut-out. The fix: decide purely from the AudioContext state. A running (or
+// unknown) context is alive → 'none'; 'suspended' → cheap resume; only a genuinely
+// dead 'closed' context → 'rebuild'.
+{
+  const action = window.__voiceTest.micWatchdogAction
+  assert.equal(action('running'), 'none', 'running context must never be torn down (the 6/19 false-stall case)')
+  assert.equal(action(undefined), 'none', 'unknown state is treated as alive — never a destructive restart')
+  assert.equal(action('suspended'), 'resume', 'suspended context is repaired by resume(), not teardown')
+  assert.equal(action('closed'), 'rebuild', 'only a genuinely dead (closed) context warrants a rebuild')
+  console.log('✓ Test 12: mic watchdog never restarts a running/suspended context')
+}
+
+console.log('\nAll 15 tests passed.')

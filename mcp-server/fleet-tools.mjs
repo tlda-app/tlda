@@ -21,9 +21,14 @@ import { compactPrettyResult, indentPrettyResult, normalizePrettyResult } from '
 import { resolveFilePath, uploadFileToServer } from '../shared/chat-file-processing.mjs';
 import { scanMarkdownDeps } from '../shared/markdown-deps.mjs';
 import { extractMarkdownSection } from '../shared/markdown-section.mjs';
+import { normalizeChatDisplayMathDelimiters } from '../shared/chat-math-normalize.mjs';
 import { baseName, nameForPhase, phaseFromName } from '../shared/lineage-name.mjs';
 import { formatSpawnModelSummary, validateSpawnModelSelection } from '../shared/spawn-model-validation.mjs';
-import { applyNonClaudeRolePack, inferHarnessKind } from '../shared/task-role-routing.mjs';
+import {
+  applyNonClaudeRolePack,
+  crossLaneBlock,
+  inferHarnessKind,
+} from '../shared/task-role-routing.mjs';
 import { parseFilter, evalExpr } from '../shared/fleet-labels.mjs';
 import { baseMacros } from '../shared/katex-base-macros.mjs';
 import { normalizeRefNumber as _normalizeRefNumber, refTypeForName as _refTypeForName, buildTheoremRefRegex as _buildTheoremRefRegex } from '../shared/doc-refs.mjs';
@@ -406,32 +411,68 @@ async function getMacrosForAgent() {
   return getMacrosForDoc(await getAgentPreambleDoc());
 }
 
-function lintChatMessage(message, macros = {}) {
-  const issues = [];
+// Two distinct lint classes, deliberately kept apart (Skip, 6/19):
+//
+//   VALIDITY — will this message render at all on Skip's screen? KaTeX parse
+//   errors, undefined macros with no preamble, glued `$` delimiters, LaTeX
+//   dumped into a code block, and markdown that won't close (unbalanced ```
+//   fence or `$$` block). A validity failure means Skip sees garbage, so these
+//   are real and get surfaced PROMINENTLY with the amend affordance — "warn
+//   agents that [it] doesn't render properly so they can amend their shit."
+//   The wording is harness-neutral: it points at the `amend_id` chat path,
+//   which every agent has, not at any Claude-Code-specific tool.
+//
+//   STYLE — optional presentation hints (combine display blocks, don't narrate
+//   between equations). Never a gate; surfaced quietly and separately.
+//
+// The completion-style keyword gate ("done/fixed/handled/passing…") was REMOVED
+// entirely — Skip: "that should never be a gate." Report-shape / evidence-before-
+// claims discipline lives in the self-sufficiency and verification-before-
+// completion skills the agent reads, not in a regex that flags the word "done".
+export function checkChatRender(message, macros = {}) {
+  const validity = [];
+  const style = [];
   // Render with the universal physics base + this doc's extracted paper macros
   // (paper wins). `macros` is the paper-specific set; when it's empty the agent
   // isn't scoped to a project, so an undefined-macro error means "go set them".
   const hasPaperMacros = Object.keys(macros).length > 0;
   const renderMacros = { ...baseMacros, ...macros };
   let suggestedSetMacros = false;
-  const displayBlocks = (message.match(/\$\$[\s\S]*?\$\$/g) || []);
-  if (displayBlocks.length > 1) {
-    issues.push(`${displayBlocks.length} separate display blocks — consider combining into one \\begin{aligned} block so all steps are visible together.`);
+  const normalizedMathMessage = normalizeChatDisplayMathDelimiters(message);
+
+  // ---- markdown render validity (harness-neutral structural checks) ----
+  // An odd number of code fences leaves a block open, so everything after it
+  // renders as code. An odd number of `$$` (counted outside code blocks) leaves
+  // a display-math block open, so the math never renders. Both are silent
+  // garbage on Skip's screen — exactly the "doesn't render" case to warn on.
+  const fenceCount = (String(message).match(/```/g) || []).length;
+  if (fenceCount % 2 !== 0) {
+    validity.push('Unclosed code fence (odd number of ```) — everything after the open fence renders as a code block on Skip\'s screen. Close it, then re-chat with `amend_id` to fix it in place.');
   }
-  const proseLines = message.split(/\$\$[\s\S]*?\$\$/);
+  const messageNoCode = String(message).replace(/```[\s\S]*?```/g, '');
+  const displayDollarCount = (normalizeChatDisplayMathDelimiters(messageNoCode).match(/\$\$/g) || []).length;
+  if (displayDollarCount % 2 !== 0) {
+    validity.push('Unclosed `$$` display-math block (odd number of `$$`) — the math will not render. Close the block, then re-chat with `amend_id`.');
+  }
+
+  const displayBlocks = (normalizedMathMessage.match(/\$\$[\s\S]*?\$\$/g) || []);
+  if (displayBlocks.length > 1) {
+    style.push(`${displayBlocks.length} separate display blocks — consider combining into one \\begin{aligned} block so all steps are visible together.`);
+  }
+  const proseLines = normalizedMathMessage.split(/\$\$[\s\S]*?\$\$/);
   const proseBetween = proseLines.slice(1, -1).filter(p => p.trim().length > 0);
   if (proseBetween.length > 0 && displayBlocks.length > 1) {
-    issues.push(`Prose narration between display equations. If these are sequential algebra steps, put them in one block without interleaved text.`);
+    style.push(`Prose narration between display equations. If these are sequential algebra steps, put them in one block without interleaved text.`);
   }
   if (/\\text\{.*(?:by|since|because|using|from|note|recall).*\}/i.test(message) && displayBlocks.length > 0) {
     const textAnnotations = (message.match(/\\text\{[^}]*\}/g) || []).length;
     if (textAnnotations > 2) {
-      issues.push(`${textAnnotations} \\text{} annotations in display math. Show the steps and let the reader follow — don't narrate each one.`);
+      style.push(`${textAnnotations} \\text{} annotations in display math. Show the steps and let the reader follow — don't narrate each one.`);
     }
   }
   const allMath = [];
-  for (const m of message.matchAll(/\$\$([\s\S]*?)\$\$/g)) allMath.push({ tex: m[1], display: true, pos: m.index });
-  for (const m of message.matchAll(/(?<!\$)\$(?!\$)((?:[^$\\]|\\.)+)\$/g)) allMath.push({ tex: m[1], display: false, pos: m.index });
+  for (const m of normalizedMathMessage.matchAll(/\$\$([\s\S]*?)\$\$/g)) allMath.push({ tex: m[1], display: true, pos: m.index });
+  for (const m of normalizedMathMessage.matchAll(/(?<!\$)\$(?!\$)((?:[^$\\]|\\.)+)\$/g)) allMath.push({ tex: m[1], display: false, pos: m.index });
   for (const { tex, display, pos } of allMath) {
     try {
       katex.renderToString(tex, { displayMode: display, throwOnError: true, macros: renderMacros });
@@ -442,24 +483,24 @@ function lintChatMessage(message, macros = {}) {
         // One actionable nudge beats a pile of cryptic per-macro parse errors.
         if (!suggestedSetMacros) {
           suggestedSetMacros = true;
-          issues.push(`Math uses macros that aren't loaded, and you have no project preamble set — so the chat renderer can't display them either. Set your paper's macros once with the \`set_preamble\` tool (point it at the project's main .tex), or include the macro definitions in the message. (Physics-package commands like \\norm, \\qty are always available.)`);
+          validity.push(`Math uses macros that aren't loaded, and you have no project preamble set — so the chat renderer can't display them either. Set your paper's macros once with the \`set_preamble\` tool (point it at the project's main .tex), or include the macro definitions in the message. (Physics-package commands like \\norm, \\qty are always available.)`);
         }
       } else {
         const snippet = tex.length > 40 ? tex.slice(0, 40) + '…' : tex;
-        issues.push(`LaTeX parse error in \`${display ? '$$' : '$'}${snippet}${display ? '$$' : '$'}\`: ${e.message}`);
+        validity.push(`LaTeX parse error in \`${display ? '$$' : '$'}${snippet}${display ? '$$' : '$'}\`: ${e.message}`);
       }
     }
     if (!display) {
-      const before = pos > 0 ? message[pos - 1] : ' ';
+      const before = pos > 0 ? normalizedMathMessage[pos - 1] : ' ';
       const afterIdx = pos + tex.length + 2;
-      const after = afterIdx < message.length ? message[afterIdx] : ' ';
+      const after = afterIdx < normalizedMathMessage.length ? normalizedMathMessage[afterIdx] : ' ';
       if (/[a-zA-Z]/.test(before)) {
-        const word = message.slice(Math.max(0, pos - 20), pos).match(/[a-zA-Z]+$/)?.[0] || '';
-        issues.push(`\`$\` delimiter glued to text "${word}$..." — the chat renderer may not find the math boundary. Add a space before \`$\`.`);
+        const word = normalizedMathMessage.slice(Math.max(0, pos - 20), pos).match(/[a-zA-Z]+$/)?.[0] || '';
+        validity.push(`\`$\` delimiter glued to text "${word}$..." — the chat renderer may not find the math boundary. Add a space before \`$\`.`);
       }
       if (/[a-zA-Z]/.test(after)) {
-        const word = message.slice(afterIdx, afterIdx + 20).match(/^[a-zA-Z]+/)?.[0] || '';
-        issues.push(`\`$\` delimiter glued to text "...$${word}" — the chat renderer may not find the math boundary. Add a space after \`$\`.`);
+        const word = normalizedMathMessage.slice(afterIdx, afterIdx + 20).match(/^[a-zA-Z]+/)?.[0] || '';
+        validity.push(`\`$\` delimiter glued to text "...$${word}" — the chat renderer may not find the math boundary. Add a space after \`$\`.`);
       }
     }
   }
@@ -467,10 +508,20 @@ function lintChatMessage(message, macros = {}) {
   for (const block of codeBlocks) {
     const inner = block.slice(3, -3).replace(/^[a-z]*\n/, '');
     if (/\\(?:begin|end|frac|sum|int|prod|hat|bar|tilde|mathbb|mathrm|operatorname|left|right|alpha|beta|gamma|theta|lambda|mu|sigma|phi|psi|omega|infty|partial|nabla|sqrt|over|under)\b/.test(inner)) {
-      issues.push(`Don't put LaTeX in a code block unless you want to show the code itself, not the rendered math. Use $$ delimiters for display math or $ for inline — the chat renderer supports KaTeX. You can fix this in place by re-chatting with amend_id after it sends.`);
+      validity.push(`Don't put LaTeX in a code block unless you want to show the code itself, not the rendered math. Use $$ delimiters for display math or $ for inline — the chat renderer supports KaTeX. You can fix this in place by re-chatting with amend_id after it sends.`);
     }
   }
-  return issues;
+  return { validity, style };
+}
+
+// Backward-compatible flat view: validity issues first, then style hints.
+export function lintChatMessage(message, macros = {}) {
+  const { validity, style } = checkChatRender(message, macros);
+  return [...validity, ...style];
+}
+
+export function blockingChatLintIssues(issues = []) {
+  return [];
 }
 
 /**
@@ -865,6 +916,40 @@ export function classifyTaskAgentHealth(task, agent, options = {}) {
   };
 }
 
+export const TASK_HEALTH_ACTIONABLE_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+
+export function classifyTaskListHealthBucket(task, health, options = {}) {
+  if (!task || task.synthetic || !health || health.level === 'ok') return null;
+  const nowMs = options.nowMs ?? Date.now();
+  const staleAfterMs = options.staleAfterMs ?? TASK_HEALTH_ACTIONABLE_MAX_AGE_MS;
+  const delegatedMs = task.delegated_at ? Date.parse(task.delegated_at) : NaN;
+  const taskAgeMs = Number.isFinite(delegatedMs) ? Math.max(0, nowMs - delegatedMs) : null;
+  if (taskAgeMs != null && taskAgeMs > staleAfterMs) {
+    return {
+      kind: 'stale-backlog',
+      taskAgeMs,
+      health,
+    };
+  }
+  return {
+    kind: 'actionable',
+    taskAgeMs,
+    health,
+  };
+}
+
+export function summarizeTaskListHealth(tasks = [], agentMap = new Map(), options = {}) {
+  const buckets = tasks.map(task => {
+    const health = classifyTaskAgentHealth(task, agentMap.get(task.agent), options);
+    return classifyTaskListHealthBucket(task, health, options);
+  });
+  return {
+    buckets,
+    actionableUnhealthy: buckets.filter(b => b?.kind === 'actionable'),
+    staleBacklogUnhealthy: buckets.filter(b => b?.kind === 'stale-backlog'),
+  };
+}
+
 function formatTaskHealth(health, { includeOk = false, includeAction = false } = {}) {
   if (!health || (health.level === 'ok' && !includeOk)) return '';
   let text = health.text;
@@ -1034,17 +1119,21 @@ function findValidSession(agent) {
  *  @returns {string} fleet-spawn stdout (trimmed)
  */
 function runFleetSpawn(name, opts = {}) {
-  const script = path.join(os.homedir(), 'bin', 'fleet-spawn');
-  const parts = [script];
-  if (opts.fresh) parts.push('--fresh');
-  if (opts.refresh) parts.push('--refresh');
-  if (opts.session) parts.push('--session', opts.session);
-  if (opts.model) parts.push('--model', opts.model);
-  if (opts.effort) parts.push('--effort', opts.effort);
-  if (opts.cwd) parts.push('--cwd', JSON.stringify(opts.cwd));
-  if (opts.mode) parts.push('--mode', opts.mode);
-  parts.push('--no-attach', name);
-  return execSync(parts.join(' '), { encoding: 'utf8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+  const script = path.join(__dirname, '..', 'bin', 'fleet-spawn.py');
+  const args = [];
+  if (opts.fresh) args.push('--fresh');
+  if (opts.refresh) args.push('--refresh');
+  if (opts.session) args.push('--session', opts.session);
+  if (opts.model) args.push('--model', opts.model);
+  if (opts.effort) args.push('--effort', opts.effort);
+  if (opts.cwd) args.push('--cwd', opts.cwd);
+  if (opts.mode) args.push('--mode', opts.mode);
+  args.push('--no-attach', name);
+  const pythonDeps = path.join(__dirname, '..', '.python-deps');
+  const env = fs.existsSync(pythonDeps)
+    ? { ...process.env, PYTHONPATH: [pythonDeps, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter) }
+    : process.env;
+  return execFileSync('python3', [script, ...args], { encoding: 'utf8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'], env }).trim();
 }
 
 function windowTail(output, n = 40) {
@@ -1087,13 +1176,13 @@ export function getFleetTools() {
               model: { type: 'string', description: 'Model alias/id. Call spawn_models() for valid values. Common aliases: opus48/sonnet/haiku for Claude, gpt-5.5 or gpt for Codex, deepseek for Goose deepseek/deepseek-v4-pro.' },
               effort: { type: 'string', description: 'Effort level: low|medium|high|xhigh|max (default: inherit global config)' },
               kind: { type: 'string', description: 'Agent runtime/harness (claude, goose, codex).' },
-              capability: { type: 'string', description: 'Requested sandbox capability: read-only, workspace-write-no-net, workspace-write+net, or full-access.' },
+              capability: { type: 'string', description: 'Requested capability: read, write, tlda-write, or full. (Internet is always on; there is no network capability to request.)' },
             },
 	          },
           description: { type: 'string', description: 'Short human-readable description (5-10 words). Auto-derived from message if omitted.' },
           message: { type: 'string', description: 'Full task message for the agent' },
           after: { description: 'Task ID or array of IDs — deferred until all complete.', oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }] },
-          friendly_name: { type: 'string', description: 'Set a friendly name for the agent (optional, same as name_agent)' },
+          friendly_name: { type: 'string', description: 'Rename an EXISTING target agent (two-call form, same as name_agent). Not allowed with spawn — a spawned agent\'s only name is spawn.name.' },
           success_criteria: { type: 'array', items: { type: 'string' }, description: 'Verifiable success criteria. Agent must verify each before marking done.' },
           template: { type: 'string', description: 'Task template name (e.g. "math-edit"). Auto-populates success_criteria; explicit criteria are appended.' },
           requires_approval: { type: 'boolean', description: 'If true, task_done requires an approval_id — the event ID of a message from Skip approving the work. Agent cannot close without it.' },
@@ -1277,7 +1366,7 @@ export function getFleetTools() {
           cwd: { type: 'string', description: 'Working directory (fresh mode only).' },
           effort: { type: 'string', description: 'Effort level: low|medium|high|xhigh|max (default: inherit global config).' },
           kind: { type: 'string', description: 'Agent runtime/harness (claude, goose, codex).' },
-          capability: { type: 'string', description: 'Requested sandbox capability: read-only, workspace-write-no-net, workspace-write+net, or full-access.' },
+          capability: { type: 'string', description: 'Requested capability: read, write, tlda-write, or full. (Internet is always on; there is no network capability to request.)' },
           mode: { type: 'string', description: 'Harness-specific launch mode projection for claude (e.g. plan, default, auto). Capability remains the durable authority.' },
           phase: { type: 'string', enum: ['dawn', 'day', 'dusk'], description: 'Phase slot in the lineage. Rejects if slot is occupied. Default: day for fresh agents joining a lineage.' },
         },
@@ -1468,11 +1557,11 @@ export function getFleetTools() {
     // ---- Wiretap ----
     {
       name: 'wiretap',
-      description: 'Listen in on messages matching a filter. You get CC\'d on matching messages. Call with no args to list. Filter is DNF of [role, label] tuples: [[["to","skip"],["from","math"]]] = to:skip AND from:math. Roles: "to", "from". Labels match agent name/ID/labels. Optional types filter restricts to specific event types (e.g. ["chat"] for chat only, skipping activity cards).',
+      description: 'Listen in on messages matching a filter. You get CC\'d on matching messages. Call with no args to list. Filter is a STRING EXPRESSION — the same grammar as chat/fleet_table (`|` or, `&` and, `!` not, parens) — with directional `to:`/`from:` leaf prefixes: "to:skip & from:math" fires on a message TO skip FROM math. A bare label (no prefix) matches EITHER side (a message involving that agent). Labels match agent name/ID/labels. Optional types filter restricts to specific event types (e.g. ["chat"] for chat only, skipping activity cards).',
       inputSchema: {
         type: 'object',
         properties: {
-          filter: { type: 'array', description: 'DNF of [role, label] tuples. E.g. [[["to","skip"],["from","math"]],[["to","apps"]]]' },
+          filter: { type: 'string', description: 'Filter expression with to:/from: leaf prefixes. E.g. "to:skip & from:math", "to:apps | from:ops", "from:goose & !chat-noise".' },
           types: { type: 'array', items: { type: 'string' }, description: 'Event types to listen for. E.g. ["chat"] for chat only, ["chat","delegate"] for chat + delegations. Omit for all types.' },
           remove: { description: 'true to remove all wiretaps, or a wiretap ID to remove one.' },
         },
@@ -1990,6 +2079,39 @@ export async function handleFleetTool(name, args) {
     }
   }
 
+  async function getRoster() {
+    const agents = await sendWS('store-agents');
+    return Array.isArray(agents) ? agents : [];
+  }
+
+  function agentMatches(agent, id) {
+    return !!agent && (agent.id === id || agent.friendly_name === id || agent.session_id === id);
+  }
+
+  async function recentDirectInbound(fromId, toId) {
+    try {
+      const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+      const data = await sendWS('store-events', { agent: fromId, since, limit: 100 });
+      return (data.events || []).some(e =>
+        e.type === 'chat' &&
+        e.from === toId &&
+        e.to === fromId
+      );
+    } catch (e) {
+      process.stderr.write(`[fleet] recent direct-reply check failed: ${e.message}\n`);
+      return false;
+    }
+  }
+
+  async function requireInLaneAction(targetAgentId, { action, message, directReply = false } = {}) {
+    const agents = await getRoster();
+    const fromAgent = agents.find(a => a.id === AGENT_ID) || { id: AGENT_ID, cwd: getAgentCwd() };
+    const toAgent = agents.find(a => agentMatches(a, targetAgentId));
+    if (!toAgent) return null;
+    const block = crossLaneBlock({ fromAgent, toAgent, action, message, directReply });
+    return block?.text || null;
+  }
+
   // ==== Task Management ====
 
   // ---- delegate ----
@@ -2004,6 +2126,17 @@ export async function handleFleetTool(name, args) {
       return { content: [{ type: 'text', text: 'Missing agent (or spawn).' }], isError: true };
     }
 
+    // One name, enforced: on the spawn path the spawn name is the single source
+    // of identity (pre-registration, FLEET_NAME, the register prompt, and the
+    // roster all key off it). A separate `friendly_name` would rename the row to
+    // a second string after spawn — the exact desync that produces ghost rows
+    // (a never-seen "math-historian" stub beside a live "math historian"). So
+    // forbid it: put the name in `spawn.name`. friendly_name remains valid only
+    // for the two-call form (delegating to an existing `agent`).
+    if (args.spawn && args.friendly_name) {
+      return { content: [{ type: 'text', text: 'Do not pass friendly_name with spawn — the spawn name is the agent\'s only name. Put the name in spawn.name.' }], isError: true };
+    }
+
     let agent = args.agent;
     let spawnedInfo = null;
 
@@ -2016,7 +2149,7 @@ export async function handleFleetTool(name, args) {
       try {
         const modelError = await validateSpawnRequest(spawnOpts);
         if (modelError) return { content: [{ type: 'text', text: modelError }], isError: true };
-        await sendWS('spawn', {
+        const spawnResult = await sendWS('spawn', {
           fresh: true,
           name: agentName,
           model: spawnOpts.model,
@@ -2025,6 +2158,9 @@ export async function handleFleetTool(name, args) {
           cwd: agentCwd,
           capability: spawnOpts.capability,
         });
+        if (spawnResult?.ok === false || spawnResult?.error) {
+          return { content: [{ type: 'text', text: `spawn failed before delegation: ${spawnResult.error || JSON.stringify(spawnResult)}` }], isError: true };
+        }
       } catch (e) {
         const msg = (e.message || '').trim();
         return { content: [{ type: 'text', text: `spawn failed before delegation: ${msg}` }], isError: true };
@@ -2042,6 +2178,12 @@ export async function handleFleetTool(name, args) {
 
       if (!spawned?.id) {
         return { content: [{ type: 'text', text: `spawn started for ${agentName}, but the agent did not register within 5s` }], isError: true };
+      }
+      if (!spawned.tmux_session) {
+        return { content: [{ type: 'text', text: `spawn registered ${agentName} (${spawned.id}), but no tmux session was recorded. Not delegating: a registry row is not a usable agent.` }], isError: true };
+      }
+      if (!agentAlive(spawned)) {
+        return { content: [{ type: 'text', text: `spawn registered ${agentName} (${spawned.id}), but the agent is not alive/usable yet. Not delegating.` }], isError: true };
       }
 
       agent = spawned.id;
@@ -2066,6 +2208,11 @@ export async function handleFleetTool(name, args) {
     const criteria = [...templateCriteria, ...(args.success_criteria || [])];
     const afterRaw = args.after;
     const blockedBy = afterRaw ? (Array.isArray(afterRaw) ? afterRaw : [afterRaw]) : [];
+    const laneBlock = await requireInLaneAction(agent, {
+      action: 'delegate',
+      message,
+    });
+    if (laneBlock) return { content: [{ type: 'text', text: laneBlock }], isError: true };
     const harnessKind = await harnessKindForDelegateTarget(agent, args.spawn);
     const routedMessage = applyNonClaudeRolePack(message, {
       template: args.template,
@@ -2138,6 +2285,11 @@ export async function handleFleetTool(name, args) {
     if (parsedSuggestions.error) return { content: [{ type: 'text', text: `Message NOT sent — ${parsedSuggestions.error}` }], isError: true };
     const { body: message, source } = { body: parsedSuggestions.body, source: resolvedBody.source };
     const authoredSuggestions = parsedSuggestions.suggestions || [];
+    const macros = await getMacrosForAgent();
+    // Two classes, surfaced differently: render-VALIDITY prominently with the
+    // amend affordance (Skip will see garbage if it doesn't render), STYLE
+    // hints quietly. No register/completion gate — that was deleted.
+    const { validity: renderIssues, style: styleHints } = checkChatRender(message, macros);
 
     // ---- amend branch: edit an already-sent message in place ----
     // `amend_id` present → route to the server's amend handler (same body forms,
@@ -2159,11 +2311,13 @@ export async function handleFleetTool(name, args) {
         if (source) body.source = source;
         const data = await sendWS('amend', body);
         if (!data?.ok) return { content: [{ type: 'text', text: `Amend failed: ${data?.error || `no message of yours matched id ${args.amend_id}`}` }], isError: true };
-        const macros = await getMacrosForAgent();
-        const lint = lintChatMessage(message, macros);
-        const extra = lint.length > 0
-          ? `\n\n⚠ Still has ${lint.length} lint issue${lint.length > 1 ? 's' : ''}:\n${lint.map(l => `- ${l}`).join('\n')}`
-          : '';
+        let extra = '';
+        if (renderIssues.length > 0) {
+          extra += `\n\n⚠ **Still won't render (${renderIssues.length}):**\n${renderIssues.map(l => `- ${l}`).join('\n')}\nFix and re-chat \`amend_id: ${data.event_id}\` again — Skip is reading this message.`;
+        }
+        if (styleHints.length > 0) {
+          extra += `\n\nStyle (optional): ${styleHints.join(' ')}`;
+        }
         return { content: [{ type: 'text', text: `Amended message ${data.event_id} in place.${extra}` }] };
       } catch (e) {
         return { content: [{ type: 'text', text: `Amend failed: ${e.message}` }], isError: true };
@@ -2228,6 +2382,19 @@ export async function handleFleetTool(name, args) {
     }
     if (authoredSuggestions.some(s => s.targetId && !recipients.includes(s.targetId))) {
       return { content: [{ type: 'text', text: '<suggestions> block has a target that is not one of this chat\'s resolved recipients.' }], isError: true };
+    }
+    const laneBlocks = [];
+    for (const to of recipients) {
+      const directReply = await recentDirectInbound(AGENT_ID, to);
+      const laneBlock = await requireInLaneAction(to, {
+        action: 'chat',
+        message,
+        directReply,
+      });
+      if (laneBlock) laneBlocks.push(laneBlock);
+    }
+    if (laneBlocks.length) {
+      return { content: [{ type: 'text', text: `Message NOT sent.\n${laneBlocks.map(b => `- ${b}`).join('\n')}` }], isError: true };
     }
 
     // Resolve the body's file references → uploads. Two modes:
@@ -2333,11 +2500,15 @@ export async function handleFleetTool(name, args) {
       warning += `\n\n⚠ **File(s) not uploaded** (not found or upload failed — removed from message):\n${brokenFiles.map(p => `- ${p}`).join('\n')}`;
     }
 
-    const macros = await getMacrosForAgent();
-    const lint = lintChatMessage(message, macros);
-    if (lint.length > 0) {
+    // Render-VALIDITY: prominent — Skip sees broken output unless the agent
+    // amends. This is the "warn so they can amend their shit" check (Skip 6/19).
+    if (renderIssues.length > 0) {
       const target = lastEventId != null ? `chat({ amend_id: ${lastEventId}, message: "…" })` : 'chat({ amend_id: <id>, message: "…" })';
-      warning += `\n\n⚠ **Lint (${lint.length} issue${lint.length > 1 ? 's' : ''}):**\n${lint.map(l => `- ${l}`).join('\n')}\nYour message went out but has these issues — **you are strongly encouraged to fix it in place** with \`${target}\` (it edits the message Skip is reading, no new message).`;
+      warning += `\n\n⚠ **Won't render properly (${renderIssues.length} issue${renderIssues.length > 1 ? 's' : ''}) — Skip will see broken output.** Fix it in place with \`${target}\` (edits the message Skip is reading, no new message):\n${renderIssues.map(l => `- ${l}`).join('\n')}`;
+    }
+    // STYLE: quiet, optional — never a gate.
+    if (styleHints.length > 0) {
+      warning += `\n\nStyle (optional): ${styleHints.join(' ')}`;
     }
 
     const amendHint = lastEventId != null ? ` (message id ${lastEventId} — chat({ amend_id: ${lastEventId} }) to edit it in place)` : '';
@@ -2440,11 +2611,14 @@ export async function handleFleetTool(name, args) {
     const showOwner = false;
 
     const agentMap = new Map(agents.map(a => [a.id, a]));
+    const taskHealthSummary = summarizeTaskListHealth(active, agentMap);
     const lines = active.map(t => {
       const age = Math.round((Date.now() - new Date(t.delegated_at)) / 60000);
       const taskAgent = agentMap.get(t.agent);
       const health = classifyTaskAgentHealth(t, taskAgent);
-      const healthNote = formatTaskHealth(health, { includeAction: true });
+      const healthBucket = classifyTaskListHealthBucket(t, health);
+      const includeHealthAction = healthBucket?.kind !== 'stale-backlog';
+      const healthNote = formatTaskHealth(health, { includeAction: includeHealthAction });
       let status = t.status;
       if (t.synthetic) status = `📬 ${t.priority || 'normal'}`;
       if (t.status === 'blocked' && t.blockedBy) {
@@ -2468,9 +2642,7 @@ export async function handleFleetTool(name, args) {
     const pending = active.filter(t => t.status === 'pending');
     const idle = active.filter(t => t.status === 'idle');
     const blocked = active.filter(t => t.status === 'blocked');
-    const unhealthy = active
-      .map(t => classifyTaskAgentHealth(t, agentMap.get(t.agent)))
-      .filter(h => h && h.level !== 'ok');
+    const { actionableUnhealthy, staleBacklogUnhealthy } = taskHealthSummary;
 
     const unread = AGENT_ID ? await getUnread(null, AGENT_ID) : [];
 
@@ -2480,7 +2652,8 @@ export async function handleFleetTool(name, args) {
     if (working.length > 0) nudge += `\n\n${working.length} working.`;
     if (pending.length > 0) nudge += ` ${pending.length} pending (awaiting agent pickup).`;
     if (blocked.length > 0) nudge += ` ${blocked.length} blocked.`;
-    if (unhealthy.length > 0) nudge += `\n\n⚠ ${unhealthy.length} active task(s) have agent-health warnings — inspect or redelegate instead of waiting silently.`;
+    if (actionableUnhealthy.length > 0) nudge += `\n\n⚠ ${actionableUnhealthy.length} active task(s) have actionable agent-health warnings — inspect or redelegate instead of waiting silently.`;
+    if (staleBacklogUnhealthy.length > 0) nudge += `\n\n${staleBacklogUnhealthy.length} stale backlog task(s) have non-actionable agent-health warnings older than the Todd kick window — owner cleanup should delete/archive/redelegate; they are not counted as live liveness failures.`;
     return { content: [{ type: 'text', text: text + nudge }] };
   }
 
@@ -2757,16 +2930,35 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
     let idle = false;
     let targetLabel = '';
 
-    if (agentEntry.tmux_session && tmuxHasSession(agentEntry.tmux_session)) {
+    try {
+      const res = await fleetFetch(`${TLDA_FLEET_SERVER}/api/capture-pane`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agent: agentEntry.id || args.agent, lines: 200 }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && typeof data.pane === 'string') {
+        result = { ok: true, text: data.pane };
+        targetLabel = `server:${TLDA_FLEET_SERVER}/api/capture-pane`;
+      } else {
+        const detail = data.error || data.message || `HTTP ${res.status}`;
+        result = { ok: false, error: `server capture-pane failed: ${detail}` };
+      }
+    } catch (e) {
+      result = { ok: false, error: `server capture-pane failed: ${e.message}` };
+    }
+
+    // Local tmux is only a fallback for same-machine MCP sessions. It is not fleet
+    // ground truth; remote agents should normally be read through the daemon route.
+    if (!result?.ok && agentEntry.tmux_session && tmuxHasSession(agentEntry.tmux_session)) {
       result = tmuxRead(agentEntry.tmux_session);
-      if (result.ok) idle = tmuxIsIdle(result.text);
       targetLabel = `tmux:${agentEntry.tmux_session}`;
     }
 
     if (!result?.ok) {
-      // TODO: Need server endpoint to mark agent dead (POST /api/agents/mark-dead)
-      return { content: [{ type: 'text', text: `Cannot read terminal for ${agentEntry.friendly_name || agentEntry.id}: ${result?.error || 'no tmux session'}. Agent marked dead.` }], isError: true };
+      return { content: [{ type: 'text', text: `Cannot read terminal for ${agentEntry.friendly_name || agentEntry.id}: ${result?.error || 'no tmux session'}. Agent was not marked dead by read_terminal.` }], isError: true };
     }
+    idle = tmuxIsIdle(result.text);
 
     // Fetch tasks to find active task for this agent
     let tasks;
@@ -3308,6 +3500,9 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
         mode: args.mode,
         capability: args.capability,
       });
+      if (result?.ok === false || result?.error) {
+        return { content: [{ type: 'text', text: `spawn failed: ${result.error || JSON.stringify(result)}` }], isError: true };
+      }
 
       // Assign lineage/phase after spawn
       if (phase && isFresh) {
@@ -4381,7 +4576,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     if (!args.filter) {
       const taps = await sendWS('wiretap-list', { agent: myId });
       if (taps.length === 0) return { content: [{ type: 'text', text: 'No active wiretaps.' }] };
-      const lines = taps.map(t => `#${t.id}: ${JSON.stringify(t.filter)}`);
+      const lines = taps.map(t => `#${t.id}: ${t.filter}${t.types ? ` [types: ${t.types.join(', ')}]` : ''}`);
       return { content: [{ type: 'text', text: `Active wiretaps:\n${lines.join('\n')}` }] };
     }
 
@@ -4389,7 +4584,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     if (args.types && args.types.length > 0) body.types = args.types
     const tap = await sendWS('wiretap-add', body);
     const typesStr = args.types ? ` Types: ${args.types.join(', ')}` : ''
-    return { content: [{ type: 'text', text: `Wiretap #${tap.id} active. Filter: ${JSON.stringify(args.filter)}${typesStr}` }] };
+    return { content: [{ type: 'text', text: `Wiretap #${tap.id} active. Filter: ${args.filter}${typesStr}` }] };
   }
 
   // ---- timer (non-blocking) ----

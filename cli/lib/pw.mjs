@@ -35,6 +35,21 @@ import { homedir } from 'os'
 // Default to the one canonical session; overridable for isolated testing.
 const SESSION = process.env.TLDA_PW_SESSION || 'shared'
 
+// Pin the playwright-cli daemon's control SOCKET to a fixed, fence-visible path.
+// By default playwright-cli puts its client<->daemon unix socket under
+// $TMPDIR/playwright-cli. That breaks a FENCED agent driving the shared browser:
+// the fence remaps $TMPDIR (and the macOS sandbox denies AF_UNIX connect to the
+// real temp), so a fenced `tlda-dev pw` can't reach the out-of-fence daemon, sees
+// the live session as "closed", then destructively "recovers" (kills) the real
+// browser. /tmp is shared 1:1 with the fence, and the spawn lease whitelists this
+// dir via network.allowUnixSockets (bin/fleet-spawn.py), so pinning the socket
+// here lets the out-of-fence opener and an in-fence driver agree on one reachable
+// path. Inherited by every playwright-cli child (incl. the daemon it spawns).
+// Override with PLAYWRIGHT_DAEMON_SOCKETS_DIR for isolated testing.
+if (!process.env.PLAYWRIGHT_DAEMON_SOCKETS_DIR) {
+  process.env.PLAYWRIGHT_DAEMON_SOCKETS_DIR = '/tmp/tlda-pw-sockets'
+}
+
 // Each agent gets its own TAB in the one shared window. An earlier design gave
 // each agent its own window.open() popup so a background tab couldn't suspend
 // its paint — but under automation window.open is popup-BLOCKED, and the
@@ -88,6 +103,18 @@ function clearTouch() {
 
 function lockScript(repoRoot) {
   return join(repoRoot, 'bin', 'pw-lock.sh')
+}
+
+// Am I running inside the fence? The spawn wrapper (bin/fleet-spawn.py
+// wrap_sandbox_cmd) sets TLDA_SANDBOX_POLICY for every fenced launch; it's absent
+// for unsandboxed agents. A fenced agent can DRIVE the shared browser but CANNOT
+// open it (in-process Chromium launch Mach-fails in the sandbox), so when the
+// browser is down it must NOT try to launch/recover — that would Mach-fail and,
+// worse, the recovery path would pkill the live shared browser out from under
+// everyone. Fenced agents drive; an out-of-fence session opens.
+function isFenced() {
+  const p = process.env.TLDA_SANDBOX_POLICY
+  return !!p && p !== 'unsandboxed'
 }
 
 // ---- hard disable (Skip's kill switch) ----
@@ -239,6 +266,16 @@ function openArgs(repoRoot) {
 
 function ensureOpen(repoRoot) {
   if (sessionOpen()) return false
+  // A fenced agent must never reach the launch/recover path: it can't launch
+  // Chromium (Mach denial) and recoverStaleSharedBrowser would pkill the live
+  // shared browser. Fail clean and point at the real path (open out-of-fence).
+  if (isFenced()) {
+    throw new Error(
+      'shared browser is down and this session is sandboxed (fence) — a fenced agent ' +
+      'drives the shared browser but cannot open it. Have an out-of-fence session open it ' +
+      '(`tlda-dev pw acquire` unsandboxed, or ask app-testing/ops), then retry your verb.'
+    )
+  }
   ensureNoRaisePatch()
   if (pw(openArgs(repoRoot), { stdio: 'inherit' }).status === 0) return true
   recoverStaleSharedBrowser()

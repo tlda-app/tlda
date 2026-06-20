@@ -48,19 +48,51 @@ const KEYWORDS = [
   'kernel balancing', 'synthetic control', 'kernel ridge',
 ]
 
+// Tunable Deepgram recognition params. Defaults are docs-backed; any of them can
+// be overridden at RUNTIME with no rebuild (Skip 6/19: "tweakable parameters to
+// just play with so we don't have to rebuild all the time") by adding a
+// `voiceParams` object to ~/.config/tlda/config.json. listenOptions() re-reads the
+// config on every Deepgram connect, so editing the file and starting a fresh voice
+// session (toggle voice off→on, or reconnect) applies the change.
+//
+// To widen the recognition window so Deepgram stops cutting off / revising the
+// tail of an utterance ("it keeps eating parts of my text… make our window
+// bigger"), raise endpointing and utterance_end_ms, e.g.:
+//   "voiceParams": { "endpointing": 500, "utterance_end_ms": 1500 }
+const DEFAULT_LISTEN_OPTIONS = {
+  model: 'nova-3',
+  language: 'en',
+  smart_format: true,
+  punctuate: true,
+  interim_results: true,
+  endpointing: 300,
+  utterance_end_ms: 1000,
+  vad_events: true,
+  encoding: 'linear16',
+  sample_rate: 16000,
+  channels: 1,
+}
+
+function loadVoiceParamOverrides() {
+  try {
+    const config = loadConfig()
+    if (config.voiceParams && typeof config.voiceParams === 'object') return config.voiceParams
+  } catch {
+    // Config is an OPTIONAL tuning surface — if it's missing/unreadable, voice
+    // must still work on the docs-backed defaults. No overrides, no failure.
+  }
+  return {}
+}
+
 function listenOptions() {
+  const overrides = loadVoiceParamOverrides()
+  const recognition = { ...DEFAULT_LISTEN_OPTIONS, ...overrides }
+  if (Object.keys(overrides).length) {
+    console.log('[deepgram-sdk-bridge] voiceParams overrides applied:', JSON.stringify(overrides))
+  }
+  console.log('[deepgram-sdk-bridge] effective listen options:', JSON.stringify(recognition))
   return {
-    model: 'nova-3',
-    language: 'en',
-    smart_format: true,
-    punctuate: true,
-    interim_results: true,
-    endpointing: 300,
-    utterance_end_ms: 1000,
-    vad_events: true,
-    encoding: 'linear16',
-    sample_rate: 16000,
-    channels: 1,
+    ...recognition,
     queryParams: { keyterm: KEYWORDS },
     Authorization: `Token ${API_KEY}`,
     reconnectAttempts: 30,

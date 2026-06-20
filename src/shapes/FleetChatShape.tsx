@@ -72,6 +72,26 @@ const FLEET_API = DATABASE_HTTP
 type ChatTrafficMode = 'normal' | 'quiet'
 type ComposerTrafficFilterMode = 'dm-quiet' | 'dm' | 'agent' | 'custom'
 
+// Bind a handler that fires on both mouse click and a touch tap. On touch a tap
+// on a text element (e.g. the lightbox ✕ or a chip) never synthesizes a `click`,
+// so click-only handlers are dead on iPad; add a movement-guarded pointerup so a
+// genuine tap (not a drag) also fires. Handlers used here are idempotent
+// (overlay.remove()), so a redundant mouse/touch double-call is harmless.
+function addTap(el: Element | null | undefined, fn: (e: Event) => void) {
+  if (!el) return
+  let dx = 0, dy = 0
+  el.addEventListener('click', fn)
+  // Track both finger (touch) AND stylus (pen) — Apple Pencil taps also fire no
+  // synthesized click. Guard is 16px (not 10): a thumb drifts more than 10px on
+  // a genuine tap, so 10 dropped real taps.
+  el.addEventListener('pointerdown', (e: any) => { if (e.pointerType === 'touch' || e.pointerType === 'pen') { dx = e.clientX; dy = e.clientY } })
+  el.addEventListener('pointerup', (e: any) => {
+    if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return
+    if (Math.abs(e.clientX - dx) > 16 || Math.abs(e.clientY - dy) > 16) return
+    fn(e)
+  })
+}
+
 // On touch devices the chat input is voice-only: tapping it focuses the field
 // for dictation, and iOS must NOT raise the on-screen keyboard (it eats half the
 // screen). inputmode="none" reliably suppresses the soft keyboard on a <textarea>
@@ -577,7 +597,15 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
           <div ref={containerRef} />
         </div>
       </div>
-      {pinned && status === 'connected' && (
+      {pinned && (
+        // Input bar shows whenever the pane is pinned — Skip's ask is that pinning
+        // ALWAYS gives a field ("when you pin it, I'm not getting a text field").
+        // It used to be gated on status==='connected', so a terminal that hadn't
+        // connected (goose terminals, slow connects) pinned with no field at all.
+        // sendInput() already no-ops while the WS isn't open, so an un-connected
+        // field degrades safely; the placeholder reflects the connection state so
+        // it reads as "waiting", not a dead field. (Making typing actually reach a
+        // goose shell is the separate goose-terminal-connection item.)
         <div className="fleet-terminal-hover-input-bar"
           onPointerDown={stopEventPropagation}
           onPointerMove={stopEventPropagation}
@@ -589,10 +617,21 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
             rows={1}
             onKeyDown={handleInputKeyDown}
             onKeyUp={(e) => stopEventPropagation(e as any)}
-            onPointerDown={(e) => { stopEventPropagation(e as any); setLightboxed(true); registerVoice(e.currentTarget) }}
-            onFocus={(e) => { stopEventPropagation(e); setLightboxed(true); registerVoice(e.currentTarget) }}
+            // Skip's ask: clicking into the pinned-terminal field must just focus
+            // it so he can type — it must NOT auto-pop the lightbox (the "blowing
+            // up on my screen"). The lightbox was historically spec'd to open on
+            // field-tap; he asked for that removed and made manual. Focus only
+            // here; do not setLightboxed(true).
+            onPointerDown={(e) => { stopEventPropagation(e); registerVoice(e.currentTarget) }}
+            onFocus={(e) => { stopEventPropagation(e); registerVoice(e.currentTarget) }}
             onBlur={(e) => { clearVoiceTarget(e.currentTarget); e.currentTarget.style.boxShadow = ''; setLightboxed(false) }}
-            placeholder="type or speak a command…"
+            placeholder={status === 'connected' ? 'type or speak a command…' : status === 'error' ? 'terminal unavailable — reconnecting…' : 'connecting…'}
+            // Suppress the iOS soft keyboard on touch (same as the main composer
+            // ChatComposer.tsx + math notes): the field is voice/dictation-first,
+            // and raising the on-screen keyboard shifts visualViewport, which
+            // drags this portaled hover pane out of place (Skip: "the onscreen
+            // keyboard drags the terminal hover somewhere else").
+            inputMode={_isTouchDevice ? 'none' : undefined}
             spellCheck={false}
             autoComplete="off"
             style={{
@@ -1365,11 +1404,13 @@ function SuggestionGroup({ chips, agentName }: { chips: Suggestion[], agentName:
       onMouseEnter={showTip}
       onMouseLeave={hideTip}
     >
-      <span className="suggestion-chip-x" title="Dismiss" onClick={dismiss}>✕</span>
+      {/* onPointerUp not onClick: these are text <span>s, dead on touch (a tap
+          synthesizes no click). pointerup fires for mouse + finger + stylus. */}
+      <span className="suggestion-chip-x" title="Dismiss" onPointerUp={dismiss}>✕</span>
       {chips.map((c, i) => (
         <span key={c.id}>
           {i > 0 ? <span className="suggestion-group-sep"> | </span> : ' '}
-          <span className="suggestion-chip-label" onClick={pick(c)}>{c.label}</span>
+          <span className="suggestion-chip-label" onPointerUp={pick(c)}>{c.label}</span>
         </span>
       ))}
     </span>
@@ -2262,14 +2303,12 @@ function FleetChatInner({ shape }: { shape: any }) {
         const overlay = document.createElement('div')
         overlay.className = 'chat-lightbox-md'
         overlay.innerHTML = '<div class="chat-lightbox-md-card"><div class="chat-lightbox-md-header"><span></span><button class="chat-lightbox-md-close" title="Close">✕</button></div><div class="chat-lightbox-md-body"></div></div>'
-        overlay.addEventListener('click', (ev) => {
-          if (ev.target === overlay) overlay.remove()
-        })
+        addTap(overlay, (ev) => { if (ev.target === overlay) overlay.remove() })
         const titleEl = overlay.querySelector('.chat-lightbox-md-header span')
         if (titleEl) titleEl.textContent = title
         const bodyEl = overlay.querySelector('.chat-lightbox-md-body')
         if (bodyEl) bodyEl.innerHTML = renderedHtml
-        overlay.querySelector('.chat-lightbox-md-close')?.addEventListener('click', () => overlay.remove())
+        addTap(overlay.querySelector('.chat-lightbox-md-close'), () => overlay.remove())
         document.body.appendChild(overlay)
       }
       if (mdChip.classList.contains('src-chip')) {
@@ -2291,9 +2330,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         const overlay = document.createElement('div')
         overlay.className = 'chat-lightbox-md'
         overlay.innerHTML = '<div class="chat-lightbox-md-card"><div class="chat-lightbox-md-loading">Loading…</div></div>'
-        overlay.addEventListener('click', (ev) => {
-          if (ev.target === overlay) overlay.remove()
-        })
+        addTap(overlay, (ev) => { if (ev.target === overlay) overlay.remove() })
         document.body.appendChild(overlay)
         fetch(fetchUrl)
           .then(r => r.ok ? r.text() : Promise.reject(r.status))
@@ -2311,7 +2348,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             }
             const cardEl = overlay.querySelector('.chat-lightbox-md-card')!
             cardEl.innerHTML = `<div class="chat-lightbox-md-header"><span>${title}</span><button class="chat-lightbox-md-close" title="Close">✕</button></div><div class="chat-lightbox-md-body">${renderedHtml}</div>`
-            cardEl.querySelector('.chat-lightbox-md-close')?.addEventListener('click', () => overlay.remove())
+            addTap(cardEl.querySelector('.chat-lightbox-md-close'), () => overlay.remove())
           })
           .catch(() => {
             const cardEl = overlay.querySelector('.chat-lightbox-md-card')
@@ -3497,11 +3534,41 @@ function FleetChatInner({ shape }: { shape: any }) {
       const overlay = document.createElement('div')
       overlay.className = 'chat-lightbox'
       overlay.innerHTML = `<img src="${img.src}" alt="${img.alt || ''}">`
-      overlay.addEventListener('click', () => overlay.remove())
+      addTap(overlay, () => overlay.remove())
       document.body.appendChild(overlay)
     }
+    // Touch/stylus: the toggles handled above are text <div>/<span> elements
+    // (code-block fold, build-result header, pretty-expand, lifecycle/terminal
+    // cards, plan-mode badge, delegation-message collapse) — a tap synthesizes
+    // no `click`, so the delegated handler is dead on iPad/pen. On a deliberate
+    // tap, re-dispatch a real .click() on the nearest such element: that fires
+    // the inline onclick (code-block fold) AND this delegated handler, exactly
+    // like a mouse click. <button> targets (resend/approve/deny/plan-action/
+    // amend) already get a native click on touch, so they are excluded — both to
+    // avoid a double-fire and so a tap on a button inside an .lc-message doesn't
+    // redispatch onto the message (which would collapse it).
+    let tapDownX = 0, tapDownY = 0
+    const onTapDown = (e: PointerEvent) => {
+      if (e.pointerType === 'touch' || e.pointerType === 'pen') { tapDownX = e.clientX; tapDownY = e.clientY }
+    }
+    const onTapUp = (e: PointerEvent) => {
+      if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return
+      if (Math.abs(e.clientX - tapDownX) > 16 || Math.abs(e.clientY - tapDownY) > 16) return
+      const t = e.target as HTMLElement
+      if (t.closest('button')) return
+      const hit = t.closest(
+        '.code-block-toggle, .build-result-header, .pretty-expand-btn, .lc-message, .lc-terminal-card, .bullet-card-go, .plan-badge-click',
+      ) as HTMLElement | null
+      if (hit) hit.click()
+    }
+    logEl.addEventListener('pointerdown', onTapDown)
+    logEl.addEventListener('pointerup', onTapUp)
     logEl.addEventListener('click', onClick)
-    return () => logEl.removeEventListener('click', onClick)
+    return () => {
+      logEl.removeEventListener('pointerdown', onTapDown)
+      logEl.removeEventListener('pointerup', onTapUp)
+      logEl.removeEventListener('click', onClick)
+    }
   }, [chatLogEl])
 
   // Unquote: double-click on <code> spans inside chat messages.
@@ -3787,6 +3854,11 @@ function FleetChatInner({ shape }: { shape: any }) {
     () => activeComposerAgentLabel(filter, sendTargets, agents),
     [filterKey, sendTargets, agents],
   )
+  // Records the pointerdown that started on the traffic toggle, so a cycle only
+  // fires on a deliberate tap (down AND up on the toggle, little movement) — not
+  // on a stray touch or a scroll-drag that merely lifts off over it. This is the
+  // `93aba2cd` spurious-filter-cycling fix.
+  const trafficTapRef = useRef<{ x: number; y: number; id: number } | null>(null)
   const composerTrafficMode = useMemo<ComposerTrafficFilterMode>(
     () => classifyFleetComposerTrafficMode(filter, trafficMode, humanFilterLabel, composerAgentLabel),
     [filterKey, trafficMode, humanFilterLabel, composerAgentLabel],
@@ -4055,8 +4127,13 @@ function FleetChatInner({ shape }: { shape: any }) {
   // event below instead of picking an arbitrary first match.
   const resolveTargetAgent = useCallback((label: string, agentList: any[]) => {
     if (label.startsWith('fleet:')) return agentList.find((a: any) => a.id === label) || null
-    const exact = agentList.find((a: any) => a.friendly_name === label || a.id === label)
-    if (exact) return exact
+    // A friendly name can have a LIVE holder plus one or more DEAD former holders:
+    // a dead agent keeps its friendly_name for provenance (spec G.18), so the name
+    // string outlives any single holder. The live holder IS the agent (G.22), so
+    // prefer a non-dead match; fall back to a dead one only when the name has no
+    // live holder (which keeps resurrect-by-name working for an all-dead name).
+    const byName = agentList.filter((a: any) => a.friendly_name === label || a.id === label)
+    if (byName.length) return byName.find((a: any) => !a.dead) || byName[0]
     const matched = agentList.filter((a: any) => !a.human && labelsForAgent(a).includes(label))
     return matched.length === 1 ? matched[0] : null
   }, [])
@@ -4109,7 +4186,17 @@ function FleetChatInner({ shape }: { shape: any }) {
   const deadTargetAgent = useMemo(() => {
     for (const label of sendTargets) {
       const agent = resolveTargetAgent(label, agents)
-      if (agent?.dead) return { id: agent.id, name: agent.friendly_name || agent.id.replace('fleet:', '') }
+      if (agent?.dead) {
+        // Spec G.22: a dead agent that shares its friendly name with a LIVE
+        // holder is just provenance, never a resurrect target — the live holder
+        // IS the agent. Only offer resurrect when the name has NO live holder
+        // (the legitimate "the only holder is dead" case). This is what stops
+        // dead namesakes nagging "resurrect?" in a chat with the live holder.
+        const name = agent.friendly_name
+        const hasLiveHolder = !!name && agents.some((a: any) => !a.dead && a.friendly_name === name)
+        if (hasLiveHolder) continue
+        return { id: agent.id, name: name || agent.id.replace('fleet:', '') }
+      }
     }
     return null
   }, [sendTargets, agents, resolveTargetAgent])
@@ -4179,11 +4266,39 @@ function FleetChatInner({ shape }: { shape: any }) {
     const el = chatLogEl
     if (!el) return
     const onScroll = (e: Event) => handleScroll(e as any)
-    const onClick = (e: Event) => handleDocLinkClick(e as any)
+    // Touch: a tap on a text chip never synthesizes a `click`, so the
+    // click-delegated chip/link handlers below are dead on iPad. Drive them
+    // from a movement-guarded pointerup for touch instead. The movement guard
+    // means a drag-to-scroll that lifts off on a chip does NOT fire an open;
+    // the timestamp dedupe stops a mouse `click` from double-firing.
+    let downX = 0, downY = 0, lastTouchHandled = 0
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return
+      downX = e.clientX; downY = e.clientY
+    }
+    const onPointerUp = (e: PointerEvent) => {
+      // Finger AND stylus: a tap on a markdown/file chip never synthesizes a
+      // `click`, so the mouse-only open handler was dead on iPad/pen. (Skip: the
+      // md-chip lightbox "triggers on click with a mouse, it should work on
+      // finger and stylus touch.") 16px guard so a drag-to-scroll that lifts off
+      // on a chip does NOT open it (a thumb drifts >10px on a real tap).
+      if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return
+      if (Math.abs(e.clientX - downX) > 16 || Math.abs(e.clientY - downY) > 16) return
+      lastTouchHandled = e.timeStamp
+      handleDocLinkClick(e as any)
+    }
+    const onClick = (e: Event) => {
+      if (e.timeStamp - lastTouchHandled < 700) return
+      handleDocLinkClick(e as any)
+    }
     el.addEventListener('scroll', onScroll, { passive: true })
+    el.addEventListener('pointerdown', onPointerDown)
+    el.addEventListener('pointerup', onPointerUp)
     el.addEventListener('click', onClick)
     return () => {
       el.removeEventListener('scroll', onScroll)
+      el.removeEventListener('pointerdown', onPointerDown)
+      el.removeEventListener('pointerup', onPointerUp)
       el.removeEventListener('click', onClick)
     }
   }, [chatLogEl, handleScroll, handleDocLinkClick])
@@ -4264,7 +4379,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       // clicking on their .drag-handle left-edge element. Small inline items
       // (chips, timestamps) are draggable from the whole element.
       const isDraggable = target.closest(
-        '.drag-handle, .chat-ts, .tool-ref, .md-file-card, .ref-chip[data-doc], .tlda-card, .build-result-card, .ref-chip-annotation, .ref-chip:not(.ref-chip-annotation), .pretty-search-ts, .agent-nick'
+        '.drag-handle, .chat-ts, .tool-ref, .md-file-card, .tlda-card, .build-result-card, .ref-chip-annotation, .ref-chip:not(.ref-chip-annotation), .pretty-search-ts, .agent-nick'
       )
 
       if (!isDraggable) {
@@ -4401,19 +4516,16 @@ function FleetChatInner({ shape }: { shape: any }) {
         }
       }
 
-      // MD file card or shared-doc ref-chip → drag as doc reference
+      // MD file card → drag as a doc reference
       if (!drag) {
-        const mdCard = target.closest('.md-file-card, .ref-chip[data-doc]') as HTMLElement
+        const mdCard = target.closest('.md-file-card') as HTMLElement
         if (mdCard) {
           const filePath = mdCard.dataset.path || ''
-          const docName = mdCard.dataset.doc || ''
-          // Prefer data-title (set by renderAttachChip for shared-doc chips), then chip text, then filename
-          const name = mdCard.dataset.title || mdCard.querySelector('.md-file-chip')?.textContent || mdCard.textContent?.trim() || filePath.split('/').pop() || 'file'
-          // Use doc:name for tlda-shared docs so canvas drop creates inline-doc; file: for local files
-          const value = docName ? `doc:${docName}` : `file:${filePath}`
+          const name = mdCard.querySelector('.md-file-chip')?.textContent || mdCard.textContent?.trim() || filePath.split('/').pop() || 'file'
+          const value = `file:${filePath}`
           drag = {
             pillId: null, pillType: 'doc' as any, value,
-            displayName: name, color: '#63a0db', content: filePath || docName,
+            displayName: name, color: '#63a0db', content: filePath,
             startX: e.clientX, startY: e.clientY,
             started: false, captureEl: logEl, pointerId: e.pointerId,
           }
@@ -4806,8 +4918,12 @@ function FleetChatInner({ shape }: { shape: any }) {
           </button>
           <button
             className={`fleet-traffic-mode-btn${quietTraffic ? ' fleet-traffic-mode-btn-active' : ''}`}
-            onClick={(e) => {
-              e.stopPropagation()
+            onPointerDown={stopEventPropagation}
+            // text-label button ('q'/'t'): onPointerUp so a touch tap fires (a
+            // text label in the canvas gets no synthesized click on iPad, same
+            // class as the DM/All toggle); pointerup covers mouse too.
+            onPointerUp={(e) => {
+              stopEventPropagation(e)
               editor.updateShape({
                 id: shape.id,
                 type: shape.type,
@@ -5045,7 +5161,9 @@ function FleetChatInner({ shape }: { shape: any }) {
               <span>{deadTargetAgent.name} is dead</span>
               <span
                 className="fleet-dead-resurrect"
-                onClick={(e) => {
+                // text <span>: onPointerUp so a finger/stylus tap fires (no
+                // synthesized click on touch); pointerup covers mouse too.
+                onPointerUp={(e) => {
                   stopEventPropagation(e as any)
                   fetch(`/api/agents/${encodeURIComponent(deadTargetAgent.id)}/resurrect`, { method: 'POST' })
                 }}
@@ -5078,6 +5196,11 @@ function FleetChatInner({ shape }: { shape: any }) {
             )}
             {/* Highlight underlay — mirrors textarea text, highlights <<ref>> tokens */}
             <InputHighlightUnderlay inputRef={inputRef} />
+            {/* Left gutter control cluster — terminal peek, traffic toggle, and
+                follow/hard-lock ("magnet") button laid out as a tight flex row
+                so they sit adjacent regardless of the traffic label's width
+                (no dead gap). Order is set via CSS `order`, not DOM order. */}
+            <div className="fleet-composer-gutter">
             {/* Unified follow / jump-to-bottom control. One button, fixed here:
                   - off bottom → ⇣ arrow; click jumps to bottom (does NOT change
                     follow mode — you return to the bottom first, then it's a
@@ -5155,9 +5278,26 @@ function FleetChatInner({ shape }: { shape: any }) {
             )}
             <button
               className={`fleet-composer-traffic-toggle fleet-composer-traffic-toggle-${composerTrafficMode}`}
-              onPointerDown={stopEventPropagation}
-              onClick={(e) => {
+              onPointerDown={(e) => {
                 stopEventPropagation(e)
+                trafficTapRef.current = { x: e.clientX, y: e.clientY, id: e.pointerId }
+              }}
+              onPointerUp={(e) => {
+                // Drive the cycle from pointerup, not click: on touch a tap on
+                // this text label never synthesizes a `click` (pointerdown +
+                // pointerup fire, click does not), so an onClick handler is dead
+                // on iPad. pointerup fires for both mouse and touch — one cycle
+                // per interaction, no double-fire.
+                stopEventPropagation(e)
+                // Only a deliberate tap on THIS button cycles: the pointerdown
+                // must have started here (same pointerId) and barely moved. A
+                // stray touch or a scroll-drag that lifts off over the button has
+                // no matching down (or drifted) → it must NOT change the filter.
+                const down = trafficTapRef.current
+                trafficTapRef.current = null
+                if (!down || down.id !== e.pointerId) return
+                if (Math.abs(e.clientX - down.x) > 16 || Math.abs(e.clientY - down.y) > 16) return
+                if (!composerAgentLabel) return
                 cycleComposerTrafficMode()
               }}
               disabled={!composerAgentLabel}
@@ -5180,6 +5320,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                     ? 'All'
                     : 'Filter'}
             </button>
+            </div>
             <ChatComposer
               sendTargets={sendTargets}
               agentNames={agentNames}

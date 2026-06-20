@@ -103,6 +103,18 @@ export function dropPillOnTarget(
       break
     }
   }
+  // Whether the drop landed on ANY fleet shape (the HUD), not just a fleet-chat.
+  // A sticky/new-chat must never be created on top of the HUD — it sits over the
+  // fixed overlay and becomes undismissable. So if the drop is over a fleet
+  // shape and isn't a handled fleet-chat interaction, the create paths below
+  // evaporate it (see the guard before the create branches).
+  const overFleet = hitEditor.getCurrentPageShapes().some(s => {
+    if (!FLEET_TYPES.includes(s.type as string)) return false
+    const b = hitEditor.getShapePageBounds(s.id)
+    return !!b &&
+      pagePoint.x >= b.x && pagePoint.x <= b.x + b.w &&
+      pagePoint.y >= b.y && pagePoint.y <= b.y + b.h
+  })
 
   if (hitShape && hitShape.type === 'fleet-chat') {
 
@@ -188,6 +200,12 @@ export function dropPillOnTarget(
     chatInsertBus.dispatchEvent(new CustomEvent('filter-applied', {
       detail: { chatId: hitShape.id },
     }))
+  } else if (overFleet) {
+    // Drop landed on the HUD (a fleet shape) but isn't a handled fleet-chat
+    // interaction — evaporate instead of spawning a sticky/new-chat on top of
+    // the fixed overlay, where it sits on top and becomes undismissable. The
+    // caller deletes the dragged pill after this returns, so nothing is left.
+    return
   } else if ((editor.getShape(pillId) as any)?.type === 'fleet-pill' &&
              (editor.getShape(pillId) as any)?.props?.pillType === 'file') {
     // File chip pill dropped on canvas → create file-backed math-note
@@ -208,7 +226,10 @@ export function dropPillOnTarget(
         text: content || pill?.props?.displayName || '',
         color: 'light-violet',
         autoSize: true,
-        collapsed: true,
+        // Drop the file/markdown chip as an OPEN sticky so the shared file is
+        // readable immediately — a collapsed dot is impossible to uncollapse on
+        // touch (iPad). The user can collapse it afterward if they want.
+        collapsed: false,
         ...(filePath ? { backingFile: filePath } : {}),
       },
       meta: {
@@ -259,7 +280,7 @@ export function dropPillOnTarget(
               text,
               color: 'light-violet',
               autoSize: true,
-              collapsed: true,
+              collapsed: false, // open sticky, not a touch-untappable dot
               backingFile: filePath,
             },
           })
@@ -286,7 +307,7 @@ export function dropPillOnTarget(
               text: `# ${displayName}\n\n(Could not read file)`,
               color: 'light-violet',
               autoSize: true,
-              collapsed: true,
+              collapsed: false, // open sticky, not a touch-untappable dot
             },
           })
         }
