@@ -325,6 +325,9 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     const modeJustChangedRef = useRef(false)
     const [dotHovered, setDotHovered] = useState(false)
     const dotHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+    // Pointerdown position on the collapse-dot, so a single tap/click expands it
+    // but a drag still moves the shape (see the dot's onPointerUp).
+    const dotDownRef = useRef<{ x: number; y: number } | null>(null)
     const [imgVersion, setImgVersion] = useState(0)
     const [backingSyncState, setBackingSyncState] = useState<'synced' | 'pushing' | 'stale'>('synced')
 
@@ -1488,10 +1491,22 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
             }}
             style={{ position: 'relative', pointerEvents: 'auto' }}
           >
-            {/* The dot — double-click to expand, single click passes through to TLDraw for select/drag */}
+            {/* The dot — SINGLE click/tap expands it (Skip's ask: was double, now
+                single). Handled on DOM pointerup, not onClick/onDoubleClick:
+                TLDraw's capture-phase listeners block ShapeUtil.onClick from
+                firing on unselected shape content (same constraint as bullets),
+                which is why the old path needed a double-click on a 10px target —
+                nearly un-hittable. pointerup fires for mouse + finger + stylus
+                regardless of selection. A movement guard preserves drag-to-move:
+                a no-move tap expands; a drag passes through to TLDraw. */}
             <div
-              onDoubleClick={(e) => {
-                e.stopPropagation()
+              onPointerDown={(e) => { dotDownRef.current = { x: e.clientX, y: e.clientY } }}
+              onPointerUp={(e) => {
+                const d = dotDownRef.current
+                dotDownRef.current = null
+                if (!d) return
+                if (Math.abs(e.clientX - d.x) > 8 || Math.abs(e.clientY - d.y) > 8) return
+                stopEventPropagation(e)
                 editor.updateShape({
                   id: shape.id,
                   type: shape.type,
