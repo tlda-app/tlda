@@ -77,9 +77,24 @@ export function resolveFleetFilter(filter, { agents = [], humanId = null, humanN
       if (label) labels.add(label)
     }
   }
+  // Resolve a shared name to the LIVE holder. Skip's model: "dying makes the name
+  // usable, it does not wipe it" — a dead agent keeps its name, so dead+live name
+  // duplicates are the steady state. A label that ANY live agent carries must
+  // resolve to the live holder(s) ONLY: a dead namesake keeping the same name
+  // must not pull its (historical) thread into a filter aimed at the live agent
+  // (that's what broke Skip's filter). A label with NO live holder still resolves
+  // to the dead one, so a fully-dead name's history stays reachable. Ids are
+  // unique, so explicit id-targeting is unaffected.
+  const liveLabels = new Set()
+  for (const a of allAgents) {
+    if (a.dead) continue
+    for (const l of labelsForAgent(a)) liveLabels.add(l)
+  }
   for (const a of allAgents) {
     const agentLabels = labelsForAgent(a)
-    if ([...labels].some(label => agentLabels.includes(label))) ids.add(a.id)
+    const matched = [...labels].some(label =>
+      agentLabels.includes(label) && (!a.dead || !liveLabels.has(label)))
+    if (matched) ids.add(a.id)
   }
   return ids
 }
