@@ -1475,7 +1475,49 @@ def build_claude_cmd(fleet_id, tmux_session, model, effort=None, mode=None,
 
 
 
-def build_goose_cmd(fleet_id, tmux_session, model, name=None):
+def goose_config_home_for_capability(sandbox_cfg, state_dir, capability):
+    """Return the XDG_CONFIG_HOME whose goose/config.yaml has the **developer**
+    extension (shell + fs) enabled iff the granted capability allows writing.
+
+    This is Skip's fence+harness coupling: the developer extension is *whether* a
+    goose agent can write/run at all; the fence (wrap_sandbox_cmd write_roots) is
+    *where* it may write. They COMPOSE — a `write` deepseek gets the tool AND is
+    sandbox-constrained to its lane. Enabling the tool here does NOT bypass the
+    fence; the lock-down on an untrusted model is the fence, not toollessness
+    (Skip: "lock down dangerous agents" = the lane, not withholding the tool).
+
+    A `read` agent keeps the base sandbox config (developer OFF) — tlda-MCP-only.
+
+    Dependency to note: while the global fence is OFF (FENCE_GLOBALLY_DISABLED), a
+    write goose with the developer extension runs shell+fs UNSANDBOXED — the same
+    risk as every other agent under the global-off, not net-new. When the fence is
+    restored (the #6/D2 flip — operator's gate), a write goose is dev-tools-on AND
+    fenced. Do not flip the fence here to make this safe; that is a separate gate.
+    """
+    cap = normalize_spawn_capability(capability)
+    if cap not in ("write", "tlda-write", "full"):
+        return sandbox_cfg  # read (or unset): base config, developer OFF
+    base_config = os.path.join(sandbox_cfg, "goose", "config.yaml")
+    try:
+        with open(base_config) as f:
+            text = f.read()
+    except OSError:
+        return sandbox_cfg  # fall back to the safe base if the config is missing
+    # Flip ONLY the developer extension on; every other bundled extension stays
+    # off (they are not about write). The developer block is the first one.
+    enabled = text.replace("  developer:\n    enabled: false",
+                           "  developer:\n    enabled: true", 1)
+    cfg_home = os.path.join(state_dir, "config")
+    goose_dir = os.path.join(cfg_home, "goose")
+    os.makedirs(goose_dir, exist_ok=True)
+    tmp = os.path.join(goose_dir, f"config.yaml.tmp-{os.getpid()}")
+    with open(tmp, "w") as f:
+        f.write(enabled)
+    os.replace(tmp, os.path.join(goose_dir, "config.yaml"))
+    return cfg_home
+
+
+def build_goose_cmd(fleet_id, tmux_session, model, name=None, capability=None):
     """Build the shell command for a Goose-backed DeepSeek fleet agent.
 
     Mirrors build_claude_cmd's identity env (FLEET_ID/FLEET_NAME/TMUX) but
@@ -1517,6 +1559,10 @@ def build_goose_cmd(fleet_id, tmux_session, model, name=None):
     os.makedirs(data_dir, exist_ok=True)
     os.makedirs(cache_dir, exist_ok=True)
     os.makedirs(xdg_state_dir, exist_ok=True)
+    # Capability decides whether the developer (shell+fs) extension boots: a
+    # write/tlda-write/full goose gets a per-agent config with it ON (and is still
+    # fenced by wrap_sandbox_cmd); a read goose keeps the base tlda-MCP-only config.
+    xdg_config_home = goose_config_home_for_capability(sandbox_cfg, state_dir, capability)
     parts = [
         f"FLEET_ID={fleet_id}",
         f"FLEET_TMUX_SESSION={tmux_session}",
@@ -1526,7 +1572,7 @@ def build_goose_cmd(fleet_id, tmux_session, model, name=None):
         "FLEET_HARNESS=goose",
         f"TLDA_SERVER={shlex.quote(API)}",
         f"TLDA_SYNC_SERVER={shlex.quote(API)}",
-        f"XDG_CONFIG_HOME={shlex.quote(sandbox_cfg)}",
+        f"XDG_CONFIG_HOME={shlex.quote(xdg_config_home)}",
         f"XDG_DATA_HOME={shlex.quote(data_dir)}",
         f"XDG_CACHE_HOME={shlex.quote(cache_dir)}",
         f"XDG_STATE_HOME={shlex.quote(xdg_state_dir)}",
@@ -1957,7 +2003,7 @@ class GooseHarness(HarnessAdapter):
     def build_cmd(self, fleet_id, sess, model, effort=None, mode=None,
                   resume_id=None, include_prompt=True, name=None, cwd=None,
                   capability=None, outer_sandbox=False):
-        return build_goose_cmd(fleet_id, sess, model, name=name)
+        return build_goose_cmd(fleet_id, sess, model, name=name, capability=capability)
 
     def no_resume_message(self):
         return "goose fresh re-brief"
