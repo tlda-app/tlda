@@ -597,7 +597,15 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
           <div ref={containerRef} />
         </div>
       </div>
-      {pinned && status === 'connected' && (
+      {pinned && (
+        // Input bar shows whenever the pane is pinned — Skip's ask is that pinning
+        // ALWAYS gives a field ("when you pin it, I'm not getting a text field").
+        // It used to be gated on status==='connected', so a terminal that hadn't
+        // connected (goose terminals, slow connects) pinned with no field at all.
+        // sendInput() already no-ops while the WS isn't open, so an un-connected
+        // field degrades safely; the placeholder reflects the connection state so
+        // it reads as "waiting", not a dead field. (Making typing actually reach a
+        // goose shell is the separate goose-terminal-connection item.)
         <div className="fleet-terminal-hover-input-bar"
           onPointerDown={stopEventPropagation}
           onPointerMove={stopEventPropagation}
@@ -617,7 +625,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
             onPointerDown={(e) => { stopEventPropagation(e); registerVoice(e.currentTarget) }}
             onFocus={(e) => { stopEventPropagation(e); registerVoice(e.currentTarget) }}
             onBlur={(e) => { clearVoiceTarget(e.currentTarget); e.currentTarget.style.boxShadow = ''; setLightboxed(false) }}
-            placeholder="type or speak a command…"
+            placeholder={status === 'connected' ? 'type or speak a command…' : status === 'error' ? 'terminal unavailable — reconnecting…' : 'connecting…'}
             // Suppress the iOS soft keyboard on touch (same as the main composer
             // ChatComposer.tsx + math notes): the field is voice/dictation-first,
             // and raising the on-screen keyboard shifts visualViewport, which
