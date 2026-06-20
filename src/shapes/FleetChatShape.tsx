@@ -475,6 +475,15 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
     refreshHistory()
   }
 
+  const submitInput = (text: string) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'submit', text }))
+    }
+    // Lightbox shows a capture snapshot, not the live stream — re-pull it so the
+    // command's effect shows up.
+    refreshHistory()
+  }
+
   const shortId = agentId.replace('fleet:', '')
 
   // Make this field the active voice target — dictation flows in, and saying
@@ -482,7 +491,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
   // setVoiceTarget wiring, but with a terminal-specific send).
   const registerVoice = (el: HTMLTextAreaElement) => {
     setVoiceTarget(el, [agentId], { [agentId]: shortId }, async (_targets: string[], text: string) => {
-      sendInput(text + '\r')
+      submitInput(text)
       el.value = ''
     })
   }
@@ -491,7 +500,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
     stopEventPropagation(e as any)
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      sendInput((inputRef.current?.value ?? '') + '\r')
+      submitInput(inputRef.current?.value ?? '')
       if (inputRef.current) inputRef.current.value = ''
     } else if (e.key === 'c' && e.ctrlKey) {
       e.preventDefault()
