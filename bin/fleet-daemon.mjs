@@ -2261,7 +2261,7 @@ function rpcTerminalInput({ tmux_session, data }) {
 
 const _activeSpawns = new Map()
 const STARTUP_FAILURE_PROBE_MS = Number(process.env.TLDA_SPAWN_STARTUP_FAILURE_PROBE_MS || 2500)
-const SPAWN_LAUNCH_TIMEOUT_MS = Number(process.env.TLDA_SPAWN_LAUNCH_TIMEOUT_MS || 8000)
+const SPAWN_LAUNCH_TIMEOUT_MS = Number(process.env.TLDA_SPAWN_LAUNCH_TIMEOUT_MS || 20000)
 const _reportedStartupFailures = new Set()
 
 function parseSpawnLaunch(stdout = '', fallbackName = null) {
