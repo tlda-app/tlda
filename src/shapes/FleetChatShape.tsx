@@ -81,10 +81,13 @@ function addTap(el: Element | null | undefined, fn: (e: Event) => void) {
   if (!el) return
   let dx = 0, dy = 0
   el.addEventListener('click', fn)
-  el.addEventListener('pointerdown', (e: any) => { if (e.pointerType === 'touch') { dx = e.clientX; dy = e.clientY } })
+  // Track both finger (touch) AND stylus (pen) — Apple Pencil taps also fire no
+  // synthesized click. Guard is 16px (not 10): a thumb drifts more than 10px on
+  // a genuine tap, so 10 dropped real taps.
+  el.addEventListener('pointerdown', (e: any) => { if (e.pointerType === 'touch' || e.pointerType === 'pen') { dx = e.clientX; dy = e.clientY } })
   el.addEventListener('pointerup', (e: any) => {
-    if (e.pointerType !== 'touch') return
-    if (Math.abs(e.clientX - dx) > 10 || Math.abs(e.clientY - dy) > 10) return
+    if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return
+    if (Math.abs(e.clientX - dx) > 16 || Math.abs(e.clientY - dy) > 16) return
     fn(e)
   })
 }
@@ -606,8 +609,13 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
             rows={1}
             onKeyDown={handleInputKeyDown}
             onKeyUp={(e) => stopEventPropagation(e as any)}
-            onPointerDown={(e) => { stopEventPropagation(e as any); setLightboxed(true); registerVoice(e.currentTarget) }}
-            onFocus={(e) => { stopEventPropagation(e); setLightboxed(true); registerVoice(e.currentTarget) }}
+            // Skip's ask: clicking into the pinned-terminal field must just focus
+            // it so he can type — it must NOT auto-pop the lightbox (the "blowing
+            // up on my screen"). The lightbox was historically spec'd to open on
+            // field-tap; he asked for that removed and made manual. Focus only
+            // here; do not setLightboxed(true).
+            onPointerDown={(e) => { stopEventPropagation(e); registerVoice(e.currentTarget) }}
+            onFocus={(e) => { stopEventPropagation(e); registerVoice(e.currentTarget) }}
             onBlur={(e) => { clearVoiceTarget(e.currentTarget); e.currentTarget.style.boxShadow = ''; setLightboxed(false) }}
             placeholder="type or speak a command…"
             spellCheck={false}
@@ -1382,11 +1390,13 @@ function SuggestionGroup({ chips, agentName }: { chips: Suggestion[], agentName:
       onMouseEnter={showTip}
       onMouseLeave={hideTip}
     >
-      <span className="suggestion-chip-x" title="Dismiss" onClick={dismiss}>✕</span>
+      {/* onPointerUp not onClick: these are text <span>s, dead on touch (a tap
+          synthesizes no click). pointerup fires for mouse + finger + stylus. */}
+      <span className="suggestion-chip-x" title="Dismiss" onPointerUp={dismiss}>✕</span>
       {chips.map((c, i) => (
         <span key={c.id}>
           {i > 0 ? <span className="suggestion-group-sep"> | </span> : ' '}
-          <span className="suggestion-chip-label" onClick={pick(c)}>{c.label}</span>
+          <span className="suggestion-chip-label" onPointerUp={pick(c)}>{c.label}</span>
         </span>
       ))}
     </span>
@@ -3510,11 +3520,41 @@ function FleetChatInner({ shape }: { shape: any }) {
       const overlay = document.createElement('div')
       overlay.className = 'chat-lightbox'
       overlay.innerHTML = `<img src="${img.src}" alt="${img.alt || ''}">`
-      overlay.addEventListener('click', () => overlay.remove())
+      addTap(overlay, () => overlay.remove())
       document.body.appendChild(overlay)
     }
+    // Touch/stylus: the toggles handled above are text <div>/<span> elements
+    // (code-block fold, build-result header, pretty-expand, lifecycle/terminal
+    // cards, plan-mode badge, delegation-message collapse) — a tap synthesizes
+    // no `click`, so the delegated handler is dead on iPad/pen. On a deliberate
+    // tap, re-dispatch a real .click() on the nearest such element: that fires
+    // the inline onclick (code-block fold) AND this delegated handler, exactly
+    // like a mouse click. <button> targets (resend/approve/deny/plan-action/
+    // amend) already get a native click on touch, so they are excluded — both to
+    // avoid a double-fire and so a tap on a button inside an .lc-message doesn't
+    // redispatch onto the message (which would collapse it).
+    let tapDownX = 0, tapDownY = 0
+    const onTapDown = (e: PointerEvent) => {
+      if (e.pointerType === 'touch' || e.pointerType === 'pen') { tapDownX = e.clientX; tapDownY = e.clientY }
+    }
+    const onTapUp = (e: PointerEvent) => {
+      if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return
+      if (Math.abs(e.clientX - tapDownX) > 16 || Math.abs(e.clientY - tapDownY) > 16) return
+      const t = e.target as HTMLElement
+      if (t.closest('button')) return
+      const hit = t.closest(
+        '.code-block-toggle, .build-result-header, .pretty-expand-btn, .lc-message, .lc-terminal-card, .bullet-card-go, .plan-badge-click',
+      ) as HTMLElement | null
+      if (hit) hit.click()
+    }
+    logEl.addEventListener('pointerdown', onTapDown)
+    logEl.addEventListener('pointerup', onTapUp)
     logEl.addEventListener('click', onClick)
-    return () => logEl.removeEventListener('click', onClick)
+    return () => {
+      logEl.removeEventListener('pointerdown', onTapDown)
+      logEl.removeEventListener('pointerup', onTapUp)
+      logEl.removeEventListener('click', onClick)
+    }
   }, [chatLogEl])
 
   // Unquote: double-click on <code> spans inside chat messages.
@@ -3800,6 +3840,11 @@ function FleetChatInner({ shape }: { shape: any }) {
     () => activeComposerAgentLabel(filter, sendTargets, agents),
     [filterKey, sendTargets, agents],
   )
+  // Records the pointerdown that started on the traffic toggle, so a cycle only
+  // fires on a deliberate tap (down AND up on the toggle, little movement) — not
+  // on a stray touch or a scroll-drag that merely lifts off over it. This is the
+  // `93aba2cd` spurious-filter-cycling fix.
+  const trafficTapRef = useRef<{ x: number; y: number; id: number } | null>(null)
   const composerTrafficMode = useMemo<ComposerTrafficFilterMode>(
     () => classifyFleetComposerTrafficMode(filter, trafficMode, humanFilterLabel, composerAgentLabel),
     [filterKey, trafficMode, humanFilterLabel, composerAgentLabel],
@@ -4214,12 +4259,17 @@ function FleetChatInner({ shape }: { shape: any }) {
     // the timestamp dedupe stops a mouse `click` from double-firing.
     let downX = 0, downY = 0, lastTouchHandled = 0
     const onPointerDown = (e: PointerEvent) => {
-      if (e.pointerType !== 'touch') return
+      if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return
       downX = e.clientX; downY = e.clientY
     }
     const onPointerUp = (e: PointerEvent) => {
-      if (e.pointerType !== 'touch') return
-      if (Math.abs(e.clientX - downX) > 10 || Math.abs(e.clientY - downY) > 10) return
+      // Finger AND stylus: a tap on a markdown/file chip never synthesizes a
+      // `click`, so the mouse-only open handler was dead on iPad/pen. (Skip: the
+      // md-chip lightbox "triggers on click with a mouse, it should work on
+      // finger and stylus touch.") 16px guard so a drag-to-scroll that lifts off
+      // on a chip does NOT open it (a thumb drifts >10px on a real tap).
+      if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return
+      if (Math.abs(e.clientX - downX) > 16 || Math.abs(e.clientY - downY) > 16) return
       lastTouchHandled = e.timeStamp
       handleDocLinkClick(e as any)
     }
@@ -4854,8 +4904,12 @@ function FleetChatInner({ shape }: { shape: any }) {
           </button>
           <button
             className={`fleet-traffic-mode-btn${quietTraffic ? ' fleet-traffic-mode-btn-active' : ''}`}
-            onClick={(e) => {
-              e.stopPropagation()
+            onPointerDown={stopEventPropagation}
+            // text-label button ('q'/'t'): onPointerUp so a touch tap fires (a
+            // text label in the canvas gets no synthesized click on iPad, same
+            // class as the DM/All toggle); pointerup covers mouse too.
+            onPointerUp={(e) => {
+              stopEventPropagation(e)
               editor.updateShape({
                 id: shape.id,
                 type: shape.type,
@@ -5093,7 +5147,9 @@ function FleetChatInner({ shape }: { shape: any }) {
               <span>{deadTargetAgent.name} is dead</span>
               <span
                 className="fleet-dead-resurrect"
-                onClick={(e) => {
+                // text <span>: onPointerUp so a finger/stylus tap fires (no
+                // synthesized click on touch); pointerup covers mouse too.
+                onPointerUp={(e) => {
                   stopEventPropagation(e as any)
                   fetch(`/api/agents/${encodeURIComponent(deadTargetAgent.id)}/resurrect`, { method: 'POST' })
                 }}
@@ -5208,15 +5264,26 @@ function FleetChatInner({ shape }: { shape: any }) {
             )}
             <button
               className={`fleet-composer-traffic-toggle fleet-composer-traffic-toggle-${composerTrafficMode}`}
-              onPointerDown={stopEventPropagation}
+              onPointerDown={(e) => {
+                stopEventPropagation(e)
+                trafficTapRef.current = { x: e.clientX, y: e.clientY, id: e.pointerId }
+              }}
               onPointerUp={(e) => {
                 // Drive the cycle from pointerup, not click: on touch a tap on
                 // this text label never synthesizes a `click` (pointerdown +
                 // pointerup fire, click does not), so an onClick handler is dead
                 // on iPad. pointerup fires for both mouse and touch — one cycle
                 // per interaction, no double-fire.
-                if (!composerAgentLabel) return
                 stopEventPropagation(e)
+                // Only a deliberate tap on THIS button cycles: the pointerdown
+                // must have started here (same pointerId) and barely moved. A
+                // stray touch or a scroll-drag that lifts off over the button has
+                // no matching down (or drifted) → it must NOT change the filter.
+                const down = trafficTapRef.current
+                trafficTapRef.current = null
+                if (!down || down.id !== e.pointerId) return
+                if (Math.abs(e.clientX - down.x) > 16 || Math.abs(e.clientY - down.y) > 16) return
+                if (!composerAgentLabel) return
                 cycleComposerTrafficMode()
               }}
               disabled={!composerAgentLabel}
