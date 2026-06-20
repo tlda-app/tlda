@@ -627,6 +627,38 @@ function touchActivity(agentId) {
   _lastActivityAt.set(agentId, Date.now())
 }
 
+// ---- Turn-end synthetic event ----
+// An agent's "turn" ends when it transitions thinking → idle. The transient
+// `agent-thinking` indicator is fire-and-forget (a disconnected subscriber
+// misses the edge), so we ALSO persist a synthetic `turn_ended` row in the
+// events DB. Because every share() is auto-broadcast as a fleet-event (see the
+// fleetStore.onEvent wiring below), bots can SUBSCRIBE to turn boundaries live
+// AND catch up after a disconnect by polling /api/store/events?type=turn_ended.
+// This is the signal the disposition self-check bot (bin/disposition-bot.mjs)
+// rides on. The true→false edge is deduped upstream by _thinkingState, so this
+// fires exactly once per turn.
+function emitTurnEnded(agentId, startedAtMs) {
+  if (!fleetStore || !agentId) return
+  // Only real agents have turns — skip humans/bots (Skip, todd, tlda, …).
+  const a = fleetStore.getAgent?.(agentId)
+  if (a?.human) return
+  const endedAt = new Date()
+  const durationMs = startedAtMs ? (endedAt.getTime() - startedAtMs) : null
+  Promise.resolve(fleetStore.share({
+    type: 'turn_ended',
+    from: agentId,
+    agentId,
+    text: null,
+    metadata: {
+      kind: 'turn-end',
+      startedAt: startedAtMs ? new Date(startedAtMs).toISOString() : null,
+      endedAt: endedAt.toISOString(),
+      durationMs,
+    },
+    unread: false,
+  })).catch(e => console.error('[turn_ended] emit failed:', e.message))
+}
+
 function getWouldHibernate() {
   const now = Date.now()
   const result = {}
@@ -3357,7 +3389,11 @@ async function handleFleetWsMessage(ws, msg) {
       _thinkingState.set(msg.agentId, Date.now())
       touchActivity(msg.agentId)
     } else {
+      // thinking → idle edge is a turn end. _thinkingState holds the start ts
+      // and dedupes: only the first false after a true reaches emitTurnEnded.
+      const startedAt = _thinkingState.get(msg.agentId)
       _thinkingState.delete(msg.agentId)
+      if (startedAt !== undefined) emitTurnEnded(msg.agentId, startedAt)
     }
     broadcastEvent('agent-thinking', { agent: msg.agentId, thinking: !!msg.thinking })
     reply({ ok: true })
@@ -4797,7 +4833,10 @@ async function handleDaemonWsMessage(ws, msg) {
         _thinkingState.set(msg.agentId, Date.now())
         touchActivity(msg.agentId)
       } else {
+        // thinking → idle edge = turn end (see emitTurnEnded; deduped by _thinkingState).
+        const startedAt = _thinkingState.get(msg.agentId)
         _thinkingState.delete(msg.agentId)
+        if (startedAt !== undefined) emitTurnEnded(msg.agentId, startedAt)
       }
       broadcastEvent('agent-thinking', { agent: msg.agentId, thinking: !!msg.thinking })
     }
