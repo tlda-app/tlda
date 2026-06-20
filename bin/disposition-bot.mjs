@@ -160,7 +160,9 @@ function connect() {
     register()
   })
   ws.on('message', (raw) => {
-    try { handleMessage(JSON.parse(raw.toString())) } catch {}
+    let msg
+    try { msg = JSON.parse(raw.toString()) } catch { return } // ignore non-JSON frames
+    try { handleMessage(msg) } catch (e) { console.error(`[${BOT_KEY}] handleMessage error:`, e.message) }
   })
   ws.on('close', () => { console.log(`[${BOT_KEY}] disconnected, reconnecting in ${reconnectDelay}ms`); scheduleReconnect() })
   ws.on('error', (err) => console.error(`[${BOT_KEY}] ws error:`, err.message))
