@@ -1,15 +1,14 @@
-// Live end-to-end driver for the turn-end self-check bot against the sandbox.
-// Run AFTER: tlda-dev sandbox backend up on :5280, AND disposition-bot running
-// pointed at TLDA_SERVER=https://localhost:5280.
+// Live end-to-end driver for the turn-end INTROSPECTION POKE bot against the
+// sandbox. Run AFTER: tlda-dev sandbox backend up on :5280, AND disposition-bot
+// running pointed at TLDA_SERVER=https://localhost:5280 with a SHORT countdown
+// (DISPO_COUNTDOWN_SEC=2) so the test is quick.
 //
-// Injects three real turns over /ws/fleet and checks the bot's live behavior:
-//   1. done-claim, no verification activity → bot SHOULD fire (untouched-surface)
-//   2. plain finding (no claim, no punt)     → bot should stay QUIET
-//   3. directive punt ("reload and check")   → bot SHOULD fire (dont-make-him-steer)
-// Verifies via the sandbox events DB: turn_ended persisted for each, and a chat
-// from fleet:disposition only to the two failure turns, not the quiet one.
-// (The done-WITH-verification "stays quiet" branch is covered by the unit test;
-//  activity events arrive on the daemon path, not the /ws/fleet path this rig uses.)
+// Injects real turns over /ws/fleet and checks the bot's live behavior:
+//   1. turn ends, no Skip message            → bot SHOULD poke (countdown expired)
+//   2. turn ends, Skip messages that agent    → bot SHOULD stay quiet (cancelled)
+//   3. manual kick ("poke <agent>" to bot)    → bot SHOULD poke immediately
+// Verifies via the sandbox events DB: turn_ended persisted, and a chat from
+// fleet:disposition to the right agents (and NOT to the cancelled one).
 import WebSocket from 'ws'
 import https from 'https'
 
@@ -17,6 +16,8 @@ const BASE = process.env.SBX || 'https://localhost:5280'
 const WS_URL = BASE.replace(/^http/, 'ws') + '/ws/fleet'
 const SKIP = 'fleet:skip'
 const DISPO = 'fleet:disposition'
+// Match the bot's countdown (DISPO_COUNTDOWN_SEC); default 2s for the rig.
+const COUNTDOWN_MS = (parseInt(process.env.DISPO_COUNTDOWN_SEC || '', 10) || 2) * 1000
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
 
 const sleep = ms => new Promise(r => setTimeout(r, ms))
@@ -31,48 +32,57 @@ const ws = new WebSocket(WS_URL)
 let mid = 1
 const send = m => ws.send(JSON.stringify({ id: mid++, ...m }))
 
-const CASES = [
-  { id: 'fleet:sbx-pos',   msg: 'Fixed the build-card color — the sidebar is 50/50 now. Done.', expectFire: true,  label: 'untouched-surface' },
-  { id: 'fleet:sbx-quiet', msg: 'Found the root cause: the daemon emits agent-thinking every sweep, not on transition.', expectFire: false },
-  { id: 'fleet:sbx-punt',  msg: 'Pushed the change — reload and check it looks right on your end.', expectFire: true,  label: 'dont-make-him-steer' },
-]
+const POKE = 'fleet:sbx-poke'   // turn ends, no Skip message → should be poked
+const CANCEL = 'fleet:sbx-cancel' // turn ends, Skip messages → should NOT be poked
+const KICK = 'fleet:sbx-kick'   // manual kick target
 
 await new Promise((resolve) => ws.on('open', resolve))
 
-for (const c of CASES) {
-  send({ type: 'register', id: c.id, name: c.id.replace('fleet:', ''), human: false, labels: ['worker'] })
+// Register the three workers.
+for (const id of [POKE, CANCEL, KICK]) {
+  send({ type: 'register', id, name: id.replace('fleet:', ''), human: false, labels: ['worker'] })
   await sleep(150)
-  // The agent's report TO Skip (what it claimed)
-  send({ type: 'chat', from: c.id, to: SKIP, message: c.msg })
-  await sleep(150)
-  // The turn: thinking true → false (= turn_ended)
-  send({ type: 'agent-thinking', agentId: c.id, thinking: true })
-  await sleep(200)
-  send({ type: 'agent-thinking', agentId: c.id, thinking: false })
-  await sleep(400)
 }
 
-// Wait out the bot's SETTLE_MS (1.5s) + processing
-await sleep(4000)
+// Case 1 + 2: both end a turn (thinking true → false = turn_ended).
+for (const id of [POKE, CANCEL]) {
+  send({ type: 'agent-thinking', agentId: id, thinking: true })
+  await sleep(150)
+  send({ type: 'agent-thinking', agentId: id, thinking: false })
+  await sleep(150)
+}
+// Case 2: Skip messages the CANCEL agent before its countdown expires → cancel.
+send({ type: 'chat', from: SKIP, to: CANCEL, message: 'hey, hold on' })
+
+// Case 3: manual kick — Skip tells the bot to poke the KICK agent.
+await sleep(150)
+send({ type: 'chat', from: SKIP, to: DISPO, message: `poke ${KICK}` })
+
+// Wait out the countdown + processing.
+await sleep(COUNTDOWN_MS + 2500)
 
 let pass = 0, fail = 0
 const ok = (cond, name) => { if (cond) { pass++; console.log(`PASS  ${name}`) } else { fail++; console.log(`FAIL  ${name}`) } }
 
-// turn_ended persisted + broadcast for all three real agents
+// turn_ended persisted for the two that ended a turn.
 const te = (await getJson('/api/store/events?type=turn_ended&limit=200'))?.events || []
 const teAgents = new Set(te.map(e => e.agent_id || e.from))
-for (const c of CASES) ok(teAgents.has(c.id), `turn_ended persisted for ${c.id}`)
+ok(teAgents.has(POKE), `turn_ended persisted for ${POKE}`)
+ok(teAgents.has(CANCEL), `turn_ended persisted for ${CANCEL}`)
 
-// The bot's behavior: a chat from fleet:disposition to the agent = it fired.
-for (const c of CASES) {
-  const evs = (await getJson(`/api/store/events?agent=${encodeURIComponent(c.id)}&limit=200`))?.events || []
-  const fired = evs.some(e => e.type === 'chat' && e.from === DISPO && e.to === c.id)
-  ok(fired === c.expectFire, `${c.id}: bot ${c.expectFire ? 'FIRED' : 'stayed QUIET'} as expected (live=${fired ? 'fired' : 'quiet'})`)
-  if (fired) {
-    const m = evs.find(e => e.type === 'chat' && e.from === DISPO && e.to === c.id)
-    console.log(`        > self-check text: ${(m.text || '').split('\n')[0].slice(0, 90)}`)
-  }
+async function pokedBy(agent) {
+  const evs = (await getJson(`/api/store/events?agent=${encodeURIComponent(agent)}&limit=200`))?.events || []
+  return evs.some(e => e.type === 'chat' && e.from === DISPO && e.to === agent)
 }
+
+ok(await pokedBy(POKE), `${POKE}: poked after countdown (no Skip message)`)
+ok(!(await pokedBy(CANCEL)), `${CANCEL}: NOT poked (Skip messaged it → cancelled)`)
+ok(await pokedBy(KICK), `${KICK}: poked immediately by manual kick`)
+
+// Show the actual poke text once.
+const pe = (await getJson(`/api/store/events?agent=${encodeURIComponent(POKE)}&limit=200`))?.events || []
+const m = pe.find(e => e.type === 'chat' && e.from === DISPO && e.to === POKE)
+if (m) console.log(`        > poke text: ${(m.text || '').split('\n')[0].slice(0, 90)}`)
 
 ws.close()
 console.log(`\n${pass}/${pass + fail} passed`)

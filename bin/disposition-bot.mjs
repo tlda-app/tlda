@@ -1,26 +1,26 @@
 #!/usr/bin/env node
 /**
- * disposition-bot — a turn-end self-check bot.
+ * disposition-bot — a turn-end INTROSPECTION POKE.
  *
- * Where todd watches Skip's CHAT for frustration signals and nudges, this bot
- * watches TURN BOUNDARIES. When an agent's turn ends, the server writes a
- * synthetic `turn_ended` event to the events DB (see emitTurnEnded in
- * server/unified-server.mjs); every such event is auto-broadcast as a
- * fleet-event, so this bot SUBSCRIBES to it over the same `/ws/fleet` socket
- * todd uses. On each turn end it looks at the turn that just finished and, IF
- * (and only if) the turn shows a likely disposition failure from
- * scratch/disposition-mine/TAXONOMY.md, it signals that agent the specific
- * self-check to run.
+ * NOT a detector. It does not read the turn, match a regex, or judge anything.
+ * The mechanism is just a countdown:
  *
- * SELECTIVITY is the whole game. todd's failure mode — firing on every match
- * until agents tune it out (the "wallpaper" trap) — is the thing to avoid. So
- * this bot fires on a *correlation* a per-message watcher can't see: a turn
- * that ends with a done-claim to Skip but contains NO verification activity.
- * That conjunction is naturally rare, which is what keeps it quiet. Turns that
- * end with no Skip-facing message fire nothing at all.
+ *   turn_ended(agent) → start a ~30s countdown for that agent
+ *   Skip messages that agent → cancel that agent's countdown (he's in the room)
+ *   countdown expires → send the agent the introspection poke (bin/lib/disposition-poke.mjs)
  *
- * Additive: this is a NEW bot. It does not touch todd, the daemon, or any
- * existing handler. Run it alongside todd.
+ * The poke goes to the AGENT, never to Skip — the agent self-checks ("am I
+ * actually done? did I do the thing, or something easier?") and moves on. A
+ * "wrong" poke is cheap, so we err toward prompting (short countdown).
+ *
+ * Plus a MANUAL KICK: Skip chats this bot ("poke <agent>" / "kick <agent>") to
+ * fire an immediate poke at any agent on demand.
+ *
+ * The countdown logic is pure and unit-tested (bin/lib/disposition-scheduler.mjs,
+ * .test.mjs). This file is the I/O shell: it rides the same `/ws/fleet` socket
+ * todd uses, subscribes to the server's synthetic `turn_ended` events (see
+ * emitTurnEnded in server/unified-server.mjs), and reads its tunables (enabled,
+ * countdown seconds) live from the fleet_prefs store the settings menu writes.
  *
  * Start: TLDA_BOT_NAME=disposition node bin/disposition-bot.mjs
  *   (or just `node bin/disposition-bot.mjs` — defaults to the name "disposition")
@@ -33,7 +33,8 @@ import https from 'https'
 import http from 'http'
 
 import { getServerUrl, CONFIG_DIR } from '../shared/config.mjs'
-import { runChecks } from './lib/disposition-checks.mjs'
+import { DispositionScheduler } from './lib/disposition-scheduler.mjs'
+import { pokeFor } from './lib/disposition-poke.mjs'
 
 const BOT_KEY = (process.env.TLDA_BOT_NAME || 'disposition').toLowerCase()
 const AGENT_ID = 'fleet:' + BOT_KEY
@@ -45,103 +46,96 @@ const OWNER_ID = 'fleet:skip'
 
 const DECISIONS_LOG = path.join(CONFIG_DIR, `${BOT_KEY}-decisions.jsonl`)
 
-// Don't judge these — bots/pseudo-agents, not real workers. (The server already
+// Don't poke these — bots/pseudo-agents, not real workers. (The server already
 // excludes humans from turn_ended, so this is a belt-and-suspenders guard.)
 const IGNORE_IDS = new Set([OWNER_ID, AGENT_ID, 'fleet:todd', 'fleet:tlda', 'fleet:teacher', 'fleet:eliza'])
 
-// ---- Tunables ----
-const PER_AGENT_COOLDOWN_MS = parseInt(process.env.DISPO_COOLDOWN_MS || '', 10) || 10 * 60_000
-// Skip is "in the room" with an agent he messaged in this window → stand down,
-// exactly like todd's proactive watchdogs. ("when I am in the room, you shut
-// the fuck up." — Skip 6/19.)
-const SKIP_LIVE_WINDOW_MS = parseInt(process.env.DISPO_SKIP_LIVE_MS || '', 10) || 5 * 60_000
-// Fallback lookback the first time we see an agent (before we've recorded a
-// previous turn boundary to scope from).
-const DEFAULT_TURN_WINDOW_MS = 8 * 60_000
-// Let the agent's final writes (its last chat, last tool result) settle into the
-// events DB before we read the turn back.
-const SETTLE_MS = 1500
+// ---- Tunables (config-driven; live from the settings menu via fleet_prefs) ----
+// These are the two preferences surfaced in Skip's settings menu (src/panels/
+// PrefsTab.tsx → "Bots"). The bot polls them so a change feeds the running bot
+// without a restart. Env vars are the fallback before the first prefs fetch.
+const DEFAULT_COUNTDOWN_SEC = parseInt(process.env.DISPO_COUNTDOWN_SEC || '', 10) || 30
+const DEFAULT_ENABLED = process.env.DISPO_ENABLED !== '0'
+const PREFS_POLL_MS = 20_000
+const PREF_ENABLED_KEY = 'disposition-bot-enabled'
+const PREF_COUNTDOWN_KEY = 'disposition-countdown-sec'
 
-const _lastFired = new Map()       // agentId → ts of last self-check we sent
-const _lastSkipInbound = new Map() // agentId → ts Skip last messaged them
-const _lastTurnEndTs = new Map()   // agentId → ISO ts of the previous turn end we processed
+const _cmdCache = new Map() // dedupe manual-kick acks per command
 
 // ─────────────────────────────────────────────────────────────────────────
-// Turn handling
-// (The selective checks live in ./lib/disposition-checks.mjs — pure + tested.)
+// The scheduler (pure countdown logic) — the bot is its I/O shell.
 // ─────────────────────────────────────────────────────────────────────────
 
-function logDecision(agentId, fired, label, detail) {
-  const record = {
-    ts: new Date().toISOString(),
-    agent: agentId,
-    fired,                 // true = sent a self-check; false = inspected, stayed quiet
-    label: label || null,  // which check fired (or the reason it didn't)
-    detail: detail || null,
-  }
+const scheduler = new DispositionScheduler({
+  countdownMs: DEFAULT_COUNTDOWN_SEC * 1000,
+  enabled: DEFAULT_ENABLED,
+  sendPoke: (agentId) => sendChat(agentId, pokeFor(_cwdOf(agentId))),
+  log: logDecision,
+})
+
+// The poke is cwd-sensitive in principle (math agents have a different miss-set
+// — see disposition-poke.mjs). We don't track per-agent cwd yet; v1 passes null
+// and pokeFor returns the one generic poke. This is the seam, nothing more.
+function _cwdOf(_agentId) { return null }
+
+function logDecision(event, agentId, detail) {
+  const record = { ts: new Date().toISOString(), event, agent: agentId || null, detail: detail || null }
   try { fs.appendFileSync(DECISIONS_LOG, JSON.stringify(record) + '\n') }
   catch (e) { console.error(`[${BOT_KEY}] log write failed: ${e.message}`) }
 }
 
-function skipIsLive(agentId) {
-  return Date.now() - (_lastSkipInbound.get(agentId) || 0) < SKIP_LIVE_WINDOW_MS
+// ─────────────────────────────────────────────────────────────────────────
+// Live preferences — poll the fleet_prefs the settings menu writes.
+// ─────────────────────────────────────────────────────────────────────────
+
+async function refreshPrefs() {
+  const prefs = await getJson(`/api/fleet/prefs?user=${encodeURIComponent(OWNER_ID)}`, null)
+  if (!prefs || typeof prefs !== 'object') return
+  if (PREF_ENABLED_KEY in prefs) scheduler.setEnabled(prefs[PREF_ENABLED_KEY] !== false)
+  if (PREF_COUNTDOWN_KEY in prefs) {
+    const sec = Number(prefs[PREF_COUNTDOWN_KEY])
+    if (Number.isFinite(sec) && sec > 0) scheduler.setCountdownMs(sec * 1000)
+  }
 }
 
-async function handleTurnEnd(agentId) {
-  if (!agentId || IGNORE_IDS.has(agentId)) return
+// ─────────────────────────────────────────────────────────────────────────
+// Manual kick — Skip chats this bot "poke <agent>" / "kick <agent>".
+// ─────────────────────────────────────────────────────────────────────────
 
-  // 1. Skip-in-the-room: stand down.
-  if (skipIsLive(agentId)) { logDecision(agentId, false, 'skip-live'); return }
+const KICK_RE = /^\s*(?:poke|kick|check|nudge)\s+(.+?)\s*$/i
 
-  // 2. Cooldown: one self-check per agent per window — never a wall.
-  const last = _lastFired.get(agentId) || 0
-  if (Date.now() - last < PER_AGENT_COOLDOWN_MS) { logDecision(agentId, false, 'cooldown'); return }
-
-  // 3. Scope the just-ended turn: [previous turn end, now]. First time we see an
-  //    agent, fall back to a fixed lookback.
-  const since = _lastTurnEndTs.get(agentId)
-    || new Date(Date.now() - DEFAULT_TURN_WINDOW_MS).toISOString()
-  _lastTurnEndTs.set(agentId, new Date().toISOString())
-
-  const events = await getJson(
-    `/api/store/events?agent=${encodeURIComponent(agentId)}&since=${encodeURIComponent(since)}&limit=400`,
-    { events: [] },
-  )
-  const list = events.events || []
-
-  // The agent's last message TO Skip in this turn (what it claimed), and the
-  // tool activity in the turn (what it actually did).
-  let lastMsg = null
-  const activityChunks = []
-  for (const e of list) {
-    if (e.type === 'chat' && e.from === agentId && e.to === OWNER_ID) lastMsg = e.text || ''
-    if (e.type === 'activity' && e.from === agentId) {
-      const m = typeof e.metadata === 'string' ? safeJson(e.metadata) : (e.metadata || {})
-      activityChunks.push([
-        m.tool, m.arg, m.description,
-        m.input?.command, m.input?.description, e.text,
-      ].filter(Boolean).join(' '))
-    }
-  }
-  const activityText = activityChunks.join(' \n ')
-
-  // No Skip-facing message this turn → nothing to judge. (This is most turns —
-  // the source of the bot's quietness.)
-  if (!lastMsg) { logDecision(agentId, false, 'no-skip-facing-message'); return }
-
-  // 4. Run checks; fire at most one.
-  const hit = runChecks(lastMsg, activityText)
-  if (hit) {
-    sendChat(agentId, hit.message)
-    _lastFired.set(agentId, Date.now())
-    logDecision(agentId, true, hit.label, { msg: lastMsg.slice(0, 160) })
-    console.log(`[${BOT_KEY}] self-check "${hit.label}" → ${agentId}`)
+async function handleManualKick(text) {
+  const m = text.match(KICK_RE)
+  if (!m) return
+  const targetRaw = m[1].trim()
+  const targetId = await resolveAgent(targetRaw)
+  if (!targetId) {
+    sendChat(OWNER_ID, `Couldn't find an agent matching "${targetRaw}" to poke.`)
     return
   }
-  logDecision(agentId, false, 'no-trigger-matched')
+  scheduler.kick(targetId)
+  // Brief confirmation to Skip — this is HIS command, not the poke itself
+  // (which goes only to the agent). Deduped so a replayed command can't spam.
+  const key = `kick\0${targetId}`
+  if (Date.now() - (_cmdCache.get(key) || 0) > 5000) {
+    _cmdCache.set(key, Date.now())
+    sendChat(OWNER_ID, `Poked **${targetRaw}** to self-check.`)
+  }
 }
 
-function safeJson(s) { try { return JSON.parse(s) } catch { return {} } }
+// Resolve a friendly name or id to a fleet id via the live alive-roster WS
+// request (store-agents). `fleet:` ids pass straight through.
+async function resolveAgent(query) {
+  if (/^fleet:/.test(query)) return query
+  const agents = await wsRequest('store-agents', {}).catch(() => null)
+  if (!Array.isArray(agents)) return null
+  const q = query.toLowerCase()
+  const hit = agents.find(a =>
+    (a.friendly_name && a.friendly_name.toLowerCase() === q) ||
+    (a.name && a.name.toLowerCase() === q) ||
+    (a.id && a.id.toLowerCase() === q))
+  return hit ? hit.id : null
+}
 
 // ─────────────────────────────────────────────────────────────────────────
 // WebSocket plumbing (modeled on bin/todd.mjs)
@@ -151,6 +145,7 @@ let ws = null
 let msgId = 1
 let reconnectTimer = null
 let reconnectDelay = 500
+const _pendingWs = new Map() // id → { resolve, timer }
 
 function connect() {
   ws = new WebSocket(WS_URL)
@@ -158,6 +153,7 @@ function connect() {
     console.log(`[${BOT_KEY}] connected to ${WS_URL}`)
     reconnectDelay = 500
     register()
+    refreshPrefs().catch(e => console.error(`[${BOT_KEY}] prefs refresh failed:`, e.message))
   })
   ws.on('message', (raw) => {
     let msg
@@ -178,13 +174,24 @@ function send(msg) {
   if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ id: msgId++, ...msg }))
 }
 
+// Request/response over the fleet WS (store-agents etc.): correlate by id.
+function wsRequest(type, extra = {}) {
+  return new Promise((resolve, reject) => {
+    if (ws?.readyState !== WebSocket.OPEN) return reject(new Error('ws not open'))
+    const id = msgId++
+    const timer = setTimeout(() => { _pendingWs.delete(id); reject(new Error('ws request timeout')) }, 10_000)
+    _pendingWs.set(id, { resolve, timer })
+    ws.send(JSON.stringify({ id, type, ...extra }))
+  })
+}
+
 function register() {
   send({ type: 'register', id: AGENT_ID, name: AGENT_NAME, cwd: process.cwd(), labels: ['bot', BOT_KEY], human: true })
 }
 
 // Per-recipient dedupe so a reconnect-replay or rapid double turn can't double-send.
 const recentChatSends = new Map()
-const CHAT_DEDUPE_MS = 10 * 60_000
+const CHAT_DEDUPE_MS = 60_000
 function sendChat(to, text) {
   const now = Date.now()
   const key = `${to}\0${text}`
@@ -195,20 +202,34 @@ function sendChat(to, text) {
 }
 
 function handleMessage(msg) {
+  // Correlated WS replies (store-agents, …).
+  if (msg.id !== undefined && _pendingWs.has(msg.id)) {
+    const { resolve, timer } = _pendingWs.get(msg.id)
+    clearTimeout(timer)
+    _pendingWs.delete(msg.id)
+    resolve(msg.result)
+    return
+  }
+
   if (msg.event !== 'fleet-event') return
   const d = msg.data || {}
 
-  // Track Skip-in-the-room from his chats to agents (for skip-live suppression).
-  if (d.type === 'chat' && d.from_id === OWNER_ID && d.to_id && d.to_id !== AGENT_ID) {
-    _lastSkipInbound.set(d.to_id, Date.now())
+  if (d.type === 'chat') {
+    // Skip → an agent: he's in the room with THAT agent → cancel its countdown.
+    if (d.from_id === OWNER_ID && d.to_id && d.to_id !== AGENT_ID) {
+      scheduler.onSkipMessage(d.to_id)
+    }
+    // Skip → this bot: a manual kick command.
+    if (d.from_id === OWNER_ID && d.to_id === AGENT_ID && d.text) {
+      handleManualKick(d.text).catch(e => console.error(`[${BOT_KEY}] manual kick error:`, e.message))
+    }
+    return
   }
 
   // The turn-end signal: a synthetic `turn_ended` event from the server.
   if (d.type === 'turn_ended') {
     const agentId = d.agent_id || d.from_id
-    setTimeout(() => {
-      handleTurnEnd(agentId).catch(e => console.error(`[${BOT_KEY}] handleTurnEnd error:`, e.message))
-    }, SETTLE_MS)
+    if (agentId && !IGNORE_IDS.has(agentId)) scheduler.onTurnEnd(agentId)
   }
 }
 
@@ -236,8 +257,17 @@ if (fs.existsSync(PID_FILE)) {
 }
 try { fs.writeFileSync(PID_FILE, String(process.pid)) } catch {}
 
-console.log(`[${BOT_KEY}] starting (pid ${process.pid}) — watching turn_ended events`)
+console.log(`[${BOT_KEY}] starting (pid ${process.pid}) — turn-end introspection poke`)
 connect()
+const _prefsTimer = setInterval(() => {
+  refreshPrefs().catch(e => console.error(`[${BOT_KEY}] prefs refresh failed:`, e.message))
+}, PREFS_POLL_MS)
 
-process.on('SIGINT', () => { try { fs.unlinkSync(PID_FILE) } catch {}; ws?.close(); process.exit(0) })
-process.on('exit', () => { try { fs.unlinkSync(PID_FILE) } catch {} })
+// Best-effort PID cleanup on exit: the file being already gone (ENOENT) is the
+// one expected failure; surface anything else (e.g. a permissions problem).
+function removePidFile() {
+  try { fs.unlinkSync(PID_FILE) }
+  catch (e) { if (e.code !== 'ENOENT') console.error(`[${BOT_KEY}] pid cleanup failed: ${e.message}`) }
+}
+process.on('SIGINT', () => { clearInterval(_prefsTimer); removePidFile(); ws?.close(); process.exit(0) })
+process.on('exit', removePidFile)

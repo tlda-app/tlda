@@ -72,6 +72,7 @@ type PrefsSectionId =
   | 'highlighter'
   | 'editor'
   | 'curve'
+  | 'bots'
 
 function CollapsiblePrefsSection({
   id,
@@ -139,6 +140,8 @@ function readAll() {
     foldMd: getPref('fold-md-lines'),
     foldDiff: getPref('fold-diff-lines'),
     hlZone: getPref('hl-zone-enabled'),
+    dispoEnabled: getPref('disposition-bot-enabled'),
+    dispoCountdown: getPref('disposition-countdown-sec'),
   }
 }
 
@@ -498,6 +501,41 @@ export function PrefsTab() {
           />
           <span>Edge zone</span>
         </label>
+      </CollapsiblePrefsSection>
+
+      <CollapsiblePrefsSection
+        id="bots"
+        title="Bots"
+        summary={prefs.dispoEnabled ? `Self-check poke ${prefs.dispoCountdown}s` : 'Self-check poke off'}
+        open={prefs.openSections.includes('bots')}
+        onToggle={toggleSection}
+      >
+        <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 4 }}>
+          When an agent's turn ends and you haven't messaged it, the disposition bot
+          pokes it to self-check ("am I actually done?"). The poke goes to the agent,
+          never to you. Shorter = prompts more often (a wrong poke is cheap).
+        </div>
+        <label className="prefs-check">
+          <input
+            type="checkbox"
+            checked={prefs.dispoEnabled}
+            onChange={e => setPref('disposition-bot-enabled', e.target.checked)}
+          />
+          <span>Turn-end self-check poke</span>
+        </label>
+        <div className="prefs-num-row">
+          <span className="prefs-num-label">Countdown</span>
+          <input
+            type="number"
+            min={5}
+            max={300}
+            step={5}
+            value={prefs.dispoCountdown}
+            onChange={e => setPref('disposition-countdown-sec', Number(e.target.value))}
+            className="prefs-num"
+          />
+          <span className="prefs-num-unit">sec</span>
+        </div>
       </CollapsiblePrefsSection>
 
       <CollapsiblePrefsSection
