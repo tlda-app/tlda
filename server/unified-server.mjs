@@ -4136,11 +4136,21 @@ function checkQualifications(agentId, tool, arg, input) {
 
   const matchingRules = []
 
-  if ((tool === 'Read' || tool === 'Skill') && input) {
-    if (tool === 'Read') {
+  // A "file read" is the native Read tool OR the tlda MCP `read_file` tool. The
+  // latter is the only file-read path sandboxed goose/codex agents have, so it's
+  // how they read a skill's SKILL.md now that the bespoke skill() tool is gone.
+  // Normalize the tool name to its base so every form is recognized: Read,
+  // read_file, mcp__tlda__read_file, tlda/read_file.
+  const toolBase = String(tool || '').replace(/^mcp__/, '').replace(/__/g, '/').split('/').pop()
+  const isFileRead = tool === 'Read' || toolBase === 'read_file'
+  if ((isFileRead || tool === 'Skill') && input) {
+    if (isFileRead) {
       const fp = input.file_path || input.path || arg || ''
       if (fp) {
         qualTrackRead(agentId, fp)
+        // A read whose path is …/skills/<name>/SKILL.md credits skill:<name> —
+        // this is what lets native (Claude/codex) and MCP-read_file (goose)
+        // reads register with the education gate in place of skill().
         const skillMatch = fp.match(/[/\\]skills[/\\]([^/\\]+)[/\\]SKILL\.md$/)
         if (skillMatch) qualTrackRead(agentId, 'skill:' + skillMatch[1])
       }
