@@ -860,6 +860,75 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       }
     }, [isEditing, useVim])
 
+    // Grow the note to fit content WHILE editing (the dictation case). The
+    // CodeMirror container is overflow:auto at a fixed height derived from
+    // props.h, so without this the editor scrolls and the latest dictated line
+    // sits below the fold until edit-exit — Skip's complaint: "speaking to a
+    // sticky and it's getting cut off on the bottom." Grow-only: the shrink-to-
+    // fit still happens on edit exit (the edit start/end effect above), so we
+    // never shrink out from under the user mid-edit.
+    //
+    // We size props.h to the FIXED POINT of the edit-mode layout (see the render
+    // math: availH = h - 16 - contextHeight, and the editor gets `availH` with
+    // no preview or `0.6 * availH` with one). Solving in closed form — rather
+    // than nudging h against the current value — avoids a feedback loop when the
+    // reply-context band (min(120, 0.3h)) itself grows with h.
+    useEffect(() => {
+      if (!isEditing || !shape.props.autoSize) return
+      let raf = 0
+      let cancelled = false
+      let ro: ResizeObserver | null = null
+      const grow = () => {
+        if (cancelled) return
+        const view = cmViewRef.current
+        if (!view) return
+        const host = cmContainerRef.current
+        if (!host) return
+        // Skip a culled / not-yet-laid-out editor (a bogus measurement here
+        // would over-grow; shrink-on-exit can't always undo a giant height).
+        const r = host.getBoundingClientRect()
+        if (r.width < 1 || r.height < 1) return
+        const contentH = view.contentHeight // CodeMirror's measured doc height (layout px)
+        if (!contentH || contentH < 1) return
+        const showPreview = hasMath(localText) && !!previewHtml
+        // A pinned split while previewing is the user's manual choice — growing
+        // the whole note wouldn't enlarge the (fixed) editor pane, so leave it.
+        if (showPreview && splitPx != null) return
+        const editorFraction = showPreview ? 0.6 : 1
+        // Required availH so the editor's share covers the content (+buffer).
+        const needAvail = (contentH + AUTO_SIZE_Y_BUFFER) / editorFraction
+        let target: number
+        if (!replyContext) {
+          target = needAvail + 16 // 16px status bar
+        } else {
+          // contextHeight = min(120, 0.3h). Small-h branch: 0.7h - 16 >= needAvail.
+          const small = (needAvail + 16) / 0.7
+          target = small <= 400 ? small : needAvail + 16 + 120
+        }
+        target = Math.max(40, Math.ceil(target))
+        if (target > shape.props.h + 2) {
+          editor.updateShape({
+            id: shape.id,
+            type: 'math-note' as any,
+            props: { h: target },
+          })
+        }
+      }
+      // Observe the editor content for height changes (text streaming in,
+      // wrapping, font load) and grow as it grows.
+      const view = cmViewRef.current
+      if (view) {
+        ro = new ResizeObserver(() => grow())
+        ro.observe(view.contentDOM)
+      }
+      raf = requestAnimationFrame(grow)
+      return () => {
+        cancelled = true
+        cancelAnimationFrame(raf)
+        ro?.disconnect()
+      }
+    }, [isEditing, useVim, shape.props.autoSize, shape.props.h, shape.props.w, localText, previewHtml, splitPx, replyContext])
+
     // Wrapper keydown: stop TLDraw from stealing keys, handle Escape fallback
     const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
       stopEventPropagation(e)

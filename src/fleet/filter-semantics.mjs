@@ -1,14 +1,21 @@
-import { labelsForAgent } from '../../shared/fleet-labels.mjs'
+import { labelsForAgent, evalExprDirectional } from '../../shared/fleet-labels.mjs'
 
-function agentMatchesLabel(agentId, label, { agents = [], humanId = null, humanName = null } = {}) {
-  if (!agentId) return false
-  if (agentId === label) return true
+// The set of labels a participant (an event's from/to/agent id) answers to.
+// Label expansion has a single source of truth — `labelsForAgent` in
+// shared/fleet-labels.mjs, the same function the server uses — so client and
+// server agree on "does agent X carry label L". A bare id with no roster entry
+// still answers to its own id (preserving the old `agentId === label` case).
+function labelSetForParticipant(agentId, { agents = [], humanId = null, humanName = null } = {}) {
+  if (!agentId) return new Set()
   let agent = agents.find(a => a.id === agentId)
   if (!agent && humanId && agentId === humanId) {
     agent = { id: humanId, friendly_name: humanName || 'user', status: 'human', labels: [] }
   }
-  if (!agent) return false
-  return labelsForAgent(agent).includes(label)
+  return new Set(agent ? labelsForAgent(agent) : [agentId])
+}
+
+function agentMatchesLabel(agentId, label, context = {}) {
+  return labelSetForParticipant(agentId, context).has(label)
 }
 
 function isHumanParticipant(agentId, context) {
@@ -43,23 +50,36 @@ function isDmWithTarget(event, targetLabel, context) {
 
 // Filter is DNF of terms: [[["to","skip"],["from","math"]]] or plain [["label"]] or null (match all).
 // Term formats: [role, label] tuple (directional) or plain string (matches from OR to).
+//
+// The directional label matching is evaluated by the SHARED engine —
+// `evalExprDirectional` from shared/fleet-labels.mjs, the same evaluator the
+// server uses for wiretap (`to:`/`from:`/bare leaves) — so a `[role,label]`
+// tuple and the server's `role:label` string expression resolve identically.
+// We hand the evaluator a single-leaf AST node directly (not a constructed
+// string) so labels containing spaces or `&|!()` can't be mis-tokenized. The
+// only client-specific term is `dm`, an event-level predicate (it needs the
+// human's identity and the from/to/empty-to shape) that has no server
+// counterpart, so it stays a local pre-check rather than a shared leaf.
+function leafNode(token) { return { t: 'lit', v: token } }
+
 export function matchesFleetFilter(filter, event, context = {}) {
   if (!event) return true  // broadcast (e.g. read-receipt refresh)
   if (!filter || filter.length === 0) return true
   if ((event.from_id === 'system' || event.from === 'system') && !event.to) return true
-  return filter.some(clause =>
-    clause.every(term => {
-      if (Array.isArray(term)) {
-        const [role, label] = term
-        if (role === 'dm') return isDmWithTarget(event, label, context)
-        const agentId = role === 'from' ? (event.from || event.agent) : (event.to || event.agent)
-        return agentMatchesLabel(agentId, label, context)
-      }
-      // Plain string — match from OR to
-      return agentMatchesLabel(event.from || event.agent, term, context) ||
-             agentMatchesLabel(event.to || event.agent, term, context)
-    })
-  )
+  const fromLabels = labelSetForParticipant(event.from || event.agent, context)
+  const toLabels = labelSetForParticipant(event.to || event.agent, context)
+  const dirCtx = { fromLabels, toLabels }
+  const matchTerm = (term) => {
+    if (Array.isArray(term)) {
+      const [role, label] = term
+      if (role === 'dm') return isDmWithTarget(event, label, context)
+      // [from,x] -> "from:x", [to,x] -> "to:x" leaf for the shared evaluator.
+      return evalExprDirectional(leafNode(`${role}:${label}`), dirCtx)
+    }
+    // Plain string — bare leaf matches from OR to (shared evaluator semantics).
+    return evalExprDirectional(leafNode(term), dirCtx)
+  }
+  return filter.some(clause => clause.every(matchTerm))
 }
 
 function termLabel(term) {
