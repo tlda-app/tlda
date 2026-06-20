@@ -4068,8 +4068,13 @@ function FleetChatInner({ shape }: { shape: any }) {
   // event below instead of picking an arbitrary first match.
   const resolveTargetAgent = useCallback((label: string, agentList: any[]) => {
     if (label.startsWith('fleet:')) return agentList.find((a: any) => a.id === label) || null
-    const exact = agentList.find((a: any) => a.friendly_name === label || a.id === label)
-    if (exact) return exact
+    // A friendly name can have a LIVE holder plus one or more DEAD former holders:
+    // a dead agent keeps its friendly_name for provenance (spec G.18), so the name
+    // string outlives any single holder. The live holder IS the agent (G.22), so
+    // prefer a non-dead match; fall back to a dead one only when the name has no
+    // live holder (which keeps resurrect-by-name working for an all-dead name).
+    const byName = agentList.filter((a: any) => a.friendly_name === label || a.id === label)
+    if (byName.length) return byName.find((a: any) => !a.dead) || byName[0]
     const matched = agentList.filter((a: any) => !a.human && labelsForAgent(a).includes(label))
     return matched.length === 1 ? matched[0] : null
   }, [])
@@ -4122,7 +4127,17 @@ function FleetChatInner({ shape }: { shape: any }) {
   const deadTargetAgent = useMemo(() => {
     for (const label of sendTargets) {
       const agent = resolveTargetAgent(label, agents)
-      if (agent?.dead) return { id: agent.id, name: agent.friendly_name || agent.id.replace('fleet:', '') }
+      if (agent?.dead) {
+        // Spec G.22: a dead agent that shares its friendly name with a LIVE
+        // holder is just provenance, never a resurrect target — the live holder
+        // IS the agent. Only offer resurrect when the name has NO live holder
+        // (the legitimate "the only holder is dead" case). This is what stops
+        // dead namesakes nagging "resurrect?" in a chat with the live holder.
+        const name = agent.friendly_name
+        const hasLiveHolder = !!name && agents.some((a: any) => !a.dead && a.friendly_name === name)
+        if (hasLiveHolder) continue
+        return { id: agent.id, name: name || agent.id.replace('fleet:', '') }
+      }
     }
     return null
   }, [sendTargets, agents, resolveTargetAgent])
