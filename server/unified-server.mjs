@@ -2906,8 +2906,15 @@ async function handleFleetWsMessage(ws, msg) {
       if (machineIds.length === 0) continue
       const machineId = agent.machine_id || machineIds[0]
       try {
+        // An RPC failure here is UNCERTAINTY, not confirmed death. Defaulting to
+        // alive:false meant a transient check-alive error respawned a live agent
+        // (register + "continue from where you left off"). A respawn needs the
+        // daemon anyway, so if we can't reach it the respawn would fail too —
+        // assume alive and skip it; a genuinely-needed wake self-corrects on the
+        // next message once the daemon answers. Only a daemon-CONFIRMED alive:false
+        // triggers a respawn now.
         const { alive } = await sendRpc(machineId, 'check-alive', { tmux_session: agent.tmux_session })
-          .catch(() => ({ alive: false }))
+          .catch(() => ({ alive: true }))
         if (alive) {
           if (nudgeText && agent.tmux_session && terminalNudgeKind(agent)) {
             await sendRpc(machineId, 'send-text', {
