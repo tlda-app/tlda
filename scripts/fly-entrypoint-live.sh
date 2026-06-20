@@ -88,6 +88,29 @@ if [ -f "$HIST_DB" ] && [ ! -f "$MERGED_FLAG" ]; then
   fi
 fi
 
+# --- Feelings export: periodic chat + attachments -> Skip's Google Drive ---
+# Skip-authorized PII export. The rclone remote (feelings-drive, scoped to a single
+# Drive folder) is provisioned as a Fly secret holding the base64 of its rclone.conf
+# section, so the OAuth token never lands in any image layer or transcript. Decode it
+# to rclone.conf, then run the export on an interval in the background. Fail-soft: if
+# the secret is absent or a run fails, the server still starts and keeps serving.
+if [ -n "$FEELINGS_RCLONE_CONF_B64" ]; then
+  echo "[entrypoint] feelings-export: provisioning rclone remote + starting interval loop"
+  mkdir -p /root/.config/rclone
+  printf '%s' "$FEELINGS_RCLONE_CONF_B64" | base64 -d > /root/.config/rclone/rclone.conf
+  (
+    sleep 90   # let the server bind + settle first
+    while true; do
+      node /app/bin/feelings-export.mjs --db /root/.config/tlda/fleet.db \
+        >> /root/.config/tlda/feelings-export.log 2>&1 || \
+        echo "[feelings-export] run failed (continuing)" >> /root/.config/tlda/feelings-export.log
+      sleep "${FEELINGS_INTERVAL_SECONDS:-21600}"   # default 6h
+    done
+  ) &
+else
+  echo "[entrypoint] feelings-export: FEELINGS_RCLONE_CONF_B64 not set — skipping"
+fi
+
 cd /app/server
 # --i-am-tlda-cli authorizes launching the server directly (the guard otherwise
 # refuses and tells you to use `tlda server start`). This is how the CLI launches it.
