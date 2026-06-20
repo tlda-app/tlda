@@ -5075,6 +5075,11 @@ function FleetChatInner({ shape }: { shape: any }) {
             )}
             {/* Highlight underlay — mirrors textarea text, highlights <<ref>> tokens */}
             <InputHighlightUnderlay inputRef={inputRef} />
+            {/* Left gutter control cluster — terminal peek, traffic toggle, and
+                follow/hard-lock ("magnet") button laid out as a tight flex row
+                so they sit adjacent regardless of the traffic label's width
+                (no dead gap). Order is set via CSS `order`, not DOM order. */}
+            <div className="fleet-composer-gutter">
             {/* Unified follow / jump-to-bottom control. One button, fixed here:
                   - off bottom → ⇣ arrow; click jumps to bottom (does NOT change
                     follow mode — you return to the bottom first, then it's a
@@ -5153,7 +5158,13 @@ function FleetChatInner({ shape }: { shape: any }) {
             <button
               className={`fleet-composer-traffic-toggle fleet-composer-traffic-toggle-${composerTrafficMode}`}
               onPointerDown={stopEventPropagation}
-              onClick={(e) => {
+              onPointerUp={(e) => {
+                // Drive the cycle from pointerup, not click: on touch a tap on
+                // this text label never synthesizes a `click` (pointerdown +
+                // pointerup fire, click does not), so an onClick handler is dead
+                // on iPad. pointerup fires for both mouse and touch — one cycle
+                // per interaction, no double-fire.
+                if (!composerAgentLabel) return
                 stopEventPropagation(e)
                 cycleComposerTrafficMode()
               }}
@@ -5177,6 +5188,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                     ? 'All'
                     : 'Filter'}
             </button>
+            </div>
             <ChatComposer
               sendTargets={sendTargets}
               agentNames={agentNames}

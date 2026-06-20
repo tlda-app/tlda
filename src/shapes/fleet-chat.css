@@ -2886,22 +2886,37 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   color: #9370db;
 }
 
-/* Terminal, traffic toggle, then magnet: inline chrome floats over the textfield. */
-.fleet-chat-shape .fleet-hardlock-toggle {
+/* Terminal, traffic toggle, then magnet: inline chrome floats over the textfield.
+   The three controls live in a tight flex cluster (.fleet-composer-gutter) so
+   they sit adjacent regardless of the traffic label width — no dead gap. The
+   container is pointer-events:none so the inter-button gaps fall through to the
+   textarea; each button re-enables pointer events. Every button is the full
+   row height (touch target) with a transparent box, so nothing drawn moves. */
+.fleet-chat-shape .fleet-composer-gutter {
   position: absolute;
-  left: 54px;
-  top: 50%;
-  transform: translateY(-50%);
+  left: 6px;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  z-index: 2;
+  pointer-events: none;
+}
+.fleet-chat-shape .fleet-hardlock-toggle {
+  order: 3;
+  pointer-events: auto;
+  height: 36px;
   border: none;
   background: transparent;
   color: inherit;
   cursor: pointer;
   opacity: 0.05;
   transition: opacity 0.3s;
-  padding: 0;
+  padding: 0 4px;
   display: flex;
   align-items: center;
-  z-index: 2;
+  justify-content: center;
   line-height: 1;
 }
 .fleet-chat-shape .fleet-hardlock-toggle:hover {
@@ -2913,34 +2928,36 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 }
 
 .fleet-chat-shape .fleet-terminal-icon {
-  position: absolute;
-  left: 4px;
-  top: 50%;
-  transform: translateY(-50%);
+  order: 1;
+  pointer-events: auto;
+  height: 36px;
   border: none;
   background: transparent;
   color: inherit;
   cursor: pointer;
   opacity: 0.05;
   transition: opacity 0.3s;
-  padding: 0;
+  padding: 0 4px;
   display: flex;
   align-items: center;
-  z-index: 2;
+  justify-content: center;
   line-height: 1;
 }
 .fleet-chat-shape .fleet-terminal-icon:hover {
   opacity: 0.55;
 }
 
-/* Composer traffic toggle — text-only control in the same chrome as terminal. */
+/* Composer traffic toggle — text-only control, a flex item in the gutter.
+   The box is the full row height (36px) and hugs the glyph with side padding
+   so it is actually tappable on touch — the old glyph-sized 12x20 box was
+   unhittable by hand and impossible on iPad. The box is transparent, so the
+   drawn glyph is unchanged; it just gets a real hit area, and the flex cluster
+   places the magnet button right beside it (no dead gap). */
 .fleet-chat-shape .fleet-composer-traffic-toggle {
-  position: absolute;
-  left: 20px;
-  top: 50%;
-  transform: translateY(-50%);
+  order: 2;
+  pointer-events: auto;
   min-width: 0;
-  height: 20px;
+  height: 36px;
   border: none;
   border-radius: 0;
   background: transparent;
@@ -2948,15 +2965,22 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   cursor: pointer;
   opacity: 0.22;
   transition: opacity 0.3s;
-  padding: 0 2px;
+  padding: 0 6px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  z-index: 2;
   line-height: 1;
   font: inherit;
   font-size: 9px;
   white-space: nowrap;
+  /* Touch hygiene for a tap target whose content is text: don't let a tap or
+     long-press select the "DM"/"All" label, and remove the tap delay. (The
+     actual touch fix is driving the cycle from onPointerUp in the component —
+     on touch this text label never synthesizes a click; see FleetChatShape.) */
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  touch-action: manipulation;
 }
 .fleet-chat-shape .fleet-composer-traffic-toggle:hover,
 .fleet-chat-shape .fleet-composer-traffic-toggle:focus-visible {
