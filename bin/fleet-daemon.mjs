@@ -2554,7 +2554,16 @@ async function checkAgentLiveness() {
     checkedAgentIds.push(agent.id)
     if (!sessions.has(agent.tmux_session)) {
       if (!_observedLiveSessions.has(agent.tmux_session)) {
-        log.info(`agent ${agent.friendly_name || agent.id} is hibernating (tmux session ${agent.tmux_session} absent on first local observation)`)
+        // Session was never seen alive by this daemon → it was already gone at
+        // first observation. Mark hibernating, but emit the log/transition exactly
+        // ONCE — not every sweep. Without this gate, every agent whose session
+        // never existed in this daemon's lifetime re-logs "absent on first local
+        // observation" on every 30s sweep (hundreds of dead agents → GB log,
+        // perpetual re-stamp storm). The aliveness cache is the durable record of
+        // "already known absent".
+        if (_alivenessCache.get(agent.tmux_session) !== false) {
+          log.info(`agent ${agent.friendly_name || agent.id} is hibernating (tmux session ${agent.tmux_session} absent on first local observation)`)
+        }
         agent.hibernating = true
         _alivenessCache.set(agent.tmux_session, false)
         continue
