@@ -57,31 +57,59 @@ describe('spawn policy', () => {
     })
   })
 
-  it('rejects requests above caller capability', () => {
-    assert.throws(() => authorizeSpawn({
+  it('lets a write agent always confer write to a trusted-model child', () => {
+    // The thing that hurt Skip: a write-capable agent must be able to hand a
+    // child write. With the clamp, a write caller spawning an opus child gets a
+    // write grant — never down-clamped to read, never refused.
+    const r = authorizeSpawn({
+      caller: { id: 'fleet:a', metadata: { spawnPolicy: { name: 'write', capability: 'workspace-write', policy: 'cwd' } } },
+      requestedCapability: 'write',
+      model: 'opus48',
+    })
+    assert.equal(r.grantedPolicy.capability, 'workspace-write')
+    assert.equal(r.grantedPolicy.policy, 'cwd')
+    assert.equal(r.grantedPolicy.name, 'write')
+  })
+
+  it('clamps requests above caller capability instead of refusing', () => {
+    // Skip's rule: never fail on capability grounds. A caller that can only
+    // confer no-net write, asked for net write, hands down its own no-net write.
+    const r = authorizeSpawn({
       caller: { id: 'fleet:a', metadata: { spawnPolicy: { capability: 'workspace-write-no-net' } } },
       requestedCapability: 'workspace-write',
       model: 'opus46',
-    }), /exceeds caller capability/)
+    })
+    assert.equal(r.requestedCapability, 'workspace-write-no-net')
+    assert.equal(r.grantedPolicy.capability, 'workspace-write-no-net')
   })
 
-  it('rejects project-scope requests above caller filesystem policy', () => {
-    assert.throws(() => authorizeSpawn({
+  it('clamps project-scope requests down to the caller filesystem policy', () => {
+    // Caller is cwd-only write; child asks for tlda-projects (tlda-write). The
+    // grant is clamped to the caller's cwd scope, keeping the write capability.
+    const r = authorizeSpawn({
       caller: { id: 'fleet:a', metadata: { spawnPolicy: { name: 'write', capability: 'workspace-write', policy: 'cwd' } } },
       requestedCapability: 'tlda-write',
       model: 'opus46',
-    }), /requested spawn policy tlda-projects \/ workspace-write exceeds caller capability\/policy cwd \/ workspace-write/)
+    })
+    assert.equal(r.grantedPolicy.capability, 'workspace-write')
+    assert.equal(r.grantedPolicy.policy, 'cwd')
+    assert.equal(r.grantedPolicy.name, 'write')
   })
 
-  it('rejects requests above model ceiling', () => {
-    assert.throws(() => authorizeSpawn({
+  it('clamps requests above the model ceiling instead of refusing', () => {
+    // Operator (root) spawning a deepseek asks for full; the deepseek-narrow
+    // model ceiling clamps the child to cwd write — "lock down dangerous agents"
+    // expressed as a clamp, never a refusal.
+    const r = authorizeSpawn({
       caller: { id: 'fleet:skip', human: true },
       requestedCapability: 'full-access',
       model: 'deepseek/deepseek-v4-pro',
-    }), /exceeds model ceiling/)
+    })
+    assert.equal(r.grantedPolicy.capability, 'workspace-write')
+    assert.equal(r.grantedPolicy.policy, 'cwd')
   })
 
-  it('rejects project-scope requests above model filesystem ceiling', () => {
+  it('clamps project-scope requests down to the model filesystem ceiling', () => {
     assert.deepEqual(modelSpawnCeiling({
       spawnPolicy: { familyCeilings: { goose: 'write' } },
     }, { kind: 'goose' }), {
@@ -90,12 +118,14 @@ describe('spawn policy', () => {
       policy: 'cwd',
       category: 'write-scope',
     })
-    assert.throws(() => authorizeSpawn({
+    const r = authorizeSpawn({
       caller: { id: 'fleet:skip', human: true },
       requestedCapability: 'tlda-write',
       kind: 'goose',
       config: { spawnPolicy: { familyCeilings: { goose: 'write' } } },
-    }), /requested spawn policy tlda-projects \/ workspace-write exceeds model ceiling cwd \/ workspace-write/)
+    })
+    assert.equal(r.grantedPolicy.capability, 'workspace-write')
+    assert.equal(r.grantedPolicy.policy, 'cwd')
   })
 
   it('keys the trust tier on the model, not the harness', () => {
@@ -122,12 +152,15 @@ describe('spawn policy', () => {
     })
     assert.equal(spawnPolicyLte(modelSpawnCeiling({}, { model: 'deepseek/deepseek-v4-pro' }),
                                modelSpawnCeiling({}, { model: 'minimax/minimax-m3' })), true)
-    // A deepseek can't be granted machine-level even by the operator.
-    assert.throws(() => authorizeSpawn({
+    // A deepseek can't be granted machine-level even by the operator: the
+    // request is clamped to the narrow ceiling (cwd write), never refused.
+    const r = authorizeSpawn({
       caller: { id: 'fleet:skip', human: true },
       requestedCapability: 'full',
       model: 'deepseek/deepseek-v4-pro',
-    }), /exceeds model ceiling/)
+    })
+    assert.equal(r.grantedPolicy.capability, 'workspace-write')
+    assert.equal(r.grantedPolicy.policy, 'cwd')
   })
 
   it('lets the operator raise a model ceiling per-agent, but never an agent', () => {
@@ -140,12 +173,15 @@ describe('spawn policy', () => {
     })
     assert.equal(result.requestedCapability, 'full-access')
     assert.equal(result.modelCeiling, 'full-access')
-    // Without the override the same request is refused at the model ceiling.
-    assert.throws(() => authorizeSpawn({
+    // Without the override the same request clamps to minimax's elevated ceiling
+    // (tlda-projects write), rather than being refused.
+    const noOverride = authorizeSpawn({
       caller: { id: 'fleet:skip', human: true },
       requestedCapability: 'full',
       model: 'minimax/minimax-m3',
-    }), /exceeds model ceiling/)
+    })
+    assert.equal(noOverride.grantedPolicy.capability, 'workspace-write')
+    assert.equal(noOverride.grantedPolicy.policy, 'tlda-projects')
     // An agent presenting a trust override is refused outright — no self-escalation.
     assert.throws(() => authorizeSpawn({
       caller: { id: 'fleet:a', metadata: { spawnPolicy: { capability: 'full' } } },
@@ -188,13 +224,15 @@ describe('spawn policy', () => {
     assert.equal(claudeInMath.requestedPolicy.policy, 'tlda-projects')
     assert.equal(claudeInMath.requestedCapability, 'workspace-write')
     // A deepseek spawned into the same math project: the profile asks for
-    // tlda-projects, but its narrow model ceiling (cwd) caps it — the project
+    // tlda-projects, but its narrow model ceiling (cwd) clamps it — the project
     // profile cannot lift an untrusted model above its ceiling.
-    assert.throws(() => authorizeSpawn({
+    const deepseekInMath = authorizeSpawn({
       caller: { id: 'fleet:skip', human: true },
       requestedCapability: resolveProjectProfile({}, { project: { profile: 'math' } }),
       model: 'deepseek/deepseek-v4-pro',
-    }), /exceeds model ceiling/)
+    })
+    assert.equal(deepseekInMath.grantedPolicy.capability, 'workspace-write')
+    assert.equal(deepseekInMath.grantedPolicy.policy, 'cwd')
   })
 
   it('allows downward choice within both ceilings', () => {

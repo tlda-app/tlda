@@ -158,6 +158,35 @@ export function spawnPolicyLte(left, right) {
   return POLICY_RANK.get(a.policy) <= POLICY_RANK.get(b.policy)
 }
 
+// The built-in friendly name (read / write / tlda-write / full) for a
+// (capability, policy) point, or null if a clamp landed between named rungs.
+// Keeps a clamped grant's `name` meaningful so it still travels as a
+// capability-derived spawn rather than an explicit fence (see buildFleetSpawnArgs).
+function nameForPolicy(capability, policy) {
+  for (const [name, def] of Object.entries(SPAWN_POLICY_OPTIONS)) {
+    if (def.capability === capability && def.policy === policy) return name
+  }
+  return null
+}
+
+// The greatest-lower-bound (meet) of a set of spawn policies: componentwise min
+// over the capability ladder AND the filesystem-policy ladder. The result is
+// always ≤ every input on both axes, so it can never confer more than any bound
+// allows. This is how a spawn CLAMPS instead of refusing — Skip's rule: "Every
+// agent should be able to spawn agents with no more privileges than they have."
+// A spawn never fails on capability grounds; it hands down the lower of the
+// bounds. (Every real bound is a coherent rung, so the meet stays coherent.)
+export function meetSpawnPolicies(policies) {
+  const norm = policies.map((p) => normalizeSpawnPolicy(p))
+  let capability = norm[0].capability
+  let policy = norm[0].policy
+  for (const p of norm.slice(1)) {
+    if (CAPABILITY_RANK.get(p.capability) < CAPABILITY_RANK.get(capability)) capability = p.capability
+    if (POLICY_RANK.get(p.policy) < POLICY_RANK.get(policy)) policy = p.policy
+  }
+  return { name: nameForPolicy(capability, policy), capability, policy, category: 'write-scope' }
+}
+
 // Harness inference. The harness (claude / codex / goose) is plumbing — HOW a
 // model is run — and is used only for the optional `familyCeilings` config knob
 // and harness-only fallbacks. It is NOT what governs the trust ceiling; the
@@ -333,20 +362,19 @@ export function authorizeSpawn({ caller, requestedCapability, model, kind, trust
   }
   const requestedPolicy = normalizeSpawnPolicy(requestedCapability, DEFAULT_AGENT_CAPABILITY)
   const callerPolicy = callerSpawnPolicy(caller, { serverOwnerId })
-  if (!spawnPolicyLte(requestedPolicy, callerPolicy)) {
-    const err = new Error(`requested spawn policy ${requestedPolicy.policy} / ${requestedPolicy.capability} exceeds caller capability/policy ${callerPolicy.policy} / ${callerPolicy.capability}`)
-    err.code = 'SPAWN_CALLER_CAPABILITY'
-    throw err
-  }
   const ceilingPolicy = modelSpawnCeiling(config, { model, kind, trustOverride })
-  if (!spawnPolicyLte(requestedPolicy, ceilingPolicy)) {
-    const err = new Error(`requested spawn policy ${requestedPolicy.policy} / ${requestedPolicy.capability} exceeds model ceiling ${ceilingPolicy.policy} / ${ceilingPolicy.capability}`)
-    err.code = 'SPAWN_MODEL_CEILING'
-    throw err
-  }
+  // Skip's rule: a spawn NEVER fails on capability grounds. The granted policy is
+  // the meet (greatest lower bound) of what was asked for, the caller's own
+  // authority, and the model's trust ceiling — clamp down and hand it off, never
+  // refuse. A `full` agent spawning a deepseek yields a deepseek-narrow child
+  // (the model ceiling clamps it), not an error — which is exactly "lock down
+  // dangerous agents" expressed as a clamp. The only refusal left is the
+  // self-escalation guard above (an agent presenting a trust override).
+  const grantedPolicy = meetSpawnPolicies([requestedPolicy, callerPolicy, ceilingPolicy])
   return {
-    requestedCapability: requestedPolicy.capability,
-    requestedPolicy,
+    requestedCapability: grantedPolicy.capability,
+    requestedPolicy: grantedPolicy,
+    grantedPolicy,
     callerCapability: callerPolicy.capability,
     callerPolicy,
     modelCeiling: ceilingPolicy.capability,
