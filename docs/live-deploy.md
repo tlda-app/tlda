@@ -2,6 +2,28 @@
 
 This is the deploy path for Skip's live `phi`/Fly TLDA server.
 
+## Principle: test vs live is a name (Skip, 2026-06-19)
+
+The only difference between a **test** phi instance and the **live** phi instance
+must be a single specification in the deploy process — `test` or `live` — nothing
+else. Same build, same image, same entrypoint, same deploy command; the config
+name is the one thing that differs (`fly.live.toml` for live, a `fly.test-*.toml`
+for a test instance pointed at a separate Fly app). That way, vetting a test
+instance tells Skip exactly what he is getting from the real deploy, because it
+went through the identical path.
+
+> "The difference between it being the test instance and the actual instance is
+> just a specification of test or live. That way I know what I'm getting. That
+> should be the goal of all of this — all this dev/test infrastructure should be
+> going toward the difference between real and test being a name."
+
+This is the north star for the test/dev deploy infrastructure. A test path that
+diverges from the live path (a local rig, a hand-built one-off, a different
+image) is **not** a valid vetting target — if it isn't the live process with the
+name swapped, it doesn't tell Skip what the real deploy will do. Hard line either
+way: a test deploy must target a **separate** Fly app and must never touch the
+live `phi` env.
+
 ## Current Command
 
 Run from `/Users/skip/work/tlda`:
