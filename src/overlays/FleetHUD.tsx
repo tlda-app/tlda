@@ -18,6 +18,7 @@ import { getMyAnchorId, isMyFleetShape, FLEET_SHAPE_TYPES, adoptLegacyFleetShape
 import { fleetTouchGestureActiveRef, postTouchTelemetry, setTouchDiagStatus, useFleetGestures } from './useFleetGestures'
 import { SuggestionTip } from '../shapes/FleetChatShape'
 import { log } from '../logger'
+import { computeFleetBoundsFromShapes, createFleetBoundsTracker, type FleetBoundsResult } from './fleet-bounds'
 import './FleetHUD.css'
 
 function saveAnchorOffsets(editor: Editor, panOffset: number, cameraY: number) {
@@ -128,45 +129,47 @@ export function repackFleetShapes(editor: Editor, targetBounds?: { x: number; y:
 // HUD. We log both null reasons (kept permanently): they're the signal to look
 // for if the fleet panels ever flash/blank. `fleet-hud` namespace; grep
 // client.log for it.
-function getFleetBounds(editor: Editor): ClipBounds | null {
-  const shapes = editor.getCurrentPageShapes()
-    .filter(isMyFleetShape)
-  if (shapes.length === 0) {
+function isFleetShapeForOwner(s: any, humanId: string, deviceId: string): boolean {
+  if (!FLEET_SHAPE_TYPES.has(s.type as string)) return false
+  const uid = s.props?.userId
+  const dev = s.props?.deviceId
+  return !!uid && uid === humanId && !!dev && dev === deviceId
+}
+
+function ownerFleetPredicate() {
+  const humanId = getHumanId()
+  const deviceId = getDeviceId()
+  return (shape: any) => isFleetShapeForOwner(shape, humanId, deviceId)
+}
+
+function logFleetBoundsResult(result: FleetBoundsResult): void {
+  if (result.shapeCount === 0) {
     log.debug('fleet-hud', 'getFleetBounds → null: no fleet shapes on page', {})
-    return null
+    return
   }
+  if (result.bounds) {
+    if (result.noBounds.length > 0) {
+      log.debug('fleet-hud', 'getFleetBounds ok; some shapes lacked bounds (excluded)', { noBounds: result.noBounds, shapeCount: result.shapeCount })
+    }
+    return
+  }
+  // Transient-null: shapes exist but NONE had computable page bounds this
+  // frame. This is the dangerous case — it blanks/remounts the HUD. warn.
+  log.warn('fleet-hud', 'getFleetBounds → null despite present shapes (uncomputable bounds — HUD will blank)', {
+    shapeCount: result.shapeCount,
+    shapes: result.shapeLabels,
+    noBounds: result.noBounds,
+  })
+}
 
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-  const noBounds: string[] = []
-  for (const s of shapes) {
-    const bounds = editor.getShapePageBounds(s.id)
-    if (!bounds) { noBounds.push(`${s.type}:${s.id}`); continue }
-    minX = Math.min(minX, bounds.x)
-    minY = Math.min(minY, bounds.y)
-    maxX = Math.max(maxX, bounds.x + bounds.w)
-    maxY = Math.max(maxY, bounds.y + bounds.h)
-  }
-  if (!isFinite(minX)) {
-    // Transient-null: shapes exist but NONE had computable page bounds this
-    // frame. This is the dangerous case — it blanks/remounts the HUD. warn.
-    log.warn('fleet-hud', 'getFleetBounds → null despite present shapes (uncomputable bounds — HUD will blank)', {
-      shapeCount: shapes.length,
-      shapes: shapes.map(s => `${s.type}:${s.id}`),
-      noBounds,
-    })
-    return null
-  }
-  if (noBounds.length > 0) {
-    log.debug('fleet-hud', 'getFleetBounds ok; some shapes lacked bounds (excluded)', { noBounds, shapeCount: shapes.length })
-  }
-
-  const PAD = 20
-  return {
-    x: minX - PAD,
-    y: minY - PAD,
-    w: maxX - minX + PAD * 2,
-    h: maxY - minY + PAD * 2,
-  }
+function getFleetBounds(editor: Editor): ClipBounds | null {
+  const isMine = ownerFleetPredicate()
+  const result = computeFleetBoundsFromShapes(
+    editor.getCurrentPageShapes().filter(isMine),
+    id => editor.getShapePageBounds(id as any),
+  )
+  logFleetBoundsResult(result)
+  return result.bounds
 }
 
 function isPhoneFleetLayout(editor: Editor): boolean {
@@ -193,30 +196,46 @@ function getFleetHudDiagnostic(editor: Editor) {
   const deviceId = getDeviceId()
   const myAnchorId = getMyAnchorId()
   const shapes = editor.getCurrentPageShapes()
-  const fleetShapes = shapes.filter(s => FLEET_SHAPE_TYPES.has(s.type as string)) as any[]
-  const myFleetShapes = fleetShapes.filter(isMyFleetShape)
-  const sameUserOtherDevice = fleetShapes.filter(s =>
-    !!humanId &&
-    s.props?.userId === humanId &&
-    !!s.props?.deviceId &&
-    s.props.deviceId !== deviceId
-  )
-  const sameUserDevices = [...new Set(sameUserOtherDevice.map(s => String(s.props.deviceId)))].sort()
-  const orphanFleetShapes = fleetShapes.filter(s => !s.props?.userId || !s.props?.deviceId)
-  const anchors = shapes.filter((s: any) => s.id === myAnchorId || String(s.id).startsWith(`shape:fleet-hud-anchor--${humanId?.replace('fleet:', '') || ''}--`))
+  const fleetShapes: any[] = []
+  const sameUserOtherDevice: any[] = []
+  const sameUserDevicesSet = new Set<string>()
+  let myFleetShapeCount = 0
+  let orphanFleetShapeCount = 0
+  let sameUserAnchorCount = 0
+  let docShapeCount = 0
 
+  for (const s of shapes as any[]) {
+    const type = s.type as string
+    if (type === 'svg-page' || type === 'html-page') docShapeCount += 1
+    if (s.id === myAnchorId || String(s.id).startsWith(`shape:fleet-hud-anchor--${humanId?.replace('fleet:', '') || ''}--`)) {
+      sameUserAnchorCount += 1
+    }
+    if (!FLEET_SHAPE_TYPES.has(type)) continue
+    fleetShapes.push(s)
+    if (isFleetShapeForOwner(s, humanId, deviceId)) myFleetShapeCount += 1
+    if (!s.props?.userId || !s.props?.deviceId) orphanFleetShapeCount += 1
+    if (
+      !!humanId &&
+      s.props?.userId === humanId &&
+      !!s.props?.deviceId &&
+      s.props.deviceId !== deviceId
+    ) {
+      sameUserOtherDevice.push(s)
+      sameUserDevicesSet.add(String(s.props.deviceId))
+    }
+  }
   return {
     humanId: humanId || '',
     deviceId: deviceId || '',
     myAnchorId,
     anchorExists: !!editor.getShape(myAnchorId as any),
-    sameUserAnchorCount: anchors.length,
+    sameUserAnchorCount,
     totalFleetShapeCount: fleetShapes.length,
-    myFleetShapeCount: myFleetShapes.length,
+    myFleetShapeCount,
     sameUserOtherDeviceCount: sameUserOtherDevice.length,
-    sameUserDevices,
-    orphanFleetShapeCount: orphanFleetShapes.length,
-    docShapeCount: shapes.filter(s => (s.type as string) === 'svg-page' || (s.type as string) === 'html-page').length,
+    sameUserDevices: [...sameUserDevicesSet].sort(),
+    orphanFleetShapeCount,
+    docShapeCount,
   }
 }
 
@@ -268,6 +287,40 @@ export function FleetHUD({
   const { id: identityId } = useFleetIdentity()
   const [expanded, setExpanded] = useState(() => localStorage.getItem('fleet-hud-expanded') === '1')
   const [fleetBounds, setFleetBounds] = useState<ClipBounds | null>(() => identityId ? getFleetBounds(mainEditor) : null)
+  // Camera tick used to recompute canvas→screen for the render on camera change
+  const [cameraTick, setCameraTick] = useState(0)
+  // True once document page shapes are present — panOffset must not be computed before this.
+  // On browser restore, fleet shapes may load before SVG pages, causing panOffset to use
+  // the window.innerWidth/2 fallback and place fleet shapes inside the document text.
+  const [docShapesReady, setDocShapesReady] = useState(() => {
+    const s = mainEditor.getCurrentPageShapes()
+    return s.some(s => (s.type as string) === 'svg-page' || (s.type as string) === 'html-page')
+  })
+  const agents = useFleetAgents()
+  const hudRef = useRef<HTMLDivElement>(null)
+  const draggingRef = useRef(false)
+  const overlayEditorRef = useRef<Editor | null>(null)
+  const lastHudDiagSigRef = useRef('')
+  const fleetBoundsTrackerRef = useRef<ReturnType<typeof createFleetBoundsTracker<any>> | null>(null)
+  const gesturesEnabled = expanded && !!fleetBounds && docShapesReady
+
+  const resetFleetBoundsTracker = useCallback((): ClipBounds | null => {
+    const tracker = createFleetBoundsTracker<any>({
+      isFleetShape: ownerFleetPredicate(),
+      getShapePageBounds: id => mainEditor.getShapePageBounds(id as any),
+    })
+    const result = tracker.reset(mainEditor.getCurrentPageShapes() as any[])
+    fleetBoundsTrackerRef.current = tracker
+    logFleetBoundsResult(result)
+    return result.bounds
+  }, [mainEditor])
+
+  const readMaintainedFleetBounds = useCallback((): ClipBounds | null => {
+    const result = fleetBoundsTrackerRef.current?.getResult()
+    if (result) return result.bounds
+    return resetFleetBoundsTracker()
+  }, [resetFleetBoundsTracker])
+
   useEffect(() => {
     if (!identityId) return
     // Claim any pre-(identity,device) fleet shapes for this device BEFORE
@@ -278,28 +331,8 @@ export function FleetHUD({
     // placed under the old hash that collided), slide my whole layout into a free
     // lane so different owners' shapes never overlap. Only moves MY shapes.
     ensureMyLaneDisjoint(mainEditor, getHumanId(), getDeviceId())
-    setFleetBounds(getFleetBounds(mainEditor))
-  }, [identityId, mainEditor])
-  // Camera tick used to recompute canvas→screen for the render on camera change
-  const [cameraTick, setCameraTick] = useState(0)
-  // True once document page shapes are present — panOffset must not be computed before this.
-  // On browser restore, fleet shapes may load before SVG pages, causing panOffset to use
-  // the window.innerWidth/2 fallback and place fleet shapes inside the document text.
-  const [docShapesReady, setDocShapesReady] = useState(() => {
-    const s = mainEditor.getCurrentPageShapes()
-    return s.some(s => (s.type as string) === 'svg-page' || (s.type as string) === 'html-page')
-  })
-  const [diagnosticTick, setDiagnosticTick] = useState(0)
-  const agents = useFleetAgents()
-  const hudRef = useRef<HTMLDivElement>(null)
-  const draggingRef = useRef(false)
-  const overlayEditorRef = useRef<Editor | null>(null)
-  const lastHudDiagSigRef = useRef('')
-  const gesturesEnabled = expanded && !!fleetBounds && docShapesReady
-  const emptyDiagnostic = useMemo(
-    () => getFleetHudDiagnostic(mainEditor),
-    [mainEditor, identityId, fleetBounds, docShapesReady, cameraTick, diagnosticTick],
-  )
+    setFleetBounds(resetFleetBoundsTracker())
+  }, [identityId, mainEditor, resetFleetBoundsTracker])
 
   useEffect(() => {
     const shapes = mainEditor.getCurrentPageShapes()
@@ -433,22 +466,13 @@ export function FleetHUD({
   // appear to "spontaneously zoom" minutes later when the user happened to
   // click anywhere on the page (which fired the deferred handler).
   useEffect(() => {
-    setFleetBounds(getFleetBounds(mainEditor))
+    setFleetBounds(resetFleetBoundsTracker())
 
     const unsub = mainEditor.store.listen(({ changes }) => {
-      const isFleetChange = (record: any) =>
-        record.typeName === 'shape' && isMyFleetShape(record)
       const humanId = getHumanId()
-      const anchorPrefix = humanId ? `shape:fleet-hud-anchor--${humanId.replace('fleet:', '')}--` : ''
-      const isFleetDiagnosticChange = (record: any) =>
-        record.typeName === 'shape' &&
-        (FLEET_SHAPE_TYPES.has(record.type as string) || (anchorPrefix && String(record.id).startsWith(anchorPrefix)))
-      const diagnosticChanged =
-        Object.values(changes.added).some(isFleetDiagnosticChange) ||
-        Object.values(changes.removed).some(isFleetDiagnosticChange) ||
-        Object.values(changes.updated).some(([from, to]: any) => isFleetDiagnosticChange(from) || isFleetDiagnosticChange(to))
-      if (diagnosticChanged) setDiagnosticTick(t => t + 1)
-
+      const deviceId = getDeviceId()
+      const isFleetChange = (record: any) =>
+        record.typeName === 'shape' && isFleetShapeForOwner(record, humanId, deviceId)
       // Immediate: add/remove always recalculates
       const hasAddition = Object.values(changes.added).some(isFleetChange)
       const hasRemoval = Object.values(changes.removed).some(isFleetChange)
@@ -460,7 +484,9 @@ export function FleetHUD({
           removed: Object.values(changes.removed).filter(isFleetChange).map((r: any) => `${r.type}:${r.id}`),
         })
         draggingRef.current = false
-        setFleetBounds(getFleetBounds(mainEditor))
+        const result = fleetBoundsTrackerRef.current?.applyChanges(changes)
+        if (result) logFleetBoundsResult(result)
+        setFleetBounds(result?.bounds ?? readMaintainedFleetBounds())
         // Auto-reflow disabled — it was making things worse, not better.
         // TODO: reimplement add+delete-as-identity later. For now shapes
         // stay where they are on add/remove; user drags manually.
@@ -490,6 +516,8 @@ export function FleetHUD({
         log.debug('fleet-gesture', 'fleet update deferred during user drag', { updatedFleet })
         draggingRef.current = true
       } else {
+        const result = fleetBoundsTrackerRef.current?.applyChanges(changes)
+        if (result) logFleetBoundsResult(result)
         const updatedFleet = Object.values(changes.updated)
           .filter(([from, to]: any) => isFleetChange(from) || isFleetChange(to))
           .map(([from, to]: any) => {
@@ -500,18 +528,18 @@ export function FleetHUD({
           isUserDragging,
           updatedFleet,
           previousBounds: fleetBounds,
-          nextBounds: getFleetBounds(mainEditor),
+          nextBounds: result?.bounds ?? readMaintainedFleetBounds(),
         })
         log.debug('fleet-hud', 'bounds recompute (fleet shape update)', { updatedFleet })
         draggingRef.current = false
-        setFleetBounds(getFleetBounds(mainEditor))
+        setFleetBounds(result?.bounds ?? readMaintainedFleetBounds())
       }
     }, { source: 'all', scope: 'document' })
 
     const handlePointerUp = () => {
       if (draggingRef.current) {
         draggingRef.current = false
-        setFleetBounds(getFleetBounds(mainEditor))
+        setFleetBounds(resetFleetBoundsTracker())
       }
     }
     window.addEventListener('pointerup', handlePointerUp, true)
@@ -520,7 +548,7 @@ export function FleetHUD({
       unsub()
       window.removeEventListener('pointerup', handlePointerUp, true)
     }
-  }, [mainEditor, recenterHudForBounds])
+  }, [mainEditor, readMaintainedFleetBounds, resetFleetBoundsTracker])
 
   // Watch for SVG/HTML page shapes to arrive (async on browser restore).
   // If no saved panOffset exists, reset so it recomputes with real shape bounds.
@@ -569,7 +597,7 @@ export function FleetHUD({
   useEffect(() => {
     if (!expanded || !fleetBounds || !docShapesReady) return
     if (panOffsetRef.current === null || cameraYRef.current === null) return
-    const latestBounds = getFleetBounds(mainEditor) || fleetBounds
+    const latestBounds = readMaintainedFleetBounds() || fleetBounds
     const hasFreshBounds =
       latestBounds.x !== fleetBounds.x ||
       latestBounds.y !== fleetBounds.y ||
@@ -583,7 +611,7 @@ export function FleetHUD({
     if (userPannedRef.current) return
     ignoreSavedAnchorRef.current = true
     recenterHudForBounds(latestBounds)
-  }, [expanded, fleetBounds?.x, fleetBounds?.y, fleetBounds?.w, fleetBounds?.h, docShapesReady, mainEditor, recenterHudForBounds])
+  }, [expanded, fleetBounds?.x, fleetBounds?.y, fleetBounds?.w, fleetBounds?.h, docShapesReady, mainEditor, readMaintainedFleetBounds, recenterHudForBounds])
 
   // Touch fleet shapes to invalidate getShapeVisibility cache — only when
   // expanded state actually changes, not on every fleetBounds update.
@@ -912,7 +940,7 @@ export function FleetHUD({
           }
         } catch {}
       }
-      const nextBounds = getFleetBounds(mainEditor)
+      const nextBounds = resetFleetBoundsTracker()
       recenterHudForBounds(nextBounds)
       setFleetBounds(nextBounds)
     }
@@ -931,7 +959,7 @@ export function FleetHUD({
       window.removeEventListener('fleet-hud-reset', onReset)
       window.removeEventListener('fleet-hud-toggle', onToggle)
     }
-  }, [mainEditor])
+  }, [mainEditor, recenterHudForBounds, resetFleetBoundsTracker])
 
   // Fail loud instead of silently rendering an empty HUD. A common phi/iPad
   // failure mode is a new browser device id: same-user fleet shapes exist in
@@ -941,7 +969,7 @@ export function FleetHUD({
     if (expanded) {
       return (
         <FleetHudEmptyDiagnostic
-          diagnostic={emptyDiagnostic}
+          diagnostic={getFleetHudDiagnostic(mainEditor)}
         />
       )
     }
@@ -953,7 +981,7 @@ export function FleetHUD({
     return null
   }
 
-  const activeFleetBounds = getFleetBounds(mainEditor) || fleetBounds
+  const activeFleetBounds = readMaintainedFleetBounds() || fleetBounds
 
   // Fleet shapes rendered at z=1 (fixed size). X position computed dynamically
   // from document's screen position each render. Y frozen on first expand.
