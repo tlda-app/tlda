@@ -1475,46 +1475,68 @@ def build_claude_cmd(fleet_id, tmux_session, model, effort=None, mode=None,
 
 
 
-def goose_config_home_for_capability(sandbox_cfg, state_dir, capability):
-    """Return the XDG_CONFIG_HOME whose goose/config.yaml has the **developer**
-    extension (shell + fs) enabled iff the granted capability allows writing.
+# Restrictive instruction sentences in the base deepseek recipe that tell a goose
+# it cannot write. For a write-capable goose we swap these for write-positive
+# guidance so it actually USES the developer tool. Kept as exact-match constants
+# so a recipe edit that breaks the match fails loudly in the test, not silently.
+_GOOSE_NOWRITE_LINE = (
+    "interface. You have no shell and no general file editing; everything you can\n"
+    "  do, you do through the fleet (`tlda`) MCP tools."
+)
+_GOOSE_WRITE_LINE = (
+    "interface, plus a developer tool. You CAN write and edit files and run shell\n"
+    "  commands within your sandboxed workspace; the fence constrains WHERE you may\n"
+    "  write (your project lane). You also have the fleet (`tlda`) MCP tools."
+)
+_GOOSE_NOWRITE_BULLET = (
+    "  - You cannot edit arbitrary files or run shell commands. If you need to produce\n"
+    "    written output, put it in a scratch file via the scratch tools, or say it in\n"
+    "    `chat`. Never claim to have changed something you cannot change."
+)
+_GOOSE_WRITE_BULLET = (
+    "  - You CAN edit files and run shell commands within your sandboxed workspace\n"
+    "    via the developer tool. Write real output to disk where the task needs it;\n"
+    "    the fence keeps you in your lane. Never claim to have changed something you\n"
+    "    did not actually change."
+)
 
-    This is Skip's fence+harness coupling: the developer extension is *whether* a
-    goose agent can write/run at all; the fence (wrap_sandbox_cmd write_roots) is
-    *where* it may write. They COMPOSE — a `write` deepseek gets the tool AND is
-    sandbox-constrained to its lane. Enabling the tool here does NOT bypass the
-    fence; the lock-down on an untrusted model is the fence, not toollessness
-    (Skip: "lock down dangerous agents" = the lane, not withholding the tool).
 
-    A `read` agent keeps the base sandbox config (developer OFF) — tlda-MCP-only.
+def goose_capability_launch(base_recipe, state_dir, capability):
+    """Return (recipe_path, extra_goose_args) for a goose spawn at `capability`.
 
-    Dependency to note: while the global fence is OFF (FENCE_GLOBALLY_DISABLED), a
-    write goose with the developer extension runs shell+fs UNSANDBOXED — the same
-    risk as every other agent under the global-off, not net-new. When the fence is
-    restored (the #6/D2 flip — operator's gate), a write goose is dev-tools-on AND
-    fenced. Do not flip the fence here to make this safe; that is a separate gate.
+    Skip's fence+harness coupling, BOTH HALVES gated together:
+      * write / tlda-write / full -> the developer (shell+fs) builtin is added via
+        `--with-builtin developer`, AND a per-agent recipe whose instructions tell
+        the agent it MAY write its workspace. A tool with a "don't write"
+        instruction is still no write, so both move as one.
+      * read (or unset) -> the base recipe (tlda-MCP-only instructions) and NO
+        builtin. Neither half.
+
+    `--with-builtin developer` is the only thing that actually loads the tool when
+    goose runs with --recipe — verified live that the recipe's `extensions:` block
+    and the sandbox profile's developer.enabled do NOT. The fence
+    (wrap_sandbox_cmd write_roots) still constrains WHERE; the tool does not bypass
+    it. Dependency: under the global fence-off a write goose is shell+fs
+    unsandboxed (same risk as every other agent tonight, not net-new); the restored
+    fence (#6/D2, operator's gate) makes it dev-tools-on AND fenced — not flipped
+    here.
     """
-    cap = normalize_spawn_capability(capability)
-    if cap not in ("write", "tlda-write", "full"):
-        return sandbox_cfg  # read (or unset): base config, developer OFF
-    base_config = os.path.join(sandbox_cfg, "goose", "config.yaml")
+    if normalize_spawn_capability(capability) not in ("write", "tlda-write", "full"):
+        return base_recipe, []
     try:
-        with open(base_config) as f:
+        with open(base_recipe) as f:
             text = f.read()
     except OSError:
-        return sandbox_cfg  # fall back to the safe base if the config is missing
-    # Flip ONLY the developer extension on; every other bundled extension stays
-    # off (they are not about write). The developer block is the first one.
-    enabled = text.replace("  developer:\n    enabled: false",
-                           "  developer:\n    enabled: true", 1)
-    cfg_home = os.path.join(state_dir, "config")
-    goose_dir = os.path.join(cfg_home, "goose")
-    os.makedirs(goose_dir, exist_ok=True)
-    tmp = os.path.join(goose_dir, f"config.yaml.tmp-{os.getpid()}")
+        return base_recipe, ["--with-builtin developer"]  # tool at least
+    text = text.replace(_GOOSE_NOWRITE_LINE, _GOOSE_WRITE_LINE, 1)
+    text = text.replace(_GOOSE_NOWRITE_BULLET, _GOOSE_WRITE_BULLET, 1)
+    os.makedirs(state_dir, exist_ok=True)
+    per_recipe = os.path.join(state_dir, "fleet-deepseek.yaml")
+    tmp = per_recipe + f".tmp-{os.getpid()}"
     with open(tmp, "w") as f:
-        f.write(enabled)
-    os.replace(tmp, os.path.join(goose_dir, "config.yaml"))
-    return cfg_home
+        f.write(text)
+    os.replace(tmp, per_recipe)
+    return per_recipe, ["--with-builtin developer"]
 
 
 def build_goose_cmd(fleet_id, tmux_session, model, name=None, capability=None):
@@ -1559,10 +1581,12 @@ def build_goose_cmd(fleet_id, tmux_session, model, name=None, capability=None):
     os.makedirs(data_dir, exist_ok=True)
     os.makedirs(cache_dir, exist_ok=True)
     os.makedirs(xdg_state_dir, exist_ok=True)
-    # Capability decides whether the developer (shell+fs) extension boots: a
-    # write/tlda-write/full goose gets a per-agent config with it ON (and is still
-    # fenced by wrap_sandbox_cmd); a read goose keeps the base tlda-MCP-only config.
-    xdg_config_home = goose_config_home_for_capability(sandbox_cfg, state_dir, capability)
+    # Capability decides whether the developer (shell+fs) extension boots and
+    # whether the instructions permit writing: a write/tlda-write/full goose gets
+    # the developer builtin AND a per-agent recipe whose instructions allow
+    # writing its workspace (still fenced by wrap_sandbox_cmd); a read goose gets
+    # neither (tlda-MCP-only). Both halves move together.
+    recipe, dev_args = goose_capability_launch(recipe, state_dir, capability)
     parts = [
         f"FLEET_ID={fleet_id}",
         f"FLEET_TMUX_SESSION={tmux_session}",
@@ -1572,7 +1596,7 @@ def build_goose_cmd(fleet_id, tmux_session, model, name=None, capability=None):
         "FLEET_HARNESS=goose",
         f"TLDA_SERVER={shlex.quote(API)}",
         f"TLDA_SYNC_SERVER={shlex.quote(API)}",
-        f"XDG_CONFIG_HOME={shlex.quote(xdg_config_home)}",
+        f"XDG_CONFIG_HOME={shlex.quote(sandbox_cfg)}",
         f"XDG_DATA_HOME={shlex.quote(data_dir)}",
         f"XDG_CACHE_HOME={shlex.quote(cache_dir)}",
         f"XDG_STATE_HOME={shlex.quote(xdg_state_dir)}",
@@ -1588,6 +1612,7 @@ def build_goose_cmd(fleet_id, tmux_session, model, name=None, capability=None):
     parts.append(shlex.quote(GOOSE_BIN))
     parts.append("run")
     parts.append(f"--recipe {shlex.quote(recipe)}")
+    parts.extend(dev_args)  # --with-builtin developer for write-capable goose
     parts.append("--params provider=openrouter")
     parts.append(f"--params model={shlex.quote(model)}")
     # Stamp the goose session with a fleet-derived NAME so the daemon can map a
