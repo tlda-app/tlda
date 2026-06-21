@@ -662,7 +662,7 @@ async function ensureFleetDaemonRunning() {
   const { openSync: fsOpenSync } = await import('fs')
   if (!existsSync(dirname(FLEET_DAEMON_LOGFILE))) mkdirSync(dirname(FLEET_DAEMON_LOGFILE), { recursive: true })
   const logFd = fsOpenSync(FLEET_DAEMON_LOGFILE, 'a')
-  const child = cpSpawn(process.execPath, [daemonScript], {
+  const child = cpSpawn(process.execPath, ['--import', 'tsx', daemonScript], {
     detached: true,
     stdio: ['ignore', logFd, logFd],
     env: {
@@ -759,7 +759,7 @@ async function cmdFleetWatch(sub) {
   if (sub === 'run') {
     // Foreground — exec the daemon directly so SIGINT etc. work normally.
     const { spawn: cpSpawn } = await import('child_process')
-    const child = cpSpawn(process.execPath, [daemonScript], {
+    const child = cpSpawn(process.execPath, ['--import', 'tsx', daemonScript], {
       stdio: 'inherit',
       env: {
         ...process.env,
@@ -794,7 +794,7 @@ async function cmdFleetWatch(sub) {
     if (!existsSync(dirname(FLEET_DAEMON_LOGFILE))) mkdirSync(dirname(FLEET_DAEMON_LOGFILE), { recursive: true })
     const logFd = fsOpenSync(FLEET_DAEMON_LOGFILE, 'a')
 
-    const child = cpSpawn(process.execPath, [daemonScript], {
+    const child = cpSpawn(process.execPath, ['--import', 'tsx', daemonScript], {
       detached: true,
       stdio: ['ignore', logFd, logFd],
       env: { ...process.env, TMUX: undefined, TMUX_PANE: undefined },
@@ -2036,7 +2036,7 @@ async function cmdDoctor() {
         const { spawn: cpSpawn } = await import('child_process')
         const { openSync: fsOpenSync } = await import('fs')
         const logFd = fsOpenSync(LOGFILE, 'a')
-        const child = cpSpawn(process.execPath, [serverScript, '--i-am-tlda-cli'], {
+        const child = cpSpawn(process.execPath, ['--import', 'tsx', serverScript, '--i-am-tlda-cli'], {
           detached: true, stdio: ['ignore', logFd, logFd],
           env: { ...process.env, PORT: getPort(), TMUX: undefined, TMUX_PANE: undefined }
         })
