@@ -4733,6 +4733,34 @@ async function handleDaemonWsMessage(ws, msg) {
 
   if (type === 'agent-liveness') {
     const { agent_id, state, tmux_session, pid, reason, ts } = msg
+    if (Array.isArray(msg.agent_ids) || Array.isArray(msg.checked_agent_ids)) {
+      const aliveIds = new Set((msg.agent_ids || []).filter(id => typeof id === 'string' && id))
+      const checkedIds = new Set([
+        ...(msg.checked_agent_ids || []).filter(id => typeof id === 'string' && id),
+        ...aliveIds,
+      ])
+      const batchTs = ts || new Date().toISOString()
+      for (const id of checkedIds) {
+        const agent = fleetStore?.getAgent?.(id)
+        const batchState = aliveIds.has(id) ? 'alive' : 'dead'
+        spawnLibrarian.observeLiveness({
+          type,
+          agent_id: id,
+          tmux_session: agent?.tmux_session || null,
+          state: batchState,
+          reason: batchState === 'dead' ? 'daemon liveness batch: not alive' : undefined,
+          ts: batchTs,
+        })
+        if (batchState === 'alive') {
+          markAgentAlive(id)
+          touchActivity(id)
+        } else {
+          markAgentNotAlive(id)
+        }
+      }
+      broadcastState()
+      return
+    }
     if (!agent_id || !state) return
     spawnLibrarian.observeLiveness({ type, agent_id, state, tmux_session, pid, reason, ts })
     if (state === 'alive') {
