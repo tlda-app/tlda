@@ -419,7 +419,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   // doc: project name — daemon resolves to sourceDir for the cwd
   // For respawn: { agent: "fleet:xxx" or "name", respawn: true }
   router.post('/api/spawn', async (req, res) => {
-    const { name, model, doc, cwd, agent, respawn, capability, spawnCapability, kind, mode, effort, trustOverride } = req.body || {}
+    const { name, model, doc, cwd, agent, respawn, fresh, capability, spawnCapability, kind, mode, effort, trustOverride } = req.body || {}
     // HTTP auth currently proves only bearer-token level, not which fleet agent or
     // human browser session made the request. Spawning is authority-sensitive, so
     // fail closed here instead of treating all HTTP callers as the server owner.
@@ -459,7 +459,10 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       })
       const launchMode = projectCapabilityToMode(authorized.requestedCapability, mode)
       const resolved = resolveSpawnTarget
-        ? await resolveSpawnTarget(spawnName, !!respawn)
+        ? await resolveSpawnTarget(spawnName, !!respawn, {
+            fresh: !!fresh,
+            requested: { model, kind, project: doc },
+          })
         : { name: spawnName, respawn: !!respawn }
       const result = await sendRpc(machineIds[0], 'spawn', {
         name: resolved.name || undefined,

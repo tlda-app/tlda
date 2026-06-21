@@ -24,6 +24,20 @@ export interface ModelClassification {
 }
 
 const CLAUDE_MODEL_NAMES = new Set(['opus', 'opus45', 'opus46', 'opus47', 'opus48', 'fable', 'fable5', 'sonnet', 'haiku'])
+const MODEL_ALIASES = new Map<string, string>([
+  ['opus', 'claude-opus-4-8'],
+  ['opus45', 'claude-opus-4-5'],
+  ['opus46', 'claude-opus-4-6'],
+  ['opus47', 'claude-opus-4-7'],
+  ['opus48', 'claude-opus-4-8'],
+  ['fable', 'claude-opus-4-8'],
+  ['fable5', 'claude-opus-4-5'],
+  ['sonnet', 'claude-sonnet'],
+  ['haiku', 'claude-haiku'],
+  ['gpt', 'gpt-5.5'],
+  ['deepseek', 'deepseek/deepseek-v4-pro'],
+  ['deepseek-v4-pro', 'deepseek/deepseek-v4-pro'],
+])
 
 export function assertNever(value: never): never {
   throw new Error(`Unhandled harness kind: ${String(value)}`)
@@ -54,6 +68,14 @@ export function classifyModel({ model, kind }: { model?: unknown; kind?: unknown
     isClaudeModel: isClaudeModel(m),
     isOpenAiModel: isOpenAiModel(m),
   }
+}
+
+export function canonicalModel(model?: unknown, kind?: unknown): string {
+  const m = normalize(model).replace(/\[[^\]]+\]$/u, '')
+  if (!m) return ''
+  const aliased = MODEL_ALIASES.get(m) || m
+  const family = modelFamily({ model: aliased, kind })
+  return `${family}:${aliased}`
 }
 
 export function modelFamily({ model, kind }: { model?: unknown; kind?: unknown } = {}): ModelFamily {
