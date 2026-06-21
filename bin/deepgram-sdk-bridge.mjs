@@ -48,7 +48,7 @@ function resolveIntOpt(flag, configKey, def) {
   try {
     const config = loadConfig()
     if (config[configKey] != null && Number.isFinite(Number(config[configKey]))) return Number(config[configKey])
-  } catch {}
+  } catch { /* config is an optional tuning surface — fall through to the default */ }
   return def
 }
 

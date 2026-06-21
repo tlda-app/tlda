@@ -41,7 +41,7 @@ async function runBridge({ port, idleMs, autoCloseMs, fn }) {
   try {
     await sleep(500)
     const ws = new WebSocket(`${proto}://localhost:${port}`, { rejectUnauthorized: false })
-    ws.on('message', (d) => { try { const m = JSON.parse(d.toString()); if (m.type === 'status') statuses.push(m.status) } catch {} })
+    ws.on('message', (d) => { try { const m = JSON.parse(d.toString()); if (m.type === 'status') statuses.push(m.status) } catch { /* non-JSON frame — ignore */ } })
     await new Promise((resolve, reject) => { ws.on('open', resolve); ws.on('error', reject) })
     await fn({ ws, fakeLines, statuses })
     ws.close()

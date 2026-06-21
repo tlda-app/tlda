@@ -69,6 +69,7 @@ type PrefsSectionId =
   | 'notes'
   | 'voice-backend'
   | 'voice-commands'
+  | 'voice-tuning'
   | 'spawn'
   | 'highlighter'
   | 'presentation'
@@ -129,6 +130,11 @@ function readAll() {
     voiceBackend: getPref('voice-backend'),
     voiceSubmitWords: getPref('voice-submit-words'),
     voiceSinkShapeTypes: getPref('voice-sink-shape-types'),
+    voiceIdleCutoffMs: getPref('voice-idle-cutoff-ms'),
+    voicePrerollMs: getPref('voice-preroll-ms'),
+    voiceResumeRms: getPref('voice-resume-rms'),
+    voiceEndpointing: getPref('voice-endpointing'),
+    voiceUtteranceEndMs: getPref('voice-utterance-end-ms'),
     fontSize: getPref('fleet-font-size'),
     heightFrac: getPref('layout-height-frac'),
     railWidth: getPref('layout-rail-width'),
@@ -493,6 +499,38 @@ export function PrefsTab() {
             placeholder="fleet-agents"
           />
         </div>
+      </CollapsiblePrefsSection>
+
+      <CollapsiblePrefsSection
+        id="voice-tuning"
+        title="Voice tuning"
+        summary={`Idle ${Math.round(prefs.voiceIdleCutoffMs / 1000)}s · pre-roll ${prefs.voicePrerollMs}ms`}
+        open={prefs.openSections.includes('voice-tuning')}
+        onToggle={toggleSection}
+      >
+        <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 4 }}>
+          When to stream to Deepgram and how it hears you. Applies on the next voice session.
+        </div>
+        {([
+          ['Idle cutoff', 'voice-idle-cutoff-ms', prefs.voiceIdleCutoffMs, 'ms'],
+          ['Pre-roll', 'voice-preroll-ms', prefs.voicePrerollMs, 'ms'],
+          ['Resume RMS', 'voice-resume-rms', prefs.voiceResumeRms, ''],
+          ['Endpointing', 'voice-endpointing', prefs.voiceEndpointing, 'ms'],
+          ['Utterance end', 'voice-utterance-end-ms', prefs.voiceUtteranceEndMs, 'ms'],
+        ] as const).map(([label, key, val, unit]) => (
+          <div className="prefs-num-row" key={key}>
+            <span className="prefs-num-label">{label}</span>
+            <input
+              type="number"
+              min={0}
+              step={1}
+              value={val}
+              onChange={e => setPref(key, Number(e.target.value))}
+              className="prefs-num"
+            />
+            <span className="prefs-num-unit">{unit}</span>
+          </div>
+        ))}
       </CollapsiblePrefsSection>
 
       <CollapsiblePrefsSection
