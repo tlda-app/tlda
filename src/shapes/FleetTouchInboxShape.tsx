@@ -17,7 +17,7 @@ import {
   useEditor,
   useValue,
 } from 'tldraw'
-import { agentDisplayName, FLEET_SHAPE_TYPES } from './fleet-utils'
+import { agentDisplayName, beginNativeSnapDrag, endNativeSnapDrag, FLEET_SHAPE_TYPES } from './fleet-utils'
 import { useCallback, useRef, useMemo, useEffect, memo } from 'react'
 import { useFleetAgents, useFleetEvents, useFleetUnreadCounts, useFleetIdentity } from '../fleet-data-adapter'
 // @ts-ignore — vanilla JS module
@@ -90,8 +90,12 @@ export class FleetTouchInboxShapeUtil extends BaseBoxShapeUtil<any> {
 
   override canEdit = () => false
   override canResize = () => true
+  override canSnap = () => true
   override canBind = () => false
   override hideRotateHandle = () => true
+  override onTranslateStart = () => beginNativeSnapDrag(this.editor)
+  override onTranslateEnd = () => endNativeSnapDrag(this.editor)
+  override onTranslateCancel = () => endNativeSnapDrag(this.editor)
 
   // Clip the child chat to the container bounds.
   override getClipPath(shape: any) {

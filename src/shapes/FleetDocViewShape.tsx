@@ -37,6 +37,7 @@ import { pdfToCanvas } from '../synctexAnchor'
 import { getSvgText, setSvgText } from '../stores/svgTextStore'
 import { getPageUrl } from '../stores/pageUrlStore'
 import { getPref } from '../preferences'
+import { beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
 
 const DEFAULT_W = 300
 const DEFAULT_H = 250
@@ -92,6 +93,11 @@ export class FleetDocViewShapeUtil extends BaseBoxShapeUtil<any> {
   getDefaultProps() {
     return { w: DEFAULT_W, h: DEFAULT_H, sources: JSON.stringify(getPref('docview-sources')), label: '', page: 0, yTop: 0, yBottom: 0, title: '', userId: '', deviceId: '' }
   }
+
+  override canSnap = () => true
+  override onTranslateStart = () => beginNativeSnapDrag(this.editor)
+  override onTranslateEnd = () => endNativeSnapDrag(this.editor)
+  override onTranslateCancel = () => endNativeSnapDrag(this.editor)
 
   component(shape: any) {
     return (
@@ -665,4 +671,3 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
     </div>
   )
 }
-

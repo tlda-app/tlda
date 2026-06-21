@@ -172,6 +172,136 @@ export function parseChatAuthoredSuggestions(body) {
   return { body: stripped.join('\n').replace(/\n{3,}/g, '\n\n').trim(), suggestions };
 }
 
+// Inline suggestion section — the forget-proof, markdown-native authoring surface
+// (complement to the end-of-message <suggestions> block above, which agents skip
+// because it's a context-switch they forget at the end). Written ANYWHERE in a
+// message, a recognized section does two things at once:
+//   (a) RENDERS AS NORMAL MARKDOWN (bold name + description), left in the body, and
+//   (b) is HARVESTED into suggestion chips at the bottom of chat.
+// One construct, two effects.
+//
+// Marker — a `.suggest` class on a section heading (pandoc heading-attribute
+// style, the form Skip pictured). The heading TEXT is free; the `.suggest` class
+// is the trigger, so a plain "## Suggestions" heading is NEVER harvested by
+// accident — only an explicit opt-in fires:
+//
+//   ## Pick one {.suggest}
+//   - **ship it** — proceed with the reviewed change
+//   - **hold** — wait for the test rig *​/hold*
+//
+// Item grammar is PURE MARKDOWN — no pipes:
+//   - `**name**`  = the chip label AND the default sent-payload.
+//   - anything between the bold name and the command = optional description (chip
+//     hover) — the separator is forgiving: a dash, a period, or nothing all work
+//     (`**x** — d`, `**x**. d`, `**x** d`, `**x**` all parse).
+//   - `*command*` = OPTIONAL explicit command, only when the sent-payload differs
+//                   from the name. No italic → clicking sends the name.
+//   - no `**bold**` → the FIRST WORD is the name (graceful degrade, never errors).
+// NO group field: the GROUP is implicit — **each `.suggest` section is one group**,
+// and multiple `.suggest` sections anywhere in the message give multiple groups.
+// (This is why inline does NOT share the end-block's `parseSuggestionFields`
+// helper — the end-block keeps explicit `label|hover|command|group|target` pipes;
+// inline is a different, pure-markdown grammar.)
+//
+// The pre-pass strips ONLY the `{.suggest}` attribute from the heading — the
+// items are already clean markdown and stay as the author wrote them (bold name +
+// description). The optional italic `*command*` is stripped from the rendered body
+// when INLINE_STRIP_RENDERED_COMMAND is true (kept verbatim otherwise); either way
+// it is harvested as the chip's command. A section is the `.suggest` heading plus
+// the contiguous list under it (one blank-line gap allowed); it ends at the first
+// blank line, non-list line, next heading, or code fence.
+const INLINE_SUGGEST_HEADING = /^(#{1,6})\s+(.*?)\s*\{([^}]*)\}\s*$/;
+const attrHasSuggest = (attrBlob) => /(?:^|\s)\.suggest(?:\s|$)/.test(attrBlob);
+// A single-`*` italic run that is NOT part of a `**bold**` marker.
+const INLINE_ITALIC_COMMAND = /(?<!\*)\*(?!\*)([^*\n]+?)\*(?!\*)/;
+const INLINE_BOLD_NAME = /\*\*([^*\n]+?)\*\*/;
+// Whether to drop the italic `*command*` from the RENDERED message body (it is
+// always harvested into the chip regardless). Skip's eyeball call — flip in one place.
+const INLINE_STRIP_RENDERED_COMMAND = false;
+
+// Parse one item's markdown (the text after its `- `) into a chip + the cleaned
+// line to render. Returns { suggestion, rendered } or { error }.
+function parseInlineItem(content) {
+  let work = content;
+  // 1. optional explicit command = an italic run (not part of a bold marker).
+  let command = null;
+  const im = work.match(INLINE_ITALIC_COMMAND);
+  if (im) command = im[1].trim();
+  // The body either keeps the italic verbatim or drops it (Skip's render call).
+  const renderedInner = (INLINE_STRIP_RENDERED_COMMAND && im)
+    ? (content.slice(0, im.index) + content.slice(im.index + im[0].length)).replace(/[\s—–-]+$/, '').trimEnd()
+    : content.trimEnd();
+  // For NAME/description parsing, work off the command-stripped text.
+  if (im) work = work.slice(0, im.index) + work.slice(im.index + im[0].length);
+
+  // 2. name = the first **bold** run; else graceful-degrade to the first word.
+  let name, rest;
+  const bm = work.match(INLINE_BOLD_NAME);
+  if (bm) {
+    name = bm[1].trim();
+    rest = (work.slice(0, bm.index) + work.slice(bm.index + bm[0].length));
+  } else {
+    const w = work.trim();
+    const firstWord = w.split(/\s+/)[0] || '';
+    name = firstWord.replace(/[*_`]/g, '').trim();
+    rest = w.slice(firstWord.length);
+  }
+  if (!name) return { error: 'missing a name' };
+
+  // 3. description = whatever's left between name and command, minus a leading
+  // separator — a dash, a period, or nothing (Skip: the separator is forgiving).
+  const description = rest.replace(/^[\s.—–-]+/, '').replace(/[\s—–-]+$/, '').replace(/\s{2,}/g, ' ').trim();
+
+  const suggestion = { label: name, command: command || name };
+  if (description) suggestion.text = description;
+  return { suggestion, rendered: renderedInner };
+}
+
+export function parseInlineSuggestions(body) {
+  const text = String(body || '');
+  const lines = text.split('\n');
+  const out = [];
+  const suggestions = [];
+  let inFence = false;
+  let sectionN = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    if (/^(```|~~~)/.test(trimmed)) { inFence = !inFence; out.push(line); continue; }
+    if (inFence) { out.push(line); continue; }
+
+    const hm = trimmed.match(INLINE_SUGGEST_HEADING);
+    if (!hm || !attrHasSuggest(hm[3])) { out.push(line); continue; }
+
+    // A `.suggest` section. The section IS one implicit group — its items form one
+    // disjunctive chip group, distinct from every other section in the message
+    // (the `#n` suffix guarantees distinctness even if two sections share a title).
+    const headingText = hm[2].trim();
+    sectionN += 1;
+    const group = `${headingText || 'suggest'}#${sectionN}`;
+    out.push(`${hm[1]} ${headingText}`);   // strip the {.suggest} attribute
+
+    // Consume the list under it (allowing one blank-line gap after the heading).
+    let j = i + 1;
+    while (j < lines.length && lines[j].trim() === '') { out.push(lines[j]); j++; }
+    for (; j < lines.length; j++) {
+      const t = lines[j].trim();
+      if (t === '' || /^(```|~~~)/.test(t) || /^#{1,6}\s/.test(t)) break;
+      const itm = t.match(/^[-*]\s+(.+)$/);
+      if (!itm) break;
+      const parsed = parseInlineItem(itm[1]);
+      if (parsed.error) return { error: `Inline suggestion at line ${j + 1} is ${parsed.error}.` };
+      suggestions.push({ ...parsed.suggestion, group });
+      const indent = lines[j].slice(0, lines[j].length - lines[j].trimStart().length);
+      out.push(`${indent}- ${parsed.rendered}`);
+    }
+    i = j - 1;
+  }
+
+  return { body: out.join('\n'), suggestions };
+}
+
 async function postChatAuthoredSuggestions(suggestions, recipients) {
   const ts = Date.now();
   const targetId = recipients.length === 1 ? recipients[0] : null;
@@ -1253,6 +1383,47 @@ export function getFleetTools() {
       },
     },
     {
+      name: 'notify',
+      description: 'Raise or dismiss an actionable item for the human. Defaults by kind: bounce/mic-death → HUD notification; modal/suggest/task → list task; all items also live in chat.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['raise', 'dismiss'], description: 'Default raise. Use dismiss with id to remove an item.' },
+          id: { type: 'string', description: 'Stable item id. Re-raising the same id replaces the existing item.' },
+          userId: { type: 'string', description: 'Target human fleet id. Defaults to server owner.' },
+          kind: { type: 'string', description: 'bounce, modal, status, task, suggest, info, etc.' },
+          title: { type: 'string', description: 'One-line headline.' },
+          body: { type: 'string', description: 'Optional detail text.' },
+          actions: {
+            type: 'array',
+            description: 'Action buttons.',
+            items: {
+              type: 'object',
+              properties: {
+                label: { type: 'string' },
+                command: { type: 'string' },
+                target: { type: 'string' },
+                clientAction: { type: 'string' },
+              },
+              required: ['label'],
+            },
+          },
+          present: {
+            type: 'object',
+            properties: {
+              chat: { type: 'boolean' },
+              hud: { type: 'boolean' },
+              list: { type: 'boolean' },
+            },
+          },
+          payload: { type: 'object', description: 'Optional payload for later drag/drop consumers.' },
+          dropTarget: { type: 'string' },
+          ttl: { type: 'number', description: 'Milliseconds before expiry.' },
+          priority: { type: 'string', enum: ['low', 'normal', 'high'] },
+        },
+      },
+    },
+    {
       name: 'task_list',
       description: 'List all active (non-done) tasks and registered agents. Call at session start.',
       inputSchema: { type: 'object', properties: {} },
@@ -2283,8 +2454,14 @@ export async function handleFleetTool(name, args) {
     if (resolvedBody.error) return { content: [{ type: 'text', text: resolvedBody.error }], isError: true };
     const parsedSuggestions = parseChatAuthoredSuggestions(resolvedBody.body);
     if (parsedSuggestions.error) return { content: [{ type: 'text', text: `Message NOT sent — ${parsedSuggestions.error}` }], isError: true };
-    const { body: message, source } = { body: parsedSuggestions.body, source: resolvedBody.source };
-    const authoredSuggestions = parsedSuggestions.suggestions || [];
+    // Inline `.suggest` section(s): harvested to chips AND left in the (cleaned)
+    // body so they render as a normal heading + list. The end-block above is
+    // stripped from the body; this inline surface STAYS visible (forget-proof).
+    const inlineSuggestions = parseInlineSuggestions(parsedSuggestions.body);
+    if (inlineSuggestions.error) return { content: [{ type: 'text', text: `Message NOT sent — ${inlineSuggestions.error}` }], isError: true };
+    const { body: message, source } = { body: inlineSuggestions.body, source: resolvedBody.source };
+    const blockSuggestions = parsedSuggestions.suggestions || [];
+    const authoredSuggestions = [...blockSuggestions, ...(inlineSuggestions.suggestions || [])];
     const macros = await getMacrosForAgent();
     // Two classes, surfaced differently: render-VALIDITY prominently with the
     // amend affordance (Skip will see garbage if it doesn't render), STYLE
@@ -2295,9 +2472,12 @@ export async function handleFleetTool(name, args) {
     // `amend_id` present → route to the server's amend handler (same body forms,
     // same keep/clear-`source` semantics) instead of posting a new message.
     if (args.amend_id != null) {
-      if (authoredSuggestions.length) {
+      if (blockSuggestions.length) {
         return { content: [{ type: 'text', text: 'Message NOT amended — <suggestions> blocks are not supported with amend_id. Send a new chat or use suggest().' }], isError: true };
       }
+      // Inline `.suggest` sections are fine on amend — the body is already cleaned
+      // (heading + list, attr stripped) so it re-renders correctly — but the chips
+      // were posted on the original send and are NOT re-harvested here.
       try {
         let resolvedMessage, inlineAttachments = [];
         if (source?.file) {
@@ -2317,6 +2497,9 @@ export async function handleFleetTool(name, args) {
         }
         if (styleHints.length > 0) {
           extra += `\n\nStyle (optional): ${styleHints.join(' ')}`;
+        }
+        if (inlineSuggestions.suggestions?.length) {
+          extra += `\n\nNote: the inline \`.suggest\` section rendered cleanly, but its chips were NOT re-posted (amend edits the message text, not its already-posted chips).`;
         }
         return { content: [{ type: 'text', text: `Amended message ${data.event_id} in place.${extra}` }] };
       } catch (e) {
@@ -2572,6 +2755,42 @@ export async function handleFleetTool(name, args) {
       return { content: [{ type: 'text', text: stamped.length ? `Posted ${stamped.length} suggestion chip(s) to chat.` : 'Cleared your suggestion chips.' }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `suggest failed: ${e.message}` }], isError: true };
+    }
+  }
+
+  // ---- notify ----
+  if (name === 'notify') {
+    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not registered. Call register() first.' }], isError: true };
+    const action = args?.action || 'raise';
+    if (action === 'dismiss' && !args?.id) return { content: [{ type: 'text', text: 'notify dismiss requires `id`.' }], isError: true };
+    if (action !== 'dismiss' && !args?.title) return { content: [{ type: 'text', text: 'notify raise requires `title`.' }], isError: true };
+    const item = action === 'dismiss' ? null : {
+      id: args.id || `${AGENT_ID}:${args.kind || 'info'}:${Date.now()}`,
+      kind: args.kind || 'info',
+      from: AGENT_ID,
+      title: args.title,
+      body: args.body || '',
+      actions: Array.isArray(args.actions) ? args.actions : [],
+      present: args.present || undefined,
+      payload: args.payload || undefined,
+      dropTarget: args.dropTarget || undefined,
+      ttl: Number.isFinite(args.ttl) ? args.ttl : undefined,
+      priority: args.priority || undefined,
+    };
+    try {
+      const res = await fleetFetch(`${TLDA_FLEET_SERVER}/api/items`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(action === 'dismiss'
+          ? { action: 'dismiss', id: args.id, userId: args.userId }
+          : { action: 'raise', userId: args.userId, item }),
+        signal: AbortSignal.timeout(3000),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return { content: [{ type: 'text', text: `notify failed: ${data.error || res.statusText}` }], isError: true };
+      return { content: [{ type: 'text', text: action === 'dismiss' ? `Dismissed item ${args.id}.` : `Raised ${item.kind} item ${item.id}.` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `notify failed: ${e.message}` }], isError: true };
     }
   }
 

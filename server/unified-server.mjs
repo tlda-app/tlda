@@ -869,7 +869,7 @@ async function resolveSpawnTarget(name, respawn, { fresh = false, requested = {}
     fleetStore._bustAgentsCache?.()
     broadcastState()
   } catch (e) {
-    console.error(`[spawn] raise failed for ${existing.id}: ${e.message}`)
+    console.error(`[spawn] synthetic activity failed for ${existing.id}: ${e.message}`)
   }
   // Carry the resolved fleet-id, NOT the friendly name, into the wake. The name
   // is re-resolvable to the wrong (dead/corrupted) namesake downstream; the id is
@@ -1701,6 +1701,96 @@ async function emitSkillDismissCard(agentId, dismissed, reason) {
 // an empty array clears it — so agents never clobber each other. The broadcast
 // carries the flattened set across all agents.
 const _suggestions = new Map() // agentId → Suggestion[]
+const _items = new Map() // humanId → Item[]
+
+function defaultPresentForKind(kind) {
+  if (kind === 'bounce' || kind === 'mic-death') return { chat: true, hud: true }
+  if (kind === 'modal' || kind === 'suggest' || kind === 'task') return { chat: true, list: true }
+  return { chat: true }
+}
+
+function normalizeItem(raw = {}, fallback = {}) {
+  const kind = String(raw.kind || fallback.kind || 'info')
+  const present = { ...defaultPresentForKind(kind), ...(fallback.present || {}), ...(raw.present || {}), chat: true }
+  return {
+    id: String(raw.id || fallback.id || `${kind}:${Date.now()}`),
+    kind,
+    from: raw.from || fallback.from || undefined,
+    title: String(raw.title || raw.label || fallback.title || ''),
+    body: raw.body != null ? String(raw.body) : (raw.text != null ? String(raw.text) : fallback.body),
+    actions: Array.isArray(raw.actions) ? raw.actions : (Array.isArray(fallback.actions) ? fallback.actions : []),
+    payload: raw.payload ?? fallback.payload,
+    present,
+    dropTarget: raw.dropTarget || fallback.dropTarget,
+    ttl: Number.isFinite(raw.ttl) ? raw.ttl : fallback.ttl,
+    priority: raw.priority || fallback.priority || 'normal',
+    ts: Number.isFinite(raw.ts) ? raw.ts : Date.now(),
+    targetId: raw.targetId || fallback.targetId,
+    label: raw.label || fallback.label,
+    text: raw.text || fallback.text,
+    command: raw.command ?? fallback.command,
+    group: raw.group || fallback.group,
+  }
+}
+
+function unexpiredItemsFor(userId) {
+  const now = Date.now()
+  const list = _items.get(userId) || []
+  const kept = list.filter(item => !item.ttl || item.ts + item.ttl > now)
+  if (kept.length !== list.length) _items.set(userId, kept)
+  return kept
+}
+
+function broadcastItems(userId) {
+  broadcastEvent('items', { userId, items: unexpiredItemsFor(userId) })
+}
+
+function raiseItem(userId, item) {
+  const target = userId || SERVER_OWNER_ID
+  const normalized = normalizeItem(item)
+  if (!normalized.title && !normalized.label) throw new Error('Item title is required')
+  const existing = unexpiredItemsFor(target)
+  const next = existing.filter(i => i.id !== normalized.id)
+  next.push(normalized)
+  next.sort((a, b) => (a.ts || 0) - (b.ts || 0))
+  _items.set(target, next)
+  broadcastItems(target)
+  return normalized
+}
+
+function dismissItem(userId, itemId) {
+  const target = userId || SERVER_OWNER_ID
+  const next = unexpiredItemsFor(target).filter(i => i.id !== itemId)
+  _items.set(target, next)
+  broadcastItems(target)
+}
+
+function suggestionToItem(agentId, s) {
+  return normalizeItem({
+    ...s,
+    id: `suggest:${agentId}:${s.group || s.id}`,
+    kind: 'suggest',
+    from: agentId,
+    targetId: s.targetId || agentId,
+    title: s.label,
+    body: s.text || '',
+    present: { chat: true, list: true },
+    actions: [{
+      label: s.label,
+      command: s.command || undefined,
+      target: s.targetId || agentId,
+    }],
+  })
+}
+
+function refreshSuggestionItems(agentId, suggestions) {
+  const userId = SERVER_OWNER_ID
+  const prefix = `suggest:${agentId}:`
+  const retained = unexpiredItemsFor(userId).filter(i => !String(i.id).startsWith(prefix))
+  for (const s of suggestions) retained.push(suggestionToItem(agentId, s))
+  _items.set(userId, retained)
+  broadcastItems(userId)
+}
 
 function flattenSuggestions() {
   const out = []
@@ -1714,12 +1804,34 @@ app.post('/api/suggestions', (req, res) => {
   if (!Array.isArray(suggestions)) return res.status(400).json({ error: 'Missing suggestions array' })
   if (suggestions.length === 0) _suggestions.delete(agentId)
   else _suggestions.set(agentId, suggestions.map(s => ({ ...s, from: agentId })))
+  refreshSuggestionItems(agentId, _suggestions.get(agentId) || [])
   broadcastEvent('suggestions', { suggestions: flattenSuggestions() })
   res.json({ ok: true })
 })
 
 app.get('/api/suggestions', (_req, res) => {
   res.json({ suggestions: flattenSuggestions() })
+})
+
+app.get('/api/items', (req, res) => {
+  const userId = req.query.userId || SERVER_OWNER_ID
+  res.json({ userId, items: unexpiredItemsFor(userId) })
+})
+
+app.post('/api/items', (req, res) => {
+  const { userId = SERVER_OWNER_ID, action = 'raise', item, id, ...rest } = req.body || {}
+  try {
+    if (action === 'dismiss') {
+      const itemId = id || item?.id
+      if (!itemId) return res.status(400).json({ error: 'Missing item id' })
+      dismissItem(userId, String(itemId))
+      return res.json({ ok: true })
+    }
+    const raised = raiseItem(userId, item || rest)
+    res.json({ ok: true, item: raised })
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
 })
 
 // ---------- Local image serving ----------

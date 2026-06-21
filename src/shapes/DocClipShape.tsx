@@ -106,7 +106,7 @@ function DocClipComponent({ shape }: { shape: any }) {
 
   const shapeUtils = useMemo(() => {
     const all = (window as any).__tldraw_shape_utils__ || []
-    const EXCLUDE = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-inbox', 'fleet-docview', 'fleet-pill', 'doc-clip'])
+    const EXCLUDE = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-inbox', 'fleet-notifications', 'fleet-docview', 'fleet-pill', 'doc-clip'])
     return all.filter((u: any) => !EXCLUDE.has(u.type))
   }, [])
 

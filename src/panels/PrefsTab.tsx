@@ -65,6 +65,7 @@ type PrefsSectionId =
   | 'layout'
   | 'folding'
   | 'sources'
+  | 'provenance'
   | 'notes'
   | 'voice-backend'
   | 'voice-commands'
@@ -140,6 +141,7 @@ function readAll() {
     foldMd: getPref('fold-md-lines'),
     foldDiff: getPref('fold-diff-lines'),
     hlZone: getPref('hl-zone-enabled'),
+    provenanceMode: getPref('provenance-display-mode'),
     dispoEnabled: getPref('disposition-bot-enabled'),
     dispoCountdown: getPref('disposition-countdown-sec'),
   }
@@ -379,6 +381,28 @@ export function PrefsTab() {
               <span>{src}</span>
             </label>
           ))}
+        </div>
+      </CollapsiblePrefsSection>
+
+      <CollapsiblePrefsSection
+        id="provenance"
+        title="Provenance display"
+        summary={prefs.provenanceMode === 'off' ? 'Off' : prefs.provenanceMode}
+        open={prefs.openSections.includes('provenance')}
+        onToggle={toggleSection}
+      >
+        <select
+          className="prefs-select"
+          value={prefs.provenanceMode}
+          onChange={e => setPref('provenance-display-mode', e.target.value)}
+        >
+          <option value="off">Off</option>
+          <option value="hover">Hover tooltip (on the ribbon)</option>
+          <option value="panel">Side panel (provenance + cascade)</option>
+          <option value="inline">Inline pinned card (click a span)</option>
+        </select>
+        <div style={{ fontSize: 10, color: '#6b7280', marginTop: 2 }}>
+          How a vetted span's provenance and its dependency cascade are shown. Switch freely to live in each.
         </div>
       </CollapsiblePrefsSection>
 

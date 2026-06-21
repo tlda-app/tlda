@@ -1,4 +1,4 @@
-// Integration test for the spawn-collision → raise + respawn-coercion behavior.
+// Integration test for the spawn-collision → synthetic activity + respawn-coercion behavior.
 // Boots the worktree server against a temp DB on a test port, attaches a MOCK
 // daemon (so no real claude is launched), registers a live agent, then drives
 // the real WS `spawn` path and asserts what reached the daemon + the store.
@@ -101,18 +101,18 @@ async function run() {
   await sleep(1200)
 
   const spawnRpcs = capturedRpcs.filter(r => r.op === 'spawn')
-  const collide = spawnRpcs.find(r => r.name === 'collidertest')
+  const collide = spawnRpcs.find(r => r.name === 'fleet:tester1')
   const fresh = spawnRpcs.find(r => r.name === 'totallynewname')
 
-  if (!collide) fail(`no spawn RPC for collidertest reached the daemon. RPCs: ${JSON.stringify(spawnRpcs)}`)
+  if (!collide) fail(`no spawn RPC for fleet:tester1 reached the daemon. RPCs: ${JSON.stringify(spawnRpcs)}`)
   if (collide.respawn !== true) fail(`collision spawn should coerce respawn=true, got ${collide.respawn}`)
-  console.log('PASS: collision spawn coerced to respawn=true')
+  console.log('PASS: collision spawn coerced to respawn=true using the resolved fleet id')
 
   if (!fresh) fail(`no spawn RPC for totallynewname reached the daemon. RPCs: ${JSON.stringify(spawnRpcs)}`)
   if (fresh.respawn === true) fail(`new-name spawn should stay fresh (respawn falsy), got ${fresh.respawn}`)
   console.log('PASS: new-name spawn stayed fresh (respawn falsy)')
 
-  // Assert the synthetic raise: a fresh 'activity' event for fleet:tester1 and
+  // Assert the synthetic activity: a fresh 'activity' event for fleet:tester1 and
   // a bumped last_active. Read it back over the events API.
   const evRes = await fetch(`${proto}://localhost:${PORT}/api/store/events?agent=fleet:tester1&limit=50`)
   const evJson = await evRes.json()
@@ -124,7 +124,13 @@ async function run() {
     return m && m.synthetic === true
   })
   if (!synthetic) fail(`no synthetic activity (raise) event for fleet:tester1. activity events: ${JSON.stringify(activity)}`)
-  console.log('PASS: synthetic raise activity event written for the existing agent')
+  console.log('PASS: synthetic activity event written for the existing agent')
+
+  const itemRes = await fetch(`${proto}://localhost:${PORT}/api/items?userId=fleet:${process.env.TLDA_USER || process.env.USER}`)
+  const itemJson = await itemRes.json()
+  const bounce = (itemJson.items || []).find(i => String(i.id || '').startsWith('spawn-bounce:'))
+  if (bounce) fail(`spawn-bounce item should be emitted by the librarian path, not notif-phase1: ${JSON.stringify(bounce)}`)
+  console.log('PASS: notif-phase1 does not emit spawn-bounce items')
 
   // Assert last_active actually advanced past registration — this is the value
   // the panel's Active sort keys on, so this is what makes the agent rise.

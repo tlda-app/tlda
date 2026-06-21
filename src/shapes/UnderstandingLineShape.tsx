@@ -7,6 +7,7 @@ import {
   useEditor,
   useValue,
 } from 'tldraw'
+import { useProvenanceMode } from '../useProvenanceMode'
 
 export type LineStatus = 'approved' | 'understood' | 'presentation' | 'uncertain' | 'rejected' | 'unchecked'
 
@@ -97,7 +98,7 @@ function StatusBadge({ status, arrow }: { status: LineStatus; arrow?: boolean })
   )
 }
 
-function formatCheckedAt(ts?: number): string | null {
+export function formatCheckedAt(ts?: number): string | null {
   if (!ts) return null
   const diff = Date.now() - ts
   const mins = Math.round(diff / 60000)
@@ -112,7 +113,8 @@ function formatCheckedAt(ts?: number): string | null {
 // what method, and why. Shown under the status badge on hover so the ribbon
 // surfaces its provenance, not just a status color. Provenance is optional —
 // renders nothing when a span carries none (e.g. a plain human highlight).
-function ProvenanceDetail({ seg }: { seg: RibbonSegment }) {
+// Exported so the panel/inline display modes reuse the same detail block.
+export function ProvenanceDetail({ seg }: { seg: RibbonSegment }) {
   const when = formatCheckedAt(seg.checkedAt)
   const rows: { label: string; value: string }[] = []
   if (seg.checkedByName) rows.push({ label: 'by', value: seg.checkedByName + (when ? ` · ${when}` : '') })
@@ -186,6 +188,7 @@ export class UnderstandingLineShapeUtil extends BaseBoxShapeUtil<any> {
 
   component(shape: any) {
     const editor = useEditor()
+    const provMode = useProvenanceMode()
     const segments: RibbonSegment[] = (() => {
       try { return JSON.parse(shape.props.segments || '[]') }
       catch { return [] }
@@ -428,8 +431,10 @@ export class UnderstandingLineShapeUtil extends BaseBoxShapeUtil<any> {
             </svg>
           )
         })()}
-        {/* Hover tooltip: status badge(s) on top, who-checked-what-why below. */}
-        {hovered && hoveredSegment && (
+        {/* Hover tooltip: status badge(s) on top, who-checked-what-why below.
+            Gated to the 'hover' display mode (the default) so the panel/inline
+            modes can take over the same provenance surface. */}
+        {provMode === 'hover' && hovered && hoveredSegment && (
           <div
             style={{
               position: 'absolute',

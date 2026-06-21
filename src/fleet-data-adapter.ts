@@ -12,6 +12,7 @@ import {
   subscribe,
   getAgents,
   getTasks,
+  getItems,
   getUnreadCountsForHuman,
   getHumanId,
   getHumanName,
@@ -34,6 +35,7 @@ import {
   removeOptimisticEvent as _removeOptimisticEvent,
   reconcileOptimistic as _reconcileOptimistic,
   fleetWS as _fleetWS,
+  dismissItem as _dismissItem,
   // @ts-ignore — vanilla JS module
 } from './fleet/fleet-data.mjs'
 import { viewFleetEvents, type FleetEvent } from './fleet/fleet-data.ts'
@@ -522,39 +524,87 @@ export function useFleetCompacting(dnfFilter?: string[][] | [string,string][][] 
   return compacting
 }
 
-// A suggestion chip any agent can push to the bottom of the chat (see the
-// server's /api/suggestions channel + the `suggest` MCP tool). `from` is the
-// posting agent; `command`, if set, is sent as a chat when the chip is clicked.
-export type Suggestion = { id: string | number, label: string, targetId?: string, from?: string, text: string, kind?: string, command?: string | null, group?: string, ts: number, msgCount?: number }
+export type PresentConfig = {
+  chat: true
+  hud?: boolean
+  list?: boolean
+}
 
-export function useSuggestions(): Suggestion[] {
-  const [pending, setPending] = useState<Suggestion[]>([])
+export type ItemAction = {
+  label: string
+  command?: string
+  target?: string
+  clientAction?: string
+}
+
+export type Item = {
+  id: string
+  kind: 'bounce' | 'modal' | 'status' | 'task' | 'suggest' | 'info' | string
+  from?: string
+  title: string
+  body?: string
+  actions?: ItemAction[]
+  payload?: any
+  present: PresentConfig
+  dropTarget?: 'doc' | 'chat' | 'any' | string
+  ttl?: number
+  priority?: 'low' | 'normal' | 'high' | string
+  ts: number
+  targetId?: string
+  label?: string
+  text?: string
+  command?: string | null
+  group?: string
+}
+
+// A suggestion chip any agent can push to the bottom of the chat. Suggestion is
+// now an additive narrowing of Item; the live /api/suggestions route remains the
+// write/clear path for replace-semantics.
+export type Suggestion = Item & { kind: 'suggest', label: string, targetId?: string, from?: string, text: string, command?: string | null, group?: string, msgCount?: number }
+
+export function useItems(role: 'hud' | 'list' | 'chat' | 'suggest' = 'chat'): Item[] {
+  const [items, setItems] = useState<Item[]>([])
 
   useEffect(() => {
     let unsub: (() => void) | null = null
     let cancelled = false
 
-    // Fetch the current set on mount. The broadcast only carries *new* posts, so
-    // without this a chip already pending when the chat loads (or after a reload)
-    // never shows until the next post. Subscribe first so a post arriving during
-    // the fetch isn't lost; the fetch result is the baseline.
-    fetch('/api/suggestions')
-      .then(r => r.json())
-      .then(j => { if (!cancelled) setPending(prev => prev.length ? prev : (j.suggestions || [])) })
-      .catch(() => {})
-
     ensureInit().then(() => {
       if (cancelled) return
-      unsub = subscribe('suggestions', null, (data: any) => {
-        setPending(data.suggestions || [])
+      setItems(getItems())
+      const humanId = getHumanId()
+      const query = humanId ? `?userId=${encodeURIComponent(humanId)}` : ''
+      fetch(`/api/items${query}`)
+        .then(r => r.json())
+        .then(j => { if (!cancelled) setItems(j.items || []) })
+        .catch(() => {})
+      unsub = subscribe('items', null, (data: any) => {
+        setItems(data.items || getItems())
       })
     })
 
     return () => { cancelled = true; unsub?.() }
   }, [])
 
-  return pending
+  return items.filter((item: Item) => {
+    if (role === 'chat') return item.present?.chat
+    if (role === 'suggest') return item.kind === 'suggest'
+    return !!item.present?.[role]
+  })
 }
+
+export function useSuggestions(): Suggestion[] {
+  return useItems('suggest').map((item: Item) => ({
+    ...item,
+    kind: 'suggest',
+    label: item.label || item.title,
+    text: item.text || item.body || '',
+    command: item.command ?? item.actions?.[0]?.command ?? null,
+    targetId: item.targetId || item.actions?.[0]?.target || item.from,
+  })) as Suggestion[]
+}
+
+export const dismissItem = _dismissItem
 
 // Taking an option (click) or dismissing (✕) resolves ONE group. Clear just that
 // group by re-posting the agent's set minus the group's options (replace-

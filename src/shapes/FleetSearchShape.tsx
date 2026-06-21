@@ -14,7 +14,7 @@ import {
   useValue,
   createShapeId,
 } from 'tldraw'
-import { createFleetShape, agentDisplayName } from './fleet-utils'
+import { beginNativeSnapDrag, createFleetShape, agentDisplayName, endNativeSnapDrag } from './fleet-utils'
 import { useState, useCallback, useRef, useMemo, useEffect, memo } from 'react'
 import { searchFleet, fetchSharedDocs, useFleetAgents, useFleetTasks } from '../fleet-data-adapter'
 import katex from 'katex'
@@ -190,8 +190,12 @@ export class FleetSearchShapeUtil extends BaseBoxShapeUtil<any> {
 
   override canEdit = () => true
   override canResize = () => true
+  override canSnap = () => true
   override canBind = () => false
   override hideRotateHandle = () => true
+  override onTranslateStart = () => beginNativeSnapDrag(this.editor)
+  override onTranslateEnd = () => endNativeSnapDrag(this.editor)
+  override onTranslateCancel = () => endNativeSnapDrag(this.editor)
 
   component(shape: any) {
     return <FleetSearchComponent shape={shape} />

@@ -45,7 +45,7 @@ import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useSuggestions, clearGroup, sendMessage, loadBefore, resolveFilter, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
 import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
-import { agentDisplayName } from './fleet-utils'
+import { agentDisplayName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
 import { ChatComposer } from './ChatComposer'
 import { AgentName, PhaseIcon } from './PhaseIcon'
 import { baseName, phaseFromName } from '../../shared/lineage-name.mjs'
@@ -1163,8 +1163,12 @@ export class FleetChatShapeUtil extends BaseBoxShapeUtil<any> {
 
   override canEdit = () => false
   override canResize = () => true
+  override canSnap = () => true
   override canBind = () => false
   override hideRotateHandle = () => true
+  override onTranslateStart = () => beginNativeSnapDrag(this.editor)
+  override onTranslateEnd = () => endNativeSnapDrag(this.editor)
+  override onTranslateCancel = () => endNativeSnapDrag(this.editor)
 
   component(shape: any) {
     return <FleetChatComponent shape={shape} />
@@ -3619,41 +3623,17 @@ function FleetChatInner({ shape }: { shape: any }) {
     const logEl = chatLogEl
     if (!logEl) return
 
-    function isLatexLabel(text: string): boolean {
-      if (/^https?:/i.test(text)) return false
-      return /^[a-z][a-z0-9]{0,9}:[a-z][a-z0-9_.-]{0,50}$/i.test(text)
-    }
-
-    function matchesUnquotePattern(text: string): boolean {
-      if (!text || text.length > 500) return false
-      if (/^https?:\/\/\S+/.test(text)) return true
-      if (/^\/\S+/.test(text)) return true
-      if (/^~\/\S+/.test(text)) return true
-      // Relative paths: no spaces, contains / or ends with a known file extension
-      if (!/\s/.test(text) && (/\//.test(text) || /\.(png|jpg|jpeg|gif|svg|pdf|tex|md|r|py|js|mjs|ts|json|csv|txt|log)$/i.test(text))) return true
-      if (isLatexLabel(text)) return true
-      return false
-    }
-
-    function isFilePath(text: string): boolean {
-      return text.startsWith('/') || text.startsWith('~/') || (!/\s/.test(text) && (/\//.test(text) || /\.(png|jpg|jpeg|gif|svg|pdf|tex|md|r|py|js|mjs|ts|json|csv|txt|log)$/i.test(text)))
-    }
-
-    function applyTierLabel(codeEl: HTMLElement, text: string) {
-      const html = linkifyLabelRefs(text, labelRegionsRef.current)
-      const wrapper = document.createElement('span')
-      wrapper.innerHTML = html
-      codeEl.replaceWith(...Array.from(wrapper.childNodes))
-    }
-
-    function applyTier1(codeEl: HTMLElement, text: string) {
-      const rendered = renderMarkdownUtil(esc(text))
-      const wrapper = document.createElement('span')
-      wrapper.innerHTML = rendered
-      codeEl.replaceWith(...Array.from(wrapper.childNodes))
-    }
-
-    async function applyTier2(codeEl: HTMLElement, text: string, eventId: string, agentId: string) {
+    // Unquote = amend the message by removing the backticks around the clicked
+    // span, then re-render the WHOLE message as if it had never been quoted —
+    // including file attachments. ONE behavior for ANY quoted block (path, label,
+    // prose, code): the full interior is sent through the amend/upload path
+    // (/api/unquote-file → daemon rechat → processMessageText), which resolves and
+    // uploads any file paths inside it. The server patches the stored event and
+    // broadcasts event-update, which re-renders the entire message in place — that
+    // broadcast is the authoritative whole-message re-render. The local span-swap
+    // below is just immediate feedback (and the terminal state when the message
+    // isn't persisted server-side, so no broadcast comes back).
+    async function unquoteSpan(codeEl: HTMLElement, text: string, eventId: string, agentId: string) {
       const spinner = document.createElement('span')
       spinner.textContent = '⏳'
       spinner.style.opacity = '0.6'
@@ -3663,7 +3643,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         const resp = await fetch('/api/unquote-file', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ eventId: parseInt(eventId, 10), path: text, agentId }),
+          body: JSON.stringify({ eventId: parseInt(eventId, 10), quoted: text, agentId }),
         })
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
         const { resolvedMessage, inlineAttachments } = await resp.json()
@@ -3672,11 +3652,11 @@ function FleetChatInner({ shape }: { shape: any }) {
         wrapper.innerHTML = rendered
         spinner.replaceWith(...Array.from(wrapper.childNodes))
       } catch {
-        const fallback = document.createElement('span')
-        fallback.textContent = text
-        fallback.title = 'Unquote failed — file not found or daemon unreachable'
-        fallback.style.opacity = '0.5'
-        spinner.replaceWith(fallback)
+        // No daemon / unpersisted message: still drop the quote locally by
+        // re-rendering the interior as markdown (no upload possible offline).
+        const wrapper = document.createElement('span')
+        wrapper.innerHTML = renderMarkdownUtil(esc(text))
+        spinner.replaceWith(...Array.from(wrapper.childNodes))
       }
     }
 
@@ -3700,7 +3680,8 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (!chatLine) { clearPending(); return }
 
       const text = codeEl.textContent || ''
-      if (!matchesUnquotePattern(text)) { clearPending(); return }
+      // Any non-empty quoted block is unquotable (Skip: "any quoted block at all").
+      if (!text || text.length > 2000) { clearPending(); return }
 
       const now = Date.now()
       if (lastClickEl === codeEl && now - lastClickTime < 1000) {
@@ -3708,15 +3689,9 @@ function FleetChatInner({ shape }: { shape: any }) {
         clearPending()
         e.preventDefault()
         e.stopPropagation()
-        if (isLatexLabel(text)) {
-          applyTierLabel(codeEl, text)
-        } else if (isFilePath(text)) {
-          const eventId = chatLine.dataset.msgId || ''
-          const agentId = chatLine.dataset.msgFrom || ''
-          applyTier2(codeEl, text, eventId, agentId)
-        } else {
-          applyTier1(codeEl, text)
-        }
+        const eventId = chatLine.dataset.msgId || ''
+        const agentId = chatLine.dataset.msgFrom || ''
+        unquoteSpan(codeEl, text, eventId, agentId)
       } else {
         clearPending()
         lastClickEl = codeEl
