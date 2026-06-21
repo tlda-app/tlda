@@ -210,22 +210,6 @@ function isPhoneFleetLayout(editor: Editor): boolean {
   return Math.abs(stackedHeight - chatH) <= 2 && Math.abs((chat.x || 0) - chatX) <= 2
 }
 
-function getWmHudViewportZoom(bounds: ClipBounds): number {
-  const availableW = Math.max(1, window.innerWidth - 40)
-  const availableH = Math.max(1, window.innerHeight - 100)
-  const fit = Math.min(availableW / Math.max(bounds.w, 1), availableH / Math.max(bounds.h, 1), 1)
-  return Math.max(0.25, fit)
-}
-
-function projectFleetBounds(bounds: ClipBounds, cameraX: number, cameraY: number, zoom: number) {
-  return {
-    top: (bounds.y + cameraY) * zoom,
-    bottom: (bounds.y + cameraY + bounds.h) * zoom,
-    left: (bounds.x + cameraX) * zoom,
-    right: (bounds.x + cameraX + bounds.w) * zoom,
-  }
-}
-
 function getFleetHudDiagnostic(editor: Editor) {
   const humanId = getHumanId()
   const deviceId = getDeviceId()
@@ -476,14 +460,6 @@ export function FleetHUD({
 
   const recenterHudForBounds = useCallback((bounds: ClipBounds | null): boolean => {
     if (!bounds || !docShapesReady) return false
-    const wmZoom = useWmHudViewport ? getWmHudViewportZoom(bounds) : 1
-    if (useWmHudViewport && wmZoom < 1) {
-      panOffsetRef.current = LEFT_PAD / wmZoom - bounds.x
-      cameraYRef.current = TOP_PAD / wmZoom - bounds.y
-      userPannedRef.current = false
-      setCameraTick(t => t + 1)
-      return true
-    }
     const docShapes = mainEditor.getCurrentPageShapes().filter(s =>
       (s.type as string) === 'html-page' || (s.type as string) === 'svg-page')
     if (docShapes.length === 0) return false
@@ -505,7 +481,7 @@ export function FleetHUD({
     userPannedRef.current = false
     setCameraTick(t => t + 1)
     return true
-  }, [docShapesReady, mainEditor, useWmHudViewport])
+  }, [docShapesReady, mainEditor])
 
   // Reactively update fleet bounds when shapes change.
   //
@@ -661,14 +637,14 @@ export function FleetHUD({
       latestBounds.w !== fleetBounds.w ||
       latestBounds.h !== fleetBounds.h
     if (hasFreshBounds) setFleetBounds(latestBounds)
-    const wmZoom = useWmHudViewport ? getWmHudViewportZoom(latestBounds) : 1
-    const projected = projectFleetBounds(latestBounds, panOffsetRef.current, cameraYRef.current, wmZoom)
-    const verticallyVisible = projected.bottom > 0 && projected.top < window.innerHeight
+    const projectedTop = latestBounds.y + cameraYRef.current
+    const projectedBottom = projectedTop + latestBounds.h
+    const verticallyVisible = projectedBottom > 0 && projectedTop < window.innerHeight
     if (verticallyVisible) return
     if (userPannedRef.current) return
     ignoreSavedAnchorRef.current = true
     recenterHudForBounds(latestBounds)
-  }, [expanded, fleetBounds?.x, fleetBounds?.y, fleetBounds?.w, fleetBounds?.h, docShapesReady, mainEditor, readMaintainedFleetBounds, recenterHudForBounds, useWmHudViewport])
+  }, [expanded, fleetBounds?.x, fleetBounds?.y, fleetBounds?.w, fleetBounds?.h, docShapesReady, mainEditor, readMaintainedFleetBounds, recenterHudForBounds])
 
   // Touch fleet shapes to invalidate getShapeVisibility cache — only when
   // expanded state actually changes, not on every fleetBounds update.
@@ -1047,21 +1023,15 @@ export function FleetHUD({
   }
 
   const activeFleetBounds = readMaintainedFleetBounds() || fleetBounds
-  const overlayZoom = useWmHudViewport ? getWmHudViewportZoom(activeFleetBounds) : 1
 
-  // Fleet shapes usually render at z=1 (fixed size). In the WM viewport path,
-  // smaller screens zoom the whole fleet layout down so the user sees the
-  // complete panel set instead of only the left/top slice.
+  // Fleet shapes rendered at z=1 (fixed size). X position computed dynamically
+  // from document's screen position each render. Y frozen on first expand.
   void cameraTick
 
   // Camera offsets: computed once on first expand from the document's
   // current screen position, then frozen. X tracks pan only (no zoom).
   // Y is fixed after initial layout.
   if (panOffsetRef.current === null) {
-    if (useWmHudViewport && overlayZoom < 1) {
-      panOffsetRef.current = LEFT_PAD / overlayZoom - activeFleetBounds.x
-      cameraYRef.current = TOP_PAD / overlayZoom - activeFleetBounds.y
-    } else {
     // Position the overlay so the page-space placement set by createFleetLayout
     // shows through 1:1. The whole layout (margins, widths, gaps) lives in those
     // page coords; the HUD offset is purely "where the document's left edge sits
@@ -1089,7 +1059,6 @@ export function FleetHUD({
     const off = layoutOffset(getHumanId(), getDeviceId())
     panOffsetRef.current = docLeftScreen - minPageX - off.dx
     cameraYRef.current = TOP_PAD - activeFleetBounds.y
-    }
     // This is a *derived default*, not a user-chosen position. Do NOT persist it:
     // a saved anchor may simply be unsynced (large multi-machine rooms deliver it
     // in a later chunk), and saving the default here would overwrite the real
@@ -1099,16 +1068,13 @@ export function FleetHUD({
   }
 
   if (panOffsetRef.current !== null && cameraYRef.current !== null) {
-    const projected = projectFleetBounds(activeFleetBounds, panOffsetRef.current, cameraYRef.current, overlayZoom)
-    const verticallyVisible = projected.bottom > 0 && projected.top < window.innerHeight
-    const horizontallyVisible = projected.right > 0 && projected.left < window.innerWidth
+    const projectedTop = activeFleetBounds.y + cameraYRef.current
+    const projectedBottom = projectedTop + activeFleetBounds.h
+    const projectedLeft = activeFleetBounds.x + panOffsetRef.current
+    const projectedRight = projectedLeft + activeFleetBounds.w
+    const verticallyVisible = projectedBottom > 0 && projectedTop < window.innerHeight
+    const horizontallyVisible = projectedRight > 0 && projectedLeft < window.innerWidth
     if (!userPannedRef.current && (!verticallyVisible || !horizontallyVisible)) {
-      if (useWmHudViewport && overlayZoom < 1) {
-        panOffsetRef.current = LEFT_PAD / overlayZoom - activeFleetBounds.x
-        cameraYRef.current = TOP_PAD / overlayZoom - activeFleetBounds.y
-        ignoreSavedAnchorRef.current = true
-        userPannedRef.current = false
-      } else {
       const docShapes = mainEditor.getCurrentPageShapes().filter(s =>
         (s.type as string) === 'html-page' || (s.type as string) === 'svg-page')
       let minPageX = Infinity
@@ -1129,14 +1095,12 @@ export function FleetHUD({
         ignoreSavedAnchorRef.current = true
         userPannedRef.current = false
       }
-      }
     }
   }
 
   const overlayLayer = createFleetHudOverlayLayer({
     panOffset: panOffsetRef.current!,
     cameraY: cameraYRef.current!,
-    zoom: overlayZoom,
     layout: { axis: 'vertical', spacing: 0 },
   })
   const overlayCam = overlayLayer.camera
