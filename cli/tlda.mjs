@@ -25,7 +25,7 @@ import { randomBytes } from 'crypto'
 import { collectSourceFiles, collectSourceHashes, collectSpecificFiles } from './lib/source-files.mjs'
 import {
   loadConfig, saveConfig, getServerUrl, getFleetServerUrl, getRwToken, DEFAULT_PORT,
-  CONFIG_DIR, CONFIG_FILE, hasTls, TLS_CA_PATH, getManagedBots,
+  CONFIG_DIR, CONFIG_FILE, hasTls, TLS_CA_PATH,
 } from '../shared/config.mjs'
 import { tldaFetch } from '../shared/http-client.mjs'
 import { DEV_COMMANDS } from './lib/dev-commands.mjs'
@@ -632,10 +632,6 @@ const _cliWorktreeMatch = _cliDir.match(/^(.+?)\/\.claude\/worktrees\//)
 const FLEET_DAEMON_SCRIPT = _cliWorktreeMatch
   ? join(_cliWorktreeMatch[1], 'bin', 'fleet-daemon.mjs')
   : join(_cliDir, '..', 'bin', 'fleet-daemon.mjs')
-const _cliRepoRoot = _cliWorktreeMatch ? _cliWorktreeMatch[1] : join(_cliDir, '..')
-function resolveBotScript(script) {
-  return script.startsWith('/') ? script : join(_cliRepoRoot, script)
-}
 
 function lastDaemonConnectedTarget() {
   try {
@@ -679,40 +675,6 @@ async function ensureFleetDaemonRunning() {
     console.log(green('Fleet daemon started') + dim(` (pid ${pid})`))
   } else {
     console.log(dim('Fleet daemon failed to start — see ' + FLEET_DAEMON_LOGFILE))
-  }
-}
-
-// Start each configured bot (the shipped example is Todd). Mirrors the server's
-// managed-bot supervisor; the server keeps them alive thereafter. The supervisor
-// owns the pidfile/log location and passes them to the bot via env.
-async function ensureManagedBotsRunning() {
-  const { spawn: cpSpawn } = await import('child_process')
-  const { openSync: fsOpenSync } = await import('fs')
-  for (const spec of getManagedBots()) {
-    if (!spec?.name || !spec.script) continue
-    const pidFile = join(homedir(), '.config', 'tlda', `${spec.name}.pid`)
-    const logFile = join(homedir(), '.config', 'tlda', `${spec.name}.log`)
-    const scriptPath = resolveBotScript(spec.script)
-    if (existsSync(pidFile)) {
-      const pid = parseInt(readFileSync(pidFile, 'utf8').trim(), 10)
-      try { process.kill(pid, 0); continue } catch {} // stale pid → fall through
-    }
-    if (!existsSync(scriptPath)) continue // not installed; silently skip
-    if (!existsSync(dirname(logFile))) mkdirSync(dirname(logFile), { recursive: true })
-    const logFd = fsOpenSync(logFile, 'a')
-    const child = cpSpawn(process.execPath, [scriptPath], {
-      detached: true,
-      stdio: ['ignore', logFd, logFd],
-      env: { ...process.env, ...(spec.env || {}), TLDA_BOT_NAME: spec.name, TLDA_BOT_PIDFILE: pidFile },
-    })
-    child.unref()
-    await new Promise(r => setTimeout(r, 800))
-    if (existsSync(pidFile)) {
-      const pid = readFileSync(pidFile, 'utf8').trim()
-      console.log(green(`${spec.name} started`) + dim(` (pid ${pid})`))
-    } else {
-      console.log(dim(`${spec.name} failed to start — see ` + logFile))
-    }
   }
 }
 
@@ -2575,9 +2537,8 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
           console.log(green(`Server running at ${getServer()}`) + dim(` (pid ${data.pid})`))
           console.log(dim(`  Log: ${LOGFILE}`))
           if (hasLaunchd) console.log(dim('  Managed by launchd (auto-restarts)'))
-          // Also ensure the fleet daemon and configured bots are up.
+          // Also ensure the fleet daemon is up; the daemon owns configured bots.
           await ensureFleetDaemonRunning()
-          await ensureManagedBotsRunning()
           return
         }
       } catch {}
@@ -2594,7 +2555,6 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
       console.log(dim(`  Log: ${LOGFILE}`))
       if (hasLaunchd) console.log(dim('  Managed by launchd (auto-restarts)'))
       await ensureFleetDaemonRunning()
-      await ensureManagedBotsRunning()
       return
     }
     console.error(red('Server failed to start within 30s'))

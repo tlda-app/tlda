@@ -132,11 +132,12 @@ export function getReadToken(config = null) {
 }
 
 /**
- * Background bots the server keeps alive — a configurable list of managed
+ * Background bots the daemon keeps alive — a configurable list of managed
  * processes. Each is just a script that talks to the fleet API; tlda doesn't
- * special-case any of them. Each entry: { name, script } where `script` is
- * absolute or repo-relative (the supervisor resolves it). config.bots overrides;
- * the default is the shipped example bot, Todd. Write your own by adding an entry.
+ * special-case any of them. Each entry: { name, script, machine_id? } where
+ * `script` is absolute or repo-relative and `machine_id` optionally pins the
+ * bot to one daemon machine. config.bots overrides; the default is the shipped
+ * example bot, Todd. Write your own by adding an entry.
  */
 export function getManagedBots(config = null) {
   const cfg = config ?? loadConfig()

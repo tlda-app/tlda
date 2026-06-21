@@ -65,7 +65,7 @@ import { scanMarkdownDeps } from '../shared/markdown-deps.mjs'
 import {
   loadConfig as _loadSharedConfig, saveConfig as _saveSharedConfig,
   getServerUrl, getFleetServerUrl, getRwToken, DEFAULT_PORT, hasTls,
-  CONFIG_DIR as _SHARED_CONFIG_DIR,
+  CONFIG_DIR as _SHARED_CONFIG_DIR, getManagedBots,
 } from '../shared/config.mjs'
 const execFileP = promisify(execFile)
 
@@ -73,6 +73,7 @@ const VERSION = '0.1.1'
 import { createLogger } from '../shared/logger.mjs'
 import { resolveDaemonIsolation } from '../shared/daemon-identity.mjs'
 import { makeActivityThrottle } from './lib/activity-throttle.mjs'
+import { createManagedBotSupervisor } from './lib/managed-bots.mjs'
 import { maybeKickGoose, resolveGooseStatus } from './lib/goose-kick.mjs'
 import {
   classifyPane, decideThinkingEdge, shouldDisarm,
@@ -118,6 +119,14 @@ function loadSourceBindings() {
 const LOG_FILE = path.join(CONFIG_DIR, 'fleet-daemon.log')
 const DEAD_LETTER_FILE = path.join(CONFIG_DIR, 'daemon-dead-letters.jsonl')
 const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects')
+
+function resolveBotScript(script) {
+  if (script.startsWith('/')) return script
+  const d = path.dirname(fileURLToPath(import.meta.url))
+  const m = d.match(/^(.+?)\/\.claude\/worktrees\//)
+  const root = m ? m[1] : path.join(d, '..')
+  return path.join(root, script)
+}
 
 // ---------- config / machine identity ----------
 
@@ -3891,5 +3900,12 @@ log.info(`  machine_id  = ${MACHINE_ID}`)
 log.info(`  boot_id     = ${BOOT_ID}`)
 log.info(`  user        = ${USER}@${HOSTNAME}`)
 startHeartbeat()
+createManagedBotSupervisor({
+  bots: getManagedBots(config),
+  machineId: MACHINE_ID,
+  resolveScript: resolveBotScript,
+  configDir: CONFIG_DIR,
+  log,
+}).start()
 startReapers()
 connect()
