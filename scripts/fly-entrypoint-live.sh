@@ -112,6 +112,10 @@ else
 fi
 
 cd /app/server
+# --import tsx lets the server import TypeScript library modules directly (no build
+# artifact) — the algo-refactor splits server logic into .ts modules. tsx loads
+# plain .mjs unchanged, so this is a no-op until .ts modules land. tsx is a runtime
+# dependency (server/package.json) so `npm install --production` puts it in the image.
 # --i-am-tlda-cli authorizes launching the server directly (the guard otherwise
 # refuses and tells you to use `tlda server start`). This is how the CLI launches it.
-exec node unified-server.mjs --i-am-tlda-cli
+exec node --import tsx unified-server.mjs --i-am-tlda-cli
