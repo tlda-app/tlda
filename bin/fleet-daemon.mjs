@@ -2556,8 +2556,16 @@ function armAgent(agentId) {
 }
 function armBySession(tmux_session) {
   if (!tmux_session) return
-  const a = agents.find(x => x.tmux_session === tmux_session)
-  if (a) armAgent(a.id)
+  for (const a of agents) {
+    if (a.tmux_session !== tmux_session) continue
+    // A session-targeted RPC can correspond to more than one registry row
+    // (stale rows, handoff windows, duplicate registrations). Arming only the
+    // first row makes correctness depend on registry order, so arm every active
+    // non-human row attached to this session. The scan loop is still bounded to
+    // active rows and will disarm stale rows quickly if they cannot produce pane
+    // truth.
+    if (!a.dead && !a.human && !a.hibernating) armAgent(a.id)
+  }
 }
 // Disarm an agent, emitting a clean idle edge first if it was mid-turn. The daemon
 // OWNS the transition, so a thinking agent that vanishes (dead/hibernating) or is
