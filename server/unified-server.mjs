@@ -41,6 +41,7 @@ const { homedir, hostname } = os
 import { spawn as cpSpawn } from 'child_process'
 import { lookup as mimeLookup } from 'mime-types'
 import { DEFAULT_PORT, hasTls, getManagedBots, loadConfig, resolveConfig } from '../shared/config.mjs'
+import { normalizeUsageStatus } from '../shared/usage-status.mjs'
 import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
 import { labelsForAgent, parseFilter, evalExpr, evalExprDirectional } from '../shared/fleet-labels.mjs'
 import { phaseFromName, baseName, PHASES } from '../shared/lineage-name.mjs'
@@ -628,6 +629,38 @@ function touchActivity(agentId) {
   _lastActivityAt.set(agentId, Date.now())
 }
 
+// ---- Turn-end synthetic event ----
+// An agent's "turn" ends when it transitions thinking → idle. The transient
+// `agent-thinking` indicator is fire-and-forget (a disconnected subscriber
+// misses the edge), so we ALSO persist a synthetic `turn_ended` row in the
+// events DB. Because every share() is auto-broadcast as a fleet-event (see the
+// fleetStore.onEvent wiring below), bots can SUBSCRIBE to turn boundaries live
+// AND catch up after a disconnect by polling /api/store/events?type=turn_ended.
+// This is the signal the disposition self-check bot (bin/disposition-bot.mjs)
+// rides on. The true→false edge is deduped upstream by _thinkingState, so this
+// fires exactly once per turn.
+function emitTurnEnded(agentId, startedAtMs) {
+  if (!fleetStore || !agentId) return
+  // Only real agents have turns — skip humans/bots (Skip, todd, tlda, …).
+  const a = fleetStore.getAgent?.(agentId)
+  if (a?.human) return
+  const endedAt = new Date()
+  const durationMs = startedAtMs ? (endedAt.getTime() - startedAtMs) : null
+  Promise.resolve(fleetStore.share({
+    type: 'turn_ended',
+    from: agentId,
+    agentId,
+    text: null,
+    metadata: {
+      kind: 'turn-end',
+      startedAt: startedAtMs ? new Date(startedAtMs).toISOString() : null,
+      endedAt: endedAt.toISOString(),
+      durationMs,
+    },
+    unread: false,
+  })).catch(e => console.error('[turn_ended] emit failed:', e.message))
+}
+
 function getWouldHibernate() {
   const now = Date.now()
   const result = {}
@@ -759,23 +792,10 @@ async function resolveSpawnTarget(name, respawn) {
       type: 'activity', from: existing.id, to: existing.id,
       text: 'spawn', metadata: { tool: 'spawn', synthetic: true }, unread: false,
     })
-    raiseItem(SERVER_OWNER_ID, {
-      id: `spawn-bounce:${existing.id}`,
-      kind: 'bounce',
-      from: existing.id,
-      title: `${existing.friendly_name || name} is already live`,
-      body: 'Spawn request matched an existing live agent. Choose whether to pick another name or wake that session.',
-      actions: [
-        { label: 'pick-another', command: `/spawn fresh name=${existing.friendly_name || name}-2`, target: SERVER_OWNER_ID, clientAction: 'pick-another' },
-        { label: 'respawn', command: `/spawn agent=${existing.id}`, target: SERVER_OWNER_ID, clientAction: 'respawn' },
-      ],
-      present: { chat: true, hud: true },
-      priority: 'high',
-    })
     fleetStore._bustAgentsCache?.()
     broadcastState()
   } catch (e) {
-    console.error(`[spawn] raise failed for ${existing.id}: ${e.message}`)
+    console.error(`[spawn] synthetic activity failed for ${existing.id}: ${e.message}`)
   }
   // Carry the resolved fleet-id, NOT the friendly name, into the wake. The name
   // is re-resolvable to the wrong (dead/corrupted) namesake downstream; the id is
@@ -1303,6 +1323,17 @@ app.post('/api/log', (req, res) => {
 
 app.get('/api/reaper/status', requireRead, (req, res) => {
   res.json(_lastReaperStatus || { error: 'no data yet' })
+})
+
+// Sanitized provider/account usage status for the usage-meter shape. Same data
+// as the `usage_status` MCP tool — manual/static config only, no scraping, no
+// tokens. The shape polls this; missing config returns an empty accounts list.
+app.get('/api/usage-status', requireRead, (req, res) => {
+  try {
+    res.json(normalizeUsageStatus(loadConfig()))
+  } catch (e) {
+    res.status(500).json({ error: `usage-status failed: ${e.message}` })
+  }
 })
 
 app.post('/api/reaper/kill', requireRead, async (req, res) => {
@@ -2999,8 +3030,15 @@ async function handleFleetWsMessage(ws, msg) {
       if (machineIds.length === 0) continue
       const machineId = agent.machine_id || machineIds[0]
       try {
+        // An RPC failure here is UNCERTAINTY, not confirmed death. Defaulting to
+        // alive:false meant a transient check-alive error respawned a live agent
+        // (register + "continue from where you left off"). A respawn needs the
+        // daemon anyway, so if we can't reach it the respawn would fail too —
+        // assume alive and skip it; a genuinely-needed wake self-corrects on the
+        // next message once the daemon answers. Only a daemon-CONFIRMED alive:false
+        // triggers a respawn now.
         const { alive } = await sendRpc(machineId, 'check-alive', { tmux_session: agent.tmux_session })
-          .catch(() => ({ alive: false }))
+          .catch(() => ({ alive: true }))
         if (alive) {
           if (nudgeText && agent.tmux_session && terminalNudgeKind(agent)) {
             await sendRpc(machineId, 'send-text', {
@@ -3473,7 +3511,11 @@ async function handleFleetWsMessage(ws, msg) {
       _thinkingState.set(msg.agentId, Date.now())
       touchActivity(msg.agentId)
     } else {
+      // thinking → idle edge is a turn end. _thinkingState holds the start ts
+      // and dedupes: only the first false after a true reaches emitTurnEnded.
+      const startedAt = _thinkingState.get(msg.agentId)
       _thinkingState.delete(msg.agentId)
+      if (startedAt !== undefined) emitTurnEnded(msg.agentId, startedAt)
     }
     broadcastEvent('agent-thinking', { agent: msg.agentId, thinking: !!msg.thinking })
     reply({ ok: true })
@@ -4189,11 +4231,21 @@ function checkQualifications(agentId, tool, arg, input) {
 
   const matchingRules = []
 
-  if ((tool === 'Read' || tool === 'Skill') && input) {
-    if (tool === 'Read') {
+  // A "file read" is the native Read tool OR the tlda MCP `read_file` tool. The
+  // latter is the only file-read path sandboxed goose/codex agents have, so it's
+  // how they read a skill's SKILL.md now that the bespoke skill() tool is gone.
+  // Normalize the tool name to its base so every form is recognized: Read,
+  // read_file, mcp__tlda__read_file, tlda/read_file.
+  const toolBase = String(tool || '').replace(/^mcp__/, '').replace(/__/g, '/').split('/').pop()
+  const isFileRead = tool === 'Read' || toolBase === 'read_file'
+  if ((isFileRead || tool === 'Skill') && input) {
+    if (isFileRead) {
       const fp = input.file_path || input.path || arg || ''
       if (fp) {
         qualTrackRead(agentId, fp)
+        // A read whose path is …/skills/<name>/SKILL.md credits skill:<name> —
+        // this is what lets native (Claude/codex) and MCP-read_file (goose)
+        // reads register with the education gate in place of skill().
         const skillMatch = fp.match(/[/\\]skills[/\\]([^/\\]+)[/\\]SKILL\.md$/)
         if (skillMatch) qualTrackRead(agentId, 'skill:' + skillMatch[1])
       }
@@ -4892,7 +4944,10 @@ async function handleDaemonWsMessage(ws, msg) {
         _thinkingState.set(msg.agentId, Date.now())
         touchActivity(msg.agentId)
       } else {
+        // thinking → idle edge = turn end (see emitTurnEnded; deduped by _thinkingState).
+        const startedAt = _thinkingState.get(msg.agentId)
         _thinkingState.delete(msg.agentId)
+        if (startedAt !== undefined) emitTurnEnded(msg.agentId, startedAt)
       }
       broadcastEvent('agent-thinking', { agent: msg.agentId, thinking: !!msg.thinking })
     }

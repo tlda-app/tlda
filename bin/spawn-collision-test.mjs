@@ -1,4 +1,4 @@
-// Integration test for the spawn-collision → raise + respawn-coercion behavior.
+// Integration test for the spawn-collision → synthetic activity + respawn-coercion behavior.
 // Boots the worktree server against a temp DB on a test port, attaches a MOCK
 // daemon (so no real claude is launched), registers a live agent, then drives
 // the real WS `spawn` path and asserts what reached the daemon + the store.
@@ -112,7 +112,7 @@ async function run() {
   if (fresh.respawn === true) fail(`new-name spawn should stay fresh (respawn falsy), got ${fresh.respawn}`)
   console.log('PASS: new-name spawn stayed fresh (respawn falsy)')
 
-  // Assert the synthetic raise: a fresh 'activity' event for fleet:tester1 and
+  // Assert the synthetic activity: a fresh 'activity' event for fleet:tester1 and
   // a bumped last_active. Read it back over the events API.
   const evRes = await fetch(`${proto}://localhost:${PORT}/api/store/events?agent=fleet:tester1&limit=50`)
   const evJson = await evRes.json()
@@ -124,16 +124,13 @@ async function run() {
     return m && m.synthetic === true
   })
   if (!synthetic) fail(`no synthetic activity (raise) event for fleet:tester1. activity events: ${JSON.stringify(activity)}`)
-  console.log('PASS: synthetic raise activity event written for the existing agent')
+  console.log('PASS: synthetic activity event written for the existing agent')
 
   const itemRes = await fetch(`${proto}://localhost:${PORT}/api/items?userId=fleet:${process.env.TLDA_USER || process.env.USER}`)
   const itemJson = await itemRes.json()
-  const bounce = (itemJson.items || []).find(i => i.id === 'spawn-bounce:fleet:tester1')
-  if (!bounce) fail(`no spawn-bounce item raised. Items: ${JSON.stringify(itemJson.items || [])}`)
-  if (!bounce.present?.hud) fail(`spawn-bounce item is not a HUD item: ${JSON.stringify(bounce)}`)
-  const actionLabels = (bounce.actions || []).map(a => a.label).sort()
-  if (actionLabels.join(',') !== 'pick-another,respawn') fail(`spawn-bounce actions wrong: ${JSON.stringify(bounce.actions)}`)
-  console.log('PASS: spawn-bounce item raised with pick-another/respawn HUD actions')
+  const bounce = (itemJson.items || []).find(i => String(i.id || '').startsWith('spawn-bounce:'))
+  if (bounce) fail(`spawn-bounce item should be emitted by the librarian path, not notif-phase1: ${JSON.stringify(bounce)}`)
+  console.log('PASS: notif-phase1 does not emit spawn-bounce items')
 
   // Assert last_active actually advanced past registration — this is the value
   // the panel's Active sort keys on, so this is what makes the agent rise.

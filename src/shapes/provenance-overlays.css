@@ -1,0 +1,124 @@
+.provenance-panel,
+.provenance-inline-card {
+  color: rgba(20, 24, 31, 0.92);
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(90, 96, 110, 0.22);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+  font-family: var(--tl-font-ui);
+  font-size: 11px;
+  line-height: 1.25;
+  opacity: 0.1;
+  transition: opacity 0.3s ease;
+}
+
+.provenance-panel:hover,
+.provenance-inline-card:hover {
+  opacity: 0.6;
+}
+
+.tl-theme__dark .provenance-panel,
+.tl-theme__dark .provenance-inline-card {
+  color: rgba(255, 255, 255, 0.9);
+  background: rgba(24, 24, 27, 0.94);
+  border-color: rgba(255, 255, 255, 0.14);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+}
+
+.provenance-panel {
+  border-radius: 6px;
+  padding: 9px;
+}
+
+.provenance-inline-card {
+  border-radius: 4px;
+  padding: 7px;
+}
+
+.provenance-card-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 6px;
+  min-width: 0;
+}
+
+.provenance-card-lines,
+.provenance-card-stale,
+.provenance-muted,
+.provenance-cascade-title {
+  color: rgba(75, 85, 99, 0.78);
+}
+
+.tl-theme__dark .provenance-card-lines,
+.tl-theme__dark .provenance-card-stale,
+.tl-theme__dark .provenance-muted,
+.tl-theme__dark .provenance-cascade-title {
+  color: rgba(255, 255, 255, 0.56);
+}
+
+.provenance-card-lines {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provenance-card-stale {
+  margin-left: auto;
+  font-size: 10px;
+}
+
+.provenance-muted {
+  font-size: 10px;
+  line-height: 14px;
+}
+
+.provenance-cascade {
+  margin-top: 8px;
+  padding-top: 7px;
+  border-top: 1px solid rgba(90, 96, 110, 0.18);
+}
+
+.tl-theme__dark .provenance-cascade {
+  border-top-color: rgba(255, 255, 255, 0.12);
+}
+
+.provenance-cascade-title {
+  font-size: 10px;
+  font-weight: 600;
+  margin-bottom: 5px;
+  text-transform: uppercase;
+}
+
+.provenance-close {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 14px;
+  margin-left: auto;
+  opacity: 0.58;
+  padding: 0 2px;
+}
+
+.provenance-close:hover {
+  opacity: 0.9;
+}
+
+.provenance-panel .cascade-graph-node-approve,
+.provenance-inline-card .cascade-graph-node-approve {
+  display: none !important;
+}
+
+.provenance-status-badge {
+  border-radius: 3px;
+  color: #fff;
+  display: inline-flex;
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 14px;
+  padding: 1px 5px;
+  white-space: nowrap;
+}

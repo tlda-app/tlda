@@ -130,29 +130,6 @@ export function renderAgentPill(agentId, opts = {}) {
   return `<span class="agent-pill ${cls}" data-agent-id="${esc(agentId)}" data-agent-label="${esc(name)}"${dead ? ' data-dead="1"' : ''}>${esc(name)}${respawnHtml}</span>`
 }
 
-// --- Agent/label matching ---
-export function agentMatchesDnf(dnf, agent) {
-  if (!dnf || dnf.length === 0) return true
-  const labels = [...(agent.labels || [])]
-  if (agent.status === 'awake') labels.push('awake')
-  else if (agent.status === 'hibernating') labels.push('hibernating')
-  if (agent.friendly_name) labels.push(agent.friendly_name)
-  if (agent.id) labels.push(agent.id)
-  // Terms are [role, label] tuples or plain strings
-  return dnf.some(andGroup => andGroup.every(term => {
-    const label = Array.isArray(term) ? term[1] : term
-    return labels.includes(label)
-  }))
-}
-
-export function dnfMatches(dnf, agentLabels) {
-  if (!dnf || dnf.length === 0) return true
-  return dnf.some(andGroup => andGroup.every(term => {
-    const label = Array.isArray(term) ? term[1] : term
-    return agentLabels.includes(label)
-  }))
-}
-
 // --- Label colors (hash-based) ---
 const LABEL_COLORS = ['#9370db','#7ab8a0','#c8b060','#7a9ec8','#c8956a','#6aafb0','#b87a95','#8bc87a']
 const LABEL_COLOR_CLASSES = ['filter-chip-purple', 'filter-chip-green', 'filter-chip-yellow', 'filter-chip-blue', 'filter-chip-orange', 'filter-chip-cyan', 'filter-chip-pink', 'filter-chip-lime']
@@ -461,7 +438,12 @@ export function renderMarkdown(html, extraMacros) {
     }
     if (_inTag) return segment
     return segment.replace(/\bhttps?:\/\/[^\s<>"')\]]+/g, url => {
-      return `<a href="${esc(url)}" target="_blank" class="chat-link">${esc(url)}</a>`
+      // `url` is captured from already-rendered HTML, so marked has ALREADY
+      // HTML-escaped it once (e.g. a query string's `&` is `&amp;`). The regex
+      // excludes <>"' so it's safe in both an attribute and text. Re-`esc()`ing
+      // here double-escaped it (`&amp;` -> `&amp;amp;`), giving a broken href and
+      // a visible `&amp;` in the link. Use it as-is.
+      return `<a href="${url}" target="_blank" class="chat-link">${url}</a>`
     })
   })
 

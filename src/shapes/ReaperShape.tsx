@@ -8,6 +8,7 @@ import {
 } from 'tldraw'
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
 import { useReaperStatus } from '../fleet-data-adapter'
+import { beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
 
 const DEFAULT_W = 480
 const DEFAULT_H = 400
@@ -27,8 +28,12 @@ export class ReaperShapeUtil extends BaseBoxShapeUtil<any> {
 
   override canEdit = () => false
   override canResize = () => true
+  override canSnap = () => true
   override canBind = () => false
   override hideRotateHandle = () => true
+  override onTranslateStart = () => beginNativeSnapDrag(this.editor)
+  override onTranslateEnd = () => endNativeSnapDrag(this.editor)
+  override onTranslateCancel = () => endNativeSnapDrag(this.editor)
 
   component(_shape: any) {
     return <ReaperComponent shape={_shape} />

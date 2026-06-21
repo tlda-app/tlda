@@ -401,7 +401,6 @@ export function coherentSpawnPolicy(stored) {
 export function projectCapabilityToMode(capability, explicitMode = null) {
   const cap = normalizeCapability(capability)
   if (explicitMode) return explicitMode
-  if (cap === 'read') return 'plan'
   if (cap === 'full') return 'auto'
   return 'default'
 }

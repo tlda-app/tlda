@@ -20,6 +20,7 @@ import { fetchProofInfo } from '../docInfoCache'
 import { linkifyArrowRefs, linkifyAtRefs, refToCanvas, type LabelRegionInfo, type ResolvedRef } from '../docLinks'
 import { PDF_HEIGHT } from '../layoutConstants'
 import { getPref, subscribePref } from '../preferences'
+import { beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
 
 const md = new MarkdownIt({ html: true, breaks: true, linkify: true })
 // Open all links in new tab so they don't navigate the tldraw iframe
@@ -249,6 +250,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
   override hideRotateHandle = () => true
   override hideSelectionBoundsBg = (shape: any) => !!shape.props.collapsed
   override hideSelectionBoundsFg = (shape: any) => !!shape.props.collapsed
+  override canSnap = (shape: any) => !shape.props.docView
 
   override getGeometry(shape: any) {
     if (shape.props.collapsed) {
@@ -257,7 +259,16 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     return new Rectangle2d({ width: shape.props.w, height: shape.props.h, isFilled: true })
   }
 
+  override onTranslateStart = (shape: any) => {
+    if (!shape.props.docView) beginNativeSnapDrag(this.editor)
+  }
+
+  override onTranslateCancel = (_initial: any, current: any) => {
+    if (!current.props.docView) endNativeSnapDrag(this.editor)
+  }
+
   override onTranslateEnd = (initial: any, current: any) => {
+    if (!current.props.docView) endNativeSnapDrag(this.editor)
     // If dropped on a fleet-chat shape → snap back + insert annotation token
     const bounds = this.editor.getShapePageBounds(current.id)
     if (bounds) {
@@ -325,6 +336,9 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     const modeJustChangedRef = useRef(false)
     const [dotHovered, setDotHovered] = useState(false)
     const dotHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+    // Pointerdown position on the collapse-dot, so a single tap/click expands it
+    // but a drag still moves the shape (see the dot's onPointerUp).
+    const dotDownRef = useRef<{ x: number; y: number } | null>(null)
     const [imgVersion, setImgVersion] = useState(0)
     const [backingSyncState, setBackingSyncState] = useState<'synced' | 'pushing' | 'stale'>('synced')
 
@@ -859,6 +873,75 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         setVimMode('normal')
       }
     }, [isEditing, useVim])
+
+    // Grow the note to fit content WHILE editing (the dictation case). The
+    // CodeMirror container is overflow:auto at a fixed height derived from
+    // props.h, so without this the editor scrolls and the latest dictated line
+    // sits below the fold until edit-exit — Skip's complaint: "speaking to a
+    // sticky and it's getting cut off on the bottom." Grow-only: the shrink-to-
+    // fit still happens on edit exit (the edit start/end effect above), so we
+    // never shrink out from under the user mid-edit.
+    //
+    // We size props.h to the FIXED POINT of the edit-mode layout (see the render
+    // math: availH = h - 16 - contextHeight, and the editor gets `availH` with
+    // no preview or `0.6 * availH` with one). Solving in closed form — rather
+    // than nudging h against the current value — avoids a feedback loop when the
+    // reply-context band (min(120, 0.3h)) itself grows with h.
+    useEffect(() => {
+      if (!isEditing || !shape.props.autoSize) return
+      let raf = 0
+      let cancelled = false
+      let ro: ResizeObserver | null = null
+      const grow = () => {
+        if (cancelled) return
+        const view = cmViewRef.current
+        if (!view) return
+        const host = cmContainerRef.current
+        if (!host) return
+        // Skip a culled / not-yet-laid-out editor (a bogus measurement here
+        // would over-grow; shrink-on-exit can't always undo a giant height).
+        const r = host.getBoundingClientRect()
+        if (r.width < 1 || r.height < 1) return
+        const contentH = view.contentHeight // CodeMirror's measured doc height (layout px)
+        if (!contentH || contentH < 1) return
+        const showPreview = hasMath(localText) && !!previewHtml
+        // A pinned split while previewing is the user's manual choice — growing
+        // the whole note wouldn't enlarge the (fixed) editor pane, so leave it.
+        if (showPreview && splitPx != null) return
+        const editorFraction = showPreview ? 0.6 : 1
+        // Required availH so the editor's share covers the content (+buffer).
+        const needAvail = (contentH + AUTO_SIZE_Y_BUFFER) / editorFraction
+        let target: number
+        if (!replyContext) {
+          target = needAvail + 16 // 16px status bar
+        } else {
+          // contextHeight = min(120, 0.3h). Small-h branch: 0.7h - 16 >= needAvail.
+          const small = (needAvail + 16) / 0.7
+          target = small <= 400 ? small : needAvail + 16 + 120
+        }
+        target = Math.max(40, Math.ceil(target))
+        if (target > shape.props.h + 2) {
+          editor.updateShape({
+            id: shape.id,
+            type: 'math-note' as any,
+            props: { h: target },
+          })
+        }
+      }
+      // Observe the editor content for height changes (text streaming in,
+      // wrapping, font load) and grow as it grows.
+      const view = cmViewRef.current
+      if (view) {
+        ro = new ResizeObserver(() => grow())
+        ro.observe(view.contentDOM)
+      }
+      raf = requestAnimationFrame(grow)
+      return () => {
+        cancelled = true
+        cancelAnimationFrame(raf)
+        ro?.disconnect()
+      }
+    }, [isEditing, useVim, shape.props.autoSize, shape.props.h, shape.props.w, localText, previewHtml, splitPx, replyContext])
 
     // Wrapper keydown: stop TLDraw from stealing keys, handle Escape fallback
     const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
@@ -1419,10 +1502,22 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
             }}
             style={{ position: 'relative', pointerEvents: 'auto' }}
           >
-            {/* The dot — double-click to expand, single click passes through to TLDraw for select/drag */}
+            {/* The dot — SINGLE click/tap expands it (Skip's ask: was double, now
+                single). Handled on DOM pointerup, not onClick/onDoubleClick:
+                TLDraw's capture-phase listeners block ShapeUtil.onClick from
+                firing on unselected shape content (same constraint as bullets),
+                which is why the old path needed a double-click on a 10px target —
+                nearly un-hittable. pointerup fires for mouse + finger + stylus
+                regardless of selection. A movement guard preserves drag-to-move:
+                a no-move tap expands; a drag passes through to TLDraw. */}
             <div
-              onDoubleClick={(e) => {
-                e.stopPropagation()
+              onPointerDown={(e) => { dotDownRef.current = { x: e.clientX, y: e.clientY } }}
+              onPointerUp={(e) => {
+                const d = dotDownRef.current
+                dotDownRef.current = null
+                if (!d) return
+                if (Math.abs(e.clientX - d.x) > 8 || Math.abs(e.clientY - d.y) > 8) return
+                stopEventPropagation(e)
                 editor.updateShape({
                   id: shape.id,
                   type: shape.type,

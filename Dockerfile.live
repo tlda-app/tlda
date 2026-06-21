@@ -60,6 +60,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && apt-get update && apt-get install -y --no-install-recommends tailscale \
     && rm -rf /var/lib/apt/lists/*
 
+# --- rclone (feelings-export pushes chat JSONL + attachments to Skip's Google Drive) ---
+# Its own layer so it caches across app-code redeploys. The feelings-export job
+# (bin/feelings-export.mjs, scheduled by the entrypoint) shells out to `rclone copy`.
+RUN apt-get update && apt-get install -y --no-install-recommends rclone \
+    && rm -rf /var/lib/apt/lists/*
+
 # --- runtime deps ---
 # Install at /app (not server/) so BOTH server/*.mjs and shared/*.mjs resolve up to
 # one /app/node_modules. shared/ imports @tldraw/* too, and from /app/shared it can't
@@ -89,6 +95,12 @@ COPY bin/deepgram-sdk-bridge.mjs ./bin/deepgram-sdk-bridge.mjs
 # /api/fleet/models shells out to fleet-spawn.py --list-models so the spawn UI's
 # picker is generated from the same aliases the daemon accepts.
 COPY bin/fleet-spawn.py ./bin/fleet-spawn.py
+
+# Feelings export: server-side job reads fleet.db chat -> JSONL + copies referenced
+# attachments -> rclone to Skip's Drive. The entrypoint runs it on an interval
+# (Skip-authorized PII export). Opens the DB readonly, so it's safe alongside the
+# server's writer.
+COPY bin/feelings-export.mjs ./bin/feelings-export.mjs
 
 # Serve the tldraw SPA from this server too. For the PRIVATE tailnet deployment
 # (server gated behind Tailscale, not the open internet), Skip's tldraw license

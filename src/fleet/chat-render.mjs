@@ -43,9 +43,10 @@ export function timerDoneLabel(s) {
 }
 
 // --- Standalone att-token resolver ---
-// Used by unquote Tier 2 to render a rechat result (resolvedMessage + inlineAttachments)
-// into HTML without the full chat-line wrapper. renderMarkdown is the same function
-// passed via ctx to renderChatLine.
+// Used by the unquote handler to render a rechat result (resolvedMessage +
+// inlineAttachments) into HTML without the full chat-line wrapper — the immediate
+// local feedback before the authoritative event-update broadcast re-renders the
+// whole message. renderMarkdown is the same function passed via ctx to renderChatLine.
 export function resolveInlineAttachments(text, inlineAttachments, renderMarkdown) {
   // Expand ![alt]({{att:N}}) → ![alt](URL) before renderMarkdown sees it
   let processed = text
