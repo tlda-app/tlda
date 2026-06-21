@@ -15,6 +15,7 @@ import os from 'os'
 import { DEFAULT_PORT, loadConfig, resolveConfig } from '../../shared/config.mjs'
 import { parseFilter, evalExpr, labelsForAgent } from '../../shared/fleet-labels.mjs'
 import { callerSpawnPolicy } from '../lib/spawn-policy.mjs'
+import { resolveSpawnMachine } from '../lib/spawn-routing.mjs'
 
 // Server owner — the human running this server process. Browser users
 // log in via the WS 'login' message or register via 'register'.
@@ -429,22 +430,32 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       res.status(403).json({ error: 'spawn requires authenticated caller identity; HTTP /api/spawn has no per-caller identity. Use the fleet WS spawn path.' })
       return
     }
-    // For respawn, resolve agent to a name
+    // For respawn, resolve agent to a target identity. Routing is by the
+    // target's machine, not by the caller's current device.
     let spawnName = name
+    let routeTarget = null
     if (respawn && agent) {
       const a = fleetStore?.findAgent(agent)
-      spawnName = a?.friendly_name || agent
+      routeTarget = a || null
+      spawnName = a?.id || agent
+    } else if (respawn && spawnName) {
+      routeTarget = fleetStore?.findAgent(spawnName) || null
+      spawnName = routeTarget?.id || spawnName
     }
-    const machineId = caller.machine_id
-    if (!machineId) {
-      res.status(503).json({ error: 'spawn caller has no machine_id — cannot route to a fleet daemon' })
-      return
-    }
-    if (!daemonConnections.has(machineId)) {
-      res.status(503).json({ error: `No fleet daemon connected for machine "${machineId}" — cannot spawn agents` })
+    if (respawn && !routeTarget) {
+      res.status(404).json({ error: `spawn target not found: ${agent || name}` })
       return
     }
     try {
+      const route = resolveSpawnMachine({
+        caller,
+        targetAgent: routeTarget,
+        fresh: !!fresh,
+        respawn: !!respawn,
+        refresh: false,
+        fleetStore,
+        daemonConnections,
+      })
       const requestedCapability = capability || spawnCapability || null
       const callerRung = callerSpawnPolicy(caller, { serverOwnerId: SERVER_OWNER_ID }).capability
       const resolved = resolveSpawnTarget
@@ -453,7 +464,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
             requested: { model, kind, project: doc },
           })
         : { name: spawnName, respawn: !!respawn }
-      const result = await sendRpc(machineId, 'spawn', {
+      const result = await sendRpc(route.machine_id, 'spawn', {
         name: resolved.name || undefined,
         model: model || undefined,
         kind: kind || undefined,
@@ -463,6 +474,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         mode: mode || undefined,
         requestedCapability: requestedCapability || undefined,
         callerRung,
+        spawnRoute: route.source,
         respawn: resolved.respawn,
       })
       broadcastState()

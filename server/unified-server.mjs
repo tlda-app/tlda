@@ -58,6 +58,7 @@ import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html
 import { FleetStore } from './lib/fleet-store.mjs'
 import { createFleetRouter } from './routes/fleet.mjs'
 import { callerSpawnPolicy, coherentSpawnPolicy } from './lib/spawn-policy.mjs'
+import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
 import { SpawnBounceError, SpawnLibrarian, resolveSpawnCollision } from '../shared/spawn-librarian.ts'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -124,6 +125,7 @@ const wsFleetClients = new Set()            // active /ws/fleet connections
 // that machine's fleet-daemon. Used for RPC routing and for pushing
 // agents-updated / projects-updated messages.
 const daemonConnections = new Map()         // machine_id -> ws
+const daemonWelcomeSeenAt = new Map()       // machine_id -> last successful hello setup
 
 // "Agent has a running claude process right now" — flat set keyed by agent_id.
 // Populated by `agent-liveness` messages from each machine's daemon (every
@@ -565,7 +567,10 @@ function sendRpc(machineId, op, params = {}) {
   return new Promise((resolve, reject) => {
     if (!machineId) return reject(new NoDaemonError('(unknown)'))
     const dws = daemonConnections.get(machineId)
-    if (!dws || dws.readyState !== 1) return reject(new NoDaemonError(machineId))
+    if (!dws || dws.readyState !== 1) {
+      if (op === 'spawn') logSpawnDaemonMiss(machineId, 'sendRpc(spawn)', { hasWs: !!dws, readyState: dws?.readyState ?? 'missing', route: params.spawnRoute || 'unknown' })
+      return reject(new NoDaemonError(machineId))
+    }
     const id = `rpc-${++_rpcSeq}-${Date.now().toString(36)}`
     const timer = setTimeout(() => {
       pendingRpcs.delete(id)
@@ -580,6 +585,12 @@ function sendRpc(machineId, op, params = {}) {
       reject(e)
     }
   })
+}
+
+function logSpawnDaemonMiss(machineId, context, detail = {}) {
+  if (!daemonWelcomeSeenAt.has(machineId)) return
+  const ageMs = Date.now() - daemonWelcomeSeenAt.get(machineId)
+  console.error(`[spawn-route] no routable daemon at spawn after welcome: machine_id=${machineId} age_ms=${ageMs} has_ws=${detail.hasWs ?? 'unknown'} ready_state=${detail.readyState ?? 'unknown'} route=${detail.route || 'unknown'} context=${context}`)
 }
 
 // When a daemon WS drops, fail any in-flight RPCs that targeted it. The
@@ -891,8 +902,10 @@ async function performSpawnRelay(caller, msg) {
   const shouldRespawn = !!respawn || (!fresh && !refresh && !!agent)
   let spawnName = fresh ? name : (agent || name)
   let refreshTarget = null
+  let routeTarget = null
   if ((shouldRespawn || refresh) && agent) {
     const existing = fleetStore?.findAgent(agent)
+    routeTarget = existing || null
     // Carry the fleet-id (not the friendly name) so the wake targets that exact
     // identity's session — fleet-spawn re-resolves a name to the wrong namesake,
     // but resumes a `fleet:` id directly. findAgent is now liveness-aware, so it
@@ -902,6 +915,8 @@ async function performSpawnRelay(caller, msg) {
   }
   if (!spawnName) throw new Error(fresh ? 'fresh spawn requires name' : 'agent name required')
   if (refresh && !refreshTarget) refreshTarget = fleetStore?.findAgent(spawnName)
+  if ((shouldRespawn || refresh) && !routeTarget) routeTarget = fleetStore?.findAgent(spawnName) || null
+  if ((shouldRespawn || refresh) && !routeTarget) throw new Error(`spawn target not found: ${spawnName}`)
   const spawnKind = kind || refreshTarget?.metadata?.kind
   if (refresh && spawnKind === 'codex') {
     throw new Error('codex refresh is not supported through MCP spawn; use respawn with a real resume handle')
@@ -909,8 +924,17 @@ async function performSpawnRelay(caller, msg) {
   const requestedSpec = { model, kind: spawnKind, project: doc }
   const requestedCapability = capability || spawnCapability || null
   const callerRung = callerSpawnPolicy(caller, { serverOwnerId: SERVER_OWNER_ID }).capability
-  const machineId = caller.machine_id || LOCAL_MACHINE_ID
-  if (!daemonConnections.has(machineId)) throw new Error(`No fleet daemon connected for machine "${machineId}" — cannot spawn agents`)
+  const route = resolveSpawnMachine({
+    caller,
+    targetAgent: routeTarget,
+    fresh: !!fresh,
+    respawn: shouldRespawn && !refresh,
+    refresh: !!refresh,
+    fleetStore,
+    daemonConnections,
+    onDaemonMissing: (machineId, context, detail) => logSpawnDaemonMiss(machineId, context, detail),
+  })
+  const machineId = route.machine_id
   const resolved = resolveSpawnTarget
     ? await resolveSpawnTarget(spawnName, shouldRespawn && !refresh, {
         fresh: !!fresh,
@@ -935,6 +959,7 @@ async function performSpawnRelay(caller, msg) {
       mode: mode || undefined,
       requestedCapability: requestedCapability || undefined,
       callerRung,
+      spawnRoute: route.source,
       respawn: refresh ? false : resolved.respawn,
       refresh: !!refresh,
     })
@@ -986,6 +1011,11 @@ if (fleetStore) {
     registered_at: new Date().toISOString(),
     last_seen: new Date().toISOString(),
   })
+  const configuredSpawnMachine = process.env.TLDA_SPAWN_MACHINE_ID || loadConfig()?.spawnMachineId
+  if (configuredSpawnMachine && !fleetStore.getFleetPref(SERVER_OWNER_ID, SPAWN_MACHINE_PREF_KEY)) {
+    fleetStore.setFleetPref(SERVER_OWNER_ID, SPAWN_MACHINE_PREF_KEY, configuredSpawnMachine)
+    console.log(`[spawn-route] configured ${SERVER_OWNER_ID} ${SPAWN_MACHINE_PREF_KEY}=${configuredSpawnMachine}`)
+  }
 }
 
 // Full chat delivery pipeline used by tlda-feedback (push-channel
@@ -4674,6 +4704,10 @@ async function handleDaemonWsMessage(ws, msg) {
     ws._hostname = hostname
     ws._version = version
     daemonConnections.set(machine_id, ws)
+    daemonWelcomeSeenAt.set(machine_id, Date.now())
+    if (daemonConnections.get(machine_id) !== ws) {
+      console.error(`[fleet-daemon] routability invariant failed after welcome setup: machine_id=${machine_id}`)
+    }
     // Reset the activity-feed uptime clock: this (re)connect starts a fresh
     // continuous window. getWouldHibernate won't hibernate agents on this machine
     // until the feed has been up a full idle window, so a flap can't cause a
