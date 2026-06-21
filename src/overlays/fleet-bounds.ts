@@ -11,7 +11,7 @@ export type FleetBoundsShape = {
   type: string
 }
 
-export type StoreShapeChanges<S extends FleetBoundsShape> = {
+export type StoreShapeChanges = {
   added?: Record<string, unknown>
   removed?: Record<string, unknown>
   updated?: Record<string, unknown>
@@ -108,7 +108,7 @@ export function createFleetBoundsTracker<S extends FleetBoundsShape>({
       return recompute()
     },
 
-    applyChanges(changes: StoreShapeChanges<S>): FleetBoundsResult | null {
+    applyChanges(changes: StoreShapeChanges): FleetBoundsResult | null {
       let changed = false
 
       for (const record of Object.values(changes.added ?? {})) {
