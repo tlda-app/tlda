@@ -49,7 +49,10 @@ test('DM filter matches only direct human-agent chat', () => {
   }, context), false)
 })
 
-test('DM filter excludes self-addressed activity for the agent', () => {
+test('DM filter includes the target agent\'s own activity (DM ⚒ "tools visible" rung)', () => {
+  // The "DM ⚒ / tools visible" rung is a DM filter with normal traffic; it must
+  // show the target agent's own tool activity. The quiet rung (dm-quiet) hides it
+  // via quietTrafficSuppressesActivity at the render layer, not via this filter.
   const activity = {
     type: 'activity',
     from: 'fleet:worker',
@@ -58,7 +61,20 @@ test('DM filter excludes self-addressed activity for the agent', () => {
     _activity: true,
   }
 
-  assert.equal(matchesFleetFilter(dmFilter, activity, context), false)
+  assert.equal(matchesFleetFilter(dmFilter, activity, context), true)
+})
+
+test('DM filter excludes a DIFFERENT agent\'s activity', () => {
+  // Scope guard: a DM filter for "worker" must not pull in some other agent's
+  // tool activity just because it's an activity event.
+  const otherActivity = {
+    type: 'activity',
+    from: 'fleet:other',
+    agent: 'fleet:other',
+    _activity: true,
+  }
+
+  assert.equal(matchesFleetFilter(dmFilter, otherActivity, context), false)
 })
 
 test('Agent and All filters include self-addressed activity for the agent', () => {

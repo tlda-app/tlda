@@ -9,7 +9,7 @@
 import { StateNode, createShapeId, type TLShapeId, type JsonObject } from 'tldraw'
 import { currentDocumentInfo } from '../svgDocumentLoader'
 import { getSourceAnchor, canvasToPdf, type SourceAnchor } from '../synctexAnchor'
-import { getTranscript } from '../voice.mjs'
+import { getTranscript, resetTranscript } from '../voice.mjs'
 import { log } from '../logger'
 import { getPref } from '../preferences'
 
@@ -40,6 +40,11 @@ export class VoiceNoteTool extends StateNode {
   // entry passes nothing and uses the live cursor position.
   override onEnter = (info?: { initialPoint?: { x: number; y: number } }) => {
     const { editor } = this
+    // Start every new voice note with a clean transcript buffer. Without this,
+    // a previous note's leftover `_left`/`_interim` bleeds into the new note
+    // (content from note 1 reappears in / displaces note 2). Resetting clears
+    // the live buffer; the just-committed note keeps its own saved text.
+    resetTranscript()
     const point = info?.initialPoint ?? editor.inputs.currentPagePoint
     const id = createShapeId()
     this._shapeId = id
@@ -85,10 +90,9 @@ export class VoiceNoteTool extends StateNode {
     const id = this._shapeId
     const point = { ...editor.inputs.currentPagePoint }
 
-    // Snapshot transcript and stop interval — but do NOT stop recording.
-    // setEditingShape below puts the note in edit mode, which registers its
-    // own voice accumulator, so recording continues seamlessly without the
-    // user needing to tap shift again.
+    // Snapshot the final transcript and stop the live-update interval. Recording
+    // is stopped at the end of this commit (see below) so the note is finished
+    // and the next voice-button tap starts a fresh note.
     const transcript = getTranscript()
     this._clearInterval()
 
@@ -123,8 +127,15 @@ export class VoiceNoteTool extends StateNode {
 
     log.debug('voice', 'VoiceNoteTool committed', { transcriptLen: transcript.length })
     this._shapeId = null
-    editor.setEditingShape(id)
+    // Finish this note cleanly: stop recording and clear the placement +
+    // selection so the NEXT voice-button tap starts a brand-new, independent
+    // note instead of re-targeting this one (the reported "lost content on the
+    // 2nd note" / needing a "double-click"). Deliberate targeting is preserved:
+    // explicitly selecting an existing note and tapping voice still dictates
+    // into it — only the post-commit AUTO-selection/auto-continue is removed.
+    if (_stopRecording) { _stopRecording(); _stopRecording = null }
     editor.setCurrentTool('select')
+    editor.setSelectedShapes([])
   }
 
   override onKeyDown = (info: any) => {

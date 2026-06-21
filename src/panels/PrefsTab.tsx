@@ -65,6 +65,7 @@ type PrefsSectionId =
   | 'layout'
   | 'folding'
   | 'sources'
+  | 'provenance'
   | 'notes'
   | 'voice-backend'
   | 'voice-commands'
@@ -72,6 +73,7 @@ type PrefsSectionId =
   | 'highlighter'
   | 'editor'
   | 'curve'
+  | 'bots'
 
 function CollapsiblePrefsSection({
   id,
@@ -139,6 +141,9 @@ function readAll() {
     foldMd: getPref('fold-md-lines'),
     foldDiff: getPref('fold-diff-lines'),
     hlZone: getPref('hl-zone-enabled'),
+    provenanceMode: getPref('provenance-display-mode'),
+    dispoEnabled: getPref('disposition-bot-enabled'),
+    dispoCountdown: getPref('disposition-countdown-sec'),
   }
 }
 
@@ -380,6 +385,28 @@ export function PrefsTab() {
       </CollapsiblePrefsSection>
 
       <CollapsiblePrefsSection
+        id="provenance"
+        title="Provenance display"
+        summary={prefs.provenanceMode === 'off' ? 'Off' : prefs.provenanceMode}
+        open={prefs.openSections.includes('provenance')}
+        onToggle={toggleSection}
+      >
+        <select
+          className="prefs-select"
+          value={prefs.provenanceMode}
+          onChange={e => setPref('provenance-display-mode', e.target.value)}
+        >
+          <option value="off">Off</option>
+          <option value="hover">Hover tooltip (on the ribbon)</option>
+          <option value="panel">Side panel (provenance + cascade)</option>
+          <option value="inline">Inline pinned card (click a span)</option>
+        </select>
+        <div style={{ fontSize: 10, color: '#6b7280', marginTop: 2 }}>
+          How a vetted span's provenance and its dependency cascade are shown. Switch freely to live in each.
+        </div>
+      </CollapsiblePrefsSection>
+
+      <CollapsiblePrefsSection
         id="notes"
         title="Note colors"
         summary={`Voice ${prefs.voiceColor} / math ${prefs.mathColor} / ${Math.round(prefs.mathOpacity * 100)}%`}
@@ -498,6 +525,41 @@ export function PrefsTab() {
           />
           <span>Edge zone</span>
         </label>
+      </CollapsiblePrefsSection>
+
+      <CollapsiblePrefsSection
+        id="bots"
+        title="Bots"
+        summary={prefs.dispoEnabled ? `Self-check poke ${prefs.dispoCountdown}s` : 'Self-check poke off'}
+        open={prefs.openSections.includes('bots')}
+        onToggle={toggleSection}
+      >
+        <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 4 }}>
+          When an agent's turn ends and you haven't messaged it, the disposition bot
+          pokes it to self-check ("am I actually done?"). The poke goes to the agent,
+          never to you. Shorter = prompts more often (a wrong poke is cheap).
+        </div>
+        <label className="prefs-check">
+          <input
+            type="checkbox"
+            checked={prefs.dispoEnabled}
+            onChange={e => setPref('disposition-bot-enabled', e.target.checked)}
+          />
+          <span>Turn-end self-check poke</span>
+        </label>
+        <div className="prefs-num-row">
+          <span className="prefs-num-label">Countdown</span>
+          <input
+            type="number"
+            min={5}
+            max={300}
+            step={5}
+            value={prefs.dispoCountdown}
+            onChange={e => setPref('disposition-countdown-sec', Number(e.target.value))}
+            className="prefs-num"
+          />
+          <span className="prefs-num-unit">sec</span>
+        </div>
       </CollapsiblePrefsSection>
 
       <CollapsiblePrefsSection

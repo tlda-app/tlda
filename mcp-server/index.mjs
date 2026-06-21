@@ -410,83 +410,6 @@ function findLabelLine(sourceDir, sourceMap, mainFile, label) {
   return null;
 }
 
-// ---- skill reading + harness-aware section filtering ----
-
-const SKILLS_DIR = path.join(os.homedir(), 'work', 'dot-claude', 'skills');
-
-// Parse a markdown heading line → { level, text, classes } or null. Recognizes
-// a trailing pandoc attribute block, e.g. `## Driving the browser {.claude-only}`.
-function _parseHeading(line) {
-  const m = /^(#{1,6})\s+(.*?)\s*$/.exec(line);
-  if (!m) return null;
-  const level = m[1].length;
-  let text = m[2];
-  const classes = [];
-  const attr = /\{([^}]*)\}\s*$/.exec(text);
-  if (attr) {
-    for (const tok of attr[1].split(/\s+/)) {
-      if (tok.startsWith('.')) classes.push(tok.slice(1));
-    }
-    text = text.slice(0, attr.index).trimEnd();
-  }
-  return { level, text, classes };
-}
-
-// Filter a skill's markdown for a requesting agent type. A section whose heading
-// carries a `<type>-only` class is kept ONLY for that agent type; a `not-<type>`
-// class drops it for that type. Dropping a heading drops its whole section — down
-// to the next heading of the same or higher level (subsections go with it).
-// Headings with no harness class are universal. `agentTags` is the set the
-// requester matches (e.g. {'goose'} or {'claude'}). Kept headings have their
-// attribute block stripped so the agent sees clean markdown.
-function filterSkillByHarness(md, agentTags) {
-  const lines = md.split('\n');
-  const out = [];
-  let dropUntilLevel = 0;   // >0 while inside a dropped section; drop until a heading of level <= this
-  for (const line of lines) {
-    const h = _parseHeading(line);
-    if (h) {
-      if (dropUntilLevel > 0 && h.level > dropUntilLevel) continue;  // still inside dropped section
-      dropUntilLevel = 0;
-      const onlyBases = h.classes.filter(c => c.endsWith('-only')).map(c => c.slice(0, -5));
-      const notBases = h.classes.filter(c => c.startsWith('not-')).map(c => c.slice(4));
-      const dropByOnly = onlyBases.length > 0 && !onlyBases.some(b => agentTags.has(b));
-      const dropByNot = notBases.some(b => agentTags.has(b));
-      if (dropByOnly || dropByNot) { dropUntilLevel = h.level; continue; }
-      // kept heading — strip the attribute block for clean output
-      out.push('#'.repeat(h.level) + ' ' + h.text);
-      continue;
-    }
-    if (dropUntilLevel > 0) continue;
-    out.push(line);
-  }
-  return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
-}
-
-// List available skills as { name, description } from each SKILL.md frontmatter.
-function listSkills() {
-  const out = [];
-  let dirs;
-  try { dirs = fs.readdirSync(SKILLS_DIR, { withFileTypes: true }); } catch { return out; }
-  for (const d of dirs) {
-    if (!d.isDirectory()) continue;
-    const p = path.join(SKILLS_DIR, d.name, 'SKILL.md');
-    let text;
-    try { text = fs.readFileSync(p, 'utf8'); } catch { continue; }
-    const fm = /^---\n([\s\S]*?)\n---/.exec(text);
-    let name = d.name, description = '';
-    if (fm) {
-      const nm = /^name:\s*(.+)$/m.exec(fm[1]);
-      const dm = /^description:\s*(.+)$/m.exec(fm[1]);
-      if (nm) name = nm[1].trim();
-      if (dm) description = dm[1].trim();
-    }
-    out.push({ name, description });
-  }
-  out.sort((a, b) => a.name.localeCompare(b.name));
-  return out;
-}
-
 // ---- education gate for sandboxed (non-claude) agents ----
 //
 // Mirrors Claude's PreToolUse skill mandate at the MCP boundary. Claude agents
@@ -494,8 +417,8 @@ function listSkills() {
 // agents have no such hook, so we enforce the SAME qualifications rules here,
 // against the tlda server's existing /api/education/check endpoint. On a gated
 // call we BLOCK and name the owed skill(s), giving the agent the same two ways
-// forward a Claude has — read each one with `skill("<name>")` (which credits it),
-// or `dismiss_skill(skills:[…], reason:"…")` if it judges one irrelevant (which
+// forward a Claude has — read each one's markdown with `read_file` (which credits
+// it), or `dismiss_skill(skills:[…], reason:"…")` if it judges one irrelevant (which
 // records the dismissal + shows Skip the reason) — then retry the tool. The block
 // is sticky (no auto-credit): the server re-derives the owed set each call, so it
 // lifts only once the agent has read or dismissed every required skill, exactly
@@ -555,14 +478,15 @@ async function educationGate(name, args) {
   const owed = await eduCheckOwedSkills(spec.tool, input);
   if (!owed.length) return null;
   const list = owed.map(s => `\`${s}\``).join(', ');
-  const readCmds = owed.map(s => `skill("${s}")`).join(', ');
+  const readCmds = owed.map(s => `read_file(path: "/Users/skip/work/dot-claude/skills/${s}/SKILL.md")`).join('\n  ');
   const dismissArg = owed.map(s => `"${s}"`).join(', ');
   const text = [
     `⚠️ Before \`${name}\`, you must clear ${owed.length} required skill(s): ${list}.`,
     `These are the same playbook(s) a Claude agent is force-gated into here.`,
     ``,
     `Do ONE of these for each, then call \`${name}\` again:`,
-    `• Read it — ${readCmds}. Each returns the skill (filtered for you) and credits it.`,
+    `• Read its markdown with read_file (reading it credits the skill):`,
+    `  ${readCmds}`,
     `• Or, if it genuinely does not apply to what you are doing, decline it —`,
     `  dismiss_skill(skills: [${dismissArg}], reason: "<why it does not apply>").`,
     `  A reason is required and is shown to Skip.`,
@@ -2108,17 +2032,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
-      name: 'skill',
-      description: 'Read a fleet SKILL (process/role guidance) by name, or list available skills. Skills describe how to do a job — adversary method, proof discipline, writing register, etc. Call with no `skill` to LIST what is available (name + one-line description); call with `skill` to READ that skill\'s guidance. Sections that don\'t apply to your harness are stripped automatically, so what you get is the guidance you can actually act on. This is how a sandboxed (non-Claude) agent consumes the same playbooks Claude agents use.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          skill: { type: 'string', description: 'Skill name to read (e.g. "adversarial-proof-process"). Omit to list all available skills.' },
-          raw: { type: 'boolean', description: 'Return the full skill unfiltered (no harness-section stripping). Default false.' },
-        },
-      },
-    },
-    {
       name: 'read_annotations',
       description: 'Read all annotations in a document: math notes, highlighter strokes, pen strokes, arrows, rectangles/ellipses. Returns formatted text with highlighted regions marked using ⟦⟧ brackets. Sorted by document position (default) or time.',
       inputSchema: {
@@ -2722,6 +2635,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const why = e.code === 'ENOENT' ? 'no such file' : e.code === 'EISDIR' ? 'is a directory' : e.message;
       return { content: [{ type: 'text', text: `read_file: ${why}: ${abs}` }], isError: true };
     }
+    // Reading a skill's SKILL.md via read_file credits it against the education
+    // gate — same as the Claude Skill tool or the old skill() tool. This is the
+    // skill-read path for sandboxed goose/codex agents, which have no native file
+    // read. Credit synchronously here so a subsequently gated action clears
+    // immediately, without waiting for the async daemon activity stream.
+    const skillMatch = abs.match(/[/\\]skills[/\\]([^/\\]+)[/\\]SKILL\.md$/);
+    if (skillMatch) await eduCreditSkillRead(skillMatch[1]);
     const allLines = data.split('\n');
     const offset = args.offset > 0 ? (args.offset - 1) : 0;
     const limit = args.lines > 0 ? args.lines : allLines.length;
@@ -2735,45 +2655,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     return { content: [{ type: 'text', text: header + body + trunc }] };
   }
 
-  if (name === 'skill') {
-    // Harness-aware skill reader. Lets a sandboxed agent (goose/DeepSeek, etc.)
-    // consume the same process/role playbooks Claude agents use — named `skill`
-    // to mirror the Claude harness `Skill` tool (same primitive, both deliver the
-    // skill's text into the agent's context). The requesting agent's harness
-    // (FLEET_HARNESS, default 'claude') decides which sections survive: a
-    // `## … {.claude-only}` section is stripped for a goose agent and vice-versa,
-    // so the agent only sees guidance it can actually act on.
-    const harness = harnessFromEnv();
-    const agentTags = new Set([harness.kind]);
-    if (!args?.skill) {
-      const skills = listSkills();
-      if (!skills.length) return { content: [{ type: 'text', text: `skill: no skills found at ${SKILLS_DIR}.` }], isError: true };
-      const body = skills.map(s => `• ${s.name} — ${s.description}`).join('\n');
-      return { content: [{ type: 'text', text: `Available skills (${skills.length}) — call skill({ skill: "<name>" }) to read one:\n\n${body}` }] };
-    }
-    const skillName = String(args.skill).trim().replace(/^\/+/, '');
-    if (skillName.includes('/') || skillName.includes('..')) {
-      return { content: [{ type: 'text', text: `skill: invalid skill name "${args.skill}".` }], isError: true };
-    }
-    const p = path.join(SKILLS_DIR, skillName, 'SKILL.md');
-    let md;
-    try { md = fs.readFileSync(p, 'utf8'); }
-    catch {
-      const names = listSkills().map(s => s.name);
-      const near = names.filter(n => n.includes(skillName) || skillName.includes(n)).slice(0, 5);
-      const hint = near.length ? ` Did you mean: ${near.join(', ')}?` : ' Call skill() with no args to list available skills.';
-      return { content: [{ type: 'text', text: `skill: no skill "${skillName}".${hint}` }], isError: true };
-    }
-    // Reading a skill credits it against the education gate (same as a Claude
-    // agent invoking the Skill tool), so a subsequently gated action proceeds.
-    await eduCreditSkillRead(skillName);
-    if (args.raw) {
-      return { content: [{ type: 'text', text: md }] };
-    }
-    const filtered = filterSkillByHarness(md, agentTags);
-    const note = harness.kind !== 'claude' ? `\n\n— (filtered for harness "${harness.kind}"; sections that don't apply to you were removed. Pass raw:true for the full text.)` : '';
-    return { content: [{ type: 'text', text: filtered + note }] };
-  }
 
   if (name === 'read_doc') {
     // Document- and version-aware source read. Resolves a doc to its source

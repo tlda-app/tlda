@@ -144,7 +144,7 @@ export function buildRolePackBlock(role) {
   return `${ROLE_PACK_MARKER}
 **Non-Claude ${pack.title}**
 
-Before task work, route yourself to the relevant shared skill(s): ${skillList}. Call \`skill\` with no argument if a named skill is unavailable in this harness. Read each applicable skill with \`skill(skill: "<name>")\`, or dismiss it with a specific reason only when it truly does not apply.
+Before task work, route yourself to the relevant shared skill(s): ${skillList}. Read each applicable skill's markdown with \`read_file\`, passing the FULL path (no \`~\`): \`read_file(path: "/Users/skip/work/dot-claude/skills/<name>/SKILL.md")\` — reading it credits the skill. Or dismiss one with a specific reason only when it truly does not apply.
 
 Workflow hints:
 ${workflow}

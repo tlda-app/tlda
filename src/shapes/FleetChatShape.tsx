@@ -81,10 +81,13 @@ function addTap(el: Element | null | undefined, fn: (e: Event) => void) {
   if (!el) return
   let dx = 0, dy = 0
   el.addEventListener('click', fn)
-  el.addEventListener('pointerdown', (e: any) => { if (e.pointerType === 'touch') { dx = e.clientX; dy = e.clientY } })
+  // Track both finger (touch) AND stylus (pen) — Apple Pencil taps also fire no
+  // synthesized click. Guard is 16px (not 10): a thumb drifts more than 10px on
+  // a genuine tap, so 10 dropped real taps.
+  el.addEventListener('pointerdown', (e: any) => { if (e.pointerType === 'touch' || e.pointerType === 'pen') { dx = e.clientX; dy = e.clientY } })
   el.addEventListener('pointerup', (e: any) => {
-    if (e.pointerType !== 'touch') return
-    if (Math.abs(e.clientX - dx) > 10 || Math.abs(e.clientY - dy) > 10) return
+    if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return
+    if (Math.abs(e.clientX - dx) > 16 || Math.abs(e.clientY - dy) > 16) return
     fn(e)
   })
 }
@@ -603,7 +606,15 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
           <div ref={containerRef} />
         </div>
       </div>
-      {pinned && status === 'connected' && (
+      {pinned && (
+        // Input bar shows whenever the pane is pinned — Skip's ask is that pinning
+        // ALWAYS gives a field ("when you pin it, I'm not getting a text field").
+        // It used to be gated on status==='connected', so a terminal that hadn't
+        // connected (goose terminals, slow connects) pinned with no field at all.
+        // sendInput() already no-ops while the WS isn't open, so an un-connected
+        // field degrades safely; the placeholder reflects the connection state so
+        // it reads as "waiting", not a dead field. (Making typing actually reach a
+        // goose shell is the separate goose-terminal-connection item.)
         <div className="fleet-terminal-hover-input-bar"
           onPointerDown={stopEventPropagation}
           onPointerMove={stopEventPropagation}
@@ -615,10 +626,21 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
             rows={1}
             onKeyDown={handleInputKeyDown}
             onKeyUp={(e) => stopEventPropagation(e as any)}
-            onPointerDown={(e) => { stopEventPropagation(e as any); setLightboxed(true); registerVoice(e.currentTarget) }}
-            onFocus={(e) => { stopEventPropagation(e); setLightboxed(true); registerVoice(e.currentTarget) }}
+            // Skip's ask: clicking into the pinned-terminal field must just focus
+            // it so he can type — it must NOT auto-pop the lightbox (the "blowing
+            // up on my screen"). The lightbox was historically spec'd to open on
+            // field-tap; he asked for that removed and made manual. Focus only
+            // here; do not setLightboxed(true).
+            onPointerDown={(e) => { stopEventPropagation(e); registerVoice(e.currentTarget) }}
+            onFocus={(e) => { stopEventPropagation(e); registerVoice(e.currentTarget) }}
             onBlur={(e) => { clearVoiceTarget(e.currentTarget); e.currentTarget.style.boxShadow = ''; setLightboxed(false) }}
-            placeholder="type or speak a command…"
+            placeholder={status === 'connected' ? 'type or speak a command…' : status === 'error' ? 'terminal unavailable — reconnecting…' : 'connecting…'}
+            // Suppress the iOS soft keyboard on touch (same as the main composer
+            // ChatComposer.tsx + math notes): the field is voice/dictation-first,
+            // and raising the on-screen keyboard shifts visualViewport, which
+            // drags this portaled hover pane out of place (Skip: "the onscreen
+            // keyboard drags the terminal hover somewhere else").
+            inputMode={_isTouchDevice ? 'none' : undefined}
             spellCheck={false}
             autoComplete="off"
             style={{
@@ -1395,11 +1417,13 @@ function SuggestionGroup({ chips, agentName }: { chips: Suggestion[], agentName:
       onMouseEnter={showTip}
       onMouseLeave={hideTip}
     >
-      <span className="suggestion-chip-x" title="Dismiss" onClick={dismiss}>✕</span>
+      {/* onPointerUp not onClick: these are text <span>s, dead on touch (a tap
+          synthesizes no click). pointerup fires for mouse + finger + stylus. */}
+      <span className="suggestion-chip-x" title="Dismiss" onPointerUp={dismiss}>✕</span>
       {chips.map((c, i) => (
         <span key={c.id}>
           {i > 0 ? <span className="suggestion-group-sep"> | </span> : ' '}
-          <span className="suggestion-chip-label" onClick={pick(c)}>{c.label}</span>
+          <span className="suggestion-chip-label" onPointerUp={pick(c)}>{c.label}</span>
         </span>
       ))}
     </span>
@@ -3523,11 +3547,41 @@ function FleetChatInner({ shape }: { shape: any }) {
       const overlay = document.createElement('div')
       overlay.className = 'chat-lightbox'
       overlay.innerHTML = `<img src="${img.src}" alt="${img.alt || ''}">`
-      overlay.addEventListener('click', () => overlay.remove())
+      addTap(overlay, () => overlay.remove())
       document.body.appendChild(overlay)
     }
+    // Touch/stylus: the toggles handled above are text <div>/<span> elements
+    // (code-block fold, build-result header, pretty-expand, lifecycle/terminal
+    // cards, plan-mode badge, delegation-message collapse) — a tap synthesizes
+    // no `click`, so the delegated handler is dead on iPad/pen. On a deliberate
+    // tap, re-dispatch a real .click() on the nearest such element: that fires
+    // the inline onclick (code-block fold) AND this delegated handler, exactly
+    // like a mouse click. <button> targets (resend/approve/deny/plan-action/
+    // amend) already get a native click on touch, so they are excluded — both to
+    // avoid a double-fire and so a tap on a button inside an .lc-message doesn't
+    // redispatch onto the message (which would collapse it).
+    let tapDownX = 0, tapDownY = 0
+    const onTapDown = (e: PointerEvent) => {
+      if (e.pointerType === 'touch' || e.pointerType === 'pen') { tapDownX = e.clientX; tapDownY = e.clientY }
+    }
+    const onTapUp = (e: PointerEvent) => {
+      if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return
+      if (Math.abs(e.clientX - tapDownX) > 16 || Math.abs(e.clientY - tapDownY) > 16) return
+      const t = e.target as HTMLElement
+      if (t.closest('button')) return
+      const hit = t.closest(
+        '.code-block-toggle, .build-result-header, .pretty-expand-btn, .lc-message, .lc-terminal-card, .bullet-card-go, .plan-badge-click',
+      ) as HTMLElement | null
+      if (hit) hit.click()
+    }
+    logEl.addEventListener('pointerdown', onTapDown)
+    logEl.addEventListener('pointerup', onTapUp)
     logEl.addEventListener('click', onClick)
-    return () => logEl.removeEventListener('click', onClick)
+    return () => {
+      logEl.removeEventListener('pointerdown', onTapDown)
+      logEl.removeEventListener('pointerup', onTapUp)
+      logEl.removeEventListener('click', onClick)
+    }
   }, [chatLogEl])
 
   // Unquote: double-click on <code> spans inside chat messages.
@@ -3538,41 +3592,17 @@ function FleetChatInner({ shape }: { shape: any }) {
     const logEl = chatLogEl
     if (!logEl) return
 
-    function isLatexLabel(text: string): boolean {
-      if (/^https?:/i.test(text)) return false
-      return /^[a-z][a-z0-9]{0,9}:[a-z][a-z0-9_.-]{0,50}$/i.test(text)
-    }
-
-    function matchesUnquotePattern(text: string): boolean {
-      if (!text || text.length > 500) return false
-      if (/^https?:\/\/\S+/.test(text)) return true
-      if (/^\/\S+/.test(text)) return true
-      if (/^~\/\S+/.test(text)) return true
-      // Relative paths: no spaces, contains / or ends with a known file extension
-      if (!/\s/.test(text) && (/\//.test(text) || /\.(png|jpg|jpeg|gif|svg|pdf|tex|md|r|py|js|mjs|ts|json|csv|txt|log)$/i.test(text))) return true
-      if (isLatexLabel(text)) return true
-      return false
-    }
-
-    function isFilePath(text: string): boolean {
-      return text.startsWith('/') || text.startsWith('~/') || (!/\s/.test(text) && (/\//.test(text) || /\.(png|jpg|jpeg|gif|svg|pdf|tex|md|r|py|js|mjs|ts|json|csv|txt|log)$/i.test(text)))
-    }
-
-    function applyTierLabel(codeEl: HTMLElement, text: string) {
-      const html = linkifyLabelRefs(text, labelRegionsRef.current)
-      const wrapper = document.createElement('span')
-      wrapper.innerHTML = html
-      codeEl.replaceWith(...Array.from(wrapper.childNodes))
-    }
-
-    function applyTier1(codeEl: HTMLElement, text: string) {
-      const rendered = renderMarkdownUtil(esc(text))
-      const wrapper = document.createElement('span')
-      wrapper.innerHTML = rendered
-      codeEl.replaceWith(...Array.from(wrapper.childNodes))
-    }
-
-    async function applyTier2(codeEl: HTMLElement, text: string, eventId: string, agentId: string) {
+    // Unquote = amend the message by removing the backticks around the clicked
+    // span, then re-render the WHOLE message as if it had never been quoted —
+    // including file attachments. ONE behavior for ANY quoted block (path, label,
+    // prose, code): the full interior is sent through the amend/upload path
+    // (/api/unquote-file → daemon rechat → processMessageText), which resolves and
+    // uploads any file paths inside it. The server patches the stored event and
+    // broadcasts event-update, which re-renders the entire message in place — that
+    // broadcast is the authoritative whole-message re-render. The local span-swap
+    // below is just immediate feedback (and the terminal state when the message
+    // isn't persisted server-side, so no broadcast comes back).
+    async function unquoteSpan(codeEl: HTMLElement, text: string, eventId: string, agentId: string) {
       const spinner = document.createElement('span')
       spinner.textContent = '⏳'
       spinner.style.opacity = '0.6'
@@ -3582,7 +3612,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         const resp = await fetch('/api/unquote-file', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ eventId: parseInt(eventId, 10), path: text, agentId }),
+          body: JSON.stringify({ eventId: parseInt(eventId, 10), quoted: text, agentId }),
         })
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
         const { resolvedMessage, inlineAttachments } = await resp.json()
@@ -3591,11 +3621,11 @@ function FleetChatInner({ shape }: { shape: any }) {
         wrapper.innerHTML = rendered
         spinner.replaceWith(...Array.from(wrapper.childNodes))
       } catch {
-        const fallback = document.createElement('span')
-        fallback.textContent = text
-        fallback.title = 'Unquote failed — file not found or daemon unreachable'
-        fallback.style.opacity = '0.5'
-        spinner.replaceWith(fallback)
+        // No daemon / unpersisted message: still drop the quote locally by
+        // re-rendering the interior as markdown (no upload possible offline).
+        const wrapper = document.createElement('span')
+        wrapper.innerHTML = renderMarkdownUtil(esc(text))
+        spinner.replaceWith(...Array.from(wrapper.childNodes))
       }
     }
 
@@ -3619,7 +3649,8 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (!chatLine) { clearPending(); return }
 
       const text = codeEl.textContent || ''
-      if (!matchesUnquotePattern(text)) { clearPending(); return }
+      // Any non-empty quoted block is unquotable (Skip: "any quoted block at all").
+      if (!text || text.length > 2000) { clearPending(); return }
 
       const now = Date.now()
       if (lastClickEl === codeEl && now - lastClickTime < 1000) {
@@ -3627,15 +3658,9 @@ function FleetChatInner({ shape }: { shape: any }) {
         clearPending()
         e.preventDefault()
         e.stopPropagation()
-        if (isLatexLabel(text)) {
-          applyTierLabel(codeEl, text)
-        } else if (isFilePath(text)) {
-          const eventId = chatLine.dataset.msgId || ''
-          const agentId = chatLine.dataset.msgFrom || ''
-          applyTier2(codeEl, text, eventId, agentId)
-        } else {
-          applyTier1(codeEl, text)
-        }
+        const eventId = chatLine.dataset.msgId || ''
+        const agentId = chatLine.dataset.msgFrom || ''
+        unquoteSpan(codeEl, text, eventId, agentId)
       } else {
         clearPending()
         lastClickEl = codeEl
@@ -3645,8 +3670,28 @@ function FleetChatInner({ shape }: { shape: any }) {
       }
     }
 
+    // Touch/stylus double-TAP parity: on touch there are no clicks, so the
+    // double-click-to-unquote above is dead. Route a movement-guarded touch/pen
+    // pointerup through the SAME handler — two taps on the same <code> within the
+    // window trigger the unquote exactly like a double-click. Mouse keeps its
+    // native double-click (touch/pen only here, so no double-count).
+    let uqDownX = 0, uqDownY = 0
+    const onUqDown = (e: PointerEvent) => {
+      if (e.pointerType === 'touch' || e.pointerType === 'pen') { uqDownX = e.clientX; uqDownY = e.clientY }
+    }
+    const onUqUp = (e: PointerEvent) => {
+      if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return
+      if (Math.abs(e.clientX - uqDownX) > 16 || Math.abs(e.clientY - uqDownY) > 16) return
+      onClick(e)
+    }
+    logEl.addEventListener('pointerdown', onUqDown)
+    logEl.addEventListener('pointerup', onUqUp)
     logEl.addEventListener('click', onClick)
-    return () => logEl.removeEventListener('click', onClick)
+    return () => {
+      logEl.removeEventListener('pointerdown', onUqDown)
+      logEl.removeEventListener('pointerup', onUqUp)
+      logEl.removeEventListener('click', onClick)
+    }
   }, [chatLogEl])
 
   // Track clicks to determine which fleet chat shape the user is interacting with.
@@ -3813,6 +3858,11 @@ function FleetChatInner({ shape }: { shape: any }) {
     () => activeComposerAgentLabel(filter, sendTargets, agents),
     [filterKey, sendTargets, agents],
   )
+  // Records the pointerdown that started on the traffic toggle, so a cycle only
+  // fires on a deliberate tap (down AND up on the toggle, little movement) — not
+  // on a stray touch or a scroll-drag that merely lifts off over it. This is the
+  // `93aba2cd` spurious-filter-cycling fix.
+  const trafficTapRef = useRef<{ x: number; y: number; id: number } | null>(null)
   const composerTrafficMode = useMemo<ComposerTrafficFilterMode>(
     () => classifyFleetComposerTrafficMode(filter, trafficMode, humanFilterLabel, composerAgentLabel),
     [filterKey, trafficMode, humanFilterLabel, composerAgentLabel],
@@ -4227,12 +4277,17 @@ function FleetChatInner({ shape }: { shape: any }) {
     // the timestamp dedupe stops a mouse `click` from double-firing.
     let downX = 0, downY = 0, lastTouchHandled = 0
     const onPointerDown = (e: PointerEvent) => {
-      if (e.pointerType !== 'touch') return
+      if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return
       downX = e.clientX; downY = e.clientY
     }
     const onPointerUp = (e: PointerEvent) => {
-      if (e.pointerType !== 'touch') return
-      if (Math.abs(e.clientX - downX) > 10 || Math.abs(e.clientY - downY) > 10) return
+      // Finger AND stylus: a tap on a markdown/file chip never synthesizes a
+      // `click`, so the mouse-only open handler was dead on iPad/pen. (Skip: the
+      // md-chip lightbox "triggers on click with a mouse, it should work on
+      // finger and stylus touch.") 16px guard so a drag-to-scroll that lifts off
+      // on a chip does NOT open it (a thumb drifts >10px on a real tap).
+      if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return
+      if (Math.abs(e.clientX - downX) > 16 || Math.abs(e.clientY - downY) > 16) return
       lastTouchHandled = e.timeStamp
       handleDocLinkClick(e as any)
     }
@@ -4314,6 +4369,10 @@ function FleetChatInner({ shape }: { shape: any }) {
     // Document-level capture listeners: fires before tldraw's tl-container
     // listener can intercept. We scope to this chat by checking if the target
     // is inside our logEl.
+
+    // The element a drag-claim started on — so a no-move TAP on a draggable
+    // chip/link can re-fire its click on touch/stylus (see onPointerUp).
+    let downTargetEl: HTMLElement | null = null
 
     function onPointerDown(e: PointerEvent) {
       const target = e.target as HTMLElement
@@ -4596,6 +4655,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       e.stopImmediatePropagation()
       e.preventDefault()
       dragRef.current = drag
+      downTargetEl = target
 
       // Use shared drag coordinator instead of per-drag capture listeners
       dragCoordinator.claim(onPointerMove, onPointerUp)
@@ -4743,7 +4803,23 @@ function FleetChatInner({ shape }: { shape: any }) {
       const shapeEl = logEl!.closest('.fleet-shape') as HTMLElement | null
       if (shapeEl) shapeEl.style.boxShadow = ''
       dragRef.current = null
-      if (!drag.started || !drag.pillId) return
+      if (!drag.started) {
+        // No drag happened = a TAP on a draggable chip/link. This handler claimed
+        // the pointer (capture-phase stopImmediatePropagation on pointerdown), so
+        // the element's own click handler never ran. On mouse the browser still
+        // synthesizes a `click` afterward (the chip opens); on touch/stylus it
+        // does NOT, so the tap was dead. Re-fire the element's click so a tap does
+        // exactly what a mouse click does — same action, just the touch pointing
+        // device (Skip's pointer-device-parity rule). Touch/pen only: mouse keeps
+        // its native click, so no double-open.
+        if ((e.pointerType === 'touch' || e.pointerType === 'pen') && downTargetEl) {
+          downTargetEl.click()
+        }
+        downTargetEl = null
+        return
+      }
+      downTargetEl = null
+      if (!drag.pillId) return
 
       const onMain = !!(drag as any)._onMain
       const mainEditor = (window as any).__tldraw_editor__ as any
@@ -4867,8 +4943,12 @@ function FleetChatInner({ shape }: { shape: any }) {
           </button>
           <button
             className={`fleet-traffic-mode-btn${quietTraffic ? ' fleet-traffic-mode-btn-active' : ''}`}
-            onClick={(e) => {
-              e.stopPropagation()
+            onPointerDown={stopEventPropagation}
+            // text-label button ('q'/'t'): onPointerUp so a touch tap fires (a
+            // text label in the canvas gets no synthesized click on iPad, same
+            // class as the DM/All toggle); pointerup covers mouse too.
+            onPointerUp={(e) => {
+              stopEventPropagation(e)
               editor.updateShape({
                 id: shape.id,
                 type: shape.type,
@@ -5106,7 +5186,9 @@ function FleetChatInner({ shape }: { shape: any }) {
               <span>{deadTargetAgent.name} is dead</span>
               <span
                 className="fleet-dead-resurrect"
-                onClick={(e) => {
+                // text <span>: onPointerUp so a finger/stylus tap fires (no
+                // synthesized click on touch); pointerup covers mouse too.
+                onPointerUp={(e) => {
                   stopEventPropagation(e as any)
                   fetch(`/api/agents/${encodeURIComponent(deadTargetAgent.id)}/resurrect`, { method: 'POST' })
                 }}
@@ -5221,15 +5303,26 @@ function FleetChatInner({ shape }: { shape: any }) {
             )}
             <button
               className={`fleet-composer-traffic-toggle fleet-composer-traffic-toggle-${composerTrafficMode}`}
-              onPointerDown={stopEventPropagation}
+              onPointerDown={(e) => {
+                stopEventPropagation(e)
+                trafficTapRef.current = { x: e.clientX, y: e.clientY, id: e.pointerId }
+              }}
               onPointerUp={(e) => {
                 // Drive the cycle from pointerup, not click: on touch a tap on
                 // this text label never synthesizes a `click` (pointerdown +
                 // pointerup fire, click does not), so an onClick handler is dead
                 // on iPad. pointerup fires for both mouse and touch — one cycle
                 // per interaction, no double-fire.
-                if (!composerAgentLabel) return
                 stopEventPropagation(e)
+                // Only a deliberate tap on THIS button cycles: the pointerdown
+                // must have started here (same pointerId) and barely moved. A
+                // stray touch or a scroll-drag that lifts off over the button has
+                // no matching down (or drifted) → it must NOT change the filter.
+                const down = trafficTapRef.current
+                trafficTapRef.current = null
+                if (!down || down.id !== e.pointerId) return
+                if (Math.abs(e.clientX - down.x) > 16 || Math.abs(e.clientY - down.y) > 16) return
+                if (!composerAgentLabel) return
                 cycleComposerTrafficMode()
               }}
               disabled={!composerAgentLabel}
