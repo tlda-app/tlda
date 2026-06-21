@@ -20,6 +20,7 @@ import { fetchProofInfo } from '../docInfoCache'
 import { linkifyArrowRefs, linkifyAtRefs, refToCanvas, type LabelRegionInfo, type ResolvedRef } from '../docLinks'
 import { PDF_HEIGHT } from '../layoutConstants'
 import { getPref, subscribePref } from '../preferences'
+import { beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
 
 const md = new MarkdownIt({ html: true, breaks: true, linkify: true })
 // Open all links in new tab so they don't navigate the tldraw iframe
@@ -249,6 +250,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
   override hideRotateHandle = () => true
   override hideSelectionBoundsBg = (shape: any) => !!shape.props.collapsed
   override hideSelectionBoundsFg = (shape: any) => !!shape.props.collapsed
+  override canSnap = (shape: any) => !shape.props.docView
 
   override getGeometry(shape: any) {
     if (shape.props.collapsed) {
@@ -257,7 +259,16 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     return new Rectangle2d({ width: shape.props.w, height: shape.props.h, isFilled: true })
   }
 
+  override onTranslateStart = (shape: any) => {
+    if (!shape.props.docView) beginNativeSnapDrag(this.editor)
+  }
+
+  override onTranslateCancel = (_initial: any, current: any) => {
+    if (!current.props.docView) endNativeSnapDrag(this.editor)
+  }
+
   override onTranslateEnd = (initial: any, current: any) => {
+    if (!current.props.docView) endNativeSnapDrag(this.editor)
     // If dropped on a fleet-chat shape → snap back + insert annotation token
     const bounds = this.editor.getShapePageBounds(current.id)
     if (bounds) {

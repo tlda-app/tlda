@@ -18,7 +18,7 @@ import {
   useEditor,
   useValue,
 } from 'tldraw'
-import { agentDisplayName } from './fleet-utils'
+import { agentDisplayName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
 import { usePillDrag } from './FleetAgentsShape'
 import { ChatComposer } from './ChatComposer'
 import { useState, useCallback, useRef, useMemo, useEffect, useContext, memo } from 'react'
@@ -214,8 +214,12 @@ export class FleetInboxShapeUtil extends BaseBoxShapeUtil<any> {
 
   override canEdit = () => true
   override canResize = () => true
+  override canSnap = () => true
   override canBind = () => false
   override hideRotateHandle = () => true
+  override onTranslateStart = () => beginNativeSnapDrag(this.editor)
+  override onTranslateEnd = () => endNativeSnapDrag(this.editor)
+  override onTranslateCancel = () => endNativeSnapDrag(this.editor)
 
   component(shape: any) {
     return <FleetInboxComponent shape={shape} />

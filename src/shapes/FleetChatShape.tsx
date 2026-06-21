@@ -45,7 +45,7 @@ import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useSuggestions, clearGroup, sendMessage, loadBefore, resolveFilter, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
 import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
-import { agentDisplayName } from './fleet-utils'
+import { agentDisplayName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
 import { ChatComposer } from './ChatComposer'
 import { AgentName, PhaseIcon } from './PhaseIcon'
 import { baseName, phaseFromName } from '../../shared/lineage-name.mjs'
@@ -1110,8 +1110,12 @@ export class FleetChatShapeUtil extends BaseBoxShapeUtil<any> {
 
   override canEdit = () => false
   override canResize = () => true
+  override canSnap = () => true
   override canBind = () => false
   override hideRotateHandle = () => true
+  override onTranslateStart = () => beginNativeSnapDrag(this.editor)
+  override onTranslateEnd = () => endNativeSnapDrag(this.editor)
+  override onTranslateCancel = () => endNativeSnapDrag(this.editor)
 
   component(shape: any) {
     return <FleetChatComponent shape={shape} />

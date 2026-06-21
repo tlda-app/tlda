@@ -15,6 +15,23 @@ export const FLEET_SHAPE_TYPES = new Set([
   'fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview', 'fleet-reaper', 'fleet-inbox', 'fleet-touch-inbox',
 ])
 
+const nativeSnapModeStack = new WeakMap<Editor, boolean[]>()
+
+export function beginNativeSnapDrag(editor: Editor) {
+  const stack = nativeSnapModeStack.get(editor) ?? []
+  stack.push(editor.user.getIsSnapMode())
+  nativeSnapModeStack.set(editor, stack)
+  editor.user.updateUserPreferences({ isSnapMode: true })
+}
+
+export function endNativeSnapDrag(editor: Editor) {
+  const stack = nativeSnapModeStack.get(editor)
+  const previous = stack?.pop()
+  if (previous === undefined) return
+  editor.user.updateUserPreferences({ isSnapMode: previous })
+  if (stack && stack.length === 0) nativeSnapModeStack.delete(editor)
+}
+
 /**
  * The display name for an agent — the single source of truth used everywhere a
  * name is shown (agents panel, chat target chip, nicks). Lineage is purely a
