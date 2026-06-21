@@ -33,7 +33,7 @@ export interface LiveStore<T extends Rec> {
   all(): readonly T[]
   readonly size: number
   index<K>(name: string, keyOf: (rec: T) => K | readonly K[]): Index<T, K>
-  view(filter: Filter<T>, opts?: { key?: string }): LiveView<T>
+  view(filter: Filter<T>, opts?: { key?: string; compare?: (a: T, b: T) => number }): LiveView<T>
   listen(cb: (delta: Delta<T>) => void): () => void
   bulk(fn: (s: LiveStore<T>) => void): void
   dispose(): void
@@ -66,6 +66,16 @@ function replaceById<T extends Rec>(list: readonly T[], rec: T): readonly T[] {
   const next = list.slice()
   next[index] = rec
   return next
+}
+
+function insertSorted<T extends Rec>(
+  list: readonly T[],
+  rec: T,
+  compare: (a: T, b: T) => number
+): readonly T[] {
+  const index = list.findIndex((item) => compare(rec, item) < 0)
+  if (index === -1) return [...list, rec]
+  return [...list.slice(0, index), rec, ...list.slice(index)]
 }
 
 type Bucket<T extends Rec> = {
@@ -178,6 +188,7 @@ class MaintainedView<T extends Rec> implements LiveView<T> {
   private readonly subscribers = new Set<ViewSubscriber<T>>()
   private readonly onZeroRefs: (view: MaintainedView<T>) => void
   private readonly orderOf: (id: Id) => number
+  private readonly compare?: (a: T, b: T) => number
   private disposed = false
   private refCount = 1
   private current: readonly T[]
@@ -187,13 +198,15 @@ class MaintainedView<T extends Rec> implements LiveView<T> {
     initial: readonly T[],
     onZeroRefs: (view: MaintainedView<T>) => void,
     orderOf: (id: Id) => number,
-    key?: string
+    key?: string,
+    compare?: (a: T, b: T) => number
   ) {
     this.filter = filter
     this.onZeroRefs = onZeroRefs
     this.orderOf = orderOf
-    this.current = initial
-    this.atom = makeAtom(`live-view:${key ?? 'anon'}`, initial)
+    this.compare = compare
+    this.current = compare ? [...initial].sort(compare) : initial
+    this.atom = makeAtom(`live-view:${key ?? 'anon'}`, this.current)
   }
 
   get list(): readonly T[] {
@@ -240,7 +253,7 @@ class MaintainedView<T extends Rec> implements LiveView<T> {
 
   applyAdd(rec: T): boolean {
     if (!this.filter(rec)) return false
-    this.current = [...this.current, rec]
+    this.current = this.compare ? insertSorted(this.current, rec, this.compare) : [...this.current, rec]
     this.atom.set(this.current)
     return true
   }
@@ -250,11 +263,13 @@ class MaintainedView<T extends Rec> implements LiveView<T> {
     const now = this.filter(rec)
     if (!was && !now) return false
     if (!was && now) {
-      this.current = this.insertByOrder(rec)
+      this.current = this.compare ? insertSorted(this.current, rec, this.compare) : this.insertByOrder(rec)
     } else if (was && !now) {
       this.current = removeById(this.current, prev.id)
     } else {
-      this.current = replaceById(this.current, rec)
+      this.current = this.compare
+        ? insertSorted(removeById(this.current, prev.id), rec, this.compare)
+        : replaceById(this.current, rec)
     }
     this.atom.set(this.current)
     return true
@@ -360,7 +375,7 @@ class LiveStoreImpl<T extends Rec> implements LiveStore<T> {
     return index
   }
 
-  view(filter: Filter<T>, opts?: { key?: string }): LiveView<T> {
+  view(filter: Filter<T>, opts?: { key?: string; compare?: (a: T, b: T) => number }): LiveView<T> {
     this.assertActive()
     const key = opts?.key
     if (key) {
@@ -379,7 +394,8 @@ class LiveStoreImpl<T extends Rec> implements LiveStore<T> {
         if (key) this.keyedViews.delete(key)
       },
       (id) => this.insertionOrder.get(id) ?? Number.MAX_SAFE_INTEGER,
-      key
+      key,
+      opts?.compare
     )
     this.views.add(view)
     if (key) this.keyedViews.set(key, view)
