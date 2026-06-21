@@ -48,6 +48,7 @@ import { phaseFromName, baseName, PHASES } from '../shared/lineage-name.mjs'
 import { daemonHelloDecision } from '../shared/daemon-identity.mjs'
 import { initProjectStore, listProjects, readProject, getProjectsDir } from './lib/project-store.mjs'
 import { resetStaleBuildStates, killAllBuilds, runBuild } from './lib/build-runner.mjs'
+import { writeSentinel } from './lib/sentinel.mjs'
 import projectRoutes, { processProjectPush } from './routes/projects.mjs'
 import { initAuth, isAuthEnabled, validateToken, extractToken, requireRead, loginRoute } from './lib/auth.mjs'
 import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, updateShape, putShape } from './lib/sync-rooms.mjs'
@@ -4326,22 +4327,15 @@ async function syncSentinelFromShadow(projectName) {
     const latestBuildAt = new Date(parts[1] + ' ' + parts[2]).getTime() || Date.now()
 
     const docName = `doc-${projectName}`
-    const room = await getOrCreateRoom(docName)
-    const current = room.getRecord?.('shape:doc-version--sentinel')
-    const currentHash = current?.props?.commitHash
-
-    if (currentHash === latestBuildHash) return  // already current
-
-    console.log(`[sentinel-sync] ${projectName}: updating ${currentHash?.slice(0, 7) || 'none'} → ${latestBuildHash.slice(0, 7)}`)
-    await putShape(docName, {
-      id: 'shape:doc-version--sentinel',
-      typeName: 'shape',
-      type: 'doc-version',
-      x: 0, y: 0, rotation: 0, index: 'a0',
-      parentId: 'page:page',
-      isLocked: true, opacity: 0, meta: {},
-      props: { w: 1, h: 1, commitHash: latestBuildHash, timestamp: Date.now(), buildReadyAt: latestBuildAt },
+    const result = await writeSentinel(docName, {
+      commitHash: latestBuildHash,
+      timestamp: Date.now(),
+      buildReadyAt: latestBuildAt,
     })
+
+    if (!result.skipped) {
+      console.log(`[sentinel-sync] ${projectName}: synced ${latestBuildHash.slice(0, 7)}`)
+    }
   } catch (e) {
     console.warn(`[sentinel-sync] ${projectName}: failed: ${e.message}`)
   }
