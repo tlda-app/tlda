@@ -503,6 +503,12 @@ function notifyChangeListeners(docName, changes) {
 /** @type {Map<string, Map<string, { state: object, clock: number }>>} */
 const prevSnapshots = new Map()
 
+/** @type {Map<string, number>} */
+const prevSnapshotClocks = new Map()
+
+/** @type {Map<string, ReturnType<typeof setTimeout>>} */
+const changeTimers = new Map()
+
 /**
  * Get changelog file path for a document.
  */
@@ -525,31 +531,53 @@ function buildDocMap(docs) {
 }
 
 /**
- * Diff current snapshot against previous, append changes to JSONL log.
- * Returns the interesting changes (shape creates/updates/deletes) for real-time notification.
+ * Record a whole-snapshot baseline for future delta diffs.
+ * @param {string} docName
+ * @param {{ documents: { state: object, lastChangedClock: number }[], documentClock?: number }} snapshot
+ */
+function setChangelogBaseline(docName, snapshot) {
+  prevSnapshots.set(docName, buildDocMap(snapshot.documents))
+  prevSnapshotClocks.set(docName, snapshot.documentClock ?? 0)
+}
+
+/**
+ * Read the sync storage's changed-record diff since our previous changelog clock.
+ * @param {string} docName
+ * @param {TLSocketRoom} room
+ * @returns {{ diff: { puts: Record<string, object | [object, object]>, deletes: string[] }, documentClock: number, wipeAll?: boolean } | null}
+ */
+function getStorageChangesSinceBaseline(docName, room) {
+  const sinceClock = prevSnapshotClocks.get(docName)
+  if (sinceClock == null || !room.storage?.transaction) return null
+
+  const result = room.storage.transaction((txn) => txn.getChangesSince(sinceClock))
+  return result.result ? { ...result.result, documentClock: result.documentClock } : null
+}
+
+/**
+ * Full-snapshot diff fallback used for first baseline and unusual storage reset cases.
+ * @param {string} docName
+ * @param {TLSocketRoom} room
  * @returns {object[]|null}
  */
-function recordChanges(docName, room) {
+function recordChangesFromSnapshot(docName, room) {
   const snapshot = room.getCurrentSnapshot()
   const current = buildDocMap(snapshot.documents)
   const prev = prevSnapshots.get(docName)
 
-  // First call for this room: just record baseline, no diff
   if (!prev) {
-    prevSnapshots.set(docName, current)
+    setChangelogBaseline(docName, snapshot)
     return null
   }
 
   const entries = []
   const ts = Date.now()
 
-  // Created or updated
   for (const [id, { state, clock }] of current) {
     const old = prev.get(id)
     if (!old) {
       entries.push({ ts, action: 'create', id, type: state.typeName, shapeType: state.type, state })
     } else if (old.clock !== clock) {
-      // Only log shape records, skip internal tldraw records (camera, page, instance, etc.)
       const diff = shallowDiff(old.state, state)
       if (diff) {
         entries.push({ ts, action: 'update', id, type: state.typeName, shapeType: state.type, diff })
@@ -557,7 +585,6 @@ function recordChanges(docName, room) {
     }
   }
 
-  // Deleted
   for (const [id, { state }] of prev) {
     if (!current.has(id)) {
       entries.push({ ts, action: 'delete', id, type: state.typeName, shapeType: state.type })
@@ -565,7 +592,18 @@ function recordChanges(docName, room) {
   }
 
   prevSnapshots.set(docName, current)
+  prevSnapshotClocks.set(docName, snapshot.documentClock ?? 0)
 
+  return writeInterestingChanges(docName, entries)
+}
+
+/**
+ * Append interesting entries to the changelog and return the notification payload.
+ * @param {string} docName
+ * @param {object[]} entries
+ * @returns {object[]|null}
+ */
+function writeInterestingChanges(docName, entries) {
   if (entries.length === 0) return null
 
   // Filter to interesting records (shapes, not camera/pointer/instance state)
@@ -580,6 +618,69 @@ function recordChanges(docName, room) {
   appendFile(path, compressed).catch(e => console.error(`[changelog] Failed to write ${path}:`, e.message))
 
   return interesting
+}
+
+/**
+ * Diff changed records against previous, append changes to JSONL log.
+ * Returns the interesting changes (shape creates/updates/deletes) for real-time notification.
+ * @returns {object[]|null}
+ */
+function recordChanges(docName, room) {
+  const prev = prevSnapshots.get(docName)
+
+  // First call for this room: just record baseline, no diff
+  if (!prev) {
+    return recordChangesFromSnapshot(docName, room)
+  }
+
+  const changes = getStorageChangesSinceBaseline(docName, room)
+  if (!changes) return null
+
+  // If storage can no longer tell us every deletion since the previous clock,
+  // fall back to the old whole-doc diff once to restore a correct baseline.
+  if (changes.wipeAll) return recordChangesFromSnapshot(docName, room)
+
+  const entries = []
+  const ts = Date.now()
+  const currentClock = changes.documentClock
+
+  for (const [id, value] of Object.entries(changes.diff.puts ?? {})) {
+    const state = Array.isArray(value) ? value[1] : value
+    const old = prev.get(id)
+    if (!old) {
+      entries.push({ ts, action: 'create', id, type: state.typeName, shapeType: state.type, state })
+    } else {
+      const diff = shallowDiff(old.state, state)
+      if (diff) {
+        entries.push({ ts, action: 'update', id, type: state.typeName, shapeType: state.type, diff })
+      }
+    }
+    prev.set(id, { state, clock: currentClock })
+  }
+
+  for (const id of changes.diff.deletes ?? []) {
+    const old = prev.get(id)
+    if (old) {
+      const { state } = old
+      entries.push({ ts, action: 'delete', id, type: state.typeName, shapeType: state.type })
+      prev.delete(id)
+    }
+  }
+
+  prevSnapshotClocks.set(docName, currentClock)
+
+  return writeInterestingChanges(docName, entries)
+}
+
+function flushChangeLog(docName, room) {
+  changeTimers.delete(docName)
+  const changes = recordChanges(docName, room)
+  notifyChangeListeners(docName, changes)
+}
+
+function scheduleChangeFlush(docName, room) {
+  if (changeTimers.has(docName)) clearTimeout(changeTimers.get(docName))
+  changeTimers.set(docName, setTimeout(() => flushChangeLog(docName, room), 50))
 }
 
 /**
@@ -654,8 +755,7 @@ export async function getOrCreateRoom(docName) {
       },
       onDataChange: () => {
         scheduleSave(docName, room)
-        const changes = recordChanges(docName, room)
-        notifyChangeListeners(docName, changes)
+        scheduleChangeFlush(docName, room)
       },
     }
 
@@ -663,7 +763,7 @@ export async function getOrCreateRoom(docName) {
     if (snapshot) {
       opts.initialSnapshot = snapshot
       room = new TLSocketRoom(opts)
-      prevSnapshots.set(docName, buildDocMap(snapshot.documents))
+      setChangelogBaseline(docName, snapshot)
       console.log(`[sync] Room created: ${docName} (loaded snapshot)`)
     } else {
       room = new TLSocketRoom(opts)
@@ -877,6 +977,20 @@ export async function deleteShape(docName, shapeId) {
  * Flush all pending saves (for graceful shutdown).
  */
 export function flushAllRooms() {
+  for (const [docName, timer] of changeTimers) {
+    clearTimeout(timer)
+    const room = rooms.get(docName)
+    if (room) {
+      try {
+        flushChangeLog(docName, room)
+      } catch (e) {
+        console.error(`[sync] Failed to flush changelog for ${docName}:`, e.message)
+      }
+    } else {
+      changeTimers.delete(docName)
+    }
+  }
+
   for (const [docName, timer] of saveTimers) {
     clearTimeout(timer)
     saveTimers.delete(docName)
@@ -910,12 +1024,18 @@ export function replaceRoomSnapshot(docName, snapshot) {
     rooms.delete(docName)
     console.log(`[sync] Room closed for snapshot replace: ${docName}`)
   }
+  const changeTimer = changeTimers.get(docName)
+  if (changeTimer) {
+    clearTimeout(changeTimer)
+    changeTimers.delete(docName)
+  }
   const path = snapshotPath(docName)
   const dir = dirname(path)
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   const tmp = path + '.tmp'
   writeFileSync(tmp, JSON.stringify(snapshot))
   renameSync(tmp, path)
+  setChangelogBaseline(docName, snapshot)
   console.log(`[sync] Snapshot replaced: ${docName}`)
 }
 
@@ -1054,4 +1174,16 @@ export function closeAllRooms() {
     console.log(`[sync] Room closed: ${docName}`)
   }
   rooms.clear()
+}
+
+export const __testSyncChangelog = {
+  recordChanges,
+  recordChangesFromSnapshot,
+  setChangelogBaseline,
+  reset() {
+    for (const timer of changeTimers.values()) clearTimeout(timer)
+    changeTimers.clear()
+    prevSnapshots.clear()
+    prevSnapshotClocks.clear()
+  },
 }
