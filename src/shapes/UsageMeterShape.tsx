@@ -69,6 +69,10 @@ export class UsageMeterShapeUtil extends BaseBoxShapeUtil<any> {
     return <UsageMeterComponent shape={shape} />
   }
 
+  getIndicatorPath() {
+    return undefined
+  }
+
   indicator() {
     return null
   }

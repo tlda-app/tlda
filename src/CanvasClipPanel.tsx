@@ -13,7 +13,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Tldraw, createTLStore, stopEventPropagation, react } from 'tldraw'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor, TLRecord } from 'tldraw'
 import { chatInsertBus } from './shapes/FleetPillShape'
-import { FLEET_SHAPE_TYPES, isMyFleetShape } from './shapes/fleet-utils'
+import { FLEET_INTERACTION_SHAPE_SELECTOR, FLEET_SHAPE_TYPES, isMyFleetShape } from './shapes/fleet-utils'
 import { createCanvasClipPanelPlan } from './wm/canvas-clip-panel'
 import './CanvasClipPanel.css'
 
@@ -831,7 +831,7 @@ export function CanvasClipPanel({
       // In fullViewport mode, only handle wheel events over fleet shapes.
       // Events over empty areas should pass through to the main canvas.
       if (fullViewport) {
-        const fleetShape = target?.closest('[data-shape-type="fleet-chat"], [data-shape-type="fleet-agents"], [data-shape-type="fleet-search"], [data-shape-type="fleet-inbox"], [data-shape-type="fleet-notifications"], [data-shape-type="fleet-docview"], [data-shape-type="fleet-reaper"]')
+        const fleetShape = target?.closest(FLEET_INTERACTION_SHAPE_SELECTOR)
         if (!fleetShape) return // let event pass through
       }
       e.preventDefault()
@@ -1022,10 +1022,9 @@ export function CanvasClipPanel({
     if (!fullViewport) return
     const el = canvasRef.current
     if (!el) return
-    const FLEET_SELECTOR = '[data-shape-type="fleet-chat"], [data-shape-type="fleet-agents"], [data-shape-type="fleet-search"], [data-shape-type="fleet-inbox"], [data-shape-type="fleet-notifications"], [data-shape-type="fleet-docview"]'
     const handler = (e: DragEvent) => {
       const target = document.elementFromPoint(e.clientX, e.clientY)
-      if (target?.closest(FLEET_SELECTOR)) return // let fleet shapes handle it
+      if (target?.closest(FLEET_INTERACTION_SHAPE_SELECTOR)) return // let fleet shapes handle it
       // Not over a fleet shape — block the overlay's tldraw from seeing this
       e.stopPropagation()
     }

@@ -9,7 +9,7 @@
  * SVG), laid out in dependency bands top→bottom — the same layered-DAG shape the
  * argument GraphShape uses, scoped here to the invalidated subgraph.
  */
-import { stopEventPropagation } from 'tldraw'
+import { stopEventPropagation, useUniqueSafeId } from 'tldraw'
 import { useMemo } from 'react'
 
 export interface CascadeGraphNode {
@@ -55,6 +55,7 @@ export function CascadeGraph({ nodes, width, onApprove }: {
   width: number
   onApprove: (id: string) => void
 }) {
+  const arrowId = useUniqueSafeId('cg-arrow')
   const innerW = Math.max(160, width - 4)
   const { pos, totalH } = useMemo(() => layout(nodes, innerW), [nodes, innerW])
   // Edges: each cascade node draws an arrow up from its immediate upstream `via`,
@@ -73,7 +74,7 @@ export function CascadeGraph({ nodes, width, onApprove }: {
     <div className="cascade-graph" style={{ position: 'relative', width: '100%', height: totalH }} onPointerDown={(e) => stopEventPropagation(e)}>
       <svg width="100%" height={totalH} style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
         <defs>
-          <marker id="cg-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <marker id={arrowId} viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
             <path d="M0,0 L8,4 L0,8 z" fill={DIM} />
           </marker>
         </defs>
@@ -84,7 +85,7 @@ export function CascadeGraph({ nodes, width, onApprove }: {
           return (
             <path key={i} className="cascade-graph-edge" data-from={e.from} data-to={e.to}
               d={`M${x1},${y1} C${x1},${my} ${x2},${my} ${x2},${y2 - 2}`}
-              fill="none" stroke={DIM} strokeWidth={1.3} markerEnd="url(#cg-arrow)" />
+              fill="none" stroke={DIM} strokeWidth={1.3} markerEnd={`url(#${arrowId})`} />
           )
         })}
       </svg>

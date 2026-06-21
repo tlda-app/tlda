@@ -14,7 +14,7 @@
  * matching the single-color approach of .build-warning-badge.
  */
 import React, { useState, useCallback, useRef } from 'react'
-import { stopEventPropagation } from 'tldraw'
+import { stopEventPropagation, useUniqueSafeId } from 'tldraw'
 import type { Editor } from 'tldraw'
 import { useFleetAgents } from '../fleet-data-adapter'
 import { createFleetLayout } from '../shapes/fleet-utils'
@@ -165,6 +165,7 @@ function getPhoneCameraSettlingDelay() {
 interface FleetIconPillProps { mainEditor: Editor }
 
 export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
+  const countMaskId = useUniqueSafeId('fleet-count-mask')
   const agents = useFleetAgents()
   const [hidden, setHidden] = useState(() => isFleetHidden())
   const [dragging, setDragging] = useState(false)
@@ -366,7 +367,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
           ) : (
             <>
               <defs>
-                <mask id="fleet-count-mask">
+                <mask id={countMaskId}>
                   {/* White = visible, black = knocked out */}
                   <rect width="960" height="960" fill="white" />
                   {aliveCount > 0 && (
@@ -377,7 +378,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
                   )}
                 </mask>
               </defs>
-              <g mask="url(#fleet-count-mask)" fill="currentColor">
+              <g mask={`url(#${countMaskId})`} fill="currentColor">
                 <g transform="translate(0,960) scale(1,-1)">{BASESTAR_PATHS}</g>
               </g>
             </>

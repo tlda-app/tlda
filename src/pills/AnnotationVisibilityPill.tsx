@@ -4,6 +4,7 @@
  *   visible → filled, faint → half-filled (clip), hidden → outline only.
  */
 import { useState, useEffect, useRef, useSyncExternalStore } from 'react'
+import { useUniqueSafeId } from 'tldraw'
 import {
   getVisibilityMode,
   setVisibilityMode,
@@ -19,7 +20,7 @@ const MODE_LABELS: Record<VisibilityMode, string> = {
 }
 
 function LayersIcon({ mode }: { mode: VisibilityMode }) {
-  const id = `lc-${mode}`
+  const id = useUniqueSafeId(`lc-${mode}`)
   return (
     <svg width="14" height="14" viewBox="0 0 14 14" className="annot-vis-icon">
       {mode === 'faint' && (

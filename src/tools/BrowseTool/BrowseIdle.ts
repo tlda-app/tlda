@@ -32,9 +32,10 @@ import {
 import { fleetLayoutActiveRef } from '../../overlays/FleetHUD'
 import { getOnSourceClick } from '../../stores'
 import { getHumanId } from '../../fleet/fleet-data.mjs'
+import { FLEET_SHAPE_TYPES } from '../../shapes/fleet-utils'
 
 // --- Fleet shape types that get DOM interaction ---
-const FLEET_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-inbox', 'fleet-notifications', 'fleet-docview', 'fleet-reaper'])
+const FLEET_TYPES = FLEET_SHAPE_TYPES
 
 // --- Inlined helpers (not exported from tldraw) ---
 
@@ -173,7 +174,6 @@ export class BrowseIdle extends StateNode {
     // This is the ONLY place layout mode is turned off — never from store
     // listeners, which race with TLDraw's state machine.
     if (fleetLayoutActiveRef.current && this.editor.getContainer().closest('.fleet-hud-wrap')) {
-      const FLEET_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-inbox', 'fleet-notifications', 'fleet-docview', 'fleet-reaper'])
       const hasFleetSelected = this.editor.getSelectedShapeIds().some(id => {
         const s = this.editor.getShape(id)
         return s && FLEET_TYPES.has(s.type)
@@ -271,22 +271,24 @@ export class BrowseIdle extends StateNode {
     // Restore deselected fleet shapes
     for (const id of this._selectedFleetIds) {
       if (!selected.has(id)) {
-        const el = container.querySelector(`[data-shape-id="${id}"]`)
-        el?.classList.remove('fleet-drag-mode')
+        const els = container.querySelectorAll(`[data-shape-id="${id}"]`)
+        els.forEach(el => el.classList.remove('fleet-drag-mode'))
       }
     }
 
     // Mark newly selected fleet shapes for drag mode.
     // CSS rule makes .fleet-drag-mode .tl-html-container { pointer-events: none }
-    // so clicks pass through to tldraw's canvas for drag/resize.
+    // so clicks pass through to tldraw's canvas for drag/resize. A shape may
+    // have more than one DOM copy while WM viewports are mounted, so update all
+    // matching elements, not just the first copy in the default canvas.
     const newFleet = new Set<string>()
     for (const id of selected) {
       const shape = this.editor.getShape(id as any)
       if (shape && FLEET_TYPES.has(shape.type as string)) {
         newFleet.add(id)
         if (!this._selectedFleetIds.has(id)) {
-          const el = container.querySelector(`[data-shape-id="${id}"]`)
-          el?.classList.add('fleet-drag-mode')
+          const els = container.querySelectorAll(`[data-shape-id="${id}"]`)
+          els.forEach(el => el.classList.add('fleet-drag-mode'))
         }
       }
     }
@@ -296,8 +298,8 @@ export class BrowseIdle extends StateNode {
   private _restoreAllFleetPointerEvents() {
     const container = this.editor.getContainer()
     for (const id of this._selectedFleetIds) {
-      const el = container.querySelector(`[data-shape-id="${id}"]`)
-      el?.classList.remove('fleet-drag-mode')
+      const els = container.querySelectorAll(`[data-shape-id="${id}"]`)
+      els.forEach(el => el.classList.remove('fleet-drag-mode'))
     }
     this._selectedFleetIds.clear()
   }

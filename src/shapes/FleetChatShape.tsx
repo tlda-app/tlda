@@ -1174,6 +1174,10 @@ export class FleetChatShapeUtil extends BaseBoxShapeUtil<any> {
     return <FleetChatComponent shape={shape} />
   }
 
+  getIndicatorPath() {
+    return undefined
+  }
+
   indicator() {
     return null
   }

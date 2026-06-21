@@ -19,7 +19,7 @@
  * Read-focused: structure is authored over MCP (chain_apply), so the shape never
  * mutates the graph — it renders it and projects it.
  */
-import { BaseBoxShapeUtil, HTMLContainer, stopEventPropagation } from 'tldraw'
+import { BaseBoxShapeUtil, HTMLContainer, stopEventPropagation, useUniqueSafeId } from 'tldraw'
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import { graphProps } from '../../shared/shapes/graph-schema.mjs'
 import { renderMarkdownMath } from './MathNoteShape'
@@ -152,6 +152,8 @@ function topoProjection(chain: Chain) {
 }
 
 export function GraphComponent({ shape }: { shape: any }) {
+  const arrowId = useUniqueSafeId('g-arrow')
+  const loadBearingArrowId = useUniqueSafeId('g-arrow-lb')
   const doc = shape.props.doc as string
   const slug = shape.props.slug as string
   const w = shape.props.w as number
@@ -223,10 +225,10 @@ export function GraphComponent({ shape }: { shape: any }) {
             <div style={{ position: 'relative', width: '100%', height: lay.totalH, minHeight: 60 }}>
               <svg width="100%" height={lay.totalH} style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
                 <defs>
-                  <marker id="g-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                  <marker id={arrowId} viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
                     <path d="M0,0 L8,4 L0,8 z" fill={DIM} />
                   </marker>
-                  <marker id="g-arrow-lb" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+                  <marker id={loadBearingArrowId} viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
                     <path d="M0,0 L8,4 L0,8 z" fill={ACCENT} />
                   </marker>
                 </defs>
@@ -246,7 +248,7 @@ export function GraphComponent({ shape }: { shape: any }) {
                   return (
                     <path key={e.id} d={d}
                       fill="none" stroke={lb ? ACCENT : DIM} strokeWidth={lb ? 2.4 : 1.2}
-                      markerEnd={lb ? 'url(#g-arrow-lb)' : 'url(#g-arrow)'} />
+                      markerEnd={lb ? `url(#${loadBearingArrowId})` : `url(#${arrowId})`} />
                   )
                 })}
               </svg>
@@ -346,6 +348,12 @@ export class GraphShapeUtil extends BaseBoxShapeUtil<any> {
 
   component(shape: any) {
     return <GraphComponent shape={shape} />
+  }
+
+  getIndicatorPath(shape: any) {
+    const path = new Path2D()
+    path.rect(0, 0, shape.props.w, shape.props.h)
+    return path
   }
 
   indicator(shape: any) {

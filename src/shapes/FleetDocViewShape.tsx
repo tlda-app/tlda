@@ -37,7 +37,7 @@ import { pdfToCanvas } from '../synctexAnchor'
 import { getSvgText, setSvgText } from '../stores/svgTextStore'
 import { getPageUrl } from '../stores/pageUrlStore'
 import { getPref } from '../preferences'
-import { beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
+import { beginNativeSnapDrag, endNativeSnapDrag, FLEET_SHAPE_TYPES } from './fleet-utils'
 
 const DEFAULT_W = 300
 const DEFAULT_H = 250
@@ -105,6 +105,12 @@ export class FleetDocViewShapeUtil extends BaseBoxShapeUtil<any> {
         <FleetDocViewComponent shape={shape} />
       </HTMLContainer>
     )
+  }
+
+  getIndicatorPath(shape: any) {
+    const path = new Path2D()
+    path.rect(0, 0, shape.props.w, shape.props.h)
+    return path
   }
 
   indicator(shape: any) {
@@ -374,8 +380,8 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
 
   const shapeUtils = useMemo(() => {
     const all = (window as any).__tldraw_shape_utils__ || []
-    const FLEET_TYPES = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-inbox', 'fleet-docview', 'fleet-pill'])
-    return all.filter((u: any) => !FLEET_TYPES.has(u.type))
+    const excluded = new Set([...FLEET_SHAPE_TYPES, 'fleet-pill'])
+    return all.filter((u: any) => !excluded.has(u.type))
   }, [])
   const licenseKey = 'tldraw-2027-01-19/WyJhUGMwcWRBayIsWyIqLnF0bTI4NS5naXRodWIuaW8iXSw5LCIyMDI3LTAxLTE5Il0.Hq9z1V8oTLsZKgpB0pI3o/RXCoLOsh5Go7Co53YGqHNmtEO9Lv/iuyBPzwQwlxQoREjwkkFbpflOOPmQMwvQSQ'
 

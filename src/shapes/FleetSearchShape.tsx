@@ -201,6 +201,10 @@ export class FleetSearchShapeUtil extends BaseBoxShapeUtil<any> {
     return <FleetSearchComponent shape={shape} />
   }
 
+  getIndicatorPath() {
+    return undefined
+  }
+
   indicator() {
     return null
   }

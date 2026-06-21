@@ -2,6 +2,7 @@ import { createWMCore, type Camera, type Layer, type LayerLayout } from './wm-co
 
 export const FLEET_HUD_ROOT_LAYER_ID = 'screen'
 export const FLEET_HUD_OVERLAY_LAYER_ID = 'fleet-overlay'
+export const FLEET_HUD_VIEWPORT_ID = 'wm:fleet-hud'
 
 export interface FleetHudLayerInput {
 	panOffset: number
@@ -13,6 +14,7 @@ export interface FleetHudLayerInput {
 export interface FleetHudLayerState {
 	rootLayerId: string
 	overlayLayerId: string
+	viewportId: string
 	camera: Camera
 	layer: Layer
 }
@@ -34,6 +36,7 @@ export function createFleetHudOverlayLayer({
 	return {
 		rootLayerId: wm.rootLayerId,
 		overlayLayerId: FLEET_HUD_OVERLAY_LAYER_ID,
+		viewportId: FLEET_HUD_VIEWPORT_ID,
 		camera: wm.camera(FLEET_HUD_OVERLAY_LAYER_ID),
 		layer: wm.getLayer(FLEET_HUD_OVERLAY_LAYER_ID),
 	}

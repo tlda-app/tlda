@@ -374,6 +374,10 @@ export class FleetAgentsShapeUtil extends BaseBoxShapeUtil<any> {
     return <FleetAgentsComponent shape={shape} />
   }
 
+  getIndicatorPath() {
+    return undefined
+  }
+
   indicator() {
     return null
   }

@@ -33,6 +33,10 @@ export class FleetNotificationsShapeUtil extends BaseBoxShapeUtil<any> {
     return <FleetNotificationsComponent shape={shape} />
   }
 
+  getIndicatorPath() {
+    return undefined
+  }
+
   indicator() {
     return null
   }

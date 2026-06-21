@@ -44,6 +44,10 @@ export class DocVersionShapeUtil extends BaseBoxShapeUtil<any> {
     return null
   }
 
+  getIndicatorPath() {
+    return undefined
+  }
+
   indicator(_shape: any) {
     return null
   }

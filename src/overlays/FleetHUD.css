@@ -47,6 +47,22 @@
   pointer-events: auto;
 }
 
+/* The WM HUD is a transparent same-store fleet layer over the real document
+   canvas. Its internal tldraw viewport must not paint its own canvas chrome, or
+   opening the HUD hides the page shapes that provide the user's spatial frame. */
+.fleet-hud-wrap .wm-fleet-hud-viewport .tl-canvas,
+.fleet-hud-wrap .wm-fleet-hud-viewport .tl-html-layer,
+.fleet-hud-wrap .wm-fleet-hud-viewport .tl-shapes,
+.fleet-hud-wrap .wm-fleet-hud-viewport .tl-background__wrapper {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+.fleet-hud-wrap .wm-fleet-hud-viewport .tl-background__wrapper,
+.fleet-hud-wrap .wm-fleet-hud-viewport .tl-grid {
+  display: none !important;
+}
+
 /* Full-viewport overlay pointer-events architecture:
    1. Everything in the overlay is pointer-events: none (clicks pass to main canvas)
    2. Fleet shape elements get pointer-events: auto (interactive)

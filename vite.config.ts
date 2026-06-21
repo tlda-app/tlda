@@ -10,14 +10,32 @@ const tlsDir = join(homedir(), '.config/tlda')
 const tlsCert = join(tlsDir, 'localhost+2.pem')
 const tlsKey  = join(tlsDir, 'localhost+2-key.pem')
 const hasTls = existsSync(tlsCert) && existsSync(tlsKey)
+const tldrawForkPackages = resolve('../../.tldraw-fork/packages')
+
+const tldrawForkAliases = [
+  { find: /^tldraw$/, replacement: resolve(tldrawForkPackages, 'tldraw/src/index.ts') },
+  { find: /^tldraw\/tldraw\.css$/, replacement: resolve(tldrawForkPackages, 'tldraw/tldraw.css') },
+  { find: /^@tldraw\/driver$/, replacement: resolve(tldrawForkPackages, 'driver/src/index.ts') },
+  { find: /^@tldraw\/editor$/, replacement: resolve(tldrawForkPackages, 'editor/src/index.ts') },
+  { find: /^@tldraw\/state$/, replacement: resolve(tldrawForkPackages, 'state/src/index.ts') },
+  { find: /^@tldraw\/state-react$/, replacement: resolve(tldrawForkPackages, 'state-react/src/index.ts') },
+  { find: /^@tldraw\/store$/, replacement: resolve(tldrawForkPackages, 'store/src/index.ts') },
+  { find: /^@tldraw\/sync$/, replacement: resolve(tldrawForkPackages, 'sync/src/index.ts') },
+  { find: /^@tldraw\/sync-core$/, replacement: resolve(tldrawForkPackages, 'sync-core/src/index.ts') },
+  { find: /^@tldraw\/tlschema$/, replacement: resolve(tldrawForkPackages, 'tlschema/src/index.ts') },
+  { find: /^@tldraw\/utils$/, replacement: resolve(tldrawForkPackages, 'utils/src/index.ts') },
+  { find: /^@tldraw\/validate$/, replacement: resolve(tldrawForkPackages, 'validate/src/index.ts') },
+  { find: /^rbush$/, replacement: resolve('node_modules/rbush/index.js') },
+]
 
 function injectedConfig() {
   const cfg = resolveConfig()
   const serverPort = process.env.VITE_SERVER_PORT
   if (!serverPort) return cfg
 
-  const http = `${hasTls ? 'https' : 'http'}://localhost:${serverPort}`
-  const ws = `${hasTls ? 'wss' : 'ws'}://localhost:${serverPort}`
+  const serverHost = process.env.VITE_SERVER_HOST || 'localhost'
+  const http = `${hasTls ? 'https' : 'http'}://${serverHost}:${serverPort}`
+  const ws = `${hasTls ? 'wss' : 'ws'}://${serverHost}:${serverPort}`
   return {
     ...cfg,
     database: { http, ws },
@@ -54,8 +72,17 @@ const localImagePlugin = {
 // https://vite.dev/config/
 export default defineConfig({
   base: process.env.VITE_BASE_PATH || '/',
-  plugins: [activeConfigPlugin, react(), localImagePlugin],
+  plugins: [
+    activeConfigPlugin,
+    react({
+      babel: {
+        plugins: [['@babel/plugin-proposal-decorators', { version: '2023-11' }]],
+      },
+    }),
+    localImagePlugin,
+  ],
   resolve: {
+    alias: tldrawForkAliases,
     dedupe: ['react', 'react-dom'],
   },
   server: {
@@ -63,7 +90,7 @@ export default defineConfig({
     port: 5179,
     ...(hasTls ? { https: { cert: readFileSync(tlsCert, 'utf8'), key: readFileSync(tlsKey, 'utf8') } } : {}),
     fs: {
-      allow: ['..'],
+      allow: ['..', resolve('../../.tldraw-fork')],
     },
     hmr: process.env.VITE_HMR !== '1',
     watch: {
