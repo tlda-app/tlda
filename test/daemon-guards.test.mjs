@@ -65,9 +65,10 @@ test('daemon spawn args preserve codex kind and capability on fresh spawn (capab
   ])
 })
 
-test('daemon spawn args pass --policy ONLY for a genuinely named policy', () => {
-  // A user-NAMED policy (e.g. `tlda-write`) is an explicit fence request and DOES
-  // carry --policy; this is the one case that fences a single agent on purpose.
+test('daemon spawn args do not pass --policy for a standard rung', () => {
+  // Standard rungs carry their fence region inside --spawn-capability. Passing
+  // --policy here would make fleet-spawn treat the spawn as an explicit fence
+  // request and bypass the global fence-off default.
   const { args } = buildFleetSpawnArgs({
     name: 'mathbot',
     model: 'opus',
@@ -79,6 +80,27 @@ test('daemon spawn args pass --policy ONLY for a genuinely named policy', () => 
 
   assert.deepEqual(args, [
     '--fresh', 'mathbot',
+    '--model', 'opus',
+    '--kind', 'claude',
+    '--mode', 'default',
+    '--spawn-capability', 'workspace-write',
+    '--cwd', '/tmp/project',
+    '--no-attach',
+  ])
+})
+
+test('daemon spawn args pass --policy for a genuinely custom named policy', () => {
+  const { args } = buildFleetSpawnArgs({
+    name: 'custombot',
+    model: 'opus',
+    kind: 'claude',
+    cwd: '/tmp/project',
+    mode: 'default',
+    spawnPolicy: { name: 'ops-single-agent-test', capability: 'workspace-write', policy: 'tlda-projects' },
+  })
+
+  assert.deepEqual(args, [
+    '--fresh', 'custombot',
     '--model', 'opus',
     '--kind', 'claude',
     '--mode', 'default',

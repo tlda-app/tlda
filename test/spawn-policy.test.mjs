@@ -208,6 +208,12 @@ describe('spawn policy', () => {
     assert.equal(resolveProjectProfileName({}, { project: { profile: 'math' } }), 'math')
     assert.equal(resolveProjectProfileName(
       { spawnPolicy: { projectProfiles: { 'host-ops': 'ops' } } }, { doc: 'host-ops' }), 'ops')
+    assert.equal(resolveProjectProfileName({}, { cwd: '/Users/skip/work/ops' }), 'ops')
+    assert.equal(resolveProjectProfileName({}, { cwd: '/Users/skip/work/tlda' }), 'app')
+    assert.equal(resolveProjectProfileName(
+      { spawnPolicy: { projectProfiles: { 'custom-work': 'math' } } },
+      { cwd: '/Users/skip/work/custom-work' }
+    ), 'math')
     assert.equal(resolveProjectProfileName({ spawnPolicy: { defaultProfile: 'untrusted' } }, {}), 'untrusted')
     assert.equal(resolveProjectProfileName({}, {}), 'app')
     assert.equal(resolveProjectProfileName({}, { project: { profile: 'bogus' } }), 'app')
@@ -303,6 +309,38 @@ describe('spawn policy', () => {
       name: 'tlda-write',
       capability: 'tlda-write',
       policy: 'tlda-projects',
+      category: 'write-scope',
+    })
+  })
+
+  it('daemon derives the local project fence from cwd when no doc is supplied', () => {
+    const ops = resolveDaemonSpawnGrant({
+      callerRung: 'full',
+      model: 'gpt-5.5',
+      kind: 'codex',
+      config: {},
+      cwd: '/Users/skip/work/ops',
+    })
+    assert.equal(ops.requestedCapability, 'full')
+    assert.deepEqual(ops.grantedPolicy, {
+      name: 'full',
+      capability: 'full',
+      policy: 'unsandboxed',
+      category: 'write-scope',
+    })
+
+    const app = resolveDaemonSpawnGrant({
+      callerRung: 'full',
+      model: 'gpt-5.5',
+      kind: 'codex',
+      config: {},
+      cwd: '/Users/skip/work/tlda',
+    })
+    assert.equal(app.requestedCapability, 'write')
+    assert.deepEqual(app.grantedPolicy, {
+      name: 'write',
+      capability: 'write',
+      policy: 'cwd',
       category: 'write-scope',
     })
   })

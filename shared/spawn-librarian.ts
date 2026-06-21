@@ -247,7 +247,8 @@ export class SpawnLibrarian {
     return this.liveness.get(agentId)?.state
   }
 
-  decideWake(agent: AgentRecord, checked?: AgentLivenessEvent | null): WakeDecision {
+  decideWake(agent: AgentRecord, checked?: AgentLivenessEvent | null, opts: { serverAlive?: boolean } = {}): WakeDecision {
+    if (opts.serverAlive === false) return { action: 'respawn' }
     const state = checked?.state || this.liveness.get(agent.id)?.state || (agent.dead ? 'dead' : 'unknown')
     if (state === 'alive') return { action: 'deliver' }
     if (state === 'spawning') return { action: 'queue', reason: 'spawning' }

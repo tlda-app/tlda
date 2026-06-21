@@ -138,6 +138,19 @@ describe('spawn librarian liveness routing', () => {
     assert.deepEqual(librarian.decideWake(agent), { action: 'hold', reason: 'unknown' })
   })
 
+  it('respawns a server-hibernating agent even when daemon liveness is unknown', () => {
+    const librarian = new SpawnLibrarian()
+    const agent = { id: 'fleet:a', friendly_name: 'a' }
+    assert.deepEqual(
+      librarian.decideWake(
+        agent,
+        { agent_id: agent.id, tmux_session: 'fleet-a', state: 'unknown', reason: 'daemon missed' },
+        { serverAlive: false }
+      ),
+      { action: 'respawn' }
+    )
+  })
+
   it('respawns only after daemon-confirmed dead state', () => {
     const librarian = new SpawnLibrarian()
     const agent = { id: 'fleet:a', friendly_name: 'a' }
