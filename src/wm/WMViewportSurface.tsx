@@ -1,11 +1,12 @@
 import { useEffect, useMemo } from 'react'
-import { TldrawViewport, useEditor, useValue } from 'tldraw'
-import type { Editor, TLShape, TLViewportId } from 'tldraw'
+import { useEditor, useValue } from 'tldraw'
+import type { TLShape } from 'tldraw'
 import type { Camera } from './wm-core'
 import { VisibilityViewportProvider } from '../shapes/useIsInViewport'
+import type { VisibilityViewportId } from '../shapes/useIsInViewport'
 
 export interface WMViewportDiagnostics {
-	viewportId: TLViewportId
+	viewportId: VisibilityViewportId
 	getCamera: () => Camera
 	getViewport: () => unknown
 	getRenderingShapeCount: () => number
@@ -13,7 +14,7 @@ export interface WMViewportDiagnostics {
 }
 
 interface WMViewportSurfaceProps {
-	viewportId: TLViewportId
+	viewportId: VisibilityViewportId
 	camera: Camera
 	onCameraChange: (camera: Camera) => void
 	title?: string
@@ -23,21 +24,7 @@ interface WMViewportSurfaceProps {
 	shapePredicate?: (shape: TLShape) => boolean
 }
 
-type ShapeFilteredViewportProps = React.ComponentProps<typeof TldrawViewport> & {
-	shapePredicate?: (shape: TLShape) => boolean
-}
-
-const ShapeFilteredTldrawViewport = TldrawViewport as React.ComponentType<ShapeFilteredViewportProps>
-
 type DiagnosticsWindow = Window & Record<string, WMViewportDiagnostics | undefined>
-
-function getRegisteredViewport(editor: Editor, viewportId: TLViewportId) {
-	try {
-		return editor.getViewport(viewportId)
-	} catch {
-		return null
-	}
-}
 
 export function WMViewportSurface({
 	viewportId,
@@ -50,18 +37,20 @@ export function WMViewportSurface({
 	shapePredicate,
 }: WMViewportSurfaceProps) {
 	const editor = useEditor()
+	void onCameraChange
+	void shapePredicate
 	const renderingShapeCount = useValue(
 		`wm viewport ${viewportId} rendering count`,
-		() => editor.getRenderingShapes({ viewportId }).length,
+		() => editor.getRenderingShapes().length,
 		[editor, viewportId],
 	)
 	const culledShapeCount = useValue(
 		`wm viewport ${viewportId} culled count`,
-		() => editor.getCulledShapes({ viewportId }).size,
+		() => editor.getCulledShapes().size,
 		[editor, viewportId],
 	)
 	const status = useMemo(
-		() => `${renderingShapeCount} rendered / ${culledShapeCount} culled`,
+		() => `${renderingShapeCount} rendered / ${culledShapeCount} culled in main viewport`,
 		[renderingShapeCount, culledShapeCount],
 	)
 
@@ -71,9 +60,9 @@ export function WMViewportSurface({
 		target[diagnosticsKey] = {
 			viewportId,
 			getCamera: () => camera,
-			getViewport: () => getRegisteredViewport(editor, viewportId),
-				getRenderingShapeCount: () => editor.getRenderingShapes({ viewportId }).length,
-				getCulledShapeCount: () => editor.getCulledShapes({ viewportId }).size,
+			getViewport: () => null,
+			getRenderingShapeCount: () => editor.getRenderingShapes().length,
+			getCulledShapeCount: () => editor.getCulledShapes().size,
 		}
 		return () => {
 			if (target[diagnosticsKey]?.viewportId === viewportId) {
@@ -109,12 +98,23 @@ export function WMViewportSurface({
 			) : null}
 			<div style={{ position: 'relative', flex: 1, minHeight: 0 }}>
 				<VisibilityViewportProvider viewportId={viewportId}>
-					<ShapeFilteredTldrawViewport
-						id={viewportId}
-						camera={camera}
-						onCameraChange={onCameraChange}
-						shapePredicate={shapePredicate}
-					/>
+					{import.meta.env.DEV ? (
+						<div
+							style={{
+								position: 'absolute',
+								inset: 0,
+								display: 'flex',
+								alignItems: 'center',
+								justifyContent: 'center',
+								padding: 16,
+								fontSize: 11,
+								color: 'rgba(30,30,35,0.62)',
+								pointerEvents: 'none',
+							}}
+						>
+							WM viewport runtime requires the multi-viewport tldraw fork.
+						</div>
+					) : null}
 				</VisibilityViewportProvider>
 			</div>
 		</div>

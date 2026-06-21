@@ -5,18 +5,20 @@
  * during scrolling/zooming, preventing rapid mount/unmount thrashing at
  * viewport edges.
  */
-import { createContext, createElement, useContext, type ReactNode } from 'react'
-import { useEditor, useValue, type TLViewportId } from 'tldraw'
+import { createContext, createElement, type ReactNode } from 'react'
+import { useEditor, useValue } from 'tldraw'
 
 const MARGIN_PX = 400  // screen pixels of hysteresis on each side
 
-const VisibilityViewportContext = createContext<TLViewportId | undefined>(undefined)
+export type VisibilityViewportId = string
+
+const VisibilityViewportContext = createContext<VisibilityViewportId | undefined>(undefined)
 
 export function VisibilityViewportProvider({
   viewportId,
   children,
 }: {
-  viewportId?: TLViewportId
+  viewportId?: VisibilityViewportId
   children: ReactNode
 }) {
   return createElement(VisibilityViewportContext.Provider, { value: viewportId }, children)
@@ -24,29 +26,11 @@ export function VisibilityViewportProvider({
 
 export function useIsInViewport(shapeId: string): boolean {
   const editor = useEditor()
-  const viewportId = useContext(VisibilityViewportContext)
   return useValue('isInViewport', () => {
     const bounds = editor.getShapePageBounds(shapeId as any)
     if (!bounds) return true  // unknown → assume visible
-    let vp = editor.getViewportPageBounds()
-    let zoom = editor.getZoomLevel()
-    if (viewportId) {
-      try {
-        const viewport = editor.getViewport(viewportId)
-        vp = editor.getViewportPageBounds({ viewport })
-        zoom = viewport.camera.z
-      } catch (err) {
-        // The named viewport is registered after its DOM bounds are measured.
-        // Until then, keep the old main-viewport answer rather than unmounting.
-        if (import.meta.env.DEV) {
-          console.debug('[wm-viewport] visibility fallback before viewport registration', {
-            viewportId,
-            shapeId,
-            err,
-          })
-        }
-      }
-    }
+    const vp = editor.getViewportPageBounds()
+    const zoom = editor.getZoomLevel()
     const m = MARGIN_PX / zoom  // convert screen px to page coords
     return !(
       bounds.x         > vp.x + vp.w + m ||
@@ -54,5 +38,5 @@ export function useIsInViewport(shapeId: string): boolean {
       bounds.y         > vp.y + vp.h + m ||
       bounds.y + bounds.h < vp.y         - m
     )
-  }, [editor, shapeId, viewportId])
+  }, [editor, shapeId])
 }

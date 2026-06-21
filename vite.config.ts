@@ -11,8 +11,9 @@ const tlsCert = join(tlsDir, 'localhost+2.pem')
 const tlsKey  = join(tlsDir, 'localhost+2-key.pem')
 const hasTls = existsSync(tlsCert) && existsSync(tlsKey)
 const tldrawForkPackages = resolve('../../.tldraw-fork/packages')
+const hasTldrawForkSources = existsSync(resolve(tldrawForkPackages, 'tldraw/src/index.ts'))
 
-const tldrawForkAliases = [
+const tldrawForkAliases = hasTldrawForkSources ? [
   { find: /^tldraw$/, replacement: resolve(tldrawForkPackages, 'tldraw/src/index.ts') },
   { find: /^tldraw\/tldraw\.css$/, replacement: resolve(tldrawForkPackages, 'tldraw/tldraw.css') },
   { find: /^@tldraw\/driver$/, replacement: resolve(tldrawForkPackages, 'driver/src/index.ts') },
@@ -26,7 +27,7 @@ const tldrawForkAliases = [
   { find: /^@tldraw\/utils$/, replacement: resolve(tldrawForkPackages, 'utils/src/index.ts') },
   { find: /^@tldraw\/validate$/, replacement: resolve(tldrawForkPackages, 'validate/src/index.ts') },
   { find: /^rbush$/, replacement: resolve('node_modules/rbush/index.js') },
-]
+] : []
 
 function injectedConfig() {
   const cfg = resolveConfig()
@@ -90,7 +91,7 @@ export default defineConfig({
     port: 5179,
     ...(hasTls ? { https: { cert: readFileSync(tlsCert, 'utf8'), key: readFileSync(tlsKey, 'utf8') } } : {}),
     fs: {
-      allow: ['..', resolve('../../.tldraw-fork')],
+      allow: hasTldrawForkSources ? ['..', resolve('../../.tldraw-fork')] : ['..'],
     },
     hmr: process.env.VITE_HMR !== '1',
     watch: {
