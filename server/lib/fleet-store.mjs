@@ -22,7 +22,8 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 
-import { PSEUDO_LABELS, parseFilter, evalExprDirectional, labelsForAgent } from '../../shared/fleet-labels.mjs';
+import { createLiveStore } from '../../shared/live-store.ts';
+import { PSEUDO_LABELS, parseFilter, evalExpr, evalExprDirectional, labelsForAgent } from '../../shared/fleet-labels.mjs';
 import { baseName, nameForPhase, phaseFromName, ALL_PHASES } from '../../shared/lineage-name.mjs';
 
 // Persistent DB under ~/.config/tlda/ (survives macOS reboots).
@@ -30,6 +31,17 @@ import { baseName, nameForPhase, phaseFromName, ALL_PHASES } from '../../shared/
 // Excluded from Spotlight via a .metadata_never_index file next to the DB.
 const DB_PATH = path.join(os.homedir(), '.config', 'tlda', 'fleet.db');
 const FLEET_DIR = path.join(os.homedir(), '.fleet');
+
+function compareAgentsForRoster(a, b) {
+  const ts = (x) => x ? new Date(x).getTime() || 0 : 0;
+  const seenDelta = ts(b.last_seen) - ts(a.last_seen);
+  if (seenDelta !== 0) return seenDelta;
+  return ts(b.last_active) - ts(a.last_active);
+}
+
+function astLiteral(ast) {
+  return ast && ast.t === 'lit' ? ast.v : null;
+}
 
 // Virtual labels emitted by the DNF chat-routing resolver based on liveness
 // state. A friendly_name or label that equals one of these would silently
@@ -79,6 +91,8 @@ export class FleetStore {
     this.db.pragma('synchronous = NORMAL');
     this._createTables();
     this._prepareStatements();
+    this._initAgentRegistry();
+    this._wiretapCache = null;
     this._backfillNameHistory();
     this._listeners = []; // SSE broadcast callbacks
 
@@ -618,9 +632,11 @@ export class FleetStore {
         machine_id = COALESCE(excluded.machine_id, agents.machine_id)
     `);
 
-    this._getAgent = this.db.prepare('SELECT * FROM agents WHERE id = ?');
-    this._getAgentsByMachine = this.db.prepare('SELECT * FROM agents WHERE machine_id = ? AND dead = 0');
-    this._getAgentByName = this.db.prepare('SELECT * FROM agents WHERE friendly_name = ?');
+    const AGENT_SELECT = 'agents.*, lineages.friendly_name AS lineage_name';
+    const AGENT_JOIN = 'FROM agents LEFT JOIN lineages ON lineages.id = agents.lineage_id';
+    this._getAgent = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.id = ?`);
+    this._getAgentsByMachine = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.machine_id = ? AND agents.dead = 0`);
+    this._getAgentByName = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.friendly_name = ?`);
 
     // Name provenance: span covering an instant (newest qualifying span wins).
     this._nameAtStmt = this.db.prepare(`
@@ -641,10 +657,10 @@ export class FleetStore {
     // the events table. Earlier versions computed last_active inline (correlated
     // subquery, then a grouped index pass); both scanned ~400k events per call
     // and pinned the event loop for seconds-to-tens-of-seconds under load.
-    this._getAllAgents = this.db.prepare(`SELECT * FROM agents ORDER BY last_seen DESC`);
+    this._getAllAgents = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} ORDER BY agents.last_seen DESC`);
     // Live-only roster (the agents panel never shows dead agents). Indexed by
     // idx_agents_alive(dead, last_seen DESC) → returns ~tens of rows, not ~1300.
-    this._getAliveAgents = this.db.prepare(`SELECT * FROM agents WHERE dead = 0 ORDER BY last_seen DESC`);
+    this._getAliveAgents = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.dead = 0 ORDER BY agents.last_seen DESC`);
     // id→friendly_name only — for labeling chat history without hydrating all
     // ~1300 agents (parsing labels/metadata/session JSON per row).
     this._getAgentNames = this.db.prepare(`SELECT id, friendly_name FROM agents`);
@@ -886,6 +902,78 @@ export class FleetStore {
     });
   }
 
+  _initAgentRegistry() {
+    this._agentRegistry = createLiveStore();
+    this._aliveAgentRegistry = createLiveStore();
+    this._agentById = this._agentRegistry.index('byId', a => a.id);
+    this._agentByName = this._agentRegistry.index('byName', a => a.friendly_name || []);
+    this._agentByLabel = this._agentRegistry.index('byLabel', a => labelsForAgent(a));
+    this._aliveAgentById = this._aliveAgentRegistry.index('byId', a => a.id);
+    this._aliveAgentByName = this._aliveAgentRegistry.index('byName', a => a.friendly_name || []);
+    this._aliveAgentByLabel = this._aliveAgentRegistry.index('byLabel', a => labelsForAgent(a));
+    this._reloadAgentRegistry();
+  }
+
+  _reloadAgentRegistry() {
+    if (!this._agentRegistry || !this._aliveAgentRegistry) return;
+    const rows = this._getAllAgents.all().map(r => this._hydrateAgent(r));
+    const ids = new Set(rows.map(a => a.id));
+    const aliveIds = new Set(rows.filter(a => !a.dead).map(a => a.id));
+    this._agentRegistry.bulk(s => {
+      for (const a of rows) s.upsert(a);
+      for (const a of s.all()) {
+        if (!ids.has(a.id)) s.remove(a.id);
+      }
+    });
+    this._aliveAgentRegistry.bulk(s => {
+      for (const a of rows) {
+        if (a.dead) s.remove(a.id);
+        else s.upsert(a);
+      }
+      for (const a of s.all()) {
+        if (!aliveIds.has(a.id)) s.remove(a.id);
+      }
+    });
+  }
+
+  _syncAgentRegistry(id) {
+    if (!this._agentRegistry || !this._aliveAgentRegistry || !id) return;
+    const agent = this.getAgent(id);
+    if (!agent) {
+      this._agentRegistry.remove(id);
+      this._aliveAgentRegistry.remove(id);
+      return;
+    }
+    this._agentRegistry.upsert(agent);
+    if (agent.dead) this._aliveAgentRegistry.remove(id);
+    else this._aliveAgentRegistry.upsert(agent);
+  }
+
+  _agentRegistryViewKey(filter, from) {
+    return `fleet-recipient:${filter || '<all>'}:from:${from || ''}`;
+  }
+
+  resolveChatRecipients(filterAst, { from = null, filter = '' } = {}) {
+    const literal = astLiteral(filterAst);
+    if (literal) {
+      const found = new Map();
+      const byId = this._aliveAgentRegistry.get(literal);
+      if (byId) found.set(byId.id, byId);
+      for (const a of this._aliveAgentByName.get(literal)) found.set(a.id, a);
+      for (const a of this._aliveAgentByLabel.get(literal)) found.set(a.id, a);
+      return [...found.values()]
+        .filter(a => a.id !== from)
+        .sort(compareAgentsForRoster)
+        .map(a => a.id);
+    }
+
+    const view = this._aliveAgentRegistry.view(
+      a => a.id !== from && evalExpr(filterAst, labelsForAgent(a)),
+      { key: this._agentRegistryViewKey(filter, from), compare: compareAgentsForRoster }
+    );
+    return view.list.map(a => a.id);
+  }
+
   // ---- Agent state management ----
 
   upsertAgent(agent) {
@@ -924,6 +1012,7 @@ export class FleetStore {
         agent.machine_id || null
       );
       this._bustAgentsCache();
+      this._syncAgentRegistry(agent.id);
     } catch (e) {
       if (e.code === 'SQLITE_CONSTRAINT_UNIQUE' || e.message?.includes('UNIQUE constraint failed')) {
         throw new Error(`Name "${agent.friendly_name}" is already taken by another live agent`);
@@ -1248,17 +1337,20 @@ export class FleetStore {
   removeAgent(id) {
     this._deleteAgent.run(id);
     this._bustAgentsCache();
+    this._syncAgentRegistry(id);
   }
 
   updateHeartbeat(id) {
     const _t0 = Date.now();
     this._updateAgentLastSeen.run(new Date().toISOString(), id);
+    this._syncAgentRegistry(id);
     const _dt = Date.now() - _t0; if (_dt > 100) process.stderr.write(`[hb-slow] ${_dt}ms id=${id}\n`);
   }
 
   markDead(id) {
     this._markAgentDead.run(id);
     this._bustAgentsCache();
+    this._syncAgentRegistry(id);
   }
 
   updateAgentStatus(id, state, tool, ts) {
@@ -1271,6 +1363,7 @@ export class FleetStore {
     metadata.status = { state, tool: tool || null, ts: ts || new Date().toISOString() };
     this.db.prepare('UPDATE agents SET metadata = ?, last_seen = ? WHERE id = ?')
       .run(JSON.stringify(metadata), new Date().toISOString(), id);
+    this._syncAgentRegistry(id);
   }
 
   updateAgentMeta(id, patch) {
@@ -1283,6 +1376,7 @@ export class FleetStore {
     Object.assign(metadata, patch);
     this.db.prepare('UPDATE agents SET metadata = ? WHERE id = ?')
       .run(JSON.stringify(metadata), id);
+    this._syncAgentRegistry(id);
   }
 
   // Liveness oracle: optional function (agentId) => boolean.
@@ -1291,7 +1385,11 @@ export class FleetStore {
   // No oracle installed → no agent reports awake (all hibernating). The
   // daemon's first liveness sweep populates the oracle within seconds of
   // connect, so this is only the cold-start transient.
-  setLivenessOracle(fn) { this._isLiveOracle = fn }
+  setLivenessOracle(fn) {
+    this._isLiveOracle = fn;
+    this._bustAgentsCache();
+    this._reloadAgentRegistry();
+  }
 
   // ---- Lineage management ----
 
@@ -1323,7 +1421,7 @@ export class FleetStore {
   // client; rotated-off members have a NULL name and are excluded here.
   getLineageRoster(lineageId) {
     return this.db.prepare(
-      "SELECT * FROM agents WHERE lineage_id = ? AND friendly_name IS NOT NULL AND dead = 0"
+      "SELECT agents.*, lineages.friendly_name AS lineage_name FROM agents LEFT JOIN lineages ON lineages.id = agents.lineage_id WHERE agents.lineage_id = ? AND agents.friendly_name IS NOT NULL AND agents.dead = 0"
     ).all(lineageId).map(r => this._hydrateAgent(r));
   }
 
@@ -1332,7 +1430,7 @@ export class FleetStore {
     const base = this._lineageBase(lineageId);
     if (!base) return null;
     const row = this.db.prepare(
-      "SELECT * FROM agents WHERE lineage_id = ? AND friendly_name = ? AND dead = 0"
+      "SELECT agents.*, lineages.friendly_name AS lineage_name FROM agents LEFT JOIN lineages ON lineages.id = agents.lineage_id WHERE agents.lineage_id = ? AND agents.friendly_name = ? AND agents.dead = 0"
     ).get(lineageId, nameForPhase(base, 'day'));
     return row ? this._hydrateAgent(row) : null;
   }
@@ -1352,6 +1450,8 @@ export class FleetStore {
           'INSERT INTO lineage_phase_log (lineage_id, fleet_id, phase, entered_at) VALUES (?, ?, ?, ?)'
         ).run(lineageId, agentId, phase, now);
       })();
+      this._bustAgentsCache();
+      this._syncAgentRegistry(agentId);
       return;
     }
     this.db.transaction(() => {
@@ -1361,6 +1461,8 @@ export class FleetStore {
         'INSERT INTO lineage_phase_log (lineage_id, fleet_id, phase, entered_at) VALUES (?, ?, ?, ?)'
       ).run(lineageId, agentId, phase, now);
     })();
+    this._bustAgentsCache();
+    this._syncAgentRegistry(agentId);
   }
 
   retireFromLineage(agentId) {
@@ -1374,6 +1476,8 @@ export class FleetStore {
       this.db.prepare('UPDATE agents SET lineage_id = NULL WHERE id = ?')
         .run(agentId);
     })();
+    this._bustAgentsCache();
+    this._syncAgentRegistry(agentId);
   }
 
   // Resurrect a dead agent. If it was rotated out of a lineage — i.e. it is
@@ -1382,7 +1486,7 @@ export class FleetStore {
   // named "<base>:zombie". A plain dead agent (no lineage, or still named) just
   // comes back as-is. Returns { ok, zombie, name? }.
   resurrectAsZombie(agentId) {
-    return this.db.transaction(() => {
+    const result = this.db.transaction(() => {
       const agent = this._getAgent.get(agentId);
       if (!agent) return { ok: false, reason: 'not found' };
       this.db.prepare('UPDATE agents SET dead = 0 WHERE id = ?').run(agentId);
@@ -1410,6 +1514,9 @@ export class FleetStore {
       ).run(agent.lineage_id, agentId, 'zombie', ts);
       return { ok: true, zombie: true, name: zombieName };
     })();
+    this._bustAgentsCache();
+    this._reloadAgentRegistry();
+    return result;
   }
 
   // Move an agent to a different phase within its lineage = rename it.
@@ -1431,6 +1538,8 @@ export class FleetStore {
         'INSERT INTO lineage_phase_log (lineage_id, fleet_id, phase, entered_at) VALUES (?, ?, ?, ?)'
       ).run(agent.lineage_id, agentId, newPhase, now);
     })();
+    this._bustAgentsCache();
+    this._syncAgentRegistry(agentId);
   }
 
   // One rotation of the lineage's name-chain. The incoming agent takes the
@@ -1508,6 +1617,8 @@ export class FleetStore {
         .run(lineageId, dawnName, incomingAgentId);
       enterLog(incomingAgentId, 'dawn');
     })();
+    this._bustAgentsCache();
+    this._reloadAgentRegistry();
   }
 
   // Free a phase slot so a new agent can be placed there, instead of erroring on
@@ -1557,6 +1668,8 @@ export class FleetStore {
         }
       }
     })();
+    this._bustAgentsCache();
+    this._reloadAgentRegistry();
   }
 
   getLineageHistory(lineageId) {
@@ -1577,7 +1690,7 @@ export class FleetStore {
     if (!lineage) return null;
     // Phase is the name: "<base>" (dawn) / "<base>:day" / "<base>:dusk".
     const row = this.db.prepare(
-      'SELECT * FROM agents WHERE lineage_id = ? AND friendly_name = ? AND dead = 0'
+      'SELECT agents.*, lineages.friendly_name AS lineage_name FROM agents LEFT JOIN lineages ON lineages.id = agents.lineage_id WHERE agents.lineage_id = ? AND agents.friendly_name = ? AND agents.dead = 0'
     ).get(lineage.id, nameForPhase(lineage.friendly_name, phase));
     return row ? this._hydrateAgent(row) : null;
   }
@@ -1609,7 +1722,7 @@ export class FleetStore {
       lineage_id: row.lineage_id || null,
       // No `phase` field — phase is encoded in friendly_name and parsed on the
       // client. lineage_name (the base) is still exposed for lineage search.
-      lineage_name: row.lineage_id ? (this.db.prepare('SELECT friendly_name FROM lineages WHERE id = ?').get(row.lineage_id)?.friendly_name || null) : null,
+      lineage_name: row.lineage_name || null,
     };
   }
 
@@ -1719,11 +1832,15 @@ export class FleetStore {
     if (types != null && !Array.isArray(types)) throw new Error('types must be an array');
     const validTypes = types && types.length > 0 ? types : null;
     const info = this._addWiretap.run(agentId, JSON.stringify(filter), validTypes ? JSON.stringify(validTypes) : null);
+    this._wiretapCache = null;
     return { id: info.lastInsertRowid, agent_id: agentId, filter, types: validTypes };
   }
 
   getWiretaps() {
-    return this._getWiretaps.all().map(r => this._hydrateWiretap(r));
+    if (!this._wiretapCache) {
+      this._wiretapCache = this._getWiretaps.all().map(r => this._hydrateWiretap(r));
+    }
+    return this._wiretapCache;
   }
 
   getWiretapsByAgent(agentId) {
@@ -1732,10 +1849,12 @@ export class FleetStore {
 
   removeWiretap(id) {
     this._deleteWiretap.run(id);
+    this._wiretapCache = null;
   }
 
   removeWiretapsByAgent(agentId) {
     this._deleteWiretapsByAgent.run(agentId);
+    this._wiretapCache = null;
   }
 
   // Resolve wiretap matches: given a sender and recipient, return agent IDs that should be CC'd
@@ -2018,6 +2137,48 @@ export class FleetStore {
     }
     rows.reverse(); // chronological
     return rows;
+  }
+
+  buildChatHistoryResponse({ before = null, agents = [], limit = 50, serverOwnerId = null, serverOwnerName = null } = {}) {
+    const cap = Math.min(parseInt(limit) || 50, 1000);
+    let events = this.queryChatHistory({
+      before,
+      agents: Array.isArray(agents) ? agents : [],
+      limit: cap + 1,
+    }).map(e => ({ ...e, event_type: e.type, from: e.from, to: e.to, agent: e.agent_id }));
+
+    const hasMore = events.length > cap;
+    if (hasMore) events.shift();
+    events = events.filter(e => {
+      const t = e.text || '';
+      return !t.startsWith('<channel') && !t.startsWith('<task-notification') && !t.startsWith('<system-reminder');
+    });
+
+    const agentMap = { ...this.getAgentNameMap() };
+    if (serverOwnerId || serverOwnerName) {
+      agentMap.web = agentMap[serverOwnerId] || serverOwnerName || serverOwnerId || 'web';
+    }
+
+    const unreadIds = new Set();
+    const eventIds = events.map(e => e.id).filter(id => id != null);
+    if (eventIds.length) {
+      const placeholders = eventIds.map(() => '?').join(',');
+      try {
+        const rows = this.db.prepare(`SELECT event_id FROM unread WHERE read = 0 AND event_id IN (${placeholders})`).all(...eventIds);
+        for (const r of rows) unreadIds.add(r.event_id);
+      } catch (e) {
+        console.error('[fleet] unread query failed:', e.message);
+      }
+    }
+
+    const resolved = events.map(e => ({
+      ...e,
+      read: !unreadIds.has(e.id),
+      fromLabel: agentMap[e.from] || (e.from ? e.from.substring(0, 8) : ''),
+      toLabel: agentMap[e.to] || agentMap[e.agent] || (e.to ? e.to.substring(0, 8) : ''),
+    }));
+    const nextCursor = hasMore && events.length > 0 ? events[0].timestamp : null;
+    return { events: resolved, hasMore, nextCursor };
   }
 
   // Get events after a known rowid (for SSE catch-up)

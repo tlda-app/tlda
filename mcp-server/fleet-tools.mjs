@@ -2185,7 +2185,7 @@ export async function handleFleetTool(name, args) {
       msg += `\nYour name: "${entry.friendly_name}" — other agents and the user know you by this name.`;
     }
 
-    if (currentHarness.kind === 'claude' && !CLAUDE_SESSION) {
+    if (currentHarness.requiresClaudeSession && !CLAUDE_SESSION) {
       msg += '\n\n⚠️ No session ID detected — activity cards will NOT appear for this agent. Pass session_id to register() to fix.';
       process.stderr.write(`[fleet] WARNING: agent ${AGENT_ID} registered with no session_id — no activity tracking\n`);
     }

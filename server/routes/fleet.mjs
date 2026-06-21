@@ -248,36 +248,17 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const rawAgents = req.query.agents
     const agents = Array.isArray(rawAgents) ? rawAgents : (rawAgents ? [rawAgents] : [])
     try {
-      let events = []
-      if (fleetStore) {
-        const fleetEvents = fleetStore.queryChatHistory({ before, agents, limit: limit + 1 })
-        events = fleetEvents.map(e => ({ ...e, event_type: e.type, from: e.from, to: e.to, agent: e.agent_id }))
+      if (!fleetStore) {
+        res.json({ events: [], hasMore: false, nextCursor: null })
+        return
       }
-      const hasMore = events.length > limit
-      if (hasMore) events.shift()
-      events = events.filter(e => {
-        const t = e.text || ''
-        return !t.startsWith('<channel') && !t.startsWith('<task-notification') && !t.startsWith('<system-reminder')
-      })
-      const allAgents = fleetStore ? fleetStore.getAllAgents() : []
-      const agentMap = {}
-      for (const a of allAgents) agentMap[a.id] = a.friendly_name || a.name || a.id
-      agentMap['web'] = agentMap[SERVER_OWNER_ID] || SERVER_OWNER_NAME
-      const unreadIds = new Set()
-      if (fleetStore) {
-        try {
-          const rows = fleetStore.db.prepare('SELECT event_id FROM unread WHERE read = 0').all()
-          for (const r of rows) unreadIds.add(r.event_id)
-        } catch {}
-      }
-      const resolved = events.map(e => ({
-        ...e,
-        read: !unreadIds.has(e.id),
-        fromLabel: agentMap[e.from] || (e.from ? e.from.substring(0, 8) : ''),
-        toLabel: agentMap[e.to] || agentMap[e.agent] || (e.to ? e.to.substring(0, 8) : ''),
+      res.json(fleetStore.buildChatHistoryResponse({
+        before,
+        agents,
+        limit,
+        serverOwnerId: SERVER_OWNER_ID,
+        serverOwnerName: SERVER_OWNER_NAME,
       }))
-      const nextCursor = hasMore && events.length > 0 ? events[0].timestamp : null
-      res.json({ events: resolved, hasMore, nextCursor })
     } catch (e) {
       res.status(500).json({ error: e.message })
     }
@@ -438,7 +419,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   // doc: project name — daemon resolves to sourceDir for the cwd
   // For respawn: { agent: "fleet:xxx" or "name", respawn: true }
   router.post('/api/spawn', async (req, res) => {
-    const { name, model, doc, cwd, agent, respawn, capability, spawnCapability, kind, mode, effort, trustOverride } = req.body || {}
+    const { name, model, doc, cwd, agent, respawn, fresh, capability, spawnCapability, kind, mode, effort, trustOverride } = req.body || {}
     // HTTP auth currently proves only bearer-token level, not which fleet agent or
     // human browser session made the request. Spawning is authority-sensitive, so
     // fail closed here instead of treating all HTTP callers as the server owner.
@@ -478,7 +459,10 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       })
       const launchMode = projectCapabilityToMode(authorized.requestedCapability, mode)
       const resolved = resolveSpawnTarget
-        ? await resolveSpawnTarget(spawnName, !!respawn)
+        ? await resolveSpawnTarget(spawnName, !!respawn, {
+            fresh: !!fresh,
+            requested: { model, kind, project: doc },
+          })
         : { name: spawnName, respawn: !!respawn }
       const result = await sendRpc(machineIds[0], 'spawn', {
         name: resolved.name || undefined,

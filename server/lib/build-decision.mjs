@@ -69,7 +69,12 @@ export function shouldBuildOnPush(project, name, { changedFiles = [], anyChanged
 }
 
 /**
- * Check if a project's SVG build output is stale (source newer than build).
+ * Check if a project's SVG build output is stale.
+ *
+ * build.stamp stores the source.stamp mtime captured at build start: the source
+ * version the last successful build covered. A source edit that lands while a
+ * build is running will therefore have a newer source.stamp than build.stamp's
+ * content even if the build finishes after the edit.
  * Used by the ensure system for on-demand builds.
  *
  * @param {string} name — project name
@@ -83,7 +88,10 @@ export function isSvgBuildStale(name) {
   if (!existsSync(sourceStamp)) return false
   if (!existsSync(buildStamp)) return true
 
-  return statSync(sourceStamp).mtimeMs > statSync(buildStamp).mtimeMs
+  const builtSourceVersion = Number(readFileSync(buildStamp, 'utf8'))
+  if (!Number.isFinite(builtSourceVersion)) return true
+
+  return statSync(sourceStamp).mtimeMs > builtSourceVersion
 }
 
 /**
