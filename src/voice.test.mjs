@@ -482,7 +482,7 @@ function reset() {
   console.log('✓ Test 8b: submit magic words are configurable')
 }
 
-// ---- Test 8c: Sink escalation clears only live sink interim ----
+// ---- Test 8c: 2nd sink tap wipes the last real field's interim (the #4 fix) ----
 {
   const ta = makeTextarea()
   setVoiceTarget(ta, [], {})
@@ -503,13 +503,16 @@ function reset() {
   enterVoiceSink()
   const state = window.__voiceTest.getState()
   assert.equal(state.dumping, true, 'second sink tap stays in sink mode')
-  assert.equal(state.state, 'edit', 'second sink tap clears the current sink segment')
-  assert.equal(state.interim, '', 'live sink interim is cleared')
-  assert.ok(ta.value.includes('ambient'), 'second sink tap still does not rewrite prior target text')
+  assert.equal(state.state, 'edit', 'second sink tap resets the sink buffer')
+  assert.equal(state.interim, '', 'sink buffer is cleared')
+  // The #4 fix: the 2nd tap wipes the interim that was in the LAST REAL field
+  // ("ambient", an uncommitted interim) — not the sink's nowhere buffer (the old
+  // no-op). "ambient" was never finalized, so the field is left empty.
+  assert.equal(ta.value.includes('ambient'), false, 'second sink tap wipes the prior field’s in-flight interim')
 
   window.__voiceTest.fakeStop()
   reset()
-  console.log('✓ Test 8c: sink escalation clears only live sink interim')
+  console.log('✓ Test 8c: 2nd sink tap wipes the last real field’s interim')
 }
 
 // ---- Test 8d: Accumulator target switches preserve committed note text ----
@@ -689,4 +692,55 @@ await setBackend('chrome')
   console.log('✓ Test 12: mic watchdog never restarts a running/suspended context')
 }
 
-console.log('\nAll 15 tests passed.')
+// Test 13: upstream lifecycle decision — stream to Deepgram ONLY while actively
+// dictating in the active tab. Drop recording / routing / foreground and the
+// upstream is released; restore all three and it resumes. (Cost-leak gate.)
+{
+  const act = window.__voiceTest.upstreamAction
+  const S = (recording, routed, tabHidden, paused) => act({ recording, routed, tabHidden, paused })
+  // Actively dictating, foreground, routed → stream.
+  assert.equal(S(true, true, false, false), 'send', 'recording + routed + foreground must stream')
+  // Routed-to-nowhere (dumb mode) while streaming → pause (send stop).
+  assert.equal(S(true, false, false, false), 'pause', 'routed-to-nowhere must release upstream')
+  // Backgrounded tab while streaming → pause.
+  assert.equal(S(true, true, true, false), 'pause', 'backgrounded tab must release upstream')
+  // Recording off while streaming → pause.
+  assert.equal(S(false, true, false, false), 'pause', 'not recording must release upstream')
+  // Already paused and still shouldn't stream → hold (no repeat stop).
+  assert.equal(S(true, false, false, true), 'hold', 'stay paused when still not dictating')
+  // Paused but now actively dictating again → resume (send start).
+  assert.equal(S(true, true, false, true), 'resume', 'resume when routed + foreground + recording')
+  console.log('✓ Test 13: upstream streams only while actively dictating in the active tab')
+}
+
+// Test 14: honest mic status — the HUD reads "no mic input" when raw frames stop
+// (a silently-dead/muted mic), "live" while frames arrive, even across a pause.
+{
+  const p = window.__voiceTest.micPresence
+  assert.equal(p(0, 'running', 1500), 'live', 'a just-arrived frame reads live')
+  assert.equal(p(200, 'running', 1500), 'live', 'recent frame reads live')
+  assert.equal(p(3000, 'running', 1500), 'no-input', 'no frame past the timeout = dead/muted mic, not a fake live')
+  assert.equal(p(null, 'running', 1500), 'no-input', 'no frame ever delivered reads no-input')
+  assert.equal(p(0, 'closed', 1500), 'no-input', 'a closed context is never live')
+  console.log('✓ Test 14: HUD mic status is honest about real audio presence')
+}
+
+// Test 15: <nowhere> second click wipes ONLY the in-flight interim from the last
+// real field; committed text (left) survives.
+{
+  const ta = makeTextarea()
+  setVoiceTarget(ta, [], {}, null)
+  window.__voiceTest.fakeRecord(ta)
+  window.__voiceTest.injectTranscript('hello', false) // interim → state=speech, hasSeenInterim
+  window.__voiceTest.injectTranscript('hello', true)  // final → commits "hello" to _left
+  window.__voiceTest.injectTranscript('world', false) // new interim (uncommitted) to be wiped
+  enterVoiceSink()  // 1st click → nowhere, remembers ta + left/right
+  enterVoiceSink()  // 2nd click → wipe interim only
+  assert.ok(/hello/i.test(ta.value), `committed text must survive, got "${ta.value}"`)
+  assert.ok(!/world/i.test(ta.value), `in-flight interim must be wiped, got "${ta.value}"`)
+  window.__voiceTest.fakeStop()
+  reset()
+  console.log('✓ Test 15: <nowhere> 2nd click wipes interim, keeps committed text')
+}
+
+console.log('\nAll 18 tests passed.')

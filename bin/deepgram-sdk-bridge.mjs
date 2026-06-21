@@ -38,6 +38,52 @@ if (!API_KEY) {
   process.exit(1)
 }
 
+// CLI flag → config key → default. Used for the idle-cutoff tunable so Skip can
+// feel-test without a rebuild (config) and tests can pin short values (flags).
+function resolveIntOpt(flag, configKey, def) {
+  if (process.argv.includes(flag)) {
+    const v = parseInt(process.argv[process.argv.indexOf(flag) + 1], 10)
+    if (Number.isFinite(v)) return v
+  }
+  try {
+    const config = loadConfig()
+    if (config[configKey] != null && Number.isFinite(Number(config[configKey]))) return Number(config[configKey])
+  } catch {}
+  return def
+}
+
+// Idle cutoff: close the upstream session after this many ms with no Deepgram
+// speech activity (its own VAD), so a warm/silent session is never kept alive
+// (and never billed). 30s is long enough not to interrupt a thinking pause
+// (connection stays warm → instant, no clipped words) but closes an abandoned
+// session. After a cutoff the bridge waits — it reconnects only when the audio
+// it receives actually contains sound (see RESUME_RMS_THRESHOLD).
+const IDLE_CUTOFF_MS = resolveIntOpt('--idle-ms', 'idleCutoffMs', 30000)
+// Resume gate: after an idle cutoff, reconnect upstream only when an incoming PCM
+// frame's RMS energy exceeds this — i.e. the user is actually speaking, not a
+// silent-but-live mic. Energy magnitude (not a timestamp) is the discriminator;
+// a quiet mic's noise floor sits below this, real speech well above. Device-ish,
+// so it's tunable; the default is conservative. Linear16 RMS is 0..32767.
+const RESUME_RMS_THRESHOLD = resolveIntOpt('--resume-rms', 'resumeRmsThreshold', 250)
+// Pre-roll kept while idle so the first words after a pause aren't clipped through
+// the reconnect: when speech resumes we flush this buffer ahead of the live audio.
+const PREROLL_MS = resolveIntOpt('--preroll-ms', 'prerollMs', 300)
+const PREROLL_MAX_BYTES = Math.round(16000 * 2 * (PREROLL_MS / 1000)) // 16kHz · 2 bytes/sample
+
+// RMS of a linear16 (Int16 LE) PCM buffer. Pure → unit-tested.
+function rmsOfPcm(buf) {
+  const n = Math.floor(buf.length / 2)
+  if (n === 0) return 0
+  let sumSq = 0
+  for (let i = 0; i < n; i++) {
+    const s = buf.readInt16LE(i * 2)
+    sumSq += s * s
+  }
+  return Math.sqrt(sumSq / n)
+}
+
+console.log(`[deepgram-sdk-bridge] idle cutoff ${IDLE_CUTOFF_MS}ms; resume RMS ${RESUME_RMS_THRESHOLD}; preroll ${PREROLL_MS}ms; redials only on real audio / explicit start`)
+
 const KEYWORDS = [
   'Bregman', 'estimand', 'estimands', 'Riesz', 'RKHS', 'Hilbert',
   'Sobolev', 'Matérn', 'semiparametric', 'minimax', 'nuisance',
@@ -84,8 +130,10 @@ function loadVoiceParamOverrides() {
   return {}
 }
 
-function listenOptions() {
-  const overrides = loadVoiceParamOverrides()
+function listenOptions(clientOverrides = {}) {
+  // Precedence: docs-backed defaults < config.json voiceParams < per-connection
+  // client params (Skip's Preferences, sent in the `start` message).
+  const overrides = { ...loadVoiceParamOverrides(), ...clientOverrides }
   const recognition = { ...DEFAULT_LISTEN_OPTIONS, ...overrides }
   if (Object.keys(overrides).length) {
     console.log('[deepgram-sdk-bridge] voiceParams overrides applied:', JSON.stringify(overrides))
@@ -135,6 +183,35 @@ wss.on('connection', (browserWs) => {
   let connecting = null
   let keepAliveInterval = null
   let manuallyClosed = false
+  let idleTimer = null
+  let lastSpeechAt = 0
+  let idleClosed = false        // upstream closed by the idle cutoff — wait for `start`
+  let reconnectFailures = 0     // consecutive failed/dropped connects (drives backoff)
+  let lastConnectAt = 0         // timestamp of the last upstream connect attempt (throttle)
+  let preroll = []              // recent PCM frames buffered while idle (anti-clip on resume)
+  let prerollBytes = 0
+  // Per-connection tunables — default to the bridge config, overridden by the
+  // values the client sends in its `start` message (Skip's Preferences).
+  let idleMs = IDLE_CUTOFF_MS
+  let resumeRms = RESUME_RMS_THRESHOLD
+  let prerollMaxBytes = PREROLL_MAX_BYTES
+  let clientVoiceParams = {}    // per-connection Deepgram recognition overrides (endpointing, utterance_end_ms)
+
+  function applyClientParams(msg) {
+    if (Number.isFinite(msg?.idleMs) && msg.idleMs > 0) idleMs = msg.idleMs
+    if (Number.isFinite(msg?.resumeRms) && msg.resumeRms >= 0) resumeRms = msg.resumeRms
+    if (Number.isFinite(msg?.prerollMs) && msg.prerollMs >= 0) prerollMaxBytes = Math.round(16000 * 2 * (msg.prerollMs / 1000))
+    if (Number.isFinite(msg?.endpointing) && msg.endpointing >= 0) clientVoiceParams.endpointing = msg.endpointing
+    if (Number.isFinite(msg?.utterance_end_ms) && msg.utterance_end_ms >= 0) clientVoiceParams.utterance_end_ms = msg.utterance_end_ms
+  }
+
+  function pushPreroll(buf) {
+    preroll.push(buf)
+    prerollBytes += buf.length
+    while (prerollBytes > prerollMaxBytes && preroll.length > 1) {
+      prerollBytes -= preroll.shift().length
+    }
+  }
 
   function isDeepgramOpen(connection = dg) {
     return connection?.socket?.readyState === WebSocket.OPEN
@@ -157,10 +234,20 @@ wss.on('connection', (browserWs) => {
 
     connection.on('open', () => {
       console.log('[deepgram-sdk-bridge] connected to Deepgram')
+      reconnectFailures = 0
+      lastSpeechAt = Date.now()
       broadcast({ type: 'status', status: 'connected', implementation: 'sdk' })
       keepAliveInterval = setInterval(() => {
         try { sendDeepgramJson(dg, { type: 'KeepAlive' }) } catch {}
       }, 3000)
+      // Idle cutoff: if Deepgram's own VAD reports no speech for IDLE_CUTOFF_MS,
+      // close the upstream session so silence is never billed. The client resumes
+      // (sends `start`) when it hears speech again.
+      clearInterval(idleTimer)
+      idleTimer = setInterval(() => {
+        if (!isDeepgramOpen()) return
+        if (Date.now() - lastSpeechAt > idleMs) idleCutoff()
+      }, 1000)
     })
 
     connection.on('message', (msg) => {
@@ -170,6 +257,7 @@ wss.on('connection', (browserWs) => {
         const text = alt.transcript.trim()
         if (!text) return
 
+        lastSpeechAt = Date.now() // speech activity → keep the upstream session alive
         console.log(`[deepgram-sdk-bridge] transcript: is_final=${msg.is_final} speech_final=${msg.speech_final} from_finalize=${msg.from_finalize} "${text.slice(0, 60)}"`)
         broadcast({
           type: 'transcript',
@@ -183,6 +271,7 @@ wss.on('connection', (browserWs) => {
       }
 
       if (msg.type === 'SpeechStarted') {
+        lastSpeechAt = Date.now()
         console.log('[deepgram-sdk-bridge] speech started')
         broadcast({ type: 'speech_started', timestamp: Date.now() })
         return
@@ -199,15 +288,21 @@ wss.on('connection', (browserWs) => {
     })
 
     connection.on('close', (event) => {
-      console.log(`[deepgram-sdk-bridge] Deepgram closed: ${event?.code ?? ''} ${event?.reason ?? ''}`)
       clearInterval(keepAliveInterval)
       keepAliveInterval = null
+      clearInterval(idleTimer)
+      idleTimer = null
       dg = null
       connecting = null
-      if (!manuallyClosed && browserWs.readyState === WebSocket.OPEN) {
-        setTimeout(() => {
-          if (!dg && browserWs.readyState === WebSocket.OPEN) connectDeepgram()
-        }, 1000)
+      if (manuallyClosed || idleClosed) return
+      // Unexpected drop — INCLUDING Deepgram's own no-audio/timeout close. Do NOT
+      // self-redial: that instant auto-reconnect (no "should I be connected?"
+      // check) was the 555K-reconnect storm. We only reconnect when the client
+      // sends real audio or an explicit `start`, and connectDeepgram() throttles
+      // with backoff. Just count the failure so the throttle widens.
+      reconnectFailures++
+      if (reconnectFailures <= 2 || reconnectFailures % 10 === 0) {
+        console.log(`[deepgram-sdk-bridge] upstream closed (code ${event?.code ?? '?'}); not redialing — waits for audio/start (drop #${reconnectFailures})`)
       }
     })
 
@@ -219,14 +314,26 @@ wss.on('connection', (browserWs) => {
 
   async function connectDeepgram() {
     if (dg || connecting) return connecting
+    // STORM GUARD — reconnects only happen here (driven by real audio or an
+    // explicit `start`), never on a self-scheduled timer. After a failure/drop we
+    // back off exponentially, so a session Deepgram keeps closing (its no-audio
+    // timeout, a 402, etc.) can't loop — that loop was the 555K-reconnect storm.
+    // An explicit `start` resets reconnectFailures, so user intent connects now.
+    const backoff = reconnectFailures > 0 ? Math.min(30000, 1000 * 2 ** (reconnectFailures - 1)) : 0
+    if (backoff && Date.now() - lastConnectAt < backoff) return null
+    lastConnectAt = Date.now()
+    // A fresh connect (incl. voice OFF→ON after a stop-triggered disconnect)
+    // re-arms auto-reconnect: clear the manual-close flag set by disconnectDeepgram().
+    manuallyClosed = false
     connecting = (async () => {
-      const connection = await client.listen.v1.connect(listenOptions())
+      const connection = await client.listen.v1.connect(listenOptions(clientVoiceParams))
       attachDeepgramConnection(connection)
       connection.connect()
       await connection.waitForOpen()
       return connection
     })().catch(err => {
       connecting = null
+      reconnectFailures++
       console.error('[deepgram-sdk-bridge] connect failed:', err.message)
       try { browserWs.send(JSON.stringify({ type: 'status', status: 'error', error: err.message, implementation: 'sdk' })) } catch {}
       return null
@@ -234,10 +341,22 @@ wss.on('connection', (browserWs) => {
     return connecting
   }
 
+  // Close the upstream session because Deepgram saw no speech for IDLE_CUTOFF_MS.
+  // Marks idleClosed so we won't auto-reconnect and so incoming audio is dropped
+  // until the client explicitly sends `start` again (no flap on a quiet mic).
+  function idleCutoff() {
+    console.log(`[deepgram-sdk-bridge] idle cutoff — no speech for ${IDLE_CUTOFF_MS}ms, closing upstream`)
+    idleClosed = true
+    disconnectDeepgram()
+    broadcast({ type: 'status', status: 'idle', implementation: 'sdk' })
+  }
+
   function disconnectDeepgram() {
     manuallyClosed = true
     clearInterval(keepAliveInterval)
     keepAliveInterval = null
+    clearInterval(idleTimer)
+    idleTimer = null
     if (dg) {
       try { sendDeepgramJson(dg, { type: 'CloseStream' }) } catch {}
       try { dg.close() } catch {}
@@ -247,6 +366,26 @@ wss.on('connection', (browserWs) => {
 
   browserWs.on('message', (data, isBinary) => {
     if (isBinary) {
+      // After an idle cutoff the upstream is closed. A continuously-streaming
+      // client must NOT instantly reconnect (that defeats the cutoff and was the
+      // storm). Resume ONLY when the audio actually contains sound (RMS), not on a
+      // silent-but-live mic. Buffer silence as pre-roll so the first words after
+      // the pause aren't clipped through the reconnect.
+      if (idleClosed) {
+        const frame = Buffer.from(data)
+        if (rmsOfPcm(frame) < resumeRms) { pushPreroll(frame); return }
+        // Real speech → resume. Treat like user intent: clear the gate + backoff.
+        console.log('[deepgram-sdk-bridge] resume — speech after idle, reconnecting upstream')
+        idleClosed = false
+        reconnectFailures = 0
+        const frames = [...preroll, frame]
+        preroll = []; prerollBytes = 0
+        connectDeepgram().then(connection => {
+          if (!connection || browserWs.readyState !== WebSocket.OPEN) return
+          for (const f of frames) { try { sendDeepgramAudio(connection, f) } catch {} }
+        })
+        return
+      }
       if (isDeepgramOpen()) {
         try { sendDeepgramAudio(dg, data) } catch (err) { console.warn('[deepgram-sdk-bridge] audio send failed:', err.message) }
         return
@@ -268,11 +407,21 @@ wss.on('connection', (browserWs) => {
     try {
       const msg = JSON.parse(data.toString())
       if (msg.type === 'start') {
+        // Explicit user intent (voice ON / resume after idle): clear the idle
+        // gate and reset the backoff so we connect immediately. Pick up any
+        // client-tuned conservation params (Skip's Preferences).
+        applyClientParams(msg)
+        idleClosed = false
+        reconnectFailures = 0
         connectDeepgram()
       } else if (msg.type === 'finalize' || msg.type === 'flush') {
         try { sendDeepgramJson(dg, { type: 'Finalize' }) } catch {}
       } else if (msg.type === 'stop') {
-        // Keep the upstream session warm; browser close ends the session.
+        // Voice OFF must end the upstream Deepgram session, or it stays open
+        // (held by the 3 s KeepAlive) and keeps billing. The client tears down
+        // the mic on stop but leaves this WS open for a later 'start', so tab
+        // close is NOT a reliable end-of-session — disconnect upstream here.
+        disconnectDeepgram()
       } else if (msg.type === 'log') {
         console.log(`[voice] ${msg.text}`)
       }
