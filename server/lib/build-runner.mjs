@@ -44,7 +44,8 @@ import { join, basename, dirname } from 'path'
 import { tmpdir, homedir } from 'os'
 import { fileURLToPath } from 'url'
 import { updateProject, sourceDir, outputDir, projectDir, readProject, listProjects, extractBuildErrors } from './project-store.mjs'
-import { broadcastSignal, putShape, updateShape, emitGlobalEvent } from './sync-rooms.mjs'
+import { broadcastSignal, emitGlobalEvent } from './sync-rooms.mjs'
+import { writeSentinel } from './sentinel.mjs'
 import { snapshotBeforeBuild, recordGitSnapshot } from './history-store.mjs'
 import { commitSnapshot, currentVersion, initShadowFromProjectRepo } from './shadow-repo.mjs'
 import { appendBuildEntry } from './changelog.mjs'
@@ -1763,7 +1764,7 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
     // the previous role of `output/main.dvi` mtime (which broke once we
     // had multiple per-target DVIs).
     try {
-      writeFileSync(join(outDir, 'build.stamp'), new Date().toISOString())
+      writeFileSync(join(outDir, 'build.stamp'), String(sourceVersion ?? 0))
     } catch (e) {
       ctx.addLog(`build.stamp write failed (non-fatal): ${e.message}`)
     }
@@ -2068,63 +2069,24 @@ async function updateDocVersionSentinel(name, shadowHash, buildReadyAt, errors, 
   const commitHash = shadowHash || 'unknown'
   const docName = `doc-${name}`
   const sv = typeof sourceVersion === 'number' ? sourceVersion : 0
-  const sentinel = {
-    id: 'shape:doc-version--sentinel',
-    typeName: 'shape',
-    type: 'doc-version',
-    x: 0,
-    y: 0,
-    rotation: 0,
-    index: 'a0',
-    parentId: 'page:page',
-    isLocked: true,
-    opacity: 0,
-    meta: {},
-    props: {
-      w: 1,
-      h: 1,
-      commitHash,
-      timestamp: Date.now(),
-      buildReadyAt: buildReadyAt || Date.now(),
-      // sourceVersion = the source.stamp mtime this build was for, monotonic per
-      // source change. The sentinel write fires non-blocking after each build, so
-      // an older build's write can race a newer one's; the guard below (atomic
-      // read-modify-write) drops any write whose source is ≤ what's already
-      // committed, so the version can never jump backward. Carried IN the sentinel
-      // so it survives restart with no side state.
-      sourceVersion: sv,
-      // Build errors/warnings live HERE — convergent Yjs state, not a
-      // fire-and-forget signal. A build's error status is a stable property
-      // that must survive reconnect/restart, so the viewer reads it straight
-      // from the sentinel (single source of truth, no signal fallback).
-      warningsJson: warnings ? JSON.stringify(warnings) : '',
-      errorsJson: errors ? JSON.stringify(errors) : '',
-    },
-  }
-
-  // Atomic monotonicity guard: keep the existing sentinel if its source is newer.
-  try {
-    let skipped = false
-    await updateShape(docName, 'shape:doc-version--sentinel', (cur) => {
-      const prev = cur?.props?.sourceVersion
-      const prevReadyAt = cur?.props?.buildReadyAt || cur?.props?.timestamp || 0
-      if (
-        (typeof prev === 'number' && sv < prev) ||
-        (typeof prev === 'number' && sv === prev && prevReadyAt >= sentinel.props.buildReadyAt)
-      ) { skipped = true; return cur }
-      // Preserve a standing mirror sync-failure indicator across build writes —
-      // a successful build doesn't mean the working-copy mirror sync recovered;
-      // only daemon-sync-ok clears it.
-      return { ...sentinel, props: { ...sentinel.props, syncErrorJson: cur?.props?.syncErrorJson ?? '' } }
-    })
-    if (skipped) {
-      console.log(`[build:${name}] skipped out-of-order sentinel write: source ${sv} ≤ committed`)
-      return
-    }
-  } catch (e) {
-    // No sentinel yet (first build for this room) → create it.
-    if (/not found/i.test(e?.message || '')) await putShape(docName, sentinel)
-    else throw e
+  const result = await writeSentinel(docName, {
+    commitHash,
+    timestamp: Date.now(),
+    buildReadyAt: buildReadyAt || Date.now(),
+    // sourceVersion = the source.stamp mtime this build was for, monotonic per
+    // source change. The shared sentinel writer drops older build writes so the
+    // version can never jump backward.
+    sourceVersion: sv,
+    // Build errors/warnings live HERE — convergent Yjs state, not a
+    // fire-and-forget signal. A build's error status is a stable property
+    // that must survive reconnect/restart, so the viewer reads it straight
+    // from the sentinel (single source of truth, no signal fallback).
+    warningsJson: warnings ? JSON.stringify(warnings) : '',
+    errorsJson: errors ? JSON.stringify(errors) : '',
+  })
+  if (result.skipped) {
+    console.log(`[build:${name}] skipped out-of-order sentinel write: source ${sv} ≤ committed`)
+    return
   }
   console.log(`[build:${name}] doc-version sentinel updated: ${commitHash.slice(0, 7)} src=${sv} (${errors?.length || 0} errors, ${warnings?.length || 0} warnings)`)
 }
