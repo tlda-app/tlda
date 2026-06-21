@@ -211,3 +211,38 @@ test('listener reentrancy applies nested ops after current notification', () => 
   assert.deepEqual(emitted, ['add:a', 'add:b'])
   assert.deepEqual(ids(store.all()), ['a', 'b'])
 })
+
+test('maintains ordered (compare) views equivalent to filter+sort after every random op', () => {
+  const random = rng(0x5eed1234)
+  const store = createLiveStore<TestRec>()
+  // total order (score asc, then id asc) — no ties, so engine sort-stability is irrelevant
+  const compare = (a: TestRec, b: TestRec) =>
+    a.score - b.score || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+  const filter: Filter<TestRec> = (rec) => rec.alive
+  const view = store.view(filter, { key: 'alive-by-score', compare })
+
+  const idsToUse = Array.from({ length: 30 }, (_value, index) => `rec-${index}`)
+  for (let step = 0; step < 500; step++) {
+    const id = pick(random, idsToUse)
+    // randomRec assigns a fresh score each upsert → exercises sort-key-changing updates (re-position)
+    if (random() < 0.8) store.upsert(randomRec(random, id))
+    else store.remove(id)
+
+    const expected = [...store.all().filter(filter)].sort(compare)
+    assertSameRecords(view.list, expected)
+    assert.equal(view.size, expected.length)
+  }
+})
+
+test('compare view backfills sorted from initial', () => {
+  const store = createLiveStore<TestRec>({
+    initial: [
+      { id: 'a', labels: [], alive: true, score: 50 },
+      { id: 'b', labels: [], alive: true, score: 10 },
+      { id: 'c', labels: [], alive: true, score: 30 },
+    ],
+  })
+  const compare = (x: TestRec, y: TestRec) => x.score - y.score
+  const view = store.view((rec) => rec.alive, { key: 'init-sorted', compare })
+  assert.deepEqual(ids(view.list), ['b', 'c', 'a'])
+})
