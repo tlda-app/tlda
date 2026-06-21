@@ -872,10 +872,7 @@ export function VoiceTargetFollower() {
 }
 
 export function VoiceNoteButton() {
-  // Only render if SpeechRecognition is available
   if (typeof window === 'undefined') return null
-  const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-  if (!SR) return null
   return <VoiceNoteButtonInner />
 }
 
