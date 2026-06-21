@@ -72,6 +72,37 @@ const FLEET_API = DATABASE_HTTP
 type ChatTrafficMode = 'normal' | 'quiet'
 type ComposerTrafficFilterMode = 'dm-quiet' | 'dm' | 'agent' | 'custom'
 
+function isFleetPillRecord(record: any): boolean {
+  return record?.typeName === 'shape' && record.type === 'fleet-pill'
+}
+
+function useFleetPillCount(editor: Editor): number {
+  const [count, setCount] = useState(() =>
+    editor.getCurrentPageShapes().reduce((total, shape) => total + ((shape.type as string) === 'fleet-pill' ? 1 : 0), 0),
+  )
+
+  useEffect(() => {
+    return editor.store.listen(({ changes }) => {
+      let delta = 0
+      for (const record of Object.values(changes.added)) {
+        if (isFleetPillRecord(record)) delta += 1
+      }
+      for (const record of Object.values(changes.removed)) {
+        if (isFleetPillRecord(record)) delta -= 1
+      }
+      for (const [from, to] of Object.values(changes.updated) as any[]) {
+        const wasPill = isFleetPillRecord(from)
+        const isPill = isFleetPillRecord(to)
+        if (!wasPill && isPill) delta += 1
+        else if (wasPill && !isPill) delta -= 1
+      }
+      if (delta !== 0) setCount(value => Math.max(0, value + delta))
+    }, { source: 'all', scope: 'document' })
+  }, [editor])
+
+  return count
+}
+
 // Bind a handler that fires on both mouse click and a touch tap. On touch a tap
 // on a text element (e.g. the lightbox ✕ or a chip) never synthesizes a `click`,
 // so click-only handlers are dead on iPad; add a movement-guarded pointerup so a
@@ -3829,7 +3860,9 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   // Detect pill drag hovering over this chat — returns stable string to avoid flicker
   // Only agent/label pills trigger filter overlay, not content pills (msg, code, etc.)
+  const fleetPillCount = useFleetPillCount(editor)
   const pillOverKey = useValue('pill-over', () => {
+    if (fleetPillCount === 0) return ''
     const pills = editor.getCurrentPageShapes().filter(s => (s.type as string) === 'fleet-pill') as any[]
     if (pills.length === 0) return ''
     const myBounds = editor.getShapePageBounds(shape.id)
@@ -3848,7 +3881,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       }
     }
     return ''
-  }, [editor, shape.id])
+  }, [editor, shape.id, fleetPillCount])
   const pillOver = useMemo(() => {
     if (!pillOverKey) return null
     const [role, value, displayName] = pillOverKey.split('\0')
@@ -5637,7 +5670,9 @@ function FilterOverlay({
   }, [shapeId, editor, onClose, applyPreset])
 
   // Detect pill hovering over the shape — show two-pane drop preview
+  const fleetPillCount = useFleetPillCount(editor)
   const pillOverKey = useValue('filter-pill-over', () => {
+    if (fleetPillCount === 0) return ''
     const pills = editor.getCurrentPageShapes().filter((s: any) => s.type === 'fleet-pill')
     if (pills.length === 0) return ''
     const pill = pills[0] as any
@@ -5649,7 +5684,7 @@ function FilterOverlay({
     if (!shapeBounds || cx < shapeBounds.x || cx > shapeBounds.x + shapeBounds.w ||
         cy < shapeBounds.y || cy > shapeBounds.y + shapeBounds.h) return ''
     return `${pill.props.value}\0${pill.props.displayName}`
-  }, [editor, shapeId])
+  }, [editor, shapeId, fleetPillCount])
 
   const internalPillOver = useMemo(() => {
     if (!pillOverKey) return null
@@ -5672,6 +5707,7 @@ function FilterOverlay({
 
   const hoveredGroup = useValue('filter-hovered-group', () => {
     if (!pillOver) { lastGroupRef.current = null; return null }
+    if (fleetPillCount === 0) { lastGroupRef.current = null; return null }
     const pills = editor.getCurrentPageShapes().filter((s: any) => s.type === 'fleet-pill')
     if (pills.length === 0) { lastGroupRef.current = null; return null }
     const pill = pills[0]
@@ -5726,7 +5762,7 @@ function FilterOverlay({
       return { pane, idx: foundIdx }
     }
     return null
-  }, [editor, pillOver])
+  }, [editor, pillOver, fleetPillCount])
 
   // Compute preview DNF for each pane based on hovered AND group
   const toGroupIdx = hoveredGroup?.pane === 'to' ? hoveredGroup.idx : -1
