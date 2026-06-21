@@ -822,21 +822,24 @@ function surfaceSpawnBounce(error) {
     message: error.message,
     ts: Date.now(),
   }
+  // 2a: raise the collision as a notification card via the real notif spine
+  // (collision detected + surfaced — the refactor's value). Action buttons
+  // (pick-another / respawn behavior) are a tracked post-cutover follow-up (2b),
+  // OMITTED here so we don't ship dead buttons. The notif Item type has actions
+  // optional and the adapter handles no-actions safely.
+  const agentId = payload.existing?.id || payload.name || 'unknown'
   const item = {
+    id: `spawn-bounce:${agentId}`,
     kind: 'bounce',
-    target: SERVER_OWNER_ID,
+    from: agentId,
+    title: 'Spawn name collision',
+    body: error.message,
     present: { chat: true, hud: true },
     priority: 'high',
-    message: error.message,
-    payload,
-    actions: [
-      { label: 'pick-another', payload: { name: payload.name || null } },
-      { label: 'respawn', payload: { agent: payload.existing?.id || null } },
-    ],
   }
   payload.item = item
+  raiseItem(SERVER_OWNER_ID, item)
   broadcastEvent('spawn-bounced', payload)
-  broadcastEvent('notification-item', item)
   throw error
 }
 
