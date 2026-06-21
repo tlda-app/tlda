@@ -582,24 +582,6 @@ function sendRpc(machineId, op, params = {}) {
   })
 }
 
-function connectedDaemonMachineIds() {
-  return [...daemonConnections.entries()]
-    .filter(([, ws]) => ws?.readyState === 1)
-    .map(([machineId]) => machineId)
-}
-
-function selectSpawnMachine(caller, preferredMachineId = null) {
-  const connected = connectedDaemonMachineIds()
-  if (connected.length === 0) {
-    throw new Error('No fleet daemon connected — cannot spawn agents')
-  }
-  const requested = preferredMachineId || caller?.machine_id || null
-  if (requested && connected.includes(requested)) return requested
-  if (connected.length === 1) return connected[0]
-  const requestedText = requested ? ` for machine "${requested}"` : ''
-  throw new Error(`No fleet daemon connected${requestedText} — connected machines: ${connected.join(', ')}`)
-}
-
 // When a daemon WS drops, fail any in-flight RPCs that targeted it. The
 // HTTP caller decides whether to retry.
 function failPendingRpcsForMachine(machineId, reason = 'daemon disconnected') {
@@ -927,7 +909,8 @@ async function performSpawnRelay(caller, msg) {
   const requestedSpec = { model, kind: spawnKind, project: doc }
   const requestedCapability = capability || spawnCapability || null
   const callerRung = callerSpawnPolicy(caller, { serverOwnerId: SERVER_OWNER_ID }).capability
-  const machineId = selectSpawnMachine(caller, refreshTarget?.machine_id || null)
+  const machineId = caller.machine_id || LOCAL_MACHINE_ID
+  if (!daemonConnections.has(machineId)) throw new Error(`No fleet daemon connected for machine "${machineId}" — cannot spawn agents`)
   const resolved = resolveSpawnTarget
     ? await resolveSpawnTarget(spawnName, shouldRespawn && !refresh, {
         fresh: !!fresh,

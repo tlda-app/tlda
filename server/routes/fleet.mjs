@@ -74,24 +74,6 @@ function copyAttachment(srcPath) {
 }
 
 export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, clearEphemeralState, suppressEchoFor, sendRpc, resolveRpc, daemonConnections, resolveSpawnTarget }) {
-  function connectedDaemonMachineIds() {
-    return [...daemonConnections.entries()]
-      .filter(([, ws]) => ws?.readyState === 1)
-      .map(([machineId]) => machineId)
-  }
-
-  function selectSpawnMachine(caller, preferredMachineId = null) {
-    const connected = connectedDaemonMachineIds()
-    if (connected.length === 0) {
-      throw new Error('No fleet daemon connected — cannot spawn agents')
-    }
-    const requested = preferredMachineId || caller?.machine_id || null
-    if (requested && connected.includes(requested)) return requested
-    if (connected.length === 1) return connected[0]
-    const requestedText = requested ? ` for machine "${requested}"` : ''
-    throw new Error(`No fleet daemon connected${requestedText} — connected machines: ${connected.join(', ')}`)
-  }
-
   // Helper: route an agent op through the daemon, or 503 cleanly. The
   // op-name is whatever the daemon's rpc dispatcher expects (kebab-case
   // matches the spec: 'send-key', 'capture-pane', etc.).
@@ -453,8 +435,16 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       const a = fleetStore?.findAgent(agent)
       spawnName = a?.friendly_name || agent
     }
+    const machineId = caller.machine_id
+    if (!machineId) {
+      res.status(503).json({ error: 'spawn caller has no machine_id — cannot route to a fleet daemon' })
+      return
+    }
+    if (!daemonConnections.has(machineId)) {
+      res.status(503).json({ error: `No fleet daemon connected for machine "${machineId}" — cannot spawn agents` })
+      return
+    }
     try {
-      const machineId = selectSpawnMachine(caller)
       const requestedCapability = capability || spawnCapability || null
       const callerRung = callerSpawnPolicy(caller, { serverOwnerId: SERVER_OWNER_ID }).capability
       const resolved = resolveSpawnTarget
