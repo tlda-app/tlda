@@ -35,6 +35,7 @@ export function getFleetHttpBase() { return FLEET }
 // --- Stores ---
 let _agents = []
 let _tasks = []
+let _items = []
 // One id-keyed ordered buffer — the SINGLE source for chat + activity, fed by
 // two sources (live WS + DB history). upsert() dedups by id and binds the
 // optimistic tempId→dbId handoff, so there's no live/older split to merge (the
@@ -133,6 +134,7 @@ export { resolveFilter }
 export function getReaperStatus() { return _reaperStatus }
 export function getAgents() { return _agents }
 export function getTasks() { return _tasks }
+export function getItems() { return _items }
 export function getEvents() { return _store.all() }
 export function getActivity(agentId) { return _store.all().filter(e => e._activity && e.agent === agentId) }
 export function getHumanId() { return _humanId }
@@ -298,6 +300,22 @@ export function sendText(agent, text) {
 /** Send an arbitrary WS message to the fleet server. Returns a promise for the result. */
 export function fleetWS(type, body = {}) {
   return wsSend({ type, ...body })
+}
+
+export async function dismissItem(id) {
+  const userId = _humanId
+  if (!userId) throw new Error('no human identity')
+  const res = await fetch(`${FLEET}/api/items`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'dismiss', userId, id }),
+  })
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(data.error || res.statusText)
+  }
+  _items = _items.filter(i => i.id !== id)
+  notify('items', { userId, items: _items })
 }
 
 // --- WebSocket connection ---
@@ -537,6 +555,11 @@ export function connect() {
         notify('reaper', data)
       } else if (eventType === 'suggestions') {
         notify('suggestions', data)
+      } else if (eventType === 'items') {
+        if (!data?.userId || data.userId === _humanId) {
+          _items = data.items || []
+          notify('items', data)
+        }
       } else if (eventType === 'projects-updated') {
         notify('projects', data)
       } else if (eventType === 'agent-thinking') {
@@ -587,6 +610,20 @@ export async function init() {
     if (e.id && e.id > _lastEventId) _lastEventId = e.id
   }
   for (const ev of chatEvents) notify('messages', ev)
+
+  const fetchItemsForHuman = () => {
+    if (!_humanId) return
+    fetch(`${FLEET}/api/items?userId=${encodeURIComponent(_humanId)}`)
+      .then(r => r.json())
+      .then(data => {
+        _items = data.items || []
+        notify('items', { userId: _humanId, items: _items })
+      })
+      .catch(e => console.warn('[fleet-data] items fetch failed:', e.message))
+  }
+  const offIdentity = subscribe('identity', null, fetchItemsForHuman)
+  fetchItemsForHuman()
+  setTimeout(() => offIdentity?.(), 30000)
 
   // Connect SSE for live updates
   connect()

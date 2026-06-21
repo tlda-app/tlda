@@ -687,7 +687,7 @@ export function FleetHUD({
     const isInsideFleetShape = (clientX: number, clientY: number) => {
       const target = document.elementFromPoint(clientX, clientY)
       if (!target) return false
-      return !!target.closest('[data-shape-type="fleet-chat"], [data-shape-type="fleet-agents"], [data-shape-type="fleet-search"], [data-shape-type="fleet-inbox"], [data-shape-type="fleet-docview"], [data-shape-type="fleet-touch-inbox"], [data-shape-type="fleet-reaper"]')
+      return !!target.closest('[data-shape-type="fleet-chat"], [data-shape-type="fleet-agents"], [data-shape-type="fleet-search"], [data-shape-type="fleet-inbox"], [data-shape-type="fleet-notifications"], [data-shape-type="fleet-docview"], [data-shape-type="fleet-touch-inbox"], [data-shape-type="fleet-reaper"]')
     }
     const isInsideChatInput = (e: DragEvent): boolean => {
       const target = document.elementFromPoint(e.clientX, e.clientY)

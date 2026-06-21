@@ -833,7 +833,7 @@ export function CanvasClipPanel({
       // In fullViewport mode, only handle wheel events over fleet shapes.
       // Events over empty areas should pass through to the main canvas.
       if (fullViewport) {
-        const fleetShape = target?.closest('[data-shape-type="fleet-chat"], [data-shape-type="fleet-agents"], [data-shape-type="fleet-search"], [data-shape-type="fleet-inbox"], [data-shape-type="fleet-docview"], [data-shape-type="fleet-reaper"]')
+        const fleetShape = target?.closest('[data-shape-type="fleet-chat"], [data-shape-type="fleet-agents"], [data-shape-type="fleet-search"], [data-shape-type="fleet-inbox"], [data-shape-type="fleet-notifications"], [data-shape-type="fleet-docview"], [data-shape-type="fleet-reaper"]')
         if (!fleetShape) return // let event pass through
       }
       e.preventDefault()
@@ -856,6 +856,7 @@ export function CanvasClipPanel({
             shapeEl?.querySelector('.fleet-search-results') ??
             shapeEl?.querySelector('.fleet-inbox-conv') ??
             shapeEl?.querySelector('.fleet-inbox-list') ??
+            shapeEl?.querySelector('.fleet-notifications-list') ??
             shapeEl?.querySelector('.fleet-reaper-body') ?? null) as HTMLElement | null
           if (scrollable) {
             scrollable.scrollTop += e.deltaY
@@ -1023,7 +1024,7 @@ export function CanvasClipPanel({
     if (!fullViewport) return
     const el = canvasRef.current
     if (!el) return
-    const FLEET_SELECTOR = '[data-shape-type="fleet-chat"], [data-shape-type="fleet-agents"], [data-shape-type="fleet-search"], [data-shape-type="fleet-inbox"], [data-shape-type="fleet-docview"]'
+    const FLEET_SELECTOR = '[data-shape-type="fleet-chat"], [data-shape-type="fleet-agents"], [data-shape-type="fleet-search"], [data-shape-type="fleet-inbox"], [data-shape-type="fleet-notifications"], [data-shape-type="fleet-docview"]'
     const handler = (e: DragEvent) => {
       const target = document.elementFromPoint(e.clientX, e.clientY)
       if (target?.closest(FLEET_SELECTOR)) return // let fleet shapes handle it

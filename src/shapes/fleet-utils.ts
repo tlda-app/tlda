@@ -12,7 +12,7 @@ import { getPref } from '../preferences'
  *  ownership filtering, visibility, copy gating, and hit-test exclusion.
  *  Import this everywhere instead of defining local copies. */
 export const FLEET_SHAPE_TYPES = new Set([
-  'fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview', 'fleet-reaper', 'fleet-inbox', 'fleet-touch-inbox',
+  'fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview', 'fleet-reaper', 'fleet-inbox', 'fleet-touch-inbox', 'fleet-notifications',
 ])
 
 /**
@@ -145,6 +145,7 @@ export const FLEET_TOOL_DIMS: Record<string, { w: number; h: number }> = {
   'fleet-search': { w: 400, h: 300 },
   'fleet-inbox': { w: 360, h: 560 },
   'fleet-touch-inbox': { w: 380, h: 680 },
+  'fleet-notifications': { w: 360, h: 220 },
   'fleet-reaper': { w: 480, h: 360 },
 }
 
@@ -570,6 +571,13 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
     }
 
     const shapes: any[] = [
+      {
+        id: slotId(myId, myDevice, 'notifications'),
+        type: 'fleet-notifications',
+        x: anchorX - leftW - gap, y: anchorY - 230,
+        isLocked: false,
+        props: { w: leftW, h: 220 },
+      },
       {
         id: slotId(myId, myDevice, 'inbox'),
         type: 'fleet-inbox' as any,

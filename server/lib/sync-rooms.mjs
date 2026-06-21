@@ -228,6 +228,18 @@ const customShapeSchemas = {
       sequence: [],
     }),
   },
+  'fleet-notifications': {
+    props: {
+      w: T.number,
+      h: T.number,
+      userId: T.optional(T.string),
+      deviceId: T.optional(T.string),
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.fleet-notifications',
+      sequence: [],
+    }),
+  },
   'fleet-touch-inbox': {
     props: {
       w: T.number,

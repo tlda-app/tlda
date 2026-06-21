@@ -1253,6 +1253,47 @@ export function getFleetTools() {
       },
     },
     {
+      name: 'notify',
+      description: 'Raise or dismiss an actionable item for the human. Defaults by kind: bounce/mic-death → HUD notification; modal/suggest/task → list task; all items also live in chat.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['raise', 'dismiss'], description: 'Default raise. Use dismiss with id to remove an item.' },
+          id: { type: 'string', description: 'Stable item id. Re-raising the same id replaces the existing item.' },
+          userId: { type: 'string', description: 'Target human fleet id. Defaults to server owner.' },
+          kind: { type: 'string', description: 'bounce, modal, status, task, suggest, info, etc.' },
+          title: { type: 'string', description: 'One-line headline.' },
+          body: { type: 'string', description: 'Optional detail text.' },
+          actions: {
+            type: 'array',
+            description: 'Action buttons.',
+            items: {
+              type: 'object',
+              properties: {
+                label: { type: 'string' },
+                command: { type: 'string' },
+                target: { type: 'string' },
+                clientAction: { type: 'string' },
+              },
+              required: ['label'],
+            },
+          },
+          present: {
+            type: 'object',
+            properties: {
+              chat: { type: 'boolean' },
+              hud: { type: 'boolean' },
+              list: { type: 'boolean' },
+            },
+          },
+          payload: { type: 'object', description: 'Optional payload for later drag/drop consumers.' },
+          dropTarget: { type: 'string' },
+          ttl: { type: 'number', description: 'Milliseconds before expiry.' },
+          priority: { type: 'string', enum: ['low', 'normal', 'high'] },
+        },
+      },
+    },
+    {
       name: 'task_list',
       description: 'List all active (non-done) tasks and registered agents. Call at session start.',
       inputSchema: { type: 'object', properties: {} },
@@ -2572,6 +2613,42 @@ export async function handleFleetTool(name, args) {
       return { content: [{ type: 'text', text: stamped.length ? `Posted ${stamped.length} suggestion chip(s) to chat.` : 'Cleared your suggestion chips.' }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `suggest failed: ${e.message}` }], isError: true };
+    }
+  }
+
+  // ---- notify ----
+  if (name === 'notify') {
+    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not registered. Call register() first.' }], isError: true };
+    const action = args?.action || 'raise';
+    if (action === 'dismiss' && !args?.id) return { content: [{ type: 'text', text: 'notify dismiss requires `id`.' }], isError: true };
+    if (action !== 'dismiss' && !args?.title) return { content: [{ type: 'text', text: 'notify raise requires `title`.' }], isError: true };
+    const item = action === 'dismiss' ? null : {
+      id: args.id || `${AGENT_ID}:${args.kind || 'info'}:${Date.now()}`,
+      kind: args.kind || 'info',
+      from: AGENT_ID,
+      title: args.title,
+      body: args.body || '',
+      actions: Array.isArray(args.actions) ? args.actions : [],
+      present: args.present || undefined,
+      payload: args.payload || undefined,
+      dropTarget: args.dropTarget || undefined,
+      ttl: Number.isFinite(args.ttl) ? args.ttl : undefined,
+      priority: args.priority || undefined,
+    };
+    try {
+      const res = await fleetFetch(`${TLDA_FLEET_SERVER}/api/items`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(action === 'dismiss'
+          ? { action: 'dismiss', id: args.id, userId: args.userId }
+          : { action: 'raise', userId: args.userId, item }),
+        signal: AbortSignal.timeout(3000),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return { content: [{ type: 'text', text: `notify failed: ${data.error || res.statusText}` }], isError: true };
+      return { content: [{ type: 'text', text: action === 'dismiss' ? `Dismissed item ${args.id}.` : `Raised ${item.kind} item ${item.id}.` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `notify failed: ${e.message}` }], isError: true };
     }
   }
 
