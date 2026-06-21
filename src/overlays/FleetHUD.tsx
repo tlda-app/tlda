@@ -19,7 +19,15 @@ import { fleetTouchGestureActiveRef, postTouchTelemetry, setTouchDiagStatus, use
 import { SuggestionTip } from '../shapes/FleetChatShape'
 import { log } from '../logger'
 import { computeFleetBoundsFromShapes, createFleetBoundsTracker, type FleetBoundsResult } from './fleet-bounds'
+import { createFleetHudOverlayLayer } from '../wm/fleet-hud-layer'
+import type { FleetHudLayerState } from '../wm/fleet-hud-layer'
 import './FleetHUD.css'
+
+declare global {
+  interface Window {
+    __tlda_wm_hud__?: FleetHudLayerState
+  }
+}
 
 function saveAnchorOffsets(editor: Editor, panOffset: number, cameraY: number) {
   // Never persist a HUD anchor without a resolved identity — getMyAnchorId()
@@ -1057,10 +1065,14 @@ export function FleetHUD({
     }
   }
 
-  const overlayCam = {
-    x: panOffsetRef.current,
-    y: cameraYRef.current!,
-    z: 1,
+  const overlayLayer = createFleetHudOverlayLayer({
+    panOffset: panOffsetRef.current!,
+    cameraY: cameraYRef.current!,
+    layout: { axis: 'vertical', spacing: 0 },
+  })
+  const overlayCam = overlayLayer.camera
+  if (import.meta.env.DEV || (typeof navigator !== 'undefined' && navigator.webdriver)) {
+    window.__tlda_wm_hud__ = overlayLayer
   }
 
   return (
