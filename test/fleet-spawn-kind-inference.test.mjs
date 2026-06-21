@@ -160,6 +160,26 @@ assert write_roots == ["/Users/skip/work/tlda"]
 assert matched == "/Users/skip/work/tlda"
 assert policy is not None
 
+effective_policy = mod._live_spawn_policy(
+    mod.sandbox_policy_for_spawn_capability("write"),
+    explicit=False)
+assert effective_policy == "unsandboxed"
+policy_name, dev_tools, write_roots, matched, policy = mod.resolve_harness_sandbox(
+    "codex", "gpt-5.5", "/Users/skip/work/tlda",
+    explicit_policy=effective_policy)
+assert policy_name == "unsandboxed"
+assert policy is None
+global_off_cmd = mod.build_codex_cmd(
+    "fleet:test123",
+    "fleet-canary",
+    model="gpt-5.5",
+    name="canary",
+    cwd="/Users/skip/work/tlda",
+    capability="write",
+    outer_sandbox=bool(policy) or policy_name == "unsandboxed",
+)
+assert "-s danger-full-access" in global_off_cmd
+
 class FakeResult:
     def __init__(self, returncode=0, stdout=""):
         self.returncode = returncode

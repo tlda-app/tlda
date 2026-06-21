@@ -2388,10 +2388,17 @@ async function rpcSpawn({
     }
     if (project.sourceDir) resolvedCwd = project.sourceDir
   }
+  const projectForGrant = doc
+    ? projects.find(p => p.name === doc)
+    : projects.find(p => {
+        if (!resolvedCwd || !p.sourceDir) return false
+        const cwdPath = path.resolve(resolvedCwd)
+        const sourcePath = path.resolve(p.sourceDir)
+        return cwdPath === sourcePath || cwdPath.startsWith(`${sourcePath}${path.sep}`)
+      })
   let grant
   try {
     const config = _loadSharedConfig()
-    const project = doc ? projects.find(p => p.name === doc) : null
     grant = resolveDaemonSpawnGrant({
       requestedCapability,
       callerRung,
@@ -2399,7 +2406,8 @@ async function rpcSpawn({
       kind,
       config,
       doc,
-      project,
+      project: projectForGrant,
+      cwd: resolvedCwd,
     })
   } catch (e) {
     return { ok: false, name: agentName, error: `spawn policy resolution failed: ${e.message}` }

@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { modelFamily as sharedModelFamily, modelTrustTier as sharedModelTrustTier } from '../../shared/harness.ts'
 
 // Skip's ONE capability vocabulary — four named rungs, low → high. This is the
@@ -275,23 +275,76 @@ export const SPAWN_PROFILES = {
 
 export const DEFAULT_SPAWN_PROFILE = 'app'
 
-// Resolve which profile NAME a spawn into `doc` should inherit. Precedence:
+function normalizedPath(value) {
+  if (!value || typeof value !== 'string') return null
+  try {
+    return resolve(value)
+  } catch {
+    return null
+  }
+}
+
+function pathInside(child, parent) {
+  const c = normalizedPath(child)
+  const p = normalizedPath(parent)
+  return !!(c && p && (c === p || c.startsWith(`${p}/`)))
+}
+
+function pathBasename(value) {
+  const p = normalizedPath(value)
+  return p ? basename(p).toLowerCase() : null
+}
+
+function firstKnownProfile(...values) {
+  for (const value of values) {
+    const name = String(value || '').trim().toLowerCase()
+    if (SPAWN_PROFILES[name]) return name
+  }
+  return null
+}
+
+function configuredProjectProfileName(projectProfiles = {}, keys = []) {
+  for (const key of keys) {
+    if (!key) continue
+    const configured = projectProfiles[key] ?? projectProfiles[String(key).toLowerCase()]
+    const name = firstKnownProfile(configured)
+    if (name) return name
+  }
+  return null
+}
+
+// Resolve which profile NAME a spawn should inherit. Precedence:
 // the project record's own `profile` field → config.spawnPolicy.projectProfiles
-// keyed by project name → config.spawnPolicy.defaultProfile → DEFAULT_SPAWN_PROFILE.
-export function resolveProjectProfileName(config = {}, { doc, project } = {}) {
+// keyed by project name / sourceDir / cwd basename → built-in basename profile
+// → config.spawnPolicy.defaultProfile → DEFAULT_SPAWN_PROFILE.
+export function resolveProjectProfileName(config = {}, { doc, project, cwd } = {}) {
   const policy = config.spawnPolicy || {}
-  const fromProject = project?.profile
-  const fromConfig = doc ? (policy.projectProfiles || {})[doc] : null
-  const name = String(fromProject || fromConfig || policy.defaultProfile || DEFAULT_SPAWN_PROFILE).trim().toLowerCase()
-  return SPAWN_PROFILES[name] ? name : DEFAULT_SPAWN_PROFILE
+  const projectProfiles = policy.projectProfiles || {}
+  const sourceDir = project?.sourceDir || null
+  const cwdMatchesProject = cwd && sourceDir && pathInside(cwd, sourceDir)
+  return firstKnownProfile(project?.profile)
+    || configuredProjectProfileName(projectProfiles, [
+      doc,
+      project?.name,
+      sourceDir,
+      pathBasename(sourceDir),
+      cwd,
+      pathBasename(cwd),
+    ])
+    || firstKnownProfile(
+      cwdMatchesProject ? pathBasename(sourceDir) : null,
+      pathBasename(cwd)
+    )
+    || firstKnownProfile(policy.defaultProfile)
+    || DEFAULT_SPAWN_PROFILE
 }
 
 // The profile a spawn inherits, as a normalized spawn policy. This becomes the
 // requested capability when the caller does not request one explicitly — the
 // default fence. authorizeSpawn still bounds it by the model ceiling and the
 // caller's own authority.
-export function resolveProjectProfile(config = {}, { doc, project } = {}) {
-  const name = resolveProjectProfileName(config, { doc, project })
+export function resolveProjectProfile(config = {}, { doc, project, cwd } = {}) {
+  const name = resolveProjectProfileName(config, { doc, project, cwd })
   return { ...normalizeSpawnPolicy(SPAWN_PROFILES[name]), name }
 }
 
@@ -417,8 +470,9 @@ export function resolveDaemonSpawnGrant({
   config = {},
   doc,
   project,
+  cwd,
 } = {}) {
-  const inheritedProfile = resolveProjectProfile(config, { doc, project })
+  const inheritedProfile = resolveProjectProfile(config, { doc, project, cwd })
   const requestedPolicy = normalizeSpawnPolicy(requestedCapability || inheritedProfile, DEFAULT_AGENT_CAPABILITY)
   const callerPolicy = normalizeSpawnPolicy(callerRung, DEFAULT_AGENT_CAPABILITY)
   const machineAllowedPolicy = meetSpawnPolicies([

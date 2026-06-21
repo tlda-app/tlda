@@ -3133,17 +3133,27 @@ async function handleFleetWsMessage(ws, msg) {
       if (machineIds.length === 0) continue
       const machineId = agent.machine_id || machineIds[0]
       try {
-        const liveness = await sendRpc(machineId, 'check-alive', { tmux_session: agent.tmux_session })
-          .catch(e => ({
-            type: 'agent-liveness',
-            agent_id: agentId,
-            tmux_session: agent.tmux_session,
-            state: 'unknown',
-            reason: e.message,
-            ts: new Date().toISOString(),
-          }))
+        const serverAlive = isAgentAlive(agentId)
+        const liveness = serverAlive
+          ? await sendRpc(machineId, 'check-alive', { tmux_session: agent.tmux_session })
+            .catch(e => ({
+              type: 'agent-liveness',
+              agent_id: agentId,
+              tmux_session: agent.tmux_session,
+              state: 'unknown',
+              reason: e.message,
+              ts: new Date().toISOString(),
+            }))
+          : {
+              type: 'agent-liveness',
+              agent_id: agentId,
+              tmux_session: agent.tmux_session,
+              state: 'unknown',
+              reason: 'server liveness says hibernating',
+              ts: new Date().toISOString(),
+            }
         spawnLibrarian.observeLiveness({ ...liveness, agent_id: liveness.agent_id || agentId })
-        const decision = spawnLibrarian.decideWake(agent, { ...liveness, agent_id: liveness.agent_id || agentId })
+        const decision = spawnLibrarian.decideWake(agent, { ...liveness, agent_id: liveness.agent_id || agentId }, { serverAlive })
         if (decision.action === 'deliver') {
           if (nudgeText && agent.tmux_session && terminalNudgeKind(agent)) {
             await sendRpc(machineId, 'send-text', {

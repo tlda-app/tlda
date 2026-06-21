@@ -2505,7 +2505,7 @@ def fresh(name, model, cwd, effort, mode, kind="claude", spawn_capability=None,
 
     cmd = adapter.build_cmd(fleet_id, sess, model, effort, mode, name=name, cwd=cwd,
                             capability=spawn_capability,
-                            outer_sandbox=bool(policy))
+                            outer_sandbox=bool(policy) or policy_name == "unsandboxed")
     if policy:
         cmd = wrap_sandbox_cmd(cmd, policy)
     if adapter.kind == "codex":
@@ -2588,7 +2588,7 @@ def respawn(name, model, cwd, effort, mode, session_override=None,
         fleet_id, sess, model, effort, mode, resume_id=resume_id,
         include_prompt=(adapter.kind != "claude" or not resume_id), name=name, cwd=cwd,
         capability=spawn_capability,
-        outer_sandbox=bool(policy))
+        outer_sandbox=bool(policy) or policy_name == "unsandboxed")
     if policy:
         cmd = wrap_sandbox_cmd(cmd, policy)
     if adapter.kind == "codex":
@@ -2647,7 +2647,7 @@ def refresh(name, model, cwd, effort, mode, spawn_capability=None,
         metadata={**sandbox_metadata(policy), **spawn_policy_metadata(spawn_capability, policy_name)})
     cmd = adapter.build_cmd(fleet_id, sess, model, effort, mode, name=name, cwd=cwd,
                             capability=spawn_capability,
-                            outer_sandbox=bool(policy))
+                            outer_sandbox=bool(policy) or policy_name == "unsandboxed")
     if policy:
         cmd = wrap_sandbox_cmd(cmd, policy)
     if adapter.kind == "codex":
