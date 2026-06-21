@@ -1,23 +1,6 @@
-export const HARNESS_ADAPTERS = {
-  claude: {
-    kind: 'claude',
-    channelNudge: false,
-    nudgeSettleMs: 0,
-    educationGate: false,
-  },
-  goose: {
-    kind: 'goose',
-    channelNudge: true,
-    nudgeSettleMs: 0,
-    educationGate: true,
-  },
-  codex: {
-    kind: 'codex',
-    channelNudge: true,
-    nudgeSettleMs: 400,
-    educationGate: true,
-  },
-}
+import { HARNESS } from '../../shared/harness.ts'
+
+export const HARNESS_ADAPTERS = HARNESS
 
 export function harnessKindFromEnv(env = process.env) {
   const kind = env.FLEET_HARNESS || 'claude'

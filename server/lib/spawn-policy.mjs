@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { modelFamily as sharedModelFamily, modelTrustTier as sharedModelTrustTier } from '../../shared/harness.ts'
 
 // Skip's ONE capability vocabulary — four named rungs, low → high. This is the
 // only capability vocabulary tlda owns; there is NO machine vocabulary
@@ -196,15 +197,7 @@ export function meetSpawnPolicies(policies) {
 // and harness-only fallbacks. It is NOT what governs the trust ceiling; the
 // MODEL does (see modelTrustTier). goose is a harness, not a trust level.
 export function modelFamily({ model, kind } = {}) {
-  const k = String(kind || '').toLowerCase()
-  const m = String(model || '').toLowerCase()
-  if (k) return k
-  if (!m) return 'goose'
-  if (m.includes('/')) return 'goose'
-  if (m.startsWith('claude-') || ['opus', 'opus45', 'opus46', 'opus47', 'opus48', 'fable', 'fable5', 'sonnet', 'haiku'].includes(m)) return 'claude'
-  if (m.startsWith('gpt-') || m.startsWith('o') || m.includes('openai')) return 'gpt'
-  if (m.includes('deepseek') || m.includes('qwen') || m.includes('kimi') || m.includes('glm') || m.includes('minimax')) return 'goose'
-  return 'unknown'
+  return sharedModelFamily({ model, kind })
 }
 
 // Model trust tiers — keyed on the MODEL identity, NOT the harness (Skip 06-19:
@@ -228,30 +221,8 @@ export const MODEL_TRUST_TIERS = {
   narrow: { capability: 'write', policy: 'cwd' },
 }
 
-const CLAUDE_MODEL_NAMES = new Set(['opus', 'opus45', 'opus46', 'opus47', 'opus48', 'fable', 'fable5', 'sonnet', 'haiku'])
-
-function isClaudeModel(m) {
-  return m.startsWith('claude-') || CLAUDE_MODEL_NAMES.has(m)
-}
-
-function isOpenAiModel(m) {
-  return m.startsWith('gpt') || m.startsWith('o1') || m.startsWith('o3') || m.startsWith('o4') || m.includes('openai') || m.includes('codex')
-}
-
 export function modelTrustTier({ model, kind } = {}) {
-  const m = String(model || '').toLowerCase()
-  const k = String(kind || '').toLowerCase()
-  if (m) {
-    if (isClaudeModel(m) || isOpenAiModel(m)) return 'full'
-    if (m.includes('minimax')) return 'elevated'
-    // deepseek / qwen / kimi / glm and any other open or unrecognized model.
-    return 'narrow'
-  }
-  // No model string: lean on the harness, which constrains the model set.
-  // claude / codex / gpt are closed harnesses that only run trusted models;
-  // goose runs arbitrary open models, so fail safe to narrow.
-  if (k === 'claude' || k === 'codex' || k === 'gpt') return 'full'
-  return 'narrow'
+  return sharedModelTrustTier({ model, kind })
 }
 
 export function defaultModelCeiling({ model, kind } = {}) {
