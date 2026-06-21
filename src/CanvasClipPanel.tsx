@@ -14,6 +14,7 @@ import { Tldraw, createTLStore, stopEventPropagation, react } from 'tldraw'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor, TLRecord } from 'tldraw'
 import { chatInsertBus } from './shapes/FleetPillShape'
 import { FLEET_SHAPE_TYPES, isMyFleetShape } from './shapes/fleet-utils'
+import { createCanvasClipPanelPlan } from './wm/canvas-clip-panel'
 import './CanvasClipPanel.css'
 
 const DEFAULT_WIDTH = 600
@@ -687,27 +688,24 @@ export function CanvasClipPanel({
       return
     }
 
+    const clipPlan = createCanvasClipPanelPlan({
+      bounds,
+      panelWidth,
+      viewportHeight: window.innerHeight,
+      maxHeightFraction: DEFAULT_MAX_HEIGHT_FRACTION,
+      minVisibleLines: readOnly ? 0 : MIN_VISIBLE_LINES,
+      lineHeightEstimate: readOnly ? 0 : LINE_HEIGHT_ESTIMATE,
+      lockCamera,
+    })
+
     // readOnly mode: free infinite canvas, just set initial camera position
     if (readOnly) {
-      const zoom = panelWidth / bounds.w
-      const contentScreenH = bounds.h * zoom
-      const viewportH = Math.min(contentScreenH, window.innerHeight * DEFAULT_MAX_HEIGHT_FRACTION)
-      const yOffset = (viewportH > contentScreenH)
-        ? (viewportH - contentScreenH) / (2 * zoom)
-        : 0
-      editor.setCamera({ x: -bounds.x, y: -(bounds.y - yOffset), z: zoom })
+      editor.setCamera(clipPlan.camera)
       return
     }
 
     // Target camera for these bounds
-    const zoom = panelWidth / bounds.w
-    const contentScreenH = bounds.h * zoom
-    const minScreenH = MIN_VISIBLE_LINES * LINE_HEIGHT_ESTIMATE * zoom
-    const viewportH = Math.max(minScreenH, Math.min(contentScreenH, window.innerHeight * DEFAULT_MAX_HEIGHT_FRACTION))
-    const yOffset = (viewportH > contentScreenH)
-      ? (viewportH - contentScreenH) / (2 * zoom)
-      : 0
-    const targetCam = { x: -bounds.x, y: -(bounds.y - yOffset), z: zoom }
+    const targetCam = clipPlan.camera
 
     if (lockCamera && !initialBoundsRef.current && !liveEdit) {
       // Animate camera to new bounds (post-drop rearrangement)
