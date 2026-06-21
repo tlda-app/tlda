@@ -43,7 +43,7 @@ import { lookup as mimeLookup } from 'mime-types'
 import { DEFAULT_PORT, hasTls, getManagedBots, loadConfig, resolveConfig } from '../shared/config.mjs'
 import { normalizeUsageStatus } from '../shared/usage-status.mjs'
 import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
-import { labelsForAgent, parseFilter, evalExpr, evalExprDirectional } from '../shared/fleet-labels.mjs'
+import { labelsForAgent, parseFilter, evalExpr } from '../shared/fleet-labels.mjs'
 import { phaseFromName, baseName, PHASES } from '../shared/lineage-name.mjs'
 import { daemonHelloDecision } from '../shared/daemon-identity.mjs'
 import { initProjectStore, listProjects, readProject, getProjectsDir } from './lib/project-store.mjs'
@@ -3070,18 +3070,7 @@ async function handleFleetWsMessage(ws, msg) {
     // an old `preread` row + the live `preread`) → the sender sees their
     // message twice. To reach a dead agent, resurrect it first (it goes live,
     // then matches here). No "prefer the live one" — dead is simply excluded.
-    const allAgents = fleetStore.getAllAgents?.() || []
-    const recipients = []
-    for (const a of allAgents) {
-      if (a.id === from) continue
-      if (a.dead) continue
-      // labelsForAgent (shared with the client filters) covers pseudo-labels,
-      // friendly_name, id, and lineage tags. getAllAgents() hydrates
-      // lineage_name + status, so no per-agent lineage lookup is needed here.
-      if (evalExpr(filterAst, labelsForAgent(a))) {
-        recipients.push(a.id)
-      }
-    }
+    const recipients = fleetStore.resolveChatRecipients(filterAst, { from, filter: rawTo })
     // Server-owner pseudo-recipient: not in the roster, so evaluate the filter
     // against its literal id/name label set. An empty filter (null) does NOT
     // fan out to the owner.
@@ -3116,24 +3105,12 @@ async function handleFleetWsMessage(ws, msg) {
     }
     const senderAgent = fleetStore.getAgent?.(from)
     const chatReminder = senderAgent?.metadata?.chatReminder || undefined
-    const taps = fleetStore.getWiretaps?.() || []
-    const fromLabels = labelsForAgent(fleetStore.findAgent(from) || { id: from })
     const ts = new Date().toISOString()
     const eventIds = []
     const insertedEvents = []
     for (const to of recipients) {
       // Resolve wiretaps per recipient — tap labels are matched against this `to`.
-      const toLabels = labelsForAgent(fleetStore.findAgent(to) || { id: to })
-      const wiretapRecipients = []
-      for (const tap of taps) {
-        if (!tap._ast) continue // empty/unparseable filter (logged at hydrate) — never match-all
-        if (tap.types && tap.types.length > 0 && !tap.types.includes('chat')) continue
-        // Directional string expression: to:/from: leaf prefixes select the side.
-        const matches = evalExprDirectional(tap._ast, { fromLabels, toLabels })
-        if (matches && tap.agent_id !== from && tap.agent_id !== to) {
-          wiretapRecipients.push(tap.agent_id)
-        }
-      }
+      const wiretapRecipients = fleetStore.resolveWiretaps(from, to, 'chat')
       const combinedMetadata = {
         ...(metadata || {}),
         ...(ccResolved ? { cc: ccResolved } : {}),
@@ -3235,31 +3212,13 @@ async function handleFleetWsMessage(ws, msg) {
     const before = msg.before || null
     const agents = Array.isArray(msg.agents) ? msg.agents : []
     try {
-      let events = fleetStore.queryChatHistory({ before, agents, limit: limit + 1 })
-        .map(e => ({ ...e, event_type: e.type, from: e.from, to: e.to, agent: e.agent_id }))
-      const hasMore = events.length > limit
-      if (hasMore) events.shift()
-      events = events.filter(e => {
-        const t = e.text || ''
-        return !t.startsWith('<channel') && !t.startsWith('<task-notification') && !t.startsWith('<system-reminder')
+      const { events: resolved, hasMore } = fleetStore.buildChatHistoryResponse({
+        before,
+        agents,
+        limit,
+        serverOwnerId: SERVER_OWNER_ID,
+        serverOwnerName: SERVER_OWNER_NAME,
       })
-      const agentMap = { ...fleetStore.getAgentNameMap() }
-      agentMap['web'] = agentMap[SERVER_OWNER_ID] || SERVER_OWNER_NAME
-      const unreadIds = new Set()
-      const _evIds = events.map(e => e.id).filter(id => id != null)
-      if (_evIds.length) {
-        const _ph = _evIds.map(() => '?').join(',')
-        try {
-          const rows = fleetStore.db.prepare(`SELECT event_id FROM unread WHERE read = 0 AND event_id IN (${_ph})`).all(..._evIds)
-          for (const r of rows) unreadIds.add(r.event_id)
-        } catch (e) { console.error('[fleet] unread query failed:', e.message) }
-      }
-      const resolved = events.map(e => ({
-        ...e,
-        read: !unreadIds.has(e.id),
-        fromLabel: agentMap[e.from] || (e.from ? e.from.substring(0, 8) : ''),
-        toLabel: agentMap[e.to] || agentMap[e.agent] || (e.to ? e.to.substring(0, 8) : ''),
-      }))
       // Period-correct names: render each historical message with the name its
       // sender/recipient held AT send time, plus `*NameNow` when since rotated.
       // The client nick prefers these over the current-name fallback.
@@ -3910,26 +3869,13 @@ async function handleFleetWsMessage(ws, msg) {
     const { limit: rawLimit = 50, before, agents } = msg
     const limit = Math.min(parseInt(rawLimit) || 50, 1000)
     try {
-      let events = []
-      const fleetEvents = fleetStore.queryChatHistory?.({ before, agents: Array.isArray(agents) ? agents : [], limit: limit + 1 }) || []
-      events = fleetEvents.map(e => ({ ...e, event_type: e.type, from: e.from, to: e.to, agent: e.agent_id }))
-      const hasMore = events.length > limit
-      if (hasMore) events.shift()
-      events = events.filter(e => { const t = e.text || ''; return !t.startsWith('<channel') && !t.startsWith('<task-notification') && !t.startsWith('<system-reminder') })
-      const agentMap = fleetStore.getAgentNameMap()
-      const unreadIds = new Set()
-      const _evIds = events.map(e => e.id).filter(id => id != null)
-      if (_evIds.length) {
-        const _ph = _evIds.map(() => '?').join(',')
-        try { const rows = fleetStore.db.prepare(`SELECT event_id FROM unread WHERE read = 0 AND event_id IN (${_ph})`).all(..._evIds); for (const r of rows) unreadIds.add(r.event_id) } catch (e) { console.error('[fleet] unread query failed:', e.message) }
-      }
-      const resolved = events.map(e => ({
-        ...e,
-        read: !unreadIds.has(e.id),
-        fromLabel: agentMap[e.from] || (e.from ? e.from.substring(0, 8) : ''),
-        toLabel: agentMap[e.to] || agentMap[e.agent] || (e.to ? e.to.substring(0, 8) : ''),
-      }))
-      const nextCursor = hasMore && events.length > 0 ? events[0].timestamp : null
+      const { events: resolved, hasMore, nextCursor } = fleetStore.buildChatHistoryResponse({
+        before,
+        agents: Array.isArray(agents) ? agents : [],
+        limit,
+        serverOwnerId: SERVER_OWNER_ID,
+        serverOwnerName: SERVER_OWNER_NAME,
+      })
       reply({ events: resolved, hasMore, nextCursor })
     } catch (e) { error(e.message) }
     return

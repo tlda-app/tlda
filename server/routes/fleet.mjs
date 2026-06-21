@@ -248,36 +248,17 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const rawAgents = req.query.agents
     const agents = Array.isArray(rawAgents) ? rawAgents : (rawAgents ? [rawAgents] : [])
     try {
-      let events = []
-      if (fleetStore) {
-        const fleetEvents = fleetStore.queryChatHistory({ before, agents, limit: limit + 1 })
-        events = fleetEvents.map(e => ({ ...e, event_type: e.type, from: e.from, to: e.to, agent: e.agent_id }))
+      if (!fleetStore) {
+        res.json({ events: [], hasMore: false, nextCursor: null })
+        return
       }
-      const hasMore = events.length > limit
-      if (hasMore) events.shift()
-      events = events.filter(e => {
-        const t = e.text || ''
-        return !t.startsWith('<channel') && !t.startsWith('<task-notification') && !t.startsWith('<system-reminder')
-      })
-      const allAgents = fleetStore ? fleetStore.getAllAgents() : []
-      const agentMap = {}
-      for (const a of allAgents) agentMap[a.id] = a.friendly_name || a.name || a.id
-      agentMap['web'] = agentMap[SERVER_OWNER_ID] || SERVER_OWNER_NAME
-      const unreadIds = new Set()
-      if (fleetStore) {
-        try {
-          const rows = fleetStore.db.prepare('SELECT event_id FROM unread WHERE read = 0').all()
-          for (const r of rows) unreadIds.add(r.event_id)
-        } catch {}
-      }
-      const resolved = events.map(e => ({
-        ...e,
-        read: !unreadIds.has(e.id),
-        fromLabel: agentMap[e.from] || (e.from ? e.from.substring(0, 8) : ''),
-        toLabel: agentMap[e.to] || agentMap[e.agent] || (e.to ? e.to.substring(0, 8) : ''),
+      res.json(fleetStore.buildChatHistoryResponse({
+        before,
+        agents,
+        limit,
+        serverOwnerId: SERVER_OWNER_ID,
+        serverOwnerName: SERVER_OWNER_NAME,
       }))
-      const nextCursor = hasMore && events.length > 0 ? events[0].timestamp : null
-      res.json({ events: resolved, hasMore, nextCursor })
     } catch (e) {
       res.status(500).json({ error: e.message })
     }
