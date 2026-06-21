@@ -795,6 +795,19 @@ const _activityThrottle = makeActivityThrottle({
 })
 
 function bufferActivity(agentId, evts) {
+  // Liveness #B(a): a JSONL line IS a per-turn heartbeat — the agent just processed
+  // a turn, so it is alive NOW. Warm the liveness cache (keyed by tmux_session) and
+  // stamp last_seen, so rpcCheckAlive / the wake path read "alive" from activity
+  // without a tmux probe. Strictly additive: it only ever marks a live agent alive
+  // (never dead), so it can't cause respawn-churn — it just keeps the cache warm and
+  // shrinks the cold-miss window the 30s sweep used to own (the step that lets the
+  // sweep later demote to a slow drift-reconciler).
+  const agent = agents.find(a => a.id === agentId)
+  if (agent?.tmux_session) {
+    _alivenessCache.set(agent.tmux_session, true)
+    _missingSessionSince.delete(agentId)
+    agent.last_seen = new Date().toISOString()
+  }
   return _activityThrottle.buffer(agentId, evts)
 }
 
