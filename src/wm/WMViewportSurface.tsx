@@ -2,6 +2,7 @@ import { useEffect, useMemo } from 'react'
 import { TldrawViewport, useEditor, useValue } from 'tldraw'
 import type { Editor, TLShape, TLViewportId } from 'tldraw'
 import type { Camera } from './wm-core'
+import { VisibilityViewportProvider } from '../shapes/useIsInViewport'
 
 export interface WMViewportDiagnostics {
 	viewportId: TLViewportId
@@ -107,12 +108,14 @@ export function WMViewportSurface({
 				</div>
 			) : null}
 			<div style={{ position: 'relative', flex: 1, minHeight: 0 }}>
-				<ShapeFilteredTldrawViewport
-					id={viewportId}
-					camera={camera}
-					onCameraChange={onCameraChange}
-					shapePredicate={shapePredicate}
-				/>
+				<VisibilityViewportProvider viewportId={viewportId}>
+					<ShapeFilteredTldrawViewport
+						id={viewportId}
+						camera={camera}
+						onCameraChange={onCameraChange}
+						shapePredicate={shapePredicate}
+					/>
+				</VisibilityViewportProvider>
 			</div>
 		</div>
 	)
