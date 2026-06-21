@@ -131,7 +131,7 @@ test('HARNESS preserves the existing adapter behavior with capability flags', ()
 
 test('model classification matches the legacy spawn-policy behavior', () => {
   const cases = [
-    ...models.map((model) => ({ model })),
+    ...models.map((model) => ({ kind: undefined as string | undefined, model })),
     ...kinds.flatMap((kind) => models.map((model) => ({ kind, model }))),
     { kind: 'gpt', model: '' },
     { kind: 'unknown', model: '' },
