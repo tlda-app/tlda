@@ -36,6 +36,13 @@ t('codex shares the claude classifier (same code path)', () => {
   assert.equal(classifyPane('codex', 'Thinking…').thinking, true)
   assert.equal(classifyPane('codex', 'idle > ').thinking, false)
 })
+t('codex REAL working line ("esc to interrupt", no ellipsis) → thinking via interrupt-hint', () => {
+  // Captured live 2026-06-21 from a gpt-5.5 codex agent (codexops) while working:
+  //   "• Working (4s • esc to interrupt)"
+  // codex's spinner word "Working" has no ellipsis, so THINKING_SPINNER_RE misses
+  // it — the interrupt-hint branch is what makes the shared classifier catch codex.
+  assert.equal(classifyPane('codex', '• Working (4s • esc to interrupt)').thinking, true)
+})
 
 // ---- classifyPane: goose (own markers, stateful freeze→stuck) ----
 t('goose working (Ctrl+C hint) → thinking', () => {

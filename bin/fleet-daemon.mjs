@@ -1847,6 +1847,7 @@ async function tmux(...args) {
 async function rpcSendKey({ tmux_session, key }) {
   checkSession(tmux_session)
   if (!key) throw new Error('missing key')
+  armBySession(tmux_session)   // delivering a keystroke (e.g. submit) → arm
   // Translate `ctrl+x` → `C-x` for tmux's send-keys grammar; everything
   // else passes through as-is (Enter, Escape, etc.).
   const tmuxKey = key.replace(/^ctrl\+(.)/i, (_, c) => `C-${c}`)
@@ -1896,6 +1897,7 @@ function teardownEphemeral(tmuxSession) {
 
 async function rpcSendText({ tmux_session, text, enter, enter_delay_ms }) {
   checkSession(tmux_session)
+  armBySession(tmux_session)   // delivering input/wake-bootstrap → arm the status machine
   // Prefer long-lived PTY watcher, then ephemeral PTY, never tmux send-keys
   let pty = terminalWatchPtys.get(tmux_session)?.alive
     ? terminalWatchPtys.get(tmux_session).pty
@@ -2039,6 +2041,7 @@ function pendingQueuedIdx(lines) {
 }
 async function rpcSoftInterrupt({ tmux_session, agent_id }) {
   checkSession(tmux_session)
+  if (agent_id) armAgent(agent_id); else armBySession(tmux_session)   // promoting a queued message → arm
   let pane = ''
   try { pane = await capturePaneTail(tmux_session) } catch {}
   let lines = pane.split('\n').slice(-THINKING_SCAN_LINES)
@@ -2098,6 +2101,7 @@ async function rpcCheckAlive({ tmux_session }) {
 
 async function rpcKick({ agent_id }) {
   if (!agent_id) throw new Error('missing agent_id')
+  armAgent(agent_id)   // kicking/waking → arm the status machine
   const dir = path.join(os.homedir(), '.fleet', 'signals')
   fs.mkdirSync(dir, { recursive: true })
   const file = path.join(dir, agent_id.replace(/[^a-zA-Z0-9_-]/g, '_'))
@@ -2550,10 +2554,27 @@ const _classifierState = new Map()   // agent_id -> carried classifier state (go
 function armAgent(agentId) {
   if (agentId) _armedSince.set(agentId, Date.now())
 }
+function armBySession(tmux_session) {
+  if (!tmux_session) return
+  const a = agents.find(x => x.tmux_session === tmux_session)
+  if (a) armAgent(a.id)
+}
+// Disarm an agent, emitting a clean idle edge first if it was mid-turn. The daemon
+// OWNS the transition, so a thinking agent that vanishes (dead/hibernating) or is
+// disarmed must get a thinking:false edge HERE — otherwise the server's
+// _thinkingState stays true (its disconnect path clears it WITHOUT a turn_ended),
+// so a bot never sees the turn end. The normal idle-past-linger path already
+// emitted false via the hysteresis, so _prevThinking is false there and this
+// re-emits nothing — it just clears state.
 function disarmAgent(agentId) {
+  if (_prevThinking.get(agentId) === true) sendMsg({ type: 'agent-thinking', agentId, thinking: false })
+  if (_prevCompacting.get(agentId) === true) sendMsg({ type: 'agent-compacting', agentId, compacting: false })
   _armedSince.delete(agentId)
   _idleScans.delete(agentId)
   _classifierState.delete(agentId)
+  _prevThinking.delete(agentId)
+  _prevCompacting.delete(agentId)
+  _prevApprovalFP.delete(agentId)
 }
 const _prevThinking = new Map()   // agent_id → boolean
 const _prevCompacting = new Map() // agent_id → boolean
