@@ -87,6 +87,7 @@ import {
   unlinkPidfileIfOwnPid,
 } from './lib/daemon-guards.mjs'
 import { codexRolloutBelongsToAgent, codexRolloutHasOwnerEvidence, resolveTranscript } from './lib/resolve-transcript.mjs'
+import { projectCapabilityToMode, resolveDaemonSpawnGrant } from '../server/lib/spawn-policy.mjs'
 const log = createLogger('daemon')
 // CONFIG_DIR holds config.json, cursors, PID and log files. Defaults to
 // ~/.config/tlda. TLDA_DAEMON_CONFIG_DIR lets the E2E test start a second
@@ -2353,7 +2354,20 @@ async function probeSpawnStartupFailure({ agentName, agent_id, tmux_session, har
   }
 }
 
-async function rpcSpawn({ name, model, kind, cwd, doc, respawn, refresh, effort, mode, spawnPolicy }) {
+async function rpcSpawn({
+  agent_id,
+  name,
+  model,
+  kind,
+  cwd,
+  doc,
+  respawn,
+  refresh,
+  effort,
+  mode,
+  requestedCapability,
+  callerRung,
+}) {
   const agentName = name || `agent-${Date.now().toString(36).slice(-4)}`
   if (_activeSpawns.has(agentName)) {
     const age = Date.now() - _activeSpawns.get(agentName)
@@ -2374,7 +2388,25 @@ async function rpcSpawn({ name, model, kind, cwd, doc, respawn, refresh, effort,
     }
     if (project.sourceDir) resolvedCwd = project.sourceDir
   }
+  let grant
+  try {
+    const config = _loadSharedConfig()
+    const project = doc ? projects.find(p => p.name === doc) : null
+    grant = resolveDaemonSpawnGrant({
+      requestedCapability,
+      callerRung,
+      model,
+      kind,
+      config,
+      doc,
+      project,
+    })
+  } catch (e) {
+    return { ok: false, name: agentName, error: `spawn policy resolution failed: ${e.message}` }
+  }
+  const launchMode = projectCapabilityToMode(grant.grantedCapability, mode)
   const { args } = buildFleetSpawnArgs({
+    agentId: agent_id,
     name: agentName,
     model,
     kind,
@@ -2382,8 +2414,8 @@ async function rpcSpawn({ name, model, kind, cwd, doc, respawn, refresh, effort,
     respawn,
     refresh,
     effort,
-    mode,
-    spawnPolicy,
+    mode: launchMode,
+    spawnPolicy: grant.grantedPolicy,
   })
   // Route spawn through `tlda` (the on-path installed binary, which resolves the
   // fleet-spawn script internally) rather than a bare `fleet-spawn` that depends
@@ -2395,7 +2427,7 @@ async function rpcSpawn({ name, model, kind, cwd, doc, respawn, refresh, effort,
   try {
     const { stdout, stderr } = await execFileP(spawnScript, spawnArgs, {
       timeout: SPAWN_LAUNCH_TIMEOUT_MS,
-      env: { ...process.env, PATH: process.env.PATH, TMUX: '' },
+      env: { ...process.env, PATH: process.env.PATH, TMUX: '', TLDA_MACHINE_ID: MACHINE_ID },
     })
     log.info(`fleet-spawn finished: ${agentName}: ${stdout.trim()}`)
     const launched = parseSpawnLaunch(stdout, agentName)
@@ -2431,7 +2463,14 @@ async function rpcSpawn({ name, model, kind, cwd, doc, respawn, refresh, effort,
       model: model || null,
       respawn,
     }).catch(e => log.warn(`detached startup-failure probe errored for ${agentName}: ${e.message}`))
-    return { ok: true, name: agentName, agent_id: launched.agent_id, tmux_session: launched.tmux_session }
+    return {
+      ok: true,
+      name: agentName,
+      agent_id: launched.agent_id,
+      tmux_session: launched.tmux_session,
+      spawnPolicy: grant.grantedPolicy,
+      grantedCapability: grant.grantedCapability,
+    }
   } catch (e) {
     const detail = ((e.stderr || e.message || '').trim().split('\n').filter(Boolean).pop()) || 'unknown error'
     log.warn(`fleet-spawn finished with error: ${agentName}: ${e.stderr || e.message}`)

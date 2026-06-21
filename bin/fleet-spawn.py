@@ -103,7 +103,7 @@ _tls_cert = os.path.expanduser("~/.config/tlda/localhost+2.pem")
 _scheme = "https" if API.startswith("https://") else "http"
 _ca_path = os.path.expanduser("~/Library/Application Support/mkcert/rootCA.pem")
 _ssl_ctx = None
-if API.startswith("https://127.0.0.1") and os.path.exists(_ca_path):
+if re.match(r"^https://(127\.0\.0\.1|localhost)(:\d+)?$", API) and os.path.exists(_ca_path):
     _ssl_ctx = ssl.create_default_context()
     _ssl_ctx.load_verify_locations(_ca_path)
 
@@ -406,7 +406,7 @@ def ws_register(fleet_id, name, tmux_session, cwd, model=None, effort=None, refr
         if _ssl_ctx:
             ws_opts["sslopt"] = {"context": _ssl_ctx}
         ws = websocket.create_connection(ws_url, **ws_opts)
-        machine_id = read_config().get("machineId")
+        machine_id = os.environ.get("TLDA_MACHINE_ID") or read_config().get("machineId")
         msg = {"type": "register", "id": fleet_id, "name": name,
                "tmux_session": tmux_session, "cwd": cwd, "kind": kind}
         if machine_id:
@@ -2477,9 +2477,10 @@ def _check_fresh_name_available(name, server_up):
 
 
 def fresh(name, model, cwd, effort, mode, kind="claude", spawn_capability=None,
+          agent_id=None,
           sandbox_policy=None):
     server_up = ensure_server()
-    fleet_id = f"fleet:{uuid.uuid4().hex[:8]}"
+    fleet_id = agent_id or f"fleet:{uuid.uuid4().hex[:8]}"
     sess = unique_session_name(f"fleet-{sanitize_session_name(name)}")
     cwd = resolve_spawn_cwd(cwd)
     adapter = harness_for_spawn(kind, model)
@@ -2831,6 +2832,8 @@ def main():
     parser.add_argument("--kind", default="claude", choices=sorted(HARNESS_ADAPTERS),
                         help="Agent runtime/harness (default: claude). Goose can also "
                              "be selected by its model aliases for compatibility.")
+    parser.add_argument("--agent-id", default=None,
+                        help="Fleet id already minted by the server for a fresh spawn")
     parser.add_argument("--session", default=None)
     parser.add_argument("--enroll", action="store_true")
     parser.add_argument("--no-attach", action="store_true")
@@ -2887,6 +2890,7 @@ def main():
         elif args.fresh:
             sess = fresh(args.name, args.model, args.cwd, args.effort, mode,
                          kind=args.kind, spawn_capability=default_capability,
+                         agent_id=args.agent_id,
                          sandbox_policy=args.policy)
         elif args.refresh:
             sess = refresh(args.name, args.model, args.cwd, args.effort, mode,

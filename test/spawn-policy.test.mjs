@@ -16,6 +16,7 @@ import {
   modelTrustTier,
   normalizeCapability,
   normalizeSpawnPolicy,
+  resolveDaemonSpawnGrant,
   resolveProjectProfile,
   resolveProjectProfileName,
   spawnPolicyLte,
@@ -267,6 +268,42 @@ describe('spawn policy', () => {
     })
     assert.deepEqual(meetSpawnPolicies(['full', 'tlda-write']), {
       name: 'tlda-write', capability: 'tlda-write', policy: 'tlda-projects', category: 'write-scope',
+    })
+  })
+
+  it('daemon grant is meet(requested, caller rung, machine allowed rung)', () => {
+    const grant = resolveDaemonSpawnGrant({
+      requestedCapability: 'full',
+      callerRung: 'tlda-write',
+      model: 'deepseek/deepseek-v4-pro',
+      config: {},
+    })
+    assert.equal(grant.requestedCapability, 'full')
+    assert.equal(grant.callerCapability, 'tlda-write')
+    assert.equal(grant.machineAllowedCapability, 'write')
+    assert.deepEqual(grant.grantedPolicy, {
+      name: 'write',
+      capability: 'write',
+      policy: 'cwd',
+      category: 'write-scope',
+    })
+  })
+
+  it('daemon derives the local project fence before clamping', () => {
+    const grant = resolveDaemonSpawnGrant({
+      callerRung: 'full',
+      model: 'opus48',
+      config: {},
+      doc: 'mathdoc',
+      project: { name: 'mathdoc', profile: 'math' },
+    })
+    assert.equal(grant.requestedCapability, 'tlda-write')
+    assert.equal(grant.machineAllowedCapability, 'tlda-write')
+    assert.deepEqual(grant.grantedPolicy, {
+      name: 'tlda-write',
+      capability: 'tlda-write',
+      policy: 'tlda-projects',
+      category: 'write-scope',
     })
   })
 })

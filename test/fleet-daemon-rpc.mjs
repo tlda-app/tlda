@@ -14,12 +14,13 @@
  */
 import { WebSocketServer } from 'ws'
 import { spawn } from 'child_process'
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'fs'
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import path from 'path'
 
 const TMP = path.join(tmpdir(), 'fleet-daemon-rpc-' + Date.now())
 const DAEMON_CFG = path.join(TMP, 'daemon-config')
+const ARG_LOG = path.join(TMP, 'spawn-args.log')
 mkdirSync(TMP, { recursive: true })
 mkdirSync(DAEMON_CFG, { recursive: true })
 
@@ -42,7 +43,7 @@ wss.on('connection', (ws) => {
     const msg = JSON.parse(raw.toString())
     if (msg.type === 'daemon-hello') {
       helloOk = true
-      send(ws, { type: 'daemon-welcome', agents: [], projects: [] })
+      send(ws, { type: 'daemon-welcome', agents: [], projects: [{ name: 'mathdoc', profile: 'math' }] })
       // Issue an RPC after a small delay to make sure the daemon's
       // dispatcher is wired.
       setTimeout(() => send(ws, { type: 'rpc', id: 'r1', op: 'list-sessions' }), 100)
@@ -51,13 +52,23 @@ wss.on('connection', (ws) => {
       // return an error string from tmux.
       setTimeout(() => send(ws, { type: 'rpc', id: 'r3', op: 'send-key', tmux_session: 'fleet-test-nonexistent-xyz', key: 'Enter' }), 300)
       // spawn must not report ok before the launcher has actually succeeded.
-      setTimeout(() => send(ws, { type: 'rpc', id: 'r4', op: 'spawn', name: 'false-success-canary', model: 'sonnet', kind: 'claude' }), 400)
+      setTimeout(() => send(ws, {
+        type: 'rpc',
+        id: 'r4',
+        op: 'spawn',
+        agent_id: 'fleet:falsecanary',
+        name: 'false-success-canary',
+        model: 'sonnet',
+        kind: 'claude',
+        requestedCapability: 'full',
+        callerRung: 'write',
+      }), 400)
       // Even a zero-exit launcher is not success unless the reported tmux
       // session exists and is usable.
       setTimeout(() => send(ws, { type: 'rpc', id: 'r5', op: 'spawn', name: 'phantom-success-canary', model: 'sonnet', kind: 'claude' }), 500)
       // A launcher that creates a tmux session can still hit a harness startup
-      // failure. That must return ok:false to the spawn caller, not only surface
-      // later as chat noise.
+      // failure. The daemon returns the verified launch and surfaces the later
+      // harness startup failure as a typed async event.
       setTimeout(() => send(ws, { type: 'rpc', id: 'r6', op: 'spawn', name: 'startup-auth-canary', model: 'sonnet', kind: 'claude' }), 600)
     }
     if (msg.type === 'rpc-reply') {
@@ -76,6 +87,7 @@ console.log(`[rpc-test] mock server on ws://localhost:${PORT}/ws/fleet-daemon`)
 
 const fakeSpawn = path.join(TMP, 'fake-fleet-spawn')
 writeFileSync(fakeSpawn, `#!/bin/sh
+printf '%s\\n' "$*" >> ${JSON.stringify(ARG_LOG)}
 case "$*" in
   *phantom-success-canary*)
     echo "fleet-phantom-success-canary (fleet:phantom123) spawned in /tmp"
@@ -160,22 +172,27 @@ setTimeout(() => {
   const phantomSpawnRejected = spawnPhantomResult?.result?.ok === false
     && spawnPhantomResult.result.tmux_session === 'fleet-phantom-success-canary'
     && /tmux session is not usable/.test(spawnPhantomResult.result.error || '')
-  const startupFailureSurfaced = spawnStartupFailureResult?.result?.ok === false
+  const startupFailureSurfaced = spawnStartupFailureResult?.result?.ok === true
     && spawnStartupFailureResult.result.tmux_session === 'fleet-startup-auth-canary'
-    && /spawn startup failed:.*Not logged in/.test(spawnStartupFailureResult.result.error || '')
-    && spawnStartupFailureResult.result.startupFailure?.code === 'account-auth-startup-error'
+    && spawnStartupFailureResult.result.grantedCapability === 'write'
   const startupFailureEventSent = spawnStartupFailureEvent?.agent_id === 'fleet:startupauth123'
     && spawnStartupFailureEvent?.code === 'account-auth-startup-error'
+  const argLog = readFileSync(ARG_LOG, 'utf8')
+  const falseSuccessArgs = argLog.split('\n').find(line => line.includes('false-success-canary')) || ''
+  const daemonGrantedWrite = falseSuccessArgs.includes('--spawn-capability write')
+    && falseSuccessArgs.includes('--agent-id fleet:falsecanary')
+    && falseSuccessArgs.includes('--mode default')
+    && !falseSuccessArgs.includes('--spawn-capability full')
 
   child.kill('SIGTERM')
   wss.close()
   rmSync(TMP, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 
-  if (helloOk && allReplied && unknownIsError && listOk && sendOk && spawnFailureSurfaced && phantomSpawnRejected && startupFailureSurfaced && startupFailureEventSent) {
+  if (helloOk && allReplied && unknownIsError && listOk && sendOk && spawnFailureSurfaced && phantomSpawnRejected && startupFailureSurfaced && startupFailureEventSent && daemonGrantedWrite) {
     console.log('PASS')
     process.exit(0)
   } else {
-    console.error(`FAIL — helloOk=${helloOk} allReplied=${allReplied} unknownIsError=${unknownIsError} listOk=${listOk} sendOk=${!!sendOk} spawnFailureSurfaced=${spawnFailureSurfaced} phantomSpawnRejected=${phantomSpawnRejected} startupFailureSurfaced=${startupFailureSurfaced} startupFailureEventSent=${startupFailureEventSent}`)
+    console.error(`FAIL — helloOk=${helloOk} allReplied=${allReplied} unknownIsError=${unknownIsError} listOk=${listOk} sendOk=${!!sendOk} spawnFailureSurfaced=${spawnFailureSurfaced} phantomSpawnRejected=${phantomSpawnRejected} startupFailureSurfaced=${startupFailureSurfaced} startupFailureEventSent=${startupFailureEventSent} daemonGrantedWrite=${daemonGrantedWrite} falseSuccessArgs=${JSON.stringify(falseSuccessArgs)}`)
     process.exit(1)
   }
 }, 2500)

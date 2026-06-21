@@ -14,8 +14,7 @@ import path from 'path'
 import os from 'os'
 import { DEFAULT_PORT, loadConfig, resolveConfig } from '../../shared/config.mjs'
 import { parseFilter, evalExpr, labelsForAgent } from '../../shared/fleet-labels.mjs'
-import { authorizeSpawn, projectCapabilityToMode, resolveProjectProfile } from '../lib/spawn-policy.mjs'
-import { readProject } from '../lib/project-store.mjs'
+import { callerSpawnPolicy } from '../lib/spawn-policy.mjs'
 
 // Server owner — the human running this server process. Browser users
 // log in via the WS 'login' message or register via 'register'.
@@ -419,7 +418,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   // doc: project name — daemon resolves to sourceDir for the cwd
   // For respawn: { agent: "fleet:xxx" or "name", respawn: true }
   router.post('/api/spawn', async (req, res) => {
-    const { name, model, doc, cwd, agent, respawn, fresh, capability, spawnCapability, kind, mode, effort, trustOverride } = req.body || {}
+    const { name, model, doc, cwd, agent, respawn, fresh, capability, spawnCapability, kind, mode, effort } = req.body || {}
     // HTTP auth currently proves only bearer-token level, not which fleet agent or
     // human browser session made the request. Spawning is authority-sensitive, so
     // fail closed here instead of treating all HTTP callers as the server owner.
@@ -436,43 +435,34 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       const a = fleetStore?.findAgent(agent)
       spawnName = a?.friendly_name || agent
     }
-    // Find a daemon to route to — use the local machine
-    const machineIds = [...daemonConnections.keys()]
-    if (machineIds.length === 0) {
-      res.status(503).json({ error: 'No fleet daemon connected — cannot spawn agents' })
+    const machineId = caller.machine_id
+    if (!machineId) {
+      res.status(503).json({ error: 'spawn caller has no machine_id — cannot route to a fleet daemon' })
+      return
+    }
+    if (!daemonConnections.has(machineId)) {
+      res.status(503).json({ error: `No fleet daemon connected for machine "${machineId}" — cannot spawn agents` })
       return
     }
     try {
-      const config = loadConfig()
-      // Inherit the target project's default profile (the default fence) when no
-      // capability is requested explicitly; authorizeSpawn caps it by the model
-      // ceiling and the caller.
-      const profile = resolveProjectProfile(config, { doc, project: doc ? readProject(doc) : null })
-      const authorized = authorizeSpawn({
-        caller,
-        requestedCapability: capability || spawnCapability || profile,
-        model,
-        kind,
-        trustOverride,
-        config,
-        serverOwnerId: SERVER_OWNER_ID,
-      })
-      const launchMode = projectCapabilityToMode(authorized.requestedCapability, mode)
+      const requestedCapability = capability || spawnCapability || null
+      const callerRung = callerSpawnPolicy(caller, { serverOwnerId: SERVER_OWNER_ID }).capability
       const resolved = resolveSpawnTarget
         ? await resolveSpawnTarget(spawnName, !!respawn, {
             fresh: !!fresh,
             requested: { model, kind, project: doc },
           })
         : { name: spawnName, respawn: !!respawn }
-      const result = await sendRpc(machineIds[0], 'spawn', {
+      const result = await sendRpc(machineId, 'spawn', {
         name: resolved.name || undefined,
         model: model || undefined,
         kind: kind || undefined,
         doc: doc || undefined,
         cwd: cwd || undefined,
         effort: effort || undefined,
-        mode: launchMode || undefined,
-        spawnPolicy: authorized.requestedPolicy,
+        mode: mode || undefined,
+        requestedCapability: requestedCapability || undefined,
+        callerRung,
         respawn: resolved.respawn,
       })
       broadcastState()

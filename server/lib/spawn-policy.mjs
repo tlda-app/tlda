@@ -408,3 +408,32 @@ export function authorizeSpawn({ caller, requestedCapability, model, kind, trust
     modelCeilingPolicy: ceilingPolicy,
   }
 }
+
+export function resolveDaemonSpawnGrant({
+  requestedCapability,
+  callerRung,
+  model,
+  kind,
+  config = {},
+  doc,
+  project,
+} = {}) {
+  const inheritedProfile = resolveProjectProfile(config, { doc, project })
+  const requestedPolicy = normalizeSpawnPolicy(requestedCapability || inheritedProfile, DEFAULT_AGENT_CAPABILITY)
+  const callerPolicy = normalizeSpawnPolicy(callerRung, DEFAULT_AGENT_CAPABILITY)
+  const machineAllowedPolicy = meetSpawnPolicies([
+    inheritedProfile,
+    modelSpawnCeiling(config, { model, kind }),
+  ])
+  const grantedPolicy = meetSpawnPolicies([requestedPolicy, callerPolicy, machineAllowedPolicy])
+  return {
+    requestedCapability: requestedPolicy.capability,
+    requestedPolicy,
+    callerCapability: callerPolicy.capability,
+    callerPolicy,
+    machineAllowedCapability: machineAllowedPolicy.capability,
+    machineAllowedPolicy,
+    grantedCapability: grantedPolicy.capability,
+    grantedPolicy,
+  }
+}

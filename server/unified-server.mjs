@@ -57,7 +57,7 @@ import * as tldaFeedback from './lib/tlda-feedback.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
 import { FleetStore } from './lib/fleet-store.mjs'
 import { createFleetRouter } from './routes/fleet.mjs'
-import { authorizeSpawn, coherentSpawnPolicy, projectCapabilityToMode, resolveProjectProfile } from './lib/spawn-policy.mjs'
+import { callerSpawnPolicy, coherentSpawnPolicy } from './lib/spawn-policy.mjs'
 import { SpawnBounceError, SpawnLibrarian, resolveSpawnCollision } from '../shared/spawn-librarian.ts'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -882,11 +882,11 @@ async function resolveSpawnTarget(name, respawn, { fresh = false, requested = {}
   return { name: resolved.name, respawn: resolved.respawn }
 }
 
-async function performAuthorizedSpawn(caller, msg) {
+async function performSpawnRelay(caller, msg) {
   if (!caller?.id) throw new Error('spawn caller identity is required')
   const {
     name, agent, model, doc, cwd, respawn, fresh, refresh, effort, kind, mode,
-    capability, spawnCapability, trustOverride,
+    capability, spawnCapability,
   } = msg || {}
   const shouldRespawn = !!respawn || (!fresh && !refresh && !!agent)
   let spawnName = fresh ? name : (agent || name)
@@ -907,43 +907,23 @@ async function performAuthorizedSpawn(caller, msg) {
     throw new Error('codex refresh is not supported through MCP spawn; use respawn with a real resume handle')
   }
   const requestedSpec = { model, kind: spawnKind, project: doc }
-  const config = loadConfig()
-  // The project a spawn lands in carries a default profile (the default fence).
-  // When the caller doesn't request a capability explicitly, inherit the
-  // project's profile — set-once, per-project, applies to everyone including
-  // Claude. authorizeSpawn still caps it by the model ceiling and the caller.
-  const profile = resolveProjectProfile(config, { doc, project: doc ? readProject(doc) : null })
-  const requestedCapability = capability || spawnCapability || profile
-  let authorized
-  try {
-    authorized = authorizeSpawn({
-      caller,
-      requestedCapability,
-      model,
-      kind: spawnKind,
-      trustOverride,
-      config,
-      serverOwnerId: SERVER_OWNER_ID,
-    })
-  } catch {
-    return { ok: false, reason: 'policy-denied' }
-  }
-  const machineIds = [...daemonConnections.keys()]
-  if (machineIds.length === 0) throw new Error('No fleet daemon connected — cannot spawn agents')
+  const requestedCapability = capability || spawnCapability || null
+  const callerRung = callerSpawnPolicy(caller, { serverOwnerId: SERVER_OWNER_ID }).capability
+  const machineId = caller.machine_id || LOCAL_MACHINE_ID
+  if (!daemonConnections.has(machineId)) throw new Error(`No fleet daemon connected for machine "${machineId}" — cannot spawn agents`)
   const resolved = resolveSpawnTarget
     ? await resolveSpawnTarget(spawnName, shouldRespawn && !refresh, {
         fresh: !!fresh,
         requested: requestedSpec,
       })
     : { name: spawnName, respawn: shouldRespawn && !refresh }
-  const launchMode = projectCapabilityToMode(authorized.requestedCapability, mode)
   const pendingAgentId = (!resolved.respawn && !refresh) ? mintFleetId() : null
   const readiness = pendingAgentId
     ? spawnLibrarian.awaitRegister({ id: pendingAgentId, name: spawnName, spec: requestedSpec })
     : null
   let result
   try {
-    result = await sendRpc(machineIds[0], 'spawn', {
+    result = await sendRpc(machineId, 'spawn', {
       agent_id: pendingAgentId || undefined,
       friendly_name: pendingAgentId ? spawnName : undefined,
       name: resolved.name || undefined,
@@ -952,22 +932,34 @@ async function performAuthorizedSpawn(caller, msg) {
       doc: doc || undefined,
       cwd: cwd || undefined,
       effort: effort || undefined,
-      mode: launchMode || undefined,
-      spawnPolicy: authorized.requestedPolicy,
+      mode: mode || undefined,
+      requestedCapability: requestedCapability || undefined,
+      callerRung,
       respawn: refresh ? false : resolved.respawn,
       refresh: !!refresh,
     })
   } catch (e) {
-    if (pendingAgentId) spawnLibrarian.failPending(pendingAgentId, 'launch-failed')
-    return { ok: false, reason: 'launch-failed' }
+    if (pendingAgentId && /RPC timeout .*op=spawn/.test(e.message || '')) {
+      result = { ok: false, reason: 'spawning' }
+    } else {
+      if (pendingAgentId) spawnLibrarian.failPending(pendingAgentId, 'launch-failed')
+      return { ok: false, reason: 'launch-failed' }
+    }
   }
   if (readiness) {
     const ready = await readiness
     if (!ready.ok) return ready
-    return { ok: true, agent: ready.agent, spawnPolicy: authorized.requestedPolicy }
+    const registeredPolicy = ready.agent?.metadata?.spawnPolicy
+    const spawnPolicy = result.spawnPolicy || registeredPolicy
+    return {
+      ok: true,
+      agent: ready.agent,
+      spawnPolicy,
+      grantedCapability: result.grantedCapability || spawnPolicy?.capability,
+    }
   }
   broadcastState()
-  return { ...result, spawnPolicy: authorized.requestedPolicy }
+  return result
 }
 
 // Wire fleet store events → WS broadcast
@@ -3042,7 +3034,7 @@ async function handleFleetWsMessage(ws, msg) {
     const caller = fleetStore.getAgent?.(callerId)
     if (!caller) { error(`spawn caller ${callerId} is not registered`); return }
     try {
-      reply(await performAuthorizedSpawn(caller, msg))
+      reply(await performSpawnRelay(caller, msg))
     } catch (e) {
       error(e.message)
     }

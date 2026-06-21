@@ -126,6 +126,7 @@ export function detectSpawnStartupFailureTranscript(text = '', { harness = null 
 }
 
 export function buildFleetSpawnArgs({
+  agentId,
   name,
   model,
   kind,
@@ -138,6 +139,7 @@ export function buildFleetSpawnArgs({
 } = {}) {
   const agentName = name || `agent-${Date.now().toString(36).slice(-4)}`
   const args = refresh ? ['--refresh', agentName] : (respawn ? [agentName] : ['--fresh', agentName])
+  if (agentId) args.push('--agent-id', agentId)
   if (model) args.push('--model', model)
   if (kind) args.push('--kind', kind)
   if (effort) args.push('--effort', effort)
