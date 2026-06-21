@@ -2450,6 +2450,11 @@ async function rpcSpawn({ name, model, kind, cwd, doc, respawn, refresh, effort,
 // explicit kill; absent processes are just sleeping.
 let _deathCheckInterval = null
 const DEATH_CHECK_MS = 30_000   // liveness check every 30s
+// Liveness #B(c): if an agent emitted JSONL activity within this window it's a
+// known-alive heartbeat — the sweep skips the expensive pane-pgrep for it. Longer
+// than a normal turn so a mid-turn agent isn't falsely treated as quiet (worst
+// case it just gets probed, which confirms alive). Death cadence is unchanged.
+const ACTIVITY_FRESH_MS = 90_000
 
 // Cache populated by checkAgentLiveness every 30s.
 // rpcCheckAlive reads from here — zero spawns per call.
@@ -2640,6 +2645,18 @@ async function checkAgentLiveness() {
     }
     _observedLiveSessions.add(agent.tmux_session)
     _missingSessionSince.delete(agent.id)
+    // Liveness #B(c): session exists AND the agent emitted JSONL activity recently
+    // (a per-turn heartbeat) → known alive; skip the expensive pane-pgrep and mark
+    // it alive. A genuinely quiet/dead agent has no fresh activity, so it still
+    // falls through to the probe below — death-detection cadence is unchanged; the
+    // sweep just stops re-pgrep'ing the obviously-active fleet (heartbeat-driven
+    // liveness, sweep as backstop for the quiet ones).
+    const lastSeenMs = Date.parse(agent.last_seen || '') || 0
+    if (now - lastSeenMs < ACTIVITY_FRESH_MS) {
+      _alivenessCache.set(agent.tmux_session, true)
+      aliveAgentIds.push(agent.id)
+      continue
+    }
     candidateAgents.push(agent)
   }
 
