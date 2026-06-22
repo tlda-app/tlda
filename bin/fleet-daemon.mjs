@@ -1520,10 +1520,15 @@ function syncSourceWatchers(projectList, activeViewers) {
 
     const isMarkdown = isMarkdownDoc(p.format, p.mainFile)
     const hasFlsWatchList = p.watchFiles?.length > 0
+    // Bootstrap watchSet (no .fls yet) must include the main's \input deps, not
+    // just the main — else the per-file poller (the backup for when fs.watch
+    // goes stale) only covers the main, and an edit to an \input file (e.g.
+    // appendix_b.tex) is silently dropped when fs.watch misses it → stale doc.
+    // Scan the deps with the same scanner pushWatchedFiles uses.
     const watchSet = new Set(
       hasFlsWatchList ? p.watchFiles
         : isMarkdown && p.mainFile ? scanMarkdownInputs(sourceDir, p.mainFile)
-        : p.mainFile ? [p.mainFile] : []
+        : p.mainFile ? scanTexInputs(sourceDir, p.mainFile, p.extraInputCommands || []) : []
     )
 
     if (sourceWatchers.has(p.name)) {
