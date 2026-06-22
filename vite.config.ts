@@ -10,7 +10,7 @@ const tlsDir = join(homedir(), '.config/tlda')
 const tlsCert = join(tlsDir, 'localhost+2.pem')
 const tlsKey  = join(tlsDir, 'localhost+2-key.pem')
 const hasTls = existsSync(tlsCert) && existsSync(tlsKey)
-const tldrawForkPackages = resolve('../../.tldraw-fork/packages')
+const tldrawForkPackages = resolve('./tldraw-fork/packages')
 const hasTldrawForkSources = existsSync(resolve(tldrawForkPackages, 'tldraw/src/index.ts'))
 
 const tldrawForkAliases = hasTldrawForkSources ? [
@@ -91,7 +91,7 @@ export default defineConfig({
     port: 5179,
     ...(hasTls ? { https: { cert: readFileSync(tlsCert, 'utf8'), key: readFileSync(tlsKey, 'utf8') } } : {}),
     fs: {
-      allow: hasTldrawForkSources ? ['..', resolve('../../.tldraw-fork')] : ['..'],
+      allow: hasTldrawForkSources ? ['..', resolve('./tldraw-fork')] : ['..'],
     },
     hmr: process.env.VITE_HMR !== '1',
     watch: {

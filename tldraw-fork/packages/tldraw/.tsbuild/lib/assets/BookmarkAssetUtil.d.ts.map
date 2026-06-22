@@ -1,0 +1,1 @@
+{"version":3,"file":"BookmarkAssetUtil.d.ts","sourceRoot":"","sources":["../../../src/lib/assets/BookmarkAssetUtil.ts"],"names":[],"mappings":"AAAA,OAAO,EACN,SAAS,EACT,eAAe,EAGf,MAAM,gBAAgB,CAAA;AAEvB,cAAc;AACd,qBAAa,iBAAkB,SAAQ,SAAS,CAAC,eAAe,CAAC;IAChE,OAAgB,IAAI,aAAsB;IAC1C,OAAgB,KAAK;;;;;;MAAqB;IAC1C,OAAgB,UAAU,4CAA0B;IAE3C,eAAe,IAAI,eAAe,CAAC,OAAO,CAAC,CAQnD;CACD"}

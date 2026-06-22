@@ -1,0 +1,1 @@
+{"version":3,"file":"EditLinkDialog.d.ts","sourceRoot":"","sources":["../../../../src/lib/ui/components/EditLinkDialog.tsx"],"names":[],"mappings":"AAAA,OAAO,EAAE,mBAAmB,EAAgC,MAAM,gBAAgB,CAAA;AAElF,OAAO,EAAE,eAAe,EAAE,MAAM,oBAAoB,CAAA;AAyBpD,KAAK,YAAY,GAAG,mBAAmB,CAAC;IAAE,GAAG,EAAE,MAAM,CAAA;CAAE,CAAC,CAAA;AAYxD,eAAO,MAAM,cAAc,uDAUzB,CAAA;AAEF,eAAO,MAAM,mBAAmB;;EAmJ9B,CAAA"}

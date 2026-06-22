@@ -1,0 +1,1 @@
+{"version":3,"file":"Idle.d.ts","sourceRoot":"","sources":["../../../../../../src/lib/editor/tools/BaseBoxShapeTool/children/Idle.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,kBAAkB,EAAE,MAAM,4BAA4B,CAAA;AAC/D,OAAO,EAAE,SAAS,EAAE,MAAM,iBAAiB,CAAA;AAE3C,qBAAa,IAAK,SAAQ,SAAS;IAClC,OAAgB,EAAE,SAAS;IAElB,aAAa,CAAC,IAAI,EAAE,kBAAkB,QAE9C;IAEQ,OAAO,SAEf;IAEQ,QAAQ,SAEhB;CACD"}

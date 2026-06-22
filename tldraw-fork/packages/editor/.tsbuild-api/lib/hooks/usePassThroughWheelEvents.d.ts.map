@@ -1,0 +1,1 @@
+{"version":3,"file":"usePassThroughWheelEvents.d.ts","sourceRoot":"","sources":["../../../src/lib/hooks/usePassThroughWheelEvents.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,SAAS,EAAa,MAAM,OAAO,CAAA;AAK5C,cAAc;AACd,wBAAgB,yBAAyB,CAAC,GAAG,EAAE,SAAS,CAAC,WAAW,GAAG,IAAI,CAAC,QAkC3E"}

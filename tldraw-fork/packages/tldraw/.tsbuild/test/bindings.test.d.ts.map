@@ -1,0 +1,1 @@
+{"version":3,"file":"bindings.test.d.ts","sourceRoot":"","sources":["../../src/test/bindings.test.tsx"],"names":[],"mappings":"AAmJA,QAAA,MAAM,SAAS,SAAS,CAAA;AAExB,OAAO,QAAQ,kBAAkB,CAAC,CAAC;IAClC,UAAiB,uBAAuB;QACvC,CAAC,SAAS,CAAC,EAAE,MAAM,CAAC,MAAM,EAAE,KAAK,CAAC,CAAA;KAClC;CACD"}

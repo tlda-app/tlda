@@ -1,0 +1,1 @@
+{"version":3,"file":"getCulledShapes.test.d.ts","sourceRoot":"","sources":["../../src/test/getCulledShapes.test.tsx"],"names":[],"mappings":"AAYA,QAAA,MAAM,eAAe,eAAe,CAAA;AAEpC,OAAO,QAAQ,kBAAkB,CAAC,CAAC;IAClC,UAAiB,qBAAqB;QACrC,CAAC,eAAe,CAAC,EAAE;YAAE,CAAC,EAAE,MAAM,CAAC;YAAC,CAAC,EAAE,MAAM,CAAA;SAAE,CAAA;KAC3C;CACD"}

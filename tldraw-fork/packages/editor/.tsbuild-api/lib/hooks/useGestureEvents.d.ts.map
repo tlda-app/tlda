@@ -1,0 +1,1 @@
+{"version":3,"file":"useGestureEvents.d.ts","sourceRoot":"","sources":["../../../src/lib/hooks/useGestureEvents.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,KAAK,MAAM,OAAO,CAAA;AAE9B,OAAO,EAAE,YAAY,EAAE,MAAM,gCAAgC,CAAA;AAsD7D,wBAAgB,gBAAgB,CAC/B,GAAG,EAAE,KAAK,CAAC,SAAS,CAAC,cAAc,GAAG,IAAI,CAAC,EAC3C,IAAI,CAAC,EAAE;IAAE,UAAU,CAAC,EAAE,YAAY,CAAA;CAAE,QA6VpC"}

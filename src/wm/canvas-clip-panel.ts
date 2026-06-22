@@ -1,4 +1,4 @@
-import { createWMCore, type Camera, type Layer } from './wm-core'
+import { createWMCore, type Camera, type Layer } from './wm-core.ts'
 
 export const CANVAS_CLIP_ROOT_LAYER_ID = 'screen'
 export const CANVAS_CLIP_PANEL_LAYER_ID = 'canvas-clip-panel'

@@ -20,3 +20,8 @@ webkit-peek
 .DS_Store
 recipes
 !dist
+
+# RC deploy fork context: keep source, drop nested installs/caches
+tldraw-fork/**/node_modules
+tldraw-fork/**/.lazy
+tldraw-fork/**/.git

@@ -1,4 +1,4 @@
-import { createWMCore, type Camera, type Layer, type LayerLayout } from './wm-core'
+import { createWMCore, type Camera, type Layer, type LayerLayout } from './wm-core.ts'
 
 export const FLEET_HUD_ROOT_LAYER_ID = 'screen'
 export const FLEET_HUD_OVERLAY_LAYER_ID = 'fleet-overlay'

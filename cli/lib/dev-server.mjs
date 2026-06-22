@@ -267,7 +267,7 @@ export async function cmdDevServer(args, repoRoot) {
   const logFd = openSync(LOG_FILE, 'a')
   const serverScript = join(worktreeDir, 'server', 'unified-server.mjs')
 
-  const child = spawn(process.execPath, [serverScript, '--i-am-tlda-cli'], {
+  const child = spawn(process.execPath, ['--import', 'tsx', serverScript, '--i-am-tlda-cli'], {
     detached: true,
     stdio: ['ignore', logFd, logFd],
     env: {

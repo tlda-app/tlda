@@ -1,4 +1,4 @@
-import { createWMCore, type Camera, type Layer } from './wm-core'
+import { createWMCore, type Camera, type Layer } from './wm-core.ts'
 
 export const WM_VIEWPORT_ROOT_LAYER_ID = 'screen'
 export const WM_PICTURE_IN_PICTURE_LAYER_ID = 'picture-in-picture'
