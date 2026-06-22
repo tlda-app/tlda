@@ -28,7 +28,7 @@ import { createServer } from 'http'
 import { createServer as createHttpsServer } from 'https'
 import { createSecureContext } from 'tls'
 import { WebSocketServer } from 'ws'
-import { spawn } from 'child_process'
+import { spawn, spawn as cpSpawn } from 'child_process'
 // Runtime guard: warn on execSync in server process (tmux commands still use it)
 // TODO: migrate tmux commands to async exec, then ban execSync entirely
 import path from 'path'
