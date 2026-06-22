@@ -47,6 +47,7 @@ export const GOOSE_WORKING_RE = /Ctrl\+C to interrupt|[◐-◓]/
 export const GOOSE_GLYPH_RE = /[◐-◓]/
 export const GOOSE_INTERRUPT_RE = /Ctrl\+C to interrupt/
 export const GOOSE_COMPACTING_RE = /goose is compacting the conversation/
+export const GOOSE_PROGRESS_RE = /\b\d+%\s+\d+[kKmM]?\/\d+[kKmM]?\b/
 // A frozen goose (hung mid-turn, last spinner frame stuck on screen) shows a live
 // status but its pane tail stops changing. We call it `stuck` only after the live
 // tail has been byte-identical for ≥ this long — TIME-based, not a sweep count, so
@@ -140,6 +141,10 @@ export function newKickState() {
 //                  scrollback `Enter to send` can't false-idle a working agent.
 //   'compacting' — a live spinner-glyph line carries the compaction phrase.
 //   'working'    — a glyph and/or the `Ctrl+C to interrupt` hint is present.
+//                  Goose can also drop the spinner from the captured bottom
+//                  region during long DeepSeek thinking while leaving the live
+//                  context/progress bar (`44% 57k/128k`); that still means the
+//                  turn is active, not a queued-message wedge.
 //   'pending'    — at the `🪿` prompt with a queued/unsubmitted message (NOT the
 //                  empty `Enter to send`) and NO live spinner: goose received a
 //                  message but never started processing it. The most common
@@ -153,10 +158,12 @@ export function newKickState() {
 export function gooseStatus(paneTail) {
   const nonEmpty = String(paneTail).split('\n').map(l => l.trim()).filter(Boolean)
   const bottom = nonEmpty.slice(-2).join('\n')
+  const bottomWorkRegion = nonEmpty.slice(-8).join('\n')
   if (GOOSE_IDLE_RE.test(bottom)) return 'idle'
   const glyph = GOOSE_GLYPH_RE.test(paneTail)
   if (glyph && GOOSE_COMPACTING_RE.test(paneTail)) return 'compacting'
   if (glyph || GOOSE_INTERRUPT_RE.test(paneTail)) return 'working'
+  if (GOOSE_PROGRESS_RE.test(bottomWorkRegion)) return 'working'
   if (GOOSE_PROMPT_RE.test(bottom)) return 'pending'   // queued msg at prompt, no spinner — scoped to live bottom
   return 'unknown'
 }

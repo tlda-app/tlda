@@ -35,6 +35,17 @@ const PENDING = [
   '  some earlier output line',
   '🪿 📬 Message from teacher: We aren\'t doing regression here… · Call my_task()…',
 ].join('\n')
+const DEEPSEEK_THINKING_NO_GLYPH = [
+  '  ▸ get_thread tlda',
+  '    agent: todd',
+  '    since: 10m',
+  '',
+  '  ⏱ 1m 11s',
+  '  ━━━━━━━━━╌╌╌╌╌╌╌╌╌╌╌ 44% 57k/128k',
+  '🪿 📬 Message from d2eed6ff: New candidate to attack, prompted by Skip\'s anti-concentration point: · Use anti-concentrat',
+  'ion directly on the fitted sco… · (TRUNCATED — showing 120/1151 chars. You MUST call my_task() for the full text before',
+  'responding) · Call my_task() to read and respond.',
+].join('\n')
 const BOOT = ['', '  some transient boot frame', ''].join('\n')
 
 let pass = 0, fail = 0
@@ -49,6 +60,7 @@ check('working line → working', gooseStatus(WORKING) === 'working')
 check('compacting line → compacting', gooseStatus(COMPACTING) === 'compacting')
 check('stale glyph + queued prompt → working (pre-liveness)', gooseStatus(STUCK) === 'working')
 check('🪿 queued msg, no glyph → pending', gooseStatus(PENDING) === 'pending')
+check('DeepSeek thinking progress with no glyph → working', gooseStatus(DEEPSEEK_THINKING_NO_GLYPH) === 'working')
 check('no 🪿 prompt at all → unknown (boot)', gooseStatus(BOOT) === 'unknown')
 // A `🪿 📬` prompt WITH a live spinner above is working, NOT pending.
 check('🪿 📬 + spinner above → working (not pending)',
