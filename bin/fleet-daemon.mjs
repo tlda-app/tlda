@@ -82,7 +82,7 @@ import {
 } from './lib/status-classifier.mjs'
 import { gooseActivityTick } from './lib/goose-activity.mjs'
 import { parseCodexLine } from './lib/codex-activity.mjs'
-import { truncatePrettyResult } from '../shared/activity-pretty-result.mjs'
+import { normalizePrettyResult, truncatePrettyResult } from '../shared/activity-pretty-result.mjs'
 import { trimTerminalSeedBlankRows } from '../shared/terminal-seed.mjs'
 import {
   buildFleetSpawnArgs,
@@ -396,7 +396,7 @@ function parseSessionLine(jsonStr) {
       if (c.type === 'tool_result') {
         const items = typeof c.content === 'string' ? [{ type: 'text', text: c.content }] :
           Array.isArray(c.content) ? c.content : []
-        const text = items.map(x => x.text || '').join('')
+        const text = normalizePrettyResult(c.content)
         const imgItem = items.find(x => x.type === 'image')
         const imgData = imgItem?.source?.type === 'base64' ? imgItem.source.data : (imgItem?.data || null)
         const imgMime = imgItem?.source?.media_type || imgItem?.mimeType || 'image/png'

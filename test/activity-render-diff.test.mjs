@@ -186,6 +186,17 @@ test('shared pretty-result normalizer handles Claude, Codex, and Goose envelopes
   assert.equal(normalizePrettyResult(goose), 'goose text')
 })
 
+test('shared pretty-result normalizer gives Claude text blocks the same shape as MCP envelopes', () => {
+  const claudeBlocks = [
+    { type: 'text', text: 'first' },
+    { type: 'text', text: 'second' },
+  ]
+  const mcpEnvelope = JSON.stringify(claudeBlocks)
+
+  assert.equal(normalizePrettyResult(claudeBlocks), 'first\nsecond')
+  assert.equal(normalizePrettyResult(mcpEnvelope), 'first\nsecond')
+})
+
 test('annotation activity formatter unwraps pretty result envelopes', () => {
   const text = 'thread line one\nthread line two'
   const formatted = formatActivity([{
