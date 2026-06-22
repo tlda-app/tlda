@@ -210,6 +210,12 @@ function renderSearchResult(text, ctx) {
   const results = parts.slice(1)
   const SEARCH_FRONT = 3
   const SEARCH_TAIL = 3
+  const renderSnippet = (snippet) => {
+    const html = ctx.renderMarkdown ? ctx.renderMarkdown(esc(snippet)) : esc(snippet)
+    return html
+      .replace(/<strong>([\s\S]*?)<\/strong>/g, '<mark>$1</mark>')
+      .replace(/\*\*([^*]+)\*\*/g, '<mark>$1</mark>')
+  }
   const renderRow = (r, globalIdx) => {
     const pipeMatch = r.match(/^([^|]+)\|([^|]+)\|(.+)$/s)
     const stripe = globalIdx % 2 === 0 ? 'pretty-row-even' : 'pretty-row-odd'
@@ -217,15 +223,15 @@ function renderSearchResult(text, ctx) {
       const ts = pipeMatch[1].trim()
       const source = pipeMatch[2].trim()
       const snippet = pipeMatch[3].trim()
-      const highlightedSnippet = esc(snippet).replace(/\*\*([^*]+)\*\*/g, '<mark>$1</mark>')
+      const highlightedSnippet = renderSnippet(snippet)
       const tsShort = ts.replace(/^\d+\/\d+\/\d+,?\s*/, '')  // strip date, keep time
       return `<div class="pretty-search-row ${stripe}" draggable="true" data-ts="${esc(ts)}">
         <span class="pretty-search-ts" title="${esc(ts)}">${esc(tsShort)}</span>
         <span class="pretty-search-source">${prettySearchSource(source)}</span>
-        <span class="pretty-search-snippet">${highlightedSnippet}</span>
+        <div class="pretty-search-snippet">${highlightedSnippet}</div>
       </div>`
     }
-    const highlighted = esc(r).replace(/\*\*([^*]+)\*\*/g, '<mark>$1</mark>')
+    const highlighted = renderSnippet(r)
     return `<div class="pretty-search-row ${stripe}">${highlighted}</div>`
   }
   // Show first FRONT + gap marker + last TAIL so both ends are visible.

@@ -359,3 +359,30 @@ test('search pretty result strips Codex wall-time output wrapper before renderin
   assert.doesNotMatch(html, /Output:/)
   assert.doesNotMatch(html, /\[\{&quot;type&quot;:&quot;text&quot;/)
 })
+
+test('search pretty result renders markdown snippets without losing match highlights', () => {
+  const markdownCtx = {
+    ...ctx,
+    renderMarkdown: s => s
+      .replace(/^## (.*)$/gm, '<h2>$1</h2>')
+      .replace(/^- (.*)$/gm, '<li>$1</li>')
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>'),
+  }
+  const prettyText = `1 results (1 fleet, 0 session)
+
+6/22/2026, 7:17:14 AM | [fleet] [chat] render-compare-goose | ## **Goose** rendering comparison report
+- bullet with \`code\``
+  const html = renderActivityGroup([{
+    from: 'agent-1',
+    timestamp: '2026-06-22T12:00:00.000Z',
+    _activity: true,
+    _toolName: 'mcp__tlda__search_logs',
+    _toolArg: 'Goose',
+    _prettyResult: prettyText,
+  }], markdownCtx)
+
+  assert.match(html, /<h2><mark>Goose<\/mark> rendering comparison report<\/h2>/)
+  assert.match(html, /<li>bullet with <code>code<\/code><\/li>/)
+  assert.doesNotMatch(html, /## <mark>Goose<\/mark>/)
+})

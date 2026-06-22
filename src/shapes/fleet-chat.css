@@ -1361,7 +1361,25 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   white-space: nowrap;
 }
 .fleet-chat-shape .pretty-search-snippet {
+  flex: 1 1 auto;
+  min-width: 0;
   word-break: break-word;
+}
+.fleet-chat-shape .pretty-search-snippet h1,
+.fleet-chat-shape .pretty-search-snippet h2,
+.fleet-chat-shape .pretty-search-snippet h3 {
+  margin: 0 0 2px;
+  font-size: 11px;
+  line-height: 1.25;
+  color: var(--text-bright);
+}
+.fleet-chat-shape .pretty-search-snippet p {
+  margin: 0 0 2px;
+}
+.fleet-chat-shape .pretty-search-snippet ul,
+.fleet-chat-shape .pretty-search-snippet ol {
+  margin: 2px 0 2px 14px;
+  padding: 0;
 }
 .fleet-chat-shape .pretty-search-row mark {
   background: rgba(255, 220, 80, 0.3);
