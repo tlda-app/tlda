@@ -84,7 +84,7 @@ describe('agent capability CLI', () => {
     })
 
     assert.equal(exitCode, 0)
-    assert.ok(stdout.includes('[dry-run] would set alice capability to write (cwd / workspace-write / network)'))
+    assert.ok(stdout.includes('[dry-run] would set alice capability to write (cwd / write / network)'))
     assert.ok(stdout.includes('update metadata.spawnPolicy policy/category'))
   })
 
@@ -93,7 +93,7 @@ describe('agent capability CLI', () => {
       env: scrubAgentEnv(process.env),
     })
     assert.equal(dryRun.exitCode, 0)
-    assert.ok(dryRun.stdout.includes('write (cwd / workspace-write-no-net / no network)'))
+    assert.ok(dryRun.stdout.includes('write (cwd / write / no network)'))
 
     const asType = tlda('agent', 'capability', 'alice', 'no-net', '--dry-run', {
       env: scrubAgentEnv(process.env),

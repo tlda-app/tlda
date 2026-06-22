@@ -7,7 +7,7 @@
 
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -20,12 +20,31 @@ export const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chr
 /** Start a server on a test port with temp dirs. Returns control object. */
 export function startServer(port = 15176) {
   const dataDir = mkdtempSync(join(tmpdir(), 'tlda-test-data-'))
-  const projectsDir = mkdtempSync(join(tmpdir(), 'tlda-test-projects-'))
+  const testHome = mkdtempSync(join(tmpdir(), 'tlda-test-home-'))
+  const projectsDir = join(dataDir, 'projects')
+  const configDir = join(testHome, '.config', 'tlda')
+  mkdirSync(projectsDir, { recursive: true })
+  mkdirSync(join(dataDir, 'data'), { recursive: true })
+  mkdirSync(configDir, { recursive: true })
+
+  const base = `http://localhost:${port}`
+  writeFileSync(join(configDir, 'config.json'), JSON.stringify({
+    defaultConfig: 'test',
+    configs: {
+      test: {
+        database: base,
+        store: base,
+        licenseKey: '',
+      },
+    },
+  }, null, 2))
 
   return new Promise((resolve, reject) => {
-    const proc = spawn('node', [SERVER_SCRIPT], {
+    const proc = spawn('node', [SERVER_SCRIPT, '--i-am-tlda-cli'], {
       env: {
         ...process.env,
+        HOME: testHome,
+        TLDA_CONFIG: 'test',
         PORT: String(port),
         DATA_DIR: dataDir,
         PROJECTS_DIR: projectsDir,
@@ -53,9 +72,10 @@ export function startServer(port = 15176) {
           port,
           proc,
           dataDir,
+          testHome,
           projectsDir,
           logs,
-          base: `http://localhost:${port}`,
+          base,
           dumpLogs(label = 'server') {
             const recent = logs.slice(-40).join('\n')
             console.log(`\n--- ${label} logs (last 40 lines) ---\n${recent}\n---\n`)
@@ -64,7 +84,7 @@ export function startServer(port = 15176) {
             proc.kill('SIGTERM')
             await new Promise(r => proc.on('exit', r))
             rmSync(dataDir, { recursive: true, force: true })
-            rmSync(projectsDir, { recursive: true, force: true })
+            rmSync(testHome, { recursive: true, force: true })
           },
         })
       }
@@ -117,10 +137,26 @@ export async function pushFile(base, name, filename, content) {
 /** Poll build status until done. Returns final status. */
 export async function waitForBuild(base, name, timeoutMs = 180000) {
   const start = Date.now()
+  await fetch(`${base}/api/projects/${name}/build`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  }).catch(() => {})
+  await new Promise(r => setTimeout(r, 100))
   while (Date.now() - start < timeoutMs) {
     const res = await fetch(`${base}/api/projects/${name}/build/status`)
     const data = await res.json()
-    if (data.status !== 'building') return data
+    if (data.status !== 'building') {
+      if (data.status === 'success') {
+        const project = await fetch(`${base}/api/projects/${name}`)
+          .then(r => r.ok ? r.json() : null)
+          .catch(() => null)
+        const primary = project?.targets?.[0]?.texBase ||
+          String(project?.mainFile || 'main.tex').split('/').pop().replace(/\.tex$/, '')
+        await fetch(`${base}/docs/${name}/${primary}-page-1.svg`).catch(() => {})
+      }
+      return data
+    }
     await new Promise(r => setTimeout(r, 500))
   }
   throw new Error(`Build did not complete within ${timeoutMs / 1000}s`)
