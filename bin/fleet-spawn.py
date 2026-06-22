@@ -17,6 +17,21 @@ Options:
   --dry-run          Print what would happen
 """
 
+# ─────────────────────────────────────────────────────────────────────────────
+# JUNK MARKER — LAYER-1 LAUNCHER, slated for deletion in the daemon-owned-spawn
+# relocation. Skip's architecture: spawn control + security belong in the DAEMON
+# (node), not in a python script with shell return values. This file DUPLICATES
+# logic that is (or is becoming) canonical in node:
+#     model resolution        → shared/spawn-model-validation.mjs
+#     name-collision / agent   → shared/spawn-librarian.ts
+#     capability → policy       → server/lib/spawn-policy.mjs (resolveDaemonSpawnGrant)
+# It is still the LIVE launcher (the daemon re-execs it per spawn), so do NOT
+# delete it yet. But the duplicated concerns above are the cycle Skip wants
+# stopped: do NOT patch the python copy onto the node path or extend these here
+# in isolation — fix the node canonical, and keep this in sync only until the
+# relocation removes this file. Plan + full junk inventory: scratch/spawn-relocation-plan.md
+# ─────────────────────────────────────────────────────────────────────────────
+
 import argparse
 import copy
 import ipaddress
