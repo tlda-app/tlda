@@ -1633,7 +1633,16 @@ def build_goose_cmd(fleet_id, tmux_session, model, name=None, capability=None):
         f"TLDA_SERVER={shlex.quote(API)}",
         f"TLDA_SYNC_SERVER={shlex.quote(API)}",
         f"XDG_CONFIG_HOME={shlex.quote(sandbox_cfg)}",
-        f"XDG_DATA_HOME={shlex.quote(data_dir)}",
+        # XDG_DATA_HOME stays the SHARED default (~/.local/share) on purpose:
+        # goose writes its session sqlite to $XDG_DATA_HOME/goose/sessions/
+        # sessions.db, and the daemon's goose observability (goose-kick +
+        # goose-activity) reads that ONE shared path to produce activity cards +
+        # turn-detection. A per-agent XDG_DATA_HOME (we used /tmp/.../data) split
+        # each agent's session into its own db the daemon never reads -> every
+        # goose agent showed idle/unresponsive with no terminal/activity. The
+        # sandbox is XDG_CONFIG_HOME (above), NOT data, so sharing data is safe;
+        # per-agent session NAMES (fleet-<hex>) keep agents logically separate.
+        f"XDG_DATA_HOME={shlex.quote(os.path.expanduser('~/.local/share'))}",
         f"XDG_CACHE_HOME={shlex.quote(cache_dir)}",
         f"XDG_STATE_HOME={shlex.quote(xdg_state_dir)}",
         "GOOSE_DISABLE_KEYRING=1",
