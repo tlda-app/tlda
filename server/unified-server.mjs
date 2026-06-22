@@ -577,8 +577,10 @@ const DAEMON_WARN_DEDUP_MS = 5 * 60 * 1000
 
 // machine_id → ts when the CURRENT uninterrupted daemon connection began. Reset on
 // every daemon-hello (i.e. every reconnect). Agent activity events arrive over the
-// daemon WS, so if that WS flapped, an agent's activity wasn't delivered and its
-// _lastActivityAt went stale — making an active agent *look* idle. See getWouldHibernate.
+// daemon WS, so if that WS flapped, an agent's activity wasn't delivered LIVE and its
+// _lastActivityAt was briefly stale — making an active agent *look* idle. The daemon
+// backfills the gap on reconnect (its cursor only advances on delivered bytes), so the
+// staleness clears within seconds; getWouldHibernate just waits out the reconnect grace.
 const _daemonConnectedSince = new Map()
 
 const HIBERNATE_IDLE_MS = 20 * 60 * 1000
@@ -650,15 +652,19 @@ function getWouldHibernate() {
     const lastActive = _lastActivityAt.get(agentId) || aliveSince
     const idleMs = now - lastActive
     if (idleMs < HIBERNATE_IDLE_MS) continue
-    // Gap-aware idle: a 20-min-idle reading is only trustworthy if the activity
-    // feed (this agent's daemon WS) was continuously connected for that whole
-    // window. If the daemon (re)connected within the window, activity events were
-    // dropped during the gap — the agent may have been active the entire time, its
-    // events just never arrived. Don't hibernate on an unreliable reading.
+    // Gap-aware idle: don't hibernate on a reading the activity feed couldn't
+    // back up. But the daemon BACKFILLS on reconnect — its cursor is a
+    // high-water mark of *delivered* bytes, so activity during a WS outage isn't
+    // lost; on reconnect it drains everything written during the gap (see
+    // readNewSessionLines in fleet-daemon.mjs). So _lastActivityAt self-corrects
+    // within seconds of a reconnect. We therefore don't need a full idle window
+    // of connection — just enough settle time for that drain to land. Require
+    // the daemon to have been connected for the reconnect grace (~2min, well
+    // over the actual drain) before trusting a "no recent activity" reading.
     const machineId = agent.machine_id
     if (machineId) {
       const connectedSince = _daemonConnectedSince.get(machineId)
-      if (!connectedSince || (now - connectedSince) < HIBERNATE_IDLE_MS) continue
+      if (!connectedSince || (now - connectedSince) < LIVENESS_RECONNECT_GRACE_MS) continue
     }
     result[agentId] = Math.round(idleMs / 1000)
   }
