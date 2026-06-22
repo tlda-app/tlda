@@ -112,7 +112,7 @@ export function WMViewportSurface({
 								pointerEvents: 'none',
 							}}
 						>
-							WM viewport runtime requires the multi-viewport tldraw fork.
+							WM viewport probe ({viewportId}) — {status}
 						</div>
 					) : null}
 				</VisibilityViewportProvider>

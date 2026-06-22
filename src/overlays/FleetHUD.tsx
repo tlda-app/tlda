@@ -19,9 +19,8 @@ import { fleetTouchGestureActiveRef, postTouchTelemetry, setTouchDiagStatus, use
 import { SuggestionTip } from '../shapes/FleetChatShape'
 import { log } from '../logger'
 import { computeFleetBoundsFromShapes, createFleetBoundsTracker, type FleetBoundsResult } from './fleet-bounds'
-import { createFleetHudOverlayLayer, FLEET_HUD_VIEWPORT_ID } from '../wm/fleet-hud-layer'
+import { createFleetHudOverlayLayer } from '../wm/fleet-hud-layer'
 import type { FleetHudLayerState } from '../wm/fleet-hud-layer'
-import { WMViewportSurface } from '../wm/WMViewportSurface'
 import './FleetHUD.css'
 
 declare global {
@@ -74,11 +73,6 @@ export const fleetHudOpenRef = { current: false }
  *  Read by BrowseIdle's _deselHandler to skip selectNone during layout.
  *  Separate from the CSS class to avoid circular dependency. */
 export const fleetLayoutActiveRef = { current: false }
-
-function hasWmHudViewportFlag() {
-  if (typeof window === 'undefined') return false
-  return new URLSearchParams(window.location.search).get('wmHudViewport') === '1'
-}
 
 interface FleetHUDProps {
   mainEditor: Editor
@@ -155,10 +149,6 @@ function ownerFleetPredicate() {
   const humanId = getHumanId()
   const deviceId = getDeviceId()
   return (shape: any) => isFleetShapeForOwner(shape, humanId, deviceId)
-}
-
-function isWmFleetViewportShape(shape: any): boolean {
-  return isMyFleetShape(shape) || shape.type === 'fleet-pill'
 }
 
 function logFleetBoundsResult(result: FleetBoundsResult): void {
@@ -305,7 +295,6 @@ export function FleetHUD({
 }: FleetHUDProps) {
   const { id: identityId } = useFleetIdentity()
   const [expanded, setExpanded] = useState(() => localStorage.getItem('fleet-hud-expanded') === '1')
-  const useWmHudViewport = hasWmHudViewportFlag()
   const [fleetBounds, setFleetBounds] = useState<ClipBounds | null>(() => identityId ? getFleetBounds(mainEditor) : null)
   // Camera tick used to recompute canvas→screen for the render on camera change
   const [cameraTick, setCameraTick] = useState(0)
@@ -322,7 +311,7 @@ export function FleetHUD({
   const overlayEditorRef = useRef<Editor | null>(null)
   const lastHudDiagSigRef = useRef('')
   const fleetBoundsTrackerRef = useRef<ReturnType<typeof createFleetBoundsTracker<any>> | null>(null)
-  const gesturesEnabled = expanded && !!fleetBounds && docShapesReady && !useWmHudViewport
+  const gesturesEnabled = expanded && !!fleetBounds && docShapesReady
 
   const resetFleetBoundsTracker = useCallback((): ClipBounds | null => {
     const tracker = createFleetBoundsTracker<any>({
@@ -396,12 +385,6 @@ export function FleetHUD({
 
   // Touch gesture vocabulary on the HUD (move/resize shapes, pass-through pan/zoom).
   useFleetGestures({ hudRef, overlayEditorRef, mainEditor, expanded: gesturesEnabled })
-
-  useEffect(() => {
-    if (!useWmHudViewport) return
-    overlayEditorRef.current = mainEditor
-    window.__tldraw_hud_editor__ = mainEditor
-  }, [mainEditor, useWmHudViewport])
 
   useEffect(() => {
     const shapes = mainEditor.getCurrentPageShapes()
@@ -604,11 +587,6 @@ export function FleetHUD({
   // Body class + visibility ref (no shape updates here — that causes loops
   // since updating shapes triggers fleetBounds recalc which re-runs this effect)
   useEffect(() => {
-    if (useWmHudViewport) {
-      fleetHudOpenRef.current = false
-      document.body.classList.remove('fleet-hud-open')
-      return
-    }
     const isOpen = !!(expanded && fleetBounds)
     fleetHudOpenRef.current = isOpen
     if (isOpen) {
@@ -620,7 +598,7 @@ export function FleetHUD({
       document.body.classList.remove('fleet-hud-open')
       fleetHudOpenRef.current = false
     }
-  }, [expanded, fleetBounds, useWmHudViewport])
+  }, [expanded, fleetBounds])
 
   // A saved HUD anchor is only a camera offset. After a fresh layout selection
   // the fleet shapes can move to a new page-space lane while a stale camera
@@ -650,7 +628,6 @@ export function FleetHUD({
   // expanded state actually changes, not on every fleetBounds update.
   const prevExpandedRef = useRef(false)
   useEffect(() => {
-    if (useWmHudViewport) return
     const isOpen = !!(expanded && fleetBounds)
     if (isOpen === prevExpandedRef.current) return
     prevExpandedRef.current = isOpen
@@ -665,7 +642,7 @@ export function FleetHUD({
         })))
       }, { history: 'ignore' })
     }
-  }, [expanded, fleetBounds, mainEditor, useWmHudViewport])
+  }, [expanded, fleetBounds, mainEditor])
 
   // Track main camera for pan: update panOffsetRef by screen-pixel deltas
   // when the user pans (cam.z unchanged). Zoom changes are ignored (fleet
@@ -875,14 +852,8 @@ export function FleetHUD({
         // ADD immediately — user selected a fleet shape, enable interaction
         fleetLayoutActiveRef.current = true
         el.classList.add('hud-layout-active')
-      } else if (useWmHudViewport && !editor.inputs.isPointing) {
-        // The WM path uses the main editor, so BrowseIdle cleanup may run
-        // outside the HUD wrapper. Keep pass-through tied to the actual
-        // selection state here once no drag/resize interaction is in flight.
-        fleetLayoutActiveRef.current = false
-        el.classList.remove('hud-layout-active')
       }
-      // In the copy-store HUD, removal is handled by BrowseIdle.onEnter.
+      // Removal is handled by BrowseIdle.onEnter.
       // Removing from this listener races with TLDraw's state machine and
       // kills pointer-events mid-interaction.
     }
@@ -901,7 +872,6 @@ export function FleetHUD({
     // double pointer_up that fires selectOnCanvasPointerUp in idle state,
     // clearing the brush selection immediately after it completes.
     const onWindowPointerUp = (e: PointerEvent) => {
-      if (useWmHudViewport) return
       const editor = overlayEditorRef.current
       if (!editor) return
       if (!editor.inputs.isPointing) return
@@ -949,7 +919,7 @@ export function FleetHUD({
         el.classList.remove('hud-layout-active')
       }
     }
-  }, [expanded, useWmHudViewport])
+  }, [expanded])
 
   const aliveCount = useMemo(() => agents.filter((a: any) => !a.dead && !a.human).length, [agents])
   void aliveCount
@@ -1108,15 +1078,6 @@ export function FleetHUD({
     window.__tlda_wm_hud__ = overlayLayer
   }
 
-  const onWmViewportCameraChange = (camera: typeof overlayCam) => {
-    panOffsetRef.current = camera.x
-    cameraYRef.current = camera.y
-    userPannedRef.current = true
-    ignoreSavedAnchorRef.current = false
-    saveAnchorOffsets(mainEditor, camera.x, camera.y)
-    setCameraTick(t => t + 1)
-  }
-
   return (
     <>
       <div
@@ -1124,50 +1085,27 @@ export function FleetHUD({
         ref={hudRef}
         style={{ position: 'fixed', inset: 0, width: '100vw', height: '100vh' }}
       >
-        {useWmHudViewport ? (
-          <WMViewportSurface
-            className="clip-panel-fullvp fleet-hud wm-fleet-hud-viewport"
-            viewportId={FLEET_HUD_VIEWPORT_ID}
-            camera={overlayCam}
-            onCameraChange={onWmViewportCameraChange}
-            diagnosticsKey="__tlda_wm_hud_viewport__"
-            shapePredicate={isWmFleetViewportShape}
-            style={{
-              position: 'fixed',
-              inset: 0,
-              width: '100vw',
-              height: '100vh',
-              display: 'flex',
-              flexDirection: 'column',
-              overflow: 'visible',
-              background: 'transparent',
-              boxShadow: 'none',
-              borderRadius: 0,
-            }}
-          />
-        ) : (
-          <CanvasClipPanel
-            mainEditor={mainEditor}
-            bounds={activeFleetBounds}
-            shapeUtils={shapeUtils}
-            tools={tools}
-            licenseKey={licenseKey}
-            panelWidth={window.innerWidth}
-            maxHeightFraction={1}
-            lockCamera={true}
-            liveEdit={true}
-            cameraOverride={overlayCam}
-            fullViewport={true}
-            identityId={identityId}
-            customGestureActiveRef={fleetTouchGestureActiveRef}
-            onEditorMount={(e) => {
-              overlayEditorRef.current = e
-              if (e) window.__tldraw_hud_editor__ = e
-              else delete window.__tldraw_hud_editor__
-            }}
-            className="fleet-hud"
-          />
-        )}
+        <CanvasClipPanel
+          mainEditor={mainEditor}
+          bounds={activeFleetBounds}
+          shapeUtils={shapeUtils}
+          tools={tools}
+          licenseKey={licenseKey}
+          panelWidth={window.innerWidth}
+          maxHeightFraction={1}
+          lockCamera={true}
+          liveEdit={true}
+          cameraOverride={overlayCam}
+          fullViewport={true}
+          identityId={identityId}
+          customGestureActiveRef={fleetTouchGestureActiveRef}
+          onEditorMount={(e) => {
+            overlayEditorRef.current = e
+            if (e) window.__tldraw_hud_editor__ = e
+            else delete window.__tldraw_hud_editor__
+          }}
+          className="fleet-hud"
+        />
         {/* Suggestion-chip tooltip: rendered here, ABOVE the shapes and outside
             any (dimmed) shape, so it stays fully opaque. Driven by the chip's
             hover store. Not a portal. */}
