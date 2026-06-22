@@ -3,7 +3,7 @@
  * tlda — tlda CLI.
  *
  * Commands:
- *   tlda doc create <name> [--title "Title"] [--dir /path] [--main main.tex]
+ *   tlda doc link <name> [main.tex] [--title "Title"] [--dir /path] [--main main.tex]
  *   tlda doc push [name] [--dir /path]
  *   tlda daemon [/path/to/main.tex] [name]
  *   tlda daemon
@@ -43,15 +43,20 @@ import { SPAWN_POLICY_OPTIONS, resolveSpawnPolicyOption } from '../server/lib/sp
 // are their own top-level commands.) Flat forms still work for now so the
 // feedback hook etc. don't break, but `--help` only advertises the nouns.
 const DOC_SUBS = new Set([
-  'create', 'open', 'push', 'list', 'ls', 'status', 'errors', 'preview',
+  'open', 'push', 'list', 'ls', 'status', 'errors', 'preview',
   'delete', 'rm', 'share', 'publish', 'scratch', 'book', 'link',
   'repo-doctor', 'init-shadow',
 ])
+const REMOVED_DOC_SUBS = new Set(['create'])
 const CONFIG_SUBS = new Set(['setup', 'mcp-setup', 'auth'])  // config subs that map to existing handlers
 let _nounUsed = null
 {
   const noun = process.argv[2]
   const sub = process.argv[3]
+  if (noun === 'doc' && sub && REMOVED_DOC_SUBS.has(sub)) {
+    console.error(`Unknown tlda doc subcommand: ${sub}`)
+    process.exit(1)
+  }
   if (noun === 'doc' && sub && DOC_SUBS.has(sub)) { process.argv.splice(2, 1); _nounUsed = 'doc' }
   else if (noun === 'config' && sub && CONFIG_SUBS.has(sub)) { process.argv.splice(2, 1); _nounUsed = 'config' }
 }
@@ -74,7 +79,7 @@ const command = args[0]
 const COMMAND_HELP = {
   scratch: 'tlda doc scratch <file.md> [--title "Title"] [--book fleet-workspace]\n\n  Publish a scratch markdown file as a page in a book.\n  Creates a markdown project, pushes the file, and auto-joins the book.\n  Subsequent edits are auto-pushed by watch-all.\n\n  --title    Display title (default: first heading or filename)\n  --book     Book to join (default: fleet-workspace)',
   book:    'tlda doc book <name> --members doc1,doc2,doc3,...\n\n  Create a book that groups existing documents together.\n  Each member keeps its own sync room and annotations.\n  The viewer shows one member at a time with a tab bar to switch.',
-  create:  'tlda doc create <name> [--title "Title"] [--dir /path] [--main main.tex] [--format slides|html|markdown]\n\n  Create a project and push source files. If the project already exists,\n  pushes files and triggers a rebuild.\n\n  Formats:\n    (default)  LaTeX → SVG pipeline (latexmk → dvisvgm)\n    slides     Reveal.js HTML (from Quarto revealjs or manual)\n    html       Multipage HTML chapters (from Quarto book render)\n    markdown   Markdown with KaTeX math → HTML',
+  link:    'tlda doc link <name> [main.tex] [--title "Title"] [--dir /path] [--main main.tex] [--format slides|html|markdown]\n\n  Link a paper repository to tlda and push source files. If the project already exists,\n  pushes files and triggers a rebuild.\n\n  Formats:\n    (default)  LaTeX → SVG pipeline (latexmk → dvisvgm)\n    slides     Reveal.js HTML (from Quarto revealjs or manual)\n    html       Multipage HTML chapters (from Quarto book render)\n    markdown   Markdown with KaTeX math → HTML',
   push:    'tlda doc push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
   watch:   'tlda daemon [start|stop|status|log|run]\n\n  Control the per-machine fleet-daemon (bin/fleet-daemon.mjs).\n  The daemon watches Claude Code session JSONLs and project source\n  dirs locally, pushing events to the tlda server over WebSocket.',
   'watch-all': 'tlda daemon [start|stop|status|log|run]\n\n  Alias for `tlda daemon start/stop/status/log/run` — runs the\n  per-machine fleet-daemon (bin/fleet-daemon.mjs), which watches\n  every project source dir AND every Claude Code session JSONL\n  on this machine and pushes events to the tlda server over WebSocket.',
@@ -339,18 +344,25 @@ async function cmdScratch() {
 
 async function cmdCreate() {
   const name = getPositional(0)
-  if (!name) { console.error('Usage: tlda doc create <name> [--title "Title"] [--dir /path] [--main main.tex] [--format slides|html]'); process.exit(1) }
+  if (!name) { console.error('Usage: tlda doc link <name> [main.tex] [--title "Title"] [--dir /path] [--main main.tex] [--format slides|html]'); process.exit(1) }
 
   let format = getFlag('format') || null
-  const dir = resolve(getFlag('dir') || '.')
+  const positionalMain = getPositional(1)
+  let dir = resolve(getFlag('dir') || '.')
+  let mainArg = getFlag('main')
+  if (positionalMain) {
+    const mainPath = resolve(positionalMain)
+    dir = dirname(mainPath)
+    mainArg = basename(mainPath)
+  }
   const title = getFlag('title') || name
 
   // Infer the format from --main's extension when --format is omitted. Without
-  // this, `tlda doc create x --main README.md` falls through to the LaTeX/svg
+  // this, `tlda doc link x --main README.md` falls through to the LaTeX/svg
   // path, which uploads the ENTIRE directory — gigabytes if --dir is a code repo.
   // Explicit --format always wins; .tex/unknown keep the existing LaTeX default.
   if (!format) {
-    const mainHint = getFlag('main')
+    const mainHint = mainArg
     const ext = mainHint ? mainHint.toLowerCase().split('.').pop() : null
     if (ext === 'md') format = 'markdown'
     else if (ext === 'html' || ext === 'htm') format = 'html'
@@ -445,7 +457,7 @@ async function cmdCreate() {
 
   // Markdown format: push .md file, server renders to HTML with KaTeX
   if (format === 'markdown') {
-    const mainFile = getFlag('main') || readdirSync(dir).find(f => f.endsWith('.md'))
+    const mainFile = mainArg || readdirSync(dir).find(f => f.endsWith('.md'))
     if (!mainFile) { console.error(`No .md file found in ${dir}`); process.exit(1) }
 
     console.log(dim(`  Source: ${dir}`))
@@ -503,7 +515,7 @@ async function cmdCreate() {
     }
   }
 
-  const mainFile = getFlag('main') || findMainTex(dir)
+  const mainFile = mainArg || findMainTex(dir)
   if (!mainFile) { console.error(`No .tex file with \\documentclass found in ${dir}`); process.exit(1) }
 
   console.log(dim(`  Source: ${dir}`))
@@ -575,43 +587,8 @@ async function cmdPush() {
   }
 }
 
-// `tlda doc link <name> --dir <localdir>` — bind a project name to THIS machine's
-// local source clone. Per-machine fact ("where my copy lives"), stored on the
-// daemon side, so a collaborator joining someone else's server watches/pushes
-// their own clone instead of the server's (host's) sourceDir.
 async function cmdLink() {
-  const name = getPositional(0)
-  const dir = resolve(getFlag('dir') || '.')
-  if (!name) {
-    console.error('Usage: tlda doc link <name> --dir /path/to/local/clone')
-    process.exit(1)
-  }
-  if (!existsSync(dir)) { console.error(red(`Directory not found: ${dir}`)); process.exit(1) }
-  if (!existsSync(join(dir, '.git'))) {
-    console.error(red(`${dir} is not a git repository.`))
-    console.error(dim('  The local copy must be a git clone that shares history with the'))
-    console.error(dim('  project\'s shadow repo — otherwise edits won\'t reconcile (git).'))
-    process.exit(1)
-  }
-  if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true })
-  const f = join(CONFIG_DIR, 'source-bindings.json')
-  let bindings = {}
-  if (existsSync(f)) {
-    try {
-      bindings = JSON.parse(readFileSync(f, 'utf8')) || {}
-    } catch (e) {
-      // Surface, don't swallow: a corrupt file would otherwise be silently
-      // replaced, dropping other projects' bindings.
-      console.error(red(`Warning: ${f} is unreadable (${e.message}); recreating with just this binding.`))
-    }
-  }
-  bindings[name] = dir
-  writeFileSync(f, JSON.stringify(bindings, null, 2))
-  console.log(green(`Linked "${name}" → ${dir}`))
-  console.log(dim('  This machine\'s daemon will watch/push this dir for the project.'))
-  console.log(dim('  Restart the daemon to pick it up:  tlda daemon start'))
-  // TODO (follow-up): verify the local repo shares git history with the project's
-  // shadow (merge-base) before binding — needs the shadow ref from the server.
+  await cmdCreate()
 }
 
 // Fleet-daemon control: `tlda daemon start | stop | status | log | run`
@@ -812,7 +789,7 @@ async function cmdWatch() {
     await api('GET', `/api/projects/${name}`)
   } catch {
     console.error(red(`Project "${name}" not found on server.`))
-    console.error(`  Run \`tlda doc create ${name}\` first, or did you mean \`tlda daemon start\`?`)
+    console.error(`  Run \`tlda doc link ${name}\` first, or did you mean \`tlda daemon start\`?`)
     process.exit(1)
   }
 
@@ -1172,7 +1149,7 @@ async function cmdAuth() {
 function cmdCompletions() {
   // Fetch project names at completion time via a helper function in the script
   const commands = [
-    'server', 'agent', 'create', 'push', 'watch', 'watch-all', 'open', 'list', 'ls',
+    'server', 'agent', 'link', 'push', 'watch', 'watch-all', 'open', 'list', 'ls',
     'status', 'errors', 'delete', 'rm', 'preview', 'revert',
     'logs', 'log', 'config', 'completions',
   ]
@@ -1192,7 +1169,7 @@ _tlda() {
   local -a commands
   commands=(
     'server:Manage the server'
-    'create:Create project and upload files'
+    'link:Link project and upload files'
     'push:Push source files and rebuild'
     'watch:Watch for changes and auto-push'
     'watch-all:Watch all projects'
@@ -1220,7 +1197,7 @@ _tlda() {
           local -a subs=(${serverSubs.map(s => `'${s}'`).join(' ')})
           _describe 'subcommand' subs
           ;;
-        create|push|open|status|errors|build|delete|rm|preview)
+        link|push|open|status|errors|build|delete|rm|preview)
           _tlda_projects
           ;;
       esac
@@ -2721,9 +2698,8 @@ async function main() {
       case 'server': await cmdServer(); break
       case 'scratch': await ensureServer(); await cmdScratch(); break
       case 'book':   await ensureServer(); await cmdBook(); break
-      case 'create': await ensureServer(); await cmdCreate(); break
       case 'push':   await ensureServer(); await cmdPush(); break
-      case 'link':   await cmdLink(); break
+      case 'link':   await ensureServer(); await cmdLink(); break
       case 'daemon': await ensureServer(); await cmdWatch(); break
       case 'open':   await ensureServer(); await cmdOpen(); break
       case 'share':  await cmdShare(); break
@@ -2752,7 +2728,7 @@ async function main() {
       case 'doc':
         console.log(`tlda doc — work on a document project
 
-  create <name>        Create a project, push files, build
+  link <name> [main]   Link a project, push files, build
   open [name]          Open the viewer
   push [name]          Push source, rebuild
   status [name]        Build status

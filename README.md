@@ -33,14 +33,7 @@ TLDA_SERVER=<their-url> tlda config mcp-setup
 
 Claude Code in that directory now has tlda's tools, pointed at their server.
 
-To **edit the source yourself** and have your saves rebuild on their canvas, bind a local clone of the paper to the project so your own daemon watches it:
-
-```bash
-tlda doc link <name> --dir /path/to/your/clone   # <name> is the project on their server
-tlda daemon start                                 # your saves now rebuild there
-```
-
-Your clone has to share git history with the paper — otherwise edits won't reconcile. Everyone works in their own clone and syncs with plain git (push, pull, resolve conflicts as usual); the daemon keeps each person's rendered view current but doesn't merge source for you, so reach for a collaborative editor (Zed, VS Code Live Share) when you're in the same file at once.
+Everyone works in their own clone and syncs with plain git (push, pull, resolve conflicts as usual); reach for a collaborative editor (Zed, VS Code Live Share) when you're in the same file at once.
 
 ### Running your own
 
@@ -58,12 +51,14 @@ Then:
 
 ```bash
 tlda server start                                        # run when it's down and you want to edit
-tlda doc create my-paper --dir /path/to/paper --main paper.tex
+tlda doc link my-paper /path/to/paper/paper.tex
 tlda config mcp-setup                                    # (in your paper dir) so agents can work on it
 tlda doc open my-paper                                   # opens it on the canvas — run once
 ```
 
-`tlda server start` runs the server and the **daemon** that watches your documents and agents, in the background — start it whenever it's down; while it's up, everything here works. Point `--dir` at an existing git repository on your machine — the daemon picks up your saves and rebuilds, and version history has real history to build on. From there you just edit in your normal editor and the document rebuilds live. `tlda config mcp-setup` gives Claude Code in that directory tlda's tools, so agents can work on the document.
+`tlda server start` runs the server and the **daemon** that watches your documents and agents, in the background — start it whenever it's down; while it's up, everything here works. Link the project from the paper's main file; tlda finds the Git repository that contains it, uses that repo as the source root, and stores the main file relative to that root. That repo-backed path is the default: get a real repository onto the serving machine, then run `link` from the main file in that checkout. If there is no real repository to push, `tlda doc init ...` is the explicit special case: it creates a blank repository first, then `link` can build from it. From there you just edit in your normal editor and the document rebuilds live. `tlda config mcp-setup` gives Claude Code in that directory tlda's tools, so agents can work on the document.
+
+History is tied to the repository the server can see. If you create a project by uploading files, tlda can render the current pages, but it cannot reconstruct the paper's Git history from those files. `tlda doc link` expects a repository on the serving machine. `tlda doc init ...` creates that named repo slot. Between `init` and `link`, you can populate the slot with real history (`git push`, a Git bundle, or a server-side clone). If you skip that population step, `link` uses the blank repo, which is the explicit fresh-start case.
 
 Running `tlda doc open` once opens the doc on the canvas and stores your authorization — from then on you just go back to the page in your browser.
 
@@ -303,6 +298,16 @@ This is roughly how the project's own deployment runs — a container that joins
 - Inside the container, bring up `tailscaled` with an auth key (supplied as a secret), then `tailscale serve` the app over the tailnet's HTTPS. Don't expose a public port.
 - Set `TLDA_FLEET_SERVER` to the container's tailnet name so clients resolve chat/agents to it, and `TLDA_NO_AUTH=1` (the tailnet is the boundary — see below).
 - Mount a volume for the mutable data (`projects/`, `data/`, the fleet database) so it survives redeploys.
+- Put each history-backed paper on that volume as a server-side Git repo/worktree. The simplest setup is a named repo slot:
+
+  ```bash
+  tlda doc init my-paper          # creates the server repo slot
+  git remote add tlda <printed-url>
+  git push tlda main              # optional: populate the slot with real history
+  tlda doc link my-paper paper.tex
+  ```
+
+  The project name ties the steps together: `init my-paper` creates the repo endpoint, an optional push/import/clone populates it with real history, and `link my-paper paper.tex` links the tlda project to that repo's worktree. Other transports (`scp`/`sftp` a Git bundle or tarball, or `git clone` from a readable remote) are fine too. The invariant is that the tlda project points `sourceDir` at the resulting checkout; file upload alone is only a current-render path, not a history-backed setup.
 
 Anyone you add to the tailnet opens the `.ts.net` URL and they're in; nobody else can reach it at all.
 
