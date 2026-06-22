@@ -1610,6 +1610,9 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
   // Output dir may not exist (e.g. after a wipe). All targets publish here.
   mkdirSync(outDir, { recursive: true })
 
+  const buildStart = Date.now()
+  const elapsed = () => ((Date.now() - buildStart) / 1000).toFixed(1)
+
   try {
     // Snapshot current output in background — don't block the build
     Promise.resolve().then(() => {
@@ -1620,9 +1623,6 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
         ctx.addLog(`Snapshot failed (non-fatal): ${e.message}`)
       }
     })
-
-    const buildStart = Date.now()
-    const elapsed = () => ((Date.now() - buildStart) / 1000).toFixed(1)
 
     // Per-target phases (compile, publish DVI, extract macros / synctex /
     // proof-pairing / theorem-map / source-map / relevant-files). All
@@ -1994,7 +1994,6 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
     throw e
   } finally {
     buildChildProcesses.delete(buildId)
-    try { rmSync(buildDir, { recursive: true, force: true }) } catch (e) { console.warn(`[build] failed to clean build dir: ${e.message}`) }
   }
 }
 

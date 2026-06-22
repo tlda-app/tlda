@@ -412,7 +412,7 @@ function ensureLocalDaemon() {
   try {
     if (!existsSync(dirname(DAEMON_LOG_FILE))) mkdirSync(dirname(DAEMON_LOG_FILE), { recursive: true })
     const logFd = openSync(DAEMON_LOG_FILE, 'a')
-    const child = cpSpawn(process.execPath, [DAEMON_SCRIPT], {
+    const child = spawn(process.execPath, [DAEMON_SCRIPT], {
       detached: true,
       stdio: ['ignore', logFd, logFd],
       env: { ...process.env, TMUX: undefined, TMUX_PANE: undefined },
@@ -1439,7 +1439,7 @@ let _gooseModelsCacheAt = 0
 app.get('/api/fleet/models', requireRead, (req, res) => {
   if (_gooseModelsCache && Date.now() - _gooseModelsCacheAt < 60_000) return res.json(_gooseModelsCache)
   const script = join(__dirname, '..', 'bin', 'fleet-spawn.py')
-  const child = cpSpawn('python3', [script, '--list-models'], { timeout: 10_000 })
+  const child = spawn('python3', [script, '--list-models'], { timeout: 10_000 })
   let out = '', err = '', done = false
   const fail = (msg) => { if (!done) { done = true; res.status(500).json({ error: msg }) } }
   child.stdout.on('data', d => { out += d })
