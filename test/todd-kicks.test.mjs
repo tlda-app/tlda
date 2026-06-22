@@ -54,11 +54,12 @@ test('task kick recovers hibernating agents but skips stale backlog tasks', () =
   }).length, 0)
 })
 
-test('task kick skips recently active agents and respects per-task cooldown', () => {
+test('task kick skips recently real-active agents and respects per-task cooldown', () => {
   assert.equal(decideTaskKicks({
     tasks: [task()],
-    agents: [agent({ last_seen: new Date(now - 60_000).toISOString() })],
+    agents: [agent()],
     now,
+    lastRealActivityMs: new Map([['fleet:agent-1', now - 60_000]]),
   }).length, 0)
 
   assert.equal(decideTaskKicks({
@@ -92,10 +93,10 @@ test('task kick not repeated when the blocker state is unchanged since last kick
   const second = decideTaskKicks({ tasks: [task()], agents: [a], now, lastKicked })
   assert.equal(second.length, 0)
 
-  // Agent acted (last_seen advanced, still past the quiet window) → state
-  // changed → a kick is allowed again.
-  const a2 = agent({ last_seen: new Date(now - 6 * 60_000).toISOString() })
-  const third = decideTaskKicks({ tasks: [task()], agents: [a2], now, lastKicked })
+  // Agent did real work (still past the quiet window) → state changed → a kick
+  // is allowed again.
+  const lastRealActivityMs = new Map([['fleet:agent-1', now - 6 * 60_000]])
+  const third = decideTaskKicks({ tasks: [task()], agents: [a], now, lastKicked, lastRealActivityMs })
   assert.equal(third.length, 1)
 })
 
