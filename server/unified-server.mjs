@@ -2584,7 +2584,15 @@ server.on('upgrade', async (req, socket, head) => {
           tmux_session: agent.tmux_session, lines: 80,
         })
         if (pane && ws.readyState === 1) {
-          ws.send(JSON.stringify({ type: 'output', data: Buffer.from(pane).toString('base64'), encoding: 'base64' }))
+          // capture-pane emits bare `\n` line endings; xterm has no convertEol,
+          // so `\n` is a line-feed WITHOUT carriage-return → every line renders
+          // one column further right (a staircase). The daemon's own PTY seed
+          // already converts (fleet-daemon.mjs), but this server-side seed did
+          // not — invisible for Claude (its TUI streams continuous full-screen
+          // repaints that overwrite the garble) but permanent for an idle goose
+          // agent that never repaints. Convert here too so the seed is readable.
+          const seed = pane.replace(/\r?\n/g, '\r\n')
+          ws.send(JSON.stringify({ type: 'output', data: Buffer.from(seed).toString('base64'), encoding: 'base64' }))
         }
       } catch (e) {
         console.warn(`[terminal] seed capture failed for ${agent.id} (${agent.tmux_session}): ${e.message}`)
