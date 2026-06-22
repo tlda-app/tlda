@@ -72,7 +72,13 @@ function setup() {
 
 const turnEnded = (id) => ({ type: 'turn_ended', agent_id: id })
 const chat = (from, to, text) => ({ type: 'chat', from_id: from, to_id: to, text })
-const activity = (id, tool) => ({ type: 'activity', from_id: id, to_id: id, metadata: { tool } })
+const activity = (id, tool, input = undefined) => ({
+  type: 'activity',
+  from_id: id,
+  to_id: id,
+  metadata: input === undefined ? { tool } : { tool, input },
+})
+const chatToBotInput = { filter: { to: BOT } }
 const POKE_CHAT = (to) => chat(BOT, to, '🪞 self-check') // a poke as it appears on the wire
 
 // 1. Skip ABSENT → poke fires after the countdown, with the universal poke text.
@@ -163,7 +169,7 @@ const POKE_CHAT = (to) => chat(BOT, to, '🪞 self-check') // a poke as it appea
   const { clock, poked, wiring } = setup()
   wiring.handleFleetEvent(POKE_CHAT('fleet:a'))         // the poke, on the wire (from the bot)
   wiring.handleFleetEvent(activity('fleet:a', '_text')) // agent narrates...
-  wiring.handleFleetEvent(activity('fleet:a', 'tlda/chat')) // ...and fires a chat reply (a comms tool)
+  wiring.handleFleetEvent(activity('fleet:a', 'tlda/chat', chatToBotInput)) // ...and fires a chat reply (a comms tool)
   wiring.handleFleetEvent(turnEnded('fleet:a'))
   clock.advance(COUNTDOWN_MS + 1000)
   check('poke → bare chat reply → suppressed (no loop)', poked.length === 0)
@@ -207,7 +213,7 @@ const POKE_CHAT = (to) => chat(BOT, to, '🪞 self-check') // a poke as it appea
 {
   const { clock, poked, wiring } = setup()
   wiring.handleFleetEvent(POKE_CHAT('fleet:a'))
-  wiring.handleFleetEvent(activity('fleet:a', 'tlda/chat'))
+  wiring.handleFleetEvent(activity('fleet:a', 'tlda/chat', chatToBotInput))
   wiring.handleFleetEvent(turnEnded('fleet:a'))  // suppressed (bare reply to bot)
   check('the bare-reply turn was suppressed', poked.length === 0)
   wiring.handleFleetEvent(activity('fleet:a', 'Bash'))  // later, real autonomous work

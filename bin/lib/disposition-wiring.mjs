@@ -23,8 +23,11 @@
 // the bare-reply loop is the harm.
 const COMMENT_TOOLS = new Set([
   '_text', '_usage', '_prettyResult',
-  'tlda/chat', 'tlda/reply_note', 'tlda/report', 'tlda/notify', 'tlda/share',
+  'tlda/reply_note', 'tlda/report', 'tlda/notify', 'tlda/share',
+  'tlda/task_done', 'task_done',
+  'mcp__tlda__task_done',
 ])
+const CHAT_TOOLS = new Set(['chat', 'tlda/chat', 'mcp__tlda__chat'])
 
 export function createDispositionWiring({
   scheduler,
@@ -39,6 +42,8 @@ export function createDispositionWiring({
   if (!scheduler) throw new Error('scheduler is required')
   let lastSkipActivityAt = 0          // 0 = Skip unseen → absent (pokeable)
   const cwdCache = new Map()           // agentId → cwd
+  const knownBotIds = new Set([...ignoreIds].filter(id => id !== ownerId))
+  knownBotIds.add(agentId)
   const lastInboundFrom = new Map()    // agentId → from_id of the message that triggered its current turn
   const workedThisTurn = new Set()     // agentIds that emitted a real-work tool since their last turn end
 
@@ -57,8 +62,13 @@ export function createDispositionWiring({
     // a non-array (failed fetch) is a no-op, leaving the prior cache intact.
     updateRoster: (agents) => {
       if (!Array.isArray(agents)) return
+      knownBotIds.clear()
+      knownBotIds.add(agentId)
+      for (const id of ignoreIds) if (id !== ownerId) knownBotIds.add(id)
       for (const a of agents) {
         if (a?.id && typeof a.cwd === 'string' && a.cwd) cwdCache.set(a.id, a.cwd)
+        const labels = Array.isArray(a?.labels) ? a.labels : []
+        if (a?.id && (labels.includes('bot') || a.human)) knownBotIds.add(a.id)
       }
     },
 
@@ -69,7 +79,7 @@ export function createDispositionWiring({
       if (d.type === 'chat') {
         // Track the trigger of the recipient's turn (any sender — Skip, another
         // agent, or the bot's own poke). A later inbound overrides an earlier one.
-        if (d.to_id) lastInboundFrom.set(d.to_id, d.from_id)
+        if (d.to_id && d.to_id !== d.from_id) lastInboundFrom.set(d.to_id, d.from_id)
         if (d.from_id === ownerId) {
           lastSkipActivityAt = now()                                  // presence (global)
           if (d.to_id && d.to_id !== agentId) scheduler.onSkipMessage(d.to_id) // in the room with that agent
@@ -84,7 +94,14 @@ export function createDispositionWiring({
         // is the authoritative tool name the server always sets (don't fall back
         // to d.text — for a text block that's the prose, not the '_text' marker).
         const id = d.from_id || d.agent_id
-        const tool = (d.metadata && d.metadata.tool) || ''
+        const meta = typeof d.metadata === 'string'
+          ? (() => { try { return JSON.parse(d.metadata) } catch { return {} } })()
+          : (d.metadata || {})
+        const tool = meta.tool || ''
+        const inputObj = typeof meta.input === 'object' && meta.input ? meta.input : {}
+        const chatTarget = inputObj.filter?.to
+        const botOrSelfChat = CHAT_TOOLS.has(tool) && chatTarget && (knownBotIds.has(chatTarget) || chatTarget === id)
+        if (botOrSelfChat) return
         if (id && tool && !COMMENT_TOOLS.has(tool)) workedThisTurn.add(id)
         return
       }
