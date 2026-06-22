@@ -253,11 +253,17 @@ function loadQualifications() {
   try {
     if (!fs.existsSync(QUALIFICATIONS_FILE)) return
     const data = JSON.parse(fs.readFileSync(QUALIFICATIONS_FILE, 'utf8'))
-    _qualRules = (data.rules || []).map(r => ({
-      editPattern: r.edit,
-      editRe: globToRegex(r.edit),
-      requires: r.requires || [],
-    }))
+    // Only edit-gating rules build an editRe. `tool:`-gating rules have no
+    // `edit` field (they're enforced elsewhere) and must be skipped here — else
+    // globToRegex(undefined) throws and the whole load fails with
+    // "Cannot read properties of undefined (reading 'replace')".
+    _qualRules = (data.rules || [])
+      .filter(r => typeof r.edit === 'string' && r.edit)
+      .map(r => ({
+        editPattern: r.edit,
+        editRe: globToRegex(r.edit),
+        requires: r.requires || [],
+      }))
     log.info(`loaded ${_qualRules.length} qualification rules`)
   } catch (e) {
     log.error(`failed to load qualifications: ${e.message}`)
