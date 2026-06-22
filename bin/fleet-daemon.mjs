@@ -72,7 +72,7 @@ const execFileP = promisify(execFile)
 const VERSION = '0.1.1'
 import { createLogger } from '../shared/logger.mjs'
 import { resolveDaemonIsolation } from '../shared/daemon-identity.mjs'
-import { makeActivityThrottle } from './lib/activity-throttle.mjs'
+import { sendActivityEvents } from './lib/activity-send.mjs'
 import { createManagedBotSupervisor } from './lib/managed-bots.mjs'
 import { maybeKickGoose, resolveGooseStatus } from './lib/goose-kick.mjs'
 import {
@@ -795,26 +795,6 @@ function scheduleCheckForPlanModePrompt(agentId) {
 
 // ---------- activity event buffer ----------
 
-// Per-agent leading-edge throttle (see bin/lib/activity-throttle.mjs). The first
-// activity after an agent has been quiet flushes immediately so its card lands
-// in fleet chat the moment it acts; bursts within the window batch to one push.
-// Replaces the old single trailing 2s timer that delayed EVERY event — the
-// chat-lags-terminal bug.
-const _activityThrottle = makeActivityThrottle({
-  windowMs: 2000,
-  send: (agentId, evt) => sendMsg({
-    type: 'activity-event',
-    agent_id: agentId,
-    tool: evt.tool,
-    arg: evt.arg || '',
-    input: evt.input || null,
-    ts: evt.ts,
-    ...(evt.usage ? { usage: evt.usage } : {}),
-    ...(evt.prettyResult ? { prettyResult: evt.prettyResult } : {}),
-    ...(evt.origTool ? { origTool: evt.origTool } : {}),
-  }),
-})
-
 function bufferActivity(agentId, evts) {
   // Liveness #B(a): a JSONL line IS a per-turn heartbeat — the agent just processed
   // a turn, so it is alive NOW. Warm the liveness cache (keyed by tmux_session) and
@@ -832,7 +812,7 @@ function bufferActivity(agentId, evts) {
   // Any buffered activity (claude/codex JSONL or goose sqlite) is a reason to
   // watch this agent's pane frequently — arm it for the status state machine.
   armAgent(agentId)
-  return _activityThrottle.buffer(agentId, evts)
+  return sendActivityEvents(agentId, evts, sendMsg)
 }
 
 // ---------- JSONL watching ----------
