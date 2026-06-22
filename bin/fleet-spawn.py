@@ -2068,7 +2068,15 @@ class CodexHarness(HarnessAdapter):
     def resolve_model(self, model):
         if not model:
             return CODEX_MODELS["gpt"]
-        return CODEX_MODELS.get(model, model)
+        if model in CODEX_MODELS:
+            return CODEX_MODELS[model]
+        # Voice/typo-robust: any gpt-family spelling (gpt, gpt5, gpt5.5, gpt55,
+        # gpt-5.5, …) collapses to the supported subscription model. ChatGPT-auth
+        # Codex only accepts gpt-5.5 today, so the whole family resolves to it
+        # rather than passing a literal the CLI would reject.
+        if re.match(r"^gpt", model, re.IGNORECASE):
+            return CODEX_MODELS["gpt"]
+        return model
 
     def build_cmd(self, fleet_id, sess, model, effort=None, mode=None,
                   resume_id=None, include_prompt=True, name=None, cwd=None,
@@ -2121,7 +2129,11 @@ def infer_harness_kind(kind, model):
     """
     if kind and kind != "claude":
         return kind
-    if model and re.match(r"^gpt(?:[-_.]|$)", model):
+    # Any gpt-family or "codex" spelling routes to codex — including
+    # separator-less voice transcriptions like "gpt5.5"/"gpt55" that the old
+    # `^gpt(?:[-_.]|$)` regex missed, sending them to the claude resolver which
+    # rejected them as "Unknown model" (the spawn-refuses-codex symptom).
+    if model and re.match(r"^(gpt|codex)", model, re.IGNORECASE):
         return "codex"
     return kind or "claude"
 
