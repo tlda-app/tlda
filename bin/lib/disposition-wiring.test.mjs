@@ -10,7 +10,7 @@
 // covered in disposition-scheduler.test.mjs).
 import { DispositionScheduler } from './disposition-scheduler.mjs'
 import { createDispositionWiring } from './disposition-wiring.mjs'
-import { pokeFor, GENERIC_POKE, MATH_POKE, CODE_POKE } from './disposition-poke.mjs'
+import { pokeFor, POKE } from './disposition-poke.mjs'
 
 // ── Fake clock shared by the scheduler timers AND the wiring's now() ──────────
 function makeClock() {
@@ -75,14 +75,14 @@ const chat = (from, to, text) => ({ type: 'chat', from_id: from, to_id: to, text
 const activity = (id, tool) => ({ type: 'activity', from_id: id, to_id: id, metadata: { tool } })
 const POKE_CHAT = (to) => chat(BOT, to, '🪞 self-check') // a poke as it appears on the wire
 
-// 1. Skip ABSENT + code-lane agent → poke fires after the countdown, with the CODE poke.
+// 1. Skip ABSENT → poke fires after the countdown, with the universal poke text.
 {
   const { clock, poked, wiring } = setup()
   wiring.updateRoster([{ id: 'fleet:a', cwd: '/Users/skip/work/tlda' }])
   wiring.handleFleetEvent(turnEnded('fleet:a'))
   clock.advance(COUNTDOWN_MS + 1000)
   check('absent → poke fires', poked.length === 1 && poked[0].to === 'fleet:a')
-  check('code-lane agent gets the CODE poke', poked[0]?.text === CODE_POKE)
+  check('poke text is the universal completeness line', poked[0]?.text === POKE)
 }
 
 // 2. Skip PRESENT (chatted another agent just now) → a different agent's turn does NOT poke.
@@ -104,21 +104,21 @@ const POKE_CHAT = (to) => chat(BOT, to, '🪞 self-check') // a poke as it appea
   check('presence window expires → poke fires again', poked.length === 1 && poked[0].to === 'fleet:c')
 }
 
-// 4. Math-lane agent → the MATH poke.
+// 4. Any lane (math cwd here) → the same universal poke (text no longer branches on cwd).
 {
   const { clock, poked, wiring } = setup()
   wiring.updateRoster([{ id: 'fleet:m', cwd: '/Users/skip/work/bregman' }])
   wiring.handleFleetEvent(turnEnded('fleet:m'))
   clock.advance(COUNTDOWN_MS + 1000)
-  check('math-lane agent gets the MATH poke', poked.length === 1 && poked[0].text === MATH_POKE)
+  check('math-lane agent also gets the universal poke', poked.length === 1 && poked[0].text === POKE)
 }
 
-// 5. Unknown-cwd agent → the generic poke.
+// 5. Unknown-cwd agent → still the universal poke.
 {
   const { clock, poked, wiring } = setup()
   wiring.handleFleetEvent(turnEnded('fleet:unknown'))  // no roster entry
   clock.advance(COUNTDOWN_MS + 1000)
-  check('unknown-cwd agent gets the GENERIC poke', poked.length === 1 && poked[0].text === GENERIC_POKE)
+  check('unknown-cwd agent gets the universal poke', poked.length === 1 && poked[0].text === POKE)
 }
 
 // 6. Agent→agent cross-talk does NOT mark Skip present, and (per Skip's final

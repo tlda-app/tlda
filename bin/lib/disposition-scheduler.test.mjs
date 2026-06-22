@@ -2,7 +2,7 @@
 // Exercises the countdown / cancel-on-Skip-message / manual-kick logic with a
 // fake clock — no real time, no WS. Replaces the old regex-check test.
 import { DispositionScheduler } from './disposition-scheduler.mjs'
-import { GENERIC_POKE, MATH_POKE, CODE_POKE, pokeFor } from './disposition-poke.mjs'
+import { POKE, pokeFor } from './disposition-poke.mjs'
 
 // ── Fake clock: a setTimer/clearTimer pair we advance by hand ──────────────
 function makeClock() {
@@ -148,29 +148,22 @@ function setup(opts = {}) {
   check('kick fires even when Skip is present', ok === true && poked.length === 1 && poked[0] === 'fleet:a')
 }
 
-// 11. Poke is SHORT (no multi-point numbered checklist) and grounded.
+// 11. Poke is ONE short completeness line — no checklist, no method/test verbs.
 {
-  check('generic poke has no numbered checklist', !/\n\s*1\./.test(GENERIC_POKE))
-  check('generic poke is short (< 400 chars)', GENERIC_POKE.length < 400)
-  check('generic poke names the actual-thing gate', /actual thing Skip asked/i.test(GENERIC_POKE))
-  check('generic poke names verify + no-punt', /verify it/i.test(GENERIC_POKE) && /go check it/i.test(GENERIC_POKE))
+  check('poke is a single short line', !/\n/.test(POKE) && POKE.length < 200)
+  check('poke is a completeness gut-check', /whole thing/i.test(POKE) && /piece of it/i.test(POKE))
+  check('poke defers the method to the agent\'s skills', /skills say to verify/i.test(POKE))
+  check('poke prescribes no verification method (no browser/test/run/reload verbs)',
+    !/browser|run the test|\bdrove\b|reload/i.test(POKE))
 }
 
-// 12. pokeFor routes by lane (cwd); generic for unknown/unset.
+// 12. pokeFor returns the ONE universal poke regardless of cwd (lane-adaptiveness
+//     now lives in the agent's own skills, not in branched poke text).
 {
-  check('tlda dir → code poke', pokeFor('/Users/skip/work/tlda') === CODE_POKE)
-  check('tlda worktree sibling → code poke', pokeFor('/Users/skip/work/tlda-buildq') === CODE_POKE)
-  check('tlda .worktree subdir → code poke', pokeFor('/Users/skip/work/tlda/.worktrees/x') === CODE_POKE)
-  check('fleet dir → code poke', pokeFor('/Users/skip/work/fleet/server') === CODE_POKE)
-  check('paper dir under work → math poke', pokeFor('/Users/skip/work/bregman') === MATH_POKE)
-  check('another work dir → math poke', pokeFor('/Users/skip/work/spinoffs/code') === MATH_POKE)
-  check('null cwd → generic poke', pokeFor(null) === GENERIC_POKE)
-  check('empty cwd → generic poke', pokeFor('') === GENERIC_POKE)
-  check('non-work dir → generic poke', pokeFor('/tmp/whatever') === GENERIC_POKE)
-  check('the three lane pokes are distinct', GENERIC_POKE !== MATH_POKE && MATH_POKE !== CODE_POKE && GENERIC_POKE !== CODE_POKE)
-  check('math poke speaks proof language', /defined|quantifier|proof/i.test(MATH_POKE))
-  check('code poke speaks verify/surface language', /verify|browser|surface/i.test(CODE_POKE))
-  check('each lane poke is short (< 400 chars)', MATH_POKE.length < 400 && CODE_POKE.length < 400)
+  check('code dir → universal poke', pokeFor('/Users/skip/work/tlda') === POKE)
+  check('math dir → universal poke', pokeFor('/Users/skip/work/bregman') === POKE)
+  check('null cwd → universal poke', pokeFor(null) === POKE)
+  check('unknown dir → universal poke', pokeFor('/tmp/whatever') === POKE)
 }
 
 console.log(`\n${pass}/${pass + fail} passed`)
