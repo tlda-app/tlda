@@ -1224,6 +1224,16 @@ function writeRelevantFiles(ctx) {
   // We translate them to authoring-dir paths so the set matches what the
   // daemon actually pushes from.
   const authorDir = project?.sourceDir
+  // Resolve the source/author dirs once. On Fly, /app/server/projects is a
+  // symlink to /app/server/persist/projects (fly-entrypoint-live.sh), so
+  // realpathSync(<input>) yields the persist path. We must compare against the
+  // RESOLVED dirs, but emit paths in the LITERAL srcDir/authorDir space the rest
+  // of the pipeline (readPaperScope, the daemon watch filter) expects. See
+  // relevantPathsForInput. Before this, the post-realpath input was tested
+  // against the un-resolved srcDir, never matched, and the paper scope came out
+  // empty — which silently froze shadow commits after the 2026-06-14 persist
+  // migration (commit 46fb299d introduced the symlink).
+  const dirs = { srcDir, authorDir, realSrcDir: realDirOf(srcDir), realAuthorDir: realDirOf(authorDir) }
   const relevant = new Set()
   let lineCount = 0
   try {
@@ -1231,22 +1241,9 @@ function writeRelevantFiles(ctx) {
     for (const line of fls.split('\n')) {
       if (!line.startsWith('INPUT ')) continue
       lineCount++
-      let p = line.slice(6).trim()
-      if (!p) continue
-      // Absolute paths from texlive / system libs: skip.
-      if (p.startsWith('/') && !p.startsWith(srcDir) && !(authorDir && p.startsWith(authorDir))) continue
-      // Relative paths: resolve against srcDir (cwd of pdflatex).
-      if (!p.startsWith('/')) p = join(srcDir, p)
-      // Normalize — collapse any .. / . segments.
-      try { p = realpathSync(p) } catch { /* file may not exist anymore */ }
-      // Only keep paths inside srcDir (the mirror) — translate to authorDir.
-      if (p.startsWith(srcDir + '/')) {
-        const rel = p.slice(srcDir.length + 1)
-        if (authorDir) relevant.add(join(authorDir, rel))
-        relevant.add(p)  // also keep mirror path for safety
-      } else if (authorDir && p.startsWith(authorDir + '/')) {
-        relevant.add(p)
-      }
+      const raw = line.slice(6).trim()
+      if (!raw) continue
+      for (const rp of relevantPathsForInput(raw, dirs)) relevant.add(rp)
     }
   } catch (e) {
     addLog(`Relevant files: parse failed (non-fatal): ${e.message}`)
@@ -1302,18 +1299,9 @@ function writeRelevantFiles(ctx) {
           try {
             for (const line of readFileSync(xrFls, 'utf8').split('\n')) {
               if (!line.startsWith('INPUT ')) continue
-              let p = line.slice(6).trim()
-              if (!p) continue
-              if (p.startsWith('/') && !p.startsWith(srcDir) && !(authorDir && p.startsWith(authorDir))) continue
-              if (!p.startsWith('/')) p = join(srcDir, p)
-              try { p = realpathSync(p) } catch {}
-              if (p.startsWith(srcDir + '/')) {
-                const rel = p.slice(srcDir.length + 1)
-                if (authorDir) relevant.add(join(authorDir, rel))
-                relevant.add(p)
-              } else if (authorDir && p.startsWith(authorDir + '/')) {
-                relevant.add(p)
-              }
+              const raw = line.slice(6).trim()
+              if (!raw) continue
+              for (const rp of relevantPathsForInput(raw, dirs)) relevant.add(rp)
             }
           } catch {}
         }
@@ -1333,18 +1321,61 @@ function writeRelevantFiles(ctx) {
   }
 }
 
-/** Add a relative path to the relevant set, resolving against srcDir and authorDir. */
+/** Add a relative path to the relevant set, resolving against srcDir and authorDir.
+ * Stores the LITERAL srcDir/authorDir paths (not realpathSync'd) — downstream
+ * consumers (readPaperScope, the daemon watch filter) work in literal space, and
+ * existsSync already follows the symlink so the existence check is correct. */
 function addRelevantPath(relevant, relPath, srcDir, authorDir) {
   const mirrorPath = join(srcDir, relPath)
-  if (existsSync(mirrorPath)) {
-    try { relevant.add(realpathSync(mirrorPath)) } catch { relevant.add(mirrorPath) }
-  }
+  if (existsSync(mirrorPath)) relevant.add(mirrorPath)
   if (authorDir) {
     const authorPath = join(authorDir, relPath)
-    if (existsSync(authorPath)) {
-      try { relevant.add(realpathSync(authorPath)) } catch { relevant.add(authorPath) }
-    }
+    if (existsSync(authorPath)) relevant.add(authorPath)
   }
+}
+
+/** realpathSync(dir), or the dir itself if it can't be resolved (e.g. doesn't
+ * exist yet). Used to make symlinked source dirs (Fly's persist volume) compare
+ * correctly without changing the literal paths we store. */
+function realDirOf(dir) {
+  if (!dir) return dir
+  try { return realpathSync(dir) } catch { return dir }
+}
+
+/**
+ * Map one .fls INPUT path to the relevant-file paths it contributes (possibly
+ * empty). System/texlive paths and anything outside the project's source/author
+ * dirs return []. Symlink-safe: the input is realpath-resolved (so it may land
+ * under Fly's persist volume), compared against the RESOLVED source/author dirs,
+ * but emitted in the LITERAL srcDir/authorDir space that readPaperScope and the
+ * daemon watch filter expect — never the resolved/persist path.
+ *
+ * `dirs` = { srcDir, authorDir, realSrcDir, realAuthorDir }. Exported for tests.
+ */
+export function relevantPathsForInput(raw, { srcDir, authorDir, realSrcDir, realAuthorDir }) {
+  let p = raw
+  if (!p) return []
+  // Absolute texlive / system paths: skip unless under the source/author dir
+  // (test both literal and resolved forms — the symlink makes them differ).
+  if (p.startsWith('/') &&
+      !p.startsWith(srcDir) && !p.startsWith(realSrcDir) &&
+      !(authorDir && (p.startsWith(authorDir) || (realAuthorDir && p.startsWith(realAuthorDir))))) {
+    return []
+  }
+  // Relative paths: resolve against srcDir (pdflatex's source base).
+  if (!p.startsWith('/')) p = join(srcDir, p)
+  // Resolve symlinks / collapse .. so the prefix test is apples-to-apples.
+  try { p = realpathSync(p) } catch { /* file may not exist anymore */ }
+  const out = []
+  if (p.startsWith(realSrcDir + '/')) {
+    const rel = p.slice(realSrcDir.length + 1)
+    if (authorDir) out.push(join(authorDir, rel))
+    out.push(join(srcDir, rel)) // literal mirror path (what readPaperScope expects)
+  } else if (realAuthorDir && p.startsWith(realAuthorDir + '/')) {
+    const rel = p.slice(realAuthorDir.length + 1)
+    out.push(join(authorDir, rel))
+  }
+  return out
 }
 
 // Detect xr-referenced sibling .tex files in the project's primary main.
