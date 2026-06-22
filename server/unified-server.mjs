@@ -4706,8 +4706,13 @@ async function handleDaemonWsMessage(ws, msg) {
           ts: batchTs,
         })
         if (batchState === 'alive') {
+          // Liveness = "the tmux process still exists", NOT "the agent did work".
+          // The daemon sends this batch every 30s (DEATH_CHECK_MS) for EVERY live
+          // agent, so calling touchActivity here would reset the idle clock each
+          // sweep and no idle agent could ever reach the 20-min hibernate threshold.
+          // markAgentAlive is idempotent for _aliveSince; real activity is recorded
+          // by agent-activity / agent-thinking / chat, not by this liveness ping.
           markAgentAlive(id)
-          touchActivity(id)
         } else {
           markAgentNotAlive(id)
         }
@@ -4718,8 +4723,10 @@ async function handleDaemonWsMessage(ws, msg) {
     if (!agent_id || !state) return
     spawnLibrarian.observeLiveness({ type, agent_id, state, tmux_session, pid, reason, ts })
     if (state === 'alive') {
+      // Liveness ≠ activity (see the batch handler above): this is a 30s "process
+      // exists" ping, not real work, so it must not reset the idle clock. Real
+      // activity is recorded by agent-activity / agent-thinking / chat.
       markAgentAlive(agent_id)
-      touchActivity(agent_id)
     } else if (state === 'dead' || state === 'wedged') {
       markAgentNotAlive(agent_id)
     }
