@@ -258,6 +258,7 @@ GOOSE_BIN = "/opt/homebrew/bin/goose"
 DEEPSEEK_RECIPE = os.path.join(
     os.path.dirname(os.path.realpath(__file__)), "..", "recipes", "fleet-deepseek.yaml")
 GOOSE_STATE_ROOT = "/tmp/tlda-goose-state"
+GOOSE_MAX_TOKENS = "32768"
 
 CODEX_MODELS = {
     # `codex -m gpt` is not accepted for ChatGPT-authenticated Codex accounts.
@@ -1591,6 +1592,12 @@ def build_goose_cmd(fleet_id, tmux_session, model, name=None, capability=None):
         f"XDG_CACHE_HOME={shlex.quote(cache_dir)}",
         f"XDG_STATE_HOME={shlex.quote(xdg_state_dir)}",
         "GOOSE_DISABLE_KEYRING=1",
+        # DeepSeek thinking models can spend thousands of tokens before emitting
+        # final content or a tool call. Leaving this unset let goose/OpenRouter
+        # cap a v4-pro turn at 4096 output tokens, producing reasoning-only
+        # rows with no deliverable answer. Keep reasoning enabled, but budget
+        # enough response tokens for an actual result.
+        f"GOOSE_MAX_TOKENS={GOOSE_MAX_TOKENS}",
         # Force telemetry off non-interactively. goose's first interactive run
         # otherwise blocks on a "share anonymous usage data?" consent prompt that
         # hangs boot (the config's GOOSE_TELEMETRY_ENABLED:false doesn't suppress
