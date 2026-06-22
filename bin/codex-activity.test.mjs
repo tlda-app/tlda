@@ -42,6 +42,7 @@ const PRETTY_PRINT_TOOLS = new Set([
 const humanToolName = name => name.replace(/^mcp__/, '').replace(/__/g, '/')
 const toolBaseName = name => String(name || '').split('__').pop()
 const isPrettyPrintTool = name => PRETTY_PRINT_TOOLS.has(name) || PRETTY_PRINT_TOOLS.has(toolBaseName(name))
+const pendingPrettyPrint = new Map()
 function extractCards(events) {
   const cards = []
   const toolResults = new Map()
@@ -66,12 +67,21 @@ function extractCards(events) {
         const card = { tool: humanName, arg: String(arg).slice(0, 80) }
         if (isPrettyPrintTool(b.name) && b.id && toolResults.has(b.id)) {
           card.prettyResult = toolResults.get(b.id)
+        } else if (isPrettyPrintTool(b.name) && b.id) {
+          pendingPrettyPrint.set(b.id, { card })
+          continue
         }
         cards.push(card)
       } else if (b.type === 'text' && b.text?.length > 20) {
         cards.push({ tool: '_text', arg: b.text.slice(0, 60) })
       }
     }
+  }
+  for (const [id, text] of toolResults) {
+    const pending = pendingPrettyPrint.get(id)
+    if (!pending) continue
+    pendingPrettyPrint.delete(id)
+    cards.push({ ...pending.card, prettyResult: text })
   }
   return cards
 }
@@ -124,6 +134,26 @@ console.log('\n=== unit fixtures ===')
   const threadCard = cards.find(c => c.tool === 'tlda/get_thread')
   assert(threadCard?.arg === 'bhist', 'get_thread activity card keeps the requested agent as arg')
   assert(threadCard?.prettyResult?.includes('skip → bhist'), 'get_thread activity card attaches readable pretty result')
+}
+{
+  const request = parseCodexLine(JSON.stringify({
+    type: 'response_item',
+    timestamp: '2026-06-17T00:00:00.000Z',
+    payload: {
+      type: 'function_call',
+      name: 'get_thread',
+      namespace: 'mcp__tlda',
+      arguments: JSON.stringify({ agent: 'bhist' }),
+      call_id: 'call-thread-delayed',
+    },
+  }))
+  const firstCards = extractCards([request])
+  assert(firstCards.length === 0, 'delayed pretty tool request waits for result instead of emitting bare card')
+  const result = parseCodexLine(codexOutputLine('Wall time: 0.123 seconds\nOutput:\n[{"type":"text","text":"1 message\\n\\n[6/18/2026, 8:00:00 AM] skip → bhist\\nhello"}]', 'function_call_output').replace('call-test', 'call-thread-delayed'))
+  const secondCards = extractCards([result])
+  const delayedCard = secondCards.find(c => c.tool === 'tlda/get_thread')
+  assert(delayedCard?.prettyResult?.includes('skip → bhist'), 'delayed pretty result emits original tool card shape')
+  assert(!secondCards.some(c => c.tool === '_prettyResult'), 'delayed pretty result does not emit _prettyResult card')
 }
 
 function findRollouts() {

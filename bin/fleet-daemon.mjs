@@ -458,9 +458,11 @@ function isPrettyPrintTool(name) {
 
 // Pending pretty-print tool_uses waiting for their results. Keyed by tool_use_id.
 // When a tool_use for a pretty-print tool arrives without a matching result in
-// the same batch, we stash the activity event here. When the result arrives in
-// a later batch, we send a follow-up activity event with the prettyResult.
-// Entries expire after 30s to avoid leaking memory on abandoned tool calls.
+// the same batch, delay the activity card instead of sending a bare card and a
+// later _prettyResult follow-up. That keeps delayed results in the same stored
+// input shape as same-batch Claude results: the original tool event with
+// prettyResult attached. Entries expire after 30s to avoid leaking memory on
+// abandoned tool calls.
 const pendingPrettyPrint = new Map()  // id -> { agentId, evt, expiresAt }
 
 function extractActivityEvents(events) {
@@ -506,8 +508,10 @@ function extractActivityEvents(events) {
             const raw = toolResults.get(block.id)
             evt.prettyResult = truncatePrettyResult(raw, name)
           } else {
-            // Result not in this batch — stash and wait
+            // Result not in this batch — stash and wait so the eventual card
+            // has the same shape as a same-batch Claude pretty-result card.
             pendingPrettyPrint.set(block.id, { evt: { ...evt }, expiresAt: Date.now() + 30000 })
+            continue
           }
         }
         result.push(evt)
@@ -523,13 +527,16 @@ function extractActivityEvents(events) {
     if (pending) {
       pendingPrettyPrint.delete(id)
       const capped = truncatePrettyResult(resultText, pending.evt.tool)
-      result.push({ ...pending.evt, origTool: pending.evt.tool, tool: '_prettyResult', prettyResult: capped })
+      result.push({ ...pending.evt, prettyResult: capped })
     }
   }
   // Expire old pending entries
   const now = Date.now()
   for (const [id, entry] of pendingPrettyPrint) {
-    if (now > entry.expiresAt) pendingPrettyPrint.delete(id)
+    if (now > entry.expiresAt) {
+      pendingPrettyPrint.delete(id)
+      result.push(entry.evt)
+    }
   }
   return result
 }
