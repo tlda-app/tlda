@@ -400,10 +400,13 @@ let _spawnModelCatalog = null;
 let _spawnModelCatalogAt = 0;
 async function getSpawnModelCatalog({ maxAgeMs = 60_000 } = {}) {
   if (_spawnModelCatalog && Date.now() - _spawnModelCatalogAt < maxAgeMs) return _spawnModelCatalog;
-  const headers = _tldaToken ? { Authorization: `Bearer ${_tldaToken}` } : {};
-  const res = await fleetFetch(`${TLDA_SERVER}/api/fleet/models`, { headers, signal: AbortSignal.timeout(5000) });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  const script = path.join(__dirname, '..', 'bin', 'fleet-spawn.py');
+  const out = execFileSync('python3', [script, '--list-models'], {
+    encoding: 'utf8',
+    timeout: 10_000,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  const data = JSON.parse(out);
   _spawnModelCatalog = data;
   _spawnModelCatalogAt = Date.now();
   return data;
