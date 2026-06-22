@@ -12,13 +12,15 @@
 //      the fleet → he's in the room → stay quiet. Presence = a chat from Skip
 //      (UI or terminal, both from_id=ownerId) within presenceWindowMs.
 //   2. POKE-LOOP GATE (here, decided at turn_ended): the turn was a response to
-//      the bot's OWN poke. Don't re-poke a turn the bot itself caused; the
-//      next real inbound from Skip or another agent overrides the bot trigger.
+//      the bot's OWN poke AND did no real work — a bare "thanks, done" chat
+//      reply. Don't loop on talk. A post-poke turn that actually DID work
+//      (tool calls / edits, not just a chat reply) is fine to follow up on.
 //   - A manual kick bypasses both (it's Skip's explicit command).
 //
 // "Did real work" = the turn emitted an activity event whose tool is something
 // other than plain text and the comms tools (a chat reply is itself a tool
-// call). Errs toward "work" on ambiguous tools.
+// call). Errs toward "work" on ambiguous tools — an extra poke is cheap; only
+// the bare-reply loop is the harm.
 const COMMENT_TOOLS = new Set([
   '_text', '_usage', '_prettyResult',
   'tlda/reply_note', 'tlda/report', 'tlda/notify', 'tlda/share',
@@ -113,10 +115,7 @@ export function createDispositionWiring({
         // NEXT turn (which may be autonomous, with no new inbound) starts clean.
         lastInboundFrom.delete(id)
         workedThisTurn.delete(id)
-        if (triggeredByBot) {
-          log(didWork ? 'suppress-bot-triggered-work' : 'suppress-poke-loop', id)
-          return
-        }
+        if (triggeredByBot && !didWork) { log('suppress-poke-loop', id); return } // bare reply to the bot
         scheduler.onTurnEnd(id)
       }
     },

@@ -6,7 +6,7 @@
 // fake clock and asserts the observable behavior — no WS, no live agents, no
 // real time. This is the "poke fires when Skip's absent + the agent worked,
 // silent when present or on a bare reply-to-the-bot; message short + lane-
-// correct; bot-triggered continuations do not re-poke) evidence at the wiring level (the scheduler's own gate/lane logic is
+// correct" evidence at the wiring level (the scheduler's own gate/lane logic is
 // covered in disposition-scheduler.test.mjs).
 import { DispositionScheduler } from './disposition-scheduler.mjs'
 import { createDispositionWiring } from './disposition-wiring.mjs'
@@ -175,9 +175,7 @@ const POKE_CHAT = (to) => chat(BOT, to, '🪞 self-check') // a poke as it appea
   check('poke → bare chat reply → suppressed (no loop)', poked.length === 0)
 }
 
-// 11. POKE + WORK — bot poked, agent actually edited a file → still suppress.
-//     The bot's check created this continuation; don't make the agent answer the
-//     same completion question again just because it used tools while answering.
+// 11. POKE + WORK — bot poked, agent actually edited a file → follow-up poke OK.
 {
   const { clock, poked, wiring } = setup()
   wiring.updateRoster([{ id: 'fleet:a', cwd: '/Users/skip/work/tlda' }])
@@ -185,7 +183,7 @@ const POKE_CHAT = (to) => chat(BOT, to, '🪞 self-check') // a poke as it appea
   wiring.handleFleetEvent(activity('fleet:a', 'Edit'))  // agent did real work
   wiring.handleFleetEvent(turnEnded('fleet:a'))
   clock.advance(COUNTDOWN_MS + 1000)
-  check('poke → real work → suppressed (no repeated disposition)', poked.length === 0)
+  check('poke → real work → follow-up poke fires', poked.length === 1 && poked[0].to === 'fleet:a')
 }
 
 // 12. notePoked path (echo-independent): even if the bot never saw its own poke
