@@ -59,6 +59,7 @@ import { createFleetRouter } from './routes/fleet.mjs'
 import { callerSpawnPolicy, coherentSpawnPolicy } from './lib/spawn-policy.mjs'
 import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
 import { SpawnBounceError, SpawnLibrarian, resolveSpawnCollision } from '../shared/spawn-librarian.ts'
+import { trimTerminalSeedBlankRows } from '../shared/terminal-seed.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -2603,7 +2604,7 @@ server.on('upgrade', async (req, socket, head) => {
           // not — invisible for Claude (its TUI streams continuous full-screen
           // repaints that overwrite the garble) but permanent for an idle goose
           // agent that never repaints. Convert here too so the seed is readable.
-          const seed = pane.replace(/\r?\n/g, '\r\n')
+          const seed = trimTerminalSeedBlankRows(pane).replace(/\r?\n/g, '\r\n')
           ws.send(JSON.stringify({ type: 'output', data: Buffer.from(seed).toString('base64'), encoding: 'base64' }))
         }
       } catch (e) {

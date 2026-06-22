@@ -83,6 +83,7 @@ import {
 import { gooseActivityTick } from './lib/goose-activity.mjs'
 import { parseCodexLine } from './lib/codex-activity.mjs'
 import { truncatePrettyResult } from '../shared/activity-pretty-result.mjs'
+import { trimTerminalSeedBlankRows } from '../shared/terminal-seed.mjs'
 import {
   buildFleetSpawnArgs,
   decideMissingLiveness,
@@ -2236,7 +2237,7 @@ async function rpcStartTerminalWatch({ tmux_session, agent_id, poll_ms }) {
     const { stdout } = await execFileP('tmux',
       [...TMUX_ARGS, 'capture-pane', '-t', tmux_session, '-p', '-S', `-${size.rows}`],
       { timeout: 3000, encoding: 'utf8' })
-    const snapshot = stdout.replace(/\n/g, '\r\n')
+    const snapshot = trimTerminalSeedBlankRows(stdout).replace(/\n/g, '\r\n')
     if (snapshot.trim()) {
       sendMsg({
         type: 'terminal-data',
