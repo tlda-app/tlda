@@ -2,7 +2,7 @@
 // Exercises the countdown / cancel-on-Skip-message / manual-kick logic with a
 // fake clock — no real time, no WS. Replaces the old regex-check test.
 import { DispositionScheduler } from './disposition-scheduler.mjs'
-import { GENERIC_POKE, pokeFor } from './disposition-poke.mjs'
+import { POKE, pokeFor } from './disposition-poke.mjs'
 
 // ── Fake clock: a setTimer/clearTimer pair we advance by hand ──────────────
 function makeClock() {
@@ -117,12 +117,53 @@ function setup(opts = {}) {
   check('shortened countdown fires at the new duration', poked.length === 1)
 }
 
-// 8. Poke text is the grounded generic poke (and pokeFor returns it in v1).
+// 8. Skip-absence gate: present at fire time → suppressed; absent → poke.
 {
-  check('poke text mentions the actual-thing gate', /the thing Skip asked/i.test(GENERIC_POKE))
-  check('poke text mentions verification gate', /verify, or am I assuming/i.test(GENERIC_POKE))
-  check('poke text mentions the make-him-steer gate', /making Skip steer/i.test(GENERIC_POKE))
-  check('pokeFor returns the generic poke in v1', pokeFor('/any/dir') === GENERIC_POKE)
+  let present = true
+  const { clock, poked, sched } = setup({ isSkipPresent: () => present })
+  sched.onTurnEnd('fleet:a')
+  clock.advance(31_000)
+  check('Skip present at fire time → no poke', poked.length === 0)
+  present = false
+  sched.onTurnEnd('fleet:a')
+  clock.advance(31_000)
+  check('Skip absent at fire time → poke fires', poked.length === 1 && poked[0] === 'fleet:a')
+}
+
+// 9. Presence is checked at FIRE time: present at turn-end but gone by expiry → poke.
+{
+  let present = true
+  const { clock, poked, sched } = setup({ isSkipPresent: () => present })
+  sched.onTurnEnd('fleet:a') // countdown starts while Skip is present
+  clock.advance(15_000)
+  present = false            // Skip goes quiet mid-countdown
+  clock.advance(16_000)
+  check('Skip leaving mid-countdown lets the poke fire', poked.length === 1 && poked[0] === 'fleet:a')
+}
+
+// 10. Manual kick bypasses the presence gate (Skip's explicit command).
+{
+  const { poked, sched } = setup({ isSkipPresent: () => true })
+  const ok = sched.kick('fleet:a')
+  check('kick fires even when Skip is present', ok === true && poked.length === 1 && poked[0] === 'fleet:a')
+}
+
+// 11. Poke is ONE short completeness line — no checklist, no method/test verbs.
+{
+  check('poke is a single short line', !/\n/.test(POKE) && POKE.length < 200)
+  check('poke is a completeness gut-check', /whole thing/i.test(POKE) && /piece of it/i.test(POKE))
+  check('poke defers the method to the agent\'s skills', /skills say to verify/i.test(POKE))
+  check('poke prescribes no verification method (no browser/test/run/reload verbs)',
+    !/browser|run the test|\bdrove\b|reload/i.test(POKE))
+}
+
+// 12. pokeFor returns the ONE universal poke regardless of cwd (lane-adaptiveness
+//     now lives in the agent's own skills, not in branched poke text).
+{
+  check('code dir → universal poke', pokeFor('/Users/skip/work/tlda') === POKE)
+  check('math dir → universal poke', pokeFor('/Users/skip/work/bregman') === POKE)
+  check('null cwd → universal poke', pokeFor(null) === POKE)
+  check('unknown dir → universal poke', pokeFor('/tmp/whatever') === POKE)
 }
 
 console.log(`\n${pass}/${pass + fail} passed`)

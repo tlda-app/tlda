@@ -17,6 +17,21 @@ Options:
   --dry-run          Print what would happen
 """
 
+# ─────────────────────────────────────────────────────────────────────────────
+# JUNK MARKER — LAYER-1 LAUNCHER, slated for deletion in the daemon-owned-spawn
+# relocation. Skip's architecture: spawn control + security belong in the DAEMON
+# (node), not in a python script with shell return values. This file DUPLICATES
+# logic that is (or is becoming) canonical in node:
+#     model resolution        → shared/spawn-model-validation.mjs
+#     name-collision / agent   → shared/spawn-librarian.ts
+#     capability → policy       → server/lib/spawn-policy.mjs (resolveDaemonSpawnGrant)
+# It is still the LIVE launcher (the daemon re-execs it per spawn), so do NOT
+# delete it yet. But the duplicated concerns above are the cycle Skip wants
+# stopped: do NOT patch the python copy onto the node path or extend these here
+# in isolation — fix the node canonical, and keep this in sync only until the
+# relocation removes this file. Plan + full junk inventory: scratch/spawn-relocation-plan.md
+# ─────────────────────────────────────────────────────────────────────────────
+
 import argparse
 import copy
 import ipaddress
@@ -2068,7 +2083,15 @@ class CodexHarness(HarnessAdapter):
     def resolve_model(self, model):
         if not model:
             return CODEX_MODELS["gpt"]
-        return CODEX_MODELS.get(model, model)
+        if model in CODEX_MODELS:
+            return CODEX_MODELS[model]
+        # Voice/typo-robust: any gpt-family spelling (gpt, gpt5, gpt5.5, gpt55,
+        # gpt-5.5, …) collapses to the supported subscription model. ChatGPT-auth
+        # Codex only accepts gpt-5.5 today, so the whole family resolves to it
+        # rather than passing a literal the CLI would reject.
+        if re.match(r"^gpt", model, re.IGNORECASE):
+            return CODEX_MODELS["gpt"]
+        return model
 
     def build_cmd(self, fleet_id, sess, model, effort=None, mode=None,
                   resume_id=None, include_prompt=True, name=None, cwd=None,
@@ -2121,7 +2144,11 @@ def infer_harness_kind(kind, model):
     """
     if kind and kind != "claude":
         return kind
-    if model and re.match(r"^gpt(?:[-_.]|$)", model):
+    # Any gpt-family or "codex" spelling routes to codex — including
+    # separator-less voice transcriptions like "gpt5.5"/"gpt55" that the old
+    # `^gpt(?:[-_.]|$)` regex missed, sending them to the claude resolver which
+    # rejected them as "Unknown model" (the spawn-refuses-codex symptom).
+    if model and re.match(r"^(gpt|codex)", model, re.IGNORECASE):
         return "codex"
     return kind or "claude"
 

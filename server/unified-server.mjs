@@ -28,7 +28,7 @@ import { createServer } from 'http'
 import { createServer as createHttpsServer } from 'https'
 import { createSecureContext } from 'tls'
 import { WebSocketServer } from 'ws'
-import { spawn } from 'child_process'
+import { spawn, spawn as cpSpawn } from 'child_process'
 // Runtime guard: warn on execSync in server process (tmux commands still use it)
 // TODO: migrate tmux commands to async exec, then ban execSync entirely
 import path from 'path'
@@ -39,9 +39,8 @@ const { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, openSyn
 import os from 'os'
 const { homedir, hostname } = os
 import { randomUUID } from 'crypto'
-import { spawn as cpSpawn } from 'child_process'
 import { lookup as mimeLookup } from 'mime-types'
-import { DEFAULT_PORT, hasTls, getManagedBots, loadConfig, resolveConfig } from '../shared/config.mjs'
+import { DEFAULT_PORT, hasTls, loadConfig, resolveConfig } from '../shared/config.mjs'
 import { normalizeUsageStatus } from '../shared/usage-status.mjs'
 import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
 import { labelsForAgent, parseFilter, evalExpr } from '../shared/fleet-labels.mjs'
@@ -413,7 +412,7 @@ function ensureLocalDaemon() {
   try {
     if (!existsSync(dirname(DAEMON_LOG_FILE))) mkdirSync(dirname(DAEMON_LOG_FILE), { recursive: true })
     const logFd = openSync(DAEMON_LOG_FILE, 'a')
-    const child = cpSpawn(process.execPath, [DAEMON_SCRIPT], {
+    const child = spawn(process.execPath, [DAEMON_SCRIPT], {
       detached: true,
       stdio: ['ignore', logFd, logFd],
       env: { ...process.env, TMUX: undefined, TMUX_PANE: undefined },
@@ -427,85 +426,6 @@ function ensureLocalDaemon() {
   } finally {
     // Brief lockout so we don't burst-spawn while the new daemon is coming up.
     setTimeout(() => { _daemonSpawnInFlight = false }, 3000)
-  }
-}
-
-// ---- Managed-bot supervisor ----
-// tlda keeps a configurable list of background "bots" alive — each is just a
-// script that talks to the fleet API (the shipped example is Todd). No bot is
-// special-cased; the list comes from config (getManagedBots). Each tick we check
-// a bot's pidfile and respawn it (detached, own log) when its process is gone,
-// with crash-loop backoff so a startup crash doesn't hot-loop. The supervisor
-// owns the pidfile/log location and hands them to the bot via env, so the bot
-// stays agnostic about where it lives.
-function resolveBotScript(script) {
-  if (script.startsWith('/')) return script
-  // repo-relative — resolve against the repo root, accounting for a worktree.
-  const d = dirname(fileURLToPath(import.meta.url))
-  const m = d.match(/^(.+?)\/\.claude\/worktrees\//)
-  const root = m ? m[1] : join(d, '..')
-  return join(root, script)
-}
-
-const _botState = new Map() // name → { spawnInFlight, lastSpawnAt, rapidFails, backoffUntil, givingUpLogged }
-
-function ensureManagedBot(spec) {
-  const name = spec?.name
-  if (!name || !spec.script) return
-  const scriptPath = resolveBotScript(spec.script)
-  const pidFile = join(homedir(), '.config', 'tlda', `${name}.pid`)
-  const logFile = join(homedir(), '.config', 'tlda', `${name}.log`)
-  let st = _botState.get(name)
-  if (!st) { st = { spawnInFlight: false, lastSpawnAt: 0, rapidFails: 0, backoffUntil: 0, givingUpLogged: false }; _botState.set(name, st) }
-  if (st.spawnInFlight) return
-  const now = Date.now()
-  if (now < st.backoffUntil) return
-  // Already running? (pidfile process alive — the bot writes its own pid on start)
-  if (existsSync(pidFile)) {
-    try {
-      const pid = parseInt(readFileSync(pidFile, 'utf8').trim(), 10)
-      if (pid > 0) { try { process.kill(pid, 0); return } catch {} } // not alive → respawn
-    } catch (e) { console.warn(`[bot-supervisor:${name}] stale pid file: ${e.message}`) }
-  }
-  if (!existsSync(scriptPath)) return
-  // Crash-loop guard — same shape/budget as the daemon supervisor.
-  if (st.lastSpawnAt > 0 && now - st.lastSpawnAt < DAEMON_FAST_DEATH_MS) {
-    st.rapidFails++
-    if (st.rapidFails >= DAEMON_MAX_RAPID_RESPAWNS) {
-      st.backoffUntil = now + DAEMON_BACKOFF_MS
-      if (!st.givingUpLogged) {
-        console.error(`[bot-supervisor:${name}] crashed ${st.rapidFails}× in <${DAEMON_FAST_DEATH_MS}ms each — backing off ${DAEMON_BACKOFF_MS / 1000}s. Tail ${logFile} for the cause.`)
-        st.givingUpLogged = true
-      }
-      st.rapidFails = 0
-      return
-    }
-  } else if (st.lastSpawnAt > 0) {
-    st.rapidFails = 0
-  }
-  st.spawnInFlight = true
-  try {
-    if (!existsSync(dirname(logFile))) mkdirSync(dirname(logFile), { recursive: true })
-    const logFd = openSync(logFile, 'a')
-    const child = cpSpawn(process.execPath, [scriptPath], {
-      detached: true,
-      stdio: ['ignore', logFd, logFd],
-      env: { ...process.env, TMUX: undefined, TMUX_PANE: undefined, TLDA_BOT_NAME: name, TLDA_BOT_PIDFILE: pidFile },
-    })
-    child.unref()
-    st.lastSpawnAt = now
-    st.givingUpLogged = false
-    console.log(`[bot-supervisor:${name}] respawned`)
-  } catch (e) {
-    console.error(`[bot-supervisor:${name}] spawn failed: ${e.message}`)
-  } finally {
-    setTimeout(() => { st.spawnInFlight = false }, 3000)
-  }
-}
-
-function ensureManagedBots() {
-  for (const spec of getManagedBots()) {
-    try { ensureManagedBot(spec) } catch (e) { console.error(`[bot-supervisor] ${spec?.name || '?'}: ${e.message}`) }
   }
 }
 
@@ -1519,7 +1439,7 @@ let _gooseModelsCacheAt = 0
 app.get('/api/fleet/models', requireRead, (req, res) => {
   if (_gooseModelsCache && Date.now() - _gooseModelsCacheAt < 60_000) return res.json(_gooseModelsCache)
   const script = join(__dirname, '..', 'bin', 'fleet-spawn.py')
-  const child = cpSpawn('python3', [script, '--list-models'], { timeout: 10_000 })
+  const child = spawn('python3', [script, '--list-models'], { timeout: 10_000 })
   let out = '', err = '', done = false
   const fail = (msg) => { if (!done) { done = true; res.status(500).json({ error: msg }) } }
   child.stdout.on('data', d => { out += d })
@@ -5300,10 +5220,10 @@ server.listen(PORT, HOST, () => {
   }
 
   // An isolated dev/test server (TLDA_DEV_SERVER=1) never runs the fleet
-  // supervisors or the hibernate loop — it exists only to load schemas + serve
+  // supervisor or the hibernate loop — it exists only to load schemas + serve
   // a throwaway doc, and must not touch the live fleet.
   if (process.env.TLDA_DEV_SERVER === '1') {
-    console.log('[dev-server] isolated mode — daemon/bot supervisors and hibernate loop disabled')
+    console.log('[dev-server] isolated mode — daemon supervisor and hibernate loop disabled')
   } else {
   // Start the local-daemon supervisor. Run an immediate check (so the daemon
   // is up shortly after server start) and then poll on an interval. The
@@ -5312,11 +5232,6 @@ server.listen(PORT, HOST, () => {
   console.log(`[daemon-supervisor] watching for local daemon (machine_id=${LOCAL_MACHINE_ID})`)
   ensureLocalDaemon()
   setInterval(ensureLocalDaemon, DAEMON_SUPERVISOR_INTERVAL_MS).unref()
-
-  // Keep the configured bots alive too — same cadence as the daemon supervisor.
-  console.log(`[bot-supervisor] watching ${getManagedBots().map(b => b.name).join(', ') || '(none)'}`)
-  ensureManagedBots()
-  setInterval(ensureManagedBots, DAEMON_SUPERVISOR_INTERVAL_MS).unref()
 
   const HIBERNATE_CHECK_MS = 60_000
   setInterval(async () => {

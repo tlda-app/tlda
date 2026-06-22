@@ -3,15 +3,21 @@
  * disposition-bot — a turn-end INTROSPECTION POKE.
  *
  * NOT a detector. It does not read the turn, match a regex, or judge anything.
- * The mechanism is just a countdown:
+ * The mechanism is a countdown gated on Skip's ABSENCE:
  *
- *   turn_ended(agent) → start a ~30s countdown for that agent
+ *   turn_ended(agent) → start a ~30s countdown for that agent ("wait a beat")
  *   Skip messages that agent → cancel that agent's countdown (he's in the room)
- *   countdown expires → send the agent the introspection poke (bin/lib/disposition-poke.mjs)
+ *   countdown expires → if Skip is AWAY, send the agent the introspection poke
+ *                       (bin/lib/disposition-poke.mjs); if he's active, stay quiet
  *
- * The poke goes to the AGENT, never to Skip — the agent self-checks ("am I
- * actually done? did I do the thing, or something easier?") and moves on. A
- * "wrong" poke is cheap, so we err toward prompting (short countdown).
+ * The poke fires only when Skip is away and presumably expecting progress — when
+ * he's active in the fleet he'll self-direct, so the bot shuts up (his standing
+ * "when I'm in the room you shut the fuck up" rule). Presence is global: any
+ * recent chat from fleet:skip (UI or terminal) marks him present for ~2 min.
+ *
+ * The poke goes to the AGENT, never to Skip, and is SHORT + LANE-AWARE (a math
+ * agent gets a proof-flavored nudge, a code/app agent a build-flavored one — by
+ * the poked agent's cwd). A "wrong" poke is cheap, so we err toward prompting.
  *
  * Plus a MANUAL KICK: Skip chats this bot ("poke <agent>" / "kick <agent>") to
  * fire an immediate poke at any agent on demand.
@@ -34,6 +40,7 @@ import http from 'http'
 
 import { getServerUrl, CONFIG_DIR } from '../shared/config.mjs'
 import { DispositionScheduler } from './lib/disposition-scheduler.mjs'
+import { createDispositionWiring } from './lib/disposition-wiring.mjs'
 import { pokeFor } from './lib/disposition-poke.mjs'
 
 const BOT_KEY = (process.env.TLDA_BOT_NAME || 'disposition').toLowerCase()
@@ -60,23 +67,42 @@ const PREFS_POLL_MS = 20_000
 const PREF_ENABLED_KEY = 'disposition-bot-enabled'
 const PREF_COUNTDOWN_KEY = 'disposition-countdown-sec'
 
+// Skip-presence window. He's "present" if he's chatted — UI OR terminal, both
+// arrive as a fleet chat from fleet:skip — within this window. SHORT on purpose
+// (~2 min): a long window would stall agents waiting to be poked the whole time
+// he's away (a 10-min job dragging into hours). Poking is cheap, so err toward
+// poking sooner — stay quiet only while he's *actively* bursting (gaps < ~2 min).
+const PRESENCE_WINDOW_MS = (parseInt(process.env.DISPO_PRESENCE_SEC || '', 10) || 120) * 1000
+
 const _cmdCache = new Map() // dedupe manual-kick acks per command
 
 // ─────────────────────────────────────────────────────────────────────────
-// The scheduler (pure countdown logic) — the bot is its I/O shell.
+// The scheduler (pure countdown logic) + the wiring (presence + cwd state and
+// fleet-event dispatch). The bot is the I/O shell around both. They reference
+// each other, so the scheduler is built first with closures over `wiring`
+// (resolved at call time), then the wiring is built with the scheduler.
 // ─────────────────────────────────────────────────────────────────────────
 
+let wiring
 const scheduler = new DispositionScheduler({
   countdownMs: DEFAULT_COUNTDOWN_SEC * 1000,
   enabled: DEFAULT_ENABLED,
-  sendPoke: (agentId) => sendChat(agentId, pokeFor(_cwdOf(agentId))),
+  // notePoked first so a post-poke turn is recognized as bot-triggered (the
+  // poke-loop gate) even if the bot never sees its own outgoing chat echoed.
+  sendPoke: (agentId) => { wiring.notePoked(agentId); sendChat(agentId, pokeFor(wiring.cwdOf(agentId))) },
+  isSkipPresent: () => wiring.isSkipPresent(),
   log: logDecision,
 })
-
-// The poke is cwd-sensitive in principle (math agents have a different miss-set
-// — see disposition-poke.mjs). We don't track per-agent cwd yet; v1 passes null
-// and pokeFor returns the one generic poke. This is the seam, nothing more.
-function _cwdOf(_agentId) { return null }
+wiring = createDispositionWiring({
+  scheduler,
+  ownerId: OWNER_ID,
+  agentId: AGENT_ID,
+  ignoreIds: IGNORE_IDS,
+  presenceWindowMs: PRESENCE_WINDOW_MS,
+  onKickCommand: (text) =>
+    handleManualKick(text).catch(e => console.error(`[${BOT_KEY}] manual kick error:`, e.message)),
+  log: logDecision,
+})
 
 function logDecision(event, agentId, detail) {
   const record = { ts: new Date().toISOString(), event, agent: agentId || null, detail: detail || null }
@@ -96,6 +122,14 @@ async function refreshPrefs() {
     const sec = Number(prefs[PREF_COUNTDOWN_KEY])
     if (Number.isFinite(sec) && sec > 0) scheduler.setCountdownMs(sec * 1000)
   }
+}
+
+// Refresh the per-agent cwd cache from the live alive-roster so wiring.cwdOf can
+// pick the lane-specific poke. cwd rarely changes, so polling alongside prefs
+// (20s) is plenty fresh. Best-effort: a failed request leaves the prior cache intact.
+async function refreshRoster() {
+  const agents = await wsRequest('store-agents', {}).catch(() => null)
+  wiring.updateRoster(agents)
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -154,6 +188,7 @@ function connect() {
     reconnectDelay = 500
     register()
     refreshPrefs().catch(e => console.error(`[${BOT_KEY}] prefs refresh failed:`, e.message))
+    refreshRoster().catch(e => console.error(`[${BOT_KEY}] roster refresh failed:`, e.message))
   })
   ws.on('message', (raw) => {
     let msg
@@ -212,25 +247,9 @@ function handleMessage(msg) {
   }
 
   if (msg.event !== 'fleet-event') return
-  const d = msg.data || {}
-
-  if (d.type === 'chat') {
-    // Skip → an agent: he's in the room with THAT agent → cancel its countdown.
-    if (d.from_id === OWNER_ID && d.to_id && d.to_id !== AGENT_ID) {
-      scheduler.onSkipMessage(d.to_id)
-    }
-    // Skip → this bot: a manual kick command.
-    if (d.from_id === OWNER_ID && d.to_id === AGENT_ID && d.text) {
-      handleManualKick(d.text).catch(e => console.error(`[${BOT_KEY}] manual kick error:`, e.message))
-    }
-    return
-  }
-
-  // The turn-end signal: a synthetic `turn_ended` event from the server.
-  if (d.type === 'turn_ended') {
-    const agentId = d.agent_id || d.from_id
-    if (agentId && !IGNORE_IDS.has(agentId)) scheduler.onTurnEnd(agentId)
-  }
+  // Presence tracking, Skip-in-the-room cancel, manual kick, and turn_ended →
+  // countdown all live in the wiring (unit-tested in disposition-wiring.test.mjs).
+  wiring.handleFleetEvent(msg.data || {})
 }
 
 // RESILIENT GET — always resolves (parsed JSON or `fallback`); never hangs.
@@ -261,6 +280,7 @@ console.log(`[${BOT_KEY}] starting (pid ${process.pid}) — turn-end introspecti
 connect()
 const _prefsTimer = setInterval(() => {
   refreshPrefs().catch(e => console.error(`[${BOT_KEY}] prefs refresh failed:`, e.message))
+  refreshRoster().catch(e => console.error(`[${BOT_KEY}] roster refresh failed:`, e.message))
 }, PREFS_POLL_MS)
 
 // Best-effort PID cleanup on exit: the file being already gone (ENOENT) is the

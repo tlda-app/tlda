@@ -65,7 +65,7 @@ import { scanMarkdownDeps } from '../shared/markdown-deps.mjs'
 import {
   loadConfig as _loadSharedConfig, saveConfig as _saveSharedConfig,
   getServerUrl, getFleetServerUrl, getRwToken, DEFAULT_PORT, hasTls,
-  CONFIG_DIR as _SHARED_CONFIG_DIR,
+  CONFIG_DIR as _SHARED_CONFIG_DIR, getManagedBots,
 } from '../shared/config.mjs'
 const execFileP = promisify(execFile)
 
@@ -73,7 +73,13 @@ const VERSION = '0.1.1'
 import { createLogger } from '../shared/logger.mjs'
 import { resolveDaemonIsolation } from '../shared/daemon-identity.mjs'
 import { makeActivityThrottle } from './lib/activity-throttle.mjs'
+import { createManagedBotSupervisor } from './lib/managed-bots.mjs'
 import { maybeKickGoose, resolveGooseStatus } from './lib/goose-kick.mjs'
+import {
+  classifyPane, decideThinkingEdge, shouldDisarm,
+  THINKING_SPINNER_RE, INTERRUPT_HINT_RE, COMPACTING_RE, APPROVAL_PROMPT_RE,
+  THINKING_SCAN_LINES, APPROVAL_PROMPT_SCAN_LINES,
+} from './lib/status-classifier.mjs'
 import { gooseActivityTick } from './lib/goose-activity.mjs'
 import { parseCodexLine } from './lib/codex-activity.mjs'
 import { truncatePrettyResult } from '../shared/activity-pretty-result.mjs'
@@ -113,6 +119,14 @@ function loadSourceBindings() {
 const LOG_FILE = path.join(CONFIG_DIR, 'fleet-daemon.log')
 const DEAD_LETTER_FILE = path.join(CONFIG_DIR, 'daemon-dead-letters.jsonl')
 const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects')
+
+function resolveBotScript(script) {
+  if (script.startsWith('/')) return script
+  const d = path.dirname(fileURLToPath(import.meta.url))
+  const m = d.match(/^(.+?)\/\.claude\/worktrees\//)
+  const root = m ? m[1] : path.join(d, '..')
+  return path.join(root, script)
+}
 
 // ---------- config / machine identity ----------
 
@@ -239,11 +253,17 @@ function loadQualifications() {
   try {
     if (!fs.existsSync(QUALIFICATIONS_FILE)) return
     const data = JSON.parse(fs.readFileSync(QUALIFICATIONS_FILE, 'utf8'))
-    _qualRules = (data.rules || []).map(r => ({
-      editPattern: r.edit,
-      editRe: globToRegex(r.edit),
-      requires: r.requires || [],
-    }))
+    // Only edit-gating rules build an editRe. `tool:`-gating rules have no
+    // `edit` field (they're enforced elsewhere) and must be skipped here — else
+    // globToRegex(undefined) throws and the whole load fails with
+    // "Cannot read properties of undefined (reading 'replace')".
+    _qualRules = (data.rules || [])
+      .filter(r => typeof r.edit === 'string' && r.edit)
+      .map(r => ({
+        editPattern: r.edit,
+        editRe: globToRegex(r.edit),
+        requires: r.requires || [],
+      }))
     log.info(`loaded ${_qualRules.length} qualification rules`)
   } catch (e) {
     log.error(`failed to load qualifications: ${e.message}`)
@@ -809,6 +829,9 @@ function bufferActivity(agentId, evts) {
     _missingSessionSince.delete(agentId)
     agent.last_seen = new Date().toISOString()
   }
+  // Any buffered activity (claude/codex JSONL or goose sqlite) is a reason to
+  // watch this agent's pane frequently — arm it for the status state machine.
+  armAgent(agentId)
   return _activityThrottle.buffer(agentId, evts)
 }
 
@@ -1162,6 +1185,10 @@ function readNewSessionLines(agentId, jsonlPath, sessionId, harnessKind = 'claud
     cursors[sessionId] = { inode: stat.ino, offset: 0 }
   }
   if (stat.size <= cursors[sessionId].offset) return
+  // New JSONL bytes = the agent just did something (text OR tool — not only tool
+  // calls). Arm it for the status state machine; the pane scan derives the actual
+  // thinking state. JSONL only ever says "active", never "thinking".
+  armAgent(agentId)
 
   let buf
   try {
@@ -1835,6 +1862,7 @@ async function tmux(...args) {
 async function rpcSendKey({ tmux_session, key }) {
   checkSession(tmux_session)
   if (!key) throw new Error('missing key')
+  armBySession(tmux_session)   // delivering a keystroke (e.g. submit) → arm
   // Translate `ctrl+x` → `C-x` for tmux's send-keys grammar; everything
   // else passes through as-is (Enter, Escape, etc.).
   const tmuxKey = key.replace(/^ctrl\+(.)/i, (_, c) => `C-${c}`)
@@ -1884,6 +1912,7 @@ function teardownEphemeral(tmuxSession) {
 
 async function rpcSendText({ tmux_session, text, enter, enter_delay_ms }) {
   checkSession(tmux_session)
+  armBySession(tmux_session)   // delivering input/wake-bootstrap → arm the status machine
   // Prefer long-lived PTY watcher, then ephemeral PTY, never tmux send-keys
   let pty = terminalWatchPtys.get(tmux_session)?.alive
     ? terminalWatchPtys.get(tmux_session).pty
@@ -2027,6 +2056,7 @@ function pendingQueuedIdx(lines) {
 }
 async function rpcSoftInterrupt({ tmux_session, agent_id }) {
   checkSession(tmux_session)
+  if (agent_id) armAgent(agent_id); else armBySession(tmux_session)   // promoting a queued message → arm
   let pane = ''
   try { pane = await capturePaneTail(tmux_session) } catch {}
   let lines = pane.split('\n').slice(-THINKING_SCAN_LINES)
@@ -2086,6 +2116,7 @@ async function rpcCheckAlive({ tmux_session }) {
 
 async function rpcKick({ agent_id }) {
   if (!agent_id) throw new Error('missing agent_id')
+  armAgent(agent_id)   // kicking/waking → arm the status machine
   const dir = path.join(os.homedir(), '.fleet', 'signals')
   fs.mkdirSync(dir, { recursive: true })
   const file = path.join(dir, agent_id.replace(/[^a-zA-Z0-9_-]/g, '_'))
@@ -2521,12 +2552,53 @@ const _observedLiveRuntimes = new Set() // agent_id
 
 // Thinking/compacting/approval detection — moved from MCP to daemon so it
 // survives MCP restarts and the hibernate sweep can trust it.
-const THINKING_SPINNER_RE = /[A-Z][a-z]+ing\u2026/
-const INTERRUPT_HINT_RE = /esc to interrupt/
-const COMPACTING_RE = /Compacting conversation/
-const THINKING_SCAN_LINES = 40
-const APPROVAL_PROMPT_RE = /[\u25CB\u25CF]\s*Allow once|Allow this .{0,30}\?\s*\(y\/n\)|Esc to cancel\s*\u00B7\s*Tab to amend/i
-const APPROVAL_PROMPT_SCAN_LINES = 15
+// Status classification (per-harness regexes + classifier) is imported from
+// ./lib/status-classifier.mjs above \u2014 single source of truth. The daemon OWNS the
+// status STATE (the maps + scanArmedStatus loop below) and emits the transitions;
+// server/client/bots consume them and do not reconstruct status.
+const STATUS_SCAN_MS = 1500          // frequent pane pull for armed agents (1-3s status)
+const ARM_LINGER_MS = 8000           // stay armed this long after the last activity / busy frame
+const IDLE_CONFIRM_SCANS = 2         // consecutive idle scans before thinking:false (anti-flicker)
+let _statusScanInterval = null
+const _armedSince = new Map()        // agent_id -> last arm/activity ts (armed iff present)
+const _idleScans = new Map()         // agent_id -> consecutive non-thinking scans (hysteresis)
+const _classifierState = new Map()   // agent_id -> carried classifier state (goose freeze tracking)
+// Arm an agent for frequent status checks. Cheap; called from the activity path
+// (any JSONL/sqlite write = the agent is doing something). `armed` is a watch
+// state, never shown \u2014 the pane scan decides the actual thinking state.
+function armAgent(agentId) {
+  if (agentId) _armedSince.set(agentId, Date.now())
+}
+function armBySession(tmux_session) {
+  if (!tmux_session) return
+  for (const a of agents) {
+    if (a.tmux_session !== tmux_session) continue
+    // A session-targeted RPC can correspond to more than one registry row
+    // (stale rows, handoff windows, duplicate registrations). Arming only the
+    // first row makes correctness depend on registry order, so arm every active
+    // non-human row attached to this session. The scan loop is still bounded to
+    // active rows and will disarm stale rows quickly if they cannot produce pane
+    // truth.
+    if (!a.dead && !a.human && !a.hibernating) armAgent(a.id)
+  }
+}
+// Disarm an agent, emitting a clean idle edge first if it was mid-turn. The daemon
+// OWNS the transition, so a thinking agent that vanishes (dead/hibernating) or is
+// disarmed must get a thinking:false edge HERE — otherwise the server's
+// _thinkingState stays true (its disconnect path clears it WITHOUT a turn_ended),
+// so a bot never sees the turn end. The normal idle-past-linger path already
+// emitted false via the hysteresis, so _prevThinking is false there and this
+// re-emits nothing — it just clears state.
+function disarmAgent(agentId) {
+  if (_prevThinking.get(agentId) === true) sendMsg({ type: 'agent-thinking', agentId, thinking: false })
+  if (_prevCompacting.get(agentId) === true) sendMsg({ type: 'agent-compacting', agentId, compacting: false })
+  _armedSince.delete(agentId)
+  _idleScans.delete(agentId)
+  _classifierState.delete(agentId)
+  _prevThinking.delete(agentId)
+  _prevCompacting.delete(agentId)
+  _prevApprovalFP.delete(agentId)
+}
 const _prevThinking = new Map()   // agent_id → boolean
 const _prevCompacting = new Map() // agent_id → boolean
 const _prevGooseLive = new Map()  // agent_id → { fingerprint, since } (goose freeze tracking)
@@ -2864,69 +2936,126 @@ async function checkAgentLiveness() {
     void syncSessionWatchers(agents).catch(e => log.error(`syncSessionWatchers failed: ${e.stack || e.message}`))
   }
 
-  // Scan alive agents for thinking/compacting/approval state
+  // Goose turn-end auto-kick — bot supervision, deliberately kept on this slow
+  // sweep, SEPARATE from the shared status state machine. scanArmedStatus() now
+  // owns agent-thinking / agent-compacting for EVERY harness (goose included via
+  // its classifier), so this pass no longer emits status — it only nudges an
+  // idle/stuck goose that has undelivered work. It keeps its own freeze-tracking
+  // map (_prevGooseLive) so it never contends with the display classifier state.
   for (const agent of candidateAgents) {
     if (agent.hibernating) continue
+    if (harnessForAgent(agent).kind !== 'goose') continue
     try {
       const { stdout: pane } = await execFileP('tmux',
         [...TMUX_ARGS, 'capture-pane', '-t', agent.tmux_session, '-p', '-S', `-${THINKING_SCAN_LINES}`],
         { timeout: 3000, encoding: 'utf8' })
-
       const paneBottom = pane.split('\n').slice(-THINKING_SCAN_LINES).join('\n')
-
-      const adapter = harnessForAgent(agent)
-
-      // Goose agents have a different TUI — the claude spinner/compacting/approval
-      // regexes don't apply. Derive thinking from goose's own working marker and
-      // run the turn-end auto-kick, then skip the claude-specific detection.
-      if (adapter.kind === 'goose') {
-        // One resolved status per sweep feeds BOTH the emit and the kick — no
-        // second code path. A frozen spinner resolves to 'stuck' (not 'working'),
-        // so thinking=false (turn-timeout fires) AND the kick is un-suppressed.
-        const { status, live } = resolveGooseStatus(paneBottom, _prevGooseLive.get(agent.id), Date.now())
-        if (live) _prevGooseLive.set(agent.id, live)
-        else _prevGooseLive.delete(agent.id)
-
-        const gThinking = status === 'working'
-        sendMsg({ type: 'agent-thinking', agentId: agent.id, thinking: gThinking })
-        if (gThinking !== _prevThinking.get(agent.id)) _prevThinking.set(agent.id, gThinking)
-
-        const gCompacting = status === 'compacting'
-        sendMsg({ type: 'agent-compacting', agentId: agent.id, compacting: gCompacting })
-        if (gCompacting !== _prevCompacting.get(agent.id)) _prevCompacting.set(agent.id, gCompacting)
-
-        await maybeKickGoose(agent, status, {
-          sendText: gooseKickSend, execFileP, log, stateMap: _gooseKickState,
-        })
-        continue
-      }
-
-      const isThinking = THINKING_SPINNER_RE.test(paneBottom) || INTERRUPT_HINT_RE.test(paneBottom)
-      sendMsg({ type: 'agent-thinking', agentId: agent.id, thinking: isThinking })
-      if (isThinking !== _prevThinking.get(agent.id)) {
-        _prevThinking.set(agent.id, isThinking)
-      }
-
-      const isCompacting = COMPACTING_RE.test(pane)
-      sendMsg({ type: 'agent-compacting', agentId: agent.id, compacting: isCompacting })
-      if (isCompacting !== _prevCompacting.get(agent.id)) {
-        _prevCompacting.set(agent.id, isCompacting)
-      }
-
-      const approvalBottom = pane.split('\n').slice(-APPROVAL_PROMPT_SCAN_LINES).join('\n')
-      if (APPROVAL_PROMPT_RE.test(approvalBottom)) {
-        const fingerprint = approvalBottom.slice(-100)
-        if (fingerprint !== _prevApprovalFP.get(agent.id)) {
-          _prevApprovalFP.set(agent.id, fingerprint)
-          sendMsg({ type: 'terminal_attention', agent_id: agent.id, reason: 'permission prompt', text: 'permission prompt' })
-        }
-      } else {
-        _prevApprovalFP.delete(agent.id)
-      }
-    } catch {}
+      const { status, live } = resolveGooseStatus(paneBottom, _prevGooseLive.get(agent.id), Date.now())
+      if (live) _prevGooseLive.set(agent.id, live)
+      else _prevGooseLive.delete(agent.id)
+      await maybeKickGoose(agent, status, {
+        sendText: gooseKickSend, execFileP, log, stateMap: _gooseKickState,
+      })
+    } catch {
+      // capture-pane failed (tmux session gone / transient churn) — skip this
+      // goose this sweep; the next sweep retries. A genuinely dead session is
+      // handled by the death/hibernate path above, so the recovery here is simply
+      // to move on to the next agent.
+      continue
+    }
   }
 
   sendMsg({ type: 'agent-liveness', agent_ids: aliveAgentIds, checked_agent_ids: checkedAgentIds })
+}
+
+// ---------------------------------------------------------------------------
+// Shared agent status state machine (every harness). The daemon OWNS these
+// transitions; server/client/bots consume the emitted edges. `armed` is a watch
+// state (an agent earns frequent pane pulls when it shows activity) and is never
+// displayed. `thinking`/`compacting` are derived ONLY from the pane.
+// ---------------------------------------------------------------------------
+
+// Emit the agent-thinking edge with anti-flicker hysteresis on the idle side: a
+// single missed spinner frame must not fabricate a turn end. The server holds
+// _thinkingState until our explicit false edge (no TTL), so it consumes edges,
+// not per-scan resends; the true->false edge is what becomes turn_ended.
+function emitThinkingEdge(agentId, isThinking) {
+  const d = decideThinkingEdge(
+    _prevThinking.get(agentId) === true,
+    _idleScans.get(agentId) || 0,
+    isThinking,
+    IDLE_CONFIRM_SCANS,
+  )
+  _prevThinking.set(agentId, d.prev)
+  if (d.idleCount) _idleScans.set(agentId, d.idleCount)
+  else _idleScans.delete(agentId)
+  if (d.emit !== null) sendMsg({ type: 'agent-thinking', agentId, thinking: d.emit })
+}
+
+function emitCompactingEdge(agentId, isCompacting) {
+  if (isCompacting !== (_prevCompacting.get(agentId) === true)) {
+    _prevCompacting.set(agentId, isCompacting)
+    sendMsg({ type: 'agent-compacting', agentId, compacting: isCompacting })
+  }
+}
+
+// Pull one armed agent's pane and emit its real status. All harnesses share this
+// path; the only per-harness branch is classifyPane(). Returns whether the agent
+// is busy (thinking/compacting) so the loop can keep it armed or let it disarm.
+async function scanAgentPaneStatus(agent) {
+  let pane
+  try {
+    const { stdout } = await execFileP('tmux',
+      [...TMUX_ARGS, 'capture-pane', '-t', agent.tmux_session, '-p', '-S', `-${THINKING_SCAN_LINES}`],
+      { timeout: 3000, encoding: 'utf8' })
+    pane = stdout
+  } catch {
+    // Capture failed (session gone / tmux hiccup). Feed the idle side so a truly
+    // dead pane resolves to thinking:false via hysteresis; a one-off miss is
+    // absorbed by the 2-scan guard.
+    emitThinkingEdge(agent.id, false)
+    emitCompactingEdge(agent.id, false)
+    return { busy: false }
+  }
+  const c = classifyPane(harnessForAgent(agent).kind, pane, _classifierState.get(agent.id) || null, Date.now())
+  if (c.state) _classifierState.set(agent.id, c.state)
+  else _classifierState.delete(agent.id)
+
+  emitThinkingEdge(agent.id, c.thinking)
+  emitCompactingEdge(agent.id, c.compacting)
+
+  if (c.approval) {
+    if (c.approvalFp !== _prevApprovalFP.get(agent.id)) {
+      _prevApprovalFP.set(agent.id, c.approvalFp)
+      sendMsg({ type: 'terminal_attention', agent_id: agent.id, reason: 'permission prompt', text: 'permission prompt' })
+    }
+  } else {
+    _prevApprovalFP.delete(agent.id)
+  }
+  return { busy: c.thinking || c.compacting }
+}
+
+// The frequent loop: pull each armed agent's pane (~STATUS_SCAN_MS), keep it armed
+// while busy, disarm once it has sat idle past ARM_LINGER_MS. Bounded to the few
+// agents actually working — idle / un-armed agents are never pulled.
+async function scanArmedStatus() {
+  if (!_serverReady || !_rws?.connected) return
+  if (!_armedSince.size) return
+  const now = Date.now()
+  for (const agentId of [..._armedSince.keys()]) {
+    const agent = agents.find(a => a.id === agentId)
+    if (!agent || agent.dead || agent.human || agent.hibernating || !agent.tmux_session) {
+      disarmAgent(agentId)
+      continue
+    }
+    let busy = false
+    try { ({ busy } = await scanAgentPaneStatus(agent)) } catch { busy = false }
+    if (busy) {
+      _armedSince.set(agentId, now)
+    } else if (shouldDisarm(now, _armedSince.get(agentId) || 0, busy, ARM_LINGER_MS)) {
+      disarmAgent(agentId)
+    }
+  }
 }
 
 async function rpcResolveFile({ path: filePath, cwd, server_url }) {
@@ -3554,6 +3683,12 @@ function handleServerMessage(msg) {
       _deathCheckInterval = setInterval(checkAgentLiveness, DEATH_CHECK_MS)
       setTimeout(checkAgentLiveness, 5000)
     }
+    // Fast status state machine — pulls panes only for agents armed by recent
+    // activity, so it's bounded to the few agents actually working (1-3s status,
+    // accurate turn edges) without a fleet-wide sweep.
+    if (!_statusScanInterval) {
+      _statusScanInterval = setInterval(scanArmedStatus, STATUS_SCAN_MS)
+    }
     // Non-JSONL activity sources. Goose writes to sqlite instead of a Claude/Codex
     // JSONL, so its adapter polls and feeds the same bufferActivity() path.
     if (!_gooseActivityInterval) {
@@ -3771,5 +3906,12 @@ log.info(`  machine_id  = ${MACHINE_ID}`)
 log.info(`  boot_id     = ${BOOT_ID}`)
 log.info(`  user        = ${USER}@${HOSTNAME}`)
 startHeartbeat()
+createManagedBotSupervisor({
+  bots: getManagedBots(config),
+  machineId: MACHINE_ID,
+  resolveScript: resolveBotScript,
+  configDir: CONFIG_DIR,
+  log,
+}).start()
 startReapers()
 connect()

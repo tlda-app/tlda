@@ -68,16 +68,52 @@ async function openViewer(browser, base, docName, timeoutMs = 30000) {
   })
   page.on('pageerror', err => consoleErrors.push(err.message))
 
-  await page.goto(`${base}/?doc=${docName}`, {
+  await page.goto(`${base}/?doc=${docName}&name=tester&pw=1`, {
     waitUntil: 'networkidle2',
     timeout: timeoutMs,
   })
 
   // Wait for TLDraw + svg-page shapes
-  await page.waitForFunction(() => {
+  try {
+    await page.waitForFunction(() => {
+      const ed = window.__tldraw_editor__
+      return ed && ed.getCurrentPageShapes().some(s => s.type === 'svg-page')
+    }, { timeout: timeoutMs })
+  } catch (e) {
+    const state = await page.evaluate(() => ({
+      url: location.href,
+      title: document.title,
+      bodyText: document.body?.innerText?.slice(0, 500) || '',
+      errorText: document.querySelector('.ErrorScreen')?.textContent?.slice(0, 500) || '',
+      loadingText: document.querySelector('.LoadingScreen')?.textContent?.slice(0, 500) || '',
+      hasEditor: !!window.__tldraw_editor__,
+      shapeTypes: window.__tldraw_editor__?.getCurrentPageShapes?.().map(s => s.type).slice(0, 20) || [],
+    })).catch(err => ({ evaluateError: err.message }))
+    throw new Error(`Timed out waiting for svg-page: ${JSON.stringify(state)}; console errors: ${consoleErrors.join(' | ')}`)
+  }
+
+  await page.evaluate(() => {
     const ed = window.__tldraw_editor__
-    return ed && ed.getCurrentPageShapes().some(s => s.type === 'svg-page')
-  }, { timeout: timeoutMs })
+    if (!ed) return
+    const pages = ed.getCurrentPageShapes()
+      .filter(s => s.type === 'svg-page')
+      .sort((a, b) => {
+        const ab = ed.getShapePageBounds(a.id)
+        const bb = ed.getShapePageBounds(b.id)
+        return (ab?.y ?? 0) - (bb?.y ?? 0) || (ab?.x ?? 0) - (bb?.x ?? 0)
+      })
+    const first = pages[0]
+    if (!first) return
+    const bounds = ed.getShapePageBounds(first.id)
+    if (!bounds) return
+    const minX = bounds.minX ?? bounds.x
+    const minY = bounds.minY ?? bounds.y
+    ed.setCamera({ x: -minX + 32, y: -minY + 32, z: ed.getCamera().z }, { animation: { duration: 0 } })
+  })
+
+  await page.waitForFunction(() => document.querySelector('[data-shape-type="svg-page"] svg'), {
+    timeout: timeoutMs,
+  })
 
   // Let SVG injection settle
   await new Promise(r => setTimeout(r, 2000))
@@ -89,7 +125,8 @@ async function openViewer(browser, base, docName, timeoutMs = 30000) {
 /** Check that SVGs are actually rendered (not empty white divs). */
 async function checkRendered(page) {
   return page.evaluate(() => {
-    const els = document.querySelectorAll('[data-shape-type="svg-page"]')
+    const els = [...document.querySelectorAll('[data-shape-type="svg-page"]')]
+      .filter(el => !el.querySelector('.svg-page-background'))
     let rendered = 0, empty = 0
     for (const el of els) {
       if (el.querySelector('svg')) rendered++
@@ -128,6 +165,7 @@ describe('pipeline', { timeout: 300000 }, () => {
     browser = await puppeteer.launch({
       headless: 'shell',
       executablePath: CHROME,
+      args: ['--ignore-certificate-errors'],
     })
     console.log(`  Server on port ${server.port}`)
   })
