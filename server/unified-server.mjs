@@ -640,8 +640,14 @@ function getWouldHibernate() {
     // get killed almost immediately.
     const aliveSince = _aliveSince.get(agentId)
     if (!aliveSince || (now - aliveSince) < HIBERNATE_IDLE_MS) continue
-    const lastActive = _lastActivityAt.get(agentId)
-    if (!lastActive) continue
+    // Idle baseline = last REAL activity, or — if we've recorded none this
+    // server-run (e.g. the agent was already idle before the last restart) —
+    // the start of its current alive run. aliveSince is set once by
+    // markAgentAlive and, unlike the old liveness touchActivity, is NOT bumped
+    // by the 30s liveness sweep, so it's a true floor for "has done nothing".
+    // Without this, every deploy would leave pre-existing idle agents
+    // permanently un-hibernatable (no lastActive → skipped forever).
+    const lastActive = _lastActivityAt.get(agentId) || aliveSince
     const idleMs = now - lastActive
     if (idleMs < HIBERNATE_IDLE_MS) continue
     // Gap-aware idle: a 20-min-idle reading is only trustworthy if the activity
