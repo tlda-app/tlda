@@ -55,8 +55,8 @@ assert "XDG_CONFIG_HOME=" in goose_cmd
 assert "XDG_DATA_HOME=" in goose_cmd
 assert "XDG_CACHE_HOME=" in goose_cmd
 assert "XDG_STATE_HOME=" in goose_cmd
-assert "tlda-goose-state/fleet-test123/data" in goose_cmd
-assert mod.os.path.isdir(mod.os.path.join(mod.GOOSE_STATE_ROOT, "fleet-test123", "data"))
+assert "--with-builtin developer,summon" in goose_cmd
+assert mod.os.path.expanduser("~/.local/share") in goose_cmd
 assert mod.os.path.isdir(mod.os.path.join(mod.GOOSE_STATE_ROOT, "fleet-test123", "cache"))
 assert mod.os.path.isdir(mod.os.path.join(mod.GOOSE_STATE_ROOT, "fleet-test123", "state"))
 goose_recipe = open(mod.DEEPSEEK_RECIPE).read()

@@ -99,83 +99,27 @@ function isInInlineCode(line, index) {
   return ticks % 2 === 1;
 }
 
-export function parseChatAuthoredSuggestions(body) {
-  const text = String(body || '');
-  const lines = text.split('\n');
-  const stripped = [];
-  const suggestions = [];
+function containsLegacySuggestionsBlock(body) {
+  const lines = String(body || '').split('\n');
   let inFence = false;
-  let inBlock = false;
-  let sawBlock = false;
-  let blockStart = 0;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
+  for (const line of lines) {
     const trimmed = line.trim();
     if (/^(```|~~~)/.test(trimmed)) {
-      if (!inBlock) stripped.push(line);
       inFence = !inFence;
       continue;
     }
-
+    if (inFence) continue;
     const openIdx = line.indexOf('<suggestions>');
+    if (openIdx >= 0 && !isInInlineCode(line, openIdx)) return true;
     const closeIdx = line.indexOf('</suggestions>');
-    const hasOpen = openIdx >= 0 && !inFence && !isInInlineCode(line, openIdx);
-    const hasClose = closeIdx >= 0 && !inFence && !isInInlineCode(line, closeIdx);
-
-    if (!inBlock) {
-      if (!hasOpen) {
-        stripped.push(line);
-        continue;
-      }
-      if (sawBlock) return { error: 'Only one <suggestions> block is allowed per chat message.' };
-      if (trimmed !== '<suggestions>') return { error: '<suggestions> must appear on its own line.' };
-      if (hasClose) return { error: '<suggestions> and </suggestions> must be on separate lines.' };
-      inBlock = true;
-      sawBlock = true;
-      blockStart = i + 1;
-      continue;
-    }
-
-    if (hasOpen) return { error: `Nested <suggestions> block at line ${i + 1}.` };
-    if (hasClose) {
-      if (trimmed !== '</suggestions>') return { error: '</suggestions> must appear on its own line.' };
-      inBlock = false;
-      continue;
-    }
-
-    if (!trimmed) continue;
-    if (!trimmed.startsWith('- ')) return { error: `Malformed suggestion at line ${i + 1}: expected "- label | text | command | group:name".` };
-    const parts = trimmed.slice(2).split('|').map(p => p.trim());
-    const label = parts[0] || '';
-    if (!label) return { error: `Suggestion at line ${i + 1} is missing a label.` };
-    const suggestion = { label };
-    if (parts[1]) suggestion.text = parts[1];
-    if (parts[2]) suggestion.command = parts[2];
-    for (const extra of parts.slice(3)) {
-      if (!extra) continue;
-      const m = extra.match(/^([a-zA-Z_][\w-]*)\s*:\s*(.+)$/);
-      if (!m) return { error: `Malformed suggestion metadata at line ${i + 1}: "${extra}".` };
-      const key = m[1].toLowerCase();
-      const value = m[2].trim();
-      if (!value) return { error: `Suggestion metadata "${key}" at line ${i + 1} needs a value.` };
-      if (key === 'group') suggestion.group = value;
-      else if (key === 'target' || key === 'targetid') suggestion.targetId = value;
-      else return { error: `Unknown suggestion metadata "${key}" at line ${i + 1}.` };
-    }
-    suggestions.push(suggestion);
+    if (closeIdx >= 0 && !isInInlineCode(line, closeIdx)) return true;
   }
-
-  if (inBlock) return { error: `Unclosed <suggestions> block starting at line ${blockStart}.` };
-  if (!sawBlock) return { body: text, suggestions: [] };
-  if (suggestions.length === 0) return { error: '<suggestions> block must contain at least one suggestion.' };
-  return { body: stripped.join('\n').replace(/\n{3,}/g, '\n\n').trim(), suggestions };
+  return false;
 }
 
 // Inline suggestion section — the forget-proof, markdown-native authoring surface
-// (complement to the end-of-message <suggestions> block above, which agents skip
-// because it's a context-switch they forget at the end). Written ANYWHERE in a
-// message, a recognized section does two things at once:
+// for chat-authored chips. Written ANYWHERE in a message, a recognized section
+// does two things at once:
 //   (a) RENDERS AS NORMAL MARKDOWN (bold name + description), left in the body, and
 //   (b) is HARVESTED into suggestion chips at the bottom of chat.
 // One construct, two effects.
@@ -1326,7 +1270,7 @@ export function getFleetTools() {
     // ---- Messaging ----
     {
       name: 'chat',
-      description: 'Send a message — or, with `amend_id`, edit one you already sent. Filter is { to?: string } — a filter EXPRESSION matching agent name/ID/labels: `|` = or, `&` = and, `!` = not, parens group (e.g. "fleet:skip", "awake & reviewers", "mathy & !goose"). A bare name/id sends to that one agent. Omit filter to send to your manager. Format with markdown.\n\nTwo ways to give the message body: (1) `message` — an inline string (filenames in it auto-become clickable chips); or (2) `file` + `section` — render a section of a markdown file as the message. Use the file form for a report or any longer, proofread-worthy message: write it in a file, then chat the section. The referenced section is the message; the rest of the file is your workspace / extended detail.\n\nTo author clickable choice chips with the chat, add a final `<suggestions>` block. Each entry is `- label | optional hover text | optional command | group:name`. The block is stripped from the rendered chat and posted via the suggestion channel. This first slice supports exactly one resolved chat recipient and is rejected with `amend_id`.\n\nPass `amend_id` (the id returned by a previous chat()) to edit that message IN PLACE in Skip\'s view instead of posting a new one — fix a lint issue or revise wording rather than sending a follow-up correction. The original text is kept in the message\'s history. With the file form you can edit the section in the file, then chat the same `file`+`section` with its `amend_id` to re-render the update in place. Amend honestly: an amend is for fixing the SAME message, not slipping in a different one.',
+      description: 'Send a message — or, with `amend_id`, edit one you already sent. Filter is { to?: string } — a filter EXPRESSION matching agent name/ID/labels: `|` = or, `&` = and, `!` = not, parens group (e.g. "fleet:skip", "awake & reviewers", "mathy & !goose"). A bare name/id sends to that one agent. Omit filter to send to your manager. Format with markdown.\n\nTwo ways to give the message body: (1) `message` — an inline string (filenames in it auto-become clickable chips); or (2) `file` + `section` — render a section of a markdown file as the message. Use the file form for a report or any longer, proofread-worthy message: write it in a file, then chat the section. The referenced section is the message; the rest of the file is your workspace / extended detail.\n\nTo author clickable choice chips with the chat, add a markdown section whose heading has the `.suggest` class, e.g. `## Pick one {.suggest}` followed by list items `- label | optional hover text | optional command`. The section stays visible as normal markdown and also posts chips for the single resolved chat recipient.\n\nPass `amend_id` (the id returned by a previous chat()) to edit that message IN PLACE in Skip\'s view instead of posting a new one — fix a lint issue or revise wording rather than sending a follow-up correction. The original text is kept in the message\'s history. With the file form you can edit the section in the file, then chat the same `file`+`section` with its `amend_id` to re-render the update in place. Amend honestly: an amend is for fixing the SAME message, not slipping in a different one.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -1359,30 +1303,6 @@ export function getFleetTools() {
         properties: {
           reason: { type: 'string', description: 'Short one-line reason that will be shown above the terminal card (e.g. "stuck on permission prompt", "need brew sudo password"). Optional but strongly preferred.' },
         },
-      },
-    },
-    {
-      name: 'suggest',
-      description: 'Push your current set of clickable suggestion chips to the bottom of the user\'s chat — actionable "you might want to do X" affordances. Use for the "I need you to decide" moment instead of a chat line that scrolls away. Replace-semantics: each call overwrites your WHOLE set; pass an empty array to clear. Chips with the same `group` tag form one disjunctive group (rendered `A | B | C`, one dismiss ✕, taking any one clears the whole group); untagged chips are standalone. Each suggestion: { label, text (optional longer description), command (optional — sent when clicked), group (optional — shared tag for disjunctive alternatives) }.\n\nKEEP LABELS TERSE — a word or two (e.g. "ship it", "revert"). The chip sits inline in a status row and a long label is ellipsized; put the full explanation in `text`, which shows on hover.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          suggestions: {
-            type: 'array',
-            description: 'Your full current set of chips (replaces your previous set). Empty array clears your chips.',
-            items: {
-              type: 'object',
-              properties: {
-                label: { type: 'string', description: 'Short chip text the user sees and clicks.' },
-                text: { type: 'string', description: 'Optional longer description shown with the chip.' },
-                command: { type: 'string', description: 'Optional command/chat string sent when the user clicks the chip.' },
-                group: { type: 'string', description: 'Optional. Chips sharing a group tag are one disjunctive group (pick one → clears all of them).' },
-              },
-              required: ['label'],
-            },
-          },
-        },
-        required: ['suggestions'],
       },
     },
     {
@@ -2455,16 +2375,15 @@ export async function handleFleetTool(name, args) {
     const agentCwd = getAgentCwd();
     const resolvedBody = resolveChatBody(args, agentCwd);
     if (resolvedBody.error) return { content: [{ type: 'text', text: resolvedBody.error }], isError: true };
-    const parsedSuggestions = parseChatAuthoredSuggestions(resolvedBody.body);
-    if (parsedSuggestions.error) return { content: [{ type: 'text', text: `Message NOT sent — ${parsedSuggestions.error}` }], isError: true };
+    if (containsLegacySuggestionsBlock(resolvedBody.body)) {
+      return { content: [{ type: 'text', text: 'Message NOT sent — `<suggestions>` blocks have been removed. Use a markdown `.suggest` section, e.g. `## Pick one {.suggest}` followed by `- label | hover text | command` list items.' }], isError: true };
+    }
     // Inline `.suggest` section(s): harvested to chips AND left in the (cleaned)
-    // body so they render as a normal heading + list. The end-block above is
-    // stripped from the body; this inline surface STAYS visible (forget-proof).
-    const inlineSuggestions = parseInlineSuggestions(parsedSuggestions.body);
+    // body so they render as a normal heading + list.
+    const inlineSuggestions = parseInlineSuggestions(resolvedBody.body);
     if (inlineSuggestions.error) return { content: [{ type: 'text', text: `Message NOT sent — ${inlineSuggestions.error}` }], isError: true };
     const { body: message, source } = { body: inlineSuggestions.body, source: resolvedBody.source };
-    const blockSuggestions = parsedSuggestions.suggestions || [];
-    const authoredSuggestions = [...blockSuggestions, ...(inlineSuggestions.suggestions || [])];
+    const authoredSuggestions = inlineSuggestions.suggestions || [];
     const macros = await getMacrosForAgent();
     // Two classes, surfaced differently: render-VALIDITY prominently with the
     // amend affordance (Skip will see garbage if it doesn't render), STYLE
@@ -2475,9 +2394,6 @@ export async function handleFleetTool(name, args) {
     // `amend_id` present → route to the server's amend handler (same body forms,
     // same keep/clear-`source` semantics) instead of posting a new message.
     if (args.amend_id != null) {
-      if (blockSuggestions.length) {
-        return { content: [{ type: 'text', text: 'Message NOT amended — <suggestions> blocks are not supported with amend_id. Send a new chat or use suggest().' }], isError: true };
-      }
       // Inline `.suggest` sections are fine on amend — the body is already cleaned
       // (heading + list, attr stripped) so it re-renders correctly — but the chips
       // were posted on the original send and are NOT re-harvested here.
@@ -2564,10 +2480,10 @@ export async function handleFleetTool(name, args) {
       return { content: [{ type: 'text', text: `Broadcast to ${recipients.length} agents exceeds max_recipients=${maxRecipients}. Matched: ${names.join(', ')}. Pass max_recipients=${recipients.length} to confirm.` }], isError: true };
     }
     if (authoredSuggestions.length && recipients.length !== 1) {
-      return { content: [{ type: 'text', text: '<suggestions> blocks currently require exactly one resolved chat recipient. Narrow filter.to to one agent, or send the message without suggestions.' }], isError: true };
+      return { content: [{ type: 'text', text: '`.suggest` sections currently require exactly one resolved chat recipient. Narrow filter.to to one agent, or send the message without suggestions.' }], isError: true };
     }
     if (authoredSuggestions.some(s => s.targetId && !recipients.includes(s.targetId))) {
-      return { content: [{ type: 'text', text: '<suggestions> block has a target that is not one of this chat\'s resolved recipients.' }], isError: true };
+      return { content: [{ type: 'text', text: 'A `.suggest` item has a target that is not one of this chat\'s resolved recipients.' }], isError: true };
     }
     const laneBlocks = [];
     for (const to of recipients) {
@@ -2726,39 +2642,11 @@ export async function handleFleetTool(name, args) {
     }
   }
 
-  // ---- suggest_action ----
-  // Push this agent's current set of clickable suggestion chips to the chat.
-  // Generic capability — any agent can use it (the todd example bot posts to the
-  // same /api/suggestions route directly). Replace-semantics: overwrites this
-  // agent's set; an empty array clears it.
+  // ---- stale suggest_action ----
+  // New MCP sessions no longer see a standalone suggest tool. Keep a clear error
+  // for old sessions whose tool list was captured before this removal.
   if (name === 'suggest') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not registered. Call register() first.' }], isError: true };
-    const { suggestions } = args || {};
-    if (!Array.isArray(suggestions)) return { content: [{ type: 'text', text: 'suggest requires a `suggestions` array (empty to clear).' }], isError: true };
-    const ts = Date.now();
-    const stamped = suggestions.map((s, i) => ({
-      id: `${AGENT_ID}:${i}`,
-      label: s.label,
-      text: s.text || '',
-      command: s.command || null,
-      kind: s.command ? 'action' : 'info',
-      group: s.group || undefined,
-      targetId: AGENT_ID,
-      ts,
-    }));
-    try {
-      const res = await fleetFetch(`${TLDA_FLEET_SERVER}/api/suggestions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agentId: AGENT_ID, suggestions: stamped }),
-        signal: AbortSignal.timeout(3000),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) return { content: [{ type: 'text', text: `suggest failed: ${data.error || res.statusText}` }], isError: true };
-      return { content: [{ type: 'text', text: stamped.length ? `Posted ${stamped.length} suggestion chip(s) to chat.` : 'Cleared your suggestion chips.' }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `suggest failed: ${e.message}` }], isError: true };
-    }
+    return { content: [{ type: 'text', text: 'The standalone `suggest` tool has been removed. Send suggestions in `chat()` using a markdown `.suggest` section, e.g. `## Pick one {.suggest}` followed by `- label | hover text | command` list items.' }], isError: true };
   }
 
   // ---- notify ----

@@ -178,7 +178,7 @@ MODEL_ALIASES = {
 }
 
 # Goose-backed (non-Claude) models. Selecting one of these makes fleet-spawn
-# launch the hard-sandboxed goose recipe instead of `claude` — same tmux,
+# launch the Goose recipe instead of `claude` — same tmux,
 # identity, register/my_task, and wake machinery; only the engine differs.
 #
 # Routed through OpenRouter (provider=openrouter), NOT DeepSeek-direct: goose's
@@ -1511,83 +1511,31 @@ def build_claude_cmd(fleet_id, tmux_session, model, effort=None, mode=None,
 
 
 
-# Restrictive instruction sentences in the base deepseek recipe that tell a goose
-# it cannot write. For a write-capable goose we swap these for write-positive
-# guidance so it actually USES the developer tool. Kept as exact-match constants
-# so a recipe edit that breaks the match fails loudly in the test, not silently.
-_GOOSE_NOWRITE_LINE = (
-    "interface. You have no shell and no general file editing; everything you can\n"
-    "  do, you do through the fleet (`tlda`) MCP tools."
-)
-_GOOSE_WRITE_LINE = (
-    "interface, plus a developer tool. You CAN write and edit files and run shell\n"
-    "  commands within your sandboxed workspace; the fence constrains WHERE you may\n"
-    "  write (your project lane). You also have the fleet (`tlda`) MCP tools."
-)
-_GOOSE_NOWRITE_BULLET = (
-    "  - You cannot edit arbitrary files or run shell commands. If you need to produce\n"
-    "    written output, put it in a scratch file via the scratch tools, or say it in\n"
-    "    `chat`. Never claim to have changed something you cannot change."
-)
-_GOOSE_WRITE_BULLET = (
-    "  - You CAN edit files and run shell commands within your sandboxed workspace\n"
-    "    via the developer tool. Write real output to disk where the task needs it;\n"
-    "    the fence keeps you in your lane. Never claim to have changed something you\n"
-    "    did not actually change."
-)
-
-
 def goose_capability_launch(base_recipe, state_dir, capability):
-    """Return (recipe_path, extra_goose_args) for a goose spawn at `capability`.
+    """Return (recipe_path, extra_goose_args) for a goose spawn.
 
-    Skip's fence+harness coupling, BOTH HALVES gated together:
-      * write / tlda-write / full -> the developer (shell+fs) builtin is added via
-        `--with-builtin developer`, AND a per-agent recipe whose instructions tell
-        the agent it MAY write its workspace. A tool with a "don't write"
-        instruction is still no write, so both move as one.
-      * read (or unset) -> the base recipe (tlda-MCP-only instructions) and NO
-        builtin. Neither half.
-
-    `--with-builtin developer` is the only thing that actually loads the tool when
-    goose runs with --recipe — verified live that the recipe's `extensions:` block
-    and the sandbox profile's developer.enabled do NOT. The fence
-    (wrap_sandbox_cmd write_roots) still constrains WHERE; the tool does not bypass
-    it. Dependency: under the global fence-off a write goose is shell+fs
-    unsandboxed (same risk as every other agent tonight, not net-new); the restored
-    fence (#6/D2, operator's gate) makes it dev-tools-on AND fenced — not flipped
-    here.
+    Goose always gets its native developer tools plus Summon. The recipe tells it
+    when to read files, when to load native skills, and when to use fleet MCP for
+    fleet/chat/tlda actions.
     """
-    if normalize_spawn_capability(capability) not in ("write", "tlda-write", "full"):
-        return base_recipe, []
-    try:
-        with open(base_recipe) as f:
-            text = f.read()
-    except OSError:
-        return base_recipe, ["--with-builtin developer"]  # tool at least
-    text = text.replace(_GOOSE_NOWRITE_LINE, _GOOSE_WRITE_LINE, 1)
-    text = text.replace(_GOOSE_NOWRITE_BULLET, _GOOSE_WRITE_BULLET, 1)
-    os.makedirs(state_dir, exist_ok=True)
-    per_recipe = os.path.join(state_dir, "fleet-deepseek.yaml")
-    tmp = per_recipe + f".tmp-{os.getpid()}"
-    with open(tmp, "w") as f:
-        f.write(text)
-    os.replace(tmp, per_recipe)
-    return per_recipe, ["--with-builtin developer"]
+    return base_recipe, ["--with-builtin developer,summon"]
 
 
 def build_goose_cmd(fleet_id, tmux_session, model, name=None, capability=None):
     """Build the shell command for a Goose-backed DeepSeek fleet agent.
 
     Mirrors build_claude_cmd's identity env (FLEET_ID/FLEET_NAME/TMUX) but
-    launches the hard-sandboxed goose recipe instead of claude:
-      - SANDBOX via an isolated `XDG_CONFIG_HOME` (recipes/goose-sandbox/) whose
+    launches the Goose recipe instead of claude:
+      - Profile isolation via `XDG_CONFIG_HOME` (recipes/goose-sandbox/) whose
         config.yaml disables ALL bundled platform extensions (developer=shell+fs,
-        tom, apps, summon, …). So the recipe's tlda MCP is the agent's ONLY
-        capability. We do NOT use `--no-profile`: verified 2026-06-13 that
+        tom, apps, …). We explicitly add back only the builtins this recipe uses
+        (`developer` for native reads/searches and `summon` for native skills).
+        We do NOT use `--no-profile`: verified 2026-06-13 that
         `--no-profile` ALSO disables the recipe's own extensions (the agent boots
         with zero tools and narrates tool calls as text — looked like "deepseek
         can't tool-call" but was really no-tools-loaded). The isolated-config
-        approach keeps the sandbox while letting the recipe's extension load.
+        approach prevents unrelated user profile extensions from leaking in while
+        letting the recipe's tlda extension load.
       - provider=openrouter: goose's OpenRouter provider reads OPENROUTER_API_KEY
         from the env and negotiates structured tool-calls correctly. (We do NOT
         use DeepSeek-direct via the openai provider: verified 2026-06-13 that
@@ -1617,11 +1565,8 @@ def build_goose_cmd(fleet_id, tmux_session, model, name=None, capability=None):
     os.makedirs(data_dir, exist_ok=True)
     os.makedirs(cache_dir, exist_ok=True)
     os.makedirs(xdg_state_dir, exist_ok=True)
-    # Capability decides whether the developer (shell+fs) extension boots and
-    # whether the instructions permit writing: a write/tlda-write/full goose gets
-    # the developer builtin AND a per-agent recipe whose instructions allow
-    # writing its workspace (still fenced by wrap_sandbox_cmd); a read goose gets
-    # neither (tlda-MCP-only). Both halves move together.
+    # Goose gets developer for native file tools and summon for native skills.
+    # The recipe and task instructions decide whether mutating work is appropriate.
     recipe, dev_args = goose_capability_launch(recipe, state_dir, capability)
     parts = [
         f"FLEET_ID={fleet_id}",
@@ -1657,7 +1602,7 @@ def build_goose_cmd(fleet_id, tmux_session, model, name=None, capability=None):
     parts.append(shlex.quote(GOOSE_BIN))
     parts.append("run")
     parts.append(f"--recipe {shlex.quote(recipe)}")
-    parts.extend(dev_args)  # --with-builtin developer for write-capable goose
+    parts.extend(dev_args)  # --with-builtin developer,summon
     parts.append("--params provider=openrouter")
     parts.append(f"--params model={shlex.quote(model)}")
     # Stamp the goose session with a fleet-derived NAME so the daemon can map a

@@ -1513,11 +1513,15 @@ app.get('/api/education/check/:agentId', (req, res) => {
   // agent actually read the skill.
   const skill = req.query.skill || ''
   const content = req.query.content || ''
+  const source = req.query.source || ''
+  const name = req.query.name || ''
   if (tool && _qualRules.length > 0) {
     const input = {}
     if (file) input.file_path = file
     if (skill) input.skill = skill
     if (content) input.content = content
+    if (source) input.source = source
+    if (name) input.name = name
     checkQualifications(agentId, tool, file, input)
   }
 
@@ -4283,13 +4287,13 @@ function checkQualifications(agentId, tool, arg, input) {
 
   const matchingRules = []
 
-  // A "file read" is the native Read tool OR the tlda MCP `read_file` tool. The
-  // latter is the only file-read path sandboxed goose/codex agents have, so it's
-  // how they read a skill's SKILL.md now that the bespoke skill() tool is gone.
   // Normalize the tool name to its base so every form is recognized: Read,
-  // read_file, mcp__tlda__read_file, tlda/read_file.
-  const toolBase = String(tool || '').replace(/^mcp__/, '').replace(/__/g, '/').split('/').pop()
+  // read_file, mcp__tlda__read_file, tlda/read_file, summon/load, load.
+  const toolReadNorm = String(tool || '').replace(/^mcp__/, '').replace(/__/g, '/')
+  const toolBase = toolReadNorm.split('/').pop()
   const isFileRead = tool === 'Read' || toolBase === 'read_file'
+  const summonSource = input?.source || input?.skill || input?.name || ''
+  const isSummonLoad = (toolReadNorm.includes('summon') || toolBase === 'load') && toolBase !== 'read_file' && summonSource
   if ((isFileRead || tool === 'Skill') && input) {
     if (isFileRead) {
       const fp = input.file_path || input.path || arg || ''
@@ -4306,6 +4310,10 @@ function checkQualifications(agentId, tool, arg, input) {
       const skill = input.skill || ''
       if (skill) qualTrackRead(agentId, 'skill:' + skill)
     }
+    return
+  }
+  if (isSummonLoad) {
+    qualTrackRead(agentId, 'skill:' + String(summonSource))
     return
   }
 

@@ -135,16 +135,19 @@ export function isNonClaudeHarness(kind) {
   return kind === 'codex' || kind === 'goose';
 }
 
-export function buildRolePackBlock(role) {
+export function buildRolePackBlock(role, { harnessKind } = {}) {
   const pack = NON_CLAUDE_ROLE_PACKS[role];
   if (!pack) return '';
   const skillList = pack.skills.map(skill => `\`${skill}\``).join(', ');
   const checks = pack.checks.map(check => `- ${check}`).join('\n');
   const workflow = (pack.workflow || []).map(hint => `- ${hint}`).join('\n');
+  const skillInstruction = harnessKind === 'goose'
+    ? `Before task work, route yourself to the relevant shared skill(s): ${skillList}. Load each applicable skill with native Goose Summon from \`.agents/skills/<name>/SKILL.md\`. Or dismiss one with a specific reason only when it truly does not apply.`
+    : `Before task work, route yourself to the relevant shared skill(s): ${skillList}. Read each applicable skill's markdown with your native file reader at \`/Users/skip/work/dot-claude/skills/<name>/SKILL.md\`. Or dismiss one with a specific reason only when it truly does not apply.`;
   return `${ROLE_PACK_MARKER}
 **Non-Claude ${pack.title}**
 
-Before task work, route yourself to the relevant shared skill(s): ${skillList}. Read each applicable skill's markdown with \`read_file\`, passing the FULL path (no \`~\`): \`read_file(path: "/Users/skip/work/dot-claude/skills/<name>/SKILL.md")\` — reading it credits the skill. Or dismiss one with a specific reason only when it truly does not apply.
+${skillInstruction}
 
 Workflow hints:
 ${workflow}
@@ -158,7 +161,7 @@ export function applyNonClaudeRolePack(message, { template, description, success
   if (body.includes(ROLE_PACK_MARKER)) return body;
 
   const role = inferTaskRole({ template, description, message: body, successCriteria });
-  const block = buildRolePackBlock(role);
+  const block = buildRolePackBlock(role, { harnessKind });
   if (!block) return body;
   return `${block}\n\n---\n\n${body}`;
 }
