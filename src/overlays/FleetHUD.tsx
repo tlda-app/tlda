@@ -309,6 +309,7 @@ export function FleetHUD({
   const hudRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
   const overlayEditorRef = useRef<Editor | null>(null)
+  const viewportId = useMemo(() => `fleet-hud-${Math.random().toString(36).slice(2, 9)}`, [])
   const lastHudDiagSigRef = useRef('')
   const fleetBoundsTrackerRef = useRef<ReturnType<typeof createFleetBoundsTracker<any>> | null>(null)
   const gesturesEnabled = expanded && !!fleetBounds && docShapesReady
@@ -384,7 +385,7 @@ export function FleetHUD({
   }, [mainEditor, expanded, identityId, fleetBounds, docShapesReady, gesturesEnabled])
 
   // Touch gesture vocabulary on the HUD (move/resize shapes, pass-through pan/zoom).
-  useFleetGestures({ hudRef, overlayEditorRef, mainEditor, expanded: gesturesEnabled })
+  useFleetGestures({ hudRef, overlayEditorRef, mainEditor, expanded: gesturesEnabled, viewportId })
 
   useEffect(() => {
     const shapes = mainEditor.getCurrentPageShapes()
@@ -1087,6 +1088,7 @@ export function FleetHUD({
       >
         <CanvasClipPanel
           mainEditor={mainEditor}
+          viewportId={viewportId}
           bounds={activeFleetBounds}
           shapeUtils={shapeUtils}
           tools={tools}
