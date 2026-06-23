@@ -23,7 +23,7 @@
  *   5. Copy the output — it tells you which surface is hot
  */
 
-type ProbeName = 'svg' | 'chat' | 'reconnect' | 'frame' | 'startup'
+type ProbeName = 'svg' | 'chat' | 'reconnect' | 'frame' | 'startup' | 'hud'
 
 interface Measurement {
   probe: ProbeName
@@ -40,6 +40,8 @@ class PerfProbe {
   readonly enabledProbes: Set<ProbeName>
   private buffer: Measurement[] = []
   private frameTimers: { label: string; start: number }[] = []
+  private uploadTimer: number | null = null
+  private lastUploadSampleCount = 0
 
   constructor() {
     if (typeof window === 'undefined') {
@@ -56,13 +58,14 @@ class PerfProbe {
     }
     this.active = true
     if (raw === '1' || raw === 'true') {
-      this.enabledProbes = new Set(['svg', 'chat', 'reconnect', 'frame', 'startup'])
+      this.enabledProbes = new Set(['svg', 'chat', 'reconnect', 'frame', 'startup', 'hud'])
     } else {
       this.enabledProbes = new Set(raw.split(',').map(s => s.trim()) as ProbeName[])
     }
     // Expose globally for console access
     (window as any).__perfProbe = this
     console.info('[perf-probe] active, probes:', [...this.enabledProbes].join(', '))
+    window.addEventListener('pagehide', () => this.sendReport('pagehide'))
   }
 
   isEnabled(probe: ProbeName): boolean {
@@ -92,6 +95,18 @@ class PerfProbe {
     if (this.buffer.length > MAX_BUFFER) {
       this.buffer.splice(0, this.buffer.length - MAX_BUFFER)
     }
+    this.scheduleUpload()
+  }
+
+  time<T>(probe: ProbeName, label: string, fn: () => T, detail?: Record<string, any> | (() => Record<string, any>)): T {
+    if (!this.isEnabled(probe)) return fn()
+    const t0 = performance.now()
+    try {
+      return fn()
+    } finally {
+      const extra = typeof detail === 'function' ? detail() : detail
+      this.record(probe, label, performance.now() - t0, extra)
+    }
   }
 
   private probeFromLabel(label: string): ProbeName {
@@ -99,6 +114,7 @@ class PerfProbe {
     if (label.startsWith('chat')) return 'chat'
     if (label.startsWith('reconnect')) return 'reconnect'
     if (label.startsWith('frame')) return 'frame'
+    if (label.startsWith('hud')) return 'hud'
     return 'startup'
   }
 
@@ -152,6 +168,50 @@ class PerfProbe {
     const output = lines.join('\n')
     console.info(output)
     return output
+  }
+
+  sendReport(reason = 'manual'): void {
+    if (!this.active || this.buffer.length === 0) return
+    this.lastUploadSampleCount = this.buffer.length
+    const payload = {
+      ts: new Date().toISOString(),
+      level: 'info',
+      ns: 'perf-probe',
+      msg: `perf report (${reason})`,
+      data: {
+        reason,
+        url: window.location.href,
+        userAgent: navigator.userAgent,
+        sampleCount: this.buffer.length,
+        report: this.report(),
+        measurements: this.dump(),
+      },
+    }
+    try {
+      const body = JSON.stringify(payload)
+      if (navigator.sendBeacon) {
+        const ok = navigator.sendBeacon('/api/log', new Blob([body], { type: 'application/json' }))
+        if (ok) return
+      }
+      void fetch('/api/log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+        keepalive: true,
+      })
+    } catch (err) {
+      console.warn('[perf-probe] report upload failed', err)
+    }
+  }
+
+  private scheduleUpload(): void {
+    if (this.uploadTimer !== null) return
+    this.uploadTimer = window.setTimeout(() => {
+      this.uploadTimer = null
+      if (this.buffer.length !== this.lastUploadSampleCount) {
+        this.sendReport('periodic')
+      }
+    }, 5000)
   }
 
   /** Clear the buffer. */

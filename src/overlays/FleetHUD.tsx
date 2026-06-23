@@ -19,9 +19,11 @@ import { fleetTouchGestureActiveRef, postTouchTelemetry, setTouchDiagStatus, use
 import { SuggestionTip } from '../shapes/FleetChatShape'
 import { log } from '../logger'
 import { computeFleetBoundsFromShapes, createFleetBoundsTracker, type FleetBoundsResult } from './fleet-bounds'
+import { probe } from '../perf-probe'
 import './FleetHUD.css'
 
 function saveAnchorOffsets(editor: Editor, panOffset: number, cameraY: number) {
+  const t0 = probe.isEnabled('hud') ? performance.now() : 0
   // Never persist a HUD anchor without a resolved identity — getMyAnchorId()
   // falls back to the bare `shape:fleet-hud-anchor` id, which becomes a global
   // orphan shared across users.
@@ -53,6 +55,9 @@ function saveAnchorOffsets(editor: Editor, panOffset: number, cameraY: number) {
       })
     }
   }, { history: 'ignore' })
+  if (probe.isEnabled('hud')) {
+    probe.record('hud', 'hud-save-anchor', performance.now() - t0, { panOffset, cameraY })
+  }
 }
 
 /** Mutable flag: true when the HUD overlay is expanded. Read by
@@ -479,6 +484,7 @@ export function FleetHUD({
       const hasAddOrRemove = hasAddition || hasRemoval
 
       if (hasAddOrRemove) {
+        const t0 = probe.isEnabled('hud') ? performance.now() : 0
         log.debug('fleet-hud', 'bounds recompute (fleet shape add/remove)', {
           added: Object.values(changes.added).filter(isFleetChange).map((r: any) => `${r.type}:${r.id}`),
           removed: Object.values(changes.removed).filter(isFleetChange).map((r: any) => `${r.type}:${r.id}`),
@@ -487,6 +493,13 @@ export function FleetHUD({
         const result = fleetBoundsTrackerRef.current?.applyChanges(changes)
         if (result) logFleetBoundsResult(result)
         setFleetBounds(result?.bounds ?? readMaintainedFleetBounds())
+        if (probe.isEnabled('hud')) {
+          probe.record('hud', 'hud-bounds-add-remove', performance.now() - t0, {
+            added: Object.values(changes.added).filter(isFleetChange).length,
+            removed: Object.values(changes.removed).filter(isFleetChange).length,
+            bounds: result?.bounds ?? null,
+          })
+        }
         // Auto-reflow disabled — it was making things worse, not better.
         // TODO: reimplement add+delete-as-identity later. For now shapes
         // stay where they are on add/remove; user drags manually.
@@ -514,8 +527,12 @@ export function FleetHUD({
             changedProps: Object.keys(to.props || {}).filter(k => (from.props || {})[k] !== to.props[k]),
           }))
         log.debug('fleet-gesture', 'fleet update deferred during user drag', { updatedFleet })
+        if (probe.isEnabled('hud')) {
+          probe.record('hud', 'hud-bounds-defer-drag', 0, { updatedCount: updatedFleet.length })
+        }
         draggingRef.current = true
       } else {
+        const t0 = probe.isEnabled('hud') ? performance.now() : 0
         const result = fleetBoundsTrackerRef.current?.applyChanges(changes)
         if (result) logFleetBoundsResult(result)
         const updatedFleet = Object.values(changes.updated)
@@ -533,13 +550,24 @@ export function FleetHUD({
         log.debug('fleet-hud', 'bounds recompute (fleet shape update)', { updatedFleet })
         draggingRef.current = false
         setFleetBounds(result?.bounds ?? readMaintainedFleetBounds())
+        if (probe.isEnabled('hud')) {
+          probe.record('hud', 'hud-bounds-update', performance.now() - t0, {
+            updatedCount: updatedFleet.length,
+            bounds: result?.bounds ?? null,
+          })
+        }
       }
     }, { source: 'all', scope: 'document' })
 
     const handlePointerUp = () => {
       if (draggingRef.current) {
+        const t0 = probe.isEnabled('hud') ? performance.now() : 0
         draggingRef.current = false
-        setFleetBounds(resetFleetBoundsTracker())
+        const bounds = resetFleetBoundsTracker()
+        setFleetBounds(bounds)
+        if (probe.isEnabled('hud')) {
+          probe.record('hud', 'hud-bounds-pointerup-reset', performance.now() - t0, { bounds })
+        }
       }
     }
     window.addEventListener('pointerup', handlePointerUp, true)
@@ -657,10 +685,14 @@ export function FleetHUD({
           // Wait for camera restore / phone startup fit, then treat later
           // same-zoom camera changes as deliberate pan.
         } else if (cam.z === lastCamZ && panOffsetRef.current !== null) {
+          const t0 = probe.isEnabled('hud') ? performance.now() : 0
           panOffsetRef.current += (cam.x - lastCamX) * cam.z
           userPannedRef.current = true
           ignoreSavedAnchorRef.current = false
           saveAnchorOffsets(mainEditor, panOffsetRef.current, cameraYRef.current!)
+          if (probe.isEnabled('hud')) {
+            probe.record('hud', 'hud-pan-camera-change', performance.now() - t0, { dx: cam.x - lastCamX })
+          }
         }
         lastCamX = cam.x
         lastCamZ = cam.z
