@@ -4419,8 +4419,8 @@ function FleetChatInner({ shape }: { shape: any }) {
   //
   // Terminal peek needs a concrete tmux owner. Broadcast/group labels such as
   // "awake" can match many agents, so only return label matches that identify a
-  // single non-human agent. Group panels fall back to the most recent visible
-  // event below instead of picking an arbitrary first match.
+  // single non-human agent. Group panels deliberately show no panel-level
+  // terminal peek: there is no one agent associated with the whole chat.
   const resolveTargetAgent = useCallback((label: string, agentList: any[]) => {
     if (label.startsWith('fleet:')) return agentList.find((a: any) => a.id === label) || null
     // A friendly name can have a LIVE holder plus one or more DEAD former holders:
@@ -4437,16 +4437,6 @@ function FleetChatInner({ shape }: { shape: any }) {
   const isTerminalReadyAgent = useCallback((agent: any) => {
     return !!agent?.tmux_session && !agent?.dead && !agent?.hibernating && agent?.status !== 'hibernating'
   }, [])
-
-  const terminalAgentIdFromEvent = useCallback((event: any) => {
-    const ids = [event?.from, event?.agent, event?.to, event?._agent, event?._agentId]
-    for (const id of ids) {
-      if (!id || id === getHumanId()) continue
-      const agent = resolveTargetAgent(id, agents)
-      if (agent && !agent.human && isTerminalReadyAgent(agent)) return agent.id
-    }
-    return null
-  }, [agents, resolveTargetAgent, isTerminalReadyAgent])
 
   const hoverTargetAgentId = useMemo(() => {
     const diag: any[] = []
@@ -4468,16 +4458,9 @@ function FleetChatInner({ shape }: { shape: any }) {
         return agent.id
       }
     }
-    for (let i = liveEvents.length - 1; i >= 0; i--) {
-      const eventAgentId = terminalAgentIdFromEvent(liveEvents[i])
-      if (eventAgentId) {
-        log.info('terminal-icon', 'resolved target', { sendTargets, filter, source: 'recent-event', fleetId: eventAgentId, diag, agentCount: agents.length })
-        return eventAgentId
-      }
-    }
-    log.info('terminal-icon', 'no terminal target', { sendTargets, filter, diag, agentCount: agents.length, visibleEvents: liveEvents.length })
+    log.info('terminal-icon', 'no terminal target', { sendTargets, filter, diag, agentCount: agents.length })
     return null
-  }, [sendTargets, filterKey, agents, liveEvents, resolveTargetAgent, isTerminalReadyAgent, terminalAgentIdFromEvent])
+  }, [sendTargets, filterKey, agents, resolveTargetAgent, isTerminalReadyAgent])
 
   const deadTargetAgent = useMemo(() => {
     for (const label of sendTargets) {
