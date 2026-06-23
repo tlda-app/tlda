@@ -2,7 +2,8 @@
  * perf-probe — lightweight performance telemetry for slow-device profiling.
  *
  * Activated ONLY by ?perf=1 (or ?perf=svg,chat,reconnect for specific probes).
- * Zero cost when inactive — every call site guards with `probe.active`.
+ * Minimal inactive cost — module imports and cheap early-return helpers run,
+ * but no measurements are recorded or logged when `probe.active` is false.
  *
  * Measures:
  *   - Frame timing during pan/scroll (JS vs idle breakdown)

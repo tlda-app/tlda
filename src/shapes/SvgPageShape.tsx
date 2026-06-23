@@ -300,7 +300,9 @@ function SvgPageComponent({ shape }: { shape: any }) {
           // result is cached, so scrolling the page into view (an ancestor
           // transform) is free instead of freezing. Runs once per new image
           // (this effect only fires when svgText changes).
+          const bboxTimer = probe.start('svg', 'svg-getBBox')
           try { svgEl.getBBox() } catch { /* not layable yet — harmless */ }
+          probe.stop(bboxTimer, { shapeId: shape.id, pageIndex: shape.props.pageIndex })
         })
       })
 
