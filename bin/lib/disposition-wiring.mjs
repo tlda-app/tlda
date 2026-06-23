@@ -8,9 +8,10 @@
 // fake clock alongside a real DispositionScheduler.
 //
 // Suppression conditions (any one keeps the poke from firing for a turn):
-//   1. ABSENCE GATE (in the scheduler, checked at fire time): Skip is active in
-//      the fleet → he's in the room → stay quiet. Presence = a chat from Skip
-//      (UI or terminal, both from_id=ownerId) within presenceWindowMs.
+//   1. ABSENCE GATE (in the scheduler, checked at fire time): Skip recently
+//      chatted with THAT target agent → he's in that room → stay quiet for that
+//      agent. Presence = a chat from Skip to that agent (UI or terminal, both
+//      from_id=ownerId) within presenceWindowMs.
 //   2. POKE-LOOP GATE (here, decided at turn_ended): the turn was a response to
 //      the bot's OWN poke AND did no real work — a bare "thanks, done" chat
 //      reply. Don't loop on talk. A post-poke turn that actually DID work
@@ -40,7 +41,7 @@ export function createDispositionWiring({
   log = () => {},
 }) {
   if (!scheduler) throw new Error('scheduler is required')
-  let lastSkipActivityAt = 0          // 0 = Skip unseen → absent (pokeable)
+  const lastSkipActivityByAgent = new Map() // agentId → timestamp of Skip's last chat to that agent
   const cwdCache = new Map()           // agentId → cwd
   const knownBotIds = new Set([...ignoreIds].filter(id => id !== ownerId))
   knownBotIds.add(agentId)
@@ -48,8 +49,12 @@ export function createDispositionWiring({
   const workedThisTurn = new Set()     // agentIds that emitted a real-work tool since their last turn end
 
   return {
-    // Read at scheduler fire time: he's present iff he chatted within the window.
-    isSkipPresent: () => now() - lastSkipActivityAt < presenceWindowMs,
+    // Read at scheduler fire time: he's present for this target iff he recently
+    // chatted with that same agent.
+    isSkipPresent: (id) => {
+      const last = lastSkipActivityByAgent.get(id) || 0
+      return now() - last < presenceWindowMs
+    },
 
     // Lane lookup for the poke text; unknown agent → null → generic poke.
     cwdOf: (id) => cwdCache.get(id) || null,
@@ -81,8 +86,10 @@ export function createDispositionWiring({
         // agent, or the bot's own poke). A later inbound overrides an earlier one.
         if (d.to_id && d.to_id !== d.from_id) lastInboundFrom.set(d.to_id, d.from_id)
         if (d.from_id === ownerId) {
-          lastSkipActivityAt = now()                                  // presence (global)
-          if (d.to_id && d.to_id !== agentId) scheduler.onSkipMessage(d.to_id) // in the room with that agent
+          if (d.to_id && d.to_id !== agentId) {
+            lastSkipActivityByAgent.set(d.to_id, now())               // presence for that agent
+            scheduler.onSkipMessage(d.to_id)                          // in the room with that agent
+          }
           if (d.to_id === agentId && d.text) onKickCommand(d.text)    // manual kick to the bot
         }
         return
@@ -121,6 +128,6 @@ export function createDispositionWiring({
     },
 
     // Test/introspection helpers.
-    _lastSkipActivityAt: () => lastSkipActivityAt,
+    _lastSkipActivityAt: (id) => lastSkipActivityByAgent.get(id) || 0,
   }
 }

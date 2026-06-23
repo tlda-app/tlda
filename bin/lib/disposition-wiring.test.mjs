@@ -4,10 +4,10 @@
 // DispositionScheduler + REAL createDispositionWiring + REAL pokeFor exactly the
 // way bin/disposition-bot.mjs does, then feeds SYNTHETIC fleet-events through a
 // fake clock and asserts the observable behavior — no WS, no live agents, no
-// real time. This is the "poke fires when Skip's absent + the agent worked,
-// silent when present or on a bare reply-to-the-bot; message short + lane-
-// correct" evidence at the wiring level (the scheduler's own gate/lane logic is
-// covered in disposition-scheduler.test.mjs).
+// real time. This is the "poke fires when Skip's absent from that target agent's
+// room + the agent worked, silent when present with that target or on a bare
+// reply-to-the-bot; message short + lane-correct" evidence at the wiring level
+// (the scheduler's own gate/lane logic is covered in disposition-scheduler.test.mjs).
 import { DispositionScheduler } from './disposition-scheduler.mjs'
 import { createDispositionWiring } from './disposition-wiring.mjs'
 import { pokeFor, POKE } from './disposition-poke.mjs'
@@ -54,7 +54,7 @@ function setup() {
   const scheduler = new DispositionScheduler({
     countdownMs: COUNTDOWN_MS,
     sendPoke: (id) => { wiring.notePoked(id); poked.push({ to: id, text: pokeFor(wiring.cwdOf(id)) }) },
-    isSkipPresent: () => wiring.isSkipPresent(),
+    isSkipPresent: (id) => wiring.isSkipPresent(id),
     setTimer: clock.setTimer,
     clearTimer: clock.clearTimer,
   })
@@ -91,23 +91,26 @@ const POKE_CHAT = (to) => chat(BOT, to, '🪞 self-check') // a poke as it appea
   check('poke text is the universal completeness line', poked[0]?.text === POKE)
 }
 
-// 2. Skip PRESENT (chatted another agent just now) → a different agent's turn does NOT poke.
+// 2. Skip PRESENT with another agent does NOT suppress this target agent.
 {
   const { clock, poked, wiring } = setup()
-  wiring.handleFleetEvent(chat(OWNER, 'fleet:b', 'working on it?'))  // presence (global) + cancels b
+  wiring.handleFleetEvent(chat(OWNER, 'fleet:b', 'working on it?'))  // presence with b + cancels b
   wiring.handleFleetEvent(turnEnded('fleet:c'))                      // unrelated agent ends a turn
   clock.advance(COUNTDOWN_MS + 1000)
-  check('Skip present → poke suppressed for ALL agents', poked.length === 0)
+  check('Skip with b does not suppress c', poked.length === 1 && poked[0].to === 'fleet:c')
 }
 
-// 3. Presence expires: once Skip's been quiet past the window, pokes resume.
+// 3. Same-target presence suppresses while fresh, then expires.
 {
   const { clock, poked, wiring } = setup()
-  wiring.handleFleetEvent(chat(OWNER, 'fleet:b', 'hi'))   // present at t=0
-  clock.advance(PRESENCE_MS + 1000)                       // ...quiet past the window
-  wiring.handleFleetEvent(turnEnded('fleet:c'))           // turn ends while he's now absent
+  wiring.handleFleetEvent(chat(OWNER, 'fleet:c', 'hi'))   // present with c at t=0
+  wiring.handleFleetEvent(turnEnded('fleet:c'))
   clock.advance(COUNTDOWN_MS + 1000)
-  check('presence window expires → poke fires again', poked.length === 1 && poked[0].to === 'fleet:c')
+  check('Skip present with c suppresses c', poked.length === 0)
+  clock.advance(PRESENCE_MS + 1000)                       // ...quiet past the window
+  wiring.handleFleetEvent(turnEnded('fleet:c'))           // turn ends while he's now absent from c
+  clock.advance(COUNTDOWN_MS + 1000)
+  check('same-target presence window expires → poke fires again', poked.length === 1 && poked[0].to === 'fleet:c')
 }
 
 // 4. Any lane (math cwd here) → the same universal poke (text no longer branches on cwd).
@@ -132,7 +135,7 @@ const POKE_CHAT = (to) => chat(BOT, to, '🪞 self-check') // a poke as it appea
 {
   const { clock, poked, wiring } = setup()
   wiring.handleFleetEvent(chat('fleet:other', 'fleet:a', 'ping'))   // another agent messages a
-  check('cross-talk leaves Skip absent', wiring._lastSkipActivityAt() === 0)
+  check('cross-talk leaves Skip absent from a', wiring._lastSkipActivityAt('fleet:a') === 0)
   wiring.handleFleetEvent(turnEnded('fleet:a'))
   clock.advance(COUNTDOWN_MS + 1000)
   check('cross-talk-prompted turn still pokes (Skip absent)', poked.length === 1)
