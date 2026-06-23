@@ -55,6 +55,12 @@ const TASK_KICK_MAX_TASK_AGE_MS = parseInt(process.env.TODD_TASK_KICK_MAX_TASK_A
 const TASK_KICK_POLL_MS = parseInt(process.env.TODD_TASK_KICK_POLL_MS || '', 10) || 60_000
 const taskKickLastSent = new Map()
 const looseEndLastSent = new Map()
+// lastRealActivityMs[agentId] = timestamp of last meaningful tool call.
+// Meaningful = any tool call that is NOT a chat aimed at a bot.
+const lastRealActivityMs = new Map()
+// knownBotIds is populated from the agents roster in taskKickSweep.
+// Todd itself is always a bot; we seed it here.
+const knownBotIds = new Set()
 
 // ---- Skip-in-the-room tracker ----
 // When did Skip last message each agent. Todd's PROACTIVE watchdog nudges
@@ -1514,6 +1520,13 @@ async function taskKickSweep() {
   ])
   const tasks = Array.isArray(tasksRaw) ? tasksRaw : (tasksRaw?.tasks || [])
   const agents = Array.isArray(agentsRaw) ? agentsRaw : (agentsRaw?.agents || [])
+  // Keep the bot roster fresh so the activity handler can exclude bot-chats.
+  knownBotIds.clear()
+  knownBotIds.add(AGENT_ID)
+  for (const a of agents) {
+    const labels = Array.isArray(a.labels) ? a.labels : []
+    if (labels.includes('bot') || a.human) knownBotIds.add(a.id)
+  }
   const kicks = decideTaskKicks({
     tasks,
     agents,
@@ -1523,6 +1536,7 @@ async function taskKickSweep() {
     quietMs: TASK_KICK_QUIET_MS,
     kickIntervalMs: TASK_KICK_INTERVAL_MS,
     skipLive: skipLiveAgentSet(),
+    lastRealActivityMs,
   })
   for (const { task, agent, key, sig, taskAgeMs, action, reason } of kicks) {
     // Store the state signature alongside the timestamp so an unchanged blocker
@@ -2116,6 +2130,15 @@ function handleMessage(msg) {
     const meta = typeof metadata === 'string' ? (() => { try { return JSON.parse(metadata) } catch { return {} } })() : (metadata || {})
     const tool = meta.tool || text || ''
     const arg = typeof meta.arg === 'string' ? meta.arg : ''
+    // Count as real activity unless it's a chat aimed at a bot or plain text output.
+    // _text = agent echoing text to its terminal (no tool call).
+    const inputObj = typeof meta.input === 'object' && meta.input ? meta.input : {}
+    const chatTarget = inputObj.filter?.to
+    const isBotChat = tool === 'chat' && chatTarget && knownBotIds.has(chatTarget)
+    const isTextEcho = tool === '_text'
+    if (!isBotChat && !isTextEcho) {
+      lastRealActivityMs.set(from_id, Date.now())
+    }
     handleActivity(from_id, tool)
     checkGlobalActivityRules(from_id, `${tool} ${arg}`)
   }

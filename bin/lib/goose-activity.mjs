@@ -56,6 +56,13 @@ function textFromToolResponse(value) {
   return normalizePrettyResult(value)
 }
 
+function toolResponseText(block) {
+  return textFromToolResponse(
+    block.toolResult?.value ?? block.toolResult ?? block.result ??
+    block.output ?? block.content ?? block.value ?? block.text
+  )
+}
+
 function gooseApplyPatchEvents(input, blockId, ts) {
   const patch = typeof input === 'string'
     ? input
@@ -98,6 +105,14 @@ export function gooseMessageEvents(row, isNoise) {
   try { blocks = JSON.parse(row.content_json) } catch { return events }
   if (!Array.isArray(blocks)) return events
   const ts = new Date((row.created_timestamp || 0) * 1000).toISOString()
+  const responsesInRow = new Map()
+  for (const b of blocks) {
+    if (!b || b.type !== 'toolResponse') continue
+    const id = toolResponseId(b)
+    if (!id) continue
+    const raw = toolResponseText(b)
+    if (raw) responsesInRow.set(id, raw)
+  }
   for (const b of blocks) {
     if (!b || typeof b !== 'object') continue
     if (b.type === 'toolRequest') {
@@ -117,6 +132,11 @@ export function gooseMessageEvents(row, isNoise) {
       const evt = { tool: humanName, arg: String(arg), ts, id: b.id }
       if (input && Object.keys(input).length > 0) evt.input = input
       if (isPrettyTool(name) && b.id) {
+        if (responsesInRow.has(b.id)) {
+          evt.prettyResult = truncatePrettyResult(responsesInRow.get(b.id), name)
+          events.push(evt)
+          continue
+        }
         pendingPrettyPrint.set(b.id, { evt: { ...evt }, name, expiresAt: Date.now() + 30000 })
       }
       events.push(evt)
@@ -125,7 +145,7 @@ export function gooseMessageEvents(row, isNoise) {
       if (!id || !pendingPrettyPrint.has(id)) continue
       const pending = pendingPrettyPrint.get(id)
       pendingPrettyPrint.delete(id)
-      const raw = textFromToolResponse(b.toolResult?.value ?? b.toolResult ?? b.result ?? b.output ?? b.content ?? b.value ?? b.text)
+      const raw = toolResponseText(b)
       if (!raw) continue
       const prettyResult = truncatePrettyResult(raw, pending.name)
       events.push({

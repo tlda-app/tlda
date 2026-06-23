@@ -90,7 +90,7 @@ const scheduler = new DispositionScheduler({
   // notePoked first so a post-poke turn is recognized as bot-triggered (the
   // poke-loop gate) even if the bot never sees its own outgoing chat echoed.
   sendPoke: (agentId) => { wiring.notePoked(agentId); sendChat(agentId, pokeFor(wiring.cwdOf(agentId))) },
-  isSkipPresent: () => wiring.isSkipPresent(),
+  isSkipPresent: (agentId) => wiring.isSkipPresent(agentId),
   log: logDecision,
 })
 wiring = createDispositionWiring({

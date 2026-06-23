@@ -75,6 +75,44 @@ test('live registry recipient resolution matches old full-roster scan', async ()
   }
 })
 
+test('agent roster APIs are maintained views, not SQL snapshots', async () => {
+  const { store, cleanup } = makeStore()
+  try {
+    seedAgents(store)
+
+    let allSqlReads = 0
+    let aliveSqlReads = 0
+    const origAll = store._getAllAgents.all.bind(store._getAllAgents)
+    const origAlive = store._getAliveAgents.all.bind(store._getAliveAgents)
+    store._getAllAgents.all = (...args) => { allSqlReads++; return origAll(...args) }
+    store._getAliveAgents.all = (...args) => { aliveSqlReads++; return origAlive(...args) }
+
+    assert.deepEqual(
+      store.getAllAgents().map(a => a.id),
+      ['fleet:human', 'fleet:a', 'fleet:b', 'fleet:c', 'fleet:dead']
+    )
+    assert.deepEqual(
+      store.getAliveAgents().map(a => a.id),
+      ['fleet:human', 'fleet:a', 'fleet:b', 'fleet:c']
+    )
+    assert.equal(allSqlReads, 0, 'getAllAgents should not query SQL after registry init')
+    assert.equal(aliveSqlReads, 0, 'getAliveAgents should not query SQL after registry init')
+
+    await new Promise(r => setTimeout(r, 10))
+    store.updateHeartbeat('fleet:b')
+    assert.equal(store.getAllAgents()[0].id, 'fleet:b', 'heartbeat reorders maintained all-agents view')
+    assert.equal(store.getAliveAgents()[0].id, 'fleet:b', 'heartbeat reorders maintained alive-agents view')
+
+    store.markDead('fleet:b')
+    assert.ok(store.getAllAgents().find(a => a.id === 'fleet:b')?.dead, 'dead agent stays in all roster')
+    assert.ok(!store.getAliveAgents().some(a => a.id === 'fleet:b'), 'dead agent drops out of alive roster')
+    assert.equal(allSqlReads, 0, 'registry updates should not force all-agent SQL reload')
+    assert.equal(aliveSqlReads, 0, 'registry updates should not force alive-agent SQL reload')
+  } finally {
+    await cleanup()
+  }
+})
+
 function oldWiretapScan(store, senderId, recipientId, eventType) {
   const matched = new Set()
   const fromLabels = labelsForAgent(store.getAgent(senderId) || { id: senderId })

@@ -72,7 +72,7 @@ const execFileP = promisify(execFile)
 const VERSION = '0.1.1'
 import { createLogger } from '../shared/logger.mjs'
 import { resolveDaemonIsolation } from '../shared/daemon-identity.mjs'
-import { makeActivityThrottle } from './lib/activity-throttle.mjs'
+import { sendActivityEvents } from './lib/activity-send.mjs'
 import { createManagedBotSupervisor } from './lib/managed-bots.mjs'
 import { maybeKickGoose, resolveGooseStatus } from './lib/goose-kick.mjs'
 import {
@@ -83,6 +83,7 @@ import {
 import { gooseActivityTick } from './lib/goose-activity.mjs'
 import { parseCodexLine } from './lib/codex-activity.mjs'
 import { truncatePrettyResult } from '../shared/activity-pretty-result.mjs'
+import { trimTerminalSeedBlankRows } from '../shared/terminal-seed.mjs'
 import {
   buildFleetSpawnArgs,
   decideMissingLiveness,
@@ -457,9 +458,11 @@ function isPrettyPrintTool(name) {
 
 // Pending pretty-print tool_uses waiting for their results. Keyed by tool_use_id.
 // When a tool_use for a pretty-print tool arrives without a matching result in
-// the same batch, we stash the activity event here. When the result arrives in
-// a later batch, we send a follow-up activity event with the prettyResult.
-// Entries expire after 30s to avoid leaking memory on abandoned tool calls.
+// the same batch, delay the activity card instead of sending a bare card and a
+// later _prettyResult follow-up. That keeps delayed results in the same stored
+// input shape as same-batch Claude results: the original tool event with
+// prettyResult attached. Entries expire after 30s to avoid leaking memory on
+// abandoned tool calls.
 const pendingPrettyPrint = new Map()  // id -> { agentId, evt, expiresAt }
 
 function extractActivityEvents(events) {
@@ -505,8 +508,10 @@ function extractActivityEvents(events) {
             const raw = toolResults.get(block.id)
             evt.prettyResult = truncatePrettyResult(raw, name)
           } else {
-            // Result not in this batch — stash and wait
+            // Result not in this batch — stash and wait so the eventual card
+            // has the same shape as a same-batch Claude pretty-result card.
             pendingPrettyPrint.set(block.id, { evt: { ...evt }, expiresAt: Date.now() + 30000 })
+            continue
           }
         }
         result.push(evt)
@@ -522,13 +527,16 @@ function extractActivityEvents(events) {
     if (pending) {
       pendingPrettyPrint.delete(id)
       const capped = truncatePrettyResult(resultText, pending.evt.tool)
-      result.push({ ...pending.evt, origTool: pending.evt.tool, tool: '_prettyResult', prettyResult: capped })
+      result.push({ ...pending.evt, prettyResult: capped })
     }
   }
   // Expire old pending entries
   const now = Date.now()
   for (const [id, entry] of pendingPrettyPrint) {
-    if (now > entry.expiresAt) pendingPrettyPrint.delete(id)
+    if (now > entry.expiresAt) {
+      pendingPrettyPrint.delete(id)
+      result.push(entry.evt)
+    }
   }
   return result
 }
@@ -795,26 +803,6 @@ function scheduleCheckForPlanModePrompt(agentId) {
 
 // ---------- activity event buffer ----------
 
-// Per-agent leading-edge throttle (see bin/lib/activity-throttle.mjs). The first
-// activity after an agent has been quiet flushes immediately so its card lands
-// in fleet chat the moment it acts; bursts within the window batch to one push.
-// Replaces the old single trailing 2s timer that delayed EVERY event — the
-// chat-lags-terminal bug.
-const _activityThrottle = makeActivityThrottle({
-  windowMs: 2000,
-  send: (agentId, evt) => sendMsg({
-    type: 'activity-event',
-    agent_id: agentId,
-    tool: evt.tool,
-    arg: evt.arg || '',
-    input: evt.input || null,
-    ts: evt.ts,
-    ...(evt.usage ? { usage: evt.usage } : {}),
-    ...(evt.prettyResult ? { prettyResult: evt.prettyResult } : {}),
-    ...(evt.origTool ? { origTool: evt.origTool } : {}),
-  }),
-})
-
 function bufferActivity(agentId, evts) {
   // Liveness #B(a): a JSONL line IS a per-turn heartbeat — the agent just processed
   // a turn, so it is alive NOW. Warm the liveness cache (keyed by tmux_session) and
@@ -832,7 +820,7 @@ function bufferActivity(agentId, evts) {
   // Any buffered activity (claude/codex JSONL or goose sqlite) is a reason to
   // watch this agent's pane frequently — arm it for the status state machine.
   armAgent(agentId)
-  return _activityThrottle.buffer(agentId, evts)
+  return sendActivityEvents(agentId, evts, sendMsg)
 }
 
 // ---------- JSONL watching ----------
@@ -1520,10 +1508,15 @@ function syncSourceWatchers(projectList, activeViewers) {
 
     const isMarkdown = isMarkdownDoc(p.format, p.mainFile)
     const hasFlsWatchList = p.watchFiles?.length > 0
+    // Bootstrap watchSet (no .fls yet) must include the main's \input deps, not
+    // just the main — else the per-file poller (the backup for when fs.watch
+    // goes stale) only covers the main, and an edit to an \input file (e.g.
+    // appendix_b.tex) is silently dropped when fs.watch misses it → stale doc.
+    // Scan the deps with the same scanner pushWatchedFiles uses.
     const watchSet = new Set(
       hasFlsWatchList ? p.watchFiles
         : isMarkdown && p.mainFile ? scanMarkdownInputs(sourceDir, p.mainFile)
-        : p.mainFile ? [p.mainFile] : []
+        : p.mainFile ? scanTexInputs(sourceDir, p.mainFile, p.extraInputCommands || []) : []
     )
 
     if (sourceWatchers.has(p.name)) {
@@ -2251,7 +2244,7 @@ async function rpcStartTerminalWatch({ tmux_session, agent_id, poll_ms }) {
     const { stdout } = await execFileP('tmux',
       [...TMUX_ARGS, 'capture-pane', '-t', tmux_session, '-p', '-S', `-${size.rows}`],
       { timeout: 3000, encoding: 'utf8' })
-    const snapshot = stdout.replace(/\n/g, '\r\n')
+    const snapshot = trimTerminalSeedBlankRows(stdout).replace(/\n/g, '\r\n')
     if (snapshot.trim()) {
       sendMsg({
         type: 'terminal-data',

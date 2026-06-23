@@ -23,6 +23,7 @@ import {
   upsertFleetEvents,
 } from './fleet-data.ts'
 import { log } from '../logger'
+import { probe } from '../perf-probe'
 import { DATABASE_HTTP, DATABASE_WS } from '../activeConfig'
 import { storedIdentityLoginFailureAction } from './identity-persistence.mjs'
 
@@ -435,6 +436,7 @@ export function connect() {
     // State (agents/tasks) is pushed by the server on WS connect — no need to re-fetch.
     // Catch up on missed chat events
     if (_lastEventId > 0) {
+      const reconnectTimer = probe.start('reconnect', 'reconnect-backfill')
       fetch(`${FLEET}/api/store/events?after=${_lastEventId}&limit=500`)
         .then(r => r.json())
         .then(data => {
@@ -458,8 +460,12 @@ export function connect() {
           }
           for (const ev of newEvents) notify('messages', ev)
           if (boundAny && !newEvents.length) notify('messages', null)
+          probe.stop(reconnectTimer, { missedCount: missed.length, newCount: newEvents.length, boundAny })
         })
-        .catch(e => console.warn('[fleet-data] history backfill failed:', e.message))
+        .catch(e => {
+          console.warn('[fleet-data] history backfill failed:', e.message)
+          probe.stop(reconnectTimer, { error: e.message })
+        })
     }
   }
 

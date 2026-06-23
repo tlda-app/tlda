@@ -23,6 +23,7 @@ import type {
   TLPointerEventInfo,
   TLShape,
   TLRichText,
+  TLShapeId,
   VecLike,
 } from '@tldraw/editor'
 import {
@@ -33,9 +34,13 @@ import { fleetLayoutActiveRef } from '../../overlays/FleetHUD'
 import { getOnSourceClick } from '../../stores'
 import { getHumanId } from '../../fleet/fleet-data.mjs'
 import { FLEET_SHAPE_TYPES } from '../../shapes/fleet-utils'
+import { probe } from '../../perf-probe'
 
 // --- Fleet shape types that get DOM interaction ---
 const FLEET_TYPES = FLEET_SHAPE_TYPES
+type TransitionParent = StateNode & {
+  transition?: (id: string, info?: unknown) => void
+}
 
 // --- Inlined helpers (not exported from tldraw) ---
 
@@ -265,6 +270,9 @@ export class BrowseIdle extends StateNode {
   }
 
   private _updateFleetPointerEvents() {
+    const t0 = probe.isEnabled('hud') ? performance.now() : 0
+    let added = 0
+    let removed = 0
     const container = this.editor.getContainer()
     const selected = new Set(this.editor.getSelectedShapeIds() as string[])
 
@@ -272,7 +280,10 @@ export class BrowseIdle extends StateNode {
     for (const id of this._selectedFleetIds) {
       if (!selected.has(id)) {
         const els = container.querySelectorAll(`[data-shape-id="${id}"]`)
-        els.forEach(el => el.classList.remove('fleet-drag-mode'))
+        els.forEach(el => {
+          el.classList.remove('fleet-drag-mode')
+          removed++
+        })
       }
     }
 
@@ -288,11 +299,22 @@ export class BrowseIdle extends StateNode {
         newFleet.add(id)
         if (!this._selectedFleetIds.has(id)) {
           const els = container.querySelectorAll(`[data-shape-id="${id}"]`)
-          els.forEach(el => el.classList.add('fleet-drag-mode'))
+          els.forEach(el => {
+            el.classList.add('fleet-drag-mode')
+            added++
+          })
         }
       }
     }
     this._selectedFleetIds = newFleet
+    if (probe.isEnabled('hud')) {
+      probe.record('hud', 'hud-pointer-events-sync', performance.now() - t0, {
+        selectedCount: selected.size,
+        fleetSelectedCount: newFleet.size,
+        added,
+        removed,
+      })
+    }
   }
 
   private _restoreAllFleetPointerEvents() {
@@ -343,6 +365,17 @@ export class BrowseIdle extends StateNode {
   }
 
   override onPointerDown(info: TLPointerEventInfo) {
+    const t0 = probe.isEnabled('hud') ? performance.now() : 0
+    let transition = ''
+    const transitionParent = this.parent as TransitionParent
+    const originalTransition = transitionParent.transition?.bind(this.parent)
+    if (probe.isEnabled('hud') && originalTransition) {
+      transitionParent.transition = (id: string, nextInfo?: unknown) => {
+        transition = id
+        return originalTransition(id, nextInfo)
+      }
+    }
+    try {
     switch (info.target) {
       case 'canvas': {
         // cmd-click on document pages: getHitShapeOnCanvasPointerDown skips svg-page
@@ -522,6 +555,23 @@ export class BrowseIdle extends StateNode {
           }
         }
         break
+      }
+    }
+    } finally {
+      if (probe.isEnabled('hud') && originalTransition) {
+        transitionParent.transition = originalTransition
+        const selected = this.editor.getSelectedShapeIds()
+        const only = selected.length === 1 ? this.editor.getShape(selected[0] as TLShapeId) : null
+        const handle = 'handle' in info ? String(info.handle || '') : ''
+        probe.record('hud', 'hud-browse-pointer-down', performance.now() - t0, {
+          target: info.target,
+          handle,
+          transition,
+          selectedCount: selected.length,
+          onlySelectedType: only?.type || '',
+          inHud: !!this.editor.getContainer().closest('.fleet-hud-wrap'),
+          layoutActive: fleetLayoutActiveRef.current,
+        })
       }
     }
   }

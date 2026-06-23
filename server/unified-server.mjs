@@ -59,6 +59,7 @@ import { createFleetRouter } from './routes/fleet.mjs'
 import { callerSpawnPolicy, coherentSpawnPolicy } from './lib/spawn-policy.mjs'
 import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
 import { SpawnBounceError, SpawnLibrarian, resolveSpawnCollision } from '../shared/spawn-librarian.ts'
+import { trimTerminalSeedBlankRows } from '../shared/terminal-seed.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -577,8 +578,10 @@ const DAEMON_WARN_DEDUP_MS = 5 * 60 * 1000
 
 // machine_id → ts when the CURRENT uninterrupted daemon connection began. Reset on
 // every daemon-hello (i.e. every reconnect). Agent activity events arrive over the
-// daemon WS, so if that WS flapped, an agent's activity wasn't delivered and its
-// _lastActivityAt went stale — making an active agent *look* idle. See getWouldHibernate.
+// daemon WS, so if that WS flapped, an agent's activity wasn't delivered LIVE and its
+// _lastActivityAt was briefly stale — making an active agent *look* idle. The daemon
+// backfills the gap on reconnect (its cursor only advances on delivered bytes), so the
+// staleness clears within seconds; getWouldHibernate just waits out the reconnect grace.
 const _daemonConnectedSince = new Map()
 
 const HIBERNATE_IDLE_MS = 20 * 60 * 1000
@@ -640,19 +643,29 @@ function getWouldHibernate() {
     // get killed almost immediately.
     const aliveSince = _aliveSince.get(agentId)
     if (!aliveSince || (now - aliveSince) < HIBERNATE_IDLE_MS) continue
-    const lastActive = _lastActivityAt.get(agentId)
-    if (!lastActive) continue
+    // Idle baseline = last REAL activity, or — if we've recorded none this
+    // server-run (e.g. the agent was already idle before the last restart) —
+    // the start of its current alive run. aliveSince is set once by
+    // markAgentAlive and, unlike the old liveness touchActivity, is NOT bumped
+    // by the 30s liveness sweep, so it's a true floor for "has done nothing".
+    // Without this, every deploy would leave pre-existing idle agents
+    // permanently un-hibernatable (no lastActive → skipped forever).
+    const lastActive = _lastActivityAt.get(agentId) || aliveSince
     const idleMs = now - lastActive
     if (idleMs < HIBERNATE_IDLE_MS) continue
-    // Gap-aware idle: a 20-min-idle reading is only trustworthy if the activity
-    // feed (this agent's daemon WS) was continuously connected for that whole
-    // window. If the daemon (re)connected within the window, activity events were
-    // dropped during the gap — the agent may have been active the entire time, its
-    // events just never arrived. Don't hibernate on an unreliable reading.
+    // Gap-aware idle: don't hibernate on a reading the activity feed couldn't
+    // back up. But the daemon BACKFILLS on reconnect — its cursor is a
+    // high-water mark of *delivered* bytes, so activity during a WS outage isn't
+    // lost; on reconnect it drains everything written during the gap (see
+    // readNewSessionLines in fleet-daemon.mjs). So _lastActivityAt self-corrects
+    // within seconds of a reconnect. We therefore don't need a full idle window
+    // of connection — just enough settle time for that drain to land. Require
+    // the daemon to have been connected for the reconnect grace (~2min, well
+    // over the actual drain) before trusting a "no recent activity" reading.
     const machineId = agent.machine_id
     if (machineId) {
       const connectedSince = _daemonConnectedSince.get(machineId)
-      if (!connectedSince || (now - connectedSince) < HIBERNATE_IDLE_MS) continue
+      if (!connectedSince || (now - connectedSince) < LIVENESS_RECONNECT_GRACE_MS) continue
     }
     result[agentId] = Math.round(idleMs / 1000)
   }
@@ -1500,11 +1513,15 @@ app.get('/api/education/check/:agentId', (req, res) => {
   // agent actually read the skill.
   const skill = req.query.skill || ''
   const content = req.query.content || ''
+  const source = req.query.source || ''
+  const name = req.query.name || ''
   if (tool && _qualRules.length > 0) {
     const input = {}
     if (file) input.file_path = file
     if (skill) input.skill = skill
     if (content) input.content = content
+    if (source) input.source = source
+    if (name) input.name = name
     checkQualifications(agentId, tool, file, input)
   }
 
@@ -2584,7 +2601,15 @@ server.on('upgrade', async (req, socket, head) => {
           tmux_session: agent.tmux_session, lines: 80,
         })
         if (pane && ws.readyState === 1) {
-          ws.send(JSON.stringify({ type: 'output', data: Buffer.from(pane).toString('base64'), encoding: 'base64' }))
+          // capture-pane emits bare `\n` line endings; xterm has no convertEol,
+          // so `\n` is a line-feed WITHOUT carriage-return → every line renders
+          // one column further right (a staircase). The daemon's own PTY seed
+          // already converts (fleet-daemon.mjs), but this server-side seed did
+          // not — invisible for Claude (its TUI streams continuous full-screen
+          // repaints that overwrite the garble) but permanent for an idle goose
+          // agent that never repaints. Convert here too so the seed is readable.
+          const seed = trimTerminalSeedBlankRows(pane).replace(/\r?\n/g, '\r\n')
+          ws.send(JSON.stringify({ type: 'output', data: Buffer.from(seed).toString('base64'), encoding: 'base64' }))
         }
       } catch (e) {
         console.warn(`[terminal] seed capture failed for ${agent.id} (${agent.tmux_session}): ${e.message}`)
@@ -4262,13 +4287,13 @@ function checkQualifications(agentId, tool, arg, input) {
 
   const matchingRules = []
 
-  // A "file read" is the native Read tool OR the tlda MCP `read_file` tool. The
-  // latter is the only file-read path sandboxed goose/codex agents have, so it's
-  // how they read a skill's SKILL.md now that the bespoke skill() tool is gone.
   // Normalize the tool name to its base so every form is recognized: Read,
-  // read_file, mcp__tlda__read_file, tlda/read_file.
-  const toolBase = String(tool || '').replace(/^mcp__/, '').replace(/__/g, '/').split('/').pop()
+  // read_file, mcp__tlda__read_file, tlda/read_file, summon/load, load.
+  const toolReadNorm = String(tool || '').replace(/^mcp__/, '').replace(/__/g, '/')
+  const toolBase = toolReadNorm.split('/').pop()
   const isFileRead = tool === 'Read' || toolBase === 'read_file'
+  const summonSource = input?.source || input?.skill || input?.name || ''
+  const isSummonLoad = (toolReadNorm.includes('summon') || toolBase === 'load') && toolBase !== 'read_file' && summonSource
   if ((isFileRead || tool === 'Skill') && input) {
     if (isFileRead) {
       const fp = input.file_path || input.path || arg || ''
@@ -4285,6 +4310,10 @@ function checkQualifications(agentId, tool, arg, input) {
       const skill = input.skill || ''
       if (skill) qualTrackRead(agentId, 'skill:' + skill)
     }
+    return
+  }
+  if (isSummonLoad) {
+    qualTrackRead(agentId, 'skill:' + String(summonSource))
     return
   }
 
@@ -4706,8 +4735,13 @@ async function handleDaemonWsMessage(ws, msg) {
           ts: batchTs,
         })
         if (batchState === 'alive') {
+          // Liveness = "the tmux process still exists", NOT "the agent did work".
+          // The daemon sends this batch every 30s (DEATH_CHECK_MS) for EVERY live
+          // agent, so calling touchActivity here would reset the idle clock each
+          // sweep and no idle agent could ever reach the 20-min hibernate threshold.
+          // markAgentAlive is idempotent for _aliveSince; real activity is recorded
+          // by agent-activity / agent-thinking / chat, not by this liveness ping.
           markAgentAlive(id)
-          touchActivity(id)
         } else {
           markAgentNotAlive(id)
         }
@@ -4718,8 +4752,10 @@ async function handleDaemonWsMessage(ws, msg) {
     if (!agent_id || !state) return
     spawnLibrarian.observeLiveness({ type, agent_id, state, tmux_session, pid, reason, ts })
     if (state === 'alive') {
+      // Liveness ≠ activity (see the batch handler above): this is a 30s "process
+      // exists" ping, not real work, so it must not reset the idle clock. Real
+      // activity is recorded by agent-activity / agent-thinking / chat.
       markAgentAlive(agent_id)
-      touchActivity(agent_id)
     } else if (state === 'dead' || state === 'wedged') {
       markAgentNotAlive(agent_id)
     }

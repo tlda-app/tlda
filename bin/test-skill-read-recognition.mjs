@@ -1,10 +1,8 @@
-// Functional test for native/MCP skill-read recognition (cross-harness skill
-// parity). Spawns the worktree server with an isolated DB + a test
-// qualifications file, then drives /api/education/check to assert that reading a
-// skill's SKILL.md — via the native Read tool OR the tlda MCP read_file tool —
-// credits the skill and lifts the education gate, exactly as the old skill()
-// tool did. This is the registration layer the bespoke skill() tool was removed
-// in favor of.
+// Functional test for skill-read recognition (cross-harness skill parity).
+// Spawns the worktree server with an isolated DB + a test qualifications file,
+// then drives /api/education/check to assert that native Read, native Goose
+// Summon, and the compatibility tlda MCP read_file path all credit the skill and
+// lift the education gate.
 import { spawn } from 'child_process'
 import fs from 'fs'
 import os from 'os'
@@ -57,17 +55,22 @@ async function main() {
   await check(a1, { tool: 'Read', file: `/Users/skip/work/dot-claude/skills/${SKILL}/SKILL.md` })
   T('1b. after native Read of the SKILL.md, report no longer gates it', !owes(await check(a1, { tool: 'mcp__tlda__report' })))
 
-  // --- Path 2: tlda MCP read_file of a SKILL.md credits the skill (goose) ---
-  const a2 = 'fleet:parity-readfile-probe'
-  T('2a. report gates the probe skill (fresh agent, before read)', owes(await check(a2, { tool: 'mcp__tlda__report' })))
-  // The daemon-normalized form a sandboxed goose read_file arrives as.
-  await check(a2, { tool: 'tlda/read_file', file: `/Users/skip/work/dot-claude/skills/${SKILL}/SKILL.md` })
-  T('2b. after read_file of the SKILL.md, report no longer gates it', !owes(await check(a2, { tool: 'mcp__tlda__report' })))
+  // --- Path 2: native Goose Summon load credits the skill ---
+  const a2 = 'fleet:parity-summon-probe'
+  T('2a. report gates the probe skill (fresh agent, before summon)', owes(await check(a2, { tool: 'mcp__tlda__report' })))
+  await check(a2, { tool: 'summon/load', source: SKILL })
+  T('2b. after Summon load of the skill, report no longer gates it', !owes(await check(a2, { tool: 'mcp__tlda__report' })))
 
-  // --- Path 3: a non-skill read must NOT credit (no false positives) ---
+  // --- Path 3: compatibility tlda MCP read_file of a SKILL.md still credits ---
+  const aCompat = 'fleet:parity-readfile-probe'
+  T('3a. report gates the probe skill (fresh agent, before read_file)', owes(await check(aCompat, { tool: 'mcp__tlda__report' })))
+  await check(aCompat, { tool: 'tlda/read_file', file: `/Users/skip/work/dot-claude/skills/${SKILL}/SKILL.md` })
+  T('3b. after read_file of the SKILL.md, report no longer gates it', !owes(await check(aCompat, { tool: 'mcp__tlda__report' })))
+
+  // --- Path 4: a non-skill read must NOT credit (no false positives) ---
   const a3 = 'fleet:parity-negative-probe'
   await check(a3, { tool: 'Read', file: `/Users/skip/work/tlda/server/unified-server.mjs` })
-  T('3. reading a non-skill file does NOT clear the gate', owes(await check(a3, { tool: 'mcp__tlda__report' })))
+  T('4. reading a non-skill file does NOT clear the gate', owes(await check(a3, { tool: 'mcp__tlda__report' })))
 
   console.log(failed ? '\nSOME CHECKS FAILED' : '\nALL SKILL-READ-RECOGNITION CHECKS PASSED')
   if (failed) console.log(out.slice(-1200))

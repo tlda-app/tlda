@@ -410,19 +410,19 @@ function findLabelLine(sourceDir, sourceMap, mainFile, label) {
   return null;
 }
 
-// ---- education gate for sandboxed (non-claude) agents ----
+// ---- education gate for non-Claude agents ----
 //
 // Mirrors Claude's PreToolUse skill mandate at the MCP boundary. Claude agents
 // are gated by their harness hook and never reach this path. Goose/DeepSeek
 // agents have no such hook, so we enforce the SAME qualifications rules here,
 // against the tlda server's existing /api/education/check endpoint. On a gated
-// call we BLOCK and name the owed skill(s), giving the agent the same two ways
-// forward a Claude has — read each one's markdown with `read_file` (which credits
-// it), or `dismiss_skill(skills:[…], reason:"…")` if it judges one irrelevant (which
-// records the dismissal + shows Skip the reason) — then retry the tool. The block
-// is sticky (no auto-credit): the server re-derives the owed set each call, so it
-// lifts only once the agent has read or dismissed every required skill, exactly
-// like the Claude gate.
+// call we BLOCK and name the owed skill(s). Goose clears that by loading the
+// skill with native Summon; other non-Claude agents clear it by reading the
+// SKILL.md natively. Any agent may instead call
+// `dismiss_skill(skills:[…], reason:"…")` if it judges one irrelevant, which
+// records the dismissal and shows Skip the reason. The block is sticky: the
+// server re-derives the owed set each call, so it lifts only once the agent has
+// loaded/read or dismissed every required skill, exactly like the Claude gate.
 //
 // Fail-OPEN by design: if the endpoint is down/unreachable the gate returns null
 // so a tool is never broken by it. That is not a silent fallback — the gate is
@@ -478,20 +478,28 @@ async function educationGate(name, args) {
   const owed = await eduCheckOwedSkills(spec.tool, input);
   if (!owed.length) return null;
   const list = owed.map(s => `\`${s}\``).join(', ');
-  const readCmds = owed.map(s => `read_file(path: "/Users/skip/work/dot-claude/skills/${s}/SKILL.md")`).join('\n  ');
   const dismissArg = owed.map(s => `"${s}"`).join(', ');
+  const isGoose = harnessFromEnv().kind === 'goose';
+  const satisfyLines = isGoose
+    ? [
+        `• Load each named skill with Goose Summon from \`.agents/skills/<name>/SKILL.md\`.`,
+        `  Example: ask Summon to load ${owed.map(s => `"${s}"`).join(', ')}.`,
+      ]
+    : [
+        `• Read each skill's markdown with your native file reader:`,
+        `  ${owed.map(s => `/Users/skip/work/dot-claude/skills/${s}/SKILL.md`).join('\n  ')}`,
+      ];
   const text = [
     `⚠️ Before \`${name}\`, you must clear ${owed.length} required skill(s): ${list}.`,
     `These are the same playbook(s) a Claude agent is force-gated into here.`,
     ``,
     `Do ONE of these for each, then call \`${name}\` again:`,
-    `• Read its markdown with read_file (reading it credits the skill):`,
-    `  ${readCmds}`,
+    ...satisfyLines,
     `• Or, if it genuinely does not apply to what you are doing, decline it —`,
     `  dismiss_skill(skills: [${dismissArg}], reason: "<why it does not apply>").`,
     `  A reason is required and is shown to Skip.`,
     ``,
-    `The block lifts once every required skill is read or dismissed.`,
+    `The block lifts once every required skill is loaded/read or dismissed.`,
   ].join('\n');
   return { content: [{ type: 'text', text }], isError: true };
 }
@@ -2002,7 +2010,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'read_file',
-      description: 'Read a file (read-only) from your machine, restricted to ~/work. Use this to read raw source files, scratch notes, markdown, etc. (For tlda document content/annotations, prefer doc_view / read_annotations.) Optional offset (1-based start line) and lines (count) to page through large files.',
+      description: 'Compatibility file reader, restricted to ~/work. Prefer native file tools when your harness has them; use tlda document/annotation tools for tlda document content. Optional offset (1-based start line) and lines (count) page through large files.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -2610,16 +2618,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
-  // Education gate for sandboxed (non-claude) agents — no-op for claude.
+  // Education gate for non-Claude agents — no-op for claude.
   {
     const gated = await educationGate(name, args);
     if (gated) return gated;
   }
 
   if (name === 'read_file') {
-    // Generic read-only file reader, fenced to ~/work. Exists so sandboxed
-    // agents (e.g. goose/DeepSeek, which have no shell or developer extension)
-    // can read raw source + scratch files — the doc tools only cover annotations.
+    // Generic read-only file reader, fenced to ~/work. Kept as a compatibility
+    // surface for older agents and harnesses without native file tools.
     if (!args?.path) {
       return { content: [{ type: 'text', text: 'read_file: `path` is required.' }], isError: true };
     }
@@ -2635,11 +2642,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const why = e.code === 'ENOENT' ? 'no such file' : e.code === 'EISDIR' ? 'is a directory' : e.message;
       return { content: [{ type: 'text', text: `read_file: ${why}: ${abs}` }], isError: true };
     }
-    // Reading a skill's SKILL.md via read_file credits it against the education
-    // gate — same as the Claude Skill tool or the old skill() tool. This is the
-    // skill-read path for sandboxed goose/codex agents, which have no native file
-    // read. Credit synchronously here so a subsequently gated action clears
-    // immediately, without waiting for the async daemon activity stream.
+    // Reading a skill's SKILL.md via read_file still credits it against the
+    // education gate for stale/compat callers. Goose should use native Summon.
     const skillMatch = abs.match(/[/\\]skills[/\\]([^/\\]+)[/\\]SKILL\.md$/);
     if (skillMatch) await eduCreditSkillRead(skillMatch[1]);
     const allLines = data.split('\n');

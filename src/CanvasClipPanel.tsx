@@ -71,7 +71,8 @@ export function CanvasClipPanel({
 }: CanvasClipPanelProps) {
   const panelRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLDivElement>(null)
-  const viewportId = externalViewportId ?? useMemo(() => `clip-panel-${Math.random().toString(36).slice(2, 9)}`, [])
+  const generatedViewportId = useMemo(() => `clip-panel-${Math.random().toString(36).slice(2, 9)}`, [])
+  const viewportId = externalViewportId ?? generatedViewportId
 
   // Expose the main editor to consumers via onEditorMount.
   // With the fork viewport there is no separate overlay editor — consumers
@@ -119,14 +120,12 @@ export function CanvasClipPanel({
       if (lockCamera) {
         const type = (shape as any).type
         if (!type) return false
-        // Fleet shape types: fleet-chat, fleet-agents, fleet-search, etc.
+        // Fleet shape types: fleet-chat, fleet-agents, etc.
         if (!type.startsWith('fleet-')) return false
-        // Check ownership
         const props = (shape as any).props
         if (!props) return false
         const uid = props.userId
         const dev = props.deviceId
-        // Only render shapes owned by this user/device
         return !!uid && !!dev
       }
 

@@ -103,7 +103,7 @@ test('Goose apply_patch tool request normalizes to Edit events with diff', () =>
   assert.match(events[0].input.diff, /const x = 2/)
 })
 
-test('Goose get_thread tool response emits unwrapped pretty result event', () => {
+test('Goose same-row get_thread response attaches pretty result to the tool event', () => {
   const prettyText = `2 messages (6/18/2026, 8:00:00 AM -> 8:01:00 AM)
 
 [6/18/2026, 8:00:00 AM] skip → agent-1
@@ -127,15 +127,14 @@ first message`
     ]),
   })
 
-  assert.equal(events.length, 2)
+  assert.equal(events.length, 1)
   assert.equal(events[0].tool, 'tlda/get_thread')
   assert.equal(events[0].arg, '')
-  assert.equal(events[1].tool, '_prettyResult')
-  assert.equal(events[1].origTool, 'tlda/get_thread')
-  assert.match(events[1].prettyResult, /2 messages/)
-  assert.match(events[1].prettyResult, /first message/)
-  assert.doesNotMatch(events[1].prettyResult, /\[\{"type":"text"/)
-  assert.doesNotMatch(events[1].prettyResult, /Wall time:/)
+  assert.match(events[0].prettyResult, /2 messages/)
+  assert.match(events[0].prettyResult, /first message/)
+  assert.doesNotMatch(events[0].prettyResult, /\[\{"type":"text"/)
+  assert.doesNotMatch(events[0].prettyResult, /Wall time:/)
+  assert.equal(events[0].origTool, undefined)
 })
 
 test('Goose split-row pretty result preserves original tool request timestamp', () => {

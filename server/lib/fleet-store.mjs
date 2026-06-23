@@ -911,6 +911,14 @@ export class FleetStore {
     this._aliveAgentById = this._aliveAgentRegistry.index('byId', a => a.id);
     this._aliveAgentByName = this._aliveAgentRegistry.index('byName', a => a.friendly_name || []);
     this._aliveAgentByLabel = this._aliveAgentRegistry.index('byLabel', a => labelsForAgent(a));
+    this._agentRosterView = this._agentRegistry.view(
+      () => true,
+      { key: 'fleet-roster:all', compare: compareAgentsForRoster }
+    );
+    this._aliveAgentRosterView = this._aliveAgentRegistry.view(
+      () => true,
+      { key: 'fleet-roster:alive', compare: compareAgentsForRoster }
+    );
     this._reloadAgentRegistry();
   }
 
@@ -1218,23 +1226,11 @@ export class FleetStore {
   }
 
   getAllAgents() {
-    // In-memory roster snapshot. The roster is read constantly (store-agents,
-    // roll_call, the boot path — ~1400 calls per log window) to re-sort a list
-    // that barely changes; re-querying + re-hydrating ~1300 rows on every call
-    // was a top source of lock contention. Serve a hydrated snapshot from
-    // memory, rebuilding only after a short TTL or an explicit structural bust
-    // (register, mark-dead, remove). Heartbeats (last_seen) deliberately do NOT
-    // bust — a ≤1s-stale last_seen is fine for ordering, and busting on every
-    // heartbeat would defeat the cache. Treat the result as read-only: callers
-    // build view models via map/filter, they don't mutate agent objects.
-    const TTL_MS = 1000;
-    const now = Date.now();
-    if (this._agentsCache && (now - this._agentsCacheTs) < TTL_MS) {
-      return this._agentsCache;
-    }
-    this._agentsCache = this._getAllAgents.all().map(r => this._hydrateAgent(r));
-    this._agentsCacheTs = now;
-    return this._agentsCache;
+    // Maintained roster view. Startup/reconciliation may reload the registry
+    // from SQLite, but hot callers (store-agents, fleet-table, WS init,
+    // broadcastState paths) should never rebuild the whole roster from SQL.
+    // Treat the returned agent objects as read-only.
+    return this._agentRosterView?.list || [];
   }
 
   // Plain { id: friendly_name } map for labeling chat history. The hot
@@ -1256,12 +1252,9 @@ export class FleetStore {
     return map;
   }
 
-  // Force the next getAllAgents()/getAliveAgents()/getAgentNameMap() to rebuild.
-  // Call after any structural change (insert/register, dead/alive flip, removal)
-  // so it shows up immediately instead of waiting out the TTL.
+  // Force the next getAgentNameMap() to rebuild. Agent roster membership/order is
+  // maintained by _syncAgentRegistry(id) and _reloadAgentRegistry().
   _bustAgentsCache() {
-    this._agentsCacheTs = 0;
-    this._aliveCacheTs = 0;
     this._nameMapCacheTs = 0;
   }
 
@@ -1320,18 +1313,10 @@ export class FleetStore {
   }
 
   getAliveAgents() {
-    // Highest-frequency roster read (store-agents / agents panel). Query
-    // dead=0 directly via idx_agents_alive — ~tens of rows — instead of
-    // pulling the full ~1300-row table through getAllAgents and filtering.
-    // Same 1s TTL + structural bust as getAllAgents.
-    const TTL_MS = 1000;
-    const now = Date.now();
-    if (this._aliveCache && (now - this._aliveCacheTs) < TTL_MS) {
-      return this._aliveCache;
-    }
-    this._aliveCache = this._getAliveAgents.all().map(r => this._hydrateAgent(r));
-    this._aliveCacheTs = now;
-    return this._aliveCache;
+    // Highest-frequency roster read (store-agents / agents panel /
+    // broadcastState). Serve the maintained alive view instead of re-querying
+    // and re-hydrating the full live set under churn.
+    return this._aliveAgentRosterView?.list || [];
   }
 
   removeAgent(id) {

@@ -148,11 +148,11 @@ function setup(opts = {}) {
   check('kick fires even when Skip is present', ok === true && poked.length === 1 && poked[0] === 'fleet:a')
 }
 
-// 11. Poke is ONE short completeness line — no checklist, no method/test verbs.
+// 11. Poke is ONE short next-action line — no checklist, no method/test verbs.
 {
   check('poke is a single short line', !/\n/.test(POKE) && POKE.length < 200)
-  check('poke is a completeness gut-check', /whole thing/i.test(POKE) && /piece of it/i.test(POKE))
-  check('poke defers the method to the agent\'s skills', /skills say to verify/i.test(POKE))
+  check('poke asks for the next unresolved action', /next unresolved action/i.test(POKE))
+  check('poke requires doing self-servable work before reporting', /do it now/i.test(POKE))
   check('poke prescribes no verification method (no browser/test/run/reload verbs)',
     !/browser|run the test|\bdrove\b|reload/i.test(POKE))
 }

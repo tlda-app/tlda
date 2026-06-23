@@ -12,6 +12,7 @@ export function decideTaskKicks({
   quietMs = 5 * 60 * 1000,
   kickIntervalMs = 15 * 60 * 1000,
   skipLive = null,
+  lastRealActivityMs = null,
 } = {}) {
   const agentById = new Map()
   for (const a of agents || []) {
@@ -29,7 +30,7 @@ export function decideTaskKicks({
     const agent = agentById.get(task.agent)
     if (!agent || agent.dead || agent.human) continue
     const status = String(agent.status || '').toLowerCase()
-    if (status !== 'awake' && status !== 'hibernating') continue
+    if (status === 'dead') continue
 
     // Skip-live beats the nudge — Todd doesn't manage an agent Skip is working
     // with right now. [taxonomy Cat 2: "don't listen to Todd here. We're good."]
@@ -40,9 +41,10 @@ export function decideTaskKicks({
     const taskAge = now - delegatedAt
     if (taskAge < quietMs || taskAge > maxTaskAgeMs) continue
 
-    if (status === 'awake') {
-      const lastSeen = Date.parse(agent.last_seen || agent.last_active || '')
-      if (Number.isFinite(lastSeen) && now - lastSeen < quietMs) continue
+    // Guard on real work: if the agent had meaningful activity (tool calls outside
+    // bot-poke suppression windows) within quietMs, they're mid-work — don't kick.
+    if (lastRealActivityMs && lastRealActivityMs.has(agent.id)) {
+      if (now - lastRealActivityMs.get(agent.id) < quietMs) continue
     }
 
     const key = task.id || `${task.agent}:${task.description || ''}`
@@ -55,7 +57,8 @@ export function decideTaskKicks({
     // app-project-manager case: re-kicked every 15 min for hours, "517m old",
     // with nothing new). When the agent acts or the task changes, the signature
     // changes and a kick is allowed again. [Skip 6/19]
-    const sig = `${task.status}|${agent.status || ''}|${agent.last_seen || agent.last_active || ''}`
+    const realActivity = lastRealActivityMs ? (lastRealActivityMs.get(agent.id) || 0) : 0
+    const sig = `${task.status}|${agent.status || ''}|${realActivity}`
     if (lastSigOf(prev) !== null && sig === lastSigOf(prev)) continue
 
     kicks.push({

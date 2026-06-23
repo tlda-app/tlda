@@ -178,7 +178,7 @@ MODEL_ALIASES = {
 }
 
 # Goose-backed (non-Claude) models. Selecting one of these makes fleet-spawn
-# launch the hard-sandboxed goose recipe instead of `claude` — same tmux,
+# launch the Goose recipe instead of `claude` — same tmux,
 # identity, register/my_task, and wake machinery; only the engine differs.
 #
 # Routed through OpenRouter (provider=openrouter), NOT DeepSeek-direct: goose's
@@ -201,6 +201,12 @@ MODEL_ALIASES = {
 # table is convenience, not a whitelist. Add a family's newest tool-capable
 # snapshot here once it PASSES the probe (bin/verify-goose-toolcalls.mjs).
 GOOSE_MODELS = {
+    # Cursor Agent passthrough provider. This runs through Goose's built-in
+    # cursor-agent CLI provider, so it uses Skip's Cursor subscription instead
+    # of OpenRouter tokens. Requires cursor-agent to be installed + authenticated.
+    "cursor": "cursor-agent/default",
+    "cursor-agent": "cursor-agent/default",
+    "cursor-default": "cursor-agent/default",
     # Bare `deepseek` → the current flagship (v4-pro). Verified 2026-06-13 to
     # emit structured tool-calls through goose/OpenRouter and read/reason over a
     # doc end-to-end — Skip's pick for the default goose/adversary model. The
@@ -239,6 +245,7 @@ GOOSE_MODELS = {
 # (deepseek-r1 did), which leaves the agent unable to act. Only ids here are
 # known-good for tool-using fleet agents; resolving to anything else warns.
 GOOSE_VERIFIED = {
+    "cursor-agent/default",
     "deepseek/deepseek-v4-pro",
     "deepseek/deepseek-v4-flash",
     "deepseek/deepseek-chat",
@@ -258,6 +265,8 @@ GOOSE_BIN = "/opt/homebrew/bin/goose"
 DEEPSEEK_RECIPE = os.path.join(
     os.path.dirname(os.path.realpath(__file__)), "..", "recipes", "fleet-deepseek.yaml")
 GOOSE_STATE_ROOT = "/tmp/tlda-goose-state"
+GOOSE_MAX_TOKENS = "32768"
+CURSOR_AGENT_COMMAND = os.path.expanduser("~/.local/bin/cursor-agent")
 
 CODEX_MODELS = {
     # `codex -m gpt` is not accepted for ChatGPT-authenticated Codex accounts.
@@ -290,6 +299,13 @@ def resolve_goose_model(model):
 def goose_model_verified(resolved_id):
     """True if this concrete OpenRouter id is on the verified-tool-calling list."""
     return resolved_id in GOOSE_VERIFIED
+
+
+def goose_provider_for_model(model):
+    """Return (provider, provider_model) for a resolved Goose model id."""
+    if model and model.startswith("cursor-agent/"):
+        return "cursor-agent", model.split("/", 1)[1] or "default"
+    return "openrouter", model
 
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 REPO_DIR = os.path.dirname(SCRIPT_DIR)
@@ -1511,83 +1527,31 @@ def build_claude_cmd(fleet_id, tmux_session, model, effort=None, mode=None,
 
 
 
-# Restrictive instruction sentences in the base deepseek recipe that tell a goose
-# it cannot write. For a write-capable goose we swap these for write-positive
-# guidance so it actually USES the developer tool. Kept as exact-match constants
-# so a recipe edit that breaks the match fails loudly in the test, not silently.
-_GOOSE_NOWRITE_LINE = (
-    "interface. You have no shell and no general file editing; everything you can\n"
-    "  do, you do through the fleet (`tlda`) MCP tools."
-)
-_GOOSE_WRITE_LINE = (
-    "interface, plus a developer tool. You CAN write and edit files and run shell\n"
-    "  commands within your sandboxed workspace; the fence constrains WHERE you may\n"
-    "  write (your project lane). You also have the fleet (`tlda`) MCP tools."
-)
-_GOOSE_NOWRITE_BULLET = (
-    "  - You cannot edit arbitrary files or run shell commands. If you need to produce\n"
-    "    written output, put it in a scratch file via the scratch tools, or say it in\n"
-    "    `chat`. Never claim to have changed something you cannot change."
-)
-_GOOSE_WRITE_BULLET = (
-    "  - You CAN edit files and run shell commands within your sandboxed workspace\n"
-    "    via the developer tool. Write real output to disk where the task needs it;\n"
-    "    the fence keeps you in your lane. Never claim to have changed something you\n"
-    "    did not actually change."
-)
-
-
 def goose_capability_launch(base_recipe, state_dir, capability):
-    """Return (recipe_path, extra_goose_args) for a goose spawn at `capability`.
+    """Return (recipe_path, extra_goose_args) for a goose spawn.
 
-    Skip's fence+harness coupling, BOTH HALVES gated together:
-      * write / tlda-write / full -> the developer (shell+fs) builtin is added via
-        `--with-builtin developer`, AND a per-agent recipe whose instructions tell
-        the agent it MAY write its workspace. A tool with a "don't write"
-        instruction is still no write, so both move as one.
-      * read (or unset) -> the base recipe (tlda-MCP-only instructions) and NO
-        builtin. Neither half.
-
-    `--with-builtin developer` is the only thing that actually loads the tool when
-    goose runs with --recipe — verified live that the recipe's `extensions:` block
-    and the sandbox profile's developer.enabled do NOT. The fence
-    (wrap_sandbox_cmd write_roots) still constrains WHERE; the tool does not bypass
-    it. Dependency: under the global fence-off a write goose is shell+fs
-    unsandboxed (same risk as every other agent tonight, not net-new); the restored
-    fence (#6/D2, operator's gate) makes it dev-tools-on AND fenced — not flipped
-    here.
+    Goose always gets its native developer tools plus Summon. The recipe tells it
+    when to read files, when to load native skills, and when to use fleet MCP for
+    fleet/chat/tlda actions.
     """
-    if normalize_spawn_capability(capability) not in ("write", "tlda-write", "full"):
-        return base_recipe, []
-    try:
-        with open(base_recipe) as f:
-            text = f.read()
-    except OSError:
-        return base_recipe, ["--with-builtin developer"]  # tool at least
-    text = text.replace(_GOOSE_NOWRITE_LINE, _GOOSE_WRITE_LINE, 1)
-    text = text.replace(_GOOSE_NOWRITE_BULLET, _GOOSE_WRITE_BULLET, 1)
-    os.makedirs(state_dir, exist_ok=True)
-    per_recipe = os.path.join(state_dir, "fleet-deepseek.yaml")
-    tmp = per_recipe + f".tmp-{os.getpid()}"
-    with open(tmp, "w") as f:
-        f.write(text)
-    os.replace(tmp, per_recipe)
-    return per_recipe, ["--with-builtin developer"]
+    return base_recipe, ["--with-builtin developer,summon"]
 
 
 def build_goose_cmd(fleet_id, tmux_session, model, name=None, capability=None):
     """Build the shell command for a Goose-backed DeepSeek fleet agent.
 
     Mirrors build_claude_cmd's identity env (FLEET_ID/FLEET_NAME/TMUX) but
-    launches the hard-sandboxed goose recipe instead of claude:
-      - SANDBOX via an isolated `XDG_CONFIG_HOME` (recipes/goose-sandbox/) whose
+    launches the Goose recipe instead of claude:
+      - Profile isolation via `XDG_CONFIG_HOME` (recipes/goose-sandbox/) whose
         config.yaml disables ALL bundled platform extensions (developer=shell+fs,
-        tom, apps, summon, …). So the recipe's tlda MCP is the agent's ONLY
-        capability. We do NOT use `--no-profile`: verified 2026-06-13 that
+        tom, apps, …). We explicitly add back only the builtins this recipe uses
+        (`developer` for native reads/searches and `summon` for native skills).
+        We do NOT use `--no-profile`: verified 2026-06-13 that
         `--no-profile` ALSO disables the recipe's own extensions (the agent boots
         with zero tools and narrates tool calls as text — looked like "deepseek
         can't tool-call" but was really no-tools-loaded). The isolated-config
-        approach keeps the sandbox while letting the recipe's extension load.
+        approach prevents unrelated user profile extensions from leaking in while
+        letting the recipe's tlda extension load.
       - provider=openrouter: goose's OpenRouter provider reads OPENROUTER_API_KEY
         from the env and negotiates structured tool-calls correctly. (We do NOT
         use DeepSeek-direct via the openai provider: verified 2026-06-13 that
@@ -1609,6 +1573,7 @@ def build_goose_cmd(fleet_id, tmux_session, model, name=None, capability=None):
     never appears in this command string.
     """
     recipe = os.path.abspath(DEEPSEEK_RECIPE)
+    goose_provider, goose_model = goose_provider_for_model(model)
     sandbox_cfg = os.path.join(os.path.dirname(recipe), "goose-sandbox")
     state_dir = os.path.join(GOOSE_STATE_ROOT, str(fleet_id).replace(":", "-"))
     data_dir = os.path.join(state_dir, "data")
@@ -1617,11 +1582,8 @@ def build_goose_cmd(fleet_id, tmux_session, model, name=None, capability=None):
     os.makedirs(data_dir, exist_ok=True)
     os.makedirs(cache_dir, exist_ok=True)
     os.makedirs(xdg_state_dir, exist_ok=True)
-    # Capability decides whether the developer (shell+fs) extension boots and
-    # whether the instructions permit writing: a write/tlda-write/full goose gets
-    # the developer builtin AND a per-agent recipe whose instructions allow
-    # writing its workspace (still fenced by wrap_sandbox_cmd); a read goose gets
-    # neither (tlda-MCP-only). Both halves move together.
+    # Goose gets developer for native file tools and summon for native skills.
+    # The recipe and task instructions decide whether mutating work is appropriate.
     recipe, dev_args = goose_capability_launch(recipe, state_dir, capability)
     parts = [
         f"FLEET_ID={fleet_id}",
@@ -1633,24 +1595,41 @@ def build_goose_cmd(fleet_id, tmux_session, model, name=None, capability=None):
         f"TLDA_SERVER={shlex.quote(API)}",
         f"TLDA_SYNC_SERVER={shlex.quote(API)}",
         f"XDG_CONFIG_HOME={shlex.quote(sandbox_cfg)}",
-        f"XDG_DATA_HOME={shlex.quote(data_dir)}",
+        # XDG_DATA_HOME stays the SHARED default (~/.local/share) on purpose:
+        # goose writes its session sqlite to $XDG_DATA_HOME/goose/sessions/
+        # sessions.db, and the daemon's goose observability (goose-kick +
+        # goose-activity) reads that ONE shared path to produce activity cards +
+        # turn-detection. A per-agent XDG_DATA_HOME (we used /tmp/.../data) split
+        # each agent's session into its own db the daemon never reads -> every
+        # goose agent showed idle/unresponsive with no terminal/activity. The
+        # sandbox is XDG_CONFIG_HOME (above), NOT data, so sharing data is safe;
+        # per-agent session NAMES (fleet-<hex>) keep agents logically separate.
+        f"XDG_DATA_HOME={shlex.quote(os.path.expanduser('~/.local/share'))}",
         f"XDG_CACHE_HOME={shlex.quote(cache_dir)}",
         f"XDG_STATE_HOME={shlex.quote(xdg_state_dir)}",
         "GOOSE_DISABLE_KEYRING=1",
+        # DeepSeek thinking models can spend thousands of tokens before emitting
+        # final content or a tool call. Leaving this unset let goose/OpenRouter
+        # cap a v4-pro turn at 4096 output tokens, producing reasoning-only
+        # rows with no deliverable answer. Keep reasoning enabled, but budget
+        # enough response tokens for an actual result.
+        f"GOOSE_MAX_TOKENS={GOOSE_MAX_TOKENS}",
         # Force telemetry off non-interactively. goose's first interactive run
         # otherwise blocks on a "share anonymous usage data?" consent prompt that
         # hangs boot (the config's GOOSE_TELEMETRY_ENABLED:false doesn't suppress
         # the PROMPT). GOOSE_TELEMETRY_OFF overrides the config and skips the ask.
         "GOOSE_TELEMETRY_OFF=1",
     ]
+    if goose_provider == "cursor-agent":
+        parts.append(f"CURSOR_AGENT_COMMAND={shlex.quote(CURSOR_AGENT_COMMAND)}")
     if name:
         parts.append(f"FLEET_NAME={shlex.quote(name)}")
     parts.append(shlex.quote(GOOSE_BIN))
     parts.append("run")
     parts.append(f"--recipe {shlex.quote(recipe)}")
-    parts.extend(dev_args)  # --with-builtin developer for write-capable goose
-    parts.append("--params provider=openrouter")
-    parts.append(f"--params model={shlex.quote(model)}")
+    parts.extend(dev_args)  # --with-builtin developer,summon
+    parts.append(f"--params provider={shlex.quote(goose_provider)}")
+    parts.append(f"--params model={shlex.quote(goose_model)}")
     # Stamp the goose session with a fleet-derived NAME so the daemon can map a
     # fleet agent to its goose sqlite session exactly (sessions otherwise carry
     # no fleet identity — auto name + shared working_dir = ambiguous with >1

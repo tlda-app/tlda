@@ -18,6 +18,7 @@ import {
 import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, useContext, memo, useSyncExternalStore, forwardRef } from 'react'
 import { createPortal } from 'react-dom'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
+import { probe } from '../perf-probe'
 
 // @ts-ignore — vanilla JS module
 import { renderChatLine, resolveInlineAttachments, esc } from '../fleet/chat-render.mjs'
@@ -1559,11 +1560,15 @@ const ChatMessageRow = memo(function ChatMessageRow({
   itemKey: string
   expandedRowsRef: React.RefObject<Set<string>>
 }) {
-  const processed = useMemo(() => postProcess(html), [html, postProcess])
+  const processed = useMemo(() => probe.time('chat', 'chat-row-postprocess', () => postProcess(html), {
+    itemKey,
+    htmlLength: html.length,
+  }), [html, postProcess, itemKey])
   const divRef = useRef<HTMLDivElement>(null)
 
   // Restore expand state after dangerouslySetInnerHTML replaces the DOM.
   useLayoutEffect(() => {
+    const t0 = probe.isEnabled('chat') ? performance.now() : 0
     const el = divRef.current
     if (!el) return
     const expanded = expandedRowsRef.current
@@ -1584,6 +1589,10 @@ const ChatMessageRow = memo(function ChatMessageRow({
         if (toggle) toggle.textContent = 'collapse'
       }
     })
+    if (probe.isEnabled('chat')) {
+      const dt = performance.now() - t0
+      if (dt > 1) probe.record('chat', 'chat-row-layout-restore', dt, { itemKey })
+    }
   }, [processed, itemKey, expandedRowsRef])
 
   return <div ref={divRef} data-item-key={itemKey} dangerouslySetInnerHTML={{ __html: processed }} />
@@ -1936,6 +1945,25 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   // Build context and render messages
   const prefTick = usePrefTick()
+  const ctxRenderKey = useMemo(() => JSON.stringify({
+    agents: agents.map((a: any) => [
+      a.id,
+      a.friendly_name,
+      a.name,
+      !!a.human,
+      a.metadata?.inPlanMode,
+      a.metadata?.permission_mode,
+      a.metadata?.planModeType,
+    ]),
+    tasks: tasks.map((t: any) => [
+      t.id,
+      t.status,
+      t.agent,
+      t.delegated_by,
+    ]),
+    macros: Object.entries(preambleMacros).sort(),
+    prefTick,
+  }), [agents, tasks, preambleMacros, prefTick])
   const ctx = useMemo(() => makeCtx(agents, tasks, preambleMacros), [agents, tasks, preambleMacros, prefTick])
   const ctxRef = useRef(ctx)
   ctxRef.current = ctx
@@ -1950,15 +1978,18 @@ function FleetChatInner({ shape }: { shape: any }) {
   // bump ctxVersion to invalidate stale lines. This turns O(N) re-render on
   // every new message into O(1) for the common case of appending one message.
   const msgLineCache = useRef<Map<string, string>>(new Map())
+  const activityGroupCache = useRef<Map<string, string>>(new Map())
   const ctxVersionRef = useRef(0)
-  const prevCtxRef = useRef(ctx)
-  if (prevCtxRef.current !== ctx) {
-    prevCtxRef.current = ctx
+  const prevCtxRenderKeyRef = useRef(ctxRenderKey)
+  if (prevCtxRenderKeyRef.current !== ctxRenderKey) {
+    prevCtxRenderKeyRef.current = ctxRenderKey
     ctxVersionRef.current++
     msgLineCache.current.clear()
+    activityGroupCache.current.clear()
   }
 
   const chatMessages = useMemo(() => {
+    const chatSortTimer = probe.start('chat', 'chat-sort')
     const sorted = events
       .filter((m: any) => {
         const t = m.type
@@ -1985,6 +2016,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         return ida == null ? 1 : -1
       })
 
+    probe.stop(chatSortTimer, { eventCount: events.length, resultCount: sorted.length })
     return sorted
   }, [events, quietDmTraffic])
 
@@ -2058,19 +2090,45 @@ function FleetChatInner({ shape }: { shape: any }) {
   // style themselves green (you're viewing this build) vs gray (stale).
   const viewingVersion = currentDocVersion(panel, editor)
   const rawItems = useMemo(() => {
+    const rawItemsT0 = probe.isEnabled('chat') ? performance.now() : 0
     // Extend ctx with thinking state so renderChatLine can apply queued styling
     const renderCtx = { ...ctx, thinkingAgents }
+    const renderVersion = ctxVersionRef.current
+    const thinkingKey = [...(thinkingAgents?.entries?.() ?? [])]
+      .map(([id, since]: any[]) => `${id}:${since}`)
+      .join('|')
     const items: RawItem[] = []
     let activityGroup: any[] = []
+    let activityGroupCount = 0
+    let chatLineCount = 0
+    let buildResultCount = 0
+    let specialCount = 0
     function flushActivity() {
       if (activityGroup.length === 0) return
+      const t0 = probe.isEnabled('chat') ? performance.now() : 0
       const a0: any = activityGroup[0]
       const aid = a0._dbId != null ? `db${a0._dbId}` : a0._tempId ? `tmp${a0._tempId}` : `${a0.from}:${a0.timestamp}`
       const key = `activity:${aid}`
+      const groupSize = activityGroup.length
+      const cacheKey = [
+        renderVersion,
+        activityGroup.map((a: any) => a._dbId ?? a._tempId ?? `${a.from}:${a.timestamp}:${a.text || ''}`).join(','),
+      ].join('::')
+      let html = activityGroupCache.current.get(cacheKey)
+      const cached = !!html
+      if (!html) {
+        html = `<div class="chat-activity-inline-wrap">${renderActivityGroup(activityGroup, renderCtx)}</div>`
+        activityGroupCache.current.set(cacheKey, html)
+      }
       items.push({
         key,
-        html: `<div class="chat-activity-inline-wrap">${renderActivityGroup(activityGroup, renderCtx)}</div>`,
+        html,
       })
+      activityGroupCount++
+      if (probe.isEnabled('chat')) {
+        const dt = performance.now() - t0
+        if (dt > 2) probe.record('chat', 'chat-render-activity-group', dt, { key, groupSize, cached })
+      }
       activityGroup = []
     }
 
@@ -2093,6 +2151,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         activityGroup.push(m)
       } else if (m.metadata?.type === 'build_result') {
         flushActivity()
+        buildResultCount++
         const { name: docName, hash, summary, lintFindings = [], mirrorFailed } = m.metadata
         const hasDetails = !!(summary || lintFindings.length > 0)
         const lintCount = lintFindings.length
@@ -2123,6 +2182,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         items.push({ key: m._dbId || m._tempId || `${m.timestamp}:${m.from}:build`, html })
       } else if (m._evType === 'plan_approval' || m.type === 'plan_approval') {
         flushActivity()
+        specialCount++
         const agentId: string = m.from || ''
         const agentObjs: any[] = renderCtx.getAgents()
         const agentObj = agentObjs.find((a: any) => a.id === agentId)
@@ -2141,6 +2201,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         items.push({ key: m._dbId || m._tempId || `${m.timestamp}:${m.from}:plan`, html })
       } else if (m.type === 'kill-session') {
         flushActivity()
+        specialCount++
         const agentObjs: any[] = renderCtx.getAgents()
         const targetId = m.to || ''
         const targetAgent = agentObjs.find((a: any) => a.id === targetId)
@@ -2149,6 +2210,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         items.push({ key: m._dbId || m._tempId || `${m.timestamp}:${m.from}:kill`, html })
       } else if (m.type === 'interrupt') {
         flushActivity()
+        specialCount++
         const agentObjs: any[] = renderCtx.getAgents()
         const targetId = m.to || ''
         const targetAgent = agentObjs.find((a: any) => a.id === targetId)
@@ -2186,9 +2248,39 @@ function FleetChatInner({ shape }: { shape: any }) {
         const lineCtx = lineMacros === preambleMacros
           ? renderCtx
           : { ...renderCtx, renderMarkdown: (input: string) => tldaRenderMarkdown(input, lineMacros) }
-        const html = renderChatLine(renderM, lineCtx)
+        const itemKey = m._dbId || m._tempId || `${m.timestamp}:${m.from}`
+        const cacheKey = [
+          renderVersion,
+          thinkingKey,
+          itemKey,
+          renderM.text || '',
+          renderM._amendStepper || '',
+          senderPreambleDoc || '',
+          lineMacros === preambleMacros ? 'viewer' : senderPreambleDoc || 'sender',
+          JSON.stringify(renderM.metadata?.source || null),
+        ].join('::')
+        let html = msgLineCache.current.get(cacheKey)
+        const t0 = probe.isEnabled('chat') ? performance.now() : 0
+        const cached = !!html
+        if (!html) {
+          html = renderChatLine(renderM, lineCtx)
+          msgLineCache.current.set(cacheKey, html)
+        }
+        chatLineCount++
+        if (probe.isEnabled('chat')) {
+          const dt = performance.now() - t0
+          if (dt > 2) {
+            probe.record('chat', 'chat-render-line', dt, {
+              key: itemKey,
+              type: m.type,
+              evType: m._evType || '',
+              textLength: String(renderM.text || '').length,
+              cached,
+            })
+          }
+        }
         if (html) {
-          const item: RawItem = { key: m._dbId || m._tempId || `${m.timestamp}:${m.from}`, html }
+          const item: RawItem = { key: itemKey, html }
           // Tag interrupt system_notices so they jump ahead of queued messages
           if (m._evType === 'system_notice' && m._isInterrupt) {
             item._interrupt = true
@@ -2202,6 +2294,17 @@ function FleetChatInner({ shape }: { shape: any }) {
       }
     }
     flushActivity()
+    if (probe.isEnabled('chat')) {
+      probe.record('chat', 'chat-build-raw-items', performance.now() - rawItemsT0, {
+        messageCount: chatMessages.length,
+        itemCount: items.length,
+        chatLineCount,
+        activityGroupCount,
+        buildResultCount,
+        specialCount,
+        eventCount: events.length,
+      })
+    }
     return items
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatMessages, ctx, thinkingAgents, unqueuedAt, viewingVersion, doc, amendsByOrig, amendView, macrosByDoc, preambleMacros])
@@ -5015,26 +5118,16 @@ function FleetChatInner({ shape }: { shape: any }) {
             Dropping customScrollParent: with Virtuoso-owned scroll,
             initialTopMostItemIndex is reliably honored and the previous
             "start at top" / RAF pin loop / scroll race is gone. */}
-        {chatMessages.length === 0 ? (
-          <div
-            className="fleet-chat-log"
-            ref={(el) => { chatLogRef.current = el; setChatLogEl(el) }}
-            style={{
-              flex: 1,
-              minHeight: 0,
-              overflowY: 'auto',
-              padding: '20px 8px',
-              opacity: isImpossibleFilter ? 0.6 : 0.3,
-              textAlign: 'center',
-              fontSize: 10,
-              color: isImpossibleFilter ? 'var(--red, #e55)' : undefined,
-            }}
-          >
-            {isImpossibleFilter
-              ? '⚠ Filter matches no known agents'
-              : filter.length > 0 ? 'No messages' : 'No filter set'}
-          </div>
-        ) : (
+        {/* Keep Virtuoso ALWAYS mounted. A momentary chatMessages→0 (a transient
+            empty, e.g. during a reconnect blip) must NOT swap the scroller out
+            for a placeholder div — that unmounts Virtuoso and remounts it fresh
+            when messages return, which re-runs initialTopMostItemIndex and snaps
+            scroll to the bottom: the "bounce". allItems always carries the
+            __status__ row, so Virtuoso is never truly empty; the empty-state hint
+            is a non-interactive overlay (top-aligned + same padding as before, so
+            it renders in the same place), not a replacement of the list. The
+            wrapper div is the minimal means to position that overlay. */}
+        <div style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex', flexDirection: 'column' }}>
           <Virtuoso
             ref={virtuosoRef}
             data={allItems}
@@ -5058,6 +5151,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             // adds pixels to existing items) which doesn't tick items.length
             // and so isn't caught by force-pin-on-item-grow.
             totalListHeightChanged={(h) => {
+              const t0 = probe.isEnabled('chat') ? performance.now() : 0
               const prev = prevTotalHeightRef.current
               prevTotalHeightRef.current = h
               const grew = h > prev
@@ -5095,8 +5189,22 @@ function FleetChatInner({ shape }: { shape: any }) {
                   log.debug('chat-scroll', 'TRACE after pin', { gapAfter })
                 })
               }
+              if (probe.isEnabled('chat')) {
+                const dt = performance.now() - t0
+                if (dt > 1 || grew) {
+                  probe.record('chat', 'chat-virtuoso-height-change', dt, {
+                    prev,
+                    h,
+                    grew,
+                    follow,
+                    gapNow,
+                    itemCount: allItems.length,
+                  })
+                }
+              }
             }}
             atBottomStateChange={(atBottom) => {
+              const t0 = probe.isEnabled('chat') ? performance.now() : 0
               const el = chatLogEl
               const gap = el ? (el.scrollHeight - (el.scrollTop + el.clientHeight)) : null
               if (isAtBottomRef.current !== atBottom) {
@@ -5128,6 +5236,16 @@ function FleetChatInner({ shape }: { shape: any }) {
               } else if (hardLockedRef.current) {
                 requestAnimationFrame(pinHard)
               }
+              if (probe.isEnabled('chat')) {
+                const dt = performance.now() - t0
+                if (dt > 1) {
+                  probe.record('chat', 'chat-at-bottom-change', dt, {
+                    atBottom,
+                    gap,
+                    itemCount: allItems.length,
+                  })
+                }
+              }
             }}
             itemContent={(_index, item) => (
               item?._status ? (
@@ -5155,7 +5273,28 @@ function FleetChatInner({ shape }: { shape: any }) {
               Scroller: ChatLogScroller,
             }}
           />
-        )}
+          {chatMessages.length === 0 && (
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                display: 'flex',
+                justifyContent: 'center',
+                alignItems: 'flex-start',
+                padding: '20px 8px',
+                pointerEvents: 'none',
+                opacity: isImpossibleFilter ? 0.6 : 0.3,
+                textAlign: 'center',
+                fontSize: 10,
+                color: isImpossibleFilter ? 'var(--red, #e55)' : undefined,
+              }}
+            >
+              {isImpossibleFilter
+                ? '⚠ Filter matches no known agents'
+                : filter.length > 0 ? 'No messages' : 'No filter set'}
+            </div>
+          )}
+        </div>
 
         {/* Terminal card overlay — shown on hover or when pinned; outside scroll container */}
         {(termCardPinnedId || termCardHoverId) && (() => {
