@@ -19,7 +19,7 @@ import { fleetTouchGestureActiveRef, postTouchTelemetry, setTouchDiagStatus, use
 import { SuggestionTip } from '../shapes/FleetChatShape'
 import { log } from '../logger'
 import { computeFleetBoundsFromShapes, createFleetBoundsTracker, type FleetBoundsResult } from './fleet-bounds'
-import { createFleetHudOverlayLayer } from '../wm/fleet-hud-layer'
+import { createFleetHudOverlayLayer, FLEET_HUD_VIEWPORT_ID } from '../wm/fleet-hud-layer'
 import type { FleetHudLayerState } from '../wm/fleet-hud-layer'
 import { probe } from '../perf-probe'
 import './FleetHUD.css'
@@ -314,7 +314,7 @@ export function FleetHUD({
   const hudRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
   const overlayEditorRef = useRef<Editor | null>(null)
-  const viewportId = useMemo(() => `fleet-hud-${Math.random().toString(36).slice(2, 9)}`, [])
+  const viewportId = FLEET_HUD_VIEWPORT_ID
   const lastHudDiagSigRef = useRef('')
   const fleetBoundsTrackerRef = useRef<ReturnType<typeof createFleetBoundsTracker<any>> | null>(null)
   const gesturesEnabled = expanded && !!fleetBounds && docShapesReady

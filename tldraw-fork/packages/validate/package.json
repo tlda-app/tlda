@@ -26,7 +26,7 @@
     "infinite"
   ],
   "/* NOTE */": "These `main` and `types` fields are rewritten by the build script. They are not the actual values we publish",
-  "main": "./src/index.ts",
+  "main": "./dist-esm/index.mjs",
   "types": "./.tsbuild/index.d.ts",
   "type": "module",
   "/* GOTCHA */": "files will include ./dist and index.d.ts by default, add any others you want to include in here",
@@ -50,5 +50,12 @@
   },
   "engines": {
     "node": ">=22.12.0"
+  },
+  "module": "./dist-esm/index.mjs",
+  "exports": {
+    ".": {
+      "types": "./.tsbuild/index.d.ts",
+      "import": "./dist-esm/index.mjs"
+    }
   }
 }

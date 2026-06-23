@@ -85,7 +85,7 @@ import { MarkdownDropHandler } from './MarkdownDropHandler'
 import { setCurrentDocumentInfo, pageSpacing, type SvgDocument } from './svgDocumentLoader'
 import { ScrollyOverlay } from './overlays/ScrollyOverlay'
 import { ScreenshotCapture } from './overlays/ScreenshotCapture'
-import { FleetHUD, fleetHudOpenRef } from './overlays/FleetHUD'
+import { FleetHUD } from './overlays/FleetHUD'
 import { WMViewportProbe } from './wm/WMViewportProbe'
 
 import { BuildWarningPill } from './pills/BuildWarningPill'
@@ -906,13 +906,12 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     shadowActiveVersion,
   }), [docKey, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, selectedChangeId, handleSelectChange, buildErrors, buildWarnings, timelineActive, toggleTimeline, shadowVisible, toggleShadowOverlay, shadowActiveVersion])
 
-  // Hide fleet shapes on the main canvas in two cases:
-  // 1. Non-owned fleet shapes (belong to another user or orphans) — always hidden
-  // 2. Owned fleet shapes when HUD is open — the HUD renders its own copies
+  // Hide non-owned fleet shapes (belong to another user or orphans). Owned fleet
+  // shapes must remain visible to custom WM viewports; the HUD renders from the
+  // same editor/store, not a copy store.
   const getShapeVisibility = useCallback((shape: any) => {
     if (FLEET_SHAPE_TYPES.has(shape.type)) {
       if (!isMyFleetShape(shape)) return 'hidden' as const
-      if (fleetHudOpenRef.current) return 'hidden' as const
     }
     return undefined
   }, [])
