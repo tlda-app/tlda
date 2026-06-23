@@ -18,6 +18,7 @@ import {
 import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, useContext, memo, useSyncExternalStore, forwardRef } from 'react'
 import { createPortal } from 'react-dom'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
+import { probe } from '../perf-probe'
 
 // @ts-ignore — vanilla JS module
 import { renderChatLine, resolveInlineAttachments, esc } from '../fleet/chat-render.mjs'
@@ -1955,6 +1956,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   }
 
   const chatMessages = useMemo(() => {
+    const chatSortTimer = probe.start('chat', 'chat-sort')
     const sorted = events
       .filter((m: any) => {
         const t = m.type
@@ -1981,6 +1983,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         return ida == null ? 1 : -1
       })
 
+    probe.stop(chatSortTimer, { eventCount: events.length, resultCount: sorted.length })
     return sorted
   }, [events, quietDmTraffic])
 

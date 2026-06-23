@@ -6,6 +6,7 @@ import {
   useValue,
 } from 'tldraw'
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { probe } from '../perf-probe'
 import { injectSvgFonts } from '../svgFonts'
 import { LineNumberOverlay } from '../LineNumberOverlay'
 import { injectWordSpaces } from '../svgWordSpaces'
@@ -264,6 +265,7 @@ function SvgPageComponent({ shape }: { shape: any }) {
       return
     }
 
+    const svgInjectTimer = probe.start('svg', 'svg-inject')
     el.innerHTML = svgText
     injectedRef.current = svgText
 
@@ -285,7 +287,9 @@ function SvgPageComponent({ shape }: { shape: any }) {
       document.fonts.ready.then(() => {
         enqueueWordSpaces(() => {
           if (!containerRef.current || injectedRef.current !== capturedSvgText) return
+          const wsTimer = probe.start('svg', 'svg-word-spaces')
           injectWordSpaces(svgEl)
+          probe.stop(wsTimer, { shapeId: shape.id, pageIndex: shape.props.pageIndex })
           // Cache the fully-processed HTML so scroll-back re-injection is instant
           processedSvgCache.set(shape.id, { svgText: capturedSvgText, html: el.innerHTML })
           // Final step of rendering a new page image: force its layout now, on
@@ -354,6 +358,7 @@ function SvgPageComponent({ shape }: { shape: any }) {
 
     // Apply any pending tint highlights
     applyTinting(textYCacheRef.current, highlights)
+    probe.stop(svgInjectTimer, { shapeId: shape.id, pageIndex: shape.props.pageIndex, cached: !!cacheEntry })
   }, [isNearViewport, svgText])
 
   // Anchor navigation (links inside the SVG) — click events do reach via link targets.
