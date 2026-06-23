@@ -126,16 +126,16 @@ parameters:
     requirement: optional
     default: "openrouter"
     description: >
-      Goose provider, chosen by the launch env from which key is present
-      (mirrors qa-watcher.py): "openrouter" (uses OPENROUTER_API_KEY) or
-      "openai" for DeepSeek-direct (DeepSeek key as OPENAI_API_KEY +
-      OPENAI_HOST=https://api.deepseek.com).
+      Goose provider. Fleet spawn normally passes "openrouter" for verified
+      tool-calling OpenRouter models. It may pass "cursor-agent" for Cursor
+      Agent passthrough, which uses CURSOR_AGENT_COMMAND and Cursor auth.
   - key: model
     input_type: string
     requirement: optional
     default: "deepseek/deepseek-chat"
     description: >
-      Cheap chat model is the generic default. Role overrides: an adversary
+      Cheap chat model is the generic default. For provider "cursor-agent", use
+      "default". Role overrides: an adversary
       role should pass the reasoner — "deepseek/deepseek-r1-0528" (openrouter).
       The plain "deepseek/deepseek-r1" snapshot emits tool calls as TEXT through
       goose (its provider doesn't negotiate structured tool-calls), so use the

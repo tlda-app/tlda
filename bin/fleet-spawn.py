@@ -201,6 +201,12 @@ MODEL_ALIASES = {
 # table is convenience, not a whitelist. Add a family's newest tool-capable
 # snapshot here once it PASSES the probe (bin/verify-goose-toolcalls.mjs).
 GOOSE_MODELS = {
+    # Cursor Agent passthrough provider. This runs through Goose's built-in
+    # cursor-agent CLI provider, so it uses Skip's Cursor subscription instead
+    # of OpenRouter tokens. Requires cursor-agent to be installed + authenticated.
+    "cursor": "cursor-agent/default",
+    "cursor-agent": "cursor-agent/default",
+    "cursor-default": "cursor-agent/default",
     # Bare `deepseek` → the current flagship (v4-pro). Verified 2026-06-13 to
     # emit structured tool-calls through goose/OpenRouter and read/reason over a
     # doc end-to-end — Skip's pick for the default goose/adversary model. The
@@ -239,6 +245,7 @@ GOOSE_MODELS = {
 # (deepseek-r1 did), which leaves the agent unable to act. Only ids here are
 # known-good for tool-using fleet agents; resolving to anything else warns.
 GOOSE_VERIFIED = {
+    "cursor-agent/default",
     "deepseek/deepseek-v4-pro",
     "deepseek/deepseek-v4-flash",
     "deepseek/deepseek-chat",
@@ -259,6 +266,7 @@ DEEPSEEK_RECIPE = os.path.join(
     os.path.dirname(os.path.realpath(__file__)), "..", "recipes", "fleet-deepseek.yaml")
 GOOSE_STATE_ROOT = "/tmp/tlda-goose-state"
 GOOSE_MAX_TOKENS = "32768"
+CURSOR_AGENT_COMMAND = os.path.expanduser("~/.local/bin/cursor-agent")
 
 CODEX_MODELS = {
     # `codex -m gpt` is not accepted for ChatGPT-authenticated Codex accounts.
@@ -291,6 +299,13 @@ def resolve_goose_model(model):
 def goose_model_verified(resolved_id):
     """True if this concrete OpenRouter id is on the verified-tool-calling list."""
     return resolved_id in GOOSE_VERIFIED
+
+
+def goose_provider_for_model(model):
+    """Return (provider, provider_model) for a resolved Goose model id."""
+    if model and model.startswith("cursor-agent/"):
+        return "cursor-agent", model.split("/", 1)[1] or "default"
+    return "openrouter", model
 
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 REPO_DIR = os.path.dirname(SCRIPT_DIR)
@@ -1558,6 +1573,7 @@ def build_goose_cmd(fleet_id, tmux_session, model, name=None, capability=None):
     never appears in this command string.
     """
     recipe = os.path.abspath(DEEPSEEK_RECIPE)
+    goose_provider, goose_model = goose_provider_for_model(model)
     sandbox_cfg = os.path.join(os.path.dirname(recipe), "goose-sandbox")
     state_dir = os.path.join(GOOSE_STATE_ROOT, str(fleet_id).replace(":", "-"))
     data_dir = os.path.join(state_dir, "data")
@@ -1604,14 +1620,16 @@ def build_goose_cmd(fleet_id, tmux_session, model, name=None, capability=None):
         # the PROMPT). GOOSE_TELEMETRY_OFF overrides the config and skips the ask.
         "GOOSE_TELEMETRY_OFF=1",
     ]
+    if goose_provider == "cursor-agent":
+        parts.append(f"CURSOR_AGENT_COMMAND={shlex.quote(CURSOR_AGENT_COMMAND)}")
     if name:
         parts.append(f"FLEET_NAME={shlex.quote(name)}")
     parts.append(shlex.quote(GOOSE_BIN))
     parts.append("run")
     parts.append(f"--recipe {shlex.quote(recipe)}")
     parts.extend(dev_args)  # --with-builtin developer,summon
-    parts.append("--params provider=openrouter")
-    parts.append(f"--params model={shlex.quote(model)}")
+    parts.append(f"--params provider={shlex.quote(goose_provider)}")
+    parts.append(f"--params model={shlex.quote(goose_model)}")
     # Stamp the goose session with a fleet-derived NAME so the daemon can map a
     # fleet agent to its goose sqlite session exactly (sessions otherwise carry
     # no fleet identity — auto name + shared working_dir = ambiguous with >1
