@@ -435,11 +435,15 @@ export function renderChatLine(m, ctx) {
     if (a.type === 'shared-doc') {
       const rawTarget = String(a.url || a.path || '').trim()
       if (!rawTarget) return ''
-      const href = /^(?:https?:\/\/|\/api\/)/i.test(rawTarget)
+      const fileUrl = /^(?:https?:\/\/|\/api\/)/i.test(rawTarget)
         ? rawTarget
         : `/api/file?path=${encodeURIComponent(rawTarget)}`
       const label = a.title || a.name || rawTarget.split('/').pop() || rawTarget
-      return `<a href="${esc(href)}" target="_blank">${esc(label)}</a>`
+      const ext = (rawTarget || label).split('.').pop()?.toLowerCase() || ''
+      const icon = ext === 'pdf' ? '📕' : ext === 'md' ? '📄' : '📎'
+      const pathAttr = a.path ? ` data-path="${esc(a.path)}"` : ''
+      const titleAttr = label ? ` data-title="${esc(label)}"` : ''
+      return `<span class="ref-chip ref-chip-doc"${pathAttr} data-url="${esc(fileUrl)}"${titleAttr} draggable="true"><span class="ref-chip-doc-icon">${icon}</span>${esc(label)}</span>`
     }
     const agentId = (a.source || '').split(':')[1] || ''
     const agentName = agentId ? agentLabel(agentId) : ''

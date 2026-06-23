@@ -156,7 +156,7 @@ test('backticked local path remains literal and does not upload', withTempDir(as
   }
 }))
 
-test('legacy shared-doc metadata with path renders as ordinary link, not shared-doc chip UI', () => {
+test('shared-doc metadata with path renders as an artifact chip, not a navigation link', () => {
   const html = renderChatLine({
     type: 'chat',
     from: 'fleet:agent',
@@ -176,20 +176,17 @@ test('legacy shared-doc metadata with path renders as ordinary link, not shared-
   }, renderCtx())
   const dom = new JSDOM(`<div id="root">${html}</div>`)
   const root = dom.window.document.getElementById('root')
-  const sharedChip = dom.window.document.querySelector('.ref-chip-shared-doc, .shared-doc.doc-chip')
-  const refChip = dom.window.document.querySelector('.ref-chip')
+  const chip = dom.window.document.querySelector('.ref-chip-doc')
   const link = dom.window.document.querySelector('a')
 
-  assert.equal(sharedChip, null, 'legacy shared-doc metadata should not render shared-doc chip classes')
-  assert.equal(refChip, null, 'legacy shared-doc metadata should not render generated ref-chip UI')
-  assert.ok(link)
-  assert.equal(link.getAttribute('href'), '/api/file?path=%2Ftmp%2Fagent-report.md')
-  assert.equal(link.getAttribute('target'), '_blank')
+  assert.ok(chip)
+  assert.equal(link, null)
+  assert.equal(chip.getAttribute('data-path'), '/tmp/agent-report.md')
+  assert.equal(chip.getAttribute('data-url'), '/api/file?path=%2Ftmp%2Fagent-report.md')
+  assert.equal(chip.getAttribute('data-title'), 'agent-report.md')
+  assert.equal(chip.getAttribute('draggable'), 'true')
   assert.match(root.textContent, /agent-report\.md/)
-  assert.equal(link.hasAttribute('data-doc'), false)
-  assert.equal(link.hasAttribute('data-path'), false)
-  assert.equal(link.hasAttribute('draggable'), false)
-  assert.doesNotMatch(root.innerHTML, /ref-chip-shared-doc|shared-doc|doc-chip|data-share-id|tool-ref-preview/)
+  assert.doesNotMatch(root.innerHTML, /ref-chip-shared-doc|shared-doc|doc-chip|data-share-id|tool-ref-preview|<a\b/)
 })
 
 test('literal doc token with URL uses ordinary markdown link handling, not shared-doc output', () => {
