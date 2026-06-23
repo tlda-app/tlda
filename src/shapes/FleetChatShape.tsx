@@ -5011,26 +5011,16 @@ function FleetChatInner({ shape }: { shape: any }) {
             Dropping customScrollParent: with Virtuoso-owned scroll,
             initialTopMostItemIndex is reliably honored and the previous
             "start at top" / RAF pin loop / scroll race is gone. */}
-        {chatMessages.length === 0 ? (
-          <div
-            className="fleet-chat-log"
-            ref={(el) => { chatLogRef.current = el; setChatLogEl(el) }}
-            style={{
-              flex: 1,
-              minHeight: 0,
-              overflowY: 'auto',
-              padding: '20px 8px',
-              opacity: isImpossibleFilter ? 0.6 : 0.3,
-              textAlign: 'center',
-              fontSize: 10,
-              color: isImpossibleFilter ? 'var(--red, #e55)' : undefined,
-            }}
-          >
-            {isImpossibleFilter
-              ? '⚠ Filter matches no known agents'
-              : filter.length > 0 ? 'No messages' : 'No filter set'}
-          </div>
-        ) : (
+        {/* Keep Virtuoso ALWAYS mounted. A momentary chatMessages→0 (a transient
+            empty, e.g. during a reconnect blip) must NOT swap the scroller out
+            for a placeholder div — that unmounts Virtuoso and remounts it fresh
+            when messages return, which re-runs initialTopMostItemIndex and snaps
+            scroll to the bottom: the "bounce". allItems always carries the
+            __status__ row, so Virtuoso is never truly empty; the empty-state hint
+            is a non-interactive overlay (top-aligned + same padding as before, so
+            it renders in the same place), not a replacement of the list. The
+            wrapper div is the minimal means to position that overlay. */}
+        <div style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex', flexDirection: 'column' }}>
           <Virtuoso
             ref={virtuosoRef}
             data={allItems}
@@ -5151,7 +5141,28 @@ function FleetChatInner({ shape }: { shape: any }) {
               Scroller: ChatLogScroller,
             }}
           />
-        )}
+          {chatMessages.length === 0 && (
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                display: 'flex',
+                justifyContent: 'center',
+                alignItems: 'flex-start',
+                padding: '20px 8px',
+                pointerEvents: 'none',
+                opacity: isImpossibleFilter ? 0.6 : 0.3,
+                textAlign: 'center',
+                fontSize: 10,
+                color: isImpossibleFilter ? 'var(--red, #e55)' : undefined,
+              }}
+            >
+              {isImpossibleFilter
+                ? '⚠ Filter matches no known agents'
+                : filter.length > 0 ? 'No messages' : 'No filter set'}
+            </div>
+          )}
+        </div>
 
         {/* Terminal card overlay — shown on hover or when pinned; outside scroll container */}
         {(termCardPinnedId || termCardHoverId) && (() => {
