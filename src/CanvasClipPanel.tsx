@@ -10,7 +10,7 @@
  *
  * This replaces the old copy-store approach (separate editor + bidirectional sync).
  */
-import { useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { TldrawViewport, stopEventPropagation } from 'tldraw'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor, TLShape } from 'tldraw'
 import { createCanvasClipPanelPlan } from './wm/canvas-clip-panel'
@@ -54,6 +54,7 @@ interface CanvasClipPanelProps {
 }
 
 export function CanvasClipPanel({
+  mainEditor,
   bounds,
   panelWidth = DEFAULT_WIDTH,
   maxHeightFraction = DEFAULT_MAX_HEIGHT_FRACTION,
@@ -62,11 +63,20 @@ export function CanvasClipPanel({
   cameraOverride,
   fullViewport = false,
   readOnly = false,
+  onEditorMount,
   children,
 }: CanvasClipPanelProps) {
   const panelRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLDivElement>(null)
   const viewportId = useMemo(() => `clip-panel-${Math.random().toString(36).slice(2, 9)}`, [])
+
+  // Expose the main editor to consumers via onEditorMount.
+  // With the fork viewport there is no separate overlay editor — consumers
+  // use the main editor + viewportId for viewport-specific queries.
+  useEffect(() => {
+    onEditorMount?.(mainEditor ?? null)
+    return () => { onEditorMount?.(null) }
+  }, [mainEditor, onEditorMount])
 
   // Compute camera from bounds or use override
   const camera = useMemo(() => {
@@ -140,6 +150,7 @@ export function CanvasClipPanel({
       <div
         ref={panelRef}
         className={`clip-panel clip-panel-fullvp ${className || ''}`}
+        data-viewport-id={viewportId}
         style={{
           position: 'fixed',
           inset: 0,
@@ -174,6 +185,7 @@ export function CanvasClipPanel({
     <div
       ref={panelRef}
       className={`clip-panel ${className || ''}`}
+      data-viewport-id={viewportId}
       style={{ width: panelWidth }}
       onPointerDown={stopEventPropagation}
     >
