@@ -1,5 +1,6 @@
 import { useMemo, useEffect, useRef, useState, useCallback, useContext, createContext, useSyncExternalStore, Component } from 'react'
 import type { ReactNode, ErrorInfo } from 'react'
+const _pageLoadStart = typeof performance !== 'undefined' ? performance.now() : 0
 import {
   Tldraw,
   react,
@@ -12,6 +13,7 @@ import {
 } from 'tldraw'
 import type { TLComponents, Editor, TLShapeId } from 'tldraw'
 import 'tldraw/tldraw.css'
+import { probe } from './perf-probe'
 import { MathNoteShapeUtil, setMathNoteEntryMode } from './shapes/MathNoteShape'
 import { TocDropTargetShapeUtil } from './shapes/TocDropTargetShape'
 // noteThreading removed — no tabs
@@ -1245,6 +1247,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           (window as unknown as { __tldraw_editor__: Editor }).__tldraw_editor__ = editor
           editorRef.current = editor
           setEditorMounted(v => v + 1)
+          probe.record('startup', 'startup-tldraw-mount', performance.now() - _pageLoadStart, {
+            shapeCount: editor.getCurrentPageShapes().length,
+          })
 
           editor.user.updateUserPreferences({ colorScheme: getStoredScheme() })
 

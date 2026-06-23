@@ -1,6 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
+import './frame-probe'  // perf-probe frame timing (inactive unless ?perf=1)
 import App from './App.tsx'
 
 // High-res display compensation: macOS "More Space" gives huge CSS viewports
