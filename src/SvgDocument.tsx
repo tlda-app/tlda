@@ -86,7 +86,6 @@ import { setCurrentDocumentInfo, pageSpacing, type SvgDocument } from './svgDocu
 import { ScrollyOverlay } from './overlays/ScrollyOverlay'
 import { ScreenshotCapture } from './overlays/ScreenshotCapture'
 import { FleetHUD } from './overlays/FleetHUD'
-import { WMViewportProbe } from './wm/WMViewportProbe'
 
 import { BuildWarningPill } from './pills/BuildWarningPill'
 import { BuildErrorPill } from './pills/BuildErrorPill'
@@ -840,7 +839,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       // button cluster instead.
       Toolbar: () => IS_PHONE ? null : <FormatToolbar format={document.format} />,
       HelperButtons: () => <PenHelperButtons format={document.format} />,
-      InFrontOfTheCanvas: () => <><RibbonLane /><ProvenancePanel docName={docName} /><ProvenanceInline docName={docName} /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /><WMViewportProbe /></>,
+      InFrontOfTheCanvas: () => <><RibbonLane /><ProvenancePanel docName={docName} /><ProvenanceInline docName={docName} /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /></>,
     }),
     [document, roomId]
   )

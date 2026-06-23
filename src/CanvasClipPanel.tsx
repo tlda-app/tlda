@@ -12,14 +12,26 @@
  */
 import { useEffect, useMemo, useRef } from 'react'
 import { TldrawViewport, stopEventPropagation } from 'tldraw'
-import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor, TLShape } from 'tldraw'
+import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor, TLShape, TLViewportId } from 'tldraw'
 import { createCanvasClipPanelPlan } from './wm/canvas-clip-panel'
+import { VisibilityViewportProvider } from './shapes/useIsInViewport'
 import './CanvasClipPanel.css'
 
 const DEFAULT_WIDTH = 600
 const DEFAULT_MAX_HEIGHT_FRACTION = 0.4
 const MIN_VISIBLE_LINES = 5
 const LINE_HEIGHT_ESTIMATE = 14 // ~12pt in PDF coordinates
+
+function getOptionalViewport(editor: Editor, viewportId: TLViewportId) {
+  try {
+    return editor.getViewport(viewportId)
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('No viewport registered')) {
+      return null
+    }
+    throw error
+  }
+}
 
 export interface ClipBounds {
   x: number
@@ -73,6 +85,53 @@ export function CanvasClipPanel({
   const canvasRef = useRef<HTMLDivElement>(null)
   const generatedViewportId = useMemo(() => `clip-panel-${Math.random().toString(36).slice(2, 9)}`, [])
   const viewportId = externalViewportId ?? generatedViewportId
+
+  useEffect(() => {
+    const shouldRouteWheel = (fullViewport && lockCamera) || readOnly
+    if (!shouldRouteWheel) return
+    const panel = panelRef.current
+    if (!panel) return
+
+    const onWheelCapture = (e: WheelEvent) => {
+      const target = e.target instanceof Element ? e.target : null
+      if (!target || e.ctrlKey || e.metaKey) return
+
+      const chat = target.closest('.fleet-chat-shape') as HTMLElement | null
+      if (chat) {
+        const log = chat.querySelector('.fleet-chat-log') as HTMLElement | null
+        if (!log || log.scrollHeight <= log.clientHeight) return
+        e.preventDefault()
+        e.stopPropagation()
+        e.stopImmediatePropagation()
+        log.scrollTop += e.deltaY
+        log.dispatchEvent(new CustomEvent('fleet-user-scroll'))
+        return
+      }
+
+      const docview = target.closest('.fleet-docview') as HTMLElement | null
+      if (docview) {
+        const viewportHost = (target.closest('[data-viewport-id]') || docview.querySelector('[data-viewport-id]')) as HTMLElement | null
+        const nestedViewportId = viewportHost?.dataset.viewportId as TLViewportId | undefined
+        if (!nestedViewportId) return
+        const registered = getOptionalViewport(mainEditor, nestedViewportId)
+        if (!registered) return
+        e.preventDefault()
+        e.stopPropagation()
+        e.stopImmediatePropagation()
+        const z = registered.camera.z || 1
+        mainEditor.updateViewport(nestedViewportId, {
+          camera: {
+            ...registered.camera,
+            x: registered.camera.x - e.deltaX / z,
+            y: registered.camera.y - e.deltaY / z,
+          },
+        })
+      }
+    }
+
+    panel.addEventListener('wheel', onWheelCapture, { capture: true, passive: false })
+    return () => panel.removeEventListener('wheel', onWheelCapture, { capture: true })
+  }, [fullViewport, lockCamera, mainEditor, readOnly])
 
   // Expose the main editor to consumers via onEditorMount.
   // With the fork viewport there is no separate overlay editor — consumers
@@ -135,16 +194,18 @@ export function CanvasClipPanel({
   }, [lockCamera, readOnly])
 
   const viewportEl = (
-    <TldrawViewport
-      id={viewportId}
-      camera={camera}
-      className={className}
-      shapePredicate={shapePredicate}
-      onCameraChange={lockCamera ? undefined : (newCam) => {
-        // For non-locked panels, allow user to pan/zoom
-        console.log('[CanvasClipPanel] camera change:', newCam)
-      }}
-    />
+    <VisibilityViewportProvider viewportId={viewportId}>
+      <TldrawViewport
+        id={viewportId}
+        camera={camera}
+        className={className}
+        shapePredicate={shapePredicate}
+        onCameraChange={lockCamera ? undefined : (newCam) => {
+          // For non-locked panels, allow user to pan/zoom
+          console.log('[CanvasClipPanel] camera change:', newCam)
+        }}
+      />
+    </VisibilityViewportProvider>
   )
 
   if (fullViewport) {

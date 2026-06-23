@@ -13,10 +13,10 @@
  * Inline SVG (fill="currentColor") so color-based opacity applies to icon + count together,
  * matching the single-color approach of .build-warning-badge.
  */
-import React, { useState, useCallback, useRef } from 'react'
+import React, { useState, useCallback, useEffect, useRef } from 'react'
 import { stopEventPropagation, useUniqueSafeId } from 'tldraw'
 import type { Editor } from 'tldraw'
-import { useFleetAgents } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetIdentity } from '../fleet-data-adapter'
 import { createFleetLayout } from '../shapes/fleet-utils'
 import './FleetIconPill.css'
 
@@ -160,6 +160,10 @@ function getPhoneCameraSettlingDelay() {
   return Math.max(0, until - Date.now())
 }
 
+function cleanUrlName(name: string | null) {
+  return name?.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '') || ''
+}
+
 // ── FleetIconPill ────────────────────────────────────────────────────────────
 
 interface FleetIconPillProps { mainEditor: Editor }
@@ -167,6 +171,7 @@ interface FleetIconPillProps { mainEditor: Editor }
 export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
   const countMaskId = useUniqueSafeId('fleet-count-mask')
   const agents = useFleetAgents()
+  const identity = useFleetIdentity()
   const [hidden, setHidden] = useState(() => isFleetHidden())
   const [dragging, setDragging] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -181,6 +186,8 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
   const isDragRef = useRef(false)
   const selectedIdxRef = useRef<number | null>(null)
   const agentsRef = useRef(agents)
+  const autoLayoutAppliedRef = useRef<string | null>(null)
+  const identifyingForUrlRef = useRef<string | null>(null)
   agentsRef.current = agents
 
   const applyPreset = useCallback((idx: number) => {
@@ -246,6 +253,33 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
       }, { source: 'all', scope: 'document' })
     }
   }, [mainEditor])
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const requested = params.get('fleetLayout') as LayoutId | null
+    if (!requested) return
+    const idx = LAYOUT_PRESETS.findIndex(p => p.id === requested)
+    if (idx < 0) return
+
+    const requestedName = cleanUrlName(params.get('name'))
+    if (requestedName && identity.name !== requestedName) {
+      if (!identity.id && !identity.needsIdentity) return
+      if (identifyingForUrlRef.current === requestedName) return
+      identifyingForUrlRef.current = requestedName
+      identity.login(requestedName)
+        .catch(() => identity.register(requestedName))
+        .finally(() => {
+          if (identifyingForUrlRef.current === requestedName) identifyingForUrlRef.current = null
+        })
+      return
+    }
+
+    if (!identity.id) return
+    const applyKey = `${requested}|${identity.id}`
+    if (autoLayoutAppliedRef.current === applyKey) return
+    autoLayoutAppliedRef.current = applyKey
+    applyPreset(idx)
+  }, [applyPreset, identity.id, identity.name, identity.login, identity.register])
 
   /** Click handler — desktop toggles HUD; touch opens the reachable layout fan. */
   const handleClick = useCallback((e: React.MouseEvent) => {

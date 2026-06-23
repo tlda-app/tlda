@@ -1075,8 +1075,11 @@ export function FleetHUD({
     const projectedBottom = projectedTop + activeFleetBounds.h
     const projectedLeft = activeFleetBounds.x + panOffsetRef.current
     const projectedRight = projectedLeft + activeFleetBounds.w
+    const phoneLayout = isPhoneFleetLayout(mainEditor)
     const verticallyVisible = projectedBottom > 0 && projectedTop < window.innerHeight
-    const horizontallyVisible = projectedRight > 0 && projectedLeft < window.innerWidth
+    const horizontallyVisible = phoneLayout
+      ? projectedRight > 0 && projectedLeft < window.innerWidth
+      : projectedLeft >= 0 && projectedRight <= window.innerWidth
     if (!userPannedRef.current && (!verticallyVisible || !horizontallyVisible)) {
       const docShapes = mainEditor.getCurrentPageShapes().filter(s =>
         (s.type as string) === 'html-page' || (s.type as string) === 'svg-page')
@@ -1091,7 +1094,7 @@ export function FleetHUD({
         panOffsetRef.current = docLeftScreen - minPageX - off.dx
         const nextProjectedLeft = activeFleetBounds.x + panOffsetRef.current
         const nextProjectedRight = nextProjectedLeft + activeFleetBounds.w
-        if (!isPhoneFleetLayout(mainEditor) && (nextProjectedRight < window.innerWidth * 0.25 || nextProjectedLeft > window.innerWidth * 0.75)) {
+        if (!phoneLayout && (nextProjectedLeft < LEFT_PAD || nextProjectedRight > window.innerWidth - LEFT_PAD)) {
           panOffsetRef.current = LEFT_PAD - activeFleetBounds.x
         }
         cameraYRef.current = TOP_PAD - activeFleetBounds.y
