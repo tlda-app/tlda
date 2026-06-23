@@ -64,6 +64,25 @@ function shadowRepoDir(name) {
   return join(projectDir(name), 'shadow-repo')
 }
 
+export async function createShadowBundleBase64(name, hash) {
+  const repoDir = shadowRepoDir(name)
+  if (!existsSync(join(repoDir, '.git'))) {
+    throw new Error(`Shadow repo not found for ${name}`)
+  }
+  const safeHash = String(hash || '').trim()
+  if (!/^[0-9a-f]{40}$/i.test(safeHash)) {
+    throw new Error(`Invalid shadow hash for ${name}: ${hash}`)
+  }
+  await execAsync(`git cat-file -e "${safeHash}^{commit}"`, { cwd: repoDir, timeout: 5000 })
+  const bundlePath = join(tmpdir(), `tlda-shadow-${name}-${safeHash.slice(0, 7)}-${Date.now()}.bundle`)
+  try {
+    await execAsync(`git bundle create "${bundlePath}" --all`, { cwd: repoDir, timeout: 30000 })
+    return readFileSync(bundlePath).toString('base64')
+  } finally {
+    rmSync(bundlePath, { force: true })
+  }
+}
+
 /**
  * Initialize a shadow repo by filtering an existing project repo down to
  * paper-scope paths only. The filter operation is the canonical way to bring

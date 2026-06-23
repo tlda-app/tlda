@@ -274,3 +274,53 @@ describe('source hashes', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 })
+
+// ---------------------------------------------------------------------------
+// Shadow mirror refs
+// ---------------------------------------------------------------------------
+
+describe('shadow mirror refs', () => {
+  function git(cwd, args) {
+    return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim()
+  }
+
+  it('imports a shadow bundle as refs without moving the checked-out branch', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tlda-mirror-test-'))
+    const shadow = join(root, 'shadow')
+    const source = join(root, 'source')
+    mkdirSync(shadow)
+    mkdirSync(source)
+
+    try {
+      git(shadow, ['init'])
+      git(shadow, ['config', 'user.email', 'tlda@test'])
+      git(shadow, ['config', 'user.name', 'tlda'])
+      writeFileSync(join(shadow, 'main.tex'), 'one\n')
+      git(shadow, ['add', 'main.tex'])
+      git(shadow, ['commit', '-m', 'Build at test'])
+      const hash = git(shadow, ['rev-parse', 'HEAD'])
+      const hash7 = hash.slice(0, 7)
+      const bundle = join(root, 'shadow.bundle')
+      git(shadow, ['bundle', 'create', bundle, '--all'])
+
+      git(source, ['init'])
+      git(source, ['config', 'user.email', 'user@test'])
+      git(source, ['config', 'user.name', 'user'])
+      writeFileSync(join(source, 'notes.txt'), 'working tree stays here\n')
+      git(source, ['add', 'notes.txt'])
+      git(source, ['commit', '-m', 'source root'])
+      const beforeHead = git(source, ['rev-parse', 'HEAD'])
+
+      git(source, ['bundle', 'verify', bundle])
+      git(source, ['fetch', bundle, `+${hash}:refs/tags/shadow/${hash7}`])
+      git(source, ['cat-file', '-e', `${hash}^{commit}`])
+      git(source, ['update-ref', 'refs/tlda/shadow/HEAD', hash])
+
+      assert.equal(git(source, ['rev-parse', `shadow/${hash7}`]), hash)
+      assert.equal(git(source, ['rev-parse', 'refs/tlda/shadow/HEAD']), hash)
+      assert.equal(git(source, ['rev-parse', 'HEAD']), beforeHead)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})

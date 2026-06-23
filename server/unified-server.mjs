@@ -46,8 +46,8 @@ import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
 import { labelsForAgent, parseFilter, evalExpr } from '../shared/fleet-labels.mjs'
 import { phaseFromName, baseName, PHASES } from '../shared/lineage-name.mjs'
 import { daemonHelloDecision } from '../shared/daemon-identity.mjs'
-import { initProjectStore, listProjects, readProject, getProjectsDir } from './lib/project-store.mjs'
-import { resetStaleBuildStates, killAllBuilds, runBuild } from './lib/build-runner.mjs'
+import { initProjectStore, listProjects, readProject, updateProject, getProjectsDir } from './lib/project-store.mjs'
+import { resetStaleBuildStates, killAllBuilds, runBuild, setShadowMirrorHandler } from './lib/build-runner.mjs'
 import { writeSentinel } from './lib/sentinel.mjs'
 import projectRoutes, { processProjectPush } from './routes/projects.mjs'
 import { initAuth, isAuthEnabled, validateToken, extractToken, requireRead, loginRoute } from './lib/auth.mjs'
@@ -526,6 +526,20 @@ function failPendingRpcsForMachine(machineId, reason = 'daemon disconnected') {
   }
 }
 
+setShadowMirrorHandler(async ({ name, hash, bundleBase64 }) => {
+  const project = readProject(name)
+  const machineId = project?.lastSourceMachineId || null
+  if (!machineId) {
+    throw new Error(`no source daemon recorded for ${name}`)
+  }
+  const result = await sendRpc(machineId, 'mirror-shadow-ref', {
+    project: name,
+    hash,
+    bundleBase64,
+  })
+  return { ...result, machine_id: machineId }
+})
+
 // No server-side echo suppression. Dedup is client-side: the WS reply
 // includes the event ID, which the client maps to its optimistic event
 // before the echo arrives (WS message ordering guarantees this).
@@ -975,7 +989,6 @@ onGlobalEvent((event) => {
     broadcastEvent('projects-updated', { name: event.name })
   }
   if (event?.type === 'version-committed') {
-    broadcastDaemonVersionCommitted(event.name, event.hash)
     // Auto-spawn a QA watcher agent when new content is committed to the shadow repo.
     // version-committed is the semantic trigger (new prose exists); build-card is UI-level.
     // fleet-spawn.py pre-registers the agent before starting tmux, so findAgent() works
@@ -4587,24 +4600,6 @@ async function setSentinelSyncError(projectName, syncError) {
   }
 }
 
-function broadcastDaemonVersionCommitted(projectName, hash) {
-  if (daemonConnections.size === 0) return
-  const project = readProject(projectName)
-  const repoPath = join(getProjectsDir(), projectName, 'shadow-repo')
-  for (const [, dws] of daemonConnections) {
-    if (dws.readyState !== 1) continue
-    try {
-      dws.send(JSON.stringify({
-        type: 'version-committed',
-        project: projectName,
-        hash,
-        repoPath,
-        autoSync: project?.autoSync !== false,
-      }))
-    } catch {}
-  }
-}
-
 async function handleDaemonWsMessage(ws, msg) {
   const { type } = msg
 
@@ -5055,6 +5050,9 @@ async function handleDaemonWsMessage(ws, msg) {
   if (type === 'source-change') {
     const { project, files, deletedFiles, editedBy } = msg
     if (!project) return
+    if (readProject(project)) {
+      updateProject(project, { lastSourceMachineId: ws._machineId, lastSourceMachineAt: Date.now() })
+    }
     // Hand off to the same pipeline used by HTTP /api/projects/:name/push.
     processProjectPush(project, { files, deletedFiles, editedBy }).then(result => {
       if (!result.ok) {
