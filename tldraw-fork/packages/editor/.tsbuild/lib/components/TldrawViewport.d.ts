@@ -6,6 +6,7 @@ export interface TldrawViewportProps {
     pageId?: TLViewport['pageId'];
     className?: string;
     onCameraChange?(camera: TLViewport['camera']): void;
+    shapePredicate?(shape: TLShape): boolean;
 }
 /** @public @react */
 export declare function TldrawViewport({ id, camera, pageId, className, onCameraChange }: TldrawViewportProps): import("react/jsx-runtime").JSX.Element;

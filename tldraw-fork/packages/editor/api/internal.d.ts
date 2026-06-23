@@ -8978,6 +8978,7 @@ export declare interface TldrawViewportProps {
     pageId?: TLViewport['pageId'];
     className?: string;
     onCameraChange?(camera: TLViewport['camera']): void;
+    shapePredicate?(shape: TLShape): boolean;
 }
 
 /** @public */

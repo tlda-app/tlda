@@ -6,13 +6,7 @@ import {
 	createWMPictureInPictureLayer,
 } from './viewport-layer'
 
-function hasProbeFlag() {
-	if (typeof window === 'undefined') return false
-	return new URLSearchParams(window.location.search).get('wmViewportProbe') === '1'
-}
-
 export function WMViewportProbe() {
-	if (!hasProbeFlag()) return null
 	return <WMViewportProbePanel />
 }
 
@@ -29,20 +23,13 @@ function WMViewportProbePanel() {
 			camera={layer.camera}
 			onCameraChange={(camera) => setLayer(current => ({ ...current, camera }))}
 			title="picture-in-picture"
-			diagnosticsKey="__tlda_wm_viewport_probe__"
+			width={360}
+			height={260}
 			style={{
 				position: 'absolute',
 				right: 18,
 				top: 58,
-				width: 360,
-				height: 260,
 				zIndex: 200,
-				background: 'rgba(250,250,250,0.96)',
-				border: '1px solid rgba(80,80,90,0.22)',
-				boxShadow: '0 8px 30px rgba(0,0,0,0.12)',
-				display: 'flex',
-				flexDirection: 'column',
-				overflow: 'hidden',
 			}}
 		/>
 	)
