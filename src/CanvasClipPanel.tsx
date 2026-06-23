@@ -11,9 +11,10 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Tldraw, createTLStore, stopEventPropagation, react } from 'tldraw'
-import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor, TLRecord } from 'tldraw'
+import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor, TLRecord, TLShapeId } from 'tldraw'
 import { chatInsertBus } from './shapes/FleetPillShape'
 import { FLEET_SHAPE_TYPES, isMyFleetShape } from './shapes/fleet-utils'
+import { probe } from './perf-probe'
 import './CanvasClipPanel.css'
 
 const DEFAULT_WIDTH = 600
@@ -174,7 +175,12 @@ export function CanvasClipPanel({
   const shapeOverlapsVisibleRegion = (shapeId: string): boolean => {
     const vr = visibleRegionRef.current
     if (!vr || lockCamera) return true
+    const t0 = probe.isEnabled('hud') ? performance.now() : 0
     const pb = mainEditor.getShapePageBounds(shapeId as any)
+    if (probe.isEnabled('hud')) {
+      const dt = performance.now() - t0
+      if (dt > 2) probe.record('hud', 'hud-get-shape-bounds', dt, { shapeId, site: 'visible-region' })
+    }
     if (!pb) return true
     return pb.x + pb.w > vr.minX && pb.x < vr.maxX &&
       pb.y + pb.h > vr.minY && pb.y < vr.maxY
@@ -211,6 +217,7 @@ export function CanvasClipPanel({
     r.typeName !== 'shape' || knownTypes.has((r as any).type) || knownTypes.size === 0
 
   const store = useMemo(() => {
+    const t0 = probe.isEnabled('hud') ? performance.now() : 0
     const allRecords = mainEditor.store.allRecords()
     const docRecords = allRecords.filter(r => shouldSyncToCopy(r) && isKnownShape(r))
       .map(r => {
@@ -223,6 +230,14 @@ export function CanvasClipPanel({
       })
     const s = createTLStore({ shapeUtils })
     s.mergeRemoteChanges(() => { s.put(docRecords) })
+    if (probe.isEnabled('hud')) {
+      probe.record('hud', 'hud-copy-store-create', performance.now() - t0, {
+        allRecords: allRecords.length,
+        copiedRecords: docRecords.length,
+        lockCamera,
+        readOnly,
+      })
+    }
     return s
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -313,7 +328,13 @@ export function CanvasClipPanel({
     const toRemove: TLRecord['id'][] = []
     for (const r of store.allRecords()) {
       if (r.typeName !== 'shape') continue
-      const pb = mainEditor.getShapePageBounds((r as any).id)
+      const shapeId = r.id as TLShapeId
+      const tBounds = probe.isEnabled('hud') ? performance.now() : 0
+      const pb = mainEditor.getShapePageBounds(shapeId)
+      if (probe.isEnabled('hud')) {
+        const dt = performance.now() - tBounds
+        if (dt > 2) probe.record('hud', 'hud-get-shape-bounds', dt, { shapeId, site: 'evict' })
+      }
       if (!pb) continue
       if (pb.x + pb.w < minX || pb.x > maxX || pb.y + pb.h < minY || pb.y > maxY) {
         toRemove.push(r.id)
@@ -341,10 +362,15 @@ export function CanvasClipPanel({
 
     // main → copy (unlock fleet shapes in HUD so they're draggable)
     const unsubMain = mainEditor.store.listen(({ changes }) => {
+      const t0 = probe.isEnabled('hud') ? performance.now() : 0
+      let addedCount = 0
+      let updatedCount = 0
+      let removedCount = 0
       store.mergeRemoteChanges(() => {
         for (const record of Object.values(changes.added)) {
           if (isPill(record) || !isKnownShape(record)) continue
           if (shouldSyncToCopy(record)) {
+            addedCount++
             if (readOnly && record.typeName === 'shape' && !(record as any).isLocked) {
               store.put([{ ...record, isLocked: true } as any])
               lockedIdsRef.current.add(record.id)
@@ -356,6 +382,7 @@ export function CanvasClipPanel({
         for (const [, to] of Object.values(changes.updated)) {
           if (isPill(to) || !isKnownShape(to)) continue
           if (shouldSyncToCopy(to)) {
+            updatedCount++
             if (readOnly && to.typeName === 'shape' && lockedIdsRef.current.has(to.id)) {
               store.put([{ ...to, isLocked: true } as any])
             } else {
@@ -369,9 +396,19 @@ export function CanvasClipPanel({
           if (isPill(record)) continue
           if (isDocRecord(record)) {
             try { store.remove([record.id]) } catch { /* might not exist */ }
+            removedCount++
           }
         }
       })
+      if (probe.isEnabled('hud') && (addedCount || updatedCount || removedCount)) {
+        probe.record('hud', 'hud-main-to-copy-sync', performance.now() - t0, {
+          addedCount,
+          updatedCount,
+          removedCount,
+          lockCamera,
+          readOnly,
+        })
+      }
     }, { source: 'all', scope: 'document' })
 
     // copy → main (re-lock fleet shapes so they stay locked on main canvas)
@@ -388,6 +425,7 @@ export function CanvasClipPanel({
     const isFleetShape = (r: any) =>
       r.typeName === 'shape' && FLEET_SHAPE_TYPES.has(r.type)
     const unsubCopy = store.listen(({ changes }) => {
+      const t0 = probe.isEnabled('hud') ? performance.now() : 0
       // ADDED — a structural op (spawn / paste). store.put with source:'user'
       // records on the main undo stack; a stopping point *before* it isolates
       // this op as its own undo step instead of gluing onto the prior edit.
@@ -443,6 +481,16 @@ export function CanvasClipPanel({
         for (const record of removed) {
           try { mainEditor.store.remove([record.id]) } catch { /* might not exist */ }
         }
+      }
+      if (probe.isEnabled('hud') && (added.length || updated.length || removed.length)) {
+        probe.record('hud', 'hud-copy-to-main-sync', performance.now() - t0, {
+          addedCount: added.length,
+          updatedCount: updated.length,
+          removedCount: removed.length,
+          lockCamera,
+          gestureOpen: gestureOpenRef.current,
+          customGestureOpen: !!customGestureActiveRef?.current,
+        })
       }
     }, { source: 'user', scope: 'document' })
 
