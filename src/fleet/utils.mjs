@@ -6,7 +6,7 @@ import { baseMacros } from '../../shared/katex-base-macros.mjs'
 import { myTldaUrl } from './tldaUrl.mjs'
 import { baseName } from '../../shared/lineage-name.mjs'
 import { normalizeChatDisplayMathDelimiters } from '../../shared/chat-math-normalize.mjs'
-import { rewriteBareLocalPaths, rewriteLocalFileAnchors } from '../../shared/chat-local-link-safety.mjs'
+import { rewriteBareLocalPaths } from '../../shared/chat-local-link-safety.mjs'
 // Utility functions. Agent lookups read from fleet-data directly.
 
 const _tldaToken = null // was from state.mjs (removed)
@@ -414,9 +414,9 @@ export function renderMarkdown(html, extraMacros) {
   // Make links open in new tab (skip links that already have target)
   result = result.replace(/<a(?![^>]*target=)([^>]*href=")/g, '<a target="_blank"$1')
 
-  // Local paths should render as file chips/spans, not clickable `~/...` links.
-  // Also avoid chipifying local path text inside existing anchors.
-  result = rewriteBareLocalPaths(rewriteLocalFileAnchors(result))
+  // Bare local paths should render as file chips/spans, but authored links stay
+  // links. A chip promises an attached artifact; a link promises navigation.
+  result = rewriteBareLocalPaths(result)
 
   // File:line references (skip inside tags)
   result = result.replace(/((?:<[^>]*>)|(?:[^<]+))/g, (segment) => {
