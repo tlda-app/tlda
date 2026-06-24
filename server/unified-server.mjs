@@ -32,7 +32,7 @@ import { spawn, spawn as cpSpawn } from 'child_process'
 // Runtime guard: warn on execSync in server process (tmux commands still use it)
 // TODO: migrate tmux commands to async exec, then ban execSync entirely
 import path from 'path'
-const { dirname, join, resolve } = path
+const { basename, dirname, join, resolve } = path
 import { fileURLToPath } from 'url'
 import fs from 'fs'
 const { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, openSync, statSync } = fs
@@ -2207,6 +2207,15 @@ app.use('/docs', (req, res, next) => {
   if (livePageMatch) {
     const texBase = livePageMatch[1]
     const pageNum = parseInt(livePageMatch[2], 10)
+    const project = readProject(name)
+    const targets = Array.isArray(project?.targets) && project.targets.length > 0
+      ? project.targets
+      : [{ texBase: basename(project?.mainFile || 'main.tex', '.tex'), pages: project?.pages || 0 }]
+    const target = targets.find(t => t?.texBase === texBase)
+    const pageLimit = Number(target?.pages || 0)
+    if (!target || pageNum < 1 || (pageLimit > 0 && pageNum > pageLimit)) {
+      return res.status(404).json({ error: 'Page out of range' })
+    }
     try {
       const { buildCurrentPage } = await import('./lib/shadow-repo.mjs')
       const built = await buildCurrentPage(name, pageNum, texBase)
