@@ -159,10 +159,10 @@ export async function initShadowRepo(name) {
   writeFileSync(join(repoDir, 'CLAUDE.md'), claudeMd)
 
   const commitMsgHook = `#!/bin/sh\n# Block agent commits to shadow repo — only the server's commitSnapshot should write here.\nmsg=$(cat "$1")\nif ! echo "$msg" | grep -qE "^Build at "; then\n  echo "ERROR: Direct commits to this shadow repo are blocked." >&2\n  echo "Write your changes in your project source directory instead." >&2\n  echo "See CLAUDE.md in this repo for details." >&2\n  exit 1\nfi\n`
+  await execAsync('git add .gitignore CLAUDE.md && git commit -m "init"', { cwd: repoDir, timeout: 10000 })
+
   const hookPath = join(repoDir, '.git', 'hooks', 'commit-msg')
   writeFileSync(hookPath, commitMsgHook, { mode: 0o755 })
-
-  await execAsync('git add .gitignore CLAUDE.md && git commit -m "init"', { cwd: repoDir, timeout: 10000 })
 
   return repoDir
 }

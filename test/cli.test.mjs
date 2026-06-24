@@ -11,7 +11,7 @@
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, unlinkSync } from 'node:fs'
+import { appendFileSync, mkdtempSync, writeFileSync, mkdirSync, rmSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
@@ -283,6 +283,30 @@ describe('shadow mirror refs', () => {
   function git(cwd, args) {
     return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim()
   }
+
+  it('initializes a fresh shadow repo before installing the blocking commit hook', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'tlda-shadow-init-test-'))
+
+    try {
+      const { initProjectStore, projectDir } = await import('../server/lib/project-store.mjs')
+      const { initShadowRepo } = await import('../server/lib/shadow-repo.mjs')
+
+      initProjectStore(root)
+      mkdirSync(projectDir('fresh-shadow'), { recursive: true })
+
+      const repo = await initShadowRepo('fresh-shadow')
+      assert.equal(git(repo, ['log', '--format=%s', '-1']), 'init')
+
+      appendFileSync(join(repo, 'CLAUDE.md'), '\nmanual change\n')
+      git(repo, ['add', 'CLAUDE.md'])
+      assert.throws(
+        () => git(repo, ['commit', '-m', 'manual edit']),
+        /Direct commits to this shadow repo are blocked/,
+      )
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
 
   it('imports a shadow bundle as refs without moving the checked-out branch', () => {
     const root = mkdtempSync(join(tmpdir(), 'tlda-mirror-test-'))
