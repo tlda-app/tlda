@@ -11,7 +11,7 @@
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, unlinkSync } from 'node:fs'
+import { appendFileSync, mkdtempSync, writeFileSync, mkdirSync, rmSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
@@ -272,5 +272,79 @@ describe('source hashes', () => {
     assert.equal(files[0].path, 'a.tex')
 
     rmSync(dir, { recursive: true, force: true })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Shadow mirror refs
+// ---------------------------------------------------------------------------
+
+describe('shadow mirror refs', () => {
+  function git(cwd, args) {
+    return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim()
+  }
+
+  it('initializes a fresh shadow repo before installing the blocking commit hook', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'tlda-shadow-init-test-'))
+
+    try {
+      const { initProjectStore, projectDir } = await import('../server/lib/project-store.mjs')
+      const { initShadowRepo } = await import('../server/lib/shadow-repo.mjs')
+
+      initProjectStore(root)
+      mkdirSync(projectDir('fresh-shadow'), { recursive: true })
+
+      const repo = await initShadowRepo('fresh-shadow')
+      assert.equal(git(repo, ['log', '--format=%s', '-1']), 'init')
+
+      appendFileSync(join(repo, 'CLAUDE.md'), '\nmanual change\n')
+      git(repo, ['add', 'CLAUDE.md'])
+      assert.throws(
+        () => git(repo, ['commit', '-m', 'manual edit']),
+        /Direct commits to this shadow repo are blocked/,
+      )
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('imports a shadow bundle as refs without moving the checked-out branch', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tlda-mirror-test-'))
+    const shadow = join(root, 'shadow')
+    const source = join(root, 'source')
+    mkdirSync(shadow)
+    mkdirSync(source)
+
+    try {
+      git(shadow, ['init'])
+      git(shadow, ['config', 'user.email', 'tlda@test'])
+      git(shadow, ['config', 'user.name', 'tlda'])
+      writeFileSync(join(shadow, 'main.tex'), 'one\n')
+      git(shadow, ['add', 'main.tex'])
+      git(shadow, ['commit', '-m', 'Build at test'])
+      const hash = git(shadow, ['rev-parse', 'HEAD'])
+      const hash7 = hash.slice(0, 7)
+      const bundle = join(root, 'shadow.bundle')
+      git(shadow, ['bundle', 'create', bundle, '--all'])
+
+      git(source, ['init'])
+      git(source, ['config', 'user.email', 'user@test'])
+      git(source, ['config', 'user.name', 'user'])
+      writeFileSync(join(source, 'notes.txt'), 'working tree stays here\n')
+      git(source, ['add', 'notes.txt'])
+      git(source, ['commit', '-m', 'source root'])
+      const beforeHead = git(source, ['rev-parse', 'HEAD'])
+
+      git(source, ['bundle', 'verify', bundle])
+      git(source, ['fetch', bundle, `+${hash}:refs/tags/shadow/${hash7}`])
+      git(source, ['cat-file', '-e', `${hash}^{commit}`])
+      git(source, ['update-ref', 'refs/tlda/shadow/HEAD', hash])
+
+      assert.equal(git(source, ['rev-parse', `shadow/${hash7}`]), hash)
+      assert.equal(git(source, ['rev-parse', 'refs/tlda/shadow/HEAD']), hash)
+      assert.equal(git(source, ['rev-parse', 'HEAD']), beforeHead)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })

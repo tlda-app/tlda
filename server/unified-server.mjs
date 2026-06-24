@@ -32,7 +32,7 @@ import { spawn, spawn as cpSpawn } from 'child_process'
 // Runtime guard: warn on execSync in server process (tmux commands still use it)
 // TODO: migrate tmux commands to async exec, then ban execSync entirely
 import path from 'path'
-const { dirname, join, resolve } = path
+const { basename, dirname, join, resolve } = path
 import { fileURLToPath } from 'url'
 import fs from 'fs'
 const { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, openSync, statSync } = fs
@@ -46,8 +46,8 @@ import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
 import { labelsForAgent, parseFilter, evalExpr } from '../shared/fleet-labels.mjs'
 import { phaseFromName, baseName, PHASES } from '../shared/lineage-name.mjs'
 import { daemonHelloDecision } from '../shared/daemon-identity.mjs'
-import { initProjectStore, listProjects, readProject, getProjectsDir } from './lib/project-store.mjs'
-import { resetStaleBuildStates, killAllBuilds, runBuild } from './lib/build-runner.mjs'
+import { initProjectStore, listProjects, readProject, updateProject, getProjectsDir } from './lib/project-store.mjs'
+import { resetStaleBuildStates, killAllBuilds, runBuild, setShadowMirrorHandler } from './lib/build-runner.mjs'
 import { writeSentinel } from './lib/sentinel.mjs'
 import projectRoutes, { processProjectPush } from './routes/projects.mjs'
 import { initAuth, isAuthEnabled, validateToken, extractToken, requireRead, loginRoute } from './lib/auth.mjs'
@@ -526,6 +526,20 @@ function failPendingRpcsForMachine(machineId, reason = 'daemon disconnected') {
   }
 }
 
+setShadowMirrorHandler(async ({ name, hash, bundleBase64 }) => {
+  const project = readProject(name)
+  const machineId = project?.lastSourceMachineId || null
+  if (!machineId) {
+    throw new Error(`no source daemon recorded for ${name}`)
+  }
+  const result = await sendRpc(machineId, 'mirror-shadow-ref', {
+    project: name,
+    hash,
+    bundleBase64,
+  })
+  return { ...result, machine_id: machineId }
+})
+
 // No server-side echo suppression. Dedup is client-side: the WS reply
 // includes the event ID, which the client maps to its optimistic event
 // before the echo arrives (WS message ordering guarantees this).
@@ -975,7 +989,6 @@ onGlobalEvent((event) => {
     broadcastEvent('projects-updated', { name: event.name })
   }
   if (event?.type === 'version-committed') {
-    broadcastDaemonVersionCommitted(event.name, event.hash)
     // Auto-spawn a QA watcher agent when new content is committed to the shadow repo.
     // version-committed is the semantic trigger (new prose exists); build-card is UI-level.
     // fleet-spawn.py pre-registers the agent before starting tmux, so findAgent() works
@@ -2194,6 +2207,15 @@ app.use('/docs', (req, res, next) => {
   if (livePageMatch) {
     const texBase = livePageMatch[1]
     const pageNum = parseInt(livePageMatch[2], 10)
+    const project = readProject(name)
+    const targets = Array.isArray(project?.targets) && project.targets.length > 0
+      ? project.targets
+      : [{ texBase: basename(project?.mainFile || 'main.tex', '.tex'), pages: project?.pages || 0 }]
+    const target = targets.find(t => t?.texBase === texBase)
+    const pageLimit = Number(target?.pages || 0)
+    if (!target || pageNum < 1 || (pageLimit > 0 && pageNum > pageLimit)) {
+      return res.status(404).json({ error: 'Page out of range' })
+    }
     try {
       const { buildCurrentPage } = await import('./lib/shadow-repo.mjs')
       const built = await buildCurrentPage(name, pageNum, texBase)
@@ -4587,24 +4609,6 @@ async function setSentinelSyncError(projectName, syncError) {
   }
 }
 
-function broadcastDaemonVersionCommitted(projectName, hash) {
-  if (daemonConnections.size === 0) return
-  const project = readProject(projectName)
-  const repoPath = join(getProjectsDir(), projectName, 'shadow-repo')
-  for (const [, dws] of daemonConnections) {
-    if (dws.readyState !== 1) continue
-    try {
-      dws.send(JSON.stringify({
-        type: 'version-committed',
-        project: projectName,
-        hash,
-        repoPath,
-        autoSync: project?.autoSync !== false,
-      }))
-    } catch {}
-  }
-}
-
 async function handleDaemonWsMessage(ws, msg) {
   const { type } = msg
 
@@ -5055,6 +5059,9 @@ async function handleDaemonWsMessage(ws, msg) {
   if (type === 'source-change') {
     const { project, files, deletedFiles, editedBy } = msg
     if (!project) return
+    if (readProject(project)) {
+      updateProject(project, { lastSourceMachineId: ws._machineId, lastSourceMachineAt: Date.now() })
+    }
     // Hand off to the same pipeline used by HTTP /api/projects/:name/push.
     processProjectPush(project, { files, deletedFiles, editedBy }).then(result => {
       if (!result.ok) {

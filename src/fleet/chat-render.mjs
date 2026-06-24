@@ -391,31 +391,6 @@ export function renderChatLine(m, ctx) {
     </div>` + text
   }
 
-  // Convert uploaded file links into chips. Supports the old named route
-  // (/api/files/name.ext) and the current upload route (/api/file?path=...).
-  text = text.replace(/<a\s[^>]*href="((?:https?:\/\/[^"]*)?\/api\/(?:files\/[^"]+|file\?path=[^"]+))"[^>]*>([^<]*)<\/a>/gi, (_match, url, label) => {
-    const normalizedUrl = url.replace(/&amp;/g, '&')
-    let fileName = ''
-    const oldRoute = normalizedUrl.match(/\/api\/files\/([^?#]+)/)
-    if (oldRoute) {
-      fileName = decodeURIComponent(oldRoute[1])
-    } else {
-      try {
-        const parsed = new URL(normalizedUrl, 'http://tlda.local')
-        fileName = decodeURIComponent(parsed.searchParams.get('path') || '').split('/').pop() || label
-      } catch {
-        fileName = label
-      }
-    }
-    const ext = fileName.split('.').pop()?.toLowerCase() || ''
-    const isImage = /^(png|jpg|jpeg|gif|webp|svg)$/.test(ext)
-    if (isImage) {
-      return `<img class="chat-image" src="${url}" alt="${esc(label)}">`
-    }
-    const icon = ext === 'pdf' ? '📕' : ext === 'md' ? '📄' : '📎'
-    return `<span class="ref-chip ref-chip-doc" data-url="${esc(url)}" draggable="true"><span class="ref-chip-doc-icon">${icon}</span>${esc(label)}</span>`
-  })
-
   // Replace remaining {{att:N}} markers (standalone, not in markdown image syntax)
   text = text.replace(/\{\{att:(\d+)\}\}/g, (_, idx) => {
     const att = m._inlineAttachments?.[+idx]
@@ -460,11 +435,15 @@ export function renderChatLine(m, ctx) {
     if (a.type === 'shared-doc') {
       const rawTarget = String(a.url || a.path || '').trim()
       if (!rawTarget) return ''
-      const href = /^(?:https?:\/\/|\/api\/)/i.test(rawTarget)
+      const fileUrl = /^(?:https?:\/\/|\/api\/)/i.test(rawTarget)
         ? rawTarget
         : `/api/file?path=${encodeURIComponent(rawTarget)}`
       const label = a.title || a.name || rawTarget.split('/').pop() || rawTarget
-      return `<a href="${esc(href)}" target="_blank">${esc(label)}</a>`
+      const ext = (rawTarget || label).split('.').pop()?.toLowerCase() || ''
+      const icon = ext === 'pdf' ? '📕' : ext === 'md' ? '📄' : '📎'
+      const pathAttr = a.path ? ` data-path="${esc(a.path)}"` : ''
+      const titleAttr = label ? ` data-title="${esc(label)}"` : ''
+      return `<span class="ref-chip ref-chip-doc"${pathAttr} data-url="${esc(fileUrl)}"${titleAttr} draggable="true"><span class="ref-chip-doc-icon">${icon}</span>${esc(label)}</span>`
     }
     const agentId = (a.source || '').split(':')[1] || ''
     const agentName = agentId ? agentLabel(agentId) : ''

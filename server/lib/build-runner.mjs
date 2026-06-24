@@ -47,7 +47,7 @@ import { updateProject, sourceDir, outputDir, projectDir, readProject, listProje
 import { broadcastSignal, emitGlobalEvent } from './sync-rooms.mjs'
 import { writeSentinel } from './sentinel.mjs'
 import { snapshotBeforeBuild, recordGitSnapshot } from './history-store.mjs'
-import { commitSnapshot, currentVersion, initShadowFromProjectRepo } from './shadow-repo.mjs'
+import { commitSnapshot, currentVersion, initShadowFromProjectRepo, createShadowBundleBase64 } from './shadow-repo.mjs'
 import { appendBuildEntry } from './changelog.mjs'
 import { emitBuildComplete } from './webhooks.mjs'
 import { clearSynctexCache } from './synctex-query.mjs'
@@ -55,6 +55,12 @@ import { clearSynctexCache } from './synctex-query.mjs'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PROJECT_ROOT = join(__dirname, '..', '..')
 const SCRIPTS_DIR = join(PROJECT_ROOT, 'scripts')
+
+let mirrorShadowSnapshot = null
+
+export function setShadowMirrorHandler(handler) {
+  mirrorShadowSnapshot = typeof handler === 'function' ? handler : null
+}
 
 function convertScratchMarkdown(srcDir, addLog) {
   const scratchDir = join(srcDir, '.tlda', 'scratch')
@@ -1846,60 +1852,22 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
         })
         recordGitSnapshot(name, { commitHash: result.hash, commitMessage: result.message || `Build at ${new Date().toISOString()}`, pages: expectedPages ?? 0 })
         emitGlobalEvent('version-committed', { name, hash: result.hash, timestamp: result.timestamp })
-        // Mirror: fetch shadow tags into the working copy and advance the
-        // optional refs/tlda/shadow/HEAD pointer. We never touch the user's
-        // branches, index, or working tree — their `master` stays under their
-        // control and tracks their own remote (e.g. Overleaf). Agents and the
-        // user can reach the snapshots via plain git: `git diff shadow/abc1234`,
-        // `git checkout shadow/abc1234 -- path`, etc.
-        // No buildVersion early-return: the previous version of this code
-        // skipped when a newer build had started, on the assumption that the
-        // newer build's callback would mirror. That's wrong — if the newer
-        // build's source already matched the shadow tree (because the older
-        // build captured the change), commitSnapshot returns null and the
-        // newer callback never enters this block. Net result: nobody mirrors.
-        // All operations here are idempotent (git tag -f, fetch --tags --force,
-        // update-ref) so running for both builds is harmless. The last call
-        // wins, leaving tag and ref pointing at the latest shadow hash.
+        // Mirror: send the committed shadow snapshot to the daemon that owns the
+        // paper working copy and import it there as refs only. The server-local
+        // shadow-repo path is not a transport in the multi-machine deployment.
         const hash7 = result.hash.slice(0, 7)
         try {
-          const project = readProject(name)
-          if (!project?.sourceDir) {
-            console.log(`[mirror] ${name}@${hash7} skipped: no sourceDir in project.json`)
-          } else if (!existsSync(join(project.sourceDir, '.git'))) {
-            console.log(`[mirror] ${name}@${hash7} skipped: sourceDir ${project.sourceDir} has no .git`)
-          } else {
-            const cwd = project.sourceDir
-            const shadowDir = join(projDir, 'shadow-repo')
-            console.log(`[mirror] ${name}@${hash7} starting → ${cwd}`)
-            // Tag the shadow commit so shadow/<hash> resolves to it.
-            const tag = `shadow/${hash7}`
-            await _execAsync(`git tag -f "${tag}"`, { cwd: shadowDir, timeout: 5000 })
-            try {
-              await _execAsync(`git remote get-url tlda-shadow`, { cwd, timeout: 5000 })
-            } catch {
-              await _execAsync(`git remote add tlda-shadow "${shadowDir}"`, { cwd, timeout: 5000 })
-            }
-            try {
-              await _gitRetryOnLock(() => _execAsync(`git fetch --tags --force tlda-shadow`, { cwd, timeout: 10000 }))
-            } catch (fetchErr) {
-              if (/cannot lock ref|unable to update local ref/i.test(fetchErr.message)) {
-                await _execAsync(`git remote prune tlda-shadow`, { cwd, timeout: 10000 })
-                await _gitRetryOnLock(() => _execAsync(`git fetch --tags --force tlda-shadow`, { cwd, timeout: 10000 }))
-              } else {
-                throw fetchErr
-              }
-            }
-            // Advance the optional shadow-HEAD pointer. Lives under refs/tlda/
-            // so it doesn't appear in `git branch` or `git log` output unless
-            // the user asks for it explicitly.
-            await _gitRetryOnLock(() => _execAsync(`git update-ref refs/tlda/shadow/HEAD ${result.hash}`, { cwd, timeout: 5000 }))
-            updateProject(name, { lastMirrorSuccess: new Date().toISOString() })
-            console.log(`[mirror] ${name}@${hash7} ok: tag shadow/${hash7} + refs/tlda/shadow/HEAD updated in ${cwd}`)
+          if (!mirrorShadowSnapshot) {
+            throw new Error('no daemon mirror handler registered')
           }
+          const bundleBase64 = await createShadowBundleBase64(name, result.hash)
+          const mirrorResult = await mirrorShadowSnapshot({ name, hash: result.hash, bundleBase64 })
+          updateProject(name, { lastMirrorSuccess: new Date().toISOString(), lastMirrorFailure: null })
+          console.log(`[mirror] ${name}@${hash7} ok via daemon ${mirrorResult?.machine_id || 'unknown'} → ${mirrorResult?.sourceDir || 'source repo'}`)
         } catch (mirrorErr) {
           console.error(`[mirror] ${name}@${hash7} failed: ${mirrorErr.message}`)
           ctx.addLog(`mirror to working copy failed (non-fatal): ${mirrorErr.message}`)
+          updateProject(name, { lastMirrorFailure: { at: new Date().toISOString(), hash: result.hash, message: mirrorErr.message } })
           // Include lastMirrorSuccess so the failure handler can narrow the responsible-agent
           // window to edits that happened after the last clean mirror.
           const lastMirrorSuccess = readProject(name)?.lastMirrorSuccess || null

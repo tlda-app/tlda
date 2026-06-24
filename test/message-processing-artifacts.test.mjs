@@ -54,7 +54,9 @@ function renderMarkdownStub(text) {
 }
 
 function renderMarkdownWithOrdinaryLinks(text) {
-  return renderMarkdownStub(text).replace(/https?:\/\/[^\s<]+/g, url => `<a href="${url}" target="_blank">${url}</a>`)
+  return renderMarkdownStub(text)
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, href) => `<a href="${href}" target="_blank">${label}</a>`)
+    .replace(/https?:\/\/[^\s<]+/g, url => `<a href="${url}" target="_blank">${url}</a>`)
 }
 
 function renderCtx(renderMarkdown = renderMarkdownStub) {
@@ -154,7 +156,7 @@ test('backticked local path remains literal and does not upload', withTempDir(as
   }
 }))
 
-test('legacy shared-doc metadata with path renders as ordinary link, not shared-doc chip UI', () => {
+test('shared-doc metadata with path renders as an artifact chip, not a navigation link', () => {
   const html = renderChatLine({
     type: 'chat',
     from: 'fleet:agent',
@@ -174,20 +176,17 @@ test('legacy shared-doc metadata with path renders as ordinary link, not shared-
   }, renderCtx())
   const dom = new JSDOM(`<div id="root">${html}</div>`)
   const root = dom.window.document.getElementById('root')
-  const sharedChip = dom.window.document.querySelector('.ref-chip-shared-doc, .shared-doc.doc-chip')
-  const refChip = dom.window.document.querySelector('.ref-chip')
+  const chip = dom.window.document.querySelector('.ref-chip-doc')
   const link = dom.window.document.querySelector('a')
 
-  assert.equal(sharedChip, null, 'legacy shared-doc metadata should not render shared-doc chip classes')
-  assert.equal(refChip, null, 'legacy shared-doc metadata should not render generated ref-chip UI')
-  assert.ok(link)
-  assert.equal(link.getAttribute('href'), '/api/file?path=%2Ftmp%2Fagent-report.md')
-  assert.equal(link.getAttribute('target'), '_blank')
+  assert.ok(chip)
+  assert.equal(link, null)
+  assert.equal(chip.getAttribute('data-path'), '/tmp/agent-report.md')
+  assert.equal(chip.getAttribute('data-url'), '/api/file?path=%2Ftmp%2Fagent-report.md')
+  assert.equal(chip.getAttribute('data-title'), 'agent-report.md')
+  assert.equal(chip.getAttribute('draggable'), 'true')
   assert.match(root.textContent, /agent-report\.md/)
-  assert.equal(link.hasAttribute('data-doc'), false)
-  assert.equal(link.hasAttribute('data-path'), false)
-  assert.equal(link.hasAttribute('draggable'), false)
-  assert.doesNotMatch(root.innerHTML, /ref-chip-shared-doc|shared-doc|doc-chip|data-share-id|tool-ref-preview/)
+  assert.doesNotMatch(root.innerHTML, /ref-chip-shared-doc|shared-doc|doc-chip|data-share-id|tool-ref-preview|<a\b/)
 })
 
 test('literal doc token with URL uses ordinary markdown link handling, not shared-doc output', () => {
@@ -210,6 +209,45 @@ test('literal doc token with URL uses ordinary markdown link handling, not share
   assert.equal(dom.window.document.querySelector('[data-share-id]'), null)
   assert.match(root.textContent, /\[doc:psc-report\] PSC report/)
   assert.doesNotMatch(root.innerHTML, /ref-chip-shared-doc|class="shared-doc|doc-chip|data-share-id|Shared doc:/)
+})
+
+test('/api/file markdown links render as links, not file chips', () => {
+  const html = renderChatLine({
+    type: 'chat',
+    from: 'fleet:agent',
+    to: 'fleet:skip',
+    text: '[scratch/e2-argument-outline.md](/api/file?path=%2FUsers%2Fskip%2Fwork%2Fbalancing-act%2Fscratch%2Fe2-argument-outline.md)',
+    timestamp: '2026-06-23T22:19:32.000Z',
+  }, renderCtx(renderMarkdownWithOrdinaryLinks))
+  const dom = new JSDOM(`<div id="root">${html}</div>`)
+  const link = dom.window.document.querySelector('a')
+
+  assert.ok(link)
+  assert.equal(link.getAttribute('href'), '/api/file?path=%2FUsers%2Fskip%2Fwork%2Fbalancing-act%2Fscratch%2Fe2-argument-outline.md')
+  assert.equal(dom.window.document.querySelector('.ref-chip-doc, .md-file-card'), null)
+})
+
+test('resolved local file attachment tokens still render as artifact chips', () => {
+  const html = renderChatLine({
+    type: 'chat',
+    from: 'fleet:agent',
+    to: 'fleet:skip',
+    text: 'Report: {{att:0}}',
+    _inlineAttachments: [{
+      type: 'file',
+      path: '/Users/skip/work/balancing-act/scratch/e2-argument-outline.md',
+      name: 'e2-argument-outline.md',
+      url: '/api/file?path=%2Ftmp%2Ffleet-uploads%2Fe2-argument-outline.md',
+    }],
+    timestamp: '2026-06-23T22:19:32.000Z',
+  }, renderCtx(renderMarkdownWithOrdinaryLinks))
+  const dom = new JSDOM(`<div id="root">${html}</div>`)
+  const chip = dom.window.document.querySelector('.ref-chip-doc')
+
+  assert.ok(chip)
+  assert.equal(chip.getAttribute('data-path'), '/Users/skip/work/balancing-act/scratch/e2-argument-outline.md')
+  assert.equal(chip.getAttribute('data-url'), '/api/file?path=%2Ftmp%2Ffleet-uploads%2Fe2-argument-outline.md')
+  assert.equal(dom.window.document.querySelector('a'), null)
 })
 
 test('literal doc token without link target stays ordinary readable text', () => {

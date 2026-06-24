@@ -15,32 +15,6 @@ function fileChip(path, label = '') {
   return `<span class="${cls}" data-path="${esc(cleanPath)}"${drag}><span class="md-file-chip">${esc(name)}</span><span class="md-file-body"></span></span>`
 }
 
-function localAnchorToChip(href, label) {
-  const decodedHref = decodeHtmlAttr(href)
-  let path = decodedHref
-  try {
-    const url = new URL(decodedHref, 'http://tlda.local')
-    if (url.pathname === '/api/file') {
-      path = url.searchParams.get('path') || decodedHref
-    }
-  } catch {}
-
-  if (/^(?:~\/|\/Users\/|\/tmp\/).+\.md$/i.test(path)) {
-    return fileChip(path, label)
-  }
-  if (/^(?:~\/|\/Users\/|\/tmp\/)/.test(path)) {
-    return `<span class="file-path" title="${esc(path)}">${esc(label || path.replace(/^\/Users\/[^/]+\//, '~/'))}</span>`
-  }
-  return null
-}
-
-export function rewriteLocalFileAnchors(html = '') {
-  return String(html).replace(/<a\b([^>]*)href="([^"]+)"([^>]*)>([\s\S]*?)<\/a>/gi, (match, pre, href, post, labelHtml) => {
-    const label = labelHtml.replace(/<[^>]*>/g, '').trim()
-    return localAnchorToChip(href, label) || match
-  })
-}
-
 export function rewriteBareLocalPaths(html = '') {
   let inCode = 0
   let inAnchor = 0
