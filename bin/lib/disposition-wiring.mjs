@@ -8,6 +8,13 @@
 // fake clock alongside a real DispositionScheduler.
 //
 // Suppression conditions (any one keeps the poke from firing for a turn):
+//   0. OWED-WORK GATE (here, decided at turn_ended): the agent must have been
+//      addressed by a real chat or explicit delegation. A boot/orientation turn
+//      from a freshly spawned taskless agent is not owed work; asking "what's the
+//      next action?" there can send the agent inventing work.
+//   0b. SUBSTANTIVE-TURN GATE (here, decided at turn_ended): the turn must have
+//      emitted a real-work activity. Pure startup, reading, or chat-only turns
+//      are not enough signal to justify a "next action" poke.
 //   1. ABSENCE GATE (in the scheduler, checked at fire time): Skip recently
 //      chatted with THAT target agent → he's in that room → stay quiet for that
 //      agent. Presence = a chat from Skip to that agent (UI or terminal, both
@@ -46,6 +53,7 @@ export function createDispositionWiring({
   const knownBotIds = new Set([...ignoreIds].filter(id => id !== ownerId))
   knownBotIds.add(agentId)
   const lastInboundFrom = new Map()    // agentId → from_id of the message that triggered its current turn
+  const hasOwedWork = new Set()        // agentIds with a real chat/delegation antecedent
   const workedThisTurn = new Set()     // agentIds that emitted a real-work tool since their last turn end
 
   return {
@@ -84,7 +92,10 @@ export function createDispositionWiring({
       if (d.type === 'chat') {
         // Track the trigger of the recipient's turn (any sender — Skip, another
         // agent, or the bot's own poke). A later inbound overrides an earlier one.
-        if (d.to_id && d.to_id !== d.from_id) lastInboundFrom.set(d.to_id, d.from_id)
+        if (d.to_id && d.to_id !== d.from_id) {
+          lastInboundFrom.set(d.to_id, d.from_id)
+          if (!knownBotIds.has(d.from_id)) hasOwedWork.add(d.to_id)
+        }
         if (d.from_id === ownerId) {
           if (d.to_id && d.to_id !== agentId) {
             lastSkipActivityByAgent.set(d.to_id, now())               // presence for that agent
@@ -92,6 +103,12 @@ export function createDispositionWiring({
           }
           if (d.to_id === agentId && d.text) onKickCommand(d.text)    // manual kick to the bot
         }
+        return
+      }
+
+      if (d.type === 'delegate') {
+        const id = d.agent_id || d.agent || d.to_id
+        if (id && !ignoreIds.has(id)) hasOwedWork.add(id)
         return
       }
 
@@ -116,8 +133,10 @@ export function createDispositionWiring({
       if (d.type === 'turn_ended') {
         const id = d.agent_id || d.from_id
         if (!id || ignoreIds.has(id)) return
+        if (!hasOwedWork.has(id)) { log('suppress-no-owed-work', id); workedThisTurn.delete(id); lastInboundFrom.delete(id); return }
         const triggeredByBot = lastInboundFrom.get(id) === agentId
         const didWork = workedThisTurn.has(id)
+        if (!didWork) { log('suppress-non-substantive-turn', id); lastInboundFrom.delete(id); return }
         // This turn is over — consume its per-turn trigger/work state so the
         // NEXT turn (which may be autonomous, with no new inbound) starts clean.
         lastInboundFrom.delete(id)
