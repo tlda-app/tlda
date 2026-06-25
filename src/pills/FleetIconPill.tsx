@@ -17,6 +17,7 @@ import React, { useState, useCallback, useEffect, useRef } from 'react'
 import { stopEventPropagation, useUniqueSafeId } from 'tldraw'
 import type { Editor } from 'tldraw'
 import { useFleetAgents, useFleetIdentity } from '../fleet-data-adapter'
+import { countAwakeFleetAgents } from '../fleet/agent-counts'
 import { createFleetLayout } from '../shapes/fleet-utils'
 import './FleetIconPill.css'
 
@@ -178,7 +179,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
   const [, setDragAnchor] = useState<{ x: number; y: number } | null>(null)
 
-  const aliveCount = agents.filter((a: any) => !a.dead && !a.human).length
+  const aliveCount = countAwakeFleetAgents(agents)
 
   // Refs for closure-stable drag state (used inside window listeners)
   const justDraggedRef = useRef(false)
