@@ -7,6 +7,7 @@ import { baseName } from '../../shared/lineage-name.mjs'
 // @ts-ignore — vanilla JS module
 import { recentChatTargetAgents } from '../fleet/layout-targets.mjs'
 import { getPref } from '../preferences'
+import { isDocumentPageShape } from './document-pages'
 
 /** Canonical list of fleet shape types — the single source of truth for
  *  ownership filtering, visibility, copy gating, and hit-test exclusion.
@@ -265,8 +266,7 @@ const LANE_STEP = 20000
  *  All sessions compute the same value from the shared document pages, so every
  *  owner's lane index maps to the same absolute band. */
 function canonicalBaseY(editor: Editor): number {
-  const pages = editor.getCurrentPageShapes().filter(
-    s => (s.type as string) === 'svg-page' || (s.type as string) === 'html-page')
+  const pages = editor.getCurrentPageShapes().filter(isDocumentPageShape)
   let minTop = Infinity
   for (const p of pages) {
     const b = editor.getShapePageBounds(p.id)
@@ -385,8 +385,7 @@ export function createFleetLayout(editor: Editor, agents: any[], variant: '2col'
 }
 
 function getDocumentPageBounds(editor: Editor) {
-  const pageShapes = editor.getCurrentPageShapes().filter(s =>
-    (s.type as string) === 'html-page' || (s.type as string) === 'svg-page')
+  const pageShapes = editor.getCurrentPageShapes().filter(isDocumentPageShape)
   let minLeft = Infinity, minTop = Infinity, maxRight = -Infinity
   const pagesWithBounds: any[] = []
   for (const ps of pageShapes) {

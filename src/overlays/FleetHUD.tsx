@@ -15,6 +15,7 @@ import { useFleetAgents, useFleetIdentity } from '../fleet-data-adapter'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getDeviceId } from '../fleet/fleet-data.mjs'
 import { getMyAnchorId, isMyFleetShape, FLEET_INTERACTION_SHAPE_SELECTOR, FLEET_SHAPE_TYPES, adoptLegacyFleetShapes, layoutOffset, ensureMyLaneDisjoint } from '../shapes/fleet-utils'
+import { isDocumentPageShape } from '../shapes/document-pages'
 import { fleetTouchGestureActiveRef, postTouchTelemetry, setTouchDiagStatus, useFleetGestures } from './useFleetGestures'
 import { SuggestionTip } from '../shapes/FleetChatShape'
 import { log } from '../logger'
@@ -220,7 +221,7 @@ function getFleetHudDiagnostic(editor: Editor) {
 
   for (const s of shapes as any[]) {
     const type = s.type as string
-    if (type === 'svg-page' || type === 'html-page') docShapeCount += 1
+    if (isDocumentPageShape(s)) docShapeCount += 1
     if (s.id === myAnchorId || String(s.id).startsWith(`shape:fleet-hud-anchor--${humanId?.replace('fleet:', '') || ''}--`)) {
       sameUserAnchorCount += 1
     }
@@ -308,7 +309,7 @@ export function FleetHUD({
   // the window.innerWidth/2 fallback and place fleet shapes inside the document text.
   const [docShapesReady, setDocShapesReady] = useState(() => {
     const s = mainEditor.getCurrentPageShapes()
-    return s.some(s => (s.type as string) === 'svg-page' || (s.type as string) === 'html-page')
+    return s.some(isDocumentPageShape)
   })
   const agents = useFleetAgents()
   const hudRef = useRef<HTMLDivElement>(null)
@@ -352,7 +353,7 @@ export function FleetHUD({
   useEffect(() => {
     const shapes = mainEditor.getCurrentPageShapes()
     const fleetShapes = shapes.filter(isMyFleetShape)
-    const docShapes = shapes.filter(s => (s.type as string) === 'svg-page' || (s.type as string) === 'html-page')
+    const docShapes = shapes.filter(isDocumentPageShape)
     const state = {
       expanded,
       hasIdentity: !!identityId,
@@ -395,7 +396,7 @@ export function FleetHUD({
   useEffect(() => {
     const shapes = mainEditor.getCurrentPageShapes()
     const fleetShapes = shapes.filter(isMyFleetShape)
-    const docShapes = shapes.filter(s => (s.type as string) === 'svg-page' || (s.type as string) === 'html-page')
+    const docShapes = shapes.filter(isDocumentPageShape)
     log.debug('fleet-gesture', 'fleet hud load state', {
       expanded,
       hasIdentity: !!identityId,
@@ -449,8 +450,7 @@ export function FleetHUD({
 
   const recenterHudForBounds = useCallback((bounds: ClipBounds | null): boolean => {
     if (!bounds || !docShapesReady) return false
-    const docShapes = mainEditor.getCurrentPageShapes().filter(s =>
-      (s.type as string) === 'html-page' || (s.type as string) === 'svg-page')
+    const docShapes = mainEditor.getCurrentPageShapes().filter(isDocumentPageShape)
     if (docShapes.length === 0) return false
     let minPageX = Infinity
     for (const s of docShapes) {
@@ -595,7 +595,7 @@ export function FleetHUD({
     if (docShapesReady) return
     const unsub = mainEditor.store.listen(({ changes }) => {
       const hasPage = Object.values(changes.added).some((r: any) =>
-        r.typeName === 'shape' && (r.type === 'svg-page' || r.type === 'html-page'))
+        r.typeName === 'shape' && isDocumentPageShape(r))
       if (hasPage) {
         setDocShapesReady(true)
         // Only force recompute if we don't have a saved position
@@ -1044,8 +1044,7 @@ export function FleetHUD({
     // defer until docShapesReady — avoids the window.innerWidth/2 fallback that
     // placed fleet shapes in the middle of the document text.
     if (!docShapesReady) return null
-    const docShapes = mainEditor.getCurrentPageShapes().filter(s =>
-      (s.type as string) === 'html-page' || (s.type as string) === 'svg-page')
+    const docShapes = mainEditor.getCurrentPageShapes().filter(isDocumentPageShape)
     if (docShapes.length === 0) return null
     let minPageX = Infinity
     for (const s of docShapes) {
@@ -1081,8 +1080,7 @@ export function FleetHUD({
       ? projectedRight > 0 && projectedLeft < window.innerWidth
       : projectedLeft >= 0 && projectedRight <= window.innerWidth
     if (!userPannedRef.current && (!verticallyVisible || !horizontallyVisible)) {
-      const docShapes = mainEditor.getCurrentPageShapes().filter(s =>
-        (s.type as string) === 'html-page' || (s.type as string) === 'svg-page')
+      const docShapes = mainEditor.getCurrentPageShapes().filter(isDocumentPageShape)
       let minPageX = Infinity
       for (const s of docShapes) {
         const b = mainEditor.getShapePageBounds(s.id)
