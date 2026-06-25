@@ -2107,6 +2107,14 @@ function FleetChatInner({ shape }: { shape: any }) {
     const current = markdownLightboxRef.current
     if (!current) return
     setMarkdownLightbox({ ...current, pinned: true })
+    const note = editor.getShape(current.noteId)
+    if (note) {
+      editor.updateShape({
+        id: current.noteId,
+        type: "math-note",
+        meta: { ...note.meta, temporaryMarkdownLightbox: false },
+      } as unknown as EditorUpdateShapeInput)
+    }
     const bounds = editor.getShapePageBounds(current.noteId)
     editor.select(current.noteId)
     if (bounds) {
