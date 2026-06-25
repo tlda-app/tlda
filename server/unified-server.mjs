@@ -3355,6 +3355,7 @@ async function handleFleetWsMessage(ws, msg) {
         ...(ccResolved ? { cc: ccResolved } : {}),
         ...(processedAttachments ? { attachments: processedAttachments } : {}),
         ...(inline_attachments ? { inline_attachments } : {}),
+        ...(msg._tempId ? { client_temp_id: msg._tempId } : {}),
         ...(wiretapRecipients.length ? { wiretap_cc: wiretapRecipients } : {}),
         ...(context ? { context } : {}),
         ...(preambleRef ? { preambleRef } : {}),

@@ -45,7 +45,7 @@ import { appendToken } from '../authToken'
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useSuggestions, clearGroup, sendMessage, loadBefore, resolveFilter, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
 import type { Suggestion } from '../fleet-data-adapter'
-import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
+import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore, createTemporaryMarkdownColumn } from './FleetPillShape'
 import { agentDisplayName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
 import { ChatComposer } from './ChatComposer'
 import { AgentName, PhaseIcon } from './PhaseIcon'
@@ -1970,10 +1970,18 @@ function FleetChatInner({ shape }: { shape: any }) {
   const ctxRef = useRef(ctx)
   ctxRef.current = ctx
 
-  const labelRegionsRef = useRef<Record<string, LabelRegionInfo>>({})
   const docRef = useRef<typeof doc>(doc)
-  useEffect(() => { labelRegionsRef.current = labelRegions }, [labelRegions])
   useEffect(() => { docRef.current = doc }, [doc])
+
+  const openMarkdownColumn = useCallback((title: string, markdown: string, sourceEl: HTMLElement) => {
+    const sourceRect = sourceEl.getBoundingClientRect()
+    const left = Math.max(12, sourceRect.left)
+    const top = Math.max(12, sourceRect.bottom + 8)
+    const anchor = clientPointToPage(editor, { x: left, y: top }, viewportId)
+    void createTemporaryMarkdownColumn(editor, anchor, title, markdown || title, {
+      sourceChatShapeId: shape.id,
+    })
+  }, [editor, shape.id, viewportId])
 
   // Incremental render cache: non-activity messages are independent and can be
   // cached by (msgKey, ctxVersion). When ctx changes (agent rename, task done),
@@ -2447,29 +2455,16 @@ function FleetChatInner({ shape }: { shape: any }) {
     const chipTarget = (e.target as HTMLElement).closest('.ref-chip-annotation')
     if (chipTarget) { handleRefChipClick(e); return }
 
-    // Markdown chip → lightbox overlay (ref-chip-doc chips AND md-file-card chips in activity cards)
+    // Markdown chip → temporary page-like html column.
+    // (ref-chip-doc chips AND md-file-card chips in activity cards).
     const mdChip = (e.target as HTMLElement).closest('.ref-chip-doc, .md-file-card') as HTMLElement | null
     if (mdChip) {
-      const openRenderedMarkdownLightbox = (title: string, renderedHtml: string) => {
-        const existing = document.querySelector('.chat-lightbox-md')
-        if (existing) { existing.remove(); return }
-        const overlay = document.createElement('div')
-        overlay.className = 'chat-lightbox-md'
-        overlay.innerHTML = '<div class="chat-lightbox-md-card"><div class="chat-lightbox-md-header"><span></span><button class="chat-lightbox-md-close" title="Close">✕</button></div><div class="chat-lightbox-md-body"></div></div>'
-        addTap(overlay, (ev) => { if (ev.target === overlay) overlay.remove() })
-        const titleEl = overlay.querySelector('.chat-lightbox-md-header span')
-        if (titleEl) titleEl.textContent = title
-        const bodyEl = overlay.querySelector('.chat-lightbox-md-body')
-        if (bodyEl) bodyEl.innerHTML = renderedHtml
-        addTap(overlay.querySelector('.chat-lightbox-md-close'), () => overlay.remove())
-        document.body.appendChild(overlay)
-      }
       if (mdChip.classList.contains('src-chip')) {
         e.stopPropagation()
         const line = mdChip.closest('.chat-line')
         const body = line?.querySelector('.message-body') as HTMLElement | null
         const title = mdChip.getAttribute('title') || mdChip.textContent || 'source'
-        openRenderedMarkdownLightbox(title, body?.innerHTML || '')
+        openMarkdownColumn(title, body?.innerText || body?.textContent || title, mdChip)
         return
       }
       const chipUrl = mdChip.dataset.url || ''
@@ -2478,13 +2473,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       const fetchUrl = chipUrl || (chipPath ? `/api/local-image?path=${encodeURIComponent(chipPath)}` : '')
       if (isMd && fetchUrl) {
         e.stopPropagation()
-        const existing = document.querySelector('.chat-lightbox-md')
-        if (existing) { existing.remove(); return }
-        const overlay = document.createElement('div')
-        overlay.className = 'chat-lightbox-md'
-        overlay.innerHTML = '<div class="chat-lightbox-md-card"><div class="chat-lightbox-md-loading">Loading…</div></div>'
-        addTap(overlay, (ev) => { if (ev.target === overlay) overlay.remove() })
-        document.body.appendChild(overlay)
+        const title = mdChip.querySelector('.md-file-chip')?.textContent || mdChip.textContent || chipPath.split('/').pop() || 'file'
         fetch(fetchUrl)
           .then(r => r.ok ? r.text() : Promise.reject(r.status))
           .then(text => {
@@ -2493,19 +2482,10 @@ function FleetChatInner({ shape }: { shape: any }) {
               if (src.startsWith('http') || src.startsWith('/')) return match
               return `![${alt}](${baseUrl}${src})`
             }) : text
-            const title = mdChip.querySelector('.md-file-chip')?.textContent || mdChip.textContent || chipPath.split('/').pop() || 'file'
-            let renderedHtml = tldaRenderMarkdown(resolved)
-            const lr = labelRegionsRef.current
-            if (lr && Object.keys(lr).length > 0) {
-              renderedHtml = linkifyAtRefs(renderedHtml, lr)
-            }
-            const cardEl = overlay.querySelector('.chat-lightbox-md-card')!
-            cardEl.innerHTML = `<div class="chat-lightbox-md-header"><span>${title}</span><button class="chat-lightbox-md-close" title="Close">✕</button></div><div class="chat-lightbox-md-body">${renderedHtml}</div>`
-            addTap(cardEl.querySelector('.chat-lightbox-md-close'), () => overlay.remove())
+            openMarkdownColumn(title, resolved, mdChip)
           })
           .catch(() => {
-            const cardEl = overlay.querySelector('.chat-lightbox-md-card')
-            if (cardEl) cardEl.innerHTML = '<div class="chat-lightbox-md-loading">Failed to load</div>'
+            openMarkdownColumn(title, '# Failed to load', mdChip)
           })
         return
       }
@@ -2570,7 +2550,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       }
     }
     editor.centerOnPoint(canvasPos, { animation: { duration: 300 } })
-  }, [doc, refResolver, editor])
+  }, [doc, refResolver, editor, handleRefChipClick, openMarkdownColumn])
 
   const shapeContainerRef = useRef<HTMLDivElement>(null)
   const inputAreaRef = useRef<HTMLDivElement>(null)

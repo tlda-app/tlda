@@ -31,6 +31,9 @@ import { spawnSync } from 'child_process'
 import { join, dirname } from 'path'
 import { readFileSync, writeFileSync, existsSync, realpathSync, rmSync, mkdirSync } from 'fs'
 import { homedir } from 'os'
+import { fileURLToPath } from 'url'
+
+const REPO_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))))
 
 // Default to the one canonical session; overridable for isolated testing.
 const SESSION = process.env.TLDA_PW_SESSION || 'shared'
@@ -143,8 +146,23 @@ function clearDisable() {
   try { rmSync(DISABLE_FILE, { force: true }) } catch (e) { console.error(`pw: WARN could not clear disable sentinel: ${e.message}`) }
 }
 
+function playwrightCliBin() {
+  if (process.env.PLAYWRIGHT_CLI_BIN) return process.env.PLAYWRIGHT_CLI_BIN
+  const local = join(REPO_ROOT, 'node_modules', '.bin', 'playwright-cli')
+  return existsSync(local) ? local : 'playwright-cli'
+}
+
+function playwrightCliRealPath() {
+  const bin = playwrightCliBin()
+  const which = bin === 'playwright-cli'
+    ? (spawnSync('which', ['playwright-cli'], { encoding: 'utf8' }).stdout || '').trim()
+    : bin
+  if (!which) return null
+  try { return realpathSync(which) } catch { return null }
+}
+
 function pw(args, opts = {}) {
-  return spawnSync('playwright-cli', [`-s=${SESSION}`, ...args], { encoding: 'utf8', ...opts })
+  return spawnSync(playwrightCliBin(), [`-s=${SESSION}`, ...args], { encoding: 'utf8', ...opts })
 }
 
 // ---- lock (short, per-verb) ----
@@ -183,21 +201,31 @@ function lockWithWait(repoRoot, me, timeoutMs = 20000) {
 // ---- session + tabs ----
 
 function sessionOpen() {
-  const out = spawnSync('playwright-cli', ['list'], { encoding: 'utf8' }).stdout || ''
+  const out = spawnSync(playwrightCliBin(), ['list'], { encoding: 'utf8' }).stdout || ''
   const m = out.match(new RegExp(`- ${SESSION}:\\s*\\n\\s*- status: (\\w+)`, 'm'))
   return m ? m[1] === 'open' : false
 }
 
-// Locate the playwright `context.js` that the playwright-cli daemon actually
-// loads, by resolving the playwright-cli binary on PATH. (Bundled under the
-// @playwright/cli install, NOT this repo's node_modules.)
-function playwrightContextPath() {
-  const which = (spawnSync('which', ['playwright-cli'], { encoding: 'utf8' }).stdout || '').trim()
-  if (!which) return null
-  let real
-  try { real = realpathSync(which) } catch { return null }
-  const p = join(dirname(real), 'node_modules', 'playwright', 'lib', 'mcp', 'browser', 'context.js')
-  return existsSync(p) ? p : null
+// Locate the playwright-cli implementation that owns tab-select. Older
+// playwright-cli installs shipped a separate mcp/browser/context.js; the current
+// @playwright/cli package bundles that code into playwright-core/lib/coreBundle.js.
+function playwrightPatchTargets() {
+  const real = playwrightCliRealPath()
+  if (!real) return []
+  const cliRoot = dirname(real)
+  return [
+    {
+      path: join(cliRoot, 'node_modules', 'playwright', 'lib', 'mcp', 'browser', 'context.js'),
+      regexes: [/^([ \t]*)await tab\.page\.bringToFront\(\);?[ \t]*$/m],
+    },
+    {
+      path: join(cliRoot, 'node_modules', 'playwright-core', 'lib', 'coreBundle.js'),
+      regexes: [
+        /([ \t]*)await tab2\.page\.bringToFront\(\);/m,
+        /([ \t]*)await tab\.page\.bringToFront\(\);/m,
+      ],
+    },
+  ].filter(t => existsSync(t.path))
 }
 
 // tab-select calls `await tab.page.bringToFront()`, which on headed Chromium
@@ -208,22 +236,31 @@ function playwrightContextPath() {
 // self-heals on every launch so a `brew upgrade` can't silently bring the
 // front-raising back. Returns true if the daemon will load a no-raise tab-select.
 function ensureNoRaisePatch() {
-  const p = playwrightContextPath()
-  if (!p) { console.error('pw: WARN could not locate playwright context.js — windows may still raise to front'); return false }
-  let src
-  try { src = readFileSync(p, 'utf8') } catch (e) { console.error(`pw: WARN cannot read ${p}: ${e.message}`); return false }
-  const re = /^([ \t]*)await tab\.page\.bringToFront\(\);?[ \t]*$/m
-  if (!re.test(src)) return true // already patched / line gone
-  try {
-    writeFileSync(p, src.replace(re, '$1/* tlda: bringToFront removed so an agent window never raises over Skip */'))
-  } catch (e) { console.error(`pw: WARN cannot patch ${p} (${e.message}) — windows may still raise`); return false }
-  console.error(`pw: patched tab-select to not raise the window (${p})`)
-  return true
+  const targets = playwrightPatchTargets()
+  if (!targets.length) {
+    console.error('pw: WARN could not locate playwright-cli tab-select implementation — windows may still raise to front')
+    return false
+  }
+  for (const target of targets) {
+    let src
+    try { src = readFileSync(target.path, 'utf8') } catch (e) { console.error(`pw: WARN cannot read ${target.path}: ${e.message}`); continue }
+    for (const re of target.regexes) {
+      if (!re.test(src)) continue
+      try {
+        writeFileSync(target.path, src.replace(re, '$1/* tlda: bringToFront removed so an agent window never raises over Skip */'))
+      } catch (e) { console.error(`pw: WARN cannot patch ${target.path} (${e.message}) — windows may still raise`); return false }
+      console.error(`pw: patched tab-select to not raise the window (${target.path})`)
+      return true
+    }
+    return true // already patched / line gone
+  }
+  console.error('pw: WARN could not find tab-select bringToFront call — windows may still raise to front')
+  return false
 }
 
 // The session's Chrome profile dir, parsed from `playwright-cli list`.
 function sessionUserDataDir() {
-  const out = spawnSync('playwright-cli', ['list'], { encoding: 'utf8' }).stdout || ''
+  const out = spawnSync(playwrightCliBin(), ['list'], { encoding: 'utf8' }).stdout || ''
   const m = out.match(new RegExp(`- ${SESSION}:[\\s\\S]*?- user-data-dir:\\s*(\\S+)`, 'm'))
   return m ? m[1] : null
 }
@@ -258,7 +295,7 @@ function recoverStaleSharedBrowser() {
 // chrome-error://. `open` only reads --config at launch, so it must be passed on
 // every (re)open or a fresh `acquire` silently drops the flags.
 function openArgs(repoRoot) {
-  const args = ['open', '--headed', '--persistent']
+  const args = ['open', '--browser', 'chromium', '--headed', '--persistent']
   const cfg = join(repoRoot, '.playwright', 'cli.config.json')
   if (existsSync(cfg)) args.push('--config', cfg)
   return args
