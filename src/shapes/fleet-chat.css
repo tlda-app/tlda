@@ -984,121 +984,53 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   box-shadow: 0 4px 30px rgba(0,0,0,0.5);
 }
 
-/* Markdown lightbox */
-.chat-lightbox-md {
+/* Markdown chip clip panel */
+.chat-lightbox-md-clip {
   position: fixed;
-  inset: 0;
   z-index: 999999;
-  background: rgba(0,0,0,0.7);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: default;
-}
-.chat-lightbox-md-card {
-  background: #1a1a1a;
   color: #e0e0e0;
-  border-radius: 8px;
-  box-shadow: 0 8px 40px rgba(0,0,0,0.6);
-  max-width: min(90vw, 720px);
-  max-height: 85vh;
-  display: flex;
-  flex-direction: column;
+  border-radius: 6px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.45);
   overflow: hidden;
 }
-.chat-lightbox-md-header {
+.chat-lightbox-md-clip-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  padding: 10px 16px;
+  gap: 6px;
+  padding: 7px 9px;
   font-size: 13px;
   font-weight: 600;
   color: rgba(255,255,255,0.6);
+  background: #1a1a1a;
   border-bottom: 1px solid rgba(255,255,255,0.08);
-  flex-shrink: 0;
 }
+.chat-lightbox-md-clip-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-lightbox-md-pin,
 .chat-lightbox-md-close {
   background: none;
   border: none;
   color: rgba(255,255,255,0.4);
   cursor: pointer;
-  font-size: 16px;
-  padding: 0 4px;
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 4px;
   transition: color 0.15s;
 }
+.chat-lightbox-md-pin:hover,
 .chat-lightbox-md-close:hover { color: rgba(255,255,255,0.8); }
-.chat-lightbox-md-body {
-  padding: 16px 24px;
-  overflow-y: auto;
-  font-size: 14px;
-  line-height: 1.6;
-  /* Touch: allow vertical scroll-to-read with momentum, and keep the gesture
-     from bubbling to the canvas behind the overlay. */
-  -webkit-overflow-scrolling: touch;
-  touch-action: pan-y;
-  overscroll-behavior: contain;
+.chat-lightbox-md-clip .clip-panel {
+  border-radius: 0;
+  box-shadow: none;
+  border: 0;
 }
-.chat-lightbox-md-body p { margin: 0 0 0.8em; }
-.chat-lightbox-md-body p:last-child { margin-bottom: 0; }
-.chat-lightbox-md-body h1,
-.chat-lightbox-md-body h2,
-.chat-lightbox-md-body h3 {
-  margin: 1.2em 0 0.4em;
-  color: rgba(255,255,255,0.85);
-}
-.chat-lightbox-md-body h1 { font-size: 18px; }
-.chat-lightbox-md-body h2 { font-size: 16px; }
-.chat-lightbox-md-body h3 { font-size: 14px; }
-.chat-lightbox-md-body pre {
-  background: rgba(255,255,255,0.06);
-  border-radius: 4px;
-  padding: 8px 12px;
-  overflow-x: auto;
-  font-size: 12px;
-}
-.chat-lightbox-md-body code {
-  background: rgba(255,255,255,0.08);
-  padding: 1px 4px;
-  border-radius: 3px;
-  font-size: 0.9em;
-}
-.chat-lightbox-md-body pre code {
-  background: none;
-  padding: 0;
-}
-.chat-lightbox-md-body ul,
-.chat-lightbox-md-body ol {
-  padding-left: 1.5em;
-  margin: 0 0 0.8em;
-}
-.chat-lightbox-md-body img {
-  max-width: 100%;
-  border-radius: 4px;
-}
-.chat-lightbox-md-body .katex-display {
-  overflow-x: auto;
-  overflow-y: hidden;
-  padding: 4px 0;
-}
-.chat-lightbox-md-body .at-ref {
-  color: #60a5fa;
-  text-decoration: underline;
-  text-decoration-color: rgba(96, 165, 250, 0.4);
-  cursor: pointer;
-}
-.chat-lightbox-md-body .at-ref:hover {
-  text-decoration-color: rgba(96, 165, 250, 0.8);
-}
-.chat-lightbox-md-body .at-ref-broken {
-  color: #f87171;
-  text-decoration: underline wavy;
-  text-decoration-color: rgba(248, 113, 113, 0.4);
-}
-.chat-lightbox-md-loading {
-  padding: 32px;
-  text-align: center;
-  color: rgba(255,255,255,0.4);
-  font-size: 13px;
+.chat-lightbox-md-clip .clip-panel-canvas {
+  border-radius: 0;
 }
 
 /* --- Long messages --- */
