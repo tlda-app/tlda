@@ -175,8 +175,49 @@ function evaluate(rows, predictLabel) {
     correct,
     accuracy: rows.length ? correct / rows.length : 0,
     confusion,
+    metrics: labelMetrics(confusion),
     errors,
   }
+}
+
+function labelMetrics(confusion) {
+  return Object.fromEntries(LABELS.map(label => {
+    const tp = confusion[label][label]
+    const predicted = LABELS.reduce((sum, actual) => sum + confusion[actual][label], 0)
+    const actual = LABELS.reduce((sum, predictedLabel) => sum + confusion[label][predictedLabel], 0)
+    return [label, {
+      precision: predicted ? tp / predicted : 0,
+      recall: actual ? tp / actual : 0,
+      support: actual,
+    }]
+  }))
+}
+
+function guardedHeuristic(row) {
+  const text = row.text || ''
+  const f = row.features || {}
+  const modelDecision = LABELS.includes(row.modelDecision) ? row.modelDecision : 'suppress'
+
+  const asksForApproval =
+    /\b(your ok|your go-ahead|if you want me|deploy.*ok|restart.*ok|waiting on you|requires skip|permission|approve|your call)\b/i.test(text)
+  const ownsNextAction =
+    f.namesNextAction ||
+    /\b(i('|’)ll|i will|i’m going to|i am going to|on it|back with|next i|i’ll keep|i won't|i will not|nothing deploys|nothing restarts)\b/i.test(text)
+  const hasVerification =
+    f.claimsVerification ||
+    /\b(verified|tested|checked|passed|read the code|hard evidence|proven|surface)\b/i.test(text)
+  const conversational =
+    /^(right|yes|no|got it|understood|on it|fair|exactly|you're right|your instinct is right)\b/i.test(text.trim())
+  const trueExternalBlocker =
+    asksForApproval ||
+    /\b(provider credits|disk is .*full|fly.*502|live deploy|restart the live|authority|external)\b/i.test(text)
+
+  if (conversational && ownsNextAction) return 'suppress'
+  if (trueExternalBlocker) return 'suppress'
+  if (f.claimsCompletion && hasVerification && !f.claimsHandoff && !f.claimsRemaining) return 'suppress'
+  if (f.claimsUncertainty && !ownsNextAction && !hasVerification && modelDecision !== 'intervene') return 'log_only'
+  if (modelDecision === 'intervene' && ownsNextAction && !f.claimsCompletion && !f.claimsBlocker) return 'suppress'
+  return modelDecision
 }
 
 function main() {
@@ -190,6 +231,7 @@ function main() {
   const model = trainNaiveBayes(train)
   const classifier = evaluate(test, row => predict(model, row))
   const heuristic = evaluate(test, row => LABELS.includes(row.modelDecision) ? row.modelDecision : 'suppress')
+  const guarded = evaluate(test, row => guardedHeuristic(row))
 
   if (args.errorsOut) {
     fs.writeFileSync(args.errorsOut, classifier.errors.map(row => JSON.stringify(row)).join('\n') + (classifier.errors.length ? '\n' : ''))
@@ -218,8 +260,18 @@ function main() {
       n: heuristic.n,
       correct: heuristic.correct,
       accuracy: heuristic.accuracy,
+      metrics: heuristic.metrics,
       confusion: heuristic.confusion,
       errors: heuristic.errors,
+    },
+    guardedHeuristic: {
+      type: 'modelDecision plus true-blocker/already-owned/verified suppression guards',
+      n: guarded.n,
+      correct: guarded.correct,
+      accuracy: guarded.accuracy,
+      metrics: guarded.metrics,
+      confusion: guarded.confusion,
+      errors: guarded.errors,
     },
   }, null, 2))
 }
