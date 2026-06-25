@@ -1978,9 +1978,44 @@ function FleetChatInner({ shape }: { shape: any }) {
     const left = Math.max(12, sourceRect.left)
     const top = Math.max(12, sourceRect.bottom + 8)
     const mainEditor = (window as Window & { __tldraw_editor__?: typeof editor }).__tldraw_editor__ || editor
-    const anchor = clientPointToPage(mainEditor, { x: left, y: top })
+    const chipAnchor = clientPointToPage(mainEditor, { x: left, y: top })
+    const occupiedBounds = mainEditor.getCurrentPageShapes()
+      .filter((s: any) => !s.meta?.temporaryMarkdownColumn)
+      .map((s: any) => mainEditor.getShapePageBounds(s.id))
+      .filter(Boolean) as Array<{ x: number; y: number; w: number; h: number }>
+    // Click previews should not join the normal document/compare/fleet working area.
+    // Put the generated markdown page diagonally far beyond occupied canvas content,
+    // then view it through AnnotationViewer.
+    const anchor = occupiedBounds.length
+      ? {
+          x: Math.max(...occupiedBounds.map(b => b.x + b.w)) + 10000,
+          y: Math.max(...occupiedBounds.map(b => b.y + b.h)) + 10000,
+        }
+      : chipAnchor
     void createTemporaryMarkdownColumn(mainEditor, anchor, title, markdown || title, {
       sourceChatShapeId: shape.id,
+    }).then((result) => {
+      if (!result?.bounds) return
+      const chipRect = sourceEl.getBoundingClientRect()
+      window.dispatchEvent(new CustomEvent('annotation-viewer-show', {
+        detail: {
+          bounds: result.bounds,
+          shapeIds: [result.shapeId],
+          label: title || 'Markdown chip',
+          chipRect: {
+            left: chipRect.left,
+            top: chipRect.top,
+            right: chipRect.right,
+            bottom: chipRect.bottom,
+            width: chipRect.width,
+            height: chipRect.height,
+          },
+          useFullBounds: true,
+          pinned: true,
+        },
+      }))
+    }).catch((err) => {
+      console.warn('[fleet-chat] markdown annotation viewer create failed:', err?.message || err)
     })
   }, [editor, shape.id])
 
