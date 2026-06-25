@@ -38,12 +38,16 @@ import { getSvgText, setSvgText } from '../stores/svgTextStore'
 import { getPageUrl } from '../stores/pageUrlStore'
 import { getPref } from '../preferences'
 import { beginNativeSnapDrag, endNativeSnapDrag, FLEET_SHAPE_TYPES } from './fleet-utils'
+import { createFleetDocviewSurface, type FleetDocviewSurfaceState } from '../wm/fleet-docview-layer'
 
 const DEFAULT_W = 300
 const DEFAULT_H = 250
 
 const ALL_SOURCES = ['ref', 'proof', 'errors'] as const
 type Source = typeof ALL_SOURCES[number]
+type FleetDocviewWindow = Window & {
+  __tlda_wm_docviews__?: Record<string, FleetDocviewSurfaceState>
+}
 
 function parseSources(s: string | undefined): Source[] {
   try {
@@ -377,6 +381,8 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
   const currentError = activeSource === 'errors'
     ? resolvedErrors[Math.min(errorIndex, resolvedErrors.length - 1)]?.error ?? null
     : null
+  const errorHeaderH = 22
+  const panelH = currentError ? h - errorHeaderH : h
 
   const shapeUtils = useMemo(() => {
     const all = (window as any).__tldraw_shape_utils__ || []
@@ -385,6 +391,30 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
   }, [])
   const licenseKey = 'tldraw-2027-01-19/WyJhUGMwcWRBayIsWyIqLnF0bTI4NS5naXRodWIuaW8iXSw5LCIyMDI3LTAxLTE5Il0.Hq9z1V8oTLsZKgpB0pI3o/RXCoLOsh5Go7Co53YGqHNmtEO9Lv/iuyBPzwQwlxQoREjwkkFbpflOOPmQMwvQSQ'
 
+  const docviewSurface = useMemo<FleetDocviewSurfaceState | null>(() => {
+    if (!bounds || boundsPageIdx < 0 || !doc?.pages?.[boundsPageIdx]) return null
+    const pageBounds = doc.pages[boundsPageIdx].bounds
+    return createFleetDocviewSurface({
+      shapeId: shape.id,
+      bounds,
+      pageBounds: { x: pageBounds.x, y: pageBounds.y, w: pageBounds.width, h: pageBounds.height },
+      panelWidth: w,
+      panelHeight: panelH,
+      userId: shape.props.userId,
+      deviceId: shape.props.deviceId,
+      source: activeSource,
+    })
+  }, [shape.id, shape.props.userId, shape.props.deviceId, bounds, boundsPageIdx, doc, w, panelH, activeSource])
+
+  useEffect(() => {
+    const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null
+    const exposeForTest = params?.has('pw') || params?.has('wmDocviewGate')
+    if (!(import.meta.env.DEV || exposeForTest || (typeof navigator !== 'undefined' && navigator.webdriver))) return
+    const registry = ((window as FleetDocviewWindow).__tlda_wm_docviews__ ??= {})
+    if (docviewSurface) registry[shape.id] = docviewSurface
+    return () => { delete registry[shape.id] }
+  }, [shape.id, docviewSurface])
+
   if (!mainEditor || !doc) {
     return (
       <div style={{ width: w, height: h, display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0.3, fontSize: 11 }}>
@@ -392,8 +422,6 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
       </div>
     )
   }
-
-  const errorHeaderH = 22
 
   return (
     <div
@@ -642,9 +670,9 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
 
       <div
         className="fleet-docview-body"
-        style={{ height: currentError ? h - errorHeaderH : h }}
+        style={{ height: panelH }}
       >
-        {bounds && mainEditor && svgReady ? (
+        {bounds && docviewSurface && mainEditor && svgReady ? (
           <CanvasClipPanel
             mainEditor={mainEditor}
             bounds={bounds}
@@ -654,17 +682,9 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
             panelWidth={w}
             maxHeightFraction={1}
             readOnly
-            cameraOverride={(() => {
-              // Zoom to fit page width, center bounds region vertically
-              const pageIdx = boundsPageIdx >= 0 ? boundsPageIdx : 0
-              const pg = doc?.pages?.[pageIdx]
-              if (!pg) return undefined
-              const zoom = w / pg.bounds.width
-              const boundsCenter = bounds.y + bounds.h / 2
-              const panelH = currentError ? h - errorHeaderH : h
-              const camY = -(boundsCenter - (panelH / zoom) / 2)
-              return { x: -pg.bounds.x, y: camY, z: zoom }
-            })()}
+            viewportId={docviewSurface.viewportId}
+            cameraOverride={docviewSurface.camera}
+            wmSurface={{ surfaceId: docviewSurface.surfaceId, layerId: docviewSurface.layerId }}
           />
         ) : (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', opacity: 0.15, fontSize: 11 }}>

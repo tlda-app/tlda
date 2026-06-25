@@ -7,11 +7,8 @@ import {
 	createFleetHudOverlayLayer,
 } from '../src/wm/fleet-hud-layer.ts'
 import {
-	WM_PICTURE_IN_PICTURE_LAYER_ID,
-	WM_PICTURE_IN_PICTURE_VIEWPORT_ID,
-	WM_VIEWPORT_ROOT_LAYER_ID,
-	createWMPictureInPictureLayer,
-} from '../src/wm/viewport-layer.ts'
+	createFleetDocviewSurface,
+} from '../src/wm/fleet-docview-layer.ts'
 
 test('FleetHUD overlay camera is derived from a pinned WM layer', () => {
 	const state = createFleetHudOverlayLayer({
@@ -39,14 +36,24 @@ test('FleetHUD overlay layer preserves explicit zoom and layout metadata', () =>
 	assert.deepEqual(state.layer.layout, { axis: 'horizontal', spacing: 24 })
 })
 
-test('WM picture-in-picture layer derives an independent fork viewport camera', () => {
-	const state = createWMPictureInPictureLayer({
-		sourceCamera: { x: -400, y: 120, z: 2 },
+test('Fleet docview surface derives a WM-managed viewport projection', () => {
+	const state = createFleetDocviewSurface({
+		shapeId: 'shape:docview-a',
+		bounds: { x: 10, y: 120, w: 800, h: 240 },
+		pageBounds: { x: 10, y: 0, w: 800, h: 1000 },
+		panelWidth: 400,
+		panelHeight: 300,
+		userId: 'fleet:tester',
+		deviceId: 'mini',
 	})
 
-	assert.equal(state.rootLayerId, WM_VIEWPORT_ROOT_LAYER_ID)
-	assert.equal(state.viewportLayerId, WM_PICTURE_IN_PICTURE_LAYER_ID)
-	assert.equal(state.viewportId, WM_PICTURE_IN_PICTURE_VIEWPORT_ID)
-	assert.deepEqual(state.camera, { x: -490, y: 60, z: 2.7 })
-	assert.deepEqual(state.layer.policy, { x: 'pan', y: 'pan', zoom: 'own' })
+	assert.equal(state.rootLayerId, 'screen')
+	assert.equal(state.surfaceId, 'fleet-docview:docview-a')
+	assert.equal(state.layerId, 'fleet-docview:docview-a')
+	assert.equal(state.viewportId, 'wm:fleet-docview:docview-a')
+	assert.deepEqual(state.camera, { x: -10, y: 60, z: 0.5 })
+	assert.deepEqual(state.layer.policy, { x: 'pin', y: 'pin', zoom: 'lock' })
+	assert.deepEqual(state.owner, { userId: 'fleet:tester', deviceId: 'mini' })
+	assert.equal(state.source, null)
+	assert.equal(state.hitPolicy, 'chrome-catches-content-pans')
 })

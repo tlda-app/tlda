@@ -57,6 +57,7 @@ interface CanvasClipPanelProps {
   readOnly?: boolean
   liveEdit?: boolean
   cameraOverride?: { x: number; y: number; z: number }
+  wmSurface?: { surfaceId: string; layerId: string }
   fullViewport?: boolean
   identityId?: string | null
   customGestureActiveRef?: { current: boolean }
@@ -75,6 +76,7 @@ export function CanvasClipPanel({
   className,
   lockCamera = false,
   cameraOverride,
+  wmSurface,
   fullViewport = false,
   readOnly = false,
   onEditorMount,
@@ -206,6 +208,8 @@ export function CanvasClipPanel({
         ref={panelRef}
         className={`clip-panel clip-panel-fullvp ${className || ''}`}
         data-viewport-id={viewportId}
+        data-wm-surface-id={wmSurface?.surfaceId}
+        data-wm-layer-id={wmSurface?.layerId}
         style={{
           position: 'fixed',
           inset: 0,
@@ -241,6 +245,8 @@ export function CanvasClipPanel({
       ref={panelRef}
       className={`clip-panel ${className || ''}`}
       data-viewport-id={viewportId}
+      data-wm-surface-id={wmSurface?.surfaceId}
+      data-wm-layer-id={wmSurface?.layerId}
       style={{ width: panelWidth }}
       onPointerDown={stopEventPropagation}
     >
