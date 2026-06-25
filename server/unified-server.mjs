@@ -2379,6 +2379,7 @@ const fleetRouter = createFleetRouter({
   fleetStore, broadcastEvent, broadcastState, clearEphemeralState,
   suppressEchoFor: () => {},
   sendRpc, resolveRpc, daemonConnections, resolveSpawnTarget,
+  broadcastDaemonAgentsUpdated,
 })
 app.use(fleetRouter)
 

@@ -83,7 +83,7 @@ function formatNameCollisions(collisions = []) {
   }).join('; ')
 }
 
-export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, clearEphemeralState, suppressEchoFor, sendRpc, resolveRpc, daemonConnections, resolveSpawnTarget }) {
+export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, clearEphemeralState, suppressEchoFor, sendRpc, resolveRpc, daemonConnections, resolveSpawnTarget, broadcastDaemonAgentsUpdated }) {
   // Helper: route an agent op through the daemon, or 503 cleanly. The
   // op-name is whatever the daemon's rpc dispatcher expects (kebab-case
   // matches the spec: 'send-key', 'capture-pane', etc.).
@@ -931,6 +931,52 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     }
     broadcastState()
     res.json({ ok: true, machine_id: machineId, updated_count: updated.length, updated })
+  })
+
+  // --- POST /api/agents/move-machine ---
+  // Operator path for cross-machine agent moves. The CLI does the local,
+  // machine-specific context export/import; this endpoint is the registry
+  // authority for switching the durable fleet identity to a new daemon machine.
+  router.post('/api/agents/move-machine', async (req, res) => {
+    if (!fleetStore) { res.status(503).json({ error: 'no fleet store' }); return }
+    const { agent: agentQuery, machine_id: targetMachine, expected_from: expectedFrom, check_only: checkOnly } = req.body || {}
+    if (!agentQuery || !targetMachine) {
+      res.status(400).json({ error: 'agent and machine_id are required' })
+      return
+    }
+    const agent = fleetStore.findAgent(agentQuery)
+    if (!agent) { res.status(404).json({ error: `agent not found: ${agentQuery}` }); return }
+    if (agent.dead) { res.status(400).json({ error: `agent ${agent.id} is marked dead` }); return }
+    if (expectedFrom && agent.machine_id !== expectedFrom) {
+      res.status(409).json({
+        error: `agent ${agent.id} belongs to ${agent.machine_id || 'unknown'}, not ${expectedFrom}`,
+        agent: agent.id,
+        current_machine_id: agent.machine_id || null,
+      })
+      return
+    }
+    const dws = daemonConnections?.get?.(targetMachine)
+    if (!dws || dws.readyState !== 1) {
+      res.status(503).json({ error: `no fleet-daemon connected for machine "${targetMachine}"` })
+      return
+    }
+    if (checkOnly) {
+      res.json({ ok: true, agent: agent.id, from: agent.machine_id || null, to: targetMachine, check_only: true })
+      return
+    }
+    const fromMachine = agent.machine_id || null
+    fleetStore.upsertAgent({ ...agent, machine_id: targetMachine, last_seen: new Date().toISOString() })
+    const event = await fleetStore.share?.({
+      type: 'lifecycle',
+      from: SERVER_OWNER_ID,
+      to: agent.id,
+      agentId: agent.id,
+      text: `agent moved ${fromMachine || 'unknown'} -> ${targetMachine}`,
+      metadata: { from_machine_id: fromMachine, to_machine_id: targetMachine },
+    })
+    broadcastDaemonAgentsUpdated?.()
+    broadcastState()
+    res.json({ ok: true, agent: agent.id, from: fromMachine, to: targetMachine, event_id: event?.id || null })
   })
 
   // --- POST /api/agent-status ---

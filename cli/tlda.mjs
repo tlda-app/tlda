@@ -20,7 +20,7 @@
 import { resolve, basename, dirname, join, delimiter } from 'path'
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync, appendFileSync } from 'fs'
 import { fileURLToPath } from 'url'
-import { homedir } from 'os'
+import { homedir, hostname } from 'os'
 import { randomBytes } from 'crypto'
 import { collectSourceFiles, collectSourceHashes, collectSpecificFiles } from './lib/source-files.mjs'
 import {
@@ -101,6 +101,7 @@ const VALUE_FLAGS = new Set([
   'server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format',
   'session', 'target', 'timeout', 'id', 'book', 'worktree', 'port', 'browser',
   'model', 'cwd', 'effort', 'mode', 'kind', 'spawn-capability', 'capability',
+  'to',
 ])
 
 function getFlag(name, defaultVal = null) {
@@ -1614,6 +1615,7 @@ Usage:
   tlda agent spawn <agent>
   tlda agent spawn --fresh <name>
   tlda agent spawn-local <agent>
+  tlda agent move <agent> --to <machine>
   tlda agent check-ready <agent> [--timeout seconds]
   tlda agent attach <agent>
   tlda agent hibernate <agent>
@@ -1631,6 +1633,7 @@ Network:
 
 spawn routes through the fleet server and target daemon; spawn-local directly invokes
 the local fleet-spawn.py primitive on this machine.
+move must be run on the agent's current machine; only the destination is remote.
 The capability command is operator-only: it refuses from fleet agent env/tmux context.
 check-ready verifies registry + local tmux/runtime + recent register/my_task evidence.`)
 }
@@ -1653,6 +1656,10 @@ function applyNetworkModifier(policyOption) {
 
 function normalizeAgentMetadata(meta) {
   return meta && typeof meta === 'object' && !Array.isArray(meta) ? meta : {}
+}
+
+function localMachineId() {
+  return loadConfig().machineId || hostname().split('.')[0]
 }
 
 function parseJsonMaybe(value) {
@@ -1820,6 +1827,154 @@ function hibernateNameForAgent(agent, fallback) {
   return agent.tmux_session ? agent.tmux_session.replace(/^fleet-/, '') : spawnNameForAgent(agent, fallback)
 }
 
+function walkFiles(dir, predicate, out = []) {
+  let entries
+  try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return out }
+  for (const entry of entries) {
+    const p = join(dir, entry.name)
+    if (entry.isDirectory()) walkFiles(p, predicate, out)
+    else if (predicate(p)) out.push(p)
+  }
+  return out
+}
+
+function relToHome(absPath) {
+  const home = homedir()
+  if (!absPath.startsWith(`${home}/`)) {
+    throw new Error(`move artifact is outside home and cannot be imported by relative path: ${absPath}`)
+  }
+  return absPath.slice(home.length + 1)
+}
+
+function findClaudeSessionFiles(agent) {
+  const ids = [agent.session_id, ...((agent.session_ids || []).slice().reverse())].filter(Boolean)
+  const uniqueIds = [...new Set(ids)]
+  const root = join(homedir(), '.claude', 'projects')
+  const found = []
+  for (const sid of uniqueIds) {
+    for (const file of walkFiles(root, p => p.endsWith(`/${sid}.jsonl`))) {
+      if (!found.includes(file)) found.push(file)
+    }
+  }
+  return found
+}
+
+function findCodexRolloutFiles(agent) {
+  const ids = [agent.session_id, ...((agent.session_ids || []).slice().reverse())].filter(Boolean)
+  const uniqueIds = [...new Set(ids)]
+  const root = join(homedir(), '.codex', 'sessions')
+  const found = []
+  for (const sid of uniqueIds) {
+    for (const file of walkFiles(root, p => basename(p).startsWith('rollout-') && p.endsWith(`-${sid}.jsonl`))) {
+      if (!found.includes(file)) found.push(file)
+    }
+  }
+  if (found.length) return found
+  const needle = `Registered ${agent.id}`
+  for (const file of walkFiles(root, p => basename(p).startsWith('rollout-') && p.endsWith('.jsonl'))) {
+    try {
+      const text = readFileSync(file, 'utf8')
+      if (text.includes(needle)) found.push(file)
+    } catch (e) {
+      if (!['ENOENT', 'EACCES', 'EPERM'].includes(e?.code)) throw e
+    }
+  }
+  return found
+}
+
+function moveArtifactsForAgent(agent) {
+  const meta = normalizeAgentMetadata(agent.metadata)
+  const kind = meta.kind || 'claude'
+  if (kind === 'goose') {
+    throw new Error('goose agent move is not implemented yet; goose session state is SQLite/data-dir based and needs a harness-specific exporter')
+  }
+  const files = kind === 'codex' ? findCodexRolloutFiles(agent) : findClaudeSessionFiles(agent)
+  if (!files.length) {
+    throw new Error(`no ${kind} resume artifact found for ${agent.friendly_name || agent.id}`)
+  }
+  return files.map(path => ({ path, rel: relToHome(path) }))
+}
+
+async function copyMoveArtifacts(targetMachine, artifacts) {
+  const { spawnSync } = await import('child_process')
+  for (const artifact of artifacts) {
+    const remoteDir = `~/${artifact.rel.split('/').slice(0, -1).join('/')}`
+    const mkdir = spawnSync('ssh', [targetMachine, 'mkdir', '-p', remoteDir], { stdio: 'inherit' })
+    if (mkdir.status !== 0) {
+      throw new Error(`failed to create destination directory on ${targetMachine}: ${remoteDir}`)
+    }
+    const source = `${homedir()}/./${artifact.rel}`
+    const rsync = spawnSync('rsync', ['-a', '--relative', source, `${targetMachine}:~/`], { stdio: 'inherit' })
+    if (rsync.status !== 0) {
+      throw new Error(`failed to copy ${artifact.rel} to ${targetMachine}`)
+    }
+  }
+}
+
+async function findSingleAgent(agentQuery) {
+  const state = await api('GET', '/api/state')
+  const agents = Array.isArray(state?.agents) ? state.agents : []
+  const matches = agents.filter(a => agentMatchesQuery(a, agentQuery))
+  if (matches.length === 0) throw new Error(`No existing agent found for "${agentQuery}".`)
+  if (matches.length > 1) throw new Error(`Multiple agents matched "${agentQuery}". Use the fleet id instead.`)
+  return matches[0]
+}
+
+async function cmdAgentMove() {
+  const agentQuery = getPositional(1)
+  const targetMachine = getFlag('to')
+  if (hasFlag('help')) {
+    console.log('Usage: tlda agent move <agent> --to <machine>\n\nRun from the agent current machine. Copies resumable context to the destination, switches the registry machine_id, then respawns the same fleet id there.')
+    return
+  }
+  if (!agentQuery || !targetMachine) {
+    console.error('Usage: tlda agent move <agent> --to <machine>')
+    process.exit(1)
+  }
+  await assertNotAgentContext()
+  await ensureServer()
+  const agent = await findSingleAgent(agentQuery)
+  const sourceMachine = localMachineId()
+  if (!agent.machine_id) throw new Error(`Agent ${agent.id} has no machine_id; cannot prove this is the source machine.`)
+  if (agent.machine_id !== sourceMachine) {
+    throw new Error(`Agent ${agent.id} belongs to ${agent.machine_id}; run move from ${agent.machine_id}.`)
+  }
+  if (sourceMachine === targetMachine) {
+    throw new Error(`Agent ${agent.id} is already on ${targetMachine}.`)
+  }
+
+  const artifacts = moveArtifactsForAgent(agent)
+  await api('POST', '/api/agents/move-machine', {
+    agent: agent.id,
+    machine_id: targetMachine,
+    expected_from: sourceMachine,
+    check_only: true,
+  })
+
+  const meta = normalizeAgentMetadata(agent.metadata)
+  if (hasFlag('dry-run')) {
+    console.log(`[dry-run] would move ${agent.friendly_name || agent.id} (${agent.id}) ${sourceMachine} -> ${targetMachine}`)
+    console.log(`  artifacts: ${artifacts.map(a => a.rel).join(', ')}`)
+    console.log(`  hibernate: ${hibernateNameForAgent(agent, agentQuery)}`)
+    console.log(`  respawn kind: ${meta.kind || 'claude'}`)
+    return
+  }
+
+  console.log(`Moving ${agent.friendly_name || agent.id} (${agent.id}) ${sourceMachine} -> ${targetMachine}`)
+  const hibernate = await hibernateLocalAgent(hibernateNameForAgent(agent, agentQuery), { allowMissing: true })
+  if (hibernate.status !== 0) throw new Error(`failed to hibernate ${agent.id}`)
+  await copyMoveArtifacts(targetMachine, artifacts)
+  await api('POST', '/api/agents/move-machine', {
+    agent: agent.id,
+    machine_id: targetMachine,
+    expected_from: sourceMachine,
+  })
+  console.log(`Registry now points ${agent.id} at ${targetMachine}. Respawning...`)
+  const spawnArgs = [agent.id]
+  if (meta.kind) spawnArgs.push('--kind', meta.kind)
+  await runRoutedSpawn(spawnArgs)
+}
+
 async function cmdAgentCapability() {
   const agentQuery = getPositional(1)
   const capabilityArg = getPositional(2)
@@ -1888,7 +2043,7 @@ async function cmdAgentCapability() {
 
 async function cmdAgent() {
   const sub = getPositional(0)
-  if (!sub || (hasFlag('help') && sub !== 'capability')) {
+  if (!sub || (hasFlag('help') && sub !== 'capability' && sub !== 'move')) {
     usageAgent()
     return
   }
@@ -1897,12 +2052,13 @@ async function cmdAgent() {
     case 'ls':        await listLocalAgents(); break
     case 'spawn':     await runRoutedSpawn(process.argv.slice(4)); break // after "tlda agent spawn"
     case 'spawn-local': await runFleetSpawn(process.argv.slice(4)); break // direct local primitive
+    case 'move':      await cmdAgentMove(); break
     case 'check-ready': await cmdAgentCheckReady(); break
     case 'attach':    await attachToAgent(getPositional(1)); break
     case 'hibernate': await hibernateAgent(getPositional(1)); break
     case 'capability': await cmdAgentCapability(); break
     default:
-      console.error('Usage: tlda agent <list|spawn|spawn-local|check-ready|attach|hibernate|capability> [name]')
+      console.error('Usage: tlda agent <list|spawn|spawn-local|move|check-ready|attach|hibernate|capability> [name]')
       process.exit(1)
   }
 }
