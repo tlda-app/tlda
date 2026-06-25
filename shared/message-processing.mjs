@@ -26,6 +26,10 @@ export function detectAttachments(message, agentCwd) {
   let working = message.replace(/```[\s\S]*?```/g, (m) => maskToken('F', m))
   // 2. Single-backtick inline spans (no newlines, non-empty interior)
   working = working.replace(/`[^`\n]+`/g, (m) => maskToken('I', m))
+  // 2b. Ordinary markdown links are authored links, not attachment requests.
+  // Mask the whole link before bare-path detection so labels like
+  // [docs/report.md](/abs/worktree/docs/report.md) are not validated as files.
+  working = working.replace(/(?<!!)\[[^\]\n]*\]\((?:\\.|[^)\\\n])+\)/g, (m) => maskToken('L', m))
   let attIdx = 0
   // 3a. Markdown images with localhost file API URLs: ![...](http://localhost:.../api/file?path=...)
   const mdImageRe = /!\[([^\]]*)\]\((https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?\/api\/file\?path=([^)]+))\)/g
@@ -60,6 +64,7 @@ export function detectAttachments(message, agentCwd) {
   // Restore masked regions (inline spans first, then fences — reverse of masking order)
   working = working.replace(/\x00I(\d+)\x00/g, (_, i) => masked[+i])
   working = working.replace(/\x00U(\d+)\x00/g, (_, i) => masked[+i])
+  working = working.replace(/\x00L(\d+)\x00/g, (_, i) => masked[+i])
   working = working.replace(/\x00F(\d+)\x00/g, (_, i) => masked[+i])
   return { resolvedMessage: working, inlineAttachments }
 }

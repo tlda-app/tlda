@@ -141,6 +141,37 @@ test('missing bare local path is reported as broken', withTempDir(async (dir) =>
   assert.equal(result.inlineAttachments[0].path, missing)
 }))
 
+test('markdown link label that looks like a path is not detected as a file attachment', withTempDir(async (dir) => {
+  const actual = path.join(dir, 'docs', 'wm-implementation-plan.md')
+  fs.mkdirSync(path.dirname(actual), { recursive: true })
+  fs.writeFileSync(actual, '# WM implementation plan\n')
+
+  const message = `[docs/wm-implementation-plan.md](${actual})`
+  const result = detectAttachments(message, '/Users/skip/work/tlda')
+
+  assert.equal(result.resolvedMessage, message)
+  assert.deepEqual(result.inlineAttachments, [])
+}))
+
+test('markdown link absolute target is not uploaded or validated as a bare path', withTempDir(async (dir) => {
+  const actual = path.join(dir, 'docs', 'wm-implementation-plan.md')
+  fs.mkdirSync(path.dirname(actual), { recursive: true })
+  fs.writeFileSync(actual, '# WM implementation plan\n')
+
+  const stub = await startUploadStub()
+  try {
+    const message = `[docs/wm-implementation-plan.md](${actual})`
+    const result = await processMessageText(message, '/Users/skip/work/tlda', stub.baseUrl)
+
+    assert.equal(result.resolvedMessage, message)
+    assert.deepEqual(result.inlineAttachments, [])
+    assert.deepEqual(result.brokenPaths, [])
+    assert.equal(stub.uploads.length, 0)
+  } finally {
+    await stub.close()
+  }
+}))
+
 test('backticked local path remains literal and does not upload', withTempDir(async (dir) => {
   const img = path.join(dir, 'activity-card.png')
   fs.writeFileSync(img, Buffer.from([0x89, 0x50, 0x4e, 0x47]))
