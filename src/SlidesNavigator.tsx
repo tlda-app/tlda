@@ -13,6 +13,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { type Editor, type TLShapeId } from 'tldraw'
 import type { SvgDocument, SlideInfo } from './svgDocumentLoader'
+import { getPref, subscribePref } from './preferences'
 import { broadcastSlideFragment, broadcastSlideIndex, onSlideFragment, onSlideIndex } from './useYjsSync'
 import { getRole } from './viewerRole'
 
@@ -23,6 +24,8 @@ interface SlidesNavigatorProps {
 
 // Fragment state per slide, keyed by shape ID
 const fragmentState = new Map<string, { total: number; current: number }>()
+
+type SlidesNavigationMode = 'inline-fragments' | 'orthogonal-fragments'
 
 type HtmlPageShape = {
   id: TLShapeId
@@ -106,6 +109,16 @@ function stepFragment(document: SvgDocument, direction: 'next' | 'prev'): boolea
   return true
 }
 
+function setDeckFragmentCount(document: SvgDocument, current: number): boolean {
+  const el = deckIframe(document)
+  if (!el?.contentWindow) return false
+  el.contentWindow.postMessage({
+    type: 'tlda-fragment-goto',
+    current,
+  }, '*')
+  return true
+}
+
 function reconcileFragment(document: SvgDocument, shapeId: string, targetCurrent: number): boolean {
   const fs = fragmentState.get(shapeId)
   if (!fs) return false
@@ -122,12 +135,18 @@ function reconcileFragment(document: SvgDocument, shapeId: string, targetCurrent
 export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
   const [currentSlide, setCurrentSlide] = useState(0)
   const [fragmentInfo, setFragmentInfo] = useState<{ current: number; total: number } | null>(null)
+  const [navigationMode, setNavigationMode] = useState<SlidesNavigationMode>(() => getPref('slides-navigation-mode'))
   const slides = useMemo(() => getSlides(document), [document])
   const totalSlides = slides.length
   const touchStartRef = useRef<{ x: number; y: number; time: number } | null>(null)
   const pendingRemoteFragmentsRef = useRef(new Map<string, number>())
   const applyingRemoteFragmentRef = useRef(false)
   const applyingRemoteSlideRef = useRef(false)
+  const orthogonalFragments = navigationMode === 'orthogonal-fragments'
+
+  useEffect(() => {
+    return subscribePref(() => setNavigationMode(getPref('slides-navigation-mode')))
+  }, [])
 
   useEffect(() => {
     const removeStaleSlidePages = () => {
@@ -250,6 +269,10 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
   const handleNext = useCallback(() => {
     const shapeId = getDeckShapeId(document)
     if (!shapeId) return
+    if (orthogonalFragments) {
+      if (currentSlide < totalSlides - 1) goToSlide(currentSlide + 1)
+      return
+    }
     // Try advancing fragment first
     const fs = fragmentState.get(shapeId)
     if (fs && fs.current < fs.total) {
@@ -260,11 +283,15 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
     if (currentSlide < totalSlides - 1) {
       goToSlide(currentSlide + 1)
     }
-  }, [currentSlide, totalSlides, document, goToSlide])
+  }, [currentSlide, totalSlides, document, goToSlide, orthogonalFragments])
 
   const handlePrev = useCallback(() => {
     const shapeId = getDeckShapeId(document)
     if (!shapeId) return
+    if (orthogonalFragments) {
+      if (currentSlide > 0) goToSlide(currentSlide - 1)
+      return
+    }
     // Try going back a fragment first
     const fs = fragmentState.get(shapeId)
     if (fs && fs.current > 0) {
@@ -275,7 +302,23 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
     if (currentSlide > 0) {
       goToSlide(currentSlide - 1)
     }
-  }, [currentSlide, document, goToSlide])
+  }, [currentSlide, document, goToSlide, orthogonalFragments])
+
+  const setFragmentCurrent = useCallback((target: number) => {
+    const shapeId = getDeckShapeId(document)
+    if (!shapeId) return
+    const fs = fragmentState.get(shapeId)
+    const total = fs?.total ?? fragmentInfo?.total ?? 0
+    if (total <= 0) return
+    const current = Math.max(0, Math.min(target, total))
+    if (setDeckFragmentCount(document, current)) {
+      fragmentState.set(shapeId, { total, current })
+      setFragmentInfo({ total, current })
+      if (!applyingRemoteFragmentRef.current && getRole() === 'presenter') {
+        broadcastSlideFragment(shapeId, current, total)
+      }
+    }
+  }, [document, fragmentInfo])
 
   // Keyboard navigation
   useEffect(() => {
@@ -286,11 +329,17 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
       } else if (e.key === 'ArrowLeft') {
         e.preventDefault()
         handlePrev()
+      } else if (orthogonalFragments && e.key === 'ArrowDown') {
+        e.preventDefault()
+        setFragmentCurrent((fragmentInfo?.current ?? 0) + 1)
+      } else if (orthogonalFragments && e.key === 'ArrowUp') {
+        e.preventDefault()
+        setFragmentCurrent((fragmentInfo?.current ?? 0) - 1)
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [handleNext, handlePrev])
+  }, [handleNext, handlePrev, orthogonalFragments, setFragmentCurrent, fragmentInfo])
 
   // Touch swipe handling
   const startTouch = useCallback((touch: Touch) => {
@@ -368,8 +417,9 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
     cursor: 'default',
   }
 
-  const isFirst = currentSlide === 0 && (!fragmentInfo || fragmentInfo.current === 0)
-  const isLast = currentSlide === totalSlides - 1 && (!fragmentInfo || fragmentInfo.current >= fragmentInfo.total)
+  const isFirst = currentSlide === 0 && (orthogonalFragments || !fragmentInfo || fragmentInfo.current === 0)
+  const isLast = currentSlide === totalSlides - 1 && (orthogonalFragments || !fragmentInfo || fragmentInfo.current >= fragmentInfo.total)
+  const showFragmentSlider = orthogonalFragments && fragmentInfo && fragmentInfo.total > 0
 
   const nav = (
     <div
@@ -406,6 +456,18 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
           <polyline points="9 6 15 12 9 18" />
         </svg>
       </button>
+      {showFragmentSlider && (
+        <input
+          className="slides-fragment-slider"
+          type="range"
+          min={0}
+          max={fragmentInfo.total}
+          step={1}
+          value={fragmentInfo.current}
+          onChange={e => setFragmentCurrent(Number(e.target.value))}
+          aria-label="Fragment"
+        />
+      )}
     </div>
   )
 
@@ -440,6 +502,24 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
           pointer-events: none;
           opacity: 0.82;
         }
+        .slides-fragment-slider {
+          position: fixed;
+          right: max(54px, calc(env(safe-area-inset-right) + 54px));
+          top: 50%;
+          width: 96px;
+          height: 24px;
+          transform: translateY(-50%) rotate(-90deg);
+          transform-origin: center;
+          pointer-events: auto;
+          accent-color: var(--color-text, #333);
+          opacity: 0.34;
+          transition: opacity 0.15s;
+          touch-action: none;
+        }
+        .slides-fragment-slider:hover,
+        .slides-fragment-slider:active {
+          opacity: 0.68;
+        }
         .tl-theme__dark .slides-navigator {
           color: #e0e0e0 !important;
         }
@@ -453,6 +533,9 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
         .tl-theme__dark .slides-nav-counter {
           background: rgba(30,30,30,0.82) !important;
           color: #e0e0e0 !important;
+        }
+        .tl-theme__dark .slides-fragment-slider {
+          accent-color: #e0e0e0;
         }
         @media (max-width: 900px), (pointer: coarse) {
           .slides-nav-button {

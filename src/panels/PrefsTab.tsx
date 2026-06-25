@@ -71,6 +71,7 @@ type PrefsSectionId =
   | 'voice-commands'
   | 'spawn'
   | 'highlighter'
+  | 'presentation'
   | 'editor'
   | 'curve'
   | 'bots'
@@ -141,6 +142,7 @@ function readAll() {
     foldMd: getPref('fold-md-lines'),
     foldDiff: getPref('fold-diff-lines'),
     hlZone: getPref('hl-zone-enabled'),
+    slidesNavigationMode: getPref('slides-navigation-mode'),
     provenanceMode: getPref('provenance-display-mode'),
     selfCheckEnabled: getPref('todd-self-check-auto-enabled'),
     selfCheckCountdown: getPref('todd-self-check-countdown-sec'),
@@ -560,6 +562,29 @@ export function PrefsTab() {
           />
           <span className="prefs-num-unit">sec</span>
         </div>
+      </CollapsiblePrefsSection>
+
+      <CollapsiblePrefsSection
+        id="presentation"
+        title="Presentation"
+        summary={prefs.slidesNavigationMode === 'orthogonal-fragments' ? 'Slides left/right, fragments vertical' : 'Click through fragments'}
+        open={prefs.openSections.includes('presentation')}
+        onToggle={toggleSection}
+      >
+        <label className="prefs-row">
+          <span>Slide navigation</span>
+          <select
+            value={prefs.slidesNavigationMode}
+            onChange={e => {
+              const mode = e.target.value === 'orthogonal-fragments' ? 'orthogonal-fragments' : 'inline-fragments'
+              setPref('slides-navigation-mode', mode)
+            }}
+            className="prefs-select"
+          >
+            <option value="inline-fragments">Click through fragments</option>
+            <option value="orthogonal-fragments">Slides left/right, fragments vertical</option>
+          </select>
+        </label>
       </CollapsiblePrefsSection>
 
       <CollapsiblePrefsSection

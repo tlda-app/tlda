@@ -46,6 +46,9 @@ const DEFAULTS = {
   'fold-diff-lines': 0 as number,
   // Highlighter edge-zone (the HighlighterSlider). Toggled from the prefs menu.
   'hl-zone-enabled': true as boolean,
+  // Presentation mode: preserve the existing click-through-fragments behavior
+  // by default; optionally split slide movement and fragment movement.
+  'slides-navigation-mode': 'inline-fragments' as 'inline-fragments' | 'orthogonal-fragments',
   // Provenance/cascade surfacing mode. off = no surfacing (also hides the ribbon
   // hover tooltip). hover = ephemeral tooltip; panel = docked side panel; inline =
   // click-to-pin card. Default hover preserves today's behavior; off/panel/inline opt in.

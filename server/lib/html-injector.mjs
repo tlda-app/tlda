@@ -732,6 +732,37 @@ const SLIDES_BRIDGE_SCRIPT = `
       }, '*');
     }
 
+    function getVisibleFragmentCount() {
+      var slide = Reveal.getCurrentSlide();
+      if (!slide) return { current: 0, total: 0 };
+      var fragments = slide.querySelectorAll('.fragment');
+      var all = new Set();
+      var visible = new Set();
+      for (var i = 0; i < fragments.length; i++) {
+        var idx = fragments[i].getAttribute('data-fragment-index');
+        var key = idx !== null ? idx : 'auto-' + i;
+        all.add(key);
+        if (fragments[i].classList.contains('visible')) {
+          visible.add(key);
+        }
+      }
+      return { current: visible.size, total: all.size };
+    }
+
+    function goToVisibleFragmentCount(target) {
+      var state = getVisibleFragmentCount();
+      var clamped = Math.max(0, Math.min(target, state.total));
+      var guard = state.total + 2;
+      while (state.current < clamped && guard-- > 0) {
+        Reveal.nextFragment ? Reveal.nextFragment() : Reveal.next();
+        state = getVisibleFragmentCount();
+      }
+      while (state.current > clamped && guard-- > 0) {
+        Reveal.prevFragment ? Reveal.prevFragment() : Reveal.prev();
+        state = getVisibleFragmentCount();
+      }
+    }
+
     // Report initial fragment state
     setTimeout(reportSlideBackground, 50);
     setTimeout(reportFragmentState, 200);
@@ -783,6 +814,11 @@ const SLIDES_BRIDGE_SCRIPT = `
         if (avail && avail.prev) {
           Reveal.prev();
         }
+      }
+      if (e.data.type === 'tlda-fragment-goto') {
+        goToVisibleFragmentCount(parseInt(e.data.current || '0', 10) || 0);
+        setTimeout(reportFragmentState, 50);
+        setTimeout(reportSlideHeight, 50);
       }
       if (e.data.type === 'tlda-slide-goto') {
         Reveal.slide(e.data.indexh || 0, e.data.indexv || 0, 0);
