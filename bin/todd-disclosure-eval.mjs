@@ -2,6 +2,8 @@
 
 import fs from 'node:fs'
 
+import { classifyDisclosureEvent } from './lib/todd-disclosure-classifier.mjs'
+
 const LABELS = ['intervene', 'suppress', 'log_only']
 
 function parseArgs(argv) {
@@ -194,30 +196,15 @@ function labelMetrics(confusion) {
 }
 
 function guardedHeuristic(row) {
-  const text = row.text || ''
-  const f = row.features || {}
-  const modelDecision = LABELS.includes(row.modelDecision) ? row.modelDecision : 'suppress'
-
-  const asksForApproval =
-    /\b(your ok|your go-ahead|if you want me|deploy.*ok|restart.*ok|waiting on you|requires skip|permission|approve|your call)\b/i.test(text)
-  const ownsNextAction =
-    f.namesNextAction ||
-    /\b(i('|’)ll|i will|i’m going to|i am going to|on it|back with|next i|i’ll keep|i won't|i will not|nothing deploys|nothing restarts)\b/i.test(text)
-  const hasVerification =
-    f.claimsVerification ||
-    /\b(verified|tested|checked|passed|read the code|hard evidence|proven|surface)\b/i.test(text)
-  const conversational =
-    /^(right|yes|no|got it|understood|on it|fair|exactly|you're right|your instinct is right)\b/i.test(text.trim())
-  const trueExternalBlocker =
-    asksForApproval ||
-    /\b(provider credits|disk is .*full|fly.*502|live deploy|restart the live|authority|external)\b/i.test(text)
-
-  if (conversational && ownsNextAction) return 'suppress'
-  if (trueExternalBlocker) return 'suppress'
-  if (f.claimsCompletion && hasVerification && !f.claimsHandoff && !f.claimsRemaining) return 'suppress'
-  if (f.claimsUncertainty && !ownsNextAction && !hasVerification && modelDecision !== 'intervene') return 'log_only'
-  if (modelDecision === 'intervene' && ownsNextAction && !f.claimsCompletion && !f.claimsBlocker) return 'suppress'
-  return modelDecision
+  return classifyDisclosureEvent({
+    id: row.eventId,
+    timestamp: row.timestamp,
+    from: row.agentId,
+    fromName: row.agentName,
+    to: row.to,
+    text: row.text,
+    context: row.context || {},
+  }).decision
 }
 
 function main() {
