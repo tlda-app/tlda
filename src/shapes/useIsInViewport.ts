@@ -15,6 +15,10 @@ export type VisibilityViewportId = TLViewportId
 
 const VisibilityViewportContext = createContext<VisibilityViewportId | undefined>(undefined)
 
+export function useVisibilityViewportId(): VisibilityViewportId | undefined {
+  return useContext(VisibilityViewportContext)
+}
+
 export function VisibilityViewportProvider({
   viewportId,
   children,

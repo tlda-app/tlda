@@ -21,7 +21,8 @@ import { dropPillOnTarget } from './FleetPillShape'
 import { agentDisplayName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
 import { AgentName } from './PhaseIcon'
 import { dragCoordinator } from './dragCoordinator'
-import { useIsInViewport } from './useIsInViewport'
+import { useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
+import { clientPointToPage } from '../wm/viewport-coordinates'
 
 
 const DEFAULT_W = 340
@@ -400,6 +401,7 @@ const DRAG_THRESHOLD = 5
 
 export function usePillDrag() {
   const editor = useEditor()
+  const viewportId = useVisibilityViewportId()
   const dragRef = useRef<DragState | null>(null)
 
   const startDrag = useCallback((
@@ -431,7 +433,7 @@ export function usePillDrag() {
           if (Math.abs(dx) < DRAG_THRESHOLD && Math.abs(dy) < DRAG_THRESHOLD) return
           drag.started = true
 
-          const pagePos = editor.screenToPage({ x: ev.clientX, y: ev.clientY })
+          const pagePos = clientPointToPage(editor, { x: ev.clientX, y: ev.clientY }, viewportId)
           const measureEl = document.createElement('span')
           measureEl.style.cssText = "position:absolute;visibility:hidden;font:500 9px 'SF Mono',Menlo,Consolas,monospace;white-space:nowrap;padding:1px 6px;border:1px solid transparent"
           measureEl.textContent = drag.displayName
@@ -455,7 +457,7 @@ export function usePillDrag() {
         }
 
         if (drag.pillId) {
-          const pagePos = editor.screenToPage({ x: ev.clientX, y: ev.clientY })
+          const pagePos = clientPointToPage(editor, { x: ev.clientX, y: ev.clientY }, viewportId)
           const pillShape = editor.getShape(drag.pillId as any) as any
           const pw = pillShape?.props?.w || 70
           const ph = pillShape?.props?.h || 18
@@ -475,14 +477,14 @@ export function usePillDrag() {
         dragRef.current = null
         if (!drag || !drag.started || !drag.pillId) return
 
-        const pagePos = editor.screenToPage({ x: ev.clientX, y: ev.clientY })
+        const pagePos = clientPointToPage(editor, { x: ev.clientX, y: ev.clientY }, viewportId)
         dropPillOnTarget(editor, drag.pillId as any, drag.value, pagePos)
         editor.run(() => {
           try { editor.deleteShapes([drag.pillId as any]) } catch {}
         }, { history: 'ignore' })
       },
     )
-  }, [editor])
+  }, [editor, viewportId])
 
   return { startDrag }
 }
