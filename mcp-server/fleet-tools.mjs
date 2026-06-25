@@ -2251,7 +2251,7 @@ export async function handleFleetTool(name, args) {
           kind: spawnOpts.kind,
           cwd: agentCwd,
           capability: spawnOpts.capability,
-        });
+        }, { timeoutMs: SPAWN_WS_TIMEOUT_MS });
         if (spawnResult?.ok === false || spawnResult?.error) {
           return { content: [{ type: 'text', text: `spawn failed before delegation: ${spawnResult.error || JSON.stringify(spawnResult)}` }], isError: true };
         }
@@ -3609,7 +3609,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
         cwd: args.cwd,
         mode: args.mode,
         capability: args.capability,
-      });
+      }, { timeoutMs: SPAWN_WS_TIMEOUT_MS });
       if (result?.ok === false || result?.error) {
         return { content: [{ type: 'text', text: `spawn failed: ${result.error || JSON.stringify(result)}` }], isError: true };
       }
@@ -4864,20 +4864,26 @@ let _channelRWS = null;  // ResilientWS instance
 // Request/response over WS — pending callbacks keyed by correlation ID
 const _wsPending = new Map();
 const WS_TIMEOUT_MS = 10000;
+// Fresh spawn has a longer valid path than ordinary fleet requests:
+// server spawn RPC timeout/recovery can consume 10s, then registration
+// readiness can wait up to 20s. Keep normal requests tight, but do not let the
+// MCP caller abandon a spawn after 10s and skip the following delegation step.
+const SPAWN_WS_TIMEOUT_MS = 30000;
 
 /**
  * Send a request over the WS channel and wait for a response.
  * Returns the result on success, throws on error or timeout.
  * If WS is not connected, returns null (caller should fallback to REST).
  */
-function _sendWSOnce(type, params = {}) {
+function _sendWSOnce(type, params = {}, opts = {}) {
   if (!_channelRWS?.connected) return null;
   const id = crypto.randomUUID();
+  const timeoutMs = opts.timeoutMs || WS_TIMEOUT_MS;
   const promise = new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       _wsPending.delete(id);
       reject(new Error('WS request timeout'));
-    }, WS_TIMEOUT_MS);
+    }, timeoutMs);
     _wsPending.set(id, { resolve, reject, timer });
   });
   if (!_channelRWS.send({ type, ...params, id })) {
@@ -4895,11 +4901,11 @@ function _sendWSOnce(type, params = {}) {
 // reconnect. A genuine in-flight request timeout (WS_TIMEOUT_MS = a real stall)
 // is NOT retried; it surfaces as before. Contract preserved: resolves with data
 // when up, returns null only when still not connected after the retries.
-async function sendWS(type, params = {}) {
+async function sendWS(type, params = {}, opts = {}) {
   const MAX_ATTEMPTS = 4;
   const RETRY_DELAY_MS = 700;
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-    const result = _sendWSOnce(type, params);
+    const result = _sendWSOnce(type, params, opts);
     if (result !== null) return await result; // connected — await the response
     if (attempt < MAX_ATTEMPTS - 1) await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
   }
