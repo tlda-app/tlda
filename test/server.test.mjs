@@ -36,7 +36,7 @@ function startServer() {
   const projectsDir = mkdtempSync(join(tmpdir(), 'tlda-test-projects-'))
 
   return new Promise((resolve, reject) => {
-    const proc = spawn('node', [SERVER_SCRIPT, '--i-am-tlda-cli'], {
+    const proc = spawn('node', ['--import', 'tsx', SERVER_SCRIPT, '--i-am-tlda-cli'], {
       env: {
         ...process.env,
         PORT: String(PORT),

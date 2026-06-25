@@ -1,0 +1,1 @@
+{"version":3,"file":"TldrawUiButtonLabel.d.ts","sourceRoot":"","sources":["../../../../../../src/lib/ui/components/primitives/Button/TldrawUiButtonLabel.tsx"],"names":[],"mappings":"AAAA,OAAO,EAAE,SAAS,EAAE,MAAM,OAAO,CAAA;AAEjC,cAAc;AACd,MAAM,WAAW,oBAAoB;IACpC,QAAQ,CAAC,EAAE,SAAS,CAAA;CACpB;AAED,qBAAqB;AACrB,wBAAgB,mBAAmB,CAAC,EAAE,QAAQ,EAAE,EAAE,oBAAoB,2CAErE"}

@@ -1,0 +1,1 @@
+//# sourceMappingURL=Polygon2d.test.d.ts.map

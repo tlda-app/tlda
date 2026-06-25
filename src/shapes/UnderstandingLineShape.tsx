@@ -469,6 +469,12 @@ export class UnderstandingLineShapeUtil extends BaseBoxShapeUtil<any> {
     )
   }
 
+  getIndicatorPath(shape: any) {
+    const path = new Path2D()
+    path.rect(0, 0, shape.props.w, shape.props.h)
+    return path
+  }
+
   indicator() {
     return null as any
   }

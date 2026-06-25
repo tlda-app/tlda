@@ -40,7 +40,7 @@ export function startServer(port = 15176) {
   }, null, 2))
 
   return new Promise((resolve, reject) => {
-    const proc = spawn('node', [SERVER_SCRIPT, '--i-am-tlda-cli'], {
+    const proc = spawn('node', ['--import', 'tsx', SERVER_SCRIPT, '--i-am-tlda-cli'], {
       env: {
         ...process.env,
         HOME: testHome,

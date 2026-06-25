@@ -1768,6 +1768,12 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     )
   }
 
+  getIndicatorPath(shape: any) {
+    const path = new Path2D()
+    path.rect(0, 0, shape.props.w, shape.props.h)
+    return path
+  }
+
   indicator(shape: any) {
     if (shape.props.collapsed) {
       return <circle cx={5} cy={5} r={5} />

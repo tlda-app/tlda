@@ -63,6 +63,12 @@ export class GraphNodeShapeUtil extends BaseBoxShapeUtil<any> {
     )
   }
 
+  getIndicatorPath(shape: any) {
+    const path = new Path2D()
+    path.rect(0, 0, shape.props.w, shape.props.h)
+    return path
+  }
+
   indicator(shape: any) {
     return <rect width={shape.props.w} height={shape.props.h} rx={8} ry={8} />
   }

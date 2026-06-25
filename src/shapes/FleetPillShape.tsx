@@ -17,13 +17,14 @@ import type { Editor, TLShape, TLShapeId } from 'tldraw'
 import { myTldaUrl } from '../fleet/tldaUrl.mjs'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getDeviceId } from '../fleet/fleet-data.mjs'
+import { FLEET_SHAPE_TYPES } from './fleet-utils'
 
 const PILL_W = 70
 const PILL_H = 18
 const CHAT_W = 400
 const CHAT_H = 600
 
-const FLEET_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-inbox', 'fleet-notifications', 'fleet-docview']
+const FLEET_TYPES = FLEET_SHAPE_TYPES
 
 // Module-level snap state — written by drag handler, read by the component.
 // The component re-renders on every translate frame, so it picks up changes.
@@ -109,7 +110,7 @@ export function dropPillOnTarget(
   // shape and isn't a handled fleet-chat interaction, the create paths below
   // evaporate it (see the guard before the create branches).
   const overFleet = hitEditor.getCurrentPageShapes().some(s => {
-    if (!FLEET_TYPES.includes(s.type as string)) return false
+    if (!FLEET_TYPES.has(s.type as string)) return false
     const b = hitEditor.getShapePageBounds(s.id)
     return !!b &&
       pagePoint.x >= b.x && pagePoint.x <= b.x + b.w &&
@@ -430,7 +431,7 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
 
     let overFleet = false
     const allFleet = hitEditor.getCurrentPageShapes()
-      .filter(s => FLEET_TYPES.includes(s.type as string) && s.id !== pill.id)
+      .filter(s => FLEET_TYPES.has(s.type as string) && s.id !== pill.id)
     for (const s of allFleet) {
       const sb = hitEditor.getShapePageBounds(s.id)
       if (sb && cx >= sb.x && cx <= sb.x + sb.w && cy >= sb.y && cy <= sb.y + sb.h) {
@@ -528,7 +529,7 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
       const cx = bounds.x + bounds.w / 2
       const cy = bounds.y + bounds.h / 2
       return editor.getCurrentPageShapes().some(s => {
-        if (s.id === shape.id || !FLEET_TYPES.includes(s.type as string)) return false
+        if (s.id === shape.id || !FLEET_TYPES.has(s.type as string)) return false
         const sb = editor.getShapePageBounds(s.id)
         return sb && cx >= sb.x && cx <= sb.x + sb.w && cy >= sb.y && cy <= sb.y + sb.h
       })
@@ -631,6 +632,10 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
         )}
       </HTMLContainer>
     )
+  }
+
+  getIndicatorPath() {
+    return undefined
   }
 
   indicator() {

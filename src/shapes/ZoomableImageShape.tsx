@@ -53,6 +53,12 @@ export class ZoomableImageShapeUtil extends BaseBoxShapeUtil<any> {
     return <div className="svg-page-background" />
   }
 
+  getIndicatorPath(shape: any) {
+    const path = new Path2D()
+    path.rect(0, 0, shape.props.w, shape.props.h)
+    return path
+  }
+
   indicator(shape: any) {
     return <rect width={shape.props.w} height={shape.props.h} />
   }

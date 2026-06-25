@@ -1,0 +1,1 @@
+{"version":3,"file":"DefaultPeopleMenuContent.d.ts","sourceRoot":"","sources":["../../../../../src/lib/ui/components/SharePanel/DefaultPeopleMenuContent.tsx"],"names":[],"mappings":"AAAA,OAAO,EAAE,QAAQ,EAAE,MAAM,gBAAgB,CAAA;AAGzC,cAAc;AACd,MAAM,WAAW,6BAA6B;IAC7C,OAAO,EAAE,QAAQ,EAAE,CAAA;CACnB;AAED,qBAAqB;AACrB,wBAAgB,wBAAwB,CAAC,EAAE,OAAO,EAAE,EAAE,6BAA6B,2CAmBlF"}

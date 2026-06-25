@@ -2319,6 +2319,8 @@ async function cmdServer(action) {
     <key>ProgramArguments</key>
     <array>
         <string>${nodePath}</string>
+        <string>--import</string>
+        <string>tsx</string>
         <string>${serverScript}</string>
         <string>--i-am-tlda-cli</string>
     </array>

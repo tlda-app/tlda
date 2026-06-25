@@ -15,6 +15,12 @@ export const FLEET_SHAPE_TYPES = new Set([
   'fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview', 'fleet-reaper', 'fleet-inbox', 'fleet-touch-inbox', 'fleet-notifications',
 ])
 
+export const FLEET_SHAPE_SELECTOR = [...FLEET_SHAPE_TYPES]
+  .map(type => `[data-shape-type="${type}"]`)
+  .join(', ')
+
+export const FLEET_INTERACTION_SHAPE_SELECTOR = `${FLEET_SHAPE_SELECTOR}, [data-shape-type="fleet-pill"]`
+
 const nativeSnapModeStack = new WeakMap<Editor, boolean[]>()
 
 export function beginNativeSnapDrag(editor: Editor) {

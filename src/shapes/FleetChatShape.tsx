@@ -61,7 +61,8 @@ import { fetchProofInfo, fetchTheoremMap } from '../docInfoCache'
 import { PDF_HEIGHT } from '../layoutConstants'
 import { TerminalCard } from './TerminalCard'
 import { Terminal } from 'xterm'
-import { useIsInViewport } from './useIsInViewport'
+import { useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
+import { clientPointToPage, pagePointToClient } from '../wm/viewport-coordinates'
 import { consumeBulletContexts, subscribeBulletContext, getBulletContexts } from '../stores/bulletContextStore'
 import { getPref, subscribePref } from '../preferences'
 import { DATABASE_HTTP } from '../activeConfig'
@@ -1175,6 +1176,10 @@ export class FleetChatShapeUtil extends BaseBoxShapeUtil<any> {
     return <FleetChatComponent shape={shape} />
   }
 
+  getIndicatorPath() {
+    return undefined
+  }
+
   indicator() {
     return null
   }
@@ -1597,6 +1602,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
 
 function FleetChatInner({ shape }: { shape: any }) {
   const editor = useEditor()
+  const viewportId = useVisibilityViewportId()
   const doc = useContext(DocContext)
   const panel = useContext(PanelContext)
   const fleetStyleVars = useFleetStyleVars()
@@ -4806,7 +4812,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (!drag.started) {
         if (Math.abs(dx) < DRAG_THRESHOLD && Math.abs(dy) < DRAG_THRESHOLD) return
         drag.started = true
-        const pagePos = editor.screenToPage({ x: e.clientX, y: e.clientY })
+        const pagePos = clientPointToPage(editor, { x: e.clientX, y: e.clientY }, viewportId)
         const pillId = createShapeId()
         editor.createShape({
           id: pillId,
@@ -4831,7 +4837,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         editor.cancel()
       }
       if (drag.pillId) {
-        const pagePos = editor.screenToPage({ x: e.clientX, y: e.clientY })
+        const pagePos = clientPointToPage(editor, { x: e.clientX, y: e.clientY }, viewportId)
         editor.updateShape({
           id: drag.pillId as any,
           type: 'fleet-pill' as any,
@@ -4857,7 +4863,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           if (outside && !onMain) {
             // Handoff: panel → main
             try { editor.deleteShapes([drag.pillId as any]) } catch {}
-            const mainPos = mainEditor.screenToPage({ x: e.clientX, y: e.clientY })
+            const mainPos = clientPointToPage(mainEditor, { x: e.clientX, y: e.clientY })
             mainEditor.createShape({
               id: drag.pillId as any,
               type: 'fleet-pill' as any,
@@ -4880,7 +4886,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           } else if (!outside && onMain) {
             // Handoff back: main → panel
             try { mainEditor.deleteShapes([drag.pillId as any]) } catch {}
-            const panelPos = editor.screenToPage({ x: e.clientX, y: e.clientY })
+            const panelPos = clientPointToPage(editor, { x: e.clientX, y: e.clientY }, viewportId)
             editor.createShape({
               id: drag.pillId as any,
               type: 'fleet-pill' as any,
@@ -4897,7 +4903,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             ;(drag as any)._onMain = false
           } else if (onMain) {
             // Move on main editor
-            const mainPos = mainEditor.screenToPage({ x: e.clientX, y: e.clientY })
+            const mainPos = clientPointToPage(mainEditor, { x: e.clientX, y: e.clientY })
             mainEditor.updateShape({
               id: drag.pillId as any,
               type: 'fleet-pill' as any,
@@ -4960,7 +4966,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       const onMain = !!(drag as any)._onMain
       const mainEditor = (window as any).__tldraw_editor__ as any
       const dropEditor = (onMain && mainEditor) ? mainEditor : editor
-      const pagePos = dropEditor.screenToPage({ x: e.clientX, y: e.clientY })
+      const pagePos = clientPointToPage(dropEditor, { x: e.clientX, y: e.clientY }, onMain ? undefined : viewportId)
       dropPillOnTarget(dropEditor, drag.pillId as any, drag.value, pagePos, drag.content)
       try { dropEditor.deleteShapes([drag.pillId as any]) } catch {}
     }
@@ -4972,7 +4978,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       // Release coordinator if this component unmounts during a drag
       if (dragRef.current) dragCoordinator.release()
     }
-  }, [chatLogEl, editor])
+  }, [chatLogEl, editor, viewportId])
 
   // --- chatInsertBus listener: content drops insert into textarea ---
   useEffect(() => {
@@ -5710,6 +5716,7 @@ function FilterOverlay({
 }) {
   // Native click delegation on document capture — bypasses tldraw completely
   const overlayRef = useRef<HTMLDivElement>(null)
+  const viewportId = useVisibilityViewportId()
   const filterRef = useRef(filter)
   filterRef.current = filter
   const humanLabel = getHumanName() || getHumanId() || 'user'
@@ -5827,7 +5834,7 @@ function FilterOverlay({
     const pill = pills[0]
     const pb = editor.getShapePageBounds(pill.id)
     if (!pb) return null
-    const screenPt = editor.pageToScreen({ x: pb.x + pb.w / 2, y: pb.y + pb.h / 2 })
+    const screenPt = pagePointToClient(editor, { x: pb.x + pb.w / 2, y: pb.y + pb.h / 2 }, viewportId)
 
     const ENTER_PAD = 8
     const EXIT_PAD = 30

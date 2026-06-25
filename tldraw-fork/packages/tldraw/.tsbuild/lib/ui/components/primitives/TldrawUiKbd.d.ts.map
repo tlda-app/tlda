@@ -1,0 +1,1 @@
+{"version":3,"file":"TldrawUiKbd.d.ts","sourceRoot":"","sources":["../../../../../src/lib/ui/components/primitives/TldrawUiKbd.tsx"],"names":[],"mappings":"AAIA,cAAc;AACd,MAAM,WAAW,YAAY;IAC5B,QAAQ,EAAE,MAAM,CAAA;IAChB,qBAAqB,CAAC,EAAE,OAAO,CAAA;CAC/B;AAED,qBAAqB;AACrB,wBAAgB,WAAW,CAAC,EAAE,QAAQ,EAAE,qBAA6B,EAAE,EAAE,YAAY,kDAUpF"}

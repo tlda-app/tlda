@@ -1,17 +1,22 @@
 {
   "name": "tldraw-sync-server",
   "version": "1.0.0",
+  "private": true,
   "type": "module",
+  "workspaces": [
+    "tldraw-fork/packages/*"
+  ],
   "scripts": {
     "start": "node --import tsx unified-server.mjs"
   },
   "dependencies": {
     "@deepgram/sdk": "^5.4.0",
-    "@tldraw/store": "^4.3.1",
-    "@tldraw/sync-core": "^4.3.1",
-    "@tldraw/tlschema": "^4.3.1",
-    "@tldraw/utils": "^4.3.1",
-    "@tldraw/validate": "^4.3.1",
+    "@tldraw/state": "file:./tldraw-fork/packages/state",
+    "@tldraw/store": "file:./tldraw-fork/packages/store",
+    "@tldraw/sync-core": "file:./tldraw-fork/packages/sync-core",
+    "@tldraw/tlschema": "file:./tldraw-fork/packages/tlschema",
+    "@tldraw/utils": "file:./tldraw-fork/packages/utils",
+    "@tldraw/validate": "file:./tldraw-fork/packages/validate",
     "better-sqlite3": "^12.8.0",
     "express": "^5.2.1",
     "katex": "^0.16.22",

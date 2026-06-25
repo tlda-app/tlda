@@ -1850,7 +1850,7 @@ export async function initVoice() {
   // keeps any backend the user didn't choose — in particular iOS/Chrome Web
   // Speech, whose start/stop earcon ignores the silent switch — from ever
   // running unbidden.
-  const { getPref, whenPrefsLoaded } = await import('./preferences.ts')
+  const { getPref, subscribePref, whenPrefsLoaded } = await import('./preferences.ts')
   // Wait for the saved pref to load before committing — never pick a backend
   // before we know what the user actually selected. Cap at 2s.
   await Promise.race([whenPrefsLoaded(), new Promise(r => setTimeout(r, 2000))])
@@ -1897,6 +1897,14 @@ export async function initVoice() {
     maxTouchPoints: typeof navigator !== 'undefined' ? navigator.maxTouchPoints : null,
     onServerHost: _onServerHost,
     hostname: location.hostname,
+  })
+
+  let appliedPrefBackend = prefBackend
+  subscribePref(() => {
+    const next = getPref('voice-backend')
+    if (next === appliedPrefBackend) return
+    appliedPrefBackend = next
+    setBackend(next)
   })
 
   if (_backend === 'none') return false

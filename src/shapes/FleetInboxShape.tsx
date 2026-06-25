@@ -225,6 +225,10 @@ export class FleetInboxShapeUtil extends BaseBoxShapeUtil<any> {
     return <FleetInboxComponent shape={shape} />
   }
 
+  getIndicatorPath() {
+    return undefined
+  }
+
   indicator() {
     return null
   }

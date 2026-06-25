@@ -28,6 +28,24 @@ import { log } from '../logger'
 import { FLEET_SHAPE_TYPES } from '../shapes/fleet-utils'
 
 const LOG_NS = 'fleet-gesture'
+
+// Get the viewport camera (fork viewport) or main camera (legacy)
+function getViewportCamera(editor: Editor, viewportId?: string): { x: number; y: number; z: number } {
+  if (viewportId) {
+    try { return editor.getViewport(viewportId as any).camera } catch { /* fall through */ }
+  }
+  return editor.getCamera()
+}
+
+// Get the viewport container (fork viewport) or main container (legacy)
+function getViewportContainer(editor: Editor, viewportId?: string): HTMLElement {
+  if (viewportId) {
+    const el = document.querySelector(`[data-viewport-id="${viewportId}"]`)?.querySelector('.clip-panel-canvas')
+    if (el) return el as HTMLElement
+  }
+  return editor.getContainer()
+}
+
 const TOUCH_TELEMETRY_NS = 'fleet-gesture-telemetry'
 export const TOUCH_TELEMETRY_BUILD = 'touch56-20260617-hud-state-1'
 
@@ -201,9 +219,12 @@ function shapeHeight(shape: any): number {
   return shape?.props?.h ?? shape?.h ?? 0
 }
 
-function screenPointToOverlayPage(overlay: Editor, clientX: number, clientY: number) {
-  const rect = overlay.getContainer().getBoundingClientRect()
-  return overlay.screenToPage({ x: clientX - rect.left, y: clientY - rect.top })
+function screenPointToOverlayPage(overlay: Editor, clientX: number, clientY: number, viewportId?: string) {
+  const container = viewportId
+    ? document.querySelector(`[data-viewport-id="${viewportId}"]`)?.querySelector('.clip-panel-canvas') ?? getViewportContainer(overlay, viewportId)
+    : getViewportContainer(overlay, viewportId)
+  const rect = (container as HTMLElement).getBoundingClientRect()
+  return overlay.screenToPage({ x: clientX - rect.left, y: clientY - rect.top }, viewportId ? { viewportId } : undefined)
 }
 
 function describeElement(el: Element | null) {
@@ -257,7 +278,7 @@ function topLevelFleetShape(overlay: Editor, shape: TLShape): TLShape {
 // The fleet shape (if any) under a screen point. The rendered DOM is the source
 // of truth for "what is visibly under the finger"; overlay geometry is only a
 // fallback for replay / culled DOM cases.
-function fleetHitAtScreen(overlay: Editor, clientX: number, clientY: number): FleetHit | null {
+function fleetHitAtScreen(overlay: Editor, clientX: number, clientY: number, viewportId?: string): FleetHit | null {
   const el = document.elementFromPoint(clientX, clientY)
   const hudWrap = el?.closest?.('.fleet-hud-wrap') as HTMLElement | null
   if (el && hudWrap) {
@@ -283,7 +304,7 @@ function fleetHitAtScreen(overlay: Editor, clientX: number, clientY: number): Fl
     }
   }
 
-  const page = screenPointToOverlayPage(overlay, clientX, clientY)
+  const page = screenPointToOverlayPage(overlay, clientX, clientY, viewportId)
   const shape = overlay.getShapeAtPoint(page, { hitInside: true, margin: 0 })
   if (shape && FLEET_SHAPE_TYPES.has(shape.type as string)) {
     const top = topLevelFleetShape(overlay, shape)
@@ -330,13 +351,13 @@ function commonContainingFleetPanel(overlay: Editor, a: Touch, b: Touch): TLShap
   return aPanels.find(shape => bPanelIds.has(shape.id)) ?? null
 }
 
-function fleetShapeAtScreen(overlay: Editor, clientX: number, clientY: number): TLShape | null {
-  return fleetHitAtScreen(overlay, clientX, clientY)?.shape ?? null
+function fleetShapeAtScreen(overlay: Editor, clientX: number, clientY: number, viewportId?: string): TLShape | null {
+  return fleetHitAtScreen(overlay, clientX, clientY, viewportId)?.shape ?? null
 }
 
-function touchDiagnostics(overlay: Editor | null, touches: Touch[]) {
+function touchDiagnostics(overlay: Editor | null, touches: Touch[], viewportId?: string) {
   return touches.map((t, index) => {
-    const hit = overlay ? fleetHitAtScreen(overlay, t.clientX, t.clientY) : null
+    const hit = overlay ? fleetHitAtScreen(overlay, t.clientX, t.clientY, viewportId) : null
     const shape = hit?.shape ?? null
     return {
       index,
@@ -353,9 +374,9 @@ function touchDiagnostics(overlay: Editor | null, touches: Touch[]) {
   })
 }
 
-function touchHitSummary(overlay: Editor | null, touches: Touch[]) {
+function touchHitSummary(overlay: Editor | null, touches: Touch[], viewportId?: string) {
   return touches.map((t, index) => {
-    const hit = overlay ? fleetHitAtScreen(overlay, t.clientX, t.clientY) : null
+    const hit = overlay ? fleetHitAtScreen(overlay, t.clientX, t.clientY, viewportId) : null
     const shape = hit?.shape ?? null
     return {
       index,
@@ -412,7 +433,7 @@ function consumeTouchEvent(e: TouchEvent) {
 // The split itself is on what the user sees: each panel's on-SCREEN center-x vs
 // the document's on-SCREEN center-x (page coords don't line up — the doc is in
 // the main-camera frame, the panels in the overlay's override-camera frame).
-function clusterOf(overlay: Editor, seedIds: Set<string>): TLShape[] {
+function clusterOf(overlay: Editor, seedIds: Set<string>, viewportId?: string): TLShape[] {
   const fleet = overlay.getCurrentPageShapes().filter(s => FLEET_SHAPE_TYPES.has(s.type as string))
   if (fleet.length === 0) return []
   // Document's screen center-x, read from the doc page's actual rendered DOM rect
@@ -442,8 +463,8 @@ function clusterOf(overlay: Editor, seedIds: Set<string>): TLShape[] {
     const boundsX = bounds?.x ?? shape?.x
     const boundsWidth = rectWidth(bounds) || shapeWidth(shape)
     if (!(boundsWidth > 0)) return null
-    const cam = overlay.getCamera()
-    const containerRect = overlay.getContainer().getBoundingClientRect()
+    const cam = getViewportCamera(overlay, viewportId)
+    const containerRect = getViewportContainer(overlay, viewportId).getBoundingClientRect()
     const centerX = containerRect.left + (boundsX + boundsWidth / 2 + cam.x) * cam.z
     return centerX < docScreenMidX ? 'L' : 'R'
   }
@@ -599,8 +620,9 @@ export function useFleetGestures(opts: {
   overlayEditorRef: React.MutableRefObject<Editor | null>
   mainEditor: Editor
   expanded: boolean
+  viewportId?: string
 }) {
-  const { hudRef, overlayEditorRef, mainEditor, expanded } = opts
+  const { hudRef, overlayEditorRef, mainEditor, expanded, viewportId } = opts
 
   useEffect(() => {
     if (!expanded) return
@@ -715,7 +737,7 @@ export function useFleetGestures(opts: {
         changedTouches: Array.from(e.changedTouches).map(compactTouch),
         stateKind,
         hits: touchHitSummary(overlay, Array.from(e.touches)),
-        overlayCamera: overlay ? overlay.getCamera() : null,
+        overlayCamera: overlay ? getViewportCamera(overlay, viewportId) as any : null,
         mainCamera: main.getCamera(),
       })
       if ((eventType === 'touchend' || eventType === 'touchcancel') && e.touches.length < 2) {
@@ -822,7 +844,7 @@ export function useFleetGestures(opts: {
       changedTouches,
       stateKind: state.kind,
       hits: overlay ? touchHitSummary(overlay, touches.map(pointToReplayTouch)) : [],
-      overlayCamera: overlay ? overlay.getCamera() : null,
+      overlayCamera: overlay ? getViewportCamera(overlay, viewportId) as any : null,
       mainCamera: main.getCamera(),
     })
 
@@ -847,8 +869,8 @@ export function useFleetGestures(opts: {
     const fleetDomTargets = () => {
       const overlay = overlayEditorRef.current
       if (!overlay) return []
-      const containerRect = overlay.getContainer().getBoundingClientRect()
-      const camera = overlay.getCamera()
+      const containerRect = getViewportContainer(overlay, viewportId).getBoundingClientRect()
+      const camera = getViewportCamera(overlay, viewportId)
       return overlay.getCurrentPageShapes()
         .filter(s => FLEET_SHAPE_TYPES.has(s.type as string))
         .map(shape => {
@@ -973,7 +995,7 @@ export function useFleetGestures(opts: {
       }
       const targetLocalPivot = () => {
         const bounds = overlay.getShapePageBounds(target.id as any) as any
-        const pivot = screenPointToOverlayPage(overlay, target.center.x, target.center.y)
+        const pivot = screenPointToOverlayPage(overlay, target.center.x, target.center.y, viewportId)
         const bw = rectWidth(bounds)
         const bh = rectHeight(bounds)
         const fx = bw > 0 ? Math.max(0, Math.min(1, (pivot.x - (bounds?.x ?? 0)) / bw)) : 0.5
@@ -985,7 +1007,7 @@ export function useFleetGestures(opts: {
         const sep = Math.min(80, Math.max(24, target.rect.width * 0.22))
         const a = p(1, target.center.x - sep / 2, target.center.y)
         const b = p(2, target.center.x + sep / 2, target.center.y)
-        const z = overlay.getCamera().z || 1
+        const z = getViewportCamera(overlay, viewportId).z || 1
         return makeReplayGesture(name, twoTouchFrames(main, overlay, a, b, p(1, a.clientX + 100, a.clientY + 45), p(2, b.clientX + 100, b.clientY + 45)), {
           target: { id: target.id, type: target.type },
           expectedPageDelta: { x: 100 / z, y: 45 / z },
@@ -1007,7 +1029,7 @@ export function useFleetGestures(opts: {
         const sep = Math.min(70, Math.max(24, target.rect.width * 0.18))
         const a = p(1, target.center.x - sep / 2, target.center.y)
         const b = p(2, target.center.x + sep / 2, target.center.y)
-        const z = overlay.getCamera().z || 1
+        const z = getViewportCamera(overlay, viewportId).z || 1
         return makeReplayGesture(name, twoTouchFrames(main, overlay, a, b, p(1, target.center.x - sep * 1.5 + 100, target.center.y + 45), p(2, target.center.x + sep * 1.5 + 100, target.center.y + 45)), {
           target: { id: target.id, type: target.type },
           expectedPageDelta: { x: 100 / z, y: 45 / z },
@@ -1021,7 +1043,7 @@ export function useFleetGestures(opts: {
         const sepY = Math.min(120, Math.max(40, target.rect.height * 0.24))
         const a = p(1, target.center.x - sepX / 2, target.center.y - sepY / 2)
         const b = p(2, target.center.x + sepX / 2, target.center.y + sepY / 2)
-        const z = overlay.getCamera().z || 1
+        const z = getViewportCamera(overlay, viewportId).z || 1
         return makeReplayGesture(name, twoTouchFrames(main, overlay, a, b, p(1, target.center.x - sepX * 1.5 + 80, target.center.y - sepY * 0.75 + 35), p(2, target.center.x + sepX * 1.5 + 80, target.center.y + sepY * 0.75 + 35)), {
           target: { id: target.id, type: target.type },
           expectedPageDelta: { x: 80 / z, y: 35 / z },
@@ -1044,8 +1066,8 @@ export function useFleetGestures(opts: {
       }
       const a = p(1, pair[0].center.x, pair[0].center.y)
       const b = p(2, pair[1].center.x, pair[1].center.y)
-      const clusterIds = clusterOf(overlay, new Set(pair.map(t => t.id))).map(s => s.id)
-      const z = overlay.getCamera().z || 1
+      const clusterIds = clusterOf(overlay, new Set(pair.map(t => t.id, viewportId))).map(s => s.id)
+      const z = getViewportCamera(overlay, viewportId).z || 1
       return makeReplayGesture(name, twoTouchFrames(main, overlay, a, b, p(1, a.clientX + 90, a.clientY + 40), p(2, b.clientX + 90, b.clientY + 40)), {
         targets: pair.map(t => ({ id: t.id, type: t.type })),
         clusterIds,
@@ -1126,7 +1148,7 @@ export function useFleetGestures(opts: {
         at: new Date().toISOString(),
         status: status(),
         mainCamera: main.getCamera(),
-        overlayCamera: overlay ? overlay.getCamera() : null,
+        overlayCamera: overlay ? getViewportCamera(overlay, viewportId) as any : null,
         mainFleet: shapeSnapshot(main),
         overlayFleet: shapeSnapshot(overlay),
         domRects: domSnapshot(),
@@ -1354,8 +1376,8 @@ export function useFleetGestures(opts: {
       }
 
       if (ts.length === 2) {
-        const hit0 = fleetHitAtScreen(overlay, ts[0].clientX, ts[0].clientY)
-        const hit1 = fleetHitAtScreen(overlay, ts[1].clientX, ts[1].clientY)
+        const hit0 = fleetHitAtScreen(overlay, ts[0].clientX, ts[0].clientY, viewportId)
+        const hit1 = fleetHitAtScreen(overlay, ts[1].clientX, ts[1].clientY, viewportId)
         const s0 = hit0?.shape ?? null
         const s1 = hit1?.shape ?? null
         postTouchTelemetry('two-touch start', {
@@ -1441,7 +1463,7 @@ export function useFleetGestures(opts: {
           main.markHistoryStoppingPoint()
           const mainShape = (main.getShape(shape.id as any) ?? overlay.getShape(shape.id as any)) as any
           const c0 = touchCenter(ts)
-          const pivotPage = screenPointToOverlayPage(overlay, c0.x, c0.y)
+          const pivotPage = screenPointToOverlayPage(overlay, c0.x, c0.y, viewportId)
           const boundsAny = b as any
           const boundsX = boundsAny?.x ?? 0
           const boundsY = boundsAny?.y ?? 0
@@ -1476,7 +1498,7 @@ export function useFleetGestures(opts: {
           })
         } else {
           // Fingers positively span >1 shape → move OR pinch-resize that margin's cluster.
-          const shapes = clusterOf(overlay, clusterSeedIds).map(s => {
+          const shapes = clusterOf(overlay, clusterSeedIds, viewportId).map(s => {
             const m = (main.getShape(s.id as any) ?? overlay.getShape(s.id as any)) as any
             const b = overlay.getShapePageBounds(s.id)
             return {
@@ -1504,7 +1526,7 @@ export function useFleetGestures(opts: {
           const cy = validShapes.reduce((a, s) => a + s.y0 + s.h0 / 2, 0) / validShapes.length
           const span0 = touchSpan(ts[0], ts[1])
           const c0 = touchCenter(ts)
-          state = { kind: 'cluster', mode: 'pending', moveActive: false, resizeActive: false, shapes: validShapes, anchor: { x: cx, y: cy }, d0: touchDist(ts[0], ts[1]), sx0: span0.x, sy0: span0.y, c0, p0: screenPointToOverlayPage(overlay, c0.x, c0.y), writeCount: 0 }
+          state = { kind: 'cluster', mode: 'pending', moveActive: false, resizeActive: false, shapes: validShapes, anchor: { x: cx, y: cy }, d0: touchDist(ts[0], ts[1]), sx0: span0.x, sy0: span0.y, c0, p0: screenPointToOverlayPage(overlay, c0.x, c0.y, viewportId), writeCount: 0 }
           log.warn(LOG_NS, 'gesture start: cluster', {
             seedIds: [...clusterSeedIds],
             shapeIds: validShapes.map(s => s.id),
@@ -1607,7 +1629,7 @@ export function useFleetGestures(opts: {
             resizeAfterMoveThreshold: RESIZE_LOCK_AFTER_MOVE,
           })
         }
-        const pageCenter = screenPointToOverlayPage(overlay, c.x, c.y)
+        const pageCenter = screenPointToOverlayPage(overlay, c.x, c.y, viewportId)
         const dx = state.moveActive ? pageCenter.x - state.p0.x : 0
         const dy = state.moveActive ? pageCenter.y - state.p0.y : 0
         const scale = state.resizeActive && state.d0 > 0 ? d / state.d0 : 1
@@ -1689,7 +1711,7 @@ export function useFleetGestures(opts: {
             resizeAfterMoveThreshold: RESIZE_LOCK_AFTER_MOVE,
           })
         }
-        const pageCenter = screenPointToOverlayPage(overlay, c.x, c.y)
+        const pageCenter = screenPointToOverlayPage(overlay, c.x, c.y, viewportId)
         const dx = state.moveActive ? pageCenter.x - state.p0.x : 0
         const dy = state.moveActive ? pageCenter.y - state.p0.y : 0
         // Scale the whole cluster about its pivot, then translate it by the
@@ -1772,5 +1794,5 @@ export function useFleetGestures(opts: {
     }
     w.__fleetGestureCleanup = cleanup
     return cleanup
-  }, [expanded, hudRef, overlayEditorRef, mainEditor])
+  }, [expanded, hudRef, overlayEditorRef, mainEditor, viewportId])
 }

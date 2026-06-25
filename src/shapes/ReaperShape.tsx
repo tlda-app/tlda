@@ -39,6 +39,10 @@ export class ReaperShapeUtil extends BaseBoxShapeUtil<any> {
     return <ReaperComponent shape={_shape} />
   }
 
+  getIndicatorPath() {
+    return undefined
+  }
+
   indicator() {
     return null
   }
