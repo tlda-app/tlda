@@ -612,7 +612,8 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
     const editor = useEditor()
     const { displayName, color, pillType } = shape.props
     const isContent = pillType === 'msg' || pillType === 'code' || pillType === 'activity' || pillType === 'tool'
-    const isDotForm = pillType === 'doc' || pillType === 'annotation' || pillType === 'file'
+    const isFileBackedDoc = pillType === 'doc' && typeof shape.props.value === 'string' && shape.props.value.startsWith('file:')
+    const isDotForm = (pillType === 'doc' && !isFileBackedDoc) || pillType === 'annotation' || pillType === 'file'
     const isAgentPill = pillType === 'agent' || pillType === 'label'
 
     // Hide ghost when the pill is over an existing fleet shape (drop = filter update, not new chat)
@@ -628,6 +629,46 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
         return sb && cx >= sb.x && cx <= sb.x + sb.w && cy >= sb.y && cy <= sb.y + sb.h
       })
     }, [editor, shape.id, isAgentPill])
+
+    if (isFileBackedDoc) {
+      return (
+        <HTMLContainer
+          style={{
+            pointerEvents: 'none',
+            overflow: 'visible',
+            width: 0,
+            height: 0,
+          }}
+        >
+          <div
+            style={{
+              width: 300,
+              minHeight: 86,
+              padding: '10px 12px',
+              borderRadius: 6,
+              border: `1px solid ${color}55`,
+              background: 'rgba(255, 255, 255, 0.96)',
+              boxShadow: `0 10px 24px ${color}25`,
+              color: '#202124',
+              fontSize: 12,
+              lineHeight: '17px',
+              fontFamily: "'SF Mono', Menlo, Consolas, monospace",
+              transform: 'translate(-5px, -5px)',
+              userSelect: 'none',
+            }}
+          >
+            <div style={{ color, fontWeight: 600, marginBottom: 6 }}>sticky note</div>
+            <div style={{
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}>
+              {displayName}
+            </div>
+          </div>
+        </HTMLContainer>
+      )
+    }
 
     // Dot form: small colored circle (like collapsed math-note)
     if (isDotForm) {

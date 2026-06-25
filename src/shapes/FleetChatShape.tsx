@@ -1977,11 +1977,12 @@ function FleetChatInner({ shape }: { shape: any }) {
     const sourceRect = sourceEl.getBoundingClientRect()
     const left = Math.max(12, sourceRect.left)
     const top = Math.max(12, sourceRect.bottom + 8)
-    const anchor = clientPointToPage(editor, { x: left, y: top }, viewportId)
-    void createTemporaryMarkdownColumn(editor, anchor, title, markdown || title, {
+    const mainEditor = (window as Window & { __tldraw_editor__?: typeof editor }).__tldraw_editor__ || editor
+    const anchor = clientPointToPage(mainEditor, { x: left, y: top })
+    void createTemporaryMarkdownColumn(mainEditor, anchor, title, markdown || title, {
       sourceChatShapeId: shape.id,
     })
-  }, [editor, shape.id, viewportId])
+  }, [editor, shape.id])
 
   // Incremental render cache: non-activity messages are independent and can be
   // cached by (msgKey, ctxVersion). When ctx changes (agent rename, task done),
@@ -2470,7 +2471,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       const chipUrl = mdChip.dataset.url || ''
       const chipPath = mdChip.dataset.path || ''
       const isMd = /\.md$/i.test(chipUrl || chipPath)
-      const fetchUrl = chipUrl || (chipPath ? `/api/local-image?path=${encodeURIComponent(chipPath)}` : '')
+      const fetchUrl = chipUrl || (chipPath ? `/api/read-file?path=${encodeURIComponent(chipPath)}` : '')
       if (isMd && fetchUrl) {
         e.stopPropagation()
         const title = mdChip.querySelector('.md-file-chip')?.textContent || mdChip.textContent || chipPath.split('/').pop() || 'file'
@@ -4704,7 +4705,8 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (!drag) {
         const fileChip = target.closest('.ref-chip:not(.ref-chip-annotation)') as HTMLElement
         if (fileChip) {
-          const token = fileChip.dataset.token || ''
+          const filePath = fileChip.dataset.path || ''
+          const token = filePath ? `file:${filePath}` : (fileChip.dataset.token || '')
           const fileUrl = fileChip.dataset.url || ''
           const clone = fileChip.cloneNode(true) as HTMLElement
           clone.querySelectorAll('.ref-chip-preview').forEach(el => el.remove())
@@ -4745,9 +4747,8 @@ function FleetChatInner({ shape }: { shape: any }) {
             }).catch(e => console.warn('[fleet-chat] file content resolve failed:', e.message))
           }
           const chatLine = fileChip.closest('[data-msg-from]') as HTMLElement | null
-          const filePath = fileChip.dataset.path || ''
           drag = {
-            pillId: null, pillType: 'file' as any, value: token,
+            pillId: null, pillType: filePath ? 'doc' : 'file', value: token,
             displayName: label, color: '#9370db',
             content: fileContent, sourceAgent: chatLine?.dataset.msgFrom || undefined,
             filePath, fileUrl,
