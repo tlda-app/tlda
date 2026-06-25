@@ -72,7 +72,7 @@ function extractCards(events) {
           continue
         }
         cards.push(card)
-      } else if (b.type === 'text' && b.text?.length > 20) {
+      } else if (b.type === 'text' && b.text?.trim().length > 0) {
         cards.push({ tool: '_text', arg: b.text.slice(0, 60) })
       }
     }
@@ -114,6 +114,20 @@ console.log('\n=== unit fixtures ===')
 {
   const original = 'not a transcript envelope: [{"type":"text","text":'
   assert(unwrapCodexToolOutput(original) === original, 'non-envelope parse failures preserve original text')
+}
+{
+  const ev = parseCodexLine(JSON.stringify({
+    type: 'response_item',
+    timestamp: '2026-06-17T00:00:00.000Z',
+    payload: {
+      type: 'message',
+      role: 'assistant',
+      content: [{ type: 'output_text', text: 'Got it.' }],
+    },
+  }))
+  const cards = extractCards([ev])
+  assert(cards.some(c => c.tool === '_text' && c.arg === 'Got it.'),
+    'short assistant messages produce text activity cards')
 }
 {
   const events = [

@@ -515,7 +515,7 @@ function extractActivityEvents(events) {
           }
         }
         result.push(evt)
-      } else if (block.type === 'text' && block.text?.length > 20) {
+      } else if (block.type === 'text' && block.text?.trim().length > 0) {
         result.push({ tool: '_text', arg: block.text, ts: ev.timestamp })
       }
     }
@@ -2492,12 +2492,12 @@ async function rpcSpawn({
     mode: launchMode,
     spawnPolicy: grant.grantedPolicy,
   })
-  // Route spawn through `tlda` (the on-path installed binary, which resolves the
-  // fleet-spawn script internally) rather than a bare `fleet-spawn` that depends
-  // on PATH. FLEET_SPAWN env still overrides with a direct script path (tests).
+  // Route the daemon's local launch through the explicit local primitive. The
+  // public `tlda agent spawn` command is server/daemon-routed and would recurse
+  // back here; `spawn-local` is the only CLI surface that invokes fleet-spawn.py.
   const override = process.env.FLEET_SPAWN
   const spawnScript = override || 'tlda'
-  const spawnArgs = override ? args : ['agent', 'spawn', ...args]
+  const spawnArgs = override ? args : ['agent', 'spawn-local', ...args]
   _activeSpawns.set(agentName, Date.now())
   try {
     const { stdout, stderr } = await execFileP(spawnScript, spawnArgs, {

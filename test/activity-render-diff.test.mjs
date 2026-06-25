@@ -103,6 +103,18 @@ test('Goose apply_patch tool request normalizes to Edit events with diff', () =>
   assert.match(events[0].input.diff, /const x = 2/)
 })
 
+test('Goose short assistant text produces activity text events', () => {
+  const events = gooseMessageEvents({
+    role: 'assistant',
+    created_timestamp: 1770000000,
+    content_json: JSON.stringify([{ type: 'text', text: 'Got it.' }]),
+  })
+
+  assert.equal(events.length, 1)
+  assert.equal(events[0].tool, '_text')
+  assert.equal(events[0].arg, 'Got it.')
+})
+
 test('Goose same-row get_thread response attaches pretty result to the tool event', () => {
   const prettyText = `2 messages (6/18/2026, 8:00:00 AM -> 8:01:00 AM)
 

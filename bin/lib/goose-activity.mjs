@@ -94,7 +94,7 @@ function gooseApplyPatchEvents(input, blockId, ts) {
 // Map one goose message row (content_json = array of blocks) to activity events
 // matching extractActivityEvents in fleet-daemon.mjs:
 //   toolRequest block        → { tool, arg, ts, id, input }
-//   assistant text (>20 chars) → { tool: '_text', arg: text, ts }
+//   assistant text            → { tool: '_text', arg: text, ts }
 // reasoning (r1 thinking) and user-role text are skipped — the claude path
 // likewise skips tool results except pretty-print and user text.
 // `isNoise(baseName)` filters chat/my_task/register/etc. (the daemon's
@@ -155,7 +155,7 @@ export function gooseMessageEvents(row, isNoise) {
         prettyResult,
         ts: pending.evt.ts,
       })
-    } else if (b.type === 'text' && typeof b.text === 'string' && b.text.length > 20) {
+    } else if (b.type === 'text' && typeof b.text === 'string' && b.text.trim().length > 0) {
       if (row.role === 'user') continue   // inbound nudges / terminal input — not activity
       events.push({ tool: '_text', arg: b.text, ts })
     }

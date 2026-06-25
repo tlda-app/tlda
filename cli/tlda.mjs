@@ -97,7 +97,11 @@ const COMMAND_HELP = {
 }
 
 // Flags that take a value (--flag value). All others are boolean.
-const VALUE_FLAGS = new Set(['server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format', 'session', 'target', 'timeout', 'id', 'book', 'worktree', 'port', 'browser'])
+const VALUE_FLAGS = new Set([
+  'server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format',
+  'session', 'target', 'timeout', 'id', 'book', 'worktree', 'port', 'browser',
+  'model', 'cwd', 'effort', 'mode', 'kind', 'spawn-capability', 'capability',
+])
 
 function getFlag(name, defaultVal = null) {
   const idx = args.indexOf(`--${name}`)
@@ -1349,9 +1353,9 @@ Example:
   }
 }
 
-// ---- agent commands (local: they act on this machine's tmux sessions) ----
-// tmux is local to the box, so agent manipulation never routes through the
-// daemon — you run these where the agent lives.
+// ---- agent commands ----
+// `spawn` routes through the fleet server/daemon path. `spawn-local` is the
+// explicit local primitive that shells out to bin/fleet-spawn.py on this machine.
 
 function agentSessionName(name) {
   return name.startsWith('fleet-') ? name : `fleet-${name}`
@@ -1402,6 +1406,139 @@ async function runFleetSpawn(spawnArgs) {
   const child = cpSpawn('python3', [spawnScript, ...spawnArgs], { stdio: 'inherit', env })
   child.on('exit', (code) => process.exit(code ?? 0))
   await new Promise(() => {}) // keep alive until child exits
+}
+
+function wsUrlFromHttp(server) {
+  return String(server).replace(/^https:/, 'wss:').replace(/^http:/, 'ws:').replace(/\/+$/, '')
+}
+
+function flagFromRaw(rawArgs, name) {
+  const idx = rawArgs.indexOf(`--${name}`)
+  if (idx === -1) return null
+  const next = rawArgs[idx + 1]
+  if (!next || next.startsWith('--')) return ''
+  return next
+}
+
+function hasRawFlag(rawArgs, name) {
+  return rawArgs.includes(`--${name}`)
+}
+
+function positionalFromRaw(rawArgs, index = 0) {
+  let pos = 0
+  for (let i = 0; i < rawArgs.length; i++) {
+    const a = rawArgs[i]
+    if (a.startsWith('--')) {
+      const key = a.slice(2)
+      if (VALUE_FLAGS.has(key)) i++
+      continue
+    }
+    if (pos === index) return a
+    pos++
+  }
+  return null
+}
+
+function parseRoutedSpawn(rawArgs) {
+  const name = positionalFromRaw(rawArgs, 0)
+  const fresh = hasRawFlag(rawArgs, 'fresh')
+  const refresh = hasRawFlag(rawArgs, 'refresh')
+  const body = {}
+  if (fresh) {
+    if (!name) throw new Error('Usage: tlda agent spawn --fresh <name> [--model model] [--kind kind] [--cwd path]')
+    body.fresh = true
+    body.name = name
+  } else {
+    if (!name) throw new Error('Usage: tlda agent spawn <agent> [--refresh] [--model model] [--kind kind]')
+    body.agent = name
+    body.respawn = !refresh
+    if (refresh) body.refresh = true
+  }
+  const map = [
+    ['model', 'model'],
+    ['kind', 'kind'],
+    ['cwd', 'cwd'],
+    ['effort', 'effort'],
+    ['mode', 'mode'],
+    ['spawn-capability', 'spawnCapability'],
+    ['capability', 'capability'],
+  ]
+  for (const [flag, key] of map) {
+    const value = flagFromRaw(rawArgs, flag)
+    if (value) body[key] = value
+  }
+  return body
+}
+
+async function fleetWsRequest(ws, payload, timeoutMs = 30000) {
+  const id = Math.floor(Math.random() * 1e9)
+  const message = { ...payload, id }
+  return await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup()
+      reject(new Error(`fleet WS request timed out: ${payload.type}`))
+    }, timeoutMs)
+    const cleanup = () => {
+      clearTimeout(timer)
+      ws.off('message', onMessage)
+      ws.off('error', onError)
+      ws.off('close', onClose)
+    }
+    const onError = (e) => {
+      cleanup()
+      reject(e)
+    }
+    const onClose = () => {
+      cleanup()
+      reject(new Error('fleet WS closed before reply'))
+    }
+    const onMessage = (raw) => {
+      let msg
+      try { msg = JSON.parse(raw.toString()) } catch { return }
+      if (msg.id !== id) return
+      cleanup()
+      if (msg.error) reject(new Error(msg.error))
+      else resolve(msg.result)
+    }
+    ws.on('message', onMessage)
+    ws.on('error', onError)
+    ws.on('close', onClose)
+    ws.send(JSON.stringify(message))
+  })
+}
+
+async function runRoutedSpawn(rawArgs) {
+  const body = parseRoutedSpawn(rawArgs)
+  const fleetServer = getFlag('server') || getFleetServerUrl()
+  const token = getToken()
+  const human = await tldaFetch('/api/human', {
+    method: 'GET',
+    server: fleetServer,
+    token,
+  })
+  const { default: WebSocket } = await import('ws')
+  const url = `${wsUrlFromHttp(fleetServer)}/ws/fleet${token ? `?token=${encodeURIComponent(token)}` : ''}`
+  const ws = new WebSocket(url, { rejectUnauthorized: false, headers: token ? { Authorization: `Bearer ${token}` } : undefined })
+  try {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`fleet WS connect timed out: ${fleetServer}`)), 10000)
+      ws.once('open', () => { clearTimeout(timer); resolve() })
+      ws.once('error', (e) => { clearTimeout(timer); reject(e) })
+    })
+    await fleetWsRequest(ws, { type: 'login', name: human.name }, 10000)
+    const result = await fleetWsRequest(ws, { type: 'spawn', ...body }, 45000)
+    if (result?.ok === false) {
+      const reason = result.error || result.reason || 'spawn failed'
+      throw new Error(reason)
+    }
+    const agent = result?.agent
+    const label = agent?.friendly_name || result?.name || body.agent || body.name
+    const id = agent?.id || result?.agent_id
+    const session = agent?.tmux_session || result?.tmux_session
+    console.log([label, id && `(${id})`, session && session !== label && session].filter(Boolean).join(' '))
+  } finally {
+    if (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN) ws.close()
+  }
 }
 
 async function listLocalAgents() {
@@ -1475,6 +1612,8 @@ function usageAgent() {
 Usage:
   tlda agent list
   tlda agent spawn <agent>
+  tlda agent spawn --fresh <name>
+  tlda agent spawn-local <agent>
   tlda agent check-ready <agent> [--timeout seconds]
   tlda agent attach <agent>
   tlda agent hibernate <agent>
@@ -1490,6 +1629,8 @@ Network:
   network is on by default
   --no-net    rare explicit network-off modifier
 
+spawn routes through the fleet server and target daemon; spawn-local directly invokes
+the local fleet-spawn.py primitive on this machine.
 The capability command is operator-only: it refuses from fleet agent env/tmux context.
 check-ready verifies registry + local tmux/runtime + recent register/my_task evidence.`)
 }
@@ -1742,7 +1883,7 @@ async function cmdAgentCapability() {
   })
   const net = network === false ? 'no network' : 'network'
   console.log(`Updated ${agent.id} spawn policy to ${policyOption.name} (${policy} / ${capability} / ${net}). Resuming ${spawnName}...`)
-  await runFleetSpawn([spawnName])
+  await runRoutedSpawn([spawnName])
 }
 
 async function cmdAgent() {
@@ -1754,13 +1895,14 @@ async function cmdAgent() {
   switch (sub) {
     case 'list':
     case 'ls':        await listLocalAgents(); break
-    case 'spawn':     await ensureServer(); await runFleetSpawn(process.argv.slice(4)); break // after "tlda agent spawn"
+    case 'spawn':     await runRoutedSpawn(process.argv.slice(4)); break // after "tlda agent spawn"
+    case 'spawn-local': await runFleetSpawn(process.argv.slice(4)); break // direct local primitive
     case 'check-ready': await cmdAgentCheckReady(); break
     case 'attach':    await attachToAgent(getPositional(1)); break
     case 'hibernate': await hibernateAgent(getPositional(1)); break
     case 'capability': await cmdAgentCapability(); break
     default:
-      console.error('Usage: tlda agent <list|spawn|check-ready|attach|hibernate|capability> [name]')
+      console.error('Usage: tlda agent <list|spawn|spawn-local|check-ready|attach|hibernate|capability> [name]')
       process.exit(1)
   }
 }
@@ -1809,7 +1951,7 @@ async function restartMcpAgents(rest) {
 // Top-level spawn/attach kept working so the existing spawn path isn't broken;
 // `tlda agent …` is the canonical form.
 async function cmdAttach() { await attachToAgent(getPositional(0)) }
-async function cmdSpawn() { await runFleetSpawn(process.argv.slice(3)) }
+async function cmdSpawn() { await runRoutedSpawn(process.argv.slice(3)) }
 
 async function cmdRepoDoctor() {
   const name = getPositional(0)
