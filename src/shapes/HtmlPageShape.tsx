@@ -11,6 +11,7 @@ import {
 import type { TLPageId } from 'tldraw'
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { appendToken } from '../authToken'
+import { useIsInViewport } from './useIsInViewport'
 
 // Heading Y positions reported by bridge scripts, keyed by shape ID
 export const htmlHeadingPositions = new Map<string, Record<string, number>>()
@@ -112,11 +113,12 @@ function HtmlPageComponent({ shape }: { shape: any }) {
 
   // Detect slides format from URL (has _tldaH param)
   const isSlide = shape.props.url?.includes('_tldaH=')
+  const isInActiveViewport = useIsInViewport(shape.id)
 
   // Viewport gating: only render iframe when near viewport.
   // Slides are laid out horizontally, so check both X and Y axes.
   // Keep a generous margin for slides (prev/next slides should stay mounted).
-  const isNearViewport = useValue('near-viewport-' + shape.id, () => {
+  const isNearMainViewport = useValue('near-viewport-' + shape.id, () => {
     const viewport = editor.getViewportPageBounds()
     const marginY = viewport.height * (isSlide ? 6 : 2)
     const shapeTop = shape.y
@@ -132,6 +134,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
     }
     return true
   }, [editor, shape.id, shape.x, shape.y, shape.props.w, shape.props.h, isSlide])
+  const isNearViewport = isInActiveViewport || isNearMainViewport
 
   // Slide fade-in: start invisible, show when Reveal signals ready.
   // Reset when isNearViewport goes false (iframe unmounted).

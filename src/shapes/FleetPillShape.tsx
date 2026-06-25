@@ -26,6 +26,9 @@ const CHAT_H = 600
 const TEMP_MARKDOWN_PROJECT = 'fleet-markdown-chip-temp'
 const TEMP_MARKDOWN_FILE = 'content.md'
 const TEMP_MARKDOWN_SHAPE_ID = createShapeId('fleet-markdown-chip-temp-column')
+const TEMP_MARKDOWN_W = 800
+const TEMP_MARKDOWN_H = 1200
+const TEMP_MARKDOWN_PARKING_OFFSET = 50000
 
 const FLEET_TYPES = FLEET_SHAPE_TYPES
 
@@ -100,21 +103,50 @@ async function waitForTemporaryMarkdownBuild(startedAt: number, allowExisting = 
   throw new Error('markdown build timed out')
 }
 
-export async function createTemporaryMarkdownColumn(
-  editor: Editor,
-  _pagePoint: { x: number; y: number },
-  title: string,
-  markdown: string,
-  _meta: Record<string, unknown> = {},
-) {
-  const staleTempColumn = editor.getShape(TEMP_MARKDOWN_SHAPE_ID)
-  if (staleTempColumn) {
-    if (staleTempColumn.isLocked) {
-      editor.updateShape({ id: TEMP_MARKDOWN_SHAPE_ID, type: staleTempColumn.type, isLocked: false })
-    }
-    editor.deleteShapes([TEMP_MARKDOWN_SHAPE_ID])
+function getParkedMarkdownPoint(editor: Editor, fallbackPoint: { x: number; y: number }) {
+  const occupiedBounds = []
+  for (const shape of editor.getCurrentPageShapes()) {
+    if (shape.meta?.temporaryMarkdownColumn) continue
+    const bounds = editor.getShapePageBounds(shape.id)
+    if (bounds) occupiedBounds.push(bounds)
   }
 
+  if (!occupiedBounds.length) {
+    return {
+      x: fallbackPoint.x - TEMP_MARKDOWN_PARKING_OFFSET,
+      y: fallbackPoint.y - TEMP_MARKDOWN_PARKING_OFFSET,
+    }
+  }
+
+  const minX = Math.min(...occupiedBounds.map(bounds => bounds.x))
+  const minY = Math.min(...occupiedBounds.map(bounds => bounds.y))
+  return {
+    x: minX - TEMP_MARKDOWN_W - TEMP_MARKDOWN_PARKING_OFFSET,
+    y: minY - TEMP_MARKDOWN_H - TEMP_MARKDOWN_PARKING_OFFSET,
+  }
+}
+
+function sendPageShapeToBack(editor: Editor, shapeId: TLShapeId) {
+  const shape = editor.getShape(shapeId)
+  if (!shape) return
+  if (shape.isLocked) editor.updateShape({ id: shapeId, type: shape.type, isLocked: false })
+  editor.sendToBack([shapeId])
+  editor.updateShape({ id: shapeId, type: shape.type, isLocked: true })
+}
+
+function getShapeClipBounds(editor: Editor, shapeId: TLShapeId) {
+  const bounds = editor.getShapePageBounds(shapeId)
+  if (!bounds) return null
+  return { x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h }
+}
+
+export async function createTemporaryMarkdownColumn(
+  editor: Editor,
+  pagePoint: { x: number; y: number },
+  title: string,
+  markdown: string,
+  meta: Record<string, unknown> = {},
+) {
   const source = markdown.trim() ? markdown : `# ${title || 'Markdown chip'}`
   const startedAt = Date.now()
   await ensureTemporaryMarkdownProject()
@@ -134,9 +166,52 @@ export async function createTemporaryMarkdownColumn(
   await waitForTemporaryMarkdownBuild(startedAt, !!pushResult?.unchanged)
 
   const url = `/docs/${TEMP_MARKDOWN_PROJECT}/index.html?t=${Date.now()}`
+  const parkedPoint = getParkedMarkdownPoint(editor, pagePoint)
+  const existing = editor.getShape(TEMP_MARKDOWN_SHAPE_ID)
+  if (existing) {
+    if (existing.isLocked) {
+      editor.updateShape({ id: TEMP_MARKDOWN_SHAPE_ID, type: existing.type, isLocked: false })
+    }
+    editor.updateShape({
+      id: TEMP_MARKDOWN_SHAPE_ID,
+      type: 'html-page',
+      x: parkedPoint.x,
+      y: parkedPoint.y,
+      isLocked: true,
+      props: { w: TEMP_MARKDOWN_W, h: TEMP_MARKDOWN_H, url },
+      meta: {
+        ...existing.meta,
+        temporaryMarkdownColumn: true,
+        title,
+        updatedAt: Date.now(),
+        ...meta,
+      },
+    } as unknown as Parameters<Editor['updateShape']>[0])
+  } else {
+    editor.createShape({
+      id: TEMP_MARKDOWN_SHAPE_ID,
+      type: 'html-page',
+      x: parkedPoint.x,
+      y: parkedPoint.y,
+      isLocked: true,
+      props: { w: TEMP_MARKDOWN_W, h: TEMP_MARKDOWN_H, url },
+      meta: {
+        temporaryMarkdownColumn: true,
+        title,
+        createdAt: Date.now(),
+        ...meta,
+      },
+    } as unknown as Parameters<Editor['createShape']>[0])
+  }
+  sendPageShapeToBack(editor, TEMP_MARKDOWN_SHAPE_ID)
   return {
     shapeId: TEMP_MARKDOWN_SHAPE_ID,
-    bounds: null,
+    bounds: getShapeClipBounds(editor, TEMP_MARKDOWN_SHAPE_ID) || {
+      x: parkedPoint.x,
+      y: parkedPoint.y,
+      w: TEMP_MARKDOWN_W,
+      h: TEMP_MARKDOWN_H,
+    },
     url,
   }
 }
