@@ -811,20 +811,21 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
         constraints: {
           bounds: targetBounds,
           padding: { x: 16, y: 16 },
-          origin: { x: 0, y: 0.5 },
+          origin: { x: 0, y: 0 },
           initialZoom: 'default',
           baseZoom: 'default',
           behavior: 'free',
         },
       })
-      // Center camera on first slide
+      // Center camera on first slide by width. Tall slides intentionally
+      // overflow vertically instead of shrinking to fit a fixed viewport box.
       const first = document.pages[0]
       if (first) {
         const vp = editor.getViewportScreenBounds()
-        const z = Math.min(1, vp.width / first.width, vp.height / first.height)
+        const z = Math.min(1, vp.width / first.width)
         editor.setCamera({
           x: -first.bounds.x + (vp.width / z - first.width) / 2,
-          y: -first.bounds.y + (vp.height / z - first.height) / 2,
+          y: -first.bounds.y,
           z,
         })
       }
@@ -854,7 +855,7 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
       constraints: {
         bounds: targetBounds,
         padding: isSlides ? { x: 16, y: 16 } : { x: 100, y: 50 },
-        origin: { x: isSlides ? 0 : 0.5, y: isSlides ? 0.5 : 0 },
+        origin: { x: isSlides ? 0 : 0.5, y: 0 },
         initialZoom: isSlides ? 'default' : 'fit-x-100',
         baseZoom: 'default',
         behavior: 'free',
@@ -875,7 +876,7 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
         constraints: {
           bounds: targetBounds,
           padding: isSlides ? { x: 16, y: 16 } : { x: 100, y: 50 },
-          origin: { x: isSlides ? 0 : 0.5, y: isSlides ? 0.5 : 0 },
+          origin: { x: isSlides ? 0 : 0.5, y: 0 },
           initialZoom: isSlides ? 'default' : 'fit-x-100',
           baseZoom: 'default',
           behavior: 'free',

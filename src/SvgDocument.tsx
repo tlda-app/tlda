@@ -837,11 +837,13 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       // Phone: drop the TLDraw/Format toolbar entirely — most tools aren't usable
       // on a phone (Skip's call). The phone control scheme is the bottom-right
       // button cluster instead.
-      Toolbar: () => IS_PHONE ? null : <FormatToolbar format={document.format} />,
-      HelperButtons: () => <PenHelperButtons format={document.format} />,
-      InFrontOfTheCanvas: () => <><RibbonLane /><ProvenancePanel docName={docName} /><ProvenanceInline docName={docName} /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /></>,
+      Toolbar: () => (IS_PHONE || isPresentation) ? null : <FormatToolbar format={document.format} />,
+      HelperButtons: () => isPresentation ? null : <PenHelperButtons format={document.format} />,
+      InFrontOfTheCanvas: () => isPresentation
+        ? null
+        : <><RibbonLane /><ProvenancePanel docName={docName} /><ProvenanceInline docName={docName} /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /></>,
     }),
-    [document, roomId]
+    [document, roomId, isPresentation]
   )
 
   const docKey = new URLSearchParams(window.location.search).get('doc') || document.name
@@ -1275,7 +1277,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           // Load source map (labels index) for ref resolution.
           // For multi-target docs, pass targets so per-target source-maps are merged
           // with global page offsets — the bare alias only covers the primary target.
-          sourceMap.load(document.name, document.targets?.map(t => ({ name: t.name, pages: t.pages })))
+          if (!['html', 'markdown', 'png', 'slides'].includes(document.format || '')) {
+            sourceMap.load(document.name, document.targets?.map(t => ({ name: t.name, pages: t.pages })))
+          }
 
           setNavigateToAnchor((anchorId: string, title: string) => {
             let page = -1
@@ -1441,7 +1445,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
                   if (target) editor.setCurrentPage(target.id as any)
                 }
                 editor.setCamera({ x: initialCamera.x, y: initialCamera.y, z: initialCamera.z })
-              } else if (session?.camera) {
+              } else if (session?.camera && !isPresentation) {
                 editor.setCamera(session.camera)
               }
               const readinessWindow = window as Window & {

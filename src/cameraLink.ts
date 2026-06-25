@@ -8,6 +8,13 @@ function isAutomatedBrowser() {
   return navigator.webdriver || new URL(window.location.href).searchParams.get('pw') === '1'
 }
 
+function readUrlOverride(): boolean | null {
+  const value = new URL(window.location.href).searchParams.get('cameraLink')
+  if (value === '1' || value === 'true') return true
+  if (value === '0' || value === 'false') return false
+  return null
+}
+
 function readCameraLinkedPreference() {
   try {
     return localStorage.getItem('tlda-camera-linked') === 'true'
@@ -26,9 +33,10 @@ function writeCameraLinkedPreference(value: boolean) {
 }
 
 const automatedBrowser = isAutomatedBrowser()
-if (automatedBrowser) writeCameraLinkedPreference(false)
+const urlOverride = readUrlOverride()
+if (automatedBrowser && urlOverride !== true) writeCameraLinkedPreference(false)
 
-let linked = !automatedBrowser && readCameraLinkedPreference()
+let linked = urlOverride ?? (!automatedBrowser && readCameraLinkedPreference())
 const listeners = new Set<() => void>()
 
 export function getCameraLinked(): boolean { return linked }

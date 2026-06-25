@@ -42,14 +42,19 @@ export function useYjsSignals({
   panelsLocalRef: _panelsLocalRef,
   onReloadResult, setScreenshotCapture,
 }: UseYjsSignalsParams) {
+  const hasSynctex = !['html', 'markdown', 'png', 'slides'].includes(document.format || '')
   // Keep a snapshot of the current lookup for scroll anchoring across rebuilds.
   // The signalBus fires synctexLookup's cache-clear listener before ours, so we
   // can't call loadLookup() inside the reload handler to get pre-rebuild data —
   // the cache is already gone. Instead we pre-load it here and stash it in a ref.
   const lookupSnapshotRef = useRef<LookupData | null>(null)
   useEffect(() => {
+    if (!hasSynctex) {
+      lookupSnapshotRef.current = null
+      return
+    }
     loadLookup(document.name).then(data => { lookupSnapshotRef.current = data })
-  }, [document.name])
+  }, [hasSynctex, document.name])
 
   // Subscribe to Yjs reload signals
   useEffect(() => {
@@ -64,7 +69,7 @@ export function useYjsSignals({
       } else {
         clearLookupCache(document.name)
         sourceMap.clear()
-        sourceMap.load(document.name)
+        if (hasSynctex) sourceMap.load(document.name)
         diffDataRef.current = null
         setDiffFetchSeq(s => s + 1)
         proofDataRef.current = null
@@ -73,11 +78,11 @@ export function useYjsSignals({
         reloadPages(editor, document, null).then(async result => {
           onReloadResult?.(result)
           // Refresh lookup cache for future synctex queries
-          lookupSnapshotRef.current = await loadLookup(document.name)
+          lookupSnapshotRef.current = hasSynctex ? await loadLookup(document.name) : null
         })
       }
     })
-  }, [document])
+  }, [document, hasSynctex])
 
   // Re-fetch visible pages when source files change — triggers the ensure system
   // which rebuilds if source.stamp > build.stamp. The build then sends signal:reload.

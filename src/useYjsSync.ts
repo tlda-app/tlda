@@ -148,6 +148,20 @@ const cameraLinkHandle = bus.register<CameraLinkSignal>({
 })
 export const onCameraLink = cameraLinkHandle.on
 
+export type SlideFragmentSignal = {
+  shapeId: string
+  current: number
+  total: number
+  viewerId: string
+  timestamp: number
+}
+const slideFragmentHandle = bus.register<SlideFragmentSignal>({
+  key: 'signal:slide-fragment',
+  accept: (s) => s.viewerId !== localViewerId,
+  ...replayConfig('signal:slide-fragment'),
+})
+export const onSlideFragment = slideFragmentHandle.on
+
 export type BuildError = {
   message: string
   line?: number
@@ -279,6 +293,10 @@ export function broadcastPresenter(active: boolean) {
 
 export function broadcastCamera(x: number, y: number, z: number) {
   writeSignal('signal:camera-link', { x, y, z, viewerId: localViewerId })
+}
+
+export function broadcastSlideFragment(shapeId: string, current: number, total: number) {
+  writeSignal('signal:slide-fragment', { shapeId, current, total, viewerId: localViewerId })
 }
 
 /**

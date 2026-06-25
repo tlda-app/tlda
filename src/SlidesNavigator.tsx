@@ -14,6 +14,8 @@ import { createPortal } from 'react-dom'
 import { type Editor, Box } from 'tldraw'
 import type { SvgDocument } from './svgDocumentLoader'
 import { SLIDE_GAP } from './loaders/slidesLoader'
+import { broadcastSlideFragment, onSlideFragment } from './useYjsSync'
+import { getRole } from './viewerRole'
 
 interface SlidesNavigatorProps {
   editor: Editor
@@ -28,11 +30,12 @@ function navigateToSlide(editor: Editor, document: SvgDocument, index: number, a
   const page = document.pages[index]
   if (!page) return
   const vp = editor.getViewportScreenBounds()
-  // Contain: fit whole slide in viewport. Gap is large enough to hide neighbors.
-  const z = Math.min(vp.width / page.width, vp.height / page.height)
+  // Presentation mode preserves slide scale by fitting width only. Tall slides
+  // are allowed to overflow vertically on the TLDraw canvas.
+  const z = Math.min(1, vp.width / page.width)
   const target = {
     x: -page.bounds.x + (vp.width / z - page.width) / 2,
-    y: -page.bounds.y + (vp.height / z - page.height) / 2,
+    y: -page.bounds.y,
     z,
   }
   if (animate) {
@@ -73,12 +76,27 @@ function stepFragment(_editor: Editor, shapeId: string, direction: 'next' | 'pre
   return true
 }
 
+function reconcileFragment(editor: Editor, shapeId: string, targetCurrent: number): boolean {
+  const fs = fragmentState.get(shapeId)
+  if (!fs) return false
+  const delta = targetCurrent - fs.current
+  if (delta === 0) return true
+  const direction = delta > 0 ? 'next' : 'prev'
+  let sent = false
+  for (let i = 0; i < Math.abs(delta); i++) {
+    sent = stepFragment(editor, shapeId, direction) || sent
+  }
+  return sent
+}
+
 export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
   const [currentSlide, setCurrentSlide] = useState(0)
   const [fragmentInfo, setFragmentInfo] = useState<{ current: number; total: number } | null>(null)
   const totalSlides = document.pages.length
   const touchStartRef = useRef<{ x: number; y: number; time: number } | null>(null)
   const navigatingRef = useRef(false)
+  const pendingRemoteFragmentsRef = useRef(new Map<string, number>())
+  const applyingRemoteFragmentRef = useRef(false)
 
   // Listen for fragment state reports from iframes
   useEffect(() => {
@@ -86,16 +104,40 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
       if (e.data?.type === 'tlda-fragment-state') {
         const { shapeId, current, total } = e.data
         fragmentState.set(shapeId, { total, current })
+        const pending = pendingRemoteFragmentsRef.current.get(shapeId)
+        if (pending !== undefined && pending !== current) {
+          if (reconcileFragment(editor, shapeId, pending)) return
+        }
+        pendingRemoteFragmentsRef.current.delete(shapeId)
         // Update display if this is the current slide
         const currentPage = document.pages[currentSlide]
         if (currentPage && shapeId === currentPage.shapeId) {
           setFragmentInfo({ current, total })
         }
+        if (!applyingRemoteFragmentRef.current && getRole() === 'presenter') {
+          broadcastSlideFragment(shapeId, current, total)
+        }
       }
     }
     window.addEventListener('message', handler)
     return () => window.removeEventListener('message', handler)
-  }, [currentSlide, document.pages])
+  }, [currentSlide, document.pages, editor])
+
+  useEffect(() => {
+    return onSlideFragment((signal) => {
+      if (getRole() !== 'viewer') return
+      applyingRemoteFragmentRef.current = true
+      pendingRemoteFragmentsRef.current.set(signal.shapeId, signal.current)
+      const applied = reconcileFragment(editor, signal.shapeId, signal.current)
+      if (applied) {
+        const fs = fragmentState.get(signal.shapeId)
+        if (fs) {
+          setFragmentInfo({ current: signal.current, total: signal.total })
+        }
+      }
+      setTimeout(() => { applyingRemoteFragmentRef.current = false }, 250)
+    })
+  }, [editor])
 
   // On mount: fix stale opacity, reposition slides with correct gap, navigate to slide 0
   useEffect(() => {
@@ -115,27 +157,7 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
     }
     navigateToSlide(editor, document, 0, false)
     window.document.body.classList.add('slides-mode')
-    // Make slide iframe backgrounds transparent
-    const makeTransparent = () => {
-      const iframes = window.document.querySelectorAll('[data-shape-id] iframe') as NodeListOf<HTMLIFrameElement>
-      for (const iframe of iframes) {
-        try {
-          const doc = iframe.contentDocument
-          if (!doc) continue
-          if (!doc.getElementById('tlda-slide-bg')) {
-            const style = doc.createElement('style')
-            style.id = 'tlda-slide-bg'
-            style.textContent = '.reveal, .reveal .slide-background, .reveal .slide-background-content, body { background: transparent !important; }'
-            doc.head.appendChild(style)
-          }
-        } catch {}
-      }
-    }
-    // Retry since iframes load async
-    makeTransparent()
-    const timer = setInterval(makeTransparent, 1000)
-    setTimeout(() => clearInterval(timer), 10000)
-    return () => { clearInterval(timer); window.document.body.classList.remove('slides-mode') }
+    return () => { window.document.body.classList.remove('slides-mode') }
   }, [editor, document])
 
   // Track camera position to update current slide indicator
@@ -173,6 +195,18 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
     }
     setTimeout(() => { navigatingRef.current = false }, 400)
   }, [editor, document, totalSlides])
+
+  useEffect(() => {
+    const refitCurrentSlide = () => {
+      goToSlide(currentSlide, false)
+    }
+    window.addEventListener('resize', refitCurrentSlide)
+    window.visualViewport?.addEventListener('resize', refitCurrentSlide)
+    return () => {
+      window.removeEventListener('resize', refitCurrentSlide)
+      window.visualViewport?.removeEventListener('resize', refitCurrentSlide)
+    }
+  }, [currentSlide, goToSlide])
 
   const handleNext = useCallback(() => {
     const page = document.pages[currentSlide]
@@ -220,14 +254,12 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
   }, [handleNext, handlePrev])
 
   // Touch swipe handling
-  const handleTouchStart = useCallback((e: React.TouchEvent) => {
-    const touch = e.touches[0]
+  const startTouch = useCallback((touch: Touch) => {
     touchStartRef.current = { x: touch.clientX, y: touch.clientY, time: Date.now() }
   }, [])
 
-  const handleTouchEnd = useCallback((e: React.TouchEvent) => {
+  const endTouch = useCallback((touch: Touch) => {
     if (!touchStartRef.current) return
-    const touch = e.changedTouches[0]
     const dx = touch.clientX - touchStartRef.current.x
     const dy = touch.clientY - touchStartRef.current.y
     const dt = Date.now() - touchStartRef.current.time
@@ -240,19 +272,28 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
     }
   }, [handleNext, handlePrev])
 
+  useEffect(() => {
+    const handleTouchStart = (e: TouchEvent) => {
+      if (e.touches.length !== 1) return
+      startTouch(e.touches[0])
+    }
+    const handleTouchEnd = (e: TouchEvent) => {
+      if (e.changedTouches.length !== 1) return
+      endTouch(e.changedTouches[0])
+    }
+    window.addEventListener('touchstart', handleTouchStart, { passive: true })
+    window.addEventListener('touchend', handleTouchEnd, { passive: true })
+    return () => {
+      window.removeEventListener('touchstart', handleTouchStart)
+      window.removeEventListener('touchend', handleTouchEnd)
+    }
+  }, [startTouch, endTouch])
+
   const containerStyle: React.CSSProperties = {
     position: 'fixed',
-    bottom: 20,
-    left: '50%',
-    transform: 'translateX(-50%)',
-    display: 'flex',
-    alignItems: 'center',
-    gap: 12,
-    padding: '8px 16px',
-    borderRadius: 12,
-    background: 'var(--color-background, rgba(255,255,255,0.9))',
-    boxShadow: '0 2px 12px rgba(0,0,0,0.15)',
+    inset: 0,
     zIndex: 999,
+    pointerEvents: 'none',
     userSelect: 'none',
     WebkitUserSelect: 'none',
     touchAction: 'none',
@@ -261,19 +302,25 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
   }
 
   const btnStyle: React.CSSProperties = {
-    width: 48,
-    height: 48,
-    borderRadius: 8,
+    width: 42,
+    height: 72,
+    borderRadius: 999,
     border: 'none',
     background: 'transparent',
+    boxShadow: 'none',
     cursor: 'pointer',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     fontSize: 20,
     color: 'var(--color-text, #333)',
-    transition: 'background 0.15s',
+    transition: 'background 0.15s, opacity 0.15s',
     WebkitTapHighlightColor: 'transparent',
+    pointerEvents: 'auto',
+    position: 'fixed',
+    top: '50%',
+    transform: 'translateY(-50%)',
+    opacity: 0.34,
   }
 
   const disabledBtnStyle: React.CSSProperties = {
@@ -289,11 +336,10 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
     <div
       style={containerStyle}
       className="slides-navigator"
-      onTouchStart={handleTouchStart}
-      onTouchEnd={handleTouchEnd}
     >
       <button
-        style={isFirst ? disabledBtnStyle : btnStyle}
+        className="slides-nav-button slides-nav-button--prev"
+        style={{ ...(isFirst ? disabledBtnStyle : btnStyle), left: 'max(6px, env(safe-area-inset-left))' }}
         onClick={handlePrev}
         disabled={isFirst}
         aria-label="Previous"
@@ -302,16 +348,17 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
           <polyline points="15 18 9 12 15 6" />
         </svg>
       </button>
-      <span style={{ minWidth: 80, textAlign: 'center', opacity: 0.7 }}>
+      <span className="slides-nav-counter">
         {currentSlide + 1} / {totalSlides}
         {fragmentInfo && fragmentInfo.total > 0 && (
-          <span style={{ fontSize: 11, opacity: 0.5, marginLeft: 4 }}>
+          <span style={{ fontSize: 11, opacity: 0.65, marginLeft: 4 }}>
             ({fragmentInfo.current}/{fragmentInfo.total})
           </span>
         )}
       </span>
       <button
-        style={isLast ? disabledBtnStyle : btnStyle}
+        className="slides-nav-button slides-nav-button--next"
+        style={{ ...(isLast ? disabledBtnStyle : btnStyle), right: 'max(6px, env(safe-area-inset-right))' }}
         onClick={handleNext}
         disabled={isLast}
         aria-label="Next"
@@ -330,21 +377,56 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
       {nav}
       <style>{`
         .slides-navigator button:active {
-          background: rgba(0,0,0,0.08) !important;
+          background: transparent !important;
+          opacity: 0.7 !important;
+        }
+        .slides-navigator button:hover {
+          opacity: 0.55 !important;
+        }
+        .slides-nav-counter {
+          position: fixed;
+          left: 50%;
+          bottom: max(10px, env(safe-area-inset-bottom));
+          transform: translateX(-50%);
+          min-width: 72px;
+          min-height: 30px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 4px 10px;
+          border-radius: 999px;
+          background: rgba(255,255,255,0.86);
+          box-shadow: 0 2px 10px rgba(0,0,0,0.12);
+          color: var(--color-text, #333);
+          pointer-events: none;
+          opacity: 0.82;
         }
         .tl-theme__dark .slides-navigator {
-          background: rgba(30,30,30,0.95) !important;
           color: #e0e0e0 !important;
         }
         .tl-theme__dark .slides-navigator button {
           color: #e0e0e0 !important;
+          background: transparent !important;
         }
         .tl-theme__dark .slides-navigator button:active {
-          background: rgba(255,255,255,0.1) !important;
+          background: transparent !important;
+        }
+        .tl-theme__dark .slides-nav-counter {
+          background: rgba(30,30,30,0.82) !important;
+          color: #e0e0e0 !important;
+        }
+        @media (max-width: 900px), (pointer: coarse) {
+          .slides-nav-button {
+            width: 44px !important;
+            height: 84px !important;
+          }
+          .slides-nav-counter {
+            bottom: max(8px, env(safe-area-inset-bottom));
+          }
         }
         body.slides-mode .tl-background,
         body.slides-mode .tl-container {
-          background: rgba(245, 240, 232, 0.1) !important;
+          background: var(--tlda-slide-background, #fff) !important;
         }
       `}</style>
     </>,

@@ -48,7 +48,8 @@ import App from './App.tsx'
 {
   const url = new URL(window.location.href)
   const isAuto = (navigator as any).webdriver || url.searchParams.get('pw') === '1'
-  if (isAuto) {
+  const cameraLinkOverride = url.searchParams.get('cameraLink')
+  if (isAuto && cameraLinkOverride !== '1') {
     try {
       localStorage.setItem('tlda-theme', 'fog-dark')
       localStorage.setItem('tlda-camera-linked', 'false')

@@ -2456,7 +2456,11 @@ app.get('/{*path}', (req, res) => {
     // while running, the page erroring loud is the correct, predictable behavior.
     const cfg = resolveConfig()
     const cfgScript = `<script>window.__TLDA_CONFIG__=${JSON.stringify(cfg)}</script>`
-    const html = readFileSync(indexPath, 'utf8').replace('</head>', `${cfgScript}\n</head>`)
+    const rawHtml = readFileSync(indexPath, 'utf8')
+      .replace(/\s*<script>window\.__TLDA_CONFIG__=.*?<\/script>\s*/gs, '\n')
+    const html = rawHtml.includes('<script type="module"')
+      ? rawHtml.replace('<script type="module"', `${cfgScript}\n    <script type="module"`)
+      : rawHtml.replace('</head>', `${cfgScript}\n</head>`)
     res.set('Content-Type', 'text/html; charset=utf-8')
     return res.send(html)
   }

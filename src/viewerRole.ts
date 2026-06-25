@@ -15,7 +15,13 @@ const listeners = new Set<() => void>()
 
 export function initRole(doc: string) {
   docName = doc
-  role = (localStorage.getItem(`tlda-role:${doc}`) as Role) || 'presenter'
+  const urlRole = new URL(window.location.href).searchParams.get('tldaRole')
+  if (urlRole === 'presenter' || urlRole === 'viewer') {
+    role = urlRole
+    localStorage.setItem(`tlda-role:${doc}`, role)
+  } else {
+    role = (localStorage.getItem(`tlda-role:${doc}`) as Role) || 'presenter'
+  }
 }
 
 export function getRole(): Role { return role }

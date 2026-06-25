@@ -19,7 +19,7 @@ export function useProofToggle({
   editorRef, document,
   shapeIdSetRef, shapeIdsArrayRef,
 }: UseProofToggleParams) {
-  const hasProofInfo = !!document.basePath
+  const hasProofInfo = !!document.basePath && !['html', 'markdown', 'png', 'slides'].includes(document.format || '')
 
   const [proofMode, setProofMode] = useState(false)
   const proofDataRef = useRef<ProofData | null>(null)
@@ -34,6 +34,7 @@ export function useProofToggle({
   useEffect(() => { proofModeRef.current = proofMode }, [proofMode])
 
   const toggleProof = useCallback(async () => {
+    if (!hasProofInfo) return
     const editor = editorRef.current
     if (!editor || proofLoadingRef.current) return
 
@@ -115,7 +116,7 @@ export function useProofToggle({
       setProofMode(false)
       console.log('[Proof Toggle] OFF — highlights removed, overlay dismissed')
     }
-  }, [proofMode, document])
+  }, [hasProofInfo, proofMode, document])
 
   useEffect(() => { toggleProofRef.current = toggleProof }, [toggleProof])
 

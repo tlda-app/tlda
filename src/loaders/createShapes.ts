@@ -179,6 +179,29 @@ export function createSlidesShapes(editor: Editor, document: SvgDocument): boole
   const existingShapes = editor.getCurrentPageShapes()
   const hasHtmlShapes = existingShapes.some(s => (s.type as string) === 'html-page')
   if (hasHtmlShapes) {
+    for (const page of document.pages) {
+      const shape = editor.getShape(page.shapeId) as any
+      if (!shape || shape.type !== 'html-page') continue
+      if (
+        shape.x === page.bounds.x &&
+        shape.y === page.bounds.y &&
+        shape.props?.w === page.bounds.w &&
+        shape.props?.h === page.bounds.h &&
+        shape.props?.url === page.src
+      ) continue
+      editor.store.update(page.shapeId, (s: any) => ({
+        ...s,
+        x: page.bounds.x,
+        y: page.bounds.y,
+        isLocked: true,
+        props: {
+          ...s.props,
+          w: page.bounds.w,
+          h: page.bounds.h,
+          url: page.src,
+        },
+      }))
+    }
     sendDocumentPagesToBack(editor)
     return true
   }

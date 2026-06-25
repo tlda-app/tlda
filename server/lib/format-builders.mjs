@@ -75,11 +75,12 @@ export async function buildSlides(name) {
   const outDir = getOutputDir(name)
   mkdirSync(outDir, { recursive: true })
 
-  const htmlFiles = readdirSync(srcDir).filter(f => f.endsWith('.html'))
-  for (const f of htmlFiles) {
-    cpSync(join(srcDir, f), join(outDir, f))
-  }
+  // Reveal/Quarto decks depend on sibling asset directories such as site_libs,
+  // figures, fonts, and generated support JS. Copy the full source tree so a
+  // deck that works raw also has the same assets inside tlda.
+  cpSync(srcDir, outDir, { recursive: true })
 
+  const htmlFiles = readdirSync(srcDir).filter(f => f.endsWith('.html'))
   if (htmlFiles.length === 0) throw new Error('No HTML file found in source')
 
   const htmlContent = readFileSync(join(outDir, htmlFiles[0]), 'utf8')

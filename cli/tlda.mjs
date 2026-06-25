@@ -391,18 +391,45 @@ async function cmdCreate() {
       }
     }
 
-    // Push HTML files from the directory
+    // Push the rendered deck and conventional asset folders. Reveal/Quarto
+    // decks commonly reference sibling assets; sending only the HTML makes
+    // tlda diverge from the raw deck. Do not upload the surrounding work repo.
+    const allFiles = []
     const htmlFiles = readdirSync(dir).filter(f => f.endsWith('.html'))
-    if (htmlFiles.length === 0) {
+    const htmlBases = new Set(htmlFiles.map(f => f.replace(/\.html$/, '')))
+    const assetDirs = new Set(['site_libs', 'libs', 'images', 'img', 'figures', 'assets', 'css', 'js', 'fonts', '_extensions'])
+    for (const base of htmlBases) assetDirs.add(`${base}_files`)
+    const assetFileExt = new Set([
+      'html', 'css', 'js', 'mjs', 'json', 'svg', 'png', 'jpg', 'jpeg', 'gif', 'webp',
+      'woff', 'woff2', 'ttf', 'otf', 'eot', 'mp4', 'webm', 'mov', 'pdf',
+    ])
+    function collectDir(base, prefix = '') {
+      for (const entry of readdirSync(join(base, prefix), { withFileTypes: true })) {
+        const relPath = prefix ? `${prefix}/${entry.name}` : entry.name
+        if (entry.isDirectory()) {
+          if (!prefix && !assetDirs.has(entry.name)) continue
+          collectDir(base, relPath)
+        } else {
+          const ext = entry.name.includes('.') ? entry.name.split('.').pop().toLowerCase() : ''
+          if (!prefix && !assetFileExt.has(ext)) continue
+          const content = readFileSync(join(base, relPath))
+          allFiles.push({
+            path: relPath,
+            content: content.toString('base64'),
+            encoding: 'base64',
+          })
+        }
+      }
+    }
+    collectDir(dir)
+
+    if (allFiles.filter(f => f.path.endsWith('.html')).length === 0) {
       console.error(`No .html files found in ${dir}`)
       process.exit(1)
     }
-    const files = htmlFiles.map(f => ({
-      path: f,
-      content: readFileSync(join(dir, f), 'utf8'),
-    }))
-    console.log(`Pushing ${files.length} HTML file(s)...`)
-    await api('POST', `/api/projects/${name}/push`, { files, sourceDir: dir })
+
+    console.log(`Pushing ${allFiles.length} file(s)...`)
+    await api('POST', `/api/projects/${name}/push`, { files: allFiles, sourceDir: dir })
     console.log(green('Slides processed.'))
 
     const server = getServer()

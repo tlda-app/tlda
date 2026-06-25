@@ -33,9 +33,10 @@ export function parseRevealSlides(html) {
     if (hMatch) height = parseInt(hMatch[1], 10)
   }
 
-  // Find the <div class="slides"> content
-  const slidesStart = html.indexOf('<div class="slides">')
-  if (slidesStart === -1) {
+  // Find the reveal slides container. Quarto/reveal output may add extra
+  // classes or attributes, so match the class token instead of one exact tag.
+  const slidesMatch = /<div\b(?=[^>]*\bclass\s*=\s*["'][^"']*\bslides\b)[^>]*>/i.exec(html)
+  if (!slidesMatch) {
     console.warn('[slides-parser] No <div class="slides"> found')
     return { slides, width, height }
   }
@@ -43,7 +44,7 @@ export function parseRevealSlides(html) {
   // Extract top-level <section> elements from the slides container.
   // We can't use a real DOM parser in Node easily, so use a simple
   // state machine that tracks section nesting depth.
-  const content = html.slice(slidesStart)
+  const content = html.slice(slidesMatch.index + slidesMatch[0].length)
   let slideIndex = 0
 
   // Match all <section ...> tags and their nesting
@@ -76,8 +77,8 @@ export function parseRevealSlides(html) {
     if (event.type === 'open') {
       depth++
       const attrs = event.attrs || ''
-      const classMatch = attrs.match(/class="([^"]*)"/)
-      const idMatch = attrs.match(/id="([^"]*)"/)
+      const classMatch = attrs.match(/\bclass\s*=\s*["']([^"']*)["']/i)
+      const idMatch = attrs.match(/\bid\s*=\s*["']([^"']*)["']/i)
       const cls = classMatch ? classMatch[1] : ''
       const id = idMatch ? idMatch[1] : ''
       const isSlide = cls.includes('slide') || cls.includes('quarto-title-block')

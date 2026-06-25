@@ -628,15 +628,36 @@ const SLIDES_BRIDGE_SCRIPT = `
       '.reveal .progress { display: none !important; }',
       '.reveal .slide-number { display: none !important; }',
       '.reveal .slide-menu-button { display: none !important; }',
+      '.slide-menu-wrapper { display: none !important; }',
+      '.slide-menu { display: none !important; }',
+      '.slide-menu-overlay { display: none !important; }',
       '.reveal .slide-chalkboard-buttons { display: none !important; }',
       '.reveal .footer { display: none !important; }',
       '.reveal .slide-logo { display: none !important; }',
-      'body { overflow: hidden !important; margin: 0; }',
-      // Dark mode
-      'html.tlda-dark .reveal { filter: invert(0.92) hue-rotate(180deg); }',
-      'html.tlda-dark .reveal img, html.tlda-dark .reveal svg, html.tlda-dark .reveal video { filter: invert(0.92) hue-rotate(180deg); }',
+      'html, body { overflow: visible !important; margin: 0; background: transparent !important; }',
+      '.reveal, .reveal .slides, .reveal .slides section { overflow: visible !important; }',
     ].join('\\n');
     document.head.appendChild(style);
+
+    function reportSlideHeight() {
+      if (window.parent === window) return;
+      var slide = Reveal.getCurrentSlide();
+      if (!slide) return;
+      var scale = Reveal.getScale ? Reveal.getScale() : 1;
+      var rect = slide.getBoundingClientRect();
+      var h = Math.max(
+        rect.height / (scale || 1),
+        slide.scrollHeight || 0,
+        slide.offsetHeight || 0,
+        document.body ? document.body.scrollHeight : 0,
+        document.documentElement ? document.documentElement.scrollHeight : 0
+      );
+      window.parent.postMessage({
+        type: 'tlda-resize',
+        shapeId: shapeId,
+        height: Math.ceil(h),
+      }, '*');
+    }
 
     // Report fragment state to parent (for SlidesNavigator)
     function reportFragmentState() {
@@ -673,10 +694,39 @@ const SLIDES_BRIDGE_SCRIPT = `
 
     // Report initial fragment state
     setTimeout(reportFragmentState, 200);
+    setTimeout(reportSlideHeight, 200);
+    setTimeout(reportSlideHeight, 800);
+    setTimeout(reportSlideHeight, 2000);
+    setTimeout(reportSlideHeight, 5000);
+    setTimeout(reportSlideHeight, 8000);
+
+    if (window.ResizeObserver) {
+      var resizeObserver = new ResizeObserver(function() {
+        reportSlideHeight();
+      });
+      resizeObserver.observe(document.documentElement);
+      if (document.body) resizeObserver.observe(document.body);
+      var currentSlideForResize = Reveal.getCurrentSlide();
+      if (currentSlideForResize) resizeObserver.observe(currentSlideForResize);
+    }
+    if (window.MutationObserver && document.body) {
+      var mutationTimer = null;
+      var mutationObserver = new MutationObserver(function() {
+        if (mutationTimer) clearTimeout(mutationTimer);
+        mutationTimer = setTimeout(reportSlideHeight, 100);
+      });
+      mutationObserver.observe(document.body, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+      });
+    }
 
     // Report on every fragment change
     Reveal.on('fragmentshown', reportFragmentState);
     Reveal.on('fragmenthidden', reportFragmentState);
+    Reveal.on('fragmentshown', reportSlideHeight);
+    Reveal.on('fragmenthidden', reportSlideHeight);
 
     // Listen for messages from parent (edge tap zones, dark mode)
     window.addEventListener('message', function(e) {
@@ -692,9 +742,6 @@ const SLIDES_BRIDGE_SCRIPT = `
         if (avail && avail.prev) {
           Reveal.prev();
         }
-      }
-      if (e.data.type === 'tlda-dark-mode') {
-        document.documentElement.classList.toggle('tlda-dark', !!e.data.dark);
       }
     });
 

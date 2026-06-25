@@ -18,6 +18,11 @@ export function SearchTab() {
 
   useEffect(() => {
     if (!ctx) return
+    if (ctx.format === 'slides') {
+      setLookupLines(null)
+      setHtmlSearchIndex(null)
+      return
+    }
     loadLookup(ctx.docName).then(data => {
       if (data) {
         setLookupLines(data.lines)
@@ -28,7 +33,7 @@ export function SearchTab() {
         })
       }
     })
-  }, [ctx?.docName])
+  }, [ctx?.docName, ctx?.format])
 
   // Debounce
   useEffect(() => {

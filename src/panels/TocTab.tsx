@@ -271,6 +271,11 @@ export function TocTab() {
 
   useEffect(() => {
     if (!doc) return
+    if (doc.format === 'slides') {
+      setSearchLines(null)
+      setHtmlSearchIndex(null)
+      return
+    }
     loadLookup(doc.docName).then(data => {
       if (data) {
         setSearchLines(data.lines)
@@ -280,7 +285,7 @@ export function TocTab() {
         })
       }
     })
-  }, [doc?.docName, reloadCount])
+  }, [doc?.docName, doc?.format, reloadCount])
 
   useEffect(() => {
     if (timerRef.current) clearTimeout(timerRef.current)

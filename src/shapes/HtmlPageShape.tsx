@@ -7,6 +7,7 @@ import {
   useEditor,
   useValue,
   stopEventPropagation,
+  Box,
 } from 'tldraw'
 import type { TLPageId } from 'tldraw'
 import { useEffect, useRef, useState, useCallback } from 'react'
@@ -136,13 +137,6 @@ function HtmlPageComponent({ shape }: { shape: any }) {
   }, [editor, shape.id, shape.x, shape.y, shape.props.w, shape.props.h, isSlide])
   const isNearViewport = isInActiveViewport || isNearMainViewport
 
-  // Slide fade-in: start invisible, show when Reveal signals ready.
-  // Reset when isNearViewport goes false (iframe unmounted).
-  const [slideReady, setSlideReady] = useState(false)
-  useEffect(() => {
-    if (!isNearViewport) setSlideReady(false)
-  }, [isNearViewport])
-
   // When entering local interaction mode, listen for clicks or wheel outside to exit
   useEffect(() => {
     if (!isInteracting) return
@@ -179,10 +173,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
     if (!iframe?.contentWindow) return
     htmlIframeElements.set(shape.id, iframe)
     iframe.contentWindow.postMessage({ type: 'tlda-dark-mode', dark: isDark }, '*')
-    // Mark ready on load. For slides, Reveal.js navigates to the target slide during
-    // initialization, so by the time onLoad fires the slide is already at the right position.
-    setSlideReady(true)
-  }, [isDark, isSlide])
+  }, [isDark])
 
   // Listen for height reports from iframe content
   // Read current height from the store (not the closure) to avoid stale delta calculations
@@ -369,19 +360,39 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         }
         return
       }
-      if (e.data?.type === 'tlda-slide-ready' && e.data.shapeId === shape.id) {
-        setSlideReady(true)
-        return
-      }
+      if (e.data?.type === 'tlda-slide-ready' && e.data.shapeId === shape.id) return
       if (e.data?.type === 'tlda-resize' && e.data.shapeId === shape.id) {
-        const newH = Math.max(200, Math.round(e.data.height))
         const current = editor.store.get(shape.id) as any
         if (!current) return
+        const isSlideShape = current.props.url?.includes('_tldaH=')
+        const minH = isSlideShape ? current.props.h : 200
+        const newH = Math.max(minH, 200, Math.round(e.data.height))
         if (Math.abs(newH - current.props.h) > 5) {
           editor.store.update(shape.id, (s: any) => ({
             ...s,
             props: { ...s.props, h: newH },
           }))
+          if (isSlideShape) {
+            const slideShapes = editor.getCurrentPageShapes()
+              .filter((s: any) => s.type === 'html-page' && s.props?.url?.includes('_tldaH='))
+            const bounds = slideShapes.reduce((acc: Box | null, s: any) => {
+              const h = s.id === shape.id ? newH : s.props.h
+              const box = new Box(s.x, s.y, s.props.w, h)
+              return acc ? acc.union(box) : box
+            }, null)
+            if (bounds) {
+              editor.setCameraOptions({
+                constraints: {
+                  bounds,
+                  padding: { x: 16, y: 16 },
+                  origin: { x: 0, y: 0 },
+                  initialZoom: 'default',
+                  baseZoom: 'default',
+                  behavior: 'free',
+                },
+              })
+            }
+          }
         }
       }
     }
@@ -440,8 +451,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
                 border: 'none',
                 pointerEvents: iframeActive ? 'auto' : 'none',
                 display: 'block',
-                opacity: isSlide ? (slideReady ? 1 : 0) : 1,
-                transition: isSlide ? 'opacity 0.25s ease' : undefined,
+                opacity: 1,
               }}
               scrolling="no"
               allow="cross-origin-isolated"
