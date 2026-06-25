@@ -25,30 +25,21 @@ test('routes task text to compact role packs', () => {
   assert.equal(inferTaskRole({ message: 'Summarize the meeting notes' }), null)
 })
 
-test('prepends role pack only for non-Claude targets without replacing task body', () => {
+test('leaves delegate task body unchanged for all harnesses', () => {
   const original = 'Implement guidance contract and skill routing.'
-  const routed = applyNonClaudeRolePack(original, { harnessKind: 'codex' })
-  assert.match(routed, /<!-- fleet-role-pack:v1 -->/)
-  assert.match(routed, /Non-Claude Guidance\/process role pack/)
-  assert.match(routed, /`self-sufficiency`, `point-dont-paraphrase`, `read-to-the-end`, `investigate-dont-narrate`/)
-  assert.match(routed, /Implement guidance contract and skill routing\./)
-
+  assert.equal(applyNonClaudeRolePack(original, { harnessKind: 'codex' }), original)
+  assert.equal(applyNonClaudeRolePack(original, { harnessKind: 'goose' }), original)
   assert.equal(applyNonClaudeRolePack(original, { harnessKind: 'claude' }), original)
-  assert.equal(applyNonClaudeRolePack(routed, { harnessKind: 'goose' }), routed)
 })
 
-test('routes math templates to math skills for goose delegates', () => {
+test('math templates do not inject reading packs for goose delegates', () => {
   const routed = applyNonClaudeRolePack('Rewrite the proof of Lemma 2.', {
     harnessKind: 'goose',
     template: 'math-edit',
   })
-  assert.match(routed, /Non-Claude Math\/proof role pack/)
-  assert.match(routed, /`self-sufficiency`, `writing-process`, `argument-outline`, `proof-smells`, `math-commit-gate`/)
-  assert.match(routed, /`writing-process` when writing, and `tooling` only when interpreting tlda errors/)
-  assert.match(routed, /Do not run `latexmk`, `tlda push`, `tlda build`, or git as routine writing verification/)
-  assert.match(routed, /route to a tlda\/build owner/)
-  assert.doesNotMatch(routed, /use the tlda push\/build feedback path/)
-  assert.doesNotMatch(routed, /project guidance file names the expected edit\/build workflow/)
+  assert.equal(routed, 'Rewrite the proof of Lemma 2.')
+  assert.doesNotMatch(routed, /role pack/i)
+  assert.doesNotMatch(routed, /Read these skills first/i)
 })
 
 test('infers broad agent lanes from cwd and labels', () => {

@@ -1,44 +1,3 @@
-const ROLE_PACK_MARKER = '<!-- fleet-role-pack:v1 -->';
-
-export const NON_CLAUDE_ROLE_PACKS = {
-  math: {
-    title: 'Math/proof role pack',
-    skills: ['self-sufficiency', 'writing-process', 'argument-outline', 'proof-smells', 'math-commit-gate'],
-    checks: [
-      'Treat proof obligations as required, not optional suggestions.',
-      'Verify the edited proof or argument on the document surface before reporting done.',
-    ],
-    workflow: [
-      'For paper-writing/source-edit tasks, read the relevant current skills: `writing-process` when writing, and `tooling` only when interpreting tlda errors is actually the task surface.',
-      'Do not run `latexmk`, `tlda push`, `tlda build`, or git as routine writing verification; automatic build, push, and versioning should handle it.',
-      'If automatic build feedback is missing, stale, or reports success while biber/citations failed, route to a tlda/build owner rather than working around it inside the writing task.',
-    ],
-  },
-  app: {
-    title: 'App/UI/fleet role pack',
-    skills: ['self-sufficiency', 'agent-guide', 'tlda-orientation', 'diagnostic-methodology'],
-    checks: [
-      'Use browser-visible behavior or fleet-visible artifacts as ground truth.',
-      'Do not report fixed/done until the user-visible surface has been checked.',
-    ],
-    workflow: [
-      'For tlda viewer/app work, prefer the project tools named in CLAUDE.md, including tlda-dev pw for browser checks and fleet-visible artifacts for evidence.',
-      'Use `tooling` or `tlda-debugging` when build, viewer, or infrastructure behavior is the task surface; do not make those workflows defaults for paper-writing delegates.',
-    ],
-  },
-  guidance: {
-    title: 'Guidance/process role pack',
-    skills: ['self-sufficiency', 'point-dont-paraphrase', 'read-to-the-end', 'investigate-dont-narrate'],
-    checks: [
-      'Point delegates at canonical guidance instead of paraphrasing it as the source of truth.',
-      'If corrected, stop and change course before continuing the prior plan.',
-    ],
-    workflow: [
-      'Project CLAUDE.md can provide context, but if it conflicts with current skills, the current skill wins and stale project guidance should be flagged for cleanup.',
-    ],
-  },
-};
-
 export const LANE_BLOCK_OVERRIDE = 'cross-lane-ok:';
 
 const LANE_PATTERNS = [
@@ -135,33 +94,6 @@ export function isNonClaudeHarness(kind) {
   return kind === 'codex' || kind === 'goose';
 }
 
-export function buildRolePackBlock(role, { harnessKind } = {}) {
-  const pack = NON_CLAUDE_ROLE_PACKS[role];
-  if (!pack) return '';
-  const skillList = pack.skills.map(skill => `\`${skill}\``).join(', ');
-  const checks = pack.checks.map(check => `- ${check}`).join('\n');
-  const workflow = (pack.workflow || []).map(hint => `- ${hint}`).join('\n');
-  const skillInstruction = harnessKind === 'goose'
-    ? `Before task work, route yourself to the relevant shared skill(s): ${skillList}. Load each applicable skill with native Goose Summon from \`.agents/skills/<name>/SKILL.md\`. Or dismiss one with a specific reason only when it truly does not apply.`
-    : `Before task work, route yourself to the relevant shared skill(s): ${skillList}. Read each applicable skill's markdown with your native file reader at \`/Users/skip/work/dot-claude/skills/<name>/SKILL.md\`. Or dismiss one with a specific reason only when it truly does not apply.`;
-  return `${ROLE_PACK_MARKER}
-**Non-Claude ${pack.title}**
-
-${skillInstruction}
-
-Workflow hints:
-${workflow}
-
-${checks}`;
-}
-
 export function applyNonClaudeRolePack(message, { template, description, successCriteria, harnessKind } = {}) {
-  const body = String(message || '');
-  if (!isNonClaudeHarness(harnessKind)) return body;
-  if (body.includes(ROLE_PACK_MARKER)) return body;
-
-  const role = inferTaskRole({ template, description, message: body, successCriteria });
-  const block = buildRolePackBlock(role, { harnessKind });
-  if (!block) return body;
-  return `${block}\n\n---\n\n${body}`;
+  return String(message || '');
 }
