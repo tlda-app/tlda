@@ -56,7 +56,10 @@ function renderMarkdownStub(text) {
 function renderMarkdownWithOrdinaryLinks(text) {
   return renderMarkdownStub(text)
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, href) => `<a href="${href}" target="_blank">${label}</a>`)
-    .replace(/https?:\/\/[^\s<]+/g, url => `<a href="${url}" target="_blank">${url}</a>`)
+    .replace(/(<[^>]+>)|(https?:\/\/[^\s<]+)/g, (match, tag, url) => {
+      if (tag) return tag
+      return `<a href="${url}" target="_blank">${url}</a>`
+    })
 }
 
 function renderCtx(renderMarkdown = renderMarkdownStub) {
@@ -242,7 +245,7 @@ test('literal doc token with URL uses ordinary markdown link handling, not share
   assert.doesNotMatch(root.innerHTML, /ref-chip-shared-doc|class="shared-doc|doc-chip|data-share-id|Shared doc:/)
 })
 
-test('/api/file markdown links render as links, not file chips', () => {
+test('/api/file markdown links render as previewable file chips', () => {
   const html = renderChatLine({
     type: 'chat',
     from: 'fleet:agent',
@@ -251,10 +254,100 @@ test('/api/file markdown links render as links, not file chips', () => {
     timestamp: '2026-06-23T22:19:32.000Z',
   }, renderCtx(renderMarkdownWithOrdinaryLinks))
   const dom = new JSDOM(`<div id="root">${html}</div>`)
+  const chip = dom.window.document.querySelector('.ref-chip-doc')
+
+  assert.ok(chip)
+  assert.equal(chip.getAttribute('data-path'), '/Users/skip/work/balancing-act/scratch/e2-argument-outline.md')
+  assert.equal(chip.getAttribute('data-url'), '/api/file?path=%2FUsers%2Fskip%2Fwork%2Fbalancing-act%2Fscratch%2Fe2-argument-outline.md')
+  assert.equal(chip.getAttribute('draggable'), 'true')
+  assert.equal(dom.window.document.querySelector('a'), null)
+})
+
+test('absolute /api/file markdown links render as previewable file chips', () => {
+  const href = 'https://tlda-fly.cormorant-matrix.ts.net/api/file?path=%2Ftmp%2Ffleet-uploads%2Facting-app-chief-queue.md'
+  const html = renderChatLine({
+    type: 'chat',
+    from: 'fleet:agent',
+    to: 'fleet:skip',
+    text: `[acting-app-chief-queue.md](${href})`,
+    timestamp: '2026-06-23T22:19:32.000Z',
+  }, renderCtx(renderMarkdownWithOrdinaryLinks))
+  const dom = new JSDOM(`<div id="root">${html}</div>`)
+  const chip = dom.window.document.querySelector('.ref-chip-doc')
+
+  assert.ok(chip)
+  assert.equal(chip.getAttribute('data-path'), '/tmp/fleet-uploads/acting-app-chief-queue.md')
+  assert.equal(chip.getAttribute('data-url'), href)
+  assert.equal(dom.window.document.querySelector('a'), null)
+})
+
+test('off-origin /api/file markdown links remain ordinary links in browser context', () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'location')
+  Object.defineProperty(globalThis, 'location', {
+    configurable: true,
+    value: { origin: 'https://localhost:5176' },
+  })
+  try {
+    const href = 'https://example.test/api/file?path=%2Ftmp%2Ffleet-uploads%2Freport.md'
+    const html = renderChatLine({
+      type: 'chat',
+      from: 'fleet:agent',
+      to: 'fleet:skip',
+      text: `[report.md](${href})`,
+      timestamp: '2026-06-23T22:19:32.000Z',
+    }, renderCtx(renderMarkdownWithOrdinaryLinks))
+    const dom = new JSDOM(`<div id="root">${html}</div>`)
+    const link = dom.window.document.querySelector('a')
+
+    assert.ok(link)
+    assert.equal(link.getAttribute('href'), href)
+    assert.equal(dom.window.document.querySelector('.ref-chip-doc, .md-file-card'), null)
+  } finally {
+    if (previous) Object.defineProperty(globalThis, 'location', previous)
+    else delete globalThis.location
+  }
+})
+
+test('protocol-relative off-origin /api/file markdown links remain ordinary links', () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'location')
+  Object.defineProperty(globalThis, 'location', {
+    configurable: true,
+    value: { origin: 'https://localhost:5176' },
+  })
+  try {
+    const href = '//example.test/api/file?path=%2Ftmp%2Freport.md'
+    const html = renderChatLine({
+      type: 'chat',
+      from: 'fleet:agent',
+      to: 'fleet:skip',
+      text: `[report.md](${href})`,
+      timestamp: '2026-06-23T22:19:32.000Z',
+    }, renderCtx(renderMarkdownWithOrdinaryLinks))
+    const dom = new JSDOM(`<div id="root">${html}</div>`)
+    const link = dom.window.document.querySelector('a')
+
+    assert.ok(link)
+    assert.equal(link.getAttribute('href'), href)
+    assert.equal(dom.window.document.querySelector('.ref-chip-doc, .md-file-card'), null)
+  } finally {
+    if (previous) Object.defineProperty(globalThis, 'location', previous)
+    else delete globalThis.location
+  }
+})
+
+test('non-markdown /api/file links remain ordinary links', () => {
+  const html = renderChatLine({
+    type: 'chat',
+    from: 'fleet:agent',
+    to: 'fleet:skip',
+    text: '[plot.png](/api/file?path=%2Ftmp%2Ffleet-uploads%2Fplot.png)',
+    timestamp: '2026-06-23T22:19:32.000Z',
+  }, renderCtx(renderMarkdownWithOrdinaryLinks))
+  const dom = new JSDOM(`<div id="root">${html}</div>`)
   const link = dom.window.document.querySelector('a')
 
   assert.ok(link)
-  assert.equal(link.getAttribute('href'), '/api/file?path=%2FUsers%2Fskip%2Fwork%2Fbalancing-act%2Fscratch%2Fe2-argument-outline.md')
+  assert.equal(link.getAttribute('href'), '/api/file?path=%2Ftmp%2Ffleet-uploads%2Fplot.png')
   assert.equal(dom.window.document.querySelector('.ref-chip-doc, .md-file-card'), null)
 })
 

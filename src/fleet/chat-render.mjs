@@ -25,6 +25,45 @@ export function esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
 }
 
+function decodeHtmlAttr(s = '') {
+  return String(s)
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+}
+
+function stripTags(html = '') {
+  return String(html).replace(/<[^>]*>/g, '').trim()
+}
+
+function markdownApiFileLink(href) {
+  const raw = decodeHtmlAttr(href)
+  const baseOrigin = globalThis.location?.origin || 'https://tlda.local'
+  let url
+  try {
+    url = new URL(raw, baseOrigin)
+  } catch {
+    return null
+  }
+  if (!/^https?:$/.test(url.protocol)) return null
+  if (/^(?:https?:)?\/\//i.test(raw) && globalThis.location && url.origin !== baseOrigin) return null
+  if (url.pathname !== '/api/file') return null
+  const filePath = url.searchParams.get('path') || ''
+  if (!/\.md$/i.test(filePath)) return null
+  return { url: raw, path: filePath }
+}
+
+function chipifyMarkdownApiFileLinks(html) {
+  return String(html).replace(/<a\b([^>]*)\bhref="([^"]+)"([^>]*)>([\s\S]*?)<\/a>/gi, (match, before, href, after, labelHtml) => {
+    const file = markdownApiFileLink(href)
+    if (!file) return match
+    const label = stripTags(labelHtml) || file.path.split('/').pop() || file.path
+    return `<span class="ref-chip ref-chip-doc" data-path="${esc(file.path)}" data-url="${esc(file.url)}" draggable="true"><span class="ref-chip-doc-icon">📄</span>${esc(label)}</span>`
+  })
+}
+
 // Backtick-wrapped URLs stay as <code> — they're literal text, not chips.
 // (Previously this function converted them to <a> links, but that caused
 // chipification of quoted URLs. Plain <code> is selectable and copyable.)
@@ -59,7 +98,7 @@ export function resolveInlineAttachments(text, inlineAttachments, renderMarkdown
       return match
     })
   }
-  let html = renderMarkdown(esc(processed))
+  let html = chipifyMarkdownApiFileLinks(renderMarkdown(esc(processed)))
   // Replace remaining {{att:N}} markers
   html = html.replace(/\{\{att:(\d+)\}\}/g, (_, idx) => {
     const att = inlineAttachments?.[+idx]
@@ -366,7 +405,7 @@ export function renderChatLine(m, ctx) {
       return match
     })
   }
-  let text = m._raw ? esc(processedText) : linkifyCodeUrls(renderMarkdown(esc(processedText)))
+  let text = m._raw ? esc(processedText) : linkifyCodeUrls(chipifyMarkdownApiFileLinks(renderMarkdown(esc(processedText))))
   // Replace «bullet:ID» tokens with card HTML using metadata
   if (m._bullets?.length) {
     text = text.replace(/«bullet:([\w-]+)»/g, (_match, id) => {
