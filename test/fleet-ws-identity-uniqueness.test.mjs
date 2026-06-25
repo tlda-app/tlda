@@ -16,11 +16,17 @@ const ROOT = path.resolve(HERE, '..')
 function waitFor(predicate, { timeout = 8000, interval = 100 } = {}) {
   return new Promise((resolve, reject) => {
     const deadline = Date.now() + timeout
+    let lastError = null
     const tick = async () => {
       try {
         if (await predicate()) return resolve(true)
-      } catch {}
-      if (Date.now() > deadline) return reject(new Error('waitFor timeout'))
+      } catch (e) {
+        lastError = e
+      }
+      if (Date.now() > deadline) {
+        const suffix = lastError ? `: ${lastError.message}` : ''
+        return reject(new Error(`waitFor timeout${suffix}`))
+      }
       setTimeout(tick, interval)
     }
     tick()

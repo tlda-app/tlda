@@ -24,7 +24,7 @@ describe('fleet name/label availability', () => {
   afterEach(() => {
     store?.close?.()
     for (const f of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
-      try { fs.unlinkSync(f) } catch {}
+      fs.rmSync(f, { force: true })
     }
   })
 

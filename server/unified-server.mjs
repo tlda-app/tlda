@@ -43,6 +43,7 @@ import { lookup as mimeLookup } from 'mime-types'
 import { DEFAULT_PORT, hasTls, loadConfig, resolveConfig } from '../shared/config.mjs'
 import { normalizeUsageStatus } from '../shared/usage-status.mjs'
 import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
+import { phaseFromName, baseName, PHASES } from '../shared/lineage-name.mjs'
 import { daemonHelloDecision } from '../shared/daemon-identity.mjs'
 import { initProjectStore, listProjects, readProject, updateProject, getProjectsDir } from './lib/project-store.mjs'
 import { resetStaleBuildStates, killAllBuilds, setShadowMirrorHandler } from './lib/build-runner.mjs'
@@ -2929,8 +2930,8 @@ async function handleFleetWsMessage(ws, msg) {
       if (superseded.has(priorWs)) return
       superseded.add(priorWs)
       console.log(`[fleet-ws] superseding existing connection for ${agentId}`)
-      try { priorWs.close(4000, 'superseded by newer registration') } catch {}
-      try { priorWs.terminate() } catch {}
+      priorWs.close(4000, 'superseded by newer registration')
+      priorWs.terminate()
     }
     supersede(agentFleetConnections.get(agentId))
     for (const client of wsFleetClients) {
