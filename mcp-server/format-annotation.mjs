@@ -6,6 +6,8 @@
 //
 // All formatters return plain text strings suitable for agent consumption.
 
+import { normalizePrettyResult } from '../shared/activity-pretty-result.mjs'
+
 /**
  * Format a highlight/highlighter shape.
  * @param {object} annotation - processed annotation object with fields:
@@ -100,7 +102,7 @@ export function formatActivity(events, agents = []) {
       const tool = m.tool || e.text || ''
       let line = `  ${tool}${m.arg ? ': ' + m.arg : ''}`
       if (m.prettyResult) {
-        const result = m.prettyResult.slice(0, 300)
+        const result = normalizePrettyResult(m.prettyResult).slice(0, 300)
         line += `\n    ${result.split('\n').join('\n    ')}`
       }
       return line

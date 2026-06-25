@@ -7,20 +7,21 @@
  *   log.info('fleet', 'layout mode entered')
  *   log.warn('fleet', 'stuck brush detected', { state })
  *
- * Output: every call goes to (1) the browser console (if its level beats the
- * console threshold) AND (2) the server log sink at POST /api/log, which
- * appends to ~/.config/tlda/client.log (every call, regardless of console
- * threshold — the server log is the durable record we can grep).
+ * Output: a call goes to BOTH (1) the browser console and (2) the server log
+ * sink at POST /api/log (appended to ~/.config/tlda/client.log) — but only when
+ * its level beats the namespace threshold. The level gates both; below it, the
+ * call is a no-op (no console, no POST). This keeps a chatty debug/diagnostic
+ * namespace from flooding the file + pegging the renderer with a POST per event.
  *
- * Control the *console* via URL param or localStorage:
+ * Control levels via URL param or localStorage (applies to file + console):
  *   ?log=debug            — all namespaces at debug
  *   ?log=fleet:debug      — fleet namespace at debug, others at warn
  *   ?log=fleet:debug,hud:info  — per-namespace levels
  *   localStorage.setItem('tlda-log', 'fleet:debug')
  *
  * Levels: debug < info < warn < error < off
- * Default console threshold: warn (only warnings and errors show in console).
- * The server sink captures everything.
+ * Default threshold: warn — only warn/error are captured (console + file).
+ * Turn a namespace up to debug/info to capture its diagnostics when you need them.
  */
 
 type Level = 'debug' | 'info' | 'warn' | 'error' | 'off'
@@ -72,6 +73,13 @@ const _session = (() => {
   return Math.random().toString(36).slice(2, 10)
 })()
 
+// Logs go to the server that served this SPA (same-origin, relative). That's the
+// instance you're actually debugging, and every tlda server has /api/log — so
+// this is a deterministic fact, not a guess. (Empty string = same-origin.)
+function logBase(): string {
+  return ''
+}
+
 function enqueue(entry: LogEntry) {
   if (typeof window === 'undefined') return
   _queue.push(entry)
@@ -86,14 +94,19 @@ function flush() {
   const batch = _queue.splice(0, _queue.length)
   try {
     const body = JSON.stringify(batch)
-    // sendBeacon survives page unload; falls back to fetch when not available
-    // (e.g. typeof navigator undefined in some test runtimes).
-    if (typeof navigator !== 'undefined' && navigator.sendBeacon) {
+    // Hosted (GitHub Pages → Fly): the SPA origin has no /api/log, so derive the
+    // HTTP base from VITE_SYNC_SERVER and POST there. Cross-origin MUST use fetch
+    // (not sendBeacon) so the authToken fetch-patch can inject the Authorization
+    // header — sendBeacon can't set headers. Same-origin (local) keeps sendBeacon
+    // for page-unload survival.
+    const base = logBase()
+    const url = base + '/api/log'
+    if (!base && typeof navigator !== 'undefined' && navigator.sendBeacon) {
       const blob = new Blob([body], { type: 'application/json' })
-      const ok = navigator.sendBeacon('/api/log', blob)
-      if (!ok) void fetch('/api/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true })
+      const ok = navigator.sendBeacon(url, blob)
+      if (!ok) void fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true })
     } else {
-      void fetch('/api/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true })
+      void fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true })
     }
   } catch { /* never let logging crash the app */ }
 }
@@ -106,10 +119,13 @@ if (typeof window !== 'undefined') {
 
 function makeLogger(level: Level, consoleFn: (...args: any[]) => void) {
   return (ns: string, msg: string, data?: any) => {
-    // Always forward to server sink — the file is the durable record.
-    enqueue({ ts: new Date().toISOString(), level, ns, msg, data, session: _session })
-    // Console-only when its threshold is met.
+    // Level gates BOTH the server sink AND the console (default threshold: warn).
+    // Previously the sink captured every call regardless of level, so a chatty
+    // debug/diagnostic namespace flooded ~/.config/tlda/client.log + fired a
+    // POST per event and pegged the renderer. Now a namespace must be turned up
+    // (e.g. ?log=chat-scroll:debug) to be captured — same control for file + console.
     if (!shouldLog(ns, level)) return
+    enqueue({ ts: new Date().toISOString(), level, ns, msg, data, session: _session })
     const prefix = `[${ns}]`
     if (data !== undefined) {
       consoleFn(prefix, msg, data)
@@ -124,6 +140,11 @@ export const log = {
   info: makeLogger('info', console.info),
   warn: makeLogger('warn', console.warn),
   error: makeLogger('error', console.error),
+
+  /** True when a namespace would emit at this level; use to guard expensive diagnostics. */
+  isEnabled(ns: string, level: Level = 'debug') {
+    return shouldLog(ns, level)
+  },
 
   /** Change console level at runtime: log.setLevel('debug') or log.setLevel('fleet', 'debug') */
   setLevel(nsOrLevel: string, level?: Level) {

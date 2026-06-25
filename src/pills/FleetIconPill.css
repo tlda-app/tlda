@@ -1,8 +1,31 @@
 /* FleetIconPill — basestar logo in the build-pills-row */
 
 .fleet-icon-pill-container {
-  position: relative;
+  /* Fixed in the bottom-right control cluster, on top of the mic/voice stack
+     (voice-note 49px, mic 82px → basestar above at 115px), same right edge as
+     the rest of the stack. Stays put while you pan between the panes. */
+  position: fixed;
+  bottom: 115px;
+  right: 16px;
+  z-index: 10001;
   pointer-events: all;
+}
+
+/* Phone: the whole stack shifts in by the safe-area inset — the basestar must
+   match or it sits to the right of the column. Mirrors .mic-toggle-btn (90px →
+   basestar 123px above it). */
+body.phone-mode .fleet-icon-pill-container {
+  bottom: calc(123px + env(safe-area-inset-bottom));
+  right: max(4px, env(safe-area-inset-right));
+}
+
+/* Tablet (coarse pointer, too wide for phone-mode) gets the same safe-area
+   treatment as the mic/voice buttons. */
+@media (pointer: coarse) and (min-width: 601px) {
+  .fleet-icon-pill-container {
+    bottom: calc(115px + env(safe-area-inset-bottom));
+    right: max(4px, env(safe-area-inset-right));
+  }
 }
 
 /* Badge: color × opacity visibility — matches voice/hl button pattern */
@@ -16,7 +39,12 @@
   user-select: none;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 1px;
+  min-width: 27px;
+  min-height: 27px;
+  pointer-events: all;
+  touch-action: none;
 }
 
 .fleet-icon-pill-container:hover .fleet-icon-pill-badge {
@@ -24,25 +52,33 @@
   opacity: 0.5;
 }
 
-/* Dimmer when fleet shapes are hidden */
-.fleet-icon-pill--hidden .fleet-icon-pill-badge {
-  opacity: 0.05;
-}
+/* Minimized state is signalled by the hollow (outline) basestar, not by
+   dimming — brightness stays equal to the open state so the form difference
+   is what reads. (Opacity has no reference point; a fainter icon just looks
+   faint, not "off".) */
 
-.fleet-icon-pill--hidden:hover .fleet-icon-pill-badge {
-  opacity: 0.35;
-}
-
-/* Layout preset fan — appears to the right of the icon during drag */
+/* Layout preset fan — appears to the LEFT of the icon during drag (the icon
+   lives in the bottom-right corner, so the fan opens inward / leftward). */
 .fleet-icon-pill-fan {
   position: absolute;
-  left: 100%;
+  right: 100%;
   bottom: 0;
-  margin-left: 6px;
+  margin-right: 6px;
   display: flex;
+  flex-direction: row-reverse;
   gap: 4px;
-  pointer-events: none;
+  pointer-events: all;
   z-index: 10002;
+}
+
+body.phone-mode .fleet-icon-pill-fan {
+  margin-right: 8px;
+}
+
+@media (pointer: coarse) {
+  .fleet-icon-pill-fan {
+    margin-right: 8px;
+  }
 }
 
 .fleet-icon-pill-fan-item {
@@ -50,9 +86,11 @@
   align-items: center;
   justify-content: center;
   white-space: nowrap;
-  pointer-events: none;
+  pointer-events: all;
   opacity: 0.3;
   transition: opacity 0.2s;
+  cursor: pointer;
+  touch-action: none;
 }
 
 .fleet-icon-pill-fan-item.hovered {
@@ -63,6 +101,10 @@
 
 html[data-theme="dark"] .fleet-icon-pill-badge {
   color: var(--pill-icon-color, rgba(255, 255, 255, 1));
+}
+
+html[data-theme="dark"] .fleet-icon-pill-container:hover .fleet-icon-pill-badge {
+  color: var(--pill-icon-color-hover, rgba(255, 255, 255, 1));
 }
 
 html[data-theme="dark"] .fleet-icon-pill-fan-item {

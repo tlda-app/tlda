@@ -16,12 +16,13 @@ import {
   createShapeId,
 } from 'tldraw'
 import { useState, useCallback, useMemo, useRef, useEffect, memo } from 'react'
-import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, useFleetContext, searchFleet, hibernateSession, spawnAgent } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, useFleetContext, useFleetProjects, searchFleet, hibernateSession, spawnAgent } from '../fleet-data-adapter'
 import { dropPillOnTarget } from './FleetPillShape'
-import { agentDisplayName } from './fleet-utils'
+import { agentDisplayName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
 import { AgentName } from './PhaseIcon'
 import { dragCoordinator } from './dragCoordinator'
-import { useIsInViewport } from './useIsInViewport'
+import { useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
+import { clientPointToPage } from '../wm/viewport-coordinates'
 
 
 const DEFAULT_W = 340
@@ -33,9 +34,52 @@ const MODEL_SHORTHANDS: Record<string, string> = {
   '45': 'opus45', '46': 'opus46', '47': 'opus47', '48': 'opus48',
   's': 'sonnet', 'h': 'haiku',
   'o45': 'opus45', 'o46': 'opus46', 'o47': 'opus47', 'o48': 'opus48',
+  'ds': 'deepseek',
 }
 
-const ALL_MODELS = ['opus', 'opus45', 'opus46', 'opus47', 'opus48', 'sonnet', 'haiku']
+// The model-alias pool for autocomplete/validation is fetched live from
+// /api/fleet/models (served from `fleet-spawn --list-models` — the single source
+// of truth for every spawnable alias, Claude AND goose). Nothing is hardcoded
+// per-family here; this fallback is used only before the fetch resolves or if it
+// fails, so an offline panel still completes the common aliases.
+const MODEL_FALLBACK = [
+  'opus', 'opus45', 'opus46', 'opus47', 'opus48', 'sonnet', 'haiku', 'fable',
+  'deepseek', 'deepseek-v4-pro', 'deepseek-v4', 'deepseek-v4-flash',
+  'deepseek-chat', 'deepseek-v3', 'deepseek-r1', 'deepseek-reasoner',
+  'kimi', 'kimi-k2.7', 'qwen', 'qwen3.7-max', 'glm', 'glm-5.1',
+  'minimax', 'minimax-m3', 'mistral', 'mistral-medium-3-5', 'gemini', 'gemini-3.5-flash',
+]
+
+// Live alias list, shared across all FleetAgents shapes: one fetch, cached, with
+// subscribers re-rendered when it lands.
+let _modelCache: string[] | null = null
+let _modelFetchStarted = false
+const _modelSubs = new Set<() => void>()
+function ensureModelFetch() {
+  if (_modelFetchStarted) return
+  _modelFetchStarted = true
+  fetch('/api/fleet/models')
+    .then(r => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+    .then(d => {
+      // Verified-only: a model flagged verified:false (e.g. one that can't emit
+      // structured tool-calls through goose) is unusable as an agent, so we keep
+      // it out of the picker entirely — it won't surface even when you type.
+      const aliases: string[] = (d?.models ?? []).filter((m: any) => m.verified !== false).map((m: any) => m.alias).filter(Boolean)
+      if (aliases.length) { _modelCache = aliases; _modelSubs.forEach(f => f()) }
+    })
+    .catch(() => { _modelFetchStarted = false }) // allow a retry on the next mount
+}
+function useSpawnModels(): string[] {
+  const [, bump] = useState(0)
+  useEffect(() => {
+    if (_modelCache) return
+    const cb = () => bump(n => n + 1)
+    _modelSubs.add(cb)
+    ensureModelFetch()
+    return () => { _modelSubs.delete(cb) }
+  }, [])
+  return _modelCache ?? MODEL_FALLBACK
+}
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
 const EFFORT_SHORTHANDS: Record<string, string> = {
   'lo': 'low', 'low': 'low', 'l': 'low',
@@ -45,7 +89,18 @@ const EFFORT_SHORTHANDS: Record<string, string> = {
   'max': 'max',
 }
 const DEFAULT_MODEL = 'opus48'
-const DEFAULT_EFFORT = 'medium'
+
+// Empty-state model picks (shown before you type a model segment): the curated,
+// diverse set we actively test — a few headline Claude families + the goose
+// models teacher-dev runs in the manners-course sweep. Everything else (older
+// versions, untested variants) still completes once you start typing letters,
+// so the full alias list stays reachable; this just keeps the no-prefix list
+// short and representative instead of a wall of Claude aliases. Goose subset
+// confirmed with teacher-dev (the leaderboard set).
+const CURATED_SPAWN_MODELS = [
+  'opus', 'sonnet', 'haiku', 'fable',
+  'deepseek', 'kimi', 'qwen', 'glm', 'minimax', 'mistral',
+]
 const CAT_NAMES = [
   'whiskers', 'mittens', 'shadow', 'luna', 'mochi', 'pepper', 'nugget', 'biscuit',
   'pickles', 'waffles', 'noodle', 'tofu', 'gizmo', 'beans', 'ziggy', 'cleo',
@@ -53,11 +108,12 @@ const CAT_NAMES = [
   'pebble', 'sage', 'jinx', 'kiwi', 'marble', 'rumble',
 ]
 
-function parseSpawnInput(raw: string): { doc: string; name: string | undefined; model: string | undefined; effort: string | undefined } {
+function parseSpawnInput(raw: string, models: string[] = MODEL_FALLBACK): { doc: string; name: string | undefined; model: string | undefined; effort: string | undefined } {
   const parts = raw.split(':')
   const doc = parts[0]
-  if (parts.length === 2 && MODEL_SHORTHANDS[parts[1]]) {
-    return { doc, name: undefined, model: MODEL_SHORTHANDS[parts[1]], effort: undefined }
+  if (parts.length === 2) {
+    const model = MODEL_SHORTHANDS[parts[1]] || (models.includes(parts[1]) ? parts[1] : undefined)
+    if (model) return { doc, name: undefined, model, effort: undefined }
   }
   const name = parts[1] || undefined
   const modelRaw = parts[2] || undefined
@@ -67,8 +123,10 @@ function parseSpawnInput(raw: string): { doc: string; name: string | undefined; 
   return { doc, name, model, effort }
 }
 
-const ALL_COMPLETABLE = [...ALL_MODELS, ...Object.keys(MODEL_SHORTHANDS)]
-  .filter((v, i, a) => a.indexOf(v) === i)
+// Tab-completable model tokens = the live aliases plus the typing-shorthand keys.
+function completableFrom(models: string[]): string[] {
+  return [...models, ...Object.keys(MODEL_SHORTHANDS)].filter((v, i, a) => a.indexOf(v) === i)
+}
 const ALL_EFFORT_COMPLETABLE = [...EFFORT_LEVELS, ...Object.keys(EFFORT_SHORTHANDS)]
   .filter((v, i, a) => a.indexOf(v) === i)
 
@@ -78,8 +136,10 @@ function completeSegment(typed: string, candidates: string[]): string {
   return match ? match.slice(typed.length) : ''
 }
 
-function getGhostCompletion(input: string, projects: string[], catName: string): string {
-  const defaults = [projects[0] || 'doc', catName, DEFAULT_MODEL, DEFAULT_EFFORT]
+function getGhostCompletion(input: string, projects: string[], catName: string, defaultDoc: string, models: string[]): string {
+  // Empty-state default is the doc the user is currently viewing, not the
+  // alphabetically-first project — so an empty field implies "spawn here".
+  const defaults = [defaultDoc || projects[0] || 'doc', catName, DEFAULT_MODEL]
   if (!input) return defaults.join(':')
 
   const parts = input.split(':')
@@ -94,7 +154,7 @@ function getGhostCompletion(input: string, projects: string[], catName: string):
   } else if (pos === 2) {
     segCompletion = completeSegment(lastPart, CAT_NAMES)
   } else if (pos === 3) {
-    segCompletion = completeSegment(lastPart, ALL_COMPLETABLE)
+    segCompletion = completeSegment(lastPart, completableFrom(models))
   } else if (pos === 4) {
     segCompletion = completeSegment(lastPart, ALL_EFFORT_COMPLETABLE)
   }
@@ -106,23 +166,56 @@ function getGhostCompletion(input: string, projects: string[], catName: string):
   return segCompletion
 }
 
+// Staged Tab completion: fill in ONLY the current segment (up to the next colon)
+// and advance to the next one, rather than expanding the whole 4-part spec at
+// once. Returns the string to APPEND to the input. On a non-final segment it
+// ends with ':' so the cursor lands at the start of the next segment; the final
+// (effort) segment has no trailing colon. Returns '' when there's nothing to add
+// (already past the last segment).
+function getStagedTabCompletion(input: string, projects: string[], catName: string, defaultDoc: string, models: string[]): string {
+  const defaults = [defaultDoc || projects[0] || 'doc', catName, DEFAULT_MODEL]
+  const parts = input.split(':')
+  const pos = parts.length // 1-based: 1=project, 2=name, 3=model, 4=effort
+  if (pos > defaults.length) return ''
+  const lastPart = parts[parts.length - 1]
+
+  let segCompletion = ''
+  if (!lastPart) {
+    segCompletion = defaults[pos - 1] || ''
+  } else if (pos === 1) {
+    segCompletion = completeSegment(lastPart, projects)
+  } else if (pos === 2) {
+    segCompletion = completeSegment(lastPart, CAT_NAMES)
+  } else if (pos === 3) {
+    segCompletion = completeSegment(lastPart, completableFrom(models))
+  } else if (pos === 4) {
+    segCompletion = completeSegment(lastPart, ALL_EFFORT_COMPLETABLE)
+  }
+
+  // Advance to the next segment on every segment but the last.
+  return pos < defaults.length ? segCompletion + ':' : segCompletion
+}
+
 const SEG_LABELS = ['project', 'name', 'model', 'effort']
 
 // Candidate list for the segment the cursor is currently in (the last colon-part).
 // Shows canonical values only (not shorthand aliases) so the dropdown stays readable.
-function getSegmentCandidates(input: string, projects: string[]): { pos: number; prefix: string; candidates: string[] } {
+function getSegmentCandidates(input: string, projects: string[], models: string[], curatedModels: string[]): { pos: number; prefix: string; candidates: string[] } {
   const parts = input.split(':')
   const pos = parts.length // 1=project, 2=name, 3=model, 4=effort
   const prefix = parts[parts.length - 1]
   let pool: string[] = []
   if (pos === 1) pool = projects
   else if (pos === 2) pool = CAT_NAMES
-  else if (pos === 3) pool = ALL_MODELS
+  else if (pos === 3) pool = models
   else if (pos === 4) pool = EFFORT_LEVELS
   const lower = prefix.toLowerCase()
+  // Model segment with nothing typed: show the curated/diverse set, not every
+  // alias. Once a prefix is typed, fall through to the full model pool so any
+  // model is still reachable by name.
   const candidates = prefix
     ? pool.filter(c => c.toLowerCase().startsWith(lower) && c !== prefix)
-    : pool
+    : (pos === 3 ? curatedModels : pool)
   return { pos, prefix, candidates }
 }
 
@@ -131,6 +224,35 @@ function applyCandidate(input: string, candidate: string): string {
   const parts = input.split(':')
   parts[parts.length - 1] = candidate
   return parts.join(':')
+}
+
+// The project that will actually be used: the typed first segment, or — when
+// the field is empty — the doc currently being viewed.
+function effectiveDoc(input: string, currentDoc: string): string {
+  return input.split(':')[0] || currentDoc
+}
+
+// True when a project is named but won't resolve to a known project. Used to
+// flag the field and block submit, so a non-existent project (the `dot-claude`
+// bug) can't silently produce a dead agent. Returns false while the project
+// list is still loading, or while the typed prefix could still complete to a
+// real project (so mid-typing doesn't flash red).
+function projectUnresolvable(input: string, projects: string[], currentDoc: string): boolean {
+  if (!projects.length) return false
+  const doc = effectiveDoc(input, currentDoc)
+  if (!doc) return false
+  if (projects.includes(doc)) return false
+  const lower = doc.toLowerCase()
+  const hasPrefixMatch = projects.some(p => p.toLowerCase().startsWith(lower))
+  return !hasPrefixMatch
+}
+
+// Submit is allowed only when the effective project is empty (spawn with no
+// cwd) or resolves exactly to a known project.
+function canSubmitSpawn(input: string, projects: string[], currentDoc: string): boolean {
+  if (!projects.length) return true
+  const doc = effectiveDoc(input, currentDoc)
+  return !doc || projects.includes(doc)
 }
 
 // --- Nick color system (shared with FleetChatShape) ---
@@ -164,14 +286,51 @@ function agentCategory(agent: any): 'awake' | 'hibernating' {
   return agent.status === 'awake' ? 'awake' : 'hibernating'
 }
 
+// Display a model by Skip's convention: no decimals, no dashes, no provider
+// prefix. claude-opus-4-8 -> opus48, gpt-5.5 -> gpt55, deepseek/deepseek-v4-pro
+// -> deepseekv4pro, minimax/minimax-m3 -> minimaxm3.
 function formatModel(model: string | null | undefined): string {
   if (!model) return ''
-  const m = model.match(/claude-(\w+)-(\d+)-(\d+)/)
-  if (!m) return model.replace('claude-', '')
-  return `${m[1]}${m[2]}${m[3]}`
+  let s = model.includes('/') ? model.split('/').pop()! : model
+  s = s.replace(/^claude-/, '')
+  return s.replace(/[.\-]/g, '')
 }
 
-function formatEffort(effort: string): string {
+// Surface the agent's capability / fence in the panel (topic-1: capability
+// discoverable in the agent panel). Derived from metadata.spawnPolicy, which the
+// server stamps at spawn (the resolved capability + filesystem policy).
+// Skip's four names are the only capability labels shown in the UI. Net is
+// always on, so there is no "nonet" capability to surface. Legacy machine words
+// (still in pre-rename agents' metadata until they respawn) map to the four names.
+const CAPABILITY_LABELS: Record<string, string> = {
+  read: 'read',
+  write: 'write',
+  'tlda-write': 'tlda-write',
+  full: 'full',
+  'read-only': 'read',
+  'workspace-write': 'write',
+  'workspace-write+net': 'write',
+  'workspace-write-no-net': 'write',
+  'full-access': 'full',
+}
+const POLICY_LABELS: Record<string, string> = {
+  cwd: 'own project',
+  'tlda-projects': 'all projects',
+  unsandboxed: 'machine',
+}
+function formatCapability(meta: any): string {
+  const sp = meta?.spawnPolicy
+  if (!sp) return ''
+  const cap = typeof sp === 'string' ? sp : sp.capability
+  const policy = typeof sp === 'object' ? sp.policy : null
+  if (!cap) return ''
+  const capLabel = CAPABILITY_LABELS[cap] || cap
+  const policyLabel = policy ? (POLICY_LABELS[policy] || policy) : ''
+  return policyLabel ? `${capLabel} · ${policyLabel}` : capLabel
+}
+
+function formatEffort(effort: string | null | undefined, kind: string | null | undefined): string {
+  if (!effort || kind !== 'claude') return ''
   return `${effort} effort`
 }
 
@@ -196,19 +355,28 @@ export class FleetAgentsShapeUtil extends BaseBoxShapeUtil<any> {
     w: T.number,
     h: T.number,
     userId: T.optional(T.string),
+    deviceId: T.optional(T.string),
   }
 
   getDefaultProps() {
-    return { w: DEFAULT_W, h: DEFAULT_H, userId: '' }
+    return { w: DEFAULT_W, h: DEFAULT_H, userId: '', deviceId: '' }
   }
 
   override canEdit = () => false
   override canResize = () => true
+  override canSnap = () => true
   override canBind = () => false
   override hideRotateHandle = () => true
+  override onTranslateStart = () => beginNativeSnapDrag(this.editor)
+  override onTranslateEnd = () => endNativeSnapDrag(this.editor)
+  override onTranslateCancel = () => endNativeSnapDrag(this.editor)
 
   component(shape: any) {
     return <FleetAgentsComponent shape={shape} />
+  }
+
+  getIndicatorPath() {
+    return undefined
   }
 
   indicator() {
@@ -231,8 +399,9 @@ interface DragState {
 
 const DRAG_THRESHOLD = 5
 
-function usePillDrag() {
+export function usePillDrag() {
   const editor = useEditor()
+  const viewportId = useVisibilityViewportId()
   const dragRef = useRef<DragState | null>(null)
 
   const startDrag = useCallback((
@@ -264,7 +433,7 @@ function usePillDrag() {
           if (Math.abs(dx) < DRAG_THRESHOLD && Math.abs(dy) < DRAG_THRESHOLD) return
           drag.started = true
 
-          const pagePos = editor.screenToPage({ x: ev.clientX, y: ev.clientY })
+          const pagePos = clientPointToPage(editor, { x: ev.clientX, y: ev.clientY }, viewportId)
           const measureEl = document.createElement('span')
           measureEl.style.cssText = "position:absolute;visibility:hidden;font:500 9px 'SF Mono',Menlo,Consolas,monospace;white-space:nowrap;padding:1px 6px;border:1px solid transparent"
           measureEl.textContent = drag.displayName
@@ -288,7 +457,7 @@ function usePillDrag() {
         }
 
         if (drag.pillId) {
-          const pagePos = editor.screenToPage({ x: ev.clientX, y: ev.clientY })
+          const pagePos = clientPointToPage(editor, { x: ev.clientX, y: ev.clientY }, viewportId)
           const pillShape = editor.getShape(drag.pillId as any) as any
           const pw = pillShape?.props?.w || 70
           const ph = pillShape?.props?.h || 18
@@ -308,14 +477,14 @@ function usePillDrag() {
         dragRef.current = null
         if (!drag || !drag.started || !drag.pillId) return
 
-        const pagePos = editor.screenToPage({ x: ev.clientX, y: ev.clientY })
+        const pagePos = clientPointToPage(editor, { x: ev.clientX, y: ev.clientY }, viewportId)
         dropPillOnTarget(editor, drag.pillId as any, drag.value, pagePos)
         editor.run(() => {
           try { editor.deleteShapes([drag.pillId as any]) } catch {}
         }, { history: 'ignore' })
       },
     )
-  }, [editor])
+  }, [editor, viewportId])
 
   return { startDrag }
 }
@@ -411,19 +580,43 @@ function FleetAgentsInner({ shape }: { shape: any }) {
   const [sortKey, setSortKey] = useState<SortKey>('active')
   const [sortAsc, setSortAsc] = useState(false)
 
-  // Spawn input — always visible, fetches projects for autocomplete
+  // Spawn input — always visible, fetches projects for autocomplete.
+  // Starts empty/ghosted; the ghost shows the current doc as the implied
+  // project, so an empty submit spawns into the doc being viewed.
   const currentDoc = useMemo(() => new URLSearchParams(window.location.search).get('doc') || '', [])
-  const [spawnDoc, setSpawnDoc] = useState(currentDoc)
-  const [projectList, setProjectList] = useState<string[]>([])
+  const [spawnDoc, setSpawnDoc] = useState('')
+  // Live project list — re-fetches on the server's `projects-updated` event so a
+  // newly-created project shows up here without a manual reload.
+  const projectList = useFleetProjects()
+  const spawnModels = useSpawnModels()
+  // Curated empty-state picks, intersected with what's actually available (and
+  // verified) so a removed/renamed alias never shows a dead entry; curated order
+  // preserved.
+  const curatedSpawnModels = useMemo(
+    () => CURATED_SPAWN_MODELS.filter(a => spawnModels.includes(a)),
+    [spawnModels],
+  )
   const [catName] = useState(() => CAT_NAMES[Math.floor(Math.random() * CAT_NAMES.length)])
   const spawnInputRef = useRef<HTMLInputElement>(null)
   const [spawnFocused, setSpawnFocused] = useState(false)
   const [dropdownIdx, setDropdownIdx] = useState(-1) // -1 = nothing highlighted
   const [dropdownDismissed, setDropdownDismissed] = useState(false)
   const { pos: segPos, candidates: segCandidates } = useMemo(
-    () => getSegmentCandidates(spawnDoc, projectList),
-    [spawnDoc, projectList],
+    () => getSegmentCandidates(spawnDoc, projectList, spawnModels, curatedSpawnModels),
+    [spawnDoc, projectList, spawnModels, curatedSpawnModels],
   )
+  const projectInvalid = useMemo(
+    () => projectUnresolvable(spawnDoc, projectList, currentDoc),
+    [spawnDoc, projectList, currentDoc],
+  )
+  const submitSpawn = useCallback(() => {
+    if (!canSubmitSpawn(spawnDoc, projectList, currentDoc)) {
+      spawnInputRef.current?.focus()
+      return
+    }
+    const { doc, name, model, effort } = parseSpawnInput(spawnDoc, spawnModels)
+    spawnAgent(model || DEFAULT_MODEL, doc || currentDoc || undefined, name, effort)
+  }, [spawnDoc, projectList, currentDoc, spawnModels])
   const dropdownOpen = spawnFocused && !dropdownDismissed && segCandidates.length > 0
   const acceptCandidate = useCallback((candidate: string) => {
     setSpawnDoc(applyCandidate(spawnDoc, candidate))
@@ -431,12 +624,6 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     setDropdownDismissed(true)
     spawnInputRef.current?.focus()
   }, [spawnDoc])
-  useEffect(() => {
-    fetch('/api/projects').then(r => r.ok ? r.json() : { projects: [] }).then((data: any) => {
-      const projects = Array.isArray(data) ? data : (data.projects || [])
-      setProjectList(projects.map((p: any) => p.name).sort())
-    }).catch(e => console.warn('[fleet-agents] projects fetch failed:', e.message))
-  }, [])
 
   // Build task lookup: agent id → active task
   const activeTasks = useMemo(() => {
@@ -630,8 +817,11 @@ function FleetAgentsInner({ shape }: { shape: any }) {
             <span className="fleet-agents-spawn-input-wrap">
               <input
                 ref={spawnInputRef}
-                className="fleet-agents-spawn-search"
+                className={'fleet-agents-spawn-search' + (projectInvalid ? ' is-invalid' : '')}
                 value={spawnDoc}
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
                 onFocus={() => setSpawnFocused(true)}
                 onBlur={() => { setSpawnFocused(false); setDropdownIdx(-1) }}
                 onChange={(e) => { setSpawnDoc(e.target.value); setDropdownIdx(-1); setDropdownDismissed(false) }}
@@ -651,22 +841,23 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                       e.preventDefault()
                       acceptCandidate(segCandidates[dropdownIdx])
                     } else {
-                      const ghost = getGhostCompletion(spawnDoc, projectList, catName)
-                      if (ghost) { e.preventDefault(); setSpawnDoc(spawnDoc + ghost); setDropdownDismissed(true) }
+                      // Staged: complete one segment (to the next colon) per Tab,
+                      // not the whole spec at once.
+                      const seg = getStagedTabCompletion(spawnDoc, projectList, catName, currentDoc, spawnModels)
+                      if (seg) { e.preventDefault(); setSpawnDoc(spawnDoc + seg); setDropdownDismissed(true) }
                     }
                   } else if (e.key === 'Enter') {
                     e.preventDefault()
                     if (dropdownOpen && dropdownIdx >= 0) {
                       acceptCandidate(segCandidates[dropdownIdx])
                     } else {
-                      const { doc, name, model, effort } = parseSpawnInput(spawnDoc)
-                      spawnAgent(model || DEFAULT_MODEL, doc || undefined, name, effort || DEFAULT_EFFORT)
+                      submitSpawn()
                     }
                   }
                 }}
                 placeholder=""
               />
-              <span className="fleet-agents-spawn-ghost"><span style={{ visibility: 'hidden' }}>{spawnDoc}</span>{getGhostCompletion(spawnDoc, projectList, catName)}</span>
+              <span className="fleet-agents-spawn-ghost"><span style={{ visibility: 'hidden' }}>{spawnDoc}</span>{getGhostCompletion(spawnDoc, projectList, catName, currentDoc, spawnModels)}</span>
               {dropdownOpen && (
                 <ul className="fleet-agents-spawn-dropdown" onPointerDown={(e) => e.stopPropagation()}>
                   <li className="fleet-agents-spawn-dropdown-label">{SEG_LABELS[segPos - 1]}</li>
@@ -682,12 +873,11 @@ function FleetAgentsInner({ shape }: { shape: any }) {
               )}
             </span>
             <button
-              className="fleet-agents-spawn-btn"
-              title="Spawn agent"
+              className={'fleet-agents-spawn-btn' + (projectInvalid ? ' is-disabled' : '')}
+              title={projectInvalid ? `No project '${effectiveDoc(spawnDoc, currentDoc)}'` : 'Spawn agent'}
               onPointerUp={(e) => {
                 e.stopPropagation()
-                const { doc, name, model, effort } = parseSpawnInput(spawnDoc)
-                spawnAgent(model || DEFAULT_MODEL, doc || undefined, name, effort || DEFAULT_EFFORT)
+                submitSpawn()
               }}
             >+</button>
           </span>
@@ -737,7 +927,9 @@ function AgentRow({
   const ago = formatRelativeTime(agent._ts)
   const meta = agent.metadata || {}
   const modelStr = formatModel(meta.model)
-  const effortStr = formatEffort(meta.effort || 'medium')
+  const effortStr = formatEffort(meta.effort, meta.kind)
+  const capStr = formatCapability(meta)
+  const taskTitle = taskDesc
 
   const secsAgo = agent._ts ? (Date.now() - agent._ts) / 1000 : Infinity
   const nameOpacity = secsAgo < 120 ? 1.0 : secsAgo < 600 ? 0.85 : 0.65
@@ -784,8 +976,8 @@ function AgentRow({
           {contextPct != null ? `${contextPct}%` : ''}
         </span>
 
-        <span className="fleet-agents-col-task" title={taskDesc}>
-          {taskDesc ? taskDesc.substring(0, 50) : ''}
+        <span className="fleet-agents-col-task" title={taskTitle}>
+          <span>{taskDesc ? taskDesc.substring(0, 50) : ''}</span>
         </span>
 
         {/* Labels — draggable chips */}
@@ -809,6 +1001,7 @@ function AgentRow({
           <div className="fleet-agents-detail-task fleet-agents-detail-firstrow">
             {modelStr && <span className="fleet-agents-detail-model">{modelStr}</span>}
             {effortStr && <span className="fleet-agents-detail-effort">{effortStr}</span>}
+            {capStr && <span className="fleet-agents-detail-cap" title="capability / fence">{capStr}</span>}
             <span>
               {tasks.length === 0
                 ? '(no task)'

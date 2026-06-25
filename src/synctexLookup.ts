@@ -3,13 +3,11 @@
 
 import type { SourceAnchor, PdfPosition } from './synctexAnchor'
 import { onReloadSignal } from './useYjsSync'
+import { STORE_HTTP } from './activeConfig'
 
-// Derive HTTP base from VITE_SYNC_SERVER for cross-origin deployments
-// (SPA on GitHub Pages, assets on Fly.io). Same-origin: returns BASE_URL.
+// Doc assets come from the active config's STORE (http), injected by the server.
 function assetBase(): string {
-  const ws = import.meta.env.VITE_SYNC_SERVER as string | undefined
-  if (ws) return ws.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/+$/, '') + '/'
-  return import.meta.env.BASE_URL || '/'
+  return STORE_HTTP + '/'
 }
 
 export interface LookupEntry {

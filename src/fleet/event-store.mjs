@@ -51,6 +51,11 @@ export function makeEventStore() {
   function merge(target, incoming) {
     for (const k of Object.keys(incoming)) {
       if (k === '_tempId' && incoming._tempId == null) continue
+      // A temp id is only the identity of a pending optimistic row. Once the
+      // row is db-keyed, later broadcast/replay echoes may still carry the
+      // client_temp_id metadata for binding, but that must not re-mark the
+      // canonical row as optimistic.
+      if (k === '_tempId' && target._dbId != null) continue
       target[k] = incoming[k]
     }
   }
@@ -152,10 +157,19 @@ export function makeEventStore() {
     return ev || null
   }
 
+  /** Remove a pending optimistic entry by temp id (e.g. dismiss failed send). */
+  function removeByTempId(tempId) {
+    const ev = byKey.get('tmp:' + tempId)
+    if (!ev) return null
+    byKey.delete('tmp:' + tempId)
+    removeFromArray(ev)
+    return ev
+  }
+
   function all() { return events }
   function size() { return events.length }
   function get(key) { return byKey.get(key) }
   function clear() { events.length = 0; byKey.clear() }
 
-  return { upsert, reconcile, patchByDbId, patchByTempId, all, size, get, clear, keyOf }
+  return { upsert, reconcile, patchByDbId, patchByTempId, removeByTempId, all, size, get, clear, keyOf }
 }

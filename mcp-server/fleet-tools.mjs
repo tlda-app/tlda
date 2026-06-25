@@ -2,7 +2,7 @@
  * Fleet tools module — imported by the unified MCP server (index.mjs).
  * Exports: getFleetTools(), handleFleetTool(), initFleet()
  */
-import { execSync, exec } from 'child_process';
+import { execSync, execFileSync, exec } from 'child_process';
 import fs from 'fs';
 import http from 'http';
 import os from 'os';
@@ -17,10 +17,22 @@ import { ledger } from './identity.mjs';
 import { formatMessage, formatActivity, formatAnnotationRef } from './format-annotation.mjs';
 import { parseTimestamp } from './lib/parse-timestamp.mjs';
 import { processMessageText } from '../shared/message-processing.mjs';
-import { resolveFilePath } from '../shared/chat-file-processing.mjs';
+import { compactPrettyResult, indentPrettyResult, normalizePrettyResult } from '../shared/activity-pretty-result.mjs';
+import { resolveFilePath, uploadFileToServer } from '../shared/chat-file-processing.mjs';
+import { scanMarkdownDeps } from '../shared/markdown-deps.mjs';
 import { extractMarkdownSection } from '../shared/markdown-section.mjs';
+import { normalizeChatDisplayMathDelimiters } from '../shared/chat-math-normalize.mjs';
 import { baseName, nameForPhase, phaseFromName } from '../shared/lineage-name.mjs';
+import { formatSpawnModelSummary, validateSpawnModelSelection } from '../shared/spawn-model-validation.mjs';
+import {
+  applyNonClaudeRolePack,
+  crossLaneBlock,
+  inferHarnessKind,
+} from '../shared/task-role-routing.mjs';
+import { parseFilter, evalExpr } from '../shared/fleet-labels.mjs';
+import { baseMacros } from '../shared/katex-base-macros.mjs';
 import { normalizeRefNumber as _normalizeRefNumber, refTypeForName as _refTypeForName, buildTheoremRefRegex as _buildTheoremRefRegex } from '../shared/doc-refs.mjs';
+import { harnessFromEnv } from './lib/harness-adapters.mjs';
 import WebSocket from 'ws';
 import { ResilientWS } from '../shared/resilient-ws.mjs';
 
@@ -79,14 +91,232 @@ function resolveChatBody(args, agentCwd) {
   return { error: 'Missing message: provide `message`, or `file`+`section`.' };
 }
 
+function isInInlineCode(line, index) {
+  let ticks = 0;
+  for (let i = 0; i < index; i++) {
+    if (line[i] === '`') ticks++;
+  }
+  return ticks % 2 === 1;
+}
+
+function containsLegacySuggestionsBlock(body) {
+  const lines = String(body || '').split('\n');
+  let inFence = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (/^(```|~~~)/.test(trimmed)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    const openIdx = line.indexOf('<suggestions>');
+    if (openIdx >= 0 && !isInInlineCode(line, openIdx)) return true;
+    const closeIdx = line.indexOf('</suggestions>');
+    if (closeIdx >= 0 && !isInInlineCode(line, closeIdx)) return true;
+  }
+  return false;
+}
+
+// Inline suggestion section — the forget-proof, markdown-native authoring surface
+// for chat-authored chips. Written ANYWHERE in a message, a recognized section
+// does two things at once:
+//   (a) RENDERS AS NORMAL MARKDOWN (bold name + description), left in the body, and
+//   (b) is HARVESTED into suggestion chips at the bottom of chat.
+// One construct, two effects.
+//
+// Marker — a `.suggest` class on a section heading (pandoc heading-attribute
+// style, the form Skip pictured). The heading TEXT is free; the `.suggest` class
+// is the trigger, so a plain "## Suggestions" heading is NEVER harvested by
+// accident — only an explicit opt-in fires:
+//
+//   ## Pick one {.suggest}
+//   - **ship it** — proceed with the reviewed change
+//   - **hold** — wait for the test rig *​/hold*
+//
+// Item grammar is PURE MARKDOWN — no pipes:
+//   - `**name**`  = the chip label AND the default sent-payload.
+//   - anything between the bold name and the command = optional description (chip
+//     hover) — the separator is forgiving: a dash, a period, or nothing all work
+//     (`**x** — d`, `**x**. d`, `**x** d`, `**x**` all parse).
+//   - `*command*` = OPTIONAL explicit command, only when the sent-payload differs
+//                   from the name. No italic → clicking sends the name.
+//   - no `**bold**` → the FIRST WORD is the name (graceful degrade, never errors).
+// NO group field: the GROUP is implicit — **each `.suggest` section is one group**,
+// and multiple `.suggest` sections anywhere in the message give multiple groups.
+// (This is why inline does NOT share the end-block's `parseSuggestionFields`
+// helper — the end-block keeps explicit `label|hover|command|group|target` pipes;
+// inline is a different, pure-markdown grammar.)
+//
+// The pre-pass strips ONLY the `{.suggest}` attribute from the heading — the
+// items are already clean markdown and stay as the author wrote them (bold name +
+// description). The optional italic `*command*` is stripped from the rendered body
+// when INLINE_STRIP_RENDERED_COMMAND is true (kept verbatim otherwise); either way
+// it is harvested as the chip's command. A section is the `.suggest` heading plus
+// the contiguous list under it (one blank-line gap allowed); it ends at the first
+// blank line, non-list line, next heading, or code fence.
+const INLINE_SUGGEST_HEADING = /^(#{1,6})\s+(.*?)\s*\{([^}]*)\}\s*$/;
+const attrHasSuggest = (attrBlob) => /(?:^|\s)\.suggest(?:\s|$)/.test(attrBlob);
+// A single-`*` italic run that is NOT part of a `**bold**` marker.
+const INLINE_ITALIC_COMMAND = /(?<!\*)\*(?!\*)([^*\n]+?)\*(?!\*)/;
+const INLINE_BOLD_NAME = /\*\*([^*\n]+?)\*\*/;
+// Whether to drop the italic `*command*` from the RENDERED message body (it is
+// always harvested into the chip regardless). Skip's eyeball call — flip in one place.
+const INLINE_STRIP_RENDERED_COMMAND = false;
+
+// Parse one item's markdown (the text after its `- `) into a chip + the cleaned
+// line to render. Returns { suggestion, rendered } or { error }.
+function parseInlineItem(content) {
+  let work = content;
+  // 1. optional explicit command = an italic run (not part of a bold marker).
+  let command = null;
+  const im = work.match(INLINE_ITALIC_COMMAND);
+  if (im) command = im[1].trim();
+  // The body either keeps the italic verbatim or drops it (Skip's render call).
+  const renderedInner = (INLINE_STRIP_RENDERED_COMMAND && im)
+    ? (content.slice(0, im.index) + content.slice(im.index + im[0].length)).replace(/[\s—–-]+$/, '').trimEnd()
+    : content.trimEnd();
+  // For NAME/description parsing, work off the command-stripped text.
+  if (im) work = work.slice(0, im.index) + work.slice(im.index + im[0].length);
+
+  // 2. name = the first **bold** run; else graceful-degrade to the first word.
+  let name, rest;
+  const bm = work.match(INLINE_BOLD_NAME);
+  if (bm) {
+    name = bm[1].trim();
+    rest = (work.slice(0, bm.index) + work.slice(bm.index + bm[0].length));
+  } else {
+    const w = work.trim();
+    const firstWord = w.split(/\s+/)[0] || '';
+    name = firstWord.replace(/[*_`]/g, '').trim();
+    rest = w.slice(firstWord.length);
+  }
+  if (!name) return { error: 'missing a name' };
+
+  // 3. description = whatever's left between name and command, minus a leading
+  // separator — a dash, a period, or nothing (Skip: the separator is forgiving).
+  const description = rest.replace(/^[\s.—–-]+/, '').replace(/[\s—–-]+$/, '').replace(/\s{2,}/g, ' ').trim();
+
+  const suggestion = { label: name, command: command || name };
+  if (description) suggestion.text = description;
+  return { suggestion, rendered: renderedInner };
+}
+
+export function parseInlineSuggestions(body) {
+  const text = String(body || '');
+  const lines = text.split('\n');
+  const out = [];
+  const suggestions = [];
+  let inFence = false;
+  let sectionN = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    if (/^(```|~~~)/.test(trimmed)) { inFence = !inFence; out.push(line); continue; }
+    if (inFence) { out.push(line); continue; }
+
+    const hm = trimmed.match(INLINE_SUGGEST_HEADING);
+    if (!hm || !attrHasSuggest(hm[3])) { out.push(line); continue; }
+
+    // A `.suggest` section. The section IS one implicit group — its items form one
+    // disjunctive chip group, distinct from every other section in the message
+    // (the `#n` suffix guarantees distinctness even if two sections share a title).
+    const headingText = hm[2].trim();
+    sectionN += 1;
+    const group = `${headingText || 'suggest'}#${sectionN}`;
+    out.push(`${hm[1]} ${headingText}`);   // strip the {.suggest} attribute
+
+    // Consume the list under it (allowing one blank-line gap after the heading).
+    let j = i + 1;
+    while (j < lines.length && lines[j].trim() === '') { out.push(lines[j]); j++; }
+    for (; j < lines.length; j++) {
+      const t = lines[j].trim();
+      if (t === '' || /^(```|~~~)/.test(t) || /^#{1,6}\s/.test(t)) break;
+      const itm = t.match(/^[-*]\s+(.+)$/);
+      if (!itm) break;
+      const parsed = parseInlineItem(itm[1]);
+      if (parsed.error) return { error: `Inline suggestion at line ${j + 1} is ${parsed.error}.` };
+      suggestions.push({ ...parsed.suggestion, group });
+      const indent = lines[j].slice(0, lines[j].length - lines[j].trimStart().length);
+      out.push(`${indent}- ${parsed.rendered}`);
+    }
+    i = j - 1;
+  }
+
+  return { body: out.join('\n'), suggestions };
+}
+
+async function postChatAuthoredSuggestions(suggestions, recipients) {
+  const ts = Date.now();
+  const targetId = recipients.length === 1 ? recipients[0] : null;
+  const stamped = suggestions.map((s, i) => ({
+    id: `${AGENT_ID}:chat:${i}`,
+    label: s.label,
+    text: s.text || '',
+    command: s.command || null,
+    kind: s.command ? 'action' : 'info',
+    group: s.group || undefined,
+    targetId: s.targetId || targetId,
+    ts,
+  }));
+  const res = await fleetFetch(`${TLDA_FLEET_SERVER}/api/suggestions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agentId: AGENT_ID, suggestions: stamped }),
+    signal: AbortSignal.timeout(3000),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return stamped.length;
+}
+
+// A shared markdown file's images are includes that travel WITH it. They don't
+// otherwise exist on the (possibly remote) server, so the renderer 404s them.
+// Upload each locally-referenced image to the fleet server (where chat is
+// viewed — NOT the doc server, which may be a different machine) and rewrite the
+// body's refs to the served URL so they render inline. Resolution is relative to
+// the FILE's own directory (its includes are written relative to it), via the
+// shared scanMarkdownDeps detector. Returns { body, uploaded, missing }.
+async function bundleSharedMarkdownImages(body, sourceFile, fleetServerUrl) {
+  const baseDir = path.dirname(sourceFile);
+  const deps = scanMarkdownDeps(body, baseDir);
+  let out = body;
+  const missing = [];
+  let uploaded = 0;
+  for (const { ref, abs } of deps) {
+    if (!abs || !fs.existsSync(abs)) { missing.push(ref); continue; }
+    let url;
+    try { ({ url } = await uploadFileToServer(abs, fleetServerUrl)); }
+    catch { missing.push(ref); continue; }
+    // /api/upload returns a server-relative url; make it absolute against the
+    // fleet origin so it resolves the same from any viewer (iPad, phone, laptop).
+    if (url && !/^https?:/i.test(url)) url = `${fleetServerUrl.replace(/\/$/, '')}${url}`;
+    const esc = ref.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // Rewrite only in image contexts: `](ref...)` and `<img ... src="ref...">`.
+    out = out.replace(new RegExp(`\\]\\(\\s*${esc}(?:[#?][^)]*)?\\s*\\)`, 'g'), `](${url})`);
+    out = out.replace(new RegExp(`(<img\\s[^>]*\\bsrc=)(["'])${esc}(?:[#?][^"']*)?\\2`, 'g'), `$1$2${url}$2`);
+    uploaded++;
+  }
+  return { body: out, uploaded, missing };
+}
+
 // State file eliminated — all data through server REST API
 const LOG_FILE = `${os.homedir()}/.claude/agent-messages.jsonl`;
 
 // --- tlda integration ---
-import { getRwToken, getServerUrl } from '../shared/config.mjs';
+import { getRwToken, getServerUrl, getFleetServerUrl, loadConfig } from '../shared/config.mjs';
 import { tldaFetch as _sharedFetch } from '../shared/http-client.mjs';
+import { formatUsageStatus, normalizeUsageStatus } from '../shared/usage-status.mjs';
 const TLDA_SERVER = getServerUrl();
 const TLDA_WS_SERVER = TLDA_SERVER.replace(/^http/, 'ws');
+// Fleet/event ops (chat, register, my-task, store-agents, fleet-event, roll-call,
+// viewing, terminal-card, suggestions, education) target the GLOBAL event store.
+// Doc/source ops (/api/projects/*) stay on TLDA_SERVER (per-resource, local via
+// the daemon on the owning machine). When TLDA_FLEET_SERVER is unset this is
+// identical to the single-endpoint behavior — set it to the Fly backend to put an
+// agent's fleet presence on the shared store while doc work stays local.
+const TLDA_FLEET_SERVER = getFleetServerUrl();
+const TLDA_FLEET_WS_SERVER = TLDA_FLEET_SERVER.replace(/^http/, 'ws');
 const _tldaToken = getRwToken();
 
 async function tldaFetch(apiPath, opts = {}) {
@@ -108,6 +338,32 @@ function fleetFetch(url, opts = {}) {
   const timeoutMs = 10_000;
   if (!opts.signal) opts.signal = AbortSignal.timeout(timeoutMs);
   return fetch(url, opts);
+}
+
+let _spawnModelCatalog = null;
+let _spawnModelCatalogAt = 0;
+async function getSpawnModelCatalog({ maxAgeMs = 60_000 } = {}) {
+  if (_spawnModelCatalog && Date.now() - _spawnModelCatalogAt < maxAgeMs) return _spawnModelCatalog;
+  const script = path.join(__dirname, '..', 'bin', 'fleet-spawn.py');
+  const out = execFileSync('python3', [script, '--list-models'], {
+    encoding: 'utf8',
+    timeout: 10_000,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  const data = JSON.parse(out);
+  _spawnModelCatalog = data;
+  _spawnModelCatalogAt = Date.now();
+  return data;
+}
+
+async function validateSpawnRequest(opts = {}) {
+  const model = opts.model;
+  const kind = opts.kind;
+  if (!model && !kind) return null;
+  const catalog = await getSpawnModelCatalog();
+  const result = validateSpawnModelSelection({ model, kind }, catalog);
+  if (!result.ok) return result.error;
+  return null;
 }
 
 // Append-only message log (backup). Fleet store writes are handled by
@@ -207,49 +463,121 @@ async function getAgentDoc() {
   } catch { return null; }
 }
 
-// Macros for the document the calling agent is working on (folder-based).
-async function getMacrosForAgent() {
-  return getMacrosForDoc(await getAgentDoc());
+// An agent's preamble is a *document reference*: by default the project in its
+// working folder, but it can point at any document via `set_preamble`. This MCP
+// process is per-agent, so a module-level override is per-agent state. (A shadow
+// version can be set too; we store it but ignore it on resolution for now — the
+// "really fancy" upgrade is to resolve macros from that shadow version with a
+// cache. See setAgentPreambleDoc.)
+let _agentPreambleDoc = null;        // { doc, version } | null
+export function setAgentPreambleDoc(doc, version = null) {
+  _agentPreambleDoc = doc ? { doc, version: version || null } : null;
 }
 
-function lintChatMessage(message, macros = {}) {
-  const issues = [];
-  const displayBlocks = (message.match(/\$\$[\s\S]*?\$\$/g) || []);
-  if (displayBlocks.length > 1) {
-    issues.push(`${displayBlocks.length} separate display blocks — consider combining into one \\begin{aligned} block so all steps are visible together.`);
+// The document whose preamble applies to this agent's chat: an explicit
+// set_preamble wins; otherwise the agent's working folder. Used both to lint the
+// agent's outgoing math and to stamp `preambleRef` on its messages so every
+// reader renders that math with the sender's macros.
+async function getAgentPreambleDoc() {
+  if (_agentPreambleDoc) return _agentPreambleDoc.doc;
+  return getAgentDoc();
+}
+
+// Macros for the document the calling agent's preamble points at.
+async function getMacrosForAgent() {
+  return getMacrosForDoc(await getAgentPreambleDoc());
+}
+
+// Two distinct lint classes, deliberately kept apart (Skip, 6/19):
+//
+//   VALIDITY — will this message render at all on Skip's screen? KaTeX parse
+//   errors, undefined macros with no preamble, glued `$` delimiters, LaTeX
+//   dumped into a code block, and markdown that won't close (unbalanced ```
+//   fence or `$$` block). A validity failure means Skip sees garbage, so these
+//   are real and get surfaced PROMINENTLY with the amend affordance — "warn
+//   agents that [it] doesn't render properly so they can amend their shit."
+//   The wording is harness-neutral: it points at the `amend_id` chat path,
+//   which every agent has, not at any Claude-Code-specific tool.
+//
+//   STYLE — optional presentation hints (combine display blocks, don't narrate
+//   between equations). Never a gate; surfaced quietly and separately.
+//
+// The completion-style keyword gate ("done/fixed/handled/passing…") was REMOVED
+// entirely — Skip: "that should never be a gate." Report-shape / evidence-before-
+// claims discipline lives in the self-sufficiency and verification-before-
+// completion skills the agent reads, not in a regex that flags the word "done".
+export function checkChatRender(message, macros = {}) {
+  const validity = [];
+  const style = [];
+  // Render with the universal physics base + this doc's extracted paper macros
+  // (paper wins). `macros` is the paper-specific set; when it's empty the agent
+  // isn't scoped to a project, so an undefined-macro error means "go set them".
+  const hasPaperMacros = Object.keys(macros).length > 0;
+  const renderMacros = { ...baseMacros, ...macros };
+  let suggestedSetMacros = false;
+  const normalizedMathMessage = normalizeChatDisplayMathDelimiters(message);
+
+  // ---- markdown render validity (harness-neutral structural checks) ----
+  // An odd number of code fences leaves a block open, so everything after it
+  // renders as code. An odd number of `$$` (counted outside code blocks) leaves
+  // a display-math block open, so the math never renders. Both are silent
+  // garbage on Skip's screen — exactly the "doesn't render" case to warn on.
+  const fenceCount = (String(message).match(/```/g) || []).length;
+  if (fenceCount % 2 !== 0) {
+    validity.push('Unclosed code fence (odd number of ```) — everything after the open fence renders as a code block on Skip\'s screen. Close it, then re-chat with `amend_id` to fix it in place.');
   }
-  const proseLines = message.split(/\$\$[\s\S]*?\$\$/);
+  const messageNoCode = String(message).replace(/```[\s\S]*?```/g, '');
+  const displayDollarCount = (normalizeChatDisplayMathDelimiters(messageNoCode).match(/\$\$/g) || []).length;
+  if (displayDollarCount % 2 !== 0) {
+    validity.push('Unclosed `$$` display-math block (odd number of `$$`) — the math will not render. Close the block, then re-chat with `amend_id`.');
+  }
+
+  const displayBlocks = (normalizedMathMessage.match(/\$\$[\s\S]*?\$\$/g) || []);
+  if (displayBlocks.length > 1) {
+    style.push(`${displayBlocks.length} separate display blocks — consider combining into one \\begin{aligned} block so all steps are visible together.`);
+  }
+  const proseLines = normalizedMathMessage.split(/\$\$[\s\S]*?\$\$/);
   const proseBetween = proseLines.slice(1, -1).filter(p => p.trim().length > 0);
   if (proseBetween.length > 0 && displayBlocks.length > 1) {
-    issues.push(`Prose narration between display equations. If these are sequential algebra steps, put them in one block without interleaved text.`);
+    style.push(`Prose narration between display equations. If these are sequential algebra steps, put them in one block without interleaved text.`);
   }
   if (/\\text\{.*(?:by|since|because|using|from|note|recall).*\}/i.test(message) && displayBlocks.length > 0) {
     const textAnnotations = (message.match(/\\text\{[^}]*\}/g) || []).length;
     if (textAnnotations > 2) {
-      issues.push(`${textAnnotations} \\text{} annotations in display math. Show the steps and let the reader follow — don't narrate each one.`);
+      style.push(`${textAnnotations} \\text{} annotations in display math. Show the steps and let the reader follow — don't narrate each one.`);
     }
   }
   const allMath = [];
-  for (const m of message.matchAll(/\$\$([\s\S]*?)\$\$/g)) allMath.push({ tex: m[1], display: true, pos: m.index });
-  for (const m of message.matchAll(/(?<!\$)\$(?!\$)((?:[^$\\]|\\.)+)\$/g)) allMath.push({ tex: m[1], display: false, pos: m.index });
+  for (const m of normalizedMathMessage.matchAll(/\$\$([\s\S]*?)\$\$/g)) allMath.push({ tex: m[1], display: true, pos: m.index });
+  for (const m of normalizedMathMessage.matchAll(/(?<!\$)\$(?!\$)((?:[^$\\]|\\.)+)\$/g)) allMath.push({ tex: m[1], display: false, pos: m.index });
   for (const { tex, display, pos } of allMath) {
     try {
-      katex.renderToString(tex, { displayMode: display, throwOnError: true, macros });
+      katex.renderToString(tex, { displayMode: display, throwOnError: true, macros: renderMacros });
     } catch (e) {
-      const snippet = tex.length > 40 ? tex.slice(0, 40) + '…' : tex;
-      issues.push(`LaTeX parse error in \`${display ? '$$' : '$'}${snippet}${display ? '$$' : '$'}\`: ${e.message}`);
+      const undefinedMacro = /Undefined control sequence/.test(e.message);
+      if (undefinedMacro && !hasPaperMacros) {
+        // No project macros loaded — the renderer can't know paper macros either.
+        // One actionable nudge beats a pile of cryptic per-macro parse errors.
+        if (!suggestedSetMacros) {
+          suggestedSetMacros = true;
+          validity.push(`Math uses macros that aren't loaded, and you have no project preamble set — so the chat renderer can't display them either. Set your paper's macros once with the \`set_preamble\` tool (point it at the project's main .tex), or include the macro definitions in the message. (Physics-package commands like \\norm, \\qty are always available.)`);
+        }
+      } else {
+        const snippet = tex.length > 40 ? tex.slice(0, 40) + '…' : tex;
+        validity.push(`LaTeX parse error in \`${display ? '$$' : '$'}${snippet}${display ? '$$' : '$'}\`: ${e.message}`);
+      }
     }
     if (!display) {
-      const before = pos > 0 ? message[pos - 1] : ' ';
+      const before = pos > 0 ? normalizedMathMessage[pos - 1] : ' ';
       const afterIdx = pos + tex.length + 2;
-      const after = afterIdx < message.length ? message[afterIdx] : ' ';
+      const after = afterIdx < normalizedMathMessage.length ? normalizedMathMessage[afterIdx] : ' ';
       if (/[a-zA-Z]/.test(before)) {
-        const word = message.slice(Math.max(0, pos - 20), pos).match(/[a-zA-Z]+$/)?.[0] || '';
-        issues.push(`\`$\` delimiter glued to text "${word}$..." — the chat renderer may not find the math boundary. Add a space before \`$\`.`);
+        const word = normalizedMathMessage.slice(Math.max(0, pos - 20), pos).match(/[a-zA-Z]+$/)?.[0] || '';
+        validity.push(`\`$\` delimiter glued to text "${word}$..." — the chat renderer may not find the math boundary. Add a space before \`$\`.`);
       }
       if (/[a-zA-Z]/.test(after)) {
-        const word = message.slice(afterIdx, afterIdx + 20).match(/^[a-zA-Z]+/)?.[0] || '';
-        issues.push(`\`$\` delimiter glued to text "...$${word}" — the chat renderer may not find the math boundary. Add a space after \`$\`.`);
+        const word = normalizedMathMessage.slice(afterIdx, afterIdx + 20).match(/^[a-zA-Z]+/)?.[0] || '';
+        validity.push(`\`$\` delimiter glued to text "...$${word}" — the chat renderer may not find the math boundary. Add a space after \`$\`.`);
       }
     }
   }
@@ -257,10 +585,39 @@ function lintChatMessage(message, macros = {}) {
   for (const block of codeBlocks) {
     const inner = block.slice(3, -3).replace(/^[a-z]*\n/, '');
     if (/\\(?:begin|end|frac|sum|int|prod|hat|bar|tilde|mathbb|mathrm|operatorname|left|right|alpha|beta|gamma|theta|lambda|mu|sigma|phi|psi|omega|infty|partial|nabla|sqrt|over|under)\b/.test(inner)) {
-      issues.push(`Don't put LaTeX in a code block unless you want to show the code itself, not the rendered math. Use $$ delimiters for display math or $ for inline — the chat renderer supports KaTeX. You can fix this in place by re-chatting with amend_id after it sends.`);
+      validity.push(`Don't put LaTeX in a code block unless you want to show the code itself, not the rendered math. Use $$ delimiters for display math or $ for inline — the chat renderer supports KaTeX. You can fix this in place by re-chatting with amend_id after it sends.`);
     }
   }
-  return issues;
+  return { validity, style };
+}
+
+// Backward-compatible flat view: validity issues first, then style hints.
+export function lintChatMessage(message, macros = {}) {
+  const { validity, style } = checkChatRender(message, macros);
+  return [...validity, ...style];
+}
+
+export function blockingChatLintIssues(issues = []) {
+  return [];
+}
+
+/**
+ * Format the exceptional staleness flag for a viewing-context. The version is
+ * always Built; this rides on the location only when the viewer's pages have
+ * drifted from the build (`ctx.stale` set by the client). Returns '' normally.
+ */
+function staleHint(ctx) {
+  const s = ctx?.stale;
+  if (!s || !Array.isArray(s.kinds) || s.kinds.length === 0) return '';
+  const labels = {
+    stale: 'older render',
+    phantom: 'past end of build',
+    unrendered: 'not yet rendered',
+    missing: 'page not yet loaded',
+  };
+  const desc = s.kinds.map(k => labels[k] || k).join(', ');
+  const pg = Array.isArray(s.pages) && s.pages.length ? ` p${s.pages.join(',')}` : '';
+  return ` ⚠ stale${pg}: ${desc} — source anchor provisional`;
 }
 
 async function fetchCurrentDocVersion(doc) {
@@ -562,6 +919,121 @@ function agentAlive(agent) {
   return false;
 }
 
+export function classifyTaskAgentHealth(task, agent, options = {}) {
+  if (!task || task.synthetic) return null;
+  const nowMs = options.nowMs ?? Date.now();
+  const aliveThresholdMs = options.aliveThresholdMs ?? ALIVE_THRESHOLD_MS;
+  const pickupGraceMs = options.pickupGraceMs ?? 2 * 60 * 1000;
+  const delegatedMs = task.delegated_at ? Date.parse(task.delegated_at) : NaN;
+  const taskAgeMs = Number.isFinite(delegatedMs) ? Math.max(0, nowMs - delegatedMs) : null;
+  const ageMin = taskAgeMs == null ? null : Math.round(taskAgeMs / 60000);
+
+  if (!agent) {
+    return {
+      level: 'error',
+      code: 'missing-agent',
+      text: '⚠ target agent is not in the roster',
+      managerAction: 'Fix the task target or redelegate.',
+    };
+  }
+
+  const name = agent.friendly_name || agent.id || task.agent;
+  const status = String(agent.status || '').toLowerCase();
+  if (agent.dead || status === 'dead') {
+    return {
+      level: 'error',
+      code: 'dead-agent',
+      text: `⚠ ${name} is marked dead`,
+      managerAction: 'Respawn or redelegate; do not wait for this task to finish silently.',
+    };
+  }
+
+  if (status === 'hibernating') {
+    return {
+      level: 'warning',
+      code: 'hibernating-agent',
+      text: `⚠ ${name} is hibernating with an active task`,
+      managerAction: 'Wake/respawn the agent or redelegate.',
+    };
+  }
+
+  const lastSeenMs = agent.last_seen ? Date.parse(agent.last_seen) : NaN;
+  if (Number.isFinite(lastSeenMs)) {
+    const heartbeatAgeMs = nowMs - lastSeenMs;
+    if (heartbeatAgeMs > aliveThresholdMs) {
+      return {
+        level: 'warning',
+        code: 'stale-heartbeat',
+        text: `⚠ no heartbeat from ${name} for ${Math.round(heartbeatAgeMs / 60000)}m`,
+        managerAction: 'Check terminal/get_thread; respawn or redelegate if the agent is stalled.',
+      };
+    }
+  } else if (taskAgeMs != null && taskAgeMs > pickupGraceMs) {
+    return {
+      level: 'warning',
+      code: 'no-heartbeat',
+      text: `⚠ ${name} has no recorded heartbeat`,
+      managerAction: 'Registration may have failed; check terminal/get_thread before waiting.',
+    };
+  }
+
+  if (task.status === 'pending' && taskAgeMs != null && taskAgeMs > pickupGraceMs) {
+    return {
+      level: 'warning',
+      code: 'pending-pickup',
+      text: `⚠ task still pending ${ageMin}m after delegation`,
+      managerAction: 'The agent may not have called my_task(); nudge, inspect, or redelegate.',
+    };
+  }
+
+  return {
+    level: 'ok',
+    code: 'healthy',
+    text: `ok${Number.isFinite(lastSeenMs) ? `; heartbeat ${Math.max(0, Math.round((nowMs - lastSeenMs) / 60000))}m ago` : ''}`,
+  };
+}
+
+export const TASK_HEALTH_ACTIONABLE_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+
+export function classifyTaskListHealthBucket(task, health, options = {}) {
+  if (!task || task.synthetic || !health || health.level === 'ok') return null;
+  const nowMs = options.nowMs ?? Date.now();
+  const staleAfterMs = options.staleAfterMs ?? TASK_HEALTH_ACTIONABLE_MAX_AGE_MS;
+  const delegatedMs = task.delegated_at ? Date.parse(task.delegated_at) : NaN;
+  const taskAgeMs = Number.isFinite(delegatedMs) ? Math.max(0, nowMs - delegatedMs) : null;
+  if (taskAgeMs != null && taskAgeMs > staleAfterMs) {
+    return {
+      kind: 'stale-backlog',
+      taskAgeMs,
+      health,
+    };
+  }
+  return {
+    kind: 'actionable',
+    taskAgeMs,
+    health,
+  };
+}
+
+export function summarizeTaskListHealth(tasks = [], agentMap = new Map(), options = {}) {
+  const buckets = tasks.map(task => {
+    const health = classifyTaskAgentHealth(task, agentMap.get(task.agent), options);
+    return classifyTaskListHealthBucket(task, health, options);
+  });
+  return {
+    buckets,
+    actionableUnhealthy: buckets.filter(b => b?.kind === 'actionable'),
+    staleBacklogUnhealthy: buckets.filter(b => b?.kind === 'stale-backlog'),
+  };
+}
+
+function formatTaskHealth(health, { includeOk = false, includeAction = false } = {}) {
+  if (!health || (health.level === 'ok' && !includeOk)) return '';
+  let text = health.text;
+  if (includeAction && health.managerAction) text += ` — ${health.managerAction}`;
+  return text;
+}
+
 // ---- Task context helpers ----
 
 /** Build a context block showing the original delegation + criteria for a task */
@@ -655,6 +1127,28 @@ function tmuxRead(sessionName) {
   }
 }
 
+// Wake a non-Claude fleet agent by typing a nudge into its tmux pane. Those
+// harnesses don't act on Claude's `notifications/claude/channel`, so the adapter
+// decides whether to also deliver via send-keys and whether Enter needs a settle
+// delay. Single-lined so an embedded newline can't submit the prompt early.
+// execFileSync (args array) avoids any shell-escaping of the message content.
+function tmuxSendText(sessionName, text) {
+  try {
+    const line = String(text || '').replace(/\s*\n\s*/g, ' · ').trim();
+    if (!line) return false;
+    execFileSync('tmux', ['send-keys', '-t', sessionName, '--', line], { timeout: 5000 });
+    const settleMs = harnessFromEnv().nudgeSettleMs || 0;
+    if (settleMs > 0) {
+      try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, settleMs); } catch {}
+    }
+    execFileSync('tmux', ['send-keys', '-t', sessionName, 'Enter'], { timeout: 5000 });
+    return true;
+  } catch (e) {
+    process.stderr.write(`[fleet-harness-nudge] send-keys failed for ${sessionName}: ${e.message}\n`);
+    return false;
+  }
+}
+
 function tmuxIsIdle(text) {
   if (!text) return false;
   // Working if "esc to interrupt" visible
@@ -702,17 +1196,21 @@ function findValidSession(agent) {
  *  @returns {string} fleet-spawn stdout (trimmed)
  */
 function runFleetSpawn(name, opts = {}) {
-  const script = path.join(os.homedir(), 'bin', 'fleet-spawn');
-  const parts = [script];
-  if (opts.fresh) parts.push('--fresh');
-  if (opts.refresh) parts.push('--refresh');
-  if (opts.session) parts.push('--session', opts.session);
-  if (opts.model) parts.push('--model', opts.model);
-  if (opts.effort) parts.push('--effort', opts.effort);
-  if (opts.cwd) parts.push('--cwd', JSON.stringify(opts.cwd));
-  if (opts.mode) parts.push('--mode', opts.mode);
-  parts.push('--no-attach', name);
-  return execSync(parts.join(' '), { encoding: 'utf8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+  const script = path.join(__dirname, '..', 'bin', 'fleet-spawn.py');
+  const args = [];
+  if (opts.fresh) args.push('--fresh');
+  if (opts.refresh) args.push('--refresh');
+  if (opts.session) args.push('--session', opts.session);
+  if (opts.model) args.push('--model', opts.model);
+  if (opts.effort) args.push('--effort', opts.effort);
+  if (opts.cwd) args.push('--cwd', opts.cwd);
+  if (opts.mode) args.push('--mode', opts.mode);
+  args.push('--no-attach', name);
+  const pythonDeps = path.join(__dirname, '..', '.python-deps');
+  const env = fs.existsSync(pythonDeps)
+    ? { ...process.env, PYTHONPATH: [pythonDeps, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter) }
+    : process.env;
+  return execFileSync('python3', [script, ...args], { encoding: 'utf8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'], env }).trim();
 }
 
 function windowTail(output, n = 40) {
@@ -752,14 +1250,16 @@ export function getFleetTools() {
             properties: {
               name: { type: 'string', description: 'Agent name (auto-generated if omitted)' },
               cwd: { type: 'string', description: 'Working directory (inherits from caller if omitted)' },
-              model: { type: 'string', description: 'Model override (omit to use fleet-spawn\'s default)' },
+              model: { type: 'string', description: 'Model alias/id. Call spawn_models() for valid values. Common aliases: opus48/sonnet/haiku for Claude, gpt-5.5 or gpt for Codex, deepseek for Goose deepseek/deepseek-v4-pro.' },
               effort: { type: 'string', description: 'Effort level: low|medium|high|xhigh|max (default: inherit global config)' },
+              kind: { type: 'string', description: 'Agent runtime/harness (claude, goose, codex).' },
+              capability: { type: 'string', description: 'Requested capability: read, write, tlda-write, or full. (Internet is always on; there is no network capability to request.)' },
             },
-          },
+	          },
           description: { type: 'string', description: 'Short human-readable description (5-10 words). Auto-derived from message if omitted.' },
           message: { type: 'string', description: 'Full task message for the agent' },
           after: { description: 'Task ID or array of IDs — deferred until all complete.', oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }] },
-          friendly_name: { type: 'string', description: 'Set a friendly name for the agent (optional, same as name_agent)' },
+          friendly_name: { type: 'string', description: 'Rename an EXISTING target agent (two-call form, same as name_agent). Not allowed with spawn — a spawned agent\'s only name is spawn.name.' },
           success_criteria: { type: 'array', items: { type: 'string' }, description: 'Verifiable success criteria. Agent must verify each before marking done.' },
           template: { type: 'string', description: 'Task template name (e.g. "math-edit"). Auto-populates success_criteria; explicit criteria are appended.' },
           requires_approval: { type: 'boolean', description: 'If true, task_done requires an approval_id — the event ID of a message from Skip approving the work. Agent cannot close without it.' },
@@ -770,11 +1270,11 @@ export function getFleetTools() {
     // ---- Messaging ----
     {
       name: 'chat',
-      description: 'Send a message — or, with `amend_id`, edit one you already sent. Filter is { to?: string[][] } — DNF label expression matching agent name/ID/labels. Omit filter to send to your manager. Format with markdown.\n\nTwo ways to give the message body: (1) `message` — an inline string (filenames in it auto-become clickable chips); or (2) `file` + `section` — render a section of a markdown file as the message. Use the file form for a report or any longer, proofread-worthy message: write it in a file, then chat the section. The referenced section is the message; the rest of the file is your workspace / extended detail.\n\nPass `amend_id` (the id returned by a previous chat()) to edit that message IN PLACE in Skip\'s view instead of posting a new one — fix a lint issue or revise wording rather than sending a follow-up correction. The original text is kept in the message\'s history. With the file form you can edit the section in the file, then chat the same `file`+`section` with its `amend_id` to re-render the update in place. Amend honestly: an amend is for fixing the SAME message, not slipping in a different one.',
+      description: 'Send a message — or, with `amend_id`, edit one you already sent. Filter is { to?: string } — a filter EXPRESSION matching agent name/ID/labels: `|` = or, `&` = and, `!` = not, parens group (e.g. "fleet:skip", "awake & reviewers", "mathy & !goose"). A bare name/id sends to that one agent. Omit filter to send to your manager. Format with markdown.\n\nTwo ways to give the message body: (1) `message` — an inline string (filenames in it auto-become clickable chips); or (2) `file` + `section` — render a section of a markdown file as the message. Use the file form for a report or any longer, proofread-worthy message: write it in a file, then chat the section. The referenced section is the message; the rest of the file is your workspace / extended detail.\n\nTo author clickable choice chips with the chat, add a markdown section whose heading has the `.suggest` class, e.g. `## Pick one {.suggest}` followed by list items `- label | optional hover text | optional command`. The section stays visible as normal markdown and also posts chips for the single resolved chat recipient.\n\nPass `amend_id` (the id returned by a previous chat()) to edit that message IN PLACE in Skip\'s view instead of posting a new one — fix a lint issue or revise wording rather than sending a follow-up correction. The original text is kept in the message\'s history. With the file form you can edit the section in the file, then chat the same `file`+`section` with its `amend_id` to re-render the update in place. Amend honestly: an amend is for fixing the SAME message, not slipping in a different one.',
       inputSchema: {
         type: 'object',
         properties: {
-          filter: { type: 'object', description: 'Filter object: { to?: string[][] }. DNF expression — resolves to matching agents. Required for a new message; ignored when amend_id is set.' },
+          filter: { type: 'object', description: 'Filter object: { to?: string }. A filter expression (`|` or, `&` and, `!` not, parens) over agent names/ids/labels — e.g. "fleet:skip", "awake & reviewers". Required for a new message; ignored when amend_id is set.' },
           message: { type: 'string', description: 'Inline message text. Provide this OR (file + section), not both.' },
           file: { type: 'string', description: 'Path to a markdown file (absolute or relative to your cwd). With `section`, the named section is rendered as the message body.' },
           section: { type: 'string', description: 'Pandoc-style section id within `file` (a heading slug, e.g. "the-plan" for "## The plan", or an explicit {#id}). The section runs to the next heading of the same or higher level.' },
@@ -802,6 +1302,47 @@ export function getFleetTools() {
         type: 'object',
         properties: {
           reason: { type: 'string', description: 'Short one-line reason that will be shown above the terminal card (e.g. "stuck on permission prompt", "need brew sudo password"). Optional but strongly preferred.' },
+        },
+      },
+    },
+    {
+      name: 'notify',
+      description: 'Raise or dismiss an actionable item for the human. Defaults by kind: bounce/mic-death → HUD notification; modal/suggest/task → list task; all items also live in chat.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['raise', 'dismiss'], description: 'Default raise. Use dismiss with id to remove an item.' },
+          id: { type: 'string', description: 'Stable item id. Re-raising the same id replaces the existing item.' },
+          userId: { type: 'string', description: 'Target human fleet id. Defaults to server owner.' },
+          kind: { type: 'string', description: 'bounce, modal, status, task, suggest, info, etc.' },
+          title: { type: 'string', description: 'One-line headline.' },
+          body: { type: 'string', description: 'Optional detail text.' },
+          actions: {
+            type: 'array',
+            description: 'Action buttons.',
+            items: {
+              type: 'object',
+              properties: {
+                label: { type: 'string' },
+                command: { type: 'string' },
+                target: { type: 'string' },
+                clientAction: { type: 'string' },
+              },
+              required: ['label'],
+            },
+          },
+          present: {
+            type: 'object',
+            properties: {
+              chat: { type: 'boolean' },
+              hud: { type: 'boolean' },
+              list: { type: 'boolean' },
+            },
+          },
+          payload: { type: 'object', description: 'Optional payload for later drag/drop consumers.' },
+          dropTarget: { type: 'string' },
+          ttl: { type: 'number', description: 'Milliseconds before expiry.' },
+          priority: { type: 'string', enum: ['low', 'normal', 'high'] },
         },
       },
     },
@@ -895,8 +1436,19 @@ export function getFleetTools() {
       },
     },
     {
+      name: 'spawn_models',
+      description: 'List valid fleet spawn model aliases grouped by harness/kind. Use before spawn/delegate when choosing a model; aliases include Claude (opus48, sonnet, haiku), Codex (gpt-5.5, gpt), and Goose/OpenRouter (deepseek -> deepseek/deepseek-v4-pro).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          kind: { type: 'string', description: 'Optional harness filter: claude, codex, or goose.' },
+          verified_only: { type: 'boolean', description: 'Only show verified tool-calling models. Default false.' },
+        },
+      },
+    },
+    {
       name: 'spawn',
-      description: 'Spawn or respawn a fleet agent via fleet-spawn. Default: respawn existing agent (resume session). Pass fresh=true to create a new agent. Pass refresh=true to start a fresh session for an existing agent (same fleet ID — breaks compaction loops). Supports lineage: set phase to join/create a lineage (auto-created from the agent name on first spawn).',
+      description: 'Spawn or respawn a fleet agent via the server-authorized spawn path. Default: respawn existing agent (resume session). Pass fresh=true to create a new agent. Pass refresh=true to start a fresh session for an existing agent (same fleet ID — rejected for Codex). Supports lineage: set phase to join/create a lineage (auto-created from the agent name on first spawn).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -904,10 +1456,12 @@ export function getFleetTools() {
           fresh: { type: 'boolean', description: 'Create a fresh agent instead of respawning.' },
           refresh: { type: 'boolean', description: 'Fresh session for existing agent (same fleet ID, breaks compaction loops).' },
           name: { type: 'string', description: 'Name for the new agent (fresh mode only).' },
-          model: { type: 'string', description: 'Model override. Omit to use fleet-spawn\'s default.' },
+          model: { type: 'string', description: 'Model alias/id. Call spawn_models() for valid values. Common aliases: opus48/sonnet/haiku for Claude, gpt-5.5 or gpt for Codex, deepseek for Goose deepseek/deepseek-v4-pro.' },
           cwd: { type: 'string', description: 'Working directory (fresh mode only).' },
           effort: { type: 'string', description: 'Effort level: low|medium|high|xhigh|max (default: inherit global config).' },
-          mode: { type: 'string', description: 'Permission mode for claude (e.g. plan, default, auto). Falls back to spawnMode in ~/.config/tlda/config.json.' },
+          kind: { type: 'string', description: 'Agent runtime/harness (claude, goose, codex).' },
+          capability: { type: 'string', description: 'Requested capability: read, write, tlda-write, or full. (Internet is always on; there is no network capability to request.)' },
+          mode: { type: 'string', description: 'Harness-specific launch mode projection for claude (e.g. plan, default, auto). Capability remains the durable authority.' },
           phase: { type: 'string', enum: ['dawn', 'day', 'dusk'], description: 'Phase slot in the lineage. Rejects if slot is occupied. Default: day for fresh agents joining a lineage.' },
         },
       },
@@ -1008,20 +1562,24 @@ export function getFleetTools() {
         required: ['agent'],
       },
     },
+    // ---- Fleet Operations ----
     {
-      name: 'restart_mcp',
-      description: 'BEST-EFFORT: send /mcp and menu-navigation keystrokes to a target agent\'s tmux session in an attempt to restart their MCP. The keystrokes get typed into their terminal; whether the menu actually navigates and reconnects is unreliable and unobservable from here. This tool does NOT confirm restart. The target may still be running old code. Do not infer success from a successful tool return — and never assume your own MCP got restarted just because /mcp text appeared in your terminal.',
+      name: 'fleet_table',
+      description: "Fleet roster: whole-fleet awake/hibernating/dead totals plus a row per agent (name, status, last-seen, cwd, current activity). Passive read — reads the registry, wakes no one. Filter to a slice with a filter expression (the same one chat uses) so you don't pull the whole fleet: e.g. awake agents, a label, or a name.",
       inputSchema: {
         type: 'object',
         properties: {
-          agent: { type: 'string', description: 'Agent identifier (UUID, name, or friendly name). Omit to restart all agents.' },
+          filter: {
+            description: 'Optional filter expression to scope rows: `|` = or, `&` = and, `!` = not, parens group. Tokens are the `awake`/`hibernating` pseudo-labels, agent names, ids, and explicit labels. Examples: "awake" = awake agents; "awake & pickup" = awake AND labelled pickup; "awake | pickup" = either; "awake & !goose" = awake but not goose. Omit to list all agents.',
+            type: 'string',
+          },
+          limit: { description: 'Max rows to return (default 50, max 500). Totals are always whole-fleet regardless of limit.', type: 'number' },
         },
       },
     },
-    // ---- Fleet Operations ----
     {
-      name: 'roll_call',
-      description: 'Show fleet status: who is alive, who is missing. Reads identity ledger + scans tmux sessions. Use before rehydrate to see what needs recovery.',
+      name: 'usage_status',
+      description: 'Read sanitized provider/account usage status configured in tlda config. This is manual/static or explicit API-fed status only; it does not scrape provider websites and never exposes auth refs or tokens. Agents can use this as a spawn/model-choice signal when the user has configured accounts.',
       inputSchema: {
         type: 'object',
         properties: {},
@@ -1093,11 +1651,11 @@ export function getFleetTools() {
     // ---- Wiretap ----
     {
       name: 'wiretap',
-      description: 'Listen in on messages matching a filter. You get CC\'d on matching messages. Call with no args to list. Filter is DNF of [role, label] tuples: [[["to","skip"],["from","math"]]] = to:skip AND from:math. Roles: "to", "from". Labels match agent name/ID/labels. Optional types filter restricts to specific event types (e.g. ["chat"] for chat only, skipping activity cards).',
+      description: 'Listen in on messages matching a filter. You get CC\'d on matching messages. Call with no args to list. Filter is a STRING EXPRESSION — the same grammar as chat/fleet_table (`|` or, `&` and, `!` not, parens) — with directional `to:`/`from:` leaf prefixes: "to:skip & from:math" fires on a message TO skip FROM math. A bare label (no prefix) matches EITHER side (a message involving that agent). Labels match agent name/ID/labels. Optional types filter restricts to specific event types (e.g. ["chat"] for chat only, skipping activity cards).',
       inputSchema: {
         type: 'object',
         properties: {
-          filter: { type: 'array', description: 'DNF of [role, label] tuples. E.g. [[["to","skip"],["from","math"]],[["to","apps"]]]' },
+          filter: { type: 'string', description: 'Filter expression with to:/from: leaf prefixes. E.g. "to:skip & from:math", "to:apps | from:ops", "from:goose & !chat-noise".' },
           types: { type: 'array', items: { type: 'string' }, description: 'Event types to listen for. E.g. ["chat"] for chat only, ["chat","delegate"] for chat + delegations. Omit for all types.' },
           remove: { description: 'true to remove all wiretaps, or a wiretap ID to remove one.' },
         },
@@ -1461,15 +2019,11 @@ export async function handleFleetTool(name, args) {
     }
     if (labels.size > 0) entry.labels = [...labels];
 
-    // Uniqueness: name must be unique among non-dead agents (matches server's dead=0 criterion)
-    if (entry.friendly_name) {
-      const nameConflict = state.agents.find(a =>
-        a.id !== entry.id && (a.friendly_name === entry.friendly_name) && !a.dead
-      );
-      if (nameConflict) {
-        return { content: [{ type: 'text', text: `Name collision: "${entry.friendly_name}" is already used by live agent ${nameConflict.id}. Use a different name or respawn the existing agent.` }], isError: true };
-      }
-    }
+    // Name uniqueness is the SERVER's job (single authority — registration-core):
+    // it rotates a colliding requested name to a free one, never errors. Do NOT gate
+    // locally on the stale ledger/state file — that left a freshly-spawned agent stuck
+    // on "respawn the old one or register new?". The server's reply carries the granted
+    // (possibly rotated) name, adopted below.
 
     // Clear compacting flag unless just inherited from a stale entry.
     // Inherited compacting persists for one SSE cycle, then the heartbeat clears it.
@@ -1501,6 +2055,7 @@ export async function handleFleetTool(name, args) {
     // the tlda server route RPCs (interrupt / send-key / capture-pane /
     // restart-mcp) to the right per-machine fleet-daemon.
     const machineId = os.hostname().split('.')[0];
+    const currentHarness = harnessFromEnv();
     const regBody = {
       // agent_id (not id): sendWS() stamps a correlation `id` onto every
       // message, which would clobber a payload `id`. Sending the real fleet
@@ -1513,6 +2068,7 @@ export async function handleFleetTool(name, args) {
       cwd: entry.cwd,
       labels: entry.labels,
       machine_id: machineId,
+      metadata: { kind: currentHarness.kind },
     };
     // Wait up to 2s for WS to connect (it should be fast — localhost)
     if (!_channelRWS?.connected) {
@@ -1536,6 +2092,13 @@ export async function handleFleetTool(name, args) {
       return { content: [{ type: 'text', text: `Registration rejected by server: ${serverResult.error}` }], isError: true };
     }
 
+    // Adopt the identity the SERVER granted (single authority): it may have rotated a
+    // colliding name to a free one, so the agent learns its real name from the reply.
+    if (serverResult?.agent?.friendly_name && serverResult.agent.friendly_name !== entry.friendly_name) {
+      entry.friendly_name = serverResult.agent.friendly_name;
+      ledger.upsertAgent(AGENT_ID, claudeSession, cwd, entry.friendly_name);
+    }
+
     const agentCount = state.agents.length;
     let msg = `Registered ${entry.id}. ${agentCount} agent(s) registered.`;
     if (identitySource) {
@@ -1545,7 +2108,7 @@ export async function handleFleetTool(name, args) {
       msg += `\nYour name: "${entry.friendly_name}" — other agents and the user know you by this name.`;
     }
 
-    if (!CLAUDE_SESSION) {
+    if (currentHarness.requiresClaudeSession && !CLAUDE_SESSION) {
       msg += '\n\n⚠️ No session ID detected — activity cards will NOT appear for this agent. Pass session_id to register() to fix.';
       process.stderr.write(`[fleet] WARNING: agent ${AGENT_ID} registered with no session_id — no activity tracking\n`);
     }
@@ -1560,12 +2123,12 @@ export async function handleFleetTool(name, args) {
       const tldaRes = await fleetFetch(`${TLDA_SERVER}/api/projects`, { signal: AbortSignal.timeout(2000) });
       health.push((tldaRes.ok || tldaRes.status === 401) ? 'tlda: ✔' : 'tlda: ✘ (not responding)');
     } catch {
-      health.push('tlda: ✘ (unreachable)');
+      health.push('tlda: ✘ (not reachable right now)');
     }
     health.push(_channelRWS?.connected ? 'fleet WS: ✔' : 'fleet WS: ✘ (not connected)');
     msg += `\n\nHealth: ${health.join(', ')}`;
     if (health.some(h => h.includes('✘'))) {
-      msg += '\n⚠ Some services are down. If tlda is down, Skip cannot see fleet chat — use terminal output instead.';
+      msg += '\nA channel is down right now. This happens and it is not yours to fix — tell ops and keep working. If tlda is down Skip cannot see fleet chat, so fall back to terminal output until it returns; you will still get 📬 when it is back.';
     }
 
     // Start channel WS for direct message injection (replaces tmux send-keys)
@@ -1591,6 +2154,58 @@ export async function handleFleetTool(name, args) {
     ],
   };
 
+  async function harnessKindForDelegateTarget(agent, spawnOpts) {
+    const fromSpawn = inferHarnessKind(spawnOpts || {});
+    if (fromSpawn) return fromSpawn;
+    if (!agent) return null;
+    try {
+      const agents = await sendWS('store-agents');
+      const target = Array.isArray(agents)
+        ? agents.find(a => a.id === agent || a.friendly_name === agent)
+        : null;
+      return inferHarnessKind({
+        kind: target?.metadata?.kind,
+        model: target?.metadata?.model || target?.model,
+      });
+    } catch (e) {
+      process.stderr.write(`[fleet] could not resolve delegate target harness: ${e.message}\n`);
+      return null;
+    }
+  }
+
+  async function getRoster() {
+    const agents = await sendWS('store-agents');
+    return Array.isArray(agents) ? agents : [];
+  }
+
+  function agentMatches(agent, id) {
+    return !!agent && (agent.id === id || agent.friendly_name === id || agent.session_id === id);
+  }
+
+  async function recentDirectInbound(fromId, toId) {
+    try {
+      const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+      const data = await sendWS('store-events', { agent: fromId, since, limit: 100 });
+      return (data.events || []).some(e =>
+        e.type === 'chat' &&
+        e.from === toId &&
+        e.to === fromId
+      );
+    } catch (e) {
+      process.stderr.write(`[fleet] recent direct-reply check failed: ${e.message}\n`);
+      return false;
+    }
+  }
+
+  async function requireInLaneAction(targetAgentId, { action, message, directReply = false } = {}) {
+    const agents = await getRoster();
+    const fromAgent = agents.find(a => a.id === AGENT_ID) || { id: AGENT_ID, cwd: getAgentCwd() };
+    const toAgent = agents.find(a => agentMatches(a, targetAgentId));
+    if (!toAgent) return null;
+    const block = crossLaneBlock({ fromAgent, toAgent, action, message, directReply });
+    return block?.text || null;
+  }
+
   // ==== Task Management ====
 
   // ---- delegate ----
@@ -1605,6 +2220,17 @@ export async function handleFleetTool(name, args) {
       return { content: [{ type: 'text', text: 'Missing agent (or spawn).' }], isError: true };
     }
 
+    // One name, enforced: on the spawn path the spawn name is the single source
+    // of identity (pre-registration, FLEET_NAME, the register prompt, and the
+    // roster all key off it). A separate `friendly_name` would rename the row to
+    // a second string after spawn — the exact desync that produces ghost rows
+    // (a never-seen "math-historian" stub beside a live "math historian"). So
+    // forbid it: put the name in `spawn.name`. friendly_name remains valid only
+    // for the two-call form (delegating to an existing `agent`).
+    if (args.spawn && args.friendly_name) {
+      return { content: [{ type: 'text', text: 'Do not pass friendly_name with spawn — the spawn name is the agent\'s only name. Put the name in spawn.name.' }], isError: true };
+    }
+
     let agent = args.agent;
     let spawnedInfo = null;
 
@@ -1614,34 +2240,47 @@ export async function handleFleetTool(name, args) {
       const agentName = spawnOpts.name || `agent-${Date.now().toString(36).slice(-4)}`;
       const agentCwd = spawnOpts.cwd || getAgentCwd();
 
-      // Resolve mode for inline spawn: explicit > config file default
-      let delegateSpawnMode = spawnOpts.mode || null;
-      if (!delegateSpawnMode) {
-        try {
-          const cfg = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.config', 'tlda', 'config.json'), 'utf8'));
-          delegateSpawnMode = cfg.spawnMode || null;
-        } catch (e) { process.stderr.write(`[fleet] spawn mode config read failed: ${e.message}\n`); }
-      }
-
-      let spawnOutput;
       try {
-        spawnOutput = runFleetSpawn(agentName, {
+        const modelError = await validateSpawnRequest(spawnOpts);
+        if (modelError) return { content: [{ type: 'text', text: modelError }], isError: true };
+        const spawnResult = await sendWS('spawn', {
           fresh: true,
-          model: spawnOpts.model, effort: spawnOpts.effort,
-          cwd: agentCwd, mode: delegateSpawnMode,
+          name: agentName,
+          model: spawnOpts.model,
+          effort: spawnOpts.effort,
+          kind: spawnOpts.kind,
+          cwd: agentCwd,
+          capability: spawnOpts.capability,
         });
+        if (spawnResult?.ok === false || spawnResult?.error) {
+          return { content: [{ type: 'text', text: `spawn failed before delegation: ${spawnResult.error || JSON.stringify(spawnResult)}` }], isError: true };
+        }
       } catch (e) {
-        const msg = (e.stderr || e.stdout || e.message || '').trim();
-        return { content: [{ type: 'text', text: `spawn failed: ${msg}` }], isError: true };
+        const msg = (e.message || '').trim();
+        return { content: [{ type: 'text', text: `spawn failed before delegation: ${msg}` }], isError: true };
       }
 
-      // fleet-spawn prints: "fleet-agentname (fleet:xxxxxxxx) spawned in /path"
-      const fleetIdMatch = spawnOutput.match(/\((fleet:[a-f0-9]+)\)/);
-      if (!fleetIdMatch) {
-        return { content: [{ type: 'text', text: `spawn output not parseable: ${spawnOutput}` }], isError: true };
+      let spawned = null;
+      for (let i = 0; i < 20; i++) {
+        try {
+          const agents = await sendWS('store-agents');
+          spawned = agents?.find(a => a.friendly_name === agentName || a.id === agentName);
+          if (spawned) break;
+        } catch {}
+        await new Promise(r => setTimeout(r, 250));
       }
 
-      agent = fleetIdMatch[1];
+      if (!spawned?.id) {
+        return { content: [{ type: 'text', text: `spawn started for ${agentName}, but the agent did not register within 5s` }], isError: true };
+      }
+      if (!spawned.tmux_session) {
+        return { content: [{ type: 'text', text: `spawn registered ${agentName} (${spawned.id}), but no tmux session was recorded. Not delegating: a registry row is not a usable agent.` }], isError: true };
+      }
+      if (!agentAlive(spawned)) {
+        return { content: [{ type: 'text', text: `spawn registered ${agentName} (${spawned.id}), but the agent is not alive/usable yet. Not delegating.` }], isError: true };
+      }
+
+      agent = spawned.id;
       spawnedInfo = { agent_id: agent, friendly_name: agentName };
     }
 
@@ -1663,9 +2302,21 @@ export async function handleFleetTool(name, args) {
     const criteria = [...templateCriteria, ...(args.success_criteria || [])];
     const afterRaw = args.after;
     const blockedBy = afterRaw ? (Array.isArray(afterRaw) ? afterRaw : [afterRaw]) : [];
+    const laneBlock = await requireInLaneAction(agent, {
+      action: 'delegate',
+      message,
+    });
+    if (laneBlock) return { content: [{ type: 'text', text: laneBlock }], isError: true };
+    const harnessKind = await harnessKindForDelegateTarget(agent, args.spawn);
+    const routedMessage = applyNonClaudeRolePack(message, {
+      template: args.template,
+      description,
+      successCriteria: criteria,
+      harnessKind,
+    });
 
     try {
-      const delegateBody = { from: AGENT_ID, agent, description, message, success_criteria: criteria.length ? criteria : undefined, blocked_by: blockedBy.length ? blockedBy : undefined, requires_approval: args.requires_approval || undefined };
+      const delegateBody = { from: AGENT_ID, agent, description, message: routedMessage, success_criteria: criteria.length ? criteria : undefined, blocked_by: blockedBy.length ? blockedBy : undefined, requires_approval: args.requires_approval || undefined };
       const data = await sendWS('delegate', delegateBody);
       if (data.event_id) {
         _originatedEventIds.add(data.event_id);
@@ -1683,7 +2334,7 @@ export async function handleFleetTool(name, args) {
       }
       return { content: [{ type: 'text', text: `Delegated to ${agent} [${data.task_id}]: ${description}` }] };
     } catch (e) {
-      return { content: [{ type: 'text', text: `Delegate failed (server unreachable): ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `Delegate failed (tlda backend not answering — tell ops if it persists): ${e.message}` }], isError: true };
     }
   }
 
@@ -1695,7 +2346,7 @@ export async function handleFleetTool(name, args) {
     if (!reason) return { content: [{ type: 'text', text: 'A reason is required to dismiss a skill. Say why it does not apply — or read the skill instead.' }], isError: true };
     const skills = Array.isArray(args.skills) ? args.skills.filter(Boolean) : null;
     try {
-      const res = await fleetFetch(`${TLDA_SERVER}/api/education/dismiss/${encodeURIComponent(AGENT_ID)}`, {
+      const res = await fleetFetch(`${TLDA_FLEET_SERVER}/api/education/dismiss/${encodeURIComponent(AGENT_ID)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ reason, ...(skills ? { skills } : {}) }),
@@ -1712,7 +2363,7 @@ export async function handleFleetTool(name, args) {
       const names = data.dismissed.map(d => d.skill).join(', ');
       return { content: [{ type: 'text', text: `Dismissed ${names}. The block is lifted; you can proceed. (Logged for Skip with your reason.)` }] };
     } catch (e) {
-      return { content: [{ type: 'text', text: `Dismiss failed (server unreachable): ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `Dismiss failed (tlda backend not answering — tell ops if it persists): ${e.message}` }], isError: true };
     }
   }
 
@@ -1724,64 +2375,146 @@ export async function handleFleetTool(name, args) {
     const agentCwd = getAgentCwd();
     const resolvedBody = resolveChatBody(args, agentCwd);
     if (resolvedBody.error) return { content: [{ type: 'text', text: resolvedBody.error }], isError: true };
-    const { body: message, source } = resolvedBody;
+    if (containsLegacySuggestionsBlock(resolvedBody.body)) {
+      return { content: [{ type: 'text', text: 'Message NOT sent — `<suggestions>` blocks have been removed. Use a markdown `.suggest` section, e.g. `## Pick one {.suggest}` followed by `- label | hover text | command` list items.' }], isError: true };
+    }
+    // Inline `.suggest` section(s): harvested to chips AND left in the (cleaned)
+    // body so they render as a normal heading + list.
+    const inlineSuggestions = parseInlineSuggestions(resolvedBody.body);
+    if (inlineSuggestions.error) return { content: [{ type: 'text', text: `Message NOT sent — ${inlineSuggestions.error}` }], isError: true };
+    const { body: message, source } = { body: inlineSuggestions.body, source: resolvedBody.source };
+    const authoredSuggestions = inlineSuggestions.suggestions || [];
+    const macros = await getMacrosForAgent();
+    // Two classes, surfaced differently: render-VALIDITY prominently with the
+    // amend affordance (Skip will see garbage if it doesn't render), STYLE
+    // hints quietly. No register/completion gate — that was deleted.
+    const { validity: renderIssues, style: styleHints } = checkChatRender(message, macros);
 
     // ---- amend branch: edit an already-sent message in place ----
     // `amend_id` present → route to the server's amend handler (same body forms,
     // same keep/clear-`source` semantics) instead of posting a new message.
     if (args.amend_id != null) {
+      // Inline `.suggest` sections are fine on amend — the body is already cleaned
+      // (heading + list, attr stripped) so it re-renders correctly — but the chips
+      // were posted on the original send and are NOT re-harvested here.
       try {
-        const { resolvedMessage, inlineAttachments } = await processMessageText(message, agentCwd, `${TLDA_SERVER}`);
+        let resolvedMessage, inlineAttachments = [];
+        if (source?.file) {
+          const r = await bundleSharedMarkdownImages(message, source.file, `${TLDA_FLEET_SERVER}`);
+          resolvedMessage = r.body;
+        } else {
+          ({ resolvedMessage, inlineAttachments } = await processMessageText(message, agentCwd, `${TLDA_FLEET_SERVER}`));
+        }
         const body = { from: AGENT_ID, message: resolvedMessage, event_id: args.amend_id };
         if (inlineAttachments?.length) body.inline_attachments = inlineAttachments;
         if (source) body.source = source;
         const data = await sendWS('amend', body);
         if (!data?.ok) return { content: [{ type: 'text', text: `Amend failed: ${data?.error || `no message of yours matched id ${args.amend_id}`}` }], isError: true };
-        const macros = await getMacrosForAgent();
-        const lint = lintChatMessage(message, macros);
-        const extra = lint.length > 0
-          ? `\n\n⚠ Still has ${lint.length} lint issue${lint.length > 1 ? 's' : ''}:\n${lint.map(l => `- ${l}`).join('\n')}`
-          : '';
+        let extra = '';
+        if (renderIssues.length > 0) {
+          extra += `\n\n⚠ **Still won't render (${renderIssues.length}):**\n${renderIssues.map(l => `- ${l}`).join('\n')}\nFix and re-chat \`amend_id: ${data.event_id}\` again — Skip is reading this message.`;
+        }
+        if (styleHints.length > 0) {
+          extra += `\n\nStyle (optional): ${styleHints.join(' ')}`;
+        }
+        if (inlineSuggestions.suggestions?.length) {
+          extra += `\n\nNote: the inline \`.suggest\` section rendered cleanly, but its chips were NOT re-posted (amend edits the message text, not its already-posted chips).`;
+        }
         return { content: [{ type: 'text', text: `Amended message ${data.event_id} in place.${extra}` }] };
       } catch (e) {
         return { content: [{ type: 'text', text: `Amend failed: ${e.message}` }], isError: true };
       }
     }
 
-    // Resolve recipients from filter
-    if (!args.filter?.to) return { content: [{ type: 'text', text: 'Missing filter.to — specify recipients as DNF expression.' }], isError: true };
+    // Resolve recipients from the filter expression.
+    // `filter.to` is a string like "fleet:skip", "awake & reviewers", or
+    // "mathy & !goose" (| = or, & = and, ! = not, parens group). Parse it once,
+    // then test each agent's label set — no nested arrays, so any agent (incl.
+    // goose-backed) can emit it.
+    if (!args.filter?.to) return { content: [{ type: 'text', text: 'Missing filter.to — specify recipients as an expression, e.g. "fleet:skip" or "awake & reviewers".' }], isError: true };
+    let filterAst;
+    try { filterAst = parseFilter(args.filter.to); } catch (e) { return { content: [{ type: 'text', text: `⚠ Message NOT sent — bad filter "${args.filter.to}": ${e.message}` }], isError: true }; }
+    if (!filterAst) return { content: [{ type: 'text', text: '⚠ Message NOT sent — empty filter.to.' }], isError: true };
     let recipients = [];
-    let serverDown = false;
     let agents = [];
-    try {
-      agents = await sendWS('store-agents');
-      for (const a of agents) {
-        if (a.id === AGENT_ID) continue;
-        const virtualLabels = a.status === 'awake' ? ['awake'] : a.status === 'hibernating' ? ['hibernating'] : [];
-        const labels = [...(a.labels || []), ...virtualLabels, a.friendly_name, a.id].filter(Boolean);
-        // Lineage members also answer to the bare base name (for lineage search);
-        // the phase-qualified name is already covered by friendly_name above.
-        const _base = baseName(a.friendly_name);
-        if (_base && _base !== a.friendly_name) labels.push(_base);
-        if (args.filter.to.some(andGroup => andGroup.every(term => labels.includes(term)))) {
-          recipients.push(a.id);
+    let rosterUnavailable = false;
+    // Short-circuit: a bare literal agent id (fleet:…) needs no roster lookup —
+    // send straight to the id (avoids fetching the whole fleet for the common
+    // { to: "fleet:<id>" } case).
+    const bareId = filterAst.t === 'lit' && /^fleet:/.test(filterAst.v) ? filterAst.v : null;
+    if (bareId) {
+      if (bareId !== AGENT_ID) recipients.push(bareId);
+    } else {
+      try {
+        agents = (await sendWS('store-agents')) || [];
+        if (agents.length === 0) {
+          rosterUnavailable = true;
+        } else {
+          for (const a of agents) {
+            if (a.id === AGENT_ID) continue;
+            const virtualLabels = a.status === 'awake' ? ['awake'] : a.status === 'hibernating' ? ['hibernating'] : [];
+            const labels = [...(a.labels || []), ...virtualLabels, a.friendly_name, a.id].filter(Boolean);
+            // Lineage members also answer to the bare base name (for lineage search);
+            // the phase-qualified name is already covered by friendly_name above.
+            const _base = baseName(a.friendly_name);
+            if (_base && _base !== a.friendly_name) labels.push(_base);
+            if (evalExpr(filterAst, labels)) {
+              recipients.push(a.id);
+            }
+          }
         }
+      } catch (e) {
+        rosterUnavailable = true;
       }
-    } catch (e) {
-      serverDown = true;
     }
-    if (serverDown) return { content: [{ type: 'text', text: '⚠ Fleet server is unreachable — message NOT sent. Check if the server is running (fleet-spawn auto-starts it, or: cd ~/work/fleet && node dashboard/server.mjs).' }], isError: true };
-    if (recipients.length === 0) return { content: [{ type: 'text', text: 'No agents matched filter.' }], isError: true };
+    recipients = [...new Set(recipients)];
+    // Target validator: report empty/unresolved honestly and distinctly from "server down".
+    // A transient roster miss must never block a direct (exact-id) send.
+    if (recipients.length === 0) {
+      if (rosterUnavailable) return { content: [{ type: 'text', text: "⚠ Message NOT sent — couldn't fetch the agent roster to resolve a label filter (transient). Retry shortly." }], isError: true };
+      return { content: [{ type: 'text', text: `⚠ Message NOT sent — no agent matched "${args.filter.to}". Check the name/label — this is a targeting miss, not a server problem.` }], isError: true };
+    }
     const maxRecipients = args.max_recipients ?? 5;
     if (recipients.length > maxRecipients) {
       const names = recipients.map(id => { const a = agents?.find(x => x.id === id); return a?.friendly_name || id; });
       return { content: [{ type: 'text', text: `Broadcast to ${recipients.length} agents exceeds max_recipients=${maxRecipients}. Matched: ${names.join(', ')}. Pass max_recipients=${recipients.length} to confirm.` }], isError: true };
     }
+    if (authoredSuggestions.length && recipients.length !== 1) {
+      return { content: [{ type: 'text', text: '`.suggest` sections currently require exactly one resolved chat recipient. Narrow filter.to to one agent, or send the message without suggestions.' }], isError: true };
+    }
+    if (authoredSuggestions.some(s => s.targetId && !recipients.includes(s.targetId))) {
+      return { content: [{ type: 'text', text: 'A `.suggest` item has a target that is not one of this chat\'s resolved recipients.' }], isError: true };
+    }
+    const laneBlocks = [];
+    for (const to of recipients) {
+      const directReply = await recentDirectInbound(AGENT_ID, to);
+      const laneBlock = await requireInLaneAction(to, {
+        action: 'chat',
+        message,
+        directReply,
+      });
+      if (laneBlock) laneBlocks.push(laneBlock);
+    }
+    if (laneBlocks.length) {
+      return { content: [{ type: 'text', text: `Message NOT sent.\n${laneBlocks.map(b => `- ${b}`).join('\n')}` }], isError: true };
+    }
 
-    // Resolve file paths in message text → inline attachments.
-    const { resolvedMessage, inlineAttachments, brokenPaths } = await processMessageText(
-      message, agentCwd, `${TLDA_SERVER}`
-    );
+    // Resolve the body's file references → uploads. Two modes:
+    //  - file-share (source.file): the body is a markdown file's content; bundle
+    //    its image includes (upload + rewrite refs inline) so they render for
+    //    every viewer. Don't chipify a shared file's prose.
+    //  - inline message: detect bare file paths / image URLs → inline attachments.
+    // Uploads target the FLEET server (where chat is viewed), not the doc server
+    // (TLDA_SERVER), which post-cutover may be a different machine.
+    let resolvedMessage, inlineAttachments = [], brokenPaths = [];
+    if (source?.file) {
+      const r = await bundleSharedMarkdownImages(message, source.file, `${TLDA_FLEET_SERVER}`);
+      resolvedMessage = r.body;
+    } else {
+      ({ resolvedMessage, inlineAttachments, brokenPaths } = await processMessageText(
+        message, agentCwd, `${TLDA_FLEET_SERVER}`
+      ));
+    }
 
     if (brokenPaths.length > 0) {
       return { content: [{ type: 'text', text: `Message NOT sent — ${brokenPaths.length} broken file reference(s):\n${brokenPaths.map(p => `  • ${p}`).join('\n')}\nFix the paths and resend.` }], isError: true };
@@ -1806,6 +2539,17 @@ export async function handleFleetTool(name, args) {
       docContext = { doc: _currentDoc, version: version || null };
     }
 
+    // Sender's preamble reference: the document whose macros this agent's math
+    // should render with, stamped on every message so each reader renders it with
+    // the sender's preamble (not the reader's). { doc, version } — version is
+    // captured for the future but ignored on resolution today.
+    let preambleRef = null;
+    const preambleDoc = await getAgentPreambleDoc();
+    if (preambleDoc) {
+      const pv = await fetchCurrentDocVersion(preambleDoc);
+      preambleRef = { doc: preambleDoc, version: pv || null };
+    }
+
     // Single write: send to dashboard server via WS.
     const sent = [];
     const failed = [];
@@ -1815,6 +2559,7 @@ export async function handleFleetTool(name, args) {
       if (inlineAttachments.length) chatBody.inline_attachments = inlineAttachments;
       if (refAttachments.length) chatBody.attachments = refAttachments;
       if (docContext) chatBody.context = docContext;
+      if (preambleRef) chatBody.preambleRef = preambleRef;
       if (source) chatBody.source = source;
       try {
         const data = await sendWS('chat', chatBody);
@@ -1827,6 +2572,17 @@ export async function handleFleetTool(name, args) {
 
     if (sent.length === 0) return { content: [{ type: 'text', text: `⚠ Send failed — fleet server may be down. No messages delivered. Failed: ${failed.join(', ')}` }], isError: true };
 
+    let warning = '';
+    let suggestionNotice = '';
+    if (authoredSuggestions.length) {
+      try {
+        const count = await postChatAuthoredSuggestions(authoredSuggestions, sent);
+        suggestionNotice = ` Posted ${count} suggestion chip(s).`;
+      } catch (e) {
+        warning += `\n\n⚠ **Suggestion chips were not posted:** ${e.message}`;
+      }
+    }
+
     // Check if tlda is up — if not, Skip can't see the message even though it was delivered
     let tldaDown = false;
     try {
@@ -1837,9 +2593,8 @@ export async function handleFleetTool(name, args) {
       tldaDown = true;
     }
 
-    let warning = '';
     if (tldaDown) {
-      warning = '\n\n⚠ **tlda is down — Skip cannot see this message.** Use terminal output to communicate until tlda is back up.';
+      warning += '\n\n⚠ **tlda is down — Skip cannot see this message.** Use terminal output to communicate until tlda is back up.';
     }
 
     const brokenFiles = inlineAttachments.filter(a => a.broken).map(a => a.path);
@@ -1847,15 +2602,19 @@ export async function handleFleetTool(name, args) {
       warning += `\n\n⚠ **File(s) not uploaded** (not found or upload failed — removed from message):\n${brokenFiles.map(p => `- ${p}`).join('\n')}`;
     }
 
-    const macros = await getMacrosForAgent();
-    const lint = lintChatMessage(message, macros);
-    if (lint.length > 0) {
+    // Render-VALIDITY: prominent — Skip sees broken output unless the agent
+    // amends. This is the "warn so they can amend their shit" check (Skip 6/19).
+    if (renderIssues.length > 0) {
       const target = lastEventId != null ? `chat({ amend_id: ${lastEventId}, message: "…" })` : 'chat({ amend_id: <id>, message: "…" })';
-      warning += `\n\n⚠ **Lint (${lint.length} issue${lint.length > 1 ? 's' : ''}):**\n${lint.map(l => `- ${l}`).join('\n')}\nYour message went out but has these issues — **you are strongly encouraged to fix it in place** with \`${target}\` (it edits the message Skip is reading, no new message).`;
+      warning += `\n\n⚠ **Won't render properly (${renderIssues.length} issue${renderIssues.length > 1 ? 's' : ''}) — Skip will see broken output.** Fix it in place with \`${target}\` (edits the message Skip is reading, no new message):\n${renderIssues.map(l => `- ${l}`).join('\n')}`;
+    }
+    // STYLE: quiet, optional — never a gate.
+    if (styleHints.length > 0) {
+      warning += `\n\nStyle (optional): ${styleHints.join(' ')}`;
     }
 
     const amendHint = lastEventId != null ? ` (message id ${lastEventId} — chat({ amend_id: ${lastEventId} }) to edit it in place)` : '';
-    return { content: [{ type: 'text', text: `Message queued for ${sent.join(', ')}.${amendHint}${warning}` }] };
+    return { content: [{ type: 'text', text: `Message queued for ${sent.join(', ')}.${suggestionNotice}${amendHint}${warning}` }] };
   }
 
   // ---- request_terminal ----
@@ -1867,7 +2626,7 @@ export async function handleFleetTool(name, args) {
     if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not registered. Call register() first.' }], isError: true };
     const { reason } = args || {};
     try {
-      const res = await fleetFetch(`${TLDA_SERVER}/api/terminal-card`, {
+      const res = await fleetFetch(`${TLDA_FLEET_SERVER}/api/terminal-card`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ from: AGENT_ID, reason: reason || null }),
@@ -1883,6 +2642,49 @@ export async function handleFleetTool(name, args) {
     }
   }
 
+  // ---- stale suggest_action ----
+  // New MCP sessions no longer see a standalone suggest tool. Keep a clear error
+  // for old sessions whose tool list was captured before this removal.
+  if (name === 'suggest') {
+    return { content: [{ type: 'text', text: 'The standalone `suggest` tool has been removed. Send suggestions in `chat()` using a markdown `.suggest` section, e.g. `## Pick one {.suggest}` followed by `- label | hover text | command` list items.' }], isError: true };
+  }
+
+  // ---- notify ----
+  if (name === 'notify') {
+    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not registered. Call register() first.' }], isError: true };
+    const action = args?.action || 'raise';
+    if (action === 'dismiss' && !args?.id) return { content: [{ type: 'text', text: 'notify dismiss requires `id`.' }], isError: true };
+    if (action !== 'dismiss' && !args?.title) return { content: [{ type: 'text', text: 'notify raise requires `title`.' }], isError: true };
+    const item = action === 'dismiss' ? null : {
+      id: args.id || `${AGENT_ID}:${args.kind || 'info'}:${Date.now()}`,
+      kind: args.kind || 'info',
+      from: AGENT_ID,
+      title: args.title,
+      body: args.body || '',
+      actions: Array.isArray(args.actions) ? args.actions : [],
+      present: args.present || undefined,
+      payload: args.payload || undefined,
+      dropTarget: args.dropTarget || undefined,
+      ttl: Number.isFinite(args.ttl) ? args.ttl : undefined,
+      priority: args.priority || undefined,
+    };
+    try {
+      const res = await fleetFetch(`${TLDA_FLEET_SERVER}/api/items`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(action === 'dismiss'
+          ? { action: 'dismiss', id: args.id, userId: args.userId }
+          : { action: 'raise', userId: args.userId, item }),
+        signal: AbortSignal.timeout(3000),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return { content: [{ type: 'text', text: `notify failed: ${data.error || res.statusText}` }], isError: true };
+      return { content: [{ type: 'text', text: action === 'dismiss' ? `Dismissed item ${args.id}.` : `Raised ${item.kind} item ${item.id}.` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `notify failed: ${e.message}` }], isError: true };
+    }
+  }
+
 
   // ---- task_list ----
   if (name === 'task_list') {
@@ -1892,7 +2694,7 @@ export async function handleFleetTool(name, args) {
       if (agents.error) return { content: [{ type: 'text', text: `task_list failed: ${agents.error}` }], isError: true };
       if (active.error) return { content: [{ type: 'text', text: `task_list failed: ${active.error}` }], isError: true };
     } catch (e) {
-      return { content: [{ type: 'text', text: `task_list failed (server unreachable): ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `task_list failed (tlda backend not answering — tell ops if it persists): ${e.message}` }], isError: true };
     }
 
     let text = '';
@@ -1919,8 +2721,14 @@ export async function handleFleetTool(name, args) {
     const showOwner = false;
 
     const agentMap = new Map(agents.map(a => [a.id, a]));
+    const taskHealthSummary = summarizeTaskListHealth(active, agentMap);
     const lines = active.map(t => {
       const age = Math.round((Date.now() - new Date(t.delegated_at)) / 60000);
+      const taskAgent = agentMap.get(t.agent);
+      const health = classifyTaskAgentHealth(t, taskAgent);
+      const healthBucket = classifyTaskListHealthBucket(t, health);
+      const includeHealthAction = healthBucket?.kind !== 'stale-backlog';
+      const healthNote = formatTaskHealth(health, { includeAction: includeHealthAction });
       let status = t.status;
       if (t.synthetic) status = `📬 ${t.priority || 'normal'}`;
       if (t.status === 'blocked' && t.blockedBy) {
@@ -1935,7 +2743,7 @@ export async function handleFleetTool(name, args) {
         const ownerLabel = ownerAgent?.friendly_name || t.delegated_by;
         owner = ` | by:${ownerLabel}`;
       }
-      return `[${t.id}] ${t.agent} | ${status} | ${t.description} | ${age}m ago${owner}`;
+      return `[${t.id}] ${t.agent} | ${status} | ${t.description} | ${age}m ago${owner}${healthNote ? ` | ${healthNote}` : ''}`;
     });
 
     text += lines.join('\n');
@@ -1944,6 +2752,7 @@ export async function handleFleetTool(name, args) {
     const pending = active.filter(t => t.status === 'pending');
     const idle = active.filter(t => t.status === 'idle');
     const blocked = active.filter(t => t.status === 'blocked');
+    const { actionableUnhealthy, staleBacklogUnhealthy } = taskHealthSummary;
 
     const unread = AGENT_ID ? await getUnread(null, AGENT_ID) : [];
 
@@ -1953,6 +2762,8 @@ export async function handleFleetTool(name, args) {
     if (working.length > 0) nudge += `\n\n${working.length} working.`;
     if (pending.length > 0) nudge += ` ${pending.length} pending (awaiting agent pickup).`;
     if (blocked.length > 0) nudge += ` ${blocked.length} blocked.`;
+    if (actionableUnhealthy.length > 0) nudge += `\n\n⚠ ${actionableUnhealthy.length} active task(s) have actionable agent-health warnings — inspect or redelegate instead of waiting silently.`;
+    if (staleBacklogUnhealthy.length > 0) nudge += `\n\n${staleBacklogUnhealthy.length} stale backlog task(s) have non-actionable agent-health warnings older than the Todd kick window — owner cleanup should delete/archive/redelegate; they are not counted as live liveness failures.`;
     return { content: [{ type: 'text', text: text + nudge }] };
   }
 
@@ -1965,7 +2776,7 @@ export async function handleFleetTool(name, args) {
       if (!res?.ok) return { content: [{ type: 'text', text: `Delete failed: ${res?.error || 'unknown'}` }], isError: true };
       return { content: [{ type: 'text', text: `Deleted task ${task_id}.` }] };
     } catch (e) {
-      return { content: [{ type: 'text', text: `Server unreachable: ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `tlda backend not answering — tell ops if it persists. (${e.message})` }], isError: true };
     }
   }
 
@@ -1979,7 +2790,7 @@ export async function handleFleetTool(name, args) {
     try {
       taskRes = await sendWS('my-task', { agent, peek: true });
     } catch (e) {
-      return { content: [{ type: 'text', text: `Server unreachable: ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `tlda backend not answering — tell ops if it persists. (${e.message})` }], isError: true };
     }
     const task = taskRes.task;
     if (!task) return { content: [{ type: 'text', text: `No active task for ${agent}.` }] };
@@ -2045,7 +2856,7 @@ export async function handleFleetTool(name, args) {
       }
       return { content: [{ type: 'text', text: msg }] };
     } catch (e) {
-      return { content: [{ type: 'text', text: `task_done failed (server unreachable): ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `task_done failed (tlda backend not answering — tell ops if it persists): ${e.message}` }], isError: true };
     }
   }
 
@@ -2057,7 +2868,7 @@ export async function handleFleetTool(name, args) {
     try {
       taskData = await sendWS('my-task', { agent: AGENT_ID, peek: true });
     } catch (e) {
-      return { content: [{ type: 'text', text: `Server unreachable: ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `tlda backend not answering — tell ops if it persists. (${e.message})` }], isError: true };
     }
     const task = taskData.task;
     if (!task) return { content: [{ type: 'text', text: 'No active task to report on.' }], isError: true };
@@ -2214,7 +3025,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
       agents = await sendWS('store-agents');
       if (!agents || agents.error) return { content: [{ type: 'text', text: `task_check failed: ${agents?.error || 'no response'}` }], isError: true };
     } catch (e) {
-      return { content: [{ type: 'text', text: `task_check failed (server unreachable): ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `task_check failed (tlda backend not answering — tell ops if it persists): ${e.message}` }], isError: true };
     }
 
     const agentEntry = agents.find(a =>
@@ -2229,16 +3040,35 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
     let idle = false;
     let targetLabel = '';
 
-    if (agentEntry.tmux_session && tmuxHasSession(agentEntry.tmux_session)) {
+    try {
+      const res = await fleetFetch(`${TLDA_FLEET_SERVER}/api/capture-pane`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agent: agentEntry.id || args.agent, lines: 200 }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && typeof data.pane === 'string') {
+        result = { ok: true, text: data.pane };
+        targetLabel = `server:${TLDA_FLEET_SERVER}/api/capture-pane`;
+      } else {
+        const detail = data.error || data.message || `HTTP ${res.status}`;
+        result = { ok: false, error: `server capture-pane failed: ${detail}` };
+      }
+    } catch (e) {
+      result = { ok: false, error: `server capture-pane failed: ${e.message}` };
+    }
+
+    // Local tmux is only a fallback for same-machine MCP sessions. It is not fleet
+    // ground truth; remote agents should normally be read through the daemon route.
+    if (!result?.ok && agentEntry.tmux_session && tmuxHasSession(agentEntry.tmux_session)) {
       result = tmuxRead(agentEntry.tmux_session);
-      if (result.ok) idle = tmuxIsIdle(result.text);
       targetLabel = `tmux:${agentEntry.tmux_session}`;
     }
 
     if (!result?.ok) {
-      // TODO: Need server endpoint to mark agent dead (POST /api/agents/mark-dead)
-      return { content: [{ type: 'text', text: `Cannot read terminal for ${agentEntry.friendly_name || agentEntry.id}: ${result?.error || 'no tmux session'}. Agent marked dead.` }], isError: true };
+      return { content: [{ type: 'text', text: `Cannot read terminal for ${agentEntry.friendly_name || agentEntry.id}: ${result?.error || 'no tmux session'}. Agent was not marked dead by read_terminal.` }], isError: true };
     }
+    idle = tmuxIsIdle(result.text);
 
     // Fetch tasks to find active task for this agent
     let tasks;
@@ -2375,7 +3205,16 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
         localPath = decodeURIComponent(pathMatch[1])
       }
 
-      // If server is local, download remote images to temp
+      // If the referenced file is not readable locally (common with Fly-hosted
+      // /api/file?path=/tmp/... links), download the image into a local temp.
+      if (localPath) {
+        try {
+          const fs = await import('fs')
+          if (!fs.existsSync(localPath)) localPath = null
+        } catch {
+          localPath = null
+        }
+      }
       if (!localPath && url.startsWith('http')) {
         try {
           const fs = await import('fs')
@@ -2394,8 +3233,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
         const ext = localPath.split('.').pop()?.toLowerCase() || 'png'
         const mimeMap = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml' }
         images.push({ path: localPath, mimeType: mimeMap[ext] || 'image/png', alt: alt || '' })
-        // Replace markdown image with text reference
-        cleaned = cleaned.replace(full, `[image: ${localPath}]`)
+        cleaned = cleaned.replace(full, alt ? `[image attached: ${alt}]` : '[image attached]')
       }
     }
     return { text: cleaned, images }
@@ -2542,7 +3380,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
               meta = meta || {}
               const tool = meta.tool || ev.text || displayLabel
               const arg = meta.arg || ''
-              const prettyResult = meta.prettyResult || ''
+              const prettyResult = meta.prettyResult ? normalizePrettyResult(meta.prettyResult) : ''
 
               // Resolve agent name
               let agentName = (ev.from || '').replace('fleet:', '')
@@ -2573,10 +3411,10 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
     try {
       data = await sendWS('my-task', { agent: AGENT_ID });
     } catch (e) {
-      return { content: [{ type: 'text', text: `Server unreachable: ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `tlda backend didn't answer (it may be restarting). Not yours to debug — tell ops if it persists, then retry shortly. (${e.message})` }], isError: true };
     }
 
-    if (!data) return { content: [{ type: 'text', text: 'Server unreachable (WS not connected).' }], isError: true };
+    if (!data) return { content: [{ type: 'text', text: `tlda backend didn't answer (it may be restarting). Not yours to debug — tell ops if it persists, then retry shortly.` }], isError: true };
     const task = data.task;
     const unread = data.messages || [];
 
@@ -2584,6 +3422,15 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
     if (task) {
       const age = Math.round((Date.now() - new Date(task.delegated_at)) / 60000);
       text = `Your task [${task.id}]: ${task.description}\nStatus: ${task.status} | ${age}m ago`;
+      try {
+        const agents = await sendWS('store-agents');
+        const agent = Array.isArray(agents) ? agents.find(a => a.id === AGENT_ID) : null;
+        const health = classifyTaskAgentHealth(task, agent);
+        const healthNote = formatTaskHealth(health, { includeOk: true, includeAction: true });
+        if (healthNote) text += `\nAgent health: ${healthNote}`;
+      } catch (e) {
+        text += `\nAgent health: unavailable (${e.message})`;
+      }
       if (task.message) {
         text += `\n\n${task.message}`;
         if (task.success_criteria?.length) {
@@ -2610,7 +3457,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
           } else {
             const sl = ctx.sourceLine
             const srcHint = sl ? ` ${sl.file}:${sl.startLine}${sl.endLine && sl.endLine !== sl.startLine ? '-' + sl.endLine : ''}` : ''
-            docHint = ` [viewing ${ctx.doc}${ctx.version ? '@' + ctx.version : ''}${ctx.page ? ' p' + (Array.isArray(ctx.page) ? ctx.page.join(',') : ctx.page) : ''}${srcHint}]`
+            docHint = ` [viewing ${ctx.doc}${ctx.version ? '@' + ctx.version : ''}${ctx.page ? ' p' + (Array.isArray(ctx.page) ? ctx.page.join(',') : ctx.page) : ''}${srcHint}${staleHint(ctx)}]`
           }
         }
         const { text: chipResolvedText, images: chipImages } = await resolveChipTokens(m.text, m.metadata)
@@ -2654,7 +3501,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
     if (!args?.doc) return { content: [{ type: 'text', text: 'Missing doc argument.' }], isError: true };
     try {
       const data = await sendWS('tlda-monitor-add', { agentId: AGENT_ID, doc: args.doc });
-      if (!data) return { content: [{ type: 'text', text: 'Server unreachable (WS not connected).' }], isError: true };
+      if (!data) return { content: [{ type: 'text', text: `tlda backend didn't answer (it may be restarting). Not yours to debug — tell ops if it persists, then retry shortly.` }], isError: true };
       const subs = Array.isArray(data.subscriptions) ? data.subscriptions : [];
       // Remember the most recent doc this agent is watching so chat() can
       // stamp outgoing messages with a docContext (doc + version) without
@@ -2670,7 +3517,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
     if (!args?.doc) return { content: [{ type: 'text', text: 'Missing doc argument.' }], isError: true };
     try {
       const data = await sendWS('tlda-monitor-remove', { agentId: AGENT_ID, doc: args.doc });
-      if (!data) return { content: [{ type: 'text', text: 'Server unreachable (WS not connected).' }], isError: true };
+      if (!data) return { content: [{ type: 'text', text: `tlda backend didn't answer (it may be restarting). Not yours to debug — tell ops if it persists, then retry shortly.` }], isError: true };
       const subs = Array.isArray(data.subscriptions) ? data.subscriptions : [];
       return { content: [{ type: 'text', text: `Stopped monitoring "${args.doc}". Remaining subscriptions: ${subs.join(', ') || '(none)'}.` }] };
     } catch (e) {
@@ -2681,7 +3528,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
     if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not registered.' }], isError: true };
     try {
       const data = await sendWS('tlda-monitor-list', { agentId: AGENT_ID });
-      if (!data) return { content: [{ type: 'text', text: 'Server unreachable (WS not connected).' }], isError: true };
+      if (!data) return { content: [{ type: 'text', text: `tlda backend didn't answer (it may be restarting). Not yours to debug — tell ops if it persists, then retry shortly.` }], isError: true };
       const subs = Array.isArray(data.subscriptions) ? data.subscriptions : [];
       return { content: [{ type: 'text', text: subs.length ? `Monitoring: ${subs.join(', ')}` : 'Not monitoring any documents.' }] };
     } catch (e) {
@@ -2699,6 +3546,21 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
       return { content: [{ type: 'text', text: `Named ${args.agent}: "${args.friendly_name}"` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Rename failed: ${e.message}` }], isError: true };
+    }
+  }
+
+  // ---- spawn_models ----
+  if (name === 'spawn_models') {
+    try {
+      const catalog = await getSpawnModelCatalog({ maxAgeMs: 0 });
+      const text = formatSpawnModelSummary(catalog, {
+        verifiedOnly: !!args.verified_only,
+        kind: args.kind || null,
+      });
+      const defaultModel = catalog?.default ? `\nDefault: ${catalog.default}` : '';
+      return { content: [{ type: 'text', text: `${text}${defaultModel}` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `spawn_models failed: ${e.message}` }], isError: true };
     }
   }
 
@@ -2730,37 +3592,43 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
       } catch {}
     }
 
-    // Resolve mode: explicit arg > config file default
-    let spawnMode = args.mode || null;
-    if (!spawnMode) {
-      try {
-        const cfg = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.config', 'tlda', 'config.json'), 'utf8'));
-        spawnMode = cfg.spawnMode || null;
-      } catch {}
-    }
-
     try {
-      const output = runFleetSpawn(agentName, {
-        fresh: isFresh, refresh: isRefresh,
-        model: args.model, effort: args.effort,
-        cwd: args.cwd, mode: spawnMode,
+      const modelError = await validateSpawnRequest(args);
+      if (modelError) return { content: [{ type: 'text', text: modelError }], isError: true };
+
+      const isRespawn = !isFresh && !isRefresh;
+      const result = await sendWS('spawn', {
+        fresh: isFresh,
+        respawn: isRespawn,
+        refresh: isRefresh,
+        agent: args.agent,
+        name: args.name,
+        model: args.model,
+        kind: args.kind,
+        effort: args.effort,
+        cwd: args.cwd,
+        mode: args.mode,
+        capability: args.capability,
       });
+      if (result?.ok === false || result?.error) {
+        return { content: [{ type: 'text', text: `spawn failed: ${result.error || JSON.stringify(result)}` }], isError: true };
+      }
 
       // Assign lineage/phase after spawn
       if (phase && isFresh) {
         try {
           const result = await sendWS('lineage-assign', { agent: agentName, phase });
           if (result?.error) {
-            return { content: [{ type: 'text', text: `Spawned but lineage assignment failed: ${result.error}\n${output}` }], isError: true };
+            return { content: [{ type: 'text', text: `Spawned but lineage assignment failed: ${result.error}` }], isError: true };
           }
         } catch (e) {
           process.stderr.write(`[fleet] lineage-assign after spawn failed: ${e.message}\n`);
         }
       }
 
-      return { content: [{ type: 'text', text: output }] };
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     } catch (e) {
-      const msg = (e.stderr || e.stdout || e.message || '').trim();
+      const msg = (e.message || '').trim();
       return { content: [{ type: 'text', text: `spawn failed: ${msg}` }], isError: true };
     }
   }
@@ -3076,6 +3944,44 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       return `  [${fmtTs(c.timestamp)}] ${cDir}: ${text}`;
     };
 
+    const parseEventMetadata = (metadata) => {
+      if (!metadata) return {};
+      if (typeof metadata === 'object') return metadata;
+      if (typeof metadata === 'string') {
+        try { return JSON.parse(metadata) || {}; } catch { return {}; }
+      }
+      return {};
+    };
+
+    const compactForSearch = (value, max = 600) => {
+      if (value == null || value === '') return '';
+      const text = typeof value === 'string' ? value : JSON.stringify(value);
+      return text.length > max ? `${text.slice(0, max)}... [truncated ${text.length - max} chars]` : text;
+    };
+
+    const indentForSearch = (value, prefix = '  ') =>
+      String(value).split('\n').map(line => `${prefix}${line}`).join('\n');
+
+    const formatActivityForSearch = (r, fallbackSnippet) => {
+      const metadata = parseEventMetadata(r.metadata);
+      const tool = metadata.tool || r.text || fallbackSnippet || 'activity';
+      if (tool === '_text') return r.text || metadata.arg || fallbackSnippet || '';
+
+      const description = metadata.input?.description || metadata.description || '';
+      let arg = '';
+      if (metadata.arg != null && metadata.arg !== '') arg = compactForSearch(metadata.arg);
+      else if (metadata.input?.command) arg = compactForSearch(metadata.input.command);
+      else if (metadata.input != null) arg = compactForSearch(metadata.input);
+
+      const lines = [`[activity${r.id ? ` #${r.id}` : ''}] ${tool}${description ? ` — ${description}` : ''}`];
+      if (arg) lines.push(indentForSearch(arg));
+      if (metadata.prettyResult) {
+        lines.push('  result:');
+        lines.push(indentPrettyResult(compactPrettyResult(metadata.prettyResult, 600), '    '));
+      }
+      return lines.join('\n');
+    };
+
     const formatted = results.map(r => {
       const snippet = (r.snippet || '').replace(/⟨⟨/g, '**').replace(/⟩⟩/g, '**');
 
@@ -3083,10 +3989,11 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
         const from = tag(r.from, r.fromName, r.fromNameNow);
         const to = tag(r.to, r.toName, r.toNameNow);
         const direction = to ? `${from} → ${to}` : from;
+        const display = r.type === 'activity' ? formatActivityForSearch(r, snippet) : snippet;
         let text;
         if (contextWindow > 0 && r.timestamp && contextMap[r.timestamp]) {
           const ctx = contextMap[r.timestamp];
-          const matchLine = `  [${fmtTs(r.timestamp)}] ${direction}: ${snippet}  ← MATCH`;
+          const matchLine = `  [${fmtTs(r.timestamp)}] ${direction}: ${display.replace(/\n/g, '\n    ')}  ← MATCH`;
           text = `=== Match ===\n${ctx.before.map(fmtCtxMsg).join('\n')}`;
           if (ctx.before.length > 0) text += '\n';
           text += matchLine;
@@ -3095,7 +4002,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
           const parts = [];
           if (r.timestamp) parts.push(new Date(r.timestamp).toLocaleString());
           parts.push(`[fleet] [${r.type}] ${direction}`);
-          parts.push(snippet);
+          parts.push(display);
           text = parts.join(' | ');
         }
         return { timestamp: r.timestamp, text };
@@ -3177,6 +4084,43 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     const isBounded = !!(resolvedSince && resolvedUntil);
     const pageSize = isBounded ? 10_000 : (args.page_size || 200);
 
+    const parseEventMetadata = (metadata) => {
+      if (!metadata) return {};
+      if (typeof metadata === 'object') return metadata;
+      if (typeof metadata === 'string') {
+        try { return JSON.parse(metadata) || {}; } catch { return {}; }
+      }
+      return {};
+    };
+
+    const compactForThread = (value, max = 1200) => {
+      if (value == null || value === '') return '';
+      const text = typeof value === 'string' ? value : JSON.stringify(value);
+      return text.length > max ? `${text.slice(0, max)}... [truncated ${text.length - max} chars]` : text;
+    };
+
+    const indentForThread = (value, prefix = '  ') =>
+      String(value).split('\n').map(line => `${prefix}${line}`).join('\n');
+
+    const formatActivityForThread = (e, metadata) => {
+      const tool = metadata.tool || e.text || 'activity';
+      if (tool === '_text') return e.text || metadata.arg || '';
+
+      const description = metadata.input?.description || metadata.description || '';
+      let arg = '';
+      if (metadata.arg != null && metadata.arg !== '') arg = compactForThread(metadata.arg);
+      else if (metadata.input?.command) arg = compactForThread(metadata.input.command);
+      else if (metadata.input != null) arg = compactForThread(metadata.input);
+
+      const lines = [`[activity${e.id ? ` #${e.id}` : ''}] ${tool}${description ? ` — ${description}` : ''}`];
+      if (arg) lines.push(indentForThread(arg));
+      if (metadata.prettyResult) {
+        lines.push('  result:');
+        lines.push(indentPrettyResult(compactPrettyResult(metadata.prettyResult, 1000), '    '));
+      }
+      return lines.join('\n');
+    };
+
     const fetchEventsForAgent = async (agentId) => {
       // Fetch one extra row so we can detect "there's more" without a COUNT.
       const params = { agent: agentId, limit: pageSize + 1 };
@@ -3186,12 +4130,16 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       const data = await sendWS('store-events', params);
       if (!data) return;
       for (const e of (data.events || [])) {
-        const text = e.type === 'delegate'
+        const metadata = parseEventMetadata(e.metadata);
+        const text = e.type === 'activity'
+          ? formatActivityForThread(e, metadata)
+          : e.type === 'delegate'
           ? `[DELEGATE] ${e.description || ''}\n${e.message || e.text || ''}`
           : e.type === 'task_done'
           ? `[DONE] ${e.description || ''}`
           : e.text || e.message || '';
         filtered.push({
+          id: e.id, type: e.type, metadata,
           from: e.from_id || e.from, to: e.to_id || e.to, text, timestamp: e.timestamp,
           fromName: e.fromName, toName: e.toName, fromNameNow: e.fromNameNow, toNameNow: e.toNameNow,
         });
@@ -3220,7 +4168,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
         return {
           content: [{
             type: 'text',
-            text: `"${args.agent}" looks like a Claude Code session UUID. Session IDs are not accepted in fleet — use the agent identifier (name like "pb" or "fleet:UUID"). If you don't know which agent ran a session, look at the JSONL's first message or use roll_call.`,
+            text: `"${args.agent}" looks like a Claude Code session UUID. Session IDs are not accepted in fleet — use the agent identifier (name like "pb" or "fleet:UUID"). If you don't know which agent ran a session, look at the JSONL's first message or use fleet_table.`,
           }],
           isError: true,
         };
@@ -3253,7 +4201,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     filtered.sort((a, b) => (a.timestamp ?? '').localeCompare(b.timestamp ?? ''));
     const seen = new Set();
     filtered = filtered.filter(m => {
-      const key = `${m.timestamp}|${m.from}|${(m.text ?? '')}`;
+      const key = m.id != null ? `id:${m.id}` : `${m.timestamp}|${m.from}|${m.type || ''}|${(m.text ?? '')}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -3389,7 +4337,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       if (data.error) return { content: [{ type: 'text', text: `Label failed: ${data.error}` }], isError: true };
       return { content: [{ type: 'text', text: `Labels for ${data.agent}: ${(data.labels || []).join(', ') || '(none)'}` }] };
     } catch (e) {
-      return { content: [{ type: 'text', text: `Label failed (server unreachable): ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `Label failed (tlda backend not answering — tell ops if it persists): ${e.message}` }], isError: true };
     }
   }
 
@@ -3404,41 +4352,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       const status = data.stopped ? 'confirmed stopped' : `not confirmed after ${data.attempts} attempts`;
       return { content: [{ type: 'text', text: `${data.agent || agent}: ${status}.` }] };
     } catch (e) {
-      return { content: [{ type: 'text', text: `Interrupt failed (server unreachable): ${e.message}` }], isError: true };
-    }
-  }
-
-  // ---- restart_mcp ----
-  if (name === 'restart_mcp') {
-    // Restart another agent's fleet MCP by routing through the tlda server's
-    // /api/restart-mcp endpoint, which delegates to the fleet-daemon's
-    // rpcRestartMcp handler on the target agent's machine. The daemon runs
-    // the fleet-mcp-restart script to navigate the /mcp menu via tmux.
-    //
-    // NOTE: can't restart YOUR OWN MCP this way — if your MCP is
-    // disconnected you can't call this tool. For that, bash the
-    // fleet-mcp-restart script directly.
-    if (!args.agent) return { content: [{ type: 'text', text: 'Specify an agent to restart.' }], isError: true };
-    if (args.agent === AGENT_ID) return { content: [{ type: 'text', text: 'Cannot restart your own MCP via this tool (if your MCP is disconnected, calling the tool is impossible). Bash ~/work/fleet/bin/fleet-mcp-restart directly.' }], isError: true };
-    try {
-      const res = await fleetFetch(`${TLDA_SERVER}/api/restart-mcp`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agent: args.agent }),
-      });
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        return { content: [{ type: 'text', text: `Restart failed: HTTP ${res.status}${text ? ' — ' + text.slice(0, 200) : ''}` }], isError: true };
-      }
-      const data = await res.json();
-      if (data.error) return { content: [{ type: 'text', text: `Restart failed: ${data.error}` }], isError: true };
-      const details = [];
-      if (data.tmux_session) details.push(`tmux:${data.tmux_session}`);
-      if (data.stdout) details.push(`stdout:${String(data.stdout).slice(0, 200)}`);
-      if (data.stderr) details.push(`stderr:${String(data.stderr).slice(0, 200)}`);
-      return { content: [{ type: 'text', text: `Restart sent to ${args.agent}${details.length ? ' (' + details.join(' | ') + ')' : ''}` }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Restart failed (server unreachable): ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `Interrupt failed (tlda backend not answering — tell ops if it persists): ${e.message}` }], isError: true };
     }
   }
 
@@ -3449,7 +4363,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     try {
       const userId = args.user
       if (!userId) return { content: [{ type: 'text', text: 'Missing user — pass the fleet ID of the person whose viewport you want (e.g. "fleet:skip").' }], isError: true }
-      const url = `${TLDA_SERVER}/api/fleet/viewing?user=${encodeURIComponent(userId)}`
+      const url = `${TLDA_FLEET_SERVER}/api/fleet/viewing?user=${encodeURIComponent(userId)}`
       const res = await fleetFetch(url)
       const data = await res.json()
       if (data.error) return { content: [{ type: 'text', text: `No viewing context for ${userId}. They may not have scrolled recently.` }] }
@@ -3466,48 +4380,53 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     }
   }
 
-  // ---- roll_call ----
-  if (name === 'roll_call') {
+  // ---- fleet_table ----
+  if (name === 'fleet_table') {
     try {
-      const res = await fleetFetch(`${TLDA_SERVER}/api/roll-call`);
+      const qs = new URLSearchParams();
+      if (args.filter) qs.set('filter', args.filter);
+      if (args.limit) qs.set('limit', String(args.limit));
+      const res = await fleetFetch(`${TLDA_FLEET_SERVER}/api/fleet-table${qs.toString() ? `?${qs}` : ''}`);
       const data = await res.json();
-      if (data.error) return { content: [{ type: 'text', text: `Roll call failed: ${data.error}` }], isError: true };
+      if (data.error) return { content: [{ type: 'text', text: `fleet_table failed: ${data.error}` }], isError: true };
 
-      const agentStatus = data.agents || [];
-      const missing = data.missing_from_roster || [];
-      const unmatchedTmux = data.unregistered_tmux || [];
+      const t = data.totals || { awake: 0, hibernating: 0, dead: 0, total: 0 };
+      const rows = data.agents || [];
+      const header = `Fleet: ${t.awake} awake · ${t.hibernating} hibernating · ${t.dead} dead · ${t.total} total`;
+      const scope = data.matched != null && data.matched !== t.total
+        ? `  (filter matched ${data.matched}${data.shown < data.matched ? `, showing ${data.shown}` : ''})`
+        : '';
 
-      const lines = [];
-      const alive = [], stale = [], dead = [];
-      for (const a of agentStatus) {
-        const label = a.friendly_name || a.id;
-        const transport = a.tmux_session ? `tmux:${a.tmux_session}` : 'no session';
-        const seenAgo = a.last_seen_ago_s == null ? 'never' : `${a.last_seen_ago_s}s ago`;
-        const info = `${label} (${a.id}) — ${transport}, cwd: ${a.cwd || '?'}, seen ${seenAgo}`;
-        if (a.status === 'alive') alive.push(info);
-        else if (a.status === 'stale') stale.push(info);
-        else dead.push(info);
+      if (rows.length === 0) {
+        return { content: [{ type: 'text', text: `${header}${scope}\n(no agents match)` }] };
       }
 
-      if (alive.length) lines.push(`Alive (${alive.length}):\n  ${alive.join('\n  ')}`);
-      if (stale.length) lines.push(`Stale (${stale.length}):\n  ${stale.join('\n  ')}`);
-      if (dead.length) lines.push(`Dead (${dead.length}):\n  ${dead.join('\n  ')}`);
-
-      if (missing.length) {
-        lines.push(`\nIn roster but gone (${missing.length}):`);
-        for (const m of missing) {
-          const label = m.name || m.fleet_id;
-          lines.push(`  ${label} (${m.fleet_id}) — cwd: ${m.cwd || '?'}, session: ${m.session || '?'}`);
-        }
-      }
-
-      if (unmatchedTmux.length) {
-        lines.push(`\nUnregistered tmux sessions (${unmatchedTmux.length}): ${unmatchedTmux.join(', ')}`);
-      }
-
-      return { content: [{ type: 'text', text: lines.join('\n') || 'No agents, no roster entries, no tmux sessions.' }] };
+      // Compact aligned table.
+      const fmt = (a) => {
+        const seen = a.last_seen_ago_s == null ? 'never' : a.last_seen_ago_s < 90 ? `${a.last_seen_ago_s}s` : a.last_seen_ago_s < 5400 ? `${Math.round(a.last_seen_ago_s / 60)}m` : `${Math.round(a.last_seen_ago_s / 3600)}h`;
+        const act = a.activity ? `${a.activity}${a.tool ? `:${a.tool}` : ''}` : '';
+        return { name: a.name, status: a.status, seen, cwd: a.cwd || '', act };
+      };
+      const f = rows.map(fmt);
+      const w = (k) => Math.max(k.length, ...f.map(r => String(r[k]).length));
+      const wn = w('name'), ws = w('status'), wsa = Math.max(4, ...f.map(r => r.seen.length));
+      const lines = f.map(r =>
+        `${r.name.padEnd(wn)}  ${r.status.padEnd(ws)}  ${r.seen.padStart(wsa)}  ${r.act ? r.act.padEnd(14) : '              '}  ${r.cwd}`.trimEnd()
+      );
+      const colHead = `${'agent'.padEnd(wn)}  ${'status'.padEnd(ws)}  ${'seen'.padStart(wsa)}  ${'activity'.padEnd(14)}  cwd`;
+      return { content: [{ type: 'text', text: `${header}${scope}\n\n${colHead}\n${lines.join('\n')}` }] };
     } catch (e) {
-      return { content: [{ type: 'text', text: `Roll call failed (server unreachable): ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `fleet_table failed (tlda backend not answering — tell ops if it persists): ${e.message}` }], isError: true };
+    }
+  }
+
+  // ---- usage_status ----
+  if (name === 'usage_status') {
+    try {
+      const status = normalizeUsageStatus(loadConfig());
+      return { content: [{ type: 'text', text: formatUsageStatus(status) }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `usage_status failed: ${e.message}` }], isError: true };
     }
   }
 
@@ -3750,14 +4669,15 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
 
     if (args.remove) {
       if (typeof args.remove === 'number' || (typeof args.remove === 'string' && !isNaN(args.remove))) {
-        // Remove specific wiretap by ID
-        await sendWS('wiretap-remove', { id: args.remove });
+        // Remove specific wiretap by ID. Field is `tap_id`, not `id`: sendWS()
+        // stamps a correlation `id` onto every RPC, which would clobber `id`.
+        await sendWS('wiretap-remove', { tap_id: args.remove });
         return { content: [{ type: 'text', text: `Removed wiretap #${args.remove}.` }] };
       }
       // Remove all wiretaps for this agent
       const existing = await sendWS('wiretap-list', { agent: myId });
       for (const tap of existing) {
-        await sendWS('wiretap-remove', { id: tap.id });
+        await sendWS('wiretap-remove', { tap_id: tap.id });
       }
       return { content: [{ type: 'text', text: `Removed ${existing.length} wiretap(s).` }] };
     }
@@ -3766,7 +4686,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     if (!args.filter) {
       const taps = await sendWS('wiretap-list', { agent: myId });
       if (taps.length === 0) return { content: [{ type: 'text', text: 'No active wiretaps.' }] };
-      const lines = taps.map(t => `#${t.id}: ${JSON.stringify(t.filter)}`);
+      const lines = taps.map(t => `#${t.id}: ${t.filter}${t.types ? ` [types: ${t.types.join(', ')}]` : ''}`);
       return { content: [{ type: 'text', text: `Active wiretaps:\n${lines.join('\n')}` }] };
     }
 
@@ -3774,7 +4694,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     if (args.types && args.types.length > 0) body.types = args.types
     const tap = await sendWS('wiretap-add', body);
     const typesStr = args.types ? ` Types: ${args.types.join(', ')}` : ''
-    return { content: [{ type: 'text', text: `Wiretap #${tap.id} active. Filter: ${JSON.stringify(args.filter)}${typesStr}` }] };
+    return { content: [{ type: 'text', text: `Wiretap #${tap.id} active. Filter: ${args.filter}${typesStr}` }] };
   }
 
   // ---- timer (non-blocking) ----
@@ -3997,10 +4917,18 @@ async function _flushUnread() {
     const lines = [];
     if (task) lines.push(`📬 You have a pending task: ${(task.description || '').slice(0, 80)}`);
     if (msgs.length > 0) lines.push(`📬 ${msgs.length} unread message(s). Call my_task().`);
-    await server.notification({
-      method: 'notifications/claude/channel',
-      params: { content: lines.join('\n'), meta: { event_type: 'flush' } },
-    });
+    const content = lines.join('\n');
+    if (harnessFromEnv().channelNudge) {
+      const sess = process.env.FLEET_TMUX_SESSION;
+      if (sess) tmuxSendText(sess, content);
+    }
+    await Promise.race([
+      server.notification({
+        method: 'notifications/claude/channel',
+        params: { content, meta: { event_type: 'flush' } },
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('notification timeout')), 1000)),
+    ]);
   } catch {}
 }
 
@@ -4009,7 +4937,7 @@ function startChannelWS() {
   if (_channelRWS) return;
 
   _channelRWS = new ResilientWS({
-    url: () => `${TLDA_WS_SERVER}/ws/fleet?agent=${encodeURIComponent(AGENT_ID)}`,
+    url: () => `${TLDA_FLEET_WS_SERVER}/ws/fleet?agent=${encodeURIComponent(AGENT_ID)}`,
     label: 'fleet-channel',
     heartbeatTimeoutMs: 45000,
     log: (s) => process.stderr.write(s + '\n'),
@@ -4141,7 +5069,7 @@ async function handleChannelMessage(msg) {
         if (ctx.compareRef) {
           docHint = ` [viewing ${ctx.doc} — comparing old@${ctx.compareRef} vs current@${ctx.version || 'latest'}]`
         } else {
-          docHint = ` [viewing ${ctx.doc}${ctx.version ? '@' + ctx.version : ''}]`
+          docHint = ` [viewing ${ctx.doc}${ctx.version ? '@' + ctx.version : ''}${staleHint(ctx)}]`
         }
       }
       const truncNote = isTruncated(rawText) ? `\n(TRUNCATED — showing ${PREVIEW_MAX}/${rawText.length} chars. You MUST call my_task() for the full text before responding)` : '';
@@ -4161,18 +5089,40 @@ async function handleChannelMessage(msg) {
   handleChannelMessage._lastContent = content;
   handleChannelMessage._lastTs = now;
 
+  let delivered = false;
+  // Harness adapter decides whether Claude-channel delivery needs a tmux nudge.
+  // Do this before the Claude notification: Codex/Goose may not support that
+  // notification method, and some clients can leave the notification pending.
+  if (isDirectTarget && harnessFromEnv().channelNudge) {
+    const sess = process.env.FLEET_TMUX_SESSION;
+    if (sess) {
+      delivered = tmuxSendText(sess, content) || delivered;
+    } else {
+      process.stderr.write('[fleet-channel] no FLEET_TMUX_SESSION for harness nudge\n');
+    }
+  }
+
   try {
-    await server.notification({
-      method: 'notifications/claude/channel',
-      params: {
-        content,
-        meta: {
-          event_type: isWiretapTarget && !isDirectTarget ? 'wiretap' : eventType,
-          from: fromId,
+    await Promise.race([
+      server.notification({
+        method: 'notifications/claude/channel',
+        params: {
+          content,
+          meta: {
+            event_type: isWiretapTarget && !isDirectTarget ? 'wiretap' : eventType,
+            from: fromId,
+          },
         },
-      },
-    });
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('notification timeout')), 1000)),
+    ]);
+    delivered = true;
     process.stderr.write(`[fleet-channel] Delivered ${eventType} from ${fromId} via channel (event ${data.id})\n`);
+  } catch (e) {
+    process.stderr.write(`[fleet-channel] notification failed: ${e.message}\n`);
+  }
+
+  if (delivered) {
     // Mark as delivered so dupes are suppressed
     if (data.id) {
       _deliveredChannelIds.add(data.id);
@@ -4183,8 +5133,6 @@ async function handleChannelMessage(msg) {
       const signalFile = path.join(os.homedir(), '.fleet', 'signals', AGENT_ID);
       if (fs.existsSync(signalFile)) fs.unlinkSync(signalFile);
     } catch {}
-  } catch (e) {
-    process.stderr.write(`[fleet-channel] notification failed: ${e.message}\n`);
   }
 }
 

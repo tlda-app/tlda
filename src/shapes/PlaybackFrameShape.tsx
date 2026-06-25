@@ -44,9 +44,10 @@ import {
   type SubtitleEntry,
   type TimewarpRegion,
 } from '../playback-context'
+import { DATABASE_HTTP } from '../activeConfig'
 import './PlaybackFrameShape.css'
 
-const FLEET_API = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5176'
+const FLEET_API = DATABASE_HTTP
 const DEFAULT_W = 500
 const SCRUBBER_H = 64
 const HEADER_H = 36
@@ -624,6 +625,12 @@ export class PlaybackFrameShapeUtil extends BaseBoxShapeUtil<any> {
 
   component(shape: any) {
     return <PlaybackFrameComponent shape={shape} />
+  }
+
+  getIndicatorPath(shape: any) {
+    const path = new Path2D()
+    path.rect(0, 0, shape.props.w, shape.props.h)
+    return path
   }
 
   indicator(shape: any) {

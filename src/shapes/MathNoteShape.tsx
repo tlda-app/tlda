@@ -19,6 +19,8 @@ import { DocContext } from '../PanelContext'
 import { fetchProofInfo } from '../docInfoCache'
 import { linkifyArrowRefs, linkifyAtRefs, refToCanvas, type LabelRegionInfo, type ResolvedRef } from '../docLinks'
 import { PDF_HEIGHT } from '../layoutConstants'
+import { getPref, subscribePref } from '../preferences'
+import { beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
 
 const md = new MarkdownIt({ html: true, breaks: true, linkify: true })
 // Open all links in new tab so they don't navigate the tldraw iframe
@@ -161,6 +163,8 @@ const DOT_COLORS: Record<string, string> = {
   'white': '#d4d4d4',
 }
 
+const AUTO_SIZE_Y_BUFFER = 4
+
 // Entry mode: set before entering edit mode to dispatch vim command on mount
 // 'i' = insert mode, ':' = ex command, null = normal mode (default)
 let pendingEntryMode: 'i' | ':' | null = null
@@ -169,6 +173,15 @@ export function setMathNoteEntryMode(mode: 'i' | ':' | null) { pendingEntryMode 
 // Reply context: set before entering edit mode to show the tab being replied to
 let pendingReplyContext: string | null = null
 export function setReplyContext(text: string | null) { pendingReplyContext = text }
+
+// On a touch device (iPad) the note is dictated into by voice, not typed. Tag
+// the editable element with inputmode="none" so iOS does NOT raise the on-screen
+// keyboard when a voice note enters edit mode — focus + programmatic transcript
+// insertion still work, the keyboard just stays down.
+// maxTouchPoints (not pointer:coarse) — a Magic Keyboard/trackpad makes the
+// iPad's primary pointer "fine", which would wrongly drop the no-keyboard rule.
+const _isTouchDevice = typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0
+const noKeyboardOnTouch = _isTouchDevice ? [EditorView.contentAttributes.of({ inputmode: 'none' })] : []
 
 // CodeMirror theme: minimal, transparent, monospace
 const cmTheme = EditorView.theme({
@@ -237,6 +250,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
   override hideRotateHandle = () => true
   override hideSelectionBoundsBg = (shape: any) => !!shape.props.collapsed
   override hideSelectionBoundsFg = (shape: any) => !!shape.props.collapsed
+  override canSnap = (shape: any) => !shape.props.docView
 
   override getGeometry(shape: any) {
     if (shape.props.collapsed) {
@@ -245,7 +259,16 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     return new Rectangle2d({ width: shape.props.w, height: shape.props.h, isFilled: true })
   }
 
+  override onTranslateStart = (shape: any) => {
+    if (!shape.props.docView) beginNativeSnapDrag(this.editor)
+  }
+
+  override onTranslateCancel = (_initial: any, current: any) => {
+    if (!current.props.docView) endNativeSnapDrag(this.editor)
+  }
+
   override onTranslateEnd = (initial: any, current: any) => {
+    if (!current.props.docView) endNativeSnapDrag(this.editor)
     // If dropped on a fleet-chat shape → snap back + insert annotation token
     const bounds = this.editor.getShapePageBounds(current.id)
     if (bounds) {
@@ -313,6 +336,9 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     const modeJustChangedRef = useRef(false)
     const [dotHovered, setDotHovered] = useState(false)
     const dotHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+    // Pointerdown position on the collapse-dot, so a single tap/click expands it
+    // but a drag still moves the shape (see the dot's onPointerUp).
+    const dotDownRef = useRef<{ x: number; y: number } | null>(null)
     const [imgVersion, setImgVersion] = useState(0)
     const [backingSyncState, setBackingSyncState] = useState<'synced' | 'pushing' | 'stale'>('synced')
 
@@ -337,6 +363,11 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     const bgColor = NOTE_COLORS[shape.props.color] || NOTE_COLORS.yellow
     const searchFilter = useSyncExternalStore(subscribeSearchFilter, getSearchFilter)
     const isFilteredOut = searchFilter !== null && !searchFilter.has(shape.id)
+    const noteOpacity = useSyncExternalStore(
+      subscribePref,
+      () => getPref('math-note-opacity'),
+      () => getPref('math-note-opacity'),
+    )
     const useVim = useSyncExternalStore(subscribeVimMode, getVimMode)
     const activeBullets = useSyncExternalStore(subscribeBulletContext, getBulletContexts)
 
@@ -450,37 +481,23 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         .catch(() => setBackingSyncState('stale'))
     }, [isEditing])
 
-    // Backing file conflict: when the file changes externally while the note
-    // has different content, split into two notes (file version + canvas version).
+    // Backing file changed externally: the file is the source of truth for a
+    // file-backed note, so update the note in place. (We must NOT spawn a sibling
+    // on every divergence — with many actively-edited backing files that floods
+    // the room with orphan notes.) Don't clobber while the user is editing.
     useEffect(() => {
       if (!backingFile) return
       return onFileUpdatedSignal((signal) => {
         if (signal.filePath !== backingFile) return
         const current = (editor.getShape(shape.id) as any)?.props?.text ?? ''
         if (signal.content === current) { setBackingSyncState('synced'); return }
-        setBackingSyncState('stale')
-        // Divergence detected — split: update this note with the file version,
-        // create a sibling with the canvas version.
-        const bounds = editor.getShapePageBounds(shape.id)
-        const x = bounds ? bounds.x + bounds.w + 20 : 0
-        const y = bounds ? bounds.y : 0
-        editor.createShape({
-          type: 'math-note' as any,
-          x,
-          y,
-          props: {
-            text: current,
-            color: shape.props.color || 'yellow',
-            w: (shape.props as any).w || 450,
-            h: (shape.props as any).h || 200,
-          },
-          meta: { ...shape.meta, splitFrom: shape.id, splitAt: Date.now() },
-        })
+        if (editor.getEditingShapeId() === shape.id) { setBackingSyncState('stale'); return }
         editor.updateShape({
           id: shape.id,
           type: 'math-note' as any,
           props: { text: signal.content },
         })
+        setBackingSyncState('synced')
       })
     }, [backingFile, shape.id, editor])
 
@@ -583,7 +600,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           requestAnimationFrame(() => {
             const el = contentRef.current
             if (!el) return
-            const contentH = el.scrollHeight
+            const contentH = Math.ceil(el.scrollHeight + AUTO_SIZE_Y_BUFFER)
             const target = Math.max(40, contentH)
             const diff = target - shape.props.h
             if (Math.abs(diff) > 2) {
@@ -603,20 +620,28 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     }, [isEditing])
 
     // Auto-size: use ResizeObserver to track content height changes reliably.
-    // Only allow shrinking when the element is actually visible (not culled by TLDraw).
+    // Both grow AND shrink are guarded against measuring an unsettled element.
+    // On reload the element can briefly report a bogus scrollHeight (e.g. text
+    // wrapping at width≈0 before layout settles, or before fonts/KaTeX lay out),
+    // which previously grew the note to a giant height that persisted to Yjs and
+    // never shrank back. Only trust a measurement when the element is genuinely
+    // on-screen (non-zero rect) AND its layout width has settled to props.w.
     useEffect(() => {
       if (isEditing || !shape.props.autoSize) return
       const el = contentRef.current
       if (!el) return
       const measure = () => {
-        const contentH = el.scrollHeight
-        const target = Math.max(40, contentH)
-        const diff = target - shape.props.h
-        if (Math.abs(diff) > 2) {
-          if (diff < 0) {
-            const rect = el.getBoundingClientRect()
-            if (rect.height < 1) return // culled — skip shrink
-          }
+        const node = contentRef.current
+        if (!node) return
+        // On-screen and not culled by TLDraw (culled → 0-size rect).
+        const rect = node.getBoundingClientRect()
+        if (rect.width < 1 || rect.height < 1) return
+        // clientWidth is layout px (unaffected by camera zoom) and must match the
+        // note's set width; if it hasn't, the text is wrapping at the wrong width
+        // and scrollHeight is unreliable.
+        if (Math.abs(node.clientWidth - shape.props.w) > 2) return
+        const target = Math.max(40, Math.ceil(node.scrollHeight + AUTO_SIZE_Y_BUFFER))
+        if (Math.abs(target - shape.props.h) > 2) {
           editor.updateShape({
             id: shape.id,
             type: 'math-note' as any,
@@ -624,11 +649,34 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           })
         }
       }
-      const ro = new ResizeObserver(measure)
-      ro.observe(el)
-      measure()
-      return () => ro.disconnect()
-    }, [isEditing, shape.props.autoSize, shape.props.text, shape.props.w, shape.props.collapsed])
+      let raf1 = 0
+      let raf2 = 0
+      let cancelled = false
+      let ro: ResizeObserver | null = null
+      const start = () => {
+        if (cancelled) return
+        ro = new ResizeObserver(measure)
+        ro.observe(el)
+        // Defer the first measure two frames so layout has actually settled
+        // before we trust the height (prevents the reload giant-resize).
+        raf1 = requestAnimationFrame(() => {
+          raf2 = requestAnimationFrame(measure)
+        })
+      }
+      // Fonts/KaTeX glyphs change content height — wait for them before measuring.
+      const fonts = (document as any).fonts
+      if (fonts?.ready) {
+        fonts.ready.then(start)
+      } else {
+        start()
+      }
+      return () => {
+        cancelled = true
+        cancelAnimationFrame(raf1)
+        cancelAnimationFrame(raf2)
+        ro?.disconnect()
+      }
+    }, [isEditing, shape.props.autoSize, shape.props.text, shape.props.w, shape.props.h, shape.props.collapsed])
 
     // Create/destroy CodeMirror when editing state changes
     useEffect(() => {
@@ -656,6 +704,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         doc: shape.props.text || '',
         extensions: [
           ...(useVim ? [vim()] : []),
+          ...noKeyboardOnTouch,
           latex(),
           // Auto-expand $$: typing second $ after first opens display math block
           EditorView.inputHandler.of((view, from, to, text) => {
@@ -824,6 +873,75 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         setVimMode('normal')
       }
     }, [isEditing, useVim])
+
+    // Grow the note to fit content WHILE editing (the dictation case). The
+    // CodeMirror container is overflow:auto at a fixed height derived from
+    // props.h, so without this the editor scrolls and the latest dictated line
+    // sits below the fold until edit-exit — Skip's complaint: "speaking to a
+    // sticky and it's getting cut off on the bottom." Grow-only: the shrink-to-
+    // fit still happens on edit exit (the edit start/end effect above), so we
+    // never shrink out from under the user mid-edit.
+    //
+    // We size props.h to the FIXED POINT of the edit-mode layout (see the render
+    // math: availH = h - 16 - contextHeight, and the editor gets `availH` with
+    // no preview or `0.6 * availH` with one). Solving in closed form — rather
+    // than nudging h against the current value — avoids a feedback loop when the
+    // reply-context band (min(120, 0.3h)) itself grows with h.
+    useEffect(() => {
+      if (!isEditing || !shape.props.autoSize) return
+      let raf = 0
+      let cancelled = false
+      let ro: ResizeObserver | null = null
+      const grow = () => {
+        if (cancelled) return
+        const view = cmViewRef.current
+        if (!view) return
+        const host = cmContainerRef.current
+        if (!host) return
+        // Skip a culled / not-yet-laid-out editor (a bogus measurement here
+        // would over-grow; shrink-on-exit can't always undo a giant height).
+        const r = host.getBoundingClientRect()
+        if (r.width < 1 || r.height < 1) return
+        const contentH = view.contentHeight // CodeMirror's measured doc height (layout px)
+        if (!contentH || contentH < 1) return
+        const showPreview = hasMath(localText) && !!previewHtml
+        // A pinned split while previewing is the user's manual choice — growing
+        // the whole note wouldn't enlarge the (fixed) editor pane, so leave it.
+        if (showPreview && splitPx != null) return
+        const editorFraction = showPreview ? 0.6 : 1
+        // Required availH so the editor's share covers the content (+buffer).
+        const needAvail = (contentH + AUTO_SIZE_Y_BUFFER) / editorFraction
+        let target: number
+        if (!replyContext) {
+          target = needAvail + 16 // 16px status bar
+        } else {
+          // contextHeight = min(120, 0.3h). Small-h branch: 0.7h - 16 >= needAvail.
+          const small = (needAvail + 16) / 0.7
+          target = small <= 400 ? small : needAvail + 16 + 120
+        }
+        target = Math.max(40, Math.ceil(target))
+        if (target > shape.props.h + 2) {
+          editor.updateShape({
+            id: shape.id,
+            type: 'math-note' as any,
+            props: { h: target },
+          })
+        }
+      }
+      // Observe the editor content for height changes (text streaming in,
+      // wrapping, font load) and grow as it grows.
+      const view = cmViewRef.current
+      if (view) {
+        ro = new ResizeObserver(() => grow())
+        ro.observe(view.contentDOM)
+      }
+      raf = requestAnimationFrame(grow)
+      return () => {
+        cancelled = true
+        cancelAnimationFrame(raf)
+        ro?.disconnect()
+      }
+    }, [isEditing, useVim, shape.props.autoSize, shape.props.h, shape.props.w, localText, previewHtml, splitPx, replyContext])
 
     // Wrapper keydown: stop TLDraw from stealing keys, handle Escape fallback
     const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
@@ -1384,10 +1502,22 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
             }}
             style={{ position: 'relative', pointerEvents: 'auto' }}
           >
-            {/* The dot — double-click to expand, single click passes through to TLDraw for select/drag */}
+            {/* The dot — SINGLE click/tap expands it (Skip's ask: was double, now
+                single). Handled on DOM pointerup, not onClick/onDoubleClick:
+                TLDraw's capture-phase listeners block ShapeUtil.onClick from
+                firing on unselected shape content (same constraint as bullets),
+                which is why the old path needed a double-click on a 10px target —
+                nearly un-hittable. pointerup fires for mouse + finger + stylus
+                regardless of selection. A movement guard preserves drag-to-move:
+                a no-move tap expands; a drag passes through to TLDraw. */}
             <div
-              onDoubleClick={(e) => {
-                e.stopPropagation()
+              onPointerDown={(e) => { dotDownRef.current = { x: e.clientX, y: e.clientY } }}
+              onPointerUp={(e) => {
+                const d = dotDownRef.current
+                dotDownRef.current = null
+                if (!d) return
+                if (Math.abs(e.clientX - d.x) > 8 || Math.abs(e.clientY - d.y) > 8) return
+                stopEventPropagation(e)
                 editor.updateShape({
                   id: shape.id,
                   type: shape.type,
@@ -1469,7 +1599,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           display: 'flex',
           flexDirection: 'column',
           position: 'relative',
-          opacity: isFilteredOut ? 0.15 : undefined,
+          opacity: isFilteredOut ? 0.15 : noteOpacity,
           transition: 'opacity 0.2s',
         }}
       >
@@ -1636,6 +1766,12 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           </div>
       </HTMLContainer>
     )
+  }
+
+  getIndicatorPath(shape: any) {
+    const path = new Path2D()
+    path.rect(0, 0, shape.props.w, shape.props.h)
+    return path
   }
 
   indicator(shape: any) {

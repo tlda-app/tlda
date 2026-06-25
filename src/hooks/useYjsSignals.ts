@@ -14,6 +14,12 @@ export interface ScreenshotCaptureState {
   bounds: { x: number; y: number; w: number; h: number }
   agent?: string
   timestamp: number
+  /** When set, the capture's side editor renders ONLY shapes whose id is in this
+   *  list or whose type is in shapeTypes — everything else (incl. the doc pages)
+   *  is skipped. Lets an agent capture just the fleet chat without re-rendering
+   *  the heavy svg-page shapes. */
+  shapeIds?: string[]
+  shapeTypes?: string[]
 }
 
 interface UseYjsSignalsParams {
@@ -211,7 +217,11 @@ export function useYjsSignals({
       writeSignal('signal:screenshot-claimed', { requestTimestamp: reqTs })
 
       try {
-        // Determine capture bounds: explicit bounds > page > viewport
+        const reqIds: string[] = Array.isArray(signal.shapeIds) ? signal.shapeIds : []
+        const reqTypes: string[] = Array.isArray(signal.shapeTypes) ? signal.shapeTypes : []
+        const hasShapeRequest = reqIds.length > 0 || reqTypes.length > 0
+
+        // Determine capture bounds: explicit bounds > page > requested shapes > viewport
         let captureBounds: { x: number; y: number; w: number; h: number } | null = null
         if (signal.bounds) {
           captureBounds = { x: signal.bounds.x, y: signal.bounds.y, w: signal.bounds.w, h: signal.bounds.h }
@@ -223,6 +233,23 @@ export function useYjsSignals({
             const b = editor.getShapePageBounds(target.id)
             if (b) captureBounds = { x: b.x, y: b.y, w: b.w, h: b.h }
           }
+        } else if (hasShapeRequest) {
+          // Frame the requested shapes: union of their page bounds.
+          const idSet = new Set(reqIds)
+          const typeSet = new Set(reqTypes)
+          const matching = editor.getCurrentPageShapes()
+            .filter((s: any) => idSet.has(s.id) || typeSet.has(s.type))
+          let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+          for (const s of matching) {
+            const b = editor.getShapePageBounds(s.id)
+            if (!b) continue
+            minX = Math.min(minX, b.minX); minY = Math.min(minY, b.minY)
+            maxX = Math.max(maxX, b.maxX); maxY = Math.max(maxY, b.maxY)
+          }
+          if (minX !== Infinity) {
+            const pad = signal.padding ?? 40
+            captureBounds = { x: minX - pad, y: minY - pad, w: (maxX - minX) + pad * 2, h: (maxY - minY) + pad * 2 }
+          }
         }
         if (!captureBounds) {
           const vp = editor.getViewportPageBounds()
@@ -230,7 +257,13 @@ export function useYjsSignals({
         }
 
         if (setScreenshotCapture) {
-          setScreenshotCapture({ bounds: captureBounds, agent: signal.agent, timestamp: Date.now() })
+          setScreenshotCapture({
+            bounds: captureBounds,
+            agent: signal.agent,
+            timestamp: Date.now(),
+            shapeIds: reqIds.length ? reqIds : undefined,
+            shapeTypes: reqTypes.length ? reqTypes : undefined,
+          })
         }
       } catch (e) {
         console.warn('[Screenshot] Capture failed:', e)

@@ -9,9 +9,10 @@
 import { Router } from 'express'
 import { join } from 'path'
 import { existsSync, readdirSync, readFileSync } from 'fs'
-import { exec as execCb } from 'child_process'
+import { exec as execCb, execFile as execFileCb } from 'child_process'
 import { promisify } from 'util'
 const execAsync = promisify(execCb)
+const execFileAsync = promisify(execFileCb)
 import { requireRead, requireRw } from '../lib/auth.mjs'
 import { readProject, outputDir, projectDir, sourceDir as getSourceDir } from '../lib/project-store.mjs'
 import { dispatchBuild } from '../lib/build-dispatch.mjs'
@@ -20,6 +21,7 @@ import { listCommits, buildAtRef, getGitBuildStatus } from '../lib/git-history.m
 import { listVersions, versionAt, checkoutSource, getShadowRepoDir, getTimeBounds, adjacentVersion, ensureShadowDvi } from '../lib/shadow-repo.mjs'
 import { ensure, historicalCtx } from '../lib/ensure.mjs'
 import { broadcastSignal, putShape } from '../lib/sync-rooms.mjs'
+import { loadProofInfo, dryRunInvalidation } from '../lib/invalidation-graph.mjs'
 
 // ---- Diff highlight helpers (mirrored from mcp-server draw_highlight logic) ----
 const _PDF_WIDTH = 612, _TARGET_WIDTH = 800, _PDF_HEIGHT = 792, _PAGE_GAP = 32
@@ -1038,6 +1040,140 @@ router.get('/shadow/changelog', requireRead, async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
+})
+
+/** Parse `git diff -U0` output into OLD-side hunk ranges. */
+export function parseOldSideHunks(diffOut) {
+  const hunks = []
+  for (const line of diffOut.split('\n')) {
+    if (!line.startsWith('@@')) continue
+    const m = line.match(/^@@ -(\d+)(?:,(\d+))? \+/)
+    if (!m) continue
+    const start = parseInt(m[1], 10)
+    const count = m[2] != null ? parseInt(m[2], 10) : 1
+    hunks.push({ start, count })
+  }
+  return hunks
+}
+
+/** Does an old-side hunk touch the inclusive line range [lo, hi]? */
+export function hunkIntersectsRange(hunk, lo, hi) {
+  if (hunk.count === 0) {
+    // Pure insertion after old line `start`: the text lands between start and
+    // start+1. Count it only when that point is strictly interior to the span,
+    // so an insertion abutting either boundary doesn't false-alarm.
+    return hunk.start >= lo && hunk.start <= hi - 1
+  }
+  const hStart = hunk.start
+  const hEnd = hunk.start + hunk.count - 1
+  return hStart <= hi && hEnd >= lo
+}
+
+const _COMMIT_RE = /^[0-9a-fA-F]{4,40}$|^HEAD$/
+
+/**
+ * POST /ribbon-stale — Given approved ribbon segments, report which have gone
+ * stale because their source lines changed since the commit they were approved at.
+ *
+ * Body: { segments: [{ file, startLine, endLine, approvedAtCommit }], currentCommit? }
+ * Response: { results: [{ stale, reason? }] } in the same order as the input.
+ *
+ * Each segment's line numbers are relative to its approvedAtCommit (the build that
+ * was on screen when it was approved), so we diff approvedAtCommit..currentCommit
+ * and intersect the OLD-side hunk ranges with the segment's [startLine, endLine].
+ */
+router.post('/ribbon-stale', requireRead, async (req, res) => {
+  const { name } = req.params
+  const { segments = [], currentCommit = 'HEAD' } = req.body ?? {}
+
+  const project = readProject(name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+  if (!Array.isArray(segments)) return res.status(400).json({ error: 'segments must be an array' })
+  if (typeof currentCommit !== 'string' || !_COMMIT_RE.test(currentCommit)) {
+    return res.status(400).json({ error: 'currentCommit must be a git hash or HEAD' })
+  }
+
+  const repoDir = getShadowRepoDir(name)
+  if (!existsSync(join(repoDir, '.git'))) {
+    return res.json({ results: segments.map(() => ({ stale: false, reason: 'no-shadow-repo' })) })
+  }
+
+  const mainFile = project.mainFile || 'main.tex'
+  const relFileFor = (f) => (f && f !== '') ? f : mainFile
+
+  // One git diff per distinct (commit, file) pair; test every segment in the pair.
+  const results = segments.map(() => ({ stale: false }))
+  const groups = new Map()
+  segments.forEach((seg, i) => {
+    if (!seg || typeof seg.approvedAtCommit !== 'string' || !_COMMIT_RE.test(seg.approvedAtCommit)) {
+      results[i] = { stale: false, reason: 'no-anchor' }
+      return
+    }
+    const file = relFileFor(seg.file)
+    if (file.includes('\0') || file.includes('\n')) { results[i] = { stale: false, reason: 'bad-file' }; return }
+    const key = `${seg.approvedAtCommit} ${file}`
+    if (!groups.has(key)) groups.set(key, { commit: seg.approvedAtCommit, file, idxs: [] })
+    groups.get(key).idxs.push(i)
+  })
+
+  for (const { commit, file, idxs } of groups.values()) {
+    if (commit === currentCommit) {
+      for (const i of idxs) results[i] = { stale: false, reason: 'current' }
+      continue
+    }
+    let hunks
+    try {
+      // execFile (no shell) — file/commit are client-supplied; never interpolate into a shell.
+      const { stdout } = await execFileAsync(
+        'git', ['diff', '-U0', commit, currentCommit, '--', file],
+        { cwd: repoDir, timeout: 15000, maxBuffer: 20 * 1024 * 1024 },
+      )
+      hunks = parseOldSideHunks(stdout)
+    } catch (e) {
+      // Unknown commit / git failure: can't determine — report it, don't false-alarm.
+      for (const i of idxs) results[i] = { stale: false, reason: `diff-failed: ${String(e.message).split('\n')[0]}` }
+      continue
+    }
+    for (const i of idxs) {
+      const seg = segments[i]
+      const lo = Math.min(seg.startLine, seg.endLine)
+      const hi = Math.max(seg.startLine, seg.endLine)
+      results[i] = { stale: hunks.some(h => hunkIntersectsRange(h, lo, hi)) }
+    }
+  }
+
+  res.json({ results })
+})
+
+/**
+ * POST /invalidation/dry-run — structural (dependency-graph) invalidation of a
+ * PROPOSED edit, without committing it.
+ *
+ * Body: { fromLine, toLine, file? }  — the source line range the edit would touch.
+ * Response: { directlyStale: [...], cascadeStale: [...] }
+ *   directlyStale: proof nodes whose own statement the edit changes
+ *   cascadeStale:  nodes that transitively depend on a changed node (with depth + via)
+ *
+ * Pure graph + interval logic over proof-info.json — no git needed, because the
+ * proposed range IS the change. (file is accepted but v1 treats statementLines as
+ * main-file-relative; multi-file anchoring is a follow-up.)
+ */
+router.post('/invalidation/dry-run', requireRead, (req, res) => {
+  const { name } = req.params
+  const { fromLine, toLine } = req.body ?? {}
+
+  const project = readProject(name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+  const lo = Number(fromLine)
+  const hi = Number(toLine)
+  if (!Number.isInteger(lo) || !Number.isInteger(hi) || lo < 1 || hi < 1) {
+    return res.status(400).json({ error: 'fromLine and toLine must be positive integers' })
+  }
+
+  const proofInfo = loadProofInfo(outputDir(name))
+  if (!proofInfo) return res.json({ directlyStale: [], cascadeStale: [], reason: 'no-proof-info' })
+
+  res.json(dryRunInvalidation(proofInfo, lo, hi))
 })
 
 export default router

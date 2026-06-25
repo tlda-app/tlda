@@ -18,7 +18,6 @@
 // }
 
 import { phaseFromName, baseName } from '../../shared/lineage-name.mjs'
-
 // --- Pure helpers (copied from utils.mjs) ---
 
 export function esc(s) {
@@ -37,10 +36,17 @@ export function timeShort(ts) {
   return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })
 }
 
+// A pending countdown's message carries a "— say "<bot> cancel" to stop" hint.
+// Once the timer has fired that hint is moot, so strip it for the terminal line.
+export function timerDoneLabel(s) {
+  return String(s || '').replace(/\s*—\s*say\b[^]*$/i, '')
+}
+
 // --- Standalone att-token resolver ---
-// Used by unquote Tier 2 to render a rechat result (resolvedMessage + inlineAttachments)
-// into HTML without the full chat-line wrapper. renderMarkdown is the same function
-// passed via ctx to renderChatLine.
+// Used by the unquote handler to render a rechat result (resolvedMessage +
+// inlineAttachments) into HTML without the full chat-line wrapper — the immediate
+// local feedback before the authoritative event-update broadcast re-renders the
+// whole message. renderMarkdown is the same function passed via ctx to renderChatLine.
 export function resolveInlineAttachments(text, inlineAttachments, renderMarkdown) {
   // Expand ![alt]({{att:N}}) → ![alt](URL) before renderMarkdown sees it
   let processed = text
@@ -140,8 +146,18 @@ export function renderChatLine(m, ctx) {
   if (m._timerCancelled) {
     const nick = agentLabel(m.from)
     const cls = getNickClass(m.from)
-    const msg = esc(m._timerMessage)
+    const msg = esc(timerDoneLabel(m._timerMessage))
     return `<div class="chat-line chat-timer-cancelled" data-msg-from="${esc(m.from || '')}"><span class="chat-ts">${timeShort(m.timestamp)}</span> <span class="agent-nick ${cls}" data-agent-id="${esc(m.from)}">${esc(nick)}</span> <span class="timer-msg">\uD83D\uDEAB ${msg} \u2014 cancelled</span></div>`
+  }
+  // Timer fired \u2014 terminal, but stays in the log so the countdown's outcome
+  // remains visible. A timer is a chat event: it counts to zero and then sits
+  // there showing it fired, rather than vanishing. The "say <bot> cancel" hint
+  // is stripped since it's moot once the action has run.
+  if (m._timerFired) {
+    const nick = agentLabel(m.from)
+    const cls = getNickClass(m.from)
+    const msg = esc(timerDoneLabel(m._timerMessage))
+    return `<div class="chat-line chat-timer-fired" data-msg-from="${esc(m.from || '')}"><span class="chat-ts">${timeShort(m.timestamp)}</span> <span class="agent-nick ${cls}" data-agent-id="${esc(m.from)}">${esc(nick)}</span> <span class="timer-msg">\u2705 ${msg}</span></div>`
   }
   // Compacting indicator
   if (m._compacting) {
@@ -177,11 +193,11 @@ export function renderChatLine(m, ctx) {
   // Kick messages and channel notifications — infrastructure noise, filter from chat UI
   if ((m.text || '').startsWith('📬')) return ''
   if ((m.text || '').startsWith('<channel')) return ''
-  if ((m.text || '').includes('[Request interrupted by user]')) return ''
+  if ((m.text || '').includes('[Request interrupted by user')) return ''
 
   // --- Terminal messages (from JSONL session logs) ---
   if (m._evType === 'terminal_user' || m._evType === 'terminal_assistant') {
-    if ((m.text || '').includes('[Request interrupted by user]')) return ''
+    if ((m.text || '').includes('[Request interrupted by user')) return ''
     if (/^[\s📬]*$/.test(m.text || '')) return ''
     if (m.from && m.from === m.to) return ''
     const nick = periodNick(m.from, m.fromName)
@@ -375,18 +391,6 @@ export function renderChatLine(m, ctx) {
     </div>` + text
   }
 
-  // Convert uploaded file links into chips — <a href="/api/files/name.ext">name.ext</a> → ref-chip
-  // This handles files drag-dropped from Finder (uploaded, inserted as markdown links)
-  text = text.replace(/<a\s[^>]*href="((?:https?:\/\/[^"]*)?\/api\/files\/([^"]+))"[^>]*>([^<]*)<\/a>/gi, (_match, url, fileName, label) => {
-    const ext = fileName.split('.').pop()?.toLowerCase() || ''
-    const isImage = /^(png|jpg|jpeg|gif|webp|svg)$/.test(ext)
-    if (isImage) {
-      return `<img class="chat-image" src="${url}" alt="${esc(label)}">`
-    }
-    const icon = ext === 'pdf' ? '📕' : ext === 'md' ? '📄' : '📎'
-    return `<span class="ref-chip ref-chip-doc" data-url="${esc(url)}" draggable="true"><span class="ref-chip-doc-icon">${icon}</span>${esc(label)}</span>`
-  })
-
   // Replace remaining {{att:N}} markers (standalone, not in markdown image syntax)
   text = text.replace(/\{\{att:(\d+)\}\}/g, (_, idx) => {
     const att = m._inlineAttachments?.[+idx]
@@ -429,25 +433,17 @@ export function renderChatLine(m, ctx) {
   // Render attachments as interactive refs
   function renderAttachChip(a) {
     if (a.type === 'shared-doc') {
-      const parts = (a.source || '').split(':')
-      const docName = parts.slice(3).join(':') || parts[parts.length - 1] || 'doc'
-      const filePath = a.path || ''
-      // Extract title from explicit field or first heading in content
-      let title = a.title || ''
-      if (!title && a.text) {
-        const m = a.text.match(/^#\s+(.+)$/m)
-        if (m) title = m[1].trim()
-      }
-      if (!title) title = docName
-      // Determine file type from path extension
-      const ext = filePath.split('.').pop()?.toLowerCase() || ''
-      const isImage = /^(png|jpg|jpeg|gif|svg|webp)$/.test(ext)
-      // Image shared-docs: render inline at 75% width
-      if (isImage && a.url) {
-        return `<img class="chat-image chat-image-shared-doc" src="${esc(a.url)}" alt="${esc(title)}" title="${esc(title)}">`
-      }
-      const icon = isImage ? '🖼' : ext === 'pdf' ? '📕' : '📄'
-      return `<span class="ref-chip ref-chip-doc" data-path="${esc(filePath)}" data-doc="${esc(docName)}" data-title="${esc(title)}" draggable="true"><span class="ref-chip-doc-icon">${icon}</span>${esc(title)}</span>`
+      const rawTarget = String(a.url || a.path || '').trim()
+      if (!rawTarget) return ''
+      const fileUrl = /^(?:https?:\/\/|\/api\/)/i.test(rawTarget)
+        ? rawTarget
+        : `/api/file?path=${encodeURIComponent(rawTarget)}`
+      const label = a.title || a.name || rawTarget.split('/').pop() || rawTarget
+      const ext = (rawTarget || label).split('.').pop()?.toLowerCase() || ''
+      const icon = ext === 'pdf' ? '📕' : ext === 'md' ? '📄' : '📎'
+      const pathAttr = a.path ? ` data-path="${esc(a.path)}"` : ''
+      const titleAttr = label ? ` data-title="${esc(label)}"` : ''
+      return `<span class="ref-chip ref-chip-doc"${pathAttr} data-url="${esc(fileUrl)}"${titleAttr} draggable="true"><span class="ref-chip-doc-icon">${icon}</span>${esc(label)}</span>`
     }
     const agentId = (a.source || '').split(':')[1] || ''
     const agentName = agentId ? agentLabel(agentId) : ''
@@ -489,7 +485,8 @@ export function renderChatLine(m, ctx) {
   }
   // Failed local messages
   if (m._failed) {
-    return `<div class="chat-line from-user" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts">${ts}</span> <span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(nick)}:</span></span> ${displayText} <span class="chat-warning">\u26A0 not sent</span> <button class="chat-resend-btn" data-resend-to="${esc(m.to || '')}" data-resend-text="${esc(m.text || '')}" data-resend-tempid="${esc(m._tempId || '')}" title="Resend">\u21BB</button></div>`
+    const tempId = esc(m._tempId || '')
+    return `<div class="chat-line from-user" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts">${ts}</span> <span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(nick)}:</span></span> ${displayText} <span class="chat-warning">\u26A0 not sent</span> <button class="chat-resend-btn" data-resend-to="${esc(m.to || '')}" data-resend-text="${esc(m.text || '')}" data-resend-tempid="${tempId}" title="Resend">\u21BB</button><button class="chat-dismiss-failed-btn" data-dismiss-tempid="${tempId}" title="Dismiss failed message" aria-label="Dismiss failed message">&times;</button></div>`
   }
   // Voicemail
   if (m._voicemail) {
@@ -530,7 +527,7 @@ export function renderChatLine(m, ctx) {
   // Long message: block display
   const rawLineCount = (m.text || '').split('\n').length
   const isLongMsg = rawLineCount > 20
-  let bodyText = isLongMsg ? `<span class="message-body message-long">${displayText}</span>` : displayText
+  let bodyText = `<span class="message-body${isLongMsg ? ' message-long' : ''}">${displayText}</span>`
   // Provenance chip: a message body baked from a file section (chat/amend with
   // file+section) carries metadata.source = { file, section }. Show a subtle
   // "from <file> §<section>" chip so the reader can see/open the source. Reuses

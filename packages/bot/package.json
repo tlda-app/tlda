@@ -1,0 +1,14 @@
+{
+  "name": "@tlda/bot",
+  "version": "0.1.0",
+  "description": "Lifecycle harness for a tlda-compatible bot: register, reconnect, pidfile, addressed-command dispatch.",
+  "type": "module",
+  "main": "index.mjs",
+  "exports": {
+    ".": "./index.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.0.0"
+  },
+  "license": "MIT"
+}

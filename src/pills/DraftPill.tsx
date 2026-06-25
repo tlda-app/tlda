@@ -3,7 +3,7 @@
  * Shows when draft mode is on or there are pending drafts.
  */
 import { useState, useEffect, useRef, useMemo, useSyncExternalStore } from 'react'
-import { useEditor, useValue } from 'tldraw'
+import { useEditor, useUniqueSafeId, useValue } from 'tldraw'
 import {
   getDraftCount,
   isDraft,
@@ -95,16 +95,18 @@ export function DraftPill() {
 }
 
 function DraftBoxIcon({ on, count }: { on: boolean; count: number }) {
+  const hatchId = useUniqueSafeId('dp-hatch')
+  const clipId = useUniqueSafeId('dp-clip')
   // A small box: diagonal-hatched (pattern fill) when draft mode off,
   // empty when on with no drafts, count text when drafts pending.
   return (
     <svg width="14" height="11" viewBox="0 0 14 11" className="draft-pill-icon">
       {!on && (
         <defs>
-          <pattern id="dp-hatch" patternUnits="userSpaceOnUse" width="3" height="3" patternTransform="rotate(45)">
+          <pattern id={hatchId} patternUnits="userSpaceOnUse" width="3" height="3" patternTransform="rotate(45)">
             <line x1="0" y1="0" x2="0" y2="3" stroke="currentColor" strokeWidth="1" />
           </pattern>
-          <clipPath id="dp-clip">
+          <clipPath id={clipId}>
             <rect x="2" y="2" width="10" height="7" rx="0.5" />
           </clipPath>
         </defs>
@@ -112,8 +114,8 @@ function DraftBoxIcon({ on, count }: { on: boolean; count: number }) {
       {/* hatch fill — clipped to interior, no stroke */}
       {!on && (
         <rect x="2" y="2" width="10" height="7"
-          fill="url(#dp-hatch)" stroke="none"
-          clipPath="url(#dp-clip)" />
+          fill={`url(#${hatchId})`} stroke="none"
+          clipPath={`url(#${clipId})`} />
       )}
       {/* border — drawn on top, clean */}
       <rect x="1.5" y="1.5" width="11" height="8" rx="1"

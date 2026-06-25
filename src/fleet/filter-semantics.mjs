@@ -1,0 +1,183 @@
+import { labelsForAgent, evalExprDirectional } from '../../shared/fleet-labels.mjs'
+
+// The set of labels a participant (an event's from/to/agent id) answers to.
+// Label expansion has a single source of truth — `labelsForAgent` in
+// shared/fleet-labels.mjs, the same function the server uses — so client and
+// server agree on "does agent X carry label L". A bare id with no roster entry
+// still answers to its own id (preserving the old `agentId === label` case).
+function labelSetForParticipant(agentId, { agents = [], humanId = null, humanName = null } = {}) {
+  if (!agentId) return new Set()
+  let agent = agents.find(a => a.id === agentId)
+  if (!agent && humanId && agentId === humanId) {
+    agent = { id: humanId, friendly_name: humanName || 'user', status: 'human', labels: [] }
+  }
+  return new Set(agent ? labelsForAgent(agent) : [agentId])
+}
+
+function agentMatchesLabel(agentId, label, context = {}) {
+  return labelSetForParticipant(agentId, context).has(label)
+}
+
+function isHumanParticipant(agentId, context) {
+  return agentMatchesLabel(agentId, context.humanId, context) ||
+    (context.humanName ? agentMatchesLabel(agentId, context.humanName, context) : false)
+}
+
+function isDmWithTarget(event, targetLabel, context) {
+  if (!event || !targetLabel) return false
+  if (event._activity || event.type === 'activity') {
+    // The target agent's OWN activity belongs in the "DM ⚒ / tools visible" rung
+    // (dm, normal traffic). The quiet rung (dm-quiet) hides it via
+    // quietTrafficSuppressesActivity at the render layer, NOT here — so this gate
+    // must let it through, scoped strictly to the target's own activity. Other
+    // agents' activity stays excluded from a DM filter.
+    const actor = event.from || event.from_id || event.agent || event.agent_id || null
+    return agentMatchesLabel(actor, targetLabel, context)
+  }
+  const from = event.from || event.from_id || event.agent
+  const to = event.to || event.to_id || null
+  const agent = event.agent || event.agent_id || null
+  const fromHuman = isHumanParticipant(from, context)
+  const toHuman = isHumanParticipant(to, context)
+  const fromTarget = agentMatchesLabel(from, targetLabel, context)
+  const toTarget = agentMatchesLabel(to, targetLabel, context) || agentMatchesLabel(agent, targetLabel, context)
+
+  if (fromHuman && toTarget) return true
+  if (fromTarget && toHuman) return true
+  if (fromTarget && !to) return true
+  return false
+}
+
+// Filter is DNF of terms: [[["to","skip"],["from","math"]]] or plain [["label"]] or null (match all).
+// Term formats: [role, label] tuple (directional) or plain string (matches from OR to).
+//
+// The directional label matching is evaluated by the SHARED engine —
+// `evalExprDirectional` from shared/fleet-labels.mjs, the same evaluator the
+// server uses for wiretap (`to:`/`from:`/bare leaves) — so a `[role,label]`
+// tuple and the server's `role:label` string expression resolve identically.
+// We hand the evaluator a single-leaf AST node directly (not a constructed
+// string) so labels containing spaces or `&|!()` can't be mis-tokenized. The
+// only client-specific term is `dm`, an event-level predicate (it needs the
+// human's identity and the from/to/empty-to shape) that has no server
+// counterpart, so it stays a local pre-check rather than a shared leaf.
+function leafNode(token) { return { t: 'lit', v: token } }
+
+export function matchesFleetFilter(filter, event, context = {}) {
+  if (!event) return true  // broadcast (e.g. read-receipt refresh)
+  if (!filter || filter.length === 0) return true
+  if ((event.from_id === 'system' || event.from === 'system') && !event.to) return true
+  const fromLabels = labelSetForParticipant(event.from || event.agent, context)
+  const toLabels = labelSetForParticipant(event.to || event.agent, context)
+  const dirCtx = { fromLabels, toLabels }
+  const matchTerm = (term) => {
+    if (Array.isArray(term)) {
+      const [role, label] = term
+      if (role === 'dm') return isDmWithTarget(event, label, context)
+      // [from,x] -> "from:x", [to,x] -> "to:x" leaf for the shared evaluator.
+      return evalExprDirectional(leafNode(`${role}:${label}`), dirCtx)
+    }
+    // Plain string — bare leaf matches from OR to (shared evaluator semantics).
+    return evalExprDirectional(leafNode(term), dirCtx)
+  }
+  return filter.some(clause => clause.every(matchTerm))
+}
+
+function termLabel(term) {
+  return Array.isArray(term) ? term[1] : term
+}
+
+// Resolve a DNF filter to the broad set of agent IDs needed to fetch history for
+// events that might match the live display filter. The history endpoint only
+// prefilters by "involves one of these agents", so include every referenced
+// participant label instead of requiring one agent to satisfy an entire clause.
+export function resolveFleetFilter(filter, { agents = [], humanId = null, humanName = null } = {}) {
+  if (!filter) return new Set()
+  const ids = new Set()
+  const allAgents = [...agents]
+  if (humanId && !allAgents.some(a => a.id === humanId)) {
+    allAgents.push({ id: humanId, friendly_name: humanName || 'user', status: 'human', labels: [] })
+  }
+  const labels = new Set()
+  for (const clause of filter) {
+    if (!Array.isArray(clause)) continue
+    for (const term of clause) {
+      const label = termLabel(term)
+      if (label) labels.add(label)
+    }
+  }
+  // Resolve a shared name to the LIVE holder. Skip's model: "dying makes the name
+  // usable, it does not wipe it" — a dead agent keeps its name, so dead+live name
+  // duplicates are the steady state. A label that ANY live agent carries must
+  // resolve to the live holder(s) ONLY: a dead namesake keeping the same name
+  // must not pull its (historical) thread into a filter aimed at the live agent
+  // (that's what broke Skip's filter). A label with NO live holder still resolves
+  // to the dead one, so a fully-dead name's history stays reachable. Ids are
+  // unique, so explicit id-targeting is unaffected.
+  const liveLabels = new Set()
+  for (const a of allAgents) {
+    if (a.dead) continue
+    for (const l of labelsForAgent(a)) liveLabels.add(l)
+  }
+  for (const a of allAgents) {
+    const agentLabels = labelsForAgent(a)
+    const matched = [...labels].some(label =>
+      agentLabels.includes(label) && (!a.dead || !liveLabels.has(label)))
+    if (matched) ids.add(a.id)
+  }
+  return ids
+}
+
+export function buildFleetDmFilter(humanLabel, agentLabel) {
+  if (!agentLabel) return []
+  return [[['dm', agentLabel]]]
+}
+
+export function buildFleetAgentFilter(agentLabel) {
+  if (!agentLabel) return []
+  return [
+    [['from', agentLabel]],
+    [['to', agentLabel]],
+  ]
+}
+
+function canonicalFilter(filter) {
+  if (!Array.isArray(filter)) return ''
+  return filter
+    .map(clause => Array.isArray(clause)
+      ? clause.map(term => Array.isArray(term) ? `${term[0]}\0${term[1]}` : `any\0${term}`).sort().join('\u0001')
+      : '')
+    .sort()
+    .join('\u0002')
+}
+
+export function sameFleetFilter(a, b) {
+  return canonicalFilter(a) === canonicalFilter(b)
+}
+
+export function quietTrafficSuppressesActivity(filter, trafficMode) {
+  if (trafficMode !== 'quiet') return false
+  return Array.isArray(filter) && filter.some((clause) =>
+    Array.isArray(clause) && clause.some((term) => Array.isArray(term) && term[0] === 'dm')
+  )
+}
+
+export function classifyFleetComposerTrafficMode(filter, trafficMode, humanLabel, agentLabel) {
+  if (!agentLabel) return 'custom'
+  if (sameFleetFilter(filter, buildFleetDmFilter(humanLabel, agentLabel))) {
+    return trafficMode === 'quiet' ? 'dm-quiet' : 'dm'
+  }
+  if (sameFleetFilter(filter, buildFleetAgentFilter(agentLabel))) return 'agent'
+  return 'custom'
+}
+
+export function nextFleetComposerTrafficMode(currentMode) {
+  if (currentMode === 'dm-quiet') return 'dm'
+  if (currentMode === 'dm') return 'agent'
+  return 'dm-quiet'
+}
+
+export function filterForFleetComposerTrafficMode(mode, humanLabel, agentLabel) {
+  return mode === 'agent'
+    ? buildFleetAgentFilter(agentLabel)
+    : buildFleetDmFilter(humanLabel, agentLabel)
+}

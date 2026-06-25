@@ -9,8 +9,9 @@
  */
 
 import puppeteer from 'puppeteer-core'
+import { hasTls } from '../shared/config.mjs'
 
-const BASE = 'http://localhost:5176'
+const BASE = `${hasTls ? 'https' : 'http'}://localhost:5176`
 const READ_TOKEN = 'uY6r_smer80SyjMxbexOBut9U82jE_bY'
 const WRITE_TOKEN = 'TQq6xhqzxiJKN_pF7vxX2py-UEVHPXUK'
 const DOC = 'spinoff4'

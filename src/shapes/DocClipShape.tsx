@@ -23,6 +23,7 @@ import { DocContext } from '../PanelContext'
 import { PDF_HEIGHT } from '../layoutConstants'
 import { getSvgText, setSvgText } from '../stores/svgTextStore'
 import { getPageUrl } from '../stores/pageUrlStore'
+import { FLEET_SHAPE_TYPES } from './fleet-utils'
 
 const BAR_H = 8
 
@@ -47,6 +48,12 @@ export class DocClipShapeUtil extends BaseBoxShapeUtil<any> {
         <DocClipComponent shape={shape} />
       </HTMLContainer>
     )
+  }
+
+  getIndicatorPath(shape: any) {
+    const path = new Path2D()
+    path.rect(0, 0, shape.props.w, shape.props.h)
+    return path
   }
 
   indicator(shape: any) {
@@ -106,7 +113,7 @@ function DocClipComponent({ shape }: { shape: any }) {
 
   const shapeUtils = useMemo(() => {
     const all = (window as any).__tldraw_shape_utils__ || []
-    const EXCLUDE = new Set(['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview', 'fleet-pill', 'doc-clip'])
+    const EXCLUDE = new Set([...FLEET_SHAPE_TYPES, 'fleet-pill', 'doc-clip'])
     return all.filter((u: any) => !EXCLUDE.has(u.type))
   }, [])
 

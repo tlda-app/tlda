@@ -5,7 +5,7 @@
 // then uses spaCy's dependency tree to flag violations.
 
 import { spawnSync } from 'node:child_process'
-import { writeFileSync, mkdtempSync } from 'node:fs'
+import { writeFileSync, mkdtempSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -80,7 +80,7 @@ export function lintDiff(diffText, readFile) {
 }
 
 // Standalone CLI — pipe diff to stdin, set TLDA_SRCDIR to post-state source dir
-if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const { readFileSync } = await import('fs')
   const { join } = await import('path')
   const srcDir = process.env.TLDA_SRCDIR || ''

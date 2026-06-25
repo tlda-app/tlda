@@ -14,7 +14,7 @@ import {
   useValue,
   createShapeId,
 } from 'tldraw'
-import { createFleetShape, agentDisplayName } from './fleet-utils'
+import { beginNativeSnapDrag, createFleetShape, agentDisplayName, endNativeSnapDrag } from './fleet-utils'
 import { useState, useCallback, useRef, useMemo, useEffect, memo } from 'react'
 import { searchFleet, fetchSharedDocs, useFleetAgents, useFleetTasks } from '../fleet-data-adapter'
 import katex from 'katex'
@@ -37,6 +37,10 @@ import './fleet-chat.css'
 const DEFAULT_W = 360
 const DEFAULT_H = 500
 
+function copySourceTemplate(text: string): string {
+  return `<template class="code-block-copy-source">${esc(text)}</template>`
+}
+
 // --- Markdown renderer (shared with FleetChatShape) ---
 const md = new MarkdownIt({ html: true, breaks: true, linkify: true })
 md.renderer.rules.fence = (tokens: any[], idx: number) => {
@@ -45,7 +49,7 @@ md.renderer.rules.fence = (tokens: any[], idx: number) => {
   const code = token.content
   const langLabel = lang ? `<span class="code-block-lang">${lang}</span>` : ''
   const escaped = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-  return `<div class="code-block-wrap"><div class="code-block-header">${langLabel}<span class="code-block-copy" title="Copy">⎘</span></div><pre><code>${escaped}</code></pre></div>`
+  return `<div class="code-block-wrap"><div class="code-block-header">${langLabel}<span class="code-block-copy" title="Copy">⎘</span></div>${copySourceTemplate(code)}<pre><code>${escaped}</code></pre></div>`
 }
 
 function searchRenderMarkdown(escapedHtml: string): string {
@@ -177,19 +181,28 @@ export class FleetSearchShapeUtil extends BaseBoxShapeUtil<any> {
     w: T.number,
     h: T.number,
     userId: T.optional(T.string),
+    deviceId: T.optional(T.string),
   }
 
   getDefaultProps() {
-    return { w: DEFAULT_W, h: DEFAULT_H, userId: '' }
+    return { w: DEFAULT_W, h: DEFAULT_H, userId: '', deviceId: '' }
   }
 
   override canEdit = () => true
   override canResize = () => true
+  override canSnap = () => true
   override canBind = () => false
   override hideRotateHandle = () => true
+  override onTranslateStart = () => beginNativeSnapDrag(this.editor)
+  override onTranslateEnd = () => endNativeSnapDrag(this.editor)
+  override onTranslateCancel = () => endNativeSnapDrag(this.editor)
 
   component(shape: any) {
     return <FleetSearchComponent shape={shape} />
+  }
+
+  getIndicatorPath() {
+    return undefined
   }
 
   indicator() {
@@ -310,16 +323,6 @@ function FleetSearchInner({ shape }: { shape: any }) {
     return id.replace('fleet:', '')
   }, [agents])
 
-  // Agent name → ID lookup (for from: filter matching)
-  const agentIdByName = useMemo(() => {
-    const map = new Map<string, string>()
-    for (const a of agents) {
-      const name = a.friendly_name || (a.id || '').replace('fleet:', '')
-      map.set(name.toLowerCase(), a.id)
-    }
-    return map
-  }, [agents])
-
   const closeChat = useCallback(() => {
     if (chatShapeId) {
       try { editor.run(() => { editor.deleteShapes([chatShapeId as any]) }, { history: 'ignore' }) } catch {}
@@ -350,50 +353,27 @@ function FleetSearchInner({ shape }: { shape: any }) {
     setSearched(true)
     closeChat()
 
-    // Build search — pass FTS query to API, filter results client-side
-    const searchQuery = ftsQuery || '*'
+    // Agent qualifiers resolve on the SERVER. An explicit `fleet:` id is sent as
+    // `agent` (exact); any other typed text is a name fragment sent as `agentQuery`
+    // — the server substring-matches it (dawn-aware) against current AND historical
+    // names, with no recency cap. `from:` narrows to the sender. When there's an
+    // agent filter and no keyword, the server returns that agent's whole history.
+    const nameSel = filters.agent ?? filters.from
+    const isExplicitId = !!nameSel && nameSel.startsWith('fleet:')
+    const serverFilters = {
+      agent: isExplicitId ? nameSel : undefined,
+      agentQuery: !isExplicitId ? nameSel : undefined,
+      fromOnly: !filters.agent && !!filters.from,
+      role: filters.role,
+      since: filters.after ? (resolveTimeFilter(filters.after) || undefined) : undefined,
+      before: filters.before ? (resolveTimeFilter(filters.before) || undefined) : undefined,
+    }
     const [res, allDocs] = await Promise.all([
-      searchFleet(searchQuery.length >= 2 ? searchQuery : 'message', 100),
+      searchFleet(ftsQuery || '', 100, serverFilters),
       fetchSharedDocs(),
     ])
 
-    // Apply client-side filters
-    let filtered = res
-    if (filters.from) {
-      const fromLower = filters.from.toLowerCase()
-      const fromId = agentIdByName.get(fromLower)
-      filtered = filtered.filter((r: any) => {
-        const name = agentName(r.from).toLowerCase()
-        return name === fromLower || name.includes(fromLower) || r.from === fromId
-      })
-    }
-    if (filters.agent) {
-      const agentLower = filters.agent.toLowerCase()
-      const aId = agentIdByName.get(agentLower)
-      filtered = filtered.filter((r: any) => {
-        const fromName = agentName(r.from).toLowerCase()
-        const toName = agentName(r.to).toLowerCase()
-        return fromName.includes(agentLower) || toName.includes(agentLower) ||
-               r.from === aId || r.to === aId
-      })
-    }
-    if (filters.role) {
-      filtered = filtered.filter((r: any) => r.role === filters.role)
-    }
-    if (filters.after) {
-      const afterTs = resolveTimeFilter(filters.after)
-      if (afterTs) {
-        filtered = filtered.filter((r: any) => r.timestamp && r.timestamp >= afterTs)
-      }
-    }
-    if (filters.before) {
-      const beforeTs = resolveTimeFilter(filters.before)
-      if (beforeTs) {
-        filtered = filtered.filter((r: any) => r.timestamp && r.timestamp <= beforeTs)
-      }
-    }
-
-    setResults(filtered.slice(0, 50))
+    setResults(res.slice(0, 50))
 
     // Filter shared docs by title match (only if there's an FTS query)
     if (ftsQuery) {
@@ -404,7 +384,7 @@ function FleetSearchInner({ shape }: { shape: any }) {
     }
 
     setLoading(false)
-  }, [agentIdByName, agentName, closeChat])
+  }, [closeChat])
 
   // Create a real fleet-chat shape on top of this search shape, filtered to the result's agent
   const openChatForResult = useCallback((result: any) => {

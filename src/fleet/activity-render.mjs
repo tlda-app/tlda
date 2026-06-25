@@ -19,12 +19,17 @@
 
 import katex from 'katex'
 import { agentNameHtml } from './chat-render.mjs'
+import { normalizePrettyResult } from '../../shared/activity-pretty-result.mjs'
 
 // --- Pure helpers (copied from utils.mjs) ---
 
 export function esc(s) {
   if (s == null) return ''
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
+}
+
+function copySourceTemplate(text) {
+  return `<template class="code-block-copy-source">${esc(text)}</template>`
 }
 
 // --- Constants ---
@@ -44,7 +49,8 @@ export const CHAT_TOOLS = new Set([
 
 // --- Pretty-print tool results ---
 
-function renderPrettyResult(toolName, text, ctx, input) {
+function renderPrettyResult(toolName, text, ctx, input, ts) {
+  text = normalizePrettyResult(text)
   const tool = (toolName || '').toLowerCase()
   if (tool.includes('get_thread') || tool.includes('thread')) {
     return renderThreadResult(text, ctx)
@@ -56,26 +62,45 @@ function renderPrettyResult(toolName, text, ctx, input) {
     return renderScreenshotResult(text)
   }
   if (tool === 'schedulewakeup') {
-    return renderScheduleResult(text, input)
+    return renderScheduleResult(text, input, ts)
   }
   // Fallback: render as markdown
   const md = ctx.renderMarkdown ? ctx.renderMarkdown(text) : esc(text)
   return `<div class="tool-pretty-result">${md}</div>`
 }
 
-function renderScheduleResult(text, input) {
+// Format remaining ms-until-fire as "in Xm Ys" / "in Ys" / "fired". Shared shape
+// with the chat-shape ticker that re-ticks the card each second.
+export function scheduleTimeLabel(fireAt) {
+  const r = Math.ceil((fireAt - Date.now()) / 1000)
+  if (r <= 0) return 'fired'
+  const min = Math.floor(r / 60)
+  const sec = r % 60
+  return min > 0 ? `in ${min}m ${sec}s` : `in ${sec}s`
+}
+
+function renderScheduleResult(text, input, ts) {
   const timeMatch = text.match(/scheduled for ([\d:]+)\s*\(in (\d+)s\)/)
   const fireTime = timeMatch ? timeMatch[1] : ''
   const delaySec = timeMatch ? parseInt(timeMatch[2], 10) : 0
-  let relativeStr = ''
+  // Absolute fire epoch = when the tool ran (the event timestamp) + the delay.
+  // Anchoring on the event timestamp keeps it correct and date-aware across
+  // re-renders; the clock-time string alone can't tell today from tomorrow.
+  let fireAt = 0
   if (delaySec > 0) {
-    const min = Math.floor(delaySec / 60)
-    const sec = delaySec % 60
-    relativeStr = min > 0 ? `${min}m ${sec}s` : `${sec}s`
+    // timestamps come through as epoch ms (number/numeric-string) or ISO.
+    let base = Date.now()
+    if (ts != null) {
+      const n = typeof ts === 'number' ? ts
+        : /^\d+$/.test(String(ts)) ? Number(ts)
+        : Date.parse(ts)
+      if (Number.isFinite(n)) base = n
+    }
+    fireAt = base + delaySec * 1000
   }
-  const timeLabel = relativeStr ? `in ${relativeStr}` : (fireTime || 'scheduled')
+  const timeLabel = fireAt ? scheduleTimeLabel(fireAt) : 'scheduled'
   const reason = input?.reason || ''
-  return `<div class="tool-pretty-result tool-pretty-schedule">
+  return `<div class="tool-pretty-result tool-pretty-schedule"${fireAt ? ` data-fire-at="${fireAt}"` : ''}>
     <span class="schedule-icon">⏱</span>
     <span class="schedule-time">${esc(timeLabel)}</span>
     ${fireTime ? `<span class="schedule-at">@ ${esc(fireTime)}</span>` : ''}
@@ -102,17 +127,22 @@ function renderScreenshotResult(text) {
 
 function renderThreadResult(text, ctx) {
   // Format: "[timestamp] from → to\nmessage\n\n---\n\n[timestamp] from → to\n..."
+  // Parse the optional summary/provenance header before splitting messages.
+  // Leaving it in the first chunk makes the first message miss the row parser.
+  const firstMsg = /(?:^|\n)(\[[^\]\n]+\]\s+)/.exec(text)
+  const headerText = firstMsg && firstMsg.index > 0 ? text.slice(0, firstMsg.index).trim() : ''
+  const bodyText = firstMsg ? text.slice(firstMsg.index).replace(/^\n+/, '') : text
   // Split on --- separators
-  const msgs = text.split(/\n\n---\n\n/)
+  const msgs = bodyText.split(/\n\n---\n\n/)
   if (msgs.length <= 1) {
-    return `<div class="tool-pretty-result">${ctx.renderMarkdown ? ctx.renderMarkdown(text) : esc(text)}</div>`
+    return `<div class="tool-pretty-result">${ctx.renderMarkdown ? ctx.renderMarkdown(bodyText || text) : esc(bodyText || text)}</div>`
   }
   const THREAD_FRONT = 3
   const THREAD_TAIL = 5
   const THREAD_PREVIEW = THREAD_FRONT + THREAD_TAIL
   const hasMoreMsgs = msgs.length > THREAD_PREVIEW
   const renderMsg = (msg) => {
-    const headerMatch = msg.match(/^\[([^\]]*)\]\s*(\S+)\s*→\s*(\S+)\n([\s\S]*)$/)
+    const headerMatch = msg.match(/^\[([^\]]*)\]\s*(.+?)\s+→\s+(.+?)\n([\s\S]*)$/)
     if (!headerMatch) return `<div class="chat-line"><div class="pretty-msg-body">${ctx.renderMarkdown ? ctx.renderMarkdown(esc(msg)) : esc(msg)}</div></div>`
     const [, ts, from, to, body] = headerMatch
     const fromCls = ctx.getNickClass ? ctx.getNickClass(from) : 'chat-nick'
@@ -152,9 +182,7 @@ function renderThreadResult(text, ctx) {
   } else {
     rows = msgs.map(renderMsg).join('')
   }
-  // Parse header (message count + pagination warning)
-  const headerLine = text.match(/^((?:Showing \d+ of \d+[^\n]*|⚠️[^\n]*|\d+ messages[^\n]*)(?:\n|$))+/)
-  const header = headerLine ? `<div class="pretty-result-header">${esc(headerLine[0].trim())}</div>` : ''
+  const header = headerText ? `<div class="pretty-result-header">${esc(headerText)}</div>` : ''
   return `<div class="tool-pretty-result tool-pretty-thread">${header}${moreHtml}${rows}</div>`
 }
 
@@ -365,12 +393,14 @@ function renderTexLines(content, macros) {
   }).join('<br>')
 }
 
-export function renderEditDiff(input, ctx) {
+export function renderEditDiff(input, ctx, opts = {}) {
   if (!input?.old_string || !input?.new_string) return ''
   const { langFromFilePath, highlightSyntax } = ctx
+  // propose_edit names its target `file`; the Edit tool uses `file_path`.
+  const filePath = input.file_path || input.file || ''
   const uid = 'diff-' + Math.random().toString(36).slice(2, 8)
-  const isTeX = input.file_path && /\.tex$/i.test(input.file_path)
-  const lang = !isTeX ? langFromFilePath(input.file_path) : ''
+  const isTeX = filePath && /\.tex$/i.test(filePath)
+  const lang = !isTeX ? langFromFilePath(filePath) : ''
   const renderSide = (str) => {
     if (!isTeX) {
       const escaped = esc(str)
@@ -392,11 +422,115 @@ export function renderEditDiff(input, ctx) {
   const header = shouldFold
     ? `<div class="code-block-header"><span class="code-block-lang">diff</span>${toggleHtml}</div>`
     : ''
-  return `<div class="code-block-wrap code-card edit-diff-wrap">${header}
+  // Location + scope header: which file (and line, when known), how many lines
+  // change. For a propose, a "tentative" badge marks the edit as not-yet-applied.
+  const addCount = opts.addCount ?? ((input.new_string.match(/\n/g) || []).length + 1)
+  const delCount = opts.delCount ?? ((input.old_string.match(/\n/g) || []).length + 1)
+  const base = filePath ? filePath.split('/').pop() : ''
+  const locText = base ? `${base}${opts.line ? ':' + opts.line : ''}` : ''
+  const tentativeBadge = opts.isPropose ? `<span class="edit-diff-badge edit-diff-tentative">tentative</span>` : ''
+  const extraBadge = opts.badge ? `<span class="edit-diff-badge">${esc(opts.badge)}</span>` : ''
+  const extraLocHtml = opts.extraLocHtml || ''
+  const locHeader = (locText || tentativeBadge || extraBadge || extraLocHtml)
+    ? `<div class="edit-diff-loc">${tentativeBadge}${extraBadge}${locText ? `<span class="edit-diff-path">${esc(locText)}</span>` : ''}<span class="edit-diff-stat">+${addCount} −${delCount}</span></div>${extraLocHtml}`
+    : ''
+  const propIdAttr = opts.proposalId ? ` data-proposal-id="${esc(opts.proposalId)}"` : ''
+  const wrapCls = `code-block-wrap code-card edit-diff-wrap${opts.isPropose ? ' edit-diff-propose' : ''}${opts.fromUnified ? ' edit-unified-side-by-side-wrap' : ''}`
+  return `<div class="${wrapCls}"${propIdAttr}>${locHeader}${header}
     <div class="edit-diff fold-body${isTeX ? ' tex-diff' : ''}${foldCls}" id="${uid}"${foldStyle}>
       <div class="diff-side diff-old"><div class="diff-label">−</div>${renderSide(input.old_string)}</div>
       <div class="diff-side diff-new"><div class="diff-label">+</div>${renderSide(input.new_string)}</div>
     </div>
+  </div>`
+}
+
+function unifiedDiffToEditStrings(diff) {
+  const oldLines = []
+  const newLines = []
+  let sawChange = false
+  for (const rawLine of diff.split('\n')) {
+    if (
+      rawLine.startsWith('diff --git ') ||
+      rawLine.startsWith('index ') ||
+      rawLine.startsWith('--- ') ||
+      rawLine.startsWith('+++ ') ||
+      rawLine.startsWith('new file mode ') ||
+      rawLine.startsWith('deleted file mode ') ||
+      rawLine.startsWith('similarity index ') ||
+      rawLine.startsWith('rename from ') ||
+      rawLine.startsWith('rename to ') ||
+      rawLine.startsWith('\\ No newline at end of file')
+    ) continue
+    if (rawLine.startsWith('@@')) {
+      if (oldLines.length || newLines.length) {
+        oldLines.push('')
+        newLines.push('')
+      }
+      oldLines.push(rawLine)
+      newLines.push(rawLine)
+      continue
+    }
+    if (rawLine.startsWith('-')) {
+      oldLines.push(rawLine.slice(1))
+      sawChange = true
+      continue
+    }
+    if (rawLine.startsWith('+')) {
+      newLines.push(rawLine.slice(1))
+      sawChange = true
+      continue
+    }
+    const line = rawLine.startsWith(' ') ? rawLine.slice(1) : rawLine
+    oldLines.push(line)
+    newLines.push(line)
+  }
+  if (!sawChange) return null
+  return {
+    old_string: oldLines.join('\n'),
+    new_string: newLines.join('\n'),
+  }
+}
+
+export function renderUnifiedEditDiff(input, ctx, opts = {}) {
+  const diff = typeof input?.diff === 'string' ? input.diff : ''
+  if (!diff.trim()) return ''
+  const filePath = input.file_path || input.file || input.path || ''
+  const base = filePath ? filePath.split('/').pop() : ''
+  const op = input.op ? String(input.op) : ''
+  const lines = diff.split('\n')
+  const addCount = lines.filter(l => l.startsWith('+') && !l.startsWith('+++')).length
+  const delCount = lines.filter(l => l.startsWith('-') && !l.startsWith('---')).length
+  const sideBySide = unifiedDiffToEditStrings(diff)
+  if (sideBySide) {
+    const moved = input.movedTo ? `<div class="edit-diff-loc"><span class="edit-diff-path">→ ${esc(input.movedTo)}</span></div>` : ''
+    return renderEditDiff(
+      { ...input, old_string: sideBySide.old_string, new_string: sideBySide.new_string },
+      ctx,
+      { ...opts, addCount, delCount, badge: op, fromUnified: true, extraLocHtml: moved },
+    )
+  }
+  const lineCount = Math.max(lines.length, 1)
+  const h = ctx?.foldHeights?.diff ?? 0
+  const shouldFold = h > 0 && lineCount > h
+  const foldCls = shouldFold ? ' code-collapsed' : ''
+  const foldStyle = shouldFold ? ` style="max-height:${(h * 1.4).toFixed(1)}em"` : ''
+  const toggleHtml = shouldFold
+    ? `<span class="code-block-toggle" onclick="(function(e){var w=e.closest('.code-block-wrap'),p=w.querySelector('.fold-body');if(p.classList.contains('code-collapsed')){p.classList.remove('code-collapsed');p.style.maxHeight='';e.textContent='collapse'}else{p.classList.add('code-collapsed');p.style.maxHeight='${(h * 1.4).toFixed(1)}em';e.textContent='${lineCount} lines — show all'}})(this)">${lineCount} lines — show all</span>`
+    : ''
+  const body = lines.map(line => {
+    let cls = 'diff-line'
+    if (line.startsWith('@@')) cls += ' diff-hunk'
+    else if (line.startsWith('+') && !line.startsWith('+++')) cls += ' diff-add'
+    else if (line.startsWith('-') && !line.startsWith('---')) cls += ' diff-del'
+    return `<span class="${cls}">${esc(line) || ' '}</span>`
+  }).join('\n')
+  const locHeader = (base || op)
+    ? `<div class="edit-diff-loc">${op ? `<span class="edit-diff-badge">${esc(op)}</span>` : ''}${base ? `<span class="edit-diff-path">${esc(base)}</span>` : ''}<span class="edit-diff-stat">+${addCount} −${delCount}</span></div>`
+    : ''
+  const moved = input.movedTo ? `<div class="edit-diff-loc"><span class="edit-diff-path">→ ${esc(input.movedTo)}</span></div>` : ''
+  return `<div class="code-block-wrap code-card edit-diff-wrap edit-unified-diff-wrap">${locHeader}${moved}
+    <div class="code-block-header"><span class="code-block-lang">diff</span>${toggleHtml}<span class="code-block-copy" title="Copy">⎘</span></div>
+    ${copySourceTemplate(diff)}<pre class="edit-unified-diff fold-body${foldCls}"${foldStyle}><code>${body}</code></pre>
   </div>`
 }
 
@@ -420,7 +554,7 @@ export function renderCodeCard(toolName, input, ctx) {
       : ''
     return `<div class="code-block-wrap code-card">
       <div class="code-block-header"><span class="code-block-lang">bash</span>${toggleHtml}<span class="code-block-copy" title="Copy">⎘</span></div>
-      <pre class="${foldClass}"${foldStyle}><code data-lang="bash" data-highlighted="1">${highlighted}</code></pre>
+      ${copySourceTemplate(cmd)}<pre class="${foldClass}"${foldStyle}><code data-lang="bash" data-highlighted="1">${highlighted}</code></pre>
     </div>`
   }
 
@@ -445,7 +579,7 @@ export function renderCodeCard(toolName, input, ctx) {
       const rendered = renderTexLines(content, ctx.preambleMacros || {})
       return `<div class="code-block-wrap code-card" id="${uid}">
         <div class="code-block-header"><span class="code-block-lang">tex</span><span class="tex-filename">${esc(name)}</span>${toggleHtml}<span class="code-block-copy" title="Copy">⎘</span></div>
-        <div class="diff-tex fold-body${shouldFold ? ' code-collapsed' : ''}"${foldStyle}>${rendered}</div>
+        ${copySourceTemplate(content)}<div class="diff-tex fold-body${shouldFold ? ' code-collapsed' : ''}"${foldStyle}>${rendered}</div>
       </div>`
     }
     if (isMd) {
@@ -468,7 +602,7 @@ export function renderCodeCard(toolName, input, ctx) {
         : `<pre class="fold-body${foldCls}" style="${maxH}white-space:pre-wrap;word-break:break-word"><code>${escaped}</code></pre>`
       return `<div class="code-block-wrap code-card">
       <div class="code-block-header"><span class="${chipClass}" data-path="${esc(filePath)}" draggable="true"><span class="md-file-chip">${esc(name)}</span></span>${toggleHtml}<span class="code-block-copy" title="Copy">⎘</span></div>
-      ${body}
+      ${copySourceTemplate(content)}${body}
     </div>`
     }
     const h = ctx?.foldHeights?.write ?? 10
@@ -482,7 +616,7 @@ export function renderCodeCard(toolName, input, ctx) {
       : ''
     return `<div class="code-block-wrap code-card">
       <div class="code-block-header">${langLabel ? `<span class="code-block-lang">${esc(langLabel)}</span>` : ''}${toggleHtml}<span class="code-block-copy" title="Copy">⎘</span></div>
-      <pre class="${foldClass}"${foldStyle}><code${lang ? ` data-lang="${esc(lang)}"` : ''}${!shouldFold && lang ? ' data-highlighted="1"' : ''}>${highlighted}</code></pre>
+      ${copySourceTemplate(content)}<pre class="${foldClass}"${foldStyle}><code${lang ? ` data-lang="${esc(lang)}"` : ''}${!shouldFold && lang ? ' data-highlighted="1"' : ''}>${highlighted}</code></pre>
     </div>`
   }
 
@@ -510,6 +644,16 @@ export function dedupTools(toolItems) {
       prev._toolArg = prev._mergedArgs.map(a => (a || '').split('/').pop()).join(', ')
       prev._count++
       continue
+    }
+    // A pretty-print result can arrive as a SEPARATE follow-up event after its
+    // tool_use (e.g. propose_edit's result lands a batch later, with an unrelated
+    // tool call in between). It carries the same tool+arg as the original, so
+    // without folding it in here we'd render a duplicate card and only the
+    // follow-up would carry the result. Merge onto the first matching tool item
+    // regardless of adjacency, then drop the follow-up.
+    if (t._prettyResult) {
+      const host = result.find(r => r._key === key && !r._prettyResult)
+      if (host) { host._prettyResult = t._prettyResult; host._count++; continue }
     }
     if (prev && prev._key === key) {
       prev._count++
@@ -592,6 +736,18 @@ export function renderActivityGroup(group, ctx) {
     const deduped = dedupTools(seg.items)
     const toolLines = deduped.map(t => {
       const num = lineNum++
+      // apply_proposal: don't redraw the whole diff (the propose card already
+      // showed it). A compact "✓ edit applied" line + a reference to the
+      // proposal keeps chat light; hover the reference to see what landed.
+      if ((t._toolName || '').toLowerCase().endsWith('apply_proposal')) {
+        const pid = t._toolInput?.id || ''
+        return `<div class="tool-line tool-apply-line" data-line="${num}" data-tool-name="${esc(t._toolName || '')}">`
+          + `<span class="tool-linenum">${num}</span>`
+          + `<span class="apply-check">✓</span>`
+          + `<span class="apply-text">edit applied</span>`
+          + (pid ? `<span class="apply-ref" data-token="«${esc(pid)}#proposal:${esc(pid)}»">${esc(pid)}</span>` : '')
+          + `</div>`
+      }
       const countHtml = t._count > 1 ? `<span class="tool-count">×${t._count}</span>` : ''
       const toolNameRaw = t._toolName || ''
       const isSkill = toolNameRaw === 'Skill'
@@ -607,16 +763,32 @@ export function renderActivityGroup(group, ctx) {
         arg = skillName ? esc(skillName) : arg
         detail = skillArgs ? `<div class="tool-detail">${esc(skillArgs)}</div>` : ''
       }
-      const isEdit = (t._toolName || '').toLowerCase() === 'edit' && t._toolInput?.old_string && t._toolInput?.new_string
-      const hasDiff = isEdit ? ' has-diff' : ''
-      const diffHtml = isEdit ? renderEditDiff(t._toolInput, ctx) : ''
+      const tnLower = (t._toolName || '').toLowerCase()
+      // A propose_edit carries the same {old_string,new_string} triple as Edit,
+      // so it renders as the same diff card — flagged tentative (not yet applied).
+      const isPropose = tnLower.endsWith('propose_edit') && t._toolInput?.old_string && t._toolInput?.new_string
+      const isEdit = (tnLower === 'edit' || isPropose) && t._toolInput?.old_string && t._toolInput?.new_string
+      const isUnifiedEdit = tnLower === 'edit' && typeof t._toolInput?.diff === 'string' && t._toolInput.diff.trim()
+      const hasDiff = (isEdit || isUnifiedEdit) ? ' has-diff' : ''
+      // The propose result text ("**Proposal proposal-1** …") carries the id the
+      // matching apply_proposal references; stamp it on the card so the apply
+      // line's hover can find this card in the DOM by `data-proposal-id`.
+      const proposalId = isPropose
+        ? (String(t._prettyResult || '').match(/proposal-[\w-]+/)?.[0] || '')
+        : ''
+      const diffHtml = isEdit
+        ? renderEditDiff(t._toolInput, ctx, { isPropose, proposalId })
+        : (isUnifiedEdit ? renderUnifiedEditDiff(t._toolInput, ctx) : '')
       const codeCardHtml = renderCodeCard(t._toolName, t._toolInput, ctx)
       const cmd = toolToCommand(t._toolName, t._toolInput)
       const cmdAttr = cmd ? ` data-cmd="${esc(cmd)}"` : ''
       const copyBtn = cmd ? `<span class="tool-copy" title="Copy command">⎘</span>` : ''
       const showArg = arg && !codeCardHtml
-      const prettyHtml = t._prettyResult
-        ? renderPrettyResult(t._toolName, t._prettyResult, ctx, t._toolInput)
+      // For a propose_edit the diff card already shows the change; its result text
+      // ("**Proposal proposal-N**…") is only consumed to extract the id above, so
+      // don't also render it as a raw result block under the card.
+      const prettyHtml = (t._prettyResult && !isPropose)
+        ? renderPrettyResult(t._toolName, t._prettyResult, ctx, t._toolInput, t.timestamp)
         : ''
       return `<div class="tool-line${hasDiff}"${cmdAttr} data-line="${num}" data-tool-name="${esc(t._toolName || '')}" data-tool-arg="${esc(t._toolArg || '')}">`
         + `<span class="drag-handle" title="Drag tool call"></span>`

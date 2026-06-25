@@ -2,7 +2,7 @@
 // export-thread.mjs — dump an agent's COMPLETE thread to a verbatim markdown file.
 //
 // "Their thread" = every event where the agent is sender OR recipient, in time
-// order: chats with Skip, chats with other agents, eliza nudges, build pings,
+// order: chats with Skip, chats with other agents, bot nudges, build pings,
 // and the agent's own activity. No summarization, no truncation. Default
 // captures all event types; --types narrows.
 //

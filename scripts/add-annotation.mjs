@@ -9,7 +9,7 @@
  *   node add-annotation.mjs --server wss://tldraw-sync-skip.fly.dev --doc bregman --list
  *
  * Options:
- *   --server URL    WebSocket server (default: ws://localhost:5176)
+ *   --server URL    WebSocket server (default: wss://localhost:5176 when local TLS exists)
  *   --doc NAME      Document name (required)
  *   --line N        Source line number - uses lookup.json for precise positioning
  *   --page N        Page number (1-indexed), positions at top-right of page
@@ -29,6 +29,7 @@ import { getIndexAbove } from '@tldraw/utils'
 import { readFileSync, existsSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
+import { hasTls } from '../shared/config.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -43,7 +44,7 @@ function hasFlag(name) {
   return args.includes(`--${name}`)
 }
 
-const SERVER = getArg('server', 'ws://localhost:5176')
+const SERVER = getArg('server', `${hasTls ? 'wss' : 'ws'}://localhost:5176`)
 const DOC_NAME = getArg('doc')
 const PAGE_NUM = getArg('page') ? parseInt(getArg('page')) : null
 const LINE_NUM = getArg('line') ? parseInt(getArg('line')) : null

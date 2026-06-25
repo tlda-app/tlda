@@ -31,8 +31,11 @@ import { chromium } from 'playwright'
 import { readFileSync, existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { getServerUrl } from '../shared/config.mjs'
 
-const SERVER = process.env.TLDA_SERVER || 'http://localhost:5176'
+// getServerUrl() returns https when the mkcert certs exist (and its import sets
+// NODE_TLS_REJECT_UNAUTHORIZED for the localhost self-signed cert). Honors TLDA_SERVER.
+const SERVER = getServerUrl()
 const PROJECT = (() => {
   const i = process.argv.indexOf('--doc')
   return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : 'test-fleet'
@@ -293,16 +296,22 @@ async function applyLayoutAndCamera(page) {
   // Wait for the FleetIconPill (and the fleet agent list) to be ready.
   await page.waitForSelector('.fleet-icon-pill-container', { timeout: 15000 })
 
-  // Clear the room: delete every non-page shape so we start from a known state.
-  // Accumulated shapes from prior sessions (stale fleet layouts, old annotations,
-  // stale HUD anchor) cause the HUD camera to miss fleet shapes on fresh opens.
+  // Clear the room: remove every non-page shape so we start from a known state.
+  // Accumulated shapes from prior sessions (stale fleet layouts owned by OTHER
+  // identities — e.g. the junk `2.0`/classroom-test human — old annotations, a
+  // stale HUD anchor) cause the HUD to miss fleet shapes on fresh opens: a shape
+  // scoped to a foreign userId fails isMyFleetShape for the verifying session and
+  // never paints (the render-wall). Use `store.remove`, NOT `deleteShapes`:
+  // deleteShapes on fleet/anchor shapes in a synced room can tear the page down
+  // and not flush the delete to the server (observed in automation), leaving the
+  // foreign shapes behind. store.remove deletes cleanly and persists.
   await page.evaluate(() => {
     const ed = (window).__tldraw_editor__
     const PAGE_TYPES = new Set(['svg-page', 'html-page', 'doc-version', 'toc-drop-target'])
-    const toDelete = ed.getCurrentPageShapes()
+    const toRemove = ed.getCurrentPageShapes()
       .filter(s => !PAGE_TYPES.has(s.type))
       .map(s => s.id)
-    if (toDelete.length > 0) ed.deleteShapes(toDelete)
+    if (toRemove.length > 0) ed.store.remove(toRemove)
     // Wipe stale HUD localStorage from prior sessions.
     try { localStorage.removeItem('fleet-hud-panOffset') } catch {}
     try { localStorage.removeItem('fleet-hud-cameraY') } catch {}
@@ -362,6 +371,19 @@ async function applyLayoutAndCamera(page) {
   })
   console.log('✓ fleet shapes:', counts)
 
+  // Report ownership — the render-wall is an ownership mismatch (a foreign userId
+  // fails isMyFleetShape for the verifying session, so the HUD never paints). If
+  // these aren't all owned by fleet:tester, the identity/login resolution is wrong.
+  const ownership = await page.evaluate(() => {
+    const ed = (window).__tldraw_editor__
+    const fleet = ed.getCurrentPageShapes().filter(s => String(s.type).startsWith('fleet-'))
+    return {
+      identity: localStorage.getItem('tlda-identity'),
+      owners: [...new Set(fleet.map(s => s.props && s.props.userId))],
+    }
+  })
+  console.log('✓ ownership:', JSON.stringify(ownership))
+
   // Frame the camera on the doc page first via tldraw's built-in zoom-to-fit
   // (this is what a user gets with the "zoom to fit" keyboard shortcut, not
   // a programmatic backdoor — it computes the same camera state).
@@ -402,7 +424,7 @@ async function main() {
   await ensureProject(token)
 
   // 2. Open the viewer.
-  const url = `${SERVER}/?doc=${PROJECT}&name=tester&token=${token}`
+  const url = `${SERVER}/?doc=${PROJECT}&name=tester&token=${token}&pw=1`
   console.log(`opening ${url}`)
   const browser = await chromium.launch({ headless: !HEADED })
   const context = await browser.newContext({ viewport: VIEWPORT })
@@ -430,8 +452,16 @@ async function main() {
       }
     } catch {}
     try { sessionStorage.clear() } catch {}
-    // Set the ONE piece of state we actually want: HUD expanded.
+    // Set the state we want: HUD expanded + a DETERMINISTIC identity. connect()
+    // logs in from localStorage['tlda-identity'] (fleet-data.mjs), not the ?name=
+    // URL param — without this the headless session's identity is undefined, so
+    // getHumanId() is null/ambiguous and createFleetLayout stamps shapes to the
+    // wrong owner (or bails). Pin it to 'tester' so login resolves to fleet:tester
+    // and the rebuilt layout is owned by the same id a verifying ?name=tester
+    // session gets. (tlda-identity isn't fleet-*/tldraw*, so the clear above skips it.)
     try { localStorage.setItem('fleet-hud-expanded', '1') } catch {}
+    try { localStorage.setItem('tlda-identity', 'tester') } catch {}
+    try { localStorage.setItem('tlda-camera-linked', 'false') } catch { void 0 }
   })
   await page.goto(url, { waitUntil: 'domcontentloaded' })
 

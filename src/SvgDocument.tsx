@@ -1,5 +1,6 @@
 import { useMemo, useEffect, useRef, useState, useCallback, useContext, createContext, useSyncExternalStore, Component } from 'react'
 import type { ReactNode, ErrorInfo } from 'react'
+const _pageLoadStart = typeof performance !== 'undefined' ? performance.now() : 0
 import {
   Tldraw,
   react,
@@ -12,8 +13,9 @@ import {
 } from 'tldraw'
 import type { TLComponents, Editor, TLShapeId } from 'tldraw'
 import 'tldraw/tldraw.css'
+import { probe } from './perf-probe'
 import { MathNoteShapeUtil, setMathNoteEntryMode } from './shapes/MathNoteShape'
-import { TocDropTargetShapeUtil, TocDropTargetManager } from './shapes/TocDropTargetShape'
+import { TocDropTargetShapeUtil } from './shapes/TocDropTargetShape'
 // noteThreading removed — no tabs
 import { HtmlPageShapeUtil } from './shapes/HtmlPageShape'
 import { SvgPageShapeUtil } from './shapes/SvgPageShape'
@@ -29,13 +31,17 @@ import { FleetDocViewShapeUtil } from './shapes/FleetDocViewShape'
 import { DocClipShapeUtil } from './shapes/DocClipShape'
 import { FleetPillShapeUtil } from './shapes/FleetPillShape'
 import { FleetSearchShapeUtil } from './shapes/FleetSearchShape'
+import { FleetInboxShapeUtil } from './shapes/FleetInboxShape'
+import { FleetNotificationsShapeUtil } from './shapes/FleetNotificationsShape'
+import { FleetTouchInboxShapeUtil } from './shapes/FleetTouchInboxShape'
 import { getMyAnchorId, isMyFleetShape, FLEET_SHAPE_TYPES } from './shapes/fleet-utils'
 import { ClusterShapeUtil } from './shapes/ClusterShape'
 import { TerminalShapeUtil } from './shapes/TerminalShape'
 import { ReaperShapeUtil } from './shapes/ReaperShape'
 import { OutlineShapeUtil } from './shapes/OutlineShape'
 import { GraphNodeShapeUtil } from './shapes/GraphNodeShape'
-import { GraphEdgeLabels } from './GraphEdgeLabels'
+import { GraphExplainShapeUtil } from './shapes/GraphExplainShape'
+import { UsageMeterShapeUtil } from './shapes/UsageMeterShape'
 import { materializeChain } from './graphNativeMaterialize'
 import { InlineDocShapeUtil } from './shapes/InlineDocShape'
 import { DocVersionShapeUtil } from './shapes/DocVersionShape'
@@ -51,8 +57,10 @@ import { TextSelectTool } from './tools/TextSelectTool'
 import { FleetChatTool } from './tools/FleetChatTool'
 import { FleetAgentsTool } from './tools/FleetAgentsTool'
 import { FleetSearchTool } from './tools/FleetSearchTool'
+import { FleetInboxTool } from './tools/FleetInboxTool'
 import { ClusterTool } from './tools/ClusterTool'
 import { ReaperTool } from './tools/ReaperTool'
+import { UsageMeterTool } from './tools/UsageMeterTool'
 import { TerminalTool } from './tools/TerminalTool'
 import { PlaybackTool } from './tools/PlaybackTool'
 import { TaskInboxShapeUtil } from './shapes/TaskInboxShape'
@@ -60,11 +68,14 @@ import { TaskInboxTool } from './tools/TaskInboxTool'
 import { RibbonEraserTool } from './tools/RibbonEraserTool'
 import { RibbonHighlightTool } from './tools/RibbonHighlightTool'
 import { RibbonLane } from './shapes/RibbonLane'
+import { ProvenancePanel } from './shapes/ProvenancePanel'
+import { ProvenanceInline } from './shapes/ProvenanceInline'
 import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onBuildStatusSignal, onReloadSignal, onViewPinSignal, onCompareSignal, onFileUpdatedSignal, onGraphDrawSignal, type BuildError, type BuildWarning } from './useYjsSync'
 import { useSync } from '@tldraw/sync'
 import { appendToken } from './authToken'
-import { DocumentPanel, PhoneOverlay, HighlighterButton, SemanticHighlightPill, VoiceNoteButton } from './DocumentPanel'
+import { DocumentPanel, PhoneOverlay, HighlighterButton, SemanticHighlightPill, VoiceNoteButton, MicToggleButton, VoiceTargetFollower } from './DocumentPanel'
 import { AgentAttentionOverlay } from './overlays/AgentAttentionOverlay'
+import { FleetToolGhost } from './overlays/FleetToolGhost'
 import { RecognizeButton } from './overlays/RecognizeButton'
 import { PenHelperButtons, DarkModeSync } from './toolbar/ToolbarComponents'
 import { FormatToolbar } from './toolbar/FormatToolbar'
@@ -74,10 +85,11 @@ import { MarkdownDropHandler } from './MarkdownDropHandler'
 import { setCurrentDocumentInfo, pageSpacing, type SvgDocument } from './svgDocumentLoader'
 import { ScrollyOverlay } from './overlays/ScrollyOverlay'
 import { ScreenshotCapture } from './overlays/ScreenshotCapture'
-import { FleetHUD, fleetHudOpenRef } from './overlays/FleetHUD'
+import { FleetHUD } from './overlays/FleetHUD'
 
 import { BuildWarningPill } from './pills/BuildWarningPill'
 import { BuildErrorPill } from './pills/BuildErrorPill'
+import { SyncErrorPill } from './pills/SyncErrorPill'
 import { BuildProgressPill } from './pills/BuildProgressPill'
 import { AnnotationVisibilityPill } from './pills/AnnotationVisibilityPill'
 import { DraftPill } from './pills/DraftPill'
@@ -102,28 +114,26 @@ import { useDiffToggle } from './hooks/useDiffToggle'
 import { useProofToggle } from './hooks/useProofToggle'
 import { useYjsSignals } from './hooks/useYjsSignals'
 import { useSyncedPlayback } from './hooks/useSyncedPlayback'
-import { useFleetTheme, THEME_FAMILY } from './hooks/useFleetTheme'
+import { useFleetTheme, getStoredScheme } from './hooks/useFleetTheme'
 import { useTimelineOverlay } from './hooks/useTimelineOverlay'
 import { useDocAutoOpen } from './hooks/useDocAutoOpen'
-import { useFootControl } from './hooks/useFootControl'
 import { usePanMode } from './hooks/usePanMode'
-import { FootControlDebug } from './footControlDebug'
-import { subscribeInputModes, getFootEnabled, getClicksEnabled, getWhistleEnabled, getHissEnabled } from './inputModes'
+import { STORE_WS, LICENSE_KEY as CFG_LICENSE_KEY } from './activeConfig'
 import { useShadowOverlay } from './hooks/useShadowOverlay'
 import { useDividerDiff } from './hooks/useDividerDiff'
 import { ShadowHistoryOverlay } from './overlays/ShadowHistoryOverlay'
 import { PlaybackPill } from './pills/PlaybackPill'
 import { SlidesNavigator } from './SlidesNavigator'
 
-// Sync server URL - use env var, or derive from window.location
-// Dev mode (Vite on 5173): connect to sync server on 5176
-// Production (unified server): same host, ws/wss based on protocol
-const SYNC_SERVER = import.meta.env.VITE_SYNC_SERVER ||
-  (import.meta.env.DEV
-    ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.hostname}:5176`
-    : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`)
+// Shape sync server = the active config's STORE (ws); tldraw license = the active
+// config's licenseKey. Both come from the server-injected config (activeConfig).
+const SYNC_SERVER = STORE_WS
+const LICENSE_KEY = CFG_LICENSE_KEY
 
-const LICENSE_KEY = 'tldraw-2027-01-19/WyJhUGMwcWRBayIsWyIqLnF0bTI4NS5naXRodWIuaW8iXSw5LCIyMDI3LTAxLTE5Il0.Hq9z1V8oTLsZKgpB0pI3o/RXCoLOsh5Go7Co53YGqHNmtEO9Lv/iuyBPzwQwlxQoREjwkkFbpflOOPmQMwvQSQ'
+// Phone = the narrow touch layout (matches isPhone in the component + the
+// other phone checks). Module-level so render-time component overrides (e.g.
+// hiding the TLDraw toolbar) can read it without prop threading.
+const IS_PHONE = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches
 
 // Agent attention overlay wrapper (needs useEditor context)
 function AgentAttentionCanvas() {
@@ -584,20 +594,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   // Auto-open shared docs pushed via fleet
   useDocAutoOpen(editorRef, document, docName)
 
-  // Input mode toggles (localStorage-persisted, per-feature on/off)
-  const footEnabled = useSyncExternalStore(subscribeInputModes, getFootEnabled)
-  const clicksEnabled = useSyncExternalStore(subscribeInputModes, getClicksEnabled)
-  const whistleEnabled = useSyncExternalStore(subscribeInputModes, getWhistleEnabled)
-  const hissEnabled = useSyncExternalStore(subscribeInputModes, getHissEnabled)
-
-  // Foot pedal control (rudder + toe brakes → cursor/pan, tongue click/lip pop → click/enter)
-  const { footInstance, clickInstance } = useFootControl(editorMounted ? editorRef.current : null, {
-    enabled: footEnabled || clicksEnabled,
-    clicksEnabled,
-    whistleEnabled,
-    hissEnabled,
-  })
-
   // Auxiliary mouse button (3 or 4) toggles pan mode: move mouse to pan canvas / scroll chat
   usePanMode(editorRef)
 
@@ -838,9 +834,12 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       PageMenu: null,
       SharePanel: null,
       MainMenu: null,
-      Toolbar: () => <FormatToolbar format={document.format} />,
+      // Phone: drop the TLDraw/Format toolbar entirely — most tools aren't usable
+      // on a phone (Skip's call). The phone control scheme is the bottom-right
+      // button cluster instead.
+      Toolbar: () => IS_PHONE ? null : <FormatToolbar format={document.format} />,
       HelperButtons: () => <PenHelperButtons format={document.format} />,
-      InFrontOfTheCanvas: () => <><RibbonLane /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><GraphEdgeLabels /></>,
+      InFrontOfTheCanvas: () => <><RibbonLane /><ProvenancePanel docName={docName} /><ProvenanceInline docName={docName} /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /></>,
     }),
     [document, roomId]
   )
@@ -906,13 +905,12 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     shadowActiveVersion,
   }), [docKey, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, selectedChangeId, handleSelectChange, buildErrors, buildWarnings, timelineActive, toggleTimeline, shadowVisible, toggleShadowOverlay, shadowActiveVersion])
 
-  // Hide fleet shapes on the main canvas in two cases:
-  // 1. Non-owned fleet shapes (belong to another user or orphans) — always hidden
-  // 2. Owned fleet shapes when HUD is open — the HUD renders its own copies
+  // Hide non-owned fleet shapes (belong to another user or orphans). Owned fleet
+  // shapes must remain visible to custom WM viewports; the HUD renders from the
+  // same editor/store, not a copy store.
   const getShapeVisibility = useCallback((shape: any) => {
     if (FLEET_SHAPE_TYPES.has(shape.type)) {
       if (!isMyFleetShape(shape)) return 'hidden' as const
-      if (fleetHudOpenRef.current) return 'hidden' as const
     }
     return undefined
   }, [])
@@ -929,7 +927,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     )
     // Wrap every custom shape util with an error boundary so a single broken shape
     // renders an error placeholder instead of crashing the entire app.
-    const customUtils = [MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetDocViewShapeUtil, DocClipShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, ClusterShapeUtil, TerminalShapeUtil, TaskInboxShapeUtil, PlaybackFrameShapeUtil, ReaperShapeUtil, OutlineShapeUtil, GraphNodeShapeUtil]
+    const customUtils = [MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetInboxShapeUtil, FleetNotificationsShapeUtil, FleetTouchInboxShapeUtil, FleetDocViewShapeUtil, DocClipShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, ClusterShapeUtil, TerminalShapeUtil, TaskInboxShapeUtil, PlaybackFrameShapeUtil, ReaperShapeUtil, OutlineShapeUtil, GraphNodeShapeUtil, GraphExplainShapeUtil, UsageMeterShapeUtil]
     const all = [...utils, ...customUtils.map(u => withShapeErrorBoundary(u))];
     (window as any).__tldraw_shape_utils__ = all
     return all
@@ -937,7 +935,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   const bindingUtils = useMemo(() => [...defaultBindingUtils], [])
   const isPhone = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches
   const tools = useMemo(() => [
-    BrowseTool, MathNoteTool, VoiceNoteTool, TextSelectTool, FleetChatTool, FleetAgentsTool, FleetSearchTool, ClusterTool, ReaperTool, PlaybackTool, TerminalTool, TaskInboxTool, RibbonEraserTool, RibbonHighlightTool,
+    BrowseTool, MathNoteTool, VoiceNoteTool, TextSelectTool, FleetChatTool, FleetAgentsTool, FleetSearchTool, FleetInboxTool, ClusterTool, ReaperTool, UsageMeterTool, PlaybackTool, TerminalTool, TaskInboxTool, RibbonEraserTool, RibbonHighlightTool,
     ...(isPhone ? [PhoneHandTool] : []),
   ], [])
 
@@ -957,47 +955,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     assets: INLINE_ASSETS,
     onCustomMessageReceived: onCustomMessage,
   })
-
-  // --- Sync error handling ---
-  // When the sync store hits an error (e.g. ValidationError from unknown shape types),
-  // show an error screen instead of an infinite spinner.
-  if (storeWithStatus.status === 'error') {
-    const err = storeWithStatus.error
-    const errMsg = err?.message || String(err) || 'Unknown sync error'
-    const isValidation = errMsg.includes('Validation') || errMsg.includes('validation') || errMsg.includes('INVALID_RECORD')
-    return (
-      <div className="App">
-        <div className="ErrorScreen">
-          <div className="error-icon">⚠</div>
-          <h2 className="error-title">Document sync failed</h2>
-          <p className="error-message" style={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: '0.8rem' }}>{errMsg}</p>
-          {isValidation && (
-            <p className="error-message" style={{ marginTop: 8 }}>
-              Schema validation error — a shape prop type mismatch between client and server.
-              Check server logs for the specific field that failed validation.
-            </p>
-          )}
-          <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
-            <button
-              className="error-clear-btn"
-              onClick={async () => {
-                try {
-                  const resp = await fetch(`/api/projects/${document.name}/sync/clear`, { method: 'POST' })
-                  if (resp.ok) window.location.reload()
-                  else alert(`Failed to clear: ${resp.statusText}`)
-                } catch (e) {
-                  alert(`Failed to clear: ${(e as Error).message}`)
-                }
-              }}
-            >
-              Clear broken shapes
-            </button>
-            <a className="error-home-link" href="/">← All documents</a>
-          </div>
-        </div>
-      </div>
-    )
-  }
 
   // Override toolbar to replace note with math-note
   const overrides = useMemo(() => ({
@@ -1056,6 +1013,15 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
         label: 'Fleet Search',
         onSelect: () => _editor.setCurrentTool('fleet-search'),
       }
+      tools['fleet-inbox'] = {
+        id: 'fleet-inbox',
+        icon: (<svg className="tlui-icon" style={{ backgroundColor: 'transparent' }} width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="22 12 16 12 14 15 10 15 8 12 2 12" />
+          <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
+        </svg>) as any,
+        label: 'Fleet Inbox',
+        onSelect: () => _editor.setCurrentTool('fleet-inbox'),
+      }
       // Register browse tool — pointer with starburst sparkle (interactive pages)
       tools['select'] = {
         id: 'select',
@@ -1112,6 +1078,19 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
         label: 'Reaper',
         onSelect: () => _editor.setCurrentTool('fleet-reaper'),
       }
+      // Register usage-meter tool — gauge icon
+      tools['usage-meter'] = {
+        id: 'usage-meter',
+        icon: (<svg className="tlui-icon" style={{ backgroundColor: 'transparent' }} width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          {/* Gauge arc */}
+          <path d="M3 13 A6 6 0 0 1 15 13" />
+          {/* Needle */}
+          <line x1="9" y1="13" x2="12" y2="8.5" />
+          <circle cx="9" cy="13" r="1" fill="currentColor" stroke="none" />
+        </svg>) as any,
+        label: 'Usage Meter',
+        onSelect: () => _editor.setCurrentTool('usage-meter'),
+      }
       // Register playback-frame tool (kbd 'p')
       tools['playback-frame'] = {
         id: 'playback-frame',
@@ -1126,6 +1105,48 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       return tools
     },
   }), [])
+
+  // --- Sync error handling ---
+  // When the sync store hits an error (e.g. ValidationError from unknown shape types),
+  // show an error screen instead of an infinite spinner. Keep this after all hooks
+  // in SvgDocumentEditor so a later sync error does not change the hook count.
+  if (storeWithStatus.status === 'error') {
+    const err = storeWithStatus.error
+    const errMsg = err?.message || String(err) || 'Unknown sync error'
+    const isValidation = errMsg.includes('Validation') || errMsg.includes('validation') || errMsg.includes('INVALID_RECORD')
+    return (
+      <div className="App">
+        <div className="ErrorScreen">
+          <div className="error-icon">⚠</div>
+          <h2 className="error-title">Document sync failed</h2>
+          <p className="error-message" style={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: '0.8rem' }}>{errMsg}</p>
+          {isValidation && (
+            <p className="error-message" style={{ marginTop: 8 }}>
+              Schema validation error — a shape prop type mismatch between client and server.
+              Check server logs for the specific field that failed validation.
+            </p>
+          )}
+          <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
+            <button
+              className="error-clear-btn"
+              onClick={async () => {
+                try {
+                  const resp = await fetch(`/api/projects/${document.name}/sync/clear`, { method: 'POST' })
+                  if (resp.ok) window.location.reload()
+                  else alert(`Failed to clear: ${resp.statusText}`)
+                } catch (e) {
+                  alert(`Failed to clear: ${(e as Error).message}`)
+                }
+              }}
+            >
+              Clear broken shapes
+            </button>
+            <a className="error-home-link" href="/">← All documents</a>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   // Bottom panels content — passed via context into InFrontOfTheCanvas
   const bottomPanelsContent = (
@@ -1182,8 +1203,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
         {isPresentation && <DraftPill />}{isPresentation && role === 'presenter' && <AnnotationVisibilityPill />}<FollowingBadge />
         <ViewPinBadge docName={document.name} />
         <PlaybackPill state={playbackState} />
+        <SyncErrorPill />
         <BuildErrorPill />
-        <BuildWarningPill warnings={buildWarnings}>
+        <BuildWarningPill warnings={remapWarnings}>
           <BuildProgressPill />
         </BuildWarningPill>
         {editorRef.current && <FleetIconPill mainEditor={editorRef.current} />}
@@ -1224,11 +1246,11 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           (window as unknown as { __tldraw_editor__: Editor }).__tldraw_editor__ = editor
           editorRef.current = editor
           setEditorMounted(v => v + 1)
+          probe.record('startup', 'startup-tldraw-mount', performance.now() - _pageLoadStart, {
+            shapeCount: editor.getCurrentPageShapes().length,
+          })
 
-          const storedTheme = localStorage.getItem('tlda-theme')
-          if (storedTheme && THEME_FAMILY[storedTheme]) {
-            editor.user.updateUserPreferences({ colorScheme: THEME_FAMILY[storedTheme] })
-          }
+          editor.user.updateUserPreferences({ colorScheme: getStoredScheme() })
 
           // Patch isInAny NARROWLY for SelectionFg only.
           // tldraw's SelectionFg checks isInAny("select.idle","select.pointing_selection",
@@ -1422,6 +1444,12 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
               } else if (session?.camera) {
                 editor.setCamera(session.camera)
               }
+              const readinessWindow = window as Window & {
+                __tldaCameraRestoredAt?: number
+                __tldaPhoneCameraSettlingUntil?: number
+                __tldaPhoneCameraReadyAt?: number
+              }
+              readinessWindow.__tldaCameraRestoredAt = Date.now()
               window.dispatchEvent(new Event('camera-restored'))
               // Recompute HUD panOffset ONLY if no saved position exists.
               // With a saved panOffset (anchor shape from a previous session),
@@ -1477,9 +1505,18 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
                     const z = vp.width / b.width
                     editor.setCamera({ x: -b.minX, y: -b.minY, z })
                   }
+                  readinessWindow.__tldaPhoneCameraSettlingUntil = Date.now() + 700
+                  const markPhoneCameraReady = () => {
+                    readinessWindow.__tldaPhoneCameraSettlingUntil = 0
+                    readinessWindow.__tldaPhoneCameraReadyAt = Date.now()
+                    window.dispatchEvent(new Event('phone-camera-ready'))
+                  }
                   // Try immediately, retry after SVG injection
                   fitToContent()
-                  setTimeout(fitToContent, 500)
+                  setTimeout(() => {
+                    fitToContent()
+                    markPhoneCameraReady()
+                  }, 500)
                 }
                 // Phone: always start in phone-hand tool for axis-locked scroll
                 editor.setCurrentTool('phone-hand')
@@ -1602,7 +1639,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       <DarkModeSync />
       <NoteDropHandler />
       <MarkdownDropHandler />
-      <TocDropTargetManager />
       {isPresentation && <SlideNavWrapper document={document} />}
     </Tldraw>
     </VersionStampContext.Provider>
@@ -1610,10 +1646,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     </BottomPanelsContext.Provider>
     </PanelContext.Provider>
     </DocContext.Provider>
-    {new URLSearchParams(window.location.search).has('input') && (
-      <FootControlDebug footController={footInstance} clickDetector={clickInstance} />
-    )}
     </>
   )
 }
-

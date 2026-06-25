@@ -59,6 +59,10 @@ export class ClusterShapeUtil extends BaseBoxShapeUtil<any> {
     return <ClusterComponent shape={shape} />
   }
 
+  getIndicatorPath() {
+    return undefined
+  }
+
   indicator() {
     return null
   }

@@ -1,18 +1,12 @@
 import { StateNode } from 'tldraw'
-import { createFleetShape } from '../shapes/fleet-utils'
+import { placeFleetShapeAtCursor, FLEET_TOOL_DIMS } from '../shapes/fleet-utils'
 
-const W = 400
-const H = 300
+const { w: W, h: H } = FLEET_TOOL_DIMS['fleet-search']
 
 export class FleetSearchTool extends StateNode {
   static override id = 'fleet-search'
 
   override onPointerDown = () => {
-    const { editor } = this
-    const point = editor.inputs.currentPagePoint
-    const id = createFleetShape(editor, 'fleet-search', point.x - W / 2, point.y, { w: W, h: H })
-    if (!id) return
-    editor.setCurrentTool('select')
-    editor.select(id as any)
+    placeFleetShapeAtCursor(this.editor, 'fleet-search', W, H)
   }
 }

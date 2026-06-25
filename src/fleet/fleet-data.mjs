@@ -14,18 +14,35 @@
 // Writes go to server → DB → SSE → subscriber. One path.
 
 import { toolContentDetail } from './activity-render.mjs'
-import { setActiveMacros } from '../katexMacros'
-import { labelsForAgent, evalDnf } from '../../shared/fleet-labels.mjs'
+import { matchesFleetFilter, resolveFleetFilter } from './filter-semantics.mjs'
 import { makeEventStore } from './event-store.mjs'
+import {
+  removeFleetEvent,
+  replaceFleetEvents,
+  upsertFleetEvent,
+  upsertFleetEvents,
+} from './fleet-data.ts'
 import { log } from '../logger'
+import { probe } from '../perf-probe'
+import { DATABASE_HTTP, DATABASE_WS } from '../activeConfig'
+import { storedIdentityLoginFailureAction } from './identity-persistence.mjs'
 
-// Fleet is embedded in tlda — use same-origin (no separate server)
-const FLEET = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5176'
-const FLEET_WS = typeof window !== 'undefined' ? window.location.origin.replace(/^http/, 'ws') : 'ws://localhost:5176'
+// The global fleet/event store (chat, agents, activity, tasks) = the active
+// config's DATABASE, read directly from the server-injected config. No fetch, no
+// resolution step, no fallback — the value is fixed for the life of the page.
+const FLEET = DATABASE_HTTP
+const FLEET_WS = DATABASE_WS
+
+// For modules that open their own fleet socket (e.g. TerminalShape's /ws/terminal):
+// the same global database base. Doc/shape (store) bases come from activeConfig
+// directly, not from here.
+export function getFleetWsBase() { return FLEET_WS }
+export function getFleetHttpBase() { return FLEET }
 
 // --- Stores ---
 let _agents = []
 let _tasks = []
+let _items = []
 // One id-keyed ordered buffer — the SINGLE source for chat + activity, fed by
 // two sources (live WS + DB history). upsert() dedups by id and binds the
 // optimistic tempId→dbId handoff, so there's no live/older split to merge (the
@@ -41,6 +58,54 @@ let _humanId = null
 let _humanName = null
 let _identifyPending = false   // true while waiting for identify response
 let _lastEventId = 0
+// Buffer for event-updates that arrive before their target event is in the
+// store (e.g. an async file-upload's `event-update` racing ahead of the chat
+// event it patches). Without this, the update is dropped and its change — most
+// visibly a late `inline_attachments` → file chip — is lost until reload. Keyed
+// by db event id; drained when the matching fleet-event arrives.
+const _pendingEventUpdates = new Map()
+const _MAX_PENDING_UPDATES = 200
+
+// Apply an `event-update` payload's fields onto an already-stored event. Shared
+// by the live handler and the buffered-apply path so a buffered update behaves
+// identically to one that arrived after its event.
+function applyEventUpdateFields(ev, data) {
+  if (data.text !== undefined) ev.text = data.text
+  if (data.inline_attachments) ev._inlineAttachments = data.inline_attachments
+  // Amend can set or clear file-section provenance. A file-form amend
+  // sends source = { file, section }; a string-form amend sends
+  // source = null to clear it. Updating ev.metadata.source makes the
+  // provenance chip appear/disappear in place on the amended message.
+  if (data.source !== undefined) {
+    if (!ev.metadata) ev.metadata = {}
+    ev.metadata.source = data.source
+  }
+  if (data.metadata_patch) {
+    if (!ev.metadata) ev.metadata = {}
+    Object.assign(ev.metadata, data.metadata_patch)
+    if (data.metadata_patch.approvedAt) {
+      ev._planResponse = data.metadata_patch.mode === 'supervised' ? 'supervised' : 'approved'
+      ev._promptResponse = 'approved'
+    }
+    if (data.metadata_patch.rejectedAt) {
+      ev._planResponse = 'rejected'
+      ev._promptResponse = 'rejected'
+    }
+    // Timer countdown reaching a terminal state: flip the derived flags
+    // so the line re-renders as cancelled (struck) or fired (persists,
+    // showing it ran). Neither state hides the line.
+    if (ev.type === 'timer' || ev._timerCountdown || ev._timerCancelled) {
+      if (ev.metadata.state === 'cancelled') {
+        ev._timerCancelled = true; ev._timerCountdown = false
+      } else if (ev.metadata.state === 'fired') {
+        ev._timerFired = true; ev._timerCountdown = false
+        if (!ev._timerMessage) ev._timerMessage = ev.metadata.message || (ev.text || '').replace(/^[⏱⏰]\s*/, '')
+      } else if (ev.metadata.pending === false) {
+        ev._timer = true; ev._timerCountdown = false
+      }
+    }
+  }
+}
 
 // --- Subscribers ---
 const _subs = []  // { channel, filter, callback }
@@ -62,52 +127,12 @@ function notify(channel, event) {
   }
 }
 
-// Filter is DNF of terms: [[["to","skip"],["from","math"]]] or plain [["label"]] or null (match all).
-// Term formats: [role, label] tuple (directional) or plain string (matches from OR to).
 export function matchesFilter(filter, event) {
-  if (!event) return true  // broadcast (e.g. read-receipt refresh)
-  if (!filter || filter.length === 0) return true
-  if ((event.from_id === 'system' || event.from === 'system') && !event.to) return true
-  return filter.some(clause =>
-    clause.every(term => {
-      if (Array.isArray(term)) {
-        const [role, label] = term
-        const agentId = role === 'from' ? (event.from || event.agent) : (event.to || event.agent)
-        return agentMatchesLabel(agentId, label)
-      }
-      // Plain string — match from OR to
-      return agentMatchesLabel(event.from || event.agent, term) ||
-             agentMatchesLabel(event.to || event.agent, term)
-    })
-  )
+  return matchesFleetFilter(filter, event, { agents: _agents, humanId: _humanId, humanName: _humanName })
 }
 
-function agentMatchesLabel(agentId, label) {
-  if (!agentId) return false
-  if (agentId === label) return true
-  let agent = _agents.find(a => a.id === agentId)
-  if (!agent && _humanId && agentId === _humanId) {
-    // Human not in the agents list yet — synthesize so pseudo-labels resolve.
-    agent = { id: _humanId, friendly_name: _humanName || 'user', status: 'human', labels: [] }
-  }
-  if (!agent) return false
-  return labelsForAgent(agent).includes(label)
-}
-
-// Resolve a DNF filter to set of agent IDs that match any clause. Uses the
-// shared labelsForAgent/evalDnf so the history id-set matches the live display
-// filter (matchesFilter) — they must agree or scrollback diverges from live.
 function resolveFilter(filter) {
-  if (!filter) return new Set()
-  const ids = new Set()
-  const allAgents = [..._agents]
-  if (_humanId && !allAgents.some(a => a.id === _humanId)) {
-    allAgents.push({ id: _humanId, friendly_name: _humanName || 'user', status: 'human', labels: [] })
-  }
-  for (const a of allAgents) {
-    if (evalDnf(filter, labelsForAgent(a))) ids.add(a.id)
-  }
-  return ids
+  return resolveFleetFilter(filter, { agents: _agents, humanId: _humanId, humanName: _humanName })
 }
 
 export { resolveFilter }
@@ -116,10 +141,31 @@ export { resolveFilter }
 export function getReaperStatus() { return _reaperStatus }
 export function getAgents() { return _agents }
 export function getTasks() { return _tasks }
+export function getItems() { return _items }
 export function getEvents() { return _store.all() }
 export function getActivity(agentId) { return _store.all().filter(e => e._activity && e.agent === agentId) }
 export function getHumanId() { return _humanId }
 export function getHumanName() { return _humanName }
+
+// A stable per-browser id, generated once and persisted. This is the "device"
+// half of the (identity, device) fleet-layout key: the same human identity open
+// on two devices (Mac + iPad) gets two distinct device ids, so each device owns
+// and lays out its own fleet shapes instead of fighting over one shared set.
+// Purely local — never sent to the server as an identity, only stamped on shapes.
+let _deviceId = null
+export function getDeviceId() {
+  if (_deviceId) return _deviceId
+  if (typeof localStorage === 'undefined') return ''
+  let id = localStorage.getItem('tlda-device-id')
+  if (!id) {
+    id = (typeof crypto !== 'undefined' && crypto.randomUUID)
+      ? crypto.randomUUID().slice(0, 8)
+      : Math.random().toString(36).slice(2, 10)
+    localStorage.setItem('tlda-device-id', id)
+  }
+  _deviceId = id
+  return id
+}
 export function needsIdentity() { return !_humanId && _identifyPending }
 
 /** Log in as an existing agent. Used by returning users and ?name= auto-login. */
@@ -138,7 +184,7 @@ export async function login(name) {
 export async function registerHuman(name) {
   const sanitized = name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
   const humanId = `fleet:${sanitized}`
-  const res = await wsSend({ type: 'register', id: humanId, name: sanitized, human: true })
+  const res = await wsSend({ type: 'register', agent_id: humanId, name: sanitized, human: true })
   _humanId = res.agent?.id || humanId
   _humanName = sanitized
   _identifyPending = false
@@ -176,6 +222,10 @@ export async function sendMessage(to, text, opts = {}) {
   if (opts.attachments) body.attachments = opts.attachments
   if (opts.cc) body.cc = opts.cc
   if (opts.context) body.context = opts.context
+  // The human's preamble is the document they're viewing — stamp it so readers
+  // render this message's math with that doc's macros (mirrors how agents stamp
+  // their working-dir doc). { doc, version }; version captured, not yet resolved.
+  if (opts.preambleRef) body.preambleRef = opts.preambleRef
   const _t0 = performance.now()
   try {
     const d = await wsSend(body)
@@ -190,16 +240,34 @@ export async function sendMessage(to, text, opts = {}) {
 /** Inject an optimistic (locally-authored) event into the event list immediately. */
 export function injectOptimisticEvent(event) {
   const { event: ev } = _store.upsert(event)
+  upsertFleetEvent(ev)
   notify('messages', ev)
 }
 
 /** Update fields on an optimistic event (e.g. mark _failed, or set _dbId on reconcile). */
 export function updateOptimisticEvent(tempId, updates) {
-  if (_store.patchByTempId(tempId, updates)) notify('messages', null)
+  const ev = _store.patchByTempId(tempId, updates)
+  if (ev) {
+    upsertFleetEvent(ev)
+    notify('messages', null)
+  }
+}
+
+/** Remove a local optimistic event that never reached the server. */
+export function removeOptimisticEvent(tempId) {
+  const ev = _store.removeByTempId(tempId)
+  if (ev) {
+    removeFleetEvent(ev)
+    notify('messages', null)
+  }
 }
 
 export function updateEventById(dbId, updates) {
-  if (_store.patchByDbId(dbId, updates)) notify('messages', null)
+  const ev = _store.patchByDbId(dbId, updates)
+  if (ev) {
+    upsertFleetEvent(ev)
+    notify('messages', null)
+  }
 }
 
 /** Link an optimistic event to its server-assigned ID (if SSE hasn't already done it). */
@@ -209,7 +277,8 @@ export function reconcileOptimistic(tempId, serverEventId, newTo) {
   // from "Skip → awake" to "Skip → alice" — a delivery confirmation for the first agent.
   // Broadcasts for the remaining recipients arrive as separate events with their own to_id.
   // Idempotent with the WS-echo path: whichever binds the tempId→dbId first wins.
-  _store.reconcile(tempId, serverEventId, newTo)
+  const ev = _store.reconcile(tempId, serverEventId, newTo)
+  if (ev) upsertFleetEvent(ev)
   notify('messages', null)
 }
 
@@ -218,7 +287,7 @@ export function respawnAgent(id) {
 }
 
 export function spawnAgent(model, doc, name, effort) {
-  return wsSend({ type: 'spawn', model, ...(doc ? { doc } : {}), ...(name ? { name } : {}), ...(effort ? { effort } : {}) })
+  return wsSend({ type: 'spawn', fresh: true, model, ...(doc ? { doc } : {}), ...(name ? { name } : {}), ...(effort ? { effort } : {}) })
 }
 
 export function renameAgent(id, name) {
@@ -252,6 +321,22 @@ export function sendText(agent, text) {
 /** Send an arbitrary WS message to the fleet server. Returns a promise for the result. */
 export function fleetWS(type, body = {}) {
   return wsSend({ type, ...body })
+}
+
+export async function dismissItem(id) {
+  const userId = _humanId
+  if (!userId) throw new Error('no human identity')
+  const res = await fetch(`${FLEET}/api/items`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'dismiss', userId, id }),
+  })
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(data.error || res.statusText)
+  }
+  _items = _items.filter(i => i.id !== id)
+  notify('items', { userId, items: _items })
 }
 
 // --- WebSocket connection ---
@@ -326,11 +411,23 @@ export function connect() {
         _identifyPending = false
         notify('identity', { type: 'identity', id: _humanId, name: _humanName })
         _startHeartbeat()
-      }).catch(() => {
-        // Login failed — agent may have been removed. Show picker.
-        _identifyPending = true
-        localStorage.removeItem('tlda-identity')
-        notify('identity', { type: 'identity', id: null, name: null, needsIdentity: true })
+      }).catch((err) => {
+        // A deploy/restart can drop or time out this login request. Do not erase
+        // the browser's chosen identity for a transient transport failure; the
+        // next reconnect should retry the same stored name.
+        if (storedIdentityLoginFailureAction(err) !== 'register-stored') {
+          _identifyPending = false
+          notify('identity', { type: 'identity', id: null, name: storedName, needsIdentity: false })
+          _ws?.close()
+          return
+        }
+        // Fresh/test servers may not have the human row yet. Preserve the
+        // browser identity by creating that same human instead of forcing a
+        // manual switch or temporary identity.
+        registerHuman(storedName).catch(() => {
+          _identifyPending = true
+          notify('identity', { type: 'identity', id: null, name: storedName, needsIdentity: true })
+        })
       })
     } else {
       _identifyPending = true
@@ -339,13 +436,16 @@ export function connect() {
     // State (agents/tasks) is pushed by the server on WS connect — no need to re-fetch.
     // Catch up on missed chat events
     if (_lastEventId > 0) {
+      const reconnectTimer = probe.start('reconnect', 'reconnect-backfill')
       fetch(`${FLEET}/api/store/events?after=${_lastEventId}&limit=500`)
         .then(r => r.json())
         .then(data => {
-          const missed = (data.events || []).filter(e => {
-            const t = e.type || e.event_type
-            return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_attention' || t === 'terminal_card' || t === 'plan_approval'
-          })
+          // One path: ingest EVERYTHING the live stream would (it upserts any
+          // typed fleet-event — the render whitelist is the sole display gate).
+          // A separate type-allowlist here drifts from that whitelist; that drift
+          // is the bug where a reconnect silently dropped `activity` (and amend/
+          // interrupt/timer/kill-session) while chats survived. Don't add one back.
+          const missed = (data.events || []).filter(e => (e.type || e.event_type))
           const newEvents = []
           let boundAny = false
           for (const raw of missed) {
@@ -355,12 +455,17 @@ export function connect() {
             // (the replayed row carries _tempId, persisted server-side). No
             // content matching — binding is always by id, per the dedup rule.
             const { event: ev, isNew } = _store.upsert(convertChatEvent(raw))
+            upsertFleetEvent(ev)
             if (isNew) newEvents.push(ev); else boundAny = true
           }
           for (const ev of newEvents) notify('messages', ev)
           if (boundAny && !newEvents.length) notify('messages', null)
+          probe.stop(reconnectTimer, { missedCount: missed.length, newCount: newEvents.length, boundAny })
         })
-        .catch(e => console.warn('[fleet-data] history backfill failed:', e.message))
+        .catch(e => {
+          console.warn('[fleet-data] history backfill failed:', e.message)
+          probe.stop(reconnectTimer, { error: e.message })
+        })
     }
   }
 
@@ -428,17 +533,20 @@ export function connect() {
           notify('open-doc', data)
           return
         }
-        // Preamble macros for KaTeX rendering — set_preamble broadcasts these
-        if (data.type === 'preamble' && data.macros) {
-          setActiveMacros(data.macros)
-          return
-        }
         // upsert dedups by db id and binds our optimistic send: if the echo
         // carries the _tempId we sent (or the WS reply already set the _dbId),
         // it rebinds the pending entry instead of appending a duplicate. All by
         // id — no content matching.
         const converted = convertChatEvent(data)
         const { event, isNew } = _store.upsert(converted)
+        // Drain any event-updates that arrived before this event (e.g. a late
+        // file-upload's inline_attachments). Applying them now, before notify,
+        // means the first render already shows the patched line.
+        if (data.id != null && _pendingEventUpdates.has(data.id)) {
+          for (const u of _pendingEventUpdates.get(data.id)) applyEventUpdateFields(event, u)
+          _pendingEventUpdates.delete(data.id)
+        }
+        upsertFleetEvent(event)
         if (data.id && data.id > _lastEventId) _lastEventId = data.id
         if (data.type === 'chat') {
           console.log(`[chat-recv] id=${data.id} from=${data.from_id||data.from} text=${(data.text||'').substring(0,30)}`)
@@ -450,50 +558,42 @@ export function connect() {
       } else if (eventType === 'event-update') {
         const ev = _store.get('db:' + data.id)
         if (ev) {
-          if (data.text !== undefined) ev.text = data.text
-          if (data.inline_attachments) ev._inlineAttachments = data.inline_attachments
-          // Amend can set or clear file-section provenance. A file-form amend
-          // sends source = { file, section }; a string-form amend sends
-          // source = null to clear it. Updating ev.metadata.source makes the
-          // provenance chip appear/disappear in place on the amended message.
-          if (data.source !== undefined) {
-            if (!ev.metadata) ev.metadata = {}
-            ev.metadata.source = data.source
-          }
-          if (data.metadata_patch) {
-            if (!ev.metadata) ev.metadata = {}
-            Object.assign(ev.metadata, data.metadata_patch)
-            if (data.metadata_patch.approvedAt) {
-              ev._planResponse = data.metadata_patch.mode === 'supervised' ? 'supervised' : 'approved'
-              ev._promptResponse = 'approved'
-            }
-            if (data.metadata_patch.rejectedAt) {
-              ev._planResponse = 'rejected'
-              ev._promptResponse = 'rejected'
-            }
-            // Timer countdown reaching a terminal state: flip the derived flags
-            // so the line re-renders as cancelled (struck) or vanishes (fired).
-            if (ev.type === 'timer' || ev._timerCountdown || ev._timerCancelled) {
-              if (ev.metadata.state === 'cancelled') {
-                ev._timerCancelled = true; ev._timerCountdown = false
-              } else if (ev.metadata.pending === false) {
-                ev._timer = true; ev._timerCountdown = false
-              }
-            }
-          }
+          applyEventUpdateFields(ev, data)
+          upsertFleetEvent(ev)
           notify('messages', null)
+        } else if (data.id != null) {
+          // The event isn't in the store yet (the update raced ahead of its
+          // event). Buffer it; the fleet-event ingest drains this on arrival so
+          // the change isn't lost until reload. Bound the buffer so orphaned
+          // updates (for events that never come) can't leak.
+          const list = _pendingEventUpdates.get(data.id) || []
+          list.push(data)
+          _pendingEventUpdates.set(data.id, list)
+          while (_pendingEventUpdates.size > _MAX_PENDING_UPDATES) {
+            _pendingEventUpdates.delete(_pendingEventUpdates.keys().next().value)
+          }
         }
       } else if (eventType === 'read-receipt') {
         const ids = new Set(data.event_ids || [])
         for (const ev of _store.all()) {
-          if (ids.has(ev._dbId)) ev.read = true
+          if (ids.has(ev._dbId)) {
+            ev.read = true
+            upsertFleetEvent(ev)
+          }
         }
         if (ids.size) notify('messages', null)
       } else if (eventType === 'reaper-status') {
         _reaperStatus = data
         notify('reaper', data)
-      } else if (eventType === 'eliza-pending') {
-        notify('eliza-pending', data)
+      } else if (eventType === 'suggestions') {
+        notify('suggestions', data)
+      } else if (eventType === 'items') {
+        if (!data?.userId || data.userId === _humanId) {
+          _items = data.items || []
+          notify('items', data)
+        }
+      } else if (eventType === 'projects-updated') {
+        notify('projects', data)
       } else if (eventType === 'agent-thinking') {
         if (data.agent) notify('thinking', data)
       } else if (eventType === 'agent-compacting') {
@@ -517,6 +617,9 @@ export async function init() {
   // If localStorage has a stored name, login is sent automatically.
   // If not, the UI shows a picker with login/register options.
 
+  // FLEET/FLEET_WS come straight from the injected active config — no resolution
+  // step needed before the fetches below.
+
   // Fetch initial state + history in parallel.
   const [stateRes, historyRes] = await Promise.all([
     fetch(`${FLEET}/api/state`).then(r => r.json()).catch(e => { console.warn('[fleet-data] state fetch failed:', e.message); return {} }),
@@ -528,18 +631,32 @@ export async function init() {
   updateTasks(stateRes.tasks || [])
 
   // Populate chat events and notify subscribers
+  // One path: ingest everything (matching the live stream); the render whitelist
+  // is the single gate for what displays. Mirrors the reconnect catch-up in connect().
   const chatEvents = (historyRes.events || [])
-    .filter(e => {
-      const t = e.event_type || e.type
-      return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_user' || t === 'terminal_assistant' || t === 'timer' || t === 'compacting' || t === 'activity' || t === 'terminal_attention' || t === 'terminal_card' || t === 'plan_approval' || t === 'kill-session' || t === 'interrupt'
-    })
+    .filter(e => (e.event_type || e.type))
     .map(convertChatEvent)
   for (const ev of chatEvents) _store.upsert(ev)
+  replaceFleetEvents(_store.all())
   // Track highest event ID for reconnect catch-up
   for (const e of historyRes.events || []) {
     if (e.id && e.id > _lastEventId) _lastEventId = e.id
   }
   for (const ev of chatEvents) notify('messages', ev)
+
+  const fetchItemsForHuman = () => {
+    if (!_humanId) return
+    fetch(`${FLEET}/api/items?userId=${encodeURIComponent(_humanId)}`)
+      .then(r => r.json())
+      .then(data => {
+        _items = data.items || []
+        notify('items', { userId: _humanId, items: _items })
+      })
+      .catch(e => console.warn('[fleet-data] items fetch failed:', e.message))
+  }
+  const offIdentity = subscribe('identity', null, fetchItemsForHuman)
+  fetchItemsForHuman()
+  setTimeout(() => offIdentity?.(), 30000)
 
   // Connect SSE for live updates
   connect()
@@ -602,6 +719,8 @@ export function convertChatEvent(e) {
     read: e.read !== undefined ? e.read : false,
     _dbId: e.id,
   }
+  const tempId = e._tempId || e.metadata?.client_temp_id
+  if (tempId) msg._tempId = tempId
   if (type === 'delegate') {
     msg._evType = 'delegate'
     msg._description = e.text || ''
@@ -647,8 +766,13 @@ export function convertChatEvent(e) {
       msg._timerUntil = e.metadata.fire_at
       msg._timerMessage = tmsg
       msg._timerRemaining = Math.max(0, Math.ceil((new Date(e.metadata.fire_at) - Date.now()) / 1000))
+    } else if (e.metadata?.state === 'fired') {
+      // Fired — keep it as a terminal line so the timer stays in the log
+      // showing it ran. A timer is a chat event; it shouldn't vanish on fire.
+      msg._timerFired = true
+      msg._timerMessage = tmsg
     } else {
-      // Fired/expired — hidden; the action's own result message follows.
+      // Expired with no terminal state recorded — legacy/dim line.
       msg._timer = true
     }
   } else if (type === 'compacting') {
@@ -689,6 +813,11 @@ export function convertChatEvent(e) {
   }
   if (e.metadata?.context?.bullets) {
     msg._bullets = e.metadata.context.bullets
+  }
+  // Carry the sender's preamble reference so the chat shape renders this message's
+  // math with the sender's macros (its preambleRef.doc), not the viewer's.
+  if (e.metadata?.preambleRef) {
+    msg.metadata = { ...(msg.metadata || {}), preambleRef: e.metadata.preambleRef }
   }
   return msg
 }
@@ -735,7 +864,14 @@ export async function loadBefore(agentIds = [], beforeTs, count = 100) {
   // Return the count of genuinely-new rows so the caller knows whether to
   // re-pin scroll after a prepend.
   let added = 0
-  for (const ev of events) { if (_store.upsert(ev).isNew) added++ }
+  const changed = []
+  for (const ev of events) {
+    const result = _store.upsert(ev)
+    if (result.isNew) added++
+    changed.push(result.event)
+  }
+  if (added) replaceFleetEvents(_store.all())
+  else upsertFleetEvents(changed)
   if (added) notify('messages', null)
   return added
 }

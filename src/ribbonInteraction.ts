@@ -5,12 +5,34 @@ import { HIGHLIGHT_TO_STATUS } from './shapes/UnderstandingLineShape'
 import type { RibbonSegment } from './shapes/UnderstandingLineShape'
 import type { LineStatus } from './shapes/UnderstandingLineShape'
 import type { SvgPage } from './loaders/types'
+import { checkRibbonStale } from './historyStore'
 
 const MARGIN_X = 0
 const BAR_WIDTH = 6
 const RIBBON_SHAPE_ID = 'shape:understanding-ribbon' as TLShapeId
+const DOC_VERSION_SENTINEL_ID = 'shape:doc-version--sentinel' as TLShapeId
 
-const lineYIndexCache = new Map<string, Array<{ line: number; canvasY: number }>>()
+// The shadow-repo commit the viewer is currently showing (from the doc-version
+// sentinel). A span approved now is anchored to this commit; staleness is judged
+// by diffing it forward on the next rebuild.
+function currentCommit(editor: Editor): string | null {
+  const s = editor.store.get(DOC_VERSION_SENTINEL_ID)
+  const h = (s as any)?.props?.commitHash
+  return h && h !== 'unknown' ? String(h) : null
+}
+
+// The build-ready time of the version currently shown (from the doc-version
+// sentinel). Used to stamp when a span went stale — i.e. the build that
+// introduced the change. Falls back to wall-clock if the sentinel lacks it.
+function currentBuildTime(editor: Editor): number {
+  const s = editor.store.get(DOC_VERSION_SENTINEL_ID)
+  const t = (s as any)?.props?.buildReadyAt
+  return typeof t === 'number' && t > 0 ? t : Date.now()
+}
+
+type LineYEntry = { file: string; line: number; canvasY: number }
+
+const lineYIndexCache = new Map<string, Array<LineYEntry>>()
 
 export function clearLineYIndexCache(docName: string): void {
   lineYIndexCache.delete(docName)
@@ -27,29 +49,36 @@ function pagesToInfos(pages: SvgPage[]) {
 async function getLineYIndex(
   docName: string,
   pages: SvgPage[]
-): Promise<Array<{ line: number; canvasY: number }>> {
+): Promise<Array<LineYEntry>> {
   if (lineYIndexCache.has(docName)) return lineYIndexCache.get(docName)!
 
   const lookup = await loadLookup(docName)
   if (!lookup) return []
 
   const pageInfos = pagesToInfos(pages)
-  const result: Array<{ line: number; canvasY: number }> = []
+  const result: Array<LineYEntry> = []
   for (const [key, entry] of Object.entries(lookup.lines)) {
-    const lineNum = parseInt(key.includes(':') ? key.split(':')[1] : key, 10)
+    // Multi-file projects key lines as "file.tex:N"; bare "N" is the main file.
+    // Keep the file so the same line number in different \input files stays
+    // distinct — collapsing them is what ballooned marks across pages on edit.
+    const hasFile = key.includes(':')
+    const file = hasFile ? key.split(':')[0] : ''
+    const lineNum = parseInt(hasFile ? key.split(':')[1] : key, 10)
     if (isNaN(lineNum)) continue
     const canvas = pdfToCanvas(entry.page, entry.x, entry.y, pageInfos)
-    if (canvas) result.push({ line: lineNum, canvasY: canvas.y })
+    if (canvas) result.push({ file, line: lineNum, canvasY: canvas.y })
   }
   result.sort((a, b) => a.canvasY - b.canvasY)
   lineYIndexCache.set(docName, result)
   return result
 }
 
+// Nearest index entry to a canvas-Y, returning its file as well as its line so
+// the caller can anchor a segment endpoint to the right \input file.
 function findClosestLine(
-  index: Array<{ line: number; canvasY: number }>,
+  index: Array<LineYEntry>,
   targetY: number
-): number | null {
+): { file: string; line: number } | null {
   if (index.length === 0) return null
   let lo = 0, hi = index.length - 1
   while (lo < hi) {
@@ -58,20 +87,23 @@ function findClosestLine(
     else hi = mid
   }
   const candidates = [lo > 0 ? index[lo - 1] : null, index[lo]]
-    .filter((x): x is { line: number; canvasY: number } => x != null)
-  return candidates.sort((a, b) =>
+    .filter((x): x is LineYEntry => x != null)
+  const best = candidates.sort((a, b) =>
     Math.abs(a.canvasY - targetY) - Math.abs(b.canvasY - targetY)
-  )[0]?.line ?? null
+  )[0]
+  return best ? { file: best.file, line: best.line } : null
 }
 
 function lineToCanvasY(
-  index: Array<{ line: number; canvasY: number }>,
+  index: Array<LineYEntry>,
+  file: string,
   lineNum: number
 ): number | null {
   if (index.length === 0) return null
-  let best: { line: number; canvasY: number } | null = null
+  let best: LineYEntry | null = null
   let bestDiff = Infinity
   for (const e of index) {
+    if (e.file !== file) continue
     const diff = Math.abs(e.line - lineNum)
     if (diff === 0) return e.canvasY
     if (diff < bestDiff) { bestDiff = diff; best = e }
@@ -79,13 +111,16 @@ function lineToCanvasY(
   return best?.canvasY ?? null
 }
 
-// Canvas-Y extent (top, bottom) spanned by all source lines in [loLine, hiLine].
-// Synctex Y is not monotonic in line number (display math, page breaks), so taking
-// the min/max over the whole range — rather than resolving the two endpoints
-// independently — keeps the band from inverting or collapsing after a rebuild.
+// Canvas-Y extent (top, bottom) spanned by the source lines in [loLine, hiLine]
+// belonging to `files`. Restricting to the segment's own file(s) is what keeps a
+// same-numbered line in another \input file from stretching the band across pages.
+// Within a single file, synctex Y is not monotonic in line number (display math,
+// page breaks), so taking min/max over the range — rather than resolving the two
+// endpoints independently — keeps the band from inverting or collapsing.
 // Falls back to the endpoints' nearest-line positions when no lines land in range.
 function lineRangeToCanvasYExtent(
-  index: Array<{ line: number; canvasY: number }>,
+  index: Array<LineYEntry>,
+  files: Set<string>,
   loLine: number,
   hiLine: number
 ): { top: number; bottom: number } | null {
@@ -93,14 +128,16 @@ function lineRangeToCanvasYExtent(
   let top = Infinity
   let bottom = -Infinity
   for (const e of index) {
+    if (!files.has(e.file)) continue
     if (e.line < loLine || e.line > hiLine) continue
     if (e.canvasY < top) top = e.canvasY
     if (e.canvasY > bottom) bottom = e.canvasY
   }
   if (top === Infinity) {
     // No surviving lines inside the range — fall back to the endpoints.
-    const a = lineToCanvasY(index, loLine)
-    const b = lineToCanvasY(index, hiLine)
+    const firstFile = files.values().next().value ?? ''
+    const a = lineToCanvasY(index, firstFile, loLine)
+    const b = lineToCanvasY(index, firstFile, hiLine)
     if (a == null || b == null) return null
     return { top: Math.min(a, b), bottom: Math.max(a, b) }
   }
@@ -118,16 +155,74 @@ function getSegments(editor: Editor): RibbonSegment[] {
   catch { return [] }
 }
 
+// Largest vertical gap (canvas px) across which two same-status segments are
+// still considered "touching" and get coalesced. Smaller than the eraser band
+// (2*ERASE_RADIUS) so an erased gap always survives — erase visibly clears.
+const COALESCE_GAP_PX = 1.5
+
+// Collapse the segment list to its minimal form: drop empty/unchecked spans,
+// then merge any run of contiguous same-status segments into one. This is what
+// bounds the count — without it, every mark and every erase-split adds a
+// fragment that never merges back (the 43k-segment bloat). Run on every write.
+export function normalizeSegments(segments: RibbonSegment[]): RibbonSegment[] {
+  // Sort by position AND status. The status tiebreaker is load-bearing: without
+  // it, exact-overlapping duplicates of alternating status (the same line marked
+  // uncertain/approved/uncertain/... - the actual shape of the bregman bloat) stay
+  // interleaved, so no two consecutive entries share a status and none collapse.
+  // Grouping same-status duplicates makes the absorb-step below fold them to one.
+  // Two spans only coalesce if they agree on everything that gives the run its
+  // identity: status, the commit they were vetted against, stale-state, and
+  // provenance. Merging across different identity fields would silently drop
+  // an anchor or checker attribution.
+  const anchorKey = (s: RibbonSegment) =>
+    [
+      s.status,
+      s.approvedAtCommit ?? '',
+      s.stale ? 1 : 0,
+      s.staleAt ?? '',
+      s.checkedById ?? '',
+      s.checkedByName ?? '',
+      s.checkedAt ?? '',
+      s.reason ?? '',
+      s.method ?? '',
+      s.taskId ?? '',
+      s.eventId ?? '',
+    ].join('\u0000')
+  const colored = segments
+    .filter(s => s.status !== 'unchecked' && s.y2 - s.y1 > 0)
+    .sort((a, b) => a.y1 - b.y1 || a.y2 - b.y2 ||
+      (anchorKey(a) < anchorKey(b) ? -1 : anchorKey(a) > anchorKey(b) ? 1 : 0))
+
+  const out: RibbonSegment[] = []
+  for (const seg of colored) {
+    const last = out[out.length - 1]
+    if (last && anchorKey(last) === anchorKey(seg) && seg.y1 <= last.y2 + COALESCE_GAP_PX) {
+      // Same status and touching/overlapping/duplicate — absorb into the run.
+      // Take the union span and carry the lower endpoint's line/file so remap
+      // stays anchored. A contained/duplicate segment (y2 <= last.y2) is dropped.
+      if (seg.y2 > last.y2) {
+        last.y2 = seg.y2
+        last.endLine = seg.endLine
+        last.endFile = seg.endFile
+      }
+    } else {
+      out.push({ ...seg })
+    }
+  }
+  return out
+}
+
 function setSegments(editor: Editor, segments: RibbonSegment[]) {
   const shape = getRibbonShape(editor)
   if (!shape) return
+  const normalized = normalizeSegments(segments)
   editor.store.update(RIBBON_SHAPE_ID, (s: any) => ({
     ...s,
-    props: { ...s.props, segments: JSON.stringify(segments) },
+    props: { ...s.props, segments: JSON.stringify(normalized) },
   }))
 }
 
-function mergeSegment(
+export function mergeSegment(
   existing: RibbonSegment[],
   newSeg: RibbonSegment
 ): RibbonSegment[] {
@@ -141,12 +236,13 @@ function mergeSegment(
       result.push(seg)
       continue
     }
-    // Partial overlap — trim
+    // Partial overlap — trim. The cut endpoint adopts the new segment's
+    // boundary line *and its file*, so the survivor remaps correctly.
     if (seg.y1 < newSeg.y1) {
-      result.push({ ...seg, y2: newSeg.y1, endLine: newSeg.startLine })
+      result.push({ ...seg, y2: newSeg.y1, endLine: newSeg.startLine, endFile: newSeg.startFile })
     }
     if (seg.y2 > newSeg.y2) {
-      result.push({ ...seg, y1: newSeg.y2, startLine: newSeg.endLine })
+      result.push({ ...seg, y1: newSeg.y2, startLine: newSeg.endLine, startFile: newSeg.endFile })
     }
   }
 
@@ -243,13 +339,21 @@ export async function processRibbonHighlight(
   const ribbonY = ribbon.y
 
   const index = await getLineYIndex(docName, pages)
-  const startLine = findClosestLine(index, bounds.minY) ?? 0
-  const endLine = findClosestLine(index, bounds.maxY) ?? 0
+  const startRef = findClosestLine(index, bounds.minY)
+  const endRef = findClosestLine(index, bounds.maxY)
 
   const y1 = Math.max(0, bounds.minY - ribbonY)
   const y2 = Math.min((ribbon.props as any).h, bounds.maxY - ribbonY)
 
-  const newSeg: RibbonSegment = { startLine, endLine, status, y1, y2 }
+  const commit = currentCommit(editor)
+  const newSeg: RibbonSegment = {
+    startLine: startRef?.line ?? 0,
+    endLine: endRef?.line ?? 0,
+    startFile: startRef?.file ?? '',
+    endFile: endRef?.file ?? '',
+    status, y1, y2,
+    ...(commit ? { approvedAtCommit: commit } : {}),
+  }
   const segments = getSegments(editor)
   const merged = mergeSegment(segments, newSeg)
   setSegments(editor, merged)
@@ -268,7 +372,7 @@ export async function processRibbonHighlight(
     }))
   }
 
-  console.log(`[Ribbon] ${status}: lines ${startLine}–${endLine}`)
+  console.log(`[Ribbon] ${status}: lines ${newSeg.startLine}–${newSeg.endLine}`)
 }
 
 /**
@@ -297,7 +401,17 @@ export async function remapRibbonSegments(
   for (const seg of segments) {
     const loLine = Math.min(seg.startLine, seg.endLine)
     const hiLine = Math.max(seg.startLine, seg.endLine)
-    const extent = lineRangeToCanvasYExtent(index, loLine, hiLine)
+    // Resolve within the segment's own file(s). Legacy segments predate the
+    // file fields — anchor them to the file nearest their last position.
+    const files = new Set<string>()
+    if (seg.startFile !== undefined || seg.endFile !== undefined) {
+      files.add(seg.startFile ?? '')
+      files.add(seg.endFile ?? '')
+    } else {
+      const ref = findClosestLine(index, seg.y1 + ribbonY)
+      files.add(ref?.file ?? '')
+    }
+    const extent = lineRangeToCanvasYExtent(index, files, loLine, hiLine)
     if (!extent) continue
 
     let y1 = extent.top - ribbonY
@@ -313,10 +427,50 @@ export async function remapRibbonSegments(
     updated.push({ ...seg, y1, y2 })
   }
 
-  if (updated.length !== segments.length ||
-      updated.some((s, i) => Math.abs(s.y1 - segments[i].y1) > 0.5 || Math.abs(s.y2 - segments[i].y2) > 0.5)) {
+  // Git-anchored staleness: ask the server which anchored spans had their source
+  // change since the commit they were vetted against, and flag them. The line
+  // numbers are as-of approvedAtCommit, which is exactly what the server diffs from.
+  let staleChanged = false
+  const cur = currentCommit(editor)
+  const anchored = updated
+    .map((s, i) => ({ s, i }))
+    .filter(({ s }) => typeof s.approvedAtCommit === 'string')
+  if (cur && anchored.length > 0) {
+    const results = await checkRibbonStale(
+      docName,
+      anchored.map(({ s }) => ({
+        file: s.startFile ?? '',
+        startLine: Math.min(s.startLine, s.endLine),
+        endLine: Math.max(s.startLine, s.endLine),
+        approvedAtCommit: s.approvedAtCommit as string,
+      })),
+      cur,
+    )
+    if (results) {
+      const buildTime = currentBuildTime(editor)
+      anchored.forEach(({ i }, k) => {
+        const nextStale = !!results[k]?.stale
+        if (!!updated[i].stale !== nextStale) {
+          // Stamp staleAt on the fresh→stale transition (so the inbox can sort
+          // by when it broke); clear it when the span heals back to fresh.
+          updated[i] = nextStale
+            ? { ...updated[i], stale: true, staleAt: updated[i].staleAt ?? buildTime }
+            : { ...updated[i], stale: false, staleAt: undefined }
+          staleChanged = true
+        }
+      })
+    }
+  }
+
+  // Write if the remap moved anything, OR coalescing would shrink the set (the
+  // self-heal path: a bloated doc collapses on its next reload even when every
+  // segment's y is unchanged), OR a span's staleness flipped.
+  const normalized = normalizeSegments(updated)
+  const positionsChanged = updated.length !== segments.length ||
+    updated.some((s, i) => Math.abs(s.y1 - segments[i].y1) > 0.5 || Math.abs(s.y2 - segments[i].y2) > 0.5)
+  if (positionsChanged || normalized.length !== segments.length || staleChanged) {
     setSegments(editor, updated)
-    console.log(`[Ribbon] Remapped ${updated.length} segment(s) after rebuild`)
+    console.log(`[Ribbon] Remapped ${segments.length} → ${normalized.length} segment(s) after rebuild`)
   }
 }
 
@@ -326,65 +480,76 @@ export function isInRibbonZone(editor: Editor, shapeId: TLShapeId): boolean {
   return bounds.minX < 5
 }
 
+// Half-height (page-space px) of the band one eraser pass clears around the
+// pointer. The lane is narrow, so only the vertical reach matters.
+const ERASE_RADIUS = 6
+
 /**
- * Set up eraser-in-ribbon detection. When the eraser tool is used and
- * the stroke overlaps the ribbon's x-extent, clear segments in that
- * y-range instead of (or in addition to) normal eraser behavior.
+ * Set up eraser-in-ribbon detection. When the eraser is used in the ribbon's
+ * x-zone, clear only the band the pointer actually scrubs over — live, as it
+ * moves — rather than trimming the mark to the bounding box of the whole
+ * gesture (which read as the mark "resizing" to follow the cursor).
  */
 export function setupRibbonEraser(
   editor: Editor,
   docName: string,
   pages: SvgPage[]
 ): void {
-  let eraserMinY = Infinity
-  let eraserMaxY = -Infinity
   let eraserActive = false
+  let index: Array<LineYEntry> = []
+
+  // Keep a resolved index handy so each pointer_move can erase synchronously.
+  // Refreshed on every pointer_down so it survives a rebuild (which clears the cache).
+  void getLineYIndex(docName, pages).then(idx => { index = idx })
+
+  // Subtract the band [pageY ± ERASE_RADIUS] from the ribbon's segments.
+  const eraseBandAt = (pageY: number) => {
+    const ribbon = getRibbonShape(editor)
+    if (!ribbon) return
+    const ribbonY = ribbon.y
+    const h = (ribbon.props as any).h
+    const y1 = Math.max(0, (pageY - ERASE_RADIUS) - ribbonY)
+    const y2 = Math.min(h, (pageY + ERASE_RADIUS) - ribbonY)
+    if (y2 <= y1) return
+
+    const startRef = findClosestLine(index, pageY - ERASE_RADIUS)
+    const endRef = findClosestLine(index, pageY + ERASE_RADIUS)
+    const eraseSeg: RibbonSegment = {
+      startLine: startRef?.line ?? 0,
+      endLine: endRef?.line ?? 0,
+      startFile: startRef?.file ?? '',
+      endFile: endRef?.file ?? '',
+      status: 'unchecked', y1, y2,
+    }
+    const segments = getSegments(editor)
+    const merged = mergeSegment(segments, eraseSeg)
+    // Only write when the erase actually changed something — avoids a flood of
+    // no-op Yjs updates while scrubbing empty parts of the lane.
+    if (merged.length !== segments.length ||
+        merged.some((s, i) => s !== segments[i])) {
+      setSegments(editor, merged)
+    }
+  }
 
   editor.on('event', (event: any) => {
     const tool = editor.getCurrentToolId()
-    if (tool !== 'eraser') {
-      if (eraserActive) { eraserActive = false; eraserMinY = Infinity; eraserMaxY = -Infinity }
-      return
-    }
+    if (tool !== 'eraser') { eraserActive = false; return }
 
     if (event.name === 'pointer_down' && event.type === 'pointer') {
       const pagePoint = editor.inputs.currentPagePoint
       if (pagePoint.x < MARGIN_X + BAR_WIDTH + 20) {
         eraserActive = true
-        eraserMinY = pagePoint.y
-        eraserMaxY = pagePoint.y
+        void getLineYIndex(docName, pages).then(idx => { index = idx })
+        eraseBandAt(pagePoint.y)
       }
     }
 
     if (event.name === 'pointer_move' && event.type === 'pointer' && eraserActive) {
-      const pagePoint = editor.inputs.currentPagePoint
-      eraserMinY = Math.min(eraserMinY, pagePoint.y)
-      eraserMaxY = Math.max(eraserMaxY, pagePoint.y)
+      eraseBandAt(editor.inputs.currentPagePoint.y)
     }
 
-    if (event.name === 'pointer_up' && event.type === 'pointer' && eraserActive) {
+    if (event.name === 'pointer_up' && event.type === 'pointer') {
       eraserActive = false
-      const ribbon = getRibbonShape(editor)
-      if (!ribbon) return
-
-      const ribbonY = ribbon.y
-      const y1 = Math.max(0, eraserMinY - ribbonY)
-      const y2 = Math.min((ribbon.props as any).h, eraserMaxY - ribbonY)
-
-      void (async () => {
-        const index = await getLineYIndex(docName, pages)
-        const startLine = findClosestLine(index, eraserMinY) ?? 0
-        const endLine = findClosestLine(index, eraserMaxY) ?? 0
-
-        const eraseSeg: RibbonSegment = { startLine, endLine, status: 'unchecked', y1, y2 }
-        const segments = getSegments(editor)
-        const merged = mergeSegment(segments, eraseSeg)
-        setSegments(editor, merged)
-        console.log(`[Ribbon] Erased: lines ${startLine}–${endLine}`)
-      })()
-
-      eraserMinY = Infinity
-      eraserMaxY = -Infinity
     }
   })
 }

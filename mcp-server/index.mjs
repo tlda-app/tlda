@@ -9,12 +9,12 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { getFleetTools, handleFleetTool, initFleet, TLDA_INSTRUCTIONS } from './fleet-tools.mjs';
+import { getFleetTools, handleFleetTool, initFleet, TLDA_INSTRUCTIONS, setAgentPreambleDoc } from './fleet-tools.mjs';
 import http from 'http';
 import fs from 'fs';
 import os from 'os';
 import crypto from 'crypto';
-import { spawn, execSync } from 'child_process';
+import { spawn, execSync, execFileSync } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { connectSSE } from '../shared/sse-parser.mjs';
@@ -24,12 +24,13 @@ import { findRenderedText } from './svg-text.mjs';
 import { initDataSource, readJsonSync, readJson, readManifestSync, readManifest, localDocDir, isRemote } from './data-source.mjs';
 import { resolveToken } from './resolve-token.mjs';
 import { formatHighlight, formatNote } from './format-annotation.mjs';
-import { extractMacrosFromFile } from '../scripts/extract-preamble.js';
+import { stageNote, stageHighlight } from './lib/annotate.mjs';
 import {
   isHtmlDoc, docToCanvas, canvasToDoc, getPageWidth,
   pdfToCanvas, canvasToPdf, htmlToCanvas, canvasToHtml, loadHtmlLayout,
   PDF_WIDTH, PDF_HEIGHT, PAGE_WIDTH, PAGE_HEIGHT, PAGE_GAP,
 } from './lib/formatCoords.mjs';
+import { harnessFromEnv } from './lib/harness-adapters.mjs';
 
 import { getServerUrl, DEFAULT_PORT } from '../shared/config.mjs'
 import { tldaFetch as _tldaFetch } from '../shared/http-client.mjs'
@@ -119,6 +120,141 @@ async function readSignalRest(docName, key) {
   }
 }
 
+const UNDERSTANDING_RIBBON_ID = 'shape:understanding-ribbon';
+const UNDERSTANDING_COALESCE_GAP_PX = 1.5;
+
+function shortText(value, max = 160) {
+  if (value == null) return undefined;
+  const text = String(value).replace(/\s+/g, ' ').trim();
+  if (!text) return undefined;
+  return text.length > max ? `${text.slice(0, max - 3)}...` : text;
+}
+
+function understandingIdentityKey(seg) {
+  return [
+    seg.status,
+    seg.approvedAtCommit ?? '',
+    seg.stale ? 1 : 0,
+    seg.staleAt ?? '',
+    seg.checkedById ?? '',
+    seg.checkedByName ?? '',
+    seg.checkedAt ?? '',
+    seg.reason ?? '',
+    seg.method ?? '',
+    seg.taskId ?? '',
+    seg.eventId ?? '',
+  ].join('\u0000');
+}
+
+function normalizeUnderstandingSegments(segments) {
+  const colored = segments
+    .filter(s => s.status !== 'unchecked' && s.y2 - s.y1 > 0)
+    .sort((a, b) => a.y1 - b.y1 || a.y2 - b.y2 ||
+      (understandingIdentityKey(a) < understandingIdentityKey(b) ? -1 :
+        understandingIdentityKey(a) > understandingIdentityKey(b) ? 1 : 0));
+
+  const out = [];
+  for (const seg of colored) {
+    const last = out[out.length - 1];
+    if (last && understandingIdentityKey(last) === understandingIdentityKey(seg) &&
+        seg.y1 <= last.y2 + UNDERSTANDING_COALESCE_GAP_PX) {
+      if (seg.y2 > last.y2) {
+        last.y2 = seg.y2;
+        last.endLine = seg.endLine;
+        last.endFile = seg.endFile;
+      }
+    } else {
+      out.push({ ...seg });
+    }
+  }
+  return out;
+}
+
+function mergeUnderstandingSegment(existing, newSeg) {
+  const result = [];
+  for (const seg of existing) {
+    if (seg.y2 <= newSeg.y1 || seg.y1 >= newSeg.y2) {
+      result.push(seg);
+      continue;
+    }
+    if (seg.y1 < newSeg.y1) {
+      result.push({ ...seg, y2: newSeg.y1, endLine: newSeg.startLine, endFile: newSeg.startFile });
+    }
+    if (seg.y2 > newSeg.y2) {
+      result.push({ ...seg, y1: newSeg.y2, startLine: newSeg.endLine, startFile: newSeg.endFile });
+    }
+  }
+  if (newSeg.status !== 'unchecked') result.push(newSeg);
+  result.sort((a, b) => a.y1 - b.y1);
+  return normalizeUnderstandingSegments(result);
+}
+
+function understandingProvenanceFromArgs(args) {
+  const checkedById = shortText(args.userId || process.env.FLEET_ID, 120);
+  const checkedByName = shortText(args.displayName || process.env.FLEET_NAME, 120);
+  return {
+    ...(checkedById ? { checkedById } : {}),
+    ...(checkedByName ? { checkedByName } : {}),
+    checkedAt: Date.now(),
+    ...(shortText(args.reason) ? { reason: shortText(args.reason) } : {}),
+    ...(shortText(args.method, 80) ? { method: shortText(args.method, 80) } : {}),
+    ...(shortText(args.taskId, 120) ? { taskId: shortText(args.taskId, 120) } : {}),
+    ...(shortText(args.eventId, 120) ? { eventId: shortText(args.eventId, 120) } : {}),
+  };
+}
+
+function formatUnderstandingRange(seg) {
+  const lo = Math.min(seg.startLine, seg.endLine);
+  const hi = Math.max(seg.startLine, seg.endLine);
+  const file = seg.startFile || seg.endFile || '';
+  return `${file ? `${file}:` : ''}${lo}-${hi}`;
+}
+
+function formatUnderstandingProvenance(seg) {
+  const bits = [];
+  const checker = seg.checkedByName || seg.checkedById;
+  if (checker) bits.push(`checked by ${checker}`);
+  if (typeof seg.checkedAt === 'number') bits.push(new Date(seg.checkedAt).toISOString());
+  if (seg.method) bits.push(`method: ${seg.method}`);
+  if (seg.taskId) bits.push(`task: ${seg.taskId}`);
+  if (seg.eventId) bits.push(`event: ${seg.eventId}`);
+  if (seg.reason) bits.push(`reason: ${shortText(seg.reason, 100)}`);
+  return bits.join('; ');
+}
+
+function formatUnderstandingSummary(segments) {
+  const sorted = [...segments].sort((a, b) =>
+    Math.min(a.startLine, a.endLine) - Math.min(b.startLine, b.endLine));
+  const groups = new Map();
+  for (const seg of sorted) {
+    const checker = seg.checkedByName || seg.checkedById || 'unknown checker';
+    const stale = seg.stale ? 'stale' : 'fresh';
+    const reason = seg.reason ? shortText(seg.reason, 80) : '';
+    const key = `${seg.status}\u0000${stale}\u0000${checker}\u0000${reason}`;
+    const cur = groups.get(key) || { status: seg.status, stale, checker, reason, count: 0 };
+    cur.count += 1;
+    groups.set(key, cur);
+  }
+
+  let summary = `${sorted.length} segment(s)\n`;
+  summary += 'Grouped:\n';
+  for (const g of [...groups.values()].sort((a, b) =>
+    a.status.localeCompare(b.status) || a.stale.localeCompare(b.stale) || a.checker.localeCompare(b.checker))) {
+    summary += `  ${g.status}/${g.stale} by ${g.checker}: ${g.count}`;
+    if (g.reason) summary += ` - ${g.reason}`;
+    summary += '\n';
+  }
+  summary += 'Segments:\n';
+  for (const seg of sorted) {
+    const stale = seg.stale ? 'stale' : 'fresh';
+    const prov = formatUnderstandingProvenance(seg);
+    summary += `  ${formatUnderstandingRange(seg)}: ${seg.status} (${stale})`;
+    if (prov) summary += ` - ${prov}`;
+    summary += '\n';
+  }
+  return summary;
+}
+
 /**
  * Connect to signal SSE stream. Returns { close() }.
  * Calls onSignal(signal) for each signal broadcast ({key, ...data, timestamp}).
@@ -166,35 +302,6 @@ const PROJECT_ROOT = path.resolve(__dirname, '..');
 const SNAPSHOT_PATH = '/tmp/tldraw-snapshot.json';
 const SCREENSHOT_PATH = '/tmp/annotated-view.png';
 
-// ---- Headless screenshot fallback ----
-
-let _browser = null;
-let _browserIdleTimer = null;
-const BROWSER_IDLE_MS = 120_000; // close after 2min idle
-
-async function getHeadlessBrowser() {
-  if (_browser && _browser.connected) {
-    clearTimeout(_browserIdleTimer);
-    return _browser;
-  }
-  const puppeteer = await import('puppeteer');
-  _browser = await puppeteer.default.launch({
-    headless: true,
-    args: ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'],
-  });
-  return _browser;
-}
-
-function scheduleBrowserClose() {
-  clearTimeout(_browserIdleTimer);
-  _browserIdleTimer = setTimeout(async () => {
-    if (_browser) {
-      await _browser.close().catch(e => process.stderr.write(`[mcp] browser close failed: ${e.message}\n`));
-      _browser = null;
-    }
-  }, BROWSER_IDLE_MS);
-}
-
 /** Check if a document has built pages. Returns { ok, pages, buildStatus } or { ok: false, reason }. */
 async function checkDocBuildStatus(docName) {
   const sUrl = getServerUrl();
@@ -241,130 +348,6 @@ function checkDocBuildStatusDisk(docName) {
   }
 }
 
-async function headlessScreenshot(docName, targetPage) {
-  const serverUrl = getServerUrl();
-  const tokenParam = TLDA_TOKEN ? `&token=${TLDA_TOKEN}` : '';
-  const url = `${serverUrl}/?doc=${docName}${tokenParam}`;
-  const browser = await getHeadlessBrowser();
-  const page = await browser.newPage();
-  try {
-    await page.setViewport({ width: 1280, height: 960 });
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
-    // Wait for TLDraw to render shapes
-    await page.waitForSelector('.tl-shapes', { timeout: 15000 });
-    // Let annotations sync from Yjs
-    await new Promise(r => setTimeout(r, 3000));
-
-    if (targetPage) {
-      await page.evaluate((pg) => {
-        const pageHeight = 792 * (800 / 612); // PDF_HEIGHT * (TARGET_WIDTH / PDF_WIDTH)
-        const pageGap = 32;
-        const y = (pg - 1) * (pageHeight + pageGap) + pageHeight / 2;
-        const editor = window.__tldraw_editor__;
-        if (editor) {
-          editor.centerOnPoint({ x: 400, y });
-        }
-      }, targetPage);
-      await new Promise(r => setTimeout(r, 500));
-    }
-
-    const buf = await page.screenshot({ type: 'png' });
-    const base64 = buf.toString('base64');
-    return base64;
-  } finally {
-    await page.close();
-    scheduleBrowserClose();
-  }
-}
-
-/**
- * Take a cropped screenshot of a specific canvas region.
- * Centers the viewport on the given canvas bounds, then clips to the exact region.
- * @param {string} docName - document name
- * @param {{ x: number, y: number, w: number, h: number }} bounds - canvas bounds to capture
- * @param {number} [padding=200] - extra pixels around the bounds (generous for context)
- * @param {string} [focusShapeId] - if provided, desaturate other annotations to highlight this one
- */
-async function headlessScreenshotCrop(docName, bounds, padding = 200, focusShapeId = null) {
-  const serverUrl = getServerUrl();
-  const tokenParam = TLDA_TOKEN ? `&token=${TLDA_TOKEN}` : '';
-  const url = `${serverUrl}/?doc=${docName}${tokenParam}`;
-  const browser = await getHeadlessBrowser();
-  const page = await browser.newPage();
-  try {
-    await page.setViewport({ width: 1280, height: 960 });
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
-    await page.waitForSelector('.tl-shapes', { timeout: 15000 });
-    await new Promise(r => setTimeout(r, 3000));
-
-    // Center on the bounds and zoom to fit
-    const clip = await page.evaluate((b, pad) => {
-      const editor = window.__tldraw_editor__;
-      if (!editor) return null;
-      // Zoom to fit the bounds with padding
-      const cx = b.x + b.w / 2;
-      const cy = b.y + b.h / 2;
-      editor.centerOnPoint({ x: cx, y: cy });
-      // Calculate zoom to fit bounds in viewport
-      const vw = 1280, vh = 960;
-      const zoomX = vw / (b.w + pad * 2);
-      const zoomY = vh / (b.h + pad * 2);
-      const zoom = Math.min(zoomX, zoomY, 2); // cap at 2x for readability
-      editor.setCamera({ x: -(cx - vw / (2 * zoom)), y: -(cy - vh / (2 * zoom)), z: zoom });
-      // Convert canvas bounds to screen coords
-      const tl = editor.pageToScreen({ x: b.x, y: b.y });
-      const br = editor.pageToScreen({ x: b.x + b.w, y: b.y + b.h });
-      return {
-        x: Math.max(0, Math.floor(tl.x - pad)),
-        y: Math.max(0, Math.floor(tl.y - pad)),
-        width: Math.min(vw, Math.ceil(br.x - tl.x + pad * 2)),
-        height: Math.min(vh, Math.ceil(br.y - tl.y + pad * 2)),
-      };
-    }, bounds, padding);
-
-    // Force light theme and hide fleet UI shapes for clean document screenshots
-    await page.evaluate(() => {
-      document.documentElement.classList.remove('tl-theme__dark');
-      document.documentElement.classList.add('tl-theme__light');
-      document.body.classList.remove('tl-theme__dark');
-      document.body.classList.add('tl-theme__light');
-      const editor = window.__tldraw_editor__;
-      if (!editor) return;
-      const fleetTypes = new Set(['fleet-chat', 'fleet-agents', 'fleet-pill', 'fleet-status']);
-      for (const shape of editor.getCurrentPageShapes()) {
-        if (!fleetTypes.has(shape.type)) continue;
-        const el = document.querySelector(`[data-shape-id="${shape.id}"]:not(.tl-shape-background)`);
-        if (el) el.style.display = 'none';
-      }
-    });
-
-    // Fade non-target annotations (keep colors recognizable, just lower salience)
-    if (focusShapeId) {
-      await page.evaluate((targetId) => {
-        const editor = window.__tldraw_editor__;
-        if (!editor) return;
-        const annotationTypes = new Set(['highlight', 'draw', 'dot-annotation']);
-        for (const shape of editor.getCurrentPageShapes()) {
-          if (!annotationTypes.has(shape.type)) continue;
-          if (shape.id === targetId) continue;
-          const el = document.querySelector(`[data-shape-id="${shape.id}"]:not(.tl-shape-background)`);
-          if (el) el.style.opacity = '0.4';
-        }
-      }, focusShapeId);
-    }
-
-    await new Promise(r => setTimeout(r, 500)); // let render settle
-
-    const buf = clip
-      ? await page.screenshot({ type: 'png', clip })
-      : await page.screenshot({ type: 'png' });
-    return buf.toString('base64');
-  } finally {
-    await page.close();
-    scheduleBrowserClose();
-  }
-}
-
 // Initialize data source: HTTP fetch when TLDA_SERVER is set, disk read otherwise
 initDataSource(PROJECT_ROOT, process.env.TLDA_SERVER || null);
 
@@ -399,6 +382,126 @@ function _lookupLineInData(lookup, lineNum, file) {
   if (!entry) entry = lookup.lines[lineNum.toString()];
   if (!entry) return null;
   return { page: entry.page, x: entry.x, y: entry.y, content: entry.content, texFile: lookup.meta?.texFile };
+}
+
+// Find the source (file, 1-based line) where `\label{label}` is written. The
+// .aux-derived source map has the label's page/number but not its line; the
+// label's true line is its definition site in the .tex. Scans the doc's real
+// build files — the distinct .tex files synctex recorded in the source map's
+// `pages` index (so junk/old .tex in the source dir are ignored) — plus the
+// main file. Returns { file, line } or null. `\label{ }` whitespace tolerated.
+function findLabelLine(sourceDir, sourceMap, mainFile, label) {
+  const files = new Set();
+  for (const entries of Object.values(sourceMap?.pages || {})) {
+    for (const e of entries) if (e?.file && e.file.endsWith('.tex')) files.add(e.file);
+  }
+  if (mainFile) files.add(mainFile);
+  const exact = `\\label{${label}}`;
+  const reLabel = new RegExp('\\\\label\\{\\s*' + label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*\\}');
+  for (const rel of files) {
+    let text;
+    try { text = fs.readFileSync(path.join(sourceDir, rel), 'utf8'); } catch { continue; }
+    let idx = text.indexOf(exact);
+    if (idx === -1) { const m = text.match(reLabel); if (m) idx = m.index; }
+    if (idx === -1) continue;
+    const line = text.slice(0, idx).split('\n').length;
+    return { file: rel, line };
+  }
+  return null;
+}
+
+// ---- education gate for non-Claude agents ----
+//
+// Mirrors Claude's PreToolUse skill mandate at the MCP boundary. Claude agents
+// are gated by their harness hook and never reach this path. Goose/DeepSeek
+// agents have no such hook, so we enforce the SAME qualifications rules here,
+// against the tlda server's existing /api/education/check endpoint. On a gated
+// call we BLOCK and name the owed skill(s). Goose clears that by loading the
+// skill with native Summon; other non-Claude agents clear it by reading the
+// SKILL.md natively. Any agent may instead call
+// `dismiss_skill(skills:[…], reason:"…")` if it judges one irrelevant, which
+// records the dismissal and shows Skip the reason. The block is sticky: the
+// server re-derives the owed set each call, so it lifts only once the agent has
+// loaded/read or dismissed every required skill, exactly like the Claude gate.
+//
+// Fail-OPEN by design: if the endpoint is down/unreachable the gate returns null
+// so a tool is never broken by it. That is not a silent fallback — the gate is
+// advisory infrastructure, not the tool's output — and every fail-open is logged
+// to stderr so an outage is visible rather than swallowed.
+//
+// `chat` is deliberately NOT gated: it is the accessibility-critical channel to
+// Skip, and a dropped retry there would lose a message. Only the producing tools
+// (propose_edit/report/input_scratch), where a missed retry is harmless, gate.
+const GATED_MCP_TOOLS = {
+  propose_edit:  { tool: 'tlda/propose_edit',  file: a => a?.file || '' },
+  report:        { tool: 'tlda/report' },
+  input_scratch: { tool: 'tlda/input_scratch' },
+};
+
+async function eduCheckOwedSkills(toolNorm, { file = '', content = '' } = {}) {
+  const agentId = process.env.FLEET_ID;
+  if (!agentId || !TLDA_SERVER) return [];
+  try {
+    const qs = new URLSearchParams({ tool: toolNorm });
+    if (file) qs.set('file', file);
+    if (content) qs.set('content', content.slice(0, 2000));
+    const res = await fetch(`${TLDA_SERVER}/api/education/check/${encodeURIComponent(agentId)}?${qs}`, { headers: TLDA_AUTH_HEADERS, signal: AbortSignal.timeout(3000) });
+    if (!res.ok) { process.stderr.write(`[education-gate] check returned ${res.status} for ${toolNorm} — failing open\n`); return []; }
+    const j = await res.json();
+    if (Array.isArray(j?.skills) && j.skills.length) return j.skills;
+    if (j?.skill) return [j.skill];
+    return [];
+  } catch (e) {
+    process.stderr.write(`[education-gate] check unreachable for ${toolNorm} (${e.message}) — failing open\n`);
+    return [];
+  }
+}
+
+async function eduCreditSkillRead(skillName) {
+  const agentId = process.env.FLEET_ID;
+  if (!agentId || !TLDA_SERVER || !skillName) return;
+  try {
+    await fetch(`${TLDA_SERVER}/api/education/check/${encodeURIComponent(agentId)}?tool=Skill&skill=${encodeURIComponent(skillName)}`, { headers: TLDA_AUTH_HEADERS, signal: AbortSignal.timeout(3000) });
+  } catch (e) {
+    process.stderr.write(`[education-gate] credit failed for ${skillName} (${e.message})\n`);
+  }
+}
+
+// Returns a blocked-tool result (named owed skills + read-or-dismiss instructions)
+// or null to proceed.
+async function educationGate(name, args) {
+  const harness = harnessFromEnv();
+  if (!harness.educationGate) return null;          // claude has its own hook; never double-gate
+  const spec = GATED_MCP_TOOLS[name];
+  if (!spec) return null;
+  const input = { file: spec.file ? spec.file(args) : '', content: spec.content ? spec.content(args) : '' };
+  const owed = await eduCheckOwedSkills(spec.tool, input);
+  if (!owed.length) return null;
+  const list = owed.map(s => `\`${s}\``).join(', ');
+  const dismissArg = owed.map(s => `"${s}"`).join(', ');
+  const isGoose = harnessFromEnv().kind === 'goose';
+  const satisfyLines = isGoose
+    ? [
+        `• Load each named skill with Goose Summon from \`.agents/skills/<name>/SKILL.md\`.`,
+        `  Example: ask Summon to load ${owed.map(s => `"${s}"`).join(', ')}.`,
+      ]
+    : [
+        `• Read each skill's markdown with your native file reader:`,
+        `  ${owed.map(s => `/Users/skip/work/dot-claude/skills/${s}/SKILL.md`).join('\n  ')}`,
+      ];
+  const text = [
+    `⚠️ Before \`${name}\`, you must clear ${owed.length} required skill(s): ${list}.`,
+    `These are the same playbook(s) a Claude agent is force-gated into here.`,
+    ``,
+    `Do ONE of these for each, then call \`${name}\` again:`,
+    ...satisfyLines,
+    `• Or, if it genuinely does not apply to what you are doing, decline it —`,
+    `  dismiss_skill(skills: [${dismissArg}], reason: "<why it does not apply>").`,
+    `  A reason is required and is shown to Skip.`,
+    ``,
+    `The block lifts once every required skill is loaded/read or dismissed.`,
+  ].join('\n');
+  return { content: [{ type: 'text', text }], isError: true };
 }
 
 // ---- @label cross-reference validation ----
@@ -1256,75 +1359,11 @@ function resolveSize({ size, width, height }) {
   }
 }
 
-async function addAnnotation(doc, line, text, { color = 'orange', size, width, height, side = 'right', file, choices, page: pageNum } = {}) {
-  const dims = resolveSize({ size, width, height })
-  width = dims.width
-  height = dims.height
-  let linePos;
-  if (line) {
-    linePos = lookupLine(doc, line, file);
-    if (!linePos) return { ok: false, error: `Line ${line}${file ? ' in ' + path.basename(file) : ''} not found in lookup.json for doc "${doc}"` };
-  } else if (pageNum) {
-    // Position near top of the given page when no source line is available
-    linePos = { page: pageNum, x: 0, y: 150, texFile: null, content: '' };
-  } else {
-    return { ok: false, error: 'Either line or page is required' };
-  }
-
-  const canvasPos = docToCanvas(doc, linePos.page, linePos.x, linePos.y);
-  // Position note at left or right margin of the page
-  let x;
-  if (isHtmlDoc(doc)) {
-    const layout = loadHtmlLayout(doc);
-    const p = layout?.pages?.[linePos.page - 1];
-    const pageRight = p ? p.x + p.width : canvasPos.x + 800;
-    const pageLeft = p ? p.x : 0;
-    x = side === 'left' ? pageLeft - width - 20 : pageRight + 10;
-  } else {
-    x = side === 'left' ? -width - 20 : 690;
-  }
-  const y = canvasPos.y - height / 2;
-
-  const shapeId = generateShapeId();
-
-  // Find the highest index among existing shapes so the note renders on top
-  let maxIndex = 'a1';
-  try {
-    const allShapes = await fetchShapes(doc);
-    for (const s of allShapes) {
-      if (s.typeName === 'shape' && s.index && s.index > maxIndex) {
-        maxIndex = s.index;
-      }
-    }
-  } catch (e) { process.stderr.write(`[mcp] shape index scan failed for add_note: ${e.message}\n`); }
-  const noteIndex = getIndexAbove(maxIndex);
-
-  const shape = {
-    id: shapeId,
-    type: 'math-note',
-    typeName: 'shape',
-    x, y,
-    rotation: 0,
-    isLocked: false,
-    opacity: 1,
-    props: { w: width, h: height, text, color, autoSize: true, ...(choices?.length ? { choices, selectedChoice: -1 } : {}) },
-    meta: {
-      sourceAnchor: {
-        file: `./${linePos.texFile || doc + '.tex'}`,
-        line,
-        column: -1,
-        content: linePos.content,
-      },
-      ...(process.env.FLEET_ID ? { fleet_id: process.env.FLEET_ID } : {}),
-      ...(process.env.FLEET_NAME ? { friendly_name: process.env.FLEET_NAME } : {}),
-    },
-    parentId: 'page:page',
-    index: noteIndex,
-  };
-
-  await createShapeRest(doc, shape);
-
-  return { ok: true, shapeId, page: linePos.page, x, y };
+// Note staging now lives in the shared lib (mcp-server/lib/annotate.mjs) so the
+// drill teacher bot stages notes through the same code path — one source of
+// truth. This stays a thin wrapper pinned to TLDA_SYNC_SERVER (the room target).
+async function addAnnotation(doc, line, text, opts = {}) {
+  return stageNote(doc, line, text, { ...opts, server: TLDA_SYNC_SERVER });
 }
 
 async function sendNote(doc, line, text, color = 'orange', file, choices) {
@@ -1910,6 +1949,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           h: { type: 'number', description: 'Height of crop region.' },
           padding: { type: 'number', description: 'Extra pixels around the region (default: 200). Applied to ref or x/y/w/h captures.' },
           shapeId: { type: 'string', description: 'Shape ID of target annotation — other annotations desaturated to make this one stand out.' },
+          shapeTypes: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Render ONLY shapes of these types and frame them (e.g. ["fleet-chat"] to capture the fleet chat). The document pages are not rendered unless you include "svg-page" — this is also what makes the capture fast. Combine with shapeIds.',
+          },
+          shapeIds: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Render ONLY these specific shapes (by id) and frame them. Combine with shapeTypes.',
+          },
         },
         required: ['doc'],
       },
@@ -1955,6 +2004,37 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           file: { type: 'string', description: 'Path to a file whose content becomes the note text. Also used as source file path for multi-file projects (e.g. "appendix.tex").' },
           choices: { type: 'array', items: { type: 'string' }, description: 'Multiple-choice options rendered as tappable buttons. User selection readable via read_annotations. Mutually exclusive with `options_file`.' },
           options_file: { type: 'string', description: 'Path to a markdown file whose `## Label` H2 sections become the choices. Each section body (LaTeX, prose, $math$, $$display$$) becomes that option\'s preview content. Renders with the document preamble macros — what you see is what gets pasted. Supports absolute paths, ~/ expansion, and cwd-relative paths.' },
+        },
+        required: ['doc'],
+      },
+    },
+    {
+      name: 'read_file',
+      description: 'Compatibility file reader, restricted to ~/work. Prefer native file tools when your harness has them; use tlda document/annotation tools for tlda document content. Optional offset (1-based start line) and lines (count) page through large files.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Absolute path to the file. Must be inside ~/work.' },
+          offset: { type: 'number', description: '1-based line number to start from (optional).' },
+          lines: { type: 'number', description: 'Number of lines to read from offset (optional).' },
+        },
+        required: ['path'],
+      },
+    },
+    {
+      name: 'read_doc',
+      description: 'Read a tlda document\'s SOURCE (read-only) — document- and version-aware. Resolves the doc name to its source file and reads a paginated line window (default 400 lines). Pass `version` (a git hash) to read a PAST version from the doc\'s history, or `ref` (a label/theorem number like "thm:main" or "2.1") to jump straight to that location. Header reports the window + total lines, with a hint to page. (For raw non-doc files use read_file; for annotations use read_annotations.)',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Document name (e.g. "bregman").' },
+          file: { type: 'string', description: 'Source file within the doc (default: the doc\'s main file).' },
+          startLine: { type: 'number', description: '1-based start line for a plain read (optional).' },
+          endLine: { type: 'number', description: 'Explicit end line (optional; otherwise a window of `lines` is read).' },
+          lines: { type: 'number', description: 'Window height: how many lines to read (default 400 for a plain read, 80 for a ref).' },
+          version: { type: 'string', description: 'Git hash to read a past version of the source (optional).' },
+          ref: { type: 'string', description: 'Label or theorem number to jump to, e.g. "thm:main" or "2.1" (optional).' },
+          before: { type: 'number', description: 'With `ref`: how many lines above the anchor to start (default 3).' },
         },
         required: ['doc'],
       },
@@ -2057,6 +2137,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           status: { type: 'string', enum: ['approved', 'understood', 'unchecked'], description: 'Understanding status' },
           userId: { type: 'string', description: 'User ID (defaults to FLEET_ID env)' },
           displayName: { type: 'string', description: 'Display name (defaults to FLEET_NAME env)' },
+          reason: { type: 'string', description: 'Short reason for this check, stored on the segment' },
+          method: { type: 'string', description: 'Short check method/source, e.g. review, proof-pass, self-check' },
+          taskId: { type: 'string', description: 'Optional fleet task ID that prompted this check' },
+          eventId: { type: 'string', description: 'Optional fleet event/message ID linked to this check' },
+          file: { type: 'string', description: 'Source file path or name for the range. Omit for main file.' },
         },
         required: ['doc', 'startLine', 'endLine', 'status'],
       },
@@ -2293,14 +2378,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'set_preamble',
-      description: 'Set KaTeX macros for math rendering in chat. Reads a .tex file, extracts \\newcommand/\\DeclareMathOperator definitions, and stores them for the dashboard to use when rendering $math$ in chat messages.',
+      description: 'Point your chat preamble at a document. Your math in chat is rendered (and linted) with that document\'s macros, and every message you send carries the reference so readers see it rendered with your preamble — not theirs. By default your preamble is the project in your working directory; use this to override it to any document (e.g. when you are not working inside a paper\'s source dir). Physics-package commands (\\norm, \\qty, …) are always available regardless.',
       inputSchema: {
         type: 'object',
         properties: {
-          tex_file: { type: 'string', description: 'Path to a .tex file to extract macros from' },
-          target: { type: 'string', description: 'Chat room or context name (default: "default"). Use to set different macros per project.' },
+          doc: { type: 'string', description: 'Document/project name whose macros to use (e.g. "bregman").' },
+          version: { type: 'string', description: 'Optional shadow version (build hash). Accepted and stored for future use; macro resolution currently uses the document\'s latest macros regardless.' },
         },
-        required: ['tex_file'],
+        required: ['doc'],
       },
     },
     // suggest tool definition removed — functionality merged into add_note
@@ -2533,6 +2618,125 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
+  // Education gate for non-Claude agents — no-op for claude.
+  {
+    const gated = await educationGate(name, args);
+    if (gated) return gated;
+  }
+
+  if (name === 'read_file') {
+    // Generic read-only file reader, fenced to ~/work. Kept as a compatibility
+    // surface for older agents and harnesses without native file tools.
+    if (!args?.path) {
+      return { content: [{ type: 'text', text: 'read_file: `path` is required.' }], isError: true };
+    }
+    const workRoot = path.join(os.homedir(), 'work');
+    const abs = path.resolve(args.path);
+    if (abs !== workRoot && !abs.startsWith(workRoot + path.sep)) {
+      return { content: [{ type: 'text', text: `read_file: path must be inside ~/work (got ${abs}).` }], isError: true };
+    }
+    let data;
+    try {
+      data = fs.readFileSync(abs, 'utf8');
+    } catch (e) {
+      const why = e.code === 'ENOENT' ? 'no such file' : e.code === 'EISDIR' ? 'is a directory' : e.message;
+      return { content: [{ type: 'text', text: `read_file: ${why}: ${abs}` }], isError: true };
+    }
+    // Reading a skill's SKILL.md via read_file still credits it against the
+    // education gate for stale/compat callers. Goose should use native Summon.
+    const skillMatch = abs.match(/[/\\]skills[/\\]([^/\\]+)[/\\]SKILL\.md$/);
+    if (skillMatch) await eduCreditSkillRead(skillMatch[1]);
+    const allLines = data.split('\n');
+    const offset = args.offset > 0 ? (args.offset - 1) : 0;
+    const limit = args.lines > 0 ? args.lines : allLines.length;
+    const slice = allLines.slice(offset, offset + limit);
+    const MAX = 60000;
+    let body = slice.join('\n');
+    let trunc = '';
+    if (body.length > MAX) { body = body.slice(0, MAX); trunc = `\n…(truncated at ${MAX} chars — pass offset/lines to page)`; }
+    const shown = (offset > 0 || limit < allLines.length) ? `, lines ${offset + 1}–${offset + slice.length}` : '';
+    const header = `${abs} (${allLines.length} lines${shown}):\n`;
+    return { content: [{ type: 'text', text: header + body + trunc }] };
+  }
+
+
+  if (name === 'read_doc') {
+    // Document- and version-aware source read. Resolves a doc to its source
+    // file, reads a paginated line window, supports reading a past version (git
+    // show) and jumping to a label/theorem via the source map.
+    const doc = args?.doc;
+    if (!doc) return { content: [{ type: 'text', text: 'read_doc: `doc` is required.' }], isError: true };
+    const projDir = path.join(os.homedir(), 'work', 'tlda', 'server', 'projects', doc);
+    let cfg;
+    try { cfg = JSON.parse(fs.readFileSync(path.join(projDir, 'project.json'), 'utf8')); }
+    catch { return { content: [{ type: 'text', text: `read_doc: unknown doc "${doc}" (no project.json).` }], isError: true }; }
+    const sourceDir = cfg.sourceDir;
+    if (!sourceDir || !fs.existsSync(sourceDir)) return { content: [{ type: 'text', text: `read_doc: doc "${doc}" has no source dir on this machine.` }], isError: true };
+    const mainFile = cfg.mainFile || cfg.main;
+    const file = args.file || mainFile;
+    if (!file) return { content: [{ type: 'text', text: `read_doc: no file given and doc "${doc}" has no mainFile.` }], isError: true };
+    let relFile = (path.basename(file) === file) ? file : path.relative(sourceDir, path.resolve(sourceDir, file));
+
+    // ref/label shorthand → anchor line. The source map's labels come from the
+    // .aux file, which records page/number/title but NOT the source line — so we
+    // resolve the line from ground truth: the actual `\label{...}` location in
+    // the doc's source. We scan the doc's real build files (the distinct .tex
+    // files synctex recorded in the source map's `pages` index, which excludes
+    // junk/old .tex lying around the source dir). This also resolves a ref that
+    // lives in an \input'd file to the right file to read.
+    let anchorLine = 0;
+    let refNote = '';
+    if (args.ref && !(args.startLine > 0)) {
+      const texBase = String(mainFile || 'main').replace(/\.tex$/, '');
+      const smPath = path.join(projDir, 'output', `${texBase}-source-map.json`);
+      let sm;
+      try { sm = JSON.parse(fs.readFileSync(smPath, 'utf8')); }
+      catch { return { content: [{ type: 'text', text: `read_doc: ref lookup unavailable for ${doc} (no source map — build the doc first).` }], isError: true }; }
+      const q = String(args.ref).trim();
+      const e = (sm.labels || []).find(x => x.label === q || x.number === q)
+            || (sm.labels || []).find(x => x.label?.includes(q) || x.number?.includes(q));
+      if (!e) return { content: [{ type: 'text', text: `read_doc: ref "${q}" not found in ${doc}'s source map.` }], isError: true };
+      const found = findLabelLine(sourceDir, sm, mainFile, e.label);
+      if (!found) return { content: [{ type: 'text', text: `read_doc: ref "${q}" matched label ${e.label} (p.${e.page}) but its \\label{} line wasn't found in the source files — the doc may need a rebuild.` }], isError: true };
+      anchorLine = found.line;
+      relFile = found.file;   // read the file the label actually lives in
+      refNote = ` (ref "${q}" → ${e.number || e.label} @ ${found.file}:${found.line})`;
+    }
+
+    // Read content — current version (fs) or a past version (git show).
+    let data, versionNote = '';
+    if (args.version) {
+      if (!fs.existsSync(path.join(sourceDir, '.git'))) return { content: [{ type: 'text', text: `read_doc: "${doc}" source has no git history for versioned reads.` }], isError: true };
+      try { data = execFileSync('git', ['show', `${args.version}:${relFile}`], { cwd: sourceDir, encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 }); versionNote = ` @${args.version}`; }
+      catch (e) { return { content: [{ type: 'text', text: `read_doc: couldn't read ${relFile} @${args.version}: ${String(e.message).split('\n')[0]}` }], isError: true }; }
+    } else {
+      try { data = fs.readFileSync(path.join(sourceDir, relFile), 'utf8'); }
+      catch (e) { return { content: [{ type: 'text', text: `read_doc: ${e.code === 'ENOENT' ? 'no such file' : e.message}: ${relFile}` }], isError: true }; }
+    }
+
+    const allLines = data.split('\n');
+    const total = allLines.length;
+    // Window: a ref anchors a focused window (a few lines above + ~80 tall); a
+    // plain read uses startLine + a 400-line page. `before`/`lines` override.
+    let off, count;
+    if (anchorLine > 0) {
+      const before = args.before >= 0 ? args.before : 3;
+      off = Math.max(0, anchorLine - 1 - before);
+      count = args.lines > 0 ? args.lines : 80;
+    } else {
+      off = args.startLine > 0 ? args.startLine - 1 : 0;
+      count = args.lines > 0 ? args.lines : 400;
+    }
+    const end = args.endLine > 0 ? Math.min(args.endLine, total) : Math.min(off + count, total);
+    let body = allLines.slice(off, end).join('\n');
+    let capNote = '';
+    const MAX = 60000;
+    if (body.length > MAX) { body = body.slice(0, MAX); capNote = `\n→ output capped at ${MAX} chars — narrow the range with endLine.`; }
+    const pageNote = end < total ? `\n→ ${total - end} more lines — call again with startLine=${end + 1}.` : '';
+    const header = `${doc}/${relFile}${versionNote}${refNote} — lines ${off + 1}–${end} of ${total}:`;
+    return { content: [{ type: 'text', text: `${header}\n${body}${capNote}${pageNote}` }] };
+  }
+
   if (name === 'screenshot') {
     const docName = args?.doc;
     if (!docName) {
@@ -2570,20 +2774,32 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (mode) signalData.mode = mode;
     if (args?.page) signalData.page = args.page;
     if (args?.shapeId) signalData.shapeId = args.shapeId;
+    if (Array.isArray(args?.shapeTypes) && args.shapeTypes.length) signalData.shapeTypes = args.shapeTypes;
+    if (Array.isArray(args?.shapeIds) && args.shapeIds.length) signalData.shapeIds = args.shapeIds;
     if (args?.padding != null) signalData.padding = args.padding;
 
     try {
+      const reqTs = signalData.timestamp;
       await broadcastSignalRest(docName, 'signal:screenshot-request', signalData);
-      const result = await new Promise((resolve) => {
-        const stream = connectSignalStream(docName, (signal) => {
-          if (signal.key === 'signal:screenshot' && signal.data) {
-            clearTimeout(timer);
-            stream.close();
-            resolve(signal);
-          }
-        });
-        const timer = setTimeout(() => { stream.close(); resolve(null); }, 8000);
-      });
+      // The viewer captures and POSTs its reply back to the server, which caches
+      // it (signalCache). Poll that cache for a reply newer than our request,
+      // rather than relying on catching the live SSE signal — the reply can
+      // arrive (~0.8s) before an SSE listener finishes registering, and the cache
+      // is the authoritative copy either way.
+      let result = null;
+      // The viewer's capture can take ~15–20s for a content-heavy region, so the
+      // old 8s timeout gave up before the (cached, valid) reply ever landed.
+      const deadline = Date.now() + 30000;
+      while (Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 350));
+        let cached = null;
+        try {
+          cached = await serverFetch(`/api/projects/${docName}/signal/signal:screenshot`);
+        } catch {
+          cached = null; // 404 until the viewer replies — keep polling
+        }
+        if (cached?.data && (cached.timestamp || 0) >= reqTs) { result = cached; break; }
+      }
       if (result?.data) {
         return {
           content: [
@@ -3093,80 +3309,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       // --- Full-line highlighting (original behavior) ---
-      // Look up canvas positions for start and end lines
-      const startPos = await lookupLineAsync(doc, startLine, file);
-      const endPos = await lookupLineAsync(doc, endLine, file);
-      if (!startPos) return { content: [{ type: 'text', text: `Line ${startLine} not found in lookup` }], isError: true };
-      if (!endPos) return { content: [{ type: 'text', text: `Line ${endLine} not found in lookup` }], isError: true };
-
-      const startCanvas = pdfToCanvas(startPos.page, startPos.x, startPos.y);
-      const endCanvas = pdfToCanvas(endPos.page, endPos.x, endPos.y);
-
-      const pageW = getPageWidth(doc);
-      // Highlight spans from text start to near-right edge
-      const hlLeft = Math.min(startCanvas.x, endCanvas.x);
-      const hlRight = pageW * 0.9; // stop before right margin
-      const hlTop = Math.min(startCanvas.y, endCanvas.y) - 3;
-      const hlBottom = Math.max(startCanvas.y, endCanvas.y) + 3;
-
-      // Create one horizontal segment per text line
-      const width = hlRight - hlLeft;
-      const height = hlBottom - hlTop;
-      const numLines = endLine - startLine + 1;
-      const lineH = numLines > 1 ? height / numLines : 0;
-
-      const segments = [];
-      if (numLines <= 1) {
-        // Single line: one horizontal sweep
-        segments.push({ type: 'free', path: encodeB64Path([
-          { x: 0, y: 0, z: 0.5 },
-          { x: width, y: 0, z: 0.5 },
-        ])});
-      } else {
-        // One horizontal sweep per line
-        for (let i = 0; i < numLines; i++) {
-          const y = i * lineH;
-          segments.push({ type: 'free', path: encodeB64Path([
-            { x: 0, y, z: 0.5 },
-            { x: width, y, z: 0.5 },
-          ])});
-        }
-      }
-
-      const shapeId = generateShapeId();
-      const shapeIndex = await getNextShapeIndex(doc);
-      const shape = {
-        id: shapeId,
-        type: 'highlight',
-        x: hlLeft,
-        y: hlTop,
-        index: shapeIndex,
-        rotation: 0,
-        isLocked: false,
-        opacity: 0.7,
-        props: {
-          segments,
-          color,
-          size: 's',
-          isComplete: true,
-          isPen: false,
-          scale: 1,
-          scaleX: 1,
-          scaleY: 1,
-        },
-        meta: {
-          createdAt: Date.now(),
-          createdBy: 'claude',
-          sourceAnchor: { file: file || './' + (startPos.texFile || 'main.tex'), line: startLine },
-          ...(process.env.FLEET_ID ? { fleet_id: process.env.FLEET_ID } : {}),
-          ...(process.env.FLEET_NAME ? { friendly_name: process.env.FLEET_NAME } : {}),
-        },
-        parentId: 'page:page',
-        typeName: 'shape',
-      };
-
-      await createShapeRest(doc, shape);
-      return { content: [{ type: 'text', text: `Highlight drawn: lines ${startLine}–${endLine}, page ${startPos.page}, ${color} (${shapeId})` }] };
+      // Staging now lives in the shared lib (mcp-server/lib/annotate.mjs) so the
+      // drill teacher stages line-range highlights through the same code path.
+      const r = await stageHighlight(doc, startLine, endLine, { color, file, server: TLDA_SYNC_SERVER });
+      if (!r.ok) return { content: [{ type: 'text', text: r.error }], isError: true };
+      return { content: [{ type: 'text', text: `Highlight drawn: lines ${startLine}–${endLine}, page ${r.page}, ${color} (${r.shapeId})` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
@@ -3264,16 +3411,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'set_understanding') {
-    const { doc, startLine, endLine, status } = args;
+    const { doc, startLine, endLine, status, file } = args;
     if (!doc || startLine == null || endLine == null || !status) {
       return { content: [{ type: 'text', text: 'Missing required parameters: doc, startLine, endLine, status' }], isError: true };
     }
     try {
-      const RIBBON_ID = 'shape:understanding-ribbon';
-
       // Look up canvas positions for start and end lines
-      const startPos = await lookupLineAsync(doc, startLine);
-      const endPos = await lookupLineAsync(doc, endLine);
+      const startPos = await lookupLineAsync(doc, startLine, file);
+      const endPos = await lookupLineAsync(doc, endLine, file);
       if (!startPos) return { content: [{ type: 'text', text: `Line ${startLine} not found in lookup` }], isError: true };
       if (!endPos) return { content: [{ type: 'text', text: `Line ${endLine} not found in lookup` }], isError: true };
 
@@ -3284,14 +3429,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       let ribbon;
       try {
         const shapes = await fetchShapes(doc, 'understanding-line');
-        ribbon = shapes.find(s => s.id === RIBBON_ID);
+        ribbon = shapes.find(s => s.id === UNDERSTANDING_RIBBON_ID);
       } catch (e) { process.stderr.write(`[mcp] ribbon shape fetch failed: ${e.message}\n`); }
 
       if (!ribbon) {
         // Create the ribbon shape — the viewer will resize it on load
         const shapeIndex = await getNextShapeIndex(doc);
         ribbon = {
-          id: RIBBON_ID,
+          id: UNDERSTANDING_RIBBON_ID,
           type: 'understanding-line',
           typeName: 'shape',
           x: 0,
@@ -3311,25 +3456,38 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const segments = JSON.parse(ribbon.props?.segments || '[]');
       const y1 = Math.min(startCanvas.y, endCanvas.y) - ribbonY;
       const y2 = Math.max(startCanvas.y, endCanvas.y) - ribbonY;
-      const newSeg = { startLine, endLine, status, y1, y2 };
 
-      // Merge: remove overlapping portions, insert new segment
-      const merged = [];
-      for (const seg of segments) {
-        if (seg.y2 <= newSeg.y1 || seg.y1 >= newSeg.y2) {
-          merged.push(seg);
-          continue;
-        }
-        if (seg.y1 < newSeg.y1) merged.push({ ...seg, y2: newSeg.y1, endLine: newSeg.startLine });
-        if (seg.y2 > newSeg.y2) merged.push({ ...seg, y1: newSeg.y2, startLine: newSeg.endLine });
-      }
-      if (status !== 'unchecked') merged.push(newSeg);
-      merged.sort((a, b) => a.y1 - b.y1);
+      // Anchor the stamp to the build currently in the room (doc-version sentinel),
+      // so the server can later diff it forward and decide if the source moved.
+      let approvedAtCommit;
+      try {
+        const dvShapes = await fetchShapes(doc, 'doc-version');
+        const sentinel = dvShapes.find(s => s.id === 'shape:doc-version--sentinel');
+        const h = sentinel?.props?.commitHash;
+        if (h && h !== 'unknown') approvedAtCommit = String(h);
+      } catch (e) { process.stderr.write(`[mcp] doc-version fetch failed: ${e.message}\n`); }
 
-      await updateShapeRest(doc, RIBBON_ID, { props: { ...ribbon.props, segments: JSON.stringify(merged) } });
+      const fileKey = file || '';
+      const newSeg = {
+        startLine,
+        endLine,
+        startFile: fileKey,
+        endFile: fileKey,
+        status,
+        y1,
+        y2,
+        ...(approvedAtCommit ? { approvedAtCommit } : {}),
+        ...(status !== 'unchecked' ? understandingProvenanceFromArgs(args) : {}),
+      };
+      const merged = mergeUnderstandingSegment(segments, newSeg);
 
-      const lineCount = endLine - startLine + 1;
-      return { content: [{ type: 'text', text: `Understanding: ${lineCount} line(s) ${startLine}–${endLine} → "${status}"` }] };
+      await updateShapeRest(doc, UNDERSTANDING_RIBBON_ID, { props: { ...ribbon.props, segments: JSON.stringify(merged) } });
+
+      const lineCount = Math.abs(endLine - startLine) + 1;
+      const checker = newSeg.checkedByName || newSeg.checkedById;
+      const reason = newSeg.reason ? `; reason: ${newSeg.reason}` : '';
+      const by = checker ? ` by ${checker}` : '';
+      return { content: [{ type: 'text', text: `Understanding: ${lineCount} line(s) ${fileKey ? `${fileKey}:` : ''}${startLine}-${endLine} -> "${status}"${by}${reason}` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
@@ -3339,9 +3497,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { doc } = args;
     if (!doc) return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
     try {
-      const RIBBON_ID = 'shape:understanding-ribbon';
       const shapes = await fetchShapes(doc, 'understanding-line');
-      const ribbon = shapes.find(s => s.id === RIBBON_ID);
+      const ribbon = shapes.find(s => s.id === UNDERSTANDING_RIBBON_ID);
       if (!ribbon) {
         return { content: [{ type: 'text', text: 'No understanding map data.' }] };
       }
@@ -3349,11 +3506,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (segments.length === 0) {
         return { content: [{ type: 'text', text: 'No understanding map data.' }] };
       }
-      let summary = `${segments.length} segment(s):\n`;
-      for (const seg of segments.sort((a, b) => a.startLine - b.startLine)) {
-        summary += `  lines ${seg.startLine}–${seg.endLine}: ${seg.status}\n`;
-      }
-      return { content: [{ type: 'text', text: summary }] };
+      return { content: [{ type: 'text', text: formatUnderstandingSummary(segments) }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
@@ -4023,75 +4176,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'set_preamble') {
-    const texFile = args.tex_file;
-    const target = args.target || 'default';
-    const resolved = path.resolve(texFile);
-    if (!fs.existsSync(resolved)) {
-      return { content: [{ type: 'text', text: `Cannot read file: ${resolved} does not exist` }], isError: true };
+    const doc = args.doc;
+    const version = args.version || null;
+    if (!doc) {
+      return { content: [{ type: 'text', text: 'doc is required (the document/project name whose macros to use).' }], isError: true };
     }
-    // Use the same brace-aware extractor as the build pipeline — one macro
-    // parser, so the explicit setter (dashboard) and the linter never disagree.
-    const macros = extractMacrosFromFile(resolved);
-    const count = Object.keys(macros).length;
-    if (count === 0) {
-      return { content: [{ type: 'text', text: `No macros found in ${resolved}. Looked for \\newcommand, \\renewcommand, \\DeclareMathOperator.` }] };
-    }
-    await fetch(`${TLDA_SERVER}/api/fleet-event`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...TLDA_AUTH_HEADERS },
-      body: JSON.stringify({ type: 'preamble', target, macros, source: resolved, timestamp: new Date().toISOString() }),
-    }).catch(e => process.stderr.write(`[mcp] preamble event push failed: ${e.message}\n`));
-    const examples = Object.entries(macros).slice(0, 5).map(([k, v]) => `  ${k} → ${v}`).join('\n');
-    return { content: [{ type: 'text', text: `Set ${count} macro(s) for "${target}" from ${resolved}.\n\nExamples:\n${examples}${count > 5 ? `\n  ... and ${count - 5} more` : ''}` }] };
-  }
-
-  if (name === 'suggest') {
-    const { doc, text } = args;
-    if (!doc || !text) return { content: [{ type: 'text', text: 'Doc and text are required.' }], isError: true };
-    const choices = args.choices || ['Accept', 'Reject', 'Modify'];
-    const color = args.color || 'orange';
-    const line = args.line || null;
-    const replyTo = args.reply_to || null;
-    const MARGIN_X = 810;
+    // Best-effort: fetch the doc's macros only to report the count back to the
+    // agent. A network failure here is non-fatal — we still set the preamble doc;
+    // the count just shows 0. (True boundary: the macros endpoint may be down.)
+    let macros = {};
     try {
-      if (replyTo) {
-        let noteY = 100;
-        let inheritedColor = color;
-        try {
-          const parent = await serverFetch(`/api/projects/${doc}/shapes/${encodeURIComponent(replyTo.startsWith('shape:') ? replyTo : `shape:${replyTo}`)}`);
-          noteY = parent.y ?? parent.meta?.anchorCanvasY ?? 100;
-          if (parent.props?.color) inheritedColor = parent.props.color;
-        } catch (e) { process.stderr.write(`[mcp] parent shape fetch for reply failed: ${e.message}\n`); }
-        const replyId = `shape:claude-${crypto.randomUUID().slice(0, 12)}`;
-        await serverFetch(`/api/projects/${doc}/shapes`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            id: replyId, type: 'math-note', typeName: 'shape', parentId: 'page:page', index: 'a1',
-            x: MARGIN_X, y: noteY, rotation: 0, isLocked: false, opacity: 1,
-            props: { w: 10, h: 10, text, color: inheritedColor, collapsed: true },
-            meta: { createdBy: 'claude', replyTo, choices: choices || [], sourceAnchor: line ? { line } : undefined },
-          }),
-        });
-        return { content: [{ type: 'text', text: `Posted reply on "${doc}" ${line ? 'at L' + line : ''} (replying to ${replyTo}). Choices: ${choices.join(', ')}` }] };
-      } else {
-        const noteY = line ? Math.max(60, 60 + (line - 1) * 18) : 100;
-        const noteId = `shape:claude-${crypto.randomUUID().slice(0, 12)}`;
-        await serverFetch(`/api/projects/${doc}/shapes`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            id: noteId, type: 'math-note', typeName: 'shape', parentId: 'page:page', index: 'a1',
-            x: MARGIN_X, y: noteY, rotation: 0, isLocked: false, opacity: 1,
-            props: { w: 10, h: 10, text, color, collapsed: true },
-            meta: { createdBy: 'claude', choices: choices || [], sourceAnchor: line ? { line } : undefined },
-          }),
-        });
-        return { content: [{ type: 'text', text: `Posted suggestion on "${doc}" ${line ? 'at L' + line : ''}. Choices: ${choices.join(', ')}` }] };
-      }
+      const res = await fetch(`${TLDA_SERVER}/api/projects/${encodeURIComponent(doc)}/macros`, { headers: TLDA_AUTH_HEADERS });
+      if (res.ok) macros = (await res.json())?.macros || {};
     } catch (e) {
-      return { content: [{ type: 'text', text: `tlda server error: ${e.message}` }], isError: true };
+      process.stderr.write(`[mcp] set_preamble macro count fetch failed for ${doc}: ${e.message}\n`);
     }
+    // Point this agent's preamble at the document. From now on this agent's chat
+    // math is linted with `doc`'s macros, and every message it sends carries
+    // preambleRef:{doc,version} so readers render it with `doc`'s preamble.
+    setAgentPreambleDoc(doc, version);
+    const count = Object.keys(macros).length;
+    const vnote = version ? ` (version "${version}" stored but not yet used for resolution)` : '';
+    return { content: [{ type: 'text', text: `Preamble set to document "${doc}"${vnote} — ${count} macro(s) available. Your chat math now renders and lints with ${doc}'s preamble; physics-package commands are always available too.` }] };
   }
 
   if (name === 'propose_edit') {

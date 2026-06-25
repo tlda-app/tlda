@@ -5,12 +5,13 @@
  * subscribe() and re-renders on updates. One SSE connection shared
  * across all fleet shapes.
  */
-import { useState, useEffect, useCallback } from 'react'
+import { useMemo, useState, useEffect, useCallback, useRef, useSyncExternalStore } from 'react'
 import {
   init,
   subscribe,
   getAgents,
   getTasks,
+  getItems,
   getUnreadCountsForHuman,
   getHumanId,
   getHumanName,
@@ -20,7 +21,6 @@ import {
   sendMessage as _sendMessage,
   fetchHistory,
   loadBefore,
-  getEvents,
   matchesFilter,
   resolveFilter,
   respawnAgent as _respawnAgent,
@@ -31,16 +31,20 @@ import {
   getReaperStatus,
   injectOptimisticEvent as _injectOptimisticEvent,
   updateOptimisticEvent as _updateOptimisticEvent,
+  removeOptimisticEvent as _removeOptimisticEvent,
   reconcileOptimistic as _reconcileOptimistic,
   fleetWS as _fleetWS,
+  dismissItem as _dismissItem,
   // @ts-ignore — vanilla JS module
 } from './fleet/fleet-data.mjs'
+import { getFilteredFleetEvents, viewFleetEvents, type FleetEvent } from './fleet/fleet-data.ts'
 import {
   getPlaybackData,
   subscribePlayback,
   getPlaybackChatEvents,
   getPlaybackAgents,
 } from './playback-context'
+import { log } from './logger'
 import { loadPrefs } from './preferences'
 
 // Load prefs whenever the user's fleet identity is established
@@ -237,8 +241,39 @@ export function useFleetTasks(frameId?: string): any[] {
  */
 
 export function useFleetEvents(dnfFilter?: [string, string][][] | null, frameId?: string): any[] {
-  const [events, setEvents] = useState<any[]>([])
+  const [playbackEvents, setPlaybackEvents] = useState<any[]>([])
+  const [isPlaybackMode, setIsPlaybackMode] = useState(false)
   const filterKey = dnfFilter ? JSON.stringify(dnfFilter) : ''
+  const filter = useMemo(() => dnfFilter && dnfFilter.length > 0 ? dnfFilter : null, [filterKey])
+  const liveSnapshotRef = useRef<{ key: string; list: readonly FleetEvent[] } | null>(null)
+  const liveMatcher = useCallback(
+    (f: unknown, ev: FleetEvent) => matchesFilter(f as [string, string][][] | null, ev),
+    [],
+  )
+  const getLiveSnapshot = useCallback(() => {
+    const cached = liveSnapshotRef.current
+    if (cached?.key === filterKey) return cached.list
+    const list = getFilteredFleetEvents(filter, { matchesFilter: liveMatcher })
+    liveSnapshotRef.current = { key: filterKey, list }
+    return list
+  }, [filter, filterKey, liveMatcher])
+  const subscribeLive = useCallback((onStoreChange: () => void) => {
+    const liveView = viewFleetEvents(filter, {
+      key: filterKey || 'all',
+      matchesFilter: liveMatcher,
+    })
+    liveSnapshotRef.current = { key: filterKey, list: liveView.get() }
+    const unsubscribe = liveView.subscribe((list) => {
+      liveSnapshotRef.current = { key: filterKey, list }
+      onStoreChange()
+    })
+    return () => {
+      unsubscribe()
+      liveView.dispose()
+      if (liveSnapshotRef.current?.key === filterKey) liveSnapshotRef.current = null
+    }
+  }, [filter, filterKey, liveMatcher])
+  const liveEvents = useSyncExternalStore(subscribeLive, getLiveSnapshot, getLiveSnapshot)
 
   // Single effect handles both playback and live modes.
   // If frameId is a shape ID: subscribe to the playback registry first.
@@ -249,53 +284,26 @@ export function useFleetEvents(dnfFilter?: [string, string][][] | null, frameId?
     let playbackUnsub: (() => void) | null = null
     let liveUnsync: (() => void) | null = null
     let cancelled = false
-    let isPlaybackMode = false
-    const filter = dnfFilter && dnfFilter.length > 0 ? dnfFilter : null
 
     // Clear stale state from previous filter immediately
-    setEvents([])
+    setPlaybackEvents([])
+    setIsPlaybackMode(false)
 
     function setupLive() {
       if (cancelled) return
       ensureInit().then(() => {
-        if (cancelled || isPlaybackMode) return
-
-        // Thin filtered VIEW over the single store (fleet-data holds live +
-        // history in one id-keyed buffer). On any 'messages' change we re-derive
-        // the filtered slice from the store rather than accumulating our own
-        // array — so there's no second list to drift from the store, and the
-        // backfilled history (upserted into the store) shows up immediately.
-        let refreshTimer: ReturnType<typeof setTimeout> | null = null
-        const refresh = () => {
-          refreshTimer = null
-          if (cancelled) return
-          setEvents(getEvents().filter((ev: any) => matchesFilter(filter, ev)))
-        }
-        refresh() // initial paint from the store (uncapped — has history + live)
-
-        const rawUnsub = subscribe('messages', filter, () => {
-          if (_tabVisible) { if (!refreshTimer) refreshTimer = setTimeout(refresh, 16) }
-        })
-        // On tab re-show, drop any pending debounce and refresh now.
-        const [, cleanupGate] = visibilityGate(() => {}, () => {
-          if (refreshTimer !== null) { clearTimeout(refreshTimer); refreshTimer = null }
-          refresh()
-        })
-        liveUnsub = () => {
-          rawUnsub()
-          cleanupGate()
-          if (refreshTimer !== null) { clearTimeout(refreshTimer); refreshTimer = null }
-        }
+        if (cancelled) return
+        setIsPlaybackMode(false)
       })
     }
 
     function setupPlayback(pb: ReturnType<typeof getPlaybackData>) {
       if (!pb) return false
-      isPlaybackMode = true
+      setIsPlaybackMode(true)
       // Tear down live subscription if it was running
       liveUnsub?.()
       liveUnsub = null
-      setEvents(getPlaybackChatEvents(pb, filter))
+      setPlaybackEvents(getPlaybackChatEvents(pb, filter))
       return true
     }
 
@@ -317,8 +325,8 @@ export function useFleetEvents(dnfFilter?: [string, string][][] | null, frameId?
           liveUnsub = null
           liveUnsync?.()
           liveUnsync = null
-          setEvents(getPlaybackChatEvents(pb, filter))
-          isPlaybackMode = true
+          setPlaybackEvents(getPlaybackChatEvents(pb, filter))
+          setIsPlaybackMode(true)
         }
       })
     } else {
@@ -331,9 +339,9 @@ export function useFleetEvents(dnfFilter?: [string, string][][] | null, frameId?
       liveUnsync?.()
       playbackUnsub?.()
     }
-  }, [frameId, filterKey])
+  }, [frameId, filter, filterKey])
 
-  return events
+  return isPlaybackMode ? playbackEvents : [...liveEvents]
 }
 
 
@@ -350,13 +358,9 @@ export function useFleetThinking(dnfFilter?: string[][] | [string,string][][] | 
     if (frameId && getPlaybackData(frameId)) return
 
     let unsubThinking: (() => void) | null = null
-    let unsubMessages: (() => void) | null = null
-    let unsubStatus: (() => void) | null = null
     let unsubSync: (() => void) | null = null
     let cancelled = false
     const filter = dnfFilter && dnfFilter.length > 0 ? dnfFilter : null
-    const pendingRemoval = new Set<string>()
-    const fallbackTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
     ensureInit().then(() => {
       if (cancelled) return
@@ -367,106 +371,49 @@ export function useFleetThinking(dnfFilter?: string[][] | [string,string][][] | 
         return matchesFilter(filter, { agent: agentId, from: agentId })
       }
 
+      // The DAEMON owns the thinking transition: it reads the spinner and applies
+      // the idle hysteresis, then emits ONE clean edge. The client just reflects
+      // it — true shows, false stops showing. No client-side hold and no
+      // reconstruction from message/status events; that hold was papering over the
+      // old unreliable producer and was exactly why turn-end looked stuck.
       unsubThinking = subscribe('thinking', null, (data: any) => {
         if (!inFilter(data.agent)) return
-        if (data.thinking) {
-          pendingRemoval.delete(data.agent)
-          const ft = fallbackTimers.get(data.agent)
-          if (ft) { clearTimeout(ft); fallbackTimers.delete(data.agent) }
-          const ts = data.startTs || data.ts || Date.now()
-          setThinking(prev => {
-            if (prev.has(data.agent)) return prev
-            const next = new Map(prev)
-            next.set(data.agent, ts)
-            return next
-          })
-        } else {
-          // Don't remove yet — wait for the message to arrive (fallback: 3s)
-          pendingRemoval.add(data.agent)
-          fallbackTimers.set(data.agent, setTimeout(() => {
-            fallbackTimers.delete(data.agent)
-            pendingRemoval.delete(data.agent)
-            setThinking(prev => {
-              const next = new Map(prev)
-              next.delete(data.agent)
-              return next
-            })
-          }, 3000))
-        }
-      })
-
-      // When a message arrives from an agent with pending removal, clear their thinking indicator
-      function clearPending(agentId: string) {
-        pendingRemoval.delete(agentId)
-        const ft = fallbackTimers.get(agentId)
-        if (ft) { clearTimeout(ft); fallbackTimers.delete(agentId) }
         setThinking(prev => {
+          const has = prev.has(data.agent)
+          if (data.thinking) {
+            if (has) return prev
+            const next = new Map(prev)
+            next.set(data.agent, data.startTs || data.ts || Date.now())
+            log.info('thinking-line', 'edge true', { agent: data.agent })
+            return next
+          }
+          if (!has) return prev
           const next = new Map(prev)
-          next.delete(agentId)
+          next.delete(data.agent)
+          log.info('thinking-line', 'edge false', { agent: data.agent })
           return next
         })
-      }
-      unsubMessages = subscribe('messages', null, (event: any) => {
-        if (!event) return
-        const from = event.from || event.agent
-        if (from && pendingRemoval.has(from)) clearPending(from)
       })
 
-      // Status events: only 'idle' should clear thinking. 'tool_call' happens mid-thought.
-      unsubStatus = subscribe('status', null, (data: any) => {
-        if (!inFilter(data.agent)) return
-        if (data.state === 'thinking') {
-          pendingRemoval.delete(data.agent)
-          const ft = fallbackTimers.get(data.agent)
-          if (ft) { clearTimeout(ft); fallbackTimers.delete(data.agent) }
-          setThinking(prev => {
-            const next = new Map(prev)
-            if (!next.has(data.agent)) next.set(data.agent, data.startTs || data.ts || Date.now())
-            return next
-          })
-        } else if (data.state === 'idle') {
-          pendingRemoval.add(data.agent)
-          fallbackTimers.set(data.agent, setTimeout(() => {
-            fallbackTimers.delete(data.agent)
-            pendingRemoval.delete(data.agent)
-            setThinking(prev => {
-              const next = new Map(prev)
-              next.delete(data.agent)
-              return next
-            })
-          }, 3000))
-        }
-        // 'tool_call' — agent is working, don't touch thinking state
-      })
-
-      // Server state sync — reconcile with server's authoritative set
+      // Server's authoritative set — reconciles a late join or any missed edge.
+      // The daemon edge is fire-and-forget, so a client that was disconnected when
+      // an edge fired converges here.
       unsubSync = subscribe('thinking-sync', null, (serverSet: Set<string>) => {
         setThinking(prev => {
           let changed = false
           const next = new Map(prev)
           for (const id of next.keys()) {
-            if (!serverSet.has(id)) {
-              next.delete(id)
-              pendingRemoval.delete(id)
-              const ft = fallbackTimers.get(id)
-              if (ft) { clearTimeout(ft); fallbackTimers.delete(id) }
-              changed = true
-            }
+            if (!serverSet.has(id)) { next.delete(id); changed = true }
           }
           return changed ? next : prev
         })
       })
-
     })
 
     return () => {
       cancelled = true
       unsubThinking?.()
-      unsubMessages?.()
-      unsubStatus?.()
       unsubSync?.()
-      for (const t of fallbackTimers.values()) clearTimeout(t)
-      fallbackTimers.clear()
       setThinking(new Map())
     }
   }, [filterKey])
@@ -532,10 +479,46 @@ export function useFleetCompacting(dnfFilter?: string[][] | [string,string][][] 
   return compacting
 }
 
-export type ElizaNudge = { id: number, label: string, targetId: string, text: string, kind?: string, command?: string | null, ts: number, msgCount: number }
+export type PresentConfig = {
+  chat: true
+  hud?: boolean
+  list?: boolean
+}
 
-export function useElizaPending(): ElizaNudge[] {
-  const [pending, setPending] = useState<ElizaNudge[]>([])
+export type ItemAction = {
+  label: string
+  command?: string
+  target?: string
+  clientAction?: string
+}
+
+export type Item = {
+  id: string
+  kind: 'bounce' | 'modal' | 'status' | 'task' | 'suggest' | 'info' | string
+  from?: string
+  title: string
+  body?: string
+  actions?: ItemAction[]
+  payload?: any
+  present: PresentConfig
+  dropTarget?: 'doc' | 'chat' | 'any' | string
+  ttl?: number
+  priority?: 'low' | 'normal' | 'high' | string
+  ts: number
+  targetId?: string
+  label?: string
+  text?: string
+  command?: string | null
+  group?: string
+}
+
+// A suggestion chip any agent can push to the bottom of the chat. Suggestion is
+// now an additive narrowing of Item; the live /api/suggestions route remains the
+// write/clear path for replace-semantics.
+export type Suggestion = Item & { kind: 'suggest', label: string, targetId?: string, from?: string, text: string, command?: string | null, group?: string, msgCount?: number }
+
+export function useItems(role: 'hud' | 'list' | 'chat' | 'suggest' = 'chat'): Item[] {
+  const [items, setItems] = useState<Item[]>([])
 
   useEffect(() => {
     let unsub: (() => void) | null = null
@@ -543,15 +526,58 @@ export function useElizaPending(): ElizaNudge[] {
 
     ensureInit().then(() => {
       if (cancelled) return
-      unsub = subscribe('eliza-pending', null, (data: any) => {
-        setPending(data.pending || [])
+      setItems(getItems())
+      const humanId = getHumanId()
+      const query = humanId ? `?userId=${encodeURIComponent(humanId)}` : ''
+      fetch(`/api/items${query}`)
+        .then(r => r.json())
+        .then(j => { if (!cancelled) setItems(j.items || []) })
+        .catch(() => {})
+      unsub = subscribe('items', null, (data: any) => {
+        setItems(data.items || getItems())
       })
     })
 
     return () => { cancelled = true; unsub?.() }
   }, [])
 
-  return pending
+  return items.filter((item: Item) => {
+    if (role === 'chat') return item.present?.chat
+    if (role === 'suggest') return item.kind === 'suggest'
+    return !!item.present?.[role]
+  })
+}
+
+export function useSuggestions(): Suggestion[] {
+  return useItems('suggest').map((item: Item) => ({
+    ...item,
+    kind: 'suggest',
+    label: item.label || item.title,
+    text: item.text || item.body || '',
+    command: item.command ?? item.actions?.[0]?.command ?? null,
+    targetId: item.targetId || item.actions?.[0]?.target || item.from,
+  })) as Suggestion[]
+}
+
+export const dismissItem = _dismissItem
+
+// Taking an option (click) or dismissing (✕) resolves ONE group. Clear just that
+// group by re-posting the agent's set minus the group's options (replace-
+// semantics — no dedicated endpoint). Other groups from the same agent stay.
+// A group is the shared `group` tag, or a lone suggestion's own id.
+export async function clearGroup(agentId: string, groupKey: string) {
+  try {
+    const j = await fetch('/api/suggestions').then(r => r.json())
+    const remaining = (j.suggestions || []).filter((s: Suggestion) =>
+      (s.from || s.targetId) === agentId && (s.group || String(s.id)) !== groupKey)
+    await fetch('/api/suggestions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agentId, suggestions: remaining }),
+    })
+  } catch (e) {
+    console.warn('clearGroup failed', e)
+  }
 }
 
 /**
@@ -601,10 +627,26 @@ export function useFleetContext(dnfFilter?: string[][] | [string,string][][] | n
 
 const DASHBOARD_URL = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5176'
 
-export async function searchFleet(query: string, limit = 50): Promise<any[]> {
+export interface FleetSearchFilters {
+  agent?: string       // explicit fleet id (or array) — exact match
+  agentQuery?: string  // typed name fragment — server resolves to ids (substring, dawn-aware)
+  fromOnly?: boolean   // agentQuery refers to the SENDER only (from:)
+  role?: string
+  since?: string
+  before?: string
+}
+
+export async function searchFleet(query: string, limit = 50, filters: FleetSearchFilters = {}): Promise<any[]> {
   await ensureInit()
   try {
-    const data = await _fleetWS('fleet-search', { query, limit })
+    const payload: Record<string, any> = { query, limit }
+    if (filters.agent) payload.agent = filters.agent
+    if (filters.agentQuery) payload.agentQuery = filters.agentQuery
+    if (filters.fromOnly) payload.fromOnly = true
+    if (filters.role) payload.role = filters.role
+    if (filters.since) payload.since = filters.since
+    if (filters.before) payload.before = filters.before
+    const data = await _fleetWS('fleet-search', payload)
     return data?.results || []
   } catch (e) { console.warn('[fleet] search failed:', (e as Error).message); return [] }
 }
@@ -646,6 +688,41 @@ export function useFleetUnreadCounts(): Record<string, number> {
   }, [])
 
   return counts
+}
+
+// --- Projects hook ---
+
+/**
+ * Returns the sorted list of project names, kept live. The server broadcasts a
+ * `projects-updated` fleet event whenever a project is created or its sourceDir
+ * changes; this re-fetches `/api/projects` on that event so the spawn form's
+ * project list updates without a manual reload.
+ */
+export function useFleetProjects(): string[] {
+  const [projects, setProjects] = useState<string[]>([])
+
+  const refetch = useCallback(() => {
+    fetch('/api/projects')
+      .then(r => r.ok ? r.json() : { projects: [] })
+      .then((data: any) => {
+        const list = Array.isArray(data) ? data : (data.projects || [])
+        setProjects(list.map((p: any) => p.name).sort())
+      })
+      .catch(e => console.warn('[fleet] projects fetch failed:', e.message))
+  }, [])
+
+  useEffect(() => {
+    refetch()
+    let unsub: (() => void) | null = null
+    let cancelled = false
+    ensureInit().then(() => {
+      if (cancelled) return
+      unsub = subscribe('projects', null, refetch)
+    })
+    return () => { cancelled = true; unsub?.() }
+  }, [refetch])
+
+  return projects
 }
 
 // --- Connection state hook ---
@@ -735,6 +812,7 @@ export const hibernateSession = _hibernateSession
 export const spawnAgent = _spawnAgent
 export const injectOptimisticEvent = _injectOptimisticEvent
 export const updateOptimisticEvent = _updateOptimisticEvent
+export const removeOptimisticEvent = _removeOptimisticEvent
 export const reconcileOptimistic = _reconcileOptimistic
 export const fleetWS = _fleetWS
 export { loadBefore, fetchHistory, resolveFilter }

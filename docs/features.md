@@ -28,7 +28,7 @@ The intended use: put fleet shapes in the **left margin** of the document. As yo
 
 ### Layout Presets — Working
 
-The fleet layout toggle (button on the right-side panel) cycles through preset layouts:
+The fleet pill opens and applies preset fleet layouts:
 
 **Single-chat layout:**
 - Left column: agents panel (top) + search panel (bottom)
@@ -39,7 +39,7 @@ The fleet layout toggle (button on the right-side panel) cycles through preset l
 - Middle column: one full-height chat
 - Right column: second 3/4-height chat + doc viewer below
 
-Design logic: the rightmost column is closest to the document — put your active conversation there. The middle chat is for secondary work (different doc, app development, etc.). The layout toggle is useful for resetting if your layout gets messed up.
+Design logic: the rightmost column is closest to the document — put your active conversation there. The middle chat is for secondary work (different doc, app development, etc.).
 
 ### Manual Resize — Working
 
@@ -208,7 +208,6 @@ Lists math note annotations. Currently shows only math notes. Does not yet show 
 
 Buttons on the panel:
 
-- **Fleet layout toggle** — Working: cycles through default fleet shape layouts. Good for resetting if your layout gets messed up.
 - **Theme selector** — Working: light / dark / warm
 - **Vim toggle** — Working: turn vim keybindings on/off in math note editors
 - **Camera link** — Working: shared camera mode. Everyone viewing the document with linked cameras follows the same scroll/zoom position. Useful for calls or screenshares.

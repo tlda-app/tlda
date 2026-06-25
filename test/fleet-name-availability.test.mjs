@@ -1,0 +1,47 @@
+import assert from 'node:assert/strict'
+import { afterEach, beforeEach, describe, it } from 'node:test'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+
+import { FleetStore } from '../server/lib/fleet-store.mjs'
+
+let store
+let dbPath
+
+function kinds(collisions) {
+  return collisions.map(c => c.kind).sort()
+}
+
+describe('fleet name/label availability', () => {
+  beforeEach(() => {
+    dbPath = path.join(os.tmpdir(), `fleet-name-availability-${process.pid}-${Date.now()}.db`)
+    store = new FleetStore(dbPath)
+    store.upsertAgent({ id: 'fleet:a', friendly_name: 'alpha', labels: ['reviewers'], dead: false })
+    store.upsertAgent({ id: 'fleet:b', friendly_name: 'bravo', labels: [], dead: false })
+  })
+
+  afterEach(() => {
+    store?.close?.()
+    for (const f of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
+      try { fs.unlinkSync(f) } catch {}
+    }
+  })
+
+  it('rejects friendly names that collide anywhere in the live routing label space', () => {
+    assert.deepEqual(kinds(store.checkNameAvailable(['alpha'], { excludeId: 'fleet:b', asFriendlyName: true })), ['friendly_name'])
+    assert.deepEqual(kinds(store.checkNameAvailable(['reviewers'], { excludeId: 'fleet:b', asFriendlyName: true })), ['label'])
+    assert.deepEqual(kinds(store.checkNameAvailable(['fleet:a'], { excludeId: 'fleet:b', asFriendlyName: true })), ['agent_id'])
+    assert.deepEqual(kinds(store.checkNameAvailable(['awake'], { excludeId: 'fleet:b', asFriendlyName: true })), ['pseudo_label'])
+  })
+
+  it('rejects labels that collide with reserved labels, live names, or durable ids', () => {
+    assert.deepEqual(kinds(store.checkNameAvailable(['alpha'], { excludeId: 'fleet:b' })), ['friendly_name'])
+    assert.deepEqual(kinds(store.checkNameAvailable(['fleet:a'], { excludeId: 'fleet:b' })), ['agent_id'])
+    assert.deepEqual(kinds(store.checkNameAvailable(['human'], { excludeId: 'fleet:b' })), ['pseudo_label'])
+  })
+
+  it('allows shared ordinary group labels', () => {
+    assert.deepEqual(store.checkNameAvailable(['reviewers'], { excludeId: 'fleet:b' }), [])
+  })
+})

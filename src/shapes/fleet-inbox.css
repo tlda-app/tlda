@@ -1,0 +1,432 @@
+/* FleetInboxShape — threaded message inbox.
+   Visuals mirror fleet-search/fleet-chat: subtle low-opacity chrome, monospace,
+   var(--text) color, hover at ~0.06 background. No new visual language. */
+
+.fleet-inbox-shape {
+  background: var(--fleet-bg, transparent);
+}
+
+/* --- Header --- */
+.fleet-inbox-header {
+  height: 30px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.12);
+}
+.fleet-inbox-title {
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.5;
+}
+.fleet-inbox-unread-total {
+  margin-left: auto;
+  font-size: 9px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 4px;
+  border-radius: 7px;
+  background: rgba(120, 160, 220, 0.1);
+  color: var(--text, #cdd);
+  opacity: 0.75;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.fleet-inbox-back {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 9px;
+  font-family: inherit;
+  color: inherit;
+  opacity: 0.5;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+.fleet-inbox-back:hover {
+  opacity: 0.9;
+}
+.fleet-inbox-thread-name {
+  font-size: 11px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- Sort toggle (time / type) — tiny, faint segmented control in the header.
+   Same near-invisible chrome convention: low opacity until hovered/active. */
+.fleet-inbox-sort {
+  display: inline-flex;
+  gap: 1px;
+  font-size: 9px;
+  opacity: 0.5;
+  transition: opacity 0.15s;
+}
+.fleet-inbox-header:hover .fleet-inbox-sort {
+  opacity: 0.8;
+}
+.fleet-inbox-sort-btn {
+  background: none;
+  border: none;
+  padding: 1px 4px;
+  font-family: inherit;
+  font-size: 9px;
+  color: inherit;
+  opacity: 0.55;
+  cursor: pointer;
+  border-radius: 3px;
+  transition: opacity 0.12s, background 0.12s;
+}
+.fleet-inbox-sort-btn:hover {
+  opacity: 0.85;
+}
+.fleet-inbox-sort-btn.active {
+  opacity: 1;
+  background: rgba(128, 128, 128, 0.14);
+}
+
+/* --- Thread list --- */
+.fleet-inbox-list {
+  flex: 1;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+}
+.fleet-inbox-empty {
+  padding: 20px 10px;
+  opacity: 0.35;
+  text-align: center;
+  font-size: 10px;
+}
+.fleet-inbox-thread {
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.06);
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.fleet-inbox-thread:hover {
+  background: rgba(128, 128, 128, 0.06);
+}
+.fleet-inbox-thread-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.fleet-inbox-thread-partner {
+  font-size: 11px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fleet-inbox-thread.unread .fleet-inbox-thread-partner {
+  font-weight: 700;
+}
+.fleet-inbox-thread-time {
+  margin-left: auto;
+  font-size: 9px;
+  opacity: 0.35;
+  flex-shrink: 0;
+}
+.fleet-inbox-thread-badge {
+  font-size: 9px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 4px;
+  border-radius: 7px;
+  background: rgba(120, 160, 220, 0.1);
+  color: var(--text, #cdd);
+  opacity: 0.75;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.fleet-inbox-thread-preview {
+  font-size: 10px;
+  opacity: 0.45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 2px;
+}
+.fleet-inbox-thread.unread .fleet-inbox-thread-preview {
+  opacity: 0.7;
+}
+
+/* --- Tasks group (revalidation items projected from the ribbon's stale spans) ---
+   Subtle like everything else; an amber tint marks "needs your attention" without
+   shouting. Auto-resolves: the card vanishes when the span is re-approved. */
+.fleet-inbox-tasks {
+  border-bottom: 1px solid rgba(128, 128, 128, 0.12);
+}
+.fleet-inbox-group-label {
+  font-size: 9px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.4;
+  padding: 6px 10px 2px;
+}
+.fleet-inbox-task {
+  padding: 4px 10px 6px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.fleet-inbox-task:hover {
+  background: rgba(200, 150, 70, 0.07);
+}
+.fleet-inbox-task-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.fleet-inbox-task-icon {
+  font-size: 10px;
+  opacity: 0.7;
+  color: #c8965a;
+  flex-shrink: 0;
+}
+.fleet-inbox-task-text {
+  font-size: 11px;
+  font-weight: 500;
+}
+.fleet-inbox-task-sub {
+  font-size: 10px;
+  opacity: 0.45;
+  margin-top: 1px;
+  padding-left: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fleet-inbox-task-total {
+  font-size: 9px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 4px;
+  border-radius: 7px;
+  background: rgba(200, 150, 70, 0.14);
+  color: #c8965a;
+  opacity: 0.85;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* --- Proof-graph revalidation nodes (structural invalidation) ---
+   A directly-stale node (own statement changed) carries the amber "needs your
+   attention" tint and an approve action. A cascade-stale node (a dependency
+   changed) gets a violet tint — it's a *consequence*, not a direct ask, and it
+   resolves when its upstream is approved. Both auto-resolve: the projection is
+   derived from the live ribbon, so re-approving clears the node and its cascade. */
+.fleet-inbox-cascade {
+  border-bottom: 1px solid rgba(128, 128, 128, 0.12);
+}
+.fleet-inbox-node {
+  padding: 4px 10px 6px;
+  transition: background 0.1s;
+}
+.fleet-inbox-node-direct {
+  cursor: pointer;
+}
+.fleet-inbox-node-direct:hover {
+  background: rgba(200, 150, 70, 0.07);
+}
+.fleet-inbox-node-cascade:hover {
+  background: rgba(150, 120, 200, 0.06);
+}
+.fleet-inbox-node-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.fleet-inbox-node-icon {
+  font-size: 10px;
+  opacity: 0.7;
+  color: #c8965a;
+  flex-shrink: 0;
+}
+.fleet-inbox-node-icon.cascade {
+  color: #9a86c8;
+}
+.fleet-inbox-node-title {
+  font-size: 11px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fleet-inbox-node-sub {
+  font-size: 10px;
+  opacity: 0.45;
+  margin-top: 1px;
+  padding-left: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Approve — faint until the row is hovered, in keeping with the subtle chrome. */
+.fleet-inbox-node-approve {
+  margin-left: auto;
+  flex-shrink: 0;
+  background: none;
+  border: 1px solid rgba(200, 150, 70, 0.4);
+  color: #c8965a;
+  font-family: inherit;
+  font-size: 9px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.12s;
+}
+.fleet-inbox-node-direct:hover .fleet-inbox-node-approve {
+  opacity: 0.75;
+}
+.fleet-inbox-node-approve:hover {
+  opacity: 1;
+  background: rgba(200, 150, 70, 0.14);
+}
+
+/* --- Notes group (open/unaddressed annotations projected from the doc) ---
+   Same subtle structure as Tasks; a cool slate tint distinguishes "open note"
+   from the amber "needs re-vetting". Auto-resolves: reply_note sets
+   meta.addressed, so an answered note drops out of the list. */
+.fleet-inbox-notes {
+  border-bottom: 1px solid rgba(128, 128, 128, 0.12);
+}
+.fleet-inbox-note {
+  padding: 4px 10px 6px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.fleet-inbox-note:hover {
+  background: rgba(120, 160, 220, 0.07);
+}
+.fleet-inbox-note-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.fleet-inbox-note-dot {
+  font-size: 8px;
+  opacity: 0.65;
+  color: #7a9ec8;
+  flex-shrink: 0;
+}
+.fleet-inbox-note-text {
+  font-size: 11px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fleet-inbox-note-sub {
+  font-size: 10px;
+  opacity: 0.45;
+  margin-top: 1px;
+  padding-left: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Messages group wrapper (only used in type-sort; matches Tasks/Notes spacing) */
+.fleet-inbox-messages {
+  border-bottom: 1px solid rgba(128, 128, 128, 0.12);
+}
+
+/* --- Cascade graph view (structural invalidation rendered as a DAG) ---
+   Amber root boxes (directly-stale, approvable) feed violet cascade boxes via
+   thin arrows, laid out in dependency bands. Subtle like the rest of the chrome;
+   the approve hint only shows on hover. */
+.fleet-inbox-graph-wrap {
+  padding: 8px 6px 14px;
+}
+.cascade-graph-empty {
+  padding: 24px 12px;
+  text-align: center;
+  font-size: 10px;
+  opacity: 0.4;
+}
+.cascade-graph-node {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  padding: 3px 6px;
+  border: 1px solid;
+  border-radius: 6px;
+  background: rgba(128, 128, 128, 0.06);
+  text-align: center;
+  transition: background 0.12s, box-shadow 0.12s;
+}
+.cascade-graph-node.root {
+  cursor: pointer;
+}
+.cascade-graph-node.root:hover {
+  background: rgba(200, 150, 70, 0.1);
+  box-shadow: 0 0 0 1px rgba(200, 150, 70, 0.35);
+}
+.cascade-graph-node-title {
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.cascade-graph-node-approve {
+  font-size: 8.5px;
+  color: #c8965a;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.cascade-graph-node.root:hover .cascade-graph-node-approve {
+  opacity: 0.85;
+}
+
+.fleet-inbox-note-total {
+  font-size: 9px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 4px;
+  border-radius: 7px;
+  background: rgba(120, 160, 220, 0.14);
+  color: #7a9ec8;
+  opacity: 0.85;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* --- Conversation view --- */
+.fleet-inbox-conv {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+}
+.fleet-inbox-msg {
+  padding: 2px 10px;
+  position: relative;
+}
+.fleet-inbox-msg.mine {
+  opacity: 0.85;
+}
+.fleet-inbox-composer-slot {
+  flex-shrink: 0;
+  padding: 4px 6px 6px;
+  border-top: 1px solid rgba(128, 128, 128, 0.12);
+  background: rgba(128, 128, 128, 0.03);
+}

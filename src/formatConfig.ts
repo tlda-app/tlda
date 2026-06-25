@@ -44,6 +44,7 @@ const SVG_TOOLS = [
   'math-note',
   'cluster',
   'fleet-reaper',
+  'usage-meter',
   'arrow',
   'laser',
   'text-select',
@@ -56,6 +57,7 @@ const SVG_TOOLS = [
   'fleet-chat',
   'fleet-agents',
   'fleet-search',
+  'fleet-inbox',
   'playback-frame',
   'terminal',
 ]
@@ -68,6 +70,7 @@ const HTML_TOOLS = [
   'math-note',
   'cluster',
   'fleet-reaper',
+  'usage-meter',
   'arrow',
   'laser',
   'select',
@@ -81,6 +84,7 @@ const HTML_TOOLS = [
   'fleet-chat',
   'fleet-agents',
   'fleet-search',
+  'fleet-inbox',
   'playback-frame',
 ]
 

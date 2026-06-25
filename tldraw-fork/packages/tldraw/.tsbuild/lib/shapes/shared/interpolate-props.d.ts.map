@@ -1,0 +1,1 @@
+{"version":3,"file":"interpolate-props.d.ts","sourceRoot":"","sources":["../../../../src/lib/shapes/shared/interpolate-props.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,kBAAkB,EAA2B,MAAM,gBAAgB,CAAA;AAE5E,cAAc;AACd,wBAAgB,mBAAmB,CAClC,aAAa,EAAE,kBAAkB,EAAE,EACnC,WAAW,EAAE,kBAAkB,EAAE,EACjC,QAAQ,EAAE,MAAM,GACd,kBAAkB,EAAE,CAqCtB"}

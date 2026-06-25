@@ -1,13 +1,10 @@
 import { useState, useEffect, useRef, useCallback, useContext, useMemo, useSyncExternalStore } from 'react'
-import { useClickActions } from './hooks/useClickActions'
-import { subscribeInputModes, getClicksEnabled } from './inputModes'
 import { setStopRecordingCallback } from './tools/VoiceNoteTool'
-import { setVoiceTarget, clearVoiceTarget, stopRecording, isRecording, toggleRecording } from './voice.mjs'
-import { log } from './logger'
+import { setVoiceTarget, clearVoiceTarget, setVoiceAccumulator, stopRecording, isRecording, toggleRecording, voiceTap, onRecordingChange, maybeHandleVoiceSinkPointerDown } from './voice.mjs'
 import { createPortal } from 'react-dom'
 import { useEditor, useValue, stopEventPropagation, DefaultColorStyle } from 'tldraw'
 import { toolNameHud } from './overlays/ToolNameHud'
-import type { Editor } from 'tldraw'
+import type { Editor, TLShapeId } from 'tldraw'
 import { DocContext } from './PanelContext'
 import { isSignalConnected, writeSignal, onAgentHeartbeat } from './useYjsSync'
 import type { AgentHeartbeatSignal } from './useYjsSync'
@@ -182,12 +179,7 @@ export function DocumentPanel() {
 
 const IS_PHONE = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches
 
-import { HL_SLOTS, TLDRAW_ICON_BASE } from './highlighterSlots'
-
-// Options accessible via upward drag — toggles and settings
-const OPTIONS_SLOTS: { id: string; color: string; label: string; svgIcon?: string }[] = [
-  { id: 'zone-toggle', color: '#666', label: 'zone', svgIcon: `${TLDRAW_ICON_BASE}#tool-frame` },
-]
+import { HL_SLOTS, TLDRAW_ICON_BASE, hlMaskUrl } from './highlighterSlots'
 
 function PhoneHighlighterButton() {
   const editor = useEditor()
@@ -207,23 +199,18 @@ function PhoneHighlighterButton() {
   const mode = activeToolId === 'highlight' ? 'highlight' : activeToolId === 'eraser' ? 'eraser' : 'hand'
 
   const [dragging, setDragging] = useState(false)
-  const [dragMode, setDragMode] = useState<'color' | 'options' | null>(null)
+  const [dragMode, setDragMode] = useState<'color' | null>(null)
   const [dragSlot, setDragSlot] = useState<number | null>(null)
-  const [optionsSlot, setOptionsSlot] = useState<number | null>(null)
   const [dragBtnRect, setDragBtnRect] = useState<DOMRect | null>(null)
   // Refs mirror the above for reliable reads in pointer handlers (state updates are async)
-  const dragModeRef = useRef<'color' | 'options' | null>(null)
+  const dragModeRef = useRef<'color' | null>(null)
   const dragSlotRef = useRef<number | null>(null)
-  const optionsSlotRef = useRef<number | null>(null)
   const dragBtnRectRef = useRef<DOMRect | null>(null)
   const colorIdxRef = useRef(0)
   const btnRef = useRef<HTMLButtonElement>(null)
   const lastTapRef = useRef(0)
+  const singleTapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   colorIdxRef.current = colorIdx // keep ref current on every render — used in handlePointerMove
-
-  const [zoneEnabled, setZoneEnabled] = useState(() =>
-    typeof localStorage !== 'undefined' && localStorage.getItem('hl-zone-mode') !== '0'
-  )
 
   const activateSlot = useCallback((idx: number) => {
     const slot = HL_SLOTS[idx]
@@ -237,34 +224,14 @@ function PhoneHighlighterButton() {
       editor.setStyleForNextShapes(DefaultColorStyle, slot.id)
       editor.setCurrentTool('highlight')
     }
-  }, [editor, zoneEnabled])
-
-  // Undo last highlight: find most recent highlight shape and delete it
-  const undoLastHighlight = useCallback(() => {
-    const allShapes = editor.getCurrentPageShapes()
-    const highlights = allShapes
-      .filter((s: any) => s.type === 'highlight')
-      .sort((a: any, b: any) => {
-        // Sort by index descending — highest index = most recently created
-        return (b.index || '').localeCompare(a.index || '')
-      })
-    if (highlights.length > 0) {
-      editor.deleteShape(highlights[0].id)
-    }
   }, [editor])
 
-  const handleTap = useCallback(() => {
-    const now = Date.now()
-    const elapsed = now - lastTapRef.current
-    lastTapRef.current = now
+  // Phone undo gesture: quick double-tap on the highlighter button.
+  const undoLastAction = useCallback(() => {
+    editor.undo()
+  }, [editor])
 
-    // Double-tap: undo last highlight
-    if (elapsed < 400) {
-      lastTapRef.current = 0 // reset so triple-tap doesn't re-trigger
-      undoLastHighlight()
-      return
-    }
-
+  const performSingleTap = useCallback(() => {
     if (mode === 'hand') {
       // Switch to highlight with current color
       activateSlot(colorIdx)
@@ -272,9 +239,33 @@ function PhoneHighlighterButton() {
       // Switch back to phone-hand (axis-locked scroll)
       editor.setCurrentTool('phone-hand')
     }
-  }, [editor, mode, colorIdx, activateSlot, undoLastHighlight])
+  }, [editor, mode, colorIdx, activateSlot])
 
-  // Drag handling — horizontal L/R for colors, vertical up for options
+  const handleTap = useCallback(() => {
+    const now = Date.now()
+    const elapsed = now - lastTapRef.current
+    lastTapRef.current = now
+
+    // Double-tap: undo. Defer single-tap behavior so the first tap does not add
+    // a competing tool-change history entry before the undo gesture lands.
+    if (elapsed < 400) {
+      if (singleTapTimerRef.current) {
+        clearTimeout(singleTapTimerRef.current)
+        singleTapTimerRef.current = null
+      }
+      lastTapRef.current = 0 // reset so triple-tap doesn't re-trigger
+      undoLastAction()
+      return
+    }
+
+    if (singleTapTimerRef.current) clearTimeout(singleTapTimerRef.current)
+    singleTapTimerRef.current = setTimeout(() => {
+      singleTapTimerRef.current = null
+      performSingleTap()
+    }, 260)
+  }, [performSingleTap, undoLastAction])
+
+  // Drag handling — horizontal L/R for colors. Tap (no drag) toggles the tool.
   const dragStartX = useRef(0)
   const dragStartY = useRef(0)
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
@@ -288,25 +279,16 @@ function PhoneHighlighterButton() {
     setDragging(false)
     dragModeRef.current = null; setDragMode(null)
     dragSlotRef.current = null; setDragSlot(null)
-    optionsSlotRef.current = null; setOptionsSlot(null)
     ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
   }, [])
 
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
     const dx = e.clientX - dragStartX.current
-    const dy = e.clientY - dragStartY.current // positive = down
 
     // Determine drag mode if not yet set — read ref (always current, state update may not have committed)
     let currentMode = dragModeRef.current
     if (currentMode === null) {
-      const absDx = Math.abs(dx), absDy = Math.abs(dy)
-      // Up-drag: within ~6° of vertical (|dx| < 10% of |dy|) and moving upward
-      if (absDy > 15 && dy < 0 && absDx < 0.1 * absDy) {
-        currentMode = 'options'
-        dragModeRef.current = 'options'; setDragMode('options')
-        setDragging(true)
-        optionsSlotRef.current = 0; setOptionsSlot(0)
-      } else if (absDx > 10) {
+      if (Math.abs(dx) > 10) {
         currentMode = 'color'
         dragModeRef.current = 'color'; setDragMode('color')
         setDragging(true)
@@ -333,7 +315,6 @@ function PhoneHighlighterButton() {
       const origIdx = filteredIndices[filteredIndices.length - 1 - clampedPos] ?? activeOrigIdx
       dragSlotRef.current = origIdx; setDragSlot(origIdx)
     }
-    // options mode: optionsSlot already set to 0 on mode entry (single option)
   }, [])
 
   const handlePointerUp = useCallback((e: React.PointerEvent) => {
@@ -341,38 +322,31 @@ function PhoneHighlighterButton() {
     // Read refs — always current even if state update hasn't committed yet
     const currentMode = dragModeRef.current
     const currentSlot = dragSlotRef.current
-    const currentOptions = optionsSlotRef.current
     if (currentMode === 'color' && currentSlot !== null) {
       activateSlot(currentSlot)
-    } else if (currentMode === 'options' && currentOptions !== null) {
-      const slot = OPTIONS_SLOTS[currentOptions]
-      if (slot?.id === 'zone-toggle') {
-        setZoneEnabled(prev => {
-          const next = !prev
-          localStorage.setItem('hl-zone-mode', next ? '1' : '0')
-          return next
-        })
-      }
     } else if (currentMode === null) {
       handleTap()
     }
     dragModeRef.current = null; setDragging(false); setDragMode(null)
     dragSlotRef.current = null; setDragSlot(null)
-    optionsSlotRef.current = null; setOptionsSlot(null)
     setDragBtnRect(null)
   }, [activateSlot, handleTap])
 
   const handlePointerCancel = useCallback((e: React.PointerEvent) => {
     ;(e.target as HTMLElement).releasePointerCapture(e.pointerId)
-    dragModeRef.current = null; dragSlotRef.current = null; optionsSlotRef.current = null
-    setDragging(false); setDragMode(null); setDragSlot(null); setOptionsSlot(null); setDragBtnRect(null)
+    dragModeRef.current = null; dragSlotRef.current = null
+    setDragging(false); setDragMode(null); setDragSlot(null); setDragBtnRect(null)
   }, [])
 
   // Clear slider if window loses focus (app switch, cmd-tab, tab hide, etc.)
   useEffect(() => {
     const reset = () => {
-      dragModeRef.current = null; dragSlotRef.current = null; optionsSlotRef.current = null
-      setDragging(false); setDragMode(null); setDragSlot(null); setOptionsSlot(null); setDragBtnRect(null)
+      dragModeRef.current = null; dragSlotRef.current = null
+      setDragging(false); setDragMode(null); setDragSlot(null); setDragBtnRect(null)
+      if (singleTapTimerRef.current) {
+        clearTimeout(singleTapTimerRef.current)
+        singleTapTimerRef.current = null
+      }
       toolNameHud.hide()
     }
     window.addEventListener('blur', reset)
@@ -428,8 +402,8 @@ function PhoneHighlighterButton() {
             >
               <span style={{
                 display: 'block', width: 20, height: 20,
-                WebkitMaskImage: `url("${slot.svgIcon ?? `${TLDRAW_ICON_BASE}#tool-highlight`}")`,
-                maskImage: `url("${slot.svgIcon ?? `${TLDRAW_ICON_BASE}#tool-highlight`}")`,
+                WebkitMaskImage: `url("${hlMaskUrl(slot)}")`,
+                maskImage: `url("${hlMaskUrl(slot)}")`,
                 WebkitMaskSize: '100%', maskSize: '100%',
                 WebkitMaskRepeat: 'no-repeat', maskRepeat: 'no-repeat',
                 WebkitMaskPosition: 'center', maskPosition: 'center',
@@ -441,38 +415,6 @@ function PhoneHighlighterButton() {
       )}
       {/* Color label is rendered by the shared ToolNameHud component;
           driven via the toolNameHud bus in the effect below. */}
-      {/* Options popup — vertical up drag */}
-      {dragging && dragMode === 'options' && dragBtnRect && (
-        <div
-          className="phone-hl-options"
-          style={{
-            bottom: `${window.innerHeight - dragBtnRect.top + 6}px`,
-            right: `${window.innerWidth - dragBtnRect.right}px`,
-
-          }}
-          onPointerDown={stopEventPropagation}
-          onTouchStart={stopEventPropagation}
-        >
-          {OPTIONS_SLOTS.map((slot, i) => (
-            <div key={slot.id} className={`phone-hl-option${i === optionsSlot ? ' active' : ''}`}>
-              {slot.svgIcon && (
-                <span style={{
-                  display: 'block', width: 15, height: 15,
-                  WebkitMaskImage: `url("${slot.svgIcon}")`,
-                  maskImage: `url("${slot.svgIcon}")`,
-                  WebkitMaskSize: '100%', maskSize: '100%',
-                  WebkitMaskRepeat: 'no-repeat', maskRepeat: 'no-repeat',
-                  WebkitMaskPosition: 'center', maskPosition: 'center',
-                  backgroundColor: 'currentColor',
-                }} />
-              )}
-              <span className="phone-hl-option-label">
-                {slot.id === 'zone-toggle' ? (zoneEnabled ? 'Zone: off' : 'Zone: on') : slot.label}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
       <button
         ref={btnRef}
         className={`phone-hl-btn${isActive ? ' active' : ''}`}
@@ -491,7 +433,10 @@ function PhoneHighlighterButton() {
             (s.id === 'select' && (toolId === 'browse' || toolId === 'select')) ||
             (s.id === 'draw' && toolId === 'draw')
           )
-          const iconUrl = iconSlot?.svgIcon ?? `${TLDRAW_ICON_BASE}#tool-highlight`
+          // When a color (not a tool) is active, key off the active color so the
+          // light-violet "outline" highlighter shows its peeling-note glyph.
+          const iconSlot2 = iconSlot ?? HL_SLOTS.find(s => s.id === activeColorName)
+          const iconUrl = iconSlot2 ? hlMaskUrl(iconSlot2) : `${TLDRAW_ICON_BASE}#tool-highlight`
           return <span style={{
             display: 'block', width: 20, height: 20,
             WebkitMaskImage: `url("${iconUrl}")`,
@@ -559,6 +504,7 @@ function PhonePageIndicator() {
 
 export function PhoneOverlay() {
   const [menuOpen, setMenuOpen] = useState(false)
+  const [tab, setTab] = useState<Tab>('toc')
 
   useEffect(() => {
     if (!IS_PHONE) return
@@ -617,7 +563,20 @@ export function PhoneOverlay() {
             onPointerDown={stopEventPropagation}
             onTouchStart={stopEventPropagation}
           >
-            <TocTab />
+            <div className="doc-panel-tabs phone-panel-tabs">
+              <button className={`doc-panel-tab ${tab === 'toc' ? 'active' : ''}`} onClick={() => setTab('toc')}>
+                TOC
+              </button>
+              <button className={`doc-panel-tab ${tab === 'notes' ? 'active' : ''}`} onClick={() => setTab('notes')}>
+                Notes
+              </button>
+              <button className={`doc-panel-tab doc-panel-tab--gear ${tab === 'prefs' ? 'active' : ''}`} onClick={() => setTab('prefs')} aria-label="Settings">
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M8 4.5a3.5 3.5 0 100 7 3.5 3.5 0 000-7zM6 8a2 2 0 114 0 2 2 0 01-4 0z"/><path d="M9.4 1.2a1.5 1.5 0 00-2.8 0l-.3.9a.5.5 0 01-.7.3l-.8-.5a1.5 1.5 0 00-2 2l.5.8a.5.5 0 01-.3.7l-.9.3a1.5 1.5 0 000 2.8l.9.3a.5.5 0 01.3.7l-.5.8a1.5 1.5 0 002 2l.8-.5a.5.5 0 01.7.3l.3.9a1.5 1.5 0 002.8 0l.3-.9a.5.5 0 01.7-.3l.8.5a1.5 1.5 0 002-2l-.5-.8a.5.5 0 01.3-.7l.9-.3a1.5 1.5 0 000-2.8l-.9-.3a.5.5 0 01-.3-.7l.5-.8a1.5 1.5 0 00-2-2l-.8.5a.5.5 0 01-.7-.3l-.3-.9z"/></svg>
+              </button>
+            </div>
+            {tab === 'toc' && <TocTab />}
+            {tab === 'notes' && <NotesTab />}
+            {tab === 'prefs' && <PrefsTab />}
           </div>
         </div>
       )}
@@ -745,15 +704,20 @@ export function SemanticHighlightPill() { return null }
 
 function VoiceNoteButtonInner() {
   const editor = useEditor()
-  const [recording, setRecording] = useState(false)
-  const clicksEnabled = useSyncExternalStore(subscribeInputModes, getClicksEnabled)
-  useClickActions(editor, clicksEnabled)
   const hiddenTARef = useRef<HTMLTextAreaElement | null>(null)
-
+  const keepRef = useRef<TLShapeId[]>([])
+  const [recording, setRecording] = useState(false)
   const isPlacing = useValue('voice-placing', () => editor.getCurrentToolId() === 'voice-note', [editor])
 
-  const cancelRecording = useCallback(() => {
-    if (isRecording()) stopRecording()
+  useEffect(() => {
+    if (!_isTouchDevice) return
+    const onDown = () => { keepRef.current = editor.getSelectedShapeIds() }
+    document.addEventListener('pointerdown', onDown, true)
+    return () => document.removeEventListener('pointerdown', onDown, true)
+  }, [editor])
+
+  const cleanupPlacement = useCallback(({ stopVoice, resetTool }: { stopVoice: boolean; resetTool: boolean }) => {
+    if (stopVoice && isRecording()) stopRecording()
     if (hiddenTARef.current) {
       clearVoiceTarget(hiddenTARef.current)
       hiddenTARef.current.remove()
@@ -761,42 +725,59 @@ function VoiceNoteButtonInner() {
     }
     setStopRecordingCallback(null)
     setRecording(false)
-    editor.setCurrentTool('select')
+    if (resetTool) editor.setCurrentTool('select')
   }, [editor])
 
-  const startRecording = useCallback(() => {
-    // Create a hidden textarea as the voice system's transcription target.
-    // voice.mjs handles all error recovery, restarts, and interim results.
+  // initialPoint (page coords) seeds the ghost when there's no cursor — touch
+  // passes a point just left of the button; mouse omits it and uses the cursor.
+  const startPlacement = useCallback((initialPoint?: { x: number; y: number }) => {
+    cleanupPlacement({ stopVoice: false, resetTool: false })
     const ta = document.createElement('textarea')
     ta.style.cssText = 'position:fixed;opacity:0;pointer-events:none;width:1px;height:1px;top:-9999px'
     document.body.appendChild(ta)
     hiddenTARef.current = ta
-
     setVoiceTarget(ta, [], {}, null, null)
     if (!isRecording()) toggleRecording()
-    log.debug('voice', 'note recording started via voice system')
-
-    // The stop callback is called by VoiceNoteTool.onPointerUp (commit) or ESC.
-    // VoiceNoteTool reads getTranscript() before calling this, so we just stop and clean up.
     setStopRecordingCallback(() => {
-      log.debug('voice', 'note placement — stop callback fired')
-      if (isRecording()) stopRecording()
-      clearVoiceTarget(ta)
-      ta.remove()
-      hiddenTARef.current = null
-      setRecording(false)
+      cleanupPlacement({ stopVoice: true, resetTool: false })
     })
     setRecording(true)
-    editor.setCurrentTool('voice-note')
-  }, [editor])
+    editor.setCurrentTool('voice-note', initialPoint ? { initialPoint } : undefined)
+  }, [cleanupPlacement, editor])
 
-  const handleClick = useCallback(() => {
-    if (recording || isPlacing) {
-      cancelRecording()
-    } else {
-      startRecording()
+  // Desktop keeps the historical "voice-note button cancels/stops placement"
+  // behavior. Touch uses the button as a note target as well, so stale
+  // post-commit placement state must not turn the next tap into a pause.
+  const cancelRecording = useCallback(() => {
+    cleanupPlacement({ stopVoice: true, resetTool: true })
+  }, [cleanupPlacement])
+
+  const handleClick = useCallback((e: React.MouseEvent) => {
+    if (_isTouchDevice) {
+      if (isPlacing) { cancelRecording(); return }
+      if (recording) cleanupPlacement({ stopVoice: false, resetTool: false })
+
+      const selectedIds = keepRef.current.length ? keepRef.current : editor.getSelectedShapeIds()
+      if (selectedIds.length === 1) {
+        const selected = editor.getShape(selectedIds[0]) as { type?: string } | undefined
+        if (selected?.type === 'math-note') {
+          reassertSelection(editor, selectedIds)
+          if (!isRecording()) toggleRecording()
+          return
+        }
+      }
+
+      // No cursor on touch — seed the ghost just left of the button, in page
+      // coords. The voice-note tool then tracks pencil hover and commits where
+      // the pen taps (instead of dumping a note at viewport center).
+      const r = e.currentTarget.getBoundingClientRect()
+      const seed = editor.screenToPage({ x: r.left - 20, y: r.top + r.height / 2 })
+      startPlacement(seed)
+      return
     }
-  }, [recording, isPlacing, cancelRecording, startRecording])
+    if (recording || isPlacing) { cancelRecording(); return }
+    startPlacement()
+  }, [recording, isPlacing, cancelRecording, cleanupPlacement, startPlacement, editor])
 
   const cls = `voice-note-btn${recording ? ' recording' : ''}${isPlacing ? ' placing' : ''}`
 
@@ -808,22 +789,169 @@ function VoiceNoteButtonInner() {
       onPointerUp={stopEventPropagation}
       onTouchStart={stopEventPropagation}
       onTouchEnd={stopEventPropagation}
-      title={recording ? 'Stop recording' : isPlacing ? 'Cancel placement' : 'Voice note'}
+      title={_isTouchDevice ? 'New voice note' : (recording ? 'Stop recording' : isPlacing ? 'Cancel placement' : 'Voice note')}
     >
-      <svg width="18" height="18" viewBox="0 0 18 18" fill="currentColor">
-        <rect x="6.5" y="1" width="5" height="8" rx="2.5" />
-        <path d="M3 9a6 6 0 0 0 12 0" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" />
-        <line x1="9" y1="15" x2="9" y2="17" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      {/* Mic inside a sticky-note silhouette — "voice → note". The note shape is
+          the noun, the mic the modifier, so it reads as a note-maker not a plain mic.
+          20px + a 1.18 fill-scale match the highlighter button's visual size. */}
+      <svg width="20" height="20" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+        <g transform="translate(9 9) scale(1.18) translate(-9 -9)">
+          {/* note card with a folded top-right corner */}
+          <path d="M11.5 2.5H4.2A1.7 1.7 0 0 0 2.5 4.2V13.8A1.7 1.7 0 0 0 4.2 15.5H13.8A1.7 1.7 0 0 0 15.5 13.8V6.5Z" />
+          <path d="M11.5 2.5V6.5H15.5" />
+          {/* mic centered in the note */}
+          <rect x="7.6" y="6" width="2.8" height="4" rx="1.4" fill="currentColor" stroke="none" />
+          <path d="M6.3 9.2a2.7 2.7 0 0 0 5.4 0" strokeWidth="1.1" />
+          <line x1="9" y1="11.9" x2="9" y2="13.2" strokeWidth="1.1" />
+        </g>
       </svg>
     </button>
   )
 }
 
-export function VoiceNoteButton() {
-  // Only render if SpeechRecognition is available
+// Target-follows-tap: tapping a note makes it the voice/dictation target —
+// exactly like tapping a chat. The sink is a shape-prop accumulator: spoken
+// text is written to the note's `text` prop via editor.updateShape, which
+// re-renders the note live. NO edit mode is forced and selection is left
+// untouched — the only thing a tap changes is where voice goes. Independent of
+// recording state (the mic button owns on/off). When a note IS open in edit
+// mode, its CodeMirror owns the sink instead (MathNoteShape), so we skip it
+// here. Touch-only; desktop keeps its hidden-textarea placement flow.
+function VoiceTargetFollowsSelection() {
+  const editor = useEditor()
+  const selectedIds = useValue('voice-sel', () => editor.getSelectedShapeIds(), [editor])
+  const editingId = useValue('voice-editing', () => editor.getEditingShapeId(), [editor])
+  // Stable accumulator callbacks per note id. A stable callback lets
+  // setVoiceAccumulator's same-ref guard no-op on re-render (so it never resets
+  // an in-progress dictation), while still re-registering after a chat focus
+  // stole the sink, and switching notes registers the other note's callback.
+  const accumsRef = useRef<Map<string, { onUpdate: (t: string) => void; onStop: () => void }>>(new Map())
+  useEffect(() => {
+    if (!_isTouchDevice) return
+    if (selectedIds.length !== 1) return
+    const id = selectedIds[0]
+    const s = editor.getShape(id) as any
+    if (!s || s.type !== 'math-note') return
+    if (editingId === id) return // edit mode: CodeMirror owns the sink
+    let a = accumsRef.current.get(id)
+    if (!a) {
+      // `base` = the note's text at the start of each recording session; spoken
+      // text is appended after it. Snapshotted once per session (base===null),
+      // reset on stop so the next session appends after the committed text.
+      let base: string | null = null
+      const onUpdate = (text: string) => {
+        if (base === null) {
+          const cur = ((editor.getShape(id) as any)?.props?.text as string) || ''
+          base = cur ? cur + (/\s$/.test(cur) ? '' : ' ') : ''
+        }
+        editor.updateShape({ id, type: 'math-note' as any, props: { text: base + text } })
+      }
+      const onStop = () => { base = null }
+      a = { onUpdate, onStop }
+      accumsRef.current.set(id, a)
+    }
+    setVoiceAccumulator(a.onUpdate, null, a.onStop, 'note')
+  }, [editor, selectedIds, editingId])
+  return null
+}
+
+function VoiceSinkShapeTapTarget() {
+  useEffect(() => {
+    const onPointerDown = (event: PointerEvent) => {
+      maybeHandleVoiceSinkPointerDown(event)
+    }
+    document.addEventListener('pointerdown', onPointerDown, true)
+    return () => document.removeEventListener('pointerdown', onPointerDown, true)
+  }, [])
+  return null
+}
+
+export function VoiceTargetFollower() {
   if (typeof window === 'undefined') return null
-  const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-  if (!SR) return null
+  return <><VoiceTargetFollowsSelection /><VoiceSinkShapeTapTarget /></>
+}
+
+export function VoiceNoteButton() {
+  if (typeof window === 'undefined') return null
   return <VoiceNoteButtonInner />
 }
 
+// ======================
+// Mic Toggle Button
+// ======================
+// Dictation is normally toggled by tapping Right Shift (voice.mjs). The iPad
+// keyboard has no Right Shift, so this button exposes the same tap-to-toggle:
+// tap to start dictating into the focused chat, tap again to stop. Lives in the
+// bottom-right corner stack directly above the voice-note button.
+
+// maxTouchPoints (not pointer:coarse) — a Magic Keyboard/trackpad makes the
+// iPad's primary pointer "fine", which would wrongly disable note dictation.
+const _isTouchDevice = (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
+  || (typeof location !== 'undefined' && new URLSearchParams(location.search).has('forcetouch'))
+
+// tldraw clears the selection when an InFrontOfTheCanvas button is clicked — it
+// reads the tap as an empty-canvas click, and the clear is deferred so it lands
+// AFTER our onClick handler. Re-assert the selection we want across a few frames
+// so it wins that race. Without this, tapping the mic / voice-note button
+// deselects the targeted note.
+function reassertSelection(editor: Editor, ids: TLShapeId[]) {
+  // tldraw's post-click deselect lands within a couple hundred ms, so re-assert
+  // immediately and again past that window (a select at ~250ms reliably sticks).
+  const apply = () => editor.setSelectedShapes(ids)
+  apply()
+  requestAnimationFrame(apply)
+  setTimeout(apply, 150)
+  setTimeout(apply, 300)
+}
+
+function MicToggleButtonInner() {
+  // Pure on/off for recording. Recording is meant to run continuously — only
+  // this button stops it. The dictation target follows selection separately
+  // (VoiceTargetFollowsSelection). tldraw clears the selection on the button's
+  // *pointerdown* (before onClick), so capture the selection in a document
+  // capture-phase listener (which fires before tldraw's) and re-assert it after.
+  const editor = useEditor()
+  const keepRef = useRef<TLShapeId[]>([])
+  useEffect(() => {
+    const onDown = () => { keepRef.current = editor.getSelectedShapeIds() }
+    document.addEventListener('pointerdown', onDown, true)
+    return () => document.removeEventListener('pointerdown', onDown, true)
+  }, [editor])
+  const handleClick = useCallback(() => {
+    // Same gesture as Right Shift: 1 tap toggles, 2 = soft reset, 3 = Chrome
+    // restart. voiceTap() owns the tap-counting (shared with the key handler).
+    voiceTap()
+    reassertSelection(editor, keepRef.current)
+  }, [editor])
+
+  // Live recording state drives the glyph: filled mic = on (the usual state),
+  // outline mic = off. Opacity stays constant — the HUD carries the aliveness
+  // signal, so this toggle stays chill and just shows armed-vs-not via fill.
+  const on = useSyncExternalStore(onRecordingChange, isRecording, isRecording)
+
+  return (
+    <button
+      className={`mic-toggle-btn${on ? ' on' : ''}`}
+      onClick={handleClick}
+      onPointerDown={stopEventPropagation}
+      onPointerUp={stopEventPropagation}
+      onTouchStart={stopEventPropagation}
+      onTouchEnd={stopEventPropagation}
+      title={on ? 'Dictation on — tap to stop' : 'Dictation off — tap to start'}
+    >
+      {/* 20px + a 1.15 fill-scale match the highlighter button's visual size. */}
+      <svg width="20" height="20" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+        <g transform="translate(9 9) scale(1.15) translate(-9 -9)">
+          <rect x="6.5" y="2" width="5" height="8" rx="2.5" fill={on ? 'currentColor' : 'none'} />
+          <path d="M3.5 8.5a5.5 5.5 0 0 0 11 0" />
+          <line x1="9" y1="14" x2="9" y2="16" />
+        </g>
+      </svg>
+    </button>
+  )
+}
+
+export function MicToggleButton() {
+  if (typeof window === 'undefined') return null
+  return <MicToggleButtonInner />
+}

@@ -12,6 +12,7 @@
  */
 
 import { onReloadSignal } from './useYjsSync'
+import { STORE_HTTP } from './activeConfig'
 
 const _proofInfoCache = new Map<string, Promise<any>>()
 const _theoremMapCache = new Map<string, Promise<any>>()
@@ -22,9 +23,7 @@ onReloadSignal(() => {
 })
 
 function assetBase(): string {
-  const ws = (import.meta as any).env?.VITE_SYNC_SERVER as string | undefined
-  if (ws) return ws.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/+$/, '') + '/'
-  return (import.meta as any).env?.BASE_URL || '/'
+  return STORE_HTTP + '/'
 }
 
 export function fetchProofInfo(docName: string): Promise<any> {

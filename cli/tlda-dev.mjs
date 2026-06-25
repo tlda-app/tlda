@@ -6,7 +6,7 @@
  * Thin front-end over the main `tlda` CLI: it forwards the command to tlda.mjs
  * (same logic, no duplication) and owns only its own --help.
  *
- * `tlda-dev pw …`, `tlda-dev dev`, `tlda-dev dev-url`, `tlda-dev deploy`.
+ * `tlda-dev pw …`, `tlda-dev serve`, `tlda-dev sandbox`, `tlda-dev dev-url`, `tlda-dev deploy`.
  */
 
 import { spawnSync } from 'child_process'
@@ -25,17 +25,22 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
   process.exit(0)
 }
 
-// `pw` and `server` live here (not in tlda.mjs) — developer commands, no flat alias.
+// `pw` and `sandbox` live here (not in tlda.mjs) — developer commands, no flat alias.
 if (cmd === 'pw') {
   await cmdPw(args.slice(1), join(cliDir, '..'))
   process.exit(0)
 }
-if (cmd === 'server') {
+if (cmd === 'sandbox') {
   await cmdDevServer(args.slice(1), join(cliDir, '..'))
   process.exit(0)
 }
 
-// Other dev commands (dev/dev-url/deploy) still live in tlda.mjs — forward them.
+// Other dev commands (worktree/dev-url/deploy/restart-mcp) still live in tlda.mjs
+// — forward them, with TLDA_DEV_CLI=1 so tlda.mjs lets them past its
+// developer-command gate (plain `tlda <devcmd>` is refused; this path is allowed).
 const tlda = join(cliDir, 'tlda.mjs')
-const r = spawnSync(process.execPath, [tlda, ...args], { stdio: 'inherit' })
+const r = spawnSync(process.execPath, [tlda, ...args], {
+  stdio: 'inherit',
+  env: { ...process.env, TLDA_DEV_CLI: '1' },
+})
 process.exit(r.status ?? 0)

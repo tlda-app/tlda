@@ -1,0 +1,8 @@
+# Python dependencies for the fleet Python tooling (bin/fleet-spawn.py et al.).
+# Install once:  pip install -r bin/requirements.txt
+#
+# fleet-spawn's ONLY non-stdlib import is `websocket` (the websocket-client
+# package); everything else it uses (ssl, uuid, urllib, fcntl, shlex, …) is the
+# Python standard library. Without this, `tlda spawn` of a goose model fails at
+# `import websocket` (ModuleNotFoundError) depending on which python3 is on PATH.
+websocket-client>=1.8

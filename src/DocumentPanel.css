@@ -321,9 +321,12 @@ html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-stale {
 }
 
 .doc-panel-tabs {
+  position: relative;
+  z-index: 1;
   display: flex;
   border-bottom: 1px solid rgba(0, 0, 0, 0.04);
   flex-shrink: 0;
+  pointer-events: all;
 }
 
 .doc-panel:hover .doc-panel-tabs,
@@ -374,15 +377,65 @@ html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-stale {
   color: rgba(0, 0, 0, 0.7);
 }
 .prefs-section {
-  margin-bottom: 12px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  padding-bottom: 6px;
+}
+.prefs-section-toggle {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 36px;
+  gap: 6px;
+  padding: 4px 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.prefs-section-toggle:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+.prefs-section-chevron {
+  width: 14px;
+  flex: 0 0 14px;
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+  line-height: 1;
+  text-align: center;
+}
+.prefs-section-heading {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+.prefs-section-body {
+  padding: 2px 0 2px 20px;
 }
 .prefs-section-label {
+  display: block;
   font-weight: 600;
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
   color: rgba(0, 0, 0, 0.4);
+}
+.prefs-section-body > .prefs-section-label {
   margin-bottom: 6px;
+}
+.prefs-section-summary {
+  overflow: hidden;
+  max-width: 100%;
+  color: rgba(0, 0, 0, 0.55);
+  font-size: 10px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .prefs-source-checks {
   display: flex;
@@ -429,6 +482,18 @@ html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-stale {
 }
 [data-theme="dark"] .prefs-section-label {
   color: rgba(255, 255, 255, 0.4);
+}
+[data-theme="dark"] .prefs-section {
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+}
+[data-theme="dark"] .prefs-section-toggle:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+[data-theme="dark"] .prefs-section-chevron {
+  color: rgba(255, 255, 255, 0.45);
+}
+[data-theme="dark"] .prefs-section-summary {
+  color: rgba(255, 255, 255, 0.55);
 }
 [data-theme="dark"] .prefs-select {
   background: #2a2a2a;
@@ -490,6 +555,22 @@ html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-stale {
 [data-theme="dark"] .prefs-num-unit {
   color: rgba(255, 255, 255, 0.5);
 }
+.prefs-btn {
+  font-size: 11px;
+  padding: 2px 10px;
+  border: 1px solid rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.04);
+  cursor: pointer;
+}
+.prefs-btn:hover { background: rgba(0, 0, 0, 0.08); }
+.prefs-btn:disabled { opacity: 0.5; cursor: default; }
+[data-theme="dark"] .prefs-btn {
+  border-color: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.85);
+}
+[data-theme="dark"] .prefs-btn:hover { background: rgba(255, 255, 255, 0.12); }
 
 /* Pen double-tap zones — fixed squares at bottom-right (touch devices only) */
 .tool-toggle-zones {
@@ -1265,7 +1346,10 @@ html[data-theme="dark"] .doc-panel-open .notes-table-section td {
 /* iPad / touch-device overrides */
 @media (pointer: coarse) {
   .doc-panel {
+    top: env(safe-area-inset-top);
+    right: env(safe-area-inset-right);
     width: 300px;
+    max-height: calc(85vh - env(safe-area-inset-top));
     font-size: 14px;
     color: rgba(0, 0, 0, 0.25);
   }
@@ -1276,9 +1360,14 @@ html[data-theme="dark"] .doc-panel-open .notes-table-section td {
   }
 
   .doc-panel-tab {
+    min-height: 44px;
     padding: 10px 0;
     font-size: 13px;
     color: rgba(0, 0, 0, 0.25);
+  }
+
+  .doc-panel-tab--gear {
+    flex-basis: 44px;
   }
 
   .doc-panel:hover .doc-panel-tab,
@@ -1742,8 +1831,8 @@ body.phone-mode .phone-toc-btn {
   top: calc(10px + env(safe-area-inset-top));
   right: calc(10px + env(safe-area-inset-right));
   z-index: 10001;
-  width: 36px;
-  height: 36px;
+  width: 44px;
+  height: 44px;
   align-items: center;
   justify-content: center;
   background: none;
@@ -1788,13 +1877,36 @@ body.phone-mode .phone-toc-backdrop {
   font-family: system-ui, -apple-system, sans-serif;
   font-size: 14px;
   color: rgba(0, 0, 0, 0.6);
-  padding-top: env(safe-area-inset-top);
+  padding-top: calc(54px + env(safe-area-inset-top));
 }
 
 /* Override ghost opacity — modal content should be fully visible */
+.phone-toc-modal .doc-panel-tabs,
 .phone-toc-modal .doc-panel-content,
 .phone-toc-modal .search-input-wrap {
   opacity: 1;
+}
+
+.phone-toc-modal .phone-panel-tabs {
+  position: sticky;
+  top: 0;
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.phone-toc-modal .doc-panel-tab {
+  min-height: 44px;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.phone-toc-modal .doc-panel-tab--gear {
+  flex-basis: 44px;
+}
+
+.phone-toc-modal .doc-panel-tab.active {
+  color: rgba(0, 0, 0, 0.7);
+  border-bottom-color: rgba(0, 0, 0, 0.3);
 }
 
 .phone-toc-modal .toc-item {
@@ -1825,6 +1937,19 @@ html[data-theme="dark"] .phone-toc-btn {
 html[data-theme="dark"] .phone-toc-modal {
   background: rgba(0, 0, 0, 0.75);
   color: rgba(255, 255, 255, 0.6);
+}
+
+html[data-theme="dark"] .phone-toc-modal .phone-panel-tabs {
+  background: rgba(0, 0, 0, 0.85);
+}
+
+html[data-theme="dark"] .phone-toc-modal .doc-panel-tab {
+  color: rgba(255, 255, 255, 0.45);
+}
+
+html[data-theme="dark"] .phone-toc-modal .doc-panel-tab.active {
+  color: rgba(255, 255, 255, 0.7);
+  border-bottom-color: rgba(255, 255, 255, 0.3);
 }
 
 html[data-theme="dark"] .phone-toc-modal .toc-item {
@@ -1867,7 +1992,7 @@ html[data-theme="dark"] .phone-toc-modal .toc-item.subsection {
 
 body.phone-mode .phone-hl-btn {
   bottom: calc(24px + env(safe-area-inset-bottom));
-  right: calc(16px + env(safe-area-inset-right));
+  right: max(4px, env(safe-area-inset-right));
   opacity: 0.5;
 }
 
@@ -1968,51 +2093,6 @@ html[data-theme="dark"] .phone-hl-btn.active {
   color: white;
 }
 
-/* Options popup — appears above button on upward drag */
-.phone-hl-options {
-  display: flex;
-  flex-direction: column;
-  position: fixed;
-  z-index: 10002;
-  background: rgba(255, 255, 255, 0.3);
-  border-radius: 8px;
-  padding: 3px;
-  box-shadow: none;
-  pointer-events: none;
-  gap: 2px;
-}
-
-.phone-hl-option {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
-  border-radius: 7px;
-  font-size: 11px;
-  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-  color: rgba(80, 80, 80, 0.6);
-  white-space: nowrap;
-  transition: background 0.08s;
-}
-
-.phone-hl-option.active {
-  background: rgba(0, 0, 0, 0.06);
-  color: rgba(40, 40, 40, 0.9);
-}
-
-.phone-hl-option-label {
-  font-size: 11px;
-  font-weight: 500;
-}
-
-html[data-theme="dark"] .phone-hl-option {
-  color: rgba(200, 200, 200, 0.6);
-}
-html[data-theme="dark"] .phone-hl-option.active {
-  background: rgba(255, 255, 255, 0.1);
-  color: rgba(220, 220, 220, 0.9);
-}
-
 html[data-theme="dark"] .phone-hl-slot.active {
   background: rgba(255, 255, 255, 0.1);
 }
@@ -2106,7 +2186,7 @@ body.warm-mode [data-shape-id] svg {
 
 body.phone-mode .voice-note-btn {
   bottom: calc(57px + env(safe-area-inset-bottom));
-  right: calc(16px + env(safe-area-inset-right));
+  right: max(4px, env(safe-area-inset-right));
   opacity: 0.5;
 }
 
@@ -2114,3 +2194,62 @@ html[data-theme="dark"] .voice-note-btn {
   color: var(--pill-icon-color, rgba(255, 255, 255, 1));
 }
 
+/* Mic controls — bottom-right stack above the voice-note button
+   (highlighter 16px → voice-note 49px → mic 82px). */
+.mic-toggle-btn {
+  display: flex;
+  position: fixed;
+  right: 16px;
+  z-index: 10001;
+  width: 27px;
+  height: 27px;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-radius: 50%;
+  color: var(--pill-icon-color, rgba(0, 0, 0, 1));
+  cursor: pointer;
+  pointer-events: all;
+  padding: 0;
+  transition: background 0.15s, opacity 0.15s, box-shadow 0.15s, color 0.15s;
+  touch-action: none;
+  opacity: 0.15;
+}
+.mic-toggle-btn { bottom: 82px; }
+.mic-toggle-btn:hover { opacity: 0.5; }
+
+body.phone-mode .mic-toggle-btn {
+  bottom: calc(90px + env(safe-area-inset-bottom));
+  right: max(4px, env(safe-area-inset-right));
+  opacity: 0.5;
+}
+
+html[data-theme="dark"] .mic-toggle-btn {
+  color: var(--pill-icon-color, rgba(255, 255, 255, 1));
+}
+
+/* iPad / tablet: touch device but too wide to be flagged a phone, so it never
+   gets body.phone-mode and its safe-area treatment. Without the inset, these
+   corner buttons sit at the literal screen edge, underneath the iOS
+   home-indicator / browser chrome — off-screen and untappable. Apply the same
+   safe-area inset phones get so the bottom-right corner is the *usable* corner.
+   (Requires viewport-fit=cover on the viewport meta for env() to be non-zero.) */
+@media (pointer: coarse) and (min-width: 601px) {
+  .phone-toc-btn {
+    top: calc(10px + env(safe-area-inset-top));
+    right: calc(10px + env(safe-area-inset-right));
+  }
+  .phone-hl-btn {
+    bottom: calc(16px + env(safe-area-inset-bottom));
+    right: max(4px, env(safe-area-inset-right));
+  }
+  .voice-note-btn {
+    bottom: calc(49px + env(safe-area-inset-bottom));
+    right: max(4px, env(safe-area-inset-right));
+  }
+  .mic-toggle-btn {
+    bottom: calc(82px + env(safe-area-inset-bottom));
+    right: max(4px, env(safe-area-inset-right));
+  }
+}

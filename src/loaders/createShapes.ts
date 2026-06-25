@@ -6,6 +6,17 @@
 import type { Editor, TLShapeId, TLPageId } from 'tldraw'
 import type { SvgDocument } from './types'
 
+function sendDocumentPagesToBack(editor: Editor) {
+  const ids = editor.getCurrentPageShapes()
+    .filter(s =>
+      (s.type as string) === 'svg-page' ||
+      (s.type as string) === 'html-page' ||
+      (s.type as string) === 'zoomable-image' ||
+      s.type === 'image')
+    .map(s => s.id)
+  if (ids.length > 0) editor.sendToBack(ids)
+}
+
 /**
  * Create SVG page shapes (custom svg-page type with inline rendering).
  * Also handles diff documents (SVG + old page overlay).
@@ -45,8 +56,7 @@ export function createSvgShapes(editor: Editor, document: SvgDocument): boolean 
 
   // Pages must always render below annotation shapes — send to back every time
   // so notes/highlights placed after initial load stay on top.
-  const allPageIds = document.pages.map(p => p.shapeId).filter(id => editor.getShape(id))
-  if (allPageIds.length > 0) editor.sendToBack(allPageIds)
+  sendDocumentPagesToBack(editor)
 
   return missingPages.length === 0
 }
@@ -64,7 +74,10 @@ export function createHtmlShapes(editor: Editor, document: SvgDocument): boolean
   const hasMultiplePages = tlPages.length > 1
   const hasHtmlShapes = existingShapes.some(s => (s.type as string) === 'html-page')
 
-  if (hasMultiplePages && hasHtmlShapes) return true // already set up
+  if (hasMultiplePages && hasHtmlShapes) {
+    sendDocumentPagesToBack(editor)
+    return true // already set up
+  }
 
   // Old format: shapes on single page — delete and recreate as multipage
   let annotationMigration: Array<{ noteId: TLShapeId; chapterIdx: number; relY: number }> | undefined
@@ -140,6 +153,7 @@ export function createHtmlShapes(editor: Editor, document: SvgDocument): boolean
 
   // Switch back to first page
   editor.setCurrentPage(defaultPageId)
+  sendDocumentPagesToBack(editor)
 
   // Migrate annotations from old single-page format
   if (annotationMigration?.length) {
@@ -164,7 +178,10 @@ export function createHtmlShapes(editor: Editor, document: SvgDocument): boolean
 export function createSlidesShapes(editor: Editor, document: SvgDocument): boolean {
   const existingShapes = editor.getCurrentPageShapes()
   const hasHtmlShapes = existingShapes.some(s => (s.type as string) === 'html-page')
-  if (hasHtmlShapes) return true
+  if (hasHtmlShapes) {
+    sendDocumentPagesToBack(editor)
+    return true
+  }
 
   editor.createShapes(
     document.pages.map((page) => ({
@@ -180,6 +197,7 @@ export function createSlidesShapes(editor: Editor, document: SvgDocument): boole
       },
     }))
   )
+  sendDocumentPagesToBack(editor)
   return false
 }
 
@@ -194,7 +212,10 @@ export function createImageShapes(editor: Editor, document: SvgDocument): boolea
   const hasPages = editor.getCurrentPageShapes().some(
     s => (s.type as string) === 'zoomable-image' || s.type === 'image'
   )
-  if (hasPages) return true
+  if (hasPages) {
+    sendDocumentPagesToBack(editor)
+    return true
+  }
 
   editor.createShapes(
     document.pages.map(
@@ -215,6 +236,7 @@ export function createImageShapes(editor: Editor, document: SvgDocument): boolea
       })
     )
   )
+  sendDocumentPagesToBack(editor)
 
   return false
 }

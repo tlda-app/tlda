@@ -20,6 +20,7 @@
  *   node bin/brush-test.mjs --headed   # visible browser (for debugging)
  */
 import { chromium } from 'playwright'
+import { hasTls } from '../shared/config.mjs'
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -44,7 +45,7 @@ await page.addInitScript(() => {
   sessionStorage.clear()
   localStorage.setItem('fleet-hud-expanded', '1')
 })
-const url = `http://localhost:5176/?doc=test-fleet&name=tester&token=${token}`
+const url = `${hasTls ? 'https' : 'http'}://localhost:5176/?doc=test-fleet&name=tester&token=${token}&pw=1`
 await page.goto(url, { waitUntil: 'domcontentloaded' })
 
 // Wait for editor + fleet shapes

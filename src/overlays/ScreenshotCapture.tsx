@@ -96,6 +96,8 @@ export function ScreenshotCapture({
         tools={tools}
         licenseKey={licenseKey}
         panelWidth={400}
+        requestedShapeIds={capture.shapeIds}
+        requestedShapeTypes={capture.shapeTypes}
         onEditorMount={handleEditorMount}
       />
     </div>

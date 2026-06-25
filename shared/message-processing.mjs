@@ -40,6 +40,12 @@ export function detectAttachments(message, agentCwd) {
     inlineAttachments.push({ type: 'file', id, path: filePath, name: path.basename(filePath), broken: true })
     return `{{att:${id}}}`
   })
+  // 3a-bis. Mask remaining http(s) URLs so the bare-path pass never reads a URL
+  // as a file. Without this, a host like `cormorant-matrix.ts.net` matches the
+  // `.ts` extension (pathRe's `(?!\w)` allows the following `.`), mangling the
+  // link into `https:{{att:N}}.net/...`. (api-file markdown images were already
+  // consumed in 3a above; this only masks plain URLs.)
+  working = working.replace(/\bhttps?:\/\/[^\s)]+/g, (m) => maskToken('U', m))
   // 3b. Bare file paths — any match enters the pipeline; missing files are marked broken.
   working = working.replace(pathRe, (match, filePath) => {
     const resolved = resolveFilePath(filePath, agentCwd)
@@ -53,6 +59,7 @@ export function detectAttachments(message, agentCwd) {
   })
   // Restore masked regions (inline spans first, then fences — reverse of masking order)
   working = working.replace(/\x00I(\d+)\x00/g, (_, i) => masked[+i])
+  working = working.replace(/\x00U(\d+)\x00/g, (_, i) => masked[+i])
   working = working.replace(/\x00F(\d+)\x00/g, (_, i) => masked[+i])
   return { resolvedMessage: working, inlineAttachments }
 }

@@ -2,8 +2,11 @@ import katex from 'katex'
 import 'katex/dist/katex.min.css'
 import { getAgents, getAgent } from './fleet-data.mjs'
 import { getActiveMacros } from '../katexMacros'
+import { baseMacros } from '../../shared/katex-base-macros.mjs'
 import { myTldaUrl } from './tldaUrl.mjs'
 import { baseName } from '../../shared/lineage-name.mjs'
+import { normalizeChatDisplayMathDelimiters } from '../../shared/chat-math-normalize.mjs'
+import { rewriteBareLocalPaths } from '../../shared/chat-local-link-safety.mjs'
 // Utility functions. Agent lookups read from fleet-data directly.
 
 const _tldaToken = null // was from state.mjs (removed)
@@ -32,6 +35,10 @@ export function esc(s) {
     return ''
   }
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
+}
+
+export function copySourceTemplate(text) {
+  return `<template class="code-block-copy-source">${esc(text)}</template>`
 }
 
 // Require a value — report error and return placeholder if missing
@@ -121,29 +128,6 @@ export function renderAgentPill(agentId, opts = {}) {
     ? ` <span class="agent-respawn-btn" data-agent-id="${esc(agentId)}" title="Respawn agent">↻</span>`
     : ''
   return `<span class="agent-pill ${cls}" data-agent-id="${esc(agentId)}" data-agent-label="${esc(name)}"${dead ? ' data-dead="1"' : ''}>${esc(name)}${respawnHtml}</span>`
-}
-
-// --- Agent/label matching ---
-export function agentMatchesDnf(dnf, agent) {
-  if (!dnf || dnf.length === 0) return true
-  const labels = [...(agent.labels || [])]
-  if (agent.status === 'awake') labels.push('awake')
-  else if (agent.status === 'hibernating') labels.push('hibernating')
-  if (agent.friendly_name) labels.push(agent.friendly_name)
-  if (agent.id) labels.push(agent.id)
-  // Terms are [role, label] tuples or plain strings
-  return dnf.some(andGroup => andGroup.every(term => {
-    const label = Array.isArray(term) ? term[1] : term
-    return labels.includes(label)
-  }))
-}
-
-export function dnfMatches(dnf, agentLabels) {
-  if (!dnf || dnf.length === 0) return true
-  return dnf.some(andGroup => andGroup.every(term => {
-    const label = Array.isArray(term) ? term[1] : term
-    return agentLabels.includes(label)
-  }))
 }
 
 // --- Label colors (hash-based) ---
@@ -315,17 +299,21 @@ export function renderMarkdown(html, extraMacros) {
       + `</div>`
 
     const dataAttrs = shouldFold && lang ? ` data-lang="${esc(lang)}"` : ''
-    return ph(`<div class="code-block-wrap">${header}<pre${shouldFold ? ' class="code-collapsed"' : ''}><code${dataAttrs}>${highlighted}</code></pre></div>`, true)
+    return ph(`<div class="code-block-wrap">${header}${copySourceTemplate(code)}<pre${shouldFold ? ' class="code-collapsed"' : ''}><code${dataAttrs}>${highlighted}</code></pre></div>`, true)
   })
 
-  // KaTeX macros — always start from getActiveMacros() (which includes defaultMacros),
-  // then merge project-specific extraMacros on top so they can override but defaults
-  // (like \griesz) are always available regardless of which doc is loaded.
-  const preambleMacros = { ...getActiveMacros(), ...(extraMacros || {}) }
+  // KaTeX macros. When extraMacros is provided it is AUTHORITATIVE — the message
+  // is rendered with the sender's preamble: physics base + exactly those macros,
+  // never the viewer's active set (so a message renders the same for everyone). The
+  // per-message sender macros are resolved from the message's preambleRef.doc by the
+  // chat shape. With no extraMacros (the human's own composing surface, notes), fall
+  // back to getActiveMacros() — the doc the viewer currently has loaded.
+  const preambleMacros = extraMacros ? { ...baseMacros, ...extraMacros } : getActiveMacros()
   // throwOnError: true so unparseable LaTeX falls through to the catch and
   // renders as raw escaped text. With throwOnError: false KaTeX returns its
   // own giant error-HTML structure, which we don't want dumped into chat.
   const katexOpts = (displayMode) => ({ displayMode, throwOnError: true, strict: false, macros: { ...preambleMacros } })
+  text = normalizeChatDisplayMathDelimiters(text)
 
   // Display math: $$...$$
   text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_, tex) => {
@@ -370,22 +358,6 @@ export function renderMarkdown(html, extraMacros) {
       </div>
     </div>`, true)
   })
-  // [doc:shareId] meta — render as compact chip, click to expand card
-  const docsExpanded = localStorage.getItem('fleet-docs-expanded') === '1'
-  text = text.replace(/\[doc:([^\]]+)\]\s*([^\n]+)/g, (_, shareId, meta) => {
-    const docId = `doc-${shareId}`
-    const bodyDisplay = docsExpanded ? '' : 'display:none'
-    const toggleChar = docsExpanded ? '▼' : '▶'
-    return ph(`<div class="shared-doc doc-chip" data-share-id="${esc(shareId)}" draggable="true">
-      <div class="shared-doc-header">
-        <span class="shared-doc-toggle">${toggleChar}</span>
-        <span class="shared-doc-name">${esc(meta.trim())}</span>
-        <span class="drag-handle" title="Drag to chat">⠿</span>
-      </div>
-      <div class="shared-doc-body doc-chip-body" id="${esc(docId)}" style="${bodyDisplay}"></div>
-    </div>`, true)
-  })
-
   // Bare image file paths → <img> tags (before marked mangles them)
   // Matches absolute paths (/... or ~/...) ending in image extensions
   // Handles: bare paths, backtick-wrapped paths, paths at end of line
@@ -415,7 +387,7 @@ export function renderMarkdown(html, extraMacros) {
   if (typeof window !== 'undefined' && window.DOMPurify) {
     result = window.DOMPurify.sanitize(result, {
       ADD_TAGS: ['span', 'div', 'img'],
-      ADD_ATTR: ['class', 'data-path', 'data-share-id', 'data-indent', 'data-file',
+      ADD_ATTR: ['class', 'data-path', 'data-indent', 'data-file',
         'data-line', 'data-tlda-src', 'data-tlda-id', 'data-lang', 'data-highlighted',
         'draggable', 'title', 'target', 'style'],
       ALLOW_DATA_ATTR: true,
@@ -442,43 +414,9 @@ export function renderMarkdown(html, extraMacros) {
   // Make links open in new tab (skip links that already have target)
   result = result.replace(/<a(?![^>]*target=)([^>]*href=")/g, '<a target="_blank"$1')
 
-  // File paths: shorten absolute paths + render relative .md paths as scratch cards
-  // Backtick-quoted content (<code> spans) is verbatim — never chipify it.
-  // Prose paths (unquoted text) are handled: absolute paths shortened, relative .md paths chipped.
-  // Second pass: absolute and relative paths in text (skip inside HTML tags and code/pre)
-  let _inCode2 = 0
-  result = result.replace(/((?:<[^>]*>)|(?:[^<]+))/g, (segment) => {
-    if (segment.startsWith('<')) {
-      if (/^<(code|pre)\b/i.test(segment)) _inCode2++
-      else if (/^<\/(code|pre)>/i.test(segment)) _inCode2 = Math.max(0, _inCode2 - 1)
-      return segment
-    }
-    if (_inCode2 > 0) return segment
-    // Absolute paths
-    segment = segment.replace(/\/Users\/\w+\/([\w/._-]+)/g, (fullPath, rel) => {
-      if (fullPath.endsWith('.md')) {
-        const name = rel.split('/').pop()
-        const isScratch = /\/scratch\//.test(fullPath)
-        const cls = isScratch ? 'md-file-card scratch-card' : 'md-file-card'
-        const drag = isScratch ? ' draggable="true"' : ''
-        return `<span class="${cls}" data-path="${fullPath}"${drag}><span class="md-file-chip">${name}</span><span class="md-file-body"></span></span>`
-      }
-      if (/\.(png|jpg|jpeg|gif|webp|svg)$/i.test(fullPath)) {
-        const name = rel.split('/').pop()
-        return `<img class="chat-image" src="/api/file?path=${encodeURIComponent(fullPath)}" alt="${name}" style="max-width:300px;max-height:200px;border-radius:4px;cursor:zoom-in;display:block;margin:4px 0" onerror="this.style.display='none'">`
-      }
-      return `<span class="file-path" title="${fullPath}" style="cursor:pointer;text-decoration:underline dotted">~/${rel}</span>`
-    })
-    // Relative paths ending in .md (word-boundary anchored, not already in a tag)
-    segment = segment.replace(/(?<![/"'>\w])(?:(?:[\w.-]+\/)+[\w.-]+\.md)/g, (relPath) => {
-      const name = relPath.split('/').pop()
-      const isScratch = /scratch\//.test(relPath)
-      const cls = isScratch ? 'md-file-card scratch-card' : 'md-file-card'
-      const drag = isScratch ? ' draggable="true"' : ''
-      return `<span class="${cls}" data-path="${relPath}"${drag}><span class="md-file-chip">${name}</span><span class="md-file-body"></span></span>`
-    })
-    return segment
-  })
+  // Bare local paths should render as file chips/spans, but authored links stay
+  // links. A chip promises an attached artifact; a link promises navigation.
+  result = rewriteBareLocalPaths(result)
 
   // File:line references (skip inside tags)
   result = result.replace(/((?:<[^>]*>)|(?:[^<]+))/g, (segment) => {
@@ -500,7 +438,12 @@ export function renderMarkdown(html, extraMacros) {
     }
     if (_inTag) return segment
     return segment.replace(/\bhttps?:\/\/[^\s<>"')\]]+/g, url => {
-      return `<a href="${esc(url)}" target="_blank" class="chat-link">${esc(url)}</a>`
+      // `url` is captured from already-rendered HTML, so marked has ALREADY
+      // HTML-escaped it once (e.g. a query string's `&` is `&amp;`). The regex
+      // excludes <>"' so it's safe in both an attribute and text. Re-`esc()`ing
+      // here double-escaped it (`&amp;` -> `&amp;amp;`), giving a broken href and
+      // a visible `&amp;` in the link. Use it as-is.
+      return `<a href="${url}" target="_blank" class="chat-link">${url}</a>`
     })
   })
 

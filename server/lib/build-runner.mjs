@@ -30,7 +30,7 @@ async function _gitRetryOnLock(fn, retries = 3, delayMs = 500) {
   for (let i = 0; i < retries; i++) {
     try { return await fn() }
     catch (err) {
-      if (i < retries - 1 && /index\.lock|Unable to create.*lock/i.test(err.message)) {
+      if (i < retries - 1 && /index\.lock|Unable to create.*lock|cannot lock ref|unable to update local ref/i.test(err.message)) {
         await new Promise(r => setTimeout(r, delayMs))
         continue
       }
@@ -45,8 +45,9 @@ import { tmpdir, homedir } from 'os'
 import { fileURLToPath } from 'url'
 import { updateProject, sourceDir, outputDir, projectDir, readProject, listProjects, extractBuildErrors } from './project-store.mjs'
 import { broadcastSignal, putShape, updateShape, emitGlobalEvent } from './sync-rooms.mjs'
+import { writeSentinel } from './sentinel.mjs'
 import { snapshotBeforeBuild, recordGitSnapshot } from './history-store.mjs'
-import { commitSnapshot, initShadowFromProjectRepo } from './shadow-repo.mjs'
+import { commitSnapshot, currentVersion, initShadowFromProjectRepo, createShadowBundleBase64 } from './shadow-repo.mjs'
 import { appendBuildEntry } from './changelog.mjs'
 import { emitBuildComplete } from './webhooks.mjs'
 import { clearSynctexCache } from './synctex-query.mjs'
@@ -61,6 +62,7 @@ import { clearSynctexCache } from './synctex-query.mjs'
 const _directReporter = {
   broadcastSignal: (room, signal, payload) => broadcastSignal(room, signal, payload),
   putShape: (docName, shape) => putShape(docName, shape),
+  writeSentinel: (docName, propsPatch) => writeSentinel(docName, propsPatch),
   patchShape: async (docName, shapeId, propsPatch) => {
     try {
       await updateShape(docName, shapeId, cur => ({
@@ -104,6 +106,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const PROJECT_ROOT = join(__dirname, '..', '..')
 const SCRIPTS_DIR = join(PROJECT_ROOT, 'scripts')
 const DOC_VERSION_SENTINEL_ID = 'shape:doc-version--sentinel'
+
+let mirrorShadowSnapshot = null
+
+export function setShadowMirrorHandler(handler) {
+  mirrorShadowSnapshot = typeof handler === 'function' ? handler : null
+}
 
 function convertScratchMarkdown(srcDir, addLog) {
   const scratchDir = join(srcDir, '.tlda', 'scratch')
@@ -417,6 +425,26 @@ async function ensureFormat(ctx) {
  * No source file copying — pdflatex reads .tex from source, writes .dvi/.log/.aux
  * to the build dir. Cached .aux/.bbl/.fmt seeded into build dir from build-cache.
  */
+// Biber ships as a PAR-packed binary that unpacks its Perl runtime + Unicode
+// tables into a cache dir. That cache can corrupt, after which biber crashes
+// silently (exit 2) mid-decode and emits a 0-byte .bbl — so every \cite renders
+// undefined. We point PAR_GLOBAL_TEMP at a per-project dir (see biberParCacheDir)
+// so each doc gets its own isolated cache: a corrupt cache can be cleared for
+// that one doc without touching any other in-flight build's cache. Removing the
+// dir forces biber to re-extract a fresh copy on the next run (~10s one-time;
+// warm reuse is the same speed as a shared global cache).
+function biberParCacheDir(projDir) {
+  return join(projDir, '.biber-par-cache')
+}
+function clearBiberParCache(parCacheDir, addLog) {
+  try {
+    rmSync(parCacheDir, { recursive: true, force: true })
+    addLog('Cleared this project’s biber PAR cache (biber will re-extract)')
+  } catch (e) {
+    addLog(`Could not clear biber PAR cache ${parCacheDir}: ${e.message}`)
+  }
+}
+
 async function compileLaTeX(ctx) {
   const { name, srcDir, buildDir, projDir, texBase, texDir, addLog, run } = ctx
   const cacheDir = join(projDir, 'build-cache')
@@ -448,6 +476,13 @@ async function compileLaTeX(ctx) {
     TEXMFOUTPUT: buildDir,
     TEXINPUTS: `${buildDir}:${texDir}:${srcDir}:`,
   }
+
+  // Per-project biber PAR cache. PAR_GLOBAL_TEMP makes biber unpack its runtime
+  // into this doc's own dir, so a corrupt cache is isolated to one project and
+  // recovery can clear it without disturbing concurrent builds of other docs.
+  const parCacheDir = biberParCacheDir(projDir)
+  mkdirSync(parCacheDir, { recursive: true })
+  const biberEnv = { ...process.env, PAR_GLOBAL_TEMP: parCacheDir }
 
   // Override the scratch-template for THIS build. The user's source dir has
   // the marker version of \inputscratch (so local vanilla-latex builds show
@@ -530,7 +565,7 @@ async function compileLaTeX(ctx) {
       signalBuildProgress(name, 'compiling', bibTool)
       let bibFailed = false
       try {
-        await run(bibCmd, { cwd: buildDir, timeout: 60000 })
+        await run(bibCmd, { cwd: buildDir, timeout: 60000, env: biberEnv })
         addLog(`${bibTool} done — recompiling`)
       } catch (e) {
         const errMsg = e.message || ''
@@ -543,36 +578,20 @@ async function compileLaTeX(ctx) {
           // (Unicode::UCD error). Also fails with XML/malformed errors on bad .bcf.
           const isCorrupt = true // Always retry on biber failure — cleaning is safe
           if (isCorrupt) {
-            addLog('Biber failed — cleaning state files and PAR cache, retrying')
-            const cleanExts = ['.bcf', '.bbl', '.blg', '.run.xml']
-            for (const ext of cleanExts) {
+            addLog('Biber failed — clearing PAR cache and retrying')
+            // Clear stale biber outputs. Keep the .bcf: it's pdflatex's control
+            // file (biber's required input, regenerated every compile) — deleting
+            // it would make the retry fail with "cannot find control file".
+            for (const ext of ['.bbl', '.blg', '.run.xml']) {
               const f = join(buildDir, `${texBase}${ext}`)
               if (existsSync(f)) { try { unlinkSync(f) } catch {} }
-              // Also clean from build cache so corruption doesn't persist
               const cacheF = join(projDir, 'build-cache', `${texBase}${ext}`)
               if (existsSync(cacheF)) { try { unlinkSync(cacheF) } catch {} }
             }
-            // Clean biber's PAR cache — delete only the corrupt unicore/ dir
-            try {
-              const tmpDir = process.env.TMPDIR || '/tmp'
-              for (const d of readdirSync(tmpDir)) {
-                if (!d.startsWith('par-')) continue
-                const parDir = join(tmpDir, d)
-                for (const sub of readdirSync(parDir)) {
-                  if (!sub.startsWith('cache-')) continue
-                  const unicorePath = join(parDir, sub, 'inc', 'lib', 'unicore')
-                  if (existsSync(unicorePath)) {
-                    try {
-                      for (const f of readdirSync(unicorePath)) unlinkSync(join(unicorePath, f))
-                      addLog('Cleaned corrupt biber unicore cache')
-                    } catch {}
-                  }
-                }
-              }
-            } catch {}
+            clearBiberParCache(parCacheDir, addLog)
             // Retry biber
             try {
-              await run(bibCmd, { cwd: buildDir, timeout: 60000 })
+              await run(bibCmd, { cwd: buildDir, timeout: 60000, env: biberEnv })
               addLog('Biber retry succeeded')
               bibFailed = false
             } catch (e2) {
@@ -615,36 +634,18 @@ async function compileLaTeX(ctx) {
       const finalLog = readFileSync(logPath, 'utf8')
       const stillUndefined = (finalLog.match(/Citation .* undefined/g) || []).length
       if (stillUndefined > 5 && existsSync(bcfPath)) {
-        addLog(`${stillUndefined} citations still undefined — cleaning biber state and retrying`)
-        const cleanExts = ['.bcf', '.bbl', '.blg', '.run.xml']
-        for (const ext of cleanExts) {
+        addLog(`${stillUndefined} citations still undefined — clearing PAR cache and retrying`)
+        // Keep the .bcf (biber's input); clear only stale biber outputs.
+        for (const ext of ['.bbl', '.blg', '.run.xml']) {
           const f = join(buildDir, `${texBase}${ext}`)
           if (existsSync(f)) { try { unlinkSync(f) } catch {} }
           const cacheF = join(projDir, 'build-cache', `${texBase}${ext}`)
           if (existsSync(cacheF)) { try { unlinkSync(cacheF) } catch {} }
         }
-        // Clean biber PAR cache — delete the specific unicore/ dir that corrupts
-        try {
-          const tmpDir = process.env.TMPDIR || '/tmp'
-          for (const d of readdirSync(tmpDir)) {
-            if (!d.startsWith('par-')) continue
-            const parDir = join(tmpDir, d)
-            for (const sub of readdirSync(parDir)) {
-              if (!sub.startsWith('cache-')) continue
-              const unicorePath = join(parDir, sub, 'inc', 'lib', 'unicore')
-              if (existsSync(unicorePath)) {
-                // Only delete the corrupted unicore dir, not the whole cache
-                try {
-                  for (const f of readdirSync(unicorePath)) unlinkSync(join(unicorePath, f))
-                  addLog('Cleaned corrupt biber unicore cache')
-                } catch {}
-              }
-            }
-          }
-        } catch {}
+        clearBiberParCache(parCacheDir, addLog)
         const bibCmd2 = `biber --input-directory="${texDir}" --output-directory="${buildDir}" "${join(buildDir, texBase)}"`
         try {
-          await run(bibCmd2, { cwd: buildDir, timeout: 60000 })
+          await run(bibCmd2, { cwd: buildDir, timeout: 60000, env: biberEnv })
           await run(cmd, { cwd: texDir, timeout: 120000, env })
           addLog('Citation recovery succeeded')
         } catch (e) {
@@ -1280,6 +1281,16 @@ function writeRelevantFiles(ctx) {
   // We translate them to authoring-dir paths so the set matches what the
   // daemon actually pushes from.
   const authorDir = project?.sourceDir
+  // Resolve the source/author dirs once. On Fly, /app/server/projects is a
+  // symlink to /app/server/persist/projects (fly-entrypoint-live.sh), so
+  // realpathSync(<input>) yields the persist path. We must compare against the
+  // RESOLVED dirs, but emit paths in the LITERAL srcDir/authorDir space the rest
+  // of the pipeline (readPaperScope, the daemon watch filter) expects. See
+  // relevantPathsForInput. Before this, the post-realpath input was tested
+  // against the un-resolved srcDir, never matched, and the paper scope came out
+  // empty — which silently froze shadow commits after the 2026-06-14 persist
+  // migration (commit 46fb299d introduced the symlink).
+  const dirs = { srcDir, authorDir, realSrcDir: realDirOf(srcDir), realAuthorDir: realDirOf(authorDir) }
   const relevant = new Set()
   let lineCount = 0
   try {
@@ -1287,22 +1298,9 @@ function writeRelevantFiles(ctx) {
     for (const line of fls.split('\n')) {
       if (!line.startsWith('INPUT ')) continue
       lineCount++
-      let p = line.slice(6).trim()
-      if (!p) continue
-      // Absolute paths from texlive / system libs: skip.
-      if (p.startsWith('/') && !p.startsWith(srcDir) && !(authorDir && p.startsWith(authorDir))) continue
-      // Relative paths: resolve against srcDir (cwd of pdflatex).
-      if (!p.startsWith('/')) p = join(srcDir, p)
-      // Normalize — collapse any .. / . segments.
-      try { p = realpathSync(p) } catch { /* file may not exist anymore */ }
-      // Only keep paths inside srcDir (the mirror) — translate to authorDir.
-      if (p.startsWith(srcDir + '/')) {
-        const rel = p.slice(srcDir.length + 1)
-        if (authorDir) relevant.add(join(authorDir, rel))
-        relevant.add(p)  // also keep mirror path for safety
-      } else if (authorDir && p.startsWith(authorDir + '/')) {
-        relevant.add(p)
-      }
+      const raw = line.slice(6).trim()
+      if (!raw) continue
+      for (const rp of relevantPathsForInput(raw, dirs)) relevant.add(rp)
     }
   } catch (e) {
     addLog(`Relevant files: parse failed (non-fatal): ${e.message}`)
@@ -1358,18 +1356,9 @@ function writeRelevantFiles(ctx) {
           try {
             for (const line of readFileSync(xrFls, 'utf8').split('\n')) {
               if (!line.startsWith('INPUT ')) continue
-              let p = line.slice(6).trim()
-              if (!p) continue
-              if (p.startsWith('/') && !p.startsWith(srcDir) && !(authorDir && p.startsWith(authorDir))) continue
-              if (!p.startsWith('/')) p = join(srcDir, p)
-              try { p = realpathSync(p) } catch {}
-              if (p.startsWith(srcDir + '/')) {
-                const rel = p.slice(srcDir.length + 1)
-                if (authorDir) relevant.add(join(authorDir, rel))
-                relevant.add(p)
-              } else if (authorDir && p.startsWith(authorDir + '/')) {
-                relevant.add(p)
-              }
+              const raw = line.slice(6).trim()
+              if (!raw) continue
+              for (const rp of relevantPathsForInput(raw, dirs)) relevant.add(rp)
             }
           } catch {}
         }
@@ -1389,18 +1378,61 @@ function writeRelevantFiles(ctx) {
   }
 }
 
-/** Add a relative path to the relevant set, resolving against srcDir and authorDir. */
+/** Add a relative path to the relevant set, resolving against srcDir and authorDir.
+ * Stores the LITERAL srcDir/authorDir paths (not realpathSync'd) — downstream
+ * consumers (readPaperScope, the daemon watch filter) work in literal space, and
+ * existsSync already follows the symlink so the existence check is correct. */
 function addRelevantPath(relevant, relPath, srcDir, authorDir) {
   const mirrorPath = join(srcDir, relPath)
-  if (existsSync(mirrorPath)) {
-    try { relevant.add(realpathSync(mirrorPath)) } catch { relevant.add(mirrorPath) }
-  }
+  if (existsSync(mirrorPath)) relevant.add(mirrorPath)
   if (authorDir) {
     const authorPath = join(authorDir, relPath)
-    if (existsSync(authorPath)) {
-      try { relevant.add(realpathSync(authorPath)) } catch { relevant.add(authorPath) }
-    }
+    if (existsSync(authorPath)) relevant.add(authorPath)
   }
+}
+
+/** realpathSync(dir), or the dir itself if it can't be resolved (e.g. doesn't
+ * exist yet). Used to make symlinked source dirs (Fly's persist volume) compare
+ * correctly without changing the literal paths we store. */
+function realDirOf(dir) {
+  if (!dir) return dir
+  try { return realpathSync(dir) } catch { return dir }
+}
+
+/**
+ * Map one .fls INPUT path to the relevant-file paths it contributes (possibly
+ * empty). System/texlive paths and anything outside the project's source/author
+ * dirs return []. Symlink-safe: the input is realpath-resolved (so it may land
+ * under Fly's persist volume), compared against the RESOLVED source/author dirs,
+ * but emitted in the LITERAL srcDir/authorDir space that readPaperScope and the
+ * daemon watch filter expect — never the resolved/persist path.
+ *
+ * `dirs` = { srcDir, authorDir, realSrcDir, realAuthorDir }. Exported for tests.
+ */
+export function relevantPathsForInput(raw, { srcDir, authorDir, realSrcDir, realAuthorDir }) {
+  let p = raw
+  if (!p) return []
+  // Absolute texlive / system paths: skip unless under the source/author dir
+  // (test both literal and resolved forms — the symlink makes them differ).
+  if (p.startsWith('/') &&
+      !p.startsWith(srcDir) && !p.startsWith(realSrcDir) &&
+      !(authorDir && (p.startsWith(authorDir) || (realAuthorDir && p.startsWith(realAuthorDir))))) {
+    return []
+  }
+  // Relative paths: resolve against srcDir (pdflatex's source base).
+  if (!p.startsWith('/')) p = join(srcDir, p)
+  // Resolve symlinks / collapse .. so the prefix test is apples-to-apples.
+  try { p = realpathSync(p) } catch { /* file may not exist anymore */ }
+  const out = []
+  if (p.startsWith(realSrcDir + '/')) {
+    const rel = p.slice(realSrcDir.length + 1)
+    if (authorDir) out.push(join(authorDir, rel))
+    out.push(join(srcDir, rel)) // literal mirror path (what readPaperScope expects)
+  } else if (realAuthorDir && p.startsWith(realAuthorDir + '/')) {
+    const rel = p.slice(realAuthorDir.length + 1)
+    out.push(join(authorDir, rel))
+  }
+  return out
 }
 
 // Detect xr-referenced sibling .tex files in the project's primary main.
@@ -1607,6 +1639,13 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
   const outDir = outputDir(name)
   const projDir = projectDir(name)
 
+  // Source-version this build is for: the source.stamp mtime captured at start.
+  // The daemon touches source.stamp on every source change, so this is monotonic
+  // per change. It's stamped onto the doc-version sentinel and used to guard the
+  // (non-blocking, racy) sentinel write so an older build can't clobber it.
+  let sourceVersion
+  try { sourceVersion = statSync(join(projDir, 'source.stamp')).mtimeMs } catch { sourceVersion = undefined }
+
   const project = readProject(name)
   if (!project) throw new Error(`Project "${name}" not found`)
 
@@ -1659,6 +1698,9 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
   // Output dir may not exist (e.g. after a wipe). All targets publish here.
   mkdirSync(outDir, { recursive: true })
 
+  const buildStart = Date.now()
+  const elapsed = () => ((Date.now() - buildStart) / 1000).toFixed(1)
+
   try {
     // Snapshot current output in background — don't block the build
     Promise.resolve().then(() => {
@@ -1669,9 +1711,6 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
         ctx.addLog(`Snapshot failed (non-fatal): ${e.message}`)
       }
     })
-
-    const buildStart = Date.now()
-    const elapsed = () => ((Date.now() - buildStart) / 1000).toFixed(1)
 
     // Per-target phases (compile, publish DVI, extract macros / synctex /
     // proof-pairing / theorem-map / source-map / relevant-files). All
@@ -1813,7 +1852,7 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
     // the previous role of `output/main.dvi` mtime (which broke once we
     // had multiple per-target DVIs).
     try {
-      writeFileSync(join(outDir, 'build.stamp'), new Date().toISOString())
+      writeFileSync(join(outDir, 'build.stamp'), String(sourceVersion ?? 0))
     } catch (e) {
       ctx.addLog(`build.stamp write failed (non-fatal): ${e.message}`)
     }
@@ -1843,69 +1882,44 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
 
     // Commit source snapshot to shadow repo (non-blocking)
     commitSnapshot(name).then(async result => {
+      if (!result) {
+        // Rebuilds with unchanged source do not create a new shadow commit, but
+        // the published SVGs did become ready again. Keep the Yjs sentinel's
+        // buildReadyAt in sync so reconnecting viewers do not show an old build
+        // timestamp beside fresh project/build state.
+        const current = await currentVersion(name)
+        if (current?.hash) {
+          updateDocVersionSentinel(name, current.hash, svgsReadyAt, buildErrSnapshot, buildWarnSnapshot, sourceVersion).catch(e => {
+            ctx.addLog(`doc-version sentinel update failed (non-fatal): ${e.message}`)
+          })
+        }
+        return
+      }
       if (result) {
         // Update doc-version sentinel with shadow hash (the build's version identity)
         // plus the build's errors/warnings (persistent, convergent).
-        updateDocVersionSentinel(name, result.hash, svgsReadyAt, buildErrSnapshot, buildWarnSnapshot).catch(e => {
+        updateDocVersionSentinel(name, result.hash, svgsReadyAt, buildErrSnapshot, buildWarnSnapshot, sourceVersion).catch(e => {
           ctx.addLog(`doc-version sentinel update failed (non-fatal): ${e.message}`)
         })
         recordGitSnapshot(name, { commitHash: result.hash, commitMessage: result.message || `Build at ${new Date().toISOString()}`, pages: expectedPages ?? 0 })
         _reporter.emitGlobalEvent('version-committed', { name, hash: result.hash, timestamp: result.timestamp })
-        // Mirror: fetch shadow tags into the working copy and advance the
-        // optional refs/tlda/shadow/HEAD pointer. We never touch the user's
-        // branches, index, or working tree — their `master` stays under their
-        // control and tracks their own remote (e.g. Overleaf). Agents and the
-        // user can reach the snapshots via plain git: `git diff shadow/abc1234`,
-        // `git checkout shadow/abc1234 -- path`, etc.
-        // No buildVersion early-return: the previous version of this code
-        // skipped when a newer build had started, on the assumption that the
-        // newer build's callback would mirror. That's wrong — if the newer
-        // build's source already matched the shadow tree (because the older
-        // build captured the change), commitSnapshot returns null and the
-        // newer callback never enters this block. Net result: nobody mirrors.
-        // All operations here are idempotent (git tag -f, fetch --tags --force,
-        // update-ref) so running for both builds is harmless. The last call
-        // wins, leaving tag and ref pointing at the latest shadow hash.
+        // Mirror: send the committed shadow snapshot to the daemon that owns the
+        // paper working copy and import it there as refs only. The server-local
+        // shadow-repo path is not a transport in the multi-machine deployment.
         const hash7 = result.hash.slice(0, 7)
         try {
-          const project = readProject(name)
-          if (!project?.sourceDir) {
-            console.log(`[mirror] ${name}@${hash7} skipped: no sourceDir in project.json`)
-          } else if (!existsSync(join(project.sourceDir, '.git'))) {
-            console.log(`[mirror] ${name}@${hash7} skipped: sourceDir ${project.sourceDir} has no .git`)
-          } else {
-            const cwd = project.sourceDir
-            const shadowDir = join(projDir, 'shadow-repo')
-            console.log(`[mirror] ${name}@${hash7} starting → ${cwd}`)
-            // Tag the shadow commit so shadow/<hash> resolves to it.
-            const tag = `shadow/${hash7}`
-            await _execAsync(`git tag -f "${tag}"`, { cwd: shadowDir, timeout: 5000 })
-            try {
-              await _execAsync(`git remote get-url tlda-shadow`, { cwd, timeout: 5000 })
-            } catch {
-              await _execAsync(`git remote add tlda-shadow "${shadowDir}"`, { cwd, timeout: 5000 })
-            }
-            try {
-              await _gitRetryOnLock(() => _execAsync(`git fetch --tags --force tlda-shadow`, { cwd, timeout: 10000 }))
-            } catch (fetchErr) {
-              if (/cannot lock ref|unable to update local ref/i.test(fetchErr.message)) {
-                await _execAsync(`git remote prune tlda-shadow`, { cwd, timeout: 10000 })
-                await _gitRetryOnLock(() => _execAsync(`git fetch --tags --force tlda-shadow`, { cwd, timeout: 10000 }))
-              } else {
-                throw fetchErr
-              }
-            }
-            // Advance the optional shadow-HEAD pointer. Lives under refs/tlda/
-            // so it doesn't appear in `git branch` or `git log` output unless
-            // the user asks for it explicitly.
-            await _gitRetryOnLock(() => _execAsync(`git update-ref refs/tlda/shadow/HEAD ${result.hash}`, { cwd, timeout: 5000 }))
-            _reporter.updateProject(name, { lastMirrorSuccess: new Date().toISOString() })
-            console.log(`[mirror] ${name}@${hash7} ok: tag shadow/${hash7} + refs/tlda/shadow/HEAD updated in ${cwd}`)
+          if (!mirrorShadowSnapshot) {
+            throw new Error('no daemon mirror handler registered')
           }
+          const bundleBase64 = await createShadowBundleBase64(name, result.hash)
+          const mirrorResult = await mirrorShadowSnapshot({ name, hash: result.hash, bundleBase64 })
+          _reporter.updateProject(name, { lastMirrorSuccess: new Date().toISOString(), lastMirrorFailure: null })
+          console.log(`[mirror] ${name}@${hash7} ok via daemon ${mirrorResult?.machine_id || 'unknown'} → ${mirrorResult?.sourceDir || 'source repo'}`)
         } catch (mirrorErr) {
           console.error(`[mirror] ${name}@${hash7} failed: ${mirrorErr.message}`)
           ctx.addLog(`mirror to working copy failed (non-fatal): ${mirrorErr.message}`)
-          recordPersistentBuildStatus(name, `Mirror failed: ${mirrorErr.message}`)
+          _reporter.updateProject(name, { lastMirrorFailure: { at: new Date().toISOString(), hash: result.hash, message: mirrorErr.message } })
+          recordPersistentBuildStatus(name, `Mirror failed: ${mirrorErr.message}`, sourceVersion)
           signalBuildStatus(name, `Mirror failed: ${mirrorErr.message}`)
           // Include lastMirrorSuccess so the failure handler can narrow the responsible-agent
           // window to edits that happened after the last clean mirror.
@@ -1924,6 +1938,7 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
             mirrorFailed: mirrorErr.message,
             lastMirrorSuccess,
             buildFiles,
+            editedBy: resolveEditedBy(name),
           })
         }
         // Build change summary: diff against previous shadow commit
@@ -1991,7 +2006,15 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
                 lintFindings,
                 buildFiles,
                 lastBuildSuccess,
+                editedBy: resolveEditedBy(name),
               })
+              // Surface lint findings as warnings on the build pill too, alongside
+              // tex/remap warnings (re-broadcast preserves the existing tex warnings).
+              if (lintFindings.length > 0) {
+                signalBuildStatus(name, null, lintFindings.map(f => ({
+                  message: f.text, file: null, line: null, category: 'lint',
+                })))
+              }
             }
           } else {
             console.log(`[build:${name}] No tex diff between shadow commits`)
@@ -2017,7 +2040,7 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
     try { _reporter.updateProject(name, { buildStatus: 'failed' }) } catch (e2) { console.error(`[build] failed to set failed status for ${name}: ${e2.message}`) }
     try { writeFileSync(join(projDir, 'build.log'), log.join('\n')) } catch (e2) { console.error(`[build] failed to write build.log for ${name}: ${e2.message}`) }
 
-    recordPersistentBuildStatus(name, e.message)
+    recordPersistentBuildStatus(name, e.message, sourceVersion)
     signalBuildStatus(name, e.message)
     signalBuildProgress(name, 'failed', e.message)
     emitBuildComplete(name, { status: 'failed', elapsed: elapsed(), errors: [e.message] })
@@ -2025,7 +2048,6 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
     throw e
   } finally {
     buildChildProcesses.delete(buildId)
-    try { rmSync(buildDir, { recursive: true, force: true }) } catch (e) { console.warn(`[build] failed to clean build dir: ${e.message}`) }
   }
 }
 
@@ -2046,17 +2068,18 @@ function signalBuildProgress(name, phase, detail) {
   }
 }
 
-function currentBuildStatusPayload(name, errorMessage) {
+function currentBuildStatusPayload(name, errorMessage, extraWarnings = []) {
   const { errors, warnings } = extractBuildErrors(name)
   const signaledErrors = (errorMessage && errors.length === 0)
     ? [{ message: errorMessage, file: 'build' }]
     : errors
-  return { errors: signaledErrors, warnings }
+  const allWarnings = extraWarnings.length ? [...warnings, ...extraWarnings] : warnings
+  return { errors: signaledErrors, warnings: allWarnings }
 }
 
-function signalBuildStatus(name, errorMessage) {
+function signalBuildStatus(name, errorMessage, extraWarnings = []) {
   try {
-    const { errors, warnings } = currentBuildStatusPayload(name, errorMessage)
+    const { errors, warnings } = currentBuildStatusPayload(name, errorMessage, extraWarnings)
     _reporter.broadcastSignal(`doc-${name}`, 'signal:build-status', {
       error: errorMessage,
       errors,
@@ -2069,15 +2092,22 @@ function signalBuildStatus(name, errorMessage) {
   }
 }
 
-function recordPersistentBuildStatus(name, errorMessage) {
+function recordPersistentBuildStatus(name, errorMessage, sourceVersion, extraWarnings = []) {
   try {
-    const { errors, warnings } = currentBuildStatusPayload(name, errorMessage)
-    Promise.resolve(_reporter.patchShape(`doc-${name}`, DOC_VERSION_SENTINEL_ID, {
+    const { errors, warnings } = currentBuildStatusPayload(name, errorMessage, extraWarnings)
+    const sv = typeof sourceVersion === 'number' ? sourceVersion : 0
+    Promise.resolve(_reporter.writeSentinel(`doc-${name}`, {
       timestamp: Date.now(),
+      sourceVersion: sv,
       errorsJson: errors.length ? JSON.stringify(errors) : '',
       warningsJson: warnings.length ? JSON.stringify(warnings) : '',
-    })).catch(e => console.error(`[build:${name}] persistent build status relay failed: ${e.message}`))
-    console.log(`[build:${name}] persistent build status updated (${errors.length} errors, ${warnings.length} warnings)`)
+    })).then(result => {
+      if (result?.skipped) {
+        console.log(`[build:${name}] skipped out-of-order persistent build status write: source ${sv} ≤ committed`)
+        return
+      }
+      console.log(`[build:${name}] persistent build status updated: src=${sv} (${errors.length} errors, ${warnings.length} warnings)`)
+    }).catch(e => console.error(`[build:${name}] persistent build status relay failed: ${e.message}`))
   } catch (e) {
     console.error(`[build:${name}] Failed to update persistent build status: ${e.message}`)
   }
@@ -2108,7 +2138,25 @@ function emitBuildFailureCard(name, message) {
     warnings: warnings.slice(0, 5),
     buildFiles,
     lastBuildSuccess: readProject(name)?.lastBuild || null,
+    editedBy: resolveEditedBy(name),
   })
+}
+
+// Edit attribution: the daemon records who last Edited/Wrote a source file and
+// stamps lastEditedBy/lastEditedByAt on the project when it pushes a change.
+// Return that agent if the edit is recent enough to plausibly be the trigger.
+const EDIT_ATTRIBUTION_WINDOW_MS = 10 * 60 * 1000
+function resolveEditedBy(name) {
+  try {
+    const proj = readProject(name)
+    if (proj?.lastEditedBy && proj.lastEditedByAt &&
+        Date.now() - proj.lastEditedByAt < EDIT_ATTRIBUTION_WINDOW_MS) {
+      return proj.lastEditedBy
+    }
+  } catch (e) {
+    console.error(`[build:${name}] resolveEditedBy failed: ${e.message}`)
+  }
+  return null
 }
 
 function signalReload(name, pages) {
@@ -2128,37 +2176,28 @@ function signalReload(name, pages) {
  * Update the doc-version sentinel shape in the Yjs room with the current
  * source git commit hash. Fire-and-forget — call without await.
  */
-async function updateDocVersionSentinel(name, shadowHash, buildReadyAt, errors, warnings) {
+async function updateDocVersionSentinel(name, shadowHash, buildReadyAt, errors, warnings, sourceVersion) {
   const commitHash = shadowHash || 'unknown'
-
   const docName = `doc-${name}`
-  const sentinel = {
-    id: DOC_VERSION_SENTINEL_ID,
-    typeName: 'shape',
-    type: 'doc-version',
-    x: 0,
-    y: 0,
-    rotation: 0,
-    index: 'a0',
-    parentId: 'page:page',
-    isLocked: true,
-    opacity: 0,
-    meta: {},
-    props: {
-      w: 1,
-      h: 1,
-      commitHash,
-      timestamp: Date.now(),
-      buildReadyAt: buildReadyAt || Date.now(),
-      // Build errors/warnings live HERE — convergent Yjs state, not a
-      // fire-and-forget signal. A build's error status is a stable property
-      // that must survive reconnect/restart, so the viewer reads it straight
-      // from the sentinel (single source of truth, no signal fallback).
-      warningsJson: warnings ? JSON.stringify(warnings) : '',
-      errorsJson: errors ? JSON.stringify(errors) : '',
-    },
+  const sv = typeof sourceVersion === 'number' ? sourceVersion : 0
+  const result = await _reporter.writeSentinel(docName, {
+    commitHash,
+    timestamp: Date.now(),
+    buildReadyAt: buildReadyAt || Date.now(),
+    // sourceVersion = the source.stamp mtime this build was for, monotonic per
+    // source change. The shared sentinel writer drops older build writes so the
+    // version can never jump backward.
+    sourceVersion: sv,
+    // Build errors/warnings live HERE — convergent Yjs state, not a
+    // fire-and-forget signal. A build's error status is a stable property
+    // that must survive reconnect/restart, so the viewer reads it straight
+    // from the sentinel (single source of truth, no signal fallback).
+    warningsJson: warnings ? JSON.stringify(warnings) : '',
+    errorsJson: errors ? JSON.stringify(errors) : '',
+  })
+  if (result.skipped) {
+    console.log(`[build:${name}] skipped out-of-order sentinel write: source ${sv} ≤ committed`)
+    return
   }
-
-  await _reporter.putShape(docName, sentinel)
-  console.log(`[build:${name}] doc-version sentinel updated: ${commitHash.slice(0, 7)} (${errors?.length || 0} errors, ${warnings?.length || 0} warnings)`)
+  console.log(`[build:${name}] doc-version sentinel updated: ${commitHash.slice(0, 7)} src=${sv} (${errors?.length || 0} errors, ${warnings?.length || 0} warnings)`)
 }

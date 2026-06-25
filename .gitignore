@@ -54,8 +54,15 @@ public/assets/
 # Working directories
 .worktrees/
 .claude/
+.agents/
 .playwright-cli/
 .playwright-mcp/
+.tlda-dev/
+.python-deps/
+venv/
+venj/
+__pycache__/
+*.pyc
 
 # Personal / development artifacts
 *.png

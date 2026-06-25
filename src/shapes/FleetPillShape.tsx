@@ -16,14 +16,20 @@ import type { Editor, TLShape, TLShapeId } from 'tldraw'
 // @ts-ignore — vanilla JS module
 import { myTldaUrl } from '../fleet/tldaUrl.mjs'
 // @ts-ignore — vanilla JS module
-import { getHumanId } from '../fleet/fleet-data.mjs'
+import { getHumanId, getDeviceId } from '../fleet/fleet-data.mjs'
+import { FLEET_SHAPE_TYPES } from './fleet-utils'
 
 const PILL_W = 70
 const PILL_H = 18
 const CHAT_W = 400
 const CHAT_H = 600
+const TEMP_MARKDOWN_PROJECT = 'fleet-markdown-chip-temp'
+const TEMP_MARKDOWN_FILE = 'content.md'
+const TEMP_MARKDOWN_SHAPE_ID = createShapeId('fleet-markdown-chip-temp-column')
+const TEMP_MARKDOWN_W = 800
+const TEMP_MARKDOWN_H = 1200
 
-const FLEET_TYPES = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview']
+const FLEET_TYPES = FLEET_SHAPE_TYPES
 
 // Module-level snap state — written by drag handler, read by the component.
 // The component re-renders on every translate frame, so it picks up changes.
@@ -56,6 +62,117 @@ export const filterDropPreview = {
   fromPreview: null as [string, string][][] | null,
   replacePreview: null as [string, string][][] | null,
   activePaneRole: null as 'to' | 'from' | 'replace' | null,
+}
+
+function encodeUtf8Base64(text: string): string {
+  const bytes = new TextEncoder().encode(text)
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary)
+}
+
+async function ensureTemporaryMarkdownProject() {
+  const createRes = await fetch('/api/projects', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: TEMP_MARKDOWN_PROJECT,
+      title: 'Markdown chip',
+      format: 'markdown',
+      mainFile: TEMP_MARKDOWN_FILE,
+    }),
+  })
+  if (!createRes.ok && createRes.status !== 409) {
+    throw new Error(`project create failed: ${createRes.status}`)
+  }
+}
+
+async function waitForTemporaryMarkdownBuild(startedAt: number, allowExisting = false) {
+  const deadline = startedAt + 8000
+  while (Date.now() < deadline) {
+    const res = await fetch(`/api/projects/${TEMP_MARKDOWN_PROJECT}?t=${Date.now()}`)
+    if (res.ok) {
+      const project = await res.json()
+      const lastBuild = project.lastBuild ? Date.parse(project.lastBuild) : 0
+      if (project.buildStatus === 'success' && project.pages > 0 && (allowExisting || lastBuild >= startedAt - 1000)) return
+      if (project.buildStatus === 'error') throw new Error('markdown build failed')
+    }
+    await new Promise(resolve => setTimeout(resolve, 200))
+  }
+  throw new Error('markdown build timed out')
+}
+
+function sendPageShapeToBack(editor: Editor, shapeId: TLShapeId) {
+  const shape = editor.getShape(shapeId)
+  if (!shape) return
+  if (shape.isLocked) editor.updateShape({ id: shapeId, type: shape.type, isLocked: false })
+  editor.sendToBack([shapeId])
+  editor.updateShape({ id: shapeId, type: shape.type, isLocked: true })
+}
+
+export async function createTemporaryMarkdownColumn(
+  editor: Editor,
+  pagePoint: { x: number; y: number },
+  title: string,
+  markdown: string,
+  meta: Record<string, unknown> = {},
+) {
+  const source = markdown.trim() ? markdown : `# ${title || 'Markdown chip'}`
+  const startedAt = Date.now()
+  await ensureTemporaryMarkdownProject()
+  const pushRes = await fetch(`/api/projects/${TEMP_MARKDOWN_PROJECT}/push`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      files: [{
+        path: TEMP_MARKDOWN_FILE,
+        content: encodeUtf8Base64(source),
+        encoding: 'base64',
+      }],
+    }),
+  })
+  if (!pushRes.ok) throw new Error(`markdown push failed: ${pushRes.status}`)
+  const pushResult = await pushRes.json().catch(() => null)
+  await waitForTemporaryMarkdownBuild(startedAt, !!pushResult?.unchanged)
+
+  const url = `/docs/${TEMP_MARKDOWN_PROJECT}/index.html?t=${Date.now()}`
+  const existing = editor.getShape(TEMP_MARKDOWN_SHAPE_ID) as any
+  if (existing) {
+    if (existing.isLocked) {
+      editor.updateShape({ id: TEMP_MARKDOWN_SHAPE_ID, type: existing.type, isLocked: false })
+    }
+    editor.updateShape({
+      id: TEMP_MARKDOWN_SHAPE_ID,
+      type: 'html-page' as any,
+      x: pagePoint.x,
+      y: pagePoint.y,
+      isLocked: true,
+      props: { w: TEMP_MARKDOWN_W, h: TEMP_MARKDOWN_H, url },
+      meta: {
+        ...existing.meta,
+        temporaryMarkdownColumn: true,
+        title,
+        updatedAt: Date.now(),
+        ...meta,
+      },
+    })
+  } else {
+    editor.createShape({
+      id: TEMP_MARKDOWN_SHAPE_ID,
+      type: 'html-page' as any,
+      x: pagePoint.x,
+      y: pagePoint.y,
+      isLocked: true,
+      props: { w: TEMP_MARKDOWN_W, h: TEMP_MARKDOWN_H, url },
+      meta: {
+        temporaryMarkdownColumn: true,
+        title,
+        createdAt: Date.now(),
+        ...meta,
+      },
+    })
+  }
+  sendPageShapeToBack(editor, TEMP_MARKDOWN_SHAPE_ID)
 }
 
 
@@ -103,6 +220,18 @@ export function dropPillOnTarget(
       break
     }
   }
+  // Whether the drop landed on ANY fleet shape (the HUD), not just a fleet-chat.
+  // A sticky/new-chat must never be created on top of the HUD — it sits over the
+  // fixed overlay and becomes undismissable. So if the drop is over a fleet
+  // shape and isn't a handled fleet-chat interaction, the create paths below
+  // evaporate it (see the guard before the create branches).
+  const overFleet = hitEditor.getCurrentPageShapes().some(s => {
+    if (!FLEET_TYPES.has(s.type as string)) return false
+    const b = hitEditor.getShapePageBounds(s.id)
+    return !!b &&
+      pagePoint.x >= b.x && pagePoint.x <= b.x + b.w &&
+      pagePoint.y >= b.y && pagePoint.y <= b.y + b.h
+  })
 
   if (hitShape && hitShape.type === 'fleet-chat') {
 
@@ -188,49 +317,36 @@ export function dropPillOnTarget(
     chatInsertBus.dispatchEvent(new CustomEvent('filter-applied', {
       detail: { chatId: hitShape.id },
     }))
+  } else if (overFleet) {
+    // Drop landed on the HUD (a fleet shape) but isn't a handled fleet-chat
+    // interaction — evaporate instead of spawning a sticky/new-chat on top of
+    // the fixed overlay, where it sits on top and becomes undismissable. The
+    // caller deletes the dragged pill after this returns, so nothing is left.
+    return
   } else if ((editor.getShape(pillId) as any)?.type === 'fleet-pill' &&
              (editor.getShape(pillId) as any)?.props?.pillType === 'file') {
-    // File chip pill dropped on canvas → create file-backed math-note
+    // File/markdown chip dropped on canvas → render it as a page-like html column.
     const pill = editor.getShape(pillId) as any
     const sourceAgent = pill?.meta?.sourceAgent as string | undefined
     const filePath = pill?.meta?.filePath as string | undefined
     const fileUrl = pill?.meta?.fileUrl as string | undefined
-    const noteId = createShapeId()
-    createEditor.createShape({
-      id: noteId,
-      type: 'math-note' as any,
-      x: pagePoint.x - 5,
-      y: pagePoint.y - 5,
-      isLocked: false,
-      props: {
-        w: 320,
-        h: 50,
-        text: content || pill?.props?.displayName || '',
-        color: 'light-violet',
-        autoSize: true,
-        collapsed: true,
-        ...(filePath ? { backingFile: filePath } : {}),
-      },
-      meta: {
-        ...(sourceAgent ? { authorId: sourceAgent } : {}),
-        ...(filePath ? { sharedDocPath: filePath, sharedDoc: true, fromAgent: sourceAgent } : {}),
-        createdAt: Date.now(),
-      },
-    })
-    // Fetch real file content (the drag content may not have loaded yet)
+    const title = pill?.props?.displayName || filePath?.split('/').pop() || 'Markdown chip'
     const fetchUrl = fileUrl || (filePath ? `/api/read-file?path=${encodeURIComponent(filePath)}` : '')
-    if (fetchUrl) {
-      fetch(fetchUrl).then(r => r.ok ? r.text() : null).then(text => {
-        if (!text) return
-        const shape = createEditor.getShape(noteId)
-        if (!shape) return
-        createEditor.updateShape({
-          id: noteId,
-          type: 'math-note' as any,
-          props: { text },
+    ;(async () => {
+      try {
+        let markdown = content || title
+        if (fetchUrl) {
+          const res = await fetch(fetchUrl)
+          if (res.ok) markdown = await res.text()
+        }
+        await createTemporaryMarkdownColumn(createEditor, pagePoint, title, markdown, {
+          ...(sourceAgent ? { authorId: sourceAgent, fromAgent: sourceAgent } : {}),
+          ...(filePath ? { sharedDocPath: filePath, sharedDoc: true } : {}),
         })
-      }).catch(e => console.warn('[fleet-pill] note update failed:', e.message))
-    }
+      } catch (e: any) {
+        console.warn('[fleet-pill] markdown column create failed:', e?.message || e)
+      }
+    })()
   } else if ((editor.getShape(pillId) as any)?.type === 'fleet-pill' &&
              (editor.getShape(pillId) as any)?.props?.pillType === 'doc') {
     // Doc/file pill dropped on canvas → create collapsed math-note with file content
@@ -259,7 +375,7 @@ export function dropPillOnTarget(
               text,
               color: 'light-violet',
               autoSize: true,
-              collapsed: true,
+              collapsed: false, // open sticky, not a touch-untappable dot
               backingFile: filePath,
             },
           })
@@ -286,7 +402,7 @@ export function dropPillOnTarget(
               text: `# ${displayName}\n\n(Could not read file)`,
               color: 'light-violet',
               autoSize: true,
-              collapsed: true,
+              collapsed: false, // open sticky, not a touch-untappable dot
             },
           })
         }
@@ -336,8 +452,9 @@ export function dropPillOnTarget(
         filter: [[['to', value]], [['from', value]]],
         // Stamp ownership — without this the chat has userId '' and the
         // ownership rule (isMyFleetShape) never renders it, so the drop looked
-        // like it did nothing.
+        // like it did nothing. deviceId is the other half of the key.
         userId: getHumanId(),
+        deviceId: getDeviceId(),
       },
     })
   }
@@ -408,7 +525,7 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
 
     let overFleet = false
     const allFleet = hitEditor.getCurrentPageShapes()
-      .filter(s => FLEET_TYPES.includes(s.type as string) && s.id !== pill.id)
+      .filter(s => FLEET_TYPES.has(s.type as string) && s.id !== pill.id)
     for (const s of allFleet) {
       const sb = hitEditor.getShapePageBounds(s.id)
       if (sb && cx >= sb.x && cx <= sb.x + sb.w && cy >= sb.y && cy <= sb.y + sb.h) {
@@ -495,7 +612,8 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
     const editor = useEditor()
     const { displayName, color, pillType } = shape.props
     const isContent = pillType === 'msg' || pillType === 'code' || pillType === 'activity' || pillType === 'tool'
-    const isDotForm = pillType === 'doc' || pillType === 'annotation' || pillType === 'file'
+    const isFileBackedDoc = pillType === 'doc' && typeof shape.props.value === 'string' && shape.props.value.startsWith('file:')
+    const isDotForm = (pillType === 'doc' && !isFileBackedDoc) || pillType === 'annotation' || pillType === 'file'
     const isAgentPill = pillType === 'agent' || pillType === 'label'
 
     // Hide ghost when the pill is over an existing fleet shape (drop = filter update, not new chat)
@@ -506,11 +624,51 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
       const cx = bounds.x + bounds.w / 2
       const cy = bounds.y + bounds.h / 2
       return editor.getCurrentPageShapes().some(s => {
-        if (s.id === shape.id || !FLEET_TYPES.includes(s.type as string)) return false
+        if (s.id === shape.id || !FLEET_TYPES.has(s.type as string)) return false
         const sb = editor.getShapePageBounds(s.id)
         return sb && cx >= sb.x && cx <= sb.x + sb.w && cy >= sb.y && cy <= sb.y + sb.h
       })
     }, [editor, shape.id, isAgentPill])
+
+    if (isFileBackedDoc) {
+      return (
+        <HTMLContainer
+          style={{
+            pointerEvents: 'none',
+            overflow: 'visible',
+            width: 0,
+            height: 0,
+          }}
+        >
+          <div
+            style={{
+              width: 300,
+              minHeight: 86,
+              padding: '10px 12px',
+              borderRadius: 6,
+              border: `1px solid ${color}55`,
+              background: 'rgba(255, 255, 255, 0.96)',
+              boxShadow: `0 10px 24px ${color}25`,
+              color: '#202124',
+              fontSize: 12,
+              lineHeight: '17px',
+              fontFamily: "'SF Mono', Menlo, Consolas, monospace",
+              transform: 'translate(-5px, -5px)',
+              userSelect: 'none',
+            }}
+          >
+            <div style={{ color, fontWeight: 600, marginBottom: 6 }}>sticky note</div>
+            <div style={{
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}>
+              {displayName}
+            </div>
+          </div>
+        </HTMLContainer>
+      )
+    }
 
     // Dot form: small colored circle (like collapsed math-note)
     if (isDotForm) {
@@ -609,6 +767,10 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
         )}
       </HTMLContainer>
     )
+  }
+
+  getIndicatorPath() {
+    return undefined
   }
 
   indicator() {

@@ -27,10 +27,12 @@ import { FitAddon } from '@xterm/addon-fit'
 import 'xterm/css/xterm.css'
 import './TerminalShape.css'
 import { getPref, subscribePref } from '../preferences'
+import { getFleetWsBase } from '../fleet/fleet-data.mjs'
+import { appendToken } from '../authToken'
 
-// Use relative URLs for API (proxied by Vite in dev, same host in prod).
-// WebSocket needs an absolute URL — derive from current host.
-const FLEET_WS_HOST = typeof window !== 'undefined' ? window.location.origin.replace(/^http/, 'ws') : 'ws://localhost:5176'
+// Terminal PTY is daemon-routed through the global fleet server (not the serving
+// origin) — on the hosted Pages site window.location.origin has no /ws/terminal,
+// so derive the WS host from the resolved fleet base.
 
 const DEFAULT_W = 560
 const DEFAULT_H = 380
@@ -70,6 +72,12 @@ export class TerminalShapeUtil extends BaseBoxShapeUtil<any> {
 
   component(shape: any) {
     return <TerminalComponent shape={shape} />
+  }
+
+  getIndicatorPath(shape: any) {
+    const path = new Path2D()
+    path.rect(0, 0, shape.props.w, shape.props.h)
+    return path
   }
 
   indicator(shape: any) {
@@ -216,7 +224,7 @@ function TerminalComponent({ shape }: { shape: any }) {
     setStatus('connecting')
     wsRef.current?.close()
 
-    const ws = new WebSocket(`${FLEET_WS_HOST}/ws/terminal?agent=${encodeURIComponent(agentId)}`)
+    const ws = new WebSocket(appendToken(`${getFleetWsBase()}/ws/terminal?agent=${encodeURIComponent(agentId)}`))
     wsRef.current = ws
 
     ws.onopen = () => {

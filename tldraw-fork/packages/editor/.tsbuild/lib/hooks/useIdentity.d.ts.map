@@ -1,0 +1,1 @@
+{"version":3,"file":"useIdentity.d.ts","sourceRoot":"","sources":["../../../src/lib/hooks/useIdentity.tsx"],"names":[],"mappings":"AA2BA,gBAAgB;AAChB,wBAAgB,uBAAuB,CAAC,CAAC,SAAS,SAAS,GAAG,EAAE,GAAG,IAAI,GAAG,SAAS,EAAE,GAAG,EAAE,CAAC,GAAG,CAAC,CAE9F;AAiBD,gBAAgB;AAChB,wBAAgB,wBAAwB,CAAC,CAAC,SAAS,MAAM,GAAG,IAAI,GAAG,SAAS,EAAE,GAAG,EAAE,CAAC,GAAG,CAAC,CAEvF"}

@@ -1,0 +1,12 @@
+/* FleetTouchInboxShape — container-specific bits only. The thread strip reuses
+   the existing fleet-inbox-* classes; these just scope the strip wrapper and
+   mark the active (filtered-to) row. */
+
+.fleet-touch-inbox-strip-wrap {
+  border-bottom: 1px solid rgba(128, 128, 128, 0.15);
+}
+
+/* Active row = the thread the chat below is currently filtered to. */
+.fleet-inbox-thread.active {
+  background: rgba(128, 128, 128, 0.12);
+}

@@ -6,6 +6,7 @@ import {
   useValue,
 } from 'tldraw'
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { probe } from '../perf-probe'
 import { injectSvgFonts } from '../svgFonts'
 import { LineNumberOverlay } from '../LineNumberOverlay'
 import { injectWordSpaces } from '../svgWordSpaces'
@@ -41,6 +42,12 @@ export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
 
   backgroundComponent(shape: any) {
     return <SvgPageBackground shape={shape} />
+  }
+
+  getIndicatorPath(shape: any) {
+    const path = new Path2D()
+    path.rect(0, 0, shape.props.w, shape.props.h)
+    return path
   }
 
   indicator(shape: any) {
@@ -264,6 +271,7 @@ function SvgPageComponent({ shape }: { shape: any }) {
       return
     }
 
+    const svgInjectTimer = probe.start('svg', 'svg-inject')
     el.innerHTML = svgText
     injectedRef.current = svgText
 
@@ -285,9 +293,22 @@ function SvgPageComponent({ shape }: { shape: any }) {
       document.fonts.ready.then(() => {
         enqueueWordSpaces(() => {
           if (!containerRef.current || injectedRef.current !== capturedSvgText) return
+          const wsTimer = probe.start('svg', 'svg-word-spaces')
           injectWordSpaces(svgEl)
+          probe.stop(wsTimer, { shapeId: shape.id, pageIndex: shape.props.pageIndex })
           // Cache the fully-processed HTML so scroll-back re-injection is instant
           processedSvgCache.set(shape.id, { svgText: capturedSvgText, html: el.innerHTML })
+          // Final step of rendering a new page image: force its layout now, on
+          // the FINISHED svg (after the word-space mutation that would otherwise
+          // invalidate an earlier layout). Laying out a page of math (~700
+          // positioned glyphs) costs ~250-300ms; doing it here — as the tail of
+          // the render pipeline, off-screen in the prefetch buffer — means the
+          // result is cached, so scrolling the page into view (an ancestor
+          // transform) is free instead of freezing. Runs once per new image
+          // (this effect only fires when svgText changes).
+          const bboxTimer = probe.start('svg', 'svg-getBBox')
+          try { svgEl.getBBox() } catch { /* not layable yet — harmless */ }
+          probe.stop(bboxTimer, { shapeId: shape.id, pageIndex: shape.props.pageIndex })
         })
       })
 
@@ -345,6 +366,7 @@ function SvgPageComponent({ shape }: { shape: any }) {
 
     // Apply any pending tint highlights
     applyTinting(textYCacheRef.current, highlights)
+    probe.stop(svgInjectTimer, { shapeId: shape.id, pageIndex: shape.props.pageIndex, cached: !!cacheEntry })
   }, [isNearViewport, svgText])
 
   // Anchor navigation (links inside the SVG) — click events do reach via link targets.

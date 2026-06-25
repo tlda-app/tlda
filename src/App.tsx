@@ -5,6 +5,7 @@ import { clearDocumentStores } from './stores'
 import { initToken, fetchAuthLevel } from './authToken'
 import { BookViewer } from './BookViewer'
 import { IdentityPicker } from './IdentityPicker'
+import { STORE_HTTP } from './activeConfig'
 import type { BookMember } from './BookContext'
 import './App.css'
 import './themes.css'
@@ -74,14 +75,8 @@ type State =
   | { phase: 'svg'; document: SvgDoc; roomId: string; diffConfig?: DiffConfig }
   | { phase: 'book'; bookName: string; members: BookMember[] }
 
-// When the SPA is hosted on a different origin than the sync/asset server
-// (e.g. GitHub Pages SPA → Fly.io server), derive the HTTP base from VITE_SYNC_SERVER.
-// This converts wss://host → https://host so doc asset fetches go to the right place.
-const ASSET_BASE = (() => {
-  const ws = import.meta.env.VITE_SYNC_SERVER as string | undefined
-  if (!ws) return ''  // same-origin: relative URLs work
-  return ws.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/+$/, '')
-})()
+// Doc assets come from the active config's STORE (http), injected by the server.
+const ASSET_BASE = STORE_HTTP
 
 // Fetch a single document config from the API — fast path for ?doc=X
 async function fetchDocConfig(docName: string): Promise<DocConfig | null> {

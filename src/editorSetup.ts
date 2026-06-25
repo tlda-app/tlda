@@ -5,7 +5,7 @@ import {
   sortByIndex,
 } from 'tldraw'
 import type { TLShapePartial, Editor, TLShape, TLShapeId } from 'tldraw'
-import { getSvgText, setSvgText, svgViewBoxStore, anchorIndex, setChangeHighlights, dismissAllChanges, getPageUrl } from './stores'
+import { getSvgText, setSvgText, svgViewBoxStore, anchorIndex, setChangeHighlights, dismissAllChanges, getPageUrl, setPageRenderHash, setBuiltPageCount } from './stores'
 import { resolvAnchor, pdfToCanvas, type SourceAnchor } from './synctexAnchor'
 import { extractTextFromSvgAsync, type PageTextData } from './TextSelectionLayer'
 import { currentDocumentInfo, setCurrentDocumentInfo, createSvgDocumentLayout, type SvgDocument } from './svgDocumentLoader'
@@ -155,6 +155,21 @@ function diffTextLines(
   return diffWords(extractFlatWords(oldData.lines), newData.lines)
 }
 
+/** Short build hash currently in the doc-version sentinel (the Built version), or null. */
+function currentBuiltHash(editor?: Editor | null): string | null {
+  const ed = editor || (window as any).__tldraw_editor__
+  if (!ed) return null
+  const s = ed.store.get('shape:doc-version--sentinel' as TLShapeId)
+  const h = (s as any)?.props?.commitHash
+  return h && h !== 'unknown' ? String(h).slice(0, 7) : null
+}
+
+/** Record that a page shape now shows the pixels from the current build. */
+function stampRenderHash(shapeId: string, editor?: Editor | null) {
+  const h = currentBuiltHash(editor)
+  if (h) setPageRenderHash(shapeId, h)
+}
+
 /** Process a single fetched SVG page: parse viewBox, index anchors, push to store. */
 function processPage(
   page: SvgDocument['pages'][number],
@@ -185,6 +200,7 @@ function processPage(
 
   // Populate reactive SVG text store — triggers component re-render immediately
   setSvgText(page.shapeId, svgText)
+  stampRenderHash(page.shapeId)
 
   return svgDoc
 }
@@ -226,6 +242,8 @@ export async function fetchSvgPagesAsync(
 ) {
   const basePath = document.basePath || `${import.meta.env.BASE_URL || '/'}docs/${document.name}/`
   const pages = document.pages
+  // At load, the laid-out page set is the build's page set.
+  setBuiltPageCount(pages.length)
 
   // Determine which pages are visible in the initial viewport.
   // Fetch those first for fast first-paint, then the rest in parallel.
@@ -316,6 +334,7 @@ export async function reloadPages(
       if (res.ok) {
         const cfg = await res.json()
         const newCount: number = cfg.pages ?? document.pages.length
+        if (newCount > 0) setBuiltPageCount(newCount)
         if (newCount > 0 && newCount !== document.pages.length) {
           const docBasePath = document.basePath || `${import.meta.env.BASE_URL || '/'}docs/${document.name}/`
           const targets = cfg.targets?.map((t: any) => ({
@@ -489,6 +508,7 @@ export async function reloadPages(
 
     // Update reactive SVG text store — triggers component re-render
     setSvgText(page.shapeId, svgText)
+    stampRenderHash(page.shapeId, editor)
     console.log(`[Reload] Updated svg-page for page ${index + 1}`)
   }
 
@@ -597,6 +617,21 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
     for (const shape of Object.values(changes.removed) as any[]) {
       if (shape?.typeName === 'shape' && shape?.type === 'html-page') {
         cleanupHtmlShapeData(shape.id)
+      }
+      // File-backed note deleted: drop its backing-file watch so the daemon stops
+      // watching a file no note references. Skip if another note still backs it.
+      if (shape?.typeName === 'shape' && shape?.type === 'math-note' && shape?.props?.backingFile) {
+        const filePath = shape.props.backingFile
+        const stillUsed = editor.getCurrentPageShapes().some(
+          (s: any) => s.type === 'math-note' && s.props?.backingFile === filePath
+        )
+        if (!stillUsed) {
+          fetch('/api/backing-file-unregister', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filePath, docName: document.name }),
+          }).catch(e => log.warn('backing', 'unregister failed', { error: String(e?.message || e) }))
+        }
       }
     }
   }, { scope: 'document' })

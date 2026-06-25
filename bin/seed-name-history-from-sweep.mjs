@@ -33,6 +33,7 @@ const SNAPSHOT = getArg('--snapshot',
 const SWEEP_TS = getArg('--sweep-ts', '2026-06-06T18:08:24.000Z');
 
 const db = new Database(DB_PATH);
+db.pragma('busy_timeout = 30000'); // coexist with the running server's writer
 const hasTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='name_history'").get();
 if (!hasTable) {
   console.error('name_history table does not exist yet — start the migrated server first.');

@@ -3,7 +3,7 @@
  * tlda — tlda CLI.
  *
  * Commands:
- *   tlda doc create <name> [--title "Title"] [--dir /path] [--main main.tex]
+ *   tlda doc link <name> [main.tex] [--title "Title"] [--dir /path] [--main main.tex]
  *   tlda doc push [name] [--dir /path]
  *   tlda daemon [/path/to/main.tex] [name]
  *   tlda daemon
@@ -13,21 +13,26 @@
  *   tlda config set server <url>
  *
  * Server URL resolution:
- *   TLDA_SERVER env → --server flag → ~/.config/tlda/config.json → http://localhost:5176
+ *   TLDA_SERVER env → --server flag → ~/.config/tlda/config.json → <proto>://localhost:5176
+ *   (<proto> = https when the mkcert certs exist, else http — see getServerUrl in shared/config.mjs)
  */
 
-import { resolve, basename, dirname, join } from 'path'
+import { resolve, basename, dirname, join, delimiter } from 'path'
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync, appendFileSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { homedir } from 'os'
 import { randomBytes } from 'crypto'
 import { collectSourceFiles, collectSourceHashes, collectSpecificFiles } from './lib/source-files.mjs'
 import {
-  loadConfig, saveConfig, getServerUrl, getRwToken, DEFAULT_PORT,
+  loadConfig, saveConfig, getServerUrl, getFleetServerUrl, getRwToken, DEFAULT_PORT,
   CONFIG_DIR, CONFIG_FILE, hasTls, TLS_CA_PATH,
 } from '../shared/config.mjs'
 import { tldaFetch } from '../shared/http-client.mjs'
+import { DEV_COMMANDS } from './lib/dev-commands.mjs'
+import { resolveRepoRoot, ensureWorktree, startWorktreeVite, findFreePort } from './lib/dev-vite.mjs'
+import { scanMarkdownDeps } from '../shared/markdown-deps.mjs'
 import { cmdLogs } from './lib/unified-logs.mjs'
+import { SPAWN_POLICY_OPTIONS, resolveSpawnPolicyOption } from '../server/lib/spawn-policy.mjs'
 
 // --- Argument parsing ---
 
@@ -38,15 +43,20 @@ import { cmdLogs } from './lib/unified-logs.mjs'
 // are their own top-level commands.) Flat forms still work for now so the
 // feedback hook etc. don't break, but `--help` only advertises the nouns.
 const DOC_SUBS = new Set([
-  'create', 'open', 'push', 'list', 'ls', 'status', 'errors', 'preview',
-  'delete', 'rm', 'share', 'publish', 'scratch', 'book',
+  'open', 'push', 'list', 'ls', 'status', 'errors', 'preview',
+  'delete', 'rm', 'share', 'publish', 'scratch', 'book', 'link',
   'repo-doctor', 'init-shadow',
 ])
+const REMOVED_DOC_SUBS = new Set(['create'])
 const CONFIG_SUBS = new Set(['setup', 'mcp-setup', 'auth'])  // config subs that map to existing handlers
 let _nounUsed = null
 {
   const noun = process.argv[2]
   const sub = process.argv[3]
+  if (noun === 'doc' && sub && REMOVED_DOC_SUBS.has(sub)) {
+    console.error(`Unknown tlda doc subcommand: ${sub}`)
+    process.exit(1)
+  }
   if (noun === 'doc' && sub && DOC_SUBS.has(sub)) { process.argv.splice(2, 1); _nounUsed = 'doc' }
   else if (noun === 'config' && sub && CONFIG_SUBS.has(sub)) { process.argv.splice(2, 1); _nounUsed = 'config' }
 }
@@ -69,7 +79,7 @@ const command = args[0]
 const COMMAND_HELP = {
   scratch: 'tlda doc scratch <file.md> [--title "Title"] [--book fleet-workspace]\n\n  Publish a scratch markdown file as a page in a book.\n  Creates a markdown project, pushes the file, and auto-joins the book.\n  Subsequent edits are auto-pushed by watch-all.\n\n  --title    Display title (default: first heading or filename)\n  --book     Book to join (default: fleet-workspace)',
   book:    'tlda doc book <name> --members doc1,doc2,doc3,...\n\n  Create a book that groups existing documents together.\n  Each member keeps its own sync room and annotations.\n  The viewer shows one member at a time with a tab bar to switch.',
-  create:  'tlda doc create <name> [--title "Title"] [--dir /path] [--main main.tex] [--format slides|html|markdown]\n\n  Create a project and push source files. If the project already exists,\n  pushes files and triggers a rebuild.\n\n  Formats:\n    (default)  LaTeX → SVG pipeline (latexmk → dvisvgm)\n    slides     Reveal.js HTML (from Quarto revealjs or manual)\n    html       Multipage HTML chapters (from Quarto book render)\n    markdown   Markdown with KaTeX math → HTML',
+  link:    'tlda doc link <name> [main.tex] [--title "Title"] [--dir /path] [--main main.tex] [--format slides|html|markdown]\n\n  Link a paper repository to tlda and push source files. If the project already exists,\n  pushes files and triggers a rebuild.\n\n  Formats:\n    (default)  LaTeX → SVG pipeline (latexmk → dvisvgm)\n    slides     Reveal.js HTML (from Quarto revealjs or manual)\n    html       Multipage HTML chapters (from Quarto book render)\n    markdown   Markdown with KaTeX math → HTML',
   push:    'tlda doc push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
   watch:   'tlda daemon [start|stop|status|log|run]\n\n  Control the per-machine fleet-daemon (bin/fleet-daemon.mjs).\n  The daemon watches Claude Code session JSONLs and project source\n  dirs locally, pushing events to the tlda server over WebSocket.',
   'watch-all': 'tlda daemon [start|stop|status|log|run]\n\n  Alias for `tlda daemon start/stop/status/log/run` — runs the\n  per-machine fleet-daemon (bin/fleet-daemon.mjs), which watches\n  every project source dir AND every Claude Code session JSONL\n  on this machine and pushes events to the tlda server over WebSocket.',
@@ -87,7 +97,11 @@ const COMMAND_HELP = {
 }
 
 // Flags that take a value (--flag value). All others are boolean.
-const VALUE_FLAGS = new Set(['server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format', 'session', 'target', 'timeout', 'id', 'book', 'worktree', 'port', 'browser'])
+const VALUE_FLAGS = new Set([
+  'server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format',
+  'session', 'target', 'timeout', 'id', 'book', 'worktree', 'port', 'browser',
+  'model', 'cwd', 'effort', 'mode', 'kind', 'spawn-capability', 'capability',
+])
 
 function getFlag(name, defaultVal = null) {
   const idx = args.indexOf(`--${name}`)
@@ -334,11 +348,30 @@ async function cmdScratch() {
 
 async function cmdCreate() {
   const name = getPositional(0)
-  if (!name) { console.error('Usage: tlda doc create <name> [--title "Title"] [--dir /path] [--main main.tex] [--format slides|html]'); process.exit(1) }
+  if (!name) { console.error('Usage: tlda doc link <name> [main.tex] [--title "Title"] [--dir /path] [--main main.tex] [--format slides|html]'); process.exit(1) }
 
-  const format = getFlag('format') || null
-  const dir = resolve(getFlag('dir') || '.')
+  let format = getFlag('format') || null
+  const positionalMain = getPositional(1)
+  let dir = resolve(getFlag('dir') || '.')
+  let mainArg = getFlag('main')
+  if (positionalMain) {
+    const mainPath = resolve(positionalMain)
+    dir = dirname(mainPath)
+    mainArg = basename(mainPath)
+  }
   const title = getFlag('title') || name
+
+  // Infer the format from --main's extension when --format is omitted. Without
+  // this, `tlda doc link x --main README.md` falls through to the LaTeX/svg
+  // path, which uploads the ENTIRE directory — gigabytes if --dir is a code repo.
+  // Explicit --format always wins; .tex/unknown keep the existing LaTeX default.
+  if (!format) {
+    const mainHint = mainArg
+    const ext = mainHint ? mainHint.toLowerCase().split('.').pop() : null
+    if (ext === 'md') format = 'markdown'
+    else if (ext === 'html' || ext === 'htm') format = 'html'
+    if (format) console.log(dim(`  Inferred format: ${format} (from --main ${mainHint})`))
+  }
 
   // Slides format: push HTML files, no TeX
   if (format === 'slides') {
@@ -428,7 +461,7 @@ async function cmdCreate() {
 
   // Markdown format: push .md file, server renders to HTML with KaTeX
   if (format === 'markdown') {
-    const mainFile = getFlag('main') || readdirSync(dir).find(f => f.endsWith('.md'))
+    const mainFile = mainArg || readdirSync(dir).find(f => f.endsWith('.md'))
     if (!mainFile) { console.error(`No .md file found in ${dir}`); process.exit(1) }
 
     console.log(dim(`  Source: ${dir}`))
@@ -446,12 +479,24 @@ async function cmdCreate() {
       }
     }
 
-    // Push just the main file as a build trigger — the server reads from
-    // sourceDir directly, so we don't need to send the whole directory.
-    const content = readFileSync(join(dir, mainFile))
-    const files = [{ path: mainFile, content: content.toString('base64'), encoding: 'base64' }]
+    // Push the main file PLUS every locally-referenced image. A remote server
+    // (e.g. hosted) can't read the author's disk, and build-markdown.mjs copies
+    // referenced images from the PUSHED source mirror — so if we only send the
+    // .md, every image 404s off-machine. Scan with the same ref patterns the
+    // server uses (build-markdown.mjs) and upload each referenced local file at
+    // its relative path, so it lands where the server's copyRef looks for it.
+    const mdSource = readFileSync(join(dir, mainFile), 'utf8')
+    const files = [{ path: mainFile, content: Buffer.from(mdSource).toString('base64'), encoding: 'base64' }]
 
-    console.log(`Pushing ${mainFile}...`)
+    const missing = []
+    for (const { ref, abs } of scanMarkdownDeps(mdSource, dir)) {
+      if (!abs || !existsSync(abs)) { missing.push(ref); continue }
+      files.push({ path: ref, content: readFileSync(abs).toString('base64'), encoding: 'base64' })
+    }
+    const assetCount = files.length - 1
+
+    console.log(`Pushing ${mainFile}${assetCount ? ` + ${assetCount} image(s)` : ''}...`)
+    if (missing.length) console.log(dim(`  Skipped ${missing.length} unresolved image ref(s): ${missing.slice(0, 5).join(', ')}${missing.length > 5 ? '…' : ''}`))
     await api('POST', `/api/projects/${name}/push`, { files, sourceDir: dir })
     console.log(green('Markdown project processed.'))
 
@@ -460,7 +505,21 @@ async function cmdCreate() {
     return
   }
 
-  const mainFile = getFlag('main') || findMainTex(dir)
+  // Guard: this path uploads the WHOLE directory tree. A real paper source dir
+  // never contains node_modules/.git — their presence means --dir points at a
+  // code repo (or --format markdown was forgotten), and the upload would be
+  // gigabytes. Refuse loudly instead of hanging on "Pushing source files...".
+  for (const junk of ['node_modules', '.git']) {
+    if (existsSync(join(dir, junk))) {
+      console.error(red(`Refusing to create an svg/LaTeX project from ${dir}`))
+      console.error(red(`  — it contains ${junk}/, and the LaTeX path uploads the entire directory.`))
+      console.error(`  If this is a LaTeX paper, point --dir at just the paper's source folder.`)
+      console.error(`  If you meant a markdown doc, add --format markdown (uploads only --main + its images).`)
+      process.exit(1)
+    }
+  }
+
+  const mainFile = mainArg || findMainTex(dir)
   if (!mainFile) { console.error(`No .tex file with \\documentclass found in ${dir}`); process.exit(1) }
 
   console.log(dim(`  Source: ${dir}`))
@@ -532,6 +591,10 @@ async function cmdPush() {
   }
 }
 
+async function cmdLink() {
+  await cmdCreate()
+}
+
 // Fleet-daemon control: `tlda daemon start | stop | status | log | run`
 //
 // The fleet-daemon is the per-machine local agent that owns JSONL
@@ -550,11 +613,16 @@ const _cliWorktreeMatch = _cliDir.match(/^(.+?)\/\.claude\/worktrees\//)
 const FLEET_DAEMON_SCRIPT = _cliWorktreeMatch
   ? join(_cliWorktreeMatch[1], 'bin', 'fleet-daemon.mjs')
   : join(_cliDir, '..', 'bin', 'fleet-daemon.mjs')
-const ELIZA_LOGFILE = join(homedir(), '.config', 'tlda', 'eliza.log')
-const ELIZA_PIDFILE = join(homedir(), '.config', 'tlda', 'eliza.pid')
-const ELIZA_SCRIPT = _cliWorktreeMatch
-  ? join(_cliWorktreeMatch[1], 'bin', 'eliza.mjs')
-  : join(_cliDir, '..', 'bin', 'eliza.mjs')
+
+function lastDaemonConnectedTarget() {
+  try {
+    const log = readFileSync(FLEET_DAEMON_LOGFILE, 'utf8')
+    const matches = [...log.matchAll(/\[daemon\] connecting to (wss?:\/\/[^?\s]+)/g)]
+    return matches.length ? matches[matches.length - 1][1] : null
+  } catch {
+    return null
+  }
+}
 
 // Idempotent daemon start — no-op if already running, spawns if not.
 // Used by `tlda server start` to make sure the daemon comes up alongside
@@ -571,10 +639,15 @@ async function ensureFleetDaemonRunning() {
   const { openSync: fsOpenSync } = await import('fs')
   if (!existsSync(dirname(FLEET_DAEMON_LOGFILE))) mkdirSync(dirname(FLEET_DAEMON_LOGFILE), { recursive: true })
   const logFd = fsOpenSync(FLEET_DAEMON_LOGFILE, 'a')
-  const child = cpSpawn(process.execPath, [daemonScript], {
+  const child = cpSpawn(process.execPath, ['--import', 'tsx', daemonScript], {
     detached: true,
     stdio: ['ignore', logFd, logFd],
-    env: { ...process.env, ...(hasTls && !process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: TLS_CA_PATH } : {}) },
+    env: {
+      ...process.env,
+      TMUX: undefined,
+      TMUX_PANE: undefined,
+      ...(hasTls && !process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: TLS_CA_PATH } : {}),
+    },
   })
   child.unref()
   await new Promise(r => setTimeout(r, 800))
@@ -583,31 +656,6 @@ async function ensureFleetDaemonRunning() {
     console.log(green('Fleet daemon started') + dim(` (pid ${pid})`))
   } else {
     console.log(dim('Fleet daemon failed to start — see ' + FLEET_DAEMON_LOGFILE))
-  }
-}
-
-async function ensureElizaRunning() {
-  if (existsSync(ELIZA_PIDFILE)) {
-    const pid = parseInt(readFileSync(ELIZA_PIDFILE, 'utf8').trim(), 10)
-    try { process.kill(pid, 0); return } catch {} // stale pid → fall through
-  }
-  if (!existsSync(ELIZA_SCRIPT)) return // not installed; silently skip
-  const { spawn: cpSpawn } = await import('child_process')
-  const { openSync: fsOpenSync } = await import('fs')
-  if (!existsSync(dirname(ELIZA_LOGFILE))) mkdirSync(dirname(ELIZA_LOGFILE), { recursive: true })
-  const logFd = fsOpenSync(ELIZA_LOGFILE, 'a')
-  const child = cpSpawn(process.execPath, [ELIZA_SCRIPT], {
-    detached: true,
-    stdio: ['ignore', logFd, logFd],
-    env: { ...process.env },
-  })
-  child.unref()
-  await new Promise(r => setTimeout(r, 800))
-  if (existsSync(ELIZA_PIDFILE)) {
-    const pid = readFileSync(ELIZA_PIDFILE, 'utf8').trim()
-    console.log(green('Eliza started') + dim(` (pid ${pid})`))
-  } else {
-    console.log(dim('Eliza failed to start — see ' + ELIZA_LOGFILE))
   }
 }
 
@@ -630,6 +678,9 @@ async function cmdFleetWatch(sub) {
       try {
         process.kill(pid, 0)
         console.log(green('Fleet daemon running') + dim(` (pid ${pid})`))
+        console.log(dim(`  Config target: ${getFleetServerUrl()}`))
+        const connectedTarget = lastDaemonConnectedTarget()
+        if (connectedTarget) console.log(dim(`  Last WS target: ${connectedTarget}`))
         console.log(dim(`  Log: ${FLEET_DAEMON_LOGFILE}`))
         return
       } catch {}
@@ -651,7 +702,15 @@ async function cmdFleetWatch(sub) {
   if (sub === 'run') {
     // Foreground — exec the daemon directly so SIGINT etc. work normally.
     const { spawn: cpSpawn } = await import('child_process')
-    const child = cpSpawn(process.execPath, [daemonScript], { stdio: 'inherit', env: { ...process.env, ...(hasTls && !process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: TLS_CA_PATH } : {}) } })
+    const child = cpSpawn(process.execPath, ['--import', 'tsx', daemonScript], {
+      stdio: 'inherit',
+      env: {
+        ...process.env,
+        TMUX: undefined,
+        TMUX_PANE: undefined,
+        ...(hasTls && !process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: TLS_CA_PATH } : {}),
+      },
+    })
     child.on('exit', (code) => process.exit(code ?? 0))
     return
   }
@@ -678,10 +737,10 @@ async function cmdFleetWatch(sub) {
     if (!existsSync(dirname(FLEET_DAEMON_LOGFILE))) mkdirSync(dirname(FLEET_DAEMON_LOGFILE), { recursive: true })
     const logFd = fsOpenSync(FLEET_DAEMON_LOGFILE, 'a')
 
-    const child = cpSpawn(process.execPath, [daemonScript], {
+    const child = cpSpawn(process.execPath, ['--import', 'tsx', daemonScript], {
       detached: true,
       stdio: ['ignore', logFd, logFd],
-      env: { ...process.env },
+      env: { ...process.env, TMUX: undefined, TMUX_PANE: undefined },
     })
     child.unref()
 
@@ -734,7 +793,7 @@ async function cmdWatch() {
     await api('GET', `/api/projects/${name}`)
   } catch {
     console.error(red(`Project "${name}" not found on server.`))
-    console.error(`  Run \`tlda doc create ${name}\` first, or did you mean \`tlda daemon start\`?`)
+    console.error(`  Run \`tlda doc link ${name}\` first, or did you mean \`tlda daemon start\`?`)
     process.exit(1)
   }
 
@@ -789,7 +848,7 @@ async function cmdShare() {
   const readToken = config.tokenRead || null
 
   if (!readToken) {
-    console.error('No read token configured. Run `tlda config init` to generate tokens.')
+    console.error('No read token configured. Run `tlda config auth init` to generate tokens.')
     process.exit(1)
   }
 
@@ -1094,7 +1153,7 @@ async function cmdAuth() {
 function cmdCompletions() {
   // Fetch project names at completion time via a helper function in the script
   const commands = [
-    'server', 'agent', 'create', 'push', 'watch', 'watch-all', 'open', 'list', 'ls',
+    'server', 'agent', 'link', 'push', 'watch', 'watch-all', 'open', 'list', 'ls',
     'status', 'errors', 'delete', 'rm', 'preview', 'revert',
     'logs', 'log', 'config', 'completions',
   ]
@@ -1114,7 +1173,7 @@ _tlda() {
   local -a commands
   commands=(
     'server:Manage the server'
-    'create:Create project and upload files'
+    'link:Link project and upload files'
     'push:Push source files and rebuild'
     'watch:Watch for changes and auto-push'
     'watch-all:Watch all projects'
@@ -1142,7 +1201,7 @@ _tlda() {
           local -a subs=(${serverSubs.map(s => `'${s}'`).join(' ')})
           _describe 'subcommand' subs
           ;;
-        create|push|open|status|errors|build|delete|rm|preview)
+        link|push|open|status|errors|build|delete|rm|preview)
           _tlda_projects
           ;;
       esac
@@ -1195,7 +1254,7 @@ async function cmdDeploy() {
 
   step('Starting server')
   try {
-    execSync('node ' + JSON.stringify(join(tldaRoot, 'cli', 'tlda.mjs')) + ' server start', { stdio: 'pipe', timeout: 15_000 })
+    execSync('node ' + JSON.stringify(join(tldaRoot, 'cli', 'tlda.mjs')) + ' server start', { stdio: 'pipe', timeout: 40_000 })
   } catch (e) {
     die('Server failed to start: ' + e.message)
   }
@@ -1294,9 +1353,9 @@ Example:
   }
 }
 
-// ---- agent commands (local: they act on this machine's tmux sessions) ----
-// tmux is local to the box, so agent manipulation never routes through the
-// daemon — you run these where the agent lives.
+// ---- agent commands ----
+// `spawn` routes through the fleet server/daemon path. `spawn-local` is the
+// explicit local primitive that shells out to bin/fleet-spawn.py on this machine.
 
 function agentSessionName(name) {
   return name.startsWith('fleet-') ? name : `fleet-${name}`
@@ -1305,6 +1364,22 @@ function agentSessionName(name) {
 function tmuxBase() {
   const sock = loadConfig().tmuxSocket || null
   return sock ? ['-L', sock] : []
+}
+
+async function assertNotAgentContext() {
+  const agentEnv = ['FLEET_ID', 'FLEET_HARNESS', 'FLEET_TMUX_SESSION', 'FLEET_NAME'].filter(k => process.env[k])
+  if (agentEnv.length) {
+    throw new Error(`Refusing: tlda agent capability is user/operator-only and cannot run from an agent context (${agentEnv.join(', ')} set).`)
+  }
+
+  if (process.env.TMUX) {
+    const { spawnSync } = await import('child_process')
+    const res = spawnSync('tmux', [...tmuxBase(), 'display-message', '-p', '#S'], { encoding: 'utf8' })
+    const session = res.status === 0 ? res.stdout.trim() : ''
+    if (session.startsWith('fleet-')) {
+      throw new Error(`Refusing: tlda agent capability is user/operator-only and cannot run from fleet tmux session "${session}".`)
+    }
+  }
 }
 
 async function attachToAgent(name) {
@@ -1324,9 +1399,146 @@ async function runFleetSpawn(spawnArgs) {
     console.error(red(`fleet-spawn script not found: ${spawnScript}`))
     process.exit(1)
   }
-  const child = cpSpawn('python3', [spawnScript, ...spawnArgs], { stdio: 'inherit' })
+  const pythonDeps = join(dirname(fileURLToPath(import.meta.url)), '..', '.python-deps')
+  const env = existsSync(pythonDeps)
+    ? { ...process.env, PYTHONPATH: [pythonDeps, process.env.PYTHONPATH].filter(Boolean).join(delimiter) }
+    : process.env
+  const child = cpSpawn('python3', [spawnScript, ...spawnArgs], { stdio: 'inherit', env })
   child.on('exit', (code) => process.exit(code ?? 0))
   await new Promise(() => {}) // keep alive until child exits
+}
+
+function wsUrlFromHttp(server) {
+  return String(server).replace(/^https:/, 'wss:').replace(/^http:/, 'ws:').replace(/\/+$/, '')
+}
+
+function flagFromRaw(rawArgs, name) {
+  const idx = rawArgs.indexOf(`--${name}`)
+  if (idx === -1) return null
+  const next = rawArgs[idx + 1]
+  if (!next || next.startsWith('--')) return ''
+  return next
+}
+
+function hasRawFlag(rawArgs, name) {
+  return rawArgs.includes(`--${name}`)
+}
+
+function positionalFromRaw(rawArgs, index = 0) {
+  let pos = 0
+  for (let i = 0; i < rawArgs.length; i++) {
+    const a = rawArgs[i]
+    if (a.startsWith('--')) {
+      const key = a.slice(2)
+      if (VALUE_FLAGS.has(key)) i++
+      continue
+    }
+    if (pos === index) return a
+    pos++
+  }
+  return null
+}
+
+function parseRoutedSpawn(rawArgs) {
+  const name = positionalFromRaw(rawArgs, 0)
+  const fresh = hasRawFlag(rawArgs, 'fresh')
+  const refresh = hasRawFlag(rawArgs, 'refresh')
+  const body = {}
+  if (fresh) {
+    if (!name) throw new Error('Usage: tlda agent spawn --fresh <name> [--model model] [--kind kind] [--cwd path]')
+    body.fresh = true
+    body.name = name
+  } else {
+    if (!name) throw new Error('Usage: tlda agent spawn <agent> [--refresh] [--model model] [--kind kind]')
+    body.agent = name
+    body.respawn = !refresh
+    if (refresh) body.refresh = true
+  }
+  const map = [
+    ['model', 'model'],
+    ['kind', 'kind'],
+    ['cwd', 'cwd'],
+    ['effort', 'effort'],
+    ['mode', 'mode'],
+    ['spawn-capability', 'spawnCapability'],
+    ['capability', 'capability'],
+  ]
+  for (const [flag, key] of map) {
+    const value = flagFromRaw(rawArgs, flag)
+    if (value) body[key] = value
+  }
+  return body
+}
+
+async function fleetWsRequest(ws, payload, timeoutMs = 30000) {
+  const id = Math.floor(Math.random() * 1e9)
+  const message = { ...payload, id }
+  return await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup()
+      reject(new Error(`fleet WS request timed out: ${payload.type}`))
+    }, timeoutMs)
+    const cleanup = () => {
+      clearTimeout(timer)
+      ws.off('message', onMessage)
+      ws.off('error', onError)
+      ws.off('close', onClose)
+    }
+    const onError = (e) => {
+      cleanup()
+      reject(e)
+    }
+    const onClose = () => {
+      cleanup()
+      reject(new Error('fleet WS closed before reply'))
+    }
+    const onMessage = (raw) => {
+      let msg
+      try { msg = JSON.parse(raw.toString()) } catch { return }
+      if (msg.id !== id) return
+      cleanup()
+      if (msg.error) reject(new Error(msg.error))
+      else resolve(msg.result)
+    }
+    ws.on('message', onMessage)
+    ws.on('error', onError)
+    ws.on('close', onClose)
+    ws.send(JSON.stringify(message))
+  })
+}
+
+async function runRoutedSpawn(rawArgs) {
+  const body = parseRoutedSpawn(rawArgs)
+  const fleetServer = getFlag('server') || getFleetServerUrl()
+  const token = getToken()
+  const human = await tldaFetch('/api/human', {
+    method: 'GET',
+    server: fleetServer,
+    token,
+  })
+  const { default: WebSocket } = await import('ws')
+  const url = `${wsUrlFromHttp(fleetServer)}/ws/fleet${token ? `?token=${encodeURIComponent(token)}` : ''}`
+  const ws = new WebSocket(url, { rejectUnauthorized: false, headers: token ? { Authorization: `Bearer ${token}` } : undefined })
+  try {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`fleet WS connect timed out: ${fleetServer}`)), 10000)
+      ws.once('open', () => { clearTimeout(timer); resolve() })
+      ws.once('error', (e) => { clearTimeout(timer); reject(e) })
+    })
+    await fleetWsRequest(ws, { type: 'login', name: human.name }, 10000)
+    const result = await fleetWsRequest(ws, { type: 'spawn', ...body }, 45000)
+    if (result?.ok === false) {
+      const reason = result.error || result.reason || 'spawn failed'
+      throw new Error(reason)
+    }
+    const agent = result?.agent
+    const label = agent?.friendly_name || result?.name || body.agent || body.name
+    const id = agent?.id || result?.agent_id
+    const session = agent?.tmux_session || result?.tmux_session
+    console.log([label, id && `(${id})`, session && session !== label && session].filter(Boolean).join(' '))
+  } finally {
+    if (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN) ws.close()
+  }
 }
 
 async function listLocalAgents() {
@@ -1353,39 +1565,393 @@ async function hibernateAgent(name) {
     console.error('Usage: tlda agent hibernate <name>')
     process.exit(1)
   }
+  const res = await hibernateLocalAgent(name)
+  process.exit(res.status)
+}
+
+async function hibernateLocalAgent(name, { allowMissing = false } = {}) {
   const { spawnSync } = await import('child_process')
   const sess = agentSessionName(name)
   const has = spawnSync('tmux', [...tmuxBase(), 'has-session', '-t', sess], { stdio: 'ignore' })
   if (has.status !== 0) {
-    console.error(`No live session "${sess}" on this machine — already hibernating, or it lives on another box.`)
-    process.exit(1)
+    const message = `No live session "${sess}" on this machine — already hibernating, or it lives on another box.`
+    if (!allowMissing) {
+      console.error(message)
+      return { status: 1, hibernated: false, session: sess }
+    }
+    console.log(`${message} Continuing with metadata update and respawn.`)
+    return { status: 0, hibernated: false, session: sess }
   }
   const res = spawnSync('tmux', [...tmuxBase(), 'kill-session', '-t', sess], { stdio: 'inherit' })
   const short = name.replace(/^fleet-/, '')
   if (res.status === 0) {
     console.log(`Hibernated ${short} — its thread is intact; \`tlda agent spawn ${short}\` brings it back.`)
   }
-  process.exit(res.status ?? 0)
+  return { status: res.status ?? 0, hibernated: res.status === 0, session: sess }
+}
+
+function usageAgentCapability() {
+  const out = `Usage: tlda agent capability <agent> <capability> [--no-net] [--dry-run]
+
+Write scope:
+  read        no workspace writes
+  write       write launch working directory
+  tlda-write  write configured TLDA project/source roots
+  full        unfenced operator access
+
+Network:
+  network is on by default
+  --no-net    rare explicit network-off modifier`
+  if (hasFlag('help')) console.log(out)
+  else console.error(out)
+}
+
+function usageAgent() {
+  console.log(`tlda agent — manage local fleet agents
+
+Usage:
+  tlda agent list
+  tlda agent spawn <agent>
+  tlda agent spawn --fresh <name>
+  tlda agent spawn-local <agent>
+  tlda agent check-ready <agent> [--timeout seconds]
+  tlda agent attach <agent>
+  tlda agent hibernate <agent>
+  tlda agent capability <agent> <capability> [--no-net] [--dry-run]
+
+Write scope:
+  read        no workspace writes
+  write       write launch working directory
+  tlda-write  write configured TLDA project/source roots
+  full        unfenced operator access
+
+Network:
+  network is on by default
+  --no-net    rare explicit network-off modifier
+
+spawn routes through the fleet server and target daemon; spawn-local directly invokes
+the local fleet-spawn.py primitive on this machine.
+The capability command is operator-only: it refuses from fleet agent env/tmux context.
+check-ready verifies registry + local tmux/runtime + recent register/my_task evidence.`)
+}
+
+function capabilityNamesForError() {
+  return Object.keys(SPAWN_POLICY_OPTIONS).join(', ')
+}
+
+function applyNetworkModifier(policyOption) {
+  if (!hasFlag('no-net')) return { ...policyOption, network: true }
+  if (policyOption.name === 'full') {
+    throw new Error('--no-net cannot modify full; full is unfenced operator access.')
+  }
+  // no-net is a MODIFIER, never a capability (Skip: "no-net should be a modifier,
+  // it's not a type"). The rung name (read/write/tlda-write) is unchanged; the
+  // restriction rides as network:false. Net is on for everyone by default, so
+  // this flag is the never-used opt-out.
+  return { ...policyOption, network: false }
+}
+
+function normalizeAgentMetadata(meta) {
+  return meta && typeof meta === 'object' && !Array.isArray(meta) ? meta : {}
+}
+
+function parseJsonMaybe(value) {
+  if (!value) return null
+  if (typeof value === 'object') return value
+  try { return JSON.parse(value) } catch { return null }
+}
+
+function agentMatchesQuery(agent, query) {
+  return agent?.id === query ||
+    agent?.friendly_name === query ||
+    agent?.tmux_session === query ||
+    agent?.tmux_session === agentSessionName(query)
+}
+
+function processTreeHasRuntime(spawnSync, panePids, expectedKind = null) {
+  const ps = spawnSync('ps', ['-eo', 'pid,ppid,args'], { encoding: 'utf8' })
+  if (ps.status !== 0) return { ok: false, kind: null, pid: null }
+  const children = new Map()
+  const argsByPid = new Map()
+  for (const line of ps.stdout.split('\n')) {
+    const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/)
+    if (!m) continue
+    const [, pid, ppid, procArgs] = m
+    argsByPid.set(pid, procArgs)
+    if (!children.has(ppid)) children.set(ppid, [])
+    children.get(ppid).push(pid)
+  }
+  const runtimeRes = [
+    ['codex', /(?:^|\s|\/)codex(?:\s|$)/],
+    ['goose', /(?:^|\s|\/)goose(?:\s|$).*?\brun\b|\bgoose run\b/],
+    ['claude', /(?:^|\s|\/)claude(?:\s|$)/],
+  ]
+  const ordered = expectedKind
+    ? [...runtimeRes.filter(([k]) => k === expectedKind), ...runtimeRes.filter(([k]) => k !== expectedKind)]
+    : runtimeRes
+  const stack = [...panePids]
+  const seen = new Set()
+  while (stack.length) {
+    const pid = stack.pop()
+    if (seen.has(pid)) continue
+    seen.add(pid)
+    const procArgs = argsByPid.get(pid) || ''
+    for (const [kind, re] of ordered) {
+      if (re.test(procArgs)) return { ok: true, kind, pid }
+    }
+    for (const child of children.get(pid) || []) stack.push(child)
+  }
+  return { ok: false, kind: null, pid: null }
+}
+
+async function cmdAgentCheckReady() {
+  const query = getPositional(1)
+  if (!query) {
+    console.error('Usage: tlda agent check-ready <agent> [--timeout seconds]')
+    process.exit(1)
+  }
+  const { spawnSync } = await import('child_process')
+  await ensureServer()
+  const timeoutSec = Math.max(0, Number(getFlag('timeout', '0') || 0))
+  const deadline = Date.now() + timeoutSec * 1000
+  let final = null
+  do {
+    final = await collectAgentReadiness(query, spawnSync)
+    if (final.ok) break
+    if (Date.now() >= deadline) break
+    await new Promise(resolve => setTimeout(resolve, 2000))
+  } while (true)
+
+  printAgentReadiness(final)
+  process.exit(final.ok ? 0 : 1)
+}
+
+async function collectAgentReadiness(query, spawnSync) {
+  const state = await api('GET', '/api/state')
+  const agents = Array.isArray(state?.agents) ? state.agents : []
+  const matches = agents.filter(a => agentMatchesQuery(a, query))
+  if (matches.length !== 1) {
+    return { ok: false, query, error: matches.length ? `multiple agents matched (${matches.length})` : 'agent not found' }
+  }
+  const agent = matches[0]
+  const meta = normalizeAgentMetadata(agent.metadata)
+  const expectedKind = meta.kind || null
+  const sess = agent.tmux_session || agentSessionName(agent.friendly_name || query)
+  const hasSession = spawnSync('tmux', [...tmuxBase(), 'has-session', '-t', sess], { stdio: 'ignore' }).status === 0
+  let panes = []
+  if (hasSession) {
+    const r = spawnSync('tmux', [...tmuxBase(), 'list-panes', '-t', sess, '-F', '#{pane_pid}'], { encoding: 'utf8' })
+    if (r.status === 0) panes = r.stdout.trim().split(/\s+/).filter(Boolean)
+  }
+  const runtime = hasSession ? processTreeHasRuntime(spawnSync, panes, expectedKind) : { ok: false, kind: null, pid: null }
+  const table = await api('GET', `/api/fleet-table?filter=${encodeURIComponent(agent.id)}&limit=5`)
+  const row = (table.agents || []).find(a => a.id === agent.id) || null
+  const eventsData = await api('GET', `/api/store/events?agent=${encodeURIComponent(agent.id)}&limit=200`)
+  const events = Array.isArray(eventsData?.events) ? eventsData.events : []
+  const recentRegister = [...events].reverse().find(e => e.type === 'register')
+  const recentMyTask = [...events].reverse().find(e => {
+    if (e.type !== 'activity') return false
+    const m = parseJsonMaybe(e.metadata) || {}
+    return String(m.tool || e.text || '').includes('my_task')
+  })
+  const incoming = [...events].reverse().find(e => e.to === agent.id && e.from !== agent.id && ['chat', 'delegate'].includes(e.type))
+  const replyAfterIncoming = incoming
+    ? events.find(e => e.from === agent.id && e.to !== agent.id && Date.parse(e.timestamp) > Date.parse(incoming.timestamp))
+    : null
+  const ok = !agent.dead && hasSession && runtime.ok && !!recentRegister
+  return {
+    ok, query, agent, tableRow: row, session: sess, hasSession, panes, runtime,
+    recentRegister, recentMyTask, incoming, replyAfterIncoming,
+  }
+}
+
+function printAgentReadiness(r) {
+  if (r.error) {
+    console.error(`spawn readiness: FAIL — ${r.error}`)
+    return
+  }
+  const agent = r.agent
+  const row = r.tableRow
+  console.log(`spawn readiness for ${agent.friendly_name || agent.id} (${agent.id})`)
+  console.log(`  registry: ${agent.dead ? 'dead' : 'live row'}; status=${row?.status || agent.status || 'unknown'}; machine=${agent.machine_id || 'unknown'}`)
+  console.log(`  tmux: ${r.hasSession ? `ok ${r.session} panes=${r.panes.join(',') || 'none'}` : `missing ${r.session}`}`)
+  console.log(`  runtime: ${r.runtime.ok ? `ok ${r.runtime.kind} pid=${r.runtime.pid}` : 'missing under tmux pane'}`)
+  console.log(`  register event: ${r.recentRegister ? `${r.recentRegister.timestamp} #${r.recentRegister.id}` : 'missing'}`)
+  console.log(`  recent my_task activity: ${r.recentMyTask ? `${r.recentMyTask.timestamp} #${r.recentMyTask.id}` : 'not observed (my_task is often filtered as infrastructure)'}`)
+  if (r.incoming) {
+    const reply = r.replyAfterIncoming ? `${r.replyAfterIncoming.timestamp} #${r.replyAfterIncoming.id}` : 'no later outbound reply observed'
+    console.log(`  chat/task roundtrip: incoming #${r.incoming.id}; reply=${reply}`)
+  } else {
+    console.log('  chat/task roundtrip: no recent inbound chat/delegate to evaluate')
+  }
+  console.log(`  result: ${r.ok ? 'READY' : 'NOT READY'}`)
+}
+
+async function findAgentForCapability(agentQuery) {
+  const state = await api('GET', '/api/state')
+  const agents = Array.isArray(state?.agents) ? state.agents : []
+  const matches = agents.filter(a => (
+    a?.id === agentQuery ||
+    a?.friendly_name === agentQuery ||
+    a?.tmux_session === agentSessionName(agentQuery)
+  ))
+  if (matches.length === 0) {
+    throw new Error(`No existing agent found for "${agentQuery}". Use an existing fleet id, friendly name, or tmux session name.`)
+  }
+  if (matches.length > 1) {
+    throw new Error(`Multiple agents matched "${agentQuery}". Use the fleet id instead.`)
+  }
+  const agent = matches[0]
+  if (agent.status === 'dead') {
+    throw new Error(`Agent ${agent.id} is marked dead; refusing to create an impostor identity.`)
+  }
+  const localMachine = loadConfig().machineId
+  if (agent.machine_id && localMachine && agent.machine_id !== localMachine) {
+    throw new Error(`Agent ${agent.id} belongs to machine ${agent.machine_id}; run this command on that machine.`)
+  }
+  return agent
+}
+
+function spawnNameForAgent(agent, fallback) {
+  return agent.friendly_name || agent.id || fallback
+}
+
+function hibernateNameForAgent(agent, fallback) {
+  return agent.tmux_session ? agent.tmux_session.replace(/^fleet-/, '') : spawnNameForAgent(agent, fallback)
+}
+
+async function cmdAgentCapability() {
+  const agentQuery = getPositional(1)
+  const capabilityArg = getPositional(2)
+  if (hasFlag('help')) {
+    usageAgentCapability()
+    return
+  }
+  if (!agentQuery || !capabilityArg) {
+    usageAgentCapability()
+    process.exit(1)
+  }
+  const policyOption = resolveSpawnPolicyOption(capabilityArg)
+  if (!policyOption) {
+    console.error(`Unknown capability "${capabilityArg}". Supported capabilities: ${capabilityNamesForError()}`)
+    process.exit(1)
+  }
+  let resolvedPolicy
+  try {
+    resolvedPolicy = applyNetworkModifier(policyOption)
+  } catch (e) {
+    console.error(e.message)
+    process.exit(1)
+  }
+  const { capability, policy, network } = resolvedPolicy
+
+  try {
+    await assertNotAgentContext()
+  } catch (e) {
+    console.error(e.message)
+    process.exit(1)
+  }
+
+  if (hasFlag('dry-run')) {
+    const net = network === false ? 'no network' : 'network'
+    console.log(`[dry-run] would set ${agentQuery} capability to ${policyOption.name} (${policy} / ${capability} / ${net})`)
+    console.log('  1. look up existing agent identity')
+    console.log('  2. hibernate local tmux session if live')
+    console.log('  3. update metadata.spawnPolicy policy/category')
+    console.log(`  4. run: tlda agent spawn ${agentQuery}`)
+    return
+  }
+
+  await ensureServer()
+  const agent = await findAgentForCapability(agentQuery)
+  const spawnName = spawnNameForAgent(agent, agentQuery)
+  const hibernateName = hibernateNameForAgent(agent, agentQuery)
+  const hibernate = await hibernateLocalAgent(hibernateName, { allowMissing: true })
+  if (hibernate.status !== 0) {
+    console.error(`Failed to hibernate ${spawnName}; metadata was not changed.`)
+    process.exit(hibernate.status)
+  }
+
+  const meta = normalizeAgentMetadata(agent.metadata)
+  const currentSpawnPolicy = normalizeAgentMetadata(meta.spawnPolicy)
+  const nextSpawnPolicy = { ...currentSpawnPolicy, name: policyOption.name, capability, policy, network }
+  await api('POST', '/api/set-metadata', {
+    agent: agent.id,
+    spawnPolicy: nextSpawnPolicy,
+    spawnPolicyChangedBy: 'tlda-agent-capability-cli',
+    spawnPolicyChangedAt: new Date().toISOString(),
+  })
+  const net = network === false ? 'no network' : 'network'
+  console.log(`Updated ${agent.id} spawn policy to ${policyOption.name} (${policy} / ${capability} / ${net}). Resuming ${spawnName}...`)
+  await runRoutedSpawn([spawnName])
 }
 
 async function cmdAgent() {
   const sub = getPositional(0)
+  if (!sub || (hasFlag('help') && sub !== 'capability')) {
+    usageAgent()
+    return
+  }
   switch (sub) {
     case 'list':
     case 'ls':        await listLocalAgents(); break
-    case 'spawn':     await ensureServer(); await runFleetSpawn(process.argv.slice(4)); break // after "tlda agent spawn"
+    case 'spawn':     await runRoutedSpawn(process.argv.slice(4)); break // after "tlda agent spawn"
+    case 'spawn-local': await runFleetSpawn(process.argv.slice(4)); break // direct local primitive
+    case 'check-ready': await cmdAgentCheckReady(); break
     case 'attach':    await attachToAgent(getPositional(1)); break
     case 'hibernate': await hibernateAgent(getPositional(1)); break
+    case 'capability': await cmdAgentCapability(); break
     default:
-      console.error('Usage: tlda agent <list|spawn|attach|hibernate> [name]')
+      console.error('Usage: tlda agent <list|spawn|spawn-local|check-ready|attach|hibernate|capability> [name]')
       process.exit(1)
   }
+}
+
+// Restart the fleet MCP for agents by driving Claude Code's /mcp menu via the
+// bin/fleet-mcp-restart script (path resolved here, not relying on PATH).
+// Dev-only — surfaced as `tlda-dev restart-mcp`, kept out of `tlda --help`.
+//   tlda-dev restart-mcp                  → your own MCP (current tmux session)
+//   tlda-dev restart-mcp foo bar          → those agents
+//   tlda-dev restart-mcp --all [--except foo bar]
+async function restartMcpAgents(rest) {
+  const { spawnSync } = await import('child_process')
+  const script = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'fleet-mcp-restart')
+  if (!existsSync(script)) { console.error(red(`fleet-mcp-restart not found: ${script}`)); process.exit(1) }
+
+  // No args → restart own MCP (script defaults the session to the current tmux session).
+  if (rest.length === 0) {
+    const r = spawnSync('bash', [script, '--skip-preflight'], { stdio: 'inherit' })
+    process.exit(r.status ?? 0)
+  }
+
+  let targets
+  if (rest.includes('--all')) {
+    const ei = rest.indexOf('--except')
+    const except = new Set((ei >= 0 ? rest.slice(ei + 1) : []).map(n => n.replace(/^fleet-/, '')))
+    const res = spawnSync('tmux', [...tmuxBase(), 'list-sessions', '-F', '#{session_name}'], { encoding: 'utf8' })
+    const all = (res.status === 0 ? res.stdout.trim().split('\n') : [])
+      .filter(n => n.startsWith('fleet-')).map(n => n.replace(/^fleet-/, ''))
+    targets = all.filter(n => !except.has(n))
+  } else {
+    targets = rest.filter(a => !a.startsWith('--'))
+  }
+
+  if (targets.length === 0) { console.log('No agents to restart.'); process.exit(0) }
+  let ok = 0, fail = 0
+  for (const name of targets) {
+    process.stdout.write(`restart-mcp ${name} … `)
+    const r = spawnSync('bash', [script, agentSessionName(name)], { encoding: 'utf8' })
+    if (r.status === 0) { console.log('ok'); ok++ }
+    else { console.log(`FAILED: ${((r.stderr || '') + (r.stdout || '')).trim().split('\n').filter(Boolean).pop() || 'error'}`); fail++ }
+  }
+  console.log(`Done: ${ok} ok${fail ? `, ${fail} failed` : ''}.`)
+  process.exit(fail ? 1 : 0)
 }
 
 // Top-level spawn/attach kept working so the existing spawn path isn't broken;
 // `tlda agent …` is the canonical form.
 async function cmdAttach() { await attachToAgent(getPositional(0)) }
-async function cmdSpawn() { await runFleetSpawn(process.argv.slice(3)) }
+async function cmdSpawn() { await runRoutedSpawn(process.argv.slice(3)) }
 
 async function cmdRepoDoctor() {
   const name = getPositional(0)
@@ -1551,7 +2117,7 @@ async function cmdDoctor() {
         const { spawn: cpSpawn } = await import('child_process')
         const { openSync: fsOpenSync } = await import('fs')
         const logFd = fsOpenSync(LOGFILE, 'a')
-        const child = cpSpawn(process.execPath, [serverScript, '--i-am-tlda-cli'], {
+        const child = cpSpawn(process.execPath, ['--import', 'tsx', serverScript, '--i-am-tlda-cli'], {
           detached: true, stdio: ['ignore', logFd, logFd],
           env: { ...process.env, PORT: getPort(), TMUX: undefined, TMUX_PANE: undefined }
         })
@@ -1895,6 +2461,8 @@ async function cmdServer(action) {
     <key>ProgramArguments</key>
     <array>
         <string>${nodePath}</string>
+        <string>--import</string>
+        <string>tsx</string>
         <string>${serverScript}</string>
         <string>--i-am-tlda-cli</string>
     </array>
@@ -2077,9 +2645,11 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
     }
 
     // Wait for it to come up. The server can boot slowly (large fleet-DB query
-    // on a big roster), so give it ~30s before declaring failure — a too-short
-    // wait made agents falsely think they'd killed prod fleet chat.
-    for (let i = 0; i < 120; i++) {
+    // on a big roster — measured ~50s on a ~1500-row agents table), so give it
+    // ~90s before declaring failure. A too-short wait (was 30s) made `tlda deploy`
+    // falsely report "Server failed to start" while the server was still booting,
+    // tempting a panic rollback. (Real cure: speed the boot — see the startup scan.)
+    for (let i = 0; i < 360; i++) {
       await new Promise(r => setTimeout(r, 250))
       try {
         const res = await fetch(`${getServer()}/health`)
@@ -2088,9 +2658,8 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
           console.log(green(`Server running at ${getServer()}`) + dim(` (pid ${data.pid})`))
           console.log(dim(`  Log: ${LOGFILE}`))
           if (hasLaunchd) console.log(dim('  Managed by launchd (auto-restarts)'))
-          // Also ensure the fleet daemon and eliza are up.
+          // Also ensure the fleet daemon is up; the daemon owns configured bots.
           await ensureFleetDaemonRunning()
-          await ensureElizaRunning()
           return
         }
       } catch {}
@@ -2107,7 +2676,6 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
       console.log(dim(`  Log: ${LOGFILE}`))
       if (hasLaunchd) console.log(dim('  Managed by launchd (auto-restarts)'))
       await ensureFleetDaemonRunning()
-      await ensureElizaRunning()
       return
     }
     console.error(red('Server failed to start within 30s'))
@@ -2215,155 +2783,67 @@ async function cmdFleetDev() {
   }
 }
 
-// --- Dev worktree setup ---
-
-async function findFreePort(startPort) {
-  const net = await import('net')
-  return new Promise((resolve) => {
-    const server = net.default.createServer()
-    server.listen(startPort, () => {
-      const { port } = server.address()
-      server.close(() => resolve(port))
-    })
-    server.on('error', () => resolve(findFreePort(startPort + 1)))
-  })
-}
+// --- `tlda-dev serve <branch>` — vite dev server for a branch ---
 
 async function cmdDev() {
-  const { execSync, spawn } = await import('child_process')
-  const { openSync: fsOpenSync } = await import('fs')
-
-  const worktreeName = getFlag('worktree')
+  // branch is positional (`tlda-dev serve <branch>`); --worktree still accepted.
+  const branch = getPositional(0) || getFlag('worktree')
   const portArg = getFlag('port')
 
-  // Find main repo root (works whether we're in a worktree or the main repo).
-  // git rev-parse --git-common-dir returns the shared .git dir — parent is the main repo.
-  const scriptDir = dirname(fileURLToPath(import.meta.url))
-  let repoRoot
-  try {
-    const gitCommonDir = execSync('git rev-parse --git-common-dir', { cwd: scriptDir, stdio: 'pipe' }).toString().trim()
-    // In main repo: '.git' (relative). In worktree: absolute path like /path/to/repo/.git
-    repoRoot = gitCommonDir === '.git'
-      ? join(scriptDir, '..')
-      : dirname(gitCommonDir)
-  } catch {
-    repoRoot = join(scriptDir, '..')
-  }
+  const worktreeDir = ensureWorktree(resolveRepoRoot(), branch)
+  console.log(dim(branch ? `Worktree: .worktrees/${branch}` : 'Serving current checkout'))
 
-  let worktreeDir = repoRoot  // default: current repo if no --worktree
-  if (worktreeName) {
-    worktreeDir = join(repoRoot, '.worktrees', worktreeName)
-
-    if (!existsSync(worktreeDir)) {
-      console.log(dim(`Creating worktree .worktrees/${worktreeName}...`))
-      try {
-        execSync(`git worktree add -b "${worktreeName}" ".worktrees/${worktreeName}"`, {
-          cwd: repoRoot,
-          stdio: 'pipe',
-        })
-      } catch (e1) {
-        // Branch already exists — check it out without -b
-        try {
-          execSync(`git worktree add ".worktrees/${worktreeName}" "${worktreeName}"`, {
-            cwd: repoRoot,
-            stdio: 'pipe',
-          })
-        } catch (e2) {
-          throw new Error(`Failed to create worktree: ${e2.message}`)
-        }
-      }
-      console.log(green(`Worktree created: ${worktreeDir}`))
-    } else {
-      console.log(dim(`Using existing worktree: ${worktreeDir}`))
-    }
-  }
-
-  // npm install if needed (--ignore-scripts skips `prepare` vite build)
-  if (!existsSync(join(worktreeDir, 'node_modules'))) {
-    console.log(dim('Running npm install...'))
-    execSync('npm install --ignore-scripts', { cwd: worktreeDir, stdio: 'inherit' })
-  }
-
-  // Pick port
-  const port = portArg ? parseInt(portArg) : await findFreePort(5180)
-
-  // Start Vite in background. Call the vite binary DIRECTLY — `npx vite` adds a
-  // wrapper process that gets reaped when the spawning shell exits, so the dev
-  // server "dies" between commands. Prefer the worktree's install, fall back to
-  // the main repo's binary.
-  const viteLogFile = join(worktreeDir, '.dev-vite.log')
-  const logFd = fsOpenSync(viteLogFile, 'a')
-
-  const mainRepoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
-  const viteBin = [
-    join(worktreeDir, 'node_modules', '.bin', 'vite'),
-    join(mainRepoRoot, 'node_modules', '.bin', 'vite'),
-  ].find(p => existsSync(p))
-  if (!viteBin) throw new Error('vite binary not found (worktree or main repo node_modules)')
-
-  // Bind IPv4 explicitly — without --host, vite binds IPv6 [::1] only, so a
-  // browser hitting `localhost` (which resolves to 127.0.0.1) gets "can't be
-  // found." 127.0.0.1 makes the printed localhost URL actually load.
-  const viteChild = spawn(viteBin, ['--port', String(port), '--host', '127.0.0.1'], {
-    cwd: worktreeDir,
-    detached: true,
-    stdio: ['ignore', logFd, logFd],
+  const { scheme, port, pid, logFile } = await startWorktreeVite({
+    worktreeDir,
+    port: portArg ? parseInt(portArg) : await findFreePort(5180),
+    hasTls,
   })
-  viteChild.unref()
 
-  console.log(dim(`Vite starting on port ${port} (pid ${viteChild.pid})...`))
-
-  // Wait for Vite to be ready (poll up to 30s)
-  let ready = false
-  for (let i = 0; i < 60; i++) {
-    await new Promise(r => setTimeout(r, 500))
-    try {
-      const res = await fetch(`http://localhost:${port}/`, { signal: AbortSignal.timeout(1000) })
-      if (res.ok || res.status === 404) { ready = true; break }
-    } catch {}
-  }
-
-  if (!ready) {
-    throw new Error(`Vite failed to start on port ${port} within 30s. Check log: ${viteLogFile}`)
-  }
-
-  // Write .dev-url
+  // Chat/fleet resolves to the global store via /api/fleet-config; only doc-sync +
+  // assets ride this local proxy, so the worktree shares your room with no extra wiring.
   const token = getToken()
-  const url = token
-    ? `http://localhost:${port}/?token=${token}`
-    : `http://localhost:${port}/`
-  const devUrlPath = join(worktreeDir, '.dev-url')
-  writeFileSync(devUrlPath, url)
+  const base = `${scheme}://localhost:${port}/`
+  const url = token ? `${base}?token=${token}` : base
+  writeFileSync(join(worktreeDir, '.dev-url'), url)
 
-  // Print summary
   console.log(green(`\nVite dev server ready`))
-  if (worktreeName) console.log(`  Worktree: ${worktreeDir}`)
+  if (branch) console.log(`  Worktree: ${worktreeDir}`)
   console.log(`  Port:     ${port}`)
-  console.log(`  PID:      ${viteChild.pid}`)
-  console.log(`  Log:      ${viteLogFile}`)
+  console.log(`  PID:      ${pid}`)
+  console.log(`  Log:      ${logFile}`)
   console.log(bold(`\n  ${url}\n`))
 }
 
 async function cmdDevUrl() {
+  // Prefer the .dev-url that `tlda-dev serve` wrote (correct scheme + token).
+  const devUrlPath = join(process.cwd(), '.dev-url')
+  if (existsSync(devUrlPath)) { console.log(readFileSync(devUrlPath, 'utf8').trim()); return }
   const portArg = getFlag('port')
   const port = portArg ? parseInt(portArg) : 5180
   const token = getToken()
-  const url = token
-    ? `http://localhost:${port}/?token=${token}`
-    : `http://localhost:${port}/`
-  console.log(url)
+  const scheme = hasTls ? 'https' : 'http'
+  const base = `${scheme}://localhost:${port}/`
+  console.log(token ? `${base}?token=${token}` : base)
 }
 
 // --- Main ---
 
 async function main() {
   try {
+    // Developer commands live on the `tlda-dev` binary (the developer app), not
+    // on plain `tlda` (the user app). When reached directly as `tlda <devcmd>`,
+    // point the user at tlda-dev instead of silently running it. tlda-dev sets
+    // TLDA_DEV_CLI=1 when it forwards, so it still works through that path.
+    if (DEV_COMMANDS.includes(command) && !process.env.TLDA_DEV_CLI) {
+      console.error(`'${command}' is a developer command — run: tlda-dev ${command}`)
+      process.exit(1)
+    }
     switch (command) {
       case 'server': await cmdServer(); break
       case 'scratch': await ensureServer(); await cmdScratch(); break
       case 'book':   await ensureServer(); await cmdBook(); break
-      case 'create': await ensureServer(); await cmdCreate(); break
       case 'push':   await ensureServer(); await cmdPush(); break
+      case 'link':   await ensureServer(); await cmdLink(); break
       case 'daemon': await ensureServer(); await cmdWatch(); break
       case 'open':   await ensureServer(); await cmdOpen(); break
       case 'share':  await cmdShare(); break
@@ -2382,7 +2862,8 @@ async function main() {
       case 'config': await cmdConfig(); break
       case 'setup': await cmdSetup(); break
       case 'agent': await cmdAgent(); break
-      case 'dev': await cmdDev(); break
+      case 'restart-mcp': await restartMcpAgents(process.argv.slice(3)); break // dev-only; surfaced via `tlda-dev restart-mcp`
+      case 'serve': await cmdDev(); break // dev-only; surfaced via `tlda-dev serve`
       case 'dev-url': await cmdDevUrl(); break
       case 'deploy': await cmdDeploy(); break
       case 'doctor': await cmdDoctor(); break
@@ -2391,7 +2872,7 @@ async function main() {
       case 'doc':
         console.log(`tlda doc — work on a document project
 
-  create <name>        Create a project, push files, build
+  link <name> [main]   Link a project, push files, build
   open [name]          Open the viewer
   push [name]          Push source, rebuild
   status [name]        Build status
@@ -2411,7 +2892,7 @@ async function main() {
 
   tlda doc <cmd>       work on a document project   (\`tlda doc\` for the list)
   tlda server <cmd>    run/manage the tlda server   (start/stop/status/log)
-  tlda agent <cmd>     fleet agents on this machine (list/spawn/attach/hibernate)
+  tlda agent <cmd>     fleet agents on this machine (list/spawn/attach/hibernate/capability)
   tlda config <cmd>    configure tlda               (set/get/setup/mcp-setup/auth)
   tlda daemon [start|stop]  fleet daemon (source watch + activity)
   tlda doctor          health check (--fix to repair)

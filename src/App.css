@@ -780,6 +780,28 @@ body.text-select-mode ::selection {
   font-size: 13px;
 }
 
+.identity-auto-notice {
+  position: fixed;
+  right: 14px;
+  bottom: 54px;
+  z-index: 10000;
+  max-width: min(340px, calc(100vw - 28px));
+  padding: 9px 12px;
+  border: 1px solid rgba(80, 80, 110, 0.18);
+  border-radius: 8px;
+  background: rgba(250, 252, 255, 0.94);
+  box-shadow: 0 8px 24px rgba(20, 24, 35, 0.14);
+  color: rgba(24, 30, 42, 0.76);
+  font: 12px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  pointer-events: none;
+}
+
+html[data-theme="dark"] .identity-auto-notice {
+  border-color: rgba(230, 235, 255, 0.14);
+  background: rgba(26, 28, 40, 0.94);
+  color: rgba(238, 242, 255, 0.78);
+}
+
 /* Highlight source context card */
 .hl-source-card {
   max-width: 480px;

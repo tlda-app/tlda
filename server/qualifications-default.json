@@ -1,0 +1,22 @@
+{
+  "rules": [
+    { "edit": "*.tex", "requires": ["writing-core", "writing-process", "argument-outline", "writing-arguments-output"] },
+    { "edit": "*.bib", "requires": ["writing-core"] },
+    { "edit": "*.md",  "requires": ["writing-core", "writing-process", "argument-outline"], "condition": "latex-project" },
+
+    { "edit": "*.css", "requires": ["app-development", "app-testing", "appearance-requires-permission"] },
+    { "edit": "*.tsx", "requires": ["app-development", "app-testing", "appearance-requires-permission", "code-patterns"] },
+    { "edit": "*.ts",  "requires": ["app-development", "code-patterns"] },
+    { "edit": "*.js",  "requires": ["app-development", "code-patterns"] },
+    { "edit": "*.mjs", "requires": ["app-development", "code-patterns"] },
+
+    { "edit": "*.R",   "requires": ["math-implementation"] },
+
+    { "tool": "tlda/delegate",     "requires": ["point-dont-paraphrase", "manager-team-stewardship"] },
+    { "tool": "Agent",              "requires": ["subagents"] },
+    { "tool": "tlda/input_scratch", "requires": ["where-to-write"] },
+    { "tool": "tlda/propose_edit",  "requires": ["writing-core", "writing-process", "argument-outline", "writing-arguments-output"] },
+    { "tool": "tlda/report",        "requires": ["explain-math-concretely"] },
+    { "tool": "tlda/chat",          "requires": ["explain-math-concretely"], "condition": "math-heavy" }
+  ]
+}

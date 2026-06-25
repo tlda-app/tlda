@@ -1,42 +1,66 @@
-import { StateNode, Vec, EASINGS, type TLClickEventInfo, type TLStateNodeConstructor } from 'tldraw'
+import { StateNode, Vec, type Editor, type TLStateNodeConstructor } from 'tldraw'
+import { log } from '../logger'
 
 const AXIS_THRESHOLD = 5 // px before locking axis
+const LOG_NS = 'fleet-gesture'
 
-/** Find the actual text content bounds within an SVG page shape.
- *  Queries the DOM for text elements and returns their x-range in page coordinates.
- *  Falls back to full page bounds if no text found. */
-function getContentBounds(shapeId: string, pageBounds: { minX: number; minY: number; width: number; height: number }) {
+function describeElement(el: Element | null) {
+  if (!el) return null
+  let pointerEvents: string | null = null
   try {
-    const el = document.querySelector(`[data-shape-id="${shapeId}"]:not(.tl-shape-background)`)
-    const svg = el?.querySelector('svg')
-    if (!svg) return pageBounds
-
-    const viewBox = svg.viewBox?.baseVal
-    if (!viewBox || viewBox.width === 0) return pageBounds
-
-    const texts = svg.querySelectorAll('text')
-    if (texts.length === 0) return pageBounds
-
-    let minX = Infinity, maxX = -Infinity
-    for (const t of texts) {
-      if (t.closest('defs')) continue
-      const x = parseFloat(t.getAttribute('x') || '0')
-      const len = (t as SVGTextContentElement).getComputedTextLength?.() || 0
-      if (x < minX) minX = x
-      if (x + len > maxX) maxX = x + len
-    }
-
-    if (minX >= maxX) return pageBounds
-
-    // Convert from SVG viewBox coords to page coords
-    const scaleX = pageBounds.width / viewBox.width
-    const pageMinX = pageBounds.minX + minX * scaleX
-    const pageMaxX = pageBounds.minX + maxX * scaleX
-
-    return { minX: pageMinX, minY: pageBounds.minY, width: pageMaxX - pageMinX, height: pageBounds.height }
+    pointerEvents = window.getComputedStyle(el).pointerEvents
   } catch {
-    return pageBounds
+    pointerEvents = null
   }
+  return {
+    tag: el.tagName.toLowerCase(),
+    id: el.id || undefined,
+    classes: el instanceof HTMLElement || el instanceof SVGElement ? Array.from(el.classList).slice(0, 8) : [],
+    shapeId: el.getAttribute('data-shape-id') || undefined,
+    shapeType: el.getAttribute('data-shape-type') || undefined,
+    role: el.getAttribute('role') || undefined,
+    pointerEvents,
+  }
+}
+
+function elementChainFrom(el: Element | null) {
+  const chain: ReturnType<typeof describeElement>[] = []
+  let cur = el
+  for (let i = 0; cur && i < 10; i++) {
+    chain.push(describeElement(cur))
+    if (cur.classList.contains('fleet-hud-wrap')) break
+    cur = cur.parentElement
+  }
+  return chain
+}
+
+/**
+ * True when the current pointer is over a fleet panel. The panels live in the
+ * full-viewport `.fleet-hud-wrap` overlay, which is pointer-events:none EXCEPT
+ * the fleet shape elements (pointer-events:auto) — so a screen-point hit-test
+ * lands inside the wrap iff it's on an interactive panel. We can't use the main
+ * editor's shape coords here: the panels are painted by the HUD's OVERRIDE
+ * camera, so their page coords don't line up with where they actually render.
+ */
+function pointerOnFleetPanel(editor: Editor): boolean {
+  if (typeof document === 'undefined') {
+    log.debug(LOG_NS, 'phone panel gate: no document', {})
+    return false
+  }
+  const sp = editor.inputs.getCurrentScreenPoint()
+  const rect = editor.getContainer().getBoundingClientRect()
+  const clientX = rect.left + sp.x
+  const clientY = rect.top + sp.y
+  const el = document.elementFromPoint(clientX, clientY)
+  const onFleetPanel = !!el?.closest('.fleet-hud-wrap')
+  log.debug(LOG_NS, 'phone panel gate', {
+    onFleetPanel,
+    screenPoint: { x: Math.round(sp.x), y: Math.round(sp.y) },
+    clientPoint: { x: Math.round(clientX), y: Math.round(clientY) },
+    target: describeElement(el),
+    elementChain: log.isEnabled(LOG_NS, 'debug') ? elementChainFrom(el) : undefined,
+  })
+  return onFleetPanel
 }
 
 /**
@@ -45,7 +69,16 @@ function getContentBounds(shapeId: string, pageBounds: { minX: number; minY: num
  * - Drag starts unlocked; after AXIS_THRESHOLD px, locks to dominant axis
  * - Locked axis zeroes out the other delta
  * - Momentum slide is also axis-locked
- * - Double/triple/quad tap zoom inherited from HandTool behavior
+ *
+ * Stands down entirely when the touch lands on a fleet panel: there a 1-finger
+ * drag scrolls the panel's own content and 2-finger drives the fleet move/resize
+ * gesture (useFleetGestures), so axis-locked canvas panning is irrelevant and
+ * was racing the fleet gesture handler for the same fingers (the intermittent
+ * "multitouch on fleet shapes only sometimes works" bug). The 3-finger
+ * pass-through canvas pan keeps its own (soft) axis lock in useFleetGestures.
+ *
+ * Tap-to-zoom (double/triple/quad) is deliberately NOT handled here: on a phone
+ * stray rapid taps were being read as multi-clicks and firing unwanted zooms.
  */
 export class PhoneHandTool extends StateNode {
   static override id = 'phone-hand'
@@ -54,66 +87,19 @@ export class PhoneHandTool extends StateNode {
   static override children(): TLStateNodeConstructor[] {
     return [PhoneIdle, PhonePointing, PhoneDragging]
   }
-
-  override onDoubleClick(info: TLClickEventInfo) {
-    if (info.phase === 'settle') {
-      const pt = this.editor.inputs.getCurrentScreenPoint()
-      const pagePt = this.editor.screenToPage(pt)
-      // Smart zoom: find the svg-page at tap point and zoom to fit its width
-      const pageShape = this.editor.getCurrentPageShapes().find(s => {
-        if ((s as any).type !== 'svg-page') return false
-        const b = this.editor.getShapePageBounds(s.id)
-        return b && pagePt.x >= b.minX && pagePt.x <= b.maxX && pagePt.y >= b.minY && pagePt.y <= b.maxY
-      })
-      if (pageShape) {
-        const b = this.editor.getShapePageBounds(pageShape.id)!
-        const vp = this.editor.getViewportScreenBounds()
-        // Find actual text column bounds from the SVG to avoid zooming to LaTeX margins
-        const contentBounds = getContentBounds(pageShape.id, b)
-        const targetZoom = vp.width / contentBounds.width
-        const currentZoom = this.editor.getZoomLevel()
-        if (Math.abs(currentZoom - targetZoom) < 0.05) {
-          // Already at fit-width — zoom out to overview
-          this.editor.zoomToFit({ animation: { duration: 300, easing: EASINGS.easeOutQuint } })
-        } else {
-          // Zoom to fit text column width, centered on tap Y
-          const camX = -contentBounds.minX
-          const camY = -(pagePt.y - vp.height / targetZoom / 2)
-          this.editor.setCamera(
-            { x: camX, y: camY, z: targetZoom },
-            { animation: { duration: 300, easing: EASINGS.easeOutQuint } }
-          )
-        }
-      } else {
-        this.editor.zoomIn(pt, { animation: { duration: 220, easing: EASINGS.easeOutQuint } })
-      }
-    }
-  }
-
-  override onTripleClick(info: TLClickEventInfo) {
-    if (info.phase === 'settle') {
-      const pt = this.editor.inputs.getCurrentScreenPoint()
-      this.editor.zoomOut(pt, { animation: { duration: 320, easing: EASINGS.easeOutQuint } })
-    }
-  }
-
-  override onQuadrupleClick(info: TLClickEventInfo) {
-    if (info.phase === 'settle') {
-      const zoom = this.editor.getZoomLevel()
-      const pt = this.editor.inputs.getCurrentScreenPoint()
-      if (zoom === 1) {
-        this.editor.zoomToFit({ animation: { duration: 400, easing: EASINGS.easeOutQuint } })
-      } else {
-        this.editor.resetZoom(pt, { animation: { duration: 320, easing: EASINGS.easeOutQuint } })
-      }
-    }
-  }
 }
 
 class PhoneIdle extends StateNode {
   static override id = 'idle'
 
   override onPointerDown() {
+    // Touch on a fleet panel → stand down so the panel's own scroll + the
+    // 2-finger move/resize gesture run without this axis-locked pan racing them.
+    if (pointerOnFleetPanel(this.editor)) {
+      log.debug(LOG_NS, 'phone hand tool stand down', {})
+      return
+    }
+    log.debug(LOG_NS, 'phone hand tool enter pointing', {})
     this.parent.transition('pointing')
   }
 

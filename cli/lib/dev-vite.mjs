@@ -1,0 +1,105 @@
+/**
+ * Shared dev-environment helpers for `tlda-dev serve` and `tlda-dev sandbox`.
+ *
+ * Both commands need the same three things: find the repo root from anywhere,
+ * resolve/create a worktree for a branch, and start a detached Vite dev server
+ * off that worktree. `serve` points Vite at the normal local backend (chat → the
+ * global store via /api/fleet-config); `sandbox` points it at an isolated backend
+ * (VITE_SERVER_PORT) so nothing is shared.
+ */
+
+import { execSync, spawn } from 'child_process'
+import { existsSync, openSync } from 'fs'
+import { join, dirname, resolve } from 'path'
+import { fileURLToPath } from 'url'
+
+export async function findFreePort(startPort) {
+  const net = await import('net')
+  return new Promise((resolve) => {
+    const server = net.default.createServer()
+    server.listen(startPort, () => {
+      const { port } = server.address()
+      server.close(() => resolve(port))
+    })
+    server.on('error', () => resolve(findFreePort(startPort + 1)))
+  })
+}
+
+// Main repo root, whether we're called from the main checkout or a worktree.
+// `git rev-parse --git-common-dir` returns the shared .git dir; its parent is the
+// main repo. Falls back to the dir two levels up from this file (cli/lib → repo).
+export function resolveRepoRoot() {
+  const here = dirname(fileURLToPath(import.meta.url))
+  try {
+    return execSync('git rev-parse --show-toplevel', { cwd: here, stdio: 'pipe' }).toString().trim()
+  } catch {
+    return resolve(here, '..', '..')
+  }
+}
+
+// Resolve the worktree dir for a branch, creating the worktree + installing deps
+// if needed. `branch` null/undefined → use repoRoot itself (current checkout).
+export function ensureWorktree(repoRoot, branch) {
+  if (!branch) return repoRoot
+  const worktreeDir = join(repoRoot, '.worktrees', branch)
+  if (!existsSync(worktreeDir)) {
+    console.log(`Creating worktree .worktrees/${branch}...`)
+    try {
+      execSync(`git worktree add -b "${branch}" ".worktrees/${branch}"`, { cwd: repoRoot, stdio: 'pipe' })
+    } catch {
+      // Branch already exists — check it out without -b.
+      execSync(`git worktree add ".worktrees/${branch}" "${branch}"`, { cwd: repoRoot, stdio: 'pipe' })
+    }
+    console.log(`Worktree created: ${worktreeDir}`)
+  }
+  if (!existsSync(join(worktreeDir, 'node_modules'))) {
+    console.log('Running npm install...')
+    execSync('npm install --ignore-scripts', { cwd: worktreeDir, stdio: 'inherit' })
+  }
+  return worktreeDir
+}
+
+// Start a detached Vite dev server off `worktreeDir`. Returns { scheme, port, pid,
+// logFile }. Probes https-first (vite serves https when the mkcert certs exist) so
+// the printed URL matches what Vite actually serves. `serverPort`, when set, is
+// exported as VITE_SERVER_PORT so Vite proxies /api+/sync to that backend (used by
+// the sandbox to point the frontend at its isolated server).
+export async function startWorktreeVite({ worktreeDir, port, serverPort = null, hasTls = false }) {
+  const repoRoot = resolveRepoRoot()
+  const logFile = join(worktreeDir, '.dev-vite.log')
+  const logFd = openSync(logFile, 'a')
+
+  // Call the vite binary directly — `npx vite` adds a wrapper that gets reaped when
+  // the spawning shell exits. Prefer the worktree's install, fall back to the repo's.
+  const viteBin = [
+    join(worktreeDir, 'node_modules', '.bin', 'vite'),
+    join(repoRoot, 'node_modules', '.bin', 'vite'),
+  ].find(p => existsSync(p))
+  if (!viteBin) throw new Error('vite binary not found (worktree or main repo node_modules)')
+
+  // Bind IPv4 explicitly — without --host vite binds IPv6 [::1] only, so a browser
+  // hitting `localhost` (→ 127.0.0.1) can't connect.
+  const child = spawn(viteBin, ['--port', String(port), '--host', '127.0.0.1'], {
+    cwd: worktreeDir,
+    detached: true,
+    stdio: ['ignore', logFd, logFd],
+    env: serverPort ? { ...process.env, VITE_SERVER_PORT: String(serverPort) } : process.env,
+  })
+  child.unref()
+
+  // Poll for readiness (up to 30s). Probe https first when certs exist; the scheme
+  // that answers is the one we return — polling only http hangs on a cert'd machine.
+  let scheme = null
+  for (let i = 0; i < 60 && !scheme; i++) {
+    await new Promise(r => setTimeout(r, 500))
+    for (const s of (hasTls ? ['https', 'http'] : ['http'])) {
+      try {
+        const res = await fetch(`${s}://localhost:${port}/`, { signal: AbortSignal.timeout(1000) })
+        if (res.ok || res.status === 404) { scheme = s; break }
+      } catch { /* not up yet / wrong scheme — retry */ }
+    }
+  }
+  if (!scheme) throw new Error(`Vite failed to start on port ${port} within 30s. Check log: ${logFile}`)
+
+  return { scheme, port, pid: child.pid, logFile }
+}

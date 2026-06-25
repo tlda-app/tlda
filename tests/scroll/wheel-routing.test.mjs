@@ -85,7 +85,7 @@ const context = await browser.newContext({
 const page = await context.newPage()
 
 try {
-  await page.goto(`http://localhost:${PORT}/?doc=${DOC}&name=skip&token=${TOKEN}`)
+  await page.goto(`http://localhost:${PORT}/?doc=${DOC}&name=skip&token=${TOKEN}&pw=1`)
   await delay(12000) // match scroll-playback.mjs timing
 
   // Clean up accumulated shapes from previous test runs, then create one fresh one

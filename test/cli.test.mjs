@@ -11,7 +11,7 @@
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, unlinkSync } from 'node:fs'
+import { appendFileSync, mkdtempSync, writeFileSync, mkdirSync, rmSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
@@ -21,13 +21,25 @@ const __dirname = fileURLToPath(new URL('.', import.meta.url))
 const ROOT = join(__dirname, '..')
 const CTD = join(ROOT, 'cli', 'tlda.mjs')
 
+function scrubAgentEnv(env) {
+  const next = { ...env }
+  for (const key of ['FLEET_ID', 'FLEET_NAME', 'FLEET_TMUX_SESSION', 'FLEET_HARNESS', 'TMUX']) {
+    delete next[key]
+  }
+  return next
+}
+
 // Helper: run tlda with args, return { stdout, stderr, exitCode }
 function tlda(...args) {
+  const options = args.at(-1)
+  const hasOptions = options && typeof options === 'object' && !Array.isArray(options)
+  const cliArgs = hasOptions ? args.slice(0, -1) : args
+  const baseEnv = hasOptions && options.env ? options.env : scrubAgentEnv(process.env)
   try {
-    const stdout = execFileSync('node', [CTD, ...args], {
+    const stdout = execFileSync('node', [CTD, ...cliArgs], {
       encoding: 'utf8',
       timeout: 10000,
-      env: { ...process.env, TLDA_SERVER: 'http://localhost:99999' }, // unreachable server
+      env: { ...baseEnv, TLDA_SERVER: 'http://localhost:99999' }, // unreachable server
     })
     return { stdout, stderr: '', exitCode: 0 }
   } catch (e) {
@@ -42,23 +54,90 @@ function tlda(...args) {
 describe('argument parser', () => {
   it('shows help with no args', () => {
     const { stdout } = tlda()
-    assert.ok(stdout.includes('tlda — Claude TLDraw CLI'))
-    assert.ok(stdout.includes('Commands:'))
+    assert.ok(stdout.includes('tlda — collaborative LaTeX paper review'))
+    assert.ok(stdout.includes('tlda doc <cmd>'))
   })
 
   it('shows per-command help', () => {
-    for (const cmd of ['create', 'push', 'watch', 'open', 'status', 'errors', 'build', 'delete', 'preview', 'server', 'config']) {
+    for (const cmd of ['doc', 'server', 'agent', 'config']) {
       const { stdout, exitCode } = tlda(cmd, '--help')
       assert.equal(exitCode, 0, `${cmd} --help should exit 0`)
       assert.ok(stdout.includes('tlda'), `${cmd} --help should show usage`)
     }
   })
 
-  it('completions outputs zsh script', () => {
+  it('completions is advertised in top-level help', () => {
     const { stdout, exitCode } = tlda('completions')
     assert.equal(exitCode, 0)
-    assert.ok(stdout.includes('#compdef tlda'))
-    assert.ok(stdout.includes('_ctd'))
+    assert.ok(stdout.includes('tlda — collaborative LaTeX paper review'))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Agent capability CLI
+// ---------------------------------------------------------------------------
+
+describe('agent capability CLI', () => {
+  it('dry-runs friendly names without contacting the server from user context', () => {
+    const { stdout, exitCode } = tlda('agent', 'capability', 'alice', 'write', '--dry-run', {
+      env: scrubAgentEnv(process.env),
+    })
+
+    assert.equal(exitCode, 0)
+    assert.ok(stdout.includes('[dry-run] would set alice capability to write (cwd / write / network)'))
+    assert.ok(stdout.includes('update metadata.spawnPolicy policy/category'))
+  })
+
+  it('uses no-net as a modifier, not a capability type', () => {
+    const dryRun = tlda('agent', 'capability', 'alice', 'write', '--no-net', '--dry-run', {
+      env: scrubAgentEnv(process.env),
+    })
+    assert.equal(dryRun.exitCode, 0)
+    assert.ok(dryRun.stdout.includes('write (cwd / write / no network)'))
+
+    const asType = tlda('agent', 'capability', 'alice', 'no-net', '--dry-run', {
+      env: scrubAgentEnv(process.env),
+    })
+    assert.notEqual(asType.exitCode, 0)
+    assert.ok(asType.stderr.includes('Unknown capability "no-net"'))
+  })
+
+  it('shows capability-specific help', () => {
+    const { stdout, exitCode } = tlda('agent', 'capability', '--help')
+
+    assert.equal(exitCode, 0)
+    assert.ok(stdout.includes('Write scope:'))
+    assert.ok(stdout.includes('tlda-write  write configured TLDA project/source roots'))
+    assert.ok(stdout.includes('--no-net    rare explicit network-off modifier'))
+  })
+
+  it('rejects unknown capabilities', () => {
+    const { stderr, exitCode } = tlda('agent', 'capability', 'alice', 'workspace-write', '--dry-run', {
+      env: scrubAgentEnv(process.env),
+    })
+
+    assert.notEqual(exitCode, 0)
+    assert.ok(stderr.includes('Unknown capability "workspace-write"'))
+    assert.ok(stderr.includes('read, write, tlda-write, full'))
+  })
+
+  it('does not expose an escalate alias', () => {
+    const { stderr, exitCode } = tlda('agent', 'escalate', 'alice', 'write', '--dry-run', {
+      env: scrubAgentEnv(process.env),
+    })
+
+    assert.notEqual(exitCode, 0)
+    assert.ok(stderr.includes('Usage: tlda agent <list|spawn|check-ready|attach|hibernate|capability>'))
+  })
+
+  it('refuses from an agent context before dry-run escalation', () => {
+    const { stderr, exitCode } = tlda('agent', 'capability', 'alice', 'read', '--dry-run', {
+      env: { ...scrubAgentEnv(process.env), FLEET_ID: 'fleet:test-agent', FLEET_NAME: 'test-agent' },
+    })
+
+    assert.notEqual(exitCode, 0)
+    assert.ok(stderr.includes('user/operator-only'))
+    assert.ok(stderr.includes('agent context'))
   })
 })
 
@@ -193,5 +272,79 @@ describe('source hashes', () => {
     assert.equal(files[0].path, 'a.tex')
 
     rmSync(dir, { recursive: true, force: true })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Shadow mirror refs
+// ---------------------------------------------------------------------------
+
+describe('shadow mirror refs', () => {
+  function git(cwd, args) {
+    return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim()
+  }
+
+  it('initializes a fresh shadow repo before installing the blocking commit hook', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'tlda-shadow-init-test-'))
+
+    try {
+      const { initProjectStore, projectDir } = await import('../server/lib/project-store.mjs')
+      const { initShadowRepo } = await import('../server/lib/shadow-repo.mjs')
+
+      initProjectStore(root)
+      mkdirSync(projectDir('fresh-shadow'), { recursive: true })
+
+      const repo = await initShadowRepo('fresh-shadow')
+      assert.equal(git(repo, ['log', '--format=%s', '-1']), 'init')
+
+      appendFileSync(join(repo, 'CLAUDE.md'), '\nmanual change\n')
+      git(repo, ['add', 'CLAUDE.md'])
+      assert.throws(
+        () => git(repo, ['commit', '-m', 'manual edit']),
+        /Direct commits to this shadow repo are blocked/,
+      )
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('imports a shadow bundle as refs without moving the checked-out branch', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tlda-mirror-test-'))
+    const shadow = join(root, 'shadow')
+    const source = join(root, 'source')
+    mkdirSync(shadow)
+    mkdirSync(source)
+
+    try {
+      git(shadow, ['init'])
+      git(shadow, ['config', 'user.email', 'tlda@test'])
+      git(shadow, ['config', 'user.name', 'tlda'])
+      writeFileSync(join(shadow, 'main.tex'), 'one\n')
+      git(shadow, ['add', 'main.tex'])
+      git(shadow, ['commit', '-m', 'Build at test'])
+      const hash = git(shadow, ['rev-parse', 'HEAD'])
+      const hash7 = hash.slice(0, 7)
+      const bundle = join(root, 'shadow.bundle')
+      git(shadow, ['bundle', 'create', bundle, '--all'])
+
+      git(source, ['init'])
+      git(source, ['config', 'user.email', 'user@test'])
+      git(source, ['config', 'user.name', 'user'])
+      writeFileSync(join(source, 'notes.txt'), 'working tree stays here\n')
+      git(source, ['add', 'notes.txt'])
+      git(source, ['commit', '-m', 'source root'])
+      const beforeHead = git(source, ['rev-parse', 'HEAD'])
+
+      git(source, ['bundle', 'verify', bundle])
+      git(source, ['fetch', bundle, `+${hash}:refs/tags/shadow/${hash7}`])
+      git(source, ['cat-file', '-e', `${hash}^{commit}`])
+      git(source, ['update-ref', 'refs/tlda/shadow/HEAD', hash])
+
+      assert.equal(git(source, ['rev-parse', `shadow/${hash7}`]), hash)
+      assert.equal(git(source, ['rev-parse', 'refs/tlda/shadow/HEAD']), hash)
+      assert.equal(git(source, ['rev-parse', 'HEAD']), beforeHead)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })

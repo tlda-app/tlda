@@ -16,11 +16,13 @@ import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import puppeteer from 'puppeteer-core'
 import { readManifest, listDocs } from './manifest.mjs'
+import { hasTls } from '../shared/config.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..')
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 const VITE_BASE = '/tlda/'
+const LOCAL_PROTO = hasTls ? 'https' : 'http'
 
 function pass(msg) { return { ok: true, msg } }
 function fail(msg, detail) { return { ok: false, msg, detail } }
@@ -57,7 +59,7 @@ async function checkServices() {
 
   // Sync server health
   try {
-    const resp = await fetch('http://localhost:5176/health')
+    const resp = await fetch(`${LOCAL_PROTO}://localhost:5176/health`)
     const body = await resp.text()
     if (resp.ok && body.trim() === 'ok') {
       checks.push(pass('Sync server healthy on port 5176'))
@@ -65,7 +67,7 @@ async function checkServices() {
       checks.push(fail('Sync server unhealthy', `status=${resp.status}, body=${body}`))
     }
   } catch (e) {
-    checks.push(fail('Sync server not responding on port 5176', e.message))
+    checks.push(fail(`Sync server not responding on ${LOCAL_PROTO}://localhost:5176`, e.message))
   }
 
   // Port conflict: exactly one process on 5176

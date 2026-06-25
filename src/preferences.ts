@@ -8,17 +8,33 @@
  * Local cache makes getPref() synchronous; loadPrefs() populates it async.
  */
 
-import type { CurveHandles } from './curveEditor'
-import { DEFAULT_CURVE } from './curveEditor'
+import type { CurveHandles } from './curveEditor.ts'
+import { DEFAULT_CURVE } from './curveEditor.ts'
 
 const DEFAULTS = {
   'docview-sources': ['ref'] as string[],
   'voice-note-color': 'yellow' as string,
   'math-note-color': 'light-blue' as string,
+  'math-note-opacity': 1.0 as number,
   'response-curve': DEFAULT_CURVE as CurveHandles,
   'spawn-mode': '' as string,
-  'voice-backend': 'chrome' as string,
+  // Default on, but to the SILENT backend (Deepgram SDK) — never chrome. Chrome
+  // (the only backend whose earcon can beep) is opt-in only. There is NO
+  // fallback: if the selected backend is unreachable, voice goes quiet, it
+  // never switches to another backend.
+  'voice-backend': 'deepgram-sdk' as string,
+  'voice-submit-words': 'send, send it, sent' as string,
+  'voice-sink-shape-types': 'fleet-agents' as string,
   'fleet-font-size': 11 as number,
+  // Default fleet layout sizing (used by createFleetLayout). margin-gap is the
+  // distance from each document edge to the near edge of the fleet shapes in
+  // that margin; everything else stacks outward from there. Height is a fraction
+  // of the raw viewport; the rest are px (HUD renders at z=1, so page == screen
+  // px). These only shape how layouts are CREATED — never HUD position (anchor).
+  'layout-height-frac': 0.7 as number,
+  'layout-rail-width': 375 as number,
+  'layout-chat-width': 460 as number,
+  'layout-margin-gap': 40 as number,
   'fleet-chrome-opacity': 1.0 as number,
   'fleet-content-opacity': 1.0 as number,
   'fleet-age-fade': true as boolean,
@@ -28,6 +44,21 @@ const DEFAULTS = {
   'fold-write-lines': 10 as number,
   'fold-md-lines': 0 as number,
   'fold-diff-lines': 0 as number,
+  // Highlighter edge-zone (the HighlighterSlider). Toggled from the prefs menu.
+  'hl-zone-enabled': true as boolean,
+  // Provenance/cascade surfacing mode. off = no surfacing (also hides the ribbon
+  // hover tooltip). hover = ephemeral tooltip; panel = docked side panel; inline =
+  // click-to-pin card. Default hover preserves today's behavior; off/panel/inline opt in.
+  'provenance-display-mode': 'hover' as string,
+  // Todd's optional automatic turn-end introspection poke. Read live over
+  // /api/fleet/prefs. Default off: the routine automatic watchdog is task-kick
+  // for genuinely idle active tasks; this poke is available manually unless
+  // explicitly enabled here.
+  'todd-self-check-auto-enabled': false as boolean,
+  'todd-self-check-countdown-sec': 30 as number,
+  // Preferences panel disclosure state. Kept server-backed so touch-only
+  // devices don't need localStorage access to recover usable panel space.
+  'prefs-open-sections': ['identity', 'theme', 'readability'] as string[],
 }
 
 export type PrefKey = keyof typeof DEFAULTS

@@ -77,7 +77,7 @@ async function main() {
   // 1) chat with source (file form) — server gets the already-extracted body + source
   const body1 = '## The Plan\nfirst version'
   const src = { file: sectionFile, section: 'the-plan' }
-  const r1 = await sender.req('chat', { message: body1, to: [['rt-rcpt']], from: 'fleet:rt-sender', source: src })
+  const r1 = await sender.req('chat', { message: body1, to: 'rt-rcpt', from: 'fleet:rt-sender', source: src })
   if (!r1?.ok) return fail('chat send failed: ' + JSON.stringify(r1))
   const e1 = lastEvent()
   const m1 = e1.metadata ? JSON.parse(e1.metadata) : {}

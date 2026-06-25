@@ -12,30 +12,47 @@ import {
   stopEventPropagation,
   useEditor,
   useValue,
+  type Editor,
+  type TLShapeId,
 } from 'tldraw'
 import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, useContext, memo, useSyncExternalStore, forwardRef } from 'react'
 import { createPortal } from 'react-dom'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
+import { probe } from '../perf-probe'
 
 // @ts-ignore — vanilla JS module
 import { renderChatLine, resolveInlineAttachments, esc } from '../fleet/chat-render.mjs'
 // @ts-ignore — vanilla JS module
-import { renderActivityGroup } from '../fleet/activity-render.mjs'
+import { renderActivityGroup, scheduleTimeLabel } from '../fleet/activity-render.mjs'
 // @ts-ignore — vanilla JS module
 import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil } from '../fleet/utils.mjs'
 // @ts-ignore — vanilla JS module
 import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText, isRecording } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
-import { getHumanId, getHumanName, updateEventById, sendViewingContext, setViewingEnrichFn } from '../fleet/fleet-data.mjs'
+import { getHumanId, getHumanName, updateEventById, sendViewingContext, setViewingEnrichFn, getFleetWsBase } from '../fleet/fleet-data.mjs'
+// @ts-ignore — vanilla JS module
+import { installChatImageRetry } from '../fleet/chat-image-retry.mjs'
+// @ts-ignore — vanilla JS module
+import {
+  buildFleetAgentFilter,
+  buildFleetDmFilter,
+  classifyFleetComposerTrafficMode,
+  filterForFleetComposerTrafficMode,
+  nextFleetComposerTrafficMode,
+  quietTrafficSuppressesActivity,
+} from '../fleet/filter-semantics.mjs'
+import { appendToken } from '../authToken'
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
-import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useElizaPending, sendMessage, loadBefore, resolveFilter, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
-import type { ElizaNudge } from '../fleet-data-adapter'
-import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
-import { agentDisplayName } from './fleet-utils'
+import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useSuggestions, clearGroup, sendMessage, loadBefore, resolveFilter, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
+import type { Suggestion } from '../fleet-data-adapter'
+import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore, createTemporaryMarkdownColumn } from './FleetPillShape'
+import { agentDisplayName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
+import { ChatComposer } from './ChatComposer'
 import { AgentName, PhaseIcon } from './PhaseIcon'
 import { baseName, phaseFromName } from '../../shared/lineage-name.mjs'
 import { dragCoordinator } from './dragCoordinator'
 import { DocContext, PanelContext } from '../PanelContext'
+import { getPageRenderHash, getBuiltPageCount } from '../stores'
 import { loadLookup, type LookupData } from '../synctexLookup'
 import { getSourceAnchor } from '../synctexAnchor'
 import { log } from '../logger'
@@ -44,15 +61,83 @@ import { fetchProofInfo, fetchTheoremMap } from '../docInfoCache'
 import { PDF_HEIGHT } from '../layoutConstants'
 import { TerminalCard } from './TerminalCard'
 import { Terminal } from 'xterm'
-import { useIsInViewport } from './useIsInViewport'
-import { broadcastSharedDoc } from '../useYjsSync'
+import { useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
+import { clientPointToPage, pagePointToClient } from '../wm/viewport-coordinates'
 import { consumeBulletContexts, subscribeBulletContext, getBulletContexts } from '../stores/bulletContextStore'
 import { getPref, subscribePref } from '../preferences'
+import { DATABASE_HTTP } from '../activeConfig'
 import './fleet-chat.css'
 
 const DEFAULT_W = 400
 const DEFAULT_H = 600
-const FLEET_API = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5176'
+const FLEET_API = DATABASE_HTTP
+type ChatTrafficMode = 'normal' | 'quiet'
+type ComposerTrafficFilterMode = 'dm-quiet' | 'dm' | 'agent' | 'custom'
+
+function isFleetPillRecord(record: any): boolean {
+  return record?.typeName === 'shape' && record.type === 'fleet-pill'
+}
+
+function useFleetPillCount(editor: Editor): number {
+  const [count, setCount] = useState(() =>
+    editor.getCurrentPageShapes().reduce((total, shape) => total + ((shape.type as string) === 'fleet-pill' ? 1 : 0), 0),
+  )
+
+  useEffect(() => {
+    return editor.store.listen(({ changes }) => {
+      let delta = 0
+      for (const record of Object.values(changes.added)) {
+        if (isFleetPillRecord(record)) delta += 1
+      }
+      for (const record of Object.values(changes.removed)) {
+        if (isFleetPillRecord(record)) delta -= 1
+      }
+      for (const [from, to] of Object.values(changes.updated) as any[]) {
+        const wasPill = isFleetPillRecord(from)
+        const isPill = isFleetPillRecord(to)
+        if (!wasPill && isPill) delta += 1
+        else if (wasPill && !isPill) delta -= 1
+      }
+      if (delta !== 0) setCount(value => Math.max(0, value + delta))
+    }, { source: 'all', scope: 'document' })
+  }, [editor])
+
+  return count
+}
+
+// Bind a handler that fires on both mouse click and a touch tap. On touch a tap
+// on a text element (e.g. the lightbox ✕ or a chip) never synthesizes a `click`,
+// so click-only handlers are dead on iPad; add a movement-guarded pointerup so a
+// genuine tap (not a drag) also fires. Handlers used here are idempotent
+// (overlay.remove()), so a redundant mouse/touch double-call is harmless.
+function addTap(el: Element | null | undefined, fn: (e: Event) => void) {
+  if (!el) return
+  let dx = 0, dy = 0
+  el.addEventListener('click', fn)
+  // Track both finger (touch) AND stylus (pen) — Apple Pencil taps also fire no
+  // synthesized click. Guard is 16px (not 10): a thumb drifts more than 10px on
+  // a genuine tap, so 10 dropped real taps.
+  el.addEventListener('pointerdown', (e: any) => { if (e.pointerType === 'touch' || e.pointerType === 'pen') { dx = e.clientX; dy = e.clientY } })
+  el.addEventListener('pointerup', (e: any) => {
+    if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return
+    if (Math.abs(e.clientX - dx) > 16 || Math.abs(e.clientY - dy) > 16) return
+    fn(e)
+  })
+}
+
+// On touch devices the chat input is voice-only: tapping it focuses the field
+// for dictation, and iOS must NOT raise the on-screen keyboard (it eats half the
+// screen). inputmode="none" reliably suppresses the soft keyboard on a <textarea>
+// while keeping focus + programmatic/hardware-keyboard input working.
+// maxTouchPoints (not pointer:coarse) — a Magic Keyboard/trackpad makes the
+// iPad's primary pointer "fine", which would wrongly drop the no-keyboard rule.
+const _isTouchDevice = (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
+  || (typeof location !== 'undefined' && new URLSearchParams(location.search).has('forcetouch'))
+
+// Phone (narrow screen). iOS Safari auto-zooms any focused input under 16px, so
+// the composer font must be ≥16px on phone — and it's set as an INLINE style
+// (below), which CSS can't override, so the value is chosen here.
+const _isPhone = typeof window !== 'undefined' && !!window.matchMedia?.('(max-width: 600px)').matches
 
 function getFleetStyleVars(): React.CSSProperties {
   return {
@@ -77,11 +162,24 @@ function usePrefTick() {
   return tick
 }
 
-// ---- Terminal hover pane ----
+function isNonHumanAgentLabel(agents: any[], label: string) {
+  const agent = agents.find((a: any) => labelsForAgent(a).includes(label))
+  return !!agent && !agent.human
+}
 
-const TERM_HOVER_WS_HOST = typeof window !== 'undefined'
-  ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`
-  : 'ws://localhost:5176'
+function activeComposerAgentLabel(filter: [string, string][][], sendTargets: string[], agents: any[]) {
+  for (const clause of filter) {
+    for (const [, label] of clause) {
+      if (isNonHumanAgentLabel(agents, label)) return label
+    }
+  }
+  for (const label of sendTargets) {
+    if (isNonHumanAgentLabel(agents, label)) return label
+  }
+  return ''
+}
+
+// ---- Terminal hover pane ----
 
 // Terminal peek overlay — shown when hovering the terminal icon on a chat shape.
 // Fixed grid for the peek. MUST match the daemon's tmux-attach PTY size in
@@ -93,6 +191,28 @@ const PEEK_ROWS = 40
 // Lightbox height. When lightboxed the pane is bottom-anchored so it grows
 // UPWARD from the (fixed) input bar instead of pushing the input off-screen.
 const LIGHTBOX_H = 480
+// Lines of real tmux scrollback to fetch for lightbox backscroll.
+const HISTORY_LINES = 500
+
+const TERM_FONT = "'SF Mono', 'Fira Code', Menlo, monospace"
+const TERM_THEME = {
+  background: '#0d0d14',
+  foreground: '#c8c8d8',
+  cursor: '#c8c8d8',
+  black: '#1e1e1e', brightBlack: '#555',
+  red: '#f44747', brightRed: '#f44747',
+  green: '#6a9955', brightGreen: '#6a9955',
+  yellow: '#dcdcaa', brightYellow: '#dcdcaa',
+  blue: '#569cd6', brightBlue: '#569cd6',
+  magenta: '#c678dd', brightMagenta: '#c678dd',
+  cyan: '#4ec9b0', brightCyan: '#4ec9b0',
+  white: '#d4d4d4', brightWhite: '#ffffff',
+}
+
+type TerminalOutputFrame = {
+  data: string
+  encoding?: string
+}
 
 // Hover mode: read-only snapshot that resets on each server push.
 // Pinned mode: stays open, shows input bar for sending commands, resizable.
@@ -119,6 +239,11 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
           ? prev
           : { left: r.left, top: r.bottom, width: r.width })
       }
+      // Track the pinned pane's bottom edge while NOT lightboxed so the lightbox
+      // can anchor its bottom-left there (keeping it fixed as it grows up + right).
+      if (!lightboxedRef.current && paneRef.current) {
+        paneBottomRef.current = paneRef.current.getBoundingClientRect().bottom
+      }
       raf = requestAnimationFrame(measure)
     }
     raf = requestAnimationFrame(measure)
@@ -134,15 +259,97 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
   const [height, setHeight] = useState(210)
   const [lightboxed, setLightboxed] = useState(false)
   const [scale, setScale] = useState(1)
+  // The peek renders a fixed grid sized to the agent's REAL tmux window width
+  // (reported by the daemon via a 'size' message), then CSS-scales it to fit the
+  // panel. PEEK_COLS/ROWS are only the fallback until the first 'size' arrives —
+  // a grid narrower than the window would garble the absolute-positioned stream.
+  const [gridCols, setGridCols] = useState(PEEK_COLS)
+  const [gridRows, setGridRows] = useState(PEEK_ROWS)
+  const gridColsRef = useRef(gridCols)
+  const gridRowsRef = useRef(gridRows)
+  useEffect(() => { gridColsRef.current = gridCols }, [gridCols])
+  useEffect(() => { gridRowsRef.current = gridRows }, [gridRows])
   const dragRef = useRef<{ startY: number; startH: number } | null>(null)
+  const paneRef = useRef<HTMLDivElement>(null)
+  // Viewport-y of the pinned pane's bottom edge, frozen as the lightbox anchor so
+  // the bottom-left corner stays put when the lightbox grows up + right.
+  const paneBottomRef = useRef(0)
+  const lightboxedRef = useRef(lightboxed)
+  // Real tmux scrollback shown as one continuous capture when lightboxed.
+  const [historyText, setHistoryText] = useState<string | null>(null)
+  // Bumped to re-pull the capture (e.g. after sending a command) since the
+  // lightbox capture is a snapshot, not the live attach stream.
+  const [historyTick, setHistoryTick] = useState(0)
+  const historyContainerRef = useRef<HTMLDivElement>(null)
+  const historyTermRef = useRef<Terminal | null>(null)
+  const refreshHistory = useCallback(() => {
+    if (!lightboxedRef.current) return
+    setTimeout(() => setHistoryTick(t => t + 1), 400)
+    setTimeout(() => setHistoryTick(t => t + 1), 1200)
+  }, [])
 
   useEffect(() => { pinnedRef.current = pinned }, [pinned])
+  useEffect(() => { lightboxedRef.current = lightboxed }, [lightboxed])
 
-  // Render at a FIXED grid that matches the daemon's tmux-attach PTY
-  // (PEEK_COLS × PEEK_ROWS == fleet-daemon.mjs rpcStartTerminalWatch). The two
-  // MUST agree: the agent's TUI repaints at the PTY's column count using
-  // absolute cursor positioning, so a mismatched xterm grid garbles every
-  // frame. We never reflow the grid to fit the popup — instead we scale the
+  // On lightbox open, fetch the agent's real tmux scrollback (capture-pane via
+  // the daemon). The live attach stream only carries the current screen, so this
+  // is what makes backscroll meaningful. Snapshot — refetched each time you open.
+  useEffect(() => {
+    if (!lightboxed) { setHistoryText(null); return }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const r = await fetch(`${FLEET_API}/api/capture-pane`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ agent: agentId, lines: HISTORY_LINES }),
+        })
+        if (!r.ok) return
+        const { pane } = await r.json()
+        if (!cancelled && typeof pane === 'string') setHistoryText(pane)
+      } catch {}
+    })()
+    return () => { cancelled = true }
+  }, [lightboxed, agentId, historyTick])
+
+  // Render the scrollback snapshot into a static, full-height xterm stacked above
+  // the live screen. The body scrolls through [history][live] natively, so the
+  // wheel moves smoothly (no xterm line-stepping), and the live screen stays live.
+  useEffect(() => {
+    const host = historyContainerRef.current
+    if (!lightboxed || !historyText || !host) {
+      if (historyTermRef.current) { historyTermRef.current.dispose(); historyTermRef.current = null }
+      return
+    }
+    const text = historyText.replace(/\r?\n/g, '\r\n')
+    const rows = Math.max(1, Math.min(historyText.split('\n').length, 2000))
+    const term = new Terminal({
+      cols: gridCols,
+      rows,
+      fontSize: 11,
+      fontFamily: TERM_FONT,
+      theme: TERM_THEME,
+      scrollback: 0,
+      cursorBlink: false,
+      disableStdin: true,
+    })
+    term.open(host)
+    term.write(text)
+    historyTermRef.current = term
+    // After the history renders, drop the body to the bottom so the live screen
+    // is what's showing; scroll up to read history.
+    requestAnimationFrame(() => {
+      const body = bodyRef.current
+      if (body) body.scrollTop = body.scrollHeight
+    })
+    return () => { term.dispose(); historyTermRef.current = null }
+  }, [lightboxed, historyText, gridCols])
+
+  // Create at the PEEK_COLS×PEEK_ROWS fallback, then resize to the agent's real
+  // tmux window size when the 'size' message arrives (see the WS handler below).
+  // The grid MUST match the window: the agent's TUI repaints at the window's
+  // column count using absolute cursor positioning, so a mismatched grid garbles
+  // every frame. We never reflow the grid to fit the popup — instead we scale the
   // rendered terminal visually (see the scale effect below).
   useEffect(() => {
     if (!containerRef.current) return
@@ -150,26 +357,15 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
       cols: PEEK_COLS,
       rows: PEEK_ROWS,
       fontSize: 11,
-      fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace",
-      theme: {
-        background: '#0d0d14',
-        foreground: '#c8c8d8',
-        cursor: '#c8c8d8',
-        black: '#1e1e1e', brightBlack: '#555',
-        red: '#f44747', brightRed: '#f44747',
-        green: '#6a9955', brightGreen: '#6a9955',
-        yellow: '#dcdcaa', brightYellow: '#dcdcaa',
-        blue: '#569cd6', brightBlue: '#569cd6',
-        magenta: '#c678dd', brightMagenta: '#c678dd',
-        cyan: '#4ec9b0', brightCyan: '#4ec9b0',
-        white: '#d4d4d4', brightWhite: '#ffffff',
-      },
+      fontFamily: TERM_FONT,
+      theme: TERM_THEME,
       scrollback: 200,
       cursorBlink: false,
       disableStdin: true,
     })
     term.open(containerRef.current)
     termRef.current = term
+    try { term.resize(gridColsRef.current, gridRowsRef.current) } catch {}
     return () => {
       term.dispose()
       termRef.current = null
@@ -192,7 +388,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
     const ro = new ResizeObserver(() => measure())
     if (bodyRef.current) ro.observe(bodyRef.current)
     return () => { cancelAnimationFrame(raf); ro.disconnect() }
-  }, [lightboxed, height, status])
+  }, [lightboxed, height, status, gridCols])
 
   // Leaving pinned mode also leaves the lightbox.
   useEffect(() => { if (!pinned) setLightboxed(false) }, [pinned])
@@ -207,11 +403,56 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
     })
   }, [lightboxed])
 
+  // xterm installs its own wheel handler and preventDefault()s it, and its
+  // viewport is overflow:hidden — so the wheel never reaches the scroll
+  // container. Intercept it in the CAPTURE phase (before either xterm sees it)
+  // and scroll the container ourselves, so backscroll works over both the
+  // history block and the live screen.
+  useEffect(() => {
+    if (!lightboxed) return
+    const body = bodyRef.current
+    if (!body) return
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      body.scrollTop += e.deltaY
+    }
+    body.addEventListener('wheel', onWheel, { capture: true, passive: false })
+    return () => body.removeEventListener('wheel', onWheel, { capture: true } as any)
+  }, [lightboxed, historyText])
+
   useEffect(() => {
     if (!agentId) return
     wsRef.current?.close()
     setStatus('connecting')
-    const ws = new WebSocket(`${TERM_HOVER_WS_HOST}/ws/terminal?agent=${encodeURIComponent(agentId)}`)
+    let sawAuthoritativeSize = false
+    let fallbackFlushed = false
+    let fallbackTimer: ReturnType<typeof setTimeout> | null = null
+    const pendingOutput: TerminalOutputFrame[] = []
+    const writeOutput = (msg: TerminalOutputFrame) => {
+      const term = termRef.current
+      if (!term) return
+      if (msg.encoding === 'base64') {
+        const bytes = Uint8Array.from(atob(msg.data), c => c.charCodeAt(0))
+        term.write(bytes)
+      } else {
+        term.write(msg.data)
+      }
+    }
+    const flushPendingOutput = () => {
+      if (!termRef.current) return
+      for (const msg of pendingOutput) writeOutput(msg)
+      pendingOutput.length = 0
+    }
+    fallbackTimer = setTimeout(() => {
+      if (sawAuthoritativeSize) return
+      fallbackFlushed = true
+      for (const msg of pendingOutput) writeOutput(msg)
+    }, 1500)
+    // /ws/terminal must hit the fleet server (where the daemon is connected),
+    // NOT the page origin — on the local copy the page is served from 5176 but
+    // the daemon talks to Fly, so the page-origin socket had no daemon behind it.
+    const ws = new WebSocket(appendToken(`${getFleetWsBase()}/ws/terminal?agent=${encodeURIComponent(agentId)}`))
     wsRef.current = ws
     ws.onopen = () => {
       setStatus('connected')
@@ -219,12 +460,31 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
     ws.onmessage = (evt) => {
       try {
         const msg = JSON.parse(evt.data)
-        if (msg.type === 'output' && msg.data && termRef.current) {
-          if (msg.encoding === 'base64') {
-            const bytes = Uint8Array.from(atob(msg.data), c => c.charCodeAt(0))
-            termRef.current.write(bytes)
+        if (msg.type === 'size' && msg.cols && msg.rows) {
+          // The daemon reports the agent's real tmux window size. Resize the live
+          // grid to match so the absolute-positioned stream renders cleanly; the
+          // scale effect then re-fits it to the panel width.
+          setGridCols(msg.cols)
+          setGridRows(msg.rows)
+          try {
+            const term = termRef.current
+            term?.resize(msg.cols, msg.rows)
+            if (fallbackTimer) {
+              clearTimeout(fallbackTimer)
+              fallbackTimer = null
+            }
+            if (!sawAuthoritativeSize) {
+              sawAuthoritativeSize = true
+              term?.clear()
+              flushPendingOutput()
+            }
+          } catch { void 0 }
+        } else if (msg.type === 'output' && msg.data && termRef.current) {
+          if (sawAuthoritativeSize) {
+            writeOutput(msg)
           } else {
-            termRef.current.write(msg.data)
+            pendingOutput.push(msg)
+            if (fallbackFlushed) writeOutput(msg)
           }
         } else if (msg.type === 'error') {
           setStatus('error')
@@ -233,13 +493,28 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
     }
     ws.onerror = () => setStatus('error')
     ws.onclose = () => {}
-    return () => { ws.close() }
+    return () => {
+      if (fallbackTimer) clearTimeout(fallbackTimer)
+      ws.close()
+    }
   }, [agentId])
 
   const sendInput = (data: string) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: 'input', data }))
     }
+    // Lightbox shows a capture snapshot, not the live stream — re-pull it so the
+    // command's effect shows up.
+    refreshHistory()
+  }
+
+  const submitInput = (text: string) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'submit', text }))
+    }
+    // Lightbox shows a capture snapshot, not the live stream — re-pull it so the
+    // command's effect shows up.
+    refreshHistory()
   }
 
   const shortId = agentId.replace('fleet:', '')
@@ -249,7 +524,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
   // setVoiceTarget wiring, but with a terminal-specific send).
   const registerVoice = (el: HTMLTextAreaElement) => {
     setVoiceTarget(el, [agentId], { [agentId]: shortId }, async (_targets: string[], text: string) => {
-      sendInput(text + '\r')
+      submitInput(text)
       el.value = ''
     })
   }
@@ -258,7 +533,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
     stopEventPropagation(e as any)
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      sendInput((inputRef.current?.value ?? '') + '\r')
+      submitInput(inputRef.current?.value ?? '')
       if (inputRef.current) inputRef.current.value = ''
     } else if (e.key === 'c' && e.ctrlKey) {
       e.preventDefault()
@@ -301,15 +576,28 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
     // contents so it adds no box and no opacity group — the pane stays fully opaque.
     <div className="fleet-chat-shape" style={{ display: 'contents' }}>
     <div
+      ref={paneRef}
       className={`fleet-terminal-hover-pane${pinned ? ' fleet-terminal-hover-pane-pinned' : ''}${lightboxed ? ' fleet-terminal-hover-pane-lightboxed' : ''}`}
       style={{
         position: 'fixed',
         left: anchor?.left ?? 0,
-        top: anchor?.top ?? 0,
-        width: anchor?.width ?? 0,
-        right: 'auto',
         visibility: anchor ? 'visible' : 'hidden',
-        height: lightboxed ? LIGHTBOX_H : height,
+        ...(lightboxed
+          // Grow UP + RIGHT from the pinned pane's bottom-left, which stays put.
+          // Width comes from the lightbox CSS (min(840px,92vw)); height is fixed.
+          ? {
+              top: 'auto',
+              bottom: (typeof window !== 'undefined' ? window.innerHeight : 0) - paneBottomRef.current,
+              height: LIGHTBOX_H,
+            }
+          // Peek/pinned: top-anchored to the input's bottom edge at the chat's
+          // width. Height is auto, so pinning ADDS the input bar below and the
+          // terminal you saw on hover stays in place (pane grows downward).
+          : {
+              top: anchor?.top ?? 0,
+              width: anchor?.width ?? 0,
+              right: 'auto',
+            }),
       }}
       onMouseEnter={onMouseEnter}
       onMouseLeave={pinned ? undefined : onMouseLeave}
@@ -328,15 +616,38 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
           ×
         </button>
       )}
-      <div ref={bodyRef} className="fleet-terminal-hover-body">
+      <div
+        ref={bodyRef}
+        className="fleet-terminal-hover-body"
+        style={lightboxed ? undefined : { height, flex: 'none' }}
+      >
+        {lightboxed && historyText && (
+          <div ref={historyContainerRef} className="fleet-terminal-hover-history" />
+        )}
+        {/* Live scaled screen for the hover/pinned peek. In the lightbox we show
+            the single continuous capture instead (history + current screen as one
+            block), so the live wrapper is hidden once the capture has loaded —
+            but stays mounted so the live term resumes when you leave the lightbox. */}
         <div
           className="fleet-terminal-hover-scale"
-          style={{ transform: `scale(${scale})`, transformOrigin: 'top left' }}
+          style={
+            lightboxed && historyText ? { display: 'none' }
+            : lightboxed ? { transform: `scale(${scale})`, transformOrigin: 'top left' }
+            : { transform: `scale(${scale})`, transformOrigin: 'bottom left', position: 'absolute', left: 0, bottom: 0 }
+          }
         >
           <div ref={containerRef} />
         </div>
       </div>
-      {pinned && status === 'connected' && (
+      {pinned && (
+        // Input bar shows whenever the pane is pinned — Skip's ask is that pinning
+        // ALWAYS gives a field ("when you pin it, I'm not getting a text field").
+        // It used to be gated on status==='connected', so a terminal that hadn't
+        // connected (goose terminals, slow connects) pinned with no field at all.
+        // sendInput() already no-ops while the WS isn't open, so an un-connected
+        // field degrades safely; the placeholder reflects the connection state so
+        // it reads as "waiting", not a dead field. (Making typing actually reach a
+        // goose shell is the separate goose-terminal-connection item.)
         <div className="fleet-terminal-hover-input-bar"
           onPointerDown={stopEventPropagation}
           onPointerMove={stopEventPropagation}
@@ -348,10 +659,21 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
             rows={1}
             onKeyDown={handleInputKeyDown}
             onKeyUp={(e) => stopEventPropagation(e as any)}
-            onPointerDown={(e) => { stopEventPropagation(e as any); setLightboxed(true); registerVoice(e.currentTarget) }}
-            onFocus={(e) => { stopEventPropagation(e); setLightboxed(true); registerVoice(e.currentTarget) }}
+            // Skip's ask: clicking into the pinned-terminal field must just focus
+            // it so he can type — it must NOT auto-pop the lightbox (the "blowing
+            // up on my screen"). The lightbox was historically spec'd to open on
+            // field-tap; he asked for that removed and made manual. Focus only
+            // here; do not setLightboxed(true).
+            onPointerDown={(e) => { stopEventPropagation(e); registerVoice(e.currentTarget) }}
+            onFocus={(e) => { stopEventPropagation(e); registerVoice(e.currentTarget) }}
             onBlur={(e) => { clearVoiceTarget(e.currentTarget); e.currentTarget.style.boxShadow = ''; setLightboxed(false) }}
-            placeholder="type or speak a command…"
+            placeholder={status === 'connected' ? 'type or speak a command…' : status === 'error' ? 'terminal unavailable — reconnecting…' : 'connecting…'}
+            // Suppress the iOS soft keyboard on touch (same as the main composer
+            // ChatComposer.tsx + math notes): the field is voice/dictation-first,
+            // and raising the on-screen keyboard shifts visualViewport, which
+            // drags this portaled hover pane out of place (Skip: "the onscreen
+            // keyboard drags the terminal hover somewhere else").
+            inputMode={_isTouchDevice ? 'none' : undefined}
             spellCheck={false}
             autoComplete="off"
             style={{
@@ -388,6 +710,116 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
         />
       )}
     </div>
+    </div>
+  ), document.body)
+}
+
+// ---- Skill-state hover popover ----
+// Hovering an agent's name in chat shows what skills they've read / owe /
+// dismissed (with the reason). Data comes from /api/education/skills/:id.
+type SkillState = {
+  read: string[]
+  owed: { skill: string; scope: string; trigger: string | null }[]
+  dismissed: { skill: string; reason: string; scope: string; trigger: string | null }[]
+  cards?: { drill: string; gradient: string | null; pass: boolean | null; gradedAt?: string }[]
+}
+
+// The orientation gradient → a colored dot, matching teacher's report-card icons.
+function drillGradeIcon(g: string | null): string {
+  if (g === 'oriented') return '🟢'
+  if (g === 'recovers') return '🟡'
+  if (g == null) return '⚪️'
+  return '🔴' // drifts / drifts-at-<stage> / anything else
+}
+
+function SkillHoverPane({ agentId, agentName, anchorRect, onMouseEnter, onMouseLeave }: {
+  agentId: string
+  agentName: string
+  anchorRect: { left: number; bottom: number; top: number }
+  onMouseEnter: () => void
+  onMouseLeave: () => void
+}) {
+  const [data, setData] = useState<SkillState | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    fetch(`/api/education/skills/${encodeURIComponent(agentId)}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (!cancelled) { setData(d); setLoading(false) } })
+      .catch(() => { if (!cancelled) { setData(null); setLoading(false) } })
+    return () => { cancelled = true }
+  }, [agentId])
+
+  // Anchor below the name, clamped into the viewport.
+  const PANE_W = 240
+  const left = Math.max(6, Math.min(anchorRect.left, window.innerWidth - PANE_W - 6))
+  const spaceBelow = window.innerHeight - anchorRect.bottom
+  const placeAbove = spaceBelow < 160
+  const style: React.CSSProperties = placeAbove
+    ? { left, bottom: Math.max(6, window.innerHeight - anchorRect.top + 4), width: PANE_W }
+    : { left, top: anchorRect.bottom + 4, width: PANE_W }
+
+  const read = data?.read || []
+  const owed = data?.owed || []
+  const dismissed = data?.dismissed || []
+  const cards = data?.cards || []
+  const empty = !loading && read.length === 0 && owed.length === 0 && dismissed.length === 0 && cards.length === 0
+
+  // Portal to <body>: the pane is position:fixed, but a fixed element inside the
+  // TLDraw canvas's CSS transform is positioned relative to that transform, not
+  // the viewport — so it lands far from the hovered name (whose rect is in
+  // viewport coords). Portaling out of the transformed tree makes fixed coords
+  // viewport-relative again (same fix as TerminalHoverPane).
+  return createPortal((
+    <div
+      className="fleet-skill-hover-pane"
+      style={style}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+      onPointerDown={stopEventPropagation}
+    >
+      <div className="fleet-skill-hover-head">{agentName}</div>
+      {loading && <div className="fleet-skill-hover-empty">…</div>}
+      {empty && <div className="fleet-skill-hover-empty">no skill activity yet</div>}
+      {cards.length > 0 && (
+        <div className="fleet-skill-hover-section">
+          <div className="fleet-skill-hover-label read">drills ({cards.length})</div>
+          <div className="fleet-skill-hover-chips">
+            {cards.map(c => (
+              <span key={c.drill} className="fleet-skill-chip read">{drillGradeIcon(c.gradient)} {c.drill}</span>
+            ))}
+          </div>
+        </div>
+      )}
+      {owed.length > 0 && (
+        <div className="fleet-skill-hover-section">
+          <div className="fleet-skill-hover-label owed">skills owed ({owed.length})</div>
+          <div className="fleet-skill-hover-chips">
+            {owed.map(o => <span key={o.skill} className="fleet-skill-chip owed">{o.skill}</span>)}
+          </div>
+        </div>
+      )}
+      {dismissed.length > 0 && (
+        <div className="fleet-skill-hover-section">
+          <div className="fleet-skill-hover-label dismissed">skills dismissed ({dismissed.length})</div>
+          {dismissed.map(d => (
+            <div key={d.skill} className="fleet-skill-dismissed-row">
+              <span className="fleet-skill-chip dismissed">{d.skill}</span>
+              {d.reason && <span className="fleet-skill-reason">“{d.reason}”</span>}
+            </div>
+          ))}
+        </div>
+      )}
+      {read.length > 0 && (
+        <div className="fleet-skill-hover-section">
+          <div className="fleet-skill-hover-label read">skills read ({read.length})</div>
+          <div className="fleet-skill-hover-chips">
+            {read.map(s => <span key={s} className="fleet-skill-chip read">{s}</span>)}
+          </div>
+        </div>
+      )}
     </div>
   ), document.body)
 }
@@ -528,7 +960,7 @@ function gatherViewerContext(editor: any, doc: any, chatShapeId?: string, versio
     })
   }
   const compareRef = (window as any).__tlda_compare_ref__ || null
-  const ctx = {
+  const ctx: any = {
     doc: doc.docName || null,
     version: version || null,
     compareRef,
@@ -538,8 +970,60 @@ function gatherViewerContext(editor: any, doc: any, chatShapeId?: string, versio
     browser: /Chrome/.test(navigator.userAgent) ? 'chrome' : /Safari/.test(navigator.userAgent) ? 'safari' : /Firefox/.test(navigator.userAgent) ? 'firefox' : 'unknown',
     _viewportEdges: viewportEdges,
   }
+  const stale = computeStaleness(mainEd, doc, version, visiblePages, viewport)
+  if (stale) ctx.stale = stale
   sendViewingContext(ctx)
   return ctx
+}
+
+/**
+ * Detect whether the pages under the camera have drifted from the current build
+ * (Built). The version stamp is always Built; this is the *exceptional* flag
+ * that rides on the location only when Displayed != Built. Returns null in the
+ * normal (caught-up) case. Skips entirely when the user has scrubbed to another
+ * version (the stamp won't equal Built then) — drift-vs-Built isn't meaningful.
+ */
+function computeStaleness(
+  editor: any, doc: any, version: string | null | undefined,
+  visiblePages: number[], viewport: any,
+): { kinds: string[]; pages?: number[]; builtHash: string; note: string } | null {
+  const sent = editor?.store?.get?.('shape:doc-version--sentinel' as TLShapeId)
+  const rawHash = (sent as any)?.props?.commitHash
+  const builtHash = rawHash && rawHash !== 'unknown' ? String(rawHash).slice(0, 7) : null
+  if (!builtHash) return null
+  // Scrubbed to a non-Built version → drift-vs-Built doesn't apply.
+  if (version && version !== builtHash) return null
+
+  const builtCount = getBuiltPageCount()
+  const laidOutCount = doc?.pages?.length ?? 0
+  const kinds = new Set<string>()
+  const stalePages: number[] = []
+
+  for (const pn of visiblePages) {
+    const idx0 = pn - 1
+    if (builtCount != null && idx0 >= builtCount) {        // doc shrank: page past the built end
+      kinds.add('phantom'); stalePages.push(pn); continue
+    }
+    const shapeId = doc?.pages?.[idx0]?.shapeId
+    const rh = shapeId ? getPageRenderHash(shapeId) : undefined
+    if (rh == null) { kinds.add('unrendered'); stalePages.push(pn) }     // never rendered in this viewer yet
+    else if (rh !== builtHash) { kinds.add('stale'); stalePages.push(pn) } // showing an older render
+  }
+
+  // doc grew: more built pages than are laid out, and the camera sits past the last laid-out page.
+  if (builtCount != null && builtCount > laidOutCount && viewport) {
+    const lb = doc?.pages?.[laidOutCount - 1]?.bounds
+    const lastBottom = lb ? lb.y + (lb.h ?? lb.height ?? 0) : 0
+    if (viewport.maxY > lastBottom) kinds.add('missing')
+  }
+
+  if (kinds.size === 0) return null
+  return {
+    kinds: [...kinds],
+    pages: stalePages.length ? stalePages : undefined,
+    builtHash,
+    note: 'pages under the camera have not caught up to the build; source anchor is provisional until reload',
+  }
 }
 
 async function enrichContextWithSourceLines(context: any): Promise<void> {
@@ -571,29 +1055,36 @@ setViewingEnrichFn(async (ctx: any) => {
 })
 
 /**
- * Resolve the document version the user is currently viewing. Prefer the
- * shadow-repo version since that's what the MCP build pipeline considers
- * authoritative. If the user has scrubbed the shadow slider, use the active
- * snapshot; otherwise use the latest. Falls back to historyEntries for git
- * commits if no shadow data is available. Returns a short hash that travels
- * well in chat metadata.
+ * Resolve the document version the user is currently viewing, as a short hash
+ * for chat metadata. If the user has scrubbed back (shadow slider or git-history
+ * slider) the stamp reflects that historical version. Otherwise — the common
+ * case, viewing the live build — it reads the version straight from the
+ * doc-version sentinel, the convergent source that also drives the rendered
+ * pages and corner timestamp, so the stamp can't lag behind the actual build.
  */
-function currentDocVersion(panel: any): string | null {
-  // If user has scrubbed to a historical version, stamp that version's hash
+function currentDocVersion(panel: any, editor?: Editor | null): string | null {
+  // Scrubbed back via the shadow slider → the historical version you're comparing against.
   const sav = panel?.shadowActiveVersion
   if (sav?.hash) return String(sav.hash).slice(0, 7)
-  const entries = panel?.historyEntries
-  if (entries && entries.length > 0) {
-    const idx = (typeof panel.activeHistoryIdx === 'number' && panel.activeHistoryIdx >= 0)
-      ? panel.activeHistoryIdx
-      : entries.length - 1  // entries are oldest-first; -1/default = current = newest
-    // Prefer the scrubbed entry if it has a real git hash; otherwise find most recent git entry
-    const scrubbed = entries[idx]
-    if (scrubbed?.commitHash) return String(scrubbed.commitHash).slice(0, 7)
-    // Fall back to most recent entry that has a real commitHash (skip build-type entries)
-    for (let i = entries.length - 1; i >= 0; i--) {
-      if (entries[i]?.commitHash) return String(entries[i].commitHash).slice(0, 7)
-    }
+
+  // Scrubbed back via the git-history slider → the entry you scrubbed to.
+  const idx = panel?.activeHistoryIdx
+  if (typeof idx === 'number' && idx >= 0) {
+    const e = panel?.historyEntries?.[idx]
+    return e?.commitHash ? String(e.commitHash).slice(0, 7) : null
+  }
+
+  // Not scrubbed → the current build (Built). Single canonical source: the
+  // doc-version sentinel, which the build writes on every build. Never the lazy
+  // historyEntries list — it only refreshes on a full reload / text-changing
+  // rebuild, so it drifts out of date.
+  // Read from the MAIN editor: the chat shape can render in the HUD's copy
+  // store, which does not contain the doc-room sentinel shape.
+  const mainEd = (typeof window !== 'undefined' && (window as any).__tldraw_editor__) || editor
+  if (mainEd) {
+    const s = mainEd.store.get('shape:doc-version--sentinel' as TLShapeId)
+    const hash = (s as any)?.props?.commitHash
+    if (hash && hash !== 'unknown') return String(hash).slice(0, 7)
   }
   return null
 }
@@ -663,20 +1154,30 @@ export class FleetChatShapeUtil extends BaseBoxShapeUtil<any> {
     w: T.number,
     h: T.number,
     filter: T.arrayOf(T.arrayOf(T.arrayOf(T.string))),  // DNF of [role, label] tuples
+    trafficMode: T.optional(T.string),
     userId: T.optional(T.string),
+    deviceId: T.optional(T.string),
   }
 
   getDefaultProps() {
-    return { w: DEFAULT_W, h: DEFAULT_H, filter: [], userId: '' }
+    return { w: DEFAULT_W, h: DEFAULT_H, filter: [], trafficMode: 'normal', userId: '', deviceId: '' }
   }
 
   override canEdit = () => false
   override canResize = () => true
+  override canSnap = () => true
   override canBind = () => false
   override hideRotateHandle = () => true
+  override onTranslateStart = () => beginNativeSnapDrag(this.editor)
+  override onTranslateEnd = () => endNativeSnapDrag(this.editor)
+  override onTranslateCancel = () => endNativeSnapDrag(this.editor)
 
   component(shape: any) {
     return <FleetChatComponent shape={shape} />
+  }
+
+  getIndicatorPath() {
+    return undefined
   }
 
   indicator() {
@@ -707,20 +1208,23 @@ function ContextBadge({ percent }: { percent?: number }) {
 }
 
 /**
- * ThinkingStatus — one status line per agent (thinking / compacting).
- * When all agents stop, the space persists (ghost) until a new chat item
- * arrives to fill it. Ghost detection uses useEffect — not during-render
- * ref mutation — so the transition is never missed across render batches.
+ * ThinkingStatus — one status line per agent (thinking / compacting / waking /
+ * hibernating). The slot reserves one row of height unconditionally so the line
+ * fading in/out never shifts the stack (no bounce); content shows when a status
+ * is active, blank otherwise. (A reserve-then-consume variant was tried but
+ * fought the virtualized chat layout — flashed on every message — and was
+ * reverted; see scratch/status-line-spec.md.)
  */
-function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibernatingAgents, ctx, itemCount, agents: _agents, escalationState }: {
+function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibernatingAgents, ctx, agents: _agents, itemCount: _itemCount, escalationState, suggestions }: {
   thinkingAgents: Map<string, number>
   compactingAgents: Map<string, number>
   contextPercent: Map<string, number>
   hibernatingAgents: Set<string>
   ctx: any
-  itemCount: number
   agents: any[]
+  itemCount: number
   escalationState?: Record<string, { level: number; confirmed: number }>
+  suggestions: Suggestion[]
 }) {
   // Build status display from server-authoritative agent status field.
   // thinkingAgents/compactingAgents are pre-filtered to chat targets and provide elapsed timestamps.
@@ -759,61 +1263,58 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
     return merged
   }, [thinkingAgents, compactingAgents, hibernatingAgents])
 
-  const hasActive = statusAgents.size > 0
-  const lastStatusRef = useRef(statusAgents)
-  if (hasActive) lastStatusRef.current = statusAgents
-
-  const [ghost, setGhost] = useState(false)
-  // Item count captured when the slot is reserved; the slot is released only
-  // when the chat actually GROWS past it (a real new item filled the space).
-  // Count grows on genuine additions; it's far less noisy than the bottom-row
-  // key, which also changed on dividers / activity regrouping and made the slot
-  // collapse with nothing filling it (the inconsistent reserve = the bounce).
-  const ghostCountRef = useRef(0)
-  // Item count as of the previous render — lets the reserve check tell whether a
-  // new item landed in the same tick the agent went inactive (it already filled
-  // the space, so reserving would leave a leftover gap).
-  const prevCountRef = useRef(itemCount)
-
-  // Reserve the slot when the agent goes inactive — in a LAYOUT effect so the
-  // footer never paints a collapsed frame (which itself read as a bounce).
-  useLayoutEffect(() => {
-    const grewThisTick = itemCount !== prevCountRef.current
-    if (!hasActive && lastStatusRef.current.size > 0 && !ghost && !grewThisTick) {
-      setGhost(true)
-      ghostCountRef.current = itemCount
+  // Suggestions live in the per-agent status row, keyed by the agent that
+  // posted them. An agent with no thinking/compacting status (e.g. a bot like
+  // todd) still gets a row the moment it has a suggestion — the suggestion IS
+  // its status. The row set is the union of agents-with-status and
+  // agents-with-suggestions.
+  const suggestionsByAgent = useMemo(() => {
+    const m = new Map<string, Suggestion[]>()
+    for (const s of suggestions) {
+      const key = s.from || s.targetId || ''
+      if (!key) continue
+      if (!m.has(key)) m.set(key, [])
+      m.get(key)!.push(s)
     }
-    if (hasActive && ghost) {
-      setGhost(false)
-    }
-  // itemCount intentionally omitted — fires only on the hasActive transition;
-  // prevCountRef carries the previous render's count.
-  }, [hasActive]) // eslint-disable-line react-hooks/exhaustive-deps -- intentional: transition-only detection
+    return m
+  }, [suggestions])
+  const rowAgentIds = useMemo(() => {
+    const ids = new Set<string>(statusAgents.keys())
+    for (const k of suggestionsByAgent.keys()) ids.add(k)
+    // A row with suggestions but no status and no context% is a bot (e.g. todd) —
+    // float it above the working agents. Order within each group is preserved.
+    const isBot = (id: string) =>
+      (suggestionsByAgent.get(id)?.length ?? 0) > 0 &&
+      !statusAgents.has(id) &&
+      contextPercent.get(id) === undefined
+    const all = [...ids]
+    return [...all.filter(isBot), ...all.filter((id) => !isBot(id))]
+  }, [statusAgents, suggestionsByAgent, contextPercent])
 
-  // Release the slot only when the chat grows past the reserved count — a real
-  // new item landed and filled the space. Churn that doesn't add an item
-  // (regrouping, dividers) leaves the count unchanged, so the slot holds.
+  const statusKeysStr = [...statusAgents.keys()].join(',')
   useEffect(() => {
-    if (ghost && itemCount > ghostCountRef.current) {
-      setGhost(false)
-    }
-  }, [ghost, itemCount])
-
-  // Track the count every render (after the reserve check reads the previous
-  // value) so the same-tick-absorb detection works.
-  useLayoutEffect(() => { prevCountRef.current = itemCount })
-
-  if (!hasActive && !ghost) return null
+    // Log only when the set of shown statuses changes — NOT per message. (A
+    // previous version read offsetHeight on every itemCount change, forcing a
+    // layout reflow on each keystroke → the screen flash.)
+    log.info('thinking-line', 'render', {
+      keys: statusKeysStr ? statusKeysStr.split(',') : [],
+      rows: statusAgents.size,
+    })
+  }, [statusKeysStr])
 
   return (
     <div style={{
       padding: '0 8px',
       fontSize: 11,
       flexShrink: 0,
-      opacity: ghost ? 0 : 0.6,
-      transition: 'opacity 0.2s',
+      // One row of reserved height, always — the anti-bounce floor.
+      minHeight: 'calc(var(--fleet-base-font, 11px) * 1.5 + 4px)',
     }}>
-      {[...(hasActive ? statusAgents : lastStatusRef.current).entries()].map(([agentId, { status, startTs }]) => {
+      {rowAgentIds.map((agentId) => {
+        const statusEntry = statusAgents.get(agentId)
+        const status = statusEntry?.status
+        const startTs = statusEntry?.startTs ?? 0
+        const chips = suggestionsByAgent.get(agentId) || []
         const esc = escalationState?.[agentId]
         const escLevel = esc?.level || 0
         const escConfirmed = esc?.confirmed || 0
@@ -825,15 +1326,17 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
         const statusText = status === 'hibernating' ? 'is hibernating'
           : status === 'waking' ? 'waking up…'
           : status === 'compacting' ? 'compacting…'
-          : 'thinking…'
+          : status === 'thinking' ? 'thinking…'
+          : null
         return (
-          <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-            <span>
+          <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0', display: 'grid', gridTemplateColumns: 'auto minmax(0, 1fr) auto', alignItems: 'baseline', gap: 6 }}>
+            {/* left: agent + status */}
+            <span style={{ justifySelf: 'start', minWidth: 0 }}>
               <span className="thinking-text">
                 <PhaseIcon phase={phaseFromName(ctx.agentFullName(agentId))} />{baseName(ctx.agentFullName(agentId)).replace('fleet:', '')}
               </span>
-              {' '}<span className="thinking-text">{statusText}</span>
-              {status !== 'hibernating' && status !== 'waking' && <>{' '}<ElapsedTime startMs={startTs} /></>}
+              {statusText && <>{' '}<span className="thinking-text">{statusText}</span></>}
+              {status && status !== 'hibernating' && status !== 'waking' && <>{' '}<ElapsedTime startMs={startTs} /></>}
               {escLevel > 0 && (
                 <span className="escalation-meter" style={{ marginLeft: 6, letterSpacing: 2, fontSize: '0.9em' }}>
                   <span style={{ opacity: tierOpacity(1), transition: 'opacity 0.15s' }}>↑</span>
@@ -842,7 +1345,18 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
                 </span>
               )}
             </span>
-            <ContextBadge percent={contextPercent.get(agentId)} />
+            {/* center: suggestion groups. The grid track (minmax(0,1fr)) is the
+                bound — this span fills it and clips/wraps within, so wide
+                suggestions can never crowd the agent-status / context columns. */}
+            <span style={{ display: 'flex', gap: 14, alignItems: 'baseline', flexWrap: 'wrap', justifyContent: 'center', minWidth: 0, overflow: 'hidden' }}>
+              {[...groupChips(chips)].map(([gkey, items]) => (
+                <SuggestionGroup key={gkey} chips={items} agentName={ctx.agentLabel(items[0].targetId || items[0].from)} />
+              ))}
+            </span>
+            {/* right: context info */}
+            <span style={{ justifySelf: 'end' }}>
+              <ContextBadge percent={contextPercent.get(agentId)} />
+            </span>
           </div>
         )
       })}
@@ -850,79 +1364,106 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
   )
 }
 
-function ElizaSuggestion({ nudge, isFirst, agentName }: { nudge: ElizaNudge, isFirst: boolean, agentName: string }) {
-  // Release nudges fire via "eliza <label>"; action suggestions (hand off / get qa)
-  // carry an explicit command. Either way, sending it as a real message keeps a
-  // visible record of what fired and reuses eliza's existing routing.
-  const command = nudge.command || `eliza ${nudge.label}`
-  const canSayIt = isFirst && nudge.kind !== 'action'
-  const fire = (e: React.SyntheticEvent) => {
-    stopEventPropagation(e as any)
-    sendMessage(nudge.targetId, command)
+// The suggestion tooltip can't live inside the chip: the fleet-chat shape is
+// dimmed (opacity < 1) and CSS opacity caps every descendant, so a nested tip
+// renders see-through. It also must not be a portal (breaks TLDraw). So the tip
+// is its OWN object, rendered ABOVE the shapes in the HUD layer (see
+// <SuggestionTip/> mounted in FleetHUD) via this tiny shared store. The chip
+// publishes what/where on label-hover; the HUD-level tip renders it crisp.
+type TipOption = { label: string; text: string }
+type TipData = {
+  left: number; bottom: number; agentName: string
+  vars: Record<string, string>
+  options: TipOption[]
+} | null
+let _tipData: TipData = null
+const _tipSubs = new Set<() => void>()
+function setSuggestionTip(d: TipData) { _tipData = d; _tipSubs.forEach(f => f()) }
+const TIP_VARS = ['--surface', '--border', '--shadow-lg', '--text', '--text-bright', '--accent', '--text-dim']
+
+// groupKey: suggestions sharing a `group` tag are one disjunctive group; an
+// untagged suggestion is its own singleton group (keyed by its id).
+function groupKeyOf(s: Suggestion): string { return s.group || String(s.id) }
+function groupChips(chips: Suggestion[]): Map<string, Suggestion[]> {
+  const m = new Map<string, Suggestion[]>()
+  for (const c of chips) {
+    const k = groupKeyOf(c)
+    if (!m.has(k)) m.set(k, [])
+    m.get(k)!.push(c)
   }
+  return m
+}
+
+export function SuggestionTip() {
+  const tip = useSyncExternalStore(
+    (cb) => { _tipSubs.add(cb); return () => _tipSubs.delete(cb) },
+    () => _tipData,
+  )
+  if (!tip) return null
   return (
     <span
-      className="eliza-suggestion"
-      onPointerDown={stopEventPropagation}
-      onClick={fire}
+      className="suggestion-chip-tip"
+      style={{ position: 'fixed', left: tip.left, bottom: tip.bottom, ...tip.vars } as React.CSSProperties}
     >
-      <span className="eliza-suggestion-label">{nudge.label}</span>
-      <span className="eliza-suggestion-tip" onPointerDown={stopEventPropagation}>
-        <span className="eliza-tip-trigger">
-          Say <b>"{command}"</b>{canSayIt ? <> or <b>"say it"</b></> : null} — or click to send now
+      {tip.options.map((o, i) => (
+        <span key={i} className="suggestion-tip-trigger">
+          <b>{o.label}</b>{o.text ? <> — {o.text}</> : null}
         </span>
-        <span className="eliza-tip-target">→ {agentName}</span>
-        <span className="eliza-tip-text">{nudge.text}</span>
-      </span>
+      ))}
+      <span className="suggestion-tip-target">→ {tip.agentName} · click an option to pick it</span>
     </span>
   )
 }
 
-function ElizaStatus({ pending, ctx, rawItemsLength }: { pending: ElizaNudge[], ctx: any, rawItemsLength: number }) {
-  const hasActive = pending.length > 0
-  const lastPendingRef = useRef(pending)
-  if (hasActive) lastPendingRef.current = pending
-
-  const [ghost, setGhost] = useState(false)
-  const ghostRawItemsRef = useRef(rawItemsLength)
-
-  useEffect(() => {
-    if (!hasActive && lastPendingRef.current.length > 0 && !ghost) {
-      setGhost(true)
-      ghostRawItemsRef.current = rawItemsLength
-    }
-    if (hasActive && ghost) setGhost(false)
-  }, [hasActive]) // eslint-disable-line react-hooks/exhaustive-deps -- intentional: transition-only detection
-
-  useEffect(() => {
-    if (ghost && rawItemsLength > ghostRawItemsRef.current) setGhost(false)
-  }, [ghost, rawItemsLength])
-
-  if (!hasActive && !ghost) return null
-
+// One disjunctive group: ✕ on the left (dismiss the group), then the options
+// `|`-separated (each clickable to pick → sends its command + clears the group).
+// One shared hover on the whole group → a single tooltip listing the options.
+function SuggestionGroup({ chips, agentName }: { chips: Suggestion[], agentName: string }) {
+  const ref = useRef<HTMLSpanElement>(null)
+  const fromAgent = chips[0]?.from || chips[0]?.targetId || ''
+  const key = groupKeyOf(chips[0])
+  const showTip = () => {
+    const el = ref.current
+    if (!el) return
+    const r = el.getBoundingClientRect()
+    const cs = getComputedStyle(el)
+    const vars: Record<string, string> = {}
+    for (const v of TIP_VARS) vars[v] = cs.getPropertyValue(v)
+    setSuggestionTip({
+      left: r.left, bottom: window.innerHeight - r.top + 6, agentName, vars,
+      options: chips.map(c => ({ label: c.label, text: c.text || '' })),
+    })
+  }
+  const hideTip = () => setSuggestionTip(null)
+  const pick = (c: Suggestion) => (e: React.SyntheticEvent) => {
+    stopEventPropagation(e as any)
+    if (c.command) sendMessage(c.targetId || c.from || '', c.command)
+    hideTip()
+    clearGroup(fromAgent, key)
+  }
+  const dismiss = (e: React.SyntheticEvent) => {
+    stopEventPropagation(e as any)
+    hideTip()
+    clearGroup(fromAgent, key)
+  }
   return (
-    <div style={{
-      padding: '2px 8px',
-      fontSize: 11,
-      flexShrink: 0,
-      opacity: ghost ? 0 : 1,
-      transition: 'opacity 0.2s',
-    }}
-    className="eliza-status"
+    <span
+      className="suggestion-group"
+      ref={ref}
+      onPointerDown={stopEventPropagation}
+      onMouseEnter={showTip}
+      onMouseLeave={hideTip}
     >
-      {!ghost && (
-        <div className="chat-line" style={{ padding: '2px 0' }}>
-          <span className="eliza-status-prefix">eliza:</span>{' '}
-          {pending.map((n, i) => (
-            <span key={n.id}>
-              {i > 0 ? <span className="eliza-suggestion-label">, </span> : null}
-              <ElizaSuggestion nudge={n} isFirst={i === 0} agentName={ctx.agentLabel(n.targetId)} />
-            </span>
-          ))}
-        </div>
-      )}
-      {ghost && <div style={{ padding: '2px 0', visibility: 'hidden' }}>placeholder</div>}
-    </div>
+      {/* onPointerUp not onClick: these are text <span>s, dead on touch (a tap
+          synthesizes no click). pointerup fires for mouse + finger + stylus. */}
+      <span className="suggestion-chip-x" title="Dismiss" onPointerUp={dismiss}>✕</span>
+      {chips.map((c, i) => (
+        <span key={c.id}>
+          {i > 0 ? <span className="suggestion-group-sep"> | </span> : ' '}
+          <span className="suggestion-chip-label" onPointerUp={pick(c)}>{c.label}</span>
+        </span>
+      ))}
+    </span>
   )
 }
 
@@ -1020,11 +1561,15 @@ const ChatMessageRow = memo(function ChatMessageRow({
   itemKey: string
   expandedRowsRef: React.RefObject<Set<string>>
 }) {
-  const processed = useMemo(() => postProcess(html), [html, postProcess])
+  const processed = useMemo(() => probe.time('chat', 'chat-row-postprocess', () => postProcess(html), {
+    itemKey,
+    htmlLength: html.length,
+  }), [html, postProcess, itemKey])
   const divRef = useRef<HTMLDivElement>(null)
 
   // Restore expand state after dangerouslySetInnerHTML replaces the DOM.
   useLayoutEffect(() => {
+    const t0 = probe.isEnabled('chat') ? performance.now() : 0
     const el = divRef.current
     if (!el) return
     const expanded = expandedRowsRef.current
@@ -1045,6 +1590,10 @@ const ChatMessageRow = memo(function ChatMessageRow({
         if (toggle) toggle.textContent = 'collapse'
       }
     })
+    if (probe.isEnabled('chat')) {
+      const dt = performance.now() - t0
+      if (dt > 1) probe.record('chat', 'chat-row-layout-restore', dt, { itemKey })
+    }
   }, [processed, itemKey, expandedRowsRef])
 
   return <div ref={divRef} data-item-key={itemKey} dangerouslySetInnerHTML={{ __html: processed }} />
@@ -1053,10 +1602,13 @@ const ChatMessageRow = memo(function ChatMessageRow({
 
 function FleetChatInner({ shape }: { shape: any }) {
   const editor = useEditor()
+  const viewportId = useVisibilityViewportId()
   const doc = useContext(DocContext)
   const panel = useContext(PanelContext)
   const fleetStyleVars = useFleetStyleVars()
-  const { w, h, filter } = shape.props as { w: number; h: number; filter: [string, string][][] }
+  const { w, h, filter, trafficMode = 'normal' } = shape.props as { w: number; h: number; filter: [string, string][][]; trafficMode?: ChatTrafficMode }
+  const quietTraffic = trafficMode === 'quiet'
+  const quietDmTraffic = quietTrafficSuppressesActivity(filter, trafficMode)
   void useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
   const [filterOpen, setFilterOpen] = useState(false)
   const [filterOpenByPill, setFilterOpenByPill] = useState(false)
@@ -1098,7 +1650,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const thinkingAgents = useFleetThinking(dnfFilter, frameId)
   const compactingAgents = useFleetCompacting(dnfFilter, frameId)
   const contextPercent = useFleetContext(dnfFilter, frameId)
-  const elizaPendingAll = useElizaPending()
+  const suggestionsAll = useSuggestions()
 
   // When an agent renames itself, auto-update any filter terms that used the old name.
   useEffect(() => {
@@ -1155,9 +1707,6 @@ function FleetChatInner({ shape }: { shape: any }) {
     setTermCardHoverId(null)
   }, [liveEvents])
 
-  // Input history (up/down arrow navigation like terminal)
-  const sentHistoryRef = useRef<string[]>([])
-  const historyIndexRef = useRef<number>(-1)
   // Esc interrupt: track last Esc timestamp for soft/hard distinction
   const escCountRef = useRef<number>(0)
   // Track whether the user last clicked inside this fleet chat shape.
@@ -1247,8 +1796,8 @@ function FleetChatInner({ shape }: { shape: any }) {
     return result
   }, [agents, dnfFilter, resolveToFleetIds])
 
-  const elizaPending = useMemo(() => {
-    let filtered = elizaPendingAll
+  const suggestionsPending = useMemo(() => {
+    let filtered = suggestionsAll
     if (dnfFilter && dnfFilter.length > 0) {
       const targetIds = new Set<string>()
       for (const andGroup of dnfFilter) {
@@ -1256,18 +1805,18 @@ function FleetChatInner({ shape }: { shape: any }) {
           for (const id of resolveToFleetIds(label)) targetIds.add(id)
         }
       }
-      filtered = filtered.filter(n => targetIds.has(n.targetId))
+      filtered = filtered.filter(n => targetIds.has(n.targetId || n.from || ''))
     }
     const seen = new Set<string>()
     return filtered.filter(n => {
       // Key on target too: the same label (e.g. "hand off") can be pending for
       // multiple agents at once, and each must stay clickable against its own target.
-      const key = `${n.targetId}::${n.label}`
+      const key = `${n.targetId || n.from || ''}::${n.label}`
       if (seen.has(key)) return false
       seen.add(key)
       return true
     })
-  }, [elizaPendingAll, dnfFilter, resolveToFleetIds])
+  }, [suggestionsAll, dnfFilter, resolveToFleetIds])
 
   // Fetch per-agent history on mount / filter change.
   // The global event buffer (MAX_EVENTS=150) is shared across all agents.
@@ -1390,45 +1939,137 @@ function FleetChatInner({ shape }: { shape: any }) {
       .catch(e => console.warn('[fleet-chat] macros fetch failed:', e.message))
   }, [doc?.docName])
 
+  // Per-sender preamble: each message carries metadata.preambleRef.doc (the
+  // sender's preamble document). We render that message's math with that doc's
+  // macros so it looks the same for everyone, regardless of what the viewer has
+  // loaded. Cache macros per doc; fetch any referenced doc we haven't seen yet.
+  const [macrosByDoc, setMacrosByDoc] = useState<Record<string, Record<string, string>>>({})
+
   // Build context and render messages
   const prefTick = usePrefTick()
+  const ctxRenderKey = useMemo(() => JSON.stringify({
+    agents: agents.map((a: any) => [
+      a.id,
+      a.friendly_name,
+      a.name,
+      !!a.human,
+      a.metadata?.inPlanMode,
+      a.metadata?.permission_mode,
+      a.metadata?.planModeType,
+    ]),
+    tasks: tasks.map((t: any) => [
+      t.id,
+      t.status,
+      t.agent,
+      t.delegated_by,
+    ]),
+    macros: Object.entries(preambleMacros).sort(),
+    prefTick,
+  }), [agents, tasks, preambleMacros, prefTick])
   const ctx = useMemo(() => makeCtx(agents, tasks, preambleMacros), [agents, tasks, preambleMacros, prefTick])
   const ctxRef = useRef(ctx)
   ctxRef.current = ctx
 
-  const labelRegionsRef = useRef<Record<string, LabelRegionInfo>>({})
   const docRef = useRef<typeof doc>(doc)
-  useEffect(() => { labelRegionsRef.current = labelRegions }, [labelRegions])
   useEffect(() => { docRef.current = doc }, [doc])
+
+  const openMarkdownColumn = useCallback((title: string, markdown: string, sourceEl: HTMLElement) => {
+    const sourceRect = sourceEl.getBoundingClientRect()
+    const left = Math.max(12, sourceRect.left)
+    const top = Math.max(12, sourceRect.bottom + 8)
+    const mainEditor = (window as Window & { __tldraw_editor__?: typeof editor }).__tldraw_editor__ || editor
+    const anchor = clientPointToPage(mainEditor, { x: left, y: top })
+    void createTemporaryMarkdownColumn(mainEditor, anchor, title, markdown || title, {
+      sourceChatShapeId: shape.id,
+    })
+  }, [editor, shape.id])
 
   // Incremental render cache: non-activity messages are independent and can be
   // cached by (msgKey, ctxVersion). When ctx changes (agent rename, task done),
   // bump ctxVersion to invalidate stale lines. This turns O(N) re-render on
   // every new message into O(1) for the common case of appending one message.
   const msgLineCache = useRef<Map<string, string>>(new Map())
+  const activityGroupCache = useRef<Map<string, string>>(new Map())
   const ctxVersionRef = useRef(0)
-  const prevCtxRef = useRef(ctx)
-  if (prevCtxRef.current !== ctx) {
-    prevCtxRef.current = ctx
+  const prevCtxRenderKeyRef = useRef(ctxRenderKey)
+  if (prevCtxRenderKeyRef.current !== ctxRenderKey) {
+    prevCtxRenderKeyRef.current = ctxRenderKey
     ctxVersionRef.current++
     msgLineCache.current.clear()
+    activityGroupCache.current.clear()
   }
 
   const chatMessages = useMemo(() => {
+    const chatSortTimer = probe.start('chat', 'chat-sort')
     const sorted = events
       .filter((m: any) => {
         const t = m.type
-        return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'activity' || t === 'kill-session' || t === 'interrupt' || t === 'terminal_attention' || t === 'terminal_card' || t === 'plan_approval'
+        if (quietDmTraffic && (t === 'activity' || m._activity)) return false
+        return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'activity' || t === 'kill-session' || t === 'interrupt' || t === 'terminal_attention' || t === 'terminal_card' || t === 'plan_approval' || t === 'timer'
       })
-      .filter((m: any) => !m._timer) // skip timer-fired messages
+      .filter((m: any) => !m._timer) // skip legacy timer-expired messages (fired→_timerFired and cancelled→_timerCancelled still render)
+      // Order by arrival (DB insert id), NOT wall-clock timestamp. The daemon
+      // delivers activity/terminal events carrying their original JSONL ts, but
+      // it delivers them late (buffer flush + poll fallback). Sorting by ts would
+      // insert a late event *back in the past*, behind rows already on screen —
+      // that backward jump is the "bounce". _dbId is the monotonic server insert
+      // order, so a late event always appends at the bottom and nothing already
+      // rendered ever moves. Un-persisted optimistic sends (no _dbId yet) sort
+      // last (they're the newest), tie-broken by timestamp.
       .sort((a: any, b: any) => {
-        const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0
-        const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0
-        return ta - tb
+        const ida = a._dbId, idb = b._dbId
+        if (ida != null && idb != null) return ida - idb
+        if (ida == null && idb == null) {
+          const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0
+          const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0
+          return ta - tb
+        }
+        return ida == null ? 1 : -1
       })
 
+    probe.stop(chatSortTimer, { eventCount: events.length, resultCount: sorted.length })
     return sorted
-  }, [events])
+  }, [events, quietDmTraffic])
+
+  // Standing diagnostic — does the message list momentarily empty? When
+  // chatMessages hits 0 the render swaps the Virtuoso list for the "No messages"
+  // div (a different DOM node), which remounts the scroller and can read as a
+  // flash/blank. These two transitions are the fingerprint to look for if the
+  // history ever vanishes-and-returns. warn (notable); grep `chat-scroll`.
+  const _prevMsgLen = useRef(chatMessages.length)
+  useEffect(() => {
+    if (chatMessages.length === 0 && _prevMsgLen.current !== 0) {
+      log.debug('chat-scroll', 'message list emptied → "No messages" branch (scroller will remount)', { prev: _prevMsgLen.current })
+    } else if (chatMessages.length !== 0 && _prevMsgLen.current === 0) {
+      log.debug('chat-scroll', 'message list refilled 0→N (Virtuoso remounts)', { now: chatMessages.length })
+    }
+    _prevMsgLen.current = chatMessages.length
+  }, [chatMessages.length])
+
+  // Standing diagnostic — the scroll container's DOM node identity. A change
+  // here means the scroller was mounted or REPLACED (e.g. the empty-branch swap
+  // above, or a Virtuoso remount). A replacement mid-session is the signature of
+  // a flash; routine on first mount. debug.
+  useEffect(() => {
+    log.debug('chat-scroll', 'scroll node mounted/replaced', { hasEl: !!chatLogEl, msgCount: chatMessages.length })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatLogEl])
+
+  // Fetch macros for any preamble doc referenced by a message we haven't cached.
+  useEffect(() => {
+    const needed = new Set<string>()
+    chatMessages.forEach((m: any) => {
+      const d = m?.metadata?.preambleRef?.doc
+      if (d && !(d in macrosByDoc)) needed.add(d)
+    })
+    if (needed.size === 0) return
+    for (const d of needed) {
+      fetch(`/api/projects/${encodeURIComponent(d)}/macros`)
+        .then(r => r.ok ? r.json() : null)
+        .then(data => setMacrosByDoc(prev => (d in prev ? prev : { ...prev, [d]: data?.macros || {} })))
+        .catch(() => setMacrosByDoc(prev => (d in prev ? prev : { ...prev, [d]: {} })))
+    }
+  }, [chatMessages, macrosByDoc])
 
   // Amend events (type 'amend', metadata.amends = original id) are folded into
   // their original message as version history — they never render standalone
@@ -1454,25 +2095,51 @@ function FleetChatInner({ shape }: { shape: any }) {
   // This replaces the old joined renderedHtml string and enables virtualization.
   // Items tagged _queued render below the thinking indicator; _interrupt items
   // render between the indicator and the queue (they "jump the line").
-  type RawItem = { key: string; html: string; _queued?: boolean; _interrupt?: boolean; _divider?: boolean }
+  type RawItem = { key: string; html: string; _queued?: boolean; _interrupt?: boolean; _divider?: boolean; _status?: boolean }
   // Short hash of the version currently shown in the viewer (accounts for
   // scrubbing to a historical version). Build cards compare against this to
   // style themselves green (you're viewing this build) vs gray (stale).
-  const viewingVersion = currentDocVersion(panel)
+  const viewingVersion = currentDocVersion(panel, editor)
   const rawItems = useMemo(() => {
+    const rawItemsT0 = probe.isEnabled('chat') ? performance.now() : 0
     // Extend ctx with thinking state so renderChatLine can apply queued styling
     const renderCtx = { ...ctx, thinkingAgents }
+    const renderVersion = ctxVersionRef.current
+    const thinkingKey = [...(thinkingAgents?.entries?.() ?? [])]
+      .map(([id, since]: any[]) => `${id}:${since}`)
+      .join('|')
     const items: RawItem[] = []
     let activityGroup: any[] = []
+    let activityGroupCount = 0
+    let chatLineCount = 0
+    let buildResultCount = 0
+    let specialCount = 0
     function flushActivity() {
       if (activityGroup.length === 0) return
+      const t0 = probe.isEnabled('chat') ? performance.now() : 0
       const a0: any = activityGroup[0]
       const aid = a0._dbId != null ? `db${a0._dbId}` : a0._tempId ? `tmp${a0._tempId}` : `${a0.from}:${a0.timestamp}`
       const key = `activity:${aid}`
+      const groupSize = activityGroup.length
+      const cacheKey = [
+        renderVersion,
+        activityGroup.map((a: any) => a._dbId ?? a._tempId ?? `${a.from}:${a.timestamp}:${a.text || ''}`).join(','),
+      ].join('::')
+      let html = activityGroupCache.current.get(cacheKey)
+      const cached = !!html
+      if (!html) {
+        html = `<div class="chat-activity-inline-wrap">${renderActivityGroup(activityGroup, renderCtx)}</div>`
+        activityGroupCache.current.set(cacheKey, html)
+      }
       items.push({
         key,
-        html: `<div class="chat-activity-inline-wrap">${renderActivityGroup(activityGroup, renderCtx)}</div>`,
+        html,
       })
+      activityGroupCount++
+      if (probe.isEnabled('chat')) {
+        const dt = performance.now() - t0
+        if (dt > 2) probe.record('chat', 'chat-render-activity-group', dt, { key, groupSize, cached })
+      }
       activityGroup = []
     }
 
@@ -1495,6 +2162,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         activityGroup.push(m)
       } else if (m.metadata?.type === 'build_result') {
         flushActivity()
+        buildResultCount++
         const { name: docName, hash, summary, lintFindings = [], mirrorFailed, buildFailed, errors = [] } = m.metadata
         const hasDetails = !!(summary || lintFindings.length > 0 || mirrorFailed || buildFailed || errors.length > 0)
         const lintCount = lintFindings.length
@@ -1531,6 +2199,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         items.push({ key: m._dbId || m._tempId || `${m.timestamp}:${m.from}:build`, html })
       } else if (m._evType === 'plan_approval' || m.type === 'plan_approval') {
         flushActivity()
+        specialCount++
         const agentId: string = m.from || ''
         const agentObjs: any[] = renderCtx.getAgents()
         const agentObj = agentObjs.find((a: any) => a.id === agentId)
@@ -1549,6 +2218,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         items.push({ key: m._dbId || m._tempId || `${m.timestamp}:${m.from}:plan`, html })
       } else if (m.type === 'kill-session') {
         flushActivity()
+        specialCount++
         const agentObjs: any[] = renderCtx.getAgents()
         const targetId = m.to || ''
         const targetAgent = agentObjs.find((a: any) => a.id === targetId)
@@ -1557,6 +2227,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         items.push({ key: m._dbId || m._tempId || `${m.timestamp}:${m.from}:kill`, html })
       } else if (m.type === 'interrupt') {
         flushActivity()
+        specialCount++
         const agentObjs: any[] = renderCtx.getAgents()
         const targetId = m.to || ''
         const targetAgent = agentObjs.find((a: any) => a.id === targetId)
@@ -1584,9 +2255,49 @@ function FleetChatInner({ shape }: { shape: any }) {
           const v = versions[viewIdx]
           renderM = { ...m, text: v.text, metadata: { ...(m.metadata || {}), source: v.source }, _amendStepper: stepper }
         }
-        const html = renderChatLine(renderM, renderCtx)
+        // Render this message's math with the SENDER's preamble (preambleRef.doc),
+        // not the viewer's. Fall back to the viewer's preamble for messages with no
+        // ref, or while the referenced doc's macros are still loading.
+        const senderPreambleDoc = m?.metadata?.preambleRef?.doc
+        const lineMacros = (senderPreambleDoc && senderPreambleDoc in macrosByDoc)
+          ? macrosByDoc[senderPreambleDoc]
+          : preambleMacros
+        const lineCtx = lineMacros === preambleMacros
+          ? renderCtx
+          : { ...renderCtx, renderMarkdown: (input: string) => tldaRenderMarkdown(input, lineMacros) }
+        const itemKey = m._dbId || m._tempId || `${m.timestamp}:${m.from}`
+        const cacheKey = [
+          renderVersion,
+          thinkingKey,
+          itemKey,
+          renderM.text || '',
+          renderM._amendStepper || '',
+          senderPreambleDoc || '',
+          lineMacros === preambleMacros ? 'viewer' : senderPreambleDoc || 'sender',
+          JSON.stringify(renderM.metadata?.source || null),
+        ].join('::')
+        let html = msgLineCache.current.get(cacheKey)
+        const t0 = probe.isEnabled('chat') ? performance.now() : 0
+        const cached = !!html
+        if (!html) {
+          html = renderChatLine(renderM, lineCtx)
+          msgLineCache.current.set(cacheKey, html)
+        }
+        chatLineCount++
+        if (probe.isEnabled('chat')) {
+          const dt = performance.now() - t0
+          if (dt > 2) {
+            probe.record('chat', 'chat-render-line', dt, {
+              key: itemKey,
+              type: m.type,
+              evType: m._evType || '',
+              textLength: String(renderM.text || '').length,
+              cached,
+            })
+          }
+        }
         if (html) {
-          const item: RawItem = { key: m._dbId || m._tempId || `${m.timestamp}:${m.from}`, html }
+          const item: RawItem = { key: itemKey, html }
           // Tag interrupt system_notices so they jump ahead of queued messages
           if (m._evType === 'system_notice' && m._isInterrupt) {
             item._interrupt = true
@@ -1600,9 +2311,20 @@ function FleetChatInner({ shape }: { shape: any }) {
       }
     }
     flushActivity()
+    if (probe.isEnabled('chat')) {
+      probe.record('chat', 'chat-build-raw-items', performance.now() - rawItemsT0, {
+        messageCount: chatMessages.length,
+        itemCount: items.length,
+        chatLineCount,
+        activityGroupCount,
+        buildResultCount,
+        specialCount,
+        eventCount: events.length,
+      })
+    }
     return items
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatMessages, ctx, thinkingAgents, unqueuedAt, viewingVersion, doc, amendsByOrig, amendView])
+  }, [chatMessages, ctx, thinkingAgents, unqueuedAt, viewingVersion, doc, amendsByOrig, amendView, macrosByDoc, preambleMacros])
 
   // Per-item post-processing: applies chip replacement, URL linkification, and
   // doc-link resolution to a single item's HTML. Called by ChatMessageRow only
@@ -1703,6 +2425,11 @@ function FleetChatInner({ shape }: { shape: any }) {
     if (firstQueuedIdx > 0) {
       items[firstQueuedIdx - 1] = { ...items[firstQueuedIdx - 1], _divider: true }
     }
+    // Status row is a real trailing item (not a Virtuoso Footer) so its height
+    // enters totalListHeight — a Footer's height leaks into scrollHeight without
+    // Virtuoso knowing, which makes the pin loop re-solve the sizer paddingBottom
+    // and flicker whenever the status height changes.
+    items.push({ key: '__status__', html: '', _status: true })
     return items
   }, [rawItems])
 
@@ -1735,24 +2462,25 @@ function FleetChatInner({ shape }: { shape: any }) {
     const chipTarget = (e.target as HTMLElement).closest('.ref-chip-annotation')
     if (chipTarget) { handleRefChipClick(e); return }
 
-    // Markdown chip → lightbox overlay (ref-chip-doc chips AND md-file-card chips in activity cards)
+    // Markdown chip → temporary page-like html column.
+    // (ref-chip-doc chips AND md-file-card chips in activity cards).
     const mdChip = (e.target as HTMLElement).closest('.ref-chip-doc, .md-file-card') as HTMLElement | null
     if (mdChip) {
+      if (mdChip.classList.contains('src-chip')) {
+        e.stopPropagation()
+        const line = mdChip.closest('.chat-line')
+        const body = line?.querySelector('.message-body') as HTMLElement | null
+        const title = mdChip.getAttribute('title') || mdChip.textContent || 'source'
+        openMarkdownColumn(title, body?.innerText || body?.textContent || title, mdChip)
+        return
+      }
       const chipUrl = mdChip.dataset.url || ''
       const chipPath = mdChip.dataset.path || ''
       const isMd = /\.md$/i.test(chipUrl || chipPath)
-      const fetchUrl = chipUrl || (chipPath ? `/api/local-image?path=${encodeURIComponent(chipPath)}` : '')
+      const fetchUrl = chipUrl || (chipPath ? `/api/read-file?path=${encodeURIComponent(chipPath)}` : '')
       if (isMd && fetchUrl) {
         e.stopPropagation()
-        const existing = document.querySelector('.chat-lightbox-md')
-        if (existing) { existing.remove(); return }
-        const overlay = document.createElement('div')
-        overlay.className = 'chat-lightbox-md'
-        overlay.innerHTML = '<div class="chat-lightbox-md-card"><div class="chat-lightbox-md-loading">Loading…</div></div>'
-        overlay.addEventListener('click', (ev) => {
-          if (ev.target === overlay) overlay.remove()
-        })
-        document.body.appendChild(overlay)
+        const title = mdChip.querySelector('.md-file-chip')?.textContent || mdChip.textContent || chipPath.split('/').pop() || 'file'
         fetch(fetchUrl)
           .then(r => r.ok ? r.text() : Promise.reject(r.status))
           .then(text => {
@@ -1761,19 +2489,10 @@ function FleetChatInner({ shape }: { shape: any }) {
               if (src.startsWith('http') || src.startsWith('/')) return match
               return `![${alt}](${baseUrl}${src})`
             }) : text
-            const title = mdChip.querySelector('.md-file-chip')?.textContent || mdChip.textContent || chipPath.split('/').pop() || 'file'
-            let renderedHtml = tldaRenderMarkdown(resolved)
-            const lr = labelRegionsRef.current
-            if (lr && Object.keys(lr).length > 0) {
-              renderedHtml = linkifyAtRefs(renderedHtml, lr)
-            }
-            const cardEl = overlay.querySelector('.chat-lightbox-md-card')!
-            cardEl.innerHTML = `<div class="chat-lightbox-md-header"><span>${title}</span><button class="chat-lightbox-md-close" title="Close">✕</button></div><div class="chat-lightbox-md-body">${renderedHtml}</div>`
-            cardEl.querySelector('.chat-lightbox-md-close')?.addEventListener('click', () => overlay.remove())
+            openMarkdownColumn(title, resolved, mdChip)
           })
           .catch(() => {
-            const cardEl = overlay.querySelector('.chat-lightbox-md-card')
-            if (cardEl) cardEl.innerHTML = '<div class="chat-lightbox-md-loading">Failed to load</div>'
+            openMarkdownColumn(title, '# Failed to load', mdChip)
           })
         return
       }
@@ -1782,9 +2501,12 @@ function FleetChatInner({ shape }: { shape: any }) {
     // Copy button on code blocks
     const copyBtn = (e.target as HTMLElement).closest('.code-block-copy') as HTMLElement | null
     if (copyBtn) {
-      const pre = copyBtn.closest('.code-block-wrap')?.querySelector('pre')
-      if (pre) {
-        navigator.clipboard.writeText(pre.textContent || '').then(() => {
+      const wrap = copyBtn.closest('.code-block-wrap')
+      const source = wrap?.querySelector('template.code-block-copy-source') as HTMLTemplateElement | null
+      const fallback = wrap?.querySelector('pre, .fold-body, .diff-tex') as HTMLElement | null
+      const text = source?.content.textContent ?? fallback?.innerText ?? fallback?.textContent
+      if (text != null) {
+        navigator.clipboard.writeText(text).then(() => {
           copyBtn.textContent = '✓'
           copyBtn.classList.add('code-block-copy-success')
           setTimeout(() => { copyBtn.textContent = '⎘'; copyBtn.classList.remove('code-block-copy-success') }, 1500)
@@ -1835,7 +2557,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       }
     }
     editor.centerOnPoint(canvasPos, { animation: { duration: 300 } })
-  }, [doc, refResolver, editor])
+  }, [doc, refResolver, editor, handleRefChipClick, openMarkdownColumn])
 
   const shapeContainerRef = useRef<HTMLDivElement>(null)
   const inputAreaRef = useRef<HTMLDivElement>(null)
@@ -1910,9 +2632,11 @@ function FleetChatInner({ shape }: { shape: any }) {
       window.dispatchEvent(new CustomEvent('annotation-viewer-hide'))
     }
 
-    // Chip hover — show popover for msg/activity/tool reference chips
+    // Chip hover — show popover for msg/activity/tool reference chips. The
+    // apply-line's proposal ref (.apply-ref) opts into this same machinery via a
+    // data-token, so we don't maintain a second hover handler.
     async function onChipOver(e: MouseEvent) {
-      const chip = (e.target as HTMLElement).closest('.ref-chip[data-token]') as HTMLElement | null
+      const chip = (e.target as HTMLElement).closest('.ref-chip[data-token], .apply-ref[data-token]') as HTMLElement | null
       if (!chip) return
       // Don't handle annotation chips here (they use AnnotationViewer)
       if (chip.classList.contains('ref-chip-annotation')) return
@@ -1922,6 +2646,28 @@ function FleetChatInner({ shape }: { shape: any }) {
       const token = chip.getAttribute('data-token') || ''
       const refId = token.replace(/^«/, '').replace(/»$/, '').split('#')[1]
       if (!refId) return
+      // Proposal ref (apply line): the full diff is on the propose card already in
+      // the chat DOM, stamped with data-proposal-id. Clone it into the standard
+      // chip-hover popover — the proposal store itself is in-process in the MCP
+      // server, not reachable from the browser, so there's nothing to fetch.
+      if (refId.startsWith('proposal:')) {
+        const pid = refId.slice('proposal:'.length)
+        if (!logEl) return
+        const card = logEl.querySelector(`.edit-diff-wrap[data-proposal-id="${pid}"]`) as HTMLElement | null
+        if (!card) return
+        document.querySelector('.chip-hover-popover')?.remove()
+        const popover = document.createElement('div')
+        popover.className = 'chip-hover-popover fleet-chat-shape'
+        popover.innerHTML = `<div class="chat-activity-inline-wrap">${card.outerHTML}</div>`
+        const chipRect = chip.getBoundingClientRect()
+        popover.style.position = 'fixed'
+        popover.style.left = `${chipRect.left}px`
+        popover.style.bottom = `${window.innerHeight - chipRect.top + 4}px`
+        popover.style.zIndex = '10000'
+        popover.style.maxWidth = `${w}px`
+        document.body.appendChild(popover)
+        return
+      }
       // Find matching event by timestamp embedded in the refId
       // New format: msg:<dbId> or activity:<dbId> or activity:<dbId>:line<N>
       // Legacy format: msg:fleet:skip:2026-04-18T... or activity:fleet:xxx:ISO
@@ -2056,7 +2802,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
 
     function onChipOut(e: MouseEvent) {
-      const chip = (e.target as HTMLElement).closest('.ref-chip[data-token]')
+      const chip = (e.target as HTMLElement).closest('.ref-chip[data-token], .apply-ref[data-token]')
       if (!chip) return
       const related = e.relatedTarget as HTMLElement | null
       if (related?.closest('.chip-hover-popover')) return
@@ -2248,6 +2994,38 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
   }, [chatLogEl])
 
+  // Hover an agent's name in chat → show their skill state (read / owed / dismissed).
+  useEffect(() => {
+    const logEl = chatLogEl
+    if (!logEl) return
+    let showTimer: ReturnType<typeof setTimeout> | null = null
+    function onNickOver(e: MouseEvent) {
+      const nick = (e.target as HTMLElement).closest('.agent-nick[data-agent-id]') as HTMLElement | null
+      if (!nick) return
+      const agentId = nick.dataset.agentId
+      if (!agentId) return
+      if (skillHideTimerRef.current) { clearTimeout(skillHideTimerRef.current); skillHideTimerRef.current = null }
+      if (showTimer) clearTimeout(showTimer)
+      showTimer = setTimeout(() => {
+        if (!nick.matches(':hover')) return
+        const r = nick.getBoundingClientRect()
+        setSkillHover({ agentId: agentId!, agentName: nick.textContent?.trim() || agentId!, rect: { left: r.left, bottom: r.bottom, top: r.top } })
+      }, 450)
+    }
+    function onNickOut(e: MouseEvent) {
+      if (!(e.target as HTMLElement).closest?.('.agent-nick[data-agent-id]')) return
+      if (showTimer) { clearTimeout(showTimer); showTimer = null }
+      skillHideTimerRef.current = setTimeout(() => setSkillHover(null), 220)
+    }
+    logEl.addEventListener('mouseover', onNickOver)
+    logEl.addEventListener('mouseout', onNickOut)
+    return () => {
+      if (showTimer) clearTimeout(showTimer)
+      logEl.removeEventListener('mouseover', onNickOver)
+      logEl.removeEventListener('mouseout', onNickOut)
+    }
+  }, [chatLogEl])
+
   // Live countdown ticker: timer-countdown lines render a frozen number, so each
   // second we recompute remaining from data-timer-until and update the text in
   // place. Pure DOM — doesn't fight the dangerouslySetInnerHTML items. Terminal
@@ -2269,6 +3047,15 @@ function FleetChatInner({ shape }: { shape: any }) {
         const arrowIdx = txt.indexOf('→')
         const tail = arrowIdx >= 0 ? txt.slice(arrowIdx) : ''
         span.textContent = `⏱ ${timeStr} ${tail}`.trimEnd()
+      }
+      // ScheduleWakeup cards: same idea — recompute the "in Xm Ys" countdown each
+      // second from the absolute fire epoch baked into data-fire-at.
+      const schedNodes = logEl.querySelectorAll<HTMLElement>('.tool-pretty-schedule[data-fire-at]')
+      for (const node of schedNodes) {
+        const fireAt = parseInt(node.getAttribute('data-fire-at') || '0', 10)
+        const span = node.querySelector<HTMLElement>('.schedule-time')
+        if (!fireAt || !span) continue
+        span.textContent = scheduleTimeLabel(fireAt)
       }
     }
     const id = setInterval(tick, 1000)
@@ -2352,6 +3139,9 @@ function FleetChatInner({ shape }: { shape: any }) {
   const [termHoverPinned, setTermHoverPinned] = useState(false)
   const termHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const termAutoPinnedRef = useRef(false)
+  // Skill-state hover popover (hovering an agent name in chat)
+  const [skillHover, setSkillHover] = useState<{ agentId: string; agentName: string; rect: { left: number; bottom: number; top: number } } | null>(null)
+  const skillHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastAttentionTsRef = useRef<string | null>(null)
   // Tracks which chat rows have been expanded (by item key) so the state
   // survives dangerouslySetInnerHTML re-renders.
@@ -2367,17 +3157,24 @@ function FleetChatInner({ shape }: { shape: any }) {
     localStorage.setItem(HARD_LOCKED_KEY, String(hardLocked))
   }, [hardLocked])
 
-  // pin-to-bottom: two complementary mechanisms, each needed.
-  //  - scrollToIndex(LAST) forces Virtuoso to render+measure the last items
-  //    (virtualization-aware); without it the raw scrollTop undershoots while
-  //    the tail is unmeasured.
-  //  - raw scrollTop = scrollHeight reaches the ABSOLUTE bottom past the Virtuoso
-  //    Footer (eliza/thinking status). scrollToIndex(LAST, 'end') only aligns the
-  //    last DATA item, stopping ~the footer's height above true bottom — that was
-  //    the consistent ~514px residual gap when raw was removed.
-  // The bounded loop re-runs as height settles. The standing watchdog below is
-  // what guarantees convergence after this loop's frame budget — the original
-  // bug was that nothing re-applied this once events stopped firing.
+  // pin-to-bottom: Virtuoso's own scrollToIndex(LAST, 'end') is the single
+  // source of truth. It is virtualization-aware — it renders + measures the
+  // last items and lands the true last item flush against the viewport bottom.
+  //
+  // We deliberately do NOT also slam `el.scrollTop = el.scrollHeight`. That used
+  // to exist to "reach past the thinking/suggestion FOOTER" — but the status row
+  // is now a measured list item, not a footer, so there is nothing below the last
+  // item to clear. With the footer gone, the raw slam became actively harmful:
+  // when the status item's height shrinks (an agent stops thinking), Virtuoso's
+  // totalListHeight lags one frame, so scrollHeight is transiently TALLER than the
+  // real content. `scrollTop = scrollHeight` then locks the view into that stale
+  // tail — the last message strands at the TOP of the viewport with ~a screenful
+  // of blank below it, and it persists because no later event re-pins. scrollToIndex
+  // doesn't have this failure mode: it targets the last ITEM, re-measuring it, so
+  // it can never scroll into space that isn't really there.
+  //
+  // The bounded loop re-runs as height settles; the standing watchdog below
+  // guarantees convergence after this loop's frame budget.
   const pinHard = useCallback(() => {
     programmaticUntilRef.current = performance.now() + 400
     let frames = 0
@@ -2386,7 +3183,6 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (userScrolledUpRef.current && !hardLockedRef.current) return
       virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
       const el = chatLogEl
-      if (el) el.scrollTop = el.scrollHeight
       programmaticUntilRef.current = performance.now() + 120
       const gap = el ? (el.scrollHeight - (el.scrollTop + el.clientHeight)) : 0
       if (gap > 8 && ++frames < 12) requestAnimationFrame(step)
@@ -2396,7 +3192,7 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   // Imperative scroll-to-bottom for the floating ⇣ button.
   const scrollToBottom = useCallback(() => {
-    log.warn('chat-scroll', 'scrollToBottom (user click ⇣)')
+    log.debug('chat-scroll', 'scrollToBottom (user click ⇣)')
     // Clear the scroll-up flag BEFORE pinHard: pinHard's step() bails
     // immediately when userScrolledUp is set (and we're not hard-locked), so
     // calling it first made the click a no-op — that was the "click twice to
@@ -2420,7 +3216,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       const h = el.clientHeight
       if (h !== prevH) {
         const pin = !userScrolledUpRef.current || hardLockedRef.current
-        log.warn('chat-scroll', 'container resize', { prevH, h, atBottom: isAtBottomRef.current, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current, action: pin ? 'pin' : 'skip' })
+        log.debug('chat-scroll', 'container resize', { prevH, h, atBottom: isAtBottomRef.current, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current, action: pin ? 'pin' : 'skip' })
         if (pin) pinHard()
       }
       prevH = h
@@ -2442,7 +3238,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     const prev = prevItemCountRef.current
     prevItemCountRef.current = allItems.length
     if (allItems.length > prev && (!userScrolledUpRef.current || hardLockedRef.current)) {
-      log.warn('chat-scroll', 'force-pin on item grow', { prev, now: allItems.length, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
+      log.debug('chat-scroll', 'force-pin on item grow', { prev, now: allItems.length, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
       requestAnimationFrame(pinHard)
     }
   }, [allItems.length, pinHard])
@@ -2475,10 +3271,31 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (!hardLockedRef.current) {
         userScrolledUpRef.current = gap > FOLLOW_THRESHOLD
       }
-      log.warn('chat-scroll', 'user scroll', { gap, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
+      log.debug('chat-scroll', 'user scroll', { gap, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
     }
     el.addEventListener('fleet-user-scroll', onUserScroll as EventListener)
-    return () => el.removeEventListener('fleet-user-scroll', onUserScroll as EventListener)
+
+    // Touch devices generate no wheel events, so the wheel-driven
+    // fleet-user-scroll signal above never fires on iPad — the user drags up,
+    // intent is never recorded, and the pin watchdog slams the view back to the
+    // bottom ("can't scroll up on iPad"). Treat native scrolling during an
+    // active touch (and its short momentum tail) as the same user-scroll intent.
+    // Programmatic pins happen when no touch is active, so they don't trip this.
+    let touchScrolling = false
+    let momentumUntil = 0
+    const onTouchStart = () => { touchScrolling = true; momentumUntil = 0 }
+    const onTouchEnd = () => { touchScrolling = false; momentumUntil = Date.now() + 600 }
+    const onNativeScroll = () => { if (touchScrolling || Date.now() < momentumUntil) onUserScroll() }
+    el.addEventListener('touchstart', onTouchStart, { passive: true })
+    el.addEventListener('touchend', onTouchEnd, { passive: true })
+    el.addEventListener('scroll', onNativeScroll, { passive: true })
+
+    return () => {
+      el.removeEventListener('fleet-user-scroll', onUserScroll as EventListener)
+      el.removeEventListener('touchstart', onTouchStart)
+      el.removeEventListener('touchend', onTouchEnd)
+      el.removeEventListener('scroll', onNativeScroll)
+    }
   }, [chatLogEl])
 
   // Convergence watchdog — the reconciler of last resort. scrollToIndex(LAST)
@@ -2530,8 +3347,8 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Logs the chat's mount/unmount (to confirm or rule out remount-resets) and
   // every scroll event with its attributed cause (our pin vs. anything else).
   useEffect(() => {
-    log.warn('chat-scroll', 'TRACE mount')
-    return () => log.warn('chat-scroll', 'TRACE unmount')
+    log.debug('chat-scroll', 'TRACE mount')
+    return () => log.debug('chat-scroll', 'TRACE unmount')
   }, [])
   useEffect(() => {
     const el = chatLogEl
@@ -2543,7 +3360,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       const gap = Math.round(el.scrollHeight - (el.scrollTop + el.clientHeight))
       const dir = top > prevTop ? 'down' : top < prevTop ? 'up' : 'same'
       const cause = now < programmaticUntilRef.current ? 'pin' : 'other'
-      log.warn('chat-scroll', 'TRACE scroll', {
+      log.debug('chat-scroll', 'TRACE scroll', {
         top, sh: el.scrollHeight, ch: el.clientHeight, gap, dir, cause,
         scrolledUp: userScrolledUpRef.current, atBottom: isAtBottomRef.current,
       })
@@ -2590,126 +3407,10 @@ function FleetChatInner({ shape }: { shape: any }) {
     return () => { el.removeEventListener('mouseover', onOver); el.removeEventListener('mouseout', onOut) }
   }, [chatLogEl])
 
-  // --- Shared doc: auto-create sticky when a .md file chip appears in chat ---
-  // Track which messages we've already processed to avoid duplicates.
-  const sharedDocProcessed = useRef<Set<string>>(new Set())
   useEffect(() => {
-    if (chatMessages.length === 0) return
-    const mainEditor = (window as any).__tldraw_editor__ as any
-    if (!mainEditor) return
-
-    for (const m of chatMessages) {
-      const msgKey = m._dbId != null ? `db${m._dbId}` : m._tempId ? `tmp${m._tempId}` : `${m.timestamp}:${m.from}`
-      if (sharedDocProcessed.current.has(msgKey)) continue
-      sharedDocProcessed.current.add(msgKey)
-
-      // Skip messages from the human user — only auto-display agent-shared files
-      if (m.from && !m.from.startsWith('fleet:')) continue
-
-      // Extract .md file attachments (the chipifier already replaced raw paths
-      // with {{att:N}} tokens — inline_attachments metadata is the sole source)
-      const mdAtts: Array<{ path: string; url?: string }> = []
-      if (m._inlineAttachments) {
-        for (const att of m._inlineAttachments) {
-          if (att?.path && /\.md$/i.test(att.path)) {
-            mdAtts.push(att)
-          }
-        }
-      }
-
-      if (mdAtts.length === 0) continue
-
-      // Create a sticky for each .md file found
-      for (const att of mdAtts) {
-        const filePath = att.path
-        ;(async () => {
-          try {
-            // Prefer the uploaded copy (works cross-machine), fall back to direct path
-            const fetchUrl = att.url || `/api/read-file?path=${encodeURIComponent(filePath)}`
-            const res = await fetch(fetchUrl)
-            if (!res.ok) return
-            const content = await res.text()
-            if (!content.trim()) return
-
-            // Check if a shared sticky for this file already exists — update it instead
-            const allShapes = mainEditor.getCurrentPageShapes()
-            let existingId: string | null = null
-            for (const s of allShapes) {
-              if ((s as any).type === 'math-note' && (s as any).meta?.sharedDocPath === filePath) {
-                existingId = s.id
-                break
-              }
-            }
-
-            if (existingId) {
-              // Update existing sticky content + ensure backingFile and authorId are set
-              const existing = mainEditor.getShape(existingId) as any
-              mainEditor.updateShape({
-                id: existingId,
-                type: 'math-note',
-                props: { text: content, backingFile: filePath },
-                meta: { ...existing?.meta, authorId: existing?.meta?.authorId || m.from },
-              })
-              broadcastSharedDoc(existingId, filePath)
-            } else {
-              // Find open canvas space for the new sticky (2D grid search)
-              const noteW = 550, noteH = 400, gap = 30
-              const startX = 2000, startY = 100
-              const blockers = allShapes.filter((s: any) =>
-                s.type === 'math-note' ||
-                s.type === 'fleet-docview'
-              ).map((s: any) => mainEditor.getShapePageBounds(s.id)).filter(Boolean)
-
-              let newX = startX, newY = startY
-              const maxX = startX + (noteW + gap) * 4
-              let placed = false
-              for (let y = startY; !placed; y += noteH + gap) {
-                for (let x = startX; x < maxX; x += noteW + gap) {
-                  const collides = blockers.some((sb: any) =>
-                    x < sb.x + sb.w + gap && x + noteW > sb.x - gap &&
-                    y < sb.y + sb.h + gap && y + noteH > sb.y - gap
-                  )
-                  if (!collides) {
-                    newX = x
-                    newY = y
-                    placed = true
-                    break
-                  }
-                }
-              }
-              const stickyId = createShapeId()
-              mainEditor.createShape({
-                id: stickyId,
-                type: 'math-note' as any,
-                x: newX,
-                y: newY,
-                isLocked: false,
-                props: {
-                  w: 550,
-                  h: 400,
-                  text: content,
-                  color: 'light-violet',
-                  autoSize: true,
-                  backingFile: filePath,
-                },
-                meta: {
-                  sharedDocPath: filePath,
-                  sharedDoc: true,
-                  fromAgent: m.from,
-                  authorId: m.from,
-                  createdAt: Date.now(),
-                },
-              })
-              broadcastSharedDoc(stickyId, filePath)
-            }
-          } catch (e) {
-            console.error('[fleet] Failed to create shared doc sticky:', e)
-          }
-        })()
-      }
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatMessages])
+    if (!chatLogEl) return
+    return installChatImageRetry(chatLogEl)
+  }, [chatLogEl])
 
   // Lightbox: click on chat-image opens full-size overlay
   useEffect(() => {
@@ -2750,6 +3451,13 @@ function FleetChatInner({ shape }: { shape: any }) {
             .then((r: any) => { if (!r?.ok) throw new Error('resend failed') })
             .catch(() => updateOptimisticEvent(tempId, { _failed: true }))
         }
+        return
+      }
+      const dismissFailedBtn = (e.target as HTMLElement).closest('.chat-dismiss-failed-btn') as HTMLElement
+      if (dismissFailedBtn) {
+        e.stopPropagation()
+        const tempId = dismissFailedBtn.dataset.dismissTempid
+        if (tempId) removeOptimisticEvent(tempId)
         return
       }
       // Plan approval buttons
@@ -2966,11 +3674,41 @@ function FleetChatInner({ shape }: { shape: any }) {
       const overlay = document.createElement('div')
       overlay.className = 'chat-lightbox'
       overlay.innerHTML = `<img src="${img.src}" alt="${img.alt || ''}">`
-      overlay.addEventListener('click', () => overlay.remove())
+      addTap(overlay, () => overlay.remove())
       document.body.appendChild(overlay)
     }
+    // Touch/stylus: the toggles handled above are text <div>/<span> elements
+    // (code-block fold, build-result header, pretty-expand, lifecycle/terminal
+    // cards, plan-mode badge, delegation-message collapse) — a tap synthesizes
+    // no `click`, so the delegated handler is dead on iPad/pen. On a deliberate
+    // tap, re-dispatch a real .click() on the nearest such element: that fires
+    // the inline onclick (code-block fold) AND this delegated handler, exactly
+    // like a mouse click. <button> targets (resend/approve/deny/plan-action/
+    // amend) already get a native click on touch, so they are excluded — both to
+    // avoid a double-fire and so a tap on a button inside an .lc-message doesn't
+    // redispatch onto the message (which would collapse it).
+    let tapDownX = 0, tapDownY = 0
+    const onTapDown = (e: PointerEvent) => {
+      if (e.pointerType === 'touch' || e.pointerType === 'pen') { tapDownX = e.clientX; tapDownY = e.clientY }
+    }
+    const onTapUp = (e: PointerEvent) => {
+      if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return
+      if (Math.abs(e.clientX - tapDownX) > 16 || Math.abs(e.clientY - tapDownY) > 16) return
+      const t = e.target as HTMLElement
+      if (t.closest('button')) return
+      const hit = t.closest(
+        '.code-block-toggle, .build-result-header, .pretty-expand-btn, .lc-message, .lc-terminal-card, .bullet-card-go, .plan-badge-click',
+      ) as HTMLElement | null
+      if (hit) hit.click()
+    }
+    logEl.addEventListener('pointerdown', onTapDown)
+    logEl.addEventListener('pointerup', onTapUp)
     logEl.addEventListener('click', onClick)
-    return () => logEl.removeEventListener('click', onClick)
+    return () => {
+      logEl.removeEventListener('pointerdown', onTapDown)
+      logEl.removeEventListener('pointerup', onTapUp)
+      logEl.removeEventListener('click', onClick)
+    }
   }, [chatLogEl])
 
   // Unquote: double-click on <code> spans inside chat messages.
@@ -2981,41 +3719,17 @@ function FleetChatInner({ shape }: { shape: any }) {
     const logEl = chatLogEl
     if (!logEl) return
 
-    function isLatexLabel(text: string): boolean {
-      if (/^https?:/i.test(text)) return false
-      return /^[a-z][a-z0-9]{0,9}:[a-z][a-z0-9_.-]{0,50}$/i.test(text)
-    }
-
-    function matchesUnquotePattern(text: string): boolean {
-      if (!text || text.length > 500) return false
-      if (/^https?:\/\/\S+/.test(text)) return true
-      if (/^\/\S+/.test(text)) return true
-      if (/^~\/\S+/.test(text)) return true
-      // Relative paths: no spaces, contains / or ends with a known file extension
-      if (!/\s/.test(text) && (/\//.test(text) || /\.(png|jpg|jpeg|gif|svg|pdf|tex|md|r|py|js|mjs|ts|json|csv|txt|log)$/i.test(text))) return true
-      if (isLatexLabel(text)) return true
-      return false
-    }
-
-    function isFilePath(text: string): boolean {
-      return text.startsWith('/') || text.startsWith('~/') || (!/\s/.test(text) && (/\//.test(text) || /\.(png|jpg|jpeg|gif|svg|pdf|tex|md|r|py|js|mjs|ts|json|csv|txt|log)$/i.test(text)))
-    }
-
-    function applyTierLabel(codeEl: HTMLElement, text: string) {
-      const html = linkifyLabelRefs(text, labelRegionsRef.current)
-      const wrapper = document.createElement('span')
-      wrapper.innerHTML = html
-      codeEl.replaceWith(...Array.from(wrapper.childNodes))
-    }
-
-    function applyTier1(codeEl: HTMLElement, text: string) {
-      const rendered = renderMarkdownUtil(esc(text))
-      const wrapper = document.createElement('span')
-      wrapper.innerHTML = rendered
-      codeEl.replaceWith(...Array.from(wrapper.childNodes))
-    }
-
-    async function applyTier2(codeEl: HTMLElement, text: string, eventId: string, agentId: string) {
+    // Unquote = amend the message by removing the backticks around the clicked
+    // span, then re-render the WHOLE message as if it had never been quoted —
+    // including file attachments. ONE behavior for ANY quoted block (path, label,
+    // prose, code): the full interior is sent through the amend/upload path
+    // (/api/unquote-file → daemon rechat → processMessageText), which resolves and
+    // uploads any file paths inside it. The server patches the stored event and
+    // broadcasts event-update, which re-renders the entire message in place — that
+    // broadcast is the authoritative whole-message re-render. The local span-swap
+    // below is just immediate feedback (and the terminal state when the message
+    // isn't persisted server-side, so no broadcast comes back).
+    async function unquoteSpan(codeEl: HTMLElement, text: string, eventId: string, agentId: string) {
       const spinner = document.createElement('span')
       spinner.textContent = '⏳'
       spinner.style.opacity = '0.6'
@@ -3025,7 +3739,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         const resp = await fetch('/api/unquote-file', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ eventId: parseInt(eventId, 10), path: text, agentId }),
+          body: JSON.stringify({ eventId: parseInt(eventId, 10), quoted: text, agentId }),
         })
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
         const { resolvedMessage, inlineAttachments } = await resp.json()
@@ -3034,11 +3748,11 @@ function FleetChatInner({ shape }: { shape: any }) {
         wrapper.innerHTML = rendered
         spinner.replaceWith(...Array.from(wrapper.childNodes))
       } catch {
-        const fallback = document.createElement('span')
-        fallback.textContent = text
-        fallback.title = 'Unquote failed — file not found or daemon unreachable'
-        fallback.style.opacity = '0.5'
-        spinner.replaceWith(fallback)
+        // No daemon / unpersisted message: still drop the quote locally by
+        // re-rendering the interior as markdown (no upload possible offline).
+        const wrapper = document.createElement('span')
+        wrapper.innerHTML = renderMarkdownUtil(esc(text))
+        spinner.replaceWith(...Array.from(wrapper.childNodes))
       }
     }
 
@@ -3062,7 +3776,8 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (!chatLine) { clearPending(); return }
 
       const text = codeEl.textContent || ''
-      if (!matchesUnquotePattern(text)) { clearPending(); return }
+      // Any non-empty quoted block is unquotable (Skip: "any quoted block at all").
+      if (!text || text.length > 2000) { clearPending(); return }
 
       const now = Date.now()
       if (lastClickEl === codeEl && now - lastClickTime < 1000) {
@@ -3070,15 +3785,9 @@ function FleetChatInner({ shape }: { shape: any }) {
         clearPending()
         e.preventDefault()
         e.stopPropagation()
-        if (isLatexLabel(text)) {
-          applyTierLabel(codeEl, text)
-        } else if (isFilePath(text)) {
-          const eventId = chatLine.dataset.msgId || ''
-          const agentId = chatLine.dataset.msgFrom || ''
-          applyTier2(codeEl, text, eventId, agentId)
-        } else {
-          applyTier1(codeEl, text)
-        }
+        const eventId = chatLine.dataset.msgId || ''
+        const agentId = chatLine.dataset.msgFrom || ''
+        unquoteSpan(codeEl, text, eventId, agentId)
       } else {
         clearPending()
         lastClickEl = codeEl
@@ -3088,8 +3797,28 @@ function FleetChatInner({ shape }: { shape: any }) {
       }
     }
 
+    // Touch/stylus double-TAP parity: on touch there are no clicks, so the
+    // double-click-to-unquote above is dead. Route a movement-guarded touch/pen
+    // pointerup through the SAME handler — two taps on the same <code> within the
+    // window trigger the unquote exactly like a double-click. Mouse keeps its
+    // native double-click (touch/pen only here, so no double-count).
+    let uqDownX = 0, uqDownY = 0
+    const onUqDown = (e: PointerEvent) => {
+      if (e.pointerType === 'touch' || e.pointerType === 'pen') { uqDownX = e.clientX; uqDownY = e.clientY }
+    }
+    const onUqUp = (e: PointerEvent) => {
+      if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return
+      if (Math.abs(e.clientX - uqDownX) > 16 || Math.abs(e.clientY - uqDownY) > 16) return
+      onClick(e)
+    }
+    logEl.addEventListener('pointerdown', onUqDown)
+    logEl.addEventListener('pointerup', onUqUp)
     logEl.addEventListener('click', onClick)
-    return () => logEl.removeEventListener('click', onClick)
+    return () => {
+      logEl.removeEventListener('pointerdown', onUqDown)
+      logEl.removeEventListener('pointerup', onUqUp)
+      logEl.removeEventListener('click', onClick)
+    }
   }, [chatLogEl])
 
   // Track clicks to determine which fleet chat shape the user is interacting with.
@@ -3106,8 +3835,9 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   // Esc interrupt — document-level listener, scoped to fire only when the user
   // last clicked inside this fleet chat shape (chatActiveRef).
-  // Three tiers: 1×Esc = soft (single Escape to tmux), 2×Esc = hard (Escape+poll loop),
-  // 3×Esc = kill session (tmux kill-session, agent dies immediately).
+  // Three tiers: 1×Esc = soft (promote a queued message above the spinner; the
+  // daemon no-ops if nothing is queued, so a single Esc never hard-interrupts),
+  // 2×Esc = hard (one Escape that stops the agent), 3×Esc = kill session.
   useEffect(() => {
     let escTempCounter = 0
     function onEscKey(e: KeyboardEvent) {
@@ -3151,14 +3881,20 @@ function FleetChatInner({ shape }: { shape: any }) {
           })
           .catch(() => { injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', _isInterrupt: true, from: 'system', to: agent, text: `⚠ Interrupt failed (server unreachable)`, timestamp: ts }) })
       } else {
-        injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', _isInterrupt: true, from: 'system', to: agent, text: `⏸ Escape → ${agentLabel}…`, timestamp: ts })
-        fetch(`${FLEET_API}/api/send-key`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent, key: 'Escape' }) })
+        // Soft interrupt: promote a queued message above the spinner without
+        // stopping the agent. The daemon no-ops when nothing is queued — a single
+        // Esc must never hard-interrupt. Confirm the card off the real result
+        // (promoted / nothing-queued), not optimistically.
+        injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', _isInterrupt: true, from: 'system', to: agent, text: `⏸ Soft interrupt → ${agentLabel}…`, timestamp: ts })
+        fetch(`${FLEET_API}/api/soft-interrupt`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent }) })
           .then(r => r.json())
           .then(d => {
-            if (d.error) { updateOptimisticEvent(tempId, { text: `⚠ Escape failed: ${d.error}` }) }
-            else { updateOptimisticEvent(tempId, { text: `⏸ Escape → ${agentLabel}` }); confirmEscLevel(agent, 1) }
+            if (d.error) { updateOptimisticEvent(tempId, { text: `⚠ Soft interrupt failed: ${d.error}` }) }
+            else if (d.promoted) { updateOptimisticEvent(tempId, { text: `⏸ Promoted queued message → ${agentLabel}` }); confirmEscLevel(agent, 1) }
+            else if (d.reason === 'nothing-queued') { updateOptimisticEvent(tempId, { text: `· nothing queued for ${agentLabel} — no-op` }) }
+            else { updateOptimisticEvent(tempId, { text: `⏸ Soft interrupt → ${agentLabel} (unconfirmed)` }) }
           })
-          .catch(() => { updateOptimisticEvent(tempId, { text: `⚠ Escape failed (server unreachable)` }) })
+          .catch(() => { updateOptimisticEvent(tempId, { text: `⚠ Soft interrupt failed (server unreachable)` }) })
       }
     }
     function resetEscState() {
@@ -3195,7 +3931,9 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   // Detect pill drag hovering over this chat — returns stable string to avoid flicker
   // Only agent/label pills trigger filter overlay, not content pills (msg, code, etc.)
+  const fleetPillCount = useFleetPillCount(editor)
   const pillOverKey = useValue('pill-over', () => {
+    if (fleetPillCount === 0) return ''
     const pills = editor.getCurrentPageShapes().filter(s => (s.type as string) === 'fleet-pill') as any[]
     if (pills.length === 0) return ''
     const myBounds = editor.getShapePageBounds(shape.id)
@@ -3214,7 +3952,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       }
     }
     return ''
-  }, [editor, shape.id])
+  }, [editor, shape.id, fleetPillCount])
   const pillOver = useMemo(() => {
     if (!pillOverKey) return null
     const [role, value, displayName] = pillOverKey.split('\0')
@@ -3237,39 +3975,361 @@ function FleetChatInner({ shape }: { shape: any }) {
     const seen = new Set<string>()
     for (const clause of filter) {
       for (const [role, label] of clause) {
-        if (role === 'to') seen.add(label)
+        if (role === 'to' || role === 'dm') seen.add(label)
       }
     }
     return [...seen]
   }, [filterKey])
   sendTargetsRef.current = sendTargets
 
-  // Resolve a send-target label to an agent. The friendly name is an opaque
+  const humanFilterLabel = getHumanName() || getHumanId() || 'user'
+  const composerAgentLabel = useMemo(
+    () => activeComposerAgentLabel(filter, sendTargets, agents),
+    [filterKey, sendTargets, agents],
+  )
+  // Records the pointerdown that started on the traffic toggle, so a cycle only
+  // fires on a deliberate tap (down AND up on the toggle, little movement) — not
+  // on a stray touch or a scroll-drag that merely lifts off over it. This is the
+  // `93aba2cd` spurious-filter-cycling fix.
+  const trafficTapRef = useRef<{ x: number; y: number; id: number } | null>(null)
+  const composerTrafficMode = useMemo<ComposerTrafficFilterMode>(
+    () => classifyFleetComposerTrafficMode(filter, trafficMode, humanFilterLabel, composerAgentLabel),
+    [filterKey, trafficMode, humanFilterLabel, composerAgentLabel],
+  )
+  const cycleComposerTrafficMode = useCallback(() => {
+    if (!composerAgentLabel) return
+    const nextMode = nextFleetComposerTrafficMode(composerTrafficMode)
+    editor.updateShape({
+      id: shape.id,
+      type: shape.type,
+      props: {
+        filter: filterForFleetComposerTrafficMode(nextMode, humanFilterLabel, composerAgentLabel),
+        trafficMode: nextMode === 'dm-quiet' ? 'quiet' : 'normal',
+      },
+    })
+  }, [composerAgentLabel, composerTrafficMode, editor, humanFilterLabel, shape.id, shape.type])
+
+  // --- Composer host callbacks ---------------------------------------------
+  // The shared ChatComposer owns the textarea + voice registration + send-on-
+  // enter; everything chat-specific (viewer context, ref attachments, plan-mode,
+  // /terminal, file-drop, escalation reset) lives here and is passed back in.
+  // Defined as plain closures (recreated each render, like the old inline
+  // handlers) so there's no memoization-induced staleness. Keyboard and voice
+  // send remain DISTINCT — the original had two genuinely-different inline paths
+  // (keyboard: inject→…→plan→send; voice: context→inject→send, no plan).
+  const composerKeyboardSend = (text: string, targets: string[]) => {
+    const tempId = `opt-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    injectOptimisticEvent({
+      _tempId: tempId,
+      type: 'chat',
+      event_type: 'chat',
+      from: getHumanId(),
+      to: targets[0],
+      text,
+      timestamp: new Date().toISOString(),
+      read: false,
+    })
+    void (async () => {
+      const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel, editor))
+      if (context) await enrichContextWithSourceLines(context)
+      const bullets = consumeBulletContexts()
+      if (bullets.length > 0 && context) {
+        ;(context as any).bullets = bullets
+      }
+      const lc = text.toLowerCase().replace(/[.,!?]+$/, '').trim()
+      const APPROVE_PHRASES = new Set([
+        'go for it', 'do it', 'proceed', 'implement it', 'implement', 'approve',
+        'yes', 'yes do it', "let's go", 'lets go', 'sounds good', 'looks good',
+        'go ahead', 'yeah go for it', 'yep', 'yeah', 'ok', 'okay', 'ship it',
+      ])
+      const REJECT_PHRASES = new Set([
+        'stop', 'abort', "don't do it", 'cancel', 'no', 'reject', 'hold off',
+        'wait', 'hold on', 'never mind', 'nevermind', 'nope', 'nah',
+      ])
+      if (APPROVE_PHRASES.has(lc) || REJECT_PHRASES.has(lc)) {
+        const planResponse = APPROVE_PHRASES.has(lc) ? 'approve' : 'reject'
+        for (const agentId of targets) {
+          const chatLog = chatLogRef.current
+          const hasCard = chatLog
+            ? Array.from(chatLog.querySelectorAll(`.plan-card[data-agent-id="${CSS.escape(agentId)}"]`))
+                .some(el => !el.classList.contains('plan-card-approved') && !el.classList.contains('plan-card-rejected'))
+            : false
+          if (hasCard) {
+            fetch(`${FLEET_API}/api/plan-mode-respond`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ agent: agentId, response: planResponse }),
+            }).catch(e => console.warn('[fleet-chat] plan-mode-respond failed:', e.message))
+          }
+        }
+      }
+      const ENTER_PLAN_RE = /^\/plan\b|\blet'?s plan\b|\bplan mode\b|\bplanning mode\b|\bchat in planning\b|\bstay in planning\b|\bplan first\b|\bthink before\b/i
+      if (ENTER_PLAN_RE.test(text)) {
+        for (const agentId of targets) {
+          const agentName = agentNames[agentId] || agentId
+          fetch(`${FLEET_API}/api/plan-mode-toggle`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ agent: agentId }),
+          })
+            .then(r => r.json().then((data: any) => ({ ok: r.ok, data })))
+            .then(({ ok, data }: { ok: boolean; data: any }) => {
+              if (!ok || data?.error) {
+                sendMessage(getHumanId(), `⚠️ plan mode failed for ${agentName}: ${data?.error || 'unknown error'}`, {})
+              } else if (data?.mode) {
+                const modeLabel = data.mode === 'plan' ? 'plan mode ✓' : data.mode
+                sendMessage(getHumanId(), `📋 ${agentName} → ${modeLabel}`, {})
+              }
+            })
+            .catch((err: any) => sendMessage(getHumanId(), `⚠️ plan mode failed for ${agentName}: ${err.message}`, {}))
+        }
+      }
+      const refAttachments = buildRefAttachments(text, editor)
+      const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
+      if (refAttachments.length > 0) sendOpts.attachments = refAttachments
+      if (doc?.docName) sendOpts.preambleRef = { doc: doc.docName, version: currentDocVersion(panel, editor) || null }
+      const sendWithRetry = (attempt: number) => {
+        Promise.all(
+          targets.map(t => sendMessage(t, text, sendOpts))
+        ).then((results: {ok: boolean, event_id: number}[]) => {
+          if (!results.every(r => r.ok)) throw new Error('send failed')
+        }).catch(() => {
+          if (attempt < 3) {
+            setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
+          } else {
+            updateOptimisticEvent(tempId, { _failed: true })
+          }
+        })
+      }
+      sendWithRetry(1)
+    })()
+  }
+
+  const composerVoiceSend = async (targets: string[], text: string) => {
+    const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel, editor))
+    if (context) await enrichContextWithSourceLines(context)
+    const bullets = consumeBulletContexts()
+    if (bullets.length > 0 && context) {
+      ;(context as any).bullets = bullets
+    }
+    const tempId = `opt-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    injectOptimisticEvent({
+      _tempId: tempId,
+      type: 'chat',
+      event_type: 'chat',
+      from: getHumanId(),
+      to: targets[0],
+      text,
+      timestamp: new Date().toISOString(),
+      read: false,
+    })
+    const refAttachments = buildRefAttachments(text, editor)
+    const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
+    if (refAttachments.length > 0) sendOpts.attachments = refAttachments
+    if (doc?.docName) sendOpts.preambleRef = { doc: doc.docName, version: currentDocVersion(panel, editor) || null }
+    const sendWithRetry = (attempt: number) => {
+      Promise.all(
+        targets.map(t => sendMessage(t, text, sendOpts))
+      ).then((results: {ok: boolean, event_id: number}[]) => {
+        if (!results.every(r => r.ok)) throw new Error('send failed')
+      }).catch(() => {
+        if (attempt < 3) {
+          setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
+        } else {
+          updateOptimisticEvent(tempId, { _failed: true })
+        }
+      })
+    }
+    sendWithRetry(1)
+  }
+
+  const composerCommand = (text: string, targets: string[], ta: HTMLTextAreaElement): boolean => {
+    const termMatch = text.match(/^\/terminal\s*(.*)$/i)
+    if (!termMatch) return false
+    const arg = termMatch[1].trim()
+    let targetId = ''
+    if (arg) {
+      const match = agents.find((a: any) =>
+        a.friendly_name === arg || a.id === arg || a.id?.endsWith(arg)
+      )
+      targetId = match?.id || arg
+    } else if (targets.length > 0) {
+      targetId = targets[0]
+    }
+    if (targetId) {
+      setTermCardPinnedId(targetId)
+      ta.value = ''
+      ta.style.height = ''
+    }
+    return true
+  }
+
+  const composerKeyActivity = () => {
+    if (escCountRef.current > 0) {
+      escCountRef.current = 0
+      setEscalationState({})
+    }
+  }
+
+  const composerDragOver = (e: React.DragEvent<HTMLTextAreaElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+  }
+
+  const composerDrop = async (e: React.DragEvent<HTMLTextAreaElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const ta = e.currentTarget
+
+    // External file drops — upload to fleet server, insert markdown link
+    const dtItems = e.dataTransfer?.items ? [...e.dataTransfer.items] : []
+    let entries: { file: File, path: string }[] = []
+    let isFlat = true
+
+    if (dtItems.length > 0 && typeof dtItems[0].webkitGetAsEntry === 'function') {
+      for (const item of dtItems) {
+        const entry = item.webkitGetAsEntry()
+        if (entry) {
+          if (entry.isDirectory) isFlat = false
+          entries.push(...await traverseDirectory(entry))
+        }
+      }
+    } else {
+      for (const f of [...(e.dataTransfer?.files || [])]) {
+        entries.push({ file: f, path: f.name })
+      }
+    }
+
+    if (entries.length > 0) {
+      const mdEntries = entries.filter(({ file: f }) => f.name.endsWith('.md') || f.type === 'text/markdown')
+      const otherEntries = entries.filter(({ file: f }) => !f.name.endsWith('.md') && f.type !== 'text/markdown')
+
+      for (const { file, path } of mdEntries) {
+        try {
+          const companions = entries.filter(en => en.path !== path)
+          const link = await uploadMarkdownWithImages(file, companions, path, isFlat)
+          const pos = ta.selectionStart || ta.value.length
+          ta.value = ta.value.slice(0, pos) + link + ta.value.slice(pos)
+          ta.dispatchEvent(new Event('input', { bubbles: true }))
+        } catch (err) {
+          console.error('[fleet-chat] file upload failed:', err)
+          const pos = ta.selectionStart || ta.value.length
+          ta.value = ta.value.slice(0, pos) + `[${file.name}]` + ta.value.slice(pos)
+          ta.dispatchEvent(new Event('input', { bubbles: true }))
+        }
+      }
+      for (const { file } of otherEntries) {
+        if (mdEntries.length > 0 && /\.(png|jpg|jpeg|gif|svg|webp)$/i.test(file.name)) continue
+        try {
+          const formData = new FormData()
+          formData.append('file', file, file.name)
+          const resp = await fetch(`${FLEET_API}/api/upload`, { method: 'POST', body: formData })
+          if (!resp.ok) throw new Error(`upload failed: ${resp.status}`)
+          const { url, name } = await resp.json()
+          const link = file.type.startsWith('image/')
+            ? `![${name}](${FLEET_API}${url})`
+            : `[${name}](${FLEET_API}${url})`
+          const pos = ta.selectionStart || ta.value.length
+          ta.value = ta.value.slice(0, pos) + link + ta.value.slice(pos)
+          ta.dispatchEvent(new Event('input', { bubbles: true }))
+        } catch (err) {
+          console.error('[fleet-chat] file upload failed:', err)
+          const pos = ta.selectionStart || ta.value.length
+          ta.value = ta.value.slice(0, pos) + `[${file.name}]` + ta.value.slice(pos)
+          ta.dispatchEvent(new Event('input', { bubbles: true }))
+        }
+      }
+      return
+    }
+
+    // Text/attachment drops (from other chat elements)
+    const text = e.dataTransfer?.getData('text/plain') || ''
+    if (text) {
+      const pos = ta.selectionStart || ta.value.length
+      ta.value = ta.value.slice(0, pos) + text + ta.value.slice(pos)
+    }
+  }
+
+  // Resolve a send-target label to one agent. The friendly name is an opaque
   // atom — you address an agent by its exact full name (or id, or a label it
   // carries). No suffix games: dawn is "base", day is "base:day", etc.
+  //
+  // Terminal peek needs a concrete tmux owner. Broadcast/group labels such as
+  // "awake" can match many agents, so only return label matches that identify a
+  // single non-human agent. Group panels fall back to the most recent visible
+  // event below instead of picking an arbitrary first match.
   const resolveTargetAgent = useCallback((label: string, agentList: any[]) => {
     if (label.startsWith('fleet:')) return agentList.find((a: any) => a.id === label) || null
-    return agentList.find((a: any) => a.friendly_name === label || a.id === label || (a.labels || []).includes(label)) || null
+    // A friendly name can have a LIVE holder plus one or more DEAD former holders:
+    // a dead agent keeps its friendly_name for provenance (spec G.18), so the name
+    // string outlives any single holder. The live holder IS the agent (G.22), so
+    // prefer a non-dead match; fall back to a dead one only when the name has no
+    // live holder (which keeps resurrect-by-name working for an all-dead name).
+    const byName = agentList.filter((a: any) => a.friendly_name === label || a.id === label)
+    if (byName.length) return byName.find((a: any) => !a.dead) || byName[0]
+    const matched = agentList.filter((a: any) => !a.human && labelsForAgent(a).includes(label))
+    return matched.length === 1 ? matched[0] : null
   }, [])
+
+  const isTerminalReadyAgent = useCallback((agent: any) => {
+    return !!agent?.tmux_session && !agent?.dead && !agent?.hibernating && agent?.status !== 'hibernating'
+  }, [])
+
+  const terminalAgentIdFromEvent = useCallback((event: any) => {
+    const ids = [event?.from, event?.agent, event?.to, event?._agent, event?._agentId]
+    for (const id of ids) {
+      if (!id || id === getHumanId()) continue
+      const agent = resolveTargetAgent(id, agents)
+      if (agent && !agent.human && isTerminalReadyAgent(agent)) return agent.id
+    }
+    return null
+  }, [agents, resolveTargetAgent, isTerminalReadyAgent])
 
   const hoverTargetAgentId = useMemo(() => {
     const diag: any[] = []
+    const candidateLabels: string[] = []
+    const addLabel = (label: string) => {
+      if (label && !candidateLabels.includes(label)) candidateLabels.push(label)
+    }
     for (const label of sendTargets) {
+      addLabel(label)
+    }
+    for (const clause of filter) {
+      for (const [, label] of clause) addLabel(label)
+    }
+    for (const label of candidateLabels) {
       const agent = resolveTargetAgent(label, agents)
       diag.push({ label, fleetId: agent?.id || label, found: !!agent, tmux: agent?.tmux_session || null, dead: agent?.dead ?? null })
-      if (agent?.tmux_session && !agent?.dead) {
-        log.info('terminal-icon', 'resolved target', { sendTargets, fleetId: agent.id, diag, agentCount: agents.length })
+      if (isTerminalReadyAgent(agent)) {
+        log.info('terminal-icon', 'resolved target', { sendTargets, filter, source: 'label', fleetId: agent.id, diag, agentCount: agents.length })
         return agent.id
       }
     }
-    log.info('terminal-icon', 'no terminal target', { sendTargets, diag, agentCount: agents.length })
+    for (let i = liveEvents.length - 1; i >= 0; i--) {
+      const eventAgentId = terminalAgentIdFromEvent(liveEvents[i])
+      if (eventAgentId) {
+        log.info('terminal-icon', 'resolved target', { sendTargets, filter, source: 'recent-event', fleetId: eventAgentId, diag, agentCount: agents.length })
+        return eventAgentId
+      }
+    }
+    log.info('terminal-icon', 'no terminal target', { sendTargets, filter, diag, agentCount: agents.length, visibleEvents: liveEvents.length })
     return null
-  }, [sendTargets, agents, resolveTargetAgent])
+  }, [sendTargets, filterKey, agents, liveEvents, resolveTargetAgent, isTerminalReadyAgent, terminalAgentIdFromEvent])
 
   const deadTargetAgent = useMemo(() => {
     for (const label of sendTargets) {
       const agent = resolveTargetAgent(label, agents)
-      if (agent?.dead) return { id: agent.id, name: agent.friendly_name || agent.id.replace('fleet:', '') }
+      if (agent?.dead) {
+        // Spec G.22: a dead agent that shares its friendly name with a LIVE
+        // holder is just provenance, never a resurrect target — the live holder
+        // IS the agent. Only offer resurrect when the name has NO live holder
+        // (the legitimate "the only holder is dead" case). This is what stops
+        // dead namesakes nagging "resurrect?" in a chat with the live holder.
+        const name = agent.friendly_name
+        const hasLiveHolder = !!name && agents.some((a: any) => !a.dead && a.friendly_name === name)
+        if (hasLiveHolder) continue
+        return { id: agent.id, name: name || agent.id.replace('fleet:', '') }
+      }
     }
     return null
   }, [sendTargets, agents, resolveTargetAgent])
@@ -3339,11 +4399,39 @@ function FleetChatInner({ shape }: { shape: any }) {
     const el = chatLogEl
     if (!el) return
     const onScroll = (e: Event) => handleScroll(e as any)
-    const onClick = (e: Event) => handleDocLinkClick(e as any)
+    // Touch: a tap on a text chip never synthesizes a `click`, so the
+    // click-delegated chip/link handlers below are dead on iPad. Drive them
+    // from a movement-guarded pointerup for touch instead. The movement guard
+    // means a drag-to-scroll that lifts off on a chip does NOT fire an open;
+    // the timestamp dedupe stops a mouse `click` from double-firing.
+    let downX = 0, downY = 0, lastTouchHandled = 0
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return
+      downX = e.clientX; downY = e.clientY
+    }
+    const onPointerUp = (e: PointerEvent) => {
+      // Finger AND stylus: a tap on a markdown/file chip never synthesizes a
+      // `click`, so the mouse-only open handler was dead on iPad/pen. (Skip: the
+      // md-chip lightbox "triggers on click with a mouse, it should work on
+      // finger and stylus touch.") 16px guard so a drag-to-scroll that lifts off
+      // on a chip does NOT open it (a thumb drifts >10px on a real tap).
+      if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return
+      if (Math.abs(e.clientX - downX) > 16 || Math.abs(e.clientY - downY) > 16) return
+      lastTouchHandled = e.timeStamp
+      handleDocLinkClick(e as any)
+    }
+    const onClick = (e: Event) => {
+      if (e.timeStamp - lastTouchHandled < 700) return
+      handleDocLinkClick(e as any)
+    }
     el.addEventListener('scroll', onScroll, { passive: true })
+    el.addEventListener('pointerdown', onPointerDown)
+    el.addEventListener('pointerup', onPointerUp)
     el.addEventListener('click', onClick)
     return () => {
       el.removeEventListener('scroll', onScroll)
+      el.removeEventListener('pointerdown', onPointerDown)
+      el.removeEventListener('pointerup', onPointerUp)
       el.removeEventListener('click', onClick)
     }
   }, [chatLogEl, handleScroll, handleDocLinkClick])
@@ -3411,6 +4499,10 @@ function FleetChatInner({ shape }: { shape: any }) {
     // listener can intercept. We scope to this chat by checking if the target
     // is inside our logEl.
 
+    // The element a drag-claim started on — so a no-move TAP on a draggable
+    // chip/link can re-fire its click on touch/stylus (see onPointerUp).
+    let downTargetEl: HTMLElement | null = null
+
     function onPointerDown(e: PointerEvent) {
       const target = e.target as HTMLElement
       if (!logEl!.contains(target)) return
@@ -3424,7 +4516,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       // clicking on their .drag-handle left-edge element. Small inline items
       // (chips, timestamps) are draggable from the whole element.
       const isDraggable = target.closest(
-        '.drag-handle, .chat-ts, .tool-ref, .md-file-card, .ref-chip[data-doc], .tlda-card, .build-result-card, .ref-chip-annotation, .ref-chip:not(.ref-chip-annotation), .pretty-search-ts, .agent-nick'
+        '.drag-handle, .chat-ts, .tool-ref, .md-file-card, .tlda-card, .build-result-card, .ref-chip-annotation, .ref-chip:not(.ref-chip-annotation), .pretty-search-ts, .agent-nick'
       )
 
       if (!isDraggable) {
@@ -3561,19 +4653,16 @@ function FleetChatInner({ shape }: { shape: any }) {
         }
       }
 
-      // MD file card or shared-doc ref-chip → drag as doc reference
+      // MD file card → drag as a doc reference
       if (!drag) {
-        const mdCard = target.closest('.md-file-card, .ref-chip[data-doc]') as HTMLElement
+        const mdCard = target.closest('.md-file-card') as HTMLElement
         if (mdCard) {
           const filePath = mdCard.dataset.path || ''
-          const docName = mdCard.dataset.doc || ''
-          // Prefer data-title (set by renderAttachChip for shared-doc chips), then chip text, then filename
-          const name = mdCard.dataset.title || mdCard.querySelector('.md-file-chip')?.textContent || mdCard.textContent?.trim() || filePath.split('/').pop() || 'file'
-          // Use doc:name for tlda-shared docs so canvas drop creates inline-doc; file: for local files
-          const value = docName ? `doc:${docName}` : `file:${filePath}`
+          const name = mdCard.querySelector('.md-file-chip')?.textContent || mdCard.textContent?.trim() || filePath.split('/').pop() || 'file'
+          const value = `file:${filePath}`
           drag = {
             pillId: null, pillType: 'doc' as any, value,
-            displayName: name, color: '#63a0db', content: filePath || docName,
+            displayName: name, color: '#63a0db', content: filePath,
             startX: e.clientX, startY: e.clientY,
             started: false, captureEl: logEl, pointerId: e.pointerId,
           }
@@ -3622,7 +4711,8 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (!drag) {
         const fileChip = target.closest('.ref-chip:not(.ref-chip-annotation)') as HTMLElement
         if (fileChip) {
-          const token = fileChip.dataset.token || ''
+          const filePath = fileChip.dataset.path || ''
+          const token = filePath ? `file:${filePath}` : (fileChip.dataset.token || '')
           const fileUrl = fileChip.dataset.url || ''
           const clone = fileChip.cloneNode(true) as HTMLElement
           clone.querySelectorAll('.ref-chip-preview').forEach(el => el.remove())
@@ -3663,9 +4753,8 @@ function FleetChatInner({ shape }: { shape: any }) {
             }).catch(e => console.warn('[fleet-chat] file content resolve failed:', e.message))
           }
           const chatLine = fileChip.closest('[data-msg-from]') as HTMLElement | null
-          const filePath = fileChip.dataset.path || ''
           drag = {
-            pillId: null, pillType: 'file' as any, value: token,
+            pillId: null, pillType: filePath ? 'doc' : 'file', value: token,
             displayName: label, color: '#9370db',
             content: fileContent, sourceAgent: chatLine?.dataset.msgFrom || undefined,
             filePath, fileUrl,
@@ -3695,6 +4784,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       e.stopImmediatePropagation()
       e.preventDefault()
       dragRef.current = drag
+      downTargetEl = target
 
       // Use shared drag coordinator instead of per-drag capture listeners
       dragCoordinator.claim(onPointerMove, onPointerUp)
@@ -3709,7 +4799,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (!drag.started) {
         if (Math.abs(dx) < DRAG_THRESHOLD && Math.abs(dy) < DRAG_THRESHOLD) return
         drag.started = true
-        const pagePos = editor.screenToPage({ x: e.clientX, y: e.clientY })
+        const pagePos = clientPointToPage(editor, { x: e.clientX, y: e.clientY }, viewportId)
         const pillId = createShapeId()
         editor.createShape({
           id: pillId,
@@ -3734,7 +4824,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         editor.cancel()
       }
       if (drag.pillId) {
-        const pagePos = editor.screenToPage({ x: e.clientX, y: e.clientY })
+        const pagePos = clientPointToPage(editor, { x: e.clientX, y: e.clientY }, viewportId)
         editor.updateShape({
           id: drag.pillId as any,
           type: 'fleet-pill' as any,
@@ -3760,7 +4850,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           if (outside && !onMain) {
             // Handoff: panel → main
             try { editor.deleteShapes([drag.pillId as any]) } catch {}
-            const mainPos = mainEditor.screenToPage({ x: e.clientX, y: e.clientY })
+            const mainPos = clientPointToPage(mainEditor, { x: e.clientX, y: e.clientY })
             mainEditor.createShape({
               id: drag.pillId as any,
               type: 'fleet-pill' as any,
@@ -3783,7 +4873,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           } else if (!outside && onMain) {
             // Handoff back: main → panel
             try { mainEditor.deleteShapes([drag.pillId as any]) } catch {}
-            const panelPos = editor.screenToPage({ x: e.clientX, y: e.clientY })
+            const panelPos = clientPointToPage(editor, { x: e.clientX, y: e.clientY }, viewportId)
             editor.createShape({
               id: drag.pillId as any,
               type: 'fleet-pill' as any,
@@ -3800,7 +4890,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             ;(drag as any)._onMain = false
           } else if (onMain) {
             // Move on main editor
-            const mainPos = mainEditor.screenToPage({ x: e.clientX, y: e.clientY })
+            const mainPos = clientPointToPage(mainEditor, { x: e.clientX, y: e.clientY })
             mainEditor.updateShape({
               id: drag.pillId as any,
               type: 'fleet-pill' as any,
@@ -3842,12 +4932,28 @@ function FleetChatInner({ shape }: { shape: any }) {
       const shapeEl = logEl!.closest('.fleet-shape') as HTMLElement | null
       if (shapeEl) shapeEl.style.boxShadow = ''
       dragRef.current = null
-      if (!drag.started || !drag.pillId) return
+      if (!drag.started) {
+        // No drag happened = a TAP on a draggable chip/link. This handler claimed
+        // the pointer (capture-phase stopImmediatePropagation on pointerdown), so
+        // the element's own click handler never ran. On mouse the browser still
+        // synthesizes a `click` afterward (the chip opens); on touch/stylus it
+        // does NOT, so the tap was dead. Re-fire the element's click so a tap does
+        // exactly what a mouse click does — same action, just the touch pointing
+        // device (Skip's pointer-device-parity rule). Touch/pen only: mouse keeps
+        // its native click, so no double-open.
+        if ((e.pointerType === 'touch' || e.pointerType === 'pen') && downTargetEl) {
+          downTargetEl.click()
+        }
+        downTargetEl = null
+        return
+      }
+      downTargetEl = null
+      if (!drag.pillId) return
 
       const onMain = !!(drag as any)._onMain
       const mainEditor = (window as any).__tldraw_editor__ as any
       const dropEditor = (onMain && mainEditor) ? mainEditor : editor
-      const pagePos = dropEditor.screenToPage({ x: e.clientX, y: e.clientY })
+      const pagePos = clientPointToPage(dropEditor, { x: e.clientX, y: e.clientY }, onMain ? undefined : viewportId)
       dropPillOnTarget(dropEditor, drag.pillId as any, drag.value, pagePos, drag.content)
       try { dropEditor.deleteShapes([drag.pillId as any]) } catch {}
     }
@@ -3859,7 +4965,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       // Release coordinator if this component unmounts during a drag
       if (dragRef.current) dragCoordinator.release()
     }
-  }, [chatLogEl, editor])
+  }, [chatLogEl, editor, viewportId])
 
   // --- chatInsertBus listener: content drops insert into textarea ---
   useEffect(() => {
@@ -3957,11 +5063,30 @@ function FleetChatInner({ shape }: { shape: any }) {
           <button
             className="fleet-filter-btn"
             onClick={() => setFilterOpen(prev => !prev)}
+            title="Edit traffic filter"
           >
             {filterOpen
               ? <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M2 2h12v9H6l-4 3v-3z"/></svg>
               : <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M1 2h14M3 7h10M6 12h4"/></svg>
             }
+          </button>
+          <button
+            className={`fleet-traffic-mode-btn${quietTraffic ? ' fleet-traffic-mode-btn-active' : ''}`}
+            onPointerDown={stopEventPropagation}
+            // text-label button ('q'/'t'): onPointerUp so a touch tap fires (a
+            // text label in the canvas gets no synthesized click on iPad, same
+            // class as the DM/All toggle); pointerup covers mouse too.
+            onPointerUp={(e) => {
+              stopEventPropagation(e)
+              editor.updateShape({
+                id: shape.id,
+                type: shape.type,
+                props: { trafficMode: quietTraffic ? 'normal' : 'quiet' },
+              })
+            }}
+            title={quietTraffic ? 'Quiet traffic: tools hidden' : 'Normal traffic: tools visible'}
+          >
+            {quietTraffic ? 'q' : 't'}
           </button>
         </div>
 
@@ -3973,6 +5098,8 @@ function FleetChatInner({ shape }: { shape: any }) {
             editor={editor}
             onClose={() => setFilterOpen(false)}
             externalPillOver={pillOver}
+            agents={agents}
+            sendTargets={sendTargets}
           />
         )}
 
@@ -3980,26 +5107,16 @@ function FleetChatInner({ shape }: { shape: any }) {
             Dropping customScrollParent: with Virtuoso-owned scroll,
             initialTopMostItemIndex is reliably honored and the previous
             "start at top" / RAF pin loop / scroll race is gone. */}
-        {chatMessages.length === 0 ? (
-          <div
-            className="fleet-chat-log"
-            ref={(el) => { chatLogRef.current = el; setChatLogEl(el) }}
-            style={{
-              flex: 1,
-              minHeight: 0,
-              overflowY: 'auto',
-              padding: '20px 8px',
-              opacity: isImpossibleFilter ? 0.6 : 0.3,
-              textAlign: 'center',
-              fontSize: 10,
-              color: isImpossibleFilter ? 'var(--red, #e55)' : undefined,
-            }}
-          >
-            {isImpossibleFilter
-              ? '⚠ Filter matches no known agents'
-              : filter.length > 0 ? 'No messages' : 'No filter set'}
-          </div>
-        ) : (
+        {/* Keep Virtuoso ALWAYS mounted. A momentary chatMessages→0 (a transient
+            empty, e.g. during a reconnect blip) must NOT swap the scroller out
+            for a placeholder div — that unmounts Virtuoso and remounts it fresh
+            when messages return, which re-runs initialTopMostItemIndex and snaps
+            scroll to the bottom: the "bounce". allItems always carries the
+            __status__ row, so Virtuoso is never truly empty; the empty-state hint
+            is a non-interactive overlay (top-aligned + same padding as before, so
+            it renders in the same place), not a replacement of the list. The
+            wrapper div is the minimal means to position that overlay. */}
+        <div style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex', flexDirection: 'column' }}>
           <Virtuoso
             ref={virtuosoRef}
             data={allItems}
@@ -4009,7 +5126,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             // reaches the TRUE list bottom); our scroll-intent just gates WHEN it
             // follows. Follow on new content unless the user deliberately scrolled up.
             followOutput={() => (!userScrolledUpRef.current || hardLockedRef.current) ? 'auto' : false}
-            // Generous enough to absorb the Virtuoso Footer (eliza/thinking
+            // Generous enough to absorb the Virtuoso Footer (suggestion/thinking
             // status, ~40px): scrollToIndex(LAST) aligns the last DATA item, so
             // the footer sits just below the viewport and "true bottom" is ~40px
             // past the last item. With the tight 24px value, that residual read
@@ -4023,6 +5140,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             // adds pixels to existing items) which doesn't tick items.length
             // and so isn't caught by force-pin-on-item-grow.
             totalListHeightChanged={(h) => {
+              const t0 = probe.isEnabled('chat') ? performance.now() : 0
               const prev = prevTotalHeightRef.current
               prevTotalHeightRef.current = h
               const grew = h > prev
@@ -4034,22 +5152,52 @@ function FleetChatInner({ shape }: { shape: any }) {
               const el = chatLogEl
               const gapNow = el ? Math.round(el.scrollHeight - (el.scrollTop + el.clientHeight)) : null
               if (grew) {
-                log.warn('chat-scroll', 'TRACE content grew', { prev, h, gapNow, follow, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
+                log.debug('chat-scroll', 'TRACE content grew', { prev, h, gapNow, follow, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
               }
               if (grew && follow) {
+                // Glue to the true bottom SYNCHRONOUSLY, in the same frame the
+                // height grew, so late in-place growth (math/links/multiline
+                // rendering a second pass) extends the content downward with no
+                // visible gap. Without this the gap opened first and pinHard()'s
+                // scrollToIndex snapped it shut a frame later — the visible
+                // "kick"/bounce. Guarded to grew (never shrink), so the
+                // stale-tall-tail failure pinHard's comment warns about cannot
+                // bite here. pinHard stays as the convergence backstop.
+                const gapBeforeGlue = el ? Math.round(el.scrollHeight - (el.scrollTop + el.clientHeight)) : null
+                if (el) el.scrollTop = el.scrollHeight
+                const gapAfterGlue = el ? Math.round(el.scrollHeight - (el.scrollTop + el.clientHeight)) : null
+                // The kick-fix signature: gapBeforeGlue is how far the view would
+                // have jumped (the old "kick"); gapAfterGlue should be ~0 because
+                // we glued synchronously this frame. A large gapBeforeGlue with
+                // ~0 gapAfterGlue = the fix absorbed a kick.
+                log.debug('chat-scroll', 'growth bottom-glue', { gapBeforeGlue, gapAfterGlue })
                 pinHard()
                 requestAnimationFrame(() => {
                   const el2 = chatLogEl
                   const gapAfter = el2 ? Math.round(el2.scrollHeight - (el2.scrollTop + el2.clientHeight)) : null
-                  log.warn('chat-scroll', 'TRACE after pin', { gapAfter })
+                  log.debug('chat-scroll', 'TRACE after pin', { gapAfter })
                 })
+              }
+              if (probe.isEnabled('chat')) {
+                const dt = performance.now() - t0
+                if (dt > 1 || grew) {
+                  probe.record('chat', 'chat-virtuoso-height-change', dt, {
+                    prev,
+                    h,
+                    grew,
+                    follow,
+                    gapNow,
+                    itemCount: allItems.length,
+                  })
+                }
               }
             }}
             atBottomStateChange={(atBottom) => {
+              const t0 = probe.isEnabled('chat') ? performance.now() : 0
               const el = chatLogEl
               const gap = el ? (el.scrollHeight - (el.scrollTop + el.clientHeight)) : null
               if (isAtBottomRef.current !== atBottom) {
-                log.warn('chat-scroll', atBottom ? 'pinned to bottom' : 'left bottom', {
+                log.debug('chat-scroll', atBottom ? 'pinned to bottom' : 'left bottom', {
                   scrollTop: el?.scrollTop,
                   scrollHeight: el?.scrollHeight,
                   clientHeight: el?.clientHeight,
@@ -4077,36 +5225,65 @@ function FleetChatInner({ shape }: { shape: any }) {
               } else if (hardLockedRef.current) {
                 requestAnimationFrame(pinHard)
               }
+              if (probe.isEnabled('chat')) {
+                const dt = performance.now() - t0
+                if (dt > 1) {
+                  probe.record('chat', 'chat-at-bottom-change', dt, {
+                    atBottom,
+                    gap,
+                    itemCount: allItems.length,
+                  })
+                }
+              }
             }}
             itemContent={(_index, item) => (
-              <div className={item?._divider ? 'queue-divider' : undefined}>
-                <ChatMessageRow html={item.html} postProcess={postProcess} itemKey={item.key} expandedRowsRef={expandedRowsRef} />
-              </div>
-            )}
-            computeItemKey={(_index, item) => item?.key ?? _index}
-            components={{
-              Scroller: ChatLogScroller,
-              // Eliza/thinking status as Footer so they sit inside Virtuoso's
-              // tracked layout — sibling rendering would float over/under
-              // the virtualized list.
-              Footer: () => (
+              item?._status ? (
                 <div>
-                  <ElizaStatus pending={elizaPending} ctx={ctx} rawItemsLength={rawItems.length} />
                   <ThinkingStatus
                     thinkingAgents={thinkingAgents}
                     compactingAgents={compactingAgents}
                     contextPercent={contextPercent}
                     hibernatingAgents={hibernatingAgents}
                     ctx={ctx}
-                    itemCount={rawItems.length}
                     agents={agents}
+                    itemCount={rawItems.length}
                     escalationState={escalationState}
+                    suggestions={suggestionsPending}
                   />
                 </div>
-              ),
+              ) : (
+                <div className={'chat-row-wrap' + (item?._divider ? ' queue-divider' : '')}>
+                  <ChatMessageRow html={item.html} postProcess={postProcess} itemKey={item.key} expandedRowsRef={expandedRowsRef} />
+                </div>
+              )
+            )}
+            computeItemKey={(_index, item) => item?.key ?? _index}
+            components={{
+              Scroller: ChatLogScroller,
             }}
           />
-        )}
+          {chatMessages.length === 0 && (
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                display: 'flex',
+                justifyContent: 'center',
+                alignItems: 'flex-start',
+                padding: '20px 8px',
+                pointerEvents: 'none',
+                opacity: isImpossibleFilter ? 0.6 : 0.3,
+                textAlign: 'center',
+                fontSize: 10,
+                color: isImpossibleFilter ? 'var(--red, #e55)' : undefined,
+              }}
+            >
+              {isImpossibleFilter
+                ? '⚠ Filter matches no known agents'
+                : filter.length > 0 ? 'No messages' : 'No filter set'}
+            </div>
+          )}
+        </div>
 
         {/* Terminal card overlay — shown on hover or when pinned; outside scroll container */}
         {(termCardPinnedId || termCardHoverId) && (() => {
@@ -4151,6 +5328,16 @@ function FleetChatInner({ shape }: { shape: any }) {
               onMouseLeave={() => setTermHoverVisible(false)}
             />
           )}
+          {/* Skill-state hover popover — viewport-fixed, anchored to the hovered agent name */}
+          {skillHover && (
+            <SkillHoverPane
+              agentId={skillHover.agentId}
+              agentName={skillHover.agentName}
+              anchorRect={skillHover.rect}
+              onMouseEnter={() => { if (skillHideTimerRef.current) { clearTimeout(skillHideTimerRef.current); skillHideTimerRef.current = null } }}
+              onMouseLeave={() => setSkillHover(null)}
+            />
+          )}
           <SendHint
             filter={filter}
             sendTargets={sendTargets}
@@ -4164,7 +5351,9 @@ function FleetChatInner({ shape }: { shape: any }) {
               <span>{deadTargetAgent.name} is dead</span>
               <span
                 className="fleet-dead-resurrect"
-                onClick={(e) => {
+                // text <span>: onPointerUp so a finger/stylus tap fires (no
+                // synthesized click on touch); pointerup covers mouse too.
+                onPointerUp={(e) => {
                   stopEventPropagation(e as any)
                   fetch(`/api/agents/${encodeURIComponent(deadTargetAgent.id)}/resurrect`, { method: 'POST' })
                 }}
@@ -4197,6 +5386,11 @@ function FleetChatInner({ shape }: { shape: any }) {
             )}
             {/* Highlight underlay — mirrors textarea text, highlights <<ref>> tokens */}
             <InputHighlightUnderlay inputRef={inputRef} />
+            {/* Left gutter control cluster — terminal peek, traffic toggle, and
+                follow/hard-lock ("magnet") button laid out as a tight flex row
+                so they sit adjacent regardless of the traffic label's width
+                (no dead gap). Order is set via CSS `order`, not DOM order. */}
+            <div className="fleet-composer-gutter">
             {/* Unified follow / jump-to-bottom control. One button, fixed here:
                   - off bottom → ⇣ arrow; click jumps to bottom (does NOT change
                     follow mode — you return to the bottom first, then it's a
@@ -4272,314 +5466,70 @@ function FleetChatInner({ shape }: { shape: any }) {
                 </svg>
               </button>
             )}
-            <textarea
-              ref={inputRef as any}
-              placeholder=""
-              rows={1}
-              autoCorrect="off"
-              autoCapitalize="off"
-              autoComplete="off"
-              spellCheck={false}
-              onKeyDown={(e) => {
-                stopEventPropagation(e)
-                const ta = e.currentTarget
-                if (e.key === 'Escape') {
-                  e.preventDefault()
-                  if (ta.value !== '') {
-                    ta.value = ''
-                    ta.style.height = ''
-                  }
-                  return
-                }
-                if (escCountRef.current > 0) {
-                  escCountRef.current = 0
-                  setEscalationState({})
-                }
-                if (e.key === 'ArrowUp') {
-                  const history = sentHistoryRef.current
-                  if (history.length === 0) return
-                  if (historyIndexRef.current === -1 && ta.value !== '') return
-                  e.preventDefault()
-                  const nextIdx = historyIndexRef.current + 1
-                  if (nextIdx < history.length) {
-                    historyIndexRef.current = nextIdx
-                    ta.value = history[history.length - 1 - nextIdx]
-                    // field-sizing: content handles auto-resize
-                    ta.setSelectionRange(ta.value.length, ta.value.length)
-                  }
-                  return
-                }
-                if (e.key === 'ArrowDown') {
-                  if (historyIndexRef.current === -1) return
-                  e.preventDefault()
-                  const nextIdx = historyIndexRef.current - 1
-                  historyIndexRef.current = nextIdx
-                  if (nextIdx < 0) {
-                    ta.value = ''
-                    ta.style.height = ''
-                  } else {
-                    const history = sentHistoryRef.current
-                    ta.value = history[history.length - 1 - nextIdx]
-                    // field-sizing: content handles auto-resize
-                    ta.setSelectionRange(ta.value.length, ta.value.length)
-                  }
-                  return
-                }
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  const val = ta.value
-                  if (val.trim() === '') {
-                    e.preventDefault() // suppress on empty
-                    return
-                  }
-                  // /terminal command — open terminal card for target agent
-                  const termMatch = val.trim().match(/^\/terminal\s*(.*)$/i)
-                  if (termMatch) {
-                    e.preventDefault()
-                    const arg = termMatch[1].trim()
-                    // Find agent by name or ID
-                    let targetId = ''
-                    if (arg) {
-                      const match = agents.find((a: any) =>
-                        a.friendly_name === arg || a.id === arg || a.id?.endsWith(arg)
-                      )
-                      targetId = match?.id || arg
-                    } else if (sendTargets.length > 0) {
-                      targetId = sendTargets[0]
-                    }
-                    if (targetId) {
-                      setTermCardPinnedId(targetId)
-                      ta.value = ''
-                      ta.style.height = ''
-                    }
-                    return
-                  }
-                  // Get text before cursor on current line
-                  const before = val.substring(0, ta.selectionStart || val.length)
-                  const lastNewline = before.lastIndexOf('\n')
-                  const lineText = before.substring(lastNewline + 1)
-
-                  const doSend = async () => {
-                    const text = val.trim()
-                    if (!text || sendTargets.length === 0) return
-                    // Echo the message and clear the box synchronously, BEFORE any awaited
-                    // work. The source-line context lookup below can hit the network; if the
-                    // echo/clear waited on it, the message looked unsent and a second Enter
-                    // queued another send — one Enter-mash → many duplicate rows.
-                    const tempId = `opt-${Date.now()}-${Math.random().toString(36).slice(2)}`
-                    injectOptimisticEvent({
-                      _tempId: tempId,
-                      type: 'chat',
-                      event_type: 'chat',
-                      from: getHumanId(),
-                      to: sendTargets[0],
-                      text,
-                      timestamp: new Date().toISOString(),
-                      read: false,
-                    })
-                    ta.value = ''
-                    ta.style.height = ''
-                    ta.dispatchEvent(new Event('input', { bubbles: true }))
-                    resetTranscript()
-                    restartRecording()
-                    sentHistoryRef.current = [...sentHistoryRef.current, text]
-                    historyIndexRef.current = -1
-                    // Now resolve viewer context (may hit the network) off the critical path.
-                    const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel))
-                    if (context) await enrichContextWithSourceLines(context)
-                    const bullets = consumeBulletContexts()
-                    if (bullets.length > 0 && context) {
-                      ;(context as any).bullets = bullets
-                    }
-
-                    // Plan mode verbal approval: detect approval/rejection phrases and
-                    // forward them to the agent's terminal as plan-mode-respond calls.
-                    // We still send the message normally so the agent sees the text in context.
-                    const lc = text.toLowerCase().replace(/[.,!?]+$/, '').trim()
-                    const APPROVE_PHRASES = new Set([
-                      'go for it', 'do it', 'proceed', 'implement it', 'implement', 'approve',
-                      'yes', 'yes do it', "let's go", 'lets go', 'sounds good', 'looks good',
-                      'go ahead', 'yeah go for it', 'yep', 'yeah', 'ok', 'okay', 'ship it',
-                    ])
-                    const REJECT_PHRASES = new Set([
-                      'stop', 'abort', "don't do it", 'cancel', 'no', 'reject', 'hold off',
-                      'wait', 'hold on', 'never mind', 'nevermind', 'nope', 'nah',
-                    ])
-                    if (APPROVE_PHRASES.has(lc) || REJECT_PHRASES.has(lc)) {
-                      const planResponse = APPROVE_PHRASES.has(lc) ? 'approve' : 'reject'
-                      for (const agentId of sendTargets) {
-                        // Only respond if this agent has a visible plan card
-                        const chatLog = chatLogRef.current
-                        const hasCard = chatLog
-                          ? Array.from(chatLog.querySelectorAll(`.plan-card[data-agent-id="${CSS.escape(agentId)}"]`))
-                              .some(el => !el.classList.contains('plan-card-approved') && !el.classList.contains('plan-card-rejected'))
-                          : false
-                        if (hasCard) {
-                          fetch(`${FLEET_API}/api/plan-mode-respond`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ agent: agentId, response: planResponse }),
-                          }).catch(e => console.warn('[fleet-chat] plan-mode-respond failed:', e.message))
-                        }
-                      }
-                    }
-
-                    // Plan mode toggle: enter only ("let's plan", "planning mode", etc.).
-                    // Exit is handled by clicking the plan badge or approving the plan card.
-                    const ENTER_PLAN_RE = /^\/plan\b|\blet'?s plan\b|\bplan mode\b|\bplanning mode\b|\bchat in planning\b|\bstay in planning\b|\bplan first\b|\bthink before\b/i
-                    if (ENTER_PLAN_RE.test(text)) {
-                      for (const agentId of sendTargets) {
-                        const agentName = agentNames[agentId] || agentId
-                        fetch(`${FLEET_API}/api/plan-mode-toggle`, {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ agent: agentId }),
-                        })
-                          .then(r => r.json().then(data => ({ ok: r.ok, data })))
-                          .then(({ ok, data }) => {
-                            if (!ok || data?.error) {
-                              sendMessage(getHumanId(), `⚠️ plan mode failed for ${agentName}: ${data?.error || 'unknown error'}`, {})
-                            } else if (data?.mode) {
-                              const modeLabel = data.mode === 'plan' ? 'plan mode ✓' : data.mode
-                              sendMessage(getHumanId(), `📋 ${agentName} → ${modeLabel}`, {})
-                            }
-                          })
-                          .catch(err => sendMessage(getHumanId(), `⚠️ plan mode failed for ${agentName}: ${err.message}`, {}))
-                      }
-                    }
-
-                    // No explicit scroll on send — Virtuoso's followOutput
-                    // handles this: if the user was at bottom, the new
-                    // message gets followed; if scrolled up, position holds.
-                    const refAttachments = buildRefAttachments(text, editor)
-                    const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
-                    if (refAttachments.length > 0) sendOpts.attachments = refAttachments
-                    const sendWithRetry = (attempt: number) => {
-                      Promise.all(
-                        sendTargets.map(t => sendMessage(t, text, sendOpts))
-                      ).then((results: {ok: boolean, event_id: number}[]) => {
-                        if (!results.every(r => r.ok)) throw new Error('send failed')
-                        // reconcileOptimistic already called synchronously in the WS reply handler
-                      }).catch(() => {
-                        if (attempt < 3) {
-                          setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
-                        } else {
-                          updateOptimisticEvent(tempId, { _failed: true })
-                        }
-                      })
-                    }
-                    sendWithRetry(1)
-                  }
-
-                  if (lineText.trim() === '') {
-                    // Blank line (double-enter) = send
-                    e.preventDefault()
-                    doSend()
-                  } else if (lineText.endsWith(' ')) {
-                    // Trailing space = newline (let default happen)
-                    return
-                  } else {
-                    // Non-blank, no trailing space = send
-                    e.preventDefault()
-                    doSend()
-                  }
-                }
-              }}
-              onInput={() => {
-                if (escCountRef.current > 0) {
-                  escCountRef.current = 0
-                  setEscalationState({})
-                }
-              }}
+            <button
+              className={`fleet-composer-traffic-toggle fleet-composer-traffic-toggle-${composerTrafficMode}`}
               onPointerDown={(e) => {
                 stopEventPropagation(e)
-                // Register voice target on pointerdown — onFocus can be unreliable in tldraw
-                setVoiceTarget(e.currentTarget, sendTargets, agentNames, async (targets: string[], text: string) => {
-                  const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel))
-                  if (context) await enrichContextWithSourceLines(context)
-                  const bullets = consumeBulletContexts()
-                  if (bullets.length > 0 && context) {
-                    ;(context as any).bullets = bullets
-                  }
-                  const tempId = `opt-${Date.now()}-${Math.random().toString(36).slice(2)}`
-                  injectOptimisticEvent({
-                    _tempId: tempId,
-                    type: 'chat',
-                    event_type: 'chat',
-                    from: getHumanId(),
-                    to: targets[0],
-                    text,
-                    timestamp: new Date().toISOString(),
-                    read: false,
-                  })
-                  // No explicit scroll on send — Virtuoso's followOutput handles it.
-                  const refAttachments = buildRefAttachments(text, editor)
-                  const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
-                  if (refAttachments.length > 0) sendOpts.attachments = refAttachments
-                  const sendWithRetry = (attempt: number) => {
-                    Promise.all(
-                      targets.map(t => sendMessage(t, text, sendOpts))
-                    ).then((results: {ok: boolean, event_id: number}[]) => {
-                      if (!results.every(r => r.ok)) throw new Error('send failed')
-                      // reconcileOptimistic already called synchronously in the WS reply handler
-                    }).catch(() => {
-                      if (attempt < 3) {
-                        setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
-                      } else {
-                        updateOptimisticEvent(tempId, { _failed: true })
-                      }
-                    })
-                  }
-                  sendWithRetry(1)
-                })
+                trafficTapRef.current = { x: e.clientX, y: e.clientY, id: e.pointerId }
               }}
-              onFocus={(e) => {
+              onPointerUp={(e) => {
+                // Drive the cycle from pointerup, not click: on touch a tap on
+                // this text label never synthesizes a `click` (pointerdown +
+                // pointerup fire, click does not), so an onClick handler is dead
+                // on iPad. pointerup fires for both mouse and touch — one cycle
+                // per interaction, no double-fire.
                 stopEventPropagation(e)
-                setVoiceTarget(e.currentTarget, sendTargets, agentNames, async (targets: string[], text: string) => {
-                  const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel))
-                  if (context) await enrichContextWithSourceLines(context)
-                  const bullets = consumeBulletContexts()
-                  if (bullets.length > 0 && context) {
-                    ;(context as any).bullets = bullets
-                  }
-                  const tempId = `opt-${Date.now()}-${Math.random().toString(36).slice(2)}`
-                  injectOptimisticEvent({
-                    _tempId: tempId,
-                    type: 'chat',
-                    event_type: 'chat',
-                    from: getHumanId(),
-                    to: targets[0],
-                    text,
-                    timestamp: new Date().toISOString(),
-                    read: false,
-                  })
-                  // No explicit scroll on send — Virtuoso's followOutput handles it.
-                  const refAttachments = buildRefAttachments(text, editor)
-                  const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
-                  if (refAttachments.length > 0) sendOpts.attachments = refAttachments
-                  const sendWithRetry = (attempt: number) => {
-                    Promise.all(
-                      targets.map(t => sendMessage(t, text, sendOpts))
-                    ).then((results: {ok: boolean, event_id: number}[]) => {
-                      if (!results.every(r => r.ok)) throw new Error('send failed')
-                      // reconcileOptimistic already called synchronously in the WS reply handler
-                    }).catch(() => {
-                      if (attempt < 3) {
-                        setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
-                      } else {
-                        updateOptimisticEvent(tempId, { _failed: true })
-                      }
-                    })
-                  }
-                  sendWithRetry(1)
-                })
+                // Only a deliberate tap on THIS button cycles: the pointerdown
+                // must have started here (same pointerId) and barely moved. A
+                // stray touch or a scroll-drag that lifts off over the button has
+                // no matching down (or drifted) → it must NOT change the filter.
+                const down = trafficTapRef.current
+                trafficTapRef.current = null
+                if (!down || down.id !== e.pointerId) return
+                if (Math.abs(e.clientX - down.x) > 16 || Math.abs(e.clientY - down.y) > 16) return
+                if (!composerAgentLabel) return
+                cycleComposerTrafficMode()
               }}
+              disabled={!composerAgentLabel}
+              title={!composerAgentLabel
+                ? 'Choose an agent filter first'
+                : composerTrafficMode === 'dm-quiet'
+                  ? 'DM, tools hidden'
+                  : composerTrafficMode === 'dm'
+                    ? 'DM, tools visible'
+                    : composerTrafficMode === 'agent'
+                      ? 'All traffic for this agent'
+                      : 'Custom filter; tap to switch to DM without tools'}
+              aria-label="Cycle chat traffic filter"
+            >
+              {composerTrafficMode === 'dm-quiet'
+                ? 'DM'
+                : composerTrafficMode === 'dm'
+                  ? 'DM ⚒'
+                  : composerTrafficMode === 'agent'
+                    ? 'All'
+                    : 'Filter'}
+            </button>
+            </div>
+            <ChatComposer
+              sendTargets={sendTargets}
+              agentNames={agentNames}
+              onKeyboardSend={composerKeyboardSend}
+              onVoiceSend={composerVoiceSend}
+              onCommand={composerCommand}
+              onKeyActivity={composerKeyActivity}
+              onDrop={composerDrop}
+              onDragOver={composerDragOver}
+              inputRef={inputRef as any}
+              isTouchDevice={_isTouchDevice}
+              placeholder=""
               style={{
                 width: '100%',
                 background: 'transparent',
                 border: '1px solid rgba(128, 128, 128, 0.15)',
                 borderRadius: 4,
-                padding: '4px 8px',
-                fontSize: 11,
+                padding: '4px 58px 4px 8px',
+                fontSize: _isPhone ? 16 : 11,
                 color: 'inherit',
                 outline: 'none',
                 resize: 'none',
@@ -4588,86 +5538,10 @@ function FleetChatInner({ shape }: { shape: any }) {
                 position: 'relative',
                 zIndex: 1,
                 fieldSizing: 'content',
+                minHeight: 'calc(1.4em + 10px)',
                 maxHeight: 200,
               } as any}
-              onDrop={async (e) => {
-                e.preventDefault()
-                e.stopPropagation()
-                const ta = e.currentTarget
-
-                // External file drops — upload to fleet server, insert markdown link
-                const dtItems = e.dataTransfer?.items ? [...e.dataTransfer.items] : []
-                let entries: { file: File, path: string }[] = []
-                let isFlat = true
-
-                if (dtItems.length > 0 && typeof dtItems[0].webkitGetAsEntry === 'function') {
-                  for (const item of dtItems) {
-                    const entry = item.webkitGetAsEntry()
-                    if (entry) {
-                      if (entry.isDirectory) isFlat = false
-                      entries.push(...await traverseDirectory(entry))
-                    }
-                  }
-                } else {
-                  for (const f of [...(e.dataTransfer?.files || [])]) {
-                    entries.push({ file: f, path: f.name })
-                  }
-                }
-
-                if (entries.length > 0) {
-                  const mdEntries = entries.filter(({ file: f }) => f.name.endsWith('.md') || f.type === 'text/markdown')
-                  const otherEntries = entries.filter(({ file: f }) => !f.name.endsWith('.md') && f.type !== 'text/markdown')
-
-                  for (const { file, path } of mdEntries) {
-                    try {
-                      const companions = entries.filter(en => en.path !== path)
-                      const link = await uploadMarkdownWithImages(file, companions, path, isFlat)
-                      const pos = ta.selectionStart || ta.value.length
-                      ta.value = ta.value.slice(0, pos) + link + ta.value.slice(pos)
-                      ta.dispatchEvent(new Event('input', { bubbles: true }))
-                    } catch (err) {
-                      console.error('[fleet-chat] file upload failed:', err)
-                      const pos = ta.selectionStart || ta.value.length
-                      ta.value = ta.value.slice(0, pos) + `[${file.name}]` + ta.value.slice(pos)
-                      ta.dispatchEvent(new Event('input', { bubbles: true }))
-                    }
-                  }
-                  for (const { file } of otherEntries) {
-                    if (mdEntries.length > 0 && /\.(png|jpg|jpeg|gif|svg|webp)$/i.test(file.name)) continue
-                    try {
-                      const formData = new FormData()
-                      formData.append('file', file, file.name)
-                      const resp = await fetch(`${FLEET_API}/api/upload`, { method: 'POST', body: formData })
-                      if (!resp.ok) throw new Error(`upload failed: ${resp.status}`)
-                      const { url, name } = await resp.json()
-                      const link = file.type.startsWith('image/')
-                        ? `![${name}](${FLEET_API}${url})`
-                        : `[${name}](${FLEET_API}${url})`
-                      const pos = ta.selectionStart || ta.value.length
-                      ta.value = ta.value.slice(0, pos) + link + ta.value.slice(pos)
-                      ta.dispatchEvent(new Event('input', { bubbles: true }))
-                    } catch (err) {
-                      console.error('[fleet-chat] file upload failed:', err)
-                      const pos = ta.selectionStart || ta.value.length
-                      ta.value = ta.value.slice(0, pos) + `[${file.name}]` + ta.value.slice(pos)
-                      ta.dispatchEvent(new Event('input', { bubbles: true }))
-                    }
-                  }
-                  return
-                }
-
-                // Text/attachment drops (from other chat elements)
-                const text = e.dataTransfer?.getData('text/plain') || ''
-                if (text) {
-                  const pos = ta.selectionStart || ta.value.length
-                  ta.value = ta.value.slice(0, pos) + text + ta.value.slice(pos)
-                }
-              }}
-              onDragOver={(e) => {
-                e.preventDefault()
-                e.stopPropagation()
-              }}
-          />
+            />
           </div>
         </div>
 
@@ -4816,23 +5690,60 @@ function FilterOverlay({
   editor,
   onClose,
   externalPillOver,
+  agents,
+  sendTargets,
 }: {
   filter: [string, string][][]
   shapeId: any
   editor: any
   onClose: () => void
   externalPillOver?: { role: string; value: string; displayName: string } | null
+  agents: any[]
+  sendTargets: string[]
 }) {
   // Native click delegation on document capture — bypasses tldraw completely
   const overlayRef = useRef<HTMLDivElement>(null)
+  const viewportId = useVisibilityViewportId()
   const filterRef = useRef(filter)
   filterRef.current = filter
+  const humanLabel = getHumanName() || getHumanId() || 'user'
+  const activeAgentLabel = useMemo(() => {
+    for (const clause of filter) {
+      for (const [, label] of clause) {
+        if (isNonHumanAgentLabel(agents, label)) return label
+      }
+    }
+    for (const label of sendTargets) {
+      if (isNonHumanAgentLabel(agents, label)) return label
+    }
+    return ''
+  }, [agents, filter, sendTargets])
+  const applyPreset = useCallback((preset: 'all' | 'dm' | 'agent') => {
+    let nextFilter: [string, string][][] = []
+    if (preset === 'dm' && activeAgentLabel) {
+      nextFilter = buildFleetDmFilter(humanLabel, activeAgentLabel) as [string, string][][]
+    } else if (preset === 'agent' && activeAgentLabel) {
+      nextFilter = buildFleetAgentFilter(activeAgentLabel) as [string, string][][]
+    }
+    editor.updateShape({
+      id: shapeId,
+      type: 'fleet-chat',
+      props: { filter: nextFilter, trafficMode: 'normal' },
+    })
+  }, [activeAgentLabel, editor, humanLabel, shapeId])
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
       const target = e.target as HTMLElement
       const overlay = overlayRef.current
       if (!overlay || !overlay.contains(target)) return
+
+      const preset = target.closest('.fleet-filter-preset') as HTMLElement | null
+      if (preset) {
+        const mode = preset.dataset.preset as 'all' | 'dm' | 'agent' | undefined
+        if (mode) applyPreset(mode)
+        return
+      }
 
       // Remove term ×
       const termX = target.closest('.fleet-filter-term-x') as HTMLElement
@@ -4864,10 +5775,12 @@ function FilterOverlay({
     }
     document.addEventListener('click', handleClick, { capture: true })
     return () => document.removeEventListener('click', handleClick, { capture: true })
-  }, [shapeId, editor, onClose])
+  }, [shapeId, editor, onClose, applyPreset])
 
   // Detect pill hovering over the shape — show two-pane drop preview
+  const fleetPillCount = useFleetPillCount(editor)
   const pillOverKey = useValue('filter-pill-over', () => {
+    if (fleetPillCount === 0) return ''
     const pills = editor.getCurrentPageShapes().filter((s: any) => s.type === 'fleet-pill')
     if (pills.length === 0) return ''
     const pill = pills[0] as any
@@ -4879,7 +5792,7 @@ function FilterOverlay({
     if (!shapeBounds || cx < shapeBounds.x || cx > shapeBounds.x + shapeBounds.w ||
         cy < shapeBounds.y || cy > shapeBounds.y + shapeBounds.h) return ''
     return `${pill.props.value}\0${pill.props.displayName}`
-  }, [editor, shapeId])
+  }, [editor, shapeId, fleetPillCount])
 
   const internalPillOver = useMemo(() => {
     if (!pillOverKey) return null
@@ -4902,12 +5815,13 @@ function FilterOverlay({
 
   const hoveredGroup = useValue('filter-hovered-group', () => {
     if (!pillOver) { lastGroupRef.current = null; return null }
+    if (fleetPillCount === 0) { lastGroupRef.current = null; return null }
     const pills = editor.getCurrentPageShapes().filter((s: any) => s.type === 'fleet-pill')
     if (pills.length === 0) { lastGroupRef.current = null; return null }
     const pill = pills[0]
     const pb = editor.getShapePageBounds(pill.id)
     if (!pb) return null
-    const screenPt = editor.pageToScreen({ x: pb.x + pb.w / 2, y: pb.y + pb.h / 2 })
+    const screenPt = pagePointToClient(editor, { x: pb.x + pb.w / 2, y: pb.y + pb.h / 2 }, viewportId)
 
     const ENTER_PAD = 8
     const EXIT_PAD = 30
@@ -4923,7 +5837,7 @@ function FilterOverlay({
       lastGroupRef.current = null
     }
 
-    // Check replace zone first (bottom-left corner)
+    // Check replace zone first (left third)
     const replaceEl = replaceZoneRef.current
     if (replaceEl) {
       const r = replaceEl.getBoundingClientRect()
@@ -4956,7 +5870,7 @@ function FilterOverlay({
       return { pane, idx: foundIdx }
     }
     return null
-  }, [editor, pillOver])
+  }, [editor, pillOver, fleetPillCount])
 
   // Compute preview DNF for each pane based on hovered AND group
   const toGroupIdx = hoveredGroup?.pane === 'to' ? hoveredGroup.idx : -1
@@ -5103,7 +6017,7 @@ function FilterOverlay({
   return (
     <div ref={overlayRef} className="fleet-filter-overlay" onPointerDown={stopEventPropagation}>
       {pillOver ? (
-        /* Two-pane drop preview: top = to, bottom = from, with replace zone in bottom-left */
+        /* Drop preview: left third = only/to+from, right side stacks to/from */
         <div className="fleet-filter-drop-panes">
           <div
             ref={replaceZoneRef}
@@ -5146,6 +6060,11 @@ function FilterOverlay({
         <>
           <div className="fleet-filter-overlay-header">
             <span style={{ fontSize: 9, opacity: 0.5, textTransform: 'uppercase', letterSpacing: 0.5 }}>Filter</span>
+            <span className="fleet-filter-presets">
+              <button className="fleet-filter-preset" data-preset="all" title="Show all chat traffic">All</button>
+              <button className="fleet-filter-preset" data-preset="dm" disabled={!activeAgentLabel} title={activeAgentLabel ? 'Show only human-agent direct messages' : 'Choose an agent first'}>DM</button>
+              <button className="fleet-filter-preset" data-preset="agent" disabled={!activeAgentLabel} title={activeAgentLabel ? 'Show all traffic involving this agent' : 'Choose an agent first'}>Agent</button>
+            </span>
           </div>
           {filter.length === 0 ? (
             <div className="fleet-filter-empty">

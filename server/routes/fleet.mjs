@@ -12,7 +12,10 @@ import { Router } from 'express'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
-import { DEFAULT_PORT } from '../../shared/config.mjs'
+import { DEFAULT_PORT, loadConfig, resolveConfig } from '../../shared/config.mjs'
+import { parseFilter, evalExpr, labelsForAgent } from '../../shared/fleet-labels.mjs'
+import { callerSpawnPolicy } from '../lib/spawn-policy.mjs'
+import { resolveSpawnMachine } from '../lib/spawn-routing.mjs'
 
 // Server owner — the human running this server process. Browser users
 // log in via the WS 'login' message or register via 'register'.
@@ -71,7 +74,16 @@ function copyAttachment(srcPath) {
   } catch { return null }
 }
 
-export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, clearEphemeralState, suppressEchoFor, sendRpc, resolveRpc, daemonConnections }) {
+function formatNameCollisions(collisions = []) {
+  return collisions.map(c => {
+    if (c.kind === 'pseudo_label') return `${c.name} is a reserved routing label`
+    if (c.kind === 'server_owner') return `${c.name} is the server owner name`
+    if (c.kind === 'self_id') return `${c.name} is this agent's durable id`
+    return `${c.name} collides with ${c.kind}${c.agent_id ? ` on ${c.agent_id}` : ''}`
+  }).join('; ')
+}
+
+export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, clearEphemeralState, suppressEchoFor, sendRpc, resolveRpc, daemonConnections, resolveSpawnTarget }) {
   // Helper: route an agent op through the daemon, or 503 cleanly. The
   // op-name is whatever the daemon's rpc dispatcher expects (kebab-case
   // matches the spec: 'send-key', 'capture-pane', etc.).
@@ -115,6 +127,21 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   // to know who the "local human" is. Browser users log in via WS 'login'.
   router.get('/api/human', (req, res) => {
     res.json({ id: SERVER_OWNER_ID, host: SERVER_OWNER_HOST, name: SERVER_OWNER_NAME })
+  })
+
+  // --- GET /api/fleet-config ---
+  // The global fleet/event-store URL this server points at (env → config.json
+  // fleetServer → this server). The SPA fetches this from whatever server served
+  // it, then connects its chat/fleet to the returned URL — so any UI (the Pages
+  // site, the main app, or an agent's dev server) resolves chat to the same
+  // global store while doc/shapes stay per-server. Unauthenticated: it's just a
+  // public URL the client needs before it can authenticate.
+  router.get('/api/fleet-config', (req, res) => {
+    // The active named config decides what this instance talks to:
+    //   database — fleet/chat/registry (what the SPA connects chat to)
+    //   store    — shapes + doc-asset sync (per-room state)
+    // `fleetServer` is kept as an alias for `database` so existing clients work.
+    res.json(resolveConfig())
   })
 
   // --- GET /api/store/events ---
@@ -193,7 +220,12 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     if (!name || typeof name !== 'string') { res.status(400).json({ error: 'missing name param' }); return }
     try {
       const collisions = fleetStore.checkNameAvailable([name], { excludeId: req.query.exclude || null, asFriendlyName: true })
-      res.json({ ok: collisions.length === 0, collisions })
+      if (name === SERVER_OWNER_NAME) collisions.push({ name, kind: 'server_owner' })
+      res.json({
+        ok: collisions.length === 0,
+        collisions,
+        ...(collisions.length ? { error: formatNameCollisions(collisions) } : {}),
+      })
     } catch (e) { res.status(500).json({ error: e.message }) }
   })
 
@@ -230,101 +262,75 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const rawAgents = req.query.agents
     const agents = Array.isArray(rawAgents) ? rawAgents : (rawAgents ? [rawAgents] : [])
     try {
-      let events = []
-      if (fleetStore) {
-        const fleetEvents = fleetStore.queryChatHistory({ before, agents, limit: limit + 1 })
-        events = fleetEvents.map(e => ({ ...e, event_type: e.type, from: e.from, to: e.to, agent: e.agent_id }))
+      if (!fleetStore) {
+        res.json({ events: [], hasMore: false, nextCursor: null })
+        return
       }
-      const hasMore = events.length > limit
-      if (hasMore) events.shift()
-      events = events.filter(e => {
-        const t = e.text || ''
-        return !t.startsWith('<channel') && !t.startsWith('<task-notification') && !t.startsWith('<system-reminder')
-      })
-      const allAgents = fleetStore ? fleetStore.getAllAgents() : []
-      const agentMap = {}
-      for (const a of allAgents) agentMap[a.id] = a.friendly_name || a.name || a.id
-      agentMap['web'] = agentMap[SERVER_OWNER_ID] || SERVER_OWNER_NAME
-      const unreadIds = new Set()
-      if (fleetStore) {
-        try {
-          const rows = fleetStore.db.prepare('SELECT event_id FROM unread WHERE read = 0').all()
-          for (const r of rows) unreadIds.add(r.event_id)
-        } catch {}
-      }
-      const resolved = events.map(e => ({
-        ...e,
-        read: !unreadIds.has(e.id),
-        fromLabel: agentMap[e.from] || (e.from ? e.from.substring(0, 8) : ''),
-        toLabel: agentMap[e.to] || agentMap[e.agent] || (e.to ? e.to.substring(0, 8) : ''),
+      res.json(fleetStore.buildChatHistoryResponse({
+        before,
+        agents,
+        limit,
+        serverOwnerId: SERVER_OWNER_ID,
+        serverOwnerName: SERVER_OWNER_NAME,
       }))
-      const nextCursor = hasMore && events.length > 0 ? events[0].timestamp : null
-      res.json({ events: resolved, hasMore, nextCursor })
     } catch (e) {
       res.status(500).json({ error: e.message })
     }
   })
 
-  // --- GET /api/roll-call ---
-  // Aggregates tmux session lists from every connected fleet-daemon and
-  // joins against the agent registry. If a daemon is down, its agents
-  // are reported as `tmux_alive: null` (unknown), not dead — we don't
-  // mark something dead because we can't reach it.
-  router.get('/api/roll-call', async (req, res) => {
+  // --- GET /api/fleet-table ---
+  // Passive fleet roster for agents (replaces the old roll-call blob). Reads the
+  // hydrated agent registry — the SAME source as the agents panel and the `awake`
+  // pseudo-label (liveness via the installed oracle) — so it wakes no one and
+  // costs a cached registry read. Returns whole-fleet totals plus a
+  // DNF-filterable, capped slice of rows.
+  //   ?filter=<json DNF>  scope rows (e.g. [[["awake"]]], a label, a name)
+  //   ?limit=<n>          cap rows (default 50); totals are always whole-fleet
+  router.get('/api/fleet-table', (req, res) => {
     try {
-      const agents = fleetStore ? fleetStore.getAllAgents() : []
-      const ALIVE_MS = 10 * 60 * 1000
+      if (!fleetStore) { res.json({ totals: { awake: 0, hibernating: 0, dead: 0, total: 0 }, agents: [], shown: 0, matched: 0 }); return }
       const now = Date.now()
-      const rosterDir = path.join(os.homedir(), '.claude', 'fleet-roster')
-      let roster = []
-      try {
-        if (fs.existsSync(rosterDir)) {
-          roster = fs.readdirSync(rosterDir)
-            .filter(f => f.endsWith('.json'))
-            .map(f => { try { return JSON.parse(fs.readFileSync(path.join(rosterDir, f), 'utf8')) } catch { return null } })
-            .filter(Boolean)
-        }
-      } catch {}
+      // Agent roster only — humans are not fleet agents (excluded from the view).
+      const roster = fleetStore.getAllAgents().filter(a => !a.human)
 
-      // Per-machine list-sessions via daemon RPC. Concurrency-safe: each
-      // daemon answers its own machine; aggregate the union.
-      const tmuxByMachine = new Map() // machine_id -> Set<sessionName>
-      const probes = []
-      for (const [mid] of daemonConnections) {
-        probes.push(
-          sendRpc(mid, 'list-sessions', {}).then(r => {
-            const sessions = (r?.sessions || []).filter(s => s.startsWith('fleet-'))
-            tmuxByMachine.set(mid, new Set(sessions))
-          }).catch(() => { tmuxByMachine.set(mid, null) }) // null = unreachable
-        )
+      // Whole-fleet totals (independent of the filter) — the at-a-glance load.
+      const totals = { awake: 0, hibernating: 0, dead: 0, total: roster.length }
+      for (const a of roster) {
+        if (a.dead) totals.dead++
+        else if (a.status === 'awake') totals.awake++
+        else totals.hibernating++
       }
-      await Promise.all(probes)
 
-      const registryIds = new Set(agents.map(a => a.id))
-      const allTmuxSessions = new Set()
-      for (const set of tmuxByMachine.values()) if (set) for (const s of set) allTmuxSessions.add(s)
+      // Optional filter expression from the query (e.g. "awake & reviewers").
+      // Same matcher chat uses, so `awake` / a label / a name all work and
+      // compose with & | ! and parens.
+      let filterAst = null
+      if (req.query.filter) {
+        try { filterAst = parseFilter(req.query.filter) } catch (e) { res.status(400).json({ error: `bad filter: ${e.message}` }); return }
+      }
+      const matched = roster.filter(a => evalExpr(filterAst, labelsForAgent(a)))
 
-      const agentStatus = agents.map(a => {
-        const lastSeenMs = a.last_seen ? now - new Date(a.last_seen).getTime() : Infinity
-        const heartbeat = lastSeenMs < ALIVE_MS
-        let tmuxUp = null
-        if (a.tmux_session && a.machine_id) {
-          const set = tmuxByMachine.get(a.machine_id)
-          tmuxUp = set ? set.has(a.tmux_session) : null
+      // Awake first, then most-recently-seen.
+      const rank = (a) => (a.dead ? 2 : a.status === 'awake' ? 0 : 1)
+      matched.sort((x, y) => rank(x) - rank(y) || (new Date(y.last_seen || 0) - new Date(x.last_seen || 0)))
+
+      const limit = Math.max(1, Math.min(parseInt(req.query.limit) || 50, 500))
+      const rows = matched.slice(0, limit).map(a => {
+        const lastSeenMs = a.last_seen ? now - new Date(a.last_seen).getTime() : null
+        const act = a.metadata?.status || null
+        return {
+          id: a.id,
+          name: a.friendly_name || a.id,
+          status: a.dead ? 'dead' : a.status,
+          last_seen_ago_s: lastSeenMs == null ? null : Math.round(lastSeenMs / 1000),
+          cwd: a.cwd || null,
+          tmux_session: a.tmux_session || null,
+          activity: act?.state || null,
+          tool: act?.tool || null,
         }
-        // `dead` is a deliberate terminal state, only set by explicit kills.
-        // A non-running, non-dead agent is hibernating — computed, not stored.
-        let status
-        if (a.dead) status = 'dead'
-        else if (heartbeat && tmuxUp !== false) status = 'alive'
-        else if (heartbeat || tmuxUp) status = 'stale'
-        else status = 'hibernating'
-        return { ...a, status, heartbeat_alive: heartbeat, tmux_alive: tmuxUp, last_seen_ago_s: lastSeenMs === Infinity ? null : Math.round(lastSeenMs / 1000) }
       })
-      const missing = roster.filter(r => !registryIds.has(r.fleet_id))
-      const registeredTmux = new Set(agents.filter(a => a.tmux_session).map(a => a.tmux_session))
-      const unmatchedTmux = [...allTmuxSessions].filter(s => !registeredTmux.has(s))
-      res.json({ agents: agentStatus, missing_from_roster: missing, unregistered_tmux: unmatchedTmux })
+
+      res.json({ totals, agents: rows, shown: rows.length, matched: matched.length })
     } catch (e) { res.status(500).json({ error: e.message }) }
   })
 
@@ -427,26 +433,63 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   // doc: project name — daemon resolves to sourceDir for the cwd
   // For respawn: { agent: "fleet:xxx" or "name", respawn: true }
   router.post('/api/spawn', async (req, res) => {
-    const { name, model, doc, cwd, agent, respawn } = req.body || {}
-    // For respawn, resolve agent to a name
+    const { name, model, doc, cwd, agent, respawn, fresh, capability, spawnCapability, kind, mode, effort } = req.body || {}
+    // HTTP auth currently proves only bearer-token level, not which fleet agent or
+    // human browser session made the request. Spawning is authority-sensitive, so
+    // fail closed here instead of treating all HTTP callers as the server owner.
+    // MCP/agent spawns use the /ws/fleet `spawn` operation, where the caller is
+    // bound to the registered WebSocket identity.
+    const caller = req.fleetCallerId ? fleetStore?.getAgent?.(req.fleetCallerId) : null
+    if (!caller) {
+      res.status(403).json({ error: 'spawn requires authenticated caller identity; HTTP /api/spawn has no per-caller identity. Use the fleet WS spawn path.' })
+      return
+    }
+    // For respawn, resolve agent to a target identity. Routing is by the
+    // target's machine, not by the caller's current device.
     let spawnName = name
+    let routeTarget = null
     if (respawn && agent) {
       const a = fleetStore?.findAgent(agent)
-      spawnName = a?.friendly_name || agent
+      routeTarget = a || null
+      spawnName = a?.id || agent
+    } else if (respawn && spawnName) {
+      routeTarget = fleetStore?.findAgent(spawnName) || null
+      spawnName = routeTarget?.id || spawnName
     }
-    // Find a daemon to route to — use the local machine
-    const machineIds = [...daemonConnections.keys()]
-    if (machineIds.length === 0) {
-      res.status(503).json({ error: 'No fleet daemon connected — cannot spawn agents' })
+    if (respawn && !routeTarget) {
+      res.status(404).json({ error: `spawn target not found: ${agent || name}` })
       return
     }
     try {
-      const result = await sendRpc(machineIds[0], 'spawn', {
-        name: spawnName || undefined,
+      const route = resolveSpawnMachine({
+        caller,
+        targetAgent: routeTarget,
+        fresh: !!fresh,
+        respawn: !!respawn,
+        refresh: false,
+        fleetStore,
+        daemonConnections,
+      })
+      const requestedCapability = capability || spawnCapability || null
+      const callerRung = callerSpawnPolicy(caller, { serverOwnerId: SERVER_OWNER_ID }).capability
+      const resolved = resolveSpawnTarget
+        ? await resolveSpawnTarget(spawnName, !!respawn, {
+            fresh: !!fresh,
+            requested: { model, kind, project: doc },
+          })
+        : { name: spawnName, respawn: !!respawn }
+      const result = await sendRpc(route.machine_id, 'spawn', {
+        name: resolved.name || undefined,
         model: model || undefined,
+        kind: kind || undefined,
         doc: doc || undefined,
         cwd: cwd || undefined,
-        respawn: !!respawn,
+        effort: effort || undefined,
+        mode: mode || undefined,
+        requestedCapability: requestedCapability || undefined,
+        callerRung,
+        spawnRoute: route.source,
+        respawn: resolved.respawn,
       })
       broadcastState()
       res.json(result)
@@ -510,8 +553,12 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const agent = fleetStore?.findAgent(agentQuery)
     if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
     if (newName) {
-      const conflict = fleetStore?.db.prepare('SELECT id FROM agents WHERE friendly_name = ? AND dead = 0 AND id != ?').get(newName, agent.id)
-      if (conflict || newName === SERVER_OWNER_NAME) { res.status(400).json({ error: `Name "${newName}" already in use` }); return }
+      const collisions = fleetStore?.checkNameAvailable([newName], { excludeId: agent.id, asFriendlyName: true }) || []
+      if (newName === SERVER_OWNER_NAME) collisions.push({ name: newName, kind: 'server_owner' })
+      if (collisions.length) {
+        res.status(400).json({ error: `Name "${newName}" unavailable: ${formatNameCollisions(collisions)}` })
+        return
+      }
     }
     // Use direct SQL so clearing a name (newName = "") actually sets NULL
     // rather than being COALESCE'd back to the old value in upsertAgent.
@@ -526,10 +573,15 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     if (!agentQuery || !Array.isArray(labels)) { res.status(400).json({ error: 'agent and labels[] required' }); return }
     const agent = fleetStore?.findAgent(agentQuery)
     if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
-    const allAgents = fleetStore ? fleetStore.getAllAgents() : []
-    const usedNames = new Set([SERVER_OWNER_NAME, ...allAgents.map(a => a.friendly_name).filter(Boolean)])
-    const conflicts = labels.filter(l => usedNames.has(l) && l !== agent.friendly_name)
-    if (conflicts.length) { res.status(400).json({ error: `Label(s) conflict with agent name(s): ${conflicts.join(', ')}` }); return }
+    const collisions = fleetStore?.checkNameAvailable(labels, { excludeId: agent.id, asFriendlyName: false }) || []
+    for (const label of labels) {
+      if (label === SERVER_OWNER_NAME) collisions.push({ name: label, kind: 'server_owner' })
+      if (label === agent.id) collisions.push({ name: label, kind: 'self_id' })
+    }
+    if (collisions.length) {
+      res.status(400).json({ error: `Label(s) unavailable: ${formatNameCollisions(collisions)}` })
+      return
+    }
     agent.labels = labels
     if (fleetStore) fleetStore.upsertAgent(agent)
     broadcastState()
@@ -584,42 +636,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       tmux_session: agent.tmux_session, lines: lines || 50,
     })
     if (result !== null) res.json(result)
-  })
-
-  // --- POST /api/restart-mcp ---
-  router.post('/api/restart-mcp', async (req, res) => {
-    const { agent: agentQuery } = req.body || {}
-    const agent = fleetStore?.findAgent(agentQuery)
-    if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
-    if (!agent.tmux_session) { res.status(400).json({ error: 'no tmux session' }); return }
-    const result = await rpcAgent(res, agent, 'restart-mcp', { tmux_session: agent.tmux_session })
-    if (result !== null) res.json(result)
-  })
-
-  // --- POST /api/restart-my-mcp ---
-  // Developer tool: restart an agent's own fleet MCP (e.g. after updating fleet.mjs).
-  // Returns 202 immediately; daemon triggers the restart ~1.5s later.
-  // body: { agent: <id|name> }
-  router.post('/api/restart-my-mcp', async (req, res) => {
-    const { agent: agentQuery } = req.body || {}
-    const agent = fleetStore?.findAgent(agentQuery)
-    if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
-    if (!agent.tmux_session) { res.status(400).json({ error: 'no tmux session' }); return }
-    res.status(202).json({ ok: true, message: 'restart scheduled' })
-    await new Promise(r => setTimeout(r, 1500))
-    const route = resolveRpc('restart-mcp', agent)
-    if (route.via === 'none') {
-      console.error(`restart-my-mcp: no daemon route for ${agent.id}: ${route.error}`)
-      return
-    }
-    try {
-      await sendRpc(route.machine_id, 'restart-mcp', {
-        tmux_session: agent.tmux_session,
-        skipPreflight: true,
-      })
-    } catch (e) {
-      console.error(`restart-my-mcp daemon call failed: ${e.message}`)
-    }
   })
 
   // --- POST /api/plan-mode-respond ---
@@ -775,13 +791,17 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   })
 
   // --- POST /api/unquote-file ---
-  // Tier 2 unquote: runs the text through the same path-detection + upload pipeline as chat(),
-  // patches the stored event, and re-broadcasts so all clients update in-place.
-  // Body: { eventId, path, agentId }
+  // Unquote = amend the message by removing the backticks around a quoted block,
+  // then re-render it as if it had never been quoted. The full interior is run
+  // through the same path-detection + upload pipeline as chat() (rechat RPC →
+  // processMessageText on the sender's machine), so any file paths inside it get
+  // resolved + uploaded. We patch the stored event and re-broadcast so all clients
+  // re-render the whole message in place.
+  // Body: { eventId, quoted, agentId } — `quoted` is the interior of the block.
   router.post('/api/unquote-file', async (req, res) => {
-    const { eventId, path: rawText, agentId } = req.body || {}
+    const { eventId, quoted: rawText, agentId } = req.body || {}
     if (!eventId || !rawText || !agentId) {
-      return res.status(400).json({ error: 'eventId, path, and agentId required' })
+      return res.status(400).json({ error: 'eventId, quoted, and agentId required' })
     }
     const agent = fleetStore.findAgent?.(agentId) || fleetStore.getAgent?.(agentId)
     if (!agent) return res.status(404).json({ error: `agent not found: ${agentId}` })
@@ -801,6 +821,20 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
 
     let { resolvedMessage, inlineAttachments } = result
 
+    // Warn the path's agent if the unquote resolved to a missing file on its machine.
+    // The broken ref was masked at send time (backticked) and only surfaced when Skip
+    // unquoted it — without this the agent never learns its path is dead; it just
+    // renders a silent ⚠ chip in chat.
+    const brokenAtts = (inlineAttachments || []).filter(a => a && a.broken)
+    if (brokenAtts.length && typeof fleetStore?.chat === 'function') {
+      const paths = brokenAtts.map(a => a.path).join(', ')
+      fleetStore.chat(
+        SERVER_OWNER_ID,
+        agentId,
+        `⚠ ${SERVER_OWNER_NAME} unquoted a file path that isn't on your machine: ${paths}. Fix the reference (the file may be at a different path) and re-send — that link is rendering dead in chat.`
+      )
+    }
+
     // Patch the stored event: replace `rawText` (with or without backticks) in the text,
     // and merge new inline_attachments into the event's metadata.
     const evId = parseInt(eventId, 10)
@@ -817,12 +851,31 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         )
       }
 
-      const backtickForms = [`\`${rawText}\``, rawText]
+      // Splice out the backticks around the clicked block and substitute the
+      // resolved (path-uploaded) text. Every substitution uses a function replacer
+      // so a resolvedMessage containing `$` (Skip's LaTeX) or `{{att:N}}` is
+      // inserted literally — String.replace's string form would interpret `$&`,
+      // `$1`, etc. and corrupt the message.
+      const sub = () => resolvedMessage
       let newText = event.text
-      for (const form of backtickForms) {
-        if (newText.includes(form)) {
-          newText = newText.replace(form, resolvedMessage)
-          break
+      const inlineForm = '`' + rawText + '`'
+      if (newText.includes(inlineForm)) {
+        // Inline single-backtick span: `interior`
+        newText = newText.replace(inlineForm, sub)
+      } else {
+        // Fenced block: ```[lang]\n interior \n``` — strip the whole fence.
+        let fencedDone = false
+        newText = newText.replace(/```[^\n]*\n([\s\S]*?)```/g, (whole, body) => {
+          if (fencedDone) return whole
+          if (body.replace(/\n$/, '') === rawText || body.trim() === rawText.trim()) {
+            fencedDone = true
+            return resolvedMessage
+          }
+          return whole
+        })
+        // Fallback: bare interior occurrence (e.g. the block markers didn't match).
+        if (!fencedDone && newText.includes(rawText)) {
+          newText = newText.replace(rawText, sub)
         }
       }
       if (newText !== event.text || inlineAttachments?.length) {
@@ -960,7 +1013,11 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const { agent, filter, types } = req.body || {}
     if (!agent) { res.status(400).send('missing agent'); return }
     if (!filter) { res.status(400).send('missing filter'); return }
-    const tap = fleetStore.addWiretap(agent, filter, types)
+    // Filter is a string expression with directional to:/from: prefixes;
+    // addWiretap validates it via parseFilter and throws on bad syntax.
+    let tap
+    try { tap = fleetStore.addWiretap(agent, filter, types) }
+    catch (e) { res.status(400).json({ error: `bad filter: ${e.message}` }); return }
     res.json(tap)
   })
 

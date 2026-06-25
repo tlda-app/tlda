@@ -61,15 +61,40 @@ import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { resolveFilePath, uploadFileToServer } from '../shared/chat-file-processing.mjs'
 import { processMessageText } from '../shared/message-processing.mjs'
+import { scanMarkdownDeps } from '../shared/markdown-deps.mjs'
 import {
   loadConfig as _loadSharedConfig, saveConfig as _saveSharedConfig,
-  getServerUrl, getRwToken, DEFAULT_PORT, hasTls,
-  CONFIG_DIR as _SHARED_CONFIG_DIR,
+  getServerUrl, getFleetServerUrl, getRwToken, DEFAULT_PORT, hasTls,
+  CONFIG_DIR as _SHARED_CONFIG_DIR, getManagedBots,
 } from '../shared/config.mjs'
 const execFileP = promisify(execFile)
 
 const VERSION = '0.1.1'
 import { createLogger } from '../shared/logger.mjs'
+import { resolveDaemonIsolation } from '../shared/daemon-identity.mjs'
+import { sendActivityEvents } from './lib/activity-send.mjs'
+import { createManagedBotSupervisor } from './lib/managed-bots.mjs'
+import { maybeKickGoose, resolveGooseStatus } from './lib/goose-kick.mjs'
+import {
+  classifyPane, decideThinkingEdge, shouldDisarm,
+  THINKING_SPINNER_RE, INTERRUPT_HINT_RE, COMPACTING_RE, APPROVAL_PROMPT_RE,
+  THINKING_SCAN_LINES, APPROVAL_PROMPT_SCAN_LINES,
+} from './lib/status-classifier.mjs'
+import { gooseActivityTick } from './lib/goose-activity.mjs'
+import { parseCodexLine } from './lib/codex-activity.mjs'
+import { truncatePrettyResult } from '../shared/activity-pretty-result.mjs'
+import { trimTerminalSeedBlankRows } from '../shared/terminal-seed.mjs'
+import {
+  buildFleetSpawnArgs,
+  decideMissingLiveness,
+  detectSpawnStartupFailureTranscript,
+  harnessKindForAgent,
+  isPlaywrightBrowserArgs,
+  shouldClaimCodexWatcher,
+  unlinkPidfileIfOwnPid,
+} from './lib/daemon-guards.mjs'
+import { codexRolloutBelongsToAgent, codexRolloutHasOwnerEvidence, resolveTranscript } from './lib/resolve-transcript.mjs'
+import { projectCapabilityToMode, resolveDaemonSpawnGrant } from '../server/lib/spawn-policy.mjs'
 const log = createLogger('daemon')
 // CONFIG_DIR holds config.json, cursors, PID and log files. Defaults to
 // ~/.config/tlda. TLDA_DAEMON_CONFIG_DIR lets the E2E test start a second
@@ -77,14 +102,59 @@ const log = createLogger('daemon')
 const CONFIG_DIR = process.env.TLDA_DAEMON_CONFIG_DIR || _SHARED_CONFIG_DIR
 const CURSORS_FILE = path.join(CONFIG_DIR, 'daemon-cursors.json')
 const PID_FILE = path.join(CONFIG_DIR, 'fleet-daemon.pid')
+const SOURCE_BINDINGS_FILE = path.join(CONFIG_DIR, 'source-bindings.json')
+
+// Per-machine source bindings: { projectName -> absolute local source dir }.
+// This is the per-machine fact "where MY copy of project X lives" — it belongs
+// on the daemon, not on the server (whose single project.sourceDir is the host's
+// path). With a binding present, this daemon watches/pushes its OWN local clone
+// for a shared project name; with none, it falls back to the server's sourceDir,
+// so the single-host case is unchanged. Read fresh each sync so `tlda doc link`
+// takes effect without a daemon restart.
+function loadSourceBindings() {
+  try {
+    if (!fs.existsSync(SOURCE_BINDINGS_FILE)) return {}
+    return JSON.parse(fs.readFileSync(SOURCE_BINDINGS_FILE, 'utf8')) || {}
+  } catch (e) { log.warn(`corrupt source-bindings file, ignoring: ${e.message}`); return {} }
+}
 const LOG_FILE = path.join(CONFIG_DIR, 'fleet-daemon.log')
 const DEAD_LETTER_FILE = path.join(CONFIG_DIR, 'daemon-dead-letters.jsonl')
 const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects')
+
+function resolveBotScript(script) {
+  if (script.startsWith('/')) return script
+  const d = path.dirname(fileURLToPath(import.meta.url))
+  const m = d.match(/^(.+?)\/\.claude\/worktrees\//)
+  const root = m ? m[1] : path.join(d, '..')
+  return path.join(root, script)
+}
 
 // ---------- config / machine identity ----------
 
 // When using a custom config dir (E2E tests), read from there instead of shared.
 const _usingCustomConfigDir = !!process.env.TLDA_DAEMON_CONFIG_DIR
+
+// This daemon's own install path — distinguishes a main-tree daemon from a
+// worktree/dev-rig one, both at startup (the isolation guard below) and on the
+// server (the daemon-hello backstop: two distinct installs can't share a
+// machine_id). Resolve symlinks so the comparison is on the real path.
+const INSTALL_PATH = (() => {
+  try { return fs.realpathSync(fileURLToPath(import.meta.url)) }
+  catch { return fileURLToPath(import.meta.url) }
+})()
+
+// §4b guard: a worktree/dev-rig daemon must never silently join the LIVE fleet
+// as the shared machine_id (tonight a worktree daemon claimed "air" and evicted
+// the real one). Refuse to start when an isolation signal is set but isolation
+// is incomplete, instead of falling through to the live config. Fail loud.
+{
+  const { refuseReason } = resolveDaemonIsolation({ env: process.env, scriptPath: INSTALL_PATH })
+  if (refuseReason) {
+    log.error(`refusing to start: ${refuseReason}`)
+    process.stderr.write(`[fleet-daemon] REFUSING TO START — ${refuseReason}\n`)
+    process.exit(1)
+  }
+}
 
 function loadConfig() {
   if (_usingCustomConfigDir) {
@@ -116,9 +186,19 @@ function deriveMachineId() {
 }
 
 const config = loadConfig()
-const SERVER = _usingCustomConfigDir
-  ? (process.env.TLDA_SERVER || config.server || `${hasTls ? 'https' : 'http'}://localhost:${DEFAULT_PORT}`)
-  : getServerUrl(config)
+// The daemon is the local relay to THE server. There is one server (Fly); the
+// daemon watches local things (files, agents, terminals) and relays everything
+// to it — source-change → server builds in its shadow, activity/terminal/RPC →
+// fleet. Resolve the fleet server (config.fleetServer → Fly), not a local one.
+// Honor TLDA_SERVER on BOTH paths. Previously it was read only when a custom
+// config dir was set, so `TLDA_SERVER=… node fleet-daemon.mjs` silently fell
+// through to getFleetServerUrl(config) = live Fly — a rig that thought it was
+// isolated joined the live fleet. TLDA_SERVER set now always targets that server.
+const SERVER = process.env.TLDA_SERVER
+  ? process.env.TLDA_SERVER
+  : (_usingCustomConfigDir
+      ? (config.fleetServer || config.server || `${hasTls ? 'https' : 'http'}://localhost:${DEFAULT_PORT}`)
+      : getFleetServerUrl(config))
 const TOKEN = _usingCustomConfigDir
   ? (process.env.TLDA_TOKEN || config.tokenRw || config.token || null)
   : getRwToken(config)
@@ -174,11 +254,17 @@ function loadQualifications() {
   try {
     if (!fs.existsSync(QUALIFICATIONS_FILE)) return
     const data = JSON.parse(fs.readFileSync(QUALIFICATIONS_FILE, 'utf8'))
-    _qualRules = (data.rules || []).map(r => ({
-      editPattern: r.edit,
-      editRe: globToRegex(r.edit),
-      requires: r.requires || [],
-    }))
+    // Only edit-gating rules build an editRe. `tool:`-gating rules have no
+    // `edit` field (they're enforced elsewhere) and must be skipped here — else
+    // globToRegex(undefined) throws and the whole load fails with
+    // "Cannot read properties of undefined (reading 'replace')".
+    _qualRules = (data.rules || [])
+      .filter(r => typeof r.edit === 'string' && r.edit)
+      .map(r => ({
+        editPattern: r.edit,
+        editRe: globToRegex(r.edit),
+        requires: r.requires || [],
+      }))
     log.info(`loaded ${_qualRules.length} qualification rules`)
   } catch (e) {
     log.error(`failed to load qualifications: ${e.message}`)
@@ -252,6 +338,32 @@ function trackRead(agentId, filePath) {
   _agentReads.get(agentId).add(filePath)
 }
 
+// Edit attribution: remember which agent most recently Edited/Wrote each file
+// (by canonical absolute path), so a source-change can be attributed to the
+// agent whose edit triggered the build. Keyed by realpath where resolvable.
+/** @type {Map<string, { agentId: string, ts: number }>} absPath → editor */
+const _lastEditor = new Map()
+function canonPath(p) {
+  try { return fs.realpathSync(p) } catch { return p }
+}
+function recordEdit(agentId, filePath) {
+  if (!agentId || !filePath) return
+  _lastEditor.set(canonPath(filePath), { agentId, ts: Date.now() })
+}
+// Resolve the most-recent agent who edited one of the given absolute paths
+// within the recency window. Returns null if none match.
+const EDIT_ATTRIBUTION_WINDOW_MS = 10 * 60 * 1000
+function resolveEditor(absPaths) {
+  let best = null
+  const now = Date.now()
+  for (const p of absPaths) {
+    const rec = _lastEditor.get(canonPath(p))
+    if (!rec || now - rec.ts > EDIT_ATTRIBUTION_WINDOW_MS) continue
+    if (!best || rec.ts > best.ts) best = rec
+  }
+  return best?.agentId || null
+}
+
 loadQualifications()
 
 // ---------- JSONL parsing (mirrors fleet/dashboard/search-index.mjs) ----------
@@ -317,30 +429,40 @@ const ACTIVITY_NOISE = new Set([
   'ToolSearch',
 ])
 
-// Tools whose results should be captured and forwarded as pretty-printed cards
-const PRETTY_PRINT_TOOLS = new Set(['mcp__tlda__search_logs', 'mcp__tlda__get_thread', 'ScheduleWakeup', 'mcp__tlda__screenshot'])
+// Tools whose results should be captured and forwarded as pretty-printed cards.
+// Keep the accepted names broad: Claude/Codex use mcp__tlda__get_thread, while
+// Goose and stored activity can use tlda__get_thread or get_thread.
+const PRETTY_PRINT_TOOLS = new Set([
+  'mcp__tlda__search_logs',
+  'mcp__tlda__get_thread',
+  'tlda__search_logs',
+  'tlda__get_thread',
+  'search_logs',
+  'get_thread',
+  'ScheduleWakeup',
+  'mcp__tlda__screenshot',
+  'tlda__screenshot',
+  'screenshot',
+  'mcp__tlda__propose_edit',
+  'tlda__propose_edit',
+  'propose_edit',
+])
 
-function truncatePrettyResult(text, toolName) {
-  if (text.length <= 5000) return text
-  const tool = (toolName || '').toLowerCase()
-  if (tool.includes('get_thread') || tool.includes('thread')) {
-    const SEP = '\n\n---\n\n'
-    const msgs = text.split(SEP)
-    if (msgs.length > 8) {
-      const front = msgs.slice(0, 3)
-      const tail = msgs.slice(-5)
-      const hidden = msgs.length - 8
-      return front.join(SEP) + SEP + `… ${hidden} messages …` + SEP + tail.join(SEP)
-    }
-  }
-  return text.slice(0, 5000) + '\n\n… (truncated)'
+function toolBaseName(name) {
+  return String(name || '').split('__').pop()
+}
+
+function isPrettyPrintTool(name) {
+  return PRETTY_PRINT_TOOLS.has(name) || PRETTY_PRINT_TOOLS.has(toolBaseName(name))
 }
 
 // Pending pretty-print tool_uses waiting for their results. Keyed by tool_use_id.
 // When a tool_use for a pretty-print tool arrives without a matching result in
-// the same batch, we stash the activity event here. When the result arrives in
-// a later batch, we send a follow-up activity event with the prettyResult.
-// Entries expire after 30s to avoid leaking memory on abandoned tool calls.
+// the same batch, delay the activity card instead of sending a bare card and a
+// later _prettyResult follow-up. That keeps delayed results in the same stored
+// input shape as same-batch Claude results: the original tool event with
+// prettyResult attached. Entries expire after 30s to avoid leaking memory on
+// abandoned tool calls.
 const pendingPrettyPrint = new Map()  // id -> { agentId, evt, expiresAt }
 
 function extractActivityEvents(events) {
@@ -376,21 +498,24 @@ function extractActivityEvents(events) {
         const input = block.input || {}
         const arg = input.file_path || input.path ||
           input.command || input.pattern || input.message ||
-          input.query || input.description || input.reason || ''
+          input.query || input.description || input.reason ||
+          input.agent || input.doc || input.ref || input.text || ''
         const evt = { tool: humanName, arg, ts: ev.timestamp, id: block.id }
         if (Object.keys(input).length > 0) evt.input = input
         // Attach result for pretty-printed tools
-        if (PRETTY_PRINT_TOOLS.has(name) && block.id) {
+        if (isPrettyPrintTool(name) && block.id) {
           if (toolResults.has(block.id)) {
             const raw = toolResults.get(block.id)
             evt.prettyResult = truncatePrettyResult(raw, name)
           } else {
-            // Result not in this batch — stash and wait
+            // Result not in this batch — stash and wait so the eventual card
+            // has the same shape as a same-batch Claude pretty-result card.
             pendingPrettyPrint.set(block.id, { evt: { ...evt }, expiresAt: Date.now() + 30000 })
+            continue
           }
         }
         result.push(evt)
-      } else if (block.type === 'text' && block.text?.length > 20) {
+      } else if (block.type === 'text' && block.text?.trim().length > 0) {
         result.push({ tool: '_text', arg: block.text, ts: ev.timestamp })
       }
     }
@@ -402,13 +527,16 @@ function extractActivityEvents(events) {
     if (pending) {
       pendingPrettyPrint.delete(id)
       const capped = truncatePrettyResult(resultText, pending.evt.tool)
-      result.push({ ...pending.evt, origTool: pending.evt.tool, tool: '_prettyResult', prettyResult: capped })
+      result.push({ ...pending.evt, prettyResult: capped })
     }
   }
   // Expire old pending entries
   const now = Date.now()
   for (const [id, entry] of pendingPrettyPrint) {
-    if (now > entry.expiresAt) pendingPrettyPrint.delete(id)
+    if (now > entry.expiresAt) {
+      pendingPrettyPrint.delete(id)
+      result.push(entry.evt)
+    }
   }
   return result
 }
@@ -416,9 +544,11 @@ function extractActivityEvents(events) {
 // ---------- daemon state ----------
 
 let _rws = null  // ResilientWS instance, created at startup
+let _serverReady = false
+let _lastLivenessDisconnectWarnAt = 0
 let agents = []                   // current agent list (from welcome / updates)
 let projects = []                 // current project list
-const pathWatchers = new Map()    // jsonlPath -> { watcher, primaryAgentId, sessionId }
+const pathWatchers = new Map()    // jsonlPath -> { watcher, primaryAgentId, sessionId, harnessKind }
 const agentPaths = new Map()      // agentId -> jsonlPath
 const sourceWatchers = new Map()  // projectName -> { watcher, sourceDir, debounce, pending }
 
@@ -489,8 +619,22 @@ function extractPromptBody(stripped) {
   return bodyLines.join('\n').slice(0, 1000)
 }
 
+// Codex raises its own per-tool MCP approval prompt (distinct from Claude's
+// radio prompt): `Allow the tlda MCP server to run tool "<X>"?` with a 1–4
+// option list (1 Allow / 2 session / 3 Always allow / 4 Cancel). Codex's
+// "Always allow" is per-TOOL, so this fires once for each new tool the agent
+// calls; we send `3` so that tool never prompts again. Scoped to the `tlda`
+// MCP server (the agent's own fleet ops) — we don't blanket-accept arbitrary MCP.
+const CODEX_MCP_PROMPT_RE = /Allow the tlda MCP server to run tool ["']?([^"'?\n]+?)["']?\?/
+
 function detectPrompt(paneText) {
   const stripped = typeof paneText === 'string' ? stripAnsi(paneText) : ''
+
+  // Codex MCP tool-approval prompt → auto-accept with "Always allow" (key 3).
+  const codexMatch = stripped.match(CODEX_MCP_PROMPT_RE)
+  if (codexMatch && /Always allow/.test(stripped)) {
+    return { type: 'auto-accept', reason: `codex mcp tool: ${codexMatch[1]}`, acceptKey: '3' }
+  }
 
   // Radio-button TUI prompt (Create/Edit file, self-edit)
   if ((stripped.includes('Do you want to') || stripped.includes('Allow this')) && RADIO_PROMPT_RE.test(stripped)) {
@@ -514,17 +658,17 @@ function detectPrompt(paneText) {
   return { type: 'none' }
 }
 
-async function autoAcceptPrompt(tmuxSession, reason) {
+async function autoAcceptPrompt(tmuxSession, reason, acceptKey = '1') {
   try {
     const ptyState = terminalWatchPtys.get(tmuxSession)
     if (ptyState?.alive) {
-      ptyState.pty.write('1\r')
+      ptyState.pty.write(`${acceptKey}\r`)
     } else {
-      await tmux('send-keys', '-t', tmuxSession, '1')
+      await tmux('send-keys', '-t', tmuxSession, acceptKey)
       await new Promise(r => setTimeout(r, 100))
       await tmux('send-keys', '-t', tmuxSession, 'Enter')
     }
-    log.info(`auto-accepted prompt (${reason}) in ${tmuxSession}`)
+    log.info(`auto-accepted prompt (${reason}, key=${acceptKey}) in ${tmuxSession}`)
     return true
   } catch (e) {
     log.error(`auto-accept failed in ${tmuxSession}: ${e.message}`)
@@ -553,7 +697,7 @@ function startAutoAcceptSweep() {
           if (lastAccept && Date.now() - lastAccept < 10_000) continue
           promptCooldowns.set(agent.tmux_session, Date.now())
           surfacedPrompts.delete(agent.tmux_session)
-          await autoAcceptPrompt(agent.tmux_session, result.reason)
+          await autoAcceptPrompt(agent.tmux_session, result.reason, result.acceptKey)
           sendMsg({ type: 'prompt-auto-accepted', agent_id: agent.id, reason: result.reason, ts: new Date().toISOString() })
         } else if (result.type === 'surface') {
           if (surfacedPrompts.get(agent.tmux_session) === result.reason) continue
@@ -659,45 +803,197 @@ function scheduleCheckForPlanModePrompt(agentId) {
 
 // ---------- activity event buffer ----------
 
-// Activity event buffer — flush at bounded rate (max 1 push per 2s) to
-// avoid spamming the server during a chatty agent. Mirrors the original
-// inline server's `_activityBuffer` / `_activityFlushTimer`.
-let activityBuffer = {}          // { agentId: [{tool, arg, input, ts}, ...] }
-let activityFlushTimer = null
-
 function bufferActivity(agentId, evts) {
-  if (!activityBuffer[agentId]) activityBuffer[agentId] = []
-  activityBuffer[agentId].push(...evts)
-  if (activityFlushTimer) return
-  activityFlushTimer = setTimeout(() => {
-    const buf = activityBuffer
-    activityBuffer = {}
-    activityFlushTimer = null
-    for (const [aid, list] of Object.entries(buf)) {
-      for (const evt of list) {
-        sendMsg({
-          type: 'activity-event',
-          agent_id: aid,
-          tool: evt.tool,
-          arg: evt.arg || '',
-          input: evt.input || null,
-          ts: evt.ts,
-          ...(evt.usage ? { usage: evt.usage } : {}),
-          ...(evt.prettyResult ? { prettyResult: evt.prettyResult } : {}),
-          ...(evt.origTool ? { origTool: evt.origTool } : {}),
-        })
-      }
-    }
-  }, 2000)
+  // Liveness #B(a): a JSONL line IS a per-turn heartbeat — the agent just processed
+  // a turn, so it is alive NOW. Warm the liveness cache (keyed by tmux_session) and
+  // stamp last_seen, so rpcCheckAlive / the wake path read "alive" from activity
+  // without a tmux probe. Strictly additive: it only ever marks a live agent alive
+  // (never dead), so it can't cause respawn-churn — it just keeps the cache warm and
+  // shrinks the cold-miss window the 30s sweep used to own (the step that lets the
+  // sweep later demote to a slow drift-reconciler).
+  const agent = agents.find(a => a.id === agentId)
+  if (agent?.tmux_session) {
+    _alivenessCache.set(agent.tmux_session, true)
+    _missingSessionSince.delete(agentId)
+    agent.last_seen = new Date().toISOString()
+  }
+  // Any buffered activity (claude/codex JSONL or goose sqlite) is a reason to
+  // watch this agent's pane frequently — arm it for the status state machine.
+  armAgent(agentId)
+  return sendActivityEvents(agentId, evts, sendMsg)
 }
 
 // ---------- JSONL watching ----------
 
-function syncSessionWatchers(agentList) {
+async function findRuntimePidForAgent(agent, kind) {
+  const adapter = HARNESS_ADAPTERS[kind]
+  if (!adapter) return null
+  if (!agent?.tmux_session) return null
+  let paneOut = ''
+  try {
+    ;({ stdout: paneOut } = await execFileP('tmux',
+      [...TMUX_ARGS, 'list-panes', '-t', agent.tmux_session, '-F', '#{pane_pid}'],
+      { timeout: 3000, encoding: 'utf8' }))
+  } catch {
+    return null
+  }
+  const panePids = paneOut.trim().split('\n').filter(Boolean)
+  if (!panePids.length) return null
+
+  let psOut = ''
+  try {
+    ;({ stdout: psOut } = await execFileP('ps', ['-eo', 'pid,ppid,args'],
+      { timeout: 5000, encoding: 'utf8' }))
+  } catch {
+    return null
+  }
+
+  const childrenByPpid = new Map()
+  const runtimePids = new Set()
+  for (const line of psOut.split('\n')) {
+    const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/)
+    if (!m) continue
+    const [, pid, ppid, args] = m
+    if (!childrenByPpid.has(ppid)) childrenByPpid.set(ppid, [])
+    childrenByPpid.get(ppid).push(pid)
+    if (adapter.processRe.test(args)) runtimePids.add(pid)
+  }
+
+  const stack = [...panePids]
+  const seen = new Set()
+  while (stack.length) {
+    const pid = stack.pop()
+    if (seen.has(pid)) continue
+    seen.add(pid)
+    if (runtimePids.has(pid)) return pid
+    for (const child of (childrenByPpid.get(pid) || [])) stack.push(child)
+  }
+  return null
+}
+
+async function resolveCodexJsonl(agent) {
+  const pid = await findRuntimePidForAgent(agent, 'codex')
+  const hasKnownRollout = !!(agent?.session_id || (agent?.session_ids || []).length)
+  if (!pid && !hasKnownRollout) return null
+  const launchTs = Date.parse(agent.registered_at || agent.last_seen || '') || 0
+  return resolveTranscript({ pid, kind: 'codex', agent, launchTs })
+}
+
+const HARNESS_ADAPTERS = {
+  claude: {
+    kind: 'claude',
+    processRe: /(?:^|\s|\/)claude(?:\s|$)/,
+    activity: {
+      kind: 'claude',
+      parseLine: parseSessionLine,
+      usesClaudeSessionIds: true,
+      backfillSearch: true,
+      terminalChat: true,
+    },
+  },
+  codex: {
+    kind: 'codex',
+    processRe: /(?:^|\s|\/)codex(?:\s|$)/,
+    activity: {
+      kind: 'codex',
+      parseLine: parseCodexLine,
+      resolveJsonl: resolveCodexJsonl,
+      usesClaudeSessionIds: false,
+      backfillSearch: false,
+      terminalChat: false,
+    },
+  },
+  goose: {
+    kind: 'goose',
+    processRe: /(?:^|\s|\/)goose(?:\s|$).*?\brun\b|\bgoose run\b/,
+    activity: {
+      kind: 'goose',
+      source: 'sqlite',
+      poll(agents, deps) { gooseActivityTick(agents, deps) },
+      usesClaudeSessionIds: false,
+      backfillSearch: false,
+      terminalChat: false,
+    },
+  },
+}
+
+function harnessForAgent(agent) {
+  const kind = harnessKindForAgent(agent, log)
+  const adapter = HARNESS_ADAPTERS[kind]
+  if (!adapter) throw new Error(`unknown harness kind "${kind}" for ${agent?.friendly_name || agent?.id}`)
+  return adapter
+}
+
+function activityHarnessForAgent(agent) {
+  return harnessForAgent(agent).activity
+}
+
+// Resolve an agent's harness kind from its LIVE pane process when the stored
+// metadata.kind is absent or stale. resolve-transcript's contract is that kind
+// comes from process classification, not trusted metadata: a codex agent whose
+// metadata.kind never propagated (roster split / pre-refactor row) must NOT be
+// defaulted to claude — that points the watcher at ~/.claude/projects, finds no
+// JSONL, and the agent silently gets zero activity cards. Mirrors the pane-
+// subtree scan in findRuntimePidForAgent, but matches ALL adapters' processRe.
+async function resolveAgentKind(agent) {
+  const stored = agent?.metadata?.kind
+  if (!agent?.tmux_session) return (stored && HARNESS_ADAPTERS[stored]) ? stored : 'claude'
+  let paneOut = ''
+  try {
+    ;({ stdout: paneOut } = await execFileP('tmux',
+      [...TMUX_ARGS, 'list-panes', '-t', agent.tmux_session, '-F', '#{pane_pid}'],
+      { timeout: 3000, encoding: 'utf8' }))
+  } catch { return (stored && HARNESS_ADAPTERS[stored]) ? stored : 'claude' }
+  const panePids = paneOut.trim().split('\n').filter(Boolean)
+  if (!panePids.length) return (stored && HARNESS_ADAPTERS[stored]) ? stored : 'claude'
+  let psOut = ''
+  try {
+    ;({ stdout: psOut } = await execFileP('ps', ['-eo', 'pid,ppid,args'], { timeout: 5000, encoding: 'utf8' }))
+  } catch { return (stored && HARNESS_ADAPTERS[stored]) ? stored : 'claude' }
+  const childrenByPpid = new Map()
+  const argsByPid = new Map()
+  for (const line of psOut.split('\n')) {
+    const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/)
+    if (!m) continue
+    const [, pid, ppid, args] = m
+    if (!childrenByPpid.has(ppid)) childrenByPpid.set(ppid, [])
+    childrenByPpid.get(ppid).push(pid)
+    argsByPid.set(pid, args)
+  }
+  const stack = [...panePids], seen = new Set()
+  while (stack.length) {
+    const pid = stack.pop()
+    if (seen.has(pid)) continue
+    seen.add(pid)
+    const args = argsByPid.get(pid)
+    // Check codex/goose before claude: a codex/goose runtime is the specific
+    // signal; claude's regex is the broad default. (processRes are word-bounded
+    // so this is belt-and-suspenders, not load-bearing.)
+    if (args) {
+      if (HARNESS_ADAPTERS.codex.processRe.test(args)) return 'codex'
+      if (HARNESS_ADAPTERS.goose.processRe.test(args)) return 'goose'
+      if (HARNESS_ADAPTERS.claude.processRe.test(args)) return 'claude'
+    }
+    for (const child of (childrenByPpid.get(pid) || [])) stack.push(child)
+  }
+  return (stored && HARNESS_ADAPTERS[stored]) ? stored : 'claude'
+}
+
+async function syncSessionWatchers(agentList) {
   const activePaths = new Set()
 
   for (const agent of agentList) {
     if (agent.dead) continue
+    let harness
+    try {
+      const kind = await resolveAgentKind(agent)
+      const adapter = HARNESS_ADAPTERS[kind]
+      if (!adapter) throw new Error(`unknown harness kind "${kind}" for ${agent?.friendly_name || agent?.id}`)
+      harness = adapter.activity
+    } catch (e) {
+      log.error(`activity harness selection failed: ${e.message}`)
+      continue
+    }
     const cwd = agent.cwd ?? ''
     // Strip worktree suffixes so the project hash matches where Claude Code
     // stores the JSONL (at the original project root, not the worktree).
@@ -713,7 +1009,6 @@ function syncSessionWatchers(agentList) {
     for (const sid of (agent.session_ids || [])) {
       if (!candidateIds.includes(sid)) candidateIds.push(sid)
     }
-    if (candidateIds.length === 0) continue
 
     const otherAgentSessions = new Set(
       agentList.filter(a => a.id !== agent.id && a.session_id).map(a => a.session_id)
@@ -721,26 +1016,32 @@ function syncSessionWatchers(agentList) {
 
     let jsonlPath = null
     let bestMtime = 0
-    for (const sid of candidateIds) {
-      if (otherAgentSessions.has(sid)) continue
-      let p = path.join(PROJECTS_DIR, projectHash, sid + '.jsonl')
-      let foundStat = null
-      try {
-        foundStat = fs.statSync(p)
-      } catch {
-        // Not in cwd-derived dir — global search across all project dirs.
-        // Needed when agent's JSONL is in a worktree-specific project dir
-        // that doesn't match the stripped canonical cwd.
+    if (harness.resolveJsonl) {
+      jsonlPath = await harness.resolveJsonl(agent)
+      if (!jsonlPath) continue
+    } else {
+      if (!harness.usesClaudeSessionIds || candidateIds.length === 0) continue
+      for (const sid of candidateIds) {
+        if (otherAgentSessions.has(sid)) continue
+        let p = path.join(PROJECTS_DIR, projectHash, sid + '.jsonl')
+        let foundStat = null
         try {
-          for (const dir of fs.readdirSync(PROJECTS_DIR)) {
-            const candidate = path.join(PROJECTS_DIR, dir, sid + '.jsonl')
-            try { foundStat = fs.statSync(candidate); p = candidate; break } catch {}
-          }
-        } catch {}
-      }
-      if (foundStat && foundStat.mtimeMs > bestMtime) {
-        bestMtime = foundStat.mtimeMs
-        jsonlPath = p
+          foundStat = fs.statSync(p)
+        } catch {
+          // Not in cwd-derived dir — global search across all project dirs.
+          // Needed when agent's JSONL is in a worktree-specific project dir
+          // that doesn't match the stripped canonical cwd.
+          try {
+            for (const dir of fs.readdirSync(PROJECTS_DIR)) {
+              const candidate = path.join(PROJECTS_DIR, dir, sid + '.jsonl')
+              try { foundStat = fs.statSync(candidate); p = candidate; break } catch {}
+            }
+          } catch {}
+        }
+        if (foundStat && foundStat.mtimeMs > bestMtime) {
+          bestMtime = foundStat.mtimeMs
+          jsonlPath = p
+        }
       }
     }
     if (!jsonlPath) continue
@@ -753,7 +1054,20 @@ function syncSessionWatchers(agentList) {
       const fileSessionId = path.basename(jsonlPath, '.jsonl')
       // Whichever agent's session_id matches the JSONL filename is the
       // active session — others are historical sharers (post-inhabit).
-      if (agent.session_id === fileSessionId) pw.primaryAgentId = agent.id
+      if (harness.kind === 'codex') {
+        if (shouldClaimCodexWatcher({
+          currentPrimaryId: pw.primaryAgentId,
+          agent,
+          jsonlPath,
+          rolloutHasOwnerEvidence: codexRolloutHasOwnerEvidence,
+          rolloutBelongsToAgent: codexRolloutBelongsToAgent,
+        })) {
+          pw.primaryAgentId = agent.id
+        }
+      } else if (!harness.usesClaudeSessionIds || agent.session_id === fileSessionId) {
+        pw.primaryAgentId = agent.id
+      }
+      pw.harnessKind = harness.kind
       continue
     }
 
@@ -770,7 +1084,7 @@ function syncSessionWatchers(agentList) {
       if (!stored.searchBackfilled) {
         stored.searchBackfilled = true
         scheduleCursorSave()
-        backfillSearchEntries(agent.id, jsonlPath, sessionId)
+        if (harness.backfillSearch) backfillSearchEntries(agent.id, jsonlPath, sessionId)
       }
     } else {
       // New file (or rotated): start at EOF for activity cards, but backfill
@@ -778,10 +1092,10 @@ function syncSessionWatchers(agentList) {
       offset = stat.size
       cursors[sessionId] = { inode, offset, searchBackfilled: true }
       scheduleCursorSave()
-      backfillSearchEntries(agent.id, jsonlPath, sessionId)
+      if (harness.backfillSearch) backfillSearchEntries(agent.id, jsonlPath, sessionId)
       // Also backfill all prior sessions for this agent (other JSONLs that
       // contain a registration line for this fleet ID).
-      backfillAllPriorSessions(agent.id, agent.id)
+      if (harness.backfillSearch) backfillAllPriorSessions(agent.id, agent.id)
     }
 
     try {
@@ -791,7 +1105,7 @@ function syncSessionWatchers(agentList) {
         const pw = pathWatchers.get(jsonlPath)
         if (!pw) return
         pw.watchSeenAt = Date.now()
-        debounce = setTimeout(() => readNewSessionLines(pw.primaryAgentId, jsonlPath, pw.sessionId), 150)
+        debounce = setTimeout(() => readNewSessionLines(pw.primaryAgentId, jsonlPath, pw.sessionId, pw.harnessKind), 150)
       }
       const createWatcher = () => fs.watch(jsonlPath, onWatchFired)
       const watcher = createWatcher()
@@ -805,18 +1119,18 @@ function syncSessionWatchers(agentList) {
         log.warn(`fs.watch missed ${path.basename(jsonlPath)} — recreating`)
         try { pw.watcher.close() } catch {}
         pw.watcher = createWatcher()
-        readNewSessionLines(pw.primaryAgentId, jsonlPath, pw.sessionId)
+        readNewSessionLines(pw.primaryAgentId, jsonlPath, pw.sessionId, pw.harnessKind)
       })
 
-      pathWatchers.set(jsonlPath, { watcher, primaryAgentId: agent.id, sessionId, watchSeenAt: 0 })
-      log.info(`watching JSONL for ${agent.friendly_name || agent.id}: ${path.basename(jsonlPath)} @ offset=${offset}`)
+      pathWatchers.set(jsonlPath, { watcher, primaryAgentId: agent.id, sessionId, harnessKind: harness.kind, watchSeenAt: 0 })
+      log.info(`watching ${harness.kind} JSONL for ${agent.friendly_name || agent.id}: ${path.basename(jsonlPath)} @ offset=${offset}`)
 
       // Drain any backlog immediately rather than waiting for the next write to
       // fire the watcher. This is what makes reconnect lossless: on a resumed
       // cursor (daemon was disconnected while the agent kept working), the bytes
       // written during the gap stream in now. Self-guards — for a fresh session
       // the cursor is at EOF, so this returns without replaying history.
-      readNewSessionLines(agent.id, jsonlPath, sessionId)
+      readNewSessionLines(agent.id, jsonlPath, sessionId, harness.kind)
     } catch (e) {
       log.error(`watcher creation failed for ${jsonlPath}: ${e.message}`)
     }
@@ -828,6 +1142,9 @@ function syncSessionWatchers(agentList) {
       try { pw.watcher.close() } catch {}
       fs.unwatchFile(p)
       pathWatchers.delete(p)
+      for (const [aid, watchedPath] of agentPaths) {
+        if (watchedPath === p) agentPaths.delete(aid)
+      }
     }
   }
   for (const aid of [...agentPaths.keys()]) {
@@ -835,7 +1152,7 @@ function syncSessionWatchers(agentList) {
   }
 }
 
-function readNewSessionLines(agentId, jsonlPath, sessionId) {
+function readNewSessionLines(agentId, jsonlPath, sessionId, harnessKind = 'claude') {
   // The cursor is a high-water mark of *delivered* bytes. If the WS is down we
   // can't push, so don't read+advance past it — leave the bytes for the next
   // read. Otherwise the cursor would skip over activity cards whose send was
@@ -856,6 +1173,10 @@ function readNewSessionLines(agentId, jsonlPath, sessionId) {
     cursors[sessionId] = { inode: stat.ino, offset: 0 }
   }
   if (stat.size <= cursors[sessionId].offset) return
+  // New JSONL bytes = the agent just did something (text OR tool — not only tool
+  // calls). Arm it for the status state machine; the pane scan derives the actual
+  // thinking state. JSONL only ever says "active", never "thinking".
+  armAgent(agentId)
 
   let buf
   try {
@@ -868,15 +1189,20 @@ function readNewSessionLines(agentId, jsonlPath, sessionId) {
     log.error(`read ${jsonlPath}: ${e.message}`)
     return
   }
-  cursors[sessionId].offset = stat.size
-  scheduleCursorSave()
-
   const lines = buf.toString('utf8').split('\n').filter(l => l.trim())
   const parsedEvents = []
+  let delivered = true
+  const harness = HARNESS_ADAPTERS[harnessKind]?.activity
+  if (!harness) {
+    log.error(`readNewSessionLines: unknown harness kind ${harnessKind}`)
+    return
+  }
 
   for (const line of lines) {
-    const ev = parseSessionLine(line)
+    const ev = harness.parseLine(line)
     if (ev) parsedEvents.push(ev)
+
+    if (!harness.terminalChat) continue
 
     // Terminal-chat extraction: user-typed text in the terminal. Same
     // shape the inline server used: from='fleet:<user>', to=agentId,
@@ -899,19 +1225,22 @@ function readNewSessionLines(agentId, jsonlPath, sessionId) {
         /^Call register\([^)]*\) with the fleet MCP server\b/.test(text)) continue
     const ts = parsed.timestamp || null
     if (!ts) continue
-    sendMsg({
+    if (!sendMsg({
       type: 'terminal-chat',
       agent_id: agentId,
       from: `fleet:${os.userInfo?.()?.username || 'user'}`,
       text,
       ts,
       session_id: sessionId,
-    })
+    })) delivered = false
   }
 
   if (parsedEvents.length > 0) {
     const activity = extractActivityEvents(parsedEvents)
-    if (activity.length > 0) bufferActivity(agentId, activity)
+    if (activity.length > 0) {
+      log.info(`activity extracted for ${agentId}: ${activity.length} event(s) from ${path.basename(jsonlPath)}`)
+      if (bufferActivity(agentId, activity) === false) delivered = false
+    }
 
     // Context-percent: find the latest usage data and compute remaining %
     const lastUsage = [...parsedEvents].reverse().find(ev => ev.usage)
@@ -919,7 +1248,7 @@ function readNewSessionLines(agentId, jsonlPath, sessionId) {
       const MAX_CONTEXT = 200_000
       const used = lastUsage.usage.input
       const pct = Math.max(0, Math.round((1 - used / MAX_CONTEXT) * 100))
-      sendMsg({ type: 'agent-context', agentId, contextPercent: pct, inputTokens: used })
+      if (!sendMsg({ type: 'agent-context', agentId, contextPercent: pct, inputTokens: used })) delivered = false
     }
 
     // Qualification checking: track reads, check edits/writes
@@ -931,8 +1260,9 @@ function readNewSessionLines(agentId, jsonlPath, sessionId) {
         const filePath = input.file_path || input.path || ''
         if (block.name === 'Read' && filePath) trackRead(agentId, filePath)
         if (block.name === 'Skill' && input.skill) trackRead(agentId, 'skill:' + input.skill)
-        if ((block.name === 'Edit' || block.name === 'Write') && filePath) {
+        if ((block.name === 'Edit' || block.name === 'Write' || block.name === 'MultiEdit') && filePath) {
           checkQualification(agentId, block.name, filePath)
+          recordEdit(agentId, filePath)
         }
       }
     }
@@ -946,7 +1276,16 @@ function readNewSessionLines(agentId, jsonlPath, sessionId) {
     // use a tool that requires permission.
   }
 
+  if (delivered) {
+    cursors[sessionId].offset = stat.size
+    scheduleCursorSave()
+  } else {
+    log.warn(`not advancing cursor for ${path.basename(jsonlPath)}; activity delivery failed`)
+  }
+
   // Extract text content for unified search and send to server.
+  if (!harness.backfillSearch) return
+
   const searchEntries = []
   for (const line of lines) {
     if (!line.trim()) continue
@@ -1097,6 +1436,33 @@ function scanTexInputs(sourceDir, mainFile, extraCommands = []) {
   scan(mainFile)
   return result
 }
+
+// A markdown doc is NOT a single file — it's the main .md PLUS the images it
+// references. This is the markdown analog of scanTexInputs: returns a Set of
+// sourceDir-relative paths (main + referenced images that live under sourceDir),
+// computed locally on the agent's machine via the shared scanner. Mirrors the
+// server's ref-scan in build-markdown.mjs.
+function scanMarkdownInputs(sourceDir, mainFile) {
+  const result = new Set([mainFile])
+  const full = path.join(sourceDir, mainFile)
+  let content
+  try { content = fs.readFileSync(full, 'utf8') } catch { return result }
+  for (const { abs } of scanMarkdownDeps(content, path.dirname(full))) {
+    if (!abs) continue
+    const rel = path.relative(sourceDir, abs)
+    if (rel.startsWith('..') || path.isAbsolute(rel)) continue
+    result.add(rel)
+  }
+  return result
+}
+
+// A markdown doc bundles only its dependency graph (main + images), never the
+// rest of sourceDir — so the "any source file always passes" escape hatch must
+// not apply to it.
+function isMarkdownDoc(format, mainFile) {
+  return format === 'markdown' || (mainFile?.toLowerCase().endsWith('.md') ?? false)
+}
+
 function isSourceFile(name) {
   if (JUNK_PATTERNS.some(r => r.test(name))) return false
   if (name.includes('node_modules') || name.includes('.git/')) return false
@@ -1131,14 +1497,26 @@ let _activeViewerSet = new Set()
 function syncSourceWatchers(projectList, activeViewers) {
   if (activeViewers) _activeViewerSet = new Set(activeViewers)
   const activeNames = new Set()
+  const bindings = loadSourceBindings()
   for (const p of projectList) {
-    if (!p.sourceDir) continue
-    if (!fs.existsSync(p.sourceDir)) continue
+    // Per-machine binding wins over the server-provided sourceDir (the host's
+    // path). No binding → fall back to the server's sourceDir (single-host case).
+    const sourceDir = bindings[p.name] || p.sourceDir
+    if (!sourceDir) continue
+    if (!fs.existsSync(sourceDir)) continue
     activeNames.add(p.name)
 
+    const isMarkdown = isMarkdownDoc(p.format, p.mainFile)
     const hasFlsWatchList = p.watchFiles?.length > 0
+    // Bootstrap watchSet (no .fls yet) must include the main's \input deps, not
+    // just the main — else the per-file poller (the backup for when fs.watch
+    // goes stale) only covers the main, and an edit to an \input file (e.g.
+    // appendix_b.tex) is silently dropped when fs.watch misses it → stale doc.
+    // Scan the deps with the same scanner pushWatchedFiles uses.
     const watchSet = new Set(
-      hasFlsWatchList ? p.watchFiles : p.mainFile ? [p.mainFile] : []
+      hasFlsWatchList ? p.watchFiles
+        : isMarkdown && p.mainFile ? scanMarkdownInputs(sourceDir, p.mainFile)
+        : p.mainFile ? scanTexInputs(sourceDir, p.mainFile, p.extraInputCommands || []) : []
     )
 
     if (sourceWatchers.has(p.name)) {
@@ -1149,10 +1527,18 @@ function syncSourceWatchers(projectList, activeViewers) {
       continue
     }
 
-    const state = { sourceDir: p.sourceDir, debounce: null, pending: new Set(), watchSet, onFileChange: null, projectName: p.name, mainFile: p.mainFile, extraInputCommands: p.extraInputCommands || [], watchSeen: new Map() }
+    const state = { sourceDir, debounce: null, pending: new Set(), watchSet, onFileChange: null, projectName: p.name, mainFile: p.mainFile, extraInputCommands: p.extraInputCommands || [], watchSeen: new Map(), isMarkdown }
 
     const onFileChange = (filename, fromPoll) => {
       if (!filename) return
+      if (state.isMarkdown) {
+        // A markdown doc bundles exactly its dependency graph (main + referenced
+        // images). Enforce the watchSet strictly — do NOT let arbitrary source
+        // files in sourceDir through, or the doc eats the whole dir's churn.
+        // Newly-referenced images are discovered by rescanning when the main .md
+        // changes (see flushSourceChanges), not via the escape hatch below.
+        if (!state.watchSet.has(filename)) return
+      } else {
       const isScratch = filename.includes('.tlda/scratch/')
       if (!isScratch) {
         // Source files (.tex, .bib, .sty, etc.) always pass — even if not in the watchSet.
@@ -1167,6 +1553,7 @@ function syncSourceWatchers(projectList, activeViewers) {
             return
           }
         }
+      }
       }
       if (!fromPoll) {
         state.watchSeen.set(filename, Date.now())
@@ -1187,8 +1574,8 @@ function syncSourceWatchers(projectList, activeViewers) {
     try {
       for (const rel of watchSet) startPolling(state, rel)
       sourceWatchers.set(p.name, state)
-      log.info(`watching source ${p.name}: ${p.sourceDir} (${watchSet.size} files${hasFlsWatchList ? '' : ', bootstrap'})`)
-      pushWatchedFiles(p.name, p.sourceDir, watchSet, hasFlsWatchList ? null : p.mainFile, p.extraInputCommands)
+      log.info(`watching source ${p.name}: ${sourceDir}${bindings[p.name] ? ' (local binding)' : ''} (${watchSet.size} files${hasFlsWatchList ? '' : ', bootstrap'})`)
+      pushWatchedFiles(p.name, sourceDir, watchSet, hasFlsWatchList ? null : p.mainFile, p.extraInputCommands, isMarkdown)
     } catch (e) {
       log.error(`source watcher failed for ${p.name}: ${e.message}`)
     }
@@ -1229,11 +1616,14 @@ function syncFsWatchers() {
  * commands and push all discovered dependencies — the bootstrap path.
  * Otherwise push the .fls-derived watchSet.
  */
-function pushWatchedFiles(projectName, sourceDir, watchSet, mainFile, extraInputCommands) {
+function pushWatchedFiles(projectName, sourceDir, watchSet, mainFile, extraInputCommands, isMarkdown) {
   const files = []
   if (mainFile) {
-    // Bootstrap mode: no .fls yet, scan main .tex for \input-like commands
-    const deps = scanTexInputs(sourceDir, mainFile, extraInputCommands || [])
+    // Bootstrap mode: no .fls yet. Scan the main file for its deps — \input-like
+    // commands for tex, referenced images for markdown — and push main + deps.
+    const deps = isMarkdown
+      ? scanMarkdownInputs(sourceDir, mainFile)
+      : scanTexInputs(sourceDir, mainFile, extraInputCommands || [])
     log.info(`bootstrap scan for ${projectName}: ${deps.size} files from ${mainFile}`)
     for (const rel of deps) {
       const full = path.join(sourceDir, rel)
@@ -1311,6 +1701,27 @@ function flushSourceChanges(projectName) {
     }
   }
 
+  // When the main .md of a markdown doc changes, rescan its image refs. A newly-
+  // referenced image must be pushed now (the build will otherwise 404 it) and
+  // added to the watchSet + poller so later edits to it pass the strict filter.
+  if (state.isMarkdown && state.mainFile && filePaths.includes(state.mainFile)) {
+    const alreadyPushed = new Set(filePaths)
+    const deps = scanMarkdownInputs(state.sourceDir, state.mainFile)
+    for (const rel of deps) {
+      if (!state.watchSet.has(rel)) {
+        state.watchSet.add(rel)
+        startPolling(state, rel)
+      }
+      if (alreadyPushed.has(rel)) continue
+      const full = path.join(state.sourceDir, rel)
+      if (!fs.existsSync(full)) continue
+      try {
+        files.push({ path: rel, ...readFileForUpload(full) })
+        log.info(`md rescan discovered dep: ${rel}`)
+      } catch (e) { log.error(`read ${full}: ${e.message}`) }
+    }
+  }
+
   // Watch symlink targets in .tlda/scratch/ — changes to the linked file
   // should trigger a rebuild. Poll the targets since they're outside the source dir.
   for (const rel of filePaths) {
@@ -1332,11 +1743,15 @@ function flushSourceChanges(projectName) {
 
   if (files.length === 0 && deleted.length === 0) return
 
+  // Edit attribution: which agent's recent Edit/Write touched a changed file.
+  const editedBy = resolveEditor(filePaths.map(rel => path.join(state.sourceDir, rel)))
+
   sendMsg({
     type: 'source-change',
     project: projectName,
     files,
     ...(deleted.length > 0 && { deletedFiles: deleted }),
+    ...(editedBy && { editedBy }),
   })
 }
 
@@ -1406,6 +1821,49 @@ async function rpcWriteBackingFile({ filePath, content }) {
   return { ok: true }
 }
 
+async function gitRetryOnLock(fn, retries = 3, delayMs = 500) {
+  for (let i = 0; i < retries; i++) {
+    try { return await fn() } catch (e) {
+      if (i < retries - 1 && /index\.lock|Unable to create.*lock|cannot lock ref|unable to update local ref/i.test(e.message || '')) {
+        await new Promise(resolve => setTimeout(resolve, delayMs))
+        continue
+      }
+      throw e
+    }
+  }
+}
+
+async function rpcMirrorShadowRef({ project, hash, bundleBase64 }) {
+  if (!project) throw new Error('missing project')
+  if (!/^[0-9a-f]{40}$/i.test(String(hash || ''))) throw new Error(`invalid shadow hash: ${hash}`)
+  if (!bundleBase64) throw new Error('missing shadow bundle')
+
+  const state = sourceWatchers.get(project)
+  const sourceDir = state?.sourceDir
+  if (!sourceDir) throw new Error(`project ${project} is not watched on this daemon`)
+
+  try {
+    await execFileP('git', ['rev-parse', '--git-dir'], { cwd: sourceDir, timeout: 5000 })
+  } catch {
+    throw new Error(`sourceDir is not a git repo: ${sourceDir}`)
+  }
+
+  const hash7 = hash.slice(0, 7)
+  const bundlePath = path.join(os.tmpdir(), `tlda-shadow-${project}-${hash7}-${Date.now()}.bundle`)
+  try {
+    fs.writeFileSync(bundlePath, Buffer.from(bundleBase64, 'base64'))
+    await execFileP('git', ['bundle', 'verify', bundlePath], { cwd: sourceDir, timeout: 10000 })
+    await gitRetryOnLock(() => execFileP('git', ['fetch', bundlePath, `+${hash}:refs/tags/shadow/${hash7}`], { cwd: sourceDir, timeout: 30000 }))
+    await execFileP('git', ['cat-file', '-e', `${hash}^{commit}`], { cwd: sourceDir, timeout: 5000 })
+    await gitRetryOnLock(() => execFileP('git', ['update-ref', 'refs/tlda/shadow/HEAD', hash], { cwd: sourceDir, timeout: 5000 }))
+    log.info(`mirrored ${project}@${hash7} into ${sourceDir}`)
+    return { ok: true, project, hash, sourceDir, tag: `shadow/${hash7}` }
+  } finally {
+    try { fs.rmSync(bundlePath, { force: true }) }
+    catch (e) { log.warn(`failed to remove temporary shadow bundle ${bundlePath}: ${e.message}`) }
+  }
+}
+
 // ---------- RPC handlers (server → daemon) ----------
 //
 // Each handler receives the params object from the inbound `rpc`
@@ -1430,12 +1888,17 @@ function checkSession(session) {
 }
 
 async function tmux(...args) {
-  return execFileP('tmux', [...TMUX_ARGS, ...args], { timeout: 5000, encoding: 'utf8' })
+  return execFileP('tmux', [...TMUX_ARGS, ...args], {
+    timeout: 5000,
+    encoding: 'utf8',
+    env: { ...process.env, TMUX: '', TMUX_PANE: '' },
+  })
 }
 
 async function rpcSendKey({ tmux_session, key }) {
   checkSession(tmux_session)
   if (!key) throw new Error('missing key')
+  armBySession(tmux_session)   // delivering a keystroke (e.g. submit) → arm
   // Translate `ctrl+x` → `C-x` for tmux's send-keys grammar; everything
   // else passes through as-is (Enter, Escape, etc.).
   const tmuxKey = key.replace(/^ctrl\+(.)/i, (_, c) => `C-${c}`)
@@ -1460,7 +1923,7 @@ async function getOrSpawnEphemeralPty(tmuxSession) {
     name: 'xterm-256color',
     cols: 120,
     rows: 40,
-    env: { ...process.env, TERM: 'xterm-256color' },
+    env: { ...process.env, TERM: 'xterm-256color', TMUX: '', TMUX_PANE: '' },
   })
   const state = { pty, alive: true, teardownTimer: null }
   state.teardownTimer = setTimeout(() => teardownEphemeral(tmuxSession), EPHEMERAL_TTL_MS)
@@ -1483,8 +1946,9 @@ function teardownEphemeral(tmuxSession) {
   try { state.pty.kill() } catch {}
 }
 
-async function rpcSendText({ tmux_session, text, enter }) {
+async function rpcSendText({ tmux_session, text, enter, enter_delay_ms }) {
   checkSession(tmux_session)
+  armBySession(tmux_session)   // delivering input/wake-bootstrap → arm the status machine
   // Prefer long-lived PTY watcher, then ephemeral PTY, never tmux send-keys
   let pty = terminalWatchPtys.get(tmux_session)?.alive
     ? terminalWatchPtys.get(tmux_session).pty
@@ -1498,12 +1962,35 @@ async function rpcSendText({ tmux_session, text, enter }) {
   }
   if (pty) {
     if (text) pty.write(text)
-    if (enter !== false) pty.write('\r')
+    if (enter !== false) {
+      const delay = Number(enter_delay_ms ?? 120)
+      if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay))
+      await tmux('send-keys', '-t', tmux_session, 'Enter')
+    }
     return { ok: true, via: 'pty' }
   }
   if (text) await tmux('send-keys', '-t', tmux_session, '--', text)
-  if (enter !== false) await tmux('send-keys', '-t', tmux_session, 'Enter')
+  if (enter !== false) {
+    const delay = Number(enter_delay_ms ?? 120)
+    if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay))
+    await tmux('send-keys', '-t', tmux_session, 'Enter')
+  }
   return { ok: true, via: 'tmux' }
+}
+
+// Deliver a turn-end kick to a goose agent's TUI. rpcSendText prefers the PTY,
+// but goose reads a bare PTY `\r` as a literal newline-in-field ("Ctrl+J
+// newline"), NOT submit ("Enter to send") — so a kick written that way lands in
+// the input un-submitted and the agent just sits there (observed on ds-v4b
+// 2026-06-13). tmux's discrete `Enter` key IS submitted (it's how the MCP chat
+// delivery reaches goose), so the kick uses send-keys text + a short gap +
+// Enter. Same reliable path, no PTY.
+async function gooseKickSend({ tmux_session, text }) {
+  checkSession(tmux_session)
+  if (text) await tmux('send-keys', '-t', tmux_session, '--', text)
+  await new Promise(r => setTimeout(r, 300))
+  await tmux('send-keys', '-t', tmux_session, 'Enter')
+  return { ok: true, via: 'tmux-sendkeys' }
 }
 
 async function rpcCapturePane({ tmux_session, lines, agent_id }) {
@@ -1517,7 +2004,7 @@ async function rpcCapturePane({ tmux_session, lines, agent_id }) {
     const lastAction = promptCooldowns.get(tmux_session)
     if (!lastAction || Date.now() - lastAction >= 10_000) {
       promptCooldowns.set(tmux_session, Date.now())
-      autoAcceptPrompt(tmux_session, prompt.reason)
+      autoAcceptPrompt(tmux_session, prompt.reason, prompt.acceptKey)
       if (agent_id) sendMsg({ type: 'prompt-auto-accepted', agent_id, reason: prompt.reason, ts: new Date().toISOString() })
     }
   } else if (prompt.type === 'surface' && agent_id) {
@@ -1531,28 +2018,99 @@ async function rpcCapturePane({ tmux_session, lines, agent_id }) {
   return { ok: true, pane: stdout }
 }
 
+async function capturePaneTail(tmux_session, lines = 50) {
+  const cap = await execFileP('tmux',
+    [...TMUX_ARGS, 'capture-pane', '-t', tmux_session, '-p', '-S', `-${lines}`],
+    { timeout: 3000, encoding: 'utf8' })
+  return cap.stdout
+}
+
+// True while Claude Code is mid-turn: it shows a "…ing" spinner and/or the
+// "esc to interrupt" hint. Both vanish the moment the agent goes idle. Same
+// signal the liveness sweep trusts (THINKING_SPINNER_RE / INTERRUPT_HINT_RE).
+function paneIsWorking(pane) {
+  const tail = pane.split('\n').slice(-THINKING_SCAN_LINES).join('\n')
+  return THINKING_SPINNER_RE.test(tail) || INTERRUPT_HINT_RE.test(tail)
+}
+
 async function rpcInterrupt({ tmux_session, agent_id }) {
   checkSession(tmux_session)
-  // Synchronous first-shot Escape Escape so the caller can return fast.
-  try { await tmux('send-keys', '-t', tmux_session, 'Escape', 'Escape') } catch {}
-  // Background poll loop — the daemon owns this so the server can move on.
-  ;(async () => {
-    for (let i = 0; i < 5; i++) {
-      await new Promise(r => setTimeout(r, 2500))
-      try {
-        const cap = await execFileP('tmux',
-          [...TMUX_ARGS, 'capture-pane', '-t', tmux_session, '-p', '-S', '-50'],
-          { timeout: 3000, encoding: 'utf8' })
-        const pane = cap.stdout
-        const linesArr = pane.split('\n').filter(l => l.trim())
-        const last = linesArr.length ? linesArr[linesArr.length - 1] : ''
-        if (!pane.includes('esc to interrupt') &&
-            (/^[\s]*[❯>][\s📬]*$/.test(last) || pane.includes('Enter to continue'))) break
-      } catch {}
-      try { await tmux('send-keys', '-t', tmux_session, 'Escape', 'Escape') } catch {}
-    }
-  })()
-  return { ok: true }
+  // Hard interrupt. A SINGLE Escape stops a working agent (verified directly).
+  // The critical invariant: never send a second Escape once the agent is idle —
+  // two gapped escapes on an idle Claude Code open the Rewind menu. So send one
+  // Escape, then poll; the instant the working indicators are gone, STOP. Only
+  // re-send a single Escape while the agent is still visibly working.
+  //
+  // (The old code sent `Escape Escape` and retried that pair every 2.5s × 5.
+  // The first pair stopped the agent; every later pair landed on an idle agent
+  // with a gap → Rewind menu + a pile of spurious interrupt cards.)
+  //
+  // We AWAIT confirmation and return `stopped` so the server can render the
+  // interrupt card only when the agent actually halted. A soft-promote also
+  // writes "[Request interrupted by user]" to the pane but the agent resumes —
+  // so "did it stop?" is the only signal that distinguishes a real hard
+  // interrupt (card) from a soft promote (no card).
+  try { await tmux('send-keys', '-t', tmux_session, 'Escape') } catch {}
+  let stopped = false
+  for (let i = 0; i < 3; i++) {
+    await new Promise(r => setTimeout(r, 1200))
+    let pane = ''
+    try { pane = await capturePaneTail(tmux_session) } catch {}
+    if (!paneIsWorking(pane)) { stopped = true; break }  // idle — do NOT send another escape
+    try { await tmux('send-keys', '-t', tmux_session, 'Escape') } catch {}
+  }
+  return { ok: true, stopped }
+}
+
+// Soft interrupt: promote a QUEUED channel message without stopping the agent's
+// work. A single Escape does this — but ONLY when there's something queued. With
+// nothing queued, that same Escape hard-interrupts, which is exactly what soft
+// must never do.
+//
+// Anchor on the INPUT BOX (`❯`), not the spinner: the spinner word (`…ing`) only
+// shows during the *thinking* phase — while the agent is streaming output there
+// is no spinner line, just the "esc to interrupt" hint. The input prompt is the
+// one landmark present in every phase. A pending queued message renders as a
+// `← …` line sitting a couple of lines above the input box. Once promoted, the
+// agent picks it up and new content appears below it, so it's no longer adjacent
+// to the box — that's how we confirm.
+const QUEUED_LINE_RE = /^\s*←\s/
+// Index of a PENDING `← …` queued marker, or -1. The rule (Skip's): a queued
+// marker is one that sits ANYWHERE BELOW the spinner. The message the agent is
+// already answering has its `←` marker ABOVE the spinner (its output/spinner
+// renders below it), so it's excluded automatically — only genuinely-queued
+// messages, which land below the current activity line, count. Robust to todo
+// lists / status panels, since we only ever match `←` markers. No spinner line
+// (idle, or pure text streaming) → nothing to be "below" → no pending queue,
+// which fails safe: soft never fires an escape it can't justify.
+function pendingQueuedIdx(lines) {
+  let s = -1
+  for (let i = lines.length - 1; i >= 0; i--) { if (THINKING_SPINNER_RE.test(lines[i])) { s = i; break } }
+  if (s < 0) return -1
+  for (let i = s + 1; i < lines.length; i++) if (QUEUED_LINE_RE.test(lines[i])) return i
+  return -1
+}
+async function rpcSoftInterrupt({ tmux_session, agent_id }) {
+  checkSession(tmux_session)
+  if (agent_id) armAgent(agent_id); else armBySession(tmux_session)   // promoting a queued message → arm
+  let pane = ''
+  try { pane = await capturePaneTail(tmux_session) } catch {}
+  let lines = pane.split('\n').slice(-THINKING_SCAN_LINES)
+  // Only fire when the agent is working AND a queued message is pending just
+  // above the input box. Otherwise the escape would hard-interrupt — no-op.
+  if (!paneIsWorking(pane) || pendingQueuedIdx(lines) < 0) {
+    return { ok: true, promoted: false, reason: 'nothing-queued' }
+  }
+  try { await tmux('send-keys', '-t', tmux_session, 'Escape') } catch {}
+  for (let i = 0; i < 5; i++) {
+    await new Promise(r => setTimeout(r, 700))
+    try { pane = await capturePaneTail(tmux_session) } catch {}
+    lines = pane.split('\n').slice(-THINKING_SCAN_LINES)
+    // Promoted = the queued line is no longer pending just above the input box
+    // (the agent consumed it; new content/turn now sits below it).
+    if (pendingQueuedIdx(lines) < 0) return { ok: true, promoted: true }
+  }
+  return { ok: true, promoted: false, reason: 'timeout' }
 }
 
 async function rpcListSessions() {
@@ -1569,14 +2127,32 @@ async function rpcListSessions() {
 }
 
 async function rpcCheckAlive({ tmux_session }) {
-  // Read from the cache populated by checkAgentLiveness every 30s.
-  // Zero spawns per call — the periodic poll handles the expensive pgrep work.
+  // Liveness for the WAKE path. A cache miss must NOT default to "dead": the
+  // server respawns on dead, and respawning a LIVE agent injects register +
+  // "continue from where you left off" — the costly, user-visible error. Cache
+  // misses are routine (cold cache for ~30s after any daemon bounce; a session
+  // the sweep hasn't reached yet), so defaulting them to dead made every
+  // interaction in that window respawn its (live) target. Instead, on a miss do
+  // one cheap on-demand existence check and only report dead when we actually
+  // confirm the session is gone. Uncertain ≠ dead.
   if (!tmux_session) return { alive: false }
-  return { alive: _alivenessCache.get(tmux_session) ?? false }
+  const cached = _alivenessCache.get(tmux_session)
+  if (cached !== undefined) return { alive: cached }
+  try {
+    const r = await rpcListSessions()
+    const alive = (r.sessions || []).includes(tmux_session)
+    _alivenessCache.set(tmux_session, alive)
+    return { alive }
+  } catch {
+    // Couldn't probe tmux — can't confirm death. Don't trigger a respawn on a
+    // guess; a missed wake self-corrects on the next message.
+    return { alive: true }
+  }
 }
 
 async function rpcKick({ agent_id }) {
   if (!agent_id) throw new Error('missing agent_id')
+  armAgent(agent_id)   // kicking/waking → arm the status machine
   const dir = path.join(os.homedir(), '.fleet', 'signals')
   fs.mkdirSync(dir, { recursive: true })
   const file = path.join(dir, agent_id.replace(/[^a-zA-Z0-9_-]/g, '_'))
@@ -1593,11 +2169,6 @@ async function rpcKillSession({ tmux_session, agent_id: _agent_id }) {
   return { ok: true, tmux_session }
 }
 
-async function rpcRestartMcp({ tmux_session, skipPreflight }) {
-  // No-op: the fleet MCP reconnects automatically via WS retry logic.
-  // Triggering a hard restart via /mcp causes unnecessary SIGTERM churn.
-  return { ok: true, tmux_session, noop: true }
-}
 
 // Live terminal-card watching via PTY streaming.
 // Instead of polling `tmux capture-pane`, we spawn a PTY running
@@ -1644,23 +2215,105 @@ function detectPromptFromPty(agentId, tmuxSession, state) {
   }
 }
 
+// Query a tmux session's current window size. The agent's TUI repaints at this
+// width using absolute cursor moves, so the viewer's xterm grid MUST match it or
+// every frame garbles — see the peek's grid sizing in FleetChatShape.tsx.
+async function queryWindowSize(tmux_session) {
+  try {
+    const { stdout } = await tmux('display-message', '-p', '-t', tmux_session, '#{window_width} #{window_height}')
+    const [w, h] = stdout.trim().split(/\s+/).map(n => parseInt(n, 10))
+    if (Number.isFinite(w) && w > 0 && Number.isFinite(h) && h > 0) return { cols: w, rows: h }
+  } catch {}
+  return null
+}
+
 async function rpcStartTerminalWatch({ tmux_session, agent_id, poll_ms }) {
   checkSession(tmux_session)
-  if (terminalWatchPtys.has(tmux_session)) return { ok: true, already: true }
+  {
+    const existing = terminalWatchPtys.get(tmux_session)
+    if (existing) return { ok: true, already: true, cols: existing.cols, rows: existing.rows }
+  }
 
   // Disable tmux status bar — it generates escape code noise in the PTY stream
   try { await execFileP('tmux', [...TMUX_ARGS, 'set-option', '-t', tmux_session, 'status', 'off'], { timeout: 3000 }) } catch {}
 
+  // Pin the window to a fixed width before attaching. The global window-size=latest
+  // makes the window follow whatever client last attached, so an idle agent's frame
+  // (painted at one width) gets shown in the peek grid at a different width ->
+  // absolute-position garble. Pinning (manual + a fixed size) removes the reflow at
+  // the source; the resize also forces a one-time repaint that cleans any stale frame
+  // left over from a previous width. New agents are already pinned at spawn
+  // (fleet-spawn.py) — this also covers agents that predate that.
+  const PINNED_COLS = 120, PINNED_ROWS = 40
+  try {
+    await execFileP('tmux', [...TMUX_ARGS, 'set-option', '-t', tmux_session, 'window-size', 'manual'], { timeout: 3000 })
+    await execFileP('tmux', [...TMUX_ARGS, 'resize-window', '-t', tmux_session, '-x', String(PINNED_COLS), '-y', String(PINNED_ROWS)], { timeout: 3000 })
+    // Force the foreground TUI to repaint at the pinned width. resize-window is a
+    // NO-OP when the window is already 120 (no SIGWINCH → no repaint), so an idle
+    // agent's stale buffer (last painted at an old width, e.g. 80) would otherwise
+    // be reflowed garbled into the 120 peek grid. C-l = redraw-screen: the TUI
+    // repaints cleanly at the current width, with no input side-effect.
+    await execFileP('tmux', [...TMUX_ARGS, 'send-keys', '-t', tmux_session, 'C-l'], { timeout: 3000 })
+  } catch (e) { log.warn(`terminal-watch: failed to pin/repaint window for ${tmux_session}: ${e?.message || e}`) }
+
+  // Attach the watch PTY at the (now pinned) window size. tmux renders the window at
+  // the window size; a PTY narrower than the window receives garbled, absolute-
+  // positioned frames, so the PTY must match it.
+  const size = await queryWindowSize(tmux_session) || { cols: PINNED_COLS, rows: PINNED_ROWS }
+
   const nodePty = await getPty()
   const pty = nodePty.spawn('tmux', [...TMUX_ARGS, 'attach-session', '-t', tmux_session], {
     name: 'xterm-256color',
-    cols: 120,
-    rows: 40,
-    env: { ...process.env, TERM: 'xterm-256color' },
+    cols: size.cols,
+    rows: size.rows,
+    env: { ...process.env, TERM: 'xterm-256color', TMUX: '', TMUX_PANE: '' },
   })
 
-  const state = { pty, alive: true, recentOutput: '', lastPromptSurfaced: '' }
+  const state = { pty, alive: true, recentOutput: '', lastPromptSurfaced: '', cols: size.cols, rows: size.rows, sizePoll: null }
   terminalWatchPtys.set(tmux_session, state)
+
+  sendMsg({ type: 'terminal-size', agent_id, tmux_session, cols: size.cols, rows: size.rows })
+  // The pre-attach redraw can still leave Claude/goose with a stale old-width
+  // frame until the attached client exists. Redraw once more through the watch
+  // PTY and seed from capture-pane after that repaint window, so the first frame
+  // the browser sees is the tmux screen at the same width as the streamed PTY.
+  try {
+    pty.write('\x0c')
+  } catch (e) {
+    log.warn(`terminal-watch: PTY redraw request failed for ${tmux_session}: ${e?.message || e}`)
+  }
+  await new Promise(resolve => setTimeout(resolve, 120))
+  try {
+    const { stdout } = await execFileP('tmux',
+      [...TMUX_ARGS, 'capture-pane', '-t', tmux_session, '-p', '-S', `-${size.rows}`],
+      { timeout: 3000, encoding: 'utf8' })
+    const snapshot = trimTerminalSeedBlankRows(stdout).replace(/\n/g, '\r\n')
+    if (snapshot.trim()) {
+      sendMsg({
+        type: 'terminal-data',
+        agent_id,
+        tmux_session,
+        data: Buffer.from(snapshot).toString('base64'),
+      })
+      state.recentOutput = stripAnsi(snapshot).slice(-4000)
+      detectPromptFromPty(agent_id, tmux_session, state)
+    }
+  } catch (e) {
+    log.warn(`terminal-watch: initial capture failed for ${tmux_session}: ${e?.message || e}`)
+  }
+
+  // The window can change while we watch (a real terminal client attaches,
+  // detaches, or resizes). Poll and follow it: resize our PTY to match so the
+  // stream stays clean, and tell the viewer the new grid width.
+  state.sizePoll = setInterval(async () => {
+    if (!state.alive) return
+    const cur = await queryWindowSize(tmux_session)
+    if (!cur || (cur.cols === state.cols && cur.rows === state.rows)) return
+    state.cols = cur.cols
+    state.rows = cur.rows
+    try { state.pty.resize(Math.max(1, cur.cols), Math.max(1, cur.rows)) } catch {}
+    sendMsg({ type: 'terminal-size', agent_id, tmux_session, cols: cur.cols, rows: cur.rows })
+  }, 1500)
 
   pty.onData((data) => {
     if (!state.alive) return
@@ -1678,29 +2331,42 @@ async function rpcStartTerminalWatch({ tmux_session, agent_id, poll_ms }) {
 
   pty.onExit(({ exitCode }) => {
     state.alive = false
+    if (state.sizePoll) { clearInterval(state.sizePoll); state.sizePoll = null }
     terminalWatchPtys.delete(tmux_session)
     log.info(`terminal exited: agent=${agent_id} session=${tmux_session} exitCode=${exitCode}`)
     sendMsg({ type: 'terminal-dead', agent_id, tmux_session, exitCode })
   })
 
-  return { ok: true, streaming: true }
+  return { ok: true, streaming: true, cols: size.cols, rows: size.rows }
 }
 
 function rpcStopTerminalWatch({ tmux_session }) {
   const state = terminalWatchPtys.get(tmux_session)
   if (!state) return { ok: true, already: true }
   state.alive = false
+  if (state.sizePoll) { clearInterval(state.sizePoll); state.sizePoll = null }
   try { state.pty.kill() } catch {}
   terminalWatchPtys.delete(tmux_session)
   return { ok: true }
 }
 
-function rpcTerminalResize({ tmux_session, cols, rows }) {
+async function rpcTerminalResize({ tmux_session, cols, rows }) {
   checkSession(tmux_session)
   const state = terminalWatchPtys.get(tmux_session)
   if (!state || !state.alive) return { ok: false, reason: 'no active pty' }
-  try { state.pty.resize(Math.max(1, cols), Math.max(1, rows)) } catch {}
-  return { ok: true }
+  // Browser resize messages must not resize the watcher PTY away from tmux's
+  // real window size; Claude/goose repaint with absolute cursor positions at
+  // the tmux width, so a PTY-only resize recreates the wrapping bug.
+  const size = await queryWindowSize(tmux_session)
+  const target = size || { cols: state.cols, rows: state.rows }
+  state.cols = target.cols
+  state.rows = target.rows
+  try {
+    state.pty.resize(Math.max(1, target.cols), Math.max(1, target.rows))
+  } catch (e) {
+    log.warn(`terminal-watch: failed to resize watcher PTY for ${tmux_session}: ${e?.message || e}`)
+  }
+  return { ok: true, cols: target.cols, rows: target.rows }
 }
 
 function rpcTerminalInput({ tmux_session, data }) {
@@ -1713,50 +2379,181 @@ function rpcTerminalInput({ tmux_session, data }) {
 
 
 const _activeSpawns = new Map()
-async function rpcSpawn({ name, model, cwd, doc, respawn, effort }) {
+const STARTUP_FAILURE_PROBE_MS = Number(process.env.TLDA_SPAWN_STARTUP_FAILURE_PROBE_MS || 2500)
+const SPAWN_LAUNCH_TIMEOUT_MS = Number(process.env.TLDA_SPAWN_LAUNCH_TIMEOUT_MS || 20000)
+const _reportedStartupFailures = new Set()
+
+function parseSpawnLaunch(stdout = '', fallbackName = null) {
+  const text = String(stdout || '')
+  const m = text.match(/(fleet-[^\s()]+)\s+\((fleet:[^)]+)\)/)
+  if (!m) return null
+  return { tmux_session: m[1], agent_id: m[2], name: fallbackName }
+}
+
+async function probeSpawnStartupFailure({ agentName, agent_id, tmux_session, harness, model, respawn }) {
+  if (!agent_id || !tmux_session) return null
+  const dedupKey = `${agent_id}:${tmux_session}`
+  if (_reportedStartupFailures.has(dedupKey)) return null
+  try {
+    await new Promise(resolve => setTimeout(resolve, STARTUP_FAILURE_PROBE_MS))
+    const { stdout } = await execFileP('tmux',
+      [...TMUX_ARGS, 'capture-pane', '-t', tmux_session, '-p', '-e', '-S', '-120'],
+      { timeout: 5000, encoding: 'utf8' })
+    const failure = detectSpawnStartupFailureTranscript(stdout, { harness })
+    if (!failure) return null
+    _reportedStartupFailures.add(dedupKey)
+    sendMsg({
+      type: 'spawn-startup-failed',
+      agent_id,
+      agent_name: agentName || null,
+      tmux_session,
+      harness: harness || null,
+      model: model || null,
+      respawn: !!respawn,
+      code: failure.code,
+      reason: failure.reason,
+      snippet: failure.snippet,
+    })
+    return failure
+  } catch (e) {
+    log.warn(`startup failure probe failed for ${agentName || agent_id}: ${e.message}`)
+    return null
+  }
+}
+
+async function rpcSpawn({
+  agent_id,
+  name,
+  model,
+  kind,
+  cwd,
+  doc,
+  respawn,
+  refresh,
+  effort,
+  mode,
+  requestedCapability,
+  callerRung,
+}) {
   const agentName = name || `agent-${Date.now().toString(36).slice(-4)}`
   if (_activeSpawns.has(agentName)) {
     const age = Date.now() - _activeSpawns.get(agentName)
     if (age < 90_000) {
       log.info(`spawn deduped: ${agentName} already spawning (${Math.round(age / 1000)}s ago)`)
-      return { ok: true, name: agentName, deduped: true }
+      return { ok: false, name: agentName, deduped: true, error: `${agentName} is already spawning; no new terminal/session has been verified yet` }
     }
     _activeSpawns.delete(agentName)
   }
   let resolvedCwd = cwd
   if (!resolvedCwd && doc) {
     const project = projects.find(p => p.name === doc)
-    if (project?.sourceDir) resolvedCwd = project.sourceDir
+    if (!project) {
+      // An unresolvable project used to drop --cwd silently → the agent launched
+      // in launchd's cwd (`/`) and died as a ghost row. Reject loud instead.
+      const known = projects.map(p => p.name).sort().join(', ')
+      return { ok: false, error: `no project '${doc}'${known ? ` — known: ${known}` : ''}` }
+    }
+    if (project.sourceDir) resolvedCwd = project.sourceDir
   }
-  const args = respawn ? [agentName] : ['--fresh', agentName]
-  if (model) args.push('--model', model)
-  if (effort) args.push('--effort', effort)
-  if (resolvedCwd) args.push('--cwd', resolvedCwd)
-  args.push('--no-attach')
-  // Route spawn through `tlda` (the on-path installed binary, which resolves the
-  // fleet-spawn script internally) rather than a bare `fleet-spawn` that depends
-  // on PATH. FLEET_SPAWN env still overrides with a direct script path (tests).
+  const projectForGrant = doc
+    ? projects.find(p => p.name === doc)
+    : projects.find(p => {
+        if (!resolvedCwd || !p.sourceDir) return false
+        const cwdPath = path.resolve(resolvedCwd)
+        const sourcePath = path.resolve(p.sourceDir)
+        return cwdPath === sourcePath || cwdPath.startsWith(`${sourcePath}${path.sep}`)
+      })
+  let grant
+  try {
+    const config = _loadSharedConfig()
+    grant = resolveDaemonSpawnGrant({
+      requestedCapability,
+      callerRung,
+      model,
+      kind,
+      config,
+      doc,
+      project: projectForGrant,
+      cwd: resolvedCwd,
+    })
+  } catch (e) {
+    return { ok: false, name: agentName, error: `spawn policy resolution failed: ${e.message}` }
+  }
+  const launchMode = projectCapabilityToMode(grant.grantedCapability, mode)
+  const { args } = buildFleetSpawnArgs({
+    agentId: agent_id,
+    name: agentName,
+    model,
+    kind,
+    cwd: resolvedCwd,
+    respawn,
+    refresh,
+    effort,
+    mode: launchMode,
+    spawnPolicy: grant.grantedPolicy,
+  })
+  // Route the daemon's local launch through the explicit local primitive. The
+  // public `tlda agent spawn` command is server/daemon-routed and would recurse
+  // back here; `spawn-local` is the only CLI surface that invokes fleet-spawn.py.
   const override = process.env.FLEET_SPAWN
   const spawnScript = override || 'tlda'
-  const spawnArgs = override ? args : ['agent', 'spawn', ...args]
+  const spawnArgs = override ? args : ['agent', 'spawn-local', ...args]
   _activeSpawns.set(agentName, Date.now())
-  execFile(spawnScript, spawnArgs, {
-    timeout: 120_000,
-    env: { ...process.env, PATH: process.env.PATH, TMUX: '' },
-  }, (err, stdout, stderr) => {
-    _activeSpawns.delete(agentName)
-    if (err) {
-      log.warn(`fleet-spawn finished with error: ${agentName}: ${stderr || err.message}`)
-      // Spawn is fire-and-forget (we already returned ok:true), so this async
-      // failure is invisible to the server unless we report it. Surface it so a
-      // chat-wake that can't resume an agent isn't silently swallowed.
-      const detail = ((stderr || err.message || '').trim().split('\n').filter(Boolean).pop()) || 'unknown error'
-      sendMsg({ type: 'daemon-warning', message: `couldn't ${respawn ? 'wake' : 'spawn'} ${agentName} — ${detail}` })
-    } else {
-      log.info(`fleet-spawn finished: ${agentName}: ${stdout.trim()}`)
+  try {
+    const { stdout, stderr } = await execFileP(spawnScript, spawnArgs, {
+      timeout: SPAWN_LAUNCH_TIMEOUT_MS,
+      env: { ...process.env, PATH: process.env.PATH, TMUX: '', TLDA_MACHINE_ID: MACHINE_ID },
+    })
+    log.info(`fleet-spawn finished: ${agentName}: ${stdout.trim()}`)
+    const launched = parseSpawnLaunch(stdout, agentName)
+    if (!launched?.tmux_session) {
+      const detail = (stdout || stderr || '').trim().split('\n').filter(Boolean).pop() || 'launcher did not report a fleet tmux session'
+      return { ok: false, name: agentName, error: `spawn did not produce a verifiable tmux session: ${detail}` }
     }
-  })
-  return { ok: true, name: agentName, async: true }
+    try {
+      await tmux('has-session', '-t', launched.tmux_session)
+    } catch (e) {
+      const detail = ((e.stderr || e.message || '').trim().split('\n').filter(Boolean).pop()) || 'tmux session check failed'
+      return {
+        ok: false,
+        name: agentName,
+        agent_id: launched.agent_id,
+        tmux_session: launched.tmux_session,
+        error: `spawn launcher returned but tmux session is not usable: ${detail}`,
+      }
+    }
+    // Fire the startup-failure probe DETACHED, don't block the reply on it.
+    // The probe self-reports any failure via a `spawn-startup-failed` message,
+    // which the server handles independently of this RPC's result (see
+    // unified-server.mjs `spawn-startup-failed` handler). Awaiting it here only
+    // added its fixed STARTUP_FAILURE_PROBE_MS delay to the round-trip, pushing
+    // spawns past the caller's 10s RPC/WS window — a false-fail that the caller
+    // then retried into duplicate agents, even though the spawn had succeeded.
+    // Reply as soon as the tmux session is verified; surface failures async.
+    probeSpawnStartupFailure({
+      agentName,
+      agent_id: launched.agent_id,
+      tmux_session: launched.tmux_session,
+      harness: kind || null,
+      model: model || null,
+      respawn,
+    }).catch(e => log.warn(`detached startup-failure probe errored for ${agentName}: ${e.message}`))
+    return {
+      ok: true,
+      name: agentName,
+      agent_id: launched.agent_id,
+      tmux_session: launched.tmux_session,
+      spawnPolicy: grant.grantedPolicy,
+      grantedCapability: grant.grantedCapability,
+    }
+  } catch (e) {
+    const detail = ((e.stderr || e.message || '').trim().split('\n').filter(Boolean).pop()) || 'unknown error'
+    log.warn(`fleet-spawn finished with error: ${agentName}: ${e.stderr || e.message}`)
+    sendMsg({ type: 'daemon-warning', message: `couldn't ${respawn ? 'wake' : 'spawn'} ${agentName} — ${detail}` })
+    return { ok: false, name: agentName, error: detail }
+  } finally {
+    _activeSpawns.delete(agentName)
+  }
 }
 
 // --- Agent death detection ---
@@ -1767,49 +2564,259 @@ async function rpcSpawn({ name, model, cwd, doc, respawn, effort }) {
 // explicit kill; absent processes are just sleeping.
 let _deathCheckInterval = null
 const DEATH_CHECK_MS = 30_000   // liveness check every 30s
+// Liveness #B(c): if an agent emitted JSONL activity within this window it's a
+// known-alive heartbeat — the sweep skips the expensive pane-pgrep for it. Longer
+// than a normal turn so a mid-turn agent isn't falsely treated as quiet (worst
+// case it just gets probed, which confirms alive). Death cadence is unchanged.
+const ACTIVITY_FRESH_MS = 90_000
 
 // Cache populated by checkAgentLiveness every 30s.
 // rpcCheckAlive reads from here — zero spawns per call.
 const _alivenessCache = new Map()  // tmux_session → boolean
+// Session/process probes can flap briefly during wake, tmux server churn, or
+// platform permission hiccups. Do not park an agent on the first missed probe:
+// keep reporting it live for a short grace window, then hibernate only if the
+// absence persists.
+const HIBERNATE_GRACE_MS = Number(process.env.TLDA_HIBERNATE_GRACE_MS || 120_000)
+const _missingSessionSince = new Map()  // agent_id → ms timestamp
+const _missingRuntimeSince = new Map()  // agent_id → ms timestamp
+// Be conservative about transient runtime probe misses inside an existing tmux
+// session. A missing tmux session itself is not evidence of a live agent, so do
+// not publish "awake" for first-observed absent sessions.
+const _observedLiveSessions = new Set() // tmux_session
+const _observedLiveRuntimes = new Set() // agent_id
 
 // Thinking/compacting/approval detection — moved from MCP to daemon so it
 // survives MCP restarts and the hibernate sweep can trust it.
-const THINKING_SPINNER_RE = /[A-Z][a-z]+ing\u2026/
-const INTERRUPT_HINT_RE = /esc to interrupt/
-const COMPACTING_RE = /Compacting conversation/
-const THINKING_SCAN_LINES = 40
-const APPROVAL_PROMPT_RE = /[\u25CB\u25CF]\s*Allow once|Allow this .{0,30}\?\s*\(y\/n\)|Esc to cancel\s*\u00B7\s*Tab to amend/i
-const APPROVAL_PROMPT_SCAN_LINES = 15
+// Status classification (per-harness regexes + classifier) is imported from
+// ./lib/status-classifier.mjs above \u2014 single source of truth. The daemon OWNS the
+// status STATE (the maps + scanArmedStatus loop below) and emits the transitions;
+// server/client/bots consume them and do not reconstruct status.
+const STATUS_SCAN_MS = 1500          // frequent pane pull for armed agents (1-3s status)
+const ARM_LINGER_MS = 8000           // stay armed this long after the last activity / busy frame
+const IDLE_CONFIRM_SCANS = 2         // consecutive idle scans before thinking:false (anti-flicker)
+let _statusScanInterval = null
+const _armedSince = new Map()        // agent_id -> last arm/activity ts (armed iff present)
+const _idleScans = new Map()         // agent_id -> consecutive non-thinking scans (hysteresis)
+const _classifierState = new Map()   // agent_id -> carried classifier state (goose freeze tracking)
+// Arm an agent for frequent status checks. Cheap; called from the activity path
+// (any JSONL/sqlite write = the agent is doing something). `armed` is a watch
+// state, never shown \u2014 the pane scan decides the actual thinking state.
+function armAgent(agentId) {
+  if (agentId) _armedSince.set(agentId, Date.now())
+}
+function armBySession(tmux_session) {
+  if (!tmux_session) return
+  for (const a of agents) {
+    if (a.tmux_session !== tmux_session) continue
+    // A session-targeted RPC can correspond to more than one registry row
+    // (stale rows, handoff windows, duplicate registrations). Arming only the
+    // first row makes correctness depend on registry order, so arm every active
+    // non-human row attached to this session. The scan loop is still bounded to
+    // active rows and will disarm stale rows quickly if they cannot produce pane
+    // truth.
+    if (!a.dead && !a.human && !a.hibernating) armAgent(a.id)
+  }
+}
+// Disarm an agent, emitting a clean idle edge first if it was mid-turn. The daemon
+// OWNS the transition, so a thinking agent that vanishes (dead/hibernating) or is
+// disarmed must get a thinking:false edge HERE — otherwise the server's
+// _thinkingState stays true (its disconnect path clears it WITHOUT a turn_ended),
+// so a bot never sees the turn end. The normal idle-past-linger path already
+// emitted false via the hysteresis, so _prevThinking is false there and this
+// re-emits nothing — it just clears state.
+function disarmAgent(agentId) {
+  if (_prevThinking.get(agentId) === true) sendMsg({ type: 'agent-thinking', agentId, thinking: false })
+  if (_prevCompacting.get(agentId) === true) sendMsg({ type: 'agent-compacting', agentId, compacting: false })
+  _armedSince.delete(agentId)
+  _idleScans.delete(agentId)
+  _classifierState.delete(agentId)
+  _prevThinking.delete(agentId)
+  _prevCompacting.delete(agentId)
+  _prevApprovalFP.delete(agentId)
+}
 const _prevThinking = new Map()   // agent_id → boolean
 const _prevCompacting = new Map() // agent_id → boolean
+const _prevGooseLive = new Map()  // agent_id → { fingerprint, since } (goose freeze tracking)
 const _prevApprovalFP = new Map() // agent_id → string (fingerprint)
+// agent_id → session_id we last reconciled into the registry, so we don't
+// re-emit agent-session-observed every 30s once the heal has landed.
+const _reconciledSession = new Map()
+
+// Goose turn-end auto-kick state: agent_id → kick state, owned by
+// checkAgentLiveness's sweep. The detection/decision logic lives in
+// ./lib/goose-kick.mjs (pure decideKick + sqlite reads); the daemon supplies
+// the side-effecting deps (rpcSendText, execFileP, log) and this state map.
+const _gooseKickState = new Map()
+
+// Goose activity-card source state (see ./lib/goose-activity.mjs). Polls the
+// goose sqlite for new messages and feeds bufferActivity(); lastSeen tracks the
+// last message id emitted per goose agent.
+let _gooseActivityInterval = null
+const GOOSE_ACTIVITY_MS = 3000
+const _gooseActivityLastSeen = new Map()
+
+// Read an agent's *actual* live Claude session from the PID-keyed metadata
+// Claude Code writes at ~/.claude/sessions/<pid>.json. This is the same
+// authoritative source the MCP uses at startup (no birthtime guessing, no
+// shared-cwd collisions). Given the agent's tmux pane PIDs and the full
+// process tree, scan the pane PIDs plus their descendants and return the
+// session from the most-recently-updated sessions file. Returns
+// { sessionId, cwd } or null.
+function liveSessionForPids(rootPids, childrenByPpid) {
+  const subtree = new Set()
+  const stack = [...rootPids]
+  while (stack.length) {
+    const pid = stack.pop()
+    if (subtree.has(pid)) continue
+    subtree.add(pid)
+    for (const c of (childrenByPpid.get(pid) || [])) stack.push(c)
+  }
+  const sessionsDir = path.join(os.homedir(), '.claude', 'sessions')
+  let best = null
+  for (const pid of subtree) {
+    let data
+    try { data = JSON.parse(fs.readFileSync(path.join(sessionsDir, `${pid}.json`), 'utf8')) }
+    catch { continue } // most PIDs have no sessions file — that's the common case, not an error
+    if (!data || typeof data.sessionId !== 'string' || !data.sessionId) continue
+    const ts = data.updatedAt || data.startedAt || 0
+    if (!best || ts > best.ts) best = { sessionId: data.sessionId, cwd: data.cwd || null, ts }
+  }
+  return best ? { sessionId: best.sessionId, cwd: best.cwd } : null
+}
+
+// If a live agent's true session isn't its registered primary session_id, heal
+// the daemon's local agent record (so syncSessionWatchers attaches the real
+// JSONL this sweep) and tell the server to persist it. This is the automated
+// form of the manual re-map that fixes "alive agent, dead activity cards".
+// Returns true if a heal was applied (caller re-runs syncSessionWatchers).
+function reconcileAgentSession(agent, panePids, childrenByPpid) {
+  if (!agent || !agent.id || !panePids?.length) return false
+  const live = liveSessionForPids(panePids, childrenByPpid)
+  if (!live) return false
+  if (agent.session_id === live.sessionId) {
+    // Already correct — record it so we don't keep checking the message guard.
+    _reconciledSession.set(agent.id, live.sessionId)
+    return false
+  }
+  const known = [agent.session_id, ...(agent.session_ids || [])].filter(Boolean)
+  // Heal locally: make the live session primary and ensure it's in the list.
+  agent.session_id = live.sessionId
+  if (!agent.session_ids) agent.session_ids = []
+  if (!agent.session_ids.includes(live.sessionId)) agent.session_ids.push(live.sessionId)
+  // Persist once per (agent, live session) — avoid re-emitting every sweep.
+  if (_reconciledSession.get(agent.id) !== live.sessionId) {
+    _reconciledSession.set(agent.id, live.sessionId)
+    log.info(`reconciled live session for ${agent.friendly_name || agent.id}: ${live.sessionId} (was registered as ${known.join(',') || 'none'})`)
+    sendMsg({ type: 'agent-session-observed', agent_id: agent.id, session_id: live.sessionId, cwd: live.cwd })
+  }
+  return true
+}
+
+// Walk a pane's process subtree (the pane pid plus all descendants) and return
+// true if any process is an agent runtime. Handles BOTH claude (a direct child
+// of the pane shell) and goose (nested under a `zsh -lc` login wrapper, so its
+// ppid is the inner shell, not the pane) — a flat pane-pid check misses goose.
+function _paneSubtreeHasAgent(panePid, childrenByPpid, agentProcPids) {
+  const stack = [panePid], seen = new Set()
+  while (stack.length) {
+    const pid = stack.pop()
+    if (seen.has(pid)) continue
+    seen.add(pid)
+    if (agentProcPids.has(pid)) return true
+    const kids = childrenByPpid.get(pid)
+    if (kids) for (const k of kids) stack.push(k)
+  }
+  return false
+}
 
 async function checkAgentLiveness() {
   if (!agents.length) return
+  if (!_serverReady || !_rws?.connected) {
+    // A server/Fly redeploy can drop the daemon websocket while local tmux
+    // sessions are still fine. During that window liveness is unknown, not
+    // hibernating; do not let disconnect time consume the grace period.
+    _missingSessionSince.clear()
+    _missingRuntimeSince.clear()
+    const now = Date.now()
+    if (now - _lastLivenessDisconnectWarnAt > 30_000) {
+      log.warn('skipping agent liveness check while daemon websocket is not ready')
+      _lastLivenessDisconnectWarnAt = now
+    }
+    return
+  }
+  const now = Date.now()
+  const aliveAgentIds = []
+  const checkedAgentIds = []
   let sessions
   try {
     const r = await rpcListSessions()
     sessions = new Set(r.sessions || [])
-  } catch { return }
+  } catch (e) {
+    log.warn(`tmux session probe failed during liveness check — preserving prior liveness: ${e.message}`)
+    return
+  }
 
   // Collect all candidate sessions in one pass, then batch-query pane PIDs.
   const candidateAgents = []
   for (const agent of agents) {
     if (agent.dead || agent.human) continue
     if (!agent.tmux_session) continue
+    checkedAgentIds.push(agent.id)
     if (!sessions.has(agent.tmux_session)) {
-      _alivenessCache.set(agent.tmux_session, false)
+      if (!_observedLiveSessions.has(agent.tmux_session)) {
+        // Session was never seen alive by this daemon → it was already gone at
+        // first observation. Mark hibernating, but emit the log/transition exactly
+        // ONCE — not every sweep. Without this gate, every agent whose session
+        // never existed in this daemon's lifetime re-logs "absent on first local
+        // observation" on every 30s sweep (hundreds of dead agents → GB log,
+        // perpetual re-stamp storm). The aliveness cache is the durable record of
+        // "already known absent".
+        if (_alivenessCache.get(agent.tmux_session) !== false) {
+          log.info(`agent ${agent.friendly_name || agent.id} is hibernating (tmux session ${agent.tmux_session} absent on first local observation)`)
+        }
+        agent.hibernating = true
+        _alivenessCache.set(agent.tmux_session, false)
+        continue
+      }
+      const decision = decideMissingLiveness({
+        now,
+        missingSince: _missingSessionSince.get(agent.id),
+        graceMs: HIBERNATE_GRACE_MS,
+        alreadyHibernating: agent.hibernating,
+      })
+      _missingSessionSince.set(agent.id, decision.since)
+      if (decision.alive) {
+        _alivenessCache.set(agent.tmux_session, true)
+        aliveAgentIds.push(agent.id)
+        continue
+      }
       if (!agent.hibernating) {
-        log.info(`agent ${agent.friendly_name || agent.id} is hibernating (tmux session ${agent.tmux_session} gone)`)
+        log.info(`agent ${agent.friendly_name || agent.id} is hibernating (tmux session ${agent.tmux_session} gone for ${Math.round((now - decision.since) / 1000)}s)`)
       }
       agent.hibernating = true
+      _alivenessCache.set(agent.tmux_session, false)
+      continue
+    }
+    _observedLiveSessions.add(agent.tmux_session)
+    _missingSessionSince.delete(agent.id)
+    // Liveness #B(c): session exists AND the agent emitted JSONL activity recently
+    // (a per-turn heartbeat) → known alive; skip the expensive pane-pgrep and mark
+    // it alive. A genuinely quiet/dead agent has no fresh activity, so it still
+    // falls through to the probe below — death-detection cadence is unchanged; the
+    // sweep just stops re-pgrep'ing the obviously-active fleet (heartbeat-driven
+    // liveness, sweep as backstop for the quiet ones).
+    const lastSeenMs = Date.parse(agent.last_seen || '') || 0
+    if (now - lastSeenMs < ACTIVITY_FRESH_MS) {
+      _alivenessCache.set(agent.tmux_session, true)
+      aliveAgentIds.push(agent.id)
       continue
     }
     candidateAgents.push(agent)
   }
 
   if (!candidateAgents.length) {
-    sendMsg({ type: 'agent-liveness', agent_ids: [] })
+    sendMsg({ type: 'agent-liveness', agent_ids: aliveAgentIds, checked_agent_ids: checkedAgentIds })
     return
   }
 
@@ -1828,17 +2835,30 @@ async function checkAgentLiveness() {
     }
   } catch { /* tmux unavailable */ }
 
-  // One ps call: get all processes with their args and PPIDs.
-  const claudePids = new Set()
+  // One ps call: get all processes with their args and PPIDs. Each harness
+  // adapter declares what its runtime process looks like; the daemon owns the
+  // hibernating/dead state transition and only asks "is this adapter's runtime
+  // alive under this tmux pane?".
+  const runtimePidsByKind = new Map(
+    Object.keys(HARNESS_ADAPTERS).map(kind => [kind, new Set()])
+  )
+  const childrenByPpid = new Map()
   try {
     const { stdout } = await execFileP('ps', ['-eo', 'pid,ppid,args'],
       { timeout: 5000, encoding: 'utf8' })
     for (const line of stdout.split('\n')) {
-      if (line.includes('claude')) {
-        const pid = line.trim().split(/\s+/)[0]
-        const ppid = line.trim().split(/\s+/)[1]
-        if (pid) claudePids.add(pid)
-        if (ppid) claudePids.add(ppid)
+      const m = line.trim().match(/^(\d+)\s+(\d+)\s/)
+      if (m) {
+        const pid = m[1], ppid = m[2]
+        if (!childrenByPpid.has(ppid)) childrenByPpid.set(ppid, [])
+        childrenByPpid.get(ppid).push(pid)
+      }
+      const pid = line.trim().split(/\s+/)[0]
+      if (!pid) continue
+      for (const adapter of Object.values(HARNESS_ADAPTERS)) {
+        if (adapter.processRe.test(line)) {
+          runtimePidsByKind.get(adapter.kind)?.add(pid)
+        }
       }
     }
   } catch (e) {
@@ -1846,16 +2866,54 @@ async function checkAgentLiveness() {
     return
   }
 
-  const aliveAgentIds = []
+  let healedAny = false
+  let watcherNeedsSync = false
   for (const agent of candidateAgents) {
     const panes = sessionToPanes.get(agent.tmux_session) || []
-    const claudeAlive = panes.some(pid => claudePids.has(pid))
+    // Liveness + true kind from the ACTUAL pane process, not the (often
+    // absent/stale) metadata.kind. The previous code resolved kind via
+    // harnessForAgent → defaulted codex agents to claude → checked the codex
+    // pane for a *claude* runtime, found none, and wrongly marked the live
+    // codex agent hibernating (so it never got a JSONL watcher → no cards).
+    // An agent is alive if its pane subtree holds ANY harness runtime; its kind
+    // is whichever matched. Prefer the claimed kind only if its runtime is
+    // actually present, so a parent that spawned a child of another kind isn't
+    // misclassified.
+    const claimed = agent?.metadata?.kind
+    let matchedKind = null
+    if (claimed && runtimePidsByKind.has(claimed) &&
+        panes.some(pid => _paneSubtreeHasAgent(pid, childrenByPpid, runtimePidsByKind.get(claimed)))) {
+      matchedKind = claimed
+    } else {
+      for (const [kind, pids] of runtimePidsByKind) {
+        if (panes.some(pid => _paneSubtreeHasAgent(pid, childrenByPpid, pids))) { matchedKind = kind; break }
+      }
+    }
+    const agentAlive = matchedKind !== null
+    const priorRuntimeKind = agent.runtimeKind
+    agent.runtimeKind = matchedKind || (runtimePidsByKind.has(claimed) ? claimed : 'claude')
+    if (matchedKind && priorRuntimeKind && priorRuntimeKind !== matchedKind) watcherNeedsSync = true
 
-    _alivenessCache.set(agent.tmux_session, claudeAlive)
+    _alivenessCache.set(agent.tmux_session, agentAlive)
 
-    if (!claudeAlive) {
+    if (!agentAlive) {
+      const decision = decideMissingLiveness({
+        now,
+        missingSince: _missingRuntimeSince.get(agent.id),
+        graceMs: HIBERNATE_GRACE_MS,
+        alreadyHibernating: agent.hibernating,
+      })
+      _missingRuntimeSince.set(agent.id, decision.since)
+      if (decision.alive) {
+        if (!_observedLiveRuntimes.has(agent.id)) {
+          log.info(`preserving awake status for ${agent.friendly_name || agent.id}: no agent process in session ${agent.tmux_session} on first local observation, within grace`)
+        }
+        _alivenessCache.set(agent.tmux_session, true)
+        aliveAgentIds.push(agent.id)
+        continue
+      }
       if (!agent.hibernating) {
-        log.info(`agent ${agent.friendly_name || agent.id} is hibernating (no claude in session ${agent.tmux_session})`)
+        log.info(`agent ${agent.friendly_name || agent.id} is hibernating (no agent process in session ${agent.tmux_session} for ${Math.round((now - decision.since) / 1000)}s)`)
         // Capture last lines of tmux for crash diagnosis
         try {
           const { stdout: lastLines } = await execFileP('tmux',
@@ -1874,51 +2932,166 @@ async function checkAgentLiveness() {
         } catch {}
       }
       agent.hibernating = true
+      _alivenessCache.set(agent.tmux_session, false)
       continue
     }
+    _observedLiveRuntimes.add(agent.id)
+    _missingRuntimeSince.delete(agent.id)
 
     if (agent.hibernating) {
       log.info(`agent ${agent.friendly_name || agent.id} is awake`)
       agent.hibernating = false
+      watcherNeedsSync = true
+    }
+    if (matchedKind && matchedKind !== 'claude') {
+      const watchedPath = agentPaths.get(agent.id)
+      const watcher = watchedPath ? pathWatchers.get(watchedPath) : null
+      if (!watchedPath || !watcher) {
+        watcherNeedsSync = true
+      } else if (watcher.harnessKind === matchedKind) {
+        // fs.watch can go quiet on macOS even while the transcript keeps
+        // growing. The read path is cursor-based, so this is a cheap heartbeat
+        // drain for live non-Claude agents and closes the "alive agent, dead
+        // activity cards" gap without replaying old history.
+        readNewSessionLines(agent.id, watchedPath, watcher.sessionId, watcher.harnessKind)
+      }
     }
     aliveAgentIds.push(agent.id)
+
+    // Reconcile: an alive agent's true live JSONL session may have diverged
+    // from what's registered (long-lived/resumed agents roll session UUIDs;
+    // the MCP only stamps session_id once at startup). Without this, the daemon
+    // never finds the live JSONL → activity cards die though the agent is alive.
+    if (reconcileAgentSession(agent, panes, childrenByPpid)) healedAny = true
   }
 
-  // Scan alive agents for thinking/compacting/approval state
+  // A heal changed an agent's session_id/session_ids locally; re-point the JSONL
+  // watchers immediately so attribution resumes this sweep (the server persists
+  // independently from the agent-session-observed message).
+  if (healedAny || watcherNeedsSync) {
+    void syncSessionWatchers(agents).catch(e => log.error(`syncSessionWatchers failed: ${e.stack || e.message}`))
+  }
+
+  // Goose turn-end auto-kick — bot supervision, deliberately kept on this slow
+  // sweep, SEPARATE from the shared status state machine. scanArmedStatus() now
+  // owns agent-thinking / agent-compacting for EVERY harness (goose included via
+  // its classifier), so this pass no longer emits status — it only nudges an
+  // idle/stuck goose that has undelivered work. It keeps its own freeze-tracking
+  // map (_prevGooseLive) so it never contends with the display classifier state.
   for (const agent of candidateAgents) {
     if (agent.hibernating) continue
+    if (harnessForAgent(agent).kind !== 'goose') continue
     try {
       const { stdout: pane } = await execFileP('tmux',
         [...TMUX_ARGS, 'capture-pane', '-t', agent.tmux_session, '-p', '-S', `-${THINKING_SCAN_LINES}`],
         { timeout: 3000, encoding: 'utf8' })
-
       const paneBottom = pane.split('\n').slice(-THINKING_SCAN_LINES).join('\n')
-      const isThinking = THINKING_SPINNER_RE.test(paneBottom) || INTERRUPT_HINT_RE.test(paneBottom)
-      sendMsg({ type: 'agent-thinking', agentId: agent.id, thinking: isThinking })
-      if (isThinking !== _prevThinking.get(agent.id)) {
-        _prevThinking.set(agent.id, isThinking)
-      }
-
-      const isCompacting = COMPACTING_RE.test(pane)
-      sendMsg({ type: 'agent-compacting', agentId: agent.id, compacting: isCompacting })
-      if (isCompacting !== _prevCompacting.get(agent.id)) {
-        _prevCompacting.set(agent.id, isCompacting)
-      }
-
-      const approvalBottom = pane.split('\n').slice(-APPROVAL_PROMPT_SCAN_LINES).join('\n')
-      if (APPROVAL_PROMPT_RE.test(approvalBottom)) {
-        const fingerprint = approvalBottom.slice(-100)
-        if (fingerprint !== _prevApprovalFP.get(agent.id)) {
-          _prevApprovalFP.set(agent.id, fingerprint)
-          sendMsg({ type: 'terminal_attention', agent_id: agent.id, reason: 'permission prompt', text: 'permission prompt' })
-        }
-      } else {
-        _prevApprovalFP.delete(agent.id)
-      }
-    } catch {}
+      const { status, live } = resolveGooseStatus(paneBottom, _prevGooseLive.get(agent.id), Date.now())
+      if (live) _prevGooseLive.set(agent.id, live)
+      else _prevGooseLive.delete(agent.id)
+      await maybeKickGoose(agent, status, {
+        sendText: gooseKickSend, execFileP, log, stateMap: _gooseKickState,
+      })
+    } catch {
+      // capture-pane failed (tmux session gone / transient churn) — skip this
+      // goose this sweep; the next sweep retries. A genuinely dead session is
+      // handled by the death/hibernate path above, so the recovery here is simply
+      // to move on to the next agent.
+      continue
+    }
   }
 
-  sendMsg({ type: 'agent-liveness', agent_ids: aliveAgentIds })
+  sendMsg({ type: 'agent-liveness', agent_ids: aliveAgentIds, checked_agent_ids: checkedAgentIds })
+}
+
+// ---------------------------------------------------------------------------
+// Shared agent status state machine (every harness). The daemon OWNS these
+// transitions; server/client/bots consume the emitted edges. `armed` is a watch
+// state (an agent earns frequent pane pulls when it shows activity) and is never
+// displayed. `thinking`/`compacting` are derived ONLY from the pane.
+// ---------------------------------------------------------------------------
+
+// Emit the agent-thinking edge with anti-flicker hysteresis on the idle side: a
+// single missed spinner frame must not fabricate a turn end. The server holds
+// _thinkingState until our explicit false edge (no TTL), so it consumes edges,
+// not per-scan resends; the true->false edge is what becomes turn_ended.
+function emitThinkingEdge(agentId, isThinking) {
+  const d = decideThinkingEdge(
+    _prevThinking.get(agentId) === true,
+    _idleScans.get(agentId) || 0,
+    isThinking,
+    IDLE_CONFIRM_SCANS,
+  )
+  _prevThinking.set(agentId, d.prev)
+  if (d.idleCount) _idleScans.set(agentId, d.idleCount)
+  else _idleScans.delete(agentId)
+  if (d.emit !== null) sendMsg({ type: 'agent-thinking', agentId, thinking: d.emit })
+}
+
+function emitCompactingEdge(agentId, isCompacting) {
+  if (isCompacting !== (_prevCompacting.get(agentId) === true)) {
+    _prevCompacting.set(agentId, isCompacting)
+    sendMsg({ type: 'agent-compacting', agentId, compacting: isCompacting })
+  }
+}
+
+// Pull one armed agent's pane and emit its real status. All harnesses share this
+// path; the only per-harness branch is classifyPane(). Returns whether the agent
+// is busy (thinking/compacting) so the loop can keep it armed or let it disarm.
+async function scanAgentPaneStatus(agent) {
+  let pane
+  try {
+    const { stdout } = await execFileP('tmux',
+      [...TMUX_ARGS, 'capture-pane', '-t', agent.tmux_session, '-p', '-S', `-${THINKING_SCAN_LINES}`],
+      { timeout: 3000, encoding: 'utf8' })
+    pane = stdout
+  } catch {
+    // Capture failed (session gone / tmux hiccup). Feed the idle side so a truly
+    // dead pane resolves to thinking:false via hysteresis; a one-off miss is
+    // absorbed by the 2-scan guard.
+    emitThinkingEdge(agent.id, false)
+    emitCompactingEdge(agent.id, false)
+    return { busy: false }
+  }
+  const c = classifyPane(harnessForAgent(agent).kind, pane, _classifierState.get(agent.id) || null, Date.now())
+  if (c.state) _classifierState.set(agent.id, c.state)
+  else _classifierState.delete(agent.id)
+
+  emitThinkingEdge(agent.id, c.thinking)
+  emitCompactingEdge(agent.id, c.compacting)
+
+  if (c.approval) {
+    if (c.approvalFp !== _prevApprovalFP.get(agent.id)) {
+      _prevApprovalFP.set(agent.id, c.approvalFp)
+      sendMsg({ type: 'terminal_attention', agent_id: agent.id, reason: 'permission prompt', text: 'permission prompt' })
+    }
+  } else {
+    _prevApprovalFP.delete(agent.id)
+  }
+  return { busy: c.thinking || c.compacting }
+}
+
+// The frequent loop: pull each armed agent's pane (~STATUS_SCAN_MS), keep it armed
+// while busy, disarm once it has sat idle past ARM_LINGER_MS. Bounded to the few
+// agents actually working — idle / un-armed agents are never pulled.
+async function scanArmedStatus() {
+  if (!_serverReady || !_rws?.connected) return
+  if (!_armedSince.size) return
+  const now = Date.now()
+  for (const agentId of [..._armedSince.keys()]) {
+    const agent = agents.find(a => a.id === agentId)
+    if (!agent || agent.dead || agent.human || agent.hibernating || !agent.tmux_session) {
+      disarmAgent(agentId)
+      continue
+    }
+    let busy = false
+    try { ({ busy } = await scanAgentPaneStatus(agent)) } catch { busy = false }
+    if (busy) {
+      _armedSince.set(agentId, now)
+    } else if (shouldDisarm(now, _armedSince.get(agentId) || 0, busy, ARM_LINGER_MS)) {
+      disarmAgent(agentId)
+    }
+  }
 }
 
 async function rpcResolveFile({ path: filePath, cwd, server_url }) {
@@ -2107,6 +3280,12 @@ async function attributeViteByCwd(pid) {
 
 // ─── Vite reaper — kill dev servers nobody's using ──────────────────
 const VITE_IDLE_THRESHOLD_MS = parseInt(process.env.REAPER_VITE_MS, 10) || 10 * 60 * 1000
+// Floor the pressure-scaled timeout: even at 99% memory the threshold collapsed
+// to ~1 min, which SIGKILLed dev servers during a normal edit pause (the "idle"
+// signal is just "no browser currently on the port" — true for most of an agent's
+// edit loop). Never reap a dev server with less than this much idle, so a brief
+// pause can't lose an in-use server; a genuinely abandoned one still gets reaped.
+const VITE_MIN_IDLE_MS = parseInt(process.env.REAPER_VITE_MIN_MS, 10) || 5 * 60 * 1000
 const VITE_SWEEP_INTERVAL_MS = parseInt(process.env.REAPER_VITE_INTERVAL_MS, 10) || 60 * 1000
 const _viteLastClient = new Map()
 const BROWSER_NAME_RE = /Google|Chrome|Chromium|Firefox|Safari|WebKit/i
@@ -2191,7 +3370,8 @@ async function reapVites() {
     }
     if (!_viteLastClient.has(v.pid)) _viteLastClient.set(v.pid, now)
     const idleMs = now - _viteLastClient.get(v.pid)
-    if (idleMs > pressureScaledTimeout(VITE_IDLE_THRESHOLD_MS)) {
+    const threshold = Math.max(VITE_MIN_IDLE_MS, pressureScaledTimeout(VITE_IDLE_THRESHOLD_MS))
+    if (idleMs > threshold) {
       try {
         process.kill(v.pid, 'SIGKILL')
         console.log(`[vite-reaper] killed pid=${v.pid} ports=${v.ports.join(',')} idle=${Math.round(idleMs / 60000)}m pressure=${(getMemoryPressure() * 100).toFixed(0)}%`)
@@ -2227,8 +3407,20 @@ async function listPlaywrightBrowsers() {
     const pid = parseInt(m[1], 10)
     const ppid = parseInt(m[2], 10)
     const args = m[3]
-    if (!args.includes('playwright_chromiumdev_profile') && !args.includes('ms-playwright')) continue
+    if (!isPlaywrightBrowserArgs(args)) continue
     if (args.includes('--type=')) continue
+    // Skip the playwright-cli session DAEMON itself (`run-cli-server`). Its
+    // --daemon-session path lives under .../ms-playwright/..., so it matches the
+    // browser filter above — but it's a node daemon, not a browser. It's detached
+    // (ppid=1) so the orphan heuristic always flags it, and killing it orphans
+    // the Chrome it owns and closes the session — the recurring "shared browser
+    // keeps dying / nobody can use pw" bug. The reaper still reaps real orphan Chrome.
+    if (args.includes('run-cli-server')) continue
+    // Never reap the canonical `tlda-dev pw` shared browser. It's a launcher-less
+    // daemon by design (persists until `tlda pw reap`), so the orphan heuristic
+    // always flags it — and under memory pressure the threshold collapses to ~30s,
+    // killing it every minute, which strands agents on a blank data: tab.
+    if (args.includes('ud-shared-chrome')) continue
     browsers.push({ pid, ppid, args })
   }
   return browsers
@@ -2413,11 +3605,11 @@ const RPC_HANDLERS = {
   'send-text': rpcSendText,
   'capture-pane': rpcCapturePane,
   'interrupt': rpcInterrupt,
+  'soft-interrupt': rpcSoftInterrupt,
   'check-alive': rpcCheckAlive,
   'list-sessions': rpcListSessions,
   'kick': rpcKick,
   'kill-session': rpcKillSession,
-  'restart-mcp': rpcRestartMcp,
   'start-terminal-watch': rpcStartTerminalWatch,
   'stop-terminal-watch': rpcStopTerminalWatch,
   'terminal-resize': rpcTerminalResize,
@@ -2427,6 +3619,7 @@ const RPC_HANDLERS = {
   'rechat': rpcRechat,
   'kill-orphan-chromium': rpcKillOrphanChromium,
   'write-backing-file': rpcWriteBackingFile,
+  'mirror-shadow-ref': rpcMirrorShadowRef,
   'reaper-kill': rpcReaperKill,
   'reaper-sweep': rpcReaperSweep,
 }
@@ -2499,26 +3692,49 @@ function connect() {
         hostname: HOSTNAME,
         version: VERSION,
         boot_id: BOOT_ID,
+        install_path: INSTALL_PATH,
       })
     },
     onMessage: handleServerMessage,
-    onClose: teardownWatchers,
+    onClose: () => {
+      _serverReady = false
+      _missingSessionSince.clear()
+      _missingRuntimeSince.clear()
+      teardownWatchers()
+    },
   })
   _rws.connect()
 }
 
 function handleServerMessage(msg) {
   if (msg.type === 'daemon-welcome') {
+    _serverReady = true
     agents = msg.agents || []
     projects = msg.projects || []
     log.info(`welcome: ${agents.length} agents, ${projects.length} projects`)
-    syncSessionWatchers(agents)
+    void syncSessionWatchers(agents).catch(e => log.error(`syncSessionWatchers failed: ${e.stack || e.message}`))
     syncSourceWatchers(projects, msg.activeViewers)
     flushPendingSourceChanges()
     // Periodic death detection — O(1) spawns per cycle (one tmux list-sessions).
     if (!_deathCheckInterval) {
       _deathCheckInterval = setInterval(checkAgentLiveness, DEATH_CHECK_MS)
       setTimeout(checkAgentLiveness, 5000)
+    }
+    // Fast status state machine — pulls panes only for agents armed by recent
+    // activity, so it's bounded to the few agents actually working (1-3s status,
+    // accurate turn edges) without a fleet-wide sweep.
+    if (!_statusScanInterval) {
+      _statusScanInterval = setInterval(scanArmedStatus, STATUS_SCAN_MS)
+    }
+    // Non-JSONL activity sources. Goose writes to sqlite instead of a Claude/Codex
+    // JSONL, so its adapter polls and feeds the same bufferActivity() path.
+    if (!_gooseActivityInterval) {
+      _gooseActivityInterval = setInterval(() => {
+        HARNESS_ADAPTERS.goose.activity.poll(agents, {
+          bufferActivity, log, lastSeen: _gooseActivityLastSeen,
+          isNoise: (base) => ACTIVITY_NOISE.has(base),
+        })
+      }, GOOSE_ACTIVITY_MS)
     }
     if (!_autoAcceptStarted) {
       _autoAcceptStarted = true
@@ -2528,7 +3744,7 @@ function handleServerMessage(msg) {
   }
   if (msg.type === 'agents-updated') {
     agents = msg.agents || []
-    syncSessionWatchers(agents)
+    void syncSessionWatchers(agents).catch(e => log.error(`syncSessionWatchers failed: ${e.stack || e.message}`))
     return
   }
   if (msg.type === 'projects-updated') {
@@ -2539,10 +3755,6 @@ function handleServerMessage(msg) {
   if (msg.type === 'active-viewers') {
     _activeViewerSet = new Set(msg.projects || [])
     syncFsWatchers()
-    return
-  }
-  if (msg.type === 'version-committed') {
-    handleVersionCommitted(msg)
     return
   }
   if (msg.type === 'daemon-evict') {
@@ -2571,70 +3783,6 @@ function handleServerMessage(msg) {
   // Unknown message — ignore for forward compatibility.
 }
 
-// ---------- git mirror sync ----------
-
-async function handleVersionCommitted(msg) {
-  const { project: projectName, hash, repoPath, autoSync } = msg
-  if (!autoSync) return
-
-  const project = projects.find(p => p.name === projectName)
-  if (!project?.sourceDir) return
-
-  const sourceDir = project.sourceDir
-
-  // Check if sourceDir is a git repo
-  try {
-    await execFileP('git', ['rev-parse', '--git-dir'], { cwd: sourceDir, timeout: 5000 })
-  } catch {
-    return // not a git repo
-  }
-
-  // Ensure shadow repo is added as a remote
-  try {
-    await execFileP('git', ['remote', 'get-url', 'tlda-shadow'], { cwd: sourceDir, timeout: 5000 })
-  } catch {
-    // Remote doesn't exist, add it
-    try {
-      await execFileP('git', ['remote', 'add', 'tlda-shadow', repoPath], { cwd: sourceDir, timeout: 5000 })
-    } catch (e) {
-      log.warn(`failed to add tlda-shadow remote for ${projectName}: ${e.message}`)
-      return
-    }
-  }
-
-  // Fetch from shadow repo, stash local changes, fast-forward merge, unstash
-  try {
-    await execFileP('git', ['fetch', 'tlda-shadow'], { cwd: sourceDir, timeout: 15000 })
-    // Determine the branch name in the shadow repo
-    const { stdout: refOut } = await execFileP('git', ['rev-parse', '--verify', 'tlda-shadow/main'], { cwd: sourceDir, timeout: 5000 }).catch(() => ({ stdout: '' }))
-    const ref = refOut.trim() ? 'tlda-shadow/main' : 'FETCH_HEAD'
-
-    // Stash any local changes (may fail on repos with symlink-traversing paths)
-    let didStash = false
-    try {
-      const { stdout: stashOut } = await execFileP('git', ['stash', 'push', '-m', 'tlda-sync-stash'], { cwd: sourceDir, timeout: 10000 })
-      didStash = !stashOut.includes('No local changes')
-    } catch (stashErr) {
-      log.warn(`stash failed for ${projectName} (continuing without stash): ${stashErr.message.split('\n')[0]}`)
-    }
-
-    try {
-      await execFileP('git', ['merge', '--ff-only', ref], { cwd: sourceDir, timeout: 15000 })
-      log.info(`synced ${projectName}: ${hash?.slice(0, 7)}`)
-    } finally {
-      // Always unstash, even if merge fails
-      if (didStash) {
-        await execFileP('git', ['stash', 'pop'], { cwd: sourceDir, timeout: 10000 }).catch(e => {
-          log.warn(`stash pop failed for ${projectName}: ${e.message}`)
-        })
-      }
-    }
-  } catch (e) {
-    log.warn(`sync failed for ${projectName}: ${e.message}`)
-    sendMsg({ type: 'daemon-warning', project: projectName, message: `git sync failed: ${e.message.split('\n')[0]}` })
-  }
-}
-
 // ---------- lifecycle ----------
 
 if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true })
@@ -2657,7 +3805,7 @@ function shutdown(signal) {
   // Log WHY we're dying so the next post-mortem isn't a scavenger hunt.
   log.info(`shutdown via ${signal || 'unknown'} signal; saving cursors and exiting`)
   saveCursors()
-  try { fs.unlinkSync(PID_FILE) } catch {}
+  unlinkPidfileIfOwnPid(PID_FILE, process.pid)
   _rws?.close()
   process.exit(0)
 }
@@ -2705,5 +3853,12 @@ log.info(`  machine_id  = ${MACHINE_ID}`)
 log.info(`  boot_id     = ${BOOT_ID}`)
 log.info(`  user        = ${USER}@${HOSTNAME}`)
 startHeartbeat()
+createManagedBotSupervisor({
+  bots: getManagedBots(config),
+  machineId: MACHINE_ID,
+  resolveScript: resolveBotScript,
+  configDir: CONFIG_DIR,
+  log,
+}).start()
 startReapers()
 connect()

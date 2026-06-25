@@ -136,6 +136,14 @@ html.mousemove .fleet-reaper-shape:hover .fleet-btn-group {
 .fleet-btn-group .fleet-filter-btn svg {
   display: block;
 }
+.fleet-btn-group .fleet-traffic-mode-btn {
+  font-size: 9px;
+  text-transform: uppercase;
+}
+.fleet-btn-group .fleet-traffic-mode-btn-active {
+  color: var(--accent);
+  opacity: 0.9;
+}
 
 /* --- Layout/resize button (inside fleet-btn-group flex column) --- */
 .fleet-shape .fleet-layout-btn {
@@ -165,6 +173,30 @@ html.mousemove .fleet-reaper-shape:hover .fleet-btn-group {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 8px;
+}
+.fleet-chat-shape .fleet-filter-presets {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.fleet-chat-shape .fleet-filter-preset {
+  border: 1px solid rgba(128, 128, 128, 0.18);
+  background: rgba(128, 128, 128, 0.06);
+  color: var(--text-dim);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font: inherit;
+  font-size: 9px;
+  line-height: 14px;
+  cursor: pointer;
+}
+.fleet-chat-shape .fleet-filter-preset:hover:not(:disabled) {
+  color: var(--text-bright);
+  border-color: rgba(128, 128, 128, 0.32);
+}
+.fleet-chat-shape .fleet-filter-preset:disabled {
+  cursor: default;
+  opacity: 0.28;
 }
 /* --- Filter AND group boxes (ported from dashboard .filter-and-group) --- */
 .fleet-chat-shape .fleet-filter-group-container {
@@ -246,30 +278,27 @@ html.mousemove .fleet-reaper-shape:hover .fleet-btn-group {
 /* --- Filter drop panes (pill hover: to/from preview) --- */
 .fleet-chat-shape .fleet-filter-drop-panes {
   flex: 1;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: minmax(86px, 33%) 1fr;
+  grid-template-rows: 1fr 1fr;
   gap: 0;
   position: relative;
 }
 
-/* Replace zone — bottom-left corner, replaces entire filter with to+from this agent */
+/* Replace zone — full left third, replaces entire filter with to+from this agent */
 .fleet-chat-shape .fleet-filter-replace-zone {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  width: 28%;
-  aspect-ratio: 1;
+  grid-column: 1;
+  grid-row: 1 / span 2;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 2px;
-  padding: 4px;
-  border-top: 1px solid rgba(128, 128, 128, 0.12);
+  min-width: 0;
+  padding: 6px;
   border-right: 1px solid rgba(128, 128, 128, 0.12);
   background: rgba(128, 128, 128, 0.03);
   transition: background 0.15s;
-  z-index: 2;
 }
 .fleet-chat-shape .fleet-filter-replace-zone-active {
   background: rgba(180, 140, 220, 0.12);
@@ -287,16 +316,22 @@ html.mousemove .fleet-reaper-shape:hover .fleet-btn-group {
   opacity: 0.35;
 }
 .fleet-chat-shape .fleet-filter-drop-pane {
-  flex: 1;
   display: flex;
   flex-direction: column;
   justify-content: center;
-  align-items: flex-start;
+  align-items: center;
   padding: 0 10px;
+  min-width: 0;
   transition: background 0.15s;
 }
 .fleet-chat-shape .fleet-filter-pane-to {
+  grid-column: 2;
+  grid-row: 1;
   border-bottom: 1px solid rgba(128, 128, 128, 0.1);
+}
+.fleet-chat-shape .fleet-filter-pane-from {
+  grid-column: 2;
+  grid-row: 2;
 }
 .fleet-chat-shape .fleet-filter-pane-active.fleet-filter-pane-to {
   background: rgba(122, 158, 200, 0.08);
@@ -356,18 +391,17 @@ html.mousemove .fleet-reaper-shape:hover .fleet-btn-group {
   scrollbar-width: thin;
   scrollbar-color: rgba(255,255,255,0.1) transparent;
   scrollbar-gutter: stable;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
 }
 
 /* --- Draggable elements in chat --- */
 /* Only timestamps and attachment-type elements are drag handles.
    Nick spans and message text are selectable/copyable. */
 .fleet-chat-shape .chat-ts,
-.fleet-chat-shape .chat-activity-card,
-/* Large draggable items now only drag from their .drag-handle */
-.fleet-chat-shape .code-block-header,
 .fleet-chat-shape .tool-ref,
-.fleet-chat-shape .md-file-card,
-.fleet-chat-shape .tlda-card {
+.fleet-chat-shape .md-file-card {
   cursor: default;
   touch-action: none;
   user-select: none;
@@ -379,6 +413,7 @@ html.mousemove .fleet-reaper-shape:hover .fleet-btn-group {
    transparent surface, like a very slightly textured area. */
 .fleet-chat-shape .drag-handle {
   cursor: grab;
+  touch-action: none;
   opacity: 0;
   transition: opacity 2s;
   flex-shrink: 0;
@@ -766,17 +801,13 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 }
 
 /* --- Timer messages --- */
-/* Active countdown is an actionable, time-critical control (Skip can cancel it),
-   so it's deliberately more prominent than passive chrome. */
+/* The active countdown reads as normal chat text with a quiet purple timer —
+   it's information, not an alarm. No loud bar, no bold, no orange. */
 .fleet-chat-shape .chat-timer-countdown {
   font-size: 12px;
-  opacity: 0.95;
-  border-left: 2px solid var(--orange, #e08a3c);
-  padding-left: 6px;
 }
 .fleet-chat-shape .chat-timer-countdown .timer-msg {
-  color: var(--orange, #e08a3c);
-  font-weight: 600;
+  color: var(--purple, #9090c0);
 }
 .fleet-chat-shape .chat-timer-cancelled {
   font-size: 11px;
@@ -785,6 +816,15 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .chat-timer-cancelled .timer-msg {
   color: var(--text-dim);
   text-decoration: line-through;
+}
+/* Fired — terminal but persists in the log (the ✅ marks it ran). More present
+   than the struck "cancelled" line, but quieter than the active countdown. */
+.fleet-chat-shape .chat-timer-fired {
+  font-size: 11px;
+  opacity: 0.7;
+}
+.fleet-chat-shape .chat-timer-fired .timer-msg {
+  color: var(--text-dim);
 }
 .fleet-chat-shape .chat-timer-msg {
   font-size: 11px;
@@ -866,7 +906,8 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   font-size: 10px;
 }
 /* Resend control on a failed ("not sent") message — subtle until hovered. */
-.fleet-chat-shape .chat-resend-btn {
+.fleet-chat-shape .chat-resend-btn,
+.fleet-chat-shape .chat-dismiss-failed-btn {
   background: none;
   border: none;
   color: var(--orange);
@@ -876,8 +917,12 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   opacity: 0.6;
   transition: opacity 0.2s;
 }
-.fleet-chat-shape .chat-resend-btn:hover {
+.fleet-chat-shape .chat-resend-btn:hover,
+.fleet-chat-shape .chat-dismiss-failed-btn:hover {
   opacity: 1;
+}
+.fleet-chat-shape .chat-dismiss-failed-btn {
+  color: var(--text-dim);
 }
 .fleet-chat-shape .chat-voicemail {
   opacity: 0.5;
@@ -920,11 +965,6 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   display: block;
   cursor: pointer;
 }
-.fleet-chat-shape .chat-image-shared-doc {
-  width: 75%;
-  max-width: 75%;
-}
-
 /* Lightbox overlay for full-size image viewing (appended to body) */
 .chat-lightbox {
   position: fixed;
@@ -942,118 +982,6 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   object-fit: contain;
   border-radius: 6px;
   box-shadow: 0 4px 30px rgba(0,0,0,0.5);
-}
-
-/* Markdown lightbox */
-.chat-lightbox-md {
-  position: fixed;
-  inset: 0;
-  z-index: 999999;
-  background: rgba(0,0,0,0.7);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: default;
-}
-.chat-lightbox-md-card {
-  background: #1a1a1a;
-  color: #e0e0e0;
-  border-radius: 8px;
-  box-shadow: 0 8px 40px rgba(0,0,0,0.6);
-  max-width: min(90vw, 720px);
-  max-height: 85vh;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-.chat-lightbox-md-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 10px 16px;
-  font-size: 13px;
-  font-weight: 600;
-  color: rgba(255,255,255,0.6);
-  border-bottom: 1px solid rgba(255,255,255,0.08);
-  flex-shrink: 0;
-}
-.chat-lightbox-md-close {
-  background: none;
-  border: none;
-  color: rgba(255,255,255,0.4);
-  cursor: pointer;
-  font-size: 16px;
-  padding: 0 4px;
-  transition: color 0.15s;
-}
-.chat-lightbox-md-close:hover { color: rgba(255,255,255,0.8); }
-.chat-lightbox-md-body {
-  padding: 16px 24px;
-  overflow-y: auto;
-  font-size: 14px;
-  line-height: 1.6;
-}
-.chat-lightbox-md-body p { margin: 0 0 0.8em; }
-.chat-lightbox-md-body p:last-child { margin-bottom: 0; }
-.chat-lightbox-md-body h1,
-.chat-lightbox-md-body h2,
-.chat-lightbox-md-body h3 {
-  margin: 1.2em 0 0.4em;
-  color: rgba(255,255,255,0.85);
-}
-.chat-lightbox-md-body h1 { font-size: 18px; }
-.chat-lightbox-md-body h2 { font-size: 16px; }
-.chat-lightbox-md-body h3 { font-size: 14px; }
-.chat-lightbox-md-body pre {
-  background: rgba(255,255,255,0.06);
-  border-radius: 4px;
-  padding: 8px 12px;
-  overflow-x: auto;
-  font-size: 12px;
-}
-.chat-lightbox-md-body code {
-  background: rgba(255,255,255,0.08);
-  padding: 1px 4px;
-  border-radius: 3px;
-  font-size: 0.9em;
-}
-.chat-lightbox-md-body pre code {
-  background: none;
-  padding: 0;
-}
-.chat-lightbox-md-body ul,
-.chat-lightbox-md-body ol {
-  padding-left: 1.5em;
-  margin: 0 0 0.8em;
-}
-.chat-lightbox-md-body img {
-  max-width: 100%;
-  border-radius: 4px;
-}
-.chat-lightbox-md-body .katex-display {
-  overflow-x: auto;
-  overflow-y: hidden;
-  padding: 4px 0;
-}
-.chat-lightbox-md-body .at-ref {
-  color: #60a5fa;
-  text-decoration: underline;
-  text-decoration-color: rgba(96, 165, 250, 0.4);
-  cursor: pointer;
-}
-.chat-lightbox-md-body .at-ref:hover {
-  text-decoration-color: rgba(96, 165, 250, 0.8);
-}
-.chat-lightbox-md-body .at-ref-broken {
-  color: #f87171;
-  text-decoration: underline wavy;
-  text-decoration-color: rgba(248, 113, 113, 0.4);
-}
-.chat-lightbox-md-loading {
-  padding: 32px;
-  text-align: center;
-  color: rgba(255,255,255,0.4);
-  font-size: 13px;
 }
 
 /* --- Long messages --- */
@@ -1090,7 +1018,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   width: 100%;
   max-height: 150px;
   cursor: grab;
-  touch-action: none;
+  touch-action: pan-y;
 }
 .fleet-chat-shape .tlda-card-header {
   display: flex;
@@ -1498,6 +1426,44 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .diff-side pre { margin: 0; white-space: pre-wrap; }
 .fleet-chat-shape .diff-side code { font-size: 10px; }
 .fleet-chat-shape .diff-tex-raw { font-family: monospace; opacity: 0.6; font-size: 10px; }
+.fleet-chat-shape .edit-unified-diff {
+  margin: 0;
+  padding: 4px 6px;
+  font-size: 10px;
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+.fleet-chat-shape .edit-unified-diff code { font-size: 10px; }
+.fleet-chat-shape .edit-unified-diff .diff-line { display: block; min-height: 1.2em; }
+.fleet-chat-shape .edit-unified-diff .diff-add { background: rgba(95, 165, 110, 0.12); }
+.fleet-chat-shape .edit-unified-diff .diff-del { background: rgba(190, 95, 95, 0.12); }
+.fleet-chat-shape .edit-unified-diff .diff-hunk { opacity: 0.7; font-weight: 600; }
+
+/* Location + scope header above an edit diff (which file, line, ± size).
+   Mirrors the dim, small .code-block-header convention. */
+.fleet-chat-shape .edit-diff-loc {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px 0;
+  font-size: 9px;
+}
+.fleet-chat-shape .edit-diff-path { font-family: monospace; opacity: 0.55; }
+.fleet-chat-shape .edit-diff-stat { opacity: 0.4; font-variant-numeric: tabular-nums; }
+/* "tentative" marker for a not-yet-applied (proposed) edit — subtle, like
+   .build-warning-badge: present but quiet. */
+.fleet-chat-shape .edit-diff-tentative {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 8px;
+  opacity: 0.55;
+}
+
+/* Compact apply line: "✓ edit applied  <proposal-ref>" */
+.fleet-chat-shape .tool-apply-line { display: flex; align-items: center; gap: 6px; }
+.fleet-chat-shape .apply-check { opacity: 0.6; }
+.fleet-chat-shape .apply-text { opacity: 0.7; }
+.fleet-chat-shape .apply-ref { font-family: monospace; font-size: 10px; opacity: 0.45; }
 
 /* --- Code cards (inside activity) --- */
 .fleet-chat-shape .code-block-wrap {
@@ -1710,6 +1676,13 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   border-radius: 2px;
   padding: 0 4px;
 }
+.fleet-agents-shape .fleet-agents-detail-cap {
+  flex-shrink: 0;
+  opacity: 0.55;
+  background: rgba(129, 199, 132, 0.15);
+  border-radius: 2px;
+  padding: 0 4px;
+}
 
 /* --- Column widths --- */
 
@@ -1729,6 +1702,9 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   min-width: 0;
   font-size: 9px;
   opacity: 0.6;
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1867,6 +1843,14 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   display: flex;
   gap: 3px;
   align-items: center;
+  /* Wide enough to show a full project:name:model:effort spec, but capped so it
+     sits right-of-center with a clear gap from the awake/hibernating count on the
+     left (the footer's space-between pushes the capped input toward the right
+     edge) — not crowding the whole row. */
+  flex: 1;
+  min-width: 0;
+  max-width: 50%;
+  margin-left: 10px;
 }
 .fleet-agents-shape .fleet-agents-spawn-input-wrap {
   position: relative;
@@ -1889,6 +1873,11 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 }
 .fleet-agents-shape .fleet-agents-spawn-search:focus {
   border-color: rgba(128,128,128,0.5);
+}
+.fleet-agents-shape .fleet-agents-spawn-search.is-invalid,
+.fleet-agents-shape .fleet-agents-spawn-search.is-invalid:focus {
+  border-color: rgba(200,90,90,0.6);
+  color: #c85a5a;
 }
 .fleet-agents-shape .fleet-agents-spawn-ghost {
   position: absolute;
@@ -1962,6 +1951,11 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-agents-shape .fleet-agents-spawn-btn:hover {
   opacity: 1;
   border-color: rgba(128,128,128,0.4);
+}
+.fleet-agents-shape .fleet-agents-spawn-btn.is-disabled {
+  opacity: 0.25;
+  cursor: not-allowed;
+  border-color: rgba(200,90,90,0.4);
 }
 
 /* --- Search shape enhancements --- */
@@ -2230,15 +2224,39 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   gap: 3px;
   background: rgba(99, 160, 219, 0.15);
   border-color: rgba(99, 160, 219, 0.25);
-  color: var(--accent);
+  color: var(--text-bright, #c0c0d4);
+  max-width: min(100%, 360px);
+  min-width: 0;
+  overflow: hidden;
 }
 .fleet-chat-shape .ref-chip-doc:hover {
-  background: rgba(99, 160, 219, 0.25);
-  border-color: rgba(99, 160, 219, 0.45);
+  background: rgba(99, 160, 219, 0.28);
+  border-color: rgba(130, 190, 245, 0.55);
+  color: #edf6ff;
 }
 .fleet-chat-shape .ref-chip-doc-icon {
   font-size: 10px;
   line-height: 1;
+  flex: 0 0 auto;
+}
+.fleet-chat-shape .ref-chip-doc-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  color: inherit;
+}
+.fleet-chat-shape .ref-chip-doc-summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  color: var(--text, #a8a8c0);
+  font-weight: 400;
+}
+.fleet-chat-shape .ref-chip-doc-summary::before {
+  content: " — ";
+  color: var(--text-dim, #8888a0);
 }
 .fleet-chat-shape .ref-chip-broken {
   background: rgba(200, 100, 60, 0.12);
@@ -2394,7 +2412,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   right: 0;
   bottom: 0;
   /* Must exactly match textarea: same padding, border, font */
-  padding: 4px 8px;
+  padding: 4px 58px 4px 78px;
   border: 1px solid transparent;
   border-radius: 4px;
   font-size: var(--fleet-base-font, 11px);
@@ -2433,7 +2451,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 }
 .chat-thinking .thinking-elapsed {
   color: var(--text-dim, #888);
-  opacity: 0.5;
+  opacity: 0.75;
   font-size: 10px;
 }
 
@@ -2452,9 +2470,14 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   color: var(--text-dim, #888);
 }
 
-/* Queue divider — border on the last message before queued messages */
+/* Queue divider. Every chat row reserves a 1px bottom border (transparent), so
+   the divider can never change layout height — only the barrier row colors its
+   border in. Toggling/moving the barrier just darkens a line; it never grows. */
+.chat-row-wrap {
+  border-bottom: 1px solid transparent;
+}
 .queue-divider {
-  border-bottom: 1px solid rgba(128, 128, 128, 0.25);
+  border-bottom-color: rgba(128, 128, 128, 0.25);
 }
 
 /* Escalation badges in thinking indicator */
@@ -2751,22 +2774,37 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   color: #9370db;
 }
 
-/* Hard-lock scroll toggle — magnet icon, leftmost of textarea */
-.fleet-chat-shape .fleet-hardlock-toggle {
+/* Terminal, traffic toggle, then magnet: inline chrome floats over the textfield.
+   The three controls live in a tight flex cluster (.fleet-composer-gutter) so
+   they sit adjacent regardless of the traffic label width — no dead gap. The
+   container is pointer-events:none so the inter-button gaps fall through to the
+   textarea; each button re-enables pointer events. Every button is the full
+   row height (touch target) with a transparent box, so nothing drawn moves. */
+.fleet-chat-shape .fleet-composer-gutter {
   position: absolute;
-  left: 4px;
-  top: 50%;
-  transform: translateY(-50%);
+  left: 6px;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  z-index: 2;
+  pointer-events: none;
+}
+.fleet-chat-shape .fleet-hardlock-toggle {
+  order: 3;
+  pointer-events: auto;
+  height: 36px;
   border: none;
   background: transparent;
   color: inherit;
   cursor: pointer;
   opacity: 0.05;
   transition: opacity 0.3s;
-  padding: 0;
+  padding: 0 4px;
   display: flex;
   align-items: center;
-  z-index: 2;
+  justify-content: center;
   line-height: 1;
 }
 .fleet-chat-shape .fleet-hardlock-toggle:hover {
@@ -2777,26 +2815,75 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   opacity: 0.55;
 }
 
-/* Terminal peek icon — sits right of the magnet */
 .fleet-chat-shape .fleet-terminal-icon {
-  position: absolute;
-  left: 20px;
-  top: 50%;
-  transform: translateY(-50%);
+  order: 1;
+  pointer-events: auto;
+  height: 36px;
   border: none;
   background: transparent;
   color: inherit;
   cursor: pointer;
   opacity: 0.05;
   transition: opacity 0.3s;
-  padding: 0;
+  padding: 0 4px;
   display: flex;
   align-items: center;
-  z-index: 2;
+  justify-content: center;
   line-height: 1;
 }
 .fleet-chat-shape .fleet-terminal-icon:hover {
   opacity: 0.55;
+}
+
+/* Composer traffic toggle — text-only control, a flex item in the gutter.
+   The box is the full row height (36px) and hugs the glyph with side padding
+   so it is actually tappable on touch — the old glyph-sized 12x20 box was
+   unhittable by hand and impossible on iPad. The box is transparent, so the
+   drawn glyph is unchanged; it just gets a real hit area, and the flex cluster
+   places the magnet button right beside it (no dead gap). */
+.fleet-chat-shape .fleet-composer-traffic-toggle {
+  order: 2;
+  pointer-events: auto;
+  min-width: 0;
+  height: 36px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.22;
+  transition: opacity 0.3s;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  font: inherit;
+  font-size: 9px;
+  white-space: nowrap;
+  /* Touch hygiene for a tap target whose content is text: don't let a tap or
+     long-press select the "DM"/"All" label, and remove the tap delay. (The
+     actual touch fix is driving the cycle from onPointerUp in the component —
+     on touch this text label never synthesizes a click; see FleetChatShape.) */
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  touch-action: manipulation;
+}
+.fleet-chat-shape .fleet-composer-traffic-toggle:hover,
+.fleet-chat-shape .fleet-composer-traffic-toggle:focus-visible {
+  opacity: 0.65;
+}
+.fleet-chat-shape .fleet-composer-traffic-toggle:disabled {
+  cursor: default;
+  opacity: 0.05;
+}
+.fleet-chat-shape .fleet-composer-traffic-toggle-dm-quiet {
+  color: var(--text-dim);
+}
+.fleet-chat-shape .fleet-composer-traffic-toggle-dm,
+.fleet-chat-shape .fleet-composer-traffic-toggle-agent {
+  color: var(--accent);
 }
 
 /* Ghost drop preview — purple lozenges shown in the input while dragging a file
@@ -2903,12 +2990,19 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   padding: 2px;
   overflow: hidden;
   box-sizing: border-box;
+  position: relative;
 }
 
 /* The terminal renders at a fixed grid (PEEK_COLS × PEEK_ROWS) and is shrunk to
    fit by a CSS transform on this wrapper (scale set inline from React). The
    xterm's own viewport must NOT scroll — we always show the live screen. */
 .fleet-chat-shape .fleet-terminal-hover-scale {
+  width: max-content;
+}
+
+/* Lightbox backscroll: one continuous capture (real tmux history flowing into
+   the current screen). Static (write-once) so the body scrolls it natively. */
+.fleet-chat-shape .fleet-terminal-hover-history {
   width: max-content;
 }
 
@@ -3555,31 +3649,59 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   color: var(--text-bright);
 }
 
-/* --- Eliza pending-nudge suggestions (clickable + hover tooltip) --- */
+/* --- Agent suggestion chips (clickable + hover tooltip) --- */
 /* At rest the line looks identical to the old faint status line. Hover reveals
    a tooltip describing the trigger phrase + the text that will be sent; clicking
    fires the release. The label text and the tooltip carry their own opacity so
    the tooltip stays fully readable while the resting label stays faint. */
-.fleet-chat-shape .eliza-status-prefix {
-  opacity: 0.28;
+/* A disjunctive group: ✕ on the left, options `|`-separated. The status row is
+   pointer-events:none (never blocks the chat behind); the group opts back in. */
+.fleet-chat-shape .suggestion-group {
+  pointer-events: auto;
+  cursor: default;
+  white-space: nowrap;
 }
-.fleet-chat-shape .eliza-suggestion {
-  position: relative;
-  cursor: pointer;
-}
-.fleet-chat-shape .eliza-suggestion-label {
+.fleet-chat-shape .suggestion-chip-label {
   opacity: 0.4;
+  cursor: pointer;
   transition: opacity 0.2s;
+  /* Cap each label so a long one can't blow out the row — the full label +
+     text always show in the hover tooltip. */
+  display: inline-block;
+  max-width: 16ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
 }
-.fleet-chat-shape .eliza-suggestion:hover .eliza-suggestion-label {
+.fleet-chat-shape .suggestion-chip-label:hover {
   opacity: 0.85;
 }
+.fleet-chat-shape .suggestion-group-sep {
+  opacity: 0.35;
+}
+/* Dismiss ✕ on the LEFT of the group — invisible at rest, fades in on group hover. */
+.fleet-chat-shape .suggestion-chip-x {
+  margin-right: 4px;
+  font-size: 9px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.fleet-chat-shape .suggestion-group:hover .suggestion-chip-x {
+  opacity: 0.5;
+}
+.fleet-chat-shape .suggestion-chip-x:hover {
+  opacity: 1;
+}
 
-.fleet-chat-shape .eliza-suggestion-tip {
-  position: absolute;
-  bottom: 100%;
-  left: 0;
-  margin-bottom: 6px;
+/* The tooltip is its own object rendered ABOVE the shapes in the HUD layer
+   (<SuggestionTip/> in FleetHUD), NOT nested in the dimmed fleet-chat shape and
+   NOT a portal. So: a global selector (it lives in .fleet-hud-wrap, not
+   .fleet-chat-shape), positioned via inline position:fixed, theme vars passed
+   inline off the chip. Mounted only while hovered → always visible (no opacity
+   transition needed). Card styling only. */
+.suggestion-chip-tip {
   width: max-content;
   max-width: 320px;
   display: flex;
@@ -3595,33 +3717,21 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   line-height: 1.45;
   text-align: left;
   white-space: normal;
-  opacity: 0;
   pointer-events: none;
-  transform: translateY(2px);
-  /* Fast hide, no delay — vanishes the instant the cursor leaves the name. */
-  transition: opacity 0.12s ease, transform 0.12s ease;
-  transition-delay: 0s;
   z-index: 8300;
 }
-.fleet-chat-shape .eliza-suggestion:hover .eliza-suggestion-tip {
-  opacity: 1;
-  transform: translateY(0);
-  /* Hover-intent: only engage after resting ~0.7s, so sweeping the cursor
-     through the names doesn't pop the card. */
-  transition-delay: 0.7s;
-}
-.fleet-chat-shape .eliza-tip-trigger {
+.suggestion-chip-tip .suggestion-tip-trigger {
   color: var(--text-bright);
 }
-.fleet-chat-shape .eliza-tip-trigger b {
+.suggestion-chip-tip .suggestion-tip-trigger b {
   color: var(--accent);
   font-weight: 600;
 }
-.fleet-chat-shape .eliza-tip-target {
+.suggestion-chip-tip .suggestion-tip-target {
   color: var(--text-dim);
   font-size: 10px;
 }
-.fleet-chat-shape .eliza-tip-text {
+.suggestion-chip-tip .suggestion-tip-text {
   margin-top: 2px;
   padding-top: 6px;
   border-top: 1px solid var(--border);
@@ -3630,3 +3740,54 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   word-break: break-word;
 }
 
+/* ---- Skill-state hover popover (hover an agent name in chat) ---- */
+.fleet-skill-hover-pane {
+  position: fixed;
+  z-index: 600;
+  background: rgb(15, 15, 22);
+  border: 1px solid rgba(80, 80, 110, 0.4);
+  border-radius: 5px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  padding: 6px 7px 7px;
+  font-family: -apple-system, system-ui, sans-serif;
+  font-size: 10px;
+  line-height: 1.35;
+  color: rgba(220, 220, 230, 0.9);
+  max-height: 320px;
+  overflow-y: auto;
+  pointer-events: auto;
+}
+.fleet-skill-hover-head {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.45;
+  margin-bottom: 5px;
+}
+.fleet-skill-hover-empty { opacity: 0.4; font-style: italic; }
+.fleet-skill-hover-section { margin-bottom: 5px; }
+.fleet-skill-hover-section:last-child { margin-bottom: 0; }
+.fleet-skill-hover-label {
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.55;
+  margin-bottom: 2px;
+}
+.fleet-skill-hover-label.owed { color: rgba(235, 170, 70, 0.9); opacity: 0.85; }
+.fleet-skill-hover-label.dismissed { color: rgba(200, 130, 200, 0.85); opacity: 0.8; }
+.fleet-skill-hover-label.read { color: rgba(120, 200, 150, 0.85); opacity: 0.75; }
+.fleet-skill-hover-chips { display: flex; flex-wrap: wrap; gap: 3px; }
+.fleet-skill-chip {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 9px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+.fleet-skill-chip.owed { color: rgba(240, 185, 95, 0.95); background: rgba(235, 170, 70, 0.12); border-color: rgba(235, 170, 70, 0.25); }
+.fleet-skill-chip.dismissed { color: rgba(210, 160, 210, 0.9); background: rgba(200, 130, 200, 0.1); border-color: rgba(200, 130, 200, 0.2); }
+.fleet-skill-chip.read { color: rgba(150, 210, 175, 0.85); }
+.fleet-skill-dismissed-row { display: flex; align-items: baseline; gap: 4px; margin-bottom: 2px; flex-wrap: wrap; }
+.fleet-skill-reason { font-style: italic; opacity: 0.55; font-size: 9px; }

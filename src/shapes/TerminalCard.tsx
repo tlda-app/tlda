@@ -15,11 +15,12 @@ import { FitAddon } from '@xterm/addon-fit'
 import 'xterm/css/xterm.css'
 import './TerminalCard.css'
 import { log } from '../logger'
+import { getFleetWsBase } from '../fleet/fleet-data.mjs'
+import { appendToken } from '../authToken'
 
-// WebSocket for terminal — goes through Vite proxy in dev
-const FLEET_WS_HOST = typeof window !== 'undefined'
-  ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`
-  : 'ws://localhost:5176'
+// Terminal PTY is daemon-routed through the global fleet server, not the serving
+// origin (the hosted Pages host has no /ws/terminal). Derive from the resolved
+// fleet base via getFleetWsBase().
 
 interface TerminalCardProps {
   agentId: string
@@ -108,7 +109,7 @@ export function TerminalCard({ agentId, agentName, pinned, onDismiss, onMouseEnt
       setStatus('connecting')
       wsRef.current?.close()
 
-      const ws = new WebSocket(`${FLEET_WS_HOST}/ws/terminal?agent=${encodeURIComponent(agentId)}`)
+      const ws = new WebSocket(appendToken(`${getFleetWsBase()}/ws/terminal?agent=${encodeURIComponent(agentId)}`))
       wsRef.current = ws
 
       ws.onopen = () => {

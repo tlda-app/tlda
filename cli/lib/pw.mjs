@@ -1,5 +1,5 @@
 /**
- * tlda pw — one shared playwright-cli browser any agent can drive, with a
+ * tlda-dev pw — one shared playwright-cli browser any agent can drive, with a
  * PER-AGENT TAB so agents never blank each other out.
  *
  * The problem this solves, in two layers:
@@ -16,22 +16,51 @@
  *      whole browser and locking everyone else out.
  *
  * Usage:
- *   tlda pw <verb> [args...]   forward a playwright-cli verb to MY tab
- *   tlda pw acquire            open the shared browser (lazy) + ensure my tab
- *   tlda pw release            close my tab (browser stays up for others)
- *   tlda pw status             session state + my tab + current URL
- *   tlda pw reap               close the whole shared browser (the reaper)
- *   tlda pw center <region>    center the camera on doc | chat | fleet
+ *   tlda-dev pw <verb> [args...]   forward a playwright-cli verb to MY tab
+ *   tlda-dev pw acquire            open the shared browser (lazy) + ensure my tab
+ *   tlda-dev pw release            close my tab (browser stays up for others)
+ *   tlda-dev pw status             session state + my tab + current URL
+ *   tlda-dev pw reap               close the whole shared browser (the reaper)
+ *   tlda-dev pw center <region>    center the camera on doc | chat | fleet
  *
  * Identity (which tab is "mine") comes from TLDA_PW_AS → AGENT_WIN → FLEET_ID →
  * $USER@local, sanitized into a marker stamped on the tab's URL (`pwtab=<key>`).
  */
 
 import { spawnSync } from 'child_process'
-import { join } from 'path'
+import { join, dirname } from 'path'
+import { readFileSync, writeFileSync, existsSync, realpathSync, rmSync, mkdirSync } from 'fs'
+import { homedir } from 'os'
+import { fileURLToPath } from 'url'
+
+const REPO_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))))
 
 // Default to the one canonical session; overridable for isolated testing.
 const SESSION = process.env.TLDA_PW_SESSION || 'shared'
+
+// Pin the playwright-cli daemon's control SOCKET to a fixed, fence-visible path.
+// By default playwright-cli puts its client<->daemon unix socket under
+// $TMPDIR/playwright-cli. That breaks a FENCED agent driving the shared browser:
+// the fence remaps $TMPDIR (and the macOS sandbox denies AF_UNIX connect to the
+// real temp), so a fenced `tlda-dev pw` can't reach the out-of-fence daemon, sees
+// the live session as "closed", then destructively "recovers" (kills) the real
+// browser. /tmp is shared 1:1 with the fence, and the spawn lease whitelists this
+// dir via network.allowUnixSockets (bin/fleet-spawn.py), so pinning the socket
+// here lets the out-of-fence opener and an in-fence driver agree on one reachable
+// path. Inherited by every playwright-cli child (incl. the daemon it spawns).
+// Override with PLAYWRIGHT_DAEMON_SOCKETS_DIR for isolated testing.
+if (!process.env.PLAYWRIGHT_DAEMON_SOCKETS_DIR) {
+  process.env.PLAYWRIGHT_DAEMON_SOCKETS_DIR = '/tmp/tlda-pw-sockets'
+}
+
+// Each agent gets its own TAB in the one shared window. An earlier design gave
+// each agent its own window.open() popup so a background tab couldn't suspend
+// its paint — but under automation window.open is popup-BLOCKED, and the
+// fallback then stranded the agent on a `data:`/`about:blank` tab that every
+// verb misfired onto (blank screenshots, editor:false). Tabs are safe because
+// the pw lock serializes verbs: selectMyTab() makes an agent's tab the current
+// (painting) tab before its verb runs, so "only the active tab paints" never
+// bites. We never call bringToFront, so no tab raises over Skip.
 
 // Verbs the wrapper owns — agents must not drive browser/tab lifecycle directly.
 const BLOCKED_VERBS = new Set([
@@ -59,12 +88,81 @@ function myMarker() {
   return `pwtab=${myTabKey()}`
 }
 
+// Per-agent last-touch files so eliza's idle reaper can tell how long an agent's
+// window has sat unused. Each verb refreshes it; release/park removes it. The
+// raw `id` (fleet id) is recorded so eliza can map the window back to an agent
+// to check liveness and warn it before parking.
+const TOUCH_DIR = join(homedir(), '.config', 'tlda', 'pw-touch')
+function touchFile() { return join(TOUCH_DIR, `${myTabKey()}.json`) }
+function touchMine() {
+  try {
+    mkdirSync(TOUCH_DIR, { recursive: true })
+    writeFileSync(touchFile(), JSON.stringify({ id: who(), key: myTabKey(), session: SESSION, ts: Date.now() }))
+  } catch (e) { console.error(`pw: WARN last-touch stamp failed: ${e.message}`) }
+}
+function clearTouch() {
+  try { rmSync(touchFile(), { force: true }) } catch (e) { console.error(`pw: WARN clearing last-touch failed: ${e.message}`) }
+}
+
 function lockScript(repoRoot) {
   return join(repoRoot, 'bin', 'pw-lock.sh')
 }
 
+// Am I running inside the fence? The spawn wrapper (bin/fleet-spawn.py
+// wrap_sandbox_cmd) sets TLDA_SANDBOX_POLICY for every fenced launch; it's absent
+// for unsandboxed agents. A fenced agent can DRIVE the shared browser but CANNOT
+// open it (in-process Chromium launch Mach-fails in the sandbox), so when the
+// browser is down it must NOT try to launch/recover — that would Mach-fail and,
+// worse, the recovery path would pkill the live shared browser out from under
+// everyone. Fenced agents drive; an out-of-fence session opens.
+function isFenced() {
+  const p = process.env.TLDA_SANDBOX_POLICY
+  return !!p && p !== 'unsandboxed'
+}
+
+// ---- hard disable (Skip's kill switch) ----
+//
+// A sentinel file that, while present, makes `tlda-dev pw` REFUSE to open or drive
+// the shared browser for ANYONE. This is the "no windows on my screen" lock:
+// agents (and eliza's reaper) all reach the browser through this wrapper, so
+// gating every launch/drive path here is a single chokepoint. Only `status`,
+// `unlock`, `reap`, and `help` work while disabled. Created by `tlda-dev pw lock`,
+// removed by `tlda-dev pw unlock`.
+const DISABLE_FILE = join(homedir(), '.config', 'tlda', 'pw-disabled')
+function isDisabled() {
+  return existsSync(DISABLE_FILE)
+}
+function disableInfo() {
+  try { return JSON.parse(readFileSync(DISABLE_FILE, 'utf8')) } catch { return {} }
+}
+function writeDisable(by, reason) {
+  try {
+    mkdirSync(dirname(DISABLE_FILE), { recursive: true })
+    writeFileSync(DISABLE_FILE, JSON.stringify({ by, reason: reason || null, ts: Date.now() }))
+    return true
+  } catch (e) { console.error(`pw: WARN could not write disable sentinel: ${e.message}`); return false }
+}
+function clearDisable() {
+  try { rmSync(DISABLE_FILE, { force: true }) } catch (e) { console.error(`pw: WARN could not clear disable sentinel: ${e.message}`) }
+}
+
+function playwrightCliBin() {
+  if (process.env.PLAYWRIGHT_CLI_BIN) return process.env.PLAYWRIGHT_CLI_BIN
+  const local = join(REPO_ROOT, 'node_modules', '.bin', 'playwright-cli')
+  return existsSync(local) ? local : 'playwright-cli'
+}
+
+function playwrightCliRealPath() {
+  const bin = playwrightCliBin()
+  const which = bin === 'playwright-cli'
+    ? (spawnSync('which', ['playwright-cli'], { encoding: 'utf8' }).stdout || '').trim()
+    : bin
+  if (!which) return null
+  try { return realpathSync(which) } catch { return null }
+}
+
 function pw(args, opts = {}) {
-  return spawnSync('playwright-cli', [`-s=${SESSION}`, ...args], { encoding: 'utf8', ...opts })
+  return spawnSync(playwrightCliBin(), [`-s=${SESSION}`, ...args], { encoding: 'utf8', ...opts })
 }
 
 // ---- lock (short, per-verb) ----
@@ -103,58 +201,224 @@ function lockWithWait(repoRoot, me, timeoutMs = 20000) {
 // ---- session + tabs ----
 
 function sessionOpen() {
-  const out = spawnSync('playwright-cli', ['list'], { encoding: 'utf8' }).stdout || ''
+  const out = spawnSync(playwrightCliBin(), ['list'], { encoding: 'utf8' }).stdout || ''
   const m = out.match(new RegExp(`- ${SESSION}:\\s*\\n\\s*- status: (\\w+)`, 'm'))
   return m ? m[1] === 'open' : false
 }
 
-// Open the shared browser if it isn't already up (lazy pop-up).
-function ensureOpen() {
+// Locate the playwright-cli implementation that owns tab-select. Older
+// playwright-cli installs shipped a separate mcp/browser/context.js; the current
+// @playwright/cli package bundles that code into playwright-core/lib/coreBundle.js.
+function playwrightPatchTargets() {
+  const real = playwrightCliRealPath()
+  if (!real) return []
+  const cliRoot = dirname(real)
+  return [
+    {
+      path: join(cliRoot, 'node_modules', 'playwright', 'lib', 'mcp', 'browser', 'context.js'),
+      regexes: [/^([ \t]*)await tab\.page\.bringToFront\(\);?[ \t]*$/m],
+    },
+    {
+      path: join(cliRoot, 'node_modules', 'playwright-core', 'lib', 'coreBundle.js'),
+      regexes: [
+        /([ \t]*)await tab2\.page\.bringToFront\(\);/m,
+        /([ \t]*)await tab\.page\.bringToFront\(\);/m,
+      ],
+    },
+  ].filter(t => existsSync(t.path))
+}
+
+// tab-select calls `await tab.page.bringToFront()`, which on headed Chromium
+// raises the OS window to the foreground — yanking the browser over Skip every
+// time any agent runs a verb. Selecting a page does NOT need it (Playwright
+// routes input/screenshots by page object, and each agent's page is the active
+// tab of its own window so it renders regardless). Strip that one line. This
+// self-heals on every launch so a `brew upgrade` can't silently bring the
+// front-raising back. Returns true if the daemon will load a no-raise tab-select.
+function ensureNoRaisePatch() {
+  const targets = playwrightPatchTargets()
+  if (!targets.length) {
+    console.error('pw: WARN could not locate playwright-cli tab-select implementation — windows may still raise to front')
+    return false
+  }
+  for (const target of targets) {
+    let src
+    try { src = readFileSync(target.path, 'utf8') } catch (e) { console.error(`pw: WARN cannot read ${target.path}: ${e.message}`); continue }
+    for (const re of target.regexes) {
+      if (!re.test(src)) continue
+      try {
+        writeFileSync(target.path, src.replace(re, '$1/* tlda: bringToFront removed so an agent window never raises over Skip */'))
+      } catch (e) { console.error(`pw: WARN cannot patch ${target.path} (${e.message}) — windows may still raise`); return false }
+      console.error(`pw: patched tab-select to not raise the window (${target.path})`)
+      return true
+    }
+    return true // already patched / line gone
+  }
+  console.error('pw: WARN could not find tab-select bringToFront call — windows may still raise to front')
+  return false
+}
+
+// The session's Chrome profile dir, parsed from `playwright-cli list`.
+function sessionUserDataDir() {
+  const out = spawnSync(playwrightCliBin(), ['list'], { encoding: 'utf8' }).stdout || ''
+  const m = out.match(new RegExp(`- ${SESSION}:[\\s\\S]*?- user-data-dir:\\s*(\\S+)`, 'm'))
+  return m ? m[1] : null
+}
+
+// Recover from the stuck state that blocks EVERY launch: a zombie shared Chrome
+// (its daemon dead, so the session reads "closed") is still alive holding the
+// profile's SingletonLock, so a fresh `open` can't take the profile and fails.
+// Only called after sessionOpen()===false AND `open` already failed — i.e. no
+// live daemon owns this session, so any surviving ud-<session>-chrome is an
+// orphan that's safe to kill. Kills it and clears the stale singleton locks.
+function recoverStaleSharedBrowser() {
+  const udir = `ud-${SESSION}-chrome`
+  const dir = sessionUserDataDir()
+  console.error(`pw: launch failed — clearing orphaned "${udir}" (zombie holding the profile lock)`)
+  spawnSync('pkill', ['-9', '-f', udir], { encoding: 'utf8' })
+  if (dir) {
+    for (const f of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
+      try { rmSync(join(dir, f), { force: true }) } catch (e) { console.error(`pw: WARN could not clear ${f}: ${e.message}`) }
+    }
+  }
+  spawnSync('sleep', ['0.5'])
+}
+
+// Open the shared browser if it isn't already up (lazy pop-up). Patch the
+// daemon's tab-select before launch so the freshly-loaded code never raises.
+// If the launch fails on a closed session, it's almost always a zombie Chrome
+// holding the profile lock — recover and retry once before giving up.
+// The repo's playwright-cli config carries the HTTPS-ignore flags
+// (--ignore-certificate-errors + ignoreHTTPSErrors) the shared browser needs to
+// trust the server's mkcert cert — Chromium has its own cert store and ignores
+// the macOS keychain, so without this every https://localhost goto lands on
+// chrome-error://. `open` only reads --config at launch, so it must be passed on
+// every (re)open or a fresh `acquire` silently drops the flags.
+function openArgs(repoRoot) {
+  const args = ['open', '--browser', 'chromium', '--headed', '--persistent']
+  const cfg = join(repoRoot, '.playwright', 'cli.config.json')
+  if (existsSync(cfg)) args.push('--config', cfg)
+  return args
+}
+
+function ensureOpen(repoRoot) {
   if (sessionOpen()) return false
-  const r = pw(['open', '--headed', '--persistent'], { stdio: 'inherit' })
-  if (r.status !== 0) throw new Error('failed to open shared browser')
+  // A fenced agent must never reach the launch/recover path: it can't launch
+  // Chromium (Mach denial) and recoverStaleSharedBrowser would pkill the live
+  // shared browser. Fail clean and point at the real path (open out-of-fence).
+  if (isFenced()) {
+    throw new Error(
+      'shared browser is down and this session is sandboxed (fence) — a fenced agent ' +
+      'drives the shared browser but cannot open it. Have an out-of-fence session open it ' +
+      '(`tlda-dev pw acquire` unsandboxed, or ask app-testing/ops), then retry your verb.'
+    )
+  }
+  ensureNoRaisePatch()
+  if (pw(openArgs(repoRoot), { stdio: 'inherit' }).status === 0) return true
+  recoverStaleSharedBrowser()
+  if (pw(openArgs(repoRoot), { stdio: 'inherit' }).status !== 0) {
+    throw new Error('failed to open shared browser (even after clearing a stale profile lock)')
+  }
   return true
 }
 
-// Parse `tab-list` → [{ index, current, url }]. Format per line:
+// A parked, claimable window: about:blank with no agent marker in its title.
+// `release` (and the daemon reaper) park a window by navigating it here, which
+// both tears down its TLDraw page (reclaiming ~all of its memory) and clears
+// the marker — returning it to the pool for the next agent to reuse.
+function freeParkedWindow(tabs) {
+  return tabs.find(t => /^about:blank/i.test(t.url || '') && !/pwtab=/.test(t.title || ''))
+}
+
+// Claim the daemon's CURRENT page as mine by stamping the marker into its title
+// (same-origin about:blank → settable). Lets isMine find it before first goto.
+function claimCurrentWindow() {
+  const out = pw(['eval', `() => { document.title = 'pwtab=${myTabKey()}'; return 'PWCLAIM_OK'; }`]).stdout || ''
+  return out.includes('PWCLAIM_OK')
+}
+
+// Parse `tab-list` → [{ index, current, title, url }]. Format per line:
 //   - 0: [title](https://…)
 //   - 1: (current) [title](about:blank)
 function listTabs() {
   const out = pw(['tab-list']).stdout || ''
   const tabs = []
   for (const line of out.split('\n')) {
-    const m = line.match(/^- (\d+):\s*(\(current\)\s*)?\[[^\]]*\]\(([^)]*)\)/)
-    if (m) tabs.push({ index: parseInt(m[1], 10), current: !!m[2], url: m[3] })
+    const m = line.match(/^- (\d+):\s*(\(current\)\s*)?\[([^\]]*)\]\(([^)]*)\)/)
+    if (m) tabs.push({ index: parseInt(m[1], 10), current: !!m[2], title: m[3], url: m[4] })
   }
   return tabs
 }
 
-// Find this agent's tab (by URL marker), creating one if absent, select it, and
-// CONFIRM the switch took effect before returning. Confirmation matters because
-// `tab-select` runs in its own playwright-cli process and can lag the next
-// process's verb — without the check, a verb could execute against whatever tab
-// was previously current (observed: a screenshot landing on a stray blank tab).
-// Returns the confirmed index, or null if it couldn't be resolved.
-function selectMyTab() {
+// A tab is mine if my marker is in its URL (after a real goto, which stamps
+// pwtab=) OR in its title (a brand-new about:blank window whose title we set to
+// the marker before the agent's first goto).
+function isMine(t) {
   const marker = myMarker()
-  let mine = listTabs().find(t => t.url.includes(marker))
+  return (!!t.url && t.url.includes(marker)) || (!!t.title && t.title.includes(marker))
+}
+
+// `tab-list` can come back EMPTY during the intermittent snapshot hang even
+// though tabs exist. selectMyTab must never read that transient empty as "no
+// tab of mine — spawn one" (that's how an about:blank stray is born). Returns a
+// non-empty list when the session is up; returns [] only when the session is
+// genuinely DOWN (crashed context → caller re-opens, don't retry) or the daemon
+// stays wedged past the retry budget (→ caller fails clean, never spawns).
+// Bounded retries so the wrapper never piles onto a wedged daemon.
+function stableTabs(retries = 5) {
+  for (let i = 0; i < retries; i++) {
+    const tabs = listTabs()
+    if (tabs.length > 0) return tabs
+    if (!sessionOpen()) return [] // genuinely down — re-open path, not retry
+    spawnSync('sleep', ['0.2'])
+  }
+  return [] // session up but tab-list stayed empty — wedged; fail clean
+}
+
+// Find this agent's page, creating its own TAB if absent, make it the daemon's
+// current page, and CONFIRM the switch before returning. Confirmation matters
+// because `tab-select` runs in its own playwright-cli process and can lag the
+// next process's verb — without the check, a verb could execute against
+// whatever page was previously current (observed: a screenshot landing on a
+// stray blank tab). Returns the confirmed index, or null if unresolved (the
+// caller must NOT forward on null — see the forwarded-verb path).
+function selectMyTab() {
+  touchMine() // refresh idle clock — every verb runs through here
+  const tabs = stableTabs()
+  let mine = tabs.find(isMine)
   if (!mine) {
-    // Create a fresh tab (becomes current) and stamp it so future verbs find it
-    // even before the agent's first goto.
-    pw(['tab-new'], { stdio: 'ignore' })
-    pw(['goto', `data:text/html,<title>${marker}</title>`], { stdio: 'ignore' })
-    mine = listTabs().find(t => t.url.includes(marker))
+    // Never spawn off an empty list. stableTabs() returns [] only when the
+    // session is genuinely down (crashed context — caller re-opens) or the
+    // daemon stayed wedged past its budget. Reading that as "pool exhausted" is
+    // exactly what spawned the stray. Fail clean; the agent retries when idle.
+    if (tabs.length === 0) return null
+    const free = freeParkedWindow(tabs)
+    if (free) {
+      // Reuse a parked window from the pool — no window.open, so NO raise. This
+      // is the common path once the fleet has warmed up: agents recycle windows
+      // freed by agents that finished or were reaped.
+      pw(['tab-select', String(free.index)], { stdio: 'ignore' })
+      claimCurrentWindow()
+    } else {
+      // Pool exhausted — open a fresh TAB. `tab-new` can't be popup-blocked the
+      // way window.open was; it becomes the current tab, so stamp my marker into
+      // its title exactly as the parked-window-reuse path above does. The confirm
+      // loop below re-selects by marker if tab-new's focus lagged.
+      pw(['tab-new'], { stdio: 'ignore' })
+      claimCurrentWindow()
+    }
+    mine = listTabs().find(isMine)
   }
   if (!mine) return null
   for (let i = 0; i < 8; i++) {
-    const cur = listTabs().find(t => t.url.includes(marker))
+    const cur = listTabs().find(isMine)
     if (!cur) return null
-    if (cur.current) return cur.index // confirmed: my tab is the active one
+    if (cur.current) return cur.index // confirmed: my page is the current one
     pw(['tab-select', String(cur.index)], { stdio: 'ignore' })
     spawnSync('sleep', ['0.15'])
   }
   // Couldn't confirm — return index anyway, but the caller's verb may misfire.
-  const last = listTabs().find(t => t.url.includes(marker))
+  const last = listTabs().find(isMine)
   return last ? last.index : null
 }
 
@@ -217,14 +481,14 @@ export async function cmdPw(args, repoRoot) {
   if (!verb || verb === 'help' || verb === '--help') {
     console.log(
       [
-        'tlda pw — one shared browser, a private tab per agent',
+        'tlda-dev pw — one shared browser, a private tab per agent',
         '',
-        '  tlda pw acquire           open the shared browser + ensure my tab',
-        '  tlda pw release           close my tab (browser stays up for others)',
-        '  tlda pw status            session state + my tab + URL',
-        '  tlda pw reap              close the whole shared browser',
-        '  tlda pw center <region>   center camera on: doc | chat | fleet',
-        '  tlda pw <verb> [args]     forward a playwright-cli verb to MY tab',
+        '  tlda-dev pw acquire           open the shared browser + ensure my tab',
+        '  tlda-dev pw release           close my tab (browser stays up for others)',
+        '  tlda-dev pw status            session state + my tab + URL',
+        '  tlda-dev pw reap              close the whole shared browser',
+        '  tlda-dev pw center <region>   center camera on: doc | chat | fleet',
+        '  tlda-dev pw <verb> [args]     forward a playwright-cli verb to MY tab',
         '                            (goto, click, snapshot, screenshot, eval, …)',
         '',
         `  my tab key: ${myTabKey()}   (override identity with TLDA_PW_AS)`,
@@ -233,14 +497,48 @@ export async function cmdPw(args, repoRoot) {
     return
   }
 
+  // Skip's kill switch: lock / unlock the whole shared browser for everyone.
+  if (verb === 'lock') {
+    writeDisable(me, rest.join(' '))
+    // Take the browser down too, so a lock issued while it's up clears the screen.
+    if (sessionOpen()) { pw(['close'], { stdio: 'inherit' }); console.log('browser reaped') }
+    spawnSync('bash', [lockScript(repoRoot), 'steal', `lock:${me}`], { encoding: 'utf8' })
+    spawnSync('bash', [lockScript(repoRoot), 'release', `lock:${me}`], { encoding: 'utf8' })
+    console.log('playwright LOCKED — `tlda-dev pw` will not open a browser for anyone. Unlock: tlda-dev pw unlock')
+    return
+  }
+  if (verb === 'unlock') {
+    if (!isDisabled()) { console.log('playwright was not locked'); return }
+    clearDisable()
+    console.log('playwright unlocked — `tlda-dev pw` can open the shared browser again')
+    return
+  }
+
+  // While locked, refuse anything that could open or drive the browser. Only
+  // status / unlock / reap / help / lock are allowed through.
+  if (isDisabled() && !['status', 'unlock', 'reap', 'help', '--help', 'lock'].includes(verb)) {
+    const info = disableInfo()
+    const ago = info.ts ? `${Math.round((Date.now() - info.ts) / 1000)}s ago` : 'unknown when'
+    console.error(
+      `playwright is LOCKED by ${info.by || 'Skip'} (${ago})${info.reason ? ` — "${info.reason}"` : ''}.\n` +
+        '  No browser will open. This is deliberate — Skip turned playwright off.\n' +
+        '  Do NOT work around it. To re-enable: tlda-dev pw unlock'
+    )
+    process.exit(3)
+  }
+
   if (verb === 'status') {
     const lk = lockStatus(repoRoot)
     const open = sessionOpen()
+    if (isDisabled()) {
+      const info = disableInfo()
+      console.log(`DISABLED: playwright is LOCKED by ${info.by || 'Skip'}${info.reason ? ` — "${info.reason}"` : ''} (unlock: tlda-dev pw unlock)`)
+    }
     console.log(`lock:    ${lk ? `${lk.holder} (${lk.ageSecs}s ago)` : 'unlocked'}`)
     console.log(`browser: ${open ? 'up' : 'down'} (session "${SESSION}")`)
     if (open) {
       const tabs = listTabs()
-      const mine = tabs.find(t => t.url.includes(myMarker()))
+      const mine = tabs.find(isMine)
       console.log(`tabs:    ${tabs.length} open${mine ? ` (mine: #${mine.index})` : ' (none mine yet)'}`)
       if (mine) console.log(`url:     ${mine.url}`)
     }
@@ -248,14 +546,19 @@ export async function cmdPw(args, repoRoot) {
   }
 
   if (verb === 'acquire') {
-    ensureOpen()
     if (!lockWithWait(repoRoot, me)) {
       console.error('could not take the pw lock — another agent is mid-verb; try again')
       process.exit(1)
     }
     try {
+      // ensureOpen runs INSIDE the lock so concurrent agents can't each launch /
+      // recover the browser at once. That race is what produced the kill+reopen
+      // thrash — every reopen raises a headed window over Skip. Serialized, only
+      // the first agent opens; the rest find it up and reuse it (no raise).
+      ensureOpen(repoRoot)
       const idx = selectMyTab()
-      console.log(`browser up; my tab #${idx} (key ${myTabKey()})`)
+      if (idx == null) console.error("pw: couldn't resolve a tab (daemon wedged or session down) — try again when the page is idle")
+      else console.log(`browser up; my tab #${idx} (key ${myTabKey()})`)
     } finally {
       unlock(repoRoot, me)
     }
@@ -264,11 +567,18 @@ export async function cmdPw(args, repoRoot) {
 
   if (verb === 'release') {
     if (!sessionOpen()) { console.log('browser already down'); return }
-    if (!lockWithWait(repoRoot, me)) { console.error('lock busy; tab not closed'); process.exit(1) }
+    if (!lockWithWait(repoRoot, me)) { console.error('lock busy; window not parked'); process.exit(1) }
     try {
-      const mine = listTabs().find(t => t.url.includes(myMarker()))
-      if (mine) { pw(['tab-select', String(mine.index)], { stdio: 'ignore' }); pw(['tab-close'], { stdio: 'ignore' }); console.log(`closed my tab (#${mine.index})`) }
-      else console.log('no tab of mine to close')
+      const mine = listTabs().find(isMine)
+      if (mine) {
+        // Park, don't close: navigating to about:blank tears down the TLDraw
+        // page (reclaims its memory) and clears the marker, returning the window
+        // to the pool for the next agent to claim — no churn, no new raise.
+        pw(['tab-select', String(mine.index)], { stdio: 'ignore' })
+        pw(['goto', 'about:blank'], { stdio: 'ignore' })
+        clearTouch()
+        console.log(`parked my window (#${mine.index}) back to the pool`)
+      } else console.log('no window of mine to park')
     } finally {
       unlock(repoRoot, me)
     }
@@ -287,14 +597,17 @@ export async function cmdPw(args, repoRoot) {
   if (BLOCKED_VERBS.has(verb)) {
     console.error(
       `"${verb}" is managed for you — you get your own tab automatically.\n` +
-        `  • start:  tlda pw acquire\n` +
-        `  • stop:   tlda pw release   (or  tlda pw reap  to close the browser)`
+        `  • start:  tlda-dev pw acquire\n` +
+        `  • stop:   tlda-dev pw release   (or  tlda-dev pw reap  to close the browser)`
     )
     process.exit(2)
   }
 
-  // ---- forwarded verb: short lock → select my tab → (rewrite) → forward ----
-  ensureOpen()
+  // ---- forwarded verb: short lock → ensure open → select my tab → forward ----
+  // ensureOpen runs INSIDE the lock (not before it) so two agents arriving at
+  // once can't both launch/recover the browser — that race is what kill+reopened
+  // the window and raised it over Skip. The first holder opens; the rest wait,
+  // then find it up and just reuse their tab.
   if (!lockWithWait(repoRoot, me)) {
     const lk = lockStatus(repoRoot)
     console.error(`pw busy — ${lk ? `${lk.holder} holding (${lk.ageSecs}s)` : 'another agent'}. Try again.`)
@@ -302,9 +615,15 @@ export async function cmdPw(args, repoRoot) {
   }
   let code = 0
   try {
-    selectMyTab()
-
-    if (verb === 'center') {
+    ensureOpen(repoRoot)
+    const idx = selectMyTab()
+    if (idx == null) {
+      // selectMyTab couldn't resolve my tab (daemon wedged or session down). Do
+      // NOT forward — the verb would run on whatever tab is currently selected
+      // (a stray or another agent's tab). Fail clean; retry when the page is idle.
+      console.error("pw: couldn't resolve my tab (daemon wedged or session down); not forwarding — try again when the page is idle")
+      code = 1
+    } else if (verb === 'center') {
       const region = (rest[0] || 'doc').toLowerCase()
       const ev = CENTER_EVALS[region]
       if (!ev) { console.error(`center: unknown region "${region}" (use: doc | chat | fleet)`); code = 2 }

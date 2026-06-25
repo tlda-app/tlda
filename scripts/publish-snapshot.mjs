@@ -19,7 +19,7 @@
  *   published             — comma-separated list of doc names to publish
  *
  * Environment:
- *   TLDA_SERVER - Server URL for fetching annotations (default: http://localhost:5176)
+ *   TLDA_SERVER - Server URL for fetching annotations (default: https://localhost:5176 when local TLS exists)
  */
 
 import { writeFileSync, mkdirSync, cpSync, existsSync, readFileSync } from 'fs'
@@ -32,6 +32,8 @@ import { homedir } from 'os'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PROJECT_ROOT = resolve(__dirname, '..')
 const CONFIG_FILE = join(homedir(), '.config', 'tlda', 'config.json')
+const LOCAL_TLS_CERT = join(homedir(), '.config', 'tlda', 'localhost+2.pem')
+const LOCAL_TLS_KEY = join(homedir(), '.config', 'tlda', 'localhost+2-key.pem')
 
 function loadConfig() {
   if (!existsSync(CONFIG_FILE)) return {}
@@ -94,7 +96,8 @@ if (publishedList.length === 0) {
   process.exit(1)
 }
 
-const TLDA_SERVER = process.env.TLDA_SERVER || 'http://localhost:5176'
+const LOCAL_PROTO = existsSync(LOCAL_TLS_CERT) && existsSync(LOCAL_TLS_KEY) ? 'https' : 'http'
+const TLDA_SERVER = process.env.TLDA_SERVER || `${LOCAL_PROTO}://localhost:5176`
 
 // Validate all docs exist before starting
 const docs = []
@@ -156,6 +159,16 @@ try {
     mkdirSync(dest, { recursive: true })
     execSync(`rsync -a --delete ${src} ${dest}`, { stdio: 'inherit' })
   }
+  // public/ holds static build assets vite copies into dist (e.g. the Deepgram
+  // AudioWorklet processor). It was previously omitted, so new public/ files
+  // (worklet, etc.) 404'd on Pages. Sync it too, excluding docs/ which has its
+  // own dedicated copy step below.
+  {
+    const src = join(PROJECT_ROOT, 'public') + '/'
+    const dest = join(PUBLISHED_ROOT, 'public') + '/'
+    mkdirSync(dest, { recursive: true })
+    execSync(`rsync -a --delete --exclude=docs ${src} ${dest}`, { stdio: 'inherit' })
+  }
   for (const f of ['package.json', 'vite.config.ts', 'index.html', 'server/unified-server.mjs',
                     'server/package.json', 'Dockerfile', 'fly.toml', 'scripts/fly-entrypoint.sh',
                     'cli/tlda.mjs']) {
@@ -180,9 +193,12 @@ try {
 
     console.log(`[publish] ${doc.name}: ${doc.projectJson.pages} pages (${doc.projectJson.format || 'svg'})`)
     mkdirSync(pubDocsDir, { recursive: true })
-    cpSync(doc.outputDir, pubDocsDir, { recursive: true })
+    // dereference: output dirs contain symlinks (e.g. lookup.json -> main-lookup.json);
+    // a plain recursive copy of a sibling-pointing symlink throws EINVAL ("copy to a
+    // subdirectory of self"). Following symlinks copies the real file content instead.
+    cpSync(doc.outputDir, pubDocsDir, { recursive: true, dereference: true })
     mkdirSync(join(pubProjectDir, 'output'), { recursive: true })
-    cpSync(doc.outputDir, join(pubProjectDir, 'output'), { recursive: true })
+    cpSync(doc.outputDir, join(pubProjectDir, 'output'), { recursive: true, dereference: true })
     // Write project.json without archived/sourceDir (archived hides from manifest; sourceDir is local)
     const pubProject = { ...doc.projectJson }
     delete pubProject.archived

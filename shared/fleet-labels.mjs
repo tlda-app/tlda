@@ -1,11 +1,11 @@
 /**
  * fleet-labels.mjs — single source of truth for "what labels does an agent
- * answer to" and "does a DNF filter match a label set".
+ * answer to" and "does a filter expression match a label set".
  *
  * Before this module the label-expansion logic was hand-copied in six places
  * (client display `agentMatchesLabel`, client history `resolveFilter`, client
  * send `resolveToFleetId(s)`, the server chat router, the server wiretap
- * matcher, and eliza). The copies had already drifted — e.g. `resolveFilter`
+ * matcher, and bots). The copies had already drifted — e.g. `resolveFilter`
  * dropped the `human`/`human-away` pseudo-labels, so a chat scoped to `human`
  * showed live messages but returned empty backfilled history (the same class
  * of bug as the lineage-agent scrollback issue). One resolver kills that.
@@ -60,17 +60,164 @@ export function labelsForAgent(agent) {
 }
 
 /**
- * Evaluate a DNF filter (array of AND-clauses) against a precomputed label set.
- * A term is either a `[role, label]` tuple or a bare string label; the role is
- * ignored here (directional from/to selection is the caller's responsibility —
- * see `matchesFilter`). An empty/absent filter matches everything.
+ * Filter expressions — a tiny boolean language over labels.
+ *
+ * A filter is a STRING like `fleet:skip`, `awake & reviewers`, or
+ * `mathy & !goose`. The grammar:
+ *
+ *   expr  := or
+ *   or    := and ( '|' and )*
+ *   and   := not ( '&' not )*
+ *   not   := '!' not | atom
+ *   atom  := '(' or ')' | TOKEN
+ *   TOKEN := a maximal run of characters that are not whitespace or & | ! ( )
+ *
+ * A bare TOKEN is a label/name/id, tested against the agent's label set
+ * (`labelsForAgent`). `&` is AND, `|` is OR, `!` is NOT, parens group; `&`
+ * binds tighter than `|`. An empty/whitespace string parses to `null`, which
+ * matches everything (the old empty-DNF behaviour).
+ *
+ * The string is DATA: `parseFilter` turns it into a small AST and `evalExpr`
+ * walks that AST with `labels.has(token)`. There is no `eval()` / `Function()`
+ * — a token can only ever be membership-tested, so there is no code-execution
+ * or injection surface.
  */
-export function evalDnf(filter, labels) {
-  if (!filter || filter.length === 0) return true
-  const set = Array.isArray(labels) ? labels : []
-  return filter.some(clause =>
-    Array.isArray(clause) && clause.every(term =>
-      set.includes(Array.isArray(term) ? term[1] : term),
-    ),
-  )
+
+function tokenizeFilter(str) {
+  const toks = []
+  let i = 0
+  const n = str.length
+  while (i < n) {
+    const c = str[i]
+    if (c === ' ' || c === '\t' || c === '\n' || c === '\r') { i++; continue }
+    if (c === '&' || c === '|' || c === '!' || c === '(' || c === ')') {
+      toks.push({ k: 'op', v: c }); i++; continue
+    }
+    let j = i
+    while (j < n) {
+      const d = str[j]
+      if (d === ' ' || d === '\t' || d === '\n' || d === '\r' ||
+          d === '&' || d === '|' || d === '!' || d === '(' || d === ')') break
+      j++
+    }
+    toks.push({ k: 'lit', v: str.slice(i, j) })
+    i = j
+  }
+  return toks
+}
+
+/**
+ * Parse a filter string into an AST (or `null` for an empty/whitespace filter,
+ * meaning "match everything"). Throws on malformed input — there is no silent
+ * fallback to match-all, so a typo'd filter fails loud rather than fanning out.
+ */
+export function parseFilter(input) {
+  if (input == null) return null
+  if (typeof input !== 'string') {
+    throw new Error(`filter must be a string expression, got ${Array.isArray(input) ? 'array' : typeof input}`)
+  }
+  const toks = tokenizeFilter(input)
+  if (toks.length === 0) return null
+  let p = 0
+  const peek = () => toks[p]
+  const eat = (v) => {
+    const t = toks[p]
+    if (!t || (v && !(t.k === 'op' && t.v === v))) {
+      throw new Error(`filter parse error: expected ${v || 'token'} at position ${p} in "${input}"`)
+    }
+    p++; return t
+  }
+  function parseOr() {
+    let node = parseAnd()
+    while (peek() && peek().k === 'op' && peek().v === '|') { eat('|'); node = { t: 'or', l: node, r: parseAnd() } }
+    return node
+  }
+  function parseAnd() {
+    let node = parseNot()
+    while (peek() && peek().k === 'op' && peek().v === '&') { eat('&'); node = { t: 'and', l: node, r: parseNot() } }
+    return node
+  }
+  function parseNot() {
+    if (peek() && peek().k === 'op' && peek().v === '!') { eat('!'); return { t: 'not', x: parseNot() } }
+    return parseAtom()
+  }
+  function parseAtom() {
+    const t = peek()
+    if (!t) throw new Error(`filter parse error: unexpected end of "${input}"`)
+    if (t.k === 'op' && t.v === '(') { eat('('); const e = parseOr(); eat(')'); return e }
+    if (t.k === 'lit') { p++; return { t: 'lit', v: t.v } }
+    throw new Error(`filter parse error: unexpected "${t.v}" in "${input}"`)
+  }
+  const ast = parseOr()
+  if (p !== toks.length) throw new Error(`filter parse error: trailing "${toks[p].v}" in "${input}"`)
+  return ast
+}
+
+/**
+ * Evaluate a parsed filter AST (from `parseFilter`) against an agent's label
+ * set. `labels` may be an array or a Set. A `null` AST matches everything.
+ */
+export function evalExpr(ast, labels) {
+  if (!ast) return true
+  const has = labels instanceof Set
+    ? (x) => labels.has(x)
+    : (x) => (Array.isArray(labels) ? labels.includes(x) : false)
+  const ev = (n) => {
+    switch (n.t) {
+      case 'lit': return has(n.v)
+      case 'not': return !ev(n.x)
+      case 'and': return ev(n.l) && ev(n.r)
+      case 'or': return ev(n.l) || ev(n.r)
+      default: return false
+    }
+  }
+  return ev(ast)
+}
+
+/**
+ * Convenience: parse `filter` (string or AST) and evaluate against `labels` in
+ * one call. Prefer `parseFilter` once + `evalExpr` per-agent when looping over
+ * many agents.
+ */
+export function matchFilter(filter, labels) {
+  return evalExpr(parseFilter(filter), labels)
+}
+
+/**
+ * Evaluate a parsed filter AST (from `parseFilter`) in a DIRECTIONAL context —
+ * a message that has sender labels (`fromLabels`) and recipient labels
+ * (`toLabels`). This is what wiretap uses, so wiretap, chat-send, and
+ * fleet_table all share ONE parser (`parseFilter`) and differ only in how a
+ * leaf token is tested.
+ *
+ * Leaf token interpretation:
+ *   - `to:LABEL`   → matches iff the RECIPIENT carries LABEL
+ *   - `from:LABEL` → matches iff the SENDER carries LABEL
+ *   - bare `LABEL` → matches iff EITHER side carries LABEL (message involves it)
+ *
+ * `&`/`|`/`!`/parens compose exactly as in `evalExpr`. A `null` AST (empty
+ * filter) matches everything. `fromLabels`/`toLabels` may be arrays or Sets.
+ *
+ * The role prefixes `to:`/`from:` replace the old `[role, label]` DNF tuples:
+ * `to:skip & from:math` is the string form of `[[["to","skip"],["from","math"]]]`.
+ */
+export function evalExprDirectional(ast, { fromLabels = [], toLabels = [] } = {}) {
+  if (!ast) return true
+  const from = fromLabels instanceof Set ? fromLabels : new Set(fromLabels)
+  const to = toLabels instanceof Set ? toLabels : new Set(toLabels)
+  const testLeaf = (tok) => {
+    if (tok.startsWith('to:')) return to.has(tok.slice(3))
+    if (tok.startsWith('from:')) return from.has(tok.slice(5))
+    return from.has(tok) || to.has(tok)
+  }
+  const ev = (n) => {
+    switch (n.t) {
+      case 'lit': return testLeaf(n.v)
+      case 'not': return !ev(n.x)
+      case 'and': return ev(n.l) && ev(n.r)
+      case 'or': return ev(n.l) || ev(n.r)
+      default: return false
+    }
+  }
+  return ev(ast)
 }

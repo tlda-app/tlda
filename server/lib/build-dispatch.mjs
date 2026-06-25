@@ -8,6 +8,7 @@ import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { broadcastSignal, putShape, updateShape, emitGlobalEvent, getLastSignal } from './sync-rooms.mjs'
 import { updateProject, getProjectsDir } from './project-store.mjs'
+import { writeSentinel } from './sentinel.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const WORKER = join(__dirname, '..', '..', 'bin', 'build-worker.mjs')
@@ -48,7 +49,7 @@ async function patchShape(docName, shapeId, propsPatch) {
   }
 }
 
-const SINKS = { broadcastSignal, putShape, patchShape, emitGlobalEvent, updateProject }
+const SINKS = { broadcastSignal, putShape, patchShape, writeSentinel, emitGlobalEvent, updateProject }
 
 const _inFlight = new Map() // name -> child process
 const _pending = new Map()  // name -> latest priorityPages waiting behind the in-flight build

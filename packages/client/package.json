@@ -1,0 +1,11 @@
+{
+  "name": "@tlda/client",
+  "version": "0.1.0",
+  "description": "Client surface for writing tlda-compatible bots: connect, read a doc's assets, stage annotations.",
+  "type": "module",
+  "main": "index.mjs",
+  "exports": {
+    ".": "./index.mjs"
+  },
+  "license": "MIT"
+}

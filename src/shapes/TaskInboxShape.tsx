@@ -37,6 +37,10 @@ export class TaskInboxShapeUtil extends BaseBoxShapeUtil<any> {
     return <TaskInboxComponent shape={shape} />
   }
 
+  getIndicatorPath() {
+    return undefined
+  }
+
   indicator() {
     return null
   }

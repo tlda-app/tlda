@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo, useContext, useSyncExternalStore, type DragEvent as ReactDragEvent } from 'react'
 import { useBook } from '../BookContext'
-import { useEditor, useValue } from 'tldraw'
+import { useEditor } from 'tldraw'
 import type { TLShape } from 'tldraw'
 import { loadLookup, clearLookupCache, loadHtmlSearch, loadHtmlToc, type LookupEntry, type HtmlTocEntry, type HtmlSearchEntry } from '../synctexLookup'
 import { pdfToCanvas } from '../synctexAnchor'
@@ -8,11 +8,14 @@ import { DocContext, PanelContext } from '../PanelContext'
 import { getLiveUrl, onReloadSignal } from '../useYjsSync'
 import { canPresent, subscribeCanPresent } from '../authToken'
 import { getVimMode, toggleVimMode, subscribeVimMode } from '../vimMode'
+import {
+  type ThemeFamily, type ColorScheme,
+  getStoredFamily, setStoredFamily, getStoredScheme, setStoredScheme,
+  applyThemeClass,
+} from '../hooks/useFleetTheme'
 import { getCameraLinked, toggleCameraLinked, subscribeCameraLinked } from '../cameraLink'
 import { getSemanticHighlight, toggleSemanticHighlight, subscribeSemanticHighlight } from '../semanticHighlight'
 import { navigateTo, navigateToPage, navigateToAnchor, parseHeadings, renderTocTitle, stripTex, getShapeText, type TocLevel, type TocEntry } from './helpers'
-import { useFleetAgents } from '../fleet-data-adapter'
-import { createFleetLayout, forceDeleteShapes } from '../shapes/fleet-utils'
 
 const CHILDREN: Record<string, string[]> = {
   part: ['chapter', 'section', 'subsection', 'subsubsection'],
@@ -184,25 +187,6 @@ export function TocTab() {
   const [tocDragOver, setTocDragOver] = useState(false)
   const [tocAdding, setTocAdding] = useState<string | null>(null)
 
-  // TLDraw-native drop target: listen for custom events from TocDropTargetShape
-  useEffect(() => {
-    if (!book) return
-    function onHover(e: Event) {
-      const active = (e as CustomEvent).detail?.active
-      setTocDragOver(!!active)
-    }
-    function onChapter(e: Event) {
-      const { text, title } = (e as CustomEvent).detail || {}
-      if (text && title) addChapterFromContent(title, text)
-    }
-    window.addEventListener('toc-drop-hover', onHover)
-    window.addEventListener('toc-drop-chapter', onChapter)
-    return () => {
-      window.removeEventListener('toc-drop-hover', onHover)
-      window.removeEventListener('toc-drop-chapter', onChapter)
-    }
-  }, [book]) // eslint-disable-line react-hooks/exhaustive-deps
-
   // Shared chapter-add logic: create markdown project from content, add to book
   async function addChapterFromContent(title: string, text: string) {
     if (!book) return
@@ -240,7 +224,7 @@ export function TocTab() {
   function handleTocDragOver(e: ReactDragEvent) {
     if (!book) return
     const types = e.dataTransfer?.types
-    if (!types?.includes('text/plain') && !types?.includes('application/x-chat-attachment')) return
+    if (!types?.includes('text/plain')) return
     e.preventDefault()
     e.dataTransfer.dropEffect = 'copy'
     setTocDragOver(true)
@@ -255,48 +239,14 @@ export function TocTab() {
     setTocDragOver(false)
     if (!book) return
 
-    // Parse drop payload: fleet shared-doc OR canvas chapter-note
+    // Parse drop payload from a canvas chapter-note.
     let item: Record<string, any> | null = null
-    const custom = e.dataTransfer?.getData('application/x-chat-attachment')
-    if (custom) try { item = JSON.parse(custom) } catch {}
-    if (!item) {
-      const plain = e.dataTransfer?.getData('text/plain')
-      if (plain) try {
-        const p = JSON.parse(plain)
-        if (p._fleet || p._tlda) item = p
-      } catch {}
-    }
+    const plain = e.dataTransfer?.getData('text/plain')
+    if (plain) try {
+      const p = JSON.parse(plain)
+      if (p._tlda) item = p
+    } catch {}
     if (!item) return
-
-    // Fleet shared-doc: create project via fleet share endpoint
-    if (item.type === 'shared-doc' && item.path) {
-      e.preventDefault()
-      const fileName = item.name || item.path.split('/').pop() || 'untitled'
-      setTocAdding(fileName)
-
-      try {
-        const shareRes = await fetch(`${window.location.origin}/api/tlda/share`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path: item.path }),
-        })
-        if (!shareRes.ok) throw new Error('Failed to create project')
-        const shareData = await shareRes.json()
-
-        const patchRes = await fetch(`/api/projects/${book.bookName}/members`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ add: shareData.project }),
-        })
-        if (!patchRes.ok) throw new Error('Failed to add to book')
-
-        window.location.reload()
-      } catch (err) {
-        console.error('Drop-to-book failed:', err)
-        setTocAdding(null)
-      }
-      return
-    }
 
     // Canvas chapter-note: create markdown project from note content
     if (item.type === 'chapter-note' && item.text) {
@@ -660,56 +610,63 @@ export function SemanticHighlightToggle() {
   )
 }
 
-type ThemeStep = {
-  theme: 'warm' | 'fog-dark' | 'fog-light' | null
-  scheme: 'system' | 'dark' | 'light'
-  label: string
-  icon: string
-  bodyClass?: string
-}
-
-const THEME_STEPS: ThemeStep[] = [
-  { theme: null,        scheme: 'dark',   label: 'Dark',      icon: '☾' },
-  { theme: 'fog-dark',  scheme: 'dark',   label: 'Fog Dark',  icon: '\u{1F30A}', bodyClass: 'fog-dark-mode' },
-  { theme: null,        scheme: 'light',  label: 'Light',     icon: '☀' },
-  { theme: null,        scheme: 'system', label: 'System',    icon: '◑' },
-  { theme: 'fog-light', scheme: 'light',  label: 'Fog Light', icon: '\u{1F9CA}', bodyClass: 'fog-light-mode' },
-  { theme: 'warm',      scheme: 'light',  label: 'Warm',      icon: '☀︎',        bodyClass: 'warm-mode' },
+const SCHEME_STEPS: { value: ColorScheme; icon: string; label: string }[] = [
+  { value: 'dark',   icon: '☾', label: 'Dark' },
+  { value: 'light',  icon: '☀', label: 'Light' },
+  { value: 'system', icon: '◑', label: 'System' },
 ]
 
-const BODY_CLASSES = THEME_STEPS.map(s => s.bodyClass).filter(Boolean) as string[]
+const FAMILY_STEPS: { value: ThemeFamily; icon: string; label: string }[] = [
+  { value: null,   icon: '○',      label: 'Default' },
+  { value: 'fog',  icon: '\u{1F30A}', label: 'Fog' },
+  { value: 'warm', icon: '☀︎',     label: 'Warm' },
+]
 
-export function DarkModeToggle() {
+export function SchemeToggle() {
   const editor = useEditor()
-  const scheme = useValue('colorScheme', () => editor.user.getUserPreferences().colorScheme || 'system', [editor])
-  const [theme, setTheme] = useState<'warm' | 'fog-dark' | 'fog-light' | null>(() => {
-    const stored = localStorage.getItem('tlda-theme')
-    if (stored === 'warm' || stored === 'fog-dark' || stored === 'fog-light') return stored
-    if (localStorage.getItem('tlda-warm-mode') === 'true') return 'warm'
-    return null
-  })
+  const [scheme, setSchemeState] = useState<ColorScheme>(getStoredScheme)
 
-  const cur = THEME_STEPS.findIndex(s => s.theme === theme && s.scheme === scheme)
-  const step = cur >= 0 ? THEME_STEPS[cur] : THEME_STEPS[0]
-
-  const applyStep = useCallback((s: ThemeStep) => {
-    for (const cls of BODY_CLASSES) document.body.classList.remove(cls)
-    if (s.bodyClass) document.body.classList.add(s.bodyClass)
-    localStorage.setItem('tlda-theme', s.theme || '')
-    localStorage.setItem('tlda-warm-mode', s.theme === 'warm' ? 'true' : 'false')
-    setTheme(s.theme)
-    editor.user.updateUserPreferences({ colorScheme: s.scheme })
-  }, [editor])
+  const cur = Math.max(0, SCHEME_STEPS.findIndex(s => s.value === scheme))
+  const step = SCHEME_STEPS[cur]
 
   const cycle = useCallback(() => {
-    applyStep(THEME_STEPS[(cur + 1) % THEME_STEPS.length])
-  }, [cur, applyStep])
+    const next = SCHEME_STEPS[(cur + 1) % SCHEME_STEPS.length]
+    setStoredScheme(next.value)
+    setSchemeState(next.value)
+    applyThemeClass(getStoredFamily(), next.value)
+    editor.user.updateUserPreferences({ colorScheme: next.value })
+  }, [cur, editor])
 
   return (
     <div className="toc-diff-hint" onClick={cycle}>
       <span className="toc-toggle-icon">{step.icon}</span> {step.label}
     </div>
   )
+}
+
+export function ThemeFamilyToggle() {
+  const [family, setFamilyState] = useState<ThemeFamily>(getStoredFamily)
+
+  const cur = Math.max(0, FAMILY_STEPS.findIndex(s => s.value === family))
+  const step = FAMILY_STEPS[cur]
+
+  const cycle = useCallback(() => {
+    const next = FAMILY_STEPS[(cur + 1) % FAMILY_STEPS.length]
+    setStoredFamily(next.value)
+    setFamilyState(next.value)
+    applyThemeClass(next.value, getStoredScheme())
+  }, [cur])
+
+  return (
+    <div className="toc-diff-hint" onClick={cycle}>
+      <span className="toc-toggle-icon">{step.icon}</span> {step.label}
+    </div>
+  )
+}
+
+/** @deprecated Use SchemeToggle + ThemeFamilyToggle */
+export function DarkModeToggle() {
+  return null
 }
 
 const ZONE_WIDTH_KEY = 'zone-width'
@@ -748,61 +705,6 @@ export function ZoneWidthSlider() {
     <div className="toc-zone-width-slider">
       <input type="range" min={ZONE_WIDTH_MIN} max={ZONE_WIDTH_MAX} step="1"
         value={ZONE_WIDTH_MAX + ZONE_WIDTH_MIN - width} onChange={onChange} />
-    </div>
-  )
-}
-
-const FLEET_STATES = ['off', '3col', '2col'] as const
-type FleetState = typeof FLEET_STATES[number]
-const FLEET_SHAPE_TYPES_TOC = ['fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview']
-
-function detectFleetState(editor: any): FleetState {
-  const fleet = editor.getCurrentPageShapes().filter((s: any) =>
-    FLEET_SHAPE_TYPES_TOC.includes(s.type as string))
-  if (fleet.length === 0) return 'off'
-  return (localStorage.getItem('fleet-layout') as FleetState) || '3col'
-}
-
-export function FleetToggle() {
-  const editor = useEditor()
-  const allAgents = useFleetAgents()
-  const [state, setState] = useState<FleetState>(() => detectFleetState(editor))
-
-  const handleClick = useCallback(() => {
-    const current = detectFleetState(editor)
-    const idx = FLEET_STATES.indexOf(current)
-    const next = FLEET_STATES[(idx + 1) % FLEET_STATES.length]
-    setState(next)
-    localStorage.setItem('fleet-layout', next)
-    if (next === 'off') {
-      const fleet = editor.getCurrentPageShapes().filter((s: any) =>
-        FLEET_SHAPE_TYPES_TOC.includes(s.type as string))
-      if (fleet.length > 0) forceDeleteShapes(editor, fleet.map((s: any) => s.id))
-      localStorage.setItem('fleet-hud-expanded', '0')
-      window.dispatchEvent(new CustomEvent('fleet-hud-reset'))
-    } else {
-      localStorage.setItem('fleet-hud-expanded', '1')
-      createFleetLayout(editor, allAgents, next === '3col' ? '3col' : '2col')
-    }
-  }, [editor, allAgents])
-
-  // Button shows the NEXT state
-  const nextIdx = (FLEET_STATES.indexOf(state) + 1) % FLEET_STATES.length
-  const nextState = FLEET_STATES[nextIdx]
-
-  let label: React.ReactNode
-  if (nextState === '3col') {
-    label = <>Fleet|</>
-  } else if (nextState === '2col') {
-    label = <>Flee|t</>
-  } else {
-    // Next: off → strikethrough
-    label = <span style={{ textDecoration: 'line-through' }}>Fleet</span>
-  }
-
-  return (
-    <div className="toc-diff-hint" onClick={handleClick}>
-      <img src="/basestar.svg" alt="" style={{ width: 10, height: 10, verticalAlign: 'middle', marginRight: 4, opacity: 0.6, position: 'relative' as const, top: 2 }} /> {label}
     </div>
   )
 }
