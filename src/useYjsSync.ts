@@ -155,6 +155,19 @@ export type SlideFragmentSignal = {
   viewerId: string
   timestamp: number
 }
+export type SlideIndexSignal = {
+  shapeId: string
+  index: number
+  viewerId: string
+  timestamp: number
+}
+const slideIndexHandle = bus.register<SlideIndexSignal>({
+  key: 'signal:slide-index',
+  accept: (s) => s.viewerId !== localViewerId,
+  ...replayConfig('signal:slide-index'),
+})
+export const onSlideIndex = slideIndexHandle.on
+
 const slideFragmentHandle = bus.register<SlideFragmentSignal>({
   key: 'signal:slide-fragment',
   accept: (s) => s.viewerId !== localViewerId,
@@ -297,6 +310,10 @@ export function broadcastCamera(x: number, y: number, z: number) {
 
 export function broadcastSlideFragment(shapeId: string, current: number, total: number) {
   writeSignal('signal:slide-fragment', { shapeId, current, total, viewerId: localViewerId })
+}
+
+export function broadcastSlideIndex(shapeId: string, index: number) {
+  writeSignal('signal:slide-index', { shapeId, index, viewerId: localViewerId })
 }
 
 /**

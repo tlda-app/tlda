@@ -112,8 +112,8 @@ function HtmlPageComponent({ shape }: { shape: any }) {
   const [isInteracting, setIsInteracting] = useState(false)
   const iframeActive = isTextSelectTool || isInteracting || isBrowseTool
 
-  // Detect slides format from URL (has _tldaH param)
-  const isSlide = shape.props.url?.includes('_tldaH=')
+  // Detect slides format from URL (single deck iframe or legacy per-slide iframe)
+  const isSlide = shape.props.url?.includes('_tldaDeck=1') || shape.props.url?.includes('_tldaH=')
   const isInActiveViewport = useIsInViewport(shape.id)
 
   // Viewport gating: only render iframe when near viewport.
@@ -364,7 +364,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
       if (e.data?.type === 'tlda-resize' && e.data.shapeId === shape.id) {
         const current = editor.store.get(shape.id) as any
         if (!current) return
-        const isSlideShape = current.props.url?.includes('_tldaH=')
+        const isSlideShape = current.props.url?.includes('_tldaDeck=1') || current.props.url?.includes('_tldaH=')
         const minH = isSlideShape ? current.props.h : 200
         const newH = Math.max(minH, 200, Math.round(e.data.height))
         if (Math.abs(newH - current.props.h) > 5) {
@@ -374,7 +374,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
           }))
           if (isSlideShape) {
             const slideShapes = editor.getCurrentPageShapes()
-              .filter((s: any) => s.type === 'html-page' && s.props?.url?.includes('_tldaH='))
+              .filter((s: any) => s.type === 'html-page' && (s.props?.url?.includes('_tldaDeck=1') || s.props?.url?.includes('_tldaH=')))
             const bounds = slideShapes.reduce((acc: Box | null, s: any) => {
               const h = s.id === shape.id ? newH : s.props.h
               const box = new Box(s.x, s.y, s.props.w, h)

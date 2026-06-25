@@ -3,26 +3,14 @@ import {
   AssetRecordType,
   createShapeId,
 } from 'tldraw'
-import type { SvgPage, SvgDocument } from './types'
+import type { SvgPage, SvgDocument, SlideInfo } from './types'
 
-export interface SlidePageEntry {
-  file: string
-  width: number
-  height: number
-  title?: string
-  slideIndex: number
-  indexh?: number
-  indexv?: number
-}
-
-/** Gap between slides on the spatial canvas (px) — large enough that adjacent
- *  slides stay off-screen at any viewport aspect ratio when zoomed to contain */
-export const SLIDE_GAP = 500
+export type SlidePageEntry = SlideInfo
 
 /**
  * Load a slides document (Quarto reveal.js deck).
- * All slides laid out left-to-right on a SINGLE TLDraw canvas.
- * Camera navigation moves between slides; RevealJS fragments advance within each slide.
+ * The deck is one rendered html-page shape. Logical slides live in slideInfo;
+ * SlidesNavigator drives Reveal inside the single iframe.
  */
 export async function loadSlidesDocument(
   name: string,
@@ -35,23 +23,21 @@ export async function loadSlidesDocument(
 
   console.log(`Found ${pageInfos.length} slides`)
 
-  const pages: SvgPage[] = pageInfos.map((info, i) => {
-    const pageId = `${name}-slide-${i}`
-    const h = info.indexh ?? info.slideIndex
-    const v = info.indexv ?? 0
-    const url = basePath + info.file + `?_tldaH=${h}&_tldaV=${v}`
-    // Horizontal layout: each slide offset by (width + gap) * index
-    const x = i * (info.width + SLIDE_GAP)
-    return {
-      src: url,
-      bounds: new Box(x, 0, info.width, info.height),
-      assetId: AssetRecordType.createId(pageId),
-      shapeId: createShapeId(pageId),
-      width: info.width,
-      height: info.height,
-    }
-  })
+  const first = pageInfos[0]
+  if (!first) {
+    return { name, pages: [], basePath, format: 'slides', slideInfo: [] }
+  }
 
-  console.log(`Slides document ready (${pageInfos.length} slides, spatial canvas)`)
-  return { name, pages, basePath, format: 'slides' }
+  const pageId = `${name}-deck`
+  const pages: SvgPage[] = [{
+    src: basePath + first.file + '?_tldaDeck=1',
+    bounds: new Box(0, 0, first.width, first.height),
+    assetId: AssetRecordType.createId(pageId),
+    shapeId: createShapeId(pageId),
+    width: first.width,
+    height: first.height,
+  }]
+
+  console.log(`Slides document ready (${pageInfos.length} slides, single deck iframe)`)
+  return { name, pages, basePath, format: 'slides', slideInfo: pageInfos }
 }

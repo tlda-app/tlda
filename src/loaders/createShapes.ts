@@ -3,8 +3,42 @@
  * Each function checks if shapes already exist (from Yjs sync),
  * creates them if not, and returns the set of page shape IDs.
  */
-import type { Editor, TLShapeId, TLPageId } from 'tldraw'
+import type { Editor, TLPageId, TLShapeId } from 'tldraw'
 import type { SvgDocument } from './types'
+
+type HtmlPageShape = {
+  id: TLShapeId
+  type: 'html-page'
+  x: number
+  y: number
+  props: { w: number; h: number; url?: string }
+} & Record<string, unknown>
+
+function isHtmlPageShape(shape: unknown): shape is HtmlPageShape {
+  return typeof shape === 'object' && shape !== null && 'type' in shape && shape.type === 'html-page'
+}
+
+type HtmlPageShapePartial = {
+  id: TLShapeId
+  type: 'html-page'
+  x: number
+  y: number
+  isLocked: boolean
+  props: { w: number; h: number; url: string }
+}
+
+function createHtmlPageShape(editor: Editor, shape: HtmlPageShapePartial) {
+  // tldraw's Editor type is compiled against its built-in shape union, while
+  // this app registers html-page via HtmlPageShapeUtil at runtime. Remove this
+  // boundary cast if Editor becomes parameterized by app-registered shapes.
+  editor.createShapes([shape as unknown as Parameters<Editor['createShapes']>[0][number]])
+}
+
+function putHtmlPageShape(editor: Editor, shape: HtmlPageShape) {
+  // Same custom-shape boundary as createHtmlPageShape; this preserves the
+  // existing shape record's parent/index/meta fields while updating deck props.
+  editor.store.put([shape as unknown as Parameters<Editor['store']['put']>[0][number]])
+}
 
 function sendDocumentPagesToBack(editor: Editor) {
   const ids = editor.getCurrentPageShapes()
@@ -176,50 +210,67 @@ export function createHtmlShapes(editor: Editor, document: SvgDocument): boolean
  * Camera navigation moves between slides; RevealJS handles fragment stepping.
  */
 export function createSlidesShapes(editor: Editor, document: SvgDocument): boolean {
-  const existingShapes = editor.getCurrentPageShapes()
-  const hasHtmlShapes = existingShapes.some(s => (s.type as string) === 'html-page')
-  if (hasHtmlShapes) {
-    for (const page of document.pages) {
-      const shape = editor.getShape(page.shapeId) as any
-      if (!shape || shape.type !== 'html-page') continue
-      if (
-        shape.x === page.bounds.x &&
-        shape.y === page.bounds.y &&
-        shape.props?.w === page.bounds.w &&
-        shape.props?.h === page.bounds.h &&
-        shape.props?.url === page.src
-      ) continue
-      editor.store.update(page.shapeId, (s: any) => ({
-        ...s,
+  const existingShapes: unknown[] = editor.getCurrentPageShapes()
+  const expectedIds = new Set(document.pages.map(p => p.shapeId))
+  const staleSlidePages: HtmlPageShape[] = []
+  for (const shape of existingShapes) {
+    if (!isHtmlPageShape(shape) || expectedIds.has(shape.id)) continue
+    const url = shape.props.url || ''
+    if (url.includes('_tldaH=') || url.includes('_tldaDeck=1')) {
+      staleSlidePages.push(shape)
+    }
+  }
+  if (staleSlidePages.length > 0) {
+    editor.store.remove(staleSlidePages.map(s => s.id))
+  }
+
+  let changed = staleSlidePages.length > 0
+  for (const page of document.pages) {
+    const shape: unknown = editor.getShape(page.shapeId)
+    if (!shape) {
+      const deckShape = {
+        id: page.shapeId,
+        type: 'html-page' as const,
         x: page.bounds.x,
         y: page.bounds.y,
         isLocked: true,
         props: {
-          ...s.props,
           w: page.bounds.w,
           h: page.bounds.h,
           url: page.src,
         },
-      }))
+      } satisfies HtmlPageShapePartial
+      createHtmlPageShape(editor, deckShape)
+      changed = true
+      continue
     }
-    sendDocumentPagesToBack(editor)
-    return true
-  }
-
-  editor.createShapes(
-    document.pages.map((page) => ({
-      id: page.shapeId,
-      type: 'html-page' as any,
+    if (!isHtmlPageShape(shape)) continue
+    if (
+      shape.x === page.bounds.x &&
+      shape.y === page.bounds.y &&
+      shape.props?.w === page.bounds.w &&
+      shape.props?.h === page.bounds.h &&
+      shape.props?.url === page.src
+    ) continue
+    putHtmlPageShape(editor, {
+      ...shape,
       x: page.bounds.x,
       y: page.bounds.y,
       isLocked: true,
       props: {
+        ...shape.props,
         w: page.bounds.w,
         h: page.bounds.h,
         url: page.src,
       },
-    }))
-  )
+    })
+    changed = true
+  }
+
+  if (!changed) {
+    sendDocumentPagesToBack(editor)
+    return true
+  }
   sendDocumentPagesToBack(editor)
   return false
 }

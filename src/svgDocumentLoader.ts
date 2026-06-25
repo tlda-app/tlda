@@ -7,6 +7,7 @@
 export type {
   SvgPage,
   SvgDocument,
+  SlideInfo,
   TargetInfo,
   DiffHighlight,
   DiffArrow,

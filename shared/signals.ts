@@ -6,6 +6,7 @@ export const SIGNAL_REPLAY_WINDOWS = {
   'signal:diff-summaries': 86_400_000,
   'signal:viewport': 300_000,
   'signal:presenter': 600_000,
+  'signal:slide-index': 600_000,
   'signal:slide-fragment': 600_000,
 } as const satisfies Record<string, number>
 

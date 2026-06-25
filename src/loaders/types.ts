@@ -29,6 +29,16 @@ export interface SvgPage {
   targetName?: string      // which target this page belongs to
 }
 
+export interface SlideInfo {
+  file: string
+  width: number
+  height: number
+  title?: string
+  slideIndex: number
+  indexh?: number
+  indexv?: number
+}
+
 export interface TargetInfo {
   name: string
   title: string
@@ -39,6 +49,7 @@ export interface TargetInfo {
 export interface SvgDocument {
   name: string
   pages: SvgPage[]
+  slideInfo?: SlideInfo[]
   macros?: Record<string, string>
   basePath?: string  // URL path prefix for files (e.g. "/docs/bregman/")
   format?: 'svg' | 'png' | 'html' | 'diff' | 'slides' | 'markdown'

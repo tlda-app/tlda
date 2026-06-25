@@ -583,6 +583,7 @@ const SLIDES_BRIDGE_SCRIPT = `
   var shapeId = params.get('_tldaShape') || '';
   var indexh = parseInt(params.get('_tldaH') || '0', 10);
   var indexv = parseInt(params.get('_tldaV') || '0', 10);
+  var deckMode = params.get('_tldaDeck') === '1';
 
   function init() {
     if (typeof Reveal === 'undefined' || !Reveal.isReady || !Reveal.isReady()) {
@@ -590,8 +591,9 @@ const SLIDES_BRIDGE_SCRIPT = `
       return;
     }
 
-    // Navigate to the target slide using (indexh, indexv) coordinates
-    Reveal.slide(indexh, indexv, 0);
+    // Legacy per-slide iframes lock to one slide. Deck-mode iframes keep the
+    // whole Reveal instance alive and are driven by parent messages.
+    if (!deckMode) Reveal.slide(indexh, indexv, 0);
 
     // Signal parent that this slide is ready to show (triggers fade-in)
     setTimeout(function() {
@@ -616,8 +618,12 @@ const SLIDES_BRIDGE_SCRIPT = `
 
     // Prevent reveal from changing slides (lock to this slide)
     Reveal.on('slidechanged', function(ev) {
-      if (ev.indexh !== indexh || ev.indexv !== indexv) {
+      if (!deckMode && (ev.indexh !== indexh || ev.indexv !== indexv)) {
         Reveal.slide(indexh, indexv, 0);
+      }
+      if (deckMode) {
+        reportFragmentState();
+        reportSlideHeight();
       }
     });
 
@@ -687,6 +693,8 @@ const SLIDES_BRIDGE_SCRIPT = `
       window.parent.postMessage({
         type: 'tlda-fragment-state',
         shapeId: shapeId,
+        indexh: Reveal.getIndices().h,
+        indexv: Reveal.getIndices().v || 0,
         current: current,
         total: total,
       }, '*');
@@ -742,6 +750,11 @@ const SLIDES_BRIDGE_SCRIPT = `
         if (avail && avail.prev) {
           Reveal.prev();
         }
+      }
+      if (e.data.type === 'tlda-slide-goto') {
+        Reveal.slide(e.data.indexh || 0, e.data.indexv || 0, 0);
+        setTimeout(reportFragmentState, 50);
+        setTimeout(reportSlideHeight, 50);
       }
     });
 

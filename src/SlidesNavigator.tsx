@@ -9,12 +9,11 @@
  * - Animated camera transitions between slides
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { type Editor, Box } from 'tldraw'
-import type { SvgDocument } from './svgDocumentLoader'
-import { SLIDE_GAP } from './loaders/slidesLoader'
-import { broadcastSlideFragment, onSlideFragment } from './useYjsSync'
+import { type Editor, type TLShapeId } from 'tldraw'
+import type { SvgDocument, SlideInfo } from './svgDocumentLoader'
+import { broadcastSlideFragment, broadcastSlideIndex, onSlideFragment, onSlideIndex } from './useYjsSync'
 import { getRole } from './viewerRole'
 
 interface SlidesNavigatorProps {
@@ -25,9 +24,19 @@ interface SlidesNavigatorProps {
 // Fragment state per slide, keyed by shape ID
 const fragmentState = new Map<string, { total: number; current: number }>()
 
+type HtmlPageShape = {
+  id: TLShapeId
+  type: 'html-page'
+  props: { url?: string }
+} & Record<string, unknown>
+
+function isHtmlPageShape(shape: unknown): shape is HtmlPageShape {
+  return typeof shape === 'object' && shape !== null && 'type' in shape && shape.type === 'html-page'
+}
+
 /** Navigate camera to center on a specific slide */
-function navigateToSlide(editor: Editor, document: SvgDocument, index: number, animate = true) {
-  const page = document.pages[index]
+function navigateToSlide(editor: Editor, document: SvgDocument, animate = true) {
+  const page = document.pages[0]
   if (!page) return
   const vp = editor.getViewportScreenBounds()
   // Presentation mode preserves slide scale by fitting width only. Tall slides
@@ -45,30 +54,51 @@ function navigateToSlide(editor: Editor, document: SvgDocument, index: number, a
   }
 }
 
-/** Determine which slide the camera is currently closest to */
-function getCurrentSlideIndex(editor: Editor, document: SvgDocument): number {
-  const cam = editor.getCamera()
-  const vp = editor.getViewportScreenBounds()
-  // Camera x maps to canvas x via: canvasX = -cam.x + vp.width / (2 * cam.z)
-  const viewCenterX = -cam.x + vp.width / (2 * cam.z)
+function getSlides(document: SvgDocument): SlideInfo[] {
+  return document.slideInfo && document.slideInfo.length > 0
+    ? document.slideInfo
+    : document.pages.map((page, i) => ({
+      file: page.src,
+      width: page.width,
+      height: page.height,
+      slideIndex: i,
+      indexh: i,
+      indexv: 0,
+    }))
+}
 
-  let bestIdx = 0
-  let bestDist = Infinity
-  for (let i = 0; i < document.pages.length; i++) {
-    const page = document.pages[i]
-    const slideCenterX = page.bounds.x + page.width / 2
-    const dist = Math.abs(viewCenterX - slideCenterX)
-    if (dist < bestDist) {
-      bestDist = dist
-      bestIdx = i
-    }
-  }
-  return bestIdx
+function slideIndexFromCoords(slides: SlideInfo[], indexh: number, indexv: number): number {
+  const idx = slides.findIndex(slide =>
+    (slide.indexh ?? slide.slideIndex) === indexh &&
+    (slide.indexv ?? 0) === indexv
+  )
+  return idx >= 0 ? idx : 0
+}
+
+function getDeckShapeId(document: SvgDocument): string | null {
+  return document.pages[0]?.shapeId ?? null
+}
+
+function deckIframe(document: SvgDocument): HTMLIFrameElement | null {
+  const shapeId = getDeckShapeId(document)
+  if (!shapeId) return null
+  return window.document.querySelector(`[data-shape-id="${shapeId}"] iframe`) as HTMLIFrameElement | null
+}
+
+function goToDeckSlide(document: SvgDocument, slide: SlideInfo): boolean {
+  const el = deckIframe(document)
+  if (!el?.contentWindow) return false
+  el.contentWindow.postMessage({
+    type: 'tlda-slide-goto',
+    indexh: slide.indexh ?? slide.slideIndex,
+    indexv: slide.indexv ?? 0,
+  }, '*')
+  return true
 }
 
 /** Send fragment step message to the slide's iframe */
-function stepFragment(_editor: Editor, shapeId: string, direction: 'next' | 'prev'): boolean {
-  const el = window.document.querySelector(`[data-shape-id="${shapeId}"] iframe`) as HTMLIFrameElement
+function stepFragment(document: SvgDocument, direction: 'next' | 'prev'): boolean {
+  const el = deckIframe(document)
   if (!el?.contentWindow) return false
   el.contentWindow.postMessage({
     type: direction === 'next' ? 'tlda-fragment-next' : 'tlda-fragment-prev',
@@ -76,7 +106,7 @@ function stepFragment(_editor: Editor, shapeId: string, direction: 'next' | 'pre
   return true
 }
 
-function reconcileFragment(editor: Editor, shapeId: string, targetCurrent: number): boolean {
+function reconcileFragment(document: SvgDocument, shapeId: string, targetCurrent: number): boolean {
   const fs = fragmentState.get(shapeId)
   if (!fs) return false
   const delta = targetCurrent - fs.current
@@ -84,7 +114,7 @@ function reconcileFragment(editor: Editor, shapeId: string, targetCurrent: numbe
   const direction = delta > 0 ? 'next' : 'prev'
   let sent = false
   for (let i = 0; i < Math.abs(delta); i++) {
-    sent = stepFragment(editor, shapeId, direction) || sent
+    sent = stepFragment(document, direction) || sent
   }
   return sent
 }
@@ -92,26 +122,49 @@ function reconcileFragment(editor: Editor, shapeId: string, targetCurrent: numbe
 export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
   const [currentSlide, setCurrentSlide] = useState(0)
   const [fragmentInfo, setFragmentInfo] = useState<{ current: number; total: number } | null>(null)
-  const totalSlides = document.pages.length
+  const slides = useMemo(() => getSlides(document), [document])
+  const totalSlides = slides.length
   const touchStartRef = useRef<{ x: number; y: number; time: number } | null>(null)
-  const navigatingRef = useRef(false)
   const pendingRemoteFragmentsRef = useRef(new Map<string, number>())
   const applyingRemoteFragmentRef = useRef(false)
+  const applyingRemoteSlideRef = useRef(false)
+
+  useEffect(() => {
+    const removeStaleSlidePages = () => {
+      const deckShapeId = getDeckShapeId(document)
+      const currentShapes: unknown[] = editor.getCurrentPageShapes()
+      const staleSlidePages: HtmlPageShape[] = []
+      for (const shape of currentShapes) {
+        if (
+          isHtmlPageShape(shape) &&
+          shape.id !== deckShapeId &&
+          shape.props.url?.includes('_tldaH=')
+        ) {
+          staleSlidePages.push(shape)
+        }
+      }
+      if (staleSlidePages.length > 0) {
+        editor.store.remove(staleSlidePages.map((shape) => shape.id))
+      }
+    }
+    removeStaleSlidePages()
+    return editor.store.listen(removeStaleSlidePages, { source: 'all', scope: 'document' })
+  }, [editor, document])
 
   // Listen for fragment state reports from iframes
   useEffect(() => {
     const handler = (e: MessageEvent) => {
       if (e.data?.type === 'tlda-fragment-state') {
-        const { shapeId, current, total } = e.data
+        const { shapeId, current, total, indexh = 0, indexv = 0 } = e.data
         fragmentState.set(shapeId, { total, current })
         const pending = pendingRemoteFragmentsRef.current.get(shapeId)
         if (pending !== undefined && pending !== current) {
-          if (reconcileFragment(editor, shapeId, pending)) return
+          if (reconcileFragment(document, shapeId, pending)) return
         }
         pendingRemoteFragmentsRef.current.delete(shapeId)
-        // Update display if this is the current slide
-        const currentPage = document.pages[currentSlide]
-        if (currentPage && shapeId === currentPage.shapeId) {
+        if (shapeId === getDeckShapeId(document)) {
+          const idx = slideIndexFromCoords(slides, indexh, indexv)
+          if (idx !== currentSlide) setCurrentSlide(idx)
           setFragmentInfo({ current, total })
         }
         if (!applyingRemoteFragmentRef.current && getRole() === 'presenter') {
@@ -121,14 +174,14 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
     }
     window.addEventListener('message', handler)
     return () => window.removeEventListener('message', handler)
-  }, [currentSlide, document.pages, editor])
+  }, [currentSlide, document, slides])
 
   useEffect(() => {
     return onSlideFragment((signal) => {
       if (getRole() !== 'viewer') return
       applyingRemoteFragmentRef.current = true
       pendingRemoteFragmentsRef.current.set(signal.shapeId, signal.current)
-      const applied = reconcileFragment(editor, signal.shapeId, signal.current)
+      const applied = reconcileFragment(document, signal.shapeId, signal.current)
       if (applied) {
         const fs = fragmentState.get(signal.shapeId)
         if (fs) {
@@ -137,64 +190,47 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
       }
       setTimeout(() => { applyingRemoteFragmentRef.current = false }, 250)
     })
-  }, [editor])
+  }, [document])
 
-  // On mount: fix stale opacity, reposition slides with correct gap, navigate to slide 0
+  // On mount: fix stale opacity and navigate to the single deck page
   useEffect(() => {
     for (let i = 0; i < document.pages.length; i++) {
       const page = document.pages[i]
       const shape = editor.store.get(page.shapeId)
       if (!shape) continue
-      const targetX = i * (page.width + SLIDE_GAP)
       const updates: Record<string, unknown> = {}
       if (shape.opacity !== 1) updates.opacity = 1
-      if (shape.x !== targetX) updates.x = targetX
       if (Object.keys(updates).length > 0) {
         editor.store.update(page.shapeId, (s) => ({ ...s, ...updates }))
       }
-      // Update document.pages bounds to match new positions
-      page.bounds = new Box(targetX, 0, page.width, page.height)
     }
-    navigateToSlide(editor, document, 0, false)
+    navigateToSlide(editor, document, false)
+    if (slides[0]) goToDeckSlide(document, slides[0])
     window.document.body.classList.add('slides-mode')
     return () => { window.document.body.classList.remove('slides-mode') }
-  }, [editor, document])
-
-  // Track camera position to update current slide indicator
-  useEffect(() => {
-    let rafId: number
-    const checkSlide = () => {
-      if (navigatingRef.current) return
-      const idx = getCurrentSlideIndex(editor, document)
-      if (idx !== currentSlide) {
-        setCurrentSlide(idx)
-        const page = document.pages[idx]
-        if (page) {
-          const fs = fragmentState.get(page.shapeId)
-          setFragmentInfo(fs || null)
-        }
-      }
-    }
-    const unsub = editor.store.listen(() => {
-      cancelAnimationFrame(rafId)
-      rafId = requestAnimationFrame(checkSlide)
-    }, { source: 'all', scope: 'session' })
-    return () => { unsub(); cancelAnimationFrame(rafId) }
-  }, [editor, document, currentSlide])
+  }, [editor, document, slides])
 
   const goToSlide = useCallback((index: number, animate = true) => {
     const clamped = Math.max(0, Math.min(index, totalSlides - 1))
-    navigatingRef.current = true
     setCurrentSlide(clamped)
-    navigateToSlide(editor, document, clamped, animate)
-    // Update fragment info for new slide
-    const page = document.pages[clamped]
-    if (page) {
-      const fs = fragmentState.get(page.shapeId)
-      setFragmentInfo(fs || null)
+    navigateToSlide(editor, document, animate)
+    setFragmentInfo(null)
+    if (slides[clamped]) goToDeckSlide(document, slides[clamped])
+    const shapeId = getDeckShapeId(document)
+    if (!applyingRemoteSlideRef.current && shapeId && getRole() === 'presenter') {
+      broadcastSlideIndex(shapeId, clamped)
     }
-    setTimeout(() => { navigatingRef.current = false }, 400)
-  }, [editor, document, totalSlides])
+  }, [editor, document, totalSlides, slides])
+
+  useEffect(() => {
+    return onSlideIndex((signal) => {
+      if (getRole() !== 'viewer') return
+      if (signal.shapeId !== getDeckShapeId(document)) return
+      applyingRemoteSlideRef.current = true
+      goToSlide(signal.index)
+      setTimeout(() => { applyingRemoteSlideRef.current = false }, 250)
+    })
+  }, [document, goToSlide])
 
   useEffect(() => {
     const refitCurrentSlide = () => {
@@ -209,34 +245,34 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
   }, [currentSlide, goToSlide])
 
   const handleNext = useCallback(() => {
-    const page = document.pages[currentSlide]
-    if (!page) return
+    const shapeId = getDeckShapeId(document)
+    if (!shapeId) return
     // Try advancing fragment first
-    const fs = fragmentState.get(page.shapeId)
+    const fs = fragmentState.get(shapeId)
     if (fs && fs.current < fs.total) {
-      stepFragment(editor, page.shapeId, 'next')
+      stepFragment(document, 'next')
       return
     }
     // No more fragments — go to next slide
     if (currentSlide < totalSlides - 1) {
       goToSlide(currentSlide + 1)
     }
-  }, [currentSlide, totalSlides, editor, document.pages, goToSlide])
+  }, [currentSlide, totalSlides, document, goToSlide])
 
   const handlePrev = useCallback(() => {
-    const page = document.pages[currentSlide]
-    if (!page) return
+    const shapeId = getDeckShapeId(document)
+    if (!shapeId) return
     // Try going back a fragment first
-    const fs = fragmentState.get(page.shapeId)
+    const fs = fragmentState.get(shapeId)
     if (fs && fs.current > 0) {
-      stepFragment(editor, page.shapeId, 'prev')
+      stepFragment(document, 'prev')
       return
     }
     // No more fragments back — go to prev slide
     if (currentSlide > 0) {
       goToSlide(currentSlide - 1)
     }
-  }, [currentSlide, editor, document.pages, goToSlide])
+  }, [currentSlide, document, goToSlide])
 
   // Keyboard navigation
   useEffect(() => {

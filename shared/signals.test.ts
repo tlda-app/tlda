@@ -12,6 +12,8 @@ test('shared replay table preserves current server replay behavior', () => {
     'signal:diff-summaries': 86_400_000,
     'signal:viewport': 300_000,
     'signal:presenter': 600_000,
+    'signal:slide-index': 600_000,
+    'signal:slide-fragment': 600_000,
   })
 
   assert.equal(getSignalReplayMs('signal:reload'), undefined)
@@ -33,4 +35,3 @@ test('direct signal dispatch drops stale and out-of-order signals', () => {
 
   assert.deepEqual(seen, [20, 30])
 })
-
