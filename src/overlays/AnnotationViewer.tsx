@@ -30,6 +30,7 @@ interface ViewerData {
   color?: string
   chipRect?: { left: number; top: number; right: number; bottom: number; width: number; height: number }
   useFullBounds?: boolean
+  pinned?: boolean
   bulletIdx?: number
 }
 
@@ -58,9 +59,10 @@ export function AnnotationViewer({
         color: detail.color,
         chipRect: detail.chipRect,
         useFullBounds: detail.useFullBounds,
+        pinned: detail.pinned,
         bulletIdx: detail.bulletIdx,
       })
-      setState('hovering')
+      setState(detail.pinned ? 'pinned' : 'hovering')
       prevCameraRef.current = null
       if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current)
     }

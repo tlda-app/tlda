@@ -110,6 +110,12 @@ function sendPageShapeToBack(editor: Editor, shapeId: TLShapeId) {
   editor.updateShape({ id: shapeId, type: shape.type, isLocked: true })
 }
 
+function getShapeClipBounds(editor: Editor, shapeId: TLShapeId) {
+  const bounds = editor.getShapePageBounds(shapeId)
+  if (!bounds) return null
+  return { x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h }
+}
+
 export async function createTemporaryMarkdownColumn(
   editor: Editor,
   pagePoint: { x: number; y: number },
@@ -173,6 +179,16 @@ export async function createTemporaryMarkdownColumn(
     })
   }
   sendPageShapeToBack(editor, TEMP_MARKDOWN_SHAPE_ID)
+  return {
+    shapeId: TEMP_MARKDOWN_SHAPE_ID,
+    bounds: getShapeClipBounds(editor, TEMP_MARKDOWN_SHAPE_ID) || {
+      x: pagePoint.x,
+      y: pagePoint.y,
+      w: TEMP_MARKDOWN_W,
+      h: TEMP_MARKDOWN_H,
+    },
+    url,
+  }
 }
 
 
