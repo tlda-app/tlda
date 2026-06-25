@@ -15,6 +15,7 @@ import { initProjectStore } from '../server/lib/project-store.mjs'
 setBuildReporter({
   broadcastSignal: (room, signal, payload) => process.send?.({ t: 'report', m: 'broadcastSignal', a: [room, signal, payload] }),
   putShape:        (docName, shape)        => process.send?.({ t: 'report', m: 'putShape',        a: [docName, shape] }),
+  patchShape:      (docName, shapeId, propsPatch) => process.send?.({ t: 'report', m: 'patchShape', a: [docName, shapeId, propsPatch] }),
   emitGlobalEvent: (type, payload)         => process.send?.({ t: 'report', m: 'emitGlobalEvent', a: [type, payload] }),
   updateProject:   (name, patch)           => process.send?.({ t: 'report', m: 'updateProject',   a: [name, patch] }),
 })

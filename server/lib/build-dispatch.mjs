@@ -6,7 +6,7 @@
 import { fork } from 'child_process'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
-import { broadcastSignal, putShape, emitGlobalEvent, getLastSignal } from './sync-rooms.mjs'
+import { broadcastSignal, putShape, updateShape, emitGlobalEvent, getLastSignal } from './sync-rooms.mjs'
 import { updateProject, getProjectsDir } from './project-store.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -14,7 +14,41 @@ const WORKER = join(__dirname, '..', '..', 'bin', 'build-worker.mjs')
 
 // The real server-side side-effect functions, keyed the way the worker reports
 // them. A build that runs in the worker calls these here, in the server process.
-const SINKS = { broadcastSignal, putShape, emitGlobalEvent, updateProject }
+async function patchShape(docName, shapeId, propsPatch) {
+  try {
+    await updateShape(docName, shapeId, (cur) => ({
+      ...cur,
+      props: { ...(cur.props || {}), ...(propsPatch || {}) },
+    }))
+  } catch (e) {
+    if (!/not found/i.test(e?.message || '')) throw e
+    await putShape(docName, {
+      id: shapeId,
+      typeName: 'shape',
+      type: 'doc-version',
+      x: 0,
+      y: 0,
+      rotation: 0,
+      index: 'a0',
+      parentId: 'page:page',
+      isLocked: true,
+      opacity: 0,
+      meta: {},
+      props: {
+        w: 1,
+        h: 1,
+        commitHash: 'unknown',
+        timestamp: Date.now(),
+        buildReadyAt: Date.now(),
+        warningsJson: '',
+        errorsJson: '',
+        ...(propsPatch || {}),
+      },
+    })
+  }
+}
+
+const SINKS = { broadcastSignal, putShape, patchShape, emitGlobalEvent, updateProject }
 
 const _inFlight = new Map() // name -> child process
 const _pending = new Map()  // name -> latest priorityPages waiting behind the in-flight build

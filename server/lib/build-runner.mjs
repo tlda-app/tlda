@@ -44,7 +44,7 @@ import { join, basename, dirname } from 'path'
 import { tmpdir, homedir } from 'os'
 import { fileURLToPath } from 'url'
 import { updateProject, sourceDir, outputDir, projectDir, readProject, listProjects, extractBuildErrors } from './project-store.mjs'
-import { broadcastSignal, putShape, emitGlobalEvent } from './sync-rooms.mjs'
+import { broadcastSignal, putShape, updateShape, emitGlobalEvent } from './sync-rooms.mjs'
 import { snapshotBeforeBuild, recordGitSnapshot } from './history-store.mjs'
 import { commitSnapshot, initShadowFromProjectRepo } from './shadow-repo.mjs'
 import { appendBuildEntry } from './changelog.mjs'
@@ -61,6 +61,39 @@ import { clearSynctexCache } from './synctex-query.mjs'
 const _directReporter = {
   broadcastSignal: (room, signal, payload) => broadcastSignal(room, signal, payload),
   putShape: (docName, shape) => putShape(docName, shape),
+  patchShape: async (docName, shapeId, propsPatch) => {
+    try {
+      await updateShape(docName, shapeId, cur => ({
+        ...cur,
+        props: { ...(cur.props || {}), ...(propsPatch || {}) },
+      }))
+    } catch (e) {
+      if (!/not found/i.test(e?.message || '')) throw e
+      await putShape(docName, {
+        id: shapeId,
+        typeName: 'shape',
+        type: 'doc-version',
+        x: 0,
+        y: 0,
+        rotation: 0,
+        index: 'a0',
+        parentId: 'page:page',
+        isLocked: true,
+        opacity: 0,
+        meta: {},
+        props: {
+          w: 1,
+          h: 1,
+          commitHash: 'unknown',
+          timestamp: Date.now(),
+          buildReadyAt: Date.now(),
+          warningsJson: '',
+          errorsJson: '',
+          ...(propsPatch || {}),
+        },
+      })
+    }
+  },
   emitGlobalEvent: (type, payload) => emitGlobalEvent(type, payload),
   updateProject: (name, patch) => updateProject(name, patch),
 }
@@ -70,6 +103,7 @@ export function setBuildReporter(r) { _reporter = r || _directReporter }
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PROJECT_ROOT = join(__dirname, '..', '..')
 const SCRIPTS_DIR = join(PROJECT_ROOT, 'scripts')
+const DOC_VERSION_SENTINEL_ID = 'shape:doc-version--sentinel'
 
 function convertScratchMarkdown(srcDir, addLog) {
   const scratchDir = join(srcDir, '.tlda', 'scratch')
@@ -1871,6 +1905,8 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
         } catch (mirrorErr) {
           console.error(`[mirror] ${name}@${hash7} failed: ${mirrorErr.message}`)
           ctx.addLog(`mirror to working copy failed (non-fatal): ${mirrorErr.message}`)
+          recordPersistentBuildStatus(name, `Mirror failed: ${mirrorErr.message}`)
+          signalBuildStatus(name, `Mirror failed: ${mirrorErr.message}`)
           // Include lastMirrorSuccess so the failure handler can narrow the responsible-agent
           // window to edits that happened after the last clean mirror.
           const lastMirrorSuccess = readProject(name)?.lastMirrorSuccess || null
@@ -1981,9 +2017,11 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
     try { _reporter.updateProject(name, { buildStatus: 'failed' }) } catch (e2) { console.error(`[build] failed to set failed status for ${name}: ${e2.message}`) }
     try { writeFileSync(join(projDir, 'build.log'), log.join('\n')) } catch (e2) { console.error(`[build] failed to write build.log for ${name}: ${e2.message}`) }
 
+    recordPersistentBuildStatus(name, e.message)
     signalBuildStatus(name, e.message)
     signalBuildProgress(name, 'failed', e.message)
     emitBuildComplete(name, { status: 'failed', elapsed: elapsed(), errors: [e.message] })
+    emitBuildFailureCard(name, e.message)
     throw e
   } finally {
     buildChildProcesses.delete(buildId)
@@ -2008,9 +2046,17 @@ function signalBuildProgress(name, phase, detail) {
   }
 }
 
+function currentBuildStatusPayload(name, errorMessage) {
+  const { errors, warnings } = extractBuildErrors(name)
+  const signaledErrors = (errorMessage && errors.length === 0)
+    ? [{ message: errorMessage, file: 'build' }]
+    : errors
+  return { errors: signaledErrors, warnings }
+}
+
 function signalBuildStatus(name, errorMessage) {
   try {
-    const { errors, warnings } = extractBuildErrors(name)
+    const { errors, warnings } = currentBuildStatusPayload(name, errorMessage)
     _reporter.broadcastSignal(`doc-${name}`, 'signal:build-status', {
       error: errorMessage,
       errors,
@@ -2021,6 +2067,48 @@ function signalBuildStatus(name, errorMessage) {
   } catch (e) {
     console.error(`[build:${name}] Failed to send build status signal: ${e.message}`)
   }
+}
+
+function recordPersistentBuildStatus(name, errorMessage) {
+  try {
+    const { errors, warnings } = currentBuildStatusPayload(name, errorMessage)
+    Promise.resolve(_reporter.patchShape(`doc-${name}`, DOC_VERSION_SENTINEL_ID, {
+      timestamp: Date.now(),
+      errorsJson: errors.length ? JSON.stringify(errors) : '',
+      warningsJson: warnings.length ? JSON.stringify(warnings) : '',
+    })).catch(e => console.error(`[build:${name}] persistent build status relay failed: ${e.message}`))
+    console.log(`[build:${name}] persistent build status updated (${errors.length} errors, ${warnings.length} warnings)`)
+  } catch (e) {
+    console.error(`[build:${name}] Failed to update persistent build status: ${e.message}`)
+  }
+}
+
+function emitBuildFailureCard(name, message) {
+  let errors = []
+  let warnings = []
+  try {
+    const parsed = currentBuildStatusPayload(name, message)
+    errors = parsed.errors || []
+    warnings = parsed.warnings || []
+  } catch (e) {
+    console.error(`[build:${name}] extractBuildErrors for build-card failed: ${e.message}`)
+  }
+  let buildFiles = null
+  const relPath = join(projectDir(name), 'output', 'relevant-files.json')
+  if (existsSync(relPath)) {
+    buildFiles = JSON.parse(readFileSync(relPath, 'utf8'))?.files || null
+  }
+  _reporter.emitGlobalEvent('build-card', {
+    name,
+    hash: null,
+    summary: null,
+    lintFindings: [],
+    buildFailed: message,
+    errors: errors.slice(0, 5),
+    warnings: warnings.slice(0, 5),
+    buildFiles,
+    lastBuildSuccess: readProject(name)?.lastBuild || null,
+  })
 }
 
 function signalReload(name, pages) {
@@ -2045,7 +2133,7 @@ async function updateDocVersionSentinel(name, shadowHash, buildReadyAt, errors, 
 
   const docName = `doc-${name}`
   const sentinel = {
-    id: 'shape:doc-version--sentinel',
+    id: DOC_VERSION_SENTINEL_ID,
     typeName: 'shape',
     type: 'doc-version',
     x: 0,

@@ -759,11 +759,23 @@ onGlobalEvent((event) => {
     }
   }
   if (event?.type === 'build-card' && fleetStore && event.name) {
-    const { name: docName, hash, summary, lintFindings = [], mirrorFailed, lastMirrorSuccess, lastBuildSuccess, buildFiles } = event
-    const text = mirrorFailed
+    const { name: docName, hash, summary, lintFindings = [], mirrorFailed, buildFailed, errors = [], warnings = [], lastMirrorSuccess, lastBuildSuccess, buildFiles } = event
+    const text = buildFailed
+      ? `❌ Build failed — ${docName}: ${buildFailed}`
+      : mirrorFailed
       ? `⚠️ Mirror failed — ${docName} (${hash}): ${mirrorFailed}`
       : `Build ${hash} — ${docName}`
-    const metadata = { type: 'build_result', name: docName, hash, summary: summary || null, lintFindings, mirrorFailed: mirrorFailed || null }
+    const metadata = {
+      type: 'build_result',
+      name: docName,
+      hash: hash || null,
+      summary: summary || null,
+      lintFindings,
+      mirrorFailed: mirrorFailed || null,
+      buildFailed: buildFailed || null,
+      errors,
+      warnings,
+    }
 
     // Notify monitoring subscribers
     const subs = new Set(tldaFeedback.subscribers(docName))

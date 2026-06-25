@@ -1495,31 +1495,37 @@ function FleetChatInner({ shape }: { shape: any }) {
         activityGroup.push(m)
       } else if (m.metadata?.type === 'build_result') {
         flushActivity()
-        const { name: docName, hash, summary, lintFindings = [], mirrorFailed } = m.metadata
-        const hasDetails = !!(summary || lintFindings.length > 0)
+        const { name: docName, hash, summary, lintFindings = [], mirrorFailed, buildFailed, errors = [] } = m.metadata
+        const hasDetails = !!(summary || lintFindings.length > 0 || mirrorFailed || buildFailed || errors.length > 0)
         const lintCount = lintFindings.length
         const lintBadge = lintCount > 0
           ? `<span class="build-result-lint-badge">${lintCount} finding${lintCount !== 1 ? 's' : ''}</span>`
           : ''
         const summaryHtml = summary ? renderCtx.renderMarkdown(esc(summary)) : ''
         const lintHtml = lintFindings.map((f: any) => renderCtx.renderMarkdown(esc(f.text))).join('')
+        const failureText = buildFailed || mirrorFailed
+        const failureHtml = failureText ? `<p class="build-result-error">${esc(failureText)}</p>` : ''
+        const errorHtml = errors.map((e: any) => renderCtx.renderMarkdown(esc(e.message || String(e)))).join('')
         const toggle = hasDetails ? `<span class="build-result-toggle">▾</span>` : ''
         // Status color: red = mirror/build failed; green = the version you're
         // viewing is this build; gray = a newer build you haven't loaded (or a
         // card for a doc you're not currently viewing).
         const builtHash = String(hash || '').slice(0, 7)
         let statusCls = 'build-result-neutral'
-        if (mirrorFailed) statusCls = 'build-result-failed'
+        if (mirrorFailed || buildFailed) statusCls = 'build-result-failed'
         else if (docName === doc) statusCls = (viewingVersion && viewingVersion === builtHash) ? 'build-result-current' : 'build-result-stale'
+        const title = buildFailed
+          ? `Build failed — <strong>${esc(docName)}</strong>`
+          : `Build <code>${esc(hash)}</code> — <strong>${esc(docName)}</strong>`
         const html = `<div class="build-result-card ${statusCls}">` +
           `<div class="build-result-header">` +
           `<span class="build-result-icon">🔨</span>` +
-          `<span class="build-result-title">Build <code>${esc(hash)}</code> — <strong>${esc(docName)}</strong></span>` +
+          `<span class="build-result-title">${title}</span>` +
           lintBadge +
           toggle +
           `</div>` +
           (hasDetails
-            ? `<div class="build-result-body">${summaryHtml}${lintHtml}</div>`
+            ? `<div class="build-result-body">${failureHtml}${errorHtml}${summaryHtml}${lintHtml}</div>`
             : '') +
           `</div>`
         items.push({ key: m._dbId || m._tempId || `${m.timestamp}:${m.from}:build`, html })
