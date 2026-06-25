@@ -113,6 +113,32 @@ test('agent roster APIs are maintained views, not SQL snapshots', async () => {
   }
 })
 
+test('refreshAgentLiveness rehydrates maintained roster status', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'fleet-registry-liveness-'))
+  const liveIds = new Set()
+  const store = new FleetStore(path.join(dir, 'fleet.db'))
+  store.setLivenessOracle(id => liveIds.has(id))
+  try {
+    store.upsertAgent({ id: 'fleet:liveness', friendly_name: 'liveness' })
+    assert.equal(store.getAgent('fleet:liveness').status, 'hibernating')
+    assert.equal(store.getAllAgents().find(a => a.id === 'fleet:liveness')?.status, 'hibernating')
+
+    liveIds.add('fleet:liveness')
+    store.refreshAgentLiveness('fleet:liveness')
+    assert.equal(store.getAgent('fleet:liveness').status, 'awake')
+    assert.equal(store.getAllAgents().find(a => a.id === 'fleet:liveness')?.status, 'awake')
+
+    liveIds.delete('fleet:liveness')
+    store.refreshAgentLiveness('fleet:liveness')
+    assert.equal(store.getAgent('fleet:liveness').status, 'hibernating')
+    assert.equal(store.getAllAgents().find(a => a.id === 'fleet:liveness')?.status, 'hibernating')
+  } finally {
+    await store._worker?.terminate()
+    store.db.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 function oldWiretapScan(store, senderId, recipientId, eventType) {
   const matched = new Set()
   const fromLabels = labelsForAgent(store.getAgent(senderId) || { id: senderId })

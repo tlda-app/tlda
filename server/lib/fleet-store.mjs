@@ -1381,6 +1381,10 @@ export class FleetStore {
     this._reloadAgentRegistry();
   }
 
+  refreshAgentLiveness(id) {
+    this._syncAgentRegistry(id);
+  }
+
   // ---- Lineage management ----
 
   getOrCreateLineage(friendlyName) {

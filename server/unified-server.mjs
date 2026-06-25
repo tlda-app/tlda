@@ -143,14 +143,18 @@ const _aliveSince = new Map()               // agent_id -> first ms in current a
 function isAgentAlive(agentId) { return _aliveAgents.has(agentId) }
 
 function markAgentAlive(agentId, now = Date.now()) {
-  if (!_aliveAgents.has(agentId) || !_aliveSince.has(agentId)) _aliveSince.set(agentId, now)
+  const wasAlive = _aliveAgents.has(agentId)
+  if (!wasAlive || !_aliveSince.has(agentId)) _aliveSince.set(agentId, now)
   _aliveAgents.add(agentId)
+  if (!wasAlive) fleetStore?.refreshAgentLiveness?.(agentId)
 }
 
 function markAgentNotAlive(agentId) {
+  const wasAlive = _aliveAgents.has(agentId)
   _aliveAgents.delete(agentId)
   _aliveSince.delete(agentId)
   clearEphemeralState(agentId)
+  if (wasAlive) fleetStore?.refreshAgentLiveness?.(agentId)
 }
 
 if (fleetStore?.setLivenessOracle) fleetStore.setLivenessOracle(isAgentAlive)
@@ -4909,7 +4913,11 @@ async function handleDaemonWsMessage(ws, msg) {
   }
 
   if (type === 'terminal-dead') {
-    if (msg.agent_id) fanOutTerminalDead(msg.agent_id)
+    if (msg.agent_id) {
+      fanOutTerminalDead(msg.agent_id)
+      markAgentNotAlive(msg.agent_id)
+      broadcastState()
+    }
     return
   }
 
