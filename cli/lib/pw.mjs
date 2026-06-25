@@ -37,6 +37,8 @@ const REPO_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))))
 
 // Default to the one canonical session; overridable for isolated testing.
 const SESSION = process.env.TLDA_PW_SESSION || 'shared'
+const CANONICAL_SESSION = 'shared'
+const ALLOW_ISOLATED_SESSION = process.env.TLDA_PW_ALLOW_ISOLATED_SESSION === '1'
 
 // Pin the playwright-cli daemon's control SOCKET to a fixed, fence-visible path.
 // By default playwright-cli puts its client<->daemon unix socket under
@@ -163,6 +165,62 @@ function playwrightCliRealPath() {
 
 function pw(args, opts = {}) {
   return spawnSync(playwrightCliBin(), [`-s=${SESSION}`, ...args], { encoding: 'utf8', ...opts })
+}
+
+export function classifyPlaywrightProcessLine(line, session = CANONICAL_SESSION) {
+  const m = String(line || '').match(/^\s*(\d+)\s+(\d+)\s+(.+)$/)
+  if (!m) return null
+  const pid = Number(m[1])
+  const ppid = Number(m[2])
+  const command = m[3]
+  if (!Number.isFinite(pid) || !Number.isFinite(ppid)) return null
+  const exe = command.trim().split(/\s+/)[0] || ''
+  const isNode = /(^|\/)node(?:$|[\s])?/.test(exe)
+  if (isNode && command.includes('/cliDaemon.js') && new RegExp(`(?:^|\\s)${session}(?:\\s|$)`).test(command)) {
+    return { kind: 'daemon', pid, ppid, command }
+  }
+  const isChromeBrowser = command.includes('Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing')
+  if (isChromeBrowser && command.includes(`ud-${session}-chrome`) && !command.includes('--type=')) {
+    return { kind: 'browser', pid, ppid, command }
+  }
+  return null
+}
+
+function listSessionProcesses(session = SESSION) {
+  const out = spawnSync('ps', ['-eo', 'pid,ppid,command'], { encoding: 'utf8' }).stdout || ''
+  return out.split('\n').map(line => classifyPlaywrightProcessLine(line, session)).filter(Boolean)
+}
+
+function killProcess(pid) {
+  if (!pid || pid === process.pid) return
+  spawnSync('kill', ['-9', String(pid)], { encoding: 'utf8' })
+}
+
+function reapSessionProcesses(session = SESSION) {
+  const procs = listSessionProcesses(session)
+  // Kill daemon first so it cannot respawn or reattach while browsers are dying.
+  for (const p of procs.filter(p => p.kind === 'daemon')) killProcess(p.pid)
+  for (const p of procs.filter(p => p.kind === 'browser')) killProcess(p.pid)
+  return procs
+}
+
+function enforceCanonicalSession() {
+  if (SESSION === CANONICAL_SESSION || ALLOW_ISOLATED_SESSION) return
+  throw new Error(
+    `refusing non-canonical playwright session "${SESSION}". ` +
+    `Use the shared session, or set TLDA_PW_ALLOW_ISOLATED_SESSION=1 for an explicitly isolated test.`
+  )
+}
+
+function enforceSingleSessionProcess() {
+  const procs = listSessionProcesses(SESSION)
+  const daemonCount = procs.filter(p => p.kind === 'daemon').length
+  const browserCount = procs.filter(p => p.kind === 'browser').length
+  if (daemonCount <= 1 && browserCount <= 1) return false
+  console.error(`pw: found duplicate "${SESSION}" playwright processes (daemons=${daemonCount}, browsers=${browserCount}); reaping all before reopening`)
+  reapSessionProcesses(SESSION)
+  spawnSync('sleep', ['0.5'])
+  return true
 }
 
 // ---- lock (short, per-verb) ----
@@ -527,6 +585,10 @@ export async function cmdPw(args, repoRoot) {
     process.exit(3)
   }
 
+  if (!['status', 'reap', 'help', '--help', 'lock', 'unlock'].includes(verb)) {
+    enforceCanonicalSession()
+  }
+
   if (verb === 'status') {
     const lk = lockStatus(repoRoot)
     const open = sessionOpen()
@@ -555,6 +617,7 @@ export async function cmdPw(args, repoRoot) {
       // recover the browser at once. That race is what produced the kill+reopen
       // thrash — every reopen raises a headed window over Skip. Serialized, only
       // the first agent opens; the rest find it up and reuse it (no raise).
+      enforceSingleSessionProcess()
       ensureOpen(repoRoot)
       const idx = selectMyTab()
       if (idx == null) console.error("pw: couldn't resolve a tab (daemon wedged or session down) — try again when the page is idle")
@@ -588,6 +651,8 @@ export async function cmdPw(args, repoRoot) {
   if (verb === 'reap') {
     if (!sessionOpen()) console.log('browser already down')
     else { pw(['close'], { stdio: 'inherit' }); console.log('browser reaped') }
+    const killed = reapSessionProcesses(SESSION)
+    if (killed.length) console.log(`killed ${killed.length} playwright ${SESSION} process(es)`)
     // Reaping frees the lock regardless of holder.
     spawnSync('bash', [lockScript(repoRoot), 'steal', `reaper:${me}`], { encoding: 'utf8' })
     spawnSync('bash', [lockScript(repoRoot), 'release', `reaper:${me}`], { encoding: 'utf8' })
@@ -615,6 +680,7 @@ export async function cmdPw(args, repoRoot) {
   }
   let code = 0
   try {
+    enforceSingleSessionProcess()
     ensureOpen(repoRoot)
     const idx = selectMyTab()
     if (idx == null) {
