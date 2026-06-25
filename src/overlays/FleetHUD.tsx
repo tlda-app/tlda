@@ -21,7 +21,7 @@ import { SuggestionTip } from '../shapes/FleetChatShape'
 import { log } from '../logger'
 import { computeFleetBoundsFromShapes, createFleetBoundsTracker, type FleetBoundsResult } from './fleet-bounds'
 import { computeFleetHudDefaultAnchor } from './fleet-hud-anchor'
-import { createFleetHudOverlayLayer, FLEET_HUD_VIEWPORT_ID } from '../wm/fleet-hud-layer'
+import { createFleetHudOverlayLayer, FLEET_HUD_VIEWPORT_ID, projectFleetHudDocumentLeft } from '../wm/fleet-hud-layer'
 import type { FleetHudLayerState } from '../wm/fleet-hud-layer'
 import { probe } from '../perf-probe'
 import './FleetHUD.css'
@@ -458,7 +458,7 @@ export function FleetHUD({
       if (b && b.x < minPageX) minPageX = b.x
     }
     if (!isFinite(minPageX)) return false
-    const docLeftScreen = mainEditor.pageToScreen({ x: minPageX, y: 0 }).x
+    const docLeftScreen = projectFleetHudDocumentLeft(mainEditor, minPageX)
     const off = layoutOffset(getHumanId(), getDeviceId())
     const anchor = computeFleetHudDefaultAnchor({
       bounds,
@@ -1053,7 +1053,7 @@ export function FleetHUD({
       const b = mainEditor.getShapePageBounds(s.id)
       if (b && b.x < minPageX) minPageX = b.x
     }
-    const docLeftScreen = mainEditor.pageToScreen({ x: minPageX, y: 0 }).x
+    const docLeftScreen = projectFleetHudDocumentLeft(mainEditor, minPageX)
     // Compensate this (identity, device)'s horizontal layout offset so the
     // viewer's OWN shapes render in their canonical doc-relative position no
     // matter which horizontal zone they physically occupy. The VERTICAL offset
@@ -1096,7 +1096,7 @@ export function FleetHUD({
         if (b && b.x < minPageX) minPageX = b.x
       }
       if (isFinite(minPageX)) {
-        const docLeftScreen = mainEditor.pageToScreen({ x: minPageX, y: 0 }).x
+        const docLeftScreen = projectFleetHudDocumentLeft(mainEditor, minPageX)
         const off = layoutOffset(getHumanId(), getDeviceId())
         const anchor = computeFleetHudDefaultAnchor({
           bounds: activeFleetBounds,
@@ -1117,6 +1117,8 @@ export function FleetHUD({
     panOffset: panOffsetRef.current!,
     cameraY: cameraYRef.current!,
     layout: { axis: 'vertical', spacing: 0 },
+    userId: getHumanId(),
+    deviceId: getDeviceId(),
   })
   const overlayCam = overlayLayer.camera
   const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null

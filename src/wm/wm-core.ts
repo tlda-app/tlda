@@ -46,9 +46,15 @@ export interface ForkViewportAdapter {
 	setCamera?(viewportId: string, camera: Camera): void
 }
 
+export interface PageCoordinateAdapter {
+	screenToPage(point: Point): Point
+	pageToScreen(point: Point): Point
+}
+
 export type LayerBacking =
 	| { kind: 'frame' }
 	| { kind: 'screen' }
+	| { kind: 'page'; editor: PageCoordinateAdapter }
 	| { kind: 'viewport'; viewportId: string; editor: ForkViewportAdapter }
 
 export interface LayerDefinition {
@@ -301,6 +307,9 @@ export class WMCore {
 	}
 
 	private layerToParent(point: Point, layer: Layer): Point {
+		if (layer.backing.kind === 'page') {
+			return layer.backing.editor.pageToScreen(point)
+		}
 		if (layer.backing.kind === 'viewport') {
 			return layer.backing.editor.pageToScreen(point, { viewportId: layer.backing.viewportId })
 		}
@@ -314,6 +323,9 @@ export class WMCore {
 	}
 
 	private parentToLayer(point: Point, layer: Layer): Point {
+		if (layer.backing.kind === 'page') {
+			return layer.backing.editor.screenToPage(point)
+		}
 		if (layer.backing.kind === 'viewport') {
 			return layer.backing.editor.screenToPage(point, { viewportId: layer.backing.viewportId })
 		}
