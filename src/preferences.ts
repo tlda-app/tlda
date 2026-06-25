@@ -50,12 +50,12 @@ const DEFAULTS = {
   // hover tooltip). hover = ephemeral tooltip; panel = docked side panel; inline =
   // click-to-pin card. Default hover preserves today's behavior; off/panel/inline opt in.
   'provenance-display-mode': 'hover' as string,
-  // Todd's turn-end introspection poke. Read live over /api/fleet/prefs.
-  // enabled=off stands it down; countdown is how long after a turn ends before
-  // the agent gets poked (a short value over-prompts on purpose — a wrong poke
-  // is cheap).
-  'disposition-bot-enabled': true as boolean,
-  'disposition-countdown-sec': 30 as number,
+  // Todd's optional automatic turn-end introspection poke. Read live over
+  // /api/fleet/prefs. Default off: the routine automatic watchdog is task-kick
+  // for genuinely idle active tasks; this poke is available manually unless
+  // explicitly enabled here.
+  'todd-self-check-auto-enabled': false as boolean,
+  'todd-self-check-countdown-sec': 30 as number,
   // Preferences panel disclosure state. Kept server-backed so touch-only
   // devices don't need localStorage access to recover usable panel space.
   'prefs-open-sections': ['identity', 'theme', 'readability'] as string[],

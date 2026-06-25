@@ -13,12 +13,14 @@ export function decideTaskKicks({
   kickIntervalMs = 15 * 60 * 1000,
   skipLive = null,
   lastRealActivityMs = null,
+  activeTimerAgents = null,
 } = {}) {
   const agentById = new Map()
   for (const a of agents || []) {
     if (a?.id) agentById.set(a.id, a)
   }
   const isSkipLive = (id) => !!skipLive && typeof skipLive.has === 'function' && skipLive.has(id)
+  const hasActiveTimer = (id) => !!activeTimerAgents && typeof activeTimerAgents.has === 'function' && activeTimerAgents.has(id)
   // Tolerate both the legacy bare-timestamp shape and the { ts, sig } shape.
   const lastTsOf = (v) => (v && typeof v === 'object') ? (v.ts || 0) : (v || 0)
   const lastSigOf = (v) => (v && typeof v === 'object') ? (v.sig ?? null) : null
@@ -35,6 +37,7 @@ export function decideTaskKicks({
     // Skip-live beats the nudge — Todd doesn't manage an agent Skip is working
     // with right now. [taxonomy Cat 2: "don't listen to Todd here. We're good."]
     if (isSkipLive(agent.id)) continue
+    if (hasActiveTimer(agent.id)) continue
 
     const delegatedAt = Date.parse(task.delegated_at || task.created_at || '')
     if (!Number.isFinite(delegatedAt)) continue

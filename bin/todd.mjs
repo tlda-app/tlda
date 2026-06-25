@@ -58,10 +58,10 @@ const TASK_KICK_MAX_TASK_AGE_MS = parseInt(process.env.TODD_TASK_KICK_MAX_TASK_A
 const TASK_KICK_POLL_MS = parseInt(process.env.TODD_TASK_KICK_POLL_MS || '', 10) || 60_000
 const SELF_CHECK_PREFS_POLL_MS = 20_000
 const SELF_CHECK_COUNTDOWN_SEC = parseInt(process.env.TODD_SELF_CHECK_COUNTDOWN_SEC || process.env.DISPO_COUNTDOWN_SEC || '', 10) || 30
-const SELF_CHECK_ENABLED = process.env.TODD_SELF_CHECK_ENABLED !== '0' && process.env.DISPO_ENABLED !== '0'
+const SELF_CHECK_AUTO_ENABLED = process.env.TODD_SELF_CHECK_AUTO_ENABLED === '1'
 const SELF_CHECK_PRESENCE_WINDOW_MS = (parseInt(process.env.TODD_SELF_CHECK_PRESENCE_SEC || process.env.DISPO_PRESENCE_SEC || '', 10) || 120) * 1000
-const PREF_SELF_CHECK_ENABLED_KEY = 'disposition-bot-enabled'
-const PREF_SELF_CHECK_COUNTDOWN_KEY = 'disposition-countdown-sec'
+const PREF_SELF_CHECK_ENABLED_KEY = 'todd-self-check-auto-enabled'
+const PREF_SELF_CHECK_COUNTDOWN_KEY = 'todd-self-check-countdown-sec'
 const taskKickLastSent = new Map()
 const looseEndLastSent = new Map()
 // lastRealActivityMs[agentId] = timestamp of last meaningful tool call.
@@ -103,7 +103,7 @@ const SELF_CHECK_IGNORE_IDS = new Set([OWNER_ID, AGENT_ID, 'fleet:tlda', 'fleet:
 let selfCheckWiring
 const selfCheckScheduler = new DispositionScheduler({
   countdownMs: SELF_CHECK_COUNTDOWN_SEC * 1000,
-  enabled: SELF_CHECK_ENABLED,
+  enabled: true,
   sendPoke: (agentId) => {
     selfCheckWiring.notePoked(agentId)
     sendChat(agentId, pokeFor(selfCheckWiring.cwdOf(agentId)))
@@ -111,6 +111,7 @@ const selfCheckScheduler = new DispositionScheduler({
   isSkipPresent: (agentId) => selfCheckWiring.isSkipPresent(agentId),
   log: (event, agentId, detail) => logDecision(agentId || AGENT_ID, `self-check:${event}`, detail || 'turn-end-self-check', {}, null),
 })
+let selfCheckAutoEnabled = SELF_CHECK_AUTO_ENABLED
 selfCheckWiring = createDispositionWiring({
   scheduler: selfCheckScheduler,
   ownerId: OWNER_ID,
@@ -125,7 +126,7 @@ selfCheckWiring = createDispositionWiring({
 async function refreshSelfCheckPrefs() {
   const prefs = await getJson(`/api/fleet/prefs?user=${encodeURIComponent(OWNER_ID)}`, null)
   if (!prefs || typeof prefs !== 'object') return
-  if (PREF_SELF_CHECK_ENABLED_KEY in prefs) selfCheckScheduler.setEnabled(prefs[PREF_SELF_CHECK_ENABLED_KEY] !== false)
+  if (PREF_SELF_CHECK_ENABLED_KEY in prefs) selfCheckAutoEnabled = prefs[PREF_SELF_CHECK_ENABLED_KEY] === true
   if (PREF_SELF_CHECK_COUNTDOWN_KEY in prefs) {
     const sec = Number(prefs[PREF_SELF_CHECK_COUNTDOWN_KEY])
     if (Number.isFinite(sec) && sec > 0) selfCheckScheduler.setCountdownMs(sec * 1000)
@@ -150,6 +151,11 @@ async function handleSelfCheckCommand(text) {
   selfCheckScheduler.kick(targetId)
   sendChat(OWNER_ID, `Poked **${targetRaw}** to self-check.`)
   return true
+}
+
+function handleSelfCheckFleetEvent(data = {}) {
+  if (data.type === 'turn_ended' && !selfCheckAutoEnabled) return
+  selfCheckWiring.handleFleetEvent(data)
 }
 
 // Positive/negative reward signal patterns in Skip's messages (post-nudge)
@@ -1579,13 +1585,33 @@ function resolveAgentCwd(agentId) {
   })
 }
 
+function activeTimerAgentSet(events = [], agents = [], now = Date.now()) {
+  const agentIds = new Set((agents || []).map(a => a?.id).filter(Boolean))
+  const active = new Set()
+  for (const e of events || []) {
+    const meta = typeof e?.metadata === 'string'
+      ? (() => { try { return JSON.parse(e.metadata) } catch { return {} } })()
+      : (e?.metadata || {})
+    if (meta.pending !== true) continue
+    const fireAt = Date.parse(meta.fire_at || '')
+    if (!Number.isFinite(fireAt) || fireAt <= now) continue
+    const from = e.from_id || e.from || e.agent || null
+    const to = e.to_id || e.to || null
+    if (agentIds.has(from)) active.add(from)
+    if (agentIds.has(to)) active.add(to)
+  }
+  return active
+}
+
 async function taskKickSweep() {
-  const [tasksRaw, agentsRaw] = await Promise.all([
+  const [tasksRaw, agentsRaw, timersRaw] = await Promise.all([
     getJson('/api/store/tasks', []),
     getJson('/api/store/agents', []),
+    getJson('/api/store/events?type=timer&limit=500', { events: [] }),
   ])
   const tasks = Array.isArray(tasksRaw) ? tasksRaw : (tasksRaw?.tasks || [])
   const agents = Array.isArray(agentsRaw) ? agentsRaw : (agentsRaw?.agents || [])
+  const activeTimerAgents = activeTimerAgentSet(timersRaw?.events || [], agents, Date.now())
   selfCheckWiring.updateRoster(agents)
   // Keep the bot roster fresh so the activity handler can exclude bot-chats.
   knownBotIds.clear()
@@ -1604,6 +1630,7 @@ async function taskKickSweep() {
     kickIntervalMs: TASK_KICK_INTERVAL_MS,
     skipLive: skipLiveAgentSet(),
     lastRealActivityMs,
+    activeTimerAgents,
   })
   for (const { task, agent, key, sig, taskAgeMs, action, reason } of kicks) {
     // Store the state signature alongside the timestamp so an unchanged blocker
@@ -2086,7 +2113,7 @@ function sendChat(to, text) {
 function handleMessage(msg) {
   if (msg.event !== 'fleet-event') return
   const { type, from_id, to_id, text, metadata } = msg.data || {}
-  selfCheckWiring.handleFleetEvent(msg.data || {})
+  handleSelfCheckFleetEvent(msg.data || {})
 
   if (type === 'chat') {
     if (!text) return

@@ -80,6 +80,16 @@ test('task kick suppressed when Skip is live in the room with the agent', () => 
   assert.equal(kicks.length, 0)
 })
 
+test('task kick suppressed when the agent already has an active timer', () => {
+  const kicks = decideTaskKicks({
+    tasks: [task()],
+    agents: [agent({ last_seen: new Date(now - 30 * 60_000).toISOString() })],
+    now,
+    activeTimerAgents: new Set(['fleet:agent-1']),
+  })
+  assert.equal(kicks.length, 0)
+})
+
 test('task kick not repeated when the blocker state is unchanged since last kick', () => {
   const a = agent({ last_seen: new Date(now - 30 * 60_000).toISOString() })
   // First sweep: produces a kick carrying a state signature.

@@ -142,8 +142,8 @@ function readAll() {
     foldDiff: getPref('fold-diff-lines'),
     hlZone: getPref('hl-zone-enabled'),
     provenanceMode: getPref('provenance-display-mode'),
-    dispoEnabled: getPref('disposition-bot-enabled'),
-    dispoCountdown: getPref('disposition-countdown-sec'),
+    selfCheckEnabled: getPref('todd-self-check-auto-enabled'),
+    selfCheckCountdown: getPref('todd-self-check-countdown-sec'),
   }
 }
 
@@ -530,20 +530,20 @@ export function PrefsTab() {
       <CollapsiblePrefsSection
         id="bots"
         title="Bots"
-        summary={prefs.dispoEnabled ? `Self-check poke ${prefs.dispoCountdown}s` : 'Self-check poke off'}
+        summary={prefs.selfCheckEnabled ? `Self-check poke ${prefs.selfCheckCountdown}s` : 'Self-check poke off'}
         open={prefs.openSections.includes('bots')}
         onToggle={toggleSection}
       >
         <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 4 }}>
-          When an agent's turn ends and you haven't messaged it, Todd pokes it to
-          self-check ("am I actually done?"). The poke goes to the agent, never to
-          you. Shorter = prompts more often (a wrong poke is cheap).
+          Optional: when an agent's turn ends and you haven't messaged it, Todd
+          can poke it to self-check ("am I actually done?"). The routine watchdog
+          is still the longer idle-task check.
         </div>
         <label className="prefs-check">
           <input
             type="checkbox"
-            checked={prefs.dispoEnabled}
-            onChange={e => setPref('disposition-bot-enabled', e.target.checked)}
+            checked={prefs.selfCheckEnabled}
+            onChange={e => setPref('todd-self-check-auto-enabled', e.target.checked)}
           />
           <span>Turn-end self-check poke</span>
         </label>
@@ -554,8 +554,8 @@ export function PrefsTab() {
             min={5}
             max={300}
             step={5}
-            value={prefs.dispoCountdown}
-            onChange={e => setPref('disposition-countdown-sec', Number(e.target.value))}
+            value={prefs.selfCheckCountdown}
+            onChange={e => setPref('todd-self-check-countdown-sec', Number(e.target.value))}
             className="prefs-num"
           />
           <span className="prefs-num-unit">sec</span>

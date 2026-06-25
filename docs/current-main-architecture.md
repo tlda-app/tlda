@@ -63,9 +63,10 @@ harness-independent; only the classifier inputs vary by harness.
 
 The server stores thinking/compacting state and emits a synthetic persisted
 `turn_ended` event on the `agent-thinking: true -> false` edge for non-human
-agents. Todd subscribes to those events, waits the configured self-check
-countdown, cancels if Skip responds, and sends the self-check poke if the agent
-went idle without closing the loop.
+agents. Todd can optionally use those events for a turn-end self-check lane:
+wait the configured self-check countdown, cancel if Skip responds, and send the
+self-check poke if the agent went idle without closing the loop. That lane is
+off by default; the routine automatic watchdog is Todd's longer idle-task kick.
 
 Live verification on June 22, 2026:
 
