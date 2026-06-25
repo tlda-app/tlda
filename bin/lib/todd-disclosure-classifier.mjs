@@ -5,13 +5,18 @@ const BLOCKER_RE = /\b(blocked|cannot|can't|waiting|depends on|stuck)\b/i
 const HANDOFF_RE = /\b(handoff|hand off|someone else|next agent|pick up|continue from)\b/i
 const UNCERTAINTY_RE = /\b(maybe|seems|likely|I think|not sure|unclear)\b/i
 
-const VERIFICATION_RE = /\b(checked|verified|tested|passed|build passed|surface|browser|playwright|my_task|git status|npm run|node --test)\b/i
+const VERIFICATION_RE = /\b(checked|verified|tested|passed|build passed|surface|browser|playwright|my_task|git status|npm run|node --test|read the code|hard evidence|proven)\b/i
 const NEXT_ACTION_RE = /\b(I will|I'll|doing|running|checking|testing|assign|assigned|delegate|delegated|timer|checkback|scheduled|retry|falsify|prove|implement)\b/i
 const OWNER_RE = /\b(owner|assigned to|delegated to|fleet:|agent)\b/i
 const TIMER_RE = /\b(timer|checkback|scheduled|remind|wake)\b/i
 const BOUNDARY_RE = /\b(authority boundary|true blocker|external|waiting for Skip|requires Skip|permission|locked by Skip|user lock)\b/i
 const PROVENANCE_RE = /\b(message id|id:|timestamp|since:|until:|get_thread|commit|line|file|provenance|reopen)\b/i
 const SUCCESS_RE = /\b(success criteria|checked|verified|expected|surface|done when)\b/i
+const APPROVAL_BOUNDARY_RE = /\b(your ok|your go-ahead|if you want me|deploy.*ok|restart.*ok|waiting on you|requires skip|permission|approve|your call)\b/i
+const CONCRETE_ACTION_RE = /\b(i('|’)ll|i will|i’m going to|i am going to|on it|back with|next i|i’ll keep|i won't|i will not|nothing deploys|nothing restarts)\b/i
+const CONVERSATIONAL_ACK_RE = /^(right|yes|no|got it|understood|on it|fair|exactly|you're right|your instinct is right)\b/i
+const EXTERNAL_BLOCKER_RE = /\b(provider credits|disk is .*full|fly.*502|live deploy|restart the live|authority|external)\b/i
+const CHAT_INVENTORY_RE = /\b(first inventory from chat|agreed source of truth|agreed goal|agreed proof task|agreed work surface)\b/i
 
 export function isDisclosureCandidate(text = '') {
   return (
@@ -41,6 +46,11 @@ export function extractDisclosureFeatures(event = {}) {
   const namesAuthorityBoundary = BOUNDARY_RE.test(text)
   const namesProvenance = PROVENANCE_RE.test(text)
   const namesSuccessCriteria = SUCCESS_RE.test(text)
+  const namesApprovalBoundary = APPROVAL_BOUNDARY_RE.test(text)
+  const namesConcreteAction = CONCRETE_ACTION_RE.test(text)
+  const namesConversationalAck = CONVERSATIONAL_ACK_RE.test(text.trim())
+  const namesExternalBlocker = EXTERNAL_BLOCKER_RE.test(text)
+  const namesChatInventory = CHAT_INVENTORY_RE.test(text)
 
   return {
     claimsStatus,
@@ -54,6 +64,11 @@ export function extractDisclosureFeatures(event = {}) {
     namesOwner,
     namesTimer,
     namesAuthorityBoundary,
+    namesApprovalBoundary,
+    namesConcreteAction,
+    namesConversationalAck,
+    namesExternalBlocker,
+    namesChatInventory,
     namesProvenance,
     namesSuccessCriteria,
     skipLive: Boolean(context.skipLive),
@@ -83,6 +98,34 @@ export function classifyDisclosureEvent(event = {}) {
     return decision('suppress', 'liveness-suppress', features, 0.88)
   }
 
+  if (
+    (features.namesApprovalBoundary || features.namesExternalBlocker) &&
+    (features.claimsBlocker || features.claimsRemaining || features.claimsCompletion || features.claimsHandoff)
+  ) {
+    return decision('suppress', 'guarded-boundary-suppress', features, 0.86)
+  }
+
+  if (features.namesConversationalAck && (features.namesConcreteAction || features.namesNextAction)) {
+    return decision('suppress', 'guarded-owned-suppress', features, 0.84)
+  }
+
+  if (features.namesChatInventory) {
+    return decision('suppress', 'guarded-live-conversation-suppress', features, 0.84)
+  }
+
+  if (features.namesConcreteAction && features.claimsUncertainty) {
+    return decision('suppress', 'guarded-owned-suppress', features, 0.84)
+  }
+
+  if (
+    features.claimsCompletion &&
+    features.claimsVerification &&
+    !features.claimsHandoff &&
+    !features.claimsRemaining
+  ) {
+    return decision('suppress', 'guarded-verified-suppress', features, 0.86)
+  }
+
   if (features.claimsCompletion && !features.claimsVerification) {
     return decision('intervene', 'completion-check', features, 0.82)
   }
@@ -98,6 +141,7 @@ export function classifyDisclosureEvent(event = {}) {
   if (
     features.claimsRemaining &&
     !features.namesNextAction &&
+    !features.namesConcreteAction &&
     !features.namesOwner &&
     !features.namesTimer &&
     !features.namesAuthorityBoundary
@@ -105,7 +149,7 @@ export function classifyDisclosureEvent(event = {}) {
     return decision('intervene', 'remaining-work-check', features, 0.74)
   }
 
-  if (features.claimsUncertainty && !features.namesNextAction && !features.claimsVerification) {
+  if (features.claimsUncertainty && !features.namesNextAction && !features.namesConcreteAction && !features.claimsVerification) {
     return decision('log_only', 'uncertainty-review', features, 0.58)
   }
 

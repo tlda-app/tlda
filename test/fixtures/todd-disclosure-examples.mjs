@@ -10,7 +10,7 @@ export const toddDisclosureExamples = [
   {
     id: 'completion-with-surface',
     label: 'suppress',
-    reasonCode: 'no-unmet-obligation',
+    reasonCode: 'guarded-verified-suppress',
     provenance: 'hard negative: completion disclosure with verification surface',
     text: 'Status: handled. Checked: npm run build passed and browser surface showed the expected route. Changed: fixed the route. Remaining: none.',
     context: {},
