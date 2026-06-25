@@ -13,6 +13,17 @@ const BOUNDARY_RE = /\b(authority boundary|true blocker|external|waiting for Ski
 const PROVENANCE_RE = /\b(message id|id:|timestamp|since:|until:|get_thread|commit|line|file|provenance|reopen)\b/i
 const SUCCESS_RE = /\b(success criteria|checked|verified|expected|surface|done when)\b/i
 
+export function isDisclosureCandidate(text = '') {
+  return (
+    STATUS_WORD_RE.test(text) ||
+    COMPLETION_RE.test(text) ||
+    REMAINING_RE.test(text) ||
+    BLOCKER_RE.test(text) ||
+    HANDOFF_RE.test(text) ||
+    UNCERTAINTY_RE.test(text)
+  )
+}
+
 export function extractDisclosureFeatures(event = {}) {
   const text = event.text || ''
   const context = event.context || {}

@@ -120,6 +120,7 @@ function stampNames(rows) {
 
 // Fleet state: in-memory
 const wsFleetClients = new Set()            // active /ws/fleet connections
+const agentFleetConnections = new Map()     // agent_id -> active /ws/fleet connection
 
 // Daemon connections — keyed by machine_id. Each value is the live WS for
 // that machine's fleet-daemon. Used for RPC routing and for pushing
@@ -2773,9 +2774,19 @@ server.on('upgrade', async (req, socket, head) => {
         wsFleetClients.delete(ws)
         // Unsubscribe the agent from all tlda-feedback watches so stale
         // subscriptions don't accumulate across MCP respawns.
-        if (ws._tldaAgentId) tldaFeedback.unsubscribeAll(ws._tldaAgentId)
+        if (ws._tldaAgentId) {
+          if (agentFleetConnections.get(ws._tldaAgentId) === ws) {
+            agentFleetConnections.delete(ws._tldaAgentId)
+          }
+          tldaFeedback.unsubscribeAll(ws._tldaAgentId)
+        }
       })
-      ws.on('error', () => wsFleetClients.delete(ws))
+      ws.on('error', () => {
+        wsFleetClients.delete(ws)
+        if (ws._tldaAgentId && agentFleetConnections.get(ws._tldaAgentId) === ws) {
+          agentFleetConnections.delete(ws._tldaAgentId)
+        }
+      })
     })
     return
   }
@@ -2898,6 +2909,20 @@ async function handleFleetWsMessage(ws, msg) {
     const { agent_id, id: msgId, name, tmux_session, cwd, labels, manager, session_id, metadata, machine_id, kind } = msg
     const agentId = agent_id || msgId
     if (!agentId) { error('missing id'); return }
+    const superseded = new Set()
+    const supersede = (priorWs) => {
+      if (!priorWs || priorWs === ws) return
+      if (superseded.has(priorWs)) return
+      superseded.add(priorWs)
+      console.log(`[fleet-ws] superseding existing connection for ${agentId}`)
+      try { priorWs.close(4000, 'superseded by newer registration') } catch {}
+      try { priorWs.terminate() } catch {}
+    }
+    supersede(agentFleetConnections.get(agentId))
+    for (const client of wsFleetClients) {
+      if (client !== ws && client._tldaAgentId === agentId) supersede(client)
+    }
+    agentFleetConnections.set(agentId, ws)
     // Remember which agent owns this WS so we can clean up their tlda-feedback
     // subscriptions on close.
     ws._tldaAgentId = agentId

@@ -74,6 +74,15 @@ function copyAttachment(srcPath) {
   } catch { return null }
 }
 
+function formatNameCollisions(collisions = []) {
+  return collisions.map(c => {
+    if (c.kind === 'pseudo_label') return `${c.name} is a reserved routing label`
+    if (c.kind === 'server_owner') return `${c.name} is the server owner name`
+    if (c.kind === 'self_id') return `${c.name} is this agent's durable id`
+    return `${c.name} collides with ${c.kind}${c.agent_id ? ` on ${c.agent_id}` : ''}`
+  }).join('; ')
+}
+
 export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, clearEphemeralState, suppressEchoFor, sendRpc, resolveRpc, daemonConnections, resolveSpawnTarget }) {
   // Helper: route an agent op through the daemon, or 503 cleanly. The
   // op-name is whatever the daemon's rpc dispatcher expects (kebab-case
@@ -211,7 +220,12 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     if (!name || typeof name !== 'string') { res.status(400).json({ error: 'missing name param' }); return }
     try {
       const collisions = fleetStore.checkNameAvailable([name], { excludeId: req.query.exclude || null, asFriendlyName: true })
-      res.json({ ok: collisions.length === 0, collisions })
+      if (name === SERVER_OWNER_NAME) collisions.push({ name, kind: 'server_owner' })
+      res.json({
+        ok: collisions.length === 0,
+        collisions,
+        ...(collisions.length ? { error: formatNameCollisions(collisions) } : {}),
+      })
     } catch (e) { res.status(500).json({ error: e.message }) }
   })
 
@@ -539,8 +553,12 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const agent = fleetStore?.findAgent(agentQuery)
     if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
     if (newName) {
-      const conflict = fleetStore?.db.prepare('SELECT id FROM agents WHERE friendly_name = ? AND dead = 0 AND id != ?').get(newName, agent.id)
-      if (conflict || newName === SERVER_OWNER_NAME) { res.status(400).json({ error: `Name "${newName}" already in use` }); return }
+      const collisions = fleetStore?.checkNameAvailable([newName], { excludeId: agent.id, asFriendlyName: true }) || []
+      if (newName === SERVER_OWNER_NAME) collisions.push({ name: newName, kind: 'server_owner' })
+      if (collisions.length) {
+        res.status(400).json({ error: `Name "${newName}" unavailable: ${formatNameCollisions(collisions)}` })
+        return
+      }
     }
     // Use direct SQL so clearing a name (newName = "") actually sets NULL
     // rather than being COALESCE'd back to the old value in upsertAgent.
@@ -555,10 +573,15 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     if (!agentQuery || !Array.isArray(labels)) { res.status(400).json({ error: 'agent and labels[] required' }); return }
     const agent = fleetStore?.findAgent(agentQuery)
     if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
-    const allAgents = fleetStore ? fleetStore.getAllAgents() : []
-    const usedNames = new Set([SERVER_OWNER_NAME, ...allAgents.map(a => a.friendly_name).filter(Boolean)])
-    const conflicts = labels.filter(l => usedNames.has(l) && l !== agent.friendly_name)
-    if (conflicts.length) { res.status(400).json({ error: `Label(s) conflict with agent name(s): ${conflicts.join(', ')}` }); return }
+    const collisions = fleetStore?.checkNameAvailable(labels, { excludeId: agent.id, asFriendlyName: false }) || []
+    for (const label of labels) {
+      if (label === SERVER_OWNER_NAME) collisions.push({ name: label, kind: 'server_owner' })
+      if (label === agent.id) collisions.push({ name: label, kind: 'self_id' })
+    }
+    if (collisions.length) {
+      res.status(400).json({ error: `Label(s) unavailable: ${formatNameCollisions(collisions)}` })
+      return
+    }
     agent.labels = labels
     if (fleetStore) fleetStore.upsertAgent(agent)
     broadcastState()
