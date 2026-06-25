@@ -719,6 +719,8 @@ export function convertChatEvent(e) {
     read: e.read !== undefined ? e.read : false,
     _dbId: e.id,
   }
+  const tempId = e._tempId || e.metadata?.client_temp_id
+  if (tempId) msg._tempId = tempId
   if (type === 'delegate') {
     msg._evType = 'delegate'
     msg._description = e.text || ''

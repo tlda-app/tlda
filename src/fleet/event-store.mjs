@@ -51,6 +51,11 @@ export function makeEventStore() {
   function merge(target, incoming) {
     for (const k of Object.keys(incoming)) {
       if (k === '_tempId' && incoming._tempId == null) continue
+      // A temp id is only the identity of a pending optimistic row. Once the
+      // row is db-keyed, later broadcast/replay echoes may still carry the
+      // client_temp_id metadata for binding, but that must not re-mark the
+      // canonical row as optimistic.
+      if (k === '_tempId' && target._dbId != null) continue
       target[k] = incoming[k]
     }
   }
