@@ -1151,17 +1151,9 @@ const agentPatternArms = new Map()
 // ---- Global activity rules ----
 // Unlike per-agent pattern arms (above, self-registered, matched on chat to Skip),
 // these fire for ANY agent and match against the agent's tool-call command text
-// (activity events). Use for footguns every agent trips over regardless of who
-// they are. Match port 5176 specifically so legitimate http dev servers
-// (vite on :5173/:5181/etc.) don't trigger it.
-const GLOBAL_ACTIVITY_RULES = [
-  {
-    name: 'http-localhost-5176',
-    pattern: /http:\/\/(?:localhost|127\.0\.0\.1):5176\b/i,
-    cooldownMs: 5 * 60_000,
-    message: `🔌 I see you did something with \`http://localhost:5176\` — that's not a thing. The tlda server is **https**. Use \`https://localhost:5176\`. A plaintext \`http://\` request to the TLS port returns an empty reply / \`HTTP/0.9\` garbage — that's the wrong scheme, **not** an outage. (\`getServerUrl()\` already picks https automatically; don't hardcode http.)`,
-  },
-]
+// (activity events). Keep this list small: noisy global rules interrupt active
+// testing lanes.
+const GLOBAL_ACTIVITY_RULES = []
 const globalRuleCooldowns = new Map() // `${ruleName}:${agentId}` → lastFired ms
 const recentChatSends = new Map() // `${to}\0${text}` → lastSent ms
 const CHAT_DEDUPE_MS = 10 * 60_000
