@@ -535,9 +535,9 @@ export function PrefsTab() {
         onToggle={toggleSection}
       >
         <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 4 }}>
-          When an agent's turn ends and you haven't messaged it, the disposition bot
-          pokes it to self-check ("am I actually done?"). The poke goes to the agent,
-          never to you. Shorter = prompts more often (a wrong poke is cheap).
+          When an agent's turn ends and you haven't messaged it, Todd pokes it to
+          self-check ("am I actually done?"). The poke goes to the agent, never to
+          you. Shorter = prompts more often (a wrong poke is cheap).
         </div>
         <label className="prefs-check">
           <input

@@ -52,7 +52,7 @@ Primary modules:
 - `bin/lib/status-classifier.mjs`
 - `shared/spawn-librarian.ts`
 - `server/unified-server.mjs`
-- `bin/disposition-bot.mjs`
+- `bin/todd.mjs`
 - `bin/lib/disposition-scheduler.mjs`
 - `bin/lib/disposition-poke.mjs`
 
@@ -63,7 +63,7 @@ harness-independent; only the classifier inputs vary by harness.
 
 The server stores thinking/compacting state and emits a synthetic persisted
 `turn_ended` event on the `agent-thinking: true -> false` edge for non-human
-agents. The disposition bot subscribes to those events, waits its configured
+agents. Todd subscribes to those events, waits the configured self-check
 countdown, cancels if Skip responds, and sends the self-check poke if the agent
 went idle without closing the loop.
 
@@ -73,7 +73,7 @@ Live verification on June 22, 2026:
 - `agent-thinking: true` was browser-visible in `test-fleet`;
 - `agent-thinking: false` cleared the browser row;
 - server event `584387` persisted `turn_ended`;
-- disposition sent self-check chat `584400` to the same agent about 30 seconds
+- the self-check lane sent chat `584400` to the same agent about 30 seconds
   later.
 
 ## Daemon-Owned Bots
@@ -93,11 +93,10 @@ Current live config includes:
 
 - `todd`
 - `teacher`
-- `disposition`
 
-Live verification on June 22, 2026: root daemon pid `523` owns `todd` pid
-`58781`, `teacher` pid `51223`, and `disposition` pid `40890`. Teacher also
-answered a live `status` chat and refreshed its server row.
+Current intended daemon-owned bot set is `todd` plus any explicitly configured
+auxiliary bot such as `teacher`. Todd owns the self-check lane; a separate
+`disposition` daemon is no longer part of the intended default/runtime shape.
 
 ## Daemon Start Hardening
 

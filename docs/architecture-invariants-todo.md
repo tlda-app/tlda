@@ -32,8 +32,8 @@ old one), loudly. Allow an explicit `--target`/folder override to coexist.
 
 ## 2. Bots are singletons (per role)
 
-**Invariant:** one `todd` (and one `disposition-bot`) per role/target. Duplicates
-multiply the poke rate.
+**Invariant:** one `todd` per role/target. Todd owns the hygiene lanes; duplicate
+bots multiply the poke rate.
 
 **How it failed tonight:** **three** `bin/todd.mjs` processes were running from
 main plus a stale `todd.mjs` from `tlda-unfreeze`. Managed-bot supervision was

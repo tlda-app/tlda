@@ -50,10 +50,10 @@ const DEFAULTS = {
   // hover tooltip). hover = ephemeral tooltip; panel = docked side panel; inline =
   // click-to-pin card. Default hover preserves today's behavior; off/panel/inline opt in.
   'provenance-display-mode': 'hover' as string,
-  // Disposition bot (the turn-end introspection poke). Read live by
-  // bin/disposition-bot.mjs over /api/fleet/prefs. enabled=off stands it down;
-  // countdown is how long after a turn ends before the agent gets poked (a
-  // short value over-prompts on purpose — a wrong poke is cheap).
+  // Todd's turn-end introspection poke. Read live over /api/fleet/prefs.
+  // enabled=off stands it down; countdown is how long after a turn ends before
+  // the agent gets poked (a short value over-prompts on purpose — a wrong poke
+  // is cheap).
   'disposition-bot-enabled': true as boolean,
   'disposition-countdown-sec': 30 as number,
   // Preferences panel disclosure state. Kept server-backed so touch-only

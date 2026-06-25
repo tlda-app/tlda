@@ -29,6 +29,9 @@ import { labelsForAgent } from '../shared/fleet-labels.mjs'
 import { commitMdShare } from './md-share-commit.mjs'
 import { decideTaskKicks, formatTaskKickMessage } from './lib/todd-kicks.mjs'
 import { decideLooseEndNudge, LOOSE_END_COOLDOWN_MS } from './lib/todd-loose-ends.mjs'
+import { DispositionScheduler } from './lib/disposition-scheduler.mjs'
+import { createDispositionWiring } from './lib/disposition-wiring.mjs'
+import { pokeFor } from './lib/disposition-poke.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // Identity is config-driven: the supervisor passes TLDA_BOT_NAME (and the pidfile
@@ -53,6 +56,12 @@ const TASK_KICK_INTERVAL_MS = parseInt(process.env.TODD_TASK_KICK_INTERVAL_MS ||
 const TASK_KICK_QUIET_MS = parseInt(process.env.TODD_TASK_KICK_QUIET_MS || '', 10) || 5 * 60_000
 const TASK_KICK_MAX_TASK_AGE_MS = parseInt(process.env.TODD_TASK_KICK_MAX_TASK_AGE_MS || '', 10) || 12 * 60 * 60_000
 const TASK_KICK_POLL_MS = parseInt(process.env.TODD_TASK_KICK_POLL_MS || '', 10) || 60_000
+const SELF_CHECK_PREFS_POLL_MS = 20_000
+const SELF_CHECK_COUNTDOWN_SEC = parseInt(process.env.TODD_SELF_CHECK_COUNTDOWN_SEC || process.env.DISPO_COUNTDOWN_SEC || '', 10) || 30
+const SELF_CHECK_ENABLED = process.env.TODD_SELF_CHECK_ENABLED !== '0' && process.env.DISPO_ENABLED !== '0'
+const SELF_CHECK_PRESENCE_WINDOW_MS = (parseInt(process.env.TODD_SELF_CHECK_PRESENCE_SEC || process.env.DISPO_PRESENCE_SEC || '', 10) || 120) * 1000
+const PREF_SELF_CHECK_ENABLED_KEY = 'disposition-bot-enabled'
+const PREF_SELF_CHECK_COUNTDOWN_KEY = 'disposition-countdown-sec'
 const taskKickLastSent = new Map()
 const looseEndLastSent = new Map()
 // lastRealActivityMs[agentId] = timestamp of last meaningful tool call.
@@ -84,6 +93,63 @@ function skipLiveAgentSet() {
     if (now - ts < SKIP_LIVE_WINDOW_MS) set.add(id)
   }
   return set
+}
+
+// ---- Turn-end self-sufficiency poke ----
+// This is the old disposition-bot behavior folded into Todd so agents have one
+// hygiene voice. It remains a non-detector: turn ends → wait a beat → if Skip
+// is not in that agent's room, send the short next-action gut-check to the agent.
+const SELF_CHECK_IGNORE_IDS = new Set([OWNER_ID, AGENT_ID, 'fleet:tlda', 'fleet:teacher', 'fleet:eliza'])
+let selfCheckWiring
+const selfCheckScheduler = new DispositionScheduler({
+  countdownMs: SELF_CHECK_COUNTDOWN_SEC * 1000,
+  enabled: SELF_CHECK_ENABLED,
+  sendPoke: (agentId) => {
+    selfCheckWiring.notePoked(agentId)
+    sendChat(agentId, pokeFor(selfCheckWiring.cwdOf(agentId)))
+  },
+  isSkipPresent: (agentId) => selfCheckWiring.isSkipPresent(agentId),
+  log: (event, agentId, detail) => logDecision(agentId || AGENT_ID, `self-check:${event}`, detail || 'turn-end-self-check', {}, null),
+})
+selfCheckWiring = createDispositionWiring({
+  scheduler: selfCheckScheduler,
+  ownerId: OWNER_ID,
+  agentId: AGENT_ID,
+  ignoreIds: SELF_CHECK_IGNORE_IDS,
+  presenceWindowMs: SELF_CHECK_PRESENCE_WINDOW_MS,
+  onKickCommand: (text) =>
+    handleSelfCheckCommand(text).catch(e => console.error('[todd] self-check command error:', e.message)),
+  log: (event, agentId, detail) => logDecision(agentId || AGENT_ID, `self-check:${event}`, detail || 'turn-end-self-check', {}, null),
+})
+
+async function refreshSelfCheckPrefs() {
+  const prefs = await getJson(`/api/fleet/prefs?user=${encodeURIComponent(OWNER_ID)}`, null)
+  if (!prefs || typeof prefs !== 'object') return
+  if (PREF_SELF_CHECK_ENABLED_KEY in prefs) selfCheckScheduler.setEnabled(prefs[PREF_SELF_CHECK_ENABLED_KEY] !== false)
+  if (PREF_SELF_CHECK_COUNTDOWN_KEY in prefs) {
+    const sec = Number(prefs[PREF_SELF_CHECK_COUNTDOWN_KEY])
+    if (Number.isFinite(sec) && sec > 0) selfCheckScheduler.setCountdownMs(sec * 1000)
+  }
+}
+
+async function refreshSelfCheckRoster() {
+  const data = await getJson('/api/store/agents', [])
+  selfCheckWiring.updateRoster(Array.isArray(data) ? data : (data?.agents || []))
+}
+
+const SELF_CHECK_TARGET_RE = /^\s*(?:poke|kick|check|nudge)\s+(.+?)\s*$/i
+async function handleSelfCheckCommand(text) {
+  const m = text.match(SELF_CHECK_TARGET_RE)
+  if (!m) return false
+  const targetRaw = m[1].trim()
+  const targetId = await resolveAgentId(targetRaw)
+  if (!targetId) {
+    sendChat(OWNER_ID, `Couldn't find an agent matching "${targetRaw}" to poke.`)
+    return true
+  }
+  selfCheckScheduler.kick(targetId)
+  sendChat(OWNER_ID, `Poked **${targetRaw}** to self-check.`)
+  return true
 }
 
 // Positive/negative reward signal patterns in Skip's messages (post-nudge)
@@ -1520,6 +1586,7 @@ async function taskKickSweep() {
   ])
   const tasks = Array.isArray(tasksRaw) ? tasksRaw : (tasksRaw?.tasks || [])
   const agents = Array.isArray(agentsRaw) ? agentsRaw : (agentsRaw?.agents || [])
+  selfCheckWiring.updateRoster(agents)
   // Keep the bot roster fresh so the activity handler can exclude bot-chats.
   knownBotIds.clear()
   knownBotIds.add(AGENT_ID)
@@ -1917,6 +1984,8 @@ function connect() {
     console.log(`[todd] connected to ${WS_URL}`)
     reconnectDelay = 500 // back fast next time too
     register()
+    refreshSelfCheckPrefs().catch(e => console.error('[todd] self-check prefs refresh failed:', e.message))
+    refreshSelfCheckRoster().catch(e => console.error('[todd] self-check roster refresh failed:', e.message))
   })
 
   ws.on('message', (raw) => {
@@ -2017,6 +2086,7 @@ function sendChat(to, text) {
 function handleMessage(msg) {
   if (msg.event !== 'fleet-event') return
   const { type, from_id, to_id, text, metadata } = msg.data || {}
+  selfCheckWiring.handleFleetEvent(msg.data || {})
 
   if (type === 'chat') {
     if (!text) return
@@ -2079,6 +2149,18 @@ function handleMessage(msg) {
         ? CANCEL_PATTERN.test(text)
         : addressedBefore(CANCEL_PATTERN)
       if (cancelAddressed && cancelScheduledActions('skip-cancel')) return
+    }
+
+    // Manual self-check poke through Todd. Direct thread: "poke codex".
+    // Agent thread: "Todd poke/check/nudge" pokes the current chat target.
+    if (from_id === OWNER_ID) {
+      if (to_id && to_id !== AGENT_ID && addressedBefore(/\b(?:poke|kick|check|nudge)\b/i)) {
+        selfCheckScheduler.kick(to_id)
+        resolveAgentName(to_id)
+          .then(name => sendChat(OWNER_ID, `Poked **${name || to_id}** to self-check.`))
+          .catch(() => sendChat(OWNER_ID, `Poked **${to_id}** to self-check.`))
+        return
+      }
     }
 
     // Manager escalation — "todd" must appear before the escalation phrase
@@ -2289,6 +2371,10 @@ connect()
 setInterval(() => {
   taskKickSweep().catch(e => console.error('[todd] task-kick sweep failed:', e.message))
 }, TASK_KICK_POLL_MS)
+setInterval(() => {
+  refreshSelfCheckPrefs().catch(e => console.error('[todd] self-check prefs refresh failed:', e.message))
+  refreshSelfCheckRoster().catch(e => console.error('[todd] self-check roster refresh failed:', e.message))
+}, SELF_CHECK_PREFS_POLL_MS)
 
 // Keep alive
 process.on('SIGINT', () => {
