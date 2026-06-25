@@ -45,7 +45,7 @@ import { appendToken } from '../authToken'
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useSuggestions, clearGroup, sendMessage, loadBefore, resolveFilter, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
 import type { Suggestion } from '../fleet-data-adapter'
-import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
+import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore, createTemporaryMarkdownColumn } from './FleetPillShape'
 import { agentDisplayName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
 import { ChatComposer } from './ChatComposer'
 import { AgentName, PhaseIcon } from './PhaseIcon'
@@ -63,8 +63,6 @@ import { TerminalCard } from './TerminalCard'
 import { Terminal } from 'xterm'
 import { useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
 import { clientPointToPage, pagePointToClient } from '../wm/viewport-coordinates'
-import { CanvasClipPanel } from '../CanvasClipPanel'
-import type { ClipBounds } from '../CanvasClipPanel'
 import { consumeBulletContexts, subscribeBulletContext, getBulletContexts } from '../stores/bulletContextStore'
 import { getPref, subscribePref } from '../preferences'
 import { DATABASE_HTTP } from '../activeConfig'
@@ -935,76 +933,6 @@ function tldaRenderMarkdown(input: string, macros?: Record<string, string>): str
     rendered = rendered.replace(`\x00CHIP${i}\x00`, chipSlots[i])
   }
   return rendered
-}
-
-type MarkdownClipLightbox = {
-  noteId: TLShapeId
-  title: string
-  left: number
-  top: number
-  panelWidth: number
-  pinned: boolean
-}
-
-type EditorCreateShapeInput = Parameters<Editor['createShape']>[0]
-type EditorUpdateShapeInput = Parameters<Editor['updateShape']>[0]
-
-function MarkdownChipClipPanel({
-  editor,
-  lightbox,
-  onClose,
-  onPin,
-}: {
-  editor: Editor
-  lightbox: MarkdownClipLightbox
-  onClose: () => void
-  onPin: () => void
-}) {
-  const noteBounds = useValue(
-    `md-chip-lightbox-bounds:${lightbox.noteId}`,
-    () => {
-      const shape = editor.getShape(lightbox.noteId)
-      if (!shape) return null
-      const bounds = editor.getShapePageBounds(lightbox.noteId)
-      if (!bounds) return null
-      return {
-        x: bounds.x,
-        y: bounds.y,
-        w: Math.max(bounds.w, 1),
-        h: Math.max(bounds.h, 1),
-      } satisfies ClipBounds
-    },
-    [editor, lightbox.noteId],
-  )
-
-  const root = typeof document !== 'undefined' ? document.body : null
-  if (!root || !noteBounds) return null
-
-  return createPortal(
-    <div
-      className="chat-lightbox-md-clip"
-      style={{ left: lightbox.left, top: lightbox.top, width: lightbox.panelWidth }}
-      onPointerDown={stopEventPropagation}
-      onPointerUp={stopEventPropagation}
-      onTouchStart={stopEventPropagation}
-      onTouchEnd={stopEventPropagation}
-    >
-      <div className="chat-lightbox-md-clip-header">
-        <span className="chat-lightbox-md-clip-title" title={lightbox.title}>{lightbox.title}</span>
-        <button className="chat-lightbox-md-pin" title="Keep on canvas" onClick={onPin}>⌖</button>
-        <button className="chat-lightbox-md-close" title="Close" onClick={onClose}>×</button>
-      </div>
-      <CanvasClipPanel
-        mainEditor={editor}
-        bounds={noteBounds}
-        panelWidth={lightbox.panelWidth}
-        maxHeightFraction={0.72}
-        readOnly
-        className="chat-lightbox-md-clip-panel"
-      />
-    </div>,
-    root,
-  )
 }
 
 // --- Viewer context helper ---
@@ -2045,86 +1973,15 @@ function FleetChatInner({ shape }: { shape: any }) {
   const docRef = useRef<typeof doc>(doc)
   useEffect(() => { docRef.current = doc }, [doc])
 
-  const [markdownLightbox, setMarkdownLightbox] = useState<MarkdownClipLightbox | null>(null)
-  const markdownLightboxRef = useRef<MarkdownClipLightbox | null>(null)
-  useEffect(() => { markdownLightboxRef.current = markdownLightbox }, [markdownLightbox])
-
-  const closeMarkdownLightbox = useCallback((keepNote = false) => {
-    setMarkdownLightbox(prev => {
-      if (prev && !prev.pinned && !keepNote) {
-        if (editor.getShape(prev.noteId)) editor.deleteShapes([prev.noteId])
-      }
-      return null
-    })
-  }, [editor])
-
-  useEffect(() => {
-    return () => {
-      const current = markdownLightboxRef.current
-      if (current && !current.pinned) {
-        if (editor.getShape(current.noteId)) editor.deleteShapes([current.noteId])
-      }
-    }
-  }, [editor])
-
-  const openMarkdownNoteLightbox = useCallback((title: string, markdown: string, sourceEl: HTMLElement) => {
-    closeMarkdownLightbox(false)
-
+  const openMarkdownColumn = useCallback((title: string, markdown: string, sourceEl: HTMLElement) => {
     const sourceRect = sourceEl.getBoundingClientRect()
-    const panelWidth = Math.min(720, Math.max(360, window.innerWidth - 48))
-    const left = Math.max(12, Math.min(sourceRect.left, window.innerWidth - panelWidth - 12))
-    const top = Math.max(12, Math.min(sourceRect.bottom + 8, window.innerHeight - 120))
+    const left = Math.max(12, sourceRect.left)
+    const top = Math.max(12, sourceRect.bottom + 8)
     const anchor = clientPointToPage(editor, { x: left, y: top }, viewportId)
-    const noteId = createShapeId()
-    const noteW = Math.min(620, Math.max(420, panelWidth - 24))
-
-    editor.createShape({
-      id: noteId,
-      type: 'math-note',
-      x: anchor.x,
-      y: anchor.y,
-      isLocked: false,
-      props: {
-        w: noteW,
-        h: 80,
-        text: markdown || title,
-        color: 'light-violet',
-        autoSize: true,
-        collapsed: false,
-      },
-      meta: {
-        temporaryMarkdownLightbox: true,
-        createdAt: Date.now(),
-        sourceChatShapeId: shape.id,
-      },
-    } as unknown as EditorCreateShapeInput)
-
-    setMarkdownLightbox({ noteId, title, left, top, panelWidth, pinned: false })
-    return noteId
-  }, [closeMarkdownLightbox, editor, shape.id, viewportId])
-
-  const pinMarkdownLightbox = useCallback(() => {
-    const current = markdownLightboxRef.current
-    if (!current) return
-    setMarkdownLightbox({ ...current, pinned: true })
-    const note = editor.getShape(current.noteId)
-    if (note) {
-      editor.updateShape({
-        id: current.noteId,
-        type: "math-note",
-        meta: { ...note.meta, temporaryMarkdownLightbox: false },
-      } as unknown as EditorUpdateShapeInput)
-    }
-    const bounds = editor.getShapePageBounds(current.noteId)
-    editor.select(current.noteId)
-    if (bounds) {
-      editor.zoomToBounds(
-        { x: bounds.x - 24, y: bounds.y - 24, w: bounds.w + 48, h: bounds.h + 48 },
-        { animation: { duration: 220 } },
-      )
-    }
-    closeMarkdownLightbox(true)
-  }, [closeMarkdownLightbox, editor])
+    void createTemporaryMarkdownColumn(editor, anchor, title, markdown || title, {
+      sourceChatShapeId: shape.id,
+    })
+  }, [editor, shape.id, viewportId])
 
   // Incremental render cache: non-activity messages are independent and can be
   // cached by (msgKey, ctxVersion). When ctx changes (agent rename, task done),
@@ -2598,7 +2455,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     const chipTarget = (e.target as HTMLElement).closest('.ref-chip-annotation')
     if (chipTarget) { handleRefChipClick(e); return }
 
-    // Markdown chip → temporary canvas note shown through a clip panel
+    // Markdown chip → temporary page-like html column.
     // (ref-chip-doc chips AND md-file-card chips in activity cards).
     const mdChip = (e.target as HTMLElement).closest('.ref-chip-doc, .md-file-card') as HTMLElement | null
     if (mdChip) {
@@ -2607,7 +2464,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         const line = mdChip.closest('.chat-line')
         const body = line?.querySelector('.message-body') as HTMLElement | null
         const title = mdChip.getAttribute('title') || mdChip.textContent || 'source'
-        openMarkdownNoteLightbox(title, body?.innerText || body?.textContent || title, mdChip)
+        openMarkdownColumn(title, body?.innerText || body?.textContent || title, mdChip)
         return
       }
       const chipUrl = mdChip.dataset.url || ''
@@ -2617,7 +2474,6 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (isMd && fetchUrl) {
         e.stopPropagation()
         const title = mdChip.querySelector('.md-file-chip')?.textContent || mdChip.textContent || chipPath.split('/').pop() || 'file'
-        const noteId = openMarkdownNoteLightbox(title, 'Loading...', mdChip)
         fetch(fetchUrl)
           .then(r => r.ok ? r.text() : Promise.reject(r.status))
           .then(text => {
@@ -2626,12 +2482,10 @@ function FleetChatInner({ shape }: { shape: any }) {
               if (src.startsWith('http') || src.startsWith('/')) return match
               return `![${alt}](${baseUrl}${src})`
             }) : text
-            if (!noteId || !editor.getShape(noteId)) return
-            editor.updateShape({ id: noteId, type: 'math-note', props: { text: resolved } } as unknown as EditorUpdateShapeInput)
+            openMarkdownColumn(title, resolved, mdChip)
           })
           .catch(() => {
-            if (!noteId || !editor.getShape(noteId)) return
-            editor.updateShape({ id: noteId, type: 'math-note', props: { text: 'Failed to load' } } as unknown as EditorUpdateShapeInput)
+            openMarkdownColumn(title, '# Failed to load', mdChip)
           })
         return
       }
@@ -2696,7 +2550,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       }
     }
     editor.centerOnPoint(canvasPos, { animation: { duration: 300 } })
-  }, [doc, refResolver, editor, handleRefChipClick, openMarkdownNoteLightbox])
+  }, [doc, refResolver, editor, handleRefChipClick, openMarkdownColumn])
 
   const shapeContainerRef = useRef<HTMLDivElement>(null)
   const inputAreaRef = useRef<HTMLDivElement>(null)
@@ -5156,14 +5010,6 @@ function FleetChatInner({ shape }: { shape: any }) {
         overflow: 'visible',
       }}
     >
-      {markdownLightbox && (
-        <MarkdownChipClipPanel
-          editor={editor}
-          lightbox={markdownLightbox}
-          onClose={() => closeMarkdownLightbox(false)}
-          onPin={pinMarkdownLightbox}
-        />
-      )}
       <div
         ref={shapeContainerRef}
         className="fleet-shape fleet-chat-shape"

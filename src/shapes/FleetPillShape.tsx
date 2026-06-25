@@ -23,6 +23,11 @@ const PILL_W = 70
 const PILL_H = 18
 const CHAT_W = 400
 const CHAT_H = 600
+const TEMP_MARKDOWN_PROJECT = 'fleet-markdown-chip-temp'
+const TEMP_MARKDOWN_FILE = 'content.md'
+const TEMP_MARKDOWN_SHAPE_ID = createShapeId('fleet-markdown-chip-temp-column')
+const TEMP_MARKDOWN_W = 800
+const TEMP_MARKDOWN_H = 1200
 
 const FLEET_TYPES = FLEET_SHAPE_TYPES
 
@@ -57,6 +62,117 @@ export const filterDropPreview = {
   fromPreview: null as [string, string][][] | null,
   replacePreview: null as [string, string][][] | null,
   activePaneRole: null as 'to' | 'from' | 'replace' | null,
+}
+
+function encodeUtf8Base64(text: string): string {
+  const bytes = new TextEncoder().encode(text)
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary)
+}
+
+async function ensureTemporaryMarkdownProject() {
+  const createRes = await fetch('/api/projects', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: TEMP_MARKDOWN_PROJECT,
+      title: 'Markdown chip',
+      format: 'markdown',
+      mainFile: TEMP_MARKDOWN_FILE,
+    }),
+  })
+  if (!createRes.ok && createRes.status !== 409) {
+    throw new Error(`project create failed: ${createRes.status}`)
+  }
+}
+
+async function waitForTemporaryMarkdownBuild(startedAt: number, allowExisting = false) {
+  const deadline = startedAt + 8000
+  while (Date.now() < deadline) {
+    const res = await fetch(`/api/projects/${TEMP_MARKDOWN_PROJECT}?t=${Date.now()}`)
+    if (res.ok) {
+      const project = await res.json()
+      const lastBuild = project.lastBuild ? Date.parse(project.lastBuild) : 0
+      if (project.buildStatus === 'success' && project.pages > 0 && (allowExisting || lastBuild >= startedAt - 1000)) return
+      if (project.buildStatus === 'error') throw new Error('markdown build failed')
+    }
+    await new Promise(resolve => setTimeout(resolve, 200))
+  }
+  throw new Error('markdown build timed out')
+}
+
+function sendPageShapeToBack(editor: Editor, shapeId: TLShapeId) {
+  const shape = editor.getShape(shapeId)
+  if (!shape) return
+  if (shape.isLocked) editor.updateShape({ id: shapeId, type: shape.type, isLocked: false })
+  editor.sendToBack([shapeId])
+  editor.updateShape({ id: shapeId, type: shape.type, isLocked: true })
+}
+
+export async function createTemporaryMarkdownColumn(
+  editor: Editor,
+  pagePoint: { x: number; y: number },
+  title: string,
+  markdown: string,
+  meta: Record<string, unknown> = {},
+) {
+  const source = markdown.trim() ? markdown : `# ${title || 'Markdown chip'}`
+  const startedAt = Date.now()
+  await ensureTemporaryMarkdownProject()
+  const pushRes = await fetch(`/api/projects/${TEMP_MARKDOWN_PROJECT}/push`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      files: [{
+        path: TEMP_MARKDOWN_FILE,
+        content: encodeUtf8Base64(source),
+        encoding: 'base64',
+      }],
+    }),
+  })
+  if (!pushRes.ok) throw new Error(`markdown push failed: ${pushRes.status}`)
+  const pushResult = await pushRes.json().catch(() => null)
+  await waitForTemporaryMarkdownBuild(startedAt, !!pushResult?.unchanged)
+
+  const url = `/docs/${TEMP_MARKDOWN_PROJECT}/index.html?t=${Date.now()}`
+  const existing = editor.getShape(TEMP_MARKDOWN_SHAPE_ID) as any
+  if (existing) {
+    if (existing.isLocked) {
+      editor.updateShape({ id: TEMP_MARKDOWN_SHAPE_ID, type: existing.type, isLocked: false })
+    }
+    editor.updateShape({
+      id: TEMP_MARKDOWN_SHAPE_ID,
+      type: 'html-page' as any,
+      x: pagePoint.x,
+      y: pagePoint.y,
+      isLocked: true,
+      props: { w: TEMP_MARKDOWN_W, h: TEMP_MARKDOWN_H, url },
+      meta: {
+        ...existing.meta,
+        temporaryMarkdownColumn: true,
+        title,
+        updatedAt: Date.now(),
+        ...meta,
+      },
+    })
+  } else {
+    editor.createShape({
+      id: TEMP_MARKDOWN_SHAPE_ID,
+      type: 'html-page' as any,
+      x: pagePoint.x,
+      y: pagePoint.y,
+      isLocked: true,
+      props: { w: TEMP_MARKDOWN_W, h: TEMP_MARKDOWN_H, url },
+      meta: {
+        temporaryMarkdownColumn: true,
+        title,
+        createdAt: Date.now(),
+        ...meta,
+      },
+    })
+  }
+  sendPageShapeToBack(editor, TEMP_MARKDOWN_SHAPE_ID)
 }
 
 
@@ -209,50 +325,28 @@ export function dropPillOnTarget(
     return
   } else if ((editor.getShape(pillId) as any)?.type === 'fleet-pill' &&
              (editor.getShape(pillId) as any)?.props?.pillType === 'file') {
-    // File chip pill dropped on canvas → create file-backed math-note
+    // File/markdown chip dropped on canvas → render it as a page-like html column.
     const pill = editor.getShape(pillId) as any
     const sourceAgent = pill?.meta?.sourceAgent as string | undefined
     const filePath = pill?.meta?.filePath as string | undefined
     const fileUrl = pill?.meta?.fileUrl as string | undefined
-    const noteId = createShapeId()
-    createEditor.createShape({
-      id: noteId,
-      type: 'math-note' as any,
-      x: pagePoint.x - 5,
-      y: pagePoint.y - 5,
-      isLocked: false,
-      props: {
-        w: 320,
-        h: 50,
-        text: content || pill?.props?.displayName || '',
-        color: 'light-violet',
-        autoSize: true,
-        // Drop the file/markdown chip as an OPEN sticky so the shared file is
-        // readable immediately — a collapsed dot is impossible to uncollapse on
-        // touch (iPad). The user can collapse it afterward if they want.
-        collapsed: false,
-        ...(filePath ? { backingFile: filePath } : {}),
-      },
-      meta: {
-        ...(sourceAgent ? { authorId: sourceAgent } : {}),
-        ...(filePath ? { sharedDocPath: filePath, sharedDoc: true, fromAgent: sourceAgent } : {}),
-        createdAt: Date.now(),
-      },
-    })
-    // Fetch real file content (the drag content may not have loaded yet)
+    const title = pill?.props?.displayName || filePath?.split('/').pop() || 'Markdown chip'
     const fetchUrl = fileUrl || (filePath ? `/api/read-file?path=${encodeURIComponent(filePath)}` : '')
-    if (fetchUrl) {
-      fetch(fetchUrl).then(r => r.ok ? r.text() : null).then(text => {
-        if (!text) return
-        const shape = createEditor.getShape(noteId)
-        if (!shape) return
-        createEditor.updateShape({
-          id: noteId,
-          type: 'math-note' as any,
-          props: { text },
+    ;(async () => {
+      try {
+        let markdown = content || title
+        if (fetchUrl) {
+          const res = await fetch(fetchUrl)
+          if (res.ok) markdown = await res.text()
+        }
+        await createTemporaryMarkdownColumn(createEditor, pagePoint, title, markdown, {
+          ...(sourceAgent ? { authorId: sourceAgent, fromAgent: sourceAgent } : {}),
+          ...(filePath ? { sharedDocPath: filePath, sharedDoc: true } : {}),
         })
-      }).catch(e => console.warn('[fleet-pill] note update failed:', e.message))
-    }
+      } catch (e: any) {
+        console.warn('[fleet-pill] markdown column create failed:', e?.message || e)
+      }
+    })()
   } else if ((editor.getShape(pillId) as any)?.type === 'fleet-pill' &&
              (editor.getShape(pillId) as any)?.props?.pillType === 'doc') {
     // Doc/file pill dropped on canvas → create collapsed math-note with file content

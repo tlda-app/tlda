@@ -984,55 +984,6 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   box-shadow: 0 4px 30px rgba(0,0,0,0.5);
 }
 
-/* Markdown chip clip panel */
-.chat-lightbox-md-clip {
-  position: fixed;
-  z-index: 999999;
-  color: #e0e0e0;
-  border-radius: 6px;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.45);
-  overflow: hidden;
-}
-.chat-lightbox-md-clip-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 7px 9px;
-  font-size: 13px;
-  font-weight: 600;
-  color: rgba(255,255,255,0.6);
-  background: #1a1a1a;
-  border-bottom: 1px solid rgba(255,255,255,0.08);
-}
-.chat-lightbox-md-clip-title {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.chat-lightbox-md-pin,
-.chat-lightbox-md-close {
-  background: none;
-  border: none;
-  color: rgba(255,255,255,0.4);
-  cursor: pointer;
-  font-size: 14px;
-  line-height: 1;
-  padding: 2px 4px;
-  transition: color 0.15s;
-}
-.chat-lightbox-md-pin:hover,
-.chat-lightbox-md-close:hover { color: rgba(255,255,255,0.8); }
-.chat-lightbox-md-clip .clip-panel {
-  border-radius: 0;
-  box-shadow: none;
-  border: 0;
-}
-.chat-lightbox-md-clip .clip-panel-canvas {
-  border-radius: 0;
-}
-
 /* --- Long messages --- */
 .fleet-chat-shape .message-long {
   display: block;
