@@ -10,7 +10,7 @@
  * Triggered by custom DOM events from FleetChatShape ref-chip hover.
  */
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
-import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
+import type { Editor, TLAnyShapeUtilConstructor, TLShapeId, TLStateNodeConstructor } from 'tldraw'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import './AnnotationViewer.css'
 
@@ -217,6 +217,10 @@ export function AnnotationViewer({
   if (!data || !clipBounds) return null
 
   const isPinnedOrNav = state === 'pinned' || state === 'navigated'
+  const isTemporaryMarkdownPreview = data.shapeIds?.some((shapeId) => {
+    const shape = mainEditor.getShape(shapeId as TLShapeId)
+    return !!shape?.meta?.temporaryMarkdownColumn
+  }) ?? false
 
   // Position on top of the chip — viewer overlaps, chip roughly centered vertically.
   const vw = typeof window !== 'undefined' ? window.innerWidth : 1200
@@ -277,20 +281,22 @@ export function AnnotationViewer({
       {/* Nav buttons — positioned on top of the canvas */}
       {isPinnedOrNav && (
         <>
-          <button
-            className="annotation-viewer-nav-btn annotation-viewer-nav-left"
-            onClick={state === 'pinned' ? handleGo : handleBack}
-          >
-            <svg width="250" height="250" viewBox="0 0 250 250">
-              {state === 'pinned' ? (
-                <path d="M12 125 H238 M170 12 L238 125 L170 238" fill="none" stroke="currentColor"
-                  strokeWidth="48" strokeLinecap="square" strokeLinejoin="miter" />
-              ) : (
-                <path d="M238 125 H12 M80 12 L12 125 L80 238" fill="none" stroke="currentColor"
-                  strokeWidth="48" strokeLinecap="square" strokeLinejoin="miter" />
-              )}
-            </svg>
-          </button>
+          {!isTemporaryMarkdownPreview && (
+            <button
+              className="annotation-viewer-nav-btn annotation-viewer-nav-left"
+              onClick={state === 'pinned' ? handleGo : handleBack}
+            >
+              <svg width="250" height="250" viewBox="0 0 250 250">
+                {state === 'pinned' ? (
+                  <path d="M12 125 H238 M170 12 L238 125 L170 238" fill="none" stroke="currentColor"
+                    strokeWidth="48" strokeLinecap="square" strokeLinejoin="miter" />
+                ) : (
+                  <path d="M238 125 H12 M80 12 L12 125 L80 238" fill="none" stroke="currentColor"
+                    strokeWidth="48" strokeLinecap="square" strokeLinejoin="miter" />
+                )}
+              </svg>
+            </button>
+          )}
 
           <button
             className="annotation-viewer-nav-btn annotation-viewer-nav-right"
