@@ -141,10 +141,51 @@ function renderThreadResult(text, ctx) {
   const THREAD_TAIL = 5
   const THREAD_PREVIEW = THREAD_FRONT + THREAD_TAIL
   const hasMoreMsgs = msgs.length > THREAD_PREVIEW
+  const parseThreadActivity = (body, from, ts) => {
+    const lines = body.trim().split('\n')
+    const first = lines[0] || ''
+    const m = first.match(/^\[activity(?: #([^\]]+))?\]\s+(.+?)(?:\s+—\s+(.+))?$/)
+    if (!m) return null
+    const [, dbId, rawTool, description] = m
+    let resultIdx = -1
+    for (let i = 1; i < lines.length; i++) {
+      if (/^\s*result:\s*$/.test(lines[i])) { resultIdx = i; break }
+    }
+    const argLines = (resultIdx === -1 ? lines.slice(1) : lines.slice(1, resultIdx))
+      .map(line => line.replace(/^  /, ''))
+    const arg = argLines.join('\n').trim()
+    const prettyResult = resultIdx === -1
+      ? ''
+      : lines.slice(resultIdx + 1).map(line => line.replace(/^    /, '')).join('\n').trim()
+    const toolInput = {}
+    if (arg) {
+      try { Object.assign(toolInput, JSON.parse(arg)) }
+      catch {
+        if (rawTool.toLowerCase() === 'bash') toolInput.command = arg
+        else toolInput.arg = arg
+      }
+    }
+    if (description && !toolInput.description) toolInput.description = description
+    const fleetId = String(from || '').match(/\bfleet:[A-Za-z0-9_-]+\b/)?.[0] || from
+    return {
+      from: fleetId,
+      timestamp: ts,
+      _dbId: dbId || '',
+      _toolName: rawTool,
+      _toolArg: arg.split('\n')[0] || '',
+      _toolInput: toolInput,
+      _toolDetail: description || '',
+      _prettyResult: prettyResult,
+    }
+  }
   const renderMsg = (msg) => {
     const headerMatch = msg.match(/^\[([^\]]*)\]\s*(.+?)\s+→\s+(.+?)\n([\s\S]*)$/)
     if (!headerMatch) return `<div class="chat-line"><div class="pretty-msg-body">${ctx.renderMarkdown ? ctx.renderMarkdown(esc(msg)) : esc(msg)}</div></div>`
     const [, ts, from, to, body] = headerMatch
+    const activity = parseThreadActivity(body, from, ts)
+    if (activity) {
+      return `<div class="pretty-thread-activity">${renderActivityGroup([activity], ctx)}</div>`
+    }
     const fromCls = ctx.getNickClass ? ctx.getNickClass(from) : 'chat-nick'
     const toCls = ctx.getNickClass ? ctx.getNickClass(to) : 'chat-nick'
     let shortTs = ts.replace(/^\d+\/\d+\/\d+,?\s*/, '')
