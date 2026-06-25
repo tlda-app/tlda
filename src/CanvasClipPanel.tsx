@@ -13,7 +13,7 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { TldrawViewport, stopEventPropagation } from 'tldraw'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor, TLShape, TLViewportId } from 'tldraw'
-import { createCanvasClipPanelPlan } from './wm/canvas-clip-panel'
+import { createCanvasClipPanelPlan, shouldRenderLockedFleetViewportShape } from './wm/canvas-clip-panel'
 import { VisibilityViewportProvider } from './shapes/useIsInViewport'
 import './CanvasClipPanel.css'
 
@@ -177,15 +177,7 @@ export function CanvasClipPanel({
     return (shape: TLShape) => {
       // In lockCamera (HUD) mode, only render fleet shapes
       if (lockCamera) {
-        const type = (shape as any).type
-        if (!type) return false
-        // Fleet shape types: fleet-chat, fleet-agents, etc.
-        if (!type.startsWith('fleet-')) return false
-        const props = (shape as any).props
-        if (!props) return false
-        const uid = props.userId
-        const dev = props.deviceId
-        return !!uid && !!dev
+        return shouldRenderLockedFleetViewportShape(shape)
       }
 
       // In readOnly mode, render all shapes

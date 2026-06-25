@@ -3,6 +3,21 @@ import { createWMCore, type Camera, type Layer } from './wm-core.ts'
 export const CANVAS_CLIP_ROOT_LAYER_ID = 'screen'
 export const CANVAS_CLIP_PANEL_LAYER_ID = 'canvas-clip-panel'
 
+export function shouldRenderLockedFleetViewportShape(shape: {
+	type?: string
+	props?: unknown
+}): boolean {
+	const type = shape.type
+	if (!type?.startsWith('fleet-')) return false
+
+	// Transient drag previews do not carry ownership props. They still need to
+	// render inside the locked HUD viewport that owns the active drag gesture.
+	if (type === 'fleet-pill') return true
+
+	const props = shape.props as { userId?: unknown; deviceId?: unknown } | undefined
+	return !!props?.userId && !!props?.deviceId
+}
+
 export interface CanvasClipBounds {
 	x: number
 	y: number

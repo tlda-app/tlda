@@ -4,6 +4,7 @@ import {
 	CANVAS_CLIP_PANEL_LAYER_ID,
 	CANVAS_CLIP_ROOT_LAYER_ID,
 	createCanvasClipPanelPlan,
+	shouldRenderLockedFleetViewportShape,
 } from '../src/wm/canvas-clip-panel.ts'
 
 test('CanvasClipPanel WM helper preserves bounds-to-camera calculation', () => {
@@ -37,4 +38,26 @@ test('CanvasClipPanel WM helper marks locked panels as pinned lock-zoom layers',
 	assert.deepEqual(plan.camera, { x: 4, y: -8, z: 5 })
 	assert.deepEqual(plan.layer.policy, { x: 'pin', y: 'pin', zoom: 'lock' })
 	assert.deepEqual(plan.layer.layout, { axis: 'vertical', spacing: 0 })
+})
+
+test('locked fleet viewport renders owned fleet panels and transient drag pills', () => {
+	assert.equal(shouldRenderLockedFleetViewportShape({
+		type: 'fleet-chat',
+		props: { userId: 'fleet:tester', deviceId: 'device-a' },
+	}), true)
+
+	assert.equal(shouldRenderLockedFleetViewportShape({
+		type: 'fleet-chat',
+		props: { userId: 'fleet:tester' },
+	}), false)
+
+	assert.equal(shouldRenderLockedFleetViewportShape({
+		type: 'fleet-pill',
+		props: { pillType: 'agent' },
+	}), true)
+
+	assert.equal(shouldRenderLockedFleetViewportShape({
+		type: 'geo',
+		props: {},
+	}), false)
 })
