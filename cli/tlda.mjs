@@ -101,7 +101,7 @@ const VALUE_FLAGS = new Set([
   'server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format',
   'session', 'target', 'timeout', 'id', 'book', 'worktree', 'port', 'browser',
   'model', 'cwd', 'effort', 'mode', 'kind', 'spawn-capability', 'capability',
-  'to',
+  'to', 'limit',
 ])
 
 function getFlag(name, defaultVal = null) {
@@ -1561,6 +1561,60 @@ async function listLocalAgents() {
   process.exit(0)
 }
 
+function formatAge(seconds) {
+  if (seconds == null || Number.isNaN(seconds)) return 'unknown'
+  if (seconds < 60) return `${seconds}s`
+  const mins = Math.round(seconds / 60)
+  if (mins < 60) return `${mins}m`
+  const hours = Math.round(mins / 60)
+  if (hours < 48) return `${hours}h`
+  return `${Math.round(hours / 24)}d`
+}
+
+function padRight(value, width) {
+  const s = String(value ?? '')
+  return s.length >= width ? s : s + ' '.repeat(width - s.length)
+}
+
+async function listFleetAgents() {
+  if (hasFlag('local')) return listLocalAgents()
+  const limit = Number(getFlag('limit', '200')) || 200
+  const data = await api('GET', `/api/fleet-table?limit=${encodeURIComponent(String(limit))}`)
+  const agents = Array.isArray(data.agents) ? data.agents : []
+  const totals = data.totals || { awake: 0, hibernating: 0, dead: 0, total: agents.length }
+  console.log(`Fleet agents: ${totals.awake || 0} awake · ${totals.hibernating || 0} hibernating · ${totals.dead || 0} dead · ${totals.total || 0} total`)
+  if (data.matched > agents.length) {
+    console.log(dim(`Showing ${agents.length}/${data.matched}; use --limit ${data.matched} for the full table.`))
+  }
+  if (agents.length === 0) {
+    console.log('No fleet agents.')
+    return
+  }
+
+  const groups = new Map()
+  for (const a of agents) {
+    const machine = a.machine_id || 'unassigned'
+    if (!groups.has(machine)) groups.set(machine, [])
+    groups.get(machine).push(a)
+  }
+  const statusRank = { awake: 0, thinking: 0, compacting: 0, hibernating: 1, dead: 2 }
+  const sortedGroups = [...groups.entries()].sort(([a], [b]) => a.localeCompare(b))
+  for (const [machine, rows] of sortedGroups) {
+    rows.sort((a, b) => (statusRank[a.status] ?? 3) - (statusRank[b.status] ?? 3) || (a.name || a.id).localeCompare(b.name || b.id))
+    console.log(`\n${machine} (${rows.length})`)
+    console.log(`  ${padRight('status', 12)} ${padRight('agent', 24)} ${padRight('session', 28)} ${padRight('seen', 8)} cwd`)
+    for (const a of rows) {
+      const status = a.status || 'unknown'
+      const name = a.name || a.id
+      const session = a.tmux_session || '-'
+      const seen = formatAge(a.last_seen_ago_s)
+      const cwd = a.cwd || ''
+      const activity = [a.activity, a.tool].filter(Boolean).join(':')
+      console.log(`  ${padRight(status, 12)} ${padRight(name, 24)} ${padRight(session, 28)} ${padRight(seen, 8)} ${cwd}${activity ? ` ${dim(activity)}` : ''}`)
+    }
+  }
+}
+
 async function hibernateAgent(name) {
   if (!name) {
     console.error('Usage: tlda agent hibernate <name>')
@@ -1608,10 +1662,10 @@ Network:
 }
 
 function usageAgent() {
-  console.log(`tlda agent — manage local fleet agents
+  console.log(`tlda agent — manage fleet agents
 
 Usage:
-  tlda agent list
+  tlda agent list [--limit N] [--local]
   tlda agent spawn <agent>
   tlda agent spawn --fresh <name>
   tlda agent spawn-local <agent>
@@ -1635,7 +1689,8 @@ spawn routes through the fleet server and target daemon; spawn-local directly in
 the local fleet-spawn.py primitive on this machine.
 move must be run on the agent's current machine; only the destination is remote.
 The capability command is operator-only: it refuses from fleet agent env/tmux context.
-check-ready verifies registry + local tmux/runtime + recent register/my_task evidence.`)
+check-ready verifies registry + local tmux/runtime + recent register/my_task evidence.
+list reads the server roster by default; --local shows only tmux sessions on this machine.`)
 }
 
 function capabilityNamesForError() {
@@ -2049,7 +2104,7 @@ async function cmdAgent() {
   }
   switch (sub) {
     case 'list':
-    case 'ls':        await listLocalAgents(); break
+    case 'ls':        await listFleetAgents(); break
     case 'spawn':     await runRoutedSpawn(process.argv.slice(4)); break // after "tlda agent spawn"
     case 'spawn-local': await runFleetSpawn(process.argv.slice(4)); break // direct local primitive
     case 'move':      await cmdAgentMove(); break

@@ -127,7 +127,7 @@ describe('agent capability CLI', () => {
     })
 
     assert.notEqual(exitCode, 0)
-    assert.ok(stderr.includes('Usage: tlda agent <list|spawn|check-ready|attach|hibernate|capability>'))
+    assert.ok(stderr.includes('Usage: tlda agent <list|spawn|spawn-local|move|check-ready|attach|hibernate|capability>'))
   })
 
   it('refuses from an agent context before dry-run escalation', () => {

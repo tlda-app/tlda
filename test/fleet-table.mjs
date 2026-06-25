@@ -28,11 +28,12 @@ const HERE = path.dirname(new URL(import.meta.url).pathname)
 const ROOT = path.resolve(HERE, '..')
 const TMP = path.join(tmpdir(), 'fleettable-' + Date.now())
 const FLEET_DB = path.join(TMP, 'fleet.db')
+const DATA_DIR = path.join(TMP, 'data')
 const PROJECTS = path.join(TMP, 'projects')
 const PORT = 5860 + Math.floor(Math.random() * 30)
-const SERVER = `https://localhost:${PORT}`
-const WS = `wss://localhost:${PORT}`
-mkdirSync(TMP, { recursive: true }); mkdirSync(PROJECTS, { recursive: true })
+const SERVER = `http://127.0.0.1:${PORT}`
+const WS = `ws://127.0.0.1:${PORT}`
+mkdirSync(TMP, { recursive: true }); mkdirSync(DATA_DIR, { recursive: true }); mkdirSync(PROJECTS, { recursive: true })
 
 let serverProc = null
 function cleanup() { try { serverProc?.kill('SIGTERM') } catch {} ; try { rmSync(TMP, { recursive: true, force: true }) } catch {} }
@@ -60,13 +61,13 @@ function register(fields) {
 async function main() {
   const env = { ...process.env }
   delete env.TLDA_TOKEN_RW; delete env.TLDA_TOKEN_READ
-  Object.assign(env, { PORT: String(PORT), HOST: '127.0.0.1', PROJECTS_DIR: PROJECTS, TLDA_FLEET_DB: FLEET_DB, TLDA_NO_AUTH: '1' })
+  Object.assign(env, { PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR, PROJECTS_DIR: PROJECTS, TLDA_FLEET_DB: FLEET_DB, TLDA_NO_AUTH: '1' })
   serverProc = spawn(process.execPath, [path.join(ROOT, 'server', 'unified-server.mjs'), '--i-am-tlda-cli'], { env, stdio: ['ignore', 'pipe', 'pipe'] })
   serverProc.stderr.on('data', d => process.stderr.write(`[server] ${d}`))
   await waitFor(() => fetch(`${SERVER}/health`).then(r => r.ok).catch(() => false), { name: 'server health' })
 
   // 3 agents (one labelled) + 1 human
-  await register({ id: 'fleet:a1', name: 'alpha', cwd: '/tmp/a', labels: ['worker'] })
+  await register({ id: 'fleet:a1', name: 'alpha', cwd: '/tmp/a', labels: ['worker'], machine_id: 'mini', tmux_session: 'fleet-alpha' })
   await register({ id: 'fleet:a2', name: 'bravo', cwd: '/tmp/b' })
   await register({ id: 'fleet:a3', name: 'charlie', cwd: '/tmp/c', labels: ['worker'] })
   await register({ id: 'fleet:hu', name: 'thehuman', human: true })
@@ -77,17 +78,18 @@ async function main() {
   check('returns totals + agents + shown/matched', d && d.totals && Array.isArray(d.agents) && typeof d.shown === 'number' && typeof d.matched === 'number', `got ${JSON.stringify(d).slice(0, 200)}`)
   check('totals.total counts the 3 agents (human excluded)', d.totals.total === 3, `got ${d.totals.total}`)
   check('human is not in rows', !d.agents.some(a => a.id === 'fleet:hu'), `rows: ${d.agents.map(a => a.id).join(',')}`)
-  check('rows carry name/status/cwd', d.agents.every(a => a.name && a.status && 'cwd' in a), `got ${JSON.stringify(d.agents[0])}`)
+  check('rows carry name/status/cwd/machine/session', d.agents.every(a => a.name && a.status && 'cwd' in a && 'machine_id' in a && 'tmux_session' in a), `got ${JSON.stringify(d.agents[0])}`)
+  check('machine_id and tmux_session round-trip', d.agents.some(a => a.id === 'fleet:a1' && a.machine_id === 'mini' && a.tmux_session === 'fleet-alpha'), `got ${JSON.stringify(d.agents)}`)
   check('totals.awake + hibernating + dead === total', (d.totals.awake + d.totals.hibernating + d.totals.dead) === d.totals.total, `${JSON.stringify(d.totals)}`)
 
   // ---- filter by name ----
-  r = await get(`/api/fleet-table?filter=${encodeURIComponent(JSON.stringify([['alpha']]))}`)
+  r = await get(`/api/fleet-table?filter=${encodeURIComponent('alpha')}`)
   check('filter by name returns just that agent', r.body.agents.length === 1 && r.body.agents[0].name === 'alpha', `got ${JSON.stringify(r.body.agents.map(a => a.name))}`)
   check('filter still reports whole-fleet totals', r.body.totals.total === 3, `got ${r.body.totals.total}`)
   check('matched reflects the filter (1)', r.body.matched === 1, `got ${r.body.matched}`)
 
   // ---- filter by label ----
-  r = await get(`/api/fleet-table?filter=${encodeURIComponent(JSON.stringify([['worker']]))}`)
+  r = await get(`/api/fleet-table?filter=${encodeURIComponent('worker')}`)
   check('filter by label returns the 2 labelled agents', r.body.matched === 2 && r.body.agents.length === 2, `got matched=${r.body.matched} names=${r.body.agents.map(a => a.name)}`)
 
   // ---- limit caps rows, totals untouched ----
@@ -96,8 +98,8 @@ async function main() {
   check('limit leaves whole-fleet totals intact', r.body.totals.total === 3 && r.body.matched === 3, `got total=${r.body.totals.total} matched=${r.body.matched}`)
 
   // ---- bad filter rejected ----
-  r = await get('/api/fleet-table?filter=not-json')
-  check('non-JSON filter is rejected (400)', r.status === 400, `got ${r.status}`)
+  r = await get(`/api/fleet-table?filter=${encodeURIComponent('a &')}`)
+  check('invalid filter is rejected (400)', r.status === 400, `got ${r.status}`)
 
   console.log(`\n[fleettable-itest] === ${pass} pass / ${fail} fail ===`)
   if (failures.length) for (const f of failures) console.log('  - ' + f)
