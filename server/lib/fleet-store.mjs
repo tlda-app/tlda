@@ -1263,7 +1263,7 @@ export class FleetStore {
   // Rules (DNF chat routing treats friendly_names and labels equivalently):
   //   1. No name may equal a pseudo-label (awake/hibernating/human/human-away)
   //      — would silently shadow the routing category.
-  //   2. No name may equal another live agent's friendly_name — would fan out
+  //   2. No name may equal another live agent's durable id or friendly_name — would fan out
   //      every message addressed to that name across both agents.
   //   3. If `asFriendlyName`, additionally: no name may equal another live
   //      agent's label — friendly_name=X with someone else's label=X has the
@@ -1277,9 +1277,11 @@ export class FleetStore {
     const rows = this.db.prepare(
       'SELECT id, friendly_name, labels FROM agents WHERE dead = 0 AND id != ?'
     ).all(excludeId || '');
+    const ids = new Set();
     const nameToId = new Map();
     const labelToIds = new Map();
     for (const r of rows) {
+      ids.add(r.id);
       if (r.friendly_name) nameToId.set(r.friendly_name, r.id);
       if (r.labels) {
         let parsed;
@@ -1297,6 +1299,9 @@ export class FleetStore {
       if (PSEUDO_LABELS.includes(name)) {
         collisions.push({ name, kind: 'pseudo_label' });
         continue;
+      }
+      if (ids.has(name)) {
+        collisions.push({ name, kind: 'agent_id', agent_id: name });
       }
       const owner = nameToId.get(name);
       if (owner) {

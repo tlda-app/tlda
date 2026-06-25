@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { classifyDisclosureEvent } from '../bin/lib/todd-disclosure-classifier.mjs'
+import { classifyDisclosureEvent, isDisclosureCandidate } from '../bin/lib/todd-disclosure-classifier.mjs'
 import { isLooseEndReport } from '../bin/lib/todd-loose-ends.mjs'
 import { toddDisclosureExamples } from './fixtures/todd-disclosure-examples.mjs'
 
@@ -27,4 +27,9 @@ test('disclosure classifier separates ordinary handled status from legacy regex 
 
   assert.equal(isLooseEndReport(handled.text), true)
   assert.equal(classifyDisclosureEvent(handled).decision, 'suppress')
+})
+
+test('candidate detector scopes extraction to disclosure-like turns', () => {
+  assert.equal(isDisclosureCandidate('Status: partial. Remaining: needs browser verification.'), true)
+  assert.equal(isDisclosureCandidate('I am reading the file now.'), false)
 })
