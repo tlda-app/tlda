@@ -173,11 +173,14 @@ export function DocumentPanel() {
   )
 }
 
-// ======================
-// Phone overlay (small screens)
-// ======================
-
 const IS_PHONE = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches
+const IS_TOUCH_DEVICE = (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
+  || (typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches)
+  || (typeof location !== 'undefined' && new URLSearchParams(location.search).has('forcetouch'))
+
+// ======================
+// Phone / touch-tablet overlay
+// ======================
 
 import { HL_SLOTS, TLDRAW_ICON_BASE, hlMaskUrl } from './highlighterSlots'
 
@@ -505,6 +508,7 @@ function PhonePageIndicator() {
 export function PhoneOverlay() {
   const [menuOpen, setMenuOpen] = useState(false)
   const [tab, setTab] = useState<Tab>('toc')
+  const showTouchToc = IS_PHONE || IS_TOUCH_DEVICE
 
   useEffect(() => {
     if (!IS_PHONE) return
@@ -518,7 +522,13 @@ export function PhoneOverlay() {
     return () => { document.body.classList.remove('phone-mode') }
   }, [])
 
-  if (!IS_PHONE) return null
+  useEffect(() => {
+    if (!showTouchToc || IS_PHONE) return
+    document.body.classList.add('touch-toc-mode')
+    return () => { document.body.classList.remove('touch-toc-mode') }
+  }, [showTouchToc])
+
+  if (!showTouchToc) return null
 
   return (
     <>
@@ -534,13 +544,17 @@ export function PhoneOverlay() {
         {menuOpen ? '✕' : '☰'}
       </button>
 
-      {/* Highlighter toggle — bottom right, drag for color slider */}
-      <PhoneHighlighterButton />
-      {/* Voice note button — bottom right, left of highlighter */}
-      <VoiceNoteButton />
+      {IS_PHONE && (
+        <>
+          {/* Highlighter toggle — bottom right, drag for color slider */}
+          <PhoneHighlighterButton />
+          {/* Voice note button — bottom right, left of highlighter */}
+          <VoiceNoteButton />
 
-      {/* Page number indicator — shows during scroll, fades out */}
-      <PhonePageIndicator />
+          {/* Page number indicator — shows during scroll, fades out */}
+          <PhonePageIndicator />
+        </>
+      )}
 
       {/* TOC modal */}
       {menuOpen && (
@@ -886,8 +900,7 @@ export function VoiceNoteButton() {
 
 // maxTouchPoints (not pointer:coarse) — a Magic Keyboard/trackpad makes the
 // iPad's primary pointer "fine", which would wrongly disable note dictation.
-const _isTouchDevice = (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
-  || (typeof location !== 'undefined' && new URLSearchParams(location.search).has('forcetouch'))
+const _isTouchDevice = IS_TOUCH_DEVICE
 
 // tldraw clears the selection when an InFrontOfTheCanvas button is clicked — it
 // reads the tap as an empty-canvas click, and the clear is deferred so it lands

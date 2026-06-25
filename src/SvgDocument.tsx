@@ -830,20 +830,23 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
 
   const components = useMemo<TLComponents>(
-    () => ({
-      PageMenu: null,
-      SharePanel: null,
-      MainMenu: null,
-      // Phone: drop the TLDraw/Format toolbar entirely — most tools aren't usable
-      // on a phone (Skip's call). The phone control scheme is the bottom-right
-      // button cluster instead.
-      Toolbar: () => (IS_PHONE || isPresentation) ? null : <FormatToolbar format={document.format} />,
-      HelperButtons: () => isPresentation ? null : <PenHelperButtons format={document.format} />,
-      InFrontOfTheCanvas: () => isPresentation
-        ? null
-        : <><RibbonLane /><ProvenancePanel docName={docName} /><ProvenanceInline docName={docName} /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /></>,
-    }),
-    [document, roomId, isPresentation]
+    () => {
+      const chrome = isPresentation
+        ? <><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /></>
+        : <><RibbonLane /><ProvenancePanel docName={docName} /><ProvenanceInline docName={docName} /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /></>
+      return {
+        PageMenu: null,
+        SharePanel: null,
+        MainMenu: null,
+        // Phone: drop the TLDraw/Format toolbar entirely — most tools aren't usable
+        // on a phone (Skip's call). The phone control scheme is the bottom-right
+        // button cluster instead. iPad/tablet presentation keeps normal chrome.
+        Toolbar: () => IS_PHONE ? null : <FormatToolbar format={document.format} />,
+        HelperButtons: () => isPresentation ? null : <PenHelperButtons format={document.format} />,
+        InFrontOfTheCanvas: () => chrome,
+      }
+    },
+    [document, docName, isPresentation]
   )
 
   const docKey = new URLSearchParams(window.location.search).get('doc') || document.name

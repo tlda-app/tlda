@@ -207,7 +207,10 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
     navigateToSlide(editor, document, false)
     if (slides[0]) goToDeckSlide(document, slides[0])
     window.document.body.classList.add('slides-mode')
-    return () => { window.document.body.classList.remove('slides-mode') }
+    return () => {
+      window.document.body.classList.remove('slides-mode')
+      window.document.documentElement.style.removeProperty('--tlda-slide-background')
+    }
   }, [editor, document, slides])
 
   const goToSlide = useCallback((index: number, animate = true) => {

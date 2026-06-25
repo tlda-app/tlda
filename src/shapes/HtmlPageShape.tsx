@@ -361,6 +361,12 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         return
       }
       if (e.data?.type === 'tlda-slide-ready' && e.data.shapeId === shape.id) return
+      if (e.data?.type === 'tlda-slide-background' && e.data.shapeId === shape.id) {
+        if (typeof e.data.color === 'string') {
+          window.document.documentElement.style.setProperty('--tlda-slide-background', e.data.color)
+        }
+        return
+      }
       if (e.data?.type === 'tlda-resize' && e.data.shapeId === shape.id) {
         const current = editor.store.get(shape.id) as any
         if (!current) return

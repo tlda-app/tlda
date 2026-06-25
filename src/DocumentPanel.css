@@ -1825,7 +1825,8 @@ body.phone-mode [class*="watermark"] {
   display: none;
 }
 
-body.phone-mode .phone-toc-btn {
+body.phone-mode .phone-toc-btn,
+body.touch-toc-mode .phone-toc-btn {
   display: flex;
   position: fixed;
   top: calc(10px + env(safe-area-inset-top));
@@ -1854,7 +1855,8 @@ body.phone-mode .phone-toc-btn {
   display: none;
 }
 
-body.phone-mode .phone-toc-backdrop {
+body.phone-mode .phone-toc-backdrop,
+body.touch-toc-mode .phone-toc-backdrop {
   display: flex;
   position: fixed;
   inset: 0;

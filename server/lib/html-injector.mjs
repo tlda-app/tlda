@@ -584,12 +584,35 @@ const SLIDES_BRIDGE_SCRIPT = `
   var indexh = parseInt(params.get('_tldaH') || '0', 10);
   var indexv = parseInt(params.get('_tldaV') || '0', 10);
   var deckMode = params.get('_tldaDeck') === '1';
+  var slideBackground = null;
+
+  function isVisibleColor(color) {
+    return color && color !== 'transparent' && !/^rgba\\([^)]*,\\s*0\\s*\\)$/.test(color);
+  }
+
+  function readSlideBackground() {
+    var candidates = [
+      document.querySelector('.reveal'),
+      document.querySelector('.reveal .slides'),
+      document.body,
+      document.documentElement,
+    ].filter(Boolean);
+    for (var i = 0; i < candidates.length; i++) {
+      var style = getComputedStyle(candidates[i]);
+      var custom = style.getPropertyValue('--r-background-color').trim();
+      if (isVisibleColor(custom)) return custom;
+      if (isVisibleColor(style.backgroundColor)) return style.backgroundColor;
+    }
+    return '#fff';
+  }
 
   function init() {
     if (typeof Reveal === 'undefined' || !Reveal.isReady || !Reveal.isReady()) {
       setTimeout(init, 100);
       return;
     }
+
+    slideBackground = slideBackground || readSlideBackground();
 
     // Legacy per-slide iframes lock to one slide. Deck-mode iframes keep the
     // whole Reveal instance alive and are driven by parent messages.
@@ -665,6 +688,15 @@ const SLIDES_BRIDGE_SCRIPT = `
       }, '*');
     }
 
+    function reportSlideBackground() {
+      if (window.parent === window) return;
+      window.parent.postMessage({
+        type: 'tlda-slide-background',
+        shapeId: shapeId,
+        color: slideBackground || '#fff',
+      }, '*');
+    }
+
     // Report fragment state to parent (for SlidesNavigator)
     function reportFragmentState() {
       if (window.parent === window) return;
@@ -701,6 +733,7 @@ const SLIDES_BRIDGE_SCRIPT = `
     }
 
     // Report initial fragment state
+    setTimeout(reportSlideBackground, 50);
     setTimeout(reportFragmentState, 200);
     setTimeout(reportSlideHeight, 200);
     setTimeout(reportSlideHeight, 800);
