@@ -6,6 +6,7 @@ import test from 'node:test'
 import { matchesFleetFilter } from './filter-semantics.mjs'
 import { makeEventStore } from './event-store.mjs'
 import {
+  getFilteredFleetEvents,
   getFleetEvents,
   replaceFleetEvents,
   resetFleetEventStoreForTest,
@@ -122,4 +123,33 @@ test('replaceFleetEvents preserves old store ordering for scrollback prepends', 
   assert.deepEqual(ids(view.get()), ids(oldStore.all()))
   assert.deepEqual(ids(getFleetEvents()), [8, 9, 10, 11])
   view.dispose()
+})
+
+test('pure snapshots and repeated keyed views do not duplicate event rows', () => {
+  resetFleetEventStoreForTest([
+    eventAt(20, 'fleet:skip', 'fleet:alpha', 20),
+    eventAt(21, 'fleet:alpha', 'fleet:skip', 21),
+  ])
+  const filter = [[['from', 'skip']], [['to', 'skip']]]
+  const opts = {
+    key: 'chat-lifecycle',
+    matchesFilter: (f: unknown, event: FleetEvent) => visible(event, f),
+  }
+
+  assert.deepEqual(ids(getFilteredFleetEvents(filter, opts)), [20, 21])
+
+  const first = viewFleetEvents(filter, opts)
+  const second = viewFleetEvents(filter, opts)
+  assert.equal(first, second)
+
+  upsertFleetEvent(eventAt(22, 'fleet:skip', 'fleet:beta', 22))
+  assert.deepEqual(ids(first.get()), [20, 21, 22])
+  assert.deepEqual(ids(second.get()), [20, 21, 22])
+  assert.equal(new Set(ids(second.get())).size, second.get().length)
+
+  first.dispose()
+  assert.deepEqual(ids(second.get()), [20, 21, 22])
+  second.dispose()
+  upsertFleetEvent(eventAt(23, 'fleet:skip', 'fleet:gamma', 23))
+  assert.deepEqual(ids(second.get()), [])
 })

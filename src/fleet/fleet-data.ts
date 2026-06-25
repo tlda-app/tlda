@@ -69,6 +69,13 @@ export function getFleetEvents(): readonly FleetEvent[] {
   return eventStore.all()
 }
 
+export function getFilteredFleetEvents(
+  filter: FleetEventFilter | null,
+  opts: { matchesFilter: FleetEventMatcher }
+): readonly FleetEvent[] {
+  return eventStore.all().filter((event) => opts.matchesFilter(filter, event))
+}
+
 export function viewFleetEvents(
   filter: FleetEventFilter | null,
   opts: { key: string; matchesFilter: FleetEventMatcher }

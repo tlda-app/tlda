@@ -5,8 +5,7 @@
  * subscribe() and re-renders on updates. One SSE connection shared
  * across all fleet shapes.
  */
-import { useMemo, useState, useEffect, useCallback } from 'react'
-import { useValue } from 'tldraw'
+import { useMemo, useState, useEffect, useCallback, useRef, useSyncExternalStore } from 'react'
 import {
   init,
   subscribe,
@@ -38,7 +37,7 @@ import {
   dismissItem as _dismissItem,
   // @ts-ignore — vanilla JS module
 } from './fleet/fleet-data.mjs'
-import { viewFleetEvents, type FleetEvent } from './fleet/fleet-data.ts'
+import { getFilteredFleetEvents, viewFleetEvents, type FleetEvent } from './fleet/fleet-data.ts'
 import {
   getPlaybackData,
   subscribePlayback,
@@ -246,13 +245,35 @@ export function useFleetEvents(dnfFilter?: [string, string][][] | null, frameId?
   const [isPlaybackMode, setIsPlaybackMode] = useState(false)
   const filterKey = dnfFilter ? JSON.stringify(dnfFilter) : ''
   const filter = useMemo(() => dnfFilter && dnfFilter.length > 0 ? dnfFilter : null, [filterKey])
-  const liveView = useMemo(() => viewFleetEvents(filter, {
-    key: filterKey || 'all',
-    matchesFilter: (f, ev: FleetEvent) => matchesFilter(f as [string, string][][] | null, ev),
-  }), [filter, filterKey])
-  const liveEvents = useValue(`fleet-events:${filterKey || 'all'}`, () => liveView.get(), [liveView])
-
-  useEffect(() => () => liveView.dispose(), [liveView])
+  const liveSnapshotRef = useRef<{ key: string; list: readonly FleetEvent[] } | null>(null)
+  const liveMatcher = useCallback(
+    (f: unknown, ev: FleetEvent) => matchesFilter(f as [string, string][][] | null, ev),
+    [],
+  )
+  const getLiveSnapshot = useCallback(() => {
+    const cached = liveSnapshotRef.current
+    if (cached?.key === filterKey) return cached.list
+    const list = getFilteredFleetEvents(filter, { matchesFilter: liveMatcher })
+    liveSnapshotRef.current = { key: filterKey, list }
+    return list
+  }, [filter, filterKey, liveMatcher])
+  const subscribeLive = useCallback((onStoreChange: () => void) => {
+    const liveView = viewFleetEvents(filter, {
+      key: filterKey || 'all',
+      matchesFilter: liveMatcher,
+    })
+    liveSnapshotRef.current = { key: filterKey, list: liveView.get() }
+    const unsubscribe = liveView.subscribe((list) => {
+      liveSnapshotRef.current = { key: filterKey, list }
+      onStoreChange()
+    })
+    return () => {
+      unsubscribe()
+      liveView.dispose()
+      if (liveSnapshotRef.current?.key === filterKey) liveSnapshotRef.current = null
+    }
+  }, [filter, filterKey, liveMatcher])
+  const liveEvents = useSyncExternalStore(subscribeLive, getLiveSnapshot, getLiveSnapshot)
 
   // Single effect handles both playback and live modes.
   // If frameId is a shape ID: subscribe to the playback registry first.
