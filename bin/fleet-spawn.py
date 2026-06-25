@@ -2571,6 +2571,7 @@ def respawn(name, model, cwd, effort, mode, session_override=None,
 
     if subprocess.run(tmux("has-session", "-t", sess), capture_output=True).returncode == 0:
         if _session_has_runtime(sess):
+            print(f"{sess} ({fleet_id}) already alive — left running")
             return sess
 
     handle = adapter.find_resume(agent, session_override)

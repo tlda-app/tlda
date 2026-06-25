@@ -62,6 +62,7 @@ const ids = (s) => s.all().map(e => e._dbId ?? ('tmp:' + e._tempId))
   s.upsert({ _dbId: 77, _tempId: 't2', from: 'skip', to: 'bob', text: 'yo', timestamp: '2026-06-05T00:00:10Z' }) // echo after
   check('broadcast echo after reconcile → still one entry', s.size() === 1)
   check('tempId gone after reconcile', !s.get('tmp:t2'))
+  check('broadcast echo does not reattach tempId to db row', s.get('db:77')._tempId === undefined)
 }
 
 // --- 6. Lost-reply: reply dropped, echo arrives FIRST via tempId → one entry, flips to sent ---
