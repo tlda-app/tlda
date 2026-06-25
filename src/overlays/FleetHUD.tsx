@@ -1119,7 +1119,9 @@ export function FleetHUD({
     layout: { axis: 'vertical', spacing: 0 },
   })
   const overlayCam = overlayLayer.camera
-  if (import.meta.env.DEV || (typeof navigator !== 'undefined' && navigator.webdriver)) {
+  const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null
+  const exposeForTest = params?.has('pw') || params?.has('wmFlowGate')
+  if (import.meta.env.DEV || exposeForTest || (typeof navigator !== 'undefined' && navigator.webdriver)) {
     window.__tlda_wm_hud__ = overlayLayer
   }
 
