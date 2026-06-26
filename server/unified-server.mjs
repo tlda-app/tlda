@@ -2647,7 +2647,7 @@ server.on('upgrade', async (req, socket, head) => {
       // the screen as `pane` (see rpcCapturePane in fleet-daemon.mjs).
       try {
         const { pane } = await sendRpc(agent.machine_id, 'capture-pane', {
-          tmux_session: agent.tmux_session, lines: 80,
+          tmux_session: agent.tmux_session, visible: true,
         })
         if (pane && ws.readyState === 1) {
           // capture-pane emits bare `\n` line endings; xterm has no convertEol,
