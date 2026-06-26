@@ -10,6 +10,7 @@ import {
 	createFleetHudOverlayLayer,
 	type FleetHudProjectionEditor,
 	projectFleetHudDocumentLeft,
+	translateFleetHudDropPoint,
 } from '../src/wm/fleet-hud-layer.ts'
 import {
 	createFleetDocviewSurface,
@@ -67,6 +68,39 @@ test('FleetHUD document-left projection crosses the WM document layer', () => {
 
 	assert.equal(projectFleetHudDocumentLeft(editor, -120), 330)
 	assert.deepEqual(calls, [['pageToScreen', { x: -120, y: 0 }]])
+})
+
+test('FleetHUD pill drop translates overlay page point to document page through WM', () => {
+	const calls: Array<[string, { x: number; y: number }]> = []
+	const overlayEditor: FleetHudProjectionEditor = {
+		pageToScreen(point: { x: number; y: number }) {
+			calls.push(['overlay.pageToScreen', point])
+			return { x: point.x + 75, y: point.y + 20 }
+		},
+		screenToPage(point: { x: number; y: number }) {
+			calls.push(['overlay.screenToPage', point])
+			return { x: point.x - 75, y: point.y - 20 }
+		},
+	}
+	const documentEditor: FleetHudProjectionEditor = {
+		pageToScreen(point: { x: number; y: number }) {
+			calls.push(['document.pageToScreen', point])
+			return { x: point.x + 400, y: point.y + 120 }
+		},
+		screenToPage(point: { x: number; y: number }) {
+			calls.push(['document.screenToPage', point])
+			return { x: point.x - 400, y: point.y - 120 }
+		},
+	}
+
+	assert.deepEqual(
+		translateFleetHudDropPoint(overlayEditor, documentEditor, { x: 120, y: 240 }),
+		{ x: -205, y: 140 },
+	)
+	assert.deepEqual(calls, [
+		['overlay.pageToScreen', { x: 120, y: 240 }],
+		['document.screenToPage', { x: 195, y: 260 }],
+	])
 })
 
 test('Fleet docview surface derives a WM-managed viewport projection', () => {

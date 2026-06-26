@@ -44,6 +44,8 @@ export interface FleetHudProjectionEditor {
 	screenToPage(point: Point): Point
 }
 
+export type FleetHudDropEditor = FleetHudProjectionEditor
+
 export function createFleetHudOverlayLayer({
 	panOffset,
 	cameraY,
@@ -88,4 +90,33 @@ export function projectFleetHudDocumentLeft(editor: FleetHudProjectionEditor, do
 		},
 	})
 	return wm.translate({ x: docPageLeft, y: 0 }, FLEET_HUD_DOCUMENT_LAYER_ID, FLEET_HUD_ROOT_LAYER_ID).x
+}
+
+export function translateFleetHudDropPoint(
+	overlayEditor: FleetHudDropEditor,
+	documentEditor: FleetHudDropEditor,
+	overlayPagePoint: Point,
+): Point {
+	const wm = createWMCore({ rootLayerId: FLEET_HUD_ROOT_LAYER_ID })
+	wm.defineLayer(FLEET_HUD_OVERLAY_LAYER_ID, {
+		parent: FLEET_HUD_ROOT_LAYER_ID,
+		backing: {
+			kind: 'page',
+			editor: {
+				pageToScreen: (point: Point) => overlayEditor.pageToScreen(point),
+				screenToPage: (point: Point) => overlayEditor.screenToPage(point),
+			},
+		},
+	})
+	wm.defineLayer(FLEET_HUD_DOCUMENT_LAYER_ID, {
+		parent: FLEET_HUD_ROOT_LAYER_ID,
+		backing: {
+			kind: 'page',
+			editor: {
+				pageToScreen: (point: Point) => documentEditor.pageToScreen(point),
+				screenToPage: (point: Point) => documentEditor.screenToPage(point),
+			},
+		},
+	})
+	return wm.translate(overlayPagePoint, FLEET_HUD_OVERLAY_LAYER_ID, FLEET_HUD_DOCUMENT_LAYER_ID)
 }
