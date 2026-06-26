@@ -2129,7 +2129,11 @@ function FleetChatInner({ shape }: { shape: any }) {
   const [amendView, setAmendView] = useState<Map<number, number>>(new Map())
 
   const [renderedMessageLimit, setRenderedMessageLimit] = useState(INITIAL_CHAT_RENDER_WINDOW)
-  const renderWindowStartIndex = Math.max(0, chatMessages.length - renderedMessageLimit)
+  const [renderWindowAnchorStart, setRenderWindowAnchorStart] = useState<number | null>(null)
+  const tailRenderWindowStartIndex = Math.max(0, chatMessages.length - renderedMessageLimit)
+  const renderWindowStartIndex = renderWindowAnchorStart == null
+    ? tailRenderWindowStartIndex
+    : Math.max(0, Math.min(renderWindowAnchorStart, chatMessages.length))
   const renderWindowLookbehindStartIndex = Math.max(0, renderWindowStartIndex - CHAT_RENDER_LOOKBEHIND)
   const hiddenLookbehindCount = renderWindowStartIndex - renderWindowLookbehindStartIndex
   const windowedChatMessages = useMemo(
@@ -2141,15 +2145,26 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   useEffect(() => {
     setRenderedMessageLimit(INITIAL_CHAT_RENDER_WINDOW)
+    setRenderWindowAnchorStart(null)
     pendingWindowRestoreHeightRef.current = null
   }, [filterKey])
+
+  const resetRenderWindowToTail = useCallback(() => {
+    setRenderedMessageLimit(INITIAL_CHAT_RENDER_WINDOW)
+    setRenderWindowAnchorStart(null)
+  }, [])
+
+  const anchorRenderWindow = useCallback(() => {
+    setRenderWindowAnchorStart(start => start ?? renderWindowStartIndex)
+  }, [renderWindowStartIndex])
 
   const expandRenderedHistory = useCallback((el?: HTMLElement | null): boolean => {
     if (!canExpandRenderedHistory) return false
     if (el) pendingWindowRestoreHeightRef.current = el.scrollHeight
+    setRenderWindowAnchorStart(start => Math.max(0, (start ?? renderWindowStartIndex) - CHAT_RENDER_WINDOW_CHUNK))
     setRenderedMessageLimit(limit => Math.min(chatMessages.length, limit + CHAT_RENDER_WINDOW_CHUNK))
     return true
-  }, [canExpandRenderedHistory, chatMessages.length])
+  }, [canExpandRenderedHistory, chatMessages.length, renderWindowStartIndex])
 
 
   // Build per-item raw HTML array — each item is an independent renderable unit.
@@ -2394,6 +2409,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         renderedMessageCount: chatMessages.length - renderWindowStartIndex,
         hiddenLookbehindCount,
         renderWindowStartIndex,
+        renderWindowAnchored: renderWindowAnchorStart != null,
         itemCount: items.length,
         chatLineCount,
         activityGroupCount,
@@ -2411,7 +2427,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
     return items
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatMessages, windowedChatMessages, hiddenLookbehindCount, renderWindowStartIndex, renderedMessageLimit, ctx, thinkingAgents, unqueuedAt, viewingVersion, doc, amendsByOrig, amendView, macrosByDoc, preambleMacros])
+  }, [chatMessages, windowedChatMessages, hiddenLookbehindCount, renderWindowStartIndex, renderWindowAnchorStart, renderedMessageLimit, ctx, thinkingAgents, unqueuedAt, viewingVersion, doc, amendsByOrig, amendView, macrosByDoc, preambleMacros])
 
   // Per-item post-processing: applies chip replacement, URL linkification, and
   // doc-link resolution to a single item's HTML. Called by ChatMessageRow only
@@ -3296,8 +3312,9 @@ function FleetChatInner({ shape }: { shape: any }) {
     userScrolledUpRef.current = false
     isAtBottomRef.current = true
     setAtBottom(true)
+    resetRenderWindowToTail()
     pinHard()
-  }, [pinHard])
+  }, [pinHard, resetRenderWindowToTail])
 
   // When the scroll container resizes — textarea growing as you type
   // (shrinks chat-log) OR shrinking back after send (grows chat-log) — pin
@@ -3365,7 +3382,9 @@ function FleetChatInner({ shape }: { shape: any }) {
     const onUserScroll = () => {
       const gap = el.scrollHeight - (el.scrollTop + el.clientHeight)
       if (!hardLockedRef.current) {
-        userScrolledUpRef.current = gap > FOLLOW_THRESHOLD
+        const scrolledUp = gap > FOLLOW_THRESHOLD
+        userScrolledUpRef.current = scrolledUp
+        if (scrolledUp) anchorRenderWindow()
       }
       log.debug('chat-scroll', 'user scroll', { gap, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
     }
@@ -3392,7 +3411,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       el.removeEventListener('touchend', onTouchEnd)
       el.removeEventListener('scroll', onNativeScroll)
     }
-  }, [chatLogEl])
+  }, [chatLogEl, anchorRenderWindow])
 
   // Convergence watchdog — the reconciler of last resort. scrollToIndex(LAST)
   // can land SHORT while freshly-added tall items are still being measured, and
@@ -3435,8 +3454,9 @@ function FleetChatInner({ shape }: { shape: any }) {
     userScrolledUpRef.current = false
     isAtBottomRef.current = true
     setAtBottom(true)
+    resetRenderWindowToTail()
     requestAnimationFrame(pinHard)
-  }, [filterKey, pinHard])
+  }, [filterKey, pinHard, resetRenderWindowToTail])
 
   // TRACE (temporary diagnostic — remove once scroll is solid): make the log
   // tell the WHOLE story so the fix comes from ground truth, not theory.
@@ -5323,6 +5343,7 @@ function FleetChatInner({ shape }: { shape: any }) {
               // Hard-lock is the one exception: it means "always pinned".
               if (atBottom) {
                 userScrolledUpRef.current = false
+                resetRenderWindowToTail()
               } else if (hardLockedRef.current) {
                 requestAnimationFrame(pinHard)
               }
