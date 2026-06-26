@@ -1310,7 +1310,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
             if (page < 1) return
 
-            const { displayLabel } = anchorIdToLabel(title || (smMatch ? `${smMatch.type}.${smMatch.number}` : anchorId))
+            const labelTitle = smMatch ? `${smMatch.type}.${smMatch.number}` : (title || anchorId)
+            const { displayLabel } = anchorIdToLabel(labelTitle)
 
             const dvTitle = (displayLabel || anchorId).replace(/^equation\./, 'eq ').replace(/^theorem\./, 'thm ')
             editor.getCurrentPageShapes()
