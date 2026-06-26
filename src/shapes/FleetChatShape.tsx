@@ -62,6 +62,7 @@ import { PDF_HEIGHT } from '../layoutConstants'
 import { TerminalCard } from './TerminalCard'
 import { Terminal } from 'xterm'
 import { useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
+import { createTemporaryMarkdownAnnotationViewerRequest } from '../wm/annotation-viewer-surface'
 import { clientPointToPage, pagePointToClient } from '../wm/viewport-coordinates'
 import { consumeBulletContexts, subscribeBulletContext, getBulletContexts } from '../stores/bulletContextStore'
 import { getPref, subscribePref } from '../preferences'
@@ -2010,22 +2011,20 @@ function FleetChatInner({ shape }: { shape: any }) {
     }).then((result) => {
       if (!result?.bounds) return
       const chipRect = sourceEl.getBoundingClientRect()
-      window.dispatchEvent(new CustomEvent('annotation-viewer-show', {
-        detail: {
-          bounds: result.bounds,
-          shapeIds: [result.shapeId],
-          label: title || 'Markdown chip',
-          chipRect: {
-            left: chipRect.left,
-            top: chipRect.top,
-            right: chipRect.right,
-            bottom: chipRect.bottom,
-            width: chipRect.width,
-            height: chipRect.height,
-          },
-          useFullBounds: true,
-          pinned: true,
+      const request = createTemporaryMarkdownAnnotationViewerRequest(result.surface, {
+        label: title || 'Markdown chip',
+        chipRect: {
+          left: chipRect.left,
+          top: chipRect.top,
+          right: chipRect.right,
+          bottom: chipRect.bottom,
+          width: chipRect.width,
+          height: chipRect.height,
         },
+        viewport: { w: window.innerWidth, h: window.innerHeight },
+      })
+      window.dispatchEvent(new CustomEvent('wm-managed-surface-request', {
+        detail: { request },
       }))
     }).catch((err) => {
       console.warn('[fleet-chat] markdown annotation viewer create failed:', err?.message || err)

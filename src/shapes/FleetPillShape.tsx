@@ -18,6 +18,10 @@ import { myTldaUrl } from '../fleet/tldaUrl.mjs'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getDeviceId } from '../fleet/fleet-data.mjs'
 import { translateFleetHudDropPoint } from '../wm/fleet-hud-layer'
+import {
+  createTemporaryMarkdownSurfaceRequest,
+  temporaryMarkdownShapeMeta,
+} from '../wm/markdown-surface'
 import { FLEET_SHAPE_TYPES } from './fleet-utils'
 
 const PILL_W = 70
@@ -205,15 +209,40 @@ export async function createTemporaryMarkdownColumn(
     } as unknown as Parameters<Editor['createShape']>[0])
   }
   sendPageShapeToBack(editor, TEMP_MARKDOWN_SHAPE_ID)
+  const bounds = getShapeClipBounds(editor, TEMP_MARKDOWN_SHAPE_ID) || {
+    x: parkedPoint.x,
+    y: parkedPoint.y,
+    w: TEMP_MARKDOWN_W,
+    h: TEMP_MARKDOWN_H,
+  }
+  const surface = createTemporaryMarkdownSurfaceRequest({
+    shapeId: TEMP_MARKDOWN_SHAPE_ID,
+    bounds,
+    title,
+    url,
+    owner: { userId: getHumanId(), deviceId: getDeviceId() },
+    sourceChatShapeId: typeof meta.sourceChatShapeId === 'string' ? meta.sourceChatShapeId : undefined,
+    sharedDocPath: typeof meta.sharedDocPath === 'string' ? meta.sharedDocPath : undefined,
+    authorId: typeof meta.authorId === 'string' ? meta.authorId : undefined,
+  })
+  const surfaceShape = editor.getShape(TEMP_MARKDOWN_SHAPE_ID)
+  if (surfaceShape) {
+    if (surfaceShape.isLocked) editor.updateShape({ id: TEMP_MARKDOWN_SHAPE_ID, type: surfaceShape.type, isLocked: false })
+    editor.updateShape({
+      id: TEMP_MARKDOWN_SHAPE_ID,
+      type: surfaceShape.type,
+      meta: {
+        ...surfaceShape.meta,
+        ...temporaryMarkdownShapeMeta(surface),
+      },
+    } as unknown as Parameters<Editor['updateShape']>[0])
+    editor.updateShape({ id: TEMP_MARKDOWN_SHAPE_ID, type: surfaceShape.type, isLocked: true })
+  }
   return {
     shapeId: TEMP_MARKDOWN_SHAPE_ID,
-    bounds: getShapeClipBounds(editor, TEMP_MARKDOWN_SHAPE_ID) || {
-      x: parkedPoint.x,
-      y: parkedPoint.y,
-      w: TEMP_MARKDOWN_W,
-      h: TEMP_MARKDOWN_H,
-    },
+    bounds,
     url,
+    surface,
   }
 }
 
