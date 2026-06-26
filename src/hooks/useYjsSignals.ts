@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { createShapeId } from 'tldraw'
 import type { Editor } from 'tldraw'
 import { onReloadSignal, onSourceChangedSignal, onForwardSync, onScreenshotRequest, onScreenshotBounds, isSignalConnected, readSignal, writeSignal } from '../useYjsSync'
@@ -43,6 +43,14 @@ export function useYjsSignals({
   onReloadResult, setScreenshotCapture,
 }: UseYjsSignalsParams) {
   const hasSynctex = !['html', 'markdown', 'png', 'slides'].includes(document.format || '')
+  const slidesReloadingRef = useRef(false)
+  const reloadSlidesViewer = useCallback((reason: string) => {
+    if (slidesReloadingRef.current) return
+    slidesReloadingRef.current = true
+    console.log(`[SlidesReload] ${reason} — reloading viewer document`)
+    window.location.reload()
+  }, [])
+
   // Keep a snapshot of the current lookup for scroll anchoring across rebuilds.
   // The signalBus fires synctexLookup's cache-clear listener before ours, so we
   // can't call loadLookup() inside the reload handler to get pre-rebuild data —
@@ -61,6 +69,11 @@ export function useYjsSignals({
     return onReloadSignal((signal) => {
       const editor = editorRef.current
       if (!editor) return
+
+      if (document.format === 'slides') {
+        reloadSlidesViewer('reload signal')
+        return
+      }
 
       if (signal.type === 'partial') {
         reloadPages(editor, document, signal.pages).then(result => {
@@ -82,7 +95,7 @@ export function useYjsSignals({
         })
       }
     })
-  }, [document, hasSynctex])
+  }, [document, hasSynctex, reloadSlidesViewer])
 
   // Re-fetch visible pages when source files change — triggers the ensure system
   // which rebuilds if source.stamp > build.stamp. The build then sends signal:reload.
@@ -90,9 +103,13 @@ export function useYjsSignals({
     return onSourceChangedSignal(() => {
       const editor = editorRef.current
       if (!editor) return
+      if (document.format === 'slides') {
+        reloadSlidesViewer('source changed')
+        return
+      }
       reloadPages(editor, document, null)
     })
-  }, [document])
+  }, [document, reloadSlidesViewer])
 
   // Poll for new builds as a fallback — catches stale content if the reload signal
   // was missed (e.g. tldraw sync WebSocket died silently after a server restart).
@@ -110,6 +127,10 @@ export function useYjsSignals({
           lastKnownBuild = buildTs
           const editor = editorRef.current
           if (editor) {
+            if (document.format === 'slides') {
+              reloadSlidesViewer('build poll')
+              return
+            }
             console.log(`[Poll] New build detected (${buildTs}), reloading viewport pages`)
             reloadPages(editor, document, null).then(result => onReloadResult?.(result))
           }
@@ -119,7 +140,7 @@ export function useYjsSignals({
     const timer = setInterval(poll, 30_000)
     poll() // initial check
     return () => clearInterval(timer)
-  }, [document])
+  }, [document, reloadSlidesViewer])
 
   // Subscribe to Yjs forward sync signals (scroll, highlight from Claude)
   useEffect(() => {
