@@ -84,6 +84,34 @@ test('fleet gesture classifier mirrors TLDraw touch pinch thresholds', () => {
   )
 })
 
+test('phone lane drag consumes touch events so TLDraw pinch cannot inherit them', () => {
+  assert.match(
+    source,
+    /function finishPhoneLaneGesture[\s\S]*snapPhoneLane\(main, state\.docLeftPage\)/,
+    'phone lane finish should snap through the shared lane snap helper',
+  )
+  assert.match(
+    source,
+    /state\.kind === 'phone-lane' && ts\.length > 1[\s\S]*consumeTouchEvent\(e\)[\s\S]*finishPhoneLaneGesture\(main, state\)/,
+    'adding a second finger during a phone lane gesture must be consumed before TLDraw pinch sees it',
+  )
+  assert.match(
+    source,
+    /if \(ts\.length !== 1\) \{[\s\S]*consumeTouchEvent\(e\)[\s\S]*finishPhoneLaneGesture\(main, state\)/,
+    'touch-count changes during phone lane move must be consumed and snapped',
+  )
+  assert.match(
+    source,
+    /state\.kind === 'phone-lane'[\s\S]*main\.setCamera[\s\S]*\n\s*return/,
+    'phone lane drag should keep writing camera directly with fixed z',
+  )
+  assert.doesNotMatch(
+    source,
+    /state\.kind === 'phone-lane'[\s\S]*stopTouchEvent\(e\)[\s\S]*main\.setCamera/,
+    'phone lane drag must preventDefault, not only stop propagation',
+  )
+})
+
 test('fleet gesture classifier prefers intentional resize before move, then requires larger resize while moving', () => {
   assert.deepEqual(classify({ travel: 17, spread: 12 }), { moveActive: true, resizeActive: false })
   assert.deepEqual(classify({ travel: 12, spread: 25 }), { moveActive: true, resizeActive: true })
