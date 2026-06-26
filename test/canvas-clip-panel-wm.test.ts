@@ -44,12 +44,17 @@ test('locked fleet viewport renders owned fleet panels and transient drag pills'
 	assert.equal(shouldRenderLockedFleetViewportShape({
 		type: 'fleet-chat',
 		props: { userId: 'fleet:tester', deviceId: 'device-a' },
-	}), true)
+	}, { userId: 'fleet:tester', deviceId: 'device-a' }), true)
 
 	assert.equal(shouldRenderLockedFleetViewportShape({
 		type: 'fleet-chat',
-		props: { userId: 'fleet:tester' },
-	}), false)
+		props: { userId: 'fleet:tester', deviceId: 'device-b' },
+	}, { userId: 'fleet:tester', deviceId: 'device-a' }), false)
+
+	assert.equal(shouldRenderLockedFleetViewportShape({
+		type: 'fleet-chat',
+		props: { userId: 'fleet:tester', deviceId: 'device-a' },
+	}, { userId: null, deviceId: 'device-a' }), false)
 
 	assert.equal(shouldRenderLockedFleetViewportShape({
 		type: 'fleet-pill',

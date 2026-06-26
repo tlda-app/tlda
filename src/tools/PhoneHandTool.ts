@@ -1,8 +1,57 @@
 import { StateNode, Vec, type Editor, type TLStateNodeConstructor } from 'tldraw'
 import { log } from '../logger'
+import { isDocumentPageShape } from '../shapes/document-pages'
 
 const AXIS_THRESHOLD = 5 // px before locking axis
 const LOG_NS = 'fleet-gesture'
+const PHONE_SNAP_DURATION = 160
+
+function isPhoneMode() {
+  return typeof document !== 'undefined' && document.body.classList.contains('phone-mode')
+}
+
+function getPrimaryDocumentLeft(editor: Editor): number | null {
+  const pages = editor.getCurrentPageShapes()
+    .filter(isDocumentPageShape)
+    .sort((a: any, b: any) => (a.y ?? 0) - (b.y ?? 0))
+  if (pages.length === 0) return null
+  const viewport = editor.getViewportPageBounds()
+  const midY = viewport.minY + viewport.height / 2
+  let best: { x: number; d: number } | null = null
+  for (const page of pages) {
+    const bounds = editor.getShapePageBounds(page.id)
+    if (!bounds) continue
+    const d = Math.abs((bounds.y + bounds.h / 2) - midY)
+    if (!best || d < best.d) best = { x: bounds.x, d }
+  }
+  return best?.x ?? null
+}
+
+function snapPhoneHorizontalLane(editor: Editor) {
+  if (!isPhoneMode()) return
+  const docLeftPage = getPrimaryDocumentLeft(editor)
+  if (docLeftPage === null) return
+  const camera = editor.getCamera()
+  const screenW = editor.getViewportScreenBounds().w
+  if (!screenW || !Number.isFinite(screenW)) return
+  const docLeftScreen = (docLeftPage + camera.x) * camera.z
+  const stops = [
+    { lane: 'agents-inbox', docLeftScreen: screenW * 2 },
+    { lane: 'chat', docLeftScreen: screenW },
+    { lane: 'document', docLeftScreen: 0 },
+  ]
+  const nearest = stops.reduce((best, stop) =>
+    Math.abs(stop.docLeftScreen - docLeftScreen) < Math.abs(best.docLeftScreen - docLeftScreen) ? stop : best,
+  )
+  const x = nearest.docLeftScreen / camera.z - docLeftPage
+  log.debug(LOG_NS, 'phone snap lane', {
+    lane: nearest.lane,
+    docLeftScreen: Math.round(docLeftScreen),
+    targetDocLeftScreen: Math.round(nearest.docLeftScreen),
+    screenW: Math.round(screenW),
+  })
+  editor.setCamera({ ...camera, x }, { animation: { duration: PHONE_SNAP_DURATION } })
+}
 
 function describeElement(el: Element | null) {
   if (!el) return null
@@ -184,12 +233,12 @@ class PhoneDragging extends StateNode {
     const velocity = this.editor.inputs.getPointerVelocity()
     const speed = Math.min(velocity.len(), 2)
 
-    if (speed > 0.1) {
+    if (this.lockedAxis === 'x') {
+      snapPhoneHorizontalLane(this.editor)
+    } else if (speed > 0.1) {
       let direction = velocity
       // Axis-lock the momentum too
-      if (this.lockedAxis === 'x') {
-        direction = new Vec(velocity.x, 0).uni()
-      } else if (this.lockedAxis === 'y') {
+      if (this.lockedAxis === 'y') {
         direction = new Vec(0, velocity.y).uni()
       }
       // Lower friction for a smoother, longer glide (default is 0.09)

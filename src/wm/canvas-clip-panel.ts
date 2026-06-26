@@ -6,7 +6,7 @@ export const CANVAS_CLIP_PANEL_LAYER_ID = 'canvas-clip-panel'
 export function shouldRenderLockedFleetViewportShape(shape: {
 	type?: string
 	props?: unknown
-}): boolean {
+}, owner?: { userId?: string | null; deviceId?: string | null }): boolean {
 	const type = shape.type
 	if (!type?.startsWith('fleet-')) return false
 
@@ -15,7 +15,9 @@ export function shouldRenderLockedFleetViewportShape(shape: {
 	if (type === 'fleet-pill') return true
 
 	const props = shape.props as { userId?: unknown; deviceId?: unknown } | undefined
-	return !!props?.userId && !!props?.deviceId
+	if (!props?.userId || !props?.deviceId) return false
+	if (!owner?.userId || !owner?.deviceId) return false
+	return props.userId === owner.userId && props.deviceId === owner.deviceId
 }
 
 export interface CanvasClipBounds {

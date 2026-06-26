@@ -203,7 +203,7 @@ function isPhoneFleetLayout(editor: Editor): boolean {
   const gap = 10
   const stackedHeight = (agents.props?.h || 0) + gap + (inbox.props?.h || 0)
   const chatH = chat.props?.h || 0
-  const chatX = (agents.x || 0) + (agents.props?.w || 0) + gap
+  const chatX = (agents.x || 0) + (agents.props?.w || 0)
   return Math.abs(stackedHeight - chatH) <= 2 && Math.abs((chat.x || 0) - chatX) <= 2
 }
 
@@ -447,6 +447,9 @@ export function FleetHUD({
       cameraYRef.current = anchor.meta.cameraY
     }
   }
+  const phoneLayout = isPhoneFleetLayout(mainEditor)
+  const PHONE_TOP_PAD = -20
+  const activeTopPad = phoneLayout ? PHONE_TOP_PAD : TOP_PAD
 
   const recenterHudForBounds = useCallback((bounds: ClipBounds | null): boolean => {
     if (!bounds || !docShapesReady) return false
@@ -465,14 +468,14 @@ export function FleetHUD({
       docPageLeft: minPageX,
       docLeftScreen,
       layoutDx: off.dx,
-      topPad: TOP_PAD,
+      topPad: activeTopPad,
     })
     panOffsetRef.current = anchor.panOffset
     cameraYRef.current = anchor.cameraY
     userPannedRef.current = false
     setCameraTick(t => t + 1)
     return true
-  }, [docShapesReady, mainEditor])
+  }, [activeTopPad, docShapesReady, mainEditor])
 
   // Reactively update fleet bounds when shapes change.
   //
@@ -700,10 +703,12 @@ export function FleetHUD({
           // same-zoom camera changes as deliberate pan.
         } else if (cam.z === lastCamZ && panOffsetRef.current !== null) {
           const t0 = probe.isEnabled('hud') ? performance.now() : 0
-          panOffsetRef.current += (cam.x - lastCamX) * cam.z
-          userPannedRef.current = true
-          ignoreSavedAnchorRef.current = false
-          saveAnchorOffsets(mainEditor, panOffsetRef.current, cameraYRef.current!)
+          if (!isPhoneFleetLayout(mainEditor)) {
+            panOffsetRef.current += (cam.x - lastCamX) * cam.z
+            userPannedRef.current = true
+            ignoreSavedAnchorRef.current = false
+            saveAnchorOffsets(mainEditor, panOffsetRef.current, cameraYRef.current!)
+          }
           if (probe.isEnabled('hud')) {
             probe.record('hud', 'hud-pan-camera-change', performance.now() - t0, { dx: cam.x - lastCamX })
           }
@@ -1066,7 +1071,7 @@ export function FleetHUD({
       docPageLeft: minPageX,
       docLeftScreen,
       layoutDx: off.dx,
-      topPad: TOP_PAD,
+      topPad: activeTopPad,
     })
     panOffsetRef.current = anchor.panOffset
     cameraYRef.current = anchor.cameraY
@@ -1078,12 +1083,33 @@ export function FleetHUD({
     // it up and replaces this provisional value.
   }
 
-  if (panOffsetRef.current !== null && cameraYRef.current !== null) {
+  const livePhonePanOffset = (() => {
+    if (!phoneLayout || !docShapesReady) return null
+    const docShapes = mainEditor.getCurrentPageShapes().filter(isDocumentPageShape)
+    if (docShapes.length === 0) return null
+    let minPageX = Infinity
+    for (const s of docShapes) {
+      const b = mainEditor.getShapePageBounds(s.id)
+      if (b && b.x < minPageX) minPageX = b.x
+    }
+    if (!isFinite(minPageX)) return null
+    const docLeftScreen = mainEditor.pageToScreen({ x: minPageX, y: 0 }).x
+    const off = layoutOffset(getHumanId(), getDeviceId())
+    return computeFleetHudDefaultAnchor({
+      bounds: activeFleetBounds,
+      docPageLeft: minPageX,
+      docLeftScreen,
+      layoutDx: off.dx,
+      topPad: activeTopPad,
+    }).panOffset
+  })()
+  const renderPanOffset = livePhonePanOffset ?? panOffsetRef.current!
+
+  if (renderPanOffset !== null && cameraYRef.current !== null) {
     const projectedTop = activeFleetBounds.y + cameraYRef.current
     const projectedBottom = projectedTop + activeFleetBounds.h
-    const projectedLeft = activeFleetBounds.x + panOffsetRef.current
+    const projectedLeft = activeFleetBounds.x + renderPanOffset
     const projectedRight = projectedLeft + activeFleetBounds.w
-    const phoneLayout = isPhoneFleetLayout(mainEditor)
     const verticallyVisible = projectedBottom > 0 && projectedTop < window.innerHeight
     const horizontallyVisible = phoneLayout
       ? projectedRight > 0 && projectedLeft < window.innerWidth
@@ -1103,7 +1129,7 @@ export function FleetHUD({
           docPageLeft: minPageX,
           docLeftScreen,
           layoutDx: off.dx,
-          topPad: TOP_PAD,
+          topPad: activeTopPad,
         })
         panOffsetRef.current = anchor.panOffset
         cameraYRef.current = anchor.cameraY
@@ -1114,7 +1140,7 @@ export function FleetHUD({
   }
 
   const overlayLayer = createFleetHudOverlayLayer({
-    panOffset: panOffsetRef.current!,
+    panOffset: renderPanOffset,
     cameraY: cameraYRef.current!,
     layout: { axis: 'vertical', spacing: 0 },
     userId: getHumanId(),

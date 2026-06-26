@@ -1995,6 +1995,8 @@ html[data-theme="dark"] .phone-toc-modal .toc-item.subsection {
 body.phone-mode .phone-hl-btn {
   bottom: calc(24px + env(safe-area-inset-bottom));
   right: max(4px, env(safe-area-inset-right));
+  width: 44px;
+  height: 44px;
   opacity: 0.5;
 }
 
@@ -2187,8 +2189,10 @@ body.warm-mode [data-shape-id] svg {
 
 
 body.phone-mode .voice-note-btn {
-  bottom: calc(57px + env(safe-area-inset-bottom));
+  bottom: calc(76px + env(safe-area-inset-bottom));
   right: max(4px, env(safe-area-inset-right));
+  width: 44px;
+  height: 44px;
   opacity: 0.5;
 }
 
@@ -2222,8 +2226,10 @@ html[data-theme="dark"] .voice-note-btn {
 .mic-toggle-btn:hover { opacity: 0.5; }
 
 body.phone-mode .mic-toggle-btn {
-  bottom: calc(90px + env(safe-area-inset-bottom));
+  bottom: calc(128px + env(safe-area-inset-bottom));
   right: max(4px, env(safe-area-inset-right));
+  width: 44px;
+  height: 44px;
   opacity: 0.5;
 }
 

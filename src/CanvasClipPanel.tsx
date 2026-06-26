@@ -15,6 +15,7 @@ import { TldrawViewport, stopEventPropagation } from 'tldraw'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor, TLShape, TLViewportId } from 'tldraw'
 import { createCanvasClipPanelPlan, shouldRenderLockedFleetViewportShape } from './wm/canvas-clip-panel'
 import { VisibilityViewportProvider } from './shapes/useIsInViewport'
+import { getDeviceId } from './fleet/fleet-data.mjs'
 import './CanvasClipPanel.css'
 
 const DEFAULT_WIDTH = 600
@@ -80,6 +81,7 @@ export function CanvasClipPanel({
   fullViewport = false,
   readOnly = false,
   onEditorMount,
+  identityId,
   viewportId: externalViewportId,
   children,
 }: CanvasClipPanelProps) {
@@ -179,13 +181,16 @@ export function CanvasClipPanel({
     return (shape: TLShape) => {
       // In lockCamera (HUD) mode, only render fleet shapes
       if (lockCamera) {
-        return shouldRenderLockedFleetViewportShape(shape)
+        return shouldRenderLockedFleetViewportShape(shape, {
+          userId: identityId,
+          deviceId: getDeviceId(),
+        })
       }
 
       // In readOnly mode, render all shapes
       return true
     }
-  }, [lockCamera, readOnly])
+  }, [identityId, lockCamera, readOnly])
 
   const viewportEl = (
     <VisibilityViewportProvider viewportId={viewportId}>

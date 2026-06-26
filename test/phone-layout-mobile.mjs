@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { chromium } from 'playwright'
-import { readFileSync } from 'fs'
+import { existsSync, readFileSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 
@@ -14,10 +14,20 @@ const args = Object.fromEntries(
 )
 
 const BASE = String(args.url || 'https://127.0.0.1:5188').replace(/\/+$/, '')
-const DOC = String(args.doc || 'bregman')
+const DOC = String(args.doc || 'test-fleet')
 const WIDTH = Number(args.width || 390)
 const HEIGHT = Number(args.height || 844)
 const CLIP = String(args.clip || '') === '1'
+
+function findChromiumExecutable() {
+  if (process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE) return process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE
+  const cache = join(homedir(), 'Library/Caches/ms-playwright')
+  const candidates = [
+    'chromium-1226/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
+    'chromium-1208/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
+  ]
+  return candidates.map(p => join(cache, p)).find(existsSync) || null
+}
 
 let token = ''
 try {
@@ -36,7 +46,8 @@ const URL = `${BASE}/?${qs.toString()}`
 
 async function main() {
   console.log(`phone-layout-mobile url=${URL} viewport=${WIDTH}x${HEIGHT} clip=${CLIP ? '1' : '0'}`)
-  const browser = await chromium.launch({ headless: true })
+  const executablePath = findChromiumExecutable()
+  const browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) })
   const context = await browser.newContext({
     viewport: { width: WIDTH, height: HEIGHT },
     deviceScaleFactor: 3,
@@ -201,14 +212,16 @@ async function main() {
       w: agents.props.w,
       h: agents.props.h + 10 + inbox.props.h,
     }
-    const expectedRect = docScreen
-    const expectedW = Math.round(expectedRect.w)
-    const expectedH = Math.round(expectedRect.h)
+    const expectedW = width
+    const expectedH = height
     if (Math.abs(chat.props.w - expectedW) > 1) {
-      throw new Error(`chat width ${chat.props.w} != expected page width ${expectedW}`)
+      throw new Error(`chat width ${chat.props.w} != expected screen width ${expectedW}`)
     }
     if (Math.abs(chat.props.h - expectedH) > 1) {
-      throw new Error(`chat height ${chat.props.h} != expected page height ${expectedH}`)
+      throw new Error(`chat height ${chat.props.h} != expected screen height ${expectedH}`)
+    }
+    if (Math.abs(agents.props.w - expectedW) > 1 || Math.abs(inbox.props.w - expectedW) > 1) {
+      throw new Error(`left lane panels are not screen width: agents=${agents.props.w}, inbox=${inbox.props.w}, expected=${expectedW}`)
     }
     if (agents.props.h >= chat.props.h * 0.5) {
       throw new Error(`agents panel is too tall for phone layout: agents=${agents.props.h}, chat=${chat.props.h}`)
@@ -219,8 +232,11 @@ async function main() {
     if (Math.abs(inbox.props.h + agents.props.h + 10 - chat.props.h) > 1) {
       throw new Error(`left column height ${agents.props.h + 10 + inbox.props.h} != chat height ${chat.props.h}`)
     }
-    if (Math.abs(chat.x - (agents.x + agents.props.w + 10)) > 1) {
-      throw new Error('chat is not immediately to the right of agents/inbox column')
+    if (Math.abs(chat.x - (agents.x + agents.props.w)) > 1) {
+      throw new Error('chat lane is not immediately to the right of agents/inbox lane')
+    }
+    if (Math.abs((chat.x + chat.props.w) - (agents.x + agents.props.w + chat.props.w)) > 1) {
+      throw new Error('document lane projection is not one screen to the right of chat lane')
     }
     const visibleHudIds = Array.from(document.querySelectorAll('.fleet-hud-wrap [data-shape-id]'))
       .map(el => el.getAttribute('data-shape-id'))
@@ -229,30 +245,33 @@ async function main() {
       throw new Error(`HUD rendered same-user other-device fleet shape: ${alienId}`)
     }
 
-    const layoutW = column.w + 10 + chat.props.w
-    const targetDocLeft = 24 + 40 + chat.props.w
-    const currentDocLeft = ed.pageToScreen({ x: pb.x, y: pb.y }).x
+    const layoutW = column.w + chat.props.w
+    const laneStops = {
+      agentsInbox: width * 2,
+      chat: width,
+      document: 0,
+    }
     const cam = ed.getCamera()
-    ed.setCamera({ ...cam, x: cam.x + (targetDocLeft - currentDocLeft) / cam.z }, { animation: { duration: 0 } })
+    ed.setCamera({ ...cam, x: laneStops.chat / cam.z - pb.x }, { animation: { duration: 0 } })
     await new Promise(r => setTimeout(r, 1000))
 
     // FleetHUD renders these shapes at z=1 and compensates the layout lane
-    // offset; after the horizontal pan above, the phone stack appears one
-    // margin gap left of the document. The vertical camera pins the stack top at
-    // the HUD top pad. This verifies the same panned geometry without depending
-    // on the overlay surviving unrelated remote-sync render errors.
+    // offset; with the document page snapped one screen to the right, the chat
+    // lane occupies the phone viewport. The vertical camera pins the stack top
+    // to the viewport top for full-screen phone lanes. This verifies the same panned geometry without
+    // depending on the overlay surviving unrelated remote-sync render errors.
     const pannedDocLeft = ed.pageToScreen({ x: pb.x, y: pb.y }).x
     const screenChat = {
-      x: pannedDocLeft - 40 - layoutW,
-      y: 80,
+      x: pannedDocLeft - layoutW,
+      y: 0,
       w: chat.props.w,
       h: chat.props.h,
     }
-    screenChat.x += column.w + 10
-    if (screenChat.x < 16 || screenChat.x + screenChat.w > width - 16) {
+    screenChat.x += column.w
+    if (Math.abs(screenChat.x) > 2 || Math.abs(screenChat.x + screenChat.w - width) > 2) {
       throw new Error(`panned phone chat does not fit horizontally: ${JSON.stringify(screenChat)}`)
     }
-    if (!clip && (screenChat.y < 70 || screenChat.y + screenChat.h > height - 16)) {
+    if (!clip && (Math.abs(screenChat.y) > 2 || Math.abs(screenChat.y + screenChat.h - height) > 2)) {
       throw new Error(`panned phone chat does not fit vertically: ${JSON.stringify(screenChat)}`)
     }
     const chatEl = document.querySelector(`.fleet-hud-wrap [data-shape-id="${chat.id}"] .fleet-chat-shape`)
@@ -261,6 +280,9 @@ async function main() {
     const chatBox = chatEl.getBoundingClientRect()
     if (Math.abs(chatBox.width - chat.props.w) > 2 || Math.abs(chatBox.height - chat.props.h) > 2) {
       throw new Error(`HUD chat DOM size does not match shape props: dom=${JSON.stringify({ w: chatBox.width, h: chatBox.height })} props=${JSON.stringify({ w: chat.props.w, h: chat.props.h })}`)
+    }
+    if (Math.abs(chatBox.x) > 2 || Math.abs(chatBox.y) > 2 || Math.abs(chatBox.right - width) > 2 || Math.abs(chatBox.bottom - height) > 2) {
+      throw new Error(`HUD phone chat DOM is clipped or inset: ${JSON.stringify({ x: chatBox.x, y: chatBox.y, right: chatBox.right, bottom: chatBox.bottom, width, height })}`)
     }
     const textarea = chatEl.querySelector('.fleet-chat-input-area textarea')
     if (!(textarea instanceof HTMLTextAreaElement)) throw new Error('HUD phone chat textarea did not render')
@@ -319,6 +341,11 @@ async function main() {
       chat: { w: chat.props.w, h: chat.props.h },
       column: { w: column.w, h: column.h },
       layout: { w: layoutW, h: chat.props.h },
+      lanes: {
+        agentsInbox: { docLeftScreen: laneStops.agentsInbox },
+        chat: { docLeftScreen: laneStops.chat },
+        document: { docLeftScreen: laneStops.document },
+      },
       screenChat: {
         x: Math.round(screenChat.x),
         y: Math.round(screenChat.y),
@@ -353,7 +380,7 @@ async function main() {
     const anchorId = `shape:fleet-hud-anchor--${String(setup.humanId).replace('fleet:', '')}--${setup.myDeviceId}`
     if (ed.getShape(anchorId)) ids.push(anchorId)
     const unique = [...new Set(ids)].filter(id => ed.getShape(id))
-    if (unique.length > 0) ed.deleteShapes(unique)
+    if (unique.length > 0) ed.store.remove(unique)
   })
 
   console.log(JSON.stringify(report, null, 2))

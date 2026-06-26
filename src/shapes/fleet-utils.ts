@@ -501,10 +501,13 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
     anchorX += dx
     anchorY += dy
 
-    // Phone layout: short agents filter panel over inbox in a left column,
-    // dominant chat to its right. The chat footprint is the selected page's
-    // current on-screen size. Visibility only chooses which page to follow; it
-    // must never shrink the chat to the clipped viewport.
+    // Phone layout: three horizontal, screen-sized lanes.
+    // Left lane: agents over inbox/filter surface.
+    // Middle lane: chat.
+    // Right lane: the document page itself.
+    // The fleet lanes are TLDraw/HUD shapes placed immediately to the left of
+    // the document page; PhoneHandTool snaps the main camera between these
+    // three document-left screen offsets.
     if (variant === 'phone') {
       let target: { x: number; y: number; w: number; h: number; pageX: number } | null = null
       let bestArea = -1
@@ -539,18 +542,15 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
         return
       }
 
-      const chatW = Math.round(target.w)
-      const chatH = Math.round(target.h)
-      const colW = Math.min(320, Math.max(180, Math.round(chatW * 0.45)))
-      const phoneAgentsH = Math.min(220, Math.max(120, Math.round(chatH * 0.32)))
+      const screenW = Math.round(vp.w)
+      const screenH = Math.round(vp.h)
+      const chatW = screenW
+      const chatH = screenH
+      const colW = screenW
+      const phoneAgentsH = Math.min(Math.round(screenH * 0.42), Math.max(160, Math.round(screenH * 0.38)))
       const phoneInboxH = Math.max(160, chatH - gap - phoneAgentsH)
-      // Chat right edge sits marginGap to the left of the selected page/visible
-      // region. Convert that region's screen-left offset back into the page-space
-      // layout coordinate used by the HUD's z=1 camera.
-      const docLeftScreen = editor.pageToScreen({ x: target.pageX, y: 0 }).x
-      const targetScreenLeft = target.x
-      const chatX = target.pageX + (targetScreenLeft - docLeftScreen) - marginGap - chatW + dx
-      const colX = chatX - gap - colW
+      const chatX = target.pageX - chatW + dx
+      const colX = target.pageX - chatW - colW + dx
       editor.createShapes([
         {
           id: slotId(myId, myDevice, 'agents'),
