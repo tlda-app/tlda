@@ -31,6 +31,7 @@ import {
 import { tldaFetch } from '../shared/http-client.mjs'
 import { DEV_COMMANDS } from './lib/dev-commands.mjs'
 import { resolveRepoRoot, ensureWorktree, startWorktreeVite, findFreePort } from './lib/dev-vite.mjs'
+import { findTailscaleIPv4, getFunnelUrl, selectDevShareBase, selectDocShareBase, viewerLoginUrl } from './lib/share-url.mjs'
 import { scanMarkdownDeps } from '../shared/markdown-deps.mjs'
 import { cmdLogs } from './lib/unified-logs.mjs'
 import { SPAWN_POLICY_OPTIONS, resolveSpawnPolicyOption } from '../server/lib/spawn-policy.mjs'
@@ -85,7 +86,7 @@ const COMMAND_HELP = {
   watch:   'tlda daemon [start|stop|status|log|run]\n\n  Control the per-machine fleet-daemon (bin/fleet-daemon.mjs).\n  The daemon watches Claude Code session JSONLs and project source\n  dirs locally, pushing events to the tlda server over WebSocket.',
   'watch-all': 'tlda daemon [start|stop|status|log|run]\n\n  Alias for `tlda daemon start/stop/status/log/run` — runs the\n  per-machine fleet-daemon (bin/fleet-daemon.mjs), which watches\n  every project source dir AND every Claude Code session JSONL\n  on this machine and pushes events to the tlda server over WebSocket.',
   open:    'tlda doc open [name]\n\n  Open the viewer in the default browser (RW token = presenter privilege).',
-  share:   'tlda doc share [name]\n\n  Print a viewer URL with the read-only token.\n  Recipients can annotate but cannot present.',
+  share:   'tlda doc share [name]\n\n  Print a reachable viewer URL with the read-only token.\n  Uses the configured remote server when active, otherwise Funnel/Tailscale.\n  Does not print localhost as a share URL for users on another machine.\n  Recipients can annotate but cannot present.',
   status:  'tlda doc status [name]\n\n  Show build status for a project.',
   errors:  'tlda doc errors [name] [--wait]\n\n  Extract LaTeX errors and warnings from the last build log.\n  With --wait (-w), blocks until the current build finishes.',
   build:   'tlda build [name]\n\n  Trigger a rebuild without pushing files.\n\n  NOTE: Prefer the watcher pipeline. This command bypasses change\n  detection and should only be used for debugging.',
@@ -847,7 +848,6 @@ async function cmdOpen() {
 }
 
 async function cmdShare() {
-  const { execSync } = await import('child_process')
   const name = getPositional(0) || await inferProjectName()
   if (!name) { console.error('Usage: tlda doc share [name]'); process.exit(1) }
 
@@ -860,16 +860,6 @@ async function cmdShare() {
     process.exit(1)
   }
 
-  const run = (cmd) => {
-    try { return execSync(cmd, { encoding: 'utf8', timeout: 5000 }).trim() }
-    catch { return null }
-  }
-
-  const makeUrl = (base) => {
-    const redirect = `/?doc=${name}`
-    return `${base}/auth/login?token=${readToken}&redirect=${encodeURIComponent(redirect)}`
-  }
-
   const printQr = async (url) => {
     try {
       const qr = await import('qrcode-terminal')
@@ -877,35 +867,27 @@ async function cmdShare() {
     } catch {}
   }
 
-  // Try Funnel (public HTTPS) first, then Tailscale, then localhost
-  const funnelStatus = run('tailscale funnel status 2>&1')
-  const funnelMatch = funnelStatus?.match(/https:\/\/\S+\.ts\.net/)
-  if (funnelMatch) {
-    const url = makeUrl(funnelMatch[0])
-    console.log(`${bold('Funnel')} (public)`)
+  const selected = selectDocShareBase({
+    serverUrl: getServer(),
+    port,
+    funnelUrl: getFunnelUrl(),
+    tailscaleIp: findTailscaleIPv4(),
+    hasTls,
+  })
+
+  if (selected.shareable) {
+    const url = viewerLoginUrl(selected.base, name, readToken)
+    console.log(`${bold(selected.label)}`)
     console.log(`  ${cyan(url)}`)
     console.log()
     await printQr(url)
     return
   }
 
-  const tsIp = run('tailscale ip -4')
-  if (tsIp) {
-    const url = makeUrl(`http://${tsIp}:${port}`)
-    console.log(`${bold('Tailscale')}`)
-    console.log(`  ${cyan(url)}`)
-    console.log()
-    await printQr(url)
-    return
-  }
-
-  // Localhost fallback
-  const proto = hasTls ? 'https' : 'http'
-  const url = `${proto}://localhost:${port}/?doc=${name}&token=${readToken}`
-  console.log(`${bold('Local')} ${dim('(not reachable from other devices)')}`)
-  console.log(`  ${cyan(url)}`)
-  console.log()
-  console.log(dim('To share over the network: install Tailscale, or run `tailscale funnel start`'))
+  console.error(`${selected.label}: ${selected.reason}.`)
+  console.error('Not printing a localhost share link; it is broken for users on another machine.')
+  console.error('Use a configured remote tlda server, install/enable Tailscale, or run `tailscale funnel start`.')
+  process.exit(1)
 }
 
 async function cmdList() {
@@ -3037,7 +3019,9 @@ async function cmdDev() {
   // Chat/fleet resolves to the global store via /api/fleet-config; only doc-sync +
   // assets ride this local proxy, so the worktree shares your room with no extra wiring.
   const token = getToken()
-  const base = `${scheme}://localhost:${port}/`
+  const localBase = `${scheme}://localhost:${port}/`
+  const shared = selectDevShareBase({ scheme, port, tailscaleIp: findTailscaleIPv4() })
+  const base = shared.shareable ? `${shared.base}/` : localBase
   const url = token ? `${base}?token=${token}` : base
   writeFileSync(join(worktreeDir, '.dev-url'), url)
 
@@ -3046,6 +3030,8 @@ async function cmdDev() {
   console.log(`  Port:     ${port}`)
   console.log(`  PID:      ${pid}`)
   console.log(`  Log:      ${logFile}`)
+  if (shared.shareable) console.log(`  Share:    ${shared.label}`)
+  else console.log(`  Share:    unavailable — ${shared.reason}`)
   console.log(bold(`\n  ${url}\n`))
 }
 
@@ -3056,8 +3042,14 @@ async function cmdDevUrl() {
   const portArg = getFlag('port')
   const port = portArg ? parseInt(portArg) : 5180
   const token = getToken()
-  const scheme = hasTls ? 'https' : 'http'
-  const base = `${scheme}://localhost:${port}/`
+  const scheme = 'http'
+  const selected = selectDevShareBase({ scheme, port, tailscaleIp: findTailscaleIPv4() })
+  if (!selected.shareable) {
+    console.error(`dev URL unavailable: ${selected.reason}.`)
+    console.error('Not printing localhost; it is broken for users on another machine.')
+    process.exit(1)
+  }
+  const base = `${selected.base}/`
   console.log(token ? `${base}?token=${token}` : base)
 }
 

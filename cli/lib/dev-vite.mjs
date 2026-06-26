@@ -77,13 +77,14 @@ export async function startWorktreeVite({ worktreeDir, port, serverPort = null, 
   ].find(p => existsSync(p))
   if (!viteBin) throw new Error('vite binary not found (worktree or main repo node_modules)')
 
-  // Bind IPv4 explicitly — without --host vite binds IPv6 [::1] only, so a browser
-  // hitting `localhost` (→ 127.0.0.1) can't connect.
-  const child = spawn(viteBin, ['--port', String(port), '--host', '127.0.0.1'], {
+  // Bind all interfaces so a Tailscale URL printed by tlda-dev is actually
+  // reachable from Skip's machine. Serve HTTP here: the mkcert cert is
+  // localhost-only, so HTTPS on a 100.x Tailscale IP is a broken browser URL.
+  const child = spawn(viteBin, ['--port', String(port), '--host', '0.0.0.0'], {
     cwd: worktreeDir,
     detached: true,
     stdio: ['ignore', logFd, logFd],
-    env: serverPort ? { ...process.env, VITE_SERVER_PORT: String(serverPort) } : process.env,
+    env: { ...process.env, ...(serverPort ? { VITE_SERVER_PORT: String(serverPort) } : {}), TLDA_VITE_HTTP: '1' },
   })
   child.unref()
 
@@ -92,7 +93,7 @@ export async function startWorktreeVite({ worktreeDir, port, serverPort = null, 
   let scheme = null
   for (let i = 0; i < 60 && !scheme; i++) {
     await new Promise(r => setTimeout(r, 500))
-    for (const s of (hasTls ? ['https', 'http'] : ['http'])) {
+    for (const s of (hasTls ? ['http', 'https'] : ['http'])) {
       try {
         const res = await fetch(`${s}://localhost:${port}/`, { signal: AbortSignal.timeout(1000) })
         if (res.ok || res.status === 404) { scheme = s; break }
