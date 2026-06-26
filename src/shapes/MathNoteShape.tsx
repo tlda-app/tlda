@@ -451,6 +451,8 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
 
     // Backing file: register with the server so the daemon watches for changes
     const backingFile = shape.props.backingFile as string | undefined
+    const hasOutlineTabs = (shape.props.tabs as string[] | undefined)?.length === 3
+    const isOutlineTabActive = hasOutlineTabs && (shape.props.activeTab as number | undefined) === 2
     useEffect(() => {
       if (!backingFile) return
       const docParam = new URLSearchParams(window.location.search).get('doc')
@@ -520,6 +522,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     // Inject bullet-selected class into <li> elements that have active bullets
     const renderedHtml = useMemo(() => {
       if (!renderedHtmlBase) return renderedHtmlBase
+      if (!isOutlineTabActive) return renderedHtmlBase
       const myBullets = activeBullets.filter(b => b.noteShapeId === shape.id)
       if (myBullets.length === 0) return renderedHtmlBase
       const selectedIndices = new Set(myBullets.map(b => b.bulletIndex))
@@ -528,7 +531,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         if (selectedIndices.has(count++)) return '<li class="bullet-selected">'
         return match
       })
-    }, [renderedHtmlBase, activeBullets, shape.id])
+    }, [renderedHtmlBase, isOutlineTabActive, activeBullets, shape.id])
 
     // Sync local text when shape changes from external source (undo, Yjs, etc)
     useEffect(() => {
@@ -980,6 +983,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
 
     const handleBulletClick = useCallback((e: React.MouseEvent): boolean => {
       if (!backingFile) return false
+      if (!isOutlineTabActive) return false
       const li = (e.target as HTMLElement).closest('li') as HTMLLIElement | null
       if (!li) return false
       const container = contentRef.current
@@ -1021,7 +1025,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       }, 50)
 
       return true
-    }, [backingFile, shape.id, shape.meta?.authorId])
+    }, [backingFile, isOutlineTabActive, shape.id, shape.meta?.authorId])
 
     // Bullet clicks must intercept on pointerDown — TLDraw's capture-phase
     // listeners prevent onClick from ever firing on unselected shape content.
@@ -1307,7 +1311,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       const choices = shape.props.choices as string[] | undefined
       const selectedChoice = (shape.props.selectedChoice as number) ?? -1
       const hasChoices = choices && choices.length > 0
-      const hasTabs = (shape.props.tabs as string[] | undefined)?.length === 3
+      const hasTabs = hasOutlineTabs
 
       let textContent
       if (renderedHtml) {
@@ -1339,7 +1343,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
               .math-note-prose.tappable-bullets li.bullet-selected { background-color: rgba(124, 58, 237, 0.15); border-left: 3px solid rgba(124, 58, 237, 0.6); padding-left: 6px; }
             `}</style>
             <div
-              className={`math-note-prose${backingFile ? ' tappable-bullets' : ''}`}
+              className={`math-note-prose${backingFile && isOutlineTabActive ? ' tappable-bullets' : ''}`}
               style={{ maxWidth: '72ch', margin: '0 auto' }}
               dangerouslySetInnerHTML={{ __html: renderedHtml }}
             />
