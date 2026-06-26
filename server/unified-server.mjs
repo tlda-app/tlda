@@ -2775,8 +2775,12 @@ server.on('upgrade', async (req, socket, head) => {
         remotePort,
       })
 
-      // Send initial state on connect
-      if (fleetStore) {
+      // Browser fleet clients need the full connect snapshot to seed the agents
+      // panel and task list. Agent/MCP clients connect with ?agent=... and only
+      // use this socket for RPC replies + targeted fleet-event notifications;
+      // sending the full roster/task snapshot there is a multi-MB startup tax
+      // that can delay ordinary my_task/chat/delegate requests.
+      if (fleetStore && !agentFilter) {
         const initState = {
           // Full roster incl. dead. Panel filters dead client-side, but the
           // client needs dead agents present to chat them + show "resurrect?".
