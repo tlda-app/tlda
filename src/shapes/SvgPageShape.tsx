@@ -63,6 +63,27 @@ const VIEWPORT_BUFFER_PAGES = IS_PHONE ? 4 : 2
 // Avoids re-running the expensive injectWordSpaces on scroll-back re-injection.
 const processedSvgCache = new Map<string, { svgText: string; html: string }>()
 
+const BLUE_LINK_RE = /^(?:\d+(?:\.\d+)*|[A-Z](?:\.?\d+)*)$/
+
+function installSyntheticRefLinks(svgEl: SVGSVGElement) {
+  const candidates = svgEl.querySelectorAll<SVGElement>('text[fill], tspan[fill]')
+  for (const el of candidates) {
+    const fill = (el.getAttribute('fill') || '').toLowerCase()
+    if (
+      fill !== '#00f' && fill !== '#0000ff' && fill !== 'blue' && fill !== 'rgb(0,0,255)' &&
+      fill !== '#0ff' && fill !== '#00ffff' && fill !== 'cyan' && fill !== 'rgb(0,255,255)'
+    ) continue
+
+    const label = (el.textContent || '').trim()
+    if (!BLUE_LINK_RE.test(label)) continue
+
+    el.setAttribute('data-anchor', label)
+    el.setAttribute('data-title', label)
+    el.style.cursor = 'pointer'
+    el.style.pointerEvents = 'all'
+  }
+}
+
 // Queue injectWordSpaces work one page per idle frame to avoid main-thread freeze on load.
 type WordSpaceJob = () => void
 const wordSpaceQueue: WordSpaceJob[] = []
@@ -363,6 +384,7 @@ function SvgPageComponent({ shape }: { shape: any }) {
         } catch { /* getBBox may fail for off-screen elements */ }
       }
     }
+    if (svgEl) installSyntheticRefLinks(svgEl)
 
     // Apply any pending tint highlights
     applyTinting(textYCacheRef.current, highlights)
@@ -376,7 +398,7 @@ function SvgPageComponent({ shape }: { shape: any }) {
 
     const onClick = (e: MouseEvent) => {
       if (e.metaKey) return
-      const target = (e.target as Element).closest('a')
+      const target = (e.target as Element).closest('[data-anchor]')
       if (!target) return
       const anchorId = target.getAttribute('data-anchor')
       const title = target.getAttribute('data-title') || anchorId || ''
