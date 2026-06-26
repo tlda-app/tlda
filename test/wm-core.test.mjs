@@ -19,7 +19,7 @@ const compiled = ts.transpileModule(source, {
 const modulePath = join(tempDir, 'wm-core.mjs')
 writeFileSync(modulePath, compiled)
 
-const { createWMCore } = await import(modulePath)
+const { createLayerMembership, createLayerOwner, createWMCore } = await import(modulePath)
 
 test.after(() => {
 	rmSync(tempDir, { recursive: true, force: true })
@@ -168,4 +168,15 @@ test('reads and writes viewport-backed layer cameras through the adapter when av
 	assert.deepEqual(wm.camera('doc-window'), { x: 1, y: 2, z: 3 })
 	wm.setCamera('doc-window', { x: 4, y: 5, z: 6 })
 	assert.deepEqual(wm.camera('doc-window'), { x: 4, y: 5, z: 6 })
+})
+
+test('creates reusable owner and layer membership descriptors', () => {
+	const owner = createLayerOwner('fleet:tester', 'mini')
+
+	assert.deepEqual(owner, { userId: 'fleet:tester', deviceId: 'mini' })
+	assert.deepEqual(createLayerMembership('fleet-overlay', owner), {
+		layerId: 'fleet-overlay',
+		userId: 'fleet:tester',
+		deviceId: 'mini',
+	})
 })

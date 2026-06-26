@@ -88,5 +88,10 @@ test('Fleet docview surface derives a WM-managed viewport projection', () => {
 	assert.deepEqual(state.layer.policy, { x: 'pin', y: 'pin', zoom: 'lock' })
 	assert.deepEqual(state.owner, { userId: 'fleet:tester', deviceId: 'mini' })
 	assert.equal(state.source, null)
+	assert.deepEqual(state.membership, {
+		layerId: 'fleet-docview:docview-a',
+		userId: 'fleet:tester',
+		deviceId: 'mini',
+	})
 	assert.equal(state.hitPolicy, 'chrome-catches-content-pans')
 })

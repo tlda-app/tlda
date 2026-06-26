@@ -83,6 +83,15 @@ export interface LayeredShape {
 	layerId: LayerId
 }
 
+export interface LayerOwner {
+	userId: string
+	deviceId: string
+}
+
+export interface LayerMembership extends LayerOwner {
+	layerId: LayerId
+}
+
 export interface WMCoreOptions {
 	rootLayerId?: LayerId
 }
@@ -350,4 +359,12 @@ export class WMCore {
 
 export function createWMCore(options?: WMCoreOptions): WMCore {
 	return new WMCore(options)
+}
+
+export function createLayerOwner(userId = '', deviceId = ''): LayerOwner {
+	return { userId, deviceId }
+}
+
+export function createLayerMembership(layerId: LayerId, owner: LayerOwner): LayerMembership {
+	return { layerId, userId: owner.userId, deviceId: owner.deviceId }
 }

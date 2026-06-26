@@ -1,4 +1,14 @@
-import { createWMCore, type Camera, type Layer, type LayerLayout, type Point } from './wm-core.ts'
+import {
+	createLayerMembership,
+	createLayerOwner,
+	createWMCore,
+	type Camera,
+	type Layer,
+	type LayerLayout,
+	type LayerMembership,
+	type LayerOwner,
+	type Point,
+} from './wm-core.ts'
 
 export const FLEET_HUD_ROOT_LAYER_ID = 'screen'
 export const FLEET_HUD_OVERLAY_LAYER_ID = 'fleet-overlay'
@@ -23,15 +33,8 @@ export interface FleetHudLayerState {
 	viewportId: string
 	camera: Camera
 	layer: Layer
-	owner: {
-		userId: string
-		deviceId: string
-	}
-	membership: {
-		layerId: string
-		userId: string
-		deviceId: string
-	}
+	owner: LayerOwner
+	membership: LayerMembership
 	zBand: typeof FLEET_HUD_Z_BAND
 	hitPolicy: typeof FLEET_HUD_HIT_POLICY
 }
@@ -56,6 +59,7 @@ export function createFleetHudOverlayLayer({
 		camera: { x: panOffset, y: cameraY, z: zoom },
 		layout,
 	})
+	const owner = createLayerOwner(userId, deviceId)
 
 	return {
 		rootLayerId: wm.rootLayerId,
@@ -64,12 +68,8 @@ export function createFleetHudOverlayLayer({
 		viewportId: FLEET_HUD_VIEWPORT_ID,
 		camera: wm.camera(FLEET_HUD_OVERLAY_LAYER_ID),
 		layer: wm.getLayer(FLEET_HUD_OVERLAY_LAYER_ID),
-		owner: { userId, deviceId },
-		membership: {
-			layerId: FLEET_HUD_OVERLAY_LAYER_ID,
-			userId,
-			deviceId,
-		},
+		owner,
+		membership: createLayerMembership(FLEET_HUD_OVERLAY_LAYER_ID, owner),
 		zBand: FLEET_HUD_Z_BAND,
 		hitPolicy: FLEET_HUD_HIT_POLICY,
 	}
