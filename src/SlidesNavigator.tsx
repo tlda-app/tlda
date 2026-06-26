@@ -428,7 +428,7 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
     >
       <button
         className="slides-nav-button slides-nav-button--prev"
-        style={{ ...(isFirst ? disabledBtnStyle : btnStyle), left: 'max(12px, calc(env(safe-area-inset-left) + 12px))' }}
+        style={{ ...(isFirst ? disabledBtnStyle : btnStyle), left: 'max(72px, calc(env(safe-area-inset-left) + 72px))' }}
         onClick={handlePrev}
         disabled={isFirst}
         aria-label="Previous"
@@ -447,7 +447,7 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
       </span>
       <button
         className="slides-nav-button slides-nav-button--next"
-        style={{ ...(isLast ? disabledBtnStyle : btnStyle), right: 'max(56px, calc(env(safe-area-inset-right) + 56px))' }}
+        style={{ ...(isLast ? disabledBtnStyle : btnStyle), right: 'max(12px, calc(env(safe-area-inset-right) + 12px))' }}
         onClick={handleNext}
         disabled={isLast}
         aria-label="Next"

@@ -1846,7 +1846,7 @@ body.touch-toc-mode .phone-toc-btn {
   pointer-events: all;
   padding: 0;
   line-height: 1;
-  opacity: 0.14;
+  opacity: 0.5;
   transition: opacity 0.2s, background-color 0.2s;
 }
 
