@@ -1,4 +1,12 @@
-import { createWMCore, type Camera, type Layer } from './wm-core.ts'
+import {
+	createLayerMembership,
+	createLayerOwner,
+	createWMCore,
+	type Camera,
+	type Layer,
+	type LayerMembership,
+	type LayerOwner,
+} from './wm-core.ts'
 
 export const FLEET_DOCVIEW_ROOT_LAYER_ID = 'screen'
 export const FLEET_DOCVIEW_LAYER_ID = 'fleet-docview'
@@ -29,10 +37,8 @@ export interface FleetDocviewSurfaceState {
 	viewportId: string
 	camera: Camera
 	layer: Layer
-	owner: {
-		userId: string
-		deviceId: string
-	}
+	owner: LayerOwner
+	membership: LayerMembership
 	bounds: FleetDocviewBounds
 	pageBounds: FleetDocviewBounds
 	source: string | null
@@ -69,6 +75,7 @@ export function createFleetDocviewSurface({
 		camera,
 		layout: { axis: 'vertical', spacing: 0 },
 	})
+	const owner = createLayerOwner(userId, deviceId)
 
 	return {
 		rootLayerId: wm.rootLayerId,
@@ -77,7 +84,8 @@ export function createFleetDocviewSurface({
 		viewportId,
 		camera: wm.camera(surfaceId),
 		layer: wm.getLayer(surfaceId),
-		owner: { userId, deviceId },
+		owner,
+		membership: createLayerMembership(surfaceId, owner),
 		bounds,
 		pageBounds,
 		source,

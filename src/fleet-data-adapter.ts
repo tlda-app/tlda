@@ -510,12 +510,13 @@ export type Item = {
   text?: string
   command?: string | null
   group?: string
+  messageId?: string | number | null
 }
 
 // A suggestion chip any agent can push to the bottom of the chat. Suggestion is
 // now an additive narrowing of Item; the live /api/suggestions route remains the
 // write/clear path for replace-semantics.
-export type Suggestion = Item & { kind: 'suggest', label: string, targetId?: string, from?: string, text: string, command?: string | null, group?: string, msgCount?: number }
+export type Suggestion = Item & { kind: 'suggest', label: string, targetId?: string, from?: string, text: string, command?: string | null, group?: string, messageId?: string | number | null, msgCount?: number }
 
 export function useItems(role: 'hud' | 'list' | 'chat' | 'suggest' = 'chat'): Item[] {
   const [items, setItems] = useState<Item[]>([])
@@ -549,13 +550,33 @@ export function useItems(role: 'hud' | 'list' | 'chat' | 'suggest' = 'chat'): It
 }
 
 export function useSuggestions(): Suggestion[] {
-  return useItems('suggest').map((item: Item) => ({
-    ...item,
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([])
+
+  useEffect(() => {
+    let unsub: (() => void) | null = null
+    let cancelled = false
+
+    ensureInit().then(() => {
+      if (cancelled) return
+      fetch('/api/suggestions')
+        .then(r => r.json())
+        .then(j => { if (!cancelled) setSuggestions(j.suggestions || []) })
+        .catch(() => {})
+      unsub = subscribe('suggestions', null, (data: any) => {
+        setSuggestions(data.suggestions || [])
+      })
+    })
+
+    return () => { cancelled = true; unsub?.() }
+  }, [])
+
+  return suggestions.map((s: Suggestion) => ({
+    ...s,
     kind: 'suggest',
-    label: item.label || item.title,
-    text: item.text || item.body || '',
-    command: item.command ?? item.actions?.[0]?.command ?? null,
-    targetId: item.targetId || item.actions?.[0]?.target || item.from,
+    label: s.label,
+    text: s.text || '',
+    command: s.command ?? null,
+    targetId: s.targetId || s.from,
   })) as Suggestion[]
 }
 
@@ -569,7 +590,7 @@ export async function clearGroup(agentId: string, groupKey: string) {
   try {
     const j = await fetch('/api/suggestions').then(r => r.json())
     const remaining = (j.suggestions || []).filter((s: Suggestion) =>
-      (s.from || s.targetId) === agentId && (s.group || String(s.id)) !== groupKey)
+      (s.from || s.targetId) === agentId && suggestionGroupKey(s) !== groupKey)
     await fetch('/api/suggestions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -578,6 +599,10 @@ export async function clearGroup(agentId: string, groupKey: string) {
   } catch (e) {
     console.warn('clearGroup failed', e)
   }
+}
+
+function suggestionGroupKey(s: Suggestion) {
+  return `${s.messageId || ''}::${s.group || String(s.id)}`
 }
 
 /**

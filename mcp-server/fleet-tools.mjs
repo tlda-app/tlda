@@ -246,27 +246,31 @@ export function parseInlineSuggestions(body) {
   return { body: out.join('\n'), suggestions };
 }
 
-async function postChatAuthoredSuggestions(suggestions, recipients) {
+async function postChatAuthoredSuggestions(suggestions, recipients, { messageId = null } = {}) {
   const ts = Date.now();
   const targetId = recipients.length === 1 ? recipients[0] : null;
   const stamped = suggestions.map((s, i) => ({
-    id: `${AGENT_ID}:chat:${i}`,
+    id: `${AGENT_ID}:chat:${messageId || ts}:${i}`,
     label: s.label,
     text: s.text || '',
     command: s.command || null,
     kind: s.command ? 'action' : 'info',
     group: s.group || undefined,
     targetId: s.targetId || targetId,
+    messageId,
     ts,
   }));
+  const prev = await fleetFetch(`${TLDA_FLEET_SERVER}/api/suggestions`, { signal: AbortSignal.timeout(3000) });
+  const prevData = await prev.json().catch(() => ({}));
+  const retained = (prevData.suggestions || []).filter(s => s.from === AGENT_ID && String(s.messageId || '') !== String(messageId || ''));
   const res = await fleetFetch(`${TLDA_FLEET_SERVER}/api/suggestions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ agentId: AGENT_ID, suggestions: stamped }),
+    body: JSON.stringify({ agentId: AGENT_ID, suggestions: [...retained, ...stamped] }),
     signal: AbortSignal.timeout(3000),
   });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || res.statusText);
+  const postData = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(postData.error || res.statusText);
   return stamped.length;
 }
 
@@ -2576,7 +2580,7 @@ export async function handleFleetTool(name, args) {
     let suggestionNotice = '';
     if (authoredSuggestions.length) {
       try {
-        const count = await postChatAuthoredSuggestions(authoredSuggestions, sent);
+        const count = await postChatAuthoredSuggestions(authoredSuggestions, sent, { messageId: lastEventId });
         suggestionNotice = ` Posted ${count} suggestion chip(s).`;
       } catch (e) {
         warning += `\n\n⚠ **Suggestion chips were not posted:** ${e.message}`;

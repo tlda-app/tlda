@@ -34,7 +34,7 @@ const BASESTAR_PATHS = (
 
 const DRAG_THRESHOLD = 6   // px before drag activates
 const ITEM_W = 44          // px width of each preset tile
-const ITEM_H = 32          // px height
+const ITEM_H = 44          // px height
 const ITEM_GAP = 4         // px between tiles
 
 // 'touch' preset removed: the fleet-touch-inbox shape's click-to-filter never
@@ -47,7 +47,7 @@ const LAYOUT_PRESETS: { id: LayoutId; title: string }[] = [
   { id: '2col', title: 'Two-column: left margin + right margin chat' },
   { id: 'wide', title: 'Wide: agents + search | one large chat' },
   { id: 'grid', title: 'Grid: agents + search | 2×2 chat grid' },
-  { id: 'phone', title: 'Phone reset: agents + inbox beside chat' },
+  { id: 'phone', title: 'Phone reset: agents/inbox | chat | document' },
 ]
 
 /** Mini SVG diagram showing the layout arrangement */
@@ -122,11 +122,12 @@ function LayoutIcon({ id, size = 20 }: { id: LayoutId; size?: number }) {
       </>
     ),
     'phone': (
-      // Phone: short agents panel over inbox, beside one dominant chat.
+      // Phone: three full-screen lanes: agents/inbox | chat | document.
       <>
-        <rect x={0} y={0} width={s*0.24} height={s*0.34} rx={r} fill={ap} />
-        <rect x={0} y={s*0.34+g} width={s*0.24} height={s*0.66-g} rx={r} fill={sr} />
-        <rect x={s*0.24+g} y={0} width={s*0.6-g} height={s} rx={r} fill={ch} />
+        <rect x={0} y={0} width={s*0.25-g/2} height={s*0.38-g/2} rx={r} fill={ap} />
+        <rect x={0} y={s*0.38+g/2} width={s*0.25-g/2} height={s*0.62-g/2} rx={r} fill={sr} />
+        <rect x={s*0.25+g} y={0} width={s*0.28-g} height={s} rx={r} fill={ch} />
+        {docEl(s*0.55+g)}
       </>
     ),
   }

@@ -287,7 +287,10 @@ export function respawnAgent(id) {
 }
 
 export function spawnAgent(model, doc, name, effort) {
-  return wsSend({ type: 'spawn', fresh: true, model, ...(doc ? { doc } : {}), ...(name ? { name } : {}), ...(effort ? { effort } : {}) })
+  return wsSend(
+    { type: 'spawn', fresh: true, model, ...(doc ? { doc } : {}), ...(name ? { name } : {}), ...(effort ? { effort } : {}) },
+    { timeoutMs: 30_000 }
+  )
 }
 
 export function renameAgent(id, name) {
@@ -381,13 +384,16 @@ export function sendViewingContext(context) {
   }
 }
 
-function wsSend(msg) {
+function wsSend(msg, { timeoutMs = 5000 } = {}) {
   if (!_ws || _ws.readyState !== 1) return Promise.reject(new Error('not connected'))
   const id = ++_wsReqId
   return new Promise((resolve, reject) => {
-    _wsCallbacks.set(id, { resolve, reject })
+    const timer = setTimeout(() => {
+      _wsCallbacks.delete(id)
+      reject(new Error('timeout'))
+    }, timeoutMs)
+    _wsCallbacks.set(id, { resolve, reject, timer })
     _ws.send(JSON.stringify({ ...msg, id }))
-    setTimeout(() => { _wsCallbacks.delete(id); reject(new Error('timeout')) }, 5000)
   })
 }
 
@@ -490,6 +496,7 @@ export function connect() {
         const cb = _wsCallbacks.get(msg.id)
         if (cb) {
           _wsCallbacks.delete(msg.id)
+          clearTimeout(cb.timer)
           // Reconcile optimistic events SYNCHRONOUSLY before resolving —
           // the next WS message may be the echo, and _dbId must be set
           // before the echo's dedup check runs.

@@ -46,9 +46,15 @@ export interface ForkViewportAdapter {
 	setCamera?(viewportId: string, camera: Camera): void
 }
 
+export interface PageCoordinateAdapter {
+	screenToPage(point: Point): Point
+	pageToScreen(point: Point): Point
+}
+
 export type LayerBacking =
 	| { kind: 'frame' }
 	| { kind: 'screen' }
+	| { kind: 'page'; editor: PageCoordinateAdapter }
 	| { kind: 'viewport'; viewportId: string; editor: ForkViewportAdapter }
 
 export interface LayerDefinition {
@@ -74,6 +80,15 @@ export interface LayeredShape {
 	id: string
 	x: number
 	y: number
+	layerId: LayerId
+}
+
+export interface LayerOwner {
+	userId: string
+	deviceId: string
+}
+
+export interface LayerMembership extends LayerOwner {
 	layerId: LayerId
 }
 
@@ -301,6 +316,9 @@ export class WMCore {
 	}
 
 	private layerToParent(point: Point, layer: Layer): Point {
+		if (layer.backing.kind === 'page') {
+			return layer.backing.editor.pageToScreen(point)
+		}
 		if (layer.backing.kind === 'viewport') {
 			return layer.backing.editor.pageToScreen(point, { viewportId: layer.backing.viewportId })
 		}
@@ -314,6 +332,9 @@ export class WMCore {
 	}
 
 	private parentToLayer(point: Point, layer: Layer): Point {
+		if (layer.backing.kind === 'page') {
+			return layer.backing.editor.screenToPage(point)
+		}
 		if (layer.backing.kind === 'viewport') {
 			return layer.backing.editor.screenToPage(point, { viewportId: layer.backing.viewportId })
 		}
@@ -338,4 +359,12 @@ export class WMCore {
 
 export function createWMCore(options?: WMCoreOptions): WMCore {
 	return new WMCore(options)
+}
+
+export function createLayerOwner(userId = '', deviceId = ''): LayerOwner {
+	return { userId, deviceId }
+}
+
+export function createLayerMembership(layerId: LayerId, owner: LayerOwner): LayerMembership {
+	return { layerId, userId: owner.userId, deviceId: owner.deviceId }
 }

@@ -83,7 +83,11 @@ import {
 import { gooseActivityTick } from './lib/goose-activity.mjs'
 import { parseCodexLine } from './lib/codex-activity.mjs'
 import { truncatePrettyResult } from '../shared/activity-pretty-result.mjs'
-import { trimTerminalSeedBlankRows } from '../shared/terminal-seed.mjs'
+import {
+  terminalBackscrollCaptureArgs,
+  terminalVisibleCaptureArgs,
+  trimTerminalSeedBlankRows,
+} from '../shared/terminal-seed.mjs'
 import {
   buildFleetSpawnArgs,
   decideMissingLiveness,
@@ -1993,11 +1997,13 @@ async function gooseKickSend({ tmux_session, text }) {
   return { ok: true, via: 'tmux-sendkeys' }
 }
 
-async function rpcCapturePane({ tmux_session, lines, agent_id }) {
+async function rpcCapturePane({ tmux_session, lines, agent_id, visible }) {
   checkSession(tmux_session)
-  const start = `-${Math.max(1, Math.min(parseInt(lines, 10) || 50, 5000))}`
+  const captureArgs = visible
+    ? terminalVisibleCaptureArgs(tmux_session, { ansi: true })
+    : terminalBackscrollCaptureArgs(tmux_session, lines, { ansi: true })
   const { stdout } = await execFileP('tmux',
-    [...TMUX_ARGS, 'capture-pane', '-t', tmux_session, '-p', '-e', '-S', start],
+    [...TMUX_ARGS, ...captureArgs],
     { timeout: 5000, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 })
   const prompt = detectPrompt(stdout)
   if (prompt.type === 'auto-accept') {
@@ -2020,7 +2026,7 @@ async function rpcCapturePane({ tmux_session, lines, agent_id }) {
 
 async function capturePaneTail(tmux_session, lines = 50) {
   const cap = await execFileP('tmux',
-    [...TMUX_ARGS, 'capture-pane', '-t', tmux_session, '-p', '-S', `-${lines}`],
+    [...TMUX_ARGS, ...terminalBackscrollCaptureArgs(tmux_session, lines)],
     { timeout: 3000, encoding: 'utf8' })
   return cap.stdout
 }
@@ -2248,13 +2254,7 @@ async function rpcStartTerminalWatch({ tmux_session, agent_id, poll_ms }) {
   try {
     await execFileP('tmux', [...TMUX_ARGS, 'set-option', '-t', tmux_session, 'window-size', 'manual'], { timeout: 3000 })
     await execFileP('tmux', [...TMUX_ARGS, 'resize-window', '-t', tmux_session, '-x', String(PINNED_COLS), '-y', String(PINNED_ROWS)], { timeout: 3000 })
-    // Force the foreground TUI to repaint at the pinned width. resize-window is a
-    // NO-OP when the window is already 120 (no SIGWINCH → no repaint), so an idle
-    // agent's stale buffer (last painted at an old width, e.g. 80) would otherwise
-    // be reflowed garbled into the 120 peek grid. C-l = redraw-screen: the TUI
-    // repaints cleanly at the current width, with no input side-effect.
-    await execFileP('tmux', [...TMUX_ARGS, 'send-keys', '-t', tmux_session, 'C-l'], { timeout: 3000 })
-  } catch (e) { log.warn(`terminal-watch: failed to pin/repaint window for ${tmux_session}: ${e?.message || e}`) }
+  } catch (e) { log.warn(`terminal-watch: failed to pin window for ${tmux_session}: ${e?.message || e}`) }
 
   // Attach the watch PTY at the (now pinned) window size. tmux renders the window at
   // the window size; a PTY narrower than the window receives garbled, absolute-
@@ -2273,19 +2273,9 @@ async function rpcStartTerminalWatch({ tmux_session, agent_id, poll_ms }) {
   terminalWatchPtys.set(tmux_session, state)
 
   sendMsg({ type: 'terminal-size', agent_id, tmux_session, cols: size.cols, rows: size.rows })
-  // The pre-attach redraw can still leave Claude/goose with a stale old-width
-  // frame until the attached client exists. Redraw once more through the watch
-  // PTY and seed from capture-pane after that repaint window, so the first frame
-  // the browser sees is the tmux screen at the same width as the streamed PTY.
-  try {
-    pty.write('\x0c')
-  } catch (e) {
-    log.warn(`terminal-watch: PTY redraw request failed for ${tmux_session}: ${e?.message || e}`)
-  }
-  await new Promise(resolve => setTimeout(resolve, 120))
   try {
     const { stdout } = await execFileP('tmux',
-      [...TMUX_ARGS, 'capture-pane', '-t', tmux_session, '-p', '-S', `-${size.rows}`],
+      [...TMUX_ARGS, ...terminalVisibleCaptureArgs(tmux_session)],
       { timeout: 3000, encoding: 'utf8' })
     const snapshot = trimTerminalSeedBlankRows(stdout).replace(/\n/g, '\r\n')
     if (snapshot.trim()) {

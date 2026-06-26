@@ -11,12 +11,16 @@
   pointer-events: all;
 }
 
-/* Phone: the whole stack shifts in by the safe-area inset — the basestar must
-   match or it sits to the right of the column. Mirrors .mic-toggle-btn (90px →
-   basestar 123px above it). */
+/* Phone: the whole stack shifts in by the safe-area inset. The phone controls
+   are 44px touch targets stacked with an 8px gap; basestar sits above mic. */
 body.phone-mode .fleet-icon-pill-container {
-  bottom: calc(123px + env(safe-area-inset-bottom));
+  bottom: calc(180px + env(safe-area-inset-bottom));
   right: max(4px, env(safe-area-inset-right));
+}
+
+body.phone-mode .fleet-icon-pill-badge {
+  min-width: 44px;
+  min-height: 44px;
 }
 
 /* Tablet (coarse pointer, too wide for phone-mode) gets the same safe-area
@@ -73,6 +77,11 @@ body.phone-mode .fleet-icon-pill-container {
 
 body.phone-mode .fleet-icon-pill-fan {
   margin-right: 8px;
+}
+
+body.phone-mode .fleet-icon-pill-fan-item {
+  min-width: 44px;
+  min-height: 44px;
 }
 
 @media (pointer: coarse) {

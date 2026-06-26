@@ -18,13 +18,28 @@ const DEFAULTS = {
   'math-note-opacity': 1.0 as number,
   'response-curve': DEFAULT_CURVE as CurveHandles,
   'spawn-mode': '' as string,
-  // Default on, but to the SILENT backend (Deepgram SDK) — never chrome. Chrome
-  // (the only backend whose earcon can beep) is opt-in only. There is NO
-  // fallback: if the selected backend is unreachable, voice goes quiet, it
-  // never switches to another backend.
-  'voice-backend': 'deepgram-sdk' as string,
+  // Default OFF (Skip, 2026-06-21): voice is opt-in, so a fresh/anonymous client
+  // (incl. automated/Playwright tabs) never opens the paid Deepgram path on
+  // defaults — that default was the source of the Deepgram cost. The user selects
+  // a backend in Preferences; until then voice is silent. There is NO fallback:
+  // a selected backend that's unreachable goes quiet, it never switches.
+  'voice-backend': '' as string,
   'voice-submit-words': 'send, send it, sent' as string,
   'voice-sink-shape-types': 'fleet-agents' as string,
+  // Voice→Deepgram conservation feel (sent to the bridge on connect). Idle cutoff
+  // = ms of no speech before the upstream session is torn down (stays warm across
+  // a thinking pause, closes an abandoned one). Pre-roll = ms of audio buffered
+  // while paused so resume never clips the first words. Resume RMS = energy a
+  // frame must exceed to count as speech (vs a silent-but-live mic) and reconnect.
+  'voice-idle-cutoff-ms': 30000 as number,
+  'voice-preroll-ms': 300 as number,
+  'voice-resume-rms': 250 as number,
+  // Deepgram recognition window (applied via the bridge's voiceParams hook).
+  // endpointing = ms of silence before Deepgram finalizes an utterance;
+  // utterance_end_ms = ms before it emits UtteranceEnd. Raise both if Deepgram
+  // keeps cutting off the tail of a sentence.
+  'voice-endpointing': 300 as number,
+  'voice-utterance-end-ms': 1000 as number,
   'fleet-font-size': 11 as number,
   // Default fleet layout sizing (used by createFleetLayout). margin-gap is the
   // distance from each document edge to the near edge of the fleet shapes in

@@ -34,6 +34,8 @@ let spawnFailResult = null
 let spawnPhantomResult = null
 let spawnStartupFailureResult = null
 let spawnStartupFailureEvent = null
+let captureVisibleResult = null
+let captureBackscrollResult = null
 let helloOk = false
 
 function send(ws, obj) { ws.send(JSON.stringify(obj)) }
@@ -70,6 +72,10 @@ wss.on('connection', (ws) => {
       // failure. The daemon returns the verified launch and surfaces the later
       // harness startup failure as a typed async event.
       setTimeout(() => send(ws, { type: 'rpc', id: 'r6', op: 'spawn', name: 'startup-auth-canary', model: 'sonnet', kind: 'claude' }), 600)
+      // Terminal hover seeds must capture only the visible pane; explicit
+      // backscroll capture remains available for lightbox/history views.
+      setTimeout(() => send(ws, { type: 'rpc', id: 'r7', op: 'capture-pane', tmux_session: 'fleet-visible-canary', visible: true }), 700)
+      setTimeout(() => send(ws, { type: 'rpc', id: 'r8', op: 'capture-pane', tmux_session: 'fleet-backscroll-canary', lines: 80 }), 800)
     }
     if (msg.type === 'rpc-reply') {
       if (msg.id === 'r1') listSessionsResult = msg
@@ -78,6 +84,8 @@ wss.on('connection', (ws) => {
       if (msg.id === 'r4') spawnFailResult = msg
       if (msg.id === 'r5') spawnPhantomResult = msg
       if (msg.id === 'r6') spawnStartupFailureResult = msg
+      if (msg.id === 'r7') captureVisibleResult = msg
+      if (msg.id === 'r8') captureBackscrollResult = msg
     }
     if (msg.type === 'spawn-startup-failed') spawnStartupFailureEvent = msg
   })
@@ -114,6 +122,8 @@ fi
 if [ "$cmd" = "has-session" ]; then
   case "$*" in
     *fleet-startup-auth-canary*) exit 0 ;;
+    *fleet-visible-canary*) exit 0 ;;
+    *fleet-backscroll-canary*) exit 0 ;;
     *) echo "can't find session" >&2; exit 1 ;;
   esac
 fi
@@ -122,6 +132,10 @@ if [ "$cmd" = "capture-pane" ]; then
     *fleet-startup-auth-canary*)
       echo "Claude Code"
       echo "Not logged in · Run /login"
+      exit 0
+      ;;
+    *fleet-visible-canary*|*fleet-backscroll-canary*)
+      echo "ARGS:$*"
       exit 0
       ;;
     *) echo "can't find pane" >&2; exit 1 ;;
@@ -156,9 +170,11 @@ setTimeout(() => {
   console.log(`  phantom spawn reply: ${JSON.stringify(spawnPhantomResult)}`)
   console.log(`  startup failure spawn reply: ${JSON.stringify(spawnStartupFailureResult)}`)
   console.log(`  startup failure event: ${JSON.stringify(spawnStartupFailureEvent)}`)
+  console.log(`  visible capture reply: ${JSON.stringify(captureVisibleResult)}`)
+  console.log(`  backscroll capture reply: ${JSON.stringify(captureBackscrollResult)}`)
 
   // The daemon should always reply to every rpc id, regardless of success.
-  const allReplied = !!(listSessionsResult && unknownOpResult && sendKeyResult && spawnFailResult && spawnPhantomResult && spawnStartupFailureResult)
+  const allReplied = !!(listSessionsResult && unknownOpResult && sendKeyResult && spawnFailResult && spawnPhantomResult && spawnStartupFailureResult && captureVisibleResult && captureBackscrollResult)
   // Unknown op MUST return error.
   const unknownIsError = unknownOpResult?.error?.includes('unknown op')
   // list-sessions either returns ok with sessions array, or errors out
@@ -177,6 +193,11 @@ setTimeout(() => {
     && spawnStartupFailureResult.result.grantedCapability === 'write'
   const startupFailureEventSent = spawnStartupFailureEvent?.agent_id === 'fleet:startupauth123'
     && spawnStartupFailureEvent?.code === 'account-auth-startup-error'
+  const visibleCaptureUsesCurrentPane = captureVisibleResult?.result?.ok === true
+    && /capture-pane/.test(captureVisibleResult.result.pane || '')
+    && !/(^| )-S( |$)/.test(captureVisibleResult.result.pane || '')
+  const backscrollCaptureUsesStart = captureBackscrollResult?.result?.ok === true
+    && /(^| )-S -80(\s|$)/.test(captureBackscrollResult.result.pane || '')
   const argLog = readFileSync(ARG_LOG, 'utf8')
   const falseSuccessArgs = argLog.split('\n').find(line => line.includes('false-success-canary')) || ''
   const daemonGrantedWrite = falseSuccessArgs.includes('--spawn-capability write')
@@ -188,11 +209,11 @@ setTimeout(() => {
   wss.close()
   rmSync(TMP, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 
-  if (helloOk && allReplied && unknownIsError && listOk && sendOk && spawnFailureSurfaced && phantomSpawnRejected && startupFailureSurfaced && startupFailureEventSent && daemonGrantedWrite) {
+  if (helloOk && allReplied && unknownIsError && listOk && sendOk && spawnFailureSurfaced && phantomSpawnRejected && startupFailureSurfaced && startupFailureEventSent && visibleCaptureUsesCurrentPane && backscrollCaptureUsesStart && daemonGrantedWrite) {
     console.log('PASS')
     process.exit(0)
   } else {
-    console.error(`FAIL — helloOk=${helloOk} allReplied=${allReplied} unknownIsError=${unknownIsError} listOk=${listOk} sendOk=${!!sendOk} spawnFailureSurfaced=${spawnFailureSurfaced} phantomSpawnRejected=${phantomSpawnRejected} startupFailureSurfaced=${startupFailureSurfaced} startupFailureEventSent=${startupFailureEventSent} daemonGrantedWrite=${daemonGrantedWrite} falseSuccessArgs=${JSON.stringify(falseSuccessArgs)}`)
+    console.error(`FAIL — helloOk=${helloOk} allReplied=${allReplied} unknownIsError=${unknownIsError} listOk=${listOk} sendOk=${!!sendOk} spawnFailureSurfaced=${spawnFailureSurfaced} phantomSpawnRejected=${phantomSpawnRejected} startupFailureSurfaced=${startupFailureSurfaced} startupFailureEventSent=${startupFailureEventSent} visibleCaptureUsesCurrentPane=${visibleCaptureUsesCurrentPane} backscrollCaptureUsesStart=${backscrollCaptureUsesStart} daemonGrantedWrite=${daemonGrantedWrite} falseSuccessArgs=${JSON.stringify(falseSuccessArgs)}`)
     process.exit(1)
   }
 }, 2500)

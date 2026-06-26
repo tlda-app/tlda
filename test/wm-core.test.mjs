@@ -19,7 +19,7 @@ const compiled = ts.transpileModule(source, {
 const modulePath = join(tempDir, 'wm-core.mjs')
 writeFileSync(modulePath, compiled)
 
-const { createWMCore } = await import(modulePath)
+const { createLayerMembership, createLayerOwner, createWMCore } = await import(modulePath)
 
 test.after(() => {
 	rmSync(tempDir, { recursive: true, force: true })
@@ -86,6 +86,36 @@ test('bridges viewport-backed layers through the fork endpoint adapter', () => {
 	])
 })
 
+test('bridges page-backed layers through document page coordinates', () => {
+	const calls = []
+	const editor = {
+		pageToScreen(point) {
+			calls.push(['pageToScreen', point])
+			return { x: point.x + 300, y: point.y + 40 }
+		},
+		screenToPage(point) {
+			calls.push(['screenToPage', point])
+			return { x: point.x - 300, y: point.y - 40 }
+		},
+	}
+
+	const wm = createWMCore()
+	wm.defineLayer('document-page', {
+		backing: { kind: 'page', editor },
+	})
+	wm.defineLayer('hud', {
+		transform: { x: 20, y: 10, scale: 1 },
+		policy: { x: 'pin', y: 'pin', zoom: 'lock' },
+	})
+
+	assert.deepEqual(wm.translate({ x: -100, y: 5 }, 'document-page', 'hud'), { x: 180, y: 35 })
+	assert.deepEqual(wm.translate({ x: 180, y: 35 }, 'hud', 'document-page'), { x: -100, y: 5 })
+	assert.deepEqual(calls, [
+		['pageToScreen', { x: -100, y: 5 }],
+		['screenToPage', { x: 200, y: 45 }],
+	])
+})
+
 test('translates bounds with scale and offset', () => {
 	const wm = createWMCore()
 	wm.defineLayer('content', {
@@ -138,4 +168,15 @@ test('reads and writes viewport-backed layer cameras through the adapter when av
 	assert.deepEqual(wm.camera('doc-window'), { x: 1, y: 2, z: 3 })
 	wm.setCamera('doc-window', { x: 4, y: 5, z: 6 })
 	assert.deepEqual(wm.camera('doc-window'), { x: 4, y: 5, z: 6 })
+})
+
+test('creates reusable owner and layer membership descriptors', () => {
+	const owner = createLayerOwner('fleet:tester', 'mini')
+
+	assert.deepEqual(owner, { userId: 'fleet:tester', deviceId: 'mini' })
+	assert.deepEqual(createLayerMembership('fleet-overlay', owner), {
+		layerId: 'fleet-overlay',
+		userId: 'fleet:tester',
+		deviceId: 'mini',
+	})
 })

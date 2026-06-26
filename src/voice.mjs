@@ -280,6 +280,12 @@ let _activeAgentNames = {}
 let _activeAgentColor = null
 let _activeSendFn = null
 let _voiceDumping = false
+// The real field voice was routed to just before going to <nowhere>, captured so
+// the sink's second click can wipe its in-flight interim (left+right kept).
+let _sinkPrevTextarea = null
+let _sinkPrevAccumulator = null
+let _sinkPrevLeft = ''
+let _sinkPrevRight = ''
 
 // Accumulator target — alternative to _activeTextarea for code editors etc.
 // When set, fillTextarea() calls onUpdate instead of writing to a DOM element.
@@ -336,6 +342,16 @@ const DOT_AMBER = '#c8956a'
 const DOT_GREEN_OPACITY = '0.4'
 const DOT_AMBER_OPACITY = '0.4'
 const AUDIO_FLOWING_MS = 3000  // switch to amber after this long without a result
+const MIC_INPUT_TIMEOUT_MS = 1500  // no raw mic frame for this long → honest "no mic input"
+
+// Honest mic status from RAW frame arrival (not Deepgram results), so a
+// silently-dead/muted mic reads as "no mic input" instead of a fake "mic live".
+// Pure → unit-tested. `micAgo` = ms since the last worklet frame (null = none yet).
+function micPresence(micAgo, ctxState, timeoutMs = MIC_INPUT_TIMEOUT_MS) {
+  if (ctxState === 'closed') return 'no-input'
+  if (micAgo == null || micAgo > timeoutMs) return 'no-input'
+  return 'live'
+}
 let _healthDot = null
 let _healthDotTimer = null
 let _voiceHealthLabel = ''
@@ -467,8 +483,48 @@ function hideDontSpeak() {
   if (_dontSpeakOverlay) _dontSpeakOverlay.style.display = 'none'
 }
 
+// The `start` message carries the user-tunable conservation params (Preferences →
+// fleet_prefs) so Skip can adjust the feel from the panel without a rebuild; the
+// bridge applies them per-connection (falling back to its own defaults).
+function dgStartMsg() {
+  return JSON.stringify({
+    type: 'start',
+    idleMs: getPref('voice-idle-cutoff-ms'),
+    prerollMs: getPref('voice-preroll-ms'),
+    resumeRms: getPref('voice-resume-rms'),
+    // Deepgram recognition-window params (applied via the bridge's voiceParams hook).
+    endpointing: getPref('voice-endpointing'),
+    utterance_end_ms: getPref('voice-utterance-end-ms'),
+  })
+}
+
+// Tell the bridge to drop/restore the upstream Deepgram session as routing and
+// tab visibility change, so we stream only while actively dictating in the active
+// tab (Skip's principle). The mic stays live throughout — only the upstream
+// routing toggles, so resume is instant.
+function reconcileUpstream() {
+  if (!_deepgramWs || _deepgramWs.readyState !== WebSocket.OPEN || !_deepgramConnected || _backend !== 'deepgram') return
+  const action = upstreamAction({
+    recording: _recording,
+    routed: voiceHasRoute(),
+    tabHidden: typeof document !== 'undefined' && document.hidden,
+    paused: _dgUpstreamPaused,
+  })
+  if (action === 'pause') {
+    try { _deepgramWs.send(JSON.stringify({ type: 'stop' })) } catch { /* WS race; reconcile retries next tick */ }
+    _dgUpstreamPaused = true
+    vlog('upstream paused (routed-to-nowhere or tab backgrounded)')
+  } else if (action === 'resume') {
+    try { _deepgramWs.send(dgStartMsg()) } catch { /* WS race; reconcile retries next tick */ }
+    _dgUpstreamPaused = false
+    vlog('upstream resumed (routed + foreground)')
+  }
+}
+
 function sendDeepgramAudioChunk(data) {
   if (!_deepgramWs || !_deepgramConnected || !_recording) return false
+  reconcileUpstream()
+  if (_dgUpstreamPaused) return false   // routed-to-nowhere / backgrounded — don't stream (don't bill)
   try {
     _deepgramWs.send(data)
   } catch (err) {
@@ -706,6 +762,23 @@ export function dumpVoiceTarget() {
   enterVoiceSink()
 }
 
+// True when voice is routed to a real destination (a textarea, an accumulator,
+// or chat send-targets) and NOT dumping to nowhere. Streaming to Deepgram is
+// gated on this so "recording to nowhere" / dumb mode never bills.
+function voiceHasRoute() {
+  return !_voiceDumping && (!!_activeTextarea || !!_accumulator || _activeSendTargets.length > 0)
+}
+
+// Pure decision for the upstream lifecycle (unit-tested). `paused` = we've already
+// told the bridge to stop. Returns the action to take this tick.
+//   'resume' → send {start}, stream      'pause' → send {stop}, stop streaming
+//   'send'   → stream (already active)    'hold'  → stay paused, don't stream
+export function upstreamAction({ recording, routed, tabHidden, paused }) {
+  const want = recording && routed && !tabHidden
+  if (want) return paused ? 'resume' : 'send'
+  return paused ? 'hold' : 'pause'
+}
+
 function targetLabel() {
   if (_voiceDumping) return '<nowhere>'
   if (_accumulator) return _accumulator.label || 'note'
@@ -742,12 +815,32 @@ export function maybeHandleVoiceSinkPointerDown(event) {
   return true
 }
 
+// Second click on the <nowhere> shape: wipe ONLY the in-flight interim from the
+// last real field voice was dictating into (the chat/text field) — left + right
+// (committed text + anything after the cursor) stay untouched. Targets the field
+// captured on entry, since by now voice is routed to nowhere.
 function clearCurrentSinkInterim() {
+  // The fix: wipe the in-flight interim from the last real field voice was
+  // dictating into (left + right kept). This is the actual visible effect — the
+  // old code only cleared the sink's own buffer, which renders nowhere (a no-op).
+  const hadField = !!(_sinkPrevTextarea || _sinkPrevAccumulator)
+  if (_sinkPrevTextarea) {
+    const kept = postProcessTranscript(_sinkPrevLeft + _sinkPrevRight)
+    const cursor = postProcessTranscript(_sinkPrevLeft).length
+    _filling = true
+    _sinkPrevTextarea.value = kept
+    try { _sinkPrevTextarea.setSelectionRange(cursor, cursor) } catch { /* cursor restore is best-effort (element may not support selection) */ }
+    _sinkPrevTextarea.dispatchEvent(new Event('input', { bubbles: true }))
+    _filling = false
+  } else if (_sinkPrevAccumulator) {
+    _sinkPrevAccumulator.onUpdate(postProcessTranscript(_sinkPrevLeft + _sinkPrevRight))
+  }
+  // Also reset the sink's own (nowhere) buffer so the next dictation starts fresh.
   _state = 'edit'
   _left = _interim = _right = ''
   if (_backend === 'deepgram') resetDeepgramTextState()
   if (_backend === 'whisper-stream') flushWhisperBridge()
-  showHud('<nowhere> cleared', '#9370db')
+  showHud(hadField ? 'interim cleared' : '<nowhere> cleared', '#9370db')
   fadeHud(1500)
 }
 
@@ -756,6 +849,12 @@ export function enterVoiceSink() {
     clearCurrentSinkInterim()
     return
   }
+  // Remember the real field (and its committed surroundings) before we drop it,
+  // so a second click can wipe just its interim.
+  _sinkPrevTextarea = _activeTextarea
+  _sinkPrevAccumulator = _accumulator
+  _sinkPrevLeft = _left
+  _sinkPrevRight = _right
   if (_inputListeners && _activeTextarea) {
     _activeTextarea.removeEventListener('input', _inputListeners.input)
     _activeTextarea.removeEventListener('click', _inputListeners.click)
@@ -1116,12 +1215,14 @@ function disconnectWhisperBridge() {
 
 let _deepgramWs = null
 let _deepgramConnected = false
+let _dgUpstreamPaused = false   // we've told the bridge to `stop` (routed-to-nowhere or tab backgrounded); not streaming
 let _deepgramStream = null      // MediaStream from getUserMedia
 let _deepgramContext = null      // AudioContext
 let _deepgramWorklet = null      // AudioWorkletNode — captures mic on the audio thread, posts Int16 PCM
 let _deepgramInterim = ''        // current interim result (replaced on each interim)
 let _dgHasSeenInterim = false   // true after first interim in current session; guards against post-send final bleed
 let _lastAudioChunkTime = 0     // timestamp of last audio chunk sent to bridge (for heartbeat logging)
+let _lastMicFrameTime = 0       // timestamp of last RAW worklet frame (mic delivering), stamped pre-gate
 let _audioHeartbeatInterval = null  // periodic interval that logs audio-flow health
 let _dgTrickleWords = []         // words currently being trickled in
 let _dgTrickleShown = 0          // how many trickle words are visible
@@ -1402,7 +1503,8 @@ function connectDeepgramBridge() {
       _voiceHealthLabel = 'recognizer connected'
       showRecordingHud()
       vlog('bridge WS open')
-      _deepgramWs.send(JSON.stringify({ type: 'start' }))
+      _dgUpstreamPaused = false   // fresh bridge session starts streaming
+      _deepgramWs.send(dgStartMsg())
     }
     _deepgramWs.onmessage = onDeepgramMessage
     _deepgramWs.onclose = () => {
@@ -1501,6 +1603,7 @@ async function startDeepgramMic() {
 
   _deepgramWorklet = new AudioWorkletNode(_deepgramContext, 'deepgram-capture')
   _deepgramWorklet.port.onmessage = (e) => {
+    _lastMicFrameTime = Date.now()   // raw mic delivery — stamped BEFORE the route/idle gate so a paused-but-live mic still reads as live
     sendDeepgramAudioChunk(e.data)
   }
   source.connect(_deepgramWorklet)
@@ -1561,6 +1664,29 @@ async function startDeepgramMic() {
       showDontSpeak('mic stopped; restarting')
       stopDeepgramMic()
       startDeepgramMic()
+      return
+    }
+
+    // #5 — honest mic status. Drive the HUD off RAW mic-frame arrival so a
+    // silently-dead/muted mic reads as "no mic input" instead of staying on a
+    // fake "mic live". Label-only (NEVER a teardown — see the root-cause note
+    // above; this is the safe use of the timestamp). The frame stamp is pre-gate,
+    // so a conservation pause (dumb/idle/background) keeps reading as live.
+    if (_backend === 'deepgram') {
+      const micAgo = _lastMicFrameTime ? Date.now() - _lastMicFrameTime : null
+      const presence = micPresence(micAgo, ctxState)
+      if (presence === 'no-input' && _voiceHealthLabel !== 'no mic input') {
+        _voiceHealthLabel = 'no mic input'
+        const dot = ensureHealthDot()
+        dot.style.backgroundColor = DOT_AMBER
+        dot.style.opacity = DOT_AMBER_OPACITY
+        showRecordingHud()
+      } else if (presence === 'live' && _voiceHealthLabel === 'no mic input') {
+        // Mic delivering again — recover the normal label (don't clobber a live
+        // 'speech detected' state; we only get here if we were showing no-input).
+        _voiceHealthLabel = _deepgramConnected ? 'mic live; waiting for speech' : 'waiting for recognizer'
+        showRecordingHud()
+      }
     }
   }, 1000)
 }
@@ -1651,6 +1777,8 @@ if (typeof window !== 'undefined') {
     },
     simulateDeepgramAudioFrame: (data = new Int16Array([1]).buffer) => sendDeepgramAudioChunk(data),
     micWatchdogAction: (ctxState) => micWatchdogAction(ctxState),
+    upstreamAction: (s) => upstreamAction(s),
+    micPresence: (micAgo, ctxState, timeoutMs) => micPresence(micAgo, ctxState, timeoutMs),
   }
 }
 
@@ -1667,6 +1795,7 @@ function startRecording() {
   _micChannel?.postMessage('mic-start')
 
   _recording = true
+  _dgUpstreamPaused = false   // fresh recording — upstream is active until routing/tab says otherwise
   emitRecordingChange()
   _state = 'edit'
   _generation++
@@ -1683,7 +1812,7 @@ function startRecording() {
     startDeepgramMic()
     // Ensure Deepgram session is started (may have been stopped by hardResetVoice)
     if (_deepgramWs && _deepgramConnected) {
-      try { _deepgramWs.send(JSON.stringify({ type: 'start' })) } catch {}
+      try { _deepgramWs.send(dgStartMsg()) } catch { /* WS race; onopen re-sends start */ }
     }
   } else if (_backend === 'whisper-stream') {
     // whisper-stream captures mic directly — no browser mic needed.
@@ -1981,6 +2110,14 @@ export async function initVoice() {
       try { _recognition.abort() } catch {}
       _recognition = null
     }
+    // Active-tab-only: a backgrounded tab releases its upstream Deepgram session
+    // (don't stream from a tab nobody's looking at — those phantom sessions fed
+    // the storm). reconcileUpstream() sees document.hidden and sends `stop`; the
+    // AudioContext may suspend on background, so we can't rely on the audio path.
+    if (document.hidden && _recording && _backend === 'deepgram') {
+      reconcileUpstream()
+      return
+    }
     if (!document.hidden && _recording) {
       if (_backend === 'deepgram') {
         // Resume AudioContext if suspended (tab came back from background)
@@ -1993,6 +2130,8 @@ export async function initVoice() {
           vlog('visibilitychange: bridge disconnected — reconnecting')
           connectDeepgramBridge()
         }
+        // Foreground again → restore upstream (reconcileUpstream sends `start`).
+        reconcileUpstream()
         return
       }
       // Tab became visible again — Chrome may have suspended recognition.

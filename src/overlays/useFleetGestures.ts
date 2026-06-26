@@ -26,6 +26,7 @@ import { useEffect } from 'react'
 import type { Editor, TLShape } from 'tldraw'
 import { log } from '../logger'
 import { FLEET_SHAPE_TYPES } from '../shapes/fleet-utils'
+import { isDocumentPageShape } from '../shapes/document-pages'
 
 const LOG_NS = 'fleet-gesture'
 
@@ -425,6 +426,11 @@ function consumeTouchEvent(e: TouchEvent) {
   e.stopImmediatePropagation()
 }
 
+function stopTouchEvent(e: TouchEvent) {
+  e.stopPropagation()
+  e.stopImmediatePropagation()
+}
+
 // My fleet shapes that share a margin with the seed shapes. Source the set from
 // the OVERLAY editor, not the main store: the overlay holds only my current
 // (identity, device) shapes, so other devices' sets and junk-identity orphans —
@@ -526,10 +532,59 @@ const PAN_LOCK_INITIAL = 8    // px of (decayed) travel before the lock engages
 const PAN_BREAK_RATIO = 1.6   // off-axis must out-travel the locked axis by this to flip it
 const PAN_OFFAXIS_DAMP = 0.12 // residual off-axis fraction while locked (0 would be a hard lock)
 const PAN_AXIS_DECAY = 0.8    // per-move decay of the axis accumulators (recent-motion weighting)
+const PHONE_LANE_LOCK = 16
+const PHONE_LANE_AXIS_RATIO = 1.2
+const PHONE_LANE_SNAP_DURATION = 160
 const RESIZE_AXIS_LOCK_INITIAL = 12
 const RESIZE_AXIS_BREAK_RATIO = 1.6
 const RESIZE_AXIS_OFFAXIS_DAMP = 0.12
 const RESIZE_AXIS_DECAY = 0.8
+
+function isPhoneMode() {
+  return typeof document !== 'undefined' && document.body.classList.contains('phone-mode')
+}
+
+function getPrimaryDocumentLeft(editor: Editor): number | null {
+  const pages = editor.getCurrentPageShapes().filter(isDocumentPageShape)
+  if (pages.length === 0) return null
+  const viewport = editor.getViewportPageBounds()
+  const midY = viewport.minY + viewport.height / 2
+  let best: { x: number; d: number } | null = null
+  for (const page of pages) {
+    const bounds = editor.getShapePageBounds(page.id)
+    if (!bounds) continue
+    const d = Math.abs((bounds.y + bounds.h / 2) - midY)
+    if (!best || d < best.d) best = { x: bounds.x, d }
+  }
+  return best?.x ?? null
+}
+
+function nearestPhoneLaneDocLeftScreen(docLeftScreen: number, screenW: number): { lane: string; docLeftScreen: number } {
+  const stops = [
+    { lane: 'agents-inbox', docLeftScreen: screenW * 2 },
+    { lane: 'chat', docLeftScreen: screenW },
+    { lane: 'document', docLeftScreen: 0 },
+  ]
+  return stops.reduce((best, stop) =>
+    Math.abs(stop.docLeftScreen - docLeftScreen) < Math.abs(best.docLeftScreen - docLeftScreen) ? stop : best,
+  )
+}
+
+function snapPhoneLane(editor: Editor, docLeftPage: number) {
+  const camera = editor.getCamera()
+  const screenW = editor.getViewportScreenBounds().w
+  if (!screenW || !Number.isFinite(screenW)) return
+  const currentDocLeftScreen = (docLeftPage + camera.x) * camera.z
+  const target = nearestPhoneLaneDocLeftScreen(currentDocLeftScreen, screenW)
+  const x = target.docLeftScreen / camera.z - docLeftPage
+  log.debug(LOG_NS, 'phone fleet lane snap', {
+    lane: target.lane,
+    docLeftScreen: Math.round(currentDocLeftScreen),
+    targetDocLeftScreen: Math.round(target.docLeftScreen),
+    screenW: Math.round(screenW),
+  })
+  editor.setCamera({ ...camera, x }, { animation: { duration: PHONE_LANE_SNAP_DURATION } })
+}
 
 export function applyShapeResizeAxisLock(input: {
   enabled: boolean
@@ -561,6 +616,7 @@ type GestureState =
   | { kind: 'none' }
   | { kind: 'shape'; mode: 'pending' | 'combined'; moveActive: boolean; resizeActive: boolean; id: string; type: string; x0: number; y0: number; w0: number; h0: number; d0: number; sx0: number; sy0: number; relX: number; relY: number; c0: { x: number; y: number }; p0: { x: number; y: number }; resizeAxis: 'x' | 'y' | null; resizeAccX: number; resizeAccY: number; writeCount: number }
   | { kind: 'cluster'; mode: 'pending' | 'combined'; moveActive: boolean; resizeActive: boolean; shapes: { id: string; type: string; x0: number; y0: number; w0: number; h0: number }[]; anchor: { x: number; y: number }; d0: number; sx0: number; sy0: number; c0: { x: number; y: number }; p0: { x: number; y: number }; writeCount: number }
+  | { kind: 'phone-lane'; mode: 'pending' | 'dragging'; x0: number; y0: number; cameraX0: number; z0: number; docLeftPage: number; lastDx: number }
   // 3-finger: pan the main canvas from anywhere (even over the panels). Drive the
   // main camera; the HUD's camera-poll mirrors a main-camera pan onto the HUD.
   // Keep z byte-identical — a z wobble makes the poll skip the HUD update.
@@ -1375,6 +1431,30 @@ export function useFleetGestures(opts: {
         return
       }
 
+      if (ts.length === 1 && isPhoneMode()) {
+        const hit = fleetHitAtScreen(overlay, ts[0].clientX, ts[0].clientY, viewportId)
+        if (hit?.shape) {
+          const docLeftPage = getPrimaryDocumentLeft(main)
+          if (docLeftPage !== null) {
+            state = {
+              kind: 'phone-lane',
+              mode: 'pending',
+              x0: ts[0].clientX,
+              y0: ts[0].clientY,
+              cameraX0: main.getCamera().x,
+              z0: main.getCamera().z,
+              docLeftPage,
+              lastDx: 0,
+            }
+            log.debug(LOG_NS, 'phone lane pending', {
+              shape: { id: hit.shape.id, type: hit.shape.type },
+              x: Math.round(ts[0].clientX),
+              y: Math.round(ts[0].clientY),
+            })
+          }
+        }
+      }
+
       if (ts.length === 2) {
         const hit0 = fleetHitAtScreen(overlay, ts[0].clientX, ts[0].clientY, viewportId)
         const hit1 = fleetHitAtScreen(overlay, ts[1].clientX, ts[1].clientY, viewportId)
@@ -1555,6 +1635,33 @@ export function useFleetGestures(opts: {
       if (!overlay) return
       const main = getMainEditor(mainEditor)
       const ts = Array.from(e.touches)
+
+      if (state.kind === 'phone-lane') {
+        if (ts.length !== 1) {
+          state = { kind: 'none' }
+          setGestureActive(false)
+          return
+        }
+        const dx = ts[0].clientX - state.x0
+        const dy = ts[0].clientY - state.y0
+        state.lastDx = dx
+        if (state.mode === 'pending') {
+          if (Math.abs(dy) >= PHONE_LANE_LOCK && Math.abs(dy) > Math.abs(dx)) {
+            state = { kind: 'none' }
+            return
+          }
+          if (Math.abs(dx) < PHONE_LANE_LOCK || Math.abs(dx) < Math.abs(dy) * PHONE_LANE_AXIS_RATIO) return
+          state.mode = 'dragging'
+          setGestureActive(true)
+          log.debug(LOG_NS, 'phone lane drag start', { dx: Math.round(dx), dy: Math.round(dy) })
+        }
+        stopTouchEvent(e)
+        main.setCamera(
+          { ...main.getCamera(), x: state.cameraX0 + dx / state.z0, z: state.z0 },
+          { animation: { duration: 0 } },
+        )
+        return
+      }
 
       if (state.kind === 'pan') {
         consumeTouchEvent(e)
@@ -1742,6 +1849,15 @@ export function useFleetGestures(opts: {
       const overlay = overlayEditorRef.current
       recordTouchFrame(e, overlay, getMainEditor(mainEditor), state.kind)
       logTouchSnapshot(e.type === 'touchcancel' ? 'touchcancel' : 'touchend', e, overlay, el, state.kind)
+      if (state.kind === 'phone-lane') {
+        if (state.mode === 'dragging') {
+          stopTouchEvent(e)
+          snapPhoneLane(getMainEditor(mainEditor), state.docLeftPage)
+        }
+        state = { kind: 'none' }
+        setGestureActive(false, 250)
+        return
+      }
       if (state.kind !== 'none' && e.touches.length < 2) {
         log.debug(LOG_NS, 'gesture reset', { previousKind: state.kind, remainingTouches: e.touches.length, eventType: e.type })
       }
@@ -1764,10 +1880,29 @@ export function useFleetGestures(opts: {
       reset(e)
     }
 
+    const onGlobalPhoneLaneStart = (e: TouchEvent) => {
+      if (!isPhoneMode() || e.touches.length !== 1) return
+      onTouchStart(e)
+    }
+
+    const onGlobalPhoneLaneMove = (e: TouchEvent) => {
+      if (state.kind !== 'phone-lane') return
+      onTouchMove(e)
+    }
+
+    const onGlobalPhoneLaneEnd = (e: TouchEvent) => {
+      if (state.kind !== 'phone-lane') return
+      reset(e)
+    }
+
     window.addEventListener('touchstart', onGlobalThreeFingerStart, { passive: false, capture: true })
     window.addEventListener('touchmove', onGlobalThreeFingerMove, { passive: false, capture: true })
     window.addEventListener('touchend', onGlobalThreeFingerEnd, { capture: true })
     window.addEventListener('touchcancel', onGlobalThreeFingerEnd, { capture: true })
+    window.addEventListener('touchstart', onGlobalPhoneLaneStart, { passive: false, capture: true })
+    window.addEventListener('touchmove', onGlobalPhoneLaneMove, { passive: false, capture: true })
+    window.addEventListener('touchend', onGlobalPhoneLaneEnd, { capture: true })
+    window.addEventListener('touchcancel', onGlobalPhoneLaneEnd, { capture: true })
     el.addEventListener('touchstart', onTouchStart, { passive: false, capture: true })
     el.addEventListener('touchmove', onTouchMove, { passive: false, capture: true })
     el.addEventListener('touchend', reset, { capture: true })
@@ -1783,14 +1918,18 @@ export function useFleetGestures(opts: {
         delete (window as any).__fleetGestureCleanup
       }
       log.warn(LOG_NS, 'gesture listener removed', { target: 'hud' })
-      window.removeEventListener('touchstart', onGlobalThreeFingerStart, { capture: true } as any)
-      window.removeEventListener('touchmove', onGlobalThreeFingerMove, { capture: true } as any)
-      window.removeEventListener('touchend', onGlobalThreeFingerEnd, { capture: true } as any)
-      window.removeEventListener('touchcancel', onGlobalThreeFingerEnd, { capture: true } as any)
-      el.removeEventListener('touchstart', onTouchStart, { capture: true } as any)
-      el.removeEventListener('touchmove', onTouchMove, { capture: true } as any)
-      el.removeEventListener('touchend', reset, { capture: true } as any)
-      el.removeEventListener('touchcancel', reset, { capture: true } as any)
+      window.removeEventListener('touchstart', onGlobalThreeFingerStart, true)
+      window.removeEventListener('touchmove', onGlobalThreeFingerMove, true)
+      window.removeEventListener('touchend', onGlobalThreeFingerEnd, true)
+      window.removeEventListener('touchcancel', onGlobalThreeFingerEnd, true)
+      window.removeEventListener('touchstart', onGlobalPhoneLaneStart, true)
+      window.removeEventListener('touchmove', onGlobalPhoneLaneMove, true)
+      window.removeEventListener('touchend', onGlobalPhoneLaneEnd, true)
+      window.removeEventListener('touchcancel', onGlobalPhoneLaneEnd, true)
+      el.removeEventListener('touchstart', onTouchStart, true)
+      el.removeEventListener('touchmove', onTouchMove, true)
+      el.removeEventListener('touchend', reset, true)
+      el.removeEventListener('touchcancel', reset, true)
     }
     w.__fleetGestureCleanup = cleanup
     return cleanup

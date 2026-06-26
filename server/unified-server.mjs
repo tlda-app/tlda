@@ -1726,6 +1726,7 @@ function normalizeItem(raw = {}, fallback = {}) {
     text: raw.text || fallback.text,
     command: raw.command ?? fallback.command,
     group: raw.group || fallback.group,
+    messageId: raw.messageId ?? fallback.messageId ?? null,
   }
 }
 
@@ -1764,7 +1765,7 @@ function dismissItem(userId, itemId) {
 function suggestionToItem(agentId, s) {
   return normalizeItem({
     ...s,
-    id: `suggest:${agentId}:${s.group || s.id}`,
+    id: `suggest:${agentId}:${s.messageId || ''}:${s.group || s.id}`,
     kind: 'suggest',
     from: agentId,
     targetId: s.targetId || agentId,
@@ -2646,7 +2647,7 @@ server.on('upgrade', async (req, socket, head) => {
       // the screen as `pane` (see rpcCapturePane in fleet-daemon.mjs).
       try {
         const { pane } = await sendRpc(agent.machine_id, 'capture-pane', {
-          tmux_session: agent.tmux_session, lines: 80,
+          tmux_session: agent.tmux_session, visible: true,
         })
         if (pane && ws.readyState === 1) {
           // capture-pane emits bare `\n` line endings; xterm has no convertEol,
@@ -2774,8 +2775,12 @@ server.on('upgrade', async (req, socket, head) => {
         remotePort,
       })
 
-      // Send initial state on connect
-      if (fleetStore) {
+      // Browser fleet clients need the full connect snapshot to seed the agents
+      // panel and task list. Agent/MCP clients connect with ?agent=... and only
+      // use this socket for RPC replies + targeted fleet-event notifications;
+      // sending the full roster/task snapshot there is a multi-MB startup tax
+      // that can delay ordinary my_task/chat/delegate requests.
+      if (fleetStore && !agentFilter) {
         const initState = {
           // Full roster incl. dead. Panel filters dead client-side, but the
           // client needs dead agents present to chat them + show "resurrect?".
