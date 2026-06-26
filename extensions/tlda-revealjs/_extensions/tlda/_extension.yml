@@ -1,0 +1,36 @@
+title: tlda RevealJS
+author: tlda contributors
+version: 0.1.0
+quarto-required: ">=1.2.0"
+contributes:
+  formats:
+    revealjs:
+      touch: false
+      controls: true
+      controls-layout: edges
+      embed-resources: false
+      fig-format: svg
+      auto-stretch: false
+      html-math-method: mathjax
+      include-in-header:
+        text: |
+          <script>
+            window.MathJax = {
+              options: {
+                menuOptions: {
+                  settings: {
+                    assistiveMml: false,
+                    collapsible: false,
+                    explorer: false
+                  }
+                }
+              },
+              loader: {load: ['[tex]/physics', '[tex]/unicode']},
+              tex: {packages: {'[+]': ['physics', 'unicode']}}
+            }
+          </script>
+      knitr:
+        opts_chunk:
+          dev: svglite
+          dev.args:
+            bg: transparent
