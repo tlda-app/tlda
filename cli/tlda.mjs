@@ -1586,10 +1586,12 @@ function padRight(value, width) {
 async function listFleetAgents() {
   if (hasFlag('local')) return listLocalAgents()
   const limit = Number(getFlag('limit', '200')) || 200
-  const data = await api('GET', `/api/fleet-table?limit=${encodeURIComponent(String(limit))}`)
+  const data = await api('GET', `/api/fleet-roster-truth?limit=${encodeURIComponent(String(limit))}`)
   const agents = Array.isArray(data.agents) ? data.agents : []
   const totals = data.totals || { awake: 0, hibernating: 0, dead: 0, total: agents.length }
-  console.log(`Fleet agents: ${totals.awake || 0} awake · ${totals.hibernating || 0} hibernating · ${totals.dead || 0} dead · ${totals.total || 0} total`)
+  const panes = data.panes || { fleet: 0, stale: 0, registry_without_pane: 0 }
+  console.log(`Fleet registry: ${totals.awake || 0} awake · ${totals.hibernating || 0} hibernating · ${totals.dead || 0} dead · ${totals.total || 0} total`)
+  console.log(`Tmux panes: ${panes.fleet || 0} fleet · ${panes.stale || 0} stale · ${panes.registry_without_pane || 0} registry-without-pane`)
   if (data.matched > agents.length) {
     console.log(dim(`Showing ${agents.length}/${data.matched}; use --limit ${data.matched} for the full table.`))
   }
@@ -1599,16 +1601,31 @@ async function listFleetAgents() {
   }
 
   const groups = new Map()
+  for (const m of data.machines || []) {
+    if (!groups.has(m.machine_id)) groups.set(m.machine_id, { rows: [], truth: m })
+  }
   for (const a of agents) {
     const machine = a.machine_id || 'unassigned'
-    if (!groups.has(machine)) groups.set(machine, [])
-    groups.get(machine).push(a)
+    if (!groups.has(machine)) groups.set(machine, { rows: [], truth: null })
+    groups.get(machine).rows.push(a)
   }
   const statusRank = { awake: 0, thinking: 0, compacting: 0, hibernating: 1, dead: 2 }
   const sortedGroups = [...groups.entries()].sort(([a], [b]) => a.localeCompare(b))
-  for (const [machine, rows] of sortedGroups) {
+  for (const [machine, group] of sortedGroups) {
+    const rows = group.rows
     rows.sort((a, b) => (statusRank[a.status] ?? 3) - (statusRank[b.status] ?? 3) || (a.name || a.id).localeCompare(b.name || b.id))
-    console.log(`\n${machine} (${rows.length})`)
+    const truth = group.truth
+    const suffix = truth
+      ? ` — ${truth.registry.awake} awake, ${truth.registry.hibernating} hibernating, ${truth.registry.dead} dead; ${truth.panes.fleet} panes, ${truth.panes.stale} stale`
+      : ''
+    console.log(`\n${machine} (${rows.length})${suffix}`)
+    if (truth?.registry_without_pane) {
+      console.log(dim(`  ${truth.registry_without_pane} registry rows have no tmux pane on this connected daemon.`))
+    }
+    if (truth?.stale_panes?.length) {
+      const names = truth.stale_panes.slice(0, 6).map(p => p.tmux_session.replace(/^fleet-/, '')).join(', ')
+      console.log(dim(`  stale panes: ${names}${truth.stale_panes.length > 6 ? ', …' : ''}`))
+    }
     console.log(`  ${padRight('status', 12)} ${padRight('agent', 24)} ${padRight('session', 28)} ${padRight('seen', 8)} cwd`)
     for (const a of rows) {
       const status = a.status || 'unknown'
