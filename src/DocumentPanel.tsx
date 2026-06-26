@@ -506,9 +506,10 @@ function PhonePageIndicator() {
 }
 
 export function PhoneOverlay() {
+  const doc = useContext(DocContext)
   const [menuOpen, setMenuOpen] = useState(false)
   const [tab, setTab] = useState<Tab>('toc')
-  const showTouchToc = IS_PHONE || IS_TOUCH_DEVICE
+  const showButtonToc = doc?.format === 'slides' || IS_PHONE || IS_TOUCH_DEVICE
 
   useEffect(() => {
     if (!IS_PHONE) return
@@ -523,18 +524,19 @@ export function PhoneOverlay() {
   }, [])
 
   useEffect(() => {
-    if (!showTouchToc || IS_PHONE) return
+    if (!showButtonToc || IS_PHONE) return
     document.body.classList.add('touch-toc-mode')
     return () => { document.body.classList.remove('touch-toc-mode') }
-  }, [showTouchToc])
+  }, [showButtonToc])
 
-  if (!showTouchToc) return null
+  if (!showButtonToc) return null
 
   return (
     <>
       {/* Menu toggle — top right: opens TOC + shows toolbar */}
       <button
         className="phone-toc-btn"
+        aria-label={menuOpen ? 'Close table of contents' : 'Open table of contents'}
         onClick={() => setMenuOpen(!menuOpen)}
         onPointerDown={stopEventPropagation}
         onPointerUp={stopEventPropagation}

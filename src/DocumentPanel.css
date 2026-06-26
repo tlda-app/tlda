@@ -1803,7 +1803,8 @@ html[data-theme="dark"] .snapshot-label {
    ======================== */
 
 /* Hide panel and toolbar on phone */
-body.phone-mode .doc-panel {
+body.phone-mode .doc-panel,
+body.touch-toc-mode .doc-panel {
   display: none;
 }
 
@@ -1845,7 +1846,16 @@ body.touch-toc-mode .phone-toc-btn {
   pointer-events: all;
   padding: 0;
   line-height: 1;
-  opacity: 0.5;
+  opacity: 0.14;
+  transition: opacity 0.2s, background-color 0.2s;
+}
+
+body.phone-mode .phone-toc-btn:hover,
+body.phone-mode .phone-toc-btn:active,
+body.touch-toc-mode .phone-toc-btn:hover,
+body.touch-toc-mode .phone-toc-btn:active {
+  background: rgba(255, 255, 255, 0.08);
+  opacity: 0.62;
 }
 
 /* phone-bar-btn removed — merged into single ☰ menu button */
@@ -1880,6 +1890,11 @@ body.touch-toc-mode .phone-toc-backdrop {
   font-size: 14px;
   color: rgba(0, 0, 0, 0.6);
   padding-top: calc(54px + env(safe-area-inset-top));
+}
+
+body.touch-toc-mode:not(.phone-mode) .phone-toc-modal {
+  width: min(340px, 42vw);
+  max-width: calc(100vw - 64px);
 }
 
 /* Override ghost opacity — modal content should be fully visible */
@@ -1926,6 +1941,16 @@ body.touch-toc-mode .phone-toc-backdrop {
   color: rgba(0, 0, 0, 0.4);
 }
 
+.phone-toc-modal .toc-diff-hint {
+  padding: 7px 12px;
+  color: rgba(0, 0, 0, 0.5);
+  opacity: 0.72;
+}
+
+.phone-toc-modal .toc-diff-hint:hover {
+  opacity: 0.9 !important;
+}
+
 .phone-toc-modal .search-input {
   font-size: 14px;
   color: rgba(0, 0, 0, 0.6);
@@ -1934,6 +1959,13 @@ body.touch-toc-mode .phone-toc-backdrop {
 /* Dark mode */
 html[data-theme="dark"] .phone-toc-btn {
   color: rgba(255, 255, 255, 0.5);
+}
+
+html[data-theme="dark"] body.phone-mode .phone-toc-btn:hover,
+html[data-theme="dark"] body.phone-mode .phone-toc-btn:active,
+html[data-theme="dark"] body.touch-toc-mode .phone-toc-btn:hover,
+html[data-theme="dark"] body.touch-toc-mode .phone-toc-btn:active {
+  background: rgba(255, 255, 255, 0.06);
 }
 
 html[data-theme="dark"] .phone-toc-modal {
@@ -1964,6 +1996,10 @@ html[data-theme="dark"] .phone-toc-modal .toc-item.section {
 
 html[data-theme="dark"] .phone-toc-modal .toc-item.subsection {
   color: rgba(255, 255, 255, 0.4);
+}
+
+html[data-theme="dark"] .phone-toc-modal .toc-diff-hint {
+  color: rgba(255, 255, 255, 0.5);
 }
 
 /* Highlighter button — bottom right, desktop + mobile */

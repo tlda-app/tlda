@@ -408,12 +408,12 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
     position: 'fixed',
     top: '50%',
     transform: 'translateY(-50%)',
-    opacity: 0.34,
+    opacity: 0.14,
   }
 
   const disabledBtnStyle: React.CSSProperties = {
     ...btnStyle,
-    opacity: 0.3,
+    opacity: 0.1,
     cursor: 'default',
   }
 
@@ -428,7 +428,7 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
     >
       <button
         className="slides-nav-button slides-nav-button--prev"
-        style={{ ...(isFirst ? disabledBtnStyle : btnStyle), left: 'max(6px, env(safe-area-inset-left))' }}
+        style={{ ...(isFirst ? disabledBtnStyle : btnStyle), left: 'max(12px, calc(env(safe-area-inset-left) + 12px))' }}
         onClick={handlePrev}
         disabled={isFirst}
         aria-label="Previous"
@@ -447,7 +447,7 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
       </span>
       <button
         className="slides-nav-button slides-nav-button--next"
-        style={{ ...(isLast ? disabledBtnStyle : btnStyle), right: 'max(6px, env(safe-area-inset-right))' }}
+        style={{ ...(isLast ? disabledBtnStyle : btnStyle), right: 'max(56px, calc(env(safe-area-inset-right) + 56px))' }}
         onClick={handleNext}
         disabled={isLast}
         aria-label="Next"
@@ -482,7 +482,7 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
           opacity: 0.7 !important;
         }
         .slides-navigator button:hover {
-          opacity: 0.55 !important;
+          opacity: 0.6 !important;
         }
         .slides-nav-counter {
           position: fixed;
