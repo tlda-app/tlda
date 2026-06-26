@@ -2892,7 +2892,20 @@ async function handleFleetWsMessage(ws, msg) {
     if (id) ws.send(JSON.stringify({ id, result }))
   }
   const error = (err) => {
-    if (id) ws.send(JSON.stringify({ id, error: err }))
+    if (!id) return
+    if (err && typeof err === 'object') {
+      ws.send(JSON.stringify({
+        id,
+        error: {
+          message: err.message || String(err),
+          code: err.code,
+          reason: err.reason,
+          ...(err.payload ? { payload: err.payload } : {}),
+        },
+      }))
+    } else {
+      ws.send(JSON.stringify({ id, error: err }))
+    }
   }
 
   if (!fleetStore) { error('fleet store unavailable'); return }
@@ -3088,7 +3101,7 @@ async function handleFleetWsMessage(ws, msg) {
     try {
       reply(await performSpawnRelay(caller, msg))
     } catch (e) {
-      error(e.message)
+      error(e)
     }
     return
   }

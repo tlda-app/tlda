@@ -1879,6 +1879,22 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   border-color: rgba(200,90,90,0.6);
   color: #c85a5a;
 }
+.fleet-agents-shape .fleet-agents-spawn-error {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 3px);
+  max-width: 220px;
+  padding: 3px 6px;
+  border: 1px solid rgba(200,90,90,0.55);
+  border-radius: 3px;
+  background: var(--surface);
+  color: #d56a6a;
+  box-shadow: 0 2px 8px var(--shadow-lg, rgba(0,0,0,0.3));
+  font-size: 8px;
+  line-height: 1.25;
+  white-space: normal;
+  z-index: 12;
+}
 .fleet-agents-shape .fleet-agents-spawn-ghost {
   position: absolute;
   top: 0;

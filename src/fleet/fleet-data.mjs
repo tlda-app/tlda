@@ -508,8 +508,12 @@ export function connect() {
               ? msg.result.recipients[0] : null
             reconcileOptimistic(msg.result._tempId, msg.result.event_ids[0], firstRecipient)
           }
-          if (msg.error) cb.reject(new Error(msg.error))
-          else cb.resolve(msg.result)
+          if (msg.error) {
+            const detail = typeof msg.error === 'object' && msg.error !== null ? msg.error : { message: msg.error }
+            const err = new Error(detail.message || String(msg.error))
+            Object.assign(err, detail)
+            cb.reject(err)
+          } else cb.resolve(msg.result)
         }
         return
       }

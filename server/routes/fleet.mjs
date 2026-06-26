@@ -461,6 +461,18 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       res.status(404).json({ error: `spawn target not found: ${agent || name}` })
       return
     }
+    if (fresh && name) {
+      const cols = fleetStore?.checkNameAvailable?.([name], { asFriendlyName: true }) || []
+      if (cols.length) {
+        res.status(409).json({
+          ok: false,
+          code: 'spawn_name_collision',
+          error: `Spawn name "${name}" is unavailable: ${formatNameCollisions(cols)}. Choose a different name, or respawn the existing agent.`,
+          collisions: cols,
+        })
+        return
+      }
+    }
     try {
       const route = resolveSpawnMachine({
         caller,
@@ -495,6 +507,15 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       broadcastState()
       res.json(result)
     } catch (e) {
+      if (e?.reason === 'name-bounced' || e?.name === 'SpawnBounceError') {
+        res.status(409).json({
+          ok: false,
+          code: 'spawn_name_collision',
+          error: e.message,
+          ...(e.payload ? { payload: e.payload } : {}),
+        })
+        return
+      }
       res.status(502).json({ error: e.message })
     }
   })

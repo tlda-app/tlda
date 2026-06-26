@@ -123,6 +123,21 @@ function parseSpawnInput(raw: string, models: string[] = MODEL_FALLBACK): { doc:
   return { doc, name, model, effort }
 }
 
+function normalizeSpawnName(name: string | undefined): string {
+  return (name || '').trim().toLowerCase()
+}
+
+function findSpawnNameCollision(name: string | undefined, agents: any[]): any | null {
+  const normalized = normalizeSpawnName(name)
+  if (!normalized) return null
+  return agents.find((a: any) => !a.dead && normalizeSpawnName(a.friendly_name) === normalized) || null
+}
+
+function spawnCollisionMessage(name: string, agent: any): string {
+  const id = agent?.id ? ` (${agent.id})` : ''
+  return `"${name}" is already used by a live agent${id}. Choose a different name, or respawn the existing agent.`
+}
+
 // Tab-completable model tokens = the live aliases plus the typing-shorthand keys.
 function completableFrom(models: string[]): string[] {
   return [...models, ...Object.keys(MODEL_SHORTHANDS)].filter((v, i, a) => a.indexOf(v) === i)
@@ -605,18 +620,43 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     () => getSegmentCandidates(spawnDoc, projectList, spawnModels, curatedSpawnModels),
     [spawnDoc, projectList, spawnModels, curatedSpawnModels],
   )
+  const parsedSpawn = useMemo(() => parseSpawnInput(spawnDoc, spawnModels), [spawnDoc, spawnModels])
+  const spawnNameCollision = useMemo(
+    () => findSpawnNameCollision(parsedSpawn.name, agents),
+    [parsedSpawn.name, agents],
+  )
   const projectInvalid = useMemo(
     () => projectUnresolvable(spawnDoc, projectList, currentDoc),
     [spawnDoc, projectList, currentDoc],
   )
+  const [spawnError, setSpawnError] = useState('')
+  const spawnCollisionError = spawnNameCollision && parsedSpawn.name
+    ? spawnCollisionMessage(parsedSpawn.name, spawnNameCollision)
+    : ''
+  const spawnValidationError = projectInvalid
+    ? `No project '${effectiveDoc(spawnDoc, currentDoc)}'`
+    : spawnCollisionError
+  const spawnInvalid = projectInvalid || !!spawnCollisionError || !!spawnError
+  const spawnTooltip = spawnError || spawnValidationError || 'Spawn agent'
   const submitSpawn = useCallback(() => {
     if (!canSubmitSpawn(spawnDoc, projectList, currentDoc)) {
       spawnInputRef.current?.focus()
       return
     }
-    const { doc, name, model, effort } = parseSpawnInput(spawnDoc, spawnModels)
+    if (spawnCollisionError) {
+      setSpawnError(spawnCollisionError)
+      spawnInputRef.current?.focus()
+      return
+    }
+    const { doc, name, model, effort } = parsedSpawn
+    setSpawnError('')
     spawnAgent(model || DEFAULT_MODEL, doc || currentDoc || undefined, name, effort)
-  }, [spawnDoc, projectList, currentDoc, spawnModels])
+      .catch((e: any) => {
+        const message = String(e?.message || e || 'Spawn failed')
+        setSpawnError(message)
+        spawnInputRef.current?.focus()
+      })
+  }, [spawnDoc, projectList, currentDoc, parsedSpawn, spawnCollisionError])
   const dropdownOpen = spawnFocused && !dropdownDismissed && segCandidates.length > 0
   const acceptCandidate = useCallback((candidate: string) => {
     setSpawnDoc(applyCandidate(spawnDoc, candidate))
@@ -817,14 +857,17 @@ function FleetAgentsInner({ shape }: { shape: any }) {
             <span className="fleet-agents-spawn-input-wrap">
               <input
                 ref={spawnInputRef}
-                className={'fleet-agents-spawn-search' + (projectInvalid ? ' is-invalid' : '')}
+                className={'fleet-agents-spawn-search' + (spawnInvalid ? ' is-invalid' : '')}
                 value={spawnDoc}
+                title={spawnTooltip}
+                aria-invalid={spawnInvalid || undefined}
+                aria-describedby={spawnInvalid ? 'fleet-agents-spawn-error' : undefined}
                 autoCapitalize="off"
                 autoCorrect="off"
                 spellCheck={false}
                 onFocus={() => setSpawnFocused(true)}
                 onBlur={() => { setSpawnFocused(false); setDropdownIdx(-1) }}
-                onChange={(e) => { setSpawnDoc(e.target.value); setDropdownIdx(-1); setDropdownDismissed(false) }}
+                onChange={(e) => { setSpawnDoc(e.target.value); setSpawnError(''); setDropdownIdx(-1); setDropdownDismissed(false) }}
                 onKeyDown={(e) => {
                   e.stopPropagation()
                   if (e.key === 'ArrowDown') {
@@ -858,6 +901,11 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                 placeholder=""
               />
               <span className="fleet-agents-spawn-ghost"><span style={{ visibility: 'hidden' }}>{spawnDoc}</span>{getGhostCompletion(spawnDoc, projectList, catName, currentDoc, spawnModels)}</span>
+              {spawnInvalid && (
+                <span id="fleet-agents-spawn-error" className="fleet-agents-spawn-error" role="alert">
+                  {spawnTooltip}
+                </span>
+              )}
               {dropdownOpen && (
                 <ul className="fleet-agents-spawn-dropdown" onPointerDown={(e) => e.stopPropagation()}>
                   <li className="fleet-agents-spawn-dropdown-label">{SEG_LABELS[segPos - 1]}</li>
@@ -873,8 +921,8 @@ function FleetAgentsInner({ shape }: { shape: any }) {
               )}
             </span>
             <button
-              className={'fleet-agents-spawn-btn' + (projectInvalid ? ' is-disabled' : '')}
-              title={projectInvalid ? `No project '${effectiveDoc(spawnDoc, currentDoc)}'` : 'Spawn agent'}
+              className={'fleet-agents-spawn-btn' + (spawnInvalid ? ' is-disabled' : '')}
+              title={spawnTooltip}
               onPointerUp={(e) => {
                 e.stopPropagation()
                 submitSpawn()
