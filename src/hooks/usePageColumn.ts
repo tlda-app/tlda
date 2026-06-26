@@ -117,6 +117,7 @@ function visiblePageRange(
 // ── Imperative column manager ──────────────────────────────────────────────
 
 const AXIS_RATIO = 3  // must exceed this ratio for horizontal movement
+const HANDLE_HEIGHT = 99999
 
 class PageColumn {
   editor: Editor
@@ -151,6 +152,50 @@ class PageColumn {
     return this.columnX + marginPx - 10
   }
 
+  private pageMeta(pageNum: number, bounds: { x: number; y: number; w: number; h: number }) {
+    return pageColumnShapeMeta(createPageColumnSurfaceRequest({
+      columnKey: this.columnId,
+      pageNum,
+      bounds,
+      owner: this.options.owner,
+      source: sourceKey(this.options.source),
+    }))
+  }
+
+  private handleMeta(bounds: { x: number; y: number; w: number; h: number }) {
+    return pageColumnHandleShapeMeta(createPageColumnHandleSurfaceRequest({
+      columnKey: this.columnId,
+      bounds,
+      owner: this.options.owner,
+      source: sourceKey(this.options.source),
+    }))
+  }
+
+  private updatePageMeta(pageNum: number, shape: any, patch: { x?: number; y?: number } = {}) {
+    const x = patch.x ?? shape.x
+    const y = patch.y ?? shape.y
+    const w = Number(shape.props?.w) || TARGET_WIDTH
+    const h = Number(shape.props?.h) || PAGE_HEIGHT
+    return {
+      ...shape.meta,
+      ...this.pageMeta(pageNum, { x, y, w, h }),
+    }
+  }
+
+  private updateHandleMeta(x: number, y: number) {
+    if (!this.handleId) return
+    const h = this.editor.getShape(this.handleId)
+    if (!h) return
+    this.editor.updateShape({
+      id: this.handleId,
+      type: h.type,
+      meta: {
+        ...h.meta,
+        ...this.handleMeta({ x, y, w: 1, h: HANDLE_HEIGHT }),
+      },
+    })
+  }
+
   /** Create a draggable handle line near the left text edge of the shadow column */
   createHandle(_mainRightEdge: number) {
     const handleX = this.handleXFromMargin()
@@ -169,7 +214,7 @@ class PageColumn {
 
     // Render as a TLDraw line — line shapes hide their selection bounds by default,
     // so clicking the handle won't show a bounding box.
-    const handleH = 99999
+    const handleH = HANDLE_HEIGHT
     const handleY = this.yOffset - handleH / 2
     const handleSurface = createPageColumnHandleSurfaceRequest({
       columnKey: this.columnId,
@@ -209,15 +254,10 @@ class PageColumn {
             id: this.handleId!, type: 'line' as any,
             x: pos.x, y: pos.y, isLocked: false, opacity: 0.05,
             props: {
-              points: { a1: { id: 'a1', index: 'a1', x: 0, y: 0 }, a2: { id: 'a2', index: 'a2', x: 0, y: 99999 } },
+              points: { a1: { id: 'a1', index: 'a1', x: 0, y: 0 }, a2: { id: 'a2', index: 'a2', x: 0, y: HANDLE_HEIGHT } },
               color: 'grey', dash: 'solid', size: 's', spline: 'line', scale: 1,
             },
-            meta: pageColumnHandleShapeMeta(createPageColumnHandleSurfaceRequest({
-              columnKey: this.columnId,
-              bounds: { x: pos.x, y: pos.y, w: 1, h: 99999 },
-              owner: this.options.owner,
-              source: sourceKey(this.options.source),
-            })),
+            meta: this.handleMeta({ x: pos.x, y: pos.y, w: 1, h: HANDLE_HEIGHT }),
           })
         }, 50)
       }
@@ -240,6 +280,7 @@ class PageColumn {
         // Defer store mutations (can't write inside a listener)
         setTimeout(() => {
           if (this.destroyed) return
+          this.updateHandleMeta(rec.x, rec.y)
           // Apply Y offset to all column pages
           if (Math.abs(applyDy) > 0.5) {
             this.yOffset += applyDy
@@ -248,7 +289,8 @@ class PageColumn {
               const shape = this.editor.getShape(shapeId)
               if (shape) {
                 if (shape.isLocked) this.editor.updateShape({ id: shapeId, type: shape.type, isLocked: false })
-                this.editor.updateShape({ id: shapeId, type: shape.type, y: shape.y + applyDy })
+                const nextY = shape.y + applyDy
+                this.editor.updateShape({ id: shapeId, type: shape.type, y: nextY, meta: this.updatePageMeta(p, shape, { y: nextY }) })
                 this.editor.updateShape({ id: shapeId, type: shape.type, isLocked: true })
               }
             }
@@ -261,7 +303,7 @@ class PageColumn {
               const shape = this.editor.getShape(shapeId)
               if (shape) {
                 if (shape.isLocked) this.editor.updateShape({ id: shapeId, type: shape.type, isLocked: false })
-                this.editor.updateShape({ id: shapeId, type: shape.type, x: this.columnX })
+                this.editor.updateShape({ id: shapeId, type: shape.type, x: this.columnX, meta: this.updatePageMeta(p, shape, { x: this.columnX }) })
                 this.editor.updateShape({ id: shapeId, type: shape.type, isLocked: true })
               }
             }
@@ -308,7 +350,10 @@ class PageColumn {
           this.textLeftMarginPx = minX * (TARGET_WIDTH / dims.width)
           if (this.handleId) {
             const h = this.editor.getShape(this.handleId)
-            if (h) this.editor.updateShape({ id: this.handleId, type: h.type, x: this.handleXFromMargin() })
+            if (h) {
+              const x = this.handleXFromMargin()
+              this.editor.updateShape({ id: this.handleId, type: h.type, x, meta: { ...h.meta, ...this.handleMeta({ x, y: h.y, w: 1, h: HANDLE_HEIGHT }) } })
+            }
           }
         }
       }
@@ -318,19 +363,12 @@ class PageColumn {
       const pageY = this.yOffset + (pageNum - 1) * (PAGE_HEIGHT + PAGE_GAP)
       if (!this.editor.getShape(shapeId)) {
         const pageBounds = { x: this.columnX, y: pageY, w: TARGET_WIDTH, h: dims.height * scale }
-        const surface = createPageColumnSurfaceRequest({
-          columnKey: this.columnId,
-          pageNum,
-          bounds: pageBounds,
-          owner: this.options.owner,
-          source: sourceKey(this.options.source),
-        })
         this.editor.createShape({
           id: shapeId, type: 'svg-page' as any,
           x: this.columnX, y: pageY,
           isLocked: true, opacity: this.options.opacity ?? 0.9,
           props: { w: TARGET_WIDTH, h: dims.height * scale, pageIndex: pageNum - 1 },
-          meta: pageColumnShapeMeta(surface),
+          meta: this.pageMeta(pageNum, pageBounds),
         })
       }
       this.loaded.add(pageNum)

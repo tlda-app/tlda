@@ -5,6 +5,7 @@ import {
 	type ManagedSurfaceRect,
 	type ManagedSurfaceRequest,
 } from './managed-surfaces.ts'
+import type { JsonObject } from '@tldraw/utils'
 
 export const PAGE_COLUMN_SURFACE_PREFIX = 'page-column'
 export const PAGE_COLUMN_HANDLE_SURFACE_PREFIX = 'page-column-handle'
@@ -102,27 +103,72 @@ export function createPageColumnHandleSurfaceRequest({
 	}
 }
 
-export function pageColumnShapeMeta(request: ManagedSurfaceRequest<PageColumnSurfacePayload>) {
+function rectJson(rect: ManagedSurfaceRect): JsonObject {
+	return { x: rect.x, y: rect.y, w: rect.w, h: rect.h }
+}
+
+function pagePlacementJson(request: ManagedSurfaceRequest<PageColumnSurfacePayload | PageColumnHandleSurfacePayload>): JsonObject {
+	return {
+		mode: request.placement.mode,
+		left: request.placement.left,
+		top: request.placement.top,
+		margin: request.placement.margin,
+	}
+}
+
+function cameraPolicyJson(request: ManagedSurfaceRequest<PageColumnSurfacePayload | PageColumnHandleSurfacePayload>): JsonObject {
+	return {
+		x: request.cameraPolicy.x,
+		y: request.cameraPolicy.y,
+		zoom: request.cameraPolicy.zoom,
+	}
+}
+
+function cleanupJson(request: ManagedSurfaceRequest<PageColumnSurfacePayload | PageColumnHandleSurfacePayload>): JsonObject {
+	return {
+		onClose: request.cleanup.onClose,
+		onReplace: request.cleanup.onReplace,
+		onOwnerChange: request.cleanup.onOwnerChange,
+	}
+}
+
+function ownerJson(owner: ManagedSurfaceOwner): JsonObject {
+	return { userId: owner.userId, deviceId: owner.deviceId }
+}
+
+function persistenceJson(request: ManagedSurfaceRequest<PageColumnSurfacePayload | PageColumnHandleSurfacePayload>): JsonObject {
+	return { pinned: request.persistence.pinned, scope: request.persistence.scope }
+}
+
+export function pageColumnShapeMeta(request: ManagedSurfaceRequest<PageColumnSurfacePayload>): JsonObject {
 	return {
 		managedSurfaceId: request.surfaceId,
 		managedLayerId: request.layerId,
 		managedKind: request.kind,
 		managedHitPolicy: request.hitPolicy,
-		managedCleanup: { ...request.cleanup },
-		managedOwner: { ...request.owner },
+		managedExtent: rectJson(request.extent),
+		managedPlacement: pagePlacementJson(request),
+		managedCameraPolicy: cameraPolicyJson(request),
+		managedCleanup: cleanupJson(request),
+		managedOwner: ownerJson(request.owner),
+		managedPersistence: persistenceJson(request),
 		managedSource: request.source,
 		managedCoordinateSpace: request.payload.coordinateSpace,
 	}
 }
 
-export function pageColumnHandleShapeMeta(request: ManagedSurfaceRequest<PageColumnHandleSurfacePayload>) {
+export function pageColumnHandleShapeMeta(request: ManagedSurfaceRequest<PageColumnHandleSurfacePayload>): JsonObject {
 	return {
 		managedSurfaceId: request.surfaceId,
 		managedLayerId: request.layerId,
 		managedKind: request.kind,
 		managedHitPolicy: request.hitPolicy,
-		managedCleanup: { ...request.cleanup },
-		managedOwner: { ...request.owner },
+		managedExtent: rectJson(request.extent),
+		managedPlacement: pagePlacementJson(request),
+		managedCameraPolicy: cameraPolicyJson(request),
+		managedCleanup: cleanupJson(request),
+		managedOwner: ownerJson(request.owner),
+		managedPersistence: persistenceJson(request),
 		managedSource: request.source,
 		managedCoordinateSpace: request.payload.coordinateSpace,
 	}

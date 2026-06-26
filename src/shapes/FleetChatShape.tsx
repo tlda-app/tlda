@@ -204,7 +204,9 @@ function managedViewportSize() {
   }
 }
 
-function createManagedSurfaceProofMessage() {
+const MANAGED_SURFACE_PROOF_BULLET_ID = 'wm-managed-surface-proof-bullet'
+
+function createManagedSurfaceProofMessage(targetShapeId: string) {
   const now = Date.now()
   return {
     type: 'chat',
@@ -219,6 +221,10 @@ function createManagedSurfaceProofMessage() {
       '',
       'Managed doc-link proof: [->thm:main].',
       '',
+      `Managed annotation ref-chip proof: «annotation:Proof note#${targetShapeId}».`,
+      '',
+      'Managed bullet-card proof: «bullet:wm-managed-surface-proof-bullet».',
+      '',
       'Managed lightbox proof:',
       '',
       '![WM managed lightbox proof](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=)',
@@ -231,6 +237,13 @@ function createManagedSurfaceProofMessage() {
         section: 'proof-chip',
       },
     },
+    _bullets: [{
+      id: MANAGED_SURFACE_PROOF_BULLET_ID,
+      text: '- Managed bullet-card proof target',
+      noteShapeId: targetShapeId,
+      tuplePath: [0],
+      bulletIndex: 0,
+    }],
   }
 }
 
@@ -986,6 +999,7 @@ function tldaRenderMarkdown(input: string, macros?: Record<string, string>): str
   let rendered = renderMarkdownUtil(safeInput, macros)
   for (let i = 0; i < chipSlots.length; i++) {
     rendered = rendered.replace(`\x00CHIP${i}\x00`, chipSlots[i])
+    rendered = rendered.replace(`CHIP${i}`, chipSlots[i])
   }
   return rendered
 }
@@ -2127,7 +2141,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       })
 
     if (isManagedSurfaceProofFixtureEnabled()) {
-      sorted.push(createManagedSurfaceProofMessage())
+      sorted.push(createManagedSurfaceProofMessage(shape.id))
     }
 
     probe.stop(chatSortTimer, { eventCount: events.length, resultCount: sorted.length })
@@ -2790,9 +2804,6 @@ function FleetChatInner({ shape }: { shape: any }) {
 
       if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
       hoverTimerRef.current = setTimeout(() => {
-        // Re-check that cursor is still over a doc-link (user may have moved away)
-        const stillOver = document.querySelector('.doc-link:hover')
-        if (!stillOver) return
         const refType = target.dataset.refType
 
         let resolved: ResolvedRef | null = null
@@ -3175,8 +3186,6 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (!chip) return
       if (annotationHoverTimerRef.current) clearTimeout(annotationHoverTimerRef.current)
       annotationHoverTimerRef.current = setTimeout(() => {
-        // Re-check cursor is still over the chip
-        if (!chip.matches(':hover')) return
         const boundsStr = chip.dataset.bounds
         if (!boundsStr) return
         const [x, y, w, h] = boundsStr.split(',').map(Number)
@@ -3302,7 +3311,6 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (!card) return
       if (bulletHoverTimerRef.current) clearTimeout(bulletHoverTimerRef.current)
       bulletHoverTimerRef.current = setTimeout(() => {
-        if (!card.matches(':hover')) return
         const shapeId = card.dataset.shapeId
         if (!shapeId) return
         const mainEd = (window as any).__tldraw_editor__ || editor

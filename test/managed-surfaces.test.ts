@@ -143,8 +143,12 @@ test('page column page and handle requests carry managed ids owner policies and 
 		managedLayerId: page.layerId,
 		managedKind: 'page-column',
 		managedHitPolicy: 'preview-readonly',
+		managedExtent: page.extent,
+		managedPlacement: page.placement,
+		managedCameraPolicy: page.cameraPolicy,
 		managedCleanup: page.cleanup,
 		managedOwner: owner,
+		managedPersistence: page.persistence,
 		managedSource: page.source,
 		managedCoordinateSpace: 'canvas-page',
 	})
@@ -154,7 +158,20 @@ test('page column page and handle requests carry managed ids owner policies and 
 	assert.equal(handle.layerId, 'page-column-handle-chrome:1-shadow-abcdef0')
 	assert.equal(handle.hitPolicy, 'chrome-catches-content-pans')
 	assert.equal(handle.payload.coordinateSpace, 'canvas-page')
-	assert.equal(pageColumnHandleShapeMeta(handle).managedSurfaceId, handle.surfaceId)
+	assert.deepEqual(pageColumnHandleShapeMeta(handle), {
+		managedSurfaceId: handle.surfaceId,
+		managedLayerId: handle.layerId,
+		managedKind: 'page-column-handle',
+		managedHitPolicy: 'chrome-catches-content-pans',
+		managedExtent: handle.extent,
+		managedPlacement: handle.placement,
+		managedCameraPolicy: handle.cameraPolicy,
+		managedCleanup: handle.cleanup,
+		managedOwner: owner,
+		managedPersistence: handle.persistence,
+		managedSource: handle.source,
+		managedCoordinateSpace: 'canvas-page',
+	})
 })
 
 test('lightbox request declares viewport modal policy and cleanup', () => {
