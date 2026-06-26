@@ -29,7 +29,7 @@ import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil
 // @ts-ignore — vanilla JS module
 import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText, isRecording } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
-import { getHumanId, getHumanName, updateEventById, sendViewingContext, setViewingEnrichFn, getFleetWsBase } from '../fleet/fleet-data.mjs'
+import { getHumanId, getHumanName, getDeviceId, updateEventById, sendViewingContext, setViewingEnrichFn, getFleetWsBase } from '../fleet/fleet-data.mjs'
 // @ts-ignore — vanilla JS module
 import { installChatImageRetry } from '../fleet/chat-image-retry.mjs'
 // @ts-ignore — vanilla JS module
@@ -62,7 +62,12 @@ import { PDF_HEIGHT } from '../layoutConstants'
 import { TerminalCard } from './TerminalCard'
 import { Terminal } from 'xterm'
 import { useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
-import { createTemporaryMarkdownAnnotationViewerRequest } from '../wm/annotation-viewer-surface'
+import {
+  createTemporaryMarkdownAnnotationViewerRequest,
+  dispatchManagedAnnotationViewerHide,
+  dispatchManagedAnnotationViewerRequest,
+} from '../wm/annotation-viewer-surface'
+import { createLightboxSurfaceRequest } from '../wm/lightbox-surface'
 import { clientPointToPage, pagePointToClient } from '../wm/viewport-coordinates'
 import { consumeBulletContexts, subscribeBulletContext, getBulletContexts } from '../stores/bulletContextStore'
 import { getPref, subscribePref } from '../preferences'
@@ -188,6 +193,17 @@ function isManagedSurfaceProofFixtureEnabled() {
   return new URLSearchParams(window.location.search).get('wmManagedSurfaceProof') === '1'
 }
 
+function currentManagedSurfaceOwner() {
+  return { userId: getHumanId(), deviceId: getDeviceId() }
+}
+
+function managedViewportSize() {
+  return {
+    w: typeof window === 'undefined' ? 1200 : window.innerWidth,
+    h: typeof window === 'undefined' ? 800 : window.innerHeight,
+  }
+}
+
 function createManagedSurfaceProofMessage() {
   const now = Date.now()
   return {
@@ -200,6 +216,12 @@ function createManagedSurfaceProofMessage() {
       '# WM managed surface proof',
       '',
       'This query-gated proof row uses FleetChatShape source-chip rendering and the normal source-chip click handler.',
+      '',
+      'Managed doc-link proof: [->thm:main].',
+      '',
+      'Managed lightbox proof:',
+      '',
+      '![WM managed lightbox proof](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=)',
       '',
       'Expected path: real chip click -> temporary markdown surface descriptor -> managed AnnotationViewer request -> cleanup on close.',
     ].join('\n'),
@@ -2807,22 +2829,29 @@ function FleetChatInner({ shape }: { shape: any }) {
           w: pageBounds.width,
           h: REGION_H,
         }
-        const chipRect = target.getBoundingClientRect()
-        const label = target.textContent?.trim() || `p.${resolved.page}`
-        window.dispatchEvent(new CustomEvent('annotation-viewer-show', {
-          detail: { bounds, shapeIds: [], label, chipRect: { left: chipRect.left, top: chipRect.top, right: chipRect.right, bottom: chipRect.bottom, width: chipRect.width, height: chipRect.height } }
-        }))
-      }, 800)
+	        const chipRect = target.getBoundingClientRect()
+	        const label = target.textContent?.trim() || `p.${resolved.page}`
+	        dispatchManagedAnnotationViewerRequest({
+	          surfaceKey: `${shape.id}:doc-link:${label}:${resolved.page}:${resolved.pdfY ?? 'page'}`,
+	          bounds,
+	          shapeIds: [],
+	          label,
+	          chipRect: { left: chipRect.left, top: chipRect.top, right: chipRect.right, bottom: chipRect.bottom, width: chipRect.width, height: chipRect.height },
+	          owner: currentManagedSurfaceOwner(),
+	          source: `${shape.id}:doc-link:${target.dataset.refValue || label}`,
+	          viewport: managedViewportSize(),
+	        })
+	      }, 800)
     }
 
     function onMouseOut(e: MouseEvent) {
       const target = e.target as HTMLElement
       if (!target.closest('.doc-link') && !target.closest('.screenshot-inline')) return
-      const related = e.relatedTarget as HTMLElement | null
-      if (related?.closest('.annotation-viewer')) return
-      if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
-      window.dispatchEvent(new CustomEvent('annotation-viewer-hide'))
-    }
+	      const related = e.relatedTarget as HTMLElement | null
+	      if (related?.closest('.annotation-viewer')) return
+	      if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
+	      dispatchManagedAnnotationViewerHide()
+	    }
 
     // Chip hover — show popover for msg/activity/tool reference chips. The
     // apply-line's proposal ref (.apply-ref) opts into this same machinery via a
@@ -3017,7 +3046,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
       document.querySelector('.chip-hover-popover')?.remove()
     }
-  }, [chatLogEl, doc, refResolver, w, liveEvents])
+  }, [chatLogEl, doc, refResolver, w, liveEvents, shape.id])
 
   // Native capture-phase drop handler — intercepts OS file drops (from Finder etc.)
   // on the chat shape before tldraw can create a canvas image shape. A file only
@@ -3158,24 +3187,32 @@ function FleetChatInner({ shape }: { shape: any }) {
         const color = dotEl?.style.background || undefined
         const shapeIds: string[] = []
         if (chip.dataset.shapeRef) shapeIds.push(chip.dataset.shapeRef)
-        if (chip.dataset.highlightRef) shapeIds.push(chip.dataset.highlightRef)
-        // Anchor viewer to the chip element, not the cursor
-        const chipRect = chip.getBoundingClientRect()
-        window.dispatchEvent(new CustomEvent('annotation-viewer-show', {
-          detail: { bounds: { x, y, w, h }, shapeIds, label, color, chipRect: { left: chipRect.left, top: chipRect.top, right: chipRect.right, bottom: chipRect.bottom, width: chipRect.width, height: chipRect.height } }
-        }))
-      }, 500)
+	        if (chip.dataset.highlightRef) shapeIds.push(chip.dataset.highlightRef)
+	        // Anchor viewer to the chip element, not the cursor
+	        const chipRect = chip.getBoundingClientRect()
+	        dispatchManagedAnnotationViewerRequest({
+	          surfaceKey: `${shape.id}:annotation:${chip.dataset.shapeRef || chip.dataset.highlightRef || boundsStr}`,
+	          bounds: { x, y, w, h },
+	          shapeIds,
+	          label,
+	          color,
+	          chipRect: { left: chipRect.left, top: chipRect.top, right: chipRect.right, bottom: chipRect.bottom, width: chipRect.width, height: chipRect.height },
+	          owner: currentManagedSurfaceOwner(),
+	          source: `${shape.id}:annotation-chip`,
+	          viewport: managedViewportSize(),
+	        })
+	      }, 500)
     }
 
     function onAnnotationOut(e: MouseEvent) {
       const target = e.target as HTMLElement
       if (!target.closest('.ref-chip[data-bounds]')) return
       // Check if moving into the viewer itself
-      const related = e.relatedTarget as HTMLElement | null
-      if (related?.closest('.annotation-viewer')) return
-      if (annotationHoverTimerRef.current) clearTimeout(annotationHoverTimerRef.current)
-      window.dispatchEvent(new CustomEvent('annotation-viewer-hide'))
-    }
+	      const related = e.relatedTarget as HTMLElement | null
+	      if (related?.closest('.annotation-viewer')) return
+	      if (annotationHoverTimerRef.current) clearTimeout(annotationHoverTimerRef.current)
+	      dispatchManagedAnnotationViewerHide()
+	    }
 
     logEl.addEventListener('mouseover', onAnnotationOver)
     logEl.addEventListener('mouseout', onAnnotationOut)
@@ -3184,7 +3221,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       logEl.removeEventListener('mouseout', onAnnotationOut)
       if (annotationHoverTimerRef.current) clearTimeout(annotationHoverTimerRef.current)
     }
-  }, [chatLogEl])
+  }, [chatLogEl, shape.id])
 
   // Hover an agent's name in chat → show their skill state (read / owed / dismissed).
   useEffect(() => {
@@ -3273,30 +3310,32 @@ function FleetChatInner({ shape }: { shape: any }) {
         if (!noteShape) return
         const bounds = mainEd.getShapePageBounds(noteShape.id)
         if (!bounds) return
-        const chipRect = card.getBoundingClientRect()
-        const label = card.querySelector('.bullet-card-source')?.textContent?.trim() || 'Note'
-        const bulletIdx = parseInt(card.dataset.bulletIdx || '', 10)
-        window.dispatchEvent(new CustomEvent('annotation-viewer-show', {
-          detail: {
-            bounds: { x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h },
-            shapeIds: [shapeId],
-            label,
-            chipRect: { left: chipRect.left, top: chipRect.top, right: chipRect.right, bottom: chipRect.bottom, width: chipRect.width, height: chipRect.height },
-            useFullBounds: true,
-            bulletIdx: isNaN(bulletIdx) ? undefined : bulletIdx,
-          }
-        }))
-      }, 500)
+	        const chipRect = card.getBoundingClientRect()
+	        const label = card.querySelector('.bullet-card-source')?.textContent?.trim() || 'Note'
+	        const bulletIdx = parseInt(card.dataset.bulletIdx || '', 10)
+	        dispatchManagedAnnotationViewerRequest({
+	          surfaceKey: `${shape.id}:bullet:${shapeId}:${isNaN(bulletIdx) ? 'all' : bulletIdx}`,
+	          bounds: { x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h },
+	          shapeIds: [shapeId],
+	          label,
+	          chipRect: { left: chipRect.left, top: chipRect.top, right: chipRect.right, bottom: chipRect.bottom, width: chipRect.width, height: chipRect.height },
+	          useFullBounds: true,
+	          bulletIdx: isNaN(bulletIdx) ? undefined : bulletIdx,
+	          owner: currentManagedSurfaceOwner(),
+	          source: `${shape.id}:bullet-card`,
+	          viewport: managedViewportSize(),
+	        })
+	      }, 500)
     }
 
     function onBulletOut(e: MouseEvent) {
       const target = e.target as HTMLElement
       if (!target.closest('.bullet-card')) return
-      const related = e.relatedTarget as HTMLElement | null
-      if (related?.closest('.annotation-viewer')) return
-      if (bulletHoverTimerRef.current) clearTimeout(bulletHoverTimerRef.current)
-      window.dispatchEvent(new CustomEvent('annotation-viewer-hide'))
-    }
+	      const related = e.relatedTarget as HTMLElement | null
+	      if (related?.closest('.annotation-viewer')) return
+	      if (bulletHoverTimerRef.current) clearTimeout(bulletHoverTimerRef.current)
+	      dispatchManagedAnnotationViewerHide()
+	    }
 
     logEl.addEventListener('mouseover', onBulletOver)
     logEl.addEventListener('mouseout', onBulletOut)
@@ -3305,7 +3344,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       logEl.removeEventListener('mouseout', onBulletOut)
       if (bulletHoverTimerRef.current) clearTimeout(bulletHoverTimerRef.current)
     }
-  }, [chatLogEl, editor])
+  }, [chatLogEl, editor, shape.id])
 
   // Auto-scroll to bottom — event-driven, not every frame.
   // CanvasClipPanel already routes wheel events to .fleet-chat-log via
@@ -3864,14 +3903,29 @@ function FleetChatInner({ shape }: { shape: any }) {
         }
         return
       }
-      const img = (e.target as HTMLElement).closest('img') as HTMLImageElement
-      if (!img) return
-      e.stopPropagation()
-      const overlay = document.createElement('div')
-      overlay.className = 'chat-lightbox'
-      overlay.innerHTML = `<img src="${img.src}" alt="${img.alt || ''}">`
-      addTap(overlay, () => overlay.remove())
-      document.body.appendChild(overlay)
+	      const img = (e.target as HTMLElement).closest('img') as HTMLImageElement
+	      if (!img) return
+	      e.stopPropagation()
+	      const imgRect = img.getBoundingClientRect()
+	      const request = createLightboxSurfaceRequest({
+	        surfaceKey: `${shape.id}:chat-image:${img.currentSrc || img.src}`,
+	        owner: currentManagedSurfaceOwner(),
+	        source: `${shape.id}:chat-image:${img.currentSrc || img.src}`,
+	        anchor: { left: imgRect.left, top: imgRect.top, right: imgRect.right, bottom: imgRect.bottom, width: imgRect.width, height: imgRect.height },
+	        viewport: managedViewportSize(),
+	      })
+	      const overlay = document.createElement('div')
+	      overlay.className = 'chat-lightbox'
+	      overlay.dataset.managedSurfaceId = request.surfaceId
+	      overlay.dataset.managedLayerId = request.layerId
+	      overlay.dataset.managedKind = request.kind
+	      overlay.dataset.managedHitPolicy = request.hitPolicy
+	      overlay.dataset.managedOwnerUserId = request.owner.userId
+	      overlay.dataset.managedOwnerDeviceId = request.owner.deviceId
+	      overlay.dataset.managedSource = request.source || ''
+	      overlay.innerHTML = `<img src="${img.src}" alt="${img.alt || ''}">`
+	      addTap(overlay, () => overlay.remove())
+	      document.body.appendChild(overlay)
     }
     // Touch/stylus: the toggles handled above are text <div>/<span> elements
     // (code-block fold, build-result header, pretty-expand, lifecycle/terminal

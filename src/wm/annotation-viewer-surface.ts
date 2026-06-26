@@ -39,6 +39,14 @@ export interface AnnotationViewerSurfacePayload {
 	bulletIdx?: number
 }
 
+function requireManagedSurfaceOwner(owner?: Partial<ManagedSurfaceOwner>): ManagedSurfaceOwner {
+	const resolved = createManagedSurfaceOwner(owner?.userId, owner?.deviceId)
+	if (!resolved.userId || !resolved.deviceId) {
+		throw new Error('managed annotation viewer surface requires owner userId and deviceId')
+	}
+	return resolved
+}
+
 export function createAnnotationViewerSurfaceRequest({
 	surfaceKey,
 	bounds,
@@ -55,6 +63,7 @@ export function createAnnotationViewerSurfaceRequest({
 	size = { w: 650, h: 450 },
 }: AnnotationViewerSurfaceInput): ManagedSurfaceRequest<AnnotationViewerSurfacePayload> {
 	const slug = surfaceSlug(surfaceKey)
+	const resolvedOwner = requireManagedSurfaceOwner(owner)
 	const placement = clampChipAnchoredPlacement({
 		chipRect,
 		surfaceWidth: size.w,
@@ -67,7 +76,7 @@ export function createAnnotationViewerSurfaceRequest({
 		kind: 'annotation-viewer',
 		surfaceId: `${ANNOTATION_VIEWER_SURFACE_PREFIX}:${slug}`,
 		layerId: `${ANNOTATION_VIEWER_LAYER_PREFIX}:${slug}`,
-		owner: createManagedSurfaceOwner(owner?.userId, owner?.deviceId),
+		owner: resolvedOwner,
 		extent: { x: placement.left, y: placement.top, w: size.w, h: size.h },
 		placement: {
 			mode: 'chip-anchored',
@@ -106,6 +115,7 @@ export function createTemporaryMarkdownAnnotationViewerRequest(
 		surfaceKey: markdownSurface.surfaceId,
 		bounds: markdownSurface.extent,
 		shapeIds: [markdownSurface.payload.shapeId],
+		owner: input.owner ?? markdownSurface.owner,
 		source: markdownSurface.surfaceId,
 		useFullBounds: true,
 		pinned: true,
@@ -117,4 +127,42 @@ export function createTemporaryMarkdownAnnotationViewerRequest(
 			onClose: 'remove-surface' as const,
 		},
 	}
+}
+
+export function dispatchAnnotationViewerSurfaceRequest(input: AnnotationViewerSurfaceInput) {
+	const request = createAnnotationViewerSurfaceRequest({
+		...input,
+		viewport: input.viewport ?? (
+			typeof window !== 'undefined'
+				? { w: window.innerWidth, h: window.innerHeight }
+				: { w: 1200, h: 800 }
+		),
+	})
+	window.dispatchEvent(new CustomEvent('wm-managed-surface-request', {
+		detail: { request },
+	}))
+	return request
+}
+
+export function dispatchAnnotationViewerDismiss() {
+	window.dispatchEvent(new CustomEvent('wm-managed-surface-dismiss', {
+		detail: { kind: 'annotation-viewer' },
+	}))
+}
+
+export function dispatchManagedAnnotationViewerRequest(
+	input: AnnotationViewerSurfaceInput,
+	target: Window = window,
+) {
+	const request = createAnnotationViewerSurfaceRequest(input)
+	target.dispatchEvent(new CustomEvent('wm-managed-surface-request', {
+		detail: { request },
+	}))
+	return request
+}
+
+export function dispatchManagedAnnotationViewerHide(target: Window = window) {
+	target.dispatchEvent(new CustomEvent('wm-managed-surface-dismiss', {
+		detail: { kind: 'annotation-viewer' },
+	}))
 }

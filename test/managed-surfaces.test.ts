@@ -8,6 +8,13 @@ import {
 	createTemporaryMarkdownSurfaceRequest,
 	temporaryMarkdownShapeMeta,
 } from '../src/wm/markdown-surface.ts'
+import {
+	createPageColumnHandleSurfaceRequest,
+	createPageColumnSurfaceRequest,
+	pageColumnHandleShapeMeta,
+	pageColumnShapeMeta,
+} from '../src/wm/page-column-surface.ts'
+import { createLightboxSurfaceRequest } from '../src/wm/lightbox-surface.ts'
 
 const chipRect = {
 	left: 1180,
@@ -89,6 +96,7 @@ test('temporary markdown annotation viewer request links the preview surface as 
 		bounds: { x: -50000, y: -49000, w: 800, h: 1200 },
 		title: 'scratch.md',
 		url: '/docs/fleet-markdown-chip-temp/index.html',
+		owner: { userId: 'fleet:skip', deviceId: 'ipad' },
 	})
 	const viewer = createTemporaryMarkdownAnnotationViewerRequest(markdown, {
 		label: 'scratch.md',
@@ -102,4 +110,73 @@ test('temporary markdown annotation viewer request links the preview surface as 
 	assert.equal(viewer.payload.useFullBounds, true)
 	assert.deepEqual(viewer.payload.bounds, markdown.extent)
 	assert.deepEqual(viewer.payload.shapeIds, [markdown.payload.shapeId])
+})
+
+test('page column page and handle requests carry managed ids owner policies and source', () => {
+	const owner = { userId: 'fleet:skip', deviceId: 'ipad' }
+	const page = createPageColumnSurfaceRequest({
+		columnKey: '1-shadow-abcdef0',
+		pageNum: 2,
+		bounds: { x: 900, y: 1300, w: 800, h: 1035 },
+		owner,
+		source: 'shadow:bregman:abcdef012345',
+	})
+	const handle = createPageColumnHandleSurfaceRequest({
+		columnKey: '1-shadow-abcdef0',
+		bounds: { x: 960, y: -50000, w: 1, h: 99999 },
+		owner,
+		source: 'shadow:bregman:abcdef012345',
+	})
+
+	assert.equal(page.kind, 'page-column')
+	assert.equal(page.surfaceId, 'page-column:1-shadow-abcdef0-p2')
+	assert.equal(page.layerId, 'page-column-pages:1-shadow-abcdef0')
+	assert.deepEqual(page.owner, owner)
+	assert.deepEqual(page.cameraPolicy, { x: 'pan', y: 'pan', zoom: 'inherit' })
+	assert.equal(page.hitPolicy, 'preview-readonly')
+	assert.equal(page.cleanup.onClose, 'remove-surface')
+	assert.equal(page.persistence.scope, 'session')
+	assert.equal(page.payload.coordinateSpace, 'canvas-page')
+	assert.equal(page.source, 'shadow:bregman:abcdef012345')
+	assert.deepEqual(pageColumnShapeMeta(page), {
+		managedSurfaceId: page.surfaceId,
+		managedLayerId: page.layerId,
+		managedKind: 'page-column',
+		managedHitPolicy: 'preview-readonly',
+		managedCleanup: page.cleanup,
+		managedOwner: owner,
+		managedSource: page.source,
+		managedCoordinateSpace: 'canvas-page',
+	})
+
+	assert.equal(handle.kind, 'page-column-handle')
+	assert.equal(handle.surfaceId, 'page-column-handle:1-shadow-abcdef0')
+	assert.equal(handle.layerId, 'page-column-handle-chrome:1-shadow-abcdef0')
+	assert.equal(handle.hitPolicy, 'chrome-catches-content-pans')
+	assert.equal(handle.payload.coordinateSpace, 'canvas-page')
+	assert.equal(pageColumnHandleShapeMeta(handle).managedSurfaceId, handle.surfaceId)
+})
+
+test('lightbox request declares viewport modal policy and cleanup', () => {
+	const owner = { userId: 'fleet:skip', deviceId: 'ipad' }
+	const request = createLightboxSurfaceRequest({
+		surfaceKey: 'shape:fleet-chat-a:chat-image:/api/upload/x.png',
+		owner,
+		source: 'shape:fleet-chat-a:chat-image:/api/upload/x.png',
+		anchor: chipRect,
+		viewport: { w: 1024, h: 768 },
+	})
+
+	assert.equal(request.kind, 'lightbox')
+	assert.equal(request.surfaceId, 'lightbox:fleet-chat-a-chat-image--api-upload-x-png')
+	assert.equal(request.layerId, 'lightbox-modal:fleet-chat-a-chat-image--api-upload-x-png')
+	assert.deepEqual(request.owner, owner)
+	assert.deepEqual(request.extent, { x: 0, y: 0, w: 1024, h: 768 })
+	assert.equal(request.placement.mode, 'viewport-centered')
+	assert.deepEqual(request.placement.anchor, chipRect)
+	assert.deepEqual(request.cameraPolicy, { x: 'pin', y: 'pin', zoom: 'lock' })
+	assert.equal(request.hitPolicy, 'modal-catches-all')
+	assert.equal(request.cleanup.onClose, 'remove-surface')
+	assert.deepEqual(request.persistence, { pinned: true, scope: 'session' })
+	assert.equal(request.payload.coordinateSpace, 'viewport')
 })

@@ -84,46 +84,32 @@ export function AnnotationViewer({
       prevCameraRef.current = null
       if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current)
     }
-    function onShow(e: Event) {
-      const detail = (e as CustomEvent).detail
-      if (!detail?.bounds) return
-      setData({
-        bounds: detail.bounds,
-        shapeIds: detail.shapeIds,
-        label: detail.label,
-        color: detail.color,
-        chipRect: detail.chipRect,
-        useFullBounds: detail.useFullBounds,
-        pinned: detail.pinned,
-        bulletIdx: detail.bulletIdx,
-      })
-      setState(detail.pinned ? 'pinned' : 'hovering')
-      prevCameraRef.current = null
-      if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current)
-    }
-    function onHide() {
-      // Only auto-hide when hovering (not pinned/navigated)
-      dismissTimerRef.current = setTimeout(() => {
-        setState(cur => {
+	    function onHide() {
+	      // Only auto-hide when hovering (not pinned/navigated)
+	      dismissTimerRef.current = setTimeout(() => {
+	        setState(cur => {
           if (cur === 'hovering') {
             setData(null)
             return 'hovering'
           }
           return cur
-        })
-      }, 200)
-    }
-    function onCancelHide() {
-      if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current)
-    }
-    window.addEventListener('wm-managed-surface-request', onManagedSurface)
-    window.addEventListener('annotation-viewer-show', onShow)
-    window.addEventListener('annotation-viewer-hide', onHide)
-    window.addEventListener('annotation-viewer-cancel-hide', onCancelHide)
-    return () => {
-      window.removeEventListener('wm-managed-surface-request', onManagedSurface)
-      window.removeEventListener('annotation-viewer-show', onShow)
-      window.removeEventListener('annotation-viewer-hide', onHide)
+	        })
+	      }, 200)
+	    }
+	    function onManagedDismiss(e: Event) {
+	      const detail = (e as CustomEvent).detail
+	      if (detail?.kind && detail.kind !== 'annotation-viewer') return
+	      onHide()
+	    }
+	    function onCancelHide() {
+	      if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current)
+	    }
+	    window.addEventListener('wm-managed-surface-request', onManagedSurface)
+	    window.addEventListener('wm-managed-surface-dismiss', onManagedDismiss)
+	    window.addEventListener('annotation-viewer-cancel-hide', onCancelHide)
+	    return () => {
+	      window.removeEventListener('wm-managed-surface-request', onManagedSurface)
+	      window.removeEventListener('wm-managed-surface-dismiss', onManagedDismiss)
       window.removeEventListener('annotation-viewer-cancel-hide', onCancelHide)
       if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current)
     }

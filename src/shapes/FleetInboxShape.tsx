@@ -37,8 +37,12 @@ import { renderChatLine, esc, timeShort } from '../fleet/chat-render.mjs'
 // @ts-ignore — vanilla JS module
 import { highlightSyntax, langFromFilePath } from '../fleet/utils.mjs'
 // @ts-ignore — vanilla JS module
-import { getHumanId } from '../fleet/fleet-data.mjs'
+import { getHumanId, getDeviceId } from '../fleet/fleet-data.mjs'
 import { useIsInViewport } from './useIsInViewport'
+import {
+  dispatchManagedAnnotationViewerHide,
+  dispatchManagedAnnotationViewerRequest,
+} from '../wm/annotation-viewer-surface'
 import { DATABASE_HTTP } from '../activeConfig'
 import './fleet-chat.css'
 import './fleet-inbox.css'
@@ -46,6 +50,17 @@ import './fleet-inbox.css'
 const DEFAULT_W = 360
 const DEFAULT_H = 560
 const FLEET_API = DATABASE_HTTP
+
+function currentManagedSurfaceOwner() {
+  return { userId: getHumanId(), deviceId: getDeviceId() }
+}
+
+function managedViewportSize() {
+  return {
+    w: typeof window === 'undefined' ? 1200 : window.innerWidth,
+    h: typeof window === 'undefined' ? 800 : window.innerHeight,
+  }
+}
 
 function copySourceTemplate(text: string): string {
   return `<template class="code-block-copy-source">${esc(text)}</template>`
@@ -474,23 +489,27 @@ function FleetInboxInner({ shape }: { shape: any }) {
       }
       if (!pb && pages.length) pb = me.getShapePageBounds(pages[0].id)
       if (!pb) return
-      const PAD = 40
-      const bounds = { x: pb.x, y: t.pageY1 - PAD, w: pb.w, h: Math.max(t.pageY2 - t.pageY1, 20) + PAD * 2 }
-      const r = el.getBoundingClientRect()
-      window.dispatchEvent(new CustomEvent('annotation-viewer-show', {
-        detail: {
-          bounds, shapeIds: [], label: `lines ${t.lo}–${t.hi}`,
-          chipRect: { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height },
-        },
-      }))
-    },
-    [editor],
-  )
+	      const PAD = 40
+	      const bounds = { x: pb.x, y: t.pageY1 - PAD, w: pb.w, h: Math.max(t.pageY2 - t.pageY1, 20) + PAD * 2 }
+	      const r = el.getBoundingClientRect()
+	      dispatchManagedAnnotationViewerRequest({
+	        surfaceKey: `fleet-inbox:task:${t.file}:${t.lo}-${t.hi}`,
+	        bounds,
+	        shapeIds: [],
+	        label: `lines ${t.lo}–${t.hi}`,
+	        chipRect: { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height },
+	        owner: currentManagedSurfaceOwner(),
+	        source: `fleet-inbox:task:${t.file}:${t.lo}-${t.hi}`,
+	        viewport: managedViewportSize(),
+	      })
+	    },
+	    [editor],
+	  )
   const hideTaskPreview = useCallback((e: React.MouseEvent) => {
-    const related = e.relatedTarget as HTMLElement | null
-    if (related?.closest?.('.annotation-viewer')) return
-    window.dispatchEvent(new CustomEvent('annotation-viewer-hide'))
-  }, [])
+	    const related = e.relatedTarget as HTMLElement | null
+	    if (related?.closest?.('.annotation-viewer')) return
+	    dispatchManagedAnnotationViewerHide()
+	  }, [])
 
   // Hover a directly-stale node → preview the stale span over its statement (the
   // same hover→pin→go path the line-range tasks use). Cascade nodes have no span
@@ -543,18 +562,22 @@ function FleetInboxInner({ shape }: { shape: any }) {
       const me = (typeof window !== 'undefined' && (window as any).__tldraw_editor__) || editor
       const b = me.getShapePageBounds(n.id)
       if (!b) return
-      const PAD = 40
-      const bounds = { x: b.x - PAD, y: b.y - PAD, w: b.w + PAD * 2, h: b.h + PAD * 2 }
-      const r = el.getBoundingClientRect()
-      window.dispatchEvent(new CustomEvent('annotation-viewer-show', {
-        detail: {
-          bounds, shapeIds: [n.id], label: n.line != null ? `note · line ${n.line}` : 'note',
-          chipRect: { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height },
-        },
-      }))
-    },
-    [editor],
-  )
+	      const PAD = 40
+	      const bounds = { x: b.x - PAD, y: b.y - PAD, w: b.w + PAD * 2, h: b.h + PAD * 2 }
+	      const r = el.getBoundingClientRect()
+	      dispatchManagedAnnotationViewerRequest({
+	        surfaceKey: `fleet-inbox:note:${n.id}`,
+	        bounds,
+	        shapeIds: [n.id],
+	        label: n.line != null ? `note · line ${n.line}` : 'note',
+	        chipRect: { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height },
+	        owner: currentManagedSurfaceOwner(),
+	        source: `fleet-inbox:note:${n.id}`,
+	        viewport: managedViewportSize(),
+	      })
+	    },
+	    [editor],
+	  )
 
   const openThread = useCallback((t: Thread) => {
     setOpenPartner(t.partnerId)

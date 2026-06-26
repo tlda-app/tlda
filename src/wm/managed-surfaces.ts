@@ -1,6 +1,8 @@
 export type ManagedSurfaceKind =
 	| 'temporary-markdown'
 	| 'annotation-viewer'
+	| 'page-column'
+	| 'page-column-handle'
 	| 'lightbox'
 
 export type ManagedSurfaceHitPolicy =

@@ -12,6 +12,13 @@ import type { Editor, TLShapeId } from 'tldraw'
 import { setSvgText, deleteSvgText, svgViewBoxStore } from '../stores'
 import { getPageFilename } from '../stores/pageUrlStore'
 import { TARGET_WIDTH, PAGE_GAP, PDF_WIDTH, PDF_HEIGHT } from '../layoutConstants'
+import {
+  createPageColumnHandleSurfaceRequest,
+  createPageColumnSurfaceRequest,
+  pageColumnHandleShapeMeta,
+  pageColumnShapeMeta,
+} from '../wm/page-column-surface'
+import type { ManagedSurfaceOwner } from '../wm/managed-surfaces'
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -24,6 +31,7 @@ export interface PageSource {
 export interface PageColumnOptions {
   docName: string
   source: PageSource
+  owner?: Partial<ManagedSurfaceOwner>
   columnX: number
   totalPages: number
   prefetch?: number
@@ -62,6 +70,10 @@ let columnSession = 0
 
 function makeShapeId(columnId: string, pageNum: number): TLShapeId {
   return `shape:col-${columnId}-p${pageNum}` as TLShapeId
+}
+
+function sourceKey(source: PageSource): string {
+  return `${source.type}:${source.docName}:${source.ref || 'live'}`
 }
 
 /** Find minimum x coordinate of <text> elements in SVG (PDF points), or null if none found */
@@ -159,6 +171,12 @@ class PageColumn {
     // so clicking the handle won't show a bounding box.
     const handleH = 99999
     const handleY = this.yOffset - handleH / 2
+    const handleSurface = createPageColumnHandleSurfaceRequest({
+      columnKey: this.columnId,
+      bounds: { x: handleX, y: handleY, w: 1, h: handleH },
+      owner: this.options.owner,
+      source: sourceKey(this.options.source),
+    })
     this.editor.createShape({
       id: this.handleId,
       type: 'line' as any,
@@ -171,6 +189,7 @@ class PageColumn {
         },
         color: 'grey', dash: 'solid', size: 's', spline: 'line', scale: 1,
       },
+      meta: pageColumnHandleShapeMeta(handleSurface),
     })
     this.handlePos = { x: handleX, y: handleY }
 
@@ -193,6 +212,12 @@ class PageColumn {
               points: { a1: { id: 'a1', index: 'a1', x: 0, y: 0 }, a2: { id: 'a2', index: 'a2', x: 0, y: 99999 } },
               color: 'grey', dash: 'solid', size: 's', spline: 'line', scale: 1,
             },
+            meta: pageColumnHandleShapeMeta(createPageColumnHandleSurfaceRequest({
+              columnKey: this.columnId,
+              bounds: { x: pos.x, y: pos.y, w: 1, h: 99999 },
+              owner: this.options.owner,
+              source: sourceKey(this.options.source),
+            })),
           })
         }, 50)
       }
@@ -292,11 +317,20 @@ class PageColumn {
       if (this.destroyed) return  // final check before creating shape
       const pageY = this.yOffset + (pageNum - 1) * (PAGE_HEIGHT + PAGE_GAP)
       if (!this.editor.getShape(shapeId)) {
+        const pageBounds = { x: this.columnX, y: pageY, w: TARGET_WIDTH, h: dims.height * scale }
+        const surface = createPageColumnSurfaceRequest({
+          columnKey: this.columnId,
+          pageNum,
+          bounds: pageBounds,
+          owner: this.options.owner,
+          source: sourceKey(this.options.source),
+        })
         this.editor.createShape({
           id: shapeId, type: 'svg-page' as any,
           x: this.columnX, y: pageY,
           isLocked: true, opacity: this.options.opacity ?? 0.9,
           props: { w: TARGET_WIDTH, h: dims.height * scale, pageIndex: pageNum - 1 },
+          meta: pageColumnShapeMeta(surface),
         })
       }
       this.loaded.add(pageNum)
