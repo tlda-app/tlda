@@ -261,16 +261,16 @@ async function postChatAuthoredSuggestions(suggestions, recipients, { messageId 
     ts,
   }));
   const prev = await fleetFetch(`${TLDA_FLEET_SERVER}/api/suggestions`, { signal: AbortSignal.timeout(3000) });
-  const data = await prev.json().catch(() => ({}));
-  const retained = (data.suggestions || []).filter(s => s.from === AGENT_ID && String(s.messageId || '') !== String(messageId || ''));
+  const prevData = await prev.json().catch(() => ({}));
+  const retained = (prevData.suggestions || []).filter(s => s.from === AGENT_ID && String(s.messageId || '') !== String(messageId || ''));
   const res = await fleetFetch(`${TLDA_FLEET_SERVER}/api/suggestions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ agentId: AGENT_ID, suggestions: [...retained, ...stamped] }),
     signal: AbortSignal.timeout(3000),
   });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || res.statusText);
+  const postData = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(postData.error || res.statusText);
   return stamped.length;
 }
 
