@@ -1726,6 +1726,7 @@ function normalizeItem(raw = {}, fallback = {}) {
     text: raw.text || fallback.text,
     command: raw.command ?? fallback.command,
     group: raw.group || fallback.group,
+    messageId: raw.messageId ?? fallback.messageId ?? null,
   }
 }
 
@@ -1764,7 +1765,7 @@ function dismissItem(userId, itemId) {
 function suggestionToItem(agentId, s) {
   return normalizeItem({
     ...s,
-    id: `suggest:${agentId}:${s.group || s.id}`,
+    id: `suggest:${agentId}:${s.messageId || ''}:${s.group || s.id}`,
     kind: 'suggest',
     from: agentId,
     targetId: s.targetId || agentId,

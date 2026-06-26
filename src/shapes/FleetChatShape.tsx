@@ -1386,7 +1386,7 @@ const TIP_VARS = ['--surface', '--border', '--shadow-lg', '--text', '--text-brig
 
 // groupKey: suggestions sharing a `group` tag are one disjunctive group; an
 // untagged suggestion is its own singleton group (keyed by its id).
-function groupKeyOf(s: Suggestion): string { return s.group || String(s.id) }
+function groupKeyOf(s: Suggestion): string { return `${s.messageId || ''}::${s.group || String(s.id)}` }
 function groupChips(chips: Suggestion[]): Map<string, Suggestion[]> {
   const m = new Map<string, Suggestion[]>()
   for (const c of chips) {
@@ -1415,6 +1415,16 @@ export function SuggestionTip() {
       ))}
       <span className="suggestion-tip-target">→ {tip.agentName} · click an option to pick it</span>
     </span>
+  )
+}
+
+function SuggestionRow({ chips, ctx }: { chips: Suggestion[], ctx: any }) {
+  return (
+    <div className="chat-line chat-suggestions-inline" style={{ padding: '2px 8px 4px', fontSize: 11 }}>
+      {[...groupChips(chips)].map(([gkey, items]) => (
+        <SuggestionGroup key={gkey} chips={items} agentName={ctx.agentLabel(items[0].targetId || items[0].from)} />
+      ))}
+    </div>
   )
 }
 
@@ -1814,7 +1824,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     return filtered.filter(n => {
       // Key on target too: the same label (e.g. "hand off") can be pending for
       // multiple agents at once, and each must stay clickable against its own target.
-      const key = `${n.targetId || n.from || ''}::${n.label}`
+      const key = `${groupKeyOf(n)}::${n.targetId || n.from || ''}::${n.label}`
       if (seen.has(key)) return false
       seen.add(key)
       return true
@@ -2166,12 +2176,36 @@ function FleetChatInner({ shape }: { shape: any }) {
     return true
   }, [canExpandRenderedHistory, chatMessages.length, renderWindowStartIndex])
 
+  const renderedMessageIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (let i = renderWindowStartIndex; i < chatMessages.length; i++) {
+      const m = chatMessages[i] as { _dbId?: unknown }
+      if (m._dbId != null) ids.add(String(m._dbId))
+    }
+    return ids
+  }, [chatMessages, renderWindowStartIndex])
+
+  const suggestionsByMessage = useMemo(() => {
+    const byMessage = new Map<string, Suggestion[]>()
+    for (const s of suggestionsPending) {
+      if (s.messageId == null) continue
+      const key = String(s.messageId)
+      if (!renderedMessageIds.has(key)) continue
+      if (!byMessage.has(key)) byMessage.set(key, [])
+      byMessage.get(key)!.push(s)
+    }
+    return byMessage
+  }, [suggestionsPending, renderedMessageIds])
+
+  const fallbackSuggestions = useMemo(() => (
+    suggestionsPending.filter(s => s.messageId == null || !renderedMessageIds.has(String(s.messageId)))
+  ), [suggestionsPending, renderedMessageIds])
 
   // Build per-item raw HTML array — each item is an independent renderable unit.
   // This replaces the old joined renderedHtml string and enables virtualization.
   // Items tagged _queued render below the thinking indicator; _interrupt items
   // render between the indicator and the queue (they "jump the line").
-  type RawItem = { key: string; html: string; _queued?: boolean; _interrupt?: boolean; _divider?: boolean; _status?: boolean }
+  type RawItem = { key: string; html: string; _queued?: boolean; _interrupt?: boolean; _divider?: boolean; _status?: boolean; _suggestions?: Suggestion[] }
   // Short hash of the version currently shown in the viewer (accounts for
   // scrubbing to a historical version). Build cards compare against this to
   // style themselves green (you're viewing this build) vs gray (stale).
@@ -2191,6 +2225,18 @@ function FleetChatInner({ shape }: { shape: any }) {
     let chatLineCount = 0
     let buildResultCount = 0
     let specialCount = 0
+    function pushSuggestionRow(messageId: any) {
+      if (messageId == null) return
+      const chips = suggestionsByMessage.get(String(messageId))
+      if (!chips?.length) return
+      for (const [groupKey, groupChipsForMessage] of groupChips(chips)) {
+        items.push({
+          key: `suggest:${messageId}:${groupKey}`,
+          html: '',
+          _suggestions: groupChipsForMessage,
+        })
+      }
+    }
     function flushActivity() {
       if (activityGroup.length === 0) return
       if (!activityGroupHasVisible) {
@@ -2397,6 +2443,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             item._queued = true
           }
           items.push(item)
+          pushSuggestionRow(m._dbId)
         }
       }
     }
@@ -2427,7 +2474,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
     return items
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatMessages, windowedChatMessages, hiddenLookbehindCount, renderWindowStartIndex, renderWindowAnchorStart, renderedMessageLimit, ctx, thinkingAgents, unqueuedAt, viewingVersion, doc, amendsByOrig, amendView, macrosByDoc, preambleMacros])
+  }, [chatMessages, windowedChatMessages, hiddenLookbehindCount, renderWindowStartIndex, renderWindowAnchorStart, renderedMessageLimit, ctx, thinkingAgents, unqueuedAt, viewingVersion, doc, amendsByOrig, amendView, macrosByDoc, preambleMacros, suggestionsByMessage])
 
   // Per-item post-processing: applies chip replacement, URL linkification, and
   // doc-link resolution to a single item's HTML. Called by ChatMessageRow only
@@ -5370,9 +5417,11 @@ function FleetChatInner({ shape }: { shape: any }) {
                     agents={agents}
                     itemCount={rawItems.length}
                     escalationState={escalationState}
-                    suggestions={suggestionsPending}
+                    suggestions={fallbackSuggestions}
                   />
                 </div>
+              ) : item?._suggestions ? (
+                <SuggestionRow chips={item._suggestions} ctx={ctx} />
               ) : (
                 <div className={'chat-row-wrap' + (item?._divider ? ' queue-divider' : '')}>
                   <ChatMessageRow html={item.html} postProcess={postProcess} itemKey={item.key} expandedRowsRef={expandedRowsRef} />
