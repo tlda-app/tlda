@@ -101,7 +101,7 @@ export function createTemporaryMarkdownAnnotationViewerRequest(
 	markdownSurface: ManagedSurfaceRequest<TemporaryMarkdownSurfacePayload>,
 	input: Omit<AnnotationViewerSurfaceInput, 'surfaceKey' | 'bounds' | 'shapeIds' | 'source'>,
 ) {
-	return createAnnotationViewerSurfaceRequest({
+	const request = createAnnotationViewerSurfaceRequest({
 		...input,
 		surfaceKey: markdownSurface.surfaceId,
 		bounds: markdownSurface.extent,
@@ -110,4 +110,11 @@ export function createTemporaryMarkdownAnnotationViewerRequest(
 		useFullBounds: true,
 		pinned: true,
 	})
+	return {
+		...request,
+		cleanup: {
+			...request.cleanup,
+			onClose: 'remove-surface' as const,
+		},
+	}
 }

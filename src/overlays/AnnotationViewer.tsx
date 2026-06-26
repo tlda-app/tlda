@@ -203,10 +203,23 @@ export function AnnotationViewer({
   // Close
   const handleClose = useCallback((e: React.MouseEvent) => {
     e.stopPropagation()
+    if (data?.managedCleanup && typeof data.managedCleanup === 'object' && 'onClose' in data.managedCleanup) {
+      const cleanup = data.managedCleanup as { onClose?: string }
+      if (cleanup.onClose === 'remove-surface') {
+        const removable = (data.shapeIds || [])
+          .filter((shapeId) => {
+            const shape = mainEditor.getShape(shapeId as TLShapeId)
+            return !!shape?.meta?.temporaryMarkdownColumn
+          }) as TLShapeId[]
+        if (removable.length > 0) {
+          mainEditor.store.remove(removable)
+        }
+      }
+    }
     setData(null)
     setState('hovering')
     prevCameraRef.current = null
-  }, [])
+  }, [data, mainEditor])
 
   // Resize drag
   const resizeRef = useRef<{ startX: number; startY: number; startW: number; startH: number } | null>(null)

@@ -98,6 +98,7 @@ test('temporary markdown annotation viewer request links the preview surface as 
 
 	assert.equal(viewer.source, markdown.surfaceId)
 	assert.equal(viewer.persistence.pinned, true)
+	assert.equal(viewer.cleanup.onClose, 'remove-surface')
 	assert.equal(viewer.payload.useFullBounds, true)
 	assert.deepEqual(viewer.payload.bounds, markdown.extent)
 	assert.deepEqual(viewer.payload.shapeIds, [markdown.payload.shapeId])

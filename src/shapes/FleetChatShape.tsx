@@ -183,6 +183,35 @@ function activeComposerAgentLabel(filter: [string, string][][], sendTargets: str
   return ''
 }
 
+function isManagedSurfaceProofFixtureEnabled() {
+  if (typeof window === 'undefined') return false
+  return new URLSearchParams(window.location.search).get('wmManagedSurfaceProof') === '1'
+}
+
+function createManagedSurfaceProofMessage() {
+  const now = Date.now()
+  return {
+    type: 'chat',
+    _tempId: 'wm-managed-surface-proof-chip',
+    timestamp: new Date(now).toISOString(),
+    from: getHumanId() || 'fleet:wm-managed-surface-proof',
+    to: getHumanId() || 'fleet:wm-managed-surface-proof',
+    text: [
+      '# WM managed surface proof',
+      '',
+      'This query-gated proof row uses FleetChatShape source-chip rendering and the normal source-chip click handler.',
+      '',
+      'Expected path: real chip click -> temporary markdown surface descriptor -> managed AnnotationViewer request -> cleanup on close.',
+    ].join('\n'),
+    metadata: {
+      source: {
+        file: 'wm-managed-surface-proof.md',
+        section: 'proof-chip',
+      },
+    },
+  }
+}
+
 // ---- Terminal hover pane ----
 
 // Terminal peek overlay — shown when hovering the terminal icon on a chat shape.
@@ -2006,9 +2035,10 @@ function FleetChatInner({ shape }: { shape: any }) {
           y: Math.max(...occupiedBounds.map(b => b.y + b.h)) + 10000,
         }
       : chipAnchor
-    void createTemporaryMarkdownColumn(mainEditor, anchor, title, markdown || title, {
-      sourceChatShapeId: shape.id,
-    }).then((result) => {
+	    void createTemporaryMarkdownColumn(mainEditor, anchor, title, markdown || title, {
+	      sourceChatShapeId: shape.id,
+	      wmManagedSurfaceProofFixture: isManagedSurfaceProofFixtureEnabled(),
+	    }).then((result) => {
       if (!result?.bounds) return
       const chipRect = sourceEl.getBoundingClientRect()
       const request = createTemporaryMarkdownAnnotationViewerRequest(result.surface, {
@@ -2073,6 +2103,10 @@ function FleetChatInner({ shape }: { shape: any }) {
         }
         return ida == null ? 1 : -1
       })
+
+    if (isManagedSurfaceProofFixtureEnabled()) {
+      sorted.push(createManagedSurfaceProofMessage())
+    }
 
     probe.stop(chatSortTimer, { eventCount: events.length, resultCount: sorted.length })
     return sorted

@@ -77,6 +77,31 @@ function encodeUtf8Base64(text: string): string {
   return btoa(binary)
 }
 
+function isTemporaryMarkdownProofFixture(meta: Record<string, unknown>) {
+  if (meta.wmManagedSurfaceProofFixture !== true) return false
+  if (typeof window === 'undefined') return false
+  return new URLSearchParams(window.location.search).get('wmManagedSurfaceProof') === '1'
+}
+
+function temporaryMarkdownProofFixtureUrl(title: string, markdown: string) {
+  const escapedTitle = title.replace(/[&<>"']/g, (ch) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  }[ch] || ch))
+  const escapedMarkdown = markdown.replace(/[&<>"']/g, (ch) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  }[ch] || ch))
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${escapedTitle}</title></head><body><main><h1>${escapedTitle}</h1><pre>${escapedMarkdown}</pre></main></body></html>`
+  return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
+}
+
 async function ensureTemporaryMarkdownProject() {
   const createRes = await fetch('/api/projects', {
     method: 'POST',
@@ -154,23 +179,27 @@ export async function createTemporaryMarkdownColumn(
 ) {
   const source = markdown.trim() ? markdown : `# ${title || 'Markdown chip'}`
   const startedAt = Date.now()
-  await ensureTemporaryMarkdownProject()
-  const pushRes = await fetch(`/api/projects/${TEMP_MARKDOWN_PROJECT}/push`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      files: [{
-        path: TEMP_MARKDOWN_FILE,
-        content: encodeUtf8Base64(source),
-        encoding: 'base64',
-      }],
-    }),
-  })
-  if (!pushRes.ok) throw new Error(`markdown push failed: ${pushRes.status}`)
-  const pushResult = await pushRes.json().catch(() => null)
-  await waitForTemporaryMarkdownBuild(startedAt, !!pushResult?.unchanged)
-
-  const url = `/docs/${TEMP_MARKDOWN_PROJECT}/index.html?t=${Date.now()}`
+  const proofFixture = isTemporaryMarkdownProofFixture(meta)
+  let url = `/docs/${TEMP_MARKDOWN_PROJECT}/index.html?t=${Date.now()}`
+  if (proofFixture) {
+    url = temporaryMarkdownProofFixtureUrl(title, source)
+  } else {
+    await ensureTemporaryMarkdownProject()
+    const pushRes = await fetch(`/api/projects/${TEMP_MARKDOWN_PROJECT}/push`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        files: [{
+          path: TEMP_MARKDOWN_FILE,
+          content: encodeUtf8Base64(source),
+          encoding: 'base64',
+        }],
+      }),
+    })
+    if (!pushRes.ok) throw new Error(`markdown push failed: ${pushRes.status}`)
+    const pushResult = await pushRes.json().catch(() => null)
+    await waitForTemporaryMarkdownBuild(startedAt, !!pushResult?.unchanged)
+  }
   const parkedPoint = getParkedMarkdownPoint(editor, pagePoint)
   const existing = editor.getShape(TEMP_MARKDOWN_SHAPE_ID)
   if (existing) {
