@@ -23,6 +23,7 @@ import { fileURLToPath } from 'url'
 import { homedir, hostname } from 'os'
 import { randomBytes } from 'crypto'
 import { collectSourceFiles, collectSourceHashes, collectSpecificFiles } from './lib/source-files.mjs'
+import { collectHtmlArtifactFiles, htmlArtifactMainForSource } from './lib/html-artifact-files.mjs'
 import {
   loadConfig, saveConfig, getServerUrl, getFleetServerUrl, getRwToken, DEFAULT_PORT,
   CONFIG_DIR, CONFIG_FILE, hasTls, TLS_CA_PATH,
@@ -79,7 +80,7 @@ const command = args[0]
 const COMMAND_HELP = {
   scratch: 'tlda doc scratch <file.md> [--title "Title"] [--book fleet-workspace]\n\n  Publish a scratch markdown file as a page in a book.\n  Creates a markdown project, pushes the file, and auto-joins the book.\n  Subsequent edits are auto-pushed by watch-all.\n\n  --title    Display title (default: first heading or filename)\n  --book     Book to join (default: fleet-workspace)',
   book:    'tlda doc book <name> --members doc1,doc2,doc3,...\n\n  Create a book that groups existing documents together.\n  Each member keeps its own sync room and annotations.\n  The viewer shows one member at a time with a tab bar to switch.',
-  link:    'tlda doc link <name> [main.tex] [--title "Title"] [--dir /path] [--main main.tex] [--format slides|html|markdown]\n\n  Link a paper repository to tlda and push source files. If the project already exists,\n  pushes files and triggers a rebuild.\n\n  Formats:\n    (default)  LaTeX → SVG pipeline (latexmk → dvisvgm)\n    slides     Reveal.js HTML (from Quarto revealjs or manual)\n    html       Multipage HTML chapters (from Quarto book render)\n    markdown   Markdown with KaTeX math → HTML',
+  link:    'tlda doc link <name> [file] [--title "Title"] [--format slides|html|markdown]\n\n  Link the repository containing file to tlda and push files. If the project already exists,\n  pushes files and triggers a rebuild.\n\n  Examples:\n    tlda doc link paper path/to/paper.tex\n    tlda doc link talk path/to/talk.qmd --format slides\n\n  Formats:\n    (default)  LaTeX → SVG pipeline (latexmk → dvisvgm)\n    slides     Reveal.js HTML (from Quarto revealjs or manual)\n    html       Multipage HTML chapters (from Quarto book render)\n    markdown   Markdown with KaTeX math → HTML\n\n  Advanced: --dir <path> and --main <file> override file-derived paths.',
   push:    'tlda doc push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
   watch:   'tlda daemon [start|stop|status|log|run]\n\n  Control the per-machine fleet-daemon (bin/fleet-daemon.mjs).\n  The daemon watches Claude Code session JSONLs and project source\n  dirs locally, pushing events to the tlda server over WebSocket.',
   'watch-all': 'tlda daemon [start|stop|status|log|run]\n\n  Alias for `tlda daemon start/stop/status/log/run` — runs the\n  per-machine fleet-daemon (bin/fleet-daemon.mjs), which watches\n  every project source dir AND every Claude Code session JSONL\n  on this machine and pushes events to the tlda server over WebSocket.',
@@ -349,7 +350,7 @@ async function cmdScratch() {
 
 async function cmdCreate() {
   const name = getPositional(0)
-  if (!name) { console.error('Usage: tlda doc link <name> [main.tex] [--title "Title"] [--dir /path] [--main main.tex] [--format slides|html]'); process.exit(1) }
+  if (!name) { console.error('Usage: tlda doc link <name> [file] [--title "Title"] [--format slides|html|markdown]'); process.exit(1) }
 
   let format = getFlag('format') || null
   const positionalMain = getPositional(1)
@@ -362,8 +363,8 @@ async function cmdCreate() {
   }
   const title = getFlag('title') || name
 
-  // Infer the format from --main's extension when --format is omitted. Without
-  // this, `tlda doc link x --main README.md` falls through to the LaTeX/svg
+  // Infer the format from the file argument when --format is omitted. Without
+  // this, `tlda doc link x README.md` falls through to the LaTeX/svg
   // path, which uploads the ENTIRE directory — gigabytes if --dir is a code repo.
   // Explicit --format always wins; .tex/unknown keep the existing LaTeX default.
   if (!format) {
@@ -391,44 +392,23 @@ async function cmdCreate() {
       }
     }
 
-    // Push the rendered deck and conventional asset folders. Reveal/Quarto
-    // decks commonly reference sibling assets; sending only the HTML makes
-    // tlda diverge from the raw deck. Do not upload the surrounding work repo.
-    const allFiles = []
-    const htmlFiles = readdirSync(dir).filter(f => f.endsWith('.html'))
-    const htmlBases = new Set(htmlFiles.map(f => f.replace(/\.html$/, '')))
-    const assetDirs = new Set(['site_libs', 'libs', 'images', 'img', 'figures', 'assets', 'css', 'js', 'fonts', '_extensions'])
-    for (const base of htmlBases) assetDirs.add(`${base}_files`)
-    const assetFileExt = new Set([
-      'html', 'css', 'js', 'mjs', 'json', 'svg', 'png', 'jpg', 'jpeg', 'gif', 'webp',
-      'woff', 'woff2', 'ttf', 'otf', 'eot', 'mp4', 'webm', 'mov', 'pdf',
-    ])
-    function collectDir(base, prefix = '') {
-      for (const entry of readdirSync(join(base, prefix), { withFileTypes: true })) {
-        const relPath = prefix ? `${prefix}/${entry.name}` : entry.name
-        if (entry.isDirectory()) {
-          if (!prefix && !assetDirs.has(entry.name)) continue
-          collectDir(base, relPath)
-        } else {
-          const ext = entry.name.includes('.') ? entry.name.split('.').pop().toLowerCase() : ''
-          if (!prefix && !assetFileExt.has(ext)) continue
-          const content = readFileSync(join(base, relPath))
-          allFiles.push({
-            path: relPath,
-            content: content.toString('base64'),
-            encoding: 'base64',
-          })
-        }
-      }
-    }
-    collectDir(dir)
+    const slidesMain = htmlArtifactMainForSource(mainArg)
+    const artifact = collectHtmlArtifactFiles(dir, { mainFile: slidesMain })
+    const allFiles = artifact.files
 
-    if (allFiles.filter(f => f.path.endsWith('.html')).length === 0) {
-      console.error(`No .html files found in ${dir}`)
+    if (artifact.paths.filter(f => /\.(?:html|htm)$/i.test(f)).length === 0) {
+      const hint = slidesMain ? ` (${slidesMain})` : ''
+      console.error(`No .html files found in ${dir}${hint}`)
       process.exit(1)
     }
 
-    console.log(`Pushing ${allFiles.length} file(s)...`)
+    if (artifact.missing.length > 0) {
+      console.warn(yellow(`  Warning: ${artifact.missing.length} referenced local asset(s) were not found.`))
+      for (const rel of artifact.missing.slice(0, 10)) console.warn(dim(`    missing: ${rel}`))
+      if (artifact.missing.length > 10) console.warn(dim(`    ... ${artifact.missing.length - 10} more`))
+    }
+
+    console.log(`Pushing ${allFiles.length} artifact file(s)...`)
     await api('POST', `/api/projects/${name}/push`, { files: allFiles, sourceDir: dir })
     console.log(green('Slides processed.'))
 

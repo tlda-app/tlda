@@ -21,8 +21,10 @@ name `tlda-revealjs`. The extension directory is named `tlda` rather than
 
 ```sh
 quarto render talk.qmd --to tlda-revealjs
-tlda doc link talk --format slides --dir .
+tlda doc link talk talk.qmd --format slides
 ```
 
-The tlda link step copies the rendered deck and generates `page-info.json` for
-the viewer.
+The tlda link step links the repository containing `talk.qmd`, derives the
+rendered `talk.html` entrypoint from that file, follows local HTML/CSS
+references, uploads only that artifact closure, and generates `page-info.json`
+for the viewer. It does not upload caches or unused asset directories.
