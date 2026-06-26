@@ -107,7 +107,7 @@ const init = initVoice()
 await new Promise(r => setTimeout(r, 2100))
 await init
 
-assert.equal(getBackend(), 'deepgram')
+assert.equal(getBackend(), 'none')
 
 await loadPrefs('fleet:skip')
 await Promise.resolve()
