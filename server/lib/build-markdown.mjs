@@ -187,6 +187,95 @@ function extractTitle(source) {
   return m ? m[1].trim() : 'Document'
 }
 
+function escAttr(s) {
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')
+}
+
+function splitHtmlParts(html) {
+  const tagRe = /<[^>]+>/g
+  const parts = []
+  let lastIdx = 0
+  let m
+  while ((m = tagRe.exec(html)) !== null) {
+    if (m.index > lastIdx) parts.push({ text: html.slice(lastIdx, m.index), isTag: false })
+    parts.push({ text: m[0], isTag: true })
+    lastIdx = tagRe.lastIndex
+  }
+  if (lastIdx < html.length) parts.push({ text: html.slice(lastIdx), isTag: false })
+  return parts
+}
+
+function linkifyMarkdownTextRefs(html) {
+  const parts = splitHtmlParts(html)
+  let skipDepth = 0
+  const result = []
+  const skipOpen = /^<(a|code|pre)[\s>]/i
+  const skipClose = /^<\/(a|code|pre|span)>/i
+  const spanSkipOpen = /^<span\s[^>]*class="[^"]*(?:doc-link|ref-chip)/i
+  const spanOpen = /^<span[\s>]/i
+  const refRe = /(?<![\\@\w])@([\w:.-]+[\w])|texsync:\/\/file([^\s<>"']+?):(\d+)/g
+
+  for (const part of parts) {
+    if (part.isTag) {
+      if (skipDepth > 0) {
+        if (spanOpen.test(part.text)) skipDepth++
+        else if (skipClose.test(part.text)) skipDepth--
+      } else if (skipOpen.test(part.text) || spanSkipOpen.test(part.text)) {
+        skipDepth++
+      }
+      result.push(part.text)
+      continue
+    }
+
+    if (skipDepth > 0) {
+      result.push(part.text)
+      continue
+    }
+
+    let cursor = 0
+    let modified = false
+    const segments = []
+    refRe.lastIndex = 0
+    let m
+    while ((m = refRe.exec(part.text)) !== null) {
+      modified = true
+      if (m.index > cursor) segments.push(part.text.slice(cursor, m.index))
+      if (m[1]) {
+        const label = m[1]
+        segments.push(`<span class="doc-link at-ref" data-ref-type="label" data-ref-label="${escAttr(label)}">@${escAttr(label)}</span>`)
+      } else {
+        const file = m[2]
+        const line = m[3]
+        const display = `${basename(file)}:${line}`
+        segments.push(`<span class="doc-link texsync-ref" data-ref-type="source-line" data-ref-file="${escAttr(file)}" data-ref-line="${line}">${escAttr(display)}</span>`)
+      }
+      cursor = m.index + m[0].length
+    }
+    if (modified) {
+      if (cursor < part.text.length) segments.push(part.text.slice(cursor))
+      result.push(segments.join(''))
+    } else {
+      result.push(part.text)
+    }
+  }
+  return result.join('')
+}
+
+function enhanceTexsyncAnchors(html) {
+  return html.replace(/<a\b([^>]*?)\bhref="texsync:\/\/file([^"]+?):(\d+)"([^>]*)>/g, (_m, before, file, line, after) => {
+    const attrs = `${before} href="texsync://file${escAttr(file)}:${line}"${after}`
+    const classMatch = attrs.match(/\bclass="([^"]*)"/)
+    const withClass = classMatch
+      ? attrs.replace(/\bclass="([^"]*)"/, `class="${classMatch[1]} doc-link texsync-ref"`)
+      : `${attrs} class="doc-link texsync-ref"`
+    return `<a${withClass} data-ref-type="source-line" data-ref-file="${escAttr(file)}" data-ref-line="${line}">`
+  })
+}
+
+function linkifyMarkdownDocRefs(html) {
+  return enhanceTexsyncAnchors(linkifyMarkdownTextRefs(html))
+}
+
 // ---- Main build function ----
 
 export async function buildMarkdownDocument(name, addLog = console.log) {
@@ -265,7 +354,8 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
   // Render and collect tokens
   const env = {}
   const tokens = md.parse(processedSource, env)
-  const content = md.renderer.render(tokens, md.options, env)
+  let content = md.renderer.render(tokens, md.options, env)
+  content = linkifyMarkdownDocRefs(content)
   const title = extractTitle(source)
 
   const html = `<!DOCTYPE html>
@@ -332,6 +422,13 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
       width: auto;
     }
     a { color: #2563eb; }
+    .doc-link {
+      color: #2563eb;
+      cursor: pointer;
+      border-bottom: 1px dotted currentColor;
+      text-decoration: none;
+    }
+    .doc-link:hover { opacity: 0.72; }
     .katex-display { overflow-x: auto; overflow-y: hidden; }
     .math-error { color: red; font-family: monospace; }
   </style>

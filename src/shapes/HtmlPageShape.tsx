@@ -9,10 +9,11 @@ import {
   stopEventPropagation,
   Box,
 } from 'tldraw'
-import type { TLPageId } from 'tldraw'
+import type { TLPageId, TLShapeId } from 'tldraw'
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { appendToken } from '../authToken'
 import { useIsInViewport } from './useIsInViewport'
+import { PDF_HEIGHT } from '../layoutConstants'
 
 // Heading Y positions reported by bridge scripts, keyed by shape ID
 export const htmlHeadingPositions = new Map<string, Record<string, number>>()
@@ -48,6 +49,44 @@ export interface ScrollyRegion {
 }
 
 export const htmlScrollyRegions = new Map<string, ScrollyRegion[]>()
+
+type HtmlPageShapeRecord = {
+  id: TLShapeId
+  x: number
+  y: number
+  props: { w: number; h: number; url?: string }
+}
+
+function isHtmlPageShapeRecord(value: unknown): value is HtmlPageShapeRecord {
+  if (!value || typeof value !== 'object') return false
+  const candidate = value as { type?: unknown; x?: unknown; y?: unknown; props?: { w?: unknown; h?: unknown } }
+  return (
+    candidate.type === 'html-page' &&
+    typeof candidate.x === 'number' &&
+    typeof candidate.y === 'number' &&
+    typeof candidate.props?.w === 'number' &&
+    typeof candidate.props?.h === 'number'
+  )
+}
+
+type FleetDocviewShapeRecord = {
+  id: TLShapeId
+  type: 'fleet-docview'
+  isLocked?: boolean
+  props: Record<string, unknown>
+}
+
+function isFleetDocviewShapeRecord(value: unknown): value is FleetDocviewShapeRecord {
+  if (!value || typeof value !== 'object') return false
+  const candidate = value as { id?: unknown; type?: unknown; isLocked?: unknown; props?: unknown }
+  return (
+    typeof candidate.id === 'string' &&
+    candidate.type === 'fleet-docview' &&
+    (candidate.isLocked === undefined || typeof candidate.isLocked === 'boolean') &&
+    !!candidate.props &&
+    typeof candidate.props === 'object'
+  )
+}
 
 
 export class HtmlPageShapeUtil extends BaseBoxShapeUtil<any> {
@@ -95,6 +134,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
   const editor = useEditor()
   const isDark = useValue('isDarkMode', () => editor.user.getIsDarkMode(), [editor])
   const iframeRef = useRef<HTMLIFrameElement>(null)
+  const docLinkHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Register iframe ref for SvgFigureShape to send transform messages
   useEffect(() => {
@@ -180,6 +220,112 @@ function HtmlPageComponent({ shape }: { shape: any }) {
   // when multiple postMessages arrive between React re-renders
   useEffect(() => {
     const handler = (e: MessageEvent) => {
+      const htmlDocLinkBounds = () => {
+        if (e.data?.shapeId !== shape.id) return null
+        const current = editor.store.get(shape.id)
+        if (!isHtmlPageShapeRecord(current)) return null
+        const rect = e.data?.rect
+        const docSize = e.data?.docSize
+        if (!rect || typeof rect.offsetTop !== 'number') return null
+        const docWidth = typeof docSize?.width === 'number' && docSize.width > 0 ? docSize.width : 800
+        const scale = current.props.w / docWidth
+        const linkH = Math.max(16, (typeof rect.height === 'number' ? rect.height : 16) * scale)
+        const y = current.y + rect.offsetTop * scale
+        const x = current.x + (typeof rect.offsetLeft === 'number' ? rect.offsetLeft : 0) * scale
+        const w = Math.max(80, (typeof rect.width === 'number' ? rect.width : 80) * scale)
+        const minH = current.props.h * 0.18
+        const h = Math.max(minH, linkH * 8)
+        return {
+          current,
+          scale,
+          bounds: {
+            x: current.x,
+            y: Math.max(current.y, y - h / 2),
+            w: current.props.w,
+            h: Math.min(h, current.y + current.props.h - Math.max(current.y, y - h / 2)),
+          },
+          linkCenter: { x: x + w / 2, y: y + linkH / 2 },
+        }
+      }
+      const htmlDocLinkLabel = () => {
+        const text = String(e.data?.text || '').trim()
+        const line = e.data?.refLine ? `:${e.data.refLine}` : ''
+        return text || e.data?.refLabel || (e.data?.refFile ? `${String(e.data.refFile).split('/').pop()}${line}` : 'reference')
+      }
+      const topLevelChipRect = () => {
+        const iframe = iframeRef.current
+        const rect = e.data?.rect
+        if (!iframe || !rect) return undefined
+        const iframeRect = iframe.getBoundingClientRect()
+        return {
+          left: iframeRect.left + rect.left,
+          top: iframeRect.top + rect.top,
+          right: iframeRect.left + rect.right,
+          bottom: iframeRect.top + rect.bottom,
+          width: rect.width,
+          height: rect.height,
+        }
+      }
+      if (e.data?.type === 'tlda-doc-link-hover') {
+        if (docLinkHoverTimerRef.current) clearTimeout(docLinkHoverTimerRef.current)
+        docLinkHoverTimerRef.current = setTimeout(() => {
+          const mapped = htmlDocLinkBounds()
+          if (!mapped) return
+          window.dispatchEvent(new CustomEvent('annotation-viewer-show', {
+            detail: {
+              bounds: mapped.bounds,
+              shapeIds: [shape.id],
+              label: htmlDocLinkLabel(),
+              chipRect: topLevelChipRect(),
+            },
+          }))
+        }, 300)
+        return
+      }
+      if (e.data?.type === 'tlda-doc-link-out') {
+        if (e.data?.shapeId !== shape.id) return
+        if (docLinkHoverTimerRef.current) clearTimeout(docLinkHoverTimerRef.current)
+        window.dispatchEvent(new CustomEvent('annotation-viewer-hide'))
+        return
+      }
+      if (e.data?.type === 'tlda-doc-link-click') {
+        const mapped = htmlDocLinkBounds()
+        if (!mapped) return
+        const vpHeight = editor.getViewportPageBounds().h
+        editor.centerOnPoint({ x: mapped.linkCenter.x, y: mapped.linkCenter.y + vpHeight * 0.35 }, { animation: { duration: 300 } })
+        const dvShape = (editor.getCurrentPageShapes() as unknown[]).find(isFleetDocviewShapeRecord)
+        if (dvShape) {
+          const pageBounds = mapped.current
+          const pdfScale = pageBounds.props.h / PDF_HEIGHT
+          const yTop = Math.max(0, Math.round((mapped.bounds.y - pageBounds.y) / pdfScale))
+          const yBottom = Math.max(yTop + 1, Math.round((mapped.bounds.y + mapped.bounds.h - pageBounds.y) / pdfScale))
+          if (dvShape.isLocked) {
+            editor.updateShape({ id: dvShape.id, type: dvShape.type, isLocked: false } as unknown as Parameters<typeof editor.updateShape>[0])
+          }
+          editor.updateShape({
+            id: dvShape.id,
+            type: dvShape.type,
+            props: {
+              ...dvShape.props,
+              mode: 'manual',
+              label: e.data?.refLabel || '',
+              page: 1,
+              yTop,
+              yBottom,
+              title: htmlDocLinkLabel(),
+            },
+          } as unknown as Parameters<typeof editor.updateShape>[0])
+        }
+        window.dispatchEvent(new CustomEvent('annotation-viewer-show', {
+          detail: {
+            bounds: mapped.bounds,
+            shapeIds: [shape.id],
+            label: htmlDocLinkLabel(),
+            chipRect: topLevelChipRect(),
+          },
+        }))
+        return
+      }
       if (e.data?.type === 'tlda-wheel') {
         // Forward wheel events from iframe bridge directly to TLDraw's editor.dispatch
         // (synthetic DOM WheelEvents don't reach @use-gesture's internal handler)
@@ -403,7 +549,10 @@ function HtmlPageComponent({ shape }: { shape: any }) {
       }
     }
     window.addEventListener('message', handler)
-    return () => window.removeEventListener('message', handler)
+    return () => {
+      window.removeEventListener('message', handler)
+      if (docLinkHoverTimerRef.current) clearTimeout(docLinkHoverTimerRef.current)
+    }
   }, [shape.id, editor])
 
   // Pass shape ID and auth token to iframe
