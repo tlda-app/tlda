@@ -71,6 +71,9 @@ import './fleet-chat.css'
 const DEFAULT_W = 400
 const DEFAULT_H = 600
 const FLEET_API = DATABASE_HTTP
+const INITIAL_CHAT_RENDER_WINDOW = 80
+const CHAT_RENDER_WINDOW_CHUNK = 80
+const CHAT_RENDER_LOOKBEHIND = 20
 type ChatTrafficMode = 'normal' | 'quiet'
 type ComposerTrafficFilterMode = 'dm-quiet' | 'dm' | 'agent' | 'custom'
 
@@ -2125,6 +2128,29 @@ function FleetChatInner({ shape }: { shape: any }) {
   // latest). The ◀▶ stepper arrows step through.
   const [amendView, setAmendView] = useState<Map<number, number>>(new Map())
 
+  const [renderedMessageLimit, setRenderedMessageLimit] = useState(INITIAL_CHAT_RENDER_WINDOW)
+  const renderWindowStartIndex = Math.max(0, chatMessages.length - renderedMessageLimit)
+  const renderWindowLookbehindStartIndex = Math.max(0, renderWindowStartIndex - CHAT_RENDER_LOOKBEHIND)
+  const hiddenLookbehindCount = renderWindowStartIndex - renderWindowLookbehindStartIndex
+  const windowedChatMessages = useMemo(
+    () => chatMessages.slice(renderWindowLookbehindStartIndex),
+    [chatMessages, renderWindowLookbehindStartIndex],
+  )
+  const canExpandRenderedHistory = renderWindowStartIndex > 0
+  const pendingWindowRestoreHeightRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    setRenderedMessageLimit(INITIAL_CHAT_RENDER_WINDOW)
+    pendingWindowRestoreHeightRef.current = null
+  }, [filterKey])
+
+  const expandRenderedHistory = useCallback((el?: HTMLElement | null): boolean => {
+    if (!canExpandRenderedHistory) return false
+    if (el) pendingWindowRestoreHeightRef.current = el.scrollHeight
+    setRenderedMessageLimit(limit => Math.min(chatMessages.length, limit + CHAT_RENDER_WINDOW_CHUNK))
+    return true
+  }, [canExpandRenderedHistory, chatMessages.length])
+
 
   // Build per-item raw HTML array — each item is an independent renderable unit.
   // This replaces the old joined renderedHtml string and enables virtualization.
@@ -2145,12 +2171,18 @@ function FleetChatInner({ shape }: { shape: any }) {
       .join('|')
     const items: RawItem[] = []
     let activityGroup: any[] = []
+    let activityGroupHasVisible = false
     let activityGroupCount = 0
     let chatLineCount = 0
     let buildResultCount = 0
     let specialCount = 0
     function flushActivity() {
       if (activityGroup.length === 0) return
+      if (!activityGroupHasVisible) {
+        activityGroup = []
+        activityGroupHasVisible = false
+        return
+      }
       const t0 = probe.isEnabled('chat') ? performance.now() : 0
       const a0: any = activityGroup[0]
       const aid = a0._dbId != null ? `db${a0._dbId}` : a0._tempId ? `tmp${a0._tempId}` : `${a0.from}:${a0.timestamp}`
@@ -2176,6 +2208,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         if (dt > 2) probe.record('chat', 'chat-render-activity-group', dt, { key, groupSize, cached })
       }
       activityGroup = []
+      activityGroupHasVisible = false
     }
 
     // Helper: is this message queued behind a thinking agent?
@@ -2190,13 +2223,16 @@ function FleetChatInner({ shape }: { shape: any }) {
       return true
     }
 
-    for (let i = 0; i < chatMessages.length; i++) {
-      const m = chatMessages[i]
+    for (let i = 0; i < windowedChatMessages.length; i++) {
+      const m = windowedChatMessages[i]
+      const shouldRender = i >= hiddenLookbehindCount
       if (m._activity) {
         if (activityGroup.length > 0 && activityGroup[0].from !== m.from) flushActivity()
         activityGroup.push(m)
+        if (shouldRender) activityGroupHasVisible = true
       } else if (m.metadata?.type === 'build_result') {
         flushActivity()
+        if (!shouldRender) continue
         buildResultCount++
         const { name: docName, hash, summary, lintFindings = [], mirrorFailed, buildFailed, errors = [] } = m.metadata
         const hasDetails = !!(summary || lintFindings.length > 0 || mirrorFailed || buildFailed || errors.length > 0)
@@ -2234,6 +2270,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         items.push({ key: m._dbId || m._tempId || `${m.timestamp}:${m.from}:build`, html })
       } else if (m._evType === 'plan_approval' || m.type === 'plan_approval') {
         flushActivity()
+        if (!shouldRender) continue
         specialCount++
         const agentId: string = m.from || ''
         const agentObjs: any[] = renderCtx.getAgents()
@@ -2253,6 +2290,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         items.push({ key: m._dbId || m._tempId || `${m.timestamp}:${m.from}:plan`, html })
       } else if (m.type === 'kill-session') {
         flushActivity()
+        if (!shouldRender) continue
         specialCount++
         const agentObjs: any[] = renderCtx.getAgents()
         const targetId = m.to || ''
@@ -2262,6 +2300,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         items.push({ key: m._dbId || m._tempId || `${m.timestamp}:${m.from}:kill`, html })
       } else if (m.type === 'interrupt') {
         flushActivity()
+        if (!shouldRender) continue
         specialCount++
         const agentObjs: any[] = renderCtx.getAgents()
         const targetId = m.to || ''
@@ -2271,6 +2310,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         items.push({ key: m._dbId || m._tempId || `${m.timestamp}:${m.from}:interrupt`, html })
       } else {
         flushActivity()
+        if (!shouldRender) continue
         // Fold amends: if this message has amend events, show the viewed
         // version's text (+ its own source, so the chip is per-version) and a
         // V{n} ◀▶ stepper. Un-amended messages render untouched.
@@ -2347,19 +2387,31 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
     flushActivity()
     if (probe.isEnabled('chat')) {
-      probe.record('chat', 'chat-build-raw-items', performance.now() - rawItemsT0, {
+      const dt = performance.now() - rawItemsT0
+      const detail = {
         messageCount: chatMessages.length,
+        windowMessageCount: windowedChatMessages.length,
+        renderedMessageCount: chatMessages.length - renderWindowStartIndex,
+        hiddenLookbehindCount,
+        renderWindowStartIndex,
         itemCount: items.length,
         chatLineCount,
         activityGroupCount,
         buildResultCount,
         specialCount,
         eventCount: events.length,
-      })
+      }
+      probe.record('chat', 'chat-build-raw-items', dt, detail)
+      probe.record(
+        'chat',
+        renderedMessageLimit > INITIAL_CHAT_RENDER_WINDOW ? 'chat-older-window-build' : 'chat-tail-window-build',
+        dt,
+        detail,
+      )
     }
     return items
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatMessages, ctx, thinkingAgents, unqueuedAt, viewingVersion, doc, amendsByOrig, amendView, macrosByDoc, preambleMacros])
+  }, [chatMessages, windowedChatMessages, hiddenLookbehindCount, renderWindowStartIndex, renderedMessageLimit, ctx, thinkingAgents, unqueuedAt, viewingVersion, doc, amendsByOrig, amendView, macrosByDoc, preambleMacros])
 
   // Per-item post-processing: applies chip replacement, URL linkification, and
   // doc-link resolution to a single item's HTML. Called by ChatMessageRow only
@@ -2467,6 +2519,15 @@ function FleetChatInner({ shape }: { shape: any }) {
     items.push({ key: '__status__', html: '', _status: true })
     return items
   }, [rawItems])
+
+  useLayoutEffect(() => {
+    const prevHeight = pendingWindowRestoreHeightRef.current
+    if (prevHeight == null) return
+    pendingWindowRestoreHeightRef.current = null
+    const el = chatLogEl
+    if (!el) return
+    el.scrollTop += el.scrollHeight - prevHeight
+  }, [allItems.length, renderedMessageLimit, chatLogEl])
 
   // Virtual scroll — only mount DOM nodes for visible messages.
   // Handle clicks on ref-chip annotations → navigate to canvas bounds
@@ -4411,6 +4472,8 @@ function FleetChatInner({ shape }: { shape: any }) {
   const handleScroll = useCallback(async (e: React.UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget
     if (el.scrollTop > 50 || loadingMore.current || chatMessages.length === 0) return
+    if (!userScrolledUpRef.current) return
+    if (expandRenderedHistory(el)) return
     // Filtered view that hasn't resolved to any id yet — don't page in global history.
     if (loadBeforeAgents !== null && loadBeforeAgents.length === 0) return
     loadingMore.current = true
@@ -4425,7 +4488,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       })
     }
     loadingMore.current = false
-  }, [chatMessages, loadBeforeAgents])
+  }, [chatMessages, loadBeforeAgents, expandRenderedHistory])
 
   // Attach scroll + click handlers to the Virtuoso-owned scroll container.
   // Listener-based (not JSX prop) because the Scroller is memoized and
@@ -5161,6 +5224,9 @@ function FleetChatInner({ shape }: { shape: any }) {
             // reaches the TRUE list bottom); our scroll-intent just gates WHEN it
             // follows. Follow on new content unless the user deliberately scrolled up.
             followOutput={() => (!userScrolledUpRef.current || hardLockedRef.current) ? 'auto' : false}
+            startReached={() => {
+              if (chatLogEl && userScrolledUpRef.current) expandRenderedHistory(chatLogEl)
+            }}
             // Generous enough to absorb the Virtuoso Footer (suggestion/thinking
             // status, ~40px): scrollToIndex(LAST) aligns the last DATA item, so
             // the footer sits just below the viewport and "true bottom" is ~40px
