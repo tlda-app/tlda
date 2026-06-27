@@ -49,6 +49,7 @@ import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore, createTemporaryMarkdownColumn } from './FleetPillShape'
 import { agentDisplayName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
 import { ChatComposer } from './ChatComposer'
+import { decideFollowTransition } from './chatScrollIntent.mjs'
 import { AgentName, PhaseIcon } from './PhaseIcon'
 import { baseName, phaseFromName } from '../../shared/lineage-name.mjs'
 import { dragCoordinator } from './dragCoordinator'
@@ -3413,88 +3414,57 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
   }, [allItems.length, pinHard])
 
-  // Single source of user-scroll intent. In the HUD, a user can only scroll the
-  // chat log via CanvasClipPanel's wheel handler (wheel is captured there and
-  // never reaches the scroller natively), which fires 'fleet-user-scroll' right
-  // after it moves scrollTop. Because programmatic pins (pinHard/scrollToIndex)
-  // never fire this event, we can set follow intent from real user motion
-  // without the programmatic-vs-user ambiguity that broke every prior approach.
-  // Scroll away from bottom → stop following (+ show ⇣); land within EPS of the
-  // true bottom → resume following. No gap thresholds, no timing magic.
+  // ── Single source of follow-intent: scrollTop-DELTA on the real container ──
+  // Every path that scrolls the chat log fires a native 'scroll' event on
+  // .fleet-chat-log: CanvasClipPanel's wheel handler (scrollable.scrollTop +=
+  // deltaY), native touch drag, AND our own programmatic pins. So we derive
+  // intent here from the DELTA, not a gap threshold:
+  //   • follow OFF  when the user moves UP (scrollTop decreases past a jitter
+  //     epsilon) — ANY deliberate scroll-up disengages, even a small one. The
+  //     old gap>120 heuristic ignored sub-120 scroll-ups, so a small read +
+  //     a new message re-yanked you down. Delta has no dead band.
+  //   • follow ON   only when the user is back at the TRUE bottom (gap ≤ 120,
+  //     which absorbs the ~40px status footer below the last data item).
+  // Two guards keep automatic motion from being misread as user intent:
+  //   • programmatic fence (programmaticUntilRef, set by pinHard) — our own
+  //     scrollToIndex must not flip intent.
+  //   • shrink guard — when scrollHeight DECREASES (status row collapses) the
+  //     browser clamps scrollTop down; that downward move is not a user
+  //     scroll-up, so don't disengage.
+  // Because intent now lives entirely here, atBottomStateChange no longer writes
+  // it (it can't reset us mid-read), and there is no wheel-only/touch-momentum
+  // split — one handler covers wheel, touch, and trackpad uniformly.
   useEffect(() => {
     const el = chatLogEl
     if (!el) return
-    // SINGLE threshold, no dead band. This handler fires ONLY on real user wheel
-    // motion (programmatic pins never dispatch fleet-user-scroll), so we can set
-    // follow intent directly from the gap the user scrolled to: above the
-    // threshold = "I'm reading, don't follow"; within it = "I'm at the bottom,
-    // follow." The old asymmetric 120/200 dead band left scrolledUp=FALSE in the
-    // 120–200 zone, so a small scroll-up followed by a message or thinking-status
-    // growth pinned the user back down — the "jerked to the bottom when scrolled
-    // up" bug. A single threshold means ANY deliberate scroll-up past it
-    // disengages follow until the user returns to the bottom. Content-induced
-    // gaps never reach here (no wheel event), so false-bottom recovery — which
-    // keys off scrolledUp staying false while content grows — is unaffected.
-    const FOLLOW_THRESHOLD = 120
-    const onUserScroll = () => {
-      const gap = el.scrollHeight - (el.scrollTop + el.clientHeight)
-      if (!hardLockedRef.current) {
-        const scrolledUp = gap > FOLLOW_THRESHOLD
-        userScrolledUpRef.current = scrolledUp
-        if (scrolledUp) anchorRenderWindow()
+    let lastTop = el.scrollTop
+    let lastHeight = el.scrollHeight
+    const handle = () => {
+      const top = el.scrollTop
+      const height = el.scrollHeight
+      const gap = height - top - el.clientHeight
+      const programmatic = performance.now() < programmaticUntilRef.current
+      // All the intent math lives in the pure decideFollowTransition (unit
+      // tested in test/chat-scroll-intent.test.mjs); the effect only feeds it
+      // samples and applies the side effects of a transition.
+      const { scrolledUp, action } = decideFollowTransition(
+        { top, height, clientHeight: el.clientHeight, lastTop, lastHeight },
+        { scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current, programmatic },
+      )
+      lastTop = top
+      lastHeight = height
+      if (action === 'follow-off') {
+        log.debug('chat-scroll', 'follow OFF (user scrolled up)', { top, gap })
+        anchorRenderWindow()
+      } else if (action === 'follow-on') {
+        log.debug('chat-scroll', 'follow ON (returned to bottom)', { gap })
+        resetRenderWindowToTail()
       }
-      log.debug('chat-scroll', 'user scroll', { gap, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
+      userScrolledUpRef.current = scrolledUp
     }
-    el.addEventListener('fleet-user-scroll', onUserScroll as EventListener)
-
-    // Touch devices generate no wheel events, so the wheel-driven
-    // fleet-user-scroll signal above never fires on iPad — the user drags up,
-    // intent is never recorded, and the pin watchdog slams the view back to the
-    // bottom ("can't scroll up on iPad"). Treat native scrolling during an
-    // active touch (and its short momentum tail) as the same user-scroll intent.
-    // Programmatic pins happen when no touch is active, so they don't trip this.
-    let touchScrolling = false
-    let momentumUntil = 0
-    const onTouchStart = () => { touchScrolling = true; momentumUntil = 0 }
-    const onTouchEnd = () => { touchScrolling = false; momentumUntil = Date.now() + 600 }
-    const onNativeScroll = () => { if (touchScrolling || Date.now() < momentumUntil) onUserScroll() }
-    el.addEventListener('touchstart', onTouchStart, { passive: true })
-    el.addEventListener('touchend', onTouchEnd, { passive: true })
-    el.addEventListener('scroll', onNativeScroll, { passive: true })
-
-    return () => {
-      el.removeEventListener('fleet-user-scroll', onUserScroll as EventListener)
-      el.removeEventListener('touchstart', onTouchStart)
-      el.removeEventListener('touchend', onTouchEnd)
-      el.removeEventListener('scroll', onNativeScroll)
-    }
-  }, [chatLogEl, anchorRenderWindow])
-
-  // Convergence watchdog — the reconciler of last resort. scrollToIndex(LAST)
-  // can land SHORT while freshly-added tall items are still being measured, and
-  // once Virtuoso reports "not at bottom" no further event necessarily re-fires
-  // (atBottomStateChange only fires on a state TRANSITION, not while stuck), so
-  // a single short pin could strand the view above a persistent gap — the
-  // reproduced false-bottom (dist stuck 500–1100px). This low-rate check re-pins
-  // whenever we SHOULD be following (user hasn't scrolled up) but a large gap
-  // persists, guaranteeing convergence as items finish measuring.
-  //
-  // Threshold 200 == the user-scroll DISENGAGE distance, so this can NEVER fight
-  // a user reading in the 120–200 dead band: any gap >200 with userScrolledUp
-  // false can only be a failed pin, never user intent (a real scroll past 200
-  // sets userScrolledUp=true synchronously in the wheel handler before this
-  // timer next fires). 200ms cadence is well below human-perceptible and can't
-  // thrash — pinHard converges to bottom, gap drops under 200, this goes quiet.
-  useEffect(() => {
-    const el = chatLogEl
-    if (!el) return
-    const id = setInterval(() => {
-      if (userScrolledUpRef.current && !hardLockedRef.current) return
-      const gap = el.scrollHeight - (el.scrollTop + el.clientHeight)
-      if (gap > 200) pinHard()
-    }, 200)
-    return () => clearInterval(id)
-  }, [chatLogEl, pinHard])
+    el.addEventListener('scroll', handle, { passive: true })
+    return () => el.removeEventListener('scroll', handle)
+  }, [chatLogEl, anchorRenderWindow, resetRenderWindowToTail])
 
   // Refilter → bottom. Changing the filter swaps the whole rendered list out
   // from under Virtuoso; the scroll-position reset effect above (keyed on
@@ -5293,8 +5263,8 @@ function FleetChatInner({ shape }: { shape: any }) {
             // past the last item. With the tight 24px value, that residual read
             // as "not at bottom" and surfaced the ⇣ arrow even though the user
             // never scrolled. 120 (the long-proven value) keeps follow engaged
-            // through the footer. Safe because user-intent is now owned by the
-            // single-source fleet-user-scroll handler, not inferred from this gap.
+            // through the footer. Safe because follow-intent is owned by the
+            // scrollTop-delta handler, not inferred from this gap.
             atBottomThreshold={120}
             // Fires whenever Virtuoso's computed total list height changes —
             // catches in-place item growth (markdown/font/image late-render
@@ -5316,22 +5286,16 @@ function FleetChatInner({ shape }: { shape: any }) {
                 log.debug('chat-scroll', 'TRACE content grew', { prev, h, gapNow, follow, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
               }
               if (grew && follow) {
-                // Glue to the true bottom SYNCHRONOUSLY, in the same frame the
-                // height grew, so late in-place growth (math/links/multiline
-                // rendering a second pass) extends the content downward with no
-                // visible gap. Without this the gap opened first and pinHard()'s
-                // scrollToIndex snapped it shut a frame later — the visible
-                // "kick"/bounce. Guarded to grew (never shrink), so the
-                // stale-tall-tail failure pinHard's comment warns about cannot
-                // bite here. pinHard stays as the convergence backstop.
+                // Following + content grew → re-pin to the true bottom with the
+                // ONE pin (scrollToIndex via pinHard), which is virtualization-
+                // aware and re-measures the last item. We deliberately do NOT
+                // slam `el.scrollTop = el.scrollHeight`: when the status row
+                // shrinks a frame later, scrollHeight is transiently taller than
+                // the real content and the raw slam strands the tail in stale
+                // blank space (the 224px-short / "bounce"). pinHard targets the
+                // last ITEM, so it can't scroll into space that isn't there.
                 const gapBeforeGlue = el ? Math.round(el.scrollHeight - (el.scrollTop + el.clientHeight)) : null
-                if (el) el.scrollTop = el.scrollHeight
-                const gapAfterGlue = el ? Math.round(el.scrollHeight - (el.scrollTop + el.clientHeight)) : null
-                // The kick-fix signature: gapBeforeGlue is how far the view would
-                // have jumped (the old "kick"); gapAfterGlue should be ~0 because
-                // we glued synchronously this frame. A large gapBeforeGlue with
-                // ~0 gapAfterGlue = the fix absorbed a kick.
-                log.debug('chat-scroll', 'growth bottom-glue', { gapBeforeGlue, gapAfterGlue })
+                log.debug('chat-scroll', 'growth → pin', { gapBeforeGlue })
                 pinHard()
                 requestAnimationFrame(() => {
                   const el2 = chatLogEl
@@ -5370,21 +5334,18 @@ function FleetChatInner({ shape }: { shape: any }) {
               }
               isAtBottomRef.current = atBottom
               setAtBottom(atBottom)
-              // Auto-follow intent is owned by the fleet-user-scroll handler.
-              // Here we ONLY resume-follow when we genuinely reach bottom.
-              // We deliberately do NOT re-pin on a spurious "left bottom" here:
-              // doing so created an INFINITE BOUNCE when content barely exceeds
-              // the viewport — pin→bottom→(recompute)→left-bottom→pin→… every
-              // ~50ms. The persistent false-bottom (a short pin that strands the
-              // view above a growing gap because no further event re-fires) is
-              // now closed by the standing convergence watchdog above, which is
-              // bounce-safe: it samples on a 200ms cadence, so a transient
-              // sub-200ms left-bottom that self-heals never triggers it.
-              // Hard-lock is the one exception: it means "always pinned".
-              if (atBottom) {
-                userScrolledUpRef.current = false
-                resetRenderWindowToTail()
-              } else if (hardLockedRef.current) {
+              // ADVISORY ONLY. Follow-intent is owned entirely by the scrollTop-
+              // delta handler above; this callback must NOT write userScrolledUpRef.
+              // The old code reset it to false on every atBottom=true — but with
+              // atBottomThreshold=120, a reflow that momentarily brought the gap
+              // under 120 while the user was reading flipped intent back ON and
+              // the next message re-yanked them down (the "shot back down" bug).
+              // Resume-follow now happens only when the user genuinely scrolls to
+              // the bottom (handled in the delta handler). We also do NOT re-pin
+              // on a spurious "left bottom": that caused an infinite bounce when
+              // content barely exceeds the viewport. Hard-lock is the one
+              // exception — it means "always pinned".
+              if (!atBottom && hardLockedRef.current) {
                 requestAnimationFrame(pinHard)
               }
               if (probe.isEnabled('chat')) {
