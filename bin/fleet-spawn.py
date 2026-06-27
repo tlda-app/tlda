@@ -469,8 +469,6 @@ def ws_register(fleet_id, name, tmux_session, cwd, model=None, effort=None, refr
         ws.close()
     except SystemExit:
         raise
-    except Exception as e:
-        print(f"[fleet-spawn] pre-register failed (non-fatal): {e}", file=sys.stderr)
 
 
 # ---- Agent lookup ----

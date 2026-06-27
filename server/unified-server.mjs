@@ -583,6 +583,18 @@ const spawnLibrarian = new SpawnLibrarian({
     })
     broadcastState()
   },
+  onLateRegister: (agent) => {
+    const label = agent.friendly_name || agent.id
+    const metadata = { type: 'spawn_late_register', agentId: agent.id, agentLabel: label, ts: new Date().toISOString() }
+    broadcastEvent('spawn-late-register', metadata)
+    deliverTldaFeedbackChat({
+      from: 'fleet:tlda',
+      to: SERVER_OWNER_ID,
+      text: `**Late registration**: \`${label}\` registered after the spawn deadline — it is now available.`,
+      metadata,
+    })
+    broadcastState()
+  },
 })
 // Server-authoritative thinking/compacting state.
 // Populated from agent-thinking / agent-compacting events, included in
