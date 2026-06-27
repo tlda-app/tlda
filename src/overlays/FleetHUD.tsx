@@ -17,7 +17,6 @@ import { getHumanId, getDeviceId, isDeviceReady, whenDeviceReady } from '../flee
 import { getMyAnchorId, isMyFleetShape, FLEET_INTERACTION_SHAPE_SELECTOR, FLEET_SHAPE_TYPES, adoptLegacyFleetShapes, layoutOffset, ensureMyLaneDisjoint } from '../shapes/fleet-utils'
 import { isDocumentPageShape } from '../shapes/document-pages'
 import { fleetTouchGestureActiveRef, postTouchTelemetry, setTouchDiagStatus, useFleetGestures } from './useFleetGestures'
-import { SuggestionTip } from '../shapes/FleetChatShape'
 import { log } from '../logger'
 import { computeFleetBoundsFromShapes, createFleetBoundsTracker, type FleetBoundsResult } from './fleet-bounds'
 import { computeFleetHudDefaultAnchor } from './fleet-hud-anchor'
@@ -1243,10 +1242,6 @@ export function FleetHUD({
           }}
           className="fleet-hud"
         />
-        {/* Suggestion-chip tooltip: rendered here, ABOVE the shapes and outside
-            any (dimmed) shape, so it stays fully opaque. Driven by the chip's
-            hover store. Not a portal. */}
-        <SuggestionTip />
       </div>
     </>
   )
