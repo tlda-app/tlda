@@ -1,17 +1,13 @@
 // Server-side build dispatcher. Replaces the inline `await runBuild(...)` calls.
-// The server NEVER runs the build itself — it forks bin/build-worker.mjs (off
+// The server NEVER runs the build itself — it delegates to a BuildTransport (off
 // the event loop), relays the worker's side-effects to the live rooms, and
 // coalesces/serializes per project so rapid saves collapse to one build.
 
-import { fork } from 'child_process'
-import { join, dirname } from 'path'
-import { fileURLToPath } from 'url'
 import { broadcastSignal, putShape, updateShape, emitGlobalEvent, getLastSignal } from './sync-rooms.mjs'
 import { updateProject, getProjectsDir } from './project-store.mjs'
 import { writeSentinel } from './sentinel.mjs'
-
-const __dirname = dirname(fileURLToPath(import.meta.url))
-const WORKER = join(__dirname, '..', '..', 'bin', 'build-worker.mjs')
+import { loadConfig } from '../../shared/config.mjs'
+import { makeTransport } from './build-transport.mjs'
 
 // The real server-side side-effect functions, keyed the way the worker reports
 // them. A build that runs in the worker calls these here, in the server process.
@@ -51,80 +47,90 @@ async function patchShape(docName, shapeId, propsPatch) {
 
 const SINKS = { broadcastSignal, putShape, patchShape, writeSentinel, emitGlobalEvent, updateProject }
 
-const _inFlight = new Map() // name -> child process
-const _pending = new Map()  // name -> latest priorityPages waiting behind the in-flight build
-
 /**
- * Dispatch a build for `name`. Resolves when the build (and any build that
- * coalesced behind it) completes. The heavy work runs in a forked process.
+ * Create a bound dispatcher instance. Transport is injected so the coalescing
+ * logic is independently testable with a fake transport. Production callers use
+ * the module-level exports which bind the configured transport at load time.
  */
-export async function dispatchBuild(name, { priorityPages } = {}) {
-  // Resolve the camera/viewport priority HERE (the worker has no live rooms),
-  // so the worker never needs a round-trip back for it.
-  if (!priorityPages || priorityPages.length === 0) {
-    try {
-      const vp = getLastSignal(`doc-${name}`, 'signal:viewport')
-      if (vp?.pages?.length > 0) priorityPages = vp.pages
-    } catch { priorityPages = priorityPages || undefined } // no viewport signal yet → no priority
-  }
+export function createDispatcher(transport) {
+  const _inFlight = new Map() // name -> transport handle { cancel() }
+  const _pending = new Map()  // name -> latest priorityPages waiting behind the in-flight build
 
-  // Coalesce: a build is already running for this doc — record the latest
-  // priority pages and let the in-flight build's completion drain it.
-  if (_inFlight.has(name)) {
-    _pending.set(name, priorityPages || null)
-    return
-  }
-  return _runWorker(name, priorityPages)
-}
+  /**
+   * Dispatch a build for `name`. Resolves when the build (and any build that
+   * coalesced behind it) completes. The heavy work runs via the configured transport.
+   */
+  async function dispatchBuild(name, { priorityPages } = {}) {
+    // Resolve the camera/viewport priority HERE (the worker has no live rooms),
+    // so the worker never needs a round-trip back for it.
+    if (!priorityPages || priorityPages.length === 0) {
+      try {
+        const vp = getLastSignal(`doc-${name}`, 'signal:viewport')
+        if (vp?.pages?.length > 0) priorityPages = vp.pages
+      } catch { priorityPages = priorityPages || undefined } // no viewport signal yet → no priority
+    }
 
-function _runWorker(name, priorityPages) {
-  return new Promise((resolve) => {
-    let child
-    try {
-      child = fork(WORKER, [], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'] })
-    } catch (e) {
-      console.error(`[build-dispatch] failed to fork worker for ${name}: ${e.message}`)
-      resolve()
+    // Coalesce: a build is already running for this doc — record the latest
+    // priority pages and let the in-flight build's completion drain it.
+    if (_inFlight.has(name)) {
+      _pending.set(name, priorityPages || null)
       return
     }
-    _inFlight.set(name, child)
+    return _runWorker(name, priorityPages)
+  }
 
-    child.on('message', (msg) => {
-      if (msg?.t === 'report') {
-        try { SINKS[msg.m]?.(...(msg.a || [])) }
-        catch (e) { console.error(`[build-dispatch] relay ${msg.m} for ${name} failed: ${e.message}`) }
+  function _runWorker(name, priorityPages) {
+    return new Promise((resolve) => {
+      function relay(msg) {
+        if (msg?.t === 'report') {
+          try { SINKS[msg.m]?.(...(msg.a || [])) }
+          catch (e) { console.error(`[build-dispatch] relay ${msg.m} for ${name} failed: ${e.message}`) }
+        }
       }
-    })
 
-    child.on('error', (e) => console.error(`[build-dispatch] worker error for ${name}: ${e.message}`))
-
-    child.on('exit', (code) => {
-      _inFlight.delete(name)
-      resolve()
-      // Drain a coalesced rebuild, if one queued up while this ran.
-      if (_pending.has(name)) {
-        const pp = _pending.get(name)
-        _pending.delete(name)
-        _runWorker(name, pp)
+      function logErr(e) {
+        console.error(`[build-dispatch] worker error for ${name}: ${e.message}`)
       }
+
+      function drainCoalesced(_code) {
+        _inFlight.delete(name)
+        resolve()
+        // Drain a coalesced rebuild, if one queued up while this ran.
+        if (_pending.has(name)) {
+          const pp = _pending.get(name)
+          _pending.delete(name)
+          _runWorker(name, pp)
+        }
+      }
+
+      const handle = transport.start(
+        { name, priorityPages, projectsDir: getProjectsDir() },
+        { onMessage: relay, onError: logErr, onExit: drainCoalesced }
+      )
+      _inFlight.set(name, handle)
     })
+  }
 
-    child.send({ t: 'build', name, priorityPages, projectsDir: getProjectsDir() })
-  })
+  /** Cancel the in-flight build for a doc — killing the worker kills its children. */
+  function killBuild(name) {
+    const handle = _inFlight.get(name)
+    if (handle) handle.cancel()
+    _pending.delete(name)
+  }
+
+  /** Kill every in-flight build worker (server shutdown). */
+  function killAllDispatchedBuilds() {
+    for (const handle of _inFlight.values()) handle.cancel()
+    _inFlight.clear()
+    _pending.clear()
+  }
+
+  function isBuilding(name) { return _inFlight.has(name) }
+
+  return { dispatchBuild, killBuild, killAllDispatchedBuilds, isBuilding }
 }
 
-/** Cancel the in-flight build for a doc — killing the worker kills its children. */
-export function killBuild(name) {
-  const c = _inFlight.get(name)
-  if (c) c.kill('SIGTERM') // no-throw if the worker already exited
-  _pending.delete(name)
-}
+// Select the transport once at server start — no per-call branching.
+const _default = createDispatcher(makeTransport(loadConfig()))
 
-/** Kill every in-flight build worker (server shutdown). */
-export function killAllDispatchedBuilds() {
-  for (const c of _inFlight.values()) c.kill('SIGTERM') // no-throw if already exited
-  _inFlight.clear()
-  _pending.clear()
-}
-
-export function isBuilding(name) { return _inFlight.has(name) }
+export const { dispatchBuild, killBuild, killAllDispatchedBuilds, isBuilding } = _default

@@ -25,6 +25,7 @@ import { normalizeChatDisplayMathDelimiters } from '../shared/chat-math-normaliz
 import { baseName, nameForPhase, phaseFromName } from '../shared/lineage-name.mjs';
 import { formatSpawnModelSummary, validateSpawnModelSelection } from '../shared/spawn-model-validation.mjs';
 import { classifyUserBlame } from '../bin/lib/user-blame-classifier.mjs';
+import { classifyLaunder } from '../bin/lib/launder-classifier.mjs';
 import {
   applyNonClaudeRolePack,
   crossLaneBlock,
@@ -618,6 +619,20 @@ export function formatUserBlameChatWarning(result, eventId = null) {
   const target = eventId != null ? `chat({ amend_id: ${eventId}, message: "…" })` : 'chat({ amend_id: <id>, message: "…" })';
   const span = result.features?.matchedSpan || 'matched wording';
   return `⚠ **User-blame wording (${result.reasonCode}) — Skip may read this as blaming him or lecturing his own system back to him.** Matched: \`${span}\`. Fix it in place with \`${target}\` (edits the message Skip is reading, no new message).`;
+}
+
+export function checkLaunderChatLint(message, recipients = []) {
+  const result = classifyLaunder({
+    text: message,
+    context: { toSkip: recipients.includes('fleet:skip') },
+  });
+  return result.decision === 'flag' ? [result] : [];
+}
+
+export function formatLaunderChatWarning(result, eventId = null) {
+  const target = eventId != null ? `chat({ amend_id: ${eventId}, message: "…" })` : 'chat({ amend_id: <id>, message: "…" })';
+  const span = result.features?.matchedSpan || 'matched wording';
+  return `⚠ **Ungrounded notation/term introduction (${result.reasonCode}) — this may be agent-invented notation that will get laundered into later briefs.** Matched: \`${span}\`. Either ground it explicitly (e.g. "notation I'm introducing — not in the paper") or use the paper's notation. Fix it in place with \`${target}\` (edits the message Skip is reading, no new message).`;
 }
 
 /**
@@ -2630,6 +2645,10 @@ export async function handleFleetTool(name, args) {
     const userBlameIssues = checkUserBlameChatLint(message, sent);
     if (userBlameIssues.length > 0) {
       warning += `\n\n${userBlameIssues.map(issue => formatUserBlameChatWarning(issue, lastEventId)).join('\n')}`;
+    }
+    const launderIssues = checkLaunderChatLint(message, sent);
+    if (launderIssues.length > 0) {
+      warning += `\n\n${launderIssues.map(issue => formatLaunderChatWarning(issue, lastEventId)).join('\n')}`;
     }
     // STYLE: quiet, optional — never a gate.
     if (styleHints.length > 0) {
