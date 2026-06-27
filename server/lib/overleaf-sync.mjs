@@ -7,10 +7,10 @@
  *   Overleaf = the author's editor and source of truth.
  *   tlda     = a review/agent layer that mirrors the repo and rebuilds on change.
  *
- * The remote is the source of truth; the local clone is a read-only mirror. We
- * never push, never merge — every sync hard-resets the clone to the remote's
- * upstream HEAD and feeds the changed files into the normal push/build path
- * (processProjectPush). So a sync is just: fetch, diff old..new, ship the diff.
+ * The remote and tlda source tree are synchronized through the local clone.
+ * Remote edits are fetched into tlda; tlda-side source edits are committed to
+ * the clone and pushed upstream. The clone remains the git authority for merges,
+ * but neither side is allowed to silently live as a doomed local-only edit.
  *
  * Storage:
  *   server/projects/{name}/overleaf-clone/   — the git mirror (token lives here,
@@ -28,9 +28,9 @@ const _execRaw = promisify(execCb)
 const execAsync = (cmd, opts = {}) =>
   _execRaw(cmd, { maxBuffer: 50 * 1024 * 1024, timeout: 120000, ...opts })
 
-import { existsSync, readFileSync, rmSync } from 'fs'
-import { join } from 'path'
-import { projectDir, readProject, updateProject, createProject } from './project-store.mjs'
+import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'fs'
+import { dirname, join } from 'path'
+import { projectDir, readProject, updateProject, createProject, listSourceFiles, writeSourceFile } from './project-store.mjs'
 import { processProjectPush } from '../routes/projects.mjs'
 import { createLogger } from '../../shared/logger.mjs'
 
@@ -92,6 +92,17 @@ function readFileForPush(absPath) {
 
 function shouldSkip(relPath) {
   return SKIP_PATHS.some(re => re.test(relPath))
+}
+
+function shellQuote(s) {
+  return `'${String(s).replace(/'/g, `'\\''`)}'`
+}
+
+function pathInsideClone(name, relPath) {
+  const dir = cloneDir(name)
+  const full = join(dir, relPath)
+  if (!full.startsWith(dir)) throw new Error('Invalid file path')
+  return full
 }
 
 /**
@@ -172,6 +183,132 @@ async function fetchAndDiff(dir) {
   }
 }
 
+async function syncCloneToProject(name, dir) {
+  const paths = (await trackedFiles(dir)).filter(p => !shouldSkip(p))
+  const tracked = new Set(paths)
+  const deletedFiles = listSourceFiles(name).filter(p => !tracked.has(p) && !shouldSkip(p))
+  const files = paths.map(p => ({ path: p, ...readFileForPush(join(dir, p)) }))
+  return processProjectPush(name, { files, deletedFiles, overleafSync: true })
+}
+
+async function unmergedFiles(dir) {
+  const { stdout } = await execAsync('git diff --name-only --diff-filter=U -z', { cwd: dir, timeout: 30000 })
+  return stdout.split('\0').filter(Boolean).filter(p => !shouldSkip(p))
+}
+
+async function copyConflictFilesToProject(name, dir, files) {
+  for (const relPath of files) {
+    const full = pathInsideClone(name, relPath)
+    if (existsSync(full)) writeSourceFile(name, relPath, readFileSync(full))
+  }
+}
+
+async function recordConflict(name, dir, cause) {
+  const files = await unmergedFiles(dir)
+  if (files.length > 0) await copyConflictFilesToProject(name, dir, files)
+  try {
+    await execAsync('git rebase --abort', { cwd: dir, timeout: 30000 })
+  } catch (abortErr) {
+    log.warn('rebase-abort-failed', { name, error: scrubCreds(abortErr.message) })
+  }
+  updateProject(name, {
+    overleafSyncStatus: 'conflict',
+    overleafSyncError: scrubCreds(cause?.message || cause || 'Git sync conflict'),
+    overleafConflictFiles: files,
+    overleafLastConflictAt: Date.now(),
+  })
+  return files
+}
+
+/**
+ * Push tlda-side source changes back to the linked Overleaf/git remote.
+ *
+ * Called from the normal project push path after tlda source files have changed.
+ * The local clone is first updated to the remote upstream, the incoming changed
+ * files are applied on top, then one commit is pushed. After a successful push,
+ * the clone's full tracked state is fed back through processProjectPush so any
+ * concurrent upstream edits are reflected in tlda's source tree too.
+ */
+export async function pushSourceToOverleaf(name, { files = [], deletedFiles = [], editedBy } = {}) {
+  const project = readProject(name)
+  if (!project?.overleafRemote || project.autoSync === false) return { skipped: true, reason: 'not-linked' }
+
+  const dir = cloneDir(name)
+  if (!existsSync(join(dir, '.git'))) {
+    throw new Error(`No Overleaf clone for ${name} — link it first`)
+  }
+
+  const changedFiles = (files || []).filter(f => f?.path && !shouldSkip(f.path))
+  const removedFiles = (deletedFiles || []).filter(p => p && !shouldSkip(p))
+  if (changedFiles.length === 0 && removedFiles.length === 0) {
+    return { skipped: true, reason: 'no-source-changes' }
+  }
+
+  try {
+    await execAsync('git fetch --quiet origin', { cwd: dir, timeout: 120000 })
+    await execAsync('git reset --hard @{u}', { cwd: dir, timeout: 30000 })
+
+    for (const file of changedFiles) {
+      const full = pathInsideClone(name, file.path)
+      mkdirSync(dirname(full), { recursive: true })
+      const content = file.encoding === 'base64'
+        ? Buffer.from(file.content, 'base64')
+        : file.content
+      writeFileSync(full, content)
+    }
+
+    for (const relPath of removedFiles) {
+      const full = pathInsideClone(name, relPath)
+      if (existsSync(full)) unlinkSync(full)
+    }
+
+    await execAsync('git add -A', { cwd: dir, timeout: 30000 })
+    const { stdout: status } = await execAsync('git status --porcelain', { cwd: dir, timeout: 5000 })
+    if (!status.trim()) {
+      const head = (await execAsync('git rev-parse HEAD', { cwd: dir, timeout: 5000 })).stdout.trim()
+      updateProject(name, {
+        overleafHead: head,
+        overleafLastPullAt: Date.now(),
+        overleafSyncStatus: 'ok',
+        overleafSyncError: null,
+        overleafConflictFiles: [],
+      })
+      return { name, pushed: false, unchanged: true, head }
+    }
+
+    const actor = editedBy ? ` by ${editedBy}` : ''
+    await execAsync(`git commit -m ${shellQuote(`tlda sync${actor}`)}`, { cwd: dir, timeout: 30000 })
+
+    try {
+      await execAsync('git push origin HEAD', { cwd: dir, timeout: 120000 })
+    } catch (e) {
+      try {
+        await execAsync('git pull --rebase', { cwd: dir, timeout: 120000 })
+        await execAsync('git push origin HEAD', { cwd: dir, timeout: 120000 })
+      } catch (rebaseErr) {
+        const conflictFiles = await recordConflict(name, dir, rebaseErr)
+        const suffix = conflictFiles.length ? ` (${conflictFiles.join(', ')})` : ''
+        throw new Error(`Git sync conflict${suffix}: resolve the conflict markers, then push the resolved source through tlda`)
+      }
+    }
+
+    const head = (await execAsync('git rev-parse HEAD', { cwd: dir, timeout: 5000 })).stdout.trim()
+    updateProject(name, {
+      overleafHead: head,
+      overleafLastPullAt: Date.now(),
+      overleafLastPushAt: Date.now(),
+      overleafSyncStatus: 'ok',
+      overleafSyncError: null,
+      overleafConflictFiles: [],
+    })
+    await syncCloneToProject(name, dir)
+    log.info('pushed', { name, changed: changedFiles.length, deleted: removedFiles.length, head: head.slice(0, 7) })
+    return { name, pushed: true, changed: changedFiles.length, deleted: removedFiles.length, head }
+  } catch (e) {
+    throw new Error(scrubCreds(e.message))
+  }
+}
+
 /**
  * Run one sync cycle for a project: fetch, diff, ship changed files into the
  * normal push/build pipeline. Returns a summary. `initial` forces a full push
@@ -193,7 +330,12 @@ export async function syncOverleaf(name, { initial = false } = {}) {
   } else {
     const diff = await fetchAndDiff(dir)
     if (diff.unchanged) {
-      updateProject(name, { overleafLastPullAt: Date.now() })
+      updateProject(name, {
+        overleafLastPullAt: Date.now(),
+        overleafSyncStatus: 'ok',
+        overleafSyncError: null,
+        overleafConflictFiles: [],
+      })
       return { name, changed: 0, deleted: 0, head: diff.head, unchanged: true }
     }
     changedPaths = diff.changed
@@ -202,9 +344,15 @@ export async function syncOverleaf(name, { initial = false } = {}) {
   }
 
   const files = changedPaths.map(p => ({ path: p, ...readFileForPush(join(dir, p)) }))
-  const result = await processProjectPush(name, { files, deletedFiles: deletedPaths })
+  const result = await processProjectPush(name, { files, deletedFiles: deletedPaths, overleafSync: true })
 
-  updateProject(name, { overleafHead: head, overleafLastPullAt: Date.now() })
+  updateProject(name, {
+    overleafHead: head,
+    overleafLastPullAt: Date.now(),
+    overleafSyncStatus: 'ok',
+    overleafSyncError: null,
+    overleafConflictFiles: [],
+  })
   log.info('synced', { name, changed: files.length, deleted: deletedPaths.length, head: head.slice(0, 7) })
   return { name, changed: files.length, deleted: deletedPaths.length, head, building: result?.building }
 }

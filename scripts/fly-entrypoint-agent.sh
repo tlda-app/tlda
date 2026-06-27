@@ -28,6 +28,36 @@ ln -sfn "$PERSIST/tlda-config" /root/.config/tlda
 # ledger persists across redeploys (codex rollout identity continuity).
 ln -sfn "$PERSIST/claude" /root/.claude
 
+# Optional operator-shipped agent config. `tlda-fly friend up --ship-config`
+# packages the standard local config dirs into /app/tlda-fly/agent-config.tgz.
+# This is user-supplied deployment input staged during image build, not content
+# vendored into the tlda repo.
+if [ -f /app/tlda-fly/agent-config.tgz ]; then
+  mkdir -p "$PERSIST/shipped-config"
+  tar -xzf /app/tlda-fly/agent-config.tgz -C "$PERSIST/shipped-config"
+  if [ -d "$PERSIST/shipped-config/codex/skills" ]; then
+    rm -rf /root/.codex/skills
+    ln -s "$PERSIST/shipped-config/codex/skills" /root/.codex/skills
+  fi
+  if [ -f "$PERSIST/shipped-config/codex/AGENTS.md" ]; then
+    rm -f /root/.codex/AGENTS.md
+    ln -s "$PERSIST/shipped-config/codex/AGENTS.md" /root/.codex/AGENTS.md
+  fi
+  if [ -d "$PERSIST/shipped-config/claude/skills" ]; then
+    rm -rf /root/.claude/skills
+    ln -s "$PERSIST/shipped-config/claude/skills" /root/.claude/skills
+  fi
+  if [ -f "$PERSIST/shipped-config/claude/CLAUDE.md" ]; then
+    rm -f /root/.claude/CLAUDE.md
+    ln -s "$PERSIST/shipped-config/claude/CLAUDE.md" /root/.claude/CLAUDE.md
+  fi
+  if [ -d "$PERSIST/shipped-config/agents/skills" ]; then
+    mkdir -p /root/.agents
+    rm -rf /root/.agents/skills
+    ln -s "$PERSIST/shipped-config/agents/skills" /root/.agents/skills
+  fi
+fi
+
 # Seed the codex MCP entry once (per-agent env is injected via -c at spawn time;
 # the static entry just needs command + args). Don't clobber an existing config.
 if [ ! -f /root/.codex/config.toml ]; then
@@ -50,6 +80,14 @@ if [ ! -f /root/.config/tlda/config.json ]; then
   cat > /root/.config/tlda/config.json <<EOF
 { "defaultConfig": "default", "configs": { "default": { "database": "${TLDA_SERVER}", "store": "${TLDA_SERVER}", "licenseKey": "" } } }
 EOF
+fi
+
+# Keep the daemon's route identity stable across redeploys. The daemon persists
+# a derived host id when machineId is absent; a reused volume may already contain
+# that derived id from an older boot, so force the per-friend id every time.
+if [ -n "${TLDA_MACHINE_ID}" ]; then
+  node -e 'const fs=require("fs"); const f=process.argv[1]; const id=process.argv[2]; const cfg=JSON.parse(fs.readFileSync(f,"utf8")); if (cfg.machineId !== id) { cfg.machineId = id; fs.writeFileSync(f, JSON.stringify(cfg, null, 2)); }' \
+    /root/.config/tlda/config.json "${TLDA_MACHINE_ID}"
 fi
 
 # Codex auth. Precedence: an existing auth.json on the volume wins (it may hold a

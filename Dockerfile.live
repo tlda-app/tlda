@@ -2,7 +2,7 @@
 # Differs from the published/snapshot image by adding a TeXLive layer so latexmk
 # and dvisvgm actually run. Heavy TeXLive layer is first so it stays cached across
 # frequent app-code redeploys.
-FROM node:20-slim
+FROM node:24-slim
 WORKDIR /app
 
 # --- TeXLive layer (heavy, ~2-3 GB, cached — changes rarely) ---

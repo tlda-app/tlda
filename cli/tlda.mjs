@@ -159,11 +159,11 @@ const cyan  = (s) => isTTY ? `\x1b[36m${s}\x1b[0m` : s
 
 // --- HTTP helpers ---
 
-async function api(method, path, body = null, { timeoutMs = 30000 } = {}) {
+async function api(method, path, body = null, { timeoutMs = 30000, token = getToken() } = {}) {
   return tldaFetch(path, {
     method, body, timeoutMs,
     server: getServer(),
-    token: getToken(),
+    token,
   })
 }
 
@@ -621,13 +621,14 @@ async function cmdLinkRemote(gitUrl) {
     console.error('  <main-file> is the entry .tex inside the repo (no default — papers aren\'t all main.tex)')
     process.exit(1)
   }
-  const token = getFlag('token')
+  const overleafToken = getFlag('token')
   const title = getFlag('title')
   const pollSeconds = Number(getFlag('poll') || '60') || 60
 
   console.log(`Linking ${name} ← ${gitUrl} (main: ${mainFile}; cloning + initial build, this can take a minute)…`)
   const result = await api('POST', `/api/projects/${name}/overleaf-link`,
-    { gitUrl, token, title, mainFile, pollSeconds }, { timeoutMs: 300000 })
+    { gitUrl, token: overleafToken, title, mainFile, pollSeconds },
+    { timeoutMs: 300000, token: getRwToken() })
   console.log(`✓ Linked. Synced ${result.changed} file(s) at ${String(result.head || '').slice(0, 7)}; polling every ${pollSeconds}s.`)
 }
 

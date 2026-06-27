@@ -74,6 +74,10 @@ COPY shared/ ./shared/
 # siblings); copy the lib tree wholesale.
 COPY server/lib/ ./server/lib/
 
+# Optional `tlda-fly friend up --ship-config` payload. The CLI writes an ignored
+# .tlda-fly/agent-config.tgz into the build context, then removes it after deploy.
+COPY .tlda-fly/ ./tlda-fly/
+
 # Put `tlda` on PATH (fleet-spawn invokes `node cli/tlda.mjs` directly, but the
 # entrypoint and codex MCP config use the bare `tlda`).
 RUN chmod +x /app/cli/tlda.mjs && ln -sf /app/cli/tlda.mjs /usr/local/bin/tlda

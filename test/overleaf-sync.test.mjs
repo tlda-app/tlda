@@ -4,14 +4,15 @@
 // the "Overleaf remote", links a project to it, then exercises the change-sync
 // path: edit the remote, sync, assert the project's source/ tracks the remote.
 //
-// Verifies the NEW code (clone, initial full push, name-status diff, hard-reset,
-// delete propagation) against real git — no LaTeX build needed (SVG projects
-// mark stale on push rather than building synchronously).
+// Verifies the Overleaf mirror against real git: initial pull into tlda,
+// remote→tlda change propagation, and tlda→remote push propagation. No LaTeX
+// build needed (SVG projects mark stale on push rather than building
+// synchronously).
 
 import { describe, it, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { execSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs'
+import { chmodSync, mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -43,7 +44,7 @@ function seedRemote() {
   git(bareRemote, `symbolic-ref HEAD refs/heads/${branch}`)
 }
 
-let overleaf, store
+let overleaf, store, routes
 before(async () => {
   seedRemote()
   store = await import('../server/lib/project-store.mjs')
@@ -51,6 +52,7 @@ before(async () => {
   store.initProjectStore(projectsDir)
   rooms.initSyncRooms(projectsDir)
   overleaf = await import('../server/lib/overleaf-sync.mjs')
+  routes = await import('../server/routes/projects.mjs')
 })
 
 after(() => {
@@ -100,5 +102,71 @@ describe('overleaf-sync', () => {
     const res = await overleaf.syncOverleaf('paper')
     assert.equal(res.unchanged, true)
     assert.equal(res.changed, 0)
+  })
+
+  it('pushes tlda-side source changes back to the remote', async () => {
+    const content = '\\documentclass{article}\\begin{document}Hello from tlda\\end{document}\n'
+    const res = await routes.processProjectPush('paper', {
+      files: [
+        { path: 'main.tex', content },
+        { path: 'notes.tex', content: 'temporary note from tlda\n' },
+      ],
+      editedBy: 'test-agent',
+    })
+    assert.equal(res.ok, true)
+
+    git(authorRepo, 'pull --ff-only origin HEAD')
+    assert.match(readFileSync(join(authorRepo, 'main.tex'), 'utf8'), /Hello from tlda/)
+    assert.match(readFileSync(join(authorRepo, 'notes.tex'), 'utf8'), /temporary note/)
+
+    const del = await routes.processProjectPush('paper', {
+      deletedFiles: ['notes.tex'],
+      editedBy: 'test-agent',
+    })
+    assert.equal(del.ok, true)
+
+    git(authorRepo, 'pull --ff-only origin HEAD')
+    assert.equal(existsSync(join(authorRepo, 'notes.tex')), false)
+
+    const project = store.readProject('paper')
+    const remoteHead = git(authorRepo, 'rev-parse HEAD').trim()
+    assert.equal(project.overleafHead, remoteHead)
+  })
+
+  it('copies git conflict markers into tlda source when push rebase conflicts', async () => {
+    const hookPath = join(projectsDir, 'paper', 'overleaf-clone', '.git', 'hooks', 'pre-push')
+    writeFileSync(hookPath, `#!/bin/sh
+rm "$0"
+cd "${authorRepo}"
+cat > main.tex <<'EOF'
+\\\\documentclass{article}\\\\begin{document}Remote conflict\\\\end{document}
+EOF
+git add main.tex
+git commit -m "remote conflict from hook"
+git push origin HEAD
+exit 1
+`)
+    chmodSync(hookPath, 0o755)
+
+    const localContent = '\\documentclass{article}\\begin{document}Tlda conflict\\end{document}\n'
+    const res = await routes.processProjectPush('paper', {
+      files: [{ path: 'main.tex', content: localContent }],
+      editedBy: 'test-agent',
+    })
+
+    assert.equal(res.ok, false)
+    assert.equal(res.status, 409)
+    assert.match(res.error, /Git sync conflict/)
+
+    const source = readFileSync(join(store.sourceDir('paper'), 'main.tex'), 'utf8')
+    assert.match(source, /<<<<<<< HEAD/)
+    assert.match(source, /=======/)
+    assert.match(source, />>>>>>>/)
+    assert.match(source, /Remote conflict/)
+    assert.match(source, /Tlda conflict/)
+
+    const project = store.readProject('paper')
+    assert.equal(project.overleafSyncStatus, 'conflict')
+    assert.deepEqual(project.overleafConflictFiles, ['main.tex'])
   })
 })

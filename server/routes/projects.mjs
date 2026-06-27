@@ -33,7 +33,7 @@ import { loadSynctex } from '../lib/synctex-query.mjs'
 import { buildMarkdown, buildHtml, buildSlides } from '../lib/format-builders.mjs'
 import { shouldBuildOnPush } from '../lib/build-decision.mjs'
 import historyRoutes from './history.mjs'
-import { linkOverleaf, unlinkOverleaf, syncOverleaf, stopPolling, isPolling } from '../lib/overleaf-sync.mjs'
+import { linkOverleaf, unlinkOverleaf, syncOverleaf, pushSourceToOverleaf, stopPolling, isPolling } from '../lib/overleaf-sync.mjs'
 import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeChange, getOrCreateRoom, broadcastSignal, getLastSignal, onSignal, replaceRoomSnapshot, getShapesAt, emitGlobalEvent, onGlobalEvent } from '../lib/sync-rooms.mjs'
 
 const router = Router()
@@ -175,7 +175,13 @@ router.post('/:name/overleaf-link', requireRw, async (req, res) => {
       return res.status(400).json({ error: 'name must be lowercase alphanumeric with hyphens' })
     }
     const result = await linkOverleaf(req.params.name, { gitUrl, token, title, mainFile, pollSeconds })
-    if (result.linked) emitGlobalEvent('project-changed', { name: req.params.name })
+    if (result.linked) {
+      const project = readProject(req.params.name)
+      if (project?.format === 'svg') {
+        await dispatchBuild(req.params.name)
+      }
+      emitGlobalEvent('project-changed', { name: req.params.name })
+    }
     res.json({ ok: true, ...result })
   } catch (e) {
     res.status(400).json({ error: e.message })
@@ -516,7 +522,7 @@ export async function processProjectPush(name, body) {
   const project = readProject(name)
   if (!project) return { status: 404, ok: false, error: 'Project not found' }
 
-  const { files, deletedFiles, priorityPages, sourceDir, members, session, sessionAt, editedBy } = body || {}
+  const { files, deletedFiles, priorityPages, sourceDir, members, session, sessionAt, editedBy, overleafSync } = body || {}
 
   if (sourceDir && !project.sourceDir) updateProject(name, { sourceDir })
   if (session) updateProject(name, { session, sessionAt: sessionAt || Date.now() })
@@ -541,6 +547,15 @@ export async function processProjectPush(name, body) {
   if (deletedFiles?.length > 0) {
     for (const filePath of deletedFiles) {
       if (deleteSourceFile(name, filePath)) anyChanged = true
+    }
+  }
+
+  if (anyChanged && project.overleafRemote && project.autoSync !== false && !overleafSync) {
+    try {
+      await pushSourceToOverleaf(name, { files, deletedFiles, editedBy })
+    } catch (e) {
+      console.error(`[${name}] Git sync failed: ${e.message}`)
+      return { status: 409, ok: false, error: `Git sync failed: ${e.message}` }
     }
   }
 
