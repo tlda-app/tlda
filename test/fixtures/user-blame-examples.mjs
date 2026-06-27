@@ -80,6 +80,22 @@ export const userBlameExamples = [
     context: { toSkip: true },
   },
   {
+    id: 'incidental-quoted-value-action-breakage',
+    label: 'flag',
+    reasonCode: 'user-fault-framing',
+    provenance: 'synthetic regression seed from manager shipping note: incidental quote must not suppress surrounding blame',
+    text: "You set it to 'production' mode, which is why the writes are read-only now.",
+    context: { toSkip: true },
+  },
+  {
+    id: 'causal-blame-with-incidental-quote',
+    label: 'flag',
+    reasonCode: 'user-fault-framing',
+    provenance: 'synthetic regression seed from manager shipping note: causal blame with unrelated quoted value',
+    text: "Because you typed the wrong room name, the agents joined 'bregman-old' instead.",
+    context: { toSkip: true },
+  },
+  {
     id: 'temporal-before-second-person',
     label: 'flag',
     reasonCode: 'user-fault-framing',
@@ -173,6 +189,14 @@ export const userBlameExamples = [
     reasonCode: 'hard-negative-context',
     provenance: 'hard negative from manager round-4 critique: quoted error string must suppress all categories',
     text: "The error string is literally 'you must accept the cert' — that is the dvisvgm one.",
+    context: { toSkip: true },
+  },
+  {
+    id: 'quoted-error-then-real-blame',
+    label: 'flag',
+    reasonCode: 'user-fault-framing',
+    provenance: 'regression seed: quote guard scopes to matched span, not whole sentence',
+    text: "The error says 'permission denied'; because you picked the wrong room, the note is missing.",
     context: { toSkip: true },
   },
   {
