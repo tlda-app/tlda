@@ -2,9 +2,12 @@ const USER_FAULT_RE = /\b(?:you|your)\b/i
 const USER_ACTION_RE = /\b(?:you\s+(?:(?:didn't|did not|haven't|have not)\s+(?:accept|open|use|hit|click|send|log in|configure)|need to|needed to|just need to|need|needed|should|must|have to|hit|opened|used|clicked|accepted|sent|went to|logged in|configured)|your\s+(?:end|machine|browser|device|network|session|cache|token|url|server|port|certificate|cert))\b/i
 const USER_CAUSAL_CONNECTIVE_RE = /\b(?:because|since|the reason\b[\s\S]{0,60}\bis|that'?s why|that is why|now that|unless|as long as|until|before)\s+you\b/i
 const USER_NEGATIVE_ACTION_RE = /\byou\s+(?:didn'?t|did not|haven'?t|have not|never|forgot to|failed to|need to|should have|aren'?t)\b/i
+const USER_WRONG_ACTION_RE = /\byou\s+\w+(?:ed)?\b[\s\S]{0,80}\b(?:wrong|incorrectly)\b/i
+const USER_COUNTERFACTUAL_RE = /\bif\s+(?:you had|you'd)\s+\w+\b/i
 const USER_DEFLECTION_LOCUS_RE = /\bon your\s+(?:end|side|machine|laptop|browser|device|phone|ipad)\b/i
 const USER_ACTION_CONSEQUENCE_RE = /\byou\s+(?:\w+ed|set)\b[\s\S]{0,100}\b(?:that'?s why|that is why|so it|which is why|and now)\b/i
-const USER_FAULT_GRAMMAR_RE = new RegExp(`(?:${USER_CAUSAL_CONNECTIVE_RE.source}|${USER_NEGATIVE_ACTION_RE.source}|${USER_DEFLECTION_LOCUS_RE.source}|${USER_ACTION_CONSEQUENCE_RE.source})`, 'i')
+const USER_FAULT_GRAMMAR_RE = new RegExp(`(?:${USER_CAUSAL_CONNECTIVE_RE.source}|${USER_NEGATIVE_ACTION_RE.source}|${USER_WRONG_ACTION_RE.source}|${USER_COUNTERFACTUAL_RE.source}|${USER_DEFLECTION_LOCUS_RE.source}|${USER_ACTION_CONSEQUENCE_RE.source})`, 'i')
+const NEUTRAL_USER_ATTRIBUTION_RE = /\bbecause\s+you\s+(?:asked|wanted|requested|suggested|told me to|preferred)\b/i
 const FAILURE_FRAME_RE = /\b(?:gone|breaks?|broken|failed|fails?|failing|error|issue|problem|missing|wrong|read-only|nothing (?:shows up|renders|appears)|not (?:seeing|showing|rendering|appearing|working|loading)|doesn'?t (?:show|render|appear|work|load)|won'?t (?:show|render|appear|work|load|\w+)|will not (?:show|render|appear|work|load)|can'?t|cannot|won'?t|doesn'?t|no output|empty|blank|stuck)\b/i
 const ACTION_BREAKAGE_RE = new RegExp(`${USER_ACTION_CONSEQUENCE_RE.source}[\\s\\S]{0,100}${FAILURE_FRAME_RE.source}|${FAILURE_FRAME_RE.source}[\\s\\S]{0,100}${USER_ACTION_CONSEQUENCE_RE.source}`, 'i')
 const OWN_SYSTEM_RE = /\b(?:tlda|fleet|fleet daemon|daemon|server|viewer|iPad|your setup|your system|your own system|the app|your (?:annotations|agents|daemon|server|fleet|sessions|setup|notes|docs))\b/i
@@ -37,8 +40,14 @@ export function extractUserBlameFeatures(event = {}) {
     ['user-fault-framing', USER_FAULT_GRAMMAR_RE],
     ['user-fault-framing', USER_ACTION_RE],
   ])
+  const hasFaultFrame = (
+    USER_NEGATIVE_ACTION_RE.test(candidateText) ||
+    USER_WRONG_ACTION_RE.test(candidateText) ||
+    USER_COUNTERFACTUAL_RE.test(candidateText)
+  ) && !NEUTRAL_USER_ATTRIBUTION_RE.test(candidateText)
 
   const hasUserFaultLanguage = USER_FAULT_RE.test(candidateText) && (
+    hasFaultFrame ||
     ACTION_BREAKAGE_RE.test(candidateText) ||
     (USER_FAULT_GRAMMAR_RE.test(candidateText) && FAILURE_FRAME_RE.test(candidateText)) ||
     USER_ACTION_RE.test(candidateText)
@@ -54,6 +63,7 @@ export function extractUserBlameFeatures(event = {}) {
   return {
     toSkip: Boolean(context.toSkip),
     hasUserFaultLanguage,
+    hasFaultFrame,
     lecturesUserSystem,
     paradesWrongSurface,
     agreesWithSkip,
