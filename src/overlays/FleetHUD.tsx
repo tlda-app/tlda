@@ -7,11 +7,11 @@
  * the main canvas (pans with the document); vertical position is fixed.
  * Pointer events pass through to the main canvas for non-fleet areas.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { react } from 'tldraw'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
-import { useFleetAgents, useFleetIdentity } from '../fleet-data-adapter'
+import { useFleetIdentity } from '../fleet-data-adapter'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getDeviceId } from '../fleet/fleet-data.mjs'
 import { getMyAnchorId, isMyFleetShape, FLEET_INTERACTION_SHAPE_SELECTOR, FLEET_SHAPE_TYPES, adoptLegacyFleetShapes, layoutOffset, ensureMyLaneDisjoint } from '../shapes/fleet-utils'
@@ -312,7 +312,6 @@ export function FleetHUD({
     const s = mainEditor.getCurrentPageShapes()
     return s.some(isDocumentPageShape)
   })
-  const agents = useFleetAgents()
   const hudRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
   const overlayEditorRef = useRef<Editor | null>(null)
@@ -960,9 +959,6 @@ export function FleetHUD({
       }
     }
   }, [expanded])
-
-  const aliveCount = useMemo(() => agents.filter((a: any) => !a.dead && !a.human).length, [agents])
-  void aliveCount
 
   // Reset camera refs when fleet layout code recreates shapes and emits
   // `fleet-hud-reset`, so the overlay re-centers on the new shape bounds.

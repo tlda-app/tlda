@@ -145,22 +145,27 @@ export function CanvasClipPanel({
     return () => { onEditorMount?.(null) }
   }, [mainEditor, onEditorMount])
 
-  // Compute camera from bounds or use override
+  // Compute camera from bounds or use override. Deduplicate by value: when
+  // FleetHUD re-renders (e.g. on fleetBounds recalc) it creates a new
+  // overlayCam object with the same x/y/z. Without deduplication, TldrawViewport
+  // receives a new camera prop reference, re-registers the viewport, and
+  // useIsInViewport's useValue recomputes — which can briefly flip isInViewport
+  // false, unmounting FleetChatInner/FleetAgentsInner (the remount bug, 2026-06-22).
+  const stableCameraRef = useRef<{ x: number; y: number; z: number } | null>(null)
   const camera = useMemo(() => {
-    if (cameraOverride) return cameraOverride
-    if (!bounds) return { x: 0, y: 0, z: 1 }
-
-    const plan = createCanvasClipPanelPlan({
-      bounds,
-      panelWidth,
-      viewportHeight: window.innerHeight,
-      maxHeightFraction,
-      lockCamera,
-      minVisibleLines: MIN_VISIBLE_LINES,
-      lineHeightEstimate: LINE_HEIGHT_ESTIMATE,
-    })
-
-    return plan.camera
+    const next = (() => {
+      if (cameraOverride) return cameraOverride
+      if (!bounds) return { x: 0, y: 0, z: 1 }
+      return createCanvasClipPanelPlan({
+        bounds, panelWidth, viewportHeight: window.innerHeight,
+        maxHeightFraction, lockCamera,
+        minVisibleLines: MIN_VISIBLE_LINES, lineHeightEstimate: LINE_HEIGHT_ESTIMATE,
+      }).camera
+    })()
+    const prev = stableCameraRef.current
+    if (prev && prev.x === next.x && prev.y === next.y && prev.z === next.z) return prev
+    stableCameraRef.current = next
+    return next
   }, [bounds, panelWidth, maxHeightFraction, lockCamera, cameraOverride])
 
   // Panel height: at least 5 lines, at most maxHeightFraction of viewport
