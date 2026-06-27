@@ -109,7 +109,9 @@ class MockWebSocket {
 global.WebSocket = MockWebSocket
 
 // ---- Mock fetch (whisper detection fails → falls back to Web Speech API) ----
-global.fetch = () => Promise.reject(new Error('no whisper'))
+global.fetch = (url = '') => String(url).includes('/api/log')
+  ? Promise.resolve({ ok: true, status: 200, text: async () => '' })   // logger POST succeeds (no unhandled rejection)
+  : Promise.reject(new Error('no whisper'))                            // whisper/deepgram detection still fails -> fallback
 global.AbortSignal = { timeout: () => ({}) }
 
 // ---- Setup window before import ----
@@ -212,6 +214,26 @@ function reset() {
   timers.length = 0
   intervals.length = 0
   startCount = 0
+}
+
+// ---- Liveness helpers: backend-specific indicator decisions ----
+{
+  const { chromeLiveness, whisperLiveness } = window.__voiceTest
+
+  assert.equal(chromeLiveness(null, true, false, 1000), 'live', 'Chrome silence is live while recognition is active')
+  assert.equal(chromeLiveness(100000, true, false, 1000), 'live', 'Chrome long quiet session is not death')
+  assert.equal(chromeLiveness(null, false, false, 1000), 'dead', 'Chrome with no active session and no results is dead')
+  assert.equal(chromeLiveness(1500, false, false, 1000), 'dead', 'Chrome inactive past the long window is dead')
+  assert.equal(chromeLiveness(500, false, false, 1000), 'live', 'Chrome inactive inside the grace window is not dead')
+  assert.equal(chromeLiveness(1500, false, true, 1000), 'live', 'Chrome edit-stop handoff is not death')
+
+  assert.equal(whisperLiveness(100, WebSocket.OPEN, true, 1000), 'live', 'Whisper is live with recent bridge messages')
+  assert.equal(whisperLiveness(null, WebSocket.OPEN, true, 1000), 'no-input', 'Whisper open bridge with no messages is no-input')
+  assert.equal(whisperLiveness(1500, WebSocket.OPEN, true, 1000), 'no-input', 'Whisper open bridge with stale messages is no-input')
+  assert.equal(whisperLiveness(100, 3, false, 1000), 'dead', 'Whisper closed bridge is dead')
+  assert.equal(whisperLiveness(100, null, false, 1000), 'dead', 'Whisper missing bridge is dead')
+
+  console.log('✓ Liveness helpers: Chrome and whisper indicator decisions')
 }
 
 // ---- Test 1: Happy path ----
@@ -743,4 +765,87 @@ await setBackend('chrome')
   console.log('✓ Test 15: <nowhere> 2nd click wipes interim, keeps committed text')
 }
 
-console.log('\nAll 18 tests passed.')
+// Test 16: service-not-allowed message is actionable + iOS-aware (pure helper).
+{
+  const msg = window.__voiceTest.serviceUnavailableMessage
+  const ios = msg(true)
+  const other = msg(false)
+  assert.ok(/iphone/i.test(ios) && /safari/i.test(ios) && /preferences/i.test(ios),
+    `iOS message must name iPhone + Safari + Preferences, got "${ios}"`)
+  assert.ok(/deepgram|whisper/i.test(ios), `iOS message must offer a working backend, got "${ios}"`)
+  assert.ok(!/iphone/i.test(other) && /preferences/i.test(other),
+    `non-iOS message stays generic but actionable, got "${other}"`)
+  assert.notEqual(ios, other, 'iOS and non-iOS messages differ')
+  console.log('✓ Test 16: service-not-allowed message is actionable + iOS-aware')
+}
+
+// Test 17: Chrome 'service-not-allowed' (iOS WKWebView blocks Web Speech) stops
+// cleanly, routes the error to the log sink, shows the actionable message, and
+// does NOT retry a hard platform restriction.
+{
+  const { log } = await import('./logger.ts')
+  const warnCalls = []
+  const origWarn = log.warn
+  log.warn = (...args) => { warnCalls.push(args) }
+  try {
+    const ta = makeTextarea()
+    setVoiceTarget(ta, [], {})
+    reset()
+    setBackend('chrome')    // a prior test's fakeRecord left _backend='deepgram'
+
+    toggleRecording()
+    tick(300)               // fire doStart -> recognition.start()
+    assert.equal(startCount, 1, 'recognition started')
+    const startsBefore = startCount
+
+    mockRec.onerror({ error: 'service-not-allowed' })
+
+    assert.ok(!isRecording(), 'service-not-allowed must stop recording')
+    const voiceWarn = warnCalls.find(a => a[0] === 'voice' && a[2] && a[2].error === 'service-not-allowed')
+    assert.ok(voiceWarn, 'must route the error through log.warn("voice", ...) carrying the error code')
+    assert.ok(/preferences/i.test(mockDiv.textContent), `HUD must show the actionable message, got "${mockDiv.textContent}"`)
+    assert.ok(!/mic error/i.test(mockDiv.textContent), 'must NOT fall through to the generic "mic error" HUD')
+
+    tick(5000)              // give any (wrong) retry timer a chance to fire
+    assert.equal(startCount, startsBefore, 'must NOT auto-retry a hard platform restriction')
+  } finally {
+    log.warn = origWarn
+  }
+  reset()
+  console.log('✓ Test 17: Chrome service-not-allowed stops, logs, messages, no retry')
+}
+
+// Test 18: time-to-first-interim is logged once per recording, tagged + timed.
+{
+  const { log } = await import('./logger.ts')
+  const infoCalls = []
+  const origInfo = log.info
+  log.info = (...args) => { infoCalls.push(args) }
+  try {
+    const ta = makeTextarea()
+    setVoiceTarget(ta, [], {})
+    reset()
+    setBackend('chrome')
+
+    toggleRecording()
+    tick(300)
+    assert.equal(startCount, 1, 'recognition started')
+
+    mockRec.onresult({ resultIndex: 0, results: [{ isFinal: false, 0: { transcript: 'hello' } }] })
+    const fi = infoCalls.filter(a => a[0] === 'voice' && a[1] === 'first-interim')
+    assert.equal(fi.length, 1, 'first-interim logged exactly once on first content')
+    assert.equal(typeof fi[0][2].ms, 'number', 'first-interim carries numeric ms')
+    assert.ok(fi[0][2].ms >= 0, 'elapsed ms is non-negative')
+    assert.equal(fi[0][2].backend, 'chrome', 'first-interim tagged with backend')
+
+    mockRec.onresult({ resultIndex: 0, results: [{ isFinal: true, 0: { transcript: 'hello world' } }] })
+    const fi2 = infoCalls.filter(a => a[0] === 'voice' && a[1] === 'first-interim')
+    assert.equal(fi2.length, 1, 'first-interim logged only ONCE per recording')
+  } finally {
+    log.info = origInfo
+  }
+  reset()
+  console.log('✓ Test 18: time-to-first-interim logged once with elapsed ms')
+}
+
+console.log('\nAll 21 tests passed.')

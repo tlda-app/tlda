@@ -594,13 +594,6 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
 
     const shapes: any[] = [
       {
-        id: slotId(myId, myDevice, 'notifications'),
-        type: 'fleet-notifications',
-        x: anchorX - leftW - gap, y: anchorY - 230,
-        isLocked: false,
-        props: { w: leftW, h: 220 },
-      },
-      {
         id: slotId(myId, myDevice, 'inbox'),
         type: 'fleet-inbox' as any,
         x: anchorX - leftW - gap, y: anchorY,

@@ -15,6 +15,7 @@ import { SessionExtractor, EventExtractor, TldaExtractor } from './playback/extr
 import { createPlayback, getPlayback, listPlaybacks, editPlayback, playbackTranscript } from './playback/storage.mjs';
 import { ledger } from './identity.mjs';
 import { formatMessage, formatActivity, formatAnnotationRef } from './format-annotation.mjs';
+import { formatViewingHint } from './viewing-hint.mjs';
 import { parseTimestamp } from './lib/parse-timestamp.mjs';
 import { processMessageText } from '../shared/message-processing.mjs';
 import { compactPrettyResult, indentPrettyResult, normalizePrettyResult } from '../shared/activity-pretty-result.mjs';
@@ -24,6 +25,8 @@ import { extractMarkdownSection } from '../shared/markdown-section.mjs';
 import { normalizeChatDisplayMathDelimiters } from '../shared/chat-math-normalize.mjs';
 import { baseName, nameForPhase, phaseFromName } from '../shared/lineage-name.mjs';
 import { formatSpawnModelSummary, validateSpawnModelSelection } from '../shared/spawn-model-validation.mjs';
+import { classifyUserBlame } from '../bin/lib/user-blame-classifier.mjs';
+import { classifyLaunder } from '../bin/lib/launder-classifier.mjs';
 import {
   applyNonClaudeRolePack,
   crossLaneBlock,
@@ -605,23 +608,32 @@ export function blockingChatLintIssues(issues = []) {
   return [];
 }
 
-/**
- * Format the exceptional staleness flag for a viewing-context. The version is
- * always Built; this rides on the location only when the viewer's pages have
- * drifted from the build (`ctx.stale` set by the client). Returns '' normally.
- */
-function staleHint(ctx) {
-  const s = ctx?.stale;
-  if (!s || !Array.isArray(s.kinds) || s.kinds.length === 0) return '';
-  const labels = {
-    stale: 'older render',
-    phantom: 'past end of build',
-    unrendered: 'not yet rendered',
-    missing: 'page not yet loaded',
-  };
-  const desc = s.kinds.map(k => labels[k] || k).join(', ');
-  const pg = Array.isArray(s.pages) && s.pages.length ? ` p${s.pages.join(',')}` : '';
-  return ` ⚠ stale${pg}: ${desc} — source anchor provisional`;
+export function checkUserBlameChatLint(message, recipients = []) {
+  const result = classifyUserBlame({
+    text: message,
+    context: { toSkip: recipients.includes('fleet:skip') },
+  });
+  return result.decision === 'flag' ? [result] : [];
+}
+
+export function formatUserBlameChatWarning(result, eventId = null) {
+  const target = eventId != null ? `chat({ amend_id: ${eventId}, message: "…" })` : 'chat({ amend_id: <id>, message: "…" })';
+  const span = result.features?.matchedSpan || 'matched wording';
+  return `⚠ **User-blame wording (${result.reasonCode}) — Skip may read this as blaming him or lecturing his own system back to him.** Matched: \`${span}\`. Fix it in place with \`${target}\` (edits the message Skip is reading, no new message).`;
+}
+
+export function checkLaunderChatLint(message, recipients = [], { paperContext = false } = {}) {
+  const result = classifyLaunder({
+    text: message,
+    context: { toSkip: recipients.includes('fleet:skip'), paperContext },
+  });
+  return result.decision === 'flag' ? [result] : [];
+}
+
+export function formatLaunderChatWarning(result, eventId = null) {
+  const target = eventId != null ? `chat({ amend_id: ${eventId}, message: "…" })` : 'chat({ amend_id: <id>, message: "…" })';
+  const span = result.features?.matchedSpan || 'matched wording';
+  return `⚠ **Ungrounded notation/term introduction (${result.reasonCode}) — this may be agent-invented notation that will get laundered into later briefs.** Matched: \`${span}\`. Either ground it explicitly (e.g. "notation I'm introducing — not in the paper") or use the paper's notation. Fix it in place with \`${target}\` (edits the message Skip is reading, no new message).`;
 }
 
 async function fetchCurrentDocVersion(doc) {
@@ -731,7 +743,7 @@ async function loadStateAll() {
 
 // ---- Report linter ----
 // Runs on task_done() calls. Returns array of violation objects: { id, pattern, location, text, advice }
-function lintReport(reportText, gitDiff, overrides = []) {
+export function lintReport(reportText, gitDiff, overrides = []) {
   const violations = [];
   const overrideSet = new Set(overrides);
 
@@ -2612,6 +2624,14 @@ export async function handleFleetTool(name, args) {
       const target = lastEventId != null ? `chat({ amend_id: ${lastEventId}, message: "…" })` : 'chat({ amend_id: <id>, message: "…" })';
       warning += `\n\n⚠ **Won't render properly (${renderIssues.length} issue${renderIssues.length > 1 ? 's' : ''}) — Skip will see broken output.** Fix it in place with \`${target}\` (edits the message Skip is reading, no new message):\n${renderIssues.map(l => `- ${l}`).join('\n')}`;
     }
+    const userBlameIssues = checkUserBlameChatLint(message, sent);
+    if (userBlameIssues.length > 0) {
+      warning += `\n\n${userBlameIssues.map(issue => formatUserBlameChatWarning(issue, lastEventId)).join('\n')}`;
+    }
+    const launderIssues = checkLaunderChatLint(message, sent, { paperContext: Object.keys(macros).length > 0 });
+    if (launderIssues.length > 0) {
+      warning += `\n\n${launderIssues.map(issue => formatLaunderChatWarning(issue, lastEventId)).join('\n')}`;
+    }
     // STYLE: quiet, optional — never a gate.
     if (styleHints.length > 0) {
       warning += `\n\nStyle (optional): ${styleHints.join(' ')}`;
@@ -2812,32 +2832,22 @@ export async function handleFleetTool(name, args) {
       }
     }
 
-    // Report gate (own task only)
-    if (agent === AGENT_ID && !task.reported) {
-      try {
-        const diff = execSync('git diff HEAD --name-only 2>/dev/null', {
-          cwd: process.env.PWD || os.homedir(), encoding: 'utf8', timeout: 5000,
-        }).trim();
-        if (diff) {
-          return { content: [{ type: 'text', text: `File report() before task_done(). You have uncommitted file edits:\n${diff.split('\n').slice(0, 10).join('\n')}\n\nCall report() to self-review your changes first.` }] };
-        }
-      } catch {}
-    }
-
-    // Lint gate (own task only)
+    // Task close hinges on Skip's approval + success-criteria ONLY — never the
+    // filesystem. The old report/lint gates ran `git diff HEAD` over the whole
+    // working tree and blocked the close on ANY uncommitted edit — including
+    // files the agent doesn't own on a shared tree — which deadlocked agents
+    // (it wedged WM by blocking on files outside the agent's control). Lint of
+    // the report TEXT is still useful, so it is surfaced as a non-blocking
+    // advisory below rather than blocking the close, and it no longer reads the
+    // git diff at all.
     let _lintOverrides = [];
+    let _lintAdvisory = '';
     if (agent === AGENT_ID) {
       const reportText = args.report || args.description || null;
       _lintOverrides = Array.isArray(args.overrides) ? args.overrides : [];
-      let gitDiff = null;
-      try {
-        gitDiff = execSync('git diff HEAD 2>/dev/null', {
-          cwd: process.env.PWD || os.homedir(), encoding: 'utf8', timeout: 5000,
-        });
-      } catch {}
-      const violations = lintReport(reportText, gitDiff, _lintOverrides);
+      const violations = lintReport(reportText, null, _lintOverrides);
       if (violations.length > 0) {
-        return { content: [{ type: 'text', text: formatLintViolations(violations) }], isError: true };
+        _lintAdvisory = `\n\n⚠️ Report-text notes (advisory — did not block close):\n${formatLintViolations(violations)}`;
       }
     }
 
@@ -2855,6 +2865,7 @@ export async function handleFleetTool(name, args) {
       if (_lintOverrides.length > 0) {
         msg += `\n\nNote: ${_lintOverrides.length} lint override(s) were used: ${_lintOverrides.join(', ')}`;
       }
+      msg += _lintAdvisory;
       if (agent === AGENT_ID) {
         msg += '\n\nKeep working or use timer() — you\'ll see 📬 when the next task arrives.';
       }
@@ -3454,16 +3465,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
         const fromLabel = m.metadata?.fromLabel || m.from;
         const replyHint = ` (reply with chat(to: "${m.from}"))`;
         const ctx = m.metadata?.context;
-        let docHint = '';
-        if (ctx?.doc) {
-          if (ctx.compareRef) {
-            docHint = ` [viewing ${ctx.doc} — comparing old@${ctx.compareRef} vs current@${ctx.version || 'latest'}]`
-          } else {
-            const sl = ctx.sourceLine
-            const srcHint = sl ? ` ${sl.file}:${sl.startLine}${sl.endLine && sl.endLine !== sl.startLine ? '-' + sl.endLine : ''}` : ''
-            docHint = ` [viewing ${ctx.doc}${ctx.version ? '@' + ctx.version : ''}${ctx.page ? ' p' + (Array.isArray(ctx.page) ? ctx.page.join(',') : ctx.page) : ''}${srcHint}${staleHint(ctx)}]`
-          }
-        }
+        const docHint = formatViewingHint(ctx);
         const { text: chipResolvedText, images: chipImages } = await resolveChipTokens(m.text, m.metadata)
         const refResolvedText = resolveTheoremRefs(chipResolvedText, ctx?.doc, ctx?.version)
         const { text: imgResolvedText, images } = await resolveImages(refResolvedText)
@@ -5079,14 +5081,7 @@ async function handleChannelMessage(msg) {
       const rawText = data.text || data.message || '';
       const preview = previewOf(rawText);
       const ctx = data.metadata?.context;
-      let docHint = '';
-      if (ctx?.doc) {
-        if (ctx.compareRef) {
-          docHint = ` [viewing ${ctx.doc} — comparing old@${ctx.compareRef} vs current@${ctx.version || 'latest'}]`
-        } else {
-          docHint = ` [viewing ${ctx.doc}${ctx.version ? '@' + ctx.version : ''}${staleHint(ctx)}]`
-        }
-      }
+      const docHint = formatViewingHint(ctx, { terse: true });
       const truncNote = isTruncated(rawText) ? `\n(TRUNCATED — showing ${PREVIEW_MAX}/${rawText.length} chars. You MUST call my_task() for the full text before responding)` : '';
       const reminder = data.metadata?.chatReminder ? `\n⚠️ ${data.metadata.chatReminder}` : '';
       content = `📬 Message from ${fromLabel}${docHint}: ${preview}${truncNote}\nCall my_task() to read and respond.${reminder}`;

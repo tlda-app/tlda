@@ -111,6 +111,45 @@ export function getFleetServerUrl(config = null) {
   return resolveConfig(config).database.http
 }
 
+/** The active config's name — what TLDA_CONFIG/defaultConfig selected. */
+export function getActiveConfigName(config = null) {
+  return resolveConfig(config).name
+}
+
+/**
+ * Coherence guard — fail loud when an explicit TLDA_SERVER URL disagrees with
+ * the active config's resolved origin. This is the tripwire for the 6/27
+ * config-split: a stray defaultConfig (or a hand-pinned TLDA_SERVER) routing a
+ * process to a different server than the rest of the fleet, silently. The one
+ * selector is TLDA_CONFIG (or defaultConfig) — every axis derives from it; a
+ * leftover TLDA_SERVER that points somewhere else means the process refuses to
+ * start rather than join a roster nobody else is on.
+ *
+ * Exception: TLDA_SYNC_SERVER is the deliberate split-sync pattern (read doc
+ * assets from one origin, sync shapes to another — the published triage clone).
+ * When it's set, we don't force TLDA_SERVER to match the active config.
+ *
+ * This THROWS — never catch-and-log. A coherent boot is the contract; every
+ * entry point (daemon, MCP, server) calls this at startup. Checks store.http
+ * (the historical meaning of TLDA_SERVER, and === database.http in every config
+ * today); if the two axes ever split, TLDA_SERVER — a single URL — can't name
+ * both, so store is the right one to pin.
+ */
+export function assertServerCoherence(config = null) {
+  const envServer = process.env.TLDA_SERVER
+  if (!envServer) return
+  if (process.env.TLDA_SYNC_SERVER) return // deliberate split-sync — see docs/live-deploy.md
+  const resolved = resolveConfig(config)
+  const want = resolved.store.http
+  const got = _httpForm(envServer)
+  if (got !== want) {
+    throw new Error(
+      `tlda config incoherent: TLDA_SERVER=${got} but active config "${resolved.name}" resolves to ${want}. ` +
+      `Don't pin a server by URL — select a config with TLDA_CONFIG=<name> (or fix "defaultConfig" in config.json).`
+    )
+  }
+}
+
 /**
  * RW token resolution. Used by agents, daemon, CLI — anything that writes.
  * TLDA_TOKEN env → config.tokenRw → config.token → null

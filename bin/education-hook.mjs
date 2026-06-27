@@ -1,12 +1,19 @@
 #!/usr/bin/env node
 /**
- * PreToolUse hook: skill qualification enforcement.
+ * PreToolUse hook: skill qualification — SURFACED, NOT BLOCKING.
  *
- * Fail-open: if the server is down, slow, or broken, exit 0.
- * Never block a tool call because the education system itself is broken.
+ * Fail-open: if the server is down/slow/broken, exit 0. Never block a tool call
+ * because the education system itself is broken.
+ *
+ * IMPORTANT (Skip's #1 pet peeve): this gate must NEVER deadlock. The owed
+ * "skills" are tlda/fleet reference docs under ~/work/dot-claude/skills — they are
+ * NOT Claude Code skills, so the Skill tool returns "unknown skill" for them, and
+ * ~/.claude/skills does not exist. That made the requirement unsatisfiable: agents
+ * could not clear it, so the old decision:'block' wedged the whole fleet (no
+ * task_done / Edit / report / delegate). The gate now SURFACES the relevant skills
+ * as advisory context and ALWAYS allows the tool. It nudges; it never walls.
  *
  * For Read/Skill calls: notifies the server for tracking, never blocks.
- * For other calls: checks if the agent has unread required skills.
  */
 
 import { readFileSync } from 'fs'
@@ -19,10 +26,9 @@ import { getFleetServerUrl } from '../shared/config.mjs'
 const FLEET_ID = process.env.FLEET_ID
 if (!FLEET_ID) process.exit(0)
 
-// Education/skill-gate state is GLOBAL — it follows the agent onto the fleet
-// (todd/eliza watch fleet chat, set owed skills; the agent dismisses). So check
-// against the fleet server (config.fleetServer → Fly), the same place dismiss_skill
-// writes. Using the local server here while dismiss went to Fly was the re-fire bug.
+// Education state is GLOBAL — it follows the agent onto the fleet (todd/eliza
+// watch fleet chat, set owed skills; the agent reads/dismisses). Check the fleet
+// server (config.fleetServer -> Fly), the same place dismiss_skill writes.
 const SERVER = getFleetServerUrl()
 
 setTimeout(() => process.exit(0), 1500)
@@ -60,24 +66,15 @@ if (toolName) params.set('tool', toolName)
 if (filePath) params.set('file', filePath)
 if (toolName === 'Skill' && toolInput.skill) params.set('skill', toolInput.skill)
 if (toolName === 'Bash' && toolInput.command) params.set('command', toolInput.command)
-// For chat, send the message text so the server can assess math-heaviness
-// (the content-conditioned `chat` gate). Cap length — we only need to detect
-// math markers, not ship the whole message.
 if (toolName === 'mcp__tlda__chat' && toolInput.message) {
   params.set('content', String(toolInput.message).slice(0, 4000))
 }
 const qs = params.toString()
 const url = `${SERVER}/api/education/check/${encodeURIComponent(FLEET_ID)}${qs ? '?' + qs : ''}`
 
-if (toolName === 'Read') {
-  httpGet(url)
-  process.exit(0)
-}
-
-if (toolName === 'Skill') {
-  await httpGet(url)
-  process.exit(0)
-}
+// Read/Skill: tracking only, never block.
+if (toolName === 'Read') { httpGet(url); process.exit(0) }
+if (toolName === 'Skill') { await httpGet(url); process.exit(0) }
 
 const pending = await httpGet(url)
 if (!pending || !pending.skill) process.exit(0)
@@ -85,25 +82,40 @@ if (!pending || !pending.skill) process.exit(0)
 const skills = pending.skills || [pending.skill]
 const items = []
 for (const skill of skills) {
-  const skillPath = join(homedir(), '.claude', 'skills', skill, 'SKILL.md')
-  try {
-    const content = readFileSync(skillPath, 'utf8')
-    const descMatch = content.match(/^description:\s*"?(.+?)"?\s*$/m)
-    const desc = descMatch ? descMatch[1] : ''
-    items.push({ skill, desc })
-  } catch {
-    items.push({ skill, desc: '' })
+  // Real skills live under ~/work/dot-claude/skills; ~/.claude/skills may not exist.
+  const candidates = [
+    join(homedir(), 'work', 'dot-claude', 'skills', skill, 'SKILL.md'),
+    join(homedir(), '.claude', 'skills', skill, 'SKILL.md'),
+  ]
+  let desc = '', foundPath = ''
+  for (const p of candidates) {
+    try {
+      const content = readFileSync(p, 'utf8')
+      const m = content.match(/^description:\s*"?(.+?)"?\s*$/m)
+      desc = m ? m[1] : ''
+      foundPath = p
+      break
+    } catch { /* not present at this candidate path — try the next one */ }
   }
+  items.push({ skill, desc, foundPath })
 }
 if (items.length === 0) process.exit(0)
 
-let reason = '\u26a0\ufe0f **You must read ' + (items.length === 1 ? 'this skill' : 'these ' + items.length + ' skills') + ' before continuing.**\n\n'
-for (const { skill, desc } of items) {
-  reason += '- **`' + skill + '`**' + (desc ? ' \u2014 ' + desc : '') + '\n'
+// SURFACE the relevant skills as advisory context — never block.
+let advisory = 'Relevant skill' + (items.length === 1 ? '' : 's') + ' for this action'
+advisory += ' (read before proceeding if you have not — these are reference docs you Read, not Skill-tool skills):\n'
+for (const { skill, desc, foundPath } of items) {
+  advisory += '- ' + skill + (desc ? ' — ' + desc : '')
+  advisory += foundPath ? '  (Read ' + foundPath + ')' : '  (no SKILL.md found; informational only)'
+  advisory += '\n'
 }
-reason += '\nUse the Skill tool to invoke each one (e.g. `Skill({ skill: "' + items[0].skill + '" })`), then retry your edit.'
-reason += '\n\nIf you are genuinely sure a skill does not apply to what you are doing, you may dismiss it instead — `dismiss_skill({ reason: "why it does not apply" })` (a reason is required and is shown to Skip). Otherwise, read it.'
 
-const result = { decision: 'block', reason }
-
+const result = {
+  hookSpecificOutput: {
+    hookEventName: 'PreToolUse',
+    additionalContext: advisory,
+  },
+  systemMessage: 'Skill advisory (non-blocking): ' + items.map(i => i.skill).join(', '),
+}
 process.stdout.write(JSON.stringify(result))
+process.exit(0)

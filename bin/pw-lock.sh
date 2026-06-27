@@ -1,71 +1,136 @@
 #!/usr/bin/env bash
-# Playwright single-user lock.
+# Playwright single-user lock — PID-aware, renewable, queue-not-steal.
+#
 # Skip's machine can't handle two concurrent playwright sessions and the
-# automation pops a giant browser window on his screen. Agents must
-# acquire this lock before launching playwright, release it on close.
+# automation pops a giant browser window on his screen. Agents must acquire
+# this lock before launching playwright, release it on close.
+#
+# Why PID-aware: the old lock went stale purely on a timestamp, so a single
+# long-running `tlda-dev pw` verb (a multi-minute eval/proof) that issued no
+# intermediate verbs let the lock expire and get STOLEN mid-eval — the stealer
+# then reaped the shared browser. Now a lock whose HOLDER PROCESS is still alive
+# is never stale (its liveness IS the heartbeat), so an active proof can't be
+# stolen; only a genuinely dead/idle holder's lock frees. A second agent should
+# `acquire --wait` to QUEUE behind the live holder rather than steal+reap.
 #
 # Usage:
-#   bin/pw-lock.sh acquire <agent-name>     # exit 0 if acquired, 1 if held
-#   bin/pw-lock.sh release <agent-name>     # release lock if held by this agent
+#   bin/pw-lock.sh acquire <agent> [--pid <PID>] [--wait[=SECS]]
+#       acquire the lock. --pid records a liveness PID (the agent/session
+#       process); while that PID is alive the lock never goes stale. --wait
+#       QUEUES (polls) until a live holder releases or dies, up to SECS
+#       (default 600), instead of failing. exit 0 acquired, 1 held/timed-out.
+#   bin/pw-lock.sh renew <agent>            # refresh timestamp if held by agent (heartbeat)
+#   bin/pw-lock.sh release <agent>          # release if held by this agent
 #   bin/pw-lock.sh status                   # print current holder
-#   bin/pw-lock.sh steal <agent-name>       # force-take lock (last resort)
+#   bin/pw-lock.sh steal <agent> [--pid N]  # force-take (last resort, for a dead holder)
 #
-# Lock file: ~/.config/tlda/playwright.lock
-# Format:    one line, "<agent-name>\t<unix-timestamp>"
-# Stale:     considered stale after 10 minutes — anyone can re-acquire.
+# Lock file: $TLDA_PW_LOCK (default ~/work/tlda/.pw.lock — inside the tree so the
+#            fleet-agent rm shim can clean it up).
+# Format:    one line, "<agent>\t<unix-timestamp>\t<pid>"  (pid 0 = none).
+# Stale:     timestamp older than $TLDA_PW_LOCK_STALE (default 90s) AND the
+#            holder pid is absent/dead. A live pid keeps the lock fresh forever.
 
 set -euo pipefail
 
-# Lock lives inside the project tree so the fleet-agent rm shim (which
-# blocks deletes outside ~/work) can clean it up. Override with TLDA_PW_LOCK.
 LOCK="${TLDA_PW_LOCK:-$HOME/work/tlda/.pw.lock}"
-# Short stale window: a forgotten lock frees itself in ~90s. An agent actively
-# driving the browser re-acquires (refreshes the timestamp) on every `tlda-dev
-# pw` verb, so its lock stays alive while in use; only an idle lock expires.
 STALE_SECS="${TLDA_PW_LOCK_STALE:-90}"
+WAIT_POLL_SECS="${TLDA_PW_LOCK_POLL:-2}"
+WAIT_MAX_DEFAULT="${TLDA_PW_LOCK_WAIT:-600}"
 
 mkdir -p "$(dirname "$LOCK")"
 
-cmd="${1:-status}"
-who="${2:-}"
+now() { date +%s; }
 
-now=$(date +%s)
+pid_alive() { [ -n "${1:-}" ] && [ "$1" != "0" ] && kill -0 "$1" 2>/dev/null; }
 
-current_holder() {
+# Populate HOLDER/TS/PID from the lock file. Returns 1 if there is no lock file.
+read_lock() {
+  HOLDER=''; TS=0; PID=0
   [ -f "$LOCK" ] || return 1
-  awk -F'\t' -v now="$now" -v stale="$STALE_SECS" '
-    { age = now - $2; if (age < stale) { print $1; print $2; exit } }
-  ' "$LOCK"
+  IFS=$'\t' read -r HOLDER TS PID < "$LOCK" || return 1
+  TS="${TS:-0}"; PID="${PID:-0}"
+  return 0
 }
+
+# Is the lock currently ACTIVE (held by a still-valid holder, not stealable)?
+# Active iff fresh by timestamp OR the holder process is still alive.
+lock_active() {
+  read_lock || return 1
+  local age=$(( $(now) - TS ))
+  [ "$age" -lt "$STALE_SECS" ] && return 0
+  pid_alive "$PID" && return 0
+  return 1
+}
+
+write_lock() { printf '%s\t%s\t%s\n' "$1" "$2" "${3:-0}" > "$LOCK"; }
+
+# ---- arg parsing ----
+cmd="${1:-status}"
+shift || true
+who=''
+pid_arg='0'
+wait_mode=0
+wait_max="$WAIT_MAX_DEFAULT"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --pid) shift; pid_arg="${1:-0}" ;;
+    --pid=*) pid_arg="${1#--pid=}" ;;
+    --wait) wait_mode=1 ;;
+    --wait=*) wait_mode=1; wait_max="${1#--wait=}" ;;
+    --*) echo "unknown flag: $1" >&2; exit 2 ;;
+    *) [ -z "$who" ] && who="$1" || { echo "unexpected arg: $1" >&2; exit 2; } ;;
+  esac
+  shift || true
+done
 
 case "$cmd" in
   acquire)
-    [ -n "$who" ] || { echo "usage: pw-lock.sh acquire <agent-name>" >&2; exit 2; }
-    holder_info=$(current_holder || true)
-    if [ -n "$holder_info" ]; then
-      holder=$(printf '%s\n' "$holder_info" | head -1)
-      ts=$(printf '%s\n' "$holder_info" | sed -n '2p')
-      age=$(( now - ts ))
-      if [ "$holder" = "$who" ]; then
-        printf '%s\t%s\n' "$who" "$now" > "$LOCK"
-        echo "re-acquired by $who"
-        exit 0
+    [ -n "$who" ] || { echo "usage: pw-lock.sh acquire <agent> [--pid N] [--wait[=SECS]]" >&2; exit 2; }
+    deadline=$(( $(now) + wait_max ))
+    while :; do
+      if lock_active; then
+        if [ "$HOLDER" = "$who" ]; then
+          write_lock "$who" "$(now)" "$pid_arg"   # re-acquire / refresh
+          echo "re-acquired by $who"
+          exit 0
+        fi
+        # Held by a live other holder.
+        if [ "$wait_mode" = 1 ] && [ "$(now)" -lt "$deadline" ]; then
+          sleep "$WAIT_POLL_SECS"
+          continue
+        fi
+        age=$(( $(now) - TS ))
+        if [ "$wait_mode" = 1 ]; then
+          echo "TIMED OUT after ${wait_max}s waiting for $HOLDER (held ${age}s ago). Still active; not stealing." >&2
+        else
+          echo "LOCKED by $HOLDER (${age}s ago, pid $PID alive). Re-run with --wait to queue, or steal as a last resort." >&2
+        fi
+        exit 1
       fi
-      echo "LOCKED by $holder (${age}s ago). Wait or run: bin/pw-lock.sh steal $who" >&2
+      # Free or stale-and-dead → take it.
+      write_lock "$who" "$(now)" "$pid_arg"
+      echo "acquired by $who"
+      exit 0
+    done
+    ;;
+  renew)
+    [ -n "$who" ] || { echo "usage: pw-lock.sh renew <agent>" >&2; exit 2; }
+    if read_lock && [ "$HOLDER" = "$who" ]; then
+      write_lock "$who" "$(now)" "$PID"
+      echo "renewed by $who"
+    else
+      echo "not held by $who (held by ${HOLDER:-none}); not renewing" >&2
       exit 1
     fi
-    printf '%s\t%s\n' "$who" "$now" > "$LOCK"
-    echo "acquired by $who"
     ;;
   release)
-    [ -n "$who" ] || { echo "usage: pw-lock.sh release <agent-name>" >&2; exit 2; }
-    if [ -f "$LOCK" ]; then
-      holder=$(awk -F'\t' '{print $1; exit}' "$LOCK")
-      if [ "$holder" = "$who" ]; then
+    [ -n "$who" ] || { echo "usage: pw-lock.sh release <agent>" >&2; exit 2; }
+    if read_lock; then
+      if [ "$HOLDER" = "$who" ]; then
         rm -f "$LOCK"
         echo "released by $who"
       else
-        echo "not held by $who (held by ${holder:-none}); not releasing" >&2
+        echo "not held by $who (held by ${HOLDER:-none}); not releasing" >&2
         exit 1
       fi
     else
@@ -73,23 +138,21 @@ case "$cmd" in
     fi
     ;;
   status)
-    holder_info=$(current_holder || true)
-    if [ -n "$holder_info" ]; then
-      holder=$(printf '%s\n' "$holder_info" | head -1)
-      ts=$(printf '%s\n' "$holder_info" | sed -n '2p')
-      age=$(( now - ts ))
-      echo "$holder (acquired ${age}s ago)"
+    if lock_active; then
+      age=$(( $(now) - TS ))
+      if pid_alive "$PID"; then alive="pid $PID alive"; else alive="pid ${PID} (no live pid)"; fi
+      echo "$HOLDER (acquired ${age}s ago, $alive)"
     else
       echo "unlocked"
     fi
     ;;
   steal)
-    [ -n "$who" ] || { echo "usage: pw-lock.sh steal <agent-name>" >&2; exit 2; }
-    printf '%s\t%s\n' "$who" "$now" > "$LOCK"
+    [ -n "$who" ] || { echo "usage: pw-lock.sh steal <agent> [--pid N]" >&2; exit 2; }
+    write_lock "$who" "$(now)" "$pid_arg"
     echo "stolen by $who"
     ;;
   *)
-    echo "usage: pw-lock.sh {acquire|release|status|steal} [agent-name]" >&2
+    echo "usage: pw-lock.sh {acquire|renew|release|status|steal} <agent> [--pid N] [--wait[=SECS]]" >&2
     exit 2
     ;;
 esac

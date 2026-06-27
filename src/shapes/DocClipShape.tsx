@@ -175,11 +175,14 @@ function DocClipComponent({ shape }: { shape: any }) {
         >×</button>
       </div>
 
-      {/* Content area — CanvasClipPanel captures pointer events for panning */}
+      {/* Content area — CanvasClipPanel captures pointer events for panning.
+          touch-action:none + onPointerMove stop single-finger touch drags from
+          leaking to TLDraw's main canvas camera. */}
       <div
         className="doc-clip-body"
-        style={{ height: contentH }}
+        style={{ height: contentH, touchAction: 'none' }}
         onPointerDown={stopEventPropagation}
+        onPointerMove={stopEventPropagation}
       >
         <CanvasClipPanel
           mainEditor={mainEditor}

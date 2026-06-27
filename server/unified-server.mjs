@@ -56,6 +56,7 @@ import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCac
 import * as tldaFeedback from './lib/tlda-feedback.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
 import { FleetStore } from './lib/fleet-store.mjs'
+import { resolveMachine } from './lib/tailscale-peers.mjs'
 import { createFleetRouter } from './routes/fleet.mjs'
 import { callerSpawnPolicy, coherentSpawnPolicy } from './lib/spawn-policy.mjs'
 import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
@@ -561,7 +562,7 @@ function broadcastEvent(type, data) {
 }
 
 const spawnLibrarian = new SpawnLibrarian({
-  registerDeadlineMs: Number(process.env.TLDA_SPAWN_REGISTER_DEADLINE_MS || 20_000),
+  registerDeadlineMs: Number(process.env.TLDA_SPAWN_REGISTER_DEADLINE_MS || 60_000),
   wedgedWindowMs: Number(process.env.TLDA_WEDGED_JOIN_MS || 90_000),
   onWedged: ({ agent_id, liveness }) => {
     const agent = fleetStore?.getAgent?.(agent_id)
@@ -574,11 +575,20 @@ const spawnLibrarian = new SpawnLibrarian({
       reason: liveness?.reason || 'delivered chat produced no agent-activity advance',
       ts: new Date().toISOString(),
     }
+    // Wedged is convergent agent state — surface it via the agent-wedged event
+    // (consumed by the per-agent status line), NOT as a chat message. Posting it
+    // to chat spammed every idle recipient of a broadcast/fan-out delivery. (Skip 6/27)
     broadcastEvent('agent-wedged', metadata)
+    broadcastState()
+  },
+  onLateRegister: (agent) => {
+    const label = agent.friendly_name || agent.id
+    const metadata = { type: 'spawn_late_register', agentId: agent.id, agentLabel: label, ts: new Date().toISOString() }
+    broadcastEvent('spawn-late-register', metadata)
     deliverTldaFeedbackChat({
       from: 'fleet:tlda',
       to: SERVER_OWNER_ID,
-      text: `**Agent appears wedged**: \`${label}\` received a message but produced no activity.`,
+      text: `**Late registration**: \`${label}\` registered after the spawn deadline — it is now available.`,
       metadata,
     })
     broadcastState()
@@ -2764,7 +2774,13 @@ server.on('upgrade', async (req, socket, head) => {
   if (url.pathname === '/ws/fleet') {
     const remoteAddr = req.socket.remoteAddress
     const remotePort = req.socket.remotePort
+    // Behind `tailscale serve` (Fly) the socket peer is 127.0.0.1; the client's
+    // real tailnet IP is the first hop of X-Forwarded-For. Capture it so a chat
+    // message can be stamped with the sender's machine (resolveMachine).
+    const fwdFor = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || null
     fleetWss.handleUpgrade(req, socket, head, (ws) => {
+      ws._fwdFor = fwdFor
+      ws._remoteAddr = remoteAddr
       const agentFilter = url.searchParams.get('agent') || null
       ws._agentFilter = agentFilter
       wsFleetClients.add(ws)
@@ -3236,12 +3252,7 @@ async function handleFleetWsMessage(ws, msg) {
         }
         if (decision.action === 'hold') continue
         if (decision.action === 'surface') {
-          deliverTldaFeedbackChat({
-            from: 'fleet:tlda',
-            to: SERVER_OWNER_ID,
-            text: `**Agent appears wedged**: \`${agent.friendly_name || agentId}\` cannot be woken automatically. ${decision.message}`,
-            metadata: { type: 'agent_wedged', agentId, reason: decision.message },
-          })
+          // Convergent state via the event (per-agent status line), not a chat message. (Skip 6/27)
           broadcastEvent('agent-wedged', { agentId, reason: decision.message, ts: new Date().toISOString() })
           continue
         }
@@ -3412,6 +3423,16 @@ async function handleFleetWsMessage(ws, msg) {
     }
     const senderAgent = fleetStore.getAgent?.(from)
     const chatReminder = senderAgent?.metadata?.chatReminder || undefined
+    // Stamp the human sender's physical machine onto the message context so any
+    // agent can see what machine Skip is on without inferring from Tailscale.
+    // Resolved server-side from the connection's tailnet IP; fail-visible (omit
+    // when unknown — never a wrong machine). Folded into context so it renders
+    // next to the doc/page chip.
+    let outContext = context
+    if (senderAgent?.human) {
+      const machine = resolveMachine(ws?._fwdFor || ws?._remoteAddr)
+      if (machine) outContext = { ...(context || {}), machine }
+    }
     const ts = new Date().toISOString()
     const eventIds = []
     const insertedEvents = []
@@ -3425,7 +3446,7 @@ async function handleFleetWsMessage(ws, msg) {
         ...(inline_attachments ? { inline_attachments } : {}),
         ...(msg._tempId ? { client_temp_id: msg._tempId } : {}),
         ...(wiretapRecipients.length ? { wiretap_cc: wiretapRecipients } : {}),
-        ...(context ? { context } : {}),
+        ...(outContext ? { context: outContext } : {}),
         ...(preambleRef ? { preambleRef } : {}),
         ...(chatReminder ? { chatReminder } : {}),
         ...(source ? { source } : {}),

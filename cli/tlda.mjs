@@ -31,7 +31,7 @@ import {
 import { tldaFetch } from '../shared/http-client.mjs'
 import { DEV_COMMANDS } from './lib/dev-commands.mjs'
 import { resolveRepoRoot, ensureWorktree, startWorktreeVite, findFreePort } from './lib/dev-vite.mjs'
-import { findTailscaleIPv4, getFunnelUrl, selectDevShareBase, selectDocShareBase, viewerLoginUrl } from './lib/share-url.mjs'
+import { findLanIPv4, findTailscaleIPv4, getFunnelUrl, selectDevShareBase, selectDocShareBase, viewerLoginUrl } from './lib/share-url.mjs'
 import { scanMarkdownDeps } from '../shared/markdown-deps.mjs'
 import { cmdLogs } from './lib/unified-logs.mjs'
 import { SPAWN_POLICY_OPTIONS, resolveSpawnPolicyOption } from '../server/lib/spawn-policy.mjs'
@@ -45,11 +45,11 @@ import { SPAWN_POLICY_OPTIONS, resolveSpawnPolicyOption } from '../server/lib/sp
 // are their own top-level commands.) Flat forms still work for now so the
 // feedback hook etc. don't break, but `--help` only advertises the nouns.
 const DOC_SUBS = new Set([
-  'open', 'push', 'list', 'ls', 'status', 'errors', 'preview',
-  'delete', 'rm', 'share', 'publish', 'scratch', 'book', 'link',
+  'open', 'push', 'list', 'ls', 'status', 'errors',
+  'delete', 'rm', 'share', 'publish', 'scratch', 'book', 'link', 'init',
   'repo-doctor', 'init-shadow',
 ])
-const REMOVED_DOC_SUBS = new Set(['create'])
+const REMOVED_DOC_SUBS = new Set(['create', 'preview'])
 const CONFIG_SUBS = new Set(['setup', 'mcp-setup', 'auth'])  // config subs that map to existing handlers
 let _nounUsed = null
 {
@@ -65,6 +65,20 @@ let _nounUsed = null
 
 const args = process.argv.slice(2)
 const command = args[0]
+
+// Global `--config <name>`: select an alternate complete config (= an alternate
+// server, the whole database+store pair) for THIS run only, WITHOUT editing the
+// shared "defaultConfig". This is THE supported way to test against another
+// server — editing defaultConfig is what caused the 6/27 split, where a leftover
+// pointed every spawned agent at the wrong fleet. Set before any config
+// resolution (getServerUrl/getRwToken/resolveConfig all read TLDA_CONFIG), and it
+// flows into a spawned daemon via env inheritance (see ensureFleetDaemonRunning).
+{
+  const i = args.indexOf('--config')
+  if (i !== -1 && args[i + 1] && !args[i + 1].startsWith('--')) {
+    process.env.TLDA_CONFIG = args[i + 1]
+  }
+}
 
 // Noun-only: a command lives under its noun, not flat. No back-compat aliases —
 // reject the bare form and point at the noun. (Docs/callers use the noun forms.)
@@ -82,16 +96,16 @@ const COMMAND_HELP = {
   scratch: 'tlda doc scratch <file.md> [--title "Title"] [--book fleet-workspace]\n\n  Publish a scratch markdown file as a page in a book.\n  Creates a markdown project, pushes the file, and auto-joins the book.\n  Subsequent edits are auto-pushed by watch-all.\n\n  --title    Display title (default: first heading or filename)\n  --book     Book to join (default: fleet-workspace)',
   book:    'tlda doc book <name> --members doc1,doc2,doc3,...\n\n  Create a book that groups existing documents together.\n  Each member keeps its own sync room and annotations.\n  The viewer shows one member at a time with a tab bar to switch.',
   link:    'tlda doc link <name> [file] [--title "Title"] [--format slides|html|markdown]\n\n  Link the repository containing file to tlda and push files. If the project already exists,\n  pushes files and triggers a rebuild.\n\n  Examples:\n    tlda doc link paper path/to/paper.tex\n    tlda doc link talk path/to/talk.qmd --format slides\n\n  Formats:\n    (default)  LaTeX → SVG pipeline (latexmk → dvisvgm)\n    slides     Reveal.js HTML (from Quarto revealjs or manual)\n    html       Multipage HTML chapters (from Quarto book render)\n    markdown   Markdown with KaTeX math → HTML\n\n  Advanced: --dir <path> and --main <file> override file-derived paths.',
+  init:    'tlda doc init <name> [main-file] [--title "Title"] [--dir /path] [--format tex|markdown|html]\n\n  Create a new blank, git-backed project in a fresh directory and register it.\n  Unlike `tlda doc link` (which attaches an existing directory), `init` scaffolds a new one.\n\n  positional <main-file>  Main file name, e.g. paper.tex or notes.md.\n                          Format is inferred from the extension.\n                          Default: main.tex (format: tex/svg)\n  --dir <path>            Where to create the project directory (default: ./<name> in CWD)\n  --title "..."           Display title (default: <name>)\n  --format tex|markdown   Override format inference\n\n  Creates: <dir>/<main-file>, <dir>/README.md, a git repo with an initial commit,\n           then registers and pushes to the tlda server.',
   push:    'tlda doc push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
   watch:   'tlda daemon [start|stop|status|log|run]\n\n  Control the per-machine fleet-daemon (bin/fleet-daemon.mjs).\n  The daemon watches Claude Code session JSONLs and project source\n  dirs locally, pushing events to the tlda server over WebSocket.',
   'watch-all': 'tlda daemon [start|stop|status|log|run]\n\n  Alias for `tlda daemon start/stop/status/log/run` — runs the\n  per-machine fleet-daemon (bin/fleet-daemon.mjs), which watches\n  every project source dir AND every Claude Code session JSONL\n  on this machine and pushes events to the tlda server over WebSocket.',
   open:    'tlda doc open [name]\n\n  Open the viewer in the default browser (RW token = presenter privilege).',
-  share:   'tlda doc share [name]\n\n  Print a reachable viewer URL with the read-only token.\n  Uses the configured remote server when active, otherwise Funnel/Tailscale.\n  Does not print localhost as a share URL for users on another machine.\n  Recipients can annotate but cannot present.',
+  share:   'tlda doc share [name|.]\n\n  Print a reachable viewer URL with the read-only token.\n    (no arg)  share the index page (root /)\n    .         share the project inferred from the current directory\n    <name>    share that specific doc\n  Uses the configured remote server when active, otherwise Funnel/Tailscale/LAN.\n  Does not print localhost as a share URL for users on another machine.\n  Recipients can annotate but cannot present.',
   status:  'tlda doc status [name]\n\n  Show build status for a project.',
   errors:  'tlda doc errors [name] [--wait]\n\n  Extract LaTeX errors and warnings from the last build log.\n  With --wait (-w), blocks until the current build finishes.',
   build:   'tlda build [name]\n\n  Trigger a rebuild without pushing files.\n\n  NOTE: Prefer the watcher pipeline. This command bypasses change\n  detection and should only be used for debugging.',
   delete:  'tlda doc delete <name>\n\n  Delete a project and all its data.',
-  preview: 'tlda doc preview <name> [page ...]\n\n  Rasterize SVG pages to PNG for visual inspection.\n  Outputs paths to /tmp/tlda-preview-{name}/.',
   logs:    'tlda logs [agent] [--since 1h|2026-05-23] [--type chat,register] [-n 50] [-f] [--daemon] [--all]\n\n  Unified chronological log across all sources (DB events, daemon log, dead-letters).\n\n  agent      Filter by agent name (fuzzy match)\n  --since    Time range (e.g. 1h, 30m, 2d, or ISO date)\n  --type     Filter by event type (comma-separated)\n  -n N       Number of events (default: 50, or 10000 with --since)\n  -f         Follow mode (tail -f style)\n  --daemon   Include daemon log lines (heartbeats, WS, terminal exits)\n  --all      Include activity and client_error events (excluded by default)',
   server:  'tlda server [start|stop|status|log|install|uninstall]\n\n  start      Start the server (auto-restarts via launchd if installed)\n  stop       Stop the server\n  status     Check if server is running\n  log        Show recent server log\n  install    Install launchd service (macOS)\n  uninstall  Remove launchd service',
   publish: 'tlda publish [--target <name>] [doc ...]\n\n  Publish docs to GitHub Pages (+ optionally Fly).\n\n  With no args, publishes all docs in config.published using the "default" target.\n  With --target, uses the named target config (sync server, repo, etc.).\n  With doc names, publishes those and adds them to the list.\n\n  Config (targets in ~/.config/tlda/config.json):\n    targets.<name>.sync     — sync server WebSocket URL\n    targets.<name>.repo     — git remote for gh-pages (null = same repo)\n    targets.<name>.fly      — deploy to Fly (default: false)\n    targets.<name>.basePath — vite base path (default: /tlda/)',
@@ -103,7 +117,7 @@ const VALUE_FLAGS = new Set([
   'server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format',
   'session', 'target', 'timeout', 'id', 'book', 'worktree', 'port', 'browser',
   'model', 'cwd', 'effort', 'mode', 'kind', 'spawn-capability', 'capability',
-  'to', 'limit',
+  'to', 'limit', 'config',
 ])
 
 function getFlag(name, defaultVal = null) {
@@ -604,6 +618,138 @@ async function cmdLink() {
   await cmdCreate()
 }
 
+async function cmdInit() {
+  const name = getPositional(0)
+  if (!name) {
+    console.error('Usage: tlda doc init <name> [main-file] [--title "Title"] [--dir /path] [--format tex|markdown]')
+    process.exit(1)
+  }
+
+  // Determine format and main file name
+  let format = getFlag('format') || null
+  const mainArg = getPositional(1)  // optional: paper.tex, notes.md, etc.
+
+  // Infer format from the main file extension (same logic as cmdCreate)
+  let mainFile
+  if (mainArg) {
+    const ext = mainArg.toLowerCase().split('.').pop()
+    if (!format) {
+      if (ext === 'md') format = 'markdown'
+      else if (ext === 'html' || ext === 'htm') format = 'html'
+    }
+    mainFile = mainArg
+  } else {
+    // No explicit main file — pick sensible default per format
+    if (format === 'markdown') mainFile = 'main.md'
+    else if (format === 'html') mainFile = 'index.html'
+    else mainFile = 'main.tex'
+    // Default format for .tex is left as null (LaTeX/svg pipeline)
+  }
+
+  const title = getFlag('title') || name
+
+  // Determine target directory: --dir overrides, otherwise ./<name> in CWD
+  const targetDir = resolve(getFlag('dir') || join(process.cwd(), name))
+
+  // Guard: refuse to clobber a non-empty directory
+  if (existsSync(targetDir)) {
+    const entries = readdirSync(targetDir)
+    if (entries.length > 0) {
+      console.error(red(`Directory already exists and is not empty: ${targetDir}`))
+      console.error(`  Use \`tlda doc link\` to attach an existing project directory.`)
+      process.exit(1)
+    }
+  }
+
+  // Create the directory
+  mkdirSync(targetDir, { recursive: true })
+  console.log(dim(`  Creating project in ${targetDir}`))
+
+  // Seed starter files based on format
+  const isMarkdown = format === 'markdown'
+  const isHtml = format === 'html'
+
+  if (isMarkdown) {
+    // Minimal markdown stub
+    const mdContent = `# ${title}\n\nWrite your notes here. Math works: $E = mc^2$\n`
+    writeFileSync(join(targetDir, mainFile), mdContent, 'utf8')
+  } else if (isHtml) {
+    // Minimal HTML stub
+    const htmlContent = `<!DOCTYPE html>\n<html>\n<head><meta charset="utf-8"><title>${title}</title></head>\n<body>\n<h1>${title}</h1>\n<p>Edit this file.</p>\n</body>\n</html>\n`
+    writeFileSync(join(targetDir, mainFile), htmlContent, 'utf8')
+  } else {
+    // Minimal compilable LaTeX stub
+    const texContent = `\\documentclass{article}\n\\title{${title}}\n\\author{}\n\\date{\\today}\n\\begin{document}\n\\maketitle\n\n\\section{Introduction}\n\nWrite your paper here.\n\n\\end{document}\n`
+    writeFileSync(join(targetDir, mainFile), texContent, 'utf8')
+  }
+
+  // Seed README.md
+  const formatLabel = isMarkdown ? 'markdown' : isHtml ? 'html' : 'LaTeX'
+  const readmeContent = `# ${title}\n\nThis project was created with \`tlda doc init ${name}\`.\n\nFormat: ${formatLabel}  \nMain file: \`${mainFile}\`\n\nPush changes to the viewer:\n\`\`\`\ntlda doc push ${name}\n\`\`\`\n`
+  writeFileSync(join(targetDir, 'README.md'), readmeContent, 'utf8')
+
+  console.log(dim(`  Seeded ${mainFile} + README.md`))
+
+  // Git init + initial commit
+  const { execFileSync } = await import('child_process')
+  try {
+    execFileSync('git', ['init'], { cwd: targetDir, stdio: 'pipe' })
+    execFileSync('git', ['add', mainFile, 'README.md'], { cwd: targetDir, stdio: 'pipe' })
+    execFileSync('git', ['commit', '-m', `init: ${name} (${formatLabel})`], {
+      cwd: targetDir,
+      stdio: 'pipe',
+      env: { ...process.env, GIT_AUTHOR_NAME: 'tlda', GIT_COMMITTER_NAME: 'tlda',
+             GIT_AUTHOR_EMAIL: 'tlda@localhost', GIT_COMMITTER_EMAIL: 'tlda@localhost' },
+    })
+    console.log(dim(`  git init + initial commit`))
+  } catch (gitErr) {
+    console.warn(yellow(`  Warning: git init failed — ${gitErr.message.trim()}`))
+    console.warn(yellow(`  Project directory and files were created, but no git repo was initialized.`))
+  }
+
+  // Register on the server and push the seeded files
+  try {
+    if (isMarkdown) {
+      await api('POST', '/api/projects', { name, title, mainFile, format: 'markdown', sourceDir: targetDir })
+      console.log(green(`Created markdown project "${name}".`))
+      const files = [{
+        path: mainFile,
+        content: Buffer.from(readFileSync(join(targetDir, mainFile))).toString('base64'),
+        encoding: 'base64',
+      }]
+      await api('POST', `/api/projects/${name}/push`, { files, sourceDir: targetDir })
+    } else if (isHtml) {
+      await api('POST', '/api/projects', { name, title, format: 'html', sourceDir: targetDir })
+      console.log(green(`Created HTML project "${name}".`))
+      const files = [{
+        path: mainFile,
+        content: Buffer.from(readFileSync(join(targetDir, mainFile))).toString('base64'),
+        encoding: 'base64',
+      }]
+      await api('POST', `/api/projects/${name}/push`, { files, sourceDir: targetDir })
+    } else {
+      await api('POST', '/api/projects', { name, title, mainFile, sourceDir: targetDir })
+      console.log(green(`Created project "${name}".`))
+      console.log(`Pushing source files...`)
+      await incrementalPush(name, targetDir, { sourceDir: targetDir })
+      console.log(green('Build triggered.'))
+    }
+  } catch (e) {
+    if (e.message.includes('already exists')) {
+      console.log(`Project "${name}" already exists on server — use \`tlda doc link\` or \`tlda doc push\` instead.`)
+    } else {
+      console.warn(yellow(`  Server registration failed: ${e.message}`))
+      console.warn(yellow(`  Project directory and git repo are ready. Run \`tlda doc link ${name} ${mainFile}\` when the server is up.`))
+      const server = getServer()
+      console.log(`\nViewer (once registered): ${cyan(`${server}/?doc=${name}`)}`)
+      return
+    }
+  }
+
+  const server = getServer()
+  console.log(`\nViewer: ${cyan(`${server}/?doc=${name}`)}`)
+}
+
 // Fleet-daemon control: `tlda daemon start | stop | status | log | run`
 //
 // The fleet-daemon is the per-machine local agent that owns JSONL
@@ -848,11 +994,27 @@ async function cmdOpen() {
 }
 
 async function cmdShare() {
-  const name = getPositional(0) || await inferProjectName()
-  if (!name) { console.error('Usage: tlda doc share [name]'); process.exit(1) }
+  // Three shapes (Skip-confirmed):
+  //   (no arg) → index page (root `/`, docName=null)
+  //   `.`      → the project inferred from the cwd; error if none found
+  //   <name>   → that specific doc
+  const arg = getPositional(0)
+  let name
+  if (arg === undefined) {
+    name = null
+  } else if (arg === '.') {
+    name = await inferProjectName()
+    if (!name) {
+      console.error('No project found for the current directory. Run `tlda doc share <name>` or `tlda doc share` for the index page.')
+      process.exit(1)
+    }
+  } else {
+    name = arg
+  }
 
   const config = loadConfig()
-  const port = getPort()
+  const serverUrl = getServer()
+  const port = new URL(serverUrl).port || getPort()
   const readToken = config.tokenRead || null
 
   if (!readToken) {
@@ -867,27 +1029,26 @@ async function cmdShare() {
     } catch {}
   }
 
-  const selected = selectDocShareBase({
-    serverUrl: getServer(),
+  const sel = selectDocShareBase({
+    serverUrl,
     port,
     funnelUrl: getFunnelUrl(),
     tailscaleIp: findTailscaleIPv4(),
+    lanIp: findLanIPv4(),
     hasTls,
   })
-
-  if (selected.shareable) {
-    const url = viewerLoginUrl(selected.base, name, readToken)
-    console.log(`${bold(selected.label)}`)
-    console.log(`  ${cyan(url)}`)
-    console.log()
+  const url = viewerLoginUrl(sel.base, name, readToken)
+  const unavailable = sel.shareable === false
+  console.log(`${bold(sel.label)}${unavailable ? ` ${dim('(not reachable from other devices)')}` : ''}`)
+  console.log(`  ${cyan(url)}`)
+  if (sel.note) console.log(`  ${dim(sel.note)}`)
+  console.log()
+  if (!unavailable) {
     await printQr(url)
     return
   }
-
-  console.error(`${selected.label}: ${selected.reason}.`)
-  console.error('Not printing a localhost share link; it is broken for users on another machine.')
-  console.error('Use a configured remote tlda server, install/enable Tailscale, or run `tailscale funnel start`.')
-  process.exit(1)
+  console.log(dim(`Reason: ${sel.reason}`))
+  console.log(dim('To share over the network: install Tailscale, or run `tailscale funnel start`'))
 }
 
 async function cmdList() {
@@ -973,71 +1134,6 @@ async function cmdDelete() {
 
   await api('DELETE', `/api/projects/${name}`)
   console.log(green(`Project "${name}" deleted.`))
-}
-
-async function cmdPreview() {
-  const name = getPositional(0) || await inferProjectName()
-  if (!name) { console.error('Usage: tlda doc preview <name> [page ...]'); process.exit(1) }
-
-  // Collect page numbers from remaining positional args
-  const requestedPages = []
-  for (let i = 1; ; i++) {
-    const p = getPositional(i)
-    if (p === null) break
-    const n = parseInt(p, 10)
-    if (isNaN(n) || n < 1) { console.error(`Invalid page number: ${p}`); process.exit(1) }
-    requestedPages.push(n)
-  }
-
-  // Get project info to find output dir and page count
-  const data = await api('GET', `/api/projects/${name}`)
-  const totalPages = data.pages || 0
-  if (totalPages === 0) { console.error(`Project "${name}" has no pages (not built yet?)`); process.exit(1) }
-
-  const pages = requestedPages.length > 0 ? requestedPages : Array.from({ length: totalPages }, (_, i) => i + 1)
-
-  // Resolve SVG source directory
-  const server = getServer()
-  const outDir = `/tmp/tlda-preview-${name}`
-  if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true })
-
-  const { execFileSync } = await import('child_process')
-
-  // Convert pages in parallel (up to 8 at a time)
-  const CONCURRENCY = 8
-  const results = []
-
-  const token = getToken()
-  const previewHeaders = token ? { 'Authorization': `Bearer ${token}` } : {}
-
-  const texBase = data.mainFile ? data.mainFile.replace(/^.*\//, '').replace(/\.tex$/, '') : name
-  async function convertPage(page) {
-    const svgUrl = `${server}/docs/${name}/${texBase}-page-${page}.svg`
-    const pngPath = join(outDir, `page-${page}.png`)
-    try {
-      const svgRes = await fetch(svgUrl, { headers: previewHeaders, signal: AbortSignal.timeout(10000) })
-      if (!svgRes.ok) { console.error(`  page ${page}: not found`); return null }
-      const svgBuf = Buffer.from(await svgRes.arrayBuffer())
-      execFileSync('rsvg-convert', ['-f', 'png', '-o', pngPath], { input: svgBuf, timeout: 30000 })
-      return pngPath
-    } catch (e) {
-      console.error(`  page ${page}: ${e.message}`)
-      return null
-    }
-  }
-
-  for (let i = 0; i < pages.length; i += CONCURRENCY) {
-    const batch = pages.slice(i, i + CONCURRENCY)
-    const batchResults = await Promise.all(batch.map(convertPage))
-    for (const r of batchResults) if (r) results.push(r)
-  }
-
-  if (results.length === 0) {
-    console.error('No pages rendered.')
-    process.exit(1)
-  }
-
-  for (const p of results) console.log(p)
 }
 
 async function cmdPublish() {
@@ -1144,7 +1240,7 @@ function cmdCompletions() {
   // Fetch project names at completion time via a helper function in the script
   const commands = [
     'server', 'agent', 'link', 'push', 'watch', 'watch-all', 'open', 'list', 'ls',
-    'status', 'errors', 'delete', 'rm', 'preview', 'revert',
+    'status', 'errors', 'delete', 'rm', 'revert',
     'logs', 'log', 'config', 'completions',
   ]
   const serverSubs = ['start', 'stop', 'status', 'log', 'logs', 'install', 'uninstall']
@@ -1174,7 +1270,6 @@ _tlda() {
     'errors:Show LaTeX errors/warnings'
     'logs:Show server log'
     'delete:Delete a project'
-    'preview:Rasterize SVG pages to PNG'
     'config:Manage configuration'
     'completions:Output zsh completion script'
   )
@@ -1191,7 +1286,7 @@ _tlda() {
           local -a subs=(${serverSubs.map(s => `'${s}'`).join(' ')})
           _describe 'subcommand' subs
           ;;
-        link|push|open|status|errors|build|delete|rm|preview)
+        link|push|open|status|errors|build|delete|rm)
           _tlda_projects
           ;;
       esac
@@ -3020,7 +3115,7 @@ async function cmdDev() {
   // assets ride this local proxy, so the worktree shares your room with no extra wiring.
   const token = getToken()
   const localBase = `${scheme}://localhost:${port}/`
-  const shared = selectDevShareBase({ scheme, port, tailscaleIp: findTailscaleIPv4() })
+  const shared = selectDevShareBase({ scheme, port, tailscaleIp: findTailscaleIPv4(), lanIp: findLanIPv4() })
   const base = shared.shareable ? `${shared.base}/` : localBase
   const url = token ? `${base}?token=${token}` : base
   writeFileSync(join(worktreeDir, '.dev-url'), url)
@@ -3032,6 +3127,7 @@ async function cmdDev() {
   console.log(`  Log:      ${logFile}`)
   if (shared.shareable) console.log(`  Share:    ${shared.label}`)
   else console.log(`  Share:    unavailable — ${shared.reason}`)
+  if (shared.note) console.log(`  Note:     ${dim(shared.note)}`)
   console.log(bold(`\n  ${url}\n`))
 }
 
@@ -3043,7 +3139,7 @@ async function cmdDevUrl() {
   const port = portArg ? parseInt(portArg) : 5180
   const token = getToken()
   const scheme = 'http'
-  const selected = selectDevShareBase({ scheme, port, tailscaleIp: findTailscaleIPv4() })
+  const selected = selectDevShareBase({ scheme, port, tailscaleIp: findTailscaleIPv4(), lanIp: findLanIPv4() })
   if (!selected.shareable) {
     console.error(`dev URL unavailable: ${selected.reason}.`)
     console.error('Not printing localhost; it is broken for users on another machine.')
@@ -3071,6 +3167,7 @@ async function main() {
       case 'book':   await ensureServer(); await cmdBook(); break
       case 'push':   await ensureServer(); await cmdPush(); break
       case 'link':   await ensureServer(); await cmdLink(); break
+      case 'init':   await cmdInit(); break
       case 'daemon': await ensureServer(); await cmdWatch(); break
       case 'open':   await ensureServer(); await cmdOpen(); break
       case 'share':  await cmdShare(); break
@@ -3078,7 +3175,6 @@ async function main() {
       case 'ls':     await ensureServer(); await cmdList(); break
       case 'status': await ensureServer(); await cmdStatus(); break
       case 'errors': await ensureServer(); await cmdErrors(); break
-      case 'preview': await ensureServer(); await cmdPreview(); break
       case 'delete':  await ensureServer(); await cmdDelete(); break
       case 'rm':      await ensureServer(); await cmdDelete(); break
       case 'logs':    await cmdLogs(args.slice(1)); break
@@ -3099,12 +3195,12 @@ async function main() {
       case 'doc':
         console.log(`tlda doc — work on a document project
 
-  link <name> [main]   Link a project, push files, build
+  init <name> [main]   Create a new blank git-backed project
+  link <name> [main]   Link an existing project, push files, build
   open [name]          Open the viewer
   push [name]          Push source, rebuild
   status [name]        Build status
   errors [name]        LaTeX errors/warnings
-  preview <name> [p…]  Rasterize pages to PNG
   list                 List projects
   share [name]         Print a shareable read-only URL
   delete <name>        Delete a project

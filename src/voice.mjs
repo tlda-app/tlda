@@ -12,7 +12,7 @@
 
 import { appendToken } from './authToken.ts'
 import { log } from './logger.ts'
-import { getPref } from './preferences.ts'
+import { getPref, subscribePref, whenPrefsLoaded } from './preferences.ts'
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
 const _isSafari = !navigator.userAgent.includes('Chrome') && navigator.userAgent.includes('Safari')
@@ -22,6 +22,25 @@ const _isSafari = !navigator.userAgent.includes('Chrome') && navigator.userAgent
 // would wrongly fall back to iOS speech (the beeping). maxTouchPoints stays true
 // on any iPad and is 0 on the Mac.
 const _isTouchDevice = typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0
+// iOS = iPhone/iPad/iPod (incl. iPadOS pretending to be a Mac). EVERY iOS browser
+// runs on WebKit (Apple's App Store rule), so Chrome/Firefox-on-iOS are WKWebView.
+// Apple does NOT expose the Web Speech API to WKWebView — only Safari can use it —
+// so SpeechRecognition.start() there fires onerror 'service-not-allowed'. A hard
+// platform restriction we can't work around; we just message it honestly.
+const _isIOS = typeof navigator !== 'undefined' && (
+  /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+  (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent))
+)
+
+// Actionable message for Web Speech 'service-not-allowed'. Pure → unit-tested
+// without a browser. On iOS the only fixes are Safari (the lone browser allowed
+// Web Speech) or a backend that doesn't depend on it (Deepgram/whisper);
+// elsewhere it means the recognizer service itself is unreachable.
+function serviceUnavailableMessage(isIOS) {
+  return isIOS
+    ? 'Chrome can’t do voice on iPhone (Apple restriction) — use Safari, or pick Deepgram/whisper in Preferences'
+    : 'speech service unavailable — pick Deepgram/whisper in Preferences'
+}
 
 // --- Backend selection ---
 const WHISPER_BRIDGE_URL = location.protocol === 'https:' ? 'wss://127.0.0.1:8179' : 'ws://127.0.0.1:8179'
@@ -266,6 +285,8 @@ let _lastTapTime = 0
 let _singleTapTimer = null
 let _audioCaptureRetries = 0
 let _lastResultTime = 0  // timestamp of last onresult — used for HUD health color
+let _recordStartTime = 0   // Date.now() at record start — for time-to-first-interim instrumentation
+let _firstInterimLogged = false
 
 // Generation counter — bumped whenever _left is cleared (send, chat-switch,
 // startRecording, setVoiceTarget). Each _setupRecognition() snapshots the
@@ -343,6 +364,9 @@ const DOT_GREEN_OPACITY = '0.4'
 const DOT_AMBER_OPACITY = '0.4'
 const AUDIO_FLOWING_MS = 3000  // switch to amber after this long without a result
 const MIC_INPUT_TIMEOUT_MS = 1500  // no raw mic frame for this long → honest "no mic input"
+const VOICE_LIVENESS_INTERVAL_MS = 1000
+const CHROME_DEAD_RESULT_TIMEOUT_MS = 30000
+const WHISPER_INPUT_TIMEOUT_MS = 10000
 
 // Honest mic status from RAW frame arrival (not Deepgram results), so a
 // silently-dead/muted mic reads as "no mic input" instead of a fake "mic live".
@@ -352,9 +376,28 @@ function micPresence(micAgo, ctxState, timeoutMs = MIC_INPUT_TIMEOUT_MS) {
   if (micAgo == null || micAgo > timeoutMs) return 'no-input'
   return 'live'
 }
+
+// Chrome Web Speech can be legitimately silent for a long time. Treat silence
+// as live while a recognition object is active; report death only when the
+// session is no longer active and either never produced results or has been
+// resultless for a long window.
+function chromeLiveness(resultAgo, hasActiveSession, editStopped, deadTimeoutMs = CHROME_DEAD_RESULT_TIMEOUT_MS) {
+  if (hasActiveSession) return 'live'
+  if (editStopped) return 'live'
+  if (resultAgo == null || resultAgo > deadTimeoutMs) return 'dead'
+  return 'live'
+}
+
+function whisperLiveness(messageAgo, wsReadyState, connected, timeoutMs = WHISPER_INPUT_TIMEOUT_MS) {
+  if (!connected || wsReadyState == null || wsReadyState > 1) return 'dead'
+  if (messageAgo == null || messageAgo > timeoutMs) return 'no-input'
+  return 'live'
+}
 let _healthDot = null
 let _healthDotTimer = null
 let _voiceHealthLabel = ''
+let _voiceLivenessInterval = null
+let _lastWhisperMessageTime = 0
 
 function ensureHealthDot() {
   if (_healthDot) return _healthDot
@@ -424,6 +467,63 @@ function dotRecordingStart() {
   dot.style.backgroundColor = DOT_AMBER
   requestAnimationFrame(() => { dot.style.opacity = DOT_AMBER_OPACITY })
   setTextareaGlow(GLOW_AMBER)
+}
+
+function showVoiceLiveness(status, liveLabel) {
+  if (status === 'live') {
+    if (_voiceHealthLabel === 'no mic input' || _voiceHealthLabel === 'connection lost') {
+      _voiceHealthLabel = liveLabel
+      showRecordingHud()
+    }
+    return
+  }
+
+  const nextLabel = status === 'dead' ? 'connection lost' : 'no mic input'
+  if (_voiceHealthLabel === nextLabel) return
+  _voiceHealthLabel = nextLabel
+  const dot = ensureHealthDot()
+  dot.style.display = 'inline-block'
+  dot.style.backgroundColor = DOT_AMBER
+  dot.style.opacity = DOT_AMBER_OPACITY
+  setTextareaGlow(GLOW_AMBER)
+  showRecordingHud()
+}
+
+function voiceLivenessStatus(now = Date.now()) {
+  if (_backend === 'deepgram') {
+    const micAgo = _lastMicFrameTime ? now - _lastMicFrameTime : null
+    return micPresence(micAgo, _deepgramContext?.state)
+  }
+  if (_backend === 'chrome') {
+    const resultAgo = _lastResultTime ? now - _lastResultTime : null
+    return chromeLiveness(resultAgo, !!_recognition, _editStopped)
+  }
+  if (_backend === 'whisper-stream') {
+    const messageAgo = _lastWhisperMessageTime ? now - _lastWhisperMessageTime : null
+    return whisperLiveness(messageAgo, _whisperWs?.readyState, _whisperConnected)
+  }
+  return 'live'
+}
+
+function liveLivenessLabel() {
+  if (_backend === 'deepgram') return _deepgramConnected ? 'mic live; waiting for speech' : 'waiting for recognizer'
+  if (_backend === 'whisper-stream') return 'mic live; waiting for speech'
+  return 'mic live'
+}
+
+function runVoiceLivenessWatchdog() {
+  if (!_recording) return
+  showVoiceLiveness(voiceLivenessStatus(), liveLivenessLabel())
+}
+
+function startVoiceLivenessWatchdog() {
+  clearInterval(_voiceLivenessInterval)
+  _voiceLivenessInterval = setInterval(runVoiceLivenessWatchdog, VOICE_LIVENESS_INTERVAL_MS)
+}
+
+function stopVoiceLivenessWatchdog() {
+  clearInterval(_voiceLivenessInterval)
+  _voiceLivenessInterval = null
 }
 
 function showErrorGlow() {
@@ -844,6 +944,16 @@ function clearCurrentSinkInterim() {
   fadeHud(1500)
 }
 
+export function clearLastInterim() {
+  if (!_voiceDumping) {
+    _sinkPrevTextarea = _activeTextarea
+    _sinkPrevAccumulator = _accumulator
+    _sinkPrevLeft = _left
+    _sinkPrevRight = _right
+  }
+  clearCurrentSinkInterim()
+}
+
 export function enterVoiceSink() {
   if (_voiceDumping) {
     clearCurrentSinkInterim()
@@ -882,7 +992,24 @@ export function enterVoiceSink() {
 
 // --- Fill textarea with transcription ---
 
+// Time-to-first-interim instrumentation (Item 2). Logs ONCE per recording the ms
+// from record-start to the first transcript content reaching the field, tagged by
+// backend — the only way to measure real first-interim latency on phone/iPad where
+// we can't profile. Pure: label/log only, no behavior change.
+function maybeMarkFirstInterim(content) {
+  if (_firstInterimLogged || !_recording || !_recordStartTime) return
+  if (!content || !String(content).trim()) return
+  _firstInterimLogged = true
+  log.info('voice', 'first-interim', {
+    ms: Date.now() - _recordStartTime,
+    backend: _backend,
+    isTouch: _isTouchDevice,
+    hostname: location.hostname,
+  })
+}
+
 function fillTextarea(text) {
+  maybeMarkFirstInterim(_accumulator ? (_left + _interim) : text)
   if (_accumulator) {
     // Accumulator mode: deliver post-processed spoken text to the callback.
     // The caller (CodeMirror, etc.) manages cursor/insertion itself.
@@ -993,6 +1120,12 @@ function _setupRecognition() {
     if (e.error === 'no-speech') return
     if (e.error === 'aborted') return
     console.warn('voice: speech recognition error', e.error)
+    // console.warn is NOT POSTed to client.log; route through the log sink so a
+    // phone/iPad voice error is observable server-side (CLAUDE.md §Client Logging).
+    log.warn('voice', 'web speech error', {
+      error: e.error, backend: _backend, isIOS: _isIOS, isSafari: _isSafari,
+      isTouch: _isTouchDevice, hostname: location.hostname,
+    })
     showErrorGlow()
     if (e.error === 'audio-capture') {
       if (_audioCaptureRetries < 3) {
@@ -1057,6 +1190,15 @@ function _setupRecognition() {
       }, 1000)
       return
     }
+    if (e.error === 'service-not-allowed') {
+      // iOS WKWebView blocks Web Speech for every non-Safari browser — a hard Apple
+      // platform restriction, not transient. Do NOT retry; stop and tell the user
+      // what actually works (Safari on iOS, or Deepgram/whisper anywhere).
+      stopRecording()
+      showHud(serviceUnavailableMessage(_isIOS), '#c87070')
+      fadeHud(8000)
+      return
+    }
     showHud('mic error: ' + e.error, '#c87070')
     fadeHud(3000)
     _recording = false
@@ -1109,6 +1251,7 @@ function cleanWhisperText(text) {
 
 function onWhisperMessage(event) {
   if (!_recording || _backend !== 'whisper-stream') return
+  _lastWhisperMessageTime = Date.now()
   try {
     const msg = JSON.parse(event.data)
     if (msg.type !== 'transcript' || !msg.text) return
@@ -1667,27 +1810,9 @@ async function startDeepgramMic() {
       return
     }
 
-    // #5 — honest mic status. Drive the HUD off RAW mic-frame arrival so a
-    // silently-dead/muted mic reads as "no mic input" instead of staying on a
-    // fake "mic live". Label-only (NEVER a teardown — see the root-cause note
-    // above; this is the safe use of the timestamp). The frame stamp is pre-gate,
-    // so a conservation pause (dumb/idle/background) keeps reading as live.
-    if (_backend === 'deepgram') {
-      const micAgo = _lastMicFrameTime ? Date.now() - _lastMicFrameTime : null
-      const presence = micPresence(micAgo, ctxState)
-      if (presence === 'no-input' && _voiceHealthLabel !== 'no mic input') {
-        _voiceHealthLabel = 'no mic input'
-        const dot = ensureHealthDot()
-        dot.style.backgroundColor = DOT_AMBER
-        dot.style.opacity = DOT_AMBER_OPACITY
-        showRecordingHud()
-      } else if (presence === 'live' && _voiceHealthLabel === 'no mic input') {
-        // Mic delivering again — recover the normal label (don't clobber a live
-        // 'speech detected' state; we only get here if we were showing no-input).
-        _voiceHealthLabel = _deepgramConnected ? 'mic live; waiting for speech' : 'waiting for recognizer'
-        showRecordingHud()
-      }
-    }
+    // Honest mic status is label-only and shared with the other backends by
+    // runVoiceLivenessWatchdog(). This heartbeat remains responsible only for
+    // logging and event-backed Deepgram repairs.
   }, 1000)
 }
 
@@ -1761,7 +1886,7 @@ if (typeof window !== 'undefined') {
   window.__voiceLogs = _voiceLogs
   window.__voiceTest = {
     fakeRecord: (ta) => { _recording = true; _state = 'edit'; _backend = 'deepgram'; _voiceDumping = false; resetDeepgramTextState(); if (ta) _activeTextarea = ta; },
-    fakeStop: () => { _recording = false; stopDeepgramMic(); resetDeepgramTextState(); },
+    fakeStop: () => { _recording = false; stopVoiceLivenessWatchdog(); stopDeepgramMic(); resetDeepgramTextState(); },
     switchTarget: (ta) => setVoiceTarget(ta, [], {}, null, null),
     getState: () => ({ recording: _recording, backend: _backend, state: _state, connected: _deepgramConnected, hasMic: !!_deepgramStream, left: _left, interim: _interim, dumping: _voiceDumping, hasTextarea: !!_activeTextarea }),
     injectTranscript: (text, isFinal) => onDeepgramMessage({ data: JSON.stringify({ type: 'transcript', text, is_final: isFinal, speech_final: false }) }),
@@ -1773,12 +1898,15 @@ if (typeof window !== 'undefined') {
       _recording = true
       _backend = 'deepgram'
       _deepgramConnected = true
-      _deepgramWs = { readyState: 1, send: () => {} }
+      _deepgramWs = { readyState: 1, send: () => {}, close: () => {}, onclose: null }
     },
     simulateDeepgramAudioFrame: (data = new Int16Array([1]).buffer) => sendDeepgramAudioChunk(data),
     micWatchdogAction: (ctxState) => micWatchdogAction(ctxState),
     upstreamAction: (s) => upstreamAction(s),
     micPresence: (micAgo, ctxState, timeoutMs) => micPresence(micAgo, ctxState, timeoutMs),
+    chromeLiveness: (resultAgo, hasActiveSession, editStopped, deadTimeoutMs) => chromeLiveness(resultAgo, hasActiveSession, editStopped, deadTimeoutMs),
+    whisperLiveness: (messageAgo, wsReadyState, connected, timeoutMs) => whisperLiveness(messageAgo, wsReadyState, connected, timeoutMs),
+    serviceUnavailableMessage: (isIOS) => serviceUnavailableMessage(isIOS),
   }
 }
 
@@ -1801,9 +1929,13 @@ function startRecording() {
   _generation++
   _left = _interim = _right = ''
   _lastResultTime = 0
+  _lastWhisperMessageTime = 0
+  _recordStartTime = Date.now()   // Item 2: measure time-to-first-interim
+  _firstInterimLogged = false
 
   showRecordingHud()
   dotRecordingStart()
+  startVoiceLivenessWatchdog()
 
   _audioCaptureRetries = 0
 
@@ -1845,6 +1977,7 @@ function stopRecording() {
   _recording = false
   emitRecordingChange()
 
+  stopVoiceLivenessWatchdog()
   hideHealthDot()
 
   // Stop Chrome recognition if active
@@ -1908,6 +2041,8 @@ async function hardResetVoice({ keepDeepgramMic = false } = {}) {
   _filling = false
   _audioCaptureRetries = 0
   _lastResultTime = 0
+  _lastWhisperMessageTime = 0
+  stopVoiceLivenessWatchdog()
   hideHealthDot()
   // Force the browser to drop and reacquire the microphone at the OS level.
   // Skip for whisper-stream (captures mic via SDL) and deepgram (manages its own stream).
@@ -1979,11 +2114,10 @@ export async function initVoice() {
   // keeps any backend the user didn't choose — in particular iOS/Chrome Web
   // Speech, whose start/stop earcon ignores the silent switch — from ever
   // running unbidden.
-  const { getPref, subscribePref, whenPrefsLoaded } = await import('./preferences.ts')
   // Wait for the saved pref to load before committing — never pick a backend
   // before we know what the user actually selected. Cap at 2s.
   await Promise.race([whenPrefsLoaded(), new Promise(r => setTimeout(r, 2000))])
-  const prefBackend = getPref('voice-backend')   // 'deepgram-sdk' | 'whisper' | 'chrome' | '' (off)
+  let prefBackend = getPref('voice-backend')   // 'deepgram-sdk' | 'whisper' | 'chrome' | '' (off)
 
   if (prefBackend === 'chrome') {
     _backend = 'chrome'
@@ -2028,20 +2162,20 @@ export async function initVoice() {
     hostname: location.hostname,
   })
 
-  let appliedPrefBackend = prefBackend
-  subscribePref(() => {
-    const next = getPref('voice-backend')
-    if (next === appliedPrefBackend) return
-    appliedPrefBackend = next
-    setBackend(next)
-  })
-
-  if (_backend === 'none') return false
   if (_backend === 'chrome' && !SpeechRecognition) {
     console.warn('voice: chrome selected but SpeechRecognition unavailable — voice off')
     _backend = 'none'
-    return false
   }
+
+  // initVoice() runs at FleetChatShape module load, which can beat fleet login
+  // and the async loadPrefs() call. If the 2s startup cap fires first, keep the
+  // initialized voice shell alive and apply the saved backend when prefs arrive.
+  subscribePref(() => {
+    const nextPrefBackend = getPref('voice-backend')
+    if (nextPrefBackend === prefBackend) return
+    prefBackend = nextPrefBackend
+    setBackend(nextPrefBackend)
+  })
 
   // Right Shift: tap counting within 300ms windows.
   //   1 tap  → toggle recording
@@ -2157,8 +2291,8 @@ export async function initVoice() {
 
   const backend = _backend === 'deepgram' ? 'deepgram-sdk' : _backend === 'whisper-stream' ? 'whisper' : 'Web Speech API'
   console.log(`voice: initialized v8 — ${backend} — BroadcastChannel: ${!!_micChannel}`)
-  if (_isTouchDevice) startRecording()
-  return true
+  if (_backend !== 'none' && _isTouchDevice) startRecording()
+  return _backend !== 'none'
 }
 
 // --- Public controls ---
@@ -2211,14 +2345,25 @@ export async function setBackend(be) {
   if (be !== 'chrome' && be !== 'whisper-stream' && be !== 'deepgram') return
   if (be === _backend) return
   if (be === 'chrome' && !SpeechRecognition) return
-  // Lazy-start the target backend on demand. init only probes the backend it
-  // commits to, so without this a live switch to the other one would hit a stale
-  // availability flag and silently no-op. (whisper is legacy — left guarded.)
+  // Lazy-start the target backend on demand. init only starts the backend it
+  // commits to; a live switch or late-loaded saved pref must start its selected
+  // backend here instead of silently no-oping on a stale availability flag.
   if (be === 'deepgram') {
     try { await fetch('/api/voice/deepgram-sdk/start', { method: 'POST' }) } catch {}
     _deepgramAvailable = true
   }
-  if (be === 'whisper-stream' && !_whisperAvailable) return
+  if (be === 'whisper-stream') {
+    try {
+      await fetch('/api/voice/whisper/start', { method: 'POST' })
+    } catch (err) {
+      console.warn('voice: whisper lazy-start request failed', err)
+      showHud('voice: whisper unavailable', '#c8956a')
+      fadeHud(2000)
+      return
+    }
+    _whisperAvailable = true
+    connectWhisperBridge()
+  }
   const wasRecording = _recording
   if (wasRecording) stopRecording()
   _backend = be

@@ -49,18 +49,21 @@ export function useIsInViewport(shapeId: string): boolean {
     let vp = editor.getViewportPageBounds()
     if (viewportId) {
       const registered = getOptionalViewport(editor, viewportId)
-      if (registered) {
-        const z = registered.camera.z || 1
-        const x = registered.screenBounds.x / z - registered.camera.x
-        const y = registered.screenBounds.y / z - registered.camera.y
-        vp = {
-          ...vp,
-          x,
-          y,
-          w: registered.screenBounds.w / z,
-          h: registered.screenBounds.h / z,
-        } as typeof vp
-      }
+      // Viewport not yet registered → we can't compute correct bounds, so
+      // assume visible. Using the main viewport as fallback here causes a
+      // false "not in viewport" for fleet shapes (which live far off the main
+      // canvas), triggering a MOUNT→UNMOUNT→MOUNT flicker on every HUD init.
+      if (!registered) return true
+      const z = registered.camera.z || 1
+      const x = registered.screenBounds.x / z - registered.camera.x
+      const y = registered.screenBounds.y / z - registered.camera.y
+      vp = {
+        ...vp,
+        x,
+        y,
+        w: registered.screenBounds.w / z,
+        h: registered.screenBounds.h / z,
+      } as typeof vp
     }
     const zoom = editor.getZoomLevel()
     const m = MARGIN_PX / zoom  // convert screen px to page coords

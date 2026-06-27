@@ -82,6 +82,18 @@ export class ResilientWS {
         this._onMessage(msg)
       })
 
+      // A protocol-level ping is liveness evidence just like an application
+      // message, so it resets the watchdog too. The server's WS heartbeat
+      // (unified-server.mjs WS_HEARTBEAT_INTERVAL_MS = 30_000) pings every 30s
+      // even when there's no app traffic, so this keeps an idle-but-healthy
+      // connection from being falsely torn down. COUPLING: that 30s interval
+      // must stay below every consumer's heartbeatTimeoutMs (fleet daemon 90s,
+      // MCP fleet-channel 45s) — if anyone raises the server ping interval past
+      // a consumer's timeout, that consumer will false-reconnect. Purely
+      // additive: a reset only ever pushes the deadline later, so it can never
+      // shorten an existing reconnect.
+      ws.on('ping', () => this._resetHeartbeat())
+
       ws.on('close', (code, reason) => {
         this._log(`[${this._label}] closed (${code} ${reason || ''})`)
         this._cleanup()
