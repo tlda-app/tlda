@@ -1844,6 +1844,56 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   cursor: default;
   pointer-events: none;
 }
+/* Error state: re-enable pointer events so hover/click works on the row */
+.fleet-agents-shape .fleet-agents-row--spawn-error .fleet-agents-row-main {
+  pointer-events: all;
+}
+/* Dismiss button (×) — same slot as kill-btn; subtle until hovered */
+.fleet-agents-shape .fleet-agents-opt-dismiss {
+  opacity: 0.1;
+  transition: opacity 0.3s;
+  color: rgba(232, 136, 136, 0.9);
+}
+.fleet-agents-shape .fleet-agents-row--spawn-error:hover .fleet-agents-opt-dismiss {
+  opacity: 0.6;
+}
+.fleet-agents-shape .fleet-agents-opt-dismiss:hover {
+  opacity: 1 !important;
+}
+/* Error icon */
+.fleet-agents-shape .fleet-agents-opt-error-icon {
+  color: #e57373;
+  font-size: 8px;
+}
+/* Retry button — inline in the task column */
+.fleet-agents-shape .fleet-agents-opt-retry {
+  background: none;
+  border: none;
+  padding: 0 4px;
+  font-size: 10px;
+  font-family: inherit;
+  opacity: 0.1;
+  transition: opacity 0.3s;
+  cursor: pointer;
+  color: rgba(122, 180, 122, 0.9);
+}
+.fleet-agents-shape .fleet-agents-row--spawn-error:hover .fleet-agents-opt-retry {
+  opacity: 0.6;
+}
+.fleet-agents-shape .fleet-agents-opt-retry:hover {
+  opacity: 1 !important;
+}
+/* Touch targets: coarse pointer (iPad/phone) needs 44×44 minimum */
+@media (pointer: coarse) {
+  .fleet-agents-shape .fleet-agents-opt-dismiss,
+  .fleet-agents-shape .fleet-agents-opt-retry {
+    min-width: 44px;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+}
 /* Tiny CSS spinner in the name column */
 .fleet-agents-shape .fleet-agents-spawn-spinner {
   display: inline-block;

@@ -611,7 +611,6 @@ function FleetAgentsInner({ shape }: { shape: any }) {
       if (prev.length === 0) return prev
       let changed = false
       const remaining = prev.filter(opt => {
-        if (opt.status === 'error') return true // managed by its own removal timeout
         const existingSet = new Set(opt.existingIds)
         const matched = agents.some((a: any) => {
           if (a.dead) return false
@@ -717,20 +716,14 @@ function FleetAgentsInner({ shape }: { shape: any }) {
         const message = String(e?.message || e || 'Spawn failed')
         setSpawnError(message)
         spawnInputRef.current?.focus()
-        // Mark the card errored (shows briefly before disappearing).
+        // Mark the card errored — persists until dismissed or retried by the user.
+        const existing = optimisticTimeouts.current.get(optimisticId)
+        if (existing != null) { clearTimeout(existing); optimisticTimeouts.current.delete(optimisticId) }
         setOptimisticAgents(prev => prev.map(o =>
           o.optimisticId === optimisticId
             ? { ...o, status: 'error' as const, errorMessage: message }
             : o
         ))
-        // Cancel the 30s safety timeout and replace with a short error-display timeout.
-        const existing = optimisticTimeouts.current.get(optimisticId)
-        if (existing != null) clearTimeout(existing)
-        const errTid = setTimeout(() => {
-          setOptimisticAgents(prev => prev.filter(o => o.optimisticId !== optimisticId))
-          optimisticTimeouts.current.delete(optimisticId)
-        }, 3_000)
-        optimisticTimeouts.current.set(optimisticId, errTid)
       })
   }, [spawnDoc, projectList, currentDoc, parsedSpawn])
   const dropdownOpen = spawnFocused && !dropdownDismissed && segCandidates.length > 0
@@ -902,7 +895,34 @@ function FleetAgentsInner({ shape }: { shape: any }) {
         <div className="fleet-agents-body">
           {/* Optimistic cards appear at top while spawn is in flight */}
           {optimisticAgents.map((opt) => (
-            <OptimisticAgentRow key={opt.optimisticId} opt={opt} />
+            <OptimisticAgentRow
+              key={opt.optimisticId}
+              opt={opt}
+              onDismiss={() => {
+                const tid = optimisticTimeouts.current.get(opt.optimisticId)
+                if (tid != null) { clearTimeout(tid); optimisticTimeouts.current.delete(opt.optimisticId) }
+                setOptimisticAgents(prev => prev.filter(o => o.optimisticId !== opt.optimisticId))
+              }}
+              onRetry={() => {
+                setOptimisticAgents(prev => prev.map(o =>
+                  o.optimisticId === opt.optimisticId ? { ...o, status: 'spawning' as const, errorMessage: undefined } : o
+                ))
+                const safeTid = setTimeout(() => {
+                  setOptimisticAgents(prev => prev.filter(o => o.optimisticId !== opt.optimisticId))
+                  optimisticTimeouts.current.delete(opt.optimisticId)
+                }, 30_000)
+                optimisticTimeouts.current.set(opt.optimisticId, safeTid)
+                spawnAgent(opt.model, opt.doc, opt.name, opt.effort)
+                  .catch((e: any) => {
+                    const msg = String(e?.message || e || 'Spawn failed')
+                    const ex = optimisticTimeouts.current.get(opt.optimisticId)
+                    if (ex != null) { clearTimeout(ex); optimisticTimeouts.current.delete(opt.optimisticId) }
+                    setOptimisticAgents(prev => prev.map(o =>
+                      o.optimisticId === opt.optimisticId ? { ...o, status: 'error' as const, errorMessage: msg } : o
+                    ))
+                  })
+              }}
+            />
           ))}
           {sortedAgents.length === 0 && optimisticAgents.length === 0 ? (
             <div className="fleet-agents-empty">No agents</div>
@@ -1035,31 +1055,58 @@ const FleetAgentsComponent = memo(function FleetAgentsComponent({ shape }: { sha
 
 // Ghost row shown while a spawn is in flight. Matches AgentRow column layout
 // but is visually dimmed and shows a small spinning indicator instead of a name.
-function OptimisticAgentRow({ opt }: { opt: OptimisticAgent }) {
+// In error state, hovering reveals dismiss (×) and retry controls.
+function OptimisticAgentRow({
+  opt,
+  onDismiss,
+  onRetry,
+}: {
+  opt: OptimisticAgent
+  onDismiss: () => void
+  onRetry: () => void
+}) {
   const isError = opt.status === 'error'
   const nameText = opt.name || '…'
   const modelStr = formatModel(opt.model)
+  const [hovered, setHovered] = useState(false)
+  const showActions = isError && hovered
   return (
-    <div className={`fleet-agents-row fleet-agents-row--optimistic${isError ? ' fleet-agents-row--spawn-error' : ''}`}>
+    <div
+      className={`fleet-agents-row fleet-agents-row--optimistic${isError ? ' fleet-agents-row--spawn-error' : ''}`}
+      onPointerEnter={() => setHovered(true)}
+      onPointerLeave={() => setHovered(false)}
+    >
       <div
         className="fleet-agents-row-main"
         style={{ opacity: 0.45, cursor: 'default' }}
         onPointerDown={(e) => stopEventPropagation(e)}
       >
         <span className="fleet-agents-unread-dot" />
-        {/* placeholder to match kill-btn column width */}
-        <span className="fleet-agents-kill-btn" style={{ visibility: 'hidden' }}>×</span>
+        {/* dismiss button replaces kill-btn slot in error+hover state */}
+        <button
+          className={`fleet-agents-kill-btn fleet-agents-opt-dismiss${showActions ? ' is-visible' : ''}`}
+          style={{ visibility: showActions ? 'visible' : 'hidden' }}
+          onPointerDown={(e) => { stopEventPropagation(e); e.preventDefault() }}
+          onClick={(e) => { e.stopPropagation(); onDismiss() }}
+          aria-label="Dismiss"
+        >×</button>
         <span className="fleet-agents-col-name" style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
           {!isError && <span className="fleet-agents-spawn-spinner" aria-hidden="true" />}
-          {isError && <span style={{ color: '#e57373', fontSize: 8 }}>✗</span>}
+          {isError && <span className="fleet-agents-opt-error-icon" aria-hidden="true">✗</span>}
           <span style={{ opacity: 0.75 }}>{nameText}</span>
         </span>
         <span className="fleet-agents-col-seen">now</span>
         <span className="fleet-agents-col-ctx" />
         <span className="fleet-agents-col-task" style={{ opacity: 0.6 }}>
-          {isError
-            ? (opt.errorMessage || 'spawn failed')
-            : `spawning ${modelStr}`}
+          {isError && !showActions && (opt.errorMessage || 'spawn failed')}
+          {showActions && (
+            <button
+              className="fleet-agents-opt-retry"
+              onPointerDown={(e) => { stopEventPropagation(e); e.preventDefault() }}
+              onClick={(e) => { e.stopPropagation(); onRetry() }}
+            >Retry</button>
+          )}
+          {!isError && `spawning ${modelStr}`}
         </span>
         <span className="fleet-agents-col-labels" />
       </div>
