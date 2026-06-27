@@ -32,6 +32,10 @@
   height: 100%;
 }
 
+.annotation-viewer iframe {
+  pointer-events: none;
+}
+
 /* Click anywhere on canvas to pin — no button needed */
 
 /* Nav buttons — corner hit targets so the clipped canvas remains interactive */
