@@ -285,6 +285,8 @@ let _lastTapTime = 0
 let _singleTapTimer = null
 let _audioCaptureRetries = 0
 let _lastResultTime = 0  // timestamp of last onresult — used for HUD health color
+let _recordStartTime = 0   // Date.now() at record start — for time-to-first-interim instrumentation
+let _firstInterimLogged = false
 
 // Generation counter — bumped whenever _left is cleared (send, chat-switch,
 // startRecording, setVoiceTarget). Each _setupRecognition() snapshots the
@@ -980,7 +982,24 @@ export function enterVoiceSink() {
 
 // --- Fill textarea with transcription ---
 
+// Time-to-first-interim instrumentation (Item 2). Logs ONCE per recording the ms
+// from record-start to the first transcript content reaching the field, tagged by
+// backend — the only way to measure real first-interim latency on phone/iPad where
+// we can't profile. Pure: label/log only, no behavior change.
+function maybeMarkFirstInterim(content) {
+  if (_firstInterimLogged || !_recording || !_recordStartTime) return
+  if (!content || !String(content).trim()) return
+  _firstInterimLogged = true
+  log.info('voice', 'first-interim', {
+    ms: Date.now() - _recordStartTime,
+    backend: _backend,
+    isTouch: _isTouchDevice,
+    hostname: location.hostname,
+  })
+}
+
 function fillTextarea(text) {
+  maybeMarkFirstInterim(_accumulator ? (_left + _interim) : text)
   if (_accumulator) {
     // Accumulator mode: deliver post-processed spoken text to the callback.
     // The caller (CodeMirror, etc.) manages cursor/insertion itself.
@@ -1869,7 +1888,7 @@ if (typeof window !== 'undefined') {
       _recording = true
       _backend = 'deepgram'
       _deepgramConnected = true
-      _deepgramWs = { readyState: 1, send: () => {} }
+      _deepgramWs = { readyState: 1, send: () => {}, close: () => {}, onclose: null }
     },
     simulateDeepgramAudioFrame: (data = new Int16Array([1]).buffer) => sendDeepgramAudioChunk(data),
     micWatchdogAction: (ctxState) => micWatchdogAction(ctxState),
@@ -1901,6 +1920,8 @@ function startRecording() {
   _left = _interim = _right = ''
   _lastResultTime = 0
   _lastWhisperMessageTime = 0
+  _recordStartTime = Date.now()   // Item 2: measure time-to-first-interim
+  _firstInterimLogged = false
 
   showRecordingHud()
   dotRecordingStart()

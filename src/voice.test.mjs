@@ -815,4 +815,37 @@ await setBackend('chrome')
   console.log('✓ Test 17: Chrome service-not-allowed stops, logs, messages, no retry')
 }
 
-console.log('\nAll 20 tests passed.')
+// Test 18: time-to-first-interim is logged once per recording, tagged + timed.
+{
+  const { log } = await import('./logger.ts')
+  const infoCalls = []
+  const origInfo = log.info
+  log.info = (...args) => { infoCalls.push(args) }
+  try {
+    const ta = makeTextarea()
+    setVoiceTarget(ta, [], {})
+    reset()
+    setBackend('chrome')
+
+    toggleRecording()
+    tick(300)
+    assert.equal(startCount, 1, 'recognition started')
+
+    mockRec.onresult({ resultIndex: 0, results: [{ isFinal: false, 0: { transcript: 'hello' } }] })
+    const fi = infoCalls.filter(a => a[0] === 'voice' && a[1] === 'first-interim')
+    assert.equal(fi.length, 1, 'first-interim logged exactly once on first content')
+    assert.equal(typeof fi[0][2].ms, 'number', 'first-interim carries numeric ms')
+    assert.ok(fi[0][2].ms >= 0, 'elapsed ms is non-negative')
+    assert.equal(fi[0][2].backend, 'chrome', 'first-interim tagged with backend')
+
+    mockRec.onresult({ resultIndex: 0, results: [{ isFinal: true, 0: { transcript: 'hello world' } }] })
+    const fi2 = infoCalls.filter(a => a[0] === 'voice' && a[1] === 'first-interim')
+    assert.equal(fi2.length, 1, 'first-interim logged only ONCE per recording')
+  } finally {
+    log.info = origInfo
+  }
+  reset()
+  console.log('✓ Test 18: time-to-first-interim logged once with elapsed ms')
+}
+
+console.log('\nAll 21 tests passed.')
