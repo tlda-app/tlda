@@ -21,6 +21,12 @@ ln -sfn "$PERSIST/tlda-config" /root/.config/tlda
 ln -sfn "$PERSIST/projects" /app/server/projects
 ln -sfn "$PERSIST/data" /app/server/data
 
+# Source pushes from the browser commit into per-project git clones before
+# pushing upstream. Fly runs as root in a fresh image, so configure a stable
+# non-human identity instead of letting git abort at commit time.
+git config --global user.name "${TLDA_GIT_USER_NAME:-tlda-friend-box}"
+git config --global user.email "${TLDA_GIT_USER_EMAIL:-tlda-friend-box@local}"
+
 # Ensure an active tlda config exists. Commit d04a0eef ("one named-config, zero
 # fallbacks") makes the server resolveConfig() at startup and THROW — crashing
 # during module evaluation, before it binds :5176 and before any log line — if
