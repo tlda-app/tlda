@@ -29,7 +29,8 @@ const SERVER_OWNER_HOST = os.hostname()
 // from unified-server.mjs). If no daemon is connected for an agent's
 // machine, the handler returns 503.
 
-const UPLOAD_DIR = '/tmp/fleet-uploads'
+const UPLOAD_DIR = process.env.TLDA_UPLOAD_DIR ||
+  path.join(os.homedir(), '.config', 'tlda', 'uploads')
 
 // Minimal multipart/form-data parser for the single-file case used by browser
 // drag-and-drop. Returns { filename, contentType, content } for the first

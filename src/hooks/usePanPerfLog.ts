@@ -19,8 +19,12 @@ import { log } from '../logger'
 const GESTURE_END_MS = 200 // camera quiet for this long ends the gesture
 const MIN_FRAMES = 12 // ignore tiny nudges
 
-export function usePanPerfLog(editorRef: RefObject<Editor | null>) {
+export function usePanPerfLog(editorRef: RefObject<Editor | null>, editorMounted: number) {
   useEffect(() => {
+    // editorMounted is a re-run trigger: the tldraw editor mounts asynchronously
+    // (after this effect first runs), so editorRef.current is null on the initial
+    // pass. SvgDocument bumps editorMounted in onMount, which re-runs this effect
+    // with the editor available so the camera reaction actually installs.
     const editor = editorRef.current
     if (!editor) return
 
@@ -58,7 +62,9 @@ export function usePanPerfLog(editorRef: RefObject<Editor | null>) {
       if (d.length < MIN_FRAMES) return
       const sorted = [...d].sort((a, b) => a - b)
       const cam = editor.getCamera()
-      log.info('pan-perf', 'pan', {
+      // metric() is sink-only (no console, no level gate) so these land in the
+      // client log by default — pan frame-health from a user's real device.
+      log.metric('pan-perf', 'pan', {
         frames: d.length,
         median: Math.round(sorted[Math.floor(sorted.length / 2)]),
         p95: Math.round(sorted[Math.floor(sorted.length * 0.95)]),
@@ -95,5 +101,5 @@ export function usePanPerfLog(editorRef: RefObject<Editor | null>) {
       if (rafId != null) cancelAnimationFrame(rafId)
       if (endTimer != null) clearTimeout(endTimer)
     }
-  }, [editorRef])
+  }, [editorRef, editorMounted])
 }

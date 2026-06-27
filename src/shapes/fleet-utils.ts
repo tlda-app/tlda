@@ -245,6 +245,27 @@ export function forceDeleteShapes(editor: Editor, ids: string[]) {
  */
 let _layoutInFlight = false
 
+export type FleetLayoutCreateReason =
+  | 'created'
+  | 'identity-missing'
+  | 'device-missing'
+  | 'layout-in-flight'
+  | 'document-bounds-missing'
+  | 'phone-target-missing'
+  | 'no-owned-shapes-created'
+
+export type FleetLayoutCreateResult = {
+  created: boolean
+  reason: FleetLayoutCreateReason
+  variant: string
+  userId: string
+  deviceId: string
+  shapeCount: number
+  ownedFleetShapeCount: number
+  documentPageCount: number
+  documentPagesWithBounds: number
+}
+
 /** Deterministic shape ID for a fleet layout slot. Same (user, device, slot)
  *  always produces the same ID, so concurrent creates are idempotent AND two
  *  devices of the same identity get distinct IDs (no shared/contested shapes). */
@@ -386,18 +407,52 @@ export function ensureMyLaneDisjoint(editor: Editor, myId: string, myDevice: str
 }
 
 export async function createFleetLayout(editor: Editor, agents: any[], variant: '2col' | '3col' | 'wide' | 'grid' | 'touch' | 'phone' = '3col'): Promise<boolean> {
+  const result = await createFleetLayoutDetailed(editor, agents, variant)
+  return result.created
+}
+
+export async function createFleetLayoutDetailed(editor: Editor, agents: any[], variant: '2col' | '3col' | 'wide' | 'grid' | 'touch' | 'phone' = '3col'): Promise<FleetLayoutCreateResult> {
   await whenDeviceReady()
   const myId = getHumanId()
-  if (!myId) return false
+  if (!myId) return makeFleetLayoutResult(editor, variant, 'identity-missing', myId, getDeviceId())
   const myDevice = getDeviceId()
-  if (!myDevice) return false
-  if (_layoutInFlight) return false
+  if (!myDevice) return makeFleetLayoutResult(editor, variant, 'device-missing', myId, myDevice)
+  if (_layoutInFlight) return makeFleetLayoutResult(editor, variant, 'layout-in-flight', myId, myDevice)
   _layoutInFlight = true
 
   try {
     return _createFleetLayoutInner(editor, agents, variant, myId, myDevice)
   } finally {
     _layoutInFlight = false
+  }
+}
+
+function makeFleetLayoutResult(
+  editor: Editor,
+  variant: string,
+  reason: FleetLayoutCreateReason,
+  userId = getHumanId(),
+  deviceId = getDeviceId(),
+): FleetLayoutCreateResult {
+  const shapes = editor.getCurrentPageShapes()
+  const documentPages = shapes.filter(isDocumentPageShape)
+  let pagesWithBounds = 0
+  for (const page of documentPages) {
+    if (editor.getShapePageBounds(page.id)) pagesWithBounds++
+  }
+  const ownedFleetShapeCount = userId && deviceId
+    ? shapes.filter(s => isFleetShapeForOwnerKey(s, userId, deviceId)).length
+    : 0
+  return {
+    created: reason === 'created',
+    reason,
+    variant,
+    userId: userId || '',
+    deviceId: deviceId || '',
+    shapeCount: shapes.length,
+    ownedFleetShapeCount,
+    documentPageCount: documentPages.length,
+    documentPagesWithBounds: pagesWithBounds,
   }
 }
 
@@ -417,17 +472,54 @@ function getDocumentPageBounds(editor: Editor) {
   return { pageShapes: pagesWithBounds, minLeft, minTop, maxRight }
 }
 
-function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string, myId: string, myDevice: string): boolean {
+function getPhoneLayoutTarget(editor: Editor, pageShapes: any[], vp: ReturnType<Editor['getViewportScreenBounds']>) {
+  let target: { x: number; y: number; w: number; h: number; pageX: number } | null = null
+  let bestArea = -1
+  const sortedPages = [...pageShapes].sort((a: any, b: any) => (a.y ?? 0) - (b.y ?? 0))
+  for (const ps of sortedPages) {
+    const pb = editor.getShapePageBounds(ps.id)
+    if (!pb) continue
+    const tl = editor.pageToScreen({ x: pb.x, y: pb.y })
+    const br = editor.pageToScreen({ x: pb.x + pb.w, y: pb.y + pb.h })
+    const pageRect = {
+      x: Math.min(tl.x, br.x),
+      y: Math.min(tl.y, br.y),
+      w: Math.abs(br.x - tl.x),
+      h: Math.abs(br.y - tl.y),
+      pageX: pb.x,
+    }
+    const clipped = {
+      x: Math.max(pageRect.x, vp.x),
+      y: Math.max(pageRect.y, vp.y),
+      w: Math.max(0, Math.min(pageRect.x + pageRect.w, vp.x + vp.w) - Math.max(pageRect.x, vp.x)),
+      h: Math.max(0, Math.min(pageRect.y + pageRect.h, vp.y + vp.h) - Math.max(pageRect.y, vp.y)),
+    }
+    const area = clipped.w * clipped.h
+    if (area > bestArea) {
+      bestArea = area
+      target = pageRect
+    }
+  }
+  return target
+}
+
+function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string, myId: string, myDevice: string): FleetLayoutCreateResult {
   const docBounds = getDocumentPageBounds(editor)
   if (!docBounds) {
     console.warn('[FleetLayout] Refusing to create default layout before document page bounds are ready')
-    return false
+    return makeFleetLayoutResult(editor, variant, 'document-bounds-missing', myId, myDevice)
   }
 
   const existing = editor.getCurrentPageShapes().filter(s => isFleetShapeForOwnerKey(s, myId, myDevice))
   const existingChatFilters = existing
     .filter(s => (s.type as string) === 'fleet-chat')
     .map(s => (s as any).props?.filter as [string, string][][] | undefined)
+  const vp = editor.getViewportScreenBounds()
+  const phoneTarget = variant === 'phone' ? getPhoneLayoutTarget(editor, docBounds.pageShapes, vp) : null
+  if (variant === 'phone' && !phoneTarget) {
+    console.warn('[FleetLayout] Refusing to create phone layout before document page bounds are usable')
+    return makeFleetLayoutResult(editor, variant, 'phone-target-missing', myId, myDevice)
+  }
 
   editor.run(() => {
     if (existing.length > 0) forceDeleteShapes(editor, existing.map(s => s.id as string))
@@ -481,7 +573,6 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
     const chatW3 = getPref('layout-chat-width')
     const marginGap = getPref('layout-margin-gap')
     const rightW = chatW3 * 2 + gap
-    const vp = editor.getViewportScreenBounds()
     // HUD renders fleet shapes via a z=1 camera (see FleetHUD.tsx), so page units
     // map 1:1 to screen px — size off the raw viewport, not the main-camera zoom.
     const totalH = Math.round(vp.h * getPref('layout-height-frac'))
@@ -501,7 +592,7 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
       : variant === '2col' ? leftW + gap + Math.round(chatW3 * 1.5)
       : leftW + gap + rightW
 
-    const { pageShapes, minLeft, minTop, maxRight } = docBounds
+    const { minLeft, minTop, maxRight } = docBounds
     let anchorX = minLeft - marginGap - leftContentW
     let anchorY = minTop - 1200
     const docMaxRight = maxRight
@@ -526,38 +617,7 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
     // the document page; PhoneHandTool snaps the main camera between these
     // three document-left screen offsets.
     if (variant === 'phone') {
-      let target: { x: number; y: number; w: number; h: number; pageX: number } | null = null
-      let bestArea = -1
-      const sortedPages = [...pageShapes].sort((a: any, b: any) => (a.y ?? 0) - (b.y ?? 0))
-      for (const ps of sortedPages) {
-        const pb = editor.getShapePageBounds(ps.id)
-        if (!pb) continue
-        const tl = editor.pageToScreen({ x: pb.x, y: pb.y })
-        const br = editor.pageToScreen({ x: pb.x + pb.w, y: pb.y + pb.h })
-        const pageRect = {
-          x: Math.min(tl.x, br.x),
-          y: Math.min(tl.y, br.y),
-          w: Math.abs(br.x - tl.x),
-          h: Math.abs(br.y - tl.y),
-          pageX: pb.x,
-        }
-        const clipped = {
-          x: Math.max(pageRect.x, vp.x),
-          y: Math.max(pageRect.y, vp.y),
-          w: Math.max(0, Math.min(pageRect.x + pageRect.w, vp.x + vp.w) - Math.max(pageRect.x, vp.x)),
-          h: Math.max(0, Math.min(pageRect.y + pageRect.h, vp.y + vp.h) - Math.max(pageRect.y, vp.y)),
-          pageX: pb.x,
-        }
-        const area = clipped.w * clipped.h
-        if (area > bestArea) {
-          bestArea = area
-          target = pageRect
-        }
-      }
-      if (!target) {
-        console.warn('[FleetLayout] Refusing to create phone layout before document page bounds are usable')
-        return
-      }
+      const target = phoneTarget!
 
       const screenW = Math.round(vp.w)
       const screenH = Math.round(vp.h)
@@ -754,5 +814,8 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
   })
 
   try { window.dispatchEvent(new CustomEvent('fleet-hud-reset')) } catch {}
-  return true
+  const result = makeFleetLayoutResult(editor, variant, 'created', myId, myDevice)
+  return result.ownedFleetShapeCount > 0
+    ? result
+    : makeFleetLayoutResult(editor, variant, 'no-owned-shapes-created', myId, myDevice)
 }

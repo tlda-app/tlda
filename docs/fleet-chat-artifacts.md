@@ -57,7 +57,8 @@ prose.
 ### Browser Upload And Drag-Drop
 
 `POST /api/upload` accepts either raw bytes with `x-filename` or multipart
-`file`. It writes the file into the fleet server upload directory and returns
+`file`. It writes the file into the fleet server upload directory
+(`TLDA_UPLOAD_DIR`, or `~/.config/tlda/uploads` by default) and returns
 `{ name, path, url }`, where `url` is
 `/api/file?path=<server-side-upload-path>`.
 
@@ -96,8 +97,8 @@ viewed from the browser.
 
 Therefore:
 
-- `/api/file?path=/tmp/fleet-uploads/foo.png` is valid after `/api/upload` wrote
-  that file on the fleet server.
+- `/api/file?path=.../uploads/foo.png` is valid after `/api/upload` wrote that
+  file on the fleet server.
 - `/api/file?path=/tmp/some-agent-output.png` is usually invalid in multi-machine
   deployment unless that path is also present on the fleet server.
 - If a report has only a local path, resend through `chat()` as a bare,

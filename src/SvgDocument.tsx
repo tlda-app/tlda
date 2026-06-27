@@ -598,8 +598,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   // Auxiliary mouse button (3 or 4) toggles pan mode: move mouse to pan canvas / scroll chat
   usePanMode(editorRef)
 
-  // Sample pan-gesture frame-health into the client log (no UI; off-console at info level)
-  usePanPerfLog(editorRef)
+  // Sample pan-gesture frame-health into the client log (no UI; sink-only metric)
+  usePanPerfLog(editorRef, editorMounted)
 
   useYjsSignals({
     editorRef, document,

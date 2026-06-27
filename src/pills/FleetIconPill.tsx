@@ -18,8 +18,9 @@ import { stopEventPropagation, useUniqueSafeId } from 'tldraw'
 import type { Editor } from 'tldraw'
 import { useFleetAgents, useFleetIdentity } from '../fleet-data-adapter'
 import { countAwakeFleetAgents } from '../fleet/agent-counts'
-import { createFleetLayout } from '../shapes/fleet-utils'
+import { createFleetLayoutDetailed, type FleetLayoutCreateResult } from '../shapes/fleet-utils'
 import { CornerRailSlider } from '../CornerRailSlider'
+import { log } from '../logger'
 // @ts-ignore — vanilla JS module
 import { whenDeviceReady } from '../fleet/fleet-data.mjs'
 import './FleetIconPill.css'
@@ -46,6 +47,7 @@ const ITEM_GAP = 4         // px between tiles
 // retired for the normal-inbox evolution. The shape code/schema stay for the
 // inbox-evolve dead-code cut; this just makes the broken layout unreachable.
 type LayoutId = '3col' | '2col' | 'wide' | 'grid' | 'phone'
+type LayoutSource = 'badge-longpress' | 'badge-drag-release' | 'rail-commit' | 'rail-longpress' | 'fan-preset' | 'url-auto'
 const LAYOUT_PRESETS: { id: LayoutId; title: string }[] = [
   { id: '3col', title: 'Three-column: agents + search | chat | chat + docview' },
   { id: '2col', title: 'Two-column: left margin + right margin chat' },
@@ -159,6 +161,20 @@ function stopControlEvent(e: React.SyntheticEvent | Event) {
   stopEventPropagation(e)
 }
 
+function stopControlDefault(e: React.SyntheticEvent | Event) {
+  stopEventPropagation(e)
+  e.preventDefault()
+}
+
+function logLayoutTelemetry(msg: string, data: Record<string, any>) {
+  const metric = (log as any).metric
+  if (typeof metric === 'function') {
+    metric('fleet-layout', msg, data)
+    return
+  }
+  log.warn('fleet-layout', msg, data)
+}
+
 function getPhoneCameraSettlingDelay() {
   if (typeof window === 'undefined') return 0
   const readinessWindow = window as Window & { __tldaPhoneCameraSettlingUntil?: number }
@@ -180,11 +196,13 @@ function applyFleetLayoutPreset({
   mainEditor,
   agents,
   presetId,
+  source,
   onShown,
 }: {
   mainEditor: Editor
   agents: ReturnType<typeof useFleetAgents>
   presetId: LayoutId
+  source: LayoutSource
   onShown?: () => void
 }) {
   const deadline = Date.now() + 5000
@@ -192,6 +210,15 @@ function applyFleetLayoutPreset({
   let timeoutId: ReturnType<typeof setTimeout> | null = null
   let unsub: (() => void) | null = null
   let completed = false
+  let lastResult: FleetLayoutCreateResult | null = null
+  logLayoutTelemetry('explicit layout trigger fired', {
+    source,
+    presetId,
+    touchControl: isTouchLayoutControl(),
+    pointerCoarse: window.matchMedia?.('(pointer: coarse)').matches || false,
+    maxTouchPoints: navigator.maxTouchPoints || 0,
+    userAgent: navigator.userAgent,
+  })
   const cleanup = () => {
     if (rafId !== null) cancelAnimationFrame(rafId)
     rafId = null
@@ -212,12 +239,14 @@ function applyFleetLayoutPreset({
         return
       }
     }
-    // createFleetLayout is async (awaits whenDeviceReady before stamping
+    // createFleetLayoutDetailed is async (awaits whenDeviceReady before stamping
     // ownership) — must await so `created` is the boolean result, not a Promise.
-    const created = await createFleetLayout(mainEditor, agents, presetId)
-    if (created) {
+    const result = await createFleetLayoutDetailed(mainEditor, agents, presetId)
+    lastResult = result
+    if (result.created) {
       completed = true
       cleanup()
+      logLayoutTelemetry('explicit layout created', { source, presetId, result })
       if (isFleetHidden()) {
         setFleetHudExpanded(true)
         onShown?.()
@@ -228,7 +257,19 @@ function applyFleetLayoutPreset({
     if (Date.now() >= deadline) {
       completed = true
       cleanup()
-      console.warn('[FleetLayout] Timed out waiting for document page bounds')
+      const result = lastResult ?? {
+        created: false,
+        reason: 'document-bounds-missing',
+        variant: presetId,
+        userId: '',
+        deviceId: '',
+        shapeCount: 0,
+        ownedFleetShapeCount: 0,
+        documentPageCount: 0,
+        documentPagesWithBounds: 0,
+      }
+      logLayoutTelemetry('explicit layout timed out', { source, presetId, result })
+      console.warn('[FleetLayout] Timed out waiting for layout prerequisites', result)
       return
     }
     rafId = requestAnimationFrame(applyWhenReady)
@@ -277,12 +318,13 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
   const longPressFiredRef = useRef(false)
   agentsRef.current = agents
 
-  const applyPreset = useCallback((idx: number) => {
+  const applyPreset = useCallback((idx: number, source: LayoutSource = 'fan-preset') => {
     const preset = LAYOUT_PRESETS[idx]
     applyFleetLayoutPreset({
       mainEditor,
       agents: agentsRef.current,
       presetId: preset.id,
+      source,
       onShown: () => setHidden(false),
     })
     setPickerOpen(false)
@@ -297,7 +339,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
 
   useEffect(() => clearLongPressTimer, [clearLongPressTimer])
 
-  const resetToDeviceDefaultLayout = useCallback(async () => {
+  const resetToDeviceDefaultLayout = useCallback(async (source: LayoutSource = 'badge-longpress') => {
     longPressFiredRef.current = true
     justDraggedRef.current = true
     setPickerOpen(false)
@@ -310,6 +352,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
       mainEditor,
       agents: agentsRef.current,
       presetId,
+      source,
       onShown: () => setHidden(false),
     })
   }, [mainEditor])
@@ -338,7 +381,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
     const applyKey = `${requested}|${identity.id}`
     if (autoLayoutAppliedRef.current === applyKey) return
     autoLayoutAppliedRef.current = applyKey
-    applyPreset(idx)
+    applyPreset(idx, 'url-auto')
   }, [applyPreset, identity.id, identity.name, identity.login, identity.register])
 
   /** Click handler — desktop toggles HUD; touch opens the reachable layout fan. */
@@ -369,7 +412,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
 
   const commitLayoutPreset = useCallback((idx: number) => {
     setRangeIdx(idx)
-    applyPreset(idx)
+    applyPreset(idx, 'rail-commit')
     justDraggedRef.current = true
     resetRangeDrag()
   }, [applyPreset, resetRangeDrag])
@@ -402,7 +445,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
     clearLongPressTimer()
     longPressTimerRef.current = setTimeout(() => {
       longPressTimerRef.current = null
-      void resetToDeviceDefaultLayout()
+      void resetToDeviceDefaultLayout('badge-longpress')
     }, RESET_LONG_PRESS_MS)
 
     const onMove = (ev: PointerEvent) => {
@@ -452,7 +495,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
       if (isDragRef.current) {
         const idx = selectedIdxRef.current
         if (idx !== null) {
-          applyPreset(idx)
+          applyPreset(idx, 'badge-drag-release')
         }
         justDraggedRef.current = true  // suppress the upcoming onClick
       }
@@ -481,6 +524,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
         onPointerUp={stopControlEvent}
         onTouchStart={stopControlEvent}
         onTouchEnd={stopControlEvent}
+        onContextMenu={stopControlDefault}
         role="button"
         aria-label={`Fleet: ${aliveCount} agent${aliveCount !== 1 ? 's' : ''}`}
         style={{ touchAction: 'none' }}
@@ -535,7 +579,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
           onPreview={previewLayoutPreset}
           onCommit={commitLayoutPreset}
           onTap={tapFleetButton}
-          onLongPress={resetToDeviceDefaultLayout}
+          onLongPress={() => resetToDeviceDefaultLayout('rail-longpress')}
         />
       )}
 
@@ -554,7 +598,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
               className={'fleet-icon-pill-fan-item' + (selectedIdx === i ? ' hovered' : '')}
               style={{ width: ITEM_W, height: ITEM_H, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
               title={preset.title}
-              onClick={(e) => { stopControlEvent(e); applyPreset(i) }}
+              onClick={(e) => { stopControlEvent(e); applyPreset(i, 'fan-preset') }}
               onPointerDown={stopControlEvent}
             >
               <LayoutIcon id={preset.id} size={ITEM_H - 4} />

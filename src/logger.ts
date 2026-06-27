@@ -155,6 +155,14 @@ export const log = {
     }
   },
 
+  /** Server-sink-only metric: ALWAYS captured to ~/.config/tlda/client.log (no
+   *  console, no level gate). For low-volume telemetry (e.g. pan frame-health)
+   *  that we want on disk by default without turning a namespace up or spamming
+   *  the console. Still batched + queue-capped, so it can't flood the renderer. */
+  metric(ns: string, msg: string, data?: any) {
+    enqueue({ ts: new Date().toISOString(), level: 'info', ns, msg, data, session: _session })
+  },
+
   /** Flush queued entries to the server sink immediately. */
   flush,
 }

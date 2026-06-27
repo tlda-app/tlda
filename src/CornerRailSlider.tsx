@@ -74,6 +74,7 @@ export function CornerRailSlider({
 
   const start = useCallback((e: React.PointerEvent<HTMLInputElement>) => {
     stopEventPropagation(e)
+    if (e.pointerType === 'touch') e.preventDefault()
     startRef.current = { x: e.clientX, y: e.clientY }
     didDragRef.current = false
     longPressFiredRef.current = false
@@ -216,6 +217,10 @@ export function CornerRailSlider({
         onPointerUp={finish}
         onPointerCancel={cancel}
         onClick={stopEventPropagation}
+        onContextMenu={(e) => {
+          stopEventPropagation(e)
+          e.preventDefault()
+        }}
       />
     </>
   )

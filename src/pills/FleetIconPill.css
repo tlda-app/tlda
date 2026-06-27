@@ -70,6 +70,8 @@ body.corner-rail-mode .fleet-icon-pill-badge svg {
   min-height: 27px;
   pointer-events: all;
   touch-action: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .fleet-icon-pill-container:hover .fleet-icon-pill-badge {
@@ -121,6 +123,8 @@ body.phone-mode .fleet-icon-pill-fan-item {
   transition: opacity 0.2s;
   cursor: pointer;
   touch-action: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .fleet-icon-pill-fan-item.hovered {

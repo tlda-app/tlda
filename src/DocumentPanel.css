@@ -2245,6 +2245,8 @@ body.phone-mode.corner-rail-mode .voice-note-btn {
   cursor: pointer;
   appearance: none;
   -webkit-appearance: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
   background: transparent;
 }
 

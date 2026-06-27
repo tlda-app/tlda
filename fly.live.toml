@@ -19,6 +19,10 @@ primary_region = "sjc"
   # devices can reach it), so the app runs open INSIDE the tailnet — no per-request
   # token, terminal works tokenless. The tailnet IS the auth (Skip's chosen model).
   TLDA_NO_AUTH = "1"
+  # Fleet chat uploads (markdown chips, attachments) must live on the persistent
+  # volume, not /tmp (which the container wipes on restart/redeploy — that wiped
+  # markdown-chip files out from under their chips, 404ing the annotation viewer).
+  TLDA_UPLOAD_DIR = "/app/server/persist/uploads"
 
 # No [http_service] — the server is NOT exposed on the public internet. Access is
 # tailnet-only via `tailscale serve` (see fly-entrypoint-live.sh). The machine stays
