@@ -96,6 +96,7 @@ import {
   harnessKindForAgent,
   isPlaywrightBrowserArgs,
   shouldClaimCodexWatcher,
+  shouldFlushWatch,
   unlinkPidfileIfOwnPid,
 } from './lib/daemon-guards.mjs'
 import { codexRolloutBelongsToAgent, codexRolloutHasOwnerEvidence, resolveTranscript } from './lib/resolve-transcript.mjs'
@@ -1123,12 +1124,30 @@ async function syncSessionWatchers(agentList) {
 
     try {
       let debounce = null
+      let firstPending = null // timestamp the current debounce started from idle
+      const WATCH_DEBOUNCE_MS = 150
+      const doRead = () => {
+        if (debounce) { clearTimeout(debounce); debounce = null }
+        firstPending = null
+        const cur = pathWatchers.get(jsonlPath)
+        if (!cur) return
+        readNewSessionLines(cur.primaryAgentId, jsonlPath, cur.sessionId, cur.harnessKind)
+      }
       const onWatchFired = () => {
-        if (debounce) clearTimeout(debounce)
         const pw = pathWatchers.get(jsonlPath)
         if (!pw) return
-        pw.watchSeenAt = Date.now()
-        debounce = setTimeout(() => readNewSessionLines(pw.primaryAgentId, jsonlPath, pw.sessionId, pw.harnessKind), 150)
+        const now = Date.now()
+        pw.watchSeenAt = now
+        if (firstPending == null) firstPending = now
+        // Max-wait cap: a long sub-debounce burst would otherwise keep resetting
+        // the trailing timer and starve the read until writes quiesce. Once the
+        // first unread write is >= WATCH_DEBOUNCE_MS old, flush immediately.
+        if (shouldFlushWatch(firstPending, now, WATCH_DEBOUNCE_MS)) {
+          doRead()
+          return
+        }
+        if (debounce) clearTimeout(debounce)
+        debounce = setTimeout(doRead, WATCH_DEBOUNCE_MS)
       }
       const createWatcher = () => fs.watch(jsonlPath, onWatchFired)
       const watcher = createWatcher()

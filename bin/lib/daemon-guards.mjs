@@ -2,6 +2,17 @@ import { readFileSync, unlinkSync } from 'node:fs'
 
 const warnedMissingKinds = new Set()
 
+// JSONL-watch debounce decision. The trailing debounce (clearTimeout + fresh
+// timer on every fs.watch fire) defers the read until writes quiesce — so during
+// a continuous sub-debounce write burst the read never fires and chat activity
+// lags the whole burst. This adds a max-wait cap: once the first *unread* write
+// is older than maxWaitMs, flush immediately instead of resetting the timer.
+// `firstPendingAt` is the timestamp the debounce started from idle (null when no
+// read is pending). Pure so the daemon's burst-starvation guard is unit-testable.
+export function shouldFlushWatch(firstPendingAt, now, maxWaitMs = 150) {
+  return firstPendingAt != null && (now - firstPendingAt) >= maxWaitMs
+}
+
 export function harnessKindForAgent(agent, log = console) {
   const kind = agent?.metadata?.kind
   if (kind) return kind
