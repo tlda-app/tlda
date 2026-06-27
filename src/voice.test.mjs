@@ -214,6 +214,26 @@ function reset() {
   startCount = 0
 }
 
+// ---- Liveness helpers: backend-specific indicator decisions ----
+{
+  const { chromeLiveness, whisperLiveness } = window.__voiceTest
+
+  assert.equal(chromeLiveness(null, true, false, 1000), 'live', 'Chrome silence is live while recognition is active')
+  assert.equal(chromeLiveness(100000, true, false, 1000), 'live', 'Chrome long quiet session is not death')
+  assert.equal(chromeLiveness(null, false, false, 1000), 'dead', 'Chrome with no active session and no results is dead')
+  assert.equal(chromeLiveness(1500, false, false, 1000), 'dead', 'Chrome inactive past the long window is dead')
+  assert.equal(chromeLiveness(500, false, false, 1000), 'live', 'Chrome inactive inside the grace window is not dead')
+  assert.equal(chromeLiveness(1500, false, true, 1000), 'live', 'Chrome edit-stop handoff is not death')
+
+  assert.equal(whisperLiveness(100, WebSocket.OPEN, true, 1000), 'live', 'Whisper is live with recent bridge messages')
+  assert.equal(whisperLiveness(null, WebSocket.OPEN, true, 1000), 'no-input', 'Whisper open bridge with no messages is no-input')
+  assert.equal(whisperLiveness(1500, WebSocket.OPEN, true, 1000), 'no-input', 'Whisper open bridge with stale messages is no-input')
+  assert.equal(whisperLiveness(100, 3, false, 1000), 'dead', 'Whisper closed bridge is dead')
+  assert.equal(whisperLiveness(100, null, false, 1000), 'dead', 'Whisper missing bridge is dead')
+
+  console.log('✓ Liveness helpers: Chrome and whisper indicator decisions')
+}
+
 // ---- Test 1: Happy path ----
 {
   const init = initVoice()

@@ -343,6 +343,9 @@ const DOT_GREEN_OPACITY = '0.4'
 const DOT_AMBER_OPACITY = '0.4'
 const AUDIO_FLOWING_MS = 3000  // switch to amber after this long without a result
 const MIC_INPUT_TIMEOUT_MS = 1500  // no raw mic frame for this long → honest "no mic input"
+const VOICE_LIVENESS_INTERVAL_MS = 1000
+const CHROME_DEAD_RESULT_TIMEOUT_MS = 30000
+const WHISPER_INPUT_TIMEOUT_MS = 10000
 
 // Honest mic status from RAW frame arrival (not Deepgram results), so a
 // silently-dead/muted mic reads as "no mic input" instead of a fake "mic live".
@@ -352,9 +355,28 @@ function micPresence(micAgo, ctxState, timeoutMs = MIC_INPUT_TIMEOUT_MS) {
   if (micAgo == null || micAgo > timeoutMs) return 'no-input'
   return 'live'
 }
+
+// Chrome Web Speech can be legitimately silent for a long time. Treat silence
+// as live while a recognition object is active; report death only when the
+// session is no longer active and either never produced results or has been
+// resultless for a long window.
+function chromeLiveness(resultAgo, hasActiveSession, editStopped, deadTimeoutMs = CHROME_DEAD_RESULT_TIMEOUT_MS) {
+  if (hasActiveSession) return 'live'
+  if (editStopped) return 'live'
+  if (resultAgo == null || resultAgo > deadTimeoutMs) return 'dead'
+  return 'live'
+}
+
+function whisperLiveness(messageAgo, wsReadyState, connected, timeoutMs = WHISPER_INPUT_TIMEOUT_MS) {
+  if (!connected || wsReadyState == null || wsReadyState > 1) return 'dead'
+  if (messageAgo == null || messageAgo > timeoutMs) return 'no-input'
+  return 'live'
+}
 let _healthDot = null
 let _healthDotTimer = null
 let _voiceHealthLabel = ''
+let _voiceLivenessInterval = null
+let _lastWhisperMessageTime = 0
 
 function ensureHealthDot() {
   if (_healthDot) return _healthDot
@@ -424,6 +446,63 @@ function dotRecordingStart() {
   dot.style.backgroundColor = DOT_AMBER
   requestAnimationFrame(() => { dot.style.opacity = DOT_AMBER_OPACITY })
   setTextareaGlow(GLOW_AMBER)
+}
+
+function showVoiceLiveness(status, liveLabel) {
+  if (status === 'live') {
+    if (_voiceHealthLabel === 'no mic input' || _voiceHealthLabel === 'connection lost') {
+      _voiceHealthLabel = liveLabel
+      showRecordingHud()
+    }
+    return
+  }
+
+  const nextLabel = status === 'dead' ? 'connection lost' : 'no mic input'
+  if (_voiceHealthLabel === nextLabel) return
+  _voiceHealthLabel = nextLabel
+  const dot = ensureHealthDot()
+  dot.style.display = 'inline-block'
+  dot.style.backgroundColor = DOT_AMBER
+  dot.style.opacity = DOT_AMBER_OPACITY
+  setTextareaGlow(GLOW_AMBER)
+  showRecordingHud()
+}
+
+function voiceLivenessStatus(now = Date.now()) {
+  if (_backend === 'deepgram') {
+    const micAgo = _lastMicFrameTime ? now - _lastMicFrameTime : null
+    return micPresence(micAgo, _deepgramContext?.state)
+  }
+  if (_backend === 'chrome') {
+    const resultAgo = _lastResultTime ? now - _lastResultTime : null
+    return chromeLiveness(resultAgo, !!_recognition, _editStopped)
+  }
+  if (_backend === 'whisper-stream') {
+    const messageAgo = _lastWhisperMessageTime ? now - _lastWhisperMessageTime : null
+    return whisperLiveness(messageAgo, _whisperWs?.readyState, _whisperConnected)
+  }
+  return 'live'
+}
+
+function liveLivenessLabel() {
+  if (_backend === 'deepgram') return _deepgramConnected ? 'mic live; waiting for speech' : 'waiting for recognizer'
+  if (_backend === 'whisper-stream') return 'mic live; waiting for speech'
+  return 'mic live'
+}
+
+function runVoiceLivenessWatchdog() {
+  if (!_recording) return
+  showVoiceLiveness(voiceLivenessStatus(), liveLivenessLabel())
+}
+
+function startVoiceLivenessWatchdog() {
+  clearInterval(_voiceLivenessInterval)
+  _voiceLivenessInterval = setInterval(runVoiceLivenessWatchdog, VOICE_LIVENESS_INTERVAL_MS)
+}
+
+function stopVoiceLivenessWatchdog() {
+  clearInterval(_voiceLivenessInterval)
+  _voiceLivenessInterval = null
 }
 
 function showErrorGlow() {
@@ -1109,6 +1188,7 @@ function cleanWhisperText(text) {
 
 function onWhisperMessage(event) {
   if (!_recording || _backend !== 'whisper-stream') return
+  _lastWhisperMessageTime = Date.now()
   try {
     const msg = JSON.parse(event.data)
     if (msg.type !== 'transcript' || !msg.text) return
@@ -1667,27 +1747,9 @@ async function startDeepgramMic() {
       return
     }
 
-    // #5 — honest mic status. Drive the HUD off RAW mic-frame arrival so a
-    // silently-dead/muted mic reads as "no mic input" instead of staying on a
-    // fake "mic live". Label-only (NEVER a teardown — see the root-cause note
-    // above; this is the safe use of the timestamp). The frame stamp is pre-gate,
-    // so a conservation pause (dumb/idle/background) keeps reading as live.
-    if (_backend === 'deepgram') {
-      const micAgo = _lastMicFrameTime ? Date.now() - _lastMicFrameTime : null
-      const presence = micPresence(micAgo, ctxState)
-      if (presence === 'no-input' && _voiceHealthLabel !== 'no mic input') {
-        _voiceHealthLabel = 'no mic input'
-        const dot = ensureHealthDot()
-        dot.style.backgroundColor = DOT_AMBER
-        dot.style.opacity = DOT_AMBER_OPACITY
-        showRecordingHud()
-      } else if (presence === 'live' && _voiceHealthLabel === 'no mic input') {
-        // Mic delivering again — recover the normal label (don't clobber a live
-        // 'speech detected' state; we only get here if we were showing no-input).
-        _voiceHealthLabel = _deepgramConnected ? 'mic live; waiting for speech' : 'waiting for recognizer'
-        showRecordingHud()
-      }
-    }
+    // Honest mic status is label-only and shared with the other backends by
+    // runVoiceLivenessWatchdog(). This heartbeat remains responsible only for
+    // logging and event-backed Deepgram repairs.
   }, 1000)
 }
 
@@ -1761,7 +1823,7 @@ if (typeof window !== 'undefined') {
   window.__voiceLogs = _voiceLogs
   window.__voiceTest = {
     fakeRecord: (ta) => { _recording = true; _state = 'edit'; _backend = 'deepgram'; _voiceDumping = false; resetDeepgramTextState(); if (ta) _activeTextarea = ta; },
-    fakeStop: () => { _recording = false; stopDeepgramMic(); resetDeepgramTextState(); },
+    fakeStop: () => { _recording = false; stopVoiceLivenessWatchdog(); stopDeepgramMic(); resetDeepgramTextState(); },
     switchTarget: (ta) => setVoiceTarget(ta, [], {}, null, null),
     getState: () => ({ recording: _recording, backend: _backend, state: _state, connected: _deepgramConnected, hasMic: !!_deepgramStream, left: _left, interim: _interim, dumping: _voiceDumping, hasTextarea: !!_activeTextarea }),
     injectTranscript: (text, isFinal) => onDeepgramMessage({ data: JSON.stringify({ type: 'transcript', text, is_final: isFinal, speech_final: false }) }),
@@ -1779,6 +1841,8 @@ if (typeof window !== 'undefined') {
     micWatchdogAction: (ctxState) => micWatchdogAction(ctxState),
     upstreamAction: (s) => upstreamAction(s),
     micPresence: (micAgo, ctxState, timeoutMs) => micPresence(micAgo, ctxState, timeoutMs),
+    chromeLiveness: (resultAgo, hasActiveSession, editStopped, deadTimeoutMs) => chromeLiveness(resultAgo, hasActiveSession, editStopped, deadTimeoutMs),
+    whisperLiveness: (messageAgo, wsReadyState, connected, timeoutMs) => whisperLiveness(messageAgo, wsReadyState, connected, timeoutMs),
   }
 }
 
@@ -1801,9 +1865,11 @@ function startRecording() {
   _generation++
   _left = _interim = _right = ''
   _lastResultTime = 0
+  _lastWhisperMessageTime = 0
 
   showRecordingHud()
   dotRecordingStart()
+  startVoiceLivenessWatchdog()
 
   _audioCaptureRetries = 0
 
@@ -1845,6 +1911,7 @@ function stopRecording() {
   _recording = false
   emitRecordingChange()
 
+  stopVoiceLivenessWatchdog()
   hideHealthDot()
 
   // Stop Chrome recognition if active
@@ -1908,6 +1975,8 @@ async function hardResetVoice({ keepDeepgramMic = false } = {}) {
   _filling = false
   _audioCaptureRetries = 0
   _lastResultTime = 0
+  _lastWhisperMessageTime = 0
+  stopVoiceLivenessWatchdog()
   hideHealthDot()
   // Force the browser to drop and reacquire the microphone at the OS level.
   // Skip for whisper-stream (captures mic via SDL) and deepgram (manages its own stream).
