@@ -929,7 +929,12 @@ function AgentRow({
   const modelStr = formatModel(meta.model)
   const effortStr = formatEffort(meta.effort, meta.kind)
   const capStr = formatCapability(meta)
+  const machineStr = agent.machine_id || ''
   const taskTitle = taskDesc
+  // Desktop hover summary (touch users get the same via tap-to-expand).
+  const hoverTitle = [name, machineStr && `machine: ${machineStr}`, modelStr && `model: ${modelStr}`, ago && `seen ${ago}`]
+    .filter(Boolean)
+    .join('  ·  ')
 
   const secsAgo = agent._ts ? (Date.now() - agent._ts) / 1000 : Infinity
   const nameOpacity = secsAgo < 120 ? 1.0 : secsAgo < 600 ? 0.85 : 0.65
@@ -961,6 +966,7 @@ function AgentRow({
         <span
           className="fleet-agents-col-name fleet-agents-pill"
           style={{ color, opacity: nameOpacity, display: 'flex', alignItems: 'center' }}
+          title={hoverTitle}
           onPointerDown={(e) => { e.stopPropagation(); onStartDrag(e, 'agent', agent.friendly_name || name, name, color) }}
         >
           {/* Fixed-width glyph slot (blank for dawn) so base names column-align */}
@@ -995,18 +1001,21 @@ function AgentRow({
         </span>
       </div>
 
-      {/* Expanded detail: first task inline with model/effort, remaining tasks, last message */}
+      {/* Expanded detail: meta line (machine · model · effort · cap · seen),
+          current task in full, remaining tasks, last message */}
       {expanded && (
         <div className="fleet-agents-row-detail" onPointerDown={(e) => stopEventPropagation(e)}>
-          <div className="fleet-agents-detail-task fleet-agents-detail-firstrow">
+          <div className="fleet-agents-detail-meta">
+            {machineStr && <span className="fleet-agents-detail-machine" title="machine">{machineStr}</span>}
             {modelStr && <span className="fleet-agents-detail-model">{modelStr}</span>}
             {effortStr && <span className="fleet-agents-detail-effort">{effortStr}</span>}
             {capStr && <span className="fleet-agents-detail-cap" title="capability / fence">{capStr}</span>}
-            <span>
-              {tasks.length === 0
-                ? '(no task)'
-                : tasks[0].title || tasks[0].description || '(untitled task)'}
-            </span>
+            {ago && <span className="fleet-agents-detail-seen">seen {ago}</span>}
+          </div>
+          <div className="fleet-agents-detail-current">
+            {tasks.length === 0
+              ? '(no task)'
+              : tasks[0].title || tasks[0].description || '(untitled task)'}
           </div>
           {tasks.slice(1).map((t: any, i: number) => (
             <div key={t.id || i} className="fleet-agents-detail-task">

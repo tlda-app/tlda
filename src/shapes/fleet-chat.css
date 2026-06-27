@@ -1639,12 +1639,26 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   cursor: pointer;
 }
 .fleet-agents-shape .fleet-agents-row-detail {
-  padding: 0 8px 4px 18px;
-  font-size: 8px;
-  line-height: 1.4;
+  padding: 3px 10px 7px 18px;
+  font-size: 10px;
+  line-height: 1.5;
+}
+/* Meta line: machine · model · effort · cap · seen — labeled dim tokens. */
+.fleet-agents-shape .fleet-agents-detail-meta {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 3px;
+}
+/* Current task, shown in full (wraps) rather than truncated. */
+.fleet-agents-shape .fleet-agents-detail-current {
+  opacity: 0.72;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .fleet-agents-shape .fleet-agents-detail-task {
-  opacity: 0.6;
+  opacity: 0.55;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1655,12 +1669,18 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  margin-top: 1px;
+  margin-top: 2px;
 }
-.fleet-agents-shape .fleet-agents-detail-firstrow {
-  display: flex;
-  align-items: baseline;
-  gap: 5px;
+.fleet-agents-shape .fleet-agents-detail-machine {
+  flex-shrink: 0;
+  opacity: 0.75;
+  background: rgba(150, 150, 150, 0.18);
+  border-radius: 2px;
+  padding: 0 4px;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .fleet-agents-shape .fleet-agents-detail-model {
   flex-shrink: 0;
@@ -1682,6 +1702,11 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   background: rgba(129, 199, 132, 0.15);
   border-radius: 2px;
   padding: 0 4px;
+}
+.fleet-agents-shape .fleet-agents-detail-seen {
+  flex-shrink: 0;
+  opacity: 0.45;
+  margin-left: auto;
 }
 
 /* --- Column widths --- */
