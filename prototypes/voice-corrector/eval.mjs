@@ -66,7 +66,7 @@ for (const item of dataset) {
 
   if (item.class === "context-free-garble") {
     const fixedSurface = !surfacePattern(item.surface).test(result.corrected);
-    const hasCorrect = result.corrected.includes(item.correct);
+    const hasCorrect = surfacePattern(item.correct).test(result.corrected);
     const pass = changed && fixedSurface && hasCorrect;
     const bucket = scored.get(item.class) ?? { class: item.class, n: 0, passed: 0 };
     bucket.n += 1;
