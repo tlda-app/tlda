@@ -1,12 +1,14 @@
 const USER_FAULT_RE = /\b(?:you|your)\b/i
 const USER_ACTION_RE = /\b(?:you\s+(?:(?:didn't|did not|haven't|have not)\s+(?:accept|open|use|hit|click|send|log in|configure)|need to|needed to|just need to|need|needed|should|must|have to|hit|opened|used|clicked|accepted|sent|went to|logged in|configured)|your\s+(?:end|machine|browser|device|network|session|cache|token|url|server|port|certificate|cert))\b/i
-const USER_CAUSAL_CONNECTIVE_RE = /\b(?:because|since|the reason\b[\s\S]{0,60}\bis|that'?s why|that is why|now that|unless)\s+you\b/i
+const USER_CAUSAL_CONNECTIVE_RE = /\b(?:because|since|the reason\b[\s\S]{0,60}\bis|that'?s why|that is why|now that|unless|as long as|until|before)\s+you\b/i
 const USER_NEGATIVE_ACTION_RE = /\byou\s+(?:didn'?t|did not|haven'?t|have not|never|forgot to|failed to|need to|should have|aren'?t)\b/i
 const USER_DEFLECTION_LOCUS_RE = /\bon your\s+(?:end|side|machine|laptop|browser|device|phone|ipad)\b/i
-const USER_FAULT_GRAMMAR_RE = new RegExp(`(?:${USER_CAUSAL_CONNECTIVE_RE.source}|${USER_NEGATIVE_ACTION_RE.source}|${USER_DEFLECTION_LOCUS_RE.source})`, 'i')
-const FAILURE_FRAME_RE = /\b(?:breaks?|broken|failed|fails?|failing|error|issue|problem|nothing (?:shows up|renders|appears)|not (?:seeing|showing|rendering|appearing|working|loading)|doesn'?t (?:show|render|appear|work|load)|won'?t (?:show|render|appear|work|load)|will not (?:show|render|appear|work|load)|can'?t|cannot|won'?t|doesn'?t|no output|empty|blank|stuck)\b/i
-const OWN_SYSTEM_RE = /\b(?:tlda|fleet|daemon|server|viewer|iPad|your setup|your system|your own system|the app)\b/i
-const LECTURE_RE = /\b(?:remember,?\s+(?:tlda|fleet|the app|the daemon|the server)|just so you understand|to explain your own system|the way (?:this|tlda|fleet|the app|your setup|your system) works is|what(?:'s| is) happening is|this is how (?:tlda|fleet|the app|your setup|your system) works|remember that (?:tlda|fleet|the app|your setup|your system)|you need to understand)\b/i
+const USER_ACTION_CONSEQUENCE_RE = /\byou\s+\w+ed\b[\s\S]{0,100}\b(?:that'?s why|that is why|so it|which is why|and now)\b/i
+const USER_FAULT_GRAMMAR_RE = new RegExp(`(?:${USER_CAUSAL_CONNECTIVE_RE.source}|${USER_NEGATIVE_ACTION_RE.source}|${USER_DEFLECTION_LOCUS_RE.source}|${USER_ACTION_CONSEQUENCE_RE.source})`, 'i')
+const FAILURE_FRAME_RE = /\b(?:gone|breaks?|broken|failed|fails?|failing|error|issue|problem|missing|nothing (?:shows up|renders|appears)|not (?:seeing|showing|rendering|appearing|working|loading)|doesn'?t (?:show|render|appear|work|load)|won'?t (?:show|render|appear|work|load|\w+)|will not (?:show|render|appear|work|load)|can'?t|cannot|won'?t|doesn'?t|no output|empty|blank|stuck)\b/i
+const ACTION_BREAKAGE_RE = new RegExp(`${USER_ACTION_CONSEQUENCE_RE.source}[\\s\\S]{0,100}${FAILURE_FRAME_RE.source}|${FAILURE_FRAME_RE.source}[\\s\\S]{0,100}${USER_ACTION_CONSEQUENCE_RE.source}`, 'i')
+const OWN_SYSTEM_RE = /\b(?:tlda|fleet|fleet daemon|daemon|server|viewer|iPad|your setup|your system|your own system|the app|your (?:annotations|agents|daemon|server|fleet|sessions|setup|notes|docs))\b/i
+const LECTURE_RE = /\b(?:remember,?|just so you understand,?|to explain,?|to explain your own system|fyi,?\s+the way|the way (?:this|tlda|fleet|the app|your setup|your system) works is|what(?:'s| is) happening is|this is how (?:tlda|fleet|the app|your setup|your system) works|remember that (?:tlda|fleet|the app|your setup|your system)|you need to understand)\b/i
 const SELF_VERIFICATION_RE = /\b(?:I\s+(?:verified|tested|checked)\b|verified\s+from\s+the\s+Mini|works?\s+(?:on|from)\s+(?:my\s+)?(?:machine|end|browser|side|setup|Mini)|I\s+verified\s+it\s+works\s+from\s+the\s+Mini)\b/i
 const USER_DEFLECTION_RE = /\b(?:your\s+(?:end|machine|browser|device|side|setup|cache|token|cert(?:ificate)?)|for\s+you|local\s+to\s+you|on\s+your\s+(?:end|machine|browser|device|side|setup)|should\s+be\s+fine\s+(?:for\s+you|on\s+your\s+end)|must\s+be\s+local\s+to\s+you)\b/i
 const WRONG_SURFACE_RE = new RegExp(`(?:${SELF_VERIFICATION_RE.source}[\\s\\S]{0,120}${USER_DEFLECTION_RE.source}|${USER_DEFLECTION_RE.source}[\\s\\S]{0,120}${SELF_VERIFICATION_RE.source})`, 'i')
@@ -36,6 +38,7 @@ export function extractUserBlameFeatures(event = {}) {
   ])
 
   const hasUserFaultLanguage = USER_FAULT_RE.test(candidateText) && (
+    ACTION_BREAKAGE_RE.test(candidateText) ||
     (USER_FAULT_GRAMMAR_RE.test(candidateText) && FAILURE_FRAME_RE.test(candidateText)) ||
     USER_ACTION_RE.test(candidateText)
   )

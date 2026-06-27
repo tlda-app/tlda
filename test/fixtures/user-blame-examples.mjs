@@ -72,6 +72,22 @@ export const userBlameExamples = [
     context: { toSkip: true },
   },
   {
+    id: 'affirmative-action-breakage',
+    label: 'flag',
+    reasonCode: 'user-fault-framing',
+    provenance: 'synthetic regression seed from manager round-3 critique: second-person past action plus breakage consequence',
+    text: 'You switched the room before sync finished, which is why the note is missing.',
+    context: { toSkip: true },
+  },
+  {
+    id: 'temporal-before-second-person',
+    label: 'flag',
+    reasonCode: 'user-fault-framing',
+    provenance: 'synthetic regression seed from manager round-3 critique: before/until/as long as temporal connective',
+    text: 'The upload will not show before you reconnect the laptop.',
+    context: { toSkip: true },
+  },
+  {
     id: 'lectures-own-system',
     label: 'flag',
     reasonCode: 'lecturing-user-system',
@@ -93,6 +109,14 @@ export const userBlameExamples = [
     reasonCode: 'lecturing-user-system',
     provenance: 'synthetic regression seed from manager recall critique: lecture opener tied to tlda/fleet setup',
     text: 'Just so you understand, the daemon is what connects this machine to the fleet server.',
+    context: { toSkip: true },
+  },
+  {
+    id: 'lecture-possessive-annotations',
+    label: 'flag',
+    reasonCode: 'lecturing-user-system',
+    provenance: 'synthetic regression seed from manager round-3 critique: lecture opener plus possessive setup noun',
+    text: 'FYI, the way your annotations resolve is through the source-line anchor map.',
     context: { toSkip: true },
   },
   {
@@ -157,6 +181,14 @@ export const userBlameExamples = [
     reasonCode: 'hard-negative-context',
     provenance: 'hard negative: technical repo explanation mentioning daemon/server without lecturing opener',
     text: 'The implementation calls the daemon RPC when the server cannot access the agent filesystem.',
+    context: { toSkip: true },
+  },
+  {
+    id: 'neutral-user-action-code',
+    label: 'clean',
+    reasonCode: 'hard-negative-context',
+    provenance: 'hard negative from manager round-3 critique: bare second-person past action is not blame',
+    text: 'The repo code is cleaner after you moved the function into a helper.',
     context: { toSkip: true },
   },
   {
