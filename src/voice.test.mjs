@@ -218,7 +218,7 @@ function reset() {
 
 // ---- Liveness helpers: backend-specific indicator decisions ----
 {
-  const { chromeLiveness, whisperLiveness } = window.__voiceTest
+  const { chromeLiveness, whisperLiveness, shouldAutoStartOnInit } = window.__voiceTest
 
   assert.equal(chromeLiveness(null, true, false, 1000), 'live', 'Chrome silence is live while recognition is active')
   assert.equal(chromeLiveness(100000, true, false, 1000), 'live', 'Chrome long quiet session is not death')
@@ -233,7 +233,12 @@ function reset() {
   assert.equal(whisperLiveness(100, 3, false, 1000), 'dead', 'Whisper closed bridge is dead')
   assert.equal(whisperLiveness(100, null, false, 1000), 'dead', 'Whisper missing bridge is dead')
 
-  console.log('✓ Liveness helpers: Chrome and whisper indicator decisions')
+  assert.equal(shouldAutoStartOnInit(true, 'chrome'), false, 'touch Web Speech waits for user gesture instead of auto-starting on init')
+  assert.equal(shouldAutoStartOnInit(true, 'deepgram'), false, 'touch Deepgram also waits for an explicit mic action')
+  assert.equal(shouldAutoStartOnInit(false, 'chrome'), false, 'desktop Chrome does not auto-start on init')
+  assert.equal(shouldAutoStartOnInit(true, 'none'), false, 'off backend never auto-starts')
+
+  console.log('✓ Liveness helpers: Chrome/whisper indicator decisions + init auto-start guard')
 }
 
 // ---- Test 1: Happy path ----
@@ -765,18 +770,19 @@ await setBackend('chrome')
   console.log('✓ Test 15: <nowhere> 2nd click wipes interim, keeps committed text')
 }
 
-// Test 16: service-not-allowed message is actionable + iOS-aware (pure helper).
+// Test 16: service-not-allowed message is plain + iOS-aware (pure helper).
 {
   const msg = window.__voiceTest.serviceUnavailableMessage
   const ios = msg(true)
   const other = msg(false)
-  assert.ok(/iphone/i.test(ios) && /safari/i.test(ios) && /preferences/i.test(ios),
-    `iOS message must name iPhone + Safari + Preferences, got "${ios}"`)
-  assert.ok(/deepgram|whisper/i.test(ios), `iOS message must offer a working backend, got "${ios}"`)
-  assert.ok(!/iphone/i.test(other) && /preferences/i.test(other),
-    `non-iOS message stays generic but actionable, got "${other}"`)
+  assert.ok(/iphone/i.test(ios),
+    `iOS message must name iPhone, got "${ios}"`)
+  assert.ok(!/safari/i.test(ios), `iOS message must not pretend Safari is an escape hatch, got "${ios}"`)
+  assert.ok(!/deepgram|whisper|preferences/i.test(ios), `iOS message must not tell the user to switch tools, got "${ios}"`)
+  assert.ok(!/iphone|deepgram|whisper|preferences/i.test(other),
+    `non-iOS message stays generic and plain, got "${other}"`)
   assert.notEqual(ios, other, 'iOS and non-iOS messages differ')
-  console.log('✓ Test 16: service-not-allowed message is actionable + iOS-aware')
+  console.log('✓ Test 16: service-not-allowed message is plain + iOS-aware')
 }
 
 // Test 17: Chrome 'service-not-allowed' (iOS WKWebView blocks Web Speech) stops
@@ -803,7 +809,8 @@ await setBackend('chrome')
     assert.ok(!isRecording(), 'service-not-allowed must stop recording')
     const voiceWarn = warnCalls.find(a => a[0] === 'voice' && a[2] && a[2].error === 'service-not-allowed')
     assert.ok(voiceWarn, 'must route the error through log.warn("voice", ...) carrying the error code')
-    assert.ok(/preferences/i.test(mockDiv.textContent), `HUD must show the actionable message, got "${mockDiv.textContent}"`)
+    assert.ok(/speech service unavailable|voice unavailable/i.test(mockDiv.textContent), `HUD must show the plain hard-failure message, got "${mockDiv.textContent}"`)
+    assert.ok(!/preferences|deepgram|whisper|safari/i.test(mockDiv.textContent), `HUD must not tell the user to switch tools, got "${mockDiv.textContent}"`)
     assert.ok(!/mic error/i.test(mockDiv.textContent), 'must NOT fall through to the generic "mic error" HUD')
 
     tick(5000)              // give any (wrong) retry timer a chance to fire
@@ -848,4 +855,44 @@ await setBackend('chrome')
   console.log('✓ Test 18: time-to-first-interim logged once with elapsed ms')
 }
 
-console.log('\nAll 21 tests passed.')
+// Test 19: Chrome auto-restart is visible in the HUD instead of looking dead.
+{
+  const ta = makeTextarea()
+  setVoiceTarget(ta, [], {})
+  reset()
+  await setBackend('chrome')
+
+  toggleRecording()
+  tick(300)
+  assert.equal(startCount, 1, 'recognition started')
+
+  mockRec.onend()
+  assert.equal(startCount, 2, 'Chrome onend auto-restarts recognition')
+  assert.ok(/restarting/i.test(mockDiv.textContent), `HUD should say restarting during auto-restart, got "${mockDiv.textContent}"`)
+  assert.equal(window.__voiceTest.getHealthLabel(), 'restarting voice', 'health label tracks restart state')
+
+  tick(700)
+  assert.ok(!/restarting/i.test(mockDiv.textContent), `restart label should clear after grace window, got "${mockDiv.textContent}"`)
+  reset()
+  console.log('✓ Test 19: Chrome auto-restart shows restarting HUD state')
+}
+
+// Test 20: stale-audio label is backend-specific, not leaked from Deepgram state.
+{
+  reset()
+  window.__voiceTest.fakeRecord()
+  await setBackend('chrome')
+
+  window.__voiceTest.dotAudioStale()
+  assert.equal(window.__voiceTest.getHealthLabel(), 'mic live', 'Chrome stale label should stay Chrome-specific')
+
+  await setBackend('deepgram')
+  window.__voiceTest.dotAudioStale()
+  assert.equal(window.__voiceTest.getHealthLabel(), 'waiting for recognizer', 'Deepgram disconnected stale label remains recognizer-specific')
+
+  window.__voiceTest.fakeStop()
+  reset()
+  console.log('✓ Test 20: stale voice label follows active backend')
+}
+
+console.log('\nAll 23 tests passed.')
