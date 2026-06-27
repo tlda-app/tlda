@@ -24,22 +24,22 @@ const _isSafari = !navigator.userAgent.includes('Chrome') && navigator.userAgent
 const _isTouchDevice = typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0
 // iOS = iPhone/iPad/iPod (incl. iPadOS pretending to be a Mac). EVERY iOS browser
 // runs on WebKit (Apple's App Store rule), so Chrome/Firefox-on-iOS are WKWebView.
-// Apple does NOT expose the Web Speech API to WKWebView — only Safari can use it —
-// so SpeechRecognition.start() there fires onerror 'service-not-allowed'. A hard
-// platform restriction we can't work around; we just message it honestly.
+// Web Speech availability varies across iOS/WebKit builds and can fail at
+// SpeechRecognition.start() with 'service-not-allowed'. Treat that as a hard
+// recognizer failure for this session, not as a reason to bounce through more
+// startup/retry behavior.
 const _isIOS = typeof navigator !== 'undefined' && (
   /iPad|iPhone|iPod/.test(navigator.userAgent) ||
   (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent))
 )
 
-// Actionable message for Web Speech 'service-not-allowed'. Pure → unit-tested
-// without a browser. On iOS the only fixes are Safari (the lone browser allowed
-// Web Speech) or a backend that doesn't depend on it (Deepgram/whisper);
-// elsewhere it means the recognizer service itself is unreachable.
+// User-facing message for Web Speech 'service-not-allowed'. Keep it plain:
+// this is a hard recognizer failure, and extra browser/backend advice has been
+// more confusing than useful on phone.
 function serviceUnavailableMessage(isIOS) {
   return isIOS
-    ? 'Chrome can’t do voice on iPhone (Apple restriction) — use Safari, or pick Deepgram/whisper in Preferences'
-    : 'speech service unavailable — pick Deepgram/whisper in Preferences'
+    ? 'voice unavailable on this iPhone browser'
+    : 'speech service unavailable'
 }
 
 // --- Backend selection ---
@@ -393,6 +393,14 @@ function whisperLiveness(messageAgo, wsReadyState, connected, timeoutMs = WHISPE
   if (messageAgo == null || messageAgo > timeoutMs) return 'no-input'
   return 'live'
 }
+
+function shouldAutoStartOnInit() {
+  // initVoice() should only install controls and select the saved backend. Starting
+  // capture on page load creates hidden prompts, Web Speech gesture failures, and
+  // confusing retry/status churn on phone.
+  return false
+}
+
 let _healthDot = null
 let _healthDotTimer = null
 let _voiceHealthLabel = ''
@@ -451,7 +459,7 @@ function dotAudioFlowing() {
 // Audio went stale — no results for AUDIO_FLOWING_MS
 function dotAudioStale() {
   if (!_recording) return
-  _voiceHealthLabel = _deepgramConnected ? 'mic live; waiting for speech' : 'waiting for recognizer'
+  _voiceHealthLabel = liveLivenessLabel()
   showRecordingHud()
   const dot = ensureHealthDot()
   dot.style.backgroundColor = DOT_AMBER
@@ -524,6 +532,21 @@ function startVoiceLivenessWatchdog() {
 function stopVoiceLivenessWatchdog() {
   clearInterval(_voiceLivenessInterval)
   _voiceLivenessInterval = null
+}
+
+function showVoiceRestarting(reason = 'recognition restart') {
+  if (!_recording) return
+  _voiceHealthLabel = 'restarting voice'
+  log.info('voice', 'restarting', { backend: _backend, reason, hostname: location.hostname })
+  showRecordingHud()
+}
+
+function markVoiceRestarted() {
+  setTimeout(() => {
+    if (!_recording || _voiceHealthLabel !== 'restarting voice') return
+    _voiceHealthLabel = liveLivenessLabel()
+    showRecordingHud()
+  }, 700)
 }
 
 function showErrorGlow() {
@@ -668,6 +691,7 @@ function voiceStatusLabel() {
     return `paused: ${label}`
   }
   if (label === 'speech detected') return 'speaking'
+  if (label === 'restarting voice') return 'restarting'
   if (label === 'starting voice' || label === 'connecting to recognizer' || label === 'recognizer connected') return 'mic live'
   if (label.startsWith('mic live') || label === 'waiting for recognizer') return 'mic live'
   return label || 'mic live'
@@ -1136,7 +1160,9 @@ function _setupRecognition() {
           if (!_recording) return
           _setupRecognition()
           try {
+            showVoiceRestarting('audio-capture retry')
             _recognition.start()
+            markVoiceRestarted()
           } catch (err) {
             console.warn('voice: audio-capture retry failed', err)
             stopRecording()
@@ -1158,7 +1184,9 @@ function _setupRecognition() {
         if (!_recording) return
         _setupRecognition()
         try {
+          showVoiceRestarting('permission retry')
           _recognition.start()
+          markVoiceRestarted()
           showRecordingHud()
         } catch (err) {
           console.warn('voice: not-allowed retry failed', err)
@@ -1179,7 +1207,9 @@ function _setupRecognition() {
         if (!_recording) return
         _setupRecognition()
         try {
+          showVoiceRestarting('network retry')
           _recognition.start()
+          markVoiceRestarted()
           showRecordingHud()
         } catch (err) {
           console.warn('voice: retry failed', err)
@@ -1191,9 +1221,8 @@ function _setupRecognition() {
       return
     }
     if (e.error === 'service-not-allowed') {
-      // iOS WKWebView blocks Web Speech for every non-Safari browser — a hard Apple
-      // platform restriction, not transient. Do NOT retry; stop and tell the user
-      // what actually works (Safari on iOS, or Deepgram/whisper anywhere).
+      // On the tested iPhone path, Web Speech is unavailable even in Safari. Do NOT
+      // retry; stop and point to backends that do not depend on Web Speech.
       stopRecording()
       showHud(serviceUnavailableMessage(_isIOS), '#c87070')
       fadeHud(8000)
@@ -1221,10 +1250,17 @@ function _setupRecognition() {
         _setupRecognition()
       }
       try {
+        showVoiceRestarting('speech recognition onend')
         _recognition.start()
+        markVoiceRestarted()
       } catch (err) {
         if (err.name !== 'InvalidStateError') throw err
-        setTimeout(() => { if (_recording) _recognition.start() }, 100)
+        setTimeout(() => {
+          if (!_recording) return
+          showVoiceRestarting('speech recognition invalid-state retry')
+          _recognition.start()
+          markVoiceRestarted()
+        }, 100)
       }
     }
   }
@@ -1907,6 +1943,9 @@ if (typeof window !== 'undefined') {
     chromeLiveness: (resultAgo, hasActiveSession, editStopped, deadTimeoutMs) => chromeLiveness(resultAgo, hasActiveSession, editStopped, deadTimeoutMs),
     whisperLiveness: (messageAgo, wsReadyState, connected, timeoutMs) => whisperLiveness(messageAgo, wsReadyState, connected, timeoutMs),
     serviceUnavailableMessage: (isIOS) => serviceUnavailableMessage(isIOS),
+    dotAudioStale: () => dotAudioStale(),
+    getHealthLabel: () => _voiceHealthLabel,
+    shouldAutoStartOnInit: (isTouch, backend) => shouldAutoStartOnInit(isTouch, backend),
   }
 }
 
@@ -2291,7 +2330,7 @@ export async function initVoice() {
 
   const backend = _backend === 'deepgram' ? 'deepgram-sdk' : _backend === 'whisper-stream' ? 'whisper' : 'Web Speech API'
   console.log(`voice: initialized v8 — ${backend} — BroadcastChannel: ${!!_micChannel}`)
-  if (_backend !== 'none' && _isTouchDevice) startRecording()
+  if (shouldAutoStartOnInit(_isTouchDevice, _backend)) startRecording()
   return _backend !== 'none'
 }
 
