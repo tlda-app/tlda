@@ -152,9 +152,12 @@ export class VoiceNoteTool extends StateNode {
   }
 
   override onExit = () => {
-    // Shape stays on canvas — ESC is the only explicit cancel.
-    // If the tool exits via any other path (click-commit, tool switch, etc.)
-    // the shape was either committed or should survive for the user to edit.
+    if (this._shapeId) {
+      const shape = this.editor.getShape(this._shapeId)
+      const props = shape?.props as { text?: unknown } | undefined
+      const text = typeof props?.text === 'string' ? props.text : ''
+      if (text.trim() === '') this.editor.deleteShape(this._shapeId)
+    }
     this._clearInterval()
     this._shapeId = null
   }
