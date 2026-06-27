@@ -31,6 +31,7 @@ import {
 import { tldaFetch } from '../shared/http-client.mjs'
 import { DEV_COMMANDS } from './lib/dev-commands.mjs'
 import { resolveRepoRoot, ensureWorktree, startWorktreeVite, findFreePort } from './lib/dev-vite.mjs'
+import { getFunnelUrl, findTailscaleIPv4, selectDocShareBase, viewerLoginUrl } from './lib/share-url.mjs'
 import { scanMarkdownDeps } from '../shared/markdown-deps.mjs'
 import { cmdLogs } from './lib/unified-logs.mjs'
 import { SPAWN_POLICY_OPTIONS, resolveSpawnPolicyOption } from '../server/lib/spawn-policy.mjs'
@@ -847,27 +848,17 @@ async function cmdOpen() {
 }
 
 async function cmdShare() {
-  const { execSync } = await import('child_process')
   const name = getPositional(0) || await inferProjectName()
   if (!name) { console.error('Usage: tlda doc share [name]'); process.exit(1) }
 
   const config = loadConfig()
-  const port = getPort()
+  const serverUrl = getServer()
+  const port = new URL(serverUrl).port || getPort()
   const readToken = config.tokenRead || null
 
   if (!readToken) {
     console.error('No read token configured. Run `tlda config auth init` to generate tokens.')
     process.exit(1)
-  }
-
-  const run = (cmd) => {
-    try { return execSync(cmd, { encoding: 'utf8', timeout: 5000 }).trim() }
-    catch { return null }
-  }
-
-  const makeUrl = (base) => {
-    const redirect = `/?doc=${name}`
-    return `${base}/auth/login?token=${readToken}&redirect=${encodeURIComponent(redirect)}`
   }
 
   const printQr = async (url) => {
@@ -877,34 +868,23 @@ async function cmdShare() {
     } catch {}
   }
 
-  // Try Funnel (public HTTPS) first, then Tailscale, then localhost
-  const funnelStatus = run('tailscale funnel status 2>&1')
-  const funnelMatch = funnelStatus?.match(/https:\/\/\S+\.ts\.net/)
-  if (funnelMatch) {
-    const url = makeUrl(funnelMatch[0])
-    console.log(`${bold('Funnel')} (public)`)
-    console.log(`  ${cyan(url)}`)
-    console.log()
-    await printQr(url)
-    return
-  }
-
-  const tsIp = run('tailscale ip -4')
-  if (tsIp) {
-    const url = makeUrl(`http://${tsIp}:${port}`)
-    console.log(`${bold('Tailscale')}`)
-    console.log(`  ${cyan(url)}`)
-    console.log()
-    await printQr(url)
-    return
-  }
-
-  // Localhost fallback
-  const proto = hasTls ? 'https' : 'http'
-  const url = `${proto}://localhost:${port}/?doc=${name}&token=${readToken}`
-  console.log(`${bold('Local')} ${dim('(not reachable from other devices)')}`)
+  const sel = selectDocShareBase({
+    serverUrl,
+    port,
+    funnelUrl: getFunnelUrl(),
+    tailscaleIp: findTailscaleIPv4(),
+    hasTls,
+  })
+  const url = viewerLoginUrl(sel.base, name, readToken)
+  const unavailable = sel.shareable === false
+  console.log(`${bold(sel.label)}${unavailable ? ` ${dim('(not reachable from other devices)')}` : ''}`)
   console.log(`  ${cyan(url)}`)
   console.log()
+  if (!unavailable) {
+    await printQr(url)
+    return
+  }
+  console.log(dim(`Reason: ${sel.reason}`))
   console.log(dim('To share over the network: install Tailscale, or run `tailscale funnel start`'))
 }
 
