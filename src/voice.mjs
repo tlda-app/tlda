@@ -22,6 +22,25 @@ const _isSafari = !navigator.userAgent.includes('Chrome') && navigator.userAgent
 // would wrongly fall back to iOS speech (the beeping). maxTouchPoints stays true
 // on any iPad and is 0 on the Mac.
 const _isTouchDevice = typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0
+// iOS = iPhone/iPad/iPod (incl. iPadOS pretending to be a Mac). EVERY iOS browser
+// runs on WebKit (Apple's App Store rule), so Chrome/Firefox-on-iOS are WKWebView.
+// Apple does NOT expose the Web Speech API to WKWebView — only Safari can use it —
+// so SpeechRecognition.start() there fires onerror 'service-not-allowed'. A hard
+// platform restriction we can't work around; we just message it honestly.
+const _isIOS = typeof navigator !== 'undefined' && (
+  /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+  (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent))
+)
+
+// Actionable message for Web Speech 'service-not-allowed'. Pure → unit-tested
+// without a browser. On iOS the only fixes are Safari (the lone browser allowed
+// Web Speech) or a backend that doesn't depend on it (Deepgram/whisper);
+// elsewhere it means the recognizer service itself is unreachable.
+function serviceUnavailableMessage(isIOS) {
+  return isIOS
+    ? 'Chrome can’t do voice on iPhone (Apple restriction) — use Safari, or pick Deepgram/whisper in Preferences'
+    : 'speech service unavailable — pick Deepgram/whisper in Preferences'
+}
 
 // --- Backend selection ---
 const WHISPER_BRIDGE_URL = location.protocol === 'https:' ? 'wss://127.0.0.1:8179' : 'ws://127.0.0.1:8179'
@@ -1072,6 +1091,12 @@ function _setupRecognition() {
     if (e.error === 'no-speech') return
     if (e.error === 'aborted') return
     console.warn('voice: speech recognition error', e.error)
+    // console.warn is NOT POSTed to client.log; route through the log sink so a
+    // phone/iPad voice error is observable server-side (CLAUDE.md §Client Logging).
+    log.warn('voice', 'web speech error', {
+      error: e.error, backend: _backend, isIOS: _isIOS, isSafari: _isSafari,
+      isTouch: _isTouchDevice, hostname: location.hostname,
+    })
     showErrorGlow()
     if (e.error === 'audio-capture') {
       if (_audioCaptureRetries < 3) {
@@ -1134,6 +1159,15 @@ function _setupRecognition() {
           _recording = false
         }
       }, 1000)
+      return
+    }
+    if (e.error === 'service-not-allowed') {
+      // iOS WKWebView blocks Web Speech for every non-Safari browser — a hard Apple
+      // platform restriction, not transient. Do NOT retry; stop and tell the user
+      // what actually works (Safari on iOS, or Deepgram/whisper anywhere).
+      stopRecording()
+      showHud(serviceUnavailableMessage(_isIOS), '#c87070')
+      fadeHud(8000)
       return
     }
     showHud('mic error: ' + e.error, '#c87070')
@@ -1843,6 +1877,7 @@ if (typeof window !== 'undefined') {
     micPresence: (micAgo, ctxState, timeoutMs) => micPresence(micAgo, ctxState, timeoutMs),
     chromeLiveness: (resultAgo, hasActiveSession, editStopped, deadTimeoutMs) => chromeLiveness(resultAgo, hasActiveSession, editStopped, deadTimeoutMs),
     whisperLiveness: (messageAgo, wsReadyState, connected, timeoutMs) => whisperLiveness(messageAgo, wsReadyState, connected, timeoutMs),
+    serviceUnavailableMessage: (isIOS) => serviceUnavailableMessage(isIOS),
   }
 }
 

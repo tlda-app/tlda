@@ -109,7 +109,9 @@ class MockWebSocket {
 global.WebSocket = MockWebSocket
 
 // ---- Mock fetch (whisper detection fails → falls back to Web Speech API) ----
-global.fetch = () => Promise.reject(new Error('no whisper'))
+global.fetch = (url = '') => String(url).includes('/api/log')
+  ? Promise.resolve({ ok: true, status: 200, text: async () => '' })   // logger POST succeeds (no unhandled rejection)
+  : Promise.reject(new Error('no whisper'))                            // whisper/deepgram detection still fails -> fallback
 global.AbortSignal = { timeout: () => ({}) }
 
 // ---- Setup window before import ----
@@ -763,4 +765,54 @@ await setBackend('chrome')
   console.log('✓ Test 15: <nowhere> 2nd click wipes interim, keeps committed text')
 }
 
-console.log('\nAll 18 tests passed.')
+// Test 16: service-not-allowed message is actionable + iOS-aware (pure helper).
+{
+  const msg = window.__voiceTest.serviceUnavailableMessage
+  const ios = msg(true)
+  const other = msg(false)
+  assert.ok(/iphone/i.test(ios) && /safari/i.test(ios) && /preferences/i.test(ios),
+    `iOS message must name iPhone + Safari + Preferences, got "${ios}"`)
+  assert.ok(/deepgram|whisper/i.test(ios), `iOS message must offer a working backend, got "${ios}"`)
+  assert.ok(!/iphone/i.test(other) && /preferences/i.test(other),
+    `non-iOS message stays generic but actionable, got "${other}"`)
+  assert.notEqual(ios, other, 'iOS and non-iOS messages differ')
+  console.log('✓ Test 16: service-not-allowed message is actionable + iOS-aware')
+}
+
+// Test 17: Chrome 'service-not-allowed' (iOS WKWebView blocks Web Speech) stops
+// cleanly, routes the error to the log sink, shows the actionable message, and
+// does NOT retry a hard platform restriction.
+{
+  const { log } = await import('./logger.ts')
+  const warnCalls = []
+  const origWarn = log.warn
+  log.warn = (...args) => { warnCalls.push(args) }
+  try {
+    const ta = makeTextarea()
+    setVoiceTarget(ta, [], {})
+    reset()
+    setBackend('chrome')    // a prior test's fakeRecord left _backend='deepgram'
+
+    toggleRecording()
+    tick(300)               // fire doStart -> recognition.start()
+    assert.equal(startCount, 1, 'recognition started')
+    const startsBefore = startCount
+
+    mockRec.onerror({ error: 'service-not-allowed' })
+
+    assert.ok(!isRecording(), 'service-not-allowed must stop recording')
+    const voiceWarn = warnCalls.find(a => a[0] === 'voice' && a[2] && a[2].error === 'service-not-allowed')
+    assert.ok(voiceWarn, 'must route the error through log.warn("voice", ...) carrying the error code')
+    assert.ok(/preferences/i.test(mockDiv.textContent), `HUD must show the actionable message, got "${mockDiv.textContent}"`)
+    assert.ok(!/mic error/i.test(mockDiv.textContent), 'must NOT fall through to the generic "mic error" HUD')
+
+    tick(5000)              // give any (wrong) retry timer a chance to fire
+    assert.equal(startCount, startsBefore, 'must NOT auto-retry a hard platform restriction')
+  } finally {
+    log.warn = origWarn
+  }
+  reset()
+  console.log('✓ Test 17: Chrome service-not-allowed stops, logs, messages, no retry')
+}
+
+console.log('\nAll 20 tests passed.')
