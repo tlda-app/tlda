@@ -56,6 +56,7 @@ import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCac
 import * as tldaFeedback from './lib/tlda-feedback.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
 import { FleetStore } from './lib/fleet-store.mjs'
+import { resolveMachine } from './lib/tailscale-peers.mjs'
 import { createFleetRouter } from './routes/fleet.mjs'
 import { callerSpawnPolicy, coherentSpawnPolicy } from './lib/spawn-policy.mjs'
 import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
@@ -2764,7 +2765,13 @@ server.on('upgrade', async (req, socket, head) => {
   if (url.pathname === '/ws/fleet') {
     const remoteAddr = req.socket.remoteAddress
     const remotePort = req.socket.remotePort
+    // Behind `tailscale serve` (Fly) the socket peer is 127.0.0.1; the client's
+    // real tailnet IP is the first hop of X-Forwarded-For. Capture it so a chat
+    // message can be stamped with the sender's machine (resolveMachine).
+    const fwdFor = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || null
     fleetWss.handleUpgrade(req, socket, head, (ws) => {
+      ws._fwdFor = fwdFor
+      ws._remoteAddr = remoteAddr
       const agentFilter = url.searchParams.get('agent') || null
       ws._agentFilter = agentFilter
       wsFleetClients.add(ws)
@@ -3399,6 +3406,16 @@ async function handleFleetWsMessage(ws, msg) {
     }
     const senderAgent = fleetStore.getAgent?.(from)
     const chatReminder = senderAgent?.metadata?.chatReminder || undefined
+    // Stamp the human sender's physical machine onto the message context so any
+    // agent can see what machine Skip is on without inferring from Tailscale.
+    // Resolved server-side from the connection's tailnet IP; fail-visible (omit
+    // when unknown — never a wrong machine). Folded into context so it renders
+    // next to the doc/page chip.
+    let outContext = context
+    if (senderAgent?.human) {
+      const machine = resolveMachine(ws?._fwdFor || ws?._remoteAddr)
+      if (machine) outContext = { ...(context || {}), machine }
+    }
     const ts = new Date().toISOString()
     const eventIds = []
     const insertedEvents = []
@@ -3412,7 +3429,7 @@ async function handleFleetWsMessage(ws, msg) {
         ...(inline_attachments ? { inline_attachments } : {}),
         ...(msg._tempId ? { client_temp_id: msg._tempId } : {}),
         ...(wiretapRecipients.length ? { wiretap_cc: wiretapRecipients } : {}),
-        ...(context ? { context } : {}),
+        ...(outContext ? { context: outContext } : {}),
         ...(preambleRef ? { preambleRef } : {}),
         ...(chatReminder ? { chatReminder } : {}),
         ...(source ? { source } : {}),
