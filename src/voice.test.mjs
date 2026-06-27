@@ -895,4 +895,59 @@ await setBackend('chrome')
   console.log('✓ Test 20: stale voice label follows active backend')
 }
 
-console.log('\nAll 23 tests passed.')
+// ---- Test 21: server-inserted fly URL is never rewritten by the autocorrect ----
+// Regression: before this fix, fillTextarea() applied postProcessTranscript() to
+// the entire textarea value including _left (pre-speech text). A drag-dropped URL
+// like https://tlda-fly.cormorant-matrix.ts.net/... got "fly"→"phi" rewritten,
+// producing a dead link. Fix: correct only dictated interim/finals, never _left/_right.
+{
+  const FLY_URL = 'https://tlda-fly.cormorant-matrix.ts.net/api/file?path=/tmp/foo.png'
+
+  // Scenario A: server-inserted URL in textarea before dictation starts
+  {
+    const ta = makeTextarea()
+    ta.value = FLY_URL
+    ta.selectionStart = FLY_URL.length
+    ta.selectionEnd   = FLY_URL.length
+    setVoiceTarget(ta, [], {}, null)
+    reset()
+    setBackend('chrome')
+
+    toggleRecording()
+    tick(300)
+
+    // Interim: user says "hello" — triggers speech entry; _left = FLY_URL
+    mockRec.onresult({ resultIndex: 0, results: [{ isFinal: false, 0: { transcript: 'hello' } }] })
+    assert.ok(ta.value.includes(FLY_URL), `URL must survive interim display, got "${ta.value}"`)
+    assert.ok(!ta.value.includes('phi.cormorant'), `"fly" in URL must NOT be rewritten to "phi", got "${ta.value}"`)
+
+    // Final: user says "fly" (the word) — should be corrected to "phi" in the dictated span
+    mockRec.onresult({ resultIndex: 0, results: [{ isFinal: true, 0: { transcript: 'fly' } }] })
+    assert.ok(ta.value.includes(FLY_URL), `URL must still survive after final, got "${ta.value}"`)
+    assert.ok(!ta.value.includes('phi.cormorant'), `URL must not be rewritten after final, got "${ta.value}"`)
+    assert.ok(ta.value.includes('phi'), `dictated "fly" must be corrected to "phi", got "${ta.value}"`)
+
+    reset()
+  }
+
+  // Scenario B: spoken "fly" in interim IS still corrected (the word, isolated)
+  {
+    const ta = makeTextarea()
+    setVoiceTarget(ta, [], {}, null)
+    reset()
+    setBackend('chrome')
+
+    toggleRecording()
+    tick(300)
+
+    mockRec.onresult({ resultIndex: 0, results: [{ isFinal: false, 0: { transcript: 'fly' } }] })
+    assert.ok(ta.value.includes('phi'), `spoken "fly" interim must be corrected to "phi", got "${ta.value}"`)
+    assert.ok(!ta.value.includes('fly'), `uncorrected "fly" must not appear in interim display, got "${ta.value}"`)
+
+    reset()
+  }
+
+  console.log('✓ Test 21: server-inserted fly URL survives dictation; spoken "fly" is still corrected')
+}
+
+console.log('\nAll 24 tests passed.')

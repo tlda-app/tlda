@@ -949,15 +949,17 @@ function clearCurrentSinkInterim() {
   // old code only cleared the sink's own buffer, which renders nowhere (a no-op).
   const hadField = !!(_sinkPrevTextarea || _sinkPrevAccumulator)
   if (_sinkPrevTextarea) {
-    const kept = postProcessTranscript(_sinkPrevLeft + _sinkPrevRight)
-    const cursor = postProcessTranscript(_sinkPrevLeft).length
+    // _sinkPrevLeft/_sinkPrevRight are committed (pre-speech + already-corrected dictated text).
+    // Never re-run postProcessTranscript here — that would rewrite URLs and re-correct committed text.
+    const kept = _sinkPrevLeft + _sinkPrevRight
+    const cursor = _sinkPrevLeft.length
     _filling = true
     _sinkPrevTextarea.value = kept
     try { _sinkPrevTextarea.setSelectionRange(cursor, cursor) } catch { /* cursor restore is best-effort (element may not support selection) */ }
     _sinkPrevTextarea.dispatchEvent(new Event('input', { bubbles: true }))
     _filling = false
   } else if (_sinkPrevAccumulator) {
-    _sinkPrevAccumulator.onUpdate(postProcessTranscript(_sinkPrevLeft + _sinkPrevRight))
+    _sinkPrevAccumulator.onUpdate(_sinkPrevLeft + _sinkPrevRight)
   }
   // Also reset the sink's own (nowhere) buffer so the next dictation starts fresh.
   _state = 'edit'
@@ -1035,22 +1037,20 @@ function maybeMarkFirstInterim(content) {
 function fillTextarea(text) {
   maybeMarkFirstInterim(_accumulator ? (_left + _interim) : text)
   if (_accumulator) {
-    // Accumulator mode: deliver post-processed spoken text to the callback.
-    // The caller (CodeMirror, etc.) manages cursor/insertion itself.
-    _accumulator.onUpdate(postProcessTranscript(_left + _interim))
+    // _left has corrections applied at commit; _interim has corrections applied when set.
+    // Never re-run postProcessTranscript here — that would rewrite pre-speech text.
+    _accumulator.onUpdate(_left + _interim)
     return
   }
   const ta = _activeTextarea
   if (!ta) return
   _filling = true
-  ta.value = postProcessTranscript(text)
+  ta.value = text
   ta.style.height = 'auto'
   ta.style.height = Math.min(ta.scrollHeight, 200) + 'px'
   // Restore cursor to end of voice portion (between interim and right)
-  // Use length of processed text minus right portion
   if (_state === 'speech' && _right.length > 0) {
-    const processed = postProcessTranscript(text)
-    const cursorPos = processed.length - _right.length
+    const cursorPos = text.length - _right.length
     ta.setSelectionRange(cursorPos, cursorPos)
   }
   ta.dispatchEvent(new Event('input', { bubbles: true }))
@@ -1096,12 +1096,12 @@ function _setupRecognition() {
     let interim = ''
     for (let i = e.resultIndex; i < e.results.length; i++) {
       if (e.results[i].isFinal) {
-        _left += e.results[i][0].transcript
+        _left += postProcessTranscript(e.results[i][0].transcript)
       } else {
         interim += e.results[i][0].transcript
       }
     }
-    _interim = interim
+    _interim = postProcessTranscript(interim)
 
     if (e.results[e.results.length - 1]?.isFinal) {
       const leftTrimmed = _left.trim()
@@ -2356,7 +2356,7 @@ export { sendCurrentText, stopRecording }
 
 export function isRecording() { return _recording }
 export function getTranscript() {
-  if (_accumulator) return postProcessTranscript(_left + _interim)
+  if (_accumulator) return _left + _interim
   return _activeTextarea ? _activeTextarea.value : ''
 }
 export function addVocabReplacement(pattern, replacement) {
