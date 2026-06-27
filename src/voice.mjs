@@ -12,7 +12,7 @@
 
 import { appendToken } from './authToken.ts'
 import { log } from './logger.ts'
-import { getPref } from './preferences.ts'
+import { getPref, subscribePref, whenPrefsLoaded } from './preferences.ts'
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
 const _isSafari = !navigator.userAgent.includes('Chrome') && navigator.userAgent.includes('Safari')
@@ -1979,11 +1979,10 @@ export async function initVoice() {
   // keeps any backend the user didn't choose — in particular iOS/Chrome Web
   // Speech, whose start/stop earcon ignores the silent switch — from ever
   // running unbidden.
-  const { getPref, subscribePref, whenPrefsLoaded } = await import('./preferences.ts')
   // Wait for the saved pref to load before committing — never pick a backend
   // before we know what the user actually selected. Cap at 2s.
   await Promise.race([whenPrefsLoaded(), new Promise(r => setTimeout(r, 2000))])
-  const prefBackend = getPref('voice-backend')   // 'deepgram-sdk' | 'whisper' | 'chrome' | '' (off)
+  let prefBackend = getPref('voice-backend')   // 'deepgram-sdk' | 'whisper' | 'chrome' | '' (off)
 
   if (prefBackend === 'chrome') {
     _backend = 'chrome'
@@ -2028,20 +2027,20 @@ export async function initVoice() {
     hostname: location.hostname,
   })
 
-  let appliedPrefBackend = prefBackend
-  subscribePref(() => {
-    const next = getPref('voice-backend')
-    if (next === appliedPrefBackend) return
-    appliedPrefBackend = next
-    setBackend(next)
-  })
-
-  if (_backend === 'none') return false
   if (_backend === 'chrome' && !SpeechRecognition) {
     console.warn('voice: chrome selected but SpeechRecognition unavailable — voice off')
     _backend = 'none'
-    return false
   }
+
+  // initVoice() runs at FleetChatShape module load, which can beat fleet login
+  // and the async loadPrefs() call. If the 2s startup cap fires first, keep the
+  // initialized voice shell alive and apply the saved backend when prefs arrive.
+  subscribePref(() => {
+    const nextPrefBackend = getPref('voice-backend')
+    if (nextPrefBackend === prefBackend) return
+    prefBackend = nextPrefBackend
+    setBackend(nextPrefBackend)
+  })
 
   // Right Shift: tap counting within 300ms windows.
   //   1 tap  → toggle recording
@@ -2157,8 +2156,8 @@ export async function initVoice() {
 
   const backend = _backend === 'deepgram' ? 'deepgram-sdk' : _backend === 'whisper-stream' ? 'whisper' : 'Web Speech API'
   console.log(`voice: initialized v8 — ${backend} — BroadcastChannel: ${!!_micChannel}`)
-  if (_isTouchDevice) startRecording()
-  return true
+  if (_backend !== 'none' && _isTouchDevice) startRecording()
+  return _backend !== 'none'
 }
 
 // --- Public controls ---
@@ -2211,14 +2210,25 @@ export async function setBackend(be) {
   if (be !== 'chrome' && be !== 'whisper-stream' && be !== 'deepgram') return
   if (be === _backend) return
   if (be === 'chrome' && !SpeechRecognition) return
-  // Lazy-start the target backend on demand. init only probes the backend it
-  // commits to, so without this a live switch to the other one would hit a stale
-  // availability flag and silently no-op. (whisper is legacy — left guarded.)
+  // Lazy-start the target backend on demand. init only starts the backend it
+  // commits to; a live switch or late-loaded saved pref must start its selected
+  // backend here instead of silently no-oping on a stale availability flag.
   if (be === 'deepgram') {
     try { await fetch('/api/voice/deepgram-sdk/start', { method: 'POST' }) } catch {}
     _deepgramAvailable = true
   }
-  if (be === 'whisper-stream' && !_whisperAvailable) return
+  if (be === 'whisper-stream') {
+    try {
+      await fetch('/api/voice/whisper/start', { method: 'POST' })
+    } catch (err) {
+      console.warn('voice: whisper lazy-start request failed', err)
+      showHud('voice: whisper unavailable', '#c8956a')
+      fadeHud(2000)
+      return
+    }
+    _whisperAvailable = true
+    connectWhisperBridge()
+  }
   const wasRecording = _recording
   if (wasRecording) stopRecording()
   _backend = be
