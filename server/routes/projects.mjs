@@ -33,6 +33,7 @@ import { loadSynctex } from '../lib/synctex-query.mjs'
 import { buildMarkdown, buildHtml, buildSlides } from '../lib/format-builders.mjs'
 import { shouldBuildOnPush } from '../lib/build-decision.mjs'
 import historyRoutes from './history.mjs'
+import { linkOverleaf, unlinkOverleaf, syncOverleaf, stopPolling, isPolling } from '../lib/overleaf-sync.mjs'
 import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeChange, getOrCreateRoom, broadcastSignal, getLastSignal, onSignal, replaceRoomSnapshot, getShapesAt, emitGlobalEvent, onGlobalEvent } from '../lib/sync-rooms.mjs'
 
 const router = Router()
@@ -164,9 +165,47 @@ router.patch('/:name/auto-sync', requireRw, (req, res) => {
   }
 })
 
+// Link an Overleaf (or any) git remote → clone, initial sync, start polling.
+// Body: { gitUrl, token?, title?, mainFile?, pollSeconds? }
+router.post('/:name/overleaf-link', requireRw, async (req, res) => {
+  try {
+    const { gitUrl, token, title, mainFile, pollSeconds } = req.body || {}
+    if (!gitUrl) return res.status(400).json({ error: 'gitUrl is required' })
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(req.params.name)) {
+      return res.status(400).json({ error: 'name must be lowercase alphanumeric with hyphens' })
+    }
+    const result = await linkOverleaf(req.params.name, { gitUrl, token, title, mainFile, pollSeconds })
+    if (result.linked) emitGlobalEvent('project-changed', { name: req.params.name })
+    res.json({ ok: true, ...result })
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+// Manually trigger one Overleaf sync (also serves as a webhook endpoint).
+router.post('/:name/overleaf-sync', requireRw, async (req, res) => {
+  try {
+    const result = await syncOverleaf(req.params.name)
+    res.json({ ok: true, ...result })
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+// Unlink the Overleaf remote (stops polling, removes the clone; keeps the project).
+router.post('/:name/overleaf-unlink', requireRw, (req, res) => {
+  try {
+    unlinkOverleaf(req.params.name)
+    res.json({ ok: true })
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
 // Delete project
 router.delete('/:name', requireRw, (req, res) => {
   try {
+    stopPolling(req.params.name)
     deleteProject(req.params.name)
     res.json({ ok: true })
   } catch (e) {

@@ -47,6 +47,7 @@ import { labelsForAgent, parseFilter, evalExpr } from '../shared/fleet-labels.mj
 import { phaseFromName, baseName, PHASES } from '../shared/lineage-name.mjs'
 import { daemonHelloDecision } from '../shared/daemon-identity.mjs'
 import { initProjectStore, listProjects, readProject, updateProject, getProjectsDir } from './lib/project-store.mjs'
+import { resumeOverleafPollers } from './lib/overleaf-sync.mjs'
 import { resetStaleBuildStates, killAllBuilds, setShadowMirrorHandler } from './lib/build-runner.mjs'
 import { dispatchBuild, killAllDispatchedBuilds } from './lib/build-dispatch.mjs'
 import { writeSentinel } from './lib/sentinel.mjs'
@@ -5335,6 +5336,10 @@ server.listen(PORT, HOST, () => {
   // we don't burst-spawn while a daemon is starting.
   console.log(`[daemon-supervisor] watching for local daemon (machine_id=${LOCAL_MACHINE_ID})`)
   ensureLocalDaemon()
+
+  // Resume Overleaf git-sync pollers for any project linked to a remote.
+  resumeOverleafPollers(listProjects)
+
   setInterval(ensureLocalDaemon, DAEMON_SUPERVISOR_INTERVAL_MS).unref()
 
   const HIBERNATE_CHECK_MS = 60_000

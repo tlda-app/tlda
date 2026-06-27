@@ -46,7 +46,7 @@ import { SPAWN_POLICY_OPTIONS, resolveSpawnPolicyOption } from '../server/lib/sp
 // feedback hook etc. don't break, but `--help` only advertises the nouns.
 const DOC_SUBS = new Set([
   'open', 'push', 'list', 'ls', 'status', 'errors',
-  'delete', 'rm', 'share', 'publish', 'scratch', 'book', 'link', 'init',
+  'delete', 'rm', 'share', 'publish', 'scratch', 'book', 'link', 'link-overleaf', 'init',
   'repo-doctor', 'init-shadow',
 ])
 const REMOVED_DOC_SUBS = new Set(['create', 'preview'])
@@ -602,6 +602,28 @@ async function cmdPush() {
 
 async function cmdLink() {
   await cmdCreate()
+}
+
+// Link a project to an Overleaf (or any) git remote. The server clones it,
+// does an initial sync, and polls for changes — the author keeps editing in
+// Overleaf while tlda mirrors + rebuilds.
+//   tlda doc link-overleaf <name> <git-url> [--token TOKEN] [--title T] [--main main.tex] [--poll 60]
+async function cmdLinkOverleaf() {
+  const name = getPositional(0)
+  const gitUrl = getPositional(1)
+  if (!name || !gitUrl) {
+    console.error('Usage: tlda doc link-overleaf <name> <git-url> [--token TOKEN] [--title "Title"] [--main main.tex] [--poll 60]')
+    process.exit(1)
+  }
+  const token = getFlag('token')
+  const title = getFlag('title')
+  const mainFile = getFlag('main')
+  const pollSeconds = Number(getFlag('poll') || '60') || 60
+
+  console.log(`Linking ${name} to ${gitUrl} (cloning + initial build, this can take a minute)…`)
+  const result = await api('POST', `/api/projects/${name}/overleaf-link`,
+    { gitUrl, token, title, mainFile, pollSeconds }, { timeoutMs: 300000 })
+  console.log(`✓ Linked. Synced ${result.changed} file(s) at ${String(result.head || '').slice(0, 7)}; polling every ${pollSeconds}s.`)
 }
 
 async function cmdInit() {
@@ -3108,6 +3130,7 @@ async function main() {
       case 'book':   await ensureServer(); await cmdBook(); break
       case 'push':   await ensureServer(); await cmdPush(); break
       case 'link':   await ensureServer(); await cmdLink(); break
+      case 'link-overleaf': await ensureServer(); await cmdLinkOverleaf(); break
       case 'init':   await cmdInit(); break
       case 'daemon': await ensureServer(); await cmdWatch(); break
       case 'open':   await ensureServer(); await cmdOpen(); break
