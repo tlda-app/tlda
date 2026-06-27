@@ -46,7 +46,7 @@ import { SPAWN_POLICY_OPTIONS, resolveSpawnPolicyOption } from '../server/lib/sp
 // feedback hook etc. don't break, but `--help` only advertises the nouns.
 const DOC_SUBS = new Set([
   'open', 'push', 'list', 'ls', 'status', 'errors',
-  'delete', 'rm', 'share', 'publish', 'scratch', 'book', 'link',
+  'delete', 'rm', 'share', 'publish', 'scratch', 'book', 'link', 'init',
   'repo-doctor', 'init-shadow',
 ])
 const REMOVED_DOC_SUBS = new Set(['create', 'preview'])
@@ -82,6 +82,7 @@ const COMMAND_HELP = {
   scratch: 'tlda doc scratch <file.md> [--title "Title"] [--book fleet-workspace]\n\n  Publish a scratch markdown file as a page in a book.\n  Creates a markdown project, pushes the file, and auto-joins the book.\n  Subsequent edits are auto-pushed by watch-all.\n\n  --title    Display title (default: first heading or filename)\n  --book     Book to join (default: fleet-workspace)',
   book:    'tlda doc book <name> --members doc1,doc2,doc3,...\n\n  Create a book that groups existing documents together.\n  Each member keeps its own sync room and annotations.\n  The viewer shows one member at a time with a tab bar to switch.',
   link:    'tlda doc link <name> [file] [--title "Title"] [--format slides|html|markdown]\n\n  Link the repository containing file to tlda and push files. If the project already exists,\n  pushes files and triggers a rebuild.\n\n  Examples:\n    tlda doc link paper path/to/paper.tex\n    tlda doc link talk path/to/talk.qmd --format slides\n\n  Formats:\n    (default)  LaTeX → SVG pipeline (latexmk → dvisvgm)\n    slides     Reveal.js HTML (from Quarto revealjs or manual)\n    html       Multipage HTML chapters (from Quarto book render)\n    markdown   Markdown with KaTeX math → HTML\n\n  Advanced: --dir <path> and --main <file> override file-derived paths.',
+  init:    'tlda doc init <name> [main-file] [--title "Title"] [--dir /path] [--format tex|markdown|html]\n\n  Create a new blank, git-backed project in a fresh directory and register it.\n  Unlike `tlda doc link` (which attaches an existing directory), `init` scaffolds a new one.\n\n  positional <main-file>  Main file name, e.g. paper.tex or notes.md.\n                          Format is inferred from the extension.\n                          Default: main.tex (format: tex/svg)\n  --dir <path>            Where to create the project directory (default: ./<name> in CWD)\n  --title "..."           Display title (default: <name>)\n  --format tex|markdown   Override format inference\n\n  Creates: <dir>/<main-file>, <dir>/README.md, a git repo with an initial commit,\n           then registers and pushes to the tlda server.',
   push:    'tlda doc push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
   watch:   'tlda daemon [start|stop|status|log|run]\n\n  Control the per-machine fleet-daemon (bin/fleet-daemon.mjs).\n  The daemon watches Claude Code session JSONLs and project source\n  dirs locally, pushing events to the tlda server over WebSocket.',
   'watch-all': 'tlda daemon [start|stop|status|log|run]\n\n  Alias for `tlda daemon start/stop/status/log/run` — runs the\n  per-machine fleet-daemon (bin/fleet-daemon.mjs), which watches\n  every project source dir AND every Claude Code session JSONL\n  on this machine and pushes events to the tlda server over WebSocket.',
@@ -601,6 +602,138 @@ async function cmdPush() {
 
 async function cmdLink() {
   await cmdCreate()
+}
+
+async function cmdInit() {
+  const name = getPositional(0)
+  if (!name) {
+    console.error('Usage: tlda doc init <name> [main-file] [--title "Title"] [--dir /path] [--format tex|markdown]')
+    process.exit(1)
+  }
+
+  // Determine format and main file name
+  let format = getFlag('format') || null
+  const mainArg = getPositional(1)  // optional: paper.tex, notes.md, etc.
+
+  // Infer format from the main file extension (same logic as cmdCreate)
+  let mainFile
+  if (mainArg) {
+    const ext = mainArg.toLowerCase().split('.').pop()
+    if (!format) {
+      if (ext === 'md') format = 'markdown'
+      else if (ext === 'html' || ext === 'htm') format = 'html'
+    }
+    mainFile = mainArg
+  } else {
+    // No explicit main file — pick sensible default per format
+    if (format === 'markdown') mainFile = 'main.md'
+    else if (format === 'html') mainFile = 'index.html'
+    else mainFile = 'main.tex'
+    // Default format for .tex is left as null (LaTeX/svg pipeline)
+  }
+
+  const title = getFlag('title') || name
+
+  // Determine target directory: --dir overrides, otherwise ./<name> in CWD
+  const targetDir = resolve(getFlag('dir') || join(process.cwd(), name))
+
+  // Guard: refuse to clobber a non-empty directory
+  if (existsSync(targetDir)) {
+    const entries = readdirSync(targetDir)
+    if (entries.length > 0) {
+      console.error(red(`Directory already exists and is not empty: ${targetDir}`))
+      console.error(`  Use \`tlda doc link\` to attach an existing project directory.`)
+      process.exit(1)
+    }
+  }
+
+  // Create the directory
+  mkdirSync(targetDir, { recursive: true })
+  console.log(dim(`  Creating project in ${targetDir}`))
+
+  // Seed starter files based on format
+  const isMarkdown = format === 'markdown'
+  const isHtml = format === 'html'
+
+  if (isMarkdown) {
+    // Minimal markdown stub
+    const mdContent = `# ${title}\n\nWrite your notes here. Math works: $E = mc^2$\n`
+    writeFileSync(join(targetDir, mainFile), mdContent, 'utf8')
+  } else if (isHtml) {
+    // Minimal HTML stub
+    const htmlContent = `<!DOCTYPE html>\n<html>\n<head><meta charset="utf-8"><title>${title}</title></head>\n<body>\n<h1>${title}</h1>\n<p>Edit this file.</p>\n</body>\n</html>\n`
+    writeFileSync(join(targetDir, mainFile), htmlContent, 'utf8')
+  } else {
+    // Minimal compilable LaTeX stub
+    const texContent = `\\documentclass{article}\n\\title{${title}}\n\\author{}\n\\date{\\today}\n\\begin{document}\n\\maketitle\n\n\\section{Introduction}\n\nWrite your paper here.\n\n\\end{document}\n`
+    writeFileSync(join(targetDir, mainFile), texContent, 'utf8')
+  }
+
+  // Seed README.md
+  const formatLabel = isMarkdown ? 'markdown' : isHtml ? 'html' : 'LaTeX'
+  const readmeContent = `# ${title}\n\nThis project was created with \`tlda doc init ${name}\`.\n\nFormat: ${formatLabel}  \nMain file: \`${mainFile}\`\n\nPush changes to the viewer:\n\`\`\`\ntlda doc push ${name}\n\`\`\`\n`
+  writeFileSync(join(targetDir, 'README.md'), readmeContent, 'utf8')
+
+  console.log(dim(`  Seeded ${mainFile} + README.md`))
+
+  // Git init + initial commit
+  const { execFileSync } = await import('child_process')
+  try {
+    execFileSync('git', ['init'], { cwd: targetDir, stdio: 'pipe' })
+    execFileSync('git', ['add', mainFile, 'README.md'], { cwd: targetDir, stdio: 'pipe' })
+    execFileSync('git', ['commit', '-m', `init: ${name} (${formatLabel})`], {
+      cwd: targetDir,
+      stdio: 'pipe',
+      env: { ...process.env, GIT_AUTHOR_NAME: 'tlda', GIT_COMMITTER_NAME: 'tlda',
+             GIT_AUTHOR_EMAIL: 'tlda@localhost', GIT_COMMITTER_EMAIL: 'tlda@localhost' },
+    })
+    console.log(dim(`  git init + initial commit`))
+  } catch (gitErr) {
+    console.warn(yellow(`  Warning: git init failed — ${gitErr.message.trim()}`))
+    console.warn(yellow(`  Project directory and files were created, but no git repo was initialized.`))
+  }
+
+  // Register on the server and push the seeded files
+  try {
+    if (isMarkdown) {
+      await api('POST', '/api/projects', { name, title, mainFile, format: 'markdown', sourceDir: targetDir })
+      console.log(green(`Created markdown project "${name}".`))
+      const files = [{
+        path: mainFile,
+        content: Buffer.from(readFileSync(join(targetDir, mainFile))).toString('base64'),
+        encoding: 'base64',
+      }]
+      await api('POST', `/api/projects/${name}/push`, { files, sourceDir: targetDir })
+    } else if (isHtml) {
+      await api('POST', '/api/projects', { name, title, format: 'html', sourceDir: targetDir })
+      console.log(green(`Created HTML project "${name}".`))
+      const files = [{
+        path: mainFile,
+        content: Buffer.from(readFileSync(join(targetDir, mainFile))).toString('base64'),
+        encoding: 'base64',
+      }]
+      await api('POST', `/api/projects/${name}/push`, { files, sourceDir: targetDir })
+    } else {
+      await api('POST', '/api/projects', { name, title, mainFile, sourceDir: targetDir })
+      console.log(green(`Created project "${name}".`))
+      console.log(`Pushing source files...`)
+      await incrementalPush(name, targetDir, { sourceDir: targetDir })
+      console.log(green('Build triggered.'))
+    }
+  } catch (e) {
+    if (e.message.includes('already exists')) {
+      console.log(`Project "${name}" already exists on server — use \`tlda doc link\` or \`tlda doc push\` instead.`)
+    } else {
+      console.warn(yellow(`  Server registration failed: ${e.message}`))
+      console.warn(yellow(`  Project directory and git repo are ready. Run \`tlda doc link ${name} ${mainFile}\` when the server is up.`))
+      const server = getServer()
+      console.log(`\nViewer (once registered): ${cyan(`${server}/?doc=${name}`)}`)
+      return
+    }
+  }
+
+  const server = getServer()
+  console.log(`\nViewer: ${cyan(`${server}/?doc=${name}`)}`)
 }
 
 // Fleet-daemon control: `tlda daemon start | stop | status | log | run`
@@ -2975,6 +3108,7 @@ async function main() {
       case 'book':   await ensureServer(); await cmdBook(); break
       case 'push':   await ensureServer(); await cmdPush(); break
       case 'link':   await ensureServer(); await cmdLink(); break
+      case 'init':   await cmdInit(); break
       case 'daemon': await ensureServer(); await cmdWatch(); break
       case 'open':   await ensureServer(); await cmdOpen(); break
       case 'share':  await cmdShare(); break
@@ -3002,7 +3136,8 @@ async function main() {
       case 'doc':
         console.log(`tlda doc — work on a document project
 
-  link <name> [main]   Link a project, push files, build
+  init <name> [main]   Create a new blank git-backed project
+  link <name> [main]   Link an existing project, push files, build
   open [name]          Open the viewer
   push [name]          Push source, rebuild
   status [name]        Build status
