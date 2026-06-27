@@ -3053,6 +3053,18 @@ async function handleFleetWsMessage(ws, msg) {
         agent.metadata = rest
       }
     }
+    // Pre-register vs claim. The spawn flow registers the identity as a "shell"
+    // (msg.shell) before the agent process exists — addressable (dead=0, in the
+    // not-dead registry) but NOT awake. The agent's OWN register has no shell
+    // flag and is the claim: clear the flag so the row hydrates as awake.
+    if (msg.shell) {
+      agent.metadata = { ...(agent.metadata || {}), shell: true }
+    } else if (agent.metadata?.shell) {
+      // Claim: clear the shell flag. upsertAgent merges metadata via SQLite
+      // json_patch, which DELETES a key only when the patch sets it to null —
+      // omitting it would leave the old shell:true intact through the merge.
+      agent.metadata = { ...agent.metadata, shell: null }
+    }
     if (session_id && !agent.session_ids.includes(session_id)) {
       agent.session_ids = [...(agent.session_ids || []), session_id].slice(-10)
     }
@@ -3065,7 +3077,7 @@ async function handleFleetWsMessage(ws, msg) {
       }
       throw e
     }
-    fleetStore.share?.({ type: 'register', agent_id: agentId, from: agentId, to: agentId, text: `${name || agentId} registered` })
+    fleetStore.share?.({ type: 'register', agent_id: agentId, from: agentId, to: agentId, text: `${name || agentId} ${msg.shell ? 'pre-registered' : 'registered'}` })
     // Every non-human agent belongs to a lineage from birth, as its own `dawn`
     // (the worker). This guarantees a handoff always has a chain to rotate within
     // — a direct handoff promotes that dawn → day (manager). The lineage is an
@@ -3087,8 +3099,11 @@ async function handleFleetWsMessage(ws, msg) {
     }
     // Registration implies a live claude process — mark alive immediately so
     // the agent shows "awake" right away. The daemon's next sweep confirms
-    // or evicts within 30s.
-    if (!agent.human) {
+    // or evicts within 30s. A shell pre-register is the exception: there is no
+    // process yet, so it must NOT be marked alive (that was the roster-lie —
+    // spawned-but-not-booted agents showing "awake"). The agent's own register
+    // (the claim, msg.shell falsy) is what marks it alive.
+    if (!agent.human && !msg.shell) {
       markAgentAlive(agentId)
       touchActivity(agentId)
       spawnLibrarian.observeLiveness({
@@ -5005,6 +5020,10 @@ async function handleDaemonWsMessage(ws, msg) {
     }
     try {
       markAgentNotAlive(agent_id)
+      // A shell that never booted (never claimed) must be marked dead so it
+      // leaves the not-dead registry — otherwise the pre-registered identity
+      // lingers as a phantom addressable agent that will never inhabit.
+      if (agent?.metadata?.shell) fleetStore.markDead?.(agent_id)
       fleetStore.updateAgentMeta?.(agent_id, {
         startupFailure: {
           ts: new Date().toISOString(),

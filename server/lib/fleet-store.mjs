@@ -1691,6 +1691,7 @@ export class FleetStore {
 
   _hydrateAgent(row) {
     const lastActive = row.last_active || null
+    const metadata = row.metadata ? JSON.parse(row.metadata) : null
     const isAwake = !row.dead && !row.human && this._isLiveOracle
       ? !!this._isLiveOracle(row.id)
       : false
@@ -1700,6 +1701,12 @@ export class FleetStore {
     } else if (row.human) {
       const seenAgo = row.last_seen ? Date.now() - new Date(row.last_seen).getTime() : Infinity
       status = seenAgo < 90_000 ? 'human' : 'human-away'
+    } else if (metadata?.shell) {
+      // A pre-registered identity with no live process yet — a "shell" created at
+      // spawn time so the agent is addressable (dead=0, in the not-dead registry)
+      // before it inhabits. It is NOT awake; the agent's own register clears the
+      // shell flag (the claim) and flips it to awake.
+      status = 'shell'
     } else {
       status = isAwake ? 'awake' : 'hibernating'
     }
@@ -1710,7 +1717,7 @@ export class FleetStore {
       dead: !!row.dead,
       human: !!row.human,
       is_manager: !!row.is_manager,
-      metadata: row.metadata ? JSON.parse(row.metadata) : null,
+      metadata,
       last_active: lastActive,
       status,
       lineage_id: row.lineage_id || null,

@@ -449,7 +449,7 @@ def ensure_server():
 
 def ws_register(fleet_id, name, tmux_session, cwd, model=None, effort=None, refresh=False,
                 kind="claude", spawn_capability=None, session_id=None,
-                metadata=None):
+                metadata=None, shell=False):
     ws_url = f"{_ws_api()}/ws/fleet?agent={fleet_id}"
     try:
         ws_opts = {"timeout": 5}
@@ -459,6 +459,12 @@ def ws_register(fleet_id, name, tmux_session, cwd, model=None, effort=None, refr
         machine_id = os.environ.get("TLDA_MACHINE_ID") or read_config().get("machineId")
         msg = {"type": "register", "id": fleet_id, "name": name,
                "tmux_session": tmux_session, "cwd": cwd, "kind": kind}
+        # Pre-register: this registers the identity as a "shell" before the agent
+        # process exists, so it's addressable in the not-dead registry but shows
+        # as a shell (not awake). The agent's own register (no shell flag) claims
+        # it and flips it awake.
+        if shell:
+            msg["shell"] = True
         if machine_id:
             msg["machine_id"] = machine_id
         if session_id:
@@ -2535,7 +2541,7 @@ def fresh(name, model, cwd, effort, mode, kind="claude", spawn_capability=None,
     _check_fresh_name_available(name, server_up)
     if server_up:
         ws_register(
-            fleet_id, name, sess, cwd, model, effort, refresh=True,
+            fleet_id, name, sess, cwd, model, effort, refresh=True, shell=True,
             kind=adapter.kind, spawn_capability=spawn_capability,
             metadata={**sandbox_metadata(policy), **spawn_policy_metadata(spawn_capability, policy_name)})
 
