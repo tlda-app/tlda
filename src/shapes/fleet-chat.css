@@ -136,6 +136,15 @@ html.mousemove .fleet-reaper-shape:hover .fleet-btn-group {
 .fleet-btn-group .fleet-filter-btn svg {
   display: block;
 }
+.fleet-btn-group .fleet-traffic-mode-btn {
+  font-size: 9px;
+  text-transform: uppercase;
+}
+.fleet-btn-group .fleet-traffic-mode-btn-active {
+  color: var(--accent);
+  opacity: 0.9;
+}
+
 /* --- Layout/resize button (inside fleet-btn-group flex column) --- */
 .fleet-shape .fleet-layout-btn {
   letter-spacing: -1px;
@@ -2993,7 +3002,6 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   cursor: pointer;
   opacity: 0.22;
   transition: opacity 0.3s;
-  width: 46px;
   padding: 0 6px;
   display: inline-flex;
   align-items: center;
@@ -3011,9 +3019,6 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   -webkit-touch-callout: none;
   touch-action: manipulation;
 }
-.fleet-chat-shape .fleet-composer-traffic-toggle-tools-on {
-  opacity: 0.24;
-}
 .fleet-chat-shape .fleet-composer-traffic-toggle:hover,
 .fleet-chat-shape .fleet-composer-traffic-toggle:focus-visible {
   opacity: 0.65;
@@ -3026,18 +3031,8 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   color: var(--text-dim);
 }
 .fleet-chat-shape .fleet-composer-traffic-toggle-dm,
-.fleet-chat-shape .fleet-composer-traffic-toggle-agent-quiet,
 .fleet-chat-shape .fleet-composer-traffic-toggle-agent {
   color: var(--accent);
-}
-.fleet-chat-shape .fleet-composer-traffic-glyph {
-  width: 34px;
-  height: 20px;
-  display: block;
-}
-.fleet-chat-shape .fleet-composer-traffic-glyph text {
-  font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-  letter-spacing: 0;
 }
 
 /* Ghost drop preview — purple lozenges shown in the input while dragging a file

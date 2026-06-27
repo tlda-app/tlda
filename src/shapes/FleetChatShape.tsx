@@ -11,7 +11,6 @@ import {
   createShapeId,
   stopEventPropagation,
   useEditor,
-  useUniqueSafeId,
   useValue,
   type Editor,
   type TLShapeId,
@@ -38,7 +37,9 @@ import {
   buildFleetAgentFilter,
   buildFleetDmFilter,
   classifyFleetComposerTrafficMode,
+  filterForFleetComposerTrafficMode,
   matchesFleetFilter,
+  nextFleetComposerTrafficMode,
   quietTrafficSuppressesActivity,
 } from '../fleet/filter-semantics.mjs'
 import { appendToken } from '../authToken'
@@ -82,54 +83,7 @@ const INITIAL_CHAT_RENDER_WINDOW = 80
 const CHAT_RENDER_WINDOW_CHUNK = 80
 const CHAT_RENDER_LOOKBEHIND = 20
 type ChatTrafficMode = 'normal' | 'quiet'
-type ComposerTrafficFilterMode = 'dm-quiet' | 'dm' | 'agent-quiet' | 'agent' | 'custom'
-
-function composerTrafficScopeLabel(mode: ComposerTrafficFilterMode): string {
-  if (mode === 'dm-quiet' || mode === 'dm') return 'DM'
-  if (mode === 'agent-quiet' || mode === 'agent') return 'All'
-  return 'Filter'
-}
-
-function composerTrafficShowsTools(mode: ComposerTrafficFilterMode): boolean {
-  return mode === 'dm' || mode === 'agent'
-}
-
-function composerTrafficTextTransform(label: string): string {
-  return label === 'All'
-    ? 'scale(1.08 0.92) translate(-1.25 0.8)'
-    : 'scale(1.1 0.92) translate(-1.55 0.8)'
-}
-
-function composerTrafficTextSize(label: string): number {
-  return label === 'All' ? 9.7 : 10.2
-}
-
-function classifyFleetComposerToggleMode(
-  filter: [string, string][][],
-  trafficMode: ChatTrafficMode,
-  humanLabel: string,
-  agentLabel: string,
-): ComposerTrafficFilterMode {
-  const mode = classifyFleetComposerTrafficMode(filter, trafficMode, humanLabel, agentLabel) as ComposerTrafficFilterMode
-  return mode === 'agent' && trafficMode === 'quiet' ? 'agent-quiet' : mode
-}
-
-function nextFleetComposerToggleMode(currentMode: ComposerTrafficFilterMode): ComposerTrafficFilterMode {
-  if (currentMode === 'agent') return 'dm'
-  if (currentMode === 'dm') return 'dm-quiet'
-  if (currentMode === 'dm-quiet') return 'agent-quiet'
-  return 'agent'
-}
-
-function filterForFleetComposerToggleMode(
-  mode: ComposerTrafficFilterMode,
-  humanLabel: string,
-  agentLabel: string,
-): [string, string][][] {
-  return mode === 'agent' || mode === 'agent-quiet'
-    ? buildFleetAgentFilter(agentLabel) as [string, string][][]
-    : buildFleetDmFilter(humanLabel, agentLabel) as [string, string][][]
-}
+type ComposerTrafficFilterMode = 'dm-quiet' | 'dm' | 'agent' | 'custom'
 
 function isFleetPillRecord(record: any): boolean {
   return record?.typeName === 'shape' && record.type === 'fleet-pill'
@@ -1699,7 +1653,8 @@ function FleetChatInner({ shape }: { shape: any }) {
   const panel = useContext(PanelContext)
   const fleetStyleVars = useFleetStyleVars()
   const { w, h, filter, trafficMode = 'normal' } = shape.props as { w: number; h: number; filter: [string, string][][]; trafficMode?: ChatTrafficMode }
-  const quietTraffic = quietTrafficSuppressesActivity(filter, trafficMode)
+  const quietTraffic = trafficMode === 'quiet'
+  const quietDmTraffic = quietTrafficSuppressesActivity(filter, trafficMode)
   void useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
   const [filterOpen, setFilterOpen] = useState(false)
   const [filterOpenByPill, setFilterOpenByPill] = useState(false)
@@ -2131,7 +2086,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     const sorted = events
       .filter((m: any) => {
         const t = m.type
-        if (quietTraffic && (t === 'activity' || m._activity)) return false
+        if (quietDmTraffic && (t === 'activity' || m._activity)) return false
         return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'activity' || t === 'kill-session' || t === 'interrupt' || t === 'terminal_attention' || t === 'terminal_card' || t === 'plan_approval' || t === 'timer'
       })
       .filter((m: any) => !m._timer) // skip legacy timer-expired messages (fired→_timerFired and cancelled→_timerCancelled still render)
@@ -2160,7 +2115,7 @@ function FleetChatInner({ shape }: { shape: any }) {
 
     probe.stop(chatSortTimer, { eventCount: events.length, resultCount: sorted.length })
     return sorted
-  }, [events, quietTraffic])
+  }, [events, quietDmTraffic])
 
   // Standing diagnostic — does the message list momentarily empty? When
   // chatMessages hits 0 the render swaps the Virtuoso list for the "No messages"
@@ -4205,21 +4160,18 @@ function FleetChatInner({ shape }: { shape: any }) {
   // `93aba2cd` spurious-filter-cycling fix.
   const trafficTapRef = useRef<{ x: number; y: number; id: number } | null>(null)
   const composerTrafficMode = useMemo<ComposerTrafficFilterMode>(
-    () => classifyFleetComposerToggleMode(filter, trafficMode, humanFilterLabel, composerAgentLabel),
+    () => classifyFleetComposerTrafficMode(filter, trafficMode, humanFilterLabel, composerAgentLabel),
     [filterKey, trafficMode, humanFilterLabel, composerAgentLabel],
   )
-  const composerTrafficScope = composerTrafficScopeLabel(composerTrafficMode)
-  const composerTrafficToolsShown = composerTrafficShowsTools(composerTrafficMode)
-  const composerTrafficMaskId = useUniqueSafeId('fleet-composer-traffic-mask')
   const cycleComposerTrafficMode = useCallback(() => {
     if (!composerAgentLabel) return
-    const nextMode = nextFleetComposerToggleMode(composerTrafficMode)
+    const nextMode = nextFleetComposerTrafficMode(composerTrafficMode)
     editor.updateShape({
       id: shape.id,
       type: shape.type,
       props: {
-        filter: filterForFleetComposerToggleMode(nextMode, humanFilterLabel, composerAgentLabel),
-        trafficMode: nextMode === 'dm-quiet' || nextMode === 'agent-quiet' ? 'quiet' : 'normal',
+        filter: filterForFleetComposerTrafficMode(nextMode, humanFilterLabel, composerAgentLabel),
+        trafficMode: nextMode === 'dm-quiet' ? 'quiet' : 'normal',
       },
     })
   }, [composerAgentLabel, composerTrafficMode, editor, humanFilterLabel, shape.id, shape.type])
@@ -5270,6 +5222,24 @@ function FleetChatInner({ shape }: { shape: any }) {
               : <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M1 2h14M3 7h10M6 12h4"/></svg>
             }
           </button>
+          <button
+            className={`fleet-traffic-mode-btn${quietTraffic ? ' fleet-traffic-mode-btn-active' : ''}`}
+            onPointerDown={stopEventPropagation}
+            // text-label button ('q'/'t'): onPointerUp so a touch tap fires (a
+            // text label in the canvas gets no synthesized click on iPad, same
+            // class as the DM/All toggle); pointerup covers mouse too.
+            onPointerUp={(e) => {
+              stopEventPropagation(e)
+              editor.updateShape({
+                id: shape.id,
+                type: shape.type,
+                props: { trafficMode: quietTraffic ? 'normal' : 'quiet' },
+              })
+            }}
+            title={quietTraffic ? 'Quiet traffic: tools hidden' : 'Normal traffic: tools visible'}
+          >
+            {quietTraffic ? 'q' : 't'}
+          </button>
         </div>
 
         {/* Filter editor — full overlay showing DNF expression */}
@@ -5650,7 +5620,7 @@ function FleetChatInner({ shape }: { shape: any }) {
               </button>
             )}
             <button
-              className={`fleet-composer-traffic-toggle fleet-composer-traffic-toggle-${composerTrafficMode}${composerTrafficToolsShown ? ' fleet-composer-traffic-toggle-tools-on' : ''}`}
+              className={`fleet-composer-traffic-toggle fleet-composer-traffic-toggle-${composerTrafficMode}`}
               onPointerDown={(e) => {
                 stopEventPropagation(e)
                 trafficTapRef.current = { x: e.clientX, y: e.clientY, id: e.pointerId }
@@ -5677,54 +5647,21 @@ function FleetChatInner({ shape }: { shape: any }) {
               title={!composerAgentLabel
                 ? 'Choose an agent filter first'
                 : composerTrafficMode === 'dm-quiet'
-                  ? 'DM traffic, tools hidden'
+                  ? 'DM, tools hidden'
                   : composerTrafficMode === 'dm'
-                    ? 'DM traffic, tools shown'
-                    : composerTrafficMode === 'agent-quiet'
-                      ? 'All traffic for this agent, tools hidden'
-                      : composerTrafficMode === 'agent'
-                        ? 'All traffic for this agent, tools shown'
-                        : 'Custom filter; tap to switch to DM without tools'}
+                    ? 'DM, tools visible'
+                    : composerTrafficMode === 'agent'
+                      ? 'All traffic for this agent'
+                      : 'Custom filter; tap to switch to DM without tools'}
               aria-label="Cycle chat traffic filter"
             >
-              <svg className="fleet-composer-traffic-glyph" viewBox="0 0 34 20" aria-hidden="true" focusable="false">
-                {composerTrafficToolsShown ? (
-                  <>
-                    <defs>
-                      <mask id={composerTrafficMaskId}>
-                        <rect x="0" y="0" width="34" height="20" fill="white" />
-                        <text
-                          x="17"
-                          y="8.6"
-                          fontSize={composerTrafficTextSize(composerTrafficScope)}
-                          fontWeight="850"
-                          textAnchor="middle"
-                          dominantBaseline="middle"
-                          transform={composerTrafficTextTransform(composerTrafficScope)}
-                          fill="black"
-                        >
-                          {composerTrafficScope}
-                        </text>
-                      </mask>
-                    </defs>
-                    <g fill="currentColor" mask={`url(#${composerTrafficMaskId})`}>
-                      <rect x="2.5" y="3.7" width="29" height="9.8" rx="3.4" />
-                      <rect x="14.2" y="12.5" width="5.6" height="6" rx="1.6" />
-                    </g>
-                  </>
-                ) : (
-                  <text
-                    x="17"
-                    y="9.8"
-                    fontSize={composerTrafficScope === 'Filter' ? 7.2 : 9}
-                    textAnchor="middle"
-                    dominantBaseline="middle"
-                    fill="currentColor"
-                  >
-                    {composerTrafficScope}
-                  </text>
-                )}
-              </svg>
+              {composerTrafficMode === 'dm-quiet'
+                ? 'DM'
+                : composerTrafficMode === 'dm'
+                  ? 'DM ⚒'
+                  : composerTrafficMode === 'agent'
+                    ? 'All'
+                    : 'Filter'}
             </button>
             </div>
             <ChatComposer
