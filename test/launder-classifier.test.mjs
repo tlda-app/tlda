@@ -18,6 +18,7 @@ test('classifier emits feature map for audit and future statistical model', () =
 
   assert.equal(typeof actual.confidence, 'number')
   assert.equal(actual.features.toSkip, true)
+  assert.equal(actual.features.paperContext, true)
   assert.equal(actual.features.strongIntroduction, true)
   assert.match(actual.features.matchedSpan, /Let V_i/)
 })
@@ -37,12 +38,13 @@ test('hard negatives stay clean', () => {
 test('fleet chat warning fires only for Skip recipients', () => {
   const message = 'Let V_i(t) = h_i(t) be the per-sample value function.'
 
-  assert.equal(checkLaunderChatLint(message, ['fleet:skip']).length, 1)
-  assert.deepEqual(checkLaunderChatLint(message, ['fleet:manager']), [])
+  assert.equal(checkLaunderChatLint(message, ['fleet:skip'], { paperContext: true }).length, 1)
+  assert.deepEqual(checkLaunderChatLint(message, ['fleet:skip'], { paperContext: false }), [])
+  assert.deepEqual(checkLaunderChatLint(message, ['fleet:manager'], { paperContext: true }), [])
 })
 
 test('fleet warning names reason, matched span, and amend affordance', () => {
-  const [issue] = checkLaunderChatLint('Define \\bar M(t) as the normalized marginal curvature profile.', ['fleet:skip'])
+  const [issue] = checkLaunderChatLint('Define \\bar M(t) as the normalized marginal curvature profile.', ['fleet:skip'], { paperContext: true })
   const warning = formatLaunderChatWarning(issue, 456)
 
   assert.match(warning, /ungrounded-notation-introduction/)

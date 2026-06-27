@@ -621,10 +621,10 @@ export function formatUserBlameChatWarning(result, eventId = null) {
   return `⚠ **User-blame wording (${result.reasonCode}) — Skip may read this as blaming him or lecturing his own system back to him.** Matched: \`${span}\`. Fix it in place with \`${target}\` (edits the message Skip is reading, no new message).`;
 }
 
-export function checkLaunderChatLint(message, recipients = []) {
+export function checkLaunderChatLint(message, recipients = [], { paperContext = false } = {}) {
   const result = classifyLaunder({
     text: message,
-    context: { toSkip: recipients.includes('fleet:skip') },
+    context: { toSkip: recipients.includes('fleet:skip'), paperContext },
   });
   return result.decision === 'flag' ? [result] : [];
 }
@@ -2646,7 +2646,7 @@ export async function handleFleetTool(name, args) {
     if (userBlameIssues.length > 0) {
       warning += `\n\n${userBlameIssues.map(issue => formatUserBlameChatWarning(issue, lastEventId)).join('\n')}`;
     }
-    const launderIssues = checkLaunderChatLint(message, sent);
+    const launderIssues = checkLaunderChatLint(message, sent, { paperContext: Object.keys(macros).length > 0 });
     if (launderIssues.length > 0) {
       warning += `\n\n${launderIssues.map(issue => formatLaunderChatWarning(issue, lastEventId)).join('\n')}`;
     }
