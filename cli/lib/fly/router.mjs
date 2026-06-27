@@ -235,6 +235,7 @@ primary_region = "${plan.region}"
   NODE_ENV = "production"
   TLDA_SERVER = "${plan.renderUrl}"
   TLDA_MACHINE_ID = "${plan.machineId}"
+  TLDA_FRIEND_PROJECT = "${plan.project}"
 
 [[vm]]
   size = "shared-cpu-2x"

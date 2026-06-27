@@ -16,7 +16,16 @@
 set -e
 
 PERSIST=/app/server/persist
-mkdir -p "$PERSIST/codex" "$PERSIST/tlda-config" "$PERSIST/claude"
+WORK_ROOT=/root/work
+PROJECT_DIR=
+if [ -n "${TLDA_FRIEND_PROJECT}" ]; then
+  PROJECT_NAME=$(printf '%s' "${TLDA_FRIEND_PROJECT}" | tr -cs 'A-Za-z0-9._-' '-' | sed 's/^-//; s/-$//')
+  PROJECT_DIR="$WORK_ROOT/${PROJECT_NAME:-project}"
+fi
+mkdir -p "$PERSIST/codex" "$PERSIST/tlda-config" "$PERSIST/claude" "$WORK_ROOT"
+if [ -n "$PROJECT_DIR" ]; then
+  mkdir -p "$PROJECT_DIR"
+fi
 
 # Persist codex auth + tlda daemon config on the volume so they survive redeploys.
 mkdir -p /root/.config
@@ -116,5 +125,9 @@ export TERM="${TERM:-xterm-256color}"
 export TLDA_MCP_FLEET_ONLY="${TLDA_MCP_FLEET_ONLY:-1}"
 
 echo "[entrypoint] starting fleet-daemon → ${TLDA_SERVER} (machine_id=${TLDA_MACHINE_ID})"
-cd /app
-exec node bin/fleet-daemon.mjs
+if [ -n "$PROJECT_DIR" ]; then
+  cd "$PROJECT_DIR"
+else
+  cd /app
+fi
+exec node /app/bin/fleet-daemon.mjs
