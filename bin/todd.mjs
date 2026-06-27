@@ -62,6 +62,8 @@ const SELF_CHECK_AUTO_ENABLED = process.env.TODD_SELF_CHECK_AUTO_ENABLED === '1'
 const SELF_CHECK_PRESENCE_WINDOW_MS = (parseInt(process.env.TODD_SELF_CHECK_PRESENCE_SEC || process.env.DISPO_PRESENCE_SEC || '', 10) || 120) * 1000
 const PREF_SELF_CHECK_ENABLED_KEY = 'todd-self-check-auto-enabled'
 const PREF_SELF_CHECK_COUNTDOWN_KEY = 'todd-self-check-countdown-sec'
+const PREF_BOT_SELF_CHECK_ENABLED_KEY = 'bot-self-check-enabled'
+const PREF_BOT_SELF_CHECK_COUNTDOWN_KEY = 'bot-self-check-countdown-sec'
 const taskKickLastSent = new Map()
 const looseEndLastSent = new Map()
 // lastRealActivityMs[agentId] = timestamp of last meaningful tool call.
@@ -126,11 +128,13 @@ selfCheckWiring = createDispositionWiring({
 async function refreshSelfCheckPrefs() {
   const prefs = await getJson(`/api/fleet/prefs?user=${encodeURIComponent(OWNER_ID)}`, null)
   if (!prefs || typeof prefs !== 'object') return
-  if (PREF_SELF_CHECK_ENABLED_KEY in prefs) selfCheckAutoEnabled = prefs[PREF_SELF_CHECK_ENABLED_KEY] === true
-  if (PREF_SELF_CHECK_COUNTDOWN_KEY in prefs) {
-    const sec = Number(prefs[PREF_SELF_CHECK_COUNTDOWN_KEY])
-    if (Number.isFinite(sec) && sec > 0) selfCheckScheduler.setCountdownMs(sec * 1000)
-  }
+  const perBotEnabled = prefs[PREF_BOT_SELF_CHECK_ENABLED_KEY]?.[AGENT_ID]
+  if (perBotEnabled !== undefined) selfCheckAutoEnabled = perBotEnabled === true
+  else if (PREF_SELF_CHECK_ENABLED_KEY in prefs) selfCheckAutoEnabled = prefs[PREF_SELF_CHECK_ENABLED_KEY] === true
+
+  const perBotCountdown = prefs[PREF_BOT_SELF_CHECK_COUNTDOWN_KEY]?.[AGENT_ID]
+  const sec = Number(perBotCountdown ?? prefs[PREF_SELF_CHECK_COUNTDOWN_KEY])
+  if (Number.isFinite(sec) && sec > 0) selfCheckScheduler.setCountdownMs(sec * 1000)
 }
 
 async function refreshSelfCheckRoster() {

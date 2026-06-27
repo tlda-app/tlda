@@ -2,7 +2,6 @@ import { StateNode, createShapeId, DefaultColorStyle, type JsonObject } from 'tl
 import { currentDocumentInfo } from '../svgDocumentLoader'
 import { getSourceAnchor, canvasToPdf, type SourceAnchor } from '../synctexAnchor'
 import { NOTE_COLORS } from '../shapes/MathNoteShape'
-import { getPref } from '../preferences'
 
 const NOTE_W = 200
 const NOTE_H = 50
@@ -12,9 +11,13 @@ export class MathNoteTool extends StateNode {
 
   private preview: HTMLDivElement | null = null
 
-  private getPreviewColor(): string {
+  private getActiveColor(): string {
     const color = this.editor.getStyleForNextShape(DefaultColorStyle)
-    return NOTE_COLORS[color] || NOTE_COLORS[getPref('math-note-color')]
+    return NOTE_COLORS[color] ? color : 'light-blue'
+  }
+
+  private getPreviewColor(): string {
+    return NOTE_COLORS[this.getActiveColor()]
   }
 
   override onEnter = () => {
@@ -80,7 +83,7 @@ export class MathNoteTool extends StateNode {
         w: NOTE_W,
         h: NOTE_H,
         text: '',
-        color: getPref('math-note-color'),
+        color: this.getActiveColor(),
       },
     })
 

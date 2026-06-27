@@ -157,8 +157,7 @@ body.tlda-pan-mode .tl-shape[data-shape-type="fleet-chat"] {
    opaque". Pin to 1 regardless of the shape's stored TLDraw opacity (existing
    notes were persisted at 0.7) and regardless of hover. CSS opacity is
    theme-independent, so this single rule covers light AND .tl-theme__dark.
-   The per-note dim feature (math-note-opacity pref) and the search-filter dim
-   still work — they apply to the inner HTMLContainer, not this outer element. */
+   Search-filter dimming still works on the inner HTMLContainer. */
 .tl-shape[data-shape-type="math-note"] {
   opacity: 1 !important;
 }

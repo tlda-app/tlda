@@ -289,6 +289,8 @@ Don't write test scripts speculatively for features that aren't being actively w
 
 ## TLDraw Patterns
 
+**tlda is a tool for mathematicians who do math and don't write software.** Do not impose software-developer preferences on it. Most software like this is built by and for developers; this audience is the opposite — they use voice and touch (the primary user has RSI), they read and annotate math, they don't want keyboard-centric affordances, dense developer chrome, capability/permission systems, or loud notifications. When you make a design or UX decision, default to what serves a non-coding mathematician, not what a developer would prefer. Agents consistently default to developer-centric design — that default is the bug.
+
 **Use tldraw's event system.** `stopEventPropagation` from tldraw (not bare `e.stopPropagation()`). TLDraw uses capture-phase listeners; bare stopPropagation doesn't prevent TLDraw from intercepting events.
 
 **Shape state lives in shape props**, not in meta fields or external state. One shape = one visual unit.

@@ -14,10 +14,9 @@ import { DEFAULT_CURVE } from './curveEditor.ts'
 const DEFAULTS = {
   'docview-sources': ['ref'] as string[],
   'voice-note-color': 'yellow' as string,
-  'math-note-color': 'light-blue' as string,
-  'math-note-opacity': 1.0 as number,
   'response-curve': DEFAULT_CURVE as CurveHandles,
-  'spawn-mode': '' as string,
+  'known-devices': {} as Record<string, { lastSeen: string }>,
+  'device-names': {} as Record<string, string>,
   // Default OFF (Skip, 2026-06-21): voice is opt-in, so a fresh/anonymous client
   // (incl. automated/Playwright tabs) never opens the paid Deepgram path on
   // defaults — that default was the source of the Deepgram cost. The user selects
@@ -79,9 +78,12 @@ const DEFAULTS = {
   // explicitly enabled here.
   'todd-self-check-auto-enabled': false as boolean,
   'todd-self-check-countdown-sec': 30 as number,
+  'bot-self-check-enabled': {} as Record<string, boolean>,
+  'bot-self-check-countdown-sec': {} as Record<string, number>,
+  'bot-model': {} as Record<string, string>,
   // Preferences panel disclosure state. Kept server-backed so touch-only
   // devices don't need localStorage access to recover usable panel space.
-  'prefs-open-sections': ['identity', 'theme', 'readability'] as string[],
+  'prefs-open-sections': ['account', 'appearance', 'voice'] as string[],
 }
 
 export type PrefKey = keyof typeof DEFAULTS

@@ -19,7 +19,6 @@ import { DocContext } from '../PanelContext'
 import { fetchProofInfo } from '../docInfoCache'
 import { linkifyArrowRefs, linkifyAtRefs, refToCanvas, type LabelRegionInfo, type ResolvedRef } from '../docLinks'
 import { PDF_HEIGHT } from '../layoutConstants'
-import { getPref, subscribePref } from '../preferences'
 import { beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
 
 const md = new MarkdownIt({ html: true, breaks: true, linkify: true })
@@ -381,11 +380,6 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     const bgColor = NOTE_COLORS[shape.props.color] || NOTE_COLORS.yellow
     const searchFilter = useSyncExternalStore(subscribeSearchFilter, getSearchFilter)
     const isFilteredOut = searchFilter !== null && !searchFilter.has(shape.id)
-    const noteOpacity = useSyncExternalStore(
-      subscribePref,
-      () => getPref('math-note-opacity'),
-      () => getPref('math-note-opacity'),
-    )
     const useVim = useSyncExternalStore(subscribeVimMode, getVimMode)
     const activeBullets = useSyncExternalStore(subscribeBulletContext, getBulletContexts)
 
@@ -1628,7 +1622,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           display: 'flex',
           flexDirection: 'column',
           position: 'relative',
-          opacity: isFilteredOut ? 0.15 : noteOpacity,
+          opacity: isFilteredOut ? 0.15 : 1,
           transition: 'opacity 0.2s',
         }}
       >
