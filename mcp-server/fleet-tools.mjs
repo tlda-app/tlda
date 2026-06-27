@@ -2850,32 +2850,22 @@ export async function handleFleetTool(name, args) {
       }
     }
 
-    // Report gate (own task only)
-    if (agent === AGENT_ID && !task.reported) {
-      try {
-        const diff = execSync('git diff HEAD --name-only 2>/dev/null', {
-          cwd: process.env.PWD || os.homedir(), encoding: 'utf8', timeout: 5000,
-        }).trim();
-        if (diff) {
-          return { content: [{ type: 'text', text: `File report() before task_done(). You have uncommitted file edits:\n${diff.split('\n').slice(0, 10).join('\n')}\n\nCall report() to self-review your changes first.` }] };
-        }
-      } catch {}
-    }
-
-    // Lint gate (own task only)
+    // Task close hinges on Skip's approval + success-criteria ONLY — never the
+    // filesystem. The old report/lint gates ran `git diff HEAD` over the whole
+    // working tree and blocked the close on ANY uncommitted edit — including
+    // files the agent doesn't own on a shared tree — which deadlocked agents
+    // (it wedged WM by blocking on files outside the agent's control). Lint of
+    // the report TEXT is still useful, so it is surfaced as a non-blocking
+    // advisory below rather than blocking the close, and it no longer reads the
+    // git diff at all.
     let _lintOverrides = [];
+    let _lintAdvisory = '';
     if (agent === AGENT_ID) {
       const reportText = args.report || args.description || null;
       _lintOverrides = Array.isArray(args.overrides) ? args.overrides : [];
-      let gitDiff = null;
-      try {
-        gitDiff = execSync('git diff HEAD 2>/dev/null', {
-          cwd: process.env.PWD || os.homedir(), encoding: 'utf8', timeout: 5000,
-        });
-      } catch {}
-      const violations = lintReport(reportText, gitDiff, _lintOverrides);
+      const violations = lintReport(reportText, null, _lintOverrides);
       if (violations.length > 0) {
-        return { content: [{ type: 'text', text: formatLintViolations(violations) }], isError: true };
+        _lintAdvisory = `\n\n⚠️ Report-text notes (advisory — did not block close):\n${formatLintViolations(violations)}`;
       }
     }
 
@@ -2893,6 +2883,7 @@ export async function handleFleetTool(name, args) {
       if (_lintOverrides.length > 0) {
         msg += `\n\nNote: ${_lintOverrides.length} lint override(s) were used: ${_lintOverrides.join(', ')}`;
       }
+      msg += _lintAdvisory;
       if (agent === AGENT_ID) {
         msg += '\n\nKeep working or use timer() — you\'ll see 📬 when the next task arrives.';
       }
