@@ -101,7 +101,7 @@ const COMMAND_HELP = {
   watch:   'tlda daemon [start|stop|status|log|run]\n\n  Control the per-machine fleet-daemon (bin/fleet-daemon.mjs).\n  The daemon watches Claude Code session JSONLs and project source\n  dirs locally, pushing events to the tlda server over WebSocket.',
   'watch-all': 'tlda daemon [start|stop|status|log|run]\n\n  Alias for `tlda daemon start/stop/status/log/run` — runs the\n  per-machine fleet-daemon (bin/fleet-daemon.mjs), which watches\n  every project source dir AND every Claude Code session JSONL\n  on this machine and pushes events to the tlda server over WebSocket.',
   open:    'tlda doc open [name]\n\n  Open the viewer in the default browser (RW token = presenter privilege).',
-  share:   'tlda doc share [name]\n\n  Print a reachable viewer URL with the read-only token.\n  Uses the configured remote server when active, otherwise Funnel/Tailscale.\n  Does not print localhost as a share URL for users on another machine.\n  Recipients can annotate but cannot present.',
+  share:   'tlda doc share [name|.]\n\n  Print a reachable viewer URL with the read-only token.\n    (no arg)  share the index page (root /)\n    .         share the project inferred from the current directory\n    <name>    share that specific doc\n  Uses the configured remote server when active, otherwise Funnel/Tailscale/LAN.\n  Does not print localhost as a share URL for users on another machine.\n  Recipients can annotate but cannot present.',
   status:  'tlda doc status [name]\n\n  Show build status for a project.',
   errors:  'tlda doc errors [name] [--wait]\n\n  Extract LaTeX errors and warnings from the last build log.\n  With --wait (-w), blocks until the current build finishes.',
   build:   'tlda build [name]\n\n  Trigger a rebuild without pushing files.\n\n  NOTE: Prefer the watcher pipeline. This command bypasses change\n  detection and should only be used for debugging.',
@@ -994,8 +994,23 @@ async function cmdOpen() {
 }
 
 async function cmdShare() {
-  const name = getPositional(0) || await inferProjectName()
-  if (!name) { console.error('Usage: tlda doc share [name]'); process.exit(1) }
+  // Three shapes (Skip-confirmed):
+  //   (no arg) → index page (root `/`, docName=null)
+  //   `.`      → the project inferred from the cwd; error if none found
+  //   <name>   → that specific doc
+  const arg = getPositional(0)
+  let name
+  if (arg === undefined) {
+    name = null
+  } else if (arg === '.') {
+    name = await inferProjectName()
+    if (!name) {
+      console.error('No project found for the current directory. Run `tlda doc share <name>` or `tlda doc share` for the index page.')
+      process.exit(1)
+    }
+  } else {
+    name = arg
+  }
 
   const config = loadConfig()
   const serverUrl = getServer()

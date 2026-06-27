@@ -179,4 +179,17 @@ describe('share URL selection', () => {
       'https://tlda-fly.cormorant-matrix.ts.net/auth/login?token=read%20token&redirect=%2F%3Fdoc%3Dbregman',
     )
   })
+
+  it('redirects to the index page when no doc name is given (no-arg share)', () => {
+    // `tlda doc share` with no arg → docName=null → redirect to root `/`.
+    const url = viewerLoginUrl('https://100.88.45.64:5176', null, 'tok')
+    assert.equal(url, 'https://100.88.45.64:5176/auth/login?token=tok&redirect=%2F')
+  })
+
+  it('redirects to a specific doc when a name is given (`.`-inferred or explicit)', () => {
+    // Both `tlda doc share .` (cwd-inferred name) and `tlda doc share NAME`
+    // resolve a doc name and redirect to `/?doc=NAME`.
+    const url = viewerLoginUrl('https://100.88.45.64:5176', 'bregman', 'tok')
+    assert.equal(url, 'https://100.88.45.64:5176/auth/login?token=tok&redirect=%2F%3Fdoc%3Dbregman')
+  })
 })
