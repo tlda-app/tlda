@@ -52,6 +52,17 @@ export const TOUCH_TELEMETRY_BUILD = 'touch56-20260617-hud-state-1'
 
 export const fleetTouchGestureActiveRef = { current: false }
 
+export const CORNER_CONTROL_SELECTORS = [
+  '.phone-hl-btn',
+  '.voice-note-btn',
+  '.mic-toggle-btn',
+  '.fleet-icon-pill-container',
+  '.fleet-icon-pill-badge',
+  '.phone-toc-btn',
+] as const
+
+const CORNER_CONTROL_SELECTOR = CORNER_CONTROL_SELECTORS.join(',')
+
 function touchDiagEnabled() {
   if (typeof window === 'undefined') return false
   try {
@@ -259,6 +270,11 @@ function elementChainAt(clientX: number, clientY: number) {
   return chain
 }
 
+function cornerControlAtPoint(clientX: number, clientY: number): Element | null {
+  const el = document.elementFromPoint(clientX, clientY)
+  return el?.closest?.(CORNER_CONTROL_SELECTOR) ?? null
+}
+
 type FleetHit = {
   shape: TLShape
   source: 'dom' | 'geometry'
@@ -283,7 +299,14 @@ function topLevelFleetShape(overlay: Editor, shape: TLShape): TLShape {
 // The fleet shape (if any) under a screen point. The rendered DOM is the source
 // of truth for "what is visibly under the finger"; overlay geometry is only a
 // fallback for replay / culled DOM cases.
-function fleetHitAtScreen(overlay: Editor, clientX: number, clientY: number, viewportId?: string): FleetHit | null {
+function fleetHitAtScreen(
+  overlay: Editor,
+  clientX: number,
+  clientY: number,
+  viewportId?: string,
+  opts: { ignoreCornerControls?: boolean } = {},
+): FleetHit | null {
+  if (!opts.ignoreCornerControls && cornerControlAtPoint(clientX, clientY)) return null
   const el = document.elementFromPoint(clientX, clientY)
   const hudWrap = el?.closest?.('.fleet-hud-wrap') as HTMLElement | null
   if (el && hudWrap) {
@@ -330,7 +353,13 @@ function fleetHitAtScreen(overlay: Editor, clientX: number, clientY: number, vie
   return null
 }
 
-function containingFleetPanelsAtPoint(overlay: Editor, clientX: number, clientY: number): TLShape[] {
+function containingFleetPanelsAtPoint(
+  overlay: Editor,
+  clientX: number,
+  clientY: number,
+  opts: { ignoreCornerControls?: boolean } = {},
+): TLShape[] {
+  if (!opts.ignoreCornerControls && cornerControlAtPoint(clientX, clientY)) return []
   const hits: { shape: TLShape; area: number }[] = []
   for (const node of Array.from(document.querySelectorAll('.fleet-hud-wrap [data-shape-id]'))) {
     if (!(node instanceof HTMLElement)) continue
@@ -1178,6 +1207,33 @@ export function useFleetGestures(opts: {
       hudPointerEvents: describeElement(el)?.pointerEvents ?? null,
     })
 
+    const describeFleetHit = (hit: FleetHit | null) => hit ? ({
+      id: hit.shape.id,
+      type: hit.shape.type as string,
+      source: hit.source,
+      rawShapeId: hit.rawShapeId ?? null,
+      rawShapeType: hit.rawShapeType ?? null,
+    }) : null
+
+    const describeFleetShape = (shape: TLShape) => ({
+      id: shape.id,
+      type: shape.type as string,
+    })
+
+    const hitTestAt = (clientX: number, clientY: number) => {
+      const overlay = overlayEditorRef.current
+      if (!overlay) return { hasOverlay: false }
+      return {
+        hasOverlay: true,
+        cornerControl: describeElement(cornerControlAtPoint(clientX, clientY)),
+        guardedHit: describeFleetHit(fleetHitAtScreen(overlay, clientX, clientY, viewportId)),
+        rawHit: describeFleetHit(fleetHitAtScreen(overlay, clientX, clientY, viewportId, { ignoreCornerControls: true })),
+        guardedContainingPanels: containingFleetPanelsAtPoint(overlay, clientX, clientY).map(describeFleetShape),
+        rawContainingPanels: containingFleetPanelsAtPoint(overlay, clientX, clientY, { ignoreCornerControls: true }).map(describeFleetShape),
+        elementChain: elementChainAt(clientX, clientY),
+      }
+    }
+
     const shapeSnapshot = (editor: Editor | null) => {
       if (!editor) return {}
       const out: Record<string, { id: string; type: string; x: number; y: number; w: number | null; h: number | null }> = {}
@@ -1400,6 +1456,7 @@ export function useFleetGestures(opts: {
       replayLibraryAll,
       replayLast: (speed?: number) => replay(undefined, speed),
       status,
+      hitTestAt,
     }
 
     const markEventHandled = (e: TouchEvent) => {
