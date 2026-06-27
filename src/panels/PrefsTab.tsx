@@ -148,6 +148,8 @@ function readAll() {
     foldMd: getPref('fold-md-lines'),
     foldDiff: getPref('fold-diff-lines'),
     hlZone: getPref('hl-zone-enabled'),
+    cornerRail: getPref('corner-rail-enabled'),
+    cornerSize: getPref('corner-control-size'),
     slidesNavigationMode: getPref('slides-navigation-mode'),
     provenanceMode: getPref('provenance-display-mode'),
     selfCheckEnabled: getPref('todd-self-check-auto-enabled'),
@@ -552,8 +554,8 @@ export function PrefsTab() {
 
       <CollapsiblePrefsSection
         id="highlighter"
-        title="Highlighter"
-        summary={prefs.hlZone ? 'Edge zone on' : 'Edge zone off'}
+        title="Corner controls"
+        summary={`${prefs.hlZone ? 'Edge zone on' : 'Edge zone off'} / ${prefs.cornerRail ? `voice slider ${prefs.cornerSize || 'auto'}` : 'classic'}`}
         open={prefs.openSections.includes('highlighter')}
         onToggle={toggleSection}
       >
@@ -565,6 +567,27 @@ export function PrefsTab() {
           />
           <span>Edge zone</span>
         </label>
+        <label className="prefs-check">
+          <input
+            type="checkbox"
+            checked={prefs.cornerRail}
+            onChange={e => setPref('corner-rail-enabled', e.target.checked)}
+          />
+          <span>Voice slider</span>
+        </label>
+        <div className="prefs-num-row">
+          <span className="prefs-num-label">Corner size</span>
+          <input
+            type="number"
+            min={0}
+            max={88}
+            step={4}
+            value={prefs.cornerSize}
+            onChange={e => setPref('corner-control-size', Number(e.target.value))}
+            className="prefs-num"
+          />
+          <span className="prefs-num-unit">{prefs.cornerSize ? 'px' : 'auto'}</span>
+        </div>
       </CollapsiblePrefsSection>
 
       <CollapsiblePrefsSection

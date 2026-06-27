@@ -944,6 +944,16 @@ function clearCurrentSinkInterim() {
   fadeHud(1500)
 }
 
+export function clearLastInterim() {
+  if (!_voiceDumping) {
+    _sinkPrevTextarea = _activeTextarea
+    _sinkPrevAccumulator = _accumulator
+    _sinkPrevLeft = _left
+    _sinkPrevRight = _right
+  }
+  clearCurrentSinkInterim()
+}
+
 export function enterVoiceSink() {
   if (_voiceDumping) {
     clearCurrentSinkInterim()
