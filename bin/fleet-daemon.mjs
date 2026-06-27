@@ -1115,11 +1115,14 @@ async function syncSessionWatchers(agentList) {
       const watcher = createWatcher()
 
       // Poll fallback: catches writes that fs.watch misses when FSEvents goes silent on macOS.
-      fs.watchFile(jsonlPath, { interval: 2000, persistent: false }, (curr, prev) => {
+      // On NFS-mounted agent JSONLs (the common production case — mini serves ~/work over NFS,
+      // and FSEvents does not fire for NFS paths), the poll is the PRIMARY detection path, not
+      // a rare fallback. Use a tight interval so worst-case detection lag stays sub-second.
+      fs.watchFile(jsonlPath, { interval: 250, persistent: false }, (curr, prev) => {
         if (curr.mtimeMs === prev.mtimeMs) return
         const pw = pathWatchers.get(jsonlPath)
         if (!pw) return
-        if (pw.watchSeenAt && Date.now() - pw.watchSeenAt < 3000) return
+        if (pw.watchSeenAt && Date.now() - pw.watchSeenAt < 750) return
         log.warn(`fs.watch missed ${path.basename(jsonlPath)} — recreating`)
         try { pw.watcher.close() } catch {}
         pw.watcher = createWatcher()
