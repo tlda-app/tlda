@@ -761,7 +761,7 @@ async function loadStateAll() {
 
 // ---- Report linter ----
 // Runs on task_done() calls. Returns array of violation objects: { id, pattern, location, text, advice }
-function lintReport(reportText, gitDiff, overrides = []) {
+export function lintReport(reportText, gitDiff, overrides = []) {
   const violations = [];
   const overrideSet = new Set(overrides);
 
