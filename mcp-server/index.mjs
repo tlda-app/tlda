@@ -1927,9 +1927,11 @@ const server = new Server(
   }
 );
 
+const FLEET_ONLY_MCP = process.env.TLDA_MCP_FLEET_ONLY === '1'
+
 // List available tools
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [
+  tools: FLEET_ONLY_MCP ? getFleetTools() : [
     {
       name: 'screenshot',
       description: 'Capture an image of part of the viewer. Specify a target — viewport (current scroll position), screen (the user\'s entire visible area), an annotation region (via screenshotRef from a read_annotations result), or explicit canvas bounds. Always passes through the viewer\'s capture mechanism. There is no default — pick a target intentionally.',
