@@ -66,6 +66,20 @@ let _nounUsed = null
 const args = process.argv.slice(2)
 const command = args[0]
 
+// Global `--config <name>`: select an alternate complete config (= an alternate
+// server, the whole database+store pair) for THIS run only, WITHOUT editing the
+// shared "defaultConfig". This is THE supported way to test against another
+// server — editing defaultConfig is what caused the 6/27 split, where a leftover
+// pointed every spawned agent at the wrong fleet. Set before any config
+// resolution (getServerUrl/getRwToken/resolveConfig all read TLDA_CONFIG), and it
+// flows into a spawned daemon via env inheritance (see ensureFleetDaemonRunning).
+{
+  const i = args.indexOf('--config')
+  if (i !== -1 && args[i + 1] && !args[i + 1].startsWith('--')) {
+    process.env.TLDA_CONFIG = args[i + 1]
+  }
+}
+
 // Noun-only: a command lives under its noun, not flat. No back-compat aliases —
 // reject the bare form and point at the noun. (Docs/callers use the noun forms.)
 {
@@ -103,7 +117,7 @@ const VALUE_FLAGS = new Set([
   'server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format',
   'session', 'target', 'timeout', 'id', 'book', 'worktree', 'port', 'browser',
   'model', 'cwd', 'effort', 'mode', 'kind', 'spawn-capability', 'capability',
-  'to', 'limit',
+  'to', 'limit', 'config',
 ])
 
 function getFlag(name, defaultVal = null) {

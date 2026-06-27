@@ -32,8 +32,13 @@ import {
 } from './lib/formatCoords.mjs';
 import { harnessFromEnv } from './lib/harness-adapters.mjs';
 
-import { getServerUrl, DEFAULT_PORT } from '../shared/config.mjs'
+import { getServerUrl, assertServerCoherence, DEFAULT_PORT } from '../shared/config.mjs'
 import { tldaFetch as _tldaFetch } from '../shared/http-client.mjs'
+
+// Fail loud if a hand-pinned TLDA_SERVER disagrees with the config this agent's
+// MCP resolved — the 6/27 split, refused at boot rather than joining the wrong
+// roster. Throws (no tools come up) instead of silently registering elsewhere.
+assertServerCoherence();
 
 const TLDA_TOKEN = resolveToken();
 const TLDA_AUTH_HEADERS = TLDA_TOKEN ? { 'Authorization': `Bearer ${TLDA_TOKEN}` } : {};
@@ -348,8 +353,15 @@ function checkDocBuildStatusDisk(docName) {
   }
 }
 
-// Initialize data source: HTTP fetch when TLDA_SERVER is set, disk read otherwise
-initDataSource(PROJECT_ROOT, process.env.TLDA_SERVER || null);
+// Doc-asset source: fetch over HTTP from the active config's STORE when that
+// store is a remote origin; read disk otherwise. Derived from store.http (config),
+// NOT a raw TLDA_SERVER env — so the asset origin can't diverge from the fleet the
+// agent joined (a spawned remote agent on the Mini has no local output/ to read, so
+// it must HTTP from store). Disk mode is preserved for a local store (localhost,
+// same-machine dev) and the deliberate split-sync (TLDA_SYNC_SERVER — the published
+// triage clone reads assets from disk while shapes sync elsewhere).
+const _storeIsLocal = /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(TLDA_SERVER);
+initDataSource(PROJECT_ROOT, (process.env.TLDA_SYNC_SERVER || _storeIsLocal) ? null : TLDA_SERVER);
 
 // ---- Lookup.json support ----
 
