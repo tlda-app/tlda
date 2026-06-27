@@ -99,6 +99,49 @@ if [ -n "${TLDA_MACHINE_ID}" ]; then
     /root/.config/tlda/config.json "${TLDA_MACHINE_ID}"
 fi
 
+# Put the friend paper where an agent expects to work: a real git checkout in
+# ~/work/<project>, watched by this daemon. This mirrors a normal user machine:
+# agents start in the project repo, not an empty container directory.
+if [ -n "$PROJECT_DIR" ]; then
+  node -e 'const fs=require("fs"); const file=process.argv[1]; const project=process.argv[2]; const dir=process.argv[3]; let cfg={}; try { cfg=JSON.parse(fs.readFileSync(file,"utf8")) || {}; } catch {} if (cfg[project] !== dir) { cfg[project] = dir; fs.mkdirSync(require("path").dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(cfg, null, 2)); }' \
+    /root/.config/tlda/source-bindings.json "${PROJECT_NAME:-project}" "$PROJECT_DIR"
+
+  FRIEND_REMOTE="${TLDA_FRIEND_GIT_REMOTE:-}"
+  if [ -z "$FRIEND_REMOTE" ] && [ -n "${TLDA_FRIEND_GIT_URL}" ]; then
+    FRIEND_REMOTE=$(node -e 'const gitUrl=process.argv[1]; const token=process.env.TLDA_FRIEND_GIT_TOKEN || ""; if (token && /^https?:\/\//i.test(gitUrl)) { const u=new URL(gitUrl); u.username="git"; u.password=token; console.log(u.toString()); } else { console.log(gitUrl); }' "${TLDA_FRIEND_GIT_URL}")
+  fi
+
+  if [ -n "$FRIEND_REMOTE" ]; then
+    CLONE_LOG=$(mktemp)
+    if [ ! -d "$PROJECT_DIR/.git" ]; then
+      if [ -z "$(find "$PROJECT_DIR" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+        if git clone "$FRIEND_REMOTE" "$PROJECT_DIR" >"$CLONE_LOG" 2>&1; then
+          git -C "$PROJECT_DIR" config user.email "tlda@local" || true
+          git -C "$PROJECT_DIR" config user.name "tlda" || true
+          echo "[entrypoint] cloned project repo into $PROJECT_DIR"
+        else
+          sed 's#//[^/@[:space:]]*@#//***@#g' "$CLONE_LOG" >&2 || true
+          echo "[entrypoint] WARNING: project clone failed; agents will start with current directory contents" >&2
+        fi
+      else
+        echo "[entrypoint] WARNING: $PROJECT_DIR is not empty and is not a git checkout; leaving it alone" >&2
+      fi
+    elif [ -z "$(git -C "$PROJECT_DIR" status --porcelain 2>/dev/null)" ]; then
+      if git -C "$PROJECT_DIR" pull --ff-only >"$CLONE_LOG" 2>&1; then
+        echo "[entrypoint] updated project repo in $PROJECT_DIR"
+      else
+        sed 's#//[^/@[:space:]]*@#//***@#g' "$CLONE_LOG" >&2 || true
+        echo "[entrypoint] WARNING: project repo update failed; leaving checkout as-is" >&2
+      fi
+    else
+      echo "[entrypoint] project repo has local changes; skipping boot pull"
+    fi
+    rm -f "$CLONE_LOG"
+  else
+    echo "[entrypoint] WARNING: no TLDA_FRIEND_GIT_REMOTE/TLDA_FRIEND_GIT_URL; project directory will not be cloned" >&2
+  fi
+fi
+
 # Codex auth. Precedence: an existing auth.json on the volume wins (it may hold a
 # token codex auto-refreshed, newer than the secret). Otherwise seed it from the
 # CODEX_AUTH_JSON Fly secret so a fresh box needs NO interactive device-auth — set

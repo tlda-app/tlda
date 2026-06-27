@@ -80,6 +80,14 @@ function docLinkDisplayLine(plan) {
     + ` --title ${shellQuote(plan.title)} --poll ${shellQuote(plan.poll)}`
 }
 
+function authedGitUrl(gitUrl, token) {
+  if (!token || !/^https?:\/\//i.test(gitUrl)) return gitUrl
+  const u = new URL(gitUrl)
+  u.username = 'git'
+  u.password = token
+  return u.toString()
+}
+
 function run(command, args, { execute, env = {}, displayLine = null }) {
   const line = commandLine(command, args, env)
   if (!execute) return { line, skipped: true }
@@ -236,6 +244,7 @@ primary_region = "${plan.region}"
   TLDA_SERVER = "${plan.renderUrl}"
   TLDA_MACHINE_ID = "${plan.machineId}"
   TLDA_FRIEND_PROJECT = "${plan.project}"
+  TLDA_FRIEND_GIT_URL = "${plan.overleafUrl}"
 
 [[vm]]
   size = "shared-cpu-2x"
@@ -267,6 +276,7 @@ async function buildFriendPlan(flags, verb) {
   const renderUrl = `https://${renderApp}.fly.dev`
   const rwToken = flags['rw-token'] || makeToken()
   const readToken = flags['read-token'] || makeToken()
+  const agentGitRemote = authedGitUrl(overleafUrl, overleafToken.value)
   const codexAuthJson = flags['codex-auth-json'] || join(process.env.HOME || '~', '.codex', 'auth.json')
   const shipConfig = !!flags['ship-config']
   const configBundle = shipConfig ? join(mkdtempSync(join(tmpdir(), 'tlda-fly-config-')), 'agent-config.tgz') : null
@@ -277,7 +287,7 @@ async function buildFriendPlan(flags, verb) {
   return {
     project, person: person || '(project)', mainFile, overleafUrl, overleafToken: overleafToken.value,
     overleafTokenDisplay: overleafToken.display, overleafTokenSource: overleafToken.source, region, renderApp, agentApp,
-    renderVolume, agentVolume, machineId, poll, renderUrl, rwToken, readToken,
+    renderVolume, agentVolume, machineId, poll, renderUrl, rwToken, readToken, agentGitRemote,
     codexAuthJson, editorUrl, shareUrl, title: flags.title || project, stem, shipConfig, configBundle,
   }
 }
@@ -371,7 +381,7 @@ function printFriendPlan(plan, { execute, renderConfig, agentConfig, bundle }) {
     ['fly', ['deploy', REPO_ROOT, '-c', renderConfig, '--remote-only']],
     ['fly', ['apps', 'create', plan.agentApp]],
     ['fly', ['volumes', 'create', plan.agentVolume, '-a', plan.agentApp, '-r', plan.region, '-s', '1']],
-    ['fly', ['secrets', 'set', `CODEX_AUTH_JSON=$(cat ${plan.codexAuthJson})`, '-a', plan.agentApp], {}, `fly secrets set CODEX_AUTH_JSON="$(cat ${shellQuote(plan.codexAuthJson)})" -a ${shellQuote(plan.agentApp)}`],
+    ['fly', ['secrets', 'set', `CODEX_AUTH_JSON=$(cat ${plan.codexAuthJson})`, `TLDA_FRIEND_GIT_REMOTE=${plan.agentGitRemote}`, '-a', plan.agentApp], {}, `fly secrets set CODEX_AUTH_JSON="$(cat ${shellQuote(plan.codexAuthJson)})" TLDA_FRIEND_GIT_REMOTE=<git-remote-with-token> -a ${shellQuote(plan.agentApp)}`],
     ['fly', ['deploy', REPO_ROOT, '-c', agentConfig, '--remote-only']],
     ['tlda', ['doc', 'link', plan.project, plan.mainFile, '--server', plan.renderUrl, '--from', plan.overleafUrl, '--token', plan.overleafToken, '--title', plan.title, '--poll', plan.poll], { TLDA_TOKEN: plan.rwToken }, docLinkDisplayLine(plan)],
   ]
@@ -429,9 +439,9 @@ Examples:
   run('fly', ['deploy', REPO_ROOT, '-c', renderConfig, '--remote-only'], { execute })
   ensureFlyApp(plan.agentApp, { execute })
   ensureFlyVolume(plan.agentApp, plan.agentVolume, plan.region, { execute })
-  run('fly', ['secrets', 'set', `CODEX_AUTH_JSON=${readFileSync(plan.codexAuthJson, 'utf8')}`, '-a', plan.agentApp], {
+  run('fly', ['secrets', 'set', `CODEX_AUTH_JSON=${readFileSync(plan.codexAuthJson, 'utf8')}`, `TLDA_FRIEND_GIT_REMOTE=${plan.agentGitRemote}`, '-a', plan.agentApp], {
     execute,
-    displayLine: `fly secrets set CODEX_AUTH_JSON="$(cat ${shellQuote(plan.codexAuthJson)})" -a ${shellQuote(plan.agentApp)}`,
+    displayLine: `fly secrets set CODEX_AUTH_JSON="$(cat ${shellQuote(plan.codexAuthJson)})" TLDA_FRIEND_GIT_REMOTE=<git-remote-with-token> -a ${shellQuote(plan.agentApp)}`,
   })
   prepareAgentBuildAssets(plan)
   unsetFlySecretIfPresent(plan.agentApp, 'TLDA_AGENT_CONFIG_TGZ_B64', { execute })
