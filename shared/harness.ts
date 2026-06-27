@@ -10,6 +10,12 @@ export interface HarnessOps {
   educationGate: boolean
   requiresClaudeSession: boolean
   filtersSkillSections: boolean
+  // The harness's natural on-disk skills directory — where THIS harness's agents
+  // read SKILL.md from. The skill gate points an agent here instead of at any one
+  // machine's checkout path, so it stays portable: each box symlinks its skills
+  // into the harness-native place. A leading '~/' is the agent's home dir; a
+  // relative path (goose) resolves against the agent's workspace.
+  skillsDir: string
   modelFamily(model?: string | null): ModelFamily
   trustTier(model?: string | null): TrustTier
 }
@@ -110,6 +116,7 @@ export const HARNESS: Record<Kind, HarnessOps> = {
     educationGate: false,
     requiresClaudeSession: true,
     filtersSkillSections: false,
+    skillsDir: '~/.claude/skills',
     modelFamily: (model) => modelFamily({ model, kind: 'claude' }),
     trustTier: (model) => modelTrustTier({ model, kind: 'claude' }),
   },
@@ -120,6 +127,7 @@ export const HARNESS: Record<Kind, HarnessOps> = {
     educationGate: true,
     requiresClaudeSession: false,
     filtersSkillSections: true,
+    skillsDir: '~/.codex/skills',
     modelFamily: (model) => modelFamily({ model, kind: 'codex' }),
     trustTier: (model) => modelTrustTier({ model, kind: 'codex' }),
   },
@@ -130,6 +138,7 @@ export const HARNESS: Record<Kind, HarnessOps> = {
     educationGate: true,
     requiresClaudeSession: false,
     filtersSkillSections: true,
+    skillsDir: '.agents/skills',
     modelFamily: (model) => modelFamily({ model, kind: 'goose' }),
     trustTier: (model) => modelTrustTier({ model, kind: 'goose' }),
   },
