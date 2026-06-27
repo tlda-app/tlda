@@ -53,12 +53,24 @@ read_lock() {
 }
 
 # Is the lock currently ACTIVE (held by a still-valid holder, not stealable)?
-# Active iff fresh by timestamp OR the holder process is still alive.
+#
+# Liveness-FIRST: when a holder PID is recorded, that pid's liveness IS the
+# heartbeat — a live pid keeps the lock active forever (a long verb can't be
+# stolen), and a DEAD recorded pid makes the lock stale IMMEDIATELY regardless of
+# timestamp. That last part is the fix for the wedge: a `tlda-dev pw` verb whose
+# wrapper was killed mid-flight used to keep the lock "fresh" by timestamp for the
+# full stale window, so every other agent's acquire timed out and they
+# re-hibernated without ever getting a browser. Now the next agent sees the dead
+# pid and takes the lock at once. Only when NO pid was recorded (pid 0 — e.g. a
+# manual steal) do we fall back to the timestamp heartbeat.
 lock_active() {
   read_lock || return 1
+  if [ -n "$PID" ] && [ "$PID" != "0" ]; then
+    pid_alive "$PID" && return 0
+    return 1
+  fi
   local age=$(( $(now) - TS ))
   [ "$age" -lt "$STALE_SECS" ] && return 0
-  pid_alive "$PID" && return 0
   return 1
 }
 

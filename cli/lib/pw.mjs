@@ -28,10 +28,11 @@
  */
 
 import { spawnSync } from 'child_process'
-import { join, dirname } from 'path'
+import { join, dirname, resolve, isAbsolute } from 'path'
 import { readFileSync, writeFileSync, existsSync, realpathSync, rmSync, mkdirSync } from 'fs'
 import { homedir } from 'os'
 import { fileURLToPath } from 'url'
+import { createHash } from 'crypto'
 
 const REPO_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))))
 
@@ -40,20 +41,45 @@ const SESSION = process.env.TLDA_PW_SESSION || 'shared'
 const CANONICAL_SESSION = 'shared'
 const ALLOW_ISOLATED_SESSION = process.env.TLDA_PW_ALLOW_ISOLATED_SESSION === '1'
 
-// Pin the playwright-cli daemon's control SOCKET to a fixed, fence-visible path.
-// By default playwright-cli puts its client<->daemon unix socket under
-// $TMPDIR/playwright-cli. That breaks a FENCED agent driving the shared browser:
-// the fence remaps $TMPDIR (and the macOS sandbox denies AF_UNIX connect to the
-// real temp), so a fenced `tlda-dev pw` can't reach the out-of-fence daemon, sees
-// the live session as "closed", then destructively "recovers" (kills) the real
-// browser. /tmp is shared 1:1 with the fence, and the spawn lease whitelists this
-// dir via network.allowUnixSockets (bin/fleet-spawn.py), so pinning the socket
-// here lets the out-of-fence opener and an in-fence driver agree on one reachable
-// path. Inherited by every playwright-cli child (incl. the daemon it spawns).
-// Override with PLAYWRIGHT_DAEMON_SOCKETS_DIR for isolated testing.
-if (!process.env.PLAYWRIGHT_DAEMON_SOCKETS_DIR) {
-  process.env.PLAYWRIGHT_DAEMON_SOCKETS_DIR = '/tmp/tlda-pw-sockets'
+// ---- one daemon for everyone: pin the playwright-cli WORKSPACE ----
+//
+// playwright-cli keys its per-session daemon by a hash of the "workspace dir" it
+// finds by walking UP from process.cwd() looking for a `.playwright/` dir
+// (playwright-core cli-client/registry: createClientInfo → findWorkspaceDir, with
+// the package dir as the fallback when none is found). So two agents invoking
+// `tlda-dev pw` from different cwds — the main checkout, a worktree that has its
+// OWN `.playwright`, or any cwd with no `.playwright` ancestor — resolve to
+// DIFFERENT workspace hashes and each spawn a SEPARATE `shared` daemon+browser.
+// The reaper then sees duplicate `shared` processes and (old behavior) nuked them
+// ALL and reopened, yanking every agent's tab to about:blank. That is the
+// duplicate-daemon / about:blank-reset wedge.
+//
+// Fix: pin EVERY playwright-cli spawn's cwd to ONE canonical workspace — the main
+// checkout, which owns `.playwright/cli.config.json` — so all agents (any cwd, any
+// worktree, fenced or not) discover the same single daemon. CANONICAL_HASH lets
+// the reaper tell the canonical shared browser from an interloper and spare it.
+//
+// (The legacy PLAYWRIGHT_DAEMON_SOCKETS_DIR pin was dead code: this playwright-cli
+// has no such env var — it records the daemon's socket path in the session file
+// under the workspace-hash dir and clients read it from there, not from a fixed
+// sockets dir. Pinning the workspace is what actually makes one daemon shared.)
+const AGENT_CWD = process.cwd()
+function canonicalWorkspace() {
+  try {
+    const r = spawnSync('git', ['-C', REPO_ROOT, 'rev-parse', '--git-common-dir'], { encoding: 'utf8' })
+    if (r.status === 0) {
+      let g = (r.stdout || '').trim()
+      if (g) {
+        if (!isAbsolute(g)) g = resolve(REPO_ROOT, g)
+        const main = g.replace(/\/?\.git\/?$/, '') || REPO_ROOT
+        if (existsSync(join(main, '.playwright'))) return main
+      }
+    }
+  } catch { /* git unavailable — fall back to this checkout */ }
+  return REPO_ROOT
 }
+const PW_CWD = canonicalWorkspace()
+const CANONICAL_HASH = createHash('sha1').update(PW_CWD).digest('hex').slice(0, 16)
 
 // Each agent gets its own TAB in the one shared window. An earlier design gave
 // each agent its own window.open() popup so a background tab couldn't suspend
@@ -164,7 +190,9 @@ function playwrightCliRealPath() {
 }
 
 function pw(args, opts = {}) {
-  return spawnSync(playwrightCliBin(), [`-s=${SESSION}`, ...args], { encoding: 'utf8', ...opts })
+  // cwd PINNED to the canonical workspace so this command targets the ONE shared
+  // daemon regardless of where the agent invoked tlda-dev pw from (see PW_CWD).
+  return spawnSync(playwrightCliBin(), [`-s=${SESSION}`, ...args], { encoding: 'utf8', cwd: PW_CWD, ...opts })
 }
 
 export function classifyPlaywrightProcessLine(line, session = CANONICAL_SESSION) {
@@ -181,7 +209,11 @@ export function classifyPlaywrightProcessLine(line, session = CANONICAL_SESSION)
   }
   const isChromeBrowser = command.includes('Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing')
   if (isChromeBrowser && command.includes(`ud-${session}-chrome`) && !command.includes('--type=')) {
-    return { kind: 'browser', pid, ppid, command }
+    // The browser's --user-data-dir lives under .../daemon/<workspaceHash>/ud-…,
+    // so the hash tells us which workspace daemon owns this browser — the reaper
+    // uses it to spare the canonical shared browser and kill only interlopers.
+    const hm = command.match(/\/daemon\/([0-9a-f]{16})\/ud-/)
+    return { kind: 'browser', pid, ppid, command, hash: hm ? hm[1] : null }
   }
   return null
 }
@@ -212,15 +244,35 @@ function enforceCanonicalSession() {
   )
 }
 
-function enforceSingleSessionProcess() {
+// Reap any `shared` daemon/browser that is NOT the canonical one — a browser
+// under a different workspace hash, or a daemon that doesn't parent the canonical
+// browser. SURGICAL on purpose: the canonical shared browser is left running, so
+// its tabs never reset to about:blank. (The old version nuked ALL `shared`
+// processes and reopened on any duplicate — that reopen is what produced the
+// repeated about:blank reset across every agent.) With cwd pinned to PW_CWD every
+// wrapper-spawned daemon is canonical, so this only cleans up interlopers started
+// outside the wrapper or before the cwd pin. Returns true if anything was killed.
+function reapAlienSessionProcesses() {
   const procs = listSessionProcesses(SESSION)
-  const daemonCount = procs.filter(p => p.kind === 'daemon').length
-  const browserCount = procs.filter(p => p.kind === 'browser').length
-  if (daemonCount <= 1 && browserCount <= 1) return false
-  console.error(`pw: found duplicate "${SESSION}" playwright processes (daemons=${daemonCount}, browsers=${browserCount}); reaping all before reopening`)
-  reapSessionProcesses(SESSION)
-  spawnSync('sleep', ['0.5'])
-  return true
+  const browsers = procs.filter(p => p.kind === 'browser')
+  const daemons = procs.filter(p => p.kind === 'daemon')
+  // Keep the first canonical browser and the daemon that parents it.
+  const keepBrowser = browsers.find(b => b.hash === CANONICAL_HASH) || null
+  const keepDaemonPid = keepBrowser ? keepBrowser.ppid : null
+  let killed = 0
+  for (const b of browsers) {
+    if (keepBrowser && b.pid === keepBrowser.pid) continue
+    killProcess(b.pid); killed++
+  }
+  for (const d of daemons) {
+    if (keepDaemonPid && d.pid === keepDaemonPid) continue
+    killProcess(d.pid); killed++
+  }
+  if (killed) {
+    console.error(`pw: reaped ${killed} non-canonical "${SESSION}" process(es)${keepBrowser ? ' (kept the canonical shared browser)' : ''}`)
+    spawnSync('sleep', ['0.3'])
+  }
+  return killed > 0
 }
 
 // ---- lock (short, per-verb) ----
@@ -229,13 +281,22 @@ function lockStatus(repoRoot) {
   const r = spawnSync('bash', [lockScript(repoRoot), 'status'], { encoding: 'utf8' })
   const out = (r.stdout || '').trim()
   if (!out || out === 'unlocked') return null
-  const m = out.match(/^(.*) \(acquired (\d+)s ago\)$/)
+  // Status is "<holder> (acquired <N>s ago[, <pid info>])" — tolerate the
+  // trailing pid clause pw-lock.sh now appends so the age still parses.
+  const m = out.match(/^(.*) \(acquired (\d+)s ago(?:,[^)]*)?\)$/)
   if (!m) return { holder: out, ageSecs: null }
   return { holder: m[1], ageSecs: parseInt(m[2], 10) }
 }
 
 function tryLock(repoRoot, me) {
-  const r = spawnSync('bash', [lockScript(repoRoot), 'acquire', me], { encoding: 'utf8' })
+  // Record THIS wrapper process as the liveness pid. A verb holds the lock only
+  // for its own (short) lifetime, so while we run the pid is alive and other
+  // agents queue; the instant this process exits or is killed, the pid is dead and
+  // pw-lock.sh frees the lock immediately (liveness IS the heartbeat) — so a verb
+  // whose wrapper was killed mid-flight no longer blocks the next agent for the
+  // full stale window. That stuck-lock window is what made agents time out and
+  // re-hibernate without ever getting the browser.
+  const r = spawnSync('bash', [lockScript(repoRoot), 'acquire', me, '--pid', String(process.pid)], { encoding: 'utf8' })
   return r.status === 0
 }
 
@@ -259,7 +320,7 @@ function lockWithWait(repoRoot, me, timeoutMs = 20000) {
 // ---- session + tabs ----
 
 function sessionOpen() {
-  const out = spawnSync(playwrightCliBin(), ['list'], { encoding: 'utf8' }).stdout || ''
+  const out = spawnSync(playwrightCliBin(), ['list'], { encoding: 'utf8', cwd: PW_CWD }).stdout || ''
   const m = out.match(new RegExp(`- ${SESSION}:\\s*\\n\\s*- status: (\\w+)`, 'm'))
   return m ? m[1] === 'open' : false
 }
@@ -318,7 +379,7 @@ function ensureNoRaisePatch() {
 
 // The session's Chrome profile dir, parsed from `playwright-cli list`.
 function sessionUserDataDir() {
-  const out = spawnSync(playwrightCliBin(), ['list'], { encoding: 'utf8' }).stdout || ''
+  const out = spawnSync(playwrightCliBin(), ['list'], { encoding: 'utf8', cwd: PW_CWD }).stdout || ''
   const m = out.match(new RegExp(`- ${SESSION}:[\\s\\S]*?- user-data-dir:\\s*(\\S+)`, 'm'))
   return m ? m[1] : null
 }
@@ -369,6 +430,18 @@ function ensureOpen(repoRoot) {
       'shared browser is down and this session is sandboxed (fence) — a fenced agent ' +
       'drives the shared browser but cannot open it. Have an out-of-fence session open it ' +
       '(`tlda-dev pw acquire` unsandboxed, or ask app-testing/ops), then retry your verb.'
+    )
+  }
+  // If the playwright-cli binary can't even be resolved, `open` will "fail" for a
+  // reason that has nothing to do with a zombie profile lock — and the recover
+  // path below would then pkill the LIVE shared browser out from under everyone
+  // (observed: running the wrapper from a worktree with no node_modules). Fail
+  // clean instead of destructively reaping a browser we simply can't talk to.
+  if (!playwrightCliRealPath()) {
+    throw new Error(
+      'cannot resolve the playwright-cli binary (no node_modules/.bin/playwright-cli and none on PATH) — ' +
+      'run tlda-dev pw from a checkout with deps installed, or set PLAYWRIGHT_CLI_BIN. ' +
+      'Not touching the shared browser.'
     )
   }
   ensureNoRaisePatch()
@@ -496,12 +569,18 @@ function rewriteGoto(rest) {
 }
 
 // Screenshot guard: a filename with no image extension reads back as raw bytes
-// (the exact footgun that wasted a session). Force a .png.
+// (the exact footgun that wasted a session). Force a .png. Also absolutize a
+// relative path against the AGENT's cwd — playwright-cli now runs with cwd pinned
+// to the canonical workspace (PW_CWD), so a bare `foo.png` would otherwise be
+// written into the main checkout instead of where the agent expects it.
 function rewriteScreenshot(rest) {
   const out = [...rest]
   const i = out.findIndex(a => a === '--filename' || a === '-f')
-  if (i !== -1 && out[i + 1] && !IMG_EXT.test(out[i + 1])) {
-    out[i + 1] = out[i + 1].replace(/\.[^./]*$/, '') + '.png'
+  if (i !== -1 && out[i + 1]) {
+    let f = out[i + 1]
+    if (!IMG_EXT.test(f)) f = f.replace(/\.[^./]*$/, '') + '.png'
+    if (!isAbsolute(f)) f = resolve(AGENT_CWD, f)
+    out[i + 1] = f
   }
   return out
 }
@@ -617,7 +696,7 @@ export async function cmdPw(args, repoRoot) {
       // recover the browser at once. That race is what produced the kill+reopen
       // thrash — every reopen raises a headed window over Skip. Serialized, only
       // the first agent opens; the rest find it up and reuse it (no raise).
-      enforceSingleSessionProcess()
+      reapAlienSessionProcesses()
       ensureOpen(repoRoot)
       const idx = selectMyTab()
       if (idx == null) console.error("pw: couldn't resolve a tab (daemon wedged or session down) — try again when the page is idle")
@@ -680,7 +759,7 @@ export async function cmdPw(args, repoRoot) {
   }
   let code = 0
   try {
-    enforceSingleSessionProcess()
+    reapAlienSessionProcesses()
     ensureOpen(repoRoot)
     const idx = selectMyTab()
     if (idx == null) {

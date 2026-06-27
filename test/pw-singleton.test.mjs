@@ -17,7 +17,13 @@ test('classifies canonical playwright daemon and browser processes', () => {
   )
   assert.deepEqual(
     classifyPlaywrightProcessLine('124 123 /Cache/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing --user-data-dir=/tmp/ud-shared-chrome-for-testing about:blank', 'shared'),
-    { kind: 'browser', pid: 124, ppid: 123, command: '/Cache/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing --user-data-dir=/tmp/ud-shared-chrome-for-testing about:blank' },
+    { kind: 'browser', pid: 124, ppid: 123, command: '/Cache/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing --user-data-dir=/tmp/ud-shared-chrome-for-testing about:blank', hash: null },
+  )
+  // A real browser path carries the workspace hash under .../daemon/<hash>/ud-… —
+  // the reaper reads it to spare the canonical shared browser.
+  assert.deepEqual(
+    classifyPlaywrightProcessLine('200 199 /Cache/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing --user-data-dir=/Users/x/Library/Caches/ms-playwright/daemon/e9044018ee20ff1b/ud-shared-chrome-for-testing about:blank', 'shared'),
+    { kind: 'browser', pid: 200, ppid: 199, command: '/Cache/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing --user-data-dir=/Users/x/Library/Caches/ms-playwright/daemon/e9044018ee20ff1b/ud-shared-chrome-for-testing about:blank', hash: 'e9044018ee20ff1b' },
   )
   assert.equal(
     classifyPlaywrightProcessLine('125 124 /Cache/Google Chrome Helper --type=renderer --user-data-dir=/tmp/ud-shared-chrome-for-testing', 'shared'),
