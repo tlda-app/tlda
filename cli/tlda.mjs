@@ -30,7 +30,6 @@ import {
 } from '../shared/config.mjs'
 import { tldaFetch } from '../shared/http-client.mjs'
 import { DEV_COMMANDS } from './lib/dev-commands.mjs'
-import { resolveRepoRoot, ensureWorktree, startWorktreeVite, findFreePort } from './lib/dev-vite.mjs'
 import { getFunnelUrl, findTailscaleIPv4, selectDocShareBase, viewerLoginUrl } from './lib/share-url.mjs'
 import { scanMarkdownDeps } from '../shared/markdown-deps.mjs'
 import { cmdLogs } from './lib/unified-logs.mjs'
@@ -2803,10 +2802,15 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
     if (serverPid) {
       try { process.kill(serverPid, 'SIGTERM') } catch {}
     }
-    // Also kill any zombie server processes that aren't bound to the port
-    // (e.g., old servers from worktrees that failed to bind but are still running
-    // their daemon-supervisor loops). pkill is safe here — unified-server.mjs is unique.
-    try { execSync('pkill -f "server/unified-server.mjs"', { stdio: 'pipe' }) } catch {}
+    // Also kill a zombie MAIN server that isn't bound to the port (e.g. an old
+    // instance still running its daemon-supervisor loop). Match the THIS-checkout
+    // absolute server path only — NOT the bare "server/unified-server.mjs", which
+    // is a substring of every worktree's `.../.worktrees/X/server/unified-server.mjs`
+    // and so swept every `tlda-dev serve` preview on every stop/deploy. That
+    // cross-worktree sweep is exactly what killed Skip's preview tabs when an
+    // unrelated agent restarted the main server. Worktree dev servers are managed
+    // by `tlda-dev serve stop`, never by the main `server stop`.
+    try { execSync(`pkill -f ${JSON.stringify(serverScript)}`, { stdio: 'pipe' }) } catch {}
     // No other fallback — if /health doesn't respond, the server is already dead.
 
     // Wait for the server to actually stop
@@ -3047,36 +3051,9 @@ async function cmdFleetDev() {
   }
 }
 
-// --- `tlda-dev serve <branch>` — vite dev server for a branch ---
-
-async function cmdDev() {
-  // branch is positional (`tlda-dev serve <branch>`); --worktree still accepted.
-  const branch = getPositional(0) || getFlag('worktree')
-  const portArg = getFlag('port')
-
-  const worktreeDir = ensureWorktree(resolveRepoRoot(), branch)
-  console.log(dim(branch ? `Worktree: .worktrees/${branch}` : 'Serving current checkout'))
-
-  const { scheme, port, pid, logFile } = await startWorktreeVite({
-    worktreeDir,
-    port: portArg ? parseInt(portArg) : await findFreePort(5180),
-    hasTls,
-  })
-
-  // Chat/fleet resolves to the global store via /api/fleet-config; only doc-sync +
-  // assets ride this local proxy, so the worktree shares your room with no extra wiring.
-  const token = getToken()
-  const base = `${scheme}://localhost:${port}/`
-  const url = token ? `${base}?token=${token}` : base
-  writeFileSync(join(worktreeDir, '.dev-url'), url)
-
-  console.log(green(`\nVite dev server ready`))
-  if (branch) console.log(`  Worktree: ${worktreeDir}`)
-  console.log(`  Port:     ${port}`)
-  console.log(`  PID:      ${pid}`)
-  console.log(`  Log:      ${logFile}`)
-  console.log(bold(`\n  ${url}\n`))
-}
+// `tlda-dev serve` is the worktree-relative reachable preview — it lives in
+// cli/lib/dev-worktree.mjs and is intercepted by the tlda-dev front-end, so there
+// is no `serve` case in the switch below.
 
 async function cmdDevUrl() {
   // Prefer the .dev-url that `tlda-dev serve` wrote (correct scheme + token).
@@ -3127,7 +3104,6 @@ async function main() {
       case 'setup': await cmdSetup(); break
       case 'agent': await cmdAgent(); break
       case 'restart-mcp': await restartMcpAgents(process.argv.slice(3)); break // dev-only; surfaced via `tlda-dev restart-mcp`
-      case 'serve': await cmdDev(); break // dev-only; surfaced via `tlda-dev serve`
       case 'dev-url': await cmdDevUrl(); break
       case 'deploy': await cmdDeploy(); break
       case 'doctor': await cmdDoctor(); break
