@@ -925,6 +925,10 @@ async function performSpawnRelay(caller, msg) {
       return { ok: false, reason: 'launch-failed' }
     }
   }
+  if (result?.ok === false && result.reason !== 'spawning') {
+    if (pendingAgentId) spawnLibrarian.failPending(pendingAgentId, result.reason || result.error || 'launch-failed')
+    return result
+  }
   if (readiness) {
     const ready = await readiness
     if (!ready.ok) return ready
@@ -4493,12 +4497,12 @@ function projectsForDaemon() {
   // .fls). The daemon uses this to watch ONLY the files the build
   // actually reads — not the entire sourceDir.
   return listProjects()
-    .filter(p => p.sourceDir && !p.archived)
+    .filter(p => !p.archived)
     .map(p => {
       let watchFiles = null
       try {
         const rfPath = join(PROJECTS_DIR, p.name, 'output', 'relevant-files.json')
-        if (existsSync(rfPath)) {
+        if (p.sourceDir && existsSync(rfPath)) {
           const rf = JSON.parse(readFileSync(rfPath, 'utf8'))
           // Filter to only author-dir paths (not the server mirror paths)
           watchFiles = (rf.files || [])
