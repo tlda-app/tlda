@@ -31,7 +31,7 @@ import {
 import { tldaFetch } from '../shared/http-client.mjs'
 import { DEV_COMMANDS } from './lib/dev-commands.mjs'
 import { resolveRepoRoot, ensureWorktree, startWorktreeVite, findFreePort } from './lib/dev-vite.mjs'
-import { findTailscaleIPv4, getFunnelUrl, selectDevShareBase, selectDocShareBase, viewerLoginUrl } from './lib/share-url.mjs'
+import { findLanIPv4, findTailscaleIPv4, getFunnelUrl, selectDevShareBase, selectDocShareBase, viewerLoginUrl } from './lib/share-url.mjs'
 import { scanMarkdownDeps } from '../shared/markdown-deps.mjs'
 import { cmdLogs } from './lib/unified-logs.mjs'
 import { SPAWN_POLICY_OPTIONS, resolveSpawnPolicyOption } from '../server/lib/spawn-policy.mjs'
@@ -1019,12 +1019,14 @@ async function cmdShare() {
     port,
     funnelUrl: getFunnelUrl(),
     tailscaleIp: findTailscaleIPv4(),
+    lanIp: findLanIPv4(),
     hasTls,
   })
   const url = viewerLoginUrl(sel.base, name, readToken)
   const unavailable = sel.shareable === false
   console.log(`${bold(sel.label)}${unavailable ? ` ${dim('(not reachable from other devices)')}` : ''}`)
   console.log(`  ${cyan(url)}`)
+  if (sel.note) console.log(`  ${dim(sel.note)}`)
   console.log()
   if (!unavailable) {
     await printQr(url)
@@ -3098,7 +3100,7 @@ async function cmdDev() {
   // assets ride this local proxy, so the worktree shares your room with no extra wiring.
   const token = getToken()
   const localBase = `${scheme}://localhost:${port}/`
-  const shared = selectDevShareBase({ scheme, port, tailscaleIp: findTailscaleIPv4() })
+  const shared = selectDevShareBase({ scheme, port, tailscaleIp: findTailscaleIPv4(), lanIp: findLanIPv4() })
   const base = shared.shareable ? `${shared.base}/` : localBase
   const url = token ? `${base}?token=${token}` : base
   writeFileSync(join(worktreeDir, '.dev-url'), url)
@@ -3110,6 +3112,7 @@ async function cmdDev() {
   console.log(`  Log:      ${logFile}`)
   if (shared.shareable) console.log(`  Share:    ${shared.label}`)
   else console.log(`  Share:    unavailable — ${shared.reason}`)
+  if (shared.note) console.log(`  Note:     ${dim(shared.note)}`)
   console.log(bold(`\n  ${url}\n`))
 }
 
@@ -3121,7 +3124,7 @@ async function cmdDevUrl() {
   const port = portArg ? parseInt(portArg) : 5180
   const token = getToken()
   const scheme = 'http'
-  const selected = selectDevShareBase({ scheme, port, tailscaleIp: findTailscaleIPv4() })
+  const selected = selectDevShareBase({ scheme, port, tailscaleIp: findTailscaleIPv4(), lanIp: findLanIPv4() })
   if (!selected.shareable) {
     console.error(`dev URL unavailable: ${selected.reason}.`)
     console.error('Not printing localhost; it is broken for users on another machine.')
