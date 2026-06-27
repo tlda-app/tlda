@@ -6,7 +6,9 @@ import {
 	type Layer,
 	type LayerMembership,
 	type LayerOwner,
+	type WMCore,
 } from './wm-core.ts'
+import { ensureLayer } from './editor-wm.ts'
 
 export const FLEET_DOCVIEW_ROOT_LAYER_ID = 'screen'
 export const FLEET_DOCVIEW_LAYER_ID = 'fleet-docview'
@@ -28,6 +30,7 @@ export interface FleetDocviewLayerInput {
 	userId?: string
 	deviceId?: string
 	source?: string | null
+	wm?: WMCore
 }
 
 export interface FleetDocviewSurfaceState {
@@ -35,6 +38,7 @@ export interface FleetDocviewSurfaceState {
 	layerId: string
 	surfaceId: string
 	viewportId: string
+	wm: WMCore
 	camera: Camera
 	layer: Layer
 	owner: LayerOwner
@@ -58,6 +62,7 @@ export function createFleetDocviewSurface({
 	userId = '',
 	deviceId = '',
 	source = null,
+	wm = createWMCore({ rootLayerId: FLEET_DOCVIEW_ROOT_LAYER_ID }),
 }: FleetDocviewLayerInput): FleetDocviewSurfaceState {
 	const zoom = panelWidth / pageBounds.w
 	const boundsCenter = bounds.y + bounds.h / 2
@@ -68,13 +73,13 @@ export function createFleetDocviewSurface({
 	}
 	const surfaceId = `${FLEET_DOCVIEW_LAYER_ID}:${slug(shapeId)}`
 	const viewportId = `${FLEET_DOCVIEW_VIEWPORT_PREFIX}:${slug(shapeId)}`
-	const wm = createWMCore({ rootLayerId: FLEET_DOCVIEW_ROOT_LAYER_ID })
-	wm.defineLayer(surfaceId, {
+	ensureLayer(wm, surfaceId, {
 		parent: FLEET_DOCVIEW_ROOT_LAYER_ID,
 		policy: { x: 'pin', y: 'pin', zoom: 'lock' },
-		camera,
+		transform: { x: camera.x, y: camera.y, scale: camera.z },
 		layout: { axis: 'vertical', spacing: 0 },
 	})
+	const renderTransform = wm.transform(surfaceId)
 	const owner = createLayerOwner(userId, deviceId)
 
 	return {
@@ -82,7 +87,8 @@ export function createFleetDocviewSurface({
 		layerId: surfaceId,
 		surfaceId,
 		viewportId,
-		camera: wm.camera(surfaceId),
+		wm,
+		camera: { x: renderTransform.x, y: renderTransform.y, z: renderTransform.scale },
 		layer: wm.getLayer(surfaceId),
 		owner,
 		membership: createLayerMembership(surfaceId, owner),

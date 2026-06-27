@@ -62,6 +62,7 @@ export interface LayerDefinition {
 	policy?: Partial<TrackPolicy>
 	transform?: Partial<LayerTransform>
 	camera?: Partial<Camera>
+	cameraPanUnit?: 'layer' | 'screen'
 	backing?: LayerBacking
 	layout?: LayerLayout
 }
@@ -72,6 +73,7 @@ export interface Layer {
 	policy: TrackPolicy
 	transform: LayerTransform
 	camera: Camera
+	cameraPanUnit: 'layer' | 'screen'
 	backing: LayerBacking
 	layout?: LayerLayout
 }
@@ -94,6 +96,13 @@ export interface LayerMembership extends LayerOwner {
 
 export interface WMCoreOptions {
 	rootLayerId?: LayerId
+}
+
+export interface LayerEffectiveTransform {
+	local: LayerTransform
+	effective: LayerTransform
+	parent: LayerTransform | null
+	parentChain: LayerId[]
 }
 
 const DEFAULT_POLICY: TrackPolicy = {
@@ -149,6 +158,11 @@ function zoomFactor(policy: ZoomTrackPolicy, camera: Camera) {
 	return camera.z
 }
 
+function parentZoomFactor(policy: ZoomTrackPolicy) {
+	if (policy === 'inherit') return 1
+	return 0
+}
+
 function clonePoint(point: Point): Point {
 	return { x: point.x, y: point.y, ...(point.z === undefined ? {} : { z: point.z }) }
 }
@@ -164,6 +178,7 @@ function cloneLayer(layer: Layer): Layer {
 		policy: { ...layer.policy },
 		transform: { ...layer.transform },
 		camera: { ...layer.camera },
+		cameraPanUnit: layer.cameraPanUnit,
 		backing: layer.backing,
 		layout: layer.layout ? { ...layer.layout } : undefined,
 	}
@@ -180,6 +195,7 @@ export class WMCore {
 			policy: normalizePolicy({ x: 'pin', y: 'pin', zoom: 'lock' }),
 			transform: normalizeTransform(),
 			camera: normalizeCamera(),
+			cameraPanUnit: 'layer',
 			backing: { kind: 'screen' },
 		})
 	}
@@ -197,11 +213,57 @@ export class WMCore {
 			policy: normalizePolicy(definition.policy),
 			transform: normalizeTransform(definition.transform),
 			camera: normalizeCamera(definition.camera),
+			cameraPanUnit: definition.cameraPanUnit ?? 'layer',
 			backing: definition.backing ?? { kind: 'frame' },
 			layout: definition.layout ? { ...definition.layout } : undefined,
 		}
 
 		this.layers.set(id, layer)
+		this.assertAcyclic(id)
+		return cloneLayer(layer)
+	}
+
+	defineOrUpdateLayer(id: LayerId, definition: LayerDefinition = {}): Layer {
+		if (!this.layers.has(id)) return this.defineLayer(id, definition)
+		return this.updateLayer(id, definition)
+	}
+
+	hasLayer(id: LayerId): boolean {
+		return this.layers.has(id)
+	}
+
+	layerCount(): number {
+		return this.layers.size
+	}
+
+	updateLayer(id: LayerId, definition: LayerDefinition = {}): Layer {
+		const layer = this.requireLayer(id)
+		if (id === this.rootLayerId) throw new Error('Cannot update the root layer.')
+
+		if (definition.parent !== undefined) {
+			if (!this.layers.has(definition.parent)) throw new Error(`Parent layer "${definition.parent}" is not defined.`)
+			if (definition.parent === id) throw new Error('A layer cannot be its own parent.')
+			layer.parent = definition.parent
+		}
+		if (definition.policy !== undefined) {
+			layer.policy = normalizePolicy({ ...layer.policy, ...definition.policy })
+		}
+		if (definition.transform !== undefined) {
+			layer.transform = normalizeTransform({ ...layer.transform, ...definition.transform })
+		}
+		if (definition.camera !== undefined) {
+			layer.camera = normalizeCamera({ ...layer.camera, ...definition.camera })
+		}
+		if (definition.cameraPanUnit !== undefined) {
+			layer.cameraPanUnit = definition.cameraPanUnit
+		}
+		if (definition.backing !== undefined) {
+			layer.backing = definition.backing
+		}
+		if (definition.layout !== undefined) {
+			layer.layout = { ...definition.layout }
+		}
+
 		this.assertAcyclic(id)
 		return cloneLayer(layer)
 	}
@@ -265,6 +327,26 @@ export class WMCore {
 		}
 	}
 
+	transform(layerId: LayerId): LayerTransform {
+		return { ...this.effectiveTransform(this.requireLayer(layerId)) }
+	}
+
+	transformInfo(layerId: LayerId): LayerEffectiveTransform {
+		const layer = this.requireLayer(layerId)
+		const parent = layer.parent ? this.effectiveTransform(this.requireLayer(layer.parent)) : null
+		return {
+			local: this.localTransform(layer),
+			effective: this.effectiveTransform(layer),
+			parent: parent ? { ...parent } : null,
+			parentChain: this.parentChain(layerId),
+		}
+	}
+
+	setTransform(layerId: LayerId, transform: Partial<LayerTransform>): void {
+		const layer = this.requireLayer(layerId)
+		layer.transform = normalizeTransform({ ...layer.transform, ...transform })
+	}
+
 	configureLayout(layerId: LayerId, layout: LayerLayout): void {
 		const layer = this.requireLayer(layerId)
 		layer.layout = { ...layout }
@@ -323,7 +405,7 @@ export class WMCore {
 			return layer.backing.editor.pageToScreen(point, { viewportId: layer.backing.viewportId })
 		}
 
-		const transform = this.effectiveTransform(layer)
+		const transform = this.localTransform(layer)
 		return {
 			x: point.x * transform.scale + transform.x,
 			y: point.y * transform.scale + transform.y,
@@ -339,7 +421,7 @@ export class WMCore {
 			return layer.backing.editor.screenToPage(point, { viewportId: layer.backing.viewportId })
 		}
 
-		const transform = this.effectiveTransform(layer)
+		const transform = this.localTransform(layer)
 		return {
 			x: (point.x - transform.x) / transform.scale,
 			y: (point.y - transform.y) / transform.scale,
@@ -348,12 +430,36 @@ export class WMCore {
 	}
 
 	private effectiveTransform(layer: Layer): LayerTransform {
-		const camera = this.camera(layer.id)
+		const local = this.localTransform(layer)
+		if (layer.backing.kind === 'page' || layer.backing.kind === 'viewport' || !layer.parent) {
+			return local
+		}
+		const parent = this.effectiveTransform(this.requireLayer(layer.parent))
 		return {
-			x: layer.transform.x + camera.x * axisTrackFactor(layer.policy.x),
-			y: layer.transform.y + camera.y * axisTrackFactor(layer.policy.y),
+			x: local.x + parent.x * axisTrackFactor(layer.policy.x),
+			y: local.y + parent.y * axisTrackFactor(layer.policy.y),
+			scale: local.scale * (1 + (parent.scale - 1) * parentZoomFactor(layer.policy.zoom)),
+		}
+	}
+
+	private localTransform(layer: Layer): LayerTransform {
+		const camera = this.camera(layer.id)
+		const panUnit = layer.cameraPanUnit === 'screen' ? camera.z : 1
+		return {
+			x: layer.transform.x + camera.x * panUnit * axisTrackFactor(layer.policy.x),
+			y: layer.transform.y + camera.y * panUnit * axisTrackFactor(layer.policy.y),
 			scale: layer.transform.scale * zoomFactor(layer.policy.zoom, camera),
 		}
+	}
+
+	private parentChain(layerId: LayerId): LayerId[] {
+		const chain: LayerId[] = []
+		let layer = this.requireLayer(layerId)
+		while (layer.parent) {
+			chain.unshift(layer.parent)
+			layer = this.requireLayer(layer.parent)
+		}
+		return chain
 	}
 }
 

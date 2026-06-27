@@ -17,7 +17,8 @@ import type { Editor, TLShape, TLShapeId } from 'tldraw'
 import { myTldaUrl } from '../fleet/tldaUrl.mjs'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getDeviceId } from '../fleet/fleet-data.mjs'
-import { translateFleetHudDropPoint } from '../wm/fleet-hud-layer'
+import { translateFleetHudDropPointWithWM } from '../wm/fleet-hud-layer'
+import { getEditorWMCore } from '../wm/editor-wm'
 import {
   createTemporaryMarkdownSurfaceRequest,
   temporaryMarkdownShapeMeta,
@@ -680,7 +681,7 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
     let dropPoint = { x: pageCenterX, y: pageCenterY }
 
     if (mainEditor && mainEditor !== editor) {
-      dropPoint = translateFleetHudDropPoint(editor, mainEditor, dropPoint)
+      dropPoint = translateFleetHudDropPointWithWM(getEditorWMCore(mainEditor), editor, mainEditor, dropPoint)
     }
 
     // When expanded (pill was 400×600), the drop point is already the

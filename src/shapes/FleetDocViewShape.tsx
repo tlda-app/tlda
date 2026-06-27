@@ -39,6 +39,7 @@ import { getPageUrl } from '../stores/pageUrlStore'
 import { getPref } from '../preferences'
 import { beginNativeSnapDrag, endNativeSnapDrag, FLEET_SHAPE_TYPES } from './fleet-utils'
 import { createFleetDocviewSurface, type FleetDocviewSurfaceState } from '../wm/fleet-docview-layer'
+import { getEditorWMCore, removeLayers } from '../wm/editor-wm'
 
 const DEFAULT_W = 300
 const DEFAULT_H = 250
@@ -392,9 +393,10 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
   const licenseKey = 'tldraw-2027-01-19/WyJhUGMwcWRBayIsWyIqLnF0bTI4NS5naXRodWIuaW8iXSw5LCIyMDI3LTAxLTE5Il0.Hq9z1V8oTLsZKgpB0pI3o/RXCoLOsh5Go7Co53YGqHNmtEO9Lv/iuyBPzwQwlxQoREjwkkFbpflOOPmQMwvQSQ'
 
   const docviewSurface = useMemo<FleetDocviewSurfaceState | null>(() => {
-    if (!bounds || boundsPageIdx < 0 || !doc?.pages?.[boundsPageIdx]) return null
+    if (!mainEditor || !bounds || boundsPageIdx < 0 || !doc?.pages?.[boundsPageIdx]) return null
     const pageBounds = doc.pages[boundsPageIdx].bounds
     return createFleetDocviewSurface({
+      wm: getEditorWMCore(mainEditor),
       shapeId: shape.id,
       bounds,
       pageBounds: { x: pageBounds.x, y: pageBounds.y, w: pageBounds.width, h: pageBounds.height },
@@ -404,7 +406,16 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
       deviceId: shape.props.deviceId,
       source: activeSource,
     })
-  }, [shape.id, shape.props.userId, shape.props.deviceId, bounds, boundsPageIdx, doc, w, panelH, activeSource])
+  }, [mainEditor, shape.id, shape.props.userId, shape.props.deviceId, bounds, boundsPageIdx, doc, w, panelH, activeSource])
+
+  const docviewSurfaceRef = useRef<FleetDocviewSurfaceState | null>(null)
+  docviewSurfaceRef.current = docviewSurface
+  useEffect(() => {
+    return () => {
+      const surface = docviewSurfaceRef.current
+      if (surface) removeLayers(surface.wm, [surface.layerId])
+    }
+  }, [])
 
   useEffect(() => {
     const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null
@@ -683,8 +694,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
             maxHeightFraction={1}
             readOnly
             viewportId={docviewSurface.viewportId}
-            cameraOverride={docviewSurface.camera}
-            wmSurface={{ surfaceId: docviewSurface.surfaceId, layerId: docviewSurface.layerId }}
+            wmSurface={{ wm: docviewSurface.wm, surfaceId: docviewSurface.surfaceId, layerId: docviewSurface.layerId }}
           />
         ) : (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', opacity: 0.15, fontSize: 11 }}>
