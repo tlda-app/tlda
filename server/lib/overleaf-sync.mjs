@@ -51,6 +51,11 @@ function cloneDir(name) {
 // so we leave them untouched.
 const isHttpUrl = (s) => /^https?:\/\//i.test(s)
 
+// Strip `//user:token@` userinfo from any string so a token-bearing remote URL
+// can never leak into an error message, a log line, or an API response. Generic
+// (matches the URL shape) so we don't have to know the token value.
+const scrubCreds = (s) => String(s).replace(/\/\/[^/@\s]+@/g, '//***@')
+
 /**
  * Embed an auth token into an https git URL as the password. Overleaf's
  * git-bridge authenticates with the token as the password and any (or empty)
@@ -100,7 +105,11 @@ async function cloneRemote(name, gitUrl, token) {
     throw new Error(`Overleaf clone already exists for ${name} — unlink first`)
   }
   const url = authedUrl(gitUrl, token)
-  await execAsync(`git clone "${url}" "${dir}"`, { timeout: 180000 })
+  try {
+    await execAsync(`git clone "${url}" "${dir}"`, { timeout: 180000 })
+  } catch (e) {
+    throw new Error(scrubCreds(e.message))
+  }
   // Don't let a stray local identity break anything; set one for safety.
   await execAsync('git config user.email "tlda@local"', { cwd: dir, timeout: 5000 })
   await execAsync('git config user.name "tlda"', { cwd: dir, timeout: 5000 })
@@ -121,7 +130,11 @@ async function trackedFiles(dir) {
  */
 async function fetchAndDiff(dir) {
   const before = (await execAsync('git rev-parse HEAD', { cwd: dir, timeout: 5000 })).stdout.trim()
-  await execAsync('git fetch --quiet origin', { cwd: dir, timeout: 120000 })
+  try {
+    await execAsync('git fetch --quiet origin', { cwd: dir, timeout: 120000 })
+  } catch (e) {
+    throw new Error(scrubCreds(e.message))  // fetch error can echo the stored remote URL
+  }
   const upstream = (await execAsync('git rev-parse @{u}', { cwd: dir, timeout: 5000 })).stdout.trim()
 
   if (upstream === before) return { changed: [], deleted: [], head: before, unchanged: true }
