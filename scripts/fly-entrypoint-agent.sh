@@ -38,14 +38,29 @@ fi
 # comes from TLDA_MACHINE_ID (distinct per friend so daemons don't evict each
 # other on the render box).
 if [ ! -f /root/.config/tlda/config.json ]; then
+  # shared/config.mjs requires every config to be COMPLETE: database, store, AND
+  # licenseKey (no field optional). The agent box doesn't serve the tldraw SPA, so
+  # licenseKey is unused here — but the field must be present (empty string ok) or
+  # `tlda agent spawn` throws "field licenseKey must be a string (got undefined)".
   cat > /root/.config/tlda/config.json <<EOF
-{ "defaultConfig": "default", "configs": { "default": { "database": "${TLDA_SERVER}", "store": "${TLDA_SERVER}" } } }
+{ "defaultConfig": "default", "configs": { "default": { "database": "${TLDA_SERVER}", "store": "${TLDA_SERVER}", "licenseKey": "" } } }
 EOF
 fi
 
+# Codex auth. Precedence: an existing auth.json on the volume wins (it may hold a
+# token codex auto-refreshed, newer than the secret). Otherwise seed it from the
+# CODEX_AUTH_JSON Fly secret so a fresh box needs NO interactive device-auth — set
+# the secret once (`fly secrets set CODEX_AUTH_JSON="$(cat ~/.codex/auth.json)"`)
+# and every instance self-auths on boot. Falls back to a device-auth hint.
 if [ ! -f /root/.codex/auth.json ]; then
-  echo "[entrypoint] WARNING: /root/.codex/auth.json missing — run 'codex login' once"
-  echo "[entrypoint]   fly ssh console -a <this-app> -C 'codex login'  (approve on chatgpt.com)"
+  if [ -n "${CODEX_AUTH_JSON}" ]; then
+    printf '%s' "${CODEX_AUTH_JSON}" > /root/.codex/auth.json
+    chmod 600 /root/.codex/auth.json
+    echo "[entrypoint] seeded /root/.codex/auth.json from CODEX_AUTH_JSON secret"
+  else
+    echo "[entrypoint] WARNING: no codex auth — set CODEX_AUTH_JSON secret, or run device-auth once:"
+    echo "[entrypoint]   fly ssh console -a <this-app> -C 'codex login --device-auth'  (approve on chatgpt.com)"
+  fi
 fi
 
 # tmux needs a sane TERM for the codex TUI to render in a pane.
