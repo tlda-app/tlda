@@ -3709,6 +3709,14 @@ function connect() {
     url: () => SERVER.replace(/^http/, 'ws') + '/ws/fleet-daemon' +
       (TOKEN ? `?token=${encodeURIComponent(TOKEN)}` : ''),
     label: 'daemon',
+    // Detect a half-open/zombie WS to the server: if no message OR protocol
+    // ping arrives within 90s, ResilientWS closes + reconnects. Without this a
+    // dead socket stays readyState===OPEN and the daemon keeps "delivering"
+    // activity into the void while advancing JSONL cursors → permanent silent
+    // card loss with no reconnect. The server pings every 30s
+    // (unified-server.mjs WS_HEARTBEAT_INTERVAL_MS) and ResilientWS resets the
+    // watchdog on 'ping', so 90s = 3× margin (tolerates two missed pings).
+    heartbeatTimeoutMs: 90_000,
     onOpen: () => {
       sendMsg({
         type: 'daemon-hello',
