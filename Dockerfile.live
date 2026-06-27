@@ -103,6 +103,11 @@ COPY bin/fleet-spawn.py ./bin/fleet-spawn.py
 # server's writer.
 COPY bin/feelings-export.mjs ./bin/feelings-export.mjs
 
+# Build worker: the server dispatches LaTeX builds to `node bin/build-worker.mjs`
+# (server/lib/build-dispatch.mjs spawns it as a subprocess). Without this file in
+# the image, every build crashes with ERR_MODULE_NOT_FOUND and produces 0 pages.
+COPY bin/build-worker.mjs ./bin/build-worker.mjs
+
 # Serve the tldraw SPA from this server too. For the PRIVATE tailnet deployment
 # (server gated behind Tailscale, not the open internet), Skip's tldraw license
 # allows self-hosting — so SPA + API + WS become ONE same-origin server, dropping
