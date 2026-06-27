@@ -1862,6 +1862,79 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   opacity: 0.4;
 }
 
+/* --- Optimistic spawn card --- */
+/* Ghost row rendered immediately on spawn submit; fades out when the real
+   agent registers. Visually subtle — matches dimmed-row treatment. */
+.fleet-agents-shape .fleet-agents-row--optimistic .fleet-agents-row-main {
+  cursor: default;
+  pointer-events: none;
+}
+/* Error state: re-enable pointer events so hover/click works on the row */
+.fleet-agents-shape .fleet-agents-row--spawn-error .fleet-agents-row-main {
+  pointer-events: all;
+}
+/* Dismiss button (×) — same slot as kill-btn; subtle until hovered */
+.fleet-agents-shape .fleet-agents-opt-dismiss {
+  opacity: 0.1;
+  transition: opacity 0.3s;
+  color: rgba(232, 136, 136, 0.9);
+}
+.fleet-agents-shape .fleet-agents-row--spawn-error:hover .fleet-agents-opt-dismiss {
+  opacity: 0.6;
+}
+.fleet-agents-shape .fleet-agents-opt-dismiss:hover {
+  opacity: 1 !important;
+}
+/* Error icon */
+.fleet-agents-shape .fleet-agents-opt-error-icon {
+  color: #e57373;
+  font-size: 8px;
+}
+/* Retry button — inline in the task column */
+.fleet-agents-shape .fleet-agents-opt-retry {
+  background: none;
+  border: none;
+  padding: 0 4px;
+  font-size: 10px;
+  font-family: inherit;
+  opacity: 0.1;
+  transition: opacity 0.3s;
+  cursor: pointer;
+  color: rgba(122, 180, 122, 0.9);
+}
+.fleet-agents-shape .fleet-agents-row--spawn-error:hover .fleet-agents-opt-retry {
+  opacity: 0.6;
+}
+.fleet-agents-shape .fleet-agents-opt-retry:hover {
+  opacity: 1 !important;
+}
+/* Touch targets: coarse pointer (iPad/phone) needs 44×44 minimum */
+@media (pointer: coarse) {
+  .fleet-agents-shape .fleet-agents-opt-dismiss,
+  .fleet-agents-shape .fleet-agents-opt-retry {
+    min-width: 44px;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+}
+/* Tiny CSS spinner in the name column */
+.fleet-agents-shape .fleet-agents-spawn-spinner {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border: 1px solid rgba(122, 158, 200, 0.35);
+  border-top-color: rgba(122, 158, 200, 0.85);
+  border-radius: 50%;
+  animation: fleet-spawn-spin 0.85s linear infinite;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+@keyframes fleet-spawn-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* --- Spawn input + button --- */
 
 .fleet-agents-shape .fleet-agents-spawn-btns {
@@ -1903,6 +1976,22 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-agents-shape .fleet-agents-spawn-search.is-invalid:focus {
   border-color: rgba(200,90,90,0.6);
   color: #c85a5a;
+}
+.fleet-agents-shape .fleet-agents-spawn-error {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 3px);
+  max-width: 220px;
+  padding: 3px 6px;
+  border: 1px solid rgba(200,90,90,0.55);
+  border-radius: 3px;
+  background: var(--surface);
+  color: #d56a6a;
+  box-shadow: 0 2px 8px var(--shadow-lg, rgba(0,0,0,0.3));
+  font-size: 8px;
+  line-height: 1.25;
+  white-space: normal;
+  z-index: 12;
 }
 .fleet-agents-shape .fleet-agents-spawn-ghost {
   position: absolute;

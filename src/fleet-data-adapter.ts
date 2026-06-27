@@ -168,6 +168,28 @@ export function useFleetAgents(frameId?: string): any[] {
   return agents
 }
 
+export function useFleetRosterTruth(): any | null {
+  const [truth, setTruth] = useState<any | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    const refresh = () => {
+      fetch(`${INBOX_API}/api/fleet-roster-truth?limit=1`)
+        .then(r => r.json())
+        .then(data => { if (!cancelled) setTruth(data) })
+        .catch(() => { if (!cancelled) setTruth(null) })
+    }
+    refresh()
+    const timer = setInterval(refresh, 30000)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [])
+
+  return truth
+}
+
 
 const INBOX_API = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5176'
 

@@ -431,6 +431,12 @@ function stopTouchEvent(e: TouchEvent) {
   e.stopImmediatePropagation()
 }
 
+function finishPhoneLaneGesture(main: Editor, state: Extract<GestureState, { kind: 'phone-lane' }>) {
+  if (state.mode === 'dragging') {
+    snapPhoneLane(main, state.docLeftPage)
+  }
+}
+
 // My fleet shapes that share a margin with the seed shapes. Source the set from
 // the OVERLAY editor, not the main store: the overlay holds only my current
 // (identity, device) shapes, so other devices' sets and junk-identity orphans —
@@ -1410,6 +1416,15 @@ export function useFleetGestures(opts: {
       const ts = Array.from(e.touches)
       recordTouchFrame(e, overlay, getMainEditor(mainEditor), state.kind)
       logTouchSnapshot('touchstart', e, overlay, el, state.kind)
+      if (state.kind === 'phone-lane' && ts.length > 1) {
+        const main = getMainEditor(mainEditor)
+        consumeTouchEvent(e)
+        finishPhoneLaneGesture(main, state)
+        state = { kind: 'none' }
+        setGestureActive(false, 250)
+        log.debug(LOG_NS, 'phone lane cancelled by multitouch', { touchesLength: ts.length })
+        return
+      }
       if (ts.length <= 1 && state.kind !== 'none') {
         log.warn(LOG_NS, 'stale gesture state reset on fresh touchstart', {
           previousKind: state.kind,
@@ -1638,8 +1653,11 @@ export function useFleetGestures(opts: {
 
       if (state.kind === 'phone-lane') {
         if (ts.length !== 1) {
+          consumeTouchEvent(e)
+          finishPhoneLaneGesture(main, state)
           state = { kind: 'none' }
-          setGestureActive(false)
+          setGestureActive(false, 250)
+          log.debug(LOG_NS, 'phone lane ended by touch-count change', { touchesLength: ts.length })
           return
         }
         const dx = ts[0].clientX - state.x0
@@ -1655,7 +1673,7 @@ export function useFleetGestures(opts: {
           setGestureActive(true)
           log.debug(LOG_NS, 'phone lane drag start', { dx: Math.round(dx), dy: Math.round(dy) })
         }
-        stopTouchEvent(e)
+        consumeTouchEvent(e)
         main.setCamera(
           { ...main.getCamera(), x: state.cameraX0 + dx / state.z0, z: state.z0 },
           { animation: { duration: 0 } },
@@ -1852,7 +1870,7 @@ export function useFleetGestures(opts: {
       if (state.kind === 'phone-lane') {
         if (state.mode === 'dragging') {
           stopTouchEvent(e)
-          snapPhoneLane(getMainEditor(mainEditor), state.docLeftPage)
+          finishPhoneLaneGesture(getMainEditor(mainEditor), state)
         }
         state = { kind: 'none' }
         setGestureActive(false, 250)

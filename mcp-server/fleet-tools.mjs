@@ -4972,7 +4972,12 @@ function startChannelWS() {
         const { resolve, reject, timer } = _wsPending.get(msg.id);
         _wsPending.delete(msg.id);
         clearTimeout(timer);
-        if (msg.error) reject(new Error(msg.error));
+        if (msg.error) {
+          const detail = typeof msg.error === 'object' && msg.error !== null ? msg.error : { message: msg.error };
+          const err = new Error(detail.message || String(msg.error));
+          Object.assign(err, detail);
+          reject(err);
+        }
         else {
           if (msg.result?.event_id) {
             _originatedEventIds.add(msg.result.event_id);

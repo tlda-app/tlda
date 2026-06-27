@@ -9,8 +9,8 @@
  * Isolated server (own port/db, no daemon). Mirrors test/wiretap-remove.mjs.
  */
 import { spawn } from 'child_process'
-import { mkdirSync, rmSync } from 'fs'
-import { tmpdir } from 'os'
+import { existsSync, mkdirSync, rmSync } from 'fs'
+import { homedir, tmpdir } from 'os'
 import path from 'path'
 import { WebSocket } from 'ws'
 
@@ -31,8 +31,10 @@ const FLEET_DB = path.join(TMP, 'fleet.db')
 const DATA_DIR = path.join(TMP, 'data')
 const PROJECTS = path.join(TMP, 'projects')
 const PORT = 5860 + Math.floor(Math.random() * 30)
-const SERVER = `http://127.0.0.1:${PORT}`
-const WS = `ws://127.0.0.1:${PORT}`
+const hasLocalTls = existsSync(path.join(homedir(), '.config', 'tlda', 'localhost+2.pem')) &&
+  existsSync(path.join(homedir(), '.config', 'tlda', 'localhost+2-key.pem'))
+const SERVER = `${hasLocalTls ? 'https' : 'http'}://127.0.0.1:${PORT}`
+const WS = `${hasLocalTls ? 'wss' : 'ws'}://127.0.0.1:${PORT}`
 mkdirSync(TMP, { recursive: true }); mkdirSync(DATA_DIR, { recursive: true }); mkdirSync(PROJECTS, { recursive: true })
 
 let serverProc = null
