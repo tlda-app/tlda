@@ -575,13 +575,10 @@ const spawnLibrarian = new SpawnLibrarian({
       reason: liveness?.reason || 'delivered chat produced no agent-activity advance',
       ts: new Date().toISOString(),
     }
+    // Wedged is convergent agent state — surface it via the agent-wedged event
+    // (consumed by the per-agent status line), NOT as a chat message. Posting it
+    // to chat spammed every idle recipient of a broadcast/fan-out delivery. (Skip 6/27)
     broadcastEvent('agent-wedged', metadata)
-    deliverTldaFeedbackChat({
-      from: 'fleet:tlda',
-      to: SERVER_OWNER_ID,
-      text: `**Agent appears wedged**: \`${label}\` received a message but produced no activity.`,
-      metadata,
-    })
     broadcastState()
   },
   onLateRegister: (agent) => {
@@ -3255,12 +3252,7 @@ async function handleFleetWsMessage(ws, msg) {
         }
         if (decision.action === 'hold') continue
         if (decision.action === 'surface') {
-          deliverTldaFeedbackChat({
-            from: 'fleet:tlda',
-            to: SERVER_OWNER_ID,
-            text: `**Agent appears wedged**: \`${agent.friendly_name || agentId}\` cannot be woken automatically. ${decision.message}`,
-            metadata: { type: 'agent_wedged', agentId, reason: decision.message },
-          })
+          // Convergent state via the event (per-agent status line), not a chat message. (Skip 6/27)
           broadcastEvent('agent-wedged', { agentId, reason: decision.message, ts: new Date().toISOString() })
           continue
         }
