@@ -23,7 +23,7 @@ import { useFleetAgents, useFleetEvents, useFleetUnreadCounts, useFleetIdentity 
 // @ts-ignore — vanilla JS module
 import { timeShort } from '../fleet/chat-render.mjs'
 // @ts-ignore — vanilla JS module
-import { getHumanId, getDeviceId } from '../fleet/fleet-data.mjs'
+import { getHumanId, getDeviceId, whenDeviceReady } from '../fleet/fleet-data.mjs'
 import { useIsInViewport } from './useIsInViewport'
 import { DATABASE_HTTP } from '../activeConfig'
 import './fleet-inbox.css'
@@ -223,6 +223,10 @@ function FleetTouchInboxInner({ shape }: { shape: any }) {
 
   // Auto-populate the child chat once, below the strip — on the MAIN editor.
   useEffect(() => {
+    let cancelled = false
+    const createChildChat = async () => {
+      await whenDeviceReady()
+      if (cancelled) return
     const existing = mainEd.getSortedChildIdsForParent(shape.id)
       .map((id: any) => mainEd.getShape(id))
       .find((s: any) => s?.type === 'fleet-chat')
@@ -238,6 +242,9 @@ function FleetTouchInboxInner({ shape }: { shape: any }) {
       y: STRIP_H,
       props: { w: myW, h: Math.max(80, myH - STRIP_H), filter: [], userId: uid, deviceId: dev },
     })
+    }
+    void createChildChat()
+    return () => { cancelled = true }
   }, [mainEd, shape.id, myW, myH])
 
   // Active partner = the agent the child chat is currently filtered to.

@@ -152,19 +152,125 @@ export function getHumanName() { return _humanName }
 // on two devices (Mac + iPad) gets two distinct device ids, so each device owns
 // and lays out its own fleet shapes instead of fighting over one shared set.
 // Purely local — never sent to the server as an identity, only stamped on shapes.
+const DEVICE_ID_KEY = 'tlda-device-id'
+const DEVICE_ID_DB = 'tlda-device'
+const DEVICE_ID_STORE = 'kv'
 let _deviceId = null
+let _deviceReady = false
+let _deviceReadyResolve = null
+const _deviceReadyPromise = new Promise(resolve => { _deviceReadyResolve = resolve })
+
+export function whenDeviceReady() { return _deviceReadyPromise }
+export function isDeviceReady() { return _deviceReady }
+
+function readLocalDeviceId() {
+  try {
+    if (typeof localStorage === 'undefined') return ''
+    return localStorage.getItem(DEVICE_ID_KEY) || ''
+  } catch {
+    return ''
+  }
+}
+
+function writeLocalDeviceId(id) {
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.setItem(DEVICE_ID_KEY, id)
+  } catch {}
+}
+
+function openDeviceDb() {
+  if (typeof indexedDB === 'undefined') return Promise.resolve(null)
+  return new Promise(resolve => {
+    try {
+      const req = indexedDB.open(DEVICE_ID_DB, 1)
+      req.onupgradeneeded = () => {
+        try {
+          const db = req.result
+          if (!db.objectStoreNames.contains(DEVICE_ID_STORE)) db.createObjectStore(DEVICE_ID_STORE)
+        } catch {}
+      }
+      req.onsuccess = () => resolve(req.result)
+      req.onerror = () => resolve(null)
+      req.onblocked = () => resolve(null)
+    } catch {
+      resolve(null)
+    }
+  })
+}
+
+async function readIndexedDeviceId() {
+  const db = await openDeviceDb()
+  if (!db) return ''
+  try {
+    return await new Promise(resolve => {
+      const tx = db.transaction(DEVICE_ID_STORE, 'readonly')
+      const store = tx.objectStore(DEVICE_ID_STORE)
+      const req = store.get(DEVICE_ID_KEY)
+      req.onsuccess = () => resolve(typeof req.result === 'string' ? req.result : '')
+      req.onerror = () => resolve('')
+      tx.oncomplete = () => db.close()
+      tx.onerror = () => { try { db.close() } catch {}; resolve('') }
+      tx.onabort = () => { try { db.close() } catch {}; resolve('') }
+    })
+  } catch {
+    try { db.close() } catch {}
+    return ''
+  }
+}
+
+async function writeIndexedDeviceId(id) {
+  const db = await openDeviceDb()
+  if (!db) return
+  try {
+    await new Promise(resolve => {
+      const tx = db.transaction(DEVICE_ID_STORE, 'readwrite')
+      tx.objectStore(DEVICE_ID_STORE).put(id, DEVICE_ID_KEY)
+      tx.oncomplete = () => { try { db.close() } catch {}; resolve() }
+      tx.onerror = () => { try { db.close() } catch {}; resolve() }
+      tx.onabort = () => { try { db.close() } catch {}; resolve() }
+    })
+  } catch {
+    try { db.close() } catch {}
+  }
+}
+
+function mintDeviceId() {
+  return (typeof crypto !== 'undefined' && crypto.randomUUID)
+    ? crypto.randomUUID().slice(0, 8)
+    : Math.random().toString(36).slice(2, 10)
+}
+
+async function initDeviceId() {
+  try {
+    let id = readLocalDeviceId()
+    if (id) {
+      _deviceId = id
+      void writeIndexedDeviceId(id)
+      return
+    }
+
+    id = await readIndexedDeviceId()
+    if (id) {
+      _deviceId = id
+      writeLocalDeviceId(id)
+      return
+    }
+
+    id = mintDeviceId()
+    _deviceId = id
+    writeLocalDeviceId(id)
+    void writeIndexedDeviceId(id)
+  } finally {
+    _deviceReady = true
+    if (_deviceReadyResolve) { _deviceReadyResolve(); _deviceReadyResolve = null }
+  }
+}
+
+void initDeviceId()
+
 export function getDeviceId() {
   if (_deviceId) return _deviceId
-  if (typeof localStorage === 'undefined') return ''
-  let id = localStorage.getItem('tlda-device-id')
-  if (!id) {
-    id = (typeof crypto !== 'undefined' && crypto.randomUUID)
-      ? crypto.randomUUID().slice(0, 8)
-      : Math.random().toString(36).slice(2, 10)
-    localStorage.setItem('tlda-device-id', id)
-  }
-  _deviceId = id
-  return id
+  return ''
 }
 export function needsIdentity() { return !_humanId && _identifyPending }
 

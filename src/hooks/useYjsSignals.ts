@@ -10,7 +10,7 @@ import { reloadPages } from '../editorSetup'
 import type { ReloadResult } from '../editorSetup'
 import type { SvgDocument, DiffData } from '../svgDocumentLoader'
 // @ts-ignore — vanilla JS module
-import { getDeviceId, getHumanId } from '../fleet/fleet-data.mjs'
+import { getDeviceId, getHumanId, whenDeviceReady } from '../fleet/fleet-data.mjs'
 import {
   dispatchManagedAnnotationViewerHide,
   dispatchManagedAnnotationViewerRequest,
@@ -316,7 +316,8 @@ export function useYjsSignals({
       if (!signal.bounds) return
       const label = signal.agent ? `📷 ${signal.agent}` : '📷 screenshot'
 
-      function showAtPlaceholder() {
+      async function showAtPlaceholder() {
+        await whenDeviceReady()
         // Find the most recent screenshot placeholder in any chat
         const placeholder = window.document.querySelector('.screenshot-placeholder') as HTMLElement | null
         if (!placeholder) {
@@ -330,6 +331,9 @@ export function useYjsSignals({
           dispatchManagedAnnotationViewerHide()
           return
         }
+        const userId = getHumanId()
+        const deviceId = getDeviceId()
+        if (!userId || !deviceId) return
         dispatchManagedAnnotationViewerRequest({
           surfaceKey: `screenshot-bounds:${signal.agent || 'agent'}:${signal.timestamp || Date.now()}`,
           bounds: signal.bounds,
@@ -337,7 +341,7 @@ export function useYjsSignals({
           label,
           pinned: true,
           chipRect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height },
-          owner: { userId: getHumanId(), deviceId: getDeviceId() },
+          owner: { userId, deviceId },
           source: `screenshot-bounds:${signal.agent || 'agent'}:${signal.timestamp || 'unknown'}`,
           viewport: { w: window.innerWidth, h: window.innerHeight },
         })

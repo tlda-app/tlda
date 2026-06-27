@@ -16,7 +16,7 @@ import type { Editor, TLShape, TLShapeId } from 'tldraw'
 // @ts-ignore — vanilla JS module
 import { myTldaUrl } from '../fleet/tldaUrl.mjs'
 // @ts-ignore — vanilla JS module
-import { getHumanId, getDeviceId } from '../fleet/fleet-data.mjs'
+import { getHumanId, getDeviceId, whenDeviceReady } from '../fleet/fleet-data.mjs'
 import { translateFleetHudDropPointWithWM } from '../wm/fleet-hud-layer'
 import { getEditorWMCore } from '../wm/editor-wm'
 import {
@@ -245,12 +245,16 @@ export async function createTemporaryMarkdownColumn(
     w: TEMP_MARKDOWN_W,
     h: TEMP_MARKDOWN_H,
   }
+  await whenDeviceReady()
+  const userId = getHumanId()
+  const deviceId = getDeviceId()
+  if (!userId || !deviceId) return
   const surface = createTemporaryMarkdownSurfaceRequest({
     shapeId: TEMP_MARKDOWN_SHAPE_ID,
     bounds,
     title,
     url,
-    owner: { userId: getHumanId(), deviceId: getDeviceId() },
+    owner: { userId, deviceId },
     sourceChatShapeId: typeof meta.sourceChatShapeId === 'string' ? meta.sourceChatShapeId : undefined,
     sharedDocPath: typeof meta.sharedDocPath === 'string' ? meta.sharedDocPath : undefined,
     authorId: typeof meta.authorId === 'string' ? meta.authorId : undefined,
@@ -283,7 +287,7 @@ export async function createTemporaryMarkdownColumn(
  * - Content pills over fleet-chat → insert text into that chat's input
  * - Over empty canvas → create new fleet-chat filtered to this value
  */
-export function dropPillOnTarget(
+export async function dropPillOnTarget(
   editor: Editor,
   pillId: TLShapeId,
   value: string,
@@ -541,6 +545,10 @@ export function dropPillOnTarget(
     })
   } else if (!content && (!hitShape || (hitShape as any).type !== 'fleet-agents')) {
     // Drop on empty canvas → create new fleet-chat at the drop point.
+    await whenDeviceReady()
+    const userId = getHumanId()
+    const deviceId = getDeviceId()
+    if (!userId || !deviceId) return
     createEditor.createShape({
       id: createShapeId(),
       type: 'fleet-chat' as any,
@@ -554,8 +562,8 @@ export function dropPillOnTarget(
         // Stamp ownership — without this the chat has userId '' and the
         // ownership rule (isMyFleetShape) never renders it, so the drop looked
         // like it did nothing. deviceId is the other half of the key.
-        userId: getHumanId(),
-        deviceId: getDeviceId(),
+        userId,
+        deviceId,
       },
     })
   }

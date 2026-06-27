@@ -387,12 +387,12 @@ function FleetSearchInner({ shape }: { shape: any }) {
   }, [closeChat])
 
   // Create a real fleet-chat shape on top of this search shape, filtered to the result's agent
-  const openChatForResult = useCallback((result: any) => {
+  const openChatForResult = useCallback(async (result: any) => {
     const name = agentName(result.from || result.agentId || '')
     const filter: [string, string][][] = [[['name', name]]]
     const rec = editor.getShape(shape.id) as any
     if (!rec) return
-    const newId = createFleetShape(editor, 'fleet-chat', rec.x, rec.y + CHAT_HEADER_H, {
+    const newId = await createFleetShape(editor, 'fleet-chat', rec.x, rec.y + CHAT_HEADER_H, {
       w: rec.props.w,
       h: rec.props.h - CHAT_HEADER_H,
       filter,

@@ -18,7 +18,7 @@ import type { ShadowVersion, ShadowTimeBounds } from '../historyStore'
 import type { ChangelogCommit } from '../overlays/SpaceTimeDots'
 import type { SvgDocument } from '../svgDocumentLoader'
 // @ts-ignore — vanilla JS module
-import { getDeviceId, getHumanId } from '../fleet/fleet-data.mjs'
+import { getDeviceId, getHumanId, isDeviceReady } from '../fleet/fleet-data.mjs'
 
 import { usePageColumn } from './usePageColumn'
 import type { PageColumnOptions } from './usePageColumn'
@@ -232,6 +232,7 @@ export function useShadowOverlay(
 
   const columnOptions: PageColumnOptions | null = useMemo(() => {
     if (!committedVersion || !visible) return null
+    if (!isDeviceReady()) return null
     const userId = getHumanId()
     const deviceId = getDeviceId()
     if (!userId || !deviceId) return null

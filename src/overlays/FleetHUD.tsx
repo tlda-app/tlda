@@ -13,7 +13,7 @@ import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from '
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { useFleetIdentity } from '../fleet-data-adapter'
 // @ts-ignore — vanilla JS module
-import { getHumanId, getDeviceId } from '../fleet/fleet-data.mjs'
+import { getHumanId, getDeviceId, isDeviceReady, whenDeviceReady } from '../fleet/fleet-data.mjs'
 import { getMyAnchorId, isMyFleetShape, FLEET_INTERACTION_SHAPE_SELECTOR, FLEET_SHAPE_TYPES, adoptLegacyFleetShapes, layoutOffset, ensureMyLaneDisjoint } from '../shapes/fleet-utils'
 import { isDocumentPageShape } from '../shapes/document-pages'
 import { fleetTouchGestureActiveRef, postTouchTelemetry, setTouchDiagStatus, useFleetGestures } from './useFleetGestures'
@@ -46,7 +46,7 @@ function saveAnchorOffsets(editor: Editor, panOffset: number, cameraY: number) {
   // Never persist a HUD anchor without a resolved identity — getMyAnchorId()
   // falls back to the bare `shape:fleet-hud-anchor` id, which becomes a global
   // orphan shared across users.
-  if (!getHumanId()) return
+  if (!getHumanId() || !isDeviceReady()) return
   const anchorId = getMyAnchorId()
   // Pure UI bookkeeping — the anchor stores pan/camera offsets, not document
   // content. Keep it off the user's undo stack (run with history:'ignore').
@@ -166,6 +166,7 @@ function isFleetShapeForOwner(s: any, humanId: string, deviceId: string): boolea
 }
 
 function ownerFleetPredicate() {
+  if (!isDeviceReady()) return () => false
   const humanId = getHumanId()
   const deviceId = getDeviceId()
   return (shape: any) => isFleetShapeForOwner(shape, humanId, deviceId)
@@ -314,6 +315,7 @@ export function FleetHUD({
   licenseKey,
 }: FleetHUDProps) {
   const { id: identityId } = useFleetIdentity()
+  const [deviceReady, setDeviceReady] = useState(isDeviceReady())
   const [expanded, setExpanded] = useState(() => localStorage.getItem('fleet-hud-expanded') === '1')
   const [fleetBounds, setFleetBounds] = useState<ClipBounds | null>(() => identityId ? getFleetBounds(mainEditor) : null)
   // WM tick used to re-render the fork viewport camera after event-driven WM updates.
@@ -339,6 +341,13 @@ export function FleetHUD({
   const lastHudDiagSigRef = useRef('')
   const fleetBoundsTrackerRef = useRef<ReturnType<typeof createFleetBoundsTracker<any>> | null>(null)
   const gesturesEnabled = expanded && !!fleetBounds && docShapesReady
+
+  useEffect(() => {
+    if (deviceReady) return
+    let cancelled = false
+    whenDeviceReady().then(() => { if (!cancelled) setDeviceReady(true) })
+    return () => { cancelled = true }
+  }, [deviceReady])
 
   const applyHudAnchor = useCallback((anchor: FleetHudAnchor, options: { resetBaseCamera?: boolean; tick?: boolean } = {}) => {
     hudAnchorRef.current = anchor
@@ -378,16 +387,22 @@ export function FleetHUD({
 
   useEffect(() => {
     if (!identityId) return
+    let cancelled = false
     // Claim any pre-(identity,device) fleet shapes for this device BEFORE
     // computing bounds, else the device-scoped isMyFleetShape would orphan a
     // user's existing hand-built layout on first load after the upgrade.
-    adoptLegacyFleetShapes(mainEditor)
-    // Self-heal accumulation: if my layout overlaps another owner (e.g. shapes
-    // placed under the old hash that collided), slide my whole layout into a free
-    // lane so different owners' shapes never overlap. Only moves MY shapes.
-    ensureMyLaneDisjoint(mainEditor, getHumanId(), getDeviceId())
-    setFleetBounds(resetFleetBoundsTracker())
-  }, [identityId, mainEditor, resetFleetBoundsTracker])
+    whenDeviceReady().then(async () => {
+      if (cancelled) return
+      await adoptLegacyFleetShapes(mainEditor)
+      if (cancelled) return
+      // Self-heal accumulation: if my layout overlaps another owner (e.g. shapes
+      // placed under the old hash that collided), slide my whole layout into a free
+      // lane so different owners' shapes never overlap. Only moves MY shapes.
+      ensureMyLaneDisjoint(mainEditor, getHumanId(), getDeviceId())
+      setFleetBounds(resetFleetBoundsTracker())
+    })
+    return () => { cancelled = true }
+  }, [identityId, mainEditor, resetFleetBoundsTracker, deviceReady])
 
   useEffect(() => {
     const shapes = mainEditor.getCurrentPageShapes()
@@ -1191,7 +1206,7 @@ export function FleetHUD({
 
   const overlayLayer = readFleetHudOverlayLayer(hudWm, {
     userId: getHumanId(),
-    deviceId: getDeviceId(),
+    deviceId: deviceReady ? getDeviceId() : '',
   })
   const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null
   const exposeForTest = params?.has('pw') || params?.has('wmFlowGate')

@@ -207,7 +207,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
       unsub?.()
       unsub = null
     }
-    const applyWhenReady = () => {
+    const applyWhenReady = async () => {
       if (preset.id === 'phone') {
         const delay = getPhoneCameraSettlingDelay()
         if (delay > 0) {
@@ -219,7 +219,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
           return
         }
       }
-      const created = createFleetLayout(mainEditor, agentsRef.current, preset.id)
+      const created = await createFleetLayout(mainEditor, agentsRef.current, preset.id)
       if (created) {
         completed = true
         cleanup()

@@ -37,7 +37,7 @@ import { renderChatLine, esc, timeShort } from '../fleet/chat-render.mjs'
 // @ts-ignore — vanilla JS module
 import { highlightSyntax, langFromFilePath } from '../fleet/utils.mjs'
 // @ts-ignore — vanilla JS module
-import { getHumanId, getDeviceId } from '../fleet/fleet-data.mjs'
+import { getHumanId, getDeviceId, isDeviceReady } from '../fleet/fleet-data.mjs'
 import { useIsInViewport } from './useIsInViewport'
 import {
   dispatchManagedAnnotationViewerHide,
@@ -52,6 +52,7 @@ const DEFAULT_H = 560
 const FLEET_API = DATABASE_HTTP
 
 function currentManagedSurfaceOwner() {
+  if (!isDeviceReady()) return { userId: '', deviceId: '' }
   return { userId: getHumanId(), deviceId: getDeviceId() }
 }
 

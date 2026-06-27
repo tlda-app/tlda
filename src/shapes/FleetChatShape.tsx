@@ -30,7 +30,7 @@ import { attachHopperDismiss } from '../fleet/hopper-dismiss.mjs'
 // @ts-ignore — vanilla JS module
 import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText, isRecording } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
-import { getHumanId, getHumanName, getDeviceId, updateEventById, sendViewingContext, setViewingEnrichFn, getFleetWsBase } from '../fleet/fleet-data.mjs'
+import { getHumanId, getHumanName, getDeviceId, isDeviceReady, updateEventById, sendViewingContext, setViewingEnrichFn, getFleetWsBase } from '../fleet/fleet-data.mjs'
 // @ts-ignore — vanilla JS module
 import { installChatImageRetry } from '../fleet/chat-image-retry.mjs'
 // @ts-ignore — vanilla JS module
@@ -196,6 +196,7 @@ function isManagedSurfaceProofFixtureEnabled() {
 }
 
 function currentManagedSurfaceOwner() {
+  if (!isDeviceReady()) return { userId: '', deviceId: '' }
   return { userId: getHumanId(), deviceId: getDeviceId() }
 }
 

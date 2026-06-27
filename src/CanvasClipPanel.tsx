@@ -25,7 +25,7 @@ import {
   viewportFrameLayerId,
 } from './wm/editor-wm'
 import { VisibilityViewportProvider } from './shapes/useIsInViewport'
-import { getDeviceId } from './fleet/fleet-data.mjs'
+import { getDeviceId, isDeviceReady } from './fleet/fleet-data.mjs'
 import './CanvasClipPanel.css'
 
 const DEFAULT_WIDTH = 600
@@ -276,7 +276,7 @@ export function CanvasClipPanel({
       if (lockCamera) {
         return shouldRenderLockedFleetViewportShape(shape, {
           userId: identityId,
-          deviceId: getDeviceId(),
+          deviceId: isDeviceReady() ? getDeviceId() : '',
         })
       }
 

@@ -53,7 +53,7 @@ import { chatInsertBus } from './FleetPillShape'
 import { getVimMode, subscribeVimMode } from '../vimMode'
 import { appendToken } from '../authToken'
 // @ts-ignore — vanilla JS module
-import { getHumanId, getDeviceId } from '../fleet/fleet-data.mjs'
+import { getHumanId, getDeviceId, isDeviceReady } from '../fleet/fleet-data.mjs'
 import {
   dispatchManagedAnnotationViewerHide,
   dispatchManagedAnnotationViewerRequest,
@@ -66,6 +66,7 @@ import { vim, getCM, Vim, CodeMirror as CM5 } from '@replit/codemirror-vim'
 import { latex } from 'codemirror-lang-latex'
 
 function currentManagedSurfaceOwner() {
+  if (!isDeviceReady()) return { userId: '', deviceId: '' }
   return { userId: getHumanId(), deviceId: getDeviceId() }
 }
 

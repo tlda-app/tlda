@@ -1,7 +1,7 @@
 import type { Editor } from 'tldraw'
 import { createShapeId } from 'tldraw'
 // @ts-ignore — vanilla JS module
-import { getHumanId, getHumanName, getDeviceId, getEvents } from '../fleet/fleet-data.mjs'
+import { getHumanId, getHumanName, getDeviceId, getEvents, isDeviceReady, whenDeviceReady } from '../fleet/fleet-data.mjs'
 // @ts-ignore — vanilla JS module
 import { baseName } from '../../shared/lineage-name.mjs'
 // @ts-ignore — vanilla JS module
@@ -92,6 +92,7 @@ export function isFleetShapeForOwnerKey(s: any, userId: string, deviceId: string
  * can never disagree.
  */
 export function isMyFleetShape(s: any): boolean {
+  if (!isDeviceReady()) return false
   const myId = getHumanId()
   const myDevice = getDeviceId()
   return isFleetShapeForOwnerKey(s, myId, myDevice)
@@ -111,7 +112,8 @@ export function isMyFleetShape(s: any): boolean {
  * would override the offset compensation). Run once on identity resolve;
  * history-ignored. A real migration, NOT an "empty deviceId means mine" shim.
  */
-export function adoptLegacyFleetShapes(editor: Editor): number {
+export async function adoptLegacyFleetShapes(editor: Editor): Promise<number> {
+  await whenDeviceReady()
   const myId = getHumanId()
   const myDevice = getDeviceId()
   if (!myId || !myDevice) return 0
@@ -143,16 +145,18 @@ export function adoptLegacyFleetShapes(editor: Editor): number {
 /** Create a fleet shape with ownership stamped. Returns the shape id, or null
  *  if identity is unresolved (shape not created). Every fleet-shape creation
  *  MUST go through this so unowned shapes can never enter the store. */
-export function createFleetShape(
+export async function createFleetShape(
   editor: Editor,
   type: string,
   x: number,
   y: number,
   props: Record<string, any>,
-): string | null {
+): Promise<string | null> {
+  await whenDeviceReady()
   const myId = getHumanId()
   if (!myId) return null
   const myDevice = getDeviceId()
+  if (!myDevice) return null
   const id = createShapeId()
   // Isolate this creation as its own undo step. createFleetShape is THE choke
   // point for fleet-shape creation, and it can run on the main editor directly
@@ -195,13 +199,13 @@ export const FLEET_TOOL_DIMS: Record<string, { w: number; h: number }> = {
  * the cursor (matching ReaperTool). Returns the new shape id, or null if
  * identity is unresolved (no shape created).
  */
-export function placeFleetShapeAtCursor(
+export async function placeFleetShapeAtCursor(
   editor: Editor,
   type: string,
   w: number,
   h: number,
   extraProps: Record<string, any> = {},
-): string | null {
+): Promise<string | null> {
   const hudEditor = (typeof window !== 'undefined' && (window as any).__tldraw_hud_editor__) || null
   let x: number, y: number
   if (hudEditor) {
@@ -214,7 +218,7 @@ export function placeFleetShapeAtCursor(
     x = point.x - w / 2
     y = point.y - h / 2
   }
-  const id = createFleetShape(editor, type, x, y, { w, h, ...extraProps })
+  const id = await createFleetShape(editor, type, x, y, { w, h, ...extraProps })
   if (!id) return null
   editor.setCurrentTool('select')
   editor.select(id as any)
@@ -330,6 +334,7 @@ export function laneDy(editor: Editor, myId: string, myDevice: string): number {
  *  its own shapes out of any collision into the lowest free lane. Only ever
  *  moves MY shapes; other owners are untouched. Returns the number moved. */
 export function ensureMyLaneDisjoint(editor: Editor, myId: string, myDevice: string): number {
+  if (!isDeviceReady()) return 0
   if (!myId || !myDevice) return 0
   const mine = editor.getCurrentPageShapes().filter(isMyFleetShape)
   if (mine.length === 0) return 0
@@ -380,7 +385,8 @@ export function ensureMyLaneDisjoint(editor: Editor, myId: string, myDevice: str
   return mine.length
 }
 
-export function createFleetLayout(editor: Editor, agents: any[], variant: '2col' | '3col' | 'wide' | 'grid' | 'touch' | 'phone' = '3col'): boolean {
+export async function createFleetLayout(editor: Editor, agents: any[], variant: '2col' | '3col' | 'wide' | 'grid' | 'touch' | 'phone' = '3col'): Promise<boolean> {
+  await whenDeviceReady()
   const myId = getHumanId()
   if (!myId) return false
   const myDevice = getDeviceId()
