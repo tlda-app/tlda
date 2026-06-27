@@ -561,7 +561,7 @@ function broadcastEvent(type, data) {
 }
 
 const spawnLibrarian = new SpawnLibrarian({
-  registerDeadlineMs: Number(process.env.TLDA_SPAWN_REGISTER_DEADLINE_MS || 20_000),
+  registerDeadlineMs: Number(process.env.TLDA_SPAWN_REGISTER_DEADLINE_MS || 60_000),
   wedgedWindowMs: Number(process.env.TLDA_WEDGED_JOIN_MS || 90_000),
   onWedged: ({ agent_id, liveness }) => {
     const agent = fleetStore?.getAgent?.(agent_id)

@@ -161,7 +161,7 @@ export class SpawnLibrarian {
   private readonly pendingDeliveries = new Map<string, DeliveryWait>()
 
   constructor(opts: SpawnLibrarianOptions = {}) {
-    this.registerDeadlineMs = opts.registerDeadlineMs ?? 20_000
+    this.registerDeadlineMs = opts.registerDeadlineMs ?? 60_000
     this.wedgedWindowMs = opts.wedgedWindowMs ?? 90_000
     this.now = opts.now ?? Date.now
     this.setTimer = opts.setTimeoutFn ?? setTimeout
