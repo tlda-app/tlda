@@ -892,6 +892,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
             <OptimisticAgentRow
               key={opt.optimisticId}
               opt={opt}
+              onStartDrag={startDrag}
               onDismiss={() => {
                 const tid = optimisticTimeouts.current.get(opt.optimisticId)
                 if (tid != null) { clearTimeout(tid); optimisticTimeouts.current.delete(opt.optimisticId) }
@@ -1051,13 +1052,21 @@ function OptimisticAgentRow({
   opt,
   onDismiss,
   onRetry,
+  onStartDrag,
 }: {
   opt: OptimisticAgent
   onDismiss: () => void
   onRetry: () => void
+  onStartDrag: (e: React.PointerEvent, pillType: 'agent' | 'label', value: string, displayName: string, color: string) => void
 }) {
   const isError = opt.status === 'error'
   const nameText = opt.name || '…'
+  // A spawning agent is already a real chat target: drag its name to filter the
+  // chat just like a live agent. The filter value is opt.name — the friendly_name
+  // it will register with — so the filter carries over once it inhabits. Only a
+  // named, non-errored card is a valid drag source.
+  const canDrag = !isError && !!opt.name
+  const dragColor = getNickColor(opt.name || opt.optimisticId, false)
   const modelStr = formatModel(opt.model)
   const [hovered, setHovered] = useState(false)
   const showActions = isError && hovered
@@ -1081,7 +1090,11 @@ function OptimisticAgentRow({
           onClick={(e) => { e.stopPropagation(); onDismiss() }}
           aria-label="Dismiss"
         >×</button>
-        <span className="fleet-agents-col-name" style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+        <span
+          className="fleet-agents-col-name"
+          style={{ display: 'flex', alignItems: 'center', gap: 3, ...(canDrag ? { cursor: 'grab', touchAction: 'none' } : null) }}
+          onPointerDown={canDrag ? (e) => { e.stopPropagation(); onStartDrag(e, 'agent', opt.name!, opt.name!, dragColor) } : undefined}
+        >
           {!isError && <span className="fleet-agents-spawn-spinner" aria-hidden="true" />}
           {isError && <span className="fleet-agents-opt-error-icon" aria-hidden="true">✗</span>}
           <span style={{ opacity: 0.75 }}>{nameText}</span>
