@@ -2889,27 +2889,15 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
       try { execSync('launchctl bootstrap gui/$(id -u) ' + PLIST, { stdio: 'pipe' }) } catch {}
       try { execSync('launchctl kickstart gui/$(id -u)/com.tlda.server', { stdio: 'pipe' }) } catch {}
     } else {
-      // No supervisor: reclaim a genuinely-dead port, then spawn directly.
-      try {
-        const stale = execSync(`lsof -ti:${port} -sTCP:LISTEN`, { stdio: 'pipe' }).toString().trim()
-        if (stale) {
-          for (const pid of stale.split('\n')) {
-            try { process.kill(parseInt(pid), 'SIGKILL') } catch {}
-          }
-          await new Promise(r => setTimeout(r, 500))
-        }
-      } catch {}
-      const { spawn } = await import('child_process')
-      const { openSync: fsOpenSync } = await import('fs')
-      const logFd = fsOpenSync(LOGFILE, 'a')
-
-      const serverArgs = [serverScript, '--i-am-tlda-cli']
-      const child = spawn('node', serverArgs, {
-        detached: true,
-        stdio: ['ignore', logFd, logFd],
-        env: { ...process.env, PORT: port, TMUX: undefined, TMUX_PANE: undefined, ...(hasTls && !process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: TLS_CA_PATH } : {}) },
+      // No supervisor: spawn the server fully detached via the shared helper
+      // (the same daemonization `tlda-dev serve` uses, so there's one robust
+      // path, not a hand-rolled parallel one). reclaimPort: the main server owns
+      // the fixed port, so clear a dead LISTENer before binding.
+      const { spawnDetachedServer } = await import('./lib/server-start.mjs')
+      spawnDetachedServer({
+        serverScript, port, logFile: LOGFILE, reclaimPort: true,
+        extraCaPath: hasTls ? TLS_CA_PATH : null,
       })
-      child.unref()
     }
 
     // Wait for it to come up. The server can boot slowly (large fleet-DB query
