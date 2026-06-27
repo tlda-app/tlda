@@ -40,6 +40,7 @@ export class VoiceNoteTool extends StateNode {
   // entry passes nothing and uses the live cursor position.
   override onEnter = (info?: { initialPoint?: { x: number; y: number } }) => {
     const { editor } = this
+    editor.markHistoryStoppingPoint('voice note')
     // Start every new voice note with a clean transcript buffer. Without this,
     // a previous note's leftover `_left`/`_interim` bleeds into the new note
     // (content from note 1 reappears in / displaces note 2). Resetting clears
