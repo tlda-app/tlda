@@ -13,12 +13,13 @@
  * Inline SVG (fill="currentColor") so color-based opacity applies to icon + count together,
  * matching the single-color approach of .build-warning-badge.
  */
-import React, { useState, useCallback, useEffect, useRef } from 'react'
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react'
 import { stopEventPropagation, useUniqueSafeId } from 'tldraw'
 import type { Editor } from 'tldraw'
 import { useFleetAgents, useFleetIdentity } from '../fleet-data-adapter'
 import { countAwakeFleetAgents } from '../fleet/agent-counts'
 import { createFleetLayout } from '../shapes/fleet-utils'
+import { CornerRailSlider } from '../CornerRailSlider'
 import './FleetIconPill.css'
 
 // Basestar hull paths (drawn in a flipped coord system: translate(0,960) scale(1,-1)).
@@ -147,7 +148,8 @@ function isTouchLayoutControl() {
   if (typeof window === 'undefined') return false
   return document.body.classList.contains('phone-mode') ||
     window.matchMedia?.('(pointer: coarse)').matches ||
-    navigator.maxTouchPoints > 0
+    navigator.maxTouchPoints > 0 ||
+    new URLSearchParams(window.location.search).has('forcetouch')
 }
 
 function stopControlEvent(e: React.SyntheticEvent | Event) {
@@ -166,18 +168,94 @@ function cleanUrlName(name: string | null) {
   return name?.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '') || ''
 }
 
+function setFleetHudExpanded(expanded: boolean) {
+  localStorage.setItem('fleet-hud-expanded', expanded ? '1' : '0')
+  window.dispatchEvent(new CustomEvent('fleet-hud-toggle', { detail: { expanded } }))
+}
+
+function applyFleetLayoutPreset({
+  mainEditor,
+  agents,
+  presetId,
+  onShown,
+}: {
+  mainEditor: Editor
+  agents: ReturnType<typeof useFleetAgents>
+  presetId: LayoutId
+  onShown?: () => void
+}) {
+  const deadline = Date.now() + 5000
+  let rafId: number | null = null
+  let timeoutId: ReturnType<typeof setTimeout> | null = null
+  let unsub: (() => void) | null = null
+  let completed = false
+  const cleanup = () => {
+    if (rafId !== null) cancelAnimationFrame(rafId)
+    rafId = null
+    if (timeoutId !== null) clearTimeout(timeoutId)
+    timeoutId = null
+    unsub?.()
+    unsub = null
+  }
+  const applyWhenReady = () => {
+    if (presetId === 'phone') {
+      const delay = getPhoneCameraSettlingDelay()
+      if (delay > 0) {
+        if (timeoutId !== null) return
+        timeoutId = setTimeout(() => {
+          timeoutId = null
+          applyWhenReady()
+        }, Math.min(delay + 50, 1000))
+        return
+      }
+    }
+    const created = createFleetLayout(mainEditor, agents, presetId)
+    if (created) {
+      completed = true
+      cleanup()
+      if (isFleetHidden()) {
+        setFleetHudExpanded(true)
+        onShown?.()
+      }
+      requestAnimationFrame(() => window.dispatchEvent(new CustomEvent('fleet-hud-reset')))
+      return
+    }
+    if (Date.now() >= deadline) {
+      completed = true
+      cleanup()
+      console.warn('[FleetLayout] Timed out waiting for document page bounds')
+      return
+    }
+    rafId = requestAnimationFrame(applyWhenReady)
+  }
+  applyWhenReady()
+  if (!completed && !unsub) {
+    unsub = mainEditor.store.listen(({ changes }) => {
+      const hasPageChange =
+        Object.values(changes.added).some((r: any) => r.typeName === 'shape' && (r.type === 'svg-page' || r.type === 'html-page')) ||
+        Object.values(changes.updated).some((pair: any) => {
+          const r = pair[1]
+          return r?.typeName === 'shape' && (r.type === 'svg-page' || r.type === 'html-page')
+        })
+      if (hasPageChange) applyWhenReady()
+    }, { source: 'all', scope: 'document' })
+  }
+}
+
 // ── FleetIconPill ────────────────────────────────────────────────────────────
 
 interface FleetIconPillProps { mainEditor: Editor }
 
 export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
   const countMaskId = useUniqueSafeId('fleet-count-mask')
+  const badgeRef = useRef<HTMLSpanElement>(null)
   const agents = useFleetAgents()
   const identity = useFleetIdentity()
   const [hidden, setHidden] = useState(() => isFleetHidden())
   const [dragging, setDragging] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
+  const [rangeIdx, setRangeIdx] = useState(0)
   const [, setDragAnchor] = useState<{ x: number; y: number } | null>(null)
 
   const aliveCount = countAwakeFleetAgents(agents)
@@ -194,66 +272,13 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
 
   const applyPreset = useCallback((idx: number) => {
     const preset = LAYOUT_PRESETS[idx]
-    const deadline = Date.now() + 5000
-    let rafId: number | null = null
-    let timeoutId: ReturnType<typeof setTimeout> | null = null
-    let unsub: (() => void) | null = null
-    let completed = false
-    const cleanup = () => {
-      if (rafId !== null) cancelAnimationFrame(rafId)
-      rafId = null
-      if (timeoutId !== null) clearTimeout(timeoutId)
-      timeoutId = null
-      unsub?.()
-      unsub = null
-    }
-    const applyWhenReady = () => {
-      if (preset.id === 'phone') {
-        const delay = getPhoneCameraSettlingDelay()
-        if (delay > 0) {
-          if (timeoutId !== null) return
-          timeoutId = setTimeout(() => {
-            timeoutId = null
-            applyWhenReady()
-          }, Math.min(delay + 50, 1000))
-          return
-        }
-      }
-      const created = createFleetLayout(mainEditor, agentsRef.current, preset.id)
-      if (created) {
-        completed = true
-        cleanup()
-        // Applying a layout while the HUD is toggled off would create shapes you
-        // can't see. Setting a layout always shows the HUD.
-        if (isFleetHidden()) {
-          localStorage.setItem('fleet-hud-expanded', '1')
-          setHidden(false)
-          window.dispatchEvent(new CustomEvent('fleet-hud-toggle', { detail: { expanded: true } }))
-        }
-        setPickerOpen(false)
-        requestAnimationFrame(() => window.dispatchEvent(new CustomEvent('fleet-hud-reset')))
-        return
-      }
-      if (Date.now() >= deadline) {
-        completed = true
-        cleanup()
-        console.warn('[FleetLayout] Timed out waiting for document page bounds')
-        return
-      }
-      rafId = requestAnimationFrame(applyWhenReady)
-    }
-    applyWhenReady()
-    if (!completed && !unsub) {
-      unsub = mainEditor.store.listen(({ changes }) => {
-        const hasPageChange =
-          Object.values(changes.added).some((r: any) => r.typeName === 'shape' && (r.type === 'svg-page' || r.type === 'html-page')) ||
-          Object.values(changes.updated).some((pair: any) => {
-            const r = pair[1]
-            return r?.typeName === 'shape' && (r.type === 'svg-page' || r.type === 'html-page')
-          })
-        if (hasPageChange) applyWhenReady()
-      }, { source: 'all', scope: 'document' })
-    }
+    applyFleetLayoutPreset({
+      mainEditor,
+      agents: agentsRef.current,
+      presetId: preset.id,
+      onShown: () => setHidden(false),
+    })
+    setPickerOpen(false)
   }, [mainEditor])
 
   useEffect(() => {
@@ -295,11 +320,42 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
       return
     }
     const wasHidden = isFleetHidden()
-    localStorage.setItem('fleet-hud-expanded', wasHidden ? '1' : '0')
+    setFleetHudExpanded(wasHidden)
     setHidden(!wasHidden)
-    // Tell FleetHUD to toggle
-    window.dispatchEvent(new CustomEvent('fleet-hud-toggle'))
   }, [])
+
+  const previewLayoutPreset = useCallback((idx: number) => {
+    setRangeIdx(idx)
+    setSelectedIdx(idx)
+  }, [])
+
+  const resetRangeDrag = useCallback(() => {
+    setDragging(false)
+    setSelectedIdx(null)
+  }, [])
+
+  const commitLayoutPreset = useCallback((idx: number) => {
+    setRangeIdx(idx)
+    applyPreset(idx)
+    justDraggedRef.current = true
+    resetRangeDrag()
+  }, [applyPreset, resetRangeDrag])
+
+  const tapFleetButton = useCallback(() => {
+    if (isTouchLayoutControl()) {
+      setPickerOpen(open => !open)
+      return
+    }
+    const wasHidden = isFleetHidden()
+    setFleetHudExpanded(wasHidden)
+    setHidden(!wasHidden)
+  }, [])
+
+  const layoutSliderOptions = useMemo(() => LAYOUT_PRESETS.map(preset => ({
+    id: preset.id,
+    label: preset.title,
+    render: () => <LayoutIcon id={preset.id} size={20} />,
+  })), [])
 
   /** Pointer down — stop propagation (prevents TLDraw interference) and set up drag listeners. */
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
@@ -372,6 +428,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
       title={hidden ? 'Fleet shapes hidden — click to show' : 'Fleet — click to hide, drag for layout'}
     >
       <span
+        ref={badgeRef}
         className="fleet-icon-pill-badge"
         onClick={handleClick}
         onPointerDown={handlePointerDown}
@@ -421,6 +478,19 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
           )}
         </svg>
       </span>
+
+      {isTouchLayoutControl() && (
+        <CornerRailSlider
+          anchorRef={badgeRef}
+          className="fleet-layout-slider"
+          ariaLabel="Fleet layout"
+          options={layoutSliderOptions}
+          value={rangeIdx}
+          onPreview={previewLayoutPreset}
+          onCommit={commitLayoutPreset}
+          onTap={tapFleetButton}
+        />
+      )}
 
       {/* Layout preset fan — positioned above the icon */}
       {(dragging || pickerOpen) && (
