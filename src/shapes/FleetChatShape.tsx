@@ -11,6 +11,7 @@ import {
   createShapeId,
   stopEventPropagation,
   useEditor,
+  useUniqueSafeId,
   useValue,
   type Editor,
   type TLShapeId,
@@ -37,9 +38,7 @@ import {
   buildFleetAgentFilter,
   buildFleetDmFilter,
   classifyFleetComposerTrafficMode,
-  filterForFleetComposerTrafficMode,
   matchesFleetFilter,
-  nextFleetComposerTrafficMode,
   quietTrafficSuppressesActivity,
 } from '../fleet/filter-semantics.mjs'
 import { appendToken } from '../authToken'
@@ -83,7 +82,54 @@ const INITIAL_CHAT_RENDER_WINDOW = 80
 const CHAT_RENDER_WINDOW_CHUNK = 80
 const CHAT_RENDER_LOOKBEHIND = 20
 type ChatTrafficMode = 'normal' | 'quiet'
-type ComposerTrafficFilterMode = 'dm-quiet' | 'dm' | 'agent' | 'custom'
+type ComposerTrafficFilterMode = 'dm-quiet' | 'dm' | 'agent-quiet' | 'agent' | 'custom'
+
+function composerTrafficScopeLabel(mode: ComposerTrafficFilterMode): string {
+  if (mode === 'dm-quiet' || mode === 'dm') return 'DM'
+  if (mode === 'agent-quiet' || mode === 'agent') return 'All'
+  return 'Filter'
+}
+
+function composerTrafficShowsTools(mode: ComposerTrafficFilterMode): boolean {
+  return mode === 'dm' || mode === 'agent'
+}
+
+function composerTrafficTextTransform(label: string): string {
+  return label === 'All'
+    ? 'scale(1.08 0.92) translate(-1.25 0.8)'
+    : 'scale(1.1 0.92) translate(-1.55 0.8)'
+}
+
+function composerTrafficTextSize(label: string): number {
+  return label === 'All' ? 9.7 : 10.2
+}
+
+function classifyFleetComposerToggleMode(
+  filter: [string, string][][],
+  trafficMode: ChatTrafficMode,
+  humanLabel: string,
+  agentLabel: string,
+): ComposerTrafficFilterMode {
+  const mode = classifyFleetComposerTrafficMode(filter, trafficMode, humanLabel, agentLabel) as ComposerTrafficFilterMode
+  return mode === 'agent' && trafficMode === 'quiet' ? 'agent-quiet' : mode
+}
+
+function nextFleetComposerToggleMode(currentMode: ComposerTrafficFilterMode): ComposerTrafficFilterMode {
+  if (currentMode === 'agent') return 'dm'
+  if (currentMode === 'dm') return 'dm-quiet'
+  if (currentMode === 'dm-quiet') return 'agent-quiet'
+  return 'agent'
+}
+
+function filterForFleetComposerToggleMode(
+  mode: ComposerTrafficFilterMode,
+  humanLabel: string,
+  agentLabel: string,
+): [string, string][][] {
+  return mode === 'agent' || mode === 'agent-quiet'
+    ? buildFleetAgentFilter(agentLabel) as [string, string][][]
+    : buildFleetDmFilter(humanLabel, agentLabel) as [string, string][][]
+}
 
 function isFleetPillRecord(record: any): boolean {
   return record?.typeName === 'shape' && record.type === 'fleet-pill'
@@ -1653,8 +1699,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const panel = useContext(PanelContext)
   const fleetStyleVars = useFleetStyleVars()
   const { w, h, filter, trafficMode = 'normal' } = shape.props as { w: number; h: number; filter: [string, string][][]; trafficMode?: ChatTrafficMode }
-  const quietTraffic = trafficMode === 'quiet'
-  const quietDmTraffic = quietTrafficSuppressesActivity(filter, trafficMode)
+  const quietTraffic = quietTrafficSuppressesActivity(filter, trafficMode)
   void useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
   const [filterOpen, setFilterOpen] = useState(false)
   const [filterOpenByPill, setFilterOpenByPill] = useState(false)
@@ -2086,7 +2131,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     const sorted = events
       .filter((m: any) => {
         const t = m.type
-        if (quietDmTraffic && (t === 'activity' || m._activity)) return false
+        if (quietTraffic && (t === 'activity' || m._activity)) return false
         return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'activity' || t === 'kill-session' || t === 'interrupt' || t === 'terminal_attention' || t === 'terminal_card' || t === 'plan_approval' || t === 'timer'
       })
       .filter((m: any) => !m._timer) // skip legacy timer-expired messages (fired→_timerFired and cancelled→_timerCancelled still render)
@@ -2115,7 +2160,7 @@ function FleetChatInner({ shape }: { shape: any }) {
 
     probe.stop(chatSortTimer, { eventCount: events.length, resultCount: sorted.length })
     return sorted
-  }, [events, quietDmTraffic])
+  }, [events, quietTraffic])
 
   // Standing diagnostic — does the message list momentarily empty? When
   // chatMessages hits 0 the render swaps the Virtuoso list for the "No messages"
@@ -3523,35 +3568,6 @@ function FleetChatInner({ shape }: { shape: any }) {
     requestAnimationFrame(pinHard)
   }, [filterKey, pinHard, resetRenderWindowToTail])
 
-  // TRACE (temporary diagnostic — remove once scroll is solid): make the log
-  // tell the WHOLE story so the fix comes from ground truth, not theory.
-  // Logs the chat's mount/unmount (to confirm or rule out remount-resets) and
-  // every scroll event with its attributed cause (our pin vs. anything else).
-  useEffect(() => {
-    log.debug('chat-scroll', 'TRACE mount')
-    return () => log.debug('chat-scroll', 'TRACE unmount')
-  }, [])
-  useEffect(() => {
-    const el = chatLogEl
-    if (!el) return
-    let prevTop = Math.round(el.scrollTop)
-    const onTrace = () => {
-      const now = performance.now()
-      const top = Math.round(el.scrollTop)
-      const gap = Math.round(el.scrollHeight - (el.scrollTop + el.clientHeight))
-      const dir = top > prevTop ? 'down' : top < prevTop ? 'up' : 'same'
-      const cause = now < programmaticUntilRef.current ? 'pin' : 'other'
-      log.debug('chat-scroll', 'TRACE scroll', {
-        top, sh: el.scrollHeight, ch: el.clientHeight, gap, dir, cause,
-        scrolledUp: userScrolledUpRef.current, atBottom: isAtBottomRef.current,
-      })
-      prevTop = top
-    }
-    el.addEventListener('scroll', onTrace, { passive: true })
-    return () => el.removeEventListener('scroll', onTrace)
-  }, [chatLogEl])
-
-
   // Terminal card hover — mouseover on .lc-terminal-card shows the terminal overlay.
   useEffect(() => {
     const el = chatLogEl
@@ -4189,18 +4205,21 @@ function FleetChatInner({ shape }: { shape: any }) {
   // `93aba2cd` spurious-filter-cycling fix.
   const trafficTapRef = useRef<{ x: number; y: number; id: number } | null>(null)
   const composerTrafficMode = useMemo<ComposerTrafficFilterMode>(
-    () => classifyFleetComposerTrafficMode(filter, trafficMode, humanFilterLabel, composerAgentLabel),
+    () => classifyFleetComposerToggleMode(filter, trafficMode, humanFilterLabel, composerAgentLabel),
     [filterKey, trafficMode, humanFilterLabel, composerAgentLabel],
   )
+  const composerTrafficScope = composerTrafficScopeLabel(composerTrafficMode)
+  const composerTrafficToolsShown = composerTrafficShowsTools(composerTrafficMode)
+  const composerTrafficMaskId = useUniqueSafeId('fleet-composer-traffic-mask')
   const cycleComposerTrafficMode = useCallback(() => {
     if (!composerAgentLabel) return
-    const nextMode = nextFleetComposerTrafficMode(composerTrafficMode)
+    const nextMode = nextFleetComposerToggleMode(composerTrafficMode)
     editor.updateShape({
       id: shape.id,
       type: shape.type,
       props: {
-        filter: filterForFleetComposerTrafficMode(nextMode, humanFilterLabel, composerAgentLabel),
-        trafficMode: nextMode === 'dm-quiet' ? 'quiet' : 'normal',
+        filter: filterForFleetComposerToggleMode(nextMode, humanFilterLabel, composerAgentLabel),
+        trafficMode: nextMode === 'dm-quiet' || nextMode === 'agent-quiet' ? 'quiet' : 'normal',
       },
     })
   }, [composerAgentLabel, composerTrafficMode, editor, humanFilterLabel, shape.id, shape.type])
@@ -5251,24 +5270,6 @@ function FleetChatInner({ shape }: { shape: any }) {
               : <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M1 2h14M3 7h10M6 12h4"/></svg>
             }
           </button>
-          <button
-            className={`fleet-traffic-mode-btn${quietTraffic ? ' fleet-traffic-mode-btn-active' : ''}`}
-            onPointerDown={stopEventPropagation}
-            // text-label button ('q'/'t'): onPointerUp so a touch tap fires (a
-            // text label in the canvas gets no synthesized click on iPad, same
-            // class as the DM/All toggle); pointerup covers mouse too.
-            onPointerUp={(e) => {
-              stopEventPropagation(e)
-              editor.updateShape({
-                id: shape.id,
-                type: shape.type,
-                props: { trafficMode: quietTraffic ? 'normal' : 'quiet' },
-              })
-            }}
-            title={quietTraffic ? 'Quiet traffic: tools hidden' : 'Normal traffic: tools visible'}
-          >
-            {quietTraffic ? 'q' : 't'}
-          </button>
         </div>
 
         {/* Filter editor — full overlay showing DNF expression */}
@@ -5324,20 +5325,13 @@ function FleetChatInner({ shape }: { shape: any }) {
             // adds pixels to existing items) which doesn't tick items.length
             // and so isn't caught by force-pin-on-item-grow.
             totalListHeightChanged={(h) => {
-              const t0 = probe.isEnabled('chat') ? performance.now() : 0
+              const diag = probe.isEnabled('chat')
+              const t0 = diag ? performance.now() : 0
               const prev = prevTotalHeightRef.current
               prevTotalHeightRef.current = h
               const grew = h > prev
               const follow = !userScrolledUpRef.current || hardLockedRef.current
-              // TRACE: log the gap the MOMENT content grows, follow-or-not. This
-              // catches the "doesn't follow" symptom directly — content grew, we
-              // were supposed to be at bottom, but the view didn't move. The plain
-              // scroll-trace is blind to this (no scrollTop change => no event).
               const el = chatLogEl
-              const gapNow = el ? Math.round(el.scrollHeight - (el.scrollTop + el.clientHeight)) : null
-              if (grew) {
-                log.debug('chat-scroll', 'TRACE content grew', { prev, h, gapNow, follow, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
-              }
               if (grew && follow) {
                 // Following + content grew → re-pin to the true bottom with the
                 // ONE pin (scrollToIndex via pinHard), which is virtualization-
@@ -5347,16 +5341,27 @@ function FleetChatInner({ shape }: { shape: any }) {
                 // the real content and the raw slam strands the tail in stale
                 // blank space (the 224px-short / "bounce"). pinHard targets the
                 // last ITEM, so it can't scroll into space that isn't there.
-                const gapBeforeGlue = el ? Math.round(el.scrollHeight - (el.scrollTop + el.clientHeight)) : null
-                log.debug('chat-scroll', 'growth → pin', { gapBeforeGlue })
+                if (diag) {
+                  const gapBeforeGlue = el ? Math.round(el.scrollHeight - (el.scrollTop + el.clientHeight)) : null
+                  log.debug('chat-scroll', 'growth → pin', { gapBeforeGlue })
+                }
                 pinHard()
-                requestAnimationFrame(() => {
-                  const el2 = chatLogEl
-                  const gapAfter = el2 ? Math.round(el2.scrollHeight - (el2.scrollTop + el2.clientHeight)) : null
-                  log.debug('chat-scroll', 'TRACE after pin', { gapAfter })
-                })
+                if (diag) {
+                  requestAnimationFrame(() => {
+                    const el2 = chatLogEl
+                    const gapAfter = el2 ? Math.round(el2.scrollHeight - (el2.scrollTop + el2.clientHeight)) : null
+                    log.debug('chat-scroll', 'TRACE after pin', { gapAfter })
+                  })
+                }
               }
-              if (probe.isEnabled('chat')) {
+              // Diagnostics only — gated behind the probe flag so the per-height-
+              // change forced-layout reads + POSTs don't run in normal use (kept
+              // for when scroll is being debugged again).
+              if (diag) {
+                const gapNow = el ? Math.round(el.scrollHeight - (el.scrollTop + el.clientHeight)) : null
+                if (grew) {
+                  log.debug('chat-scroll', 'TRACE content grew', { prev, h, gapNow, follow, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
+                }
                 const dt = performance.now() - t0
                 if (dt > 1 || grew) {
                   probe.record('chat', 'chat-virtuoso-height-change', dt, {
@@ -5645,7 +5650,7 @@ function FleetChatInner({ shape }: { shape: any }) {
               </button>
             )}
             <button
-              className={`fleet-composer-traffic-toggle fleet-composer-traffic-toggle-${composerTrafficMode}`}
+              className={`fleet-composer-traffic-toggle fleet-composer-traffic-toggle-${composerTrafficMode}${composerTrafficToolsShown ? ' fleet-composer-traffic-toggle-tools-on' : ''}`}
               onPointerDown={(e) => {
                 stopEventPropagation(e)
                 trafficTapRef.current = { x: e.clientX, y: e.clientY, id: e.pointerId }
@@ -5672,21 +5677,54 @@ function FleetChatInner({ shape }: { shape: any }) {
               title={!composerAgentLabel
                 ? 'Choose an agent filter first'
                 : composerTrafficMode === 'dm-quiet'
-                  ? 'DM, tools hidden'
+                  ? 'DM traffic, tools hidden'
                   : composerTrafficMode === 'dm'
-                    ? 'DM, tools visible'
-                    : composerTrafficMode === 'agent'
-                      ? 'All traffic for this agent'
-                      : 'Custom filter; tap to switch to DM without tools'}
+                    ? 'DM traffic, tools shown'
+                    : composerTrafficMode === 'agent-quiet'
+                      ? 'All traffic for this agent, tools hidden'
+                      : composerTrafficMode === 'agent'
+                        ? 'All traffic for this agent, tools shown'
+                        : 'Custom filter; tap to switch to DM without tools'}
               aria-label="Cycle chat traffic filter"
             >
-              {composerTrafficMode === 'dm-quiet'
-                ? 'DM'
-                : composerTrafficMode === 'dm'
-                  ? 'DM ⚒'
-                  : composerTrafficMode === 'agent'
-                    ? 'All'
-                    : 'Filter'}
+              <svg className="fleet-composer-traffic-glyph" viewBox="0 0 34 20" aria-hidden="true" focusable="false">
+                {composerTrafficToolsShown ? (
+                  <>
+                    <defs>
+                      <mask id={composerTrafficMaskId}>
+                        <rect x="0" y="0" width="34" height="20" fill="white" />
+                        <text
+                          x="17"
+                          y="8.6"
+                          fontSize={composerTrafficTextSize(composerTrafficScope)}
+                          fontWeight="850"
+                          textAnchor="middle"
+                          dominantBaseline="middle"
+                          transform={composerTrafficTextTransform(composerTrafficScope)}
+                          fill="black"
+                        >
+                          {composerTrafficScope}
+                        </text>
+                      </mask>
+                    </defs>
+                    <g fill="currentColor" mask={`url(#${composerTrafficMaskId})`}>
+                      <rect x="2.5" y="3.7" width="29" height="9.8" rx="3.4" />
+                      <rect x="14.2" y="12.5" width="5.6" height="6" rx="1.6" />
+                    </g>
+                  </>
+                ) : (
+                  <text
+                    x="17"
+                    y="9.8"
+                    fontSize={composerTrafficScope === 'Filter' ? 7.2 : 9}
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                    fill="currentColor"
+                  >
+                    {composerTrafficScope}
+                  </text>
+                )}
+              </svg>
             </button>
             </div>
             <ChatComposer
