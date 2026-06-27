@@ -34,13 +34,13 @@
 
 /* Click anywhere on canvas to pin — no button needed */
 
-/* Nav buttons — big hit targets, icons flush in corners */
+/* Nav buttons — corner hit targets so the clipped canvas remains interactive */
 .annotation-viewer-nav-btn {
   position: absolute;
   z-index: 999;
   top: 0;
-  bottom: 0;
-  width: 50%;
+  width: 72px;
+  height: 72px;
   background: none;
   border: none;
   cursor: pointer;
@@ -52,6 +52,8 @@
 }
 .annotation-viewer-nav-btn svg {
   position: absolute;
+  width: 72px;
+  height: 72px;
 }
 .annotation-viewer-nav-btn:hover {
   color: rgba(140, 140, 140, 0.225);

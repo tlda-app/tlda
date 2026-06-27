@@ -7,7 +7,6 @@ import {
 	type ManagedSurfaceRect,
 	type ManagedSurfaceRequest,
 } from './managed-surfaces.ts'
-import type { TemporaryMarkdownSurfacePayload } from './markdown-surface.ts'
 
 export const ANNOTATION_VIEWER_SURFACE_PREFIX = 'annotation-viewer'
 export const ANNOTATION_VIEWER_LAYER_PREFIX = 'annotation-viewer-panel'
@@ -102,29 +101,6 @@ export function createAnnotationViewerSurfaceRequest({
 			useFullBounds,
 			pinned,
 			bulletIdx,
-		},
-	}
-}
-
-export function createTemporaryMarkdownAnnotationViewerRequest(
-	markdownSurface: ManagedSurfaceRequest<TemporaryMarkdownSurfacePayload>,
-	input: Omit<AnnotationViewerSurfaceInput, 'surfaceKey' | 'bounds' | 'shapeIds' | 'source'>,
-) {
-	const request = createAnnotationViewerSurfaceRequest({
-		...input,
-		surfaceKey: markdownSurface.surfaceId,
-		bounds: markdownSurface.extent,
-		shapeIds: [markdownSurface.payload.shapeId],
-		owner: input.owner ?? markdownSurface.owner,
-		source: markdownSurface.surfaceId,
-		useFullBounds: true,
-		pinned: true,
-	})
-	return {
-		...request,
-		cleanup: {
-			...request.cleanup,
-			onClose: 'remove-surface' as const,
 		},
 	}
 }

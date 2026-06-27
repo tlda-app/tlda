@@ -2,7 +2,6 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
 	createAnnotationViewerSurfaceRequest,
-	createTemporaryMarkdownAnnotationViewerRequest,
 } from '../src/wm/annotation-viewer-surface.ts'
 import {
 	createTemporaryMarkdownSurfaceRequest,
@@ -88,28 +87,6 @@ test('annotation viewer surface request clamps chip-anchored placement and decla
 	assert.deepEqual(request.persistence, { pinned: true, scope: 'session' })
 	assert.equal(request.payload.useFullBounds, true)
 	assert.deepEqual(request.payload.shapeIds, ['shape:fleet-markdown-chip-temp-column'])
-})
-
-test('temporary markdown annotation viewer request links the preview surface as source', () => {
-	const markdown = createTemporaryMarkdownSurfaceRequest({
-		shapeId: 'shape:fleet-markdown-chip-temp-column',
-		bounds: { x: -50000, y: -49000, w: 800, h: 1200 },
-		title: 'scratch.md',
-		url: '/docs/fleet-markdown-chip-temp/index.html',
-		owner: { userId: 'fleet:skip', deviceId: 'ipad' },
-	})
-	const viewer = createTemporaryMarkdownAnnotationViewerRequest(markdown, {
-		label: 'scratch.md',
-		chipRect,
-		viewport: { w: 1280, h: 720 },
-	})
-
-	assert.equal(viewer.source, markdown.surfaceId)
-	assert.equal(viewer.persistence.pinned, true)
-	assert.equal(viewer.cleanup.onClose, 'remove-surface')
-	assert.equal(viewer.payload.useFullBounds, true)
-	assert.deepEqual(viewer.payload.bounds, markdown.extent)
-	assert.deepEqual(viewer.payload.shapeIds, [markdown.payload.shapeId])
 })
 
 test('page column page and handle requests carry managed ids owner policies and source', () => {

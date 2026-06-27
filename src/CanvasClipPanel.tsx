@@ -55,6 +55,10 @@ const wmSurfaceRegistry = new Map<string, {
   setCamera: (camera: { x: number; y: number; z: number }) => void
 }>()
 
+function sameCamera(a: { x: number; y: number; z: number } | null, b: { x: number; y: number; z: number }) {
+  return !!a && a.x === b.x && a.y === b.y && a.z === b.z
+}
+
 function wmSurfaceCamera(surface: CanvasClipWMSurface, fullViewport: boolean) {
   const transform = fullViewport
     ? surface.wm.transform(surface.layerId)
@@ -202,7 +206,8 @@ export function CanvasClipPanel({
   // useValue recomputes — which can briefly flip isInViewport false, unmounting
   // FleetChatInner/FleetAgentsInner (the remount bug, 2026-06-22, commit 1517e737).
   const stableCameraRef = useRef<{ x: number; y: number; z: number } | null>(null)
-  const camera = useMemo(() => {
+  const [interactiveCamera, setInteractiveCamera] = useState<{ x: number; y: number; z: number } | null>(null)
+  const plannedCamera = useMemo(() => {
     const next = (() => {
       if (wmSurface) return wmSurfaceCamera(wmSurface, fullViewport)
       if (!bounds) return { x: 0, y: 0, z: 1 }
@@ -217,6 +222,11 @@ export function CanvasClipPanel({
     stableCameraRef.current = next
     return next
   }, [bounds, panelWidth, maxHeightFraction, lockCamera, wmSurface, wmCameraTick, fullViewport])
+  const camera = interactiveCamera ?? plannedCamera
+
+  useEffect(() => {
+    setInteractiveCamera(null)
+  }, [plannedCamera])
 
   useEffect(() => {
     if (!wmSurface) return
@@ -293,8 +303,7 @@ export function CanvasClipPanel({
         className={className}
         shapePredicate={shapePredicate}
         onCameraChange={lockCamera ? undefined : (newCam) => {
-          // For non-locked panels, allow user to pan/zoom
-          console.log('[CanvasClipPanel] camera change:', newCam)
+          setInteractiveCamera(prev => sameCamera(prev, newCam) ? prev : newCam)
         }}
       />
     </VisibilityViewportProvider>

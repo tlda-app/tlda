@@ -65,7 +65,6 @@ import { TerminalCard } from './TerminalCard'
 import { Terminal } from 'xterm'
 import { useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
 import {
-  createTemporaryMarkdownAnnotationViewerRequest,
   dispatchManagedAnnotationViewerHide,
   dispatchManagedAnnotationViewerRequest,
 } from '../wm/annotation-viewer-surface'
@@ -2046,7 +2045,10 @@ function FleetChatInner({ shape }: { shape: any }) {
 	    }).then((result) => {
       if (!result?.bounds) return
       const chipRect = sourceEl.getBoundingClientRect()
-      const request = createTemporaryMarkdownAnnotationViewerRequest(result.surface, {
+      dispatchManagedAnnotationViewerRequest({
+        surfaceKey: result.surface.surfaceId,
+        bounds: { x: result.bounds.x, y: result.bounds.y, w: result.bounds.w, h: result.bounds.h },
+        shapeIds: [result.surface.payload.shapeId],
         label: title || 'Markdown chip',
         chipRect: {
           left: chipRect.left,
@@ -2056,11 +2058,12 @@ function FleetChatInner({ shape }: { shape: any }) {
           width: chipRect.width,
           height: chipRect.height,
         },
-        viewport: { w: window.innerWidth, h: window.innerHeight },
+        useFullBounds: true,
+        pinned: true,
+        owner: currentManagedSurfaceOwner(),
+        source: result.surface.surfaceId,
+        viewport: managedViewportSize(),
       })
-      window.dispatchEvent(new CustomEvent('wm-managed-surface-request', {
-        detail: { request },
-      }))
     }).catch((err) => {
       console.warn('[fleet-chat] markdown annotation viewer create failed:', err?.message || err)
     })
