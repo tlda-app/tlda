@@ -12,7 +12,13 @@
 # think of that as a win because it forces agents to not try to build locally.")
 # What it DOES need: node + the daemon's deps, tmux, codex, and python for
 # fleet-spawn.py.
-FROM node:20-slim
+#
+# node:24 (NOT 20): the daemon surface imports TypeScript modules directly
+# (server/lib/spawn-policy.mjs → ../../shared/harness.ts; fleet-store → live-store.ts;
+# sync-rooms → signals.ts). Those rely on Node's native type-stripping, which is
+# on by default since 23.6 (the Mini runs node 26). node:20 throws
+# ERR_UNKNOWN_FILE_EXTENSION on the first `.ts` import and the daemon never starts.
+FROM node:24-slim
 WORKDIR /app
 
 # --- system deps ---
