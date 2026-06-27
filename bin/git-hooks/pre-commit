@@ -1,7 +1,11 @@
 #!/bin/sh
 # tlda pre-commit hook: run the suppression-pattern lint on staged changes.
-# Advisory only — never blocks the commit. Findings print to stderr so the
-# dev sees them in their commit output.
+#
+# Mostly advisory — findings print to stderr. With --block, it BLOCKS the commit
+# (exit 1) only when the staged diff ADDS an error-swallowing catch or bare
+# `except: pass` (BLOCKING_PATTERNS). Net-new only: legacy hits stay advisory,
+# and a reason comment inside the catch exempts a deliberate swallow. Genuine
+# emergency bypass: `git commit --no-verify`.
 #
 # Install once with: bin/install-git-hooks.sh
 
@@ -12,7 +16,8 @@ fi
 
 LINT="$REPO_ROOT/bin/tlda-lint-suppress.mjs"
 if [ -x "$LINT" ] || [ -f "$LINT" ]; then
-  node "$LINT" 2>&1 1>/dev/null
+  node "$LINT" --block 1>/dev/null
+  exit $?
 fi
 
 exit 0
