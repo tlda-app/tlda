@@ -16,12 +16,17 @@
 set -e
 
 PERSIST=/app/server/persist
-mkdir -p "$PERSIST/codex" "$PERSIST/tlda-config"
+mkdir -p "$PERSIST/codex" "$PERSIST/tlda-config" "$PERSIST/claude"
 
 # Persist codex auth + tlda daemon config on the volume so they survive redeploys.
 mkdir -p /root/.config
 ln -sfn "$PERSIST/codex" /root/.codex
 ln -sfn "$PERSIST/tlda-config" /root/.config/tlda
+# The fleet MCP's identity ledger opens ~/.claude/fleet-identity.sqlite (and a
+# fleet-roster/ dir) and assumes ~/.claude exists — true on a Claude Code machine,
+# but this box has no Claude Code. Point it at the volume so the dir exists AND the
+# ledger persists across redeploys (codex rollout identity continuity).
+ln -sfn "$PERSIST/claude" /root/.claude
 
 # Seed the codex MCP entry once (per-agent env is injected via -c at spawn time;
 # the static entry just needs command + args). Don't clobber an existing config.
