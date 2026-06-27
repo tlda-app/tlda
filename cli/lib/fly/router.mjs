@@ -269,13 +269,15 @@ async function buildFriendPlan(flags, verb) {
   const codexAuthJson = flags['codex-auth-json'] || join(process.env.HOME || '~', '.codex', 'auth.json')
   const shipConfig = !!flags['ship-config']
   const configBundle = shipConfig ? join(mkdtempSync(join(tmpdir(), 'tlda-fly-config-')), 'agent-config.tgz') : null
-  const shareUrl = `${renderUrl}/auth/login?token=${encodeURIComponent(readToken)}&redirect=${encodeURIComponent(`/?doc=${project}`)}`
+  const viewerPath = `/?doc=${project}`
+  const editorUrl = `${renderUrl}/auth/login?token=${encodeURIComponent(rwToken)}&redirect=${encodeURIComponent(viewerPath)}`
+  const shareUrl = `${renderUrl}/auth/login?token=${encodeURIComponent(readToken)}&redirect=${encodeURIComponent(viewerPath)}`
 
   return {
     project, person: person || '(project)', mainFile, overleafUrl, overleafToken: overleafToken.value,
     overleafTokenDisplay: overleafToken.display, overleafTokenSource: overleafToken.source, region, renderApp, agentApp,
     renderVolume, agentVolume, machineId, poll, renderUrl, rwToken, readToken,
-    codexAuthJson, shareUrl, title: flags.title || project, stem, shipConfig, configBundle,
+    codexAuthJson, editorUrl, shareUrl, title: flags.title || project, stem, shipConfig, configBundle,
   }
 }
 
@@ -374,15 +376,18 @@ function printFriendPlan(plan, { execute, renderConfig, agentConfig, bundle }) {
   ]
   for (const [cmd, args, env, display] of commands) console.log(`  ${display || commandLine(cmd, args, env)}`)
   console.log(``)
-  console.log(`Viewer/share URL:`)
+  console.log(`Editor/write URL:`)
+  console.log(`  ${plan.editorUrl}`)
+  console.log(``)
+  console.log(`Read/share URL:`)
   console.log(`  ${plan.shareUrl}`)
   if (!execute) {
     console.log(``)
     console.log(`DRY RUN ONLY: no Fly apps, volumes, secrets, docs, or URLs were created.`)
-    console.log(`The URL above will not resolve until you run the command without --dry-run.`)
+    console.log(`The URLs above will not resolve until you run the command without --dry-run.`)
   }
   console.log(``)
-  qrcode.generate(plan.shareUrl, { small: true })
+  qrcode.generate(plan.editorUrl, { small: true })
 }
 
 async function friend(argv) {
