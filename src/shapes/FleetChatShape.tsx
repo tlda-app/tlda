@@ -1402,6 +1402,35 @@ export function SuggestionTip() {
     (cb) => { _tipSubs.add(cb); return () => _tipSubs.delete(cb) },
     () => _tipData,
   )
+  // Voice+touch-first dismissal: onMouseLeave (the only hide path on the group)
+  // never fires on touch when you tap empty space or scroll, so the hopper sticks
+  // until you happen to hover another suggestion — which the user often can't do.
+  // While a tip is up, dismiss on the triggers that DON'T require a hover:
+  // tap-away (pointerdown outside any group), scroll/wheel, and Escape.
+  useEffect(() => {
+    if (!tip) return
+    const dismiss = () => setSuggestionTip(null)
+    const onPointerDown = (e: PointerEvent) => {
+      const t = e.target as HTMLElement | null
+      // A tap on a chip/✕ inside a group handles itself (pick/dismiss); a tap on
+      // another group re-shows its own tip. Anything else is a tap-away.
+      if (t && t.closest('.suggestion-group')) return
+      dismiss()
+    }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') dismiss() }
+    // capture phase so we still see scrolls inside nested chat containers and
+    // taps even when a child stops propagation; we only observe, never preventDefault.
+    document.addEventListener('pointerdown', onPointerDown, true)
+    document.addEventListener('scroll', dismiss, true)
+    window.addEventListener('wheel', dismiss, { passive: true })
+    document.addEventListener('keydown', onKey, true)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown, true)
+      document.removeEventListener('scroll', dismiss, true)
+      window.removeEventListener('wheel', dismiss)
+      document.removeEventListener('keydown', onKey, true)
+    }
+  }, [tip])
   if (!tip) return null
   return (
     <span
