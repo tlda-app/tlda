@@ -203,6 +203,29 @@ const SERVER = process.env.TLDA_SERVER
   : (_usingCustomConfigDir
       ? (config.fleetServer || config.server || `${hasTls ? 'https' : 'http'}://localhost:${DEFAULT_PORT}`)
       : getFleetServerUrl(config))
+
+// HARD INVARIANT — a dev daemon literally cannot target the real fleet.
+// `tlda-dev serve --sandbox` starts its daemon with TLDA_DEV_DAEMON=<the exact
+// sandbox base it stood up>, plus TLDA_SERVER=<that same base> and TLDA_CONFIG=<the
+// sandbox config> (whose fleet host is also that base — so the worktree-isolation
+// guard and the server-coherence guard are both satisfied: the declared target
+// agrees with the config). When TLDA_DEV_DAEMON is set we additionally require the
+// resolved SERVER to be EXACTLY the URL serve authorized (catching a config drifted
+// to point at prod), on a port that is NOT the main :5176. Only `tlda-dev serve`
+// ever sets TLDA_DEV_DAEMON, and only ever to a this-machine sandbox on a free high
+// port — so the daemon can't reach prod. Any mismatch aborts before a single WS
+// connect. This is the whole reason raw `daemon start` is not exposed as a dev verb.
+if (process.env.TLDA_DEV_DAEMON) {
+  let ok = false
+  try {
+    const u = new URL(SERVER)
+    ok = SERVER === process.env.TLDA_DEV_DAEMON && !!u.port && Number(u.port) !== DEFAULT_PORT
+  } catch { ok = false }
+  if (!ok) {
+    console.error(`[fleet-daemon] REFUSING to start dev daemon: resolved SERVER=${SERVER} is not the authorized sandbox target (${process.env.TLDA_DEV_DAEMON}) on a non-${DEFAULT_PORT} port. A dev daemon must never join the real fleet.`)
+    process.exit(1)
+  }
+}
 const TOKEN = _usingCustomConfigDir
   ? (process.env.TLDA_TOKEN || config.tokenRw || config.token || null)
   : getRwToken(config)

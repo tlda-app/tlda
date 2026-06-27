@@ -30,8 +30,8 @@
  * shell. Nothing touches the live :5176 server or its rooms.
  */
 
-import { spawnSync, execFileSync } from 'child_process'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, cpSync, rmSync } from 'fs'
+import { spawn, spawnSync, execFileSync } from 'child_process'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, openSync, cpSync, rmSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { X509Certificate } from 'crypto'
@@ -81,6 +81,13 @@ function sanitize(name) {
 function stateDir(branch) { return join(BASE_DIR, sanitize(branch)) }
 function pidFile(branch) { return join(stateDir(branch), 'server.pid') }
 function logFile(branch) { return join(stateDir(branch), 'server.log') }
+function daemonPidFile(branch) { return join(stateDir(branch), 'daemon.pid') }
+function daemonLogFile(branch) { return join(stateDir(branch), 'daemon.log') }
+// Own config dir for the sandbox daemon → its OWN machine_id + pidfile, so it
+// coexists with the real machine daemon instead of tripping its singleton. (It
+// can't evict the real daemon: eviction is server-side and this one only ever
+// connects to the sandbox server.)
+function daemonConfigDir(branch) { return join(stateDir(branch), 'daemon-cfg') }
 function manifestFile(branch) { return join(stateDir(branch), 'manifest.json') }
 function projectsDir(branch) { return join(stateDir(branch), 'projects') }
 function fleetDb(branch) { return join(stateDir(branch), 'fleet.db') }
@@ -311,10 +318,49 @@ export async function cmdServeWorktree(args) {
   }
   if (!up) { console.error(`server didn't answer on ${base} within 30s — see ${logFile(branch)}`); process.exit(1) }
 
+  // --sandbox: also bring up a fleet-daemon wired ONLY to this sandbox server.
+  // TLDA_SERVER=base satisfies the worktree-daemon isolation guard (a worktree
+  // daemon must declare its own target) AND equals the sandbox config's fleet host
+  // (database=base), so the server-coherence guard is happy too. TLDA_DEV_DAEMON
+  // names that same authorized base; fleet-daemon refuses to start unless its
+  // resolved SERVER equals it, on a non-:5176 port — so this daemon can never join
+  // the real fleet. Detached + unref'd so it outlives the launcher, like the server.
+  let daemonPid = null
+  if (flags.has('sandbox')) {
+    // Give the sandbox daemon its own config dir with a DISTINCT machine_id so it
+    // coexists with the real daemon (own pidfile = no singleton clash; own
+    // machine_id = no eviction). TLDA_SERVER (precedence) keeps its target = base.
+    const dcfg = daemonConfigDir(branch)
+    mkdirSync(dcfg, { recursive: true })
+    writeFileSync(join(dcfg, 'config.json'), JSON.stringify({
+      machineId: `dev-${sanitize(branch)}`, fleetServer: base, server: base,
+    }, null, 2))
+    const dlogFd = openSync(daemonLogFile(branch), 'a')
+    const dchild = spawn(process.execPath, [join(worktreeDir, 'bin', 'fleet-daemon.mjs')], {
+      detached: true,
+      stdio: ['ignore', dlogFd, dlogFd],
+      env: {
+        ...process.env,
+        TLDA_DAEMON_CONFIG_DIR: dcfg,    // own machine_id + pidfile (coexist with real daemon)
+        TLDA_SERVER: base,               // isolation target == config fleet host (coherent)
+        TLDA_DEV_DAEMON: base,           // the authorized sandbox target; arms the invariant
+        TLDA_CONFIG: configName(branch),
+        TLDA_FLEET_DB: fleetDb(branch),
+        PROJECTS_DIR: projectsDir(branch),
+        TMUX: undefined,
+        TMUX_PANE: undefined,
+      },
+    })
+    dchild.unref()
+    daemonPid = dchild.pid
+    writeFileSync(daemonPidFile(branch), String(daemonPid))
+    console.log(`sandbox daemon started (pid ${daemonPid}) → ${base} (sandbox-locked, cannot reach prod)`)
+  }
+
   const url = viewerUrl(base, doc)
   const manifest = {
     branch, worktreeDir, base, doc, port, host: reach.host, kind: reach.kind,
-    url, pid, tokenless: true, config: configName(branch),
+    url, pid, daemonPid, sandbox: flags.has('sandbox'), tokenless: true, config: configName(branch),
     projectsDir: projectsDir(branch), fleetDb: fleetDb(branch),
   }
   writeFileSync(manifestFile(branch), JSON.stringify(manifest, null, 2))
@@ -347,6 +393,11 @@ export async function cmdShareWorktree(args) {
 function stopPreview(branch, json) {
   const pid = readPid(branch)
   if (pid) { try { process.kill(pid) } catch { /* gone */ } }
+  // Tear down the sandbox daemon too, if --sandbox started one.
+  if (existsSync(daemonPidFile(branch))) {
+    const dpid = parseInt(readFileSync(daemonPidFile(branch), 'utf8').trim(), 10)
+    if (Number.isInteger(dpid)) { try { process.kill(dpid) } catch { /* gone */ } }
+  }
   removePreviewConfig(branch)
   for (const f of [pidFile(branch), manifestFile(branch)]) if (existsSync(f)) unlinkSync(f)
   // Drop the isolated projects + fleet DB so a stopped preview leaves nothing behind.
