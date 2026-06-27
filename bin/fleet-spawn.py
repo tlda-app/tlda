@@ -1901,6 +1901,8 @@ def build_codex_cmd(fleet_id, tmux_session, model=None, resume_id=None,
     # the -c overrides), so inject it here too — without it the nudge silently
     # no-ops and the agent never wakes on an incoming chat.
     parts.append(_cenv("FLEET_TMUX_SESSION", tmux_session))
+    if os.environ.get("TLDA_MACHINE_ID"):
+        parts.append(_cenv("TLDA_MACHINE_ID", os.environ["TLDA_MACHINE_ID"]))
     parts.append(_cenv("TLDA_SERVER", API))
     parts.append(_cenv("TLDA_SYNC_SERVER", API))
     if dns_alias and os.path.exists(NODE_DNS_ALIAS_PRELOAD):
