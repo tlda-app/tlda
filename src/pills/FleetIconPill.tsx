@@ -20,6 +20,8 @@ import { useFleetAgents, useFleetIdentity } from '../fleet-data-adapter'
 import { countAwakeFleetAgents } from '../fleet/agent-counts'
 import { createFleetLayout } from '../shapes/fleet-utils'
 import { CornerRailSlider } from '../CornerRailSlider'
+// @ts-ignore — vanilla JS module
+import { whenDeviceReady } from '../fleet/fleet-data.mjs'
 import './FleetIconPill.css'
 
 // Basestar hull paths (drawn in a flipped coord system: translate(0,960) scale(1,-1)).
@@ -34,6 +36,7 @@ const BASESTAR_PATHS = (
 )
 
 const DRAG_THRESHOLD = 6   // px before drag activates
+const RESET_LONG_PRESS_MS = 600
 const ITEM_W = 44          // px width of each preset tile
 const ITEM_H = 44          // px height
 const ITEM_GAP = 4         // px between tiles
@@ -270,6 +273,8 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
   const agentsRef = useRef(agents)
   const autoLayoutAppliedRef = useRef<string | null>(null)
   const identifyingForUrlRef = useRef<string | null>(null)
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const longPressFiredRef = useRef(false)
   agentsRef.current = agents
 
   const applyPreset = useCallback((idx: number) => {
@@ -281,6 +286,32 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
       onShown: () => setHidden(false),
     })
     setPickerOpen(false)
+  }, [mainEditor])
+
+  const clearLongPressTimer = useCallback(() => {
+    if (longPressTimerRef.current !== null) {
+      clearTimeout(longPressTimerRef.current)
+      longPressTimerRef.current = null
+    }
+  }, [])
+
+  useEffect(() => clearLongPressTimer, [clearLongPressTimer])
+
+  const resetToDeviceDefaultLayout = useCallback(async () => {
+    longPressFiredRef.current = true
+    justDraggedRef.current = true
+    setPickerOpen(false)
+    setDragging(false)
+    setSelectedIdx(null)
+    setDragAnchor(null)
+    await whenDeviceReady()
+    const presetId: LayoutId = document.body.classList.contains('phone-mode') ? 'phone' : '3col'
+    applyFleetLayoutPreset({
+      mainEditor,
+      agents: agentsRef.current,
+      presetId,
+      onShown: () => setHidden(false),
+    })
   }, [mainEditor])
 
   useEffect(() => {
@@ -367,14 +398,22 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
     dragStartRef.current = start
     isDragRef.current = false
     selectedIdxRef.current = null
+    longPressFiredRef.current = false
+    clearLongPressTimer()
+    longPressTimerRef.current = setTimeout(() => {
+      longPressTimerRef.current = null
+      void resetToDeviceDefaultLayout()
+    }, RESET_LONG_PRESS_MS)
 
     const onMove = (ev: PointerEvent) => {
+      if (longPressFiredRef.current) return
       const s = dragStartRef.current
       if (!s) return
       const dx = ev.clientX - s.x
       const dy = ev.clientY - s.y
       const dist = Math.sqrt(dx * dx + dy * dy)
       if (!isDragRef.current && dist > DRAG_THRESHOLD) {
+        clearLongPressTimer()
         isDragRef.current = true
         setDragging(true)
         setDragAnchor({ x: s.x, y: s.y })
@@ -392,6 +431,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
     }
 
     const cleanup = () => {
+      clearLongPressTimer()
       window.removeEventListener('pointermove', onMove, true)
       window.removeEventListener('pointerup', onUp, true)
       window.removeEventListener('pointercancel', onCancel, true)
@@ -405,6 +445,10 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
 
     const onUp = (ev: PointerEvent) => {
       stopControlEvent(ev)
+      if (longPressFiredRef.current) {
+        cleanup()
+        return
+      }
       if (isDragRef.current) {
         const idx = selectedIdxRef.current
         if (idx !== null) {
@@ -422,7 +466,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
     window.addEventListener('pointermove', onMove, true)
     window.addEventListener('pointerup', onUp, true)
     window.addEventListener('pointercancel', onCancel, true)
-  }, [applyPreset])
+  }, [applyPreset, clearLongPressTimer, resetToDeviceDefaultLayout])
 
   return (
     <div
@@ -491,6 +535,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
           onPreview={previewLayoutPreset}
           onCommit={commitLayoutPreset}
           onTap={tapFleetButton}
+          onLongPress={resetToDeviceDefaultLayout}
         />
       )}
 

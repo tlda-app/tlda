@@ -2281,6 +2281,24 @@ body.phone-mode.corner-rail-mode .voice-note-btn {
   bottom: calc(24px + env(safe-area-inset-bottom) + (var(--corner-control-size, 58.6667px) + var(--corner-control-gap, 8px)) * 2);
 }
 
+.corner-rail-vertical-hitstrip {
+  position: fixed;
+  z-index: 10000;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  pointer-events: all;
+  touch-action: none;
+  cursor: pointer;
+}
+
+.phone-hl-btn.corner-rail-drag-active,
+.voice-note-btn.corner-rail-drag-active,
+.fleet-icon-pill-badge.corner-rail-drag-active {
+  opacity: 1;
+  transform: scale(1.06);
+}
+
 /* Dark mode highlighter */
 html[data-theme="dark"] .phone-hl-btn {
   color: var(--pill-icon-color, rgba(255, 255, 255, 1));

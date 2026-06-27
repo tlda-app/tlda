@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useContext, useMemo } from 'react'
 import { setStopRecordingCallback } from './tools/VoiceNoteTool'
-import { setVoiceTarget, clearVoiceTarget, setVoiceAccumulator, stopRecording, isRecording, toggleRecording, voiceTap, maybeHandleVoiceSinkPointerDown } from './voice.mjs'
+import { setVoiceTarget, clearVoiceTarget, setVoiceAccumulator, stopRecording, isRecording, toggleRecording, voiceTap, onRecordingChange, maybeHandleVoiceSinkPointerDown } from './voice.mjs'
 import { createPortal } from 'react-dom'
 import { useEditor, useValue, stopEventPropagation, DefaultColorStyle } from 'tldraw'
 import { toolNameHud } from './overlays/ToolNameHud'
@@ -153,39 +153,42 @@ export function DocumentPanel() {
   }, [])
 
   return (
-    <div
-      ref={panelRef}
-      className={`doc-panel${(open || dragOpen) ? ' doc-panel-open' : ''}${isHtml ? ' doc-panel--html' : ''}`}
-      onPointerDown={(e) => {
-        stopEventPropagation(e)
-        // Touch tap on collapsed strip → open
-        if ((e.nativeEvent as PointerEvent).pointerType !== 'mouse' && !open) {
-          setOpen(true)
-        }
-      }}
-      onPointerUp={stopEventPropagation}
-      onPointerMove={stopEventPropagation}
-      onTouchStart={stopEventPropagation}
-      onTouchEnd={stopEventPropagation}
-    >
-      <div className="doc-panel-tabs">
-        <button className={`doc-panel-tab ${tab === 'toc' ? 'active' : ''}`} onClick={() => setTab('toc')}>
-          TOC
-        </button>
-        {/* History tab removed — version wheel + bottom scrubber replaces it */}
-        <button className={`doc-panel-tab ${tab === 'notes' ? 'active' : ''}`} onClick={() => setTab('notes')}>
-          Notes
-        </button>
-        <button className={`doc-panel-tab doc-panel-tab--gear ${tab === 'prefs' ? 'active' : ''}`} onClick={() => setTab('prefs')}>
-          <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M8 4.5a3.5 3.5 0 100 7 3.5 3.5 0 000-7zM6 8a2 2 0 114 0 2 2 0 01-4 0z"/><path d="M9.4 1.2a1.5 1.5 0 00-2.8 0l-.3.9a.5.5 0 01-.7.3l-.8-.5a1.5 1.5 0 00-2 2l.5.8a.5.5 0 01-.3.7l-.9.3a1.5 1.5 0 000 2.8l.9.3a.5.5 0 01.3.7l-.5.8a1.5 1.5 0 002 2l.8-.5a.5.5 0 01.7.3l.3.9a1.5 1.5 0 002.8 0l.3-.9a.5.5 0 01.7-.3l.8.5a1.5 1.5 0 002-2l-.5-.8a.5.5 0 01.3-.7l.9-.3a1.5 1.5 0 000-2.8l-.9-.3a.5.5 0 01-.3-.7l.5-.8a1.5 1.5 0 00-2-2l-.8.5a.5.5 0 01-.7-.3l-.3-.9z"/></svg>
-        </button>
+    <>
+      <CornerRailVerticalTracker />
+      <div
+        ref={panelRef}
+        className={`doc-panel${(open || dragOpen) ? ' doc-panel-open' : ''}${isHtml ? ' doc-panel--html' : ''}`}
+        onPointerDown={(e) => {
+          stopEventPropagation(e)
+          // Touch tap on collapsed strip → open
+          if ((e.nativeEvent as PointerEvent).pointerType !== 'mouse' && !open) {
+            setOpen(true)
+          }
+        }}
+        onPointerUp={stopEventPropagation}
+        onPointerMove={stopEventPropagation}
+        onTouchStart={stopEventPropagation}
+        onTouchEnd={stopEventPropagation}
+      >
+        <div className="doc-panel-tabs">
+          <button className={`doc-panel-tab ${tab === 'toc' ? 'active' : ''}`} onClick={() => setTab('toc')}>
+            TOC
+          </button>
+          {/* History tab removed — version wheel + bottom scrubber replaces it */}
+          <button className={`doc-panel-tab ${tab === 'notes' ? 'active' : ''}`} onClick={() => setTab('notes')}>
+            Notes
+          </button>
+          <button className={`doc-panel-tab doc-panel-tab--gear ${tab === 'prefs' ? 'active' : ''}`} onClick={() => setTab('prefs')}>
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M8 4.5a3.5 3.5 0 100 7 3.5 3.5 0 000-7zM6 8a2 2 0 114 0 2 2 0 01-4 0z"/><path d="M9.4 1.2a1.5 1.5 0 00-2.8 0l-.3.9a.5.5 0 01-.7.3l-.8-.5a1.5 1.5 0 00-2 2l.5.8a.5.5 0 01-.3.7l-.9.3a1.5 1.5 0 000 2.8l.9.3a.5.5 0 01.3.7l-.5.8a1.5 1.5 0 002 2l.8-.5a.5.5 0 01.7.3l.3.9a1.5 1.5 0 002.8 0l.3-.9a.5.5 0 01.7-.3l.8.5a1.5 1.5 0 002-2l-.5-.8a.5.5 0 01.3-.7l.9-.3a1.5 1.5 0 000-2.8l-.9-.3a.5.5 0 01-.3-.7l.5-.8a1.5 1.5 0 00-2-2l-.8.5a.5.5 0 01-.7-.3l-.3-.9z"/></svg>
+          </button>
+        </div>
+        {tab === 'toc' && <TocTab />}
+        {/* HistoryTab removed */}
+        {tab === 'notes' && <NotesTab />}
+        {tab === 'prefs' && <PrefsTab />}
+        <ZoneWidthSlider />
       </div>
-      {tab === 'toc' && <TocTab />}
-      {/* HistoryTab removed */}
-      {tab === 'notes' && <NotesTab />}
-      {tab === 'prefs' && <PrefsTab />}
-      <ZoneWidthSlider />
-    </div>
+    </>
   )
 }
 
@@ -193,6 +196,190 @@ const IS_PHONE = typeof window !== 'undefined' && window.matchMedia('(max-width:
 const IS_TOUCH_DEVICE = (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
   || (typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches)
   || (typeof location !== 'undefined' && new URLSearchParams(location.search).has('forcetouch'))
+
+type CornerRailTarget = {
+  id: 'fleet' | 'voice' | 'highlighter'
+  selector: string
+  element: HTMLElement
+  rect: DOMRect
+}
+
+type CornerRailMeasurement = {
+  targets: CornerRailTarget[]
+  rail: { left: number; top: number; width: number; height: number }
+}
+
+type CornerRailTrackDetail = {
+  phase: 'down' | 'move' | 'up' | 'cancel'
+  clientX: number
+  clientY: number
+  pointerId?: number
+}
+
+const CORNER_RAIL_TARGETS: Array<Pick<CornerRailTarget, 'id' | 'selector'>> = [
+  { id: 'fleet', selector: '.fleet-icon-pill-badge' },
+  { id: 'voice', selector: '.voice-note-btn' },
+  { id: 'highlighter', selector: '.phone-hl-btn' },
+]
+
+function CornerRailVerticalTracker() {
+  const [rail, setRail] = useState<CornerRailMeasurement['rail'] | null>(null)
+  const [dragging, setDragging] = useState(false)
+  const measurementRef = useRef<CornerRailMeasurement | null>(null)
+  const activeRef = useRef<CornerRailTarget['id'] | null>(null)
+  const draggingRef = useRef(false)
+
+  const clearActive = useCallback(() => {
+    for (const { selector } of CORNER_RAIL_TARGETS) {
+      document.querySelector<HTMLElement>(selector)?.classList.remove('corner-rail-drag-active')
+    }
+    activeRef.current = null
+  }, [])
+
+  const measure = useCallback((): CornerRailMeasurement | null => {
+    if (!IS_TOUCH_DEVICE) return null
+    const targets = CORNER_RAIL_TARGETS
+      .map((target) => {
+        const element = document.querySelector<HTMLElement>(target.selector)
+        if (!element) return null
+        return { ...target, element, rect: element.getBoundingClientRect() }
+      })
+      .filter((target): target is CornerRailTarget => !!target && target.rect.width > 0 && target.rect.height > 0)
+
+    if (targets.length !== CORNER_RAIL_TARGETS.length) return null
+
+    const left = Math.min(...targets.map((target) => target.rect.left))
+    const right = Math.max(...targets.map((target) => target.rect.right))
+    const top = Math.min(...targets.map((target) => target.rect.top))
+    const bottom = Math.max(...targets.map((target) => target.rect.bottom))
+    return { targets, rail: { left, top, width: right - left, height: bottom - top } }
+  }, [])
+
+  const pickTarget = useCallback((clientY: number, measurement: CornerRailMeasurement) => {
+    const containing = measurement.targets.find((target) => clientY >= target.rect.top && clientY <= target.rect.bottom)
+    if (containing) return containing
+    return measurement.targets.reduce((closest, target) => {
+      const closestCenter = closest.rect.top + closest.rect.height / 2
+      const targetCenter = target.rect.top + target.rect.height / 2
+      return Math.abs(clientY - targetCenter) < Math.abs(clientY - closestCenter) ? target : closest
+    })
+  }, [])
+
+  const setActiveTarget = useCallback((target: CornerRailTarget | null) => {
+    if (activeRef.current === target?.id) return
+    clearActive()
+    if (target) {
+      target.element.classList.add('corner-rail-drag-active')
+      activeRef.current = target.id
+    }
+  }, [clearActive])
+
+  useEffect(() => {
+    let raf = 0
+    const update = () => {
+      const measured = measure()
+      measurementRef.current = measured
+      setRail(measured?.rail ?? null)
+    }
+    raf = window.requestAnimationFrame(update)
+    window.addEventListener('resize', update)
+    window.addEventListener('scroll', update, true)
+    return () => {
+      window.cancelAnimationFrame(raf)
+      window.removeEventListener('resize', update)
+      window.removeEventListener('scroll', update, true)
+      clearActive()
+    }
+  }, [clearActive, measure])
+
+  const beginRailDrag = useCallback((clientY: number) => {
+    const measured = measure()
+    if (!measured) return false
+    measurementRef.current = measured
+    setRail(measured.rail)
+    setDragging(true)
+    draggingRef.current = true
+    setActiveTarget(pickTarget(clientY, measured))
+    return true
+  }, [measure, pickTarget, setActiveTarget])
+
+  const moveRailDrag = useCallback((clientY: number) => {
+    if (!draggingRef.current) return
+    const measured = measurementRef.current ?? measure()
+    if (!measured) return
+    setActiveTarget(pickTarget(clientY, measured))
+  }, [measure, pickTarget, setActiveTarget])
+
+  const finishRailDrag = useCallback((clientY: number, commit: boolean) => {
+    if (!draggingRef.current) return
+    const measured = measurementRef.current
+    const target = measured ? pickTarget(clientY, measured) : null
+    setDragging(false)
+    draggingRef.current = false
+    clearActive()
+    if (commit) target?.element.click()
+  }, [clearActive, dragging, pickTarget])
+
+  useEffect(() => {
+    const onRailTrack = (event: Event) => {
+      const railEvent = event as CustomEvent<CornerRailTrackDetail>
+      const detail = railEvent.detail
+      if (!detail) return
+      if (detail.phase === 'down') {
+        if (beginRailDrag(detail.clientY)) railEvent.preventDefault()
+      } else if (detail.phase === 'move') {
+        moveRailDrag(detail.clientY)
+      } else {
+        finishRailDrag(detail.clientY, detail.phase === 'up')
+      }
+    }
+    window.addEventListener('corner-rail-track', onRailTrack)
+    return () => window.removeEventListener('corner-rail-track', onRailTrack)
+  }, [beginRailDrag, finishRailDrag, moveRailDrag])
+
+  const onPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    stopEventPropagation(e)
+    e.preventDefault()
+    if (beginRailDrag(e.clientY)) {
+      e.currentTarget.setPointerCapture(e.pointerId)
+    }
+  }, [beginRailDrag])
+
+  const onPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!dragging) return
+    stopEventPropagation(e)
+    moveRailDrag(e.clientY)
+  }, [dragging, moveRailDrag])
+
+  const finish = useCallback((e: React.PointerEvent<HTMLDivElement>, commit: boolean) => {
+    if (!dragging) return
+    stopEventPropagation(e)
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId)
+    }
+    finishRailDrag(e.clientY, commit)
+  }, [dragging, finishRailDrag])
+
+  if (!IS_TOUCH_DEVICE || !rail) return null
+
+  return (
+    <div
+      className="corner-rail-vertical-hitstrip"
+      data-active-rail-target={dragging ? activeRef.current ?? undefined : undefined}
+      style={{
+        left: `${rail.left}px`,
+        top: `${rail.top}px`,
+        width: `${rail.width}px`,
+        height: `${rail.height}px`,
+      }}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={(e) => finish(e, true)}
+      onPointerCancel={(e) => finish(e, false)}
+      onClick={stopEventPropagation}
+    />
+  )
+}
 
 function cornerControlMetrics() {
   const baseSize = IS_PHONE ? 44 : 27
@@ -253,6 +440,8 @@ function PhoneHighlighterButton() {
   const btnRef = useRef<HTMLButtonElement>(null)
   const lastTapRef = useRef(0)
   const singleTapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const suppressClickRef = useRef(false)
+  const railTrackingRef = useRef(false)
   colorIdxRef.current = colorIdx // keep ref current on every render — used in handlePointerMove
 
   const activateSlot = useCallback((idx: number) => activateHlSlot(editor, idx), [editor])
@@ -302,6 +491,16 @@ function PhoneHighlighterButton() {
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
     e.stopPropagation()
     e.preventDefault()
+    const railEvent = new CustomEvent<CornerRailTrackDetail>('corner-rail-track', {
+      cancelable: true,
+      detail: { phase: 'down', clientX: e.clientX, clientY: e.clientY, pointerId: e.pointerId },
+    })
+    window.dispatchEvent(railEvent)
+    railTrackingRef.current = railEvent.defaultPrevented
+    if (railTrackingRef.current) {
+      ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+      return
+    }
     dragStartX.current = e.clientX
     dragStartY.current = e.clientY
     const btnRect = btnRef.current?.getBoundingClientRect() ?? null
@@ -314,6 +513,12 @@ function PhoneHighlighterButton() {
   }, [])
 
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
+    if (railTrackingRef.current) {
+      window.dispatchEvent(new CustomEvent<CornerRailTrackDetail>('corner-rail-track', {
+        detail: { phase: 'move', clientX: e.clientX, clientY: e.clientY, pointerId: e.pointerId },
+      }))
+      return
+    }
     const dx = e.clientX - dragStartX.current
 
     // Determine drag mode if not yet set — read ref (always current, state update may not have committed)
@@ -350,9 +555,17 @@ function PhoneHighlighterButton() {
 
   const handlePointerUp = useCallback((e: React.PointerEvent) => {
     ;(e.target as HTMLElement).releasePointerCapture(e.pointerId)
+    if (railTrackingRef.current) {
+      window.dispatchEvent(new CustomEvent<CornerRailTrackDetail>('corner-rail-track', {
+        detail: { phase: 'up', clientX: e.clientX, clientY: e.clientY, pointerId: e.pointerId },
+      }))
+      railTrackingRef.current = false
+      return
+    }
     // Read refs — always current even if state update hasn't committed yet
     const currentMode = dragModeRef.current
     const currentSlot = dragSlotRef.current
+    suppressClickRef.current = true
     if (currentMode === 'color' && currentSlot !== null) {
       activateSlot(currentSlot)
     } else if (currentMode === null) {
@@ -365,9 +578,25 @@ function PhoneHighlighterButton() {
 
   const handlePointerCancel = useCallback((e: React.PointerEvent) => {
     ;(e.target as HTMLElement).releasePointerCapture(e.pointerId)
+    if (railTrackingRef.current) {
+      window.dispatchEvent(new CustomEvent<CornerRailTrackDetail>('corner-rail-track', {
+        detail: { phase: 'cancel', clientX: e.clientX, clientY: e.clientY, pointerId: e.pointerId },
+      }))
+      railTrackingRef.current = false
+      return
+    }
     dragModeRef.current = null; dragSlotRef.current = null
     setDragging(false); setDragMode(null); setDragSlot(null); setDragBtnRect(null)
   }, [])
+
+  const handleClick = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
+    stopEventPropagation(e)
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false
+      return
+    }
+    handleTap()
+  }, [handleTap])
 
   // Clear slider if window loses focus (app switch, cmd-tab, tab hide, etc.)
   useEffect(() => {
@@ -458,6 +687,7 @@ function PhoneHighlighterButton() {
         onPointerCancel={handlePointerCancel}
         onTouchStart={stopEventPropagation}
         onTouchEnd={stopEventPropagation}
+        onClick={handleClick}
       >
         {(() => {
           const toolId = editor.getCurrentToolId()
@@ -836,11 +1066,15 @@ function VoiceNoteButtonInner() {
   const btnRef = useRef<HTMLButtonElement>(null)
   const suppressClickRef = useRef(false)
   const [voiceValue, setVoiceValue] = useState(1)
+  // Reflect global voice on/off in the dictate slot label so the HUD states the
+  // action the tap performs (which also tells you the current state).
+  const [voiceOn, setVoiceOn] = useState(() => isRecording())
+  useEffect(() => onRecordingChange(setVoiceOn), [])
 
   const voiceSlots = useMemo(() => [
     {
       id: 'dictate-selection',
-      label: 'dictate',
+      label: voiceOn ? 'toggle voice off' : 'toggle voice on',
       color: '#7ab8a0',
       action: voiceTap,
       render: () => (
@@ -865,7 +1099,7 @@ function VoiceNoteButtonInner() {
         </svg>
       ),
     },
-  ], [triggerFromElement])
+  ], [triggerFromElement, voiceOn])
 
   const handleClick = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
     if (suppressClickRef.current) {
