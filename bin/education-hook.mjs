@@ -95,7 +95,7 @@ for (const skill of skills) {
       desc = m ? m[1] : ''
       foundPath = p
       break
-    } catch {}
+    } catch { /* not present at this candidate path — try the next one */ }
   }
   items.push({ skill, desc, foundPath })
 }
