@@ -118,6 +118,7 @@ import { useFleetTheme, getStoredScheme } from './hooks/useFleetTheme'
 import { useTimelineOverlay } from './hooks/useTimelineOverlay'
 import { useDocAutoOpen } from './hooks/useDocAutoOpen'
 import { usePanMode } from './hooks/usePanMode'
+import { usePanPerfLog } from './hooks/usePanPerfLog'
 import { STORE_WS, LICENSE_KEY as CFG_LICENSE_KEY } from './activeConfig'
 import { useShadowOverlay } from './hooks/useShadowOverlay'
 import { useDividerDiff } from './hooks/useDividerDiff'
@@ -596,6 +597,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
   // Auxiliary mouse button (3 or 4) toggles pan mode: move mouse to pan canvas / scroll chat
   usePanMode(editorRef)
+
+  // Sample pan-gesture frame-health into the client log (no UI; off-console at info level)
+  usePanPerfLog(editorRef)
 
   useYjsSignals({
     editorRef, document,
