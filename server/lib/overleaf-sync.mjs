@@ -200,8 +200,11 @@ export async function syncOverleaf(name, { initial = false } = {}) {
  * Link a project to an Overleaf git remote: create it if missing, clone, do the
  * initial full sync, persist metadata, and start polling. Returns a summary.
  */
-export async function linkOverleaf(name, { gitUrl, token, title, mainFile = 'main.tex', pollSeconds = 60 } = {}) {
+export async function linkOverleaf(name, { gitUrl, token, title, mainFile, pollSeconds = 60 } = {}) {
   if (!gitUrl) throw new Error('gitUrl is required')
+  // No main.tex default — papers aren't all called main.tex, and silently
+  // building the wrong entry point is worse than failing loud.
+  if (!mainFile) throw new Error('mainFile is required (the entry .tex inside the repo)')
 
   let project = readProject(name)
   if (!project) {

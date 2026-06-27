@@ -59,7 +59,7 @@ after(() => {
 
 describe('overleaf-sync', () => {
   it('links + does the initial full sync', async () => {
-    const res = await overleaf.linkOverleaf('paper', { gitUrl: bareRemote, pollSeconds: 9999 })
+    const res = await overleaf.linkOverleaf('paper', { gitUrl: bareRemote, mainFile: 'main.tex', pollSeconds: 9999 })
     assert.equal(res.linked, true)
     assert.equal(res.changed, 2, 'both tracked files pushed on initial sync')
 

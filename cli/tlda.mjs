@@ -46,7 +46,7 @@ import { SPAWN_POLICY_OPTIONS, resolveSpawnPolicyOption } from '../server/lib/sp
 // feedback hook etc. don't break, but `--help` only advertises the nouns.
 const DOC_SUBS = new Set([
   'open', 'push', 'list', 'ls', 'status', 'errors',
-  'delete', 'rm', 'share', 'publish', 'scratch', 'book', 'link', 'link-overleaf', 'init',
+  'delete', 'rm', 'share', 'publish', 'scratch', 'book', 'link', 'init',
   'repo-doctor', 'init-shadow',
 ])
 const REMOVED_DOC_SUBS = new Set(['create', 'preview'])
@@ -103,7 +103,7 @@ const VALUE_FLAGS = new Set([
   'server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format',
   'session', 'target', 'timeout', 'id', 'book', 'worktree', 'port', 'browser',
   'model', 'cwd', 'effort', 'mode', 'kind', 'spawn-capability', 'capability',
-  'to', 'limit',
+  'to', 'limit', 'from', 'poll',
 ])
 
 function getFlag(name, defaultVal = null) {
@@ -600,27 +600,32 @@ async function cmdPush() {
   }
 }
 
+// A repository is just a remote you haven't cloned yet. `link` takes the main
+// file either way; add `--from <git-url>` (Overleaf, GitHub, ssh, …) and the
+// server clones + polls that remote instead of watching a local directory.
+//   tlda doc link <name> <main-file> [--from <git-url>] [--token TOKEN] [--title T] [--poll 60]
 async function cmdLink() {
-  await cmdCreate()
+  const from = getFlag('from')
+  if (from) await cmdLinkRemote(from)
+  else await cmdCreate()
 }
 
-// Link a project to an Overleaf (or any) git remote. The server clones it,
-// does an initial sync, and polls for changes — the author keeps editing in
-// Overleaf while tlda mirrors + rebuilds.
-//   tlda doc link-overleaf <name> <git-url> [--token TOKEN] [--title T] [--main main.tex] [--poll 60]
-async function cmdLinkOverleaf() {
+// Link a project to a git remote (e.g. Overleaf). The server clones it, does an
+// initial sync, and polls for changes — the author keeps editing upstream while
+// tlda mirrors + rebuilds. The main file is the entry point *inside* the repo.
+async function cmdLinkRemote(gitUrl) {
   const name = getPositional(0)
-  const gitUrl = getPositional(1)
-  if (!name || !gitUrl) {
-    console.error('Usage: tlda doc link-overleaf <name> <git-url> [--token TOKEN] [--title "Title"] [--main main.tex] [--poll 60]')
+  const mainFile = getPositional(1) || getFlag('main')
+  if (!name || !mainFile) {
+    console.error('Usage: tlda doc link <name> <main-file> --from <git-url> [--token TOKEN] [--title "Title"] [--poll 60]')
+    console.error('  <main-file> is the entry .tex inside the repo (no default — papers aren\'t all main.tex)')
     process.exit(1)
   }
   const token = getFlag('token')
   const title = getFlag('title')
-  const mainFile = getFlag('main')
   const pollSeconds = Number(getFlag('poll') || '60') || 60
 
-  console.log(`Linking ${name} to ${gitUrl} (cloning + initial build, this can take a minute)…`)
+  console.log(`Linking ${name} ← ${gitUrl} (main: ${mainFile}; cloning + initial build, this can take a minute)…`)
   const result = await api('POST', `/api/projects/${name}/overleaf-link`,
     { gitUrl, token, title, mainFile, pollSeconds }, { timeoutMs: 300000 })
   console.log(`✓ Linked. Synced ${result.changed} file(s) at ${String(result.head || '').slice(0, 7)}; polling every ${pollSeconds}s.`)
@@ -3130,7 +3135,6 @@ async function main() {
       case 'book':   await ensureServer(); await cmdBook(); break
       case 'push':   await ensureServer(); await cmdPush(); break
       case 'link':   await ensureServer(); await cmdLink(); break
-      case 'link-overleaf': await ensureServer(); await cmdLinkOverleaf(); break
       case 'init':   await cmdInit(); break
       case 'daemon': await ensureServer(); await cmdWatch(); break
       case 'open':   await ensureServer(); await cmdOpen(); break
