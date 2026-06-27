@@ -45,11 +45,11 @@ import { SPAWN_POLICY_OPTIONS, resolveSpawnPolicyOption } from '../server/lib/sp
 // are their own top-level commands.) Flat forms still work for now so the
 // feedback hook etc. don't break, but `--help` only advertises the nouns.
 const DOC_SUBS = new Set([
-  'open', 'push', 'list', 'ls', 'status', 'errors', 'preview',
+  'open', 'push', 'list', 'ls', 'status', 'errors',
   'delete', 'rm', 'share', 'publish', 'scratch', 'book', 'link',
   'repo-doctor', 'init-shadow',
 ])
-const REMOVED_DOC_SUBS = new Set(['create'])
+const REMOVED_DOC_SUBS = new Set(['create', 'preview'])
 const CONFIG_SUBS = new Set(['setup', 'mcp-setup', 'auth'])  // config subs that map to existing handlers
 let _nounUsed = null
 {
@@ -91,7 +91,6 @@ const COMMAND_HELP = {
   errors:  'tlda doc errors [name] [--wait]\n\n  Extract LaTeX errors and warnings from the last build log.\n  With --wait (-w), blocks until the current build finishes.',
   build:   'tlda build [name]\n\n  Trigger a rebuild without pushing files.\n\n  NOTE: Prefer the watcher pipeline. This command bypasses change\n  detection and should only be used for debugging.',
   delete:  'tlda doc delete <name>\n\n  Delete a project and all its data.',
-  preview: 'tlda doc preview <name> [page ...]\n\n  Rasterize SVG pages to PNG for visual inspection.\n  Outputs paths to /tmp/tlda-preview-{name}/.',
   logs:    'tlda logs [agent] [--since 1h|2026-05-23] [--type chat,register] [-n 50] [-f] [--daemon] [--all]\n\n  Unified chronological log across all sources (DB events, daemon log, dead-letters).\n\n  agent      Filter by agent name (fuzzy match)\n  --since    Time range (e.g. 1h, 30m, 2d, or ISO date)\n  --type     Filter by event type (comma-separated)\n  -n N       Number of events (default: 50, or 10000 with --since)\n  -f         Follow mode (tail -f style)\n  --daemon   Include daemon log lines (heartbeats, WS, terminal exits)\n  --all      Include activity and client_error events (excluded by default)',
   server:  'tlda server [start|stop|status|log|install|uninstall]\n\n  start      Start the server (auto-restarts via launchd if installed)\n  stop       Stop the server\n  status     Check if server is running\n  log        Show recent server log\n  install    Install launchd service (macOS)\n  uninstall  Remove launchd service',
   publish: 'tlda publish [--target <name>] [doc ...]\n\n  Publish docs to GitHub Pages (+ optionally Fly).\n\n  With no args, publishes all docs in config.published using the "default" target.\n  With --target, uses the named target config (sync server, repo, etc.).\n  With doc names, publishes those and adds them to the list.\n\n  Config (targets in ~/.config/tlda/config.json):\n    targets.<name>.sync     — sync server WebSocket URL\n    targets.<name>.repo     — git remote for gh-pages (null = same repo)\n    targets.<name>.fly      — deploy to Fly (default: false)\n    targets.<name>.basePath — vite base path (default: /tlda/)',
@@ -973,71 +972,6 @@ async function cmdDelete() {
   console.log(green(`Project "${name}" deleted.`))
 }
 
-async function cmdPreview() {
-  const name = getPositional(0) || await inferProjectName()
-  if (!name) { console.error('Usage: tlda doc preview <name> [page ...]'); process.exit(1) }
-
-  // Collect page numbers from remaining positional args
-  const requestedPages = []
-  for (let i = 1; ; i++) {
-    const p = getPositional(i)
-    if (p === null) break
-    const n = parseInt(p, 10)
-    if (isNaN(n) || n < 1) { console.error(`Invalid page number: ${p}`); process.exit(1) }
-    requestedPages.push(n)
-  }
-
-  // Get project info to find output dir and page count
-  const data = await api('GET', `/api/projects/${name}`)
-  const totalPages = data.pages || 0
-  if (totalPages === 0) { console.error(`Project "${name}" has no pages (not built yet?)`); process.exit(1) }
-
-  const pages = requestedPages.length > 0 ? requestedPages : Array.from({ length: totalPages }, (_, i) => i + 1)
-
-  // Resolve SVG source directory
-  const server = getServer()
-  const outDir = `/tmp/tlda-preview-${name}`
-  if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true })
-
-  const { execFileSync } = await import('child_process')
-
-  // Convert pages in parallel (up to 8 at a time)
-  const CONCURRENCY = 8
-  const results = []
-
-  const token = getToken()
-  const previewHeaders = token ? { 'Authorization': `Bearer ${token}` } : {}
-
-  const texBase = data.mainFile ? data.mainFile.replace(/^.*\//, '').replace(/\.tex$/, '') : name
-  async function convertPage(page) {
-    const svgUrl = `${server}/docs/${name}/${texBase}-page-${page}.svg`
-    const pngPath = join(outDir, `page-${page}.png`)
-    try {
-      const svgRes = await fetch(svgUrl, { headers: previewHeaders, signal: AbortSignal.timeout(10000) })
-      if (!svgRes.ok) { console.error(`  page ${page}: not found`); return null }
-      const svgBuf = Buffer.from(await svgRes.arrayBuffer())
-      execFileSync('rsvg-convert', ['-f', 'png', '-o', pngPath], { input: svgBuf, timeout: 30000 })
-      return pngPath
-    } catch (e) {
-      console.error(`  page ${page}: ${e.message}`)
-      return null
-    }
-  }
-
-  for (let i = 0; i < pages.length; i += CONCURRENCY) {
-    const batch = pages.slice(i, i + CONCURRENCY)
-    const batchResults = await Promise.all(batch.map(convertPage))
-    for (const r of batchResults) if (r) results.push(r)
-  }
-
-  if (results.length === 0) {
-    console.error('No pages rendered.')
-    process.exit(1)
-  }
-
-  for (const p of results) console.log(p)
-}
-
 async function cmdPublish() {
   const { execSync: exec } = await import('child_process')
   const scriptPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'publish-snapshot.mjs')
@@ -1142,7 +1076,7 @@ function cmdCompletions() {
   // Fetch project names at completion time via a helper function in the script
   const commands = [
     'server', 'agent', 'link', 'push', 'watch', 'watch-all', 'open', 'list', 'ls',
-    'status', 'errors', 'delete', 'rm', 'preview', 'revert',
+    'status', 'errors', 'delete', 'rm', 'revert',
     'logs', 'log', 'config', 'completions',
   ]
   const serverSubs = ['start', 'stop', 'status', 'log', 'logs', 'install', 'uninstall']
@@ -1172,7 +1106,6 @@ _tlda() {
     'errors:Show LaTeX errors/warnings'
     'logs:Show server log'
     'delete:Delete a project'
-    'preview:Rasterize SVG pages to PNG'
     'config:Manage configuration'
     'completions:Output zsh completion script'
   )
@@ -1189,7 +1122,7 @@ _tlda() {
           local -a subs=(${serverSubs.map(s => `'${s}'`).join(' ')})
           _describe 'subcommand' subs
           ;;
-        link|push|open|status|errors|build|delete|rm|preview)
+        link|push|open|status|errors|build|delete|rm)
           _tlda_projects
           ;;
       esac
@@ -3049,7 +2982,6 @@ async function main() {
       case 'ls':     await ensureServer(); await cmdList(); break
       case 'status': await ensureServer(); await cmdStatus(); break
       case 'errors': await ensureServer(); await cmdErrors(); break
-      case 'preview': await ensureServer(); await cmdPreview(); break
       case 'delete':  await ensureServer(); await cmdDelete(); break
       case 'rm':      await ensureServer(); await cmdDelete(); break
       case 'logs':    await cmdLogs(args.slice(1)); break
@@ -3075,7 +3007,6 @@ async function main() {
   push [name]          Push source, rebuild
   status [name]        Build status
   errors [name]        LaTeX errors/warnings
-  preview <name> [p…]  Rasterize pages to PNG
   list                 List projects
   share [name]         Print a shareable read-only URL
   delete <name>        Delete a project
