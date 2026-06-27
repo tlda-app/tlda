@@ -30,7 +30,7 @@ WORKDIR /app
 #                     fleet-spawn.py.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       tmux git ca-certificates curl \
-      build-essential python3 python3-venv \
+      build-essential python3 python3-venv procps \
     && rm -rf /var/lib/apt/lists/*
 
 # --- python deps for fleet-spawn.py ---
