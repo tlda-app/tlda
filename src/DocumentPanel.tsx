@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef, useCallback, useContext, useMemo, useSyncExternalStore } from 'react'
+import { useState, useEffect, useRef, useCallback, useContext, useMemo } from 'react'
 import { setStopRecordingCallback } from './tools/VoiceNoteTool'
-import { setVoiceTarget, clearVoiceTarget, setVoiceAccumulator, stopRecording, isRecording, toggleRecording, voiceTap, onRecordingChange, maybeHandleVoiceSinkPointerDown, clearLastInterim } from './voice.mjs'
+import { setVoiceTarget, clearVoiceTarget, setVoiceAccumulator, stopRecording, isRecording, toggleRecording, voiceTap, maybeHandleVoiceSinkPointerDown } from './voice.mjs'
 import { createPortal } from 'react-dom'
 import { useEditor, useValue, stopEventPropagation, DefaultColorStyle } from 'tldraw'
 import { toolNameHud } from './overlays/ToolNameHud'
@@ -11,7 +11,7 @@ import type { AgentHeartbeatSignal } from './useYjsSync'
 import { TocTab, ZoneWidthSlider } from './panels/TocTab'
 import { NotesTab } from './panels/NotesTab'
 import { PrefsTab } from './panels/PrefsTab'
-import { getPref, subscribePref } from './preferences'
+import { CornerRailSlider } from './CornerRailSlider'
 
 import './DocumentPanel.css'
 
@@ -82,28 +82,24 @@ type Tab = 'toc' | 'notes' | 'prefs'
 export function DocumentPanel() {
   const doc = useContext(DocContext)
   const isHtml = doc?.format === 'html' || doc?.format === 'markdown'
-  const cornerRailEnabled = useCornerRailEnabled()
-  const cornerMetrics = cornerControlMetrics(Number(usePrefValue('corner-control-size')))
+  const cornerMetrics = cornerControlMetrics()
   const [tab, setTab] = useState<Tab>('toc')
   const [open, setOpen] = useState(false)
   const [dragOpen, setDragOpen] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    document.body.classList.toggle('corner-rail-mode', cornerRailEnabled)
-    if (cornerRailEnabled) {
-      document.documentElement.style.setProperty('--corner-control-size', `${cornerMetrics.size}px`)
-      document.documentElement.style.setProperty('--corner-control-gap', `${cornerMetrics.gap}px`)
-    } else {
-      document.documentElement.style.removeProperty('--corner-control-size')
-      document.documentElement.style.removeProperty('--corner-control-gap')
-    }
+    document.body.classList.add('corner-rail-mode')
+    document.documentElement.style.setProperty('--corner-control-size', `${cornerMetrics.size}px`)
+    document.documentElement.style.setProperty('--corner-control-gap', `${cornerMetrics.gap}px`)
+    document.documentElement.style.setProperty('--corner-icon-size', `${cornerMetrics.iconSize}px`)
     return () => {
       document.body.classList.remove('corner-rail-mode')
       document.documentElement.style.removeProperty('--corner-control-size')
       document.documentElement.style.removeProperty('--corner-control-gap')
+      document.documentElement.style.removeProperty('--corner-icon-size')
     }
-  }, [cornerRailEnabled, cornerMetrics.size, cornerMetrics.gap])
+  }, [cornerMetrics.size, cornerMetrics.gap, cornerMetrics.iconSize])
 
   // Close on outside touch (touch devices only — desktop uses CSS :hover)
   useEffect(() => {
@@ -198,26 +194,13 @@ const IS_TOUCH_DEVICE = (typeof navigator !== 'undefined' && navigator.maxTouchP
   || (typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches)
   || (typeof location !== 'undefined' && new URLSearchParams(location.search).has('forcetouch'))
 
-function usePrefValue<K extends Parameters<typeof getPref>[0]>(key: K) {
-  const [value, setValue] = useState(() => getPref(key))
-  useEffect(() => subscribePref(() => setValue(getPref(key))), [key])
-  return value
-}
-
-function useCornerRailEnabled() {
-  return !!usePrefValue('corner-rail-enabled')
-}
-
-function cornerControlMetrics(raw: number) {
+function cornerControlMetrics() {
   const baseSize = IS_PHONE ? 44 : 27
   const baseGap = IS_PHONE ? 8 : 6
-  const size = Number.isFinite(raw) && raw > 0
-    ? Math.max(27, Math.min(88, raw))
-    : baseSize * 4 / 3
-  const gap = Number.isFinite(raw) && raw > 0
-    ? baseGap * (size / baseSize)
-    : ((4 * baseSize + 3 * baseGap) - 3 * size) / 2
-  return { size, gap }
+  const size = baseSize * 4 / 3
+  const iconSize = 20 * (size / baseSize)
+  const gap = baseGap
+  return { size, gap, iconSize }
 }
 
 function activateHlSlot(editor: Editor, idx: number) {
@@ -449,13 +432,15 @@ function PhoneHighlighterButton() {
               style={{ '--hl-color': slotColor } as React.CSSProperties}
             >
               <span style={{
-                display: 'block', width: 20, height: 20,
+                display: 'block',
                 WebkitMaskImage: `url("${hlMaskUrl(slot)}")`,
                 maskImage: `url("${hlMaskUrl(slot)}")`,
                 WebkitMaskSize: '100%', maskSize: '100%',
                 WebkitMaskRepeat: 'no-repeat', maskRepeat: 'no-repeat',
                 WebkitMaskPosition: 'center', maskPosition: 'center',
                 backgroundColor: 'currentColor',
+                width: 'var(--corner-icon-size, 20px)',
+                height: 'var(--corner-icon-size, 20px)',
               }} />
             </div>
           })}
@@ -486,7 +471,9 @@ function PhoneHighlighterButton() {
           const iconSlot2 = iconSlot ?? HL_SLOTS.find(s => s.id === activeColorName)
           const iconUrl = iconSlot2 ? hlMaskUrl(iconSlot2) : `${TLDRAW_ICON_BASE}#tool-highlight`
           return <span style={{
-            display: 'block', width: 20, height: 20,
+            display: 'block',
+            width: 'var(--corner-icon-size, 20px)',
+            height: 'var(--corner-icon-size, 20px)',
             WebkitMaskImage: `url("${iconUrl}")`,
             maskImage: `url("${iconUrl}")`,
             WebkitMaskSize: '100%', maskSize: '100%',
@@ -596,7 +583,7 @@ export function PhoneOverlay() {
           {/* Highlighter toggle — bottom right, drag for color slider */}
           <PhoneHighlighterButton />
           {/* Voice note button — bottom right, left of highlighter */}
-          <VoiceNoteButton />
+          <VoiceNoteButtonInner />
 
           {/* Page number indicator — shows during scroll, fades out */}
           <PhonePageIndicator />
@@ -844,166 +831,89 @@ function useVoiceNoteController() {
 }
 
 function VoiceNoteButtonInner() {
-  const voiceRailEnabled = useCornerRailEnabled()
-  const { size: controlSize } = cornerControlMetrics(Number(usePrefValue('corner-control-size')))
+  const { size: controlSize } = cornerControlMetrics()
   const { recording, isPlacing, triggerFromElement } = useVoiceNoteController()
   const btnRef = useRef<HTMLButtonElement>(null)
-  const startRef = useRef<{ x: number; y: number } | null>(null)
-  const draggingRef = useRef(false)
-  const dragSlotRef = useRef<number | null>(null)
   const suppressClickRef = useRef(false)
-  const [dragging, setDragging] = useState(false)
-  const [dragSlot, setDragSlot] = useState<number | null>(null)
-  const [btnRect, setBtnRect] = useState<DOMRect | null>(null)
+  const [voiceValue, setVoiceValue] = useState(1)
 
   const voiceSlots = useMemo(() => [
-    { id: 'voice-note', label: 'voice note', color: '#d7b950', action: () => btnRef.current && triggerFromElement(btnRef.current) },
-    { id: 'clear-last-interim', label: 'clear interim', color: '#9370db', action: clearLastInterim },
-    { id: 'dictate-selection', label: 'dictate', color: '#7ab8a0', action: voiceTap },
+    {
+      id: 'dictate-selection',
+      label: 'dictate',
+      color: '#7ab8a0',
+      action: voiceTap,
+      render: () => (
+        <svg width="20" height="20" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="6.5" y="2" width="5" height="8" rx="2.5" fill="currentColor" />
+          <path d="M3.5 8.5a5.5 5.5 0 0 0 11 0" />
+          <line x1="9" y1="14" x2="9" y2="16" />
+        </svg>
+      ),
+    },
+    {
+      id: 'voice-note',
+      label: 'voice note',
+      color: '#d7b950',
+      action: () => btnRef.current && triggerFromElement(btnRef.current),
+      render: () => (
+        <svg width="20" height="20" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M11.5 2.5H4.2A1.7 1.7 0 0 0 2.5 4.2V13.8A1.7 1.7 0 0 0 4.2 15.5H13.8A1.7 1.7 0 0 0 15.5 13.8V6.5Z" />
+          <path d="M11.5 2.5V6.5H15.5" />
+          <rect x="7.6" y="6" width="2.8" height="4" rx="1.4" fill="currentColor" stroke="none" />
+          <path d="M6.3 9.2a2.7 2.7 0 0 0 5.4 0" strokeWidth="1.1" />
+        </svg>
+      ),
+    },
   ], [triggerFromElement])
 
-  const resetDrag = useCallback(() => {
-    draggingRef.current = false
-    dragSlotRef.current = null
-    startRef.current = null
-    setDragging(false)
-    setDragSlot(null)
-    setBtnRect(null)
-    toolNameHud.hide()
-  }, [])
-
   const handleClick = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
-    if (voiceRailEnabled) {
-      if (suppressClickRef.current) {
-        suppressClickRef.current = false
-        return
-      }
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false
       return
     }
     triggerFromElement(e.currentTarget)
-  }, [triggerFromElement, voiceRailEnabled])
+  }, [triggerFromElement])
 
-  const handlePointerDown = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
-    if (!voiceRailEnabled) {
-      stopEventPropagation(e)
-      return
-    }
-    stopEventPropagation(e)
-    e.preventDefault()
-    startRef.current = { x: e.clientX, y: e.clientY }
-    draggingRef.current = false
-    dragSlotRef.current = null
-    setDragging(false)
-    setDragSlot(null)
-    setBtnRect(btnRef.current?.getBoundingClientRect() ?? null)
-    e.currentTarget.setPointerCapture(e.pointerId)
-  }, [voiceRailEnabled])
-
-  const handlePointerMove = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
-    if (!voiceRailEnabled) return
-    const start = startRef.current
-    const rect = btnRef.current?.getBoundingClientRect()
-    if (!start || !rect) return
-    const dx = e.clientX - start.x
-    const dy = e.clientY - start.y
-    if (!draggingRef.current) {
-      if (Math.hypot(dx, dy) < 8) return
-      draggingRef.current = true
-      setDragging(true)
-    }
-    const slotW = Math.max(29, controlSize * 0.7)
-    const dist = Math.max(0, rect.left - e.clientX)
-    const idx = Math.max(0, Math.min(voiceSlots.length - 1, Math.round(dist / slotW)))
-    dragSlotRef.current = idx
-    setDragSlot(idx)
+  const previewVoiceSlot = useCallback((idx: number) => {
+    setVoiceValue(idx)
     const slot = voiceSlots[idx]
     if (slot) toolNameHud.show(slot.label, slot.color)
-  }, [controlSize, voiceRailEnabled, voiceSlots])
+  }, [voiceSlots])
 
-  const handlePointerUp = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
-    if (!voiceRailEnabled) {
-      stopEventPropagation(e)
-      return
-    }
-    stopEventPropagation(e)
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-      e.currentTarget.releasePointerCapture(e.pointerId)
-    }
-    const wasDragging = draggingRef.current
-    const slotIdx = dragSlotRef.current
+  const commitVoiceSlot = useCallback((idx: number) => {
     suppressClickRef.current = true
-    resetDrag()
-    if (wasDragging && slotIdx !== null) {
-      voiceSlots[slotIdx]?.action()
-    } else {
-      triggerFromElement(e.currentTarget)
-    }
-  }, [resetDrag, triggerFromElement, voiceRailEnabled, voiceSlots])
+    toolNameHud.hide()
+    setVoiceValue(1)
+    voiceSlots[idx]?.action()
+  }, [voiceSlots])
 
-  const handlePointerCancel = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
-    if (!voiceRailEnabled) return
-    stopEventPropagation(e)
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-      e.currentTarget.releasePointerCapture(e.pointerId)
-    }
-    resetDrag()
-  }, [resetDrag, voiceRailEnabled])
+  const tapVoiceButton = useCallback(() => {
+    if (btnRef.current) triggerFromElement(btnRef.current)
+  }, [triggerFromElement])
 
   const cls = `voice-note-btn${recording ? ' recording' : ''}${isPlacing ? ' placing' : ''}`
 
   return (
     <>
-      {voiceRailEnabled && dragging && btnRect && (
-        <div
-          className="voice-action-slider"
-          style={{
-            bottom: `${window.innerHeight - btnRect.bottom}px`,
-            right: `${window.innerWidth - btnRect.left}px`,
-          }}
-          onPointerDown={stopEventPropagation}
-          onTouchStart={stopEventPropagation}
-        >
-          {voiceSlots.map((slot, i) => (
-            <div
-              key={slot.id}
-              className={`voice-action-slot${i === dragSlot ? ' active' : ''}`}
-              style={{ '--voice-action-color': slot.color } as React.CSSProperties}
-              title={slot.label}
-            >
-              {slot.id === 'voice-note' && (
-                <svg width="20" height="20" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M11.5 2.5H4.2A1.7 1.7 0 0 0 2.5 4.2V13.8A1.7 1.7 0 0 0 4.2 15.5H13.8A1.7 1.7 0 0 0 15.5 13.8V6.5Z" />
-                  <path d="M11.5 2.5V6.5H15.5" />
-                  <rect x="7.6" y="6" width="2.8" height="4" rx="1.4" fill="currentColor" stroke="none" />
-                  <path d="M6.3 9.2a2.7 2.7 0 0 0 5.4 0" strokeWidth="1.1" />
-                </svg>
-              )}
-              {slot.id === 'clear-last-interim' && (
-                <svg width="20" height="20" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M3 5.5h8.5l3.5 3.5-3.5 3.5H3z" />
-                  <path d="M7 7l4 4M11 7l-4 4" />
-                </svg>
-              )}
-              {slot.id === 'dictate-selection' && (
-                <svg width="20" height="20" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="6.5" y="2" width="5" height="8" rx="2.5" fill="currentColor" />
-                  <path d="M3.5 8.5a5.5 5.5 0 0 0 11 0" />
-                  <line x1="9" y1="14" x2="9" y2="16" />
-                </svg>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
+      <CornerRailSlider
+        anchorRef={btnRef}
+        className="voice-action-slider"
+        ariaLabel="Voice action"
+        options={voiceSlots}
+        value={voiceValue}
+        onPreview={previewVoiceSlot}
+        onCommit={commitVoiceSlot}
+        onTap={tapVoiceButton}
+      />
       <button
         ref={btnRef}
         className={cls}
-        style={voiceRailEnabled ? { '--corner-control-size': `${controlSize}px` } as React.CSSProperties : undefined}
+        style={{ '--corner-control-size': `${controlSize}px` } as React.CSSProperties}
         onClick={handleClick}
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
-        onPointerCancel={handlePointerCancel}
+        onPointerDown={stopEventPropagation}
+        onPointerUp={stopEventPropagation}
+        onPointerCancel={stopEventPropagation}
         onTouchStart={stopEventPropagation}
         onTouchEnd={stopEventPropagation}
         title={_isTouchDevice ? 'New voice note' : (recording ? 'Stop recording' : isPlacing ? 'Cancel placement' : 'Voice note')}
@@ -1091,6 +1001,7 @@ export function VoiceTargetFollower() {
 
 export function VoiceNoteButton() {
   if (typeof window === 'undefined') return null
+  if (IS_PHONE) return null
   return <VoiceNoteButtonInner />
 }
 
@@ -1121,56 +1032,7 @@ function reassertSelection(editor: Editor, ids: TLShapeId[]) {
   setTimeout(apply, 300)
 }
 
-function MicToggleButtonInner() {
-  // Pure on/off for recording. Recording is meant to run continuously — only
-  // this button stops it. The dictation target follows selection separately
-  // (VoiceTargetFollowsSelection). tldraw clears the selection on the button's
-  // *pointerdown* (before onClick), so capture the selection in a document
-  // capture-phase listener (which fires before tldraw's) and re-assert it after.
-  const editor = useEditor()
-  const keepRef = useRef<TLShapeId[]>([])
-  useEffect(() => {
-    const onDown = () => { keepRef.current = editor.getSelectedShapeIds() }
-    document.addEventListener('pointerdown', onDown, true)
-    return () => document.removeEventListener('pointerdown', onDown, true)
-  }, [editor])
-  const handleClick = useCallback(() => {
-    // Same gesture as Right Shift: 1 tap toggles, 2 = soft reset, 3 = Chrome
-    // restart. voiceTap() owns the tap-counting (shared with the key handler).
-    voiceTap()
-    reassertSelection(editor, keepRef.current)
-  }, [editor])
-
-  // Live recording state drives the glyph: filled mic = on (the usual state),
-  // outline mic = off. Opacity stays constant — the HUD carries the aliveness
-  // signal, so this toggle stays chill and just shows armed-vs-not via fill.
-  const on = useSyncExternalStore(onRecordingChange, isRecording, isRecording)
-
-  return (
-    <button
-      className={`mic-toggle-btn${on ? ' on' : ''}`}
-      onClick={handleClick}
-      onPointerDown={stopEventPropagation}
-      onPointerUp={stopEventPropagation}
-      onTouchStart={stopEventPropagation}
-      onTouchEnd={stopEventPropagation}
-      title={on ? 'Dictation on — tap to stop' : 'Dictation off — tap to start'}
-    >
-      {/* 20px + a 1.15 fill-scale match the highlighter button's visual size. */}
-      <svg width="20" height="20" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-        <g transform="translate(9 9) scale(1.15) translate(-9 -9)">
-          <rect x="6.5" y="2" width="5" height="8" rx="2.5" fill={on ? 'currentColor' : 'none'} />
-          <path d="M3.5 8.5a5.5 5.5 0 0 0 11 0" />
-          <line x1="9" y1="14" x2="9" y2="16" />
-        </g>
-      </svg>
-    </button>
-  )
-}
-
 export function MicToggleButton() {
-  const cornerRailEnabled = useCornerRailEnabled()
   if (typeof window === 'undefined') return null
-  if (cornerRailEnabled) return null
-  return <MicToggleButtonInner />
+  return null
 }
