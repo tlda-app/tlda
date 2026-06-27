@@ -46,13 +46,18 @@ function cloneDir(name) {
   return join(projectDir(name), 'overleaf-clone')
 }
 
+// Credentials only live in the userinfo of an http(s) URL. ssh remotes,
+// file:// URLs, and bare local paths carry no token and aren't URL-parseable,
+// so we leave them untouched.
+const isHttpUrl = (s) => /^https?:\/\//i.test(s)
+
 /**
  * Embed an auth token into an https git URL as the password. Overleaf's
  * git-bridge authenticates with the token as the password and any (or empty)
  * username; we use `git` as the username by convention.
  */
 function authedUrl(gitUrl, token) {
-  if (!token) return gitUrl
+  if (!token || !isHttpUrl(gitUrl)) return gitUrl
   const u = new URL(gitUrl)
   u.username = 'git'
   u.password = token
@@ -61,14 +66,11 @@ function authedUrl(gitUrl, token) {
 
 /** Strip any embedded credentials from a URL for safe storage/display. */
 function sanitizeUrl(gitUrl) {
-  try {
-    const u = new URL(gitUrl)
-    u.username = ''
-    u.password = ''
-    return u.toString()
-  } catch {
-    return gitUrl
-  }
+  if (!isHttpUrl(gitUrl)) return gitUrl
+  const u = new URL(gitUrl)
+  u.username = ''
+  u.password = ''
+  return u.toString()
 }
 
 /**
