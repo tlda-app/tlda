@@ -104,6 +104,14 @@ export const launderExamples = [
     context: { toSkip: true, paperContext: false },
   },
   {
+    id: 'paper-context-colloquial-done-definition',
+    label: 'clean',
+    reasonCode: 'no-notation-introduction',
+    provenance: 'fresh-gate hard negative: ordinary colloquial define inside paper context is not notation introduction',
+    text: "Let's define done as: tests green and committed.",
+    context: { toSkip: true, paperContext: true },
+  },
+  {
     id: 'utils-helper-definition',
     label: 'clean',
     reasonCode: 'not-paper-context',
