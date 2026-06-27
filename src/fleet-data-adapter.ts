@@ -612,7 +612,7 @@ export async function clearGroup(agentId: string, groupKey: string) {
   try {
     const j = await fetch('/api/suggestions').then(r => r.json())
     const remaining = (j.suggestions || []).filter((s: Suggestion) =>
-      (s.from || s.targetId) === agentId && suggestionGroupKey(s) !== groupKey)
+      suggestionOwnerId(s) === agentId && suggestionGroupKey(s) !== groupKey)
     await fetch('/api/suggestions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -625,6 +625,10 @@ export async function clearGroup(agentId: string, groupKey: string) {
 
 function suggestionGroupKey(s: Suggestion) {
   return `${s.messageId || ''}::${s.group || String(s.id)}`
+}
+
+function suggestionOwnerId(s?: Suggestion) {
+  return s?.from || s?.targetId || ''
 }
 
 /**

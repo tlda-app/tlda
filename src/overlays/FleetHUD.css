@@ -36,6 +36,14 @@
   pointer-events: none;
 }
 
+body.fleet-hud-open .bottom-panels {
+  z-index: 10000;
+}
+
+body.fleet-hud-open .fleet-hud-wrap {
+  z-index: 10000;
+}
+
 .fleet-hud-wrap > .clip-panel {
   pointer-events: auto;
   background: transparent !important;

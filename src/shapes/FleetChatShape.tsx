@@ -39,6 +39,7 @@ import {
   buildFleetDmFilter,
   classifyFleetComposerTrafficMode,
   filterForFleetComposerTrafficMode,
+  matchesFleetFilter,
   nextFleetComposerTrafficMode,
   quietTrafficSuppressesActivity,
 } from '../fleet/filter-semantics.mjs'
@@ -1343,7 +1344,7 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
   const suggestionsByAgent = useMemo(() => {
     const m = new Map<string, Suggestion[]>()
     for (const s of suggestions) {
-      const key = s.from || s.targetId || ''
+      const key = suggestionOwnerId(s)
       if (!key) continue
       if (!m.has(key)) m.set(key, [])
       m.get(key)!.push(s)
@@ -1422,7 +1423,7 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
                 suggestions can never crowd the agent-status / context columns. */}
             <span style={{ display: 'flex', gap: 14, alignItems: 'baseline', flexWrap: 'wrap', justifyContent: 'center', minWidth: 0, overflow: 'hidden' }}>
               {[...groupChips(chips)].map(([gkey, items]) => (
-                <SuggestionGroup key={gkey} chips={items} agentName={ctx.agentLabel(items[0].targetId || items[0].from)} />
+                <SuggestionGroup key={gkey} chips={items} agentName={ctx.agentLabel(suggestionOwnerId(items[0]))} />
               ))}
             </span>
             {/* right: context info */}
@@ -1456,6 +1457,7 @@ const TIP_VARS = ['--surface', '--border', '--shadow-lg', '--text', '--text-brig
 // groupKey: suggestions sharing a `group` tag are one disjunctive group; an
 // untagged suggestion is its own singleton group (keyed by its id).
 function groupKeyOf(s: Suggestion): string { return `${s.messageId || ''}::${s.group || String(s.id)}` }
+function suggestionOwnerId(s?: Suggestion): string { return s?.from || s?.targetId || '' }
 function groupChips(chips: Suggestion[]): Map<string, Suggestion[]> {
   const m = new Map<string, Suggestion[]>()
   for (const c of chips) {
@@ -1500,7 +1502,7 @@ function SuggestionRow({ chips, ctx }: { chips: Suggestion[], ctx: any }) {
   return (
     <div className="chat-line chat-suggestions-inline" style={{ padding: '2px 8px 4px', fontSize: 11 }}>
       {[...groupChips(chips)].map(([gkey, items]) => (
-        <SuggestionGroup key={gkey} chips={items} agentName={ctx.agentLabel(items[0].targetId || items[0].from)} />
+        <SuggestionGroup key={gkey} chips={items} agentName={ctx.agentLabel(suggestionOwnerId(items[0]))} />
       ))}
     </div>
   )
@@ -1511,7 +1513,7 @@ function SuggestionRow({ chips, ctx }: { chips: Suggestion[], ctx: any }) {
 // One shared hover on the whole group → a single tooltip listing the options.
 function SuggestionGroup({ chips, agentName }: { chips: Suggestion[], agentName: string }) {
   const ref = useRef<HTMLSpanElement>(null)
-  const fromAgent = chips[0]?.from || chips[0]?.targetId || ''
+  const fromAgent = suggestionOwnerId(chips[0])
   const key = groupKeyOf(chips[0])
   const showTip = () => {
     const el = ref.current
@@ -1890,24 +1892,26 @@ function FleetChatInner({ shape }: { shape: any }) {
   const suggestionsPending = useMemo(() => {
     let filtered = suggestionsAll
     if (dnfFilter && dnfFilter.length > 0) {
-      const targetIds = new Set<string>()
-      for (const andGroup of dnfFilter) {
-        for (const [, label] of andGroup) {
-          for (const id of resolveToFleetIds(label)) targetIds.add(id)
-        }
-      }
-      filtered = filtered.filter(n => targetIds.has(n.targetId || n.from || ''))
+      filtered = filtered.filter(n => {
+        const ownerId = suggestionOwnerId(n)
+        if (!ownerId) return false
+        return matchesFleetFilter(dnfFilter, { agent: ownerId, from: ownerId, to: ownerId }, {
+          agents,
+          humanId: getHumanId(),
+          humanName: getHumanName(),
+        })
+      })
     }
     const seen = new Set<string>()
     return filtered.filter(n => {
       // Key on target too: the same label (e.g. "hand off") can be pending for
       // multiple agents at once, and each must stay clickable against its own target.
-      const key = `${groupKeyOf(n)}::${n.targetId || n.from || ''}::${n.label}`
+      const key = `${groupKeyOf(n)}::${suggestionOwnerId(n)}::${n.label}`
       if (seen.has(key)) return false
       seen.add(key)
       return true
     })
-  }, [suggestionsAll, dnfFilter, resolveToFleetIds])
+  }, [suggestionsAll, dnfFilter, agents])
 
   // Fetch per-agent history on mount / filter change.
   // The global event buffer (MAX_EVENTS=150) is shared across all agents.
@@ -5905,7 +5909,7 @@ function buildFilterPreview(
   return simplifyDnf([...filter, [newTerm]])
 }
 
-function FilterOverlay({
+export function FilterOverlay({
   filter,
   shapeId,
   editor,

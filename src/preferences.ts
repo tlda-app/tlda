@@ -62,7 +62,7 @@ const DEFAULTS = {
   // Highlighter edge-zone (the HighlighterSlider). Toggled from the prefs menu.
   'hl-zone-enabled': true as boolean,
   // Bottom-right corner rail: one vertical rail with Marking, Voice, and Fleet rows.
-  'corner-rail-enabled': true as boolean,
+  'corner-rail-enabled': false as boolean,
   // 0 = automatic per device: current corner button size * 4/3, with the
   // gap chosen so the 3-button stack preserves the old 4-button envelope.
   'corner-control-size': 0 as number,

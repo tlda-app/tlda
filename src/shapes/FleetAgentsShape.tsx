@@ -16,7 +16,7 @@ import {
   createShapeId,
 } from 'tldraw'
 import { useState, useCallback, useMemo, useRef, useEffect, memo } from 'react'
-import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, useFleetContext, useFleetProjects, useFleetRosterTruth, searchFleet, hibernateSession, spawnAgent } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, useFleetContext, useFleetProjects, searchFleet, hibernateSession, spawnAgent } from '../fleet-data-adapter'
 import { dropPillOnTarget } from './FleetPillShape'
 import { agentDisplayName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
 import { AgentName } from './PhaseIcon'
@@ -796,12 +796,6 @@ function FleetAgentsInner({ shape }: { shape: any }) {
 
   const hibernatingCount = useMemo(() => sortedAgents.filter(a => agentCategory(a) === 'hibernating').length, [sortedAgents])
   const awakeCount = sortedAgents.length - hibernatingCount
-  const rosterTruth = useFleetRosterTruth()
-  const registryTotals = rosterTruth?.totals
-  const paneTotals = rosterTruth?.panes
-  const deadCount = registryTotals?.dead ?? agents.filter((a: any) => a.dead && !a.human).length
-  const stalePaneCount = paneTotals?.stale ?? 0
-  const registryWithoutPaneCount = paneTotals?.registry_without_pane ?? 0
 
   // Fetch last messages for visible agents
   const lastMessages = useLastMessages(sortedAgents)
@@ -958,9 +952,6 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                 >{hibernatingCount} hibernating</span>
               </span>
             )}
-            {deadCount > 0 && <span style={{ marginLeft: 6 }}>· {deadCount} dead</span>}
-            {stalePaneCount > 0 && <span style={{ marginLeft: 6 }}>· {stalePaneCount} stale panes</span>}
-            {registryWithoutPaneCount > 0 && <span style={{ marginLeft: 6 }}>· {registryWithoutPaneCount} no-pane rows</span>}
           </span>
           <span className="fleet-agents-spawn-btns" onPointerDown={(e) => e.stopPropagation()}>
             <span className="fleet-agents-spawn-input-wrap">
