@@ -1,5 +1,8 @@
 import katex from 'katex'
 import 'katex/dist/katex.min.css'
+// npm marked used as a fallback when window.marked (CDN) is not yet available:
+// Node.js tests, SSR, and the brief window before the CDN script loads.
+import { marked as _markedFallback } from 'marked'
 import { getAgents, getAgent } from './fleet-data.mjs'
 import { getActiveMacros } from '../katexMacros'
 import { baseMacros } from '../../shared/katex-base-macros.mjs'
@@ -369,18 +372,18 @@ export function renderMarkdown(html, extraMacros) {
   })
 
   // --- Run marked ---
-  let result
-  if (typeof window !== 'undefined' && window.marked) {
-    result = window.marked.parse(text, { breaks: true })
-    // Unwrap single <p> — marked wraps everything in <p> tags, which are block-level
-    // and break inline chat layout. Strip if the result is just one paragraph.
-    const trimmed = result.trim()
-    if (trimmed.startsWith('<p>') && trimmed.endsWith('</p>') && trimmed.indexOf('<p>', 1) === -1) {
-      result = trimmed.slice(3, -4)
-    }
-  } else {
-    // Fallback: basic escaping (shouldn't happen in browser with CDN loaded)
-    result = esc(text).replace(/\n/g, '<br>')
+  // Prefer window.marked (CDN) so browser behaviour matches the historical baseline;
+  // fall back to the npm bundle when window.marked is absent — Node.js tests,
+  // SSR, and the brief window before the CDN script finishes loading.
+  const _markedParser = (typeof window !== 'undefined' && window.marked)
+    ? window.marked
+    : _markedFallback
+  let result = _markedParser.parse(text, { breaks: true })
+  // Unwrap single <p> — marked wraps everything in <p> tags, which are block-level
+  // and break inline chat layout. Strip if the result is just one paragraph.
+  const trimmed = result.trim()
+  if (trimmed.startsWith('<p>') && trimmed.endsWith('</p>') && trimmed.indexOf('<p>', 1) === -1) {
+    result = trimmed.slice(3, -4)
   }
 
   // --- Sanitize with DOMPurify ---
