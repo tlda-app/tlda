@@ -3372,17 +3372,10 @@ function FleetChatInner({ shape }: { shape: any }) {
   // source of truth. It is virtualization-aware — it renders + measures the
   // last items and lands the true last item flush against the viewport bottom.
   //
-  // We deliberately do NOT also slam `el.scrollTop = el.scrollHeight`. That used
-  // to exist to "reach past the thinking/suggestion FOOTER" — but the status row
-  // is now a measured list item, not a footer, so there is nothing below the last
-  // item to clear. With the footer gone, the raw slam became actively harmful:
-  // when the status item's height shrinks (an agent stops thinking), Virtuoso's
-  // totalListHeight lags one frame, so scrollHeight is transiently TALLER than the
-  // real content. `scrollTop = scrollHeight` then locks the view into that stale
-  // tail — the last message strands at the TOP of the viewport with ~a screenful
-  // of blank below it, and it persists because no later event re-pins. scrollToIndex
-  // doesn't have this failure mode: it targets the last ITEM, re-measuring it, so
-  // it can never scroll into space that isn't really there.
+  // We deliberately do NOT also slam `el.scrollTop = el.scrollHeight` in this
+  // explicit item-targeted path. That used to exist to "reach past the
+  // thinking/suggestion FOOTER" — but the status row is now a measured list item,
+  // not a footer, so there is nothing below the last item to clear.
   //
   // The bounded loop re-runs as height settles; the standing watchdog below
   // guarantees convergence after this loop's frame budget.
@@ -3399,6 +3392,13 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (gap > 8 && ++frames < 12) requestAnimationFrame(step)
     }
     step()
+  }, [chatLogEl])
+
+  const glueToBottom = useCallback(() => {
+    const el = chatLogEl
+    if (!el) return
+    programmaticUntilRef.current = performance.now() + 120
+    el.scrollTop = el.scrollHeight
   }, [chatLogEl])
 
   // Imperative scroll-to-bottom for the floating ⇣ button.
@@ -3429,31 +3429,32 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (h !== prevH) {
         const pin = !userScrolledUpRef.current || hardLockedRef.current
         log.debug('chat-scroll', 'container resize', { prevH, h, atBottom: isAtBottomRef.current, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current, action: pin ? 'pin' : 'skip' })
-        if (pin) pinHard()
+        if (pin) glueToBottom()
       }
       prevH = h
     })
     ro.observe(el)
     return () => ro.disconnect()
-  }, [chatLogEl, pinHard])
+  }, [chatLogEl, glueToBottom])
 
-  // Force-pin when new items arrive AND we were at bottom. Virtuoso's
+  // Glue when new items arrive AND we were at bottom. Virtuoso's
   // followOutput="auto" sometimes scrolls against a stale measurement of
   // the new item's height, ending up ~20px short — enough to trip
   // atBottomThreshold and surface the ⇣ arrow even though the user didn't
-  // scroll. This redundant scroll catches that.
+  // scroll. This same-frame scroll catches that without asking Virtuoso to
+  // re-resolve item positions during its own height measurement pass.
   const prevItemCountRef = useRef(allItems.length)
   // Tracks Virtuoso's total list height for totalListHeightChanged — catches
   // in-place item growth that doesn't tick items.length.
   const prevTotalHeightRef = useRef(0)
-  useEffect(() => {
+  useLayoutEffect(() => {
     const prev = prevItemCountRef.current
     prevItemCountRef.current = allItems.length
     if (allItems.length > prev && (!userScrolledUpRef.current || hardLockedRef.current)) {
-      log.debug('chat-scroll', 'force-pin on item grow', { prev, now: allItems.length, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
-      requestAnimationFrame(pinHard)
+      log.debug('chat-scroll', 'bottom glue on item grow', { prev, now: allItems.length, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
+      glueToBottom()
     }
-  }, [allItems.length, pinHard])
+  }, [allItems.length, glueToBottom])
 
   // ── Single source of follow-intent: scrollTop-DELTA on the real container ──
   // Every path that scrolls the chat log fires a native 'scroll' event on
@@ -5306,19 +5307,15 @@ function FleetChatInner({ shape }: { shape: any }) {
               const follow = !userScrolledUpRef.current || hardLockedRef.current
               const el = chatLogEl
               if (grew && follow) {
-                // Following + content grew → re-pin to the true bottom with the
-                // ONE pin (scrollToIndex via pinHard), which is virtualization-
-                // aware and re-measures the last item. We deliberately do NOT
-                // slam `el.scrollTop = el.scrollHeight`: when the status row
-                // shrinks a frame later, scrollHeight is transiently taller than
-                // the real content and the raw slam strands the tail in stale
-                // blank space (the 224px-short / "bounce"). pinHard targets the
-                // last ITEM, so it can't scroll into space that isn't there.
+                // Following + content grew: glue in the same frame the height
+                // changed. Calling scrollToIndex(LAST) here asks Virtuoso to
+                // resolve item positions while it is already measuring variable
+                // row heights, which makes the bottom solve bounce.
                 if (diag) {
                   const gapBeforeGlue = el ? Math.round(el.scrollHeight - (el.scrollTop + el.clientHeight)) : null
-                  log.debug('chat-scroll', 'growth → pin', { gapBeforeGlue })
+                  log.debug('chat-scroll', 'growth → bottom glue', { gapBeforeGlue })
                 }
-                pinHard()
+                glueToBottom()
                 if (diag) {
                   requestAnimationFrame(() => {
                     const el2 = chatLogEl
