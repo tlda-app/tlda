@@ -61,7 +61,19 @@ export function getMyAnchorId(): string {
   // so the same identity on two devices doesn't share — and fight over — one
   // anchor.
   const dev = getDeviceId()
-  return `shape:fleet-hud-anchor--${uid.replace('fleet:', '')}--${dev}`
+  return getAnchorIdForOwnerKey(uid, dev)
+}
+
+export function getAnchorIdForOwnerKey(userId: string, deviceId: string): string {
+  if (!userId || !deviceId) return FLEET_HUD_ANCHOR_ID
+  return `shape:fleet-hud-anchor--${userId.replace('fleet:', '')}--${deviceId}`
+}
+
+export function isFleetShapeForOwnerKey(s: any, userId: string, deviceId: string): boolean {
+  if (!FLEET_SHAPE_TYPES.has(s.type as string)) return false
+  const uid = s.props?.userId
+  const dev = s.props?.deviceId
+  return !!uid && uid === userId && !!dev && dev === deviceId
 }
 
 /**
@@ -80,10 +92,9 @@ export function getMyAnchorId(): string {
  * can never disagree.
  */
 export function isMyFleetShape(s: any): boolean {
-  if (!FLEET_SHAPE_TYPES.has(s.type as string)) return false
-  const uid = s.props?.userId
-  const dev = s.props?.deviceId
-  return !!uid && uid === getHumanId() && !!dev && dev === getDeviceId()
+  const myId = getHumanId()
+  const myDevice = getDeviceId()
+  return isFleetShapeForOwnerKey(s, myId, myDevice)
 }
 
 /**
@@ -407,7 +418,7 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
     return false
   }
 
-  const existing = editor.getCurrentPageShapes().filter(isMyFleetShape)
+  const existing = editor.getCurrentPageShapes().filter(s => isFleetShapeForOwnerKey(s, myId, myDevice))
   const existingChatFilters = existing
     .filter(s => (s.type as string) === 'fleet-chat')
     .map(s => (s as any).props?.filter as [string, string][][] | undefined)
@@ -415,7 +426,7 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
   editor.run(() => {
     if (existing.length > 0) forceDeleteShapes(editor, existing.map(s => s.id as string))
 
-    const anchorId = getMyAnchorId()
+    const anchorId = getAnchorIdForOwnerKey(myId, myDevice)
     try {
       const anchor = editor.getShape(anchorId as any)
       if (anchor) {

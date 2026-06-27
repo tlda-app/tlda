@@ -25,7 +25,7 @@
 import { useEffect } from 'react'
 import type { Editor, TLShape } from 'tldraw'
 import { log } from '../logger'
-import { FLEET_SHAPE_TYPES } from '../shapes/fleet-utils'
+import { FLEET_SHAPE_TYPES, isMyFleetShape } from '../shapes/fleet-utils'
 import { isDocumentPageShape } from '../shapes/document-pages'
 
 const LOG_NS = 'fleet-gesture'
@@ -266,11 +266,15 @@ type FleetHit = {
   rawShapeType?: string
 }
 
+function isMyGestureFleetShape(shape: TLShape | null | undefined): shape is TLShape {
+  return !!shape && FLEET_SHAPE_TYPES.has(shape.type as string) && isMyFleetShape(shape)
+}
+
 function topLevelFleetShape(overlay: Editor, shape: TLShape): TLShape {
   let cur = shape
   while (cur.parentId) {
     const parent = overlay.getShape(cur.parentId as any)
-    if (!parent || !FLEET_SHAPE_TYPES.has(parent.type as string)) break
+    if (!parent || !isMyGestureFleetShape(parent)) break
     cur = parent
   }
   return cur
@@ -298,7 +302,7 @@ function fleetHitAtScreen(overlay: Editor, clientX: number, clientY: number, vie
     const domShapeType = outerFleetEl?.getAttribute('data-shape-type')
     if (domShapeId && domShapeType && FLEET_SHAPE_TYPES.has(domShapeType)) {
       const domShape = overlay.getShape(domShapeId as any)
-      if (domShape && FLEET_SHAPE_TYPES.has(domShape.type as string)) {
+      if (isMyGestureFleetShape(domShape)) {
         const shape = topLevelFleetShape(overlay, domShape)
         return { shape, source: 'dom', rawShapeId: domShape.id as string, rawShapeType: domShape.type as string }
       }
@@ -307,16 +311,16 @@ function fleetHitAtScreen(overlay: Editor, clientX: number, clientY: number, vie
 
   const page = screenPointToOverlayPage(overlay, clientX, clientY, viewportId)
   const shape = overlay.getShapeAtPoint(page, { hitInside: true, margin: 0 })
-  if (shape && FLEET_SHAPE_TYPES.has(shape.type as string)) {
+  if (isMyGestureFleetShape(shape)) {
     const top = topLevelFleetShape(overlay, shape)
     return { shape: top, source: 'geometry', rawShapeId: shape.id as string, rawShapeType: shape.type as string }
   }
   // Walk up to a fleet ancestor (e.g. a nested child like a chat inside a container)
-  let cur = shape
+  let cur: TLShape | null | undefined = shape as TLShape | null | undefined
   while (cur) {
     const parent = overlay.getShape(cur.parentId as any)
     if (!parent) break
-    if (FLEET_SHAPE_TYPES.has(parent.type as string)) {
+    if (isMyGestureFleetShape(parent)) {
       const top = topLevelFleetShape(overlay, parent)
       return { shape: top, source: 'geometry', rawShapeId: parent.id as string, rawShapeType: parent.type as string }
     }
@@ -337,7 +341,7 @@ function containingFleetPanelsAtPoint(overlay: Editor, clientX: number, clientY:
     if (!(rect.width > 0) || !(rect.height > 0)) continue
     if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) continue
     const shape = overlay.getShape(id as any)
-    if (!shape || !FLEET_SHAPE_TYPES.has(shape.type as string)) continue
+    if (!isMyGestureFleetShape(shape)) continue
     hits.push({ shape: topLevelFleetShape(overlay, shape), area: rect.width * rect.height })
   }
   return hits
@@ -446,7 +450,7 @@ function finishPhoneLaneGesture(main: Editor, state: Extract<GestureState, { kin
 // the document's on-SCREEN center-x (page coords don't line up — the doc is in
 // the main-camera frame, the panels in the overlay's override-camera frame).
 function clusterOf(overlay: Editor, seedIds: Set<string>, viewportId?: string): TLShape[] {
-  const fleet = overlay.getCurrentPageShapes().filter(s => FLEET_SHAPE_TYPES.has(s.type as string))
+  const fleet = overlay.getCurrentPageShapes().filter(isMyGestureFleetShape)
   if (fleet.length === 0) return []
   // Document's screen center-x, read from the doc page's actual rendered DOM rect
   // on the main canvas — the SAME getBoundingClientRect frame as the panels below
@@ -816,8 +820,8 @@ export function useFleetGestures(opts: {
       const main = getMainEditor(mainEditor)
       const shape = opts?.id
         ? overlay.getShape(opts.id as any)
-        : overlay.getCurrentPageShapes().find(s => FLEET_SHAPE_TYPES.has(s.type as string))
-      if (!shape || !FLEET_SHAPE_TYPES.has(shape.type as string)) {
+        : overlay.getCurrentPageShapes().find(isMyGestureFleetShape)
+      if (!isMyGestureFleetShape(shape)) {
         log.warn(LOG_NS, 'debug simulate shape move abort: no fleet shape', { requestedId: opts?.id ?? null })
         return false
       }
@@ -934,7 +938,7 @@ export function useFleetGestures(opts: {
       const containerRect = getViewportContainer(overlay, viewportId).getBoundingClientRect()
       const camera = getViewportCamera(overlay, viewportId)
       return overlay.getCurrentPageShapes()
-        .filter(s => FLEET_SHAPE_TYPES.has(s.type as string))
+        .filter(isMyGestureFleetShape)
         .map(shape => {
           const dom = Array.from(document.querySelectorAll('.fleet-hud-wrap [data-shape-id]'))
             .find(node => node.getAttribute('data-shape-id') === shape.id)
@@ -1178,7 +1182,7 @@ export function useFleetGestures(opts: {
       if (!editor) return {}
       const out: Record<string, { id: string; type: string; x: number; y: number; w: number | null; h: number | null }> = {}
       for (const shape of editor.getCurrentPageShapes()) {
-        if (!FLEET_SHAPE_TYPES.has(shape.type as string)) continue
+        if (!isMyGestureFleetShape(shape)) continue
         const s = shape as any
         out[shape.id] = {
           id: shape.id,
