@@ -1,0 +1,25 @@
+{
+  "_comment": "\"demon\" -> \"daemon\" is a deliberate personal mapping with a known false-positive risk for the English word \"demon\"; acceptable here because this is Skip's personal normalizer and \"daemon\" is the only attested sense in the Phase 1 dataset.",
+  "rules": [
+    {
+      "surface": "demon",
+      "to": "daemon",
+      "match": "word"
+    },
+    {
+      "surface": "deep gram",
+      "to": "Deepgram",
+      "match": "phrase"
+    },
+    {
+      "surface": "tl draw",
+      "to": "tldraw",
+      "match": "phrase"
+    },
+    {
+      "surface": "web kit",
+      "to": "WebKit",
+      "match": "phrase"
+    }
+  ]
+}
