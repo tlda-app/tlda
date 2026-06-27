@@ -23,6 +23,28 @@
   letter-spacing: 0.06em;
   opacity: 0.5;
 }
+.fleet-inbox-filter-btn {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: none;
+  color: inherit;
+  opacity: 0.38;
+  padding: 0;
+  cursor: pointer;
+  transition: opacity 0.15s, background 0.15s;
+}
+.fleet-inbox-filter-btn:hover,
+.fleet-inbox-filter-btn.active {
+  opacity: 0.75;
+  background: rgba(128, 128, 128, 0.08);
+}
+.fleet-inbox-filter-btn svg {
+  display: block;
+}
 .fleet-inbox-unread-total {
   margin-left: auto;
   font-size: 9px;

@@ -18,6 +18,7 @@ import {
   useEditor,
   useValue,
 } from 'tldraw'
+import type { Editor, TLShapeId } from 'tldraw'
 import { agentDisplayName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
 import { usePillDrag } from './FleetAgentsShape'
 import { ChatComposer } from './ChatComposer'
@@ -29,6 +30,7 @@ import { onReloadSignal } from '../useYjsSync'
 import { invalidationFromRanges } from '../invalidationGraph'
 import type { DirectNode, CascadeNode } from '../invalidationGraph'
 import { CascadeGraph } from './CascadeGraph'
+import { FilterOverlay } from './FleetChatShape'
 import katex from 'katex'
 import { getActiveMacros } from '../katexMacros'
 import MarkdownIt from 'markdown-it'
@@ -46,6 +48,12 @@ import './fleet-inbox.css'
 const DEFAULT_W = 360
 const DEFAULT_H = 560
 const FLEET_API = DATABASE_HTTP
+type FleetFilter = [string, string][][]
+type PhoneChatShape = {
+  id: TLShapeId
+  type: 'fleet-chat'
+  props?: { filter?: FleetFilter }
+}
 
 function copySourceTemplate(text: string): string {
   return `<template class="code-block-copy-source">${esc(text)}</template>`
@@ -236,6 +244,9 @@ export class FleetInboxShapeUtil extends BaseBoxShapeUtil<any> {
 
 function FleetInboxInner({ shape }: { shape: any }) {
   const editor = useEditor()
+  const mainEd = (typeof window !== 'undefined'
+    ? (window as Window & { __tldraw_editor__?: Editor }).__tldraw_editor__
+    : undefined) || editor
   const docCtx = useContext(DocContext)
   const docName = docCtx?.docName || ''
   const { w, h } = shape.props
@@ -294,6 +305,26 @@ function FleetInboxInner({ shape }: { shape: any }) {
 
   // Which thread is open (partnerId), or null = thread list.
   const [openPartner, setOpenPartner] = useState<string | null>(null)
+  const [filterOpen, setFilterOpen] = useState(false)
+  const [filterTargetId, setFilterTargetId] = useState<TLShapeId | null>(null)
+  const [isPhoneSurface, setIsPhoneSurface] = useState(() => {
+    if (typeof window === 'undefined') return false
+    return document.body.classList.contains('phone-mode') || !!window.matchMedia?.('(max-width: 600px)').matches
+  })
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const media = window.matchMedia?.('(max-width: 600px)')
+    const update = () => setIsPhoneSurface(document.body.classList.contains('phone-mode') || !!media?.matches)
+    update()
+    media?.addEventListener?.('change', update)
+    const observer = new MutationObserver(update)
+    observer.observe(document.body, { attributes: true, attributeFilter: ['class'] })
+    return () => {
+      media?.removeEventListener?.('change', update)
+      observer.disconnect()
+    }
+  }, [])
 
   // Sort mode — time (one interleaved stream, newest first) or type (grouped
   // sections). Persisted so it sticks across reloads. Default: time.
@@ -349,6 +380,27 @@ function FleetInboxInner({ shape }: { shape: any }) {
   }, [events, myId, agents, ctx, unreadCounts])
 
   const totalUnread = useMemo(() => threads.reduce((n, t) => n + t.unread, 0), [threads])
+
+  const resolvePhoneChat = useCallback((): PhoneChatShape | null => {
+    const userId = shape.props?.userId
+    const deviceId = shape.props?.deviceId
+    if (!userId || !deviceId) return null
+    const chats = mainEd.getCurrentPageShapes().filter((s: any) =>
+      s.type === 'fleet-chat' &&
+      s.props?.userId === userId &&
+      s.props?.deviceId === deviceId,
+    )
+    return chats.length === 1 ? (chats[0] as unknown as PhoneChatShape) : null
+  }, [mainEd, shape.props?.userId, shape.props?.deviceId])
+
+  const phoneChat = useValue(
+    'phone-inbox-chat-filter-target',
+    (): PhoneChatShape | null => {
+      const target = filterTargetId ? mainEd.getShape(filterTargetId) : resolvePhoneChat()
+      return target?.type === 'fleet-chat' ? (target as unknown as PhoneChatShape) : null
+    },
+    [mainEd, filterTargetId, resolvePhoneChat],
+  )
 
   // Tasks group — a live projection of the understanding-ribbon's stale spans.
   // Reading the ribbon shape inside useValue keeps this reactive: re-approving a
@@ -626,6 +678,17 @@ function FleetInboxInner({ shape }: { shape: any }) {
           >⊞</button>
         </div>
 
+        {filterOpen && phoneChat && (
+          <FilterOverlay
+            filter={phoneChat.props?.filter || []}
+            shapeId={phoneChat.id}
+            editor={mainEd}
+            onClose={() => setFilterOpen(false)}
+            agents={agents}
+            sendTargets={[]}
+          />
+        )}
+
         {/* Header */}
         <div className="fleet-inbox-header" onPointerDown={(e) => stopEventPropagation(e)}>
           {activeThread ? (
@@ -633,7 +696,24 @@ function FleetInboxInner({ shape }: { shape: any }) {
               ← inbox
             </button>
           ) : (
-            <span className="fleet-inbox-title">Inbox</span>
+            <>
+              <span className="fleet-inbox-title">Inbox</span>
+              {isPhoneSurface && (
+                <button
+                  className={`fleet-inbox-filter-btn${filterOpen ? ' active' : ''}`}
+                  onPointerUp={(e) => {
+                    stopEventPropagation(e)
+                    const target = resolvePhoneChat()
+                    if (!target) return
+                    setFilterTargetId(target.id)
+                    setFilterOpen(prev => !prev)
+                  }}
+                  title="Edit chat filter"
+                >
+                  <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M1 2h14M3 7h10M6 12h4"/></svg>
+                </button>
+              )}
+            </>
           )}
           {activeThread ? (
             <span

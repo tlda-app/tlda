@@ -5813,7 +5813,7 @@ function buildFilterPreview(
   return simplifyDnf([...filter, [newTerm]])
 }
 
-function FilterOverlay({
+export function FilterOverlay({
   filter,
   shapeId,
   editor,
