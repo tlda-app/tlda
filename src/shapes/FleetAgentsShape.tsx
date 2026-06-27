@@ -123,21 +123,6 @@ function parseSpawnInput(raw: string, models: string[] = MODEL_FALLBACK): { doc:
   return { doc, name, model, effort }
 }
 
-function normalizeSpawnName(name: string | undefined): string {
-  return (name || '').trim().toLowerCase()
-}
-
-function findSpawnNameCollision(name: string | undefined, agents: any[]): any | null {
-  const normalized = normalizeSpawnName(name)
-  if (!normalized) return null
-  return agents.find((a: any) => !a.dead && normalizeSpawnName(a.friendly_name) === normalized) || null
-}
-
-function spawnCollisionMessage(name: string, agent: any): string {
-  const id = agent?.id ? ` (${agent.id})` : ''
-  return `"${name}" is already used by a live agent${id}. Choose a different name, or respawn the existing agent.`
-}
-
 // Tab-completable model tokens = the live aliases plus the typing-shorthand keys.
 function completableFrom(models: string[]): string[] {
   return [...models, ...Object.keys(MODEL_SHORTHANDS)].filter((v, i, a) => a.indexOf(v) === i)
@@ -682,30 +667,21 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     [spawnDoc, projectList, spawnModels, curatedSpawnModels],
   )
   const parsedSpawn = useMemo(() => parseSpawnInput(spawnDoc, spawnModels), [spawnDoc, spawnModels])
-  const spawnNameCollision = useMemo(
-    () => findSpawnNameCollision(parsedSpawn.name, agents),
-    [parsedSpawn.name, agents],
-  )
   const projectInvalid = useMemo(
     () => projectUnresolvable(spawnDoc, projectList, currentDoc),
     [spawnDoc, projectList, currentDoc],
   )
+  // spawnError holds a real spawn FAILURE (set in submitSpawn's catch), shown
+  // briefly in the tooltip. Name-collision pre-checking is intentionally not
+  // done here — friendly-name uniqueness is a separate concern handled server-side.
   const [spawnError, setSpawnError] = useState('')
-  const spawnCollisionError = spawnNameCollision && parsedSpawn.name
-    ? spawnCollisionMessage(parsedSpawn.name, spawnNameCollision)
-    : ''
   const spawnValidationError = projectInvalid
     ? `No project '${effectiveDoc(spawnDoc, currentDoc)}'`
-    : spawnCollisionError
-  const spawnInvalid = projectInvalid || !!spawnCollisionError || !!spawnError
+    : ''
+  const spawnInvalid = projectInvalid || !!spawnError
   const spawnTooltip = spawnError || spawnValidationError || 'Spawn agent'
   const submitSpawn = useCallback(() => {
     if (!canSubmitSpawn(spawnDoc, projectList, currentDoc)) {
-      spawnInputRef.current?.focus()
-      return
-    }
-    if (spawnCollisionError) {
-      setSpawnError(spawnCollisionError)
       spawnInputRef.current?.focus()
       return
     }
@@ -756,7 +732,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
         }, 3_000)
         optimisticTimeouts.current.set(optimisticId, errTid)
       })
-  }, [spawnDoc, projectList, currentDoc, parsedSpawn, spawnCollisionError])
+  }, [spawnDoc, projectList, currentDoc, parsedSpawn])
   const dropdownOpen = spawnFocused && !dropdownDismissed && segCandidates.length > 0
   const acceptCandidate = useCallback((candidate: string) => {
     setSpawnDoc(applyCandidate(spawnDoc, candidate))
