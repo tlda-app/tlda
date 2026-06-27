@@ -295,6 +295,22 @@ function labelColor(name: string): string {
 
 type SortKey = 'active' | 'name' | 'status'
 
+// --- Optimistic spawn card ---
+// Appears immediately when the user submits a spawn; disappears when the real
+// agent registers (reconciled by name or model+novelty). Transient per-device
+// state — kept in React component state, not shared via Yjs or shape props.
+interface OptimisticAgent {
+  optimisticId: string
+  model: string        // alias as sent to spawn (e.g. 'opus48')
+  doc?: string
+  name?: string        // friendly_name the real agent will register with
+  effort?: string
+  startedAt: number    // Date.now() at submit
+  status: 'spawning' | 'error'
+  errorMessage?: string
+  existingIds: string[] // agent IDs present at spawn time (model-only reconciliation)
+}
+
 function agentCategory(agent: any): 'awake' | 'hibernating' {
   if (agent.status === 'human') return 'awake'
   if (agent.status === 'human-away') return 'hibernating'
@@ -592,6 +608,51 @@ function FleetAgentsInner({ shape }: { shape: any }) {
   const tasks = useFleetTasks(frameId)
   const { startDrag } = usePillDrag()
   const [expandedId, setExpandedId] = useState<string | null>(null)
+
+  // Optimistic spawn cards — transient per-device state, not shared.
+  const [optimisticAgents, setOptimisticAgents] = useState<OptimisticAgent[]>([])
+  // Timeout handles keyed by optimisticId — allows cancellation on reconciliation or error.
+  const optimisticTimeouts = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+  // Stable ref for agents so submitSpawn can read the current list without
+  // taking agents as a dep (it changes frequently and would re-create the callback).
+  const agentsRef = useRef<any[]>(agents)
+  agentsRef.current = agents
+
+  // Reconcile: drop an optimistic card when a matching real agent arrives.
+  // Runs on every agents update; uses functional-update pattern to avoid
+  // needing optimisticAgents in deps (preventing a setState→effect→setState loop).
+  useEffect(() => {
+    setOptimisticAgents(prev => {
+      if (prev.length === 0) return prev
+      let changed = false
+      const remaining = prev.filter(opt => {
+        if (opt.status === 'error') return true // managed by its own removal timeout
+        const existingSet = new Set(opt.existingIds)
+        const matched = agents.some((a: any) => {
+          if (a.dead) return false
+          // Name-based: the real agent registers with the same friendly_name
+          if (opt.name) return a.friendly_name === opt.name
+          // Model-based fallback: a NEW agent (not in existingIds at spawn time)
+          // with a matching model alias. Uses formatModel to normalise
+          // 'claude-opus-4-8' → 'opus48' so the comparison works across formats.
+          return !existingSet.has(a.id) && formatModel(a.metadata?.model) === formatModel(opt.model)
+        })
+        if (matched) {
+          const tid = optimisticTimeouts.current.get(opt.optimisticId)
+          if (tid != null) { clearTimeout(tid); optimisticTimeouts.current.delete(opt.optimisticId) }
+          changed = true
+          return false
+        }
+        return true
+      })
+      return changed ? remaining : prev
+    })
+  }, [agents])
+
+  // Cancel all pending timeouts when this component unmounts.
+  useEffect(() => () => {
+    for (const tid of optimisticTimeouts.current.values()) clearTimeout(tid)
+  }, [])
   const [sortKey, setSortKey] = useState<SortKey>('active')
   const [sortAsc, setSortAsc] = useState(false)
 
@@ -650,11 +711,50 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     }
     const { doc, name, model, effort } = parsedSpawn
     setSpawnError('')
-    spawnAgent(model || DEFAULT_MODEL, doc || currentDoc || undefined, name, effort)
+
+    // Add optimistic card immediately — the real agent will reconcile it away.
+    const optimisticId = `opt-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+    const effectiveModel = model || DEFAULT_MODEL
+    const optimistic: OptimisticAgent = {
+      optimisticId,
+      model: effectiveModel,
+      doc: doc || currentDoc || undefined,
+      name: name || undefined,
+      effort: effort || undefined,
+      startedAt: Date.now(),
+      status: 'spawning',
+      // Snapshot current IDs for model-only reconciliation (a new agent with the
+      // right model will have an ID that wasn't in this set).
+      existingIds: agentsRef.current.map((a: any) => a.id),
+    }
+    setOptimisticAgents(prev => [...prev, optimistic])
+
+    // Safety: drop the card after 30s if reconciliation never happens.
+    const safeTid = setTimeout(() => {
+      setOptimisticAgents(prev => prev.filter(o => o.optimisticId !== optimisticId))
+      optimisticTimeouts.current.delete(optimisticId)
+    }, 30_000)
+    optimisticTimeouts.current.set(optimisticId, safeTid)
+
+    spawnAgent(effectiveModel, doc || currentDoc || undefined, name, effort)
       .catch((e: any) => {
         const message = String(e?.message || e || 'Spawn failed')
         setSpawnError(message)
         spawnInputRef.current?.focus()
+        // Mark the card errored (shows briefly before disappearing).
+        setOptimisticAgents(prev => prev.map(o =>
+          o.optimisticId === optimisticId
+            ? { ...o, status: 'error' as const, errorMessage: message }
+            : o
+        ))
+        // Cancel the 30s safety timeout and replace with a short error-display timeout.
+        const existing = optimisticTimeouts.current.get(optimisticId)
+        if (existing != null) clearTimeout(existing)
+        const errTid = setTimeout(() => {
+          setOptimisticAgents(prev => prev.filter(o => o.optimisticId !== optimisticId))
+          optimisticTimeouts.current.delete(optimisticId)
+        }, 3_000)
+        optimisticTimeouts.current.set(optimisticId, errTid)
       })
   }, [spawnDoc, projectList, currentDoc, parsedSpawn, spawnCollisionError])
   const dropdownOpen = spawnFocused && !dropdownDismissed && segCandidates.length > 0
@@ -824,7 +924,11 @@ function FleetAgentsInner({ shape }: { shape: any }) {
 
         {/* Agent rows — scrollable flat list */}
         <div className="fleet-agents-body">
-          {sortedAgents.length === 0 ? (
+          {/* Optimistic cards appear at top while spawn is in flight */}
+          {optimisticAgents.map((opt) => (
+            <OptimisticAgentRow key={opt.optimisticId} opt={opt} />
+          ))}
+          {sortedAgents.length === 0 && optimisticAgents.length === 0 ? (
             <div className="fleet-agents-empty">No agents</div>
           ) : sortedAgents.map((agent: any) => (
             <AgentRow
@@ -952,6 +1056,40 @@ const FleetAgentsComponent = memo(function FleetAgentsComponent({ shape }: { sha
   }
   return <FleetAgentsInner shape={shape} />
 }, (prev, next) => prev.shape.props === next.shape.props)
+
+// Ghost row shown while a spawn is in flight. Matches AgentRow column layout
+// but is visually dimmed and shows a small spinning indicator instead of a name.
+function OptimisticAgentRow({ opt }: { opt: OptimisticAgent }) {
+  const isError = opt.status === 'error'
+  const nameText = opt.name || '…'
+  const modelStr = formatModel(opt.model)
+  return (
+    <div className={`fleet-agents-row fleet-agents-row--optimistic${isError ? ' fleet-agents-row--spawn-error' : ''}`}>
+      <div
+        className="fleet-agents-row-main"
+        style={{ opacity: 0.45, cursor: 'default' }}
+        onPointerDown={(e) => stopEventPropagation(e)}
+      >
+        <span className="fleet-agents-unread-dot" />
+        {/* placeholder to match kill-btn column width */}
+        <span className="fleet-agents-kill-btn" style={{ visibility: 'hidden' }}>×</span>
+        <span className="fleet-agents-col-name" style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+          {!isError && <span className="fleet-agents-spawn-spinner" aria-hidden="true" />}
+          {isError && <span style={{ color: '#e57373', fontSize: 8 }}>✗</span>}
+          <span style={{ opacity: 0.75 }}>{nameText}</span>
+        </span>
+        <span className="fleet-agents-col-seen">now</span>
+        <span className="fleet-agents-col-ctx" />
+        <span className="fleet-agents-col-task" style={{ opacity: 0.6 }}>
+          {isError
+            ? (opt.errorMessage || 'spawn failed')
+            : `spawning ${modelStr}`}
+        </span>
+        <span className="fleet-agents-col-labels" />
+      </div>
+    </div>
+  )
+}
 
 function AgentRow({
   agent,

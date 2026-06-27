@@ -1837,6 +1837,29 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   opacity: 0.4;
 }
 
+/* --- Optimistic spawn card --- */
+/* Ghost row rendered immediately on spawn submit; fades out when the real
+   agent registers. Visually subtle — matches dimmed-row treatment. */
+.fleet-agents-shape .fleet-agents-row--optimistic .fleet-agents-row-main {
+  cursor: default;
+  pointer-events: none;
+}
+/* Tiny CSS spinner in the name column */
+.fleet-agents-shape .fleet-agents-spawn-spinner {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border: 1px solid rgba(122, 158, 200, 0.35);
+  border-top-color: rgba(122, 158, 200, 0.85);
+  border-radius: 50%;
+  animation: fleet-spawn-spin 0.85s linear infinite;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+@keyframes fleet-spawn-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* --- Spawn input + button --- */
 
 .fleet-agents-shape .fleet-agents-spawn-btns {
