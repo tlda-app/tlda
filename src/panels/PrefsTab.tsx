@@ -4,16 +4,156 @@ import { setBackend as setVoiceBackend } from '../voice.mjs'
 import { NOTE_COLORS } from '../shapes/MathNoteShape'
 import { CurveEditor } from '../components/CurveEditor'
 import { SchemeToggle, ThemeFamilyToggle, VimModeToggle } from './TocTab'
-import { useFleetIdentity } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetIdentity } from '../fleet-data-adapter'
+// @ts-ignore — vanilla JS module
+import { getDeviceId } from '../fleet/fleet-data.mjs'
+import { agentDisplayName } from '../shapes/fleet-utils'
 
-// Identity switcher — touch devices can't edit localStorage, so this is the only
-// way to change who you are on a server that auto-assigned a wrong/cached id
-// (e.g. the no-auth local copy that used to log everyone in as "dev").
-function IdentitySectionBody() {
+type DeviceRecord = { lastSeen: string }
+
+const ALL_SOURCES = ['ref', 'proof', 'errors'] as const
+const SOURCE_LABELS: Record<(typeof ALL_SOURCES)[number], string> = {
+  ref: 'References',
+  proof: 'Proofs',
+  errors: 'Errors',
+}
+
+const COLOR_OPTIONS = Object.keys(NOTE_COLORS)
+
+const FLEET_SHAPE_OPTIONS = [
+  ['fleet-agents', 'Agents'],
+  ['fleet-chat', 'Chat'],
+  ['fleet-search', 'Search'],
+  ['fleet-docview', 'Doc view'],
+  ['fleet-source-editor', 'Source editor'],
+  ['fleet-reaper', 'Reaper'],
+  ['fleet-inbox', 'Inbox'],
+  ['fleet-touch-inbox', 'Touch inbox'],
+  ['fleet-notifications', 'Notifications'],
+] as const
+
+type PrefsSectionId = 'account' | 'appearance' | 'voice' | 'input' | 'bots'
+type VoiceBackendOption = { value: string; label: string; available: boolean }
+type SpeechRecognitionWindow = Window & {
+  SpeechRecognition?: unknown
+  webkitSpeechRecognition?: unknown
+}
+
+function csvToSet(value: string): Set<string> {
+  return new Set(value.split(',').map(s => s.trim()).filter(Boolean))
+}
+
+function setToCsv(value: Set<string>): string {
+  return [...value].join(', ')
+}
+
+function labelsFor(agent: any): string[] {
+  if (Array.isArray(agent?.labels)) return agent.labels
+  if (typeof agent?.labels === 'string') {
+    try {
+      const parsed = JSON.parse(agent.labels)
+      return Array.isArray(parsed) ? parsed : []
+    } catch { return [] }
+  }
+  return []
+}
+
+function isRunningBot(agent: any): boolean {
+  const status = agent?.status
+  return !agent?.dead && labelsFor(agent).includes('bot') && status !== 'dead' && status !== 'hibernating' && status !== 'human-away'
+}
+
+function useVoiceBackends(): VoiceBackendOption[] {
+  const [backends, setBackends] = useState<VoiceBackendOption[]>([
+    { value: '', label: 'Off', available: true },
+  ])
+
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/voice/backends')
+      .then(r => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then(data => {
+        if (cancelled) return
+        let next = (data?.backends || []).filter((b: VoiceBackendOption) => b?.available !== false)
+        const speechWindow = window as SpeechRecognitionWindow
+        const hasBrowserSpeech = !!(speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition)
+        next = next.filter((b: VoiceBackendOption) => b.value !== 'chrome' || hasBrowserSpeech)
+        if (!next.some((b: VoiceBackendOption) => b.value === '')) next.unshift({ value: '', label: 'Off', available: true })
+        setBackends(next)
+      })
+      .catch(() => {
+        if (!cancelled) setBackends([{ value: '', label: 'Off', available: true }])
+      })
+    return () => { cancelled = true }
+  }, [])
+
+  return backends
+}
+
+function useAvailableModels(): string[] {
+  const [models, setModels] = useState<string[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/fleet/models')
+      .then(r => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then(data => {
+        if (cancelled) return
+        const aliases = (data?.models || [])
+          .filter((m: any) => m?.verified !== false)
+          .map((m: any) => m?.alias)
+          .filter(Boolean)
+        setModels(aliases)
+      })
+      .catch(() => {
+        if (!cancelled) setModels([])
+      })
+    return () => { cancelled = true }
+  }, [])
+
+  return models
+}
+
+function formatLastSeen(value?: string): string {
+  if (!value) return 'never'
+  const t = new Date(value).getTime()
+  if (!Number.isFinite(t)) return value
+  const sec = Math.max(0, Math.round((Date.now() - t) / 1000))
+  if (sec < 60) return 'just now'
+  const min = Math.round(sec / 60)
+  if (min < 60) return `${min}m ago`
+  const hr = Math.round(min / 60)
+  if (hr < 48) return `${hr}h ago`
+  return new Date(value).toLocaleDateString()
+}
+
+function PrefSubsection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="prefs-subsection">
+      <div className="prefs-subsection-title">{title}</div>
+      {children}
+    </div>
+  )
+}
+
+function IdentitySectionBody({
+  knownDevices,
+  deviceNames,
+}: {
+  knownDevices: Record<string, DeviceRecord>
+  deviceNames: Record<string, string>
+}) {
   const { name, login, register } = useFleetIdentity()
   const [val, setVal] = useState('')
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const deviceId = getDeviceId()
+
+  useEffect(() => {
+    if (!deviceId) return
+    const current = getPref('known-devices') as Record<string, DeviceRecord>
+    setPref('known-devices', { ...current, [deviceId]: { lastSeen: new Date().toISOString() } })
+  }, [deviceId])
 
   const switchTo = useCallback(async () => {
     const n = val.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
@@ -23,7 +163,6 @@ function IdentitySectionBody() {
       await login(n)
       setVal('')
     } catch (e) {
-      // Not a known human yet → create it, so a first-time name still works.
       try { await register(n); setVal('') }
       catch (e2) { setErr((e2 as Error).message) }
     } finally {
@@ -31,51 +170,61 @@ function IdentitySectionBody() {
     }
   }, [val, login, register])
 
+  const renameDevice = useCallback((id: string, deviceName: string) => {
+    const current = getPref('device-names') as Record<string, string>
+    const next = { ...current }
+    const clean = deviceName.trim()
+    if (clean) next[id] = clean
+    else delete next[id]
+    setPref('device-names', next)
+  }, [])
+
+  const devices = Object.entries(knownDevices)
+    .sort((a, b) => new Date(b[1]?.lastSeen || 0).getTime() - new Date(a[1]?.lastSeen || 0).getTime())
+
   return (
     <>
-      <div style={{ fontSize: 11, marginBottom: 4 }}>
-        You are <strong>{name || '(none)'}</strong>
-      </div>
-      <div className="prefs-num-row">
-        <input
-          className="prefs-num"
-          style={{ width: 120, textAlign: 'left' }}
-          placeholder="switch to…"
-          value={val}
-          onChange={e => setVal(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter') switchTo() }}
-        />
-        <button className="prefs-btn" onClick={switchTo} disabled={busy}>
-          {busy ? '…' : 'Switch'}
-        </button>
-      </div>
-      {err && <div style={{ fontSize: 10, color: '#b91c1c', marginTop: 2 }}>{err}</div>}
+      <PrefSubsection title="User">
+        <div style={{ fontSize: 11, marginBottom: 4 }}>
+          You are <strong>{name || '(none)'}</strong>
+        </div>
+        <div className="prefs-num-row">
+          <input
+            className="prefs-num"
+            style={{ width: 120, textAlign: 'left' }}
+            placeholder="switch to..."
+            value={val}
+            onChange={e => setVal(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') switchTo() }}
+          />
+          <button className="prefs-btn" onClick={switchTo} disabled={busy}>
+            {busy ? '...' : 'Switch'}
+          </button>
+        </div>
+        {err && <div style={{ fontSize: 10, color: '#b91c1c', marginTop: 2 }}>{err}</div>}
+      </PrefSubsection>
+
+      <PrefSubsection title="Devices">
+        {devices.length === 0 && <div style={{ fontSize: 10, color: '#6b7280' }}>No devices seen yet.</div>}
+        {devices.map(([id, rec]) => (
+          <div className="prefs-device-row" key={id}>
+            <div className="prefs-device-meta">
+              <span className="prefs-device-id">{id}{id === deviceId ? ' (this device)' : ''}</span>
+              <span className="prefs-device-seen">{formatLastSeen(rec?.lastSeen)}</span>
+            </div>
+            <input
+              className="prefs-num prefs-device-name"
+              style={{ textAlign: 'left' }}
+              value={deviceNames[id] || ''}
+              placeholder="device name"
+              onChange={e => renameDevice(id, e.target.value)}
+            />
+          </div>
+        ))}
+      </PrefSubsection>
     </>
   )
 }
-
-const ALL_SOURCES = ['ref', 'proof', 'errors'] as const
-
-const COLOR_OPTIONS = Object.keys(NOTE_COLORS)
-
-type PrefsSectionId =
-  | 'identity'
-  | 'theme'
-  | 'readability'
-  | 'layout'
-  | 'folding'
-  | 'sources'
-  | 'provenance'
-  | 'notes'
-  | 'voice-backend'
-  | 'voice-commands'
-  | 'voice-tuning'
-  | 'spawn'
-  | 'highlighter'
-  | 'presentation'
-  | 'editor'
-  | 'curve'
-  | 'bots'
 
 function CollapsiblePrefsSection({
   id,
@@ -123,10 +272,9 @@ function readAll() {
     openSections: getPref('prefs-open-sections') as PrefsSectionId[],
     sources: getPref('docview-sources'),
     voiceColor: getPref('voice-note-color'),
-    mathColor: getPref('math-note-color'),
-    mathOpacity: getPref('math-note-opacity'),
     curve: getPref('response-curve'),
-    spawnMode: getPref('spawn-mode'),
+    knownDevices: getPref('known-devices'),
+    deviceNames: getPref('device-names'),
     voiceBackend: getPref('voice-backend'),
     voiceSubmitWords: getPref('voice-submit-words'),
     voiceSinkShapeTypes: getPref('voice-sink-shape-types'),
@@ -152,11 +300,17 @@ function readAll() {
     provenanceMode: getPref('provenance-display-mode'),
     selfCheckEnabled: getPref('todd-self-check-auto-enabled'),
     selfCheckCountdown: getPref('todd-self-check-countdown-sec'),
+    botSelfCheckEnabled: getPref('bot-self-check-enabled'),
+    botSelfCheckCountdown: getPref('bot-self-check-countdown-sec'),
+    botModel: getPref('bot-model'),
   }
 }
 
 export function PrefsTab() {
   const [prefs, setPrefs] = useState(readAll)
+  const agents = useFleetAgents()
+  const voiceBackends = useVoiceBackends()
+  const availableModels = useAvailableModels()
 
   useEffect(() => subscribePref(() => setPrefs(readAll())), [])
 
@@ -167,16 +321,15 @@ export function PrefsTab() {
     setPref('docview-sources', next)
   }, [prefs.sources])
 
+  const toggleVoiceSink = useCallback((shapeType: string) => {
+    const next = csvToSet(prefs.voiceSinkShapeTypes)
+    if (next.has(shapeType)) next.delete(shapeType)
+    else next.add(shapeType)
+    setPref('voice-sink-shape-types', setToCsv(next))
+  }, [prefs.voiceSinkShapeTypes])
+
   const handleVoiceColor = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
     setPref('voice-note-color', e.target.value)
-  }, [])
-
-  const handleMathColor = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
-    setPref('math-note-color', e.target.value)
-  }, [])
-
-  const handleSpawnMode = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    setPref('spawn-mode', e.target.checked ? 'plan' : '')
   }, [])
 
   const toggleSection = useCallback((id: PrefsSectionId) => {
@@ -187,465 +340,279 @@ export function PrefsTab() {
     setPref('prefs-open-sections', next)
   }, [prefs.openSections])
 
-  const foldSummary = [
-    `Bash ${prefs.foldBash || 'off'}`,
-    `Writes ${prefs.foldWrite || 'off'}`,
-    `MD ${prefs.foldMd || 'off'}`,
-    `Diff ${prefs.foldDiff || 'off'}`,
-  ].join(' / ')
+  const sinkShapes = csvToSet(prefs.voiceSinkShapeTypes)
+  const runningBots = agents.filter(isRunningBot)
+  const selectedVoiceBackend = voiceBackends.some(b => b.value === prefs.voiceBackend) ? prefs.voiceBackend : ''
+
+  const setBotEnabled = useCallback((botId: string, enabled: boolean) => {
+    setPref('bot-self-check-enabled', { ...(getPref('bot-self-check-enabled') as Record<string, boolean>), [botId]: enabled })
+  }, [])
+
+  const setBotCountdown = useCallback((botId: string, seconds: number) => {
+    setPref('bot-self-check-countdown-sec', { ...(getPref('bot-self-check-countdown-sec') as Record<string, number>), [botId]: seconds })
+  }, [])
+
+  const setBotModel = useCallback((botId: string, model: string) => {
+    const current = getPref('bot-model') as Record<string, string>
+    const next = { ...current }
+    if (model) next[botId] = model
+    else delete next[botId]
+    setPref('bot-model', next)
+  }, [])
 
   return (
     <div className="prefs-tab">
       <CollapsiblePrefsSection
-        id="identity"
-        title="Identity"
-        summary="Current user and switcher"
-        open={prefs.openSections.includes('identity')}
+        id="account"
+        title="Account"
+        summary="User and devices"
+        open={prefs.openSections.includes('account')}
         onToggle={toggleSection}
       >
-        <IdentitySectionBody />
+        <IdentitySectionBody knownDevices={prefs.knownDevices} deviceNames={prefs.deviceNames} />
       </CollapsiblePrefsSection>
 
       <CollapsiblePrefsSection
-        id="theme"
-        title="Theme"
-        summary="Scheme and color family"
-        open={prefs.openSections.includes('theme')}
+        id="appearance"
+        title="Appearance"
+        summary={`${prefs.fontSize}px / ${Math.round(prefs.heightFrac * 100)}% layout / ${prefs.provenanceMode}`}
+        open={prefs.openSections.includes('appearance')}
         onToggle={toggleSection}
       >
-        <SchemeToggle />
-        <ThemeFamilyToggle />
-      </CollapsiblePrefsSection>
+        <PrefSubsection title="Theme">
+          <SchemeToggle />
+          <ThemeFamilyToggle />
+        </PrefSubsection>
 
-      <CollapsiblePrefsSection
-        id="readability"
-        title="Fleet readability"
-        summary={`${prefs.fontSize}px / chrome ${Math.round(prefs.chromeOpacity * 100)}% / content ${Math.round(prefs.contentOpacity * 100)}%`}
-        open={prefs.openSections.includes('readability')}
-        onToggle={toggleSection}
-      >
-        <div className="prefs-num-row">
-          <span className="prefs-num-label">Font size</span>
-          <input
-            type="number"
-            min={8}
-            max={24}
-            step={1}
-            value={prefs.fontSize}
-            onChange={e => setPref('fleet-font-size', Number(e.target.value))}
-            className="prefs-num"
-          />
-          <span className="prefs-num-unit">px</span>
-        </div>
-
-        <div className="prefs-num-row">
-          <span className="prefs-num-label">Chrome opacity</span>
-          <input
-            type="number"
-            min={0}
-            max={150}
-            step={5}
-            value={Math.round(prefs.chromeOpacity * 100)}
-            onChange={e => setPref('fleet-chrome-opacity', Number(e.target.value) / 100)}
-            className="prefs-num"
-          />
-          <span className="prefs-num-unit">%</span>
-        </div>
-
-        <div className="prefs-num-row">
-          <span className="prefs-num-label">Content opacity</span>
-          <input
-            type="number"
-            min={0}
-            max={100}
-            step={5}
-            value={Math.round(prefs.contentOpacity * 100)}
-            onChange={e => setPref('fleet-content-opacity', Number(e.target.value) / 100)}
-            className="prefs-num"
-          />
-          <span className="prefs-num-unit">%</span>
-        </div>
-
-        <label className="prefs-check">
-          <input
-            type="checkbox"
-            checked={prefs.ageFade}
-            onChange={e => setPref('fleet-age-fade', e.target.checked)}
-          />
-          <span>Age fade</span>
-        </label>
-      </CollapsiblePrefsSection>
-
-      <CollapsiblePrefsSection
-        id="layout"
-        title="Default layout size"
-        summary={`${Math.round(prefs.heightFrac * 100)}% high / rail ${prefs.railWidth}px / chat ${prefs.chatWidth}px`}
-        open={prefs.openSections.includes('layout')}
-        onToggle={toggleSection}
-      >
-        <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 4 }}>
-          Applied when you pick a layout preset. Re-pick a layout to apply changes.
-        </div>
-        <div className="prefs-num-row">
-          <span className="prefs-num-label">Height</span>
-          <input
-            type="number"
-            min={10}
-            max={100}
-            step={5}
-            value={Math.round(prefs.heightFrac * 100)}
-            onChange={e => setPref('layout-height-frac', Number(e.target.value) / 100)}
-            className="prefs-num"
-          />
-          <span className="prefs-num-unit">% of view</span>
-        </div>
-        <div className="prefs-num-row">
-          <span className="prefs-num-label">Rail width</span>
-          <input
-            type="number"
-            min={200}
-            max={800}
-            step={5}
-            value={prefs.railWidth}
-            onChange={e => setPref('layout-rail-width', Number(e.target.value))}
-            className="prefs-num"
-          />
-          <span className="prefs-num-unit">px</span>
-        </div>
-        <div className="prefs-num-row">
-          <span className="prefs-num-label">Chat width</span>
-          <input
-            type="number"
-            min={200}
-            max={1000}
-            step={5}
-            value={prefs.chatWidth}
-            onChange={e => setPref('layout-chat-width', Number(e.target.value))}
-            className="prefs-num"
-          />
-          <span className="prefs-num-unit">px</span>
-        </div>
-        <div className="prefs-num-row">
-          <span className="prefs-num-label">Margin gap</span>
-          <input
-            type="number"
-            min={0}
-            max={300}
-            step={5}
-            value={prefs.marginGap}
-            onChange={e => setPref('layout-margin-gap', Number(e.target.value))}
-            className="prefs-num"
-          />
-          <span className="prefs-num-unit">px</span>
-        </div>
-      </CollapsiblePrefsSection>
-
-      <CollapsiblePrefsSection
-        id="folding"
-        title="Fold tool output"
-        summary={foldSummary}
-        open={prefs.openSections.includes('folding')}
-        onToggle={toggleSection}
-      >
-        <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 4 }}>
-          Collapse long tool/monitoring output past N lines (0 = never fold). Messages and images are never folded.
-        </div>
-        {([
-          ['Bash', 'fold-bash-lines', prefs.foldBash],
-          ['File writes', 'fold-write-lines', prefs.foldWrite],
-          ['Markdown writes', 'fold-md-lines', prefs.foldMd],
-          ['Edit diffs', 'fold-diff-lines', prefs.foldDiff],
-        ] as const).map(([label, key, val]) => (
-          <div className="prefs-num-row" key={key}>
-            <span className="prefs-num-label">{label}</span>
-            <input
-              type="number"
-              min={0}
-              step={1}
-              value={val}
-              onChange={e => setPref(key, Number(e.target.value))}
-              className="prefs-num"
-            />
-            <span className="prefs-num-unit">{val === 0 ? 'off' : 'lines'}</span>
+        <PrefSubsection title="Readability">
+          <div className="prefs-num-row">
+            <span className="prefs-num-label">Font size</span>
+            <input type="number" min={8} max={24} step={1} value={prefs.fontSize} onChange={e => setPref('fleet-font-size', Number(e.target.value))} className="prefs-num" />
+            <span className="prefs-num-unit">px</span>
           </div>
-        ))}
-      </CollapsiblePrefsSection>
+          <div className="prefs-num-row">
+            <span className="prefs-num-label">Chrome opacity</span>
+            <input type="number" min={0} max={150} step={5} value={Math.round(prefs.chromeOpacity * 100)} onChange={e => setPref('fleet-chrome-opacity', Number(e.target.value) / 100)} className="prefs-num" />
+            <span className="prefs-num-unit">%</span>
+          </div>
+          <div className="prefs-num-row">
+            <span className="prefs-num-label">Content opacity</span>
+            <input type="number" min={0} max={100} step={5} value={Math.round(prefs.contentOpacity * 100)} onChange={e => setPref('fleet-content-opacity', Number(e.target.value) / 100)} className="prefs-num" />
+            <span className="prefs-num-unit">%</span>
+          </div>
+          <label className="prefs-check">
+            <input type="checkbox" checked={prefs.ageFade} onChange={e => setPref('fleet-age-fade', e.target.checked)} />
+            <span>Age fade</span>
+          </label>
+        </PrefSubsection>
 
-      <CollapsiblePrefsSection
-        id="sources"
-        title="Doc viewer sources"
-        summary={prefs.sources.length ? prefs.sources.join(', ') : 'none'}
-        open={prefs.openSections.includes('sources')}
-        onToggle={toggleSection}
-      >
-        <div className="prefs-source-checks">
-          {ALL_SOURCES.map(src => (
-            <label key={src} className="prefs-check">
-              <input
-                type="checkbox"
-                checked={prefs.sources.includes(src)}
-                onChange={() => toggleSource(src)}
-              />
-              <span>{src}</span>
-            </label>
+        <PrefSubsection title="Default layout size">
+          <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 4 }}>
+            Applied when you pick a layout preset. Re-pick a layout to apply changes.
+          </div>
+          <div className="prefs-num-row">
+            <span className="prefs-num-label">Height</span>
+            <input type="number" min={10} max={100} step={5} value={Math.round(prefs.heightFrac * 100)} onChange={e => setPref('layout-height-frac', Number(e.target.value) / 100)} className="prefs-num" />
+            <span className="prefs-num-unit">% of view</span>
+          </div>
+          <div className="prefs-num-row">
+            <span className="prefs-num-label">Rail width</span>
+            <input type="number" min={200} max={800} step={5} value={prefs.railWidth} onChange={e => setPref('layout-rail-width', Number(e.target.value))} className="prefs-num" />
+            <span className="prefs-num-unit">px</span>
+          </div>
+          <div className="prefs-num-row">
+            <span className="prefs-num-label">Chat width</span>
+            <input type="number" min={200} max={1000} step={5} value={prefs.chatWidth} onChange={e => setPref('layout-chat-width', Number(e.target.value))} className="prefs-num" />
+            <span className="prefs-num-unit">px</span>
+          </div>
+          <div className="prefs-num-row">
+            <span className="prefs-num-label">Margin gap</span>
+            <input type="number" min={0} max={300} step={5} value={prefs.marginGap} onChange={e => setPref('layout-margin-gap', Number(e.target.value))} className="prefs-num" />
+            <span className="prefs-num-unit">px</span>
+          </div>
+        </PrefSubsection>
+
+        <PrefSubsection title="Full tool output">
+          <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 4 }}>
+            Collapse long tool output past N lines. Use 0 to show full output.
+          </div>
+          {([
+            ['Bash', 'fold-bash-lines', prefs.foldBash],
+            ['File writes', 'fold-write-lines', prefs.foldWrite],
+            ['Markdown writes', 'fold-md-lines', prefs.foldMd],
+            ['Edit diffs', 'fold-diff-lines', prefs.foldDiff],
+          ] as const).map(([label, key, val]) => (
+            <div className="prefs-num-row" key={key}>
+              <span className="prefs-num-label">{label}</span>
+              <input type="number" min={0} step={1} value={val} onChange={e => setPref(key, Number(e.target.value))} className="prefs-num" />
+              <span className="prefs-num-unit">{val === 0 ? 'full' : 'lines'}</span>
+            </div>
           ))}
-        </div>
-      </CollapsiblePrefsSection>
+        </PrefSubsection>
 
-      <CollapsiblePrefsSection
-        id="provenance"
-        title="Provenance display"
-        summary={prefs.provenanceMode === 'off' ? 'Off' : prefs.provenanceMode}
-        open={prefs.openSections.includes('provenance')}
-        onToggle={toggleSection}
-      >
-        <select
-          className="prefs-select"
-          value={prefs.provenanceMode}
-          onChange={e => setPref('provenance-display-mode', e.target.value)}
-        >
-          <option value="off">Off</option>
-          <option value="hover">Hover tooltip (on the ribbon)</option>
-          <option value="panel">Side panel (provenance + cascade)</option>
-          <option value="inline">Inline pinned card (click a span)</option>
-        </select>
-        <div style={{ fontSize: 10, color: '#6b7280', marginTop: 2 }}>
-          How a vetted span's provenance and its dependency cascade are shown. Switch freely to live in each.
-        </div>
-      </CollapsiblePrefsSection>
-
-      <CollapsiblePrefsSection
-        id="notes"
-        title="Note colors"
-        summary={`Voice ${prefs.voiceColor} / math ${prefs.mathColor} / ${Math.round(prefs.mathOpacity * 100)}%`}
-        open={prefs.openSections.includes('notes')}
-        onToggle={toggleSection}
-      >
-        <div className="prefs-color-row">
-          <span className="prefs-color-label">Voice</span>
-          <select value={prefs.voiceColor} onChange={handleVoiceColor} className="prefs-select">
-            {COLOR_OPTIONS.map(c => (
-              <option key={c} value={c}>{c}</option>
+        <PrefSubsection title="Doc viewer sources">
+          <div className="prefs-source-checks">
+            {ALL_SOURCES.map(src => (
+              <label key={src} className="prefs-check">
+                <input type="checkbox" checked={prefs.sources.includes(src)} onChange={() => toggleSource(src)} />
+                <span>{SOURCE_LABELS[src]}</span>
+              </label>
             ))}
-          </select>
-          <span className="prefs-color-swatch" style={{ background: NOTE_COLORS[prefs.voiceColor] }} />
-        </div>
-        <div className="prefs-color-row">
-          <span className="prefs-color-label">Math</span>
-          <select value={prefs.mathColor} onChange={handleMathColor} className="prefs-select">
-            {COLOR_OPTIONS.map(c => (
-              <option key={c} value={c}>{c}</option>
-            ))}
-          </select>
-          <span className="prefs-color-swatch" style={{ background: NOTE_COLORS[prefs.mathColor] }} />
-        </div>
-        <div className="prefs-num-row">
-          <span className="prefs-num-label">Note opacity</span>
-          <input
-            type="number"
-            min={20}
-            max={100}
-            step={5}
-            value={Math.round(prefs.mathOpacity * 100)}
-            onChange={e => setPref('math-note-opacity', Number(e.target.value) / 100)}
-            className="prefs-num"
-          />
-          <span className="prefs-num-unit">%</span>
-        </div>
-      </CollapsiblePrefsSection>
-
-      <CollapsiblePrefsSection
-        id="voice-backend"
-        title="Voice backend"
-        summary={prefs.voiceBackend || 'Off'}
-        open={prefs.openSections.includes('voice-backend')}
-        onToggle={toggleSection}
-      >
-        <select value={prefs.voiceBackend} onChange={e => { setPref('voice-backend', e.target.value); setVoiceBackend(e.target.value) }} className="prefs-select">
-          <option value="">Off</option>
-          <option value="chrome">Chrome Web Speech</option>
-          <option value="deepgram-sdk">Deepgram SDK</option>
-          <option value="whisper">Whisper</option>
-        </select>
-        <div style={{ fontSize: 10, color: '#6b7280', marginTop: 2 }}>
-          Defaults to Deepgram. No fallback — the chosen backend is the only one that ever runs; Chrome (can beep) is opt-in only.
-        </div>
-      </CollapsiblePrefsSection>
-
-      <CollapsiblePrefsSection
-        id="voice-commands"
-        title="Voice commands"
-        summary={`Submit: ${prefs.voiceSubmitWords || 'off'}`}
-        open={prefs.openSections.includes('voice-commands')}
-        onToggle={toggleSection}
-      >
-        <div className="prefs-num-row">
-          <span className="prefs-color-label">Submit</span>
-          <input
-            className="prefs-num"
-            style={{ width: 170, textAlign: 'left' }}
-            value={prefs.voiceSubmitWords}
-            onChange={e => setPref('voice-submit-words', e.target.value)}
-            placeholder="send, send it"
-          />
-        </div>
-        <div className="prefs-num-row">
-          <span className="prefs-color-label">&lt;nowhere&gt; shapes</span>
-          <input
-            className="prefs-num"
-            style={{ width: 170, textAlign: 'left' }}
-            value={prefs.voiceSinkShapeTypes}
-            onChange={e => setPref('voice-sink-shape-types', e.target.value)}
-            placeholder="fleet-agents"
-          />
-        </div>
-      </CollapsiblePrefsSection>
-
-      <CollapsiblePrefsSection
-        id="voice-tuning"
-        title="Voice tuning"
-        summary={`Idle ${Math.round(prefs.voiceIdleCutoffMs / 1000)}s · pre-roll ${prefs.voicePrerollMs}ms`}
-        open={prefs.openSections.includes('voice-tuning')}
-        onToggle={toggleSection}
-      >
-        <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 4 }}>
-          When to stream to Deepgram and how it hears you. Applies on the next voice session.
-        </div>
-        {([
-          ['Idle cutoff', 'voice-idle-cutoff-ms', prefs.voiceIdleCutoffMs, 'ms'],
-          ['Pre-roll', 'voice-preroll-ms', prefs.voicePrerollMs, 'ms'],
-          ['Resume RMS', 'voice-resume-rms', prefs.voiceResumeRms, ''],
-          ['Endpointing', 'voice-endpointing', prefs.voiceEndpointing, 'ms'],
-          ['Utterance end', 'voice-utterance-end-ms', prefs.voiceUtteranceEndMs, 'ms'],
-        ] as const).map(([label, key, val, unit]) => (
-          <div className="prefs-num-row" key={key}>
-            <span className="prefs-num-label">{label}</span>
-            <input
-              type="number"
-              min={0}
-              step={1}
-              value={val}
-              onChange={e => setPref(key, Number(e.target.value))}
-              className="prefs-num"
-            />
-            <span className="prefs-num-unit">{unit}</span>
           </div>
-        ))}
+        </PrefSubsection>
+
+        <PrefSubsection title="Note color">
+          <div className="prefs-color-row">
+            <span className="prefs-color-label">Voice notes</span>
+            <select value={prefs.voiceColor} onChange={handleVoiceColor} className="prefs-select">
+              {COLOR_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <span className="prefs-color-swatch" style={{ background: NOTE_COLORS[prefs.voiceColor] }} />
+          </div>
+        </PrefSubsection>
+
+        <PrefSubsection title="Ribbon provenance">
+          <select className="prefs-select" value={prefs.provenanceMode} onChange={e => setPref('provenance-display-mode', e.target.value)}>
+            <option value="off">Off</option>
+            <option value="hover">Ribbon hover</option>
+            <option value="panel">Side panel</option>
+            <option value="inline">Inline pinned card</option>
+          </select>
+        </PrefSubsection>
+
+        <PrefSubsection title="Slide advance">
+          <label className="prefs-row">
+            <span>Mode</span>
+            <select
+              value={prefs.slidesNavigationMode}
+              onChange={e => {
+                const mode = e.target.value === 'orthogonal-fragments' ? 'orthogonal-fragments' : 'inline-fragments'
+                setPref('slides-navigation-mode', mode)
+              }}
+              className="prefs-select"
+            >
+              <option value="inline-fragments">Click through fragments</option>
+              <option value="orthogonal-fragments">Slides left/right, fragments vertical</option>
+            </select>
+          </label>
+        </PrefSubsection>
       </CollapsiblePrefsSection>
 
       <CollapsiblePrefsSection
-        id="spawn"
-        title="Spawn"
-        summary={prefs.spawnMode === 'plan' ? 'Plan mode' : 'Default mode'}
-        open={prefs.openSections.includes('spawn')}
+        id="voice"
+        title="Voice"
+        summary={voiceBackends.find(b => b.value === selectedVoiceBackend)?.label || 'Off'}
+        open={prefs.openSections.includes('voice')}
         onToggle={toggleSection}
       >
-        <label className="prefs-check">
-          <input
-            type="checkbox"
-            checked={prefs.spawnMode === 'plan'}
-            onChange={handleSpawnMode}
-          />
-          <span>Spawn in plan mode</span>
-        </label>
+        <PrefSubsection title="Backend">
+          <select value={selectedVoiceBackend} onChange={e => { setPref('voice-backend', e.target.value); setVoiceBackend(e.target.value) }} className="prefs-select">
+            {voiceBackends.map(backend => (
+              <option key={backend.value || 'off'} value={backend.value}>{backend.label}</option>
+            ))}
+          </select>
+        </PrefSubsection>
+
+        <PrefSubsection title="Submit phrases">
+          <div className="prefs-num-row">
+            <span className="prefs-color-label">Submit</span>
+            <input className="prefs-num" style={{ width: 170, textAlign: 'left' }} value={prefs.voiceSubmitWords} onChange={e => setPref('voice-submit-words', e.target.value)} placeholder="send, send it" />
+          </div>
+        </PrefSubsection>
+
+        <PrefSubsection title="Voice ignored in">
+          <div className="prefs-source-checks">
+            {FLEET_SHAPE_OPTIONS.map(([value, label]) => (
+              <label key={value} className="prefs-check">
+                <input type="checkbox" checked={sinkShapes.has(value)} onChange={() => toggleVoiceSink(value)} />
+                <span>{label}</span>
+              </label>
+            ))}
+          </div>
+        </PrefSubsection>
+
+        {selectedVoiceBackend === 'deepgram-sdk' && (
+          <PrefSubsection title="Deepgram tuning">
+            <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 4 }}>
+              Applies on the next voice session.
+            </div>
+            {([
+              ['Idle cutoff', 'voice-idle-cutoff-ms', prefs.voiceIdleCutoffMs, 'ms'],
+              ['Pre-roll', 'voice-preroll-ms', prefs.voicePrerollMs, 'ms'],
+              ['Resume RMS', 'voice-resume-rms', prefs.voiceResumeRms, ''],
+              ['Endpointing', 'voice-endpointing', prefs.voiceEndpointing, 'ms'],
+              ['Utterance end', 'voice-utterance-end-ms', prefs.voiceUtteranceEndMs, 'ms'],
+            ] as const).map(([label, key, val, unit]) => (
+              <div className="prefs-num-row" key={key}>
+                <span className="prefs-num-label">{label}</span>
+                <input type="number" min={0} step={1} value={val} onChange={e => setPref(key, Number(e.target.value))} className="prefs-num" />
+                <span className="prefs-num-unit">{unit}</span>
+              </div>
+            ))}
+          </PrefSubsection>
+        )}
       </CollapsiblePrefsSection>
 
       <CollapsiblePrefsSection
-        id="highlighter"
-        title="Highlighter"
+        id="input"
+        title="Input"
         summary={prefs.hlZone ? 'Edge zone on' : 'Edge zone off'}
-        open={prefs.openSections.includes('highlighter')}
+        open={prefs.openSections.includes('input')}
         onToggle={toggleSection}
       >
-        <label className="prefs-check">
-          <input
-            type="checkbox"
-            checked={prefs.hlZone}
-            onChange={e => setPref('hl-zone-enabled', e.target.checked)}
-          />
-          <span>Edge zone</span>
-        </label>
+        <PrefSubsection title="Highlighter">
+          <label className="prefs-check">
+            <input type="checkbox" checked={prefs.hlZone} onChange={e => setPref('hl-zone-enabled', e.target.checked)} />
+            <span>Edge zone</span>
+          </label>
+        </PrefSubsection>
+
+        <PrefSubsection title="Edge-zone response curve">
+          <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 4 }}>
+            Drag handles to shape scroll/pan velocity near viewport edges.
+          </div>
+          <CurveEditor value={prefs.curve} onChange={h => setPref('response-curve', h)} />
+        </PrefSubsection>
+
+        <PrefSubsection title="Editor input">
+          <VimModeToggle />
+        </PrefSubsection>
       </CollapsiblePrefsSection>
 
       <CollapsiblePrefsSection
         id="bots"
         title="Bots"
-        summary={prefs.selfCheckEnabled ? `Self-check poke ${prefs.selfCheckCountdown}s` : 'Self-check poke off'}
+        summary={runningBots.length ? `${runningBots.length} running` : 'No running bots'}
         open={prefs.openSections.includes('bots')}
         onToggle={toggleSection}
       >
-        <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 4 }}>
-          Optional: when an agent's turn ends and you haven't messaged it, Todd
-          can poke it to self-check ("am I actually done?"). The routine watchdog
-          is still the longer idle-task check.
-        </div>
-        <label className="prefs-check">
-          <input
-            type="checkbox"
-            checked={prefs.selfCheckEnabled}
-            onChange={e => setPref('todd-self-check-auto-enabled', e.target.checked)}
-          />
-          <span>Turn-end self-check poke</span>
-        </label>
-        <div className="prefs-num-row">
-          <span className="prefs-num-label">Countdown</span>
-          <input
-            type="number"
-            min={5}
-            max={300}
-            step={5}
-            value={prefs.selfCheckCountdown}
-            onChange={e => setPref('todd-self-check-countdown-sec', Number(e.target.value))}
-            className="prefs-num"
-          />
-          <span className="prefs-num-unit">sec</span>
-        </div>
-      </CollapsiblePrefsSection>
-
-      <CollapsiblePrefsSection
-        id="presentation"
-        title="Presentation"
-        summary={prefs.slidesNavigationMode === 'orthogonal-fragments' ? 'Slides left/right, fragments vertical' : 'Click through fragments'}
-        open={prefs.openSections.includes('presentation')}
-        onToggle={toggleSection}
-      >
-        <label className="prefs-row">
-          <span>Slide navigation</span>
-          <select
-            value={prefs.slidesNavigationMode}
-            onChange={e => {
-              const mode = e.target.value === 'orthogonal-fragments' ? 'orthogonal-fragments' : 'inline-fragments'
-              setPref('slides-navigation-mode', mode)
-            }}
-            className="prefs-select"
-          >
-            <option value="inline-fragments">Click through fragments</option>
-            <option value="orthogonal-fragments">Slides left/right, fragments vertical</option>
-          </select>
-        </label>
-      </CollapsiblePrefsSection>
-
-      <CollapsiblePrefsSection
-        id="editor"
-        title="Editor"
-        summary="Vim mode"
-        open={prefs.openSections.includes('editor')}
-        onToggle={toggleSection}
-      >
-        <VimModeToggle />
-      </CollapsiblePrefsSection>
-
-      <CollapsiblePrefsSection
-        id="curve"
-        title="Edge-zone response curve"
-        summary="Scroll and pan velocity"
-        open={prefs.openSections.includes('curve')}
-        onToggle={toggleSection}
-      >
-        <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 4 }}>
-          Drag handles to shape scroll/pan velocity near viewport edges
-        </div>
-        <CurveEditor value={prefs.curve} onChange={h => setPref('response-curve', h)} />
+        {runningBots.length === 0 && <div style={{ fontSize: 10, color: '#6b7280' }}>No running bots.</div>}
+        {runningBots.map(bot => {
+          const botId = bot.id as string
+          const enabled = prefs.botSelfCheckEnabled[botId] ?? prefs.selfCheckEnabled
+          const countdown = prefs.botSelfCheckCountdown[botId] ?? prefs.selfCheckCountdown
+          const model = availableModels.includes(prefs.botModel[botId]) ? prefs.botModel[botId] : ''
+          return (
+            <PrefSubsection key={botId} title={agentDisplayName(bot, agents)}>
+              <label className="prefs-check">
+                <input type="checkbox" checked={enabled} onChange={e => setBotEnabled(botId, e.target.checked)} />
+                <span>Turn-end self-check poke</span>
+              </label>
+              <div className="prefs-num-row">
+                <span className="prefs-num-label">Countdown</span>
+                <input type="number" min={5} max={300} step={5} value={countdown} onChange={e => setBotCountdown(botId, Number(e.target.value))} className="prefs-num" />
+                <span className="prefs-num-unit">sec</span>
+              </div>
+              <div className="prefs-num-row">
+                <span className="prefs-num-label">Model</span>
+                <select value={model} onChange={e => setBotModel(botId, e.target.value)} className="prefs-select">
+                  <option value="">Default</option>
+                  {availableModels.map(alias => <option key={alias} value={alias}>{alias}</option>)}
+                </select>
+              </div>
+            </PrefSubsection>
+          )
+        })}
       </CollapsiblePrefsSection>
     </div>
   )

@@ -66,6 +66,8 @@ const DEFAULT_ENABLED = process.env.DISPO_ENABLED !== '0'
 const PREFS_POLL_MS = 20_000
 const PREF_ENABLED_KEY = 'disposition-bot-enabled'
 const PREF_COUNTDOWN_KEY = 'disposition-countdown-sec'
+const PREF_BOT_ENABLED_KEY = 'bot-self-check-enabled'
+const PREF_BOT_COUNTDOWN_KEY = 'bot-self-check-countdown-sec'
 
 // Skip-presence window. He's "present" if he's chatted — UI OR terminal, both
 // arrive as a fleet chat from fleet:skip — within this window. SHORT on purpose
@@ -117,11 +119,12 @@ function logDecision(event, agentId, detail) {
 async function refreshPrefs() {
   const prefs = await getJson(`/api/fleet/prefs?user=${encodeURIComponent(OWNER_ID)}`, null)
   if (!prefs || typeof prefs !== 'object') return
-  if (PREF_ENABLED_KEY in prefs) scheduler.setEnabled(prefs[PREF_ENABLED_KEY] !== false)
-  if (PREF_COUNTDOWN_KEY in prefs) {
-    const sec = Number(prefs[PREF_COUNTDOWN_KEY])
-    if (Number.isFinite(sec) && sec > 0) scheduler.setCountdownMs(sec * 1000)
-  }
+  const perBotEnabled = prefs[PREF_BOT_ENABLED_KEY]?.[AGENT_ID]
+  if (perBotEnabled !== undefined) scheduler.setEnabled(perBotEnabled !== false)
+  else if (PREF_ENABLED_KEY in prefs) scheduler.setEnabled(prefs[PREF_ENABLED_KEY] !== false)
+
+  const sec = Number(prefs[PREF_BOT_COUNTDOWN_KEY]?.[AGENT_ID] ?? prefs[PREF_COUNTDOWN_KEY])
+  if (Number.isFinite(sec) && sec > 0) scheduler.setCountdownMs(sec * 1000)
 }
 
 // Refresh the per-agent cwd cache from the live alive-roster so wiring.cwdOf can

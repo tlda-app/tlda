@@ -417,6 +417,19 @@ html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-stale {
 .prefs-section-body {
   padding: 2px 0 2px 20px;
 }
+.prefs-subsection {
+  margin: 0 0 12px;
+}
+.prefs-subsection:last-child {
+  margin-bottom: 2px;
+}
+.prefs-subsection-title {
+  margin: 0 0 6px;
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 1.2;
+  color: rgba(0, 0, 0, 0.48);
+}
 .prefs-section-label {
   display: block;
   font-weight: 600;
@@ -441,6 +454,33 @@ html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-stale {
   display: flex;
   flex-wrap: wrap;
   gap: 6px 12px;
+}
+.prefs-device-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.prefs-device-meta {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+}
+.prefs-device-id {
+  overflow: hidden;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.prefs-device-seen {
+  font-size: 10px;
+  color: rgba(0, 0, 0, 0.5);
+}
+.prefs-device-name {
+  width: 100%;
 }
 .prefs-check {
   display: flex;
@@ -494,6 +534,12 @@ html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-stale {
 }
 [data-theme="dark"] .prefs-section-summary {
   color: rgba(255, 255, 255, 0.55);
+}
+[data-theme="dark"] .prefs-subsection-title {
+  color: rgba(255, 255, 255, 0.48);
+}
+[data-theme="dark"] .prefs-device-seen {
+  color: rgba(255, 255, 255, 0.5);
 }
 [data-theme="dark"] .prefs-select {
   background: #2a2a2a;

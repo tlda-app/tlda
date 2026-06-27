@@ -1236,6 +1236,7 @@ const _dgCert = path.join(homedir(), '.config/tlda/localhost+2.pem')
 const _dgKey = path.join(homedir(), '.config/tlda/localhost+2-key.pem')
 const _dgWsScheme = existsSync(_dgCert) && existsSync(_dgKey) ? 'wss' : 'ws'
 const DEEPGRAM_SDK_BRIDGE_URL = `${_dgWsScheme}://127.0.0.1:8180`
+const WHISPER_BRIDGE_URL = 'ws://127.0.0.1:8179'
 
 async function isBridgeUp(bridgeUrl) {
   const WS = (await import('ws')).default
@@ -1251,6 +1252,25 @@ async function isBridgeUp(bridgeUrl) {
     } catch { resolve(false) }
   })
 }
+
+function hasDeepgramKey() {
+  if (process.env.DEEPGRAM_API_KEY) return true
+  try { return !!loadConfig()?.deepgramApiKey } catch { return false }
+}
+
+app.get('/api/voice/backends', requireRead, async (req, res) => {
+  try {
+    const backends = [
+      { value: '', label: 'Off', available: true },
+      { value: 'chrome', label: 'Browser', available: true },
+    ]
+    if (hasDeepgramKey()) backends.push({ value: 'deepgram-sdk', label: 'Deepgram', available: true })
+    if (await isBridgeUp(WHISPER_BRIDGE_URL)) backends.push({ value: 'whisper', label: 'Whisper', available: true })
+    res.json({ backends })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
 
 async function spawnVoiceBridge({ bridgeUrl, scriptName, logName, label }) {
   if (await isBridgeUp(bridgeUrl)) return { ok: true, started: false }
