@@ -9,13 +9,14 @@ const FAILURE_FRAME_RE = /\b(?:gone|breaks?|broken|failed|fails?|failing|error|i
 const ACTION_BREAKAGE_RE = new RegExp(`${USER_ACTION_CONSEQUENCE_RE.source}[\\s\\S]{0,100}${FAILURE_FRAME_RE.source}|${FAILURE_FRAME_RE.source}[\\s\\S]{0,100}${USER_ACTION_CONSEQUENCE_RE.source}`, 'i')
 const OWN_SYSTEM_RE = /\b(?:tlda|fleet|fleet daemon|daemon|server|viewer|iPad|your setup|your system|your own system|the app|your (?:annotations|agents|daemon|server|fleet|sessions|setup|notes|docs))\b/i
 const LECTURE_RE = /\b(?:remember,?|just so you understand,?|to explain,?|to explain your own system|fyi,?\s+the way|the way (?:this|tlda|fleet|the app|your setup|your system) works is|what(?:'s| is) happening is|this is how (?:tlda|fleet|the app|your setup|your system) works|remember that (?:tlda|fleet|the app|your setup|your system)|you need to understand)\b/i
-const SELF_VERIFICATION_RE = /\b(?:I\s+(?:verified|tested|checked)\b|verified\s+from\s+the\s+Mini|works?\s+(?:on|from)\s+(?:my\s+)?(?:machine|end|browser|side|setup|Mini)|I\s+verified\s+it\s+works\s+from\s+the\s+Mini)\b/i
-const USER_DEFLECTION_RE = /\b(?:your\s+(?:end|machine|browser|device|side|setup|cache|token|cert(?:ificate)?)|for\s+you|local\s+to\s+you|on\s+your\s+(?:end|machine|browser|device|side|setup)|should\s+be\s+fine\s+(?:for\s+you|on\s+your\s+end)|must\s+be\s+local\s+to\s+you)\b/i
+const SELF_VERIFICATION_RE = /\b(?:I\s+(?:verified|tested|checked)\b|verified\s+from\s+the\s+Mini|works?\s+(?:on|from)\s+(?:my\s+)?(?:machine|end|browser|side|setup|Mini)|green on my end|zero errors here|I\s+verified\s+it\s+works\s+from\s+the\s+Mini)\b/i
+const USER_DEFLECTION_RE = /\b(?:your\s+(?:end|machine|browser|device|side|setup|cache|token|cert(?:ificate)?)|for\s+you|local\s+to\s+you|a you problem|on\s+your\s+(?:end|machine|browser|device|side|setup)|should\s+be\s+fine\s+(?:for\s+you|on\s+your\s+end)|must\s+be\s+local\s+to\s+you|isn'?t reproducible (?:here|on my machine)|is not reproducible (?:here|on my machine)|whatever you'?re seeing isn'?t reproducible here|whatever you are seeing is not reproducible here)\b/i
 const WRONG_SURFACE_RE = new RegExp(`(?:${SELF_VERIFICATION_RE.source}[\\s\\S]{0,120}${USER_DEFLECTION_RE.source}|${USER_DEFLECTION_RE.source}[\\s\\S]{0,120}${SELF_VERIFICATION_RE.source})`, 'i')
 const AGREEMENT_RE = /^(?:yes|right|agreed|exactly|got it|understood|fair)\b/i
 const OWNERSHIP_RE = /\b(?:that's mine|that is mine|my bug|my mistake|I need to fix|I'll fix|I will fix|I'm fixing|I am fixing|I need to test|I should have tested|I didn't test|I did not test)\b/i
 const REPO_EXPLANATION_RE = /\b(?:the repo(?:'s)?|this function|this module|the code path|the implementation|the server route|the handler)\b/i
 const DIAGNOSTIC_QUOTE_RE = /\b(?:log|error|output|trace|stack|console|message)\s+(?:says|shows|contains|included|reported)\b/i
+const QUOTE_INTRODUCER_RE = /\b(?:the\s+(?:error|log|string)\s+(?:says|reads|is)|literally)\b/i
 
 export function isUserBlameCandidate(text = '') {
   const candidateText = lintableText(text)
@@ -48,6 +49,7 @@ export function extractUserBlameFeatures(event = {}) {
   const ownsFix = OWNERSHIP_RE.test(candidateText)
   const explainsRepoCode = REPO_EXPLANATION_RE.test(candidateText)
   const quotesDiagnostic = DIAGNOSTIC_QUOTE_RE.test(text) && quotedOrCodeText(text).some(chunk => /(?:you|your)/i.test(chunk))
+  const quotedMatch = Boolean(matched && (isSpanQuoted(candidateText, matched.index, matched.index + matched.span.length) || hasQuoteIntroducer(candidateText, matched.index)))
 
   return {
     toSkip: Boolean(context.toSkip),
@@ -58,6 +60,7 @@ export function extractUserBlameFeatures(event = {}) {
     ownsFix,
     explainsRepoCode,
     quotesDiagnostic,
+    quotedMatch,
     matchedReasonCode: matched?.reasonCode || null,
     matchedSpan: matched?.span || null,
   }
@@ -68,7 +71,7 @@ export function classifyUserBlame(event = {}) {
 
   if (!features.toSkip) return decision('clean', 'not-skip-recipient', features, 0.96)
 
-  if (features.quotesDiagnostic || features.explainsRepoCode || (features.agreesWithSkip && features.ownsFix)) {
+  if (features.quotedMatch || features.quotesDiagnostic || features.explainsRepoCode || (features.agreesWithSkip && features.ownsFix)) {
     return decision('clean', 'hard-negative-context', features, 0.9)
   }
 
@@ -110,9 +113,26 @@ function quotedOrCodeText(text) {
 function firstMatch(text, entries) {
   for (const [reasonCode, re] of entries) {
     const match = re.exec(text)
-    if (match) return { reasonCode, span: match[0] }
+    if (match) return { reasonCode, span: match[0], index: match.index }
   }
   return null
+}
+
+function isSpanQuoted(text, start, end) {
+  return quoteRanges(text).some(([rangeStart, rangeEnd]) => start >= rangeStart && end <= rangeEnd)
+}
+
+function hasQuoteIntroducer(text, index) {
+  const before = text.slice(Math.max(0, index - 80), index)
+  return QUOTE_INTRODUCER_RE.test(before)
+}
+
+function quoteRanges(text) {
+  const ranges = []
+  for (const re of [/```[\s\S]*?```/g, /`[^`]*`/g, /"[^"]*"/g, /'[^']*'/g]) {
+    for (const match of String(text).matchAll(re)) ranges.push([match.index, match.index + match[0].length])
+  }
+  return ranges
 }
 
 function decision(decision, reasonCode, features, confidence) {

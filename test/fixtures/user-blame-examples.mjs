@@ -136,6 +136,14 @@ export const userBlameExamples = [
     context: { toSkip: true },
   },
   {
+    id: 'green-on-my-end-deflection',
+    label: 'flag',
+    reasonCode: 'wrong-surface-verification',
+    provenance: 'synthetic regression seed from manager round-4 critique: self-verification plus non-reproducible-here deflection',
+    text: 'Green on my end; whatever you are seeing is not reproducible here.',
+    context: { toSkip: true },
+  },
+  {
     id: 'agent-to-agent-out-of-scope',
     label: 'clean',
     reasonCode: 'not-skip-recipient',
@@ -157,6 +165,14 @@ export const userBlameExamples = [
     reasonCode: 'hard-negative-context',
     provenance: 'hard negative required by scratch/user-blame-classifier-handoff.md',
     text: 'The error says "you need to accept the cert prompt"; I am fixing the server trust path instead of treating that as your action item.',
+    context: { toSkip: true },
+  },
+  {
+    id: 'quoted-error-string',
+    label: 'clean',
+    reasonCode: 'hard-negative-context',
+    provenance: 'hard negative from manager round-4 critique: quoted error string must suppress all categories',
+    text: "The error string is literally 'you must accept the cert' — that is the dvisvgm one.",
     context: { toSkip: true },
   },
   {
