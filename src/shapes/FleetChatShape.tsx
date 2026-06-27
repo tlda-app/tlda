@@ -26,7 +26,6 @@ import { renderChatLine, resolveInlineAttachments, esc } from '../fleet/chat-ren
 import { renderActivityGroup, scheduleTimeLabel } from '../fleet/activity-render.mjs'
 // @ts-ignore — vanilla JS module
 import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil } from '../fleet/utils.mjs'
-import { attachHopperDismiss } from '../fleet/hopper-dismiss.mjs'
 // @ts-ignore — vanilla JS module
 import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText, isRecording } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
@@ -1370,23 +1369,6 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
   )
 }
 
-// The suggestion tooltip can't live inside the chip: the fleet-chat shape is
-// dimmed (opacity < 1) and CSS opacity caps every descendant, so a nested tip
-// renders see-through. It also must not be a portal (breaks TLDraw). So the tip
-// is its OWN object, rendered ABOVE the shapes in the HUD layer (see
-// <SuggestionTip/> mounted in FleetHUD) via this tiny shared store. The chip
-// publishes what/where on label-hover; the HUD-level tip renders it crisp.
-type TipOption = { label: string; text: string }
-type TipData = {
-  left: number; bottom: number; agentName: string
-  vars: Record<string, string>
-  options: TipOption[]
-} | null
-let _tipData: TipData = null
-const _tipSubs = new Set<() => void>()
-function setSuggestionTip(d: TipData) { _tipData = d; _tipSubs.forEach(f => f()) }
-const TIP_VARS = ['--surface', '--border', '--shadow-lg', '--text', '--text-bright', '--accent', '--text-dim']
-
 // groupKey: suggestions sharing a `group` tag are one disjunctive group; an
 // untagged suggestion is its own singleton group (keyed by its id).
 function groupKeyOf(s: Suggestion): string { return `${s.messageId || ''}::${s.group || String(s.id)}` }
@@ -1399,36 +1381,6 @@ function groupChips(chips: Suggestion[]): Map<string, Suggestion[]> {
     m.get(k)!.push(c)
   }
   return m
-}
-
-export function SuggestionTip() {
-  const tip = useSyncExternalStore(
-    (cb) => { _tipSubs.add(cb); return () => _tipSubs.delete(cb) },
-    () => _tipData,
-  )
-  // Voice+touch-first dismissal: the group's onMouseLeave (its only hide path)
-  // never fires on touch when you tap empty space or scroll, so the hopper would
-  // stick until you hover another suggestion — which the user often can't do.
-  // While a tip is up, attach the non-hover dismiss triggers (tap-away, scroll,
-  // wheel, Escape). Extracted to a pure, unit-tested helper (hopper-dismiss.mjs).
-  useEffect(() => {
-    if (!tip) return
-    return attachHopperDismiss(() => setSuggestionTip(null))
-  }, [tip])
-  if (!tip) return null
-  return (
-    <span
-      className="suggestion-chip-tip"
-      style={{ position: 'fixed', left: tip.left, bottom: tip.bottom, ...tip.vars } as React.CSSProperties}
-    >
-      {tip.options.map((o, i) => (
-        <span key={i} className="suggestion-tip-trigger">
-          <b>{o.label}</b>{o.text ? <> — {o.text}</> : null}
-        </span>
-      ))}
-      <span className="suggestion-tip-target">→ {tip.agentName} · click an option to pick it</span>
-    </span>
-  )
 }
 
 function SuggestionRow({ chips, ctx }: { chips: Suggestion[], ctx: any }) {
@@ -1445,44 +1397,45 @@ function SuggestionRow({ chips, ctx }: { chips: Suggestion[], ctx: any }) {
 // `|`-separated (each clickable to pick → sends its command + clears the group).
 // One shared hover on the whole group → a single tooltip listing the options.
 function SuggestionGroup({ chips, agentName }: { chips: Suggestion[], agentName: string }) {
-  const ref = useRef<HTMLSpanElement>(null)
   const fromAgent = suggestionOwnerId(chips[0])
   const key = groupKeyOf(chips[0])
-  const showTip = () => {
-    const el = ref.current
-    if (!el) return
-    const r = el.getBoundingClientRect()
-    const cs = getComputedStyle(el)
-    const vars: Record<string, string> = {}
-    for (const v of TIP_VARS) vars[v] = cs.getPropertyValue(v)
-    setSuggestionTip({
-      left: r.left, bottom: window.innerHeight - r.top + 6, agentName, vars,
-      options: chips.map(c => ({ label: c.label, text: c.text || '' })),
-    })
-  }
-  const hideTip = () => setSuggestionTip(null)
+  const details = chips
+    .map(c => c.text ? `${c.label}: ${c.text}` : c.label)
+    .join('\n')
   const pick = (c: Suggestion) => (e: React.SyntheticEvent) => {
     stopEventPropagation(e as any)
     if (c.command) sendMessage(c.targetId || c.from || '', c.command)
-    hideTip()
     clearGroup(fromAgent, key)
   }
   const dismiss = (e: React.SyntheticEvent) => {
     stopEventPropagation(e as any)
-    hideTip()
     clearGroup(fromAgent, key)
+  }
+  const stopNotePointer = (e: React.SyntheticEvent) => {
+    stopEventPropagation(e)
   }
   return (
     <span
       className="suggestion-group"
-      ref={ref}
       onPointerDown={stopEventPropagation}
-      onMouseEnter={showTip}
-      onMouseLeave={hideTip}
     >
       {/* onPointerUp not onClick: these are text <span>s, dead on touch (a tap
           synthesizes no click). pointerup fires for mouse + finger + stylus. */}
       <span className="suggestion-chip-x" title="Dismiss" onPointerUp={dismiss}>✕</span>
+      {details && (
+        <span
+          className="suggestion-note-icon"
+          title={`${details}\n→ ${agentName}`}
+          aria-label={`Suggestion details for ${agentName}`}
+          onPointerUp={stopNotePointer}
+        >
+          <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M4 2.5h6l2 2v9H4z" />
+            <path d="M10 2.5v2h2" />
+            <path d="M6 7h4M6 10h4" />
+          </svg>
+        </span>
+      )}
       {chips.map((c, i) => (
         <span key={c.id}>
           {i > 0 ? <span className="suggestion-group-sep"> | </span> : ' '}
