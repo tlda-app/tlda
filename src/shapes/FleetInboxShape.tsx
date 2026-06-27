@@ -512,50 +512,6 @@ function FleetInboxInner({ shape }: { shape: any }) {
     }))
   }, [editor])
 
-  // Hover a task → preview the span in the annotation viewer (the same hover→
-  // pin→go mechanism chat references use); the viewer handles pin/navigation
-  // itself when clicked. A task click never moves the main doc.
-  const showTaskPreview = useCallback(
-    (t: RibbonTask, el: HTMLElement) => {
-      const me = (typeof window !== 'undefined' && (window as any).__tldraw_editor__) || editor
-      const pages = me.getCurrentPageShapes().filter((s: any) => s.type === 'svg-page')
-      let pb: any = null
-      for (const p of pages) {
-        const b = me.getShapePageBounds(p.id)
-        if (b && t.pageY1 >= b.minY - 4 && t.pageY1 <= b.maxY + 4) { pb = b; break }
-      }
-      if (!pb && pages.length) pb = me.getShapePageBounds(pages[0].id)
-      if (!pb) return
-      const PAD = 40
-      const bounds = { x: pb.x, y: t.pageY1 - PAD, w: pb.w, h: Math.max(t.pageY2 - t.pageY1, 20) + PAD * 2 }
-      const r = el.getBoundingClientRect()
-      window.dispatchEvent(new CustomEvent('annotation-viewer-show', {
-        detail: {
-          bounds, shapeIds: [], label: `lines ${t.lo}–${t.hi}`,
-          chipRect: { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height },
-        },
-      }))
-    },
-    [editor],
-  )
-  const hideTaskPreview = useCallback((e: React.MouseEvent) => {
-    const related = e.relatedTarget as HTMLElement | null
-    if (related?.closest?.('.annotation-viewer')) return
-    window.dispatchEvent(new CustomEvent('annotation-viewer-hide'))
-  }, [])
-
-  // Hover a directly-stale node → preview the stale span over its statement (the
-  // same hover→pin→go path the line-range tasks use). Cascade nodes have no span
-  // of their own, so they don't preview here — navigating the cascade is the
-  // graph render's job.
-  const showNodePreview = useCallback(
-    (task: NodeTask, el: HTMLElement) => {
-      const span = task.spans?.[0]
-      if (span) showTaskPreview(span, el)
-    },
-    [showTaskPreview],
-  )
-
   // Notes group — a live projection of the doc's open (unaddressed) annotations.
   // Same pattern as the ribbon tasks: read math-note shapes from the MAIN editor
   // (fleet panels render in a separate HUD editor), keep it inside useValue so it
@@ -583,27 +539,6 @@ function FleetInboxInner({ shape }: { shape: any }) {
         // Stable order: topmost note first.
         .sort((a: any, b: any) => a._y - b._y)
         .map(({ _y, ...n }: any) => n as DocNote)
-    },
-    [editor],
-  )
-
-  // Hover a note → preview it in the annotation viewer (same hover→pin→go path as
-  // the tasks and as chat references). The viewer targets the note shape itself,
-  // so it frames the note in place; a note click never moves the main doc.
-  const showNotePreview = useCallback(
-    (n: DocNote, el: HTMLElement) => {
-      const me = (typeof window !== 'undefined' && (window as any).__tldraw_editor__) || editor
-      const b = me.getShapePageBounds(n.id)
-      if (!b) return
-      const PAD = 40
-      const bounds = { x: b.x - PAD, y: b.y - PAD, w: b.w + PAD * 2, h: b.h + PAD * 2 }
-      const r = el.getBoundingClientRect()
-      window.dispatchEvent(new CustomEvent('annotation-viewer-show', {
-        detail: {
-          bounds, shapeIds: [n.id], label: n.line != null ? `note · line ${n.line}` : 'note',
-          chipRect: { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height },
-        },
-      }))
     },
     [editor],
   )
@@ -762,11 +697,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
             cascadeNodes={proofTasks.cascade}
             spanTasks={proofTasks.spanTasks}
             notes={docNotes}
-            onTaskHover={showTaskPreview}
-            onNodeHover={showNodePreview}
             onApprove={approveNode}
-            onNoteHover={showNotePreview}
-            onItemLeave={hideTaskPreview}
             onOpen={openThread}
             onStartDrag={startDrag}
           />
@@ -809,9 +740,9 @@ type StartDrag = (e: React.PointerEvent, pillType: 'agent' | 'label', value: str
 // --- Row components — one per kind, shared by both the grouped and the
 // interleaved renderers so the two views can't visually drift. ---
 
-function TaskRow({ t, onHover, onLeave }: { t: RibbonTask; onHover: (t: RibbonTask, el: HTMLElement) => void; onLeave: (e: React.MouseEvent) => void }) {
+function TaskRow({ t }: { t: RibbonTask }) {
   return (
-    <div className="fleet-inbox-task" onMouseEnter={(e) => onHover(t, e.currentTarget)} onMouseLeave={onLeave}>
+    <div className="fleet-inbox-task">
       <div className="fleet-inbox-task-row">
         <span className="fleet-inbox-task-icon">⟳</span>
         <span className="fleet-inbox-task-text">Re-vet lines {t.lo}–{t.hi}</span>
@@ -824,11 +755,9 @@ function TaskRow({ t, onHover, onLeave }: { t: RibbonTask; onHover: (t: RibbonTa
 // A proof-graph revalidation task. Direct = its own statement changed (offers an
 // approve action that re-vets it and clears its cascade); cascade = it depends on
 // a changed node (shows the `via` link, resolves when the upstream is approved).
-function NodeRow({ task, onApprove, onHover, onLeave }: {
+function NodeRow({ task, onApprove }: {
   task: NodeTask
   onApprove: (t: NodeTask) => void
-  onHover: (t: NodeTask, el: HTMLElement) => void
-  onLeave: (e: React.MouseEvent) => void
 }) {
   if (task.stale === 'cascade') {
     return (
@@ -842,11 +771,7 @@ function NodeRow({ task, onApprove, onHover, onLeave }: {
     )
   }
   return (
-    <div
-      className="fleet-inbox-node fleet-inbox-node-direct"
-      onMouseEnter={(e) => onHover(task, e.currentTarget)}
-      onMouseLeave={onLeave}
-    >
+    <div className="fleet-inbox-node fleet-inbox-node-direct">
       <div className="fleet-inbox-node-row">
         <span className="fleet-inbox-node-icon">⟳</span>
         <span className="fleet-inbox-node-title">{task.title}</span>
@@ -861,9 +786,9 @@ function NodeRow({ task, onApprove, onHover, onLeave }: {
   )
 }
 
-function NoteRow({ n, onHover, onLeave }: { n: DocNote; onHover: (n: DocNote, el: HTMLElement) => void; onLeave: (e: React.MouseEvent) => void }) {
+function NoteRow({ n }: { n: DocNote }) {
   return (
-    <div className="fleet-inbox-note" onMouseEnter={(e) => onHover(n, e.currentTarget)} onMouseLeave={onLeave}>
+    <div className="fleet-inbox-note">
       <div className="fleet-inbox-note-row">
         <span className="fleet-inbox-note-dot" style={n.color ? { color: n.color } : undefined}>●</span>
         <span className="fleet-inbox-note-text">{n.preview || '(empty note)'}</span>
@@ -901,26 +826,22 @@ interface InboxListProps {
   cascadeNodes: NodeTask[]
   spanTasks: RibbonTask[]
   notes: DocNote[]
-  onTaskHover: (t: RibbonTask, el: HTMLElement) => void
-  onNodeHover: (t: NodeTask, el: HTMLElement) => void
   onApprove: (t: NodeTask) => void
-  onNoteHover: (n: DocNote, el: HTMLElement) => void
-  onItemLeave: (e: React.MouseEvent) => void
   onOpen: (t: Thread) => void
   onStartDrag: StartDrag
 }
 
 function InboxList(props: InboxListProps) {
-  const { sortMode, timeItems, threads, directNodes, cascadeNodes, spanTasks, notes, onTaskHover, onNodeHover, onApprove, onNoteHover, onItemLeave, onOpen, onStartDrag } = props
+  const { sortMode, timeItems, threads, directNodes, cascadeNodes, spanTasks, notes, onApprove, onOpen, onStartDrag } = props
   const listRef = useRef<HTMLDivElement>(null)
   useWheelScroll(listRef)
 
   const empty = threads.length === 0 && directNodes.length === 0 && cascadeNodes.length === 0 && spanTasks.length === 0 && notes.length === 0
 
   const renderItem = (it: InboxItem) => {
-    if (it.kind === 'task') return <TaskRow key={it.key} t={it.task} onHover={onTaskHover} onLeave={onItemLeave} />
-    if (it.kind === 'node') return <NodeRow key={it.key} task={it.node} onApprove={onApprove} onHover={onNodeHover} onLeave={onItemLeave} />
-    if (it.kind === 'note') return <NoteRow key={it.key} n={it.note} onHover={onNoteHover} onLeave={onItemLeave} />
+    if (it.kind === 'task') return <TaskRow key={it.key} t={it.task} />
+    if (it.kind === 'node') return <NodeRow key={it.key} task={it.node} onApprove={onApprove} />
+    if (it.kind === 'note') return <NoteRow key={it.key} n={it.note} />
     return <MessageRow key={it.key} t={it.thread} onOpen={onOpen} onStartDrag={onStartDrag} />
   }
 
@@ -948,20 +869,20 @@ function InboxList(props: InboxListProps) {
           {(directNodes.length > 0 || spanTasks.length > 0) && (
             <div className="fleet-inbox-tasks">
               <div className="fleet-inbox-group-label">Tasks</div>
-              {directNodes.map((t) => <NodeRow key={t.id} task={t} onApprove={onApprove} onHover={onNodeHover} onLeave={onItemLeave} />)}
-              {spanTasks.map((t) => <TaskRow key={t.id} t={t} onHover={onTaskHover} onLeave={onItemLeave} />)}
+              {directNodes.map((t) => <NodeRow key={t.id} task={t} onApprove={onApprove} />)}
+              {spanTasks.map((t) => <TaskRow key={t.id} t={t} />)}
             </div>
           )}
           {cascadeNodes.length > 0 && (
             <div className="fleet-inbox-cascade">
               <div className="fleet-inbox-group-label">Cascade</div>
-              {cascadeNodes.map((t) => <NodeRow key={t.id} task={t} onApprove={onApprove} onHover={onNodeHover} onLeave={onItemLeave} />)}
+              {cascadeNodes.map((t) => <NodeRow key={t.id} task={t} onApprove={onApprove} />)}
             </div>
           )}
           {notes.length > 0 && (
             <div className="fleet-inbox-notes">
               <div className="fleet-inbox-group-label">Notes</div>
-              {notes.map((n) => <NoteRow key={n.id} n={n} onHover={onNoteHover} onLeave={onItemLeave} />)}
+              {notes.map((n) => <NoteRow key={n.id} n={n} />)}
             </div>
           )}
           {threads.length > 0 && (
