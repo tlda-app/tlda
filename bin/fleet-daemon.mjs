@@ -66,6 +66,7 @@ import {
   loadConfig as _loadSharedConfig, saveConfig as _saveSharedConfig,
   getServerUrl, getFleetServerUrl, getRwToken, DEFAULT_PORT, hasTls,
   CONFIG_DIR as _SHARED_CONFIG_DIR, getManagedBots,
+  getActiveConfigName, assertServerCoherence,
 } from '../shared/config.mjs'
 const execFileP = promisify(execFile)
 
@@ -203,6 +204,24 @@ const SERVER = process.env.TLDA_SERVER
   : (_usingCustomConfigDir
       ? (config.fleetServer || config.server || `${hasTls ? 'https' : 'http'}://localhost:${DEFAULT_PORT}`)
       : getFleetServerUrl(config))
+
+// True only when SERVER was derived from the named config (the normal path) —
+// not pinned via TLDA_SERVER or a custom config dir. Only then can a later edit
+// to config.json's defaultConfig drift us off the origin we're connected to, so
+// only then does the runtime drift watcher (watchConfigDrift) arm.
+const _serverFromConfig = !process.env.TLDA_SERVER && !_usingCustomConfigDir
+
+// The active config NAME (TLDA_CONFIG → defaultConfig). This — not a URL — is the
+// single selector we propagate to spawned agents so their MCP resolves the SAME
+// complete config (database + store) the daemon did. A stray defaultConfig can't
+// then misroute a spawn, because the spawn carries the real active name.
+// Safe to resolve unconditionally in this branch: SERVER already ran resolveConfig
+// via getFleetServerUrl(config) above, so a broken config would have thrown there.
+const ACTIVE_CONFIG = _serverFromConfig ? getActiveConfigName(config) : null
+
+// Fail loud if a hand-pinned TLDA_SERVER disagrees with the active config — the
+// 6/27 divergence, refused at the door rather than served silently. Bubbles.
+assertServerCoherence(config)
 const TOKEN = _usingCustomConfigDir
   ? (process.env.TLDA_TOKEN || config.tokenRw || config.token || null)
   : getRwToken(config)
@@ -2495,7 +2514,20 @@ async function rpcSpawn({
   try {
     const { stdout, stderr } = await execFileP(spawnScript, spawnArgs, {
       timeout: SPAWN_LAUNCH_TIMEOUT_MS,
-      env: { ...process.env, PATH: process.env.PATH, TMUX: '', TLDA_MACHINE_ID: MACHINE_ID },
+      // Pin fleet-spawn.py (and the agent's MCP) to the SAME config the daemon
+      // resolved. The selector is the config NAME, not a URL: the agent's MCP
+      // resolves the fleet via TLDA_CONFIG/defaultConfig and ignores TLDA_SERVER,
+      // so a URL passthrough never reached it — a stray defaultConfig (e.g. a wmtip
+      // leftover from WM testing) routed spawned agents to the Mini while the daemon
+      // talked to Fly, landing them on a roster the user isn't on. Handing the active
+      // NAME through makes the agent resolve the exact same complete config (database
+      // + store), regardless of what defaultConfig says. ACTIVE_CONFIG is null only
+      // when the daemon itself was URL-pinned (TLDA_SERVER) or custom-dir'd; then we
+      // pass nothing and fleet-spawn falls back to its own resolution.
+      env: {
+        ...process.env, PATH: process.env.PATH, TMUX: '', TLDA_MACHINE_ID: MACHINE_ID,
+        ...(ACTIVE_CONFIG ? { TLDA_CONFIG: ACTIVE_CONFIG } : {}),
+      },
     })
     log.info(`fleet-spawn finished: ${agentName}: ${stdout.trim()}`)
     const launched = parseSpawnLaunch(stdout, agentName)
@@ -3855,3 +3887,51 @@ createManagedBotSupervisor({
 }).start()
 startReapers()
 connect()
+watchConfigDrift()
+
+// ---------- config drift guard ----------
+// SERVER is frozen at startup. If config.json is later edited so the active
+// config resolves to a DIFFERENT fleet origin than the one this daemon is
+// connected to, every fresh CLI/MCP/spawn resolves the NEW origin while this
+// running daemon keeps serving the OLD one — exactly the 6/27 split, just
+// arriving over the daemon's lifetime instead of at boot. Don't serve a stale
+// roster silently: shout (daemon-warning) and exit non-zero. launchd's KeepAlive
+// relaunches us, re-reading config fresh, so we come back on the corrected
+// target. (Only armed when SERVER came from the named config — a URL-pinned or
+// custom-dir daemon has no config to drift against.)
+function watchConfigDrift() {
+  if (!_serverFromConfig) return
+  const f = path.join(CONFIG_DIR, 'config.json')
+  if (!fs.existsSync(f)) return
+  const norm = (u) => String(u).replace(/\/+$/, '')
+  let fired = false
+  const onChange = () => {
+    if (fired) return
+    let fresh
+    try {
+      fresh = getFleetServerUrl(loadConfig())
+    } catch (e) {
+      // A config that no longer resolves is itself a loud failure — surface it
+      // and exit so launchd reloads once it's fixed. Not a silent swallow: we
+      // re-raise as an exit after announcing.
+      fired = true
+      const msg = `config.json no longer resolves (${e.message}) — daemon exiting for launchd relaunch`
+      log.error(msg)
+      sendMsg({ type: 'daemon-warning', message: msg })
+      setTimeout(() => process.exit(1), 250)
+      return
+    }
+    if (norm(fresh) !== norm(SERVER)) {
+      fired = true
+      const msg = `config drift: config.json now targets ${fresh} but this daemon is connected to ${SERVER}. ` +
+        `Exiting so launchd relaunches on the corrected target.`
+      log.error(msg)
+      sendMsg({ type: 'daemon-warning', message: msg })
+      setTimeout(() => process.exit(1), 250)
+    }
+  }
+  fs.watchFile(f, { interval: 1500 }, (curr, prev) => {
+    if (curr.mtimeMs !== prev.mtimeMs) onChange()
+  })
+  log.info(`config drift watcher armed on ${f} (connected to ${SERVER})`)
+}
