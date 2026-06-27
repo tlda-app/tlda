@@ -18,27 +18,9 @@ body.phone-mode .fleet-icon-pill-container {
   right: max(4px, env(safe-area-inset-right));
 }
 
-body.corner-rail-mode .fleet-icon-pill-container {
-  bottom: calc(16px + (var(--corner-control-size, 36px) + var(--corner-control-gap, 6px)) * 2);
-}
-
-body.phone-mode.corner-rail-mode .fleet-icon-pill-container {
-  bottom: calc(24px + env(safe-area-inset-bottom) + (var(--corner-control-size, 58.6667px) + var(--corner-control-gap, 8px)) * 2);
-}
-
 body.phone-mode .fleet-icon-pill-badge {
   min-width: 44px;
   min-height: 44px;
-}
-
-body.corner-rail-mode .fleet-icon-pill-badge {
-  min-width: var(--corner-control-size, 36px);
-  min-height: var(--corner-control-size, 36px);
-}
-
-body.corner-rail-mode .fleet-icon-pill-badge svg {
-  width: var(--corner-icon-size, 26.6667px);
-  height: var(--corner-icon-size, 26.6667px);
 }
 
 /* Tablet (coarse pointer, too wide for phone-mode) gets the same safe-area
@@ -47,9 +29,6 @@ body.corner-rail-mode .fleet-icon-pill-badge svg {
   .fleet-icon-pill-container {
     bottom: calc(115px + env(safe-area-inset-bottom));
     right: max(4px, env(safe-area-inset-right));
-  }
-  body.corner-rail-mode .fleet-icon-pill-container {
-    bottom: calc(16px + env(safe-area-inset-bottom) + (var(--corner-control-size, 36px) + var(--corner-control-gap, 6px)) * 2);
   }
 }
 
@@ -70,8 +49,6 @@ body.corner-rail-mode .fleet-icon-pill-badge svg {
   min-height: 27px;
   pointer-events: all;
   touch-action: none;
-  -webkit-user-select: none;
-  -webkit-touch-callout: none;
 }
 
 .fleet-icon-pill-container:hover .fleet-icon-pill-badge {
@@ -123,8 +100,6 @@ body.phone-mode .fleet-icon-pill-fan-item {
   transition: opacity 0.2s;
   cursor: pointer;
   touch-action: none;
-  -webkit-user-select: none;
-  -webkit-touch-callout: none;
 }
 
 .fleet-icon-pill-fan-item.hovered {

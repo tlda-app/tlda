@@ -59,12 +59,6 @@ export const CORNER_CONTROL_SELECTORS = [
   '.fleet-icon-pill-container',
   '.fleet-icon-pill-badge',
   '.phone-toc-btn',
-  // Corner-rail rebuild (disabled by default; on when body.corner-rail-mode):
-  // the highlighter etc. render as CornerRailSlider. `.corner-rail-slider-range`
-  // is the always-present <input>; `.corner-rail-slider` is the drag-popup
-  // container (its `.corner-rail-slider-slot` children match via closest()).
-  '.corner-rail-slider-range',
-  '.corner-rail-slider',
 ] as const
 
 const CORNER_CONTROL_SELECTOR = CORNER_CONTROL_SELECTORS.join(',')

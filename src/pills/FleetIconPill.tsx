@@ -13,16 +13,13 @@
  * Inline SVG (fill="currentColor") so color-based opacity applies to icon + count together,
  * matching the single-color approach of .build-warning-badge.
  */
-import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react'
+import React, { useState, useCallback, useEffect, useRef } from 'react'
 import { stopEventPropagation, useUniqueSafeId } from 'tldraw'
 import type { Editor } from 'tldraw'
 import { useFleetAgents, useFleetIdentity } from '../fleet-data-adapter'
 import { countAwakeFleetAgents } from '../fleet/agent-counts'
 import { createFleetLayoutDetailed, type FleetLayoutCreateResult } from '../shapes/fleet-utils'
-import { CornerRailSlider } from '../CornerRailSlider'
 import { log } from '../logger'
-// @ts-ignore — vanilla JS module
-import { whenDeviceReady } from '../fleet/fleet-data.mjs'
 import './FleetIconPill.css'
 
 // Basestar hull paths (drawn in a flipped coord system: translate(0,960) scale(1,-1)).
@@ -37,7 +34,6 @@ const BASESTAR_PATHS = (
 )
 
 const DRAG_THRESHOLD = 6   // px before drag activates
-const RESET_LONG_PRESS_MS = 600
 const ITEM_W = 44          // px width of each preset tile
 const ITEM_H = 44          // px height
 const ITEM_GAP = 4         // px between tiles
@@ -47,7 +43,7 @@ const ITEM_GAP = 4         // px between tiles
 // retired for the normal-inbox evolution. The shape code/schema stay for the
 // inbox-evolve dead-code cut; this just makes the broken layout unreachable.
 type LayoutId = '3col' | '2col' | 'wide' | 'grid' | 'phone'
-type LayoutSource = 'badge-longpress' | 'badge-drag-release' | 'rail-commit' | 'rail-longpress' | 'fan-preset' | 'url-auto'
+type LayoutSource = 'badge-drag-release' | 'fan-preset' | 'url-auto'
 const LAYOUT_PRESETS: { id: LayoutId; title: string }[] = [
   { id: '3col', title: 'Three-column: agents + search | chat | chat + docview' },
   { id: '2col', title: 'Two-column: left margin + right margin chat' },
@@ -159,11 +155,6 @@ function isTouchLayoutControl() {
 
 function stopControlEvent(e: React.SyntheticEvent | Event) {
   stopEventPropagation(e)
-}
-
-function stopControlDefault(e: React.SyntheticEvent | Event) {
-  stopEventPropagation(e)
-  e.preventDefault()
 }
 
 function logLayoutTelemetry(msg: string, data: Record<string, any>) {
@@ -294,14 +285,12 @@ interface FleetIconPillProps { mainEditor: Editor }
 
 export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
   const countMaskId = useUniqueSafeId('fleet-count-mask')
-  const badgeRef = useRef<HTMLSpanElement>(null)
   const agents = useFleetAgents()
   const identity = useFleetIdentity()
   const [hidden, setHidden] = useState(() => isFleetHidden())
   const [dragging, setDragging] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
-  const [rangeIdx, setRangeIdx] = useState(0)
   const [, setDragAnchor] = useState<{ x: number; y: number } | null>(null)
 
   const aliveCount = countAwakeFleetAgents(agents)
@@ -314,8 +303,6 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
   const agentsRef = useRef(agents)
   const autoLayoutAppliedRef = useRef<string | null>(null)
   const identifyingForUrlRef = useRef<string | null>(null)
-  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const longPressFiredRef = useRef(false)
   agentsRef.current = agents
 
   const applyPreset = useCallback((idx: number, source: LayoutSource = 'fan-preset') => {
@@ -328,33 +315,6 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
       onShown: () => setHidden(false),
     })
     setPickerOpen(false)
-  }, [mainEditor])
-
-  const clearLongPressTimer = useCallback(() => {
-    if (longPressTimerRef.current !== null) {
-      clearTimeout(longPressTimerRef.current)
-      longPressTimerRef.current = null
-    }
-  }, [])
-
-  useEffect(() => clearLongPressTimer, [clearLongPressTimer])
-
-  const resetToDeviceDefaultLayout = useCallback(async (source: LayoutSource = 'badge-longpress') => {
-    longPressFiredRef.current = true
-    justDraggedRef.current = true
-    setPickerOpen(false)
-    setDragging(false)
-    setSelectedIdx(null)
-    setDragAnchor(null)
-    await whenDeviceReady()
-    const presetId: LayoutId = document.body.classList.contains('phone-mode') ? 'phone' : '3col'
-    applyFleetLayoutPreset({
-      mainEditor,
-      agents: agentsRef.current,
-      presetId,
-      source,
-      onShown: () => setHidden(false),
-    })
   }, [mainEditor])
 
   useEffect(() => {
@@ -400,39 +360,6 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
     setHidden(!wasHidden)
   }, [])
 
-  const previewLayoutPreset = useCallback((idx: number) => {
-    setRangeIdx(idx)
-    setSelectedIdx(idx)
-  }, [])
-
-  const resetRangeDrag = useCallback(() => {
-    setDragging(false)
-    setSelectedIdx(null)
-  }, [])
-
-  const commitLayoutPreset = useCallback((idx: number) => {
-    setRangeIdx(idx)
-    applyPreset(idx, 'rail-commit')
-    justDraggedRef.current = true
-    resetRangeDrag()
-  }, [applyPreset, resetRangeDrag])
-
-  const tapFleetButton = useCallback(() => {
-    if (isTouchLayoutControl()) {
-      setPickerOpen(open => !open)
-      return
-    }
-    const wasHidden = isFleetHidden()
-    setFleetHudExpanded(wasHidden)
-    setHidden(!wasHidden)
-  }, [])
-
-  const layoutSliderOptions = useMemo(() => LAYOUT_PRESETS.map(preset => ({
-    id: preset.id,
-    label: preset.title,
-    render: () => <LayoutIcon id={preset.id} size={20} />,
-  })), [])
-
   /** Pointer down — stop propagation (prevents TLDraw interference) and set up drag listeners. */
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
     stopControlEvent(e)
@@ -441,22 +368,14 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
     dragStartRef.current = start
     isDragRef.current = false
     selectedIdxRef.current = null
-    longPressFiredRef.current = false
-    clearLongPressTimer()
-    longPressTimerRef.current = setTimeout(() => {
-      longPressTimerRef.current = null
-      void resetToDeviceDefaultLayout('badge-longpress')
-    }, RESET_LONG_PRESS_MS)
 
     const onMove = (ev: PointerEvent) => {
-      if (longPressFiredRef.current) return
       const s = dragStartRef.current
       if (!s) return
       const dx = ev.clientX - s.x
       const dy = ev.clientY - s.y
       const dist = Math.sqrt(dx * dx + dy * dy)
       if (!isDragRef.current && dist > DRAG_THRESHOLD) {
-        clearLongPressTimer()
         isDragRef.current = true
         setDragging(true)
         setDragAnchor({ x: s.x, y: s.y })
@@ -474,7 +393,6 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
     }
 
     const cleanup = () => {
-      clearLongPressTimer()
       window.removeEventListener('pointermove', onMove, true)
       window.removeEventListener('pointerup', onUp, true)
       window.removeEventListener('pointercancel', onCancel, true)
@@ -488,10 +406,6 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
 
     const onUp = (ev: PointerEvent) => {
       stopControlEvent(ev)
-      if (longPressFiredRef.current) {
-        cleanup()
-        return
-      }
       if (isDragRef.current) {
         const idx = selectedIdxRef.current
         if (idx !== null) {
@@ -509,7 +423,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
     window.addEventListener('pointermove', onMove, true)
     window.addEventListener('pointerup', onUp, true)
     window.addEventListener('pointercancel', onCancel, true)
-  }, [applyPreset, clearLongPressTimer, resetToDeviceDefaultLayout])
+  }, [applyPreset])
 
   return (
     <div
@@ -517,14 +431,12 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
       title={hidden ? 'Fleet shapes hidden — click to show' : 'Fleet — click to hide, drag for layout'}
     >
       <span
-        ref={badgeRef}
         className="fleet-icon-pill-badge"
         onClick={handleClick}
         onPointerDown={handlePointerDown}
         onPointerUp={stopControlEvent}
         onTouchStart={stopControlEvent}
         onTouchEnd={stopControlEvent}
-        onContextMenu={stopControlDefault}
         role="button"
         aria-label={`Fleet: ${aliveCount} agent${aliveCount !== 1 ? 's' : ''}`}
         style={{ touchAction: 'none' }}
@@ -568,20 +480,6 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
           )}
         </svg>
       </span>
-
-      {isTouchLayoutControl() && (
-        <CornerRailSlider
-          anchorRef={badgeRef}
-          className="fleet-layout-slider"
-          ariaLabel="Fleet layout"
-          options={layoutSliderOptions}
-          value={rangeIdx}
-          onPreview={previewLayoutPreset}
-          onCommit={commitLayoutPreset}
-          onTap={tapFleetButton}
-          onLongPress={() => resetToDeviceDefaultLayout('rail-longpress')}
-        />
-      )}
 
       {/* Layout preset fan — positioned above the icon */}
       {(dragging || pickerOpen) && (

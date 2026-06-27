@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useContext, useMemo } from 'react'
 import { setStopRecordingCallback } from './tools/VoiceNoteTool'
-import { setVoiceTarget, clearVoiceTarget, setVoiceAccumulator, stopRecording, isRecording, toggleRecording, voiceTap, onRecordingChange, maybeHandleVoiceSinkPointerDown } from './voice.mjs'
+import { setVoiceTarget, clearVoiceTarget, setVoiceAccumulator, stopRecording, isRecording, toggleRecording, maybeHandleVoiceSinkPointerDown } from './voice.mjs'
 import { createPortal } from 'react-dom'
 import { useEditor, useValue, stopEventPropagation, DefaultColorStyle } from 'tldraw'
 import { toolNameHud } from './overlays/ToolNameHud'
@@ -11,7 +11,6 @@ import type { AgentHeartbeatSignal } from './useYjsSync'
 import { TocTab, ZoneWidthSlider } from './panels/TocTab'
 import { NotesTab } from './panels/NotesTab'
 import { PrefsTab } from './panels/PrefsTab'
-import { CornerRailSlider } from './CornerRailSlider'
 
 import './DocumentPanel.css'
 
@@ -82,24 +81,10 @@ type Tab = 'toc' | 'notes' | 'prefs'
 export function DocumentPanel() {
   const doc = useContext(DocContext)
   const isHtml = doc?.format === 'html' || doc?.format === 'markdown'
-  const cornerMetrics = cornerControlMetrics()
   const [tab, setTab] = useState<Tab>('toc')
   const [open, setOpen] = useState(false)
   const [dragOpen, setDragOpen] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    document.body.classList.add('corner-rail-mode')
-    document.documentElement.style.setProperty('--corner-control-size', `${cornerMetrics.size}px`)
-    document.documentElement.style.setProperty('--corner-control-gap', `${cornerMetrics.gap}px`)
-    document.documentElement.style.setProperty('--corner-icon-size', `${cornerMetrics.iconSize}px`)
-    return () => {
-      document.body.classList.remove('corner-rail-mode')
-      document.documentElement.style.removeProperty('--corner-control-size')
-      document.documentElement.style.removeProperty('--corner-control-gap')
-      document.documentElement.style.removeProperty('--corner-icon-size')
-    }
-  }, [cornerMetrics.size, cornerMetrics.gap, cornerMetrics.iconSize])
 
   // Close on outside touch (touch devices only — desktop uses CSS :hover)
   useEffect(() => {
@@ -154,7 +139,6 @@ export function DocumentPanel() {
 
   return (
     <>
-      <CornerRailVerticalTracker />
       <div
         ref={panelRef}
         className={`doc-panel${(open || dragOpen) ? ' doc-panel-open' : ''}${isHtml ? ' doc-panel--html' : ''}`}
@@ -196,199 +180,6 @@ const IS_PHONE = typeof window !== 'undefined' && window.matchMedia('(max-width:
 const IS_TOUCH_DEVICE = (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
   || (typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches)
   || (typeof location !== 'undefined' && new URLSearchParams(location.search).has('forcetouch'))
-
-type CornerRailTarget = {
-  id: 'fleet' | 'voice' | 'highlighter'
-  selector: string
-  element: HTMLElement
-  rect: DOMRect
-}
-
-type CornerRailMeasurement = {
-  targets: CornerRailTarget[]
-  rail: { left: number; top: number; width: number; height: number }
-}
-
-type CornerRailTrackDetail = {
-  phase: 'down' | 'move' | 'up' | 'cancel'
-  clientX: number
-  clientY: number
-  pointerId?: number
-}
-
-const CORNER_RAIL_TARGETS: Array<Pick<CornerRailTarget, 'id' | 'selector'>> = [
-  { id: 'fleet', selector: '.fleet-icon-pill-badge' },
-  { id: 'voice', selector: '.voice-note-btn' },
-  { id: 'highlighter', selector: '.phone-hl-btn' },
-]
-
-function CornerRailVerticalTracker() {
-  const [rail, setRail] = useState<CornerRailMeasurement['rail'] | null>(null)
-  const [dragging, setDragging] = useState(false)
-  const measurementRef = useRef<CornerRailMeasurement | null>(null)
-  const activeRef = useRef<CornerRailTarget['id'] | null>(null)
-  const draggingRef = useRef(false)
-
-  const clearActive = useCallback(() => {
-    for (const { selector } of CORNER_RAIL_TARGETS) {
-      document.querySelector<HTMLElement>(selector)?.classList.remove('corner-rail-drag-active')
-    }
-    activeRef.current = null
-  }, [])
-
-  const measure = useCallback((): CornerRailMeasurement | null => {
-    if (!IS_TOUCH_DEVICE) return null
-    const targets = CORNER_RAIL_TARGETS
-      .map((target) => {
-        const element = document.querySelector<HTMLElement>(target.selector)
-        if (!element) return null
-        return { ...target, element, rect: element.getBoundingClientRect() }
-      })
-      .filter((target): target is CornerRailTarget => !!target && target.rect.width > 0 && target.rect.height > 0)
-
-    if (targets.length !== CORNER_RAIL_TARGETS.length) return null
-
-    const left = Math.min(...targets.map((target) => target.rect.left))
-    const right = Math.max(...targets.map((target) => target.rect.right))
-    const top = Math.min(...targets.map((target) => target.rect.top))
-    const bottom = Math.max(...targets.map((target) => target.rect.bottom))
-    return { targets, rail: { left, top, width: right - left, height: bottom - top } }
-  }, [])
-
-  const pickTarget = useCallback((clientY: number, measurement: CornerRailMeasurement) => {
-    const containing = measurement.targets.find((target) => clientY >= target.rect.top && clientY <= target.rect.bottom)
-    if (containing) return containing
-    return measurement.targets.reduce((closest, target) => {
-      const closestCenter = closest.rect.top + closest.rect.height / 2
-      const targetCenter = target.rect.top + target.rect.height / 2
-      return Math.abs(clientY - targetCenter) < Math.abs(clientY - closestCenter) ? target : closest
-    })
-  }, [])
-
-  const setActiveTarget = useCallback((target: CornerRailTarget | null) => {
-    if (activeRef.current === target?.id) return
-    clearActive()
-    if (target) {
-      target.element.classList.add('corner-rail-drag-active')
-      activeRef.current = target.id
-    }
-  }, [clearActive])
-
-  useEffect(() => {
-    let raf = 0
-    const update = () => {
-      const measured = measure()
-      measurementRef.current = measured
-      setRail(measured?.rail ?? null)
-    }
-    raf = window.requestAnimationFrame(update)
-    window.addEventListener('resize', update)
-    window.addEventListener('scroll', update, true)
-    return () => {
-      window.cancelAnimationFrame(raf)
-      window.removeEventListener('resize', update)
-      window.removeEventListener('scroll', update, true)
-      clearActive()
-    }
-  }, [clearActive, measure])
-
-  const beginRailDrag = useCallback((clientY: number) => {
-    const measured = measure()
-    if (!measured) return false
-    measurementRef.current = measured
-    setRail(measured.rail)
-    setDragging(true)
-    draggingRef.current = true
-    setActiveTarget(pickTarget(clientY, measured))
-    return true
-  }, [measure, pickTarget, setActiveTarget])
-
-  const moveRailDrag = useCallback((clientY: number) => {
-    if (!draggingRef.current) return
-    const measured = measurementRef.current ?? measure()
-    if (!measured) return
-    setActiveTarget(pickTarget(clientY, measured))
-  }, [measure, pickTarget, setActiveTarget])
-
-  const finishRailDrag = useCallback((clientY: number, commit: boolean) => {
-    if (!draggingRef.current) return
-    const measured = measurementRef.current
-    const target = measured ? pickTarget(clientY, measured) : null
-    setDragging(false)
-    draggingRef.current = false
-    clearActive()
-    if (commit) target?.element.click()
-  }, [clearActive, dragging, pickTarget])
-
-  useEffect(() => {
-    const onRailTrack = (event: Event) => {
-      const railEvent = event as CustomEvent<CornerRailTrackDetail>
-      const detail = railEvent.detail
-      if (!detail) return
-      if (detail.phase === 'down') {
-        if (beginRailDrag(detail.clientY)) railEvent.preventDefault()
-      } else if (detail.phase === 'move') {
-        moveRailDrag(detail.clientY)
-      } else {
-        finishRailDrag(detail.clientY, detail.phase === 'up')
-      }
-    }
-    window.addEventListener('corner-rail-track', onRailTrack)
-    return () => window.removeEventListener('corner-rail-track', onRailTrack)
-  }, [beginRailDrag, finishRailDrag, moveRailDrag])
-
-  const onPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    stopEventPropagation(e)
-    e.preventDefault()
-    if (beginRailDrag(e.clientY)) {
-      e.currentTarget.setPointerCapture(e.pointerId)
-    }
-  }, [beginRailDrag])
-
-  const onPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    if (!dragging) return
-    stopEventPropagation(e)
-    moveRailDrag(e.clientY)
-  }, [dragging, moveRailDrag])
-
-  const finish = useCallback((e: React.PointerEvent<HTMLDivElement>, commit: boolean) => {
-    if (!dragging) return
-    stopEventPropagation(e)
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-      e.currentTarget.releasePointerCapture(e.pointerId)
-    }
-    finishRailDrag(e.clientY, commit)
-  }, [dragging, finishRailDrag])
-
-  if (!IS_TOUCH_DEVICE || !rail) return null
-
-  return (
-    <div
-      className="corner-rail-vertical-hitstrip"
-      data-active-rail-target={dragging ? activeRef.current ?? undefined : undefined}
-      style={{
-        left: `${rail.left}px`,
-        top: `${rail.top}px`,
-        width: `${rail.width}px`,
-        height: `${rail.height}px`,
-      }}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={(e) => finish(e, true)}
-      onPointerCancel={(e) => finish(e, false)}
-      onClick={stopEventPropagation}
-    />
-  )
-}
-
-function cornerControlMetrics() {
-  const baseSize = IS_PHONE ? 44 : 27
-  const baseGap = IS_PHONE ? 8 : 6
-  const size = baseSize * 4 / 3
-  const iconSize = 20 * (size / baseSize)
-  const gap = baseGap
-  return { size, gap, iconSize }
-}
 
 function activateHlSlot(editor: Editor, idx: number) {
   const slot = HL_SLOTS[idx]
@@ -441,7 +232,6 @@ function PhoneHighlighterButton() {
   const lastTapRef = useRef(0)
   const singleTapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const suppressClickRef = useRef(false)
-  const railTrackingRef = useRef(false)
   colorIdxRef.current = colorIdx // keep ref current on every render — used in handlePointerMove
 
   const activateSlot = useCallback((idx: number) => activateHlSlot(editor, idx), [editor])
@@ -491,16 +281,6 @@ function PhoneHighlighterButton() {
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
     e.stopPropagation()
     e.preventDefault()
-    const railEvent = new CustomEvent<CornerRailTrackDetail>('corner-rail-track', {
-      cancelable: true,
-      detail: { phase: 'down', clientX: e.clientX, clientY: e.clientY, pointerId: e.pointerId },
-    })
-    window.dispatchEvent(railEvent)
-    railTrackingRef.current = railEvent.defaultPrevented
-    if (railTrackingRef.current) {
-      ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
-      return
-    }
     dragStartX.current = e.clientX
     dragStartY.current = e.clientY
     const btnRect = btnRef.current?.getBoundingClientRect() ?? null
@@ -513,12 +293,6 @@ function PhoneHighlighterButton() {
   }, [])
 
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
-    if (railTrackingRef.current) {
-      window.dispatchEvent(new CustomEvent<CornerRailTrackDetail>('corner-rail-track', {
-        detail: { phase: 'move', clientX: e.clientX, clientY: e.clientY, pointerId: e.pointerId },
-      }))
-      return
-    }
     const dx = e.clientX - dragStartX.current
 
     // Determine drag mode if not yet set — read ref (always current, state update may not have committed)
@@ -555,13 +329,6 @@ function PhoneHighlighterButton() {
 
   const handlePointerUp = useCallback((e: React.PointerEvent) => {
     ;(e.target as HTMLElement).releasePointerCapture(e.pointerId)
-    if (railTrackingRef.current) {
-      window.dispatchEvent(new CustomEvent<CornerRailTrackDetail>('corner-rail-track', {
-        detail: { phase: 'up', clientX: e.clientX, clientY: e.clientY, pointerId: e.pointerId },
-      }))
-      railTrackingRef.current = false
-      return
-    }
     // Read refs — always current even if state update hasn't committed yet
     const currentMode = dragModeRef.current
     const currentSlot = dragSlotRef.current
@@ -578,13 +345,6 @@ function PhoneHighlighterButton() {
 
   const handlePointerCancel = useCallback((e: React.PointerEvent) => {
     ;(e.target as HTMLElement).releasePointerCapture(e.pointerId)
-    if (railTrackingRef.current) {
-      window.dispatchEvent(new CustomEvent<CornerRailTrackDetail>('corner-rail-track', {
-        detail: { phase: 'cancel', clientX: e.clientX, clientY: e.clientY, pointerId: e.pointerId },
-      }))
-      railTrackingRef.current = false
-      return
-    }
     dragModeRef.current = null; dragSlotRef.current = null
     setDragging(false); setDragMode(null); setDragSlot(null); setDragBtnRect(null)
   }, [])
@@ -662,14 +422,14 @@ function PhoneHighlighterButton() {
             >
               <span style={{
                 display: 'block',
+                width: 20,
+                height: 20,
                 WebkitMaskImage: `url("${hlMaskUrl(slot)}")`,
                 maskImage: `url("${hlMaskUrl(slot)}")`,
                 WebkitMaskSize: '100%', maskSize: '100%',
                 WebkitMaskRepeat: 'no-repeat', maskRepeat: 'no-repeat',
                 WebkitMaskPosition: 'center', maskPosition: 'center',
                 backgroundColor: 'currentColor',
-                width: 'var(--corner-icon-size, 20px)',
-                height: 'var(--corner-icon-size, 20px)',
               }} />
             </div>
           })}
@@ -702,8 +462,8 @@ function PhoneHighlighterButton() {
           const iconUrl = iconSlot2 ? hlMaskUrl(iconSlot2) : `${TLDRAW_ICON_BASE}#tool-highlight`
           return <span style={{
             display: 'block',
-            width: 'var(--corner-icon-size, 20px)',
-            height: 'var(--corner-icon-size, 20px)',
+            width: 20,
+            height: 20,
             WebkitMaskImage: `url("${iconUrl}")`,
             maskImage: `url("${iconUrl}")`,
             WebkitMaskSize: '100%', maskSize: '100%',
@@ -1061,113 +821,42 @@ function useVoiceNoteController() {
 }
 
 function VoiceNoteButtonInner() {
-  const { size: controlSize } = cornerControlMetrics()
   const { recording, isPlacing, triggerFromElement } = useVoiceNoteController()
   const btnRef = useRef<HTMLButtonElement>(null)
-  const suppressClickRef = useRef(false)
-  const [voiceValue, setVoiceValue] = useState(1)
-  // Reflect global voice on/off in the dictate slot label so the HUD states the
-  // action the tap performs (which also tells you the current state).
-  const [voiceOn, setVoiceOn] = useState(() => isRecording())
-  useEffect(() => onRecordingChange(setVoiceOn), [])
-
-  const voiceSlots = useMemo(() => [
-    {
-      id: 'dictate-selection',
-      label: voiceOn ? 'toggle voice off' : 'toggle voice on',
-      color: '#7ab8a0',
-      action: voiceTap,
-      render: () => (
-        <svg width="20" height="20" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-          <rect x="6.5" y="2" width="5" height="8" rx="2.5" fill="currentColor" />
-          <path d="M3.5 8.5a5.5 5.5 0 0 0 11 0" />
-          <line x1="9" y1="14" x2="9" y2="16" />
-        </svg>
-      ),
-    },
-    {
-      id: 'voice-note',
-      label: 'voice note',
-      color: '#d7b950',
-      action: () => btnRef.current && triggerFromElement(btnRef.current),
-      render: () => (
-        <svg width="20" height="20" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M11.5 2.5H4.2A1.7 1.7 0 0 0 2.5 4.2V13.8A1.7 1.7 0 0 0 4.2 15.5H13.8A1.7 1.7 0 0 0 15.5 13.8V6.5Z" />
-          <path d="M11.5 2.5V6.5H15.5" />
-          <rect x="7.6" y="6" width="2.8" height="4" rx="1.4" fill="currentColor" stroke="none" />
-          <path d="M6.3 9.2a2.7 2.7 0 0 0 5.4 0" strokeWidth="1.1" />
-        </svg>
-      ),
-    },
-  ], [triggerFromElement, voiceOn])
 
   const handleClick = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
-    if (suppressClickRef.current) {
-      suppressClickRef.current = false
-      return
-    }
     triggerFromElement(e.currentTarget)
-  }, [triggerFromElement])
-
-  const previewVoiceSlot = useCallback((idx: number) => {
-    setVoiceValue(idx)
-    const slot = voiceSlots[idx]
-    if (slot) toolNameHud.show(slot.label, slot.color)
-  }, [voiceSlots])
-
-  const commitVoiceSlot = useCallback((idx: number) => {
-    suppressClickRef.current = true
-    toolNameHud.hide()
-    setVoiceValue(1)
-    voiceSlots[idx]?.action()
-  }, [voiceSlots])
-
-  const tapVoiceButton = useCallback(() => {
-    if (btnRef.current) triggerFromElement(btnRef.current)
   }, [triggerFromElement])
 
   const cls = `voice-note-btn${recording ? ' recording' : ''}${isPlacing ? ' placing' : ''}`
 
   return (
-    <>
-      <CornerRailSlider
-        anchorRef={btnRef}
-        className="voice-action-slider"
-        ariaLabel="Voice action"
-        options={voiceSlots}
-        value={voiceValue}
-        onPreview={previewVoiceSlot}
-        onCommit={commitVoiceSlot}
-        onTap={tapVoiceButton}
-      />
-      <button
-        ref={btnRef}
-        className={cls}
-        style={{ '--corner-control-size': `${controlSize}px` } as React.CSSProperties}
-        onClick={handleClick}
-        onPointerDown={stopEventPropagation}
-        onPointerUp={stopEventPropagation}
-        onPointerCancel={stopEventPropagation}
-        onTouchStart={stopEventPropagation}
-        onTouchEnd={stopEventPropagation}
-        title={_isTouchDevice ? 'New voice note' : (recording ? 'Stop recording' : isPlacing ? 'Cancel placement' : 'Voice note')}
-      >
-        {/* Mic inside a sticky-note silhouette — "voice → note". The note shape is
-            the noun, the mic the modifier, so it reads as a note-maker not a plain mic.
-            20px + a 1.18 fill-scale match the highlighter button's visual size. */}
-        <svg width="20" height="20" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-          <g transform="translate(9 9) scale(1.18) translate(-9 -9)">
-            {/* note card with a folded top-right corner */}
-            <path d="M11.5 2.5H4.2A1.7 1.7 0 0 0 2.5 4.2V13.8A1.7 1.7 0 0 0 4.2 15.5H13.8A1.7 1.7 0 0 0 15.5 13.8V6.5Z" />
-            <path d="M11.5 2.5V6.5H15.5" />
-            {/* mic centered in the note */}
-            <rect x="7.6" y="6" width="2.8" height="4" rx="1.4" fill="currentColor" stroke="none" />
-            <path d="M6.3 9.2a2.7 2.7 0 0 0 5.4 0" strokeWidth="1.1" />
-            <line x1="9" y1="11.9" x2="9" y2="13.2" strokeWidth="1.1" />
-          </g>
-        </svg>
-      </button>
-    </>
+    <button
+      ref={btnRef}
+      className={cls}
+      onClick={handleClick}
+      onPointerDown={stopEventPropagation}
+      onPointerUp={stopEventPropagation}
+      onPointerCancel={stopEventPropagation}
+      onTouchStart={stopEventPropagation}
+      onTouchEnd={stopEventPropagation}
+      title={_isTouchDevice ? 'New voice note' : (recording ? 'Stop recording' : isPlacing ? 'Cancel placement' : 'Voice note')}
+    >
+      {/* Mic inside a sticky-note silhouette — "voice → note". The note shape is
+          the noun, the mic the modifier, so it reads as a note-maker not a plain mic.
+          20px + a 1.18 fill-scale match the highlighter button's visual size. */}
+      <svg width="20" height="20" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+        <g transform="translate(9 9) scale(1.18) translate(-9 -9)">
+          {/* note card with a folded top-right corner */}
+          <path d="M11.5 2.5H4.2A1.7 1.7 0 0 0 2.5 4.2V13.8A1.7 1.7 0 0 0 4.2 15.5H13.8A1.7 1.7 0 0 0 15.5 13.8V6.5Z" />
+          <path d="M11.5 2.5V6.5H15.5" />
+          {/* mic centered in the note */}
+          <rect x="7.6" y="6" width="2.8" height="4" rx="1.4" fill="currentColor" stroke="none" />
+          <path d="M6.3 9.2a2.7 2.7 0 0 0 5.4 0" strokeWidth="1.1" />
+          <line x1="9" y1="11.9" x2="9" y2="13.2" strokeWidth="1.1" />
+        </g>
+      </svg>
+    </button>
   )
 }
 
