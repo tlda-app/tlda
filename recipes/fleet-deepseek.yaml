@@ -39,9 +39,9 @@ instructions: |
   2. Call `my_task` to read your assignment. YOUR ROLE AND INSTRUCTIONS COME
      FROM CHAT, not from this prompt — `my_task` tells you what you are here to
      do. If nothing is pending, wait; you will be messaged.
-  3. Before task work, read the same project guidance Claude agents receive:
-     read `CLAUDE.md` in the workspace if it exists, and read `AGENTS.md` if it
-     exists. Follow the guidance you find.
+  3. Before task work, read the project guidance in `AGENTS.md` if it exists.
+     Do not read `CLAUDE.md`; in this repo it is a template source for
+     `AGENTS.md`, not agent-facing guidance. Follow the guidance you find.
 
   While working:
   - Talk to Skip and other agents ONLY via `chat` (markdown supported). Anything
@@ -94,8 +94,10 @@ instructions: |
 prompt: |
   Call register() now (no name argument — your name comes from the
   environment). Then call my_task() to check for a pending assignment. Before
-  task work, read CLAUDE.md in the workspace if it exists and AGENTS.md if it
-  exists, then follow that guidance and the Non-Claude guidance contract above.
+  task work, read AGENTS.md in the workspace if it exists. Do not read
+  CLAUDE.md; in this repo it is a template source for AGENTS.md, not
+  agent-facing guidance. Then follow that guidance and the Non-Claude guidance
+  contract above.
   If nothing is pending, wait quietly; you will be messaged.
 
 extensions:
