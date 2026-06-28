@@ -1,7 +1,8 @@
 /**
  * perf-probe — lightweight performance telemetry for slow-device profiling.
  *
- * Activated ONLY by ?perf=1 (or ?perf=svg,chat,reconnect for specific probes).
+ * Activated ONLY by ?perf=1 (or ?perf=svg,chat,reconnect for specific probes)
+ * or persistent localStorage key `tlda-perf`.
  * Minimal inactive cost — module imports and cheap early-return helpers run,
  * but no measurements are recorded or logged when `probe.active` is false.
  *
@@ -16,7 +17,8 @@
  * for a formatted summary. No server POST, no behavior changes.
  *
  * iPhone 13 profiling path:
- *   1. Open tlda on iPhone Safari with ?perf=1
+ *   1. Open tlda on iPhone Safari with ?perf=1, or run
+ *      localStorage.setItem('tlda-perf', 'frame') and reload
  *   2. Tether to Mac, open Safari Web Inspector → Timelines
  *   3. Reproduce the jank (pan, scroll chat, background/foreground)
  *   4. In Web Inspector console: __perfProbe.report()
@@ -42,6 +44,7 @@ class PerfProbe {
   private frameTimers: { label: string; start: number }[] = []
   private uploadTimer: number | null = null
   private lastUploadSampleCount = 0
+  private enabledBy: 'url' | 'localStorage' | null = null
 
   constructor() {
     if (typeof window === 'undefined') {
@@ -50,12 +53,15 @@ class PerfProbe {
       return
     }
     const params = new URLSearchParams(window.location.search)
-    const raw = params.get('perf')
+    const urlRaw = params.get('perf')
+    const storedRaw = localStorage.getItem('tlda-perf')
+    const raw = urlRaw || storedRaw
     if (!raw) {
       this.active = false
       this.enabledProbes = new Set()
       return
     }
+    this.enabledBy = urlRaw ? 'url' : 'localStorage'
     this.active = true
     if (raw === '1' || raw === 'true') {
       this.enabledProbes = new Set(['svg', 'chat', 'reconnect', 'frame', 'startup', 'hud'])
@@ -155,14 +161,29 @@ class PerfProbe {
       lines.push('')
     }
 
-    // Frame-specific analysis: how many frames exceeded 16ms (60fps budget)?
+    // Frame-specific analysis. `frame-timing` is the old raw-per-frame shape;
+    // `frame-health` is the real-session interaction summary emitted by
+    // frame-probe.
     const frames = groups.get('frame') || []
     if (frames.length > 0) {
-      const janky = frames.filter(f => f.durationMs > 16.7)
-      const veryJanky = frames.filter(f => f.durationMs > 33.3)
-      lines.push(`[frame jank] ${janky.length}/${frames.length} frames > 16.7ms (${(janky.length / frames.length * 100).toFixed(0)}%)`)
-      lines.push(`[frame jank] ${veryJanky.length}/${frames.length} frames > 33.3ms (${(veryJanky.length / frames.length * 100).toFixed(0)}%)`)
-      lines.push('')
+      const health = frames.filter(f => f.label === 'frame-health')
+      const rawFrames = frames.filter(f => f.label !== 'frame-health')
+      if (health.length > 0) {
+        const over33 = health.reduce((sum, f) => sum + (f.detail?.over33 || 0), 0)
+        const over50 = health.reduce((sum, f) => sum + (f.detail?.over50 || 0), 0)
+        const frameCount = health.reduce((sum, f) => sum + (f.detail?.frameCount || 0), 0)
+        const worst = Math.max(...health.map(f => f.durationMs))
+        lines.push(`[frame health] ${health.length} interaction(s), ${frameCount} sampled frame(s)`)
+        lines.push(`[frame health] worst: ${worst.toFixed(1)}ms  >33ms: ${over33}  >50ms: ${over50}`)
+        lines.push('')
+      }
+      if (rawFrames.length > 0) {
+        const janky = rawFrames.filter(f => f.durationMs > 16.7)
+        const veryJanky = rawFrames.filter(f => f.durationMs > 33.3)
+        lines.push(`[frame jank] ${janky.length}/${rawFrames.length} frames > 16.7ms (${(janky.length / rawFrames.length * 100).toFixed(0)}%)`)
+        lines.push(`[frame jank] ${veryJanky.length}/${rawFrames.length} frames > 33.3ms (${(veryJanky.length / rawFrames.length * 100).toFixed(0)}%)`)
+        lines.push('')
+      }
     }
 
     const output = lines.join('\n')
@@ -181,6 +202,8 @@ class PerfProbe {
       data: {
         reason,
         url: window.location.href,
+        enabledBy: this.enabledBy,
+        enabledProbes: [...this.enabledProbes],
         userAgent: navigator.userAgent,
         sampleCount: this.buffer.length,
         report: this.report(),
