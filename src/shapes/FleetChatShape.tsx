@@ -2686,34 +2686,25 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
   }, [editor])
 
-  // Handle clicks on doc-link spans
-  const handleDocLinkClick = useCallback((e: React.MouseEvent) => {
-    // Plain URL links — open in new tab (TLDraw intercepts native <a> navigation)
-    const chatLink = (e.target as HTMLElement).closest('.chat-link') as HTMLAnchorElement | null
-    if (chatLink?.href) { e.preventDefault(); window.open(chatLink.href, '_blank'); return }
-
-    // Also check for annotation chip clicks
-    const chipTarget = (e.target as HTMLElement).closest('.ref-chip-annotation')
-    if (chipTarget) { handleRefChipClick(e); return }
-
+  const openMarkdownChipFromTarget = useCallback((target: HTMLElement, stopPropagation: () => void): boolean => {
     // Markdown chip → temporary page-like html column.
     // (ref-chip-doc chips AND md-file-card chips in activity cards).
-    const mdChip = (e.target as HTMLElement).closest('.ref-chip-doc, .md-file-card') as HTMLElement | null
+    const mdChip = target.closest('.ref-chip-doc, .md-file-card') as HTMLElement | null
     if (mdChip) {
       if (mdChip.classList.contains('src-chip')) {
-        e.stopPropagation()
+        stopPropagation()
         const line = mdChip.closest('.chat-line')
         const body = line?.querySelector('.message-body') as HTMLElement | null
         const title = mdChip.getAttribute('title') || mdChip.textContent || 'source'
         openMarkdownColumn(title, body?.innerText || body?.textContent || title, mdChip)
-        return
+        return true
       }
       const chipUrl = mdChip.dataset.url || ''
       const chipPath = mdChip.dataset.path || ''
       const isMd = /\.md$/i.test(chipUrl || chipPath)
       const fetchUrl = chipUrl || (chipPath ? `/api/read-file?path=${encodeURIComponent(chipPath)}` : '')
       if (isMd && fetchUrl) {
-        e.stopPropagation()
+        stopPropagation()
         const title = mdChip.querySelector('.md-file-chip')?.textContent || mdChip.textContent || chipPath.split('/').pop() || 'file'
         fetchMarkdownChipText(chipUrl, chipPath)
           .then(text => {
@@ -2727,9 +2718,23 @@ function FleetChatInner({ shape }: { shape: any }) {
           .catch(() => {
             openMarkdownColumn(title, `# Failed to load\n\n${chipUrl || chipPath || title}`, mdChip)
           })
-        return
+        return true
       }
     }
+    return false
+  }, [openMarkdownColumn])
+
+  // Handle clicks on doc-link spans
+  const handleDocLinkClick = useCallback((e: React.MouseEvent) => {
+    // Plain URL links — open in new tab (TLDraw intercepts native <a> navigation)
+    const chatLink = (e.target as HTMLElement).closest('.chat-link') as HTMLAnchorElement | null
+    if (chatLink?.href) { e.preventDefault(); window.open(chatLink.href, '_blank'); return }
+
+    // Also check for annotation chip clicks
+    const chipTarget = (e.target as HTMLElement).closest('.ref-chip-annotation')
+    if (chipTarget) { handleRefChipClick(e); return }
+
+    if (openMarkdownChipFromTarget(e.target as HTMLElement, () => e.stopPropagation())) return
 
     // Copy button on code blocks
     const copyBtn = (e.target as HTMLElement).closest('.code-block-copy') as HTMLElement | null
@@ -2790,7 +2795,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       }
     }
     editor.centerOnPoint(canvasPos, { animation: { duration: 300 } })
-  }, [doc, refResolver, editor, handleRefChipClick, openMarkdownColumn])
+  }, [doc, refResolver, editor, handleRefChipClick, openMarkdownChipFromTarget])
 
   const shapeContainerRef = useRef<HTMLDivElement>(null)
   const inputAreaRef = useRef<HTMLDivElement>(null)
@@ -5165,11 +5170,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         // browser still emits one.
         if (downTargetEl) {
           suppressNativeChipClickUntilRef.current = Date.now() + 700
-          handleDocLinkClick({
-            target: downTargetEl,
-            preventDefault: () => e.preventDefault(),
-            stopPropagation: () => {},
-          } as any)
+          openMarkdownChipFromTarget(downTargetEl, () => {})
         }
         downTargetEl = null
         return
@@ -5192,7 +5193,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       // Release coordinator if this component unmounts during a drag
       if (dragRef.current) dragCoordinator.release()
     }
-  }, [chatLogEl, editor, viewportId])
+  }, [chatLogEl, editor, viewportId, openMarkdownChipFromTarget])
 
   // --- chatInsertBus listener: content drops insert into textarea ---
   useEffect(() => {
