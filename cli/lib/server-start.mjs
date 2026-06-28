@@ -18,6 +18,7 @@
 import { spawn, execSync } from 'child_process'
 import { openSync, writeFileSync, existsSync, mkdirSync } from 'fs'
 import { dirname } from 'path'
+import { resolveServerIsolation } from '../../shared/server-identity.mjs'
 
 // Spawn unified-server.mjs fully detached. Returns the child pid.
 //   serverScript  absolute path to server/unified-server.mjs (this checkout's)
@@ -31,6 +32,19 @@ import { dirname } from 'path'
 //   pidFile       if set, write the child pid here for status/stop
 export function spawnDetachedServer({ serverScript, port, logFile = null, env = {}, extraCaPath = null, reclaimPort = false, pidFile = null }) {
   if (!existsSync(serverScript)) throw new Error(`server script not found: ${serverScript}`)
+  const childEnv = {
+    ...process.env,
+    ...env,
+    PORT: String(port),
+    // Sever any tmux-pane association so a hibernating agent's SIGHUP can't
+    // reap this server. This is the difference between a real daemon and the
+    // zombie that `node … &` produces.
+    TMUX: undefined,
+    TMUX_PANE: undefined,
+    ...(extraCaPath && !process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: extraCaPath } : {}),
+  }
+  const isolation = resolveServerIsolation({ env: childEnv, scriptPath: serverScript })
+  if (isolation.refuseReason) throw new Error(isolation.refuseReason)
   if (logFile && !existsSync(dirname(logFile))) mkdirSync(dirname(logFile), { recursive: true })
 
   if (reclaimPort) {
@@ -51,17 +65,7 @@ export function spawnDetachedServer({ serverScript, port, logFile = null, env = 
   const child = spawn('node', [serverScript, '--i-am-tlda-cli'], {
     detached: true,
     stdio: ['ignore', logFd, logFd],
-    env: {
-      ...process.env,
-      ...env,
-      PORT: String(port),
-      // Sever any tmux-pane association so a hibernating agent's SIGHUP can't
-      // reap this server. This is the difference between a real daemon and the
-      // zombie that `node … &` produces.
-      TMUX: undefined,
-      TMUX_PANE: undefined,
-      ...(extraCaPath && !process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: extraCaPath } : {}),
-    },
+    env: childEnv,
   })
   child.unref()
   if (pidFile) {
