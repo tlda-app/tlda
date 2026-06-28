@@ -975,6 +975,24 @@ async function uploadMarkdownWithImages(
   return link
 }
 
+async function fetchMarkdownChipText(chipUrl: string, chipPath: string): Promise<string> {
+  const candidates = [
+    chipUrl,
+    chipPath ? `/api/read-file?path=${encodeURIComponent(chipPath)}` : '',
+  ].filter(Boolean)
+  let lastError: unknown = null
+  for (const url of candidates) {
+    try {
+      const res = await fetch(url)
+      if (res.ok) return await res.text()
+      lastError = new Error(`HTTP ${res.status}`)
+    } catch (err) {
+      lastError = err
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('markdown chip fetch failed')
+}
+
 // --- Voice + trackpad input (global, one-time init) ---
 initVoice()
 
@@ -1971,6 +1989,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   // chatLogEl tracks the scroller element in state so effects can attach
   // listeners as soon as Virtuoso mounts its scroll container.
   const [chatLogEl, setChatLogEl] = useState<HTMLDivElement | null>(null)
+  const suppressNativeChipClickUntilRef = useRef(0)
 
   // Stable Scroller component for Virtuoso. Owns the .fleet-chat-log class
   // (so CanvasClipPanel's wheel reroute keeps targeting it) and captures the
@@ -2696,8 +2715,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (isMd && fetchUrl) {
         e.stopPropagation()
         const title = mdChip.querySelector('.md-file-chip')?.textContent || mdChip.textContent || chipPath.split('/').pop() || 'file'
-        fetch(fetchUrl)
-          .then(r => r.ok ? r.text() : Promise.reject(r.status))
+        fetchMarkdownChipText(chipUrl, chipPath)
           .then(text => {
             const baseUrl = chipUrl ? chipUrl.substring(0, chipUrl.lastIndexOf('/') + 1) : ''
             const resolved = baseUrl ? text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, src) => {
@@ -2707,7 +2725,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             openMarkdownColumn(title, resolved, mdChip)
           })
           .catch(() => {
-            openMarkdownColumn(title, '# Failed to load', mdChip)
+            openMarkdownColumn(title, `# Failed to load\n\n${chipUrl || chipPath || title}`, mdChip)
           })
         return
       }
@@ -4627,6 +4645,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       handleDocLinkClick(e as any)
     }
     const onClick = (e: Event) => {
+      if (Date.now() < suppressNativeChipClickUntilRef.current) return
       if (e.timeStamp - lastTouchHandled < 700) return
       handleDocLinkClick(e as any)
     }
@@ -5141,14 +5160,16 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (!drag.started) {
         // No drag happened = a TAP on a draggable chip/link. This handler claimed
         // the pointer (capture-phase stopImmediatePropagation on pointerdown), so
-        // the element's own click handler never ran. On mouse the browser still
-        // synthesizes a `click` afterward (the chip opens); on touch/stylus it
-        // does NOT, so the tap was dead. Re-fire the element's click so a tap does
-        // exactly what a mouse click does — same action, just the touch pointing
-        // device (Skip's pointer-device-parity rule). Touch/pen only: mouse keeps
-        // its native click, so no double-open.
-        if ((e.pointerType === 'touch' || e.pointerType === 'pen') && downTargetEl) {
-          downTargetEl.click()
+        // the element's own click handler may never run. Open the chip directly
+        // for every pointer type; suppress a follow-up native mouse click if the
+        // browser still emits one.
+        if (downTargetEl) {
+          suppressNativeChipClickUntilRef.current = Date.now() + 700
+          handleDocLinkClick({
+            target: downTargetEl,
+            preventDefault: () => e.preventDefault(),
+            stopPropagation: () => {},
+          } as any)
         }
         downTargetEl = null
         return

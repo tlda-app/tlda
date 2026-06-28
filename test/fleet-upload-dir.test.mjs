@@ -35,6 +35,7 @@ async function withUploadServer(uploadDir, fn) {
 test('/api/upload writes to persistent configured upload directory', async () => {
   const uploadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-upload-dir-'))
   try {
+    let uploadedUrl = null
     await withUploadServer(uploadDir, async (base) => {
       const res = await fetch(`${base}/api/upload`, {
         method: 'POST',
@@ -46,6 +47,12 @@ test('/api/upload writes to persistent configured upload directory', async () =>
       assert.equal(path.dirname(json.path), uploadDir)
       assert.match(json.url, /^\/api\/file\?path=/)
       assert.equal(fs.readFileSync(json.path, 'utf8'), '# upload proof\n')
+      uploadedUrl = json.url
+    })
+    await withUploadServer(uploadDir, async (base) => {
+      const res = await fetch(`${base}${uploadedUrl}`)
+      assert.equal(res.status, 200)
+      assert.equal(await res.text(), '# upload proof\n')
     })
   } finally {
     fs.rmSync(uploadDir, { recursive: true, force: true })
