@@ -50,6 +50,9 @@ export function startServer(port = 15176) {
         PROJECTS_DIR: projectsDir,
         PUBLIC_DIR: join(ROOT, 'server', 'public'),
         TLDA_NO_AUTH: '1',
+        // Test server runs against temp dirs from a worktree; declare it a dev/test
+        // server so the worktree-isolation guard (shared/server-identity.mjs) allows it.
+        TLDA_DEV_SERVER: '1',
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     })

@@ -43,6 +43,9 @@ function startServer() {
         DATA_DIR: dataDir,
         PROJECTS_DIR: projectsDir,
         PUBLIC_DIR: join(ROOT, 'server', 'public'),
+        // Test server runs against temp dirs from a worktree; declare it a dev/test
+        // server so the worktree-isolation guard (shared/server-identity.mjs) allows it.
+        TLDA_DEV_SERVER: '1',
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     })
