@@ -10,6 +10,7 @@
  *   DELETE /:name               Remove project
  *   GET    /:name/files         List source files
  *   GET    /:name/source/:file  Read source file content
+ *   PUT    /:name/source/:file  Write source file content and trigger build
  *   POST   /:name/push          Push files + trigger build
  *   POST   /:name/build         Trigger rebuild
  *   GET    /:name/build/status  Build status + log
@@ -249,6 +250,20 @@ router.get('/:name/source/:file', requireRead, (req, res) => {
   } catch (e) {
     res.status(400).json({ error: e.message })
   }
+})
+
+// Write a specific source file's content and trigger the normal project push path
+router.put('/:name/source/:file', requireRw, async (req, res) => {
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+  const content = typeof req.body?.content === 'string' ? req.body.content : null
+  if (content === null) return res.status(400).json({ error: 'Required: content string' })
+  const result = await processProjectPush(req.params.name, {
+    files: [{ path: req.params.file, content }],
+    editedBy: req.body?.editedBy,
+  })
+  const { status, ...payload } = result
+  res.status(status).json(payload)
 })
 
 // Synctex path-based lookup: trace highlight path through synctex records

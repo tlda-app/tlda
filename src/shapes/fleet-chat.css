@@ -3248,6 +3248,125 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   background: var(--glass-bg, rgba(30,30,30,0.7));
 }
 .fleet-docview:hover .fleet-docview-nav { opacity: 0.8; }
+.fleet-source-editor {
+  position: relative;
+  overflow: hidden;
+  border-radius: 0;
+  background: transparent;
+  border: 0;
+  color: var(--text, #a8a8c0);
+  box-shadow: none;
+}
+.fleet-source-editor-status {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 16px;
+  gap: 10px;
+  padding: 2px 10px;
+  box-sizing: border-box;
+  background: transparent;
+  color: var(--text-dim, #8888a0);
+  font: 10px/1.2 "SF Mono", Menlo, Monaco, "Courier New", monospace;
+  pointer-events: none;
+  opacity: 0.24;
+}
+.fleet-source-editor-vim {
+  color: inherit;
+  white-space: nowrap;
+}
+.fleet-source-editor-conflict {
+  position: absolute;
+  right: 6px;
+  top: 6px;
+  z-index: 3;
+  display: inline-flex;
+  gap: 4px;
+  padding: 2px;
+  background: var(--glass-bg, rgba(0,0,0,0.35));
+  pointer-events: all;
+}
+.fleet-source-editor-conflict button {
+  border: 0;
+  background: transparent;
+  color: var(--red, #e55);
+  font: 10px/1.2 "SF Mono", Menlo, Monaco, "Courier New", monospace;
+  padding: 2px 4px;
+  cursor: pointer;
+}
+.fleet-source-editor-conflict button:disabled {
+  color: var(--text-dim, #8888a0);
+  cursor: default;
+  opacity: 0.45;
+}
+.fleet-source-editor-body {
+  position: absolute;
+  inset: 0;
+}
+.fleet-source-editor-with-status .fleet-source-editor-body {
+  bottom: 20px;
+}
+.fleet-source-editor-cm {
+  position: absolute;
+  inset: 0;
+}
+.fleet-source-editor:has(.cm-vim-panel) .fleet-source-editor-status {
+  visibility: hidden;
+}
+.fleet-source-editor .cm-panels-bottom {
+  position: absolute !important;
+  left: 0;
+  right: 0;
+  top: auto !important;
+  bottom: -20px !important;
+  z-index: 4;
+  border: 0;
+  background: transparent;
+  color: var(--text-dim, #8888a0);
+  font: 10px/1.2 "SF Mono", Menlo, Monaco, "Courier New", monospace;
+  opacity: 0.56;
+}
+.fleet-source-editor .cm-vim-panel {
+  min-height: 16px;
+  padding: 2px 10px;
+  background: transparent;
+  color: inherit;
+  box-sizing: border-box;
+}
+.fleet-source-editor .cm-vim-panel input {
+  background: transparent;
+  color: inherit;
+  border: 0;
+  outline: 0;
+  font: inherit;
+}
+.fleet-source-editor .cm-vim-panel > div > span {
+  display: none !important;
+}
+.fleet-source-editor .cm-vim-panel > div > span * {
+  display: none !important;
+}
+.fleet-source-editor .cm-vim-panel > div > div > span:nth-of-type(n + 2) {
+  display: none !important;
+}
+.fleet-source-editor .cm-vim-panel > div > div > span:nth-of-type(n + 2) * {
+  display: none !important;
+}
+.fleet-source-editor-error {
+  position: absolute;
+  inset: 8px 12px auto 12px;
+  z-index: 1;
+  padding: 8px;
+  border-radius: 6px;
+  background: rgba(238, 85, 85, 0.12);
+  color: var(--red, #e55);
+  font: 12px/1.4 "SF Mono", Menlo, Monaco, "Courier New", monospace;
+}
 .docview-nav-btn {
   background: none;
   border: none;

@@ -904,6 +904,8 @@ export function FleetHUD({
       const t = e.target as Node | null
       const inHud = (t && wrap.contains(t)) || (document.activeElement instanceof Node && wrap.contains(document.activeElement))
       if (!inHud) return // main-canvas undo keeps its normal path
+      const targetEl = t instanceof Element ? t : document.activeElement instanceof Element ? document.activeElement : null
+      if (targetEl?.closest('.fleet-source-editor')) return
       e.preventDefault()
       e.stopImmediatePropagation()
       const redo = k === 'y' || (k === 'z' && e.shiftKey)
