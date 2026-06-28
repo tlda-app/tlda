@@ -16,6 +16,7 @@ import {
   modelTrustTier,
   normalizeCapability,
   normalizeSpawnPolicy,
+  projectCapabilityToMode,
   resolveDaemonSpawnGrant,
   resolveProjectProfile,
   resolveProjectProfileName,
@@ -87,6 +88,14 @@ describe('spawn policy', () => {
       policy: 'tlda-projects',
       category: 'write-scope',
     })
+  })
+
+  it('projects trusted full launches to Claude classifier bypass', () => {
+    assert.equal(projectCapabilityToMode('read'), 'default')
+    assert.equal(projectCapabilityToMode('write'), 'default')
+    assert.equal(projectCapabilityToMode('tlda-write'), 'default')
+    assert.equal(projectCapabilityToMode('full'), 'bypassPermissions')
+    assert.equal(projectCapabilityToMode('full', 'auto'), 'auto')
   })
 
   it('lets a write agent always confer write to a trusted-model child', () => {

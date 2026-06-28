@@ -430,7 +430,7 @@ export function projectCapabilityToMode(capability, explicitMode = null) {
   // intentionally force that bypass even without a fence.
   const cap = normalizeCapability(capability)
   if (explicitMode) return explicitMode
-  if (cap === 'full') return 'auto'
+  if (cap === 'full') return 'bypassPermissions'
   return 'default'
 }
 

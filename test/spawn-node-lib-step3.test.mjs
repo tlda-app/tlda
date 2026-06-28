@@ -168,6 +168,29 @@ test('launch policy keeps built-in write unfenced while global fence is off', ()
   assert.match(cmd, /--permission-mode 'default'/)
 })
 
+test('launch policy maps built-in full to Claude permission bypass', () => {
+  const policy = resolveLaunchPolicy({
+    spawnPolicy: { capability: 'full', policy: 'unsandboxed' },
+    harness: 'claude',
+    model: 'claude-opus-4-8',
+    cwd: tmpdir(),
+  })
+  assert.equal(policy.fenceGloballyDisabled, true)
+  assert.equal(policy.policyName, 'unsandboxed')
+  assert.equal(policy.leasePolicy, null)
+  assert.equal(policy.permissionMode, 'bypassPermissions')
+  const cmd = claude.buildCmd({
+    fleetId: 'fleet:test',
+    tmuxSession: 'fleet-test',
+    model: 'claude-opus-4-8',
+    mode: policy.permissionMode,
+    includePrompt: false,
+    config: {},
+  })
+  assert.match(cmd, /--dangerously-skip-permissions/)
+  assert.doesNotMatch(cmd, /--permission-mode/)
+})
+
 test('explicit fenced claude launch bypasses the native permission classifier', () => {
   const policy = resolveLaunchPolicy({
     spawnPolicy: { capability: 'write', policy: 'cwd' },
