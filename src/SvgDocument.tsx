@@ -28,6 +28,7 @@ import { ZoomableImageShapeUtil } from './shapes/ZoomableImageShape'
 import { FleetChatShapeUtil } from './shapes/FleetChatShape'
 import { FleetAgentsShapeUtil } from './shapes/FleetAgentsShape'
 import { FleetDocViewShapeUtil } from './shapes/FleetDocViewShape'
+import { FleetVideoShapeUtil } from './shapes/FleetVideoShape'
 import { DocClipShapeUtil } from './shapes/DocClipShape'
 import { FleetPillShapeUtil } from './shapes/FleetPillShape'
 import { FleetSearchShapeUtil } from './shapes/FleetSearchShape'
@@ -126,6 +127,7 @@ import { useDividerDiff } from './hooks/useDividerDiff'
 import { ShadowHistoryOverlay } from './overlays/ShadowHistoryOverlay'
 import { PlaybackPill } from './pills/PlaybackPill'
 import { SlidesNavigator } from './SlidesNavigator'
+import { LiveRoomAudio } from './livekit/LiveRoomAudio'
 
 // Shape sync server = the active config's STORE (ws); tldraw license = the active
 // config's licenseKey. Both come from the server-injected config (activeConfig).
@@ -938,7 +940,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     )
     // Wrap every custom shape util with an error boundary so a single broken shape
     // renders an error placeholder instead of crashing the entire app.
-    const customUtils = [MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetInboxShapeUtil, FleetNotificationsShapeUtil, FleetTouchInboxShapeUtil, FleetSourceEditorShapeUtil, FleetDocViewShapeUtil, DocClipShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, ClusterShapeUtil, TerminalShapeUtil, TaskInboxShapeUtil, PlaybackFrameShapeUtil, ReaperShapeUtil, OutlineShapeUtil, GraphNodeShapeUtil, GraphExplainShapeUtil, UsageMeterShapeUtil]
+    const customUtils = [MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetInboxShapeUtil, FleetNotificationsShapeUtil, FleetTouchInboxShapeUtil, FleetSourceEditorShapeUtil, FleetDocViewShapeUtil, FleetVideoShapeUtil, DocClipShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, ClusterShapeUtil, TerminalShapeUtil, TaskInboxShapeUtil, PlaybackFrameShapeUtil, ReaperShapeUtil, OutlineShapeUtil, GraphNodeShapeUtil, GraphExplainShapeUtil, UsageMeterShapeUtil]
     const all = [...utils, ...customUtils.map(u => withShapeErrorBoundary(u))];
     (window as any).__tldraw_shape_utils__ = all
     return all
@@ -1214,6 +1216,15 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
         {isPresentation && <DraftPill />}{isPresentation && role === 'presenter' && <AnnotationVisibilityPill />}<FollowingBadge />
         <ViewPinBadge docName={document.name} />
         <PlaybackPill state={playbackState} />
+        {editorRef.current && (
+          <LiveRoomAudio
+            docName={document.name}
+            editor={editorRef.current}
+            shapeUtils={shapeUtils}
+            tools={tools}
+            licenseKey={LICENSE_KEY}
+          />
+        )}
         <SyncErrorPill />
         <BuildErrorPill />
         <BuildWarningPill warnings={remapWarnings}>

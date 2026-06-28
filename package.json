@@ -57,6 +57,8 @@
     "codemirror-lang-latex": "^0.2.0",
     "jsdom": "^27.0.1",
     "katex": "^0.16.28",
+    "livekit-client": "^2.20.0",
+    "livekit-server-sdk": "^2.15.5",
     "markdown-it": "^14.1.1",
     "markdown-it-anchor": "^9.2.0",
     "node-pty": "^1.1.0",

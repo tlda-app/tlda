@@ -13,7 +13,7 @@ import { isDocumentPageShape } from './document-pages'
  *  ownership filtering, visibility, copy gating, and hit-test exclusion.
  *  Import this everywhere instead of defining local copies. */
 export const FLEET_SHAPE_TYPES = new Set([
-  'fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview', 'fleet-source-editor', 'fleet-reaper', 'fleet-inbox', 'fleet-touch-inbox', 'fleet-notifications',
+  'fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview', 'fleet-source-editor', 'fleet-video', 'fleet-reaper', 'fleet-inbox', 'fleet-touch-inbox', 'fleet-notifications',
 ])
 
 export const FLEET_SHAPE_SELECTOR = [...FLEET_SHAPE_TYPES]
@@ -187,6 +187,7 @@ export const FLEET_TOOL_DIMS: Record<string, { w: number; h: number }> = {
   'fleet-notifications': { w: 360, h: 220 },
   'fleet-source-editor': { w: 560, h: 520 },
   'fleet-reaper': { w: 480, h: 360 },
+  'fleet-video': { w: 260, h: 172 },
 }
 
 /**
