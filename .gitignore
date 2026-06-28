@@ -31,6 +31,7 @@ server/data/
 
 # Built viewer SPA (copied from dist/ to server/public/ for unified server)
 server/public/
+server/build-info.json
 
 # Project build output (gitignore all except test fixtures)
 server/projects/*

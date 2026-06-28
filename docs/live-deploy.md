@@ -29,6 +29,7 @@ live `phi` env.
 Run from `/Users/skip/work/tlda`:
 
 ```bash
+node scripts/live-deploy-preflight.mjs
 npm run build
 fly deploy -c fly.live.toml
 ```
@@ -48,14 +49,18 @@ fly deploy -c fly.live.toml
 ## Before Deploy
 
 ```bash
-git status --short
 git log --oneline -5
+node scripts/live-deploy-preflight.mjs
 npm run build
 ```
 
-Make sure the commits intended for `phi` are on `main`. The live Docker image
-copies `dist/`, so `npm run build` must happen before deploy or the server can
-ship stale frontend assets.
+Make sure the commits intended for `phi` are on `main`. The preflight refuses a
+dirty checkout, resolves the committed HEAD, and writes the generated
+`server/build-info.json` stamp that the live image copies for runtime status.
+Run it before `npm run build`; the stamp is gitignored so writing it after the
+clean check does not dirty the deploy commit. The live Docker image copies
+`dist/`, so `npm run build` must happen before deploy or the server can ship
+stale frontend assets.
 
 ## Deploy
 
