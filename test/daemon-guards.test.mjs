@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 
 import {
-  buildFleetSpawnArgs,
   decideMissingLiveness,
   detectSpawnStartupFailureTranscript,
   harnessKindForAgent,
@@ -57,97 +56,6 @@ test('pidfile is only removed when it matches our pid', () => {
   assert.equal(existsSync(pidfile), false)
 
   rmSync(dir, { recursive: true, force: true })
-})
-
-test('daemon spawn args preserve codex kind and capability on fresh spawn (capability-derived policy → no --policy)', () => {
-  // A capability-derived policy (no .name) must travel ONLY via --spawn-capability.
-  // Passing its derived .policy as --policy is what made fleet-spawn treat every UI
-  // spawn as an explicit fence request and fence the daemon — so --policy is omitted.
-  const { agentName, args } = buildFleetSpawnArgs({
-    name: 'codexrel55',
-    model: 'gpt-5.5',
-    kind: 'codex',
-    cwd: '/tmp/project',
-    effort: 'high',
-    mode: 'default',
-    spawnPolicy: { capability: 'workspace-write', policy: 'tlda-projects' },
-  })
-
-  assert.equal(agentName, 'codexrel55')
-  assert.deepEqual(args, [
-    '--fresh', 'codexrel55',
-    '--model', 'gpt-5.5',
-    '--kind', 'codex',
-    '--effort', 'high',
-    '--mode', 'default',
-    '--spawn-capability', 'workspace-write',
-    '--cwd', '/tmp/project',
-    '--no-attach',
-  ])
-})
-
-test('daemon spawn args do not pass --policy for a standard rung', () => {
-  // Standard rungs carry their fence region inside --spawn-capability. Passing
-  // --policy here would make fleet-spawn treat the spawn as an explicit fence
-  // request and bypass the global fence-off default.
-  const { args } = buildFleetSpawnArgs({
-    name: 'mathbot',
-    model: 'opus',
-    kind: 'claude',
-    cwd: '/tmp/project',
-    mode: 'default',
-    spawnPolicy: { name: 'tlda-write', capability: 'workspace-write', policy: 'tlda-projects' },
-  })
-
-  assert.deepEqual(args, [
-    '--fresh', 'mathbot',
-    '--model', 'opus',
-    '--kind', 'claude',
-    '--mode', 'default',
-    '--spawn-capability', 'workspace-write',
-    '--cwd', '/tmp/project',
-    '--no-attach',
-  ])
-})
-
-test('daemon spawn args pass --policy for a genuinely custom named policy', () => {
-  const { args } = buildFleetSpawnArgs({
-    name: 'custombot',
-    model: 'opus',
-    kind: 'claude',
-    cwd: '/tmp/project',
-    mode: 'default',
-    spawnPolicy: { name: 'ops-single-agent-test', capability: 'workspace-write', policy: 'tlda-projects' },
-  })
-
-  assert.deepEqual(args, [
-    '--fresh', 'custombot',
-    '--model', 'opus',
-    '--kind', 'claude',
-    '--mode', 'default',
-    '--spawn-capability', 'workspace-write',
-    '--policy', 'tlda-projects',
-    '--cwd', '/tmp/project',
-    '--no-attach',
-  ])
-})
-
-test('daemon spawn args use bare agent name for respawn', () => {
-  const { args } = buildFleetSpawnArgs({
-    name: 'codexrel55',
-    model: 'gpt-5.5',
-    kind: 'codex',
-    respawn: true,
-    spawnPolicy: { capability: 'workspace-write-no-net' },
-  })
-
-  assert.deepEqual(args, [
-    'codexrel55',
-    '--model', 'gpt-5.5',
-    '--kind', 'codex',
-    '--spawn-capability', 'workspace-write-no-net',
-    '--no-attach',
-  ])
 })
 
 test('playwright reaper does not classify codex cache grants as browsers', () => {
@@ -251,6 +159,17 @@ test('already-hibernating agent remains hibernating on liveness miss', () => {
     alive: false,
     hibernate: true,
     since: 5_000,
+  })
+})
+
+test('runtime liveness miss can hibernate immediately when process truth is required', () => {
+  assert.deepEqual(decideMissingLiveness({
+    now: 10_000,
+    graceMs: 0,
+  }), {
+    alive: false,
+    hibernate: true,
+    since: 10_000,
   })
 })
 

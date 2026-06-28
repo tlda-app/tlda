@@ -117,7 +117,7 @@ const VALUE_FLAGS = new Set([
   'server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format',
   'session', 'target', 'timeout', 'id', 'book', 'worktree', 'port', 'browser',
   'model', 'cwd', 'effort', 'mode', 'kind', 'spawn-capability', 'capability',
-  'to', 'limit', 'config',
+  'agent-id', 'policy', 'to', 'limit', 'config',
 ])
 
 function getFlag(name, defaultVal = null) {
@@ -1440,7 +1440,7 @@ Example:
 
 // ---- agent commands ----
 // `spawn` routes through the fleet server/daemon path. `spawn-local` is the
-// explicit local primitive that shells out to bin/fleet-spawn.py on this machine.
+// explicit local primitive backed by the node spawn library on this machine.
 
 function agentSessionName(name) {
   return name.startsWith('fleet-') ? name : `fleet-${name}`
@@ -1478,19 +1478,39 @@ async function attachToAgent(name) {
 }
 
 async function runFleetSpawn(spawnArgs) {
-  const { spawn: cpSpawn } = await import('child_process')
-  const spawnScript = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'fleet-spawn.py')
-  if (!existsSync(spawnScript)) {
-    console.error(red(`fleet-spawn script not found: ${spawnScript}`))
+  if (spawnArgs.includes('--list-models')) {
+    const { listModels } = await import('../bin/lib/spawn/models.mjs')
+    console.log(JSON.stringify(listModels(), null, 2))
+    return
+  }
+  const { spawn } = await import('../bin/lib/spawn/index.mjs')
+  const session = flagFromRaw(spawnArgs, 'session')
+  const refresh = hasRawFlag(spawnArgs, 'refresh')
+  const fresh = hasRawFlag(spawnArgs, 'fresh')
+  const name = positionalFromRaw(spawnArgs, 0)
+  const params = {
+    spawnMode: session ? 'session' : (refresh ? 'refresh' : (fresh ? 'fresh' : 'respawn')),
+    name,
+    agentId: flagFromRaw(spawnArgs, 'agent-id') || undefined,
+    model: flagFromRaw(spawnArgs, 'model') || undefined,
+    kind: flagFromRaw(spawnArgs, 'kind') || undefined,
+    cwd: flagFromRaw(spawnArgs, 'cwd') || undefined,
+    effort: flagFromRaw(spawnArgs, 'effort') || undefined,
+    permissionMode: flagFromRaw(spawnArgs, 'mode') || undefined,
+    sessionId: session || undefined,
+    enroll: hasRawFlag(spawnArgs, 'enroll'),
+  }
+  if (!params.name && !params.sessionId) {
+    console.error(red('Usage: tlda agent spawn-local [--fresh|--refresh|--session uuid] <agent> [--model model] [--kind kind] [--cwd path]'))
     process.exit(1)
   }
-  const pythonDeps = join(dirname(fileURLToPath(import.meta.url)), '..', '.python-deps')
-  const env = existsSync(pythonDeps)
-    ? { ...process.env, PYTHONPATH: [pythonDeps, process.env.PYTHONPATH].filter(Boolean).join(delimiter) }
-    : process.env
-  const child = cpSpawn('python3', [spawnScript, ...spawnArgs], { stdio: 'inherit', env })
-  child.on('exit', (code) => process.exit(code ?? 0))
-  await new Promise(() => {}) // keep alive until child exits
+  try {
+    const result = await spawn(params)
+    console.log(`${result.tmuxSession} (${result.fleetId}) spawned in ${params.cwd || process.cwd()}`)
+  } catch (e) {
+    console.error(red(e?.message || String(e)))
+    process.exit(1)
+  }
 }
 
 function wsUrlFromHttp(server) {
@@ -1528,8 +1548,13 @@ function parseRoutedSpawn(rawArgs) {
   const name = positionalFromRaw(rawArgs, 0)
   const fresh = hasRawFlag(rawArgs, 'fresh')
   const refresh = hasRawFlag(rawArgs, 'refresh')
+  const session = flagFromRaw(rawArgs, 'session')
   const body = {}
-  if (fresh) {
+  if (session) {
+    body.session = session
+    if (name) body.name = name
+    if (hasRawFlag(rawArgs, 'enroll')) body.enroll = true
+  } else if (fresh) {
     if (!name) throw new Error('Usage: tlda agent spawn --fresh <name> [--model model] [--kind kind] [--cwd path]')
     body.fresh = true
     body.name = name
@@ -1769,6 +1794,7 @@ Usage:
   tlda agent list [--limit N] [--local]
   tlda agent spawn <agent>
   tlda agent spawn --fresh <name>
+  tlda agent spawn --session <uuid> [--enroll] [name]
   tlda agent spawn-local <agent>
   tlda agent move <agent> --to <machine>
   tlda agent check-ready <agent> [--timeout seconds]
@@ -1787,7 +1813,7 @@ Network:
   --no-net    rare explicit network-off modifier
 
 spawn routes through the fleet server and target daemon; spawn-local directly invokes
-the local fleet-spawn.py primitive on this machine.
+the local primitive on this machine.
 move must be run on the agent's current machine; only the destination is remote.
 The capability command is operator-only: it refuses from fleet agent env/tmux context.
 check-ready verifies registry + local tmux/runtime + recent register/my_task evidence.

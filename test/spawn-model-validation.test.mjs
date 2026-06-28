@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
 import test from 'node:test'
+import { listModels } from '../bin/lib/spawn/models.mjs'
 
 import {
   formatSpawnModelSummary,
@@ -56,14 +55,8 @@ test('spawn model summary exposes canonical aliases without hiding Codex or Goos
   assert.match(summary, /goose: .*deepseek -> deepseek\/deepseek-v4-pro/)
 })
 
-test('fleet-spawn live model catalog keeps DeepSeek and Codex aliases spawnable', () => {
-  const out = execFileSync('python3', ['bin/fleet-spawn.py', '--list-models'], {
-    cwd: fileURLToPath(new URL('..', import.meta.url)),
-    encoding: 'utf8',
-    timeout: 10_000,
-  })
-  const liveCatalog = JSON.parse(out)
-
+test('node spawn live model catalog keeps DeepSeek and Codex aliases spawnable', () => {
+  const liveCatalog = listModels()
   assert.equal(validateSpawnModelSelection({ model: 'deepseek', kind: 'goose' }, liveCatalog).ok, true)
   assert.equal(validateSpawnModelSelection({ model: 'gpt-5.5', kind: 'codex' }, liveCatalog).ok, true)
 

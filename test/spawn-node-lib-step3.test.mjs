@@ -1,0 +1,115 @@
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import test from 'node:test'
+import { fenceSettings, wrapSandboxCmd } from '../bin/lib/spawn/fence.mjs'
+import { codexSandboxProjection, resolveLeasePolicy } from '../bin/lib/spawn/permissions.mjs'
+import { findClaudeSession, findCodexRollout, scanClaudeSessionIdentity, stripSyntheticTail } from '../bin/lib/spawn/resume.mjs'
+import { claudeStartupDialogAction } from '../bin/lib/spawn/tmux.mjs'
+
+function tmpdir() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'spawn-node-step3-'))
+}
+
+function writeJsonl(file, rows) {
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, rows.map((row) => `${typeof row === 'string' ? row : JSON.stringify(row)}\n`).join(''))
+}
+
+test('Claude resume scan uses the first own Registered fleet result and strips synthetic tail', () => {
+  const root = tmpdir()
+  const projectsBase = path.join(root, 'projects')
+  const sid = '11111111-1111-4111-8111-111111111111'
+  const fpath = path.join(projectsBase, '-tmp-step3', `${sid}.jsonl`)
+  writeJsonl(fpath, [
+    { type: 'user', message: { content: 'boot' } },
+    { toolUseResult: [{ text: 'Registered fleet:aaa11111. Your name: "alpha"' }] },
+    { toolUseResult: [{ text: 'Registered fleet:bbb22222. Your name: "child"' }] },
+    { type: 'assistant', message: { id: '22222222-2222-4222-8222-222222222222', model: 'claude-<synthetic>' } },
+    '',
+  ])
+  const found = findClaudeSession({ id: 'fleet:aaa11111' }, { projectsBase })
+  assert.equal(found.sessionId, sid)
+  const stripped = stripSyntheticTail(sid, { projectsBase })
+  assert.equal(stripped.stripped, 2)
+  assert.match(fs.readFileSync(fpath, 'utf8'), /fleet:bbb22222/)
+  assert.doesNotMatch(fs.readFileSync(fpath, 'utf8'), /<synthetic>/)
+})
+
+test('Claude session scan prefers JSONL cwd over ambiguous project directory decoding', () => {
+  const root = tmpdir()
+  const projectsBase = path.join(root, 'projects')
+  const cwd = tmpdir()
+  const sid = '55555555-5555-4555-8555-555555555555'
+  const fpath = path.join(projectsBase, '-Users-skip-work-tlda--worktrees-spawn-node-lib', `${sid}.jsonl`)
+  writeJsonl(fpath, [
+    { type: 'user', cwd, message: { content: 'boot' } },
+    { toolUseResult: [{ text: 'Registered fleet:cwd55555. Your name: "cwd-agent"' }] },
+  ])
+  const identity = scanClaudeSessionIdentity(sid, { projectsBase })
+  assert.equal(identity.cwd, cwd)
+  const found = findClaudeSession({ id: 'fleet:cwd55555' }, { projectsBase })
+  assert.equal(found.cwd, cwd)
+})
+
+test('Claude startup dialog classifier covers unattended resume gates', () => {
+  assert.equal(claudeStartupDialogAction('WARNING: Loading development channels\nEnter to confirm'), 'devchannels')
+  assert.equal(claudeStartupDialogAction('Resume from summary (recommended)\nEnter to confirm'), 'resume-full')
+  assert.equal(claudeStartupDialogAction('Allow external CLAUDE.md file imports?\nEnter to confirm'), 'allow-external-imports')
+  assert.equal(claudeStartupDialogAction('normal prompt\n❯'), null)
+})
+
+test('Codex rollout scan uses first own registration and newest matching rollout', () => {
+  const root = tmpdir()
+  const sessionsBase = path.join(root, 'codex-sessions')
+  const oldId = '33333333-3333-4333-8333-333333333333'
+  const newId = '44444444-4444-4444-8444-444444444444'
+  const oldPath = path.join(sessionsBase, '2026', '06', '27', `rollout-2026-06-27T00-00-00-${oldId}.jsonl`)
+  const newPath = path.join(sessionsBase, '2026', '06', '28', `rollout-2026-06-28T00-00-00-${newId}.jsonl`)
+  writeJsonl(oldPath, [
+    { type: 'session_meta', payload: { id: oldId, cwd: '/tmp/old' } },
+    'Registered fleet:codexaaa. Your name: "codex-a"',
+  ])
+  writeJsonl(newPath, [
+    { type: 'session_meta', payload: { id: newId, cwd: '/tmp/new' } },
+    'Registered fleet:codexaaa. Your name: "codex-a"',
+    'Registered fleet:otherone. Your name: "child"',
+  ])
+  fs.utimesSync(oldPath, new Date('2026-06-27T00:00:00Z'), new Date('2026-06-27T00:00:00Z'))
+  fs.utimesSync(newPath, new Date('2026-06-28T00:00:00Z'), new Date('2026-06-28T00:00:00Z'))
+  const found = findCodexRollout({ id: 'fleet:codexaaa' }, { sessionsBase })
+  assert.equal(found.rolloutId, newId)
+  assert.equal(found.cwd, '/tmp/new')
+})
+
+test('lease policy and fence wrapper stay outside harness adapters', () => {
+  const cwd = tmpdir()
+  const { leasePolicy } = resolveLeasePolicy({
+    spawnPolicy: { capability: 'write', policy: 'cwd' },
+    harness: 'codex',
+    model: 'gpt-5.5',
+    cwd,
+    config: { agentSandbox: { runner: { command: 'fence' } } },
+  })
+  assert.equal(leasePolicy.policy, 'cwd')
+  assert.equal(leasePolicy.network, true)
+  assert.ok(leasePolicy.write_roots.includes(path.join(cwd, '.git')))
+  const settings = fenceSettings(leasePolicy, { api: 'https://tlda-fly.example.test', dnsAlias: { host: 'tlda-fly.example.test', address: '100.80.1.2' } })
+  assert.equal(settings.filesystem.defaultDenyRead, false)
+  assert.ok(settings.filesystem.allowWrite.some((p) => p.endsWith('/.git')))
+  assert.equal(settings.network.allowLocalOutbound, true)
+  const wrapped = wrapSandboxCmd('echo hi', leasePolicy, { api: 'https://tlda-fly.example.test' })
+  assert.match(wrapped, /TLDA_SANDBOX_LEASE=/)
+  assert.match(wrapped, /'?fence'? '?--settings'?/)
+})
+
+test('fenced codex uses Codex danger-full-access under the outer fence', () => {
+  const projection = codexSandboxProjection(
+    { capability: 'write', policy: 'cwd' },
+    tmpdir(),
+    { fenced: true },
+  )
+  assert.equal(projection.sandboxMode, 'danger-full-access')
+  assert.deepEqual(projection.workspaceWriteConfigArgs, [])
+})

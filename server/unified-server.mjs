@@ -43,6 +43,7 @@ import { lookup as mimeLookup } from 'mime-types'
 import { DEFAULT_PORT, hasTls, loadConfig, resolveConfig } from '../shared/config.mjs'
 import { normalizeUsageStatus } from '../shared/usage-status.mjs'
 import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
+import { listModels as listSpawnModels } from '../bin/lib/spawn/models.mjs'
 import { labelsForAgent, parseFilter, evalExpr } from '../shared/fleet-labels.mjs'
 import { phaseFromName, baseName, PHASES } from '../shared/lineage-name.mjs'
 import { daemonHelloDecision } from '../shared/daemon-identity.mjs'
@@ -515,6 +516,12 @@ function sendRpc(machineId, op, params = {}) {
   })
 }
 
+function rpcErrorMessage(error) {
+  if (typeof error === 'string') return error
+  if (error?.message && typeof error.message === 'string') return error.message
+  try { return JSON.stringify(error) } catch { return String(error) }
+}
+
 function logSpawnDaemonMiss(machineId, context, detail = {}) {
   if (!daemonWelcomeSeenAt.has(machineId)) return
   const ageMs = Date.now() - daemonWelcomeSeenAt.get(machineId)
@@ -860,13 +867,15 @@ async function performSpawnRelay(caller, msg) {
   if (!caller?.id) throw new Error('spawn caller identity is required')
   const {
     name, agent, model, doc, cwd, respawn, fresh, refresh, effort, kind, mode,
-    capability, spawnCapability,
+    capability, spawnCapability, session, sessionId, session_id, enroll,
   } = msg || {}
+  const requestedSession = session || sessionId || session_id || null
+  const sessionMode = !!requestedSession
   const shouldRespawn = !!respawn || (!fresh && !refresh && !!agent)
-  let spawnName = fresh ? name : (agent || name)
+  let spawnName = sessionMode ? (name || null) : (fresh ? name : (agent || name))
   let refreshTarget = null
   let routeTarget = null
-  if ((shouldRespawn || refresh) && agent) {
+  if (!sessionMode && (shouldRespawn || refresh) && agent) {
     const existing = fleetStore?.findAgent(agent)
     routeTarget = existing || null
     // Carry the fleet-id (not the friendly name) so the wake targets that exact
@@ -876,10 +885,10 @@ async function performSpawnRelay(caller, msg) {
     spawnName = existing?.id || agent
     if (refresh) refreshTarget = existing
   }
-  if (!spawnName) throw new Error(fresh ? 'fresh spawn requires name' : 'agent name required')
+  if (!sessionMode && !spawnName) throw new Error(fresh ? 'fresh spawn requires name' : 'agent name required')
   if (refresh && !refreshTarget) refreshTarget = fleetStore?.findAgent(spawnName)
-  if ((shouldRespawn || refresh) && !routeTarget) routeTarget = fleetStore?.findAgent(spawnName) || null
-  if ((shouldRespawn || refresh) && !routeTarget) throw new Error(`spawn target not found: ${spawnName}`)
+  if (!sessionMode && (shouldRespawn || refresh) && !routeTarget) routeTarget = fleetStore?.findAgent(spawnName) || null
+  if (!sessionMode && (shouldRespawn || refresh) && !routeTarget) throw new Error(`spawn target not found: ${spawnName}`)
   const spawnKind = kind || refreshTarget?.metadata?.kind
   if (refresh && spawnKind === 'codex') {
     throw new Error('codex refresh is not supported through MCP spawn; use respawn with a real resume handle')
@@ -890,21 +899,23 @@ async function performSpawnRelay(caller, msg) {
   const route = resolveSpawnMachine({
     caller,
     targetAgent: routeTarget,
-    fresh: !!fresh,
-    respawn: shouldRespawn && !refresh,
+    fresh: !!fresh || sessionMode,
+    respawn: !sessionMode && shouldRespawn && !refresh,
     refresh: !!refresh,
     fleetStore,
     daemonConnections,
     onDaemonMissing: (machineId, context, detail) => logSpawnDaemonMiss(machineId, context, detail),
   })
   const machineId = route.machine_id
-  const resolved = resolveSpawnTarget
+  const resolved = sessionMode
+    ? { name: spawnName, respawn: false }
+    : (resolveSpawnTarget
     ? await resolveSpawnTarget(spawnName, shouldRespawn && !refresh, {
         fresh: !!fresh,
         requested: requestedSpec,
       })
-    : { name: spawnName, respawn: shouldRespawn && !refresh }
-  const pendingAgentId = (!resolved.respawn && !refresh) ? mintFleetId() : null
+    : { name: spawnName, respawn: shouldRespawn && !refresh })
+  const pendingAgentId = (!sessionMode && !resolved.respawn && !refresh) ? mintFleetId() : null
   const readiness = pendingAgentId
     ? spawnLibrarian.awaitRegister({ id: pendingAgentId, name: spawnName, spec: requestedSpec })
     : null
@@ -918,14 +929,19 @@ async function performSpawnRelay(caller, msg) {
       kind: spawnKind || undefined,
       doc: doc || undefined,
       cwd: cwd || undefined,
+      session_id: requestedSession || undefined,
+      enroll: !!enroll || undefined,
       effort: effort || undefined,
       mode: mode || undefined,
       requestedCapability: requestedCapability || undefined,
       callerRung,
       spawnRoute: route.source,
-      respawn: refresh ? false : resolved.respawn,
+      respawn: sessionMode ? false : (refresh ? false : resolved.respawn),
       refresh: !!refresh,
     })
+    if (pendingAgentId && result?.ok === false) {
+      spawnLibrarian.failPending(pendingAgentId, result.code || result.reason || 'launch-failed')
+    }
   } catch (e) {
     if (pendingAgentId && /RPC timeout .*op=spawn/.test(e.message || '')) {
       result = { ok: false, reason: 'spawning' }
@@ -1007,7 +1023,7 @@ onGlobalEvent((event) => {
   if (event?.type === 'version-committed') {
     // Auto-spawn a QA watcher agent when new content is committed to the shadow repo.
     // version-committed is the semantic trigger (new prose exists); build-card is UI-level.
-    // fleet-spawn.py pre-registers the agent before starting tmux, so findAgent() works
+    // The spawn library pre-registers the agent before starting tmux, so findAgent() works
     // immediately after the spawn RPC resolves — no register hook or name-pattern needed.
     if (fleetStore) {
       const docName = event.name
@@ -1506,33 +1522,25 @@ app.get('/api/fleet/viewing', requireRead, (req, res) => {
   res.json(result)
 })
 
-// Goose model list for the spawn UI's autocomplete + validation. Single source
-// of truth is `fleet-spawn --list-models` (GOOSE_MODELS/GOOSE_VERIFIED), so the
-// UI never drifts from what fleet-spawn actually accepts. Cached 60s since it
-// only changes when a model is verified. Shape: { default, models:[{alias,id,
-// verified}], verified:[id…] }.
-let _gooseModelsCache = null
-let _gooseModelsCacheAt = 0
+// Spawn model list for the spawn UI's autocomplete + validation. Single source
+// of truth is bin/lib/spawn/models.mjs, so the UI never drifts from what spawn
+// actually accepts. Shape: { default, models:[{alias,id,verified,kind}], verified:[id…] }.
 app.get('/api/fleet/models', requireRead, (req, res) => {
-  if (_gooseModelsCache && Date.now() - _gooseModelsCacheAt < 60_000) return res.json(_gooseModelsCache)
-  const script = join(__dirname, '..', 'bin', 'fleet-spawn.py')
-  const child = spawn('python3', [script, '--list-models'], { timeout: 10_000 })
-  let out = '', err = '', done = false
-  const fail = (msg) => { if (!done) { done = true; res.status(500).json({ error: msg }) } }
-  child.stdout.on('data', d => { out += d })
-  child.stderr.on('data', d => { err += d })
-  child.on('error', e => fail(`model list failed: ${e.message}`))
-  child.on('close', code => {
-    if (done) return
-    if (code !== 0) return fail(`model list exited ${code}: ${err.slice(0, 200)}`)
+  res.json(listSpawnModels())
+})
+
+app.get('/api/fleet/spawn-capabilities', requireRead, async (req, res) => {
+  const machine = req.query.machine ? String(req.query.machine) : null
+  const machines = machine ? [machine] : [...daemonConnections.keys()].sort()
+  const results = {}
+  await Promise.all(machines.map(async (machineId) => {
     try {
-      const data = JSON.parse(out)
-      _gooseModelsCache = data
-      _gooseModelsCacheAt = Date.now()
-      done = true
-      res.json(data)
-    } catch (e) { fail(`model list parse error: ${e.message}`) }
-  })
+      results[machineId] = await sendRpc(machineId, 'spawn-capabilities', {})
+    } catch (e) {
+      results[machineId] = { ok: false, error: e.message || String(e) }
+    }
+  }))
+  res.json({ schema: 1, machines: results })
 })
 
 app.get('/api/fleet/prefs', requireRead, (req, res) => {
@@ -5156,7 +5164,7 @@ async function handleDaemonWsMessage(ws, msg) {
     if (!entry) return // unknown / already-timed-out RPC
     clearTimeout(entry.timer)
     pendingRpcs.delete(msg.id)
-    if (msg.error) entry.reject(new Error(msg.error))
+    if (msg.error) entry.reject(new Error(rpcErrorMessage(msg.error)))
     else entry.resolve(msg.result)
     return
   }

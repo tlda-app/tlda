@@ -93,10 +93,9 @@ test('register handler: shell pre-register sets the flag and skips mark-alive; c
 })
 
 test('spawn flow pre-registers a shell before launch', () => {
-  const src = readFileSync(new URL('../bin/fleet-spawn.py', import.meta.url), 'utf8')
-  // ws_register forwards a shell flag.
-  assert.match(src, /def ws_register\([\s\S]*?shell=False\)/)
-  assert.match(src, /if shell:\s*\n\s*msg\["shell"\] = True/)
-  // fresh() pre-registers as a shell before building/launching the agent command.
-  assert.match(src, /ws_register\(\s*\n\s*fleet_id, name, sess, cwd, model, effort, refresh=True, shell=True,/)
+  const registerSrc = readFileSync(new URL('../bin/lib/spawn/register.mjs', import.meta.url), 'utf8')
+  const spawnSrc = readFileSync(new URL('../bin/lib/spawn/index.mjs', import.meta.url), 'utf8')
+  assert.match(registerSrc, /shell = false/)
+  assert.match(registerSrc, /if \(shell\) msg\.shell = true/)
+  assert.match(spawnSrc, /await wsRegister\(\{[\s\S]*?shell: true,/)
 })
