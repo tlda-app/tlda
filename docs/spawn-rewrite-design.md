@@ -82,9 +82,32 @@ synthetic-tail strip, first-registration-only scan, DNS alias). A naive rewrite
 re-introduces those bugs — so this is an **incremental, parity-gated port**, not a
 big-bang.
 
+## Reuse first: `shared/spawn-librarian.ts` is the lifecycle brain
+
+Before writing any lifecycle/liveness/failure logic, **adopt the existing one.**
+`shared/spawn-librarian.ts` (366 lines, tested, **wired into nothing** today — only
+its own test imports it) already models exactly the state layer this rewrite needs:
+
+- `LivenessState = alive | dead | spawning | wedged | unknown` — the truthful-liveness
+  / roster-lie fix.
+- `SpawnFailureReason = launch-failed | register-timeout | policy-denied | name-bounced`
+  — **typed failure reasons = the opaque-`[object Object]` fix**, already enumerated.
+- `SpawnLibrarian` class: `awaitRegister`, `observeRegister`, `failPending`,
+  `observeLiveness`, `observeActivity`, `observeDelivery`, `livenessState`, `decideWake`.
+- Helpers: `buildSpawnBounceItem`, `resolveSpawnCollision`, `specMismatch`.
+
+The python and the server each reinvent a worse, ad-hoc version of this. **The rewrite
+wires `SpawnLibrarian` in as the brain** rather than re-spec'ing it. That means the
+node lib below is almost entirely **mechanics** — `spawn-librarian` has no `exec` and
+launches nothing; it only tracks state. So the genuinely-new code is: launch tmux,
+build harness commands, ws-register, fence. The lifecycle/typed-errors come from the
+librarian. (If the librarian is missing a state or reason the mechanics need, extend
+*it* — don't fork a parallel state model.)
+
 ## Target architecture
 
-A node module tree (proposed `bin/lib/spawn/`), consumed by the daemon and a thin CLI:
+A node module tree (proposed `bin/lib/spawn/`), consumed by the daemon and a thin CLI.
+The lib produces events the `SpawnLibrarian` observes; the librarian owns lifecycle:
 
 ```
 bin/lib/spawn/
