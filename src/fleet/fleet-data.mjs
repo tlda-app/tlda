@@ -44,10 +44,9 @@ let _agents = []
 let _tasks = []
 let _items = []
 // One id-keyed ordered buffer — the SINGLE source for chat + activity, fed by
-// two sources (live WS + DB history). upsert() dedups by id and binds the
-// optimistic tempId→dbId handoff, so there's no live/older split to merge (the
-// old two-list merge was what duplicated cards). No memory cap: the buffer
-// grows and the renderer windows the tail (fixed size in render, not memory).
+// two sources (live WS + DB history). upsert() dedups by id, binds the
+// optimistic tempId→dbId handoff, and caps memory as one contiguous ordered
+// window, so there's no live/older split to gap against.
 const _store = makeEventStore()
 // History fetched from the server is limited to this many rows per request.
 const HISTORY_PAGE = 150
@@ -105,6 +104,12 @@ function applyEventUpdateFields(ev, data) {
       }
     }
   }
+}
+
+function projectStoreResult(result) {
+  if (!result) return
+  if (result.evicted?.length) replaceFleetEvents(_store.all())
+  else upsertFleetEvent(result.event)
 }
 
 // --- Subscribers ---
@@ -345,9 +350,9 @@ export async function sendMessage(to, text, opts = {}) {
 
 /** Inject an optimistic (locally-authored) event into the event list immediately. */
 export function injectOptimisticEvent(event) {
-  const { event: ev } = _store.upsert(event)
-  upsertFleetEvent(ev)
-  notify('messages', ev)
+  const result = _store.upsert(event)
+  projectStoreResult(result)
+  notify('messages', result.event)
 }
 
 /** Update fields on an optimistic event (e.g. mark _failed, or set _dbId on reconcile). */
@@ -566,8 +571,9 @@ export function connect() {
             // upsert dedups by id and binds the optimistic tempId→dbId handoff
             // (the replayed row carries _tempId, persisted server-side). No
             // content matching — binding is always by id, per the dedup rule.
-            const { event: ev, isNew } = _store.upsert(convertChatEvent(raw))
-            upsertFleetEvent(ev)
+            const { event: ev, isNew, evicted } = _store.upsert(convertChatEvent(raw))
+            if (evicted.length) replaceFleetEvents(_store.all())
+            else upsertFleetEvent(ev)
             if (isNew) newEvents.push(ev); else boundAny = true
           }
           for (const ev of newEvents) notify('messages', ev)
@@ -655,7 +661,8 @@ export function connect() {
         // it rebinds the pending entry instead of appending a duplicate. All by
         // id — no content matching.
         const converted = convertChatEvent(data)
-        const { event, isNew } = _store.upsert(converted)
+        const result = _store.upsert(converted)
+        const { event, isNew } = result
         // Drain any event-updates that arrived before this event (e.g. a late
         // file-upload's inline_attachments). Applying them now, before notify,
         // means the first render already shows the patched line.
@@ -663,7 +670,7 @@ export function connect() {
           for (const u of _pendingEventUpdates.get(data.id)) applyEventUpdateFields(event, u)
           _pendingEventUpdates.delete(data.id)
         }
-        upsertFleetEvent(event)
+        projectStoreResult(result)
         if (data.id && data.id > _lastEventId) _lastEventId = data.id
         if (data.type === 'chat') {
           console.log(`[chat-recv] id=${data.id} from=${data.from_id||data.from} text=${(data.text||'').substring(0,30)}`)
@@ -753,7 +760,7 @@ export async function init() {
   const chatEvents = (historyRes.events || [])
     .filter(e => (e.event_type || e.type))
     .map(convertChatEvent)
-  for (const ev of chatEvents) _store.upsert(ev)
+  _store.upsertMany(chatEvents)
   replaceFleetEvents(_store.all())
   // Track highest event ID for reconnect catch-up
   for (const e of historyRes.events || []) {
@@ -982,12 +989,13 @@ export async function loadBefore(agentIds = [], beforeTs, count = 100) {
   // re-pin scroll after a prepend.
   let added = 0
   const changed = []
-  for (const ev of events) {
-    const result = _store.upsert(ev)
+  const results = _store.upsertMany(events, { evict: 'newest' })
+  for (const result of results) {
     if (result.isNew) added++
     changed.push(result.event)
   }
-  if (added) replaceFleetEvents(_store.all())
+  const evicted = results.some(result => result.evicted?.length)
+  if (added || evicted) replaceFleetEvents(_store.all())
   else upsertFleetEvents(changed)
   if (added) notify('messages', null)
   return added

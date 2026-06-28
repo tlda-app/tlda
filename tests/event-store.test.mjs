@@ -11,6 +11,9 @@ function check(name, cond) {
 }
 const texts = (s) => s.all().map(e => e.text)
 const ids = (s) => s.all().map(e => e._dbId ?? ('tmp:' + e._tempId))
+const evictedIds = (result) => result.evicted.map(e => e._dbId ?? ('tmp:' + e._tempId))
+const event = (id) => ({ _dbId: id, text: 'm' + id, timestamp: `2026-06-05T00:00:${String(id).padStart(2, '0')}Z` })
+const consecutive = (xs) => xs.every((x, i) => i === 0 || x === xs[i - 1] + 1)
 
 // --- 1. Duplicate delivery of the same db event collapses to one entry ---
 {
@@ -95,15 +98,40 @@ const ids = (s) => s.all().map(e => e._dbId ?? ('tmp:' + e._tempId))
   check('foreign tempId does not collide', s.size() === 2)
 }
 
-// --- 9. Flood: many events, repeated re-deliveries, nothing dropped or duplicated ---
+// --- 9. Flood: live append is bounded and keeps the newest contiguous tail ---
 {
-  const s = makeEventStore()
+  const s = makeEventStore({ maxEvents: 500 })
   for (let i = 1; i <= 2000; i++) s.upsert({ _dbId: i, text: 'm' + i, timestamp: `2026-06-05T01:${String(i).padStart(4,'0')}Z`.replace(':0',':').slice(0,24) })
   // re-deliver every 7th event (simulating double-broadcast under load)
   for (let i = 7; i <= 2000; i += 7) s.upsert({ _dbId: i, text: 'm' + i, timestamp: '2026-06-05T01:00:00Z' })
-  check('flood: no memory cap drops events', s.size() === 2000)
+  check('flood: memory cap bounds events', s.size() === 500)
   const idset = new Set(ids(s))
-  check('flood: no duplicate ids', idset.size === 2000)
+  check('flood: no duplicate ids inside cap', idset.size === 500)
+  check('flood: keeps newest contiguous tail', ids(s)[0] === 1501 && ids(s).at(-1) === 2000 && consecutive(ids(s)))
+  check('flood: evicted ids leave the key map', !s.get('db:1500') && s.get('db:1501'))
+}
+
+// --- 10. Scrollback prepends older history and evicts the newest edge ---
+{
+  const s = makeEventStore({ maxEvents: 5 })
+  s.upsertMany([event(4), event(5), event(6), event(7), event(8)])
+  const results = s.upsertMany([event(1), event(2), event(3)], { evict: 'newest' })
+  check('scrollback remains capped', s.size() === 5)
+  check('scrollback slides to older contiguous window', ids(s).join() === '1,2,3,4,5')
+  check('scrollback reports newest-edge evictions', results.some(r => evictedIds(r).join() === '8,7,6'))
+  check('scrollback evicted newest ids leave the key map', !s.get('db:6') && !s.get('db:8') && s.get('db:5'))
+}
+
+// --- 11. Live arrival after a history-shift starts a fresh tail window, no split ---
+{
+  const s = makeEventStore({ maxEvents: 5 })
+  s.upsertMany([event(4), event(5), event(6), event(7), event(8)])
+  s.upsertMany([event(1), event(2), event(3)], { evict: 'newest' })
+  s.upsert(event(9))
+  check('live after scrollback does not make an old+live split', ids(s).join() === '9')
+  s.upsert(event(10))
+  s.upsert(event(11))
+  check('new live tail grows contiguously', ids(s).join() === '9,10,11')
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

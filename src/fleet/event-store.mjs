@@ -1,13 +1,13 @@
 // event-store.mjs — the single ordered, id-keyed buffer for fleet chat + activity.
 //
-// One store, two sources (live WS + DB history), no duplicates, no holes.
+// One store, two sources (live WS + DB history), no duplicates, bounded memory.
 //
 // Key per entry: `_dbId` if it has one, else `_tempId`. Both the live stream and
 // the history fetch funnel through upsert(), so:
 //   - insert-by-id can't duplicate (same id → same entry)
 //   - history filling a gap can't duplicate (it upserts by id too)
-//   - a chatty agent can't punch a hole (nothing is dropped from memory; the
-//     render layer windows the tail instead)
+//   - capping trims only one edge of the single ordered buffer, so the in-memory
+//     set remains one contiguous window instead of a history/live split
 //
 // The optimistic handoff (your own send) is the one place an entry changes key:
 // it starts keyed by `_tempId`, and when the server echo arrives carrying both
@@ -21,11 +21,18 @@ export function keyOf(e) {
   return null
 }
 
-export function makeEventStore() {
+export const DEFAULT_MAX_EVENTS = 500
+
+export function makeEventStore(opts = {}) {
+  const maxEvents = Number.isFinite(opts.maxEvents) ? Math.max(1, Math.floor(opts.maxEvents)) : DEFAULT_MAX_EVENTS
   /** @type {any[]} chronological (timestamp asc, ties in insertion order) */
   const events = []
   /** @type {Map<string, any>} 'db:<id>' | 'tmp:<tempId>' → the live entry object */
   const byKey = new Map()
+  // False after scrollback has shifted the memory window away from the live
+  // tail. The next newer live/reconnect event starts a fresh tail window rather
+  // than creating an old-history + new-live split.
+  let hasLiveTail = true
 
   function tsOf(e) {
     const t = e && e.timestamp ? Date.parse(e.timestamp) : NaN
@@ -46,6 +53,35 @@ export function makeEventStore() {
     if (i >= 0) events.splice(i, 1)
   }
 
+  function forgetKey(e) {
+    const k = keyOf(e)
+    if (k) byKey.delete(k)
+  }
+
+  function clearEventsOnly() {
+    events.length = 0
+    byKey.clear()
+  }
+
+  function trimOverflow(evict = 'oldest') {
+    /** @type {any[]} */
+    const evicted = []
+    while (events.length > maxEvents) {
+      const ev = evict === 'newest' ? events.pop() : events.shift()
+      if (!ev) break
+      forgetKey(ev)
+      evicted.push(ev)
+    }
+    if (evict === 'newest' && evicted.length) hasLiveTail = false
+    if (evict === 'oldest' && evicted.length) hasLiveTail = true
+    return evicted
+  }
+
+  function shouldResetToLiveTail(incoming, evict) {
+    if (evict !== 'oldest' || hasLiveTail || events.length === 0) return false
+    return tsOf(incoming) > tsOf(events[events.length - 1])
+  }
+
   // Bring server-authoritative fields onto an existing entry without clobbering
   // its identity. Never let a merge null out an id we already hold.
   function merge(target, incoming) {
@@ -61,17 +97,25 @@ export function makeEventStore() {
   }
 
   /**
-   * Insert or update an event. Returns { event, isNew }.
+   * Insert or update an event. Returns { event, isNew, evicted }.
    * `event` is the live, canonical entry (callers should use it, not `incoming`).
    */
-  function upsert(incoming) {
+  function upsert(incoming, opts = {}) {
+    const evict = opts.evict === 'newest' ? 'newest' : 'oldest'
+    let evicted = []
+    if (shouldResetToLiveTail(incoming, evict)) {
+      evicted = events.slice()
+      clearEventsOnly()
+      hasLiveTail = true
+    }
+
     const dbId = incoming._dbId
     const tempId = incoming._tempId
 
     if (dbId != null) {
       // 1) Already have this id — update in place. The dedup backstop.
       const exDb = byKey.get('db:' + dbId)
-      if (exDb) { merge(exDb, incoming); return { event: exDb, isNew: false } }
+      if (exDb) { merge(exDb, incoming); return { event: exDb, isNew: false, evicted } }
 
       // 2) Optimistic handoff: this is the echo of our own send. Rebind the
       //    pending tmp entry to its real id instead of adding a second row.
@@ -84,28 +128,48 @@ export function makeEventStore() {
           delete opt._tempId
           delete opt._failed // it actually went through
           byKey.set('db:' + dbId, opt)
-          return { event: opt, isNew: false }
+          return { event: opt, isNew: false, evicted }
         }
       }
 
       // 3) Genuinely new.
       byKey.set('db:' + dbId, incoming)
       insertOrdered(incoming)
-      return { event: incoming, isNew: true }
+      if (!opts.skipTrim) evicted.push(...trimOverflow(evict))
+      return { event: incoming, isNew: true, evicted }
     }
 
     if (tempId) {
       const exTmp = byKey.get('tmp:' + tempId)
-      if (exTmp) { merge(exTmp, incoming); return { event: exTmp, isNew: false } }
+      if (exTmp) { merge(exTmp, incoming); return { event: exTmp, isNew: false, evicted } }
       byKey.set('tmp:' + tempId, incoming)
       insertOrdered(incoming)
-      return { event: incoming, isNew: true }
+      if (!opts.skipTrim) evicted.push(...trimOverflow(evict))
+      return { event: incoming, isNew: true, evicted }
     }
 
     // No stable key at all — shouldn't happen for real events. Append rather
     // than silently drop, so the gap is visible instead of mysterious.
     insertOrdered(incoming)
-    return { event: incoming, isNew: true }
+    if (!opts.skipTrim) evicted.push(...trimOverflow(evict))
+    return { event: incoming, isNew: true, evicted }
+  }
+
+  function upsertMany(incomingEvents, opts = {}) {
+    /** @type {{ event: any, isNew: boolean, evicted: any[] }[]} */
+    const results = []
+    /** @type {any[]} */
+    const evicted = []
+    for (const incoming of incomingEvents) {
+      const result = upsert(incoming, { ...opts, skipTrim: true })
+      results.push(result)
+      evicted.push(...result.evicted)
+    }
+    evicted.push(...trimOverflow(opts.evict === 'newest' ? 'newest' : 'oldest'))
+    if (evicted.length) {
+      for (const result of results) result.evicted = evicted
+    }
+    return results
   }
 
   /**
@@ -169,7 +233,7 @@ export function makeEventStore() {
   function all() { return events }
   function size() { return events.length }
   function get(key) { return byKey.get(key) }
-  function clear() { events.length = 0; byKey.clear() }
+  function clear() { clearEventsOnly(); hasLiveTail = true }
 
-  return { upsert, reconcile, patchByDbId, patchByTempId, removeByTempId, all, size, get, clear, keyOf }
+  return { upsert, upsertMany, reconcile, patchByDbId, patchByTempId, removeByTempId, all, size, get, clear, keyOf }
 }
