@@ -47,6 +47,7 @@ import { listModels as listSpawnModels } from '../bin/lib/spawn/models.mjs'
 import { labelsForAgent, parseFilter, evalExpr } from '../shared/fleet-labels.mjs'
 import { phaseFromName, baseName, PHASES } from '../shared/lineage-name.mjs'
 import { daemonHelloDecision } from '../shared/daemon-identity.mjs'
+import { resolveServerIsolation } from '../shared/server-identity.mjs'
 import { initProjectStore, listProjects, readProject, updateProject, getProjectsDir } from './lib/project-store.mjs'
 import { resumeOverleafPollers } from './lib/overleaf-sync.mjs'
 import { resetStaleBuildStates, killAllBuilds, setShadowMirrorHandler } from './lib/build-runner.mjs'
@@ -61,11 +62,18 @@ import { FleetStore } from './lib/fleet-store.mjs'
 import { resolveMachine } from './lib/tailscale-peers.mjs'
 import { createFleetRouter } from './routes/fleet.mjs'
 import { callerSpawnPolicy, coherentSpawnPolicy } from './lib/spawn-policy.mjs'
+import { buildRuntimeStatus } from './lib/runtime-status.mjs'
 import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
 import { SpawnBounceError, SpawnLibrarian, resolveSpawnCollision } from '../shared/spawn-librarian.ts'
 import { trimTerminalSeedBlankRows } from '../shared/terminal-seed.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
+
+const serverIsolation = resolveServerIsolation({ env: process.env, scriptPath: fileURLToPath(import.meta.url) })
+if (serverIsolation.refuseReason) {
+  console.error(serverIsolation.refuseReason)
+  process.exit(1)
+}
 
 // Load .env from project root (for MYSCRIPT_APP_KEY, etc.)
 try {
@@ -1581,6 +1589,18 @@ app.post('/api/fleet/prefs/:key', requireRead, (req, res) => {
   if (!fleetStore) return res.status(503).json({ error: 'fleet store unavailable' })
   fleetStore.setFleetPref(userId, req.params.key, value)
   res.json({ ok: true })
+})
+
+app.get('/api/runtime-status', requireRead, (_req, res) => {
+  res.json(buildRuntimeStatus({
+    env: process.env,
+    serverScriptPath: fileURLToPath(import.meta.url),
+    fleetDbPath: process.env.TLDA_FLEET_DB || null,
+    fleetStore,
+    daemonConnections,
+    agents: fleetStore.getAllAgents(),
+    localHostname: hostname(),
+  }))
 })
 
 app.post('/api/fleet/bot-lease/claim', requireRead, (req, res) => {

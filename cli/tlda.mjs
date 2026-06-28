@@ -33,6 +33,7 @@ import { DEV_COMMANDS } from './lib/dev-commands.mjs'
 import { getFunnelUrl, findTailscaleIPv4, selectDevShareBase, selectDocShareBase, viewerLoginUrl } from './lib/share-url.mjs'
 import { scanMarkdownDeps } from '../shared/markdown-deps.mjs'
 import { cmdLogs } from './lib/unified-logs.mjs'
+import { formatSystemStatus } from './lib/system-status.mjs'
 import { SPAWN_POLICY_OPTIONS, resolveSpawnPolicyOption } from '../server/lib/spawn-policy.mjs'
 
 // --- Argument parsing ---
@@ -107,6 +108,7 @@ const COMMAND_HELP = {
   delete:  'tlda doc delete <name>\n\n  Delete a project and all its data.',
   logs:    'tlda logs [agent] [--since 1h|2026-05-23] [--type chat,register] [-n 50] [-f] [--daemon] [--all]\n\n  Unified chronological log across all sources (DB events, daemon log, dead-letters).\n\n  agent      Filter by agent name (fuzzy match)\n  --since    Time range (e.g. 1h, 30m, 2d, or ISO date)\n  --type     Filter by event type (comma-separated)\n  -n N       Number of events (default: 50, or 10000 with --since)\n  -f         Follow mode (tail -f style)\n  --daemon   Include daemon log lines (heartbeats, WS, terminal exits)\n  --all      Include activity and client_error events (excluded by default)',
   server:  'tlda server [start|stop|status|log|install|uninstall]\n\n  start      Start the server (auto-restarts via launchd if installed)\n  stop       Stop the server\n  status     Check if server is running\n  log        Show recent server log\n  install    Install launchd service (macOS)\n  uninstall  Remove launchd service',
+  system:  'tlda system status\n\n  Show server, daemon, deploy stamp, and fleet runtime identity.',
   publish: 'tlda publish [--target <name>] [doc ...]\n\n  Publish docs to GitHub Pages (+ optionally Fly).\n\n  With no args, publishes all docs in config.published using the "default" target.\n  With --target, uses the named target config (sync server, repo, etc.).\n  With doc names, publishes those and adds them to the list.\n\n  Config (targets in ~/.config/tlda/config.json):\n    targets.<name>.sync     — sync server WebSocket URL\n    targets.<name>.repo     — git remote for gh-pages (null = same repo)\n    targets.<name>.fly      — deploy to Fly (default: false)\n    targets.<name>.basePath — vite base path (default: /tlda/)',
   config:  'tlda config [set <key> <value> | get [key]]\n\n  Manage persistent configuration.\n  Example: tlda config set server http://myhost:5176',
 }
@@ -3049,6 +3051,16 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
   process.exit(1)
 }
 
+async function cmdSystem() {
+  const sub = getPositional(0) || 'status'
+  if (sub !== 'status') {
+    console.error('Usage: tlda system status')
+    process.exit(1)
+  }
+  const data = await api('GET', '/api/runtime-status')
+  process.stdout.write(formatSystemStatus(data))
+}
+
 async function inferProjectName() {
   const dir = resolve(getFlag('dir') || '.')
 
@@ -3180,6 +3192,7 @@ async function main() {
     }
     switch (command) {
       case 'server': await cmdServer(); break
+      case 'system': await ensureServer(); await cmdSystem(); break
       case 'scratch': await ensureServer(); await cmdScratch(); break
       case 'book':   await ensureServer(); await cmdBook(); break
       case 'push':   await ensureServer(); await cmdPush(); break
