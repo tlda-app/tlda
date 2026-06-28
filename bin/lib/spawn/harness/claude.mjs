@@ -66,5 +66,5 @@ export function resumeId(handle) {
 }
 
 export function kickoffPrompt(name) {
-  return registerPrompt(name)
+  return `${registerPrompt(name)} Then, before task work, read the project guidance in AGENTS.md if it exists. Do not read CLAUDE.md; in this repo it is a template source for AGENTS.md, not agent-facing guidance. Follow the guidance you find.`
 }
