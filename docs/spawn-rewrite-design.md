@@ -116,13 +116,15 @@ bin/lib/spawn/
                    #   codex); serves --list-models AND the capability probe
   identity.mjs     # fleet-id/name/session resolution, name-collision check
   register.mjs     # ws register incl. shell pre-register; config/TLS resolution
-  harness/
-    claude.mjs     # adapter: resolveModel, buildCmd, findResume, afterResume…
-    codex.mjs
-    goose.mjs
+  harness/         # each engine isolated behind ONE adapter interface; an
+    claude.mjs     #   adapter knows nothing about permissions/fence — it builds
+    codex.mjs      #   a command, the orchestrator applies the resolved policy.
+    goose.mjs      #   adapter: resolveModel, buildCmd, findResume, afterResume…
   tmux.mjs         # session/pane/send-keys/capture/wake-lock/prompt-injection
-  sandbox.mjs      # capability model, policy resolution, write-roots
-  fence.mjs        # build lease JSON, invoke the existing `fence` binary
+  permissions.mjs  # capability rung → policy resolution. PURE LOGIC, no exec,
+                   #   no harness knowledge. Just decisions: what's allowed.
+  fence.mjs        # takes a RESOLVED policy → builds lease JSON → invokes the
+                   #   existing `fence` binary. Mechanics only; no policy logic.
   resume.mjs       # JSONL/rollout transcript scanning, synthetic-tail strip
   capabilities.mjs # NEW: probe which harnesses/models actually run on THIS box
   cli.mjs          # thin argv front-end for manual `tlda agent spawn`
