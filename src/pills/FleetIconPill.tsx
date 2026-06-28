@@ -13,13 +13,14 @@
  * Inline SVG (fill="currentColor") so color-based opacity applies to icon + count together,
  * matching the single-color approach of .build-warning-badge.
  */
-import React, { useState, useCallback, useEffect, useRef } from 'react'
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react'
 import { stopEventPropagation, useUniqueSafeId } from 'tldraw'
 import type { Editor } from 'tldraw'
 import { useFleetAgents, useFleetIdentity } from '../fleet-data-adapter'
 import { countAwakeFleetAgents } from '../fleet/agent-counts'
 import { createFleetLayoutDetailed, type FleetLayoutCreateResult } from '../shapes/fleet-utils'
 import { log } from '../logger'
+import { CornerButtonSlider, pickCornerSliderIndex } from '../CornerButtonSlider'
 import './FleetIconPill.css'
 
 // Basestar hull paths (drawn in a flipped coord system: translate(0,960) scale(1,-1)).
@@ -35,7 +36,6 @@ const BASESTAR_PATHS = (
 
 const DRAG_THRESHOLD = 6   // px before drag activates
 const ITEM_W = 44          // px width of each preset tile
-const ITEM_H = 44          // px height
 const ITEM_GAP = 4         // px between tiles
 
 // 'touch' preset removed: the fleet-touch-inbox shape's click-to-filter never
@@ -287,13 +287,14 @@ interface FleetIconPillProps { mainEditor: Editor }
 
 export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
   const countMaskId = useUniqueSafeId('fleet-count-mask')
+  const badgeRef = useRef<HTMLSpanElement>(null)
   const agents = useFleetAgents()
   const identity = useFleetIdentity()
   const [hidden, setHidden] = useState(() => isFleetHidden())
   const [dragging, setDragging] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
-  const [, setDragAnchor] = useState<{ x: number; y: number } | null>(null)
+  const [sliderAnchor, setSliderAnchor] = useState<DOMRect | null>(null)
 
   const aliveCount = countAwakeFleetAgents(agents)
 
@@ -317,6 +318,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
       onShown: () => setHidden(false),
     })
     setPickerOpen(false)
+    setSliderAnchor(null)
   }, [mainEditor])
 
   useEffect(() => {
@@ -346,7 +348,13 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
     applyPreset(idx, 'url-auto')
   }, [applyPreset, identity.id, identity.name, identity.login, identity.register])
 
-  /** Click handler — desktop toggles HUD; touch opens the reachable layout fan. */
+  const layoutSliderOptions = useMemo(() => LAYOUT_PRESETS.map(preset => ({
+    id: preset.id,
+    label: preset.title,
+    render: () => <LayoutIcon id={preset.id} size={20} />,
+  })), [])
+
+  /** Click handler — desktop toggles HUD; touch opens the reachable layout slider. */
   const handleClick = useCallback((e: React.MouseEvent) => {
     stopControlEvent(e)
     if (justDraggedRef.current) {
@@ -354,6 +362,8 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
       return
     }
     if (isTouchLayoutControl()) {
+      const rect = badgeRef.current?.getBoundingClientRect() ?? null
+      setSliderAnchor(rect)
       setPickerOpen(open => !open)
       return
     }
@@ -370,9 +380,11 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
     dragStartRef.current = start
     isDragRef.current = false
     selectedIdxRef.current = null
+    setSliderAnchor(badgeRef.current?.getBoundingClientRect() ?? null)
 
     const onMove = (ev: PointerEvent) => {
       const s = dragStartRef.current
+      const anchor = badgeRef.current?.getBoundingClientRect()
       if (!s) return
       const dx = ev.clientX - s.x
       const dy = ev.clientY - s.y
@@ -380,15 +392,18 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
       if (!isDragRef.current && dist > DRAG_THRESHOLD) {
         isDragRef.current = true
         setDragging(true)
-        setDragAnchor({ x: s.x, y: s.y })
       }
       if (isDragRef.current) {
         stopControlEvent(ev)
-        // Fan opens leftward from the bottom-right corner, so dragging LEFT
-        // slides through the presets; dragging right (wrong way) selects the 0th.
-        const idx = ev.clientX > s.x
-          ? 0
-          : Math.max(0, Math.min(LAYOUT_PRESETS.length - 1, Math.floor((s.x - ev.clientX) / (ITEM_W + ITEM_GAP))))
+        if (!anchor) return
+        setSliderAnchor(anchor)
+        const idx = pickCornerSliderIndex({
+          clientX: ev.clientX,
+          anchorRect: anchor,
+          count: LAYOUT_PRESETS.length,
+          slotWidth: ITEM_W,
+          gap: ITEM_GAP,
+        })
         selectedIdxRef.current = idx
         setSelectedIdx(idx)
       }
@@ -403,7 +418,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
       selectedIdxRef.current = null
       setDragging(false)
       setSelectedIdx(null)
-      setDragAnchor(null)
+      setSliderAnchor(null)
     }
 
     const onUp = (ev: PointerEvent) => {
@@ -433,6 +448,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
       title={hidden ? 'Fleet shapes hidden — click to show' : 'Fleet — click to hide, drag for layout'}
     >
       <span
+        ref={badgeRef}
         className="fleet-icon-pill-badge"
         onClick={handleClick}
         onPointerDown={handlePointerDown}
@@ -483,28 +499,13 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
         </svg>
       </span>
 
-      {/* Layout preset fan — positioned above the icon */}
-      {(dragging || pickerOpen) && (
-        <div
-          className="fleet-icon-pill-fan"
-          onPointerDown={stopControlEvent}
-          onPointerUp={stopControlEvent}
-          onTouchStart={stopControlEvent}
-          onTouchEnd={stopControlEvent}
-        >
-          {LAYOUT_PRESETS.map((preset, i) => (
-            <div
-              key={preset.id}
-              className={'fleet-icon-pill-fan-item' + (selectedIdx === i ? ' hovered' : '')}
-              style={{ width: ITEM_W, height: ITEM_H, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-              title={preset.title}
-              onClick={(e) => { stopControlEvent(e); applyPreset(i, 'fan-preset') }}
-              onPointerDown={stopControlEvent}
-            >
-              <LayoutIcon id={preset.id} size={ITEM_H - 4} />
-            </div>
-          ))}
-        </div>
+      {(dragging || pickerOpen) && sliderAnchor && (
+        <CornerButtonSlider
+          anchorRect={sliderAnchor}
+          className="fleet-layout-slider"
+          options={layoutSliderOptions}
+          activeIndex={selectedIdx}
+        />
       )}
     </div>
   )

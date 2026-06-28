@@ -2169,6 +2169,47 @@ body.phone-mode .phone-hl-btn {
   box-shadow: 0 2px 8px rgba(0,0,0,0.2);
 }
 
+.corner-button-slider {
+  display: flex;
+  flex-direction: row;
+  position: fixed;
+  z-index: var(--tlda-z-top-control-popover);
+  background: rgba(255, 255, 255, 0.3);
+  border-radius: 8px;
+  padding: 3px;
+  box-shadow: none;
+  pointer-events: none;
+  gap: 4px;
+  opacity: 0.6;
+}
+
+.corner-button-slider-slot {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--corner-button-slider-color, currentColor);
+  box-shadow: inset 0 0 0 2px var(--corner-button-slider-color, currentColor);
+  transition: transform 0.1s;
+}
+
+.corner-button-slider-slot.active {
+  transform: scale(1.18);
+}
+
+.corner-button-slider-slot svg,
+.corner-button-slider-slot span {
+  width: 26px;
+  height: 26px;
+}
+
+html[data-theme="dark"] .corner-button-slider {
+  background: rgba(0, 0, 0, 0.3);
+}
+
 /* Dark mode highlighter */
 html[data-theme="dark"] .phone-hl-btn {
   color: var(--pill-icon-color, rgba(255, 255, 255, 1));
