@@ -975,6 +975,24 @@ async function uploadMarkdownWithImages(
   return link
 }
 
+async function fetchMarkdownChipText(chipUrl: string, chipPath: string): Promise<string> {
+  const candidates = [
+    chipUrl,
+    chipPath ? `/api/read-file?path=${encodeURIComponent(chipPath)}` : '',
+  ].filter(Boolean)
+  let lastError: unknown = null
+  for (const url of candidates) {
+    try {
+      const res = await fetch(url)
+      if (res.ok) return await res.text()
+      lastError = new Error(`HTTP ${res.status}`)
+    } catch (err) {
+      lastError = err
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('markdown chip fetch failed')
+}
+
 // --- Voice + trackpad input (global, one-time init) ---
 initVoice()
 
@@ -1971,6 +1989,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   // chatLogEl tracks the scroller element in state so effects can attach
   // listeners as soon as Virtuoso mounts its scroll container.
   const [chatLogEl, setChatLogEl] = useState<HTMLDivElement | null>(null)
+  const suppressNativeChipClickUntilRef = useRef(0)
 
   // Stable Scroller component for Virtuoso. Owns the .fleet-chat-log class
   // (so CanvasClipPanel's wheel reroute keeps targeting it) and captures the
@@ -2667,6 +2686,44 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
   }, [editor])
 
+  const openMarkdownChipFromTarget = useCallback((target: HTMLElement, stopPropagation: () => void): boolean => {
+    // Markdown chip → temporary page-like html column.
+    // (ref-chip-doc chips AND md-file-card chips in activity cards).
+    const mdChip = target.closest('.ref-chip-doc, .md-file-card') as HTMLElement | null
+    if (mdChip) {
+      if (mdChip.classList.contains('src-chip')) {
+        stopPropagation()
+        const line = mdChip.closest('.chat-line')
+        const body = line?.querySelector('.message-body') as HTMLElement | null
+        const title = mdChip.getAttribute('title') || mdChip.textContent || 'source'
+        openMarkdownColumn(title, body?.innerText || body?.textContent || title, mdChip)
+        return true
+      }
+      const chipUrl = mdChip.dataset.url || ''
+      const chipPath = mdChip.dataset.path || ''
+      const isMd = /\.md$/i.test(chipUrl || chipPath)
+      const fetchUrl = chipUrl || (chipPath ? `/api/read-file?path=${encodeURIComponent(chipPath)}` : '')
+      if (isMd && fetchUrl) {
+        stopPropagation()
+        const title = mdChip.querySelector('.md-file-chip')?.textContent || mdChip.textContent || chipPath.split('/').pop() || 'file'
+        fetchMarkdownChipText(chipUrl, chipPath)
+          .then(text => {
+            const baseUrl = chipUrl ? chipUrl.substring(0, chipUrl.lastIndexOf('/') + 1) : ''
+            const resolved = baseUrl ? text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, src) => {
+              if (src.startsWith('http') || src.startsWith('/')) return match
+              return `![${alt}](${baseUrl}${src})`
+            }) : text
+            openMarkdownColumn(title, resolved, mdChip)
+          })
+          .catch(() => {
+            openMarkdownColumn(title, `# Failed to load\n\n${chipUrl || chipPath || title}`, mdChip)
+          })
+        return true
+      }
+    }
+    return false
+  }, [openMarkdownColumn])
+
   // Handle clicks on doc-link spans
   const handleDocLinkClick = useCallback((e: React.MouseEvent) => {
     // Plain URL links — open in new tab (TLDraw intercepts native <a> navigation)
@@ -2677,41 +2734,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     const chipTarget = (e.target as HTMLElement).closest('.ref-chip-annotation')
     if (chipTarget) { handleRefChipClick(e); return }
 
-    // Markdown chip → temporary page-like html column.
-    // (ref-chip-doc chips AND md-file-card chips in activity cards).
-    const mdChip = (e.target as HTMLElement).closest('.ref-chip-doc, .md-file-card') as HTMLElement | null
-    if (mdChip) {
-      if (mdChip.classList.contains('src-chip')) {
-        e.stopPropagation()
-        const line = mdChip.closest('.chat-line')
-        const body = line?.querySelector('.message-body') as HTMLElement | null
-        const title = mdChip.getAttribute('title') || mdChip.textContent || 'source'
-        openMarkdownColumn(title, body?.innerText || body?.textContent || title, mdChip)
-        return
-      }
-      const chipUrl = mdChip.dataset.url || ''
-      const chipPath = mdChip.dataset.path || ''
-      const isMd = /\.md$/i.test(chipUrl || chipPath)
-      const fetchUrl = chipUrl || (chipPath ? `/api/read-file?path=${encodeURIComponent(chipPath)}` : '')
-      if (isMd && fetchUrl) {
-        e.stopPropagation()
-        const title = mdChip.querySelector('.md-file-chip')?.textContent || mdChip.textContent || chipPath.split('/').pop() || 'file'
-        fetch(fetchUrl)
-          .then(r => r.ok ? r.text() : Promise.reject(r.status))
-          .then(text => {
-            const baseUrl = chipUrl ? chipUrl.substring(0, chipUrl.lastIndexOf('/') + 1) : ''
-            const resolved = baseUrl ? text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, src) => {
-              if (src.startsWith('http') || src.startsWith('/')) return match
-              return `![${alt}](${baseUrl}${src})`
-            }) : text
-            openMarkdownColumn(title, resolved, mdChip)
-          })
-          .catch(() => {
-            openMarkdownColumn(title, '# Failed to load', mdChip)
-          })
-        return
-      }
-    }
+    if (openMarkdownChipFromTarget(e.target as HTMLElement, () => e.stopPropagation())) return
 
     // Copy button on code blocks
     const copyBtn = (e.target as HTMLElement).closest('.code-block-copy') as HTMLElement | null
@@ -2772,7 +2795,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       }
     }
     editor.centerOnPoint(canvasPos, { animation: { duration: 300 } })
-  }, [doc, refResolver, editor, handleRefChipClick, openMarkdownColumn])
+  }, [doc, refResolver, editor, handleRefChipClick, openMarkdownChipFromTarget])
 
   const shapeContainerRef = useRef<HTMLDivElement>(null)
   const inputAreaRef = useRef<HTMLDivElement>(null)
@@ -4638,6 +4661,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       handleDocLinkClick(e as any)
     }
     const onClick = (e: Event) => {
+      if (Date.now() < suppressNativeChipClickUntilRef.current) return
       if (e.timeStamp - lastTouchHandled < 700) return
       handleDocLinkClick(e as any)
     }
@@ -5152,14 +5176,12 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (!drag.started) {
         // No drag happened = a TAP on a draggable chip/link. This handler claimed
         // the pointer (capture-phase stopImmediatePropagation on pointerdown), so
-        // the element's own click handler never ran. On mouse the browser still
-        // synthesizes a `click` afterward (the chip opens); on touch/stylus it
-        // does NOT, so the tap was dead. Re-fire the element's click so a tap does
-        // exactly what a mouse click does — same action, just the touch pointing
-        // device (Skip's pointer-device-parity rule). Touch/pen only: mouse keeps
-        // its native click, so no double-open.
-        if ((e.pointerType === 'touch' || e.pointerType === 'pen') && downTargetEl) {
-          downTargetEl.click()
+        // the element's own click handler may never run. Open the chip directly
+        // for every pointer type; suppress a follow-up native mouse click if the
+        // browser still emits one.
+        if (downTargetEl) {
+          suppressNativeChipClickUntilRef.current = Date.now() + 700
+          openMarkdownChipFromTarget(downTargetEl, () => {})
         }
         downTargetEl = null
         return
@@ -5182,7 +5204,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       // Release coordinator if this component unmounts during a drag
       if (dragRef.current) dragCoordinator.release()
     }
-  }, [chatLogEl, editor, viewportId])
+  }, [chatLogEl, editor, viewportId, openMarkdownChipFromTarget])
 
   // --- chatInsertBus listener: content drops insert into textarea ---
   useEffect(() => {

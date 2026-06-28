@@ -36,7 +36,6 @@ import { FleetNotificationsShapeUtil } from './shapes/FleetNotificationsShape'
 import { FleetTouchInboxShapeUtil } from './shapes/FleetTouchInboxShape'
 import { FleetSourceEditorShapeUtil } from './shapes/FleetSourceEditorShape'
 import { getMyAnchorId, isMyFleetShape, FLEET_SHAPE_TYPES } from './shapes/fleet-utils'
-import { isFleetSourceEditorAllowedDoc } from './shapes/fleet-source-editor-safety'
 import { ClusterShapeUtil } from './shapes/ClusterShape'
 import { TerminalShapeUtil } from './shapes/TerminalShape'
 import { ReaperShapeUtil } from './shapes/ReaperShape'
@@ -464,31 +463,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
   // --- Hooks ---
   const docName = new URLSearchParams(window.location.search).get('doc') || document.name
-
-  useEffect(() => {
-    const editor = editorRef.current
-    if (!editor || isFleetSourceEditorAllowedDoc(docName)) return
-    const sweep = () => {
-      const sourceEditorIds = editor.getCurrentPageShapes()
-        .filter((s: any) => s.type === 'fleet-source-editor')
-        .map((s: any) => s.id)
-      if (sourceEditorIds.length === 0) return
-      editor.run(() => {
-        for (const id of sourceEditorIds) {
-          const shape = editor.getShape(id as any)
-          if (shape?.isLocked) editor.updateShape({ id: shape.id, type: shape.type, isLocked: false } as any)
-        }
-        editor.deleteShapes(sourceEditorIds as any)
-      }, { history: 'ignore' })
-    }
-    sweep()
-    return editor.store.listen(({ changes }) => {
-      const addedSourceEditor = Object.values(changes.added).some((r: any) =>
-        r.typeName === 'shape' && r.type === 'fleet-source-editor'
-      )
-      if (addedSourceEditor) queueMicrotask(sweep)
-    }, { source: 'all', scope: 'document' })
-  }, [docName, editorMounted])
 
   const { historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange } = useSnapshotTimeline(document, docName)
   const { overlayActive: showHistoryPanel, toggleOverlay: toggleHistoryOverlay, hideOverlay: hideHistoryOverlay } = useHistoryOverlay(

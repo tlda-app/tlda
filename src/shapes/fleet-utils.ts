@@ -8,7 +8,6 @@ import { baseName } from '../../shared/lineage-name.mjs'
 import { recentChatTargetAgents } from '../fleet/layout-targets.mjs'
 import { getPref } from '../preferences'
 import { isDocumentPageShape } from './document-pages'
-import { isFleetSourceEditorAllowedDoc } from './fleet-source-editor-safety'
 
 /** Canonical list of fleet shape types — the single source of truth for
  *  ownership filtering, visibility, copy gating, and hit-test exclusion.
@@ -575,7 +574,6 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
     const chatW3 = getPref('layout-chat-width')
     const marginGap = getPref('layout-margin-gap')
     const rightW = chatW3 * 2 + gap
-    const sourceEditorAllowed = isFleetSourceEditorAllowedDoc()
     const sourceEditorSlot = (slotX: number, slotY: number, w: number, h: number) => ({
       id: slotId(myId, myDevice, 'source-editor'),
       type: 'fleet-source-editor' as any,
@@ -590,9 +588,7 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
       isLocked: false,
       props: { w, h, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '' },
     })
-    const sourceOrDocview = (slotX: number, slotY: number, w: number, h: number) => sourceEditorAllowed
-      ? sourceEditorSlot(slotX, slotY, w, h)
-      : docviewSlot(slotX, slotY, w, h)
+    const sourceOrDocview = sourceEditorSlot
     const vp = editor.getViewportScreenBounds()
     // HUD renders fleet shapes via a z=1 camera (see FleetHUD.tsx), so page units
     // map 1:1 to screen px — size off the raw viewport, not the main-camera zoom.
@@ -715,7 +711,7 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
     ]
     if (variant === 'wide') {
       const chatWide = Math.round(chatW3 * 2)
-      const wideChatH = sourceEditorAllowed ? Math.round((totalH - gap) / 2) : totalH
+      const wideChatH = Math.round((totalH - gap) / 2)
       const wideSourceH = totalH - gap - wideChatH
       shapes.push(
         {
@@ -726,11 +722,7 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
           props: { w: chatWide, h: wideChatH, filter: filter1 },
         },
       )
-      if (sourceEditorAllowed) {
-        shapes.push(sourceEditorSlot(anchorX + leftW + gap, anchorY + wideChatH + gap, chatWide, wideSourceH))
-      } else {
-        shapes.push(docviewSlot(anchorX + leftW + gap, anchorY + wideChatH + gap, chatWide, wideSourceH))
-      }
+      shapes.push(sourceEditorSlot(anchorX + leftW + gap, anchorY + wideChatH + gap, chatWide, wideSourceH))
     } else if (variant === 'grid') {
       const gridChatW = chatW3
       const gridChatH = Math.round((totalH - gap) / 2)
@@ -804,17 +796,7 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
         },
         docviewSlot(anchorX + leftW + gap, anchorY + rightChatH + gap, chatWide, docviewH),
       )
-      if (sourceEditorAllowed) {
-        shapes.push(sourceEditorSlot(rightChatX, anchorY, chatWide, totalH))
-      } else {
-        shapes.push({
-          id: slotId(myId, myDevice, 'chat-1'),
-          type: 'fleet-chat' as any,
-          x: rightChatX, y: anchorY,
-          isLocked: false,
-          props: { w: chatWide, h: totalH, filter: filter2 },
-        })
-      }
+      shapes.push(sourceEditorSlot(rightChatX, anchorY, chatWide, totalH))
     }
     for (const s of shapes) { s.props.userId = myId; s.props.deviceId = myDevice }
     editor.createShapes(shapes)
