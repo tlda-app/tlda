@@ -6,6 +6,7 @@ import test from 'node:test'
 import { fenceSettings, wrapSandboxCmd } from '../bin/lib/spawn/fence.mjs'
 import { codexSandboxProjection, resolveLaunchPolicy, resolveLeasePolicy } from '../bin/lib/spawn/permissions.mjs'
 import * as claude from '../bin/lib/spawn/harness/claude.mjs'
+import * as codex from '../bin/lib/spawn/harness/codex.mjs'
 import { spawn } from '../bin/lib/spawn/index.mjs'
 import { findClaudeSession, findCodexRollout, scanClaudeSessionIdentity, stripSyntheticTail } from '../bin/lib/spawn/resume.mjs'
 import { claudeStartupDialogAction } from '../bin/lib/spawn/tmux.mjs'
@@ -143,6 +144,22 @@ test('fenced codex uses Codex danger-full-access under the outer fence', () => {
   )
   assert.equal(projection.sandboxMode, 'danger-full-access')
   assert.deepEqual(projection.workspaceWriteConfigArgs, [])
+})
+
+test('unfenced codex no-net projects explicit workspace-write network false', () => {
+  const projection = codexSandboxProjection(
+    { capability: 'write', policy: 'cwd', network: false },
+    tmpdir(),
+    { fenced: false },
+  )
+  assert.equal(projection.sandboxMode, 'workspace-write')
+  assert.equal(projection.networkAccess, false)
+  const args = codex.buildWorkspaceWriteConfigArgs({
+    writableRoots: projection.writableRoots,
+    networkAccess: projection.networkAccess,
+  })
+  assert.ok(args.some((arg) => arg.includes('sandbox_workspace_write.network_access=false')))
+  assert.equal(args.some((arg) => arg.includes('sandbox_workspace_write.network_access=true')), false)
 })
 
 test('launch policy keeps built-in write unfenced while global fence is off', () => {

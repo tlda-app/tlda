@@ -134,7 +134,7 @@ export function codexSandboxProjection(spawnPolicy, cwd, { fenced = false } = {}
     path.join(os.homedir(), '.config', 'tlda'),
     path.join(cwd, '.git'),
   ]
-  return { sandboxMode: 'workspace-write', writableRoots, networkAccess: true }
+  return { sandboxMode: 'workspace-write', writableRoots, networkAccess: spawnPolicy.network !== false }
 }
 
 export function resolveLeasePolicy({ spawnPolicy, harness, model, cwd, config = {} } = {}) {

@@ -26,7 +26,7 @@ export function resolveModel(model) {
 
 export function buildWorkspaceWriteConfigArgs({ writableRoots = [], networkAccess = true } = {}) {
   const args = []
-  if (networkAccess) args.push(`-c ${sq('sandbox_workspace_write.network_access=true')}`)
+  args.push(`-c ${sq(`sandbox_workspace_write.network_access=${networkAccess !== false ? 'true' : 'false'}`)}`)
   if (writableRoots.length) {
     args.push(`-c ${sq(`sandbox_workspace_write.writable_roots=${JSON.stringify(writableRoots)}`)}`)
   }
