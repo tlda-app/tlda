@@ -1,20 +1,18 @@
 /* FleetIconPill — basestar logo in the build-pills-row */
 
 .fleet-icon-pill-container {
-  /* Fixed in the bottom-right control cluster, on top of the mic/voice stack
-     (voice-note 49px, mic 82px → basestar above at 115px), same right edge as
-     the rest of the stack. Stays put while you pan between the panes. */
+  /* Fixed in the bottom-right control cluster above voice + highlighter. */
   position: fixed;
-  bottom: 115px;
+  bottom: 82px;
   right: 16px;
   z-index: 10001;
   pointer-events: all;
 }
 
 /* Phone: the whole stack shifts in by the safe-area inset. The phone controls
-   are 44px touch targets stacked with an 8px gap; basestar sits above mic. */
+   are 44px touch targets stacked with an 8px gap. */
 body.phone-mode .fleet-icon-pill-container {
-  bottom: calc(180px + env(safe-area-inset-bottom));
+  bottom: calc(128px + env(safe-area-inset-bottom));
   right: max(4px, env(safe-area-inset-right));
 }
 
@@ -27,7 +25,7 @@ body.phone-mode .fleet-icon-pill-badge {
    treatment as the mic/voice buttons. */
 @media (pointer: coarse) and (min-width: 601px) {
   .fleet-icon-pill-container {
-    bottom: calc(115px + env(safe-area-inset-bottom));
+    bottom: calc(82px + env(safe-area-inset-bottom));
     right: max(4px, env(safe-area-inset-right));
   }
 }

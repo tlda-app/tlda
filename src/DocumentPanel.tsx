@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useContext, useMemo } from 'react'
 import { setStopRecordingCallback } from './tools/VoiceNoteTool'
-import { setVoiceTarget, clearVoiceTarget, setVoiceAccumulator, stopRecording, isRecording, toggleRecording, maybeHandleVoiceSinkPointerDown } from './voice.mjs'
+import { setVoiceTarget, clearVoiceTarget, setVoiceAccumulator, stopRecording, isRecording, toggleRecording, voiceTap, maybeHandleVoiceSinkPointerDown } from './voice.mjs'
 import { createPortal } from 'react-dom'
 import { useEditor, useValue, stopEventPropagation, DefaultColorStyle } from 'tldraw'
 import { toolNameHud } from './overlays/ToolNameHud'
@@ -11,6 +11,7 @@ import type { AgentHeartbeatSignal } from './useYjsSync'
 import { TocTab, ZoneWidthSlider } from './panels/TocTab'
 import { NotesTab } from './panels/NotesTab'
 import { PrefsTab } from './panels/PrefsTab'
+import { CornerButtonSlider, pickCornerSliderIndex } from './CornerButtonSlider'
 
 import './DocumentPanel.css'
 
@@ -823,40 +824,150 @@ function useVoiceNoteController() {
 function VoiceNoteButtonInner() {
   const { recording, isPlacing, triggerFromElement } = useVoiceNoteController()
   const btnRef = useRef<HTMLButtonElement>(null)
+  const suppressClickRef = useRef(false)
+  const dragStartRef = useRef<{ x: number; y: number } | null>(null)
+  const dragAnchorRef = useRef<DOMRect | null>(null)
+  const dragSlotRef = useRef<number | null>(null)
+  const [dragging, setDragging] = useState(false)
+  const [dragAnchor, setDragAnchor] = useState<DOMRect | null>(null)
+  const [dragSlot, setDragSlot] = useState<number | null>(null)
+
+  const voiceSlots = useMemo(() => [
+    {
+      id: 'dictate-selection',
+      label: 'dictate',
+      color: '#7ab8a0',
+      action: voiceTap,
+      render: () => (
+        <svg width="20" height="20" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="6.5" y="2" width="5" height="8" rx="2.5" fill="currentColor" stroke="none" />
+          <path d="M3.5 8.5a5.5 5.5 0 0 0 11 0" />
+          <line x1="9" y1="14" x2="9" y2="16" />
+        </svg>
+      ),
+    },
+    {
+      id: 'voice-note',
+      label: 'voice note',
+      color: '#d7b950',
+      action: () => btnRef.current && triggerFromElement(btnRef.current),
+      render: () => (
+        <svg width="20" height="20" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M11.5 2.5H4.2A1.7 1.7 0 0 0 2.5 4.2V13.8A1.7 1.7 0 0 0 4.2 15.5H13.8A1.7 1.7 0 0 0 15.5 13.8V6.5Z" />
+          <path d="M11.5 2.5V6.5H15.5" />
+          <rect x="7.6" y="6" width="2.8" height="4" rx="1.4" fill="currentColor" stroke="none" />
+          <path d="M6.3 9.2a2.7 2.7 0 0 0 5.4 0" strokeWidth="1.1" />
+        </svg>
+      ),
+    },
+  ], [triggerFromElement])
+
+  const resetDrag = useCallback(() => {
+    dragStartRef.current = null
+    dragAnchorRef.current = null
+    dragSlotRef.current = null
+    setDragging(false)
+    setDragAnchor(null)
+    setDragSlot(null)
+    toolNameHud.hide()
+  }, [])
 
   const handleClick = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false
+      return
+    }
     triggerFromElement(e.currentTarget)
   }, [triggerFromElement])
+
+  const handlePointerDown = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
+    stopEventPropagation(e)
+    dragStartRef.current = { x: e.clientX, y: e.clientY }
+    dragAnchorRef.current = e.currentTarget.getBoundingClientRect()
+    dragSlotRef.current = null
+    setDragSlot(null)
+    ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+  }, [])
+
+  const handlePointerMove = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
+    const start = dragStartRef.current
+    const anchor = dragAnchorRef.current
+    if (!start || !anchor) return
+    const dx = e.clientX - start.x
+    const dy = e.clientY - start.y
+    if (!dragging && Math.hypot(dx, dy) <= 8) return
+    if (!dragging) {
+      setDragging(true)
+      setDragAnchor(anchor)
+    }
+    const idx = pickCornerSliderIndex({ clientX: e.clientX, anchorRect: anchor, count: voiceSlots.length })
+    dragSlotRef.current = idx
+    setDragSlot(idx)
+    const slot = voiceSlots[idx]
+    if (slot) toolNameHud.show(slot.label, slot.color)
+  }, [dragging, voiceSlots])
+
+  const handlePointerUp = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId)
+    }
+    const slot = dragSlotRef.current
+    if (dragging && slot !== null) {
+      suppressClickRef.current = true
+      voiceSlots[slot]?.action()
+      resetDrag()
+      return
+    }
+    resetDrag()
+  }, [dragging, resetDrag, voiceSlots])
+
+  const handlePointerCancel = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId)
+    }
+    resetDrag()
+  }, [resetDrag])
 
   const cls = `voice-note-btn${recording ? ' recording' : ''}${isPlacing ? ' placing' : ''}`
 
   return (
-    <button
-      ref={btnRef}
-      className={cls}
-      onClick={handleClick}
-      onPointerDown={stopEventPropagation}
-      onPointerUp={stopEventPropagation}
-      onPointerCancel={stopEventPropagation}
-      onTouchStart={stopEventPropagation}
-      onTouchEnd={stopEventPropagation}
-      title={_isTouchDevice ? 'New voice note' : (recording ? 'Stop recording' : isPlacing ? 'Cancel placement' : 'Voice note')}
-    >
-      {/* Mic inside a sticky-note silhouette — "voice → note". The note shape is
-          the noun, the mic the modifier, so it reads as a note-maker not a plain mic.
-          20px + a 1.18 fill-scale match the highlighter button's visual size. */}
-      <svg width="20" height="20" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-        <g transform="translate(9 9) scale(1.18) translate(-9 -9)">
-          {/* note card with a folded top-right corner */}
-          <path d="M11.5 2.5H4.2A1.7 1.7 0 0 0 2.5 4.2V13.8A1.7 1.7 0 0 0 4.2 15.5H13.8A1.7 1.7 0 0 0 15.5 13.8V6.5Z" />
-          <path d="M11.5 2.5V6.5H15.5" />
-          {/* mic centered in the note */}
-          <rect x="7.6" y="6" width="2.8" height="4" rx="1.4" fill="currentColor" stroke="none" />
-          <path d="M6.3 9.2a2.7 2.7 0 0 0 5.4 0" strokeWidth="1.1" />
-          <line x1="9" y1="11.9" x2="9" y2="13.2" strokeWidth="1.1" />
-        </g>
-      </svg>
-    </button>
+    <>
+      {dragging && dragAnchor && (
+        <CornerButtonSlider
+          anchorRect={dragAnchor}
+          className="voice-action-slider"
+          options={voiceSlots}
+          activeIndex={dragSlot}
+        />
+      )}
+      <button
+        ref={btnRef}
+        className={cls}
+        onClick={handleClick}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerCancel}
+        onTouchStart={stopEventPropagation}
+        onTouchEnd={stopEventPropagation}
+        title={_isTouchDevice ? 'New voice note' : (recording ? 'Stop recording' : isPlacing ? 'Cancel placement' : 'Voice note')}
+      >
+        {/* Mic inside a sticky-note silhouette — "voice → note". The note shape is
+            the noun, the mic the modifier, so it reads as a note-maker not a plain mic.
+            20px + a 1.18 fill-scale match the highlighter button's visual size. */}
+        <svg width="20" height="20" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+          <g transform="translate(9 9) scale(1.18) translate(-9 -9)">
+            {/* note card with a folded top-right corner */}
+            <path d="M11.5 2.5H4.2A1.7 1.7 0 0 0 2.5 4.2V13.8A1.7 1.7 0 0 0 4.2 15.5H13.8A1.7 1.7 0 0 0 15.5 13.8V6.5Z" />
+            <path d="M11.5 2.5V6.5H15.5" />
+            {/* mic centered in the note */}
+            <rect x="7.6" y="6" width="2.8" height="4" rx="1.4" fill="currentColor" stroke="none" />
+            <path d="M6.3 9.2a2.7 2.7 0 0 0 5.4 0" strokeWidth="1.1" />
+            <line x1="9" y1="11.9" x2="9" y2="13.2" strokeWidth="1.1" />
+          </g>
+        </svg>
+      </button>
+    </>
   )
 }
 
