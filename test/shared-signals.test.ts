@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { SignalBus } from '../src/signalBus.ts'
-import { SIGNAL_REPLAY_WINDOWS, getSignalReplayMs } from './signals.ts'
+import { SIGNAL_REPLAY_WINDOWS, getSignalReplayMs } from '../shared/signals.ts'
 
 test('shared replay table preserves current server replay behavior', () => {
   assert.deepEqual(SIGNAL_REPLAY_WINDOWS, {
