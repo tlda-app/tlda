@@ -29,7 +29,7 @@ import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil
 // @ts-ignore — vanilla JS module
 import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText, isRecording } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
-import { getHumanId, getHumanName, getDeviceId, isDeviceReady, updateEventById, sendViewingContext, setViewingEnrichFn, getFleetWsBase } from '../fleet/fleet-data.mjs'
+import { getHumanId, getHumanName, getDeviceId, isDeviceReady, updateEventById, sendViewingContext, setViewingEnrichFn, getFleetWsBase, setFleetEventsLiveTailPinned, clearFleetEventsLiveTailPinned } from '../fleet/fleet-data.mjs'
 // @ts-ignore — vanilla JS module
 import { installChatImageRetry } from '../fleet/chat-image-retry.mjs'
 // @ts-ignore — vanilla JS module
@@ -3381,7 +3381,13 @@ function FleetChatInner({ shape }: { shape: any }) {
   useEffect(() => {
     hardLockedRef.current = hardLocked
     localStorage.setItem(HARD_LOCKED_KEY, String(hardLocked))
+    setFleetEventsLiveTailPinned(shape.id, hardLocked || !userScrolledUpRef.current)
   }, [hardLocked])
+
+  useEffect(() => {
+    setFleetEventsLiveTailPinned(shape.id, hardLockedRef.current || !userScrolledUpRef.current)
+    return () => clearFleetEventsLiveTailPinned(shape.id)
+  }, [shape.id])
 
   // pin-to-bottom: Virtuoso's own scrollToIndex(LAST, 'end') is the single
   // source of truth. It is virtualization-aware — it renders + measures the
@@ -3426,9 +3432,10 @@ function FleetChatInner({ shape }: { shape: any }) {
     userScrolledUpRef.current = false
     isAtBottomRef.current = true
     setAtBottom(true)
+    setFleetEventsLiveTailPinned(shape.id, true)
     resetRenderWindowToTail()
     pinHard()
-  }, [pinHard, resetRenderWindowToTail])
+  }, [pinHard, resetRenderWindowToTail, shape.id])
 
   // When the scroll container resizes — textarea growing as you type
   // (shrinks chat-log) OR shrinking back after send (grows chat-log) — pin
@@ -3528,10 +3535,13 @@ function FleetChatInner({ shape }: { shape: any }) {
         resetRenderWindowToTail()
       }
       userScrolledUpRef.current = scrolledUp
+      if (action === 'follow-off' || action === 'follow-on') {
+        setFleetEventsLiveTailPinned(shape.id, hardLockedRef.current || !scrolledUp)
+      }
     }
     el.addEventListener('scroll', handle, { passive: true })
     return () => el.removeEventListener('scroll', handle)
-  }, [chatLogEl, anchorRenderWindow, resetRenderWindowToTail])
+  }, [chatLogEl, anchorRenderWindow, resetRenderWindowToTail, shape.id])
 
   // Convergence watchdog — the backstop that was simplified away in b5e24e35.
   // Most follow paths are event-driven, but Virtuoso can land short while rows
@@ -3564,9 +3574,10 @@ function FleetChatInner({ shape }: { shape: any }) {
     userScrolledUpRef.current = false
     isAtBottomRef.current = true
     setAtBottom(true)
+    setFleetEventsLiveTailPinned(shape.id, true)
     resetRenderWindowToTail()
     requestAnimationFrame(pinHard)
-  }, [filterKey, pinHard, resetRenderWindowToTail])
+  }, [filterKey, pinHard, resetRenderWindowToTail, shape.id])
 
   // Terminal card hover — mouseover on .lc-terminal-card shows the terminal overlay.
   useEffect(() => {

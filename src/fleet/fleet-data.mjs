@@ -64,6 +64,42 @@ let _lastEventId = 0
 // by db event id; drained when the matching fleet-event arrives.
 const _pendingEventUpdates = new Map()
 const _MAX_PENDING_UPDATES = 200
+const _liveTailViewers = new Map()
+
+function isLiveTailPinned() {
+  for (const pinned of _liveTailViewers.values()) {
+    if (!pinned) return false
+  }
+  return true
+}
+
+function trimIfLiveTailPinned() {
+  if (!isLiveTailPinned()) return []
+  const evicted = _store.trim({ evict: 'oldest' })
+  if (evicted.length) {
+    replaceFleetEvents(_store.all())
+    notify('messages', null)
+  }
+  return evicted
+}
+
+function liveUpsert(event) {
+  return _store.upsert(event, { skipTrim: !isLiveTailPinned() })
+}
+
+export function setFleetEventsLiveTailPinned(viewerId, pinned) {
+  const key = viewerId || 'default'
+  const wasPinned = isLiveTailPinned()
+  _liveTailViewers.set(key, !!pinned)
+  if (!wasPinned && isLiveTailPinned()) trimIfLiveTailPinned()
+}
+
+export function clearFleetEventsLiveTailPinned(viewerId) {
+  const key = viewerId || 'default'
+  const wasPinned = isLiveTailPinned()
+  _liveTailViewers.delete(key)
+  if (!wasPinned && isLiveTailPinned()) trimIfLiveTailPinned()
+}
 
 // Apply an `event-update` payload's fields onto an already-stored event. Shared
 // by the live handler and the buffered-apply path so a buffered update behaves
@@ -350,7 +386,7 @@ export async function sendMessage(to, text, opts = {}) {
 
 /** Inject an optimistic (locally-authored) event into the event list immediately. */
 export function injectOptimisticEvent(event) {
-  const result = _store.upsert(event)
+  const result = liveUpsert(event)
   projectStoreResult(result)
   notify('messages', result.event)
 }
@@ -571,7 +607,7 @@ export function connect() {
             // upsert dedups by id and binds the optimistic tempId→dbId handoff
             // (the replayed row carries _tempId, persisted server-side). No
             // content matching — binding is always by id, per the dedup rule.
-            const { event: ev, isNew, evicted } = _store.upsert(convertChatEvent(raw))
+            const { event: ev, isNew, evicted } = liveUpsert(convertChatEvent(raw))
             if (evicted.length) replaceFleetEvents(_store.all())
             else upsertFleetEvent(ev)
             if (isNew) newEvents.push(ev); else boundAny = true
@@ -661,7 +697,7 @@ export function connect() {
         // it rebinds the pending entry instead of appending a duplicate. All by
         // id — no content matching.
         const converted = convertChatEvent(data)
-        const result = _store.upsert(converted)
+        const result = liveUpsert(converted)
         const { event, isNew } = result
         // Drain any event-updates that arrived before this event (e.g. a late
         // file-upload's inline_attachments). Applying them now, before notify,
@@ -989,7 +1025,7 @@ export async function loadBefore(agentIds = [], beforeTs, count = 100) {
   // re-pin scroll after a prepend.
   let added = 0
   const changed = []
-  const results = _store.upsertMany(events, { evict: 'newest' })
+  const results = _store.upsertMany(events, { skipTrim: true })
   for (const result of results) {
     if (result.isNew) added++
     changed.push(result.event)

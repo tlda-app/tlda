@@ -3,12 +3,24 @@ import test from 'node:test'
 
 import { makeEventStore } from '../src/fleet/event-store.mjs'
 
-function eventAt(id, minute) {
+function eventAt(id) {
+  const ms = Date.UTC(2026, 5, 28, 12, 0, id)
   return {
     _dbId: id,
     type: 'chat',
     text: `event ${id}`,
-    timestamp: `2026-06-28T12:${String(minute).padStart(2, '0')}:00.000Z`,
+    timestamp: new Date(ms).toISOString(),
+  }
+}
+
+function ids(store) {
+  return store.all().map(e => e._dbId)
+}
+
+function assertContiguousAscending(store) {
+  const got = ids(store)
+  for (let i = 1; i < got.length; i++) {
+    assert.equal(got[i], got[i - 1] + 1, `gap between ${got[i - 1]} and ${got[i]}`)
   }
 }
 
@@ -25,29 +37,40 @@ test('failed optimistic events can be dismissed by temp id', () => {
   assert.equal(store.removeByTempId('tmp-1'), null)
 })
 
-test('live event after scrollback does not clear loaded backlog', () => {
+test('scroll-back grows the buffer and evicts nothing', () => {
   const store = makeEventStore({ maxEvents: 5 })
-  store.upsertMany([eventAt(10, 10), eventAt(11, 11), eventAt(12, 12)])
+  store.upsertMany([eventAt(10), eventAt(11), eventAt(12), eventAt(13), eventAt(14)])
 
-  store.upsertMany([eventAt(6, 6), eventAt(7, 7), eventAt(8, 8), eventAt(9, 9)], { evict: 'newest' })
-  assert.deepEqual(store.all().map(e => e._dbId), [6, 7, 8, 9, 10])
+  store.upsertMany([eventAt(6), eventAt(7), eventAt(8), eventAt(9)], { skipTrim: true })
 
-  store.upsert(eventAt(13, 13))
-  assert.deepEqual(
-    store.all().map(e => e._dbId),
-    [7, 8, 9, 10, 13],
-    'posting at the tail should evict only the oldest row, not reset to recent-only',
-  )
+  assert.equal(store.size(), 9)
+  assert.deepEqual(ids(store), [6, 7, 8, 9, 10, 11, 12, 13, 14])
+  assert.equal(store.get('db:14')?.text, 'event 14', 'live tail must remain present')
+  assertContiguousAscending(store)
 })
 
-test('event store remains bounded while preserving newer live rows', () => {
+test('live append while pinned to bottom rotates out only the oldest', () => {
   const store = makeEventStore({ maxEvents: 3 })
-  store.upsertMany([eventAt(5, 5), eventAt(6, 6), eventAt(7, 7)])
-  store.upsertMany([eventAt(2, 2), eventAt(3, 3), eventAt(4, 4)], { evict: 'newest' })
-  assert.deepEqual(store.all().map(e => e._dbId), [2, 3, 4])
+  store.upsertMany([eventAt(5), eventAt(6), eventAt(7)])
 
-  store.upsert(eventAt(8, 8))
-  store.upsert(eventAt(9, 9))
-  assert.deepEqual(store.all().map(e => e._dbId), [4, 8, 9])
+  store.upsert(eventAt(8), { evict: 'oldest' })
+
+  assert.deepEqual(ids(store), [6, 7, 8])
   assert.equal(store.size(), 3)
+  assert.equal(store.get('db:5'), undefined)
+  assert.equal(store.get('db:8')?.text, 'event 8')
+  assertContiguousAscending(store)
+})
+
+test('live append while scrolled up does NOT evict the oldest', () => {
+  const store = makeEventStore({ maxEvents: 3 })
+  store.upsertMany([eventAt(5), eventAt(6), eventAt(7)])
+
+  store.upsert(eventAt(8), { skipTrim: true })
+
+  assert.deepEqual(ids(store), [5, 6, 7, 8])
+  assert.equal(store.size(), 4)
+  assert.equal(store.get('db:5')?.text, 'event 5', 'old viewed row must stay while scrolled up')
+  assert.equal(store.get('db:8')?.text, 'event 8')
+  assertContiguousAscending(store)
 })

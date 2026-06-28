@@ -6,8 +6,9 @@
 // the history fetch funnel through upsert(), so:
 //   - insert-by-id can't duplicate (same id → same entry)
 //   - history filling a gap can't duplicate (it upserts by id too)
-//   - capping trims only the edge requested by the caller. Scrollback can evict
-//     newest rows to move older; later live rows must not clear that backlog.
+//   - capping trims only the edge requested by the caller. Scrollback disables
+//     trimming entirely; live-tail rotation trims oldest rows only when the
+//     viewer is actually following the bottom.
 //
 // The optimistic handoff (your own send) is the one place an entry changes key:
 // it starts keyed by `_tempId`, and when the server echo arrives carrying both
@@ -148,11 +149,15 @@ export function makeEventStore(opts = {}) {
       results.push(result)
       evicted.push(...result.evicted)
     }
-    evicted.push(...trimOverflow(opts.evict === 'newest' ? 'newest' : 'oldest'))
+    if (!opts.skipTrim) evicted.push(...trimOverflow(opts.evict === 'newest' ? 'newest' : 'oldest'))
     if (evicted.length) {
       for (const result of results) result.evicted = evicted
     }
     return results
+  }
+
+  function trim(opts = {}) {
+    return trimOverflow(opts.evict === 'newest' ? 'newest' : 'oldest')
   }
 
   /**
@@ -218,5 +223,5 @@ export function makeEventStore(opts = {}) {
   function get(key) { return byKey.get(key) }
   function clear() { clearEventsOnly() }
 
-  return { upsert, upsertMany, reconcile, patchByDbId, patchByTempId, removeByTempId, all, size, get, clear, keyOf }
+  return { upsert, upsertMany, trim, reconcile, patchByDbId, patchByTempId, removeByTempId, all, size, get, clear, keyOf }
 }
