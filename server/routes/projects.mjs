@@ -10,6 +10,7 @@
  *   DELETE /:name               Remove project
  *   GET    /:name/files         List source files
  *   GET    /:name/source/:file  Read source file content
+ *   PUT    /:name/source/:file  Write source file content and trigger build
  *   POST   /:name/push          Push files + trigger build
  *   POST   /:name/build         Trigger rebuild
  *   GET    /:name/build/status  Build status + log
@@ -33,6 +34,7 @@ import { loadSynctex } from '../lib/synctex-query.mjs'
 import { buildMarkdown, buildHtml, buildSlides } from '../lib/format-builders.mjs'
 import { shouldBuildOnPush } from '../lib/build-decision.mjs'
 import historyRoutes from './history.mjs'
+import { linkOverleaf, unlinkOverleaf, syncOverleaf, pushSourceToOverleaf, stopPolling, isPolling } from '../lib/overleaf-sync.mjs'
 import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeChange, getOrCreateRoom, broadcastSignal, getLastSignal, onSignal, replaceRoomSnapshot, getShapesAt, emitGlobalEvent, onGlobalEvent } from '../lib/sync-rooms.mjs'
 
 const router = Router()
@@ -164,9 +166,53 @@ router.patch('/:name/auto-sync', requireRw, (req, res) => {
   }
 })
 
+// Link an Overleaf (or any) git remote → clone, initial sync, start polling.
+// Body: { gitUrl, token?, title?, mainFile?, pollSeconds? }
+router.post('/:name/overleaf-link', requireRw, async (req, res) => {
+  try {
+    const { gitUrl, token, title, mainFile, pollSeconds } = req.body || {}
+    if (!gitUrl) return res.status(400).json({ error: 'gitUrl is required' })
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(req.params.name)) {
+      return res.status(400).json({ error: 'name must be lowercase alphanumeric with hyphens' })
+    }
+    const result = await linkOverleaf(req.params.name, { gitUrl, token, title, mainFile, pollSeconds })
+    if (result.linked) {
+      const project = readProject(req.params.name)
+      if (project?.format === 'svg') {
+        await dispatchBuild(req.params.name)
+      }
+      emitGlobalEvent('project-changed', { name: req.params.name })
+    }
+    res.json({ ok: true, ...result })
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+// Manually trigger one Overleaf sync (also serves as a webhook endpoint).
+router.post('/:name/overleaf-sync', requireRw, async (req, res) => {
+  try {
+    const result = await syncOverleaf(req.params.name)
+    res.json({ ok: true, ...result })
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+// Unlink the Overleaf remote (stops polling, removes the clone; keeps the project).
+router.post('/:name/overleaf-unlink', requireRw, (req, res) => {
+  try {
+    unlinkOverleaf(req.params.name)
+    res.json({ ok: true })
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
 // Delete project
 router.delete('/:name', requireRw, (req, res) => {
   try {
+    stopPolling(req.params.name)
     deleteProject(req.params.name)
     res.json({ ok: true })
   } catch (e) {
@@ -204,6 +250,20 @@ router.get('/:name/source/:file', requireRead, (req, res) => {
   } catch (e) {
     res.status(400).json({ error: e.message })
   }
+})
+
+// Write a specific source file's content and trigger the normal project push path
+router.put('/:name/source/:file', requireRw, async (req, res) => {
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+  const content = typeof req.body?.content === 'string' ? req.body.content : null
+  if (content === null) return res.status(400).json({ error: 'Required: content string' })
+  const result = await processProjectPush(req.params.name, {
+    files: [{ path: req.params.file, content }],
+    editedBy: req.body?.editedBy,
+  })
+  const { status, ...payload } = result
+  res.status(status).json(payload)
 })
 
 // Synctex path-based lookup: trace highlight path through synctex records
@@ -477,7 +537,7 @@ export async function processProjectPush(name, body) {
   const project = readProject(name)
   if (!project) return { status: 404, ok: false, error: 'Project not found' }
 
-  const { files, deletedFiles, priorityPages, sourceDir, members, session, sessionAt, editedBy } = body || {}
+  const { files, deletedFiles, priorityPages, sourceDir, members, session, sessionAt, editedBy, overleafSync } = body || {}
 
   if (sourceDir && !project.sourceDir) updateProject(name, { sourceDir })
   if (session) updateProject(name, { session, sessionAt: sessionAt || Date.now() })
@@ -502,6 +562,15 @@ export async function processProjectPush(name, body) {
   if (deletedFiles?.length > 0) {
     for (const filePath of deletedFiles) {
       if (deleteSourceFile(name, filePath)) anyChanged = true
+    }
+  }
+
+  if (anyChanged && project.overleafRemote && project.autoSync !== false && !overleafSync) {
+    try {
+      await pushSourceToOverleaf(name, { files, deletedFiles, editedBy })
+    } catch (e) {
+      console.error(`[${name}] Git sync failed: ${e.message}`)
+      return { status: 409, ok: false, error: `Git sync failed: ${e.message}` }
     }
   }
 

@@ -9,23 +9,27 @@
  * Re-sorting a command between user-facing and developer is a one-line edit here.
  */
 
-export const DEV_COMMANDS = ['pw', 'serve', 'sandbox', 'dev-url', 'deploy', 'restart-mcp']
+export const DEV_COMMANDS = ['pw', 'serve', 'dev-url', 'deploy', 'restart-mcp']
 
 export const DEV_HELP = `tlda-dev — developer commands for hacking on tlda itself
 
-Two dev-environment modes (the user app is just \`tlda server start\`):
-  serve <branch> [--port N]   Vite dev server for a branch — free port, HTTP on
-                     all interfaces, off .worktrees/<branch> (creates it if
-                     missing). Prints/stores a Tailscale URL when available so
-                     Skip can open it from another machine; otherwise says why
-                     no shareable URL is available instead of forwarding
-                     localhost. Chat/fleet resolves to your global store via
-                     /api/fleet-config; docs + shapes stay on your local server.
-  sandbox <branch>            A complete throwaway environment for a branch — its
-                     own backend + DB + projects + chat + a Vite pointed at it,
-                     nothing shared. For server/shape changes that would crash a
-                     live room. (\`sandbox stop|status|url\` to manage it; add
-                     \`--json\` or \`--print-json\` for machine-readable rig info.)
+\`tlda-dev\` is plain \`tlda\` run against the CURRENT worktree's branch + correct
+injected config, plus a few dev-only verbs. Read-only mirrors (doc status, …)
+forward to \`tlda\`. Raw \`server\`/\`daemon\` lifecycle is DISABLED here — a worktree
+daemon could target the real fleet; use \`serve\` instead.
+
+  serve [--sandbox] [--doc NAME] [--port N] [--no-build]
+                     The ONE dev bring-up command. Stands up THIS worktree's branch
+                     as a preview, REACHABLE from your other devices (Tailscale
+                     MagicDNS host, valid cert), SPA config pointed at that host,
+                     and NO token (a non-standard port disables auth). Delegates to
+                     the real robust \`tlda server start\` detach, so it survives the
+                     launching agent exiting. Isolated (own projects/DB/chat).
+                     \`--sandbox\` also brings up a fleet-daemon wired ONLY to this
+                     sandbox server (it literally cannot reach prod). Prints the
+                     clean URL + a QR. \`serve stop|status|url\` to manage it.
+  share [--doc NAME] Print the reachable, tokenless URL + QR for this worktree's
+                     running preview (mirror of \`tlda doc share\`, per-worktree).
 
 Other commands:
   pw <verb> [args]   Drive the one shared playwright browser (goto, click,

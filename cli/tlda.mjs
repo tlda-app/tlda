@@ -30,8 +30,7 @@ import {
 } from '../shared/config.mjs'
 import { tldaFetch } from '../shared/http-client.mjs'
 import { DEV_COMMANDS } from './lib/dev-commands.mjs'
-import { resolveRepoRoot, ensureWorktree, startWorktreeVite, findFreePort } from './lib/dev-vite.mjs'
-import { findLanIPv4, findTailscaleIPv4, getFunnelUrl, selectDevShareBase, selectDocShareBase, viewerLoginUrl } from './lib/share-url.mjs'
+import { getFunnelUrl, findTailscaleIPv4, selectDevShareBase, selectDocShareBase, viewerLoginUrl } from './lib/share-url.mjs'
 import { scanMarkdownDeps } from '../shared/markdown-deps.mjs'
 import { cmdLogs } from './lib/unified-logs.mjs'
 import { SPAWN_POLICY_OPTIONS, resolveSpawnPolicyOption } from '../server/lib/spawn-policy.mjs'
@@ -117,7 +116,7 @@ const VALUE_FLAGS = new Set([
   'server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format',
   'session', 'target', 'timeout', 'id', 'book', 'worktree', 'port', 'browser',
   'model', 'cwd', 'effort', 'mode', 'kind', 'spawn-capability', 'capability',
-  'agent-id', 'policy', 'to', 'limit', 'config',
+  'agent-id', 'policy', 'to', 'limit', 'from', 'poll', 'config',
 ])
 
 function getFlag(name, defaultVal = null) {
@@ -173,11 +172,11 @@ const cyan  = (s) => isTTY ? `\x1b[36m${s}\x1b[0m` : s
 
 // --- HTTP helpers ---
 
-async function api(method, path, body = null, { timeoutMs = 30000 } = {}) {
+async function api(method, path, body = null, { timeoutMs = 30000, token = getToken() } = {}) {
   return tldaFetch(path, {
     method, body, timeoutMs,
     server: getServer(),
-    token: getToken(),
+    token,
   })
 }
 
@@ -614,8 +613,36 @@ async function cmdPush() {
   }
 }
 
+// A repository is just a remote you haven't cloned yet. `link` takes the main
+// file either way; add `--from <git-url>` (Overleaf, GitHub, ssh, …) and the
+// server clones + polls that remote instead of watching a local directory.
+//   tlda doc link <name> <main-file> [--from <git-url>] [--token TOKEN] [--title T] [--poll 60]
 async function cmdLink() {
-  await cmdCreate()
+  const from = getFlag('from')
+  if (from) await cmdLinkRemote(from)
+  else await cmdCreate()
+}
+
+// Link a project to a git remote (e.g. Overleaf). The server clones it, does an
+// initial sync, and polls for changes — the author keeps editing upstream while
+// tlda mirrors + rebuilds. The main file is the entry point *inside* the repo.
+async function cmdLinkRemote(gitUrl) {
+  const name = getPositional(0)
+  const mainFile = getPositional(1) || getFlag('main')
+  if (!name || !mainFile) {
+    console.error('Usage: tlda doc link <name> <main-file> --from <git-url> [--token TOKEN] [--title "Title"] [--poll 60]')
+    console.error('  <main-file> is the entry .tex inside the repo (no default — papers aren\'t all main.tex)')
+    process.exit(1)
+  }
+  const overleafToken = getFlag('token')
+  const title = getFlag('title')
+  const pollSeconds = Number(getFlag('poll') || '60') || 60
+
+  console.log(`Linking ${name} ← ${gitUrl} (main: ${mainFile}; cloning + initial build, this can take a minute)…`)
+  const result = await api('POST', `/api/projects/${name}/overleaf-link`,
+    { gitUrl, token: overleafToken, title, mainFile, pollSeconds },
+    { timeoutMs: 300000, token: getRwToken() })
+  console.log(`✓ Linked. Synced ${result.changed} file(s) at ${String(result.head || '').slice(0, 7)}; polling every ${pollSeconds}s.`)
 }
 
 async function cmdInit() {
@@ -2877,10 +2904,15 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
     if (serverPid) {
       try { process.kill(serverPid, 'SIGTERM') } catch {}
     }
-    // Also kill any zombie server processes that aren't bound to the port
-    // (e.g., old servers from worktrees that failed to bind but are still running
-    // their daemon-supervisor loops). pkill is safe here — unified-server.mjs is unique.
-    try { execSync('pkill -f "server/unified-server.mjs"', { stdio: 'pipe' }) } catch {}
+    // Also kill a zombie MAIN server that isn't bound to the port (e.g. an old
+    // instance still running its daemon-supervisor loop). Match the THIS-checkout
+    // absolute server path only — NOT the bare "server/unified-server.mjs", which
+    // is a substring of every worktree's `.../.worktrees/X/server/unified-server.mjs`
+    // and so swept every `tlda-dev serve` preview on every stop/deploy. That
+    // cross-worktree sweep is exactly what killed Skip's preview tabs when an
+    // unrelated agent restarted the main server. Worktree dev servers are managed
+    // by `tlda-dev serve stop`, never by the main `server stop`.
+    try { execSync(`pkill -f ${JSON.stringify(serverScript)}`, { stdio: 'pipe' }) } catch {}
     // No other fallback — if /health doesn't respond, the server is already dead.
 
     // Wait for the server to actually stop
@@ -2959,27 +2991,15 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
       try { execSync('launchctl bootstrap gui/$(id -u) ' + PLIST, { stdio: 'pipe' }) } catch {}
       try { execSync('launchctl kickstart gui/$(id -u)/com.tlda.server', { stdio: 'pipe' }) } catch {}
     } else {
-      // No supervisor: reclaim a genuinely-dead port, then spawn directly.
-      try {
-        const stale = execSync(`lsof -ti:${port} -sTCP:LISTEN`, { stdio: 'pipe' }).toString().trim()
-        if (stale) {
-          for (const pid of stale.split('\n')) {
-            try { process.kill(parseInt(pid), 'SIGKILL') } catch {}
-          }
-          await new Promise(r => setTimeout(r, 500))
-        }
-      } catch {}
-      const { spawn } = await import('child_process')
-      const { openSync: fsOpenSync } = await import('fs')
-      const logFd = fsOpenSync(LOGFILE, 'a')
-
-      const serverArgs = [serverScript, '--i-am-tlda-cli']
-      const child = spawn('node', serverArgs, {
-        detached: true,
-        stdio: ['ignore', logFd, logFd],
-        env: { ...process.env, PORT: port, TMUX: undefined, TMUX_PANE: undefined, ...(hasTls && !process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: TLS_CA_PATH } : {}) },
+      // No supervisor: spawn the server fully detached via the shared helper
+      // (the same daemonization `tlda-dev serve` uses, so there's one robust
+      // path, not a hand-rolled parallel one). reclaimPort: the main server owns
+      // the fixed port, so clear a dead LISTENer before binding.
+      const { spawnDetachedServer } = await import('./lib/server-start.mjs')
+      spawnDetachedServer({
+        serverScript, port, logFile: LOGFILE, reclaimPort: true,
+        extraCaPath: hasTls ? TLS_CA_PATH : null,
       })
-      child.unref()
     }
 
     // Wait for it to come up. The server can boot slowly (large fleet-DB query
@@ -3121,41 +3141,9 @@ async function cmdFleetDev() {
   }
 }
 
-// --- `tlda-dev serve <branch>` — vite dev server for a branch ---
-
-async function cmdDev() {
-  // branch is positional (`tlda-dev serve <branch>`); --worktree still accepted.
-  const branch = getPositional(0) || getFlag('worktree')
-  const portArg = getFlag('port')
-
-  const worktreeDir = ensureWorktree(resolveRepoRoot(), branch)
-  console.log(dim(branch ? `Worktree: .worktrees/${branch}` : 'Serving current checkout'))
-
-  const { scheme, port, pid, logFile } = await startWorktreeVite({
-    worktreeDir,
-    port: portArg ? parseInt(portArg) : await findFreePort(5180),
-    hasTls,
-  })
-
-  // Chat/fleet resolves to the global store via /api/fleet-config; only doc-sync +
-  // assets ride this local proxy, so the worktree shares your room with no extra wiring.
-  const token = getToken()
-  const localBase = `${scheme}://localhost:${port}/`
-  const shared = selectDevShareBase({ scheme, port, tailscaleIp: findTailscaleIPv4(), lanIp: findLanIPv4() })
-  const base = shared.shareable ? `${shared.base}/` : localBase
-  const url = token ? `${base}?token=${token}` : base
-  writeFileSync(join(worktreeDir, '.dev-url'), url)
-
-  console.log(green(`\nVite dev server ready`))
-  if (branch) console.log(`  Worktree: ${worktreeDir}`)
-  console.log(`  Port:     ${port}`)
-  console.log(`  PID:      ${pid}`)
-  console.log(`  Log:      ${logFile}`)
-  if (shared.shareable) console.log(`  Share:    ${shared.label}`)
-  else console.log(`  Share:    unavailable — ${shared.reason}`)
-  if (shared.note) console.log(`  Note:     ${dim(shared.note)}`)
-  console.log(bold(`\n  ${url}\n`))
-}
+// `tlda-dev serve` is the worktree-relative reachable preview — it lives in
+// cli/lib/dev-worktree.mjs and is intercepted by the tlda-dev front-end, so there
+// is no `serve` case in the switch below.
 
 async function cmdDevUrl() {
   // Prefer the .dev-url that `tlda-dev serve` wrote (correct scheme + token).
@@ -3212,7 +3200,6 @@ async function main() {
       case 'setup': await cmdSetup(); break
       case 'agent': await cmdAgent(); break
       case 'restart-mcp': await restartMcpAgents(process.argv.slice(3)); break // dev-only; surfaced via `tlda-dev restart-mcp`
-      case 'serve': await cmdDev(); break // dev-only; surfaced via `tlda-dev serve`
       case 'dev-url': await cmdDevUrl(); break
       case 'deploy': await cmdDeploy(); break
       case 'doctor': await cmdDoctor(); break

@@ -32,6 +32,11 @@ body.tlda-pan-mode * {
   z-index: 1000 !important;
 }
 
+/* Keep native TLDraw overlays (laser/scribbles, collaborators) above SVG page text. */
+.tl-canvas-overlays {
+  z-index: 8300 !important;
+}
+
 /* Shrink and fade toolbar controls (color dot keeps its inline color) */
 .tlui-layout__bottom {
   z-index: 1000 !important;

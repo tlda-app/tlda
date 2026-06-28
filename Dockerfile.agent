@@ -1,0 +1,88 @@
+# Dockerfile.agent — the AGENT box for a friend's instance.
+#
+# A friend's deployment is TWO boxes:
+#   - RENDER box (Dockerfile.live): tlda server + TeXLive, mirrors their Overleaf
+#     paper and builds it. Serves the viewer.
+#   - AGENT box (THIS image): runs the fleet-daemon + codex agents in tmux,
+#     connected over WebSocket to the render box. The container IS the fence
+#     (one friend, one paper) so no macOS `fence` binary is used.
+#
+# This image deliberately has NO TeXLive and does NOT serve the viewer. Agents
+# here never build locally — builds happen on the render box. (Skip: "I kind of
+# think of that as a win because it forces agents to not try to build locally.")
+# What it DOES need: node + the daemon's deps, tmux, codex, and python for
+# fleet-spawn.py.
+#
+# node:24 (NOT 20): the daemon surface imports TypeScript modules directly
+# (server/lib/spawn-policy.mjs → ../../shared/harness.ts; fleet-store → live-store.ts;
+# sync-rooms → signals.ts). Those rely on Node's native type-stripping, which is
+# on by default since 23.6 (the Mini runs node 26). node:20 throws
+# ERR_UNKNOWN_FILE_EXTENSION on the first `.ts` import and the daemon never starts.
+FROM node:24-slim
+WORKDIR /app
+
+# --- system deps ---
+#   tmux            — codex runs as an interactive TUI in a tmux pane (terminal
+#                     hover / capture-pane); `codex exec` is NOT used.
+#   git             — fleet tooling shells out to git.
+#   build-essential, python3, python3-venv — native npm modules (node-pty,
+#                     better-sqlite3) compile via node-gyp; python also runs
+#                     fleet-spawn.py.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      tmux git ca-certificates curl \
+      build-essential python3 python3-venv procps \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- python deps for fleet-spawn.py ---
+# Its ONLY non-stdlib import is `websocket` (websocket-client). Debian's system
+# python is PEP-668 externally-managed, so install into an isolated venv and put
+# it first on PATH (fleet-spawn is invoked as `python3 fleet-spawn.py`).
+ENV PATH="/opt/venv/bin:$PATH"
+RUN python3 -m venv /opt/venv \
+    && pip install --no-cache-dir "websocket-client>=1.8,<2"
+
+# --- codex (OpenAI GPT-5.5 CLI) ---
+# Pinned. Auth is a per-box one-time `codex login` (ChatGPT-subscription device
+# flow); auth.json persists on the volume via the entrypoint. Its own layer so it
+# caches across app-code redeploys.
+RUN npm install -g @openai/codex@0.142.3
+
+# --- node runtime deps ---
+# Install the full root package.json at /app (like Dockerfile.live) so both the
+# daemon code and shared/*.mjs resolve up to one /app/node_modules — shared/
+# imports @tldraw/* (file: deps), so the tldraw-fork workspace must be present.
+COPY server/package.json ./package.json
+COPY server/package-lock.json* ./
+COPY tldraw-fork/ ./tldraw-fork/
+RUN npm install --production
+
+# mcp-server has its own package.json (ws, yjs, @modelcontextprotocol/sdk) and
+# expects a local node_modules. codex spawns it as the `tlda` MCP server.
+COPY mcp-server/ ./mcp-server/
+RUN cd mcp-server && npm install --production
+
+# --- app code ---
+# fleet-spawn.py computes REPO_DIR as the parent of bin/, so it needs cli/,
+# shared/, and server/ siblings of bin/ under /app.
+COPY bin/fleet-daemon.mjs ./bin/fleet-daemon.mjs
+COPY bin/fleet-spawn.py ./bin/fleet-spawn.py
+COPY bin/requirements.txt ./bin/requirements.txt
+COPY bin/lib/ ./bin/lib/
+COPY cli/ ./cli/
+COPY shared/ ./shared/
+# The daemon imports ../server/lib/spawn-policy.mjs (and its transitive server/lib
+# siblings); copy the lib tree wholesale.
+COPY server/lib/ ./server/lib/
+
+# Optional `tlda-fly friend up --ship-config` payload. The CLI writes an ignored
+# .tlda-fly/agent-config.tgz into the build context, then removes it after deploy.
+COPY .tlda-fly/ ./tlda-fly/
+
+# Put `tlda` on PATH (fleet-spawn invokes `node cli/tlda.mjs` directly, but the
+# entrypoint and codex MCP config use the bare `tlda`).
+RUN chmod +x /app/cli/tlda.mjs && ln -sf /app/cli/tlda.mjs /usr/local/bin/tlda
+
+# --- entrypoint: runs fleet-daemon (NOT the server), wires ~/.codex + config ---
+COPY scripts/fly-entrypoint-agent.sh ./
+RUN chmod +x fly-entrypoint-agent.sh
+CMD ["/app/fly-entrypoint-agent.sh"]

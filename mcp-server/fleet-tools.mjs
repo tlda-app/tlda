@@ -2061,7 +2061,7 @@ export async function handleFleetTool(name, args) {
     // hostname (everything before the first dot). Stable per box, lets
     // the tlda server route RPCs (interrupt / send-key / capture-pane /
     // restart-mcp) to the right per-machine fleet-daemon.
-    const machineId = os.hostname().split('.')[0];
+    const machineId = process.env.TLDA_MACHINE_ID || os.hostname().split('.')[0];
     const currentHarness = harnessFromEnv();
     const regBody = {
       // agent_id (not id): sendWS() stamps a correlation `id` onto every

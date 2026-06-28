@@ -9,18 +9,23 @@
  * when a critical daemon-warning fires for this doc; cleared on the next clean
  * sync (daemon-sync-ok). Renders nothing when there's no standing sync failure.
  */
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useContext } from 'react'
 import { useEditor } from 'tldraw'
 import type { TLShapeId } from 'tldraw'
+import { DocContext } from '../PanelContext'
+import { isMyFleetShape } from '../shapes/fleet-utils'
 import './SyncErrorPill.css'
 
-interface SyncError { message?: string }
+interface SyncError { message?: string; file?: string; kind?: 'overleaf-conflict' | 'sync-error' }
 
 export function SyncErrorPill() {
   const editor = useEditor()
-  const [errors, setErrors] = useState<SyncError[]>([])
+  const [sentinelErrors, setSentinelErrors] = useState<SyncError[]>([])
+  const [projectErrors, setProjectErrors] = useState<SyncError[]>([])
   const [showList, setShowList] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
+  const doc = useContext(DocContext)
+  const errors = [...projectErrors, ...sentinelErrors]
 
   useEffect(() => {
     if (!editor) return
@@ -30,9 +35,65 @@ export function SyncErrorPill() {
       if (!json) return []
       try { const arr = JSON.parse(json); return Array.isArray(arr) ? arr : [] } catch { return [] }
     }
-    setErrors(read())
-    return editor.store.listen(() => setErrors(read()), { scope: 'all' })
+    setSentinelErrors(read())
+    return editor.store.listen(() => setSentinelErrors(read()), { scope: 'all' })
   }, [editor])
+
+  useEffect(() => {
+    if (!doc?.docName) return
+    let cancelled = false
+    const read = async () => {
+      try {
+        const res = await fetch(`/api/projects/${encodeURIComponent(doc.docName)}`)
+        if (!res.ok) throw new Error(`project ${res.status}`)
+        const info = await res.json()
+        if (cancelled) return
+        if (info?.overleafSyncStatus !== 'conflict') {
+          setProjectErrors([])
+          return
+        }
+        const files = Array.isArray(info?.overleafConflictFiles) ? info.overleafConflictFiles : []
+        const conflictErrors = files.length > 0
+          ? files.map((file: string) => ({
+              kind: 'overleaf-conflict' as const,
+              file,
+              message: `Git conflict: ${file}`,
+            }))
+          : [{
+              kind: 'overleaf-conflict' as const,
+              message: 'Git conflict',
+            }]
+        setProjectErrors(conflictErrors)
+      } catch {
+        if (!cancelled) setProjectErrors([])
+      }
+    }
+    void read()
+    const interval = window.setInterval(read, 5000)
+    return () => {
+      cancelled = true
+      window.clearInterval(interval)
+    }
+  }, [doc?.docName])
+
+  const openConflictInSourceEditor = (file?: string) => {
+    if (!file) return
+    const sourceEditor = editor.getCurrentPageShapes()
+      .find((shape: any) => shape.type === 'fleet-source-editor' && isMyFleetShape(shape)) as any
+    if (!sourceEditor) {
+      setShowList(false)
+      return
+    }
+    editor.updateShape({
+      id: sourceEditor.id,
+      type: sourceEditor.type,
+      props: { file, title: file, line: 1 },
+    } as any)
+    localStorage.setItem('fleet-hud-expanded', '1')
+    window.dispatchEvent(new CustomEvent('fleet-hud-toggle', { detail: { expanded: true } }))
+    window.dispatchEvent(new CustomEvent('fleet-hud-reset'))
+    setShowList(false)
+  }
 
   useEffect(() => {
     if (!showList) return
@@ -50,19 +111,29 @@ export function SyncErrorPill() {
   return (
     <div className="sync-error-container" ref={containerRef}>
       <span
-        className="sync-error-badge"
+        className={'sync-error-badge' + (errors.some(e => e.kind === 'overleaf-conflict') ? ' sync-error-badge-conflict' : '')}
         onClick={() => setShowList(s => !s)}
         onPointerDown={e => e.stopPropagation()}
-        title="Mirror sync failed — your working copy may be out of step with the build"
-      >&#9888; sync failed</span>
+        title="Source sync blocked"
+      >&#9888; {errors.find(e => e.kind === 'overleaf-conflict')?.message || 'sync failed'}</span>
       {showList && (
         <div className="sync-error-list" onPointerDown={e => e.stopPropagation()}>
-          <div className="sync-error-head">Mirror sync failed</div>
+          <div className="sync-error-head">
+            {errors.some(e => e.kind === 'overleaf-conflict') ? 'Source sync blocked' : 'Mirror sync failed'}
+          </div>
           {errors.map((err, i) => (
-            <div key={i} className="sync-error-item">{String(err?.message ?? err)}</div>
+            <div
+              key={i}
+              className={'sync-error-item' + (err.kind === 'overleaf-conflict' ? ' clickable' : '')}
+              onClick={err.kind === 'overleaf-conflict' ? () => openConflictInSourceEditor(err.file) : undefined}
+            >
+              {String(err?.message ?? err)}
+            </div>
           ))}
           <div className="sync-error-note">
-            Your working copy may be out of step with the build. This clears automatically on the next clean sync.
+            {errors.some(e => e.kind === 'overleaf-conflict')
+              ? 'Resolve the conflict markers, then push the resolved source through tlda.'
+              : 'Your working copy may be out of step with the build. This clears automatically on the next clean sync.'}
           </div>
         </div>
       )}

@@ -272,6 +272,21 @@ const customShapeSchemas = {
       sequence: [],
     }),
   },
+  'fleet-source-editor': {
+    props: {
+      w: T.number,
+      h: T.number,
+      file: T.string,
+      line: T.number,
+      title: T.string,
+      userId: T.optional(T.string),
+      deviceId: T.optional(T.string),
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.fleet-source-editor',
+      sequence: [],
+    }),
+  },
   'doc-clip': {
     props: {
       w: T.number,

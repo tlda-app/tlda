@@ -58,6 +58,7 @@ public/assets/
 .playwright-cli/
 .playwright-mcp/
 .tlda-dev/
+.tlda-fly/
 .python-deps/
 venv/
 venj/

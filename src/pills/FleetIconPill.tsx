@@ -45,9 +45,9 @@ const ITEM_GAP = 4         // px between tiles
 type LayoutId = '3col' | '2col' | 'wide' | 'grid' | 'phone'
 type LayoutSource = 'badge-drag-release' | 'fan-preset' | 'url-auto'
 const LAYOUT_PRESETS: { id: LayoutId; title: string }[] = [
+  { id: 'wide', title: 'Wide: large chat over source editor' },
   { id: '3col', title: 'Three-column: agents + search | chat | chat + docview' },
-  { id: '2col', title: 'Two-column: left margin + right margin chat' },
-  { id: 'wide', title: 'Wide: agents + search | one large chat' },
+  { id: '2col', title: 'Two-column: left docview + full right source editor' },
   { id: 'grid', title: 'Grid: agents + search | 2×2 chat grid' },
   { id: 'phone', title: 'Phone reset: agents/inbox | chat | document' },
 ]
@@ -93,21 +93,23 @@ function LayoutIcon({ id, size = 20 }: { id: LayoutId; size?: number }) {
       </>
     ),
     '2col': (
-      // [agents/search + chat] | DOC | [chat]
+      // [agents/search + chat/docview] | DOC | [source]
       <>
         <rect x={0} y={0} width={s*0.16} height={s*0.55} rx={r} fill={ap} />
         <rect x={0} y={s*0.55+g} width={s*0.16} height={s*0.45-g} rx={r} fill={sr} />
-        <rect x={s*0.16+g} y={0} width={s*0.24-g} height={s} rx={r} fill={ch} />
+        <rect x={s*0.16+g} y={0} width={s*0.24-g} height={s*0.7} rx={r} fill={ch} />
+        <rect x={s*0.16+g} y={s*0.7+g} width={s*0.24-g} height={s*0.3-g} rx={r} fill={dv} />
         {docEl(s*0.4+g)}
-        <rect x={s*0.62+g} y={0} width={s*0.22-g} height={s} rx={r} fill={ch} />
+        <rect x={s*0.62+g} y={0} width={s*0.22-g} height={s} rx={r} fill={dv} />
       </>
     ),
     'wide': (
-      // [agents/search] [wide chat] | DOC
+      // [agents/search] [wide chat/source] | DOC
       <>
         <rect x={0} y={0} width={s*0.16} height={s*0.55} rx={r} fill={ap} />
         <rect x={0} y={s*0.55+g} width={s*0.16} height={s*0.45-g} rx={r} fill={sr} />
-        <rect x={s*0.16+g} y={0} width={s*0.44-g} height={s} rx={r} fill={ch} />
+        <rect x={s*0.16+g} y={0} width={s*0.44-g} height={s*0.5-g/2} rx={r} fill={ch} />
+        <rect x={s*0.16+g} y={s*0.5+g/2} width={s*0.44-g} height={s*0.5-g/2} rx={r} fill={dv} />
         {docEl()}
       </>
     ),

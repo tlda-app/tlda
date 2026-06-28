@@ -25,6 +25,11 @@
   opacity: 1;
 }
 
+.sync-error-badge-conflict {
+  color: #b00020;
+  opacity: 1;
+}
+
 /* Popup list */
 .sync-error-list {
   position: absolute;
@@ -61,6 +66,14 @@
   word-break: break-word;
 }
 
+.sync-error-item.clickable {
+  cursor: pointer;
+}
+
+.sync-error-item.clickable:hover {
+  background: rgba(217, 52, 43, 0.08);
+}
+
 .sync-error-note {
   padding: 6px 12px 2px;
   margin-top: 2px;
@@ -76,6 +89,10 @@ html[data-theme="dark"] .sync-error-badge {
   color: #ff6b61;
 }
 
+html[data-theme="dark"] .sync-error-badge-conflict {
+  color: #ff4d4d;
+}
+
 html[data-theme="dark"] .sync-error-list {
   background: #1e1e1e;
   border-color: rgba(217, 52, 43, 0.5);
@@ -83,6 +100,9 @@ html[data-theme="dark"] .sync-error-list {
 
 html[data-theme="dark"] .sync-error-head { color: #ff6b61; }
 html[data-theme="dark"] .sync-error-item { color: #ccc; }
+html[data-theme="dark"] .sync-error-item.clickable:hover {
+  background: rgba(255, 107, 97, 0.12);
+}
 html[data-theme="dark"] .sync-error-note {
   color: #999;
   border-top-color: rgba(255, 255, 255, 0.08);
