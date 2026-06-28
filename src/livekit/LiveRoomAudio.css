@@ -1,0 +1,219 @@
+.live-room-cluster {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: all;
+}
+
+.live-room-audio {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  color: rgba(20, 122, 96, 0.55);
+  pointer-events: all;
+  transition: color 0.3s, opacity 0.3s;
+  white-space: nowrap;
+}
+
+.live-room-audio:hover {
+  color: rgba(20, 122, 96, 0.9);
+}
+
+.live-room-audio button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+}
+
+.live-room-audio button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.live-session-replay {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  color: rgba(81, 88, 102, 0.55);
+  white-space: nowrap;
+}
+
+.live-room-spatial {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  color: rgba(102, 87, 36, 0.55);
+  white-space: nowrap;
+}
+
+.live-room-spatial--enabled,
+.live-room-spatial:hover {
+  color: rgba(102, 87, 36, 0.9);
+}
+
+.live-room-spatial--warn {
+  color: rgba(190, 70, 50, 0.7);
+}
+
+.live-room-spatial button {
+  appearance: none;
+  min-width: 13px;
+  height: 13px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: 1;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+}
+
+.live-room-spatial button:hover {
+  background: rgba(102, 87, 36, 0.08);
+}
+
+.live-room-spatial button:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
+.live-session-replay--paused,
+.live-session-replay--playing,
+.live-session-replay:hover {
+  color: rgba(81, 88, 102, 0.9);
+}
+
+.live-session-replay button {
+  appearance: none;
+  min-width: 13px;
+  height: 13px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: 1;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+}
+
+.live-session-replay__window {
+  appearance: none;
+  height: 13px;
+  max-width: 34px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: 1;
+  padding: 0 2px;
+  margin: 0;
+  cursor: pointer;
+}
+
+.live-session-replay button:hover {
+  background: rgba(81, 88, 102, 0.08);
+}
+
+.live-session-replay__window:hover {
+  background: rgba(81, 88, 102, 0.08);
+}
+
+.live-session-replay button:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
+.live-session-replay__time {
+  min-width: 24px;
+  opacity: 0.7;
+}
+
+.live-room-audio__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(20, 122, 96, 0.55);
+}
+
+.live-room-audio--connected .live-room-audio__dot {
+  animation: live-room-audio-pulse 1.5s ease-in-out infinite;
+}
+
+.live-room-audio--error {
+  color: rgba(190, 70, 50, 0.7);
+}
+
+.live-room-audio--error .live-room-audio__dot {
+  background: rgba(190, 70, 50, 0.7);
+}
+
+@keyframes live-room-audio-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+html[data-theme="dark"] .live-room-audio {
+  color: rgba(52, 211, 153, 0.55);
+}
+
+html[data-theme="dark"] .live-session-replay {
+  color: rgba(203, 213, 225, 0.55);
+}
+
+html[data-theme="dark"] .live-room-spatial {
+  color: rgba(250, 204, 21, 0.55);
+}
+
+html[data-theme="dark"] .live-room-spatial--enabled,
+html[data-theme="dark"] .live-room-spatial:hover {
+  color: rgba(250, 204, 21, 0.9);
+}
+
+html[data-theme="dark"] .live-room-spatial button:hover {
+  background: rgba(250, 204, 21, 0.1);
+}
+
+html[data-theme="dark"] .live-session-replay--paused,
+html[data-theme="dark"] .live-session-replay--playing,
+html[data-theme="dark"] .live-session-replay:hover {
+  color: rgba(203, 213, 225, 0.9);
+}
+
+html[data-theme="dark"] .live-session-replay button:hover {
+  background: rgba(203, 213, 225, 0.1);
+}
+
+html[data-theme="dark"] .live-session-replay__window:hover {
+  background: rgba(203, 213, 225, 0.1);
+}
+
+html[data-theme="dark"] .live-room-audio:hover {
+  color: rgba(52, 211, 153, 0.9);
+}
+
+html[data-theme="dark"] .live-room-audio__dot {
+  background: rgba(52, 211, 153, 0.55);
+}
+
+html[data-theme="dark"] .live-room-audio--error {
+  color: rgba(248, 113, 113, 0.8);
+}
+
+html[data-theme="dark"] .live-room-audio--error .live-room-audio__dot {
+  background: rgba(248, 113, 113, 0.8);
+}

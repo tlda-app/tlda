@@ -260,6 +260,20 @@ const customShapeSchemas = {
       sequence: [],
     }),
   },
+  'fleet-video': {
+    props: {
+      w: T.number,
+      h: T.number,
+      title: T.string,
+      tileKeys: T.string,
+      userId: T.optional(T.string),
+      deviceId: T.optional(T.string),
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.fleet-video',
+      sequence: [],
+    }),
+  },
   'doc-clip': {
     props: {
       w: T.number,
