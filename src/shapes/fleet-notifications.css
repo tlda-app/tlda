@@ -1,0 +1,143 @@
+/* FleetNotificationsShape — HUD notification stack.
+   Same quiet chrome as fleet inbox/search: low opacity until there is action. */
+
+.fleet-notifications-shape {
+  background: transparent;
+}
+
+.fleet-notifications-header {
+  height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.12);
+}
+
+.fleet-notifications-title {
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.5;
+}
+
+.fleet-notifications-count {
+  margin-left: auto;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 4px;
+  border-radius: 7px;
+  background: rgba(120, 160, 220, 0.12);
+  font-size: 9px;
+  opacity: 0.75;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.fleet-notifications-list {
+  height: calc(100% - 28px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+  padding: 6px;
+  box-sizing: border-box;
+}
+
+.fleet-notifications-empty {
+  padding: 20px 10px;
+  opacity: 0.35;
+  text-align: center;
+  font-size: 10px;
+}
+
+.fleet-notification-card {
+  border: 1px solid rgba(128, 128, 128, 0.16);
+  background: rgba(128, 128, 128, 0.06);
+  border-radius: 6px;
+  padding: 8px;
+  margin-bottom: 6px;
+  font-size: 11px;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.fleet-notification-card:hover {
+  background: rgba(128, 128, 128, 0.1);
+  border-color: rgba(128, 128, 128, 0.24);
+}
+
+.fleet-notification-card.priority-high {
+  border-color: rgba(190, 130, 120, 0.3);
+  background: rgba(190, 130, 120, 0.08);
+}
+
+.fleet-notification-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.fleet-notification-kind {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.45;
+}
+
+.fleet-notification-dismiss {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: inherit;
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0.45;
+  cursor: pointer;
+  padding: 1px 3px;
+  border-radius: 3px;
+}
+
+.fleet-notification-dismiss:hover {
+  opacity: 0.9;
+  background: rgba(128, 128, 128, 0.12);
+}
+
+.fleet-notification-title {
+  font-weight: 600;
+  opacity: 0.82;
+  overflow-wrap: anywhere;
+}
+
+.fleet-notification-body {
+  margin-top: 4px;
+  opacity: 0.62;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.fleet-notification-actions {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.fleet-notification-actions button {
+  background: rgba(128, 128, 128, 0.08);
+  border: 1px solid rgba(128, 128, 128, 0.16);
+  border-radius: 4px;
+  color: inherit;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 10px;
+  padding: 3px 7px;
+  opacity: 0.72;
+}
+
+.fleet-notification-actions button:hover {
+  background: rgba(128, 128, 128, 0.16);
+  opacity: 0.95;
+}

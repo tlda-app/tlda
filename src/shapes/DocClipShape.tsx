@@ -17,13 +17,14 @@ import {
   useEditor,
 } from 'tldraw'
 import type { Editor } from 'tldraw'
-import { useContext, useEffect, useMemo, useState } from 'react'
+import { useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { DocContext } from '../PanelContext'
 import { PDF_HEIGHT } from '../layoutConstants'
 import { getSvgText, setSvgText } from '../stores/svgTextStore'
 import { getPageUrl } from '../stores/pageUrlStore'
 import { FLEET_SHAPE_TYPES } from './fleet-utils'
+import { ensureLayer, getEditorWMCore, removeLayers } from '../wm/editor-wm'
 
 const BAR_H = 8
 
@@ -119,6 +120,34 @@ function DocClipComponent({ shape }: { shape: any }) {
 
   const licenseKey = 'tldraw-2027-01-19/WyJhUGMwcWRBayIsWyIqLnF0bTI4NS5naXRodWIuaW8iXSw5LCIyMDI3LTAxLTE5Il0.Hq9z1V8oTLsZKgpB0pI3o/RXCoLOsh5Go7Co53YGqHNmtEO9Lv/iuyBPzwQwlxQoREjwkkFbpflOOPmQMwvQSQ'
 
+  const wmSurface = useMemo(() => {
+    if (!mainEditor || !doc || !bounds || !svgReady) return null
+    const pageIdx = page - 1
+    const pg = doc.pages[pageIdx]
+    if (!pg) return null
+    const zoom = w / pg.bounds.width
+    const boundsCenter = bounds.y + bounds.h / 2
+    const camY = -(boundsCenter - (contentH / zoom) / 2)
+    const wm = getEditorWMCore(mainEditor)
+    const layerId = `doc-clip:${shape.id}`
+    ensureLayer(wm, layerId, {
+      parent: wm.rootLayerId,
+      policy: { x: 'pin', y: 'pin', zoom: 'lock' },
+      transform: { x: -pg.bounds.x, y: camY, scale: zoom },
+      layout: { axis: 'vertical', spacing: 0 },
+    })
+    return { wm, layerId, surfaceId: layerId }
+  }, [mainEditor, doc, bounds, svgReady, page, w, contentH, shape.id])
+
+  const wmSurfaceRef = useRef(wmSurface)
+  wmSurfaceRef.current = wmSurface
+  useEffect(() => {
+    return () => {
+      const surface = wmSurfaceRef.current
+      if (surface) removeLayers(surface.wm, [surface.layerId])
+    }
+  }, [])
+
   if (!mainEditor || !doc || !bounds || !svgReady) {
     return (
       <div
@@ -129,14 +158,6 @@ function DocClipComponent({ shape }: { shape: any }) {
       </div>
     )
   }
-
-  // Camera: zoom to fit page width, center bounds region vertically
-  const pageIdx = page - 1
-  const pg = doc.pages[pageIdx]
-  const zoom = pg ? w / pg.bounds.width : 1
-  const boundsCenter = bounds.y + bounds.h / 2
-  const camY = -(boundsCenter - (contentH / zoom) / 2)
-  const cameraOverride = pg ? { x: -pg.bounds.x, y: camY, z: zoom } : undefined
 
   return (
     <div
@@ -172,7 +193,7 @@ function DocClipComponent({ shape }: { shape: any }) {
           panelWidth={w}
           maxHeightFraction={1}
           readOnly
-          cameraOverride={cameraOverride}
+          wmSurface={wmSurface ?? undefined}
         />
       </div>
     </div>

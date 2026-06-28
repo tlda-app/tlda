@@ -16,6 +16,7 @@ import { DEFAULT_PORT, loadConfig, resolveConfig } from '../../shared/config.mjs
 import { parseFilter, evalExpr, labelsForAgent } from '../../shared/fleet-labels.mjs'
 import { callerSpawnPolicy } from '../lib/spawn-policy.mjs'
 import { resolveSpawnMachine } from '../lib/spawn-routing.mjs'
+import { summarizeFleetRosterTruth } from '../lib/fleet-roster-truth.mjs'
 
 // Server owner — the human running this server process. Browser users
 // log in via the WS 'login' message or register via 'register'.
@@ -294,13 +295,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       const roster = fleetStore.getAllAgents().filter(a => !a.human)
 
       // Whole-fleet totals (independent of the filter) — the at-a-glance load.
-      const totals = { awake: 0, hibernating: 0, dead: 0, total: roster.length }
-      for (const a of roster) {
-        if (a.dead) totals.dead++
-        else if (a.status === 'awake') totals.awake++
-        else totals.hibernating++
-      }
-
       // Optional filter expression from the query (e.g. "awake & reviewers").
       // Same matcher chat uses, so `awake` / a label / a name all work and
       // compose with & | ! and parens.
@@ -315,23 +309,38 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       matched.sort((x, y) => rank(x) - rank(y) || (new Date(y.last_seen || 0) - new Date(x.last_seen || 0)))
 
       const limit = Math.max(1, Math.min(parseInt(req.query.limit) || 50, 500))
-      const rows = matched.slice(0, limit).map(a => {
-        const lastSeenMs = a.last_seen ? now - new Date(a.last_seen).getTime() : null
-        const act = a.metadata?.status || null
-        return {
-          id: a.id,
-          name: a.friendly_name || a.id,
-          status: a.dead ? 'dead' : a.status,
-          last_seen_ago_s: lastSeenMs == null ? null : Math.round(lastSeenMs / 1000),
-          cwd: a.cwd || null,
-          machine_id: a.machine_id || null,
-          tmux_session: a.tmux_session || null,
-          activity: act?.state || null,
-          tool: act?.tool || null,
-        }
-      })
+      const summary = summarizeFleetRosterTruth({ roster, matched, limit, now })
+      res.json({ totals: summary.totals, agents: summary.agents, shown: summary.shown, matched: summary.matched })
+    } catch (e) { res.status(500).json({ error: e.message }) }
+  })
 
-      res.json({ totals, agents: rows, shown: rows.length, matched: matched.length })
+  router.get('/api/fleet-roster-truth', async (req, res) => {
+    try {
+      if (!fleetStore) {
+        res.json({ totals: { awake: 0, hibernating: 0, dead: 0, total: 0 }, panes: { fleet: 0, stale: 0, registry_without_pane: 0 }, machines: [], agents: [], shown: 0, matched: 0 })
+        return
+      }
+      const now = Date.now()
+      const roster = fleetStore.getAllAgents().filter(a => !a.human)
+      let filterAst = null
+      if (req.query.filter) {
+        try { filterAst = parseFilter(req.query.filter) } catch (e) { res.status(400).json({ error: `bad filter: ${e.message}` }); return }
+      }
+      const matched = roster.filter(a => evalExpr(filterAst, labelsForAgent(a)))
+      const rank = (a) => (a.dead ? 2 : a.status === 'awake' ? 0 : 1)
+      matched.sort((x, y) => rank(x) - rank(y) || (new Date(y.last_seen || 0) - new Date(x.last_seen || 0)))
+      const limit = Math.max(1, Math.min(parseInt(req.query.limit) || 50, 500))
+      const machineSessions = {}
+      const machineIds = [...(daemonConnections?.keys?.() || [])]
+      await Promise.all(machineIds.map(async machineId => {
+        try {
+          const result = await sendRpc(machineId, 'list-sessions', {})
+          machineSessions[machineId] = Array.isArray(result?.sessions) ? result.sessions : []
+        } catch {
+          machineSessions[machineId] = []
+        }
+      }))
+      res.json(summarizeFleetRosterTruth({ roster, matched, limit, machineSessions, now }))
     } catch (e) { res.status(500).json({ error: e.message }) }
   })
 
@@ -461,6 +470,18 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       res.status(404).json({ error: `spawn target not found: ${agent || name}` })
       return
     }
+    if (fresh && name) {
+      const cols = fleetStore?.checkNameAvailable?.([name], { asFriendlyName: true }) || []
+      if (cols.length) {
+        res.status(409).json({
+          ok: false,
+          code: 'spawn_name_collision',
+          error: `Spawn name "${name}" is unavailable: ${formatNameCollisions(cols)}. Choose a different name, or respawn the existing agent.`,
+          collisions: cols,
+        })
+        return
+      }
+    }
     try {
       const route = resolveSpawnMachine({
         caller,
@@ -495,6 +516,15 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       broadcastState()
       res.json(result)
     } catch (e) {
+      if (e?.reason === 'name-bounced' || e?.name === 'SpawnBounceError') {
+        res.status(409).json({
+          ok: false,
+          code: 'spawn_name_collision',
+          error: e.message,
+          ...(e.payload ? { payload: e.payload } : {}),
+        })
+        return
+      }
       res.status(502).json({ error: e.message })
     }
   })

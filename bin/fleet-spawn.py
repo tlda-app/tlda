@@ -114,11 +114,30 @@ def resolve_api():
 
 
 API = resolve_api()
+
+# The active config NAME to stamp into the spawned agent's MCP env. This — not a
+# URL — is the single selector the agent's MCP resolves the fleet by (it reads
+# TLDA_CONFIG/defaultConfig and ignores TLDA_SERVER). Stamping it makes the agent
+# resolve the EXACT same complete config the daemon did, so a stray defaultConfig
+# can't reroute the agent. Only when nothing pinned a URL: if TLDA_SERVER is set,
+# that URL is the selector and the agent inherits it instead — stamping a config
+# name that might resolve elsewhere would reintroduce the very divergence we're
+# closing.
+CONFIG_NAME = None
+if not os.environ.get("TLDA_SERVER"):
+    CONFIG_NAME = os.environ.get("TLDA_CONFIG") or read_config().get("defaultConfig")
+
 _tls_cert = os.path.expanduser("~/.config/tlda/localhost+2.pem")
 _scheme = "https" if API.startswith("https://") else "http"
 _ca_path = os.path.expanduser("~/Library/Application Support/mkcert/rootCA.pem")
 _ssl_ctx = None
-if re.match(r"^https://(127\.0\.0\.1|localhost)(:\d+)?$", API) and os.path.exists(_ca_path):
+# Load the mkcert CA for ANY https API, not just localhost. The daemon's config
+# can resolve API to the Mini's Tailscale hostname (multi-machine), which the old
+# localhost-only gate excluded — so _ssl_ctx stayed None, ws_register's TLS
+# handshake failed with CERTIFICATE_VERIFY_FAILED, the error was swallowed, and
+# pre-registration was silently dropped → register-timeout. The mkcert cert's SANs
+# already cover every hostname this fleet uses (localhost, *.ts.net, mini.local, …).
+if API.startswith("https://") and os.path.exists(_ca_path):
     _ssl_ctx = ssl.create_default_context()
     _ssl_ctx.load_verify_locations(_ca_path)
 
@@ -469,8 +488,6 @@ def ws_register(fleet_id, name, tmux_session, cwd, model=None, effort=None, refr
         ws.close()
     except SystemExit:
         raise
-    except Exception as e:
-        print(f"[fleet-spawn] pre-register failed (non-fatal): {e}", file=sys.stderr)
 
 
 # ---- Agent lookup ----
@@ -1490,6 +1507,12 @@ def build_claude_cmd(fleet_id, tmux_session, model, effort=None, mode=None,
     parts = [f"FLEET_ID={fleet_id}", f"FLEET_TMUX_SESSION={tmux_session}"]
     if name:
         parts.append(f"FLEET_NAME={shlex.quote(name)}")
+    # Claude passes its process env down to the tlda MCP subprocess, so stamping
+    # the active config NAME here makes the agent's MCP resolve the SAME complete
+    # config (fleet database + store) the daemon did — the fix for the 6/27 split,
+    # where the claude MCP fell through to defaultConfig and joined the wrong fleet.
+    if CONFIG_NAME:
+        parts.append(f"TLDA_CONFIG={shlex.quote(CONFIG_NAME)}")
     # DNS alias for the tlda server host (same as codex/goose). Claude passes its
     # process env down to the tlda MCP subprocess, so this reaches the MCP's node.
     # It matters under the FENCE: the sandbox can't resolve the Tailscale MagicDNS
@@ -1594,6 +1617,9 @@ def build_goose_cmd(fleet_id, tmux_session, model, name=None, capability=None):
         "FLEET_HARNESS=goose",
         f"TLDA_SERVER={shlex.quote(API)}",
         f"TLDA_SYNC_SERVER={shlex.quote(API)}",
+        # Config NAME selector — same complete config the daemon resolved (the MCP
+        # resolves the fleet by this, not by the URL above). See CONFIG_NAME.
+        *( [f"TLDA_CONFIG={shlex.quote(CONFIG_NAME)}"] if CONFIG_NAME else [] ),
         f"XDG_CONFIG_HOME={shlex.quote(sandbox_cfg)}",
         # XDG_DATA_HOME stays the SHARED default (~/.local/share) on purpose:
         # goose writes its session sqlite to $XDG_DATA_HOME/goose/sessions/
@@ -1905,6 +1931,10 @@ def build_codex_cmd(fleet_id, tmux_session, model=None, resume_id=None,
         parts.append(_cenv("TLDA_MACHINE_ID", os.environ["TLDA_MACHINE_ID"]))
     parts.append(_cenv("TLDA_SERVER", API))
     parts.append(_cenv("TLDA_SYNC_SERVER", API))
+    # Config NAME selector — same complete config the daemon resolved (the MCP
+    # resolves the fleet by this, not by the URL above). See CONFIG_NAME.
+    if CONFIG_NAME:
+        parts.append(_cenv("TLDA_CONFIG", CONFIG_NAME))
     if dns_alias and os.path.exists(NODE_DNS_ALIAS_PRELOAD):
         host, address = dns_alias
         parts.append(_cenv("NODE_OPTIONS", f"--require={NODE_DNS_ALIAS_PRELOAD}"))

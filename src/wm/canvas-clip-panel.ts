@@ -1,4 +1,4 @@
-import { createWMCore, type Camera, type Layer } from './wm-core.ts'
+import type { Camera, Layer } from './wm-core.ts'
 
 export const CANVAS_CLIP_ROOT_LAYER_ID = 'screen'
 export const CANVAS_CLIP_PANEL_LAYER_ID = 'canvas-clip-panel'
@@ -67,21 +67,28 @@ export function createCanvasClipPanelPlan({
 		: 0
 	const camera = { x: -bounds.x, y: -(bounds.y - yOffset), z: zoom }
 
-	const wm = createWMCore({ rootLayerId: CANVAS_CLIP_ROOT_LAYER_ID })
-	wm.defineLayer(CANVAS_CLIP_PANEL_LAYER_ID, {
+	const layer: Layer = {
+		id: CANVAS_CLIP_PANEL_LAYER_ID,
 		parent: CANVAS_CLIP_ROOT_LAYER_ID,
 		policy: lockCamera
 			? { x: 'pin', y: 'pin', zoom: 'lock' }
 			: { x: 'pan', y: 'pan', zoom: 'inherit' },
-		camera,
+		transform: lockCamera
+			? { x: camera.x, y: camera.y, scale: camera.z }
+			: { x: 0, y: 0, scale: 1 },
+		camera: lockCamera
+			? { x: 0, y: 0, z: 1 }
+			: camera,
+		cameraPanUnit: 'layer',
+		backing: { kind: 'frame' },
 		layout: { axis: 'vertical', spacing: 0 },
-	})
+	}
 
 	return {
-		rootLayerId: wm.rootLayerId,
+		rootLayerId: CANVAS_CLIP_ROOT_LAYER_ID,
 		panelLayerId: CANVAS_CLIP_PANEL_LAYER_ID,
-		camera: wm.camera(CANVAS_CLIP_PANEL_LAYER_ID),
-		layer: wm.getLayer(CANVAS_CLIP_PANEL_LAYER_ID),
+		camera,
+		layer,
 		visibleBounds: {
 			x: bounds.x,
 			y: bounds.y - yOffset,

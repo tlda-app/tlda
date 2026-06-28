@@ -1,55 +1,107 @@
 import type { Editor, TLViewportId } from 'tldraw'
-import { createWMCore, type Point } from './wm-core'
+import type { Point } from './wm-core.ts'
+import {
+	EDITOR_WM_ROOT_LAYER_ID,
+	getRegisteredViewportLayer,
+	recordCoordinateTrace,
+	refreshViewportFrame,
+} from './editor-wm.ts'
 
-const ROOT_LAYER_ID = 'screen'
-const VIEWPORT_LAYER_ID = 'viewport'
-
-function viewportAdapter(editor: Editor) {
-  return {
-    screenToPage: (point: Point, opts: { viewportId: string }) =>
-      editor.screenToPage(point, opts),
-    pageToScreen: (point: Point, opts: { viewportId: string }) =>
-      editor.pageToScreen(point, opts),
-    getCamera: (viewportId: string) => editor.getViewport(viewportId as TLViewportId).camera,
-    setCamera: (viewportId: string, camera: { x: number; y: number; z: number }) => {
-      editor.updateViewport(viewportId as TLViewportId, { camera })
-    },
-  }
-}
-
-function createViewportCoordinateWM(editor: Editor, viewportId: TLViewportId) {
-  const wm = createWMCore({ rootLayerId: ROOT_LAYER_ID })
-  wm.defineLayer(VIEWPORT_LAYER_ID, {
-    parent: ROOT_LAYER_ID,
-    backing: { kind: 'viewport', viewportId, editor: viewportAdapter(editor) },
-  })
-  return wm
+function clonePoint(point: { x: number; y: number }): Point {
+	return { x: point.x, y: point.y }
 }
 
 export function clientPointToPage(
-  editor: Editor,
-  point: { x: number; y: number },
-  viewportId?: TLViewportId,
+	editor: Editor,
+	point: { x: number; y: number },
+	viewportId?: TLViewportId,
 ) {
-  if (!viewportId) return editor.screenToPage(point)
-  return createViewportCoordinateWM(editor, viewportId).translate(point, ROOT_LAYER_ID, VIEWPORT_LAYER_ID)
+	if (!viewportId) {
+		const result = editor.screenToPage(point)
+		recordCoordinateTrace(editor, { fn: 'clientPointToPage', path: 'main', point, result })
+		return result
+	}
+
+	const registered = getRegisteredViewportLayer(editor, viewportId)
+	if (registered) {
+		refreshViewportFrame(registered)
+		const result = registered.wm.translate(
+			clonePoint(point),
+			EDITOR_WM_ROOT_LAYER_ID,
+			registered.coordinateLayerId,
+		)
+		recordCoordinateTrace(editor, {
+			fn: 'clientPointToPage',
+			viewportId,
+			path: 'wm',
+			layerId: registered.coordinateLayerId,
+			point,
+			result,
+		})
+		return result
+	}
+
+	const result = editor.screenToPage(point, { viewportId })
+	recordCoordinateTrace(editor, { fn: 'clientPointToPage', viewportId, path: 'fallback', point, result })
+	return result
 }
 
 export function pagePointToClient(
-  editor: Editor,
-  point: { x: number; y: number },
-  viewportId?: TLViewportId,
+	editor: Editor,
+	point: { x: number; y: number },
+	viewportId?: TLViewportId,
 ) {
-  if (!viewportId) return editor.pageToScreen(point)
-  return createViewportCoordinateWM(editor, viewportId).translate(point, VIEWPORT_LAYER_ID, ROOT_LAYER_ID)
+	if (!viewportId) {
+		const result = editor.pageToScreen(point)
+		recordCoordinateTrace(editor, { fn: 'pagePointToClient', path: 'main', point, result })
+		return result
+	}
+
+	const registered = getRegisteredViewportLayer(editor, viewportId)
+	if (registered) {
+		refreshViewportFrame(registered)
+		const result = registered.wm.translate(
+			clonePoint(point),
+			registered.coordinateLayerId,
+			EDITOR_WM_ROOT_LAYER_ID,
+		)
+		recordCoordinateTrace(editor, {
+			fn: 'pagePointToClient',
+			viewportId,
+			path: 'wm',
+			layerId: registered.coordinateLayerId,
+			point,
+			result,
+		})
+		return result
+	}
+
+	const result = editor.pageToScreen(point, { viewportId })
+	recordCoordinateTrace(editor, { fn: 'pagePointToClient', viewportId, path: 'fallback', point, result })
+	return result
 }
 
 export function pagePointToPage(
-  editor: Editor,
-  point: { x: number; y: number },
-  fromViewportId?: TLViewportId,
-  toViewportId?: TLViewportId,
+	editor: Editor,
+	point: { x: number; y: number },
+	fromViewportId?: TLViewportId,
+	toViewportId?: TLViewportId,
 ) {
-  const clientPoint = pagePointToClient(editor, point, fromViewportId)
-  return clientPointToPage(editor, clientPoint, toViewportId)
+	const clientPoint = pagePointToClient(editor, point, fromViewportId)
+	return clientPointToPage(editor, clientPoint, toViewportId)
+}
+
+if (typeof window !== 'undefined') {
+	const w = window as unknown as {
+		__tlda_wm_coordinates__?: {
+			clientPointToPage: typeof clientPointToPage
+			pagePointToClient: typeof pagePointToClient
+			pagePointToPage: typeof pagePointToPage
+		}
+	}
+	w.__tlda_wm_coordinates__ = {
+		clientPointToPage,
+		pagePointToClient,
+		pagePointToPage,
+	}
 }

@@ -7,7 +7,7 @@
  * the main canvas (pans with the document); vertical position is fixed.
  * Pointer events pass through to the main canvas for non-fleet areas.
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { react } from 'tldraw'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
@@ -21,8 +21,16 @@ import { SuggestionTip } from '../shapes/FleetChatShape'
 import { log } from '../logger'
 import { computeFleetBoundsFromShapes, createFleetBoundsTracker, type FleetBoundsResult } from './fleet-bounds'
 import { computeFleetHudDefaultAnchor } from './fleet-hud-anchor'
-import { createFleetHudOverlayLayer, FLEET_HUD_VIEWPORT_ID, projectFleetHudDocumentLeft } from '../wm/fleet-hud-layer'
+import {
+  configureFleetHudOverlayLayer,
+  ensureFleetHudLayers,
+  FLEET_HUD_OVERLAY_LAYER_ID,
+  FLEET_HUD_VIEWPORT_ID,
+  projectFleetHudDocumentLeftWithWM,
+  readFleetHudOverlayLayer,
+} from '../wm/fleet-hud-layer'
 import type { FleetHudLayerState } from '../wm/fleet-hud-layer'
+import { getEditorWMCore } from '../wm/editor-wm'
 import { probe } from '../perf-probe'
 import './FleetHUD.css'
 
@@ -86,6 +94,11 @@ interface FleetHUDProps {
   shapeUtils: TLAnyShapeUtilConstructor[]
   tools: TLStateNodeConstructor[]
   licenseKey: string
+}
+
+interface FleetHudAnchor {
+  panOffset: number
+  cameraY: number
 }
 
 /**
@@ -303,8 +316,8 @@ export function FleetHUD({
   const { id: identityId } = useFleetIdentity()
   const [expanded, setExpanded] = useState(() => localStorage.getItem('fleet-hud-expanded') === '1')
   const [fleetBounds, setFleetBounds] = useState<ClipBounds | null>(() => identityId ? getFleetBounds(mainEditor) : null)
-  // Camera tick used to recompute canvas→screen for the render on camera change
-  const [cameraTick, setCameraTick] = useState(0)
+  // WM tick used to re-render the fork viewport camera after event-driven WM updates.
+  const [wmCameraTick, setWmCameraTick] = useState(0)
   // True once document page shapes are present — panOffset must not be computed before this.
   // On browser restore, fleet shapes may load before SVG pages, causing panOffset to use
   // the window.innerWidth/2 fallback and place fleet shapes inside the document text.
@@ -316,9 +329,35 @@ export function FleetHUD({
   const draggingRef = useRef(false)
   const overlayEditorRef = useRef<Editor | null>(null)
   const viewportId = FLEET_HUD_VIEWPORT_ID
+  const hudWm = useMemo(() => {
+    const wm = getEditorWMCore(mainEditor)
+    ensureFleetHudLayers(wm)
+    return wm
+  }, [mainEditor])
+  const hudAnchorRef = useRef<FleetHudAnchor | null>(null)
+  const hudBaseCameraRef = useRef(mainEditor.getCamera())
   const lastHudDiagSigRef = useRef('')
   const fleetBoundsTrackerRef = useRef<ReturnType<typeof createFleetBoundsTracker<any>> | null>(null)
   const gesturesEnabled = expanded && !!fleetBounds && docShapesReady
+
+  const applyHudAnchor = useCallback((anchor: FleetHudAnchor, options: { resetBaseCamera?: boolean; tick?: boolean } = {}) => {
+    hudAnchorRef.current = anchor
+    if (options.resetBaseCamera !== false) hudBaseCameraRef.current = mainEditor.getCamera()
+    configureFleetHudOverlayLayer(hudWm, {
+      panOffset: anchor.panOffset,
+      cameraY: anchor.cameraY,
+      mainCamera: mainEditor.getCamera(),
+      baseCamera: hudBaseCameraRef.current,
+    })
+    if (options.tick !== false) setWmCameraTick(t => t + 1)
+  }, [hudWm, mainEditor])
+
+  const readHudCameraAnchor = useCallback((): FleetHudAnchor | null => {
+    const anchor = hudAnchorRef.current
+    if (!anchor) return null
+    const overlay = readFleetHudOverlayLayer(hudWm)
+    return { panOffset: overlay.camera.x, cameraY: overlay.camera.y }
+  }, [hudWm])
 
   const resetFleetBoundsTracker = useCallback((): ClipBounds | null => {
     const tracker = createFleetBoundsTracker<any>({
@@ -407,8 +446,7 @@ export function FleetHUD({
       shapeCount: shapes.length,
       myFleetShapeCount: fleetShapes.length,
       docShapeCount: docShapes.length,
-      panOffset: panOffsetRef.current,
-      cameraY: cameraYRef.current,
+      hudAnchor: readHudCameraAnchor(),
       mainCamera: mainEditor.getCamera(),
       devicePixelRatio: typeof window !== 'undefined' ? window.devicePixelRatio : null,
       visualViewport: typeof window !== 'undefined' && window.visualViewport
@@ -427,23 +465,20 @@ export function FleetHUD({
   // When active, the HUD canvas gets pointer-events: auto so drag-box select works.
   // Toggled via CSS class on the wrap div — see .fleet-hud-wrap.hud-layout-active in FleetHUD.css.
 
-  // Camera offsets: initialized once on first expand, then frozen.
-  // panOffsetRef (X): only updated by pan deltas, not zoom or shape moves.
-  // cameraYRef (Y): set once, never updated by shape moves.
-  // Persisted via an invisible anchor shape in Yjs (survives across sessions/devices).
+  // Camera anchor: initialized once on first expand, then held as the overlay
+  // transform in the long-lived WMCore. X tracks the main-camera layer through
+  // recursive composition; Y is pinned by the overlay policy. Persisted via an
+  // invisible anchor shape in Yjs (survives across sessions/devices).
   const TOP_PAD = 80
-  const panOffsetRef = useRef<number | null>(null)
-  const cameraYRef = useRef<number | null>(null)
   const ignoreSavedAnchorRef = useRef(false)
   // True once the user has deliberately panned this session. Guards the
   // adopt-anchor-on-late-arrival listener so a late-syncing anchor can't
   // snap the HUD back after the user has intentionally moved it.
   const userPannedRef = useRef(false)
-  if (!ignoreSavedAnchorRef.current && panOffsetRef.current === null && cameraYRef.current === null) {
+  if (!ignoreSavedAnchorRef.current && hudAnchorRef.current === null) {
     const anchor = mainEditor.getShape(getMyAnchorId() as any) as any
     if (anchor?.meta?.panOffset !== undefined) {
-      panOffsetRef.current = anchor.meta.panOffset
-      cameraYRef.current = anchor.meta.cameraY
+      applyHudAnchor({ panOffset: anchor.meta.panOffset, cameraY: anchor.meta.cameraY }, { tick: false })
     }
   }
   const phoneLayout = isPhoneFleetLayout(mainEditor)
@@ -460,7 +495,7 @@ export function FleetHUD({
       if (b && b.x < minPageX) minPageX = b.x
     }
     if (!isFinite(minPageX)) return false
-    const docLeftScreen = projectFleetHudDocumentLeft(mainEditor, minPageX)
+    const docLeftScreen = projectFleetHudDocumentLeftWithWM(hudWm, mainEditor, minPageX)
     const off = layoutOffset(getHumanId(), getDeviceId())
     const anchor = computeFleetHudDefaultAnchor({
       bounds,
@@ -469,12 +504,10 @@ export function FleetHUD({
       layoutDx: off.dx,
       topPad: activeTopPad,
     })
-    panOffsetRef.current = anchor.panOffset
-    cameraYRef.current = anchor.cameraY
+    applyHudAnchor(anchor)
     userPannedRef.current = false
-    setCameraTick(t => t + 1)
     return true
-  }, [activeTopPad, docShapesReady, mainEditor])
+  }, [activeTopPad, applyHudAnchor, docShapesReady, mainEditor])
 
   // Reactively update fleet bounds when shapes change.
   //
@@ -605,7 +638,8 @@ export function FleetHUD({
         // Only force recompute if we don't have a saved position
         const anchor = mainEditor.getShape(getMyAnchorId() as any) as any
         if (anchor?.meta?.panOffset === undefined) {
-          panOffsetRef.current = null
+          hudAnchorRef.current = null
+          hudBaseCameraRef.current = mainEditor.getCamera()
         }
       }
     }, { source: 'all', scope: 'document' })
@@ -640,7 +674,8 @@ export function FleetHUD({
   // depending only on external reset event timing.
   useEffect(() => {
     if (!expanded || !fleetBounds || !docShapesReady) return
-    if (panOffsetRef.current === null || cameraYRef.current === null) return
+    const hudCameraAnchor = readHudCameraAnchor()
+    if (!hudCameraAnchor) return
     const latestBounds = readMaintainedFleetBounds() || fleetBounds
     const hasFreshBounds =
       latestBounds.x !== fleetBounds.x ||
@@ -648,14 +683,14 @@ export function FleetHUD({
       latestBounds.w !== fleetBounds.w ||
       latestBounds.h !== fleetBounds.h
     if (hasFreshBounds) setFleetBounds(latestBounds)
-    const projectedTop = latestBounds.y + cameraYRef.current
+    const projectedTop = latestBounds.y + hudCameraAnchor.cameraY
     const projectedBottom = projectedTop + latestBounds.h
     const verticallyVisible = projectedBottom > 0 && projectedTop < window.innerHeight
     if (verticallyVisible) return
     if (userPannedRef.current) return
     ignoreSavedAnchorRef.current = true
     recenterHudForBounds(latestBounds)
-  }, [expanded, fleetBounds?.x, fleetBounds?.y, fleetBounds?.w, fleetBounds?.h, docShapesReady, mainEditor, readMaintainedFleetBounds, recenterHudForBounds])
+  }, [expanded, fleetBounds?.x, fleetBounds?.y, fleetBounds?.w, fleetBounds?.h, docShapesReady, mainEditor, readHudCameraAnchor, readMaintainedFleetBounds, recenterHudForBounds])
 
   // Touch fleet shapes to invalidate getShapeVisibility cache — only when
   // expanded state actually changes, not on every fleetBounds update.
@@ -677,14 +712,12 @@ export function FleetHUD({
     }
   }, [expanded, fleetBounds, mainEditor])
 
-  // Track main camera for pan: update panOffsetRef by screen-pixel deltas
-  // when the user pans (cam.z unchanged). Zoom changes are ignored (fleet
-  // shapes stay at their current screen positions).
+  // Track main camera through the WM parent layer. Same-zoom main camera pans
+  // enter the core as page-unit deltas; the main-camera layer converts them to
+  // screen-pixel motion and the overlay layer inherits only X.
   useEffect(() => {
     if (!expanded) return
-    let rafId: number
-    let lastCamX = mainEditor.getCamera().x
-    let lastCamZ = mainEditor.getCamera().z
+    let lastCam = mainEditor.getCamera()
     const readinessWindow = window as Window & {
       __tldaCameraRestoredAt?: number
       __tldaPhoneCameraSettlingUntil?: number
@@ -693,40 +726,52 @@ export function FleetHUD({
     const onCameraRestored = () => { cameraRestored = true }
     window.addEventListener('camera-restored', onCameraRestored)
     const fallbackTimer = setTimeout(() => { cameraRestored = true }, 5000)
-    const poll = () => {
+    const stop = react('fleet-hud-main-camera', () => {
       const cam = mainEditor.getCamera()
-      if (cam.x !== lastCamX || cam.z !== lastCamZ) {
-        const phoneSettlingUntil = Number(readinessWindow.__tldaPhoneCameraSettlingUntil || 0)
-        if (!cameraRestored || (phoneSettlingUntil && Date.now() < phoneSettlingUntil)) {
-          // Wait for camera restore / phone startup fit, then treat later
-          // same-zoom camera changes as deliberate pan.
-        } else if (cam.z === lastCamZ && panOffsetRef.current !== null) {
-          const t0 = probe.isEnabled('hud') ? performance.now() : 0
-          if (!isPhoneFleetLayout(mainEditor)) {
-            panOffsetRef.current += (cam.x - lastCamX) * cam.z
+      if (cam.x === lastCam.x && cam.z === lastCam.z) return
+
+      const phoneSettlingUntil = Number(readinessWindow.__tldaPhoneCameraSettlingUntil || 0)
+      if (!cameraRestored || (phoneSettlingUntil && Date.now() < phoneSettlingUntil)) {
+        // Wait for camera restore / phone startup fit, then treat later
+        // same-zoom camera changes as deliberate pan.
+      } else if (hudAnchorRef.current !== null) {
+        const t0 = probe.isEnabled('hud') ? performance.now() : 0
+        if (!isPhoneFleetLayout(mainEditor)) {
+          if (cam.z !== lastCam.z) {
+            const currentAnchor = readHudCameraAnchor()
+            if (currentAnchor) {
+              hudAnchorRef.current = currentAnchor
+              hudBaseCameraRef.current = cam
+            }
+          }
+          configureFleetHudOverlayLayer(hudWm, {
+            panOffset: hudAnchorRef.current.panOffset,
+            cameraY: hudAnchorRef.current.cameraY,
+            mainCamera: cam,
+            baseCamera: hudBaseCameraRef.current,
+          })
+          const hudCameraAnchor = readHudCameraAnchor()
+          if (hudCameraAnchor && cam.z === lastCam.z) {
             userPannedRef.current = true
             ignoreSavedAnchorRef.current = false
-            saveAnchorOffsets(mainEditor, panOffsetRef.current, cameraYRef.current!)
-          }
-          if (probe.isEnabled('hud')) {
-            probe.record('hud', 'hud-pan-camera-change', performance.now() - t0, { dx: cam.x - lastCamX })
+            saveAnchorOffsets(mainEditor, hudCameraAnchor.panOffset, hudCameraAnchor.cameraY)
           }
         }
-        lastCamX = cam.x
-        lastCamZ = cam.z
-        setCameraTick(t => t + 1)
+        if (probe.isEnabled('hud')) {
+          probe.record('hud', 'hud-pan-camera-change', performance.now() - t0, { dx: cam.x - lastCam.x })
+        }
       }
-      rafId = requestAnimationFrame(poll)
-    }
-    rafId = requestAnimationFrame(poll)
+      lastCam = cam
+      setWmCameraTick(t => t + 1)
+    })
     return () => {
-      cancelAnimationFrame(rafId)
+      stop()
       window.removeEventListener('camera-restored', onCameraRestored)
       clearTimeout(fallbackTimer)
     }
-  }, [mainEditor, expanded])
+  }, [mainEditor, expanded, hudWm, readHudCameraAnchor])
 
-  // Adopt the saved anchor when it arrives in the store — even if panOffsetRef
+  // Adopt the saved anchor when it arrives in the store — even if the WM anchor
   // is already set to a provisional recomputed default. In large multi-machine
   // rooms the anchor record can sync AFTER the fleet shapes, so the first render
   // recomputes a flush-left default; when the real anchor lands we replace it.
@@ -743,17 +788,16 @@ export function FleetHUD({
       ]
       for (const r of arrivals as any[]) {
         if (isMyAnchor(r) && r.meta?.panOffset !== undefined) {
-          if (panOffsetRef.current !== r.meta.panOffset || cameraYRef.current !== r.meta.cameraY) {
-            panOffsetRef.current = r.meta.panOffset
-            cameraYRef.current = r.meta.cameraY
-            setCameraTick(t => t + 1)
+          const hudCameraAnchor = readHudCameraAnchor()
+          if (hudCameraAnchor?.panOffset !== r.meta.panOffset || hudCameraAnchor?.cameraY !== r.meta.cameraY) {
+            applyHudAnchor({ panOffset: r.meta.panOffset, cameraY: r.meta.cameraY })
           }
           break
         }
       }
     }, { source: 'all', scope: 'document' })
     return unsub
-  }, [mainEditor, recenterHudForBounds])
+  }, [applyHudAnchor, mainEditor, readHudCameraAnchor, recenterHudForBounds])
 
   // Block HTML5 file/chip drops on fleet shapes (except chat input areas).
   // With the full-viewport overlay, we check if the drop target is inside
@@ -971,8 +1015,8 @@ export function FleetHUD({
       // The adopt-on-arrival listener restores the real position once it lands.
       // Destructive callers (layout switch, emergency recovery) omit the flag.
       const preserveAnchor = !!(e as CustomEvent)?.detail?.preserveAnchor
-      panOffsetRef.current = null
-      cameraYRef.current = null
+      hudAnchorRef.current = null
+      hudBaseCameraRef.current = mainEditor.getCamera()
       if (!preserveAnchor) ignoreSavedAnchorRef.current = true
       if (!preserveAnchor) {
         try {
@@ -1032,12 +1076,12 @@ export function FleetHUD({
 
   // Fleet shapes rendered at z=1 (fixed size). X position computed dynamically
   // from document's screen position each render. Y frozen on first expand.
-  void cameraTick
+  void wmCameraTick
 
-  // Camera offsets: computed once on first expand from the document's
-  // current screen position, then frozen. X tracks pan only (no zoom).
-  // Y is fixed after initial layout.
-  if (panOffsetRef.current === null) {
+  // Camera anchor: computed once on first expand from the document's current
+  // screen position, then held by the WM overlay layer. X tracks pan only (no
+  // zoom). Y is fixed after initial layout.
+  if (hudAnchorRef.current === null) {
     // Position the overlay so the page-space placement set by createFleetLayout
     // shows through 1:1. The whole layout (margins, widths, gaps) lives in those
     // page coords; the HUD offset is purely "where the document's left edge sits
@@ -1054,7 +1098,7 @@ export function FleetHUD({
       const b = mainEditor.getShapePageBounds(s.id)
       if (b && b.x < minPageX) minPageX = b.x
     }
-    const docLeftScreen = projectFleetHudDocumentLeft(mainEditor, minPageX)
+    const docLeftScreen = projectFleetHudDocumentLeftWithWM(hudWm, mainEditor, minPageX)
     // Compensate this (identity, device)'s horizontal layout offset so the
     // viewer's OWN shapes render in their canonical doc-relative position no
     // matter which horizontal zone they physically occupy. The VERTICAL offset
@@ -1069,8 +1113,7 @@ export function FleetHUD({
       layoutDx: off.dx,
       topPad: activeTopPad,
     })
-    panOffsetRef.current = anchor.panOffset
-    cameraYRef.current = anchor.cameraY
+    applyHudAnchor(anchor, { tick: false })
     // This is a *derived default*, not a user-chosen position. Do NOT persist it:
     // a saved anchor may simply be unsynced (large multi-machine rooms deliver it
     // in a later chunk), and saving the default here would overwrite the real
@@ -1099,12 +1142,24 @@ export function FleetHUD({
       topPad: activeTopPad,
     }).panOffset
   })()
-  const renderPanOffset = livePhonePanOffset ?? panOffsetRef.current!
+  const baseAnchor = hudAnchorRef.current
+  if (!baseAnchor) return null
+  const renderAnchor = livePhonePanOffset === null
+    ? baseAnchor
+    : { panOffset: livePhonePanOffset, cameraY: baseAnchor.cameraY }
+  configureFleetHudOverlayLayer(hudWm, {
+    panOffset: renderAnchor.panOffset,
+    cameraY: renderAnchor.cameraY,
+    mainCamera: mainEditor.getCamera(),
+    baseCamera: livePhonePanOffset === null ? hudBaseCameraRef.current : mainEditor.getCamera(),
+  })
+  const renderHudCameraAnchor = readHudCameraAnchor()
+  if (!renderHudCameraAnchor) return null
 
-  if (renderPanOffset !== null && cameraYRef.current !== null) {
-    const projectedTop = activeFleetBounds.y + cameraYRef.current
+  if (renderHudCameraAnchor !== null) {
+    const projectedTop = activeFleetBounds.y + renderHudCameraAnchor.cameraY
     const projectedBottom = projectedTop + activeFleetBounds.h
-    const projectedLeft = activeFleetBounds.x + renderPanOffset
+    const projectedLeft = activeFleetBounds.x + renderHudCameraAnchor.panOffset
     const projectedRight = projectedLeft + activeFleetBounds.w
     const verticallyVisible = projectedBottom > 0 && projectedTop < window.innerHeight
     const horizontallyVisible = phoneLayout
@@ -1118,7 +1173,7 @@ export function FleetHUD({
         if (b && b.x < minPageX) minPageX = b.x
       }
       if (isFinite(minPageX)) {
-        const docLeftScreen = projectFleetHudDocumentLeft(mainEditor, minPageX)
+        const docLeftScreen = projectFleetHudDocumentLeftWithWM(hudWm, mainEditor, minPageX)
         const off = layoutOffset(getHumanId(), getDeviceId())
         const anchor = computeFleetHudDefaultAnchor({
           bounds: activeFleetBounds,
@@ -1127,22 +1182,17 @@ export function FleetHUD({
           layoutDx: off.dx,
           topPad: activeTopPad,
         })
-        panOffsetRef.current = anchor.panOffset
-        cameraYRef.current = anchor.cameraY
+        applyHudAnchor(anchor, { tick: false })
         ignoreSavedAnchorRef.current = true
         userPannedRef.current = false
       }
     }
   }
 
-  const overlayLayer = createFleetHudOverlayLayer({
-    panOffset: renderPanOffset,
-    cameraY: cameraYRef.current!,
-    layout: { axis: 'vertical', spacing: 0 },
+  const overlayLayer = readFleetHudOverlayLayer(hudWm, {
     userId: getHumanId(),
     deviceId: getDeviceId(),
   })
-  const overlayCam = overlayLayer.camera
   const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null
   const exposeForTest = params?.has('pw') || params?.has('wmFlowGate')
   if (import.meta.env.DEV || exposeForTest || (typeof navigator !== 'undefined' && navigator.webdriver)) {
@@ -1167,7 +1217,7 @@ export function FleetHUD({
           maxHeightFraction={1}
           lockCamera={true}
           liveEdit={true}
-          cameraOverride={overlayCam}
+          wmSurface={{ wm: hudWm, layerId: FLEET_HUD_OVERLAY_LAYER_ID, surfaceId: overlayLayer.overlayLayerId }}
           fullViewport={true}
           identityId={identityId}
           customGestureActiveRef={fleetTouchGestureActiveRef}

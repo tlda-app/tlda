@@ -4,17 +4,43 @@
 // tests in TS/JS/Python/Ruby diffs. Mirrors the lint-parens / lint-passive
 // pattern: lintText for full content, lintDiff for an added-lines view.
 //
-// Companion to ~/work/dot-claude/skills/diagnose-not-suppress/SKILL.md — the
-// skill is the agent-side guidance, this is the build-time backstop.
+// Companion to ~/work/dot-claude/skills/code-patterns/SKILL.md (the diagnose-
+// don't-suppress classifier) — the skill is the agent-side guidance, this is the
+// build-time backstop.
+//
+// BLOCKING_PATTERNS lists the patterns the pre-commit gate refuses outright when
+// a commit ADDS one (net-new, diff-scoped). Everything else stays advisory.
 
 const PATTERNS = [
-  // Empty catch — `catch (e) {}`, `catch {}`, `catch (e) { /* ignored */ }`.
-  // We also catch the pure-logging case ("catch and console.log" — usually a
-  // mistake too: surface log lines should be specific, not "something failed").
+  // Empty or log-only catch — `catch (e) {}`, `catch {}`, `catch (e) { /* x */ }`,
+  // and the pure-logging case `catch (e) { log.error(...) }` / `console.error(...)`.
+  // A body that is ONLY a comment and/or log calls swallows every error — failed
+  // migrations, wrong types, network outages — while looking handled. `console.error`
+  // and the app's `log.<lvl>`/`logger.<lvl>` (per CLAUDE.md, how server/fleet code
+  // logs) are the dominant swallow form, so they count too. A catch that logs and
+  // then rethrows/returns/recovers has a non-log statement in its body → not matched.
+  //
+  // Escape hatch (mirrors the ts-ignore/eslint-disable "give a reason" rule): a
+  // catch whose body carries a real reason comment (≥2 meaningful words) is exempt —
+  // `catch { /* best-effort: pid may already be dead */ }` passes; bare `catch {}`
+  // and `catch { /* ignore */ }` do not. See `exempt` below.
   {
-    name: 'empty-catch',
-    description: 'catch with empty body or pure-log body silently swallows every error — including ones that signal real bugs (failed migrations, wrong types, network outages).',
-    regex: /\bcatch\s*(?:\([^)]*\))?\s*\{\s*(?:\/\/[^\n]*\s*|\/\*[\s\S]*?\*\/\s*|console\.(?:log|warn|debug)\([^)]*\)\s*;?\s*)*\}/g,
+    name: 'empty-or-log-only-catch',
+    description: 'catch with empty body or log-only body silently swallows every error — including ones that signal real bugs. Handle the error, rethrow it, or (if swallowing is genuinely correct) add a comment explaining why.',
+    regex: /\bcatch\s*(?:\([^)]*\))?\s*\{\s*(?:\/\/[^\n]*\s*|\/\*[\s\S]*?\*\/\s*|(?:console\.(?:log|warn|debug|error)|(?:log|logger)\.(?:trace|debug|info|warn|error|fatal))\([^)]*\)\s*;?\s*)*\}/g,
+    // Exempt a catch whose body explains WHY the swallow is deliberate. A real
+    // reason = a comment with ≥2 words that aren't filler ("ignore", "noop", …).
+    exempt: (matchText) => {
+      const comments = [...matchText.matchAll(/\/\/([^\n]*)|\/\*([\s\S]*?)\*\//g)]
+        .map((c) => (c[1] || c[2] || '').trim())
+      const FILLER = new Set(['ignore', 'ignored', 'ignores', 'empty', 'noop', 'nothing',
+        'skip', 'skipped', 'pass', 'todo', 'fixme', 'catch', 'error', 'err', 'swallow'])
+      return comments.some((c) => {
+        const words = c.replace(/[^a-zA-Z]+/g, ' ').trim().split(/\s+/).filter((w) => w.length > 2)
+        const meaningful = words.filter((w) => !FILLER.has(w.toLowerCase()))
+        return meaningful.length >= 2
+      })
+    },
   },
   // @ts-ignore or @ts-expect-error without a reason. Acceptable form requires
   // " — " or "TODO" or a reason after the directive.
@@ -50,6 +76,15 @@ const PATTERNS = [
   },
 ]
 
+// Patterns the pre-commit gate BLOCKS on when a commit adds one (net-new only —
+// legacy hits stay advisory because the gate is diff-scoped). Scoped to the
+// JS/TS error-swallowing catch: "exceptions bubble" is the rule with teeth, and
+// this pattern has a humane reason-comment escape (see `exempt`). The other
+// patterns — including python-bare-except-pass — stay advisory for now: blocking
+// `except OSError: pass` (a legit best-effort idiom) with no reason-escape would
+// just nag. Adding an exempt + blocking for Python is a clean follow-up.
+export const BLOCKING_PATTERNS = new Set(['empty-or-log-only-catch'])
+
 // Lint a full text. Returns [{file, line, pattern, snippet, description}].
 export function lintText(text, file = '<text>') {
   const results = []
@@ -58,10 +93,12 @@ export function lintText(text, file = '<text>') {
   if (/lint-suppress\.|lint-suppress$/i.test(file)) return results
   if (/\.test\.|spec\./i.test(file) && /test-skip|empty-catch/.test(file)) return results
 
-  for (const { name, regex, description } of PATTERNS) {
+  for (const { name, regex, description, exempt } of PATTERNS) {
     regex.lastIndex = 0
     let m
     while ((m = regex.exec(text)) !== null) {
+      // A pattern may exempt a match (e.g. a catch that explains its swallow).
+      if (exempt && exempt(m[0])) continue
       // Compute the line number from the match offset.
       const before = text.slice(0, m.index)
       const line = before.split('\n').length
@@ -107,6 +144,12 @@ function parseDiffAddedLines(diffText) {
 
 const CODE_EXTS = /\.(ts|tsx|js|mjs|cjs|jsx|py|rb)$/
 
+// Generated / vendored / runtime-data paths that contain code-shaped files but
+// aren't hand-authored source — linting them is noise. mcp-server/fleet-data/ is
+// the fleet upload store (timestamped build/sync snapshots agents upload); dist
+// and bundles are build output.
+const NON_SOURCE_PATHS = /(?:^|\/)(?:dist|node_modules|fleet-data\/uploads|fleet-data)\/|\.min\.[cm]?js$/
+
 // Lint a unified diff against the post-state file contents.
 // `diffText` — `git diff --cached` or `git diff HEAD~1 HEAD` output.
 // `readFile(path)` — function returning post-state file contents (or null).
@@ -116,6 +159,7 @@ export function lintDiff(diffText, readFile) {
   const results = []
   for (const [file, addedLines] of addedByFile.entries()) {
     if (!CODE_EXTS.test(file)) continue
+    if (NON_SOURCE_PATHS.test(file)) continue
     let content
     try { content = readFile(file) } catch { content = null }
     if (!content) continue
@@ -130,22 +174,36 @@ export function lintDiff(diffText, readFile) {
 // Format findings for human display (CLI / chat). Groups by file, includes
 // a one-line per finding with line number + pattern + snippet, then a short
 // pointer to the skill at the end.
-export function formatFindings(findings) {
+export function formatFindings(findings, { blocking = false } = {}) {
   if (findings.length === 0) return ''
   const byFile = new Map()
   for (const f of findings) {
     if (!byFile.has(f.file)) byFile.set(f.file, [])
     byFile.get(f.file).push(f)
   }
-  const lines = [`⚠ Suppression-pattern lint — ${findings.length} flagged:`]
+  const blocked = findings.filter((f) => BLOCKING_PATTERNS.has(f.pattern))
+  const header = blocked.length > 0
+    ? `${blocking ? '✖' : '⚠'} Suppression-pattern lint — ${findings.length} flagged (${blocked.length} swallow-the-error):`
+    : `⚠ Suppression-pattern lint — ${findings.length} flagged:`
+  const lines = [header]
   for (const [file, items] of byFile.entries()) {
     lines.push(``)
     lines.push(`  ${file}`)
     for (const f of items) {
-      lines.push(`    L${f.line} [${f.pattern}]  ${f.snippet}`)
+      const mark = BLOCKING_PATTERNS.has(f.pattern) ? '✖' : '·'
+      lines.push(`    ${mark} L${f.line} [${f.pattern}]  ${f.snippet}`)
     }
   }
   lines.push(``)
-  lines.push(`Each one is the cheap version of a fix. Read ~/work/dot-claude/skills/diagnose-not-suppress/SKILL.md before suppressing — most are real bugs, dead code, or API drift.`)
+  if (blocked.length > 0) {
+    lines.push(blocking
+      ? `✖ BLOCKED: this commit adds an error-swallowing catch. Exceptions must bubble.`
+      : `⚠ The ✖ lines swallow errors — these BLOCK at commit time (pre-commit gate).`)
+    lines.push(`  Fix it: handle the error, rethrow, or recover. If swallowing is genuinely`)
+    lines.push(`  correct (e.g. a best-effort liveness probe), add a comment saying WHY`)
+    lines.push(`  (≥2 words) inside the catch body — that exempts it.${blocking ? ' Last resort: --no-verify.' : ''}`)
+    lines.push(``)
+  }
+  lines.push(`Each one is the cheap version of a fix. Read ~/work/dot-claude/skills/code-patterns/SKILL.md before suppressing — most are real bugs, dead code, or API drift.`)
   return lines.join('\n')
 }

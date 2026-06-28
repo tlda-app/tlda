@@ -12,6 +12,13 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import type { Editor, TLAnyShapeUtilConstructor, TLShapeId, TLStateNodeConstructor } from 'tldraw'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
+import type {
+  AnnotationViewerSurfacePayload,
+} from '../wm/annotation-viewer-surface'
+import type {
+  ManagedSurfacePlacement,
+  ManagedSurfaceRequest,
+} from '../wm/managed-surfaces'
 import './AnnotationViewer.css'
 
 type ViewerState = 'hovering' | 'pinned' | 'navigated'
@@ -29,6 +36,11 @@ interface ViewerData {
   label?: string
   color?: string
   chipRect?: { left: number; top: number; right: number; bottom: number; width: number; height: number }
+  managedSurfaceId?: string
+  managedLayerId?: string
+  managedPlacement?: ManagedSurfacePlacement
+  managedHitPolicy?: string
+  managedCleanup?: unknown
   useFullBounds?: boolean
   pinned?: boolean
   bulletIdx?: number
@@ -49,44 +61,55 @@ export function AnnotationViewer({
 
   // Listen for show/hide events from FleetChatShape
   useEffect(() => {
-    function onShow(e: Event) {
-      const detail = (e as CustomEvent).detail
-      if (!detail?.bounds) return
+    function onManagedSurface(e: Event) {
+      const request = (e as CustomEvent).detail?.request as ManagedSurfaceRequest<AnnotationViewerSurfacePayload> | undefined
+      if (!request || request.kind !== 'annotation-viewer') return
+      const payload = request.payload
       setData({
-        bounds: detail.bounds,
-        shapeIds: detail.shapeIds,
-        label: detail.label,
-        color: detail.color,
-        chipRect: detail.chipRect,
-        useFullBounds: detail.useFullBounds,
-        pinned: detail.pinned,
-        bulletIdx: detail.bulletIdx,
+        bounds: payload.bounds,
+        shapeIds: payload.shapeIds,
+        label: payload.label,
+        color: payload.color,
+        chipRect: payload.chipRect,
+        managedSurfaceId: request.surfaceId,
+        managedLayerId: request.layerId,
+        managedPlacement: request.placement,
+        managedHitPolicy: request.hitPolicy,
+        managedCleanup: request.cleanup,
+        useFullBounds: payload.useFullBounds,
+        pinned: payload.pinned,
+        bulletIdx: payload.bulletIdx,
       })
-      setState(detail.pinned ? 'pinned' : 'hovering')
+      setState(request.persistence.pinned ? 'pinned' : 'hovering')
       prevCameraRef.current = null
       if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current)
     }
-    function onHide() {
-      // Only auto-hide when hovering (not pinned/navigated)
-      dismissTimerRef.current = setTimeout(() => {
-        setState(cur => {
+	    function onHide() {
+	      // Only auto-hide when hovering (not pinned/navigated)
+	      dismissTimerRef.current = setTimeout(() => {
+	        setState(cur => {
           if (cur === 'hovering') {
             setData(null)
             return 'hovering'
           }
           return cur
-        })
-      }, 200)
-    }
-    function onCancelHide() {
-      if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current)
-    }
-    window.addEventListener('annotation-viewer-show', onShow)
-    window.addEventListener('annotation-viewer-hide', onHide)
-    window.addEventListener('annotation-viewer-cancel-hide', onCancelHide)
-    return () => {
-      window.removeEventListener('annotation-viewer-show', onShow)
-      window.removeEventListener('annotation-viewer-hide', onHide)
+	        })
+	      }, 200)
+	    }
+	    function onManagedDismiss(e: Event) {
+	      const detail = (e as CustomEvent).detail
+	      if (detail?.kind && detail.kind !== 'annotation-viewer') return
+	      onHide()
+	    }
+	    function onCancelHide() {
+	      if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current)
+	    }
+	    window.addEventListener('wm-managed-surface-request', onManagedSurface)
+	    window.addEventListener('wm-managed-surface-dismiss', onManagedDismiss)
+	    window.addEventListener('annotation-viewer-cancel-hide', onCancelHide)
+	    return () => {
+	      window.removeEventListener('wm-managed-surface-request', onManagedSurface)
+	      window.removeEventListener('wm-managed-surface-dismiss', onManagedDismiss)
       window.removeEventListener('annotation-viewer-cancel-hide', onCancelHide)
       if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current)
     }
@@ -166,10 +189,23 @@ export function AnnotationViewer({
   // Close
   const handleClose = useCallback((e: React.MouseEvent) => {
     e.stopPropagation()
+    if (data?.managedCleanup && typeof data.managedCleanup === 'object' && 'onClose' in data.managedCleanup) {
+      const cleanup = data.managedCleanup as { onClose?: string }
+      if (cleanup.onClose === 'remove-surface') {
+        const removable = (data.shapeIds || [])
+          .filter((shapeId) => {
+            const shape = mainEditor.getShape(shapeId as TLShapeId)
+            return !!shape?.meta?.temporaryMarkdownColumn
+          }) as TLShapeId[]
+        if (removable.length > 0) {
+          mainEditor.store.remove(removable)
+        }
+      }
+    }
     setData(null)
     setState('hovering')
     prevCameraRef.current = null
-  }, [])
+  }, [data, mainEditor])
 
   // Resize drag
   const resizeRef = useRef<{ startX: number; startY: number; startW: number; startH: number } | null>(null)
@@ -229,7 +265,10 @@ export function AnnotationViewer({
   const chip = data.chipRect
   let left: number
   let top: number
-  if (chip) {
+  if (data.managedPlacement?.left != null && data.managedPlacement?.top != null) {
+    left = data.managedPlacement.left
+    top = data.managedPlacement.top
+  } else if (chip) {
     // Horizontal: align left edge with chip, clamp to viewport
     left = chip.left
     if (left + size.w > vw - 8) left = vw - size.w - 8
@@ -248,6 +287,9 @@ export function AnnotationViewer({
   return (
     <div
       className={`annotation-viewer annotation-viewer--${state}`}
+      data-managed-surface-id={data.managedSurfaceId}
+      data-managed-layer-id={data.managedLayerId}
+      data-managed-hit-policy={data.managedHitPolicy}
       style={{ width: size.w, position: 'fixed', left, top, zIndex: 9999, pointerEvents: 'auto' }}
       onMouseEnter={() => {
         if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current)

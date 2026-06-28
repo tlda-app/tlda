@@ -34,7 +34,9 @@ daemon could target the real fleet; use \`serve\` instead.
 Other commands:
   pw <verb> [args]   Drive the one shared playwright browser (goto, click,
                      screenshot, snapshot, eval, …); acquire/release/status/reap
-  dev-url            Print the worktree dev server URL (reads .dev-url)
+  dev-url            Print the shareable worktree dev server URL (reads .dev-url,
+                     or derives a Tailscale URL for --port). Never prints
+                     localhost as a share URL.
   deploy             Build, restart the server, verify the SPA renders
   restart-mcp [name…]  Reload an agent's fleet MCP (drives /mcp → Reconnect).
                      No args = your own; names = those agents; --all [--except …].

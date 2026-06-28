@@ -36,6 +36,8 @@ test('CanvasClipPanel WM helper marks locked panels as pinned lock-zoom layers',
 	})
 
 	assert.deepEqual(plan.camera, { x: 4, y: -8, z: 5 })
+	assert.deepEqual(plan.layer.transform, { x: 4, y: -8, scale: 5 })
+	assert.deepEqual(plan.layer.camera, { x: 0, y: 0, z: 1 })
 	assert.deepEqual(plan.layer.policy, { x: 'pin', y: 'pin', zoom: 'lock' })
 	assert.deepEqual(plan.layer.layout, { axis: 'vertical', spacing: 0 })
 })

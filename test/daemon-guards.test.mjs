@@ -11,6 +11,7 @@ import {
   harnessKindForAgent,
   isPlaywrightBrowserArgs,
   shouldClaimCodexWatcher,
+  shouldFlushWatch,
   unlinkPidfileIfOwnPid,
 } from '../bin/lib/daemon-guards.mjs'
 
@@ -23,6 +24,26 @@ test('missing metadata.kind defaults to claude once', () => {
   assert.equal(harnessKindForAgent(agent, log), 'claude')
   assert.equal(warnings.length, 1)
   assert.match(warnings[0], /defaulting to claude/)
+})
+
+test('shouldFlushWatch: no pending read never flushes', () => {
+  assert.equal(shouldFlushWatch(null, 1000), false)
+  assert.equal(shouldFlushWatch(undefined, 1000), false)
+})
+
+test('shouldFlushWatch: holds (trailing-debounce) while inside the max-wait window', () => {
+  // First write of a burst: firstPending == now, so 0ms elapsed -> keep debouncing.
+  assert.equal(shouldFlushWatch(1000, 1000, 150), false)
+  // Mid-burst, still under the cap.
+  assert.equal(shouldFlushWatch(1000, 1100, 150), false)
+  assert.equal(shouldFlushWatch(1000, 1149, 150), false)
+})
+
+test('shouldFlushWatch: flushes immediately once the first unread write hits the cap', () => {
+  // Sustained burst: once the oldest unread write is >= maxWait, flush now
+  // instead of resetting the trailing timer (prevents read starvation).
+  assert.equal(shouldFlushWatch(1000, 1150, 150), true)
+  assert.equal(shouldFlushWatch(1000, 5000, 150), true)
 })
 
 test('pidfile is only removed when it matches our pid', () => {

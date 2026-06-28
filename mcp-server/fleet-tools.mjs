@@ -15,6 +15,7 @@ import { SessionExtractor, EventExtractor, TldaExtractor } from './playback/extr
 import { createPlayback, getPlayback, listPlaybacks, editPlayback, playbackTranscript } from './playback/storage.mjs';
 import { ledger } from './identity.mjs';
 import { formatMessage, formatActivity, formatAnnotationRef } from './format-annotation.mjs';
+import { formatViewingHint } from './viewing-hint.mjs';
 import { parseTimestamp } from './lib/parse-timestamp.mjs';
 import { processMessageText } from '../shared/message-processing.mjs';
 import { compactPrettyResult, indentPrettyResult, normalizePrettyResult } from '../shared/activity-pretty-result.mjs';
@@ -633,25 +634,6 @@ export function formatLaunderChatWarning(result, eventId = null) {
   const target = eventId != null ? `chat({ amend_id: ${eventId}, message: "…" })` : 'chat({ amend_id: <id>, message: "…" })';
   const span = result.features?.matchedSpan || 'matched wording';
   return `⚠ **Ungrounded notation/term introduction (${result.reasonCode}) — this may be agent-invented notation that will get laundered into later briefs.** Matched: \`${span}\`. Either ground it explicitly (e.g. "notation I'm introducing — not in the paper") or use the paper's notation. Fix it in place with \`${target}\` (edits the message Skip is reading, no new message).`;
-}
-
-/**
- * Format the exceptional staleness flag for a viewing-context. The version is
- * always Built; this rides on the location only when the viewer's pages have
- * drifted from the build (`ctx.stale` set by the client). Returns '' normally.
- */
-function staleHint(ctx) {
-  const s = ctx?.stale;
-  if (!s || !Array.isArray(s.kinds) || s.kinds.length === 0) return '';
-  const labels = {
-    stale: 'older render',
-    phantom: 'past end of build',
-    unrendered: 'not yet rendered',
-    missing: 'page not yet loaded',
-  };
-  const desc = s.kinds.map(k => labels[k] || k).join(', ');
-  const pg = Array.isArray(s.pages) && s.pages.length ? ` p${s.pages.join(',')}` : '';
-  return ` ⚠ stale${pg}: ${desc} — source anchor provisional`;
 }
 
 async function fetchCurrentDocVersion(doc) {
@@ -3483,16 +3465,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
         const fromLabel = m.metadata?.fromLabel || m.from;
         const replyHint = ` (reply with chat(to: "${m.from}"))`;
         const ctx = m.metadata?.context;
-        let docHint = '';
-        if (ctx?.doc) {
-          if (ctx.compareRef) {
-            docHint = ` [viewing ${ctx.doc} — comparing old@${ctx.compareRef} vs current@${ctx.version || 'latest'}]`
-          } else {
-            const sl = ctx.sourceLine
-            const srcHint = sl ? ` ${sl.file}:${sl.startLine}${sl.endLine && sl.endLine !== sl.startLine ? '-' + sl.endLine : ''}` : ''
-            docHint = ` [viewing ${ctx.doc}${ctx.version ? '@' + ctx.version : ''}${ctx.page ? ' p' + (Array.isArray(ctx.page) ? ctx.page.join(',') : ctx.page) : ''}${srcHint}${staleHint(ctx)}]`
-          }
-        }
+        const docHint = formatViewingHint(ctx);
         const { text: chipResolvedText, images: chipImages } = await resolveChipTokens(m.text, m.metadata)
         const refResolvedText = resolveTheoremRefs(chipResolvedText, ctx?.doc, ctx?.version)
         const { text: imgResolvedText, images } = await resolveImages(refResolvedText)
@@ -4999,7 +4972,12 @@ function startChannelWS() {
         const { resolve, reject, timer } = _wsPending.get(msg.id);
         _wsPending.delete(msg.id);
         clearTimeout(timer);
-        if (msg.error) reject(new Error(msg.error));
+        if (msg.error) {
+          const detail = typeof msg.error === 'object' && msg.error !== null ? msg.error : { message: msg.error };
+          const err = new Error(detail.message || String(msg.error));
+          Object.assign(err, detail);
+          reject(err);
+        }
         else {
           if (msg.result?.event_id) {
             _originatedEventIds.add(msg.result.event_id);
@@ -5103,14 +5081,7 @@ async function handleChannelMessage(msg) {
       const rawText = data.text || data.message || '';
       const preview = previewOf(rawText);
       const ctx = data.metadata?.context;
-      let docHint = '';
-      if (ctx?.doc) {
-        if (ctx.compareRef) {
-          docHint = ` [viewing ${ctx.doc} — comparing old@${ctx.compareRef} vs current@${ctx.version || 'latest'}]`
-        } else {
-          docHint = ` [viewing ${ctx.doc}${ctx.version ? '@' + ctx.version : ''}${staleHint(ctx)}]`
-        }
-      }
+      const docHint = formatViewingHint(ctx, { terse: true });
       const truncNote = isTruncated(rawText) ? `\n(TRUNCATED — showing ${PREVIEW_MAX}/${rawText.length} chars. You MUST call my_task() for the full text before responding)` : '';
       const reminder = data.metadata?.chatReminder ? `\n⚠️ ${data.metadata.chatReminder}` : '';
       content = `📬 Message from ${fromLabel}${docHint}: ${preview}${truncNote}\nCall my_task() to read and respond.${reminder}`;

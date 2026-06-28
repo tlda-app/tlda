@@ -17,7 +17,12 @@ import type { Editor, TLShape, TLShapeId } from 'tldraw'
 import { myTldaUrl } from '../fleet/tldaUrl.mjs'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getDeviceId } from '../fleet/fleet-data.mjs'
-import { translateFleetHudDropPoint } from '../wm/fleet-hud-layer'
+import { translateFleetHudDropPointWithWM } from '../wm/fleet-hud-layer'
+import { getEditorWMCore } from '../wm/editor-wm'
+import {
+  createTemporaryMarkdownSurfaceRequest,
+  temporaryMarkdownShapeMeta,
+} from '../wm/markdown-surface'
 import { FLEET_SHAPE_TYPES } from './fleet-utils'
 
 const PILL_W = 70
@@ -71,6 +76,31 @@ function encodeUtf8Base64(text: string): string {
   let binary = ''
   for (const byte of bytes) binary += String.fromCharCode(byte)
   return btoa(binary)
+}
+
+function isTemporaryMarkdownProofFixture(meta: Record<string, unknown>) {
+  if (meta.wmManagedSurfaceProofFixture !== true) return false
+  if (typeof window === 'undefined') return false
+  return new URLSearchParams(window.location.search).get('wmManagedSurfaceProof') === '1'
+}
+
+function temporaryMarkdownProofFixtureUrl(title: string, markdown: string) {
+  const escapedTitle = title.replace(/[&<>"']/g, (ch) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  }[ch] || ch))
+  const escapedMarkdown = markdown.replace(/[&<>"']/g, (ch) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  }[ch] || ch))
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${escapedTitle}</title></head><body><main><h1>${escapedTitle}</h1><pre>${escapedMarkdown}</pre></main></body></html>`
+  return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
 }
 
 async function ensureTemporaryMarkdownProject() {
@@ -150,23 +180,27 @@ export async function createTemporaryMarkdownColumn(
 ) {
   const source = markdown.trim() ? markdown : `# ${title || 'Markdown chip'}`
   const startedAt = Date.now()
-  await ensureTemporaryMarkdownProject()
-  const pushRes = await fetch(`/api/projects/${TEMP_MARKDOWN_PROJECT}/push`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      files: [{
-        path: TEMP_MARKDOWN_FILE,
-        content: encodeUtf8Base64(source),
-        encoding: 'base64',
-      }],
-    }),
-  })
-  if (!pushRes.ok) throw new Error(`markdown push failed: ${pushRes.status}`)
-  const pushResult = await pushRes.json().catch(() => null)
-  await waitForTemporaryMarkdownBuild(startedAt, !!pushResult?.unchanged)
-
-  const url = `/docs/${TEMP_MARKDOWN_PROJECT}/index.html?t=${Date.now()}`
+  const proofFixture = isTemporaryMarkdownProofFixture(meta)
+  let url = `/docs/${TEMP_MARKDOWN_PROJECT}/index.html?t=${Date.now()}`
+  if (proofFixture) {
+    url = temporaryMarkdownProofFixtureUrl(title, source)
+  } else {
+    await ensureTemporaryMarkdownProject()
+    const pushRes = await fetch(`/api/projects/${TEMP_MARKDOWN_PROJECT}/push`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        files: [{
+          path: TEMP_MARKDOWN_FILE,
+          content: encodeUtf8Base64(source),
+          encoding: 'base64',
+        }],
+      }),
+    })
+    if (!pushRes.ok) throw new Error(`markdown push failed: ${pushRes.status}`)
+    const pushResult = await pushRes.json().catch(() => null)
+    await waitForTemporaryMarkdownBuild(startedAt, !!pushResult?.unchanged)
+  }
   const parkedPoint = getParkedMarkdownPoint(editor, pagePoint)
   const existing = editor.getShape(TEMP_MARKDOWN_SHAPE_ID)
   if (existing) {
@@ -205,15 +239,40 @@ export async function createTemporaryMarkdownColumn(
     } as unknown as Parameters<Editor['createShape']>[0])
   }
   sendPageShapeToBack(editor, TEMP_MARKDOWN_SHAPE_ID)
+  const bounds = getShapeClipBounds(editor, TEMP_MARKDOWN_SHAPE_ID) || {
+    x: parkedPoint.x,
+    y: parkedPoint.y,
+    w: TEMP_MARKDOWN_W,
+    h: TEMP_MARKDOWN_H,
+  }
+  const surface = createTemporaryMarkdownSurfaceRequest({
+    shapeId: TEMP_MARKDOWN_SHAPE_ID,
+    bounds,
+    title,
+    url,
+    owner: { userId: getHumanId(), deviceId: getDeviceId() },
+    sourceChatShapeId: typeof meta.sourceChatShapeId === 'string' ? meta.sourceChatShapeId : undefined,
+    sharedDocPath: typeof meta.sharedDocPath === 'string' ? meta.sharedDocPath : undefined,
+    authorId: typeof meta.authorId === 'string' ? meta.authorId : undefined,
+  })
+  const surfaceShape = editor.getShape(TEMP_MARKDOWN_SHAPE_ID)
+  if (surfaceShape) {
+    if (surfaceShape.isLocked) editor.updateShape({ id: TEMP_MARKDOWN_SHAPE_ID, type: surfaceShape.type, isLocked: false })
+    editor.updateShape({
+      id: TEMP_MARKDOWN_SHAPE_ID,
+      type: surfaceShape.type,
+      meta: {
+        ...surfaceShape.meta,
+        ...temporaryMarkdownShapeMeta(surface),
+      },
+    } as unknown as Parameters<Editor['updateShape']>[0])
+    editor.updateShape({ id: TEMP_MARKDOWN_SHAPE_ID, type: surfaceShape.type, isLocked: true })
+  }
   return {
     shapeId: TEMP_MARKDOWN_SHAPE_ID,
-    bounds: getShapeClipBounds(editor, TEMP_MARKDOWN_SHAPE_ID) || {
-      x: parkedPoint.x,
-      y: parkedPoint.y,
-      w: TEMP_MARKDOWN_W,
-      h: TEMP_MARKDOWN_H,
-    },
+    bounds,
     url,
+    surface,
   }
 }
 
@@ -622,7 +681,7 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
     let dropPoint = { x: pageCenterX, y: pageCenterY }
 
     if (mainEditor && mainEditor !== editor) {
-      dropPoint = translateFleetHudDropPoint(editor, mainEditor, dropPoint)
+      dropPoint = translateFleetHudDropPointWithWM(getEditorWMCore(mainEditor), editor, mainEditor, dropPoint)
     }
 
     // When expanded (pill was 400×600), the drop point is already the

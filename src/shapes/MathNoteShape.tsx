@@ -52,12 +52,29 @@ import { onFileUpdatedSignal } from '../useYjsSync'
 import { chatInsertBus } from './FleetPillShape'
 import { getVimMode, subscribeVimMode } from '../vimMode'
 import { appendToken } from '../authToken'
+// @ts-ignore — vanilla JS module
+import { getHumanId, getDeviceId } from '../fleet/fleet-data.mjs'
+import {
+  dispatchManagedAnnotationViewerHide,
+  dispatchManagedAnnotationViewerRequest,
+} from '../wm/annotation-viewer-surface'
 
 // CodeMirror imports
 import { EditorView, keymap } from '@codemirror/view'
 import { EditorState, Prec } from '@codemirror/state'
 import { vim, getCM, Vim, CodeMirror as CM5 } from '@replit/codemirror-vim'
 import { latex } from 'codemirror-lang-latex'
+
+function currentManagedSurfaceOwner() {
+  return { userId: getHumanId(), deviceId: getDeviceId() }
+}
+
+function managedViewportSize() {
+  return {
+    w: typeof window === 'undefined' ? 1200 : window.innerWidth,
+    h: typeof window === 'undefined' ? 800 : window.innerHeight,
+  }
+}
 
 // Render markdown + KaTeX math
 // Extracts math, replaces with placeholder tokens, renders the whole text as
@@ -1064,22 +1081,29 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           } else {
             cy = pageBounds.y + pageBounds.height / 2
           }
-          const bounds = { x: pageBounds.x, y: cy - REGION_H / 2, w: pageBounds.width, h: REGION_H }
-          const chipRect = target.getBoundingClientRect()
-          const label = target.textContent?.trim() || `p.${page}`
-          window.dispatchEvent(new CustomEvent('annotation-viewer-show', {
-            detail: { bounds, shapeIds: [], label, chipRect: { left: chipRect.left, top: chipRect.top, right: chipRect.right, bottom: chipRect.bottom, width: chipRect.width, height: chipRect.height } }
-          }))
-        }, 800)
-      }
+	          const bounds = { x: pageBounds.x, y: cy - REGION_H / 2, w: pageBounds.width, h: REGION_H }
+	          const chipRect = target.getBoundingClientRect()
+	          const label = target.textContent?.trim() || `p.${page}`
+	          dispatchManagedAnnotationViewerRequest({
+	            surfaceKey: `${shape.id}:math-note-doc-link:${label}:${page}:${isNaN(yTop) ? 'page' : yTop}`,
+	            bounds,
+	            shapeIds: [],
+	            label,
+	            chipRect: { left: chipRect.left, top: chipRect.top, right: chipRect.right, bottom: chipRect.bottom, width: chipRect.width, height: chipRect.height },
+	            owner: currentManagedSurfaceOwner(),
+	            source: `${shape.id}:doc-link:${target.dataset.refValue || label}`,
+	            viewport: managedViewportSize(),
+	          })
+	        }, 800)
+	      }
       function onMouseOut(e: MouseEvent) {
         const target = e.target as HTMLElement
         if (!target.closest('.doc-link')) return
-        const related = e.relatedTarget as HTMLElement | null
-        if (related?.closest('.annotation-viewer')) return
-        if (docLinkHoverTimerRef.current) clearTimeout(docLinkHoverTimerRef.current)
-        window.dispatchEvent(new CustomEvent('annotation-viewer-hide'))
-      }
+	        const related = e.relatedTarget as HTMLElement | null
+	        if (related?.closest('.annotation-viewer')) return
+	        if (docLinkHoverTimerRef.current) clearTimeout(docLinkHoverTimerRef.current)
+	        dispatchManagedAnnotationViewerHide()
+	      }
       el.addEventListener('mouseover', onMouseOver)
       el.addEventListener('mouseout', onMouseOut)
       return () => {

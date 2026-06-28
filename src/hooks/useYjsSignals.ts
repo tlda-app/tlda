@@ -9,6 +9,12 @@ import type { LookupData } from '../synctexLookup'
 import { reloadPages } from '../editorSetup'
 import type { ReloadResult } from '../editorSetup'
 import type { SvgDocument, DiffData } from '../svgDocumentLoader'
+// @ts-ignore — vanilla JS module
+import { getDeviceId, getHumanId } from '../fleet/fleet-data.mjs'
+import {
+  dispatchManagedAnnotationViewerHide,
+  dispatchManagedAnnotationViewerRequest,
+} from '../wm/annotation-viewer-surface'
 
 export interface ScreenshotCaptureState {
   bounds: { x: number; y: number; w: number; h: number }
@@ -321,18 +327,20 @@ export function useYjsSignals({
         const rect = placeholder.getBoundingClientRect()
         // Only show if placeholder is visible
         if (rect.bottom < 0 || rect.top > window.innerHeight) {
-          window.dispatchEvent(new CustomEvent('annotation-viewer-hide'))
+          dispatchManagedAnnotationViewerHide()
           return
         }
-        window.dispatchEvent(new CustomEvent('annotation-viewer-show', {
-          detail: {
-            bounds: signal.bounds,
-            shapeIds: [],
-            label,
-            pinned: true,
-            chipRect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height },
-          }
-        }))
+        dispatchManagedAnnotationViewerRequest({
+          surfaceKey: `screenshot-bounds:${signal.agent || 'agent'}:${signal.timestamp || Date.now()}`,
+          bounds: signal.bounds,
+          shapeIds: [],
+          label,
+          pinned: true,
+          chipRect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height },
+          owner: { userId: getHumanId(), deviceId: getDeviceId() },
+          source: `screenshot-bounds:${signal.agent || 'agent'}:${signal.timestamp || 'unknown'}`,
+          viewport: { w: window.innerWidth, h: window.innerHeight },
+        })
       }
 
       showAtPlaceholder()

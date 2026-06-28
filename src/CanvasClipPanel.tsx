@@ -10,10 +10,20 @@
  *
  * This replaces the old copy-store approach (separate editor + bidirectional sync).
  */
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { TldrawViewport, stopEventPropagation } from 'tldraw'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor, TLShape, TLViewportId } from 'tldraw'
 import { createCanvasClipPanelPlan, shouldRenderLockedFleetViewportShape } from './wm/canvas-clip-panel'
+import type { WMCore } from './wm/wm-core'
+import {
+  cameraToCoordinateTransform,
+  ensureLayer,
+  registerViewportLayer,
+  removeLayers,
+  unregisterViewportLayer,
+  viewportCoordinateLayerId,
+  viewportFrameLayerId,
+} from './wm/editor-wm'
 import { VisibilityViewportProvider } from './shapes/useIsInViewport'
 import { getDeviceId } from './fleet/fleet-data.mjs'
 import './CanvasClipPanel.css'
@@ -32,6 +42,34 @@ function getOptionalViewport(editor: Editor, viewportId: TLViewportId) {
     }
     throw error
   }
+}
+
+interface CanvasClipWMSurface {
+  wm: WMCore
+  layerId: string
+  surfaceId?: string
+}
+
+const wmSurfaceRegistry = new Map<string, {
+  surface: CanvasClipWMSurface
+  setCamera: (camera: { x: number; y: number; z: number }) => void
+}>()
+
+function wmSurfaceCamera(surface: CanvasClipWMSurface, fullViewport: boolean) {
+  const transform = fullViewport
+    ? surface.wm.transform(surface.layerId)
+    : surface.wm.transformInfo(surface.layerId).local
+  return { x: transform.x, y: transform.y, z: transform.scale }
+}
+
+function setSurfaceCamera(surface: CanvasClipWMSurface, camera: { x: number; y: number; z: number }) {
+  const layer = surface.wm.getLayer(surface.layerId)
+  if (layer.policy.x === 'pin' && layer.policy.y === 'pin' && layer.policy.zoom === 'lock') {
+    surface.wm.setTransform(surface.layerId, { x: camera.x, y: camera.y, scale: camera.z })
+    surface.wm.setCamera(surface.layerId, { x: 0, y: 0, z: 1 })
+    return
+  }
+  surface.wm.setCamera(surface.layerId, camera)
 }
 
 export interface ClipBounds {
@@ -57,8 +95,7 @@ interface CanvasClipPanelProps {
   emphasizeShapeIds?: string[]
   readOnly?: boolean
   liveEdit?: boolean
-  cameraOverride?: { x: number; y: number; z: number }
-  wmSurface?: { surfaceId: string; layerId: string }
+  wmSurface?: CanvasClipWMSurface
   fullViewport?: boolean
   identityId?: string | null
   customGestureActiveRef?: { current: boolean }
@@ -76,7 +113,6 @@ export function CanvasClipPanel({
   maxHeightFraction = DEFAULT_MAX_HEIGHT_FRACTION,
   className,
   lockCamera = false,
-  cameraOverride,
   wmSurface,
   fullViewport = false,
   readOnly = false,
@@ -87,6 +123,7 @@ export function CanvasClipPanel({
 }: CanvasClipPanelProps) {
   const panelRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLDivElement>(null)
+  const [wmCameraTick, setWmCameraTick] = useState(0)
   const generatedViewportId = useMemo(() => `clip-panel-${Math.random().toString(36).slice(2, 9)}`, [])
   const viewportId = externalViewportId ?? generatedViewportId
 
@@ -123,19 +160,32 @@ export function CanvasClipPanel({
         e.stopPropagation()
         e.stopImmediatePropagation()
         const z = registered.camera.z || 1
-        mainEditor.updateViewport(nestedViewportId, {
-          camera: {
-            ...registered.camera,
-            x: registered.camera.x - e.deltaX / z,
-            y: registered.camera.y - e.deltaY / z,
-          },
-        })
+        const nextCamera = {
+          ...registered.camera,
+          x: registered.camera.x - e.deltaX / z,
+          y: registered.camera.y - e.deltaY / z,
+        }
+        const nestedSurface = wmSurfaceRegistry.get(nestedViewportId)
+        if (nestedSurface) nestedSurface.setCamera(nextCamera)
       }
     }
 
     panel.addEventListener('wheel', onWheelCapture, { capture: true, passive: false })
     return () => panel.removeEventListener('wheel', onWheelCapture, { capture: true })
   }, [fullViewport, lockCamera, mainEditor, readOnly])
+
+  useEffect(() => {
+    if (!wmSurface) return
+    const setCamera = (camera: { x: number; y: number; z: number }) => {
+      setSurfaceCamera(wmSurface, camera)
+      setWmCameraTick(t => t + 1)
+    }
+    wmSurfaceRegistry.set(viewportId, { surface: wmSurface, setCamera })
+    return () => {
+      const registered = wmSurfaceRegistry.get(viewportId)
+      if (registered?.surface === wmSurface) wmSurfaceRegistry.delete(viewportId)
+    }
+  }, [viewportId, wmSurface])
 
   // Expose the main editor to consumers via onEditorMount.
   // With the fork viewport there is no separate overlay editor — consumers
@@ -145,16 +195,16 @@ export function CanvasClipPanel({
     return () => { onEditorMount?.(null) }
   }, [mainEditor, onEditorMount])
 
-  // Compute camera from bounds or use override. Deduplicate by value: when
-  // FleetHUD re-renders (e.g. on fleetBounds recalc) it creates a new
-  // overlayCam object with the same x/y/z. Without deduplication, TldrawViewport
-  // receives a new camera prop reference, re-registers the viewport, and
-  // useIsInViewport's useValue recomputes — which can briefly flip isInViewport
-  // false, unmounting FleetChatInner/FleetAgentsInner (the remount bug, 2026-06-22).
+  // Compute camera from bounds or use WM surface. Deduplicate by value: when
+  // FleetHUD re-renders (e.g. on fleetBounds recalc) the source produces a new
+  // camera object with the same x/y/z. Without dedup, TldrawViewport receives a
+  // new camera prop reference, re-registers the viewport, and useIsInViewport's
+  // useValue recomputes — which can briefly flip isInViewport false, unmounting
+  // FleetChatInner/FleetAgentsInner (the remount bug, 2026-06-22, commit 1517e737).
   const stableCameraRef = useRef<{ x: number; y: number; z: number } | null>(null)
   const camera = useMemo(() => {
     const next = (() => {
-      if (cameraOverride) return cameraOverride
+      if (wmSurface) return wmSurfaceCamera(wmSurface, fullViewport)
       if (!bounds) return { x: 0, y: 0, z: 1 }
       return createCanvasClipPanelPlan({
         bounds, panelWidth, viewportHeight: window.innerHeight,
@@ -166,7 +216,45 @@ export function CanvasClipPanel({
     if (prev && prev.x === next.x && prev.y === next.y && prev.z === next.z) return prev
     stableCameraRef.current = next
     return next
-  }, [bounds, panelWidth, maxHeightFraction, lockCamera, cameraOverride])
+  }, [bounds, panelWidth, maxHeightFraction, lockCamera, wmSurface, wmCameraTick, fullViewport])
+
+  useEffect(() => {
+    if (!wmSurface) return
+    const frameLayerId = viewportFrameLayerId(viewportId as TLViewportId)
+    const coordinateLayerId = viewportCoordinateLayerId(viewportId as TLViewportId)
+    const readFrame = () => {
+      const currentRect = panelRef.current?.getBoundingClientRect()
+      return {
+        x: fullViewport ? 0 : currentRect?.left ?? 0,
+        y: fullViewport ? 0 : currentRect?.top ?? 0,
+        scale: 1,
+      }
+    }
+    ensureLayer(wmSurface.wm, frameLayerId, {
+      parent: wmSurface.wm.rootLayerId,
+      policy: { x: 'pin', y: 'pin', zoom: 'lock' },
+      transform: readFrame(),
+    })
+    ensureLayer(wmSurface.wm, coordinateLayerId, {
+      parent: frameLayerId,
+      policy: { x: 'pin', y: 'pin', zoom: 'lock' },
+      transform: cameraToCoordinateTransform(camera),
+      camera: { x: 0, y: 0, z: 1 },
+    })
+    const registration = {
+      viewportId: viewportId as TLViewportId,
+      wm: wmSurface.wm,
+      frameLayerId,
+      coordinateLayerId,
+      surfaceLayerId: wmSurface.layerId,
+      readFrame,
+    }
+    registerViewportLayer(mainEditor, registration)
+    return () => {
+      unregisterViewportLayer(mainEditor, viewportId as TLViewportId, registration)
+      removeLayers(wmSurface.wm, [coordinateLayerId, frameLayerId])
+    }
+  }, [mainEditor, wmSurface, viewportId, fullViewport, camera.x, camera.y, camera.z])
 
   // Panel height: at least 5 lines, at most maxHeightFraction of viewport
   const canvasHeight = useMemo(() => {
@@ -177,7 +265,7 @@ export function CanvasClipPanel({
     return Math.max(minH, Math.min(contentH, window.innerHeight * maxHeightFraction))
   }, [bounds, panelWidth, maxHeightFraction])
 
-  if (!bounds && !cameraOverride) return null
+  if (!bounds && !wmSurface) return null
 
   // Shape predicate: filter shapes based on mode
   const shapePredicate = useMemo(() => {

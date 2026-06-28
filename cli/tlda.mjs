@@ -30,7 +30,7 @@ import {
 } from '../shared/config.mjs'
 import { tldaFetch } from '../shared/http-client.mjs'
 import { DEV_COMMANDS } from './lib/dev-commands.mjs'
-import { getFunnelUrl, findTailscaleIPv4, selectDocShareBase, viewerLoginUrl } from './lib/share-url.mjs'
+import { getFunnelUrl, findTailscaleIPv4, selectDevShareBase, selectDocShareBase, viewerLoginUrl } from './lib/share-url.mjs'
 import { scanMarkdownDeps } from '../shared/markdown-deps.mjs'
 import { cmdLogs } from './lib/unified-logs.mjs'
 import { SPAWN_POLICY_OPTIONS, resolveSpawnPolicyOption } from '../server/lib/spawn-policy.mjs'
@@ -65,6 +65,20 @@ let _nounUsed = null
 const args = process.argv.slice(2)
 const command = args[0]
 
+// Global `--config <name>`: select an alternate complete config (= an alternate
+// server, the whole database+store pair) for THIS run only, WITHOUT editing the
+// shared "defaultConfig". This is THE supported way to test against another
+// server — editing defaultConfig is what caused the 6/27 split, where a leftover
+// pointed every spawned agent at the wrong fleet. Set before any config
+// resolution (getServerUrl/getRwToken/resolveConfig all read TLDA_CONFIG), and it
+// flows into a spawned daemon via env inheritance (see ensureFleetDaemonRunning).
+{
+  const i = args.indexOf('--config')
+  if (i !== -1 && args[i + 1] && !args[i + 1].startsWith('--')) {
+    process.env.TLDA_CONFIG = args[i + 1]
+  }
+}
+
 // Noun-only: a command lives under its noun, not flat. No back-compat aliases —
 // reject the bare form and point at the noun. (Docs/callers use the noun forms.)
 {
@@ -86,7 +100,7 @@ const COMMAND_HELP = {
   watch:   'tlda daemon [start|stop|status|log|run]\n\n  Control the per-machine fleet-daemon (bin/fleet-daemon.mjs).\n  The daemon watches Claude Code session JSONLs and project source\n  dirs locally, pushing events to the tlda server over WebSocket.',
   'watch-all': 'tlda daemon [start|stop|status|log|run]\n\n  Alias for `tlda daemon start/stop/status/log/run` — runs the\n  per-machine fleet-daemon (bin/fleet-daemon.mjs), which watches\n  every project source dir AND every Claude Code session JSONL\n  on this machine and pushes events to the tlda server over WebSocket.',
   open:    'tlda doc open [name]\n\n  Open the viewer in the default browser (RW token = presenter privilege).',
-  share:   'tlda doc share [name]\n\n  Print a viewer URL with the read-only token.\n  Recipients can annotate but cannot present.',
+  share:   'tlda doc share [name|.]\n\n  Print a reachable viewer URL with the read-only token.\n    (no arg)  share the index page (root /)\n    .         share the project inferred from the current directory\n    <name>    share that specific doc\n  Uses the configured remote server when active, otherwise Funnel/Tailscale/LAN.\n  Does not print localhost as a share URL for users on another machine.\n  Recipients can annotate but cannot present.',
   status:  'tlda doc status [name]\n\n  Show build status for a project.',
   errors:  'tlda doc errors [name] [--wait]\n\n  Extract LaTeX errors and warnings from the last build log.\n  With --wait (-w), blocks until the current build finishes.',
   build:   'tlda build [name]\n\n  Trigger a rebuild without pushing files.\n\n  NOTE: Prefer the watcher pipeline. This command bypasses change\n  detection and should only be used for debugging.',
@@ -102,7 +116,7 @@ const VALUE_FLAGS = new Set([
   'server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format',
   'session', 'target', 'timeout', 'id', 'book', 'worktree', 'port', 'browser',
   'model', 'cwd', 'effort', 'mode', 'kind', 'spawn-capability', 'capability',
-  'to', 'limit', 'from', 'poll',
+  'to', 'limit', 'from', 'poll', 'config',
 ])
 
 function getFlag(name, defaultVal = null) {
@@ -1007,8 +1021,23 @@ async function cmdOpen() {
 }
 
 async function cmdShare() {
-  const name = getPositional(0) || await inferProjectName()
-  if (!name) { console.error('Usage: tlda doc share [name]'); process.exit(1) }
+  // Three shapes (Skip-confirmed):
+  //   (no arg) → index page (root `/`, docName=null)
+  //   `.`      → the project inferred from the cwd; error if none found
+  //   <name>   → that specific doc
+  const arg = getPositional(0)
+  let name
+  if (arg === undefined) {
+    name = null
+  } else if (arg === '.') {
+    name = await inferProjectName()
+    if (!name) {
+      console.error('No project found for the current directory. Run `tlda doc share <name>` or `tlda doc share` for the index page.')
+      process.exit(1)
+    }
+  } else {
+    name = arg
+  }
 
   const config = loadConfig()
   const serverUrl = getServer()
@@ -1032,12 +1061,14 @@ async function cmdShare() {
     port,
     funnelUrl: getFunnelUrl(),
     tailscaleIp: findTailscaleIPv4(),
+    lanIp: findLanIPv4(),
     hasTls,
   })
   const url = viewerLoginUrl(sel.base, name, readToken)
   const unavailable = sel.shareable === false
   console.log(`${bold(sel.label)}${unavailable ? ` ${dim('(not reachable from other devices)')}` : ''}`)
   console.log(`  ${cyan(url)}`)
+  if (sel.note) console.log(`  ${dim(sel.note)}`)
   console.log()
   if (!unavailable) {
     await printQr(url)
@@ -1659,10 +1690,12 @@ function padRight(value, width) {
 async function listFleetAgents() {
   if (hasFlag('local')) return listLocalAgents()
   const limit = Number(getFlag('limit', '200')) || 200
-  const data = await api('GET', `/api/fleet-table?limit=${encodeURIComponent(String(limit))}`)
+  const data = await api('GET', `/api/fleet-roster-truth?limit=${encodeURIComponent(String(limit))}`)
   const agents = Array.isArray(data.agents) ? data.agents : []
   const totals = data.totals || { awake: 0, hibernating: 0, dead: 0, total: agents.length }
-  console.log(`Fleet agents: ${totals.awake || 0} awake · ${totals.hibernating || 0} hibernating · ${totals.dead || 0} dead · ${totals.total || 0} total`)
+  const panes = data.panes || { fleet: 0, stale: 0, registry_without_pane: 0 }
+  console.log(`Fleet registry: ${totals.awake || 0} awake · ${totals.hibernating || 0} hibernating · ${totals.dead || 0} dead · ${totals.total || 0} total`)
+  console.log(`Tmux panes: ${panes.fleet || 0} fleet · ${panes.stale || 0} stale · ${panes.registry_without_pane || 0} registry-without-pane`)
   if (data.matched > agents.length) {
     console.log(dim(`Showing ${agents.length}/${data.matched}; use --limit ${data.matched} for the full table.`))
   }
@@ -1672,16 +1705,31 @@ async function listFleetAgents() {
   }
 
   const groups = new Map()
+  for (const m of data.machines || []) {
+    if (!groups.has(m.machine_id)) groups.set(m.machine_id, { rows: [], truth: m })
+  }
   for (const a of agents) {
     const machine = a.machine_id || 'unassigned'
-    if (!groups.has(machine)) groups.set(machine, [])
-    groups.get(machine).push(a)
+    if (!groups.has(machine)) groups.set(machine, { rows: [], truth: null })
+    groups.get(machine).rows.push(a)
   }
   const statusRank = { awake: 0, thinking: 0, compacting: 0, hibernating: 1, dead: 2 }
   const sortedGroups = [...groups.entries()].sort(([a], [b]) => a.localeCompare(b))
-  for (const [machine, rows] of sortedGroups) {
+  for (const [machine, group] of sortedGroups) {
+    const rows = group.rows
     rows.sort((a, b) => (statusRank[a.status] ?? 3) - (statusRank[b.status] ?? 3) || (a.name || a.id).localeCompare(b.name || b.id))
-    console.log(`\n${machine} (${rows.length})`)
+    const truth = group.truth
+    const suffix = truth
+      ? ` — ${truth.registry.awake} awake, ${truth.registry.hibernating} hibernating, ${truth.registry.dead} dead; ${truth.panes.fleet} panes, ${truth.panes.stale} stale`
+      : ''
+    console.log(`\n${machine} (${rows.length})${suffix}`)
+    if (truth?.registry_without_pane) {
+      console.log(dim(`  ${truth.registry_without_pane} registry rows have no tmux pane on this connected daemon.`))
+    }
+    if (truth?.stale_panes?.length) {
+      const names = truth.stale_panes.slice(0, 6).map(p => p.tmux_session.replace(/^fleet-/, '')).join(', ')
+      console.log(dim(`  stale panes: ${names}${truth.stale_panes.length > 6 ? ', …' : ''}`))
+    }
     console.log(`  ${padRight('status', 12)} ${padRight('agent', 24)} ${padRight('session', 28)} ${padRight('seen', 8)} cwd`)
     for (const a of rows) {
       const status = a.status || 'unknown'
@@ -3078,8 +3126,14 @@ async function cmdDevUrl() {
   const portArg = getFlag('port')
   const port = portArg ? parseInt(portArg) : 5180
   const token = getToken()
-  const scheme = hasTls ? 'https' : 'http'
-  const base = `${scheme}://localhost:${port}/`
+  const scheme = 'http'
+  const selected = selectDevShareBase({ scheme, port, tailscaleIp: findTailscaleIPv4(), lanIp: findLanIPv4() })
+  if (!selected.shareable) {
+    console.error(`dev URL unavailable: ${selected.reason}.`)
+    console.error('Not printing localhost; it is broken for users on another machine.')
+    process.exit(1)
+  }
+  const base = `${selected.base}/`
   console.log(token ? `${base}?token=${token}` : base)
 }
 

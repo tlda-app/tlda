@@ -9,7 +9,7 @@ import { resolveConfig } from './shared/config.mjs'
 const tlsDir = join(homedir(), '.config/tlda')
 const tlsCert = join(tlsDir, 'localhost+2.pem')
 const tlsKey  = join(tlsDir, 'localhost+2-key.pem')
-const hasTls = existsSync(tlsCert) && existsSync(tlsKey)
+const hasTls = process.env.TLDA_VITE_HTTP !== '1' && existsSync(tlsCert) && existsSync(tlsKey)
 const tldrawForkPackages = resolve('./tldraw-fork/packages')
 const hasTldrawForkSources = existsSync(resolve(tldrawForkPackages, 'tldraw/src/index.ts'))
 
