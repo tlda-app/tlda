@@ -2082,6 +2082,21 @@ body.phone-mode .phone-hl-btn {
   opacity: 0.5;
 }
 
+body.touch-toc-mode:not(.phone-mode) .phone-hl-btn,
+body.touch-toc-mode:not(.phone-mode) .voice-note-btn,
+body.touch-toc-mode:not(.phone-mode) .fleet-icon-pill-badge {
+  width: 44px;
+  height: 44px;
+}
+
+body.touch-toc-mode:not(.phone-mode) .voice-note-btn {
+  bottom: calc(76px + env(safe-area-inset-bottom));
+}
+
+body.touch-toc-mode:not(.phone-mode) .fleet-icon-pill-container {
+  bottom: calc(128px + env(safe-area-inset-bottom));
+}
+
 /* Show selected color as subtle ring when inactive */
 /* Inactive button + tool slots (eraser, select, draw): ring style */
 .phone-hl-btn,
