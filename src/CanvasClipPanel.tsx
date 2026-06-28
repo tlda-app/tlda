@@ -11,7 +11,7 @@
  * This replaces the old copy-store approach (separate editor + bidirectional sync).
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { TldrawViewport, stopEventPropagation } from 'tldraw'
+import { TldrawViewport, Vec, stopEventPropagation } from 'tldraw'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor, TLShape, TLViewportId } from 'tldraw'
 import { createCanvasClipPanelPlan, shouldRenderLockedFleetViewportShape } from './wm/canvas-clip-panel'
 import type { WMCore } from './wm/wm-core'
@@ -81,6 +81,25 @@ function setSurfaceCamera(surface: CanvasClipWMSurface, camera: { x: number; y: 
     return
   }
   surface.wm.setCamera(surface.layerId, camera)
+}
+
+function isEditableWheelTarget(target: Element) {
+  return !!target.closest('input, textarea, select, button, a, [contenteditable="true"], [role="button"]')
+}
+
+function dispatchMainCanvasWheel(mainEditor: Editor, e: WheelEvent) {
+  mainEditor.focus({ focusContainer: false })
+  mainEditor.dispatch({
+    type: 'wheel',
+    name: 'wheel',
+    delta: new Vec(-e.deltaX, -e.deltaY, 0),
+    point: new Vec(e.clientX, e.clientY),
+    shiftKey: e.shiftKey,
+    altKey: e.altKey,
+    ctrlKey: e.metaKey || e.ctrlKey,
+    metaKey: e.metaKey,
+    accelKey: e.metaKey || e.ctrlKey,
+  })
 }
 
 export function syncCanvasClipPanelViewportCamera(
@@ -159,8 +178,17 @@ export function CanvasClipPanel({
 
       const chat = target.closest('.fleet-chat-shape') as HTMLElement | null
       if (chat) {
-        const log = chat.querySelector('.fleet-chat-log') as HTMLElement | null
-        if (!log || log.scrollHeight <= log.clientHeight) return
+        const log = target.closest('.fleet-chat-log') as HTMLElement | null
+        if (!log) {
+          if (Math.abs(e.deltaX) > Math.abs(e.deltaY) && !isEditableWheelTarget(target)) {
+            e.preventDefault()
+            e.stopPropagation()
+            e.stopImmediatePropagation()
+            dispatchMainCanvasWheel(mainEditor, e)
+          }
+          return
+        }
+        if (log.scrollHeight <= log.clientHeight) return
         e.preventDefault()
         e.stopPropagation()
         e.stopImmediatePropagation()

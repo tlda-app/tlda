@@ -1,13 +1,52 @@
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, openSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
+import http from 'node:http'
+import https from 'node:https'
 
 const DEFAULT_INTERVAL_MS = 10_000
 const FAST_DEATH_MS = 30_000
 const MAX_RAPID_RESPAWNS = 3
 const BACKOFF_MS = 5 * 60_000
 const SPAWN_LOCKOUT_MS = 3000
+const TODD_HEARTBEAT_TIMEOUT_MS = 3 * 60_000
+const BOT_LEASE_TTL_MS = 45_000
+
+function botHeartbeatTimeoutMs(spec, env) {
+  const configured = Number(spec?.heartbeat_timeout_ms ?? spec?.heartbeatTimeoutMs ?? env.TLDA_BOT_HEARTBEAT_TIMEOUT_MS)
+  if (Number.isFinite(configured) && configured > 0) return configured
+  return spec?.name === 'todd' ? TODD_HEARTBEAT_TIMEOUT_MS : 0
+}
+
+function requestJson(baseUrl, path, body, timeoutMs = 5000, token = null) {
+  if (!baseUrl) return Promise.resolve(null)
+  const url = `${baseUrl}${path}`
+  const mod = url.startsWith('https') ? https : http
+  const payload = JSON.stringify(body || {})
+  const headers = { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
+  if (token) headers.Authorization = `Bearer ${token}`
+  return new Promise((resolve) => {
+    let done = false
+    const finish = (v) => { if (!done) { done = true; resolve(v) } }
+    const req = mod.request(url, {
+      method: 'POST',
+      headers,
+    }, res => {
+      let buf = ''
+      res.on('data', c => { buf += c })
+      res.on('end', () => {
+        let json = null
+        try { json = buf ? JSON.parse(buf) : {} } catch { json = { raw: buf } }
+        finish({ status: res.statusCode || 0, json })
+      })
+    })
+    req.setTimeout(timeoutMs, () => { req.destroy(); finish({ status: 0, json: { error: 'bot lease request timed out' } }) })
+    req.on('error', e => finish({ status: 0, json: { error: e.message } }))
+    req.write(payload)
+    req.end()
+  })
+}
 
 export function botBelongsToMachine(spec, machineId) {
   if (!spec?.name || !spec.script) return false
@@ -35,6 +74,9 @@ export function createManagedBotSupervisor({
   configDir = join(homedir(), '.config', 'tlda'),
   env = process.env,
   nodePath = process.execPath,
+  fleetServerUrl = null,
+  authToken = env.TLDA_TOKEN || env.TLDA_TOKEN_RW || null,
+  installPath = process.cwd(),
   log = console,
   spawnImpl = spawn,
   timers = { setTimeout, setInterval },
@@ -55,10 +97,60 @@ export function createManagedBotSupervisor({
     return st
   }
 
-  function ensureOne(spec) {
+  async function claimBotLease(spec, scriptPath) {
+    if (!fleetServerUrl) return true
+    const owner = `${machineId}:${scriptPath}`
+    const res = await requestJson(fleetServerUrl, '/api/fleet/bot-lease/claim', {
+      name: spec.name,
+      machine_id: machineId,
+      owner,
+      install_path: installPath,
+      script: scriptPath,
+      ttl_ms: Number(spec.lease_ttl_ms || spec.leaseTtlMs || BOT_LEASE_TTL_MS),
+    }, 5000, authToken)
+    if (!res || (res.status >= 200 && res.status < 300 && res.json?.ok !== false)) return true
+    if (res.status === 409) {
+      log.warn?.(`[bot-supervisor:${spec.name}] not spawning; fleet lease held by ${res.json?.lease?.owner || 'another supervisor'}`)
+      return false
+    }
+    log.warn?.(`[bot-supervisor:${spec.name}] lease check failed (${res.json?.error || res.status}); refusing to spawn duplicate-prone bot`)
+    return false
+  }
+
+  function pidIsAlive(pid) {
+    if (!(pid > 0)) return false
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch (e) {
+      return e?.code === 'EPERM'
+    }
+  }
+
+  function heartbeatFresh(name, heartbeatFile, timeoutMs, t) {
+    if (!timeoutMs) return true
+    try {
+      const st = statSync(heartbeatFile)
+      return t - st.mtimeMs <= timeoutMs
+    } catch {
+      log.warn?.(`[bot-supervisor:${name}] heartbeat missing; recycling live pid`)
+      return false
+    }
+  }
+
+  function recycleStalePid(name, pid, pidFile, heartbeatFile, timeoutMs, t) {
+    if (heartbeatFresh(name, heartbeatFile, timeoutMs, t)) return false
+    log.warn?.(`[bot-supervisor:${name}] heartbeat stale >${Math.round(timeoutMs / 1000)}s; recycling pid ${pid}`)
+    try { process.kill(pid, 'SIGTERM') } catch {}
+    try { unlinkSync(pidFile) } catch {}
+    return true
+  }
+
+  async function ensureOne(spec) {
     const name = spec.name
     const scriptPath = resolveScript(spec.script)
     const pidFile = join(configDir, `${name}.pid`)
+    const heartbeatFile = join(configDir, `${name}.heartbeat`)
     const logFile = join(configDir, `${name}.log`)
     const st = stateFor(name)
     if (st.spawnInFlight) return false
@@ -68,13 +160,9 @@ export function createManagedBotSupervisor({
     if (existsSync(pidFile)) {
       try {
         const pid = parseInt(readFileSync(pidFile, 'utf8').trim(), 10)
-        if (pid > 0) {
-          try {
-            process.kill(pid, 0)
-            return false
-          } catch (e) {
-            if (e?.code === 'EPERM') return false
-          }
+        if (pidIsAlive(pid)) {
+          const timeoutMs = botHeartbeatTimeoutMs(spec, env)
+          if (!recycleStalePid(name, pid, pidFile, heartbeatFile, timeoutMs, t)) return false
         }
       } catch (e) {
         log.warn?.(`[bot-supervisor:${name}] stale pid file: ${e.message}`)
@@ -82,6 +170,7 @@ export function createManagedBotSupervisor({
     }
 
     if (!existsSync(scriptPath)) return false
+    if (!(await claimBotLease(spec, scriptPath))) return false
 
     if (st.lastSpawnAt > 0 && t - st.lastSpawnAt < FAST_DEATH_MS) {
       st.rapidFails++
@@ -112,6 +201,7 @@ export function createManagedBotSupervisor({
           TMUX_PANE: undefined,
           TLDA_BOT_NAME: name,
           TLDA_BOT_PIDFILE: pidFile,
+          TLDA_BOT_HEARTBEAT: heartbeatFile,
         },
       })
       child.unref?.()
@@ -127,16 +217,16 @@ export function createManagedBotSupervisor({
     }
   }
 
-  function ensureAll() {
+  async function ensureAll() {
     for (const spec of specs) {
-      try { ensureOne(spec) } catch (e) { log.error?.(`[bot-supervisor] ${spec?.name || '?'}: ${e.message}`) }
+      try { await ensureOne(spec) } catch (e) { log.error?.(`[bot-supervisor] ${spec?.name || '?'}: ${e.message}`) }
     }
   }
 
   function start({ intervalMs = DEFAULT_INTERVAL_MS } = {}) {
     log.info?.(`[bot-supervisor] daemon-owned on machine_id=${machineId}; watching ${specs.map(b => b.name).join(', ') || '(none)'}`)
     ensureAll()
-    const timer = timers.setInterval(ensureAll, intervalMs)
+    const timer = timers.setInterval(() => { ensureAll() }, intervalMs)
     timer?.unref?.()
     return timer
   }

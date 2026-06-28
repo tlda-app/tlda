@@ -127,12 +127,15 @@ const LOG_FILE = path.join(CONFIG_DIR, 'fleet-daemon.log')
 const DEAD_LETTER_FILE = path.join(CONFIG_DIR, 'daemon-dead-letters.jsonl')
 const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects')
 
-function resolveBotScript(script) {
-  if (script.startsWith('/')) return script
+function repoRoot() {
   const d = path.dirname(fileURLToPath(import.meta.url))
   const m = d.match(/^(.+?)\/\.claude\/worktrees\//)
-  const root = m ? m[1] : path.join(d, '..')
-  return path.join(root, script)
+  return m ? m[1] : path.join(d, '..')
+}
+
+function resolveBotScript(script) {
+  if (script.startsWith('/')) return script
+  return path.join(repoRoot(), script)
 }
 
 // ---------- config / machine identity ----------
@@ -3905,6 +3908,9 @@ createManagedBotSupervisor({
   machineId: MACHINE_ID,
   resolveScript: resolveBotScript,
   configDir: CONFIG_DIR,
+  fleetServerUrl: SERVER,
+  authToken: getRwToken(config),
+  installPath: repoRoot(),
   log,
 }).start()
 startReapers()

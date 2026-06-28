@@ -1400,7 +1400,7 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
           : status === 'thinking' ? 'thinking…'
           : null
         return (
-          <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0', display: 'grid', gridTemplateColumns: 'auto minmax(0, 1fr) auto', alignItems: 'baseline', gap: 6 }}>
+          <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0', display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto minmax(0, 1fr)', alignItems: 'baseline', gap: 6 }}>
             {/* left: agent + status */}
             <span style={{ justifySelf: 'start', minWidth: 0 }}>
               <span className="thinking-text">
@@ -1416,10 +1416,9 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
                 </span>
               )}
             </span>
-            {/* center: suggestion groups. The grid track (minmax(0,1fr)) is the
-                bound — this span fills it and clips/wraps within, so wide
-                suggestions can never crowd the agent-status / context columns. */}
-            <span style={{ display: 'flex', gap: 14, alignItems: 'baseline', flexWrap: 'wrap', justifyContent: 'center', minWidth: 0, overflow: 'hidden' }}>
+            {/* center: suggestion groups. The auto middle column keeps the chip
+                location stable while the left status text changes. */}
+            <span style={{ justifySelf: 'center', display: 'flex', gap: 14, alignItems: 'baseline', flexWrap: 'wrap', justifyContent: 'center', minWidth: 0, overflow: 'hidden' }}>
               {[...groupChips(chips)].map(([gkey, items]) => (
                 <SuggestionGroup key={gkey} chips={items} agentName={ctx.agentLabel(suggestionOwnerId(items[0]))} />
               ))}
@@ -1435,6 +1434,20 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
   )
 }
 
+// The suggestion tooltip can't live inside the chip: the fleet-chat shape is
+// dimmed (opacity < 1) and CSS opacity caps every descendant. It also must not
+// be a portal (breaks TLDraw), so the HUD layer renders this shared store.
+type TipOption = { label: string; text: string }
+type TipData = {
+  left: number; bottom: number; agentName: string
+  vars: Record<string, string>
+  options: TipOption[]
+} | null
+let _tipData: TipData = null
+const _tipSubs = new Set<() => void>()
+function setSuggestionTip(d: TipData) { _tipData = d; _tipSubs.forEach(f => f()) }
+const TIP_VARS = ['--surface', '--border', '--shadow-lg', '--text', '--text-bright', '--accent', '--text-dim']
+
 // groupKey: suggestions sharing a `group` tag are one disjunctive group; an
 // untagged suggestion is its own singleton group (keyed by its id).
 function groupKeyOf(s: Suggestion): string { return `${s.messageId || ''}::${s.group || String(s.id)}` }
@@ -1447,6 +1460,42 @@ function groupChips(chips: Suggestion[]): Map<string, Suggestion[]> {
     m.get(k)!.push(c)
   }
   return m
+}
+
+export function SuggestionTip() {
+  const tip = useSyncExternalStore(
+    (cb) => { _tipSubs.add(cb); return () => _tipSubs.delete(cb) },
+    () => _tipData,
+  )
+  useEffect(() => {
+    if (!tip) return
+    const hide = () => setSuggestionTip(null)
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') hide() }
+    window.addEventListener('pointerdown', hide, true)
+    window.addEventListener('wheel', hide, true)
+    window.addEventListener('scroll', hide, true)
+    window.addEventListener('keydown', onKey, true)
+    return () => {
+      window.removeEventListener('pointerdown', hide, true)
+      window.removeEventListener('wheel', hide, true)
+      window.removeEventListener('scroll', hide, true)
+      window.removeEventListener('keydown', onKey, true)
+    }
+  }, [tip])
+  if (!tip) return null
+  return (
+    <span
+      className="suggestion-chip-tip"
+      style={{ position: 'fixed', left: tip.left, bottom: tip.bottom, ...tip.vars } as React.CSSProperties}
+    >
+      {tip.options.map((o, i) => (
+        <span key={i} className="suggestion-tip-trigger">
+          <b>{o.label}</b>{o.text ? <> — {o.text}</> : null}
+        </span>
+      ))}
+      <span className="suggestion-tip-target">→ {tip.agentName} · click an option to pick it</span>
+    </span>
+  )
 }
 
 function SuggestionRow({ chips, ctx }: { chips: Suggestion[], ctx: any }) {
@@ -1463,45 +1512,44 @@ function SuggestionRow({ chips, ctx }: { chips: Suggestion[], ctx: any }) {
 // `|`-separated (each clickable to pick → sends its command + clears the group).
 // One shared hover on the whole group → a single tooltip listing the options.
 function SuggestionGroup({ chips, agentName }: { chips: Suggestion[], agentName: string }) {
+  const ref = useRef<HTMLSpanElement>(null)
   const fromAgent = suggestionOwnerId(chips[0])
   const key = groupKeyOf(chips[0])
-  const details = chips
-    .map(c => c.text ? `${c.label}: ${c.text}` : c.label)
-    .join('\n')
+  const showTip = () => {
+    const el = ref.current
+    if (!el) return
+    const r = el.getBoundingClientRect()
+    const cs = getComputedStyle(el)
+    const vars: Record<string, string> = {}
+    for (const v of TIP_VARS) vars[v] = cs.getPropertyValue(v)
+    setSuggestionTip({
+      left: r.left, bottom: window.innerHeight - r.top + 6, agentName, vars,
+      options: chips.map(c => ({ label: c.label, text: c.text || '' })),
+    })
+  }
+  const hideTip = () => setSuggestionTip(null)
   const pick = (c: Suggestion) => (e: React.SyntheticEvent) => {
     stopEventPropagation(e as any)
     if (c.command) sendMessage(c.targetId || c.from || '', c.command)
+    hideTip()
     clearGroup(fromAgent, key)
   }
   const dismiss = (e: React.SyntheticEvent) => {
     stopEventPropagation(e as any)
+    hideTip()
     clearGroup(fromAgent, key)
-  }
-  const stopNotePointer = (e: React.SyntheticEvent) => {
-    stopEventPropagation(e)
   }
   return (
     <span
       className="suggestion-group"
+      ref={ref}
       onPointerDown={stopEventPropagation}
+      onMouseEnter={showTip}
+      onMouseLeave={hideTip}
     >
       {/* onPointerUp not onClick: these are text <span>s, dead on touch (a tap
           synthesizes no click). pointerup fires for mouse + finger + stylus. */}
       <span className="suggestion-chip-x" title="Dismiss" onPointerUp={dismiss}>✕</span>
-      {details && (
-        <span
-          className="suggestion-note-icon"
-          title={`${details}\n→ ${agentName}`}
-          aria-label={`Suggestion details for ${agentName}`}
-          onPointerUp={stopNotePointer}
-        >
-          <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M4 2.5h6l2 2v9H4z" />
-            <path d="M10 2.5v2h2" />
-            <path d="M6 7h4M6 10h4" />
-          </svg>
-        </span>
-      )}
       {chips.map((c, i) => (
         <span key={c.id}>
           {i > 0 ? <span className="suggestion-group-sep"> | </span> : ' '}
@@ -2217,31 +2265,6 @@ function FleetChatInner({ shape }: { shape: any }) {
     return true
   }, [canExpandRenderedHistory, chatMessages.length, renderWindowStartIndex])
 
-  const renderedMessageIds = useMemo(() => {
-    const ids = new Set<string>()
-    for (let i = renderWindowStartIndex; i < chatMessages.length; i++) {
-      const m = chatMessages[i] as { _dbId?: unknown }
-      if (m._dbId != null) ids.add(String(m._dbId))
-    }
-    return ids
-  }, [chatMessages, renderWindowStartIndex])
-
-  const suggestionsByMessage = useMemo(() => {
-    const byMessage = new Map<string, Suggestion[]>()
-    for (const s of suggestionsPending) {
-      if (s.messageId == null) continue
-      const key = String(s.messageId)
-      if (!renderedMessageIds.has(key)) continue
-      if (!byMessage.has(key)) byMessage.set(key, [])
-      byMessage.get(key)!.push(s)
-    }
-    return byMessage
-  }, [suggestionsPending, renderedMessageIds])
-
-  const fallbackSuggestions = useMemo(() => (
-    suggestionsPending.filter(s => s.messageId == null || !renderedMessageIds.has(String(s.messageId)))
-  ), [suggestionsPending, renderedMessageIds])
-
   // Build per-item raw HTML array — each item is an independent renderable unit.
   // This replaces the old joined renderedHtml string and enables virtualization.
   // Items tagged _queued render below the thinking indicator; _interrupt items
@@ -2266,18 +2289,6 @@ function FleetChatInner({ shape }: { shape: any }) {
     let chatLineCount = 0
     let buildResultCount = 0
     let specialCount = 0
-    function pushSuggestionRow(messageId: any) {
-      if (messageId == null) return
-      const chips = suggestionsByMessage.get(String(messageId))
-      if (!chips?.length) return
-      for (const [groupKey, groupChipsForMessage] of groupChips(chips)) {
-        items.push({
-          key: `suggest:${messageId}:${groupKey}`,
-          html: '',
-          _suggestions: groupChipsForMessage,
-        })
-      }
-    }
     function flushActivity() {
       if (activityGroup.length === 0) return
       if (!activityGroupHasVisible) {
@@ -2484,7 +2495,6 @@ function FleetChatInner({ shape }: { shape: any }) {
             item._queued = true
           }
           items.push(item)
-          pushSuggestionRow(m._dbId)
         }
       }
     }
@@ -2515,7 +2525,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
     return items
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatMessages, windowedChatMessages, hiddenLookbehindCount, renderWindowStartIndex, renderWindowAnchorStart, renderedMessageLimit, ctx, thinkingAgents, unqueuedAt, viewingVersion, doc, amendsByOrig, amendView, macrosByDoc, preambleMacros, suggestionsByMessage])
+  }, [chatMessages, windowedChatMessages, hiddenLookbehindCount, renderWindowStartIndex, renderWindowAnchorStart, renderedMessageLimit, ctx, thinkingAgents, unqueuedAt, viewingVersion, doc, amendsByOrig, amendView, macrosByDoc, preambleMacros])
 
   // Per-item post-processing: applies chip replacement, URL linkification, and
   // doc-link resolution to a single item's HTML. Called by ChatMessageRow only
@@ -5430,7 +5440,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                     agents={agents}
                     itemCount={rawItems.length}
                     escalationState={escalationState}
-                    suggestions={fallbackSuggestions}
+                    suggestions={suggestionsPending}
                   />
                 </div>
               ) : item?._suggestions ? (

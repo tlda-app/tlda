@@ -2,6 +2,7 @@ export const SPAWN_MACHINE_PREF_KEY = 'spawn_machine_id'
 
 // Spawn routing is identity-based, not device-based:
 // - fresh spawn: caller's configured fleet_prefs.spawn_machine_id
+// - anchored fresh spawn: anchor agent's known machine_id
 // - respawn/refresh: target agent's known machine_id
 // Defaults are deliberately narrow and visible. A non-human agent defaults to
 // its own machine; any identity may use the sole connected daemon as bootstrap
@@ -58,6 +59,13 @@ export function resolveSpawnMachine({ caller, targetAgent, fresh, respawn, refre
   }
   if (respawn || refresh) {
     throw new Error('respawn/refresh target agent is required to route spawn')
+  }
+
+  if (fresh && targetAgent) {
+    return {
+      ...requireConnected(targetAgent.machine_id, daemonConnections, `route anchor ${targetAgent.id || targetAgent.friendly_name || 'agent'}`, onDaemonMissing),
+      source: 'route-agent-machine',
+    }
   }
 
   if (!fresh) {

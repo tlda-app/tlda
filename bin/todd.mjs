@@ -44,6 +44,7 @@ const AGENT_ID = 'fleet:' + BOT_KEY
 const AGENT_NAME = BOT_KEY
 const VERB = BOT_KEY  // what Skip says to address this bot, e.g. "todd cancel"
 const PID_FILE = process.env.TLDA_BOT_PIDFILE || path.join(CONFIG_DIR, `${BOT_KEY}.pid`)
+const HEARTBEAT_FILE = process.env.TLDA_BOT_HEARTBEAT || path.join(CONFIG_DIR, `${BOT_KEY}.heartbeat`)
 const SERVER = getServerUrl()
 const WS_URL = SERVER.replace(/^http/, 'ws') + '/ws/fleet'
 const OWNER_ID = 'fleet:skip'
@@ -66,6 +67,9 @@ const PREF_BOT_SELF_CHECK_ENABLED_KEY = 'bot-self-check-enabled'
 const PREF_BOT_SELF_CHECK_COUNTDOWN_KEY = 'bot-self-check-countdown-sec'
 const taskKickLastSent = new Map()
 const looseEndLastSent = new Map()
+let lastFleetEventId = 0
+const seenFleetEventIds = new Set()
+let fleetCursorInitialized = false
 // lastRealActivityMs[agentId] = timestamp of last meaningful tool call.
 // Meaningful = any tool call that is NOT a chat aimed at a bot.
 const lastRealActivityMs = new Map()
@@ -194,6 +198,21 @@ function logDecision(agentId, action, trigger, stateSnapshot, textSnippet) {
     fs.appendFileSync(DECISIONS_LOG, JSON.stringify(record) + '\n')
   } catch (e) {
     console.error(`[todd] log write failed: ${e.message}`)
+  }
+}
+
+function writeHeartbeat(reason) {
+  const line = JSON.stringify({
+    ts: new Date().toISOString(),
+    pid: process.pid,
+    bot: BOT_KEY,
+    reason,
+    lastFleetEventId,
+  }) + '\n'
+  try {
+    fs.appendFileSync(HEARTBEAT_FILE, line)
+  } catch (e) {
+    console.error(`[todd] heartbeat write failed: ${e.message}`)
   }
 }
 
@@ -1399,6 +1418,8 @@ const managerEscalationCooldowns = new Map()
 // Matches imperative handoff commands anywhere in a message (not just at start).
 // Skip often says "I'm done with you let's hand this off" — the phrase appears mid-sentence.
 const HANDOFF_PATTERN = /(?:(?:I\s+(?:want|wanna|need)\s+to\s+)?hand\s+(?:this\s+)?off|do\s+(?:a\s+)?handoff|direct\s+handoff|let'?s\s+(?:(?:do\s+(?:a\s+)?)?handoff|hand\s+(?:this\s+)?off)|time\s+(?:for\s+(?:a\s+)?)?handoff)\b/i
+const ROTATE_PATTERN = /\brotate\s+(?:this\s+(?:guy|agent|one)|him|her|them|it|the\s+agent)?\s*out\b|\brotate\s+out\b/i
+const ROTATE_NAMED_PATTERN = /\brotate\s+(.+?)\s+out\b/i
 const handoffCooldowns = new Map()
 const HANDOFF_COOLDOWN_MS = 120_000
 
@@ -1600,6 +1621,7 @@ function activeTimerAgentSet(events = [], agents = [], now = Date.now()) {
 }
 
 async function taskKickSweep() {
+  writeHeartbeat('task-kick-sweep')
   const [tasksRaw, agentsRaw, timersRaw] = await Promise.all([
     getJson('/api/store/tasks', []),
     getJson('/api/store/agents', []),
@@ -1766,6 +1788,60 @@ async function hasInvokedSkillSince(agentId, skillName, sinceTs) {
 }
 
 // ---- Handoff automation ----
+
+async function handleRotate(agentId, triggerText) {
+  const now = Date.now()
+  const lastHandoff = handoffCooldowns.get(agentId) || 0
+  if (now - lastHandoff < HANDOFF_COOLDOWN_MS) return
+  handoffCooldowns.set(agentId, now)
+
+  dequeueActions(agentId)
+  const agentName = await resolveAgentName(agentId)
+  const agentCwd = await resolveAgentCwd(agentId)
+  const successorName = stripPhase(agentName)
+  console.log(`[todd] rotate triggered for ${agentName} (${agentId}) → ${successorName}`)
+
+  sendChat(OWNER_ID, `Rotating **${agentName}** out and starting a fresh **${successorName}** with no briefing.`)
+  sendChat(agentId, `⚠️ Skip is rotating you out. Stop work; a fresh **${successorName}** is taking over this role.`)
+
+  try {
+    await sendRequest({ type: 'lineage-transition', agent: agentId, phase: 'day' })
+  } catch (e) {
+    sendChat(OWNER_ID, `⚠️ Moving ${agentName} out of the active role failed: ${e.message}`)
+    logDecision(agentId, 'rotate-lineage-failed', 'rotate', { error: e.message }, triggerText)
+    return
+  }
+
+  const spawnResult = await spawnAgent({
+    fresh: true,
+    name: successorName,
+    cwd: agentCwd,
+    routeAgent: agentId,
+  })
+  if (spawnResult?.error || spawnResult?.ok === false) {
+    const error = spawnResult.error || spawnResult.reason || 'unknown spawn failure'
+    sendChat(OWNER_ID, `⚠️ Rotate failed while spawning **${successorName}**: ${error}`)
+    logDecision(agentId, 'rotate-spawn-failed', 'rotate', { successorName, error }, triggerText)
+    return
+  }
+
+  sendChat(OWNER_ID, `Rotate complete. Fresh **${successorName}** is starting on ${agentCwd || 'the same role'}; no briefing was sent.`)
+  logDecision(agentId, 'rotate-fresh-successor', 'rotate', {
+    successorName,
+    routeAgent: agentId,
+    cwd: agentCwd,
+  }, triggerText)
+}
+
+async function resolveRotateTarget(text, chatTargetId) {
+  const m = text.match(ROTATE_NAMED_PATTERN)
+  const raw = m?.[1]?.trim()
+  if (!raw) return chatTargetId && chatTargetId !== AGENT_ID ? chatTargetId : null
+  if (/^(?:(?:this\s+)?(?:guy|agent|one)|him|her|them|it|the\s+agent)$/i.test(raw)) {
+    return chatTargetId && chatTargetId !== AGENT_ID ? chatTargetId : null
+  }
+  return await resolveAgentId(raw)
+}
 
 async function handleHandoff(agentId, triggerText) {
   const now = Date.now()
@@ -2007,15 +2083,18 @@ function connect() {
     console.log(`[todd] connected to ${WS_URL}`)
     reconnectDelay = 500 // back fast next time too
     register()
+    writeHeartbeat('ws-open')
     refreshSelfCheckPrefs().catch(e => console.error('[todd] self-check prefs refresh failed:', e.message))
     refreshSelfCheckRoster().catch(e => console.error('[todd] self-check roster refresh failed:', e.message))
+    catchUpFleetEvents().catch(e => console.error('[todd] event catch-up failed:', e.message))
+    broadcastPendingStatus()
   })
 
   ws.on('message', (raw) => {
     try {
       const msg = JSON.parse(raw.toString())
       if (handleWsReply(msg)) return
-      handleMessage(msg)
+      handleMessage(msg).catch(e => console.error('[todd] handle message failed:', e.message))
     } catch {}
   })
 
@@ -2070,7 +2149,7 @@ function handleWsReply(msg) {
   const { resolve, reject, timer } = _pendingRequests.get(msg.id)
   _pendingRequests.delete(msg.id)
   clearTimeout(timer)
-  if (msg.error) reject(new Error(msg.error))
+  if (msg.error) reject(new Error(typeof msg.error === 'string' ? msg.error : (msg.error.message || JSON.stringify(msg.error))))
   else resolve(msg.result)
   return true
 }
@@ -2106,16 +2185,58 @@ function sendChat(to, text) {
   })
 }
 
-function handleMessage(msg) {
+function noteFleetEvent(data = {}) {
+  const eventId = Number(data.id ?? data.event_id ?? 0)
+  if (!Number.isFinite(eventId) || eventId <= 0) return true
+  if (seenFleetEventIds.has(eventId)) return false
+  seenFleetEventIds.add(eventId)
+  if (seenFleetEventIds.size > 2000) {
+    const drop = seenFleetEventIds.values().next().value
+    seenFleetEventIds.delete(drop)
+  }
+  lastFleetEventId = Math.max(lastFleetEventId, eventId)
+  return true
+}
+
+async function catchUpFleetEvents() {
+  const after = lastFleetEventId
+  const data = await getJson(`/api/store/events?after=${after}&limit=1000`, { events: [] })
+  const events = Array.isArray(data?.events) ? data.events : []
+  if (!events.length) return
+  console.log(`[todd] replaying ${events.length} fleet events after reconnect (after=${after})`)
+  for (const event of events) {
+    await handleMessage({ event: 'fleet-event', data: event })
+  }
+  writeHeartbeat('catch-up')
+}
+
+async function initializeFleetCursor() {
+  if (fleetCursorInitialized) return false
+  const data = await getJson('/api/store/events?after=0&limit=1', null)
+  if (Number.isFinite(Number(data?.lastId))) lastFleetEventId = Number(data.lastId)
+  fleetCursorInitialized = true
+  writeHeartbeat('cursor-init')
+  return true
+}
+
+async function handleMessage(msg) {
   if (msg.event !== 'fleet-event') return
-  const { type, from_id, to_id, text, metadata } = msg.data || {}
-  handleSelfCheckFleetEvent(msg.data || {})
+  if (!noteFleetEvent(msg.data || {})) return
+  writeHeartbeat('fleet-event')
+  const rawData = msg.data || {}
+  const data = {
+    ...rawData,
+    from_id: rawData.from_id ?? rawData.from,
+    to_id: rawData.to_id ?? rawData.to,
+  }
+  const { type, from_id, to_id, text, metadata } = data
+  handleSelfCheckFleetEvent(data)
 
   if (type === 'chat') {
     if (!text) return
 
     // Per-share md versioning → ~/work/md-versions (fire-and-forget, never throws)
-    commitMdShare(msg.data)
+    commitMdShare(data)
 
     // Messages sent directly to Todd from agents: handoff-ready signal or pattern arm registration
     if (to_id === AGENT_ID && from_id && from_id !== OWNER_ID) {
@@ -2191,6 +2312,25 @@ function handleMessage(msg) {
       const mode = MANAGER_MODE_1_PATTERN.test(text) ? 'talk-to-skip' : 'set-them-straight'
       scheduleAction('manager-escalation', 'Escalating to a manager',
         () => handleManagerEscalation(to_id, text, mode).catch(e => console.error('[todd] manager escalation error:', e.message)), to_id)
+      return
+    }
+
+    // Rotate — "todd rotate this guy out" or direct "todd rotate <name> out":
+    // retire stale role-holder and spawn a fresh same-role successor with no
+    // briefing/context packet.
+    const rotateAddressed = from_id === OWNER_ID && (
+      addressedBefore(ROTATE_PATTERN) ||
+      addressedBefore(ROTATE_NAMED_PATTERN) ||
+      (to_id === AGENT_ID && ROTATE_NAMED_PATTERN.test(text))
+    )
+    if (rotateAddressed) {
+      const rotateTarget = await resolveRotateTarget(text, to_id)
+      if (!rotateTarget) {
+        sendChat(OWNER_ID, `Rotate needs a target — say it in the agent's chat or name the agent: \`${VERB} rotate <name> out\`.`)
+        return
+      }
+      scheduleAction('rotate', 'Rotating agent',
+        () => handleRotate(rotateTarget, text).catch(e => console.error('[todd] rotate error:', e.message)), rotateTarget)
       return
     }
 
@@ -2388,6 +2528,7 @@ if (fs.existsSync(PID_FILE)) {
   } catch {} // stale pid — continue
 }
 try { fs.writeFileSync(PID_FILE, String(process.pid)) } catch {}
+writeHeartbeat('startup')
 
 console.log(`[todd] starting (pid ${process.pid}) — watching for frustration signals from ${OWNER_ID}`)
 connect()

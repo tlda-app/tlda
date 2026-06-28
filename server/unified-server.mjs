@@ -868,7 +868,7 @@ async function performSpawnRelay(caller, msg) {
   if (!caller?.id) throw new Error('spawn caller identity is required')
   const {
     name, agent, model, doc, cwd, respawn, fresh, refresh, effort, kind, mode,
-    capability, spawnCapability, session, sessionId, session_id, enroll,
+    capability, spawnCapability, session, sessionId, session_id, enroll, routeAgent,
   } = msg || {}
   const requestedSession = session || sessionId || session_id || null
   const sessionMode = !!requestedSession
@@ -885,6 +885,10 @@ async function performSpawnRelay(caller, msg) {
     // already picked the live holder; pass that choice through, don't re-grep.
     spawnName = existing?.id || agent
     if (refresh) refreshTarget = existing
+  }
+  if (!sessionMode && fresh && routeAgent) {
+    routeTarget = fleetStore?.findAgent(routeAgent) || null
+    if (!routeTarget) throw new Error(`spawn route anchor not found: ${routeAgent}`)
   }
   if (!sessionMode && !spawnName) throw new Error(fresh ? 'fresh spawn requires name' : 'agent name required')
   if (refresh && !refreshTarget) refreshTarget = fleetStore?.findAgent(spawnName)
@@ -1570,6 +1574,32 @@ app.post('/api/fleet/prefs/:key', requireRead, (req, res) => {
   if (!fleetStore) return res.status(503).json({ error: 'fleet store unavailable' })
   fleetStore.setFleetPref(userId, req.params.key, value)
   res.json({ ok: true })
+})
+
+app.post('/api/fleet/bot-lease/claim', requireRead, (req, res) => {
+  if (!fleetStore) return res.status(503).json({ error: 'fleet store unavailable' })
+  const { name, owner, machine_id, install_path, script } = req.body || {}
+  if (!name || typeof name !== 'string') return res.status(400).json({ error: 'missing bot name' })
+  if (!owner || typeof owner !== 'string') return res.status(400).json({ error: 'missing lease owner' })
+  const ttlMs = Math.max(10_000, Math.min(Number(req.body?.ttl_ms) || 45_000, 10 * 60_000))
+  const key = `bot-lease:${name.toLowerCase()}`
+  const now = Date.now()
+  const existing = fleetStore.getFleetPref('fleet:tlda', key)
+  if (existing && existing.expires_at_ms > now && existing.owner !== owner) {
+    return res.status(409).json({ ok: false, error: 'bot lease held', lease: existing })
+  }
+  const lease = {
+    name: name.toLowerCase(),
+    owner,
+    machine_id: machine_id || null,
+    install_path: install_path || null,
+    script: script || null,
+    claimed_at_ms: existing?.owner === owner ? existing.claimed_at_ms : now,
+    renewed_at_ms: now,
+    expires_at_ms: now + ttlMs,
+  }
+  fleetStore.setFleetPref('fleet:tlda', key, lease)
+  res.json({ ok: true, lease })
 })
 
 // ---------- Education enforcement ----------

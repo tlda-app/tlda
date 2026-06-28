@@ -3945,24 +3945,6 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .suggestion-chip-label:hover {
   opacity: 0.85;
 }
-.fleet-chat-shape .suggestion-note-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 12px;
-  height: 12px;
-  margin-left: 2px;
-  margin-right: 1px;
-  color: var(--text-dim);
-  opacity: 0.42;
-  vertical-align: -1px;
-}
-.fleet-chat-shape .suggestion-note-icon:hover {
-  opacity: 0.8;
-}
-.fleet-chat-shape .suggestion-note-icon svg {
-  display: block;
-}
 .fleet-chat-shape .suggestion-group-sep {
   opacity: 0.35;
 }
@@ -3979,6 +3961,43 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 }
 .fleet-chat-shape .suggestion-chip-x:hover {
   opacity: 1;
+}
+
+/* The tooltip is its own object rendered ABOVE the shapes in the HUD layer
+   (<SuggestionTip/> in FleetHUD), NOT nested in the dimmed fleet-chat shape and
+   NOT a portal. So: a global selector (it lives in .fleet-hud-wrap, not
+   .fleet-chat-shape), positioned via inline position:fixed, theme vars passed
+   inline off the chip. Mounted only while hovered → always visible (no opacity
+   transition needed). Card styling only. */
+.suggestion-chip-tip {
+  width: max-content;
+  max-width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px var(--shadow-lg);
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.45;
+  text-align: left;
+  white-space: normal;
+  pointer-events: none;
+  z-index: 8300;
+}
+.suggestion-chip-tip .suggestion-tip-trigger {
+  color: var(--text-bright);
+}
+.suggestion-chip-tip .suggestion-tip-trigger b {
+  color: var(--accent);
+  font-weight: 600;
+}
+.suggestion-chip-tip .suggestion-tip-target {
+  color: var(--text-dim);
+  font-size: 10px;
 }
 
 /* ---- Skill-state hover popover (hover an agent name in chat) ---- */

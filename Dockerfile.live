@@ -93,9 +93,9 @@ COPY scripts/ ./scripts/
 # (Skip 6/19, one implementation); the old raw bin/deepgram-bridge.mjs is gone.
 COPY bin/deepgram-sdk-bridge.mjs ./bin/deepgram-sdk-bridge.mjs
 
-# /api/fleet/models shells out to fleet-spawn.py --list-models so the spawn UI's
-# picker is generated from the same aliases the daemon accepts.
-COPY bin/fleet-spawn.py ./bin/fleet-spawn.py
+# NOTE: fleet-spawn.py removed on this branch (spawn launcher migrated to the node
+# library bin/lib/spawn/). The live server only routes spawns (server/lib/), so the
+# old python file is no longer copied. (chiefo 2026-06-28, unblock deploy.)
 
 # Feelings export: server-side job reads fleet.db chat -> JSONL + copies referenced
 # attachments -> rclone to Skip's Drive. The entrypoint runs it on an interval
@@ -107,6 +107,13 @@ COPY bin/feelings-export.mjs ./bin/feelings-export.mjs
 # (server/lib/build-dispatch.mjs spawns it as a subprocess). Without this file in
 # the image, every build crashes with ERR_MODULE_NOT_FOUND and produces 0 pages.
 COPY bin/build-worker.mjs ./bin/build-worker.mjs
+
+# Spawn model registry: unified-server imports bin/lib/spawn/models.mjs (listModels)
+# as the single source of truth for the spawn UI's model list. The branch migrated
+# spawn into bin/lib/spawn/; without this COPY the server crashes at startup with
+# ERR_MODULE_NOT_FOUND: Cannot find module '/app/bin/lib/spawn/models.mjs'. Copy the
+# whole dir (self-contained ESM). (chiefo 2026-06-28, unblock crashed deploy.)
+COPY bin/lib/spawn/ ./bin/lib/spawn/
 
 # Serve the tldraw SPA from this server too. For the PRIVATE tailnet deployment
 # (server gated behind Tailscale, not the open internet), Skip's tldraw license

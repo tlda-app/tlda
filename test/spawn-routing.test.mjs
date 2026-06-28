@@ -50,6 +50,18 @@ test('respawn routes to target agent machine', () => {
   assert.equal(route.source, 'target-agent-machine')
 })
 
+test('anchored fresh spawn routes to route agent machine without respawn semantics', () => {
+  const route = resolveSpawnMachine({
+    caller: { id: 'fleet:todd', human: true, machine_id: null },
+    targetAgent: { id: 'fleet:stale-worker', machine_id: 'mini' },
+    fresh: true,
+    fleetStore: store(),
+    daemonConnections: daemons('air', 'mini'),
+  })
+  assert.equal(route.machine_id, 'mini')
+  assert.equal(route.source, 'route-agent-machine')
+})
+
 test('missing configured human spawn machine uses sole connected daemon as documented bootstrap default', () => {
   const route = resolveSpawnMachine({
     caller: { id: 'fleet:skip', human: true, machine_id: 'ipad' },

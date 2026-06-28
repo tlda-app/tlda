@@ -2523,9 +2523,10 @@ export async function handleFleetTool(name, args) {
       ));
     }
 
-    if (brokenPaths.length > 0) {
-      return { content: [{ type: 'text', text: `Message NOT sent — ${brokenPaths.length} broken file reference(s):\n${brokenPaths.map(p => `  • ${p}`).join('\n')}\nFix the paths and resend.` }], isError: true };
-    }
+    // We don't bounce a message. Ever. Warn, don't bounce: deliver it and at most
+    // append a warning so the sender can amend in place. (Here, processMessageText
+    // already rewrote the refs it could resolve; any leftover path-looking tokens
+    // just stay as plain text and the message still goes.)
 
     // Auto-attach ref metadata for «...» tokens in the message
     const refAttachments = [];
@@ -2607,6 +2608,12 @@ export async function handleFleetTool(name, args) {
     const brokenFiles = inlineAttachments.filter(a => a.broken).map(a => a.path);
     if (brokenFiles.length) {
       warning += `\n\n⚠ **File(s) not uploaded** (not found or upload failed — removed from message):\n${brokenFiles.map(p => `- ${p}`).join('\n')}`;
+    }
+    // Path-looking tokens that didn't resolve to a real file: the message was
+    // delivered with them left as plain text (warn, don't bounce). If one was
+    // meant to be a shared artifact, re-send it with a real path.
+    if (brokenPaths.length) {
+      warning += `\n\n⚠ **Sent as text — these look like file paths but didn't resolve to a file** (if you meant to share one, resend with a real path):\n${brokenPaths.map(p => `- ${p}`).join('\n')}`;
     }
 
     // Render-VALIDITY: prominent — Skip sees broken output unless the agent
