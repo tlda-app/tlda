@@ -865,18 +865,20 @@ export function LiveRoomAudio({ docName, editor, shapeUtils, tools, licenseKey }
       return
     }
 
-    const id = createFleetShape(editor, 'fleet-video', 24, 72, {
+    let cancelled = false
+    void createFleetShape(editor, 'fleet-video', 24, 72, {
       w: 260,
       h: 172,
       title: 'live video',
       tileKeys,
-    })
-    if (id) {
+    }).then((id) => {
+      if (cancelled || !id) return
       videoShapeIdRef.current = id
       editor.run(() => {
         editor.updateShape({ id: id as any, type: 'fleet-video' as any, isLocked: true })
       }, { history: 'ignore' })
-    }
+    })
+    return () => { cancelled = true }
   }, [deleteVideoShape, editor, videoKeys])
 
   const className = [
