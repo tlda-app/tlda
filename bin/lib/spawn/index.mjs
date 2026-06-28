@@ -102,19 +102,27 @@ async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, mode
 
 async function spawnFresh(params) {
   const { requestedKind, adapter } = params
-  const api = resolveApi()
-  const librarian = new SpawnLibrarian({ registerDeadlineMs: params.registerDeadlineMs || 60_000 })
+  const deps = params._deps || {}
+  const api = (deps.resolveApi || resolveApi)()
+  const librarian = deps.createLibrarian
+    ? deps.createLibrarian({ registerDeadlineMs: params.registerDeadlineMs || 60_000 })
+    : new SpawnLibrarian({ registerDeadlineMs: params.registerDeadlineMs || 60_000 })
   const name = params.name || `agent-${Date.now().toString(36).slice(-4)}`
   const fleetId = params.agentId || params.agent_id || newFleetId()
   const cwd = resolveSpawnCwd(params.cwd)
   let tmuxSession = null
   let model = null
   let shellRegistered = false
+  let serverUp = false
   try {
-    const serverUp = await ensureServer({ api })
-    tmuxSession = await uniqueSessionName(`fleet-${sanitizeSessionName(name)}`, { tmuxSocket: params.tmuxSocket })
+    try {
+      serverUp = await (deps.ensureServer || ensureServer)({ api })
+    } catch {
+      serverUp = false
+    }
+    tmuxSession = await (deps.uniqueSessionName || uniqueSessionName)(`fleet-${sanitizeSessionName(name)}`, { tmuxSocket: params.tmuxSocket })
     model = adapter.resolveModel(params.model)
-    const dnsAlias = await resolveDnsAlias(api)
+    const dnsAlias = await (deps.resolveDnsAlias || resolveDnsAlias)(api)
     const launchPolicy = resolveLaunchPolicy({
       spawnPolicy: params.spawnPolicy,
       requestedCapability: params.requestedCapability,
@@ -127,30 +135,32 @@ async function spawnFresh(params) {
       explicitPolicy: params.explicitPolicy,
     })
     assertNativeTools(launchPolicy, requestedKind)
-    await checkFreshNameAvailable(name, { api, serverUp })
-    await wsRegister({
-      fleetId,
-      name,
-      tmuxSession,
-      cwd,
-      model,
-      effort: params.effort,
-      refresh: true,
-      shell: true,
-      kind: requestedKind,
-      spawnCapability: launchPolicy.spawnPolicy?.capability || params.requestedCapability,
-      metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
-      machineId: params.machineId,
-      api,
-    })
-    shellRegistered = true
-    librarian.observeLiveness({
-      type: 'agent-liveness',
-      agent_id: fleetId,
-      tmux_session: tmuxSession,
-      state: 'spawning',
-      ts: new Date().toISOString(),
-    })
+    if (serverUp) {
+      await (deps.checkFreshNameAvailable || checkFreshNameAvailable)(name, { api, serverUp })
+      await (deps.wsRegister || wsRegister)({
+        fleetId,
+        name,
+        tmuxSession,
+        cwd,
+        model,
+        effort: params.effort,
+        refresh: true,
+        shell: true,
+        kind: requestedKind,
+        spawnCapability: launchPolicy.spawnPolicy?.capability || params.requestedCapability,
+        metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
+        machineId: params.machineId,
+        api,
+      })
+      shellRegistered = true
+      librarian.observeLiveness({
+        type: 'agent-liveness',
+        agent_id: fleetId,
+        tmux_session: tmuxSession,
+        state: 'spawning',
+        ts: new Date().toISOString(),
+      })
+    }
     const { cmd, sendKeys } = await buildCommand({
       requestedKind,
       adapter,
@@ -166,15 +176,18 @@ async function spawnFresh(params) {
       dnsAlias,
       leasePolicy: launchPolicy.leasePolicy,
     })
-    const launched = await spawnTmux(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket })
+    const launched = await (deps.spawnTmux || spawnTmux)(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket })
     if (!launched) {
       librarian.failPending(fleetId, 'launch-failed')
       throw new SpawnError('launch-failed', `tmux session ${tmuxSession} already has a live harness runtime`, { tmuxSession })
     }
     if (requestedKind === 'codex') {
-      await injectCodexPrompt(tmuxSession, codex.kickoffPrompt(name), { tmuxSocket: params.tmuxSocket })
+      await (deps.injectCodexPrompt || injectCodexPrompt)(tmuxSession, codex.kickoffPrompt(name), { tmuxSocket: params.tmuxSocket })
     }
-    const registered = await waitForAwakeRegistration(fleetId, { api, librarian, timeoutMs: params.registerDeadlineMs || 60_000 })
+    if (!serverUp) {
+      return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, registrationDeferred: true }
+    }
+    const registered = await (deps.waitForAwakeRegistration || waitForAwakeRegistration)(fleetId, { api, librarian, timeoutMs: params.registerDeadlineMs || 60_000 })
     if (!registered.ok) {
       throw new SpawnError(registered.reason, `spawn ${fleetId} did not register before deadline`, { fleetId, tmuxSession })
     }
@@ -182,9 +195,9 @@ async function spawnFresh(params) {
   } catch (e) {
     const err = toSpawnError(e, e?.message?.includes('not available') ? 'name-bounced' : 'launch-failed', { fleetId, tmuxSession, model })
     librarian.failPending(fleetId, err.reason || 'launch-failed')
-    if (shellRegistered) {
+    if (serverUp && shellRegistered) {
       try {
-        await markAgentDead(fleetId, { api })
+        await (deps.markAgentDead || markAgentDead)(fleetId, { api })
       } catch (markErr) {
         err.detail = { ...(err.detail || {}), markDeadError: markErr?.message || String(markErr) }
       }

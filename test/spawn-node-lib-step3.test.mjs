@@ -6,6 +6,7 @@ import test from 'node:test'
 import { fenceSettings, wrapSandboxCmd } from '../bin/lib/spawn/fence.mjs'
 import { codexSandboxProjection, resolveLaunchPolicy, resolveLeasePolicy } from '../bin/lib/spawn/permissions.mjs'
 import * as claude from '../bin/lib/spawn/harness/claude.mjs'
+import { spawn } from '../bin/lib/spawn/index.mjs'
 import { findClaudeSession, findCodexRollout, scanClaudeSessionIdentity, stripSyntheticTail } from '../bin/lib/spawn/resume.mjs'
 import { claudeStartupDialogAction } from '../bin/lib/spawn/tmux.mjs'
 
@@ -16,6 +17,35 @@ function tmpdir() {
 function writeJsonl(file, rows) {
   fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.writeFileSync(file, rows.map((row) => `${typeof row === 'string' ? row : JSON.stringify(row)}\n`).join(''))
+}
+
+function freshSpawnDeps({ ensureServer }) {
+  const calls = []
+  return {
+    calls,
+    deps: {
+      resolveApi: () => 'http://127.0.0.1:5176',
+      ensureServer,
+      uniqueSessionName: async () => 'fleet-breakglass',
+      resolveDnsAlias: async () => null,
+      checkFreshNameAvailable: async () => { calls.push('checkFreshNameAvailable') },
+      wsRegister: async () => { calls.push('wsRegister') },
+      spawnTmux: async (_session, _cwd, cmd) => {
+        calls.push('spawnTmux')
+        calls.push(cmd)
+        return true
+      },
+      waitForAwakeRegistration: async () => {
+        calls.push('waitForAwakeRegistration')
+        return { ok: true }
+      },
+      markAgentDead: async () => { calls.push('markAgentDead') },
+      createLibrarian: () => ({
+        observeLiveness: () => { calls.push('observeLiveness') },
+        failPending: () => { calls.push('failPending') },
+      }),
+    },
+  }
 }
 
 test('Claude resume scan uses the first own Registered fleet result and strips synthetic tail', () => {
@@ -194,4 +224,59 @@ test('direct requested capability lands in the shared launch-policy helper', () 
   assert.equal(policy.spawnPolicy.capability, 'write')
   assert.equal(policy.spawnPolicy.policy, 'cwd')
   assert.equal(policy.permissionMode, 'default')
+})
+
+test('fresh local spawn defers registration when localhost server probe fails', async () => {
+  const { calls, deps } = freshSpawnDeps({
+    ensureServer: async () => { throw new Error('server unreachable at http://127.0.0.1:5176') },
+  })
+  const result = await spawn({
+    spawnMode: 'fresh',
+    kind: 'claude',
+    model: 'opus48',
+    name: 'breakglass-local',
+    cwd: tmpdir(),
+    agentId: 'fleet:testoff',
+    _deps: deps,
+  })
+  assert.equal(result.ok, true)
+  assert.equal(result.registrationDeferred, true)
+  assert.equal(result.fleetId, 'fleet:testoff')
+  assert.equal(result.tmuxSession, 'fleet-breakglass')
+  assert.ok(calls.includes('spawnTmux'))
+  assert.ok(calls.some((value) => typeof value === 'string' && value.includes('FLEET_ID=') && value.includes('fleet:testoff')))
+  assert.equal(calls.includes('checkFreshNameAvailable'), false)
+  assert.equal(calls.includes('wsRegister'), false)
+  assert.equal(calls.includes('observeLiveness'), false)
+  assert.equal(calls.includes('waitForAwakeRegistration'), false)
+  assert.equal(calls.includes('markAgentDead'), false)
+})
+
+test('fresh local spawn keeps server-up pre-register and registration wait semantics', async () => {
+  const { calls, deps } = freshSpawnDeps({ ensureServer: async () => true })
+  const result = await spawn({
+    spawnMode: 'fresh',
+    kind: 'claude',
+    model: 'opus48',
+    name: 'server-up-local',
+    cwd: tmpdir(),
+    agentId: 'fleet:teston',
+    _deps: deps,
+  })
+  assert.equal(result.ok, true)
+  assert.equal(result.registrationDeferred, undefined)
+  assert.deepEqual(calls.filter((value) => [
+    'checkFreshNameAvailable',
+    'wsRegister',
+    'observeLiveness',
+    'spawnTmux',
+    'waitForAwakeRegistration',
+  ].includes(value)), [
+    'checkFreshNameAvailable',
+    'wsRegister',
+    'observeLiveness',
+    'spawnTmux',
+    'waitForAwakeRegistration',
+  ])
+  assert.equal(calls.includes('markAgentDead'), false)
 })
