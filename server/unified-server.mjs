@@ -61,6 +61,7 @@ import { FleetStore } from './lib/fleet-store.mjs'
 import { resolveMachine } from './lib/tailscale-peers.mjs'
 import { createFleetRouter } from './routes/fleet.mjs'
 import { callerSpawnPolicy, coherentSpawnPolicy } from './lib/spawn-policy.mjs'
+import { buildRuntimeStatus } from './lib/runtime-status.mjs'
 import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
 import { SpawnBounceError, SpawnLibrarian, resolveSpawnCollision } from '../shared/spawn-librarian.ts'
 import { trimTerminalSeedBlankRows } from '../shared/terminal-seed.mjs'
@@ -1581,6 +1582,18 @@ app.post('/api/fleet/prefs/:key', requireRead, (req, res) => {
   if (!fleetStore) return res.status(503).json({ error: 'fleet store unavailable' })
   fleetStore.setFleetPref(userId, req.params.key, value)
   res.json({ ok: true })
+})
+
+app.get('/api/runtime-status', requireRead, (_req, res) => {
+  res.json(buildRuntimeStatus({
+    env: process.env,
+    serverScriptPath: fileURLToPath(import.meta.url),
+    fleetDbPath: process.env.TLDA_FLEET_DB || null,
+    fleetStore,
+    daemonConnections,
+    agents: fleetStore.getAllAgents(),
+    localHostname: hostname(),
+  }))
 })
 
 app.post('/api/fleet/bot-lease/claim', requireRead, (req, res) => {
