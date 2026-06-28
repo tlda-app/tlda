@@ -1,4 +1,4 @@
-import { flattenAvailableSpawnModels } from '../../src/fleet/spawn-model-options.mjs'
+import { flattenAvailableSpawnModels } from '../../shared/spawn-model-options.mjs'
 
 export async function resolveFreshSpawnCapabilityModels({
   userId,

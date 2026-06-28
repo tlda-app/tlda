@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { resolveSpawnMachine } from '../server/lib/spawn-routing.mjs'
 import { resolveFreshSpawnCapabilityModels } from '../server/lib/spawn-capability-models.mjs'
-import { flattenAvailableSpawnModels, spawnModelsFromCapabilitiesResponse } from '../src/fleet/spawn-model-options.mjs'
+import { flattenAvailableSpawnModels, spawnModelsFromCapabilitiesResponse } from '../shared/spawn-model-options.mjs'
 import { loadAvailableSpawnModels } from '../src/fleet/useAvailableSpawnModels.ts'
 
 const user = { id: 'fleet:skip', human: true }

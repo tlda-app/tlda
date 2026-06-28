@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-// @ts-ignore — shared vanilla module used by server tests too.
-import { spawnModelsFromCapabilitiesResponse } from './spawn-model-options.mjs'
+// @ts-ignore — shared vanilla module used by server + frontend; lives in shared/ so the live image ships it.
+import { spawnModelsFromCapabilitiesResponse } from '../../shared/spawn-model-options.mjs'
 
 export type AvailableSpawnModels = {
   aliases: string[]
