@@ -3,6 +3,18 @@
   inset: 0;
 }
 
+:root {
+  --tlda-z-tldraw-chrome: 1000;
+  --tlda-z-fleet-shape: 8200;
+  --tlda-z-canvas-overlay: 8300;
+  --tlda-z-fleet-hud: 8400;
+  --tlda-z-hud-toolbar: 8500;
+  --tlda-z-managed-surface: 9000;
+  --tlda-z-top-control: 11000;
+  --tlda-z-top-control-popover: 11001;
+  --tlda-z-modal: 12000;
+}
+
 /* Pan mode: override cursor to grab when active */
 body.tlda-pan-mode,
 body.tlda-pan-mode * {
@@ -29,17 +41,17 @@ body.tlda-pan-mode * {
    tlui-layout's contain:strict means internal z-indexes are local to its stacking
    context — setting z-index on __bottom alone never helped against the HUD. */
 .tlui-layout {
-  z-index: 1000 !important;
+  z-index: var(--tlda-z-tldraw-chrome) !important;
 }
 
 /* Keep native TLDraw overlays (laser/scribbles, collaborators) above SVG page text. */
 .tl-canvas-overlays {
-  z-index: 8300 !important;
+  z-index: var(--tlda-z-canvas-overlay) !important;
 }
 
 /* Shrink and fade toolbar controls (color dot keeps its inline color) */
 .tlui-layout__bottom {
-  z-index: 1000 !important;
+  z-index: var(--tlda-z-tldraw-chrome) !important;
   zoom: 0.6;
   --tl-color-text-1: rgba(0, 0, 0, 0.15);
   --tl-color-text: rgba(0, 0, 0, 0.15);
@@ -725,7 +737,7 @@ body.text-select-mode ::selection {
   align-items: center;
   justify-content: center;
   background: rgba(0, 0, 0, 0.5);
-  z-index: 10000;
+  z-index: var(--tlda-z-modal);
 }
 .identity-picker {
   background: #1a1a2e;
@@ -789,7 +801,7 @@ body.text-select-mode ::selection {
   position: fixed;
   right: 14px;
   bottom: 54px;
-  z-index: 10000;
+  z-index: var(--tlda-z-modal);
   max-width: min(340px, calc(100vw - 28px));
   padding: 9px 12px;
   border: 1px solid rgba(80, 80, 110, 0.18);
