@@ -160,8 +160,6 @@ export function CanvasClipPanel({
   identityId,
   viewportId: externalViewportId,
   children,
-  requestedShapeIds,
-  requestedShapeTypes,
 }: CanvasClipPanelProps) {
   const panelRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLDivElement>(null)
@@ -331,21 +329,7 @@ export function CanvasClipPanel({
   if (!bounds && !wmSurface) return null
 
   // Shape predicate: filter shapes based on mode
-  const requestedIdSet = useMemo(() => {
-    return requestedShapeIds?.length ? new Set(requestedShapeIds) : null
-  }, [requestedShapeIds])
-  const requestedTypeSet = useMemo(() => {
-    return requestedShapeTypes?.length ? new Set(requestedShapeTypes) : null
-  }, [requestedShapeTypes])
   const shapePredicate = useMemo(() => {
-    if (requestedIdSet || requestedTypeSet) {
-      return (shape: TLShape) => {
-        if (requestedIdSet && !requestedIdSet.has(shape.id)) return false
-        if (requestedTypeSet && !requestedTypeSet.has(shape.type)) return false
-        return true
-      }
-    }
-
     if (!lockCamera && !readOnly) return undefined
 
     return (shape: TLShape) => {
@@ -360,7 +344,7 @@ export function CanvasClipPanel({
       // In readOnly mode, render all shapes
       return true
     }
-  }, [identityId, lockCamera, readOnly, requestedIdSet, requestedTypeSet])
+  }, [identityId, lockCamera, readOnly])
 
   const viewportEl = (
     <VisibilityViewportProvider viewportId={viewportId}>

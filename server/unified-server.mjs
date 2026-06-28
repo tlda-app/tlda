@@ -2484,10 +2484,6 @@ app.use('/docs', (req, res, next) => {
 
 app.use('/api/projects', projectRoutes)
 
-// LiveKit room audio tokens
-import livekitRoutes from './routes/livekit.mjs'
-app.use('/api/livekit', livekitRoutes)
-
 // Handwriting recognition (MyScript proxy)
 import recognizeRoutes from './routes/recognize.mjs'
 app.use('/api/recognize', recognizeRoutes)
