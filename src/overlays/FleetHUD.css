@@ -29,19 +29,19 @@
 
 
 /* Expanded HUD — full overlay with fleet shapes, positioned by JS */
-/* z-index 1100: above doc-panel (1001), bottom-panels (1000), and TLDraw chrome */
+/* Above TLDraw chrome, below managed clips/annotation previews and top controls. */
 .fleet-hud-wrap {
   position: fixed;
-  z-index: 1100;
+  z-index: var(--tlda-z-fleet-hud);
   pointer-events: none;
 }
 
 body.fleet-hud-open .bottom-panels {
-  z-index: 10000;
+  z-index: var(--tlda-z-hud-toolbar);
 }
 
 body.fleet-hud-open .fleet-hud-wrap {
-  z-index: 10000;
+  z-index: var(--tlda-z-fleet-hud);
 }
 
 .fleet-hud-wrap > .clip-panel {
@@ -182,7 +182,7 @@ body.fleet-hud-open .fleet-hud-wrap {
   left: 0;
   display: flex;
   gap: 2px;
-  z-index: 1000;
+  z-index: var(--tlda-z-hud-toolbar);
   pointer-events: auto;
 }
 
@@ -203,7 +203,7 @@ body.fleet-hud-open .fleet-hud-wrap {
 .fleet-hud-diagnostic-wrap {
   position: fixed;
   inset: 0;
-  z-index: 10000;
+  z-index: var(--tlda-z-modal);
   display: flex;
   align-items: flex-start;
   justify-content: flex-start;

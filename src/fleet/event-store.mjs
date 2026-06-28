@@ -6,8 +6,8 @@
 // the history fetch funnel through upsert(), so:
 //   - insert-by-id can't duplicate (same id → same entry)
 //   - history filling a gap can't duplicate (it upserts by id too)
-//   - capping trims only one edge of the single ordered buffer, so the in-memory
-//     set remains one contiguous window instead of a history/live split
+//   - capping trims only the edge requested by the caller. Scrollback can evict
+//     newest rows to move older; later live rows must not clear that backlog.
 //
 // The optimistic handoff (your own send) is the one place an entry changes key:
 // it starts keyed by `_tempId`, and when the server echo arrives carrying both
@@ -29,11 +29,6 @@ export function makeEventStore(opts = {}) {
   const events = []
   /** @type {Map<string, any>} 'db:<id>' | 'tmp:<tempId>' → the live entry object */
   const byKey = new Map()
-  // False after scrollback has shifted the memory window away from the live
-  // tail. The next newer live/reconnect event starts a fresh tail window rather
-  // than creating an old-history + new-live split.
-  let hasLiveTail = true
-
   function tsOf(e) {
     const t = e && e.timestamp ? Date.parse(e.timestamp) : NaN
     return Number.isNaN(t) ? Infinity : t // undated (fresh optimistic) sorts to the end
@@ -72,14 +67,7 @@ export function makeEventStore(opts = {}) {
       forgetKey(ev)
       evicted.push(ev)
     }
-    if (evict === 'newest' && evicted.length) hasLiveTail = false
-    if (evict === 'oldest' && evicted.length) hasLiveTail = true
     return evicted
-  }
-
-  function shouldResetToLiveTail(incoming, evict) {
-    if (evict !== 'oldest' || hasLiveTail || events.length === 0) return false
-    return tsOf(incoming) > tsOf(events[events.length - 1])
   }
 
   // Bring server-authoritative fields onto an existing entry without clobbering
@@ -103,11 +91,6 @@ export function makeEventStore(opts = {}) {
   function upsert(incoming, opts = {}) {
     const evict = opts.evict === 'newest' ? 'newest' : 'oldest'
     let evicted = []
-    if (shouldResetToLiveTail(incoming, evict)) {
-      evicted = events.slice()
-      clearEventsOnly()
-      hasLiveTail = true
-    }
 
     const dbId = incoming._dbId
     const tempId = incoming._tempId
@@ -233,7 +216,7 @@ export function makeEventStore(opts = {}) {
   function all() { return events }
   function size() { return events.length }
   function get(key) { return byKey.get(key) }
-  function clear() { clearEventsOnly(); hasLiveTail = true }
+  function clear() { clearEventsOnly() }
 
   return { upsert, upsertMany, reconcile, patchByDbId, patchByTempId, removeByTempId, all, size, get, clear, keyOf }
 }

@@ -4568,10 +4568,8 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   // Infinite scroll — load older messages
   const loadingMore = useRef(false)
-  const handleScroll = useCallback(async (e: React.UIEvent<HTMLDivElement>) => {
-    const el = e.currentTarget
-    if (el.scrollTop > 50 || loadingMore.current || chatMessages.length === 0) return
-    if (!userScrolledUpRef.current) return
+  const loadOlderHistory = useCallback(async (el: HTMLElement | null | undefined) => {
+    if (!el || loadingMore.current || chatMessages.length === 0) return
     if (expandRenderedHistory(el)) return
     // Filtered view that hasn't resolved to any id yet — don't page in global history.
     if (loadBeforeAgents !== null && loadBeforeAgents.length === 0) return
@@ -4581,13 +4579,24 @@ function FleetChatInner({ shape }: { shape: any }) {
       const prevHeight = el.scrollHeight
       // Older rows fold into the single store (deduped by id); the view re-renders
       // off the store. Restore scroll position so the viewport doesn't jump.
-      await loadBefore(loadBeforeAgents || [], oldestTs, 50)
-      requestAnimationFrame(() => {
-        el.scrollTop = el.scrollHeight - prevHeight
-      })
+      try {
+        await loadBefore(loadBeforeAgents || [], oldestTs, 50)
+        requestAnimationFrame(() => {
+          el.scrollTop = el.scrollHeight - prevHeight
+        })
+      } finally {
+        loadingMore.current = false
+      }
+      return
     }
     loadingMore.current = false
   }, [chatMessages, loadBeforeAgents, expandRenderedHistory])
+
+  const handleScroll = useCallback(async (e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget
+    if (el.scrollTop > 50 || loadingMore.current || chatMessages.length === 0) return
+    await loadOlderHistory(el)
+  }, [chatMessages.length, loadOlderHistory])
 
   // Attach scroll + click handlers to the Virtuoso-owned scroll container.
   // Listener-based (not JSX prop) because the Scroller is memoized and
@@ -5324,7 +5333,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             // follows. Follow on new content unless the user deliberately scrolled up.
             followOutput={() => (!userScrolledUpRef.current || hardLockedRef.current) ? 'auto' : false}
             startReached={() => {
-              if (chatLogEl && userScrolledUpRef.current) expandRenderedHistory(chatLogEl)
+              void loadOlderHistory(chatLogEl)
             }}
             // Generous enough to absorb the Virtuoso Footer (suggestion/thinking
             // status, ~40px): scrollToIndex(LAST) aligns the last DATA item, so

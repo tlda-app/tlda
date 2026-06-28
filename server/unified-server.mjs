@@ -64,6 +64,7 @@ import { createFleetRouter } from './routes/fleet.mjs'
 import { callerSpawnPolicy, coherentSpawnPolicy } from './lib/spawn-policy.mjs'
 import { buildRuntimeStatus } from './lib/runtime-status.mjs'
 import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
+import { resolveFreshSpawnCapabilityModels } from './lib/spawn-capability-models.mjs'
 import { SpawnBounceError, SpawnLibrarian, resolveSpawnCollision } from '../shared/spawn-librarian.ts'
 import { trimTerminalSeedBlankRows } from '../shared/terminal-seed.mjs'
 
@@ -1554,6 +1555,18 @@ app.get('/api/fleet/models', requireRead, (req, res) => {
 })
 
 app.get('/api/fleet/spawn-capabilities', requireRead, async (req, res) => {
+  if (req.query.target === 'fresh-spawn-current') {
+    const result = await resolveFreshSpawnCapabilityModels({
+      userId: req.query.user,
+      fleetStore,
+      daemonConnections,
+      sendRpc,
+      resolveSpawnMachine,
+      onDaemonMissing: (machineId, context, detail) => logSpawnDaemonMiss(machineId, context, detail),
+    })
+    res.json({ schema: 1, target: 'fresh-spawn-current', ...result })
+    return
+  }
   const machine = req.query.machine ? String(req.query.machine) : null
   const machines = machine ? [machine] : [...daemonConnections.keys()].sort()
   const results = {}

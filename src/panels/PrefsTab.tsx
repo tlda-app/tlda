@@ -8,6 +8,7 @@ import { useFleetAgents, useFleetIdentity } from '../fleet-data-adapter'
 // @ts-ignore — vanilla JS module
 import { getDeviceId } from '../fleet/fleet-data.mjs'
 import { agentDisplayName } from '../shapes/fleet-utils'
+import { useAvailableSpawnModels } from '../fleet/useAvailableSpawnModels'
 
 type DeviceRecord = { lastSeen: string }
 
@@ -88,30 +89,6 @@ function useVoiceBackends(): VoiceBackendOption[] {
   }, [])
 
   return backends
-}
-
-function useAvailableModels(): string[] {
-  const [models, setModels] = useState<string[]>([])
-
-  useEffect(() => {
-    let cancelled = false
-    fetch('/api/fleet/models')
-      .then(r => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
-      .then(data => {
-        if (cancelled) return
-        const aliases = (data?.models || [])
-          .filter((m: any) => m?.verified !== false)
-          .map((m: any) => m?.alias)
-          .filter(Boolean)
-        setModels(aliases)
-      })
-      .catch(() => {
-        if (!cancelled) setModels([])
-      })
-    return () => { cancelled = true }
-  }, [])
-
-  return models
 }
 
 function formatLastSeen(value?: string): string {
@@ -309,10 +286,11 @@ function readAll() {
 }
 
 export function PrefsTab() {
+  const { id: userId } = useFleetIdentity()
   const [prefs, setPrefs] = useState(readAll)
   const agents = useFleetAgents()
   const voiceBackends = useVoiceBackends()
-  const availableModels = useAvailableModels()
+  const availableModels = useAvailableSpawnModels(userId).aliases
 
   useEffect(() => subscribePref(() => setPrefs(readAll())), [])
 

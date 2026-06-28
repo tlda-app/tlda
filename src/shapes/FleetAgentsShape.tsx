@@ -16,13 +16,14 @@ import {
   createShapeId,
 } from 'tldraw'
 import { useState, useCallback, useMemo, useRef, useEffect, memo } from 'react'
-import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, useFleetContext, useFleetProjects, searchFleet, hibernateSession, spawnAgent } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, useFleetContext, useFleetProjects, useFleetIdentity, searchFleet, hibernateSession, spawnAgent } from '../fleet-data-adapter'
 import { dropPillOnTarget } from './FleetPillShape'
 import { agentDisplayName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
 import { AgentName } from './PhaseIcon'
 import { dragCoordinator } from './dragCoordinator'
 import { useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
 import { clientPointToPage } from '../wm/viewport-coordinates'
+import { useAvailableSpawnModels } from '../fleet/useAvailableSpawnModels'
 
 
 const DEFAULT_W = 340
@@ -37,49 +38,6 @@ const MODEL_SHORTHANDS: Record<string, string> = {
   'ds': 'deepseek',
 }
 
-// The model-alias pool for autocomplete/validation is fetched live from
-// /api/fleet/models (served from `fleet-spawn --list-models` — the single source
-// of truth for every spawnable alias, Claude AND goose). Nothing is hardcoded
-// per-family here; this fallback is used only before the fetch resolves or if it
-// fails, so an offline panel still completes the common aliases.
-const MODEL_FALLBACK = [
-  'opus', 'opus45', 'opus46', 'opus47', 'opus48', 'sonnet', 'haiku',
-  'deepseek', 'deepseek-v4-pro', 'deepseek-v4', 'deepseek-v4-flash',
-  'deepseek-chat', 'deepseek-v3', 'deepseek-r1', 'deepseek-reasoner',
-  'kimi', 'kimi-k2.7', 'qwen', 'qwen3.7-max', 'glm', 'glm-5.1',
-  'minimax', 'minimax-m3', 'mistral', 'mistral-medium-3-5', 'gemini', 'gemini-3.5-flash',
-]
-
-// Live alias list, shared across all FleetAgents shapes: one fetch, cached, with
-// subscribers re-rendered when it lands.
-let _modelCache: string[] | null = null
-let _modelFetchStarted = false
-const _modelSubs = new Set<() => void>()
-function ensureModelFetch() {
-  if (_modelFetchStarted) return
-  _modelFetchStarted = true
-  fetch('/api/fleet/models')
-    .then(r => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
-    .then(d => {
-      // Verified-only: a model flagged verified:false (e.g. one that can't emit
-      // structured tool-calls through goose) is unusable as an agent, so we keep
-      // it out of the picker entirely — it won't surface even when you type.
-      const aliases: string[] = (d?.models ?? []).filter((m: any) => m.verified !== false).map((m: any) => m.alias).filter(Boolean)
-      if (aliases.length) { _modelCache = aliases; _modelSubs.forEach(f => f()) }
-    })
-    .catch(() => { _modelFetchStarted = false }) // allow a retry on the next mount
-}
-function useSpawnModels(): string[] {
-  const [, bump] = useState(0)
-  useEffect(() => {
-    if (_modelCache) return
-    const cb = () => bump(n => n + 1)
-    _modelSubs.add(cb)
-    ensureModelFetch()
-    return () => { _modelSubs.delete(cb) }
-  }, [])
-  return _modelCache ?? MODEL_FALLBACK
-}
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
 const EFFORT_SHORTHANDS: Record<string, string> = {
   'lo': 'low', 'low': 'low', 'l': 'low',
@@ -88,8 +46,6 @@ const EFFORT_SHORTHANDS: Record<string, string> = {
   'xhi': 'xhigh', 'xhigh': 'xhigh', 'xh': 'xhigh', 'x': 'xhigh',
   'max': 'max',
 }
-const DEFAULT_MODEL = 'opus48'
-
 // Empty-state model picks (shown before you type a model segment): the curated,
 // diverse set we actively test — a few headline Claude families + the goose
 // models teacher-dev runs in the manners-course sweep. Everything else (older
@@ -108,7 +64,7 @@ const CAT_NAMES = [
   'pebble', 'sage', 'jinx', 'kiwi', 'marble', 'rumble',
 ]
 
-function parseSpawnInput(raw: string, models: string[] = MODEL_FALLBACK): { doc: string; name: string | undefined; model: string | undefined; effort: string | undefined } {
+function parseSpawnInput(raw: string, models: string[] = []): { doc: string; name: string | undefined; model: string | undefined; effort: string | undefined } {
   const parts = raw.split(':')
   const doc = parts[0]
   if (parts.length === 2) {
@@ -136,10 +92,10 @@ function completeSegment(typed: string, candidates: string[]): string {
   return match ? match.slice(typed.length) : ''
 }
 
-function getGhostCompletion(input: string, projects: string[], catName: string, defaultDoc: string, models: string[]): string {
+function getGhostCompletion(input: string, projects: string[], catName: string, defaultDoc: string, models: string[], defaultModel: string): string {
   // Empty-state default is the doc the user is currently viewing, not the
   // alphabetically-first project — so an empty field implies "spawn here".
-  const defaults = [defaultDoc || projects[0] || 'doc', catName, DEFAULT_MODEL]
+  const defaults = [defaultDoc || projects[0] || 'doc', catName, defaultModel]
   if (!input) return defaults.join(':')
 
   const parts = input.split(':')
@@ -172,8 +128,8 @@ function getGhostCompletion(input: string, projects: string[], catName: string, 
 // ends with ':' so the cursor lands at the start of the next segment; the final
 // (effort) segment has no trailing colon. Returns '' when there's nothing to add
 // (already past the last segment).
-function getStagedTabCompletion(input: string, projects: string[], catName: string, defaultDoc: string, models: string[]): string {
-  const defaults = [defaultDoc || projects[0] || 'doc', catName, DEFAULT_MODEL]
+function getStagedTabCompletion(input: string, projects: string[], catName: string, defaultDoc: string, models: string[], defaultModel: string): string {
+  const defaults = [defaultDoc || projects[0] || 'doc', catName, defaultModel]
   const parts = input.split(':')
   const pos = parts.length // 1-based: 1=project, 2=name, 3=model, 4=effort
   if (pos > defaults.length) return ''
@@ -645,10 +601,13 @@ function FleetAgentsInner({ shape }: { shape: any }) {
   // project, so an empty submit spawns into the doc being viewed.
   const currentDoc = useMemo(() => new URLSearchParams(window.location.search).get('doc') || '', [])
   const [spawnDoc, setSpawnDoc] = useState('')
+  const { id: userId } = useFleetIdentity()
   // Live project list — re-fetches on the server's `projects-updated` event so a
   // newly-created project shows up here without a manual reload.
   const projectList = useFleetProjects()
-  const spawnModels = useSpawnModels()
+  const spawnModelInfo = useAvailableSpawnModels(userId)
+  const spawnModels = spawnModelInfo.aliases
+  const defaultSpawnModel = spawnModelInfo.defaultAlias
   // Curated empty-state picks, intersected with what's actually available (and
   // verified) so a removed/renamed alias never shows a dead entry; curated order
   // preserved.
@@ -689,7 +648,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
 
     // Add optimistic card immediately — the real agent will reconcile it away.
     const optimisticId = `opt-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
-    const effectiveModel = model || DEFAULT_MODEL
+    const effectiveModel = model || defaultSpawnModel
     const optimistic: OptimisticAgent = {
       optimisticId,
       model: effectiveModel,
@@ -711,7 +670,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     }, 30_000)
     optimisticTimeouts.current.set(optimisticId, safeTid)
 
-    spawnAgent(effectiveModel, doc || currentDoc || undefined, name, effort)
+    spawnAgent(effectiveModel || undefined, doc || currentDoc || undefined, name, effort)
       .catch((e: any) => {
         const message = String(e?.message || e || 'Spawn failed')
         setSpawnError(message)
@@ -725,7 +684,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
             : o
         ))
       })
-  }, [spawnDoc, projectList, currentDoc, parsedSpawn])
+  }, [spawnDoc, projectList, currentDoc, parsedSpawn, defaultSpawnModel])
   const dropdownOpen = spawnFocused && !dropdownDismissed && segCandidates.length > 0
   const acceptCandidate = useCallback((candidate: string) => {
     setSpawnDoc(applyCandidate(spawnDoc, candidate))
@@ -907,7 +866,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                   optimisticTimeouts.current.delete(opt.optimisticId)
                 }, 30_000)
                 optimisticTimeouts.current.set(opt.optimisticId, safeTid)
-                spawnAgent(opt.model, opt.doc, opt.name, opt.effort)
+                spawnAgent(opt.model || undefined, opt.doc, opt.name, opt.effort)
                   .catch((e: any) => {
                     const msg = String(e?.message || e || 'Spawn failed')
                     const ex = optimisticTimeouts.current.get(opt.optimisticId)
@@ -987,7 +946,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                     } else {
                       // Staged: complete one segment (to the next colon) per Tab,
                       // not the whole spec at once.
-                      const seg = getStagedTabCompletion(spawnDoc, projectList, catName, currentDoc, spawnModels)
+                      const seg = getStagedTabCompletion(spawnDoc, projectList, catName, currentDoc, spawnModels, defaultSpawnModel)
                       if (seg) { e.preventDefault(); setSpawnDoc(spawnDoc + seg); setDropdownDismissed(true) }
                     }
                   } else if (e.key === 'Enter') {
@@ -1001,7 +960,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                 }}
                 placeholder=""
               />
-              <span className="fleet-agents-spawn-ghost"><span style={{ visibility: 'hidden' }}>{spawnDoc}</span>{getGhostCompletion(spawnDoc, projectList, catName, currentDoc, spawnModels)}</span>
+              <span className="fleet-agents-spawn-ghost"><span style={{ visibility: 'hidden' }}>{spawnDoc}</span>{getGhostCompletion(spawnDoc, projectList, catName, currentDoc, spawnModels, defaultSpawnModel)}</span>
               {spawnInvalid && (
                 <span id="fleet-agents-spawn-error" className="fleet-agents-spawn-error" role="alert">
                   {spawnTooltip}

@@ -54,7 +54,11 @@
 [data-shape-type="fleet-agents"]:not(.fleet-hud-wrap *),
 [data-shape-type="fleet-search"]:not(.fleet-hud-wrap *),
 [data-shape-type="fleet-chat"]:not(.fleet-hud-wrap *) {
-  z-index: 8200 !important;
+  z-index: var(--tlda-z-fleet-shape) !important;
+}
+
+[data-shape-type="doc-clip"]:not(.fleet-hud-wrap *) {
+  z-index: var(--tlda-z-managed-surface) !important;
 }
 [data-shape-type="fleet-chat"] {
   isolation: isolate;
@@ -3782,9 +3786,19 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 /* --- Doc Clip Shape --- */
 
 .doc-clip-shape {
+  --surface: #161625;
   overflow: hidden;
   border: 1px solid rgba(128, 128, 128, 0.15);
   border-radius: 2px;
+  background: var(--surface);
+}
+
+.tl-theme__dark .doc-clip-shape {
+  --surface: #161625;
+}
+
+.tl-theme__light .doc-clip-shape {
+  --surface: #f0f0f5;
 }
 
 .doc-clip-bar {
@@ -3823,10 +3837,10 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   color: #e88;
 }
 
-.doc-clip-shape .clip-panel {
+.doc-clip-shape .doc-clip-body > .clip-panel {
   border: none;
   border-radius: 0;
-  background: transparent;
+  background: var(--surface);
   width: 100% !important;
   height: 100% !important;
 }
