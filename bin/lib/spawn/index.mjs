@@ -76,10 +76,12 @@ async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, mode
       dnsAlias,
       resumeId,
       sandboxMode: projection.sandboxMode,
-      workspaceWriteConfigArgs: codex.buildWorkspaceWriteConfigArgs({
-        writableRoots: projection.writableRoots || [],
-        networkAccess: projection.networkAccess !== false,
-      }),
+      workspaceWriteConfigArgs: projection.sandboxMode === 'workspace-write'
+        ? codex.buildWorkspaceWriteConfigArgs({
+            writableRoots: projection.writableRoots || [],
+            networkAccess: projection.networkAccess !== false,
+          })
+        : [],
     })
     sendKeys = true
   } else {

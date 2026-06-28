@@ -2486,6 +2486,7 @@ async function rpcSpawn({
   effort,
   mode,
   requestedCapability,
+  policy,
   callerRung,
 }) {
   const sessionId = session || session_id
@@ -2521,7 +2522,7 @@ async function rpcSpawn({
   try {
     const config = _loadSharedConfig()
     grant = resolveDaemonSpawnGrant({
-      requestedCapability,
+      requestedCapability: requestedCapability || (policy != null ? 'write' : undefined),
       callerRung,
       model,
       kind,
@@ -2548,6 +2549,7 @@ async function rpcSpawn({
       effort,
       permissionMode: mode,
       spawnPolicy: grant.grantedPolicy,
+      explicitPolicy: policy != null,
       machineId: MACHINE_ID,
       tmuxSocket: TMUX_SOCKET,
     })

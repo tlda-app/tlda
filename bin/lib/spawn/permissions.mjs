@@ -63,7 +63,9 @@ function runnerFromConfig(cfg) {
     if (runner.args != null && !Array.isArray(runner.args)) throw new Error('agentSandbox.runner.args must be an array')
     return runner
   }
-  return { command: 'fence' }
+  const localFence = path.join(os.homedir(), '.claude', 'bin', 'fence')
+  if (!fs.existsSync(localFence)) throw new Error(`required fence runner is missing: ${localFence}`)
+  return { command: localFence }
 }
 
 function configPathList(cfg, key, fallback = []) {
@@ -126,10 +128,10 @@ export function stripRunner(policy) {
 }
 
 export function codexSandboxProjection(spawnPolicy, cwd, { fenced = false } = {}) {
-  if (fenced) return { sandboxMode: 'danger-full-access', workspaceWriteConfigArgs: [] }
+  if (fenced) return { sandboxMode: 'danger-full-access', workspaceWriteConfigArgs: [], networkAccess: false }
   const capability = spawnPolicy?.capability
-  if (capability === 'full') return { sandboxMode: 'danger-full-access', workspaceWriteConfigArgs: [] }
-  if (capability === 'read') return { sandboxMode: 'read-only', workspaceWriteConfigArgs: [] }
+  if (capability === 'full') return { sandboxMode: 'danger-full-access', workspaceWriteConfigArgs: [], networkAccess: false }
+  if (capability === 'read') return { sandboxMode: 'read-only', workspaceWriteConfigArgs: [], networkAccess: false }
   const writableRoots = [
     path.join(os.homedir(), '.config', 'tlda'),
     path.join(cwd, '.git'),
@@ -165,7 +167,7 @@ export function resolveLeasePolicy({ spawnPolicy, harness, model, cwd, config = 
     writeRoots = []
   } else if (cap === 'write' || cap === 'tlda-write') {
     writeRoots = [...writeRoots, path.join(os.homedir(), '.config', 'tlda'), PLAYWRIGHT_CACHE_ROOT, TLDA_FENCE_TMP_ROOT, path.join(workspace, '.git')]
-    options.network = true
+    if (normalized.network !== false) options.network = true
   }
   const readRoots = [...new Set([workspace, ...configPathList(cfg, 'readRoots', DEFAULT_READ_ROOTS), ...writeRoots].map(abs))].sort()
   writeRoots = [...new Set(writeRoots.map(abs))].sort()
@@ -203,8 +205,16 @@ export function resolveLaunchPolicy({
   explicitPolicy = false,
   env = process.env,
 } = {}) {
-  const requestedPolicy = normalizeSpawnPolicy(spawnPolicy || requestedCapability, null)
-  const useFence = !!requestedPolicy && (!FENCE_GLOBALLY_DISABLED || isExplicitPolicy(requestedPolicy, explicitPolicy))
+  const requestedPolicy = normalizeSpawnPolicy(
+    spawnPolicy || requestedCapability || (harness === 'codex' ? 'write' : null),
+    null,
+  )
+  const codexRequiresExternalFence = harness === 'codex' && requestedPolicy?.policy !== 'unsandboxed'
+  const useFence = !!requestedPolicy && (
+    codexRequiresExternalFence
+    || !FENCE_GLOBALLY_DISABLED
+    || isExplicitPolicy(requestedPolicy, explicitPolicy)
+  )
   const leaseResolution = useFence
     ? resolveLeasePolicy({ spawnPolicy: requestedPolicy, harness, model, cwd, config })
     : { policyName: requestedPolicy ? 'unsandboxed' : null, devTools: true, leasePolicy: null }

@@ -162,7 +162,62 @@ test('unfenced codex no-net projects explicit workspace-write network false', ()
   assert.equal(args.some((arg) => arg.includes('sandbox_workspace_write.network_access=true')), false)
 })
 
-test('launch policy keeps built-in write unfenced while global fence is off', () => {
+test('codex default launch is externally fenced even while global fence is off', () => {
+  const cwd = tmpdir()
+  const policy = resolveLaunchPolicy({
+    harness: 'codex',
+    model: 'gpt-5.5',
+    cwd,
+    env: {},
+  })
+  assert.equal(policy.fenceGloballyDisabled, true)
+  assert.equal(policy.spawnPolicy.capability, 'write')
+  assert.equal(policy.spawnPolicy.policy, 'cwd')
+  assert.equal(policy.policyName, 'cwd')
+  assert.equal(policy.leasePolicy.policy, 'cwd')
+  assert.equal(policy.permissionMode, 'bypassPermissions')
+  const projection = codexSandboxProjection(policy.spawnPolicy, cwd, { fenced: !!policy.leasePolicy })
+  const cmd = codex.buildCmd({
+    fleetId: 'fleet:test',
+    tmuxSession: 'fleet-test',
+    model: 'gpt-5.5',
+    name: 'codex-fenced',
+    cwd,
+    api: 'http://127.0.0.1:5176',
+    sandboxMode: projection.sandboxMode,
+    workspaceWriteConfigArgs: projection.sandboxMode === 'workspace-write'
+      ? codex.buildWorkspaceWriteConfigArgs({
+          writableRoots: projection.writableRoots || [],
+          networkAccess: projection.networkAccess !== false,
+        })
+      : [],
+    config: {},
+    env: {},
+  })
+  const wrapped = wrapSandboxCmd(cmd, policy.leasePolicy, { api: 'http://127.0.0.1:5176' })
+  assert.match(wrapped, /(?:^|['\s/])fence'? '?--settings'?/)
+  assert.match(wrapped, /-s.*danger-full-access/)
+  assert.doesNotMatch(wrapped, /sandbox_workspace_write\.writable_roots/)
+  assert.doesNotMatch(wrapped, /sandbox_workspace_write\.network_access/)
+})
+
+test('codex no-net external fence preserves network-off in the lease', () => {
+  const cwd = tmpdir()
+  const policy = resolveLaunchPolicy({
+    spawnPolicy: { capability: 'write', policy: 'cwd', network: false },
+    harness: 'codex',
+    model: 'gpt-5.5',
+    cwd,
+    env: {},
+  })
+  assert.equal(policy.policyName, 'cwd')
+  assert.equal(policy.leasePolicy.policy, 'cwd')
+  assert.equal(policy.leasePolicy.network, false)
+  const settings = fenceSettings(policy.leasePolicy, { api: 'http://127.0.0.1:5176' })
+  assert.notDeepEqual(settings.network.allowedDomains, ['*'])
+})
+
+test('claude built-in write stays on the global-off classifier path', () => {
   const policy = resolveLaunchPolicy({
     spawnPolicy: { capability: 'write', policy: 'cwd' },
     harness: 'claude',

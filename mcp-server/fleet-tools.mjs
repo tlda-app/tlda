@@ -1470,6 +1470,7 @@ export function getFleetTools() {
           effort: { type: 'string', description: 'Effort level: low|medium|high|xhigh|max (default: inherit global config).' },
           kind: { type: 'string', description: 'Agent runtime/harness (claude, goose, codex).' },
           capability: { type: 'string', description: 'Requested capability: read, write, tlda-write, or full. (Internet is always on; there is no network capability to request.)' },
+          policy: { type: 'string', description: 'Force an explicit fenced launch at the requested capability; does not raise the capability grant.' },
           mode: { type: 'string', description: 'Harness-specific launch mode projection for claude (e.g. plan, default, auto). Capability remains the durable authority.' },
           phase: { type: 'string', enum: ['dawn', 'day', 'dusk'], description: 'Phase slot in the lineage. Rejects if slot is occupied. Default: day for fresh agents joining a lineage.' },
         },
@@ -3611,6 +3612,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
         cwd: args.cwd,
         mode: args.mode,
         capability: args.capability,
+        policy: args.policy,
       }, { timeoutMs: SPAWN_WS_TIMEOUT_MS });
       if (result?.ok === false || result?.error) {
         return { content: [{ type: 'text', text: `spawn failed: ${result.error || JSON.stringify(result)}` }], isError: true };

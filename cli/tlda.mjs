@@ -1517,7 +1517,9 @@ async function runFleetSpawn(spawnArgs) {
   const refresh = hasRawFlag(spawnArgs, 'refresh')
   const fresh = hasRawFlag(spawnArgs, 'fresh')
   const name = positionalFromRaw(spawnArgs, 0)
-  const requestedCapability = flagFromRaw(spawnArgs, 'capability') || flagFromRaw(spawnArgs, 'spawn-capability') || undefined
+  const policyArg = flagFromRaw(spawnArgs, 'policy')
+  const capabilityArg = flagFromRaw(spawnArgs, 'capability') || flagFromRaw(spawnArgs, 'spawn-capability') || undefined
+  const requestedCapability = capabilityArg || (policyArg != null ? 'write' : undefined)
   const params = {
     spawnMode: session ? 'session' : (refresh ? 'refresh' : (fresh ? 'fresh' : 'respawn')),
     name,
@@ -1528,6 +1530,7 @@ async function runFleetSpawn(spawnArgs) {
     effort: flagFromRaw(spawnArgs, 'effort') || undefined,
     permissionMode: flagFromRaw(spawnArgs, 'mode') || undefined,
     requestedCapability,
+    explicitPolicy: policyArg != null,
     sessionId: session || undefined,
     enroll: hasRawFlag(spawnArgs, 'enroll'),
   }
