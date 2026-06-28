@@ -49,7 +49,7 @@ import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore, createTemporaryMarkdownColumn } from './FleetPillShape'
 import { agentDisplayName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
 import { ChatComposer } from './ChatComposer'
-import { decideFollowTransition } from './chatScrollIntent.mjs'
+import { decideFollowTransition, shouldConvergeToBottom, shouldGlueTailChange } from './chatScrollIntent.mjs'
 import { AgentName, PhaseIcon } from './PhaseIcon'
 import { baseName, phaseFromName } from '../../shared/lineage-name.mjs'
 import { dragCoordinator } from './dragCoordinator'
@@ -2623,6 +2623,11 @@ function FleetChatInner({ shape }: { shape: any }) {
     items.push({ key: '__status__', html: '', _status: true })
     return items
   }, [rawItems])
+  const tailMessageKey = useMemo(() => {
+    const m = chatMessages[chatMessages.length - 1] as any
+    if (!m) return ''
+    return String(m._dbId ?? m._tempId ?? `${m.timestamp}:${m.from}`)
+  }, [chatMessages])
 
   useLayoutEffect(() => {
     const prevHeight = pendingWindowRestoreHeightRef.current
@@ -3456,6 +3461,16 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
   }, [allItems.length, glueToBottom])
 
+  const prevTailMessageKeyRef = useRef(tailMessageKey)
+  useLayoutEffect(() => {
+    const prev = prevTailMessageKeyRef.current
+    prevTailMessageKeyRef.current = tailMessageKey
+    if (shouldGlueTailChange(prev, tailMessageKey, { scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })) {
+      log.debug('chat-scroll', 'bottom glue on tail change', { prev, tail: tailMessageKey, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
+      glueToBottom()
+    }
+  }, [tailMessageKey, glueToBottom])
+
   // ── Single source of follow-intent: scrollTop-DELTA on the real container ──
   // Every path that scrolls the chat log fires a native 'scroll' event on
   // .fleet-chat-log: CanvasClipPanel's wheel handler (scrollable.scrollTop +=
@@ -3507,6 +3522,22 @@ function FleetChatInner({ shape }: { shape: any }) {
     el.addEventListener('scroll', handle, { passive: true })
     return () => el.removeEventListener('scroll', handle)
   }, [chatLogEl, anchorRenderWindow, resetRenderWindowToTail])
+
+  // Convergence watchdog — the backstop that was simplified away in b5e24e35.
+  // Most follow paths are event-driven, but Virtuoso can land short while rows
+  // are still being measured, and ring-buffer eviction can replace the list
+  // without increasing item count. If we still intend to follow and a large gap
+  // persists, re-apply the virtualization-aware pin until the tail converges.
+  useEffect(() => {
+    const el = chatLogEl
+    if (!el) return
+    const id = setInterval(() => {
+      if (userScrolledUpRef.current && !hardLockedRef.current) return
+      const gap = el.scrollHeight - (el.scrollTop + el.clientHeight)
+      if (shouldConvergeToBottom(gap, { scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })) pinHard()
+    }, 200)
+    return () => clearInterval(id)
+  }, [chatLogEl, pinHard])
 
   // Refilter → bottom. Changing the filter swaps the whole rendered list out
   // from under Virtuoso; the scroll-position reset effect above (keyed on

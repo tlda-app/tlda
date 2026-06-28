@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { decideFollowTransition, FOLLOW_BOTTOM_EPS } from '../src/shapes/chatScrollIntent.mjs'
+import {
+  decideFollowTransition,
+  FOLLOW_BOTTOM_EPS,
+  FOLLOW_CONVERGENCE_GAP,
+  shouldConvergeToBottom,
+  shouldGlueTailChange,
+} from '../src/shapes/chatScrollIntent.mjs'
 
 // Driver: replays a sequence of scroll-event samples through decideFollowTransition
 // exactly as the useEffect handler in FleetChatShape does — threading lastTop /
@@ -134,4 +140,40 @@ test('H: resume threshold absorbs the status footer but not a real gap', () => {
     [{ top: 520, height: 1300 }], // moved down a little but still far from bottom
   )
   assert.equal(justOutside.actions[0], 'none', 'still well above bottom → no resume')
+})
+
+test('I: convergence watchdog pins only while following or hard-locked', () => {
+  assert.equal(
+    shouldConvergeToBottom(FOLLOW_CONVERGENCE_GAP + 1, { scrolledUp: false, hardLocked: false }),
+    true,
+    'following + persistent gap should re-pin',
+  )
+  assert.equal(
+    shouldConvergeToBottom(FOLLOW_CONVERGENCE_GAP + 1, { scrolledUp: true, hardLocked: false }),
+    false,
+    'reading history must not be yanked down',
+  )
+  assert.equal(
+    shouldConvergeToBottom(FOLLOW_CONVERGENCE_GAP + 1, { scrolledUp: true, hardLocked: true }),
+    true,
+    'hard-lock overrides reading state',
+  )
+})
+
+test('J: tail replacement glues even when list length is constant', () => {
+  assert.equal(
+    shouldGlueTailChange('db:500', 'db:501', { scrolledUp: false, hardLocked: false }),
+    true,
+    'new tail while following should glue, including ring-buffer oldest eviction',
+  )
+  assert.equal(
+    shouldGlueTailChange('db:500', 'db:501', { scrolledUp: true, hardLocked: false }),
+    false,
+    'new tail while reading history must not yank down',
+  )
+  assert.equal(
+    shouldGlueTailChange('db:501', 'db:501', { scrolledUp: false, hardLocked: false }),
+    false,
+    'same tail is not a new event',
+  )
 })

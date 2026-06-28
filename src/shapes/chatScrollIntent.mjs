@@ -10,6 +10,7 @@
 
 export const FOLLOW_BOTTOM_EPS = 120 // absorbs the ~40px status footer below the last data item
 export const UP_JITTER_EPS = 4 // ignore sub-pixel / rounding scroll noise
+export const FOLLOW_CONVERGENCE_GAP = 200
 
 /**
  * @param {{top:number, height:number, clientHeight:number, lastTop:number, lastHeight:number}} sample
@@ -49,4 +50,12 @@ export function decideFollowTransition(sample, state) {
     return { scrolledUp: false, action: state.scrolledUp ? 'follow-on' : 'none' }
   }
   return { scrolledUp: state.scrolledUp, action: 'none' }
+}
+
+export function shouldConvergeToBottom(gap, state) {
+  return gap > FOLLOW_CONVERGENCE_GAP && (!state.scrolledUp || state.hardLocked)
+}
+
+export function shouldGlueTailChange(prevTail, nextTail, state) {
+  return !!nextTail && nextTail !== prevTail && (!state.scrolledUp || state.hardLocked)
 }
