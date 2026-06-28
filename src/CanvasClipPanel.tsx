@@ -53,6 +53,7 @@ interface CanvasClipWMSurface {
 const wmSurfaceRegistry = new Map<string, {
   surface: CanvasClipWMSurface
   setCamera: (camera: { x: number; y: number; z: number }) => void
+  syncViewportCamera: (camera: { x: number; y: number; z: number }) => void
 }>()
 
 function sameCamera(a: { x: number; y: number; z: number } | null, b: { x: number; y: number; z: number }) {
@@ -66,6 +67,12 @@ function wmSurfaceCamera(surface: CanvasClipWMSurface, fullViewport: boolean) {
   return { x: transform.x, y: transform.y, z: transform.scale }
 }
 
+function applyViewportCameraToDom(canvas: HTMLDivElement | null, camera: { x: number; y: number; z: number }) {
+  const htmlLayer = canvas?.querySelector<HTMLElement>('.tl-html-layer.tl-shapes')
+  if (!htmlLayer) return
+  htmlLayer.style.transform = `scale(${camera.z}) translate(${camera.x}px,${camera.y}px)`
+}
+
 function setSurfaceCamera(surface: CanvasClipWMSurface, camera: { x: number; y: number; z: number }) {
   const layer = surface.wm.getLayer(surface.layerId)
   if (layer.policy.x === 'pin' && layer.policy.y === 'pin' && layer.policy.zoom === 'lock') {
@@ -74,6 +81,16 @@ function setSurfaceCamera(surface: CanvasClipWMSurface, camera: { x: number; y: 
     return
   }
   surface.wm.setCamera(surface.layerId, camera)
+}
+
+export function syncCanvasClipPanelViewportCamera(
+  viewportId: string,
+  camera: { x: number; y: number; z: number },
+): boolean {
+  const registered = wmSurfaceRegistry.get(viewportId)
+  if (!registered) return false
+  registered.syncViewportCamera(camera)
+  return true
 }
 
 export interface ClipBounds {
@@ -127,7 +144,6 @@ export function CanvasClipPanel({
 }: CanvasClipPanelProps) {
   const panelRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLDivElement>(null)
-  const [wmCameraTick, setWmCameraTick] = useState(0)
   const generatedViewportId = useMemo(() => `clip-panel-${Math.random().toString(36).slice(2, 9)}`, [])
   const viewportId = externalViewportId ?? generatedViewportId
 
@@ -180,16 +196,23 @@ export function CanvasClipPanel({
 
   useEffect(() => {
     if (!wmSurface) return
+    const syncViewportCamera = (camera: { x: number; y: number; z: number }) => {
+      const viewport = getOptionalViewport(mainEditor, viewportId as TLViewportId)
+      if (viewport?.screenBounds) {
+        mainEditor.updateViewport(viewportId as TLViewportId, { camera })
+      }
+      applyViewportCameraToDom(canvasRef.current, camera)
+    }
     const setCamera = (camera: { x: number; y: number; z: number }) => {
       setSurfaceCamera(wmSurface, camera)
-      setWmCameraTick(t => t + 1)
+      syncViewportCamera(wmSurfaceCamera(wmSurface, fullViewport))
     }
-    wmSurfaceRegistry.set(viewportId, { surface: wmSurface, setCamera })
+    wmSurfaceRegistry.set(viewportId, { surface: wmSurface, setCamera, syncViewportCamera })
     return () => {
       const registered = wmSurfaceRegistry.get(viewportId)
       if (registered?.surface === wmSurface) wmSurfaceRegistry.delete(viewportId)
     }
-  }, [viewportId, wmSurface])
+  }, [mainEditor, viewportId, wmSurface, fullViewport])
 
   // Expose the main editor to consumers via onEditorMount.
   // With the fork viewport there is no separate overlay editor — consumers
@@ -207,7 +230,7 @@ export function CanvasClipPanel({
   // FleetChatInner/FleetAgentsInner (the remount bug, 2026-06-22, commit 1517e737).
   const stableCameraRef = useRef<{ x: number; y: number; z: number } | null>(null)
   const [interactiveCamera, setInteractiveCamera] = useState<{ x: number; y: number; z: number } | null>(null)
-  const plannedCamera = useMemo(() => {
+  const plannedCamera = (() => {
     const next = (() => {
       if (wmSurface) return wmSurfaceCamera(wmSurface, fullViewport)
       if (!bounds) return { x: 0, y: 0, z: 1 }
@@ -221,7 +244,7 @@ export function CanvasClipPanel({
     if (prev && prev.x === next.x && prev.y === next.y && prev.z === next.z) return prev
     stableCameraRef.current = next
     return next
-  }, [bounds, panelWidth, maxHeightFraction, lockCamera, wmSurface, wmCameraTick, fullViewport])
+  })()
   const camera = interactiveCamera ?? plannedCamera
 
   useEffect(() => {

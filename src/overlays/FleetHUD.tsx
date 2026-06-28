@@ -8,9 +8,8 @@
  * Pointer events pass through to the main canvas for non-fleet areas.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { react } from 'tldraw'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
-import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
+import { CanvasClipPanel, syncCanvasClipPanelViewportCamera, type ClipBounds } from '../CanvasClipPanel'
 import { useFleetIdentity } from '../fleet-data-adapter'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getDeviceId, isDeviceReady, whenDeviceReady } from '../fleet/fleet-data.mjs'
@@ -317,8 +316,6 @@ export function FleetHUD({
   const [deviceReady, setDeviceReady] = useState(isDeviceReady())
   const [expanded, setExpanded] = useState(() => localStorage.getItem('fleet-hud-expanded') === '1')
   const [fleetBounds, setFleetBounds] = useState<ClipBounds | null>(() => identityId ? getFleetBounds(mainEditor) : null)
-  // WM tick used to re-render the fork viewport camera after event-driven WM updates.
-  const [wmCameraTick, setWmCameraTick] = useState(0)
   // True once document page shapes are present — panOffset must not be computed before this.
   // On browser restore, fleet shapes may load before SVG pages, causing panOffset to use
   // the window.innerWidth/2 fallback and place fleet shapes inside the document text.
@@ -348,7 +345,7 @@ export function FleetHUD({
     return () => { cancelled = true }
   }, [deviceReady])
 
-  const applyHudAnchor = useCallback((anchor: FleetHudAnchor, options: { resetBaseCamera?: boolean; tick?: boolean } = {}) => {
+  const applyHudAnchor = useCallback((anchor: FleetHudAnchor, options: { resetBaseCamera?: boolean; syncViewport?: boolean } = {}) => {
     hudAnchorRef.current = anchor
     if (options.resetBaseCamera !== false) hudBaseCameraRef.current = mainEditor.getCamera()
     configureFleetHudOverlayLayer(hudWm, {
@@ -357,8 +354,10 @@ export function FleetHUD({
       mainCamera: mainEditor.getCamera(),
       baseCamera: hudBaseCameraRef.current,
     })
-    if (options.tick !== false) setWmCameraTick(t => t + 1)
-  }, [hudWm, mainEditor])
+    if (options.syncViewport !== false) {
+      syncCanvasClipPanelViewportCamera(viewportId, readFleetHudOverlayLayer(hudWm).camera)
+    }
+  }, [hudWm, mainEditor, viewportId])
 
   const readHudCameraAnchor = useCallback((): FleetHudAnchor | null => {
     const anchor = hudAnchorRef.current
@@ -492,7 +491,7 @@ export function FleetHUD({
   if (!ignoreSavedAnchorRef.current && hudAnchorRef.current === null) {
     const anchor = mainEditor.getShape(getMyAnchorId() as any) as any
     if (anchor?.meta?.panOffset !== undefined) {
-      applyHudAnchor({ panOffset: anchor.meta.panOffset, cameraY: anchor.meta.cameraY }, { tick: false })
+      applyHudAnchor({ panOffset: anchor.meta.panOffset, cameraY: anchor.meta.cameraY }, { syncViewport: false })
     }
   }
   const phoneLayout = isPhoneFleetLayout(mainEditor)
@@ -518,7 +517,7 @@ export function FleetHUD({
       layoutDx: off.dx,
       topPad: activeTopPad,
     })
-    applyHudAnchor(anchor)
+    applyHudAnchor(anchor, { syncViewport: false })
     userPannedRef.current = false
     return true
   }, [activeTopPad, applyHudAnchor, docShapesReady, mainEditor])
@@ -731,7 +730,12 @@ export function FleetHUD({
   // screen-pixel motion and the overlay layer inherits only X.
   useEffect(() => {
     if (!expanded) return
-    let lastCam = mainEditor.getCamera()
+    const initialCamera = mainEditor.getCamera()
+    let lastCam: { x: number; y: number; z: number } = {
+      x: initialCamera.x,
+      y: initialCamera.y,
+      z: initialCamera.z,
+    }
     const readinessWindow = window as Window & {
       __tldaCameraRestoredAt?: number
       __tldaPhoneCameraSettlingUntil?: number
@@ -740,7 +744,8 @@ export function FleetHUD({
     const onCameraRestored = () => { cameraRestored = true }
     window.addEventListener('camera-restored', onCameraRestored)
     const fallbackTimer = setTimeout(() => { cameraRestored = true }, 5000)
-    const stop = react('fleet-hud-main-camera', () => {
+    let frame = 0
+    const updateFromCamera = () => {
       const cam = mainEditor.getCamera()
       if (cam.x === lastCam.x && cam.z === lastCam.z) return
 
@@ -764,6 +769,7 @@ export function FleetHUD({
             mainCamera: cam,
             baseCamera: hudBaseCameraRef.current,
           })
+          syncCanvasClipPanelViewportCamera(viewportId, readFleetHudOverlayLayer(hudWm).camera)
           const hudCameraAnchor = readHudCameraAnchor()
           if (hudCameraAnchor && cam.z === lastCam.z) {
             userPannedRef.current = true
@@ -775,11 +781,15 @@ export function FleetHUD({
           probe.record('hud', 'hud-pan-camera-change', performance.now() - t0, { dx: cam.x - lastCam.x })
         }
       }
-      lastCam = cam
-      setWmCameraTick(t => t + 1)
-    })
+      lastCam = { x: cam.x, y: cam.y, z: cam.z }
+    }
+    const loop = () => {
+      updateFromCamera()
+      frame = requestAnimationFrame(loop)
+    }
+    frame = requestAnimationFrame(loop)
     return () => {
-      stop()
+      cancelAnimationFrame(frame)
       window.removeEventListener('camera-restored', onCameraRestored)
       clearTimeout(fallbackTimer)
     }
@@ -864,7 +874,6 @@ export function FleetHUD({
     // ability to interact with chat without switching tools. Skip judged the
     // tradeoff bad. Reverting until we have a drag-only or pointer-down-only
     // gate that keeps chat interactive on tap.
-    void react
     el.classList.remove('tool-passes-through')
   }, [mainEditor])
 
@@ -1088,10 +1097,6 @@ export function FleetHUD({
 
   const activeFleetBounds = readMaintainedFleetBounds() || fleetBounds
 
-  // Fleet shapes rendered at z=1 (fixed size). X position computed dynamically
-  // from document's screen position each render. Y frozen on first expand.
-  void wmCameraTick
-
   // Camera anchor: computed once on first expand from the document's current
   // screen position, then held by the WM overlay layer. X tracks pan only (no
   // zoom). Y is fixed after initial layout.
@@ -1127,7 +1132,7 @@ export function FleetHUD({
       layoutDx: off.dx,
       topPad: activeTopPad,
     })
-    applyHudAnchor(anchor, { tick: false })
+    applyHudAnchor(anchor, { syncViewport: false })
     // This is a *derived default*, not a user-chosen position. Do NOT persist it:
     // a saved anchor may simply be unsynced (large multi-machine rooms deliver it
     // in a later chunk), and saving the default here would overwrite the real
@@ -1196,7 +1201,7 @@ export function FleetHUD({
           layoutDx: off.dx,
           topPad: activeTopPad,
         })
-        applyHudAnchor(anchor, { tick: false })
+        applyHudAnchor(anchor, { syncViewport: false })
         ignoreSavedAnchorRef.current = true
         userPannedRef.current = false
       }
