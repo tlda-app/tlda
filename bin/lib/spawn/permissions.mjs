@@ -1,10 +1,12 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { normalizeSpawnPolicy } from '../../../server/lib/spawn-policy.mjs'
+import { normalizeSpawnPolicy, projectCapabilityToMode } from '../../../server/lib/spawn-policy.mjs'
 import { repoRoot } from './identity.mjs'
 
 const SANDBOX_POLICIES = new Set(['no-dev', 'cwd', 'tlda-projects', 'unsandboxed'])
+const BUILTIN_POLICY_NAMES = new Set(['read', 'write', 'tlda-write', 'full'])
+const FENCE_GLOBALLY_DISABLED = true
 const DEFAULT_READ_ROOTS = ['~/work']
 const DEFAULT_OPTIONS = { network: false, git: 'read', artifacts: true }
 const DEFAULT_TRUSTED_MCP_SERVERS = { tlda: { defaultToolsApprovalMode: 'approve' } }
@@ -38,6 +40,20 @@ function sandboxConfig(config = {}) {
   if (cfg == null) return {}
   if (typeof cfg !== 'object' || Array.isArray(cfg)) throw new Error('agentSandbox must be an object')
   return cfg
+}
+
+function truthyEnv(value) {
+  if (value == null || value === '') return false
+  return !['0', 'false', 'off', 'no'].includes(String(value).trim().toLowerCase())
+}
+
+function permissionClassifierDisabled(config = {}, env = process.env) {
+  return truthyEnv(env.TLDA_DISABLE_PERMISSION_CLASSIFIER)
+    || sandboxConfig(config).disablePermissionsClassifier === true
+}
+
+function isExplicitPolicy(normalized, explicitPolicy = false) {
+  return !!(explicitPolicy || (normalized?.name && !BUILTIN_POLICY_NAMES.has(normalized.name)))
 }
 
 function runnerFromConfig(cfg) {
@@ -172,5 +188,37 @@ export function resolveLeasePolicy({ spawnPolicy, harness, model, cwd, config = 
       trusted_mcp_servers: trusted,
       runner: runnerFromConfig(cfg),
     },
+  }
+}
+
+export function resolveLaunchPolicy({
+  spawnPolicy,
+  requestedCapability,
+  harness,
+  model,
+  cwd,
+  config = {},
+  permissionMode,
+  mode,
+  explicitPolicy = false,
+  env = process.env,
+} = {}) {
+  const requestedPolicy = normalizeSpawnPolicy(spawnPolicy || requestedCapability, null)
+  const useFence = !!requestedPolicy && (!FENCE_GLOBALLY_DISABLED || isExplicitPolicy(requestedPolicy, explicitPolicy))
+  const leaseResolution = useFence
+    ? resolveLeasePolicy({ spawnPolicy: requestedPolicy, harness, model, cwd, config })
+    : { policyName: requestedPolicy ? 'unsandboxed' : null, devTools: true, leasePolicy: null }
+  const explicitMode = permissionMode ?? mode
+  const effectivePermissionMode = permissionClassifierDisabled(config, env)
+    ? 'bypassPermissions'
+    : (explicitMode ?? (leaseResolution.leasePolicy
+        ? 'bypassPermissions'
+        : (requestedPolicy?.capability ? projectCapabilityToMode(requestedPolicy.capability) : undefined)))
+  return {
+    ...leaseResolution,
+    spawnPolicy: requestedPolicy,
+    permissionMode: effectivePermissionMode,
+    classifierDisabled: permissionClassifierDisabled(config, env),
+    fenceGloballyDisabled: FENCE_GLOBALLY_DISABLED,
   }
 }

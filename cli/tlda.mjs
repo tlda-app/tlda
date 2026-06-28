@@ -1515,6 +1515,7 @@ async function runFleetSpawn(spawnArgs) {
   const refresh = hasRawFlag(spawnArgs, 'refresh')
   const fresh = hasRawFlag(spawnArgs, 'fresh')
   const name = positionalFromRaw(spawnArgs, 0)
+  const requestedCapability = flagFromRaw(spawnArgs, 'capability') || flagFromRaw(spawnArgs, 'spawn-capability') || undefined
   const params = {
     spawnMode: session ? 'session' : (refresh ? 'refresh' : (fresh ? 'fresh' : 'respawn')),
     name,
@@ -1524,11 +1525,12 @@ async function runFleetSpawn(spawnArgs) {
     cwd: flagFromRaw(spawnArgs, 'cwd') || undefined,
     effort: flagFromRaw(spawnArgs, 'effort') || undefined,
     permissionMode: flagFromRaw(spawnArgs, 'mode') || undefined,
+    requestedCapability,
     sessionId: session || undefined,
     enroll: hasRawFlag(spawnArgs, 'enroll'),
   }
   if (!params.name && !params.sessionId) {
-    console.error(red('Usage: tlda agent spawn-local [--fresh|--refresh|--session uuid] <agent> [--model model] [--kind kind] [--cwd path]'))
+    console.error(red('Usage: tlda agent spawn-local [--fresh|--refresh|--session uuid] <agent> [--model model] [--kind kind] [--cwd path] [--capability read|write|tlda-write|full]'))
     process.exit(1)
   }
   try {
@@ -1822,7 +1824,7 @@ Usage:
   tlda agent spawn <agent>
   tlda agent spawn --fresh <name>
   tlda agent spawn --session <uuid> [--enroll] [name]
-  tlda agent spawn-local <agent>
+  tlda agent spawn-local <agent> [--capability read|write|tlda-write|full]
   tlda agent move <agent> --to <machine>
   tlda agent check-ready <agent> [--timeout seconds]
   tlda agent attach <agent>
@@ -1841,6 +1843,7 @@ Network:
 
 spawn routes through the fleet server and target daemon; spawn-local directly invokes
 the local primitive on this machine.
+Set TLDA_DISABLE_PERMISSION_CLASSIFIER=1 or agentSandbox.disablePermissionsClassifier=true only as a spawn-time break-glass to launch Claude with --dangerously-skip-permissions.
 move must be run on the agent's current machine; only the destination is remote.
 The capability command is operator-only: it refuses from fleet agent env/tmux context.
 check-ready verifies registry + local tmux/runtime + recent register/my_task evidence.

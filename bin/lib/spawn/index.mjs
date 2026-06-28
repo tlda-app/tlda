@@ -4,7 +4,7 @@ import { inferHarnessKind } from './models.mjs'
 import { checkFreshNameAvailable, ensureServer, findAgent, markAgentDead, resolveApi, waitForAwakeRegistration, wsRegister } from './register.mjs'
 import { injectClaudePrompt, injectCodexPrompt, sessionHasRuntime, spawnTmux, uniqueSessionName } from './tmux.mjs'
 import { wrapSandboxCmd } from './fence.mjs'
-import { codexSandboxProjection, resolveLeasePolicy, sandboxMetadata } from './permissions.mjs'
+import { codexSandboxProjection, resolveLaunchPolicy, sandboxMetadata } from './permissions.mjs'
 import {
   codexRolloutPath,
   findClaudeSession,
@@ -52,6 +52,12 @@ function metadataOf(agent) {
 function resolveAgentKind(agent, rawModel, requestedKind) {
   const meta = metadataOf(agent)
   return requestedKind || agent?.kind || meta.kind || inferHarnessKind(null, rawModel)
+}
+
+function assertNativeTools(policy, requestedKind) {
+  if (!policy.devTools && (requestedKind === 'claude' || requestedKind === 'codex')) {
+    throw new SpawnError('launch-failed', `${requestedKind} cannot satisfy sandbox policy "${policy.policyName}" without native developer tools`, { policyName: policy.policyName })
+  }
 }
 
 async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, model, name, cwd, effort, permissionMode, spawnPolicy, api, dnsAlias, resumeId = null, includePrompt = true, leasePolicy = null }) {
@@ -109,16 +115,18 @@ async function spawnFresh(params) {
     tmuxSession = await uniqueSessionName(`fleet-${sanitizeSessionName(name)}`, { tmuxSocket: params.tmuxSocket })
     model = adapter.resolveModel(params.model)
     const dnsAlias = await resolveDnsAlias(api)
-    const { policyName, devTools, leasePolicy } = resolveLeasePolicy({
+    const launchPolicy = resolveLaunchPolicy({
       spawnPolicy: params.spawnPolicy,
+      requestedCapability: params.requestedCapability,
       harness: requestedKind,
       model,
       cwd,
       config: params.config,
+      permissionMode: params.permissionMode,
+      mode: params.mode,
+      explicitPolicy: params.explicitPolicy,
     })
-    if (!devTools && (requestedKind === 'claude' || requestedKind === 'codex')) {
-      throw new SpawnError('launch-failed', `${requestedKind} cannot satisfy sandbox policy "${policyName}" without native developer tools`, { policyName })
-    }
+    assertNativeTools(launchPolicy, requestedKind)
     await checkFreshNameAvailable(name, { api, serverUp })
     await wsRegister({
       fleetId,
@@ -130,8 +138,8 @@ async function spawnFresh(params) {
       refresh: true,
       shell: true,
       kind: requestedKind,
-      spawnCapability: params.spawnPolicy?.capability || params.requestedCapability,
-      metadata: sandboxMetadata(params.spawnPolicy, leasePolicy),
+      spawnCapability: launchPolicy.spawnPolicy?.capability || params.requestedCapability,
+      metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
       machineId: params.machineId,
       api,
     })
@@ -152,11 +160,11 @@ async function spawnFresh(params) {
       name,
       cwd,
       effort: params.effort,
-      permissionMode: params.permissionMode ?? params.mode,
-      spawnPolicy: params.spawnPolicy,
+      permissionMode: launchPolicy.permissionMode,
+      spawnPolicy: launchPolicy.spawnPolicy,
       api,
       dnsAlias,
-      leasePolicy,
+      leasePolicy: launchPolicy.leasePolicy,
     })
     const launched = await spawnTmux(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket })
     if (!launched) {
@@ -214,16 +222,18 @@ async function spawnRespawn(params) {
   if (handle?.cwd) cwd = resolveSpawnCwd(handle.cwd)
   if (requestedKind === 'claude' && resumeId) stripSyntheticTail(resumeId)
   const dnsAlias = await resolveDnsAlias(api)
-  const { policyName, devTools, leasePolicy } = resolveLeasePolicy({
+  const launchPolicy = resolveLaunchPolicy({
     spawnPolicy: params.spawnPolicy || meta.spawnPolicy,
+    requestedCapability: params.requestedCapability,
     harness: requestedKind,
     model,
     cwd,
     config: params.config,
+    permissionMode: params.permissionMode,
+    mode: params.mode,
+    explicitPolicy: params.explicitPolicy,
   })
-  if (!devTools && (requestedKind === 'claude' || requestedKind === 'codex')) {
-    throw new SpawnError('launch-failed', `${requestedKind} cannot satisfy sandbox policy "${policyName}" without native developer tools`, { policyName })
-  }
+  assertNativeTools(launchPolicy, requestedKind)
   if (requestedKind === 'codex' && resumeId) {
     await wsRegister({
       fleetId,
@@ -234,7 +244,7 @@ async function spawnRespawn(params) {
       effort: params.effort || meta.effort,
       kind: requestedKind,
       sessionId: resumeId,
-      metadata: sandboxMetadata(params.spawnPolicy || meta.spawnPolicy, leasePolicy),
+      metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
       machineId: params.machineId,
       api,
     })
@@ -248,13 +258,13 @@ async function spawnRespawn(params) {
     name: friendlyName,
     cwd,
     effort: params.effort || meta.effort,
-    permissionMode: params.permissionMode ?? params.mode,
-    spawnPolicy: params.spawnPolicy || meta.spawnPolicy,
+    permissionMode: launchPolicy.permissionMode,
+    spawnPolicy: launchPolicy.spawnPolicy,
     api,
     dnsAlias,
     resumeId,
     includePrompt: !(requestedKind === 'claude' && resumeId),
-    leasePolicy,
+    leasePolicy: launchPolicy.leasePolicy,
   })
   const launched = await spawnTmux(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket })
   if (!launched) return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, alreadyAlive: true }
@@ -283,16 +293,18 @@ async function spawnRefresh(params) {
   const model = adapter.resolveModel(rawModel)
   const tmuxSession = agent.tmux_session || `fleet-${sanitizeSessionName(friendlyName)}`
   const dnsAlias = await resolveDnsAlias(api)
-  const { policyName, devTools, leasePolicy } = resolveLeasePolicy({
+  const launchPolicy = resolveLaunchPolicy({
     spawnPolicy: params.spawnPolicy || meta.spawnPolicy,
+    requestedCapability: params.requestedCapability,
     harness: requestedKind,
     model,
     cwd,
     config: params.config,
+    permissionMode: params.permissionMode,
+    mode: params.mode,
+    explicitPolicy: params.explicitPolicy,
   })
-  if (!devTools && (requestedKind === 'claude' || requestedKind === 'codex')) {
-    throw new SpawnError('launch-failed', `${requestedKind} cannot satisfy sandbox policy "${policyName}" without native developer tools`, { policyName })
-  }
+  assertNativeTools(launchPolicy, requestedKind)
   await wsRegister({
     fleetId,
     name: friendlyName,
@@ -302,8 +314,8 @@ async function spawnRefresh(params) {
     effort: params.effort || meta.effort,
     refresh: true,
     kind: requestedKind,
-    spawnCapability: (params.spawnPolicy || meta.spawnPolicy)?.capability || params.requestedCapability,
-    metadata: sandboxMetadata(params.spawnPolicy || meta.spawnPolicy, leasePolicy),
+    spawnCapability: launchPolicy.spawnPolicy?.capability || params.requestedCapability,
+    metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
     machineId: params.machineId,
     api,
   })
@@ -316,12 +328,12 @@ async function spawnRefresh(params) {
     name: friendlyName,
     cwd,
     effort: params.effort || meta.effort,
-    permissionMode: params.permissionMode ?? params.mode,
-    spawnPolicy: params.spawnPolicy || meta.spawnPolicy,
+    permissionMode: launchPolicy.permissionMode,
+    spawnPolicy: launchPolicy.spawnPolicy,
     api,
     dnsAlias,
     includePrompt: true,
-    leasePolicy,
+    leasePolicy: launchPolicy.leasePolicy,
   })
   const launched = await spawnTmux(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket })
   if (!launched) return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, alreadyAlive: true }
@@ -372,16 +384,18 @@ async function spawnCodexSession(params, { api, sessionId, codexPath }) {
   }
   if (params.enroll) await checkFreshNameAvailable(friendlyName, { api, serverUp: true })
   const dnsAlias = await resolveDnsAlias(api)
-  const { policyName, devTools, leasePolicy } = resolveLeasePolicy({
+  const launchPolicy = resolveLaunchPolicy({
     spawnPolicy: params.spawnPolicy,
+    requestedCapability: params.requestedCapability,
     harness: 'codex',
     model,
     cwd,
     config: params.config,
+    permissionMode: params.permissionMode,
+    mode: params.mode,
+    explicitPolicy: params.explicitPolicy,
   })
-  if (!devTools) {
-    throw new SpawnError('launch-failed', `codex cannot satisfy sandbox policy "${policyName}" without native developer tools`, { policyName })
-  }
+  assertNativeTools(launchPolicy, 'codex')
   await wsRegister({
     fleetId,
     name: friendlyName,
@@ -391,8 +405,8 @@ async function spawnCodexSession(params, { api, sessionId, codexPath }) {
     effort: params.effort,
     kind: 'codex',
     sessionId,
-    spawnCapability: params.spawnPolicy?.capability || params.requestedCapability,
-    metadata: sandboxMetadata(params.spawnPolicy, leasePolicy),
+    spawnCapability: launchPolicy.spawnPolicy?.capability || params.requestedCapability,
+    metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
     machineId: params.machineId,
     api,
   })
@@ -405,12 +419,12 @@ async function spawnCodexSession(params, { api, sessionId, codexPath }) {
     name: friendlyName,
     cwd,
     effort: params.effort,
-    permissionMode: params.permissionMode ?? params.mode,
-    spawnPolicy: params.spawnPolicy,
+    permissionMode: launchPolicy.permissionMode,
+    spawnPolicy: launchPolicy.spawnPolicy,
     api,
     dnsAlias,
     resumeId: sessionId,
-    leasePolicy,
+    leasePolicy: launchPolicy.leasePolicy,
   })
   const launched = await spawnTmux(tmuxSession, cwd, cmd, { sendKeys, tmuxSocket: params.tmuxSocket })
   if (!launched) return { ok: true, fleetId, tmuxSession, harness: 'codex', model, resumeId: sessionId, alreadyAlive: true }
@@ -438,16 +452,18 @@ async function spawnClaudeSession(params, { api, sessionId, identity }) {
   if (params.enroll) await checkFreshNameAvailable(friendlyName, { api, serverUp: true })
   stripSyntheticTail(sessionId)
   const dnsAlias = await resolveDnsAlias(api)
-  const { policyName, devTools, leasePolicy } = resolveLeasePolicy({
+  const launchPolicy = resolveLaunchPolicy({
     spawnPolicy: params.spawnPolicy,
+    requestedCapability: params.requestedCapability,
     harness: 'claude',
     model,
     cwd,
     config: params.config,
+    permissionMode: params.permissionMode,
+    mode: params.mode,
+    explicitPolicy: params.explicitPolicy,
   })
-  if (!devTools) {
-    throw new SpawnError('launch-failed', `claude cannot satisfy sandbox policy "${policyName}" without native developer tools`, { policyName })
-  }
+  assertNativeTools(launchPolicy, 'claude')
   await wsRegister({
     fleetId,
     name: friendlyName,
@@ -457,8 +473,8 @@ async function spawnClaudeSession(params, { api, sessionId, identity }) {
     effort: params.effort,
     kind: 'claude',
     sessionId,
-    spawnCapability: params.spawnPolicy?.capability || params.requestedCapability,
-    metadata: sandboxMetadata(params.spawnPolicy, leasePolicy),
+    spawnCapability: launchPolicy.spawnPolicy?.capability || params.requestedCapability,
+    metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
     machineId: params.machineId,
     api,
   })
@@ -471,13 +487,13 @@ async function spawnClaudeSession(params, { api, sessionId, identity }) {
     name: friendlyName,
     cwd,
     effort: params.effort,
-    permissionMode: params.permissionMode ?? params.mode,
-    spawnPolicy: params.spawnPolicy,
+    permissionMode: launchPolicy.permissionMode,
+    spawnPolicy: launchPolicy.spawnPolicy,
     api,
     dnsAlias,
     resumeId: sessionId,
     includePrompt: false,
-    leasePolicy,
+    leasePolicy: launchPolicy.leasePolicy,
   })
   const launched = await spawnTmux(tmuxSession, cwd, cmd, { autoDismiss: true, sendKeys, tmuxSocket: params.tmuxSocket })
   if (!launched) return { ok: true, fleetId, tmuxSession, harness: 'claude', model, resumeId: sessionId, alreadyAlive: true }

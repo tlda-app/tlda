@@ -99,7 +99,7 @@ import {
   unlinkPidfileIfOwnPid,
 } from './lib/daemon-guards.mjs'
 import { codexRolloutBelongsToAgent, codexRolloutHasOwnerEvidence, resolveTranscript } from './lib/resolve-transcript.mjs'
-import { projectCapabilityToMode, resolveDaemonSpawnGrant } from '../server/lib/spawn-policy.mjs'
+import { resolveDaemonSpawnGrant } from '../server/lib/spawn-policy.mjs'
 import { probeSpawnCapabilities } from './lib/spawn/capabilities.mjs'
 const log = createLogger('daemon')
 // CONFIG_DIR holds config.json, cursors, PID and log files. Defaults to
@@ -2533,7 +2533,6 @@ async function rpcSpawn({
   } catch (e) {
     return { ok: false, name: agentName, error: `spawn policy resolution failed: ${e.message}` }
   }
-  const launchMode = projectCapabilityToMode(grant.grantedCapability, mode)
   _activeSpawns.set(agentName, Date.now())
   try {
     const { spawn: nodeSpawn } = await import('./lib/spawn/index.mjs')
@@ -2547,7 +2546,7 @@ async function rpcSpawn({
       sessionId,
       enroll: !!enroll,
       effort,
-      permissionMode: launchMode,
+      permissionMode: mode,
       spawnPolicy: grant.grantedPolicy,
       machineId: MACHINE_ID,
       tmuxSocket: TMUX_SOCKET,

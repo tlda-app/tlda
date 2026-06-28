@@ -1205,6 +1205,7 @@ function findValidSession(agent) {
  *  @param {string}  [opts.effort]
  *  @param {string}  [opts.cwd]
  *  @param {string}  [opts.mode] - permission mode
+ *  @param {string}  [opts.capability] - requested spawn capability
  *  @returns {Promise<string>} spawn summary
  */
 async function runFleetSpawn(name, opts = {}) {
@@ -1216,6 +1217,7 @@ async function runFleetSpawn(name, opts = {}) {
     effort: opts.effort || undefined,
     cwd: opts.cwd || undefined,
     permissionMode: opts.mode || undefined,
+    requestedCapability: opts.capability || opts.spawnCapability || undefined,
   });
   return `${result.tmuxSession} (${result.fleetId})`;
 }

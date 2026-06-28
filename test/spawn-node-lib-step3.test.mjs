@@ -4,7 +4,8 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { fenceSettings, wrapSandboxCmd } from '../bin/lib/spawn/fence.mjs'
-import { codexSandboxProjection, resolveLeasePolicy } from '../bin/lib/spawn/permissions.mjs'
+import { codexSandboxProjection, resolveLaunchPolicy, resolveLeasePolicy } from '../bin/lib/spawn/permissions.mjs'
+import * as claude from '../bin/lib/spawn/harness/claude.mjs'
 import { findClaudeSession, findCodexRollout, scanClaudeSessionIdentity, stripSyntheticTail } from '../bin/lib/spawn/resume.mjs'
 import { claudeStartupDialogAction } from '../bin/lib/spawn/tmux.mjs'
 
@@ -112,4 +113,85 @@ test('fenced codex uses Codex danger-full-access under the outer fence', () => {
   )
   assert.equal(projection.sandboxMode, 'danger-full-access')
   assert.deepEqual(projection.workspaceWriteConfigArgs, [])
+})
+
+test('launch policy keeps built-in write unfenced while global fence is off', () => {
+  const policy = resolveLaunchPolicy({
+    spawnPolicy: { capability: 'write', policy: 'cwd' },
+    harness: 'claude',
+    model: 'claude-opus-4-8',
+    cwd: tmpdir(),
+  })
+  assert.equal(policy.fenceGloballyDisabled, true)
+  assert.equal(policy.policyName, 'unsandboxed')
+  assert.equal(policy.leasePolicy, null)
+  assert.equal(policy.permissionMode, 'default')
+  const cmd = claude.buildCmd({
+    fleetId: 'fleet:test',
+    tmuxSession: 'fleet-test',
+    model: 'claude-opus-4-8',
+    mode: policy.permissionMode,
+    includePrompt: false,
+    config: {},
+  })
+  assert.doesNotMatch(cmd, /--dangerously-skip-permissions/)
+  assert.match(cmd, /--permission-mode 'default'/)
+})
+
+test('explicit fenced claude launch bypasses the native permission classifier', () => {
+  const policy = resolveLaunchPolicy({
+    spawnPolicy: { capability: 'write', policy: 'cwd' },
+    harness: 'claude',
+    model: 'claude-opus-4-8',
+    cwd: tmpdir(),
+    explicitPolicy: true,
+  })
+  assert.equal(policy.policyName, 'cwd')
+  assert.equal(policy.leasePolicy.policy, 'cwd')
+  assert.equal(policy.permissionMode, 'bypassPermissions')
+  const cmd = claude.buildCmd({
+    fleetId: 'fleet:test',
+    tmuxSession: 'fleet-test',
+    model: 'claude-opus-4-8',
+    mode: policy.permissionMode,
+    includePrompt: false,
+    config: {},
+  })
+  assert.match(cmd, /--dangerously-skip-permissions/)
+  assert.doesNotMatch(cmd, /--permission-mode/)
+})
+
+test('permission-classifier off-switch forces claude bypass at spawn time', () => {
+  const envPolicy = resolveLaunchPolicy({
+    spawnPolicy: { capability: 'full', policy: 'unsandboxed' },
+    harness: 'claude',
+    model: 'claude-opus-4-8',
+    cwd: tmpdir(),
+    env: { TLDA_DISABLE_PERMISSION_CLASSIFIER: '1' },
+  })
+  assert.equal(envPolicy.leasePolicy, null)
+  assert.equal(envPolicy.permissionMode, 'bypassPermissions')
+
+  const configPolicy = resolveLaunchPolicy({
+    spawnPolicy: { capability: 'full', policy: 'unsandboxed' },
+    harness: 'claude',
+    model: 'claude-opus-4-8',
+    cwd: tmpdir(),
+    config: { agentSandbox: { disablePermissionsClassifier: true } },
+    env: {},
+  })
+  assert.equal(configPolicy.leasePolicy, null)
+  assert.equal(configPolicy.permissionMode, 'bypassPermissions')
+})
+
+test('direct requested capability lands in the shared launch-policy helper', () => {
+  const policy = resolveLaunchPolicy({
+    requestedCapability: 'write',
+    harness: 'claude',
+    model: 'claude-opus-4-8',
+    cwd: tmpdir(),
+  })
+  assert.equal(policy.spawnPolicy.capability, 'write')
+  assert.equal(policy.spawnPolicy.policy, 'cwd')
+  assert.equal(policy.permissionMode, 'default')
 })

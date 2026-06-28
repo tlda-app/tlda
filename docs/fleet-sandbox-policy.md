@@ -21,6 +21,8 @@ The harness should run as normally as possible inside that boundary. For Codex, 
 
 MCP approval prompts are not the security boundary. TLDA MCP tools should be trusted or denied by server-side policy and by the outer sandbox, not by asking Skip about routine `register`, `my_task`, `chat`, `read_doc`, etc.
 
+Break-glass: `TLDA_DISABLE_PERMISSION_CLASSIFIER=1` or `agentSandbox.disablePermissionsClassifier=true` disables Claude's permission classifier at spawn time by launching with `--dangerously-skip-permissions`. This is for misclassified trusted launches only; already-running agents must be respawned or refreshed to pick it up.
+
 ## Secondary Knobs
 
 Write scope is the core policy. Other grants are secondary knobs attached to the lease:

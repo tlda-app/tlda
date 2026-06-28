@@ -423,6 +423,11 @@ export function coherentSpawnPolicy(stored) {
 }
 
 export function projectCapabilityToMode(capability, explicitMode = null) {
+  // This is only the non-fenced default projection. The spawn launch helper in
+  // bin/lib/spawn/permissions.mjs must make the final decision because fenced
+  // launches need Claude's classifier bypassed and the emergency off-switches
+  // TLDA_DISABLE_PERMISSION_CLASSIFIER / agentSandbox.disablePermissionsClassifier
+  // intentionally force that bypass even without a fence.
   const cap = normalizeCapability(capability)
   if (explicitMode) return explicitMode
   if (cap === 'full') return 'auto'
