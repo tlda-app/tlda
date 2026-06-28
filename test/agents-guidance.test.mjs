@@ -12,15 +12,17 @@ test('generated AGENTS.md is current and has expanded includes', () => {
   assert.doesNotMatch(agents, /^@/m)
 })
 
-test('fleet harness prompts read AGENTS.md without double-reading CLAUDE.md', () => {
-  for (const prompt of [
-    claude.kickoffPrompt('alpha'),
-    codex.kickoffPrompt('beta'),
-  ]) {
-    assert.match(prompt, /read the project guidance in AGENTS\.md/)
-    assert.match(prompt, /Do not read CLAUDE\.md/)
-    assert.doesNotMatch(prompt, /read CLAUDE\.md.*read AGENTS\.md/i)
-  }
+test('Claude Code gets project guidance through the thin CLAUDE importer', () => {
+  assert.equal(fs.readFileSync('CLAUDE.md', 'utf8'), '@AGENTS.md\n')
+  assert.ok(fs.existsSync('AGENTS.md'))
+  assert.equal(claude.kickoffPrompt('alpha'), 'Call register(name="alpha") with the fleet MCP server. Then call my_task() to check for a pending task.')
+})
+
+test('non-Claude fleet prompts read AGENTS.md without double-reading CLAUDE.md', () => {
+  const codexPrompt = codex.kickoffPrompt('beta')
+  assert.match(codexPrompt, /read the project guidance in AGENTS\.md/)
+  assert.match(codexPrompt, /Do not read CLAUDE\.md/)
+  assert.doesNotMatch(codexPrompt, /read CLAUDE\.md.*read AGENTS\.md/i)
 
   const recipe = fs.readFileSync('recipes/fleet-deepseek.yaml', 'utf8')
   assert.match(recipe, /read the project guidance in `AGENTS\.md`/)
