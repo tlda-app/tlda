@@ -124,7 +124,7 @@ function stampNames(rows) {
 
 // Fleet state: in-memory
 const wsFleetClients = new Set()            // active /ws/fleet connections
-const agentFleetConnections = new Map()     // agent_id -> active /ws/fleet connection
+const agentFleetConnections = new Map()     // agent_id -> latest /ws/fleet connection
 
 // Daemon connections — keyed by machine_id. Each value is the live WS for
 // that machine's fleet-daemon. Used for RPC routing and for pushing
@@ -567,6 +567,13 @@ function broadcastFleet(msg) {
 }
 function broadcastEvent(type, data) {
   broadcastFleet({ event: type, data })
+}
+
+function hasOpenFleetSocketForAgent(agentId, exceptWs = null) {
+  for (const client of wsFleetClients) {
+    if (client !== exceptWs && client._tldaAgentId === agentId && client.readyState === 1) return true
+  }
+  return false
 }
 
 const spawnLibrarian = new SpawnLibrarian({
@@ -2887,7 +2894,9 @@ server.on('upgrade', async (req, socket, head) => {
           if (agentFleetConnections.get(ws._tldaAgentId) === ws) {
             agentFleetConnections.delete(ws._tldaAgentId)
           }
-          tldaFeedback.unsubscribeAll(ws._tldaAgentId)
+          if (!hasOpenFleetSocketForAgent(ws._tldaAgentId, ws)) {
+            tldaFeedback.unsubscribeAll(ws._tldaAgentId)
+          }
         }
       })
       ws.on('error', () => {
@@ -3031,19 +3040,9 @@ async function handleFleetWsMessage(ws, msg) {
     const { agent_id, id: msgId, name, tmux_session, cwd, labels, manager, session_id, metadata, machine_id, kind } = msg
     const agentId = agent_id || msgId
     if (!agentId) { error('missing id'); return }
-    const superseded = new Set()
-    const supersede = (priorWs) => {
-      if (!priorWs || priorWs === ws) return
-      if (superseded.has(priorWs)) return
-      superseded.add(priorWs)
-      console.log(`[fleet-ws] superseding existing connection for ${agentId}`)
-      priorWs.close(4000, 'superseded by newer registration')
-      priorWs.terminate()
-    }
-    supersede(agentFleetConnections.get(agentId))
-    for (const client of wsFleetClients) {
-      if (client !== ws && client._tldaAgentId === agentId) supersede(client)
-    }
+    // Duplicate clients are allowed to coexist. Closing an existing socket here
+    // is unsafe because fleet clients such as Todd auto-reconnect on close; two
+    // same-identity clients then repeatedly kick each other off the server.
     agentFleetConnections.set(agentId, ws)
     // Remember which agent owns this WS so we can clean up their tlda-feedback
     // subscriptions on close.

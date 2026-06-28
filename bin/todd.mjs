@@ -2098,7 +2098,12 @@ function connect() {
     } catch {}
   })
 
-  ws.on('close', () => {
+  ws.on('close', (code, reasonBuffer) => {
+    const reason = reasonBuffer?.toString?.() || ''
+    if (code === 4000 && reason.includes('superseded')) {
+      console.log(`[todd] websocket superseded by another registration; exiting instead of reconnecting`)
+      process.exit(0)
+    }
     console.log(`[todd] disconnected, reconnecting in ${reconnectDelay}ms...`)
     scheduleReconnect()
   })

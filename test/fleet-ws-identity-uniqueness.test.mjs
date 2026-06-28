@@ -2,8 +2,8 @@
 
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdirSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync, mkdirSync, rmSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { WebSocket } from 'ws'
@@ -12,6 +12,8 @@ process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
 
 const HERE = path.dirname(new URL(import.meta.url).pathname)
 const ROOT = path.resolve(HERE, '..')
+const hasLocalTls = existsSync(path.join(homedir(), '.config', 'tlda', 'localhost+2.pem')) &&
+  existsSync(path.join(homedir(), '.config', 'tlda', 'localhost+2-key.pem'))
 
 function waitFor(predicate, { timeout = 8000, interval = 100 } = {}) {
   return new Promise((resolve, reject) => {
@@ -54,10 +56,14 @@ function openRegisteredWs(server, id, name) {
   })
 }
 
-test('new registration for same fleet id evicts older fleet websocket', async () => {
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+test('new registration for same fleet id does not evict older fleet websocket', async () => {
   const tmp = path.join(tmpdir(), `fleet-ws-identity-${process.pid}-${Date.now()}`)
   const port = 5890 + Math.floor(Math.random() * 30)
-  const serverUrl = `http://127.0.0.1:${port}`
+  const serverUrl = `${hasLocalTls ? 'https' : 'http'}://127.0.0.1:${port}`
   mkdirSync(tmp, { recursive: true })
 
   const env = {
@@ -87,9 +93,12 @@ test('new registration for same fleet id evicts older fleet websocket', async ()
     first.on('close', () => { firstClosed = true })
 
     const second = await openRegisteredWs(serverUrl, 'fleet:dupe', 'dupe')
-    await waitFor(() => firstClosed)
+    await delay(300)
 
+    assert.equal(firstClosed, false, 'first duplicate socket must not be closed by server registration')
+    assert.equal(first.readyState, WebSocket.OPEN)
     assert.equal(second.readyState, WebSocket.OPEN)
+    first.close()
     second.close()
   } finally {
     proc.kill('SIGTERM')
