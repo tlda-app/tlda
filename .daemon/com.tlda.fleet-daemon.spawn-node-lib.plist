@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>FLEET_SPAWN_NODE</key>
+		<string>1</string>
+		<key>NODE_EXTRA_CA_CERTS</key>
+		<string>/Users/skip/Library/Application Support/mkcert/rootCA.pem</string>
+		<key>NODE_TLS_REJECT_UNAUTHORIZED</key>
+		<string>0</string>
+		<key>PATH</key>
+		<string>/Users/skip/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<key>TLDA_SERVER</key>
+		<string>https://tlda-fly.cormorant-matrix.ts.net</string>
+	</dict>
+	<key>KeepAlive</key>
+	<true/>
+	<key>Label</key>
+	<string>com.tlda.fleet-daemon</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/zsh</string>
+		<string>-fc</string>
+		<string>exec /opt/homebrew/bin/node --import tsx /Users/skip/work/tlda/.worktrees/spawn-node-lib/bin/fleet-daemon.mjs</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/Users/skip/.config/tlda/fleet-daemon.launchd.log</string>
+	<key>StandardOutPath</key>
+	<string>/Users/skip/.config/tlda/fleet-daemon.launchd.log</string>
+	<key>WorkingDirectory</key>
+	<string>/Users/skip/work/tlda/.worktrees/spawn-node-lib</string>
+</dict>
+</plist>

@@ -1,4 +1,4 @@
-# Python dependencies for the fleet Python tooling (bin/fleet-spawn.py et al.).
+# Python dependencies for remaining fleet Python tooling.
 # Install once:  pip install -r bin/requirements.txt
 #
 # fleet-spawn's ONLY non-stdlib import is `websocket` (the websocket-client

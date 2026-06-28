@@ -90,7 +90,6 @@ import {
   trimTerminalSeedBlankRows,
 } from '../shared/terminal-seed.mjs'
 import {
-  buildFleetSpawnArgs,
   decideMissingLiveness,
   detectSpawnStartupFailureTranscript,
   harnessKindForAgent,
@@ -101,6 +100,7 @@ import {
 } from './lib/daemon-guards.mjs'
 import { codexRolloutBelongsToAgent, codexRolloutHasOwnerEvidence, resolveTranscript } from './lib/resolve-transcript.mjs'
 import { projectCapabilityToMode, resolveDaemonSpawnGrant } from '../server/lib/spawn-policy.mjs'
+import { probeSpawnCapabilities } from './lib/spawn/capabilities.mjs'
 const log = createLogger('daemon')
 // CONFIG_DIR holds config.json, cursors, PID and log files. Defaults to
 // ~/.config/tlda. TLDA_DAEMON_CONFIG_DIR lets the E2E test start a second
@@ -1922,7 +1922,7 @@ async function rpcMirrorShadowRef({ project, hash, bundleBase64 }) {
 // separators (`:` for session:window) plus whitespace/control, so reject only
 // those and tolerate everything else. The old allowlist `[a-zA-Z0-9_.\-]` wrongly
 // rejected expressive agent names like `leverage?`, wedging auto-hibernate in a
-// retry loop. New spawns are sanitized at the source (fleet-spawn.py); this keeps
+// retry loop. New spawns are sanitized at the source; this keeps
 // the daemon tolerant of legacy sessions that already carry punctuation.
 const SAFE_SESSION_RE = /^[^\s:\x00-\x1f]+$/
 
@@ -2290,7 +2290,7 @@ async function rpcStartTerminalWatch({ tmux_session, agent_id, poll_ms }) {
   // absolute-position garble. Pinning (manual + a fixed size) removes the reflow at
   // the source; the resize also forces a one-time repaint that cleans any stale frame
   // left over from a previous width. New agents are already pinned at spawn
-  // (fleet-spawn.py) — this also covers agents that predate that.
+  // This also covers agents that predate spawn-side pinning.
   const PINNED_COLS = 120, PINNED_ROWS = 40
   try {
     await execFileP('tmux', [...TMUX_ARGS, 'set-option', '-t', tmux_session, 'window-size', 'manual'], { timeout: 3000 })
@@ -2414,13 +2414,6 @@ const STARTUP_FAILURE_PROBE_MS = Number(process.env.TLDA_SPAWN_STARTUP_FAILURE_P
 const SPAWN_LAUNCH_TIMEOUT_MS = Number(process.env.TLDA_SPAWN_LAUNCH_TIMEOUT_MS || 20000)
 const _reportedStartupFailures = new Set()
 
-function parseSpawnLaunch(stdout = '', fallbackName = null) {
-  const text = String(stdout || '')
-  const m = text.match(/(fleet-[^\s()]+)\s+\((fleet:[^)]+)\)/)
-  if (!m) return null
-  return { tmux_session: m[1], agent_id: m[2], name: fallbackName }
-}
-
 async function probeSpawnStartupFailure({ agentName, agent_id, tmux_session, harness, model, respawn }) {
   if (!agent_id || !tmux_session) return null
   const dedupKey = `${agent_id}:${tmux_session}`
@@ -2461,12 +2454,16 @@ async function rpcSpawn({
   doc,
   respawn,
   refresh,
+  session,
+  session_id,
+  enroll,
   effort,
   mode,
   requestedCapability,
   callerRung,
 }) {
-  const agentName = name || `agent-${Date.now().toString(36).slice(-4)}`
+  const sessionId = session || session_id
+  const agentName = name || (sessionId ? `session-${String(sessionId).slice(0, 8)}` : `agent-${Date.now().toString(36).slice(-4)}`)
   if (_activeSpawns.has(agentName)) {
     const age = Date.now() - _activeSpawns.get(agentName)
     if (age < 90_000) {
@@ -2511,93 +2508,67 @@ async function rpcSpawn({
     return { ok: false, name: agentName, error: `spawn policy resolution failed: ${e.message}` }
   }
   const launchMode = projectCapabilityToMode(grant.grantedCapability, mode)
-  const { args } = buildFleetSpawnArgs({
-    agentId: agent_id,
-    name: agentName,
-    model,
-    kind,
-    cwd: resolvedCwd,
-    respawn,
-    refresh,
-    effort,
-    mode: launchMode,
-    spawnPolicy: grant.grantedPolicy,
-  })
-  // Route the daemon's local launch through the explicit local primitive. The
-  // public `tlda agent spawn` command is server/daemon-routed and would recurse
-  // back here; `spawn-local` is the only CLI surface that invokes fleet-spawn.py.
-  const override = process.env.FLEET_SPAWN
-  const spawnScript = override || 'tlda'
-  const spawnArgs = override ? args : ['agent', 'spawn-local', ...args]
   _activeSpawns.set(agentName, Date.now())
   try {
-    const { stdout, stderr } = await execFileP(spawnScript, spawnArgs, {
-      timeout: SPAWN_LAUNCH_TIMEOUT_MS,
-      // Pin fleet-spawn.py (and the agent's MCP) to the SAME config the daemon
-      // resolved. The selector is the config NAME, not a URL: the agent's MCP
-      // resolves the fleet via TLDA_CONFIG/defaultConfig and ignores TLDA_SERVER,
-      // so a URL passthrough never reached it — a stray defaultConfig (e.g. a wmtip
-      // leftover from WM testing) routed spawned agents to the Mini while the daemon
-      // talked to Fly, landing them on a roster the user isn't on. Handing the active
-      // NAME through makes the agent resolve the exact same complete config (database
-      // + store), regardless of what defaultConfig says. ACTIVE_CONFIG is null only
-      // when the daemon itself was URL-pinned (TLDA_SERVER) or custom-dir'd; then we
-      // pass nothing and fleet-spawn falls back to its own resolution.
-      env: {
-        ...process.env, PATH: process.env.PATH, TMUX: '', TLDA_MACHINE_ID: MACHINE_ID,
-        ...(ACTIVE_CONFIG ? { TLDA_CONFIG: ACTIVE_CONFIG } : {}),
-      },
+    const { spawn: nodeSpawn } = await import('./lib/spawn/index.mjs')
+    const launched = await nodeSpawn({
+      spawnMode: sessionId ? 'session' : (refresh ? 'refresh' : (respawn ? 'respawn' : 'fresh')),
+      agentId: agent_id,
+      name: agentName,
+      model,
+      kind,
+      cwd: resolvedCwd,
+      sessionId,
+      enroll: !!enroll,
+      effort,
+      permissionMode: launchMode,
+      spawnPolicy: grant.grantedPolicy,
+      machineId: MACHINE_ID,
+      tmuxSocket: TMUX_SOCKET,
     })
-    log.info(`fleet-spawn finished: ${agentName}: ${stdout.trim()}`)
-    const launched = parseSpawnLaunch(stdout, agentName)
-    if (!launched?.tmux_session) {
-      const detail = (stdout || stderr || '').trim().split('\n').filter(Boolean).pop() || 'launcher did not report a fleet tmux session'
-      return { ok: false, name: agentName, error: `spawn did not produce a verifiable tmux session: ${detail}` }
-    }
     try {
-      await tmux('has-session', '-t', launched.tmux_session)
+      await tmux('has-session', '-t', launched.tmuxSession)
     } catch (e) {
       const detail = ((e.stderr || e.message || '').trim().split('\n').filter(Boolean).pop()) || 'tmux session check failed'
       return {
         ok: false,
         name: agentName,
-        agent_id: launched.agent_id,
-        tmux_session: launched.tmux_session,
+        agent_id: launched.fleetId,
+        tmux_session: launched.tmuxSession,
         error: `spawn launcher returned but tmux session is not usable: ${detail}`,
       }
     }
-    // Fire the startup-failure probe DETACHED, don't block the reply on it.
-    // The probe self-reports any failure via a `spawn-startup-failed` message,
-    // which the server handles independently of this RPC's result (see
-    // unified-server.mjs `spawn-startup-failed` handler). Awaiting it here only
-    // added its fixed STARTUP_FAILURE_PROBE_MS delay to the round-trip, pushing
-    // spawns past the caller's 10s RPC/WS window — a false-fail that the caller
-    // then retried into duplicate agents, even though the spawn had succeeded.
-    // Reply as soon as the tmux session is verified; surface failures async.
     probeSpawnStartupFailure({
       agentName,
-      agent_id: launched.agent_id,
-      tmux_session: launched.tmux_session,
-      harness: kind || null,
-      model: model || null,
+      agent_id: launched.fleetId,
+      tmux_session: launched.tmuxSession,
+      harness: launched.harness,
+      model: launched.model,
       respawn,
     }).catch(e => log.warn(`detached startup-failure probe errored for ${agentName}: ${e.message}`))
     return {
       ok: true,
-      name: agentName,
-      agent_id: launched.agent_id,
-      tmux_session: launched.tmux_session,
+      name: launched.name || agentName,
+      agent_id: launched.fleetId,
+      tmux_session: launched.tmuxSession,
+      resume_id: launched.resumeId,
+      enrolled: launched.enrolled,
       spawnPolicy: grant.grantedPolicy,
       grantedCapability: grant.grantedCapability,
     }
   } catch (e) {
-    const detail = ((e.stderr || e.message || '').trim().split('\n').filter(Boolean).pop()) || 'unknown error'
-    log.warn(`fleet-spawn finished with error: ${agentName}: ${e.stderr || e.message}`)
+    const detail = typeof e?.message === 'string' ? e.message : (e?.message ? JSON.stringify(e.message) : String(e))
+    const reason = e?.reason || e?.code || 'launch-failed'
+    log.warn(`node fleet-spawn finished with error: ${agentName}: ${reason}: ${detail}`)
     sendMsg({ type: 'daemon-warning', message: `couldn't ${respawn ? 'wake' : 'spawn'} ${agentName} — ${detail}` })
-    return { ok: false, name: agentName, error: detail }
+    return { ok: false, name: agentName, error: detail, code: reason }
   } finally {
     _activeSpawns.delete(agentName)
   }
+}
+
+async function rpcSpawnCapabilities() {
+  return await probeSpawnCapabilities()
 }
 
 // --- Agent death detection ---
@@ -2944,7 +2915,7 @@ async function checkAgentLiveness() {
       const decision = decideMissingLiveness({
         now,
         missingSince: _missingRuntimeSince.get(agent.id),
-        graceMs: HIBERNATE_GRACE_MS,
+        graceMs: 0,
         alreadyHibernating: agent.hibernating,
       })
       _missingRuntimeSince.set(agent.id, decision.since)
@@ -3659,6 +3630,7 @@ const RPC_HANDLERS = {
   'terminal-resize': rpcTerminalResize,
   'terminal-input': rpcTerminalInput,
   'spawn': rpcSpawn,
+  'spawn-capabilities': rpcSpawnCapabilities,
   'resolve-file': rpcResolveFile,
   'rechat': rpcRechat,
   'kill-orphan-chromium': rpcKillOrphanChromium,

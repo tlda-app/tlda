@@ -25,6 +25,8 @@ import { extractMarkdownSection } from '../shared/markdown-section.mjs';
 import { normalizeChatDisplayMathDelimiters } from '../shared/chat-math-normalize.mjs';
 import { baseName, nameForPhase, phaseFromName } from '../shared/lineage-name.mjs';
 import { formatSpawnModelSummary, validateSpawnModelSelection } from '../shared/spawn-model-validation.mjs';
+import { listModels as listSpawnModels } from '../bin/lib/spawn/models.mjs';
+import { spawn as spawnLocalAgent } from '../bin/lib/spawn/index.mjs';
 import { classifyUserBlame } from '../bin/lib/user-blame-classifier.mjs';
 import { classifyLaunder } from '../bin/lib/launder-classifier.mjs';
 import {
@@ -351,13 +353,7 @@ let _spawnModelCatalog = null;
 let _spawnModelCatalogAt = 0;
 async function getSpawnModelCatalog({ maxAgeMs = 60_000 } = {}) {
   if (_spawnModelCatalog && Date.now() - _spawnModelCatalogAt < maxAgeMs) return _spawnModelCatalog;
-  const script = path.join(__dirname, '..', 'bin', 'fleet-spawn.py');
-  const out = execFileSync('python3', [script, '--list-models'], {
-    encoding: 'utf8',
-    timeout: 10_000,
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
-  const data = JSON.parse(out);
+  const data = listSpawnModels();
   _spawnModelCatalog = data;
   _spawnModelCatalogAt = Date.now();
   return data;
@@ -1209,24 +1205,19 @@ function findValidSession(agent) {
  *  @param {string}  [opts.effort]
  *  @param {string}  [opts.cwd]
  *  @param {string}  [opts.mode] - permission mode
- *  @returns {string} fleet-spawn stdout (trimmed)
+ *  @returns {Promise<string>} spawn summary
  */
-function runFleetSpawn(name, opts = {}) {
-  const script = path.join(__dirname, '..', 'bin', 'fleet-spawn.py');
-  const args = [];
-  if (opts.fresh) args.push('--fresh');
-  if (opts.refresh) args.push('--refresh');
-  if (opts.session) args.push('--session', opts.session);
-  if (opts.model) args.push('--model', opts.model);
-  if (opts.effort) args.push('--effort', opts.effort);
-  if (opts.cwd) args.push('--cwd', opts.cwd);
-  if (opts.mode) args.push('--mode', opts.mode);
-  args.push('--no-attach', name);
-  const pythonDeps = path.join(__dirname, '..', '.python-deps');
-  const env = fs.existsSync(pythonDeps)
-    ? { ...process.env, PYTHONPATH: [pythonDeps, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter) }
-    : process.env;
-  return execFileSync('python3', [script, ...args], { encoding: 'utf8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'], env }).trim();
+async function runFleetSpawn(name, opts = {}) {
+  const result = await spawnLocalAgent({
+    spawnMode: opts.session ? 'session' : (opts.refresh ? 'refresh' : (opts.fresh ? 'fresh' : 'respawn')),
+    name,
+    sessionId: opts.session || undefined,
+    model: opts.model || undefined,
+    effort: opts.effort || undefined,
+    cwd: opts.cwd || undefined,
+    permissionMode: opts.mode || undefined,
+  });
+  return `${result.tmuxSession} (${result.fleetId})`;
 }
 
 function windowTail(output, n = 40) {
@@ -4528,7 +4519,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       const sessionId = findValidSession(agent);
 
       try {
-        runFleetSpawn(label, { session: sessionId, cwd });
+        await runFleetSpawn(label, { session: sessionId, cwd });
 
         logEvent({ type: 'rehydrate', action: 'tmux_respawn', agent: agent.id, name: label, cwd });
         respawned.push(`${label} (cwd: ${cwd})`);

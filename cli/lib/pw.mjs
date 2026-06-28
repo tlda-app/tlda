@@ -47,7 +47,7 @@ const ALLOW_ISOLATED_SESSION = process.env.TLDA_PW_ALLOW_ISOLATED_SESSION === '1
 // real temp), so a fenced `tlda-dev pw` can't reach the out-of-fence daemon, sees
 // the live session as "closed", then destructively "recovers" (kills) the real
 // browser. /tmp is shared 1:1 with the fence, and the spawn lease whitelists this
-// dir via network.allowUnixSockets (bin/fleet-spawn.py), so pinning the socket
+// dir via network.allowUnixSockets (spawn fence policy), so pinning the socket
 // here lets the out-of-fence opener and an in-fence driver agree on one reachable
 // path. Inherited by every playwright-cli child (incl. the daemon it spawns).
 // Override with PLAYWRIGHT_DAEMON_SOCKETS_DIR for isolated testing.
@@ -110,7 +110,7 @@ function lockScript(repoRoot) {
   return join(repoRoot, 'bin', 'pw-lock.sh')
 }
 
-// Am I running inside the fence? The spawn wrapper (bin/fleet-spawn.py
+// Am I running inside the fence? The spawn wrapper
 // wrap_sandbox_cmd) sets TLDA_SANDBOX_POLICY for every fenced launch; it's absent
 // for unsandboxed agents. A fenced agent can DRIVE the shared browser but CANNOT
 // open it (in-process Chromium launch Mach-fails in the sandbox), so when the
