@@ -21,29 +21,39 @@ ln -sfn "$PERSIST/tlda-config" /root/.config/tlda
 ln -sfn "$PERSIST/projects" /app/server/projects
 ln -sfn "$PERSIST/data" /app/server/data
 
+# Source pushes from the browser commit into per-project git clones before
+# pushing upstream. Fly runs as root in a fresh image, so configure a stable
+# non-human identity instead of letting git abort at commit time.
+git config --global user.name "${TLDA_GIT_USER_NAME:-tlda-friend-box}"
+git config --global user.email "${TLDA_GIT_USER_EMAIL:-tlda-friend-box@local}"
+
 # Ensure an active tlda config exists. Commit d04a0eef ("one named-config, zero
 # fallbacks") makes the server resolveConfig() at startup and THROW — crashing
 # during module evaluation, before it binds :5176 and before any log line — if
 # there is no active config (this caused the v59 silent outage: the volume had no
 # config.json). The Fly server's config is deterministic: it tells browsers to
-# sync against this very machine's tailnet URL. Write it if the volume lacks one.
+# sync against this machine. Friend boxes set TLDA_FLEET_SERVER to their own
+# fly.dev URL, so rewrite the persisted config on startup for those boxes instead
+# of preserving a stale volume config from another app.
 # (A tldraw license key is a client-side value shipped in window.__TLDA_CONFIG__
 # to every browser — not a secret — so it lives here, not in `fly secrets`.)
 CONFIG_JSON=/root/.config/tlda/config.json
-if [ ! -f "$CONFIG_JSON" ]; then
-  echo "[entrypoint] no config.json on volume — writing canonical Fly config"
+CONFIG_ENDPOINT="${TLDA_FLEET_SERVER:-https://tlda-fly.cormorant-matrix.ts.net}"
+if [ ! -f "$CONFIG_JSON" ] || [ -n "$TLDA_FLEET_SERVER" ]; then
+  echo "[entrypoint] writing canonical Fly config for $CONFIG_ENDPOINT"
   cat > "$CONFIG_JSON" <<'EOF'
 {
   "defaultConfig": "default",
   "configs": {
     "default": {
-      "database": "https://tlda-fly.cormorant-matrix.ts.net",
-      "store": "https://tlda-fly.cormorant-matrix.ts.net",
+      "database": "__TLDA_CONFIG_ENDPOINT__",
+      "store": "__TLDA_CONFIG_ENDPOINT__",
       "licenseKey": "tldraw-2026-06-30/WyJRY2VnNHQzTSIsWyIqIl0sMTYsIjIwMjYtMDYtMzAiXQ.zL6mO6UG+rGUbpu4hYL9/Na+XX0jLRY35nx20ElD9mK+m6OStCMf1q8IUmjVqBd9Fw1JuaxplRHP8Q37bFefxQ"
     }
   }
 }
 EOF
+  sed -i "s|__TLDA_CONFIG_ENDPOINT__|$CONFIG_ENDPOINT|g" "$CONFIG_JSON"
 fi
 
 # --- Tailscale: join Skip's tailnet so the server is reachable privately ---

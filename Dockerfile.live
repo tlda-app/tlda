@@ -2,7 +2,7 @@
 # Differs from the published/snapshot image by adding a TeXLive layer so latexmk
 # and dvisvgm actually run. Heavy TeXLive layer is first so it stays cached across
 # frequent app-code redeploys.
-FROM node:20-slim
+FROM node:24-slim
 WORKDIR /app
 
 # --- TeXLive layer (heavy, ~2-3 GB, cached — changes rarely) ---
@@ -102,6 +102,11 @@ COPY bin/fleet-spawn.py ./bin/fleet-spawn.py
 # (Skip-authorized PII export). Opens the DB readonly, so it's safe alongside the
 # server's writer.
 COPY bin/feelings-export.mjs ./bin/feelings-export.mjs
+
+# Build worker: the server dispatches LaTeX builds to `node bin/build-worker.mjs`
+# (server/lib/build-dispatch.mjs spawns it as a subprocess). Without this file in
+# the image, every build crashes with ERR_MODULE_NOT_FOUND and produces 0 pages.
+COPY bin/build-worker.mjs ./bin/build-worker.mjs
 
 # Serve the tldraw SPA from this server too. For the PRIVATE tailnet deployment
 # (server gated behind Tailscale, not the open internet), Skip's tldraw license

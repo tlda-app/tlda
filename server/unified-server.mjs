@@ -47,6 +47,7 @@ import { labelsForAgent, parseFilter, evalExpr } from '../shared/fleet-labels.mj
 import { phaseFromName, baseName, PHASES } from '../shared/lineage-name.mjs'
 import { daemonHelloDecision } from '../shared/daemon-identity.mjs'
 import { initProjectStore, listProjects, readProject, updateProject, getProjectsDir } from './lib/project-store.mjs'
+import { resumeOverleafPollers } from './lib/overleaf-sync.mjs'
 import { resetStaleBuildStates, killAllBuilds, setShadowMirrorHandler } from './lib/build-runner.mjs'
 import { dispatchBuild, killAllDispatchedBuilds } from './lib/build-dispatch.mjs'
 import { writeSentinel } from './lib/sentinel.mjs'
@@ -923,6 +924,10 @@ async function performSpawnRelay(caller, msg) {
       if (pendingAgentId) spawnLibrarian.failPending(pendingAgentId, 'launch-failed')
       return { ok: false, reason: 'launch-failed' }
     }
+  }
+  if (result?.ok === false && result.reason !== 'spawning') {
+    if (pendingAgentId) spawnLibrarian.failPending(pendingAgentId, result.reason || result.error || 'launch-failed')
+    return result
   }
   if (readiness) {
     const ready = await readiness
@@ -4492,12 +4497,12 @@ function projectsForDaemon() {
   // .fls). The daemon uses this to watch ONLY the files the build
   // actually reads — not the entire sourceDir.
   return listProjects()
-    .filter(p => p.sourceDir && !p.archived)
+    .filter(p => !p.archived)
     .map(p => {
       let watchFiles = null
       try {
         const rfPath = join(PROJECTS_DIR, p.name, 'output', 'relevant-files.json')
-        if (existsSync(rfPath)) {
+        if (p.sourceDir && existsSync(rfPath)) {
           const rf = JSON.parse(readFileSync(rfPath, 'utf8'))
           // Filter to only author-dir paths (not the server mirror paths)
           watchFiles = (rf.files || [])
@@ -5335,6 +5340,10 @@ server.listen(PORT, HOST, () => {
   // we don't burst-spawn while a daemon is starting.
   console.log(`[daemon-supervisor] watching for local daemon (machine_id=${LOCAL_MACHINE_ID})`)
   ensureLocalDaemon()
+
+  // Resume Overleaf git-sync pollers for any project linked to a remote.
+  resumeOverleafPollers(listProjects)
+
   setInterval(ensureLocalDaemon, DAEMON_SUPERVISOR_INTERVAL_MS).unref()
 
   const HIBERNATE_CHECK_MS = 60_000

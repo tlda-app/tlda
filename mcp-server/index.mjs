@@ -479,15 +479,22 @@ async function educationGate(name, args) {
   if (!owed.length) return null;
   const list = owed.map(s => `\`${s}\``).join(', ');
   const dismissArg = owed.map(s => `"${s}"`).join(', ');
-  const isGoose = harnessFromEnv().kind === 'goose';
+  const isGoose = harness.kind === 'goose';
+  // Each harness reads skills from its OWN natural place (harness.skillsDir) — not
+  // a hardcoded checkout path on one machine. '~/' expands to the agent's home; a
+  // relative dir (goose) stays workspace-relative.
+  const skillsDir = harness.skillsDir.startsWith('~/')
+    ? path.join(os.homedir(), harness.skillsDir.slice(2))
+    : harness.skillsDir;
+  const skillPath = s => `${skillsDir}/${s}/SKILL.md`;
   const satisfyLines = isGoose
     ? [
-        `• Load each named skill with Goose Summon from \`.agents/skills/<name>/SKILL.md\`.`,
+        `• Load each named skill with Goose Summon from \`${harness.skillsDir}/<name>/SKILL.md\`.`,
         `  Example: ask Summon to load ${owed.map(s => `"${s}"`).join(', ')}.`,
       ]
     : [
         `• Read each skill's markdown with your native file reader:`,
-        `  ${owed.map(s => `/Users/skip/work/dot-claude/skills/${s}/SKILL.md`).join('\n  ')}`,
+        `  ${owed.map(skillPath).join('\n  ')}`,
       ];
   const text = [
     `⚠️ Before \`${name}\`, you must clear ${owed.length} required skill(s): ${list}.`,
@@ -1920,9 +1927,11 @@ const server = new Server(
   }
 );
 
+const FLEET_ONLY_MCP = process.env.TLDA_MCP_FLEET_ONLY === '1'
+
 // List available tools
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [
+  tools: FLEET_ONLY_MCP ? getFleetTools() : [
     {
       name: 'screenshot',
       description: 'Capture an image of part of the viewer. Specify a target — viewport (current scroll position), screen (the user\'s entire visible area), an annotation region (via screenshotRef from a read_annotations result), or explicit canvas bounds. Always passes through the viewer\'s capture mechanism. There is no default — pick a target intentionally.',

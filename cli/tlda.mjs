@@ -102,7 +102,7 @@ const VALUE_FLAGS = new Set([
   'server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format',
   'session', 'target', 'timeout', 'id', 'book', 'worktree', 'port', 'browser',
   'model', 'cwd', 'effort', 'mode', 'kind', 'spawn-capability', 'capability',
-  'to', 'limit',
+  'to', 'limit', 'from', 'poll',
 ])
 
 function getFlag(name, defaultVal = null) {
@@ -158,11 +158,11 @@ const cyan  = (s) => isTTY ? `\x1b[36m${s}\x1b[0m` : s
 
 // --- HTTP helpers ---
 
-async function api(method, path, body = null, { timeoutMs = 30000 } = {}) {
+async function api(method, path, body = null, { timeoutMs = 30000, token = getToken() } = {}) {
   return tldaFetch(path, {
     method, body, timeoutMs,
     server: getServer(),
-    token: getToken(),
+    token,
   })
 }
 
@@ -599,8 +599,36 @@ async function cmdPush() {
   }
 }
 
+// A repository is just a remote you haven't cloned yet. `link` takes the main
+// file either way; add `--from <git-url>` (Overleaf, GitHub, ssh, …) and the
+// server clones + polls that remote instead of watching a local directory.
+//   tlda doc link <name> <main-file> [--from <git-url>] [--token TOKEN] [--title T] [--poll 60]
 async function cmdLink() {
-  await cmdCreate()
+  const from = getFlag('from')
+  if (from) await cmdLinkRemote(from)
+  else await cmdCreate()
+}
+
+// Link a project to a git remote (e.g. Overleaf). The server clones it, does an
+// initial sync, and polls for changes — the author keeps editing upstream while
+// tlda mirrors + rebuilds. The main file is the entry point *inside* the repo.
+async function cmdLinkRemote(gitUrl) {
+  const name = getPositional(0)
+  const mainFile = getPositional(1) || getFlag('main')
+  if (!name || !mainFile) {
+    console.error('Usage: tlda doc link <name> <main-file> --from <git-url> [--token TOKEN] [--title "Title"] [--poll 60]')
+    console.error('  <main-file> is the entry .tex inside the repo (no default — papers aren\'t all main.tex)')
+    process.exit(1)
+  }
+  const overleafToken = getFlag('token')
+  const title = getFlag('title')
+  const pollSeconds = Number(getFlag('poll') || '60') || 60
+
+  console.log(`Linking ${name} ← ${gitUrl} (main: ${mainFile}; cloning + initial build, this can take a minute)…`)
+  const result = await api('POST', `/api/projects/${name}/overleaf-link`,
+    { gitUrl, token: overleafToken, title, mainFile, pollSeconds },
+    { timeoutMs: 300000, token: getRwToken() })
+  console.log(`✓ Linked. Synced ${result.changed} file(s) at ${String(result.head || '').slice(0, 7)}; polling every ${pollSeconds}s.`)
 }
 
 async function cmdInit() {

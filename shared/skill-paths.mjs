@@ -35,6 +35,7 @@ export function skillNameFromSkillMdPath(filePath) {
   const home = os.homedir()
   const bases = [
     path.join(home, '.claude', 'skills'),
+    path.join(home, '.codex', 'skills'),
     SHARED_FLEET_SKILLS_DIR,
     path.join(home, '.agents', 'skills'),
     path.join(path.sep, 'etc', 'codex', 'skills'),

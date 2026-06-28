@@ -1,0 +1,33 @@
+# fly.test-overleaf.toml — THROWAWAY test box for the Overleaf-import proof.
+# Separate Fly app (tlda-overleaf-test), NOT the live `tldraw-sync-skip`.
+# Unlike fly.live.toml this one:
+#   - serves the SPA itself (public http_service) instead of tailnet-only
+#   - is token-gated (TLDA_TOKEN_RW/READ secrets), not TLDA_NO_AUTH
+#   - auto-stops when idle (scale-to-zero compute; only the small volume bills)
+# Deploy:  fly deploy -c fly.test-overleaf.toml
+app = "tlda-overleaf-test"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "Dockerfile.live"
+
+[env]
+  PORT = "5176"
+  NODE_ENV = "production"
+  # Browser/fleet origin = this app's own public URL (overridden in config.json too).
+  TLDA_FLEET_SERVER = "https://tlda-overleaf-test.fly.dev"
+
+[http_service]
+  internal_port = 5176
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[vm]]
+  size = "performance-1x"
+  memory = "4096"
+
+[mounts]
+  source = "test_overleaf_data"
+  destination = "/app/server/persist"
