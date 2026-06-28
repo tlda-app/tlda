@@ -33,7 +33,8 @@ async function withUploadServer(uploadDir, fn) {
 }
 
 test('/api/upload writes to persistent configured upload directory', async () => {
-  const uploadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-upload-dir-'))
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-upload-dir-'))
+  const uploadDir = path.join(root, '.config', 'tlda', 'uploads')
   try {
     let uploadedUrl = null
     await withUploadServer(uploadDir, async (base) => {
@@ -53,8 +54,13 @@ test('/api/upload writes to persistent configured upload directory', async () =>
       const res = await fetch(`${base}${uploadedUrl}`)
       assert.equal(res.status, 200)
       assert.equal(await res.text(), '# upload proof\n')
+      const secret = path.join(root, '.ssh', 'id_rsa')
+      fs.mkdirSync(path.dirname(secret), { recursive: true })
+      fs.writeFileSync(secret, 'not for upload serving\n')
+      const secretRes = await fetch(`${base}/api/file?path=${encodeURIComponent(secret)}`)
+      assert.equal(secretRes.status, 404)
     })
   } finally {
-    fs.rmSync(uploadDir, { recursive: true, force: true })
+    fs.rmSync(root, { recursive: true, force: true })
   }
 })

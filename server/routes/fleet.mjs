@@ -31,6 +31,7 @@ const SERVER_OWNER_HOST = os.hostname()
 
 const UPLOAD_DIR = process.env.TLDA_UPLOAD_DIR ||
   path.join(os.homedir(), '.config', 'tlda', 'uploads')
+const RESOLVED_UPLOAD_DIR = path.resolve(UPLOAD_DIR)
 
 // Minimal multipart/form-data parser for the single-file case used by browser
 // drag-and-drop. Returns { filename, contentType, content } for the first
@@ -369,7 +370,12 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   router.get('/api/file', (req, res) => {
     const filePath = req.query.path
     if (!filePath) { res.status(400).send('Missing path'); return }
-    try { res.sendFile(filePath) }
+    try {
+      const resolved = path.resolve(filePath)
+      const inUploadDir = resolved === RESOLVED_UPLOAD_DIR ||
+        resolved.startsWith(`${RESOLVED_UPLOAD_DIR}${path.sep}`)
+      res.sendFile(resolved, inUploadDir ? { dotfiles: 'allow' } : undefined)
+    }
     catch (e) { res.status(404).send(e.message) }
   })
 
