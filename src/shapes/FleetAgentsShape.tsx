@@ -43,7 +43,7 @@ const MODEL_SHORTHANDS: Record<string, string> = {
 // per-family here; this fallback is used only before the fetch resolves or if it
 // fails, so an offline panel still completes the common aliases.
 const MODEL_FALLBACK = [
-  'opus', 'opus45', 'opus46', 'opus47', 'opus48', 'sonnet', 'haiku', 'fable',
+  'opus', 'opus45', 'opus46', 'opus47', 'opus48', 'sonnet', 'haiku',
   'deepseek', 'deepseek-v4-pro', 'deepseek-v4', 'deepseek-v4-flash',
   'deepseek-chat', 'deepseek-v3', 'deepseek-r1', 'deepseek-reasoner',
   'kimi', 'kimi-k2.7', 'qwen', 'qwen3.7-max', 'glm', 'glm-5.1',
@@ -98,7 +98,7 @@ const DEFAULT_MODEL = 'opus48'
 // short and representative instead of a wall of Claude aliases. Goose subset
 // confirmed with teacher-dev (the leaderboard set).
 const CURATED_SPAWN_MODELS = [
-  'opus', 'sonnet', 'haiku', 'fable',
+  'opus', 'sonnet', 'haiku',
   'deepseek', 'kimi', 'qwen', 'glm', 'minimax', 'mistral',
 ]
 const CAT_NAMES = [

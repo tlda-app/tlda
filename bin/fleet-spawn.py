@@ -190,8 +190,6 @@ MODEL_ALIASES = {
     "opus46": "claude-opus-4-6[1m]",
     "opus47": "claude-opus-4-7[1m]",
     "opus48": "claude-opus-4-8[1m]",
-    "fable": "claude-fable-5[1m]",
-    "fable5": "claude-fable-5[1m]",
     "sonnet": "claude-sonnet-4-6",
     "haiku": "claude-haiku-4-5",
 }
@@ -289,11 +287,12 @@ CURSOR_AGENT_COMMAND = os.path.expanduser("~/.local/bin/cursor-agent")
 
 CODEX_MODELS = {
     # `codex -m gpt` is not accepted for ChatGPT-authenticated Codex accounts.
-    # Keep the short UI alias, but resolve it to the supported subscription
-    # model id so `doc:name:gpt` and `doc:gpt` spawn a usable Codex agent.
+    # Keep the short UI aliases, but resolve them to the supported subscription
+    # model id so `doc:name:gpt55` and `doc:gpt` spawn a usable Codex agent.
+    # `gpt55` is the canonical one-word lowercase alias (no dash/dot to type).
     "gpt": "gpt-5.5",
+    "gpt55": "gpt-5.5",
     "codex": "gpt-5.5",
-    "gpt-5.5": "gpt-5.5",
 }
 
 
