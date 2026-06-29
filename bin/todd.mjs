@@ -1602,6 +1602,20 @@ function resolveAgentCwd(agentId) {
   })
 }
 
+function resolveAgentSpawnSpec(agentId) {
+  return getJson('/api/store/agents', []).then(agents => {
+    const agent = (Array.isArray(agents) ? agents : (agents.agents || []))
+      .find(a => a.id === agentId || a.friendly_name === agentId)
+    const metadata = typeof agent?.metadata === 'string'
+      ? (() => { try { return JSON.parse(agent.metadata) } catch { return {} } })()
+      : (agent?.metadata || {})
+    return {
+      ...(metadata.kind || agent?.kind ? { kind: metadata.kind || agent.kind } : {}),
+      ...(metadata.model || agent?.model ? { model: metadata.model || agent.model } : {}),
+    }
+  })
+}
+
 function activeTimerAgentSet(events = [], agents = [], now = Date.now()) {
   const agentIds = new Set((agents || []).map(a => a?.id).filter(Boolean))
   const active = new Set()
@@ -1893,6 +1907,7 @@ async function handleHandoff(agentId, triggerText) {
 
   dequeueActions(agentId)
   const agentName = await resolveAgentName(agentId)
+  const handoffSpawnSpec = await resolveAgentSpawnSpec(agentId)
   console.log(`[todd] handoff triggered for ${agentName} (${agentId})`)
 
   // Two handoff types. "direct"/"directly" in the statement → direct handoff:
@@ -1921,6 +1936,7 @@ async function handleHandoff(agentId, triggerText) {
       name: workerName,
       cwd: agentCwd,
       routeAgent: agentId,
+      ...handoffSpawnSpec,
     })
     if (spawnResult?.error || spawnResult?.ok === false) {
       const error = spawnResult.error || spawnResult.reason || 'unknown spawn failure'
@@ -1948,7 +1964,7 @@ ${triggerText ? `\n**Skip's handoff message:**\n> ${triggerText}\n` : ''}
         console.error(`[todd] direct handoff delegate failed: ${e.message}`)
       }
     }, 15_000)
-    logDecision(agentId, 'handoff-direct', 'handoff', { workerAgent: workerName, routeAgent: agentId }, triggerText)
+    logDecision(agentId, 'handoff-direct', 'handoff', { workerAgent: workerName, routeAgent: agentId, spawnSpec: handoffSpawnSpec }, triggerText)
     return
   }
 
@@ -1978,16 +1994,16 @@ ${triggerText ? `\n**Skip's handoff message:**\n> ${triggerText}\n` : ''}
     } catch (e) {
       sendChat(OWNER_ID, `⚠️ Outgoing ${agentName} → :dusk failed: ${e.message}`)
     }
-    let spawnResult = await spawnAgent({ name: briefingName, cwd: agentCwd })
+    let spawnResult = await spawnAgent({ name: briefingName, cwd: agentCwd, ...handoffSpawnSpec })
     if (spawnResult.error && spawnResult.error.includes('already exists')) {
-      spawnResult = await spawnAgent({ agent: briefingName, respawn: true })
+      spawnResult = await spawnAgent({ agent: briefingName, respawn: true, ...handoffSpawnSpec })
     }
     if (spawnResult.error) {
       sendChat(OWNER_ID, `⚠️ Failed to spawn briefing agent: ${spawnResult.error}`)
       return
     }
 
-    pendingHandoffs.set(briefingName, { originalAgent: agentName, originalAgentId: agentId, originalCwd: agentCwd, startedAt: now, triggerText })
+    pendingHandoffs.set(briefingName, { originalAgent: agentName, originalAgentId: agentId, originalCwd: agentCwd, spawnSpec: handoffSpawnSpec, startedAt: now, triggerText })
     savePendingHandoffs()
 
     setTimeout(async () => {
@@ -2023,7 +2039,7 @@ Do NOT continue the work. Do NOT form opinions about the argument. Extract decis
       }
     }, 15_000)
 
-    logDecision(agentId, 'handoff-initiated', 'handoff', { briefingAgent: briefingName }, triggerText)
+    logDecision(agentId, 'handoff-initiated', 'handoff', { briefingAgent: briefingName, spawnSpec: handoffSpawnSpec }, triggerText)
   } catch (e) {
     sendChat(OWNER_ID, `⚠️ Failed to spawn briefing agent: ${e.message}`)
   }
@@ -2074,11 +2090,12 @@ async function handleHandoffReady(fromId, text) {
   // The pickup is the new worker — spawn it directly with the bare base name
   // (dawn). Its name maps it into the lineage on register; no rotation needed.
   const pickupName = stripPhase(handoffInfo.originalAgent)
+  const pickupSpawnSpec = handoffInfo.spawnSpec || {}
   const spawnPickup = async () => {
     try {
-      let spawnResult = await spawnAgent({ name: pickupName, cwd: handoffInfo.originalCwd })
+      let spawnResult = await spawnAgent({ name: pickupName, cwd: handoffInfo.originalCwd, ...pickupSpawnSpec })
       if (spawnResult.error && spawnResult.error.includes('already exists')) {
-        spawnResult = await spawnAgent({ agent: pickupName, respawn: true })
+        spawnResult = await spawnAgent({ agent: pickupName, respawn: true, ...pickupSpawnSpec })
       }
       if (spawnResult.error) {
         sendChat(OWNER_ID, `⚠️ Failed to spawn pickup agent: ${spawnResult.error}`)
@@ -2109,7 +2126,7 @@ The briefing is your primary source. Only go to the original thread if the brief
         }
       }, 15_000)
 
-      logDecision(handoffInfo.originalAgentId, 'handoff-pickup-spawned', 'handoff', { pickupAgent: pickupName, briefingPath }, '')
+      logDecision(handoffInfo.originalAgentId, 'handoff-pickup-spawned', 'handoff', { pickupAgent: pickupName, briefingPath, spawnSpec: pickupSpawnSpec }, '')
     } catch (e) {
       sendChat(OWNER_ID, `⚠️ Failed to spawn pickup agent: ${e.message}`)
     }
