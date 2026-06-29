@@ -6,7 +6,10 @@ import { execFileSync } from 'child_process'
 import { stripRunner } from './permissions.mjs'
 
 const FENCE_AGENT_WRITE_ROOTS = [
-  '/tmp',
+  '/tmp/tlda-fence-env',
+  '/tmp/tlda-fence-env/**',
+  '/tmp/tlda-pw-sockets',
+  '/tmp/tlda-pw-sockets/**',
   '~/.cache/**',
   '~/.codex/**',
   '~/.claude*',
@@ -22,7 +25,10 @@ const FENCE_AGENT_WRITE_ROOTS = [
   '~/.zcompdump*',
 ]
 const FENCE_AGENT_READ_ROOTS = [
-  '/tmp',
+  '/tmp/tlda-fence-env',
+  '/tmp/tlda-fence-env/**',
+  '/tmp/tlda-pw-sockets',
+  '/tmp/tlda-pw-sockets/**',
   '~/.codex',
   '~/.claude',
   '~/.claude.json',
@@ -131,7 +137,7 @@ export function fenceSettings(policy, { api, dnsAlias } = {}) {
       allowUnixSockets: [TLDA_PW_SOCKETS_ROOT, `${TLDA_PW_SOCKETS_ROOT}/**`],
     },
     filesystem: {
-      defaultDenyRead: false,
+      defaultDenyRead: true,
       allowRead,
       denyRead: FENCE_DENY_READ,
       allowWrite,
