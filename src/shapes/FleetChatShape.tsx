@@ -2599,6 +2599,11 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
     return items
   }, [rawItems])
+  const tailMessageKey = useMemo(() => {
+    const m = chatMessages[chatMessages.length - 1]
+    if (!m) return ''
+    return String(m._dbId ?? m._tempId ?? `${m.timestamp}:${m.from}`)
+  }, [chatMessages])
   const [firstItemIndex, setFirstItemIndex] = useState(1_000_000)
 
   // Virtual scroll — only mount DOM nodes for visible messages.
@@ -3299,6 +3304,9 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   const isAtBottomRef = useRef(true)
   const userScrolledUpRef = useRef(false)
+  const prevItemCountRef = useRef(allItems.length)
+  const prevTailMessageKeyRef = useRef(tailMessageKey)
+  const prevTotalHeightRef = useRef(0)
   // Reactive bottom-position state. Drives the unified follow/jump button:
   // at bottom → follow-mode toggle (horseshoe); off bottom → ⇣ jump-to-bottom.
   // Position (not scroll-intent) is the right signal here — matches the spec
@@ -3346,6 +3354,48 @@ function FleetChatInner({ shape }: { shape: any }) {
     virtuosoScrollToBottom()
   }, [shape.id, virtuosoScrollToBottom])
 
+  useLayoutEffect(() => {
+    const prev = prevItemCountRef.current
+    prevItemCountRef.current = allItems.length
+    if (allItems.length <= prev) return
+    if (!userScrolledUpRef.current || hardLockedRef.current) {
+      log.debug('chat-scroll', 'new item → STICK TO BOTTOM (following / hard-locked)', {
+        prev,
+        now: allItems.length,
+        scrolledUp: userScrolledUpRef.current,
+        hardLocked: hardLockedRef.current,
+      })
+    } else {
+      log.debug('chat-scroll', 'new item → HELD position (user scrolled up) — YANK AVERTED', {
+        prev,
+        now: allItems.length,
+        scrolledUp: userScrolledUpRef.current,
+        hardLocked: hardLockedRef.current,
+      })
+    }
+  }, [allItems.length])
+
+  useLayoutEffect(() => {
+    const prev = prevTailMessageKeyRef.current
+    prevTailMessageKeyRef.current = tailMessageKey
+    if (!tailMessageKey || tailMessageKey === prev) return
+    if (!userScrolledUpRef.current || hardLockedRef.current) {
+      log.debug('chat-scroll', 'tail changed → STICK TO BOTTOM (following / hard-locked)', {
+        prev,
+        tail: tailMessageKey,
+        scrolledUp: userScrolledUpRef.current,
+        hardLocked: hardLockedRef.current,
+      })
+    } else {
+      log.debug('chat-scroll', 'tail changed → HELD position (user scrolled up) — YANK AVERTED', {
+        prev,
+        tail: tailMessageKey,
+        scrolledUp: userScrolledUpRef.current,
+        hardLocked: hardLockedRef.current,
+      })
+    }
+  }, [tailMessageKey])
+
   useEffect(() => {
     const el = chatLogEl
     if (!el) return
@@ -3382,6 +3432,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     setAtBottom(true)
     setFirstItemIndex(1_000_000)
     setFleetEventsLiveTailPinned(shape.id, true)
+    log.debug('chat-scroll', 'filter changed → reset to bottom-following view', { filterKey })
     requestAnimationFrame(virtuosoScrollToBottom)
   }, [filterKey, shape.id, virtuosoScrollToBottom])
 
@@ -4386,15 +4437,48 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Infinite scroll — load older messages
   const loadingMore = useRef(false)
   const loadOlderHistory = useCallback(async () => {
-    if (loadingMore.current || chatMessages.length === 0) return
+    if (loadingMore.current || chatMessages.length === 0) {
+      log.debug('chat-scroll', 'load older skipped', {
+        reason: loadingMore.current ? 'already-loading' : 'no-messages',
+        scrolledUp: userScrolledUpRef.current,
+        hardLocked: hardLockedRef.current,
+        itemCount: allItems.length,
+        messageCount: chatMessages.length,
+      })
+      return
+    }
     // Filtered view that hasn't resolved to any id yet — don't page in global history.
-    if (loadBeforeAgents !== null && loadBeforeAgents.length === 0) return
+    if (loadBeforeAgents !== null && loadBeforeAgents.length === 0) {
+      log.debug('chat-scroll', 'load older skipped', {
+        reason: 'empty-filter-agent-set',
+        scrolledUp: userScrolledUpRef.current,
+        hardLocked: hardLockedRef.current,
+        itemCount: allItems.length,
+        messageCount: chatMessages.length,
+      })
+      return
+    }
     loadingMore.current = true
     const oldestTs = chatMessages[0]?.timestamp
     if (oldestTs) {
+      log.debug('chat-scroll', 'load older requested', {
+        oldestTs,
+        agents: loadBeforeAgents,
+        scrolledUp: userScrolledUpRef.current,
+        hardLocked: hardLockedRef.current,
+        itemCount: allItems.length,
+        messageCount: chatMessages.length,
+      })
       try {
         await loadBefore(loadBeforeAgents || [], oldestTs, 50, {
           onBeforeNotify: (added: number) => {
+            log.debug('chat-scroll', 'older history prepending → preserve visual position via firstItemIndex', {
+              added,
+              scrolledUp: userScrolledUpRef.current,
+              hardLocked: hardLockedRef.current,
+              itemCount: allItems.length,
+              messageCount: chatMessages.length,
+            })
             setFirstItemIndex(index => Math.max(0, index - added))
           },
         })
@@ -4403,8 +4487,15 @@ function FleetChatInner({ shape }: { shape: any }) {
       }
       return
     }
+    log.debug('chat-scroll', 'load older skipped', {
+      reason: 'missing-oldest-timestamp',
+      scrolledUp: userScrolledUpRef.current,
+      hardLocked: hardLockedRef.current,
+      itemCount: allItems.length,
+      messageCount: chatMessages.length,
+    })
     loadingMore.current = false
-  }, [chatMessages, loadBeforeAgents])
+  }, [allItems.length, chatMessages, loadBeforeAgents])
 
   // Attach click/tap handlers to the Virtuoso-owned scroll container.
   // Listener-based (not JSX prop) because the Scroller is memoized and
@@ -5130,9 +5221,42 @@ function FleetChatInner({ shape }: { shape: any }) {
             alignToBottom
             followOutput={() => (!userScrolledUpRef.current || hardLockedRef.current) ? 'auto' : false}
             startReached={() => {
+              const el = chatLogEl
+              const gap = el ? (el.scrollHeight - (el.scrollTop + el.clientHeight)) : null
+              log.debug('chat-scroll', 'Virtuoso startReached → consider loading older history', {
+                scrollTop: el?.scrollTop,
+                scrollHeight: el?.scrollHeight,
+                clientHeight: el?.clientHeight,
+                gap,
+                scrolledUp: userScrolledUpRef.current,
+                hardLocked: hardLockedRef.current,
+                itemCount: allItems.length,
+                messageCount: chatMessages.length,
+              })
               void loadOlderHistory()
             }}
             atBottomThreshold={24}
+            totalListHeightChanged={(h) => {
+              const prev = prevTotalHeightRef.current
+              prevTotalHeightRef.current = h
+              if (h <= prev) return
+              const follow = !userScrolledUpRef.current || hardLockedRef.current
+              const el = chatLogEl
+              const gapNow = el ? Math.round(el.scrollHeight - (el.scrollTop + el.clientHeight)) : null
+              log.debug('chat-scroll', follow
+                ? 'content grew → SHOULD STICK TO BOTTOM (following / hard-locked)'
+                : 'content grew → HELD position (user scrolled up) — YANK AVERTED',
+                {
+                  prev,
+                  h,
+                  gapNow,
+                  follow,
+                  scrolledUp: userScrolledUpRef.current,
+                  hardLocked: hardLockedRef.current,
+                  itemCount: allItems.length,
+                  messageCount: chatMessages.length,
+                })
+            }}
             atBottomStateChange={(atBottom) => {
               const t0 = probe.isEnabled('chat') ? performance.now() : 0
               const el = chatLogEl
@@ -5151,6 +5275,13 @@ function FleetChatInner({ shape }: { shape: any }) {
               isAtBottomRef.current = atBottom
               setAtBottom(atBottom)
               if (atBottom && userScrolledUpRef.current) {
+                log.debug('chat-scroll', 'Virtuoso reports bottom → resume stick-to-bottom', {
+                  gap,
+                  scrolledUp: userScrolledUpRef.current,
+                  hardLocked: hardLockedRef.current,
+                  itemCount: allItems.length,
+                  messageCount: chatMessages.length,
+                })
                 userScrolledUpRef.current = false
                 setFleetEventsLiveTailPinned(shape.id, true)
               }
@@ -5338,6 +5469,10 @@ function FleetChatInner({ shape }: { shape: any }) {
                 // At bottom: toggle follow mode.
                 setHardLocked(prev => {
                   const next = !prev
+                  log.debug('chat-scroll', next
+                    ? 'hard-lock enabled → force bottom pin'
+                    : 'hard-lock disabled → smart follow',
+                    { atBottom, scrolledUp: userScrolledUpRef.current })
                   if (next) requestAnimationFrame(virtuosoScrollToBottom)
                   return next
                 })
