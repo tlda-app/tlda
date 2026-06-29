@@ -1300,11 +1300,12 @@ function ContextBadge({ percent }: { percent?: number }) {
  * fought the virtualized chat layout — flashed on every message — and was
  * reverted; see scratch/status-line-spec.md.)
  */
-function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibernatingAgents, ctx, agents: _agents, itemCount: _itemCount, escalationState, suggestions }: {
+function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibernatingAgents, statusTargetIds, ctx, agents: _agents, itemCount: _itemCount, escalationState, suggestions }: {
   thinkingAgents: Map<string, number>
   compactingAgents: Map<string, number>
   contextPercent: Map<string, number>
   hibernatingAgents: Set<string>
+  statusTargetIds: Set<string> | null
   ctx: any
   agents: any[]
   itemCount: number
@@ -1323,30 +1324,35 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
   const prevHibRef = useRef<Set<string>>(new Set())
   const wakingRef = useRef<Set<string>>(new Set())
   const statusAgents = useMemo(() => {
+    const isRelevant = (id: string) => !statusTargetIds || statusTargetIds.has(id)
     const merged = new Map<string, { status: 'thinking' | 'compacting' | 'hibernating' | 'waking', startTs: number }>()
     for (const [id, ts] of thinkingAgents) {
+      if (!isRelevant(id)) continue
       merged.set(id, { status: 'thinking', startTs: ts })
     }
     for (const [id, ts] of compactingAgents) {
+      if (!isRelevant(id)) continue
       if (!merged.has(id)) merged.set(id, { status: 'compacting', startTs: ts })
     }
     for (const id of hibernatingAgents) {
+      if (!isRelevant(id)) continue
       if (!merged.has(id)) merged.set(id, { status: 'hibernating', startTs: 0 })
     }
     // An agent present last render's hibernating set but gone from it now (and
     // not already thinking/compacting) just woke → mark it waking.
     for (const id of prevHibRef.current) {
-      if (!hibernatingAgents.has(id) && !merged.has(id)) wakingRef.current.add(id)
+      if (isRelevant(id) && !hibernatingAgents.has(id) && !merged.has(id)) wakingRef.current.add(id)
     }
     // Clear waking once the agent reaches a real status (thinking/compacting) or
-    // goes back to hibernating; otherwise keep showing it through the gap.
+    // goes back to hibernating, and drop it if this chat filter no longer owns
+    // the agent; otherwise keep showing it through the gap.
     for (const id of [...wakingRef.current]) {
-      if (merged.has(id)) wakingRef.current.delete(id)
+      if (!isRelevant(id) || merged.has(id)) wakingRef.current.delete(id)
       else merged.set(id, { status: 'waking', startTs: 0 })
     }
     prevHibRef.current = new Set(hibernatingAgents)
     return merged
-  }, [thinkingAgents, compactingAgents, hibernatingAgents])
+  }, [thinkingAgents, compactingAgents, hibernatingAgents, statusTargetIds])
 
   // Suggestions live in the per-agent status row, keyed by the agent that
   // posted them. An agent with no thinking/compacting status (e.g. a bot like
@@ -1861,10 +1867,9 @@ function FleetChatInner({ shape }: { shape: any }) {
     setAtBottom(true)
   }, [filterKey])
 
-  // Resolve a friendly name/label to fleet IDs for DB queries. Uses the shared
-  // labelsForAgent so send-targeting matches the live/history filters — incl.
-  // pseudo-labels (awake/hibernating/human), bare lineage names, and
-  // `lineage:phase` tags (all subsumed by the label set).
+  // Resolve a friendly name/label to fleet IDs for UI interactions such as
+  // drag/drop. Status-row scoping below uses resolveFilter() instead so it
+  // matches the chat/history membership set exactly.
   const resolveToFleetIds = useCallback((label: string): string[] => {
     if (label.startsWith('fleet:')) return [label]
     const matched = agents.filter((a: any) => labelsForAgent(a).includes(label))
@@ -1876,23 +1881,21 @@ function FleetChatInner({ shape }: { shape: any }) {
     return resolveToFleetIds(label)[0] || label
   }, [resolveToFleetIds])
 
+  const statusTargetIds = useMemo<Set<string> | null>(() => {
+    if (!dnfFilter || dnfFilter.length === 0) return null
+    return new Set(resolveFilter(dnfFilter))
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- depend on filterKey (stable filter encoding); resolveFilter reads current fleet state.
+  }, [filterKey, agents])
+
   const hibernatingAgents = useMemo(() => {
-    const targetIds = new Set<string>()
-    if (dnfFilter && dnfFilter.length > 0) {
-      for (const andGroup of dnfFilter) {
-        for (const [, label] of andGroup) {
-          for (const id of resolveToFleetIds(label)) targetIds.add(id)
-        }
-      }
-    }
     const result = new Set<string>()
     for (const a of agents) {
-      if (a.status === 'hibernating' && (!dnfFilter || targetIds.has(a.id))) {
+      if (a.status === 'hibernating' && (!statusTargetIds || statusTargetIds.has(a.id))) {
         result.add(a.id)
       }
     }
     return result
-  }, [agents, dnfFilter, resolveToFleetIds])
+  }, [agents, statusTargetIds])
 
   const suggestionsPending = useMemo(() => {
     let filtered = suggestionsAll
@@ -5199,6 +5202,7 @@ function FleetChatInner({ shape }: { shape: any }) {
               compactingAgents={compactingAgents}
               contextPercent={contextPercent}
               hibernatingAgents={hibernatingAgents}
+              statusTargetIds={statusTargetIds}
               ctx={ctx}
               agents={agents}
               itemCount={rawItems.length}
