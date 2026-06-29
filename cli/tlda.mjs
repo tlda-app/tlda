@@ -793,7 +793,6 @@ async function cmdInit() {
 // route here, otherwise we fall through to the existing watcher.
 const FLEET_DAEMON_LOGFILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.log')
 const FLEET_DAEMON_PIDFILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.pid')
-const FLEET_DAEMON_LOCKFILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.lock')
 const _cliDir = dirname(fileURLToPath(import.meta.url))
 const _cliWorktreeMatch = _cliDir.match(/^(.+?)\/\.claude\/worktrees\//)
 const FLEET_DAEMON_SCRIPT = _cliWorktreeMatch
@@ -810,61 +809,14 @@ function lastDaemonConnectedTarget() {
   }
 }
 
-function readDaemonPidFile() {
-  if (!existsSync(FLEET_DAEMON_PIDFILE)) return null
-  const pid = parseInt(readFileSync(FLEET_DAEMON_PIDFILE, 'utf8').trim(), 10)
-  return Number.isInteger(pid) ? pid : null
-}
-
-function readDaemonLockHolder() {
-  try {
-    if (!existsSync(FLEET_DAEMON_LOCKFILE)) return null
-    const holder = JSON.parse(readFileSync(FLEET_DAEMON_LOCKFILE, 'utf8'))
-    return holder && typeof holder === 'object' ? holder : null
-  } catch {
-    return null
-  }
-}
-
-function daemonPidState(pid) {
-  if (!Number.isInteger(pid)) return { alive: false, controllable: false, error: null }
-  try {
-    process.kill(pid, 0)
-    return { alive: true, controllable: true, error: null }
-  } catch (e) {
-    if (e?.code === 'EPERM') return { alive: true, controllable: false, error: e }
-    if (e?.code === 'ESRCH') return { alive: false, controllable: false, error: e }
-    return { alive: false, controllable: false, error: e }
-  }
-}
-
-function printDaemonRunning(pid, { controllable = true, holder = null } = {}) {
-  console.log(green('Fleet daemon running') + dim(` (pid ${pid})`) + (controllable ? '' : dim(' — not signalable from this process')))
-  console.log(dim(`  Config target: ${getFleetServerUrl()}`))
-  const connectedTarget = lastDaemonConnectedTarget()
-  if (connectedTarget) console.log(dim(`  Last WS target: ${connectedTarget}`))
-  if (holder?.installPath) console.log(dim(`  Lock holder: ${holder.installPath}`))
-  console.log(dim(`  Log: ${FLEET_DAEMON_LOGFILE}`))
-}
-
-function removeDaemonPidFileBestEffort() {
-  try {
-    unlinkSync(FLEET_DAEMON_PIDFILE)
-  } catch (e) {
-    if (e?.code !== 'ENOENT') console.error(dim(`  Could not remove stale pidfile: ${e.message}`))
-  }
-}
-
 // Idempotent daemon start — no-op if already running, spawns if not.
 // Used by `tlda server start` to make sure the daemon comes up alongside
 // the server. The daemon dying silently was a recurring source of pain.
 async function ensureFleetDaemonRunning() {
   // Already running?
-  const pid = readDaemonPidFile()
-  if (pid) {
-    const state = daemonPidState(pid)
-    if (state.alive) return
-    // stale pid → fall through
+  if (existsSync(FLEET_DAEMON_PIDFILE)) {
+    const pid = parseInt(readFileSync(FLEET_DAEMON_PIDFILE, 'utf8').trim(), 10)
+    try { process.kill(pid, 0); return } catch {} // stale pid → fall through
   }
   const daemonScript = FLEET_DAEMON_SCRIPT
   if (!existsSync(daemonScript)) return // not installed; silently skip
@@ -896,44 +848,27 @@ async function cmdFleetWatch(sub) {
   const daemonScript = FLEET_DAEMON_SCRIPT
 
   if (sub === 'stop') {
-    const pid = readDaemonPidFile() || readDaemonLockHolder()?.pid || null
-    if (pid) {
-      try {
-        process.kill(pid, 'SIGTERM')
-        removeDaemonPidFileBestEffort()
-      } catch (e) {
-        if (e?.code === 'ESRCH') {
-          removeDaemonPidFileBestEffort()
-        } else if (e?.code === 'EPERM') {
-          console.error(red(`Fleet daemon is running but this process cannot stop pid ${pid}: ${e.message}`))
-          console.error(dim(`  Lock: ${FLEET_DAEMON_LOCKFILE}`))
-          process.exit(1)
-        } else {
-          console.error(red(`Fleet daemon stop failed for pid ${pid}: ${e.message}`))
-          process.exit(1)
-        }
-      }
+    if (existsSync(FLEET_DAEMON_PIDFILE)) {
+      const pid = parseInt(readFileSync(FLEET_DAEMON_PIDFILE, 'utf8').trim(), 10)
+      try { process.kill(pid, 'SIGTERM') } catch {}
+      try { unlinkSync(FLEET_DAEMON_PIDFILE) } catch {}
     }
     console.log(green('Fleet daemon stopped.'))
     return
   }
 
   if (sub === 'status') {
-    const pid = readDaemonPidFile()
-    if (pid) {
-      const state = daemonPidState(pid)
-      if (state.alive) {
-        printDaemonRunning(pid, { controllable: state.controllable, holder: readDaemonLockHolder() })
+    if (existsSync(FLEET_DAEMON_PIDFILE)) {
+      const pid = parseInt(readFileSync(FLEET_DAEMON_PIDFILE, 'utf8').trim(), 10)
+      try {
+        process.kill(pid, 0)
+        console.log(green('Fleet daemon running') + dim(` (pid ${pid})`))
+        console.log(dim(`  Config target: ${getFleetServerUrl()}`))
+        const connectedTarget = lastDaemonConnectedTarget()
+        if (connectedTarget) console.log(dim(`  Last WS target: ${connectedTarget}`))
+        console.log(dim(`  Log: ${FLEET_DAEMON_LOGFILE}`))
         return
-      }
-    }
-    const holder = readDaemonLockHolder()
-    if (holder?.pid) {
-      console.log(yellow('Fleet daemon lock is held but pidfile is missing') + dim(` (pid ${holder.pid})`))
-      if (holder.installPath) console.log(dim(`  Lock holder: ${holder.installPath}`))
-      console.log(dim(`  Lock: ${FLEET_DAEMON_LOCKFILE}`))
-      console.log(dim(`  Log: ${FLEET_DAEMON_LOGFILE}`))
-      return
+      } catch {}
     }
     console.log(red('Fleet daemon not running.'))
     return
@@ -967,14 +902,13 @@ async function cmdFleetWatch(sub) {
 
   if (sub === 'start') {
     // Already running?
-    const existingPid = readDaemonPidFile()
-    if (existingPid) {
-      const state = daemonPidState(existingPid)
-      if (state.alive) {
-        console.log('Fleet daemon already running' + dim(` (pid ${existingPid})`) + (state.controllable ? '' : dim(' — not signalable from this process')))
+    if (existsSync(FLEET_DAEMON_PIDFILE)) {
+      const pid = parseInt(readFileSync(FLEET_DAEMON_PIDFILE, 'utf8').trim(), 10)
+      try {
+        process.kill(pid, 0)
+        console.log('Fleet daemon already running' + dim(` (pid ${pid})`))
         return
-      }
-      // stale pid
+      } catch {} // stale pid
     }
 
     if (!existsSync(daemonScript)) {

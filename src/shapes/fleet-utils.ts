@@ -407,13 +407,24 @@ export function ensureMyLaneDisjoint(editor: Editor, myId: string, myDevice: str
   return mine.length
 }
 
-export async function createFleetLayout(editor: Editor, agents: any[], variant: '2col' | '3col' | 'wide' | 'grid' | 'touch' | 'phone' = '3col'): Promise<boolean> {
+export type FleetLayoutVariant = 'phone' | '3-col' | '2x2' | 'big-chat' | 'both-margins' | 'touch'
+
+export async function createFleetLayout(editor: Editor, agents: any[], variant: FleetLayoutVariant = '3-col'): Promise<boolean> {
   const result = await createFleetLayoutDetailed(editor, agents, variant)
   return result.created
 }
 
-export async function createFleetLayoutDetailed(editor: Editor, agents: any[], variant: '2col' | '3col' | 'wide' | 'grid' | 'touch' | 'phone' = '3col'): Promise<FleetLayoutCreateResult> {
+export async function createFleetLayoutDetailed(editor: Editor, agents: any[], variant: FleetLayoutVariant = '3-col'): Promise<FleetLayoutCreateResult> {
   await whenDeviceReady()
+  // Identity and device are auto-provisioned, so these two bails should be
+  // UNREACHABLE in a real session — they are not "the user/tester forgot to log
+  // in." <IdentityPicker> (mounted in App.tsx) auto-registers a temporary
+  // ("joke") identity via temporaryName() whenever none is stored, and
+  // initDeviceId() auto-mints + persists a device id on load. If you ever
+  // actually hit 'identity-missing' / 'device-missing', the auto-identity path
+  // is broken (or the page mounted without <IdentityPicker>, or this ran before
+  // auto-identify resolved) — that's a bug to fix upstream, NOT an expected
+  // state and NOT something to work around by patching this function or chat.
   const myId = getHumanId()
   if (!myId) return makeFleetLayoutResult(editor, variant, 'identity-missing', myId, getDeviceId())
   const myDevice = getDeviceId()
@@ -552,7 +563,7 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
       seenNames.add(name)
       return true
     })
-    const panelCount = variant === 'grid' ? 4 : (variant === 'wide' || variant === 'phone') ? 1 : 2
+    const panelCount = variant === '2x2' ? 4 : (variant === 'big-chat' || variant === 'phone' || variant === 'both-margins') ? 1 : 2
     const recentChatAgents = recentChatTargetAgents(getEvents(), deduped, humanId, getHumanName(), panelCount)
     const recentIds = new Set(recentChatAgents.map((a: any) => a.id || a.friendly_name))
     const topAgents = [
@@ -590,8 +601,8 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
     // Everything is laid out relative to the document edges — never relative to
     // the HUD position, which is a separate offset (the anchor shape).
     const leftContentW =
-      variant === 'wide' ? leftW + gap + Math.round(chatW3 * 2)
-      : variant === '2col' ? leftW + gap + Math.round(chatW3 * 1.5)
+      variant === 'big-chat' ? leftW + gap + Math.round(chatW3 * 2)
+      : variant === 'both-margins' ? leftW + gap + Math.round(chatW3 * 1.5)
       : leftW + gap + rightW
 
     const { minLeft, minTop, maxRight } = docBounds
@@ -694,29 +705,32 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
         props: { w: leftW, h: searchH },
       },
     ]
-    if (variant === 'wide') {
+    const editorSlot = (slotX: number, slotY: number, w: number, h: number) => ({
+      id: slotId(myId, myDevice, 'source-editor'),
+      type: 'fleet-source-editor' as any,
+      x: slotX, y: slotY,
+      isLocked: false,
+      props: { w, h, file: '', line: 1, title: 'Source' },
+    })
+
+    if (variant === 'big-chat') {
       const chatWide = Math.round(chatW3 * 2)
+      const wideChatH = Math.round((totalH - gap) / 2)
+      const wideEditorH = totalH - gap - wideChatH
       shapes.push(
         {
           id: slotId(myId, myDevice, 'chat-0'),
           type: 'fleet-chat' as any,
           x: anchorX + leftW + gap, y: anchorY,
           isLocked: false,
-          props: { w: chatWide, h: rightChatH, filter: filter1 },
+          props: { w: chatWide, h: wideChatH, filter: filter1 },
         },
-        {
-          id: slotId(myId, myDevice, 'docview'),
-          type: 'fleet-docview' as any,
-          x: anchorX + leftW + gap, y: anchorY + rightChatH + gap,
-          isLocked: false,
-          props: { w: chatWide, h: docviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '' },
-        },
+        editorSlot(anchorX + leftW + gap, anchorY + wideChatH + gap, chatWide, wideEditorH),
       )
-    } else if (variant === 'grid') {
+    } else if (variant === '2x2') {
       const gridChatW = chatW3
       const gridChatH = Math.round((totalH - gap) / 2)
       const gridRightChatH = Math.round(gridChatH * 0.75)
-      const gridDocviewH = gridChatH - gap - gridRightChatH
       shapes.push(
         {
           id: slotId(myId, myDevice, 'chat-0'),
@@ -746,15 +760,8 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
           isLocked: false,
           props: { w: gridChatW, h: gridRightChatH, filter: filter4 },
         },
-        {
-          id: slotId(myId, myDevice, 'docview'),
-          type: 'fleet-docview' as any,
-          x: anchorX + leftW + gap + gridChatW + gap, y: anchorY + gridChatH + gap + gridRightChatH + gap,
-          isLocked: false,
-          props: { w: gridChatW, h: gridDocviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '' },
-        },
       )
-    } else if (variant === '3col') {
+    } else if (variant === '3-col') {
       shapes.push(
         {
           id: slotId(myId, myDevice, 'chat-0'),
@@ -802,13 +809,7 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
           isLocked: false,
           props: { w: chatWide, h: docviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '' },
         },
-        {
-          id: slotId(myId, myDevice, 'chat-1'),
-          type: 'fleet-chat' as any,
-          x: rightChatX, y: anchorY,
-          isLocked: false,
-          props: { w: chatWide, h: totalH, filter: filter2 },
-        },
+        editorSlot(rightChatX, anchorY, chatWide, totalH),
       )
     }
     for (const s of shapes) { s.props.userId = myId; s.props.deviceId = myDevice }

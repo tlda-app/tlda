@@ -26,15 +26,11 @@ const FENCE_AGENT_WRITE_ROOTS = [
   '~/.npm/_npx',
   '~/.zcompdump*',
 ]
-const FENCE_TOOL_WRITE_ROOTS = [
-  '~/Library/Caches',
-  '~/Library/Caches/**',
-  '~/Library/Application Support/Code',
-  '~/Library/Application Support/Code/**',
-  '~/Library/Application Support/Cursor',
-  '~/Library/Application Support/Cursor/**',
-]
-const FENCE_MACHINE_WRITE_ROOTS = ['/']
+// Skip's fleet policy is broad write with narrow denies: fleet event 811370
+// says agents write everything except chat. Chat is SQLite, so the filesystem
+// fence denies the DB and sidecar files directly while normal chat still goes
+// through the server.
+const FENCE_BROAD_WRITE_ROOTS = ['/']
 const FENCE_AGENT_READ_ROOTS = [
   '/tmp/tlda-fence-env',
   '/tmp/tlda-fence-env/**',
@@ -49,14 +45,13 @@ const FENCE_AGENT_READ_ROOTS = [
   '~/.config/fence',
   '~/Library/Application Support/mkcert',
   '~/Library/Preferences',
+  '~/Library/Keychains',
 ]
 const FENCE_DENY_READ = [
   '~/.ssh/*', '~/.ssh/**', '~/.ssh/id_*', '~/.ssh/config', '~/.ssh/*.pem',
   '~/.gnupg/**', '~/.aws/**', '~/.config/gcloud/**', '~/.kube/**',
   '~/.docker/**', '~/.pypirc', '~/.netrc', '~/.git-credentials',
   '~/.cargo/credentials', '~/.cargo/credentials.toml',
-  '~/Library/Keychains/**',
-  '**/.env', '**/.env.*', '**/*.key', '**/*.pem', '**/*.p12', '**/*.pfx',
 ]
 const FENCE_DENY_WRITE = [
   '~/.config/tlda/fleet.db*',
@@ -65,7 +60,6 @@ const FENCE_DENY_WRITE = [
   '~/.gnupg/**', '~/.aws/**', '~/.config/gcloud/**', '~/.kube/**',
   '~/.docker/**', '~/.pypirc', '~/.netrc', '~/.git-credentials',
   '~/.cargo/credentials', '~/.cargo/credentials.toml',
-  '~/Library/Keychains/**',
   '**/.env', '**/.env.*', '**/*.key', '**/*.pem', '**/*.p12', '**/*.pfx',
 ]
 const FENCE_GIT_READONLY_DENY = ['**/.git/**', '**/.git', '**/.git/worktrees/**']
@@ -140,14 +134,9 @@ function apiNeedsLocalOutbound(dnsAlias) {
 
 export function fenceSettings(policy, { api, dnsAlias } = {}) {
   const allowRead = uniqueSorted([...(policy.read_roots || []), ...FENCE_AGENT_READ_ROOTS].map(expandPathPattern))
-  const allowWrite = uniqueSorted([
-    ...(policy.write_roots || []),
-    ...FENCE_AGENT_WRITE_ROOTS,
-    ...FENCE_TOOL_WRITE_ROOTS,
-    ...(policy.machine_write ? FENCE_MACHINE_WRITE_ROOTS : []),
-  ].map(expandPathPattern))
+  const allowWrite = uniqueSorted([...(policy.write_roots || []), ...FENCE_AGENT_WRITE_ROOTS, ...FENCE_BROAD_WRITE_ROOTS].map(expandPathPattern))
   const denyWrite = [...FENCE_DENY_WRITE]
-  if (String(policy.git || 'write') !== 'write' && !hasGitWriteRoot(policy)) denyWrite.push(...FENCE_GIT_READONLY_DENY)
+  if (String(policy.git || 'read') !== 'write' && !hasGitWriteRoot(policy)) denyWrite.push(...FENCE_GIT_READONLY_DENY)
   let allowedDomains = [...FENCE_CODE_ALLOWED_DOMAINS]
   const host = apiHost(api)
   if (host && !allowedDomains.includes(host)) allowedDomains.push(host)
@@ -176,8 +165,8 @@ export function fenceSettings(policy, { api, dnsAlias } = {}) {
       denyWrite,
     },
     command: {
-      deny: String(policy.git || 'write') === 'write' ? [] : FENCE_COMMAND_DENY,
-      useDefaults: String(policy.git || 'write') !== 'write',
+      deny: String(policy.git) === 'write' ? [] : FENCE_COMMAND_DENY,
+      useDefaults: true,
     },
     macos: {
       mach: {

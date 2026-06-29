@@ -2215,18 +2215,18 @@ async function rpcCheckAlive({ tmux_session }) {
   // interaction in that window respawn its (live) target. Instead, on a miss do
   // one cheap on-demand existence check and only report dead when we actually
   // confirm the session is gone. Uncertain ≠ dead.
-  if (!tmux_session) return { alive: false, state: 'dead', reason: 'missing tmux_session' }
+  if (!tmux_session) return { alive: false }
   const cached = _alivenessCache.get(tmux_session)
-  if (cached !== undefined) return { alive: cached, state: cached ? 'alive' : 'dead', tmux_session }
+  if (cached !== undefined) return { alive: cached }
   try {
     const r = await rpcListSessions()
     const alive = (r.sessions || []).includes(tmux_session)
     _alivenessCache.set(tmux_session, alive)
-    return { alive, state: alive ? 'alive' : 'dead', tmux_session }
+    return { alive }
   } catch {
     // Couldn't probe tmux — can't confirm death. Don't trigger a respawn on a
     // guess; a missed wake self-corrects on the next message.
-    return { alive: true, state: 'alive', tmux_session, reason: 'tmux probe failed; preserving live delivery path' }
+    return { alive: true }
   }
 }
 
@@ -2303,9 +2303,7 @@ async function queryWindowSize(tmux_session) {
     const { stdout } = await tmux('display-message', '-p', '-t', tmux_session, '#{window_width} #{window_height}')
     const [w, h] = stdout.trim().split(/\s+/).map(n => parseInt(n, 10))
     if (Number.isFinite(w) && w > 0 && Number.isFinite(h) && h > 0) return { cols: w, rows: h }
-  } catch {
-    // Best effort only; callers can render with their existing/default size.
-  }
+  } catch {}
   return null
 }
 
@@ -2528,15 +2526,14 @@ async function rpcSpawn({
         return cwdPath === sourcePath || cwdPath.startsWith(`${sourcePath}${path.sep}`)
       })
   let grant
-  let spawnConfig
   try {
-    spawnConfig = _loadSharedConfig()
+    const config = _loadSharedConfig()
     grant = resolveDaemonSpawnGrant({
       requestedCapability: requestedCapability || (policy != null ? 'write' : undefined),
       callerRung,
       model,
       kind,
-      config: spawnConfig,
+      config,
       doc,
       project: projectForGrant,
       cwd: resolvedCwd,
@@ -2560,7 +2557,6 @@ async function rpcSpawn({
       permissionMode: mode,
       spawnPolicy: grant.grantedPolicy,
       explicitPolicy: policy != null,
-      config: spawnConfig,
       machineId: MACHINE_ID,
       tmuxSocket: TMUX_SOCKET,
     })
@@ -2716,7 +2712,7 @@ const _gooseActivityLastSeen = new Map()
 // process tree, scan the pane PIDs plus their descendants and return the
 // session from the most-recently-updated sessions file. Returns
 // { sessionId, cwd } or null.
-function paneSubtree(rootPids, childrenByPpid) {
+function liveSessionForPids(rootPids, childrenByPpid) {
   const subtree = new Set()
   const stack = [...rootPids]
   while (stack.length) {
@@ -2725,11 +2721,6 @@ function paneSubtree(rootPids, childrenByPpid) {
     subtree.add(pid)
     for (const c of (childrenByPpid.get(pid) || [])) stack.push(c)
   }
-  return subtree
-}
-
-function liveSessionForPids(rootPids, childrenByPpid) {
-  const subtree = paneSubtree(rootPids, childrenByPpid)
   const sessionsDir = path.join(os.homedir(), '.claude', 'sessions')
   let best = null
   for (const pid of subtree) {
@@ -2743,58 +2734,14 @@ function liveSessionForPids(rootPids, childrenByPpid) {
   return best ? { sessionId: best.sessionId, cwd: best.cwd } : null
 }
 
-function codexRolloutIdFromPath(jsonlPath) {
-  try {
-    const first = fs.readFileSync(jsonlPath, 'utf8').split(/\r?\n/, 1)[0]
-    if (first) {
-      const parsed = JSON.parse(first)
-      const id = parsed?.payload?.id
-      if (typeof id === 'string' && id) return id
-    }
-  } catch {
-    // Fall back to the rollout filename below when the first line is racing.
-  }
-  const m = path.basename(jsonlPath).match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i)
-  return m?.[1] || null
-}
-
-function codexRolloutCwd(jsonlPath) {
-  try {
-    const first = fs.readFileSync(jsonlPath, 'utf8').split(/\r?\n/, 1)[0]
-    if (!first) return null
-    const parsed = JSON.parse(first)
-    const cwd = parsed?.payload?.cwd
-    return typeof cwd === 'string' && cwd ? cwd : null
-  } catch {
-    return null
-  }
-}
-
-async function liveCodexSessionForPids(rootPids, childrenByPpid, runtimePids, agent) {
-  const subtree = paneSubtree(rootPids, childrenByPpid)
-  const launchTs = Date.parse(agent.registered_at || agent.last_seen || '') || 0
-  for (const pid of subtree) {
-    if (!runtimePids?.has(pid)) continue
-    const jsonlPath = await resolveTranscript({ pid, kind: 'codex', agent, launchTs })
-    if (!jsonlPath) continue
-    if (codexRolloutHasOwnerEvidence(jsonlPath) && !codexRolloutBelongsToAgent(jsonlPath, agent)) continue
-    const sessionId = codexRolloutIdFromPath(jsonlPath)
-    if (!sessionId) continue
-    return { sessionId, cwd: codexRolloutCwd(jsonlPath) }
-  }
-  return null
-}
-
 // If a live agent's true session isn't its registered primary session_id, heal
 // the daemon's local agent record (so syncSessionWatchers attaches the real
 // JSONL this sweep) and tell the server to persist it. This is the automated
 // form of the manual re-map that fixes "alive agent, dead activity cards".
 // Returns true if a heal was applied (caller re-runs syncSessionWatchers).
-async function reconcileAgentSession(agent, panePids, childrenByPpid, kind = 'claude', runtimePids = null) {
+function reconcileAgentSession(agent, panePids, childrenByPpid) {
   if (!agent || !agent.id || !panePids?.length) return false
-  const live = kind === 'codex'
-    ? await liveCodexSessionForPids(panePids, childrenByPpid, runtimePids, agent)
-    : liveSessionForPids(panePids, childrenByPpid)
+  const live = liveSessionForPids(panePids, childrenByPpid)
   if (!live) return false
   if (agent.session_id === live.sessionId) {
     // Already correct — record it so we don't keep checking the message guard.
@@ -3064,7 +3011,7 @@ async function checkAgentLiveness() {
     // from what's registered (long-lived/resumed agents roll session UUIDs;
     // the MCP only stamps session_id once at startup). Without this, the daemon
     // never finds the live JSONL → activity cards die though the agent is alive.
-    if (await reconcileAgentSession(agent, panes, childrenByPpid, matchedKind, runtimePidsByKind.get(matchedKind))) healedAny = true
+    if (reconcileAgentSession(agent, panes, childrenByPpid)) healedAny = true
   }
 
   // A heal changed an agent's session_id/session_ids locally; re-point the JSONL
