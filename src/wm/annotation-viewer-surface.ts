@@ -70,17 +70,21 @@ export function createAnnotationViewerSurfaceRequest({
 		viewportWidth: viewport.w,
 		viewportHeight: viewport.h,
 	})
+	const centeredLeft = Math.max(placement.margin, Math.min(
+		Math.round((viewport.w - size.w) / 2),
+		viewport.w - size.w - placement.margin,
+	))
 
 	return {
 		kind: 'annotation-viewer',
 		surfaceId: `${ANNOTATION_VIEWER_SURFACE_PREFIX}:${slug}`,
 		layerId: `${ANNOTATION_VIEWER_LAYER_PREFIX}:${slug}`,
 		owner: resolvedOwner,
-		extent: { x: placement.left, y: placement.top, w: size.w, h: size.h },
+		extent: { x: centeredLeft, y: placement.top, w: size.w, h: size.h },
 		placement: {
-			mode: 'chip-anchored',
+			mode: 'viewport-centered',
 			anchor: chipRect,
-			left: placement.left,
+			left: centeredLeft,
 			top: placement.top,
 			margin: placement.margin,
 		},

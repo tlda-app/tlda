@@ -23,6 +23,7 @@ import {
   createTemporaryMarkdownSurfaceRequest,
   temporaryMarkdownShapeMeta,
 } from '../wm/markdown-surface'
+import { sendCanvasPageShapesToBack } from './document-pages'
 import { FLEET_SHAPE_TYPES } from './fleet-utils'
 
 const PILL_W = 70
@@ -157,11 +158,11 @@ function getParkedMarkdownPoint(editor: Editor, fallbackPoint: { x: number; y: n
   }
 }
 
-function sendPageShapeToBack(editor: Editor, shapeId: TLShapeId) {
+function lockPageShapeAndSendPagesToBack(editor: Editor, shapeId: TLShapeId) {
   const shape = editor.getShape(shapeId)
   if (!shape) return
   if (shape.isLocked) editor.updateShape({ id: shapeId, type: shape.type, isLocked: false })
-  editor.sendToBack([shapeId])
+  sendCanvasPageShapesToBack(editor)
   editor.updateShape({ id: shapeId, type: shape.type, isLocked: true })
 }
 
@@ -238,7 +239,7 @@ export async function createTemporaryMarkdownColumn(
       },
     } as unknown as Parameters<Editor['createShape']>[0])
   }
-  sendPageShapeToBack(editor, TEMP_MARKDOWN_SHAPE_ID)
+  lockPageShapeAndSendPagesToBack(editor, TEMP_MARKDOWN_SHAPE_ID)
   const bounds = getShapeClipBounds(editor, TEMP_MARKDOWN_SHAPE_ID) || {
     x: parkedPoint.x,
     y: parkedPoint.y,

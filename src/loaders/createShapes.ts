@@ -4,6 +4,7 @@
  * creates them if not, and returns the set of page shape IDs.
  */
 import type { Editor, TLPageId, TLShapeId } from 'tldraw'
+import { sendCanvasPageShapesToBack } from '../shapes/document-pages'
 import type { SvgDocument } from './types'
 
 type HtmlPageShape = {
@@ -38,17 +39,6 @@ function putHtmlPageShape(editor: Editor, shape: HtmlPageShape) {
   // Same custom-shape boundary as createHtmlPageShape; this preserves the
   // existing shape record's parent/index/meta fields while updating deck props.
   editor.store.put([shape as unknown as Parameters<Editor['store']['put']>[0][number]])
-}
-
-function sendDocumentPagesToBack(editor: Editor) {
-  const ids = editor.getCurrentPageShapes()
-    .filter(s =>
-      (s.type as string) === 'svg-page' ||
-      (s.type as string) === 'html-page' ||
-      (s.type as string) === 'zoomable-image' ||
-      s.type === 'image')
-    .map(s => s.id)
-  if (ids.length > 0) editor.sendToBack(ids)
 }
 
 /**
@@ -90,7 +80,7 @@ export function createSvgShapes(editor: Editor, document: SvgDocument): boolean 
 
   // Pages must always render below annotation shapes — send to back every time
   // so notes/highlights placed after initial load stay on top.
-  sendDocumentPagesToBack(editor)
+  sendCanvasPageShapesToBack(editor)
 
   return missingPages.length === 0
 }
@@ -109,7 +99,7 @@ export function createHtmlShapes(editor: Editor, document: SvgDocument): boolean
   const hasHtmlShapes = existingShapes.some(s => (s.type as string) === 'html-page')
 
   if (hasMultiplePages && hasHtmlShapes) {
-    sendDocumentPagesToBack(editor)
+    sendCanvasPageShapesToBack(editor)
     return true // already set up
   }
 
@@ -187,7 +177,7 @@ export function createHtmlShapes(editor: Editor, document: SvgDocument): boolean
 
   // Switch back to first page
   editor.setCurrentPage(defaultPageId)
-  sendDocumentPagesToBack(editor)
+  sendCanvasPageShapesToBack(editor)
 
   // Migrate annotations from old single-page format
   if (annotationMigration?.length) {
@@ -268,10 +258,10 @@ export function createSlidesShapes(editor: Editor, document: SvgDocument): boole
   }
 
   if (!changed) {
-    sendDocumentPagesToBack(editor)
+    sendCanvasPageShapesToBack(editor)
     return true
   }
-  sendDocumentPagesToBack(editor)
+  sendCanvasPageShapesToBack(editor)
   return false
 }
 
@@ -287,7 +277,7 @@ export function createImageShapes(editor: Editor, document: SvgDocument): boolea
     s => (s.type as string) === 'zoomable-image' || s.type === 'image'
   )
   if (hasPages) {
-    sendDocumentPagesToBack(editor)
+    sendCanvasPageShapesToBack(editor)
     return true
   }
 
@@ -310,7 +300,7 @@ export function createImageShapes(editor: Editor, document: SvgDocument): boolea
       })
     )
   )
-  sendDocumentPagesToBack(editor)
+  sendCanvasPageShapesToBack(editor)
 
   return false
 }

@@ -19,6 +19,7 @@ import type {
   ManagedSurfacePlacement,
   ManagedSurfaceRequest,
 } from '../wm/managed-surfaces'
+import { sendCanvasPageShapesToBack } from '../shapes/document-pages'
 import './AnnotationViewer.css'
 
 type ViewerState = 'hovering' | 'pinned' | 'navigated'
@@ -49,7 +50,6 @@ interface ViewerData {
 export function AnnotationViewer({
   mainEditor,
   shapeUtils,
-  tools: _tools,
   licenseKey,
 }: AnnotationViewerProps) {
   const [data, setData] = useState<ViewerData | null>(null)
@@ -83,6 +83,7 @@ export function AnnotationViewer({
       setState(request.persistence.pinned ? 'pinned' : 'hovering')
       prevCameraRef.current = null
       if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current)
+      requestAnimationFrame(() => sendCanvasPageShapesToBack(mainEditor))
     }
 	    function onHide() {
 	      // Only auto-hide when hovering (not pinned/navigated)
@@ -113,7 +114,7 @@ export function AnnotationViewer({
       window.removeEventListener('annotation-viewer-cancel-hide', onCancelHide)
       if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current)
     }
-  }, [])
+  }, [mainEditor])
 
   const canvasWrapRef = useRef<HTMLDivElement>(null)
 
@@ -163,6 +164,7 @@ export function AnnotationViewer({
     if (!data) return
     const cam = mainEditor.getCamera()
     prevCameraRef.current = { x: cam.x, y: cam.y, z: cam.z }
+    sendCanvasPageShapesToBack(mainEditor)
     if (data.useFullBounds) {
       const cx = data.bounds.x + data.bounds.w / 2
       const cy = data.bounds.y + data.bounds.h / 2
@@ -174,6 +176,7 @@ export function AnnotationViewer({
         { animation: { duration: 300 } }
       )
     }
+    window.setTimeout(() => sendCanvasPageShapesToBack(mainEditor), 350)
     setState('navigated')
   }, [data, mainEditor])
 
@@ -181,15 +184,24 @@ export function AnnotationViewer({
   const handleBack = useCallback((e: React.MouseEvent) => {
     e.stopPropagation()
     if (!prevCameraRef.current) return
+    sendCanvasPageShapesToBack(mainEditor)
     mainEditor.setCamera(prevCameraRef.current, { animation: { duration: 300 } })
     prevCameraRef.current = null
+    window.setTimeout(() => sendCanvasPageShapesToBack(mainEditor), 350)
     setState('pinned')
   }, [mainEditor])
 
   // Close
   const handleClose = useCallback((e: React.MouseEvent) => {
     e.stopPropagation()
-    if (data?.managedCleanup && typeof data.managedCleanup === 'object' && 'onClose' in data.managedCleanup) {
+    const temporaryMarkdownShapes = (data?.shapeIds || [])
+      .filter((shapeId) => {
+        const shape = mainEditor.getShape(shapeId as TLShapeId)
+        return !!shape?.meta?.temporaryMarkdownColumn
+      }) as TLShapeId[]
+    if (temporaryMarkdownShapes.length > 0) {
+      mainEditor.store.remove(temporaryMarkdownShapes)
+    } else if (data?.managedCleanup && typeof data.managedCleanup === 'object' && 'onClose' in data.managedCleanup) {
       const cleanup = data.managedCleanup as { onClose?: string }
       if (cleanup.onClose === 'remove-surface') {
         const removable = (data.shapeIds || [])
@@ -248,7 +260,7 @@ export function AnnotationViewer({
       w: 800,
       h: 1035,
     }
-  }, [data?.useFullBounds, data?.bounds.x, data?.bounds.y, data?.bounds.w, data?.bounds.h])
+  }, [data])
 
   if (!data || !clipBounds) return null
 
@@ -265,8 +277,8 @@ export function AnnotationViewer({
     left = data.managedPlacement.left
     top = data.managedPlacement.top
   } else if (chip) {
-    // Horizontal: align left edge with chip, clamp to viewport
-    left = chip.left
+    // Horizontal: center the viewer in the viewport; vertical still follows the chip.
+    left = (vw - size.w) / 2
     if (left + size.w > vw - 8) left = vw - size.w - 8
     if (left < 8) left = 8
     // Vertical: center viewer on chip, clamp to viewport
