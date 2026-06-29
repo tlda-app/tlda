@@ -161,8 +161,30 @@ export function quietTrafficSuppressesActivity(filter, trafficMode) {
   )
 }
 
+function inferFleetComposerTrafficModeFromFilter(filter, trafficMode) {
+  if (!Array.isArray(filter)) return 'custom'
+  const dmLabel = filter.length === 1 &&
+    Array.isArray(filter[0]) &&
+    filter[0].length === 1 &&
+    Array.isArray(filter[0][0]) &&
+    filter[0][0][0] === 'dm'
+      ? filter[0][0][1]
+      : ''
+  if (dmLabel) return trafficMode === 'quiet' ? 'dm-quiet' : 'dm'
+
+  const labels = new Set()
+  for (const clause of filter) {
+    if (!Array.isArray(clause) || clause.length !== 1 || !Array.isArray(clause[0])) return 'custom'
+    const [role, label] = clause[0]
+    if (role !== 'from' && role !== 'to') return 'custom'
+    labels.add(label)
+  }
+  const roles = new Set(filter.map((clause) => clause[0][0]))
+  return filter.length === 2 && labels.size === 1 && roles.has('from') && roles.has('to') ? 'agent' : 'custom'
+}
+
 export function classifyFleetComposerTrafficMode(filter, trafficMode, humanLabel, agentLabel) {
-  if (!agentLabel) return 'custom'
+  if (!agentLabel) return inferFleetComposerTrafficModeFromFilter(filter, trafficMode)
   if (sameFleetFilter(filter, buildFleetDmFilter(humanLabel, agentLabel))) {
     return trafficMode === 'quiet' ? 'dm-quiet' : 'dm'
   }

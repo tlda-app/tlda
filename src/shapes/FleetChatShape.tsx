@@ -5744,7 +5744,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                   ? 'DM ⚒'
                   : composerTrafficMode === 'agent'
                     ? 'All'
-                    : 'Filter'}
+                    : 'DM'}
             </button>
             </div>
             <ChatComposer
