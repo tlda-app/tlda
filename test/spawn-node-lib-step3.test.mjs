@@ -20,6 +20,13 @@ function writeJsonl(file, rows) {
   fs.writeFileSync(file, rows.map((row) => `${typeof row === 'string' ? row : JSON.stringify(row)}\n`).join(''))
 }
 
+function codexRegisterRows(fleetId, name, callId) {
+  return [
+    { type: 'response_item', payload: { type: 'function_call', namespace: 'mcp__tlda', name: 'register', call_id: callId, arguments: '{}' } },
+    { type: 'response_item', payload: { type: 'function_call_output', call_id: callId, output: `Registered ${fleetId}. Your name: "${name}"` } },
+  ]
+}
+
 function freshSpawnDeps({ ensureServer }) {
   const calls = []
   return {
@@ -101,18 +108,68 @@ test('Codex rollout scan uses first own registration and newest matching rollout
   const newPath = path.join(sessionsBase, '2026', '06', '28', `rollout-2026-06-28T00-00-00-${newId}.jsonl`)
   writeJsonl(oldPath, [
     { type: 'session_meta', payload: { id: oldId, cwd: '/tmp/old' } },
-    'Registered fleet:codexaaa. Your name: "codex-a"',
+    ...codexRegisterRows('fleet:codexaaa', 'codex-a', 'call-old'),
   ])
   writeJsonl(newPath, [
     { type: 'session_meta', payload: { id: newId, cwd: '/tmp/new' } },
-    'Registered fleet:codexaaa. Your name: "codex-a"',
-    'Registered fleet:otherone. Your name: "child"',
+    ...codexRegisterRows('fleet:codexaaa', 'codex-a', 'call-new'),
+    'test fixture text mentions Registered fleet:otherone but is not MCP register output',
   ])
   fs.utimesSync(oldPath, new Date('2026-06-27T00:00:00Z'), new Date('2026-06-27T00:00:00Z'))
   fs.utimesSync(newPath, new Date('2026-06-28T00:00:00Z'), new Date('2026-06-28T00:00:00Z'))
   const found = findCodexRollout({ id: 'fleet:codexaaa' }, { sessionsBase })
   assert.equal(found.rolloutId, newId)
   assert.equal(found.cwd, '/tmp/new')
+})
+
+test('Codex respawn lookup uses stored rollout id without requiring in-rollout MCP registration', () => {
+  const root = tmpdir()
+  const sessionsBase = path.join(root, 'codex-sessions')
+  const sid = '66666666-6666-4666-8666-666666666666'
+  const fpath = path.join(sessionsBase, '2026', '06', '29', `rollout-2026-06-29T00-00-00-${sid}.jsonl`)
+  writeJsonl(fpath, [
+    { type: 'session_meta', payload: { id: sid, cwd: '/tmp/codex-live' } },
+    { type: 'event_msg', payload: { type: 'user_message', message: 'prior context' } },
+  ])
+  const found = findCodexRollout(
+    { id: 'fleet:stored1', session_id: sid, session_ids: [] },
+    { sessionsBase },
+  )
+  assert.equal(found.rolloutId, sid)
+  assert.equal(found.cwd, '/tmp/codex-live')
+})
+
+test('Codex respawn lookup rejects a stored rollout with conflicting owner evidence', () => {
+  const root = tmpdir()
+  const sessionsBase = path.join(root, 'codex-sessions')
+  const sid = '77777777-7777-4777-8777-777777777777'
+  const fpath = path.join(sessionsBase, '2026', '06', '29', `rollout-2026-06-29T00-00-00-${sid}.jsonl`)
+  writeJsonl(fpath, [
+    { type: 'session_meta', payload: { id: sid, cwd: '/tmp/wrong-owner' } },
+    ...codexRegisterRows('fleet:otherowner', 'not-yours', 'call-other'),
+  ])
+  const found = findCodexRollout(
+    { id: 'fleet:stored2', session_id: sid, session_ids: [] },
+    { sessionsBase },
+  )
+  assert.equal(found, null)
+})
+
+test('Codex respawn lookup checks historical stored rollout ids after primary misses', () => {
+  const root = tmpdir()
+  const sessionsBase = path.join(root, 'codex-sessions')
+  const missing = '88888888-8888-4888-8888-888888888888'
+  const sid = '99999999-9999-4999-8999-999999999999'
+  const fpath = path.join(sessionsBase, '2026', '06', '29', `rollout-2026-06-29T00-00-00-${sid}.jsonl`)
+  writeJsonl(fpath, [
+    { type: 'session_meta', payload: { id: sid, cwd: '/tmp/historical' } },
+  ])
+  const found = findCodexRollout(
+    { id: 'fleet:stored3', session_id: missing, session_ids: [sid] },
+    { sessionsBase },
+  )
+  assert.equal(found.rolloutId, sid)
+  assert.equal(found.cwd, '/tmp/historical')
 })
 
 test('lease policy and fence wrapper stay outside harness adapters', () => {
@@ -126,13 +183,15 @@ test('lease policy and fence wrapper stay outside harness adapters', () => {
   })
   assert.equal(leasePolicy.policy, 'cwd')
   assert.equal(leasePolicy.network, true)
+  assert.equal(leasePolicy.broad_write, false)
   assert.ok(leasePolicy.write_roots.includes(path.join(cwd, '.git')))
   const settings = fenceSettings(leasePolicy, { api: 'https://tlda-fly.example.test', dnsAlias: { host: 'tlda-fly.example.test', address: '100.80.1.2' } })
   assert.equal(settings.filesystem.defaultDenyRead, false)
-  assert.ok(settings.filesystem.allowWrite.includes('/'))
+  assert.equal(settings.filesystem.allowWrite.includes('/'), false)
   assert.ok(settings.filesystem.denyWrite.includes('~/.config/tlda/fleet.db*'))
   assert.ok(settings.filesystem.denyWrite.includes('~/.config/tlda/**/fleet.db*'))
   assert.ok(settings.filesystem.denyWrite.includes('~/.ssh/**'))
+  assert.ok(settings.filesystem.denyRead.includes('~/Library/Keychains/**'))
   assert.ok(settings.filesystem.allowWrite.some((p) => p.endsWith('/.git')))
   assert.equal(settings.filesystem.allowWrite.includes('/tmp'), false)
   assert.ok(settings.filesystem.allowWrite.includes('/private/var/folders/*/*/T/xcrun_db*'))
@@ -149,6 +208,76 @@ test('lease policy and fence wrapper stay outside harness adapters', () => {
   assert.match(wrapped, /'?fence'? '?--settings'?/)
 })
 
+test('default cwd lease writes cwd plus tool-support roots with unrestricted git', () => {
+  const cwd = tmpdir()
+  const { leasePolicy } = resolveLeasePolicy({
+    spawnPolicy: { capability: 'write', policy: 'cwd' },
+    harness: 'codex',
+    model: 'gpt-5.5',
+    cwd,
+    config: {
+      agentSandbox: {
+        runner: { command: 'fence' },
+      },
+    },
+  })
+  assert.equal(leasePolicy.policy, 'cwd')
+  assert.equal(leasePolicy.machine_write, false)
+  assert.equal(leasePolicy.git, 'write')
+  assert.ok(leasePolicy.write_roots.includes(cwd))
+  assert.equal(leasePolicy.write_roots.includes(path.join(os.homedir(), 'work')), false)
+  const settings = fenceSettings(leasePolicy, { api: 'https://tlda-fly.example.test' })
+  assert.equal(settings.filesystem.allowWrite.includes('/'), false)
+  assert.ok(settings.filesystem.allowWrite.includes(cwd))
+  assert.ok(settings.filesystem.allowWrite.includes(path.join(os.homedir(), 'Library/Caches')))
+  assert.ok(settings.filesystem.denyWrite.includes('~/.config/tlda/fleet.db*'))
+  assert.ok(settings.filesystem.denyWrite.includes('~/.ssh/**'))
+  assert.ok(settings.filesystem.denyWrite.includes('~/Library/Keychains/**'))
+  assert.deepEqual(settings.command.deny, [])
+  assert.equal(settings.command.useDefaults, false)
+})
+
+test('math lease writes tlda project roots plus shared guidance, not the app repo', () => {
+  const mathRoot = tmpdir()
+  const cwd = path.join(mathRoot, 'paper')
+  fs.mkdirSync(cwd, { recursive: true })
+  const { leasePolicy } = resolveLeasePolicy({
+    spawnPolicy: { capability: 'tlda-write', policy: 'tlda-projects' },
+    harness: 'codex',
+    model: 'gpt-5.5',
+    cwd,
+    config: {
+      agentSandbox: {
+        runner: { command: 'fence' },
+        extraProjectWriteRoots: [mathRoot],
+      },
+    },
+  })
+  assert.equal(leasePolicy.policy, 'tlda-projects')
+  assert.equal(leasePolicy.machine_write, false)
+  assert.ok(leasePolicy.write_roots.includes(mathRoot))
+  assert.ok(leasePolicy.write_roots.includes(path.join(os.homedir(), 'work', 'dot-claude')))
+  assert.equal(leasePolicy.write_roots.includes(path.join(os.homedir(), 'work', 'tlda')), false)
+})
+
+test('ops lease is machine-write with secret/chat denies still active', () => {
+  const { leasePolicy } = resolveLeasePolicy({
+    spawnPolicy: { capability: 'full', policy: 'unsandboxed' },
+    harness: 'codex',
+    model: 'gpt-5.5',
+    cwd: tmpdir(),
+    config: { agentSandbox: { runner: { command: 'fence' } } },
+  })
+  assert.equal(leasePolicy.policy, 'unsandboxed')
+  assert.equal(leasePolicy.machine_write, true)
+  assert.equal(leasePolicy.git, 'write')
+  const settings = fenceSettings(leasePolicy, { api: 'https://tlda-fly.example.test' })
+  assert.ok(settings.filesystem.allowWrite.includes('/'))
+  assert.ok(settings.filesystem.denyWrite.includes('~/.config/tlda/fleet.db*'))
+  assert.ok(settings.filesystem.denyWrite.includes('~/.ssh/**'))
+  assert.deepEqual(settings.command.deny, [])
+})
+
 test('fenced codex uses Codex danger-full-access under the outer fence', () => {
   const projection = codexSandboxProjection(
     { capability: 'write', policy: 'cwd' },
@@ -157,6 +286,16 @@ test('fenced codex uses Codex danger-full-access under the outer fence', () => {
   )
   assert.equal(projection.sandboxMode, 'danger-full-access')
   assert.deepEqual(projection.workspaceWriteConfigArgs, [])
+})
+
+test('codex read requests project to the normal working sandbox, not read-only', () => {
+  const projection = codexSandboxProjection(
+    { capability: 'read', policy: 'cwd' },
+    tmpdir(),
+    { fenced: false },
+  )
+  assert.equal(projection.sandboxMode, 'workspace-write')
+  assert.equal(projection.networkAccess, true)
 })
 
 test('unfenced codex no-net projects explicit workspace-write network false', () => {
@@ -230,17 +369,18 @@ test('codex no-net external fence preserves network-off in the lease', () => {
   assert.notDeepEqual(settings.network.allowedDomains, ['*'])
 })
 
-test('claude built-in write stays on the global-off classifier path', () => {
+test('claude built-in write uses the app-development outer fence lease', () => {
   const policy = resolveLaunchPolicy({
     spawnPolicy: { capability: 'write', policy: 'cwd' },
     harness: 'claude',
     model: 'claude-opus-4-8',
     cwd: tmpdir(),
+    config: { agentSandbox: { runner: { command: 'fence' } } },
   })
   assert.equal(policy.fenceGloballyDisabled, true)
-  assert.equal(policy.policyName, 'unsandboxed')
-  assert.equal(policy.leasePolicy, null)
-  assert.equal(policy.permissionMode, 'default')
+  assert.equal(policy.policyName, 'cwd')
+  assert.equal(policy.leasePolicy.policy, 'cwd')
+  assert.equal(policy.permissionMode, 'bypassPermissions')
   const cmd = claude.buildCmd({
     fleetId: 'fleet:test',
     tmuxSession: 'fleet-test',
@@ -249,20 +389,22 @@ test('claude built-in write stays on the global-off classifier path', () => {
     includePrompt: false,
     config: {},
   })
-  assert.doesNotMatch(cmd, /--dangerously-skip-permissions/)
-  assert.match(cmd, /--permission-mode 'default'/)
+  assert.match(cmd, /--dangerously-skip-permissions/)
+  assert.doesNotMatch(cmd, /--permission-mode/)
 })
 
-test('launch policy maps built-in full to Claude permission bypass', () => {
+test('launch policy maps built-in full to the ops machine-write fence lease', () => {
   const policy = resolveLaunchPolicy({
     spawnPolicy: { capability: 'full', policy: 'unsandboxed' },
     harness: 'claude',
     model: 'claude-opus-4-8',
     cwd: tmpdir(),
+    config: { agentSandbox: { runner: { command: 'fence' } } },
   })
   assert.equal(policy.fenceGloballyDisabled, true)
   assert.equal(policy.policyName, 'unsandboxed')
-  assert.equal(policy.leasePolicy, null)
+  assert.equal(policy.leasePolicy.policy, 'unsandboxed')
+  assert.equal(policy.leasePolicy.machine_write, true)
   assert.equal(policy.permissionMode, 'bypassPermissions')
   const cmd = claude.buildCmd({
     fleetId: 'fleet:test',
@@ -306,8 +448,9 @@ test('permission-classifier off-switch forces claude bypass at spawn time', () =
     model: 'claude-opus-4-8',
     cwd: tmpdir(),
     env: { TLDA_DISABLE_PERMISSION_CLASSIFIER: '1' },
+    config: { agentSandbox: { runner: { command: 'fence' } } },
   })
-  assert.equal(envPolicy.leasePolicy, null)
+  assert.equal(envPolicy.leasePolicy.policy, 'unsandboxed')
   assert.equal(envPolicy.permissionMode, 'bypassPermissions')
 
   const configPolicy = resolveLaunchPolicy({
@@ -315,10 +458,10 @@ test('permission-classifier off-switch forces claude bypass at spawn time', () =
     harness: 'claude',
     model: 'claude-opus-4-8',
     cwd: tmpdir(),
-    config: { agentSandbox: { disablePermissionsClassifier: true } },
+    config: { agentSandbox: { disablePermissionsClassifier: true, runner: { command: 'fence' } } },
     env: {},
   })
-  assert.equal(configPolicy.leasePolicy, null)
+  assert.equal(configPolicy.leasePolicy.policy, 'unsandboxed')
   assert.equal(configPolicy.permissionMode, 'bypassPermissions')
 })
 
@@ -328,10 +471,11 @@ test('direct requested capability lands in the shared launch-policy helper', () 
     harness: 'claude',
     model: 'claude-opus-4-8',
     cwd: tmpdir(),
+    config: { agentSandbox: { runner: { command: 'fence' } } },
   })
   assert.equal(policy.spawnPolicy.capability, 'write')
   assert.equal(policy.spawnPolicy.policy, 'cwd')
-  assert.equal(policy.permissionMode, 'default')
+  assert.equal(policy.permissionMode, 'bypassPermissions')
 })
 
 test('fresh local spawn defers registration when localhost server probe fails', async () => {

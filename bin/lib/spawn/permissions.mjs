@@ -1,17 +1,19 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { normalizeSpawnPolicy, projectCapabilityToMode } from '../../../server/lib/spawn-policy.mjs'
+import { normalizeSpawnPolicy, projectCapabilityToMode, resolveProjectProfileName } from '../../../server/lib/spawn-policy.mjs'
 import { repoRoot } from './identity.mjs'
 
-const SANDBOX_POLICIES = new Set(['no-dev', 'cwd', 'tlda-projects', 'unsandboxed'])
+const SANDBOX_POLICIES = new Set(['no-dev', 'cwd', 'app-dev', 'tlda-projects', 'unsandboxed'])
 const BUILTIN_POLICY_NAMES = new Set(['read', 'write', 'tlda-write', 'full'])
 const FENCE_GLOBALLY_DISABLED = true
 const DEFAULT_READ_ROOTS = ['~/work']
-const DEFAULT_OPTIONS = { network: false, git: 'read', artifacts: true }
+const DEFAULT_OPTIONS = { network: false, git: 'write', artifacts: true }
 const DEFAULT_TRUSTED_MCP_SERVERS = { tlda: { defaultToolsApprovalMode: 'approve' } }
 const PLAYWRIGHT_CACHE_ROOT = path.join(os.homedir(), 'Library/Caches/ms-playwright')
 const TLDA_FENCE_TMP_ROOT = '/tmp/tlda-fence-env'
+const WORK_ROOT = path.join(os.homedir(), 'work')
+const GUIDANCE_ROOT = path.join(WORK_ROOT, 'dot-claude')
 
 function expandUser(value) {
   const str = String(value || '')
@@ -84,6 +86,12 @@ function pathInside(child, parent) {
 function projectSourceDirs(config = {}) {
   const roots = []
   const projectsDir = path.join(repoRoot(), 'server', 'projects')
+  const cfg = sandboxConfig(config)
+  let allowedProfiles = cfg.tldaProjectProfiles ?? ['math-projects']
+  if (typeof allowedProfiles === 'string') allowedProfiles = [allowedProfiles]
+  const allowedProfileSet = Array.isArray(allowedProfiles)
+    ? new Set(allowedProfiles.map((p) => String(p || '').trim().toLowerCase()).filter(Boolean))
+    : null
   try {
     for (const name of fs.readdirSync(projectsDir)) {
       const projectFile = path.join(projectsDir, name, 'project.json')
@@ -93,12 +101,16 @@ function projectSourceDirs(config = {}) {
       } catch {
         continue
       }
-      if (parsed?.sourceDir && fs.existsSync(abs(parsed.sourceDir))) roots.push(abs(parsed.sourceDir))
+      if (!parsed?.sourceDir || !fs.existsSync(abs(parsed.sourceDir))) continue
+      if (allowedProfileSet) {
+        const profile = resolveProjectProfileName(config, { doc: parsed.name || name, project: parsed, cwd: parsed.sourceDir })
+        if (!allowedProfileSet.has(profile)) continue
+      }
+      roots.push(abs(parsed.sourceDir))
     }
   } catch {
     // Project-root discovery is best effort; explicit cwd policy still applies.
   }
-  const cfg = sandboxConfig(config)
   let extra = cfg.extraProjectWriteRoots || []
   if (typeof extra === 'string') extra = [extra]
   if (Array.isArray(extra)) {
@@ -129,9 +141,8 @@ export function stripRunner(policy) {
 
 export function codexSandboxProjection(spawnPolicy, cwd, { fenced = false } = {}) {
   if (fenced) return { sandboxMode: 'danger-full-access', workspaceWriteConfigArgs: [], networkAccess: false }
-  const capability = spawnPolicy?.capability
+  const capability = spawnPolicy?.capability === 'read' ? 'write' : spawnPolicy?.capability
   if (capability === 'full') return { sandboxMode: 'danger-full-access', workspaceWriteConfigArgs: [], networkAccess: false }
-  if (capability === 'read') return { sandboxMode: 'read-only', workspaceWriteConfigArgs: [], networkAccess: false }
   const writableRoots = [
     path.join(os.homedir(), '.config', 'tlda'),
     path.join(cwd, '.git'),
@@ -144,29 +155,33 @@ export function resolveLeasePolicy({ spawnPolicy, harness, model, cwd, config = 
   const normalized = normalizeSpawnPolicy(spawnPolicy)
   const policyName = normalized.policy
   if (!SANDBOX_POLICIES.has(policyName)) throw new Error(`agentSandbox policy "${policyName}" is not valid`)
-  if (policyName === 'unsandboxed') return { policyName, devTools: true, leasePolicy: null }
+  const machineWrite = normalized.capability === 'full' || policyName === 'unsandboxed'
   if (policyName === 'no-dev') return { policyName, devTools: false, leasePolicy: null }
 
   const workspace = abs(cwd || process.cwd())
   let writeRoots = []
   let matchedRoot = workspace
-  if (policyName === 'cwd') {
+  if (policyName === 'unsandboxed') {
+    writeRoots = [WORK_ROOT, GUIDANCE_ROOT]
+    matchedRoot = WORK_ROOT
+  } else if (policyName === 'app-dev') {
+    writeRoots = [WORK_ROOT]
+  } else if (policyName === 'cwd') {
     writeRoots = [workspace]
   } else if (policyName === 'tlda-projects') {
     const roots = projectSourceDirs(config)
     matchedRoot = roots.find((root) => pathInside(workspace, root)) || null
     if (!matchedRoot) return { policyName, devTools: false, leasePolicy: null }
-    writeRoots = roots
+    writeRoots = [...roots, GUIDANCE_ROOT]
   }
 
   const cfg = sandboxConfig(config)
   const policyOptions = cfg.policyOptions && typeof cfg.policyOptions === 'object' ? cfg.policyOptions : {}
   const options = deepMerge(DEFAULT_OPTIONS, policyOptions[policyName] || {})
-  const cap = normalized.capability
-  if (cap === 'read') {
-    writeRoots = []
-  } else if (cap === 'write' || cap === 'tlda-write') {
-    writeRoots = [...writeRoots, path.join(os.homedir(), '.config', 'tlda'), PLAYWRIGHT_CACHE_ROOT, TLDA_FENCE_TMP_ROOT, path.join(workspace, '.git')]
+  const cap = normalized.capability === 'read' ? 'write' : normalized.capability
+  if (cap === 'write' || cap === 'tlda-write' || cap === 'full') {
+    writeRoots = [...writeRoots, path.join(os.homedir(), '.config', 'tlda'), PLAYWRIGHT_CACHE_ROOT, TLDA_FENCE_TMP_ROOT]
+    if (!machineWrite) writeRoots.push(path.join(workspace, '.git'))
     if (normalized.network !== false) options.network = true
   }
   const readRoots = [...new Set([workspace, ...configPathList(cfg, 'readRoots', DEFAULT_READ_ROOTS), ...writeRoots].map(abs))].sort()
@@ -185,7 +200,9 @@ export function resolveLeasePolicy({ spawnPolicy, harness, model, cwd, config = 
       read_roots: readRoots,
       write_roots: writeRoots,
       network: options.network !== false,
-      git: options.git || 'read',
+      git: options.git || 'write',
+      broad_write: options.broadWrite === true,
+      machine_write: machineWrite || options.machineWrite === true,
       artifacts: options.artifacts !== false,
       trusted_mcp_servers: trusted,
       runner: runnerFromConfig(cfg),
@@ -209,9 +226,9 @@ export function resolveLaunchPolicy({
     spawnPolicy || requestedCapability || (harness === 'codex' ? 'write' : null),
     null,
   )
-  const codexRequiresExternalFence = harness === 'codex' && requestedPolicy?.policy !== 'unsandboxed'
+  const requestedNeedsFence = !!requestedPolicy && requestedPolicy.policy !== 'no-dev'
   const useFence = !!requestedPolicy && (
-    codexRequiresExternalFence
+    requestedNeedsFence
     || !FENCE_GLOBALLY_DISABLED
     || isExplicitPolicy(requestedPolicy, explicitPolicy)
   )

@@ -46,12 +46,11 @@ describe('spawn policy', () => {
     }
   })
 
-  it('honors a coherent stored rung; corrupted region is repaired, never demotes write', () => {
-    // genuine read reviewer stays read
-    assert.equal(callerCapability({ id: 'fleet:a', metadata: { spawnPolicy: { capability: 'read-only', policy: 'cwd' } } }), 'read')
-    // mathchat2's corrupted blob {read-only, unsandboxed}: honor read, ignore the
-    // bad region → read under the CODE DEFAULT (promotion is the operator sweep's job).
-    assert.equal(callerCapability({ id: 'fleet:m', metadata: { spawnPolicy: { capability: 'read-only', policy: 'unsandboxed' } } }), 'read')
+  it('repairs stored rungs without creating read-only working agents', () => {
+    // Skip's locked policy has no normal read-only agents: old read-only rows
+    // are treated as the normal working lease.
+    assert.equal(callerCapability({ id: 'fleet:a', metadata: { spawnPolicy: { capability: 'read-only', policy: 'cwd' } } }), 'write')
+    assert.equal(callerCapability({ id: 'fleet:m', metadata: { spawnPolicy: { capability: 'read-only', policy: 'unsandboxed' } } }), 'write')
     // a fence-off-corrupted write row {workspace-write, unsandboxed}: honor write,
     // repair region to cwd → NOT demoted to read.
     assert.equal(callerCapability({ id: 'fleet:w', metadata: { spawnPolicy: { capability: 'workspace-write', policy: 'unsandboxed' } } }), 'write')
@@ -213,31 +212,36 @@ describe('spawn policy', () => {
     assert.equal(isOperator({ id: 'fleet:a', metadata: { spawnPolicy: { capability: 'full' } } }), false)
   })
 
-  it('inherits a project default profile as the spawn fence', () => {
-    assert.equal(resolveProjectProfileName({}, { project: { profile: 'math' } }), 'math')
+  it('selects spawn profiles from configuration only', () => {
     assert.equal(resolveProjectProfileName(
       { spawnPolicy: { projectProfiles: { 'host-ops': 'ops' } } }, { doc: 'host-ops' }), 'ops')
-    assert.equal(resolveProjectProfileName({}, { cwd: '/Users/skip/work/ops' }), 'ops')
-    assert.equal(resolveProjectProfileName({}, { cwd: '/Users/skip/work/tlda' }), 'app')
     assert.equal(resolveProjectProfileName(
-      { spawnPolicy: { projectProfiles: { 'custom-work': 'math' } } },
+      { spawnPolicy: { projectProfiles: { '/Users/skip/work/custom-work': 'math-projects' } } },
       { cwd: '/Users/skip/work/custom-work' }
-    ), 'math')
-    assert.equal(resolveProjectProfileName({ spawnPolicy: { defaultProfile: 'untrusted' } }, {}), 'untrusted')
-    assert.equal(resolveProjectProfileName({}, {}), 'app')
-    assert.equal(resolveProjectProfileName({}, { project: { profile: 'bogus' } }), 'app')
-    assert.deepEqual(resolveProjectProfile({}, { project: { profile: 'math' } }), {
-      name: 'math', capability: 'tlda-write', policy: 'tlda-projects', category: 'write-scope',
+    ), 'math-projects')
+    assert.equal(resolveProjectProfileName({ spawnPolicy: { defaultProfile: 'cwd' } }, {}), 'cwd')
+    assert.equal(resolveProjectProfileName({}, {}), 'cwd')
+    assert.equal(resolveProjectProfileName({}, { project: { profile: 'math' }, cwd: '/Users/skip/work/math' }), 'cwd')
+    assert.deepEqual(resolveProjectProfile(
+      { spawnPolicy: { projectProfiles: { mathdoc: 'math-projects' } } },
+      { doc: 'mathdoc' },
+    ), {
+      name: 'math-projects', capability: 'tlda-write', policy: 'tlda-projects', category: 'write-scope',
     })
-    assert.deepEqual(resolveProjectProfile({}, { project: { profile: 'ops' } }), {
+    assert.deepEqual(resolveProjectProfile(
+      { spawnPolicy: { projectProfiles: { opsdoc: 'ops' } } },
+      { doc: 'opsdoc' },
+    ), {
       name: 'ops', capability: 'full', policy: 'unsandboxed', category: 'write-scope',
     })
   })
 
   it('caps an inherited profile by the model ceiling — even for Claude', () => {
+    const config = { spawnPolicy: { projectProfiles: { mathdoc: 'math-projects' } } }
+    const mathProfile = resolveProjectProfile(config, { doc: 'mathdoc' })
     const claudeInMath = authorizeSpawn({
       caller: { id: 'fleet:skip', human: true },
-      requestedCapability: resolveProjectProfile({}, { project: { profile: 'math' } }),
+      requestedCapability: mathProfile,
       model: 'opus48',
     })
     assert.equal(claudeInMath.requestedPolicy.policy, 'tlda-projects')
@@ -246,20 +250,21 @@ describe('spawn policy', () => {
     // its narrow ceiling clamps it to write/cwd — never refused.
     const deepseekInMath = authorizeSpawn({
       caller: { id: 'fleet:skip', human: true },
-      requestedCapability: resolveProjectProfile({}, { project: { profile: 'math' } }),
+      requestedCapability: mathProfile,
       model: 'deepseek/deepseek-v4-pro',
     })
     assert.equal(deepseekInMath.grantedPolicy.capability, 'write')
     assert.equal(deepseekInMath.grantedPolicy.policy, 'cwd')
   })
 
-  it('allows downward choice within both ceilings', () => {
+  it('does not produce a read-only grant from an explicit read request', () => {
     const result = authorizeSpawn({
       caller: { id: 'fleet:skip', human: true },
       requestedCapability: 'read',
       model: 'deepseek/deepseek-v4-pro',
     })
-    assert.equal(result.requestedCapability, 'read')
+    assert.equal(result.requestedCapability, 'write')
+    assert.equal(result.grantedPolicy.capability, 'write')
     assert.equal(result.grantedPolicy.policy, 'cwd')
   })
 
@@ -308,9 +313,9 @@ describe('spawn policy', () => {
     const grant = resolveDaemonSpawnGrant({
       callerRung: 'full',
       model: 'opus48',
-      config: {},
+      config: { spawnPolicy: { projectProfiles: { mathdoc: 'math-projects' } } },
       doc: 'mathdoc',
-      project: { name: 'mathdoc', profile: 'math' },
+      project: { name: 'mathdoc' },
     })
     assert.equal(grant.requestedCapability, 'tlda-write')
     assert.equal(grant.machineAllowedCapability, 'tlda-write')
@@ -327,7 +332,7 @@ describe('spawn policy', () => {
       callerRung: 'full',
       model: 'gpt-5.5',
       kind: 'codex',
-      config: {},
+      config: { spawnPolicy: { projectProfiles: { '/Users/skip/work/ops': 'ops' } } },
       cwd: '/Users/skip/work/ops',
     })
     assert.equal(ops.requestedCapability, 'full')
@@ -338,15 +343,15 @@ describe('spawn policy', () => {
       category: 'write-scope',
     })
 
-    const app = resolveDaemonSpawnGrant({
+    const cwdDefault = resolveDaemonSpawnGrant({
       callerRung: 'full',
       model: 'gpt-5.5',
       kind: 'codex',
       config: {},
       cwd: '/Users/skip/work/tlda',
     })
-    assert.equal(app.requestedCapability, 'write')
-    assert.deepEqual(app.grantedPolicy, {
+    assert.equal(cwdDefault.requestedCapability, 'write')
+    assert.deepEqual(cwdDefault.grantedPolicy, {
       name: 'write',
       capability: 'write',
       policy: 'cwd',

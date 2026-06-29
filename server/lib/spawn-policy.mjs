@@ -14,6 +14,7 @@ import { modelFamily as sharedModelFamily, modelTrustTier as sharedModelTrustTie
 // fleet-spawn boundary, not here.
 export const CAPABILITIES = ['read', 'write', 'tlda-write', 'full']
 const CAPABILITY_RANK = new Map(CAPABILITIES.map((cap, idx) => [cap, idx]))
+const NORMAL_AGENT_CAPABILITY = 'write'
 
 // The fence directory-region each rung fences to. These region names
 // (cwd / tlda-projects / unsandboxed) are the FENCE's own vocabulary for
@@ -122,6 +123,16 @@ export function normalizeCapability(value, fallback = null) {
   return cap
 }
 
+function normalizeWorkingPolicy(value, fallback = DEFAULT_AGENT_CAPABILITY) {
+  const policy = normalizeSpawnPolicy(value, fallback)
+  if (policy.capability !== 'read') return policy
+  return normalizeSpawnPolicy({
+    ...policy,
+    name: NORMAL_AGENT_CAPABILITY,
+    capability: NORMAL_AGENT_CAPABILITY,
+  })
+}
+
 // Normalize any input into a coherent spawn policy. The region is DERIVED from
 // the rung (CAPABILITY_REGION), so the result is always coherent — a custom
 // fence.json option may override the region, but the four built-in rungs never
@@ -145,10 +156,11 @@ export function normalizeSpawnPolicy(value, fallback = null) {
   }
 
   const option = value.name ? resolveSpawnPolicyOption(value.name) : null
-  const capability = normalizeCapability(value.capability || option?.capability)
-  const policy = String(option?.policy || CAPABILITY_REGION[capability] || '').trim().toLowerCase()
+  const profile = value.name && SPAWN_PROFILES[value.name] ? SPAWN_PROFILES[value.name] : null
+  const capability = normalizeCapability(value.capability || profile?.capability || option?.capability)
+  const policy = String(profile?.policy || option?.policy || value.policy || CAPABILITY_REGION[capability] || '').trim().toLowerCase()
   return {
-    name: option?.name || capability,
+    name: profile ? value.name : (option?.name || capability),
     capability,
     policy,
     category: 'write-scope',
@@ -248,32 +260,19 @@ export function modelSpawnCeiling(config = {}, { model, kind, trustOverride } = 
   return normalizeSpawnPolicy(configured, defaultModelCeiling({ model, kind }))
 }
 
-// Project-default profiles (Skip 06-19: "reasonable configurations on a
-// project-by-project level… generally set once"). A project carries a profile;
-// spawning into it inherits that profile as the DEFAULT FENCE. The profile is
-// the *default*, the model ceiling is the *cap* — effective authority is the
-// lower of (profile, model ceiling, caller). This default fence applies to
-// EVERYONE including Claude: a Claude in a math project gets the math profile
-// (fenced to math projects) so it stays in its lane, even though its model could
-// be trusted with more. The profile sets the LANE (where you may write); the
-// model tier sets the TRUST (how high the operator could raise you).
-//
-//   ops       — machine-level (the operator's host-work project): full.
-//   app       — dev + tester: code, git, dev-server, browser, network, all
-//               inside the worktree (cwd); the fence lease widens cwd to include
-//               the dev caches so the job is never blocked.
-//   math      — write across all tlda/math projects (tlda-write).
-//   untrusted — write only its own project (cwd); never across projects, never
-//               machine-level. Same lane as app; the trust difference is carried
-//               by the model ceiling, not the lane.
+// Configured lease profiles. Names describe the lease rule directly:
+//   cwd           — shipped/default: working-directory write only.
+//   app-dev       — app development: all of ~/work plus tool support paths.
+//   math-projects — tlda-versioned paper/project roots plus shared guidance.
+//   ops           — machine-write operations lease.
 export const SPAWN_PROFILES = {
+  cwd: { capability: 'write', policy: 'cwd' },
+  'app-dev': { capability: 'write', policy: 'app-dev' },
+  'math-projects': { capability: 'tlda-write', policy: 'tlda-projects' },
   ops: { capability: 'full', policy: 'unsandboxed' },
-  app: { capability: 'write', policy: 'cwd' },
-  math: { capability: 'tlda-write', policy: 'tlda-projects' },
-  untrusted: { capability: 'write', policy: 'cwd' },
 }
 
-export const DEFAULT_SPAWN_PROFILE = 'app'
+export const DEFAULT_SPAWN_PROFILE = 'cwd'
 
 function normalizedPath(value) {
   if (!value || typeof value !== 'string') return null
@@ -310,33 +309,33 @@ function configuredProjectProfileName(projectProfiles = {}, keys = []) {
     const name = firstKnownProfile(configured)
     if (name) return name
   }
+  for (const key of keys) {
+    const child = normalizedPath(key)
+    if (!child) continue
+    for (const [configuredPath, configured] of Object.entries(projectProfiles)) {
+      const parent = normalizedPath(configuredPath)
+      if (!parent || !pathInside(child, parent)) continue
+      const name = firstKnownProfile(configured)
+      if (name) return name
+    }
+  }
   return null
 }
 
-// Resolve which profile NAME a spawn should inherit. Precedence:
-// the project record's own `profile` field → config.spawnPolicy.projectProfiles
-// keyed by project name / sourceDir / cwd basename → built-in basename profile
-// → config.spawnPolicy.defaultProfile → DEFAULT_SPAWN_PROFILE.
+// Resolve which profile NAME a spawn should inherit. This is configuration, not
+// guessing: a configured global default may be overridden by configured
+// document/project/source/cwd keys. There are no basename or project-field
+// fallbacks.
 export function resolveProjectProfileName(config = {}, { doc, project, cwd } = {}) {
   const policy = config.spawnPolicy || {}
   const projectProfiles = policy.projectProfiles || {}
-  const sourceDir = project?.sourceDir || null
-  const cwdMatchesProject = cwd && sourceDir && pathInside(cwd, sourceDir)
-  return firstKnownProfile(project?.profile)
-    || configuredProjectProfileName(projectProfiles, [
+  const configured = configuredProjectProfileName(projectProfiles, [
       doc,
       project?.name,
-      sourceDir,
-      pathBasename(sourceDir),
       cwd,
-      pathBasename(cwd),
+      project?.sourceDir,
     ])
-    || firstKnownProfile(
-      cwdMatchesProject ? pathBasename(sourceDir) : null,
-      pathBasename(cwd)
-    )
-    || firstKnownProfile(policy.defaultProfile)
-    || DEFAULT_SPAWN_PROFILE
+  return configured || firstKnownProfile(policy.defaultProfile) || DEFAULT_SPAWN_PROFILE
 }
 
 // The profile a spawn inherits, as a normalized spawn policy. This becomes the
@@ -398,7 +397,7 @@ export function callerSpawnPolicy(caller, { serverOwnerId } = {}) {
   if (isOperator(caller, { serverOwnerId })) return normalizeSpawnPolicy(ROOT_CAPABILITY)
   const stored = caller?.metadata?.spawnPolicy
   if (stored == null) return normalizeSpawnPolicy(DEFAULT_AGENT_CAPABILITY)
-  return normalizeSpawnPolicy(storedConferralRung(stored) || 'read')
+  return normalizeWorkingPolicy(storedConferralRung(stored) || DEFAULT_AGENT_CAPABILITY)
 }
 
 export function callerCapability(caller, { serverOwnerId } = {}) {
@@ -446,7 +445,7 @@ export function authorizeSpawn({ caller, requestedCapability, model, kind, trust
     err.code = 'SPAWN_TRUST_OVERRIDE_FORBIDDEN'
     throw err
   }
-  const requestedPolicy = normalizeSpawnPolicy(requestedCapability, DEFAULT_AGENT_CAPABILITY)
+  const requestedPolicy = normalizeWorkingPolicy(requestedCapability, DEFAULT_AGENT_CAPABILITY)
   const callerPolicy = callerSpawnPolicy(caller, { serverOwnerId })
   const ceilingPolicy = modelSpawnCeiling(config, { model, kind, trustOverride })
   // Skip's rule: a spawn NEVER fails on capability grounds. The granted policy is
@@ -478,8 +477,8 @@ export function resolveDaemonSpawnGrant({
   cwd,
 } = {}) {
   const inheritedProfile = resolveProjectProfile(config, { doc, project, cwd })
-  const requestedPolicy = normalizeSpawnPolicy(requestedCapability || inheritedProfile, DEFAULT_AGENT_CAPABILITY)
-  const callerPolicy = normalizeSpawnPolicy(callerRung, DEFAULT_AGENT_CAPABILITY)
+  const requestedPolicy = normalizeWorkingPolicy(requestedCapability || inheritedProfile, DEFAULT_AGENT_CAPABILITY)
+  const callerPolicy = normalizeWorkingPolicy(callerRung, DEFAULT_AGENT_CAPABILITY)
   const machineAllowedPolicy = meetSpawnPolicies([
     inheritedProfile,
     modelSpawnCeiling(config, { model, kind }),

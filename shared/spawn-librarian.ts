@@ -37,7 +37,8 @@ export interface AgentLivenessEvent {
   type?: 'agent-liveness'
   agent_id: string
   tmux_session?: string | null
-  state: LivenessState
+  state?: LivenessState
+  alive?: boolean
   pid?: number
   reason?: string
   ts?: string
@@ -274,7 +275,8 @@ export class SpawnLibrarian {
 
   decideWake(agent: AgentRecord, checked?: AgentLivenessEvent | null, opts: { serverAlive?: boolean } = {}): WakeDecision {
     if (opts.serverAlive === false) return { action: 'respawn' }
-    const state = checked?.state || this.liveness.get(agent.id)?.state || (agent.dead ? 'dead' : 'unknown')
+    const checkedState = checked?.state || (typeof checked?.alive === 'boolean' ? (checked.alive ? 'alive' : 'dead') : undefined)
+    const state = checkedState || this.liveness.get(agent.id)?.state || (agent.dead ? 'dead' : 'unknown')
     if (state === 'alive') return { action: 'deliver' }
     if (state === 'spawning') return { action: 'queue', reason: 'spawning' }
     if (state === 'unknown') return { action: 'hold', reason: 'unknown' }
