@@ -48,7 +48,7 @@ if [ ! -f "$CONFIG_JSON" ] || [ -n "$TLDA_FLEET_SERVER" ]; then
     "default": {
       "database": "__TLDA_CONFIG_ENDPOINT__",
       "store": "__TLDA_CONFIG_ENDPOINT__",
-      "licenseKey": "tldraw-2026-06-30/WyJRY2VnNHQzTSIsWyIqIl0sMTYsIjIwMjYtMDYtMzAiXQ.zL6mO6UG+rGUbpu4hYL9/Na+XX0jLRY35nx20ElD9mK+m6OStCMf1q8IUmjVqBd9Fw1JuaxplRHP8Q37bFefxQ"
+      "licenseKey": "tldraw-2026-07-13/WyJUY25WakNzbyIsWyIqIl0sMTYsIjIwMjYtMDctMTMiXQ.XwCj6e5ySFSqQ+kN6QrpIDjaBAD1hJ5ojFNPTRALQPesxLZQqe6vRSOUCmsMQqDpSa/ydXNPjeLiz5PpwYjGFQ"
     }
   }
 }
