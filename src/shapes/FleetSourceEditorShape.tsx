@@ -19,7 +19,7 @@ import { getOriginalDoc, unifiedMergeView, updateOriginalDoc } from '@codemirror
 import { vim, getCM, Vim, CodeMirror as CM5 } from '@replit/codemirror-vim'
 import { latex } from 'codemirror-lang-latex'
 import { DocContext } from '../PanelContext'
-import { PDF_HEIGHT } from '../layoutConstants'
+import { PDF_HEIGHT, PDF_WIDTH } from '../layoutConstants'
 import { getPref, subscribePref } from '../preferences'
 import { loadLookup, type LookupData } from '../synctexLookup'
 import {
@@ -67,6 +67,7 @@ const sourceEditorTheme = EditorView.theme({
     backgroundColor: 'transparent',
     color: 'var(--text-dim, #8888a0)',
     borderRight: '0',
+    opacity: '0.45',
   },
   '.cm-lineNumbers .cm-gutterElement': {
     paddingLeft: '0',
@@ -78,6 +79,7 @@ const sourceEditorTheme = EditorView.theme({
   '.cm-activeLineGutter': {
     backgroundColor: 'transparent',
     color: 'var(--text-dim, #8888a0)',
+    opacity: '0.65',
   },
   '&.cm-focused': {
     outline: 'none',
@@ -288,10 +290,40 @@ function centerDocumentOnSourceLine(mainEditor: any, lookup: LookupData | null, 
 }
 
 type SourceCursorLaserMark = {
-  canvasX: number
-  canvasY: number
-  canvasW: number
+  strokes: Array<{ x1: number; y1: number; x2: number; y2: number }>
   line: number
+}
+
+type SourceCursorPdfSpan = {
+  page: number
+  line: number
+  xStart: number
+  xEnd: number
+  y: number
+}
+
+type SourceCursorPageShape = {
+  id: string
+  type?: string
+  props?: { pageIndex?: number }
+}
+
+type SourceCursorEditor = {
+  getCurrentPageShapes?: () => SourceCursorPageShape[]
+  getShapePageBounds?: (id: string) => unknown
+  scribbles?: {
+    startSession: (options: Record<string, unknown>) => string
+    addScribbleToSession: (sessionId: string, options: Record<string, unknown>) => { id: string }
+    addPointToSession: (sessionId: string, scribbleId: string, x: number, y: number, z: number) => void
+    clearSession?: (sessionId: string) => void
+    complete?: (scribbleId: string) => void
+    extendSession?: (sessionId: string) => void
+    tick?: (ms: number) => void
+  }
+}
+
+function sourceCursorEditor(fallback: unknown): SourceCursorEditor {
+  return ((typeof window !== 'undefined' && (window as Window & { __tldraw_editor__?: SourceCursorEditor }).__tldraw_editor__) || fallback || {}) as SourceCursorEditor
 }
 
 function FleetSourceEditorComponent({ shape }: { shape: any }) {
@@ -328,25 +360,60 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
   const sourceWindowRef = useRef({ startLine: 1, endLine: 1, targetLine: 1, text: '' })
   const vimModeRef = useRef(vimMode)
   const laserSessionRef = useRef<string | null>(null)
+  const cursorLaserSeqRef = useRef(0)
 
   useEffect(() => { statusRef.current = status }, [status])
   useEffect(() => { vimModeRef.current = vimMode }, [vimMode])
   useEffect(() => { conflictFilesRef.current = conflictFiles }, [conflictFiles])
 
-  const computeCursorLaserMark = (sourceFile: string, sourceLine: number): SourceCursorLaserMark | null => {
-    const mainEditor = (typeof window !== 'undefined' && (window as any).__tldraw_editor__) || editor
-    const entry = sourceLineToEditorCanvas(mainEditor, lookupRef.current, sourceFile, sourceLine)
-    if (!entry) return null
-    return {
-      canvasX: entry.canvasX,
-      canvasY: entry.canvasY + 4 * entry.scaleY,
-      canvasW: Math.max(36 * entry.scaleX, Math.min(90 * entry.scaleX, entry.pageBounds.width * 0.16)),
-      line: entry.line,
+  const pdfSpansToCanvasMark = (spans: SourceCursorPdfSpan[], sourceLine: number): SourceCursorLaserMark | null => {
+    const mainEditor = sourceCursorEditor(editor)
+    const strokes: SourceCursorLaserMark['strokes'] = []
+    const pageShapes = (mainEditor?.getCurrentPageShapes?.() || [])
+      .filter((s) => s?.type === 'svg-page' && typeof s?.props?.pageIndex === 'number')
+    for (const span of spans) {
+      const pageShape = pageShapes.find((s) => Number(s.props?.pageIndex) + 1 === span.page)
+      if (!pageShape) continue
+      const bounds = mainEditor.getShapePageBounds?.(pageShape.id)
+      const pageX = boundsValue(bounds, 'x')
+      const pageY = boundsValue(bounds, 'y')
+      const pageW = boundsValue(bounds, 'w')
+      const pageH = boundsValue(bounds, 'h')
+      if (!pageW || !pageH) continue
+      const scaleX = pageW / PDF_WIDTH
+      const scaleY = pageH / PDF_HEIGHT
+      const x1 = pageX + (span.xStart + SYNCTEX_VIEWBOX_OFFSET) * scaleX
+      const x2Raw = pageX + (span.xEnd + SYNCTEX_VIEWBOX_OFFSET) * scaleX
+      const minW = 8 * scaleX
+      const x2 = Math.abs(x2Raw - x1) < minW ? x1 + minW : x2Raw
+      const y = pageY + (span.y + SYNCTEX_VIEWBOX_OFFSET) * scaleY + 4 * scaleY
+      strokes.push({
+        x1,
+        x2,
+        y1: y,
+        y2: y,
+      })
     }
+    if (strokes.length === 0) return null
+    return { strokes, line: sourceLine }
+  }
+
+  const computeCursorLaserMark = async (sourceFile: string, sourceLine: number, sourceColumn: number, seq: number) => {
+    if (!doc?.docName) return null
+    const res = await fetch(`/api/projects/${encodeURIComponent(doc.docName)}/source-cursor`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file: sourceFile, line: sourceLine, column: sourceColumn }),
+    })
+    if (seq !== cursorLaserSeqRef.current) return null
+    if (!res.ok) return null
+    const payload = await res.json()
+    if (!Array.isArray(payload?.pdfSpans)) return null
+    return pdfSpansToCanvasMark(payload.pdfSpans, sourceLine)
   }
 
   const clearCursorLaser = () => {
-    const mainEditor = (typeof window !== 'undefined' && (window as any).__tldraw_editor__) || editor
+    const mainEditor = sourceCursorEditor(editor)
     const sessionId = laserSessionRef.current
     if (!sessionId) return
     laserSessionRef.current = null
@@ -359,7 +426,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
   }
 
   const emitCursorLaser = (mark: SourceCursorLaserMark | null) => {
-    const mainEditor = (typeof window !== 'undefined' && (window as any).__tldraw_editor__) || editor
+    const mainEditor = sourceCursorEditor(editor)
     clearCursorLaser()
     if (!mainEditor?.scribbles || !mark) return
     try {
@@ -376,17 +443,19 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
         size: 6,
         taper: false,
       })
-      const segments = 5
-      for (let i = 0; i < segments; i += 1) {
-        const t = i / (segments - 1)
-        mainEditor.scribbles.addPointToSession(
-          sessionId,
-          scribble.id,
-          mark.canvasX + mark.canvasW * t,
-          mark.canvasY + Math.sin(t * Math.PI) * 1.5,
-          0.5,
-        )
-        mainEditor.scribbles.tick?.(16)
+      for (const stroke of mark.strokes) {
+        const segments = 5
+        for (let i = 0; i < segments; i += 1) {
+          const t = i / (segments - 1)
+          mainEditor.scribbles.addPointToSession(
+            sessionId,
+            scribble.id,
+            stroke.x1 + (stroke.x2 - stroke.x1) * t,
+            stroke.y1 + (stroke.y2 - stroke.y1) * t + Math.sin(t * Math.PI) * 1.5,
+            0.5,
+          )
+          mainEditor.scribbles.tick?.(16)
+        }
       }
       mainEditor.scribbles.complete?.(scribble.id)
       mainEditor.scribbles.extendSession?.(sessionId)
@@ -398,8 +467,18 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
 
   const updateCursorLaserFromView = (view: EditorView) => {
     try {
-      const sourceLine = view.state.doc.lineAt(view.state.selection.main.head).number
-      emitCursorLaser(computeCursorLaserMark(file, sourceLine))
+      const seq = cursorLaserSeqRef.current + 1
+      cursorLaserSeqRef.current = seq
+      const docLine = view.state.doc.lineAt(view.state.selection.main.head)
+      const sourceLine = docLine.number
+      const sourceColumn = view.state.selection.main.head - docLine.from
+      void computeCursorLaserMark(file, sourceLine, sourceColumn, seq)
+        .then(mark => {
+          if (seq === cursorLaserSeqRef.current) emitCursorLaser(mark)
+        })
+        .catch(() => {
+          if (seq === cursorLaserSeqRef.current) clearCursorLaser()
+        })
     } catch {
       clearCursorLaser()
     }
