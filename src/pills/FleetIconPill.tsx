@@ -42,14 +42,19 @@ const ITEM_GAP = 4         // px between tiles
 // landed (the filter write no-ops in the HUD overlay) and the shape is being
 // retired for the normal-inbox evolution. The shape code/schema stay for the
 // inbox-evolve dead-code cut; this just makes the broken layout unreachable.
-type LayoutId = '3col' | '2col' | 'wide' | 'grid' | 'phone'
+type LayoutId = '3col' | '2col' | 'wide' | 'grid' | 'phone' | 'wide-write' | '2col-write'
 type LayoutSource = 'badge-drag-release' | 'fan-preset' | 'url-auto'
+// Reading layouts first, then the writing layouts (the ones with the editor
+// sheet) to their right. Writing variants reuse a reading variant's geometry,
+// swapping the document/right-margin panel for the source editor.
 const LAYOUT_PRESETS: { id: LayoutId; title: string }[] = [
-  { id: 'wide', title: 'Wide: large chat over source editor' },
+  { id: 'wide', title: 'Wide: large chat over document' },
   { id: '3col', title: 'Three-column: agents + search | chat | chat + docview' },
-  { id: '2col', title: 'Two-column: left docview + full right source editor' },
+  { id: '2col', title: 'Two-margin: chat + docview | document | chat' },
   { id: 'grid', title: 'Grid: agents + search | 2×2 chat grid' },
   { id: 'phone', title: 'Phone reset: agents/inbox | chat | document' },
+  { id: 'wide-write', title: 'Wide (writing): large chat over source editor' },
+  { id: '2col-write', title: 'Two-margin (writing): chat + docview | document | source editor' },
 ]
 
 /** Mini SVG diagram showing the layout arrangement */
@@ -80,6 +85,17 @@ function LayoutIcon({ id, size = 20 }: { id: LayoutId; size?: number }) {
     </g>
   )
 
+  // Editor sheet: a lightly-filled panel with text rows — distinguishes a
+  // writing layout's editor slot from the solid docview fill of a reading slot.
+  const editorEl = (x: number, y: number, w: number, h: number) => (
+    <g>
+      <rect x={x} y={y} width={w} height={h} stroke="currentColor" strokeWidth={0.5} fill="currentColor" fillOpacity={0.25} rx={r} />
+      {[1,2,3].map(i => (
+        <line key={i} x1={x + w*0.18} y1={y + h*(i/4)} x2={x + w*0.82} y2={y + h*(i/4)} stroke="currentColor" strokeWidth={0.4} opacity={0.7} />
+      ))}
+    </g>
+  )
+
   const layouts: Record<LayoutId, React.JSX.Element> = {
     '3col': (
       // [agents/search] [chat] [chat+docview] | DOC
@@ -93,23 +109,44 @@ function LayoutIcon({ id, size = 20 }: { id: LayoutId; size?: number }) {
       </>
     ),
     '2col': (
-      // [agents/search + chat/docview] | DOC | [source]
+      // [agents/search + chat/docview] | DOC | [chat]
       <>
         <rect x={0} y={0} width={s*0.16} height={s*0.55} rx={r} fill={ap} />
         <rect x={0} y={s*0.55+g} width={s*0.16} height={s*0.45-g} rx={r} fill={sr} />
         <rect x={s*0.16+g} y={0} width={s*0.24-g} height={s*0.7} rx={r} fill={ch} />
         <rect x={s*0.16+g} y={s*0.7+g} width={s*0.24-g} height={s*0.3-g} rx={r} fill={dv} />
         {docEl(s*0.4+g)}
-        <rect x={s*0.62+g} y={0} width={s*0.22-g} height={s} rx={r} fill={dv} />
+        <rect x={s*0.62+g} y={0} width={s*0.22-g} height={s} rx={r} fill={ch} />
+      </>
+    ),
+    '2col-write': (
+      // [agents/search + chat/docview] | DOC | [editor sheet]
+      <>
+        <rect x={0} y={0} width={s*0.16} height={s*0.55} rx={r} fill={ap} />
+        <rect x={0} y={s*0.55+g} width={s*0.16} height={s*0.45-g} rx={r} fill={sr} />
+        <rect x={s*0.16+g} y={0} width={s*0.24-g} height={s*0.7} rx={r} fill={ch} />
+        <rect x={s*0.16+g} y={s*0.7+g} width={s*0.24-g} height={s*0.3-g} rx={r} fill={dv} />
+        {docEl(s*0.4+g)}
+        {editorEl(s*0.62+g, 0, s*0.22-g, s)}
       </>
     ),
     'wide': (
-      // [agents/search] [wide chat/source] | DOC
+      // [agents/search] [wide chat over docview] | DOC
       <>
         <rect x={0} y={0} width={s*0.16} height={s*0.55} rx={r} fill={ap} />
         <rect x={0} y={s*0.55+g} width={s*0.16} height={s*0.45-g} rx={r} fill={sr} />
         <rect x={s*0.16+g} y={0} width={s*0.44-g} height={s*0.5-g/2} rx={r} fill={ch} />
         <rect x={s*0.16+g} y={s*0.5+g/2} width={s*0.44-g} height={s*0.5-g/2} rx={r} fill={dv} />
+        {docEl()}
+      </>
+    ),
+    'wide-write': (
+      // [agents/search] [wide chat over editor sheet] | DOC
+      <>
+        <rect x={0} y={0} width={s*0.16} height={s*0.55} rx={r} fill={ap} />
+        <rect x={0} y={s*0.55+g} width={s*0.16} height={s*0.45-g} rx={r} fill={sr} />
+        <rect x={s*0.16+g} y={0} width={s*0.44-g} height={s*0.5-g/2} rx={r} fill={ch} />
+        {editorEl(s*0.16+g, s*0.5+g/2, s*0.44-g, s*0.5-g/2)}
         {docEl()}
       </>
     ),
