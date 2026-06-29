@@ -96,6 +96,14 @@ test('resolved history agent sets follow DM and Agent preset intent', () => {
   assert.deepEqual([...resolveFleetFilter(agentFilter, context)], ['fleet:worker'])
 })
 
+test('resolved history agent sets preserve explicit fleet ids without roster rows', () => {
+  const filter = [
+    [['from', 'viewer-pm']],
+    [['to', 'fleet:8df9b9b1']],
+  ]
+  assert.deepEqual([...resolveFleetFilter(filter, { agents: [], humanId: human.id, humanName: human.friendly_name })], ['fleet:8df9b9b1'])
+})
+
 test('composer traffic presets classify and cycle DM quiet, DM, all agent traffic', () => {
   assert.deepEqual(buildFleetDmFilter('dmitry', 'worker'), dmFilter)
   assert.deepEqual(buildFleetAgentFilter('worker'), agentFilter)

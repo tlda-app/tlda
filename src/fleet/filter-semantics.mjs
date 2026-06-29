@@ -102,7 +102,9 @@ export function resolveFleetFilter(filter, { agents = [], humanId = null, humanN
     if (!Array.isArray(clause)) continue
     for (const term of clause) {
       const label = termLabel(term)
-      if (label) labels.add(label)
+      if (!label) continue
+      labels.add(label)
+      if (label.startsWith('fleet:')) ids.add(label)
     }
   }
   // Resolve a shared name to the LIVE holder. Skip's model: "dying makes the name

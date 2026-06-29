@@ -143,6 +143,29 @@ function codexRolloutHasOwnerEvidence(path) {
   return /\bRegistered fleet:[a-f0-9]+\b/.test(text) || /\bYour name:\s*\\?"/.test(text)
 }
 
+function readFirstJson(path) {
+  const text = readFilePrefix(path)
+  if (!text) return null
+  const firstLine = text.split(/\r?\n/, 1)[0]
+  if (!firstLine) return null
+  try {
+    return JSON.parse(firstLine)
+  } catch {
+    return null
+  }
+}
+
+function codexRolloutMatchesLaunch(path, agent, launchTs) {
+  if (!agent?.cwd || !launchTs) return false
+  const first = readFirstJson(path)
+  if (first?.type !== 'session_meta') return false
+  const payload = first.payload || {}
+  if (payload.cwd !== agent.cwd) return false
+  const ts = Date.parse(payload.timestamp || first.timestamp || '')
+  if (!Number.isFinite(ts)) return false
+  return ts >= launchTs - 5_000 && ts <= launchTs + 60_000
+}
+
 const codexAdapter = {
   label: 'codex',
   isTranscriptPath(p) {
@@ -158,7 +181,9 @@ const codexAdapter = {
     const matches = knownIds.length
       ? (p) => knownIds.some(id => p.endsWith(`-${id}.jsonl`))
           && (!codexRolloutHasOwnerEvidence(p) || codexRolloutBelongsToAgent(p, agent))
-      : (p) => this.isTranscriptPath(p) && codexRolloutBelongsToAgent(p, agent)
+      : (p) => this.isTranscriptPath(p)
+          && (codexRolloutBelongsToAgent(p, agent)
+            || (!codexRolloutHasOwnerEvidence(p) && codexRolloutMatchesLaunch(p, agent, launchTs)))
     return newestUnder([root], matches, launchTs)
   },
 }
@@ -187,4 +212,4 @@ export async function resolveTranscript({ pid, kind, agent, launchTs }) {
   return adapter.findByLaunchWindow({ agent, launchTs }) // FALLBACK
 }
 
-export { claudeAdapter, codexAdapter, codexRolloutBelongsToAgent, codexRolloutHasOwnerEvidence, findOpenTranscriptFd }
+export { claudeAdapter, codexAdapter, codexRolloutBelongsToAgent, codexRolloutHasOwnerEvidence, codexRolloutMatchesLaunch, findOpenTranscriptFd }
