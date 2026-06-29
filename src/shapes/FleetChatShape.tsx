@@ -49,7 +49,6 @@ import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore, createTemporaryMarkdownColumn } from './FleetPillShape'
 import { agentDisplayName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
 import { ChatComposer } from './ChatComposer'
-import { decideFollowTransition, shouldConvergeToBottom, shouldGlueTailChange } from './chatScrollIntent.mjs'
 import { AgentName, PhaseIcon } from './PhaseIcon'
 import { baseName, phaseFromName } from '../../shared/lineage-name.mjs'
 import { dragCoordinator } from './dragCoordinator'
@@ -78,9 +77,6 @@ import './fleet-chat.css'
 const DEFAULT_W = 400
 const DEFAULT_H = 600
 const FLEET_API = DATABASE_HTTP
-const INITIAL_CHAT_RENDER_WINDOW = 80
-const CHAT_RENDER_WINDOW_CHUNK = 80
-const CHAT_RENDER_LOOKBEHIND = 20
 type ChatTrafficMode = 'normal' | 'quiet'
 type ComposerTrafficFilterMode = 'dm-quiet' | 'dm' | 'agent' | 'custom'
 
@@ -1517,16 +1513,6 @@ export function SuggestionTip() {
   )
 }
 
-function SuggestionRow({ chips, ctx }: { chips: Suggestion[], ctx: any }) {
-  return (
-    <div className="chat-line chat-suggestions-inline" style={{ padding: '2px 8px 4px', fontSize: 11 }}>
-      {[...groupChips(chips)].map(([gkey, items]) => (
-        <SuggestionGroup key={gkey} chips={items} agentName={ctx.agentLabel(suggestionOwnerId(items[0]))} />
-      ))}
-    </div>
-  )
-}
-
 // One disjunctive group: ✕ on the left (dismiss the group), then the options
 // `|`-separated (each clickable to pick → sends its command + clears the group).
 // One shared hover on the whole group → a single tooltip listing the options.
@@ -1968,7 +1954,11 @@ function FleetChatInner({ shape }: { shape: any }) {
     // loadBefore folds the scrollback into the single store (deduping by id) and
     // returns the count of genuinely-new rows. No local olderEvents list — the
     // history just appears in `events` via the store view.
-    loadBefore(ids, new Date().toISOString(), 200).then((added: number) => {
+    loadBefore(ids, new Date().toISOString(), 200, {
+      onBeforeNotify: (added: number) => {
+        setFirstItemIndex(index => Math.max(0, index - added))
+      },
+    }).then((added: number) => {
       if (added <= 0) return
       isAtBottomRef.current = true
       setAtBottom(true)
@@ -2145,6 +2135,13 @@ function FleetChatInner({ shape }: { shape: any }) {
   const activityGroupCache = useRef<Map<string, string>>(new Map())
   const ctxVersionRef = useRef(0)
   const prevCtxRenderKeyRef = useRef(ctxRenderKey)
+  const capRenderCache = useCallback((cache: Map<string, string>, maxEntries: number) => {
+    while (cache.size > maxEntries) {
+      const first = cache.keys().next()
+      if (first.done) break
+      cache.delete(first.value)
+    }
+  }, [])
   if (prevCtxRenderKeyRef.current !== ctxRenderKey) {
     prevCtxRenderKeyRef.current = ctxRenderKey
     ctxVersionRef.current++
@@ -2247,49 +2244,11 @@ function FleetChatInner({ shape }: { shape: any }) {
   // latest). The ◀▶ stepper arrows step through.
   const [amendView, setAmendView] = useState<Map<number, number>>(new Map())
 
-  const [renderedMessageLimit, setRenderedMessageLimit] = useState(INITIAL_CHAT_RENDER_WINDOW)
-  const [renderWindowAnchorStart, setRenderWindowAnchorStart] = useState<number | null>(null)
-  const tailRenderWindowStartIndex = Math.max(0, chatMessages.length - renderedMessageLimit)
-  const renderWindowStartIndex = renderWindowAnchorStart == null
-    ? tailRenderWindowStartIndex
-    : Math.max(0, Math.min(renderWindowAnchorStart, chatMessages.length))
-  const renderWindowLookbehindStartIndex = Math.max(0, renderWindowStartIndex - CHAT_RENDER_LOOKBEHIND)
-  const hiddenLookbehindCount = renderWindowStartIndex - renderWindowLookbehindStartIndex
-  const windowedChatMessages = useMemo(
-    () => chatMessages.slice(renderWindowLookbehindStartIndex),
-    [chatMessages, renderWindowLookbehindStartIndex],
-  )
-  const canExpandRenderedHistory = renderWindowStartIndex > 0
-  const pendingWindowRestoreHeightRef = useRef<number | null>(null)
-
-  useEffect(() => {
-    setRenderedMessageLimit(INITIAL_CHAT_RENDER_WINDOW)
-    setRenderWindowAnchorStart(null)
-    pendingWindowRestoreHeightRef.current = null
-  }, [filterKey])
-
-  const resetRenderWindowToTail = useCallback(() => {
-    setRenderedMessageLimit(INITIAL_CHAT_RENDER_WINDOW)
-    setRenderWindowAnchorStart(null)
-  }, [])
-
-  const anchorRenderWindow = useCallback(() => {
-    setRenderWindowAnchorStart(start => start ?? renderWindowStartIndex)
-  }, [renderWindowStartIndex])
-
-  const expandRenderedHistory = useCallback((el?: HTMLElement | null): boolean => {
-    if (!canExpandRenderedHistory) return false
-    if (el) pendingWindowRestoreHeightRef.current = el.scrollHeight
-    setRenderWindowAnchorStart(start => Math.max(0, (start ?? renderWindowStartIndex) - CHAT_RENDER_WINDOW_CHUNK))
-    setRenderedMessageLimit(limit => Math.min(chatMessages.length, limit + CHAT_RENDER_WINDOW_CHUNK))
-    return true
-  }, [canExpandRenderedHistory, chatMessages.length, renderWindowStartIndex])
-
   // Build per-item raw HTML array — each item is an independent renderable unit.
   // This replaces the old joined renderedHtml string and enables virtualization.
   // Items tagged _queued render below the thinking indicator; _interrupt items
   // render between the indicator and the queue (they "jump the line").
-  type RawItem = { key: string; html: string; _queued?: boolean; _interrupt?: boolean; _divider?: boolean; _status?: boolean; _suggestions?: Suggestion[] }
+  type RawItem = { key: string; html: string; _queued?: boolean; _interrupt?: boolean; _divider?: boolean }
   // Short hash of the version currently shown in the viewer (accounts for
   // scrubbing to a historical version). Build cards compare against this to
   // style themselves green (you're viewing this build) vs gray (stale).
@@ -2330,6 +2289,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (!html) {
         html = `<div class="chat-activity-inline-wrap">${renderActivityGroup(activityGroup, renderCtx)}</div>`
         activityGroupCache.current.set(cacheKey, html)
+        capRenderCache(activityGroupCache.current, 250)
       }
       items.push({
         key,
@@ -2356,16 +2316,14 @@ function FleetChatInner({ shape }: { shape: any }) {
       return true
     }
 
-    for (let i = 0; i < windowedChatMessages.length; i++) {
-      const m = windowedChatMessages[i]
-      const shouldRender = i >= hiddenLookbehindCount
+    for (let i = 0; i < chatMessages.length; i++) {
+      const m = chatMessages[i]
       if (m._activity) {
         if (activityGroup.length > 0 && activityGroup[0].from !== m.from) flushActivity()
         activityGroup.push(m)
-        if (shouldRender) activityGroupHasVisible = true
+        activityGroupHasVisible = true
       } else if (m.metadata?.type === 'build_result') {
         flushActivity()
-        if (!shouldRender) continue
         buildResultCount++
         const { name: docName, hash, summary, lintFindings = [], mirrorFailed, buildFailed, errors = [] } = m.metadata
         const hasDetails = !!(summary || lintFindings.length > 0 || mirrorFailed || buildFailed || errors.length > 0)
@@ -2403,7 +2361,6 @@ function FleetChatInner({ shape }: { shape: any }) {
         items.push({ key: m._dbId || m._tempId || `${m.timestamp}:${m.from}:build`, html })
       } else if (m._evType === 'plan_approval' || m.type === 'plan_approval') {
         flushActivity()
-        if (!shouldRender) continue
         specialCount++
         const agentId: string = m.from || ''
         const agentObjs: any[] = renderCtx.getAgents()
@@ -2423,7 +2380,6 @@ function FleetChatInner({ shape }: { shape: any }) {
         items.push({ key: m._dbId || m._tempId || `${m.timestamp}:${m.from}:plan`, html })
       } else if (m.type === 'kill-session') {
         flushActivity()
-        if (!shouldRender) continue
         specialCount++
         const agentObjs: any[] = renderCtx.getAgents()
         const targetId = m.to || ''
@@ -2433,7 +2389,6 @@ function FleetChatInner({ shape }: { shape: any }) {
         items.push({ key: m._dbId || m._tempId || `${m.timestamp}:${m.from}:kill`, html })
       } else if (m.type === 'interrupt') {
         flushActivity()
-        if (!shouldRender) continue
         specialCount++
         const agentObjs: any[] = renderCtx.getAgents()
         const targetId = m.to || ''
@@ -2443,7 +2398,6 @@ function FleetChatInner({ shape }: { shape: any }) {
         items.push({ key: m._dbId || m._tempId || `${m.timestamp}:${m.from}:interrupt`, html })
       } else {
         flushActivity()
-        if (!shouldRender) continue
         // Fold amends: if this message has amend events, show the viewed
         // version's text (+ its own source, so the chip is per-version) and a
         // V{n} ◀▶ stepper. Un-amended messages render untouched.
@@ -2490,6 +2444,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         if (!html) {
           html = renderChatLine(renderM, lineCtx)
           msgLineCache.current.set(cacheKey, html)
+          capRenderCache(msgLineCache.current, 1000)
         }
         chatLineCount++
         if (probe.isEnabled('chat')) {
@@ -2523,11 +2478,6 @@ function FleetChatInner({ shape }: { shape: any }) {
       const dt = performance.now() - rawItemsT0
       const detail = {
         messageCount: chatMessages.length,
-        windowMessageCount: windowedChatMessages.length,
-        renderedMessageCount: chatMessages.length - renderWindowStartIndex,
-        hiddenLookbehindCount,
-        renderWindowStartIndex,
-        renderWindowAnchored: renderWindowAnchorStart != null,
         itemCount: items.length,
         chatLineCount,
         activityGroupCount,
@@ -2536,16 +2486,11 @@ function FleetChatInner({ shape }: { shape: any }) {
         eventCount: events.length,
       }
       probe.record('chat', 'chat-build-raw-items', dt, detail)
-      probe.record(
-        'chat',
-        renderedMessageLimit > INITIAL_CHAT_RENDER_WINDOW ? 'chat-older-window-build' : 'chat-tail-window-build',
-        dt,
-        detail,
-      )
+      probe.record('chat', 'chat-build-items', dt, detail)
     }
     return items
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatMessages, windowedChatMessages, hiddenLookbehindCount, renderWindowStartIndex, renderWindowAnchorStart, renderedMessageLimit, ctx, thinkingAgents, unqueuedAt, viewingVersion, doc, amendsByOrig, amendView, macrosByDoc, preambleMacros])
+  }, [chatMessages, ctx, thinkingAgents, unqueuedAt, viewingVersion, doc, amendsByOrig, amendView, macrosByDoc, preambleMacros])
 
   // Per-item post-processing: applies chip replacement, URL linkification, and
   // doc-link resolution to a single item's HTML. Called by ChatMessageRow only
@@ -2646,27 +2591,9 @@ function FleetChatInner({ shape }: { shape: any }) {
     if (firstQueuedIdx > 0) {
       items[firstQueuedIdx - 1] = { ...items[firstQueuedIdx - 1], _divider: true }
     }
-    // Status row is a real trailing item (not a Virtuoso Footer) so its height
-    // enters totalListHeight — a Footer's height leaks into scrollHeight without
-    // Virtuoso knowing, which makes the pin loop re-solve the sizer paddingBottom
-    // and flicker whenever the status height changes.
-    items.push({ key: '__status__', html: '', _status: true })
     return items
   }, [rawItems])
-  const tailMessageKey = useMemo(() => {
-    const m = chatMessages[chatMessages.length - 1] as any
-    if (!m) return ''
-    return String(m._dbId ?? m._tempId ?? `${m.timestamp}:${m.from}`)
-  }, [chatMessages])
-
-  useLayoutEffect(() => {
-    const prevHeight = pendingWindowRestoreHeightRef.current
-    if (prevHeight == null) return
-    pendingWindowRestoreHeightRef.current = null
-    const el = chatLogEl
-    if (!el) return
-    el.scrollTop += el.scrollHeight - prevHeight
-  }, [allItems.length, renderedMessageLimit, chatLogEl])
+  const [firstItemIndex, setFirstItemIndex] = useState(1_000_000)
 
   // Virtual scroll — only mount DOM nodes for visible messages.
   // Handle clicks on ref-chip annotations → navigate to canvas bounds
@@ -3365,21 +3292,8 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
   }, [chatLogEl, editor, shape.id])
 
-  // Auto-scroll to bottom — event-driven, not every frame.
-  // CanvasClipPanel already routes wheel events to .fleet-chat-log via
-  // scrollable.scrollTop += e.deltaY, so we must NOT fight it with a
-  // continuous rAF loop. Instead: scroll to bottom when new content arrives
-  // or the container resizes, but only if the user hasn't scrolled up.
   const isAtBottomRef = useRef(true)
-  // Pin decisions gate on "did the user deliberately scroll up" (userScrolledUpRef),
-  // NOT Virtuoso's raw at-bottom bool. A transient sub-threshold reflow gap (late
-  // markdown/KaTeX/image growth) must not latch auto-follow off — only a deliberate
-  // scroll-up past 200px counts as intent.
   const userScrolledUpRef = useRef(false)
-  // TRACE: timestamp until which scroll events are attributable to our own
-  // programmatic pinning (pinHard). Lets the scroll-trace tell "my pin" apart
-  // from "user wheel" and "Virtuoso/virtualization". Temporary diagnostic.
-  const programmaticUntilRef = useRef(0)
   // Reactive bottom-position state. Drives the unified follow/jump button:
   // at bottom → follow-mode toggle (horseshoe); off bottom → ⇣ jump-to-bottom.
   // Position (not scroll-intent) is the right signal here — matches the spec
@@ -3413,185 +3327,38 @@ function FleetChatInner({ shape }: { shape: any }) {
     return () => clearFleetEventsLiveTailPinned(shape.id)
   }, [shape.id])
 
-  // pin-to-bottom: Virtuoso's own scrollToIndex(LAST, 'end') is the single
-  // source of truth. It is virtualization-aware — it renders + measures the
-  // last items and lands the true last item flush against the viewport bottom.
-  //
-  // We deliberately do NOT also slam `el.scrollTop = el.scrollHeight` in this
-  // explicit item-targeted path. That used to exist to "reach past the
-  // thinking/suggestion FOOTER" — but the status row is now a measured list item,
-  // not a footer, so there is nothing below the last item to clear.
-  //
-  // The bounded loop re-runs as height settles; the standing watchdog below
-  // guarantees convergence after this loop's frame budget.
-  const pinHard = useCallback(() => {
-    programmaticUntilRef.current = performance.now() + 400
-    let frames = 0
-    const step = () => {
-      // Stop if the user has taken over since we started (unless hard-locked).
-      if (userScrolledUpRef.current && !hardLockedRef.current) return
-      virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
-      const el = chatLogEl
-      programmaticUntilRef.current = performance.now() + 120
-      const gap = el ? (el.scrollHeight - (el.scrollTop + el.clientHeight)) : 0
-      if (gap > 8 && ++frames < 12) requestAnimationFrame(step)
-    }
-    step()
-  }, [chatLogEl])
-
-  const glueToBottom = useCallback(() => {
-    const el = chatLogEl
-    if (!el) return
-    programmaticUntilRef.current = performance.now() + 120
-    el.scrollTop = el.scrollHeight
-  }, [chatLogEl])
+  const virtuosoScrollToBottom = useCallback(() => {
+    virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
+  }, [])
 
   // Imperative scroll-to-bottom for the floating ⇣ button.
   const scrollToBottom = useCallback(() => {
     log.debug('chat-scroll', 'user clicked ⇣ jump-to-bottom → resume stick-to-bottom')
-    // Clear the scroll-up flag BEFORE pinHard: pinHard's step() bails
-    // immediately when userScrolledUp is set (and we're not hard-locked), so
-    // calling it first made the click a no-op — that was the "click twice to
-    // reach the bottom" bug. Reset intent + position first, then pin.
     userScrolledUpRef.current = false
     isAtBottomRef.current = true
     setAtBottom(true)
     setFleetEventsLiveTailPinned(shape.id, true)
-    resetRenderWindowToTail()
-    pinHard()
-  }, [pinHard, resetRenderWindowToTail, shape.id])
+    virtuosoScrollToBottom()
+  }, [shape.id, virtuosoScrollToBottom])
 
-  // When the scroll container resizes — textarea growing as you type
-  // (shrinks chat-log) OR shrinking back after send (grows chat-log) — pin
-  // to bottom if we were at bottom. Virtuoso's followOutput only fires on
-  // *content* change, not container resize, so without this you drift off
-  // the bottom whenever the input area changes height.
-  useEffect(() => {
-    const el = chatLogEl
-    if (!el) return
-    let prevH = el.clientHeight
-    const ro = new ResizeObserver(() => {
-      const h = el.clientHeight
-      if (h !== prevH) {
-        const pin = !userScrolledUpRef.current || hardLockedRef.current
-        log.debug('chat-scroll', 'container resize', { prevH, h, atBottom: isAtBottomRef.current, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current, action: pin ? 'pin' : 'skip' })
-        if (pin) glueToBottom()
-      }
-      prevH = h
-    })
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [chatLogEl, glueToBottom])
-
-  // Glue when new items arrive AND we were at bottom. Virtuoso's
-  // followOutput="auto" sometimes scrolls against a stale measurement of
-  // the new item's height, ending up ~20px short — enough to trip
-  // atBottomThreshold and surface the ⇣ arrow even though the user didn't
-  // scroll. This same-frame scroll catches that without asking Virtuoso to
-  // re-resolve item positions during its own height measurement pass.
-  const prevItemCountRef = useRef(allItems.length)
-  // Tracks Virtuoso's total list height for totalListHeightChanged — catches
-  // in-place item growth that doesn't tick items.length.
-  const prevTotalHeightRef = useRef(0)
-  useLayoutEffect(() => {
-    const prev = prevItemCountRef.current
-    prevItemCountRef.current = allItems.length
-    if (allItems.length > prev) {
-      if (!userScrolledUpRef.current || hardLockedRef.current) {
-        log.debug('chat-scroll', 'new item → STICK TO BOTTOM (was at bottom / hard-locked)', { prev, now: allItems.length, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
-        glueToBottom()
-      } else {
-        log.debug('chat-scroll', 'new item → HELD position (user scrolled up) — YANK AVERTED', { prev, now: allItems.length, scrolledUp: userScrolledUpRef.current })
-      }
-    }
-  }, [allItems.length, glueToBottom])
-
-  const prevTailMessageKeyRef = useRef(tailMessageKey)
-  useLayoutEffect(() => {
-    const prev = prevTailMessageKeyRef.current
-    prevTailMessageKeyRef.current = tailMessageKey
-    const tailChanged = !!tailMessageKey && tailMessageKey !== prev
-    if (shouldGlueTailChange(prev, tailMessageKey, { scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })) {
-      log.debug('chat-scroll', 'tail changed → STICK TO BOTTOM (was at bottom / hard-locked)', { prev, tail: tailMessageKey, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
-      glueToBottom()
-    } else if (tailChanged && userScrolledUpRef.current) {
-      log.debug('chat-scroll', 'tail changed → HELD position (user scrolled up) — YANK AVERTED', { prev, tail: tailMessageKey })
-    }
-  }, [tailMessageKey, glueToBottom])
-
-  // ── Single source of follow-intent: scrollTop-DELTA on the real container ──
-  // Every path that scrolls the chat log fires a native 'scroll' event on
-  // .fleet-chat-log: CanvasClipPanel's wheel handler (scrollable.scrollTop +=
-  // deltaY), native touch drag, AND our own programmatic pins. So we derive
-  // intent here from the DELTA, not a gap threshold:
-  //   • follow OFF  when the user moves UP (scrollTop decreases past a jitter
-  //     epsilon) — ANY deliberate scroll-up disengages, even a small one. The
-  //     old gap>120 heuristic ignored sub-120 scroll-ups, so a small read +
-  //     a new message re-yanked you down. Delta has no dead band.
-  //   • follow ON   only when the user is back at the TRUE bottom (gap ≤ 120,
-  //     which absorbs the ~40px status footer below the last data item).
-  // Two guards keep automatic motion from being misread as user intent:
-  //   • programmatic fence (programmaticUntilRef, set by pinHard) — our own
-  //     scrollToIndex must not flip intent.
-  //   • shrink guard — when scrollHeight DECREASES (status row collapses) the
-  //     browser clamps scrollTop down; that downward move is not a user
-  //     scroll-up, so don't disengage.
-  // Because intent now lives entirely here, atBottomStateChange no longer writes
-  // it (it can't reset us mid-read), and there is no wheel-only/touch-momentum
-  // split — one handler covers wheel, touch, and trackpad uniformly.
   useEffect(() => {
     const el = chatLogEl
     if (!el) return
     let lastTop = el.scrollTop
-    let lastHeight = el.scrollHeight
     const handle = () => {
       const top = el.scrollTop
-      const height = el.scrollHeight
-      const gap = height - top - el.clientHeight
-      const programmatic = performance.now() < programmaticUntilRef.current
-      // All the intent math lives in the pure decideFollowTransition (unit
-      // tested in test/chat-scroll-intent.test.mjs); the effect only feeds it
-      // samples and applies the side effects of a transition.
-      const { scrolledUp, action } = decideFollowTransition(
-        { top, height, clientHeight: el.clientHeight, lastTop, lastHeight },
-        { scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current, programmatic },
-      )
+      const gap = el.scrollHeight - top - el.clientHeight
+      const movingUp = top < lastTop - 2
       lastTop = top
-      lastHeight = height
-      if (action === 'follow-off') {
+      if (movingUp && !userScrolledUpRef.current && !hardLockedRef.current) {
         log.debug('chat-scroll', 'user scrolled UP → HOLD position, stop following (new messages will NOT yank)', { top, gap })
-        anchorRenderWindow()
-      } else if (action === 'follow-on') {
-        log.debug('chat-scroll', 'user returned to BOTTOM → resume stick-to-bottom', { gap })
-        resetRenderWindowToTail()
-      }
-      userScrolledUpRef.current = scrolledUp
-      if (action === 'follow-off' || action === 'follow-on') {
-        setFleetEventsLiveTailPinned(shape.id, hardLockedRef.current || !scrolledUp)
+        userScrolledUpRef.current = true
+        setFleetEventsLiveTailPinned(shape.id, false)
       }
     }
     el.addEventListener('scroll', handle, { passive: true })
     return () => el.removeEventListener('scroll', handle)
-  }, [chatLogEl, anchorRenderWindow, resetRenderWindowToTail, shape.id])
-
-  // Convergence watchdog — the backstop that was simplified away in b5e24e35.
-  // Most follow paths are event-driven, but Virtuoso can land short while rows
-  // are still being measured, and ring-buffer eviction can replace the list
-  // without increasing item count. If we still intend to follow and a large gap
-  // persists, re-apply the virtualization-aware pin until the tail converges.
-  useEffect(() => {
-    const el = chatLogEl
-    if (!el) return
-    const id = setInterval(() => {
-      if (userScrolledUpRef.current && !hardLockedRef.current) return
-      const gap = el.scrollHeight - (el.scrollTop + el.clientHeight)
-      if (shouldConvergeToBottom(gap, { scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })) {
-        log.debug('chat-scroll', 'watchdog → converge to bottom (was following, landed short)', { gap, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
-        pinHard()
-      }
-    }, 200)
-    return () => clearInterval(id)
-  }, [chatLogEl, pinHard])
+  }, [chatLogEl, shape.id])
 
   // Refilter → bottom. Changing the filter swaps the whole rendered list out
   // from under Virtuoso; the scroll-position reset effect above (keyed on
@@ -3608,10 +3375,10 @@ function FleetChatInner({ shape }: { shape: any }) {
     userScrolledUpRef.current = false
     isAtBottomRef.current = true
     setAtBottom(true)
+    setFirstItemIndex(1_000_000)
     setFleetEventsLiveTailPinned(shape.id, true)
-    resetRenderWindowToTail()
-    requestAnimationFrame(pinHard)
-  }, [filterKey, pinHard, resetRenderWindowToTail, shape.id])
+    requestAnimationFrame(virtuosoScrollToBottom)
+  }, [filterKey, shape.id, virtuosoScrollToBottom])
 
   // Terminal card hover — mouseover on .lc-terminal-card shows the terminal overlay.
   useEffect(() => {
@@ -4613,21 +4380,18 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   // Infinite scroll — load older messages
   const loadingMore = useRef(false)
-  const loadOlderHistory = useCallback(async (el: HTMLElement | null | undefined) => {
-    if (!el || loadingMore.current || chatMessages.length === 0) return
-    if (expandRenderedHistory(el)) return
+  const loadOlderHistory = useCallback(async () => {
+    if (loadingMore.current || chatMessages.length === 0) return
     // Filtered view that hasn't resolved to any id yet — don't page in global history.
     if (loadBeforeAgents !== null && loadBeforeAgents.length === 0) return
     loadingMore.current = true
     const oldestTs = chatMessages[0]?.timestamp
     if (oldestTs) {
-      const prevHeight = el.scrollHeight
-      // Older rows fold into the single store (deduped by id); the view re-renders
-      // off the store. Restore scroll position so the viewport doesn't jump.
       try {
-        await loadBefore(loadBeforeAgents || [], oldestTs, 50)
-        requestAnimationFrame(() => {
-          el.scrollTop = el.scrollHeight - prevHeight
+        await loadBefore(loadBeforeAgents || [], oldestTs, 50, {
+          onBeforeNotify: (added: number) => {
+            setFirstItemIndex(index => Math.max(0, index - added))
+          },
         })
       } finally {
         loadingMore.current = false
@@ -4635,21 +4399,14 @@ function FleetChatInner({ shape }: { shape: any }) {
       return
     }
     loadingMore.current = false
-  }, [chatMessages, loadBeforeAgents, expandRenderedHistory])
+  }, [chatMessages, loadBeforeAgents])
 
-  const handleScroll = useCallback(async (e: React.UIEvent<HTMLDivElement>) => {
-    const el = e.currentTarget
-    if (el.scrollTop > 50 || loadingMore.current || chatMessages.length === 0) return
-    await loadOlderHistory(el)
-  }, [chatMessages.length, loadOlderHistory])
-
-  // Attach scroll + click handlers to the Virtuoso-owned scroll container.
+  // Attach click/tap handlers to the Virtuoso-owned scroll container.
   // Listener-based (not JSX prop) because the Scroller is memoized and
   // doesn't close over changing callbacks.
   useEffect(() => {
     const el = chatLogEl
     if (!el) return
-    const onScroll = (e: Event) => handleScroll(e as any)
     // Touch: a tap on a text chip never synthesizes a `click`, so the
     // click-delegated chip/link handlers below are dead on iPad. Drive them
     // from a movement-guarded pointerup for touch instead. The movement guard
@@ -4676,21 +4433,19 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (e.timeStamp - lastTouchHandled < 700) return
       handleDocLinkClick(e as any)
     }
-    el.addEventListener('scroll', onScroll, { passive: true })
     el.addEventListener('pointerdown', onPointerDown)
     el.addEventListener('pointerup', onPointerUp)
     el.addEventListener('click', onClick)
     return () => {
-      el.removeEventListener('scroll', onScroll)
       el.removeEventListener('pointerdown', onPointerDown)
       el.removeEventListener('pointerup', onPointerUp)
       el.removeEventListener('click', onClick)
     }
-  }, [chatLogEl, handleScroll, handleDocLinkClick])
+  }, [chatLogEl, handleDocLinkClick])
 
   // Auto-load more history when content doesn't fill the scroll container.
   // Without this, if initial messages are too few to create a scrollbar,
-  // handleScroll never fires and the user can't get more messages.
+  // Virtuoso never reaches the top sentinel and the user can't get more messages.
   useEffect(() => {
     const el = chatLogEl
     // Auto-load only for a resolved filtered view (a specific id set) — not for
@@ -4700,7 +4455,11 @@ function FleetChatInner({ shape }: { shape: any }) {
     const oldestTs = chatMessages[0]?.timestamp
     if (!oldestTs) return
     loadingMore.current = true
-    loadBefore(loadBeforeAgents, oldestTs, 50).then(() => {
+    loadBefore(loadBeforeAgents, oldestTs, 50, {
+      onBeforeNotify: (added: number) => {
+        setFirstItemIndex(index => Math.max(0, index - added))
+      },
+    }).then(() => {
       // Older rows fold into the single store; the view re-renders off it.
       loadingMore.current = false
     })
@@ -5353,95 +5112,22 @@ function FleetChatInner({ shape }: { shape: any }) {
           />
         )}
 
-        {/* Messages — Virtuoso owns the scroll container via components.Scroller.
-            Dropping customScrollParent: with Virtuoso-owned scroll,
-            initialTopMostItemIndex is reliably honored and the previous
-            "start at top" / RAF pin loop / scroll race is gone. */}
-        {/* Keep Virtuoso ALWAYS mounted. A momentary chatMessages→0 (a transient
-            empty, e.g. during a reconnect blip) must NOT swap the scroller out
-            for a placeholder div — that unmounts Virtuoso and remounts it fresh
-            when messages return, which re-runs initialTopMostItemIndex and snaps
-            scroll to the bottom: the "bounce". allItems always carries the
-            __status__ row, so Virtuoso is never truly empty; the empty-state hint
-            is a non-interactive overlay (top-aligned + same padding as before, so
-            it renders in the same place), not a replacement of the list. The
-            wrapper div is the minimal means to position that overlay. */}
+        {/* Messages — Virtuoso owns the scroll container and the virtualized
+            item measurement. Status/suggestions render as a separate footer
+            below the scroller, never as a fake measured message. */}
         <div style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex', flexDirection: 'column' }}>
           <Virtuoso
             ref={virtuosoRef}
             data={allItems}
+            firstItemIndex={firstItemIndex}
             style={{ flex: 1, minHeight: 0 }}
             initialTopMostItemIndex={{ index: 'LAST', align: 'end' }}
-            // Virtuoso owns the actual scrolling (it's virtualization-aware, so it
-            // reaches the TRUE list bottom); our scroll-intent just gates WHEN it
-            // follows. Follow on new content unless the user deliberately scrolled up.
+            alignToBottom
             followOutput={() => (!userScrolledUpRef.current || hardLockedRef.current) ? 'auto' : false}
             startReached={() => {
-              void loadOlderHistory(chatLogEl)
+              void loadOlderHistory()
             }}
-            // Generous enough to absorb the Virtuoso Footer (suggestion/thinking
-            // status, ~40px): scrollToIndex(LAST) aligns the last DATA item, so
-            // the footer sits just below the viewport and "true bottom" is ~40px
-            // past the last item. With the tight 24px value, that residual read
-            // as "not at bottom" and surfaced the ⇣ arrow even though the user
-            // never scrolled. 120 (the long-proven value) keeps follow engaged
-            // through the footer. Safe because follow-intent is owned by the
-            // scrollTop-delta handler, not inferred from this gap.
-            atBottomThreshold={120}
-            // Fires whenever Virtuoso's computed total list height changes —
-            // catches in-place item growth (markdown/font/image late-render
-            // adds pixels to existing items) which doesn't tick items.length
-            // and so isn't caught by force-pin-on-item-grow.
-            totalListHeightChanged={(h) => {
-              const diag = probe.isEnabled('chat')
-              const t0 = diag ? performance.now() : 0
-              const prev = prevTotalHeightRef.current
-              prevTotalHeightRef.current = h
-              const grew = h > prev
-              const follow = !userScrolledUpRef.current || hardLockedRef.current
-              const el = chatLogEl
-              // LOUD chat-scroll logging — restored to fire UNCONDITIONALLY (not
-              // gated behind the probe flag, which is off by default and silenced
-              // these). One layout read per growth event (per-message, not
-              // per-frame) so client.log tells the whole scroll story for QA.
-              if (grew) {
-                const gapNow = el ? Math.round(el.scrollHeight - (el.scrollTop + el.clientHeight)) : null
-                log.debug('chat-scroll', follow
-                  ? 'content grew → STICK TO BOTTOM (following)'
-                  : 'content grew → HELD position (user scrolled up) — YANK AVERTED',
-                  { prev, h, gapNow, follow, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
-              }
-              if (grew && follow) {
-                // Following + content grew: glue in the same frame the height
-                // changed. Calling scrollToIndex(LAST) here asks Virtuoso to
-                // resolve item positions while it is already measuring variable
-                // row heights, which makes the bottom solve bounce.
-                glueToBottom()
-                if (diag) {
-                  requestAnimationFrame(() => {
-                    const el2 = chatLogEl
-                    const gapAfter = el2 ? Math.round(el2.scrollHeight - (el2.scrollTop + el2.clientHeight)) : null
-                    log.debug('chat-scroll', 'TRACE after pin', { gapAfter })
-                  })
-                }
-              }
-              // Heavy perf instrumentation (forced-layout reads + POSTs) stays
-              // gated behind the probe flag so it doesn't run in normal use.
-              if (diag) {
-                const gapNow = el ? Math.round(el.scrollHeight - (el.scrollTop + el.clientHeight)) : null
-                const dt = performance.now() - t0
-                if (dt > 1 || grew) {
-                  probe.record('chat', 'chat-virtuoso-height-change', dt, {
-                    prev,
-                    h,
-                    grew,
-                    follow,
-                    gapNow,
-                    itemCount: allItems.length,
-                  })
-                }
-              }
-            }}
+            atBottomThreshold={24}
             atBottomStateChange={(atBottom) => {
               const t0 = probe.isEnabled('chat') ? performance.now() : 0
               const el = chatLogEl
@@ -5459,19 +5145,9 @@ function FleetChatInner({ shape }: { shape: any }) {
               }
               isAtBottomRef.current = atBottom
               setAtBottom(atBottom)
-              // ADVISORY ONLY. Follow-intent is owned entirely by the scrollTop-
-              // delta handler above; this callback must NOT write userScrolledUpRef.
-              // The old code reset it to false on every atBottom=true — but with
-              // atBottomThreshold=120, a reflow that momentarily brought the gap
-              // under 120 while the user was reading flipped intent back ON and
-              // the next message re-yanked them down (the "shot back down" bug).
-              // Resume-follow now happens only when the user genuinely scrolls to
-              // the bottom (handled in the delta handler). We also do NOT re-pin
-              // on a spurious "left bottom": that caused an infinite bounce when
-              // content barely exceeds the viewport. Hard-lock is the one
-              // exception — it means "always pinned".
-              if (!atBottom && hardLockedRef.current) {
-                requestAnimationFrame(pinHard)
+              if (atBottom && userScrolledUpRef.current) {
+                userScrolledUpRef.current = false
+                setFleetEventsLiveTailPinned(shape.id, true)
               }
               if (probe.isEnabled('chat')) {
                 const dt = performance.now() - t0
@@ -5485,27 +5161,9 @@ function FleetChatInner({ shape }: { shape: any }) {
               }
             }}
             itemContent={(_index, item) => (
-              item?._status ? (
-                <div>
-                  <ThinkingStatus
-                    thinkingAgents={thinkingAgents}
-                    compactingAgents={compactingAgents}
-                    contextPercent={contextPercent}
-                    hibernatingAgents={hibernatingAgents}
-                    ctx={ctx}
-                    agents={agents}
-                    itemCount={rawItems.length}
-                    escalationState={escalationState}
-                    suggestions={suggestionsPending}
-                  />
-                </div>
-              ) : item?._suggestions ? (
-                <SuggestionRow chips={item._suggestions} ctx={ctx} />
-              ) : (
-                <div className={'chat-row-wrap' + (item?._divider ? ' queue-divider' : '')}>
-                  <ChatMessageRow html={item.html} postProcess={postProcess} itemKey={item.key} expandedRowsRef={expandedRowsRef} />
-                </div>
-              )
+              <div className={'chat-row-wrap' + (item?._divider ? ' queue-divider' : '')}>
+                <ChatMessageRow html={item.html} postProcess={postProcess} itemKey={item.key} expandedRowsRef={expandedRowsRef} />
+              </div>
             )}
             computeItemKey={(_index, item) => item?.key ?? _index}
             components={{
@@ -5533,6 +5191,19 @@ function FleetChatInner({ shape }: { shape: any }) {
                 : filter.length > 0 ? 'No messages' : 'No filter set'}
             </div>
           )}
+          <div style={{ flexShrink: 0 }}>
+            <ThinkingStatus
+              thinkingAgents={thinkingAgents}
+              compactingAgents={compactingAgents}
+              contextPercent={contextPercent}
+              hibernatingAgents={hibernatingAgents}
+              ctx={ctx}
+              agents={agents}
+              itemCount={rawItems.length}
+              escalationState={escalationState}
+              suggestions={suggestionsPending}
+            />
+          </div>
         </div>
 
         {/* Terminal card overlay — shown on hover or when pinned; outside scroll container */}
@@ -5661,7 +5332,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                 // At bottom: toggle follow mode.
                 setHardLocked(prev => {
                   const next = !prev
-                  if (next) requestAnimationFrame(pinHard)
+                  if (next) requestAnimationFrame(virtuosoScrollToBottom)
                   return next
                 })
               }}
