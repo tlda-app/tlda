@@ -407,12 +407,14 @@ export function ensureMyLaneDisjoint(editor: Editor, myId: string, myDevice: str
   return mine.length
 }
 
-export async function createFleetLayout(editor: Editor, agents: any[], variant: '2col' | '3col' | 'wide' | 'grid' | 'touch' | 'phone' = '3col'): Promise<boolean> {
+export type FleetLayoutVariant = 'phone' | '3-col' | '2x2' | 'big-chat' | 'both-margins' | 'touch'
+
+export async function createFleetLayout(editor: Editor, agents: any[], variant: FleetLayoutVariant = '3-col'): Promise<boolean> {
   const result = await createFleetLayoutDetailed(editor, agents, variant)
   return result.created
 }
 
-export async function createFleetLayoutDetailed(editor: Editor, agents: any[], variant: '2col' | '3col' | 'wide' | 'grid' | 'touch' | 'phone' = '3col'): Promise<FleetLayoutCreateResult> {
+export async function createFleetLayoutDetailed(editor: Editor, agents: any[], variant: FleetLayoutVariant = '3-col'): Promise<FleetLayoutCreateResult> {
   await whenDeviceReady()
   const myId = getHumanId()
   if (!myId) return makeFleetLayoutResult(editor, variant, 'identity-missing', myId, getDeviceId())
@@ -552,7 +554,7 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
       seenNames.add(name)
       return true
     })
-    const panelCount = variant === 'grid' ? 4 : (variant === 'wide' || variant === 'phone') ? 1 : 2
+    const panelCount = variant === '2x2' ? 4 : (variant === 'big-chat' || variant === 'phone') ? 1 : 2
     const recentChatAgents = recentChatTargetAgents(getEvents(), deduped, humanId, getHumanName(), panelCount)
     const recentIds = new Set(recentChatAgents.map((a: any) => a.id || a.friendly_name))
     const topAgents = [
@@ -590,8 +592,8 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
     // Everything is laid out relative to the document edges — never relative to
     // the HUD position, which is a separate offset (the anchor shape).
     const leftContentW =
-      variant === 'wide' ? leftW + gap + Math.round(chatW3 * 2)
-      : variant === '2col' ? leftW + gap + Math.round(chatW3 * 1.5)
+      variant === 'big-chat' ? leftW + gap + Math.round(chatW3 * 2)
+      : variant === 'both-margins' ? leftW + gap + Math.round(chatW3 * 1.5)
       : leftW + gap + rightW
 
     const { minLeft, minTop, maxRight } = docBounds
@@ -694,7 +696,7 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
         props: { w: leftW, h: searchH },
       },
     ]
-    if (variant === 'wide') {
+    if (variant === 'big-chat') {
       const chatWide = Math.round(chatW3 * 2)
       shapes.push(
         {
@@ -712,11 +714,10 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
           props: { w: chatWide, h: docviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '' },
         },
       )
-    } else if (variant === 'grid') {
+    } else if (variant === '2x2') {
+      // 2×2 layout: four chats in a square (no document viewer).
       const gridChatW = chatW3
       const gridChatH = Math.round((totalH - gap) / 2)
-      const gridRightChatH = Math.round(gridChatH * 0.75)
-      const gridDocviewH = gridChatH - gap - gridRightChatH
       shapes.push(
         {
           id: slotId(myId, myDevice, 'chat-0'),
@@ -744,17 +745,10 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
           type: 'fleet-chat' as any,
           x: anchorX + leftW + gap + gridChatW + gap, y: anchorY + gridChatH + gap,
           isLocked: false,
-          props: { w: gridChatW, h: gridRightChatH, filter: filter4 },
-        },
-        {
-          id: slotId(myId, myDevice, 'docview'),
-          type: 'fleet-docview' as any,
-          x: anchorX + leftW + gap + gridChatW + gap, y: anchorY + gridChatH + gap + gridRightChatH + gap,
-          isLocked: false,
-          props: { w: gridChatW, h: gridDocviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '' },
+          props: { w: gridChatW, h: gridChatH, filter: filter4 },
         },
       )
-    } else if (variant === '3col') {
+    } else if (variant === '3-col') {
       shapes.push(
         {
           id: slotId(myId, myDevice, 'chat-0'),
