@@ -131,6 +131,8 @@ test('lease policy and fence wrapper stay outside harness adapters', () => {
   assert.equal(settings.filesystem.defaultDenyRead, true)
   assert.ok(settings.filesystem.allowWrite.some((p) => p.endsWith('/.git')))
   assert.equal(settings.filesystem.allowWrite.includes('/tmp'), false)
+  assert.ok(settings.filesystem.allowWrite.includes('/private/var/folders/*/*/T/xcrun_db*'))
+  assert.ok(settings.filesystem.allowWrite.includes('/var/folders/*/*/T/xcrun_db*'))
   assert.equal(settings.network.allowLocalOutbound, true)
   const wrapped = wrapSandboxCmd('echo hi', leasePolicy, { api: 'https://tlda-fly.example.test' })
   assert.match(wrapped, /TLDA_SANDBOX_LEASE=/)
