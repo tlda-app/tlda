@@ -22,7 +22,12 @@ export function pickCornerSliderIndex({
 }) {
   const slot = slotWidth + gap
   const distFromButtonLeft = anchorRect.left - clientX
-  return Math.max(0, Math.min(count - 1, Math.floor(distFromButtonLeft / slot)))
+  // Slots render left-to-right (index 0 leftmost) while the slider box is
+  // right-anchored at the button's left edge, so the slot nearest the button is
+  // the LAST index. Map distance-from-button onto that ordering so the
+  // highlighted slot matches the finger position instead of mirroring it.
+  const fromButton = Math.max(0, Math.min(count - 1, Math.floor(distFromButtonLeft / slot)))
+  return count - 1 - fromButton
 }
 
 export function CornerButtonSlider({

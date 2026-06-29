@@ -2189,7 +2189,6 @@ body.touch-toc-mode:not(.phone-mode) .fleet-icon-pill-container {
   flex-direction: row;
   position: fixed;
   z-index: var(--tlda-z-top-control-popover);
-  background: rgba(255, 255, 255, 0.3);
   border-radius: 8px;
   padding: 3px;
   box-shadow: none;
@@ -2202,12 +2201,10 @@ body.touch-toc-mode:not(.phone-mode) .fleet-icon-pill-container {
   position: relative;
   width: 44px;
   height: 44px;
-  border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
   color: var(--corner-button-slider-color, currentColor);
-  box-shadow: inset 0 0 0 2px var(--corner-button-slider-color, currentColor);
   transition: transform 0.1s;
 }
 
@@ -2219,10 +2216,6 @@ body.touch-toc-mode:not(.phone-mode) .fleet-icon-pill-container {
 .corner-button-slider-slot span {
   width: 26px;
   height: 26px;
-}
-
-html[data-theme="dark"] .corner-button-slider {
-  background: rgba(0, 0, 0, 0.3);
 }
 
 /* Dark mode highlighter */

@@ -835,7 +835,9 @@ function VoiceNoteButtonInner() {
   const voiceSlots = useMemo(() => [
     {
       id: 'dictate-selection',
-      label: 'dictate',
+      // State-aware action label: says what tapping will DO given the current
+      // transcription state (resolved live at HUD-show time in onPointerMove).
+      label: 'Toggle transcription on',
       color: '#7ab8a0',
       action: voiceTap,
       render: () => (
@@ -904,7 +906,12 @@ function VoiceNoteButtonInner() {
     dragSlotRef.current = idx
     setDragSlot(idx)
     const slot = voiceSlots[idx]
-    if (slot) toolNameHud.show(slot.label, slot.color)
+    if (slot) {
+      const label = slot.id === 'dictate-selection'
+        ? (isRecording() ? 'Toggle transcription off' : 'Toggle transcription on')
+        : slot.label
+      toolNameHud.show(label, slot.color)
+    }
   }, [dragging, voiceSlots])
 
   const handlePointerUp = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
