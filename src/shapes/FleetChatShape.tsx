@@ -1417,7 +1417,7 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
           : status === 'compacting' ? 'compacting…'
           : status === 'thinking' ? 'thinking…'
           : null
-        return (
+        return [
           <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0', display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto minmax(0, 1fr)', alignItems: 'baseline', gap: 6 }}>
             {/* left: agent + status */}
             <span style={{ justifySelf: 'start', minWidth: 0 }}>
@@ -1434,19 +1434,20 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
                 </span>
               )}
             </span>
-            {/* center: suggestion groups. The auto middle column keeps the chip
-                location stable while the left status text changes. */}
-            <span style={{ justifySelf: 'center', display: 'flex', gap: 14, alignItems: 'baseline', flexWrap: 'wrap', justifyContent: 'center', minWidth: 0, overflow: 'hidden' }}>
-              {[...groupChips(chips)].map(([gkey, items]) => (
-                <SuggestionGroup key={gkey} chips={items} agentName={ctx.agentLabel(suggestionOwnerId(items[0]))} />
-              ))}
-            </span>
+            {/* center: kept empty to preserve the left/right grid columns. */}
+            <span style={{ justifySelf: 'center', minWidth: 0 }} />
             {/* right: context info */}
             <span style={{ justifySelf: 'end' }}>
               <ContextBadge percent={contextPercent.get(agentId)} />
             </span>
-          </div>
-        )
+          </div>,
+          // suggestion groups: own line(s) below the status line, one line per group
+          ...[...groupChips(chips)].map(([gkey, items]) => (
+            <div key={`${agentId}::sug::${gkey}`} className="chat-line chat-thinking" style={{ padding: '2px 0', display: 'flex', alignItems: 'baseline' }}>
+              <SuggestionGroup chips={items} agentName={ctx.agentLabel(suggestionOwnerId(items[0]))} />
+            </div>
+          )),
+        ]
       })}
     </div>
   )
