@@ -11,7 +11,7 @@ import { createReadStream } from 'fs'
 import { createGunzip } from 'zlib'
 import { createInterface } from 'readline'
 import { dirname, basename, join, resolve } from 'path'
-import { sourceDir, getProjectsDir, readProject } from './project-store.mjs'
+import { sourceDir, getProjectsDir, readProject, readSourceFile } from './project-store.mjs'
 
 function realResolve(...args) {
   const p = resolve(...args)
@@ -176,6 +176,117 @@ export function clearSynctexCache(projectName) {
   for (const key of [...cache.keys()]) {
     if (key.startsWith(`${projectName}:`)) cache.delete(key)
   }
+}
+
+export function findTextNearSourceLine(projectName, file, startLine, text, radius = 10) {
+  const sourceContent = readSourceFile(projectName, file)
+  if (!sourceContent) return null
+  const sourceLines = sourceContent.split('\n')
+  const searchStart = Math.max(0, startLine - radius - 1)
+  const searchEnd = Math.min(sourceLines.length, startLine + radius)
+  const searchRegion = sourceLines.slice(searchStart, searchEnd).join('\n')
+  const matchIdx = searchRegion.indexOf(text)
+  if (matchIdx === -1) return null
+
+  const beforeMatch = searchRegion.slice(0, matchIdx)
+  const matchStartLine = searchStart + beforeMatch.split('\n').length
+  const matchStartCol = beforeMatch.split('\n').pop().length
+  const beforeEnd = searchRegion.slice(0, matchIdx + text.length)
+  const matchEndLine = searchStart + beforeEnd.split('\n').length
+  const matchEndCol = beforeEnd.split('\n').pop().length
+
+  return {
+    sourceLines,
+    startLine: matchStartLine,
+    startCol: matchStartCol,
+    endLine: matchEndLine,
+    endCol: matchEndCol,
+  }
+}
+
+function sourceFileIdsForSynctex(data) {
+  const sourceFileIds = new Set()
+  for (const [id, filePath] of data.inputMap) {
+    if (filePath.endsWith('.tex')) sourceFileIds.add(id)
+  }
+  return sourceFileIds
+}
+
+function targetFileIdForSynctex(data, file) {
+  const targetBasename = basename(file)
+  for (const [id, filePath] of data.inputMap) {
+    if (basename(filePath) === targetBasename) return id
+  }
+  return null
+}
+
+/**
+ * Shared rendered-span resolver used by text highlights and source-cursor laser
+ * placement. It maps source columns through the same Synctex record ordering.
+ */
+export async function sourceTextSpanToPdfSpans(projectName, file, sourceLines, span) {
+  const data = await loadSynctex(projectName)
+  if (!data) return null
+
+  const sourceFileIds = sourceFileIdsForSynctex(data)
+  const targetFileId = targetFileIdForSynctex(data, file)
+  const recordsByLine = new Map()
+  for (const r of data.records) {
+    if (r.line < span.startLine || r.line > span.endLine) continue
+    if (targetFileId != null && r.inputId !== targetFileId) continue
+    if (!sourceFileIds.has(r.inputId)) continue
+    if (!recordsByLine.has(r.line)) recordsByLine.set(r.line, [])
+    recordsByLine.get(r.line).push(r)
+  }
+
+  if (recordsByLine.size === 0) return null
+
+  const firstLineRecs = recordsByLine.values().next().value
+  const page = firstLineRecs[0].page
+  const pdfSpans = []
+  let left = Infinity
+  let right = -Infinity
+  let top = Infinity
+  let bottom = -Infinity
+
+  for (let line = span.startLine; line <= span.endLine; line++) {
+    const lineRecs = recordsByLine.get(line)
+    if (!lineRecs || lineRecs.length === 0) continue
+    const allInOrder = [...lineRecs].sort((a, b) => a.y !== b.y ? a.y - b.y : a.x - b.x)
+    const n = allInOrder.length
+    if (n === 0) continue
+
+    const srcLine = sourceLines[line - 1] || ''
+    const strippedLen = stripTex(srcLine).length || 1
+    let colStart = 0
+    let colEnd = srcLine.length
+    if (line === span.startLine) colStart = span.startCol
+    if (line === span.endLine) colEnd = span.endCol
+
+    const strippedPre = stripTex(srcLine.slice(0, colStart)).length
+    const strippedMatch = stripTex(srcLine.slice(colStart, colEnd)).length
+    if (strippedMatch === 0) continue
+
+    const startRecIdx = Math.max(0, Math.round((strippedPre / strippedLen) * (n - 1)))
+    const endRecIdx = Math.min(n - 1, Math.round(((strippedPre + strippedMatch) / strippedLen) * (n - 1)))
+    const selected = allInOrder.slice(startRecIdx, endRecIdx + 1)
+    const yValues = new Set(selected.map(r => Math.round(r.y)))
+    for (const yKey of yValues) {
+      const recsOnLine = selected.filter(r => Math.round(r.y) === yKey)
+      if (recsOnLine.length === 0) continue
+      const xStart = Math.min(...recsOnLine.map(r => r.x))
+      const xEnd = Math.max(...recsOnLine.map(r => r.x))
+      const y = recsOnLine[0].y
+      pdfSpans.push({ page, line, xStart, xEnd, y })
+      left = Math.min(left, xStart)
+      right = Math.max(right, xEnd)
+      top = Math.min(top, y - 3)
+      bottom = Math.max(bottom, y + 3)
+    }
+  }
+
+  if (pdfSpans.length === 0) return null
+  return { page, pdfSpans, bounds: { left, right, top, bottom } }
 }
 
 /**
