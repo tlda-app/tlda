@@ -1896,30 +1896,36 @@ async function handleHandoff(agentId, triggerText) {
   console.log(`[todd] handoff triggered for ${agentName} (${agentId})`)
 
   // Two handoff types. "direct"/"directly" in the statement → direct handoff:
-  // no briefer, one rotation. The current worker is promoted to manager (day)
+  // no briefer, one rotation. The current worker moves to advisor (day)
   // and a fresh worker enters at dawn. Otherwise → the briefing path (two
   // rotations) below. ("direct handoff" and "hand off directly" both qualify.)
   if (/\bdirect(?:ly)?\b/i.test(triggerText || '')) {
-    sendChat(OWNER_ID, `Direct handoff from **${agentName}** — promoting it to manager and bringing in a fresh worker.`)
-    sendChat(agentId, `⚠️ Skip is handing your work off directly. You're being promoted to manager; a fresh worker is coming in.`)
+    sendChat(OWNER_ID, `Direct handoff from **${agentName}** — moving it to advisor and bringing in a fresh worker.`)
+    sendChat(agentId, `⚠️ Skip is handing your work off directly. You're moving to advisor; a fresh worker is coming in.`)
     const agentCwd = await resolveAgentCwd(agentId)
-    // Promote the original to manager (:day), freeing the bare name, then spawn
+    // Move the original to advisor (:day), freeing the bare name, then spawn
     // the new worker directly as the bare base name (dawn). Its name maps it into
     // the lineage on register — no temp "-1" name, no rotation, no stray lineage.
     const lineageBase = stripPhase(agentName)
     const workerName = lineageBase
-    const managerName = `${lineageBase}:day`
+    const advisorName = `${lineageBase}:day`
     try {
       await sendRequest({ type: 'lineage-transition', agent: agentId, phase: 'day' })
     } catch (e) {
-      sendChat(OWNER_ID, `⚠️ Promoting ${agentName} → :day failed: ${e.message}`)
+      sendChat(OWNER_ID, `⚠️ Moving ${agentName} → :day advisor failed: ${e.message}`)
+      logDecision(agentId, 'handoff-direct-lineage-failed', 'handoff', { error: e.message }, triggerText)
+      return
     }
-    let spawnResult = await spawnAgent({ name: workerName, cwd: agentCwd })
-    if (spawnResult.error && spawnResult.error.includes('already exists')) {
-      spawnResult = await spawnAgent({ agent: workerName, respawn: true })
-    }
-    if (spawnResult.error) {
-      sendChat(OWNER_ID, `⚠️ Failed to spawn worker: ${spawnResult.error}`)
+    const spawnResult = await spawnAgent({
+      fresh: true,
+      name: workerName,
+      cwd: agentCwd,
+      routeAgent: agentId,
+    })
+    if (spawnResult?.error || spawnResult?.ok === false) {
+      const error = spawnResult.error || spawnResult.reason || 'unknown spawn failure'
+      sendChat(OWNER_ID, `⚠️ Failed to spawn worker: ${error}`)
+      logDecision(agentId, 'handoff-direct-spawn-failed', 'handoff', { workerAgent: workerName, routeAgent: agentId, error }, triggerText)
       return
     }
     setTimeout(async () => {
@@ -1927,22 +1933,22 @@ async function handleHandoff(agentId, triggerText) {
         await postJson('/api/tasks/delegate', {
           from: AGENT_ID,
           agent: workerName,
-          description: `Pick up work from ${managerName}`,
+          description: `Pick up work from ${advisorName}`,
           message: `**Read these skills first:** \`pickup\`
 
-You're taking over as the worker; **${managerName}** (the agent you're replacing) is now your manager. There's no separate briefing — orient from the thread and check in with your manager.
+You're taking over as the worker; **${advisorName}** (the agent you're replacing) is now your advisor. There's no separate briefing — orient from the thread and consult your advisor only if you need context.
 ${triggerText ? `\n**Skip's handoff message:**\n> ${triggerText}\n` : ''}
 **Steps:**
 1. Read the recent thread to understand where things stand.
 2. Check in with Skip — 3 sentences max: what you understand, what's open, what you'll start on.
 3. Wait for Skip's confirmation before diving in.`,
         })
-        sendChat(OWNER_ID, `Direct handoff complete. **${workerName}** is the new worker; **${managerName}** is now its manager.`)
+        sendChat(OWNER_ID, `Direct handoff complete. **${workerName}** is the new worker; **${advisorName}** is now advisor-only.`)
       } catch (e) {
         console.error(`[todd] direct handoff delegate failed: ${e.message}`)
       }
     }, 15_000)
-    logDecision(agentId, 'handoff-direct', 'handoff', { workerAgent: workerName }, triggerText)
+    logDecision(agentId, 'handoff-direct', 'handoff', { workerAgent: workerName, routeAgent: agentId }, triggerText)
     return
   }
 

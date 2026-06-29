@@ -28,3 +28,14 @@ test('Todd accepts agent-facing self-rotation commands', () => {
   assert.match(source, /requestedBy: from_id/)
   assert.match(source, /me\|myself\|us/)
 })
+
+test('Todd direct handoff spawns a routed fresh worker and keeps outgoing agent advisor-only', () => {
+  const directBody = source.match(/if \(\s*\/\\bdirect[\s\S]*?\n  }\n\n  sendChat\(OWNER_ID, `Starting handoff/)?.[0] || ''
+  assert.match(directBody, /fresh:\s*true/)
+  assert.match(directBody, /routeAgent:\s*agentId/)
+  assert.match(directBody, /handoff-direct-lineage-failed/)
+  assert.match(directBody, /advisor-only/)
+  assert.doesNotMatch(directBody, /promot(?:e|ing|ed) (?:it )?to manager/i)
+  assert.doesNotMatch(directBody, /You're being promoted to manager/)
+  assert.doesNotMatch(directBody, /now (?:your|its) manager/)
+})
