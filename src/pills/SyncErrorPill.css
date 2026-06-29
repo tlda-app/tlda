@@ -1,6 +1,4 @@
-/* SyncErrorPill — enlarged sibling of BuildErrorPill. A mirror/shadow sync
-   failure is more significant than a build error, so the badge is deliberately
-   larger and more present than the calm build pills — it should catch the eye. */
+/* SyncErrorPill — quiet sibling of BuildErrorPill. */
 
 .sync-error-container {
   position: relative;
@@ -11,14 +9,13 @@
 }
 
 .sync-error-badge {
-  font-size: 15px;          /* grown — larger than the 10px build badges */
-  font-weight: 700;
+  font-size: 10px;
+  font-weight: 600;
   font-family: -apple-system, BlinkMacSystemFont, sans-serif;
   color: #d9342b;
   cursor: pointer;
-  opacity: 0.9;             /* louder than the 0.6 build pills — it matters more */
+  opacity: 0.6;
   transition: opacity 0.3s;
-  letter-spacing: 0.2px;
 }
 
 .sync-error-badge:hover {
@@ -27,37 +24,37 @@
 
 .sync-error-badge-conflict {
   color: #b00020;
-  opacity: 1;
+  opacity: 0.6;
 }
 
 /* Popup list */
 .sync-error-list {
   position: absolute;
-  bottom: calc(100% + 8px);
+  bottom: calc(100% + 6px);
   left: 0;
   width: max-content;
-  max-width: min(620px, calc(100vw - 48px));
-  max-height: 340px;
+  max-width: min(600px, calc(100vw - 48px));
+  max-height: 320px;
   overflow-y: auto;
   background: #fafafa;
-  border: 1px solid rgba(217, 52, 43, 0.4);
+  border: 1px solid rgba(217, 52, 43, 0.3);
   border-radius: 6px;
-  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.14);
-  padding: 6px 0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  padding: 4px 0;
   pointer-events: all;
   z-index: 10;
 }
 
 .sync-error-head {
-  padding: 2px 12px 6px;
-  font-size: 12px;
-  font-weight: 700;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
   font-family: -apple-system, BlinkMacSystemFont, sans-serif;
   color: #d9342b;
 }
 
 .sync-error-item {
-  padding: 4px 12px;
+  padding: 4px 10px;
   font-size: 11px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   color: #444;
@@ -75,7 +72,7 @@
 }
 
 .sync-error-note {
-  padding: 6px 12px 2px;
+  padding: 6px 10px 2px;
   margin-top: 2px;
   border-top: 1px solid rgba(0, 0, 0, 0.08);
   font-size: 10px;
@@ -95,7 +92,7 @@ html[data-theme="dark"] .sync-error-badge-conflict {
 
 html[data-theme="dark"] .sync-error-list {
   background: #1e1e1e;
-  border-color: rgba(217, 52, 43, 0.5);
+  border-color: rgba(217, 52, 43, 0.4);
 }
 
 html[data-theme="dark"] .sync-error-head { color: #ff6b61; }

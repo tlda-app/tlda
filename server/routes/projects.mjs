@@ -17,7 +17,7 @@
  */
 
 import { Router } from 'express'
-import { existsSync, readFileSync, readdirSync, mkdirSync, statSync, writeFileSync } from 'fs'
+import { existsSync, readFileSync, readdirSync, mkdirSync, statSync, writeFileSync, rmSync } from 'fs'
 import { join, dirname } from 'path'
 import { requireRead, requireRw } from '../lib/auth.mjs'
 import {
@@ -645,6 +645,19 @@ router.post('/:name/build', requireRw, async (req, res) => {
 
   // Clean build: delete aux/biber cache files before rebuilding
   if (clean) {
+    const projDir = getProjectDir(req.params.name)
+    const mainFile = project.mainFile || 'main.tex'
+    const texBase = mainFile.split('/').pop().replace(/\.tex$/i, '')
+    try {
+      rmSync(join(projDir, '.biber-par-cache'), { recursive: true, force: true })
+      for (const ext of ['.bbl', '.blg', '.run.xml']) {
+        rmSync(join(projDir, 'build-cache', `${texBase}${ext}`), { force: true })
+      }
+      console.log(`[api] Clean build: cleared biber cache for ${req.params.name}`)
+    } catch (e) {
+      console.error(`[api] Clean build: failed to clear biber cache for ${req.params.name}: ${e.message}`)
+      return res.status(500).json({ error: 'Clean build failed to clear biber cache', detail: e.message })
+    }
     const srcDir = getSourceDir(req.params.name)
     if (existsSync(srcDir)) {
       const cleanExts = ['.aux', '.bbl', '.bcf', '.blg', '.run.xml', '.fls', '.fdb_latexmk', '.synctex.gz', '.log', '.out', '.toc', '.lof', '.lot']
