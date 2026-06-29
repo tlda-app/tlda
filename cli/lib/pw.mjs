@@ -138,18 +138,6 @@ function lockScript(repoRoot) {
   return join(repoRoot, 'bin', 'pw-lock.sh')
 }
 
-// Am I running inside the fence? The spawn wrapper
-// wrap_sandbox_cmd) sets TLDA_SANDBOX_POLICY for every fenced launch; it's absent
-// for unsandboxed agents. A fenced agent can DRIVE the shared browser but CANNOT
-// open it (in-process Chromium launch Mach-fails in the sandbox), so when the
-// browser is down it must NOT try to launch/recover — that would Mach-fail and,
-// worse, the recovery path would pkill the live shared browser out from under
-// everyone. Fenced agents drive; an out-of-fence session opens.
-function isFenced() {
-  const p = process.env.TLDA_SANDBOX_POLICY
-  return !!p && p !== 'unsandboxed'
-}
-
 // ---- hard disable (Skip's kill switch) ----
 //
 // A sentinel file that, while present, makes `tlda-dev pw` REFUSE to open or drive
@@ -424,16 +412,6 @@ function openArgs(repoRoot) {
 
 function ensureOpen(repoRoot) {
   if (sessionOpen()) return false
-  // A fenced agent must never reach the launch/recover path: it can't launch
-  // Chromium (Mach denial) and recoverStaleSharedBrowser would pkill the live
-  // shared browser. Fail clean and point at the real path (open out-of-fence).
-  if (isFenced()) {
-    throw new Error(
-      'shared browser is down and this session is sandboxed (fence) — a fenced agent ' +
-      'drives the shared browser but cannot open it. Have an out-of-fence session open it ' +
-      '(`tlda-dev pw acquire` unsandboxed, or ask app-testing/ops), then retry your verb.'
-    )
-  }
   // If the playwright-cli binary can't even be resolved, `open` will "fail" for a
   // reason that has nothing to do with a zombie profile lock — and the recover
   // path below would then pkill the LIVE shared browser out from under everyone

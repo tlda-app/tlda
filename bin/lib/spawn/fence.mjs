@@ -83,6 +83,10 @@ const FENCE_CODE_ALLOWED_DOMAINS = [
 ]
 const TLDA_PW_SOCKETS_ROOT = '/tmp/tlda-pw-sockets'
 const TLDA_FENCE_TMP_ROOT = '/tmp/tlda-fence-env'
+const CHROME_FOR_TESTING_MACH_SERVICES = [
+  'com.google.chrome.for.testing.MachPortRendezvousServer.*',
+  'org.chromium.crashpad.child_port_handshake.*',
+]
 
 function sq(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`
@@ -163,6 +167,12 @@ export function fenceSettings(policy, { api, dnsAlias } = {}) {
     command: {
       deny: String(policy.git) === 'write' ? [] : FENCE_COMMAND_DENY,
       useDefaults: true,
+    },
+    macos: {
+      mach: {
+        lookup: CHROME_FOR_TESTING_MACH_SERVICES,
+        register: CHROME_FOR_TESTING_MACH_SERVICES,
+      },
     },
   }
 }

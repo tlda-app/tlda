@@ -138,6 +138,12 @@ test('lease policy and fence wrapper stay outside harness adapters', () => {
   assert.ok(settings.filesystem.allowWrite.includes('/private/var/folders/*/*/T/xcrun_db*'))
   assert.ok(settings.filesystem.allowWrite.includes('/var/folders/*/*/T/xcrun_db*'))
   assert.equal(settings.network.allowLocalOutbound, true)
+  const chromeMachServices = [
+    'com.google.chrome.for.testing.MachPortRendezvousServer.*',
+    'org.chromium.crashpad.child_port_handshake.*',
+  ]
+  assert.deepEqual(settings.macos.mach.lookup, chromeMachServices)
+  assert.deepEqual(settings.macos.mach.register, chromeMachServices)
   const wrapped = wrapSandboxCmd('echo hi', leasePolicy, { api: 'https://tlda-fly.example.test' })
   assert.match(wrapped, /TLDA_SANDBOX_LEASE=/)
   assert.match(wrapped, /'?fence'? '?--settings'?/)
