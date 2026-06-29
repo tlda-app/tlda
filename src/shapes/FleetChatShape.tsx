@@ -3448,7 +3448,7 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   // Imperative scroll-to-bottom for the floating ⇣ button.
   const scrollToBottom = useCallback(() => {
-    log.debug('chat-scroll', 'scrollToBottom (user click ⇣)')
+    log.debug('chat-scroll', 'user clicked ⇣ jump-to-bottom → resume stick-to-bottom')
     // Clear the scroll-up flag BEFORE pinHard: pinHard's step() bails
     // immediately when userScrolledUp is set (and we're not hard-locked), so
     // calling it first made the click a no-op — that was the "click twice to
@@ -3496,9 +3496,13 @@ function FleetChatInner({ shape }: { shape: any }) {
   useLayoutEffect(() => {
     const prev = prevItemCountRef.current
     prevItemCountRef.current = allItems.length
-    if (allItems.length > prev && (!userScrolledUpRef.current || hardLockedRef.current)) {
-      log.debug('chat-scroll', 'bottom glue on item grow', { prev, now: allItems.length, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
-      glueToBottom()
+    if (allItems.length > prev) {
+      if (!userScrolledUpRef.current || hardLockedRef.current) {
+        log.debug('chat-scroll', 'new item → STICK TO BOTTOM (was at bottom / hard-locked)', { prev, now: allItems.length, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
+        glueToBottom()
+      } else {
+        log.debug('chat-scroll', 'new item → HELD position (user scrolled up) — YANK AVERTED', { prev, now: allItems.length, scrolledUp: userScrolledUpRef.current })
+      }
     }
   }, [allItems.length, glueToBottom])
 
@@ -3506,9 +3510,12 @@ function FleetChatInner({ shape }: { shape: any }) {
   useLayoutEffect(() => {
     const prev = prevTailMessageKeyRef.current
     prevTailMessageKeyRef.current = tailMessageKey
+    const tailChanged = !!tailMessageKey && tailMessageKey !== prev
     if (shouldGlueTailChange(prev, tailMessageKey, { scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })) {
-      log.debug('chat-scroll', 'bottom glue on tail change', { prev, tail: tailMessageKey, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
+      log.debug('chat-scroll', 'tail changed → STICK TO BOTTOM (was at bottom / hard-locked)', { prev, tail: tailMessageKey, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
       glueToBottom()
+    } else if (tailChanged && userScrolledUpRef.current) {
+      log.debug('chat-scroll', 'tail changed → HELD position (user scrolled up) — YANK AVERTED', { prev, tail: tailMessageKey })
     }
   }, [tailMessageKey, glueToBottom])
 
@@ -3552,10 +3559,10 @@ function FleetChatInner({ shape }: { shape: any }) {
       lastTop = top
       lastHeight = height
       if (action === 'follow-off') {
-        log.debug('chat-scroll', 'follow OFF (user scrolled up)', { top, gap })
+        log.debug('chat-scroll', 'user scrolled UP → HOLD position, stop following (new messages will NOT yank)', { top, gap })
         anchorRenderWindow()
       } else if (action === 'follow-on') {
-        log.debug('chat-scroll', 'follow ON (returned to bottom)', { gap })
+        log.debug('chat-scroll', 'user returned to BOTTOM → resume stick-to-bottom', { gap })
         resetRenderWindowToTail()
       }
       userScrolledUpRef.current = scrolledUp
@@ -3578,7 +3585,10 @@ function FleetChatInner({ shape }: { shape: any }) {
     const id = setInterval(() => {
       if (userScrolledUpRef.current && !hardLockedRef.current) return
       const gap = el.scrollHeight - (el.scrollTop + el.clientHeight)
-      if (shouldConvergeToBottom(gap, { scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })) pinHard()
+      if (shouldConvergeToBottom(gap, { scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })) {
+        log.debug('chat-scroll', 'watchdog → converge to bottom (was following, landed short)', { gap, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
+        pinHard()
+      }
     }, 200)
     return () => clearInterval(id)
   }, [chatLogEl, pinHard])
@@ -5390,15 +5400,22 @@ function FleetChatInner({ shape }: { shape: any }) {
               const grew = h > prev
               const follow = !userScrolledUpRef.current || hardLockedRef.current
               const el = chatLogEl
+              // LOUD chat-scroll logging — restored to fire UNCONDITIONALLY (not
+              // gated behind the probe flag, which is off by default and silenced
+              // these). One layout read per growth event (per-message, not
+              // per-frame) so client.log tells the whole scroll story for QA.
+              if (grew) {
+                const gapNow = el ? Math.round(el.scrollHeight - (el.scrollTop + el.clientHeight)) : null
+                log.debug('chat-scroll', follow
+                  ? 'content grew → STICK TO BOTTOM (following)'
+                  : 'content grew → HELD position (user scrolled up) — YANK AVERTED',
+                  { prev, h, gapNow, follow, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
+              }
               if (grew && follow) {
                 // Following + content grew: glue in the same frame the height
                 // changed. Calling scrollToIndex(LAST) here asks Virtuoso to
                 // resolve item positions while it is already measuring variable
                 // row heights, which makes the bottom solve bounce.
-                if (diag) {
-                  const gapBeforeGlue = el ? Math.round(el.scrollHeight - (el.scrollTop + el.clientHeight)) : null
-                  log.debug('chat-scroll', 'growth → bottom glue', { gapBeforeGlue })
-                }
                 glueToBottom()
                 if (diag) {
                   requestAnimationFrame(() => {
@@ -5408,14 +5425,10 @@ function FleetChatInner({ shape }: { shape: any }) {
                   })
                 }
               }
-              // Diagnostics only — gated behind the probe flag so the per-height-
-              // change forced-layout reads + POSTs don't run in normal use (kept
-              // for when scroll is being debugged again).
+              // Heavy perf instrumentation (forced-layout reads + POSTs) stays
+              // gated behind the probe flag so it doesn't run in normal use.
               if (diag) {
                 const gapNow = el ? Math.round(el.scrollHeight - (el.scrollTop + el.clientHeight)) : null
-                if (grew) {
-                  log.debug('chat-scroll', 'TRACE content grew', { prev, h, gapNow, follow, scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current })
-                }
                 const dt = performance.now() - t0
                 if (dt > 1 || grew) {
                   probe.record('chat', 'chat-virtuoso-height-change', dt, {
