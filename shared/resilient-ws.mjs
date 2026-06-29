@@ -111,6 +111,22 @@ export class ResilientWS {
     }
   }
 
+  /**
+   * Force-drop the current socket and reconnect (with backoff), WITHOUT marking
+   * the client permanently closed. Use this when the server asks us to reconnect
+   * (e.g. a server-restart eviction): unlike close(), the retry loop stays armed.
+   * Calling close() instead would set _closed and silently kill all reconnects —
+   * that was the latent bug behind the daemon's `scheduleReconnect is not defined`
+   * crash, where the eviction path both referenced a missing function AND, had it
+   * existed, would have followed a _rws.close() that wedges reconnects.
+   */
+  reconnect() {
+    if (this._closed) return
+    if (this._ws) { try { this._ws.close() } catch (e) { this._log(`[${this._label}] close error: ${e.message}`) } }
+    this._cleanup()
+    this._scheduleRetry()
+  }
+
   close() {
     this._closed = true
     if (this._retryTimer) { clearTimeout(this._retryTimer); this._retryTimer = null }

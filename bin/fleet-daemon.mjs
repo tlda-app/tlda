@@ -101,6 +101,7 @@ import {
 import { codexRolloutBelongsToAgent, codexRolloutHasOwnerEvidence, resolveTranscript } from './lib/resolve-transcript.mjs'
 import { resolveDaemonSpawnGrant } from '../server/lib/spawn-policy.mjs'
 import { probeSpawnCapabilities } from './lib/spawn/capabilities.mjs'
+import { acquireSingletonLock } from './lib/singleton-lock.mjs'
 const log = createLogger('daemon')
 // CONFIG_DIR holds config.json, cursors, PID and log files. Defaults to
 // ~/.config/tlda. TLDA_DAEMON_CONFIG_DIR lets the E2E test start a second
@@ -108,6 +109,11 @@ const log = createLogger('daemon')
 const CONFIG_DIR = process.env.TLDA_DAEMON_CONFIG_DIR || _SHARED_CONFIG_DIR
 const CURSORS_FILE = path.join(CONFIG_DIR, 'daemon-cursors.json')
 const PID_FILE = path.join(CONFIG_DIR, 'fleet-daemon.pid')
+// Machine-global singleton lock. Same fixed path no matter which install/worktree
+// launched us (it derives from CONFIG_DIR, not __dirname), so every daemon binary
+// on the machine contends for THIS one lock — that's what makes a second daemon
+// structurally impossible. See bin/lib/singleton-lock.mjs.
+const LOCK_FILE = path.join(CONFIG_DIR, 'fleet-daemon.lock')
 const SOURCE_BINDINGS_FILE = path.join(CONFIG_DIR, 'source-bindings.json')
 
 // Per-machine source bindings: { projectName -> absolute local source dir }.
@@ -3819,8 +3825,11 @@ function handleServerMessage(msg) {
     // Reconnect — the daemon should survive server restarts.
     log.warn(`evicted (${msg.reason || 'unknown'}) — reconnecting`)
     teardownWatchers()
-    try { _rws?.close() } catch {}
-    scheduleReconnect()
+    // reconnect() drops the current socket and re-arms backoff WITHOUT marking
+    // the client permanently closed. The old code called a never-defined
+    // scheduleReconnect() (→ uncaught ReferenceError crashing the evicted daemon)
+    // right after _rws.close(), which would have wedged reconnects anyway.
+    _rws?.reconnect()
     return
   }
   if (msg.type === 'watch-backing-files') {
@@ -3838,17 +3847,32 @@ function handleServerMessage(msg) {
 
 if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true })
 
-// Singleton check — only one daemon per machine at a time.
-try {
-  const existingPid = parseInt(fs.readFileSync(PID_FILE, 'utf8').trim(), 10)
-  if (existingPid && existingPid !== process.pid) {
-    try {
-      process.kill(existingPid, 0)  // signal 0 = existence check only
-      log.error(`already running (pid=${existingPid}) — exiting`)
-      process.exit(0)
-    } catch { /* stale PID file — previous daemon is gone, continue */ }
-  }
-} catch { /* no PID file — first start, continue */ }
+// INVARIANT: at most one fleet-daemon per machine, ever. This is the PRIMARY,
+// STRUCTURAL guard — a machine-global exclusive OS lock that a second daemon
+// (from ANY install/worktree) fails to acquire and so REFUSES to start BEFORE it
+// opens any WS to the server. The old check here was a racy PID-file existence
+// test; the server-side machine_id lease (still in place, see the 'daemon-evict'
+// handler) is now only defense-in-depth, because the loser never gets far enough
+// to be evicted. The kernel releases the lock automatically when the holder dies,
+// so a crashed daemon's lock is reclaimed with no stale-pid bookkeeping.
+const _ourInstallPath = fileURLToPath(import.meta.url)
+const _lock = acquireSingletonLock({ lockPath: LOCK_FILE, installPath: _ourInstallPath })
+if (!_lock.ok) {
+  const h = _lock.holder || {}
+  log.error(
+    `another fleet-daemon already holds the machine lock ${LOCK_FILE} ` +
+    `(holder pid=${h.pid ?? '?'} install=${h.installPath ?? '?'}); ` +
+    `refusing to start this one (${_ourInstallPath}). At most one daemon per machine.`,
+  )
+  process.stderr.write(
+    `fleet-daemon: refusing to start — machine lock held by pid=${h.pid ?? '?'} ` +
+    `(${h.installPath ?? 'unknown install'}). At most one daemon per machine.\n`,
+  )
+  process.exit(1)
+}
+// Keep the lock fd referenced for the process lifetime; closing/exiting releases it.
+const _singletonLockFd = _lock.fd
+void _singletonLockFd
 
 try { fs.writeFileSync(PID_FILE, String(process.pid)) } catch (e) { log.warn(`failed to write PID file: ${e.message}`) }
 
