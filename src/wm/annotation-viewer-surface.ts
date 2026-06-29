@@ -25,6 +25,7 @@ export interface AnnotationViewerSurfaceInput {
 	source?: string | null
 	viewport?: { w: number; h: number }
 	size?: { w: number; h: number }
+	centerOnAnchor?: boolean
 }
 
 export interface AnnotationViewerSurfacePayload {
@@ -60,6 +61,7 @@ export function createAnnotationViewerSurfaceRequest({
 	source = null,
 	viewport = { w: 1200, h: 800 },
 	size = { w: 650, h: 450 },
+	centerOnAnchor = false,
 }: AnnotationViewerSurfaceInput): ManagedSurfaceRequest<AnnotationViewerSurfacePayload> {
 	const slug = surfaceSlug(surfaceKey)
 	const resolvedOwner = requireManagedSurfaceOwner(owner)
@@ -71,10 +73,11 @@ export function createAnnotationViewerSurfaceRequest({
 		viewportHeight: viewport.h,
 	})
 	const centeredLeft = Math.max(placement.margin, Math.min(
-		Math.round((viewport.w - size.w) / 2),
+		Math.round(centerOnAnchor
+			? chipRect.left + chipRect.width / 2 - size.w / 2
+			: (viewport.w - size.w) / 2),
 		viewport.w - size.w - placement.margin,
 	))
-
 	return {
 		kind: 'annotation-viewer',
 		surfaceId: `${ANNOTATION_VIEWER_SURFACE_PREFIX}:${slug}`,

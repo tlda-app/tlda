@@ -2077,6 +2077,7 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   const docRef = useRef<typeof doc>(doc)
   useEffect(() => { docRef.current = doc }, [doc])
+  const shapeContainerRef = useRef<HTMLDivElement>(null)
 
   const openMarkdownColumn = useCallback((title: string, markdown: string, sourceEl: HTMLElement) => {
     const sourceRect = sourceEl.getBoundingClientRect()
@@ -2097,30 +2098,32 @@ function FleetChatInner({ shape }: { shape: any }) {
           y: Math.max(...occupiedBounds.map(b => b.y + b.h)) + 10000,
         }
       : chipAnchor
-	    void createTemporaryMarkdownColumn(mainEditor, anchor, title, markdown || title, {
-	      sourceChatShapeId: shape.id,
-	      wmManagedSurfaceProofFixture: isManagedSurfaceProofFixtureEnabled(),
-	    }).then((result) => {
+    void createTemporaryMarkdownColumn(mainEditor, anchor, title, markdown || title, {
+      sourceChatShapeId: shape.id,
+      wmManagedSurfaceProofFixture: isManagedSurfaceProofFixtureEnabled(),
+    }).then((result) => {
       if (!result?.bounds) return
       const chipRect = sourceEl.getBoundingClientRect()
+      const placementRect = shapeContainerRef.current?.getBoundingClientRect() ?? chipRect
       dispatchManagedAnnotationViewerRequest({
         surfaceKey: result.surface.surfaceId,
         bounds: { x: result.bounds.x, y: result.bounds.y, w: result.bounds.w, h: result.bounds.h },
         shapeIds: [result.surface.payload.shapeId],
         label: title || 'Markdown chip',
         chipRect: {
-          left: chipRect.left,
-          top: chipRect.top,
-          right: chipRect.right,
-          bottom: chipRect.bottom,
-          width: chipRect.width,
-          height: chipRect.height,
+          left: placementRect.left,
+          top: placementRect.top,
+          right: placementRect.right,
+          bottom: placementRect.bottom,
+          width: placementRect.width,
+          height: placementRect.height,
         },
         useFullBounds: true,
         pinned: true,
         owner: currentManagedSurfaceOwner(),
         source: result.surface.surfaceId,
         viewport: managedViewportSize(),
+        centerOnAnchor: true,
       })
     }).catch((err) => {
       console.warn('[fleet-chat] markdown annotation viewer create failed:', err?.message || err)
@@ -2725,7 +2728,6 @@ function FleetChatInner({ shape }: { shape: any }) {
     editor.centerOnPoint(canvasPos, { animation: { duration: 300 } })
   }, [doc, refResolver, editor, handleRefChipClick, openMarkdownChipFromTarget])
 
-  const shapeContainerRef = useRef<HTMLDivElement>(null)
   const inputAreaRef = useRef<HTMLDivElement>(null)
   const dragClearTimerRef = useRef<number | null>(null)
   const [dragLozenges, setDragLozenges] = useState<Array<'image' | 'file'> | null>(null)

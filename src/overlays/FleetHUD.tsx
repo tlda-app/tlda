@@ -37,6 +37,7 @@ declare global {
   interface Window {
     __tlda_wm_hud__?: FleetHudLayerState
     __tldraw_hud_editor__?: Editor
+    __tldaFleetHudSuppressCameraTrackingUntil?: number
   }
 }
 
@@ -751,6 +752,8 @@ export function FleetHUD({
       if (cam.x === lastCam.x && cam.z === lastCam.z) return
 
       const phoneSettlingUntil = Number(readinessWindow.__tldaPhoneCameraSettlingUntil || 0)
+      const suppressCameraTrackingUntil = Number(readinessWindow.__tldaFleetHudSuppressCameraTrackingUntil || 0)
+      const suppressCameraTracking = suppressCameraTrackingUntil > Date.now()
       if (!cameraRestored || (phoneSettlingUntil && Date.now() < phoneSettlingUntil)) {
         // Wait for camera restore / phone startup fit, then treat later
         // same-zoom camera changes as deliberate pan.
@@ -772,7 +775,7 @@ export function FleetHUD({
           })
           syncCanvasClipPanelViewportCamera(viewportId, readFleetHudOverlayLayer(hudWm).camera)
           const hudCameraAnchor = readHudCameraAnchor()
-          if (hudCameraAnchor && cam.z === lastCam.z) {
+          if (hudCameraAnchor && cam.z === lastCam.z && !suppressCameraTracking) {
             userPannedRef.current = true
             ignoreSavedAnchorRef.current = false
             saveAnchorOffsets(mainEditor, hudCameraAnchor.panOffset, hudCameraAnchor.cameraY)

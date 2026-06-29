@@ -47,6 +47,14 @@ interface ViewerData {
   bulletIdx?: number
 }
 
+function suppressFleetHudCameraTracking(durationMs = 700) {
+  const win = window as Window & { __tldaFleetHudSuppressCameraTrackingUntil?: number }
+  win.__tldaFleetHudSuppressCameraTrackingUntil = Math.max(
+    Number(win.__tldaFleetHudSuppressCameraTrackingUntil || 0),
+    Date.now() + durationMs,
+  )
+}
+
 export function AnnotationViewer({
   mainEditor,
   shapeUtils,
@@ -55,7 +63,10 @@ export function AnnotationViewer({
   const [data, setData] = useState<ViewerData | null>(null)
   const [state, setState] = useState<ViewerState>('hovering')
   const [size, setSize] = useState({ w: 650, h: 450 })
-  const prevCameraRef = useRef<{ x: number; y: number; z: number } | null>(null)
+  const prevViewRef = useRef<{
+    pageId: ReturnType<Editor['getCurrentPageId']>
+    camera: { x: number; y: number; z: number }
+  } | null>(null)
   const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const clickStartRef = useRef<{ x: number; y: number } | null>(null)
 
@@ -81,7 +92,7 @@ export function AnnotationViewer({
         bulletIdx: payload.bulletIdx,
       })
       setState(request.persistence.pinned ? 'pinned' : 'hovering')
-      prevCameraRef.current = null
+      prevViewRef.current = null
       if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current)
       requestAnimationFrame(() => sendCanvasPageShapesToBack(mainEditor))
     }
@@ -163,8 +174,12 @@ export function AnnotationViewer({
     e.stopPropagation()
     if (!data) return
     const cam = mainEditor.getCamera()
-    prevCameraRef.current = { x: cam.x, y: cam.y, z: cam.z }
+    prevViewRef.current = {
+      pageId: mainEditor.getCurrentPageId(),
+      camera: { x: cam.x, y: cam.y, z: cam.z },
+    }
     sendCanvasPageShapesToBack(mainEditor)
+    suppressFleetHudCameraTracking()
     if (data.useFullBounds) {
       const cx = data.bounds.x + data.bounds.w / 2
       const cy = data.bounds.y + data.bounds.h / 2
@@ -183,10 +198,14 @@ export function AnnotationViewer({
   // Go back
   const handleBack = useCallback((e: React.MouseEvent) => {
     e.stopPropagation()
-    if (!prevCameraRef.current) return
+    if (!prevViewRef.current) return
     sendCanvasPageShapesToBack(mainEditor)
-    mainEditor.setCamera(prevCameraRef.current, { animation: { duration: 300 } })
-    prevCameraRef.current = null
+    suppressFleetHudCameraTracking()
+    if (mainEditor.getCurrentPageId() !== prevViewRef.current.pageId) {
+      mainEditor.setCurrentPage(prevViewRef.current.pageId)
+    }
+    mainEditor.setCamera(prevViewRef.current.camera, { animation: { duration: 300 } })
+    prevViewRef.current = null
     window.setTimeout(() => sendCanvasPageShapesToBack(mainEditor), 350)
     setState('pinned')
   }, [mainEditor])
@@ -216,7 +235,7 @@ export function AnnotationViewer({
     }
     setData(null)
     setState('hovering')
-    prevCameraRef.current = null
+    prevViewRef.current = null
   }, [data, mainEditor])
 
   // Resize drag

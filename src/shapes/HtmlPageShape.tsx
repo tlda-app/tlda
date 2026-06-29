@@ -155,6 +155,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
   // Detect slides format from URL (single deck iframe or legacy per-slide iframe)
   const isSlide = shape.props.url?.includes('_tldaDeck=1') || shape.props.url?.includes('_tldaH=')
   const isInActiveViewport = useIsInViewport(shape.id)
+  const isTemporaryMarkdownColumn = shape.meta?.temporaryMarkdownColumn === true
 
   // Viewport gating: only render iframe when near viewport.
   // Slides are laid out horizontally, so check both X and Y axes.
@@ -175,7 +176,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
     }
     return true
   }, [editor, shape.id, shape.x, shape.y, shape.props.w, shape.props.h, isSlide])
-  const isNearViewport = isInActiveViewport || isNearMainViewport
+  const isNearViewport = isTemporaryMarkdownColumn || isInActiveViewport || isNearMainViewport
 
   // When entering local interaction mode, listen for clicks or wheel outside to exit
   useEffect(() => {
