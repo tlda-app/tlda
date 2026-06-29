@@ -2253,8 +2253,10 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Build per-item raw HTML array — each item is an independent renderable unit.
   // This replaces the old joined renderedHtml string and enables virtualization.
   // Items tagged _queued render below the thinking indicator; _interrupt items
-  // render between the indicator and the queue (they "jump the line").
-  type RawItem = { key: string; html: string; _queued?: boolean; _interrupt?: boolean; _divider?: boolean }
+  // render between the indicator and the queue (they "jump the line"). The
+  // status row is a real measured item so Virtuoso remains the only scroll
+  // authority when status/suggestions change height.
+  type RawItem = { key: string; html: string; _queued?: boolean; _interrupt?: boolean; _divider?: boolean; _status?: boolean }
   // Short hash of the version currently shown in the viewer (accounts for
   // scrubbing to a historical version). Build cards compare against this to
   // style themselves green (you're viewing this build) vs gray (stale).
@@ -2587,7 +2589,8 @@ function FleetChatInner({ shape }: { shape: any }) {
   }, [doc, labelRegions, theoremMap, imageSrcs, editor])
 
   // Mark the queue divider position inline — the last non-queued item before
-  // the first queued item gets _divider: true. All items stay in one list.
+  // the first queued item gets _divider: true. Status/suggestions stay in the
+  // measured list as the trailing row instead of a flex footer below Virtuoso.
   const allItems = useMemo(() => {
     const items = [...rawItems]
     let firstQueuedIdx = -1
@@ -2597,6 +2600,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     if (firstQueuedIdx > 0) {
       items[firstQueuedIdx - 1] = { ...items[firstQueuedIdx - 1], _divider: true }
     }
+    items.push({ key: '__status__', html: '', _status: true })
     return items
   }, [rawItems])
   const [firstItemIndex, setFirstItemIndex] = useState(1_000_000)
@@ -3349,6 +3353,14 @@ function FleetChatInner({ shape }: { shape: any }) {
   useEffect(() => {
     const el = chatLogEl
     if (!el) return
+    const handleWheelCapture = (e: WheelEvent) => {
+      const target = e.target instanceof Element ? e.target : null
+      if (!target || !el.contains(target)) return
+      e.preventDefault()
+      e.stopPropagation()
+      e.stopImmediatePropagation()
+      el.scrollTop += e.deltaY
+    }
     let lastTop = el.scrollTop
     const handle = () => {
       const top = el.scrollTop
@@ -3361,8 +3373,12 @@ function FleetChatInner({ shape }: { shape: any }) {
         setFleetEventsLiveTailPinned(shape.id, false)
       }
     }
+    document.addEventListener('wheel', handleWheelCapture, { capture: true, passive: false })
     el.addEventListener('scroll', handle, { passive: true })
-    return () => el.removeEventListener('scroll', handle)
+    return () => {
+      document.removeEventListener('wheel', handleWheelCapture, true)
+      el.removeEventListener('scroll', handle)
+    }
   }, [chatLogEl, shape.id])
 
   // Refilter → bottom. Changing the filter swaps the whole rendered list out
@@ -5117,9 +5133,8 @@ function FleetChatInner({ shape }: { shape: any }) {
           />
         )}
 
-        {/* Messages — Virtuoso owns the scroll container and the virtualized
-            item measurement. Status/suggestions render as a separate footer
-            below the scroller, never as a fake measured message. */}
+        {/* Messages — Virtuoso owns the scroll container and all virtualized
+            item measurement, including the status/suggestions trailing row. */}
         <div style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex', flexDirection: 'column' }}>
           <Virtuoso
             ref={virtuosoRef}
@@ -5167,7 +5182,22 @@ function FleetChatInner({ shape }: { shape: any }) {
             }}
             itemContent={(_index, item) => (
               <div className={'chat-row-wrap' + (item?._divider ? ' queue-divider' : '')}>
-                <ChatMessageRow html={item.html} postProcess={postProcess} itemKey={item.key} expandedRowsRef={expandedRowsRef} />
+                {item?._status ? (
+                  <ThinkingStatus
+                    thinkingAgents={thinkingAgents}
+                    compactingAgents={compactingAgents}
+                    contextPercent={contextPercent}
+                    hibernatingAgents={hibernatingAgents}
+                    statusTargetIds={statusTargetIds}
+                    ctx={ctx}
+                    agents={agents}
+                    itemCount={rawItems.length}
+                    escalationState={escalationState}
+                    suggestions={suggestionsPending}
+                  />
+                ) : (
+                  <ChatMessageRow html={item.html} postProcess={postProcess} itemKey={item.key} expandedRowsRef={expandedRowsRef} />
+                )}
               </div>
             )}
             computeItemKey={(_index, item) => item?.key ?? _index}
@@ -5196,20 +5226,6 @@ function FleetChatInner({ shape }: { shape: any }) {
                 : filter.length > 0 ? 'No messages' : 'No filter set'}
             </div>
           )}
-          <div style={{ flexShrink: 0 }}>
-            <ThinkingStatus
-              thinkingAgents={thinkingAgents}
-              compactingAgents={compactingAgents}
-              contextPercent={contextPercent}
-              hibernatingAgents={hibernatingAgents}
-              statusTargetIds={statusTargetIds}
-              ctx={ctx}
-              agents={agents}
-              itemCount={rawItems.length}
-              escalationState={escalationState}
-              suggestions={suggestionsPending}
-            />
-          </div>
         </div>
 
         {/* Terminal card overlay — shown on hover or when pinned; outside scroll container */}
