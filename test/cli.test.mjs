@@ -127,7 +127,7 @@ describe('agent capability CLI', () => {
     })
 
     assert.notEqual(exitCode, 0)
-    assert.ok(stderr.includes('Usage: tlda agent <list|spawn|spawn-local|move|check-ready|attach|hibernate|capability>'))
+    assert.ok(stderr.includes('Usage: tlda agent <list|spawn|spawn-local|move|set-spawn-machine|check-ready|attach|hibernate|capability>'))
   })
 
   it('refuses from an agent context before dry-run escalation', () => {
@@ -138,6 +138,18 @@ describe('agent capability CLI', () => {
     assert.notEqual(exitCode, 0)
     assert.ok(stderr.includes('user/operator-only'))
     assert.ok(stderr.includes('agent context'))
+  })
+
+  it('shows set-spawn-machine help and refuses agent-context dry runs', () => {
+    const help = tlda('agent', 'set-spawn-machine', '--help')
+    assert.equal(help.exitCode, 0)
+    assert.ok(help.stdout.includes('fleet_prefs.spawn_machine_id'))
+
+    const denied = tlda('agent', 'set-spawn-machine', 'todd', 'mini', '--dry-run', {
+      env: { ...scrubAgentEnv(process.env), FLEET_ID: 'fleet:test-agent', FLEET_NAME: 'test-agent' },
+    })
+    assert.notEqual(denied.exitCode, 0)
+    assert.ok(denied.stderr.includes('user/operator-only'))
   })
 })
 

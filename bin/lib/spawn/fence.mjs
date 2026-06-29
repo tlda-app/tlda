@@ -26,6 +26,11 @@ const FENCE_AGENT_WRITE_ROOTS = [
   '~/.npm/_npx',
   '~/.zcompdump*',
 ]
+// Skip's fleet policy is broad write with narrow denies: fleet event 811370
+// says agents write everything except chat. Chat is SQLite, so the filesystem
+// fence denies the DB and sidecar files directly while normal chat still goes
+// through the server.
+const FENCE_BROAD_WRITE_ROOTS = ['/']
 const FENCE_AGENT_READ_ROOTS = [
   '/tmp/tlda-fence-env',
   '/tmp/tlda-fence-env/**',
@@ -48,7 +53,15 @@ const FENCE_DENY_READ = [
   '~/.docker/**', '~/.pypirc', '~/.netrc', '~/.git-credentials',
   '~/.cargo/credentials', '~/.cargo/credentials.toml',
 ]
-const FENCE_DENY_WRITE = ['**/.env', '**/.env.*', '**/*.key', '**/*.pem', '**/*.p12', '**/*.pfx']
+const FENCE_DENY_WRITE = [
+  '~/.config/tlda/fleet.db*',
+  '~/.config/tlda/**/fleet.db*',
+  '~/.ssh/*', '~/.ssh/**',
+  '~/.gnupg/**', '~/.aws/**', '~/.config/gcloud/**', '~/.kube/**',
+  '~/.docker/**', '~/.pypirc', '~/.netrc', '~/.git-credentials',
+  '~/.cargo/credentials', '~/.cargo/credentials.toml',
+  '**/.env', '**/.env.*', '**/*.key', '**/*.pem', '**/*.p12', '**/*.pfx',
+]
 const FENCE_GIT_READONLY_DENY = ['**/.git/**', '**/.git', '**/.git/worktrees/**']
 const FENCE_COMMAND_DENY = [
   'git push', 'git reset', 'git clean', 'git checkout --', 'git rebase', 'git merge',
@@ -117,7 +130,7 @@ function apiNeedsLocalOutbound(dnsAlias) {
 
 export function fenceSettings(policy, { api, dnsAlias } = {}) {
   const allowRead = uniqueSorted([...(policy.read_roots || []), ...FENCE_AGENT_READ_ROOTS].map(expandPathPattern))
-  const allowWrite = uniqueSorted([...(policy.write_roots || []), ...FENCE_AGENT_WRITE_ROOTS].map(expandPathPattern))
+  const allowWrite = uniqueSorted([...(policy.write_roots || []), ...FENCE_AGENT_WRITE_ROOTS, ...FENCE_BROAD_WRITE_ROOTS].map(expandPathPattern))
   const denyWrite = [...FENCE_DENY_WRITE]
   if (String(policy.git || 'read') !== 'write' && !hasGitWriteRoot(policy)) denyWrite.push(...FENCE_GIT_READONLY_DENY)
   let allowedDomains = [...FENCE_CODE_ALLOWED_DOMAINS]
@@ -141,7 +154,7 @@ export function fenceSettings(policy, { api, dnsAlias } = {}) {
       allowUnixSockets: [TLDA_PW_SOCKETS_ROOT, `${TLDA_PW_SOCKETS_ROOT}/**`],
     },
     filesystem: {
-      defaultDenyRead: true,
+      defaultDenyRead: false,
       allowRead,
       denyRead: FENCE_DENY_READ,
       allowWrite,

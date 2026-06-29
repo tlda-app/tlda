@@ -35,6 +35,7 @@ import { scanMarkdownDeps } from '../shared/markdown-deps.mjs'
 import { cmdLogs } from './lib/unified-logs.mjs'
 import { formatSystemStatus } from './lib/system-status.mjs'
 import { SPAWN_POLICY_OPTIONS, resolveSpawnPolicyOption } from '../server/lib/spawn-policy.mjs'
+import { SPAWN_MACHINE_PREF_KEY } from '../server/lib/spawn-routing.mjs'
 
 // --- Argument parsing ---
 
@@ -118,7 +119,7 @@ const VALUE_FLAGS = new Set([
   'server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format',
   'session', 'target', 'timeout', 'id', 'book', 'worktree', 'port', 'browser',
   'model', 'cwd', 'effort', 'mode', 'kind', 'spawn-capability', 'capability',
-  'agent-id', 'policy', 'to', 'limit', 'from', 'poll', 'config',
+  'agent-id', 'policy', 'to', 'machine', 'limit', 'from', 'poll', 'config',
 ])
 
 function getFlag(name, defaultVal = null) {
@@ -1831,6 +1832,7 @@ Usage:
   tlda agent spawn --session <uuid> [--enroll] [name]
   tlda agent spawn-local <agent> [--capability read|write|tlda-write|full]
   tlda agent move <agent> --to <machine>
+  tlda agent set-spawn-machine <agent-or-user> <machine>
   tlda agent check-ready <agent> [--timeout seconds]
   tlda agent attach <agent>
   tlda agent hibernate <agent>
@@ -1850,6 +1852,7 @@ spawn routes through the fleet server and target daemon; spawn-local directly in
 the local primitive on this machine.
 Set TLDA_DISABLE_PERMISSION_CLASSIFIER=1 or agentSandbox.disablePermissionsClassifier=true only as a spawn-time break-glass to launch Claude with --dangerously-skip-permissions.
 move must be run on the agent's current machine; only the destination is remote.
+set-spawn-machine stores the caller's default fresh-spawn machine in fleet prefs.
 The capability command is operator-only: it refuses from fleet agent env/tmux context.
 check-ready verifies registry + local tmux/runtime + recent register/my_task evidence.
 list reads the server roster by default; --local shows only tmux sessions on this machine.`)
@@ -2137,6 +2140,46 @@ async function findSingleAgent(agentQuery) {
   return matches[0]
 }
 
+async function resolveFleetPrefUserId(query) {
+  if (!query) throw new Error('missing agent-or-user')
+  const state = await api('GET', '/api/state')
+  const agents = Array.isArray(state?.agents) ? state.agents : []
+  const matches = agents.filter(a => agentMatchesQuery(a, query))
+  if (matches.length > 1) throw new Error(`Multiple agents matched "${query}". Use the fleet id instead.`)
+  if (matches.length === 1) return matches[0].id
+  if (query.startsWith('fleet:')) return query
+  throw new Error(`No agent/user matched "${query}". Use an existing name or an explicit fleet:<id>.`)
+}
+
+async function cmdAgentSetSpawnMachine() {
+  const userQuery = getPositional(1)
+  const machineId = getPositional(2) || getFlag('machine')
+  if (hasFlag('help')) {
+    console.log(`Usage: tlda agent set-spawn-machine <agent-or-user> <machine>\n\nStores fleet_prefs.${SPAWN_MACHINE_PREF_KEY} for that fleet identity. Fresh spawns from that identity route to this daemon machine.`)
+    return
+  }
+  if (!userQuery || !machineId) {
+    console.error('Usage: tlda agent set-spawn-machine <agent-or-user> <machine>')
+    process.exit(1)
+  }
+  await assertNotAgentContext()
+  await ensureServer()
+  const userId = await resolveFleetPrefUserId(userQuery)
+  if (hasFlag('dry-run')) {
+    console.log(`[dry-run] would set ${SPAWN_MACHINE_PREF_KEY} for ${userId} to ${machineId}`)
+    return
+  }
+  await api('POST', `/api/fleet/prefs/${encodeURIComponent(SPAWN_MACHINE_PREF_KEY)}`, {
+    user: userId,
+    value: machineId,
+  })
+  const readback = await api('GET', `/api/fleet/prefs/${encodeURIComponent(SPAWN_MACHINE_PREF_KEY)}?user=${encodeURIComponent(userId)}`)
+  if (readback?.value !== machineId) {
+    throw new Error(`preference write did not stick for ${userId}: got ${JSON.stringify(readback?.value)}`)
+  }
+  console.log(`Set ${SPAWN_MACHINE_PREF_KEY} for ${userId} to ${machineId}.`)
+}
+
 async function cmdAgentMove() {
   const agentQuery = getPositional(1)
   const targetMachine = getFlag('to')
@@ -2260,7 +2303,7 @@ async function cmdAgentCapability() {
 
 async function cmdAgent() {
   const sub = getPositional(0)
-  if (!sub || (hasFlag('help') && sub !== 'capability' && sub !== 'move')) {
+  if (!sub || (hasFlag('help') && sub !== 'capability' && sub !== 'move' && sub !== 'set-spawn-machine')) {
     usageAgent()
     return
   }
@@ -2270,12 +2313,13 @@ async function cmdAgent() {
     case 'spawn':     await runRoutedSpawn(process.argv.slice(4)); break // after "tlda agent spawn"
     case 'spawn-local': await runFleetSpawn(process.argv.slice(4)); break // direct local primitive
     case 'move':      await cmdAgentMove(); break
+    case 'set-spawn-machine': await cmdAgentSetSpawnMachine(); break
     case 'check-ready': await cmdAgentCheckReady(); break
     case 'attach':    await attachToAgent(getPositional(1)); break
     case 'hibernate': await hibernateAgent(getPositional(1)); break
     case 'capability': await cmdAgentCapability(); break
     default:
-      console.error('Usage: tlda agent <list|spawn|spawn-local|move|check-ready|attach|hibernate|capability> [name]')
+      console.error('Usage: tlda agent <list|spawn|spawn-local|move|set-spawn-machine|check-ready|attach|hibernate|capability> [name]')
       process.exit(1)
   }
 }
