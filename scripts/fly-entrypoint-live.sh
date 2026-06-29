@@ -48,7 +48,7 @@ if [ ! -f "$CONFIG_JSON" ] || [ -n "$TLDA_FLEET_SERVER" ]; then
     "default": {
       "database": "__TLDA_CONFIG_ENDPOINT__",
       "store": "__TLDA_CONFIG_ENDPOINT__",
-      "licenseKey": "tldraw-2026-07-13/WyJUY25WakNzbyIsWyIqIl0sMTYsIjIwMjYtMDctMTMiXQ.XwCj6e5ySFSqQ+kN6QrpIDjaBAD1hJ5ojFNPTRALQPesxLZQqe6vRSOUCmsMQqDpSa/ydXNPjeLiz5PpwYjGFQ"
+      "licenseKey": "tldraw-david-hirshberg-2031-06-29/WyJpTW00VFpraCIsWyIqLmNvcm1vcmFudC1tYXRyaXgudHMubmV0Il0sOSwiMjAzMS0wNi0yOSJd.76nwqwOXRChl0rxuqrgwvwOqZ+Aztw8sC+qFOFixTWyVpH96riTXLDVOY83AFmW0GRcHodjkGpjUvdh/GouzzA"
     }
   }
 }
