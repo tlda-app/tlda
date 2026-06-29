@@ -407,12 +407,12 @@ export function ensureMyLaneDisjoint(editor: Editor, myId: string, myDevice: str
   return mine.length
 }
 
-export async function createFleetLayout(editor: Editor, agents: any[], variant: '2col' | '3col' | 'wide' | 'grid' | 'touch' | 'phone' | 'wide-write' | '2col-write' = '3col'): Promise<boolean> {
+export async function createFleetLayout(editor: Editor, agents: any[], variant: '2col' | '3col' | 'wide' | 'grid' | 'touch' | 'phone' = '3col'): Promise<boolean> {
   const result = await createFleetLayoutDetailed(editor, agents, variant)
   return result.created
 }
 
-export async function createFleetLayoutDetailed(editor: Editor, agents: any[], variant: '2col' | '3col' | 'wide' | 'grid' | 'touch' | 'phone' | 'wide-write' | '2col-write' = '3col'): Promise<FleetLayoutCreateResult> {
+export async function createFleetLayoutDetailed(editor: Editor, agents: any[], variant: '2col' | '3col' | 'wide' | 'grid' | 'touch' | 'phone' = '3col'): Promise<FleetLayoutCreateResult> {
   await whenDeviceReady()
   const myId = getHumanId()
   if (!myId) return makeFleetLayoutResult(editor, variant, 'identity-missing', myId, getDeviceId())
@@ -505,11 +505,6 @@ function getPhoneLayoutTarget(editor: Editor, pageShapes: any[], vp: ReturnType<
 }
 
 function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string, myId: string, myDevice: string): FleetLayoutCreateResult {
-  // Writing layouts swap the document/right-margin panel for the source editor
-  // sheet. They reuse a reading variant's geometry, so derive a base variant for
-  // all the geometry decisions and a `writing` flag for the panel-type swap.
-  const writing = variant === 'wide-write' || variant === '2col-write'
-  const baseVariant = variant === 'wide-write' ? 'wide' : variant === '2col-write' ? '2col' : variant
   const docBounds = getDocumentPageBounds(editor)
   if (!docBounds) {
     console.warn('[FleetLayout] Refusing to create default layout before document page bounds are ready')
@@ -521,8 +516,8 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
     .filter(s => (s.type as string) === 'fleet-chat')
     .map(s => (s as any).props?.filter as [string, string][][] | undefined)
   const vp = editor.getViewportScreenBounds()
-  const phoneTarget = baseVariant === 'phone' ? getPhoneLayoutTarget(editor, docBounds.pageShapes, vp) : null
-  if (baseVariant === 'phone' && !phoneTarget) {
+  const phoneTarget = variant === 'phone' ? getPhoneLayoutTarget(editor, docBounds.pageShapes, vp) : null
+  if (variant === 'phone' && !phoneTarget) {
     console.warn('[FleetLayout] Refusing to create phone layout before document page bounds are usable')
     return makeFleetLayoutResult(editor, variant, 'phone-target-missing', myId, myDevice)
   }
@@ -557,12 +552,7 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
       seenNames.add(name)
       return true
     })
-    // 2col reading has two chats (chat-0 + right-margin chat-1); 2col writing
-    // replaces chat-1 with the editor, so it only needs one chat filter.
-    const panelCount = baseVariant === 'grid' ? 4
-      : (baseVariant === 'wide' || baseVariant === 'phone') ? 1
-      : (baseVariant === '2col' && writing) ? 1
-      : 2
+    const panelCount = variant === 'grid' ? 4 : (variant === 'wide' || variant === 'phone') ? 1 : 2
     const recentChatAgents = recentChatTargetAgents(getEvents(), deduped, humanId, getHumanName(), panelCount)
     const recentIds = new Set(recentChatAgents.map((a: any) => a.id || a.friendly_name))
     const topAgents = [
@@ -600,8 +590,8 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
     // Everything is laid out relative to the document edges — never relative to
     // the HUD position, which is a separate offset (the anchor shape).
     const leftContentW =
-      baseVariant === 'wide' ? leftW + gap + Math.round(chatW3 * 2)
-      : baseVariant === '2col' ? leftW + gap + Math.round(chatW3 * 1.5)
+      variant === 'wide' ? leftW + gap + Math.round(chatW3 * 2)
+      : variant === '2col' ? leftW + gap + Math.round(chatW3 * 1.5)
       : leftW + gap + rightW
 
     const { minLeft, minTop, maxRight } = docBounds
@@ -628,7 +618,7 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
     // The fleet lanes are TLDraw/HUD shapes placed immediately to the left of
     // the document page; PhoneHandTool snaps the main camera between these
     // three document-left screen offsets.
-    if (baseVariant === 'phone') {
+    if (variant === 'phone') {
       const target = phoneTarget!
 
       const screenW = Math.round(vp.w)
@@ -669,7 +659,7 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
 
     // Touch layout: a single container (inbox strip + nested chat), one column.
     // The container auto-creates its own fleet-chat child, so no other shapes.
-    if (baseVariant === 'touch') {
+    if (variant === 'touch') {
       const touchW = chatW3
       editor.createShapes([{
         id: slotId(myId, myDevice, 'touch-inbox'),
@@ -704,49 +694,25 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
         props: { w: leftW, h: searchH },
       },
     ]
-    // Source-editor sheet slot — used by the writing layouts in place of the
-    // document/right-margin panel. userId/deviceId are stamped by the loop below.
-    const editorSlot = (slotX: number, slotY: number, w: number, h: number) => ({
-      id: slotId(myId, myDevice, 'source-editor'),
-      type: 'fleet-source-editor' as any,
-      x: slotX, y: slotY,
-      isLocked: false,
-      props: { w, h, file: '', line: 1, title: 'Source' },
-    })
-    if (baseVariant === 'wide') {
+    if (variant === 'wide') {
       const chatWide = Math.round(chatW3 * 2)
-      if (writing) {
-        // Writing: large chat over a half-height editor sheet.
-        const wideChatH = Math.round((totalH - gap) / 2)
-        const wideEditorH = totalH - gap - wideChatH
-        shapes.push({
+      shapes.push(
+        {
           id: slotId(myId, myDevice, 'chat-0'),
           type: 'fleet-chat' as any,
           x: anchorX + leftW + gap, y: anchorY,
           isLocked: false,
-          props: { w: chatWide, h: wideChatH, filter: filter1 },
-        })
-        shapes.push(editorSlot(anchorX + leftW + gap, anchorY + wideChatH + gap, chatWide, wideEditorH))
-      } else {
-        // Reading: large chat over the document viewer.
-        shapes.push(
-          {
-            id: slotId(myId, myDevice, 'chat-0'),
-            type: 'fleet-chat' as any,
-            x: anchorX + leftW + gap, y: anchorY,
-            isLocked: false,
-            props: { w: chatWide, h: rightChatH, filter: filter1 },
-          },
-          {
-            id: slotId(myId, myDevice, 'docview'),
-            type: 'fleet-docview' as any,
-            x: anchorX + leftW + gap, y: anchorY + rightChatH + gap,
-            isLocked: false,
-            props: { w: chatWide, h: docviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '' },
-          },
-        )
-      }
-    } else if (baseVariant === 'grid') {
+          props: { w: chatWide, h: rightChatH, filter: filter1 },
+        },
+        {
+          id: slotId(myId, myDevice, 'docview'),
+          type: 'fleet-docview' as any,
+          x: anchorX + leftW + gap, y: anchorY + rightChatH + gap,
+          isLocked: false,
+          props: { w: chatWide, h: docviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '' },
+        },
+      )
+    } else if (variant === 'grid') {
       const gridChatW = chatW3
       const gridChatH = Math.round((totalH - gap) / 2)
       const gridRightChatH = Math.round(gridChatH * 0.75)
@@ -788,7 +754,7 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
           props: { w: gridChatW, h: gridDocviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '' },
         },
       )
-    } else if (baseVariant === '3col') {
+    } else if (variant === '3col') {
       shapes.push(
         {
           id: slotId(myId, myDevice, 'chat-0'),
@@ -836,20 +802,14 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
           isLocked: false,
           props: { w: chatWide, h: docviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '' },
         },
-      )
-      if (writing) {
-        // Writing: the right margin holds the editor sheet instead of a 2nd chat.
-        shapes.push(editorSlot(rightChatX, anchorY, chatWide, totalH))
-      } else {
-        // Reading: the right margin holds a second chat column.
-        shapes.push({
+        {
           id: slotId(myId, myDevice, 'chat-1'),
           type: 'fleet-chat' as any,
           x: rightChatX, y: anchorY,
           isLocked: false,
           props: { w: chatWide, h: totalH, filter: filter2 },
-        })
-      }
+        },
+      )
     }
     for (const s of shapes) { s.props.userId = myId; s.props.deviceId = myDevice }
     editor.createShapes(shapes)
