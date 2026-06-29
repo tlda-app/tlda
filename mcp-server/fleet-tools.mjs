@@ -23,7 +23,7 @@ import { resolveFilePath, uploadFileToServer } from '../shared/chat-file-process
 import { scanMarkdownDeps } from '../shared/markdown-deps.mjs';
 import { extractMarkdownSection } from '../shared/markdown-section.mjs';
 import { normalizeChatDisplayMathDelimiters } from '../shared/chat-math-normalize.mjs';
-import { baseName, nameForPhase, phaseFromName } from '../shared/lineage-name.mjs';
+import { nameForPhase, phaseFromName } from '../shared/lineage-name.mjs';
 import { formatSpawnModelSummary, validateSpawnModelSelection } from '../shared/spawn-model-validation.mjs';
 import { listModels as listSpawnModels } from '../bin/lib/spawn/models.mjs';
 import { spawn as spawnLocalAgent } from '../bin/lib/spawn/index.mjs';
@@ -2463,10 +2463,6 @@ export async function handleFleetTool(name, args) {
             if (a.id === AGENT_ID) continue;
             const virtualLabels = a.status === 'awake' ? ['awake'] : a.status === 'hibernating' ? ['hibernating'] : [];
             const labels = [...(a.labels || []), ...virtualLabels, a.friendly_name, a.id].filter(Boolean);
-            // Lineage members also answer to the bare base name (for lineage search);
-            // the phase-qualified name is already covered by friendly_name above.
-            const _base = baseName(a.friendly_name);
-            if (_base && _base !== a.friendly_name) labels.push(_base);
             if (evalExpr(filterAst, labels)) {
               recipients.push(a.id);
             }

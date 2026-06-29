@@ -1418,7 +1418,7 @@ const managerEscalationCooldowns = new Map()
 // Matches imperative handoff commands anywhere in a message (not just at start).
 // Skip often says "I'm done with you let's hand this off" — the phrase appears mid-sentence.
 const HANDOFF_PATTERN = /(?:(?:I\s+(?:want|wanna|need)\s+to\s+)?hand\s+(?:this\s+)?off|do\s+(?:a\s+)?handoff|direct\s+handoff|let'?s\s+(?:(?:do\s+(?:a\s+)?)?handoff|hand\s+(?:this\s+)?off)|time\s+(?:for\s+(?:a\s+)?)?handoff)\b/i
-const ROTATE_PATTERN = /\brotate\s+(?:this\s+(?:guy|agent|one)|him|her|them|it|the\s+agent)?\s*out\b|\brotate\s+out\b/i
+const ROTATE_PATTERN = /\brotate\s+(?:this\s+(?:guy|agent|one)|him|her|them|it|me|myself|us|the\s+agent)?\s*out\b|\brotate\s+out\b/i
 const ROTATE_NAMED_PATTERN = /\brotate\s+(.+?)\s+out\b/i
 const handoffCooldowns = new Map()
 const HANDOFF_COOLDOWN_MS = 120_000
@@ -1789,7 +1789,14 @@ async function hasInvokedSkillSince(agentId, skillName, sinceTs) {
 
 // ---- Handoff automation ----
 
-async function handleRotate(agentId, triggerText) {
+function rotationBriefFrom(triggerText, fallback) {
+  const text = (triggerText || '').trim()
+  const explicit = text.match(/\bbrief\s*:\s*([\s\S]+)$/i)?.[1]?.trim()
+  if (explicit) return explicit
+  return text || fallback
+}
+
+async function handleRotate(agentId, triggerText, opts = {}) {
   const now = Date.now()
   const lastHandoff = handoffCooldowns.get(agentId) || 0
   if (now - lastHandoff < HANDOFF_COOLDOWN_MS) return
@@ -1799,10 +1806,18 @@ async function handleRotate(agentId, triggerText) {
   const agentName = await resolveAgentName(agentId)
   const agentCwd = await resolveAgentCwd(agentId)
   const successorName = stripPhase(agentName)
+  const requestedBy = opts.requestedBy || OWNER_ID
+  const requestedByOutgoing = requestedBy === agentId
+  const brief = rotationBriefFrom(
+    triggerText,
+    requestedByOutgoing
+      ? `${agentName} requested rotation but did not provide a separate brief.`
+      : `Skip requested rotation of ${agentName}.`,
+  )
   console.log(`[todd] rotate triggered for ${agentName} (${agentId}) → ${successorName}`)
 
-  sendChat(OWNER_ID, `Rotating **${agentName}** out and starting a fresh **${successorName}** with no briefing.`)
-  sendChat(agentId, `⚠️ Skip is rotating you out. Stop work; a fresh **${successorName}** is taking over this role.`)
+  sendChat(OWNER_ID, `Rotating **${agentName}** out to **${successorName}:day** and starting a fresh **${successorName}** with a brief.`)
+  sendChat(agentId, `⚠️ Rotation started. You are moving to **${successorName}:day** as the immediate advisor. The fresh **${successorName}** owns the role and the work now. Advise only when consulted; do not manage, direct, or continue the work yourself.`)
 
   try {
     await sendRequest({ type: 'lineage-transition', agent: agentId, phase: 'day' })
@@ -1825,20 +1840,47 @@ async function handleRotate(agentId, triggerText) {
     return
   }
 
-  sendChat(OWNER_ID, `Rotate complete. Fresh **${successorName}** is starting on ${agentCwd || 'the same role'}; no briefing was sent.`)
+  setTimeout(async () => {
+    try {
+      await postJson('/api/tasks/delegate', {
+        from: AGENT_ID,
+        agent: successorName,
+        description: `Take over ${successorName} after rotation`,
+        message: `You are the new **${successorName}**. You own this role and the work now.
+
+**Rotation brief from ${requestedByOutgoing ? agentName : 'Skip/Todd'}:**
+${brief}
+
+**Role contract:**
+- You hold the bare base name **${successorName}**; agents reporting to this role should now reach you.
+- **${successorName}:day** is the outgoing holder. Treat them as an immediate advisor for context only.
+- Do not let **${successorName}:day** manage, direct, or boss the work. Consult them when useful, then decide and act yourself.
+
+Start by reading the brief, checking the current workspace/task state, and sending a short status before doing substantive work.`,
+      })
+      sendChat(OWNER_ID, `Rotate complete. **${successorName}** has the bare role; **${successorName}:day** is advisor-only; the brief was delivered.`)
+    } catch (e) {
+      console.error(`[todd] rotate delegate failed: ${e.message}`)
+      sendChat(OWNER_ID, `⚠️ Rotate spawned **${successorName}**, but delegating the brief failed: ${e.message}`)
+    }
+  }, 15_000)
+
   logDecision(agentId, 'rotate-fresh-successor', 'rotate', {
     successorName,
     routeAgent: agentId,
     cwd: agentCwd,
+    requestedBy,
+    brief,
   }, triggerText)
 }
 
-async function resolveRotateTarget(text, chatTargetId) {
+async function resolveRotateTarget(text, chatTargetId, fallbackTargetId = null) {
   const m = text.match(ROTATE_NAMED_PATTERN)
   const raw = m?.[1]?.trim()
-  if (!raw) return chatTargetId && chatTargetId !== AGENT_ID ? chatTargetId : null
-  if (/^(?:(?:this\s+)?(?:guy|agent|one)|him|her|them|it|the\s+agent)$/i.test(raw)) {
-    return chatTargetId && chatTargetId !== AGENT_ID ? chatTargetId : null
+  const fallback = (chatTargetId && chatTargetId !== AGENT_ID) ? chatTargetId : fallbackTargetId
+  if (!raw) return fallback
+  if (/^(?:(?:this\s+)?(?:guy|agent|one)|him|her|them|it|me|myself|us|the\s+agent)$/i.test(raw)) {
+    return fallback
   }
   return await resolveAgentId(raw)
 }
@@ -2243,14 +2285,19 @@ async function handleMessage(msg) {
     // Per-share md versioning → ~/work/md-versions (fire-and-forget, never throws)
     commitMdShare(data)
 
-    // Messages sent directly to Todd from agents: handoff-ready signal or pattern arm registration
+    // Messages sent directly to Todd from agents: handoff-ready signal or
+    // pattern-arm registration. Only those protocol messages are consumed here;
+    // ordinary direct commands like "rotate me out" must continue into the
+    // command router below.
     if (to_id === AGENT_ID && from_id && from_id !== OWNER_ID) {
       if (/^handoff-ready:/i.test(text)) {
         handleHandoffReady(from_id, text).catch(e => console.error('[todd] handoff-ready error:', e.message))
         return
       }
-      handleRegistration(from_id, text).catch(e => console.error('[todd] registration error:', e.message))
-      return
+      if (/^watch:/im.test(text)) {
+        handleRegistration(from_id, text).catch(e => console.error('[todd] registration error:', e.message))
+        return
+      }
     }
 
     // Gated nudge release: Skip says "Todd [label]" or "say it"
@@ -2320,22 +2367,30 @@ async function handleMessage(msg) {
       return
     }
 
-    // Rotate — "todd rotate this guy out" or direct "todd rotate <name> out":
-    // retire stale role-holder and spawn a fresh same-role successor with no
-    // briefing/context packet.
-    const rotateAddressed = from_id === OWNER_ID && (
+    // Rotate — Skip can say "todd rotate this guy out" in an agent chat or
+    // "todd rotate <name> out" directly to Todd. Agents can execute their own
+    // handoff by messaging Todd directly: "rotate me out: brief: ...".
+    const rotateAddressedBySkip = from_id === OWNER_ID && (
       addressedBefore(ROTATE_PATTERN) ||
       addressedBefore(ROTATE_NAMED_PATTERN) ||
       (to_id === AGENT_ID && ROTATE_NAMED_PATTERN.test(text))
     )
+    const rotateAddressedByAgent = from_id && from_id !== OWNER_ID && from_id !== AGENT_ID && to_id === AGENT_ID && (
+      ROTATE_PATTERN.test(text) ||
+      ROTATE_NAMED_PATTERN.test(text) ||
+      addressedBefore(ROTATE_PATTERN) ||
+      addressedBefore(ROTATE_NAMED_PATTERN)
+    )
+    const rotateAddressed = rotateAddressedBySkip || rotateAddressedByAgent
     if (rotateAddressed) {
-      const rotateTarget = await resolveRotateTarget(text, to_id)
+      const fallbackTarget = rotateAddressedByAgent ? from_id : null
+      const rotateTarget = await resolveRotateTarget(text, to_id, fallbackTarget)
       if (!rotateTarget) {
         sendChat(OWNER_ID, `Rotate needs a target — say it in the agent's chat or name the agent: \`${VERB} rotate <name> out\`.`)
         return
       }
       scheduleAction('rotate', 'Rotating agent',
-        () => handleRotate(rotateTarget, text).catch(e => console.error('[todd] rotate error:', e.message)), rotateTarget)
+        () => handleRotate(rotateTarget, text, { requestedBy: from_id }).catch(e => console.error('[todd] rotate error:', e.message)), rotateTarget)
       return
     }
 
