@@ -1899,7 +1899,7 @@ async function resolveRotateTarget(text, chatTargetId, fallbackTargetId = null) 
   return await resolveAgentId(raw)
 }
 
-async function handleHandoff(agentId, triggerText) {
+async function handleHandoff(agentId, triggerText, opts = {}) {
   const now = Date.now()
   const lastHandoff = handoffCooldowns.get(agentId) || 0
   if (now - lastHandoff < HANDOFF_COOLDOWN_MS) return
@@ -1908,6 +1908,9 @@ async function handleHandoff(agentId, triggerText) {
   dequeueActions(agentId)
   const agentName = await resolveAgentName(agentId)
   const handoffSpawnSpec = await resolveAgentSpawnSpec(agentId)
+  const requestedBy = opts.requestedBy || OWNER_ID
+  const requestedByOutgoing = requestedBy === agentId
+  const requesterLabel = requestedByOutgoing ? agentName : 'Skip'
   console.log(`[todd] handoff triggered for ${agentName} (${agentId})`)
 
   // Two handoff types. "direct"/"directly" in the statement → direct handoff:
@@ -1915,8 +1918,10 @@ async function handleHandoff(agentId, triggerText) {
   // and a fresh worker enters at dawn. Otherwise → the briefing path (two
   // rotations) below. ("direct handoff" and "hand off directly" both qualify.)
   if (/\bdirect(?:ly)?\b/i.test(triggerText || '')) {
-    sendChat(OWNER_ID, `Direct handoff from **${agentName}** — moving it to advisor and bringing in a fresh worker.`)
-    sendChat(agentId, `⚠️ Skip is handing your work off directly. You're moving to advisor; a fresh worker is coming in.`)
+    sendChat(OWNER_ID, `Direct handoff from **${agentName}** requested by **${requesterLabel}** — moving it to advisor and bringing in a fresh worker.`)
+    sendChat(agentId, requestedByOutgoing
+      ? `⚠️ Direct handoff started. You're moving to advisor; a fresh worker is coming in.`
+      : `⚠️ Skip is handing your work off directly. You're moving to advisor; a fresh worker is coming in.`)
     const agentCwd = await resolveAgentCwd(agentId)
     // Move the original to advisor (:day), freeing the bare name, then spawn
     // the new worker directly as the bare base name (dawn). Its name maps it into
@@ -1953,7 +1958,7 @@ async function handleHandoff(agentId, triggerText) {
           message: `**Read these skills first:** \`pickup\`
 
 You're taking over as the worker; **${advisorName}** (the agent you're replacing) is now your advisor. There's no separate briefing — orient from the thread and consult your advisor only if you need context.
-${triggerText ? `\n**Skip's handoff message:**\n> ${triggerText}\n` : ''}
+${triggerText ? `\n**Handoff message from ${requesterLabel}:**\n> ${triggerText}\n` : ''}
 **Steps:**
 1. Read the recent thread to understand where things stand.
 2. Check in with Skip — 3 sentences max: what you understand, what's open, what you'll start on.
@@ -1964,12 +1969,14 @@ ${triggerText ? `\n**Skip's handoff message:**\n> ${triggerText}\n` : ''}
         console.error(`[todd] direct handoff delegate failed: ${e.message}`)
       }
     }, 15_000)
-    logDecision(agentId, 'handoff-direct', 'handoff', { workerAgent: workerName, routeAgent: agentId, spawnSpec: handoffSpawnSpec }, triggerText)
+    logDecision(agentId, 'handoff-direct', 'handoff', { workerAgent: workerName, routeAgent: agentId, requestedBy, spawnSpec: handoffSpawnSpec }, triggerText)
     return
   }
 
-  sendChat(OWNER_ID, `Starting handoff from **${agentName}**. Spawning briefing agent…`)
-  sendChat(agentId, `⚠️ Skip is handing off your work to a fresh agent. Stand by — a briefing agent will read your thread.`)
+  sendChat(OWNER_ID, `Starting handoff from **${agentName}** requested by **${requesterLabel}**. Spawning briefing agent…`)
+  sendChat(agentId, requestedByOutgoing
+    ? `⚠️ Handoff started. Stand by — a briefing agent will read your thread.`
+    : `⚠️ Skip is handing off your work to a fresh agent. Stand by — a briefing agent will read your thread.`)
 
   const agentCwd = await resolveAgentCwd(agentId)
   // The briefer is spawned directly as "<base>:day" — its name says which lineage
@@ -1994,7 +2001,7 @@ ${triggerText ? `\n**Skip's handoff message:**\n> ${triggerText}\n` : ''}
     } catch (e) {
       sendChat(OWNER_ID, `⚠️ Outgoing ${agentName} → :dusk failed: ${e.message}`)
     }
-    let spawnResult = await spawnAgent({ name: briefingName, cwd: agentCwd, ...handoffSpawnSpec })
+    let spawnResult = await spawnAgent({ name: briefingName, cwd: agentCwd, fresh: true, routeAgent: agentId, ...handoffSpawnSpec })
     if (spawnResult.error && spawnResult.error.includes('already exists')) {
       spawnResult = await spawnAgent({ agent: briefingName, respawn: true, ...handoffSpawnSpec })
     }
@@ -2003,7 +2010,7 @@ ${triggerText ? `\n**Skip's handoff message:**\n> ${triggerText}\n` : ''}
       return
     }
 
-    pendingHandoffs.set(briefingName, { originalAgent: agentName, originalAgentId: agentId, originalCwd: agentCwd, spawnSpec: handoffSpawnSpec, startedAt: now, triggerText })
+    pendingHandoffs.set(briefingName, { originalAgent: agentName, originalAgentId: agentId, originalCwd: agentCwd, spawnSpec: handoffSpawnSpec, requestedBy, startedAt: now, triggerText })
     savePendingHandoffs()
 
     setTimeout(async () => {
@@ -2016,7 +2023,7 @@ ${triggerText ? `\n**Skip's handoff message:**\n> ${triggerText}\n` : ''}
 
 You are a briefing agent. Your job is to read **${agentName}**'s thread, extract Skip's decisions, and clean up any mess the outgoing agent left behind.
 
-**Skip's handoff message — read this first, it scopes your work:**
+**Handoff message from ${requesterLabel} — read this first, it scopes your work:**
 > ${triggerText}
 
 This tells you *why* Skip triggered the handoff. Use it to focus your thread reading — prioritize what's relevant to Skip's stated concern. Don't do an exhaustive archaeological dig unless the handoff message is vague.
@@ -2039,7 +2046,7 @@ Do NOT continue the work. Do NOT form opinions about the argument. Extract decis
       }
     }, 15_000)
 
-    logDecision(agentId, 'handoff-initiated', 'handoff', { briefingAgent: briefingName, spawnSpec: handoffSpawnSpec }, triggerText)
+    logDecision(agentId, 'handoff-initiated', 'handoff', { briefingAgent: briefingName, routeAgent: agentId, requestedBy, spawnSpec: handoffSpawnSpec }, triggerText)
   } catch (e) {
     sendChat(OWNER_ID, `⚠️ Failed to spawn briefing agent: ${e.message}`)
   }
@@ -2093,7 +2100,13 @@ async function handleHandoffReady(fromId, text) {
   const pickupSpawnSpec = handoffInfo.spawnSpec || {}
   const spawnPickup = async () => {
     try {
-      let spawnResult = await spawnAgent({ name: pickupName, cwd: handoffInfo.originalCwd, ...pickupSpawnSpec })
+      let spawnResult = await spawnAgent({
+        name: pickupName,
+        cwd: handoffInfo.originalCwd,
+        fresh: true,
+        routeAgent: handoffInfo.originalAgentId,
+        ...pickupSpawnSpec,
+      })
       if (spawnResult.error && spawnResult.error.includes('already exists')) {
         spawnResult = await spawnAgent({ agent: pickupName, respawn: true, ...pickupSpawnSpec })
       }
@@ -2126,7 +2139,7 @@ The briefing is your primary source. Only go to the original thread if the brief
         }
       }, 15_000)
 
-      logDecision(handoffInfo.originalAgentId, 'handoff-pickup-spawned', 'handoff', { pickupAgent: pickupName, briefingPath, spawnSpec: pickupSpawnSpec }, '')
+      logDecision(handoffInfo.originalAgentId, 'handoff-pickup-spawned', 'handoff', { pickupAgent: pickupName, briefingPath, routeAgent: handoffInfo.originalAgentId, spawnSpec: pickupSpawnSpec }, '')
     } catch (e) {
       sendChat(OWNER_ID, `⚠️ Failed to spawn pickup agent: ${e.message}`)
     }
@@ -2144,9 +2157,10 @@ let reconnectDelay = 500 // fast first retry, backs off; reset on clean connect
 function connect() {
   ws = new WebSocket(WS_URL)
 
-  ws.on('open', () => {
+  ws.on('open', async () => {
     console.log(`[todd] connected to ${WS_URL}`)
     reconnectDelay = 500 // back fast next time too
+    await initializeFleetCursor()
     register()
     writeHeartbeat('ws-open')
     refreshSelfCheckPrefs().catch(e => console.error('[todd] self-check prefs refresh failed:', e.message))
@@ -2417,11 +2431,19 @@ async function handleMessage(msg) {
       return
     }
 
-    // Handoff — "todd" must appear before the handoff phrase
-    if (addressedBefore(HANDOFF_PATTERN) && from_id === OWNER_ID && to_id && to_id !== AGENT_ID) {
+    // Handoff — Skip can hand off any target by saying "todd hand this off"
+    // in that agent's chat. Agents can hand off only themselves by messaging
+    // Todd directly; they never get to hand off another agent.
+    const handoffAddressedBySkip = from_id === OWNER_ID && to_id && to_id !== AGENT_ID && addressedBefore(HANDOFF_PATTERN)
+    const handoffAddressedByAgent = from_id && from_id !== OWNER_ID && from_id !== AGENT_ID && to_id === AGENT_ID && (
+      HANDOFF_PATTERN.test(text) ||
+      addressedBefore(HANDOFF_PATTERN)
+    )
+    if (handoffAddressedBySkip || handoffAddressedByAgent) {
       const direct = /\bdirect(?:ly)?\b/i.test(text)
+      const handoffTarget = handoffAddressedByAgent ? from_id : to_id
       scheduleAction(direct ? 'handoff-direct' : 'handoff', direct ? 'Direct handoff' : 'Handing off',
-        () => handleHandoff(to_id, text).catch(e => console.error('[todd] handoff error:', e.message)), to_id)
+        () => handleHandoff(handoffTarget, text, { requestedBy: from_id }).catch(e => console.error('[todd] handoff error:', e.message)), handoffTarget)
       return
     }
 
