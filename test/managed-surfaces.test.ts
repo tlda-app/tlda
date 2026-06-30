@@ -89,6 +89,31 @@ test('annotation viewer surface request clamps chip-anchored placement and decla
 	assert.deepEqual(request.payload.shapeIds, ['shape:fleet-markdown-chip-temp-column'])
 })
 
+test('annotation viewer centerOnAnchor uses viewport-centered placement', () => {
+	const request = createAnnotationViewerSurfaceRequest({
+		surfaceKey: 'temporary-markdown:fleet-markdown-chip-temp-column',
+		bounds: { x: 10, y: 20, w: 800, h: 1200 },
+		shapeIds: ['shape:fleet-markdown-chip-temp-column'],
+		label: 'scratch.md',
+		chipRect,
+		useFullBounds: true,
+		pinned: true,
+		owner: { userId: 'fleet:skip', deviceId: 'ipad' },
+		viewport: { w: 1280, h: 720 },
+		size: { w: 650, h: 450 },
+		centerOnAnchor: true,
+	})
+
+	assert.deepEqual(request.placement, {
+		mode: 'viewport-centered',
+		anchor: chipRect,
+		left: 315,
+		top: 135,
+		margin: 8,
+	})
+	assert.deepEqual(request.extent, { x: 315, y: 135, w: 650, h: 450 })
+})
+
 test('page column page and handle requests carry managed ids owner policies and source', () => {
 	const owner = { userId: 'fleet:skip', deviceId: 'ipad' }
 	const page = createPageColumnSurfaceRequest({
