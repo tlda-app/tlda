@@ -162,6 +162,7 @@ export function scanCodexRolloutIdentity(fpath) {
   let ownId = null
   let agentName = null
   let meta = null
+  const registerCalls = new Set()
   try {
     for (const line of fs.readFileSync(fpath, 'utf8').split(/\n/)) {
       if (meta == null && line.includes('"session_meta"')) {
@@ -171,11 +172,25 @@ export function scanCodexRolloutIdentity(fpath) {
           meta = {}
         }
       }
-      if (ownId == null && line.includes('Registered fleet:')) {
-        const m = REGISTER_RE.exec(line)
+      let parsed = null
+      if (ownId == null && (line.includes('"function_call"') || line.includes('"function_call_output"'))) {
+        try {
+          parsed = JSON.parse(line)
+        } catch {
+          parsed = null
+        }
+      }
+      const payload = parsed?.payload || {}
+      if (payload.type === 'function_call' && payload.namespace === 'mcp__tlda' && payload.name === 'register' && payload.call_id) {
+        registerCalls.add(payload.call_id)
+      }
+      if (ownId == null && payload.type === 'function_call_output' && registerCalls.has(payload.call_id)) {
+        const output = typeof payload.output === 'string' ? payload.output
+          : (payload.output && typeof payload.output.content === 'string' ? payload.output.content : '')
+        const m = REGISTER_RE.exec(output)
         if (m) {
           ownId = m[1]
-          agentName = NAME_RE.exec(line)?.[1] || null
+          agentName = NAME_RE.exec(output)?.[1] || null
         }
       }
       if (ownId != null && meta != null) break
@@ -196,6 +211,28 @@ export function findCodexRollout(agent, { sessionsBase, sessionOverride } = {}) 
   const base = codexSessionsBase(sessionsBase)
   const fleetId = agent?.id
   if (!fleetId || !fs.existsSync(base)) return null
+
+  let ids = agent?.session_ids || agent?.sessions || []
+  if (typeof ids === 'string') {
+    try {
+      ids = JSON.parse(ids || '[]')
+    } catch {
+      ids = []
+    }
+  }
+  const knownIds = []
+  if (agent?.session_id) knownIds.push(agent.session_id)
+  for (const sid of (Array.isArray(ids) ? ids : [])) {
+    if (sid && !knownIds.includes(sid)) knownIds.push(sid)
+  }
+  for (const rolloutId of knownIds) {
+    const fpath = codexRolloutPath(rolloutId, { sessionsBase })
+    if (!fpath) continue
+    const { ownId, sessionMeta } = scanCodexRolloutIdentity(fpath)
+    if (ownId && ownId !== fleetId) continue
+    return { kind: 'codex', rolloutId, jsonlPath: fpath, cwd: sessionMeta.cwd, sessionMeta }
+  }
+
   const candidates = []
   for (const fpath of walkFiles(base, (_full, name) => name.startsWith('rollout-') && name.endsWith('.jsonl'))) {
     const { ownId, sessionMeta } = scanCodexRolloutIdentity(fpath)
