@@ -58,6 +58,8 @@ import { loadLookup, type LookupData } from '../synctexLookup'
 import { getSourceAnchor } from '../synctexAnchor'
 import { log } from '../logger'
 import { linkifyDocRefs, linkifyArrowRefs, linkifyAtRefs, linkifyLabelRefs, linkifyRefCommands, buildRefResolver, refToCanvas, type DocRef, type ResolvedRef, type LabelRegionInfo, type TheoremMapEntry } from '../docLinks'
+// @ts-ignore — vanilla JS module
+import { decideFollowTransition } from './chatScrollIntent.mjs'
 import { fetchProofInfo, fetchTheoremMap } from '../docInfoCache'
 import { PDF_HEIGHT } from '../layoutConstants'
 import { TerminalCard } from './TerminalCard'
@@ -3362,15 +3364,25 @@ function FleetChatInner({ shape }: { shape: any }) {
       el.scrollTop += e.deltaY
     }
     let lastTop = el.scrollTop
+    let lastHeight = el.scrollHeight
     const handle = () => {
       const top = el.scrollTop
+      const height = el.scrollHeight
       const gap = el.scrollHeight - top - el.clientHeight
-      const movingUp = top < lastTop - 2
+      const { scrolledUp, action } = decideFollowTransition(
+        { top, height, clientHeight: el.clientHeight, lastTop, lastHeight },
+        { scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current, programmatic: false },
+      )
       lastTop = top
-      if (movingUp && !userScrolledUpRef.current && !hardLockedRef.current) {
+      lastHeight = height
+      if (action === 'follow-off') {
         log.debug('chat-scroll', 'user scrolled UP → HOLD position, stop following (new messages will NOT yank)', { top, gap })
-        userScrolledUpRef.current = true
+        userScrolledUpRef.current = scrolledUp
         setFleetEventsLiveTailPinned(shape.id, false)
+      } else if (action === 'follow-on') {
+        log.debug('chat-scroll', 'user returned to bottom → resume stick-to-bottom', { top, gap })
+        userScrolledUpRef.current = scrolledUp
+        setFleetEventsLiveTailPinned(shape.id, true)
       }
     }
     document.addEventListener('wheel', handleWheelCapture, { capture: true, passive: false })
