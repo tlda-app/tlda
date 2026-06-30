@@ -1277,27 +1277,15 @@ function formatElapsedTime(startMs: number): string {
   return secs >= 60 ? `${Math.floor(secs / 60)}m ${secs % 60}s` : `${secs}s`
 }
 
-// --- Elapsed time display (DOM-only tick so Virtuoso rows don't re-render) ---
-function ElapsedTime({ startMs }: { startMs: number }) {
-  const ref = useRef<HTMLSpanElement>(null)
+// --- Elapsed time display (memoized leaf so only the ticker re-renders) ---
+const ElapsedTime = memo(function ElapsedTime({ startMs }: { startMs: number }) {
+  const [, setTick] = useState(0)
   useEffect(() => {
-    const update = () => {
-      const el = ref.current
-      if (!el) return
-      const next = `(${formatElapsedTime(startMs)})`
-      const textNode = el.firstChild
-      if (textNode && textNode.nodeType === Node.TEXT_NODE) {
-        if (textNode.nodeValue !== next) textNode.nodeValue = next
-      } else {
-        el.textContent = next
-      }
-    }
-    update()
-    const id = setInterval(update, 1000)
+    const id = setInterval(() => setTick(t => t + 1), 1000)
     return () => clearInterval(id)
   }, [startMs])
-  return <span ref={ref} className="thinking-elapsed">({formatElapsedTime(startMs)})</span>
-}
+  return <span className="thinking-elapsed">{`(${formatElapsedTime(startMs)})`}</span>
+})
 
 function ContextBadge({ percent }: { percent?: number }) {
   if (percent == null) return null
