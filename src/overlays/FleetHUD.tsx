@@ -8,6 +8,7 @@
  * Pointer events pass through to the main canvas for non-fleet areas.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { react } from 'tldraw'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
 import { CanvasClipPanel, syncCanvasClipPanelViewportCamera, type ClipBounds } from '../CanvasClipPanel'
 import { useFleetIdentity } from '../fleet-data-adapter'
@@ -746,9 +747,17 @@ export function FleetHUD({
     const onCameraRestored = () => { cameraRestored = true }
     window.addEventListener('camera-restored', onCameraRestored)
     const fallbackTimer = setTimeout(() => { cameraRestored = true }, 5000)
-    let frame = 0
-    const updateFromCamera = () => {
-      const cam = mainEditor.getCamera()
+    let frame: number | null = null
+    let pendingCam: { x: number; y: number; z: number } | null = null
+    let lastViewportCamera: { x: number; y: number; z: number } | null = null
+
+    const syncViewportIfChanged = (camera: { x: number; y: number; z: number }) => {
+      if (lastViewportCamera && lastViewportCamera.x === camera.x && lastViewportCamera.y === camera.y && lastViewportCamera.z === camera.z) return
+      lastViewportCamera = { x: camera.x, y: camera.y, z: camera.z }
+      syncCanvasClipPanelViewportCamera(viewportId, camera)
+    }
+
+    const updateFromCamera = (cam: { x: number; y: number; z: number }) => {
       if (cam.x === lastCam.x && cam.z === lastCam.z) return
 
       const phoneSettlingUntil = Number(readinessWindow.__tldaPhoneCameraSettlingUntil || 0)
@@ -773,7 +782,7 @@ export function FleetHUD({
             mainCamera: cam,
             baseCamera: hudBaseCameraRef.current,
           })
-          syncCanvasClipPanelViewportCamera(viewportId, readFleetHudOverlayLayer(hudWm).camera)
+          syncViewportIfChanged(readFleetHudOverlayLayer(hudWm).camera)
           const hudCameraAnchor = readHudCameraAnchor()
           if (hudCameraAnchor && cam.z === lastCam.z && !suppressCameraTracking) {
             userPannedRef.current = true
@@ -787,17 +796,28 @@ export function FleetHUD({
       }
       lastCam = { x: cam.x, y: cam.y, z: cam.z }
     }
-    const loop = () => {
-      updateFromCamera()
-      frame = requestAnimationFrame(loop)
+
+    const flushCamera = () => {
+      frame = null
+      const cam = pendingCam
+      pendingCam = null
+      if (cam) updateFromCamera(cam)
     }
-    frame = requestAnimationFrame(loop)
+
+    const stop = react('fleet-hud-main-camera', () => {
+      const cam = mainEditor.getCamera()
+      if (cam.x === lastCam.x && cam.z === lastCam.z) return
+      pendingCam = { x: cam.x, y: cam.y, z: cam.z }
+      if (frame === null) frame = requestAnimationFrame(flushCamera)
+    })
+
     return () => {
-      cancelAnimationFrame(frame)
+      stop()
+      if (frame !== null) cancelAnimationFrame(frame)
       window.removeEventListener('camera-restored', onCameraRestored)
       clearTimeout(fallbackTimer)
     }
-  }, [mainEditor, expanded, hudWm, readHudCameraAnchor])
+  }, [mainEditor, expanded, hudWm, readHudCameraAnchor, viewportId])
 
   // Adopt the saved anchor when it arrives in the store — even if the WM anchor
   // is already set to a provisional recomputed default. In large multi-machine
