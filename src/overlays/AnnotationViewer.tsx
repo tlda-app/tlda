@@ -10,7 +10,7 @@
  * Triggered by custom DOM events from FleetChatShape ref-chip hover.
  */
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
-import type { Editor, TLAnyShapeUtilConstructor, TLShapeId, TLStateNodeConstructor } from 'tldraw'
+import { stopEventPropagation, type Editor, type TLAnyShapeUtilConstructor, type TLShapeId, type TLStateNodeConstructor } from 'tldraw'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import type {
   AnnotationViewerSurfacePayload,
@@ -171,7 +171,7 @@ export function AnnotationViewer({
   }, [data])
 
   const handleGo = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation()
+    stopEventPropagation(e)
     if (!data) return
     const cam = mainEditor.getCamera()
     prevViewRef.current = {
@@ -197,7 +197,7 @@ export function AnnotationViewer({
 
   // Go back
   const handleBack = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation()
+    stopEventPropagation(e)
     if (!prevViewRef.current) return
     sendCanvasPageShapesToBack(mainEditor)
     suppressFleetHudCameraTracking()
@@ -212,7 +212,7 @@ export function AnnotationViewer({
 
   // Close
   const handleClose = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation()
+    stopEventPropagation(e)
     const temporaryMarkdownShapes = (data?.shapeIds || [])
       .filter((shapeId) => {
         const shape = mainEditor.getShape(shapeId as TLShapeId)
@@ -242,7 +242,7 @@ export function AnnotationViewer({
   const resizeRef = useRef<{ startX: number; startY: number; startW: number; startH: number } | null>(null)
   const handleResizeStart = useCallback((e: React.PointerEvent) => {
     e.preventDefault()
-    e.stopPropagation()
+    stopEventPropagation(e)
     resizeRef.current = { startX: e.clientX, startY: e.clientY, startW: size.w, startH: size.h }
     const onMove = (ev: PointerEvent) => {
       if (!resizeRef.current) return
@@ -284,6 +284,10 @@ export function AnnotationViewer({
   if (!data || !clipBounds) return null
 
   const isPinnedOrNav = state === 'pinned' || state === 'navigated'
+  const backArrowPath = (
+    <path d="M238 125 H12 M80 12 L12 125 L80 238" fill="none" stroke="currentColor"
+      strokeWidth="48" strokeLinecap="square" strokeLinejoin="miter" />
+  )
 
   // Position on top of the chip — viewer overlaps, chip roughly centered vertically.
   const vw = typeof window !== 'undefined' ? window.innerWidth : 1200
@@ -311,6 +315,32 @@ export function AnnotationViewer({
     top = (vh - totalH) / 2
   }
 
+  if (state === 'navigated') {
+    return (
+      <div
+        className="annotation-viewer-return-hud"
+        data-managed-surface-id={data.managedSurfaceId}
+        data-managed-layer-id={data.managedLayerId}
+        data-managed-hit-policy={data.managedHitPolicy}
+        style={{ top: Math.max(8, Math.round((vh - 72) / 2)) }}
+        onPointerDown={stopEventPropagation}
+        onPointerMove={stopEventPropagation}
+        onPointerUp={stopEventPropagation}
+        onWheel={stopEventPropagation}
+      >
+        <button
+          className="annotation-viewer-nav-btn annotation-viewer-nav-left"
+          onPointerDown={stopEventPropagation}
+          onClick={handleBack}
+        >
+          <svg width="250" height="250" viewBox="0 0 250 250">
+            {backArrowPath}
+          </svg>
+        </button>
+      </div>
+    )
+  }
+
   return (
     <div
       className={`annotation-viewer annotation-viewer--${state}`}
@@ -329,7 +359,10 @@ export function AnnotationViewer({
           }, 200)
         }
       }}
-      onPointerDown={(e) => e.stopPropagation()}
+      onPointerDown={stopEventPropagation}
+      onPointerMove={stopEventPropagation}
+      onPointerUp={stopEventPropagation}
+      onWheel={stopEventPropagation}
     >
       {/* Canvas — read-only, full page width, click anywhere to pin */}
       <div ref={canvasWrapRef} className="annotation-viewer-canvas" style={{ height: size.h }}>
@@ -352,6 +385,7 @@ export function AnnotationViewer({
         <>
           <button
             className="annotation-viewer-nav-btn annotation-viewer-nav-left"
+            onPointerDown={stopEventPropagation}
             onClick={state === 'pinned' ? handleGo : handleBack}
           >
             <svg width="250" height="250" viewBox="0 0 250 250">
@@ -359,14 +393,14 @@ export function AnnotationViewer({
                 <path d="M12 125 H238 M170 12 L238 125 L170 238" fill="none" stroke="currentColor"
                   strokeWidth="48" strokeLinecap="square" strokeLinejoin="miter" />
               ) : (
-                <path d="M238 125 H12 M80 12 L12 125 L80 238" fill="none" stroke="currentColor"
-                  strokeWidth="48" strokeLinecap="square" strokeLinejoin="miter" />
+                backArrowPath
               )}
             </svg>
           </button>
 
           <button
             className="annotation-viewer-nav-btn annotation-viewer-nav-right"
+            onPointerDown={stopEventPropagation}
             onClick={handleClose}
           >
             <svg width="250" height="250" viewBox="0 0 250 250">
