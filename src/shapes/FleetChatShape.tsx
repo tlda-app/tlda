@@ -1298,14 +1298,14 @@ function ContextBadge({ percent }: { percent?: number }) {
 }
 
 /**
- * ThinkingStatus — one status line per agent (thinking / compacting / waking /
+ * ThinkingStatus — one status line per agent (thinking / compacting /
  * hibernating). The slot reserves one row of height unconditionally so the line
  * fading in/out never shifts the stack (no bounce); content shows when a status
  * is active, blank otherwise. (A reserve-then-consume variant was tried but
  * fought the virtualized chat layout — flashed on every message — and was
  * reverted; see scratch/status-line-spec.md.)
  */
-function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibernatingAgents, statusTargetIds, ctx, agents: _agents, itemCount: _itemCount, escalationState, suggestions }: {
+function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibernatingAgents, statusTargetIds, ctx, agents, itemCount: _itemCount, escalationState, suggestions }: {
   thinkingAgents: Map<string, number>
   compactingAgents: Map<string, number>
   contextPercent: Map<string, number>
@@ -1320,16 +1320,9 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
   // Build status display from server-authoritative agent status field.
   // thinkingAgents/compactingAgents are pre-filtered to chat targets and provide elapsed timestamps.
   // hibernatingAgents is pre-filtered to chat targets.
-  // Tracks the hibernating set from the previous render + which agents are
-  // currently "waking" (left hibernating, alive, not yet thinking). This closes
-  // the hibernating→awake→thinking gap WITHOUT a timer: an agent wakes because
-  // it has work, so it always proceeds to thinking — we just hold a 'waking'
-  // status from the moment it leaves hibernating until thinking lands (or it
-  // hibernates again). No arbitrary duration; the real thinking event ends it.
-  const prevHibRef = useRef<Set<string>>(new Set())
-  const wakingRef = useRef<Set<string>>(new Set())
   const statusAgents = useMemo(() => {
-    const isRelevant = (id: string) => !statusTargetIds || statusTargetIds.has(id)
+    const currentAgentIds = new Set(agents.map((agent: any) => agent.id).filter(Boolean))
+    const isRelevant = (id: string) => currentAgentIds.has(id) && (!statusTargetIds || statusTargetIds.has(id))
     const merged = new Map<string, { status: 'thinking' | 'compacting' | 'hibernating' | 'waking', startTs: number }>()
     for (const [id, ts] of thinkingAgents) {
       if (!isRelevant(id)) continue
@@ -1343,21 +1336,8 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
       if (!isRelevant(id)) continue
       if (!merged.has(id)) merged.set(id, { status: 'hibernating', startTs: 0 })
     }
-    // An agent present last render's hibernating set but gone from it now (and
-    // not already thinking/compacting) just woke → mark it waking.
-    for (const id of prevHibRef.current) {
-      if (isRelevant(id) && !hibernatingAgents.has(id) && !merged.has(id)) wakingRef.current.add(id)
-    }
-    // Clear waking once the agent reaches a real status (thinking/compacting) or
-    // goes back to hibernating, and drop it if this chat filter no longer owns
-    // the agent; otherwise keep showing it through the gap.
-    for (const id of [...wakingRef.current]) {
-      if (!isRelevant(id) || merged.has(id)) wakingRef.current.delete(id)
-      else merged.set(id, { status: 'waking', startTs: 0 })
-    }
-    prevHibRef.current = new Set(hibernatingAgents)
     return merged
-  }, [thinkingAgents, compactingAgents, hibernatingAgents, statusTargetIds])
+  }, [thinkingAgents, compactingAgents, hibernatingAgents, statusTargetIds, agents])
 
   // Suggestions live in the per-agent status row, keyed by the agent that
   // posted them. An agent with no thinking/compacting status (e.g. a bot like
