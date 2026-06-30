@@ -1467,6 +1467,7 @@ app.get('/api/auth/me', (req, res) => {
 // the browser via src/logger.ts — every log.{debug,info,warn,error} call
 // gets forwarded here automatically. See CLAUDE.md "Client logging".
 const CLIENT_LOG_FILE = join(homedir(), '.config', 'tlda', 'client.log')
+const CLIENT_PROFILE_FILE = join(homedir(), '.config', 'tlda', 'client-profile.jsonl')
 function appendClientLogEntry(entry) {
   const obj = {
     ts: entry.ts || new Date().toISOString(),
@@ -1500,6 +1501,30 @@ app.post('/api/log', (req, res) => {
   if (lines.length) {
     fs.appendFile(CLIENT_LOG_FILE, lines.join('\n') + '\n', (err) => {
       if (err) console.log(`[client-log] append failed: ${err.message}`)
+    })
+  }
+  res.json({ ok: true, n: lines.length })
+})
+
+app.post('/api/client-profile', (req, res) => {
+  const body = req.body
+  const entries = Array.isArray(body) ? body : [body]
+  const lines = []
+  for (const e of entries) {
+    if (!e || typeof e !== 'object') continue
+    lines.push(JSON.stringify({
+      ts: e.ts || new Date().toISOString(),
+      kind: e.kind || 'client-profile',
+      ...(e.doc ? { doc: e.doc } : {}),
+      ...(e.href ? { href: e.href } : {}),
+      ...(e.summary !== undefined ? { summary: e.summary } : {}),
+      ...(e.readableStacks !== undefined ? { readableStacks: e.readableStacks } : {}),
+      ...(e.trace !== undefined ? { trace: e.trace } : {}),
+    }))
+  }
+  if (lines.length) {
+    fs.appendFile(CLIENT_PROFILE_FILE, lines.join('\n') + '\n', (err) => {
+      if (err) console.log(`[client-profile] append failed: ${err.message}`)
     })
   }
   res.json({ ok: true, n: lines.length })
@@ -2589,6 +2614,7 @@ app.get('/{*path}', (req, res) => {
   const indexPath = join(distDir, 'index.html')
   if (existsSync(indexPath)) {
     res.set('Cache-Control', 'no-cache')
+    res.set('Document-Policy', 'js-profiling')
     // Inject the resolved active config so the SPA reads database/store/licenseKey
     // synchronously at startup — no build-time baking, no async race, no guessing.
     // resolveConfig() is validated at boot (server won't start on a bad config),
