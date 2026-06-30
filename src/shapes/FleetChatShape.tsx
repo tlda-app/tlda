@@ -1272,16 +1272,31 @@ export class FleetChatShapeUtil extends BaseBoxShapeUtil<any> {
   }
 }
 
-// --- Elapsed time display (isolated to avoid re-rendering entire chat) ---
-function ElapsedTime({ startMs }: { startMs: number }) {
-  const [, setTick] = useState(0)
-  useEffect(() => {
-    const id = setInterval(() => setTick(t => t + 1), 1000)
-    return () => clearInterval(id)
-  }, [])
+function formatElapsedTime(startMs: number): string {
   const secs = Math.floor((Date.now() - startMs) / 1000)
-  const str = secs >= 60 ? `${Math.floor(secs / 60)}m ${secs % 60}s` : `${secs}s`
-  return <span className="thinking-elapsed">({str})</span>
+  return secs >= 60 ? `${Math.floor(secs / 60)}m ${secs % 60}s` : `${secs}s`
+}
+
+// --- Elapsed time display (DOM-only tick so Virtuoso rows don't re-render) ---
+function ElapsedTime({ startMs }: { startMs: number }) {
+  const ref = useRef<HTMLSpanElement>(null)
+  useEffect(() => {
+    const update = () => {
+      const el = ref.current
+      if (!el) return
+      const next = `(${formatElapsedTime(startMs)})`
+      const textNode = el.firstChild
+      if (textNode && textNode.nodeType === Node.TEXT_NODE) {
+        if (textNode.nodeValue !== next) textNode.nodeValue = next
+      } else {
+        el.textContent = next
+      }
+    }
+    update()
+    const id = setInterval(update, 1000)
+    return () => clearInterval(id)
+  }, [startMs])
+  return <span ref={ref} className="thinking-elapsed">({formatElapsedTime(startMs)})</span>
 }
 
 function ContextBadge({ percent }: { percent?: number }) {
