@@ -89,6 +89,9 @@ export default defineConfig({
     alias: tldrawForkAliases,
     dedupe: ['react', 'react-dom'],
   },
+  build: {
+    sourcemap: true,
+  },
   server: {
     host: true,
     port: 5179,

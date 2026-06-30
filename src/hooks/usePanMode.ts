@@ -212,8 +212,8 @@ export function usePanMode(editorRef: RefObject<Editor | null>) {
       if (dx === 0 && dy === 0) return
 
       // Check if cursor is over a chat scroll container
-      const el = document.elementFromPoint(e.clientX, e.clientY)
-      const chatLog = el?.closest('.fleet-chat-log') as HTMLElement | null
+      const target = e.target instanceof Element ? e.target : null
+      const chatLog = target?.closest('.fleet-chat-log') as HTMLElement | null
       if (chatLog) {
         chatLog.scrollTop += dy * CHAT_SCROLL_SENSITIVITY
         return
