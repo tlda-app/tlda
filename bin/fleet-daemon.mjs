@@ -2712,7 +2712,7 @@ const _gooseActivityLastSeen = new Map()
 // process tree, scan the pane PIDs plus their descendants and return the
 // session from the most-recently-updated sessions file. Returns
 // { sessionId, cwd } or null.
-function liveSessionForPids(rootPids, childrenByPpid) {
+function paneSubtree(rootPids, childrenByPpid) {
   const subtree = new Set()
   const stack = [...rootPids]
   while (stack.length) {
@@ -2721,6 +2721,11 @@ function liveSessionForPids(rootPids, childrenByPpid) {
     subtree.add(pid)
     for (const c of (childrenByPpid.get(pid) || [])) stack.push(c)
   }
+  return subtree
+}
+
+function liveSessionForPids(rootPids, childrenByPpid) {
+  const subtree = paneSubtree(rootPids, childrenByPpid)
   const sessionsDir = path.join(os.homedir(), '.claude', 'sessions')
   let best = null
   for (const pid of subtree) {
@@ -2734,14 +2739,58 @@ function liveSessionForPids(rootPids, childrenByPpid) {
   return best ? { sessionId: best.sessionId, cwd: best.cwd } : null
 }
 
+function codexRolloutIdFromPath(jsonlPath) {
+  try {
+    const first = fs.readFileSync(jsonlPath, 'utf8').split(/\r?\n/, 1)[0]
+    if (first) {
+      const parsed = JSON.parse(first)
+      const id = parsed?.payload?.id
+      if (typeof id === 'string' && id) return id
+    }
+  } catch {
+    // Fall back to the rollout filename below when the first line is racing.
+  }
+  const m = path.basename(jsonlPath).match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i)
+  return m?.[1] || null
+}
+
+function codexRolloutCwd(jsonlPath) {
+  try {
+    const first = fs.readFileSync(jsonlPath, 'utf8').split(/\r?\n/, 1)[0]
+    if (!first) return null
+    const parsed = JSON.parse(first)
+    const cwd = parsed?.payload?.cwd
+    return typeof cwd === 'string' && cwd ? cwd : null
+  } catch {
+    return null
+  }
+}
+
+async function liveCodexSessionForPids(rootPids, childrenByPpid, runtimePids, agent) {
+  const subtree = paneSubtree(rootPids, childrenByPpid)
+  const launchTs = Date.parse(agent.registered_at || agent.last_seen || '') || 0
+  for (const pid of subtree) {
+    if (!runtimePids?.has(pid)) continue
+    const jsonlPath = await resolveTranscript({ pid, kind: 'codex', agent, launchTs })
+    if (!jsonlPath) continue
+    if (codexRolloutHasOwnerEvidence(jsonlPath) && !codexRolloutBelongsToAgent(jsonlPath, agent)) continue
+    const sessionId = codexRolloutIdFromPath(jsonlPath)
+    if (!sessionId) continue
+    return { sessionId, cwd: codexRolloutCwd(jsonlPath) }
+  }
+  return null
+}
+
 // If a live agent's true session isn't its registered primary session_id, heal
 // the daemon's local agent record (so syncSessionWatchers attaches the real
 // JSONL this sweep) and tell the server to persist it. This is the automated
 // form of the manual re-map that fixes "alive agent, dead activity cards".
 // Returns true if a heal was applied (caller re-runs syncSessionWatchers).
-function reconcileAgentSession(agent, panePids, childrenByPpid) {
+async function reconcileAgentSession(agent, panePids, childrenByPpid, kind = 'claude', runtimePids = null) {
   if (!agent || !agent.id || !panePids?.length) return false
-  const live = liveSessionForPids(panePids, childrenByPpid)
+  const live = kind === 'codex'
+    ? await liveCodexSessionForPids(panePids, childrenByPpid, runtimePids, agent)
+    : liveSessionForPids(panePids, childrenByPpid)
   if (!live) return false
   if (agent.session_id === live.sessionId) {
     // Already correct — record it so we don't keep checking the message guard.
@@ -3011,7 +3060,7 @@ async function checkAgentLiveness() {
     // from what's registered (long-lived/resumed agents roll session UUIDs;
     // the MCP only stamps session_id once at startup). Without this, the daemon
     // never finds the live JSONL → activity cards die though the agent is alive.
-    if (reconcileAgentSession(agent, panes, childrenByPpid)) healedAny = true
+    if (await reconcileAgentSession(agent, panes, childrenByPpid, matchedKind, runtimePidsByKind.get(matchedKind))) healedAny = true
   }
 
   // A heal changed an agent's session_id/session_ids locally; re-point the JSONL

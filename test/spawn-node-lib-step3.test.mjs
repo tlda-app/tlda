@@ -27,6 +27,28 @@ function codexRegisterRows(fleetId, name, callId) {
   ]
 }
 
+function codexEventRegisterRow(fleetId, name, callId) {
+  return {
+    type: 'event_msg',
+    payload: {
+      type: 'mcp_tool_call_end',
+      call_id: callId,
+      invocation: {
+        server: 'tlda',
+        tool: 'register',
+        arguments: { name },
+      },
+      result: {
+        Ok: {
+          content: [
+            { type: 'text', text: `Registered ${fleetId}. 1 agent(s) registered.\nIdentity: $FLEET_ID\nYour name: "${name}"` },
+          ],
+        },
+      },
+    },
+  }
+}
+
 function freshSpawnDeps({ ensureServer }) {
   const calls = []
   return {
@@ -120,6 +142,45 @@ test('Codex rollout scan uses first own registration and newest matching rollout
   const found = findCodexRollout({ id: 'fleet:codexaaa' }, { sessionsBase })
   assert.equal(found.rolloutId, newId)
   assert.equal(found.cwd, '/tmp/new')
+})
+
+test('Codex rollout scan recognizes event_msg register tool results', () => {
+  const root = tmpdir()
+  const sessionsBase = path.join(root, 'codex-sessions')
+  const sid = '55555555-5555-4555-8555-555555555555'
+  const fpath = path.join(sessionsBase, '2026', '06', '29', `rollout-2026-06-29T00-00-00-${sid}.jsonl`)
+  writeJsonl(fpath, [
+    { type: 'session_meta', payload: { id: sid, cwd: '/tmp/event-register' } },
+    codexEventRegisterRow('fleet:event1', 'event-agent', 'call-event'),
+  ])
+  const found = findCodexRollout({ id: 'fleet:event1' }, { sessionsBase })
+  assert.equal(found.rolloutId, sid)
+  assert.equal(found.cwd, '/tmp/event-register')
+})
+
+test('Codex respawn lookup can bind an ownerless launch-window rollout by cwd', () => {
+  const root = tmpdir()
+  const sessionsBase = path.join(root, 'codex-sessions')
+  const sid = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+  const late = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+  const fpath = path.join(sessionsBase, '2026', '06', '29', `rollout-2026-06-29T12-00-03-${sid}.jsonl`)
+  const latePath = path.join(sessionsBase, '2026', '06', '29', `rollout-2026-06-29T12-05-00-${late}.jsonl`)
+  writeJsonl(fpath, [
+    { type: 'session_meta', payload: { id: sid, timestamp: '2026-06-29T12:00:03.000Z', cwd: '/tmp/codex-cwd' } },
+    { type: 'event_msg', payload: { type: 'user_message', message: 'boot' } },
+  ])
+  writeJsonl(latePath, [
+    { type: 'session_meta', payload: { id: late, timestamp: '2026-06-29T12:05:00.000Z', cwd: '/tmp/codex-cwd' } },
+  ])
+  fs.utimesSync(fpath, new Date('2026-06-29T12:00:03Z'), new Date('2026-06-29T12:00:03Z'))
+  fs.utimesSync(latePath, new Date('2026-06-29T12:05:00Z'), new Date('2026-06-29T12:05:00Z'))
+  const found = findCodexRollout({
+    id: 'fleet:ownerless',
+    cwd: '/tmp/codex-cwd',
+    registered_at: '2026-06-29T12:00:00.000Z',
+  }, { sessionsBase })
+  assert.equal(found.rolloutId, sid)
+  assert.equal(found.cwd, '/tmp/codex-cwd')
 })
 
 test('Codex respawn lookup uses stored rollout id without requiring in-rollout MCP registration', () => {
