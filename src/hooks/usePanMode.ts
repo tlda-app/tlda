@@ -32,33 +32,55 @@ const EDGE_ZONE_PX = 40
 const CHAT_MAX_SPEED = 2000    // chat scroll px/s at the very edge
 const CANVAS_MAX_SPEED = 2500  // canvas pan screen-px/s at the very edge
 
-const AXIS_LOCK_INITIAL = 5    // px before first lock engages
-const AXIS_LOCK_PAUSE_MS = 250 // ms of no movement before lock resets
+const AXIS_EMA_ALPHA = 0.25
+const AXIS_FREE_BAND = 0.15
+const AXIS_LOCK_SHARPNESS = 1.4
+
+const AXIS_EMA_EPSILON = 0.001
 
 // Module-level so event handlers always see current value without closure staleness
 let panModeActive = false
-let axisLock: 'x' | 'y' | null = null
-let axisPauseTimer: ReturnType<typeof setTimeout> | null = null
-let accumX = 0
-let accumY = 0
+let axisEmaX = 0
+let axisEmaY = 0
 
-function resetAxisLock() {
-  axisLock = null
-  accumX = 0
-  accumY = 0
-  if (axisPauseTimer != null) { clearTimeout(axisPauseTimer); axisPauseTimer = null }
+function resetAxisEstimate() {
+  axisEmaX = 0
+  axisEmaY = 0
 }
 
-function addMovement(adx: number, ady: number) {
-  accumX += adx
-  accumY += ady
-  if (accumX + accumY < AXIS_LOCK_INITIAL) return
-  axisLock = accumY >= accumX ? 'y' : 'x'
+function smoothstep(t: number) {
+  const x = Math.max(0, Math.min(1, t))
+  return x * x * (3 - 2 * x)
+}
+
+function getAxisGains(dx: number, dy: number) {
+  const adx = Math.abs(dx)
+  const ady = Math.abs(dy)
+
+  axisEmaX = axisEmaX * (1 - AXIS_EMA_ALPHA) + adx * AXIS_EMA_ALPHA
+  axisEmaY = axisEmaY * (1 - AXIS_EMA_ALPHA) + ady * AXIS_EMA_ALPHA
+
+  const total = axisEmaX + axisEmaY
+  if (total <= AXIS_EMA_EPSILON) return { gx: 1, gy: 1 }
+
+  const r = axisEmaX / total
+  const low = 0.5 - AXIS_FREE_BAND
+  const high = 0.5 + AXIS_FREE_BAND
+
+  if (r >= low && r <= high) return { gx: 1, gy: 1 }
+
+  if (r > high) {
+    const t = ((r - high) / (1 - high)) * AXIS_LOCK_SHARPNESS
+    return { gx: 1, gy: 1 - smoothstep(t) }
+  }
+
+  const t = ((low - r) / low) * AXIS_LOCK_SHARPNESS
+  return { gx: 1 - smoothstep(t), gy: 1 }
 }
 
 function setPanMode(active: boolean) {
   panModeActive = active
-  resetAxisLock()
+  resetAxisEstimate()
   document.body.classList.toggle('tlda-pan-mode', active)
 }
 
@@ -189,10 +211,6 @@ export function usePanMode(editorRef: RefObject<Editor | null>) {
       const dy = e.clientY - last.y
       if (dx === 0 && dy === 0) return
 
-      // Reset axis lock after a pause
-      if (axisPauseTimer != null) clearTimeout(axisPauseTimer)
-      axisPauseTimer = setTimeout(resetAxisLock, AXIS_LOCK_PAUSE_MS)
-
       // Check if cursor is over a chat scroll container
       const el = document.elementFromPoint(e.clientX, e.clientY)
       const chatLog = el?.closest('.fleet-chat-log') as HTMLElement | null
@@ -201,11 +219,9 @@ export function usePanMode(editorRef: RefObject<Editor | null>) {
         return
       }
 
-      addMovement(Math.abs(dx), Math.abs(dy))
-      let panDx = dx
-      let panDy = dy
-      if (axisLock === 'x') panDy = 0
-      else if (axisLock === 'y') panDx = 0
+      const { gx, gy } = getAxisGains(dx, dy)
+      const panDx = dx * gx
+      const panDy = dy * gy
 
       const editor = editorRef.current
       if (!editor) return
@@ -227,7 +243,6 @@ export function usePanMode(editorRef: RefObject<Editor | null>) {
       window.removeEventListener('mousemove', handleMouseMove)
       stopEdgeRaf()
       setPanMode(false)
-      resetAxisLock()
       lastPosRef.current = null
     }
   }, [editorRef])
