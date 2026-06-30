@@ -336,7 +336,7 @@ export function FleetHUD({
     return wm
   }, [mainEditor])
   const hudAnchorRef = useRef<FleetHudAnchor | null>(null)
-  const hudBaseCameraRef = useRef(mainEditor.getCamera())
+  const hudBaseCameraRef = useRef<{ x: number; y: number; z: number }>(mainEditor.getCamera())
   const lastHudDiagSigRef = useRef('')
   const fleetBoundsTrackerRef = useRef<ReturnType<typeof createFleetBoundsTracker<any>> | null>(null)
   const gesturesEnabled = expanded && !!fleetBounds && docShapesReady
