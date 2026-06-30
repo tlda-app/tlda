@@ -2204,6 +2204,8 @@ body.touch-toc-mode:not(.phone-mode) .fleet-icon-pill-container {
   display: flex;
   align-items: center;
   justify-content: center;
+  pointer-events: all;
+  touch-action: none;
   color: var(--corner-button-slider-color, currentColor);
   transition: transform 0.1s;
 }

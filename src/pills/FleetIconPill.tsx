@@ -48,8 +48,8 @@ const LAYOUT_PRESETS: { id: LayoutId; title: string }[] = [
   { id: 'phone', title: 'Phone reset: agents/inbox | chat | document' },
   { id: '3-col', title: 'Three-column: agents + search | chat | chat + docview' },
   { id: '2x2', title: '2×2: agents + search | four chats' },
-  { id: 'big-chat', title: 'Big chat: large chat over docview' },
-  { id: 'both-margins', title: 'Both margins: chat + docview | document | chat' },
+  { id: 'big-chat', title: 'Big chat: large chat over source editor' },
+  { id: 'both-margins', title: 'Both margins: chat + docview | document | source editor' },
 ]
 
 /** Mini SVG diagram showing the layout arrangement */
@@ -93,7 +93,7 @@ function LayoutIcon({ id, size = 20 }: { id: LayoutId; size?: number }) {
       </>
     ),
     'both-margins': (
-      // [agents/search + chat/docview] | DOC | [chat]
+      // [agents/search + chat/docview] | DOC | [source editor]
       <>
         <rect x={0} y={0} width={s*0.16} height={s*0.55} rx={r} fill={ap} />
         <rect x={0} y={s*0.55+g} width={s*0.16} height={s*0.45-g} rx={r} fill={sr} />
@@ -104,7 +104,7 @@ function LayoutIcon({ id, size = 20 }: { id: LayoutId; size?: number }) {
       </>
     ),
     'big-chat': (
-      // [agents/search] [wide chat over docview] | DOC
+      // [agents/search] [wide chat over source editor] | DOC
       <>
         <rect x={0} y={0} width={s*0.16} height={s*0.55} rx={r} fill={ap} />
         <rect x={0} y={s*0.55+g} width={s*0.16} height={s*0.45-g} rx={r} fill={sr} />
@@ -506,6 +506,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
           className="fleet-layout-slider"
           options={layoutSliderOptions}
           activeIndex={selectedIdx}
+          onSelect={(idx) => applyPreset(idx, 'fan-preset')}
         />
       )}
     </div>

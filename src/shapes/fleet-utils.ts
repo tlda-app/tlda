@@ -697,21 +697,24 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
       },
     ]
     if (variant === 'big-chat') {
+      // Big-chat layout: half chat over half source editor.
       const chatWide = Math.round(chatW3 * 2)
+      const wideChatH = Math.round((totalH - gap) / 2)
+      const wideEditorH = totalH - gap - wideChatH
       shapes.push(
         {
           id: slotId(myId, myDevice, 'chat-0'),
           type: 'fleet-chat' as any,
           x: anchorX + leftW + gap, y: anchorY,
           isLocked: false,
-          props: { w: chatWide, h: rightChatH, filter: filter1 },
+          props: { w: chatWide, h: wideChatH, filter: filter1 },
         },
         {
-          id: slotId(myId, myDevice, 'docview'),
-          type: 'fleet-docview' as any,
-          x: anchorX + leftW + gap, y: anchorY + rightChatH + gap,
+          id: slotId(myId, myDevice, 'source-editor'),
+          type: 'fleet-source-editor' as any,
+          x: anchorX + leftW + gap, y: anchorY + wideChatH + gap,
           isLocked: false,
-          props: { w: chatWide, h: docviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '' },
+          props: { w: chatWide, h: wideEditorH, file: '', line: 1, title: 'Source' },
         },
       )
     } else if (variant === '2x2') {
@@ -796,12 +799,13 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
           isLocked: false,
           props: { w: chatWide, h: docviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '' },
         },
+        // Two-margin layout: the right margin holds the source editor sheet.
         {
-          id: slotId(myId, myDevice, 'chat-1'),
-          type: 'fleet-chat' as any,
+          id: slotId(myId, myDevice, 'source-editor'),
+          type: 'fleet-source-editor' as any,
           x: rightChatX, y: anchorY,
           isLocked: false,
-          props: { w: chatWide, h: totalH, filter: filter2 },
+          props: { w: chatWide, h: totalH, file: '', line: 1, title: 'Source' },
         },
       )
     }
