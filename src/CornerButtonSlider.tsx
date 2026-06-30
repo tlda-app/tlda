@@ -1,4 +1,5 @@
 import React from 'react'
+import { stopEventPropagation } from 'tldraw'
 
 export type CornerButtonSliderOption = {
   id: string
@@ -35,11 +36,13 @@ export function CornerButtonSlider({
   className = '',
   options,
   activeIndex,
+  onSelect,
 }: {
   anchorRect: DOMRect
   className?: string
   options: CornerButtonSliderOption[]
   activeIndex: number | null
+  onSelect?: (index: number) => void
 }) {
   return (
     <div
@@ -55,6 +58,12 @@ export function CornerButtonSlider({
           className={`corner-button-slider-slot${i === activeIndex ? ' active' : ''}`}
           style={{ '--corner-button-slider-color': option.color || 'currentColor' } as React.CSSProperties}
           title={option.label}
+          onPointerDown={stopEventPropagation}
+          onPointerUp={stopEventPropagation}
+          onClick={(e) => {
+            stopEventPropagation(e)
+            onSelect?.(i)
+          }}
         >
           {option.render(i === activeIndex)}
         </div>
