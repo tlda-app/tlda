@@ -44,9 +44,27 @@ export function usePanPerfLog(editorRef: RefObject<Editor | null>, editorMounted
       rafId = requestAnimationFrame(tick)
     }
 
+    const visibleSvgPages = () => {
+      const viewport = editor.getViewportScreenBounds()
+      const pageIds = new Set(
+        editor.getCurrentPageShapes()
+          .filter((shape) => (shape.type as string) === 'svg-page')
+          .map((shape) => shape.id as string),
+      )
+      const pages: Element[] = []
+      for (const el of document.querySelectorAll('[data-shape-id]')) {
+        const id = el.getAttribute('data-shape-id')
+        if (!id || !pageIds.has(id) || !el.querySelector('svg')) continue
+        const rect = el.getBoundingClientRect()
+        if (rect.right < viewport.x || rect.left > viewport.x + viewport.w || rect.bottom < viewport.y || rect.top > viewport.y + viewport.h) continue
+        pages.push(el)
+      }
+      return pages
+    }
+
     const visibleNodes = () => {
       let n = 0
-      for (const el of document.querySelectorAll('[data-shape-type="svg-page"]')) {
+      for (const el of visibleSvgPages()) {
         n += el.querySelectorAll('path,use,text,tspan').length
       }
       return n
@@ -89,7 +107,7 @@ export function usePanPerfLog(editorRef: RefObject<Editor | null>, editorMounted
         deltas = []
         lastTs = 0
         startNodes = visibleNodes()
-        startPages = document.querySelectorAll('[data-shape-type="svg-page"]').length
+        startPages = visibleSvgPages().length
         rafId = requestAnimationFrame(tick)
       }
       if (endTimer != null) clearTimeout(endTimer)
