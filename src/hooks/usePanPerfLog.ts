@@ -18,6 +18,84 @@ import { log } from '../logger'
 
 const GESTURE_END_MS = 200 // camera quiet for this long ends the gesture
 const MIN_FRAMES = 12 // ignore tiny nudges
+const PROFILE_SAMPLE_INTERVAL_MS = 10
+const PROFILE_MAX_BUFFER_SIZE = 2_000
+const PROFILE_SLOW_FRAME_MS = 50
+
+type PanSummary = {
+  frames: number
+  median: number
+  p95: number
+  max: number
+  over33: number
+  over50: number
+  zoom: number
+  nodes: number
+  pages: number
+  dx: number
+  dy: number
+  directionX: -1 | 0 | 1
+}
+
+type SelfProfilingTrace = {
+  samples?: unknown[]
+  stacks?: unknown[]
+  resources?: unknown[]
+  frames?: unknown[]
+}
+
+type SelfProfiler = {
+  stop: () => Promise<SelfProfilingTrace>
+}
+
+type ProfilerConstructor = new (options: {
+  sampleInterval: number
+  maxBufferSize: number
+}) => SelfProfiler
+
+declare global {
+  interface Window {
+    Profiler?: ProfilerConstructor
+  }
+}
+
+function startPanProfiler(): SelfProfiler | null {
+  const Profiler = window.Profiler
+  if (typeof Profiler !== 'function') return null
+  try {
+    return new Profiler({
+      sampleInterval: PROFILE_SAMPLE_INTERVAL_MS,
+      maxBufferSize: PROFILE_MAX_BUFFER_SIZE,
+    })
+  } catch {
+    return null
+  }
+}
+
+function hasReadableFrameName(trace: SelfProfilingTrace) {
+  return Array.isArray(trace.frames) && trace.frames.some((frame) => {
+    if (!frame || typeof frame !== 'object') return false
+    const name = (frame as { name?: unknown }).name
+    return typeof name === 'string' && name.length > 0
+  })
+}
+
+function postPanProfile(summary: PanSummary, trace: SelfProfilingTrace) {
+  const record = {
+    ts: new Date().toISOString(),
+    kind: 'pan-profile',
+    doc: new URLSearchParams(window.location.search).get('doc') || undefined,
+    href: window.location.href,
+    summary,
+    readableStacks: hasReadableFrameName(trace),
+    trace,
+  }
+  void fetch('/api/client-profile', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(record),
+  }).catch(() => {})
+}
 
 export function usePanPerfLog(editorRef: RefObject<Editor | null>, editorMounted: number) {
   useEffect(() => {
@@ -34,8 +112,10 @@ export function usePanPerfLog(editorRef: RefObject<Editor | null>, editorMounted
     let deltas: number[] = []
     let endTimer: ReturnType<typeof setTimeout> | null = null
     let prev = editor.getCamera()
+    let startCamera = prev
     let startNodes = 0
     let startPages = 0
+    let profiler: SelfProfiler | null = null
 
     const tick = (ts: number) => {
       if (!active) { rafId = null; return }
@@ -70,19 +150,25 @@ export function usePanPerfLog(editorRef: RefObject<Editor | null>, editorMounted
       return n
     }
 
-    const endGesture = () => {
+    const endGesture = async () => {
       endTimer = null
       active = false
       if (rafId != null) { cancelAnimationFrame(rafId); rafId = null }
       const d = deltas
       deltas = []
       lastTs = 0
-      if (d.length < MIN_FRAMES) return
+      const activeProfiler = profiler
+      profiler = null
+      const tracePromise = activeProfiler?.stop().catch(() => null) ?? Promise.resolve(null)
+      if (d.length < MIN_FRAMES) {
+        await tracePromise
+        return
+      }
       const sorted = [...d].sort((a, b) => a - b)
       const cam = editor.getCamera()
-      // metric() is sink-only (no console, no level gate) so these land in the
-      // client log by default — pan frame-health from a user's real device.
-      log.metric('pan-perf', 'pan', {
+      const dx = cam.x - startCamera.x
+      const dy = cam.y - startCamera.y
+      const summary: PanSummary = {
         frames: d.length,
         median: Math.round(sorted[Math.floor(sorted.length / 2)]),
         p95: Math.round(sorted[Math.floor(sorted.length * 0.95)]),
@@ -92,7 +178,19 @@ export function usePanPerfLog(editorRef: RefObject<Editor | null>, editorMounted
         zoom: Number(cam.z.toFixed(3)),
         nodes: startNodes,
         pages: startPages,
-      })
+        dx: Math.round(dx),
+        dy: Math.round(dy),
+        directionX: dx > 0 ? 1 : dx < 0 ? -1 : 0,
+      }
+      // metric() is sink-only (no console, no level gate) so these land in the
+      // client log by default — pan frame-health from a user's real device.
+      log.metric('pan-perf', 'pan', summary)
+      if (summary.max > PROFILE_SLOW_FRAME_MS || summary.over50 >= 1) {
+        const trace = await tracePromise
+        if (trace) postPanProfile(summary, trace)
+      } else {
+        await tracePromise
+      }
     }
 
     // Reaction fires on every camera change (~1/frame during a pan). It only
@@ -106,8 +204,10 @@ export function usePanPerfLog(editorRef: RefObject<Editor | null>, editorMounted
         active = true
         deltas = []
         lastTs = 0
+        startCamera = cam
         startNodes = visibleNodes()
         startPages = visibleSvgPages().length
+        profiler = startPanProfiler()
         rafId = requestAnimationFrame(tick)
       }
       if (endTimer != null) clearTimeout(endTimer)
@@ -118,6 +218,9 @@ export function usePanPerfLog(editorRef: RefObject<Editor | null>, editorMounted
       stop()
       if (rafId != null) cancelAnimationFrame(rafId)
       if (endTimer != null) clearTimeout(endTimer)
+      const activeProfiler = profiler
+      profiler = null
+      void activeProfiler?.stop().catch(() => {})
     }
   }, [editorRef, editorMounted])
 }
