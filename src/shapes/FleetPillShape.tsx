@@ -299,19 +299,18 @@ export async function dropPillOnTarget(
   // CanvasClipPanel (HUD) whose readOnly mode locks new shapes.
   const mainEditor = (window as any).__tldraw_editor__ as Editor | undefined
   const createEditor = mainEditor || editor
+  const targetPagePoint = mainEditor && mainEditor !== editor
+    ? translateFleetHudDropPointWithWM(getEditorWMCore(mainEditor), editor, mainEditor, pagePoint)
+    : pagePoint
   // Isolate this drop as its own undo step. A pill drop creates a chat (or note,
   // or updates a filter) directly via createEditor.createShape — NOT through
   // createFleetShape — so without a mark here the new chat glues onto whatever
   // the user did just before (e.g. a move/resize), and one undo wrongly reverses
   // that prior operation. Mark before any of the drop's mutations.
   createEditor.markHistoryStoppingPoint?.()
-  // pagePoint was already translated to main-editor page space by
-  // onTranslateEnd (it does panel→screen→main when the pill is dragged in
-  // a CanvasClipPanel). So hit-test in MAIN coords too. Using `editor`
-  // (which may be the panel editor) here would silently miss because
-  // the panel's page bounds and main's page bounds aren't always identical
-  // (the panel's clip-panel camera + constraint can shift the effective
-  // page coordinate that getShapePageBounds returns).
+  // The caller passes pagePoint in its own editor's page frame. When a HUD or
+  // panel editor calls this but we create/hit-test in the main editor, translate
+  // through screen space first; raw panel page coordinates drift with pan/zoom.
   const hitEditor = mainEditor || editor
   // Find fleet-chat under the drop point manually — getShapeAtPoint skips locked shapes
   // Cast to any: custom fleet shape types aren't in tldraw's built-in type union
@@ -320,8 +319,8 @@ export async function dropPillOnTarget(
   for (const chat of allChats) {
     const bounds = hitEditor.getShapePageBounds(chat.id)
     if (bounds &&
-      pagePoint.x >= bounds.x && pagePoint.x <= bounds.x + bounds.w &&
-      pagePoint.y >= bounds.y && pagePoint.y <= bounds.y + bounds.h) {
+      targetPagePoint.x >= bounds.x && targetPagePoint.x <= bounds.x + bounds.w &&
+      targetPagePoint.y >= bounds.y && targetPagePoint.y <= bounds.y + bounds.h) {
       hitShape = chat
       break
     }
@@ -335,17 +334,17 @@ export async function dropPillOnTarget(
     if (!FLEET_TYPES.has(s.type as string)) return false
     const b = hitEditor.getShapePageBounds(s.id)
     return !!b &&
-      pagePoint.x >= b.x && pagePoint.x <= b.x + b.w &&
-      pagePoint.y >= b.y && pagePoint.y <= b.y + b.h
+      targetPagePoint.x >= b.x && targetPagePoint.x <= b.x + b.w &&
+      targetPagePoint.y >= b.y && targetPagePoint.y <= b.y + b.h
   })
 
   if (hitShape && hitShape.type === 'fleet-chat') {
 
     // Content pill → insert reference chip token into target chat's input
     // Only triggers when dropped on the text input area (bottom 60px of chat)
-    const chatBoundsForContent = editor.getShapePageBounds(hitShape.id)
+    const chatBoundsForContent = hitEditor.getShapePageBounds(hitShape.id)
     const inTextInput = chatBoundsForContent &&
-      pagePoint.y >= chatBoundsForContent.y + chatBoundsForContent.h - 60
+      targetPagePoint.y >= chatBoundsForContent.y + chatBoundsForContent.h - 60
     // Content pills that miss the text field area → do nothing (don't fall through to filter logic)
     if (content && !inTextInput) return
     if (content && inTextInput) {
@@ -393,8 +392,8 @@ export async function dropPillOnTarget(
     }
 
     // Fallback: no overlay open — use position-based role (top half = to, bottom half = from)
-    const chatBounds = editor.getShapePageBounds(hitShape.id)
-    const role = chatBounds && pagePoint.y > chatBounds.y + chatBounds.h / 2 ? 'from' : 'to'
+    const chatBounds = hitEditor.getShapePageBounds(hitShape.id)
+    const role = chatBounds && targetPagePoint.y > chatBounds.y + chatBounds.h / 2 ? 'from' : 'to'
 
     const existingFilter: [string, string][][] = (hitShape as any).props.filter || []
     const newTerm: [string, string] = [role, value]
@@ -445,7 +444,7 @@ export async function dropPillOnTarget(
           const res = await fetch(fetchUrl)
           if (res.ok) markdown = await res.text()
         }
-        await createTemporaryMarkdownColumn(createEditor, pagePoint, title, markdown, {
+        await createTemporaryMarkdownColumn(createEditor, targetPagePoint, title, markdown, {
           ...(sourceAgent ? { authorId: sourceAgent, fromAgent: sourceAgent } : {}),
           ...(filePath ? { sharedDocPath: filePath, sharedDoc: true } : {}),
         })
@@ -472,8 +471,8 @@ export async function dropPillOnTarget(
           createEditor.createShape({
             id: createShapeId(),
             type: 'math-note' as any,
-            x: pagePoint.x - 5,
-            y: pagePoint.y - 5,
+            x: targetPagePoint.x - 5,
+            y: targetPagePoint.y - 5,
             isLocked: false,
             props: {
               w: 300,
@@ -499,8 +498,8 @@ export async function dropPillOnTarget(
           createEditor.createShape({
             id: createShapeId(),
             type: 'math-note' as any,
-            x: pagePoint.x - 5,
-            y: pagePoint.y - 5,
+            x: targetPagePoint.x - 5,
+            y: targetPagePoint.y - 5,
             isLocked: false,
             props: {
               w: 300,
@@ -532,8 +531,8 @@ export async function dropPillOnTarget(
     createEditor.createShape({
       id: createShapeId(),
       type: 'math-note' as any,
-      x: pagePoint.x - 5,
-      y: pagePoint.y - 5,
+      x: targetPagePoint.x - 5,
+      y: targetPagePoint.y - 5,
       isLocked: false,
       props: {
         w: 200,
@@ -553,8 +552,8 @@ export async function dropPillOnTarget(
     createEditor.createShape({
       id: createShapeId(),
       type: 'fleet-chat' as any,
-      x: pagePoint.x,
-      y: pagePoint.y,
+      x: targetPagePoint.x,
+      y: targetPagePoint.y,
       isLocked: false,
       props: {
         w: 400,
