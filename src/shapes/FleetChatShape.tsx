@@ -86,7 +86,7 @@ import { decideFollowTransition, isTrueBottomGap, shouldConvergeToBottom, should
 import { fetchProofInfo, fetchTheoremMap } from '../docInfoCache'
 import { PDF_HEIGHT } from '../layoutConstants'
 import { Terminal } from 'xterm'
-import { useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
+import { useVisibilityViewportId } from './useIsInViewport'
 import {
   dispatchManagedAnnotationViewerHide,
   dispatchManagedAnnotationViewerRequest,
@@ -6796,17 +6796,7 @@ function FleetChatInner({ shape }: { shape: any }) {
 }
 
 /**
- * Viewport-culling shell for FleetChatInner.
- *
- * All the expensive hooks (useFleetEvents, useFleetAgents, etc.) live inside
- * FleetChatInner. When the shape is off-screen we render a cheap transparent
- * placeholder instead, which unmounts FleetChatInner and tears down every
- * subscription. Shapes scrolled back into view remount and resubscribe — a
- * one-time cost that is far cheaper than re-rendering on every fleet event
- * while off-screen.
- */
-/**
- * Subscribe this chat's filter to the server, OUTSIDE the viewport-culling shell.
+ * Subscribe this chat's filter to the server outside FleetChatInner.
  *
  * Deliberately not inside FleetChatInner: culling unmounts that component, which
  * would tear down and re-create the subscription every time a panel crosses the
@@ -6913,13 +6903,12 @@ function useUnreadRailSubscription(shape: any) {
 }
 
 const FleetChatComponent = memo(function FleetChatComponent({ shape }: { shape: any }) {
-  const { w, h } = shape.props as { w: number; h: number }
   useChatFilterSubscription(shape)
   useUnreadRailSubscription(shape)
-  const isInViewport = useIsInViewport(shape.id)
-  if (!isInViewport) {
-    return <HTMLContainer id={shape.id}><div style={{ width: w, height: h }} /></HTMLContainer>
-  }
+  // Chat panels must not mount/unmount while the user pans horizontally. The
+  // visible symptom is a flash even when the chat is idle, and the remount also
+  // rebuilds the message/rendering hooks. Keep the chat mounted; the inner
+  // render cache and live-store views handle event-side cost.
   return <FleetChatInner shape={shape} />
 }, (prev, next) => prev.shape.props === next.shape.props)
 
