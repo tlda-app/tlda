@@ -7,6 +7,7 @@ import assert from 'node:assert/strict'
 const timers = []
 let tid = 0
 let clock = 0
+Date.now = () => clock
 global.setTimeout = (fn, ms = 0) => {
   const id = ++tid
   timers.push({ id, fn, fireAt: clock + ms })
@@ -69,10 +70,20 @@ global.KeyboardEvent = class KeyboardEvent extends Event {
 
 // ---- Mock SpeechRecognition ----
 let mockRec = null
+const mockRecs = []
 let startCount = 0
+let throwInvalidStateStarts = 0
 class MockSpeechRecognition {
-  constructor() { mockRec = this }
-  start() { startCount++ }
+  constructor() { mockRec = this; mockRecs.push(this) }
+  start() {
+    startCount++
+    if (throwInvalidStateStarts > 0) {
+      throwInvalidStateStarts--
+      const err = new Error('invalid state')
+      err.name = 'InvalidStateError'
+      throw err
+    }
+  }
   stop() { this.onend?.() }
   abort() {}
 }
@@ -214,6 +225,8 @@ function reset() {
   timers.length = 0
   intervals.length = 0
   startCount = 0
+  mockRecs.length = 0
+  throwInvalidStateStarts = 0
 }
 
 // ---- Liveness helpers: backend-specific indicator decisions ----
@@ -855,7 +868,7 @@ await setBackend('chrome')
   console.log('✓ Test 18: time-to-first-interim logged once with elapsed ms')
 }
 
-// Test 19: Chrome auto-restart is visible in the HUD instead of looking dead.
+// Test 19: unexpected Chrome onend recreates/restarts recognition and marks the gap.
 {
   const ta = makeTextarea()
   setVoiceTarget(ta, [], {})
@@ -865,16 +878,68 @@ await setBackend('chrome')
   toggleRecording()
   tick(300)
   assert.equal(startCount, 1, 'recognition started')
+  const firstRec = mockRec
 
-  mockRec.onend()
-  assert.equal(startCount, 2, 'Chrome onend auto-restarts recognition')
+  throwInvalidStateStarts = 1
+  firstRec.onend()
+  assert.equal(startCount, 2, 'Chrome onend attempts immediate recognition restart')
+  assert.ok(!ta.value.includes('technical difficulties'), 'marker waits until restart succeeds')
+  tick(100)
+
+  assert.equal(startCount, 3, 'Chrome onend auto-restarts recognition after retry')
+  assert.notEqual(mockRec, firstRec, 'unexpected onend creates a fresh recognition instance')
+  assert.ok(ta.value.includes('[missed 0.1 seconds due to technical difficulties]'), `missingness marker should be inserted, got "${ta.value}"`)
+  assert.equal(window.__voiceTest.getLastChromeMissingnessMarker(), '[missed 0.1 seconds due to technical difficulties]', 'test hook tracks inserted marker')
   assert.ok(/restarting/i.test(mockDiv.textContent), `HUD should say restarting during auto-restart, got "${mockDiv.textContent}"`)
   assert.equal(window.__voiceTest.getHealthLabel(), 'restarting voice', 'health label tracks restart state')
+
+  mockRec.onresult({ resultIndex: 0, results: [{ isFinal: true, 0: { transcript: 'resumed words' } }] })
+  assert.ok(ta.value.includes('resumed words'), `fresh restarted recognizer should accept later results, got "${ta.value}"`)
 
   tick(700)
   assert.ok(!/restarting/i.test(mockDiv.textContent), `restart label should clear after grace window, got "${mockDiv.textContent}"`)
   reset()
-  console.log('✓ Test 19: Chrome auto-restart shows restarting HUD state')
+  console.log('✓ Test 19: unexpected Chrome onend restarts recognition and inserts missingness marker')
+}
+
+// Test 19b: user-initiated stop does not auto-restart or insert a marker.
+{
+  const ta = makeTextarea()
+  setVoiceTarget(ta, [], {})
+  reset()
+  await setBackend('chrome')
+
+  toggleRecording()
+  tick(300)
+  assert.equal(startCount, 1, 'recognition started')
+  toggleRecording()
+
+  assert.equal(startCount, 1, 'user stop must not restart recognition')
+  assert.equal(isRecording(), false, 'user stop turns recording off')
+  assert.equal(window.__voiceTest.getLastChromeMissingnessMarker(), '', 'user stop must not insert missingness marker')
+  assert.ok(!ta.value.includes('technical difficulties'), `user stop should leave textarea unmarked, got "${ta.value}"`)
+  reset()
+  console.log('✓ Test 19b: user stop does not auto-restart or mark missingness')
+}
+
+// Test 19c: Chrome restart retries are bounded when start() keeps failing.
+{
+  const ta = makeTextarea()
+  setVoiceTarget(ta, [], {})
+  reset()
+  await setBackend('chrome')
+
+  toggleRecording()
+  tick(300)
+  assert.equal(startCount, 1, 'recognition started')
+  throwInvalidStateStarts = 20
+  mockRec.onend()
+  for (let i = 0; i < 10; i++) tick(100)
+
+  assert.equal(isRecording(), false, 'repeated failed restarts eventually stop recording')
+  assert.ok(startCount <= 11, `restart attempts should be bounded, got ${startCount}`)
+  reset()
+  console.log('✓ Test 19c: failed Chrome restart attempts are bounded')
 }
 
 // Test 20: stale-audio label is backend-specific, not leaked from Deepgram state.
