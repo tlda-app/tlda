@@ -18,7 +18,7 @@ import {
 import { useState, useCallback, useMemo, useRef, useEffect, memo } from 'react'
 import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, useFleetContext, useFleetProjects, useFleetIdentity, searchFleet, hibernateSession, spawnAgent } from '../fleet-data-adapter'
 import { dropPillOnTarget } from './FleetPillShape'
-import { agentDisplayName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
+import { agentDisplayLabel, agentExactName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
 import { AgentName } from './PhaseIcon'
 import { dragCoordinator } from './dragCoordinator'
 import { useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
@@ -307,7 +307,7 @@ function formatEffort(effort: string | null | undefined, kind: string | null | u
 }
 
 
-// agentDisplayName imported from ./fleet-utils — single source of truth so the
+// agentDisplayLabel imported from ./fleet-utils — single source of truth so the
 // panel and the chat target chip can't drift.
 
 function formatRelativeTime(ts: number | undefined): string {
@@ -495,7 +495,7 @@ function useLastMessages(agents: any[]): Record<string, string> {
 
   useEffect(() => {
     let mounted = true
-    const names = agents.map(a => agentDisplayName(a, agents))
+    const names = agents.map(a => agentExactName(a))
     Promise.all(names.map(async (name) => {
       const msg = await fetchLastMessage(name)
       return [name, msg?.text || ''] as const
@@ -736,7 +736,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     for (const id of bandStateRef.current.keys()) if (!liveIds.has(id)) bandStateRef.current.delete(id)
     const dir = sortAsc ? 1 : -1
     list.sort((a, b) => {
-      if (sortKey === 'name') return dir * agentDisplayName(a, agents).localeCompare(agentDisplayName(b, agents))
+      if (sortKey === 'name') return dir * agentDisplayLabel(a, agents).localeCompare(agentDisplayLabel(b, agents))
       if (sortKey === 'status') {
         const order: Record<string, number> = { awake: 0, hibernating: 1 }
         const ca = order[agentCategory(a)] ?? 2
@@ -890,7 +890,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
               contextPct={contextPercent.get(agent.id)}
               dimmed={agentCategory(agent) === 'hibernating'}
               expanded={expandedId === agent.id}
-              lastMessage={lastMessages[agentDisplayName(agent, agents)] || ''}
+              lastMessage={lastMessages[agentExactName(agent)] || ''}
               onToggleExpand={() => setExpandedId(expandedId === agent.id ? null : agent.id)}
               onStartDrag={startDrag}
             />
@@ -1102,7 +1102,7 @@ function AgentRow({
 }) {
   const firstTask = tasks[0]
   const taskDesc = firstTask?.title || firstTask?.description || ''
-  const name = agentDisplayName(agent, allAgents)
+  const name = agentDisplayLabel(agent, allAgents)
   const color = getNickColor(agent.id, agent.is_manager)
   const labels: string[] = agent.labels || []
   const ago = formatRelativeTime(agent._ts)

@@ -48,10 +48,9 @@ import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 import { useFleetChatAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useFleetFilterHasMatchingAgent, useSuggestions, clearGroup, sendMessage, loadBefore, resolveFleetAgentLabelIds, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
 import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore, createTemporaryMarkdownColumn } from './FleetPillShape'
-import { agentDisplayName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
+import { agentDisplayLabel, agentExactName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
 import { ChatComposer } from './ChatComposer'
-import { AgentName, PhaseIcon } from './PhaseIcon'
-import { baseName, phaseFromName } from '../../shared/lineage-name.mjs'
+import { AgentName } from './PhaseIcon'
 import { dragCoordinator } from './dragCoordinator'
 import { DocContext, PanelContext } from '../PanelContext'
 import { getPageRenderHash, getBuiltPageCount } from '../stores'
@@ -1414,7 +1413,7 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
             {/* left: agent + status */}
             <span style={{ justifySelf: 'start', minWidth: 0 }}>
               <span className="thinking-text">
-                <PhaseIcon phase={phaseFromName(ctx.agentFullName(agentId))} />{baseName(ctx.agentFullName(agentId)).replace('fleet:', '')}
+                <AgentName name={ctx.agentFullName(agentId)} />
               </span>
               {statusText && <>{' '}<span className="thinking-text">{statusText}</span></>}
               {status && status !== 'hibernating' && status !== 'waking' && <>{' '}<ElapsedTime startMs={startTs} /></>}
@@ -1573,7 +1572,7 @@ function makeCtx(agents: any[], tasks: any[], preambleMacros: Record<string, str
   const agentLabel = (id: string) => {
     if (!id) return '[unknown]'
     const a = agents.find((a: any) => a.id === id)
-    if (a) return agentDisplayName(a)
+    if (a) return agentDisplayLabel(a)
     return typeof id === 'string' ? id : String(id)
   }
   const getNickClass = (id: string) => {
@@ -4051,7 +4050,16 @@ function FleetChatInner({ shape }: { shape: any }) {
   const agentNames = useMemo(() => {
     const map: Record<string, string> = {}
     for (const a of agents) {
-      if (a.id) map[a.id] = agentDisplayName(a)
+      if (a.id) map[a.id] = agentDisplayLabel(a)
+    }
+    if (getHumanId()) map[getHumanId()] = getHumanName() || 'user'
+    return map
+  }, [agents])
+
+  const agentExactNames = useMemo(() => {
+    const map: Record<string, string> = {}
+    for (const a of agents) {
+      if (a.id) map[a.id] = agentExactName(a)
     }
     if (getHumanId()) map[getHumanId()] = getHumanName() || 'user'
     return map
@@ -4592,9 +4600,11 @@ function FleetChatInner({ shape }: { shape: any }) {
     pointerId: number
   } | null>(null)
 
-  // Store agentNames in a ref so native listeners can access current value
+  // Store agent name maps in refs so native listeners can access current values.
   const agentNamesRef = useRef(agentNames)
   agentNamesRef.current = agentNames
+  const agentExactNamesRef = useRef(agentExactNames)
+  agentExactNamesRef.current = agentExactNames
   const resolveToFleetIdRef = useRef(resolveToFleetId)
   resolveToFleetIdRef.current = resolveToFleetId
 
@@ -4646,6 +4656,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       }
 
       const names = agentNamesRef.current
+      const exactNames = agentExactNamesRef.current
 
       let drag: typeof dragRef.current = null
 
@@ -4887,10 +4898,11 @@ function FleetChatInner({ shape }: { shape: any }) {
         const nickEl = target.closest('.agent-nick') as HTMLElement
         if (nickEl) {
           const agentId = nickEl.dataset.agentId || ''
-          const agentName = names[agentId] || agentId.replace('fleet:', '')
+          const displayName = names[agentId] || agentId.replace('fleet:', '')
+          const exactName = exactNames[agentId] || agentId.replace('fleet:', '')
           drag = {
-            pillId: null, pillType: 'agent' as any, value: agentName,
-            displayName: agentName, color: '#7a9ec8',
+            pillId: null, pillType: 'agent' as any, value: exactName,
+            displayName, color: '#7a9ec8',
             startX: e.clientX, startY: e.clientY,
             started: false, captureEl: logEl, pointerId: e.pointerId,
           }
