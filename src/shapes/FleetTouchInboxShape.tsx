@@ -52,6 +52,7 @@ function getNickClass(agents: any[], id: string) {
 interface Thread {
   partnerId: string
   partnerName: string
+  partnerFilterName: string
   nickClass: string
   lastTs: string
   unread: number
@@ -201,6 +202,7 @@ function FleetTouchInboxInner({ shape }: { shape: any }) {
       out.push({
         partnerId,
         partnerName: a ? agentDisplayName(a) : partnerId.replace('fleet:', ''),
+        partnerFilterName: (a?.friendly_name as string) || partnerId.replace('fleet:', ''),
         nickClass: getNickClass(agents, partnerId),
         lastTs: last?.timestamp || '',
         unread: unreadCounts[partnerId] || 0,
@@ -262,7 +264,7 @@ function FleetTouchInboxInner({ shape }: { shape: any }) {
     mainEd.updateShape({
       id: childChat.id,
       type: 'fleet-chat' as any,
-      props: { ...childChat.props, filter: partnerFilter(t.partnerName) },
+      props: { ...childChat.props, filter: partnerFilter(t.partnerFilterName) },
     })
     // Mark this thread's incoming messages read — per-event, same as the inbox.
     const unread = events.filter(
@@ -316,7 +318,7 @@ function FleetTouchInboxInner({ shape }: { shape: any }) {
         <div ref={stripRef} className="fleet-inbox-list">
           {threads.length === 0 && <div className="fleet-inbox-empty">no messages yet</div>}
           {threads.map((t) => {
-            const active = activePartnerName === t.partnerName
+            const active = activePartnerName === t.partnerFilterName
             return (
               <div
                 key={t.partnerId}

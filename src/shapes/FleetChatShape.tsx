@@ -36,6 +36,7 @@ import { installChatImageRetry } from '../fleet/chat-image-retry.mjs'
 import {
   buildFleetAgentFilter,
   buildFleetDmFilter,
+  chooseFleetEventDisplayFilter,
   classifyFleetComposerTrafficMode,
   filterForFleetComposerTrafficMode,
   matchesFleetFilter,
@@ -1713,6 +1714,7 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   // DNF filter: [[[role,label],...],...]  — OR of AND-groups of [role, label] tuples
   const dnfFilter = filter.length > 0 ? filter : null
+  const filterKey = JSON.stringify(filter)
 
   // Load lookup data for doc reference resolution
   const [lookup, setLookup] = useState<LookupData | null>(null)
@@ -1734,7 +1736,28 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Live data from fleet-data.mjs via SSE (or playback data if inside a PlaybackFrame)
   const frameId = shape.parentId as string | undefined
   const agents = useFleetAgents(frameId)
-  const liveEvents = useFleetEvents(dnfFilter, frameId)
+  const lastResolvableDisplayFilterRef = useRef<[string, string][][] | null>(null)
+  const eventDisplayChoice = useMemo(() => {
+    if (!dnfFilter || dnfFilter.length === 0) {
+      lastResolvableDisplayFilterRef.current = null
+      return { filter: dnfFilter, unresolved: false }
+    }
+    const choice = chooseFleetEventDisplayFilter(dnfFilter, lastResolvableDisplayFilterRef.current, {
+      agents,
+      humanId: getHumanId(),
+      humanName: getHumanName(),
+    }) as { filter: [string, string][][] | null, unresolved: boolean }
+    if (!choice.unresolved) {
+      lastResolvableDisplayFilterRef.current = dnfFilter
+    }
+    return choice
+  }, [dnfFilter, filterKey, agents])
+  useEffect(() => {
+    if (eventDisplayChoice.unresolved) {
+      log.warn('chat', 'filter resolved to no fleet ids; preserving previous display filter', { filter: dnfFilter })
+    }
+  }, [filterKey, eventDisplayChoice.unresolved])
+  const liveEvents = useFleetEvents(eventDisplayChoice.filter, frameId)
   const tasks = useFleetTasks(frameId)
   const thinkingAgents = useFleetThinking(dnfFilter, frameId)
   const compactingAgents = useFleetCompacting(dnfFilter, frameId)
@@ -1846,7 +1869,6 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   // Reset scroll state when filter changes (history for the new filter is folded
   // into the store by the backfill effect below).
-  const filterKey = JSON.stringify(filter)
   useEffect(() => {
     isAtBottomRef.current = true
     setAtBottom(true)

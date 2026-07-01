@@ -129,6 +129,14 @@ export function resolveFleetFilter(filter, { agents = [], humanId = null, humanN
   return ids
 }
 
+export function chooseFleetEventDisplayFilter(filter, previousFilter, context = {}) {
+  if (!filter || filter.length === 0) return { filter, unresolved: false }
+  if ((context.agents || []).length > 0 && resolveFleetFilter(filter, context).size === 0 && previousFilter) {
+    return { filter: previousFilter, unresolved: true }
+  }
+  return { filter, unresolved: false }
+}
+
 export function buildFleetDmFilter(humanLabel, agentLabel) {
   if (!agentLabel) return []
   return [[['dm', agentLabel]]]
