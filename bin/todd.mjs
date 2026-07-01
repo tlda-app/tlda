@@ -1953,7 +1953,6 @@ async function handleDisinherit(agentId, triggerText, opts = {}) {
   const spawnSpec = await resolveAgentSpawnSpec(agentId)
   const originalTask = await activeTaskForAgent(agentId, agentName)
   const renameTo = await chooseDisinheritCatName(agentId)
-  const requesterLabel = opts.requestedBy === agentId ? agentName : 'Skip'
   const correction = opts.correction || ''
 
   console.log(`[todd] disinherit triggered for ${agentName} (${agentId}) → rename ${renameTo}, fresh ${successorName}`)
@@ -1991,15 +1990,15 @@ async function handleDisinherit(agentId, triggerText, opts = {}) {
         from: AGENT_ID,
         agent: successorName,
         description: originalDescription,
-        message: `You are the fresh **${successorName}**. The previous holder was renamed to **${renameTo}** and remains alive there; nothing else is inherited.
+        message: `The last attempt failed. We're trying again. Here's your brief.
 
-**Original task:**
+**Skip's original instructions to the last agent:**
 ${originalMessage}
 
-**Correction from ${requesterLabel}:**
+**Skip's specific instructions for you:**
 ${correction || '(no separate correction text)'}
 
-Start from the original task plus this correction. Do not inherit the incumbent's name, state, or assumptions; check the workspace/task state and proceed from the corrected task.`,
+You are the fresh **${successorName}**. The previous holder was renamed to **${renameTo}** and remains alive there; nothing else is inherited. Start from the original instructions plus the specific instructions for you. Do not inherit the incumbent's name, state, or assumptions; check the workspace/task state and proceed from the corrected task.`,
         ...(originalTask?.success_criteria ? { success_criteria: originalTask.success_criteria } : {}),
         ...(originalTask?.blockedBy ? { blocked_by: originalTask.blockedBy } : {}),
       })
