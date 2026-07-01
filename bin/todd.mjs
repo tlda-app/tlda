@@ -1420,6 +1420,8 @@ const managerEscalationCooldowns = new Map()
 const HANDOFF_PATTERN = /(?:(?:I\s+(?:want|wanna|need)\s+to\s+)?hand\s+(?:this\s+)?off|do\s+(?:a\s+)?handoff|direct\s+handoff|let'?s\s+(?:(?:do\s+(?:a\s+)?)?handoff|hand\s+(?:this\s+)?off)|time\s+(?:for\s+(?:a\s+)?)?handoff)\b/i
 const ROTATE_PATTERN = /\brotate\s+(?:this\s+(?:guy|agent|one)|him|her|them|it|me|myself|us|the\s+agent)?\s*out\b|\brotate\s+out\b/i
 const ROTATE_NAMED_PATTERN = /\brotate\s+(.+?)\s+out\b/i
+const DISINHERIT_PATTERN = /\bdisinherit\b/i
+const DISINHERIT_CAT_NAMES = ['Whiskers', 'Mittens', 'Felix', 'Salem', 'Tom', 'Garfield', 'Simba']
 const handoffCooldowns = new Map()
 const HANDOFF_COOLDOWN_MS = 120_000
 
@@ -1888,6 +1890,138 @@ Start by reading the brief, checking the current workspace/task state, and sendi
   }, triggerText)
 }
 
+function parseDisinheritCommand(text = '') {
+  const match = text.match(DISINHERIT_PATTERN)
+  if (!match) return null
+  const after = text.slice(match.index + match[0].length).trim()
+  const callMatch = after.match(/\bcall them\s+([\s\S]+)$/i)
+  const beforeCall = (callMatch ? after.slice(0, callMatch.index) : after).trim()
+  const deictic = beforeCall.match(/^((?:(?:this\s+)?(?:guy|agent|one)|him|her|them|it|me|myself|us|the\s+agent)\b)/i)
+  if (deictic) {
+    return {
+      targetRaw: deictic[1].trim(),
+      correction: beforeCall.slice(deictic[0].length).replace(/^[;,.:\s-]+/, '').trim(),
+    }
+  }
+  const named = beforeCall.match(/^(\S+)(?:\s+([\s\S]+))?$/)
+  return {
+    targetRaw: named?.[1]?.replace(/[;,.:\s]+$/g, '').trim() || '',
+    correction: (named?.[2] || '').replace(/^[;,.:\s-]+/, '').trim(),
+  }
+}
+
+function isDeicticDisinheritTarget(raw = '') {
+  return !raw || /^(?:(?:this\s+)?(?:guy|agent|one)|him|her|them|it|me|myself|us|the\s+agent)$/i.test(raw)
+}
+
+async function activeTaskForAgent(agentId, agentName) {
+  const data = await getJson('/api/store/tasks', [])
+  const tasks = Array.isArray(data) ? data : (data?.tasks || [])
+  return tasks.find(t =>
+    (t.agent === agentId || t.agent === agentName) &&
+    t.status !== 'done'
+  ) || null
+}
+
+async function renameAgent(agentId, newName) {
+  return await postJson('/api/rename', { agent: agentId, name: newName })
+}
+
+function randomDisinheritCatName() {
+  return DISINHERIT_CAT_NAMES[Math.floor(Math.random() * DISINHERIT_CAT_NAMES.length)]
+}
+
+async function chooseDisinheritCatName(agentId) {
+  const names = [...DISINHERIT_CAT_NAMES].sort(() => Math.random() - 0.5)
+  for (const name of names) {
+    const availability = await getJson(`/api/check-name?name=${encodeURIComponent(name)}&exclude=${encodeURIComponent(agentId)}`, null)
+    if (availability?.ok !== false) return name
+  }
+  return `${randomDisinheritCatName()} ${Date.now().toString(36).slice(-4)}`
+}
+
+async function handleDisinherit(agentId, triggerText, opts = {}) {
+  const now = Date.now()
+  const lastHandoff = handoffCooldowns.get(agentId) || 0
+  if (now - lastHandoff < HANDOFF_COOLDOWN_MS) return
+  handoffCooldowns.set(agentId, now)
+
+  dequeueActions(agentId)
+  const agentName = await resolveAgentName(agentId)
+  const successorName = stripPhase(agentName)
+  const agentCwd = await resolveAgentCwd(agentId)
+  const spawnSpec = await resolveAgentSpawnSpec(agentId)
+  const originalTask = await activeTaskForAgent(agentId, agentName)
+  const renameTo = await chooseDisinheritCatName(agentId)
+  const requesterLabel = opts.requestedBy === agentId ? agentName : 'Skip'
+  const correction = opts.correction || ''
+
+  console.log(`[todd] disinherit triggered for ${agentName} (${agentId}) → rename ${renameTo}, fresh ${successorName}`)
+  sendChat(OWNER_ID, `Disinheriting **${agentName}**: renaming incumbent to **${renameTo}** and starting a fresh **${successorName}** on the original task.`)
+
+  const renameResult = await renameAgent(agentId, renameTo)
+  if (renameResult?.error || renameResult?.ok === false) {
+    const error = renameResult.error || 'unknown rename failure'
+    sendChat(OWNER_ID, `⚠️ Disinherit failed while renaming **${agentName}** to **${renameTo}**: ${error}`)
+    logDecision(agentId, 'disinherit-rename-failed', 'disinherit', { renameTo, error }, triggerText)
+    return
+  }
+
+  const spawnResult = await spawnAgent({
+    fresh: true,
+    name: successorName,
+    cwd: agentCwd,
+    routeAgent: agentId,
+    ...spawnSpec,
+  })
+  if (spawnResult?.error || spawnResult?.ok === false) {
+    const error = spawnResult.error || spawnResult.reason || 'unknown spawn failure'
+    sendChat(OWNER_ID, `⚠️ Disinherit renamed **${agentName}** to **${renameTo}**, but failed to spawn **${successorName}**: ${error}`)
+    logDecision(agentId, 'disinherit-spawn-failed', 'disinherit', { successorName, renameTo, error }, triggerText)
+    return
+  }
+
+  sendChat(agentId, `I've named you ${renameTo} to make space for your successor. Give yourself a new name.`)
+
+  setTimeout(async () => {
+    try {
+      const originalDescription = originalTask?.description || `Take over ${successorName} after disinherit`
+      const originalMessage = originalTask?.message || originalDescription
+      await postJson('/api/tasks/delegate', {
+        from: AGENT_ID,
+        agent: successorName,
+        description: originalDescription,
+        message: `You are the fresh **${successorName}**. The previous holder was renamed to **${renameTo}** and remains alive there; nothing else is inherited.
+
+**Original task:**
+${originalMessage}
+
+**Correction from ${requesterLabel}:**
+${correction || '(no separate correction text)'}
+
+Start from the original task plus this correction. Do not inherit the incumbent's name, state, or assumptions; check the workspace/task state and proceed from the corrected task.`,
+        ...(originalTask?.success_criteria ? { success_criteria: originalTask.success_criteria } : {}),
+        ...(originalTask?.blockedBy ? { blocked_by: originalTask.blockedBy } : {}),
+      })
+      sendChat(OWNER_ID, `Disinherit complete. **${renameTo}** stayed alive under the new name; fresh **${successorName}** has the original task plus the correction.`)
+    } catch (e) {
+      console.error(`[todd] disinherit delegate failed: ${e.message}`)
+      sendChat(OWNER_ID, `⚠️ Disinherit spawned **${successorName}**, but delegating the original task failed: ${e.message}`)
+    }
+  }, 15_000)
+
+  logDecision(agentId, 'disinherit-fresh-successor', 'disinherit', {
+    successorName,
+    renameTo,
+    routeAgent: agentId,
+    cwd: agentCwd,
+    requestedBy: opts.requestedBy || OWNER_ID,
+    originalTaskId: originalTask?.id || null,
+    correction,
+    spawnSpec,
+  }, triggerText)
+}
+
 async function resolveRotateTarget(text, chatTargetId, fallbackTargetId = null) {
   const m = text.match(ROTATE_NAMED_PATTERN)
   const raw = m?.[1]?.trim()
@@ -1897,6 +2031,14 @@ async function resolveRotateTarget(text, chatTargetId, fallbackTargetId = null) 
     return fallback
   }
   return await resolveAgentId(raw)
+}
+
+async function resolveDisinheritTarget(text, chatTargetId, fallbackTargetId = null) {
+  const parsed = parseDisinheritCommand(text)
+  if (!parsed) return { target: null }
+  const fallback = (chatTargetId && chatTargetId !== AGENT_ID) ? chatTargetId : fallbackTargetId
+  if (isDeicticDisinheritTarget(parsed.targetRaw)) return { target: fallback, correction: parsed.correction }
+  return { target: await resolveAgentId(parsed.targetRaw), correction: parsed.correction }
 }
 
 async function handleHandoff(agentId, triggerText, opts = {}) {
@@ -2428,6 +2570,25 @@ async function handleMessage(msg) {
       }
       scheduleAction('rotate', 'Rotating agent',
         () => handleRotate(rotateTarget, text, { requestedBy: from_id }).catch(e => console.error('[todd] rotate error:', e.message)), rotateTarget)
+      return
+    }
+
+    // Disinherit — Skip can say "todd disinherit this guy [call them X]" in an
+    // agent chat, or "todd disinherit <name> [call them X]" directly to Todd.
+    // This is a plain friendly-name rename plus a fresh bare-name successor,
+    // not lineage rotation.
+    const disinheritAddressedBySkip = from_id === OWNER_ID && (
+      addressedBefore(DISINHERIT_PATTERN) ||
+      (to_id === AGENT_ID && DISINHERIT_PATTERN.test(text))
+    )
+    if (disinheritAddressedBySkip) {
+      const { target: disinheritTarget, correction } = await resolveDisinheritTarget(text, to_id)
+      if (!disinheritTarget) {
+        sendChat(OWNER_ID, `Disinherit needs a target — say it in the agent's chat or name the agent: \`${VERB} disinherit <name>\`.`)
+        return
+      }
+      scheduleAction('disinherit', 'Disinheriting agent',
+        () => handleDisinherit(disinheritTarget, text, { requestedBy: from_id, correction }).catch(e => console.error('[todd] disinherit error:', e.message)), disinheritTarget)
       return
     }
 
