@@ -60,7 +60,7 @@ import { getSourceAnchor } from '../synctexAnchor'
 import { log } from '../logger'
 import { linkifyDocRefs, linkifyArrowRefs, linkifyAtRefs, linkifyLabelRefs, linkifyRefCommands, buildRefResolver, refToCanvas, type DocRef, type ResolvedRef, type LabelRegionInfo, type TheoremMapEntry } from '../docLinks'
 // @ts-ignore — vanilla JS module
-import { decideFollowTransition } from './chatScrollIntent.mjs'
+import { decideFollowTransition, shouldConvergeToBottom, shouldGlueTailChange } from './chatScrollIntent.mjs'
 import { fetchProofInfo, fetchTheoremMap } from '../docInfoCache'
 import { PDF_HEIGHT } from '../layoutConstants'
 import { TerminalCard } from './TerminalCard'
@@ -2644,6 +2644,11 @@ function FleetChatInner({ shape }: { shape: any }) {
     items.push({ key: '__status__', html: '', _status: true })
     return items
   }, [rawItems])
+  const tailMessageKey = useMemo(() => {
+    const m = chatMessages[chatMessages.length - 1]
+    if (!m) return ''
+    return String(m._dbId ?? m._tempId ?? `${m.timestamp}:${m.from}`)
+  }, [chatMessages])
   const [firstItemIndex, setFirstItemIndex] = useState(1_000_000)
 
   // Virtual scroll — only mount DOM nodes for visible messages.
@@ -3344,6 +3349,8 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   const isAtBottomRef = useRef(true)
   const userScrolledUpRef = useRef(false)
+  const prevTailMessageKeyRef = useRef(tailMessageKey)
+  const prevTotalHeightRef = useRef(0)
   // Reactive bottom-position state. Drives the unified follow/jump button:
   // at bottom → follow-mode toggle (horseshoe); off bottom → ⇣ jump-to-bottom.
   // Position (not scroll-intent) is the right signal here — matches the spec
@@ -3390,6 +3397,29 @@ function FleetChatInner({ shape }: { shape: any }) {
     setFleetEventsLiveTailPinned(shape.id, true)
     virtuosoScrollToBottom()
   }, [shape.id, virtuosoScrollToBottom])
+
+  useLayoutEffect(() => {
+    const prev = prevTailMessageKeyRef.current
+    prevTailMessageKeyRef.current = tailMessageKey
+    if (!tailMessageKey || tailMessageKey === prev) return
+    const state = { scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current }
+    if (!shouldGlueTailChange(prev, tailMessageKey, state)) {
+      log.debug('chat-scroll', 'tail changed → HELD position (user scrolled up) — YANK AVERTED', {
+        prev,
+        tail: tailMessageKey,
+        scrolledUp: userScrolledUpRef.current,
+        hardLocked: hardLockedRef.current,
+      })
+      return
+    }
+    log.debug('chat-scroll', 'tail changed → STICK TO BOTTOM (following / hard-locked)', {
+      prev,
+      tail: tailMessageKey,
+      scrolledUp: userScrolledUpRef.current,
+      hardLocked: hardLockedRef.current,
+    })
+    requestAnimationFrame(virtuosoScrollToBottom)
+  }, [tailMessageKey, virtuosoScrollToBottom])
 
   useEffect(() => {
     const el = chatLogEl
@@ -5199,6 +5229,31 @@ function FleetChatInner({ shape }: { shape: any }) {
               void loadOlderHistory()
             }}
             atBottomThreshold={24}
+            totalListHeightChanged={(h) => {
+              const prev = prevTotalHeightRef.current
+              prevTotalHeightRef.current = h
+              if (h <= prev) return
+              const el = chatLogEl
+              const gapNow = el ? Math.round(el.scrollHeight - (el.scrollTop + el.clientHeight)) : null
+              const state = { scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current }
+              const shouldPin = typeof gapNow === 'number' && shouldConvergeToBottom(gapNow, state)
+              log.debug('chat-scroll', shouldPin
+                ? 'content grew → STICK TO BOTTOM (following / hard-locked)'
+                : state.scrolledUp && !state.hardLocked
+                  ? 'content grew → HELD position (user scrolled up) — YANK AVERTED'
+                  : 'content grew → already near bottom',
+                {
+                  prev,
+                  h,
+                  gapNow,
+                  follow: !userScrolledUpRef.current || hardLockedRef.current,
+                  scrolledUp: userScrolledUpRef.current,
+                  hardLocked: hardLockedRef.current,
+                  itemCount: allItems.length,
+                  messageCount: chatMessages.length,
+                })
+              if (shouldPin) requestAnimationFrame(virtuosoScrollToBottom)
+            }}
             atBottomStateChange={(atBottom) => {
               const t0 = probe.isEnabled('chat') ? performance.now() : 0
               const el = chatLogEl
