@@ -67,6 +67,7 @@ import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing
 import { resolveFreshSpawnCapabilityModels } from './lib/spawn-capability-models.mjs'
 import { SpawnBounceError, SpawnLibrarian, resolveSpawnCollision } from '../shared/spawn-librarian.ts'
 import { trimTerminalSeedBlankRows } from '../shared/terminal-seed.mjs'
+import { inspectSingletonLock } from '../bin/lib/singleton-lock.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -362,6 +363,7 @@ const SERVER_BOOT_ID = Date.now()   // unique per server start; daemon uses this
 const DAEMON_SUPERVISOR_INTERVAL_MS = 10_000
 const DAEMON_LOG_FILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.log')
 const DAEMON_PID_FILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.pid')
+const DAEMON_LOCK_FILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.lock')
 const DAEMON_SCRIPT = (() => {
   const d = dirname(fileURLToPath(import.meta.url))
   const m = d.match(/^(.+?)\/\.claude\/worktrees\//)
@@ -373,12 +375,14 @@ const DAEMON_SCRIPT = (() => {
 const DAEMON_FAST_DEATH_MS = 30_000   // < 30s alive == "fast death"
 const DAEMON_MAX_RAPID_RESPAWNS = 3
 const DAEMON_BACKOFF_MS = 5 * 60_000  // back off 5 minutes after giving up
+const DAEMON_LOCK_HELD_BACKOFF_MS = 60_000
 let _daemonSpawnInFlight = false
 let _daemonRespawnCount = 0
 let _daemonRapidFails = 0
 let _daemonLastSpawnAt = 0
 let _daemonBackoffUntil = 0
 let _daemonGivingUpLogged = false
+let _daemonLockHeldLoggedAt = 0
 
 function noteDaemonHealthyConnect() {
   // Called when a daemon connects successfully — reset the rapid-fail
@@ -395,6 +399,28 @@ function ensureLocalDaemon() {
   // Already connected? Done.
   const ws = daemonConnections.get(LOCAL_MACHINE_ID)
   if (ws && ws.readyState === 1) return
+  // The daemon owns a machine-global singleton lock. If any live daemon already
+  // holds it, that is the authoritative answer: do not spawn a competing child
+  // from this server, even if this stale/local server has no daemon WS.
+  try {
+    const lock = inspectSingletonLock({ lockPath: DAEMON_LOCK_FILE })
+    if (lock.held) {
+      _daemonBackoffUntil = Math.max(_daemonBackoffUntil, now + DAEMON_LOCK_HELD_BACKOFF_MS)
+      if (now - _daemonLockHeldLoggedAt >= DAEMON_LOCK_HELD_BACKOFF_MS) {
+        const h = lock.holder || {}
+        console.warn(
+          `[daemon-supervisor] singleton lock held by pid=${h.pid ?? '?'} ` +
+          `install=${h.installPath ?? '?'}; not spawning ${DAEMON_SCRIPT}`,
+        )
+        _daemonLockHeldLoggedAt = now
+      }
+      return
+    }
+  } catch (e) {
+    _daemonBackoffUntil = Math.max(_daemonBackoffUntil, now + DAEMON_LOCK_HELD_BACKOFF_MS)
+    console.error(`[daemon-supervisor] cannot inspect singleton lock ${DAEMON_LOCK_FILE}: ${e.message}; not spawning`)
+    return
+  }
   // PID file exists and process alive? It's just not connected yet — give it
   // a moment, don't double-spawn.
   if (existsSync(DAEMON_PID_FILE)) {
