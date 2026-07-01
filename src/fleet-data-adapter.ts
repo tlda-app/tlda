@@ -37,7 +37,14 @@ import {
   dismissItem as _dismissItem,
   // @ts-ignore — vanilla JS module
 } from './fleet/fleet-data.mjs'
-import { getFilteredFleetEvents, viewFleetEvents, type FleetEvent } from './fleet/fleet-data.ts'
+import {
+  getFilteredFleetEvents,
+  getResolvedFleetAgentIds,
+  subscribeFleetAgents,
+  viewFleetEvents,
+  type FleetEvent,
+} from './fleet/fleet-data.ts'
+import { resolveFleetFilter } from './fleet/filter-semantics.mjs'
 import {
   getPlaybackData,
   subscribePlayback,
@@ -442,6 +449,75 @@ export function useFleetEvents(dnfFilter?: [string, string][][] | null, frameId?
   }, [frameId, filter, filterKey])
 
   return isPlaybackMode ? playbackEvents : [...liveEvents]
+}
+
+type FleetStatusTargets = {
+  statusTargetIds: Set<string> | null
+  hibernatingAgents: Set<string>
+}
+
+const EMPTY_STATUS_TARGETS: FleetStatusTargets = {
+  statusTargetIds: null,
+  hibernatingAgents: new Set<string>(),
+}
+
+function statusTargetKey(targetIds: readonly string[], hibernatingIds: readonly string[]): string {
+  return `${[...targetIds].sort().join(',')}\n${[...hibernatingIds].sort().join(',')}`
+}
+
+function makeStatusTargets(targetIds: readonly string[], hibernatingIds: readonly string[]): FleetStatusTargets {
+  return {
+    statusTargetIds: new Set(targetIds),
+    hibernatingAgents: new Set(hibernatingIds),
+  }
+}
+
+export function useFleetStatusTargets(dnfFilter?: [string, string][][] | null, frameId?: string): FleetStatusTargets {
+  const filterKey = dnfFilter ? JSON.stringify(dnfFilter) : ''
+  const filter = useMemo(() => dnfFilter && dnfFilter.length > 0 ? dnfFilter : null, [filterKey])
+  const snapshotRef = useRef<{ key: string; value: FleetStatusTargets } | null>(null)
+
+  const computeSnapshot = useCallback((): FleetStatusTargets => {
+    if (!filter) return EMPTY_STATUS_TARGETS
+    const playback = frameId && frameId.startsWith('shape:') ? getPlaybackData(frameId) : null
+    const playbackAgents = playback ? (getPlaybackAgents(playback) as any[]) : null
+    const targetIds: readonly string[] = playbackAgents
+      ? [...((resolveFleetFilter as any)(filter, { agents: playbackAgents, humanId: getHumanId(), humanName: getHumanName() }) as Set<string>)]
+      : getResolvedFleetAgentIds(filter)
+    const hibernatingIds: readonly string[] = playbackAgents
+      ? targetIds.filter((id) => playbackAgents.some((agent: any) => agent.id === id && agent.status === 'hibernating'))
+      : getResolvedFleetAgentIds(filter, { status: 'hibernating' })
+    const key = `${filterKey}\n${statusTargetKey(targetIds, hibernatingIds)}`
+    const cached = snapshotRef.current
+    if (cached?.key === key) return cached.value
+    const value = makeStatusTargets(targetIds, hibernatingIds)
+    snapshotRef.current = { key, value }
+    return value
+  }, [filter, filterKey, frameId])
+
+  const subscribeTargets = useCallback((onStoreChange: () => void) => {
+    if (!filter) return () => {}
+    const playbackFrame = frameId && frameId.startsWith('shape:') ? frameId : null
+    if (playbackFrame && getPlaybackData(playbackFrame)) {
+      return subscribePlayback(playbackFrame, () => {
+        snapshotRef.current = null
+        onStoreChange()
+      })
+    }
+    void ensureInit()
+    return subscribeFleetAgents(() => {
+      const before = snapshotRef.current?.key ?? ''
+      computeSnapshot()
+      const after = snapshotRef.current?.key ?? ''
+      if (before !== after) onStoreChange()
+    })
+  }, [computeSnapshot, filter, frameId])
+
+  useEffect(() => {
+    if (filter) void ensureInit()
+  }, [filter])
+
+  return useSyncExternalStore(subscribeTargets, computeSnapshot, computeSnapshot)
 }
 
 

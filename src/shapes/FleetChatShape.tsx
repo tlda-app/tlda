@@ -45,7 +45,7 @@ import {
 } from '../fleet/filter-semantics.mjs'
 import { appendToken } from '../authToken'
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
-import { useFleetChatAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useSuggestions, clearGroup, sendMessage, loadBefore, resolveFilter, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
+import { useFleetChatAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useSuggestions, clearGroup, sendMessage, loadBefore, resolveFilter, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
 import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore, createTemporaryMarkdownColumn } from './FleetPillShape'
 import { agentDisplayName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
@@ -1620,6 +1620,39 @@ function makeCtx(agents: any[], tasks: any[], preambleMacros: Record<string, str
   }
 }
 
+function addEventParticipantIds(ids: Set<string>, event: any) {
+  if (!event) return
+  for (const id of [event.from, event.from_id, event.to, event.to_id, event.agent, event.agent_id]) {
+    if (typeof id === 'string' && id) ids.add(id)
+  }
+  if (Array.isArray(event.cc)) {
+    for (const id of event.cc) {
+      if (typeof id === 'string' && id) ids.add(id)
+    }
+  }
+}
+
+function agentRenderSignature(agent: any) {
+  return [
+    agent.id,
+    agent.friendly_name,
+    agent.name,
+    !!agent.human,
+    agent.metadata?.inPlanMode,
+    agent.metadata?.permission_mode,
+    agent.metadata?.planModeType,
+  ]
+}
+
+function taskRenderSignature(task: any) {
+  return [
+    task.id,
+    task.status,
+    task.agent,
+    task.delegated_by,
+  ]
+}
+
 
 // Apply a text transform only to non-code regions of HTML.
 // Iterates alternating tag and text segments; tracks <code>/<pre> nesting depth
@@ -1888,22 +1921,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     return resolveToFleetIds(label)[0] || label
   }, [resolveToFleetIds])
 
-  const statusTargetIds = useMemo<Set<string> | null>(() => {
-    if (!dnfFilter || dnfFilter.length === 0) return null
-    return new Set(resolveFilter(dnfFilter))
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- depend on filterKey (stable filter encoding); resolveFilter reads current fleet state.
-  }, [filterKey, agents])
-
-  const hibernatingAgents = useMemo(() => {
-    if (!statusTargetIds) return new Set<string>()
-    const result = new Set<string>()
-    for (const a of agents) {
-      if (a.status === 'hibernating' && statusTargetIds.has(a.id)) {
-        result.add(a.id)
-      }
-    }
-    return result
-  }, [agents, statusTargetIds])
+  const { statusTargetIds, hibernatingAgents } = useFleetStatusTargets(dnfFilter, frameId)
 
   const suggestionsPending = useMemo(() => {
     let filtered = suggestionsAll
@@ -2063,26 +2081,41 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   // Build context and render messages
   const prefTick = usePrefTick()
+  const ctxRelevantAgentIds = useMemo<Set<string> | null>(() => {
+    if (!dnfFilter || dnfFilter.length === 0) return null
+    const ids = new Set<string>()
+    for (const event of events) addEventParticipantIds(ids, event)
+    for (const id of statusTargetIds || []) ids.add(id)
+    for (const id of hibernatingAgents) ids.add(id)
+    for (const id of thinkingAgents.keys()) ids.add(id)
+    for (const id of compactingAgents.keys()) ids.add(id)
+    for (const id of contextPercent.keys()) ids.add(id)
+    for (const suggestion of suggestionsPending) {
+      const ownerId = suggestionOwnerId(suggestion)
+      if (ownerId) ids.add(ownerId)
+    }
+    return ids
+  }, [filterKey, events, statusTargetIds, hibernatingAgents, thinkingAgents, compactingAgents, contextPercent, suggestionsPending])
+  const ctxAgents = useMemo(() => {
+    if (!ctxRelevantAgentIds) return agents
+    return [...ctxRelevantAgentIds]
+      .map(id => agents.find((agent: any) => agent.id === id))
+      .filter(Boolean)
+  }, [agents, ctxRelevantAgentIds])
+  const ctxTasks = useMemo(() => {
+    if (!ctxRelevantAgentIds) return tasks
+    return tasks.filter((task: any) =>
+      ctxRelevantAgentIds.has(task.agent) ||
+      ctxRelevantAgentIds.has(task.delegated_by)
+    )
+  }, [tasks, ctxRelevantAgentIds])
   const ctxRenderKey = useMemo(() => JSON.stringify({
-    agents: agents.map((a: any) => [
-      a.id,
-      a.friendly_name,
-      a.name,
-      !!a.human,
-      a.metadata?.inPlanMode,
-      a.metadata?.permission_mode,
-      a.metadata?.planModeType,
-    ]),
-    tasks: tasks.map((t: any) => [
-      t.id,
-      t.status,
-      t.agent,
-      t.delegated_by,
-    ]),
+    agents: ctxAgents.map(agentRenderSignature),
+    tasks: ctxTasks.map(taskRenderSignature),
     macros: Object.entries(preambleMacros).sort(),
     prefTick,
-  }), [agents, tasks, preambleMacros, prefTick])
-  const ctx = useMemo(() => makeCtx(agents, tasks, preambleMacros), [ctxRenderKey])
+  }), [ctxAgents, ctxTasks, preambleMacros, prefTick])
+  const ctx = useMemo(() => makeCtx(ctxAgents, ctxTasks, preambleMacros), [ctxRenderKey])
   const ctxRef = useRef(ctx)
   ctxRef.current = ctx
 
