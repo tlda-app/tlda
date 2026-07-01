@@ -45,7 +45,7 @@ import {
 } from '../fleet/filter-semantics.mjs'
 import { appendToken } from '../authToken'
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
-import { useFleetAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useSuggestions, clearGroup, sendMessage, loadBefore, resolveFilter, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
+import { useFleetChatAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useSuggestions, clearGroup, sendMessage, loadBefore, resolveFilter, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
 import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore, createTemporaryMarkdownColumn } from './FleetPillShape'
 import { agentDisplayName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
@@ -1735,7 +1735,7 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   // Live data from fleet-data.mjs via SSE (or playback data if inside a PlaybackFrame)
   const frameId = shape.parentId as string | undefined
-  const agents = useFleetAgents(frameId)
+  const agents = useFleetChatAgents(frameId)
   const lastResolvableDisplayFilterRef = useRef<[string, string][][] | null>(null)
   const eventDisplayChoice = useMemo(() => {
     if (!dnfFilter || dnfFilter.length === 0) {
@@ -2081,7 +2081,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     macros: Object.entries(preambleMacros).sort(),
     prefTick,
   }), [agents, tasks, preambleMacros, prefTick])
-  const ctx = useMemo(() => makeCtx(agents, tasks, preambleMacros), [agents, tasks, preambleMacros, prefTick])
+  const ctx = useMemo(() => makeCtx(agents, tasks, preambleMacros), [ctxRenderKey])
   const ctxRef = useRef(ctx)
   ctxRef.current = ctx
 
