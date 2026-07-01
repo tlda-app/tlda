@@ -74,6 +74,7 @@ const VERSION = '0.1.1'
 import { createLogger } from '../shared/logger.mjs'
 import { resolveDaemonIsolation } from '../shared/daemon-identity.mjs'
 import { sendActivityEvents } from './lib/activity-send.mjs'
+import { recordPartialSkillReads } from '../shared/partial-skill-reads.mjs'
 import { createManagedBotSupervisor } from './lib/managed-bots.mjs'
 import { maybeKickGoose, resolveGooseStatus } from './lib/goose-kick.mjs'
 import {
@@ -303,6 +304,7 @@ const QUALIFICATIONS_FILE = path.join(os.homedir(), '.claude', 'qualifications.j
 let _qualRules = []
 // Per-agent read tracking: agentId → Set of resolved file paths they've Read
 const _agentReads = new Map()
+const _agentPartialSkillReads = new Map()
 // Per-agent warnings already fired: agentId → Set of "editPath:requiredPath" to avoid spam
 const _agentWarned = new Map()
 
@@ -392,6 +394,13 @@ function trackRead(agentId, filePath) {
   if (!filePath) return
   if (!_agentReads.has(agentId)) _agentReads.set(agentId, new Set())
   _agentReads.get(agentId).add(filePath)
+}
+
+function trackPartialSkillReads(agentId, command) {
+  recordPartialSkillReads(_agentPartialSkillReads, agentId, command, (id, skillKey, filePath) => {
+    trackRead(id, filePath)
+    trackRead(id, skillKey)
+  })
 }
 
 // Edit attribution: remember which agent most recently Edited/Wrote each file
@@ -1338,6 +1347,7 @@ function readNewSessionLines(agentId, jsonlPath, sessionId, harnessKind = 'claud
         const filePath = input.file_path || input.path || ''
         if (block.name === 'Read' && filePath) trackRead(agentId, filePath)
         if (block.name === 'Skill' && input.skill) trackRead(agentId, 'skill:' + input.skill)
+        if (block.name === 'Bash' && input.command) trackPartialSkillReads(agentId, input.command)
         if ((block.name === 'Edit' || block.name === 'Write' || block.name === 'MultiEdit') && filePath) {
           checkQualification(agentId, block.name, filePath)
           recordEdit(agentId, filePath)

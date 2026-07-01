@@ -68,6 +68,7 @@ import { resolveFreshSpawnCapabilityModels } from './lib/spawn-capability-models
 import { SpawnBounceError, SpawnLibrarian, resolveSpawnCollision } from '../shared/spawn-librarian.ts'
 import { trimTerminalSeedBlankRows } from '../shared/terminal-seed.mjs'
 import { inspectSingletonLock } from '../bin/lib/singleton-lock.mjs'
+import { partialSkillReadSummaries, recordPartialSkillReads } from '../shared/partial-skill-reads.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -1713,6 +1714,7 @@ app.get('/api/education/check/:agentId', (req, res) => {
   const content = req.query.content || ''
   const source = req.query.source || ''
   const name = req.query.name || ''
+  const command = req.query.command || ''
   if (tool && _qualRules.length > 0) {
     const input = {}
     if (file) input.file_path = file
@@ -1720,6 +1722,7 @@ app.get('/api/education/check/:agentId', (req, res) => {
     if (content) input.content = content
     if (source) input.source = source
     if (name) input.name = name
+    if (command) input.command = command
     checkQualifications(agentId, tool, file, input)
   }
 
@@ -1799,7 +1802,9 @@ app.get('/api/education/skills/:agentId', (req, res) => {
   const dismissed = [...(_qualAgentDismissed.get(agentId) || new Map()).values()]
     .map(d => ({ skill: d.skill, reason: d.reason, scope: d.scope, trigger: d.trigger || null }))
   const cards = (fleetStore?.getDrillCards?.(agentId)) || []
-  res.json({ id: agentId, read, owed, dismissed, cards })
+  const partial = partialSkillReadSummaries(_qualAgentPartialSkillReads, agentId)
+    .filter(p => !readsSet.has(p.skillKey))
+  res.json({ id: agentId, read, partial, owed, dismissed, cards })
 })
 
 // Store a drill report card for an agent (the "how they performed" half of the
@@ -4434,6 +4439,7 @@ const QUALIFICATIONS_FILE = process.env.TLDA_QUALIFICATIONS_FILE || path.join(os
 const DEFAULT_QUALIFICATIONS_FILE = path.join(__dirname, 'qualifications-default.json')
 let _qualRules = []
 const _qualAgentReads = new Map()     // agentId → Set of skill keys + file paths
+const _qualAgentPartialSkillReads = new Map()
 const _qualAgentDismissed = new Map() // agentId → Map<dismissKey, {skill, reason, scope, trigger, ts}> (dismissKey = skillName | skillName@filepath)
 const _qualAgentOwed = new Map()      // agentId → Map<skillName, {scope, trigger, triggerShort}> — latest context per owed skill, for dismiss lookup
 
@@ -4491,6 +4497,13 @@ function qualTrackRead(agentId, key) {
     if (owed) owed.delete(key.slice('skill:'.length))
     if (fleetStore) { try { fleetStore.addSkillRead(agentId, key) } catch {} }
   }
+}
+
+function qualTrackPartialSkillReads(agentId, command) {
+  recordPartialSkillReads(_qualAgentPartialSkillReads, agentId, command, (id, skillKey, filePath) => {
+    qualTrackRead(id, filePath)
+    qualTrackRead(id, skillKey)
+  })
 }
 
 function qualLoadReadsFromDb() {
@@ -4568,6 +4581,7 @@ function checkQualifications(agentId, tool, arg, input) {
   const isFileRead = tool === 'Read' || toolBase === 'read_file'
   const summonSource = input?.source || input?.skill || input?.name || ''
   const isSummonLoad = (toolReadNorm.includes('summon') || toolBase === 'load') && toolBase !== 'read_file' && summonSource
+  if (tool === 'Bash' && input?.command) qualTrackPartialSkillReads(agentId, input.command)
   if ((isFileRead || tool === 'Skill') && input) {
     if (isFileRead) {
       const fp = input.file_path || input.path || arg || ''
@@ -4641,7 +4655,9 @@ function checkQualifications(agentId, tool, arg, input) {
   }
   if (owedNow.length > 0) {
     const skills = [...new Set(owedNow)]
-    pendingEducation.set(agentId, { skill: skills[0], skills, ts: Date.now() })
+    const partial = partialSkillReadSummaries(_qualAgentPartialSkillReads, agentId)
+      .filter(p => skills.includes(p.skill) && !reads.has(p.skillKey))
+    pendingEducation.set(agentId, { skill: skills[0], skills, partial, ts: Date.now() })
   }
 }
 

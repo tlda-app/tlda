@@ -787,6 +787,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
 // dismissed (with the reason). Data comes from /api/education/skills/:id.
 type SkillState = {
   read: string[]
+  partial?: { skill: string; percent: number }[]
   owed: { skill: string; scope: string; trigger: string | null }[]
   dismissed: { skill: string; reason: string; scope: string; trigger: string | null }[]
   cards?: { drill: string; gradient: string | null; pass: boolean | null; gradedAt?: string }[]
@@ -830,10 +831,11 @@ function SkillHoverPane({ agentId, agentName, anchorRect, onMouseEnter, onMouseL
     : { left, top: anchorRect.bottom + 4, width: PANE_W }
 
   const read = data?.read || []
+  const partial = data?.partial || []
   const owed = data?.owed || []
   const dismissed = data?.dismissed || []
   const cards = data?.cards || []
-  const empty = !loading && read.length === 0 && owed.length === 0 && dismissed.length === 0 && cards.length === 0
+  const empty = !loading && read.length === 0 && partial.length === 0 && owed.length === 0 && dismissed.length === 0 && cards.length === 0
 
   // Portal to <body>: the pane is position:fixed, but a fixed element inside the
   // TLDraw canvas's CSS transform is positioned relative to that transform, not
@@ -866,6 +868,14 @@ function SkillHoverPane({ agentId, agentName, anchorRect, onMouseEnter, onMouseL
           <div className="fleet-skill-hover-label owed">skills owed ({owed.length})</div>
           <div className="fleet-skill-hover-chips">
             {owed.map(o => <span key={o.skill} className="fleet-skill-chip owed">{o.skill}</span>)}
+          </div>
+        </div>
+      )}
+      {partial.length > 0 && (
+        <div className="fleet-skill-hover-section">
+          <div className="fleet-skill-hover-label owed">skills partial ({partial.length})</div>
+          <div className="fleet-skill-hover-chips">
+            {partial.map(p => <span key={p.skill} className="fleet-skill-chip owed">{p.skill} {p.percent}%</span>)}
           </div>
         </div>
       )}

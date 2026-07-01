@@ -80,6 +80,7 @@ const pending = await httpGet(url)
 if (!pending || !pending.skill) process.exit(0)
 
 const skills = pending.skills || [pending.skill]
+const partialBySkill = new Map((pending.partial || []).map(p => [p.skill, p]))
 const items = []
 for (const skill of skills) {
   // Real skills live under ~/work/dot-claude/skills; ~/.claude/skills may not exist.
@@ -104,9 +105,14 @@ if (items.length === 0) process.exit(0)
 // SURFACE the relevant skills as advisory context — never block.
 let advisory = 'Relevant skill' + (items.length === 1 ? '' : 's') + ' for this action'
 advisory += ' (read before proceeding if you have not — these are reference docs you Read, not Skill-tool skills):\n'
+function fmtRange(r) { return r.start === r.end ? String(r.start) : `${r.start}-${r.end}` }
 for (const { skill, desc, foundPath } of items) {
   advisory += '- ' + skill + (desc ? ' — ' + desc : '')
   advisory += foundPath ? '  (Read ' + foundPath + ')' : '  (no SKILL.md found; informational only)'
+  const partial = partialBySkill.get(skill)
+  if (partial?.ranges?.length && partial?.missing?.length) {
+    advisory += `\n  You read lines ${partial.ranges.map(fmtRange).join(', ')}, but you need the whole thing. Here are the remaining lines: ${partial.missing.map(fmtRange).join(', ')}.`
+  }
   advisory += '\n'
 }
 
