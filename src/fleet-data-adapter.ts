@@ -38,7 +38,9 @@ import {
   // @ts-ignore — vanilla JS module
 } from './fleet/fleet-data.mjs'
 import {
+  fleetFilterHasMatchingAgent,
   getFilteredFleetEvents,
+  getResolvedFleetAgentIdsForLabel,
   getResolvedFleetAgentIds,
   subscribeFleetAgents,
   viewFleetEvents,
@@ -518,6 +520,60 @@ export function useFleetStatusTargets(dnfFilter?: [string, string][][] | null, f
   }, [filter])
 
   return useSyncExternalStore(subscribeTargets, computeSnapshot, computeSnapshot)
+}
+
+export function resolveFleetAgentLabelIds(label: string): string[] {
+  if (!label) return []
+  if (label.startsWith('fleet:')) return [label]
+  return [...getResolvedFleetAgentIdsForLabel(label)]
+}
+
+export function useFleetFilterHasMatchingAgent(dnfFilter?: [string, string][][] | null, frameId?: string): boolean {
+  const filterKey = dnfFilter ? JSON.stringify(dnfFilter) : ''
+  const filter = useMemo(() => dnfFilter && dnfFilter.length > 0 ? dnfFilter : null, [filterKey])
+  const snapshotRef = useRef<{ key: string; value: boolean } | null>(null)
+
+  const computeSnapshot = useCallback((): boolean => {
+    if (!filter) return true
+    const playback = frameId && frameId.startsWith('shape:') ? getPlaybackData(frameId) : null
+    if (playback) {
+      return (resolveFleetFilter as any)(filter, {
+        agents: getPlaybackAgents(playback),
+        humanId: getHumanId(),
+        humanName: getHumanName(),
+      }).size > 0
+    }
+    const value = fleetFilterHasMatchingAgent(filter, { id: getHumanId(), name: getHumanName() })
+    const key = `${filterKey}\n${value ? '1' : '0'}`
+    const cached = snapshotRef.current
+    if (cached?.key === key) return cached.value
+    snapshotRef.current = { key, value }
+    return value
+  }, [filter, filterKey, frameId])
+
+  const subscribeMatches = useCallback((onStoreChange: () => void) => {
+    if (!filter) return () => {}
+    const playbackFrame = frameId && frameId.startsWith('shape:') ? frameId : null
+    if (playbackFrame && getPlaybackData(playbackFrame)) {
+      return subscribePlayback(playbackFrame, () => {
+        snapshotRef.current = null
+        onStoreChange()
+      })
+    }
+    void ensureInit()
+    return subscribeFleetAgents(() => {
+      const before = snapshotRef.current?.key ?? ''
+      computeSnapshot()
+      const after = snapshotRef.current?.key ?? ''
+      if (before !== after) onStoreChange()
+    })
+  }, [computeSnapshot, filter, frameId])
+
+  useEffect(() => {
+    if (filter) void ensureInit()
+  }, [filter])
+
+  return useSyncExternalStore(subscribeMatches, computeSnapshot, computeSnapshot)
 }
 
 

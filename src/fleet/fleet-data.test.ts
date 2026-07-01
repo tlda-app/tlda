@@ -6,8 +6,10 @@ import test from 'node:test'
 import { matchesFleetFilter } from './filter-semantics.mjs'
 import { makeEventStore } from './event-store.mjs'
 import {
+  fleetFilterHasMatchingAgent,
   getFilteredFleetEvents,
   getFleetEvents,
+  getResolvedFleetAgentIdsForLabel,
   getResolvedFleetAgentIds,
   replaceFleetEvents,
   replaceFleetAgents,
@@ -203,5 +205,42 @@ test('replaceFleetAgents and deltas maintain the label index without roster scan
     [...getResolvedFleetAgentIds([[['from', 'math']]], { status: 'hibernating' })].sort(),
     ['fleet:alpha', 'fleet:beta']
   )
+  resetFleetAgentStoreForTest()
+})
+
+test('fleet agent label resolver uses the maintained label index', () => {
+  resetFleetAgentStoreForTest([
+    { id: 'fleet:old-chief', friendly_name: 'chief', status: 'dead', dead: true, labels: [] },
+    { id: 'fleet:chief', friendly_name: 'chief', status: 'awake', dead: false, labels: [] },
+    { id: 'fleet:helper', friendly_name: 'helper', status: 'awake', labels: ['math'] },
+  ])
+
+  assert.deepEqual(getResolvedFleetAgentIdsForLabel('chief'), ['fleet:chief'])
+  assert.deepEqual(getResolvedFleetAgentIdsForLabel('math'), ['fleet:helper'])
+  assert.deepEqual(getResolvedFleetAgentIdsForLabel('missing'), [])
+  assert.deepEqual(getResolvedFleetAgentIdsForLabel('fleet:direct'), ['fleet:direct'])
+
+  resetFleetAgentStoreForTest()
+})
+
+test('fleet filter possible check is stable across unrelated agent churn', () => {
+  resetFleetAgentStoreForTest([
+    { id: 'fleet:chief', friendly_name: 'chief', status: 'awake', labels: [] },
+    { id: 'fleet:helper', friendly_name: 'helper', status: 'awake', labels: ['math'] },
+  ])
+
+  const chiefFilter: [string, string][][] = [[['dm', 'chief']]]
+  const missingFilter: [string, string][][] = [[['dm', 'missing']]]
+
+  assert.equal(fleetFilterHasMatchingAgent(chiefFilter, { id: 'fleet:skip', name: 'skip' }), true)
+  assert.equal(fleetFilterHasMatchingAgent(missingFilter, { id: 'fleet:skip', name: 'skip' }), false)
+
+  upsertFleetAgents([{ id: 'fleet:unrelated', friendly_name: 'unrelated', status: 'hibernating', labels: ['other'] }])
+  assert.equal(fleetFilterHasMatchingAgent(chiefFilter, { id: 'fleet:skip', name: 'skip' }), true)
+  assert.equal(fleetFilterHasMatchingAgent(missingFilter, { id: 'fleet:skip', name: 'skip' }), false)
+
+  upsertFleetAgents([{ id: 'fleet:missing', friendly_name: 'missing', status: 'awake', labels: [] }])
+  assert.equal(fleetFilterHasMatchingAgent(missingFilter, { id: 'fleet:skip', name: 'skip' }), true)
+
   resetFleetAgentStoreForTest()
 })

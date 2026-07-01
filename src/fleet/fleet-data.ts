@@ -157,6 +157,29 @@ function filterLabels(filter: FleetAgentFilter): Set<string> {
   return labels
 }
 
+function agentIdsForLabel(label: string, opts: { status?: string } = {}): Set<string> {
+  const ids = new Set<string>()
+  if (!label) return ids
+  if (label.startsWith('fleet:') && (!opts.status || agentStore.get(label)?.status === opts.status)) {
+    ids.add(label)
+  }
+  const bucket = agentLabelIndex.get(label)
+  const hasLiveHolder = bucket.some((agent) => !agent.dead)
+  for (const agent of bucket) {
+    if (agent.dead && hasLiveHolder) continue
+    if (opts.status && agent.status !== opts.status) continue
+    ids.add(agent.id)
+  }
+  return ids
+}
+
+export function getResolvedFleetAgentIdsForLabel(
+  label: string,
+  opts: { status?: string } = {}
+): readonly string[] {
+  return [...agentIdsForLabel(label, opts)]
+}
+
 export function getResolvedFleetAgentIds(
   filter: FleetAgentFilter,
   opts: { status?: string } = {}
@@ -164,18 +187,43 @@ export function getResolvedFleetAgentIds(
   if (!filter || filter.length === 0) return []
   const ids = new Set<string>()
   for (const label of filterLabels(filter)) {
-    if (label.startsWith('fleet:') && (!opts.status || agentStore.get(label)?.status === opts.status)) {
-      ids.add(label)
-    }
-    const bucket = agentLabelIndex.get(label)
-    const hasLiveHolder = bucket.some((agent) => !agent.dead)
-    for (const agent of bucket) {
-      if (agent.dead && hasLiveHolder) continue
-      if (opts.status && agent.status !== opts.status) continue
-      ids.add(agent.id)
-    }
+    for (const id of agentIdsForLabel(label, opts)) ids.add(id)
   }
   return [...ids]
+}
+
+function idsForClauseLabel(label: string, human: { id?: string | null; name?: string | null } = {}): Set<string> {
+  const ids = agentIdsForLabel(label)
+  if (human.id && (label === human.id || label === (human.name || 'user'))) ids.add(human.id)
+  return ids
+}
+
+function intersects(a: Set<string>, b: Set<string>): Set<string> {
+  const next = new Set<string>()
+  for (const value of a) {
+    if (b.has(value)) next.add(value)
+  }
+  return next
+}
+
+export function fleetFilterHasMatchingAgent(
+  filter: FleetAgentFilter,
+  human: { id?: string | null; name?: string | null } = {}
+): boolean {
+  if (!filter || filter.length === 0) return true
+  for (const clause of filter) {
+    if (!Array.isArray(clause) || clause.length === 0) continue
+    let possible: Set<string> | null = null
+    for (const term of clause) {
+      const label = termLabel(term)
+      if (!label) continue
+      const ids = idsForClauseLabel(label, human)
+      possible = possible ? intersects(possible, ids) : ids
+      if (possible.size === 0) break
+    }
+    if (possible && possible.size > 0) return true
+  }
+  return false
 }
 
 export function subscribeFleetAgents(cb: () => void): () => void {
