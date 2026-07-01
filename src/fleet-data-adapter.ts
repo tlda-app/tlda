@@ -168,6 +168,84 @@ export function useFleetAgents(frameId?: string): any[] {
   return agents
 }
 
+function chatAgentSignature(agents: any[]): string {
+  return JSON.stringify(agents.map((a: any) => [
+    a.id,
+    a.friendly_name,
+    a.name,
+    !!a.human,
+    !!a.dead,
+    a.status,
+    a.is_manager,
+    a.labels || [],
+    a.metadata?.inPlanMode,
+    a.metadata?.permission_mode,
+    a.metadata?.planModeType,
+  ]))
+}
+
+export function useFleetChatAgents(frameId?: string): any[] {
+  const [agents, setAgents] = useState<any[]>([])
+  const signatureRef = useRef('')
+
+  useEffect(() => {
+    let liveUnsub: (() => void) | null = null
+    let playbackUnsub: (() => void) | null = null
+    let cancelled = false
+    let isPlaybackMode = false
+
+    const publish = (nextAgents: any[]) => {
+      const nextSignature = chatAgentSignature(nextAgents)
+      if (signatureRef.current === nextSignature) return
+      signatureRef.current = nextSignature
+      setAgents(nextAgents)
+    }
+
+    function setupLive() {
+      if (cancelled) return
+      ensureInit().then(() => {
+        if (cancelled || isPlaybackMode) return
+        publish([...getAgents()])
+        const refresh = () => { if (!cancelled) publish([...getAgents()]) }
+        const [debounced, cancelDebounce] = debounce16(refresh)
+        const [gated, cleanupGate] = visibilityGate(debounced, refresh)
+        const rawUnsub = subscribe('agents', null, gated)
+        liveUnsub = () => { rawUnsub(); cleanupGate(); cancelDebounce() }
+      })
+    }
+
+    if (frameId && frameId.startsWith('shape:')) {
+      const pb = getPlaybackData(frameId)
+      if (pb) {
+        isPlaybackMode = true
+        publish(getPlaybackAgents(pb))
+      } else {
+        setupLive()
+      }
+
+      playbackUnsub = subscribePlayback(frameId, () => {
+        const pb = getPlaybackData(frameId)
+        if (pb) {
+          isPlaybackMode = true
+          liveUnsub?.()
+          liveUnsub = null
+          publish(getPlaybackAgents(pb))
+        }
+      })
+    } else {
+      setupLive()
+    }
+
+    return () => {
+      cancelled = true
+      liveUnsub?.()
+      playbackUnsub?.()
+    }
+  }, [frameId])
+
+  return agents
+}
+
 export function useFleetRosterTruth(): any | null {
   const [truth, setTruth] = useState<any | null>(null)
 
