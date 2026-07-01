@@ -3,7 +3,7 @@ import { createShapeId } from 'tldraw'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getHumanName, getDeviceId, getEvents, isDeviceReady, whenDeviceReady } from '../fleet/fleet-data.mjs'
 // @ts-ignore — vanilla JS module
-import { baseName } from '../../shared/lineage-name.mjs'
+import { decoratedNameText } from '../../shared/lineage-name.mjs'
 // @ts-ignore — vanilla JS module
 import { recentChatTargetAgents } from '../fleet/layout-targets.mjs'
 import { getPref } from '../preferences'
@@ -39,17 +39,16 @@ export function endNativeSnapDrag(editor: Editor) {
   if (stack && stack.length === 0) nativeSnapModeStack.delete(editor)
 }
 
-/**
- * The display name for an agent — the single source of truth used everywhere a
- * name is shown (agents panel, chat target chip, nicks). Lineage is purely a
- * naming convention: the agent's friendly_name IS its identity. The phase is
- * encoded in the name as a ":day"/":dusk" suffix (dawn is bare), so display
- * strips that suffix and shows the base name; the phase is conveyed only by the
- * icon. Never derive the name from any server "phase" — there is no such field.
- */
-export function agentDisplayName(agent: any, _allAgents?: any[]): string {
+/** Display-only label. Do not use this as a filter or routing value. */
+export function agentDisplayLabel(agent: any, _allAgents?: any[]): string {
   if (!agent) return '[unknown]'
-  return baseName(agent.friendly_name) || (agent.id || '').replace('fleet:', '')
+  return decoratedNameText(agent.friendly_name)?.replace(/^fleet:/, '') || (agent.id || '').replace('fleet:', '')
+}
+
+/** Exact current name for filters, DMs, and routing. */
+export function agentExactName(agent: any): string {
+  if (!agent) return ''
+  return agent.friendly_name || (agent.id || '').replace('fleet:', '')
 }
 
 export const FLEET_HUD_ANCHOR_ID = 'shape:fleet-hud-anchor' as const

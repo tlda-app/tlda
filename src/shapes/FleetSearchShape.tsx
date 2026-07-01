@@ -14,7 +14,7 @@ import {
   useValue,
   createShapeId,
 } from 'tldraw'
-import { beginNativeSnapDrag, createFleetShape, agentDisplayName, endNativeSnapDrag } from './fleet-utils'
+import { beginNativeSnapDrag, createFleetShape, agentDisplayLabel, endNativeSnapDrag } from './fleet-utils'
 import { useState, useCallback, useRef, useMemo, useEffect, memo } from 'react'
 import { searchFleet, fetchSharedDocs, useFleetAgents, useFleetTasks } from '../fleet-data-adapter'
 import katex from 'katex'
@@ -144,7 +144,7 @@ function makeChatCtx(agents: any[], tasks: any[]) {
   const agentLabel = (id: string) => {
     if (!id) return '[unknown]'
     const a = agents.find((a: any) => a.id === id)
-    if (a) return agentDisplayName(a)
+    if (a) return agentDisplayLabel(a)
     return typeof id === 'string' ? id : String(id)
   }
   const getNickClass = (id: string) => {
@@ -315,11 +315,16 @@ function FleetSearchInner({ shape }: { shape: any }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Agent ID → display name lookup
-  const agentName = useCallback((id: string) => {
+  const agentFilterName = useCallback((id: string) => {
     if (!id) return 'unknown'
     const a = agents.find((a: any) => a.id === id)
     if (a) return a.friendly_name || (a.id || '').replace('fleet:', '')
+    return id.replace('fleet:', '')
+  }, [agents])
+  const agentName = useCallback((id: string) => {
+    if (!id) return 'unknown'
+    const a = agents.find((a: any) => a.id === id)
+    if (a) return agentDisplayLabel(a)
     return id.replace('fleet:', '')
   }, [agents])
 
@@ -618,9 +623,10 @@ function FleetSearchInner({ shape }: { shape: any }) {
                   const nick = (e.target as HTMLElement).closest('[data-agent-id]') as HTMLElement | null
                   if (nick) {
                     const agentId = nick.dataset.agentId || ''
+                    const value = agentFilterName(agentId)
                     const name = agentName(agentId)
                     const color = ctx.getAgentColor(agentId)
-                    startDrag(e, name, name, color)
+                    startDrag(e, value, name, color)
                   }
                 }}
               >

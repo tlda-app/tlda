@@ -17,7 +17,7 @@ import {
   useEditor,
   useValue,
 } from 'tldraw'
-import { agentDisplayName, beginNativeSnapDrag, endNativeSnapDrag, FLEET_SHAPE_TYPES } from './fleet-utils'
+import { agentDisplayLabel, beginNativeSnapDrag, endNativeSnapDrag, FLEET_SHAPE_TYPES } from './fleet-utils'
 import { useCallback, useRef, useMemo, useEffect, memo } from 'react'
 import { useFleetAgents, useFleetEvents, useFleetUnreadCounts, useFleetIdentity } from '../fleet-data-adapter'
 // @ts-ignore — vanilla JS module
@@ -201,7 +201,7 @@ function FleetTouchInboxInner({ shape }: { shape: any }) {
       const a = agents.find((x: any) => x.id === partnerId)
       out.push({
         partnerId,
-        partnerName: a ? agentDisplayName(a) : partnerId.replace('fleet:', ''),
+        partnerName: a ? agentDisplayLabel(a) : partnerId.replace('fleet:', ''),
         partnerFilterName: (a?.friendly_name as string) || partnerId.replace('fleet:', ''),
         nickClass: getNickClass(agents, partnerId),
         lastTs: last?.timestamp || '',

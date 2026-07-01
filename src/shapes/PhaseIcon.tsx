@@ -1,14 +1,11 @@
-import { baseName, phaseFromName } from '../../shared/lineage-name.mjs'
+import { displaySuffixForName, splitDecoratedName } from '../../shared/lineage-name.mjs'
 
-// The ONE place a friendly name becomes "base text + phase glyph" for React
-// surfaces. Everywhere else the friendly name is an opaque atom — only rotation
-// and search ever split it; this is the only display split. Give it the full
-// name (e.g. "conc5:day"); it renders the base ("conc5") plus the phase glyph.
-// `slotWidth` reserves a fixed-width glyph box (blank for dawn) so a column of
-// names aligns — used by the agents panel.
+// The ONE place a friendly name becomes "text + suffix glyph" for React
+// surfaces. Everywhere else the friendly name is an opaque atom.
 export function AgentName({ name, slotWidth }: { name: string | null | undefined; slotWidth?: number }) {
-  const text = baseName(name || '').replace('fleet:', '')
-  const icon = <PhaseIcon phase={phaseFromName(name)} />
+  const parts = splitDecoratedName(name || '')
+  const text = parts.text.replace('fleet:', '')
+  const icon = <PhaseIcon phase={parts.key} />
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', minWidth: 0 }}>
       {slotWidth != null
@@ -19,10 +16,7 @@ export function AgentName({ name, slotWidth }: { name: string | null | undefined
   )
 }
 
-// Single source of truth for the lineage phase icon (React form). The HTML-string
-// form in src/fleet/chat-render.mjs (PHASE_ICON_DAY/PHASE_ICON_DUSK) mirrors this
-// exactly. dawn (the default worker) gets NO icon; only the non-default roles are
-// marked — day (manager) is a midday sun, dusk (consultant) is a horizon sun.
+// React form of the generic display suffix glyph table.
 export function PhaseIcon({ phase }: { phase: string | null }) {
   if (!phase || phase === 'dawn') return null
   const size = 12
@@ -68,4 +62,8 @@ export function PhaseIcon({ phase }: { phase: string | null }) {
     )
   }
   return null
+}
+
+export function NameSuffixIcon({ name }: { name: string | null | undefined }) {
+  return <PhaseIcon phase={displaySuffixForName(name || '')?.key || null} />
 }

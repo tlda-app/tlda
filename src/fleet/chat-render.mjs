@@ -17,7 +17,7 @@
 //   renderMarkdown: (escapedHtml) => html,
 // }
 
-import { phaseFromName, baseName } from '../../shared/lineage-name.mjs'
+import { decoratedNameText, displaySuffixForName } from '../../shared/lineage-name.mjs'
 // --- Pure helpers (copied from utils.mjs) ---
 
 export function esc(s) {
@@ -142,17 +142,17 @@ function phaseIconHtml(agentId, getAgents) {
   if (!getAgents) return ''
   const agents = getAgents()
   const a = agents?.find(x => x.id === agentId)
-  // Phase is encoded in the friendly name (":day"/":dusk"; bare = dawn), not a
-  // server field. dawn is the default and gets no icon.
-  return glyphForPhase(phaseFromName(a?.friendly_name))
+  return glyphForPhase(displaySuffixForName(a?.friendly_name)?.key)
 }
 
 // The HTML display primitive — a full friendly name → glyph + base text. The
-// bijective name display for HTML surfaces (search/thread result cards),
-// mirroring the React AgentName. Pass the full name; never a pre-stripped base.
+// name display for HTML surfaces (search/thread result cards), mirroring the
+// React AgentName. Pass the full name; never a pre-stripped base.
 export function agentNameHtml(name) {
   if (!name) return ''
-  return glyphForPhase(phaseFromName(name)) + esc(baseName(name))
+  const rule = displaySuffixForName(name)
+  const text = rule ? name.slice(0, -rule.suffix.length) : name
+  return glyphForPhase(rule?.key) + esc(text)
 }
 
 export function renderChatLine(m, ctx) {
@@ -164,9 +164,9 @@ export function renderChatLine(m, ctx) {
   // stamped, so they fall back to the current name (which is correct for "now").
   // `*NameNow` is set when the agent has since rotated → drives a hover tooltip
   // so the reader can see the current name + reach the agent by its stable id.
-  const periodNick = (id, stamped) => stamped != null ? baseName(stamped) : agentLabel(id)
+  const periodNick = (id, stamped) => stamped != null ? decoratedNameText(stamped) : agentLabel(id)
   const nowTitle = (id, nowName) => nowName != null
-    ? ` title="now: ${esc(baseName(nowName))} · ${esc(id || '')}"` : ''
+    ? ` title="now: ${esc(decoratedNameText(nowName))} · ${esc(id || '')}"` : ''
 
   // Timer countdown: live countdown for active timers. Remaining is computed
   // from data-timer-until at render time and re-ticked each second by the

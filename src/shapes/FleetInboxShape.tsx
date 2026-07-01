@@ -19,7 +19,7 @@ import {
   useValue,
 } from 'tldraw'
 import type { Editor, TLShapeId } from 'tldraw'
-import { agentDisplayName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
+import { agentDisplayLabel, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
 import { usePillDrag } from './FleetAgentsShape'
 import { ChatComposer } from './ChatComposer'
 import { useState, useCallback, useRef, useMemo, useEffect, useContext, memo } from 'react'
@@ -103,7 +103,7 @@ function makeChatCtx(agents: any[], tasks: any[]) {
   const agentLabel = (id: string) => {
     if (!id) return '[unknown]'
     const a = agents.find((a: any) => a.id === id)
-    if (a) return agentDisplayName(a)
+    if (a) return agentDisplayLabel(a)
     return typeof id === 'string' ? id : String(id)
   }
   const getNickClass = (id: string) => {
@@ -358,7 +358,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
       msgs.sort((a, b) => ((a.timestamp || '') < (b.timestamp || '') ? -1 : 1))
       const last = msgs[msgs.length - 1]
       const a = agents.find((x: any) => x.id === partnerId)
-      const partnerName = a ? agentDisplayName(a) : partnerId.replace('fleet:', '')
+      const partnerName = a ? agentDisplayLabel(a) : partnerId.replace('fleet:', '')
       out.push({
         partnerId,
         partnerName,

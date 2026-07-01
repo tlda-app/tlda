@@ -5,6 +5,7 @@ import test from 'node:test'
 
 import { matchesFleetFilter } from './filter-semantics.mjs'
 import { makeEventStore } from './event-store.mjs'
+import { decoratedNameText } from '../../shared/lineage-name.mjs'
 import {
   fleetFilterHasMatchingAgent,
   getAwakeFleetAgentCount,
@@ -220,6 +221,21 @@ test('fleet agent label resolver uses the maintained label index', () => {
   assert.deepEqual(getResolvedFleetAgentIdsForLabel('math'), ['fleet:helper'])
   assert.deepEqual(getResolvedFleetAgentIdsForLabel('missing'), [])
   assert.deepEqual(getResolvedFleetAgentIdsForLabel('fleet:direct'), ['fleet:direct'])
+
+  resetFleetAgentStoreForTest()
+})
+
+test('suffix-decorated display labels do not resolve as stripped filter names', () => {
+  resetFleetAgentStoreForTest([
+    { id: 'fleet:chief-day', friendly_name: 'chief:day', status: 'awake', dead: false, labels: [] },
+  ])
+
+  assert.equal(decoratedNameText('chief:day'), '☀ chief')
+  assert.deepEqual(getResolvedFleetAgentIds([[['dm', 'chief']]]), [])
+  assert.deepEqual(
+    getResolvedFleetAgentIds([[['dm', 'chief:day']]]),
+    ['fleet:chief-day']
+  )
 
   resetFleetAgentStoreForTest()
 })

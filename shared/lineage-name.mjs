@@ -1,23 +1,10 @@
 /**
- * lineage-name.mjs — the lineage naming convention, in one place.
+ * Friendly-name suffix helpers.
  *
- * Lineage is a friendly-name convention, NOT a server data model. The server
- * stores only `friendly_name`; it knows nothing about "phase". A lineage is a
- * chain of friendly names that rotate on handoff, and the phase (dawn / day /
- * dusk / night) is ENCODED IN THE NAME:
- *
- *   dawn  → bare base name        e.g. "conc5"        (the default worker, no icon)
- *   day   → base + ":day"         e.g. "conc5:day"    (the manager)
- *   dusk  → base + ":dusk"        e.g. "conc5:dusk"   (the consultant on the way out)
- *   night → base + ":night"       e.g. "conc5:night"  (last rung before aging out)
- *
- * Plus one phase that is NOT in the rotation:
- *   zombie → base + ":zombie"     e.g. "conc5:zombie" (manually resurrected after
- *                                                      it rotated out and died)
- *
- * Only three areas ever read this: search (lineage), handoff (rotation), and
- * display (parse phase → icon, strip suffix → pretty name). Everything general
- * — storage, chat routing, lifecycle — stays blind to it.
+ * Agent identity is the exact `friendly_name`. Suffixes such as ":day" and
+ * ":dusk" are just name endings: routing/filtering must use the full name, while
+ * display may replace a recognized ending with a glyph. The only intentional
+ * stripped-name use is scoped historical search / handoff rotation code.
  *
  * Imported by the client (Vite), the server (Node), the MCP server, and bots —
  * keep it dependency-free.
@@ -33,6 +20,34 @@ export const ALL_PHASES = Object.freeze([...PHASES, 'zombie'])
 /** The non-dawn phases carry an explicit ":<phase>" suffix; dawn is bare. */
 const SUFFIX_RE = /:(day|dusk|night|zombie)$/
 
+export const DISPLAY_SUFFIX_GLYPHS = Object.freeze([
+  { suffix: ':day', key: 'day', glyph: '☀' },
+  { suffix: ':dusk', key: 'dusk', glyph: '◐' },
+  { suffix: ':night', key: 'night', glyph: '☾' },
+  { suffix: ':zombie', key: 'zombie', glyph: '☠' },
+])
+
+export function displaySuffixForName(friendlyName) {
+  if (!friendlyName) return null
+  return DISPLAY_SUFFIX_GLYPHS.find(rule => friendlyName.endsWith(rule.suffix)) || null
+}
+
+export function splitDecoratedName(friendlyName) {
+  const rule = displaySuffixForName(friendlyName)
+  if (!rule) return { text: friendlyName || '', glyph: '', suffix: '', key: null }
+  return {
+    text: friendlyName.slice(0, -rule.suffix.length),
+    glyph: rule.glyph,
+    suffix: rule.suffix,
+    key: rule.key,
+  }
+}
+
+export function decoratedNameText(friendlyName) {
+  const parts = splitDecoratedName(friendlyName)
+  return parts.glyph ? `${parts.glyph} ${parts.text}` : parts.text
+}
+
 /**
  * The phase encoded in a friendly name. A bare name (no recognized suffix) is
  * `dawn` (the default). Returns null only when there is no name at all.
@@ -43,7 +58,7 @@ export function phaseFromName(friendlyName) {
   return m ? m[1] : 'dawn'
 }
 
-/** The base (lineage) name with any phase suffix stripped — what gets displayed. */
+/** Stripped base name for scoped historical search / handoff rotation only. */
 export function baseName(friendlyName) {
   if (!friendlyName) return friendlyName
   return friendlyName.replace(SUFFIX_RE, '')
