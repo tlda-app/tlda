@@ -27,6 +27,9 @@ export type FleetAgentFilter = [string, string][][] | null
 
 let agentStore: LiveStore<FleetAgent> = createLiveStore<FleetAgent>()
 let agentLabelIndex = agentStore.index<string>('labels', (agent) => labelsForAgent(agent))
+let awakeAgentIndex = agentStore.index<boolean>('awake-agent', (agent) =>
+  !agent.dead && !agent.human && agent.status === 'awake'
+)
 
 function keyOfEvent(event: Record<string, unknown>): string {
   const dbId = event._dbId
@@ -140,6 +143,10 @@ export function getFleetAgents(): readonly FleetAgent[] {
   return agentStore.all()
 }
 
+export function getAwakeFleetAgentCount(): number {
+  return awakeAgentIndex.get(true).length
+}
+
 function termLabel(term: unknown): string {
   return Array.isArray(term) ? String(term[1] || '') : String(term || '')
 }
@@ -234,5 +241,8 @@ export function resetFleetAgentStoreForTest(agents: readonly Record<string, unkn
   agentStore.dispose()
   agentStore = createLiveStore<FleetAgent>()
   agentLabelIndex = agentStore.index<string>('labels', (agent) => labelsForAgent(agent))
+  awakeAgentIndex = agentStore.index<boolean>('awake-agent', (agent) =>
+    !agent.dead && !agent.human && agent.status === 'awake'
+  )
   replaceFleetAgents(agents)
 }

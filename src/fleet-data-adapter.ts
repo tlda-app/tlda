@@ -39,6 +39,8 @@ import {
 } from './fleet/fleet-data.mjs'
 import {
   fleetFilterHasMatchingAgent,
+  getAwakeFleetAgentCount,
+  getFleetAgents,
   getFilteredFleetEvents,
   getResolvedFleetAgentIdsForLabel,
   getResolvedFleetAgentIds,
@@ -574,6 +576,48 @@ export function useFleetFilterHasMatchingAgent(dnfFilter?: [string, string][][] 
   }, [filter])
 
   return useSyncExternalStore(subscribeMatches, computeSnapshot, computeSnapshot)
+}
+
+export function currentFleetAgents(): any[] {
+  return [...getFleetAgents()]
+}
+
+export function useAwakeFleetAgentCount(frameId?: string): number {
+  const snapshotRef = useRef<{ key: string; value: number } | null>(null)
+
+  const computeSnapshot = useCallback((): number => {
+    const playback = frameId && frameId.startsWith('shape:') ? getPlaybackData(frameId) : null
+    if (playback) return getPlaybackAgents(playback).filter((agent: any) => !agent.dead && !agent.human && agent.status === 'awake').length
+    const value = getAwakeFleetAgentCount()
+    const key = String(value)
+    const cached = snapshotRef.current
+    if (cached?.key === key) return cached.value
+    snapshotRef.current = { key, value }
+    return value
+  }, [frameId])
+
+  const subscribeCount = useCallback((onStoreChange: () => void) => {
+    const playbackFrame = frameId && frameId.startsWith('shape:') ? frameId : null
+    if (playbackFrame && getPlaybackData(playbackFrame)) {
+      return subscribePlayback(playbackFrame, () => {
+        snapshotRef.current = null
+        onStoreChange()
+      })
+    }
+    void ensureInit()
+    return subscribeFleetAgents(() => {
+      const before = snapshotRef.current?.key ?? ''
+      computeSnapshot()
+      const after = snapshotRef.current?.key ?? ''
+      if (before !== after) onStoreChange()
+    })
+  }, [computeSnapshot, frameId])
+
+  useEffect(() => {
+    void ensureInit()
+  }, [])
+
+  return useSyncExternalStore(subscribeCount, computeSnapshot, computeSnapshot)
 }
 
 

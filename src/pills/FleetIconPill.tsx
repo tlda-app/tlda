@@ -16,8 +16,7 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react'
 import { stopEventPropagation, useUniqueSafeId } from 'tldraw'
 import type { Editor } from 'tldraw'
-import { useFleetAgents, useFleetIdentity } from '../fleet-data-adapter'
-import { countAwakeFleetAgents } from '../fleet/agent-counts'
+import { currentFleetAgents, useAwakeFleetAgentCount, useFleetIdentity } from '../fleet-data-adapter'
 import { createFleetLayoutDetailed, type FleetLayoutCreateResult, type FleetLayoutVariant } from '../shapes/fleet-utils'
 import { log } from '../logger'
 import { CornerButtonSlider, pickCornerSliderIndex } from '../CornerButtonSlider'
@@ -200,7 +199,7 @@ function applyFleetLayoutPreset({
   onShown,
 }: {
   mainEditor: Editor
-  agents: ReturnType<typeof useFleetAgents>
+  agents: any[]
   presetId: LayoutId
   source: LayoutSource
   onShown?: () => void
@@ -295,7 +294,6 @@ interface FleetIconPillProps { mainEditor: Editor }
 export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
   const countMaskId = useUniqueSafeId('fleet-count-mask')
   const badgeRef = useRef<HTMLSpanElement>(null)
-  const agents = useFleetAgents()
   const identity = useFleetIdentity()
   const [hidden, setHidden] = useState(() => isFleetHidden())
   const [dragging, setDragging] = useState(false)
@@ -303,23 +301,21 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
   const [sliderAnchor, setSliderAnchor] = useState<DOMRect | null>(null)
 
-  const aliveCount = countAwakeFleetAgents(agents)
+  const aliveCount = useAwakeFleetAgentCount()
 
   // Refs for closure-stable drag state (used inside window listeners)
   const justDraggedRef = useRef(false)
   const dragStartRef = useRef<{ x: number; y: number } | null>(null)
   const isDragRef = useRef(false)
   const selectedIdxRef = useRef<number | null>(null)
-  const agentsRef = useRef(agents)
   const autoLayoutAppliedRef = useRef<string | null>(null)
   const identifyingForUrlRef = useRef<string | null>(null)
-  agentsRef.current = agents
 
   const applyPreset = useCallback((idx: number, source: LayoutSource = 'fan-preset') => {
     const preset = LAYOUT_PRESETS[idx]
     applyFleetLayoutPreset({
       mainEditor,
-      agents: agentsRef.current,
+      agents: currentFleetAgents(),
       presetId: preset.id,
       source,
       onShown: () => setHidden(false),
