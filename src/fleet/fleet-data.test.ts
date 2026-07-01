@@ -7,6 +7,7 @@ import { matchesFleetFilter } from './filter-semantics.mjs'
 import { makeEventStore } from './event-store.mjs'
 import {
   fleetFilterHasMatchingAgent,
+  getAwakeFleetAgentCount,
   getFilteredFleetEvents,
   getFleetEvents,
   getResolvedFleetAgentIdsForLabel,
@@ -241,6 +242,28 @@ test('fleet filter possible check is stable across unrelated agent churn', () =>
 
   upsertFleetAgents([{ id: 'fleet:missing', friendly_name: 'missing', status: 'awake', labels: [] }])
   assert.equal(fleetFilterHasMatchingAgent(missingFilter, { id: 'fleet:skip', name: 'skip' }), true)
+
+  resetFleetAgentStoreForTest()
+})
+
+test('awake fleet agent count is a maintained derived index', () => {
+  resetFleetAgentStoreForTest([
+    { id: 'fleet:skip', friendly_name: 'skip', status: 'awake', human: true, labels: [] },
+    { id: 'fleet:alpha', friendly_name: 'alpha', status: 'awake', labels: [] },
+    { id: 'fleet:beta', friendly_name: 'beta', status: 'hibernating', labels: [] },
+    { id: 'fleet:gamma', friendly_name: 'gamma', status: 'dead', dead: true, labels: [] },
+  ])
+
+  assert.equal(getAwakeFleetAgentCount(), 1)
+
+  upsertFleetAgents([{ id: 'fleet:unrelated', friendly_name: 'unrelated', status: 'hibernating', labels: [] }])
+  assert.equal(getAwakeFleetAgentCount(), 1)
+
+  upsertFleetAgents([{ id: 'fleet:beta', friendly_name: 'beta', status: 'awake', labels: [] }])
+  assert.equal(getAwakeFleetAgentCount(), 2)
+
+  upsertFleetAgents([{ id: 'fleet:alpha', friendly_name: 'alpha', status: 'dead', dead: true, labels: [] }])
+  assert.equal(getAwakeFleetAgentCount(), 1)
 
   resetFleetAgentStoreForTest()
 })
