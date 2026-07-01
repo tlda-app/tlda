@@ -1288,6 +1288,10 @@ const ElapsedTime = memo(function ElapsedTime({ startMs }: { startMs: number }) 
   return <span className="thinking-elapsed">{`(${formatElapsedTime(startMs)})`}</span>
 })
 
+function setTickerText(span: HTMLElement, text: string) {
+  if (span.textContent !== text) span.textContent = text
+}
+
 function ContextBadge({ percent }: { percent?: number }) {
   if (percent == null) return null
   const color = percent <= 15 ? '#e57373' : percent <= 30 ? '#ffb74d' : '#81c784'
@@ -3277,7 +3281,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         const txt = span.textContent || ''
         const arrowIdx = txt.indexOf('→')
         const tail = arrowIdx >= 0 ? txt.slice(arrowIdx) : ''
-        span.textContent = `⏱ ${timeStr} ${tail}`.trimEnd()
+        setTickerText(span, `⏱ ${timeStr} ${tail}`.trimEnd())
       }
       // ScheduleWakeup cards: same idea — recompute the "in Xm Ys" countdown each
       // second from the absolute fire epoch baked into data-fire-at.
@@ -3286,7 +3290,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         const fireAt = parseInt(node.getAttribute('data-fire-at') || '0', 10)
         const span = node.querySelector<HTMLElement>('.schedule-time')
         if (!fireAt || !span) continue
-        span.textContent = scheduleTimeLabel(fireAt)
+        setTickerText(span, scheduleTimeLabel(fireAt))
       }
     }
     const id = setInterval(tick, 1000)
