@@ -2102,8 +2102,7 @@ You're taking over as the worker; **${advisorName}** (the agent you're replacing
 ${triggerText ? `\n**Handoff message from ${requesterLabel}:**\n> ${triggerText}\n` : ''}
 **Steps:**
 1. Read the recent thread to understand where things stand.
-2. Check in with Skip — 3 sentences max: what you understand, what's open, what you'll start on.
-3. Wait for Skip's confirmation before diving in.`,
+2. Make a plan, send Skip a quick summary (what you understand, what's open, what you'll start on), then—unless Skip said to wait—get to work.`,
         })
         sendChat(OWNER_ID, `Direct handoff complete. **${workerName}** is the new worker; **${advisorName}** is now advisor-only.`)
       } catch (e) {
@@ -2269,8 +2268,7 @@ ${handoffInfo.triggerText ? `\n**Skip's handoff message — pay attention to thi
 **Steps:**
 1. Read the briefing: \`${briefingPath}\`
 2. Run the three-check from the \`pickup\` skill
-3. Check in with Skip — short message, 3 sentences max: what you understand, what's open, what you'll start on
-4. Wait for Skip's confirmation before diving in
+3. Make a plan, send Skip a quick summary (what you understand, what's open, what you'll start on), then—unless Skip said to wait—get to work.
 
 The briefing is your primary source. Only go to the original thread if the briefing is incomplete.`,
           })
