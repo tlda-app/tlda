@@ -1895,9 +1895,10 @@ function FleetChatInner({ shape }: { shape: any }) {
   }, [filterKey, agents])
 
   const hibernatingAgents = useMemo(() => {
+    if (!statusTargetIds) return new Set<string>()
     const result = new Set<string>()
     for (const a of agents) {
-      if (a.status === 'hibernating' && (!statusTargetIds || statusTargetIds.has(a.id))) {
+      if (a.status === 'hibernating' && statusTargetIds.has(a.id)) {
         result.add(a.id)
       }
     }
