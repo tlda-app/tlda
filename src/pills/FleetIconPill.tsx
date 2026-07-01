@@ -18,7 +18,7 @@ import { stopEventPropagation, useUniqueSafeId } from 'tldraw'
 import type { Editor } from 'tldraw'
 import { useFleetAgents, useFleetIdentity } from '../fleet-data-adapter'
 import { countAwakeFleetAgents } from '../fleet/agent-counts'
-import { createFleetLayoutDetailed, type FleetLayoutCreateResult } from '../shapes/fleet-utils'
+import { createFleetLayoutDetailed, type FleetLayoutCreateResult, type FleetLayoutVariant } from '../shapes/fleet-utils'
 import { log } from '../logger'
 import { CornerButtonSlider, pickCornerSliderIndex } from '../CornerButtonSlider'
 import './FleetIconPill.css'
@@ -42,15 +42,22 @@ const ITEM_GAP = 4         // px between tiles
 // landed (the filter write no-ops in the HUD overlay) and the shape is being
 // retired for the normal-inbox evolution. The shape code/schema stay for the
 // inbox-evolve dead-code cut; this just makes the broken layout unreachable.
-type LayoutId = 'phone' | '3-col' | '2x2' | 'big-chat' | 'both-margins'
+type LayoutId = '3col' | '2col' | 'wide' | 'grid' | 'phone'
 type LayoutSource = 'badge-drag-release' | 'fan-preset' | 'url-auto'
 const LAYOUT_PRESETS: { id: LayoutId; title: string }[] = [
+  { id: 'wide', title: 'Wide: large chat over source editor' },
+  { id: '3col', title: 'Three-column: agents + search | chat | chat + docview' },
+  { id: '2col', title: 'Two-column: left docview + full right source editor' },
+  { id: 'grid', title: 'Grid: agents + search | 2×2 chat grid' },
   { id: 'phone', title: 'Phone reset: agents/inbox | chat | document' },
-  { id: '3-col', title: 'Three-column: agents + search | chat | chat + docview' },
-  { id: '2x2', title: '2×2: agents + search | four chats' },
-  { id: 'big-chat', title: 'Big chat: large chat over source editor' },
-  { id: 'both-margins', title: 'Both margins: chat + docview | document | source editor' },
 ]
+const LAYOUT_VARIANTS: Record<LayoutId, FleetLayoutVariant> = {
+  wide: 'big-chat',
+  '3col': '3-col',
+  '2col': 'both-margins',
+  grid: '2x2',
+  phone: 'phone',
+}
 
 /** Mini SVG diagram showing the layout arrangement */
 function LayoutIcon({ id, size = 20 }: { id: LayoutId; size?: number }) {
@@ -81,7 +88,7 @@ function LayoutIcon({ id, size = 20 }: { id: LayoutId; size?: number }) {
   )
 
   const layouts: Record<LayoutId, React.JSX.Element> = {
-    '3-col': (
+    '3col': (
       // [agents/search] [chat] [chat+docview] | DOC
       <>
         <rect x={0} y={0} width={s*0.16} height={s*0.55} rx={r} fill={ap} />
@@ -92,19 +99,19 @@ function LayoutIcon({ id, size = 20 }: { id: LayoutId; size?: number }) {
         {docEl()}
       </>
     ),
-    'both-margins': (
-      // [agents/search + chat/docview] | DOC | [source editor]
+    '2col': (
+      // [agents/search + chat/docview] | DOC | [source]
       <>
         <rect x={0} y={0} width={s*0.16} height={s*0.55} rx={r} fill={ap} />
         <rect x={0} y={s*0.55+g} width={s*0.16} height={s*0.45-g} rx={r} fill={sr} />
         <rect x={s*0.16+g} y={0} width={s*0.24-g} height={s*0.7} rx={r} fill={ch} />
         <rect x={s*0.16+g} y={s*0.7+g} width={s*0.24-g} height={s*0.3-g} rx={r} fill={dv} />
         {docEl(s*0.4+g)}
-        <rect x={s*0.62+g} y={0} width={s*0.22-g} height={s} rx={r} fill={ch} />
+        <rect x={s*0.62+g} y={0} width={s*0.22-g} height={s} rx={r} fill={dv} />
       </>
     ),
-    'big-chat': (
-      // [agents/search] [wide chat over source editor] | DOC
+    'wide': (
+      // [agents/search] [wide chat/source] | DOC
       <>
         <rect x={0} y={0} width={s*0.16} height={s*0.55} rx={r} fill={ap} />
         <rect x={0} y={s*0.55+g} width={s*0.16} height={s*0.45-g} rx={r} fill={sr} />
@@ -113,8 +120,8 @@ function LayoutIcon({ id, size = 20 }: { id: LayoutId; size?: number }) {
         {docEl()}
       </>
     ),
-    '2x2': (
-      // [agents/search] [2x2 chats] | DOC - four chats in a square (no docview)
+    'grid': (
+      // [agents/search] [2x2 chats] | DOC
       <>
         <rect x={0} y={0} width={s*0.16} height={s*0.55} rx={r} fill={ap} />
         <rect x={0} y={s*0.55+g} width={s*0.16} height={s*0.45-g} rx={r} fill={sr} />
@@ -126,13 +133,12 @@ function LayoutIcon({ id, size = 20 }: { id: LayoutId; size?: number }) {
       </>
     ),
     'phone': (
-      // A phone silhouette: body, speaker slit, content blocks, and home indicator.
+      // Phone: three full-screen lanes: agents/inbox | chat | document.
       <>
-        <rect x={s*0.3} y={s*0.03} width={s*0.4} height={s*0.94} rx={s*0.09} stroke="currentColor" strokeWidth={0.7} fill="none" />
-        <line x1={s*0.44} y1={s*0.105} x2={s*0.56} y2={s*0.105} stroke="currentColor" strokeWidth={0.7} strokeLinecap="round" />
-        <rect x={s*0.36} y={s*0.17} width={s*0.28} height={s*0.15} rx={r} fill={ap} />
-        <rect x={s*0.36} y={s*0.34} width={s*0.28} height={s*0.5} rx={r} fill={ch} />
-        <line x1={s*0.43} y1={s*0.915} x2={s*0.57} y2={s*0.915} stroke="currentColor" strokeWidth={0.9} strokeLinecap="round" />
+        <rect x={0} y={0} width={s*0.25-g/2} height={s*0.38-g/2} rx={r} fill={ap} />
+        <rect x={0} y={s*0.38+g/2} width={s*0.25-g/2} height={s*0.62-g/2} rx={r} fill={sr} />
+        <rect x={s*0.25+g} y={0} width={s*0.28-g} height={s} rx={r} fill={ch} />
+        {docEl(s*0.55+g)}
       </>
     ),
   }
@@ -235,7 +241,7 @@ function applyFleetLayoutPreset({
     }
     // createFleetLayoutDetailed is async (awaits whenDeviceReady before stamping
     // ownership) — must await so `created` is the boolean result, not a Promise.
-    const result = await createFleetLayoutDetailed(mainEditor, agents, presetId)
+    const result = await createFleetLayoutDetailed(mainEditor, agents, LAYOUT_VARIANTS[presetId])
     lastResult = result
     if (result.created) {
       completed = true
@@ -506,7 +512,6 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
           className="fleet-layout-slider"
           options={layoutSliderOptions}
           activeIndex={selectedIdx}
-          onSelect={(idx) => applyPreset(idx, 'fan-preset')}
         />
       )}
     </div>
