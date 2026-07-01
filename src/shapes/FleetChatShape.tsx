@@ -81,6 +81,25 @@ const DEFAULT_H = 600
 const FLEET_API = DATABASE_HTTP
 type ChatTrafficMode = 'normal' | 'quiet'
 type ComposerTrafficFilterMode = 'dm-quiet' | 'dm' | 'agent' | 'custom'
+type FleetChatRenderCounter = {
+  active?: boolean
+  renderCount?: number
+  events?: Array<{ type: 'render'; t: number; shapeId?: string }>
+}
+
+function recordFleetChatRender(shape: any) {
+  if (typeof window === 'undefined') return
+  const testWindow = window as Window & { __tldaFleetChatRenderCounter?: FleetChatRenderCounter }
+  const counter = testWindow.__tldaFleetChatRenderCounter
+  if (!counter?.active) return
+  counter.renderCount = (counter.renderCount || 0) + 1
+  if (!counter.events) counter.events = []
+  counter.events.push({
+    type: 'render',
+    t: typeof performance !== 'undefined' ? performance.now() : Date.now(),
+    shapeId: shape?.id,
+  })
+}
 
 function isFleetPillRecord(record: any): boolean {
   return record?.typeName === 'shape' && record.type === 'fleet-pill'
@@ -1737,6 +1756,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
 
 
 function FleetChatInner({ shape }: { shape: any }) {
+  recordFleetChatRender(shape)
   const editor = useEditor()
   const viewportId = useVisibilityViewportId()
   const doc = useContext(DocContext)
