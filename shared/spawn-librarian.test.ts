@@ -157,7 +157,7 @@ describe('spawn librarian liveness routing', () => {
     assert.deepEqual(
       librarian.decideWake(
         agent,
-        { agent_id: agent.id, tmux_session: 'fleet-a', alive: false },
+        { agent_id: agent.id, tmux_session: 'fleet-a', state: 'dead', reason: 'tmux gone' },
         { serverAlive: true }
       ),
       { action: 'respawn' }
