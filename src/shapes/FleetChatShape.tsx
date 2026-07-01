@@ -45,7 +45,7 @@ import {
 } from '../fleet/filter-semantics.mjs'
 import { appendToken } from '../authToken'
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
-import { useFleetChatAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useSuggestions, clearGroup, sendMessage, loadBefore, resolveFilter, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
+import { useFleetChatAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useFleetFilterHasMatchingAgent, useSuggestions, clearGroup, sendMessage, loadBefore, resolveFilter, resolveFleetAgentLabelIds, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
 import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore, createTemporaryMarkdownColumn } from './FleetPillShape'
 import { agentDisplayName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
@@ -1912,9 +1912,9 @@ function FleetChatInner({ shape }: { shape: any }) {
   // matches the chat/history membership set exactly.
   const resolveToFleetIds = useCallback((label: string): string[] => {
     if (label.startsWith('fleet:')) return [label]
-    const matched = agents.filter((a: any) => labelsForAgent(a).includes(label))
-    return matched.length > 0 ? matched.map((a: any) => a.id) : [label]
-  }, [agents])
+    const matched = resolveFleetAgentLabelIds(label)
+    return matched.length > 0 ? matched : [label]
+  }, [])
 
   const resolveToFleetId = useCallback((label: string): string => {
     if (label.startsWith('fleet:')) return label
@@ -4452,21 +4452,8 @@ function FleetChatInner({ shape }: { shape: any }) {
   // (Terminal auto-pin on permission prompts removed — chat cards handle this now)
 
   // Detect impossible filter: filter is set but no AND group can match any known agent
-  const isImpossibleFilter = useMemo(() => {
-    if (filter.length === 0) return false
-    const allIds = agents.map((a: any) => {
-      const labels = [...(a.labels || []), a.friendly_name, a.id].filter(Boolean)
-      return { id: a.id, labels }
-    })
-    // Also include human
-    if (getHumanId()) allIds.push({ id: getHumanId(), labels: [getHumanName() || 'user', getHumanId()] })
-    // For each OR clause, check if there's any agent that matches ALL terms
-    return !filter.some(clause =>
-      allIds.some(agent =>
-        clause.every(([_role, label]) => agent.labels.includes(label))
-      )
-    )
-  }, [filterKey, agents])
+  const filterHasMatchingAgent = useFleetFilterHasMatchingAgent(dnfFilter, frameId)
+  const isImpossibleFilter = filter.length > 0 && !filterHasMatchingAgent
 
   // Resolve the filter to the fleet-id set for history paging — same resolver
   // as the initial load and the live display. null = no filter (unfiltered
