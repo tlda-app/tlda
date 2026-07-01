@@ -8,8 +8,12 @@ import { makeEventStore } from './event-store.mjs'
 import {
   getFilteredFleetEvents,
   getFleetEvents,
+  getResolvedFleetAgentIds,
   replaceFleetEvents,
+  replaceFleetAgents,
+  resetFleetAgentStoreForTest,
   resetFleetEventStoreForTest,
+  upsertFleetAgents,
   upsertFleetEvent,
   viewFleetEvents,
   type FleetEvent,
@@ -152,4 +156,52 @@ test('pure snapshots and repeated keyed views do not duplicate event rows', () =
   second.dispose()
   upsertFleetEvent(eventAt(23, 'fleet:skip', 'fleet:gamma', 23))
   assert.deepEqual(ids(second.get()), [])
+})
+
+test('fleet agent indexed resolver matches live/dead filter semantics', () => {
+  resetFleetAgentStoreForTest([
+    { id: 'fleet:old-chief', friendly_name: 'chief', status: 'hibernating', dead: true, labels: [] },
+    { id: 'fleet:chief', friendly_name: 'chief', status: 'awake', dead: false, labels: [] },
+    { id: 'fleet:chat-render-fix', friendly_name: 'chat-render-fix', status: 'hibernating', dead: false, labels: [] },
+  ])
+
+  assert.deepEqual(
+    [...getResolvedFleetAgentIds([[['from', 'chief']], [['to', 'chief']]])].sort(),
+    ['fleet:chief']
+  )
+  assert.deepEqual(
+    [...getResolvedFleetAgentIds([[['from', 'chief']], [['to', 'chief']]], { status: 'hibernating' })],
+    []
+  )
+  assert.deepEqual(
+    [...getResolvedFleetAgentIds([[['from', 'chat-render-fix']], [['to', 'chat-render-fix']]], { status: 'hibernating' })],
+    ['fleet:chat-render-fix']
+  )
+
+  upsertFleetAgents([{ id: 'fleet:chief', friendly_name: 'chief', status: 'dead', dead: true, labels: [] }])
+
+  assert.deepEqual(
+    [...getResolvedFleetAgentIds([[['from', 'chief']], [['to', 'chief']]])].sort(),
+    ['fleet:chief', 'fleet:old-chief']
+  )
+  resetFleetAgentStoreForTest()
+})
+
+test('replaceFleetAgents and deltas maintain the label index without roster scans', () => {
+  resetFleetAgentStoreForTest()
+  replaceFleetAgents([
+    { id: 'fleet:alpha', friendly_name: 'alpha', status: 'awake', labels: ['math'] },
+    { id: 'fleet:beta', friendly_name: 'beta', status: 'hibernating', labels: ['math'] },
+  ])
+  assert.deepEqual(
+    [...getResolvedFleetAgentIds([[['from', 'math']]], { status: 'hibernating' })],
+    ['fleet:beta']
+  )
+
+  upsertFleetAgents([{ id: 'fleet:alpha', friendly_name: 'alpha', status: 'hibernating', labels: ['math'] }])
+  assert.deepEqual(
+    [...getResolvedFleetAgentIds([[['from', 'math']]], { status: 'hibernating' })].sort(),
+    ['fleet:alpha', 'fleet:beta']
+  )
+  resetFleetAgentStoreForTest()
 })
