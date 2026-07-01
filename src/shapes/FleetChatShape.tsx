@@ -45,7 +45,7 @@ import {
 } from '../fleet/filter-semantics.mjs'
 import { appendToken } from '../authToken'
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
-import { useFleetChatAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useFleetFilterHasMatchingAgent, useSuggestions, clearGroup, sendMessage, loadBefore, resolveFilter, resolveFleetAgentLabelIds, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
+import { useFleetChatAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useFleetFilterHasMatchingAgent, useSuggestions, clearGroup, sendMessage, loadBefore, resolveFleetAgentLabelIds, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
 import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore, createTemporaryMarkdownColumn } from './FleetPillShape'
 import { agentDisplayName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
@@ -1912,8 +1912,8 @@ function FleetChatInner({ shape }: { shape: any }) {
   }, [filterKey])
 
   // Resolve a friendly name/label to fleet IDs for UI interactions such as
-  // drag/drop. Status-row scoping below uses resolveFilter() instead so it
-  // matches the chat/history membership set exactly.
+  // drag/drop. Chat/history/status scoping uses the maintained live-store target
+  // view so roster heartbeat churn does not reopen filtered render paths.
   const resolveToFleetIds = useCallback((label: string): string[] => {
     if (label.startsWith('fleet:')) return [label]
     const matched = resolveFleetAgentLabelIds(label)
@@ -1957,16 +1957,14 @@ function FleetChatInner({ shape }: { shape: any }) {
   // chat appear empty. Fix: always fetch agent-specific history from the DB.
   const virtuosoRef = useRef<VirtuosoHandle | null>(null)
 
-  // Resolve the filter to its fleet-id set ONCE per (filter, agents) change, as a
-  // stable sorted string. The backfill effect below depends on THIS string, not
-  // the churning `agents` array — so it only re-fires when the resolved id-set
-  // actually changes, not on every agent heartbeat (the 6-panels × 600-agents
-  // re-fire that was pegging the browser at 112% CPU).
+  // Resolve the filter to its fleet-id set via the maintained live-store target
+  // view. The backfill effect below depends on THIS string, not the churning
+  // `agents` array — so it only re-fires when the resolved id-set actually
+  // changes, not on every agent heartbeat.
   const resolvedFilterIdKey = useMemo(() => {
     if (!dnfFilter || dnfFilter.length === 0) return ''
-    return [...resolveFilter(dnfFilter)].sort().join(',')
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- depend on filterKey (the stable string form of dnfFilter) not dnfFilter (new array identity each render); resolveFilter is a stable module import
-  }, [filterKey, agents])
+    return [...(statusTargetIds || [])].sort().join(',')
+  }, [filterKey, statusTargetIds])
 
   const historyLoadedRef = useRef<string | null>(null)
   useEffect(() => {
@@ -4464,15 +4462,19 @@ function FleetChatInner({ shape }: { shape: any }) {
   // view loads global history); [] = filtered but nothing resolved yet (don't
   // fall back to global history inside a filtered view).
   const loadBeforeAgents = useMemo<string[] | null>(
-    () => (dnfFilter ? [...resolveFilter(dnfFilter)] : null),
-    // filterKey is the stable string encoding of dnfFilter (avoids re-running on
-    // a fresh array identity each render); resolveFilter is a stable module import.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [filterKey, agents]
+    () => (dnfFilter ? [...(statusTargetIds || [])] : null),
+    [filterKey, statusTargetIds]
   )
 
   // Infinite scroll — load older messages
   const loadingMore = useRef(false)
+  const chatMessagesRef = useRef(chatMessages)
+  useEffect(() => { chatMessagesRef.current = chatMessages }, [chatMessages])
+  const hasChatMessages = chatMessages.length > 0
+  const loadBeforeAgentsKey = useMemo(
+    () => loadBeforeAgents === null ? 'global' : loadBeforeAgents.join(','),
+    [loadBeforeAgents],
+  )
   const loadOlderHistory = useCallback(async () => {
     if (loadingMore.current || chatMessages.length === 0) return
     // Filtered view that hasn't resolved to any id yet — don't page in global history.
@@ -4543,20 +4545,32 @@ function FleetChatInner({ shape }: { shape: any }) {
     const el = chatLogEl
     // Auto-load only for a resolved filtered view (a specific id set) — not for
     // the unfiltered view (null) and not while a filter is still unresolved ([]).
-    if (!el || loadingMore.current || chatMessages.length === 0 || !loadBeforeAgents || loadBeforeAgents.length === 0) return
-    if (el.scrollHeight > el.clientHeight) return
-    const oldestTs = chatMessages[0]?.timestamp
-    if (!oldestTs) return
-    loadingMore.current = true
-    loadBefore(loadBeforeAgents, oldestTs, 50, {
-      onBeforeNotify: (added: number) => {
-        setFirstItemIndex(index => Math.max(0, index - added))
-      },
-    }).then(() => {
-      // Older rows fold into the single store; the view re-renders off it.
-      loadingMore.current = false
-    })
-  }, [chatLogEl, chatMessages, loadBeforeAgents])
+    if (!el || loadingMore.current || !hasChatMessages || !loadBeforeAgents || loadBeforeAgents.length === 0) return
+    let cancelled = false
+    const fillUnderfullInitialView = async () => {
+      while (!cancelled && el.scrollHeight <= el.clientHeight) {
+        if (loadingMore.current) return
+        const currentMessages = chatMessagesRef.current
+        if (currentMessages.length === 0) return
+        const oldestTs = currentMessages[0]?.timestamp
+        if (!oldestTs) return
+        loadingMore.current = true
+        try {
+          const added = await loadBefore(loadBeforeAgents, oldestTs, 50, {
+            onBeforeNotify: (added: number) => {
+              setFirstItemIndex(index => Math.max(0, index - added))
+            },
+          })
+          if (added <= 0) return
+          await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
+        } finally {
+          loadingMore.current = false
+        }
+      }
+    }
+    void fillUnderfullInitialView()
+    return () => { cancelled = true }
+  }, [chatLogEl, filterKey, loadBeforeAgentsKey, hasChatMessages])
 
   // --- Chat log drag → ghost pill ---
   // Uses native capture-phase listeners because tldraw intercepts React events
@@ -5217,6 +5231,11 @@ function FleetChatInner({ shape }: { shape: any }) {
             alignToBottom
             followOutput={() => (!userScrolledUpRef.current || hardLockedRef.current) ? 'auto' : false}
             startReached={() => {
+              // Virtuoso can report "start reached" during bottom-follow layout
+              // settlement on short lists. Only user scrollback should page
+              // older history; otherwise a simple append prepends rows and
+              // reindexes the visible window.
+              if (!userScrolledUpRef.current) return
               void loadOlderHistory()
             }}
             atBottomThreshold={24}
@@ -5287,7 +5306,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                     hibernatingAgents={hibernatingAgents}
                     statusTargetIds={statusTargetIds}
                     ctx={ctx}
-                    agents={agents}
+                    agents={ctxAgents}
                     itemCount={rawItems.length}
                     escalationState={escalationState}
                     suggestions={suggestionsPending}
