@@ -33,6 +33,10 @@ test('agent loose-end report sends direct nudge to same agent', () => {
   assert.equal(nudge.agentId, agentId)
   assert.equal(nudge.kind, 'report')
   assert.equal(nudge.message, LOOSE_END_REPORT_MSG)
+  assert.match(nudge.message, /identify the next unresolved action/i)
+  assert.match(nudge.message, /if responsibility remains, keep the task open/i)
+  assert.match(nudge.message, /if the responsibility is over, mark or clear the task done/i)
+  assert.doesNotMatch(nudge.message, /Do not make Skip/i)
 })
 
 test('detects Skip process corrections and nudges target agent', () => {

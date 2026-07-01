@@ -120,12 +120,14 @@ test('task kick still honors legacy bare-timestamp lastKicked entries', () => {
   }).length, 0)
 })
 
-test('task kick message includes loose-end self-check', () => {
+test('task kick message includes task-state and loose-end self-check', () => {
   const message = formatTaskKickMessage({
     task: task(),
     taskAgeMs: 10 * 60_000,
   })
 
-  assert.match(message, /are there loose ends you can track down yourself/i)
+  assert.match(message, /if responsibility remains, keep the task open/i)
+  assert.match(message, /if the responsibility is over, mark or clear the task done/i)
+  assert.match(message, /loose ends you can resolve yourself/i)
   assert.match(message, /report a true blocker with evidence/i)
 })

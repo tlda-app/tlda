@@ -83,5 +83,5 @@ export function formatTaskKickMessage({ task, taskAgeMs, recovery = false } = {}
   const prefix = recovery
     ? `📬 Task recovery: you hibernated with unfinished task **${description}** (${ageMin}m old).`
     : `📬 Task check-in: you still have pending task **${description}** (${ageMin}m old).`
-  return `${prefix} Call \`my_task()\`, continue the work, or report/mark it done if it is complete. Before reporting or waiting: are there loose ends you can track down yourself? Continue, set a timer, or report a true blocker with evidence.`
+  return `${prefix} Call \`my_task()\` and interpret the task state before waiting: if responsibility remains, keep the task open and continue or assign the next action; if the responsibility is over, mark or clear the task done. Before reporting or pausing, check for loose ends you can resolve yourself, then continue, set a timer, or report a true blocker with evidence.`
 }
