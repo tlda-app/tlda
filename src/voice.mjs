@@ -287,6 +287,9 @@ let _audioCaptureRetries = 0
 let _lastResultTime = 0  // timestamp of last onresult — used for HUD health color
 let _recordStartTime = 0   // Date.now() at record start — for time-to-first-interim instrumentation
 let _firstInterimLogged = false
+let _lastChromeMissingnessMarker = ''
+let _chromeUnexpectedRestartFailures = 0
+const CHROME_UNEXPECTED_RESTART_LIMIT = 5
 
 // Generation counter — bumped whenever _left is cleared (send, chat-switch,
 // startRecording, setVoiceTarget). Each _setupRecognition() snapshots the
@@ -1057,6 +1060,70 @@ function fillTextarea(text) {
   _filling = false
 }
 
+function formatMissingnessSeconds(ms) {
+  const seconds = Math.max(0, ms / 1000)
+  const rounded = seconds < 10 ? Math.round(seconds * 10) / 10 : Math.round(seconds)
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1)
+}
+
+function insertChromeMissingnessMarker(dropStartedAt, restartedAt = Date.now()) {
+  if (!_recording || _backend !== 'chrome') return
+  const seconds = formatMissingnessSeconds(restartedAt - dropStartedAt)
+  const marker = `[missed ${seconds} seconds due to technical difficulties]`
+  _lastChromeMissingnessMarker = marker
+
+  if (_state !== 'speech') {
+    _state = 'speech'
+    const cursor = _activeTextarea?.selectionStart ?? (_activeTextarea?.value?.length ?? 0)
+    _left = _activeTextarea?.value?.slice(0, cursor) ?? ''
+    _right = _activeTextarea?.value?.slice(cursor) ?? ''
+    _interim = ''
+  }
+
+  if (_interim) {
+    _left += postProcessTranscript(_interim)
+    _interim = ''
+  }
+  _left += `${_left && !_left.endsWith(' ') ? ' ' : ''}${marker} `
+  fillTextarea(_left + _right)
+}
+
+function startChromeAfterUnexpectedStop(myGeneration, dropStartedAt) {
+  if (!_recording || _backend !== 'chrome') return
+  if (_chromeUnexpectedRestartFailures >= CHROME_UNEXPECTED_RESTART_LIMIT) {
+    stopRecording()
+    showHud('mic failed — tap to resume', '#c87070')
+    fadeHud(5000)
+    return
+  }
+  _chromeUnexpectedRestartFailures++
+  if (_generation === myGeneration) _setupRecognition()
+  try {
+    showVoiceRestarting('speech recognition onend')
+    _recognition.start()
+    insertChromeMissingnessMarker(dropStartedAt)
+    markVoiceRestarted()
+  } catch (err) {
+    if (err.name !== 'InvalidStateError') {
+      stopRecording()
+      showHud('mic failed — tap to resume', '#c87070')
+      fadeHud(5000)
+      return
+    }
+    setTimeout(() => {
+      if (!_recording || _backend !== 'chrome') return
+      try {
+        showVoiceRestarting('speech recognition invalid-state retry')
+        _recognition.start()
+        insertChromeMissingnessMarker(dropStartedAt)
+        markVoiceRestarted()
+      } catch {
+        startChromeAfterUnexpectedStop(myGeneration, dropStartedAt)
+      }
+    }, 100)
+  }
+}
+
 // --- Speech Recognition ---
 
 function _setupRecognition() {
@@ -1075,6 +1142,7 @@ function _setupRecognition() {
     if (_generation !== myGeneration) return
 
     _lastResultTime = Date.now()
+    _chromeUnexpectedRestartFailures = 0
     dotAudioFlowing()
 
     // Edit state: transition to Speech on first result (entering speech)
@@ -1235,12 +1303,18 @@ function _setupRecognition() {
 
   _recognition.onend = () => {
     if (_recording) {
+      const unexpectedStop = !_editStopped
+      const dropStartedAt = Date.now()
       // Commit any pending interim to left so it survives the restart
       if (_state === 'speech' && _interim) {
         _left += _interim
         _interim = ''
       }
       _editStopped = false  // new session starting — ready for speech again
+      if (unexpectedStop) {
+        startChromeAfterUnexpectedStop(myGeneration, dropStartedAt)
+        return
+      }
       // If generation was bumped since this session was set up (e.g. chat-switch
       // or send keyword called _generation++ before our stop() triggered onend),
       // create a new SpeechRecognition object so its onresult closure captures
@@ -1945,6 +2019,8 @@ if (typeof window !== 'undefined') {
     serviceUnavailableMessage: (isIOS) => serviceUnavailableMessage(isIOS),
     dotAudioStale: () => dotAudioStale(),
     getHealthLabel: () => _voiceHealthLabel,
+    getLastChromeMissingnessMarker: () => _lastChromeMissingnessMarker,
+    formatMissingnessSeconds: (ms) => formatMissingnessSeconds(ms),
     shouldAutoStartOnInit: (isTouch, backend) => shouldAutoStartOnInit(isTouch, backend),
   }
 }
@@ -1969,6 +2045,8 @@ function startRecording() {
   _left = _interim = _right = ''
   _lastResultTime = 0
   _lastWhisperMessageTime = 0
+  _lastChromeMissingnessMarker = ''
+  _chromeUnexpectedRestartFailures = 0
   _recordStartTime = Date.now()   // Item 2: measure time-to-first-interim
   _firstInterimLogged = false
 
