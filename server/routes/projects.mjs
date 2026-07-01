@@ -28,8 +28,7 @@ import {
 import { getBuildStatus } from '../lib/build-runner.mjs'
 import { dispatchBuild } from '../lib/build-dispatch.mjs'
 import { outlineForRegion, regionFromSpan, structuralLeaves } from '../lib/outline/outline.mjs'
-import { buildModel, render as renderModel, check as checkModel, parseEditedOutline, emitModelMarkdown, assertRoundTrip, seedChainFromLeaf } from '../lib/outline/model.mjs'
-import { parseChainMarkdown, emitChainMarkdown, renderChainArrows, validateChain } from '../lib/outline/chain.mjs'
+import { buildModel, assertRoundTrip } from '../lib/outline/model.mjs'
 import { findTextNearSourceLine, sourceTextSpanToPdfSpans } from '../lib/synctex-query.mjs'
 import { buildMarkdown, buildHtml, buildSlides } from '../lib/format-builders.mjs'
 import { shouldBuildOnPush } from '../lib/build-decision.mjs'
@@ -353,13 +352,10 @@ router.get('/:name/outline', requireRead, async (req, res) => {
     // raw highlighted text so the extracted note is never empty.
     let markdown = outlineForRegion(region)
     if (!markdown || !markdown.trim()) markdown = region
-    // Persist the frozen-token model so the token-edit ops (outline_open /
-    // outline_apply) can render & check without re-deriving. This is the
-    // FRAGILE step: structuralLeaves must be an EXACT partition of the region,
-    // which fails for some LaTeX and used to throw a 500 here — so extraction
-    // silently produced no note at all (the "doesn't work consistently" bug).
-    // Degrade gracefully: if the model can't be built, still return the note
-    // text below; only the token-edit outline ops are unavailable for this span.
+    // Persist the frozen-token model for the argument-chain artifact. This is
+    // the FRAGILE step: structuralLeaves must be an EXACT partition of the
+    // region, which fails for some LaTeX and used to throw a 500 here — so
+    // extraction silently produced no note at all. Degrade gracefully.
     let modelOk = false
     try {
       const model = buildModel(region, structuralLeaves(region))
@@ -382,131 +378,6 @@ router.get('/:name/outline', requireRead, async (req, res) => {
       mdView = execSync('pandoc -f latex -t markdown --wrap=none', { input: region, encoding: 'utf8', timeout: 10000 })
     } catch { /* pandoc unavailable — fall back to raw tex */ }
     res.json({ markdown, tex, md: mdView, span: { startLine, startCol, endLine, endCol }, file, backingFile, slug: modelOk ? slug : '' })
-  } catch (e) {
-    res.status(500).json({ error: String(e?.message || e) })
-  }
-})
-
-// Load the persisted outline model for a slug.
-function loadOutlineModel(name, slug) {
-  if (!/^[\w.\-]+$/.test(String(slug || ''))) return null
-  const p = join(getOutputDir(name), 'outlines', `${slug}.model.json`)
-  if (!existsSync(p)) return null
-  return JSON.parse(readFileSync(p, 'utf8'))
-}
-
-// GET /:name/outline-model?slug=… — the id-tagged outline an agent edits.
-// This is the move/insert surface (each token carries an [id] handle); the
-// agent reorders [id] lines or adds [NEW] lines, never rewriting a token.
-router.get('/:name/outline-model', requireRead, (req, res) => {
-  const model = loadOutlineModel(req.params.name, req.query.slug)
-  if (!model) return res.status(404).json({ error: 'outline model not found' })
-  res.json({ markdown: emitModelMarkdown(model), slug: String(req.query.slug) })
-})
-
-// POST /:name/outline-apply { slug, editedMd } — the "tokens not words" gate.
-// render→check the edited id-outline against the frozen model. A rewritten token
-// is a hard reject; a clean move/insert returns the candidate .tex for the
-// caller (the MCP outline_apply tool) to route through propose_edit. This route
-// never writes the source — it only computes the candidate.
-router.post('/:name/outline-apply', requireRead, (req, res) => {
-  const project = readProject(req.params.name)
-  if (!project) return res.status(404).json({ error: 'Project not found' })
-  const { slug, editedMd } = req.body || {}
-  const model = loadOutlineModel(req.params.name, slug)
-  if (!model) return res.status(404).json({ error: 'outline model not found' })
-  try {
-    const entries = parseEditedOutline(String(editedMd || ''))
-    const result = checkModel(model, entries)
-    if (result.violations.length) {
-      return res.json({ ok: false, violations: result.violations })
-    }
-    const oldText = renderModel(model, model.leaves.map((l) => ({ id: l.id })))
-    const newText = renderModel(model, entries)
-    // Absolute authoring path — what the MCP process / propose_edit reads.
-    const root = project.sourceDir || getSourceDir(req.params.name)
-    const file = join(root, model.regionFile || project.mainFile || 'main.tex')
-    res.json({ ok: true, candidate: { file, oldText, newText }, moves: result.moves, inserts: result.inserts, deletes: result.deletes })
-  } catch (e) {
-    res.status(500).json({ error: String(e?.message || e) })
-  }
-})
-
-// ---- argument-graph (arrow-chain) persistence + open/apply ----------------
-// The chain is a CONSTRUCTION artifact (authored nodes/labels/justifications),
-// NOT a verbatim partition like the outline model — so it lives in its own
-// `<slug>.chain.json` next to `<slug>.model.json`, and never touches
-// outline-apply's move-only path. It carries the `sourceLeafIds` it was split
-// from for provenance.
-function chainPath(name, slug) {
-  if (!/^[\w.\-]+$/.test(String(slug || ''))) return null
-  return join(getOutputDir(name), 'outlines', `${slug}.chain.json`)
-}
-function loadChain(name, slug) {
-  const p = chainPath(name, slug)
-  if (!p || !existsSync(p)) return null
-  return JSON.parse(readFileSync(p, 'utf8'))
-}
-function saveChain(name, slug, chain) {
-  const p = chainPath(name, slug)
-  if (!p) throw new Error('bad slug')
-  mkdirSync(dirname(p), { recursive: true })
-  writeFileSync(p, JSON.stringify(chain), 'utf8')
-}
-// The rendered chain echoed into the agent's turn (the in-transcript carry):
-// the motion-view arrows, the editable id-tagged markdown, and structural
-// validation. seed.candidateProperties (the freshly-split bag) ride along.
-function chainResponse(slug, chain) {
-  return {
-    slug,
-    arrows: renderChainArrows(chain),
-    markdown: emitChainMarkdown(chain),
-    candidateProperties: chain.candidateProperties || [],
-    validation: validateChain(chain),
-  }
-}
-
-// GET /:name/chain?slug=…[&seedFromLeaf=lN] — chain_open backend.
-// If a chain exists for the slug, return it. Otherwise, if seedFromLeaf is
-// given, split that leaf of the outline model into a starter chain (candidate
-// properties, empty graph), persist it, and return it. The split is mechanical
-// scaffolding, not a graded move — the graded move is binding via chain-apply.
-router.get('/:name/chain', requireRead, (req, res) => {
-  const { name } = req.params
-  const slug = String(req.query.slug || '')
-  let chain = loadChain(name, slug)
-  if (!chain) {
-    const leafId = req.query.seedFromLeaf ? String(req.query.seedFromLeaf) : null
-    if (!leafId) return res.status(404).json({ error: 'no chain for slug; pass seedFromLeaf to start one' })
-    const model = loadOutlineModel(name, slug)
-    if (!model) return res.status(404).json({ error: 'outline model not found (open the outline first)' })
-    try {
-      chain = seedChainFromLeaf(model, leafId)
-    } catch (e) {
-      return res.status(400).json({ error: String(e?.message || e) })
-    }
-    saveChain(name, slug, chain)
-  }
-  res.json(chainResponse(slug, chain))
-})
-
-// POST /:name/chain-apply { slug, editedMd } — chain_apply backend.
-// Parse the edited chain markdown, validate the graph shape, persist, and
-// return the rendered chain. Unlike outline-apply this DOES persist (the chain
-// is the artifact); it never writes the .tex source — that proposal→approve
-// path is deferred (live-proof use, out of scope for the drill).
-router.post('/:name/chain-apply', requireRead, (req, res) => {
-  const { name } = req.params
-  const { slug, editedMd } = req.body || {}
-  if (!slug || editedMd == null) return res.status(400).json({ error: 'slug and editedMd required' })
-  const prev = loadChain(name, slug)
-  try {
-    const chain = parseChainMarkdown(String(editedMd))
-    // preserve provenance the editing surface doesn't round-trip
-    if (prev?.candidateProperties && !chain.candidateProperties) chain.candidateProperties = prev.candidateProperties
-    const validation = validateChain(chain)
-    saveChain(name, slug, chain)
-    res.json({ ok: validation.ok, ...chainResponse(slug, chain) })
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) })
   }
@@ -869,25 +740,6 @@ router.post('/:name/signal', requireRw, async (req, res) => {
     setCompareRef(req.params.name, ref ? ref.slice(0, 7) : null)
   }
   res.json({ ok: true })
-})
-
-// POST /:name/graph — materialize an argument graph into the room (server-side
-// store ops, so it persists with no viewer connected). body: { chain, replace? }
-router.post('/:name/graph', requireRw, async (req, res) => {
-  const project = readProject(req.params.name)
-  if (!project) return res.status(404).json({ error: 'Project not found' })
-  const { chain, replace } = req.body || {}
-  if (!chain || !Array.isArray(chain.nodes) || !Array.isArray(chain.edges)) {
-    return res.status(400).json({ error: 'chain.{nodes,edges} required' })
-  }
-  try {
-    const { materializeGraph } = await import('../lib/graph-materialize.mjs')
-    const result = await materializeGraph(syncRoomName(req.params.name), chain, { replace: replace !== false })
-    res.json({ ok: true, ...result })
-  } catch (e) {
-    console.error('[graph] materialize failed:', e)
-    res.status(500).json({ error: String(e?.message || e) })
-  }
 })
 
 // GET /:name/signal/stream — SSE stream of signal broadcasts (must be before :key route)

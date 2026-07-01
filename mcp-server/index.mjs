@@ -45,11 +45,6 @@ const TLDA_AUTH_HEADERS = TLDA_TOKEN ? { 'Authorization': `Bearer ${TLDA_TOKEN}`
 const TLDA_SERVER = getServerUrl();
 // Separate sync server for shapes/signals (e.g. Fly.io) — falls back to TLDA_SERVER
 const TLDA_SYNC_SERVER = process.env.TLDA_SYNC_SERVER || TLDA_SERVER;
-// Outline-tool routes (/outline-model, /outline-apply) can be pointed at a
-// different server while the routes are still on a branch — keeps fleet comms on
-// TLDA_SERVER. Temporary; goes away once the routes land on the shared server.
-const TLDA_OUTLINE_SERVER = process.env.TLDA_OUTLINE_SERVER || TLDA_SERVER;
-
 // ---- REST API helpers (shape CRUD via @tldraw/sync rooms) ----
 
 async function serverFetch(urlPath, options = {}) {
@@ -443,9 +438,8 @@ function findLabelLine(sourceDir, sourceMap, mainFile, label) {
 //
 // `chat` is deliberately NOT gated: it is the accessibility-critical channel to
 // Skip, and a dropped retry there would lose a message. Only the producing tools
-// (propose_edit/report/input_scratch), where a missed retry is harmless, gate.
+// (report/input_scratch), where a missed retry is harmless, gate.
 const GATED_MCP_TOOLS = {
-  propose_edit:  { tool: 'tlda/propose_edit',  file: a => a?.file || '' },
   report:        { tool: 'tlda/report' },
   input_scratch: { tool: 'tlda/input_scratch' },
 };
@@ -2030,21 +2024,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
-      name: 'read_file',
-      description: 'Compatibility file reader, restricted to ~/work. Prefer native file tools when your harness has them; use tlda document/annotation tools for tlda document content. Optional offset (1-based start line) and lines (count) page through large files.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          path: { type: 'string', description: 'Absolute path to the file. Must be inside ~/work.' },
-          offset: { type: 'number', description: '1-based line number to start from (optional).' },
-          lines: { type: 'number', description: 'Number of lines to read from offset (optional).' },
-        },
-        required: ['path'],
-      },
-    },
-    {
       name: 'read_doc',
-      description: 'Read a tlda document\'s SOURCE (read-only) — document- and version-aware. Resolves the doc name to its source file and reads a paginated line window (default 400 lines). Pass `version` (a git hash) to read a PAST version from the doc\'s history, or `ref` (a label/theorem number like "thm:main" or "2.1") to jump straight to that location. Header reports the window + total lines, with a hint to page. (For raw non-doc files use read_file; for annotations use read_annotations.)',
+      description: 'Read a tlda document\'s SOURCE (read-only) — document- and version-aware. Resolves the doc name to its source file and reads a paginated line window (default 400 lines). Pass `version` (a git hash) to read a PAST version from the doc\'s history, or `ref` (a label/theorem number like "thm:main" or "2.1") to jump straight to that location. Header reports the window + total lines, with a hint to page. For annotations use read_annotations.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -2189,78 +2170,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           file: { type: 'string', description: 'Source file path or name (for multi-file projects, e.g. "appendix.tex"). Omit for main file.' },
         },
         required: ['doc', 'line'],
-      },
-    },
-    {
-      name: 'graph_draw',
-      description: 'Draw an ARGUMENT-STRUCTURE graph onto a doc canvas — the skeleton of a proof, BEFORE writing prose. A proof is an argument, not a dependency chart: build its structure here, then write from it. Grammar: a NODE is a clean CLAIM (a proposition that holds); an EDGE is an INFERENCE (a reasoning step) from premise claim(s) to a conclusion claim. The surface stays a clean skeleton (claims + arrows); each inference\'s substance ("why") goes in the edge\'s `detail` and shows in a side panel on hover — never crammed onto the arrow. Use this to externalize structure so the argument is legible and has no place for panicked, structureless prose.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          doc: { type: 'string', description: 'Document name to draw the graph onto.' },
-          chain: {
-            type: 'object',
-            description: 'The argument structure. { nodes:[{id, kind:"assumption"|"step"|"goal", claim}], edges:[{id, from, to, rule?, detail?, weight?:"load-bearing"|"one-liner"}] }. `claim` is a clean proposition ($…$ for math). `rule` is a tiny tag on the arrow; `detail` is the inference\'s full justification (side-panel only). Assumptions are leaves; the goal is the result.',
-            properties: {
-              nodes: { type: 'array', items: { type: 'object' } },
-              edges: { type: 'array', items: { type: 'object' } },
-            },
-            required: ['nodes', 'edges'],
-          },
-          replace: { type: 'boolean', description: 'Clear any existing graph on the doc first (default true).' },
-        },
-        required: ['doc', 'chain'],
-      },
-    },
-    {
-      name: 'outline_open',
-      description: 'Open the id-tagged structural outline for a region (created by a violet "outline" highlight). Returns a clause-grain markdown outline where every leaf is a FROZEN token tagged with an [id]. This is the ONLY editing surface for structural work: you may reorder the dash lines (a MOVE) or add a "- [NEW] text" line (an INSERT) — you may NEVER rewrite the words inside a token. Submit changes with outline_apply.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          doc: { type: 'string', description: 'Document name' },
-          slug: { type: 'string', description: 'Outline slug, from the note\'s backingFile (e.g. "appendix_b-L200-L240")' },
-        },
-        required: ['doc', 'slug'],
-      },
-    },
-    {
-      name: 'outline_apply',
-      description: 'Submit an edited id-tagged outline. The edit is checked: reordering tokens (MOVE) and adding "- [NEW] …" lines (INSERT) are allowed; rewriting any token\'s text is REJECTED. A clean edit is rendered back to .tex and routed to the user as a proposal to accept/reject — it does NOT mutate the source directly. This is how agents edit structure without touching prose ("tokens, not words").',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          doc: { type: 'string', description: 'Document name' },
-          slug: { type: 'string', description: 'Outline slug (same as outline_open)' },
-          editedMd: { type: 'string', description: 'The full edited id-tagged outline markdown (reordered lines and/or "- [NEW] text" inserts). Token text must be left verbatim.' },
-        },
-        required: ['doc', 'slug', 'editedMd'],
-      },
-    },
-    {
-      name: 'chain_open',
-      description: 'Open the ARGUMENT-GRAPH (arrow-chain) for an outline region. Unlike outline_open (which MOVES frozen text), this is a CONSTRUCTION surface: you build a chain of objects/states connected by arrows, each arrow labeled by the single property that drives that transition (e.g. coercive → bounded → (totally convex) Cauchy → (complete) converges). Returns the chain rendered as arrows + an editable id-tagged markdown you submit with chain_apply. If no chain exists yet, pass seedFromLeaf=<leaf id of the bag-of-properties sentence> to split that sentence into its candidate properties (UNBOUND — you must assign each to the arrow it drives).',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          doc: { type: 'string', description: 'Document name' },
-          slug: { type: 'string', description: 'Outline slug (same as outline_open)' },
-          seedFromLeaf: { type: 'string', description: 'Optional leaf id (e.g. "l3") from the outline model to split into candidate properties when starting a new chain.' },
-        },
-        required: ['doc', 'slug'],
-      },
-    },
-    {
-      name: 'chain_apply',
-      description: 'Submit an edited argument-graph (arrow-chain) markdown. The chain is validated for graph shape (every arrow must name the one property that drives it; no dangling endpoints or cycles) and persisted as the chain artifact — it does NOT mutate the .tex source. Returns the chain rendered back as arrows so the current state is always visible. Edit format: a "### nodes" list of "- [id] kind | label" (kind = object|state|roadmap; optional "  gloss: …" line) and a "### edges" list of "- [id] from -> to | property | weight" (weight = load-bearing|one-liner; optional "  justify: …" line).',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          doc: { type: 'string', description: 'Document name' },
-          slug: { type: 'string', description: 'Outline slug (same as chain_open)' },
-          editedMd: { type: 'string', description: 'The full edited arrow-chain markdown (nodes + edges, with gloss/justify continuation lines).' },
-        },
-        required: ['doc', 'slug', 'editedMd'],
       },
     },
     {
@@ -2411,62 +2320,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     // suggest tool definition removed — functionality merged into add_note
     // update_shared_doc removed — use `tlda push` CLI instead
-    {
-      name: 'propose_edit',
-      description: 'Propose a text edit for approval before writing. Use this in dictation mode instead of editing files directly. Stores the proposal and returns a formatted card showing context (before/insert/after). Show the card to Skip via fleet chat. After approval, call apply_proposal to write the stored text verbatim.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          file: { type: 'string', description: 'Absolute path to the file to edit' },
-          old_string: { type: 'string', description: 'The text to replace (same as Edit tool — must be unique in the file). For pure insertions, use a context string at the insertion point.' },
-          new_string: { type: 'string', description: 'The replacement text' },
-        },
-        required: ['file', 'old_string', 'new_string'],
-      },
-    },
-    {
-      name: 'apply_proposal',
-      description: 'Apply a previously proposed edit. Writes the STORED text from propose_edit verbatim — the agent cannot modify the text at this stage. Call this after Skip approves the proposal shown in chat.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          id: { type: 'string', description: 'Proposal ID returned by propose_edit' },
-        },
-        required: ['id'],
-      },
-    },
     ...getFleetTools(),
   ],
 }));
 
 // Track last ping timestamp (consumed by get_feedback)
 let lastPingTimestamp = 0;
-
-// ---- Proposal store (for propose_edit / apply_proposal) ----
-const _proposals = new Map(); // id → { file, old_string, new_string, context_before, context_after, created }
-let _proposalCounter = 0;
-
-// Create a proposal from a unique source substring. Reads the local file (the
-// agent's machine, where source lives), verifies old_string is present and
-// unique, stores the proposal, and returns the chat card. Shared by propose_edit
-// and outline_apply so the store + card formatting have one implementation.
-function createProposal(file, old_string, new_string) {
-  const content = fs.readFileSync(file, 'utf8');
-  const idx = content.indexOf(old_string);
-  if (idx === -1) return { ok: false, error: `old_string not found in ${file}` };
-  if (content.indexOf(old_string, idx + 1) !== -1) return { ok: false, error: `old_string is not unique in ${file} — provide more context` };
-
-  const ctxBefore = content.slice(0, idx).split('\n').slice(-3).join('\n').trim();
-  const ctxAfter = content.slice(idx + old_string.length).split('\n').slice(0, 3).join('\n').trim();
-  const id = `proposal-${++_proposalCounter}`;
-  _proposals.set(id, { file, old_string, new_string, context_before: ctxBefore, context_after: ctxAfter, created: Date.now() });
-
-  const isInsertion = new_string.includes(old_string);
-  const card = isInsertion
-    ? `**Proposal ${id}**\n\n── BEFORE (unchanged) ──\n${ctxBefore}\n${old_string}\n\n── INSERT ──\n${new_string.replace(old_string, '').trim()}\n\n── AFTER (unchanged) ──\n${ctxAfter}`
-    : `**Proposal ${id}**\n\n── BEFORE (unchanged) ──\n${ctxBefore}\n\n── REPLACING ──\n${old_string}\n\n── WITH ──\n${new_string}\n\n── AFTER (unchanged) ──\n${ctxAfter}`;
-  return { ok: true, id, card };
-}
 
 async function summarizeAnnotations(docName) {
   try {
@@ -2643,41 +2502,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   {
     const gated = await educationGate(name, args);
     if (gated) return gated;
-  }
-
-  if (name === 'read_file') {
-    // Generic read-only file reader, fenced to ~/work. Kept as a compatibility
-    // surface for older agents and harnesses without native file tools.
-    if (!args?.path) {
-      return { content: [{ type: 'text', text: 'read_file: `path` is required.' }], isError: true };
-    }
-    const workRoot = path.join(os.homedir(), 'work');
-    const abs = path.resolve(args.path);
-    if (abs !== workRoot && !abs.startsWith(workRoot + path.sep)) {
-      return { content: [{ type: 'text', text: `read_file: path must be inside ~/work (got ${abs}).` }], isError: true };
-    }
-    let data;
-    try {
-      data = fs.readFileSync(abs, 'utf8');
-    } catch (e) {
-      const why = e.code === 'ENOENT' ? 'no such file' : e.code === 'EISDIR' ? 'is a directory' : e.message;
-      return { content: [{ type: 'text', text: `read_file: ${why}: ${abs}` }], isError: true };
-    }
-    // Reading a skill's SKILL.md via read_file still credits it against the
-    // education gate for stale/compat callers. Goose should use native Summon.
-    const skillMatch = abs.match(/[/\\]skills[/\\]([^/\\]+)[/\\]SKILL\.md$/);
-    if (skillMatch) await eduCreditSkillRead(skillMatch[1]);
-    const allLines = data.split('\n');
-    const offset = args.offset > 0 ? (args.offset - 1) : 0;
-    const limit = args.lines > 0 ? args.lines : allLines.length;
-    const slice = allLines.slice(offset, offset + limit);
-    const MAX = 60000;
-    let body = slice.join('\n');
-    let trunc = '';
-    if (body.length > MAX) { body = body.slice(0, MAX); trunc = `\n…(truncated at ${MAX} chars — pass offset/lines to page)`; }
-    const shown = (offset > 0 || limit < allLines.length) ? `, lines ${offset + 1}–${offset + slice.length}` : '';
-    const header = `${abs} (${allLines.length} lines${shown}):\n`;
-    return { content: [{ type: 'text', text: header + body + trunc }] };
   }
 
 
@@ -3068,33 +2892,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   // signal_reload handler removed — folded into push
-
-  if (name === 'graph_draw') {
-    const { doc, chain, replace = true } = args;
-    if (!doc || !chain || !Array.isArray(chain.nodes) || !Array.isArray(chain.edges)) {
-      return { content: [{ type: 'text', text: 'Missing/invalid params: doc, chain.{nodes,edges}' }], isError: true };
-    }
-    const claims = chain.nodes.length;
-    const infs = chain.edges.length;
-    try {
-      // Server-side store ops: write shapes+bindings into the room so the graph
-      // persists immediately, no connected viewer required.
-      const resp = await serverFetch(`/api/projects/${doc}/graph`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chain, replace }),
-      });
-      if (!resp.ok) {
-        const t = await resp.text().catch(() => '');
-        return { content: [{ type: 'text', text: `Failed to draw graph: ${resp.status} ${t}` }], isError: true };
-      }
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Failed to draw graph: ${e?.message || e}` }], isError: true };
-    }
-    const tok = resolveToken();
-    const viewUrl = `${getServerUrl()}/?doc=${encodeURIComponent(doc)}${tok ? `&token=${tok}` : ''}`;
-    return { content: [{ type: 'text', text: `Drew argument graph on "${doc}": ${claims} claims, ${infs} inferences. Now write the prose from this structure.\nView: ${viewUrl}` }] };
-  }
 
   if (name === 'draw_highlight') {
     const { doc, startLine, endLine: endLineArg, color = 'orange', file, text } = args;
@@ -3528,77 +3325,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: 'No understanding map data.' }] };
       }
       return { content: [{ type: 'text', text: formatUnderstandingSummary(segments) }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
-    }
-  }
-
-  if (name === 'outline_open') {
-    const { doc, slug } = args;
-    if (!doc || !slug) return { content: [{ type: 'text', text: 'Missing required parameter: doc and slug' }], isError: true };
-    try {
-      const data = await _tldaFetch(`/api/projects/${encodeURIComponent(doc)}/outline-model?slug=${encodeURIComponent(slug)}`, { server: TLDA_OUTLINE_SERVER });
-      const md = data.markdown || '';
-      return { content: [{ type: 'text', text:
-        `Outline for ${slug}. Edit by MOVE (reorder the dash lines) or INSERT (add a "- [NEW] text" line). Do NOT rewrite the words inside a token — that is rejected. Submit the full edited outline with outline_apply.\n\n${md}` }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
-    }
-  }
-
-  if (name === 'outline_apply') {
-    const { doc, slug, editedMd } = args;
-    if (!doc || !slug || editedMd == null) return { content: [{ type: 'text', text: 'Missing required parameter: doc, slug, editedMd' }], isError: true };
-    try {
-      const data = await _tldaFetch(`/api/projects/${encodeURIComponent(doc)}/outline-apply`, {
-        server: TLDA_OUTLINE_SERVER,
-        method: 'POST',
-        body: { slug, editedMd },
-      });
-      if (data.ok === false) {
-        const v = (data.violations || []).map((x) => '  ✗ ' + x).join('\n');
-        return { content: [{ type: 'text', text: `REJECTED — you may only MOVE or INSERT tokens, not rewrite them:\n${v}` }], isError: true };
-      }
-      // Clean edit. The server returned the candidate (file + exact region oldText
-      // + rendered newText); create the proposal HERE — the _proposals store is
-      // in-process, so apply_proposal can find it after Skip approves.
-      const cand = data.candidate || {};
-      if (!cand.file || cand.oldText == null || cand.newText == null) {
-        return { content: [{ type: 'text', text: `Error: outline-apply returned no candidate (got ${JSON.stringify(data).slice(0, 200)})` }], isError: true };
-      }
-      const r = createProposal(cand.file, cand.oldText, cand.newText);
-      if (!r.ok) return { content: [{ type: 'text', text: `Edit passed check but could not be proposed: ${r.error}` }], isError: true };
-      const summary = [];
-      if (data.moves?.length) summary.push(`moves: ${data.moves.join('; ')}`);
-      if (data.inserts?.length) summary.push(`inserts: ${data.inserts.length}`);
-      if (data.deletes?.length) summary.push(`deletes: ${data.deletes.join(', ')}`);
-      return { content: [{ type: 'text', text:
-        `✓ Accepted (move/insert only). ${r.card}\n\n---\nShow this card to Skip via fleet chat. After approval, call apply_proposal with id="${r.id}".${summary.length ? '\n\n' + summary.join('\n') : ''}` }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
-    }
-  }
-
-  if (name === 'chain_open' || name === 'chain_apply') {
-    const { doc, slug, editedMd, seedFromLeaf } = args;
-    if (!doc || !slug) return { content: [{ type: 'text', text: 'Missing required parameter: doc and slug' }], isError: true };
-    if (name === 'chain_apply' && editedMd == null) return { content: [{ type: 'text', text: 'Missing required parameter: editedMd' }], isError: true };
-    try {
-      const data = name === 'chain_open'
-        ? await _tldaFetch(`/api/projects/${encodeURIComponent(doc)}/chain?slug=${encodeURIComponent(slug)}${seedFromLeaf ? `&seedFromLeaf=${encodeURIComponent(seedFromLeaf)}` : ''}`, { server: TLDA_OUTLINE_SERVER })
-        : await _tldaFetch(`/api/projects/${encodeURIComponent(doc)}/chain-apply`, { server: TLDA_OUTLINE_SERVER, method: 'POST', body: { slug, editedMd } });
-      // Echo the rendered chain into the turn EVERY call — the motion-view
-      // arrows, candidate properties (if freshly split), graph validation, and
-      // the editable markdown the agent submits back with chain_apply.
-      const parts = [`Arrow-chain for ${slug}:`];
-      parts.push(data.arrows && data.arrows.trim() ? `\n${data.arrows}\n` : '\n(empty — no arrows yet)\n');
-      if (data.candidateProperties?.length) {
-        parts.push(`Candidate properties from the bag (UNBOUND — assign each to the arrow it drives):\n  ${data.candidateProperties.join(', ')}\n`);
-      }
-      const v = data.validation;
-      if (v && !v.ok) parts.push(`⚠ Graph not yet valid:\n${(v.errors || []).map((e) => '  ✗ ' + e).join('\n')}\n`);
-      parts.push(`Edit the chain and submit with chain_apply. Editable form:\n\n${data.markdown || ''}`);
-      return { content: [{ type: 'text', text: parts.join('\n') }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
@@ -4219,42 +3945,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const count = Object.keys(macros).length;
     const vnote = version ? ` (version "${version}" stored but not yet used for resolution)` : '';
     return { content: [{ type: 'text', text: `Preamble set to document "${doc}"${vnote} — ${count} macro(s) available. Your chat math now renders and lints with ${doc}'s preamble; physics-package commands are always available too.` }] };
-  }
-
-  if (name === 'propose_edit') {
-    const { file, old_string, new_string } = args;
-    if (!file || !old_string || !new_string) {
-      return { content: [{ type: 'text', text: 'Missing required parameters: file, old_string, new_string' }], isError: true };
-    }
-    try {
-      const r = createProposal(file, old_string, new_string);
-      if (!r.ok) return { content: [{ type: 'text', text: r.error }], isError: true };
-      return { content: [{ type: 'text', text: `${r.card}\n\n---\nShow this card to Skip via fleet chat. After approval, call apply_proposal with id="${r.id}".` }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
-    }
-  }
-
-  if (name === 'apply_proposal') {
-    const { id } = args;
-    if (!id) return { content: [{ type: 'text', text: 'Missing required parameter: id' }], isError: true };
-    const proposal = _proposals.get(id);
-    if (!proposal) {
-      return { content: [{ type: 'text', text: `No proposal found with id "${id}". It may have expired or already been applied.` }], isError: true };
-    }
-    try {
-      const content = fs.readFileSync(proposal.file, 'utf8');
-      const idx = content.indexOf(proposal.old_string);
-      if (idx === -1) {
-        return { content: [{ type: 'text', text: `old_string no longer found in ${proposal.file} — file may have changed since proposal was created. Create a new proposal.` }], isError: true };
-      }
-      const updated = content.slice(0, idx) + proposal.new_string + content.slice(idx + proposal.old_string.length);
-      fs.writeFileSync(proposal.file, updated, 'utf8');
-      _proposals.delete(id);
-      return { content: [{ type: 'text', text: `Applied ${id} to ${proposal.file}. The stored text was written verbatim.` }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Error applying proposal: ${e.message}` }], isError: true };
-    }
   }
 
   // Dispatch to fleet tools
