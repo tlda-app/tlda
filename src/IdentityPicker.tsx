@@ -1,25 +1,10 @@
 import { useState, useEffect } from 'react'
 import { useFleetIdentity } from './fleet-data-adapter'
 import { subscribeCanPresent } from './authToken'
+import { temporaryIdentityName } from './fleet/identity-persistence.mjs'
 
 function cleanName(name: string | null) {
   return name?.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '') || ''
-}
-
-function temporaryName() {
-  const names = [
-    'big-bird',
-    'cookie',
-    'grover',
-    'oscar',
-    'snuffy',
-    'abby',
-    'bert',
-    'ernie',
-    'count',
-  ]
-  const base = names[Math.floor(Math.random() * names.length)]
-  return `${base}-${Math.random().toString(36).slice(2, 6)}`
 }
 
 export function IdentityPicker() {
@@ -40,11 +25,11 @@ export function IdentityPicker() {
     let cancelled = false
     const params = new URLSearchParams(window.location.search)
     const requestedName = cleanName(params.get('name'))
-    const targetName = requestedName || temporaryName()
+    const targetName = requestedName || temporaryIdentityName()
 
     async function identify() {
       for (let attempt = 0; attempt < 3; attempt++) {
-        const candidate = attempt === 0 ? targetName : temporaryName()
+        const candidate = attempt === 0 ? targetName : temporaryIdentityName()
         try {
           if (requestedName) {
             try { await login(candidate) }

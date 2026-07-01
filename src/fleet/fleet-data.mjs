@@ -25,7 +25,7 @@ import {
 import { log } from '../logger'
 import { probe } from '../perf-probe'
 import { DATABASE_HTTP, DATABASE_WS } from '../activeConfig'
-import { storedIdentityLoginFailureAction } from './identity-persistence.mjs'
+import { storedIdentityLoginFailureAction, temporaryIdentityName } from './identity-persistence.mjs'
 
 // The global fleet/event store (chat, agents, activity, tasks) = the active
 // config's DATABASE, read directly from the server-injected config. No fetch, no
@@ -315,30 +315,91 @@ export function getDeviceId() {
 }
 export function needsIdentity() { return !_humanId && _identifyPending }
 
+function readStoredIdentity() {
+  try { return localStorage.getItem('tlda-identity') }
+  catch {
+    // Storage access can be blocked by the browser; fall back to temporary identity.
+    return null
+  }
+}
+
+function writeStoredIdentity(name) {
+  try { localStorage.setItem('tlda-identity', name) } catch {
+    // Storage persistence is best-effort; the active WS identity is already set.
+  }
+}
+
+function writeTemporaryIdentity(name) {
+  try { sessionStorage.setItem('tlda-temporary-identity', name) } catch {
+    // Temporary identity storage is diagnostic only; registration already succeeded.
+  }
+}
+
+function clearTemporaryIdentity() {
+  try { sessionStorage.removeItem('tlda-temporary-identity') } catch {
+    // Clearing a diagnostic session key must not block identity upgrade.
+  }
+}
+
 /** Log in as an existing agent. Used by returning users and ?name= auto-login. */
 export async function login(name) {
   const res = await wsSend({ type: 'login', name })
   _humanId = res.id
   _humanName = res.name
   _identifyPending = false
-  localStorage.setItem('tlda-identity', res.name)
+  writeStoredIdentity(res.name)
+  clearTemporaryIdentity()
   notify('identity', { type: 'identity', id: _humanId, name: _humanName })
   _startHeartbeat()
   return res
 }
 
 /** Register a new human agent. Used by the IdentityPicker for new users. */
-export async function registerHuman(name) {
+export async function registerHuman(name, { persist = true } = {}) {
   const sanitized = name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
   const humanId = `fleet:${sanitized}`
   const res = await wsSend({ type: 'register', agent_id: humanId, name: sanitized, human: true })
   _humanId = res.agent?.id || humanId
   _humanName = sanitized
   _identifyPending = false
-  localStorage.setItem('tlda-identity', sanitized)
+  if (persist) {
+    writeStoredIdentity(sanitized)
+    clearTemporaryIdentity()
+  } else {
+    writeTemporaryIdentity(sanitized)
+  }
   notify('identity', { type: 'identity', id: _humanId, name: _humanName })
   _startHeartbeat()
   return res
+}
+
+async function registerTemporaryHuman() {
+  let lastErr = null
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await registerHuman(temporaryIdentityName(), { persist: false })
+    } catch (err) {
+      lastErr = err
+    }
+  }
+  throw lastErr || new Error('temporary identity registration failed')
+}
+
+function retryStoredIdentity(storedName) {
+  if (!storedName) return
+  window.setTimeout(() => {
+    if (!_ws || _ws.readyState !== 1) return
+    if (readStoredIdentity() !== storedName) return
+    if (_humanName === storedName) return
+    wsSend({ type: 'login', name: storedName }).then(res => {
+      _humanId = res.id
+      _humanName = res.name
+      _identifyPending = false
+      clearTemporaryIdentity()
+      notify('identity', { type: 'identity', id: _humanId, name: _humanName })
+      _startHeartbeat()
+    }).catch(() => {})
+  }, 5000)
 }
 
 // Returns { agentId: count } for unread messages from agents to the human
@@ -556,7 +617,7 @@ export function connect() {
     _connected = true
     notify('connection', { type: 'connection', connected: true })
     // Log in if we have a stored identity
-    const storedName = localStorage.getItem('tlda-identity')
+    const storedName = readStoredIdentity()
     if (storedName) {
       wsSend({ type: 'login', name: storedName }).then(res => {
         _humanId = res.id
@@ -566,12 +627,16 @@ export function connect() {
         _startHeartbeat()
       }).catch((err) => {
         // A deploy/restart can drop or time out this login request. Do not erase
-        // the browser's chosen identity for a transient transport failure; the
-        // next reconnect should retry the same stored name.
+        // the browser's chosen identity for a transient transport failure. Use
+        // a real temporary human for this session instead of exposing the app as
+        // an id-less "nobody", and retry the stored name later.
         if (storedIdentityLoginFailureAction(err) !== 'register-stored') {
-          _identifyPending = false
-          notify('identity', { type: 'identity', id: null, name: storedName, needsIdentity: false })
-          _ws?.close()
+          registerTemporaryHuman().then(() => {
+            retryStoredIdentity(storedName)
+          }).catch(() => {
+            _identifyPending = true
+            notify('identity', { type: 'identity', id: null, name: null, needsIdentity: true })
+          })
           return
         }
         // Fresh/test servers may not have the human row yet. Preserve the
