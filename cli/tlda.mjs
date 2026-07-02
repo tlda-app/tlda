@@ -35,7 +35,14 @@ import { scanMarkdownDeps } from '../shared/markdown-deps.mjs'
 import { cmdLogs } from './lib/unified-logs.mjs'
 import { formatSystemStatus } from './lib/system-status.mjs'
 import { resolveAgentQuery } from './lib/agent-resolve.mjs'
-import { SPAWN_POLICY_OPTIONS, SPAWN_PROFILES, resolveSpawnPolicyOption, normalizeRequestedPrivileges } from '../server/lib/spawn-policy.mjs'
+import {
+  SPAWN_POLICY_OPTIONS,
+  SPAWN_PROFILES,
+  normalizeRequestedPrivileges,
+  privilegeSetFromPolicy,
+  resolveSpawnGrant,
+  resolveSpawnPolicyOption,
+} from '../server/lib/spawn-policy.mjs'
 import { SPAWN_MACHINE_PREF_KEY } from '../server/lib/spawn-routing.mjs'
 
 // --- Argument parsing ---
@@ -1526,20 +1533,34 @@ async function runFleetSpawn(spawnArgs) {
   const requestedPrivilegePolicy = requestedPrivileges || policyArg
     ? normalizeRequestedPrivileges(requestedPrivileges || policyArg, requestedCapability || undefined)
     : null
+  const cwd = resolve(flagFromRaw(spawnArgs, 'cwd') || process.cwd())
+  const model = flagFromRaw(spawnArgs, 'model') || undefined
+  const kind = flagFromRaw(spawnArgs, 'kind') || undefined
+  const grant = resolveSpawnGrant({
+    requestedCapability: requestedPrivilegePolicy?.capability || requestedCapability,
+    requestedPrivileges,
+    spawnerPolicy: 'full',
+    spawnerPrivilegeSet: privilegeSetFromPolicy('full', { name: 'spawn-direct-operator', cwd }),
+    model,
+    kind,
+    config: loadConfig(),
+    cwd,
+  })
   const params = {
     spawnMode: session ? 'session' : (refresh ? 'refresh' : (fresh ? 'fresh' : 'respawn')),
     name,
     agentId: flagFromRaw(spawnArgs, 'agent-id') || undefined,
-    model: flagFromRaw(spawnArgs, 'model') || undefined,
-    kind: flagFromRaw(spawnArgs, 'kind') || undefined,
-    cwd: flagFromRaw(spawnArgs, 'cwd') || undefined,
+    model,
+    kind,
+    cwd,
     effort: flagFromRaw(spawnArgs, 'effort') || undefined,
     permissionMode: flagFromRaw(spawnArgs, 'mode') || undefined,
-    requestedCapability: requestedPrivilegePolicy?.capability || requestedCapability,
+    requestedCapability: grant.grantedCapability,
     requestedPrivileges,
-    spawnPolicy: requestedPrivilegePolicy || undefined,
-    privilegeSet: requestedPrivilegePolicy?.privilegeSet,
+    spawnPolicy: grant.grantedPolicy,
+    privilegeSet: grant.grantedPrivilegeSet,
     explicitPolicy: policyArg != null,
+    enforceFence: true,
     sessionId: session || undefined,
     enroll: hasRawFlag(spawnArgs, 'enroll'),
   }

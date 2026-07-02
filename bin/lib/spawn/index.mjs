@@ -68,7 +68,7 @@ function traceSpawnDecision(label, detail) {
   process.stderr.write(`[spawn-trace] ${label} ${JSON.stringify(payload)}\n`)
 }
 
-async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, model, name, cwd, effort, permissionMode, spawnPolicy, api, dnsAlias, resumeId = null, includePrompt = true, leasePolicy = null }) {
+async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, model, name, cwd, effort, permissionMode, spawnPolicy, api, dnsAlias, resumeId = null, includePrompt = true, leasePolicy = null, enforceFence = false }) {
   let cmd
   let sendKeys = false
   let projection = null
@@ -108,14 +108,14 @@ async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, mode
     })
   }
   const commandBeforeFence = cmd
-  if (leasePolicy) cmd = wrapSandboxCmd(cmd, leasePolicy, { api, dnsAlias })
+  if (leasePolicy) cmd = wrapSandboxCmd(cmd, leasePolicy, { api, dnsAlias, enforce: enforceFence })
   return {
     cmd,
     sendKeys,
     commandTrace: {
       projection,
       hasLeasePolicy: !!leasePolicy,
-      wrappedByFence: !!leasePolicy,
+      wrappedByFence: !!leasePolicy && !!enforceFence,
       commandContainsFence: /(?:^|['"\s/])fence(?:['"\s]|$)/.test(cmd),
       commandContainsCodexYolo: cmd.includes('--dangerously-bypass-approvals-and-sandbox') || cmd.includes('--yolo'),
       commandContainsDangerSandbox: cmd.includes('danger-full-access'),
@@ -218,6 +218,7 @@ async function spawnFresh(params) {
       api,
       dnsAlias,
       leasePolicy: launchPolicy.leasePolicy,
+      enforceFence: !!params.enforceFence,
     })
     traceSpawnDecision('command', {
       name,
@@ -338,6 +339,7 @@ async function spawnRespawn(params) {
     resumeId,
     includePrompt: !(requestedKind === 'claude' && resumeId),
     leasePolicy: launchPolicy.leasePolicy,
+    enforceFence: !!params.enforceFence,
   })
   const launched = await spawnTmux(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket })
   if (!launched) return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, alreadyAlive: true }
@@ -409,6 +411,7 @@ async function spawnRefresh(params) {
     dnsAlias,
     includePrompt: true,
     leasePolicy: launchPolicy.leasePolicy,
+    enforceFence: !!params.enforceFence,
   })
   const launched = await spawnTmux(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket })
   if (!launched) return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, alreadyAlive: true }
@@ -502,6 +505,7 @@ async function spawnCodexSession(params, { api, sessionId, codexPath }) {
     dnsAlias,
     resumeId: sessionId,
     leasePolicy: launchPolicy.leasePolicy,
+    enforceFence: !!params.enforceFence,
   })
   const launched = await spawnTmux(tmuxSession, cwd, cmd, { sendKeys, tmuxSocket: params.tmuxSocket })
   if (!launched) return { ok: true, fleetId, tmuxSession, harness: 'codex', model, resumeId: sessionId, alreadyAlive: true }
@@ -571,6 +575,7 @@ async function spawnClaudeSession(params, { api, sessionId, identity }) {
     resumeId: sessionId,
     includePrompt: false,
     leasePolicy: launchPolicy.leasePolicy,
+    enforceFence: !!params.enforceFence,
   })
   const launched = await spawnTmux(tmuxSession, cwd, cmd, { autoDismiss: true, sendKeys, tmuxSocket: params.tmuxSocket })
   if (!launched) return { ok: true, fleetId, tmuxSession, harness: 'claude', model, resumeId: sessionId, alreadyAlive: true }

@@ -21,7 +21,7 @@ import {
   normalizeSpawnPolicy,
   projectCapabilityToMode,
   privilegeSetLte,
-  resolveDaemonSpawnGrant,
+  resolveSpawnGrant,
   normalizeRequestedPrivileges,
   resolveProjectProfile,
   resolveProjectProfileName,
@@ -296,7 +296,7 @@ describe('spawn policy', () => {
   })
 
   it('daemon grant is meet(requested, spawner row, model cap)', () => {
-    const grant = resolveDaemonSpawnGrant({
+    const grant = resolveSpawnGrant({
       requestedCapability: 'full',
       callerRung: 'tlda-write',
       model: 'deepseek/deepseek-v4-pro',
@@ -314,7 +314,7 @@ describe('spawn policy', () => {
   })
 
   it('daemon derives the project default as request, not authority', () => {
-    const grant = resolveDaemonSpawnGrant({
+    const grant = resolveSpawnGrant({
       callerRung: 'full',
       model: 'opus48',
       config: { spawnPolicy: { projectProfiles: { mathdoc: 'math-projects' }, machineGrant: 'tlda-write' } },
@@ -333,7 +333,7 @@ describe('spawn policy', () => {
   })
 
   it('daemon derives the project default from cwd when no doc is supplied', () => {
-    const ops = resolveDaemonSpawnGrant({
+    const ops = resolveSpawnGrant({
       callerRung: 'full',
       model: 'gpt-5.5',
       kind: 'codex',
@@ -348,7 +348,7 @@ describe('spawn policy', () => {
       category: 'write-scope',
     })
 
-    const cwdDefault = resolveDaemonSpawnGrant({
+    const cwdDefault = resolveSpawnGrant({
       callerRung: 'full',
       model: 'gpt-5.5',
       kind: 'codex',
@@ -365,7 +365,7 @@ describe('spawn policy', () => {
   })
 
   it('machineGrant/local ACL no longer act as authority clamps', () => {
-    const grant = resolveDaemonSpawnGrant({
+    const grant = resolveSpawnGrant({
       requestedCapability: 'full',
       requester: { id: 'fleet:skip', human: true },
       model: 'gpt-5.5',
@@ -377,7 +377,7 @@ describe('spawn policy', () => {
   })
 
   it('none spawners cannot spawn agents', () => {
-    assert.throws(() => resolveDaemonSpawnGrant({
+    assert.throws(() => resolveSpawnGrant({
       requestedCapability: 'write',
       requester: { id: 'fleet:unknown' },
       spawnerPolicy: 'none',
@@ -432,7 +432,7 @@ describe('spawn policy', () => {
   write - ~/.ssh/**
 `)
     const requestedPrivileges = compiled.profiles['app-dev']
-    const grant = resolveDaemonSpawnGrant({
+    const grant = resolveSpawnGrant({
       requestedPrivileges,
       requester: { id: 'fleet:skip', human: true },
       model: 'gpt-5.5',
@@ -460,7 +460,7 @@ describe('spawn policy', () => {
   })
 
   it('daemon project defaults use named privilege profile zones', () => {
-    const grant = resolveDaemonSpawnGrant({
+    const grant = resolveSpawnGrant({
       requester: { id: 'fleet:skip', human: true },
       model: 'gpt-5.5',
       kind: 'codex',
@@ -497,7 +497,7 @@ describe('spawn policy', () => {
   read  - ~/.ssh/**
   write - ~/.ssh/**
 `)
-    const grant = resolveDaemonSpawnGrant({
+    const grant = resolveSpawnGrant({
       requestedPrivileges: compiled.profiles['app-dev'],
       requester: { id: 'fleet:writer', spawnPolicy: { capability: 'write', policy: 'cwd' } },
       model: 'gpt-5.5',
@@ -540,7 +540,7 @@ describe('spawn policy', () => {
         projectProfiles: { '/Users/skip/work/tlda': 'app-dev' },
       },
     }
-    const grant = resolveDaemonSpawnGrant({
+    const grant = resolveSpawnGrant({
       requestedCapability: 'full',
       requester: { id: 'fleet:skip', human: true },
       model: 'gpt-5.5',
@@ -558,7 +558,7 @@ describe('spawn policy', () => {
       category: 'write-scope',
     })
 
-    const clampedBySpawner = resolveDaemonSpawnGrant({
+    const clampedBySpawner = resolveSpawnGrant({
       requestedCapability: 'full',
       requester: { id: 'fleet:writer', spawnPolicy: { capability: 'write', policy: 'cwd' } },
       model: 'gpt-5.5',

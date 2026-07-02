@@ -900,7 +900,7 @@ export function authorizeSpawn({ caller, requestedCapability, model, kind, trust
   }
 }
 
-export function resolveDaemonSpawnGrant({
+export function resolveSpawnGrant({
   requestedCapability,
   requestedPrivileges,
   callerRung,

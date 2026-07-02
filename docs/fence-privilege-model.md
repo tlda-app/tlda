@@ -28,6 +28,7 @@
 **Security placement (hard):**
 - **Trust root = the daemon (local), NEVER the server/app.** Server only *requests*; daemon *decides + enforces*. The app must never grant privileges.
 - Privilege ledger lives in the **daemon's** local table, NOT the shared server registry — that's what makes "same agent, different privileges on Mini vs Fly" fall out, and keeps the fence working when the shared db is unreachable.
+- `spawn-direct` is the isolated enforcement testbed. It is operator-only, treats the operator as a full spawner for the shared clamp, and opts into the real fence wrapper. The daemon-routed path still computes grants through the same clamp but keeps the launch breakglass unwrapped until the separate enforcement flip is proven.
 - **Next layer (design-ready, not blocking):** fleet ID becomes **stable + cryptographic** — unforgeable identity the agent *proves*. Build the config/grant storage ready to key on it, but don't block the config fix on it.
 
 **NOT in scope here:** the partial-rename ghost-hell is a **friendly-name** atomicity bug at a different level — do not try to solve it with this work.

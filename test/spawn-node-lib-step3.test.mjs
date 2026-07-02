@@ -323,6 +323,10 @@ test('lease policy and fence wrapper stay outside harness adapters', () => {
   assert.deepEqual(settings.macos.mach.register, chromeMachServices)
   const wrapped = wrapSandboxCmd('echo hi', leasePolicy, { api: 'https://tlda-fly.example.test' })
   assert.equal(wrapped, 'echo hi')
+  const enforced = wrapSandboxCmd('echo hi', leasePolicy, { api: 'https://tlda-fly.example.test', enforce: true })
+  assert.match(enforced, /(?:^|['"\s/])fence(?:['"\s]|$)/)
+  assert.match(enforced, /--settings/)
+  assert.match(enforced, /echo hi/)
 })
 
 test('default cwd lease writes cwd plus tool-support roots with unrestricted git', () => {
@@ -573,6 +577,9 @@ test('codex explicit daemon grant is externally fenced even while global fence i
   assert.match(wrapped, /--dangerously-bypass-approvals-and-sandbox/)
   assert.doesNotMatch(wrapped, /sandbox_workspace_write\.writable_roots/)
   assert.doesNotMatch(wrapped, /sandbox_workspace_write\.network_access/)
+  const enforced = wrapSandboxCmd(cmd, policy.leasePolicy, { api: 'http://127.0.0.1:5176', enforce: true })
+  assert.match(enforced, /(?:^|['\s/])fence'? '?--monitor'?/)
+  assert.match(enforced, /--settings/)
 })
 
 test('codex explicit no-net external fence preserves network-off in the lease', () => {

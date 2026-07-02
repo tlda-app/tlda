@@ -75,12 +75,17 @@ tlda agent spawn app-fixer --privileges app-dev
 ```
 
 `spawn-direct` is the local primitive and operator escape hatch. It bypasses the
-server route, but it still uses the same privilege/profile compiler where
-applicable:
+server route, but it uses the same spawn grant clamp as the daemon path. The
+direct spawner is treated as the operator's full local authority, so the child
+grant is `full ∩ requested ∩ model-cap`.
 
 ```sh
 tlda agent spawn-direct app-fixer --privileges app-dev
 ```
+
+`spawn-direct` is also the isolated enforcement testbed: it opts into the real
+fence wrapper. Daemon-routed spawn keeps the breakglass default and launches
+unwrapped until the separate daemon enforcement flip is explicitly approved.
 
 The legacy `--capability none|read|write|tlda-write|full` field is a shorthand
 request. New callers should use `--privileges` so requests can carry explicit

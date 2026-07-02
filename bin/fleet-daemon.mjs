@@ -105,7 +105,7 @@ import {
   unlinkPidfileIfOwnPid,
 } from './lib/daemon-guards.mjs'
 import { codexRolloutBelongsToAgent, codexRolloutHasOwnerEvidence, resolveTranscript } from './lib/resolve-transcript.mjs'
-import { resolveDaemonSpawnGrant } from '../server/lib/spawn-policy.mjs'
+import { resolveSpawnGrant } from '../server/lib/spawn-policy.mjs'
 import { probeSpawnCapabilities } from './lib/spawn/capabilities.mjs'
 import { createPrivilegeLedger, defaultPrivilegeLedgerPath } from './lib/spawn/privilege-ledger.mjs'
 import { acquireSingletonLock } from './lib/singleton-lock.mjs'
@@ -2594,7 +2594,7 @@ async function rpcSpawn({
   try {
     const config = _loadSharedConfig()
     const spawnerGrant = requester?.id ? privilegeLedger.grantFor(requester, config) : null
-    grant = resolveDaemonSpawnGrant({
+    grant = resolveSpawnGrant({
       requestedCapability: requestedCapability || (policy != null ? 'write' : undefined),
       requestedPrivileges,
       callerRung,
