@@ -1728,13 +1728,21 @@ async function runRoutedSpawn(rawArgs) {
   const { default: WebSocket } = await import('ws')
   const url = `${wsUrlFromHttp(fleetServer)}/ws/fleet${token ? `?token=${encodeURIComponent(token)}` : ''}`
   const ws = new WebSocket(url, { rejectUnauthorized: false, headers: token ? { Authorization: `Bearer ${token}` } : undefined })
+  // Break-glass: this path is how an operator recovers a crippled agent. It must
+  // NOT falsely abort a connection/login that is merely slow under fleet load.
+  // Observed login latency with a large hibernating roster is ~11-14s, so a 10s
+  // client deadline aborted commands that would have succeeded. These deadlines
+  // are sized to worst-case observed latency plus headroom (they only bound a
+  // genuinely-hung socket; a real connection error rejects immediately via 'error').
+  const WS_CONNECT_TIMEOUT_MS = 60000
+  const WS_LOGIN_TIMEOUT_MS = 120000
   try {
     await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`fleet WS connect timed out: ${fleetServer}`)), 10000)
+      const timer = setTimeout(() => reject(new Error(`fleet WS connect timed out: ${fleetServer}`)), WS_CONNECT_TIMEOUT_MS)
       ws.once('open', () => { clearTimeout(timer); resolve() })
       ws.once('error', (e) => { clearTimeout(timer); reject(e) })
     })
-    await fleetWsRequest(ws, { type: 'login', name: human.name }, 10000)
+    await fleetWsRequest(ws, { type: 'login', name: human.name }, WS_LOGIN_TIMEOUT_MS)
     const result = await fleetWsRequest(ws, { type: 'spawn', ...body }, 45000)
     if (result?.ok === false) {
       throw new Error(formatSpawnFailure(result, body))
