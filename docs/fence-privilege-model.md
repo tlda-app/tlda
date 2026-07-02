@@ -1,4 +1,4 @@
-## Fence / privilege model (target)
+## Fence / privilege and robustness model (target)
 
 **Core: every agent — Skip included — is a row. Daemon privileges are a property of the row, per box. There is NO machine-wide default privilege set and no phantom box-policy floor.**
 
@@ -33,3 +33,16 @@
 - **Every bot (todd) and every doer is denied it** — they're forced through the API, which writes + emits events atomically.
 
 Keep the server-permission side minimal for now. Skip's long-term intent is to lean on **Fly's** platform permissions for server enforcement rather than a bespoke system, so don't build server-permission machinery now; just note the category and the `db-write-direct` capability. The *enforcement* that identity mutations must go through the event-emitting API is workstream #2 — note it as related, but don't build it now.
+
+**Server-identity gating (kill switch) — separate from daemon fence:**
+- Two tables of authorized **server identities**: `spawners`, `hibernators`. Checked at the **RPC boundary**: a spawn/hibernate RPC executes only if the calling server's identity is listed. Not listed → refused.
+- Hibernation is THE chaos vector (false-hibernate → respawn → kill); kill/spawn are secondary.
+- **File-authored, hot-reload, NO daemon restart** to apply. App/API can NOT write these tables (that's what keeps the switch trustworthy). Emergency use: pull a server from `hibernators` → all destructive action through it halts instantly.
+
+**Persistence:**
+- Daemon-local live state (per-box privilege grants etc.) persisted to a **daemon-local file, atomic write-through (temp+rename), reload on start.** A bounce restores rather than resets — defuses the restart-landmine.
+- **Format: YAML across the board** (config files AND the state file) — JSON is unreadable. Human-authored config (fence config, spawners/hibernators) is YAML with comments; the machine-written state file is YAML too for uniformity.
+
+**Atomic rename (cross-reference, workstream #2, not this build):**
+- `/api/rename` at `server/routes/fleet.mjs:614` does a raw `UPDATE friendly_name` with only `broadcastState()`, skipping `_bustAgentsCache()`/`_syncAgentRegistry()` → partial rename.
+- Related known bug: fix routes through `upsertAgent` or adds the cache/registry sync in-transaction.
