@@ -336,10 +336,11 @@ export function useFleetTasks(frameId?: string): any[] {
  * Accepts a DNF filter: string[][] (OR of ANDs), or null for all.
  */
 
-export function useFleetEvents(dnfFilter?: [string, string][][] | null, frameId?: string): any[] {
+export function useFleetEvents(dnfFilter?: [string, string][][] | null, frameId?: string, bufferKey?: string | null): any[] {
   const [playbackEvents, setPlaybackEvents] = useState<any[]>([])
   const [isPlaybackMode, setIsPlaybackMode] = useState(false)
   const filterKey = dnfFilter ? JSON.stringify(dnfFilter) : ''
+  const eventViewKey = `${filterKey}\n${bufferKey || ''}`
   const filter = useMemo(() => dnfFilter && dnfFilter.length > 0 ? dnfFilter : null, [filterKey])
   const liveSnapshotRef = useRef<{ key: string; list: readonly FleetEvent[] } | null>(null)
   const liveMatcher = useCallback(
@@ -348,27 +349,28 @@ export function useFleetEvents(dnfFilter?: [string, string][][] | null, frameId?
   )
   const getLiveSnapshot = useCallback(() => {
     const cached = liveSnapshotRef.current
-    if (cached?.key === filterKey) return cached.list
-    const list = getFilteredFleetEvents(filter, { matchesFilter: liveMatcher })
-    liveSnapshotRef.current = { key: filterKey, list }
+    if (cached?.key === eventViewKey) return cached.list
+    const list = getFilteredFleetEvents(filter, { matchesFilter: liveMatcher, bufferKey })
+    liveSnapshotRef.current = { key: eventViewKey, list }
     return list
-  }, [filter, filterKey, liveMatcher])
+  }, [filter, eventViewKey, liveMatcher, bufferKey])
   const subscribeLive = useCallback((onStoreChange: () => void) => {
     const liveView = viewFleetEvents(filter, {
-      key: filterKey || 'all',
+      key: eventViewKey || 'all',
       matchesFilter: liveMatcher,
+      bufferKey,
     })
-    liveSnapshotRef.current = { key: filterKey, list: liveView.get() }
+    liveSnapshotRef.current = { key: eventViewKey, list: liveView.get() }
     const unsubscribe = liveView.subscribe((list) => {
-      liveSnapshotRef.current = { key: filterKey, list }
+      liveSnapshotRef.current = { key: eventViewKey, list }
       onStoreChange()
     })
     return () => {
       unsubscribe()
       liveView.dispose()
-      if (liveSnapshotRef.current?.key === filterKey) liveSnapshotRef.current = null
+      if (liveSnapshotRef.current?.key === eventViewKey) liveSnapshotRef.current = null
     }
-  }, [filter, filterKey, liveMatcher])
+  }, [filter, eventViewKey, liveMatcher, bufferKey])
   const liveEvents = useSyncExternalStore(subscribeLive, getLiveSnapshot, getLiveSnapshot)
 
   // Single effect handles both playback and live modes.

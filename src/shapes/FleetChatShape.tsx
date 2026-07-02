@@ -1878,7 +1878,15 @@ function FleetChatInner({ shape }: { shape: any }) {
       log.warn('chat', 'filter resolved to no fleet ids; preserving previous display filter', { filter: dnfFilter })
     }
   }, [filterKey, eventDisplayChoice.unresolved])
-  const liveEvents = useFleetEvents(eventDisplayChoice.filter, frameId)
+  const { statusTargetIds, hibernatingAgents } = useFleetStatusTargets(dnfFilter, frameId)
+  const resolvedFilterIdKey = useMemo(() => {
+    if (!dnfFilter || dnfFilter.length === 0) return ''
+    return [...(statusTargetIds || [])].sort().join(',')
+  }, [filterKey, statusTargetIds])
+  const chatEventBufferKey = dnfFilter && resolvedFilterIdKey
+    ? `filter:${filterKey}:ids:${resolvedFilterIdKey}`
+    : null
+  const liveEvents = useFleetEvents(eventDisplayChoice.filter, frameId, chatEventBufferKey)
   const tasks = useFleetTasks(frameId)
   const thinkingAgents = useFleetThinking(dnfFilter, frameId)
   const compactingAgents = useFleetCompacting(dnfFilter, frameId)
@@ -1982,14 +1990,12 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Escape un-queues messages: messages sent before this timestamp are above the divider
   const [unqueuedAt, setUnqueuedAt] = useState(0)
 
-  // One buffer: liveEvents IS the full id-keyed store view (live + backfilled
-  // history, deduped by id in fleet-data). No live/older merge here — that merge
-  // seam was what rendered a slipped event twice. Scrollback is folded into the
-  // same store by loadBefore(), so it just appears in this list.
+  // One buffer per chat: liveEvents is the id-keyed event view for this chat's
+  // buffer. Live websocket events and history loads are inputs to that buffer.
   const events = liveEvents
 
-  // Reset scroll state when filter changes (history for the new filter is folded
-  // into the store by the backfill effect below).
+  // Reset scroll state when filter changes; history for the new filter is loaded
+  // into that filter's named buffer by the backfill effect below.
   useEffect(() => {
     isAtBottomRef.current = true
     setAtBottom(true)
@@ -2008,8 +2014,6 @@ function FleetChatInner({ shape }: { shape: any }) {
     if (label.startsWith('fleet:')) return label
     return resolveToFleetIds(label)[0] || label
   }, [resolveToFleetIds])
-
-  const { statusTargetIds, hibernatingAgents } = useFleetStatusTargets(dnfFilter, frameId)
 
   const suggestionsPending = useMemo(() => {
     let filtered = suggestionsAll
@@ -2031,20 +2035,10 @@ function FleetChatInner({ shape }: { shape: any }) {
     })
   }, [suggestionsAll, dnfFilter, statusTargetIds])
 
-  // Fetch per-agent history on mount / filter change.
-  // The global event buffer (MAX_EVENTS=150) is shared across all agents.
-  // A quiet agent's messages may not be in the buffer at all, making the
-  // chat appear empty. Fix: always fetch agent-specific history from the DB.
+  // Fetch per-agent history on mount / filter change. A filtered chat gets its
+  // own named history buffer so one panel's backfill cannot evict or reshape
+  // another panel's visible history.
   const virtuosoRef = useRef<VirtuosoHandle | null>(null)
-
-  // Resolve the filter to its fleet-id set via the maintained live-store target
-  // view. The backfill effect below depends on THIS string, not the churning
-  // `agents` array — so it only re-fires when the resolved id-set actually
-  // changes, not on every agent heartbeat.
-  const resolvedFilterIdKey = useMemo(() => {
-    if (!dnfFilter || dnfFilter.length === 0) return ''
-    return [...(statusTargetIds || [])].sort().join(',')
-  }, [filterKey, statusTargetIds])
 
   const historyLoadedRef = useRef<string | null>(null)
   useEffect(() => {
@@ -2059,13 +2053,14 @@ function FleetChatInner({ shape }: { shape: any }) {
       return
     }
     const ids = resolvedFilterIdKey.split(',')
-    const loadKey = `${filterKey}:${resolvedFilterIdKey}`
+    const loadKey = `${filterKey}:${resolvedFilterIdKey}:${chatEventBufferKey || ''}`
     if (historyLoadedRef.current === loadKey) return
     historyLoadedRef.current = loadKey
-    // loadBefore folds the scrollback into the single store (deduping by id) and
-    // returns the count of genuinely-new rows. No local olderEvents list — the
-    // history just appears in `events` via the store view.
+    // loadBefore folds scrollback into this chat's named buffer (deduping by id)
+    // and returns the count of genuinely-new rows. No local olderEvents list —
+    // the history just appears in `events` via the store view.
     loadBefore(ids, new Date().toISOString(), 200, {
+      bufferKey: chatEventBufferKey,
       onBeforeNotify: (added: number) => {
         setFirstItemIndex(index => Math.max(0, index - added))
       },
@@ -2084,7 +2079,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       })
     })
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resolvedFilterIdKey, filterKey])
+  }, [resolvedFilterIdKey, filterKey, chatEventBufferKey])
 
 
   const chatLogRef = useRef<HTMLDivElement>(null)
@@ -3504,13 +3499,13 @@ function FleetChatInner({ shape }: { shape: any }) {
   useEffect(() => {
     hardLockedRef.current = hardLocked
     localStorage.setItem(HARD_LOCKED_KEY, String(hardLocked))
-    setFleetEventsLiveTailPinned(shape.id, hardLocked || !userScrolledUpRef.current)
-  }, [hardLocked])
+    setFleetEventsLiveTailPinned(shape.id, hardLocked || !userScrolledUpRef.current, chatEventBufferKey)
+  }, [hardLocked, shape.id, chatEventBufferKey])
 
   useEffect(() => {
-    setFleetEventsLiveTailPinned(shape.id, hardLockedRef.current || !userScrolledUpRef.current)
-    return () => clearFleetEventsLiveTailPinned(shape.id)
-  }, [shape.id])
+    setFleetEventsLiveTailPinned(shape.id, hardLockedRef.current || !userScrolledUpRef.current, chatEventBufferKey)
+    return () => clearFleetEventsLiveTailPinned(shape.id, chatEventBufferKey)
+  }, [shape.id, chatEventBufferKey])
 
   const settleToTail = useCallback((reason: string, opts: { force?: boolean; resumeFollow?: boolean } = {}) => {
     const run = ++settleTailRunRef.current
@@ -3548,7 +3543,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           setAtBottom(true)
           if (opts.resumeFollow || hardLockedRef.current) {
             userScrolledUpRef.current = false
-            setFleetEventsLiveTailPinned(shape.id, true)
+            setFleetEventsLiveTailPinned(shape.id, true, chatEventBufferKey)
           }
           log.debug('chat-scroll', 'settle-to-tail reached true bottom', {
             reason,
@@ -3576,7 +3571,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
 
     requestAnimationFrame(step)
-  }, [shape.id])
+  }, [shape.id, chatEventBufferKey])
 
   // Imperative scroll-to-bottom for the floating ⇣ button.
   const scrollToBottom = useCallback(() => {
@@ -3635,7 +3630,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         settleTailRunRef.current += 1
         activeSettleTailRunRef.current = 0
         userScrolledUpRef.current = scrolledUp
-        setFleetEventsLiveTailPinned(shape.id, false)
+        setFleetEventsLiveTailPinned(shape.id, false, chatEventBufferKey)
       } else if (action === 'follow-on') {
         if (!isTrueBottomGap(gap)) {
           log.debug('chat-scroll', 'near-bottom scroll ignored until true bottom', { top, gap })
@@ -3643,7 +3638,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         }
         log.debug('chat-scroll', 'user returned to true bottom → resume stick-to-bottom', { top, gap })
         userScrolledUpRef.current = scrolledUp
-        setFleetEventsLiveTailPinned(shape.id, true)
+        setFleetEventsLiveTailPinned(shape.id, true, chatEventBufferKey)
       }
     }
     document.addEventListener('wheel', handleWheelCapture, { capture: true, passive: false })
@@ -3652,7 +3647,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       document.removeEventListener('wheel', handleWheelCapture, true)
       el.removeEventListener('scroll', handle)
     }
-  }, [chatLogEl, shape.id])
+  }, [chatLogEl, shape.id, chatEventBufferKey])
 
   // Refilter → bottom. Changing the filter swaps the whole rendered list out
   // from under Virtuoso; the scroll-position reset effect above (keyed on
@@ -3670,9 +3665,9 @@ function FleetChatInner({ shape }: { shape: any }) {
     isAtBottomRef.current = true
     setAtBottom(true)
     setFirstItemIndex(1_000_000)
-    setFleetEventsLiveTailPinned(shape.id, true)
+    setFleetEventsLiveTailPinned(shape.id, true, chatEventBufferKey)
     settleToTail('filter-change', { force: true, resumeFollow: true })
-  }, [filterKey, shape.id, settleToTail])
+  }, [filterKey, shape.id, settleToTail, chatEventBufferKey])
 
   // Terminal card hover — mouseover on .lc-terminal-card shows the terminal overlay.
   useEffect(() => {
@@ -4683,6 +4678,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     if (oldestTs) {
       try {
         await loadBefore(loadBeforeAgents || [], oldestTs, 50, {
+          bufferKey: chatEventBufferKey,
           onBeforeNotify: (added: number) => {
             setFirstItemIndex(index => Math.max(0, index - added))
           },
@@ -4693,7 +4689,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       return
     }
     loadingMore.current = false
-  }, [chatMessages, loadBeforeAgents])
+  }, [chatMessages, loadBeforeAgents, chatEventBufferKey])
 
   // Attach click/tap handlers to the Virtuoso-owned scroll container.
   // Listener-based (not JSX prop) because the Scroller is memoized and
@@ -4756,6 +4752,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         loadingMore.current = true
         try {
           const added = await loadBefore(loadBeforeAgents, oldestTs, 50, {
+            bufferKey: chatEventBufferKey,
             onBeforeNotify: (added: number) => {
               setFirstItemIndex(index => Math.max(0, index - added))
             },
@@ -4769,7 +4766,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
     void fillUnderfullInitialView()
     return () => { cancelled = true }
-  }, [chatLogEl, filterKey, loadBeforeAgentsKey, hasChatMessages])
+  }, [chatLogEl, filterKey, loadBeforeAgentsKey, hasChatMessages, chatEventBufferKey])
 
   // --- Chat log drag → ghost pill ---
   // Uses native capture-phase listeners because tldraw intercepts React events
@@ -5486,7 +5483,7 @@ function FleetChatInner({ shape }: { shape: any }) {
               setAtBottom(atBottom)
               if (shouldResumeFollowFromBottom(atBottom, gap) && userScrolledUpRef.current) {
                 userScrolledUpRef.current = false
-                setFleetEventsLiveTailPinned(shape.id, true)
+                setFleetEventsLiveTailPinned(shape.id, true, chatEventBufferKey)
               }
               if (probe.isEnabled('chat')) {
                 const dt = performance.now() - t0

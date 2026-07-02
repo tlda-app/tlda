@@ -14,6 +14,15 @@ export type FleetEventMatcher = (filter: FleetEventFilter | null, event: FleetEv
 const eventIds = new WeakMap<object, string>()
 
 let eventStore: LiveStore<FleetEvent> = createLiveStore<FleetEvent>()
+type EventBuffer = {
+  store: LiveStore<FleetEvent>
+  filter: FleetEventFilter | null
+  matchesFilter: FleetEventMatcher
+  pinned: boolean
+  maxEvents: number
+}
+const eventBuffers = new Map<string, EventBuffer>()
+const DEFAULT_BUFFER_MAX_EVENTS = 500
 
 export type FleetAgent = Record<string, unknown> & {
   id: string
@@ -47,7 +56,7 @@ function keyOfEvent(event: Record<string, unknown>): string {
 function asFleetEvent(event: Record<string, unknown>): FleetEvent {
   const id = keyOfEvent(event)
   const previousId = eventIds.get(event)
-  if (previousId && previousId !== id) eventStore.remove(previousId)
+  if (previousId && previousId !== id) removeEventIdFromStores(previousId)
   eventIds.set(event, id)
   Object.defineProperty(event, 'id', {
     value: id,
@@ -58,9 +67,120 @@ function asFleetEvent(event: Record<string, unknown>): FleetEvent {
   return event as FleetEvent
 }
 
+function eventTimestamp(event: FleetEvent): number {
+  const raw = typeof event.timestamp === 'string' ? event.timestamp : ''
+  const ts = raw ? Date.parse(raw) : NaN
+  return Number.isNaN(ts) ? Number.MAX_SAFE_INTEGER : ts
+}
+
+function compareFleetEvents(a: FleetEvent, b: FleetEvent): number {
+  const byTs = eventTimestamp(a) - eventTimestamp(b)
+  if (byTs !== 0) return byTs
+  return String(a.id).localeCompare(String(b.id))
+}
+
+function removeEventIdFromStores(id: string): void {
+  eventStore.remove(id)
+  for (const buffer of eventBuffers.values()) buffer.store.remove(id)
+}
+
+function eventBuffer(
+  bufferKey: string,
+  filter: FleetEventFilter | null,
+  matchesFilter: FleetEventMatcher
+): EventBuffer {
+  let buffer = eventBuffers.get(bufferKey)
+  if (!buffer) {
+    buffer = {
+      store: createLiveStore<FleetEvent>(),
+      filter,
+      matchesFilter,
+      pinned: true,
+      maxEvents: DEFAULT_BUFFER_MAX_EVENTS,
+    }
+    eventBuffers.set(bufferKey, buffer)
+    seedEventBuffer(buffer)
+    return buffer
+  }
+  buffer.filter = filter
+  buffer.matchesFilter = matchesFilter
+  reconcileEventBuffer(buffer)
+  return buffer
+}
+
+function seedEventBuffer(buffer: EventBuffer): void {
+  buffer.store.bulk((store) => {
+    for (const event of eventStore.all()) {
+      if (buffer.matchesFilter(buffer.filter, event)) store.upsert(event)
+    }
+  })
+}
+
+function reconcileEventBuffer(buffer: EventBuffer): void {
+  buffer.store.bulk((store) => {
+    for (const event of store.all()) {
+      if (!buffer.matchesFilter(buffer.filter, event)) store.remove(event.id)
+    }
+    for (const event of eventStore.all()) {
+      if (buffer.matchesFilter(buffer.filter, event)) store.upsert(event)
+    }
+  })
+}
+
+function fanoutEventToBuffers(event: FleetEvent): void {
+  for (const buffer of eventBuffers.values()) {
+    if (buffer.matchesFilter(buffer.filter, event)) {
+      buffer.store.upsert(event)
+      if (buffer.pinned) trimEventBuffer(buffer)
+    } else {
+      buffer.store.remove(event.id)
+    }
+  }
+}
+
+function trimEventBuffer(buffer: EventBuffer): void {
+  const overflow = buffer.store.size - buffer.maxEvents
+  if (overflow <= 0) return
+  const oldest = [...buffer.store.all()]
+    .sort(compareFleetEvents)
+    .slice(0, overflow)
+  buffer.store.bulk((store) => {
+    for (const event of oldest) store.remove(event.id)
+  })
+}
+
+export function setFleetEventBufferPinned(bufferKey: string | null | undefined, pinned: boolean): void {
+  if (!bufferKey) return
+  const buffer = eventBuffers.get(bufferKey)
+  if (!buffer) return
+  buffer.pinned = !!pinned
+  if (buffer.pinned) trimEventBuffer(buffer)
+}
+
+export function clearFleetEventBuffer(bufferKey: string | null | undefined): void {
+  if (!bufferKey) return
+  const buffer = eventBuffers.get(bufferKey)
+  if (!buffer) return
+  buffer.store.dispose()
+  eventBuffers.delete(bufferKey)
+}
+
+export function getFleetEventBufferSizeForTest(bufferKey: string): number {
+  return eventBuffers.get(bufferKey)?.store.size ?? 0
+}
+
+export function setFleetEventBufferMaxForTest(bufferKey: string, maxEvents: number): void {
+  const buffer = eventBuffers.get(bufferKey)
+  if (!buffer) return
+  buffer.maxEvents = Math.max(1, Math.floor(maxEvents))
+  if (buffer.pinned) trimEventBuffer(buffer)
+}
+
 export function upsertFleetEvent(event: Record<string, unknown> | null | undefined): void {
   if (!event) return
-  eventStore.upsert(asFleetEvent(event))
+  const fleetEvent = asFleetEvent(event)
+  eventStore.upsert(fleetEvent)
+  fanoutEventToBuffers(fleetEvent)
 }
 
 export function upsertFleetEvents(events: readonly Record<string, unknown>[]): void {
@@ -69,10 +189,42 @@ export function upsertFleetEvents(events: readonly Record<string, unknown>[]): v
   })
 }
 
+export function upsertFleetEventsForBuffer(
+  bufferKey: string | null | undefined,
+  events: readonly Record<string, unknown>[],
+  opts: { beforeNotify?: (added: number) => void } = {}
+): number {
+  if (!bufferKey) {
+    upsertFleetEvents(events)
+    return events.length
+  }
+  const buffer = eventBuffers.get(bufferKey)
+  const store = buffer?.store ?? createLiveStore<FleetEvent>()
+  if (!buffer) {
+    eventBuffers.set(bufferKey, {
+      store,
+      filter: null,
+      matchesFilter: () => true,
+      pinned: true,
+      maxEvents: DEFAULT_BUFFER_MAX_EVENTS,
+    })
+  }
+  const fleetEvents = events.map(asFleetEvent)
+  let added = 0
+  for (const event of fleetEvents) {
+    if (!store.has(event.id)) added++
+  }
+  if (added && opts.beforeNotify) opts.beforeNotify(added)
+  store.bulk(() => {
+    for (const event of fleetEvents) store.upsert(event)
+  })
+  return added
+}
+
 export function removeFleetEvent(event: Record<string, unknown> | null | undefined): void {
   if (!event) return
   const id = eventIds.get(event) ?? keyOfEvent(event)
-  eventStore.remove(id)
+  removeEventIdFromStores(id)
   eventIds.delete(event)
 }
 
@@ -81,6 +233,7 @@ export function replaceFleetEvents(events: readonly Record<string, unknown>[]): 
     for (const event of store.all()) store.remove(event.id)
     for (const event of events) store.upsert(asFleetEvent(event))
   })
+  for (const buffer of eventBuffers.values()) reconcileEventBuffer(buffer)
 }
 
 export function getFleetEvents(): readonly FleetEvent[] {
@@ -89,22 +242,29 @@ export function getFleetEvents(): readonly FleetEvent[] {
 
 export function getFilteredFleetEvents(
   filter: FleetEventFilter | null,
-  opts: { matchesFilter: FleetEventMatcher }
+  opts: { matchesFilter: FleetEventMatcher; bufferKey?: string | null }
 ): readonly FleetEvent[] {
-  return eventStore.all().filter((event) => opts.matchesFilter(filter, event))
+  if (!opts.bufferKey) return eventStore.all().filter((event) => opts.matchesFilter(filter, event))
+  return eventBuffer(opts.bufferKey, filter, opts.matchesFilter).store.all()
 }
 
 export function viewFleetEvents(
   filter: FleetEventFilter | null,
-  opts: { key: string; matchesFilter: FleetEventMatcher }
+  opts: { key: string; matchesFilter: FleetEventMatcher; bufferKey?: string | null }
 ): LiveView<FleetEvent> {
   const predicate = (event: FleetEvent) => opts.matchesFilter(filter, event)
-  return eventStore.view(predicate, { key: opts.key })
+  if (!opts.bufferKey) return eventStore.view(predicate, { key: opts.key, compare: compareFleetEvents })
+  return eventBuffer(opts.bufferKey, filter, opts.matchesFilter).store.view(predicate, {
+    key: `${opts.key}:buffer:${opts.bufferKey}`,
+    compare: compareFleetEvents,
+  })
 }
 
 export function resetFleetEventStoreForTest(events: readonly Record<string, unknown>[] = []): void {
   eventStore.dispose()
   eventStore = createLiveStore<FleetEvent>()
+  for (const buffer of eventBuffers.values()) buffer.store.dispose()
+  eventBuffers.clear()
   replaceFleetEvents(events)
 }
 

@@ -21,9 +21,11 @@ import {
   removeFleetAgents,
   replaceFleetAgents,
   replaceFleetEvents,
+  setFleetEventBufferPinned,
   upsertFleetAgents,
   upsertFleetEvent,
   upsertFleetEvents,
+  upsertFleetEventsForBuffer,
 } from './fleet-data.ts'
 import { log } from '../logger'
 import { probe } from '../perf-probe'
@@ -90,14 +92,31 @@ function liveUpsert(event) {
   return _store.upsert(event, { skipTrim: !isLiveTailPinned() })
 }
 
-export function setFleetEventsLiveTailPinned(viewerId, pinned) {
+/**
+ * @param {string | null | undefined} viewerId
+ * @param {boolean} pinned
+ * @param {string | null | undefined} bufferKey
+ */
+export function setFleetEventsLiveTailPinned(viewerId, pinned, bufferKey = null) {
+  if (bufferKey) {
+    setFleetEventBufferPinned(bufferKey, !!pinned)
+    return
+  }
   const key = viewerId || 'default'
   const wasPinned = isLiveTailPinned()
   _liveTailViewers.set(key, !!pinned)
   if (!wasPinned && isLiveTailPinned()) trimIfLiveTailPinned()
 }
 
-export function clearFleetEventsLiveTailPinned(viewerId) {
+/**
+ * @param {string | null | undefined} viewerId
+ * @param {string | null | undefined} bufferKey
+ */
+export function clearFleetEventsLiveTailPinned(viewerId, bufferKey = null) {
+  if (bufferKey) {
+    setFleetEventBufferPinned(bufferKey, true)
+    return
+  }
   const key = viewerId || 'default'
   const wasPinned = isLiveTailPinned()
   _liveTailViewers.delete(key)
@@ -1090,21 +1109,30 @@ export async function loadBefore(agentIds = [], beforeTs, count = 100, opts = {}
     })
     .map(convertChatEvent)
 
-  // Fold scrollback into the single store (it orders by timestamp, so these
-  // land before the live tail and dedup against anything already present).
-  // Return the count of genuinely-new rows so the caller knows whether to
-  // re-pin scroll after a prepend.
+  // Fold scrollback into either the shared global store (unfiltered/global chat)
+  // or a named chat buffer (filtered chats). Return the count of genuinely-new
+  // rows so the caller knows whether to re-pin scroll after a prepend.
   let added = 0
   const changed = []
-  const results = _store.upsertMany(events, { skipTrim: true })
-  for (const result of results) {
-    if (result.isNew) added++
-    changed.push(result.event)
+  let results = []
+  if (opts.bufferKey) {
+    changed.push(...events)
+    added = upsertFleetEventsForBuffer(opts.bufferKey, changed, {
+      beforeNotify: typeof opts.onBeforeNotify === 'function' ? opts.onBeforeNotify : undefined,
+    })
+  } else {
+    results = _store.upsertMany(events, { skipTrim: true })
+    for (const result of results) {
+      if (result.isNew) added++
+      changed.push(result.event)
+    }
+    if (added && typeof opts.onBeforeNotify === 'function') opts.onBeforeNotify(added)
   }
-  if (added && typeof opts.onBeforeNotify === 'function') opts.onBeforeNotify(added)
   const evicted = results.some(result => result.evicted?.length)
-  if (added || evicted) replaceFleetEvents(_store.all())
-  else upsertFleetEvents(changed)
+  if (!opts.bufferKey) {
+    if (added || evicted) replaceFleetEvents(_store.all())
+    else upsertFleetEvents(changed)
+  }
   if (added) notify('messages', null)
   return added
 }

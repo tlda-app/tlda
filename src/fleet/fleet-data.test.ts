@@ -13,12 +13,16 @@ import {
   getFleetEvents,
   getResolvedFleetAgentIdsForLabel,
   getResolvedFleetAgentIds,
+  getFleetEventBufferSizeForTest,
   replaceFleetEvents,
   replaceFleetAgents,
   resetFleetAgentStoreForTest,
   resetFleetEventStoreForTest,
+  setFleetEventBufferMaxForTest,
+  setFleetEventBufferPinned,
   upsertFleetAgents,
   upsertFleetEvent,
+  upsertFleetEventsForBuffer,
   viewFleetEvents,
   type FleetEvent,
 } from './fleet-data.ts'
@@ -160,6 +164,92 @@ test('pure snapshots and repeated keyed views do not duplicate event rows', () =
   second.dispose()
   upsertFleetEvent(eventAt(23, 'fleet:skip', 'fleet:gamma', 23))
   assert.deepEqual(ids(second.get()), [])
+})
+
+test('buffered chat history is isolated per chat view', () => {
+  resetFleetEventStoreForTest([
+    eventAt(30, 'fleet:alpha', 'fleet:skip', 30),
+    eventAt(31, 'fleet:beta', 'fleet:skip', 31),
+  ])
+
+  const alphaFilter = [[['from', 'alpha']], [['to', 'alpha']]]
+  const betaFilter = [[['from', 'beta']], [['to', 'beta']]]
+  const opts = {
+    matchesFilter: (f: unknown, event: FleetEvent) => visible(event, f),
+  }
+  const alphaView = viewFleetEvents(alphaFilter, {
+    ...opts,
+    key: 'buffer-alpha',
+    bufferKey: 'chat:alpha',
+  })
+  const betaView = viewFleetEvents(betaFilter, {
+    ...opts,
+    key: 'buffer-beta',
+    bufferKey: 'chat:beta',
+  })
+
+  assert.deepEqual(ids(alphaView.get()), [30])
+  assert.deepEqual(ids(betaView.get()), [31])
+  assert.deepEqual(ids(getFleetEvents()), [30, 31])
+
+  const added = upsertFleetEventsForBuffer('chat:alpha', [
+    eventAt(28, 'fleet:alpha', 'fleet:skip', 28),
+    eventAt(29, 'fleet:skip', 'fleet:alpha', 29),
+  ])
+
+  assert.equal(added, 2)
+  assert.deepEqual(ids(alphaView.get()), [28, 29, 30])
+  assert.deepEqual(ids(betaView.get()), [31])
+  assert.deepEqual(ids(getFleetEvents()), [30, 31])
+
+  const duplicateAdded = upsertFleetEventsForBuffer('chat:alpha', [
+    eventAt(28, 'fleet:alpha', 'fleet:skip', 28),
+  ])
+
+  assert.equal(duplicateAdded, 0)
+  assert.deepEqual(ids(alphaView.get()), [28, 29, 30])
+  assert.deepEqual(ids(betaView.get()), [31])
+
+  upsertFleetEventsForBuffer('chat:alpha', [
+    { ...eventAt(30, 'fleet:alpha', 'fleet:skip', 30), text: 'stale buffered copy' },
+  ])
+  upsertFleetEvent({ ...eventAt(30, 'fleet:alpha', 'fleet:skip', 30), text: 'live patched copy' })
+  assert.equal(alphaView.get().find(event => event._dbId === 30)?.text, 'live patched copy')
+
+  alphaView.dispose()
+  betaView.dispose()
+})
+
+test('chat buffers trim only when that chat is pinned at bottom', () => {
+  resetFleetEventStoreForTest([
+    eventAt(40, 'fleet:alpha', 'fleet:skip', 40),
+    eventAt(41, 'fleet:alpha', 'fleet:skip', 41),
+    eventAt(42, 'fleet:alpha', 'fleet:skip', 42),
+  ])
+
+  const alphaFilter = [[['from', 'alpha']], [['to', 'alpha']]]
+  const view = viewFleetEvents(alphaFilter, {
+    key: 'trim-alpha',
+    bufferKey: 'chat:trim-alpha',
+    matchesFilter: (f: unknown, event: FleetEvent) => visible(event, f),
+  })
+  setFleetEventBufferMaxForTest('chat:trim-alpha', 3)
+
+  assert.deepEqual(ids(view.get()), [40, 41, 42])
+  upsertFleetEvent(eventAt(43, 'fleet:alpha', 'fleet:skip', 43))
+  assert.deepEqual(ids(view.get()), [41, 42, 43])
+  assert.equal(getFleetEventBufferSizeForTest('chat:trim-alpha'), 3)
+
+  setFleetEventBufferPinned('chat:trim-alpha', false)
+  upsertFleetEvent(eventAt(44, 'fleet:alpha', 'fleet:skip', 44))
+  assert.deepEqual(ids(view.get()), [41, 42, 43, 44])
+  assert.equal(getFleetEventBufferSizeForTest('chat:trim-alpha'), 4)
+
+  setFleetEventBufferPinned('chat:trim-alpha', true)
+  assert.deepEqual(ids(view.get()), [42, 43, 44])
+  assert.equal(getFleetEventBufferSizeForTest('chat:trim-alpha'), 3)
+
+  view.dispose()
 })
 
 test('fleet agent indexed resolver matches live/dead filter semantics', () => {
