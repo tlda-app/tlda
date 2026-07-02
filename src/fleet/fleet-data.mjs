@@ -18,7 +18,10 @@ import { matchesFleetFilter, resolveFleetFilter } from './filter-semantics.mjs'
 import { makeEventStore } from './event-store.mjs'
 import {
   removeFleetEvent,
+  removeFleetAgents,
+  replaceFleetAgents,
   replaceFleetEvents,
+  upsertFleetAgents,
   upsertFleetEvent,
   upsertFleetEvents,
 } from './fleet-data.ts'
@@ -890,6 +893,7 @@ export async function init() {
 // --- State updates ---
 function updateAgents(agents) {
   _agents = agents
+  replaceFleetAgents(agents)
   notify('agents', { type: 'agents', agents })
 }
 
@@ -897,6 +901,8 @@ function updateAgents(agents) {
 // full merged list (same contract subscribers already rely on for 'agents').
 function applyAgentDelta(changed, removed) {
   if (!(changed?.length || removed?.length)) return
+  upsertFleetAgents(changed || [])
+  removeFleetAgents(removed || [])
   const byId = new Map(_agents.map(a => [a.id, a]))
   for (const a of (changed || [])) byId.set(a.id, a)
   for (const id of (removed || [])) byId.delete(id)
@@ -1067,7 +1073,7 @@ export async function fetchHistory(agentIds = [], limit = 200) {
   )
 }
 
-export async function loadBefore(agentIds = [], beforeTs, count = 100) {
+export async function loadBefore(agentIds = [], beforeTs, count = 100, opts = {}) {
   let res
   if (_ws && _ws.readyState === 1) {
     const msg = { type: 'load-history', agents: agentIds || [], before: beforeTs, limit: count }
@@ -1095,6 +1101,7 @@ export async function loadBefore(agentIds = [], beforeTs, count = 100) {
     if (result.isNew) added++
     changed.push(result.event)
   }
+  if (added && typeof opts.onBeforeNotify === 'function') opts.onBeforeNotify(added)
   const evicted = results.some(result => result.evicted?.length)
   if (added || evicted) replaceFleetEvents(_store.all())
   else upsertFleetEvents(changed)

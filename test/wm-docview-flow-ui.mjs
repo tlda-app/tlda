@@ -22,7 +22,7 @@ const RUN_ID = Date.now().toString(36)
 const NAME = String(args.name || `wm-flow-${RUN_ID}`)
 const PW_AS = process.env.TLDA_PW_AS || `fleet:${NAME}`
 const TOKEN = String(args.token || getRwToken() || '')
-const URL = `${BASE}/?doc=${encodeURIComponent(DOC)}&name=${encodeURIComponent(NAME)}&pw=1&fleetLayout=3col&wmFlowGate=${RUN_ID}${TOKEN ? '&token=' + encodeURIComponent(TOKEN) : ''}`
+const URL = `${BASE}/?doc=${encodeURIComponent(DOC)}&name=${encodeURIComponent(NAME)}&pw=1&fleetLayout=3-col&wmFlowGate=${RUN_ID}${TOKEN ? '&token=' + encodeURIComponent(TOKEN) : ''}`
 
 function runPw(verb, ...verbArgs) {
   const out = execFileSync(process.execPath, [TLDA_DEV, 'pw', verb, ...verbArgs], {

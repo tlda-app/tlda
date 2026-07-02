@@ -60,6 +60,26 @@ export function acquireSingletonLock({ lockPath, installPath }) {
   return acquirePidfileFallback({ lockPath, installPath })
 }
 
+/**
+ * Inspect whether the machine-global singleton lock is currently held.
+ *
+ * This is for supervisors that need to decide whether to launch a daemon. On
+ * darwin, use the same kernel lock as acquireSingletonLock: if a non-blocking
+ * exclusive open fails, the lock is held by a live process. If it succeeds, no
+ * daemon currently holds the lock, and the probe immediately closes the fd.
+ *
+ * @param {object} opts
+ * @param {string} opts.lockPath
+ * @returns {{ held: boolean, holder: { pid?: number, installPath?: string, startedAt?: number } }}
+ */
+export function inspectSingletonLock({ lockPath }) {
+  const holder = readHolder(lockPath)
+  if (process.platform === 'darwin') {
+    return inspectExlock({ lockPath, holder })
+  }
+  return inspectPidfileFallback({ holder })
+}
+
 function readHolder(lockPath) {
   try {
     return JSON.parse(fs.readFileSync(lockPath, 'utf8'))
@@ -96,6 +116,24 @@ function acquireExlock({ lockPath, installPath }) {
   return { ok: true, fd }
 }
 
+function inspectExlock({ lockPath, holder }) {
+  const flags = fs.constants.O_RDWR | fs.constants.O_CREAT |
+    O_EXLOCK_DARWIN | fs.constants.O_NONBLOCK
+  let fd
+  try {
+    fd = fs.openSync(lockPath, flags, 0o644)
+  } catch (e) {
+    if (e.code === 'EAGAIN' || e.code === 'EWOULDBLOCK') {
+      return { held: true, holder }
+    }
+    throw e
+  }
+  try {
+    fs.closeSync(fd)
+  } catch { /* best effort */ }
+  return { held: false, holder }
+}
+
 function acquirePidfileFallback({ lockPath, installPath }) {
   const existing = readHolder(lockPath)
   if (existing && existing.pid && existing.pid !== process.pid) {
@@ -107,4 +145,14 @@ function acquirePidfileFallback({ lockPath, installPath }) {
   const fd = fs.openSync(lockPath, fs.constants.O_RDWR | fs.constants.O_CREAT, 0o644)
   writeHolder(fd, installPath)
   return { ok: true, fd }
+}
+
+function inspectPidfileFallback({ holder }) {
+  if (holder && holder.pid && holder.pid !== process.pid) {
+    try {
+      process.kill(holder.pid, 0)
+      return { held: true, holder }
+    } catch { /* expected: pid liveness probe says holder is dead */ }
+  }
+  return { held: false, holder }
 }

@@ -7,7 +7,7 @@ import { SchemeToggle, ThemeFamilyToggle, VimModeToggle } from './TocTab'
 import { useFleetAgents, useFleetIdentity } from '../fleet-data-adapter'
 // @ts-ignore — vanilla JS module
 import { getDeviceId } from '../fleet/fleet-data.mjs'
-import { agentDisplayName } from '../shapes/fleet-utils'
+import { agentDisplayLabel } from '../shapes/fleet-utils'
 import { useAvailableSpawnModels } from '../fleet/useAvailableSpawnModels'
 
 type DeviceRecord = { lastSeen: string }
@@ -597,7 +597,7 @@ export function PrefsTab() {
           const countdown = prefs.botSelfCheckCountdown[botId] ?? prefs.selfCheckCountdown
           const model = availableModels.includes(prefs.botModel[botId]) ? prefs.botModel[botId] : ''
           return (
-            <PrefSubsection key={botId} title={agentDisplayName(bot, agents)}>
+            <PrefSubsection key={botId} title={agentDisplayLabel(bot, agents)}>
               <label className="prefs-check">
                 <input type="checkbox" checked={enabled} onChange={e => setBotEnabled(botId, e.target.checked)} />
                 <span>Turn-end self-check poke</span>

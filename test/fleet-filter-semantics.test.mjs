@@ -4,6 +4,7 @@ import test from 'node:test'
 import {
   buildFleetAgentFilter,
   buildFleetDmFilter,
+  chooseFleetEventDisplayFilter,
   classifyFleetComposerTrafficMode,
   filterForFleetComposerTrafficMode,
   matchesFleetFilter,
@@ -96,6 +97,89 @@ test('resolved history agent sets follow DM and Agent preset intent', () => {
   assert.deepEqual([...resolveFleetFilter(agentFilter, context)], ['fleet:worker'])
 })
 
+test('resolved history agent sets preserve explicit fleet ids without roster rows', () => {
+  const filter = [
+    [['from', 'viewer-pm']],
+    [['to', 'fleet:8df9b9b1']],
+  ]
+  assert.deepEqual([...resolveFleetFilter(filter, { agents: [], humanId: human.id, humanName: human.friendly_name })], ['fleet:8df9b9b1'])
+})
+
+test('plain names resolve only the exact current seat, not lineage phase siblings', () => {
+  const phaseContext = {
+    agents: [
+      human,
+      { id: 'fleet:chief-id', friendly_name: 'chief', status: 'awake', labels: [] },
+      { id: 'fleet:chief-day-id', friendly_name: 'chief:day', status: 'awake', labels: [] },
+      { id: 'fleet:chief-dusk-id', friendly_name: 'chief:dusk', status: 'awake', labels: [] },
+    ],
+    humanId: human.id,
+    humanName: human.friendly_name,
+  }
+  const filter = [[['dm', 'chief']]]
+
+  assert.equal(matchesFleetFilter(filter, {
+    type: 'chat',
+    from: 'fleet:chief-id',
+    to: human.id,
+  }, phaseContext), true)
+  assert.equal(matchesFleetFilter(filter, {
+    type: 'chat',
+    from: human.id,
+    to: 'fleet:chief-day-id',
+  }, phaseContext), false)
+  assert.deepEqual([...resolveFleetFilter(filter, phaseContext)], ['fleet:chief-id'])
+})
+
+test('plain names resolve hibernating current seats', () => {
+  const hibernatingContext = {
+    agents: [
+      human,
+      { id: 'fleet:chief-id', friendly_name: 'chief', status: 'hibernating', labels: [] },
+    ],
+    humanId: human.id,
+    humanName: human.friendly_name,
+  }
+  const filter = [[['dm', 'chief']]]
+
+  assert.equal(matchesFleetFilter(filter, {
+    type: 'chat',
+    from: 'fleet:chief-id',
+    to: human.id,
+  }, hibernatingContext), true)
+  assert.deepEqual([...resolveFleetFilter(filter, hibernatingContext)], ['fleet:chief-id'])
+})
+
+test('plain name filters resolve against the current roster at query time', () => {
+  const filter = [[['dm', 'chief']]]
+  const before = {
+    agents: [human, { id: 'fleet:old-chief', friendly_name: 'chief', status: 'dead', dead: true, labels: [] }],
+    humanId: human.id,
+    humanName: human.friendly_name,
+  }
+  const after = {
+    agents: [human, { id: 'fleet:new-chief', friendly_name: 'chief', status: 'hibernating', labels: [] }],
+    humanId: human.id,
+    humanName: human.friendly_name,
+  }
+
+  assert.deepEqual([...resolveFleetFilter(filter, before)], ['fleet:old-chief'])
+  assert.deepEqual([...resolveFleetFilter(filter, after)], ['fleet:new-chief'])
+})
+
+test('zero-id filters preserve the previous display filter instead of wiping visible history', () => {
+  const previous = [[['dm', 'worker']]]
+  const missing = [[['dm', 'missing-agent']]]
+  const choice = chooseFleetEventDisplayFilter(missing, previous, context)
+
+  assert.equal(choice.unresolved, true)
+  assert.deepEqual(choice.filter, previous)
+  assert.deepEqual(chooseFleetEventDisplayFilter(missing, null, context), {
+    filter: missing,
+    unresolved: false,
+  })
+})
+
 test('composer traffic presets classify and cycle DM quiet, DM, all agent traffic', () => {
   assert.deepEqual(buildFleetDmFilter('dmitry', 'worker'), dmFilter)
   assert.deepEqual(buildFleetAgentFilter('worker'), agentFilter)
@@ -105,6 +189,10 @@ test('composer traffic presets classify and cycle DM quiet, DM, all agent traffi
   assert.equal(classifyFleetComposerTrafficMode(agentFilter, 'normal', 'dmitry', 'worker'), 'agent')
   assert.equal(classifyFleetComposerTrafficMode(agentFilter, 'quiet', 'dmitry', 'worker'), 'agent')
   assert.equal(classifyFleetComposerTrafficMode([[['to', 'worker']]], 'normal', 'dmitry', 'worker'), 'custom')
+  assert.equal(classifyFleetComposerTrafficMode(dmFilter, 'quiet', 'dmitry', ''), 'dm-quiet')
+  assert.equal(classifyFleetComposerTrafficMode(dmFilter, 'normal', 'dmitry', ''), 'dm')
+  assert.equal(classifyFleetComposerTrafficMode(agentFilter, 'normal', 'dmitry', ''), 'agent')
+  assert.equal(classifyFleetComposerTrafficMode([[['to', 'worker']]], 'normal', 'dmitry', ''), 'custom')
 
   assert.equal(nextFleetComposerTrafficMode('dm-quiet'), 'dm')
   assert.equal(nextFleetComposerTrafficMode('dm'), 'agent')

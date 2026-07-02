@@ -5,11 +5,19 @@ import test from 'node:test'
 
 import { matchesFleetFilter } from './filter-semantics.mjs'
 import { makeEventStore } from './event-store.mjs'
+import { decoratedNameText } from '../../shared/lineage-name.mjs'
 import {
+  fleetFilterHasMatchingAgent,
+  getAwakeFleetAgentCount,
   getFilteredFleetEvents,
   getFleetEvents,
+  getResolvedFleetAgentIdsForLabel,
+  getResolvedFleetAgentIds,
   replaceFleetEvents,
+  replaceFleetAgents,
+  resetFleetAgentStoreForTest,
   resetFleetEventStoreForTest,
+  upsertFleetAgents,
   upsertFleetEvent,
   viewFleetEvents,
   type FleetEvent,
@@ -152,4 +160,126 @@ test('pure snapshots and repeated keyed views do not duplicate event rows', () =
   second.dispose()
   upsertFleetEvent(eventAt(23, 'fleet:skip', 'fleet:gamma', 23))
   assert.deepEqual(ids(second.get()), [])
+})
+
+test('fleet agent indexed resolver matches live/dead filter semantics', () => {
+  resetFleetAgentStoreForTest([
+    { id: 'fleet:old-chief', friendly_name: 'chief', status: 'hibernating', dead: true, labels: [] },
+    { id: 'fleet:chief', friendly_name: 'chief', status: 'awake', dead: false, labels: [] },
+    { id: 'fleet:chat-render-fix', friendly_name: 'chat-render-fix', status: 'hibernating', dead: false, labels: [] },
+  ])
+
+  assert.deepEqual(
+    [...getResolvedFleetAgentIds([[['from', 'chief']], [['to', 'chief']]])].sort(),
+    ['fleet:chief']
+  )
+  assert.deepEqual(
+    [...getResolvedFleetAgentIds([[['from', 'chief']], [['to', 'chief']]], { status: 'hibernating' })],
+    []
+  )
+  assert.deepEqual(
+    [...getResolvedFleetAgentIds([[['from', 'chat-render-fix']], [['to', 'chat-render-fix']]], { status: 'hibernating' })],
+    ['fleet:chat-render-fix']
+  )
+
+  upsertFleetAgents([{ id: 'fleet:chief', friendly_name: 'chief', status: 'dead', dead: true, labels: [] }])
+
+  assert.deepEqual(
+    [...getResolvedFleetAgentIds([[['from', 'chief']], [['to', 'chief']]])].sort(),
+    ['fleet:chief', 'fleet:old-chief']
+  )
+  resetFleetAgentStoreForTest()
+})
+
+test('replaceFleetAgents and deltas maintain the label index without roster scans', () => {
+  resetFleetAgentStoreForTest()
+  replaceFleetAgents([
+    { id: 'fleet:alpha', friendly_name: 'alpha', status: 'awake', labels: ['math'] },
+    { id: 'fleet:beta', friendly_name: 'beta', status: 'hibernating', labels: ['math'] },
+  ])
+  assert.deepEqual(
+    [...getResolvedFleetAgentIds([[['from', 'math']]], { status: 'hibernating' })],
+    ['fleet:beta']
+  )
+
+  upsertFleetAgents([{ id: 'fleet:alpha', friendly_name: 'alpha', status: 'hibernating', labels: ['math'] }])
+  assert.deepEqual(
+    [...getResolvedFleetAgentIds([[['from', 'math']]], { status: 'hibernating' })].sort(),
+    ['fleet:alpha', 'fleet:beta']
+  )
+  resetFleetAgentStoreForTest()
+})
+
+test('fleet agent label resolver uses the maintained label index', () => {
+  resetFleetAgentStoreForTest([
+    { id: 'fleet:old-chief', friendly_name: 'chief', status: 'dead', dead: true, labels: [] },
+    { id: 'fleet:chief', friendly_name: 'chief', status: 'awake', dead: false, labels: [] },
+    { id: 'fleet:helper', friendly_name: 'helper', status: 'awake', labels: ['math'] },
+  ])
+
+  assert.deepEqual(getResolvedFleetAgentIdsForLabel('chief'), ['fleet:chief'])
+  assert.deepEqual(getResolvedFleetAgentIdsForLabel('math'), ['fleet:helper'])
+  assert.deepEqual(getResolvedFleetAgentIdsForLabel('missing'), [])
+  assert.deepEqual(getResolvedFleetAgentIdsForLabel('fleet:direct'), ['fleet:direct'])
+
+  resetFleetAgentStoreForTest()
+})
+
+test('suffix-decorated display labels do not resolve as stripped filter names', () => {
+  resetFleetAgentStoreForTest([
+    { id: 'fleet:chief-day', friendly_name: 'chief:day', status: 'awake', dead: false, labels: [] },
+  ])
+
+  assert.equal(decoratedNameText('chief:day'), '☀ chief')
+  assert.deepEqual(getResolvedFleetAgentIds([[['dm', 'chief']]]), [])
+  assert.deepEqual(
+    getResolvedFleetAgentIds([[['dm', 'chief:day']]]),
+    ['fleet:chief-day']
+  )
+
+  resetFleetAgentStoreForTest()
+})
+
+test('fleet filter possible check is stable across unrelated agent churn', () => {
+  resetFleetAgentStoreForTest([
+    { id: 'fleet:chief', friendly_name: 'chief', status: 'awake', labels: [] },
+    { id: 'fleet:helper', friendly_name: 'helper', status: 'awake', labels: ['math'] },
+  ])
+
+  const chiefFilter: [string, string][][] = [[['dm', 'chief']]]
+  const missingFilter: [string, string][][] = [[['dm', 'missing']]]
+
+  assert.equal(fleetFilterHasMatchingAgent(chiefFilter, { id: 'fleet:skip', name: 'skip' }), true)
+  assert.equal(fleetFilterHasMatchingAgent(missingFilter, { id: 'fleet:skip', name: 'skip' }), false)
+
+  upsertFleetAgents([{ id: 'fleet:unrelated', friendly_name: 'unrelated', status: 'hibernating', labels: ['other'] }])
+  assert.equal(fleetFilterHasMatchingAgent(chiefFilter, { id: 'fleet:skip', name: 'skip' }), true)
+  assert.equal(fleetFilterHasMatchingAgent(missingFilter, { id: 'fleet:skip', name: 'skip' }), false)
+
+  upsertFleetAgents([{ id: 'fleet:missing', friendly_name: 'missing', status: 'awake', labels: [] }])
+  assert.equal(fleetFilterHasMatchingAgent(missingFilter, { id: 'fleet:skip', name: 'skip' }), true)
+
+  resetFleetAgentStoreForTest()
+})
+
+test('awake fleet agent count is a maintained derived index', () => {
+  resetFleetAgentStoreForTest([
+    { id: 'fleet:skip', friendly_name: 'skip', status: 'awake', human: true, labels: [] },
+    { id: 'fleet:alpha', friendly_name: 'alpha', status: 'awake', labels: [] },
+    { id: 'fleet:beta', friendly_name: 'beta', status: 'hibernating', labels: [] },
+    { id: 'fleet:gamma', friendly_name: 'gamma', status: 'dead', dead: true, labels: [] },
+  ])
+
+  assert.equal(getAwakeFleetAgentCount(), 1)
+
+  upsertFleetAgents([{ id: 'fleet:unrelated', friendly_name: 'unrelated', status: 'hibernating', labels: [] }])
+  assert.equal(getAwakeFleetAgentCount(), 1)
+
+  upsertFleetAgents([{ id: 'fleet:beta', friendly_name: 'beta', status: 'awake', labels: [] }])
+  assert.equal(getAwakeFleetAgentCount(), 2)
+
+  upsertFleetAgents([{ id: 'fleet:alpha', friendly_name: 'alpha', status: 'dead', dead: true, labels: [] }])
+  assert.equal(getAwakeFleetAgentCount(), 1)
+
+  resetFleetAgentStoreForTest()
 })

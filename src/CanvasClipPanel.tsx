@@ -137,6 +137,7 @@ interface CanvasClipPanelProps {
   liveEdit?: boolean
   wmSurface?: CanvasClipWMSurface
   fullViewport?: boolean
+  disableCulling?: boolean
   identityId?: string | null
   customGestureActiveRef?: { current: boolean }
   requestedShapeIds?: string[]
@@ -155,6 +156,7 @@ export function CanvasClipPanel({
   lockCamera = false,
   wmSurface,
   fullViewport = false,
+  disableCulling = false,
   readOnly = false,
   onEditorMount,
   identityId,
@@ -347,11 +349,12 @@ export function CanvasClipPanel({
   }, [identityId, lockCamera, readOnly])
 
   const viewportEl = (
-    <VisibilityViewportProvider viewportId={viewportId}>
+    <VisibilityViewportProvider viewportId={viewportId} keepMounted={disableCulling}>
       <TldrawViewport
         id={viewportId}
         camera={camera}
         className={className}
+        disableCulling={disableCulling}
         shapePredicate={shapePredicate}
         onCameraChange={lockCamera ? undefined : (newCam) => {
           setInteractiveCamera(prev => sameCamera(prev, newCam) ? prev : newCam)

@@ -25,6 +25,7 @@ export interface AnnotationViewerSurfaceInput {
 	source?: string | null
 	viewport?: { w: number; h: number }
 	size?: { w: number; h: number }
+	centerOnAnchor?: boolean
 }
 
 export interface AnnotationViewerSurfacePayload {
@@ -60,6 +61,7 @@ export function createAnnotationViewerSurfaceRequest({
 	source = null,
 	viewport = { w: 1200, h: 800 },
 	size = { w: 650, h: 450 },
+	centerOnAnchor = false,
 }: AnnotationViewerSurfaceInput): ManagedSurfaceRequest<AnnotationViewerSurfacePayload> {
 	const slug = surfaceSlug(surfaceKey)
 	const resolvedOwner = requireManagedSurfaceOwner(owner)
@@ -70,18 +72,29 @@ export function createAnnotationViewerSurfaceRequest({
 		viewportWidth: viewport.w,
 		viewportHeight: viewport.h,
 	})
-
+	const centeredLeft = Math.max(placement.margin, Math.min(
+		Math.round(centerOnAnchor
+			? (viewport.w - size.w) / 2
+			: placement.left),
+		viewport.w - size.w - placement.margin,
+	))
+	const centeredTop = Math.max(placement.margin, Math.min(
+		Math.round(centerOnAnchor
+			? (viewport.h - size.h) / 2
+			: placement.top),
+		viewport.h - size.h - placement.margin,
+	))
 	return {
 		kind: 'annotation-viewer',
 		surfaceId: `${ANNOTATION_VIEWER_SURFACE_PREFIX}:${slug}`,
 		layerId: `${ANNOTATION_VIEWER_LAYER_PREFIX}:${slug}`,
 		owner: resolvedOwner,
-		extent: { x: placement.left, y: placement.top, w: size.w, h: size.h },
+		extent: { x: centeredLeft, y: centeredTop, w: size.w, h: size.h },
 		placement: {
-			mode: 'chip-anchored',
+			mode: centerOnAnchor ? 'viewport-centered' : 'chip-anchored',
 			anchor: chipRect,
-			left: placement.left,
-			top: placement.top,
+			left: centeredLeft,
+			top: centeredTop,
 			margin: placement.margin,
 		},
 		cameraPolicy: { x: 'pin', y: 'pin', zoom: 'lock' },

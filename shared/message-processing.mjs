@@ -10,6 +10,31 @@ const pathRe = new RegExp(
   'g'
 )
 
+function markdownHrefToLocalPath(href, agentCwd) {
+  let target = String(href || '').trim()
+  if (!target) return null
+  if (target.startsWith('<') && target.endsWith('>')) target = target.slice(1, -1)
+  try {
+    target = decodeURIComponent(target)
+  } catch (err) {
+    if (!(err instanceof URIError)) throw err
+  }
+  try {
+    const url = new URL(target)
+    if (url.protocol !== 'file:') return null
+    return url.pathname
+  } catch (err) {
+    if (!(err instanceof TypeError)) throw err
+  }
+  if (/^[a-zA-Z][a-zA-Z\d+.-]*:/.test(target) || target.startsWith('//') || target.startsWith('#')) {
+    return null
+  }
+  const hasLocalPrefix = /^(?:~?\/|\.{1,2}\/|\.[\w-]+\/)/.test(target)
+  const resolved = resolveFilePath(target, agentCwd)
+  if (hasLocalPrefix || fs.existsSync(resolved)) return resolved
+  return null
+}
+
 // Detect file paths in message text and replace with {{att:N}} placeholders.
 // Backtick-quoted spans/blocks are skipped (they are "quotes" per Skip's rule).
 // Returns { resolvedMessage, inlineAttachments } where inlineAttachments entries
@@ -26,11 +51,21 @@ export function detectAttachments(message, agentCwd) {
   let working = message.replace(/```[\s\S]*?```/g, (m) => maskToken('F', m))
   // 2. Single-backtick inline spans (no newlines, non-empty interior)
   working = working.replace(/`[^`\n]+`/g, (m) => maskToken('I', m))
-  // 2b. Ordinary markdown links are authored links, not attachment requests.
-  // Mask the whole link before bare-path detection so labels like
-  // [docs/report.md](/abs/worktree/docs/report.md) are not validated as files.
-  working = working.replace(/(?<!!)\[[^\]\n]*\]\((?:\\.|[^)\\\n])+\)/g, (m) => maskToken('L', m))
   let attIdx = 0
+  // 2b. Markdown links with local file targets are attachment requests. Remote
+  // or non-file authored links are masked before bare-path detection so labels
+  // like [docs/report.md](https://...) are not validated as files.
+  working = working.replace(/(?<!!)\[[^\]\n]*\]\(((?:\\.|[^)\\\n])+)\)/g, (m, href) => {
+    const filePath = markdownHrefToLocalPath(href, agentCwd)
+    if (!filePath) return maskToken('L', m)
+    const id = attIdx++
+    if (fs.existsSync(filePath)) {
+      inlineAttachments.push({ type: 'file', id, path: filePath, name: path.basename(filePath) })
+    } else {
+      inlineAttachments.push({ type: 'file', id, path: filePath, name: path.basename(filePath), broken: true })
+    }
+    return `{{att:${id}}}`
+  })
   // 3a. Markdown images with localhost file API URLs: ![...](http://localhost:.../api/file?path=...)
   const mdImageRe = /!\[([^\]]*)\]\((https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?\/api\/file\?path=([^)]+))\)/g
   working = working.replace(mdImageRe, (match, _alt, _url, encodedPath) => {

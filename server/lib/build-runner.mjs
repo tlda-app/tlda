@@ -91,6 +91,7 @@ const _directReporter = {
           buildReadyAt: Date.now(),
           warningsJson: '',
           errorsJson: '',
+          syncErrorJson: '',
           ...(propsPatch || {}),
         },
       })
@@ -482,7 +483,11 @@ async function compileLaTeX(ctx) {
   // recovery can clear it without disturbing concurrent builds of other docs.
   const parCacheDir = biberParCacheDir(projDir)
   mkdirSync(parCacheDir, { recursive: true })
-  const biberEnv = { ...process.env, PAR_GLOBAL_TEMP: parCacheDir }
+  const biberEnv = {
+    ...process.env,
+    PAR_GLOBAL_TEMP: parCacheDir,
+    BIBINPUTS: `${texDir}:${srcDir}:`,
+  }
 
   // Override the scratch-template for THIS build. The user's source dir has
   // the marker version of \inputscratch (so local vanilla-latex builds show
@@ -555,7 +560,7 @@ async function compileLaTeX(ctx) {
     if (hasBrokenCites) {
       const useBiblatex = existsSync(bcfPath)
       const bibCmd = useBiblatex
-        ? `biber --input-directory="${texDir}" --output-directory="${buildDir}" "${join(buildDir, texBase)}"`
+        ? `biber --output-directory="${buildDir}" "${texBase}"`
         : `BIBINPUTS="${texDir}:${srcDir}:" BSTINPUTS="${texDir}:${srcDir}:" bibtex "${texBase}"`
       const bibTool = useBiblatex ? 'biber' : 'bibtex'
       // Remove stale .bbl — if we're here, citations are broken anyway.
@@ -643,7 +648,7 @@ async function compileLaTeX(ctx) {
           if (existsSync(cacheF)) { try { unlinkSync(cacheF) } catch {} }
         }
         clearBiberParCache(parCacheDir, addLog)
-        const bibCmd2 = `biber --input-directory="${texDir}" --output-directory="${buildDir}" "${join(buildDir, texBase)}"`
+        const bibCmd2 = `biber --output-directory="${buildDir}" "${texBase}"`
         try {
           await run(bibCmd2, { cwd: buildDir, timeout: 60000, env: biberEnv })
           await run(cmd, { cwd: texDir, timeout: 120000, env })
@@ -651,6 +656,12 @@ async function compileLaTeX(ctx) {
         } catch (e) {
           addLog(`Citation recovery failed: ${e.message?.split('\n')[0]}`)
         }
+      }
+
+      const recoveredLog = readFileSync(logPath, 'utf8')
+      const unresolvedAfterRecovery = (recoveredLog.match(/Citation .* undefined/g) || []).length
+      if (unresolvedAfterRecovery > 5) {
+        throw new Error(`${unresolvedAfterRecovery} undefined citations after biber recovery`)
       }
     }
   }
@@ -1914,13 +1925,21 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
           const bundleBase64 = await createShadowBundleBase64(name, result.hash)
           const mirrorResult = await mirrorShadowSnapshot({ name, hash: result.hash, bundleBase64 })
           _reporter.updateProject(name, { lastMirrorSuccess: new Date().toISOString(), lastMirrorFailure: null })
+          _reporter.writeSentinel(`doc-${name}`, { timestamp: Date.now(), syncErrorJson: '' }).catch(e => {
+            ctx.addLog(`sync-error clear failed (non-fatal): ${e.message}`)
+          })
           console.log(`[mirror] ${name}@${hash7} ok via daemon ${mirrorResult?.machine_id || 'unknown'} → ${mirrorResult?.sourceDir || 'source repo'}`)
         } catch (mirrorErr) {
           console.error(`[mirror] ${name}@${hash7} failed: ${mirrorErr.message}`)
           ctx.addLog(`mirror to working copy failed (non-fatal): ${mirrorErr.message}`)
           _reporter.updateProject(name, { lastMirrorFailure: { at: new Date().toISOString(), hash: result.hash, message: mirrorErr.message } })
-          recordPersistentBuildStatus(name, `Mirror failed: ${mirrorErr.message}`, sourceVersion)
-          signalBuildStatus(name, `Mirror failed: ${mirrorErr.message}`)
+          _reporter.writeSentinel(`doc-${name}`, {
+            timestamp: Date.now(),
+            sourceVersion,
+            syncErrorJson: JSON.stringify([{ kind: 'sync-error', message: `Mirror failed: ${mirrorErr.message}` }]),
+          }).catch(e => {
+            ctx.addLog(`sync-error sentinel update failed (non-fatal): ${e.message}`)
+          })
           // Include lastMirrorSuccess so the failure handler can narrow the responsible-agent
           // window to edits that happened after the last clean mirror.
           const lastMirrorSuccess = readProject(name)?.lastMirrorSuccess || null

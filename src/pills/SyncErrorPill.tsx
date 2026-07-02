@@ -1,13 +1,7 @@
 /**
- * SyncErrorPill — enlarged sibling of BuildErrorPill for mirror/shadow sync
- * failures. A sync failure is more significant than a build error (the working
- * copy may be out of step with the build), so it surfaces as a LARGER badge in
- * the same pill row, same interaction: badge → click to expand the message(s).
- *
- * Single source of truth: reads `syncErrorJson` straight from the doc-version
- * sentinel shape (convergent Yjs state, survives reconnect). Set by the server
- * when a critical daemon-warning fires for this doc; cleared on the next clean
- * sync (daemon-sync-ok). Renders nothing when there's no standing sync failure.
+ * SyncErrorPill — quiet sibling of BuildErrorPill for mirror/source sync
+ * failures. Reads `syncErrorJson` from the doc-version sentinel so the state
+ * survives reconnects and stays separate from build errors.
  */
 import { useState, useEffect, useRef, useContext } from 'react'
 import { useEditor } from 'tldraw'
@@ -115,7 +109,7 @@ export function SyncErrorPill() {
         onClick={() => setShowList(s => !s)}
         onPointerDown={e => e.stopPropagation()}
         title="Source sync blocked"
-      >&#9888; {errors.find(e => e.kind === 'overleaf-conflict')?.message || 'sync failed'}</span>
+      >⇄ sync</span>
       {showList && (
         <div className="sync-error-list" onPointerDown={e => e.stopPropagation()}>
           <div className="sync-error-head">

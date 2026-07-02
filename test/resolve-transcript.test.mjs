@@ -61,3 +61,24 @@ test('codex fallback binds agent-owned launch-window rollout when no rollout id 
 
   rmSync(home, { recursive: true, force: true })
 })
+
+test('codex fallback binds no-owner rollout by cwd and launch window', () => {
+  const home = mkdtempSync(path.join(tmpdir(), 'tlda-resolve-home-'))
+  const matching = rolloutPath(home, '2026-06-17T13-00-03.000Z', 'matching-rollout')
+  const wrongCwd = rolloutPath(home, '2026-06-17T13-00-04.000Z', 'wrong-cwd-rollout')
+  const tooLate = rolloutPath(home, '2026-06-17T13-05-00.000Z', 'too-late-rollout')
+  writeFileSync(matching, '{"type":"session_meta","payload":{"id":"matching-rollout","timestamp":"2026-06-17T13:00:03.000Z","cwd":"/tmp/tlda"}}\n')
+  writeFileSync(wrongCwd, '{"type":"session_meta","payload":{"id":"wrong-cwd-rollout","timestamp":"2026-06-17T13:00:04.000Z","cwd":"/tmp/other"}}\n')
+  writeFileSync(tooLate, '{"type":"session_meta","payload":{"id":"too-late-rollout","timestamp":"2026-06-17T13:05:00.000Z","cwd":"/tmp/tlda"}}\n')
+
+  const found = runResolver(home, {
+    id: 'fleet:fresh-codex',
+    friendly_name: 'fresh-codex',
+    cwd: '/tmp/tlda',
+    session_id: null,
+    session_ids: [],
+  }, Date.parse('2026-06-17T13:00:00.000Z'))
+  assert.equal(found, matching)
+
+  rmSync(home, { recursive: true, force: true })
+})

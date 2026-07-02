@@ -104,8 +104,12 @@ export function buildCmd({
   parts.push(...workspaceWriteConfigArgs)
   if (model) parts.push(`-m ${sq(model)}`)
   if (cwd) parts.push(`-C ${sq(cwd)}`)
-  parts.push(`-s ${sq(sandboxMode)}`)
-  parts.push('-a never')
+  if (sandboxMode === 'danger-full-access') {
+    parts.push('--dangerously-bypass-approvals-and-sandbox')
+  } else {
+    parts.push(`-s ${sq(sandboxMode)}`)
+    parts.push('-a never')
+  }
   return parts.join(' ')
 }
 

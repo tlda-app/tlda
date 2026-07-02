@@ -32,6 +32,7 @@ export interface TldrawViewportProps {
 	camera: TLViewport['camera']
 	pageId?: TLViewport['pageId']
 	className?: string
+	disableCulling?: boolean
 	shapePredicate?(shape: TLShape): boolean
 	onCameraChange?(camera: TLViewport['camera']): void
 }
@@ -42,6 +43,7 @@ export function TldrawViewport({
 	camera,
 	pageId,
 	className,
+	disableCulling,
 	shapePredicate,
 	onCameraChange,
 }: TldrawViewportProps) {
@@ -237,7 +239,11 @@ export function TldrawViewport({
 			{isGridMode && Grid && <Grid x={camera.x} y={camera.y} z={camera.z} size={gridSize} />}
 			<div ref={rHtmlLayer} className="tl-html-layer tl-shapes" draggable={false}>
 				<ViewportSelectionBackground />
-				<ViewportShapesLayer viewportId={id} shapePredicate={shapePredicate} />
+				<ViewportShapesLayer
+					viewportId={id}
+					shapePredicate={shapePredicate}
+					disableCulling={disableCulling}
+				/>
 			</div>
 			{screenBounds ? (
 				<CanvasOverlays viewportId={id} camera={camera} screenBounds={screenBounds.toJson()} />
@@ -284,20 +290,22 @@ function ViewportSelectionBackground() {
 function ViewportShapesLayer({
 	viewportId,
 	shapePredicate,
+	disableCulling,
 }: {
 	viewportId: TLViewportId
 	shapePredicate?: (shape: TLShape) => boolean
+	disableCulling?: boolean
 }) {
 	const editor = useEditor()
 	const debugSvg = useValue('viewport debug svg', () => debugFlags.debugSvg.get(), [debugFlags])
 	const renderingShapes = useValue(
 		'viewport rendering shapes',
 		() => {
-			const shapes = editor.getRenderingShapes({ viewportId })
+			const shapes = editor.getRenderingShapes({ viewportId, disableCulling })
 			if (!shapePredicate) return shapes
 			return shapes.filter((result) => shapePredicate(result.shape))
 		},
-		[editor, shapePredicate, viewportId]
+		[disableCulling, editor, shapePredicate, viewportId]
 	)
 
 	return (
@@ -311,21 +319,27 @@ function ViewportShapesLayer({
 					<Shape key={result.id + '_shape'} {...result} initialIsCulled={false} />
 				)
 			)}
-			<ViewportCullingController viewportId={viewportId} />
+			<ViewportCullingController viewportId={viewportId} disableCulling={disableCulling} />
 		</ShapeCullingProvider>
 	)
 }
 
-function ViewportCullingController({ viewportId }: { viewportId: TLViewportId }) {
+function ViewportCullingController({
+	viewportId,
+	disableCulling,
+}: {
+	viewportId: TLViewportId
+	disableCulling?: boolean
+}) {
 	const editor = useEditor()
 	const { updateCulling } = useShapeCulling()
 
 	useQuickReactor(
 		'update viewport shape culling',
 		() => {
-			updateCulling(editor.getCulledShapes({ viewportId }))
+			updateCulling(editor.getCulledShapes({ viewportId, disableCulling }))
 		},
-		[editor, updateCulling, viewportId]
+		[disableCulling, editor, updateCulling, viewportId]
 	)
 
 	return null

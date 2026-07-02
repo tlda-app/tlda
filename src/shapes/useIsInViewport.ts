@@ -13,20 +13,27 @@ const MARGIN_PX = 400  // screen pixels of hysteresis on each side
 
 export type VisibilityViewportId = TLViewportId
 
-const VisibilityViewportContext = createContext<VisibilityViewportId | undefined>(undefined)
+interface VisibilityViewportContextValue {
+  viewportId?: VisibilityViewportId
+  keepMounted?: boolean
+}
+
+const VisibilityViewportContext = createContext<VisibilityViewportContextValue>({})
 
 export function useVisibilityViewportId(): VisibilityViewportId | undefined {
-  return useContext(VisibilityViewportContext)
+  return useContext(VisibilityViewportContext).viewportId
 }
 
 export function VisibilityViewportProvider({
   viewportId,
+  keepMounted = false,
   children,
 }: {
   viewportId?: VisibilityViewportId
+  keepMounted?: boolean
   children: ReactNode
 }) {
-  return createElement(VisibilityViewportContext.Provider, { value: viewportId }, children)
+  return createElement(VisibilityViewportContext.Provider, { value: { viewportId, keepMounted } }, children)
 }
 
 function getOptionalViewport(editor: Editor, viewportId: TLViewportId) {
@@ -42,8 +49,9 @@ function getOptionalViewport(editor: Editor, viewportId: TLViewportId) {
 
 export function useIsInViewport(shapeId: string): boolean {
   const editor = useEditor()
-  const viewportId = useContext(VisibilityViewportContext)
+  const { viewportId, keepMounted } = useContext(VisibilityViewportContext)
   return useValue('isInViewport', () => {
+    if (keepMounted) return true
     const bounds = editor.getShapePageBounds(shapeId as TLShapeId)
     if (!bounds) return true  // unknown → assume visible
     let vp = editor.getViewportPageBounds()
@@ -73,5 +81,5 @@ export function useIsInViewport(shapeId: string): boolean {
       bounds.y         > vp.y + vp.h + m ||
       bounds.y + bounds.h < vp.y         - m
     )
-  }, [editor, shapeId, viewportId])
+  }, [editor, shapeId, viewportId, keepMounted])
 }

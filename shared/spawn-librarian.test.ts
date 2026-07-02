@@ -151,6 +151,19 @@ describe('spawn librarian liveness routing', () => {
     )
   })
 
+  it('respawns when daemon check-alive reports the tmux session absent', () => {
+    const librarian = new SpawnLibrarian()
+    const agent = { id: 'fleet:a', friendly_name: 'a' }
+    assert.deepEqual(
+      librarian.decideWake(
+        agent,
+        { agent_id: agent.id, tmux_session: 'fleet-a', state: 'dead', reason: 'tmux gone' },
+        { serverAlive: true }
+      ),
+      { action: 'respawn' }
+    )
+  })
+
   it('respawns only after daemon-confirmed dead state', () => {
     const librarian = new SpawnLibrarian()
     const agent = { id: 'fleet:a', friendly_name: 'a' }

@@ -14,7 +14,6 @@ import path from 'path'
 import os from 'os'
 import { DEFAULT_PORT, loadConfig, resolveConfig } from '../../shared/config.mjs'
 import { parseFilter, evalExpr, labelsForAgent } from '../../shared/fleet-labels.mjs'
-import { callerSpawnPolicy } from '../lib/spawn-policy.mjs'
 import { resolveSpawnMachine } from '../lib/spawn-routing.mjs'
 import { summarizeFleetRosterTruth } from '../lib/fleet-roster-truth.mjs'
 
@@ -450,7 +449,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   // doc: project name — daemon resolves to sourceDir for the cwd
   // For respawn: { agent: "fleet:xxx" or "name", respawn: true }
   router.post('/api/spawn', async (req, res) => {
-    const { name, model, doc, cwd, agent, respawn, fresh, capability, spawnCapability, kind, mode, effort } = req.body || {}
+    const { name, model, doc, cwd, agent, respawn, fresh, capability, spawnCapability, privileges, requestedPrivileges, kind, mode, effort } = req.body || {}
     // HTTP auth currently proves only bearer-token level, not which fleet agent or
     // human browser session made the request. Spawning is authority-sensitive, so
     // fail closed here instead of treating all HTTP callers as the server owner.
@@ -500,7 +499,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         daemonConnections,
       })
       const requestedCapability = capability || spawnCapability || null
-      const callerRung = callerSpawnPolicy(caller, { serverOwnerId: SERVER_OWNER_ID }).capability
+      const privilegeRequest = privileges || requestedPrivileges || null
       const resolved = resolveSpawnTarget
         ? await resolveSpawnTarget(spawnName, !!respawn, {
             fresh: !!fresh,
@@ -516,7 +515,13 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         effort: effort || undefined,
         mode: mode || undefined,
         requestedCapability: requestedCapability || undefined,
-        callerRung,
+        requestedPrivileges: privilegeRequest || undefined,
+        requester: {
+          id: caller.id,
+          name: caller.friendly_name || caller.name || undefined,
+          human: !!caller.human,
+          spawnPolicy: caller.metadata?.spawnPolicy || undefined,
+        },
         spawnRoute: route.source,
         respawn: resolved.respawn,
       })

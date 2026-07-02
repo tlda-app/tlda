@@ -3,7 +3,7 @@ import { createShapeId } from 'tldraw'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getHumanName, getDeviceId, getEvents, isDeviceReady, whenDeviceReady } from '../fleet/fleet-data.mjs'
 // @ts-ignore — vanilla JS module
-import { baseName } from '../../shared/lineage-name.mjs'
+import { decoratedNameText } from '../../shared/lineage-name.mjs'
 // @ts-ignore — vanilla JS module
 import { recentChatTargetAgents } from '../fleet/layout-targets.mjs'
 import { getPref } from '../preferences'
@@ -39,17 +39,16 @@ export function endNativeSnapDrag(editor: Editor) {
   if (stack && stack.length === 0) nativeSnapModeStack.delete(editor)
 }
 
-/**
- * The display name for an agent — the single source of truth used everywhere a
- * name is shown (agents panel, chat target chip, nicks). Lineage is purely a
- * naming convention: the agent's friendly_name IS its identity. The phase is
- * encoded in the name as a ":day"/":dusk" suffix (dawn is bare), so display
- * strips that suffix and shows the base name; the phase is conveyed only by the
- * icon. Never derive the name from any server "phase" — there is no such field.
- */
-export function agentDisplayName(agent: any, _allAgents?: any[]): string {
+/** Display-only label. Do not use this as a filter or routing value. */
+export function agentDisplayLabel(agent: any, _allAgents?: any[]): string {
   if (!agent) return '[unknown]'
-  return baseName(agent.friendly_name) || (agent.id || '').replace('fleet:', '')
+  return decoratedNameText(agent.friendly_name)?.replace(/^fleet:/, '') || (agent.id || '').replace('fleet:', '')
+}
+
+/** Exact current name for filters, DMs, and routing. */
+export function agentExactName(agent: any): string {
+  if (!agent) return ''
+  return agent.friendly_name || (agent.id || '').replace('fleet:', '')
 }
 
 export const FLEET_HUD_ANCHOR_ID = 'shape:fleet-hud-anchor' as const
@@ -407,12 +406,14 @@ export function ensureMyLaneDisjoint(editor: Editor, myId: string, myDevice: str
   return mine.length
 }
 
-export async function createFleetLayout(editor: Editor, agents: any[], variant: '2col' | '3col' | 'wide' | 'grid' | 'touch' | 'phone' = '3col'): Promise<boolean> {
+export type FleetLayoutVariant = 'phone' | '3-col' | '2x2' | 'big-chat' | 'both-margins' | 'touch'
+
+export async function createFleetLayout(editor: Editor, agents: any[], variant: FleetLayoutVariant = '3-col'): Promise<boolean> {
   const result = await createFleetLayoutDetailed(editor, agents, variant)
   return result.created
 }
 
-export async function createFleetLayoutDetailed(editor: Editor, agents: any[], variant: '2col' | '3col' | 'wide' | 'grid' | 'touch' | 'phone' = '3col'): Promise<FleetLayoutCreateResult> {
+export async function createFleetLayoutDetailed(editor: Editor, agents: any[], variant: FleetLayoutVariant = '3-col'): Promise<FleetLayoutCreateResult> {
   await whenDeviceReady()
   const myId = getHumanId()
   if (!myId) return makeFleetLayoutResult(editor, variant, 'identity-missing', myId, getDeviceId())
@@ -552,7 +553,7 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
       seenNames.add(name)
       return true
     })
-    const panelCount = variant === 'grid' ? 4 : (variant === 'wide' || variant === 'phone') ? 1 : 2
+    const panelCount = variant === '2x2' ? 4 : (variant === 'big-chat' || variant === 'phone') ? 1 : 2
     const recentChatAgents = recentChatTargetAgents(getEvents(), deduped, humanId, getHumanName(), panelCount)
     const recentIds = new Set(recentChatAgents.map((a: any) => a.id || a.friendly_name))
     const topAgents = [
@@ -574,28 +575,13 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
     const chatW3 = getPref('layout-chat-width')
     const marginGap = getPref('layout-margin-gap')
     const rightW = chatW3 * 2 + gap
-    const sourceEditorSlot = (slotX: number, slotY: number, w: number, h: number) => ({
-      id: slotId(myId, myDevice, 'source-editor'),
-      type: 'fleet-source-editor' as any,
-      x: slotX, y: slotY,
-      isLocked: false,
-      props: { w, h, file: '', line: 1, title: 'Source' },
-    })
-    const docviewSlot = (slotX: number, slotY: number, w: number, h: number) => ({
-      id: slotId(myId, myDevice, 'docview'),
-      type: 'fleet-docview' as any,
-      x: slotX, y: slotY,
-      isLocked: false,
-      props: { w, h, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '' },
-    })
-    const sourceOrDocview = sourceEditorSlot
     const vp = editor.getViewportScreenBounds()
     // HUD renders fleet shapes via a z=1 camera (see FleetHUD.tsx), so page units
     // map 1:1 to screen px — size off the raw viewport, not the main-camera zoom.
     const totalH = Math.round(vp.h * getPref('layout-height-frac'))
     const agentsH = 330
     const searchH = totalH - gap - agentsH
-    const rightChatH = Math.round(totalH * 0.62)
+    const rightChatH = Math.round(totalH * 0.75)
     const docviewH = totalH - gap - rightChatH
 
     // Width of the content that sits in the LEFT margin (rail + its chat
@@ -605,8 +591,8 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
     // Everything is laid out relative to the document edges — never relative to
     // the HUD position, which is a separate offset (the anchor shape).
     const leftContentW =
-      variant === 'wide' ? leftW + gap + Math.round(chatW3 * 2)
-      : variant === '2col' ? leftW + gap + Math.round(chatW3 * 1.5)
+      variant === 'big-chat' ? leftW + gap + Math.round(chatW3 * 2)
+      : variant === 'both-margins' ? leftW + gap + Math.round(chatW3 * 1.5)
       : leftW + gap + rightW
 
     const { minLeft, minTop, maxRight } = docBounds
@@ -709,10 +695,11 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
         props: { w: leftW, h: searchH },
       },
     ]
-    if (variant === 'wide') {
+    if (variant === 'big-chat') {
+      // Big-chat layout: half chat over half source editor.
       const chatWide = Math.round(chatW3 * 2)
       const wideChatH = Math.round((totalH - gap) / 2)
-      const wideSourceH = totalH - gap - wideChatH
+      const wideEditorH = totalH - gap - wideChatH
       shapes.push(
         {
           id: slotId(myId, myDevice, 'chat-0'),
@@ -721,13 +708,18 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
           isLocked: false,
           props: { w: chatWide, h: wideChatH, filter: filter1 },
         },
+        {
+          id: slotId(myId, myDevice, 'source-editor'),
+          type: 'fleet-source-editor' as any,
+          x: anchorX + leftW + gap, y: anchorY + wideChatH + gap,
+          isLocked: false,
+          props: { w: chatWide, h: wideEditorH, file: '', line: 1, title: 'Source' },
+        },
       )
-      shapes.push(sourceEditorSlot(anchorX + leftW + gap, anchorY + wideChatH + gap, chatWide, wideSourceH))
-    } else if (variant === 'grid') {
+    } else if (variant === '2x2') {
+      // 2×2 layout: four chats in a square (no document viewer).
       const gridChatW = chatW3
       const gridChatH = Math.round((totalH - gap) / 2)
-      const gridRightChatH = Math.round(gridChatH * 0.75)
-      const gridDocviewH = gridChatH - gap - gridRightChatH
       shapes.push(
         {
           id: slotId(myId, myDevice, 'chat-0'),
@@ -755,11 +747,10 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
           type: 'fleet-chat' as any,
           x: anchorX + leftW + gap + gridChatW + gap, y: anchorY + gridChatH + gap,
           isLocked: false,
-          props: { w: gridChatW, h: gridRightChatH, filter: filter4 },
+          props: { w: gridChatW, h: gridChatH, filter: filter4 },
         },
-        sourceOrDocview(anchorX + leftW + gap + gridChatW + gap, anchorY + gridChatH + gap + gridRightChatH + gap, gridChatW, gridDocviewH),
       )
-    } else if (variant === '3col') {
+    } else if (variant === '3-col') {
       shapes.push(
         {
           id: slotId(myId, myDevice, 'chat-0'),
@@ -775,7 +766,13 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
           isLocked: false,
           props: { w: chatW3, h: rightChatH, filter: filter2 },
         },
-        sourceOrDocview(anchorX + leftW + gap + chatW3 + gap, anchorY + rightChatH + gap, chatW3, docviewH),
+        {
+          id: slotId(myId, myDevice, 'docview'),
+          type: 'fleet-docview' as any,
+          x: anchorX + leftW + gap + chatW3 + gap, y: anchorY + rightChatH + gap,
+          isLocked: false,
+          props: { w: chatW3, h: docviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '' },
+        },
       )
     } else {
       const chatWide = Math.round(chatW3 * 1.5)
@@ -794,9 +791,22 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
           isLocked: false,
           props: { w: chatWide, h: rightChatH, filter: filter1 },
         },
-        docviewSlot(anchorX + leftW + gap, anchorY + rightChatH + gap, chatWide, docviewH),
+        {
+          id: slotId(myId, myDevice, 'docview'),
+          type: 'fleet-docview' as any,
+          x: anchorX + leftW + gap, y: anchorY + rightChatH + gap,
+          isLocked: false,
+          props: { w: chatWide, h: docviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '' },
+        },
+        // Two-margin layout: the right margin holds the source editor sheet.
+        {
+          id: slotId(myId, myDevice, 'source-editor'),
+          type: 'fleet-source-editor' as any,
+          x: rightChatX, y: anchorY,
+          isLocked: false,
+          props: { w: chatWide, h: totalH, file: '', line: 1, title: 'Source' },
+        },
       )
-      shapes.push(sourceEditorSlot(rightChatX, anchorY, chatWide, totalH))
     }
     for (const s of shapes) { s.props.userId = myId; s.props.deviceId = myDevice }
     editor.createShapes(shapes)

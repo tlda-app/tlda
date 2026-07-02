@@ -1,5 +1,5 @@
 import { SpawnLibrarian } from '../../../shared/spawn-librarian.ts'
-import { newFleetId, resolveDnsAlias, resolveSpawnCwd, sanitizeSessionName } from './identity.mjs'
+import { newFleetId, readConfig, resolveDnsAlias, resolveSpawnCwd, sanitizeSessionName } from './identity.mjs'
 import { inferHarnessKind } from './models.mjs'
 import { checkFreshNameAvailable, ensureServer, findAgent, markAgentDead, resolveApi, waitForAwakeRegistration, wsRegister } from './register.mjs'
 import { injectClaudePrompt, injectCodexPrompt, sessionHasRuntime, spawnTmux, uniqueSessionName } from './tmux.mjs'
@@ -60,12 +60,21 @@ function assertNativeTools(policy, requestedKind) {
   }
 }
 
+function traceSpawnDecision(label, detail) {
+  const payload = {
+    ts: new Date().toISOString(),
+    ...detail,
+  }
+  process.stderr.write(`[spawn-trace] ${label} ${JSON.stringify(payload)}\n`)
+}
+
 async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, model, name, cwd, effort, permissionMode, spawnPolicy, api, dnsAlias, resumeId = null, includePrompt = true, leasePolicy = null }) {
   let cmd
   let sendKeys = false
+  let projection = null
   if (requestedKind === 'codex') {
     codex.ensureProjectTrusted(cwd)
-    const projection = codexSandboxProjection(spawnPolicy, cwd, { fenced: !!leasePolicy })
+    projection = codexSandboxProjection(spawnPolicy, cwd, { fenced: !!leasePolicy })
     cmd = codex.buildCmd({
       fleetId,
       tmuxSession,
@@ -98,8 +107,21 @@ async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, mode
       includePrompt,
     })
   }
+  const commandBeforeFence = cmd
   if (leasePolicy) cmd = wrapSandboxCmd(cmd, leasePolicy, { api, dnsAlias })
-  return { cmd, sendKeys }
+  return {
+    cmd,
+    sendKeys,
+    commandTrace: {
+      projection,
+      hasLeasePolicy: !!leasePolicy,
+      wrappedByFence: !!leasePolicy,
+      commandContainsFence: /(?:^|['"\s/])fence(?:['"\s]|$)/.test(cmd),
+      commandContainsCodexYolo: cmd.includes('--dangerously-bypass-approvals-and-sandbox') || cmd.includes('--yolo'),
+      commandContainsDangerSandbox: cmd.includes('danger-full-access'),
+      commandBeforeFence,
+    },
+  }
 }
 
 async function spawnFresh(params) {
@@ -125,18 +147,37 @@ async function spawnFresh(params) {
     tmuxSession = await (deps.uniqueSessionName || uniqueSessionName)(`fleet-${sanitizeSessionName(name)}`, { tmuxSocket: params.tmuxSocket })
     model = adapter.resolveModel(params.model)
     const dnsAlias = await (deps.resolveDnsAlias || resolveDnsAlias)(api)
+    const config = params.config ?? readConfig()
     const launchPolicy = resolveLaunchPolicy({
       spawnPolicy: params.spawnPolicy,
+      privilegeSet: params.privilegeSet,
       requestedCapability: params.requestedCapability,
       harness: requestedKind,
       model,
       cwd,
-      config: params.config,
+      config,
       permissionMode: params.permissionMode,
       mode: params.mode,
       explicitPolicy: params.explicitPolicy,
     })
     assertNativeTools(launchPolicy, requestedKind)
+    traceSpawnDecision('policy', {
+      name,
+      fleetId,
+      requestedKind,
+      model,
+      cwd,
+      requestedCapability: params.requestedCapability || null,
+      requestedSpawnPolicy: params.spawnPolicy || null,
+      explicitPolicy: !!params.explicitPolicy,
+      policyName: launchPolicy.policyName,
+      permissionMode: launchPolicy.permissionMode,
+      fenceTemporarilyDisabled: !!launchPolicy.fenceTemporarilyDisabled,
+      hasLeasePolicy: !!launchPolicy.leasePolicy,
+      leasePolicyName: launchPolicy.leasePolicy?.policy || null,
+      leaseWriteRoots: launchPolicy.leasePolicy?.write_roots || [],
+      spawnPolicy: launchPolicy.spawnPolicy || null,
+    })
     if (serverUp) {
       await (deps.checkFreshNameAvailable || checkFreshNameAvailable)(name, { api, serverUp })
       await (deps.wsRegister || wsRegister)({
@@ -163,7 +204,7 @@ async function spawnFresh(params) {
         ts: new Date().toISOString(),
       })
     }
-    const { cmd, sendKeys } = await buildCommand({
+    const { cmd, sendKeys, commandTrace } = await buildCommand({
       requestedKind,
       adapter,
       fleetId,
@@ -177,6 +218,21 @@ async function spawnFresh(params) {
       api,
       dnsAlias,
       leasePolicy: launchPolicy.leasePolicy,
+    })
+    traceSpawnDecision('command', {
+      name,
+      fleetId,
+      requestedKind,
+      model,
+      cwd,
+      tmuxSession,
+      hasLeasePolicy: commandTrace.hasLeasePolicy,
+      wrappedByFence: commandTrace.wrappedByFence,
+      commandContainsFence: commandTrace.commandContainsFence,
+      commandContainsCodexYolo: commandTrace.commandContainsCodexYolo,
+      commandContainsDangerSandbox: commandTrace.commandContainsDangerSandbox,
+      projection: commandTrace.projection,
+      cmd,
     })
     const launched = await (deps.spawnTmux || spawnTmux)(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket })
     if (!launched) {
@@ -237,13 +293,15 @@ async function spawnRespawn(params) {
   if (handle?.cwd) cwd = resolveSpawnCwd(handle.cwd)
   if (requestedKind === 'claude' && resumeId) stripSyntheticTail(resumeId)
   const dnsAlias = await resolveDnsAlias(api)
+  const config = params.config ?? readConfig()
   const launchPolicy = resolveLaunchPolicy({
     spawnPolicy: params.spawnPolicy || meta.spawnPolicy,
+    privilegeSet: params.privilegeSet || meta.privilegeSet,
     requestedCapability: params.requestedCapability,
     harness: requestedKind,
     model,
     cwd,
-    config: params.config,
+    config,
     permissionMode: params.permissionMode,
     mode: params.mode,
     explicitPolicy: params.explicitPolicy,
@@ -308,13 +366,15 @@ async function spawnRefresh(params) {
   const model = adapter.resolveModel(rawModel)
   const tmuxSession = agent.tmux_session || `fleet-${sanitizeSessionName(friendlyName)}`
   const dnsAlias = await resolveDnsAlias(api)
+  const config = params.config ?? readConfig()
   const launchPolicy = resolveLaunchPolicy({
     spawnPolicy: params.spawnPolicy || meta.spawnPolicy,
+    privilegeSet: params.privilegeSet || meta.privilegeSet,
     requestedCapability: params.requestedCapability,
     harness: requestedKind,
     model,
     cwd,
-    config: params.config,
+    config,
     permissionMode: params.permissionMode,
     mode: params.mode,
     explicitPolicy: params.explicitPolicy,
@@ -399,13 +459,15 @@ async function spawnCodexSession(params, { api, sessionId, codexPath }) {
   }
   if (params.enroll) await checkFreshNameAvailable(friendlyName, { api, serverUp: true })
   const dnsAlias = await resolveDnsAlias(api)
+  const config = params.config ?? readConfig()
   const launchPolicy = resolveLaunchPolicy({
     spawnPolicy: params.spawnPolicy,
+    privilegeSet: params.privilegeSet,
     requestedCapability: params.requestedCapability,
     harness: 'codex',
     model,
     cwd,
-    config: params.config,
+    config,
     permissionMode: params.permissionMode,
     mode: params.mode,
     explicitPolicy: params.explicitPolicy,

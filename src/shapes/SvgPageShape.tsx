@@ -172,17 +172,14 @@ function SvgPageComponent({ shape }: { shape: any }) {
   const textYCacheRef = useRef<{ el: SVGTextElement; y: number }[]>([])
 
 
-  // Track whether this page is near the viewport (±2 pages buffer).
-  // Check both axes — compare columns live at a different X position
-  // and would never render with a vertical-only check.
+  // Track whether this page is vertically near the viewport (±2 pages buffer).
+  // Horizontal panning should not unload/reload page SVGs.
   const isNearViewport = useValue('near-viewport-' + shape.id, () => {
     const viewport = editor.getViewportPageBounds()
     const b = editor.getShapePageBounds(shape.id)
     if (!b) return false
     const marginY = b.h * VIEWPORT_BUFFER_PAGES
-    const marginX = b.w * 2
-    return b.x + b.w > viewport.minX - marginX && b.x < viewport.maxX + marginX &&
-           b.y + b.h > viewport.minY - marginY && b.y < viewport.maxY + marginY
+    return b.y + b.h > viewport.minY - marginY && b.y < viewport.maxY + marginY
   }, [editor, shape.id])
 
   // Fetch SVG when page enters the viewport — handles both initial load and re-entry.

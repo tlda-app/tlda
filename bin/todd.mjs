@@ -1420,6 +1420,8 @@ const managerEscalationCooldowns = new Map()
 const HANDOFF_PATTERN = /(?:(?:I\s+(?:want|wanna|need)\s+to\s+)?hand\s+(?:this\s+)?off|do\s+(?:a\s+)?handoff|direct\s+handoff|let'?s\s+(?:(?:do\s+(?:a\s+)?)?handoff|hand\s+(?:this\s+)?off)|time\s+(?:for\s+(?:a\s+)?)?handoff)\b/i
 const ROTATE_PATTERN = /\brotate\s+(?:this\s+(?:guy|agent|one)|him|her|them|it|me|myself|us|the\s+agent)?\s*out\b|\brotate\s+out\b/i
 const ROTATE_NAMED_PATTERN = /\brotate\s+(.+?)\s+out\b/i
+const DISINHERIT_PATTERN = /\bdisinherit\b/i
+const DISINHERIT_CAT_NAMES = ['Whiskers', 'Mittens', 'Felix', 'Salem', 'Tom', 'Garfield', 'Simba']
 const handoffCooldowns = new Map()
 const HANDOFF_COOLDOWN_MS = 120_000
 
@@ -1599,6 +1601,20 @@ function resolveAgentCwd(agentId) {
     const agent = (Array.isArray(agents) ? agents : (agents.agents || []))
       .find(a => a.id === agentId || a.friendly_name === agentId)
     return agent?.cwd || null
+  })
+}
+
+function resolveAgentSpawnSpec(agentId) {
+  return getJson('/api/store/agents', []).then(agents => {
+    const agent = (Array.isArray(agents) ? agents : (agents.agents || []))
+      .find(a => a.id === agentId || a.friendly_name === agentId)
+    const metadata = typeof agent?.metadata === 'string'
+      ? (() => { try { return JSON.parse(agent.metadata) } catch { return {} } })()
+      : (agent?.metadata || {})
+    return {
+      ...(metadata.kind || agent?.kind ? { kind: metadata.kind || agent.kind } : {}),
+      ...(metadata.model || agent?.model ? { model: metadata.model || agent.model } : {}),
+    }
   })
 }
 
@@ -1874,6 +1890,137 @@ Start by reading the brief, checking the current workspace/task state, and sendi
   }, triggerText)
 }
 
+function parseDisinheritCommand(text = '') {
+  const match = text.match(DISINHERIT_PATTERN)
+  if (!match) return null
+  const after = text.slice(match.index + match[0].length).trim()
+  const callMatch = after.match(/\bcall them\s+([\s\S]+)$/i)
+  const beforeCall = (callMatch ? after.slice(0, callMatch.index) : after).trim()
+  const deictic = beforeCall.match(/^((?:(?:this\s+)?(?:guy|agent|one)|him|her|them|it|me|myself|us|the\s+agent)\b)/i)
+  if (deictic) {
+    return {
+      targetRaw: deictic[1].trim(),
+      correction: beforeCall.slice(deictic[0].length).replace(/^[;,.:\s-]+/, '').trim(),
+    }
+  }
+  const named = beforeCall.match(/^(\S+)(?:\s+([\s\S]+))?$/)
+  return {
+    targetRaw: named?.[1]?.replace(/[;,.:\s]+$/g, '').trim() || '',
+    correction: (named?.[2] || '').replace(/^[;,.:\s-]+/, '').trim(),
+  }
+}
+
+function isDeicticDisinheritTarget(raw = '') {
+  return !raw || /^(?:(?:this\s+)?(?:guy|agent|one)|him|her|them|it|me|myself|us|the\s+agent)$/i.test(raw)
+}
+
+async function activeTaskForAgent(agentId, agentName) {
+  const data = await getJson('/api/store/tasks', [])
+  const tasks = Array.isArray(data) ? data : (data?.tasks || [])
+  return tasks.find(t =>
+    (t.agent === agentId || t.agent === agentName) &&
+    t.status !== 'done'
+  ) || null
+}
+
+async function renameAgent(agentId, newName) {
+  return await postJson('/api/rename', { agent: agentId, name: newName })
+}
+
+function randomDisinheritCatName() {
+  return DISINHERIT_CAT_NAMES[Math.floor(Math.random() * DISINHERIT_CAT_NAMES.length)]
+}
+
+async function chooseDisinheritCatName(agentId) {
+  const names = [...DISINHERIT_CAT_NAMES].sort(() => Math.random() - 0.5)
+  for (const name of names) {
+    const availability = await getJson(`/api/check-name?name=${encodeURIComponent(name)}&exclude=${encodeURIComponent(agentId)}`, null)
+    if (availability?.ok !== false) return name
+  }
+  return `${randomDisinheritCatName()} ${Date.now().toString(36).slice(-4)}`
+}
+
+async function handleDisinherit(agentId, triggerText, opts = {}) {
+  const now = Date.now()
+  const lastHandoff = handoffCooldowns.get(agentId) || 0
+  if (now - lastHandoff < HANDOFF_COOLDOWN_MS) return
+  handoffCooldowns.set(agentId, now)
+
+  dequeueActions(agentId)
+  const agentName = await resolveAgentName(agentId)
+  const successorName = stripPhase(agentName)
+  const agentCwd = await resolveAgentCwd(agentId)
+  const spawnSpec = await resolveAgentSpawnSpec(agentId)
+  const originalTask = await activeTaskForAgent(agentId, agentName)
+  const renameTo = await chooseDisinheritCatName(agentId)
+  const correction = opts.correction || ''
+
+  console.log(`[todd] disinherit triggered for ${agentName} (${agentId}) → rename ${renameTo}, fresh ${successorName}`)
+  sendChat(OWNER_ID, `Disinheriting **${agentName}**: renaming incumbent to **${renameTo}** and starting a fresh **${successorName}** on the original task.`)
+
+  const renameResult = await renameAgent(agentId, renameTo)
+  if (renameResult?.error || renameResult?.ok === false) {
+    const error = renameResult.error || 'unknown rename failure'
+    sendChat(OWNER_ID, `⚠️ Disinherit failed while renaming **${agentName}** to **${renameTo}**: ${error}`)
+    logDecision(agentId, 'disinherit-rename-failed', 'disinherit', { renameTo, error }, triggerText)
+    return
+  }
+
+  const spawnResult = await spawnAgent({
+    fresh: true,
+    name: successorName,
+    cwd: agentCwd,
+    routeAgent: agentId,
+    ...spawnSpec,
+  })
+  if (spawnResult?.error || spawnResult?.ok === false) {
+    const error = spawnResult.error || spawnResult.reason || 'unknown spawn failure'
+    sendChat(OWNER_ID, `⚠️ Disinherit renamed **${agentName}** to **${renameTo}**, but failed to spawn **${successorName}**: ${error}`)
+    logDecision(agentId, 'disinherit-spawn-failed', 'disinherit', { successorName, renameTo, error }, triggerText)
+    return
+  }
+
+  sendChat(agentId, `I've named you ${renameTo} to make space for your successor. Give yourself a new name.`)
+
+  setTimeout(async () => {
+    try {
+      const originalDescription = originalTask?.description || `Take over ${successorName} after disinherit`
+      const originalMessage = originalTask?.message || originalDescription
+      await postJson('/api/tasks/delegate', {
+        from: AGENT_ID,
+        agent: successorName,
+        description: originalDescription,
+        message: `The last attempt failed. We're trying again. Here's your brief.
+
+**Skip's original instructions to the last agent:**
+${originalMessage}
+
+**Skip's specific instructions for you:**
+${correction || '(no separate correction text)'}
+
+You are the fresh **${successorName}**. The previous holder was renamed to **${renameTo}** and remains alive there; nothing else is inherited. Start from the original instructions plus the specific instructions for you. Do not inherit the incumbent's name, state, or assumptions; check the workspace/task state and proceed from the corrected task.`,
+        ...(originalTask?.success_criteria ? { success_criteria: originalTask.success_criteria } : {}),
+        ...(originalTask?.blockedBy ? { blocked_by: originalTask.blockedBy } : {}),
+      })
+      sendChat(OWNER_ID, `Disinherit complete. **${renameTo}** stayed alive under the new name; fresh **${successorName}** has the original task plus the correction.`)
+    } catch (e) {
+      console.error(`[todd] disinherit delegate failed: ${e.message}`)
+      sendChat(OWNER_ID, `⚠️ Disinherit spawned **${successorName}**, but delegating the original task failed: ${e.message}`)
+    }
+  }, 15_000)
+
+  logDecision(agentId, 'disinherit-fresh-successor', 'disinherit', {
+    successorName,
+    renameTo,
+    routeAgent: agentId,
+    cwd: agentCwd,
+    requestedBy: opts.requestedBy || OWNER_ID,
+    originalTaskId: originalTask?.id || null,
+    correction,
+    spawnSpec,
+  }, triggerText)
+}
+
 async function resolveRotateTarget(text, chatTargetId, fallbackTargetId = null) {
   const m = text.match(ROTATE_NAMED_PATTERN)
   const raw = m?.[1]?.trim()
@@ -1885,7 +2032,15 @@ async function resolveRotateTarget(text, chatTargetId, fallbackTargetId = null) 
   return await resolveAgentId(raw)
 }
 
-async function handleHandoff(agentId, triggerText) {
+async function resolveDisinheritTarget(text, chatTargetId, fallbackTargetId = null) {
+  const parsed = parseDisinheritCommand(text)
+  if (!parsed) return { target: null }
+  const fallback = (chatTargetId && chatTargetId !== AGENT_ID) ? chatTargetId : fallbackTargetId
+  if (isDeicticDisinheritTarget(parsed.targetRaw)) return { target: fallback, correction: parsed.correction }
+  return { target: await resolveAgentId(parsed.targetRaw), correction: parsed.correction }
+}
+
+async function handleHandoff(agentId, triggerText, opts = {}) {
   const now = Date.now()
   const lastHandoff = handoffCooldowns.get(agentId) || 0
   if (now - lastHandoff < HANDOFF_COOLDOWN_MS) return
@@ -1893,33 +2048,46 @@ async function handleHandoff(agentId, triggerText) {
 
   dequeueActions(agentId)
   const agentName = await resolveAgentName(agentId)
+  const handoffSpawnSpec = await resolveAgentSpawnSpec(agentId)
+  const requestedBy = opts.requestedBy || OWNER_ID
+  const requestedByOutgoing = requestedBy === agentId
+  const requesterLabel = requestedByOutgoing ? agentName : 'Skip'
   console.log(`[todd] handoff triggered for ${agentName} (${agentId})`)
 
   // Two handoff types. "direct"/"directly" in the statement → direct handoff:
-  // no briefer, one rotation. The current worker is promoted to manager (day)
+  // no briefer, one rotation. The current worker moves to advisor (day)
   // and a fresh worker enters at dawn. Otherwise → the briefing path (two
   // rotations) below. ("direct handoff" and "hand off directly" both qualify.)
   if (/\bdirect(?:ly)?\b/i.test(triggerText || '')) {
-    sendChat(OWNER_ID, `Direct handoff from **${agentName}** — promoting it to manager and bringing in a fresh worker.`)
-    sendChat(agentId, `⚠️ Skip is handing your work off directly. You're being promoted to manager; a fresh worker is coming in.`)
+    sendChat(OWNER_ID, `Direct handoff from **${agentName}** requested by **${requesterLabel}** — moving it to advisor and bringing in a fresh worker.`)
+    sendChat(agentId, requestedByOutgoing
+      ? `⚠️ Direct handoff started. You're moving to advisor; a fresh worker is coming in.`
+      : `⚠️ Skip is handing your work off directly. You're moving to advisor; a fresh worker is coming in.`)
     const agentCwd = await resolveAgentCwd(agentId)
-    // Promote the original to manager (:day), freeing the bare name, then spawn
+    // Move the original to advisor (:day), freeing the bare name, then spawn
     // the new worker directly as the bare base name (dawn). Its name maps it into
     // the lineage on register — no temp "-1" name, no rotation, no stray lineage.
     const lineageBase = stripPhase(agentName)
     const workerName = lineageBase
-    const managerName = `${lineageBase}:day`
+    const advisorName = `${lineageBase}:day`
     try {
       await sendRequest({ type: 'lineage-transition', agent: agentId, phase: 'day' })
     } catch (e) {
-      sendChat(OWNER_ID, `⚠️ Promoting ${agentName} → :day failed: ${e.message}`)
+      sendChat(OWNER_ID, `⚠️ Moving ${agentName} → :day advisor failed: ${e.message}`)
+      logDecision(agentId, 'handoff-direct-lineage-failed', 'handoff', { error: e.message }, triggerText)
+      return
     }
-    let spawnResult = await spawnAgent({ name: workerName, cwd: agentCwd })
-    if (spawnResult.error && spawnResult.error.includes('already exists')) {
-      spawnResult = await spawnAgent({ agent: workerName, respawn: true })
-    }
-    if (spawnResult.error) {
-      sendChat(OWNER_ID, `⚠️ Failed to spawn worker: ${spawnResult.error}`)
+    const spawnResult = await spawnAgent({
+      fresh: true,
+      name: workerName,
+      cwd: agentCwd,
+      routeAgent: agentId,
+      ...handoffSpawnSpec,
+    })
+    if (spawnResult?.error || spawnResult?.ok === false) {
+      const error = spawnResult.error || spawnResult.reason || 'unknown spawn failure'
+      sendChat(OWNER_ID, `⚠️ Failed to spawn worker: ${error}`)
+      logDecision(agentId, 'handoff-direct-spawn-failed', 'handoff', { workerAgent: workerName, routeAgent: agentId, error }, triggerText)
       return
     }
     setTimeout(async () => {
@@ -1927,27 +2095,28 @@ async function handleHandoff(agentId, triggerText) {
         await postJson('/api/tasks/delegate', {
           from: AGENT_ID,
           agent: workerName,
-          description: `Pick up work from ${managerName}`,
+          description: `Pick up work from ${advisorName}`,
           message: `**Read these skills first:** \`pickup\`
 
-You're taking over as the worker; **${managerName}** (the agent you're replacing) is now your manager. There's no separate briefing — orient from the thread and check in with your manager.
-${triggerText ? `\n**Skip's handoff message:**\n> ${triggerText}\n` : ''}
+You're taking over as the worker; **${advisorName}** (the agent you're replacing) is now your advisor. There's no separate briefing — orient from the thread and consult your advisor only if you need context.
+${triggerText ? `\n**Handoff message from ${requesterLabel}:**\n> ${triggerText}\n` : ''}
 **Steps:**
 1. Read the recent thread to understand where things stand.
-2. Check in with Skip — 3 sentences max: what you understand, what's open, what you'll start on.
-3. Wait for Skip's confirmation before diving in.`,
+2. Make a plan, send Skip a quick summary (what you understand, what's open, what you'll start on), then—unless Skip said to wait—get to work.`,
         })
-        sendChat(OWNER_ID, `Direct handoff complete. **${workerName}** is the new worker; **${managerName}** is now its manager.`)
+        sendChat(OWNER_ID, `Direct handoff complete. **${workerName}** is the new worker; **${advisorName}** is now advisor-only.`)
       } catch (e) {
         console.error(`[todd] direct handoff delegate failed: ${e.message}`)
       }
     }, 15_000)
-    logDecision(agentId, 'handoff-direct', 'handoff', { workerAgent: workerName }, triggerText)
+    logDecision(agentId, 'handoff-direct', 'handoff', { workerAgent: workerName, routeAgent: agentId, requestedBy, spawnSpec: handoffSpawnSpec }, triggerText)
     return
   }
 
-  sendChat(OWNER_ID, `Starting handoff from **${agentName}**. Spawning briefing agent…`)
-  sendChat(agentId, `⚠️ Skip is handing off your work to a fresh agent. Stand by — a briefing agent will read your thread.`)
+  sendChat(OWNER_ID, `Starting handoff from **${agentName}** requested by **${requesterLabel}**. Spawning briefing agent…`)
+  sendChat(agentId, requestedByOutgoing
+    ? `⚠️ Handoff started. Stand by — a briefing agent will read your thread.`
+    : `⚠️ Skip is handing off your work to a fresh agent. Stand by — a briefing agent will read your thread.`)
 
   const agentCwd = await resolveAgentCwd(agentId)
   // The briefer is spawned directly as "<base>:day" — its name says which lineage
@@ -1972,16 +2141,16 @@ ${triggerText ? `\n**Skip's handoff message:**\n> ${triggerText}\n` : ''}
     } catch (e) {
       sendChat(OWNER_ID, `⚠️ Outgoing ${agentName} → :dusk failed: ${e.message}`)
     }
-    let spawnResult = await spawnAgent({ name: briefingName, cwd: agentCwd })
+    let spawnResult = await spawnAgent({ name: briefingName, cwd: agentCwd, fresh: true, routeAgent: agentId, ...handoffSpawnSpec })
     if (spawnResult.error && spawnResult.error.includes('already exists')) {
-      spawnResult = await spawnAgent({ agent: briefingName, respawn: true })
+      spawnResult = await spawnAgent({ agent: briefingName, respawn: true, ...handoffSpawnSpec })
     }
     if (spawnResult.error) {
       sendChat(OWNER_ID, `⚠️ Failed to spawn briefing agent: ${spawnResult.error}`)
       return
     }
 
-    pendingHandoffs.set(briefingName, { originalAgent: agentName, originalAgentId: agentId, originalCwd: agentCwd, startedAt: now, triggerText })
+    pendingHandoffs.set(briefingName, { originalAgent: agentName, originalAgentId: agentId, originalCwd: agentCwd, spawnSpec: handoffSpawnSpec, requestedBy, startedAt: now, triggerText })
     savePendingHandoffs()
 
     setTimeout(async () => {
@@ -1994,7 +2163,7 @@ ${triggerText ? `\n**Skip's handoff message:**\n> ${triggerText}\n` : ''}
 
 You are a briefing agent. Your job is to read **${agentName}**'s thread, extract Skip's decisions, and clean up any mess the outgoing agent left behind.
 
-**Skip's handoff message — read this first, it scopes your work:**
+**Handoff message from ${requesterLabel} — read this first, it scopes your work:**
 > ${triggerText}
 
 This tells you *why* Skip triggered the handoff. Use it to focus your thread reading — prioritize what's relevant to Skip's stated concern. Don't do an exhaustive archaeological dig unless the handoff message is vague.
@@ -2017,7 +2186,7 @@ Do NOT continue the work. Do NOT form opinions about the argument. Extract decis
       }
     }, 15_000)
 
-    logDecision(agentId, 'handoff-initiated', 'handoff', { briefingAgent: briefingName }, triggerText)
+    logDecision(agentId, 'handoff-initiated', 'handoff', { briefingAgent: briefingName, routeAgent: agentId, requestedBy, spawnSpec: handoffSpawnSpec }, triggerText)
   } catch (e) {
     sendChat(OWNER_ID, `⚠️ Failed to spawn briefing agent: ${e.message}`)
   }
@@ -2068,11 +2237,18 @@ async function handleHandoffReady(fromId, text) {
   // The pickup is the new worker — spawn it directly with the bare base name
   // (dawn). Its name maps it into the lineage on register; no rotation needed.
   const pickupName = stripPhase(handoffInfo.originalAgent)
+  const pickupSpawnSpec = handoffInfo.spawnSpec || {}
   const spawnPickup = async () => {
     try {
-      let spawnResult = await spawnAgent({ name: pickupName, cwd: handoffInfo.originalCwd })
+      let spawnResult = await spawnAgent({
+        name: pickupName,
+        cwd: handoffInfo.originalCwd,
+        fresh: true,
+        routeAgent: handoffInfo.originalAgentId,
+        ...pickupSpawnSpec,
+      })
       if (spawnResult.error && spawnResult.error.includes('already exists')) {
-        spawnResult = await spawnAgent({ agent: pickupName, respawn: true })
+        spawnResult = await spawnAgent({ agent: pickupName, respawn: true, ...pickupSpawnSpec })
       }
       if (spawnResult.error) {
         sendChat(OWNER_ID, `⚠️ Failed to spawn pickup agent: ${spawnResult.error}`)
@@ -2092,8 +2268,7 @@ ${handoffInfo.triggerText ? `\n**Skip's handoff message — pay attention to thi
 **Steps:**
 1. Read the briefing: \`${briefingPath}\`
 2. Run the three-check from the \`pickup\` skill
-3. Check in with Skip — short message, 3 sentences max: what you understand, what's open, what you'll start on
-4. Wait for Skip's confirmation before diving in
+3. Make a plan, send Skip a quick summary (what you understand, what's open, what you'll start on), then—unless Skip said to wait—get to work.
 
 The briefing is your primary source. Only go to the original thread if the briefing is incomplete.`,
           })
@@ -2103,7 +2278,7 @@ The briefing is your primary source. Only go to the original thread if the brief
         }
       }, 15_000)
 
-      logDecision(handoffInfo.originalAgentId, 'handoff-pickup-spawned', 'handoff', { pickupAgent: pickupName, briefingPath }, '')
+      logDecision(handoffInfo.originalAgentId, 'handoff-pickup-spawned', 'handoff', { pickupAgent: pickupName, briefingPath, routeAgent: handoffInfo.originalAgentId, spawnSpec: pickupSpawnSpec }, '')
     } catch (e) {
       sendChat(OWNER_ID, `⚠️ Failed to spawn pickup agent: ${e.message}`)
     }
@@ -2121,9 +2296,10 @@ let reconnectDelay = 500 // fast first retry, backs off; reset on clean connect
 function connect() {
   ws = new WebSocket(WS_URL)
 
-  ws.on('open', () => {
+  ws.on('open', async () => {
     console.log(`[todd] connected to ${WS_URL}`)
     reconnectDelay = 500 // back fast next time too
+    await initializeFleetCursor()
     register()
     writeHeartbeat('ws-open')
     refreshSelfCheckPrefs().catch(e => console.error('[todd] self-check prefs refresh failed:', e.message))
@@ -2394,11 +2570,38 @@ async function handleMessage(msg) {
       return
     }
 
-    // Handoff — "todd" must appear before the handoff phrase
-    if (addressedBefore(HANDOFF_PATTERN) && from_id === OWNER_ID && to_id && to_id !== AGENT_ID) {
+    // Disinherit — Skip can say "todd disinherit this guy [call them X]" in an
+    // agent chat, or "todd disinherit <name> [call them X]" directly to Todd.
+    // This is a plain friendly-name rename plus a fresh bare-name successor,
+    // not lineage rotation.
+    const disinheritAddressedBySkip = from_id === OWNER_ID && (
+      addressedBefore(DISINHERIT_PATTERN) ||
+      (to_id === AGENT_ID && DISINHERIT_PATTERN.test(text))
+    )
+    if (disinheritAddressedBySkip) {
+      const { target: disinheritTarget, correction } = await resolveDisinheritTarget(text, to_id)
+      if (!disinheritTarget) {
+        sendChat(OWNER_ID, `Disinherit needs a target — say it in the agent's chat or name the agent: \`${VERB} disinherit <name>\`.`)
+        return
+      }
+      scheduleAction('disinherit', 'Disinheriting agent',
+        () => handleDisinherit(disinheritTarget, text, { requestedBy: from_id, correction }).catch(e => console.error('[todd] disinherit error:', e.message)), disinheritTarget)
+      return
+    }
+
+    // Handoff — Skip can hand off any target by saying "todd hand this off"
+    // in that agent's chat. Agents can hand off only themselves by messaging
+    // Todd directly; they never get to hand off another agent.
+    const handoffAddressedBySkip = from_id === OWNER_ID && to_id && to_id !== AGENT_ID && addressedBefore(HANDOFF_PATTERN)
+    const handoffAddressedByAgent = from_id && from_id !== OWNER_ID && from_id !== AGENT_ID && to_id === AGENT_ID && (
+      HANDOFF_PATTERN.test(text) ||
+      addressedBefore(HANDOFF_PATTERN)
+    )
+    if (handoffAddressedBySkip || handoffAddressedByAgent) {
       const direct = /\bdirect(?:ly)?\b/i.test(text)
+      const handoffTarget = handoffAddressedByAgent ? from_id : to_id
       scheduleAction(direct ? 'handoff-direct' : 'handoff', direct ? 'Direct handoff' : 'Handing off',
-        () => handleHandoff(to_id, text).catch(e => console.error('[todd] handoff error:', e.message)), to_id)
+        () => handleHandoff(handoffTarget, text, { requestedBy: from_id }).catch(e => console.error('[todd] handoff error:', e.message)), handoffTarget)
       return
     }
 

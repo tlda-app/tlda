@@ -1,4 +1,5 @@
 import React from 'react'
+import { stopEventPropagation } from 'tldraw'
 
 export type CornerButtonSliderOption = {
   id: string
@@ -22,7 +23,12 @@ export function pickCornerSliderIndex({
 }) {
   const slot = slotWidth + gap
   const distFromButtonLeft = anchorRect.left - clientX
-  return Math.max(0, Math.min(count - 1, Math.floor(distFromButtonLeft / slot)))
+  // Slots render left-to-right (index 0 leftmost) while the slider box is
+  // right-anchored at the button's left edge, so the slot nearest the button is
+  // the LAST index. Map distance-from-button onto that ordering so the
+  // highlighted slot matches the finger position instead of mirroring it.
+  const fromButton = Math.max(0, Math.min(count - 1, Math.floor(distFromButtonLeft / slot)))
+  return count - 1 - fromButton
 }
 
 export function CornerButtonSlider({
@@ -30,11 +36,13 @@ export function CornerButtonSlider({
   className = '',
   options,
   activeIndex,
+  onSelect,
 }: {
   anchorRect: DOMRect
   className?: string
   options: CornerButtonSliderOption[]
   activeIndex: number | null
+  onSelect?: (index: number) => void
 }) {
   return (
     <div
@@ -50,6 +58,12 @@ export function CornerButtonSlider({
           className={`corner-button-slider-slot${i === activeIndex ? ' active' : ''}`}
           style={{ '--corner-button-slider-color': option.color || 'currentColor' } as React.CSSProperties}
           title={option.label}
+          onPointerDown={stopEventPropagation}
+          onPointerUp={stopEventPropagation}
+          onClick={(e) => {
+            stopEventPropagation(e)
+            onSelect?.(i)
+          }}
         >
           {option.render(i === activeIndex)}
         </div>

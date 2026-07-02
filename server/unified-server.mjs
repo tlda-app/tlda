@@ -61,12 +61,14 @@ import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html
 import { FleetStore } from './lib/fleet-store.mjs'
 import { resolveMachine } from './lib/tailscale-peers.mjs'
 import { createFleetRouter } from './routes/fleet.mjs'
-import { callerSpawnPolicy, coherentSpawnPolicy } from './lib/spawn-policy.mjs'
+import { coherentSpawnPolicy } from './lib/spawn-policy.mjs'
 import { buildRuntimeStatus } from './lib/runtime-status.mjs'
 import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
 import { resolveFreshSpawnCapabilityModels } from './lib/spawn-capability-models.mjs'
 import { SpawnBounceError, SpawnLibrarian, resolveSpawnCollision } from '../shared/spawn-librarian.ts'
 import { trimTerminalSeedBlankRows } from '../shared/terminal-seed.mjs'
+import { inspectSingletonLock } from '../bin/lib/singleton-lock.mjs'
+import { partialSkillReadSummaries, recordPartialSkillReads } from '../shared/partial-skill-reads.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -362,6 +364,7 @@ const SERVER_BOOT_ID = Date.now()   // unique per server start; daemon uses this
 const DAEMON_SUPERVISOR_INTERVAL_MS = 10_000
 const DAEMON_LOG_FILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.log')
 const DAEMON_PID_FILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.pid')
+const DAEMON_LOCK_FILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.lock')
 const DAEMON_SCRIPT = (() => {
   const d = dirname(fileURLToPath(import.meta.url))
   const m = d.match(/^(.+?)\/\.claude\/worktrees\//)
@@ -373,12 +376,14 @@ const DAEMON_SCRIPT = (() => {
 const DAEMON_FAST_DEATH_MS = 30_000   // < 30s alive == "fast death"
 const DAEMON_MAX_RAPID_RESPAWNS = 3
 const DAEMON_BACKOFF_MS = 5 * 60_000  // back off 5 minutes after giving up
+const DAEMON_LOCK_HELD_BACKOFF_MS = 60_000
 let _daemonSpawnInFlight = false
 let _daemonRespawnCount = 0
 let _daemonRapidFails = 0
 let _daemonLastSpawnAt = 0
 let _daemonBackoffUntil = 0
 let _daemonGivingUpLogged = false
+let _daemonLockHeldLoggedAt = 0
 
 function noteDaemonHealthyConnect() {
   // Called when a daemon connects successfully — reset the rapid-fail
@@ -395,6 +400,28 @@ function ensureLocalDaemon() {
   // Already connected? Done.
   const ws = daemonConnections.get(LOCAL_MACHINE_ID)
   if (ws && ws.readyState === 1) return
+  // The daemon owns a machine-global singleton lock. If any live daemon already
+  // holds it, that is the authoritative answer: do not spawn a competing child
+  // from this server, even if this stale/local server has no daemon WS.
+  try {
+    const lock = inspectSingletonLock({ lockPath: DAEMON_LOCK_FILE })
+    if (lock.held) {
+      _daemonBackoffUntil = Math.max(_daemonBackoffUntil, now + DAEMON_LOCK_HELD_BACKOFF_MS)
+      if (now - _daemonLockHeldLoggedAt >= DAEMON_LOCK_HELD_BACKOFF_MS) {
+        const h = lock.holder || {}
+        console.warn(
+          `[daemon-supervisor] singleton lock held by pid=${h.pid ?? '?'} ` +
+          `install=${h.installPath ?? '?'}; not spawning ${DAEMON_SCRIPT}`,
+        )
+        _daemonLockHeldLoggedAt = now
+      }
+      return
+    }
+  } catch (e) {
+    _daemonBackoffUntil = Math.max(_daemonBackoffUntil, now + DAEMON_LOCK_HELD_BACKOFF_MS)
+    console.error(`[daemon-supervisor] cannot inspect singleton lock ${DAEMON_LOCK_FILE}: ${e.message}; not spawning`)
+    return
+  }
   // PID file exists and process alive? It's just not connected yet — give it
   // a moment, don't double-spawn.
   if (existsSync(DAEMON_PID_FILE)) {
@@ -884,7 +911,7 @@ async function performSpawnRelay(caller, msg) {
   if (!caller?.id) throw new Error('spawn caller identity is required')
   const {
     name, agent, model, doc, cwd, respawn, fresh, refresh, effort, kind, mode,
-    capability, spawnCapability, session, sessionId, session_id, enroll, routeAgent,
+    capability, spawnCapability, privileges, requestedPrivileges, session, sessionId, session_id, enroll, routeAgent,
   } = msg || {}
   const requestedSession = session || sessionId || session_id || null
   const sessionMode = !!requestedSession
@@ -916,7 +943,10 @@ async function performSpawnRelay(caller, msg) {
   }
   const requestedSpec = { model, kind: spawnKind, project: doc }
   const requestedCapability = capability || spawnCapability || null
-  const callerRung = callerSpawnPolicy(caller, { serverOwnerId: SERVER_OWNER_ID }).capability
+  const storedRespawnPrivileges = (!sessionMode && !fresh && routeTarget?.metadata)
+    ? (routeTarget.metadata.requestedPrivileges || routeTarget.metadata.privilegeProfile || routeTarget.metadata.spawnPolicy || null)
+    : null
+  const privilegeRequest = privileges || requestedPrivileges || storedRespawnPrivileges || null
   const route = resolveSpawnMachine({
     caller,
     targetAgent: routeTarget,
@@ -955,7 +985,13 @@ async function performSpawnRelay(caller, msg) {
       effort: effort || undefined,
       mode: mode || undefined,
       requestedCapability: requestedCapability || undefined,
-      callerRung,
+      requestedPrivileges: privilegeRequest || undefined,
+      requester: {
+        id: caller.id,
+        name: caller.friendly_name || caller.name || undefined,
+        human: !!caller.human,
+        spawnPolicy: caller.metadata?.spawnPolicy || undefined,
+      },
       spawnRoute: route.source,
       respawn: sessionMode ? false : (refresh ? false : resolved.respawn),
       refresh: !!refresh,
@@ -985,6 +1021,10 @@ async function performSpawnRelay(caller, msg) {
       agent: ready.agent,
       spawnPolicy,
       grantedCapability: result.grantedCapability || spawnPolicy?.capability,
+      spawnerCapability: result.spawnerCapability,
+      projectCapability: result.projectCapability,
+      modelCapability: result.modelCapability,
+      localSpawnCapability: result.localSpawnCapability,
     }
   }
   broadcastState()
@@ -1441,6 +1481,7 @@ app.get('/api/auth/me', (req, res) => {
 // the browser via src/logger.ts — every log.{debug,info,warn,error} call
 // gets forwarded here automatically. See CLAUDE.md "Client logging".
 const CLIENT_LOG_FILE = join(homedir(), '.config', 'tlda', 'client.log')
+const CLIENT_PROFILE_FILE = join(homedir(), '.config', 'tlda', 'client-profile.jsonl')
 function appendClientLogEntry(entry) {
   const obj = {
     ts: entry.ts || new Date().toISOString(),
@@ -1474,6 +1515,30 @@ app.post('/api/log', (req, res) => {
   if (lines.length) {
     fs.appendFile(CLIENT_LOG_FILE, lines.join('\n') + '\n', (err) => {
       if (err) console.log(`[client-log] append failed: ${err.message}`)
+    })
+  }
+  res.json({ ok: true, n: lines.length })
+})
+
+app.post('/api/client-profile', (req, res) => {
+  const body = req.body
+  const entries = Array.isArray(body) ? body : [body]
+  const lines = []
+  for (const e of entries) {
+    if (!e || typeof e !== 'object') continue
+    lines.push(JSON.stringify({
+      ts: e.ts || new Date().toISOString(),
+      kind: e.kind || 'client-profile',
+      ...(e.doc ? { doc: e.doc } : {}),
+      ...(e.href ? { href: e.href } : {}),
+      ...(e.summary !== undefined ? { summary: e.summary } : {}),
+      ...(e.readableStacks !== undefined ? { readableStacks: e.readableStacks } : {}),
+      ...(e.trace !== undefined ? { trace: e.trace } : {}),
+    }))
+  }
+  if (lines.length) {
+    fs.appendFile(CLIENT_PROFILE_FILE, lines.join('\n') + '\n', (err) => {
+      if (err) console.log(`[client-profile] append failed: ${err.message}`)
     })
   }
   res.json({ ok: true, n: lines.length })
@@ -1662,6 +1727,7 @@ app.get('/api/education/check/:agentId', (req, res) => {
   const content = req.query.content || ''
   const source = req.query.source || ''
   const name = req.query.name || ''
+  const command = req.query.command || ''
   if (tool && _qualRules.length > 0) {
     const input = {}
     if (file) input.file_path = file
@@ -1669,6 +1735,7 @@ app.get('/api/education/check/:agentId', (req, res) => {
     if (content) input.content = content
     if (source) input.source = source
     if (name) input.name = name
+    if (command) input.command = command
     checkQualifications(agentId, tool, file, input)
   }
 
@@ -1748,7 +1815,9 @@ app.get('/api/education/skills/:agentId', (req, res) => {
   const dismissed = [...(_qualAgentDismissed.get(agentId) || new Map()).values()]
     .map(d => ({ skill: d.skill, reason: d.reason, scope: d.scope, trigger: d.trigger || null }))
   const cards = (fleetStore?.getDrillCards?.(agentId)) || []
-  res.json({ id: agentId, read, owed, dismissed, cards })
+  const partial = partialSkillReadSummaries(_qualAgentPartialSkillReads, agentId)
+    .filter(p => !readsSet.has(p.skillKey))
+  res.json({ id: agentId, read, partial, owed, dismissed, cards })
 })
 
 // Store a drill report card for an agent (the "how they performed" half of the
@@ -2563,6 +2632,7 @@ app.get('/{*path}', (req, res) => {
   const indexPath = join(distDir, 'index.html')
   if (existsSync(indexPath)) {
     res.set('Cache-Control', 'no-cache')
+    res.set('Document-Policy', 'js-profiling')
     // Inject the resolved active config so the SPA reads database/store/licenseKey
     // synchronously at startup — no build-time baking, no async race, no guessing.
     // resolveConfig() is validated at boot (server won't start on a bad config),
@@ -4382,6 +4452,7 @@ const QUALIFICATIONS_FILE = process.env.TLDA_QUALIFICATIONS_FILE || path.join(os
 const DEFAULT_QUALIFICATIONS_FILE = path.join(__dirname, 'qualifications-default.json')
 let _qualRules = []
 const _qualAgentReads = new Map()     // agentId → Set of skill keys + file paths
+const _qualAgentPartialSkillReads = new Map()
 const _qualAgentDismissed = new Map() // agentId → Map<dismissKey, {skill, reason, scope, trigger, ts}> (dismissKey = skillName | skillName@filepath)
 const _qualAgentOwed = new Map()      // agentId → Map<skillName, {scope, trigger, triggerShort}> — latest context per owed skill, for dismiss lookup
 
@@ -4439,6 +4510,13 @@ function qualTrackRead(agentId, key) {
     if (owed) owed.delete(key.slice('skill:'.length))
     if (fleetStore) { try { fleetStore.addSkillRead(agentId, key) } catch {} }
   }
+}
+
+function qualTrackPartialSkillReads(agentId, command) {
+  recordPartialSkillReads(_qualAgentPartialSkillReads, agentId, command, (id, skillKey, filePath) => {
+    qualTrackRead(id, filePath)
+    qualTrackRead(id, skillKey)
+  })
 }
 
 function qualLoadReadsFromDb() {
@@ -4516,6 +4594,7 @@ function checkQualifications(agentId, tool, arg, input) {
   const isFileRead = tool === 'Read' || toolBase === 'read_file'
   const summonSource = input?.source || input?.skill || input?.name || ''
   const isSummonLoad = (toolReadNorm.includes('summon') || toolBase === 'load') && toolBase !== 'read_file' && summonSource
+  if (tool === 'Bash' && input?.command) qualTrackPartialSkillReads(agentId, input.command)
   if ((isFileRead || tool === 'Skill') && input) {
     if (isFileRead) {
       const fp = input.file_path || input.path || arg || ''
@@ -4589,7 +4668,9 @@ function checkQualifications(agentId, tool, arg, input) {
   }
   if (owedNow.length > 0) {
     const skills = [...new Set(owedNow)]
-    pendingEducation.set(agentId, { skill: skills[0], skills, ts: Date.now() })
+    const partial = partialSkillReadSummaries(_qualAgentPartialSkillReads, agentId)
+      .filter(p => skills.includes(p.skill) && !reads.has(p.skillKey))
+    pendingEducation.set(agentId, { skill: skills[0], skills, partial, ts: Date.now() })
   }
 }
 

@@ -145,18 +145,14 @@ test('missing bare local path is reported as broken', withTempDir(async (dir) =>
 }))
 
 test('markdown link label that looks like a path is not detected as a file attachment', withTempDir(async (dir) => {
-  const actual = path.join(dir, 'docs', 'wm-implementation-plan.md')
-  fs.mkdirSync(path.dirname(actual), { recursive: true })
-  fs.writeFileSync(actual, '# WM implementation plan\n')
-
-  const message = `[docs/wm-implementation-plan.md](${actual})`
+  const message = '[docs/wm-implementation-plan.md](https://example.test/report)'
   const result = detectAttachments(message, '/Users/skip/work/tlda')
 
   assert.equal(result.resolvedMessage, message)
   assert.deepEqual(result.inlineAttachments, [])
 }))
 
-test('markdown link absolute target is not uploaded or validated as a bare path', withTempDir(async (dir) => {
+test('markdown link local target uploads instead of leaking a sender-local link', withTempDir(async (dir) => {
   const actual = path.join(dir, 'docs', 'wm-implementation-plan.md')
   fs.mkdirSync(path.dirname(actual), { recursive: true })
   fs.writeFileSync(actual, '# WM implementation plan\n')
@@ -165,6 +161,47 @@ test('markdown link absolute target is not uploaded or validated as a bare path'
   try {
     const message = `[docs/wm-implementation-plan.md](${actual})`
     const result = await processMessageText(message, '/Users/skip/work/tlda', stub.baseUrl)
+
+    assert.equal(result.resolvedMessage, '{{att:0}}')
+    assert.deepEqual(result.brokenPaths, [])
+    assert.equal(result.inlineAttachments.length, 1)
+    assert.equal(result.inlineAttachments[0].path, actual)
+    assert.match(result.inlineAttachments[0].url, /^\/api\/file\?path=/)
+    assert.equal(stub.uploads.length, 1)
+    assert.equal(stub.uploads[0].name, 'wm-implementation-plan.md')
+  } finally {
+    await stub.close()
+  }
+}))
+
+test('markdown link /tmp image target uploads and renders inline', async () => {
+  const dir = fs.mkdtempSync(path.join('/tmp', 'tlda-artifacts-'))
+  const img = path.join(dir, 'activity-card.png')
+  fs.writeFileSync(img, Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+  const stub = await startUploadStub()
+  try {
+    const result = await processMessageText(`[screenshot](${img})`, '/Users/skip/work/tlda', stub.baseUrl)
+    const html = resolveInlineAttachments(result.resolvedMessage, result.inlineAttachments, renderMarkdownStub)
+    const dom = new JSDOM(`<div id="root">${html}</div>`)
+    const rendered = dom.window.document.querySelector('img.chat-image')
+
+    assert.equal(result.resolvedMessage, '{{att:0}}')
+    assert.deepEqual(result.brokenPaths, [])
+    assert.equal(result.inlineAttachments[0].path, img)
+    assert.ok(rendered)
+    assert.match(rendered.getAttribute('src'), /^\/api\/file\?path=/)
+    assert.equal(dom.window.document.getElementById('root').textContent.includes(img), false)
+  } finally {
+    await stub.close()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('markdown link remote target remains an authored link', withTempDir(async (dir) => {
+  const stub = await startUploadStub()
+  try {
+    const message = '[docs/wm-implementation-plan.md](https://example.test/docs/wm-implementation-plan.md)'
+    const result = await processMessageText(message, dir, stub.baseUrl)
 
     assert.equal(result.resolvedMessage, message)
     assert.deepEqual(result.inlineAttachments, [])

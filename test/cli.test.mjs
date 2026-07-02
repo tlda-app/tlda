@@ -127,11 +127,72 @@ describe('agent capability CLI', () => {
     })
 
     assert.notEqual(exitCode, 0)
-    assert.ok(stderr.includes('Usage: tlda agent <list|spawn|spawn-local|move|check-ready|attach|hibernate|capability>'))
+    assert.ok(stderr.includes('Usage: tlda agent <list|spawn|spawn-direct|move|set-spawn-machine|check-ready|attach|hibernate|capability|privileges>'))
   })
 
   it('refuses from an agent context before dry-run escalation', () => {
     const { stderr, exitCode } = tlda('agent', 'capability', 'alice', 'read', '--dry-run', {
+      env: { ...scrubAgentEnv(process.env), FLEET_ID: 'fleet:test-agent', FLEET_NAME: 'test-agent' },
+    })
+
+    assert.notEqual(exitCode, 0)
+    assert.ok(stderr.includes('user/operator-only'))
+    assert.ok(stderr.includes('agent context'))
+  })
+
+  it('shows set-spawn-machine help and refuses agent-context dry runs', () => {
+    const help = tlda('agent', 'set-spawn-machine', '--help')
+    assert.equal(help.exitCode, 0)
+    assert.ok(help.stdout.includes('fleet_prefs.spawn_machine_id'))
+
+    const denied = tlda('agent', 'set-spawn-machine', 'todd', 'mini', '--dry-run', {
+      env: { ...scrubAgentEnv(process.env), FLEET_ID: 'fleet:test-agent', FLEET_NAME: 'test-agent' },
+    })
+    assert.notEqual(denied.exitCode, 0)
+    assert.ok(denied.stderr.includes('user/operator-only'))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Agent privileges CLI
+// ---------------------------------------------------------------------------
+
+describe('agent privileges CLI', () => {
+  it('dry-runs default respawn behavior without contacting the server', () => {
+    const { stdout, exitCode } = tlda('agent', 'privileges', 'alice', 'deploy', '--dry-run', {
+      env: scrubAgentEnv(process.env),
+    })
+
+    assert.equal(exitCode, 0)
+    assert.ok(stdout.includes('[dry-run] would set alice privileges to deploy'))
+    assert.ok(stdout.includes('update metadata.requestedPrivileges / metadata.spawnPolicy'))
+    assert.ok(stdout.includes('run: tlda agent spawn alice --privileges deploy'))
+  })
+
+  it('dry-runs on-respawn as metadata-only staging', () => {
+    const { stdout, exitCode } = tlda('agent', 'privileges', 'alice', 'app-dev', '--on-respawn', '--dry-run', {
+      env: scrubAgentEnv(process.env),
+    })
+
+    assert.equal(exitCode, 0)
+    assert.ok(stdout.includes('[dry-run] would set alice privileges to app-dev'))
+    assert.ok(stdout.includes('leave the change for the next respawn'))
+    assert.ok(!stdout.includes('run: tlda agent spawn'))
+  })
+
+  it('rejects unknown privilege profiles', () => {
+    const { stderr, exitCode } = tlda('agent', 'privileges', 'alice', 'launch-the-moon', '--dry-run', {
+      env: scrubAgentEnv(process.env),
+    })
+
+    assert.notEqual(exitCode, 0)
+    assert.ok(stderr.includes('Unknown privilege profile "launch-the-moon"'))
+    assert.ok(stderr.includes('app-dev'))
+    assert.ok(stderr.includes('deploy'))
+  })
+
+  it('refuses from an agent context before dry-run privilege changes', () => {
+    const { stderr, exitCode } = tlda('agent', 'privileges', 'alice', 'deploy', '--dry-run', {
       env: { ...scrubAgentEnv(process.env), FLEET_ID: 'fleet:test-agent', FLEET_NAME: 'test-agent' },
     })
 

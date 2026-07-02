@@ -37,7 +37,18 @@ import {
   dismissItem as _dismissItem,
   // @ts-ignore — vanilla JS module
 } from './fleet/fleet-data.mjs'
-import { getFilteredFleetEvents, viewFleetEvents, type FleetEvent } from './fleet/fleet-data.ts'
+import {
+  fleetFilterHasMatchingAgent,
+  getAwakeFleetAgentCount,
+  getFleetAgents,
+  getFilteredFleetEvents,
+  getResolvedFleetAgentIdsForLabel,
+  getResolvedFleetAgentIds,
+  subscribeFleetAgents,
+  viewFleetEvents,
+  type FleetEvent,
+} from './fleet/fleet-data.ts'
+import { resolveFleetFilter } from './fleet/filter-semantics.mjs'
 import {
   getPlaybackData,
   subscribePlayback,
@@ -46,6 +57,7 @@ import {
 } from './playback-context'
 import { log } from './logger'
 import { loadPrefs } from './preferences'
+import { chatAgentSignature } from './fleet/chat-agent-signature'
 
 // Load prefs whenever the user's fleet identity is established
 subscribe('identity', null, (ev: any) => {
@@ -152,6 +164,68 @@ export function useFleetAgents(frameId?: string): any[] {
           liveUnsub?.()
           liveUnsub = null
           setAgents(getPlaybackAgents(pb))
+        }
+      })
+    } else {
+      setupLive()
+    }
+
+    return () => {
+      cancelled = true
+      liveUnsub?.()
+      playbackUnsub?.()
+    }
+  }, [frameId])
+
+  return agents
+}
+
+export function useFleetChatAgents(frameId?: string): any[] {
+  const [agents, setAgents] = useState<any[]>([])
+  const signatureRef = useRef('')
+
+  useEffect(() => {
+    let liveUnsub: (() => void) | null = null
+    let playbackUnsub: (() => void) | null = null
+    let cancelled = false
+    let isPlaybackMode = false
+
+    const publish = (nextAgents: any[]) => {
+      const nextSignature = chatAgentSignature(nextAgents)
+      if (signatureRef.current === nextSignature) return
+      signatureRef.current = nextSignature
+      setAgents(nextAgents)
+    }
+
+    function setupLive() {
+      if (cancelled) return
+      ensureInit().then(() => {
+        if (cancelled || isPlaybackMode) return
+        publish([...getAgents()])
+        const refresh = () => { if (!cancelled) publish([...getAgents()]) }
+        const [debounced, cancelDebounce] = debounce16(refresh)
+        const [gated, cleanupGate] = visibilityGate(debounced, refresh)
+        const rawUnsub = subscribe('agents', null, gated)
+        liveUnsub = () => { rawUnsub(); cleanupGate(); cancelDebounce() }
+      })
+    }
+
+    if (frameId && frameId.startsWith('shape:')) {
+      const pb = getPlaybackData(frameId)
+      if (pb) {
+        isPlaybackMode = true
+        publish(getPlaybackAgents(pb))
+      } else {
+        setupLive()
+      }
+
+      playbackUnsub = subscribePlayback(frameId, () => {
+        const pb = getPlaybackData(frameId)
+        if (pb) {
+          isPlaybackMode = true
+          liveUnsub?.()
+          liveUnsub = null
+          publish(getPlaybackAgents(pb))
         }
       })
     } else {
@@ -364,6 +438,171 @@ export function useFleetEvents(dnfFilter?: [string, string][][] | null, frameId?
   }, [frameId, filter, filterKey])
 
   return isPlaybackMode ? playbackEvents : [...liveEvents]
+}
+
+type FleetStatusTargets = {
+  statusTargetIds: Set<string> | null
+  hibernatingAgents: Set<string>
+}
+
+const EMPTY_STATUS_TARGETS: FleetStatusTargets = {
+  statusTargetIds: null,
+  hibernatingAgents: new Set<string>(),
+}
+
+function statusTargetKey(targetIds: readonly string[], hibernatingIds: readonly string[]): string {
+  return `${[...targetIds].sort().join(',')}\n${[...hibernatingIds].sort().join(',')}`
+}
+
+function makeStatusTargets(targetIds: readonly string[], hibernatingIds: readonly string[]): FleetStatusTargets {
+  return {
+    statusTargetIds: new Set(targetIds),
+    hibernatingAgents: new Set(hibernatingIds),
+  }
+}
+
+export function useFleetStatusTargets(dnfFilter?: [string, string][][] | null, frameId?: string): FleetStatusTargets {
+  const filterKey = dnfFilter ? JSON.stringify(dnfFilter) : ''
+  const filter = useMemo(() => dnfFilter && dnfFilter.length > 0 ? dnfFilter : null, [filterKey])
+  const snapshotRef = useRef<{ key: string; value: FleetStatusTargets } | null>(null)
+
+  const computeSnapshot = useCallback((): FleetStatusTargets => {
+    if (!filter) return EMPTY_STATUS_TARGETS
+    const playback = frameId && frameId.startsWith('shape:') ? getPlaybackData(frameId) : null
+    const playbackAgents = playback ? (getPlaybackAgents(playback) as any[]) : null
+    const targetIds: readonly string[] = playbackAgents
+      ? [...((resolveFleetFilter as any)(filter, { agents: playbackAgents, humanId: getHumanId(), humanName: getHumanName() }) as Set<string>)]
+      : getResolvedFleetAgentIds(filter)
+    const hibernatingIds: readonly string[] = playbackAgents
+      ? targetIds.filter((id) => playbackAgents.some((agent: any) => agent.id === id && agent.status === 'hibernating'))
+      : getResolvedFleetAgentIds(filter, { status: 'hibernating' })
+    const key = `${filterKey}\n${statusTargetKey(targetIds, hibernatingIds)}`
+    const cached = snapshotRef.current
+    if (cached?.key === key) return cached.value
+    const value = makeStatusTargets(targetIds, hibernatingIds)
+    snapshotRef.current = { key, value }
+    return value
+  }, [filter, filterKey, frameId])
+
+  const subscribeTargets = useCallback((onStoreChange: () => void) => {
+    if (!filter) return () => {}
+    const playbackFrame = frameId && frameId.startsWith('shape:') ? frameId : null
+    if (playbackFrame && getPlaybackData(playbackFrame)) {
+      return subscribePlayback(playbackFrame, () => {
+        snapshotRef.current = null
+        onStoreChange()
+      })
+    }
+    void ensureInit()
+    return subscribeFleetAgents(() => {
+      const before = snapshotRef.current?.key ?? ''
+      computeSnapshot()
+      const after = snapshotRef.current?.key ?? ''
+      if (before !== after) onStoreChange()
+    })
+  }, [computeSnapshot, filter, frameId])
+
+  useEffect(() => {
+    if (filter) void ensureInit()
+  }, [filter])
+
+  return useSyncExternalStore(subscribeTargets, computeSnapshot, computeSnapshot)
+}
+
+export function resolveFleetAgentLabelIds(label: string): string[] {
+  if (!label) return []
+  if (label.startsWith('fleet:')) return [label]
+  return [...getResolvedFleetAgentIdsForLabel(label)]
+}
+
+export function useFleetFilterHasMatchingAgent(dnfFilter?: [string, string][][] | null, frameId?: string): boolean {
+  const filterKey = dnfFilter ? JSON.stringify(dnfFilter) : ''
+  const filter = useMemo(() => dnfFilter && dnfFilter.length > 0 ? dnfFilter : null, [filterKey])
+  const snapshotRef = useRef<{ key: string; value: boolean } | null>(null)
+
+  const computeSnapshot = useCallback((): boolean => {
+    if (!filter) return true
+    const playback = frameId && frameId.startsWith('shape:') ? getPlaybackData(frameId) : null
+    if (playback) {
+      return (resolveFleetFilter as any)(filter, {
+        agents: getPlaybackAgents(playback),
+        humanId: getHumanId(),
+        humanName: getHumanName(),
+      }).size > 0
+    }
+    const value = fleetFilterHasMatchingAgent(filter, { id: getHumanId(), name: getHumanName() })
+    const key = `${filterKey}\n${value ? '1' : '0'}`
+    const cached = snapshotRef.current
+    if (cached?.key === key) return cached.value
+    snapshotRef.current = { key, value }
+    return value
+  }, [filter, filterKey, frameId])
+
+  const subscribeMatches = useCallback((onStoreChange: () => void) => {
+    if (!filter) return () => {}
+    const playbackFrame = frameId && frameId.startsWith('shape:') ? frameId : null
+    if (playbackFrame && getPlaybackData(playbackFrame)) {
+      return subscribePlayback(playbackFrame, () => {
+        snapshotRef.current = null
+        onStoreChange()
+      })
+    }
+    void ensureInit()
+    return subscribeFleetAgents(() => {
+      const before = snapshotRef.current?.key ?? ''
+      computeSnapshot()
+      const after = snapshotRef.current?.key ?? ''
+      if (before !== after) onStoreChange()
+    })
+  }, [computeSnapshot, filter, frameId])
+
+  useEffect(() => {
+    if (filter) void ensureInit()
+  }, [filter])
+
+  return useSyncExternalStore(subscribeMatches, computeSnapshot, computeSnapshot)
+}
+
+export function currentFleetAgents(): any[] {
+  return [...getFleetAgents()]
+}
+
+export function useAwakeFleetAgentCount(frameId?: string): number {
+  const snapshotRef = useRef<{ key: string; value: number } | null>(null)
+
+  const computeSnapshot = useCallback((): number => {
+    const playback = frameId && frameId.startsWith('shape:') ? getPlaybackData(frameId) : null
+    if (playback) return getPlaybackAgents(playback).filter((agent: any) => !agent.dead && !agent.human && agent.status === 'awake').length
+    const value = getAwakeFleetAgentCount()
+    const key = String(value)
+    const cached = snapshotRef.current
+    if (cached?.key === key) return cached.value
+    snapshotRef.current = { key, value }
+    return value
+  }, [frameId])
+
+  const subscribeCount = useCallback((onStoreChange: () => void) => {
+    const playbackFrame = frameId && frameId.startsWith('shape:') ? frameId : null
+    if (playbackFrame && getPlaybackData(playbackFrame)) {
+      return subscribePlayback(playbackFrame, () => {
+        snapshotRef.current = null
+        onStoreChange()
+      })
+    }
+    void ensureInit()
+    return subscribeFleetAgents(() => {
+      const before = snapshotRef.current?.key ?? ''
+      computeSnapshot()
+      const after = snapshotRef.current?.key ?? ''
+      if (before !== after) onStoreChange()
+    })
+  }, [computeSnapshot, frameId])
+
+  useEffect(() => {
+    void ensureInit()
+  }, [])
+
+  return useSyncExternalStore(subscribeCount, computeSnapshot, computeSnapshot)
 }
 
 
