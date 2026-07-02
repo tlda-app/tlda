@@ -116,6 +116,10 @@ COPY bin/build-worker.mjs ./bin/build-worker.mjs
 # whole dir (self-contained ESM). (chiefo 2026-06-28, unblock crashed deploy.)
 COPY bin/lib/spawn/ ./bin/lib/spawn/
 
+# Runtime singleton inspection: unified-server imports this helper for status
+# reporting, so the live image needs it alongside the spawn helpers.
+COPY bin/lib/singleton-lock.mjs ./bin/lib/singleton-lock.mjs
+
 # Serve the tldraw SPA from this server too. For the PRIVATE tailnet deployment
 # (server gated behind Tailscale, not the open internet), Skip's tldraw license
 # allows self-hosting — so SPA + API + WS become ONE same-origin server, dropping
