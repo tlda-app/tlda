@@ -15,6 +15,7 @@ export interface TLViewport {
 export interface TLViewportOptions {
     viewportId?: TLViewportId;
     viewport?: TLViewport;
+    disableCulling?: boolean;
 }
 /** @public */
 export declare function getViewportPageBounds(viewport: Pick<TLViewport, 'screenBounds' | 'camera'>): Box;

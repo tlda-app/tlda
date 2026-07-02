@@ -15,7 +15,8 @@ import {
   useValue,
   createShapeId,
 } from 'tldraw'
-import { useState, useCallback, useMemo, useRef, useEffect, memo } from 'react'
+import { useState, useCallback, useMemo, useRef, useEffect, memo, forwardRef } from 'react'
+import { Virtuoso } from 'react-virtuoso'
 import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, useFleetContext, useFleetProjects, useFleetIdentity, searchFleet, hibernateSession, spawnAgent } from '../fleet-data-adapter'
 import { dropPillOnTarget } from './FleetPillShape'
 import { agentDisplayLabel, agentExactName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
@@ -251,6 +252,18 @@ interface OptimisticAgent {
   errorMessage?: string
   existingIds: string[] // agent IDs present at spawn time (model-only reconciliation)
 }
+
+type AgentListItem =
+  | { type: 'optimistic'; opt: OptimisticAgent }
+  | { type: 'agent'; agent: any }
+
+const FleetAgentsScroller = forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
+  function FleetAgentsScroller(props, ref) {
+    const className = props.className ? `fleet-agents-body ${props.className}` : 'fleet-agents-body'
+    return <div {...props} ref={ref} className={className} />
+  },
+)
+const FLEET_AGENTS_VIRTUOSO_COMPONENTS = { Scroller: FleetAgentsScroller }
 
 function agentCategory(agent: any): 'awake' | 'hibernating' {
   if (agent.status === 'human') return 'awake'
@@ -761,6 +774,13 @@ function FleetAgentsInner({ shape }: { shape: any }) {
 
   const unreadCounts = useFleetUnreadCounts()
   const contextPercent = useFleetContext(null, frameId)
+  const rowItems = useMemo<AgentListItem[]>(
+    () => [
+      ...optimisticAgents.map((opt) => ({ type: 'optimistic' as const, opt })),
+      ...sortedAgents.map((agent) => ({ type: 'agent' as const, agent })),
+    ],
+    [optimisticAgents, sortedAgents],
+  )
 
   // Clean up any permanent pill shapes that were children of this panel (legacy)
   const cleanedRef = useRef(false)
@@ -845,57 +865,63 @@ function FleetAgentsInner({ shape }: { shape: any }) {
         </div>
 
         {/* Agent rows — scrollable flat list */}
-        <div className="fleet-agents-body">
-          {/* Optimistic cards appear at top while spawn is in flight */}
-          {optimisticAgents.map((opt) => (
-            <OptimisticAgentRow
-              key={opt.optimisticId}
-              opt={opt}
-              onStartDrag={startDrag}
-              onDismiss={() => {
-                const tid = optimisticTimeouts.current.get(opt.optimisticId)
-                if (tid != null) { clearTimeout(tid); optimisticTimeouts.current.delete(opt.optimisticId) }
-                setOptimisticAgents(prev => prev.filter(o => o.optimisticId !== opt.optimisticId))
-              }}
-              onRetry={() => {
-                setOptimisticAgents(prev => prev.map(o =>
-                  o.optimisticId === opt.optimisticId ? { ...o, status: 'spawning' as const, errorMessage: undefined } : o
-                ))
-                const safeTid = setTimeout(() => {
-                  setOptimisticAgents(prev => prev.filter(o => o.optimisticId !== opt.optimisticId))
-                  optimisticTimeouts.current.delete(opt.optimisticId)
-                }, 30_000)
-                optimisticTimeouts.current.set(opt.optimisticId, safeTid)
-                spawnAgent(opt.model || undefined, opt.doc, opt.name, opt.effort)
-                  .catch((e: any) => {
-                    const msg = String(e?.message || e || 'Spawn failed')
-                    const ex = optimisticTimeouts.current.get(opt.optimisticId)
-                    if (ex != null) { clearTimeout(ex); optimisticTimeouts.current.delete(opt.optimisticId) }
-                    setOptimisticAgents(prev => prev.map(o =>
-                      o.optimisticId === opt.optimisticId ? { ...o, status: 'error' as const, errorMessage: msg } : o
-                    ))
-                  })
-              }}
-            />
-          ))}
-          {sortedAgents.length === 0 && optimisticAgents.length === 0 ? (
+        {sortedAgents.length === 0 && optimisticAgents.length === 0 ? (
+          <div className="fleet-agents-body">
             <div className="fleet-agents-empty">No agents</div>
-          ) : sortedAgents.map((agent: any) => (
-            <AgentRow
-              key={agent.id}
-              agent={agent}
-              allAgents={agents}
-              tasks={getTasksForAgent(agent.id)}
-              unreadCount={unreadCounts[agent.id] || 0}
-              contextPct={contextPercent.get(agent.id)}
-              dimmed={agentCategory(agent) === 'hibernating'}
-              expanded={expandedId === agent.id}
-              lastMessage={lastMessages[agentExactName(agent)] || ''}
-              onToggleExpand={() => setExpandedId(expandedId === agent.id ? null : agent.id)}
-              onStartDrag={startDrag}
-            />
-          ))}
-        </div>
+          </div>
+        ) : (
+          <Virtuoso
+            data={rowItems}
+            components={FLEET_AGENTS_VIRTUOSO_COMPONENTS}
+            style={{ flex: 1, minHeight: 0 }}
+            overscan={240}
+            itemContent={(_, item) => (
+              item.type === 'optimistic' ? (
+                <OptimisticAgentRow
+                  opt={item.opt}
+                  onStartDrag={startDrag}
+                  onDismiss={() => {
+                    const tid = optimisticTimeouts.current.get(item.opt.optimisticId)
+                    if (tid != null) { clearTimeout(tid); optimisticTimeouts.current.delete(item.opt.optimisticId) }
+                    setOptimisticAgents(prev => prev.filter(o => o.optimisticId !== item.opt.optimisticId))
+                  }}
+                  onRetry={() => {
+                    setOptimisticAgents(prev => prev.map(o =>
+                      o.optimisticId === item.opt.optimisticId ? { ...o, status: 'spawning' as const, errorMessage: undefined } : o
+                    ))
+                    const safeTid = setTimeout(() => {
+                      setOptimisticAgents(prev => prev.filter(o => o.optimisticId !== item.opt.optimisticId))
+                      optimisticTimeouts.current.delete(item.opt.optimisticId)
+                    }, 30_000)
+                    optimisticTimeouts.current.set(item.opt.optimisticId, safeTid)
+                    spawnAgent(item.opt.model || undefined, item.opt.doc, item.opt.name, item.opt.effort)
+                      .catch((e: any) => {
+                        const msg = String(e?.message || e || 'Spawn failed')
+                        const ex = optimisticTimeouts.current.get(item.opt.optimisticId)
+                        if (ex != null) { clearTimeout(ex); optimisticTimeouts.current.delete(item.opt.optimisticId) }
+                        setOptimisticAgents(prev => prev.map(o =>
+                          o.optimisticId === item.opt.optimisticId ? { ...o, status: 'error' as const, errorMessage: msg } : o
+                        ))
+                      })
+                  }}
+                />
+              ) : (
+                <AgentRow
+                  agent={item.agent}
+                  allAgents={agents}
+                  tasks={getTasksForAgent(item.agent.id)}
+                  unreadCount={unreadCounts[item.agent.id] || 0}
+                  contextPct={contextPercent.get(item.agent.id)}
+                  dimmed={agentCategory(item.agent) === 'hibernating'}
+                  expanded={expandedId === item.agent.id}
+                  lastMessage={lastMessages[agentExactName(item.agent)] || ''}
+                  onToggleExpand={() => setExpandedId(expandedId === item.agent.id ? null : item.agent.id)}
+                  onStartDrag={startDrag}
+                />
+              )
+            )}
+          />
+        )}
 
         {/* Footer */}
         <div className="fleet-agents-footer">

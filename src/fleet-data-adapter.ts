@@ -57,6 +57,7 @@ import {
 } from './playback-context'
 import { log } from './logger'
 import { loadPrefs } from './preferences'
+import { chatAgentSignature } from './fleet/chat-agent-signature'
 
 // Load prefs whenever the user's fleet identity is established
 subscribe('identity', null, (ev: any) => {
@@ -177,22 +178,6 @@ export function useFleetAgents(frameId?: string): any[] {
   }, [frameId])
 
   return agents
-}
-
-function chatAgentSignature(agents: any[]): string {
-  return JSON.stringify(agents.map((a: any) => [
-    a.id,
-    a.friendly_name,
-    a.name,
-    !!a.human,
-    !!a.dead,
-    a.status,
-    a.is_manager,
-    a.labels || [],
-    a.metadata?.inPlanMode,
-    a.metadata?.permission_mode,
-    a.metadata?.planModeType,
-  ]))
 }
 
 export function useFleetChatAgents(frameId?: string): any[] {

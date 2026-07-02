@@ -19,6 +19,7 @@ export interface TLViewport {
 export interface TLViewportOptions {
 	viewportId?: TLViewportId
 	viewport?: TLViewport
+	disableCulling?: boolean
 }
 
 /** @public */

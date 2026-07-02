@@ -1264,6 +1264,7 @@ export function FleetHUD({
           liveEdit={true}
           wmSurface={{ wm: hudWm, layerId: FLEET_HUD_OVERLAY_LAYER_ID, surfaceId: overlayLayer.overlayLayerId }}
           fullViewport={true}
+          disableCulling={true}
           identityId={identityId}
           customGestureActiveRef={fleetTouchGestureActiveRef}
           onEditorMount={(e) => {

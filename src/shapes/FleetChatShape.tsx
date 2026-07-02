@@ -39,7 +39,6 @@ import {
   chooseFleetEventDisplayFilter,
   classifyFleetComposerTrafficMode,
   filterForFleetComposerTrafficMode,
-  matchesFleetFilter,
   nextFleetComposerTrafficMode,
   quietTrafficSuppressesActivity,
 } from '../fleet/filter-semantics.mjs'
@@ -87,8 +86,51 @@ type FleetChatRenderCounter = {
   events?: Array<{ type: 'render'; t: number; shapeId?: string }>
 }
 
+type ChatRenderProbeKind =
+  | 'shape-render'
+  | 'row-render'
+  | 'row-mount'
+  | 'row-unmount'
+  | 'row-postprocess'
+  | 'markdown-render'
+  | 'chat-line-render'
+  | 'chat-line-cache-hit'
+  | 'activity-render'
+  | 'activity-cache-hit'
+  | 'render-cache-clear'
+
+type ChatRenderProbe = {
+  active?: boolean
+  counts?: Record<string, number>
+  byKey?: Record<string, Record<string, number>>
+  events?: Array<{ type: ChatRenderProbeKind; key?: string; t: number; detail?: Record<string, unknown> }>
+}
+
+function recordChatRenderProbe(type: ChatRenderProbeKind, key?: string, detail?: Record<string, unknown>) {
+  if (typeof window === 'undefined') return
+  const probeWindow = window as Window & { __tldaChatRenderProbe?: ChatRenderProbe }
+  const counter = probeWindow.__tldaChatRenderProbe
+  if (!counter?.active) return
+  const counts = (counter.counts ??= {})
+  counts[type] = (counts[type] || 0) + 1
+  if (key) {
+    const byKey = (counter.byKey ??= {})
+    const keyCounts = (byKey[key] ??= {})
+    keyCounts[type] = (keyCounts[type] || 0) + 1
+  }
+  const events = (counter.events ??= [])
+  events.push({
+    type,
+    key,
+    t: typeof performance !== 'undefined' ? performance.now() : Date.now(),
+    detail,
+  })
+  if (events.length > 20_000) events.splice(0, events.length - 20_000)
+}
+
 function recordFleetChatRender(shape: any) {
   if (typeof window === 'undefined') return
+  recordChatRenderProbe('shape-render', shape?.id)
   const testWindow = window as Window & { __tldaFleetChatRenderCounter?: FleetChatRenderCounter }
   const counter = testWindow.__tldaFleetChatRenderCounter
   if (!counter?.active) return
@@ -1338,14 +1380,13 @@ function ContextBadge({ percent }: { percent?: number }) {
  * fought the virtualized chat layout — flashed on every message — and was
  * reverted; see scratch/status-line-spec.md.)
  */
-function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibernatingAgents, statusTargetIds, ctx, agents, itemCount: _itemCount, escalationState, suggestions }: {
+function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibernatingAgents, statusTargetIds, ctx, itemCount: _itemCount, escalationState, suggestions }: {
   thinkingAgents: Map<string, number>
   compactingAgents: Map<string, number>
   contextPercent: Map<string, number>
   hibernatingAgents: Set<string>
   statusTargetIds: Set<string> | null
   ctx: any
-  agents: any[]
   itemCount: number
   escalationState?: Record<string, { level: number; confirmed: number }>
   suggestions: Suggestion[]
@@ -1354,8 +1395,7 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
   // thinkingAgents/compactingAgents are pre-filtered to chat targets and provide elapsed timestamps.
   // hibernatingAgents is pre-filtered to chat targets.
   const statusAgents = useMemo(() => {
-    const currentAgentIds = new Set(agents.map((agent: any) => agent.id).filter(Boolean))
-    const isRelevant = (id: string) => currentAgentIds.has(id) && (!statusTargetIds || statusTargetIds.has(id))
+    const isRelevant = (id: string) => !statusTargetIds || statusTargetIds.has(id)
     const merged = new Map<string, { status: 'thinking' | 'compacting' | 'hibernating' | 'waking', startTs: number }>()
     for (const [id, ts] of thinkingAgents) {
       if (!isRelevant(id)) continue
@@ -1370,7 +1410,7 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
       if (!merged.has(id)) merged.set(id, { status: 'hibernating', startTs: 0 })
     }
     return merged
-  }, [thinkingAgents, compactingAgents, hibernatingAgents, statusTargetIds, agents])
+  }, [thinkingAgents, compactingAgents, hibernatingAgents, statusTargetIds])
 
   // Suggestions live in the per-agent status row, keyed by the agent that
   // posted them. An agent with no thinking/compacting status (e.g. a bot like
@@ -1716,11 +1756,21 @@ const ChatMessageRow = memo(function ChatMessageRow({
   itemKey: string
   expandedRowsRef: React.RefObject<Set<string>>
 }) {
+  recordChatRenderProbe('row-render', itemKey, { htmlLength: html.length })
   const processed = useMemo(() => probe.time('chat', 'chat-row-postprocess', () => postProcess(html), {
     itemKey,
     htmlLength: html.length,
   }), [html, postProcess, itemKey])
   const divRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    recordChatRenderProbe('row-mount', itemKey, { htmlLength: html.length })
+    return () => recordChatRenderProbe('row-unmount', itemKey)
+  }, [itemKey, html.length])
+
+  useEffect(() => {
+    recordChatRenderProbe('row-postprocess', itemKey, { htmlLength: html.length, processedLength: processed.length })
+  }, [itemKey, html.length, processed.length])
 
   // Restore expand state after dangerouslySetInnerHTML replaces the DOM.
   useLayoutEffect(() => {
@@ -1802,6 +1852,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Live data from fleet-data.mjs via SSE (or playback data if inside a PlaybackFrame)
   const frameId = shape.parentId as string | undefined
   const agents = useFleetChatAgents(frameId)
+  const agentById = useMemo(() => new Map(agents.map((agent: any) => [agent.id, agent])), [agents])
   const lastResolvableDisplayFilterRef = useRef<[string, string][][] | null>(null)
   const eventDisplayChoice = useMemo(() => {
     if (!dnfFilter || dnfFilter.length === 0) {
@@ -1962,11 +2013,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       filtered = filtered.filter(n => {
         const ownerId = suggestionOwnerId(n)
         if (!ownerId) return false
-        return matchesFleetFilter(dnfFilter, { agent: ownerId, from: ownerId, to: ownerId }, {
-          agents,
-          humanId: getHumanId(),
-          humanName: getHumanName(),
-        })
+        return !!statusTargetIds?.has(ownerId)
       })
     }
     const seen = new Set<string>()
@@ -1978,7 +2025,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       seen.add(key)
       return true
     })
-  }, [suggestionsAll, dnfFilter, agents])
+  }, [suggestionsAll, dnfFilter, statusTargetIds])
 
   // Fetch per-agent history on mount / filter change.
   // The global event buffer (MAX_EVENTS=150) is shared across all agents.
@@ -2130,9 +2177,9 @@ function FleetChatInner({ shape }: { shape: any }) {
   const ctxAgents = useMemo(() => {
     if (!ctxRelevantAgentIds) return agents
     return [...ctxRelevantAgentIds]
-      .map(id => agents.find((agent: any) => agent.id === id))
+      .map(id => agentById.get(id))
       .filter(Boolean)
-  }, [agents, ctxRelevantAgentIds])
+  }, [agents, agentById, ctxRelevantAgentIds])
   const ctxTasks = useMemo(() => {
     if (!ctxRelevantAgentIds) return tasks
     return tasks.filter((task: any) =>
@@ -2146,6 +2193,10 @@ function FleetChatInner({ shape }: { shape: any }) {
     macros: Object.entries(preambleMacros).sort(),
     prefTick,
   }), [ctxAgents, ctxTasks, preambleMacros, prefTick])
+  const contentRenderKey = useMemo(() => JSON.stringify({
+    macros: Object.entries(preambleMacros).sort(),
+    prefTick,
+  }), [preambleMacros, prefTick])
   const ctx = useMemo(() => makeCtx(ctxAgents, ctxTasks, preambleMacros), [ctxRenderKey])
   const ctxRef = useRef(ctx)
   ctxRef.current = ctx
@@ -2211,8 +2262,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   // every new message into O(1) for the common case of appending one message.
   const msgLineCache = useRef<Map<string, string>>(new Map())
   const activityGroupCache = useRef<Map<string, string>>(new Map())
-  const ctxVersionRef = useRef(0)
-  const prevCtxRenderKeyRef = useRef(ctxRenderKey)
+  const prevContentRenderKeyRef = useRef(contentRenderKey)
   const capRenderCache = useCallback((cache: Map<string, string>, maxEntries: number) => {
     while (cache.size > maxEntries) {
       const first = cache.keys().next()
@@ -2220,9 +2270,14 @@ function FleetChatInner({ shape }: { shape: any }) {
       cache.delete(first.value)
     }
   }, [])
-  if (prevCtxRenderKeyRef.current !== ctxRenderKey) {
-    prevCtxRenderKeyRef.current = ctxRenderKey
-    ctxVersionRef.current++
+  if (prevContentRenderKeyRef.current !== contentRenderKey) {
+    recordChatRenderProbe('render-cache-clear', shape.id, {
+      prevLength: prevContentRenderKeyRef.current.length,
+      nextLength: contentRenderKey.length,
+      agentCount: ctxAgents.length,
+      taskCount: ctxTasks.length,
+    })
+    prevContentRenderKeyRef.current = contentRenderKey
     msgLineCache.current.clear()
     activityGroupCache.current.clear()
   }
@@ -2329,6 +2384,14 @@ function FleetChatInner({ shape }: { shape: any }) {
   // status row is a real measured item so Virtuoso remains the only scroll
   // authority when status/suggestions change height.
   type RawItem = { key: string; html: string; _queued?: boolean; _interrupt?: boolean; _divider?: boolean; _status?: boolean }
+  const msgLineCacheLimit = useMemo(
+    () => Math.min(20_000, Math.max(1_000, chatMessages.length + 500)),
+    [chatMessages.length],
+  )
+  const activityGroupCacheLimit = useMemo(
+    () => Math.min(5_000, Math.max(250, Math.ceil(chatMessages.length / 4) + 250)),
+    [chatMessages.length],
+  )
   // Short hash of the version currently shown in the viewer (accounts for
   // scrubbing to a historical version). Build cards compare against this to
   // style themselves green (you're viewing this build) vs gray (stale).
@@ -2337,7 +2400,6 @@ function FleetChatInner({ shape }: { shape: any }) {
     const rawItemsT0 = probe.isEnabled('chat') ? performance.now() : 0
     // Extend ctx with thinking state so renderChatLine can apply queued styling
     const renderCtx = { ...ctx, thinkingAgents }
-    const renderVersion = ctxVersionRef.current
     const thinkingKey = [...(thinkingAgents?.entries?.() ?? [])]
       .map(([id, since]: any[]) => `${id}:${since}`)
       .join('|')
@@ -2361,15 +2423,18 @@ function FleetChatInner({ shape }: { shape: any }) {
       const key = `activity:${aid}`
       const groupSize = activityGroup.length
       const cacheKey = [
-        renderVersion,
+        contentRenderKey,
         activityGroup.map((a: any) => a._dbId ?? a._tempId ?? `${a.from}:${a.timestamp}:${a.text || ''}`).join(','),
       ].join('::')
       let html = activityGroupCache.current.get(cacheKey)
       const cached = !!html
       if (!html) {
+        recordChatRenderProbe('activity-render', key, { groupSize })
         html = `<div class="chat-activity-inline-wrap">${renderActivityGroup(activityGroup, renderCtx)}</div>`
         activityGroupCache.current.set(cacheKey, html)
-        capRenderCache(activityGroupCache.current, 250)
+        capRenderCache(activityGroupCache.current, activityGroupCacheLimit)
+      } else {
+        recordChatRenderProbe('activity-cache-hit', key, { groupSize })
       }
       items.push({
         key,
@@ -2508,10 +2573,25 @@ function FleetChatInner({ shape }: { shape: any }) {
           ? renderCtx
           : { ...renderCtx, renderMarkdown: (input: string) => tldaRenderMarkdown(input, lineMacros) }
         const itemKey = m._dbId || m._tempId || `${m.timestamp}:${m.from}`
+        const participantRenderKey = [m.from, m.to, m.agent, m.agent_id]
+          .filter(Boolean)
+          .map((id: string) => {
+            const agent = agentById.get(id)
+            return agent ? agentRenderSignature(agent).join('~') : id
+          })
+          .join('|')
+        const instrumentedLineCtx = {
+          ...lineCtx,
+          renderMarkdown: (input: string) => {
+            recordChatRenderProbe('markdown-render', String(itemKey), { inputLength: input.length })
+            return lineCtx.renderMarkdown(input)
+          },
+        }
         const cacheKey = [
-          renderVersion,
+          contentRenderKey,
           thinkingKey,
           itemKey,
+          participantRenderKey,
           renderM.text || '',
           renderM._amendStepper || '',
           senderPreambleDoc || '',
@@ -2522,9 +2602,20 @@ function FleetChatInner({ shape }: { shape: any }) {
         const t0 = probe.isEnabled('chat') ? performance.now() : 0
         const cached = !!html
         if (!html) {
-          html = renderChatLine(renderM, lineCtx)
+          recordChatRenderProbe('chat-line-render', String(itemKey), {
+            type: m.type,
+            evType: m._evType || '',
+            textLength: String(renderM.text || '').length,
+          })
+          html = renderChatLine(renderM, instrumentedLineCtx)
           msgLineCache.current.set(cacheKey, html)
-          capRenderCache(msgLineCache.current, 1000)
+          capRenderCache(msgLineCache.current, msgLineCacheLimit)
+        } else {
+          recordChatRenderProbe('chat-line-cache-hit', String(itemKey), {
+            type: m.type,
+            evType: m._evType || '',
+            textLength: String(renderM.text || '').length,
+          })
         }
         chatLineCount++
         if (probe.isEnabled('chat')) {
@@ -2570,7 +2661,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
     return items
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatMessages, ctx, thinkingAgents, unqueuedAt, viewingVersion, doc, amendsByOrig, amendView, macrosByDoc, preambleMacros])
+  }, [chatMessages, ctx, thinkingAgents, unqueuedAt, viewingVersion, doc, amendsByOrig, amendView, macrosByDoc, preambleMacros, msgLineCacheLimit, activityGroupCacheLimit, contentRenderKey, agentById])
 
   // Per-item post-processing: applies chip replacement, URL linkification, and
   // doc-link resolution to a single item's HTML. Called by ChatMessageRow only
@@ -5348,7 +5439,6 @@ function FleetChatInner({ shape }: { shape: any }) {
                     hibernatingAgents={hibernatingAgents}
                     statusTargetIds={statusTargetIds}
                     ctx={ctx}
-                    agents={ctxAgents}
                     itemCount={rawItems.length}
                     escalationState={escalationState}
                     suggestions={suggestionsPending}
