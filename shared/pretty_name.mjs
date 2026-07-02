@@ -9,14 +9,13 @@
 function normalizeGlyph(part) {
   const id = part.id == null ? '' : String(part.id)
   const glyph = part.glyph == null ? '' : String(part.glyph)
-  const label = part.label == null ? glyph || id : String(part.label)
-  if (!id && !glyph && !label) return null
-  return { kind: 'glyph', id, glyph, label }
+  if (!id && !glyph) return null
+  return { kind: 'glyph', id, glyph }
 }
 
-export function pretty_name_parts(pretty_name, fallback = '') {
-  const value = pretty_name == null || pretty_name === '' ? fallback : pretty_name
-  const rawParts = Array.isArray(value) ? value : [value]
+export function pretty_name_parts(pretty_name) {
+  if (pretty_name == null || pretty_name === '') return []
+  const rawParts = Array.isArray(pretty_name) ? pretty_name : [pretty_name]
   const parts = []
   for (const part of rawParts) {
     if (part == null || part === '') continue
@@ -29,13 +28,13 @@ export function pretty_name_parts(pretty_name, fallback = '') {
       parts.push(String(part))
     }
   }
-  if (!parts.length && fallback) parts.push(String(fallback))
   return parts
 }
 
-export function pretty_name_plain_text(pretty_name, fallback = '') {
-  return pretty_name_parts(pretty_name, fallback)
-    .map(part => typeof part === 'string' ? part : (part.glyph || part.label || part.id))
+export function pretty_name_plain_text(pretty_name) {
+  return pretty_name_parts(pretty_name)
+    .map(part => typeof part === 'string' ? part : (part.glyph || ''))
+    .filter(Boolean)
     .join(' ')
     .trim()
 }

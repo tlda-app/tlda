@@ -72,7 +72,7 @@ describe('FleetStore agent metadata', () => {
   it('derives explicit pretty_name for generated phase names', () => {
     assert.equal(prettyNameForFriendlyName('chief'), 'chief')
     assert.deepEqual(prettyNameForFriendlyName('chief:day'), [
-      { kind: 'glyph', id: 'day', glyph: '☀', label: '☀' },
+      { kind: 'glyph', id: 'day', glyph: '☀' },
       'chief',
     ])
   })
@@ -90,7 +90,7 @@ describe('FleetStore agent metadata', () => {
       const agent = store.getAgent('fleet:chief')
       assert.equal(agent.friendly_name, 'chief:day')
       assert.deepEqual(agent.pretty_name, [
-        { kind: 'glyph', id: 'day', glyph: '☀', label: '☀' },
+        { kind: 'glyph', id: 'day', glyph: '☀' },
         'chief',
       ])
     } finally {
@@ -118,7 +118,7 @@ describe('FleetStore agent metadata', () => {
       const backfilled = store.getAgent('fleet:chief-day')
       assert.equal(backfilled.friendly_name, 'chief:day')
       assert.deepEqual(backfilled.pretty_name, [
-        { kind: 'glyph', id: 'day', glyph: '☀', label: '☀' },
+        { kind: 'glyph', id: 'day', glyph: '☀' },
         'chief',
       ])
 

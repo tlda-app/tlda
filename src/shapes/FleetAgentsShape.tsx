@@ -1177,7 +1177,7 @@ function AgentRow({
           onPointerDown={(e) => { e.stopPropagation(); onStartDrag(e, 'agent', agent.friendly_name || name, name, color) }}
         >
           {/* Fixed-width leading-glyph slot so the first text character aligns. */}
-          <PrettyName pretty_name={agent.pretty_name} fallback={agent.friendly_name} slotWidth={15} />
+          <PrettyName prettyName={agent.pretty_name ?? agent.friendly_name} slotWidth={15} />
         </span>
 
         <span className="fleet-agents-col-seen">{ago}</span>

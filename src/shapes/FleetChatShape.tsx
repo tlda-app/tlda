@@ -1482,7 +1482,7 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
             {/* left: agent + status */}
             <span style={{ justifySelf: 'start', minWidth: 0 }}>
               <span className="thinking-text">
-                <PrettyName pretty_name={ctx.agentPrettyName(agentId)} fallback={ctx.agentFullName(agentId)} />
+                <PrettyName prettyName={ctx.agentPrettyName(agentId) ?? ctx.agentFullName(agentId)} />
               </span>
               {statusText && <>{' '}<span className="thinking-text">{statusText}</span></>}
               {status && status !== 'hibernating' && status !== 'waking' && <>{' '}<ElapsedTime startMs={startTs} /></>}
@@ -5823,7 +5823,7 @@ function SendHint({
   const targets = sendTargets.map((t, i) => (
     <span key={t} className="send-hint-target" style={{ display: 'inline-flex', alignItems: 'center' }}>
       {i > 0 ? ' + ' : null}
-      <PrettyName pretty_name={null} fallback={t} />
+      <PrettyName prettyName={t} />
     </span>
   ))
 
@@ -6132,7 +6132,7 @@ export function FilterOverlay({
       <span className={`fleet-filter-chip fleet-filter-chip-${role}${opts?.ghost ? ' fleet-filter-chip-ghost' : ''}`}>
         <span className="fleet-filter-chip-role">{role}:</span>
         <span className="fleet-filter-chip-label">
-          <PrettyName pretty_name={null} fallback={label} />
+          <PrettyName prettyName={label} />
         </span>
         {opts?.x && (
           <span className="fleet-filter-term-x" data-clause={opts.x.ci} data-term={opts.x.ti}>×</span>

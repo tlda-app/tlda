@@ -54,7 +54,7 @@ export function prettyNameForFriendlyName(friendlyName) {
   const parts = splitDecoratedName(friendlyName)
   if (!parts.key) return friendlyName
   return [
-    { kind: 'glyph', id: parts.key, glyph: parts.glyph, label: parts.glyph },
+    { kind: 'glyph', id: parts.key, glyph: parts.glyph },
     parts.text,
   ]
 }

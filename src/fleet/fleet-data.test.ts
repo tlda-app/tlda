@@ -230,8 +230,8 @@ test('pretty_name labels do not resolve as stripped behavior names', () => {
     { id: 'fleet:chief-day', friendly_name: 'chief:day', pretty_name: 'chief:day', status: 'awake', dead: false, labels: [] },
   ])
 
-  assert.deepEqual(pretty_name_parts(null, 'chief:day'), ['chief:day'])
-  assert.equal(pretty_name_plain_text(null, 'chief:day'), 'chief:day')
+  assert.deepEqual(pretty_name_parts(null), [])
+  assert.equal(pretty_name_plain_text(null), '')
   assert.deepEqual(getResolvedFleetAgentIds([[['dm', 'chief']]]), [])
   assert.deepEqual(
     getResolvedFleetAgentIds([[['dm', 'chief:day']]]),
@@ -245,11 +245,11 @@ test('pretty_name supports convention-owned glyph rules without changing friendl
   const friendly_name = 'the-artist-formerly-known-as:prince'
   const pretty_name = [{ kind: 'glyph', id: 'love-symbol', glyph: 'Love' }, 'the-artist-formerly-known-as']
 
-  assert.deepEqual(pretty_name_parts(pretty_name, friendly_name), [
-    { kind: 'glyph', id: 'love-symbol', glyph: 'Love', label: 'Love' },
+  assert.deepEqual(pretty_name_parts(pretty_name), [
+    { kind: 'glyph', id: 'love-symbol', glyph: 'Love' },
     'the-artist-formerly-known-as',
   ])
-  assert.equal(pretty_name_plain_text(pretty_name, friendly_name), 'Love the-artist-formerly-known-as')
+  assert.equal(pretty_name_plain_text(pretty_name), 'Love the-artist-formerly-known-as')
   assert.equal(friendly_name, 'the-artist-formerly-known-as:prince')
 })
 

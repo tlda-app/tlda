@@ -95,7 +95,7 @@ export function humanIdSet() {
 // --- Agent display ---
 export function agentLabel(id) {
   const a = getAgent(id)
-  if (a) return pretty_name_plain_text(a.pretty_name, a.friendly_name) || a.id
+  if (a) return pretty_name_plain_text(a.pretty_name ?? a.friendly_name) || a.id
   if (id == null) { fleetError('agentLabel', 'null agent id'); return '[unknown]' }
   return typeof id === 'string' ? id : String(id)
 }

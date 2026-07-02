@@ -3,10 +3,10 @@ import { pretty_name_parts } from '../../shared/pretty_name.mjs'
 
 type PrettyGlyphId = 'day' | 'dusk' | 'night' | 'zombie' | string
 
-type PrettyNameValue = string | Array<string | { kind: 'glyph'; id?: string; glyph?: string; label?: string }> | null | undefined
+type PrettyNameValue = string | Array<string | { kind: 'glyph'; id?: string; glyph?: string }> | null | undefined
 
-export function PrettyName({ pretty_name, fallback, slotWidth }: { pretty_name: PrettyNameValue; fallback?: string | null; slotWidth?: number }) {
-  const parts = pretty_name_parts(pretty_name, fallback || '')
+export function PrettyName({ prettyName, slotWidth }: { prettyName: PrettyNameValue; slotWidth?: number }) {
+  const parts = pretty_name_parts(prettyName)
   let firstTextIdx = parts.findIndex((part: any) => typeof part === 'string' && part.length > 0)
   if (firstTextIdx === -1) firstTextIdx = parts.length
   const leadingGlyphs = slotWidth != null ? parts.slice(0, firstTextIdx).filter((part: any) => typeof part !== 'string') : []
@@ -25,7 +25,7 @@ export function PrettyName({ pretty_name, fallback, slotWidth }: { pretty_name: 
   )
 }
 
-export function PrettyNameGlyph({ part }: { part: { id?: PrettyGlyphId | null; glyph?: string; label?: string } | null }) {
+export function PrettyNameGlyph({ part }: { part: { id?: PrettyGlyphId | null; glyph?: string } | null }) {
   const glyph = part?.id || null
   if (!glyph) return null
   const size = 12
@@ -67,5 +67,5 @@ export function PrettyNameGlyph({ part }: { part: { id?: PrettyGlyphId | null; g
       </svg>
     )
   }
-  return <span style={style}>{part?.glyph || part?.label || glyph}</span>
+  return part?.glyph ? <span style={style}>{part.glyph}</span> : null
 }

@@ -132,36 +132,37 @@ function glyphHtml(part) {
   if (id === 'dusk') return PRETTY_GLYPH_DUSK
   if (id === 'night') return PRETTY_GLYPH_NIGHT
   if (id === 'zombie') return PRETTY_GLYPH_ZOMBIE
-  const fallback = typeof part === 'string' ? '' : (part?.glyph || part?.label || part?.id || '')
-  return fallback ? `<span class="pretty-glyph">${esc(fallback)}</span>` : ''
+  const plainGlyph = typeof part === 'string' ? '' : (part?.glyph || '')
+  return plainGlyph ? `<span class="pretty-glyph">${esc(plainGlyph)}</span>` : ''
 }
 
 function leadingPrettyGlyphHtml(agentId, getAgents) {
   if (!getAgents) return ''
   const agents = getAgents()
   const a = agents?.find(x => x.id === agentId)
-  const part = pretty_name_parts(a?.pretty_name, a?.friendly_name).find(p => typeof p !== 'string')
+  const part = pretty_name_parts(a?.pretty_name ?? a?.friendly_name).find(p => typeof p !== 'string')
   return part ? glyphHtml(part) : ''
 }
 
-function prettyNameTextOnly(pretty_name, fallback = '') {
-  const text = pretty_name_parts(pretty_name, fallback)
+function prettyNameTextOnly(pretty_name, friendlyName = '') {
+  const text = pretty_name_parts(pretty_name ?? friendlyName)
     .filter(part => typeof part === 'string')
     .join(' ')
     .trim()
-  return text || pretty_name_plain_text(pretty_name, fallback)
+  return text || friendlyName
 }
 
-function agentNameTextOnly(agentId, getAgents, fallback = '') {
+function agentNameTextOnly(agentId, getAgents, plainName = '') {
   const agents = getAgents?.()
   const a = agents?.find(x => x.id === agentId)
-  return a ? prettyNameTextOnly(a.pretty_name, a.friendly_name) : fallback
+  return a ? prettyNameTextOnly(a.pretty_name, a.friendly_name) : plainName
 }
 
 // HTML pretty_name primitive. Rendered output is display-only and must never be
 // fed back into behavior.
-export function agentNameHtml(pretty_name, fallback = '') {
-  return pretty_name_parts(pretty_name, fallback)
+export function agentNameHtml(pretty_name, friendlyName = '') {
+  const parts = pretty_name_parts(pretty_name ?? friendlyName)
+  return parts
     .map(part => typeof part === 'string' ? esc(part) : glyphHtml(part))
     .join('')
 }
@@ -176,10 +177,10 @@ export function renderChatLine(m, ctx) {
   // `*NameNow` is set when the agent has since rotated → drives a hover tooltip
   // so the reader can see the current name + reach the agent by its stable id.
   const periodNick = (id, stamped) => stamped != null
-    ? pretty_name_plain_text(null, stamped)
+    ? stamped
     : agentNameTextOnly(id, getAgents, agentLabel(id))
   const nowTitle = (id, nowName) => nowName != null
-    ? ` title="now: ${esc(pretty_name_plain_text(null, nowName))} · ${esc(id || '')}"` : ''
+    ? ` title="now: ${esc(nowName)} · ${esc(id || '')}"` : ''
 
   // Timer countdown: live countdown for active timers. Remaining is computed
   // from data-timer-until at render time and re-ticked each second by the

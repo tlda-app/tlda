@@ -18,7 +18,7 @@ let eventStore: LiveStore<FleetEvent> = createLiveStore<FleetEvent>()
 export type FleetAgent = Record<string, unknown> & {
   id: string
   friendly_name?: string
-  pretty_name?: string | Array<string | { kind: 'glyph'; id?: string; glyph?: string; label?: string }>
+  pretty_name?: string | Array<string | { kind: 'glyph'; id?: string; glyph?: string }>
   status?: string
   labels?: string[]
   dead?: boolean
