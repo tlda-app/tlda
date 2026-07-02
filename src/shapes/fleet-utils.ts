@@ -1,4 +1,4 @@
-import type { Editor } from 'tldraw'
+import type { Editor, TLShape } from 'tldraw'
 import { createShapeId } from 'tldraw'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getHumanName, getDeviceId, getEvents, isDeviceReady, whenDeviceReady } from '../fleet/fleet-data.mjs'
@@ -232,6 +232,13 @@ export function forceDeleteShapes(editor: Editor, ids: string[]) {
     if (s?.isLocked) editor.updateShape({ id: s.id, type: s.type, isLocked: false })
   }
   editor.deleteShapes(ids as any)
+}
+
+/** Enter TLDraw select mode for direct resize/move of a fleet panel. */
+export function selectFleetShapeForLayout(editor: Editor, shape: TLShape) {
+  if (shape.isLocked) editor.updateShape({ id: shape.id, type: shape.type, isLocked: false })
+  editor.setCurrentTool('select')
+  editor.select(shape.id)
 }
 
 /**

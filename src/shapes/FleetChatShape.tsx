@@ -47,7 +47,7 @@ import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 import { useFleetChatAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useFleetFilterHasMatchingAgent, useSuggestions, clearGroup, sendMessage, loadBefore, resolveFleetAgentLabelIds, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
 import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore, createTemporaryMarkdownColumn } from './FleetPillShape'
-import { agentDisplayLabel, agentExactName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
+import { agentDisplayLabel, agentExactName, beginNativeSnapDrag, endNativeSnapDrag, selectFleetShapeForLayout } from './fleet-utils'
 import { ChatComposer } from './ChatComposer'
 import { PrettyName } from './PrettyName'
 import { dragCoordinator } from './dragCoordinator'
@@ -5366,11 +5366,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             className="fleet-layout-btn"
             onPointerUp={(e) => {
               e.stopPropagation()
-              // Must be in select tool for resize handles to appear.
-              // The HUD mirrors the main editor's tool (hand/browse/etc),
-              // so switch explicitly before selecting.
-              editor.setCurrentTool('select')
-              editor.select(shape.id)
+              selectFleetShapeForLayout(editor, shape)
             }}
             title="Resize / move"
           >
@@ -5378,7 +5374,11 @@ function FleetChatInner({ shape }: { shape: any }) {
           </button>
           <button
             className="fleet-filter-btn"
-            onClick={() => setFilterOpen(prev => !prev)}
+            onPointerDown={stopEventPropagation}
+            onPointerUp={(e) => {
+              stopEventPropagation(e)
+              setFilterOpen(prev => !prev)
+            }}
             title="Edit traffic filter"
           >
             {filterOpen
@@ -5959,7 +5959,7 @@ export function FilterOverlay({
   agents: any[]
   sendTargets: string[]
 }) {
-  // Native click delegation on document capture — bypasses tldraw completely
+  // Native pointerup delegation on document capture — bypasses tldraw and works on touch.
   const overlayRef = useRef<HTMLDivElement>(null)
   const viewportId = useVisibilityViewportId()
   const filterRef = useRef(filter)
@@ -5998,7 +5998,7 @@ export function FilterOverlay({
   }, [activeAgentLabel, humanLabel, updateChatProps])
 
   useEffect(() => {
-    function handleClick(e: MouseEvent) {
+    function handlePointerUp(e: PointerEvent) {
       const target = e.target as HTMLElement
       const overlay = overlayRef.current
       if (!overlay || !overlay.contains(target)) return
@@ -6030,8 +6030,8 @@ export function FilterOverlay({
         return
       }
     }
-    document.addEventListener('click', handleClick, { capture: true })
-    return () => document.removeEventListener('click', handleClick, { capture: true })
+    document.addEventListener('pointerup', handlePointerUp, { capture: true })
+    return () => document.removeEventListener('pointerup', handlePointerUp, { capture: true })
   }, [shapeId, editor, onClose, applyPreset, updateChatProps])
 
   // Detect pill hovering over the shape — show two-pane drop preview

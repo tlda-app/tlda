@@ -8,7 +8,7 @@ import {
 } from 'tldraw'
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
 import { useReaperStatus } from '../fleet-data-adapter'
-import { beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
+import { beginNativeSnapDrag, endNativeSnapDrag, selectFleetShapeForLayout } from './fleet-utils'
 
 const DEFAULT_W = 480
 const DEFAULT_H = 400
@@ -300,8 +300,7 @@ function ReaperComponent({ shape }: { shape: any }) {
             className="fleet-layout-btn"
             onPointerUp={(e) => {
               e.stopPropagation()
-              editor.setCurrentTool('select')
-              editor.select(shape.id)
+              selectFleetShapeForLayout(editor, shape)
             }}
             title="Resize / move"
           >

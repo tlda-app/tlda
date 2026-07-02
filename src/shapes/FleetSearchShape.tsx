@@ -14,7 +14,7 @@ import {
   useValue,
   createShapeId,
 } from 'tldraw'
-import { beginNativeSnapDrag, createFleetShape, agentDisplayLabel, endNativeSnapDrag } from './fleet-utils'
+import { beginNativeSnapDrag, createFleetShape, agentDisplayLabel, endNativeSnapDrag, selectFleetShapeForLayout } from './fleet-utils'
 import { useState, useCallback, useRef, useMemo, useEffect, memo } from 'react'
 import { searchFleet, fetchSharedDocs, useFleetAgents, useFleetTasks } from '../fleet-data-adapter'
 import katex from 'katex'
@@ -500,8 +500,7 @@ function FleetSearchInner({ shape }: { shape: any }) {
             className="fleet-layout-btn"
             onPointerUp={(e) => {
               e.stopPropagation()
-              editor.setCurrentTool('select')
-              editor.select(shape.id)
+              selectFleetShapeForLayout(editor, shape)
             }}
             title="Resize / move"
           >

@@ -59,9 +59,28 @@ test('filter overlay updates locked chats by temporarily unlocking them', () => 
   assert.match(overlay, /const updateChatProps = useCallback/)
   assert.match(overlay, /isLocked: false/)
   assert.match(overlay, /isLocked: true/)
+  assert.match(overlay, /addEventListener\('pointerup', handlePointerUp/)
   assert.match(overlay, /updateChatProps\(\{ filter: nextFilter, trafficMode: 'normal' \}\)/)
   assert.match(overlay, /updateChatProps\(\{ filter: newFilter \}\)/)
   assert.match(overlay, /updateChatProps\(\{ filter: \[\] \}\)/)
+})
+
+test('fleet panel layout buttons unlock before selecting for resize or move', () => {
+  assert.match(layoutSource, /export function selectFleetShapeForLayout/)
+  assert.match(layoutSource, /isLocked: false/)
+  assert.match(layoutSource, /editor\.setCurrentTool\('select'\)/)
+  assert.match(layoutSource, /editor\.select\(shape\.id\)/)
+  assert.match(chatShapeSource, /selectFleetShapeForLayout\(editor, shape\)/)
+})
+
+test('inbox filter target allows multiple chats for the same owner device', () => {
+  const inboxSource = readFileSync(new URL('../src/shapes/FleetInboxShape.tsx', import.meta.url), 'utf8')
+  const resolver = sourceBetween(inboxSource, 'const resolvePhoneChat = useCallback', 'const phoneChat = useValue')
+  assert.match(resolver, /if \(chats\.length === 0\) return null/)
+  assert.match(resolver, /if \(chats\.length === 1\) return chats\[0\]/)
+  assert.doesNotMatch(resolver, /chats\.length === 1 \?/)
+  assert.match(resolver, /fleet-chat-0-/)
+  assert.match(resolver, /sort\(\(a, b\) => score\(a\) - score\(b\)/)
 })
 
 test('2x2 layout creates four chats and no document viewer', () => {

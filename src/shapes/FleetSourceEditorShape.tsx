@@ -30,7 +30,7 @@ import {
   sourceLineToEditorCanvas,
 } from '../synctexAnchor'
 import { getVimMode, subscribeVimMode } from '../vimMode'
-import { beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
+import { beginNativeSnapDrag, endNativeSnapDrag, selectFleetShapeForLayout } from './fleet-utils'
 import './fleet-chat.css'
 
 const DEFAULT_W = 560
@@ -897,8 +897,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
           className="fleet-layout-btn"
           onPointerUp={(e) => {
             e.stopPropagation()
-            editor.setCurrentTool('select')
-            editor.select(shape.id)
+            selectFleetShapeForLayout(editor, shape)
           }}
           title="Resize / move"
         >

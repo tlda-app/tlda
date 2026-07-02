@@ -19,7 +19,7 @@ import {
   useValue,
 } from 'tldraw'
 import type { Editor, TLShapeId } from 'tldraw'
-import { agentDisplayLabel, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
+import { agentDisplayLabel, beginNativeSnapDrag, endNativeSnapDrag, selectFleetShapeForLayout } from './fleet-utils'
 import { usePillDrag } from './FleetAgentsShape'
 import { ChatComposer } from './ChatComposer'
 import { useState, useCallback, useRef, useMemo, useEffect, useContext, memo } from 'react'
@@ -52,6 +52,8 @@ type FleetFilter = [string, string][][]
 type PhoneChatShape = {
   id: TLShapeId
   type: 'fleet-chat'
+  x: number
+  y: number
   props?: { filter?: FleetFilter }
 }
 
@@ -389,8 +391,29 @@ function FleetInboxInner({ shape }: { shape: any }) {
       s.type === 'fleet-chat' &&
       s.props?.userId === userId &&
       s.props?.deviceId === deviceId,
-    )
-    return chats.length === 1 ? (chats[0] as unknown as PhoneChatShape) : null
+    ) as unknown as PhoneChatShape[]
+    if (chats.length === 0) return null
+    if (chats.length === 1) return chats[0]
+
+    const inboxRight = shape.x + (shape.props?.w || 0)
+    const inboxTop = shape.y
+    const inboxBottom = shape.y + (shape.props?.h || 0)
+    const score = (chat: PhoneChatShape) => {
+      const props = chat.props as { w?: number; h?: number } | undefined
+      const chatTop = chat.y
+      const chatBottom = chat.y + (props?.h || 0)
+      const overlapsY = chatBottom > inboxTop && chatTop < inboxBottom
+      const isRight = chat.x >= inboxRight - 1
+      const slotPenalty = String(chat.id).includes('fleet-chat-0-') ? 0 : 100000
+      return (
+        (isRight ? 0 : 1000000) +
+        (overlapsY ? 0 : 10000) +
+        slotPenalty +
+        Math.abs(chat.x - inboxRight) +
+        Math.abs(chat.y - inboxTop) / 1000
+      )
+    }
+    return [...chats].sort((a, b) => score(a) - score(b) || String(a.id).localeCompare(String(b.id)))[0]
   }, [mainEd, shape.props?.userId, shape.props?.deviceId])
 
   const phoneChat = useValue(
@@ -608,7 +631,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
           >×</button>
           <button
             className="fleet-layout-btn"
-            onPointerUp={(e) => { e.stopPropagation(); editor.setCurrentTool('select'); editor.select(shape.id) }}
+            onPointerUp={(e) => { e.stopPropagation(); selectFleetShapeForLayout(editor, shape) }}
             title="Resize / move"
           >⊞</button>
         </div>

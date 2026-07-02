@@ -19,7 +19,7 @@ import { useState, useCallback, useMemo, useRef, useEffect, memo, forwardRef } f
 import { Virtuoso } from 'react-virtuoso'
 import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, useFleetContext, useFleetProjects, useFleetIdentity, searchFleet, hibernateSession, spawnAgent } from '../fleet-data-adapter'
 import { dropPillOnTarget } from './FleetPillShape'
-import { agentDisplayLabel, agentExactName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
+import { agentDisplayLabel, agentExactName, beginNativeSnapDrag, endNativeSnapDrag, selectFleetShapeForLayout } from './fleet-utils'
 import { PrettyName } from './PrettyName'
 import { dragCoordinator } from './dragCoordinator'
 import { useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
@@ -832,8 +832,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
             className="fleet-layout-btn"
             onPointerUp={(e) => {
               e.stopPropagation()
-              editor.setCurrentTool('select')
-              editor.select(shape.id)
+              selectFleetShapeForLayout(editor, shape)
             }}
             title="Resize / move"
           >

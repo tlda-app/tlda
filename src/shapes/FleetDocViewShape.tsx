@@ -37,7 +37,7 @@ import { pdfToCanvas } from '../synctexAnchor'
 import { getSvgText, setSvgText } from '../stores/svgTextStore'
 import { getPageUrl } from '../stores/pageUrlStore'
 import { getPref } from '../preferences'
-import { beginNativeSnapDrag, endNativeSnapDrag, FLEET_SHAPE_TYPES } from './fleet-utils'
+import { beginNativeSnapDrag, endNativeSnapDrag, FLEET_SHAPE_TYPES, selectFleetShapeForLayout } from './fleet-utils'
 import { createFleetDocviewSurface, type FleetDocviewSurfaceState } from '../wm/fleet-docview-layer'
 import { getEditorWMCore, removeLayers } from '../wm/editor-wm'
 
@@ -514,7 +514,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
         >⬓</button>
         <button
           className="fleet-layout-btn"
-          onPointerUp={(e: any) => { e.stopPropagation(); editor.setCurrentTool('select'); editor.select(shape.id) }}
+          onPointerUp={(e: any) => { e.stopPropagation(); selectFleetShapeForLayout(editor, shape) }}
           title="Resize / move"
         >⊞</button>
         <button
