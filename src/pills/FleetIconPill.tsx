@@ -430,14 +430,22 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
 
     const onUp = (ev: PointerEvent) => {
       stopControlEvent(ev)
+      const anchor = badgeRef.current?.getBoundingClientRect() ?? null
       if (isDragRef.current) {
         const idx = selectedIdxRef.current
         if (idx !== null) {
           applyPreset(idx, 'badge-drag-release')
         }
         justDraggedRef.current = true  // suppress the upcoming onClick
+        cleanup()
+        return
       }
       cleanup()
+      if (isTouchLayoutControl()) {
+        setSliderAnchor(anchor)
+        setPickerOpen(open => !open)
+        justDraggedRef.current = true  // suppress the upcoming onClick
+      }
     }
 
     const onCancel = () => { cleanup() }

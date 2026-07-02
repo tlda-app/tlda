@@ -24,7 +24,7 @@ import {
   temporaryMarkdownShapeMeta,
 } from '../wm/markdown-surface'
 import { sendCanvasPageShapesToBack } from './document-pages'
-import { FLEET_SHAPE_TYPES } from './fleet-utils'
+import { createFleetShape, FLEET_SHAPE_TYPES } from './fleet-utils'
 
 const PILL_W = 70
 const PILL_H = 18
@@ -286,7 +286,7 @@ export async function createTemporaryMarkdownColumn(
  * Drop a pill value on whatever is under the given page position.
  * - Agent/label pills over fleet-chat → update filter
  * - Content pills over fleet-chat → insert text into that chat's input
- * - Over empty canvas → create new fleet-chat filtered to this value
+ * - Over empty canvas → create a HUD-owned fleet-chat filtered to this value
  */
 export async function dropPillOnTarget(
   editor: Editor,
@@ -544,27 +544,10 @@ export async function dropPillOnTarget(
       },
     })
   } else if (!content && (!hitShape || (hitShape as any).type !== 'fleet-agents')) {
-    // Drop on empty canvas → create new fleet-chat at the drop point.
-    await whenDeviceReady()
-    const userId = getHumanId()
-    const deviceId = getDeviceId()
-    if (!userId || !deviceId) return
-    createEditor.createShape({
-      id: createShapeId(),
-      type: 'fleet-chat' as any,
-      x: targetPagePoint.x,
-      y: targetPagePoint.y,
-      isLocked: false,
-      props: {
-        w: 400,
-        h: 600,
-        filter: [[['to', value]], [['from', value]]],
-        // Stamp ownership — without this the chat has userId '' and the
-        // ownership rule (isMyFleetShape) never renders it, so the drop looked
-        // like it did nothing. deviceId is the other half of the key.
-        userId,
-        deviceId,
-      },
+    await createFleetShape(editor, 'fleet-chat', pagePoint.x, pagePoint.y, {
+      w: CHAT_W,
+      h: CHAT_H,
+      filter: [[['to', value]], [['from', value]]],
     })
   }
 }
@@ -685,12 +668,7 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
     const pageCenterX = bounds ? bounds.x + bounds.w / 2 : pill.x + pill.props.w / 2
     const pageCenterY = bounds ? bounds.y + bounds.h / 2 : pill.y + pill.props.h / 2
 
-    const mainEditor = (window as any).__tldraw_editor__ as Editor | undefined
     let dropPoint = { x: pageCenterX, y: pageCenterY }
-
-    if (mainEditor && mainEditor !== editor) {
-      dropPoint = translateFleetHudDropPointWithWM(getEditorWMCore(mainEditor), editor, mainEditor, dropPoint)
-    }
 
     // When expanded (pill was 400×600), the drop point is already the
     // pill's center which = the chat's center. Adjust to top-left.

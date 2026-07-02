@@ -5965,6 +5965,17 @@ export function FilterOverlay({
   const filterRef = useRef(filter)
   filterRef.current = filter
   const humanLabel = getHumanName() || getHumanId() || 'user'
+  const updateChatProps = useCallback((props: Record<string, unknown>) => {
+    const shape = editor.getShape(shapeId)
+    const wasLocked = !!shape?.isLocked
+    if (wasLocked) editor.updateShape({ id: shapeId, type: 'fleet-chat', isLocked: false })
+    editor.updateShape({
+      id: shapeId,
+      type: 'fleet-chat',
+      props,
+    })
+    if (wasLocked) editor.updateShape({ id: shapeId, type: 'fleet-chat', isLocked: true })
+  }, [editor, shapeId])
   const activeAgentLabel = useMemo(() => {
     for (const clause of filter) {
       for (const [, label] of clause) {
@@ -5983,12 +5994,8 @@ export function FilterOverlay({
     } else if (preset === 'agent' && activeAgentLabel) {
       nextFilter = buildFleetAgentFilter(activeAgentLabel) as [string, string][][]
     }
-    editor.updateShape({
-      id: shapeId,
-      type: 'fleet-chat',
-      props: { filter: nextFilter, trafficMode: 'normal' },
-    })
-  }, [activeAgentLabel, editor, humanLabel, shapeId])
+    updateChatProps({ filter: nextFilter, trafficMode: 'normal' })
+  }, [activeAgentLabel, humanLabel, updateChatProps])
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -6013,27 +6020,19 @@ export function FilterOverlay({
           if (i !== ci) return cl
           return cl.filter((_, j) => j !== ti)
         }).filter(cl => cl.length > 0)
-        editor.updateShape({
-          id: shapeId,
-          type: 'fleet-chat',
-          props: { filter: newFilter },
-        })
+        updateChatProps({ filter: newFilter })
         return
       }
 
       // Clear all
       if (target.closest('.fleet-filter-clear')) {
-        editor.updateShape({
-          id: shapeId,
-          type: 'fleet-chat',
-          props: { filter: [] },
-        })
+        updateChatProps({ filter: [] })
         return
       }
     }
     document.addEventListener('click', handleClick, { capture: true })
     return () => document.removeEventListener('click', handleClick, { capture: true })
-  }, [shapeId, editor, onClose, applyPreset])
+  }, [shapeId, editor, onClose, applyPreset, updateChatProps])
 
   // Detect pill hovering over the shape — show two-pane drop preview
   const fleetPillCount = useFleetPillCount(editor)
