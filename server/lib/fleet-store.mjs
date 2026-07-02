@@ -1525,6 +1525,12 @@ export class FleetStore {
       const base = this._lineageBase(agent.lineage_id);
       if (!base) return { ok: true, zombie: false };
       const zombieName = nameForPhase(base, 'zombie');
+      // Global friendly_name uniqueness: if a live agent OUTSIDE this agent
+      // already holds zombieName, bail rather than mint a cross-lineage duplicate.
+      const nameHeldByOther = this.db.prepare(
+        'SELECT id FROM agents WHERE friendly_name = ? AND dead = 0 AND id != ?'
+      ).get(zombieName, agentId);
+      if (nameHeldByOther) return { ok: false, reason: 'zombie name held by another live agent' };
       const now = Date.now();
       // At most one zombie per lineage: raising this one ages out any existing
       // live zombie (name off, marked dead), freeing the name for this agent.
@@ -1630,6 +1636,13 @@ export class FleetStore {
     // Resolve holders BEFORE any rename, then apply in an order that frees each
     // name before it's reused: night → retired, dusk → night, day → dusk,
     // dawn → day, in → dawn.
+    // Global friendly_name uniqueness: the incoming agent will take dawnName
+    // (the bare base). Bail if another live agent outside this agent already
+    // holds it — same guard as transitionPhase.
+    const dawnNameHeldByOther = this.db.prepare(
+      'SELECT id FROM agents WHERE friendly_name = ? AND dead = 0 AND id != ?'
+    ).get(dawnName, incomingAgentId);
+    if (dawnNameHeldByOther) return;
     const nightId = holder(nightName);
     const duskId = holder(duskName);
     const dayId = holder(dayName);
@@ -1694,6 +1707,19 @@ export class FleetStore {
         'INSERT INTO lineage_phase_log (lineage_id, fleet_id, phase, entered_at) VALUES (?, ?, ?, ?)'
       ).run(lineageId, id, ph, ts);
     };
+    // Global friendly_name uniqueness: before rotating, verify no target name
+    // is held by a live agent outside its current holder (cross-lineage guard).
+    for (let i = ORDER.length - 1; i >= startIdx; i--) {
+      const id = holder(nameForPhase(base, ORDER[i]));
+      if (!id) continue;
+      if (i < ORDER.length - 1) {
+        const downName = nameForPhase(base, ORDER[i + 1]);
+        const nameHeldByOther = this.db.prepare(
+          'SELECT id FROM agents WHERE friendly_name = ? AND dead = 0 AND id != ?'
+        ).get(downName, id);
+        if (nameHeldByOther) return;
+      }
+    }
     this.db.transaction(() => {
       // Walk bottom-up (night → target): each occupied rung's holder moves into
       // the rung below (already vacated this pass), and the night holder ages out
