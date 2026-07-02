@@ -1,6 +1,10 @@
 ## Fence / privilege model (target)
 
-**Core: every agent — Skip included — is a row. Privileges are a property of the row, per box. There is NO machine-wide default privilege set and no phantom box-policy floor.**
+**Core: every agent — Skip included — is a row. Daemon privileges are a property of the row, per box. There is NO machine-wide default privilege set and no phantom box-policy floor.**
+
+**Two orthogonal permission domains — don't conflate them:**
+- **Daemon permissions** (local, per-box: files, spawn, exec, git). Enforced by the daemon. **This is the scope of the fence-config fix.** The config + clamp + daemon-local ledger all live here.
+- **Server permissions** (what an agent may do *to the server*: direct DB write vs API-only, privileged fleet ops). Enforced server-side. Separate governor; does NOT intersect with daemon permissions.
 
 **Three legitimate live clamps at spawn** (this intersection is CORRECT, keep it):
 `granted = spawner's current privileges  ∩  requested  ∩  model-cap-on-this-box`
@@ -23,9 +27,8 @@
 
 **NOT in scope here:** the partial-rename ghost-hell is a **friendly-name** atomicity bug at a different level — do not try to solve it with this work.
 
-**`db-write-direct` is a distinct named capability, above `full`-for-app-work.** Rationale: writing the server DB directly bypasses the event-emitting API and can leave state half-applied (this is the root of the partial-rename ghost-hell — a bot wrote a rename row without firing the rename events).
+**Server permission: `db-write-direct`.** `db-write-direct` is a distinct server permission, separate from daemon permissions. Rationale: writing the server DB directly bypasses the event-emitting API and can leave state half-applied (this is the root of the partial-rename ghost-hell — a bot wrote a rename row without firing the rename events).
 - **Off by default.** Only ops/repair seats get it (escape hatch for when the API path itself is broken).
 - **Every bot (todd) and every doer is denied it** — they're forced through the API, which writes + emits events atomically.
-- So the profile set is roughly: `none` < `read-only` < `app-dev` < `full` (app work) < `+db-write-direct` (ops/repair only).
 
-This is fence-config scope (a capability in the profiles). The *enforcement* that identity mutations must go through the event-emitting API is workstream #2 — note it in the doc as related, but don't build it now.
+Keep the server-permission side minimal for now. Skip's long-term intent is to lean on **Fly's** platform permissions for server enforcement rather than a bespoke system, so don't build server-permission machinery now; just note the category and the `db-write-direct` capability. The *enforcement* that identity mutations must go through the event-emitting API is workstream #2 — note it as related, but don't build it now.
