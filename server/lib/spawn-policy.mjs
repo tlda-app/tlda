@@ -86,16 +86,26 @@ function loadFenceConfigPolicies() {
 function buildSpawnPolicyOptions() {
   const merged = {}
   for (const [name, def] of Object.entries(BUILTIN_SPAWN_POLICY_OPTIONS)) merged[name] = { ...def }
+  // Valid fence region names — the values CAPABILITY_REGION can produce plus the
+  // regions the fence's own sandbox resolver (permissions.mjs SANDBOX_POLICIES)
+  // accepts as write-scope policies. 'no-dev' is a valid sandbox policy but not
+  // a write-scope region, so it is excluded here.
+  const VALID_REGIONS = new Set(['cwd', 'tlda-projects', 'unsandboxed'])
   for (const [name, def] of Object.entries(loadFenceConfigPolicies())) {
     if (!def || typeof def !== 'object' || Array.isArray(def)) continue
     // The operator's fence.json may still describe a policy in OLD vocabulary
     // (capability `full-access`, writeScope `unsandboxed`). Normalize it to a
-    // four-name rung so a stale config can't reintroduce machine vocabulary; the
-    // region is derived from the rung, never from the stale writeScope.
+    // four-name rung so a stale config can't reintroduce machine vocabulary.
     const rung = legacyRung(def.capability, def.policy ?? def.writeScope)
       || (CAPABILITY_RANK.has(name) ? name : merged[name]?.capability)
     if (!rung || !CAPABILITY_RANK.has(rung)) continue
-    merged[name] = { capability: rung, policy: CAPABILITY_REGION[rung], category: 'write-scope' }
+    // Use the operator's configured region when it is a recognized fence region,
+    // falling back to the rung-derived default. This fixes the "config thrown
+    // out" bug where every policy was force-derived from CAPABILITY_REGION[rung]
+    // regardless of what the operator wrote in fence.json.
+    const operatorRegion = (def.policy ?? def.writeScope ?? '')
+    const region = VALID_REGIONS.has(operatorRegion) ? operatorRegion : CAPABILITY_REGION[rung]
+    merged[name] = { capability: rung, policy: region, category: 'write-scope' }
   }
   return merged
 }
