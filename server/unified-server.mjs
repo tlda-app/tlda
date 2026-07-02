@@ -45,7 +45,7 @@ import { normalizeUsageStatus } from '../shared/usage-status.mjs'
 import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
 import { listModels as listSpawnModels } from '../bin/lib/spawn/models.mjs'
 import { labelsForAgent, parseFilter, evalExpr } from '../shared/fleet-labels.mjs'
-import { phaseFromName, baseName, PHASES } from '../shared/lineage-name.mjs'
+import { phaseFromName, baseName, PHASES, prettyNameForFriendlyName } from '../shared/lineage-name.mjs'
 import { daemonHelloDecision } from '../shared/daemon-identity.mjs'
 import { resolveServerIsolation } from '../shared/server-identity.mjs'
 import { initProjectStore, listProjects, readProject, updateProject, getProjectsDir } from './lib/project-store.mjs'
@@ -975,6 +975,7 @@ async function performSpawnRelay(caller, msg) {
     result = await sendRpc(machineId, 'spawn', {
       agent_id: pendingAgentId || undefined,
       friendly_name: pendingAgentId ? spawnName : undefined,
+      pretty_name: pendingAgentId ? prettyNameForFriendlyName(spawnName) : undefined,
       name: resolved.name || undefined,
       model: model || undefined,
       kind: spawnKind || undefined,
@@ -3140,7 +3141,7 @@ async function handleFleetWsMessage(ws, msg) {
     // back to id keeps python fleet-spawn's ws_register (which sends id=fleet_id
     // directly, no correlation) working. Reading the bare `id` here was the
     // root cause of phantom UUID-keyed agent rows.
-    const { agent_id, id: msgId, name, tmux_session, cwd, labels, manager, session_id, metadata, machine_id, kind } = msg
+    const { agent_id, id: msgId, name, pretty_name, tmux_session, cwd, labels, manager, session_id, metadata, machine_id, kind } = msg
     const agentId = agent_id || msgId
     if (!agentId) { error('missing id'); return }
     // Duplicate clients are allowed to coexist. Closing an existing socket here
@@ -3168,6 +3169,7 @@ async function handleFleetWsMessage(ws, msg) {
     const agent = {
       id: agentId,
       friendly_name: existing?.friendly_name || name || null,
+      pretty_name: pretty_name ?? existing?.pretty_name ?? null,
       tmux_session: tmux_session || existing?.tmux_session || null,
       session_id: session_id || existing?.session_id || null,
       session_ids: existing?.session_ids || [],

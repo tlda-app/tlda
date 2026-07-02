@@ -3,7 +3,7 @@ import { createShapeId } from 'tldraw'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getHumanName, getDeviceId, getEvents, isDeviceReady, whenDeviceReady } from '../fleet/fleet-data.mjs'
 // @ts-ignore — vanilla JS module
-import { decoratedNameText } from '../../shared/lineage-name.mjs'
+import { pretty_name_plain_text } from '../../shared/pretty_name.mjs'
 // @ts-ignore — vanilla JS module
 import { recentChatTargetAgents } from '../fleet/layout-targets.mjs'
 import { getPref } from '../preferences'
@@ -42,7 +42,7 @@ export function endNativeSnapDrag(editor: Editor) {
 /** Display-only label. Do not use this as a filter or routing value. */
 export function agentDisplayLabel(agent: any, _allAgents?: any[]): string {
   if (!agent) return '[unknown]'
-  return decoratedNameText(agent.friendly_name)?.replace(/^fleet:/, '') || (agent.id || '').replace('fleet:', '')
+  return pretty_name_plain_text(agent.pretty_name, agent.friendly_name)?.replace(/^fleet:/, '') || (agent.id || '').replace('fleet:', '')
 }
 
 /** Exact current name for filters, DMs, and routing. */

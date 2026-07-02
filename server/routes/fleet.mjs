@@ -14,6 +14,7 @@ import path from 'path'
 import os from 'os'
 import { DEFAULT_PORT, loadConfig, resolveConfig } from '../../shared/config.mjs'
 import { parseFilter, evalExpr, labelsForAgent } from '../../shared/fleet-labels.mjs'
+import { prettyNameForFriendlyName } from '../../shared/lineage-name.mjs'
 import { resolveSpawnMachine } from '../lib/spawn-routing.mjs'
 import { summarizeFleetRosterTruth } from '../lib/fleet-roster-truth.mjs'
 
@@ -22,6 +23,11 @@ import { summarizeFleetRosterTruth } from '../lib/fleet-roster-truth.mjs'
 const SERVER_OWNER_NAME = process.env.TLDA_USER || os.userInfo().username || 'user'
 const SERVER_OWNER_ID = `fleet:${SERVER_OWNER_NAME}`
 const SERVER_OWNER_HOST = os.hostname()
+
+function serializePrettyName(value) {
+  if (value == null || value === '') return null
+  return typeof value === 'string' ? value : JSON.stringify(value)
+}
 
 // All inline tmux operations were removed — they now route through the
 // fleet-daemon WS RPC layer (`sendRpc(machineId, op, params)` injected
@@ -605,7 +611,8 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     }
     // Use direct SQL so clearing a name (newName = "") actually sets NULL
     // rather than being COALESCE'd back to the old value in upsertAgent.
-    fleetStore?.db.prepare('UPDATE agents SET friendly_name = ? WHERE id = ?').run(newName || null, agent.id)
+    fleetStore?.db.prepare('UPDATE agents SET friendly_name = ?, pretty_name = ? WHERE id = ?')
+      .run(newName || null, serializePrettyName(prettyNameForFriendlyName(newName)), agent.id)
     broadcastState()
     res.json({ ok: true, agent: agent.id, name: newName || null })
   })

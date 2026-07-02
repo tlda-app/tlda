@@ -5,7 +5,7 @@ import test from 'node:test'
 
 import { matchesFleetFilter } from './filter-semantics.mjs'
 import { makeEventStore } from './event-store.mjs'
-import { decoratedNameText } from '../../shared/lineage-name.mjs'
+import { pretty_name_parts, pretty_name_plain_text } from '../../shared/pretty_name.mjs'
 import {
   fleetFilterHasMatchingAgent,
   getAwakeFleetAgentCount,
@@ -225,12 +225,13 @@ test('fleet agent label resolver uses the maintained label index', () => {
   resetFleetAgentStoreForTest()
 })
 
-test('suffix-decorated display labels do not resolve as stripped filter names', () => {
+test('pretty_name labels do not resolve as stripped behavior names', () => {
   resetFleetAgentStoreForTest([
-    { id: 'fleet:chief-day', friendly_name: 'chief:day', status: 'awake', dead: false, labels: [] },
+    { id: 'fleet:chief-day', friendly_name: 'chief:day', pretty_name: 'chief:day', status: 'awake', dead: false, labels: [] },
   ])
 
-  assert.equal(decoratedNameText('chief:day'), '☀ chief')
+  assert.deepEqual(pretty_name_parts(null, 'chief:day'), ['chief:day'])
+  assert.equal(pretty_name_plain_text(null, 'chief:day'), 'chief:day')
   assert.deepEqual(getResolvedFleetAgentIds([[['dm', 'chief']]]), [])
   assert.deepEqual(
     getResolvedFleetAgentIds([[['dm', 'chief:day']]]),
@@ -238,6 +239,18 @@ test('suffix-decorated display labels do not resolve as stripped filter names', 
   )
 
   resetFleetAgentStoreForTest()
+})
+
+test('pretty_name supports convention-owned glyph rules without changing friendly_name', () => {
+  const friendly_name = 'the-artist-formerly-known-as:prince'
+  const pretty_name = [{ kind: 'glyph', id: 'love-symbol', glyph: 'Love' }, 'the-artist-formerly-known-as']
+
+  assert.deepEqual(pretty_name_parts(pretty_name, friendly_name), [
+    { kind: 'glyph', id: 'love-symbol', glyph: 'Love', label: 'Love' },
+    'the-artist-formerly-known-as',
+  ])
+  assert.equal(pretty_name_plain_text(pretty_name, friendly_name), 'Love the-artist-formerly-known-as')
+  assert.equal(friendly_name, 'the-artist-formerly-known-as:prince')
 })
 
 test('fleet filter possible check is stable across unrelated agent churn', () => {

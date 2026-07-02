@@ -6,6 +6,7 @@ import path from 'path'
 import tls from 'tls'
 import { WebSocket } from 'ws'
 import { getFleetServerUrl, loadConfig } from '../../../shared/config.mjs'
+import { prettyNameForFriendlyName } from '../../../shared/lineage-name.mjs'
 import { readConfig } from './identity.mjs'
 
 const MKCERT_CA = path.join(os.homedir(), 'Library/Application Support/mkcert/rootCA.pem')
@@ -159,6 +160,7 @@ export async function wsRegister({
     type: 'register',
     id: fleetId,
     name,
+    pretty_name: prettyNameForFriendlyName(name),
     tmux_session: tmuxSession,
     cwd,
     kind,

@@ -22,7 +22,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { getServerUrl } from '../../shared/config.mjs';
 
-export function createBot({ name = 'bot', labels = ['bot'], human = false, allow = null, server } = {}) {
+export function createBot({ name = 'bot', pretty_name = null, labels = ['bot'], human = false, allow = null, server } = {}) {
   const key = (process.env.TLDA_BOT_NAME || name).toLowerCase();
   const id = 'fleet:' + key;
   const SERVER = server || process.env.TLDA_SERVER || getServerUrl();
@@ -69,7 +69,7 @@ export function createBot({ name = 'bot', labels = ['bot'], human = false, allow
     });
   }
   function register() {
-    send({ type: 'register', id, name: key, cwd: process.cwd(), labels, human });
+    send({ type: 'register', id, name: key, pretty_name, cwd: process.cwd(), labels, human });
   }
   function chat(to, message) { send({ type: 'chat', from: id, to, message }); }
 

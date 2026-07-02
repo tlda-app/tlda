@@ -229,7 +229,7 @@ function renderThreadResult(text, ctx) {
 
 // A search row's "source" field is "[tag] [tag] <names>" where <names> is either
 // a single agent name or "from → to". Keep the bracket tags verbatim, but run the
-// agent names through the HTML display primitive (base text + phase glyph).
+// agent names through the HTML pretty_name primitive.
 function prettySearchSource(source) {
   const m = source.match(/^((?:\[[^\]]*\]\s*)+)(.*)$/)
   if (!m) return esc(source)

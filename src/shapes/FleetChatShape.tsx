@@ -49,7 +49,7 @@ import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore, createTemporaryMarkdownColumn } from './FleetPillShape'
 import { agentDisplayLabel, agentExactName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
 import { ChatComposer } from './ChatComposer'
-import { AgentName } from './PhaseIcon'
+import { PrettyName } from './PrettyName'
 import { dragCoordinator } from './dragCoordinator'
 import { DocContext, PanelContext } from '../PanelContext'
 import { getPageRenderHash, getBuiltPageCount } from '../stores'
@@ -1482,7 +1482,7 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
             {/* left: agent + status */}
             <span style={{ justifySelf: 'start', minWidth: 0 }}>
               <span className="thinking-text">
-                <AgentName name={ctx.agentFullName(agentId)} />
+                <PrettyName pretty_name={ctx.agentPrettyName(agentId)} fallback={ctx.agentFullName(agentId)} />
               </span>
               {statusText && <>{' '}<span className="thinking-text">{statusText}</span></>}
               {status && status !== 'hibernating' && status !== 'waking' && <>{' '}<ElapsedTime startMs={startTs} /></>}
@@ -1658,17 +1658,21 @@ function makeCtx(agents: any[], tasks: any[], preambleMacros: Record<string, str
     return nickMap.get(id)!
   }
   const getAgentColor = (id: string) => nickHexMap.get(id) || '#9370db'
-  // Full friendly name (e.g. "conc5:day") — keeps the phase suffix so AgentName
-  // can render the dawn/day/dusk glyph. agentLabel strips it; use this where the
-  // lineage lift should show.
+  // Exact friendly_name for routing/filtering; pretty_name is display-only.
   const agentFullName = (id: string) => {
     if (!id) return ''
     const a = agents.find((a: any) => a.id === id)
     return a?.friendly_name || (typeof id === 'string' ? id : String(id))
   }
+  const agentPrettyName = (id: string) => {
+    if (!id) return null
+    const a = agents.find((a: any) => a.id === id)
+    return a?.pretty_name ?? null
+  }
   return {
     agentLabel,
     agentFullName,
+    agentPrettyName,
     getNickClass,
     getAgentColor,
     isHumanId: (id: string) => {
@@ -5811,15 +5815,15 @@ function SendHint({
   if (kind === '') return null
   if (kind === 'newline') return <span className="fleet-chat-send-hint">↵ newline</span>
 
-  // 'empty' and 'enter' both show the target list (with phase icons, mirroring the
-  // agents panel). 'enter' prefixes the ↵ glyph; with no targets it's just ↵.
+  // 'empty' and 'enter' both show the target list. 'enter' prefixes the ↵ glyph; with no targets
+  // it's just ↵.
   const enterPrefix = kind === 'enter' ? '↵ ' : ''
   if (!hasTargets) return <span className="fleet-chat-send-hint">↵</span>
 
   const targets = sendTargets.map((t, i) => (
     <span key={t} className="send-hint-target" style={{ display: 'inline-flex', alignItems: 'center' }}>
       {i > 0 ? ' + ' : null}
-      <AgentName name={t} />
+      <PrettyName pretty_name={null} fallback={t} />
     </span>
   ))
 
@@ -6122,14 +6126,13 @@ export function FilterOverlay({
 
   // Render a single chip (role:label) — matches dashboard's chipHtml
   function renderChip(role: string, label: string, opts?: { ghost?: boolean; x?: { ci: number; ti: number } }) {
-    // The value is always the full name (an opaque atom); AgentName is the one
-    // display split — full name → base text + glyph. A plain (non-agent) label
-    // has no suffix, so it renders verbatim with no glyph.
+    // The value is always the exact friendly_name (an opaque atom); PrettyName is
+    // display-only. A plain non-agent label renders verbatim.
     return (
       <span className={`fleet-filter-chip fleet-filter-chip-${role}${opts?.ghost ? ' fleet-filter-chip-ghost' : ''}`}>
         <span className="fleet-filter-chip-role">{role}:</span>
         <span className="fleet-filter-chip-label">
-          <AgentName name={label} />
+          <PrettyName pretty_name={null} fallback={label} />
         </span>
         {opts?.x && (
           <span className="fleet-filter-term-x" data-clause={opts.x.ci} data-term={opts.x.ti}>×</span>

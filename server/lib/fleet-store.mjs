@@ -24,7 +24,7 @@ import os from 'os';
 
 import { createLiveStore } from '../../shared/live-store.ts';
 import { PSEUDO_LABELS, parseFilter, evalExpr, evalExprDirectional, labelsForAgent } from '../../shared/fleet-labels.mjs';
-import { baseName, nameForPhase, phaseFromName, ALL_PHASES } from '../../shared/lineage-name.mjs';
+import { baseName, nameForPhase, phaseFromName, ALL_PHASES, prettyNameForFriendlyName } from '../../shared/lineage-name.mjs';
 
 // Persistent DB under ~/.config/tlda/ (survives macOS reboots).
 // Previously /tmp/fleet.db which got wiped on reboot — lost all agents/state.
@@ -41,6 +41,22 @@ function compareAgentsForRoster(a, b) {
 
 function astLiteral(ast) {
   return ast && ast.t === 'lit' ? ast.v : null;
+}
+
+function serializePrettyName(value) {
+  if (value == null || value === '') return null;
+  if (typeof value === 'string') return value;
+  return JSON.stringify(value);
+}
+
+function parsePrettyName(value) {
+  if (value == null || value === '') return null;
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+    try { return JSON.parse(trimmed); } catch { return value; }
+  }
+  return value;
 }
 
 // Virtual labels emitted by the DNF chat-routing resolver based on liveness
@@ -238,6 +254,7 @@ export class FleetStore {
       CREATE TABLE IF NOT EXISTS agents (
         id TEXT PRIMARY KEY,
         friendly_name TEXT,
+        pretty_name TEXT,              -- JSON string/array or plain string, display-only
         tmux_session TEXT,
         session_id TEXT,
         session_ids TEXT,             -- JSON array
@@ -385,6 +402,9 @@ export class FleetStore {
     const agentCols = this.db.prepare("PRAGMA table_info(agents)").all();
     if (!agentCols.some(c => c.name === 'machine_id')) {
       this.db.exec("ALTER TABLE agents ADD COLUMN machine_id TEXT");
+    }
+    if (!agentCols.some(c => c.name === 'pretty_name')) {
+      this.db.exec("ALTER TABLE agents ADD COLUMN pretty_name TEXT");
     }
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_agents_machine ON agents(machine_id)");
 
@@ -610,10 +630,11 @@ export class FleetStore {
 
     // Agent queries
     this._upsertAgent = this.db.prepare(`
-      INSERT INTO agents (id, friendly_name, tmux_session, session_id, session_ids, cwd, labels, registered_at, last_seen, dead, human, is_manager, metadata, machine_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO agents (id, friendly_name, pretty_name, tmux_session, session_id, session_ids, cwd, labels, registered_at, last_seen, dead, human, is_manager, metadata, machine_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         friendly_name = COALESCE(excluded.friendly_name, agents.friendly_name),
+        pretty_name = COALESCE(excluded.pretty_name, agents.pretty_name),
         tmux_session = COALESCE(excluded.tmux_session, agents.tmux_session),
         session_id = COALESCE(excluded.session_id, agents.session_id),
         session_ids = COALESCE(excluded.session_ids, agents.session_ids),
@@ -1006,6 +1027,7 @@ export class FleetStore {
       this._upsertAgent.run(
         agent.id,
         agent.friendly_name || null,
+        serializePrettyName(agent.pretty_name),
         agent.tmux_session || null,
         agent.session_id || null,
         agent.session_ids ? JSON.stringify(agent.session_ids) : null,
@@ -1449,8 +1471,9 @@ export class FleetStore {
       return;
     }
     this.db.transaction(() => {
-      this.db.prepare('UPDATE agents SET lineage_id = ?, friendly_name = ? WHERE id = ?')
-        .run(lineageId, nameForPhase(base, phase), agentId);
+      const nextName = nameForPhase(base, phase);
+      this.db.prepare('UPDATE agents SET lineage_id = ?, friendly_name = ?, pretty_name = ? WHERE id = ?')
+        .run(lineageId, nextName, serializePrettyName(prettyNameForFriendlyName(nextName)), agentId);
       this.db.prepare(
         'INSERT INTO lineage_phase_log (lineage_id, fleet_id, phase, entered_at) VALUES (?, ?, ?, ?)'
       ).run(lineageId, agentId, phase, now);
@@ -1496,9 +1519,10 @@ export class FleetStore {
       ).all(agent.lineage_id, zombieName, agentId);
       for (const z of existing) {
         this.db.prepare('UPDATE lineage_phase_log SET exited_at = ? WHERE fleet_id = ? AND exited_at IS NULL').run(now, z.id);
-        this.db.prepare('UPDATE agents SET friendly_name = NULL, dead = 1 WHERE id = ?').run(z.id);
+        this.db.prepare('UPDATE agents SET friendly_name = NULL, pretty_name = NULL, dead = 1 WHERE id = ?').run(z.id);
       }
-      this.db.prepare('UPDATE agents SET friendly_name = ? WHERE id = ?').run(zombieName, agentId);
+      this.db.prepare('UPDATE agents SET friendly_name = ?, pretty_name = ? WHERE id = ?')
+        .run(zombieName, serializePrettyName(prettyNameForFriendlyName(zombieName)), agentId);
       const prev = this.db.prepare(
         'SELECT MAX(entered_at) AS m FROM lineage_phase_log WHERE lineage_id = ? AND fleet_id = ?'
       ).get(agent.lineage_id, agentId);
@@ -1523,11 +1547,12 @@ export class FleetStore {
       // No base name = nothing to rename to. Bail rather than NULLing the name,
       // which would leave an alive-but-nameless phantom row off any lineage.
       if (!base) return;
+      const nextName = nameForPhase(base, newPhase);
       this.db.prepare(
         'UPDATE lineage_phase_log SET exited_at = ? WHERE fleet_id = ? AND exited_at IS NULL'
       ).run(now, agentId);
-      this.db.prepare('UPDATE agents SET friendly_name = ? WHERE id = ?')
-        .run(nameForPhase(base, newPhase), agentId);
+      this.db.prepare('UPDATE agents SET friendly_name = ?, pretty_name = ? WHERE id = ?')
+        .run(nextName, serializePrettyName(prettyNameForFriendlyName(nextName)), agentId);
       this.db.prepare(
         'INSERT INTO lineage_phase_log (lineage_id, fleet_id, phase, entered_at) VALUES (?, ?, ?, ?)'
       ).run(agent.lineage_id, agentId, newPhase, now);
@@ -1557,11 +1582,12 @@ export class FleetStore {
     const holder = (name) => this.db.prepare(
       'SELECT id FROM agents WHERE lineage_id = ? AND friendly_name = ? AND dead = 0'
     ).get(lineageId, name)?.id || null;
-    const rename = (id, name) => this.db.prepare('UPDATE agents SET friendly_name = ? WHERE id = ?').run(name, id);
+    const rename = (id, name) => this.db.prepare('UPDATE agents SET friendly_name = ?, pretty_name = ? WHERE id = ?')
+      .run(name, serializePrettyName(prettyNameForFriendlyName(name)), id);
     // Ages out of existence: name rotates off (NULL) AND the agent is marked
     // dead, so it drops off the live roster (no nameless phantom row). The name
     // lives on in name_history; resurrect can bring it back as a zombie.
-    const retire = (id) => this.db.prepare('UPDATE agents SET friendly_name = NULL, dead = 1 WHERE id = ?').run(id);
+    const retire = (id) => this.db.prepare('UPDATE agents SET friendly_name = NULL, pretty_name = NULL, dead = 1 WHERE id = ?').run(id);
     const exitLog = (id) => this.db.prepare(
       'UPDATE lineage_phase_log SET exited_at = ? WHERE fleet_id = ? AND exited_at IS NULL'
     ).run(now, id);
@@ -1607,8 +1633,8 @@ export class FleetStore {
       // Incoming enters at dawn (the worker), taking the bare base name and
       // leaving whatever lineage/name it held before.
       exitLog(incomingAgentId);
-      this.db.prepare('UPDATE agents SET lineage_id = ?, friendly_name = ? WHERE id = ?')
-        .run(lineageId, dawnName, incomingAgentId);
+      this.db.prepare('UPDATE agents SET lineage_id = ?, friendly_name = ?, pretty_name = ? WHERE id = ?')
+        .run(lineageId, dawnName, serializePrettyName(prettyNameForFriendlyName(dawnName)), incomingAgentId);
       enterLog(incomingAgentId, 'dawn');
     })();
     this._bustAgentsCache();
@@ -1653,11 +1679,12 @@ export class FleetStore {
         if (!id) continue;
         exitLog(id);
         if (i === ORDER.length - 1) {
-          this.db.prepare('UPDATE agents SET friendly_name = NULL, dead = 1 WHERE id = ?').run(id);
+          this.db.prepare('UPDATE agents SET friendly_name = NULL, pretty_name = NULL, dead = 1 WHERE id = ?').run(id);
         } else {
           const downPh = ORDER[i + 1];
-          this.db.prepare('UPDATE agents SET friendly_name = ? WHERE id = ?')
-            .run(nameForPhase(base, downPh), id);
+          const downName = nameForPhase(base, downPh);
+          this.db.prepare('UPDATE agents SET friendly_name = ?, pretty_name = ? WHERE id = ?')
+            .run(downName, serializePrettyName(prettyNameForFriendlyName(downName)), id);
           enterLog(id, downPh);
         }
       }
@@ -1718,6 +1745,7 @@ export class FleetStore {
       human: !!row.human,
       is_manager: !!row.is_manager,
       metadata,
+      pretty_name: parsePrettyName(row.pretty_name),
       last_active: lastActive,
       status,
       lineage_id: row.lineage_id || null,

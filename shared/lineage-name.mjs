@@ -2,9 +2,10 @@
  * Friendly-name suffix helpers.
  *
  * Agent identity is the exact `friendly_name`. Suffixes such as ":day" and
- * ":dusk" are just name endings: routing/filtering must use the full name, while
- * display may replace a recognized ending with a glyph. The only intentional
- * stripped-name use is scoped historical search / handoff rotation code.
+ * ":dusk" are just name endings: routing/filtering must use the full name.
+ * The only intentional stripped-name use is scoped historical search / handoff
+ * rotation code. When Todd/server code generates a phase name, it may also emit
+ * an explicit display-only `pretty_name` via prettyNameForFriendlyName().
  *
  * Imported by the client (Vite), the server (Node), the MCP server, and bots —
  * keep it dependency-free.
@@ -46,6 +47,16 @@ export function splitDecoratedName(friendlyName) {
 export function decoratedNameText(friendlyName) {
   const parts = splitDecoratedName(friendlyName)
   return parts.glyph ? `${parts.glyph} ${parts.text}` : parts.text
+}
+
+export function prettyNameForFriendlyName(friendlyName) {
+  if (!friendlyName) return null
+  const parts = splitDecoratedName(friendlyName)
+  if (!parts.key) return friendlyName
+  return [
+    { kind: 'glyph', id: parts.key, glyph: parts.glyph, label: parts.glyph },
+    parts.text,
+  ]
 }
 
 /**

@@ -17,7 +17,7 @@
 //   renderMarkdown: (escapedHtml) => html,
 // }
 
-import { decoratedNameText, displaySuffixForName } from '../../shared/lineage-name.mjs'
+import { pretty_name_parts, pretty_name_plain_text } from '../../shared/pretty_name.mjs'
 // --- Pure helpers (copied from utils.mjs) ---
 
 export function esc(s) {
@@ -121,38 +121,35 @@ export function resolveInlineAttachments(text, inlineAttachments, renderMarkdown
 
 // --- Main renderer ---
 
-// Phase icons mirror FleetAgentsShape's PhaseIcon exactly: dawn (the default
-// worker) gets NO icon; the rest are marked — day (manager) is a midday sun,
-// dusk (consultant) is a horizon sun, night (last rung) is a crescent moon, and
-// zombie (out-of-rotation, resurrected) is a skull.
-const PHASE_ICON_DAY = '<svg width="10" height="10" viewBox="0 0 16 16" style="opacity:0.6;vertical-align:-1px;margin-right:2px"><circle cx="8" cy="8" r="3" stroke="currentColor" fill="none" stroke-width="1.5"/><line x1="8" y1="1" x2="8" y2="2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="8" y1="13.5" x2="8" y2="15" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="1" y1="8" x2="2.5" y2="8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="13.5" y1="8" x2="15" y2="8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>'
-const PHASE_ICON_DUSK = '<svg width="10" height="10" viewBox="0 0 16 16" style="opacity:0.6;vertical-align:-1px;margin-right:2px"><line x1="0.5" y1="11" x2="15.5" y2="11" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round"/><path d="M1 11 a3 3 0 0 1 6 0" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round"/><line x1="4" y1="6" x2="4" y2="4" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round"/><line x1="1" y1="9" x2="-0.5" y2="8" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round"/></svg>'
-const PHASE_ICON_NIGHT = '<svg width="10" height="10" viewBox="0 0 16 16" style="opacity:0.6;vertical-align:-1px;margin-right:2px"><path d="M12 3 a5.5 5.5 0 1 0 0 11 a4.3 4.3 0 0 1 0 -11 Z" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linejoin="round"/></svg>'
-const PHASE_ICON_ZOMBIE = '<svg width="10" height="10" viewBox="0 0 16 16" style="opacity:0.6;vertical-align:-1px;margin-right:2px"><path d="M3.5 7.6 a4.5 4.5 0 0 1 9 0 v1.6 a1.5 1.5 0 0 1 -1.5 1.5 v1.3 h-1 v-1.3 h-1 v1.3 h-1 v-1.3 h-1 v1.3 h-1 v-1.3 a1.5 1.5 0 0 1 -1.5 -1.5 Z" stroke="currentColor" fill="none" stroke-width="1.2" stroke-linejoin="round"/><circle cx="6" cy="7.4" r="1.05" fill="currentColor"/><circle cx="10" cy="7.4" r="1.05" fill="currentColor"/></svg>'
+const PRETTY_GLYPH_DAY = '<svg width="10" height="10" viewBox="0 0 16 16" style="opacity:0.6;vertical-align:-1px;margin-right:2px"><circle cx="8" cy="8" r="3" stroke="currentColor" fill="none" stroke-width="1.5"/><line x1="8" y1="1" x2="8" y2="2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="8" y1="13.5" x2="8" y2="15" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="1" y1="8" x2="2.5" y2="8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="13.5" y1="8" x2="15" y2="8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>'
+const PRETTY_GLYPH_DUSK = '<svg width="10" height="10" viewBox="0 0 16 16" style="opacity:0.6;vertical-align:-1px;margin-right:2px"><line x1="0.5" y1="11" x2="15.5" y2="11" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round"/><path d="M1 11 a3 3 0 0 1 6 0" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round"/><line x1="4" y1="6" x2="4" y2="4" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round"/><line x1="1" y1="9" x2="-0.5" y2="8" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round"/></svg>'
+const PRETTY_GLYPH_NIGHT = '<svg width="10" height="10" viewBox="0 0 16 16" style="opacity:0.6;vertical-align:-1px;margin-right:2px"><path d="M12 3 a5.5 5.5 0 1 0 0 11 a4.3 4.3 0 0 1 0 -11 Z" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linejoin="round"/></svg>'
+const PRETTY_GLYPH_ZOMBIE = '<svg width="10" height="10" viewBox="0 0 16 16" style="opacity:0.6;vertical-align:-1px;margin-right:2px"><path d="M3.5 7.6 a4.5 4.5 0 0 1 9 0 v1.6 a1.5 1.5 0 0 1 -1.5 1.5 v1.3 h-1 v-1.3 h-1 v1.3 h-1 v-1.3 h-1 v1.3 h-1 v-1.3 a1.5 1.5 0 0 1 -1.5 -1.5 Z" stroke="currentColor" fill="none" stroke-width="1.2" stroke-linejoin="round"/><circle cx="6" cy="7.4" r="1.05" fill="currentColor"/><circle cx="10" cy="7.4" r="1.05" fill="currentColor"/></svg>'
 
-function glyphForPhase(phase) {
-  if (phase === 'day') return PHASE_ICON_DAY
-  if (phase === 'dusk') return PHASE_ICON_DUSK
-  if (phase === 'night') return PHASE_ICON_NIGHT
-  if (phase === 'zombie') return PHASE_ICON_ZOMBIE
-  return ''
+function glyphHtml(part) {
+  const id = typeof part === 'string' ? part : part?.id
+  if (id === 'day') return PRETTY_GLYPH_DAY
+  if (id === 'dusk') return PRETTY_GLYPH_DUSK
+  if (id === 'night') return PRETTY_GLYPH_NIGHT
+  if (id === 'zombie') return PRETTY_GLYPH_ZOMBIE
+  const fallback = typeof part === 'string' ? '' : (part?.glyph || part?.label || part?.id || '')
+  return fallback ? `<span class="pretty-glyph">${esc(fallback)}</span>` : ''
 }
 
-function phaseIconHtml(agentId, getAgents) {
+function leadingPrettyGlyphHtml(agentId, getAgents) {
   if (!getAgents) return ''
   const agents = getAgents()
   const a = agents?.find(x => x.id === agentId)
-  return glyphForPhase(displaySuffixForName(a?.friendly_name)?.key)
+  const part = pretty_name_parts(a?.pretty_name, a?.friendly_name).find(p => typeof p !== 'string')
+  return part ? glyphHtml(part) : ''
 }
 
-// The HTML display primitive — a full friendly name → glyph + base text. The
-// name display for HTML surfaces (search/thread result cards), mirroring the
-// React AgentName. Pass the full name; never a pre-stripped base.
-export function agentNameHtml(name) {
-  if (!name) return ''
-  const rule = displaySuffixForName(name)
-  const text = rule ? name.slice(0, -rule.suffix.length) : name
-  return glyphForPhase(rule?.key) + esc(text)
+// HTML pretty_name primitive. Rendered output is display-only and must never be
+// fed back into behavior.
+export function agentNameHtml(pretty_name, fallback = '') {
+  return pretty_name_parts(pretty_name, fallback)
+    .map(part => typeof part === 'string' ? esc(part) : glyphHtml(part))
+    .join('')
 }
 
 export function renderChatLine(m, ctx) {
@@ -164,9 +161,9 @@ export function renderChatLine(m, ctx) {
   // stamped, so they fall back to the current name (which is correct for "now").
   // `*NameNow` is set when the agent has since rotated → drives a hover tooltip
   // so the reader can see the current name + reach the agent by its stable id.
-  const periodNick = (id, stamped) => stamped != null ? decoratedNameText(stamped) : agentLabel(id)
+  const periodNick = (id, stamped) => stamped != null ? pretty_name_plain_text(null, stamped) : agentLabel(id)
   const nowTitle = (id, nowName) => nowName != null
-    ? ` title="now: ${esc(decoratedNameText(nowName))} · ${esc(id || '')}"` : ''
+    ? ` title="now: ${esc(pretty_name_plain_text(null, nowName))} · ${esc(id || '')}"` : ''
 
   // Timer countdown: live countdown for active timers. Remaining is computed
   // from data-timer-until at render time and re-ticked each second by the
@@ -250,11 +247,11 @@ export function renderChatLine(m, ctx) {
     const toNick = periodNick(m.to, m.toName)
     const toCls = getNickClass(m.to)
     const isFromUser = isHumanId(m.from)
-    const fromPhaseIcon = phaseIconHtml(m.from, getAgents)
-    const toPhaseIcon = phaseIconHtml(m.to, getAgents)
+    const fromPrettyGlyph = leadingPrettyGlyphHtml(m.from, getAgents)
+    const toPrettyGlyph = leadingPrettyGlyphHtml(m.to, getAgents)
     const nickHtml = isFromUser
       ? `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}"${nowTitle(m.from, m.fromNameNow)}>${esc(nick)}:</span></span>`
-      : `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}"${nowTitle(m.from, m.fromNameNow)}>${fromPhaseIcon}${esc(nick)}</span><span class="chat-arrow">&rarr;</span><span class="agent-nick ${toCls}" data-agent-id="${esc(m.to)}"${nowTitle(m.to, m.toNameNow)}>${toPhaseIcon}${esc(toNick)}</span>:</span>`
+      : `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}"${nowTitle(m.from, m.fromNameNow)}>${fromPrettyGlyph}${esc(nick)}</span><span class="chat-arrow">&rarr;</span><span class="agent-nick ${toCls}" data-agent-id="${esc(m.to)}"${nowTitle(m.to, m.toNameNow)}>${toPrettyGlyph}${esc(toNick)}</span>:</span>`
     return `<div class="chat-line terminal-msg ${dimClass}${isFromUser ? ' from-user' : ''}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span> <span class="terminal-badge">term</span> ${nickHtml} ${text}</div>`
   }
 
@@ -462,11 +459,11 @@ export function renderChatLine(m, ctx) {
   // Multi-target: show all cc recipients
   let toHtml
   if (m.cc && m.cc.length > 1) {
-    toHtml = m.cc.map(id => `<span class="agent-nick ${getNickClass(id)}" data-agent-id="${esc(id)}">${phaseIconHtml(id, getAgents)}${esc(agentLabel(id))}</span>`).join('<span class="cc-separator">,</span>')
+    toHtml = m.cc.map(id => `<span class="agent-nick ${getNickClass(id)}" data-agent-id="${esc(id)}">${leadingPrettyGlyphHtml(id, getAgents)}${esc(agentLabel(id))}</span>`).join('<span class="cc-separator">,</span>')
   } else {
     const toNick = periodNick(m.to, m.toName)
     const toCls = getNickClass(m.to)
-    toHtml = `<span class="agent-nick ${toCls}" data-agent-id="${esc(m.to)}"${nowTitle(m.to, m.toNameNow)}>${phaseIconHtml(m.to, getAgents)}${esc(toNick)}</span>`
+    toHtml = `<span class="agent-nick ${toCls}" data-agent-id="${esc(m.to)}"${nowTitle(m.to, m.toNameNow)}>${leadingPrettyGlyphHtml(m.to, getAgents)}${esc(toNick)}</span>`
   }
 
   // Render attachments as interactive refs
@@ -558,11 +555,11 @@ export function renderChatLine(m, ctx) {
   const planEmoji = planModeType === 'outline' ? '📝' : '📅'
   const planTitle = planModeType === 'outline' ? 'outline mode' : 'plan mode'
   const planBadge = planMode ? `<span class="plan-mode-badge plan-badge-click" data-agent-id="${esc(m.from)}" title="Click to exit ${planTitle}">${planEmoji}</span>` : ''
-  const fromPhaseIcon = phaseIconHtml(m.from, getAgents)
+  const fromPrettyGlyph = leadingPrettyGlyphHtml(m.from, getAgents)
   const fromTitle = nowTitle(m.from, m.fromNameNow)
   const nickHtml = isAmbient
-    ? `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}"${fromTitle}>${fromPhaseIcon}${esc(nick)}</span>${planBadge}<span class="chat-arrow">${arrowHtml}</span>${toHtml}:</span>`
-    : `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}"${fromTitle}>${fromPhaseIcon}${esc(nick)}</span>${planBadge}:</span>`
+    ? `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}"${fromTitle}>${fromPrettyGlyph}${esc(nick)}</span>${planBadge}<span class="chat-arrow">${arrowHtml}</span>${toHtml}:</span>`
+    : `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}"${fromTitle}>${fromPrettyGlyph}${esc(nick)}</span>${planBadge}:</span>`
   // Long message: block display
   const rawLineCount = (m.text || '').split('\n').length
   const isLongMsg = rawLineCount > 20

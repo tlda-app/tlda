@@ -7,7 +7,7 @@ import { getAgents, getAgent } from './fleet-data.mjs'
 import { getActiveMacros } from '../katexMacros'
 import { baseMacros } from '../../shared/katex-base-macros.mjs'
 import { myTldaUrl } from './tldaUrl.mjs'
-import { decoratedNameText } from '../../shared/lineage-name.mjs'
+import { pretty_name_plain_text } from '../../shared/pretty_name.mjs'
 import { normalizeChatDisplayMathDelimiters } from '../../shared/chat-math-normalize.mjs'
 import { rewriteBareLocalPaths } from '../../shared/chat-local-link-safety.mjs'
 // Utility functions. Agent lookups read from fleet-data directly.
@@ -95,7 +95,7 @@ export function humanIdSet() {
 // --- Agent display ---
 export function agentLabel(id) {
   const a = getAgent(id)
-  if (a) return decoratedNameText(a.friendly_name) || a.id
+  if (a) return pretty_name_plain_text(a.pretty_name, a.friendly_name) || a.id
   if (id == null) { fleetError('agentLabel', 'null agent id'); return '[unknown]' }
   return typeof id === 'string' ? id : String(id)
 }

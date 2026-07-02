@@ -20,7 +20,7 @@ import { Virtuoso } from 'react-virtuoso'
 import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, useFleetContext, useFleetProjects, useFleetIdentity, searchFleet, hibernateSession, spawnAgent } from '../fleet-data-adapter'
 import { dropPillOnTarget } from './FleetPillShape'
 import { agentDisplayLabel, agentExactName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
-import { AgentName } from './PhaseIcon'
+import { PrettyName } from './PrettyName'
 import { dragCoordinator } from './dragCoordinator'
 import { useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
 import { clientPointToPage } from '../wm/viewport-coordinates'
@@ -1169,15 +1169,15 @@ function AgentRow({
           ×
         </span>
 
-        {/* Agent name — draggable, with phase icon for dawn/dusk */}
+        {/* Agent name: pretty_name display, exact friendly_name payload. */}
         <span
           className="fleet-agents-col-name fleet-agents-pill"
           style={{ color, opacity: nameOpacity, display: 'flex', alignItems: 'center' }}
           title={hoverTitle}
           onPointerDown={(e) => { e.stopPropagation(); onStartDrag(e, 'agent', agent.friendly_name || name, name, color) }}
         >
-          {/* Fixed-width glyph slot (blank for dawn) so base names column-align */}
-          <AgentName name={agent.friendly_name} slotWidth={15} />
+          {/* Fixed-width leading-glyph slot so the first text character aligns. */}
+          <PrettyName pretty_name={agent.pretty_name} fallback={agent.friendly_name} slotWidth={15} />
         </span>
 
         <span className="fleet-agents-col-seen">{ago}</span>
