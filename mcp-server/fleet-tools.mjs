@@ -737,6 +737,19 @@ async function loadStateAll() {
   }
 }
 
+async function resolveAgent(query) {
+  let data;
+  try {
+    data = await sendWS('resolve-agent', { agent: query });
+  } catch (e) {
+    throw new Error(`Agent resolution transport failed for "${query}": ${e.message}`);
+  }
+  if (!data || typeof data !== 'object' || !('agent' in data)) {
+    throw new Error(`Agent resolution transport failed for "${query}": no response from fleet server`);
+  }
+  return data.agent || null;
+}
+
 // ---- Report linter ----
 // Runs on task_done() calls. Returns array of violation objects: { id, pattern, location, text, advice }
 export function lintReport(reportText, gitDiff, overrides = []) {
@@ -4081,9 +4094,8 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
 
   // ---- get_thread ----
   if (name === 'get_thread') {
-    // Full roster (incl. dead) — a dead agent's thread must stay readable.
-    const state = await loadStateAll();
-    const tasks = state.tasks || [];
+    const tasks = args.task_id ? ((await sendWS('store-tasks')) || []) : [];
+    const resolvedAgents = new Map();
     let filtered = [];
     let overflow = false;
 
@@ -4162,7 +4174,14 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       if (!task) {
         return { content: [{ type: 'text', text: `Task ${args.task_id} not found.` }], isError: true };
       }
-      primaryId = getAgent(state, task.agent)?.id || task.agent;
+      let taskAgent = null;
+      try {
+        taskAgent = await resolveAgent(task.agent);
+      } catch (e) {
+        return { content: [{ type: 'text', text: e.message }], isError: true };
+      }
+      if (taskAgent) resolvedAgents.set(taskAgent.id, taskAgent);
+      primaryId = taskAgent?.id || task.agent;
       try { await fetchEventsForAgent(task.agent); } catch (e) {
         process.stderr.write(`[fleet] get_thread DB fetch failed: ${e.message}\n`);
       }
@@ -4183,10 +4202,16 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
           isError: true,
         };
       }
-      const agentEntry = getAgent(state, args.agent);
+      let agentEntry = null;
+      try {
+        agentEntry = await resolveAgent(args.agent);
+      } catch (e) {
+        return { content: [{ type: 'text', text: e.message }], isError: true };
+      }
       if (!agentEntry) {
         return { content: [{ type: 'text', text: `Agent "${args.agent}" not found.` }], isError: true };
       }
+      resolvedAgents.set(agentEntry.id, agentEntry);
       primaryId = agentEntry.id;
       // Lineage-aware: if the agent is in a lineage, fetch events for all fleet IDs
       let threadFleetIds = [agentEntry.id];
@@ -4248,7 +4273,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
         const label = nm || '(nameless)';
         if (trail[trail.length - 1] !== label) trail.push(label);
       }
-      const current = getAgent(state, primaryId)?.friendly_name || null;
+      const current = resolvedAgents.get(primaryId)?.friendly_name || null;
       if (current && trail[trail.length - 1] !== current) trail.push(current);
       if (trail.length > 1) provenanceNote = `\n↳ ${trail.join(' → ')} · ${primaryId}`;
     }
@@ -4302,7 +4327,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     // fleet id, with `→now:X` when the agent has since rotated. See search_logs.
     const tag = (id, periodName, nowName) => {
       if (!id) return '';
-      const nm = periodName === undefined ? (getAgent(state, id)?.friendly_name || null) : periodName;
+      const nm = periodName === undefined ? (resolvedAgents.get(id)?.friendly_name || null) : periodName;
       let s = `${nm || '(nameless)'} ${id}`;
       if (nowName != null && nowName !== nm) s += ` →now:${nowName}`;
       return s;

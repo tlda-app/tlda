@@ -3316,6 +3316,11 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
+  if (type === 'resolve-agent') {
+    reply({ agent: fleetStore.findAgent(msg.agent) || null })
+    return
+  }
+
   if (type === 'store-tasks') {
     const active = msg.active !== false
     reply(active ? fleetStore.getActiveTasks() : fleetStore.getAllTasks?.() || [])
