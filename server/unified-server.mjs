@@ -943,7 +943,10 @@ async function performSpawnRelay(caller, msg) {
   }
   const requestedSpec = { model, kind: spawnKind, project: doc }
   const requestedCapability = capability || spawnCapability || null
-  const privilegeRequest = privileges || requestedPrivileges || null
+  const storedRespawnPrivileges = (!sessionMode && !fresh && routeTarget?.metadata)
+    ? (routeTarget.metadata.requestedPrivileges || routeTarget.metadata.privilegeProfile || routeTarget.metadata.spawnPolicy || null)
+    : null
+  const privilegeRequest = privileges || requestedPrivileges || storedRespawnPrivileges || null
   const route = resolveSpawnMachine({
     caller,
     targetAgent: routeTarget,
