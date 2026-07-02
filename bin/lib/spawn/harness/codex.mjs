@@ -20,6 +20,10 @@ function cenv(key, value) {
   return `-c ${sq(`mcp_servers.tlda.env.${key}=${value}`)}`
 }
 
+function cconfig(key, value) {
+  return `-c ${sq(`${key}=${value}`)}`
+}
+
 export function resolveModel(model) {
   return resolveCodexModel(model)
 }
@@ -94,6 +98,10 @@ export function buildCmd({
   parts.push(cenv('FLEET_TMUX_SESSION', tmuxSession))
   parts.push(cenv('TLDA_SERVER', api))
   parts.push(cenv('TLDA_SYNC_SERVER', api))
+  const mcpEntrypoint = path.join(repoRoot(), 'mcp-server', 'index.mjs')
+  if (fs.existsSync(mcpEntrypoint)) {
+    parts.push(cconfig('mcp_servers.tlda.args', JSON.stringify([mcpEntrypoint])))
+  }
   const configName = activeConfigName(config, env)
   if (configName) parts.push(cenv('TLDA_CONFIG', configName))
   if (dnsAlias && fs.existsSync(DNS_ALIAS_PRELOAD)) {

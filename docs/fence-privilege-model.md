@@ -21,6 +21,10 @@
 
 **Shipped default daemon grant:** `write_roots: [".", general-temp]`, `read_roots: [".", general-temp]`, `spawn: true`, plus plumbing needed to function: git metadata, worktree metadata, and existing scratch/browser caches. `general-temp` includes `/tmp`, `/private/tmp`, and macOS `$TMPDIR`/`/var/folders/...` temp locations so the default `git worktree add /private/tmp/<x>` approach works without a special convention. The shipped default does **not** include credentials, Fly, deploy, Keychain, `~/work`, or other off-box access; those are user-config additions only.
 
+**Non-overridable real-secret floor:** after the grant allowlist is computed, the fence still denies real secret stores for every profile, including `ops`/`full`: SSH private keys, AWS/GCloud credentials, netrc/git-credentials, Keychain, and password-vault stores. This is a deny-only backstop, not an authority floor: it can remove access but cannot grant anything. Broad profiles are materialized into generated Fence settings as explicit allowlists rather than a bare `**`, so the floor is enforced even where generated deny rules do not override universal allow. Fly is intentionally excluded so deploy/ops profiles can opt into `~/.fly`.
+
+**Machine-local overlays:** personal daemon config may define local profiles on top of the shipped model. Skip's machines can use an app-dev overlay where `~/work/**` replaces cwd read scope and `~/.fly/**` is explicitly allowed, while ops is a broad allowlist minus the real-secret floor. These overlays are daemon-local allowlists plus hard-deny, never default-allow, and are not the shipped default.
+
 **Lifetime:**
 - Grant is keyed on **fleet ID**, lives on the row → **survives hibernation** (hibernation = no process, row persists).
 - Does **NOT** auto-follow **handoff** (successor = new fleet ID, re-derives from its spawner ∩ model-cap). Last night's incapacity was exactly this: a handoff/successor spawned at ~`none`, so its subtree inherited `none`.

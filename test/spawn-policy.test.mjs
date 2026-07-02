@@ -489,6 +489,43 @@ describe('spawn policy', () => {
     assert.equal(grant.grantedPrivilegeSet.operations.write.allow.includes('**'), false)
   })
 
+  it('daemon config can define Skip-local personal privilege overlays without changing shipped defaults', () => {
+    const skipAppDev = {
+      type: 'privilege-set',
+      name: 'skip-app-dev',
+      projectedPolicy: { capability: 'full', policy: 'unsandboxed' },
+      operations: {
+        read: { allow: ['~/work/**', '~/.fly/**'], deny: [] },
+        write: { allow: ['cwd', '~/.fly/**'], deny: [] },
+        spawn: { allow: ['**'], deny: [] },
+      },
+      rules: [],
+    }
+    const grant = resolveSpawnGrant({
+      requester: { id: 'fleet:skip', human: true },
+      model: 'gpt-5.5',
+      kind: 'codex',
+      config: {
+        spawnPolicy: {
+          privilegeProfiles: { 'skip-app-dev': skipAppDev },
+          projectProfiles: { '/Users/skip/work/tlda': 'skip-app-dev' },
+        },
+      },
+      cwd: '/Users/skip/work/tlda',
+      project: { name: 'tlda', sourceDir: '/Users/skip/work/tlda' },
+    })
+    assert.equal(grant.projectPolicy.name, 'skip-app-dev')
+    assert.equal(grant.projectCapability, 'full')
+    assert.deepEqual([...grant.grantedPrivilegeSet.operations.read.allow].sort(), [
+      '/Users/skip/.fly/**',
+      '/Users/skip/work/**',
+    ])
+    assert.deepEqual([...grant.grantedPrivilegeSet.operations.write.allow].sort(), [
+      '/Users/skip/.fly/**',
+      '/Users/skip/work/tlda/**',
+    ])
+  })
+
   it('daemon grant narrows wider requested zones by spawner row', () => {
     const compiled = compilePrivilegeProfiles(`profile app-dev:
   read  + /Users/skip/work/**

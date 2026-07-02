@@ -84,6 +84,7 @@ const FENCE_AGENT_READ_ROOTS = [
   '/private/var/folders/*/*/T/xcrun_db*',
   '/var/folders/*/*/T/xcrun_db*',
   '~/.codex',
+  '~/.codex/**',
   '~/.claude',
   '~/.claude/**',
   '~/.claude.json',
@@ -91,6 +92,14 @@ const FENCE_AGENT_READ_ROOTS = [
   '~/.config/tlda/**',
   '~/.config/fence',
   '~/Library/Preferences',
+  '~/.npm/_cacache',
+  '~/.npm/_cacache/**',
+  '~/.npm/_npx',
+  '~/.npm/_npx/**',
+]
+const FENCE_BOOT_READ_REALPATH_ROOTS = [
+  '~/.codex/AGENTS.md',
+  '~/.codex/skills',
 ]
 const FENCE_SECRET_PATTERNS = [
   '~/.ssh/id_*', '~/.ssh/*.key', '~/.ssh/*.pem', '~/.ssh/*.p12', '~/.ssh/*.pfx',
@@ -111,6 +120,37 @@ const FENCE_SECRET_PATTERNS = [
   '**/.env.staging',
   '**/.env.test',
   '**/*.key', '**/*.pem', '**/*.p12', '**/*.pfx',
+]
+const FENCE_REAL_SECRET_DENY = [
+  '~/.ssh/id_*',
+  '~/.ssh/*.key',
+  '~/.ssh/*.pem',
+  '~/.ssh/*.p12',
+  '~/.ssh/*.pfx',
+  '~/.aws/credentials',
+  '~/.aws/credentials.*',
+  '~/.aws/sso/cache/*.json',
+  '~/.aws/**',
+  '~/.config/gcloud/application_default_credentials.json',
+  '~/.config/gcloud/credentials.db',
+  '~/.config/gcloud/access_tokens.db',
+  '~/.config/gcloud/legacy_credentials/**/adc.json',
+  '~/.config/gcloud/**',
+  '~/.netrc',
+  '~/.git-credentials',
+  '~/Library/Keychains/**',
+  '~/Library/Group Containers/2BUA8C4S2C.com.1password/**',
+  '~/Library/Application Support/1Password/**',
+  '~/.1password/**',
+  '~/.op/**',
+  '~/.config/1Password/**',
+  '~/.config/Bitwarden CLI/**',
+  '~/.config/bitwarden/**',
+]
+const FENCE_ADVISORY_CREDENTIAL_READ_DENY = [
+  '~/.fly/**',
+  '~/.config/fly/**',
+  '~/.config/gh/**',
 ]
 const FENCE_DENY_READ = [...FENCE_SECRET_PATTERNS]
 const FENCE_DENY_WRITE = [
@@ -169,6 +209,127 @@ function hasGitWriteRoot(policy) {
   return (policy.write_roots || []).some((root) => path.basename(path.normalize(String(root))) === '.git')
 }
 
+function patternContains(parent, child) {
+  const p = expandPathPattern(parent)
+  const c = expandPathPattern(child)
+  if (p === '**' || p === '/') return true
+  if (p === c) return true
+  if (p.endsWith('/**')) {
+    const base = p.slice(0, -3)
+    return c === base || c.startsWith(`${base}/`)
+  }
+  return false
+}
+
+function readExplicitlyAllows(policy, pattern) {
+  const readAllows = [
+    ...(policy.read_roots || []),
+    ...(policy.privilege_set?.operations?.read?.allow || []),
+  ]
+  return readAllows.some((allow) => patternContains(allow, pattern))
+}
+
+function credentialReadDenies(policy) {
+  return FENCE_ADVISORY_CREDENTIAL_READ_DENY.filter((pattern) => !readExplicitlyAllows(policy, pattern))
+}
+
+function existingRealpathReadRoots(patterns) {
+  const roots = []
+  for (const pattern of patterns) {
+    let real = null
+    try {
+      real = fs.realpathSync(expandPathPattern(pattern))
+    } catch {
+      continue
+    }
+    roots.push(real)
+    try {
+      if (fs.statSync(real).isDirectory()) roots.push(`${real}/**`)
+    } catch {
+      // The resolved path existed for realpathSync; if stat races, keep the root.
+    }
+  }
+  return roots
+}
+
+function isBroadAllow(pattern) {
+  const p = expandPathPattern(pattern)
+  return p === '**' || p === '/' || p === '/**'
+}
+
+function pathMayContain(parent, child) {
+  const p = expandPathPattern(parent)
+  const c = expandPathPattern(child)
+  if (isBroadAllow(p)) return true
+  if (p === c) return true
+  if (p.endsWith('/**')) {
+    const base = p.slice(0, -3)
+    return c === base || c.startsWith(`${base}/`)
+  }
+  return c.startsWith(`${p}/`)
+}
+
+function allowPathAndContents(p) {
+  const out = [p]
+  try {
+    if (fs.statSync(p).isDirectory()) out.push(`${p}/**`)
+  } catch {
+    out.push(`${p}/**`)
+  }
+  return out
+}
+
+function globPatternMatches(pattern, candidate) {
+  const p = expandPathPattern(pattern)
+  const c = expandPathPattern(candidate)
+  if (!/[*?[\]]/.test(p)) return p === c
+  const escaped = p.replace(/[.+^${}()|\\]/g, '\\$&')
+    .replace(/\*/g, '[^/]*')
+    .replace(/\?/g, '[^/]')
+  return new RegExp(`^${escaped}$`).test(c)
+}
+
+function allowRootMatchesDenyFloor(root, denyPatterns) {
+  const expanded = expandPathPattern(root)
+  const base = expanded.endsWith('/**') ? expanded.slice(0, -3) : expanded
+  return denyPatterns.some((deny) => patternContains(deny, expanded)
+    || patternContains(deny, base)
+    || globPatternMatches(deny, expanded)
+    || globPatternMatches(deny, base))
+}
+
+function broadAllowlistMinusDenyFloor(denyPatterns, root = '/', depth = 0) {
+  const expandedDenies = denyPatterns.map(expandPathPattern)
+  const relevantDenies = expandedDenies.filter((deny) => pathMayContain(root, deny))
+  if (!relevantDenies.length) return allowPathAndContents(root)
+  if (depth > 8) return []
+
+  let children = []
+  try {
+    children = fs.readdirSync(root, { withFileTypes: true })
+  } catch {
+    return []
+  }
+
+  const out = []
+  for (const child of children) {
+    const childPath = path.join(root, child.name)
+    if (expandedDenies.some((deny) => patternContains(deny, childPath) || globPatternMatches(deny, childPath))) continue
+    if (relevantDenies.some((deny) => pathMayContain(childPath, deny))) out.push(...broadAllowlistMinusDenyFloor(denyPatterns, childPath, depth + 1))
+    else out.push(...allowPathAndContents(childPath))
+  }
+  return out
+}
+
+function materializeAllowRoots(roots, denyFloor = []) {
+  const out = []
+  for (const root of roots) {
+    if (isBroadAllow(root)) out.push(...broadAllowlistMinusDenyFloor(denyFloor))
+    else if (!allowRootMatchesDenyFloor(root, denyFloor)) out.push(root)
+  }
+  return out
+}
+
 function apiHost(api) {
   try {
     return new URL(api).hostname
@@ -191,15 +352,21 @@ function apiNeedsLocalOutbound(dnsAlias) {
 
 export function fenceSettings(policy, { api, dnsAlias } = {}) {
   const emptyCapability = policy.capability === 'none'
-  const allowRead = uniqueSorted([...(policy.read_roots || []), ...(emptyCapability ? [] : FENCE_AGENT_READ_ROOTS)].map(expandPathPattern))
+  const readAllowRoots = [
+    ...(policy.read_roots || []),
+    ...(emptyCapability ? [] : FENCE_AGENT_READ_ROOTS),
+    ...(emptyCapability ? [] : existingRealpathReadRoots(FENCE_BOOT_READ_REALPATH_ROOTS)),
+  ]
   const broadWriteRoots = policy.explicit_privilege_set ? [] : FENCE_BROAD_WRITE_ROOTS
-  const allowWrite = uniqueSorted([
+  const writeAllowRoots = [
     ...(policy.write_roots || []),
     ...(emptyCapability ? [] : FENCE_AGENT_WRITE_ROOTS),
     ...(emptyCapability ? [] : broadWriteRoots),
-  ].map(expandPathPattern))
-  const denyRead = [...FENCE_DENY_READ, ...(policy.deny_read_roots || [])]
-  const denyWrite = [...FENCE_DENY_WRITE, ...(policy.deny_write_roots || [])]
+  ]
+  const allowRead = uniqueSorted(materializeAllowRoots(readAllowRoots, FENCE_REAL_SECRET_DENY).map(expandPathPattern))
+  const allowWrite = uniqueSorted(materializeAllowRoots(writeAllowRoots, FENCE_REAL_SECRET_DENY).map(expandPathPattern))
+  const denyRead = uniqueSorted([...FENCE_REAL_SECRET_DENY, ...FENCE_DENY_READ, ...credentialReadDenies(policy), ...(policy.deny_read_roots || [])])
+  const denyWrite = uniqueSorted([...FENCE_REAL_SECRET_DENY, ...FENCE_DENY_WRITE, ...(policy.deny_write_roots || [])])
   if (String(policy.git || 'read') !== 'write' && !hasGitWriteRoot(policy)) denyWrite.push(...FENCE_GIT_READONLY_DENY)
   const allowedDomains = ['*']
   const localOutbound = apiNeedsLocalOutbound(dnsAlias)
@@ -225,7 +392,7 @@ export function fenceSettings(policy, { api, dnsAlias } = {}) {
       allowUnixSockets,
     },
     filesystem: {
-      defaultDenyRead: emptyCapability,
+      defaultDenyRead: true,
       allowRead,
       denyRead,
       allowWrite,

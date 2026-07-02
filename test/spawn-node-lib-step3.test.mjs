@@ -70,6 +70,30 @@ function fullPrivilegeSet(name = 'full-grant') {
   })
 }
 
+function assertCredentialReadDenied(settings) {
+  for (const pattern of [
+    '~/.fly/**',
+    '~/.config/fly/**',
+    '~/.config/gh/**',
+  ]) {
+    assert.ok(settings.filesystem.denyRead.includes(pattern), `expected advisory read deny for ${pattern}`)
+  }
+}
+
+function assertRealSecretFloor(settings) {
+  for (const pattern of [
+    '~/.ssh/id_*',
+    '~/.aws/**',
+    '~/.config/gcloud/**',
+    '~/.netrc',
+    '~/.git-credentials',
+    '~/Library/Keychains/**',
+  ]) {
+    assert.ok(settings.filesystem.denyRead.includes(pattern), `expected hard read deny for ${pattern}`)
+    assert.ok(settings.filesystem.denyWrite.includes(pattern), `expected hard write deny for ${pattern}`)
+  }
+}
+
 function writeJsonl(file, rows) {
   fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.writeFileSync(file, rows.map((row) => `${typeof row === 'string' ? row : JSON.stringify(row)}\n`).join(''))
@@ -303,10 +327,22 @@ test('lease policy and fence wrapper stay outside harness adapters', () => {
   assert.equal(leasePolicy.broad_write, false)
   assert.ok(leasePolicy.write_roots.includes(path.join(cwd, '**')))
   const settings = fenceSettings(leasePolicy, { api: 'https://tlda-fly.example.test', dnsAlias: { host: 'tlda-fly.example.test', address: '100.80.1.2' } })
-  assert.equal(settings.filesystem.defaultDenyRead, false)
+  assert.equal(settings.filesystem.defaultDenyRead, true)
+  assert.ok(settings.filesystem.allowRead.includes(path.join(os.homedir(), '.codex/**')))
+  assert.ok(settings.filesystem.allowRead.includes(path.join(os.homedir(), '.config', 'tlda/**')))
+  assert.equal(settings.filesystem.allowRead.includes(path.join(os.homedir(), 'work/**')), false)
+  assert.equal(settings.filesystem.allowRead.includes(path.join(os.homedir(), '**')), false)
+  if (fs.existsSync(path.join(os.homedir(), '.codex', 'skills'))) {
+    const codexSkills = fs.realpathSync(path.join(os.homedir(), '.codex', 'skills'))
+    assert.ok(settings.filesystem.allowRead.includes(codexSkills))
+    assert.ok(settings.filesystem.allowRead.includes(path.join(codexSkills, '**')))
+  }
   assert.equal(settings.filesystem.allowWrite.includes('/'), false)
+  assert.equal(settings.filesystem.allowWrite.includes(path.join(os.homedir(), 'work/**')), false)
   assert.ok(settings.filesystem.denyWrite.includes('~/.config/tlda/fleet.db*'))
   assert.ok(settings.filesystem.denyWrite.includes('~/.ssh/id_*'))
+  assertRealSecretFloor(settings)
+  assertCredentialReadDenied(settings)
   assert.equal(settings.filesystem.allowRead.includes(path.join(os.homedir(), 'Library/Keychains')), false)
   assert.ok(settings.filesystem.allowWrite.includes(path.join(cwd, '**')))
   assert.equal(settings.filesystem.allowWrite.includes('/tmp'), true)
@@ -349,11 +385,24 @@ test('default cwd lease writes cwd plus tool-support roots with unrestricted git
   assert.ok(leasePolicy.write_roots.includes(path.join(cwd, '**')))
   assert.equal(leasePolicy.write_roots.includes(path.join(os.homedir(), 'work')), false)
   const settings = fenceSettings(leasePolicy, { api: 'https://tlda-fly.example.test' })
+  assert.equal(settings.filesystem.defaultDenyRead, true)
   assert.equal(settings.filesystem.allowWrite.includes('/'), false)
   assert.ok(settings.filesystem.allowWrite.includes(path.join(cwd, '**')))
+  assert.ok(settings.filesystem.allowRead.includes(path.join(os.homedir(), '.codex/**')))
+  assert.ok(settings.filesystem.allowRead.includes(path.join(os.homedir(), '.config', 'tlda/**')))
+  assert.equal(settings.filesystem.allowRead.includes(path.join(os.homedir(), 'work/**')), false)
+  assert.equal(settings.filesystem.allowRead.includes(path.join(os.homedir(), '**')), false)
+  if (fs.existsSync(path.join(os.homedir(), '.codex', 'skills'))) {
+    const codexSkills = fs.realpathSync(path.join(os.homedir(), '.codex', 'skills'))
+    assert.ok(settings.filesystem.allowRead.includes(codexSkills))
+    assert.ok(settings.filesystem.allowRead.includes(path.join(codexSkills, '**')))
+  }
+  assert.equal(settings.filesystem.allowWrite.includes(path.join(os.homedir(), 'work/**')), false)
   assert.ok(settings.filesystem.allowWrite.includes(path.join(os.homedir(), 'Library/Caches/ms-playwright')))
   assert.ok(settings.filesystem.denyWrite.includes('~/.config/tlda/fleet.db*'))
   assert.ok(settings.filesystem.denyWrite.includes('~/.ssh/id_*'))
+  assertRealSecretFloor(settings)
+  assertCredentialReadDenied(settings)
   assert.equal(settings.filesystem.allowWrite.includes(path.join(os.homedir(), 'Library/Keychains')), false)
   assert.deepEqual(settings.command.deny, [])
   assert.equal(settings.command.useDefaults, true)
@@ -497,9 +546,15 @@ test('explicit full lease is machine-write with secret/chat denies still active'
   assert.equal(leasePolicy.machine_write, true)
   assert.equal(leasePolicy.git, 'read')
   const settings = fenceSettings(leasePolicy, { api: 'https://tlda-fly.example.test' })
-  assert.ok(settings.filesystem.allowWrite.includes('**'))
+  assert.equal(settings.filesystem.allowWrite.includes('**'), false)
+  assert.ok(settings.filesystem.allowWrite.includes('/Applications') || settings.filesystem.allowWrite.includes('/System'))
+  assert.ok(settings.filesystem.allowRead.includes(path.join(os.homedir(), '.fly')) || settings.filesystem.allowRead.includes(path.join(os.homedir(), '.fly/**')))
+  assert.equal(settings.filesystem.allowRead.includes(path.join(os.homedir(), '.ssh/**')), false)
+  assert.equal(settings.filesystem.allowRead.includes(path.join(os.homedir(), 'Library/Keychains/**')), false)
   assert.ok(settings.filesystem.denyWrite.includes('~/.config/tlda/fleet.db*'))
   assert.ok(settings.filesystem.denyWrite.includes('~/.ssh/id_*'))
+  assertRealSecretFloor(settings)
+  assert.equal(settings.filesystem.denyRead.includes('~/.fly/**'), false)
   assert.deepEqual(settings.command.deny, [])
 })
 
@@ -572,6 +627,8 @@ test('codex explicit daemon grant is externally fenced even while global fence i
     config: {},
     env: {},
   })
+  assert.match(cmd, /mcp_servers\.tlda\.args=/)
+  assert.match(cmd, /mcp-server\\?\/index\.mjs|mcp-server\/index\.mjs/)
   const wrapped = wrapSandboxCmd(cmd, policy.leasePolicy, { api: 'http://127.0.0.1:5176' })
   assert.doesNotMatch(wrapped, /(?:^|['\s/])fence'? '?--settings'?/)
   assert.match(wrapped, /--dangerously-bypass-approvals-and-sandbox/)
