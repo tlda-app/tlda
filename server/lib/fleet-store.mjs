@@ -176,7 +176,7 @@ export class FleetStore {
         text,
         content='events',
         content_rowid='id',
-        tokenize='unicode61'
+        tokenize='trigram'
       );
       DROP TRIGGER IF EXISTS events_ai;
       DROP TRIGGER IF EXISTS events_ad;
@@ -387,7 +387,7 @@ export class FleetStore {
         text,
         content='session_entries',
         content_rowid='id',
-        tokenize='unicode61'
+        tokenize='trigram'
       );
       CREATE TRIGGER IF NOT EXISTS session_entries_ai AFTER INSERT ON session_entries BEGIN
         INSERT INTO session_entries_fts(rowid, text) VALUES (new.id, new.text);
@@ -498,6 +498,93 @@ export class FleetStore {
       CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_live_name
       ON agents(friendly_name) WHERE dead = 0 AND friendly_name IS NOT NULL
     `);
+
+    // ---- FTS tokenizer migration: unicode61 → trigram ----
+    // unicode61 treats dashes and colons as token separators, so searching for
+    // "chief:day" or "balancing-act" breaks into separate words. trigram preserves
+    // them as part of 3-char windows, making dash-named things actually searchable.
+    const ftsSchema = this.db.prepare(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='events_fts'"
+    ).get();
+    if (ftsSchema && ftsSchema.sql.includes('unicode61')) {
+      this.db.exec(`
+        DROP TRIGGER IF EXISTS events_ai;
+        DROP TRIGGER IF EXISTS events_ad;
+        DROP TRIGGER IF EXISTS events_au;
+        DROP TABLE IF EXISTS events_fts;
+        CREATE VIRTUAL TABLE events_fts USING fts5(
+          text,
+          content='events',
+          content_rowid='id',
+          tokenize='trigram'
+        );
+        CREATE TRIGGER events_ai AFTER INSERT ON events BEGIN
+          INSERT INTO events_fts(rowid, text) VALUES (
+            new.id,
+            CASE
+              WHEN new.type = 'activity' THEN trim(
+                coalesce(new.text, '') || ' ' ||
+                coalesce(json_extract(new.metadata, '$.tool'), '') || ' ' ||
+                coalesce(json_extract(new.metadata, '$.description'), '') || ' ' ||
+                coalesce(json_extract(new.metadata, '$.input.description'), '') || ' ' ||
+                coalesce(json_extract(new.metadata, '$.arg'), '') || ' ' ||
+                coalesce(json_extract(new.metadata, '$.input.command'), '') || ' ' ||
+                coalesce(json_extract(new.metadata, '$.prettyResult'), '')
+              )
+              ELSE new.text
+            END
+          );
+        END;
+        CREATE TRIGGER events_ad AFTER DELETE ON events BEGIN
+          INSERT INTO events_fts(events_fts, rowid, text) VALUES('delete', old.id, old.text);
+        END;
+        CREATE TRIGGER events_au AFTER UPDATE ON events BEGIN
+          INSERT INTO events_fts(events_fts, rowid, text) VALUES('delete', old.id, old.text);
+          INSERT INTO events_fts(rowid, text) VALUES (
+            new.id,
+            CASE
+              WHEN new.type = 'activity' THEN trim(
+                coalesce(new.text, '') || ' ' ||
+                coalesce(json_extract(new.metadata, '$.tool'), '') || ' ' ||
+                coalesce(json_extract(new.metadata, '$.description'), '') || ' ' ||
+                coalesce(json_extract(new.metadata, '$.input.description'), '') || ' ' ||
+                coalesce(json_extract(new.metadata, '$.arg'), '') || ' ' ||
+                coalesce(json_extract(new.metadata, '$.input.command'), '') || ' ' ||
+                coalesce(json_extract(new.metadata, '$.prettyResult'), '')
+              )
+              ELSE new.text
+            END
+          );
+        END;
+      `);
+      this.db.exec("INSERT INTO events_fts(events_fts) VALUES ('rebuild')");
+      console.log('[fleet-store] migrated events_fts tokenizer: unicode61 → trigram');
+    }
+
+    const sessFtsSchema = this.db.prepare(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='session_entries_fts'"
+    ).get();
+    if (sessFtsSchema && sessFtsSchema.sql.includes('unicode61')) {
+      this.db.exec(`
+        DROP TRIGGER IF EXISTS session_entries_ai;
+        DROP TRIGGER IF EXISTS session_entries_ad;
+        DROP TABLE IF EXISTS session_entries_fts;
+        CREATE VIRTUAL TABLE session_entries_fts USING fts5(
+          text,
+          content='session_entries',
+          content_rowid='id',
+          tokenize='trigram'
+        );
+        CREATE TRIGGER session_entries_ai AFTER INSERT ON session_entries BEGIN
+          INSERT INTO session_entries_fts(rowid, text) VALUES (new.id, new.text);
+        END;
+        CREATE TRIGGER session_entries_ad AFTER DELETE ON session_entries BEGIN
+          INSERT INTO session_entries_fts(session_entries_fts, rowid, text) VALUES('delete', old.id, old.text);
+        END;
+      `);
+      this.db.exec("INSERT INTO session_entries_fts(session_entries_fts) VALUES ('rebuild')");
+      console.log('[fleet-store] migrated session_entries_fts tokenizer: unicode61 → trigram');
+    }
 
     // Backfill events_fts for existing events (one-time; trigger handles new inserts).
     // Use FTS5 rebuild to populate the index from the content table.

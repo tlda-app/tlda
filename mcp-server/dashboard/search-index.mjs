@@ -97,7 +97,7 @@ export class SearchIndex {
         text,
         content='entries',
         content_rowid='id',
-        tokenize='unicode61'
+        tokenize='trigram'
       );
 
       -- Triggers to keep FTS in sync
@@ -158,7 +158,7 @@ export class SearchIndex {
         text,
         content='chat_events',
         content_rowid='id',
-        tokenize='unicode61'
+        tokenize='trigram'
       );
 
       -- Triggers to keep chat FTS in sync
@@ -185,6 +185,53 @@ export class SearchIndex {
     try {
       this.db.exec(`ALTER TABLE chat_events ADD COLUMN source TEXT DEFAULT 'fleet'`);
     } catch { /* column already exists */ }
+
+    // Migrate FTS tokenizer: unicode61 → trigram (preserves dashes/colons in tokens)
+    try {
+      const ftsSchema = this.db.prepare(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='entries_fts'"
+      ).get();
+      if (ftsSchema && ftsSchema.sql.includes('unicode61')) {
+        this.db.exec(`
+          DROP TRIGGER IF EXISTS entries_ai;
+          DROP TRIGGER IF EXISTS entries_ad;
+          DROP TABLE IF EXISTS entries_fts;
+          CREATE VIRTUAL TABLE entries_fts USING fts5(
+            text, content='entries', content_rowid='id', tokenize='trigram'
+          );
+          CREATE TRIGGER entries_ai AFTER INSERT ON entries BEGIN
+            INSERT INTO entries_fts(rowid, text) VALUES (new.id, new.text);
+          END;
+          CREATE TRIGGER entries_ad AFTER DELETE ON entries BEGIN
+            INSERT INTO entries_fts(entries_fts, rowid, text) VALUES('delete', old.id, old.text);
+          END;
+        `);
+        this.db.exec("INSERT INTO entries_fts(entries_fts) VALUES ('rebuild')");
+      }
+    } catch { /* FTS table may not exist yet */ }
+
+    try {
+      const chatFtsSchema = this.db.prepare(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='chat_events_fts'"
+      ).get();
+      if (chatFtsSchema && chatFtsSchema.sql.includes('unicode61')) {
+        this.db.exec(`
+          DROP TRIGGER IF EXISTS chat_events_ai;
+          DROP TRIGGER IF EXISTS chat_events_ad;
+          DROP TABLE IF EXISTS chat_events_fts;
+          CREATE VIRTUAL TABLE chat_events_fts USING fts5(
+            text, content='chat_events', content_rowid='id', tokenize='trigram'
+          );
+          CREATE TRIGGER chat_events_ai AFTER INSERT ON chat_events BEGIN
+            INSERT INTO chat_events_fts(rowid, text) VALUES (new.id, new.text);
+          END;
+          CREATE TRIGGER chat_events_ad AFTER DELETE ON chat_events BEGIN
+            INSERT INTO chat_events_fts(chat_events_fts, rowid, text) VALUES('delete', old.id, old.text);
+          END;
+        `);
+        this.db.exec("INSERT INTO chat_events_fts(chat_events_fts) VALUES ('rebuild')");
+      }
+    } catch { /* FTS table may not exist yet */ }
 
     // Backfill chat_events_fts from existing rows (idempotent — only runs if FTS is empty)
     try {
