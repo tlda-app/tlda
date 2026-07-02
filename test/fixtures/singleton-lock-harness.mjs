@@ -1,20 +1,20 @@
 // Test harness exercising the EXACT lock acquisition the fleet-daemon does.
 //
 // Usage:
-//   node singleton-lock-harness.mjs hold <lockPath> <installPath>
+//   node singleton-lock-harness.mjs hold <lockPath> <installPath> [origin]
 //     Acquire the lock and hold it open, printing "ACQUIRED <pid>" on success.
 //     Stays alive (the held fd keeps the kernel lock) until killed. On failure,
 //     prints "REFUSED ..." to stderr and exits 1 — same shape as the daemon.
-//   node singleton-lock-harness.mjs try <lockPath> <installPath>
+//   node singleton-lock-harness.mjs try <lockPath> <installPath> [origin]
 //     Attempt to acquire once; on success print "ACQUIRED <pid>" and exit 0,
 //     on refusal print "REFUSED holder pid=<pid> install=<path>" to stderr and
 //     exit 1. This mirrors the daemon's "refuse to start before any WS" path.
 
 import { acquireSingletonLock } from '../../bin/lib/singleton-lock.mjs'
 
-const [mode, lockPath, installPath] = process.argv.slice(2)
+const [mode, lockPath, installPath, origin] = process.argv.slice(2)
 
-const res = acquireSingletonLock({ lockPath, installPath })
+const res = acquireSingletonLock({ lockPath, installPath, origin })
 
 if (!res.ok) {
   const h = res.holder || {}

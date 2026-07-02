@@ -67,7 +67,7 @@ import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing
 import { resolveFreshSpawnCapabilityModels } from './lib/spawn-capability-models.mjs'
 import { SpawnBounceError, SpawnLibrarian, resolveSpawnCollision } from '../shared/spawn-librarian.ts'
 import { trimTerminalSeedBlankRows } from '../shared/terminal-seed.mjs'
-import { inspectSingletonLock } from '../bin/lib/singleton-lock.mjs'
+import { daemonSingletonLockPath, inspectSingletonLock } from '../bin/lib/singleton-lock.mjs'
 import { partialSkillReadSummaries, recordPartialSkillReads } from '../shared/partial-skill-reads.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -364,7 +364,13 @@ const SERVER_BOOT_ID = Date.now()   // unique per server start; daemon uses this
 const DAEMON_SUPERVISOR_INTERVAL_MS = 10_000
 const DAEMON_LOG_FILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.log')
 const DAEMON_PID_FILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.pid')
-const DAEMON_LOCK_FILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.lock')
+const DAEMON_CONFIG_DIR = join(homedir(), '.config', 'tlda')
+function daemonLockFile() {
+  return daemonSingletonLockPath({
+    configDir: DAEMON_CONFIG_DIR,
+    origin: process.env.TLDA_SERVER || resolveConfig().database.http,
+  })
+}
 const DAEMON_SCRIPT = (() => {
   const d = dirname(fileURLToPath(import.meta.url))
   const m = d.match(/^(.+?)\/\.claude\/worktrees\//)
@@ -400,11 +406,13 @@ function ensureLocalDaemon() {
   // Already connected? Done.
   const ws = daemonConnections.get(LOCAL_MACHINE_ID)
   if (ws && ws.readyState === 1) return
-  // The daemon owns a machine-global singleton lock. If any live daemon already
-  // holds it, that is the authoritative answer: do not spawn a competing child
-  // from this server, even if this stale/local server has no daemon WS.
+  // The daemon owns an origin-keyed singleton lock. If any live daemon already
+  // holds this server's origin lock, that is the authoritative answer: do not
+  // spawn a competing child from this server, even if this stale/local server
+  // has no daemon WS.
   try {
-    const lock = inspectSingletonLock({ lockPath: DAEMON_LOCK_FILE })
+    const lockPath = daemonLockFile()
+    const lock = inspectSingletonLock({ lockPath })
     if (lock.held) {
       _daemonBackoffUntil = Math.max(_daemonBackoffUntil, now + DAEMON_LOCK_HELD_BACKOFF_MS)
       if (now - _daemonLockHeldLoggedAt >= DAEMON_LOCK_HELD_BACKOFF_MS) {
@@ -419,7 +427,7 @@ function ensureLocalDaemon() {
     }
   } catch (e) {
     _daemonBackoffUntil = Math.max(_daemonBackoffUntil, now + DAEMON_LOCK_HELD_BACKOFF_MS)
-    console.error(`[daemon-supervisor] cannot inspect singleton lock ${DAEMON_LOCK_FILE}: ${e.message}; not spawning`)
+    console.error(`[daemon-supervisor] cannot inspect singleton lock: ${e.message}; not spawning`)
     return
   }
   // PID file exists and process alive? It's just not connected yet — give it

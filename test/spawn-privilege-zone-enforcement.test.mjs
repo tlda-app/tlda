@@ -70,13 +70,13 @@ test('named app-dev privileges compile to explicit cwd rules instead of broad fu
     'cwd',
     '~/.config/tlda/fleet-daemon.log',
     '~/.config/tlda/fleet-daemon.pid',
-    '~/.config/tlda/fleet-daemon.lock',
+    '~/.config/tlda/fleet-daemon.*.lock',
   ])
   assert.deepEqual(request.privilegeSet.operations.write.allow, [
     'cwd',
     '~/.config/tlda/fleet-daemon.log',
     '~/.config/tlda/fleet-daemon.pid',
-    '~/.config/tlda/fleet-daemon.lock',
+    '~/.config/tlda/fleet-daemon.*.lock',
   ])
   const policy = resolveLaunchPolicy({
     spawnPolicy: request,
@@ -95,7 +95,7 @@ test('named app-dev privileges compile to explicit cwd rules instead of broad fu
   assert.ok(settings.filesystem.allowWrite.includes('/Users/skip/work/tlda/**'))
   assert.ok(settings.filesystem.allowWrite.includes('/Users/skip/.config/tlda/fleet-daemon.log'))
   assert.ok(settings.filesystem.allowWrite.includes('/Users/skip/.config/tlda/fleet-daemon.pid'))
-  assert.ok(settings.filesystem.allowWrite.includes('/Users/skip/.config/tlda/fleet-daemon.lock'))
+  assert.ok(settings.filesystem.allowWrite.includes('/Users/skip/.config/tlda/fleet-daemon.*.lock'))
   assert.equal(settings.filesystem.allowWrite.includes('/Users/skip/.config/tlda'), false)
   assert.equal(settings.filesystem.allowWrite.includes('/Users/skip/.config/tlda/**'), false)
   assert.equal(settings.filesystem.allowWrite.includes('/'), false)

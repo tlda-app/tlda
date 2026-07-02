@@ -112,7 +112,7 @@ import { createRearmableFsWatcher } from './lib/source-watch-health.mjs'
 import { resolveSpawnGrant } from '../server/lib/spawn-policy.mjs'
 import { probeSpawnCapabilities } from './lib/spawn/capabilities.mjs'
 import { createPrivilegeLedger, defaultPrivilegeLedgerPath } from './lib/spawn/privilege-ledger.mjs'
-import { acquireSingletonLock } from './lib/singleton-lock.mjs'
+import { acquireSingletonLock, daemonSingletonLockPath } from './lib/singleton-lock.mjs'
 const log = createLogger('daemon')
 // CONFIG_DIR holds config.json, cursors, PID and log files. Defaults to
 // ~/.config/tlda. TLDA_DAEMON_CONFIG_DIR lets the E2E test start a second
@@ -120,11 +120,6 @@ const log = createLogger('daemon')
 const CONFIG_DIR = process.env.TLDA_DAEMON_CONFIG_DIR || _SHARED_CONFIG_DIR
 const CURSORS_FILE = path.join(CONFIG_DIR, 'daemon-cursors.json')
 const PID_FILE = path.join(CONFIG_DIR, 'fleet-daemon.pid')
-// Machine-global singleton lock. Same fixed path no matter which install/worktree
-// launched us (it derives from CONFIG_DIR, not __dirname), so every daemon binary
-// on the machine contends for THIS one lock — that's what makes a second daemon
-// structurally impossible. See bin/lib/singleton-lock.mjs.
-const LOCK_FILE = path.join(CONFIG_DIR, 'fleet-daemon.lock')
 const SOURCE_BINDINGS_FILE = path.join(CONFIG_DIR, 'source-bindings.json')
 const PRIVILEGE_LEDGER_FILE = defaultPrivilegeLedgerPath(CONFIG_DIR)
 const privilegeLedger = createPrivilegeLedger(PRIVILEGE_LEDGER_FILE)
@@ -227,6 +222,11 @@ const SERVER = process.env.TLDA_SERVER
   : (_usingCustomConfigDir
       ? (config.fleetServer || config.server || `${hasTls ? 'https' : 'http'}://localhost:${DEFAULT_PORT}`)
       : getFleetServerUrl(config))
+// Per-origin singleton lock. Same path for a given fleet origin no matter which
+// install/worktree launched us (derived from CONFIG_DIR + SERVER origin, not
+// __dirname), so every daemon binary targeting the same origin contends for the
+// same lock while independent origins can run side by side.
+const LOCK_FILE = daemonSingletonLockPath({ configDir: CONFIG_DIR, origin: SERVER })
 
 // HARD INVARIANT — a dev daemon literally cannot target the real fleet.
 // `tlda-dev serve --sandbox` starts its daemon with TLDA_DEV_DAEMON=<the exact
@@ -4016,26 +4016,27 @@ function handleServerMessage(msg) {
 
 if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true })
 
-// INVARIANT: at most one fleet-daemon per machine, ever. This is the PRIMARY,
-// STRUCTURAL guard — a machine-global exclusive OS lock that a second daemon
-// (from ANY install/worktree) fails to acquire and so REFUSES to start BEFORE it
-// opens any WS to the server. The old check here was a racy PID-file existence
-// test; the server-side machine_id lease (still in place, see the 'daemon-evict'
-// handler) is now only defense-in-depth, because the loser never gets far enough
-// to be evicted. The kernel releases the lock automatically when the holder dies,
-// so a crashed daemon's lock is reclaimed with no stale-pid bookkeeping.
+// INVARIANT: at most one fleet-daemon per active fleet origin on this machine.
+// This is the PRIMARY, STRUCTURAL guard — an origin-keyed exclusive OS lock that
+// a second daemon targeting the same origin (from ANY install/worktree) fails to
+// acquire and so REFUSES to start BEFORE it opens any WS to the server. The old
+// check here was a racy PID-file existence test; the server-side machine_id lease
+// (still in place, see the 'daemon-evict' handler) is now only defense-in-depth,
+// because the loser never gets far enough to be evicted. The kernel releases the
+// lock automatically when the holder dies, so a crashed daemon's lock is
+// reclaimed with no stale-pid bookkeeping.
 const _ourInstallPath = fileURLToPath(import.meta.url)
-const _lock = acquireSingletonLock({ lockPath: LOCK_FILE, installPath: _ourInstallPath })
+const _lock = acquireSingletonLock({ lockPath: LOCK_FILE, installPath: _ourInstallPath, origin: SERVER })
 if (!_lock.ok) {
   const h = _lock.holder || {}
   log.error(
-    `another fleet-daemon already holds the machine lock ${LOCK_FILE} ` +
-    `(holder pid=${h.pid ?? '?'} install=${h.installPath ?? '?'}); ` +
-    `refusing to start this one (${_ourInstallPath}). At most one daemon per machine.`,
+    `another fleet-daemon already holds the origin lock ${LOCK_FILE} for ${SERVER} ` +
+    `(holder pid=${h.pid ?? '?'} install=${h.installPath ?? '?'} origin=${h.origin ?? '?'}); ` +
+    `refusing to start this one (${_ourInstallPath}). At most one daemon per origin.`,
   )
   process.stderr.write(
-    `fleet-daemon: refusing to start — machine lock held by pid=${h.pid ?? '?'} ` +
-    `(${h.installPath ?? 'unknown install'}). At most one daemon per machine.\n`,
+    `fleet-daemon: refusing to start — origin lock for ${SERVER} held by pid=${h.pid ?? '?'} ` +
+    `(${h.installPath ?? 'unknown install'}). At most one daemon per origin.\n`,
   )
   process.exit(1)
 }

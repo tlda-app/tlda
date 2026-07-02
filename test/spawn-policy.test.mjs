@@ -478,13 +478,13 @@ describe('spawn policy', () => {
       'cwd',
       '~/.config/tlda/fleet-daemon.log',
       '~/.config/tlda/fleet-daemon.pid',
-      '~/.config/tlda/fleet-daemon.lock',
+      '~/.config/tlda/fleet-daemon.*.lock',
     ])
     assert.deepEqual(grant.grantedPrivilegeSet.operations.write.allow, [
       '/Users/skip/work/tlda/**',
       '/Users/skip/.config/tlda/fleet-daemon.log',
       '/Users/skip/.config/tlda/fleet-daemon.pid',
-      '/Users/skip/.config/tlda/fleet-daemon.lock',
+      '/Users/skip/.config/tlda/fleet-daemon.*.lock',
     ])
     assert.equal(grant.grantedPrivilegeSet.operations.write.allow.includes('**'), false)
   })

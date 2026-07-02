@@ -392,8 +392,8 @@ profile app-dev:
   write + ~/.config/tlda/fleet-daemon.log
   read + ~/.config/tlda/fleet-daemon.pid
   write + ~/.config/tlda/fleet-daemon.pid
-  read + ~/.config/tlda/fleet-daemon.lock
-  write + ~/.config/tlda/fleet-daemon.lock
+  read + ~/.config/tlda/fleet-daemon.*.lock
+  write + ~/.config/tlda/fleet-daemon.*.lock
 
 profile deploy:
   read + cwd
