@@ -3,7 +3,7 @@
 **Core: every agent — Skip included — is a row. Daemon privileges are a property of the row, per box. There is NO machine-wide default privilege set and no phantom box-policy floor.**
 
 **Two orthogonal permission domains — split by where the action executes, not what it affects:**
-- **Daemon permissions** = anything run *on the box*: files, spawn, exec, git, **and network/deploy** (`fly deploy`, remote push, `~/.fly` creds). Deploy runs locally, so it's daemon-governed even though it hits a remote host. Enforced by the daemon. **This is the scope of the fence-config fix.** The config + clamp + daemon-local ledger all live here.
+- **Daemon permissions** = anything run *on the box*: files, spawn, exec, git, **and network/deploy** (`fly deploy`, remote push, `~/.fly` creds). Deploy runs locally, so it's daemon-governed even though it hits a remote host. Fly/deploy is a single binary daemon capability — you can use Fly or you can't. No granular Fly sub-permissions locally; one on/off in the daemon profile gates all deploy/Fly access. Fly's own permissions handle anything finer long-term. Enforced by the daemon. **This is the scope of the fence-config fix.** The config + clamp + daemon-local ledger all live here.
 - **Server permissions** = actions against the tlda server's own API/DB (`db-write-direct`, fleet registry ops). Enforced server-side. Separate governor; does NOT intersect with daemon permissions.
 
 **Three legitimate live clamps at spawn** (this intersection is CORRECT, keep it):
@@ -12,9 +12,10 @@
 - requested = ≤ what was asked
 - model cap = per-box ceiling per model (runaway-prone models capped regardless of spawner)
 
-**Two stores:**
-1. **Config file — the RULES.** Gitconfig/SSH-style, human-edited, part of the **daemon's** config, **per box**. Holds: named profiles (`full`/`app-dev`/`read-only`/`none`, including `deploy`/`network` capabilities for daemon-governed remote actions); model caps per box; **root ceilings keyed by fleet ID** (Skip, todd, named seats → profile; **unknown fleet ID → `none`**). Only roots need pinning.
-2. **Daemon's local agents table — the STATE.** Per box, keyed by fleet ID: each agent's **current granted privileges**. Seeded at spawn from the clamp; a **runtime grant is a clamped write to this row** applied to the live fence with no respawn.
+**Three files/stores, three roles:**
+1. **Daemon config — ceilings/authority.** Gitconfig/SSH-style, human-edited, part of the **daemon's** config, **per box**. Holds named profiles (`full`/`app-dev`/`read-only`/`none`, including the binary Fly/deploy on/off capability); model caps per box; **root ceilings keyed by fleet ID** (Skip, todd, named seats → profile; **unknown fleet ID → `none`**). Only roots need pinning.
+2. **Project file — default request.** An in-repo config file, checked into the project like `.editorconfig`. It declares the default `requested` level for agents spawned into that project without an explicit capability. It only fills the `requested` slot, so it is still fully clamped by `spawner ∩ requested ∩ model-cap ∩ daemon-ceiling`. A project file can declare `full` and still never escalate past what the box/spawner allow. Convenience, never authority.
+3. **Daemon's local agents table — live grant state.** Per box, keyed by fleet ID: each agent's **current granted privileges**. Seeded at spawn from the clamp; a **runtime grant is a clamped write to this row** applied to the live fence with no respawn.
 
 **Lifetime:**
 - Grant is keyed on **fleet ID**, lives on the row → **survives hibernation** (hibernation = no process, row persists).
