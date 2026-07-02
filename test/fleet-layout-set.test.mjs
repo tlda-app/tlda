@@ -26,6 +26,12 @@ test('phone preset thumbnail is a phone silhouette', () => {
   assert.match(iconBlock, /home indicator/)
 })
 
+test('layout slider selection applies the chosen preset', () => {
+  const sliderRender = sourceBetween(pillSource, '<CornerButtonSlider', '/>')
+  assert.match(sliderRender, /options=\{layoutSliderOptions\}/)
+  assert.match(sliderRender, /onSelect=\{applyPreset\}/)
+})
+
 test('2x2 layout creates four chats and no document viewer', () => {
   const gridBranch = sourceBetween(layoutSource, "} else if (variant === '2x2')", "} else if (variant === '3-col')")
   const chatCount = (gridBranch.match(/type: 'fleet-chat'/g) || []).length
@@ -33,13 +39,12 @@ test('2x2 layout creates four chats and no document viewer', () => {
   assert.equal(gridBranch.includes("type: 'fleet-docview'"), false)
 })
 
-test('big-chat and both-margins stay reading layouts without editor-panel shapes', () => {
-  const bannedType = ['fleet', 'source', 'editor'].join('-')
+test('big-chat and both-margins create their expected reading/writing panels', () => {
   const bigChatBranch = sourceBetween(layoutSource, "variant === 'big-chat'", "} else if (variant === '2x2')")
   const bothMarginsBranch = sourceBetween(layoutSource, "const rightChatX = docMaxRight", 'editor.createShapes(shapes)')
-  assert.match(bigChatBranch, /type: 'fleet-docview'/)
-  assert.equal(bigChatBranch.includes(`type: '${bannedType}'`), false)
+  assert.match(bigChatBranch, /type: 'fleet-chat'/)
+  assert.match(bigChatBranch, /type: 'fleet-source-editor'/)
   assert.match(bothMarginsBranch, /type: 'fleet-chat'/)
-  assert.match(bothMarginsBranch, /filter: filter2/)
-  assert.equal(bothMarginsBranch.includes(`type: '${bannedType}'`), false)
+  assert.match(bothMarginsBranch, /type: 'fleet-docview'/)
+  assert.match(bothMarginsBranch, /type: 'fleet-source-editor'/)
 })

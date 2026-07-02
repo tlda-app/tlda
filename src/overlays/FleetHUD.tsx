@@ -215,6 +215,14 @@ function isPhoneFleetLayout(editor: Editor): boolean {
   const chat = shapes.find(s => s.type === 'fleet-chat')
   if (!agents || !inbox || !chat) return false
   if (shapes.some(s => s.type === 'fleet-search' || s.type === 'fleet-docview' || s.type === 'fleet-touch-inbox')) return false
+  const vp = editor.getViewportScreenBounds()
+  if (!vp.w || !vp.h) return false
+  const oneScreenWide =
+    Math.abs((agents.props?.w || 0) - vp.w) <= 2 &&
+    Math.abs((inbox.props?.w || 0) - vp.w) <= 2 &&
+    Math.abs((chat.props?.w || 0) - vp.w) <= 2
+  if (!oneScreenWide) return false
+  if (Math.abs((chat.props?.h || 0) - vp.h) > 2) return false
   const gap = 10
   const stackedHeight = (agents.props?.h || 0) + gap + (inbox.props?.h || 0)
   const chatH = chat.props?.h || 0
@@ -768,7 +776,37 @@ export function FleetHUD({
         // same-zoom camera changes as deliberate pan.
       } else if (hudAnchorRef.current !== null) {
         const t0 = probe.isEnabled('hud') ? performance.now() : 0
-        if (!isPhoneFleetLayout(mainEditor)) {
+        if (isPhoneFleetLayout(mainEditor)) {
+          const latestBounds = readMaintainedFleetBounds() || fleetBounds
+          const docShapes = mainEditor.getCurrentPageShapes().filter(isDocumentPageShape)
+          let minPageX = Infinity
+          for (const s of docShapes) {
+            const b = mainEditor.getShapePageBounds(s.id)
+            if (b && b.x < minPageX) minPageX = b.x
+          }
+          if (latestBounds && isFinite(minPageX)) {
+            const docLeftScreen = mainEditor.pageToScreen({ x: minPageX, y: 0 }).x
+            const off = layoutOffset(getHumanId(), getDeviceId())
+            const phoneAnchor = computeFleetHudDefaultAnchor({
+              bounds: latestBounds,
+              docPageLeft: minPageX,
+              docLeftScreen,
+              layoutDx: off.dx,
+              topPad: activeTopPad,
+            })
+            hudAnchorRef.current = {
+              panOffset: phoneAnchor.panOffset,
+              cameraY: hudAnchorRef.current.cameraY,
+            }
+            configureFleetHudOverlayLayer(hudWm, {
+              panOffset: phoneAnchor.panOffset,
+              cameraY: hudAnchorRef.current.cameraY,
+              mainCamera: cam,
+              baseCamera: cam,
+            })
+            syncViewportIfChanged(readFleetHudOverlayLayer(hudWm).camera)
+          }
+        } else {
           if (cam.z !== lastCam.z) {
             const currentAnchor = readHudCameraAnchor()
             if (currentAnchor) {
@@ -817,7 +855,7 @@ export function FleetHUD({
       window.removeEventListener('camera-restored', onCameraRestored)
       clearTimeout(fallbackTimer)
     }
-  }, [mainEditor, expanded, hudWm, readHudCameraAnchor, viewportId])
+  }, [activeTopPad, fleetBounds, mainEditor, expanded, hudWm, readHudCameraAnchor, readMaintainedFleetBounds, viewportId])
 
   // Adopt the saved anchor when it arrives in the store — even if the WM anchor
   // is already set to a provisional recomputed default. In large multi-machine

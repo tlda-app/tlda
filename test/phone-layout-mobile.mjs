@@ -235,8 +235,8 @@ async function main() {
     if (Math.abs(chat.x - (agents.x + agents.props.w)) > 1) {
       throw new Error('chat lane is not immediately to the right of agents/inbox lane')
     }
-    if (Math.abs((chat.x + chat.props.w) - (agents.x + agents.props.w + chat.props.w)) > 1) {
-      throw new Error('document lane projection is not one screen to the right of chat lane')
+    if (Math.abs((chat.x + chat.props.w) - pb.x) > 1) {
+      throw new Error(`document lane is not immediately to the right of chat lane: chatRight=${chat.x + chat.props.w} docLeft=${pb.x}`)
     }
     const visibleHudIds = Array.from(document.querySelectorAll('.fleet-hud-wrap [data-shape-id]'))
       .map(el => el.getAttribute('data-shape-id'))
@@ -292,6 +292,53 @@ async function main() {
       throw new Error(`HUD phone chat textarea is not hit-testable: hit=${hitEl instanceof HTMLElement ? hitEl.className : String(hitEl)} chatBox=${JSON.stringify({ x: chatBox.x, y: chatBox.y, w: chatBox.width, h: chatBox.height })} textarea=${JSON.stringify({ x: taBox.x, y: taBox.y, w: taBox.width, h: taBox.height })}`)
     }
 
+    ed.setCamera({ ...ed.getCamera(), x: laneStops.agentsInbox / cam.z - pb.x }, { animation: { duration: 0 } })
+    await new Promise(r => setTimeout(r, 1000))
+    const inboxEl = document.querySelector(`.fleet-hud-wrap [data-shape-id="${inbox.id}"] .fleet-inbox-shape`)
+      || document.querySelector(`.fleet-hud-wrap [data-shape-id="${inbox.id}"]`)
+    if (!(inboxEl instanceof HTMLElement)) throw new Error(`HUD did not render phone inbox shape ${inbox.id}`)
+    const inboxBox = inboxEl.getBoundingClientRect()
+    if (Math.abs(inboxBox.x) > 2 || Math.abs(inboxBox.right - width) > 2) {
+      throw new Error(`HUD phone inbox lane is not screen-width aligned: ${JSON.stringify({ x: inboxBox.x, right: inboxBox.right, width })}`)
+    }
+    const filterButton = inboxEl.querySelector('.fleet-inbox-filter-btn')
+    if (!(filterButton instanceof HTMLElement)) throw new Error('phone inbox filter button did not render')
+    const filterButtonBox = filterButton.getBoundingClientRect()
+    const filterButtonHit = document.elementFromPoint(
+      filterButtonBox.left + filterButtonBox.width / 2,
+      filterButtonBox.top + filterButtonBox.height / 2,
+    )
+    if (!filterButtonHit || !filterButtonHit.closest('.fleet-inbox-filter-btn')) {
+      throw new Error(`phone inbox filter button is not hit-testable: hit=${filterButtonHit instanceof HTMLElement ? filterButtonHit.className : String(filterButtonHit)}`)
+    }
+    ed.updateShape({
+      id: chat.id,
+      type: 'fleet-chat',
+      props: { filter: [[['from', 'phone-layout-sentinel']]] },
+    })
+    await new Promise(r => setTimeout(r, 250))
+    filterButton.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerType: 'touch' }))
+    await new Promise(r => setTimeout(r, 250))
+    const overlay = inboxEl.querySelector('.fleet-filter-overlay')
+    if (!(overlay instanceof HTMLElement)) throw new Error('phone inbox did not open the chat filter overlay')
+    const overlayBox = overlay.getBoundingClientRect()
+    if (overlayBox.left < -2 || overlayBox.right > width + 2 || overlayBox.top < -2 || overlayBox.bottom > height + 2) {
+      throw new Error(`phone inbox filter overlay is outside the left lane: ${JSON.stringify({ left: overlayBox.left, right: overlayBox.right, top: overlayBox.top, bottom: overlayBox.bottom, width, height })}`)
+    }
+    const seededChat = ed.getShape(chat.id)
+    const initialFilter = JSON.stringify(seededChat?.props?.filter || [])
+    if (initialFilter === '[]') throw new Error('phone inbox filter test failed to seed sibling chat filter')
+    const allPreset = overlay.querySelector('.fleet-filter-preset[data-preset="all"]')
+    if (!(allPreset instanceof HTMLElement)) throw new Error('phone inbox filter overlay has no All preset')
+    allPreset.click()
+    await new Promise(r => setTimeout(r, 250))
+    const updatedChat = ed.getShape(chat.id)
+    if (!updatedChat) throw new Error('phone chat disappeared after inbox filter edit')
+    const updatedFilter = JSON.stringify(updatedChat.props?.filter || [])
+    if (updatedFilter !== '[]') {
+      throw new Error(`phone inbox filter preset did not update sibling chat filter: before=${initialFilter} after=${updatedFilter}`)
+    }
+
     const touchProbe = document.createElement('div')
     touchProbe.className = 'fleet-chat-shape'
     touchProbe.style.cssText = 'position:absolute;left:-10000px;top:-10000px;width:320px;height:200px;'
@@ -340,6 +387,11 @@ async function main() {
       inbox: { w: inbox.props.w, h: inbox.props.h },
       chat: { w: chat.props.w, h: chat.props.h },
       column: { w: column.w, h: column.h },
+      inboxFilter: {
+        opened: true,
+        before: initialFilter,
+        after: updatedFilter,
+      },
       layout: { w: layoutW, h: chat.props.h },
       lanes: {
         agentsInbox: { docLeftScreen: laneStops.agentsInbox },

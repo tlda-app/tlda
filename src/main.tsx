@@ -37,7 +37,7 @@ import App from './App.tsx'
   })
 }
 
-const DEFAULT_FLEET_LAYOUT_PRESET = '3col'
+const DEFAULT_FLEET_LAYOUT_PRESET = '3-col'
 
 // Automated browsers (playwright, etc.) get a forced dark theme, camera-link
 // OFF, and the default fleet layout, regardless of whatever localStorage / URL
