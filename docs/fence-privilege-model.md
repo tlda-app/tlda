@@ -14,8 +14,10 @@
 
 **Three files/stores, three roles:**
 1. **Daemon config — ceilings/authority.** Gitconfig/SSH-style, human-edited, part of the **daemon's** config, **per box**. Holds named profiles (`full`/`app-dev`/`read-only`/`none`, including the binary Fly/deploy on/off capability); model caps per box; **root ceilings keyed by fleet ID** (Skip, todd, named seats → profile; **unknown fleet ID → `none`**). Only roots need pinning.
-2. **Project file — default request.** An in-repo config file, checked into the project like `.editorconfig`. It declares the default `requested` level for agents spawned into that project without an explicit capability. It only fills the `requested` slot, so it is still fully clamped by `spawner ∩ requested ∩ model-cap ∩ daemon-ceiling`. A project file can declare `full` and still never escalate past what the box/spawner allow. Convenience, never authority.
+2. **Project file — default request.** An in-repo config file, checked into the project like `.editorconfig`. It declares the default `requested` level for agents spawned into that project without an explicit capability. It only fills the `requested` slot, so it is still fully clamped by `spawner ∩ requested ∩ model-cap`. A project file can declare `full` and still never escalate past what the spawner row/model cap allow. Convenience, never authority.
 3. **Daemon's local agents table — live grant state.** Per box, keyed by fleet ID: each agent's **current granted privileges**. Seeded at spawn from the clamp; a **runtime grant is a clamped write to this row** applied to the live fence with no respawn.
+
+**Shipped default daemon grant:** `write_roots: ["."]`, `read_roots: ["."]`, plus plumbing needed to function: temp, git metadata, worktree metadata, and existing scratch/browser caches. The shipped default does **not** include credentials, Fly, deploy, or other off-box access; those are user-config additions only.
 
 **Lifetime:**
 - Grant is keyed on **fleet ID**, lives on the row → **survives hibernation** (hibernation = no process, row persists).

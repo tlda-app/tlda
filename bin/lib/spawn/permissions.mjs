@@ -9,7 +9,7 @@ const BUILTIN_POLICY_NAMES = new Set(['read', 'write', 'tlda-write', 'full'])
 // Break-glass switch only. The durable target is a pw-capable fence: broad
 // safe writes work, while secret/chat-db/destructive paths stay denied.
 const FENCE_TEMPORARILY_DISABLED = true
-const DEFAULT_READ_ROOTS = ['~/work']
+const DEFAULT_READ_ROOTS = []
 const DEFAULT_OPTIONS = { network: false, git: 'read', artifacts: true }
 const DEFAULT_TRUSTED_MCP_SERVERS = { tlda: { defaultToolsApprovalMode: 'approve' } }
 const PLAYWRIGHT_CACHE_ROOT = path.join(os.homedir(), 'Library/Caches/ms-playwright')
@@ -96,6 +96,42 @@ function pathInside(child, parent) {
   const c = path.resolve(child)
   const p = path.resolve(parent)
   return c === p || c.startsWith(`${p}${path.sep}`)
+}
+
+function gitMetadataRoots(workspace) {
+  const dotGit = path.join(workspace, '.git')
+  const roots = []
+  if (!fs.existsSync(dotGit)) return roots
+  roots.push(dotGit)
+  try {
+    const stat = fs.statSync(dotGit)
+    if (stat.isDirectory()) {
+      roots.push(path.join(dotGit, '**'))
+      return roots
+    }
+  } catch {
+    return roots
+  }
+  let text = ''
+  try {
+    text = fs.readFileSync(dotGit, 'utf8')
+  } catch {
+    return roots
+  }
+  const match = text.match(/^gitdir:\s*(.+)\s*$/m)
+  if (!match) return roots
+  const gitDir = path.resolve(workspace, match[1].trim())
+  roots.push(gitDir, path.join(gitDir, '**'))
+  try {
+    const commonDirText = fs.readFileSync(path.join(gitDir, 'commondir'), 'utf8').trim()
+    if (commonDirText) {
+      const commonDir = path.resolve(gitDir, commonDirText)
+      roots.push(commonDir, path.join(commonDir, '**'))
+    }
+  } catch {
+    // Worktrees have commondir; ordinary gitdir files may not.
+  }
+  return roots
 }
 
 function projectSourceDirs(config = {}) {
@@ -201,24 +237,13 @@ export function resolveLeasePolicy({ spawnPolicy, privilegeSet = null, harness, 
       path.join(CHROME_FOR_TESTING_CRASHPAD_ROOT, '**'),
       TLDA_PW_RUNTIME_ROOT,
       TLDA_FENCE_TMP_ROOT,
-      path.join(workspace, '.git'),
     ]
     if (normalized.network !== false) options.network = true
   }
-  // Baseline write floor (Skip's spec, 2026-07-02): every write-capable agent
-  // may write anywhere under ~/work. The fence must NEVER intersect below this
-  // floor — the old `cwd`-clamp (writes only in the launch dir) is the "insane
-  // in practice" behavior that trapped agents for weeks. Reads already default
-  // to ~/work (DEFAULT_READ_ROOTS); this makes writes match. Read-only agents
-  // (cap === 'read') keep no writes; escalation prevention still caps the
-  // ceiling — this only guarantees the floor.
-  if (cap !== 'read') {
-    const workRoot = path.join(os.homedir(), 'work')
-    writeRoots = [...writeRoots, workRoot, path.join(workRoot, '**')]
-  }
+  if (cap !== 'none' && cap !== 'read') writeRoots = [...writeRoots, ...gitMetadataRoots(workspace)]
   const explicitReadRoots = explicitPrivilegeSet ? resolvedPrivilegeZones(privilegeSet, 'read', 'allow', workspace) : []
   const readRoots = [...new Set([
-    workspace,
+    ...(explicitPrivilegeSet ? [] : [workspace]),
     PLAYWRIGHT_CACHE_ROOT,
     CHROME_FOR_TESTING_CRASHPAD_ROOT,
     ...configPathList(cfg, 'readRoots', DEFAULT_READ_ROOTS),
@@ -245,6 +270,8 @@ export function resolveLeasePolicy({ spawnPolicy, privilegeSet = null, harness, 
       network: options.network !== false,
       git: options.git || 'read',
       artifacts: options.artifacts !== false,
+      broad_write: writeRoots.includes('**') || writeRoots.includes('/'),
+      machine_write: writeRoots.includes('**') || writeRoots.includes('/'),
       trusted_mcp_servers: trusted,
       runner: runnerFromConfig(cfg),
     },

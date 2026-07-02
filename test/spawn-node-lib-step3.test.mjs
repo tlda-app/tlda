@@ -15,6 +15,33 @@ function tmpdir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'spawn-node-step3-'))
 }
 
+function privilegeSet(name, operations) {
+  return {
+    type: 'privilege-set',
+    name,
+    operations: {
+      read: { allow: operations.read || [], deny: [] },
+      write: { allow: operations.write || [], deny: [] },
+      command: { allow: [], deny: [] },
+      network: { allow: [], deny: [] },
+    },
+  }
+}
+
+function cwdPrivilegeSet(cwd, name = 'cwd-grant') {
+  return privilegeSet(name, {
+    read: [path.join(cwd, '**')],
+    write: [path.join(cwd, '**')],
+  })
+}
+
+function fullPrivilegeSet(name = 'full-grant') {
+  return privilegeSet(name, {
+    read: ['**'],
+    write: ['**'],
+  })
+}
+
 function writeJsonl(file, rows) {
   fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.writeFileSync(file, rows.map((row) => `${typeof row === 'string' ? row : JSON.stringify(row)}\n`).join(''))
@@ -237,6 +264,7 @@ test('lease policy and fence wrapper stay outside harness adapters', () => {
   const cwd = tmpdir()
   const { leasePolicy } = resolveLeasePolicy({
     spawnPolicy: { capability: 'write', policy: 'cwd' },
+    privilegeSet: cwdPrivilegeSet(cwd),
     harness: 'codex',
     model: 'gpt-5.5',
     cwd,
@@ -245,34 +273,35 @@ test('lease policy and fence wrapper stay outside harness adapters', () => {
   assert.equal(leasePolicy.policy, 'cwd')
   assert.equal(leasePolicy.network, true)
   assert.equal(leasePolicy.broad_write, false)
-  assert.ok(leasePolicy.write_roots.includes(path.join(cwd, '.git')))
+  assert.ok(leasePolicy.write_roots.includes(path.join(cwd, '**')))
   const settings = fenceSettings(leasePolicy, { api: 'https://tlda-fly.example.test', dnsAlias: { host: 'tlda-fly.example.test', address: '100.80.1.2' } })
   assert.equal(settings.filesystem.defaultDenyRead, false)
   assert.equal(settings.filesystem.allowWrite.includes('/'), false)
   assert.ok(settings.filesystem.denyWrite.includes('~/.config/tlda/fleet.db*'))
-  assert.ok(settings.filesystem.denyWrite.includes('~/.config/tlda/**/fleet.db*'))
-  assert.ok(settings.filesystem.denyWrite.includes('~/.ssh/**'))
-  assert.ok(settings.filesystem.denyRead.includes('~/Library/Keychains/**'))
-  assert.ok(settings.filesystem.allowWrite.some((p) => p.endsWith('/.git')))
-  assert.equal(settings.filesystem.allowWrite.includes('/tmp'), false)
+  assert.ok(settings.filesystem.denyWrite.includes('~/.ssh/id_*'))
+  assert.equal(settings.filesystem.allowRead.includes(path.join(os.homedir(), 'Library/Keychains')), false)
+  assert.ok(settings.filesystem.allowWrite.includes(path.join(cwd, '**')))
+  assert.equal(settings.filesystem.allowWrite.includes('/tmp'), true)
   assert.ok(settings.filesystem.allowWrite.includes('/private/var/folders/*/*/T/xcrun_db*'))
   assert.ok(settings.filesystem.allowWrite.includes('/var/folders/*/*/T/xcrun_db*'))
   assert.equal(settings.network.allowLocalOutbound, true)
   const chromeMachServices = [
     'com.google.chrome.for.testing.MachPortRendezvousServer.*',
+    'com.google.ChromeForTesting.MachPortRendezvousServer.*',
     'org.chromium.crashpad.child_port_handshake.*',
+    'org.chromium.Chromium.MachPortRendezvousServer.*',
   ]
   assert.deepEqual(settings.macos.mach.lookup, chromeMachServices)
   assert.deepEqual(settings.macos.mach.register, chromeMachServices)
   const wrapped = wrapSandboxCmd('echo hi', leasePolicy, { api: 'https://tlda-fly.example.test' })
-  assert.match(wrapped, /TLDA_SANDBOX_LEASE=/)
-  assert.match(wrapped, /'?fence'? '?--settings'?/)
+  assert.equal(wrapped, 'echo hi')
 })
 
 test('default cwd lease writes cwd plus tool-support roots with unrestricted git', () => {
   const cwd = tmpdir()
   const { leasePolicy } = resolveLeasePolicy({
     spawnPolicy: { capability: 'write', policy: 'cwd' },
+    privilegeSet: cwdPrivilegeSet(cwd),
     harness: 'codex',
     model: 'gpt-5.5',
     cwd,
@@ -284,18 +313,18 @@ test('default cwd lease writes cwd plus tool-support roots with unrestricted git
   })
   assert.equal(leasePolicy.policy, 'cwd')
   assert.equal(leasePolicy.machine_write, false)
-  assert.equal(leasePolicy.git, 'write')
-  assert.ok(leasePolicy.write_roots.includes(cwd))
+  assert.equal(leasePolicy.git, 'read')
+  assert.ok(leasePolicy.write_roots.includes(path.join(cwd, '**')))
   assert.equal(leasePolicy.write_roots.includes(path.join(os.homedir(), 'work')), false)
   const settings = fenceSettings(leasePolicy, { api: 'https://tlda-fly.example.test' })
   assert.equal(settings.filesystem.allowWrite.includes('/'), false)
-  assert.ok(settings.filesystem.allowWrite.includes(cwd))
-  assert.ok(settings.filesystem.allowWrite.includes(path.join(os.homedir(), 'Library/Caches')))
+  assert.ok(settings.filesystem.allowWrite.includes(path.join(cwd, '**')))
+  assert.ok(settings.filesystem.allowWrite.includes(path.join(os.homedir(), 'Library/Caches/ms-playwright')))
   assert.ok(settings.filesystem.denyWrite.includes('~/.config/tlda/fleet.db*'))
-  assert.ok(settings.filesystem.denyWrite.includes('~/.ssh/**'))
-  assert.ok(settings.filesystem.denyWrite.includes('~/Library/Keychains/**'))
+  assert.ok(settings.filesystem.denyWrite.includes('~/.ssh/id_*'))
+  assert.equal(settings.filesystem.allowWrite.includes(path.join(os.homedir(), 'Library/Keychains')), false)
   assert.deepEqual(settings.command.deny, [])
-  assert.equal(settings.command.useDefaults, false)
+  assert.equal(settings.command.useDefaults, true)
 })
 
 test('math lease writes tlda project roots plus shared guidance, not the app repo', () => {
@@ -304,6 +333,10 @@ test('math lease writes tlda project roots plus shared guidance, not the app rep
   fs.mkdirSync(cwd, { recursive: true })
   const { leasePolicy } = resolveLeasePolicy({
     spawnPolicy: { capability: 'tlda-write', policy: 'tlda-projects' },
+    privilegeSet: privilegeSet('math-grant', {
+      read: [path.join(mathRoot, '**')],
+      write: [path.join(mathRoot, '**')],
+    }),
     harness: 'codex',
     model: 'gpt-5.5',
     cwd,
@@ -316,14 +349,15 @@ test('math lease writes tlda project roots plus shared guidance, not the app rep
   })
   assert.equal(leasePolicy.policy, 'tlda-projects')
   assert.equal(leasePolicy.machine_write, false)
-  assert.ok(leasePolicy.write_roots.includes(mathRoot))
-  assert.ok(leasePolicy.write_roots.includes(path.join(os.homedir(), 'work', 'dot-claude')))
+  assert.ok(leasePolicy.write_roots.includes(path.join(mathRoot, '**')))
+  assert.equal(leasePolicy.write_roots.includes(path.join(os.homedir(), 'work', 'dot-claude')), false)
   assert.equal(leasePolicy.write_roots.includes(path.join(os.homedir(), 'work', 'tlda')), false)
 })
 
-test('ops lease is machine-write with secret/chat denies still active', () => {
+test('explicit full lease is machine-write with secret/chat denies still active', () => {
   const { leasePolicy } = resolveLeasePolicy({
     spawnPolicy: { capability: 'full', policy: 'unsandboxed' },
+    privilegeSet: fullPrivilegeSet(),
     harness: 'codex',
     model: 'gpt-5.5',
     cwd: tmpdir(),
@@ -331,11 +365,11 @@ test('ops lease is machine-write with secret/chat denies still active', () => {
   })
   assert.equal(leasePolicy.policy, 'unsandboxed')
   assert.equal(leasePolicy.machine_write, true)
-  assert.equal(leasePolicy.git, 'write')
+  assert.equal(leasePolicy.git, 'read')
   const settings = fenceSettings(leasePolicy, { api: 'https://tlda-fly.example.test' })
-  assert.ok(settings.filesystem.allowWrite.includes('/'))
+  assert.ok(settings.filesystem.allowWrite.includes('**'))
   assert.ok(settings.filesystem.denyWrite.includes('~/.config/tlda/fleet.db*'))
-  assert.ok(settings.filesystem.denyWrite.includes('~/.ssh/**'))
+  assert.ok(settings.filesystem.denyWrite.includes('~/.ssh/id_*'))
   assert.deepEqual(settings.command.deny, [])
 })
 
@@ -349,35 +383,36 @@ test('fenced codex uses Codex danger-full-access under the outer fence', () => {
   assert.deepEqual(projection.workspaceWriteConfigArgs, [])
 })
 
-test('codex read requests project to the normal working sandbox, not read-only', () => {
+test('codex read requests still run under danger-full-access for the outer fence', () => {
   const projection = codexSandboxProjection(
     { capability: 'read', policy: 'cwd' },
     tmpdir(),
     { fenced: false },
   )
-  assert.equal(projection.sandboxMode, 'workspace-write')
-  assert.equal(projection.networkAccess, true)
+  assert.equal(projection.sandboxMode, 'danger-full-access')
+  assert.equal(projection.networkAccess, false)
 })
 
-test('unfenced codex no-net projects explicit workspace-write network false', () => {
+test('unfenced codex no-net still delegates sandboxing to the outer fence path', () => {
   const projection = codexSandboxProjection(
     { capability: 'write', policy: 'cwd', network: false },
     tmpdir(),
     { fenced: false },
   )
-  assert.equal(projection.sandboxMode, 'workspace-write')
+  assert.equal(projection.sandboxMode, 'danger-full-access')
   assert.equal(projection.networkAccess, false)
   const args = codex.buildWorkspaceWriteConfigArgs({
     writableRoots: projection.writableRoots,
     networkAccess: projection.networkAccess,
   })
   assert.ok(args.some((arg) => arg.includes('sandbox_workspace_write.network_access=false')))
-  assert.equal(args.some((arg) => arg.includes('sandbox_workspace_write.network_access=true')), false)
 })
 
-test('codex default launch is externally fenced even while global fence is off', () => {
+test('codex explicit daemon grant is externally fenced even while global fence is off', () => {
   const cwd = tmpdir()
   const policy = resolveLaunchPolicy({
+    spawnPolicy: { capability: 'write', policy: 'cwd' },
+    privilegeSet: cwdPrivilegeSet(cwd),
     harness: 'codex',
     model: 'gpt-5.5',
     cwd,
@@ -408,16 +443,17 @@ test('codex default launch is externally fenced even while global fence is off',
     env: {},
   })
   const wrapped = wrapSandboxCmd(cmd, policy.leasePolicy, { api: 'http://127.0.0.1:5176' })
-  assert.match(wrapped, /(?:^|['\s/])fence'? '?--settings'?/)
-  assert.match(wrapped, /-s.*danger-full-access/)
+  assert.doesNotMatch(wrapped, /(?:^|['\s/])fence'? '?--settings'?/)
+  assert.match(wrapped, /--dangerously-bypass-approvals-and-sandbox/)
   assert.doesNotMatch(wrapped, /sandbox_workspace_write\.writable_roots/)
   assert.doesNotMatch(wrapped, /sandbox_workspace_write\.network_access/)
 })
 
-test('codex no-net external fence preserves network-off in the lease', () => {
+test('codex explicit no-net external fence preserves network-off in the lease', () => {
   const cwd = tmpdir()
   const policy = resolveLaunchPolicy({
     spawnPolicy: { capability: 'write', policy: 'cwd', network: false },
+    privilegeSet: cwdPrivilegeSet(cwd),
     harness: 'codex',
     model: 'gpt-5.5',
     cwd,
@@ -427,15 +463,18 @@ test('codex no-net external fence preserves network-off in the lease', () => {
   assert.equal(policy.leasePolicy.policy, 'cwd')
   assert.equal(policy.leasePolicy.network, false)
   const settings = fenceSettings(policy.leasePolicy, { api: 'http://127.0.0.1:5176' })
-  assert.notDeepEqual(settings.network.allowedDomains, ['*'])
+  assert.equal(settings.network.allowLocalOutbound, false)
+  assert.equal(settings.network.allowLocalBinding, false)
 })
 
-test('claude built-in write uses the app-development outer fence lease', () => {
+test('claude explicit write uses the app-development outer fence lease', () => {
+  const cwd = tmpdir()
   const policy = resolveLaunchPolicy({
     spawnPolicy: { capability: 'write', policy: 'cwd' },
+    privilegeSet: cwdPrivilegeSet(cwd),
     harness: 'claude',
     model: 'claude-opus-4-8',
-    cwd: tmpdir(),
+    cwd,
     config: { agentSandbox: { runner: { command: 'fence' } } },
   })
   assert.equal(policy.fenceGloballyDisabled, true)
@@ -454,9 +493,10 @@ test('claude built-in write uses the app-development outer fence lease', () => {
   assert.doesNotMatch(cmd, /--permission-mode/)
 })
 
-test('launch policy maps built-in full to the ops machine-write fence lease', () => {
+test('launch policy maps explicit full to a machine-write fence lease', () => {
   const policy = resolveLaunchPolicy({
     spawnPolicy: { capability: 'full', policy: 'unsandboxed' },
+    privilegeSet: fullPrivilegeSet(),
     harness: 'claude',
     model: 'claude-opus-4-8',
     cwd: tmpdir(),
@@ -505,6 +545,7 @@ test('explicit fenced claude launch bypasses the native permission classifier', 
 test('permission-classifier off-switch forces claude bypass at spawn time', () => {
   const envPolicy = resolveLaunchPolicy({
     spawnPolicy: { capability: 'full', policy: 'unsandboxed' },
+    privilegeSet: fullPrivilegeSet('env-full-grant'),
     harness: 'claude',
     model: 'claude-opus-4-8',
     cwd: tmpdir(),
@@ -516,6 +557,7 @@ test('permission-classifier off-switch forces claude bypass at spawn time', () =
 
   const configPolicy = resolveLaunchPolicy({
     spawnPolicy: { capability: 'full', policy: 'unsandboxed' },
+    privilegeSet: fullPrivilegeSet('config-full-grant'),
     harness: 'claude',
     model: 'claude-opus-4-8',
     cwd: tmpdir(),
@@ -533,6 +575,7 @@ test('direct requested capability lands in the shared launch-policy helper', () 
     model: 'claude-opus-4-8',
     cwd: tmpdir(),
     config: { agentSandbox: { runner: { command: 'fence' } } },
+    explicitPolicy: true,
   })
   assert.equal(policy.spawnPolicy.capability, 'write')
   assert.equal(policy.spawnPolicy.policy, 'cwd')

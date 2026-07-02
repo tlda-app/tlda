@@ -1025,7 +1025,6 @@ async function performSpawnRelay(caller, msg) {
       spawnerCapability: result.spawnerCapability,
       projectCapability: result.projectCapability,
       modelCapability: result.modelCapability,
-      localSpawnCapability: result.localSpawnCapability,
     }
   }
   broadcastState()
