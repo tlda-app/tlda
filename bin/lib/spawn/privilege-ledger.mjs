@@ -54,7 +54,7 @@ function normalizeLedgerGrant(value, fallback = 'none') {
       : normalizeRequestedPrivileges(rawPrivilegeSet, fallback)
     const spawnPolicy = { ...policy }
     delete spawnPolicy.privilegeSet
-    return { spawnPolicy, privilegeSet: rawPrivilegeSet }
+    return { spawnPolicy, privilegeSet: withStoredSpawnDefault(rawPrivilegeSet, spawnPolicy) }
   }
   const policy = normalizeSpawnPolicy(value.spawnPolicy || value.policy || value.capability || value, fallback)
   return {
@@ -62,6 +62,22 @@ function normalizeLedgerGrant(value, fallback = 'none') {
     privilegeSet: policy.capability === 'none'
       ? emptyPrivilegeSet({ name: policy.name, projectedPolicy: policy })
       : null,
+  }
+}
+
+function withStoredSpawnDefault(privilegeSet, policy) {
+  if (!privilegeSet || policy.capability === 'none') return privilegeSet
+  if (privilegeSet.operations?.spawn) return privilegeSet
+  return {
+    ...privilegeSet,
+    operations: {
+      ...privilegeSet.operations,
+      spawn: { allow: ['**'], deny: [] },
+    },
+    rules: [
+      ...(privilegeSet.rules || []),
+      { operation: 'spawn', effect: 'allow', zone: '**', line: null },
+    ],
   }
 }
 

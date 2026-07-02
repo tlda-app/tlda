@@ -226,7 +226,7 @@ export function resolveLeasePolicy({ spawnPolicy, privilegeSet = null, harness, 
   const options = deepMerge(DEFAULT_OPTIONS, policyOptions[policyName] || {})
   const cap = normalized.capability
   if (explicitPrivilegeSet) {
-    if (normalized.network !== false) options.network = true
+    if (cap !== 'none' && normalized.network !== false) options.network = true
   } else if (cap === 'read') {
     writeRoots = []
   } else if (cap === 'write' || cap === 'tlda-write') {
@@ -244,9 +244,8 @@ export function resolveLeasePolicy({ spawnPolicy, privilegeSet = null, harness, 
   const explicitReadRoots = explicitPrivilegeSet ? resolvedPrivilegeZones(privilegeSet, 'read', 'allow', workspace) : []
   const readRoots = [...new Set([
     ...(explicitPrivilegeSet ? [] : [workspace]),
-    PLAYWRIGHT_CACHE_ROOT,
-    CHROME_FOR_TESTING_CRASHPAD_ROOT,
-    ...configPathList(cfg, 'readRoots', DEFAULT_READ_ROOTS),
+    ...(cap === 'none' ? [] : [PLAYWRIGHT_CACHE_ROOT, CHROME_FOR_TESTING_CRASHPAD_ROOT]),
+    ...(cap === 'none' ? [] : configPathList(cfg, 'readRoots', DEFAULT_READ_ROOTS)),
     ...explicitReadRoots,
     ...writeRoots,
   ].map(absOrPattern))].sort()
@@ -259,6 +258,7 @@ export function resolveLeasePolicy({ spawnPolicy, privilegeSet = null, harness, 
     leasePolicy: {
       schema: 1,
       policy: policyName,
+      capability: cap,
       harness,
       model: model || '',
       workspace,

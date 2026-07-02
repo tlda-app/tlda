@@ -190,14 +190,31 @@ function apiNeedsLocalOutbound(dnsAlias) {
 }
 
 export function fenceSettings(policy, { api, dnsAlias } = {}) {
-  const allowRead = uniqueSorted([...(policy.read_roots || []), ...FENCE_AGENT_READ_ROOTS].map(expandPathPattern))
+  const emptyCapability = policy.capability === 'none'
+  const allowRead = uniqueSorted([...(policy.read_roots || []), ...(emptyCapability ? [] : FENCE_AGENT_READ_ROOTS)].map(expandPathPattern))
   const broadWriteRoots = policy.explicit_privilege_set ? [] : FENCE_BROAD_WRITE_ROOTS
-  const allowWrite = uniqueSorted([...(policy.write_roots || []), ...FENCE_AGENT_WRITE_ROOTS, ...broadWriteRoots].map(expandPathPattern))
+  const allowWrite = uniqueSorted([
+    ...(policy.write_roots || []),
+    ...(emptyCapability ? [] : FENCE_AGENT_WRITE_ROOTS),
+    ...(emptyCapability ? [] : broadWriteRoots),
+  ].map(expandPathPattern))
   const denyRead = [...FENCE_DENY_READ, ...(policy.deny_read_roots || [])]
   const denyWrite = [...FENCE_DENY_WRITE, ...(policy.deny_write_roots || [])]
   if (String(policy.git || 'read') !== 'write' && !hasGitWriteRoot(policy)) denyWrite.push(...FENCE_GIT_READONLY_DENY)
   const allowedDomains = ['*']
   const localOutbound = apiNeedsLocalOutbound(dnsAlias)
+  const allowUnixSockets = emptyCapability ? [] : [
+    ...FENCE_TEMP_ROOTS,
+    TLDA_PW_RUNTIME_ROOT,
+    `${TLDA_PW_RUNTIME_ROOT}/**`,
+    TLDA_PW_RUNTIME_REAL_ROOT,
+    `${TLDA_PW_RUNTIME_REAL_ROOT}/**`,
+    TLDA_PW_SOCKETS_ROOT,
+    `${TLDA_PW_SOCKETS_ROOT}/**`,
+    TLDA_PW_SOCKETS_REAL_ROOT,
+    `${TLDA_PW_SOCKETS_REAL_ROOT}/**`,
+  ]
+  const machServices = emptyCapability ? [] : CHROME_FOR_TESTING_MACH_SERVICES
   return {
     allowPty: true,
     network: {
@@ -205,20 +222,10 @@ export function fenceSettings(policy, { api, dnsAlias } = {}) {
       deniedDomains: [],
       allowLocalBinding: !!policy.network || localOutbound,
       allowLocalOutbound: !!policy.network || localOutbound,
-      allowUnixSockets: [
-        ...FENCE_TEMP_ROOTS,
-        TLDA_PW_RUNTIME_ROOT,
-        `${TLDA_PW_RUNTIME_ROOT}/**`,
-        TLDA_PW_RUNTIME_REAL_ROOT,
-        `${TLDA_PW_RUNTIME_REAL_ROOT}/**`,
-        TLDA_PW_SOCKETS_ROOT,
-        `${TLDA_PW_SOCKETS_ROOT}/**`,
-        TLDA_PW_SOCKETS_REAL_ROOT,
-        `${TLDA_PW_SOCKETS_REAL_ROOT}/**`,
-      ],
+      allowUnixSockets,
     },
     filesystem: {
-      defaultDenyRead: false,
+      defaultDenyRead: emptyCapability,
       allowRead,
       denyRead,
       allowWrite,
@@ -230,8 +237,8 @@ export function fenceSettings(policy, { api, dnsAlias } = {}) {
     },
     macos: {
       mach: {
-        lookup: CHROME_FOR_TESTING_MACH_SERVICES,
-        register: CHROME_FOR_TESTING_MACH_SERVICES,
+        lookup: machServices,
+        register: machServices,
       },
     },
   }
@@ -297,7 +304,6 @@ export function wrapSandboxCmd(cmd, policy, opts = {}) {
   // fixing the fence itself. Launch every agent command UNWRAPPED. This is a
   // one-line revert (delete the `return cmd` below) if a fence is reinstated.
   return cmd
-  // eslint-disable-next-line no-unreachable
   if (!policy) return cmd
   const runner = policy.runner || {}
   const command = runner.command

@@ -17,7 +17,9 @@
 2. **Project file — default request.** An in-repo config file, checked into the project like `.editorconfig`. It declares the default `requested` level for agents spawned into that project without an explicit capability. It only fills the `requested` slot, so it is still fully clamped by `spawner ∩ requested ∩ model-cap`. A project file can declare `full` and still never escalate past what the spawner row/model cap allow. Convenience, never authority.
 3. **Daemon's local agents table — live grant state.** Per box, keyed by fleet ID: each agent's **current granted privileges**. Seeded at spawn from the clamp; a **runtime grant is a clamped write to this row** applied to the live fence with no respawn.
 
-**Shipped default daemon grant:** `write_roots: ["."]`, `read_roots: ["."]`, plus plumbing needed to function: temp, git metadata, worktree metadata, and existing scratch/browser caches. The shipped default does **not** include credentials, Fly, deploy, or other off-box access; those are user-config additions only.
+**`none` is truly empty.** An unknown/untrusted fleet ID gets no read roots, no write roots, no plumbing, and no `spawn` privilege. Spawn is a gated daemon privilege: a row without `spawn` cannot create children and cannot bootstrap a fleet. This is separate from the server-side `spawners` table.
+
+**Shipped default daemon grant:** `write_roots: [".", general-temp]`, `read_roots: [".", general-temp]`, `spawn: true`, plus plumbing needed to function: git metadata, worktree metadata, and existing scratch/browser caches. `general-temp` includes `/tmp`, `/private/tmp`, and macOS `$TMPDIR`/`/var/folders/...` temp locations so the default `git worktree add /private/tmp/<x>` approach works without a special convention. The shipped default does **not** include credentials, Fly, deploy, Keychain, `~/work`, or other off-box access; those are user-config additions only.
 
 **Lifetime:**
 - Grant is keyed on **fleet ID**, lives on the row → **survives hibernation** (hibernation = no process, row persists).

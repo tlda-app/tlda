@@ -33,10 +33,12 @@ tlda config directory. Rows are keyed by fleet ID and survive hibernation.
 
 Root rows are seeded from daemon config (`spawnPolicy.rootCeilings` or
 `spawnPolicy.rootGrants`) and written on first use. Unknown fleet IDs resolve to
-`none` unless a row or root config entry exists.
+`none` unless a row or root config entry exists. `none` is truly empty: no read,
+no write, no plumbing roots, and no `spawn` privilege.
 
 Every successful spawn writes the child's granted policy and privilege set to
 the ledger. A later child spawn uses that row as the child's spawner authority.
+If the spawner row lacks the `spawn` operation, daemon-routed spawn is denied.
 
 Ledger writes use a temp file followed by rename.
 
@@ -47,15 +49,20 @@ The shipped default request is deliberately local:
 ```yaml
 write_roots: ["."]
 read_roots: ["."]
+spawn: true
 ```
 
 The fence materializer also includes the local plumbing needed for agents to
-function: temp directories, git metadata, worktree metadata, and existing
-scratch/browser caches. It does not include credentials, Fly, deploy, or other
-off-box access; those require user config.
+function: general temp directories (`/tmp`, `/private/tmp`, and macOS
+`$TMPDIR`/`/var/folders/...`), git metadata, worktree metadata, and existing
+scratch/browser caches. It does not include credentials, Fly, deploy, Keychain,
+`~/work`, or other off-box access; those require user config.
 
-Worktrees are first-class: a write-capable worktree grant includes the worktree
-path and the actual git metadata paths required for worktree operations.
+Worktrees are first-class without a convention requirement. A normal agent may
+run `git worktree add /private/tmp/<x>` from its project root because the project
+root and repo git metadata are writable and general temp is writable by default.
+A write-capable worktree grant also includes the actual git metadata paths
+required for linked worktree operations.
 
 ## Spawn interface
 

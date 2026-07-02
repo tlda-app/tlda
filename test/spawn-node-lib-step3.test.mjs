@@ -47,6 +47,7 @@ function privilegeSet(name, operations) {
     operations: {
       read: { allow: operations.read || [], deny: [] },
       write: { allow: operations.write || [], deny: [] },
+      spawn: { allow: operations.spawn || [], deny: [] },
       command: { allow: [], deny: [] },
       network: { allow: [], deny: [] },
     },
@@ -57,6 +58,7 @@ function cwdPrivilegeSet(cwd, name = 'cwd-grant') {
   return privilegeSet(name, {
     read: [path.join(cwd, '**')],
     write: [path.join(cwd, '**')],
+    spawn: ['**'],
   })
 }
 
@@ -64,6 +66,7 @@ function fullPrivilegeSet(name = 'full-grant') {
   return privilegeSet(name, {
     read: ['**'],
     write: ['**'],
+    spawn: ['**'],
   })
 }
 
@@ -352,6 +355,31 @@ test('default cwd lease writes cwd plus tool-support roots with unrestricted git
   assert.equal(settings.command.useDefaults, true)
 })
 
+test('none lease and fence settings are truly empty', () => {
+  const cwd = tmpdir()
+  const { leasePolicy } = resolveLeasePolicy({
+    spawnPolicy: { capability: 'none', policy: 'cwd' },
+    privilegeSet: privilegeSet('none', {}),
+    harness: 'codex',
+    model: 'gpt-5.5',
+    cwd,
+    config: { agentSandbox: { runner: { command: 'fence' } } },
+  })
+  assert.equal(leasePolicy.capability, 'none')
+  assert.deepEqual(leasePolicy.read_roots, [])
+  assert.deepEqual(leasePolicy.write_roots, [])
+  assert.equal(leasePolicy.network, false)
+
+  const settings = fenceSettings(leasePolicy, { api: 'https://tlda-fly.example.test' })
+  assert.deepEqual(settings.filesystem.allowRead, [])
+  assert.deepEqual(settings.filesystem.allowWrite, [])
+  assert.deepEqual(settings.network.allowUnixSockets, [])
+  assert.equal(settings.network.allowLocalOutbound, false)
+  assert.equal(settings.network.allowLocalBinding, false)
+  assert.deepEqual(settings.macos.mach.lookup, [])
+  assert.deepEqual(settings.macos.mach.register, [])
+})
+
 test('worktree cwd lease includes external gitdir and commondir metadata roots', () => {
   const repo = makeGitRepo()
   const worktreeParent = privateTmpdir('spawn-node-step3-worktree-parent-')
@@ -383,6 +411,42 @@ test('worktree cwd lease includes external gitdir and commondir metadata roots',
       assert.ok(settings.filesystem.allowWrite.includes(root), `fence settings should allow git metadata root ${root}`)
     }
     assert.ok(settings.filesystem.allowWrite.includes(path.join(worktree, '**')))
+  } finally {
+    fs.rmSync(worktreeParent, { recursive: true, force: true })
+    fs.rmSync(repo, { recursive: true, force: true })
+  }
+})
+
+test('project root cwd default allows creating and committing in a private tmp worktree', () => {
+  const repo = makeGitRepo()
+  const worktreeParent = privateTmpdir('spawn-node-step3-project-root-worktree-')
+  const worktree = path.join(worktreeParent, 'tmp-worktree')
+  try {
+    const { leasePolicy } = resolveLeasePolicy({
+      spawnPolicy: { capability: 'write', policy: 'cwd' },
+      privilegeSet: cwdPrivilegeSet(repo),
+      harness: 'codex',
+      model: 'gpt-5.5',
+      cwd: repo,
+      config: { agentSandbox: { runner: { command: 'fence' } } },
+    })
+    const repoGit = path.join(repo, '.git')
+    assert.ok(leasePolicy.write_roots.includes(path.join(repo, '**')))
+    assert.ok(leasePolicy.write_roots.includes(repoGit))
+    assert.ok(leasePolicy.write_roots.includes(path.join(repoGit, '**')))
+
+    const settings = fenceSettings(leasePolicy, { api: 'https://tlda-fly.example.test' })
+    assert.ok(settings.filesystem.allowWrite.includes('/private/tmp'))
+    assert.ok(settings.filesystem.allowWrite.includes('/private/tmp/**'))
+    assert.ok(settings.filesystem.allowWrite.includes(path.join(repo, '**')))
+    assert.ok(settings.filesystem.allowWrite.includes(repoGit))
+    assert.ok(settings.filesystem.allowWrite.includes(path.join(repoGit, '**')))
+
+    git(repo, ['worktree', 'add', '-b', 'tmp-worktree-test', worktree])
+    fs.writeFileSync(path.join(worktree, 'worktree.txt'), 'worktree change\n')
+    git(worktree, ['add', 'worktree.txt'])
+    git(worktree, ['commit', '-m', 'worktree change'])
+    assert.equal(git(worktree, ['log', '--format=%s', '-1']), 'worktree change')
   } finally {
     fs.rmSync(worktreeParent, { recursive: true, force: true })
     fs.rmSync(repo, { recursive: true, force: true })

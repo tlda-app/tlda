@@ -10,6 +10,7 @@ import {
   callerCapability,
   callerSpawnPolicy,
   compilePrivilegeProfiles,
+  emptyPrivilegeSet,
   intersectPrivilegeSets,
   isOperator,
   meetSpawnPolicies,
@@ -373,6 +374,18 @@ describe('spawn policy', () => {
       cwd: '/Users/skip/work/tlda',
     })
     assert.equal(grant.grantedCapability, 'full')
+  })
+
+  it('none spawners cannot spawn agents', () => {
+    assert.throws(() => resolveDaemonSpawnGrant({
+      requestedCapability: 'write',
+      requester: { id: 'fleet:unknown' },
+      spawnerPolicy: 'none',
+      spawnerPrivilegeSet: emptyPrivilegeSet(),
+      model: 'gpt-5.5',
+      kind: 'codex',
+      cwd: '/Users/skip/work/tlda',
+    }), /spawner lacks spawn privilege/)
   })
 
   it('normalizes requested privilege profiles from names, objects, and profile source text', () => {

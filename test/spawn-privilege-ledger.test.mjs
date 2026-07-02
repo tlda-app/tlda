@@ -21,6 +21,7 @@ describe('daemon privilege ledger', () => {
 
     assert.equal(grant.spawnPolicy.capability, 'none')
     assert.deepEqual(grant.privilegeSet.operations.write.allow, [])
+    assert.deepEqual(grant.privilegeSet.operations.spawn.allow, [])
     assert.equal(fs.existsSync(file), false)
   })
 
@@ -66,5 +67,6 @@ describe('daemon privilege ledger', () => {
     const grant = reloaded.grantFor({ id: 'fleet:child' }, {})
     assert.equal(grant.spawnPolicy.capability, 'write')
     assert.deepEqual(grant.privilegeSet.operations.write.allow, ['/private/tmp/worktree/**'])
+    assert.deepEqual(grant.privilegeSet.operations.spawn.allow, ['**'])
   })
 })

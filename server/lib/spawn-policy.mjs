@@ -3,7 +3,7 @@ import { homedir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { modelFamily as sharedModelFamily, modelTrustTier as sharedModelTrustTier } from '../../shared/harness.ts'
 
-// Skip's ONE capability vocabulary — four named rungs, low → high. This is the
+// Skip's ONE capability vocabulary — named rungs, low → high. This is the
 // only capability vocabulary tlda owns; there is NO machine vocabulary
 // (workspace-*, *-no-net, full-access) on any tlda surface. The filesystem
 // REGION each rung fences to is PART OF THE NAME (tlda-write = write across all
@@ -37,7 +37,7 @@ export const ROOT_CAPABILITY = 'full'
 // user-facing alias. The region disambiguates the legacy write / tlda-write
 // split (both were `workspace-write`). `workspace-write-no-net` → write: net is
 // now always on, so old no-net rows correctly gain net. Returns a rung or null.
-// Removable once every live agent and fence.json use four names.
+// Removable once every live agent and fence.json use the current names.
 function legacyRung(capability, region) {
   const raw = String(capability ?? '').trim().toLowerCase()
   if (CAPABILITY_RANK.has(raw)) return raw // already a four-name rung
@@ -50,7 +50,7 @@ function legacyRung(capability, region) {
   return null
 }
 
-// The four named fence configurations are the BUILT-IN DEFAULTS. The operator
+// The named fence configurations are the BUILT-IN DEFAULTS. The operator
 // owns them and may override or add to them in the fence config file
 // (~/.config/tlda/fence.json, key "policies"; or $TLDA_FENCE_CONFIG). That FILE
 // is the source of truth — this map is only the fallback when it is absent, so
@@ -292,7 +292,7 @@ export const SPAWN_PROFILES = {
 }
 
 export const DEFAULT_SPAWN_PROFILE = 'cwd'
-export const PRIVILEGE_OPERATIONS = ['read', 'write']
+export const PRIVILEGE_OPERATIONS = ['read', 'write', 'spawn']
 
 function emptyPrivilegeOperations() {
   const operations = {}
@@ -387,6 +387,7 @@ const BUILTIN_PRIVILEGE_PROFILE_SOURCE = `
 profile app-dev:
   read + cwd
   write + cwd
+  spawn + **
   read + ~/.config/tlda/fleet-daemon.log
   write + ~/.config/tlda/fleet-daemon.log
   read + ~/.config/tlda/fleet-daemon.pid
@@ -397,6 +398,7 @@ profile app-dev:
 profile deploy:
   read + cwd
   write + cwd
+  spawn + **
   read + ~/.fly/**
   write + ~/.fly/**
   read + ~/.cache/fly/**
@@ -436,6 +438,11 @@ export function privilegeSetFromPolicy(policyValue, { name, cwd, project } = {})
     const writeRule = { operation: 'write', effect: 'allow', zone, line: null }
     rules.push(writeRule)
     operations.write.allow.push(zone)
+  }
+  if (policy.capability !== 'none') {
+    const spawnRule = { operation: 'spawn', effect: 'allow', zone: '**', line: null }
+    rules.push(spawnRule)
+    operations.spawn.allow.push('**')
   }
   return {
     type: 'privilege-set',
@@ -927,6 +934,11 @@ export function resolveDaemonSpawnGrant({
   const spawnerPrivilegeSet = explicitSpawnerPrivilegeSet
     ? materializePrivilegeSet(explicitSpawnerPrivilegeSet, { cwd, project })
     : privilegeSetFromPolicy(spawnerPolicy, { name: spawnerPolicy.name, cwd, project })
+  if (!(spawnerPrivilegeSet?.operations?.spawn?.allow || []).length) {
+    const err = new Error('spawner lacks spawn privilege')
+    err.code = 'SPAWN_PRIVILEGE_DENIED'
+    throw err
+  }
   const requestedPrivilegeSet = requestedPolicy.privilegeSet
     || (requestedPrivileges || requestedCapability
       ? privilegeSetFromPolicy(requestedPolicy, { name: requestedPolicy.name, cwd, project })
