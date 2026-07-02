@@ -25,8 +25,9 @@ import './AnnotationViewer.css'
 
 type ViewerState = 'hovering' | 'pinned' | 'navigated'
 
-const RETURN_HUD_TOP = 'calc(154px + env(safe-area-inset-top))'
 const RETURN_HUD_RIGHT = 'calc(10px + env(safe-area-inset-right))'
+const RETURN_HUD_MARGIN = 10
+const RETURN_HUD_SIZE = 72
 
 interface AnnotationViewerProps {
   mainEditor: Editor
@@ -364,6 +365,15 @@ export function AnnotationViewer({
 
   if (!data || !clipBounds) return null
 
+  function returnHudTop() {
+    const fallbackTop = 66
+    if (typeof window === 'undefined') return fallbackTop
+    const chrome = window.document.querySelector('.phone-toc-modal, .doc-panel-open, .doc-panel, .phone-toc-btn')
+    const bottom = chrome?.getBoundingClientRect().bottom ?? Number.NaN
+    const top = Number.isFinite(bottom) ? bottom + RETURN_HUD_MARGIN : fallbackTop
+    return Math.max(8, Math.min(top, window.innerHeight - RETURN_HUD_SIZE - 8))
+  }
+
   const isPinnedOrNav = state === 'pinned' || state === 'navigated'
   const backArrowPath = (
     <path d="M238 125 H12 M80 12 L12 125 L80 238" fill="none" stroke="currentColor"
@@ -403,7 +413,7 @@ export function AnnotationViewer({
         data-managed-surface-id={data.managedSurfaceId}
         data-managed-layer-id={data.managedLayerId}
         data-managed-hit-policy={data.managedHitPolicy}
-        style={{ top: RETURN_HUD_TOP, right: RETURN_HUD_RIGHT }}
+        style={{ top: returnHudTop(), right: RETURN_HUD_RIGHT }}
         onPointerDown={stopEventPropagation}
         onPointerMove={stopEventPropagation}
         onPointerUp={stopEventPropagation}
