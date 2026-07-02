@@ -144,6 +144,20 @@ function leadingPrettyGlyphHtml(agentId, getAgents) {
   return part ? glyphHtml(part) : ''
 }
 
+function prettyNameTextOnly(pretty_name, fallback = '') {
+  const text = pretty_name_parts(pretty_name, fallback)
+    .filter(part => typeof part === 'string')
+    .join(' ')
+    .trim()
+  return text || pretty_name_plain_text(pretty_name, fallback)
+}
+
+function agentNameTextOnly(agentId, getAgents, fallback = '') {
+  const agents = getAgents?.()
+  const a = agents?.find(x => x.id === agentId)
+  return a ? prettyNameTextOnly(a.pretty_name, a.friendly_name) : fallback
+}
+
 // HTML pretty_name primitive. Rendered output is display-only and must never be
 // fed back into behavior.
 export function agentNameHtml(pretty_name, fallback = '') {
@@ -161,7 +175,9 @@ export function renderChatLine(m, ctx) {
   // stamped, so they fall back to the current name (which is correct for "now").
   // `*NameNow` is set when the agent has since rotated → drives a hover tooltip
   // so the reader can see the current name + reach the agent by its stable id.
-  const periodNick = (id, stamped) => stamped != null ? pretty_name_plain_text(null, stamped) : agentLabel(id)
+  const periodNick = (id, stamped) => stamped != null
+    ? pretty_name_plain_text(null, stamped)
+    : agentNameTextOnly(id, getAgents, agentLabel(id))
   const nowTitle = (id, nowName) => nowName != null
     ? ` title="now: ${esc(pretty_name_plain_text(null, nowName))} · ${esc(id || '')}"` : ''
 
@@ -459,7 +475,7 @@ export function renderChatLine(m, ctx) {
   // Multi-target: show all cc recipients
   let toHtml
   if (m.cc && m.cc.length > 1) {
-    toHtml = m.cc.map(id => `<span class="agent-nick ${getNickClass(id)}" data-agent-id="${esc(id)}">${leadingPrettyGlyphHtml(id, getAgents)}${esc(agentLabel(id))}</span>`).join('<span class="cc-separator">,</span>')
+    toHtml = m.cc.map(id => `<span class="agent-nick ${getNickClass(id)}" data-agent-id="${esc(id)}">${leadingPrettyGlyphHtml(id, getAgents)}${esc(agentNameTextOnly(id, getAgents, agentLabel(id)))}</span>`).join('<span class="cc-separator">,</span>')
   } else {
     const toNick = periodNick(m.to, m.toName)
     const toCls = getNickClass(m.to)
