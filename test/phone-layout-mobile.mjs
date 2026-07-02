@@ -205,6 +205,9 @@ async function main() {
     if (docview || search) {
       throw new Error(`phone layout should only create agents + inbox + chat, got: ${fleet.map(s => s.type).join(',')}`)
     }
+    for (const panel of [agents, inbox, chat]) {
+      if (!panel.isLocked) throw new Error(`phone layout panel should be locked/fixed: ${panel.type}`)
+    }
 
     const column = {
       x: agents.x,

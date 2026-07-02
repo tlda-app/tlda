@@ -38,13 +38,19 @@ import App from './App.tsx'
 }
 
 const DEFAULT_FLEET_LAYOUT_PRESET = '3-col'
+const PHONE_FLEET_LAYOUT_PRESET = 'phone'
+
+function getDefaultFleetLayoutPreset() {
+  const phoneSized = window.matchMedia?.('(max-width: 600px)').matches || window.innerWidth <= 600
+  return phoneSized ? PHONE_FLEET_LAYOUT_PRESET : DEFAULT_FLEET_LAYOUT_PRESET
+}
 
 // Automated browsers (playwright, etc.) get a forced dark theme, camera-link
-// OFF, and the default fleet layout, regardless of whatever localStorage / URL
-// holds. Avoids three concrete failure modes:
+// OFF, and a surface-appropriate default fleet layout when none was requested.
+// Avoids three concrete failure modes:
 //   1. White-themed playwright windows flash on the user's screen at night
 //   2. The agent's pan/zoom hijacks the human's view via the camera-link sync
-//   3. Agents test against non-default fleet layouts instead of real usage
+//   3. Agents test against stale localStorage fleet layouts instead of real usage
 // Detection: navigator.webdriver OR ?pw=1 in the URL. playwright-mcp sets
 // --disable-features=AutomationControlled which hides the webdriver flag, so
 // the URL param is the reliable signal; agents must add &pw=1 to their URLs.
@@ -52,8 +58,8 @@ const DEFAULT_FLEET_LAYOUT_PRESET = '3-col'
   const url = new URL(window.location.href)
   const isAuto = (navigator as any).webdriver || url.searchParams.get('pw') === '1'
   const cameraLinkOverride = url.searchParams.get('cameraLink')
-  if (isAuto && url.searchParams.get('fleetLayout') !== DEFAULT_FLEET_LAYOUT_PRESET) {
-    url.searchParams.set('fleetLayout', DEFAULT_FLEET_LAYOUT_PRESET)
+  if (isAuto && !url.searchParams.get('fleetLayout')) {
+    url.searchParams.set('fleetLayout', getDefaultFleetLayoutPreset())
     window.history.replaceState(window.history.state, '', url)
   }
   if (isAuto && cameraLinkOverride !== '1') {
