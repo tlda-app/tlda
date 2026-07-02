@@ -34,6 +34,7 @@ import { getFunnelUrl, findTailscaleIPv4, selectDevShareBase, selectDocShareBase
 import { scanMarkdownDeps } from '../shared/markdown-deps.mjs'
 import { cmdLogs } from './lib/unified-logs.mjs'
 import { formatSystemStatus } from './lib/system-status.mjs'
+import { resolveAgentQuery } from './lib/agent-resolve.mjs'
 import { SPAWN_POLICY_OPTIONS, SPAWN_PROFILES, resolveSpawnPolicyOption, normalizeRequestedPrivileges } from '../server/lib/spawn-policy.mjs'
 import { SPAWN_MACHINE_PREF_KEY } from '../server/lib/spawn-routing.mjs'
 
@@ -1956,13 +1957,6 @@ function parseJsonMaybe(value) {
   try { return JSON.parse(value) } catch { return null }
 }
 
-function agentMatchesQuery(agent, query) {
-  return agent?.id === query ||
-    agent?.friendly_name === query ||
-    agent?.tmux_session === query ||
-    agent?.tmux_session === agentSessionName(query)
-}
-
 function processTreeHasRuntime(spawnSync, panePids, expectedKind = null) {
   const ps = spawnSync('ps', ['-eo', 'pid,ppid,args'], { encoding: 'utf8' })
   if (ps.status !== 0) return { ok: false, kind: null, pid: null }
@@ -2024,11 +2018,13 @@ async function cmdAgentCheckReady() {
 async function collectAgentReadiness(query, spawnSync) {
   const state = await api('GET', '/api/state')
   const agents = Array.isArray(state?.agents) ? state.agents : []
-  const matches = agents.filter(a => agentMatchesQuery(a, query))
-  if (matches.length !== 1) {
-    return { ok: false, query, error: matches.length ? `multiple agents matched (${matches.length})` : 'agent not found' }
+  let agent = null
+  try {
+    agent = resolveAgentQuery(agents, query)
+  } catch (e) {
+    return { ok: false, query, error: e.message }
   }
-  const agent = matches[0]
+  if (!agent) return { ok: false, query, error: 'agent not found' }
   const meta = normalizeAgentMetadata(agent.metadata)
   const expectedKind = meta.kind || null
   const sess = agent.tmux_session || agentSessionName(agent.friendly_name || query)
@@ -2085,18 +2081,10 @@ function printAgentReadiness(r) {
 async function findAgentForCapability(agentQuery) {
   const state = await api('GET', '/api/state')
   const agents = Array.isArray(state?.agents) ? state.agents : []
-  const matches = agents.filter(a => (
-    a?.id === agentQuery ||
-    a?.friendly_name === agentQuery ||
-    a?.tmux_session === agentSessionName(agentQuery)
-  ))
-  if (matches.length === 0) {
-    throw new Error(`No existing agent found for "${agentQuery}". Use an existing fleet id, friendly name, or tmux session name.`)
+  const agent = resolveAgentQuery(agents, agentQuery)
+  if (!agent) {
+    throw new Error(`No existing agent found for "${agentQuery}". Use an existing fleet id or friendly name.`)
   }
-  if (matches.length > 1) {
-    throw new Error(`Multiple agents matched "${agentQuery}". Use the fleet id instead.`)
-  }
-  const agent = matches[0]
   if (agent.status === 'dead') {
     throw new Error(`Agent ${agent.id} is marked dead; refusing to create an impostor identity.`)
   }
@@ -2202,19 +2190,17 @@ async function copyMoveArtifacts(targetMachine, artifacts) {
 async function findSingleAgent(agentQuery) {
   const state = await api('GET', '/api/state')
   const agents = Array.isArray(state?.agents) ? state.agents : []
-  const matches = agents.filter(a => agentMatchesQuery(a, agentQuery))
-  if (matches.length === 0) throw new Error(`No existing agent found for "${agentQuery}".`)
-  if (matches.length > 1) throw new Error(`Multiple agents matched "${agentQuery}". Use the fleet id instead.`)
-  return matches[0]
+  const agent = resolveAgentQuery(agents, agentQuery)
+  if (!agent) throw new Error(`No existing agent found for "${agentQuery}".`)
+  return agent
 }
 
 async function resolveFleetPrefUserId(query) {
   if (!query) throw new Error('missing agent-or-user')
   const state = await api('GET', '/api/state')
   const agents = Array.isArray(state?.agents) ? state.agents : []
-  const matches = agents.filter(a => agentMatchesQuery(a, query))
-  if (matches.length > 1) throw new Error(`Multiple agents matched "${query}". Use the fleet id instead.`)
-  if (matches.length === 1) return matches[0].id
+  const agent = resolveAgentQuery(agents, query)
+  if (agent) return agent.id
   if (query.startsWith('fleet:')) return query
   throw new Error(`No agent/user matched "${query}". Use an existing name or an explicit fleet:<id>.`)
 }
