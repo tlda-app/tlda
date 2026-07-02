@@ -86,6 +86,11 @@ import { gooseActivityTick } from './lib/goose-activity.mjs'
 import { parseCodexLine } from './lib/codex-activity.mjs'
 import { truncatePrettyResult } from '../shared/activity-pretty-result.mjs'
 import {
+  createJsonlReadCoalescer,
+  createOncePerKeyGate,
+  fileContainsUtf8MarkerSync,
+} from './lib/daemon-jsonl-hot-path.mjs'
+import {
   terminalBackscrollCaptureArgs,
   terminalVisibleCaptureArgs,
   trimTerminalSeedBlankRows,
@@ -616,6 +621,7 @@ let projects = []                 // current project list
 const pathWatchers = new Map()    // jsonlPath -> { watcher, primaryAgentId, sessionId, harnessKind }
 const agentPaths = new Map()      // agentId -> jsonlPath
 const sourceWatchers = new Map()  // projectName -> { watcher, sourceDir, debounce, pending }
+const priorSessionBackfillGate = createOncePerKeyGate()
 
 // ---------- plan mode detection ----------
 
@@ -1180,6 +1186,10 @@ async function syncSessionWatchers(agentList) {
         if (!pw) return
         const now = Date.now()
         pw.watchSeenAt = now
+        // FSEvents fired -> it's alive for this path. Clear any miss state so a
+        // later silent stretch is judged fresh instead of stuck "dead" forever.
+        pw.watchMisses = 0
+        pw.fsEventsDead = false
         if (firstPending == null) firstPending = now
         // Max-wait cap: a long sub-debounce burst would otherwise keep resetting
         // the trailing timer and starve the read until writes quiesce. Once the
@@ -1193,6 +1203,9 @@ async function syncSessionWatchers(agentList) {
       }
       const createWatcher = () => fs.watch(jsonlPath, onWatchFired)
       const watcher = createWatcher()
+      // How many consecutive fs.watch misses to tolerate before declaring it
+      // structurally silent for this path and polling alone.
+      const MAX_WATCH_RECREATES = 3
 
       // Poll fallback: catches writes that fs.watch misses when FSEvents goes silent on macOS.
       // On NFS-mounted agent JSONLs (the common production case — mini serves ~/work over NFS,
@@ -1202,14 +1215,27 @@ async function syncSessionWatchers(agentList) {
         if (curr.mtimeMs === prev.mtimeMs) return
         const pw = pathWatchers.get(jsonlPath)
         if (!pw) return
+        // fs.watch fired recently, so its debounced read handles this write.
         if (pw.watchSeenAt && Date.now() - pw.watchSeenAt < 750) return
-        log.warn(`fs.watch missed ${path.basename(jsonlPath)} — recreating`)
-        try { pw.watcher.close() } catch {}
-        pw.watcher = createWatcher()
-        readNewSessionLines(pw.primaryAgentId, jsonlPath, pw.sessionId, pw.harnessKind)
+        // fs.watch missed this write. Recreating the watcher does not make
+        // FSEvents start firing on a structurally silent path (macOS/NFS); give
+        // it a few chances to re-arm, then rely on the 250ms poll alone.
+        if (!pw.fsEventsDead) {
+          pw.watchMisses = (pw.watchMisses || 0) + 1
+          if (pw.watchMisses <= MAX_WATCH_RECREATES) {
+            log.warn(`fs.watch missed ${path.basename(jsonlPath)} — recreating (${pw.watchMisses}/${MAX_WATCH_RECREATES})`)
+            try { pw.watcher.close() } catch { /* best-effort: watcher may already be dead */ }
+            pw.watcher = createWatcher()
+          } else {
+            pw.fsEventsDead = true
+            log.warn(`fs.watch structurally silent for ${path.basename(jsonlPath)} — polling alone (250ms)`)
+          }
+        }
+        // The poll is the detection path for this write regardless of recreate.
+        scheduleReadNewSessionLines(pw.primaryAgentId, jsonlPath, pw.sessionId, pw.harnessKind)
       })
 
-      pathWatchers.set(jsonlPath, { watcher, primaryAgentId: agent.id, sessionId, harnessKind: harness.kind, watchSeenAt: 0 })
+      pathWatchers.set(jsonlPath, { watcher, primaryAgentId: agent.id, sessionId, harnessKind: harness.kind, watchSeenAt: 0, watchMisses: 0, fsEventsDead: false })
       log.info(`watching ${harness.kind} JSONL for ${agent.friendly_name || agent.id}: ${path.basename(jsonlPath)} @ offset=${offset}`)
 
       // Drain any backlog immediately rather than waiting for the next write to
@@ -1226,6 +1252,7 @@ async function syncSessionWatchers(agentList) {
   // Close watchers for paths no longer needed.
   for (const [p, pw] of pathWatchers) {
     if (!activePaths.has(p)) {
+      jsonlReadCoalescer.cancel(p)
       try { pw.watcher.close() } catch {}
       fs.unwatchFile(p)
       pathWatchers.delete(p)
@@ -1237,6 +1264,15 @@ async function syncSessionWatchers(agentList) {
   for (const aid of [...agentPaths.keys()]) {
     if (!agentList.some(a => a.id === aid && !a.dead)) agentPaths.delete(aid)
   }
+}
+
+const jsonlReadCoalescer = createJsonlReadCoalescer({
+  readNow: (agentId, jsonlPath, sessionId, harnessKind) =>
+    readNewSessionLines(agentId, jsonlPath, sessionId, harnessKind),
+})
+
+function scheduleReadNewSessionLines(agentId, jsonlPath, sessionId, harnessKind = 'claude') {
+  jsonlReadCoalescer.schedule(jsonlPath, agentId, jsonlPath, sessionId, harnessKind)
 }
 
 function readNewSessionLines(agentId, jsonlPath, sessionId, harnessKind = 'claude') {
@@ -1429,6 +1465,7 @@ function backfillSearchEntries(agentId, jsonlPath, sessionId) {
 // Called once when an agent is first seen (no cursor). Skips sessions already
 // marked searchBackfilled in cursors.
 function backfillAllPriorSessions(agentId, fleetId) {
+  if (!priorSessionBackfillGate.claim(fleetId)) return
   // Fleet IDs are like "fleet:f7322ebe" — the registration line contains the suffix.
   const suffix = fleetId.includes(':') ? fleetId.split(':')[1] : fleetId
   const marker = `Registered fleet:${suffix}`
@@ -1443,9 +1480,9 @@ function backfillAllPriorSessions(agentId, fleetId) {
         const sessionId = file.slice(0, -6)
         if (cursors[sessionId]?.searchBackfilled) continue
         const filePath = path.join(dirPath, file)
-        let content
-        try { content = fs.readFileSync(filePath, 'utf8') } catch { continue }
-        if (!content.includes(marker)) continue
+        try {
+          if (!fileContainsUtf8MarkerSync(filePath, marker)) continue
+        } catch { continue }
         backfillSearchEntries(agentId, filePath, sessionId)
         cursors[sessionId] = { ...(cursors[sessionId] || {}), searchBackfilled: true }
         found++
@@ -3104,7 +3141,7 @@ async function checkAgentLiveness() {
         // growing. The read path is cursor-based, so this is a cheap heartbeat
         // drain for live non-Claude agents and closes the "alive agent, dead
         // activity cards" gap without replaying old history.
-        readNewSessionLines(agent.id, watchedPath, watcher.sessionId, watcher.harnessKind)
+        scheduleReadNewSessionLines(agent.id, watchedPath, watcher.sessionId, watcher.harnessKind)
       }
     }
     aliveAgentIds.push(agent.id)
