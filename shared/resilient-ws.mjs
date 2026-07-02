@@ -19,6 +19,7 @@ export class ResilientWS {
    * @param {(ws) => void}  [options.onOpen]     — called after connection opens
    * @param {(msg) => void} options.onMessage    — called with parsed JSON message
    * @param {() => void}    [options.onClose]    — called on connection loss (before retry)
+   * @param {(reason: string) => void} [options.onActivity] — called on open/message/ping liveness
    * @param {(s: string) => void} [options.log]  — log function (default: console.log)
    */
   constructor(options) {
@@ -36,6 +37,7 @@ export class ResilientWS {
     this._onOpen = options.onOpen
     this._onMessage = options.onMessage
     this._onClose = options.onClose
+    this._onActivity = options.onActivity
     this._log = options.log ?? ((s) => console.log(s))
 
     this._ws = null
@@ -72,11 +74,13 @@ export class ResilientWS {
         this._log(`[${this._label}] connected`)
         this._backoff = this._initialBackoff
         this._resetHeartbeat()
+        this._onActivity?.('open')
         this._onOpen?.(ws)
       })
 
       ws.on('message', (raw) => {
         this._resetHeartbeat()
+        this._onActivity?.('message')
         let msg
         try { msg = JSON.parse(raw.toString()) } catch (e) { this._log(`[${this._label}] bad JSON: ${e.message}`); return }
         this._onMessage(msg)
@@ -92,7 +96,10 @@ export class ResilientWS {
       // a consumer's timeout, that consumer will false-reconnect. Purely
       // additive: a reset only ever pushes the deadline later, so it can never
       // shorten an existing reconnect.
-      ws.on('ping', () => this._resetHeartbeat())
+      ws.on('ping', () => {
+        this._resetHeartbeat()
+        this._onActivity?.('ping')
+      })
 
       ws.on('close', (code, reason) => {
         this._log(`[${this._label}] closed (${code} ${reason || ''})`)

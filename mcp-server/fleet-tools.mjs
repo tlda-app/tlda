@@ -40,6 +40,7 @@ import { normalizeRefNumber as _normalizeRefNumber, refTypeForName as _refTypeFo
 import { harnessFromEnv } from './lib/harness-adapters.mjs';
 import WebSocket from 'ws';
 import { ResilientWS } from '../shared/resilient-ws.mjs';
+import { rejectWsRequests, resetWsRequestIdleTimers, startWsRequest } from '../shared/ws-request-policy.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BIN = path.join(__dirname, 'bin');
@@ -2279,7 +2280,7 @@ export async function handleFleetTool(name, args) {
           kind: spawnOpts.kind,
           cwd: agentCwd,
           capability: spawnOpts.capability,
-        }, { timeoutMs: SPAWN_WS_TIMEOUT_MS });
+        }, { deadlineMs: SPAWN_WS_DEADLINE_MS });
         if (spawnResult?.ok === false || spawnResult?.error) {
           return { content: [{ type: 'text', text: `spawn failed before delegation: ${spawnResult.error || JSON.stringify(spawnResult)}` }], isError: true };
         }
@@ -3632,7 +3633,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
         capability: args.capability,
         privileges: args.privileges,
         policy: args.policy,
-      }, { timeoutMs: SPAWN_WS_TIMEOUT_MS });
+      }, { deadlineMs: SPAWN_WS_DEADLINE_MS });
       if (result?.ok === false || result?.error) {
         return { content: [{ type: 'text', text: `spawn failed: ${result.error || JSON.stringify(result)}` }], isError: true };
       }
@@ -4898,12 +4899,12 @@ let _channelRWS = null;  // ResilientWS instance
 
 // Request/response over WS — pending callbacks keyed by correlation ID
 const _wsPending = new Map();
-const WS_TIMEOUT_MS = 10000;
+const WS_REQUEST_IDLE_MS = 45_000;
 // Fresh spawn has a longer valid path than ordinary fleet requests:
 // server spawn RPC timeout/recovery can consume 10s, then registration
-// readiness can wait up to 20s. Keep normal requests tight, but do not let the
-// MCP caller abandon a spawn after 10s and skip the following delegation step.
-const SPAWN_WS_TIMEOUT_MS = 30000;
+// readiness can wait up to 20s. Spawn is a caller-owned policy deadline, not
+// the transport default for every request.
+const SPAWN_WS_DEADLINE_MS = 30_000;
 
 /**
  * Send a request over the WS channel and wait for a response.
@@ -4913,29 +4914,25 @@ const SPAWN_WS_TIMEOUT_MS = 30000;
 function _sendWSOnce(type, params = {}, opts = {}) {
   if (!_channelRWS?.connected) return null;
   const id = crypto.randomUUID();
-  const timeoutMs = opts.timeoutMs || WS_TIMEOUT_MS;
-  const promise = new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      _wsPending.delete(id);
-      reject(new Error('WS request timeout'));
-    }, timeoutMs);
-    _wsPending.set(id, { resolve, reject, timer });
+  const idleTimeoutMs = opts.idleTimeoutMs ?? WS_REQUEST_IDLE_MS;
+  const deadlineMs = opts.deadlineMs;
+  return startWsRequest({
+    pending: _wsPending,
+    id,
+    type,
+    idleTimeoutMs,
+    deadlineMs,
+    send: () => _channelRWS.send({ type, ...params, id }),
   });
-  if (!_channelRWS.send({ type, ...params, id })) {
-    const pending = _wsPending.get(id);
-    if (pending) { clearTimeout(pending.timer); _wsPending.delete(id); }
-    return null;
-  }
-  return promise;
 }
 
 // Retry transient disconnects before reporting the server as down. The common
 // false "server down" is a momentary !connected window while ResilientWS
 // reconnects — it fails instantly, not because of a real outage — so we retry
 // that fast not-connected case a few times (~2s total) to ride through the
-// reconnect. A genuine in-flight request timeout (WS_TIMEOUT_MS = a real stall)
-// is NOT retried; it surfaces as before. Contract preserved: resolves with data
-// when up, returns null only when still not connected after the retries.
+// reconnect. A genuine in-flight idle timeout is NOT retried; it surfaces as an
+// explicit timeout. Contract preserved: resolves with data when up, returns null
+// only when still not connected after the retries.
 async function sendWS(type, params = {}, opts = {}) {
   const MAX_ATTEMPTS = 4;
   const RETRY_DELAY_MS = 700;
@@ -4996,11 +4993,12 @@ function startChannelWS() {
       process.stderr.write(`[fleet-channel] re-registered ${AGENT_ID}\n`);
       setTimeout(_flushUnread, 500);
     },
+    onActivity: () => {
+      resetWsRequestIdleTimers(_wsPending);
+    },
     onMessage: (msg) => {
       if (msg.id && _wsPending.has(msg.id)) {
-        const { resolve, reject, timer } = _wsPending.get(msg.id);
-        _wsPending.delete(msg.id);
-        clearTimeout(timer);
+        const { resolve, reject } = _wsPending.get(msg.id);
         if (msg.error) {
           const detail = typeof msg.error === 'object' && msg.error !== null ? msg.error : { message: msg.error };
           const err = new Error(detail.message || String(msg.error));
@@ -5019,11 +5017,7 @@ function startChannelWS() {
       handleChannelMessage(msg);
     },
     onClose: () => {
-      for (const [id, { reject, timer }] of _wsPending) {
-        clearTimeout(timer);
-        reject(new Error('WS connection closed'));
-      }
-      _wsPending.clear();
+      rejectWsRequests(_wsPending, ({ type }) => new Error(`WS connection closed (type=${type})`));
     },
   });
   _channelRWS.connect();

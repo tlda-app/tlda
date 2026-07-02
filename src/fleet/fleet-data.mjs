@@ -31,6 +31,7 @@ import { log } from '../logger'
 import { probe } from '../perf-probe'
 import { DATABASE_HTTP, DATABASE_WS } from '../activeConfig'
 import { storedIdentityLoginFailureAction, temporaryIdentityName } from './identity-persistence.mjs'
+import { rejectWsRequests, resetWsRequestIdleTimers, startWsRequest } from '../../shared/ws-request-policy.mjs'
 
 // The global fleet/event store (chat, agents, activity, tasks) = the active
 // config's DATABASE, read directly from the server-injected config. No fetch, no
@@ -519,7 +520,7 @@ export function respawnAgent(id) {
 export function spawnAgent(model, doc, name, effort) {
   return wsSend(
     { type: 'spawn', fresh: true, model, ...(doc ? { doc } : {}), ...(name ? { name } : {}), ...(effort ? { effort } : {}) },
-    { timeoutMs: 30_000 }
+    { deadlineMs: SPAWN_WS_DEADLINE_MS }
   )
 }
 
@@ -588,6 +589,12 @@ export function disconnectedFor() { return _connected ? 0 : (_disconnectedAt ? D
 // WS request/response: pending callbacks keyed by message ID
 let _wsReqId = 0
 const _wsCallbacks = new Map()
+const WS_REQUEST_IDLE_MS = 45_000
+const SPAWN_WS_DEADLINE_MS = 30_000
+
+function markWsActivity() {
+  resetWsRequestIdleTimers(_wsCallbacks)
+}
 
 function _startHeartbeat() {
   if (_heartbeatInterval) clearInterval(_heartbeatInterval)
@@ -614,16 +621,19 @@ export function sendViewingContext(context) {
   }
 }
 
-function wsSend(msg, { timeoutMs = 5000 } = {}) {
+function wsSend(msg, { idleTimeoutMs = WS_REQUEST_IDLE_MS, deadlineMs } = {}) {
   if (!_ws || _ws.readyState !== 1) return Promise.reject(new Error('not connected'))
   const id = ++_wsReqId
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      _wsCallbacks.delete(id)
-      reject(new Error('timeout'))
-    }, timeoutMs)
-    _wsCallbacks.set(id, { resolve, reject, timer })
-    _ws.send(JSON.stringify({ ...msg, id }))
+  return startWsRequest({
+    pending: _wsCallbacks,
+    id,
+    type: msg.type,
+    idleTimeoutMs,
+    deadlineMs,
+    send: () => {
+      _ws.send(JSON.stringify({ ...msg, id }))
+      return true
+    },
   })
 }
 
@@ -635,6 +645,7 @@ export function connect() {
   _ws = new WebSocket(wsUrl)
 
   _ws.onopen = () => {
+    markWsActivity()
     _reconnectDelay = 1000
     _connected = true
     notify('connection', { type: 'connection', connected: true })
@@ -711,6 +722,7 @@ export function connect() {
   }
 
   _ws.onclose = (ev) => {
+    rejectWsRequests(_wsCallbacks, ({ type }) => new Error(`WS connection closed (type=${type})`))
     _ws = null
     _connected = false
     _disconnectedAt = _disconnectedAt || Date.now()
@@ -724,14 +736,13 @@ export function connect() {
 
   _ws.onmessage = (e) => {
     try {
+      markWsActivity()
       const msg = JSON.parse(e.data)
 
       // Handle request/response messages (replies to wsSend)
       if (msg.id && (msg.result !== undefined || msg.error !== undefined)) {
         const cb = _wsCallbacks.get(msg.id)
         if (cb) {
-          _wsCallbacks.delete(msg.id)
-          clearTimeout(cb.timer)
           // Reconcile optimistic events SYNCHRONOUSLY before resolving —
           // the next WS message may be the echo, and _dbId must be set
           // before the echo's dedup check runs.
