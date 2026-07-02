@@ -406,6 +406,20 @@ export class FleetStore {
     if (!agentCols.some(c => c.name === 'pretty_name')) {
       this.db.exec("ALTER TABLE agents ADD COLUMN pretty_name TEXT");
     }
+    const backfillPrettyNameRows = this.db.prepare(`
+      SELECT id, friendly_name FROM agents
+      WHERE friendly_name IS NOT NULL
+        AND friendly_name != ''
+        AND (pretty_name IS NULL OR pretty_name = '')
+    `).all();
+    if (backfillPrettyNameRows.length) {
+      const setPrettyName = this.db.prepare('UPDATE agents SET pretty_name = ? WHERE id = ?');
+      this.db.transaction((rows) => {
+        for (const row of rows) {
+          setPrettyName.run(serializePrettyName(prettyNameForFriendlyName(row.friendly_name)), row.id);
+        }
+      })(backfillPrettyNameRows);
+    }
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_agents_machine ON agents(machine_id)");
 
     // Add lineage columns to agents if missing

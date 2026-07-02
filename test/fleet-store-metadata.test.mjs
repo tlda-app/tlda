@@ -98,4 +98,35 @@ describe('FleetStore agent metadata', () => {
       fs.rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it('backfills missing pretty_name from friendly_name without replacing custom values', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-store-pretty-backfill-'))
+    const dbPath = path.join(dir, 'fleet.db')
+    let store = new FleetStore(dbPath)
+
+    try {
+      store.upsertAgent({ id: 'fleet:chief-day', friendly_name: 'chief:day', labels: [] })
+      store.upsertAgent({
+        id: 'fleet:custom',
+        friendly_name: 'custom:day',
+        pretty_name: [{ kind: 'glyph', id: 'custom', glyph: 'C' }, 'custom'],
+        labels: [],
+      })
+      store.close()
+
+      store = new FleetStore(dbPath)
+      const backfilled = store.getAgent('fleet:chief-day')
+      assert.equal(backfilled.friendly_name, 'chief:day')
+      assert.deepEqual(backfilled.pretty_name, [
+        { kind: 'glyph', id: 'day', glyph: '☀', label: '☀' },
+        'chief',
+      ])
+
+      const custom = store.getAgent('fleet:custom')
+      assert.deepEqual(custom.pretty_name, [{ kind: 'glyph', id: 'custom', glyph: 'C' }, 'custom'])
+    } finally {
+      store.close()
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })
