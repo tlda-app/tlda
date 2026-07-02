@@ -22,3 +22,10 @@
 - **Next layer (design-ready, not blocking):** fleet ID becomes **stable + cryptographic** — unforgeable identity the agent *proves*. Build the config/grant storage ready to key on it, but don't block the config fix on it.
 
 **NOT in scope here:** the partial-rename ghost-hell is a **friendly-name** atomicity bug at a different level — do not try to solve it with this work.
+
+**`db-write-direct` is a distinct named capability, above `full`-for-app-work.** Rationale: writing the server DB directly bypasses the event-emitting API and can leave state half-applied (this is the root of the partial-rename ghost-hell — a bot wrote a rename row without firing the rename events).
+- **Off by default.** Only ops/repair seats get it (escape hatch for when the API path itself is broken).
+- **Every bot (todd) and every doer is denied it** — they're forced through the API, which writes + emits events atomically.
+- So the profile set is roughly: `none` < `read-only` < `app-dev` < `full` (app work) < `+db-write-direct` (ops/repair only).
+
+This is fence-config scope (a capability in the profiles). The *enforcement* that identity mutations must go through the event-emitting API is workstream #2 — note it in the doc as related, but don't build it now.
