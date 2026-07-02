@@ -303,6 +303,13 @@ function fenceLogPath(policy) {
 }
 
 export function wrapSandboxCmd(cmd, policy, opts = {}) {
+  // Fence stripped out (Skip's call, 2026-07-02): the sandbox wrapper
+  // over-restricted every spawned agent — no `ps`, no `~/.fly`, no git
+  // worktrees — and repeatedly blocked agents from doing real work, including
+  // fixing the fence itself. Launch every agent command UNWRAPPED. This is a
+  // one-line revert (delete the `return cmd` below) if a fence is reinstated.
+  return cmd
+  // eslint-disable-next-line no-unreachable
   if (!policy) return cmd
   const runner = policy.runner || {}
   const command = runner.command

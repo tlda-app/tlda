@@ -1562,6 +1562,16 @@ export class FleetStore {
       // which would leave an alive-but-nameless phantom row off any lineage.
       if (!base) return;
       const nextName = nameForPhase(base, newPhase);
+      // Global friendly_name uniqueness (the "two chiefs" bug): a name may
+      // belong to at most one non-dead agent. If a live agent OUTSIDE this
+      // lineage already holds nextName, bail rather than mint a duplicate —
+      // same safety stance as the "bail rather than NULL" guard above. The
+      // per-lineage free happens in the rotation paths; this is the global
+      // backstop the lineage paths were missing.
+      const nameHeldByOther = this.db.prepare(
+        'SELECT id FROM agents WHERE friendly_name = ? AND dead = 0 AND id != ?'
+      ).get(nextName, agentId);
+      if (nameHeldByOther) return;
       this.db.prepare(
         'UPDATE lineage_phase_log SET exited_at = ? WHERE fleet_id = ? AND exited_at IS NULL'
       ).run(now, agentId);

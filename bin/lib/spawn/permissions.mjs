@@ -205,6 +205,17 @@ export function resolveLeasePolicy({ spawnPolicy, privilegeSet = null, harness, 
     ]
     if (normalized.network !== false) options.network = true
   }
+  // Baseline write floor (Skip's spec, 2026-07-02): every write-capable agent
+  // may write anywhere under ~/work. The fence must NEVER intersect below this
+  // floor — the old `cwd`-clamp (writes only in the launch dir) is the "insane
+  // in practice" behavior that trapped agents for weeks. Reads already default
+  // to ~/work (DEFAULT_READ_ROOTS); this makes writes match. Read-only agents
+  // (cap === 'read') keep no writes; escalation prevention still caps the
+  // ceiling — this only guarantees the floor.
+  if (cap !== 'read') {
+    const workRoot = path.join(os.homedir(), 'work')
+    writeRoots = [...writeRoots, workRoot, path.join(workRoot, '**')]
+  }
   const explicitReadRoots = explicitPrivilegeSet ? resolvedPrivilegeZones(privilegeSet, 'read', 'allow', workspace) : []
   const readRoots = [...new Set([
     workspace,
