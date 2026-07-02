@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -13,6 +14,30 @@ import { claudeStartupDialogAction } from '../bin/lib/spawn/tmux.mjs'
 
 function tmpdir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'spawn-node-step3-'))
+}
+
+function privateTmpdir(prefix) {
+  const base = fs.existsSync('/private/tmp') ? '/private/tmp' : os.tmpdir()
+  return fs.mkdtempSync(path.join(base, prefix))
+}
+
+function git(cwd, args) {
+  return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim()
+}
+
+function makeGitRepo() {
+  const dir = tmpdir()
+  git(dir, ['init', '-b', 'main'])
+  git(dir, ['config', 'user.email', 'test@example.com'])
+  git(dir, ['config', 'user.name', 'TLDA Test'])
+  fs.writeFileSync(path.join(dir, 'README.md'), 'hello\n')
+  git(dir, ['add', 'README.md'])
+  git(dir, ['commit', '-m', 'init'])
+  return dir
 }
 
 function privilegeSet(name, operations) {
@@ -325,6 +350,43 @@ test('default cwd lease writes cwd plus tool-support roots with unrestricted git
   assert.equal(settings.filesystem.allowWrite.includes(path.join(os.homedir(), 'Library/Keychains')), false)
   assert.deepEqual(settings.command.deny, [])
   assert.equal(settings.command.useDefaults, true)
+})
+
+test('worktree cwd lease includes external gitdir and commondir metadata roots', () => {
+  const repo = makeGitRepo()
+  const worktreeParent = privateTmpdir('spawn-node-step3-worktree-parent-')
+  const worktree = path.join(worktreeParent, 'linked-worktree')
+  try {
+    git(repo, ['worktree', 'add', '-b', 'linked-test', worktree])
+    const dotGitText = fs.readFileSync(path.join(worktree, '.git'), 'utf8')
+    const gitDirMatch = dotGitText.match(/^gitdir:\s*(.+)\s*$/m)
+    assert.ok(gitDirMatch, 'linked worktree .git file should point at external gitdir')
+    const gitDir = path.resolve(worktree, gitDirMatch[1].trim())
+    const commonDirText = fs.readFileSync(path.join(gitDir, 'commondir'), 'utf8').trim()
+    const commonDir = path.resolve(gitDir, commonDirText)
+
+    const { leasePolicy } = resolveLeasePolicy({
+      spawnPolicy: { capability: 'write', policy: 'cwd' },
+      privilegeSet: cwdPrivilegeSet(worktree),
+      harness: 'codex',
+      model: 'gpt-5.5',
+      cwd: worktree,
+      config: { agentSandbox: { runner: { command: 'fence' } } },
+    })
+    for (const root of [gitDir, path.join(gitDir, '**'), commonDir, path.join(commonDir, '**')]) {
+      assert.ok(leasePolicy.write_roots.includes(root), `lease should allow git metadata root ${root}`)
+    }
+    assert.ok(leasePolicy.write_roots.includes(path.join(worktree, '**')))
+
+    const settings = fenceSettings(leasePolicy, { api: 'https://tlda-fly.example.test' })
+    for (const root of [gitDir, path.join(gitDir, '**'), commonDir, path.join(commonDir, '**')]) {
+      assert.ok(settings.filesystem.allowWrite.includes(root), `fence settings should allow git metadata root ${root}`)
+    }
+    assert.ok(settings.filesystem.allowWrite.includes(path.join(worktree, '**')))
+  } finally {
+    fs.rmSync(worktreeParent, { recursive: true, force: true })
+    fs.rmSync(repo, { recursive: true, force: true })
+  }
 })
 
 test('math lease writes tlda project roots plus shared guidance, not the app repo', () => {
