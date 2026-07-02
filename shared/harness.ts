@@ -29,7 +29,7 @@ export interface ModelClassification {
   isOpenAiModel: boolean
 }
 
-const CLAUDE_MODEL_NAMES = new Set(['opus', 'opus45', 'opus46', 'opus47', 'opus48', 'fable', 'fable5', 'sonnet', 'haiku'])
+const CLAUDE_MODEL_NAMES = new Set(['opus', 'opus45', 'opus46', 'opus47', 'opus48', 'fable', 'fable5', 'sonnet', 'sonnet5', 'haiku'])
 const MODEL_ALIASES = new Map<string, string>([
   ['opus', 'claude-opus-4-8'],
   ['opus45', 'claude-opus-4-5'],
@@ -38,7 +38,8 @@ const MODEL_ALIASES = new Map<string, string>([
   ['opus48', 'claude-opus-4-8'],
   ['fable', 'claude-opus-4-8'],
   ['fable5', 'claude-opus-4-5'],
-  ['sonnet', 'claude-sonnet'],
+  ['sonnet', 'claude-sonnet-5'],
+  ['sonnet5', 'claude-sonnet-5'],
   ['haiku', 'claude-haiku'],
   ['gpt', 'gpt-5.5'],
   ['deepseek', 'deepseek/deepseek-v4-pro'],

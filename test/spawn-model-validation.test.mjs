@@ -11,6 +11,8 @@ const catalog = {
   default: 'deepseek/deepseek-v4-pro',
   models: [
     { alias: 'opus48', id: 'claude-opus-4-8[1m]', kind: 'claude', verified: true },
+    { alias: 'fable', id: 'claude-opus-4-8[1m]', kind: 'claude', verified: true },
+    { alias: 'sonnet', id: 'claude-sonnet-5', kind: 'claude', verified: true },
     { alias: 'gpt', id: 'gpt-5.5', kind: 'codex', verified: true },
     { alias: 'gpt-5.5', id: 'gpt-5.5', kind: 'codex', verified: true },
     { alias: 'deepseek', id: 'deepseek/deepseek-v4-pro', kind: 'goose', verified: true },
@@ -50,13 +52,21 @@ test('spawn model validation allows raw vendor/model ids only through Goose', ()
 
 test('spawn model summary exposes canonical aliases without hiding Codex or Goose', () => {
   const summary = formatSpawnModelSummary(catalog, { verifiedOnly: true })
+  assert.match(summary, /claude: .*fable -> claude-opus-4-8\[1m\]/)
   assert.match(summary, /claude: .*opus48/)
+  assert.match(summary, /claude: .*sonnet -> claude-sonnet-5/)
   assert.match(summary, /codex: .*gpt-5\.5/)
   assert.match(summary, /goose: .*deepseek -> deepseek\/deepseek-v4-pro/)
 })
 
-test('node spawn live model catalog keeps DeepSeek and Codex aliases spawnable', () => {
+test('node spawn live model catalog keeps Claude, DeepSeek, and Codex aliases spawnable', () => {
   const liveCatalog = listModels()
+  const fable = validateSpawnModelSelection({ model: 'fable', kind: 'claude' }, liveCatalog)
+  assert.equal(fable.ok, true)
+  assert.equal(fable.model.id, 'claude-opus-4-8[1m]')
+  const sonnet = validateSpawnModelSelection({ model: 'sonnet', kind: 'claude' }, liveCatalog)
+  assert.equal(sonnet.ok, true)
+  assert.equal(sonnet.model.id, 'claude-sonnet-5')
   assert.equal(validateSpawnModelSelection({ model: 'deepseek', kind: 'goose' }, liveCatalog).ok, true)
   assert.equal(validateSpawnModelSelection({ model: 'gpt-5.5', kind: 'codex' }, liveCatalog).ok, true)
 

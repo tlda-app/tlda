@@ -10,6 +10,7 @@ import { prettyNameForFriendlyName } from '../../../shared/lineage-name.mjs'
 import { readConfig } from './identity.mjs'
 
 const MKCERT_CA = path.join(os.homedir(), 'Library/Application Support/mkcert/rootCA.pem')
+const TLDA_LOCAL_CERT = path.join(os.homedir(), '.config', 'tlda', 'localhost+2.pem')
 
 function httpForm(url) {
   return String(url || '').replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/+$/, '')
@@ -39,7 +40,18 @@ export function resolveApi({ env = process.env, config = null } = {}) {
 
 export function tlsOptionsForApi(api) {
   if (!String(api).startsWith('https://') || !fs.existsSync(MKCERT_CA)) return {}
-  const ca = [...tls.rootCertificates, fs.readFileSync(MKCERT_CA, 'utf8')]
+  let localCa = null
+  try {
+    localCa = fs.readFileSync(MKCERT_CA, 'utf8')
+  } catch (e) {
+    if (e?.code !== 'EPERM' && e?.code !== 'EACCES' && e?.code !== 'ENOENT') throw e
+    try {
+      localCa = fs.readFileSync(TLDA_LOCAL_CERT, 'utf8')
+    } catch {
+      return {}
+    }
+  }
+  const ca = [...tls.rootCertificates, localCa]
   return {
     agent: new https.Agent({ ca }),
     ca,

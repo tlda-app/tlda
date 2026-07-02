@@ -1,12 +1,15 @@
 export const DEFAULT_MODEL = 'claude-opus-4-8[1m]'
 
 export const MODEL_ALIASES = Object.freeze({
+  fable: DEFAULT_MODEL,
+  fable5: 'claude-opus-4-5',
   opus: DEFAULT_MODEL,
   opus45: 'claude-opus-4-5',
   opus46: 'claude-opus-4-6[1m]',
   opus47: 'claude-opus-4-7[1m]',
   opus48: 'claude-opus-4-8[1m]',
-  sonnet: 'claude-sonnet-4-6',
+  sonnet: 'claude-sonnet-5',
+  sonnet5: 'claude-sonnet-5',
   haiku: 'claude-haiku-4-5',
 })
 

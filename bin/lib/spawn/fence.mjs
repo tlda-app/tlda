@@ -85,12 +85,16 @@ const FENCE_AGENT_READ_ROOTS = [
   '/var/folders/*/*/T/xcrun_db*',
   '~/.codex',
   '~/.claude',
+  '~/.claude/**',
   '~/.claude.json',
   '~/.config/tlda',
+  '~/.config/tlda/**',
   '~/.config/fence',
   '~/Library/Application Support/mkcert',
+  '~/Library/Application Support/mkcert/**',
   '~/Library/Preferences',
   '~/Library/Keychains',
+  '~/Library/Keychains/**',
 ]
 const FENCE_SECRET_PATTERNS = [
   '~/.ssh/id_*', '~/.ssh/*.key', '~/.ssh/*.pem', '~/.ssh/*.p12', '~/.ssh/*.pfx',
@@ -143,6 +147,14 @@ const CHROME_FOR_TESTING_MACH_SERVICES = [
   'com.google.ChromeForTesting.MachPortRendezvousServer.*',
   'org.chromium.crashpad.child_port_handshake.*',
   'org.chromium.Chromium.MachPortRendezvousServer.*',
+]
+const AUTH_MACH_SERVICES = [
+  'com.apple.securityd',
+  'com.apple.securityd.*',
+  'com.apple.trustd',
+  'com.apple.trustd.*',
+  'com.apple.analyticsd',
+  'com.apple.diagnosticd',
 ]
 
 function sq(value) {
@@ -230,7 +242,7 @@ export function fenceSettings(policy, { api, dnsAlias } = {}) {
     },
     macos: {
       mach: {
-        lookup: CHROME_FOR_TESTING_MACH_SERVICES,
+        lookup: [...CHROME_FOR_TESTING_MACH_SERVICES, ...AUTH_MACH_SERVICES],
         register: CHROME_FOR_TESTING_MACH_SERVICES,
       },
     },

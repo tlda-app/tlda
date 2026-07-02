@@ -32,9 +32,9 @@ const DEFAULT_H = 400
 
 const MODEL_SHORTHANDS: Record<string, string> = {
   'opus': 'opus', 'opus45': 'opus45', 'opus46': 'opus46', 'opus47': 'opus47', 'opus48': 'opus48',
-  'sonnet': 'sonnet', 'haiku': 'haiku',
+  'fable': 'fable', 'fable5': 'fable5', 'sonnet': 'sonnet', 'sonnet5': 'sonnet5', 'haiku': 'haiku',
   '45': 'opus45', '46': 'opus46', '47': 'opus47', '48': 'opus48',
-  's': 'sonnet', 'h': 'haiku',
+  's': 'sonnet', 's5': 'sonnet5', 'h': 'haiku',
   'o45': 'opus45', 'o46': 'opus46', 'o47': 'opus47', 'o48': 'opus48',
   'ds': 'deepseek',
 }
@@ -55,7 +55,7 @@ const EFFORT_SHORTHANDS: Record<string, string> = {
 // short and representative instead of a wall of Claude aliases. Goose subset
 // confirmed with teacher-dev (the leaderboard set).
 const CURATED_SPAWN_MODELS = [
-  'opus', 'sonnet', 'haiku',
+  'opus', 'fable', 'sonnet', 'haiku',
   'deepseek', 'kimi', 'qwen', 'glm', 'minimax', 'mistral',
 ]
 const CAT_NAMES = [

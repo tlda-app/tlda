@@ -13,6 +13,7 @@ const models = [
   'fable',
   'fable5',
   'sonnet',
+  'sonnet5',
   'haiku',
   'claude-3-5-sonnet',
   'claude-opus-4-5',
@@ -20,7 +21,7 @@ const models = [
   'claude-opus-4-7[1m]',
   'claude-opus-4-8[1m]',
   'claude-fable-5[1m]',
-  'claude-sonnet-4-6',
+  'claude-sonnet-5',
   'claude-haiku-4-5',
   'gpt-5.5',
   'gpt-4o',
@@ -56,7 +57,7 @@ const models = [
   'unknown-model',
 ] as const
 
-const legacyClaudeNames = new Set(['opus', 'opus45', 'opus46', 'opus47', 'opus48', 'fable', 'fable5', 'sonnet', 'haiku'])
+const legacyClaudeNames = new Set(['opus', 'opus45', 'opus46', 'opus47', 'opus48', 'fable', 'fable5', 'sonnet', 'sonnet5', 'haiku'])
 
 function legacyIsClaudeModel(m: string): boolean {
   return m.startsWith('claude-') || legacyClaudeNames.has(m)

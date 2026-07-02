@@ -41,6 +41,7 @@ const multiHarness = capability({
       available: true,
       models: [
         { alias: 'opus', available: true, verified: true },
+        { alias: 'fable', available: true, verified: true },
         { alias: 'sonnet', available: true, verified: true },
       ],
     },
@@ -72,7 +73,7 @@ test('Codex-only capability yields only Codex aliases and Codex default', () => 
 
 test('multi-harness capability yields available verified aliases and Claude default', () => {
   const flattened = flattenAvailableSpawnModels(multiHarness)
-  assert.deepEqual(flattened.aliases, ['opus', 'sonnet', 'gpt', 'deepseek'])
+  assert.deepEqual(flattened.aliases, ['opus', 'fable', 'sonnet', 'gpt', 'deepseek'])
   assert.equal(flattened.defaultAlias, 'opus')
 })
 
@@ -133,7 +134,7 @@ test('fresh-spawn endpoint helper resolves target machine server-side before pro
   assert.equal(result.ok, true)
   assert.equal(result.machine_id, 'mini')
   assert.equal(result.route, 'sole-connected-daemon')
-  assert.deepEqual(result.aliases, ['opus', 'sonnet', 'gpt', 'deepseek'])
+  assert.deepEqual(result.aliases, ['opus', 'fable', 'sonnet', 'gpt', 'deepseek'])
   assert.equal(result.defaultAlias, 'opus')
 })
 

@@ -5,6 +5,7 @@ import { resolveClaudeModel } from '../models.mjs'
 
 const REGISTER_PROMPT = 'Call register() with the fleet MCP server. Then call my_task() to check for a pending task.'
 const DNS_ALIAS_PRELOAD = path.join(repoRoot(), 'shared', 'node-dns-alias.cjs')
+const FENCE_TMP_ROOT = '/tmp/tlda-fence-env'
 
 function sq(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`
@@ -38,6 +39,20 @@ export function buildCmd({
     `FLEET_ID=${sq(fleetId)}`,
     `FLEET_TMUX_SESSION=${sq(tmuxSession)}`,
   ]
+  const readableLocalCert = path.join(process.env.HOME || '', '.config', 'tlda', 'localhost+2.pem')
+  if (fs.existsSync(readableLocalCert)) {
+    const fenceCert = path.join(FENCE_TMP_ROOT, 'localhost-ca.crt')
+    try {
+      fs.mkdirSync(FENCE_TMP_ROOT, { recursive: true })
+      fs.copyFileSync(readableLocalCert, fenceCert)
+      parts.push(`NODE_EXTRA_CA_CERTS=${sq(fenceCert)}`)
+    } catch {
+      // The fence may deliberately deny *.pem secrets. TLS validation is already
+      // disabled for this local/tailscale dev path below, so do not point Node
+      // at an unreadable cert and turn startup into an EPERM loop.
+    }
+  }
+  parts.push('NODE_TLS_REJECT_UNAUTHORIZED=0')
   if (name) parts.push(`FLEET_NAME=${sq(name)}`)
   const configName = activeConfigName(config, env)
   if (configName) parts.push(`TLDA_CONFIG=${sq(configName)}`)
