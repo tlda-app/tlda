@@ -2406,7 +2406,8 @@ async function cmdAgentPrivileges() {
   try {
     requestedPolicy = normalizeRequestedPrivileges(profileArg)
   } catch (e) {
-    console.error(`Unknown privilege profile "${profileArg}". Supported profiles: ${privilegeNamesForError()}`)
+    const detail = e?.message ? `: ${e.message}` : ''
+    console.error(`Unknown privilege profile "${profileArg}"${detail}. Supported profiles: ${privilegeNamesForError()}`)
     process.exit(1)
   }
   const nextSpawnPolicy = {
