@@ -11,6 +11,7 @@
 export const FOLLOW_BOTTOM_EPS = 120 // absorbs the ~40px status footer below the last data item
 export const UP_JITTER_EPS = 4 // ignore sub-pixel / rounding scroll noise
 export const FOLLOW_CONVERGENCE_GAP = 200
+export const TRUE_BOTTOM_EPS = 8
 
 /**
  * @param {{top:number, height:number, clientHeight:number, lastTop:number, lastHeight:number}} sample
@@ -58,4 +59,12 @@ export function shouldConvergeToBottom(gap, state) {
 
 export function shouldGlueTailChange(prevTail, nextTail, state) {
   return !!nextTail && nextTail !== prevTail && (!state.scrolledUp || state.hardLocked)
+}
+
+export function isTrueBottomGap(gap) {
+  return Number.isFinite(gap) && Math.abs(gap) <= TRUE_BOTTOM_EPS
+}
+
+export function shouldResumeFollowFromBottom(atBottom, gap) {
+  return !!atBottom && isTrueBottomGap(gap)
 }

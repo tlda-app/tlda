@@ -58,7 +58,7 @@ import { getSourceAnchor } from '../synctexAnchor'
 import { log } from '../logger'
 import { linkifyDocRefs, linkifyArrowRefs, linkifyAtRefs, linkifyLabelRefs, linkifyRefCommands, buildRefResolver, refToCanvas, type DocRef, type ResolvedRef, type LabelRegionInfo, type TheoremMapEntry } from '../docLinks'
 // @ts-ignore — vanilla JS module
-import { decideFollowTransition, shouldConvergeToBottom, shouldGlueTailChange } from './chatScrollIntent.mjs'
+import { decideFollowTransition, isTrueBottomGap, shouldConvergeToBottom, shouldGlueTailChange, shouldResumeFollowFromBottom } from './chatScrollIntent.mjs'
 import { fetchProofInfo, fetchTheoremMap } from '../docInfoCache'
 import { PDF_HEIGHT } from '../layoutConstants'
 import { TerminalCard } from './TerminalCard'
@@ -3477,6 +3477,8 @@ function FleetChatInner({ shape }: { shape: any }) {
   const userScrolledUpRef = useRef(false)
   const prevTailMessageKeyRef = useRef(tailMessageKey)
   const prevTotalHeightRef = useRef(0)
+  const settleTailRunRef = useRef(0)
+  const activeSettleTailRunRef = useRef(0)
   // Reactive bottom-position state. Drives the unified follow/jump button:
   // at bottom → follow-mode toggle (horseshoe); off bottom → ⇣ jump-to-bottom.
   // Position (not scroll-intent) is the right signal here — matches the spec
@@ -3510,19 +3512,77 @@ function FleetChatInner({ shape }: { shape: any }) {
     return () => clearFleetEventsLiveTailPinned(shape.id)
   }, [shape.id])
 
-  const virtuosoScrollToBottom = useCallback(() => {
-    virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
-  }, [])
+  const settleToTail = useCallback((reason: string, opts: { force?: boolean; resumeFollow?: boolean } = {}) => {
+    const run = ++settleTailRunRef.current
+    activeSettleTailRunRef.current = run
+    let frame = 0
+    let stableBottomFrames = 0
+    let lastHeight = -1
+
+    const step = () => {
+      if (settleTailRunRef.current !== run) return
+      if (!opts.force && userScrolledUpRef.current && !hardLockedRef.current) {
+        if (activeSettleTailRunRef.current === run) activeSettleTailRunRef.current = 0
+        return
+      }
+
+      try {
+        virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
+      } catch (e) {
+        if (activeSettleTailRunRef.current === run) activeSettleTailRunRef.current = 0
+        log.debug('chat-scroll', 'settle-to-tail scrollToIndex skipped', { reason, e: String(e) })
+        return
+      }
+
+      requestAnimationFrame(() => {
+        if (settleTailRunRef.current !== run) return
+        const el = chatLogRef.current
+        const gap = el ? el.scrollHeight - (el.scrollTop + el.clientHeight) : Number.POSITIVE_INFINITY
+        const height = el?.scrollHeight ?? -1
+        stableBottomFrames = isTrueBottomGap(gap) && height === lastHeight ? stableBottomFrames + 1 : 0
+        lastHeight = height
+
+        if (stableBottomFrames >= 1) {
+          if (activeSettleTailRunRef.current === run) activeSettleTailRunRef.current = 0
+          isAtBottomRef.current = true
+          setAtBottom(true)
+          if (opts.resumeFollow || hardLockedRef.current) {
+            userScrolledUpRef.current = false
+            setFleetEventsLiveTailPinned(shape.id, true)
+          }
+          log.debug('chat-scroll', 'settle-to-tail reached true bottom', {
+            reason,
+            frame,
+            gap,
+            height,
+            resumeFollow: !!opts.resumeFollow,
+          })
+          return
+        }
+
+        frame += 1
+        if (frame < 12) {
+          requestAnimationFrame(step)
+        } else {
+          if (activeSettleTailRunRef.current === run) activeSettleTailRunRef.current = 0
+          log.debug('chat-scroll', 'settle-to-tail stopped before stable true bottom', {
+            reason,
+            gap,
+            height,
+            resumeFollow: !!opts.resumeFollow,
+          })
+        }
+      })
+    }
+
+    requestAnimationFrame(step)
+  }, [shape.id])
 
   // Imperative scroll-to-bottom for the floating ⇣ button.
   const scrollToBottom = useCallback(() => {
-    log.debug('chat-scroll', 'user clicked ⇣ jump-to-bottom → resume stick-to-bottom')
-    userScrolledUpRef.current = false
-    isAtBottomRef.current = true
-    setAtBottom(true)
-    setFleetEventsLiveTailPinned(shape.id, true)
-    virtuosoScrollToBottom()
-  }, [shape.id, virtuosoScrollToBottom])
+    log.debug('chat-scroll', 'user clicked ⇣ jump-to-bottom → settle at true tail before resuming follow')
+    settleToTail('jump-button', { force: true, resumeFollow: true })
+  }, [settleToTail])
 
   useLayoutEffect(() => {
     const prev = prevTailMessageKeyRef.current
@@ -3544,8 +3604,8 @@ function FleetChatInner({ shape }: { shape: any }) {
       scrolledUp: userScrolledUpRef.current,
       hardLocked: hardLockedRef.current,
     })
-    requestAnimationFrame(virtuosoScrollToBottom)
-  }, [tailMessageKey, virtuosoScrollToBottom])
+    settleToTail('tail-change')
+  }, [tailMessageKey, settleToTail])
 
   useEffect(() => {
     const el = chatLogEl
@@ -3566,16 +3626,22 @@ function FleetChatInner({ shape }: { shape: any }) {
       const gap = el.scrollHeight - top - el.clientHeight
       const { scrolledUp, action } = decideFollowTransition(
         { top, height, clientHeight: el.clientHeight, lastTop, lastHeight },
-        { scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current, programmatic: false },
+        { scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current, programmatic: activeSettleTailRunRef.current !== 0 },
       )
       lastTop = top
       lastHeight = height
       if (action === 'follow-off') {
         log.debug('chat-scroll', 'user scrolled UP → HOLD position, stop following (new messages will NOT yank)', { top, gap })
+        settleTailRunRef.current += 1
+        activeSettleTailRunRef.current = 0
         userScrolledUpRef.current = scrolledUp
         setFleetEventsLiveTailPinned(shape.id, false)
       } else if (action === 'follow-on') {
-        log.debug('chat-scroll', 'user returned to bottom → resume stick-to-bottom', { top, gap })
+        if (!isTrueBottomGap(gap)) {
+          log.debug('chat-scroll', 'near-bottom scroll ignored until true bottom', { top, gap })
+          return
+        }
+        log.debug('chat-scroll', 'user returned to true bottom → resume stick-to-bottom', { top, gap })
         userScrolledUpRef.current = scrolledUp
         setFleetEventsLiveTailPinned(shape.id, true)
       }
@@ -3605,8 +3671,8 @@ function FleetChatInner({ shape }: { shape: any }) {
     setAtBottom(true)
     setFirstItemIndex(1_000_000)
     setFleetEventsLiveTailPinned(shape.id, true)
-    requestAnimationFrame(virtuosoScrollToBottom)
-  }, [filterKey, shape.id, virtuosoScrollToBottom])
+    settleToTail('filter-change', { force: true, resumeFollow: true })
+  }, [filterKey, shape.id, settleToTail])
 
   // Terminal card hover — mouseover on .lc-terminal-card shows the terminal overlay.
   useEffect(() => {
@@ -5399,7 +5465,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                   itemCount: allItems.length,
                   messageCount: chatMessages.length,
                 })
-              if (shouldPin) requestAnimationFrame(virtuosoScrollToBottom)
+              if (shouldPin) settleToTail('content-height-growth')
             }}
             atBottomStateChange={(atBottom) => {
               const t0 = probe.isEnabled('chat') ? performance.now() : 0
@@ -5418,7 +5484,7 @@ function FleetChatInner({ shape }: { shape: any }) {
               }
               isAtBottomRef.current = atBottom
               setAtBottom(atBottom)
-              if (atBottom && userScrolledUpRef.current) {
+              if (shouldResumeFollowFromBottom(atBottom, gap) && userScrolledUpRef.current) {
                 userScrolledUpRef.current = false
                 setFleetEventsLiveTailPinned(shape.id, true)
               }
@@ -5606,7 +5672,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                 // At bottom: toggle follow mode.
                 setHardLocked(prev => {
                   const next = !prev
-                  if (next) requestAnimationFrame(virtuosoScrollToBottom)
+                  if (next) settleToTail('hard-lock-toggle', { force: true, resumeFollow: true })
                   return next
                 })
               }}

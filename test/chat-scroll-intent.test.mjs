@@ -4,6 +4,9 @@ import {
   decideFollowTransition,
   FOLLOW_BOTTOM_EPS,
   FOLLOW_CONVERGENCE_GAP,
+  TRUE_BOTTOM_EPS,
+  isTrueBottomGap,
+  shouldResumeFollowFromBottom,
   shouldConvergeToBottom,
   shouldGlueTailChange,
 } from '../src/shapes/chatScrollIntent.mjs'
@@ -175,5 +178,30 @@ test('J: tail replacement glues even when list length is constant', () => {
     shouldGlueTailChange('db:501', 'db:501', { scrolledUp: false, hardLocked: false }),
     false,
     'same tail is not a new event',
+  )
+})
+
+test('K: true-bottom is stricter than Virtuoso atBottom threshold', () => {
+  assert.equal(isTrueBottomGap(0), true)
+  assert.equal(isTrueBottomGap(TRUE_BOTTOM_EPS), true)
+  assert.equal(isTrueBottomGap(TRUE_BOTTOM_EPS + 1), false)
+  assert.equal(isTrueBottomGap(24), false, 'Virtuoso atBottomThreshold=24 is not enough to prove true bottom')
+})
+
+test('L: follow resumes only after Virtuoso atBottom also has true measured bottom', () => {
+  assert.equal(
+    shouldResumeFollowFromBottom(true, TRUE_BOTTOM_EPS),
+    true,
+    'atBottom plus true measured gap resumes follow',
+  )
+  assert.equal(
+    shouldResumeFollowFromBottom(true, TRUE_BOTTOM_EPS + 1),
+    false,
+    'loose atBottom without true measured gap must not resume follow',
+  )
+  assert.equal(
+    shouldResumeFollowFromBottom(false, 0),
+    false,
+    'true measured gap without Virtuoso bottom state is not a settled bottom',
   )
 })
