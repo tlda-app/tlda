@@ -25,7 +25,7 @@ import './AnnotationViewer.css'
 
 type ViewerState = 'hovering' | 'pinned' | 'navigated'
 
-const RETURN_HUD_TOP = 'calc(66px + env(safe-area-inset-top))'
+const RETURN_HUD_TOP = 'calc(154px + env(safe-area-inset-top))'
 const RETURN_HUD_RIGHT = 'calc(10px + env(safe-area-inset-right))'
 
 interface AnnotationViewerProps {

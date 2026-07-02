@@ -34,5 +34,6 @@ export async function uploadFileToServer(absPath, serverBaseUrl, timeoutMs = 100
   if (!res.ok) throw new Error(`upload failed: HTTP ${res.status}`)
   const data = await res.json()
   if (!data.url) throw new Error('upload returned no url')
-  return { url: data.url, fileName, mimeType: guessMimeType(fileName) }
+  const url = new URL(data.url, serverBaseUrl).toString()
+  return { url, fileName, mimeType: guessMimeType(fileName) }
 }
