@@ -6,11 +6,15 @@ import { repoRoot } from './identity.mjs'
 
 const SANDBOX_POLICIES = new Set(['no-dev', 'cwd', 'tlda-projects', 'unsandboxed'])
 const BUILTIN_POLICY_NAMES = new Set(['read', 'write', 'tlda-write', 'full'])
-const FENCE_GLOBALLY_DISABLED = true
+// Break-glass switch only. The durable target is a pw-capable fence: broad
+// safe writes work, while secret/chat-db/destructive paths stay denied.
+const FENCE_TEMPORARILY_DISABLED = true
 const DEFAULT_READ_ROOTS = ['~/work']
 const DEFAULT_OPTIONS = { network: false, git: 'read', artifacts: true }
 const DEFAULT_TRUSTED_MCP_SERVERS = { tlda: { defaultToolsApprovalMode: 'approve' } }
 const PLAYWRIGHT_CACHE_ROOT = path.join(os.homedir(), 'Library/Caches/ms-playwright')
+const CHROME_FOR_TESTING_CRASHPAD_ROOT = path.join(os.homedir(), 'Library/Application Support/Google/Chrome for Testing/Crashpad')
+const TLDA_PW_RUNTIME_ROOT = '/tmp/tlda-pw-runtime'
 const TLDA_FENCE_TMP_ROOT = '/tmp/tlda-fence-env'
 
 function expandUser(value) {
@@ -22,6 +26,23 @@ function expandUser(value) {
 
 function abs(value) {
   return path.resolve(expandUser(value))
+}
+
+function absOrPattern(value) {
+  const expanded = expandUser(value)
+  if (expanded === '**') return expanded
+  if (/[*?[\]]/.test(expanded)) return path.isAbsolute(expanded) ? expanded : path.resolve(expanded)
+  return path.resolve(expanded)
+}
+
+function resolvePrivilegeZone(value, workspace) {
+  const raw = String(value || '').trim()
+  if (!raw) return null
+  if (raw === '**') return raw
+  if (raw === 'cwd') return path.join(workspace, '**')
+  const expanded = expandUser(raw)
+  if (path.isAbsolute(expanded)) return expanded
+  return path.join(workspace, expanded)
 }
 
 function deepMerge(base, override) {
@@ -50,10 +71,6 @@ function truthyEnv(value) {
 function permissionClassifierDisabled(config = {}, env = process.env) {
   return truthyEnv(env.TLDA_DISABLE_PERMISSION_CLASSIFIER)
     || sandboxConfig(config).disablePermissionsClassifier === true
-}
-
-function isExplicitPolicy(normalized, explicitPolicy = false) {
-  return !!(explicitPolicy || (normalized?.name && !BUILTIN_POLICY_NAMES.has(normalized.name)))
 }
 
 function runnerFromConfig(cfg) {
@@ -117,6 +134,7 @@ export function sandboxMetadata(spawnPolicy, leasePolicy = null) {
       ...(spawnPolicy.policy ? { policy: spawnPolicy.policy } : {}),
       ...(spawnPolicy.name ? { name: spawnPolicy.name } : {}),
     },
+    ...(leasePolicy?.privilege_set ? { privilegeSet: leasePolicy.privilege_set } : {}),
     ...(leasePolicy ? { sandbox: stripRunner(leasePolicy) } : {}),
   }
 }
@@ -129,28 +147,36 @@ export function stripRunner(policy) {
 
 export function codexSandboxProjection(spawnPolicy, cwd, { fenced = false } = {}) {
   if (fenced) return { sandboxMode: 'danger-full-access', workspaceWriteConfigArgs: [], networkAccess: false }
-  const capability = spawnPolicy?.capability
-  if (capability === 'full') return { sandboxMode: 'danger-full-access', workspaceWriteConfigArgs: [], networkAccess: false }
-  if (capability === 'read') return { sandboxMode: 'read-only', workspaceWriteConfigArgs: [], networkAccess: false }
-  const writableRoots = [
-    path.join(os.homedir(), '.config', 'tlda'),
-    path.join(cwd, '.git'),
-  ]
-  return { sandboxMode: 'workspace-write', writableRoots, networkAccess: spawnPolicy.network !== false }
+  return { sandboxMode: 'danger-full-access', workspaceWriteConfigArgs: [], networkAccess: false }
 }
 
-export function resolveLeasePolicy({ spawnPolicy, harness, model, cwd, config = {} } = {}) {
+function privilegeZones(privilegeSet, operation, effect) {
+  const zones = privilegeSet?.operations?.[operation]?.[effect] || []
+  return Array.isArray(zones) ? zones.filter((zone) => typeof zone === 'string' && zone.trim()) : []
+}
+
+function resolvedPrivilegeZones(privilegeSet, operation, effect, workspace) {
+  return privilegeZones(privilegeSet, operation, effect)
+    .map((zone) => resolvePrivilegeZone(zone, workspace))
+    .filter(Boolean)
+}
+
+export function resolveLeasePolicy({ spawnPolicy, privilegeSet = null, harness, model, cwd, config = {} } = {}) {
   if (!spawnPolicy) return { policyName: null, devTools: true, leasePolicy: null }
   const normalized = normalizeSpawnPolicy(spawnPolicy)
   const policyName = normalized.policy
   if (!SANDBOX_POLICIES.has(policyName)) throw new Error(`agentSandbox policy "${policyName}" is not valid`)
-  if (policyName === 'unsandboxed') return { policyName, devTools: true, leasePolicy: null }
+  const explicitPrivilegeSet = privilegeSet && typeof privilegeSet === 'object' && !Array.isArray(privilegeSet)
+  if (policyName === 'unsandboxed' && !explicitPrivilegeSet) return { policyName, devTools: true, leasePolicy: null }
   if (policyName === 'no-dev') return { policyName, devTools: false, leasePolicy: null }
 
   const workspace = abs(cwd || process.cwd())
   let writeRoots = []
   let matchedRoot = workspace
-  if (policyName === 'cwd') {
+  if (explicitPrivilegeSet) {
+    writeRoots = resolvedPrivilegeZones(privilegeSet, 'write', 'allow', workspace)
+    matchedRoot = workspace
+  } else if (policyName === 'cwd') {
     writeRoots = [workspace]
   } else if (policyName === 'tlda-projects') {
     const roots = projectSourceDirs(config)
@@ -163,14 +189,32 @@ export function resolveLeasePolicy({ spawnPolicy, harness, model, cwd, config = 
   const policyOptions = cfg.policyOptions && typeof cfg.policyOptions === 'object' ? cfg.policyOptions : {}
   const options = deepMerge(DEFAULT_OPTIONS, policyOptions[policyName] || {})
   const cap = normalized.capability
-  if (cap === 'read') {
+  if (explicitPrivilegeSet) {
+    if (normalized.network !== false) options.network = true
+  } else if (cap === 'read') {
     writeRoots = []
   } else if (cap === 'write' || cap === 'tlda-write') {
-    writeRoots = [...writeRoots, path.join(os.homedir(), '.config', 'tlda'), PLAYWRIGHT_CACHE_ROOT, TLDA_FENCE_TMP_ROOT, path.join(workspace, '.git')]
+    writeRoots = [
+      ...writeRoots,
+      path.join(os.homedir(), '.config', 'tlda'),
+      CHROME_FOR_TESTING_CRASHPAD_ROOT,
+      path.join(CHROME_FOR_TESTING_CRASHPAD_ROOT, '**'),
+      TLDA_PW_RUNTIME_ROOT,
+      TLDA_FENCE_TMP_ROOT,
+      path.join(workspace, '.git'),
+    ]
     if (normalized.network !== false) options.network = true
   }
-  const readRoots = [...new Set([workspace, ...configPathList(cfg, 'readRoots', DEFAULT_READ_ROOTS), ...writeRoots].map(abs))].sort()
-  writeRoots = [...new Set(writeRoots.map(abs))].sort()
+  const explicitReadRoots = explicitPrivilegeSet ? resolvedPrivilegeZones(privilegeSet, 'read', 'allow', workspace) : []
+  const readRoots = [...new Set([
+    workspace,
+    PLAYWRIGHT_CACHE_ROOT,
+    CHROME_FOR_TESTING_CRASHPAD_ROOT,
+    ...configPathList(cfg, 'readRoots', DEFAULT_READ_ROOTS),
+    ...explicitReadRoots,
+    ...writeRoots,
+  ].map(absOrPattern))].sort()
+  writeRoots = [...new Set(writeRoots.map(absOrPattern))].sort()
   const trusted = deepMerge(DEFAULT_TRUSTED_MCP_SERVERS, cfg.trustedMcpServers || {})
   return {
     policyName,
@@ -184,6 +228,9 @@ export function resolveLeasePolicy({ spawnPolicy, harness, model, cwd, config = 
       workspace,
       read_roots: readRoots,
       write_roots: writeRoots,
+      deny_read_roots: explicitPrivilegeSet ? resolvedPrivilegeZones(privilegeSet, 'read', 'deny', workspace) : [],
+      deny_write_roots: explicitPrivilegeSet ? resolvedPrivilegeZones(privilegeSet, 'write', 'deny', workspace) : [],
+      ...(explicitPrivilegeSet ? { explicit_privilege_set: true, privilege_set: privilegeSet } : {}),
       network: options.network !== false,
       git: options.git || 'read',
       artifacts: options.artifacts !== false,
@@ -195,6 +242,7 @@ export function resolveLeasePolicy({ spawnPolicy, harness, model, cwd, config = 
 
 export function resolveLaunchPolicy({
   spawnPolicy,
+  privilegeSet = null,
   requestedCapability,
   harness,
   model,
@@ -209,14 +257,9 @@ export function resolveLaunchPolicy({
     spawnPolicy || requestedCapability || (harness === 'codex' ? 'write' : null),
     null,
   )
-  const codexRequiresExternalFence = harness === 'codex' && requestedPolicy?.policy !== 'unsandboxed'
-  const useFence = !!requestedPolicy && (
-    codexRequiresExternalFence
-    || !FENCE_GLOBALLY_DISABLED
-    || isExplicitPolicy(requestedPolicy, explicitPolicy)
-  )
+  const useFence = !!requestedPolicy && (!FENCE_TEMPORARILY_DISABLED || explicitPolicy || !!privilegeSet)
   const leaseResolution = useFence
-    ? resolveLeasePolicy({ spawnPolicy: requestedPolicy, harness, model, cwd, config })
+    ? resolveLeasePolicy({ spawnPolicy: requestedPolicy, privilegeSet, harness, model, cwd, config })
     : { policyName: requestedPolicy ? 'unsandboxed' : null, devTools: true, leasePolicy: null }
   const explicitMode = permissionMode ?? mode
   const effectivePermissionMode = permissionClassifierDisabled(config, env)
@@ -229,6 +272,7 @@ export function resolveLaunchPolicy({
     spawnPolicy: requestedPolicy,
     permissionMode: effectivePermissionMode,
     classifierDisabled: permissionClassifierDisabled(config, env),
-    fenceGloballyDisabled: FENCE_GLOBALLY_DISABLED,
+    fenceTemporarilyDisabled: FENCE_TEMPORARILY_DISABLED,
+    fenceGloballyDisabled: FENCE_TEMPORARILY_DISABLED,
   }
 }

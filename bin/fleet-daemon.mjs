@@ -2457,6 +2457,10 @@ const STARTUP_FAILURE_PROBE_MS = Number(process.env.TLDA_SPAWN_STARTUP_FAILURE_P
 const SPAWN_LAUNCH_TIMEOUT_MS = Number(process.env.TLDA_SPAWN_LAUNCH_TIMEOUT_MS || 20000)
 const _reportedStartupFailures = new Set()
 
+function traceDaemonSpawn(label, detail) {
+  log.info(`[spawn-trace] ${label} ${JSON.stringify({ ts: new Date().toISOString(), machineId: MACHINE_ID, ...detail })}`)
+}
+
 async function probeSpawnStartupFailure({ agentName, agent_id, tmux_session, harness, model, respawn }) {
   if (!agent_id || !tmux_session) return null
   const dedupKey = `${agent_id}:${tmux_session}`
@@ -2503,11 +2507,15 @@ async function rpcSpawn({
   effort,
   mode,
   requestedCapability,
+  requestedPrivileges,
   policy,
   callerRung,
+  requester,
 }) {
   const sessionId = session || session_id
   const agentName = name || (sessionId ? `session-${String(sessionId).slice(0, 8)}` : `agent-${Date.now().toString(36).slice(-4)}`)
+  let launchModel = model
+  let launchKind = kind
   if (_activeSpawns.has(agentName)) {
     const age = Date.now() - _activeSpawns.get(agentName)
     if (age < 90_000) {
@@ -2540,9 +2548,11 @@ async function rpcSpawn({
     const config = _loadSharedConfig()
     grant = resolveDaemonSpawnGrant({
       requestedCapability: requestedCapability || (policy != null ? 'write' : undefined),
+      requestedPrivileges,
       callerRung,
-      model,
-      kind,
+      requester,
+      model: launchModel,
+      kind: launchKind,
       config,
       doc,
       project: projectForGrant,
@@ -2551,6 +2561,23 @@ async function rpcSpawn({
   } catch (e) {
     return { ok: false, name: agentName, error: `spawn policy resolution failed: ${e.message}` }
   }
+  traceDaemonSpawn('grant', {
+    agentName,
+    agent_id: agent_id || null,
+    requestedKind: kind || null,
+    launchKind: launchKind || null,
+    requestedModel: model || null,
+    launchModel: launchModel || null,
+    requestedCapability: requestedCapability || null,
+    requestedPolicy: policy || null,
+    hasRequestedPrivileges: !!requestedPrivileges,
+    grantedCapability: grant.grantedCapability || null,
+    grantedPolicy: grant.grantedPolicy || null,
+    hasGrantedPrivilegeSet: !!grant.grantedPrivilegeSet,
+    cwd: resolvedCwd || null,
+    doc: doc || null,
+    requester: requester ? { id: requester.id || null, name: requester.name || null, human: !!requester.human, spawnPolicy: requester.spawnPolicy || null } : null,
+  })
   _activeSpawns.set(agentName, Date.now())
   try {
     const { spawn: nodeSpawn } = await import('./lib/spawn/index.mjs')
@@ -2558,17 +2585,27 @@ async function rpcSpawn({
       spawnMode: sessionId ? 'session' : (refresh ? 'refresh' : (respawn ? 'respawn' : 'fresh')),
       agentId: agent_id,
       name: agentName,
-      model,
-      kind,
+      model: launchModel,
+      kind: launchKind,
       cwd: resolvedCwd,
       sessionId,
       enroll: !!enroll,
       effort,
       permissionMode: mode,
       spawnPolicy: grant.grantedPolicy,
+      privilegeSet: grant.grantedPrivilegeSet,
       explicitPolicy: policy != null,
       machineId: MACHINE_ID,
       tmuxSocket: TMUX_SOCKET,
+    })
+    traceDaemonSpawn('launched', {
+      agentName,
+      agent_id: launched.fleetId,
+      tmux_session: launched.tmuxSession,
+      harness: launched.harness,
+      model: launched.model,
+      spawnPolicy: grant.grantedPolicy || null,
+      grantedCapability: grant.grantedCapability || null,
     })
     try {
       await tmux('has-session', '-t', launched.tmuxSession)
@@ -2597,6 +2634,12 @@ async function rpcSpawn({
       tmux_session: launched.tmuxSession,
       resume_id: launched.resumeId,
       enrolled: launched.enrolled,
+      spawnerCapability: grant.spawnerCapability,
+      projectCapability: grant.projectCapability,
+      modelCapability: grant.modelCapability,
+      localSpawnCapability: grant.localSpawnCapability,
+      requestedPrivilegeSet: grant.requestedPrivilegeSet,
+      grantedPrivilegeSet: grant.grantedPrivilegeSet,
       spawnPolicy: grant.grantedPolicy,
       grantedCapability: grant.grantedCapability,
     }

@@ -5,11 +5,39 @@ import { randomUUID } from 'crypto'
 import { execFileSync } from 'child_process'
 import { stripRunner } from './permissions.mjs'
 
+const FENCE_TEMP_ROOTS = [
+  '/tmp',
+  '/tmp/**',
+  '/private/tmp',
+  '/private/tmp/**',
+  '/var/folders/*/*/T',
+  '/var/folders/*/*/T/**',
+  '/private/var/folders/*/*/T',
+  '/private/var/folders/*/*/T/**',
+]
+
 const FENCE_AGENT_WRITE_ROOTS = [
+  ...FENCE_TEMP_ROOTS,
   '/tmp/tlda-fence-env',
   '/tmp/tlda-fence-env/**',
+  '/tmp/tlda-pw-runtime',
+  '/tmp/tlda-pw-runtime/**',
+  '/private/tmp/tlda-pw-runtime',
+  '/private/tmp/tlda-pw-runtime/**',
   '/tmp/tlda-pw-sockets',
   '/tmp/tlda-pw-sockets/**',
+  '/private/tmp/tlda-pw-sockets',
+  '/private/tmp/tlda-pw-sockets/**',
+  '~/.config/tlda/dev-worktree',
+  '~/.config/tlda/dev-worktree/**',
+  '~/Library/Application Support/Google/Chrome for Testing',
+  '~/Library/Application Support/Google/Chrome for Testing/**',
+  '~/Library/Caches/ms-playwright',
+  '~/Library/Caches/ms-playwright/**',
+  '~/Library/Application Support/Chromium',
+  '~/Library/Application Support/Chromium/**',
+  '~/Library/Application Support/Crashpad',
+  '~/Library/Application Support/Crashpad/**',
   '/private/var/folders/*/*/T/xcrun_db*',
   '/var/folders/*/*/T/xcrun_db*',
   '~/.cache/**',
@@ -32,10 +60,27 @@ const FENCE_AGENT_WRITE_ROOTS = [
 // through the server.
 const FENCE_BROAD_WRITE_ROOTS = ['/']
 const FENCE_AGENT_READ_ROOTS = [
+  ...FENCE_TEMP_ROOTS,
   '/tmp/tlda-fence-env',
   '/tmp/tlda-fence-env/**',
+  '/tmp/tlda-pw-runtime',
+  '/tmp/tlda-pw-runtime/**',
+  '/private/tmp/tlda-pw-runtime',
+  '/private/tmp/tlda-pw-runtime/**',
   '/tmp/tlda-pw-sockets',
   '/tmp/tlda-pw-sockets/**',
+  '/private/tmp/tlda-pw-sockets',
+  '/private/tmp/tlda-pw-sockets/**',
+  '~/.config/tlda/dev-worktree',
+  '~/.config/tlda/dev-worktree/**',
+  '~/Library/Application Support/Google/Chrome for Testing',
+  '~/Library/Application Support/Google/Chrome for Testing/**',
+  '~/Library/Caches/ms-playwright',
+  '~/Library/Caches/ms-playwright/**',
+  '~/Library/Application Support/Chromium',
+  '~/Library/Application Support/Chromium/**',
+  '~/Library/Application Support/Crashpad',
+  '~/Library/Application Support/Crashpad/**',
   '/private/var/folders/*/*/T/xcrun_db*',
   '/var/folders/*/*/T/xcrun_db*',
   '~/.codex',
@@ -47,26 +92,26 @@ const FENCE_AGENT_READ_ROOTS = [
   '~/Library/Preferences',
   '~/Library/Keychains',
 ]
-const FENCE_DENY_READ = [
-  '~/.ssh/*', '~/.ssh/**', '~/.ssh/id_*', '~/.ssh/config', '~/.ssh/*.pem',
-  '~/.gnupg/**', '~/.aws/**', '~/.config/gcloud/**', '~/.kube/**',
-  '~/.docker/**', '~/.pypirc', '~/.netrc', '~/.git-credentials',
-  '~/.cargo/credentials', '~/.cargo/credentials.toml',
-]
-const FENCE_DENY_WRITE = [
-  '~/.config/tlda/fleet.db*',
-  '~/.config/tlda/**/fleet.db*',
-  '~/.ssh/*', '~/.ssh/**',
-  '~/.gnupg/**', '~/.aws/**', '~/.config/gcloud/**', '~/.kube/**',
-  '~/.docker/**', '~/.pypirc', '~/.netrc', '~/.git-credentials',
+const FENCE_SECRET_PATTERNS = [
+  '~/.ssh/id_*', '~/.ssh/*.key', '~/.ssh/*.pem', '~/.ssh/*.p12', '~/.ssh/*.pfx',
+  '~/.gnupg/private-keys-v1.d/**', '~/.gnupg/secring.gpg',
+  '~/.aws/credentials', '~/.aws/credentials.*', '~/.aws/sso/cache/*.json',
+  '~/.config/gcloud/application_default_credentials.json',
+  '~/.config/gcloud/credentials.db',
+  '~/.config/gcloud/access_tokens.db',
+  '~/.config/gcloud/legacy_credentials/**/adc.json',
+  '~/.kube/config', '~/.docker/config.json',
+  '~/.pypirc', '~/.netrc', '~/.git-credentials',
   '~/.cargo/credentials', '~/.cargo/credentials.toml',
   '**/.env', '**/.env.*', '**/*.key', '**/*.pem', '**/*.p12', '**/*.pfx',
 ]
-const FENCE_GIT_READONLY_DENY = ['**/.git/**', '**/.git', '**/.git/worktrees/**']
-const FENCE_COMMAND_DENY = [
-  'git push', 'git reset', 'git clean', 'git checkout --', 'git rebase', 'git merge',
-  'npm publish', 'pnpm publish', 'yarn publish', 'cargo publish', 'twine upload', 'gem push', 'sudo',
+const FENCE_DENY_READ = [...FENCE_SECRET_PATTERNS]
+const FENCE_DENY_WRITE = [
+  '~/.config/tlda/fleet.db*',
+  ...FENCE_SECRET_PATTERNS,
 ]
+const FENCE_GIT_READONLY_DENY = ['**/.git/**', '**/.git', '**/.git/worktrees/**']
+const FENCE_COMMAND_DENY = []
 const FENCE_CODE_ALLOWED_DOMAINS = [
   'api.openai.com', 'chatgpt.com', '*.chatgpt.com', '*.anthropic.com',
   'api.githubcopilot.com', 'generativelanguage.googleapis.com', 'api.mistral.ai',
@@ -82,10 +127,15 @@ const FENCE_CODE_ALLOWED_DOMAINS = [
   'models.dev',
 ]
 const TLDA_PW_SOCKETS_ROOT = '/tmp/tlda-pw-sockets'
+const TLDA_PW_RUNTIME_ROOT = '/tmp/tlda-pw-runtime'
+const TLDA_PW_SOCKETS_REAL_ROOT = '/private/tmp/tlda-pw-sockets'
+const TLDA_PW_RUNTIME_REAL_ROOT = '/private/tmp/tlda-pw-runtime'
 const TLDA_FENCE_TMP_ROOT = '/tmp/tlda-fence-env'
 const CHROME_FOR_TESTING_MACH_SERVICES = [
   'com.google.chrome.for.testing.MachPortRendezvousServer.*',
+  'com.google.ChromeForTesting.MachPortRendezvousServer.*',
   'org.chromium.crashpad.child_port_handshake.*',
+  'org.chromium.Chromium.MachPortRendezvousServer.*',
 ]
 
 function sq(value) {
@@ -134,33 +184,36 @@ function apiNeedsLocalOutbound(dnsAlias) {
 
 export function fenceSettings(policy, { api, dnsAlias } = {}) {
   const allowRead = uniqueSorted([...(policy.read_roots || []), ...FENCE_AGENT_READ_ROOTS].map(expandPathPattern))
-  const allowWrite = uniqueSorted([...(policy.write_roots || []), ...FENCE_AGENT_WRITE_ROOTS, ...FENCE_BROAD_WRITE_ROOTS].map(expandPathPattern))
-  const denyWrite = [...FENCE_DENY_WRITE]
+  const broadWriteRoots = policy.explicit_privilege_set ? [] : FENCE_BROAD_WRITE_ROOTS
+  const allowWrite = uniqueSorted([...(policy.write_roots || []), ...FENCE_AGENT_WRITE_ROOTS, ...broadWriteRoots].map(expandPathPattern))
+  const denyRead = [...FENCE_DENY_READ, ...(policy.deny_read_roots || [])]
+  const denyWrite = [...FENCE_DENY_WRITE, ...(policy.deny_write_roots || [])]
   if (String(policy.git || 'read') !== 'write' && !hasGitWriteRoot(policy)) denyWrite.push(...FENCE_GIT_READONLY_DENY)
-  let allowedDomains = [...FENCE_CODE_ALLOWED_DOMAINS]
-  const host = apiHost(api)
-  if (host && !allowedDomains.includes(host)) allowedDomains.push(host)
-  if (policy.network) allowedDomains = ['*']
+  const allowedDomains = ['*']
   const localOutbound = apiNeedsLocalOutbound(dnsAlias)
   return {
     allowPty: true,
     network: {
       allowedDomains,
-      deniedDomains: [
-        '169.254.169.254',
-        'metadata.google.internal',
-        'instance-data.ec2.internal',
-        'statsig.anthropic.com',
-        '*.sentry.io',
-      ],
+      deniedDomains: [],
       allowLocalBinding: !!policy.network || localOutbound,
       allowLocalOutbound: !!policy.network || localOutbound,
-      allowUnixSockets: [TLDA_PW_SOCKETS_ROOT, `${TLDA_PW_SOCKETS_ROOT}/**`],
+      allowUnixSockets: [
+        ...FENCE_TEMP_ROOTS,
+        TLDA_PW_RUNTIME_ROOT,
+        `${TLDA_PW_RUNTIME_ROOT}/**`,
+        TLDA_PW_RUNTIME_REAL_ROOT,
+        `${TLDA_PW_RUNTIME_REAL_ROOT}/**`,
+        TLDA_PW_SOCKETS_ROOT,
+        `${TLDA_PW_SOCKETS_ROOT}/**`,
+        TLDA_PW_SOCKETS_REAL_ROOT,
+        `${TLDA_PW_SOCKETS_REAL_ROOT}/**`,
+      ],
     },
     filesystem: {
       defaultDenyRead: false,
       allowRead,
-      denyRead: FENCE_DENY_READ,
+      denyRead,
       allowWrite,
       denyWrite,
     },
@@ -221,6 +274,15 @@ function ensureFenceEnv() {
   }
 }
 
+function fenceLogPath(policy) {
+  const dir = path.join(os.tmpdir(), 'tlda-fence-logs')
+  fs.mkdirSync(dir, { recursive: true })
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  const harness = String(policy.harness || 'agent').replace(/[^A-Za-z0-9_.-]/g, '_')
+  const profile = String(policy.policy || 'policy').replace(/[^A-Za-z0-9_.-]/g, '_')
+  return path.join(dir, `${stamp}-${harness}-${profile}-${randomUUID().replace(/-/g, '')}.log`)
+}
+
 export function wrapSandboxCmd(cmd, policy, opts = {}) {
   if (!policy) return cmd
   const runner = policy.runner || {}
@@ -240,7 +302,7 @@ export function wrapSandboxCmd(cmd, policy, opts = {}) {
   let wrapped
   if (path.basename(command) === 'fence' && !(runner.args || []).length) {
     const settings = writeFenceSettings(policy, opts)
-    wrapped = [command, '--settings', settings, '--', runner.shell || 'zsh', '-lc', innerCmd].map(sq).join(' ')
+    wrapped = [command, '--monitor', '--fence-log-file', fenceLogPath(policy), '--settings', settings, '--', runner.shell || 'zsh', '-lc', innerCmd].map(sq).join(' ')
   } else {
     const args = (runner.args || []).map((arg) => formatRunnerArg(arg, policy, innerCmd))
     const hasCmd = (runner.args || []).some((arg) => String(arg).includes('{cmd}'))

@@ -61,7 +61,7 @@ import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html
 import { FleetStore } from './lib/fleet-store.mjs'
 import { resolveMachine } from './lib/tailscale-peers.mjs'
 import { createFleetRouter } from './routes/fleet.mjs'
-import { callerSpawnPolicy, coherentSpawnPolicy } from './lib/spawn-policy.mjs'
+import { coherentSpawnPolicy } from './lib/spawn-policy.mjs'
 import { buildRuntimeStatus } from './lib/runtime-status.mjs'
 import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
 import { resolveFreshSpawnCapabilityModels } from './lib/spawn-capability-models.mjs'
@@ -911,7 +911,7 @@ async function performSpawnRelay(caller, msg) {
   if (!caller?.id) throw new Error('spawn caller identity is required')
   const {
     name, agent, model, doc, cwd, respawn, fresh, refresh, effort, kind, mode,
-    capability, spawnCapability, session, sessionId, session_id, enroll, routeAgent,
+    capability, spawnCapability, privileges, requestedPrivileges, session, sessionId, session_id, enroll, routeAgent,
   } = msg || {}
   const requestedSession = session || sessionId || session_id || null
   const sessionMode = !!requestedSession
@@ -943,7 +943,7 @@ async function performSpawnRelay(caller, msg) {
   }
   const requestedSpec = { model, kind: spawnKind, project: doc }
   const requestedCapability = capability || spawnCapability || null
-  const callerRung = callerSpawnPolicy(caller, { serverOwnerId: SERVER_OWNER_ID }).capability
+  const privilegeRequest = privileges || requestedPrivileges || null
   const route = resolveSpawnMachine({
     caller,
     targetAgent: routeTarget,
@@ -982,7 +982,13 @@ async function performSpawnRelay(caller, msg) {
       effort: effort || undefined,
       mode: mode || undefined,
       requestedCapability: requestedCapability || undefined,
-      callerRung,
+      requestedPrivileges: privilegeRequest || undefined,
+      requester: {
+        id: caller.id,
+        name: caller.friendly_name || caller.name || undefined,
+        human: !!caller.human,
+        spawnPolicy: caller.metadata?.spawnPolicy || undefined,
+      },
       spawnRoute: route.source,
       respawn: sessionMode ? false : (refresh ? false : resolved.respawn),
       refresh: !!refresh,
@@ -1012,6 +1018,10 @@ async function performSpawnRelay(caller, msg) {
       agent: ready.agent,
       spawnPolicy,
       grantedCapability: result.grantedCapability || spawnPolicy?.capability,
+      spawnerCapability: result.spawnerCapability,
+      projectCapability: result.projectCapability,
+      modelCapability: result.modelCapability,
+      localSpawnCapability: result.localSpawnCapability,
     }
   }
   broadcastState()

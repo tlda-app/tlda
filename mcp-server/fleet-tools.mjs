@@ -1206,6 +1206,7 @@ function findValidSession(agent) {
  *  @param {string}  [opts.cwd]
  *  @param {string}  [opts.mode] - permission mode
  *  @param {string}  [opts.capability] - requested spawn capability
+ *  @param {object|string} [opts.privileges] - requested privilege profile/spec
  *  @returns {Promise<string>} spawn summary
  */
 async function runFleetSpawn(name, opts = {}) {
@@ -1218,6 +1219,7 @@ async function runFleetSpawn(name, opts = {}) {
     cwd: opts.cwd || undefined,
     permissionMode: opts.mode || undefined,
     requestedCapability: opts.capability || opts.spawnCapability || undefined,
+    requestedPrivileges: opts.privileges || opts.requestedPrivileges || undefined,
   });
   return `${result.tmuxSession} (${result.fleetId})`;
 }
@@ -1470,6 +1472,9 @@ export function getFleetTools() {
           effort: { type: 'string', description: 'Effort level: low|medium|high|xhigh|max (default: inherit global config).' },
           kind: { type: 'string', description: 'Agent runtime/harness (claude, goose, codex).' },
           capability: { type: 'string', description: 'Requested capability: read, write, tlda-write, or full. (Internet is always on; there is no network capability to request.)' },
+          privileges: {
+            description: 'Requested privilege profile/spec. May be a named profile string (full, app-dev, math-projects) or an object such as {profile:"app-dev"}. The daemon clamps it to the spawner, project, model, and local box policy.',
+          },
           policy: { type: 'string', description: 'Force an explicit fenced launch at the requested capability; does not raise the capability grant.' },
           mode: { type: 'string', description: 'Harness-specific launch mode projection for claude (e.g. plan, default, auto). Capability remains the durable authority.' },
           phase: { type: 'string', enum: ['dawn', 'day', 'dusk'], description: 'Phase slot in the lineage. Rejects if slot is occupied. Default: day for fresh agents joining a lineage.' },
@@ -3612,6 +3617,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
         cwd: args.cwd,
         mode: args.mode,
         capability: args.capability,
+        privileges: args.privileges,
         policy: args.policy,
       }, { timeoutMs: SPAWN_WS_TIMEOUT_MS });
       if (result?.ok === false || result?.error) {

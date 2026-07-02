@@ -9,7 +9,7 @@ import { resolveConfig } from './shared/config.mjs'
 const tlsDir = join(homedir(), '.config/tlda')
 const tlsCert = join(tlsDir, 'localhost+2.pem')
 const tlsKey  = join(tlsDir, 'localhost+2-key.pem')
-const hasTls = process.env.TLDA_VITE_HTTP !== '1' && existsSync(tlsCert) && existsSync(tlsKey)
+const hasLocalTls = process.env.TLDA_VITE_HTTP !== '1' && existsSync(tlsCert) && existsSync(tlsKey)
 const tldrawForkPackages = resolve('./tldraw-fork/packages')
 const hasTldrawForkSources = existsSync(resolve(tldrawForkPackages, 'tldraw/src/index.ts'))
 
@@ -29,7 +29,7 @@ const tldrawForkAliases = hasTldrawForkSources ? [
   { find: /^rbush$/, replacement: resolve('node_modules/rbush/index.js') },
 ] : []
 
-function injectedConfig() {
+function injectedConfig(hasTls: boolean) {
   const cfg = resolveConfig()
   const serverPort = process.env.VITE_SERVER_PORT
   if (!serverPort) return cfg
@@ -47,9 +47,14 @@ function injectedConfig() {
 const activeConfigPlugin = {
   name: 'tlda-active-config',
   transformIndexHtml(html: string) {
-    const script = `<script>window.__TLDA_CONFIG__=${JSON.stringify(injectedConfig())}</script>`
+    const script = `<script>window.__TLDA_CONFIG__=${JSON.stringify(injectedConfig(hasLocalTls))}</script>`
     return html.replace('</head>', `${script}\n</head>`)
   },
+}
+
+function localTlsHttps() {
+  if (!hasLocalTls) return {}
+  return { https: { cert: readFileSync(tlsCert, 'utf8'), key: readFileSync(tlsKey, 'utf8') } }
 }
 
 // Dev-only plugin: serve local filesystem images for math notes
@@ -71,7 +76,9 @@ const localImagePlugin = {
 }
 
 // https://vite.dev/config/
-export default defineConfig({
+export default defineConfig(({ command }) => {
+const hasTls = command === 'serve' && hasLocalTls
+return {
   base: process.env.VITE_BASE_PATH || '/',
   esbuild: {
     keepNames: true,
@@ -95,7 +102,7 @@ export default defineConfig({
   server: {
     host: true,
     port: 5179,
-    ...(hasTls ? { https: { cert: readFileSync(tlsCert, 'utf8'), key: readFileSync(tlsKey, 'utf8') } } : {}),
+    ...(hasTls ? localTlsHttps() : {}),
     fs: {
       allow: hasTldrawForkSources ? ['..', resolve('./tldraw-fork')] : ['..'],
     },
@@ -136,7 +143,7 @@ export default defineConfig({
   preview: {
     host: true,
     port: 5179,
-    ...(hasTls ? { https: { cert: readFileSync(tlsCert, 'utf8'), key: readFileSync(tlsKey, 'utf8') } } : {}),
+    ...(hasTls ? localTlsHttps() : {}),
     proxy: {
       '/ws/fleet': { target: `${hasTls ? 'wss' : 'ws'}://localhost:5176`, ws: true, ...(hasTls ? { secure: false } : {}) },
       '/ws/terminal': { target: `${hasTls ? 'wss' : 'ws'}://localhost:5176`, ws: true, ...(hasTls ? { secure: false } : {}) },
@@ -153,4 +160,5 @@ export default defineConfig({
   optimizeDeps: {
     exclude: ['pdfjs-dist'],
   },
+}
 })

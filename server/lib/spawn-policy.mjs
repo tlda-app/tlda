@@ -268,12 +268,298 @@ export function modelSpawnCeiling(config = {}, { model, kind, trustOverride } = 
 //               by the model ceiling, not the lane.
 export const SPAWN_PROFILES = {
   ops: { capability: 'full', policy: 'unsandboxed' },
+  'app-dev': { capability: 'full', policy: 'unsandboxed' },
+  deploy: { capability: 'write', policy: 'cwd' },
   app: { capability: 'write', policy: 'cwd' },
+  cwd: { capability: 'write', policy: 'cwd' },
   math: { capability: 'tlda-write', policy: 'tlda-projects' },
+  'math-project': { capability: 'tlda-write', policy: 'tlda-projects' },
+  'math-projects': { capability: 'tlda-write', policy: 'tlda-projects' },
   untrusted: { capability: 'write', policy: 'cwd' },
 }
 
-export const DEFAULT_SPAWN_PROFILE = 'app'
+export const DEFAULT_SPAWN_PROFILE = 'cwd'
+export const PRIVILEGE_OPERATIONS = ['read', 'write']
+
+function emptyPrivilegeOperations() {
+  const operations = {}
+  for (const operation of PRIVILEGE_OPERATIONS) {
+    operations[operation] = { allow: [], deny: [] }
+  }
+  return operations
+}
+
+function normalizePrivilegeOperation(value, lineNumber) {
+  const operation = String(value || '').trim().toLowerCase()
+  if (!PRIVILEGE_OPERATIONS.includes(operation)) {
+    const suffix = lineNumber ? ` on line ${lineNumber}` : ''
+    throw new Error(`unknown privilege operation "${value}"${suffix}`)
+  }
+  return operation
+}
+
+function normalizePrivilegeProfileName(value, lineNumber) {
+  const name = String(value || '').trim()
+  if (!/^[A-Za-z0-9_.-]+$/.test(name)) {
+    const suffix = lineNumber ? ` on line ${lineNumber}` : ''
+    throw new Error(`invalid privilege profile name "${value}"${suffix}`)
+  }
+  return name
+}
+
+function addPrivilegeRule(profile, { operation, effect, zone, line }) {
+  const rule = { operation, effect, zone, line }
+  profile.rules.push(rule)
+  profile.operations[operation][effect].push(zone)
+}
+
+export function compilePrivilegeProfiles(source, { sourcePath } = {}) {
+  if (typeof source !== 'string') throw new Error('privilege profile source must be a string')
+  const profiles = {}
+  let current = null
+  const lines = source.split(/\r?\n/)
+  for (let idx = 0; idx < lines.length; idx++) {
+    const lineNumber = idx + 1
+    const raw = lines[idx]
+    const line = raw.trim()
+    if (!line || line.startsWith('#')) continue
+
+    const header = line.match(/^profile\s+([A-Za-z0-9_.-]+)\s*:\s*$/)
+    if (header) {
+      const name = normalizePrivilegeProfileName(header[1], lineNumber)
+      const key = name.toLowerCase()
+      if (profiles[key]) throw new Error(`duplicate privilege profile "${name}" on line ${lineNumber}`)
+      current = {
+        type: 'privilege-set',
+        name,
+        operations: emptyPrivilegeOperations(),
+        rules: [],
+        ...(sourcePath ? { sourcePath } : {}),
+      }
+      profiles[key] = current
+      continue
+    }
+
+    if (!current) throw new Error(`privilege rule before profile header on line ${lineNumber}`)
+    const rule = line.match(/^([A-Za-z][A-Za-z0-9_-]*)\s+([+-])\s+(.+?)\s*$/)
+    if (!rule) throw new Error(`invalid privilege rule on line ${lineNumber}: ${raw.trim()}`)
+    const operation = normalizePrivilegeOperation(rule[1], lineNumber)
+    const effect = rule[2] === '+' ? 'allow' : 'deny'
+    const zone = rule[3].trim()
+    if (!zone) throw new Error(`empty privilege zone on line ${lineNumber}`)
+    addPrivilegeRule(current, { operation, effect, zone, line: lineNumber })
+  }
+  if (!Object.keys(profiles).length) throw new Error('privilege profile source contains no profile blocks')
+  return {
+    type: 'privilege-profile-bundle',
+    profiles,
+    ...(sourcePath ? { sourcePath } : {}),
+  }
+}
+
+function selectCompiledPrivilegeProfile(bundle, requestedName = null) {
+  const keys = Object.keys(bundle.profiles || {})
+  if (!keys.length) throw new Error('compiled privilege bundle contains no profiles')
+  if (requestedName) {
+    const key = String(requestedName).trim().toLowerCase()
+    const profile = bundle.profiles[key]
+    if (!profile) throw new Error(`privilege profile "${requestedName}" not found`)
+    return profile
+  }
+  if (keys.length === 1) return bundle.profiles[keys[0]]
+  throw new Error('privilege profile source has multiple profiles; specify profile/name')
+}
+
+const BUILTIN_PRIVILEGE_PROFILE_SOURCE = `
+profile app-dev:
+  read + cwd
+  write + cwd
+
+profile deploy:
+  read + cwd
+  write + cwd
+  read + ~/.fly/**
+  write + ~/.fly/**
+  read + ~/.cache/fly/**
+  write + ~/.cache/fly/**
+  read + ~/Library/Caches/fly/**
+  write + ~/Library/Caches/fly/**
+`
+
+let builtinPrivilegeBundle = null
+
+function builtinPrivilegeProfiles() {
+  if (!builtinPrivilegeBundle) builtinPrivilegeBundle = compilePrivilegeProfiles(BUILTIN_PRIVILEGE_PROFILE_SOURCE, { sourcePath: 'builtin' })
+  return builtinPrivilegeBundle
+}
+
+function zoneForPolicy(policy, { cwd, project } = {}) {
+  if (policy.policy === 'unsandboxed') return '**'
+  const base = policy.policy === 'tlda-projects'
+    ? (project?.sourceDir || cwd || 'tlda-projects')
+    : (cwd || policy.policy)
+  if (base === 'cwd' || base === 'tlda-projects') return base
+  const resolved = normalizedPath(base)
+  return `${resolved || base}/**`
+}
+
+export function privilegeSetFromPolicy(policyValue, { name, cwd, project } = {}) {
+  const policy = normalizeSpawnPolicy(policyValue)
+  const zone = zoneForPolicy(policy, { cwd, project })
+  const operations = emptyPrivilegeOperations()
+  const rules = []
+  const readRule = { operation: 'read', effect: 'allow', zone, line: null }
+  rules.push(readRule)
+  operations.read.allow.push(zone)
+  if (policy.capability !== 'read') {
+    const writeRule = { operation: 'write', effect: 'allow', zone, line: null }
+    rules.push(writeRule)
+    operations.write.allow.push(zone)
+  }
+  return {
+    type: 'privilege-set',
+    name: name || policy.name,
+    operations,
+    rules,
+    projectedPolicy: policy,
+    compiledFrom: 'spawn-policy',
+  }
+}
+
+function globRoot(zone) {
+  const raw = String(zone || '').trim()
+  if (!raw || raw === '**' || raw === '/**') return { universal: true, root: raw, glob: true }
+  const expanded = raw === '~' ? homedir() : raw.startsWith('~/') ? join(homedir(), raw.slice(2)) : raw
+  const glob = /[*?[\]]/.test(expanded)
+  const root = expanded.endsWith('/**') ? expanded.slice(0, -3) : expanded
+  return { universal: false, root: root || '/', glob }
+}
+
+function zoneContains(container, candidate) {
+  const a = globRoot(container)
+  const b = globRoot(candidate)
+  if (a.universal) return true
+  if (b.universal) return false
+  if (a.root === b.root) return true
+  if (String(container).endsWith('/**')) return b.root.startsWith(`${a.root}/`)
+  return false
+}
+
+function intersectTwoZones(left, right) {
+  if (zoneContains(left, right)) return right
+  if (zoneContains(right, left)) return left
+  return null
+}
+
+function uniqueRules(rules) {
+  const seen = new Set()
+  const out = []
+  for (const rule of rules) {
+    const key = `${rule.operation}\0${rule.effect}\0${rule.zone}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(rule)
+  }
+  return out
+}
+
+function clonePrivilegeSet(set) {
+  const operations = emptyPrivilegeOperations()
+  const rules = []
+  for (const operation of PRIVILEGE_OPERATIONS) {
+    for (const effect of ['allow', 'deny']) {
+      for (const zone of set.operations?.[operation]?.[effect] || []) {
+        operations[operation][effect].push(zone)
+      }
+    }
+  }
+  for (const rule of set.rules || []) rules.push({ ...rule })
+  return { ...set, operations, rules }
+}
+
+function builtinPrivilegeProfile(name) {
+  const key = String(name || '').trim().toLowerCase()
+  if (!key) return null
+  const profile = builtinPrivilegeProfiles().profiles[key]
+  if (!profile) return null
+  const cloned = clonePrivilegeSet(profile)
+  cloned.projectedPolicy = normalizeSpawnPolicy(SPAWN_PROFILES[key] || 'write')
+  cloned.compiledFrom = 'builtin-privilege-profile'
+  return cloned
+}
+
+function intersectPrivilegePair(left, right) {
+  const operations = emptyPrivilegeOperations()
+  let rules = []
+  for (const operation of PRIVILEGE_OPERATIONS) {
+    const allow = []
+    for (const a of left.operations?.[operation]?.allow || []) {
+      for (const b of right.operations?.[operation]?.allow || []) {
+        const zone = intersectTwoZones(a, b)
+        if (zone) allow.push(zone)
+      }
+    }
+    operations[operation].allow = [...new Set(allow)]
+    operations[operation].deny = [...new Set([
+      ...(left.operations?.[operation]?.deny || []),
+      ...(right.operations?.[operation]?.deny || []),
+    ])]
+    for (const zone of operations[operation].allow) {
+      rules.push({ operation, effect: 'allow', zone, line: null })
+    }
+    for (const zone of operations[operation].deny) {
+      rules.push({ operation, effect: 'deny', zone, line: null })
+    }
+  }
+  rules = uniqueRules(rules)
+  return {
+    type: 'privilege-set',
+    name: `${left.name || 'left'}&${right.name || 'right'}`,
+    operations,
+    rules,
+    compiledFrom: 'intersection',
+  }
+}
+
+export function intersectPrivilegeSets(sets, { name = 'grant', projectedPolicy = null } = {}) {
+  const normalized = sets.filter(Boolean).map(clonePrivilegeSet)
+  if (!normalized.length) throw new Error('cannot intersect an empty privilege-set list')
+  let current = normalized[0]
+  for (const next of normalized.slice(1)) current = intersectPrivilegePair(current, next)
+  current.name = name
+  if (projectedPolicy) current.projectedPolicy = projectedPolicy
+  return current
+}
+
+export function privilegeSetLte(left, right) {
+  for (const operation of PRIVILEGE_OPERATIONS) {
+    for (const zone of left.operations?.[operation]?.allow || []) {
+      if (!(right.operations?.[operation]?.allow || []).some((candidate) => zoneContains(candidate, zone))) return false
+    }
+    for (const zone of right.operations?.[operation]?.deny || []) {
+      if (!(left.operations?.[operation]?.deny || []).includes(zone)) return false
+    }
+  }
+  return true
+}
+
+function looksLikePrivilegeSet(value) {
+  return value
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && value.type === 'privilege-set'
+    && value.operations
+    && typeof value.operations === 'object'
+}
+
+function policyForPrivilegeSet(privileges, fallback = DEFAULT_AGENT_CAPABILITY) {
+  if (privileges.projectedPolicy) return normalizeSpawnPolicy(privileges.projectedPolicy, fallback)
+  const named = privileges.name ? firstKnownProfile(privileges.name) : null
+  if (named) return normalizeProfileOrPolicyName(named)
+  const write = privileges.operations?.write || {}
+  const hasWrite = (write.allow || []).length > 0
+  return normalizeSpawnPolicy(hasWrite ? DEFAULT_AGENT_CAPABILITY : 'read', fallback)
+}
 
 function normalizedPath(value) {
   if (!value || typeof value !== 'string') return null
@@ -346,6 +632,136 @@ export function resolveProjectProfileName(config = {}, { doc, project, cwd } = {
 export function resolveProjectProfile(config = {}, { doc, project, cwd } = {}) {
   const name = resolveProjectProfileName(config, { doc, project, cwd })
   return { ...normalizeSpawnPolicy(SPAWN_PROFILES[name]), name }
+}
+
+function requesterKeys(requester = {}) {
+  const keys = []
+  for (const value of [
+    requester.id,
+    requester.fleetId,
+    requester.name,
+    requester.friendly_name,
+    requester.friendlyName,
+    requester.human ? 'human' : null,
+    '*',
+  ]) {
+    const key = String(value || '').trim()
+    if (key && !keys.includes(key)) keys.push(key)
+  }
+  return keys
+}
+
+function projectKeys({ doc, project, cwd } = {}) {
+  const keys = []
+  for (const value of [
+    doc,
+    project?.name,
+    project?.sourceDir,
+    pathBasename(project?.sourceDir),
+    cwd,
+    pathBasename(cwd),
+    '*',
+  ]) {
+    const key = String(value || '').trim()
+    if (key && !keys.includes(key)) keys.push(key)
+  }
+  return keys
+}
+
+function localAclGrantFromEntry(entry, keys) {
+  if (entry == null || entry === '') return null
+  if (typeof entry === 'string') return entry
+  if (typeof entry !== 'object' || Array.isArray(entry)) return null
+  for (const key of keys) {
+    const value = entry[key] ?? entry[String(key).toLowerCase()]
+    if (value != null && value !== '') return value
+  }
+  return null
+}
+
+export function resolveLocalSpawnAllowance(config = {}, { requester, doc, project, cwd } = {}) {
+  const policy = config.spawnPolicy || {}
+  const users = requesterKeys(requester)
+  const projects = projectKeys({ doc, project, cwd })
+  const acl = policy.localSpawnAcl || policy.machineSpawnAcl || null
+  if (acl && typeof acl === 'object' && !Array.isArray(acl)) {
+    for (const userKey of users) {
+      const entry = acl[userKey] ?? acl[String(userKey).toLowerCase()]
+      const grant = localAclGrantFromEntry(entry, projects)
+      if (grant) return normalizeSpawnPolicy(grant)
+    }
+  }
+  if (policy.machineGrant != null && policy.machineGrant !== '') {
+    return normalizeSpawnPolicy(policy.machineGrant)
+  }
+  // Daemon creation is the bootstrap grant: the local owner/human principal gets
+  // the daemon's configured owner privilege on this box. With no explicit local
+  // table, that default owner grant is full; if a local ACL/machineGrant is set,
+  // it is the local privilege table and wins above.
+  if (requester?.human) return normalizeSpawnPolicy(ROOT_CAPABILITY)
+  return normalizeSpawnPolicy(DEFAULT_AGENT_CAPABILITY)
+}
+
+function normalizeProfileOrPolicyName(value) {
+  const name = String(value || '').trim().toLowerCase()
+  if (SPAWN_PROFILES[name]) return { ...normalizeSpawnPolicy(SPAWN_PROFILES[name]), name }
+  return normalizeSpawnPolicy(value)
+}
+
+function withPrivilegeSet(policy, privilegeSet) {
+  return {
+    ...policy,
+    privilegeSet,
+  }
+}
+
+export function normalizeRequestedPrivileges(value, fallback = null) {
+  if (value == null || value === '') {
+    if (fallback == null) return null
+    return normalizeRequestedPrivileges(fallback)
+  }
+  if (typeof value === 'string') {
+    const builtinProfile = builtinPrivilegeProfile(value)
+    if (builtinProfile) {
+      const policy = policyForPrivilegeSet(builtinProfile, fallback || DEFAULT_AGENT_CAPABILITY)
+      return withPrivilegeSet({ ...policy, name: builtinProfile.name }, builtinProfile)
+    }
+    const policy = normalizeProfileOrPolicyName(value)
+    return withPrivilegeSet(policy, privilegeSetFromPolicy(policy, { name: policy.name }))
+  }
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`unknown privilege request "${value}"`)
+  }
+  if (looksLikePrivilegeSet(value)) {
+    const policy = policyForPrivilegeSet(value, fallback || DEFAULT_AGENT_CAPABILITY)
+    return withPrivilegeSet(policy, value)
+  }
+  if (value.capability) {
+    const policy = normalizeSpawnPolicy(value)
+    return withPrivilegeSet(policy, privilegeSetFromPolicy(policy, { name: policy.name }))
+  }
+  if (value.type === 'privilege-profile-bundle') {
+    const profile = selectCompiledPrivilegeProfile(value, value.profile || value.preset || value.name)
+    const policy = policyForPrivilegeSet(profile, fallback || DEFAULT_AGENT_CAPABILITY)
+    return withPrivilegeSet(policy, profile)
+  }
+  if (typeof value.source === 'string') {
+    const bundle = compilePrivilegeProfiles(value.source, { sourcePath: value.sourcePath })
+    const profile = selectCompiledPrivilegeProfile(bundle, value.profile || value.preset || value.name)
+    const policy = policyForPrivilegeSet(profile, fallback || DEFAULT_AGENT_CAPABILITY)
+    return withPrivilegeSet(policy, profile)
+  }
+  const named = value.profile || value.preset || value.name
+  if (named) {
+    const builtinProfile = builtinPrivilegeProfile(named)
+    if (builtinProfile) {
+      const policy = policyForPrivilegeSet(builtinProfile, fallback || DEFAULT_AGENT_CAPABILITY)
+      return withPrivilegeSet({ ...policy, name: builtinProfile.name }, builtinProfile)
+    }
+    const policy = normalizeProfileOrPolicyName(named)
+    return withPrivilegeSet(policy, privilegeSetFromPolicy(policy, { name: policy.name }))
+  }
+  throw new Error('unknown privilege request; expected a named profile, compiled privilege set, or profile source')
 }
 
 // The operator (human, or the server owner identity) is root: never fenced, can
@@ -469,7 +885,9 @@ export function authorizeSpawn({ caller, requestedCapability, model, kind, trust
 
 export function resolveDaemonSpawnGrant({
   requestedCapability,
+  requestedPrivileges,
   callerRung,
+  requester,
   model,
   kind,
   config = {},
@@ -477,22 +895,55 @@ export function resolveDaemonSpawnGrant({
   project,
   cwd,
 } = {}) {
-  const inheritedProfile = resolveProjectProfile(config, { doc, project, cwd })
-  const requestedPolicy = normalizeSpawnPolicy(requestedCapability || inheritedProfile, DEFAULT_AGENT_CAPABILITY)
-  const callerPolicy = normalizeSpawnPolicy(callerRung, DEFAULT_AGENT_CAPABILITY)
-  const machineAllowedPolicy = meetSpawnPolicies([
-    inheritedProfile,
-    modelSpawnCeiling(config, { model, kind }),
-  ])
-  const grantedPolicy = meetSpawnPolicies([requestedPolicy, callerPolicy, machineAllowedPolicy])
+  const projectPolicy = resolveProjectProfile(config, { doc, project, cwd })
+  const modelPolicy = modelSpawnCeiling(config, { model, kind })
+  const localSpawnPolicy = resolveLocalSpawnAllowance(config, { requester, doc, project, cwd })
+  const spawnerPolicy = requester?.human
+    ? localSpawnPolicy
+    : requester?.id
+    ? callerSpawnPolicy({
+        id: requester.id,
+        human: !!requester.human,
+        metadata: { spawnPolicy: requester.spawnPolicy || requester.metadata?.spawnPolicy },
+      })
+    : normalizeSpawnPolicy(callerRung, DEFAULT_AGENT_CAPABILITY)
+  const requestedPolicy = normalizeRequestedPrivileges(requestedPrivileges || requestedCapability || projectPolicy, DEFAULT_AGENT_CAPABILITY)
+  const grantedPolicy = meetSpawnPolicies([requestedPolicy, projectPolicy, modelPolicy, localSpawnPolicy, spawnerPolicy])
+  const projectPrivilegeSet = privilegeSetFromPolicy(projectPolicy, { name: projectPolicy.name, cwd, project })
+  const modelPrivilegeSet = privilegeSetFromPolicy(modelPolicy, { name: modelPolicy.name, cwd, project })
+  const localPrivilegeSet = privilegeSetFromPolicy(localSpawnPolicy, { name: localSpawnPolicy.name, cwd, project })
+  const spawnerPrivilegeSet = privilegeSetFromPolicy(spawnerPolicy, { name: spawnerPolicy.name, cwd, project })
+  const requestedPrivilegeSet = requestedPolicy.privilegeSet
+    || (requestedPrivileges || requestedCapability
+      ? privilegeSetFromPolicy(requestedPolicy, { name: requestedPolicy.name, cwd, project })
+      : projectPrivilegeSet)
+  const grantedPrivilegeSet = intersectPrivilegeSets([
+    requestedPrivilegeSet,
+    projectPrivilegeSet,
+    modelPrivilegeSet,
+    localPrivilegeSet,
+    spawnerPrivilegeSet,
+  ], { name: grantedPolicy.name, projectedPolicy: grantedPolicy })
   return {
     requestedCapability: requestedPolicy.capability,
     requestedPolicy,
-    callerCapability: callerPolicy.capability,
-    callerPolicy,
-    machineAllowedCapability: machineAllowedPolicy.capability,
-    machineAllowedPolicy,
+    requestedPrivileges: requestedPrivilegeSet,
+    requestedPrivilegeSet,
+    callerCapability: spawnerPolicy.capability,
+    callerPolicy: spawnerPolicy,
+    spawnerCapability: spawnerPolicy.capability,
+    spawnerPolicy,
+    localSpawnCapability: localSpawnPolicy.capability,
+    localSpawnPolicy,
+    projectCapability: projectPolicy.capability,
+    projectPolicy,
+    modelCapability: modelPolicy.capability,
+    modelPolicy,
+    machineAllowedCapability: grantedPolicy.capability,
+    machineAllowedPolicy: grantedPolicy,
     grantedCapability: grantedPolicy.capability,
     grantedPolicy,
+    grantedPrivileges: grantedPrivilegeSet,
+    grantedPrivilegeSet,
   }
 }
