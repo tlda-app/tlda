@@ -93,7 +93,6 @@
 
 .annotation-viewer-return-hud {
   position: fixed;
-  left: 8px;
   width: 72px;
   height: 72px;
   z-index: var(--tlda-z-managed-surface);

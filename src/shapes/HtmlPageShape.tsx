@@ -9,7 +9,7 @@ import {
   stopEventPropagation,
   Box,
 } from 'tldraw'
-import type { TLPageId, TLShapeId } from 'tldraw'
+import type { Editor, TLPageId, TLShapeId } from 'tldraw'
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { appendToken } from '../authToken'
 import { useIsInViewport } from './useIsInViewport'
@@ -54,7 +54,9 @@ type HtmlPageShapeRecord = {
   id: TLShapeId
   x: number
   y: number
+  parentId?: TLPageId
   props: { w: number; h: number; url?: string }
+  meta?: Record<string, unknown>
 }
 
 function isHtmlPageShapeRecord(value: unknown): value is HtmlPageShapeRecord {
@@ -74,6 +76,26 @@ type FleetDocviewShapeRecord = {
   type: 'fleet-docview'
   isLocked?: boolean
   props: Record<string, unknown>
+}
+
+function setCameraKeepingDocumentMargin(
+  editor: Editor,
+  targetShape: HtmlPageShapeRecord,
+  targetY: number,
+  targetScreenYFraction: number,
+  sourceLeftScreen: number | null,
+  animation = true,
+) {
+  const camera = editor.getCamera()
+  const viewport = editor.getViewportScreenBounds()
+  const z = camera.z || 1
+  const targetScreenY = viewport.y + viewport.h * targetScreenYFraction
+  const nextCamera = {
+    x: sourceLeftScreen == null ? camera.x : sourceLeftScreen / z - targetShape.x,
+    y: targetScreenY / z - targetY,
+    z,
+  }
+  editor.setCamera(nextCamera, animation ? { animation: { duration: 300 } } : undefined)
 }
 
 function isFleetDocviewShapeRecord(value: unknown): value is FleetDocviewShapeRecord {
@@ -328,6 +350,8 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         return
       }
       if (e.data?.type === 'tlda-wheel') {
+        const current = editor.store.get(shape.id) as any
+        if (current?.meta?.temporaryMarkdownColumn) return
         // Forward wheel events from iframe bridge directly to TLDraw's editor.dispatch
         // (synthetic DOM WheelEvents don't reach @use-gesture's internal handler)
         const { deltaX, deltaY, ctrlKey, metaKey } = e.data
@@ -349,6 +373,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
       if (e.data?.type === 'tlda-navigate') {
         // Route navigation from iframe links to page switch + anchor scroll.
         // Search ALL pages for the target shape (cross-chapter navigation).
+        const sourceShape = editor.store.get(shape.id) as any
         const allHtmlShapes = Object.values(editor.store.allRecords())
           .filter((r: any) => r.typeName === 'shape' && r.type === 'html-page') as any[]
         let targetShape: any = null
@@ -375,6 +400,15 @@ function HtmlPageComponent({ shape }: { shape: any }) {
           }
         }
         if (!targetShape) return
+        const isTemporaryMarkdownNavigation = !!sourceShape?.meta?.temporaryMarkdownColumn
+        const sourceLeftScreen = isTemporaryMarkdownNavigation
+          ? editor.pageToScreen({ x: sourceShape.x, y: sourceShape.y }).x
+          : null
+        if (sourceShape?.meta?.temporaryMarkdownColumn) {
+          window.dispatchEvent(new CustomEvent('annotation-viewer-navigation-start', {
+            detail: { shapeId: shape.id },
+          }))
+        }
 
         // Switch to the target shape's TLDraw page
         const targetPageId = targetShape.parentId as TLPageId
@@ -389,10 +423,18 @@ function HtmlPageComponent({ shape }: { shape: any }) {
           const yOff = htmlHeadingPositions.get(targetShape.id)?.[anchor]
           if (yOff != null) {
             // Place heading at ~15% from top (center + 0.35*vh pushes heading up from center)
-            editor.centerOnPoint({ x: cx, y: targetShape.y + yOff + vpHeight * 0.35 }, { animation: { duration: 300 } })
+            if (isTemporaryMarkdownNavigation) {
+              setCameraKeepingDocumentMargin(editor, targetShape, targetShape.y + yOff, 0.15, sourceLeftScreen)
+            } else {
+              editor.centerOnPoint({ x: cx, y: targetShape.y + yOff + vpHeight * 0.35 }, { animation: { duration: 300 } })
+            }
           } else {
             // Anchor not resolved yet — center on page top, poll for anchor
-            editor.centerOnPoint({ x: cx, y: targetShape.y + vpHeight * 0.3 }, { animation: { duration: 300 } })
+            if (isTemporaryMarkdownNavigation) {
+              setCameraKeepingDocumentMargin(editor, targetShape, targetShape.y, 0.2, sourceLeftScreen)
+            } else {
+              editor.centerOnPoint({ x: cx, y: targetShape.y + vpHeight * 0.3 }, { animation: { duration: 300 } })
+            }
             const poll = setInterval(() => {
               const yOff2 = htmlHeadingPositions.get(targetShape.id)?.[anchor!]
               if (yOff2 != null) {
@@ -400,24 +442,42 @@ function HtmlPageComponent({ shape }: { shape: any }) {
                 const fresh = editor.store.get(targetShape.id) as any
                 if (fresh) {
                   const vph = editor.getViewportPageBounds().h
-                  editor.centerOnPoint({ x: fresh.x + fresh.props.w / 2, y: fresh.y + yOff2 + vph * 0.35 }, { animation: { duration: 300 } })
+                  if (isTemporaryMarkdownNavigation) {
+                    setCameraKeepingDocumentMargin(editor, fresh, fresh.y + yOff2, 0.15, sourceLeftScreen)
+                  } else {
+                    editor.centerOnPoint({ x: fresh.x + fresh.props.w / 2, y: fresh.y + yOff2 + vph * 0.35 }, { animation: { duration: 300 } })
+                  }
                 }
               }
             }, 200)
             setTimeout(() => clearInterval(poll), 8000)
           }
         } else {
-          editor.centerOnPoint({ x: cx, y: targetShape.y + vpHeight * 0.3 }, { animation: { duration: 300 } })
+          if (isTemporaryMarkdownNavigation) {
+            setCameraKeepingDocumentMargin(editor, targetShape, targetShape.y, 0.2, sourceLeftScreen)
+          } else {
+            editor.centerOnPoint({ x: cx, y: targetShape.y + vpHeight * 0.3 }, { animation: { duration: 300 } })
+          }
         }
         return
       }
       if (e.data?.type === 'tlda-navigate-rel') {
         // Prev/next chapter navigation from footer links
+        const sourceShape = editor.store.get(shape.id) as any
         const pages = editor.getPages()
         const currentPageId = editor.getCurrentPageId()
         const currentIdx = pages.findIndex(p => p.id === currentPageId)
         const targetIdx = e.data.direction === 'next' ? currentIdx + 1 : currentIdx - 1
         if (targetIdx >= 0 && targetIdx < pages.length) {
+          const isTemporaryMarkdownNavigation = !!sourceShape?.meta?.temporaryMarkdownColumn
+          const sourceLeftScreen = isTemporaryMarkdownNavigation
+            ? editor.pageToScreen({ x: sourceShape.x, y: sourceShape.y }).x
+            : null
+          if (isTemporaryMarkdownNavigation) {
+            window.dispatchEvent(new CustomEvent('annotation-viewer-navigation-start', {
+              detail: { shapeId: shape.id },
+            }))
+          }
           editor.setCurrentPage(pages[targetIdx].id)
           // Center on top of the new page's html-page shape
           setTimeout(() => {
@@ -425,10 +485,14 @@ function HtmlPageComponent({ shape }: { shape: any }) {
             const htmlShape = shapes.find((s: any) => s.type === 'html-page') as any
             if (htmlShape) {
               const vpHeight = editor.getViewportPageBounds().h
-              editor.centerOnPoint(
-                { x: htmlShape.x + htmlShape.props.w / 2, y: htmlShape.y + vpHeight * 0.3 },
-                { animation: { duration: 300 } }
-              )
+              if (isTemporaryMarkdownNavigation) {
+                setCameraKeepingDocumentMargin(editor, htmlShape, htmlShape.y, 0.2, sourceLeftScreen)
+              } else {
+                editor.centerOnPoint(
+                  { x: htmlShape.x + htmlShape.props.w / 2, y: htmlShape.y + vpHeight * 0.3 },
+                  { animation: { duration: 300 } }
+                )
+              }
             }
           }, 100)
         }

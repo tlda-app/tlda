@@ -102,6 +102,27 @@ function dispatchMainCanvasWheel(mainEditor: Editor, e: WheelEvent) {
   })
 }
 
+function clampClipCameraToBounds(
+  camera: { x: number; y: number; z: number },
+  bounds: ClipBounds | null,
+  panelWidth: number,
+  canvasHeight: number,
+) {
+  if (!bounds) return camera
+  const z = camera.z || 1
+  const visibleW = panelWidth / z
+  const visibleH = canvasHeight / z
+  const maxX = -bounds.x
+  const minX = -(bounds.x + Math.max(0, bounds.w - visibleW))
+  const maxY = -bounds.y
+  const minY = -(bounds.y + Math.max(0, bounds.h - visibleH))
+  return {
+    ...camera,
+    x: Math.min(maxX, Math.max(minX, camera.x)),
+    y: Math.min(maxY, Math.max(minY, camera.y)),
+  }
+}
+
 export function syncCanvasClipPanelViewportCamera(
   viewportId: string,
   camera: { x: number; y: number; z: number },
@@ -160,6 +181,7 @@ export function CanvasClipPanel({
   readOnly = false,
   onEditorMount,
   identityId,
+  requestedShapeIds,
   viewportId: externalViewportId,
   children,
 }: CanvasClipPanelProps) {
@@ -327,6 +349,35 @@ export function CanvasClipPanel({
     const minH = MIN_VISIBLE_LINES * LINE_HEIGHT_ESTIMATE * zoom
     return Math.max(minH, Math.min(contentH, window.innerHeight * maxHeightFraction))
   }, [bounds, panelWidth, maxHeightFraction])
+
+  const requestedShapeIdsKey = useMemo(
+    () => (requestedShapeIds || []).join('\0'),
+    [requestedShapeIds],
+  )
+
+  useEffect(() => {
+    if (!readOnly || !requestedShapeIds || requestedShapeIds.length === 0) return
+    const ids = new Set(requestedShapeIds)
+    const onMessage = (e: MessageEvent) => {
+      if (e.data?.type !== 'tlda-wheel') return
+      if (!ids.has(e.data.shapeId)) return
+      if (e.data.ctrlKey || e.data.metaKey) return
+      const deltaX = Number(e.data.deltaX || 0)
+      const deltaY = Number(e.data.deltaY || 0)
+      if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY)) return
+      setInteractiveCamera(prev => {
+        const base = prev ?? plannedCamera
+        const z = base.z || 1
+        return clampClipCameraToBounds({
+          ...base,
+          x: base.x - deltaX / z,
+          y: base.y - deltaY / z,
+        }, bounds, panelWidth, canvasHeight)
+      })
+    }
+    window.addEventListener('message', onMessage)
+    return () => window.removeEventListener('message', onMessage)
+  }, [bounds, canvasHeight, panelWidth, plannedCamera, readOnly, requestedShapeIdsKey])
 
   if (!bounds && !wmSurface) return null
 

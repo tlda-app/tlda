@@ -138,7 +138,29 @@ const BRIDGE_SCRIPT = `
         }, '*');
       }
     }, { passive: false });
-    document.addEventListener('touchmove', function(e) { e.preventDefault(); }, { passive: false });
+    var tldaLastTouch = null;
+    document.addEventListener('touchstart', function(e) {
+      if (!e.touches || e.touches.length !== 1) {
+        tldaLastTouch = null;
+        return;
+      }
+      tldaLastTouch = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    }, { passive: true });
+    document.addEventListener('touchmove', function(e) {
+      e.preventDefault();
+      if (window.parent === window || !e.touches || e.touches.length !== 1 || !tldaLastTouch) return;
+      var touch = e.touches[0];
+      var deltaX = tldaLastTouch.x - touch.clientX;
+      var deltaY = tldaLastTouch.y - touch.clientY;
+      tldaLastTouch = { x: touch.clientX, y: touch.clientY };
+      window.parent.postMessage({
+        type: 'tlda-wheel', shapeId: shapeId,
+        deltaX: deltaX, deltaY: deltaY, deltaMode: 0,
+        ctrlKey: false, metaKey: false,
+      }, '*');
+    }, { passive: false });
+    document.addEventListener('touchend', function() { tldaLastTouch = null; }, { passive: true });
+    document.addEventListener('touchcancel', function() { tldaLastTouch = null; }, { passive: true });
 
     function docLinkPayload(el) {
       var rect = el.getBoundingClientRect();

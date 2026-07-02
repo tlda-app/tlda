@@ -19,10 +19,14 @@ import type {
   ManagedSurfacePlacement,
   ManagedSurfaceRequest,
 } from '../wm/managed-surfaces'
-import { sendCanvasPageShapesToBack } from '../shapes/document-pages'
+import { isDocumentPageShape, sendCanvasPageShapesToBack } from '../shapes/document-pages'
+import { isMyFleetShape } from '../shapes/fleet-utils'
 import './AnnotationViewer.css'
 
 type ViewerState = 'hovering' | 'pinned' | 'navigated'
+
+const RETURN_HUD_TOP = 'calc(66px + env(safe-area-inset-top))'
+const RETURN_HUD_RIGHT = 'calc(10px + env(safe-area-inset-right))'
 
 interface AnnotationViewerProps {
   mainEditor: Editor
@@ -66,6 +70,7 @@ export function AnnotationViewer({
   const prevViewRef = useRef<{
     pageId: ReturnType<Editor['getCurrentPageId']>
     camera: { x: number; y: number; z: number }
+    movedShapes?: Array<{ id: TLShapeId; x: number; y: number }>
   } | null>(null)
   const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const clickStartRef = useRef<{ x: number; y: number } | null>(null)
@@ -129,6 +134,54 @@ export function AnnotationViewer({
 
   const canvasWrapRef = useRef<HTMLDivElement>(null)
 
+  const shiftMarginShapesForTarget = useCallback((target: ClipBounds) => {
+    const viewport = mainEditor.getViewportPageBounds()
+    const viewportMidY = viewport.y + viewport.h / 2
+    let source: ClipBounds | null = null
+    let bestDistance = Infinity
+    for (const shape of mainEditor.getCurrentPageShapes().filter(isDocumentPageShape)) {
+      const bounds = mainEditor.getShapePageBounds(shape.id)
+      if (!bounds) continue
+      const distance = viewportMidY >= bounds.y && viewportMidY <= bounds.y + bounds.h
+        ? 0
+        : Math.min(Math.abs(viewportMidY - bounds.y), Math.abs(viewportMidY - (bounds.y + bounds.h)))
+      if (distance < bestDistance) {
+        bestDistance = distance
+        source = { x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h }
+      }
+    }
+    if (!source) return []
+
+    const sourceLeft = source.x
+    const sourceRight = source.x + source.w
+    const targetLeft = target.x
+    const targetRight = target.x + target.w
+    const moved: Array<{ id: TLShapeId; x: number; y: number }> = []
+    const updates: Array<{ id: TLShapeId; type: string; x: number; y: number }> = []
+
+    for (const shape of mainEditor.getCurrentPageShapes().filter(isMyFleetShape) as any[]) {
+      const bounds = mainEditor.getShapePageBounds(shape.id)
+      if (!bounds) continue
+      let dx = 0
+      if (bounds.x + bounds.w <= sourceLeft) {
+        dx = targetLeft - sourceLeft
+      } else if (bounds.x >= sourceRight) {
+        dx = targetRight - sourceRight
+      } else {
+        continue
+      }
+      if (Math.abs(dx) < 0.5) continue
+      moved.push({ id: shape.id, x: shape.x, y: shape.y })
+      updates.push({ id: shape.id, type: shape.type, x: shape.x + dx, y: shape.y })
+    }
+
+    if (updates.length > 0) {
+      mainEditor.updateShapes(updates as any)
+      try { window.dispatchEvent(new CustomEvent('fleet-hud-reset', { detail: { preserveAnchor: true } })) } catch {}
+    }
+    return moved
+  }, [mainEditor])
+
   useEffect(() => {
     if (data?.bulletIdx == null) return
     const el = canvasWrapRef.current
@@ -147,6 +200,25 @@ export function AnnotationViewer({
     }, 600)
     return () => clearTimeout(timer)
   }, [data])
+  useEffect(() => {
+    if (!data) return
+    const onNavigationStart = (e: Event) => {
+      const shapeId = (e as CustomEvent).detail?.shapeId
+      if (!shapeId || !data.shapeIds?.includes(shapeId)) return
+      if (!prevViewRef.current) {
+        const cam = mainEditor.getCamera()
+        prevViewRef.current = {
+          pageId: mainEditor.getCurrentPageId(),
+          camera: { x: cam.x, y: cam.y, z: cam.z },
+        }
+      }
+      setState('navigated')
+    }
+    window.addEventListener('annotation-viewer-navigation-start', onNavigationStart)
+    return () => {
+      window.removeEventListener('annotation-viewer-navigation-start', onNavigationStart)
+    }
+  }, [data, mainEditor, shiftMarginShapesForTarget])
   useEffect(() => {
     const el = canvasWrapRef.current
     if (!el || !data) return
@@ -177,6 +249,7 @@ export function AnnotationViewer({
     prevViewRef.current = {
       pageId: mainEditor.getCurrentPageId(),
       camera: { x: cam.x, y: cam.y, z: cam.z },
+      movedShapes: shiftMarginShapesForTarget(data.bounds),
     }
     sendCanvasPageShapesToBack(mainEditor)
     suppressFleetHudCameraTracking()
@@ -203,6 +276,14 @@ export function AnnotationViewer({
     suppressFleetHudCameraTracking()
     if (mainEditor.getCurrentPageId() !== prevViewRef.current.pageId) {
       mainEditor.setCurrentPage(prevViewRef.current.pageId)
+    }
+    const movedShapes = prevViewRef.current.movedShapes || []
+    if (movedShapes.length > 0) {
+      mainEditor.updateShapes(movedShapes.map((shape) => {
+        const current = mainEditor.getShape(shape.id) as any
+        return current ? { id: shape.id, type: current.type, x: shape.x, y: shape.y } : null
+      }).filter(Boolean) as any)
+      try { window.dispatchEvent(new CustomEvent('fleet-hud-reset', { detail: { preserveAnchor: true } })) } catch {}
     }
     mainEditor.setCamera(prevViewRef.current.camera, { animation: { duration: 300 } })
     prevViewRef.current = null
@@ -322,7 +403,7 @@ export function AnnotationViewer({
         data-managed-surface-id={data.managedSurfaceId}
         data-managed-layer-id={data.managedLayerId}
         data-managed-hit-policy={data.managedHitPolicy}
-        style={{ top: Math.max(8, Math.round((vh - 72) / 2)) }}
+        style={{ top: RETURN_HUD_TOP, right: RETURN_HUD_RIGHT }}
         onPointerDown={stopEventPropagation}
         onPointerMove={stopEventPropagation}
         onPointerUp={stopEventPropagation}
@@ -377,6 +458,7 @@ export function AnnotationViewer({
           emphasizeShapeIds={data.shapeIds}
           readOnly
           className="annotation-viewer-clip"
+          requestedShapeIds={data.shapeIds}
         />
       </div>
 
