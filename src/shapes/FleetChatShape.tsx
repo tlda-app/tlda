@@ -39,6 +39,7 @@ import {
   chooseFleetEventDisplayFilter,
   classifyFleetComposerTrafficMode,
   filterForFleetComposerTrafficMode,
+  matchesFleetFilter,
   nextFleetComposerTrafficMode,
   quietTrafficSuppressesActivity,
 } from '../fleet/filter-semantics.mjs'
@@ -2021,7 +2022,11 @@ function FleetChatInner({ shape }: { shape: any }) {
       filtered = filtered.filter(n => {
         const ownerId = suggestionOwnerId(n)
         if (!ownerId) return false
-        return !!statusTargetIds?.has(ownerId)
+        return matchesFleetFilter(dnfFilter, { agent: ownerId, from: ownerId, to: ownerId }, {
+          agents,
+          humanId: getHumanId(),
+          humanName: getHumanName(),
+        })
       })
     }
     const seen = new Set<string>()
@@ -2033,7 +2038,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       seen.add(key)
       return true
     })
-  }, [suggestionsAll, dnfFilter, statusTargetIds])
+  }, [suggestionsAll, dnfFilter, agents])
 
   // Fetch per-agent history on mount / filter change. A filtered chat gets its
   // own named history buffer so one panel's backfill cannot evict or reshape
