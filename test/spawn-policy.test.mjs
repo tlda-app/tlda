@@ -453,16 +453,45 @@ describe('spawn policy', () => {
     })
     assert.equal(grant.requestedCapability, 'full')
     assert.equal(grant.grantedCapability, 'full')
-  assert.deepEqual(grant.requestedPrivilegeSet.operations.write.allow, [
+    assert.deepEqual(grant.requestedPrivilegeSet.operations.write.allow, [
       '/Users/skip/work/tlda/**',
       '/tmp/tlda-*/**',
     ])
     assert.deepEqual(grant.requestedPrivilegeSet.operations.read.deny, ['~/.ssh/**'])
     assert.deepEqual(grant.grantedPrivilegeSet.operations.write.allow, [
       '/Users/skip/work/tlda/**',
-      '/tmp/tlda-*/**',
     ])
-    assert.deepEqual(grant.grantedPrivilegeSet.operations.write.deny, ['~/.ssh/**'])
+    assert.deepEqual(grant.grantedPrivilegeSet.operations.write.deny, ['/Users/skip/.ssh/**'])
+  })
+
+  it('daemon project defaults use named privilege profile zones', () => {
+    const grant = resolveDaemonSpawnGrant({
+      requester: { id: 'fleet:skip', human: true },
+      model: 'gpt-5.5',
+      kind: 'codex',
+      config: {
+        spawnPolicy: {
+          machineGrant: 'full',
+          projectProfiles: { '/Users/skip/work/tlda': 'app-dev' },
+        },
+      },
+      cwd: '/Users/skip/work/tlda',
+      project: { name: 'tlda', sourceDir: '/Users/skip/work/tlda' },
+    })
+    assert.equal(grant.projectPolicy.name, 'app-dev')
+    assert.deepEqual(grant.requestedPrivilegeSet.operations.write.allow, [
+      'cwd',
+      '~/.config/tlda/fleet-daemon.log',
+      '~/.config/tlda/fleet-daemon.pid',
+      '~/.config/tlda/fleet-daemon.lock',
+    ])
+    assert.deepEqual(grant.grantedPrivilegeSet.operations.write.allow, [
+      '/Users/skip/work/tlda/**',
+      '/Users/skip/.config/tlda/fleet-daemon.log',
+      '/Users/skip/.config/tlda/fleet-daemon.pid',
+      '/Users/skip/.config/tlda/fleet-daemon.lock',
+    ])
+    assert.equal(grant.grantedPrivilegeSet.operations.write.allow.includes('**'), false)
   })
 
   it('daemon grant narrows wider requested zones by spawner/project zones', () => {
@@ -486,8 +515,8 @@ describe('spawn policy', () => {
     assert.deepEqual(grant.grantedPrivilegeSet.operations.read.allow, ['/Users/skip/work/tlda/**'])
     assert.deepEqual(grant.grantedPrivilegeSet.operations.write.allow, ['/Users/skip/work/tlda/**'])
     assert.equal(grant.grantedPrivilegeSet.operations.write.allow.includes('/tmp/tlda-*/**'), false)
-    assert.deepEqual(grant.grantedPrivilegeSet.operations.read.deny, ['~/.ssh/**'])
-    assert.deepEqual(grant.grantedPrivilegeSet.operations.write.deny, ['~/.ssh/**'])
+    assert.deepEqual(grant.grantedPrivilegeSet.operations.read.deny, ['/Users/skip/.ssh/**'])
+    assert.deepEqual(grant.grantedPrivilegeSet.operations.write.deny, ['/Users/skip/.ssh/**'])
   })
 
   it('privilege-set subset follows narrowed allows and accumulated denies', () => {

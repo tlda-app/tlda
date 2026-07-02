@@ -1685,6 +1685,37 @@ function formatFleetError(error) {
   try { return JSON.stringify(error) } catch { return String(error) }
 }
 
+function formatSpawnFailure(result, body = {}) {
+  const reason = result?.code || result?.reason || (result?.deduped ? 'already-spawning' : 'launch-failed')
+  const detail = result?.error || result?.message
+  const lines = [detail && detail !== reason ? `${reason}: ${detail}` : String(reason)]
+  const agentName = result?.name || body.agent || body.name
+  const agentId = result?.agent_id || result?.fleetId || result?.detail?.fleetId
+  const tmuxSession = result?.tmux_session || result?.detail?.tmuxSession
+  const launchCwd = result?.cwd || body.cwd
+  if (agentName || agentId || tmuxSession || launchCwd) {
+    lines.push(`  spawn: ${[
+      agentName && `name=${agentName}`,
+      agentId && `id=${agentId}`,
+      tmuxSession && `tmux=${tmuxSession}`,
+      launchCwd && `cwd=${launchCwd}`,
+    ].filter(Boolean).join(' ')}`)
+  }
+  if (result?.deduped) {
+    const ageSec = Number.isFinite(result.age_ms) ? Math.round(result.age_ms / 1000) : null
+    const ttlSec = Number.isFinite(result.retry_after_ms) ? Math.ceil(result.retry_after_ms / 1000) : null
+    lines.push(`  status: spawn already in progress${ageSec != null ? ` for ${ageSec}s` : ''}; no verified terminal/session yet`)
+    lines.push(`  inspect: tlda agent check-ready ${agentName || agentId || '<agent>'} --timeout 0`)
+    lines.push(ttlSec != null
+      ? `  clear/retry: wait about ${ttlSec}s for the daemon spawn guard to expire, then retry`
+      : '  clear/retry: wait for the daemon spawn guard to expire, then retry')
+  } else if (reason === 'launch-failed' || reason === 'register-timeout') {
+    lines.push(`  inspect: tlda agent check-ready ${agentName || agentId || '<agent>'} --timeout 0`)
+    if (tmuxSession) lines.push(`  terminal: tlda agent attach ${agentName || tmuxSession.replace(/^fleet-/, '')}`)
+  }
+  return lines.join('\n')
+}
+
 async function runRoutedSpawn(rawArgs) {
   const body = parseRoutedSpawn(rawArgs)
   const fleetServer = getFlag('server') || getFleetServerUrl()
@@ -1706,8 +1737,7 @@ async function runRoutedSpawn(rawArgs) {
     await fleetWsRequest(ws, { type: 'login', name: human.name }, 10000)
     const result = await fleetWsRequest(ws, { type: 'spawn', ...body }, 45000)
     if (result?.ok === false) {
-      const reason = formatFleetError(result.error || result.reason || result)
-      throw new Error(reason)
+      throw new Error(formatSpawnFailure(result, body))
     }
     const agent = result?.agent
     const label = agent?.friendly_name || result?.name || body.agent || body.name
@@ -2432,7 +2462,15 @@ async function cmdAgentPrivileges() {
     return
   }
   console.log(`Updated ${agent.id} privileges to ${description}. Respawning ${spawnName}...`)
-  await runRoutedSpawn([spawnName, '--privileges', profileArg])
+  try {
+    await runRoutedSpawn([spawnName, '--privileges', profileArg])
+  } catch (e) {
+    throw new Error([
+      `Updated desired privileges for ${agent.id} to ${description}, but respawn failed.`,
+      'Active process/lease may be unchanged until a later successful respawn.',
+      e?.message || String(e),
+    ].join('\n'))
+  }
 }
 
 async function cmdAgent() {

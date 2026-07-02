@@ -374,6 +374,12 @@ const BUILTIN_PRIVILEGE_PROFILE_SOURCE = `
 profile app-dev:
   read + cwd
   write + cwd
+  read + ~/.config/tlda/fleet-daemon.log
+  write + ~/.config/tlda/fleet-daemon.log
+  read + ~/.config/tlda/fleet-daemon.pid
+  write + ~/.config/tlda/fleet-daemon.pid
+  read + ~/.config/tlda/fleet-daemon.lock
+  write + ~/.config/tlda/fleet-daemon.lock
 
 profile deploy:
   read + cwd
@@ -632,6 +638,50 @@ export function resolveProjectProfileName(config = {}, { doc, project, cwd } = {
 export function resolveProjectProfile(config = {}, { doc, project, cwd } = {}) {
   const name = resolveProjectProfileName(config, { doc, project, cwd })
   return { ...normalizeSpawnPolicy(SPAWN_PROFILES[name]), name }
+}
+
+function privilegeSetForProfileName(name, policy, { cwd, project } = {}) {
+  const builtinProfile = builtinPrivilegeProfile(name)
+  if (builtinProfile) return builtinProfile
+  return privilegeSetFromPolicy(policy, { name: policy.name, cwd, project })
+}
+
+function materializePrivilegeZone(zone, { cwd, project } = {}) {
+  const raw = String(zone || '').trim()
+  if (!raw) return null
+  if (raw === 'cwd') {
+    const root = normalizedPath(cwd || project?.sourceDir)
+    return root ? `${root}/**` : raw
+  }
+  if (raw === 'tlda-projects') {
+    const root = normalizedPath(project?.sourceDir || cwd)
+    return root ? `${root}/**` : raw
+  }
+  if (raw === '**') return raw
+  if (raw.startsWith('~/')) return join(homedir(), raw.slice(2))
+  return raw
+}
+
+function materializePrivilegeSet(privilegeSet, { cwd, project } = {}) {
+  if (!privilegeSet || typeof privilegeSet !== 'object') return privilegeSet
+  const operations = emptyPrivilegeOperations()
+  const rules = []
+  for (const operation of PRIVILEGE_OPERATIONS) {
+    for (const effect of ['allow', 'deny']) {
+      for (const zone of privilegeSet.operations?.[operation]?.[effect] || []) {
+        const materialized = materializePrivilegeZone(zone, { cwd, project })
+        if (!materialized) continue
+        operations[operation][effect].push(materialized)
+        rules.push({ operation, effect, zone: materialized, line: null })
+      }
+    }
+  }
+  return {
+    ...privilegeSet,
+    operations,
+    rules,
+    materializedFrom: privilegeSet.name || privilegeSet.materializedFrom || 'privilege-set',
+  }
 }
 
 function requesterKeys(requester = {}) {
@@ -907,9 +957,11 @@ export function resolveDaemonSpawnGrant({
         metadata: { spawnPolicy: requester.spawnPolicy || requester.metadata?.spawnPolicy },
       })
     : normalizeSpawnPolicy(callerRung, DEFAULT_AGENT_CAPABILITY)
-  const requestedPolicy = normalizeRequestedPrivileges(requestedPrivileges || requestedCapability || projectPolicy, DEFAULT_AGENT_CAPABILITY)
+  const projectPrivilegeSet = privilegeSetForProfileName(projectPolicy.name, projectPolicy, { cwd, project })
+  const requestedPolicy = requestedPrivileges || requestedCapability
+    ? normalizeRequestedPrivileges(requestedPrivileges || requestedCapability, DEFAULT_AGENT_CAPABILITY)
+    : withPrivilegeSet(projectPolicy, projectPrivilegeSet)
   const grantedPolicy = meetSpawnPolicies([requestedPolicy, projectPolicy, modelPolicy, localSpawnPolicy, spawnerPolicy])
-  const projectPrivilegeSet = privilegeSetFromPolicy(projectPolicy, { name: projectPolicy.name, cwd, project })
   const modelPrivilegeSet = privilegeSetFromPolicy(modelPolicy, { name: modelPolicy.name, cwd, project })
   const localPrivilegeSet = privilegeSetFromPolicy(localSpawnPolicy, { name: localSpawnPolicy.name, cwd, project })
   const spawnerPrivilegeSet = privilegeSetFromPolicy(spawnerPolicy, { name: spawnerPolicy.name, cwd, project })
@@ -918,8 +970,8 @@ export function resolveDaemonSpawnGrant({
       ? privilegeSetFromPolicy(requestedPolicy, { name: requestedPolicy.name, cwd, project })
       : projectPrivilegeSet)
   const grantedPrivilegeSet = intersectPrivilegeSets([
-    requestedPrivilegeSet,
-    projectPrivilegeSet,
+    materializePrivilegeSet(requestedPrivilegeSet, { cwd, project }),
+    materializePrivilegeSet(projectPrivilegeSet, { cwd, project }),
     modelPrivilegeSet,
     localPrivilegeSet,
     spawnerPrivilegeSet,

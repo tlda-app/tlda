@@ -2557,7 +2557,14 @@ async function rpcSpawn({
     const age = Date.now() - _activeSpawns.get(agentName)
     if (age < 90_000) {
       log.info(`spawn deduped: ${agentName} already spawning (${Math.round(age / 1000)}s ago)`)
-      return { ok: false, name: agentName, deduped: true, error: `${agentName} is already spawning; no new terminal/session has been verified yet` }
+      return {
+        ok: false,
+        name: agentName,
+        deduped: true,
+        age_ms: age,
+        retry_after_ms: Math.max(0, 90_000 - age),
+        error: `${agentName} is already spawning; no new terminal/session has been verified yet`,
+      }
     }
     _activeSpawns.delete(agentName)
   }
@@ -2685,7 +2692,7 @@ async function rpcSpawn({
     const reason = e?.reason || e?.code || 'launch-failed'
     log.warn(`node fleet-spawn finished with error: ${agentName}: ${reason}: ${detail}`)
     sendMsg({ type: 'daemon-warning', message: `couldn't ${respawn ? 'wake' : 'spawn'} ${agentName} — ${detail}` })
-    return { ok: false, name: agentName, error: detail, code: reason }
+    return { ok: false, name: agentName, error: detail, code: reason, detail: e?.detail || null }
   } finally {
     _activeSpawns.delete(agentName)
   }
