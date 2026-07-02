@@ -4,6 +4,7 @@
 node_modules
 .git
 .worktrees
+.env.example
 server/projects
 server/data
 server/persist
