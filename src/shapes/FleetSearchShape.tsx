@@ -29,9 +29,10 @@ import { highlightSyntax, langFromFilePath } from '../fleet/utils.mjs'
 // @ts-ignore — vanilla JS module
 import { convertChatEvent } from '../fleet/fleet-data.mjs'
 import { appendToken } from '../authToken'
-import { useIsInViewport } from './useIsInViewport'
+import { useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
 import { dropPillOnTarget } from './FleetPillShape'
 import { dragCoordinator } from './dragCoordinator'
+import { clientPointToPage } from '../wm/viewport-coordinates'
 import './fleet-chat.css'
 
 const DEFAULT_W = 360
@@ -92,6 +93,7 @@ interface DragState {
 
 function usePillDrag() {
   const editor = useEditor()
+  const viewportId = useVisibilityViewportId()
   const dragRef = useRef<DragState | null>(null)
   const startDrag = useCallback((e: React.PointerEvent, value: string, displayName: string, color: string) => {
     stopEventPropagation(e)
@@ -105,7 +107,7 @@ function usePillDrag() {
         if (!drag.started) {
           if (Math.abs(dx) < DRAG_THRESHOLD && Math.abs(dy) < DRAG_THRESHOLD) return
           drag.started = true
-          const pagePos = editor.screenToPage({ x: ev.clientX, y: ev.clientY })
+          const pagePos = clientPointToPage(editor, { x: ev.clientX, y: ev.clientY }, viewportId)
           const measureEl = document.createElement('span')
           measureEl.style.cssText = "position:absolute;visibility:hidden;font:500 9px 'SF Mono',Menlo,Consolas,monospace;white-space:nowrap;padding:1px 6px;border:1px solid transparent"
           measureEl.textContent = drag.displayName
@@ -121,7 +123,7 @@ function usePillDrag() {
           return
         }
         if (drag.pillId) {
-          const pagePos = editor.screenToPage({ x: ev.clientX, y: ev.clientY })
+          const pagePos = clientPointToPage(editor, { x: ev.clientX, y: ev.clientY }, viewportId)
           const pillShape = editor.getShape(drag.pillId as any) as any
           const pw = pillShape?.props?.w || 70, ph = pillShape?.props?.h || 18
           editor.run(() => { editor.updateShape({ id: drag.pillId as any, type: 'fleet-pill' as any, x: pagePos.x - pw / 2, y: pagePos.y - ph / 2 }) }, { history: 'ignore' })
@@ -131,12 +133,12 @@ function usePillDrag() {
         const drag = dragRef.current
         dragRef.current = null
         if (!drag || !drag.started || !drag.pillId) return
-        const pagePos = editor.screenToPage({ x: ev.clientX, y: ev.clientY })
+        const pagePos = clientPointToPage(editor, { x: ev.clientX, y: ev.clientY }, viewportId)
         dropPillOnTarget(editor, drag.pillId as any, drag.value, pagePos)
         editor.run(() => { try { editor.deleteShapes([drag.pillId as any]) } catch {} }, { history: 'ignore' })
       }
     )
-  }, [editor])
+  }, [editor, viewportId])
   return { startDrag }
 }
 
