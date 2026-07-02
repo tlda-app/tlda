@@ -103,7 +103,14 @@ const FENCE_SECRET_PATTERNS = [
   '~/.kube/config', '~/.docker/config.json',
   '~/.pypirc', '~/.netrc', '~/.git-credentials',
   '~/.cargo/credentials', '~/.cargo/credentials.toml',
-  '**/.env', '**/.env.*', '**/*.key', '**/*.pem', '**/*.p12', '**/*.pfx',
+  '**/.env',
+  '**/.env.local',
+  '**/.env.*.local',
+  '**/.env.development',
+  '**/.env.production',
+  '**/.env.staging',
+  '**/.env.test',
+  '**/*.key', '**/*.pem', '**/*.p12', '**/*.pfx',
 ]
 const FENCE_DENY_READ = [...FENCE_SECRET_PATTERNS]
 const FENCE_DENY_WRITE = [
