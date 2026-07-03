@@ -8,6 +8,22 @@ test('spawn-direct capability flags are passed to the shared Node spawn helper',
   assert.match(cli, /requestedCapability,/)
 })
 
+test('spawn-direct uses the shared clamp as a full operator spawner', () => {
+  const cli = fs.readFileSync(new URL('../cli/tlda.mjs', import.meta.url), 'utf8')
+  assert.match(cli, /resolveSpawnGrant\(\{/)
+  assert.match(cli, /spawnerPolicy: 'full'/)
+  assert.match(cli, /spawnerPrivilegeSet: privilegeSetFromPolicy\('full'/)
+  assert.match(cli, /spawnPolicy: grant\.grantedPolicy/)
+  assert.match(cli, /privilegeSet: grant\.grantedPrivilegeSet/)
+})
+
+test('spawn-direct opts into fence enforcement but daemon spawn does not', () => {
+  const cli = fs.readFileSync(new URL('../cli/tlda.mjs', import.meta.url), 'utf8')
+  const daemon = fs.readFileSync(new URL('../bin/fleet-daemon.mjs', import.meta.url), 'utf8')
+  assert.match(cli, /enforceFence: true/)
+  assert.doesNotMatch(daemon, /enforceFence/)
+})
+
 test('spawn privilege specs are accepted as CLI file-or-name and relayed to daemon/MCP', () => {
   const cli = fs.readFileSync(new URL('../cli/tlda.mjs', import.meta.url), 'utf8')
   const tools = fs.readFileSync(new URL('../mcp-server/fleet-tools.mjs', import.meta.url), 'utf8')
@@ -17,7 +33,7 @@ test('spawn privilege specs are accepted as CLI file-or-name and relayed to daem
   assert.match(cli, /'privileges'/)
   assert.match(cli, /function privilegesFromRaw\(rawArgs\)/)
   assert.match(cli, /normalizeRequestedPrivileges\(requestedPrivileges \|\| policyArg, requestedCapability \|\| undefined\)/)
-  assert.match(cli, /privilegeSet: requestedPrivilegePolicy\?\.privilegeSet/)
+  assert.match(cli, /privilegeSet: grant\.grantedPrivilegeSet/)
   assert.match(cli, /body\.privileges = privileges/)
   assert.match(tools, /privileges: args\.privileges/)
   assert.match(server, /requestedPrivileges: privilegeRequest \|\| undefined/)
@@ -29,7 +45,7 @@ test('spawn-direct policy flag forces an explicit fenced launch without raising 
   assert.match(cli, /const policyArg = flagFromRaw\(spawnArgs, 'policy'\)/)
   assert.match(cli, /const requestedCapability = capabilityArg \|\| \(policyArg != null \? 'write' : undefined\)/)
   assert.match(cli, /normalizeRequestedPrivileges\(requestedPrivileges \|\| policyArg, requestedCapability \|\| undefined\)/)
-  assert.match(cli, /spawnPolicy: requestedPrivilegePolicy \|\| undefined/)
+  assert.match(cli, /spawnPolicy: grant\.grantedPolicy/)
   assert.match(cli, /explicitPolicy: policyArg != null/)
 })
 

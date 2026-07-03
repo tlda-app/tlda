@@ -108,8 +108,9 @@ import {
   unlinkPidfileIfOwnPid,
 } from './lib/daemon-guards.mjs'
 import { codexRolloutBelongsToAgent, codexRolloutHasOwnerEvidence, resolveTranscript } from './lib/resolve-transcript.mjs'
-import { resolveDaemonSpawnGrant } from '../server/lib/spawn-policy.mjs'
+import { resolveSpawnGrant } from '../server/lib/spawn-policy.mjs'
 import { probeSpawnCapabilities } from './lib/spawn/capabilities.mjs'
+import { createPrivilegeLedger, defaultPrivilegeLedgerPath } from './lib/spawn/privilege-ledger.mjs'
 import { acquireSingletonLock } from './lib/singleton-lock.mjs'
 const log = createLogger('daemon')
 // CONFIG_DIR holds config.json, cursors, PID and log files. Defaults to
@@ -124,6 +125,8 @@ const PID_FILE = path.join(CONFIG_DIR, 'fleet-daemon.pid')
 // structurally impossible. See bin/lib/singleton-lock.mjs.
 const LOCK_FILE = path.join(CONFIG_DIR, 'fleet-daemon.lock')
 const SOURCE_BINDINGS_FILE = path.join(CONFIG_DIR, 'source-bindings.json')
+const PRIVILEGE_LEDGER_FILE = defaultPrivilegeLedgerPath(CONFIG_DIR)
+const privilegeLedger = createPrivilegeLedger(PRIVILEGE_LEDGER_FILE)
 
 // Per-machine source bindings: { projectName -> absolute local source dir }.
 // This is the per-machine fact "where MY copy of project X lives" — it belongs
@@ -2648,11 +2651,14 @@ async function rpcSpawn({
   let grant
   try {
     const config = _loadSharedConfig()
-    grant = resolveDaemonSpawnGrant({
+    const spawnerGrant = requester?.id ? privilegeLedger.grantFor(requester, config) : null
+    grant = resolveSpawnGrant({
       requestedCapability: requestedCapability || (policy != null ? 'write' : undefined),
       requestedPrivileges,
       callerRung,
       requester,
+      spawnerPolicy: spawnerGrant?.spawnPolicy,
+      spawnerPrivilegeSet: spawnerGrant?.privilegeSet,
       model: launchModel,
       kind: launchKind,
       config,
@@ -2721,6 +2727,11 @@ async function rpcSpawn({
         error: `spawn launcher returned but tmux session is not usable: ${detail}`,
       }
     }
+    privilegeLedger.set(launched.fleetId, {
+      spawnPolicy: grant.grantedPolicy,
+      privilegeSet: grant.grantedPrivilegeSet,
+      source: 'spawn',
+    })
     probeSpawnStartupFailure({
       agentName,
       agent_id: launched.fleetId,
@@ -2739,7 +2750,6 @@ async function rpcSpawn({
       spawnerCapability: grant.spawnerCapability,
       projectCapability: grant.projectCapability,
       modelCapability: grant.modelCapability,
-      localSpawnCapability: grant.localSpawnCapability,
       requestedPrivilegeSet: grant.requestedPrivilegeSet,
       grantedPrivilegeSet: grant.grantedPrivilegeSet,
       spawnPolicy: grant.grantedPolicy,

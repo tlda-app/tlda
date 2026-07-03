@@ -84,17 +84,22 @@ const FENCE_AGENT_READ_ROOTS = [
   '/private/var/folders/*/*/T/xcrun_db*',
   '/var/folders/*/*/T/xcrun_db*',
   '~/.codex',
+  '~/.codex/**',
   '~/.claude',
   '~/.claude/**',
   '~/.claude.json',
   '~/.config/tlda',
   '~/.config/tlda/**',
   '~/.config/fence',
-  '~/Library/Application Support/mkcert',
-  '~/Library/Application Support/mkcert/**',
   '~/Library/Preferences',
-  '~/Library/Keychains',
-  '~/Library/Keychains/**',
+  '~/.npm/_cacache',
+  '~/.npm/_cacache/**',
+  '~/.npm/_npx',
+  '~/.npm/_npx/**',
+]
+const FENCE_BOOT_READ_REALPATH_ROOTS = [
+  '~/.codex/AGENTS.md',
+  '~/.codex/skills',
 ]
 const FENCE_SECRET_PATTERNS = [
   '~/.ssh/id_*', '~/.ssh/*.key', '~/.ssh/*.pem', '~/.ssh/*.p12', '~/.ssh/*.pfx',
@@ -115,6 +120,37 @@ const FENCE_SECRET_PATTERNS = [
   '**/.env.staging',
   '**/.env.test',
   '**/*.key', '**/*.pem', '**/*.p12', '**/*.pfx',
+]
+const FENCE_REAL_SECRET_DENY = [
+  '~/.ssh/id_*',
+  '~/.ssh/*.key',
+  '~/.ssh/*.pem',
+  '~/.ssh/*.p12',
+  '~/.ssh/*.pfx',
+  '~/.aws/credentials',
+  '~/.aws/credentials.*',
+  '~/.aws/sso/cache/*.json',
+  '~/.aws/**',
+  '~/.config/gcloud/application_default_credentials.json',
+  '~/.config/gcloud/credentials.db',
+  '~/.config/gcloud/access_tokens.db',
+  '~/.config/gcloud/legacy_credentials/**/adc.json',
+  '~/.config/gcloud/**',
+  '~/.netrc',
+  '~/.git-credentials',
+  '~/Library/Keychains/**',
+  '~/Library/Group Containers/2BUA8C4S2C.com.1password/**',
+  '~/Library/Application Support/1Password/**',
+  '~/.1password/**',
+  '~/.op/**',
+  '~/.config/1Password/**',
+  '~/.config/Bitwarden CLI/**',
+  '~/.config/bitwarden/**',
+]
+const FENCE_ADVISORY_CREDENTIAL_READ_DENY = [
+  '~/.fly/**',
+  '~/.config/fly/**',
+  '~/.config/gh/**',
 ]
 const FENCE_DENY_READ = [...FENCE_SECRET_PATTERNS]
 const FENCE_DENY_WRITE = [
@@ -148,14 +184,6 @@ const CHROME_FOR_TESTING_MACH_SERVICES = [
   'org.chromium.crashpad.child_port_handshake.*',
   'org.chromium.Chromium.MachPortRendezvousServer.*',
 ]
-const AUTH_MACH_SERVICES = [
-  'com.apple.securityd',
-  'com.apple.securityd.*',
-  'com.apple.trustd',
-  'com.apple.trustd.*',
-  'com.apple.analyticsd',
-  'com.apple.diagnosticd',
-]
 
 function sq(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`
@@ -181,6 +209,127 @@ function hasGitWriteRoot(policy) {
   return (policy.write_roots || []).some((root) => path.basename(path.normalize(String(root))) === '.git')
 }
 
+function patternContains(parent, child) {
+  const p = expandPathPattern(parent)
+  const c = expandPathPattern(child)
+  if (p === '**' || p === '/') return true
+  if (p === c) return true
+  if (p.endsWith('/**')) {
+    const base = p.slice(0, -3)
+    return c === base || c.startsWith(`${base}/`)
+  }
+  return false
+}
+
+function readExplicitlyAllows(policy, pattern) {
+  const readAllows = [
+    ...(policy.read_roots || []),
+    ...(policy.privilege_set?.operations?.read?.allow || []),
+  ]
+  return readAllows.some((allow) => patternContains(allow, pattern))
+}
+
+function credentialReadDenies(policy) {
+  return FENCE_ADVISORY_CREDENTIAL_READ_DENY.filter((pattern) => !readExplicitlyAllows(policy, pattern))
+}
+
+function existingRealpathReadRoots(patterns) {
+  const roots = []
+  for (const pattern of patterns) {
+    let real = null
+    try {
+      real = fs.realpathSync(expandPathPattern(pattern))
+    } catch {
+      continue
+    }
+    roots.push(real)
+    try {
+      if (fs.statSync(real).isDirectory()) roots.push(`${real}/**`)
+    } catch {
+      // The resolved path existed for realpathSync; if stat races, keep the root.
+    }
+  }
+  return roots
+}
+
+function isBroadAllow(pattern) {
+  const p = expandPathPattern(pattern)
+  return p === '**' || p === '/' || p === '/**'
+}
+
+function pathMayContain(parent, child) {
+  const p = expandPathPattern(parent)
+  const c = expandPathPattern(child)
+  if (isBroadAllow(p)) return true
+  if (p === c) return true
+  if (p.endsWith('/**')) {
+    const base = p.slice(0, -3)
+    return c === base || c.startsWith(`${base}/`)
+  }
+  return c.startsWith(`${p}/`)
+}
+
+function allowPathAndContents(p) {
+  const out = [p]
+  try {
+    if (fs.statSync(p).isDirectory()) out.push(`${p}/**`)
+  } catch {
+    out.push(`${p}/**`)
+  }
+  return out
+}
+
+function globPatternMatches(pattern, candidate) {
+  const p = expandPathPattern(pattern)
+  const c = expandPathPattern(candidate)
+  if (!/[*?[\]]/.test(p)) return p === c
+  const escaped = p.replace(/[.+^${}()|\\]/g, '\\$&')
+    .replace(/\*/g, '[^/]*')
+    .replace(/\?/g, '[^/]')
+  return new RegExp(`^${escaped}$`).test(c)
+}
+
+function allowRootMatchesDenyFloor(root, denyPatterns) {
+  const expanded = expandPathPattern(root)
+  const base = expanded.endsWith('/**') ? expanded.slice(0, -3) : expanded
+  return denyPatterns.some((deny) => patternContains(deny, expanded)
+    || patternContains(deny, base)
+    || globPatternMatches(deny, expanded)
+    || globPatternMatches(deny, base))
+}
+
+function broadAllowlistMinusDenyFloor(denyPatterns, root = '/', depth = 0) {
+  const expandedDenies = denyPatterns.map(expandPathPattern)
+  const relevantDenies = expandedDenies.filter((deny) => pathMayContain(root, deny))
+  if (!relevantDenies.length) return allowPathAndContents(root)
+  if (depth > 8) return []
+
+  let children = []
+  try {
+    children = fs.readdirSync(root, { withFileTypes: true })
+  } catch {
+    return []
+  }
+
+  const out = []
+  for (const child of children) {
+    const childPath = path.join(root, child.name)
+    if (expandedDenies.some((deny) => patternContains(deny, childPath) || globPatternMatches(deny, childPath))) continue
+    if (relevantDenies.some((deny) => pathMayContain(childPath, deny))) out.push(...broadAllowlistMinusDenyFloor(denyPatterns, childPath, depth + 1))
+    else out.push(...allowPathAndContents(childPath))
+  }
+  return out
+}
+
+function materializeAllowRoots(roots, denyFloor = []) {
+  const out = []
+  for (const root of roots) {
+    if (isBroadAllow(root)) out.push(...broadAllowlistMinusDenyFloor(denyFloor))
+    else if (!allowRootMatchesDenyFloor(root, denyFloor)) out.push(root)
+  }
+  return out
+}
+
 function apiHost(api) {
   try {
     return new URL(api).hostname
@@ -202,14 +351,37 @@ function apiNeedsLocalOutbound(dnsAlias) {
 }
 
 export function fenceSettings(policy, { api, dnsAlias } = {}) {
-  const allowRead = uniqueSorted([...(policy.read_roots || []), ...FENCE_AGENT_READ_ROOTS].map(expandPathPattern))
+  const emptyCapability = policy.capability === 'none'
+  const readAllowRoots = [
+    ...(policy.read_roots || []),
+    ...(emptyCapability ? [] : FENCE_AGENT_READ_ROOTS),
+    ...(emptyCapability ? [] : existingRealpathReadRoots(FENCE_BOOT_READ_REALPATH_ROOTS)),
+  ]
   const broadWriteRoots = policy.explicit_privilege_set ? [] : FENCE_BROAD_WRITE_ROOTS
-  const allowWrite = uniqueSorted([...(policy.write_roots || []), ...FENCE_AGENT_WRITE_ROOTS, ...broadWriteRoots].map(expandPathPattern))
-  const denyRead = [...FENCE_DENY_READ, ...(policy.deny_read_roots || [])]
-  const denyWrite = [...FENCE_DENY_WRITE, ...(policy.deny_write_roots || [])]
+  const writeAllowRoots = [
+    ...(policy.write_roots || []),
+    ...(emptyCapability ? [] : FENCE_AGENT_WRITE_ROOTS),
+    ...(emptyCapability ? [] : broadWriteRoots),
+  ]
+  const allowRead = uniqueSorted(materializeAllowRoots(readAllowRoots, FENCE_REAL_SECRET_DENY).map(expandPathPattern))
+  const allowWrite = uniqueSorted(materializeAllowRoots(writeAllowRoots, FENCE_REAL_SECRET_DENY).map(expandPathPattern))
+  const denyRead = uniqueSorted([...FENCE_REAL_SECRET_DENY, ...FENCE_DENY_READ, ...credentialReadDenies(policy), ...(policy.deny_read_roots || [])])
+  const denyWrite = uniqueSorted([...FENCE_REAL_SECRET_DENY, ...FENCE_DENY_WRITE, ...(policy.deny_write_roots || [])])
   if (String(policy.git || 'read') !== 'write' && !hasGitWriteRoot(policy)) denyWrite.push(...FENCE_GIT_READONLY_DENY)
   const allowedDomains = ['*']
   const localOutbound = apiNeedsLocalOutbound(dnsAlias)
+  const allowUnixSockets = emptyCapability ? [] : [
+    ...FENCE_TEMP_ROOTS,
+    TLDA_PW_RUNTIME_ROOT,
+    `${TLDA_PW_RUNTIME_ROOT}/**`,
+    TLDA_PW_RUNTIME_REAL_ROOT,
+    `${TLDA_PW_RUNTIME_REAL_ROOT}/**`,
+    TLDA_PW_SOCKETS_ROOT,
+    `${TLDA_PW_SOCKETS_ROOT}/**`,
+    TLDA_PW_SOCKETS_REAL_ROOT,
+    `${TLDA_PW_SOCKETS_REAL_ROOT}/**`,
+  ]
+  const machServices = emptyCapability ? [] : CHROME_FOR_TESTING_MACH_SERVICES
   return {
     allowPty: true,
     network: {
@@ -217,20 +389,10 @@ export function fenceSettings(policy, { api, dnsAlias } = {}) {
       deniedDomains: [],
       allowLocalBinding: !!policy.network || localOutbound,
       allowLocalOutbound: !!policy.network || localOutbound,
-      allowUnixSockets: [
-        ...FENCE_TEMP_ROOTS,
-        TLDA_PW_RUNTIME_ROOT,
-        `${TLDA_PW_RUNTIME_ROOT}/**`,
-        TLDA_PW_RUNTIME_REAL_ROOT,
-        `${TLDA_PW_RUNTIME_REAL_ROOT}/**`,
-        TLDA_PW_SOCKETS_ROOT,
-        `${TLDA_PW_SOCKETS_ROOT}/**`,
-        TLDA_PW_SOCKETS_REAL_ROOT,
-        `${TLDA_PW_SOCKETS_REAL_ROOT}/**`,
-      ],
+      allowUnixSockets,
     },
     filesystem: {
-      defaultDenyRead: false,
+      defaultDenyRead: true,
       allowRead,
       denyRead,
       allowWrite,
@@ -242,8 +404,8 @@ export function fenceSettings(policy, { api, dnsAlias } = {}) {
     },
     macos: {
       mach: {
-        lookup: [...CHROME_FOR_TESTING_MACH_SERVICES, ...AUTH_MACH_SERVICES],
-        register: CHROME_FOR_TESTING_MACH_SERVICES,
+        lookup: machServices,
+        register: machServices,
       },
     },
   }
@@ -306,10 +468,9 @@ export function wrapSandboxCmd(cmd, policy, opts = {}) {
   // Fence stripped out (Skip's call, 2026-07-02): the sandbox wrapper
   // over-restricted every spawned agent — no `ps`, no `~/.fly`, no git
   // worktrees — and repeatedly blocked agents from doing real work, including
-  // fixing the fence itself. Launch every agent command UNWRAPPED. This is a
-  // one-line revert (delete the `return cmd` below) if a fence is reinstated.
-  return cmd
-  // eslint-disable-next-line no-unreachable
+  // fixing the fence itself. Launch daemon-spawned agent commands UNWRAPPED by
+  // default. SpawnDirect can opt into the real wrapper as the isolated testbed.
+  if (!opts.enforce) return cmd
   if (!policy) return cmd
   const runner = policy.runner || {}
   const command = runner.command

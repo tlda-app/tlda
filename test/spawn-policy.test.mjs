@@ -10,6 +10,7 @@ import {
   callerCapability,
   callerSpawnPolicy,
   compilePrivilegeProfiles,
+  emptyPrivilegeSet,
   intersectPrivilegeSets,
   isOperator,
   meetSpawnPolicies,
@@ -20,8 +21,7 @@ import {
   normalizeSpawnPolicy,
   projectCapabilityToMode,
   privilegeSetLte,
-  resolveDaemonSpawnGrant,
-  resolveLocalSpawnAllowance,
+  resolveSpawnGrant,
   normalizeRequestedPrivileges,
   resolveProjectProfile,
   resolveProjectProfileName,
@@ -29,8 +29,9 @@ import {
 } from '../server/lib/spawn-policy.mjs'
 
 describe('spawn policy', () => {
-  it('is one axis of four named rungs, region derived from the rung', () => {
-    assert.deepEqual(CAPABILITIES, ['read', 'write', 'tlda-write', 'full'])
+  it('is one axis of named rungs, region derived from the rung', () => {
+    assert.deepEqual(CAPABILITIES, ['none', 'read', 'write', 'tlda-write', 'full'])
+    assert.equal(capabilityLte('none', 'read'), true)
     assert.equal(capabilityLte('read', 'write'), true)
     assert.equal(capabilityLte('write', 'tlda-write'), true)
     assert.equal(capabilityLte('tlda-write', 'full'), true)
@@ -40,13 +41,13 @@ describe('spawn policy', () => {
     assert.equal(normalizeSpawnPolicy('write').policy, 'cwd')
     assert.equal(normalizeSpawnPolicy('tlda-write').policy, 'tlda-projects')
     assert.equal(normalizeSpawnPolicy('full').policy, 'unsandboxed')
-    assert.deepEqual(CAPABILITY_REGION, { read: 'cwd', write: 'cwd', 'tlda-write': 'tlda-projects', full: 'unsandboxed' })
+    assert.deepEqual(CAPABILITY_REGION, { none: 'cwd', read: 'cwd', write: 'cwd', 'tlda-write': 'tlda-projects', full: 'unsandboxed' })
   })
 
-  it('rejects machine vocabulary as a typed capability (four names only on the surface)', () => {
-    // The user surface accepts only the four names; the old machine words are
+  it('rejects machine vocabulary as a typed capability', () => {
+    // The user surface accepts only the named rungs; the old machine words are
     // tolerated ONLY as persisted-metadata reads, never as a normalized rung name.
-    for (const name of ['read', 'write', 'tlda-write', 'full']) {
+    for (const name of ['none', 'read', 'write', 'tlda-write', 'full']) {
       assert.equal(normalizeCapability(name), name)
     }
   })
@@ -294,8 +295,8 @@ describe('spawn policy', () => {
     })
   })
 
-  it('daemon grant is meet(requested, caller rung, machine allowed rung)', () => {
-    const grant = resolveDaemonSpawnGrant({
+  it('daemon grant is meet(requested, spawner row, model cap)', () => {
+    const grant = resolveSpawnGrant({
       requestedCapability: 'full',
       callerRung: 'tlda-write',
       model: 'deepseek/deepseek-v4-pro',
@@ -312,8 +313,8 @@ describe('spawn policy', () => {
     })
   })
 
-  it('daemon derives the local project fence before clamping', () => {
-    const grant = resolveDaemonSpawnGrant({
+  it('daemon derives the project default as request, not authority', () => {
+    const grant = resolveSpawnGrant({
       callerRung: 'full',
       model: 'opus48',
       config: { spawnPolicy: { projectProfiles: { mathdoc: 'math-projects' }, machineGrant: 'tlda-write' } },
@@ -323,7 +324,6 @@ describe('spawn policy', () => {
     assert.equal(grant.requestedCapability, 'tlda-write')
     assert.equal(grant.projectCapability, 'tlda-write')
     assert.equal(grant.modelCapability, 'full')
-    assert.equal(grant.localSpawnCapability, 'tlda-write')
     assert.deepEqual(grant.grantedPolicy, {
       name: 'tlda-write',
       capability: 'tlda-write',
@@ -332,8 +332,8 @@ describe('spawn policy', () => {
     })
   })
 
-  it('daemon derives the local project fence from cwd when no doc is supplied', () => {
-    const ops = resolveDaemonSpawnGrant({
+  it('daemon derives the project default from cwd when no doc is supplied', () => {
+    const ops = resolveSpawnGrant({
       callerRung: 'full',
       model: 'gpt-5.5',
       kind: 'codex',
@@ -348,7 +348,7 @@ describe('spawn policy', () => {
       category: 'write-scope',
     })
 
-    const cwdDefault = resolveDaemonSpawnGrant({
+    const cwdDefault = resolveSpawnGrant({
       callerRung: 'full',
       model: 'gpt-5.5',
       kind: 'codex',
@@ -364,34 +364,28 @@ describe('spawn policy', () => {
     })
   })
 
-  it('local box ACL is keyed by requester and project, with owner full and machineGrant as wildcard override', () => {
-    assert.deepEqual(resolveLocalSpawnAllowance({
-      spawnPolicy: {
-        localSpawnAcl: {
-          'fleet:writer': { mathdoc: 'tlda-write' },
-          '*': { '*': 'write' },
-        },
-      },
-    }, {
-      requester: { id: 'fleet:writer' },
-      doc: 'mathdoc',
-    }), {
-      name: 'tlda-write',
-      capability: 'tlda-write',
-      policy: 'tlda-projects',
-      category: 'write-scope',
-    })
-
-    assert.equal(resolveLocalSpawnAllowance({
-      spawnPolicy: { machineGrant: 'full' },
-    }, {
-      requester: { id: 'fleet:any' },
-      cwd: '/Users/skip/work/tlda',
-    }).capability, 'full')
-    assert.equal(resolveLocalSpawnAllowance({}, {
+  it('machineGrant/local ACL no longer act as authority clamps', () => {
+    const grant = resolveSpawnGrant({
+      requestedCapability: 'full',
       requester: { id: 'fleet:skip', human: true },
+      model: 'gpt-5.5',
+      kind: 'codex',
+      config: { spawnPolicy: { machineGrant: 'read', localSpawnAcl: { '*': { '*': 'read' } } } },
       cwd: '/Users/skip/work/tlda',
-    }).capability, 'full')
+    })
+    assert.equal(grant.grantedCapability, 'full')
+  })
+
+  it('none spawners cannot spawn agents', () => {
+    assert.throws(() => resolveSpawnGrant({
+      requestedCapability: 'write',
+      requester: { id: 'fleet:unknown' },
+      spawnerPolicy: 'none',
+      spawnerPrivilegeSet: emptyPrivilegeSet(),
+      model: 'gpt-5.5',
+      kind: 'codex',
+      cwd: '/Users/skip/work/tlda',
+    }), /spawner lacks spawn privilege/)
   })
 
   it('normalizes requested privilege profiles from names, objects, and profile source text', () => {
@@ -438,7 +432,7 @@ describe('spawn policy', () => {
   write - ~/.ssh/**
 `)
     const requestedPrivileges = compiled.profiles['app-dev']
-    const grant = resolveDaemonSpawnGrant({
+    const grant = resolveSpawnGrant({
       requestedPrivileges,
       requester: { id: 'fleet:skip', human: true },
       model: 'gpt-5.5',
@@ -460,12 +454,13 @@ describe('spawn policy', () => {
     assert.deepEqual(grant.requestedPrivilegeSet.operations.read.deny, ['~/.ssh/**'])
     assert.deepEqual(grant.grantedPrivilegeSet.operations.write.allow, [
       '/Users/skip/work/tlda/**',
+      '/tmp/tlda-*/**',
     ])
     assert.deepEqual(grant.grantedPrivilegeSet.operations.write.deny, ['/Users/skip/.ssh/**'])
   })
 
   it('daemon project defaults use named privilege profile zones', () => {
-    const grant = resolveDaemonSpawnGrant({
+    const grant = resolveSpawnGrant({
       requester: { id: 'fleet:skip', human: true },
       model: 'gpt-5.5',
       kind: 'codex',
@@ -494,7 +489,44 @@ describe('spawn policy', () => {
     assert.equal(grant.grantedPrivilegeSet.operations.write.allow.includes('**'), false)
   })
 
-  it('daemon grant narrows wider requested zones by spawner/project zones', () => {
+  it('daemon config can define Skip-local personal privilege overlays without changing shipped defaults', () => {
+    const skipAppDev = {
+      type: 'privilege-set',
+      name: 'skip-app-dev',
+      projectedPolicy: { capability: 'full', policy: 'unsandboxed' },
+      operations: {
+        read: { allow: ['~/work/**', '~/.fly/**'], deny: [] },
+        write: { allow: ['cwd', '~/.fly/**'], deny: [] },
+        spawn: { allow: ['**'], deny: [] },
+      },
+      rules: [],
+    }
+    const grant = resolveSpawnGrant({
+      requester: { id: 'fleet:skip', human: true },
+      model: 'gpt-5.5',
+      kind: 'codex',
+      config: {
+        spawnPolicy: {
+          privilegeProfiles: { 'skip-app-dev': skipAppDev },
+          projectProfiles: { '/Users/skip/work/tlda': 'skip-app-dev' },
+        },
+      },
+      cwd: '/Users/skip/work/tlda',
+      project: { name: 'tlda', sourceDir: '/Users/skip/work/tlda' },
+    })
+    assert.equal(grant.projectPolicy.name, 'skip-app-dev')
+    assert.equal(grant.projectCapability, 'full')
+    assert.deepEqual([...grant.grantedPrivilegeSet.operations.read.allow].sort(), [
+      '/Users/skip/.fly/**',
+      '/Users/skip/work/**',
+    ])
+    assert.deepEqual([...grant.grantedPrivilegeSet.operations.write.allow].sort(), [
+      '/Users/skip/.fly/**',
+      '/Users/skip/work/tlda/**',
+    ])
+  })
+
+  it('daemon grant narrows wider requested zones by spawner row', () => {
     const compiled = compilePrivilegeProfiles(`profile app-dev:
   read  + /Users/skip/work/**
   write + /Users/skip/work/**
@@ -502,7 +534,7 @@ describe('spawn policy', () => {
   read  - ~/.ssh/**
   write - ~/.ssh/**
 `)
-    const grant = resolveDaemonSpawnGrant({
+    const grant = resolveSpawnGrant({
       requestedPrivileges: compiled.profiles['app-dev'],
       requester: { id: 'fleet:writer', spawnPolicy: { capability: 'write', policy: 'cwd' } },
       model: 'gpt-5.5',
@@ -537,7 +569,7 @@ describe('spawn policy', () => {
     assert.equal(privilegeSetLte(wide, grant), false)
   })
 
-  it('daemon full override grants full from tlda only when project, model, and spawner terms also allow it', () => {
+  it('daemon full override grants full when request, model, and spawner terms allow it', () => {
     const config = {
       spawnPolicy: {
         machineGrant: 'full',
@@ -545,7 +577,7 @@ describe('spawn policy', () => {
         projectProfiles: { '/Users/skip/work/tlda': 'app-dev' },
       },
     }
-    const grant = resolveDaemonSpawnGrant({
+    const grant = resolveSpawnGrant({
       requestedCapability: 'full',
       requester: { id: 'fleet:skip', human: true },
       model: 'gpt-5.5',
@@ -555,9 +587,7 @@ describe('spawn policy', () => {
     })
     assert.equal(grant.requestedCapability, 'full')
     assert.equal(grant.spawnerCapability, 'full')
-    assert.equal(grant.projectCapability, 'full')
     assert.equal(grant.modelCapability, 'full')
-    assert.equal(grant.localSpawnCapability, 'full')
     assert.deepEqual(grant.grantedPolicy, {
       name: 'full',
       capability: 'full',
@@ -565,7 +595,7 @@ describe('spawn policy', () => {
       category: 'write-scope',
     })
 
-    const clampedBySpawner = resolveDaemonSpawnGrant({
+    const clampedBySpawner = resolveSpawnGrant({
       requestedCapability: 'full',
       requester: { id: 'fleet:writer', spawnPolicy: { capability: 'write', policy: 'cwd' } },
       model: 'gpt-5.5',
