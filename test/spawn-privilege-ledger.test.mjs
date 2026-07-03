@@ -8,6 +8,7 @@ import path from 'path'
 import Database from 'better-sqlite3'
 import YAML from 'yaml'
 import {
+  applyDaemonGrants,
   createPrivilegeLedger,
   defaultDaemonConfigPath,
   privilegeLedgerPathFromDaemonConfig,
@@ -88,7 +89,6 @@ describe('daemon privilege ledger', () => {
   it('loads daemon model aliases from yaml separately from server config', () => {
     const dir = tempConfigDir()
     fs.writeFileSync(defaultDaemonConfigPath(dir), YAML.stringify({
-      version: 1,
       models: {
         claude: {
           localopus: 'claude-opus-local',
@@ -99,6 +99,21 @@ describe('daemon privilege ledger', () => {
     const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(dir))
     const config = withDaemonModelAliases({ defaultConfig: 'live', models: { claude: { stale: 'old' } } }, daemonConfig)
     assert.deepEqual(config.models, { claude: { localopus: 'claude-opus-local' } })
+  })
+
+  it('rejects daemon yaml keys outside profiles, grants, models, and servers', () => {
+    const dir = tempConfigDir()
+    fs.writeFileSync(defaultDaemonConfigPath(dir), YAML.stringify({
+      profiles: {},
+      grants: {},
+      models: {},
+      servers: {},
+      classes: {},
+    }))
+    assert.throws(
+      () => readDaemonConfig(defaultDaemonConfigPath(dir)),
+      /unknown key\(s\): classes/,
+    )
   })
 
   it('migrates old daemon-privileges.yaml rows into fleet-daemon.db once', async () => {
@@ -147,12 +162,21 @@ describe('daemon privilege ledger', () => {
     await reopened.close()
   })
 
-  it('uses daemon yaml for model rows and ledger.db while grants stay in fleet-daemon.db', async () => {
+  it('uses flat daemon yaml for real profiles, grants, model rows, and servers', async () => {
     const dir = tempConfigDir()
     fs.writeFileSync(defaultDaemonConfigPath(dir), YAML.stringify({
-      version: 1,
-      ledger: {
-        db: 'state/fleet-daemon.db',
+      profiles: {
+        ops: {
+          capability: 'full',
+          operations: {
+            read: { allow: ['**'], deny: [] },
+            write: { allow: ['**'], deny: ['~/.config/tlda/fleet.db*'] },
+            spawn: { allow: ['**'], deny: [] },
+          },
+        },
+      },
+      grants: {
+        'fleet:spawner': 'ops',
       },
       models: {
         localgpt: {
@@ -161,41 +185,32 @@ describe('daemon privilege ledger', () => {
           cap: 'read',
         },
       },
-      classes: {
-        app: { profile: 'app-dev' },
-      },
-      assignments: {
-        'fleet:skip': 'app',
+      servers: {
+        local: {
+          rpc: { spawn: true, hibernate: true },
+        },
       },
     }))
     const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(dir))
     const file = privilegeLedgerPathFromDaemonConfig(daemonConfig, dir)
-    assert.equal(file, path.join(dir, 'state', 'fleet-daemon.db'))
+    assert.equal(file, path.join(dir, 'fleet-daemon.db'))
+    assert.deepEqual(Object.keys(daemonConfig).sort(), ['grants', 'models', 'profiles', 'servers'])
+    assert.equal(daemonConfig.profiles.ops.operations.write.deny[0], '~/.config/tlda/fleet.db*')
 
     const ledger = createPrivilegeLedger(file)
-    await ledger.set('fleet:spawner', {
-      spawnPolicy: 'full',
-      privilegeSet: {
-        type: 'privilege-set',
-        name: 'spawner-full',
-        operations: {
-          read: { allow: ['**'], deny: [] },
-          write: { allow: ['**'], deny: [] },
-          spawn: { allow: ['**'], deny: [] },
-        },
-      },
-      source: 'operator-test',
-    })
+    applyDaemonGrants(ledger, daemonConfig)
     const db = new Database(file, { readonly: true })
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM privilege_grants').get().n, 1)
-    assert.equal(db.prepare('SELECT source FROM privilege_grants WHERE id = ?').get('fleet:spawner').source, 'operator-test')
+    assert.equal(db.prepare('SELECT source FROM privilege_grants WHERE id = ?').get('fleet:spawner').source, 'daemon.yaml:grants')
     db.close()
 
-    assert.equal(fs.readFileSync(defaultDaemonConfigPath(dir), 'utf8').includes('fleet:spawner'), false)
+    assert.equal(fs.readFileSync(defaultDaemonConfigPath(dir), 'utf8').includes('classes:'), false)
+    assert.equal(fs.readFileSync(defaultDaemonConfigPath(dir), 'utf8').includes('assignments:'), false)
     assert.equal(fs.existsSync(path.join(dir, 'daemon-privileges.yaml')), false)
 
     const config = withDaemonModelAliases({}, daemonConfig)
     assert.deepEqual(config.models.codex.localgpt, { id: 'gpt-local' })
+    assert.equal(config.spawnPolicy.privilegeProfiles.ops.operations.write.deny[0], '~/.config/tlda/fleet.db*')
     assert.equal(config.spawnPolicy.modelCeilings.localgpt, 'read')
     assert.equal(config.spawnPolicy.modelCeilings['gpt-local'], 'read')
 

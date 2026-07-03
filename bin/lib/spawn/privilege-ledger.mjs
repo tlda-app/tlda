@@ -61,37 +61,71 @@ export class PrivilegeLedgerError extends Error {
 
 function normalizeDaemonConfig(parsed) {
   const root = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  const allowed = new Set(['profiles', 'grants', 'models', 'servers'])
+  const extra = Object.keys(root).filter(key => !allowed.has(key))
+  if (extra.length) throw new Error(`daemon config supports only profiles, grants, models, servers; unknown key(s): ${extra.join(', ')}`)
   const models = root.models && typeof root.models === 'object' && !Array.isArray(root.models)
     ? root.models
     : {}
-  const ledger = root.ledger && typeof root.ledger === 'object' && !Array.isArray(root.ledger)
-    ? root.ledger
+  const profiles = normalizeDaemonProfiles(root.profiles)
+  const grants = root.grants && typeof root.grants === 'object' && !Array.isArray(root.grants)
+    ? root.grants
     : {}
-  const profiles = root.profiles && typeof root.profiles === 'object' && !Array.isArray(root.profiles)
-    ? root.profiles
-    : {}
-  const classes = root.classes && typeof root.classes === 'object' && !Array.isArray(root.classes)
-    ? root.classes
-    : {}
-  const assignments = root.assignments && typeof root.assignments === 'object' && !Array.isArray(root.assignments)
-    ? root.assignments
-    : {}
-  const rootGrants = root.root_grants && typeof root.root_grants === 'object' && !Array.isArray(root.root_grants)
-    ? root.root_grants
-    : {}
-  const serverIdentities = root.server_identities && typeof root.server_identities === 'object' && !Array.isArray(root.server_identities)
-    ? root.server_identities
+  const servers = root.servers && typeof root.servers === 'object' && !Array.isArray(root.servers)
+    ? root.servers
     : {}
   return {
-    version: root.version || 1,
     profiles,
-    classes,
-    assignments,
-    root_grants: rootGrants,
+    grants,
     models,
-    server_identities: serverIdentities,
-    ledger,
+    servers,
   }
+}
+
+function normalizeOperationZones(value = {}) {
+  const row = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  const allow = Array.isArray(row.allow) ? row.allow.filter(v => typeof v === 'string' && v.trim()) : []
+  const deny = Array.isArray(row.deny) ? row.deny.filter(v => typeof v === 'string' && v.trim()) : []
+  return { allow, deny }
+}
+
+function normalizeDaemonProfile(name, value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`daemon profile "${name}" must be an object`)
+  }
+  const operations = {
+    read: normalizeOperationZones(value.operations?.read),
+    write: normalizeOperationZones(value.operations?.write),
+    spawn: normalizeOperationZones(value.operations?.spawn),
+  }
+  const policy = normalizeSpawnPolicy(value.spawnPolicy || value.policy || value.capability || name, null)
+  const rules = []
+  for (const operation of ['read', 'write', 'spawn']) {
+    for (const effect of ['allow', 'deny']) {
+      for (const zone of operations[operation][effect]) {
+        rules.push({ operation, effect, zone, line: null })
+      }
+    }
+  }
+  return {
+    type: 'privilege-set',
+    name,
+    operations,
+    rules,
+    projectedPolicy: policy,
+    compiledFrom: 'daemon.yaml',
+  }
+}
+
+function normalizeDaemonProfiles(value) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  const profiles = {}
+  for (const [name, profile] of Object.entries(source)) {
+    const key = String(name || '').trim().toLowerCase()
+    if (!key) continue
+    profiles[key] = normalizeDaemonProfile(key, profile)
+  }
+  return profiles
 }
 
 function normalizeLegacyLedgerAgents(parsed) {
@@ -375,6 +409,10 @@ export class PrivilegeLedger {
   }
 
   setSyncForTest(id, options = {}) {
+    return this.setSync(id, options)
+  }
+
+  setSync(id, options = {}) {
     const row = this.rowFor(id, options)
     this._upsert.run(
       row.id,
@@ -404,19 +442,54 @@ export function withDaemonModelAliases(config = {}, daemonConfig = {}) {
   const daemonModels = daemonConfig?.models && typeof daemonConfig.models === 'object' && !Array.isArray(daemonConfig.models)
     ? daemonConfig.models
     : {}
-  if (!Object.keys(daemonModels).length) return config || {}
+  const daemonProfiles = daemonConfig?.profiles && typeof daemonConfig.profiles === 'object' && !Array.isArray(daemonConfig.profiles)
+    ? daemonConfig.profiles
+    : {}
+  if (!Object.keys(daemonModels).length && !Object.keys(daemonProfiles).length) return config || {}
   const { aliases, modelCeilings } = normalizeDaemonModelRows(daemonModels)
-  return {
-    ...(config || {}),
-    models: aliases,
-    spawnPolicy: {
-      ...((config || {}).spawnPolicy || {}),
+  const nextSpawnPolicy = {
+    ...((config || {}).spawnPolicy || {}),
+    ...(Object.keys(daemonProfiles).length ? {
+      privilegeProfiles: {
+        ...(((config || {}).spawnPolicy || {}).privilegeProfiles || {}),
+        ...daemonProfiles,
+      },
+    } : {}),
+    ...(Object.keys(modelCeilings).length ? {
       modelCeilings: {
         ...(((config || {}).spawnPolicy || {}).modelCeilings || {}),
         ...modelCeilings,
       },
-    },
+    } : {}),
   }
+  return {
+    ...(config || {}),
+    ...(Object.keys(daemonModels).length ? { models: aliases } : {}),
+    spawnPolicy: nextSpawnPolicy,
+  }
+}
+
+export function applyDaemonGrants(ledger, daemonConfig = {}) {
+  const grants = daemonConfig?.grants && typeof daemonConfig.grants === 'object' && !Array.isArray(daemonConfig.grants)
+    ? daemonConfig.grants
+    : {}
+  const profiles = daemonConfig?.profiles && typeof daemonConfig.profiles === 'object' && !Array.isArray(daemonConfig.profiles)
+    ? daemonConfig.profiles
+    : {}
+  let written = 0
+  for (const [id, value] of Object.entries(grants)) {
+    const profileName = typeof value === 'string' ? value.trim().toLowerCase() : null
+    const source = profileName ? profiles[profileName] : value
+    if (!source) throw new Error(`daemon grant for ${id} references unknown profile "${value}"`)
+    const grant = normalizeLedgerGrant(profileName ? { privilegeSet: source } : source)
+    ledger.setSync(id, {
+      spawnPolicy: grant.spawnPolicy,
+      privilegeSet: grant.privilegeSet,
+      source: 'daemon.yaml:grants',
+    })
+    written++
+  }
+  return { written }
 }
 
 export function defaultPrivilegeLedgerPath(configDir = path.join(os.homedir(), '.config', 'tlda')) {
@@ -428,12 +501,7 @@ export function defaultDaemonConfigPath(configDir = path.join(os.homedir(), '.co
 }
 
 export function privilegeLedgerPathFromDaemonConfig(daemonConfig = {}, configDir = path.join(os.homedir(), '.config', 'tlda')) {
-  const raw = daemonConfig?.ledger?.db
-  if (!raw) return defaultPrivilegeLedgerPath(configDir)
-  const expanded = String(raw).startsWith('~/')
-    ? path.join(os.homedir(), String(raw).slice(2))
-    : String(raw)
-  return path.isAbsolute(expanded) ? expanded : path.join(configDir, expanded)
+  return defaultPrivilegeLedgerPath(configDir)
 }
 
 export function createPrivilegeLedger(file = defaultPrivilegeLedgerPath()) {

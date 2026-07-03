@@ -630,11 +630,35 @@ function firstKnownProfile(...values) {
   return null
 }
 
-function configuredProjectProfileName(projectProfiles = {}, keys = []) {
+function configuredPrivilegeProfiles(config = {}) {
+  const profiles = config.spawnPolicy?.privilegeProfiles || {}
+  return profiles && typeof profiles === 'object' && !Array.isArray(profiles) ? profiles : {}
+}
+
+function configuredPrivilegeProfile(config = {}, name) {
+  const key = String(name || '').trim().toLowerCase()
+  if (!key) return null
+  const profile = configuredPrivilegeProfiles(config)[key]
+  if (!looksLikePrivilegeSet(profile)) return null
+  const cloned = clonePrivilegeSet(profile)
+  cloned.compiledFrom = cloned.compiledFrom || 'daemon-config-profile'
+  return cloned
+}
+
+function firstConfiguredOrKnownProfile(config = {}, ...values) {
+  const configured = configuredPrivilegeProfiles(config)
+  for (const value of values) {
+    const name = String(value || '').trim().toLowerCase()
+    if (configured[name] || SPAWN_PROFILES[name]) return name
+  }
+  return null
+}
+
+function configuredProjectProfileName(config = {}, projectProfiles = {}, keys = []) {
   for (const key of keys) {
     if (!key) continue
     const configured = projectProfiles[key] ?? projectProfiles[String(key).toLowerCase()]
-    const name = firstKnownProfile(configured)
+    const name = firstConfiguredOrKnownProfile(config, configured)
     if (name) return name
   }
   return null
@@ -650,8 +674,8 @@ export function resolveProjectProfileName(config = {}, { doc, project, cwd } = {
   const projectProfiles = policy.projectProfiles || {}
   const sourceDir = project?.sourceDir || null
   const cwdMatchesProject = cwd && sourceDir && pathInside(cwd, sourceDir)
-  return firstKnownProfile(project?.profile)
-    || configuredProjectProfileName(projectProfiles, [
+  return firstConfiguredOrKnownProfile(config, project?.profile)
+    || configuredProjectProfileName(config, projectProfiles, [
       doc,
       project?.name,
       sourceDir,
@@ -659,7 +683,7 @@ export function resolveProjectProfileName(config = {}, { doc, project, cwd } = {
       cwd,
       pathBasename(cwd),
     ])
-    || firstKnownProfile(
+    || firstConfiguredOrKnownProfile(config,
       cwdMatchesProject ? pathBasename(sourceDir) : null,
       pathBasename(cwd)
     )
@@ -672,10 +696,17 @@ export function resolveProjectProfileName(config = {}, { doc, project, cwd } = {
 // caller's own authority.
 export function resolveProjectProfile(config = {}, { doc, project, cwd } = {}) {
   const name = resolveProjectProfileName(config, { doc, project, cwd })
+  const configured = configuredPrivilegeProfile(config, name)
+  if (configured) {
+    const policy = policyForPrivilegeSet(configured, SPAWN_PROFILES[name] || DEFAULT_AGENT_CAPABILITY)
+    return { ...policy, name }
+  }
   return { ...normalizeSpawnPolicy(SPAWN_PROFILES[name]), name }
 }
 
-function privilegeSetForProfileName(name, policy, { cwd, project } = {}) {
+function privilegeSetForProfileName(name, policy, { cwd, project, config } = {}) {
+  const configured = configuredPrivilegeProfile(config, name)
+  if (configured) return configured
   const builtinProfile = builtinPrivilegeProfile(name)
   if (builtinProfile) return builtinProfile
   return privilegeSetFromPolicy(policy, { name: policy.name, cwd, project })
@@ -925,7 +956,7 @@ export function resolveSpawnGrant({
         metadata: { spawnPolicy: requester.spawnPolicy || requester.metadata?.spawnPolicy },
       })
     : normalizeSpawnPolicy(callerRung, ROOT_CAPABILITY)
-  const projectPrivilegeSet = privilegeSetForProfileName(projectPolicy.name, projectPolicy, { cwd, project })
+  const projectPrivilegeSet = privilegeSetForProfileName(projectPolicy.name, projectPolicy, { cwd, project, config })
   const requestedPolicy = requestedPrivileges || requestedCapability
     ? normalizeRequestedPrivileges(requestedPrivileges || requestedCapability, DEFAULT_AGENT_CAPABILITY)
     : withPrivilegeSet(projectPolicy, projectPrivilegeSet)

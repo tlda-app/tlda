@@ -112,6 +112,7 @@ import { createRearmableFsWatcher } from './lib/source-watch-health.mjs'
 import { resolveSpawnGrant } from '../server/lib/spawn-policy.mjs'
 import { probeSpawnCapabilities } from './lib/spawn/capabilities.mjs'
 import {
+  applyDaemonGrants,
   createPrivilegeLedger,
   defaultDaemonConfigPath,
   privilegeLedgerPathFromDaemonConfig,
@@ -137,6 +138,7 @@ const DAEMON_CONFIG_FILE = defaultDaemonConfigPath(CONFIG_DIR)
 const daemonSpawnConfig = readDaemonConfig(DAEMON_CONFIG_FILE)
 const PRIVILEGE_LEDGER_FILE = privilegeLedgerPathFromDaemonConfig(daemonSpawnConfig, CONFIG_DIR)
 const privilegeLedger = createPrivilegeLedger(PRIVILEGE_LEDGER_FILE)
+applyDaemonGrants(privilegeLedger, daemonSpawnConfig)
 
 // Per-machine source bindings: { projectName -> absolute local source dir }.
 // This is the per-machine fact "where MY copy of project X lives" — it belongs
