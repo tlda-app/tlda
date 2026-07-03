@@ -730,6 +730,7 @@ let projects = []                 // current project list
 const pathWatchers = new Map()    // jsonlPath -> { tail, parser, primaryAgentId, sessionId, harnessKind }
 const agentPaths = new Map()      // agentId -> jsonlPath
 const jsonlDirWatchers = new Map() // dir -> { watcher, refs }
+let _lastSessionWatcherRosterSig = ''
 const sourceWatchers = new Map()  // projectName -> { watcher, sourceDir, debounce, pending }
 const priorSessionBackfillGate = createOncePerKeyGate()
 
@@ -1339,6 +1340,34 @@ async function syncSessionWatchers(agentList) {
   for (const aid of [...agentPaths.keys()]) {
     if (!agentList.some(a => a.id === aid && !a.dead)) agentPaths.delete(aid)
   }
+}
+
+function sessionWatcherRosterSignature(agentList) {
+  return agentList
+    .filter(a => !a.human)
+    .map(a => {
+      const sessionIds = Array.isArray(a.session_ids) ? [...a.session_ids].sort().join(',') : ''
+      return [
+        a.id,
+        a.dead ? 'dead' : 'live',
+        a.tmux_session || '',
+        a.session_id || '',
+        sessionIds,
+        a.cwd || '',
+        a.metadata?.kind || '',
+        a.runtimeKind || '',
+      ].join('\t')
+    })
+    .sort()
+    .join('\n')
+}
+
+function syncSessionWatchersIfRosterChanged(reason) {
+  const sig = sessionWatcherRosterSignature(agents)
+  if (sig === _lastSessionWatcherRosterSig) return
+  _lastSessionWatcherRosterSig = sig
+  log.info(`session watcher roster changed (${reason}); syncing live session tails`)
+  void syncSessionWatchers(agents).catch(e => log.error(`syncSessionWatchers failed: ${e.stack || e.message}`))
 }
 
 let _jsonlDirSyncTimer = null
@@ -3993,6 +4022,7 @@ function handleServerMessage(msg) {
     applyDaemonGrants(privilegeLedger, daemonSpawnConfig)
     applyGrandfatherInfill(privilegeLedger, { fleetDbPath: FLEET_DB_FILE, config, projects })
     log.info(`welcome: ${agents.length} agents, ${projects.length} projects`)
+    _lastSessionWatcherRosterSig = sessionWatcherRosterSignature(agents)
     void syncSessionWatchers(agents).catch(e => log.error(`syncSessionWatchers failed: ${e.stack || e.message}`))
     syncSourceWatchers(projects, msg.activeViewers)
     flushPendingSourceChanges()
@@ -4026,7 +4056,7 @@ function handleServerMessage(msg) {
   }
   if (msg.type === 'agents-updated') {
     agents = msg.agents || []
-    void syncSessionWatchers(agents).catch(e => log.error(`syncSessionWatchers failed: ${e.stack || e.message}`))
+    syncSessionWatchersIfRosterChanged('agents-updated')
     return
   }
   if (msg.type === 'projects-updated') {
