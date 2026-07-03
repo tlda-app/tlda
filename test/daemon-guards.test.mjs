@@ -5,10 +5,12 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 
 import {
+  claudeSessionBelongsToAgent,
   decideMissingLiveness,
   detectSpawnStartupFailureTranscript,
   harnessKindForAgent,
   isPlaywrightBrowserArgs,
+  shouldClaimClaudeWatcher,
   shouldClaimCodexWatcher,
   shouldFlushWatch,
   unlinkPidfileIfOwnPid,
@@ -122,6 +124,31 @@ test('codex watcher ownership is not stolen by stale matching rollout id when fi
     rolloutHasOwnerEvidence: hasOwner,
     rolloutBelongsToAgent: belongs,
   }), true)
+})
+
+test('claude watcher ownership comes only from embedded fleet owner', () => {
+  const owners = ['fleet:permfix']
+
+  assert.equal(claudeSessionBelongsToAgent(owners, { id: 'fleet:permfix' }), true)
+  assert.equal(claudeSessionBelongsToAgent(owners, { id: 'fleet:app-manager' }), false)
+
+  assert.equal(shouldClaimClaudeWatcher({
+    currentPrimaryId: 'fleet:app-manager',
+    agent: { id: 'fleet:permfix', session_id: '7ada' },
+    owners,
+  }), true)
+
+  assert.equal(shouldClaimClaudeWatcher({
+    currentPrimaryId: 'fleet:permfix',
+    agent: { id: 'fleet:app-manager', session_id: '7ada' },
+    owners,
+  }), false)
+
+  assert.equal(shouldClaimClaudeWatcher({
+    currentPrimaryId: null,
+    agent: { id: 'fleet:permfix', session_id: '7ada' },
+    owners: [],
+  }), false)
 })
 
 test('first runtime liveness miss stays awake within hibernate grace', () => {

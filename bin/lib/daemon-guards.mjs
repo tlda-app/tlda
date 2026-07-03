@@ -87,6 +87,17 @@ export function shouldClaimCodexWatcher({
   return true
 }
 
+export function claudeSessionBelongsToAgent(owners = [], agent) {
+  return !!agent?.id && owners.includes(agent.id)
+}
+
+export function shouldClaimClaudeWatcher({
+  agent,
+  owners = [],
+} = {}) {
+  return claudeSessionBelongsToAgent(owners, agent)
+}
+
 export function decideMissingLiveness({
   now,
   missingSince,

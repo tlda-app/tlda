@@ -91,7 +91,6 @@ import {
   extractOwnersFromText,
   scanFileOwnersSync,
   decideSessionBackfill,
-  readFirstLineSync,
 } from './lib/daemon-jsonl-hot-path.mjs'
 import {
   terminalBackscrollCaptureArgs,
@@ -103,11 +102,13 @@ import {
   detectSpawnStartupFailureTranscript,
   harnessKindForAgent,
   isPlaywrightBrowserArgs,
+  shouldClaimClaudeWatcher,
   shouldClaimCodexWatcher,
   shouldFlushWatch,
   unlinkPidfileIfOwnPid,
 } from './lib/daemon-guards.mjs'
 import { codexRolloutBelongsToAgent, codexRolloutHasOwnerEvidence, resolveTranscript } from './lib/resolve-transcript.mjs'
+import { createRearmableFsWatcher } from './lib/source-watch-health.mjs'
 import { resolveSpawnGrant } from '../server/lib/spawn-policy.mjs'
 import { probeSpawnCapabilities } from './lib/spawn/capabilities.mjs'
 import { createPrivilegeLedger, defaultPrivilegeLedgerPath } from './lib/spawn/privilege-ledger.mjs'
@@ -323,6 +324,45 @@ function recordSessionOwners(sessionId, owners) {
   entry.owners = merged
   entry.classified = true
   if (changed) scheduleCursorSave()
+}
+
+function claudeOwnersForSessionFile(sessionId, jsonlPath) {
+  const entry = cursors[sessionId]
+  if (entry?.classified) return entry.owners || []
+  try {
+    const scanned = scanFileOwnersSync(jsonlPath)
+    recordSessionOwners(sessionId, scanned.owners)
+    return scanned.owners || []
+  } catch {
+    return []
+  }
+}
+
+function indexClaudeJsonlsByOwner() {
+  const byOwner = new Map()
+  try {
+    for (const dir of fs.readdirSync(PROJECTS_DIR)) {
+      const dirPath = path.join(PROJECTS_DIR, dir)
+      let files
+      try { files = fs.readdirSync(dirPath) } catch { continue }
+      for (const file of files) {
+        if (!file.endsWith('.jsonl')) continue
+        const sessionId = file.slice(0, -6)
+        const jsonlPath = path.join(dirPath, file)
+        let stat
+        try { stat = fs.statSync(jsonlPath) } catch { continue }
+        const owners = claudeOwnersForSessionFile(sessionId, jsonlPath)
+        for (const owner of owners) {
+          if (!byOwner.has(owner)) byOwner.set(owner, [])
+          byOwner.get(owner).push({ sessionId, jsonlPath, mtimeMs: stat.mtimeMs })
+        }
+      }
+    }
+  } catch (e) {
+    // Best-effort index: per-agent candidate paths below still run.
+    log.warn(`Claude JSONL owner index failed: ${e.message}`)
+  }
+  return byOwner
 }
 
 // The niced child that classifies every session's owners in the background
@@ -668,7 +708,7 @@ let _serverReady = false
 let _lastLivenessDisconnectWarnAt = 0
 let agents = []                   // current agent list (from welcome / updates)
 let projects = []                 // current project list
-const pathWatchers = new Map()    // jsonlPath -> { watcher, primaryAgentId, sessionId, harnessKind }
+const pathWatchers = new Map()    // jsonlPath -> { fsWatch, primaryAgentId, sessionId, harnessKind }
 const agentPaths = new Map()      // agentId -> jsonlPath
 const sourceWatchers = new Map()  // projectName -> { watcher, sourceDir, debounce, pending }
 const priorSessionBackfillGate = createOncePerKeyGate()
@@ -1105,6 +1145,7 @@ async function resolveAgentKind(agent) {
 
 async function syncSessionWatchers(agentList) {
   const activePaths = new Set()
+  const claudeJsonlsByOwner = indexClaudeJsonlsByOwner()
 
   for (const agent of agentList) {
     if (agent.dead) continue
@@ -1124,19 +1165,15 @@ async function syncSessionWatchers(agentList) {
     const canonicalCwd = cwd.replace(/\/\.claude\/worktrees\/[^/]+$/, '').replace(/\/\.worktrees\/[^/]+$/, '')
     const projectHash = canonicalCwd.replace(/[/.]/g, '-')
 
-    // Pick the freshest JSONL across all session_ids for this agent.
-    // We must skip any session_id that's claimed by *another* live agent's
-    // session_id, otherwise an old shared session would attribute its
-    // events to the wrong agent.
+    // Pick the freshest JSONL across this agent's registered session_ids.
+    // Claude ownership is not inferred from roster aliases, tmux panes, or
+    // other agents' claimed session_id values. The JSONL's embedded
+    // "Registered fleet:<id>" owner is the only identity source.
     const candidateIds = []
     if (agent.session_id) candidateIds.push(agent.session_id)
     for (const sid of (agent.session_ids || [])) {
       if (!candidateIds.includes(sid)) candidateIds.push(sid)
     }
-
-    const otherAgentSessions = new Set(
-      agentList.filter(a => a.id !== agent.id && a.session_id).map(a => a.session_id)
-    )
 
     let jsonlPath = null
     let bestMtime = 0
@@ -1144,9 +1181,8 @@ async function syncSessionWatchers(agentList) {
       jsonlPath = await harness.resolveJsonl(agent)
       if (!jsonlPath) continue
     } else {
-      if (!harness.usesClaudeSessionIds || candidateIds.length === 0) continue
+      if (!harness.usesClaudeSessionIds) continue
       for (const sid of candidateIds) {
-        if (otherAgentSessions.has(sid)) continue
         let p = path.join(PROJECTS_DIR, projectHash, sid + '.jsonl')
         let foundStat = null
         try {
@@ -1162,9 +1198,19 @@ async function syncSessionWatchers(agentList) {
             }
           } catch {}
         }
+        if (foundStat) {
+          const owners = claudeOwnersForSessionFile(sid, p)
+          if (!shouldClaimClaudeWatcher({ currentPrimaryId: null, agent, owners })) continue
+        }
         if (foundStat && foundStat.mtimeMs > bestMtime) {
           bestMtime = foundStat.mtimeMs
           jsonlPath = p
+        }
+      }
+      for (const owned of (claudeJsonlsByOwner.get(agent.id) || [])) {
+        if (owned.mtimeMs > bestMtime) {
+          bestMtime = owned.mtimeMs
+          jsonlPath = owned.jsonlPath
         }
       }
     }
@@ -1176,8 +1222,8 @@ async function syncSessionWatchers(agentList) {
     if (pathWatchers.has(jsonlPath)) {
       const pw = pathWatchers.get(jsonlPath)
       const fileSessionId = path.basename(jsonlPath, '.jsonl')
-      // Whichever agent's session_id matches the JSONL filename is the
-      // active session — others are historical sharers (post-inhabit).
+      // The JSONL's embedded owner is authoritative for Claude. Roster
+      // session_id values are only candidate handles, not ownership evidence.
       if (harness.kind === 'codex') {
         if (shouldClaimCodexWatcher({
           currentPrimaryId: pw.primaryAgentId,
@@ -1188,8 +1234,19 @@ async function syncSessionWatchers(agentList) {
         })) {
           pw.primaryAgentId = agent.id
         }
-      } else if (!harness.usesClaudeSessionIds || agent.session_id === fileSessionId) {
-        pw.primaryAgentId = agent.id
+      } else if (!harness.usesClaudeSessionIds || harness.kind === 'claude') {
+        if (!harness.usesClaudeSessionIds) {
+          pw.primaryAgentId = agent.id
+        } else {
+          const owners = claudeOwnersForSessionFile(fileSessionId, jsonlPath)
+          if (shouldClaimClaudeWatcher({
+            currentPrimaryId: pw.primaryAgentId,
+            agent,
+            owners,
+          })) {
+            pw.primaryAgentId = agent.id
+          }
+        }
       }
       pw.harnessKind = harness.kind
       continue
@@ -1253,11 +1310,27 @@ async function syncSessionWatchers(agentList) {
         if (debounce) clearTimeout(debounce)
         debounce = setTimeout(doRead, WATCH_DEBOUNCE_MS)
       }
-      const createWatcher = () => fs.watch(jsonlPath, onWatchFired)
-      const watcher = createWatcher()
       // How many consecutive fs.watch misses to tolerate before declaring it
       // structurally silent for this path and polling alone.
       const MAX_WATCH_RECREATES = 3
+      const pwState = {
+        fsWatch: null,
+        primaryAgentId: agent.id,
+        sessionId,
+        harnessKind: harness.kind,
+        watchSeenAt: 0,
+        watchMisses: 0,
+        fsEventsDead: false,
+      }
+      pwState.fsWatch = createRearmableFsWatcher({
+        label: `${harness.kind} JSONL ${path.basename(jsonlPath)}`,
+        dir: jsonlPath,
+        onEvent: onWatchFired,
+        shouldWatch: () => pathWatchers.get(jsonlPath) === pwState,
+        log,
+      })
+      pathWatchers.set(jsonlPath, pwState)
+      pwState.fsWatch.start('session connected')
 
       // Poll fallback: catches writes that fs.watch misses when FSEvents goes silent on macOS.
       // On NFS-mounted agent JSONLs (the common production case — mini serves ~/work over NFS,
@@ -1276,8 +1349,7 @@ async function syncSessionWatchers(agentList) {
           pw.watchMisses = (pw.watchMisses || 0) + 1
           if (pw.watchMisses <= MAX_WATCH_RECREATES) {
             log.warn(`fs.watch missed ${path.basename(jsonlPath)} — recreating (${pw.watchMisses}/${MAX_WATCH_RECREATES})`)
-            try { pw.watcher.close() } catch { /* best-effort: watcher may already be dead */ }
-            pw.watcher = createWatcher()
+            pw.fsWatch?.rearm(`missed ${path.basename(jsonlPath)}`)
           } else {
             pw.fsEventsDead = true
             log.warn(`fs.watch structurally silent for ${path.basename(jsonlPath)} — polling alone (250ms)`)
@@ -1287,7 +1359,6 @@ async function syncSessionWatchers(agentList) {
         scheduleReadNewSessionLines(pw.primaryAgentId, jsonlPath, pw.sessionId, pw.harnessKind)
       })
 
-      pathWatchers.set(jsonlPath, { watcher, primaryAgentId: agent.id, sessionId, harnessKind: harness.kind, watchSeenAt: 0, watchMisses: 0, fsEventsDead: false })
       log.info(`watching ${harness.kind} JSONL for ${agent.friendly_name || agent.id}: ${path.basename(jsonlPath)} @ offset=${offset}`)
 
       // Drain any backlog immediately rather than waiting for the next write to
@@ -1305,7 +1376,7 @@ async function syncSessionWatchers(agentList) {
   for (const [p, pw] of pathWatchers) {
     if (!activePaths.has(p)) {
       jsonlReadCoalescer.cancel(p)
-      try { pw.watcher.close() } catch {}
+      pw.fsWatch?.stop()
       fs.unwatchFile(p)
       pathWatchers.delete(p)
       for (const [aid, watchedPath] of agentPaths) {
@@ -2855,10 +2926,6 @@ const _prevThinking = new Map()   // agent_id → boolean
 const _prevCompacting = new Map() // agent_id → boolean
 const _prevGooseLive = new Map()  // agent_id → { fingerprint, since } (goose freeze tracking)
 const _prevApprovalFP = new Map() // agent_id → string (fingerprint)
-// agent_id → session_id we last reconciled into the registry, so we don't
-// re-emit agent-session-observed every 30s once the heal has landed.
-const _reconciledSession = new Map()
-
 // Goose turn-end auto-kick state: agent_id → kick state, owned by
 // checkAgentLiveness's sweep. The detection/decision logic lives in
 // ./lib/goose-kick.mjs (pure decideKick + sqlite reads); the daemon supplies
@@ -2871,114 +2938,6 @@ const _gooseKickState = new Map()
 let _gooseActivityInterval = null
 const GOOSE_ACTIVITY_MS = 3000
 const _gooseActivityLastSeen = new Map()
-
-// Read an agent's *actual* live Claude session from the PID-keyed metadata
-// Claude Code writes at ~/.claude/sessions/<pid>.json. This is the same
-// authoritative source the MCP uses at startup (no birthtime guessing, no
-// shared-cwd collisions). Given the agent's tmux pane PIDs and the full
-// process tree, scan the pane PIDs plus their descendants and return the
-// session from the most-recently-updated sessions file. Returns
-// { sessionId, cwd } or null.
-function paneSubtree(rootPids, childrenByPpid) {
-  const subtree = new Set()
-  const stack = [...rootPids]
-  while (stack.length) {
-    const pid = stack.pop()
-    if (subtree.has(pid)) continue
-    subtree.add(pid)
-    for (const c of (childrenByPpid.get(pid) || [])) stack.push(c)
-  }
-  return subtree
-}
-
-function liveSessionForPids(rootPids, childrenByPpid) {
-  const subtree = paneSubtree(rootPids, childrenByPpid)
-  const sessionsDir = path.join(os.homedir(), '.claude', 'sessions')
-  let best = null
-  for (const pid of subtree) {
-    let data
-    try { data = JSON.parse(fs.readFileSync(path.join(sessionsDir, `${pid}.json`), 'utf8')) }
-    catch { continue } // most PIDs have no sessions file — that's the common case, not an error
-    if (!data || typeof data.sessionId !== 'string' || !data.sessionId) continue
-    const ts = data.updatedAt || data.startedAt || 0
-    if (!best || ts > best.ts) best = { sessionId: data.sessionId, cwd: data.cwd || null, ts }
-  }
-  return best ? { sessionId: best.sessionId, cwd: best.cwd } : null
-}
-
-function codexRolloutIdFromPath(jsonlPath) {
-  try {
-    // First line only — codex rollouts are multi-MB; never read the whole file.
-    const first = readFirstLineSync(jsonlPath)
-    if (first) {
-      const parsed = JSON.parse(first)
-      const id = parsed?.payload?.id
-      if (typeof id === 'string' && id) return id
-    }
-  } catch {
-    // Fall back to the rollout filename below when the first line is racing.
-  }
-  const m = path.basename(jsonlPath).match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i)
-  return m?.[1] || null
-}
-
-function codexRolloutCwd(jsonlPath) {
-  try {
-    // First line only — never load the whole multi-MB rollout to read line 1.
-    const first = readFirstLineSync(jsonlPath)
-    if (!first) return null
-    const parsed = JSON.parse(first)
-    const cwd = parsed?.payload?.cwd
-    return typeof cwd === 'string' && cwd ? cwd : null
-  } catch {
-    return null
-  }
-}
-
-async function liveCodexSessionForPids(rootPids, childrenByPpid, runtimePids, agent) {
-  const subtree = paneSubtree(rootPids, childrenByPpid)
-  const launchTs = Date.parse(agent.registered_at || agent.last_seen || '') || 0
-  for (const pid of subtree) {
-    if (!runtimePids?.has(pid)) continue
-    const jsonlPath = await resolveTranscript({ pid, kind: 'codex', agent, launchTs })
-    if (!jsonlPath) continue
-    if (codexRolloutHasOwnerEvidence(jsonlPath) && !codexRolloutBelongsToAgent(jsonlPath, agent)) continue
-    const sessionId = codexRolloutIdFromPath(jsonlPath)
-    if (!sessionId) continue
-    return { sessionId, cwd: codexRolloutCwd(jsonlPath) }
-  }
-  return null
-}
-
-// If a live agent's true session isn't its registered primary session_id, heal
-// the daemon's local agent record (so syncSessionWatchers attaches the real
-// JSONL this sweep) and tell the server to persist it. This is the automated
-// form of the manual re-map that fixes "alive agent, dead activity cards".
-// Returns true if a heal was applied (caller re-runs syncSessionWatchers).
-async function reconcileAgentSession(agent, panePids, childrenByPpid, kind = 'claude', runtimePids = null) {
-  if (!agent || !agent.id || !panePids?.length) return false
-  const live = kind === 'codex'
-    ? await liveCodexSessionForPids(panePids, childrenByPpid, runtimePids, agent)
-    : liveSessionForPids(panePids, childrenByPpid)
-  if (!live) return false
-  if (agent.session_id === live.sessionId) {
-    // Already correct — record it so we don't keep checking the message guard.
-    _reconciledSession.set(agent.id, live.sessionId)
-    return false
-  }
-  const known = [agent.session_id, ...(agent.session_ids || [])].filter(Boolean)
-  // Heal locally: make the live session primary and ensure it's in the list.
-  agent.session_id = live.sessionId
-  if (!agent.session_ids) agent.session_ids = []
-  if (!agent.session_ids.includes(live.sessionId)) agent.session_ids.push(live.sessionId)
-  // Persist once per (agent, live session) — avoid re-emitting every sweep.
-  if (_reconciledSession.get(agent.id) !== live.sessionId) {
-    _reconciledSession.set(agent.id, live.sessionId)
-    log.info(`reconciled live session for ${agent.friendly_name || agent.id}: ${live.sessionId} (was registered as ${known.join(',') || 'none'})`)
-    sendMsg({ type: 'agent-session-observed', agent_id: agent.id, session_id: live.sessionId, cwd: live.cwd })
-  }
-  return true
-}
 
 // Walk a pane's process subtree (the pane pid plus all descendants) and return
 // true if any process is an agent runtime. Handles BOTH claude (a direct child
@@ -3133,7 +3092,6 @@ async function checkAgentLiveness() {
     return
   }
 
-  let healedAny = false
   let watcherNeedsSync = false
   for (const agent of candidateAgents) {
     const panes = sessionToPanes.get(agent.tmux_session) || []
@@ -3224,18 +3182,9 @@ async function checkAgentLiveness() {
       }
     }
     aliveAgentIds.push(agent.id)
-
-    // Reconcile: an alive agent's true live JSONL session may have diverged
-    // from what's registered (long-lived/resumed agents roll session UUIDs;
-    // the MCP only stamps session_id once at startup). Without this, the daemon
-    // never finds the live JSONL → activity cards die though the agent is alive.
-    if (await reconcileAgentSession(agent, panes, childrenByPpid, matchedKind, runtimePidsByKind.get(matchedKind))) healedAny = true
   }
 
-  // A heal changed an agent's session_id/session_ids locally; re-point the JSONL
-  // watchers immediately so attribution resumes this sweep (the server persists
-  // independently from the agent-session-observed message).
-  if (healedAny || watcherNeedsSync) {
+  if (watcherNeedsSync) {
     void syncSessionWatchers(agents).catch(e => log.error(`syncSessionWatchers failed: ${e.stack || e.message}`))
   }
 
@@ -3934,7 +3883,7 @@ function sendMsg(obj) {
 }
 
 function teardownWatchers() {
-  for (const [p, pw] of pathWatchers) { try { pw.watcher.close() } catch {}; fs.unwatchFile(p) }
+  for (const [p, pw] of pathWatchers) { pw.fsWatch?.stop(); fs.unwatchFile(p) }
   pathWatchers.clear()
   agentPaths.clear()
   // Source watchers survive WS disconnects — they detect file changes
