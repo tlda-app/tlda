@@ -926,6 +926,8 @@ export interface FleetSearchFilters {
   role?: string
   since?: string
   before?: string
+  filterExpression?: string
+  eventType?: string
 }
 
 export async function searchFleet(query: string, limit = 50, filters: FleetSearchFilters = {}): Promise<any[]> {
@@ -938,6 +940,8 @@ export async function searchFleet(query: string, limit = 50, filters: FleetSearc
     if (filters.role) payload.role = filters.role
     if (filters.since) payload.since = filters.since
     if (filters.before) payload.before = filters.before
+    if (filters.filterExpression) payload.filterExpression = filters.filterExpression
+    if (filters.eventType) payload.eventType = filters.eventType
     const data = await _fleetWS('fleet-search', payload)
     return data?.results || []
   } catch (e) { console.warn('[fleet] search failed:', (e as Error).message); return [] }

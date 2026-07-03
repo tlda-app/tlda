@@ -44,7 +44,7 @@ import { DEFAULT_PORT, hasTls, loadConfig, resolveConfig } from '../shared/confi
 import { normalizeUsageStatus } from '../shared/usage-status.mjs'
 import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
 import { listModels as listSpawnModels } from '../bin/lib/spawn/models.mjs'
-import { labelsForAgent, parseFilter, evalExpr } from '../shared/fleet-labels.mjs'
+import { labelsForAgent, parseFilter, parseMessageFilter, evalExpr } from '../shared/fleet-labels.mjs'
 import { phaseFromName, baseName, PHASES, prettyNameForFriendlyName } from '../shared/lineage-name.mjs'
 import { daemonHelloDecision } from '../shared/daemon-identity.mjs'
 import { resolveServerIsolation } from '../shared/server-identity.mjs'
@@ -3336,24 +3336,104 @@ async function handleFleetWsMessage(ws, msg) {
   // ---- fleet-search: unified search across fleet events + session JSONL text ----
   if (type === 'fleet-search') {
     try {
+      const noMatch = '__fleet_search_no_match__'
+      const resolveAgentNode = (node) => {
+        if (!node) return new Set()
+        switch (node.t) {
+          case 'lit': {
+            if (node.v?.startsWith?.('fleet:')) return new Set([node.v])
+            const ids = fleetStore.resolveAgentQuery(node.selector?.fragment || node.v)
+            return new Set(ids)
+          }
+          case 'me': return new Set([msg.me || msg.sender || noMatch])
+          case 'and': {
+            const left = resolveAgentNode(node.l)
+            const right = resolveAgentNode(node.r)
+            return new Set([...left].filter(id => right.has(id)))
+          }
+          case 'or': return new Set([...resolveAgentNode(node.l), ...resolveAgentNode(node.r)])
+          case 'not':
+            // Search-side negated agent sets are enforced by the post-filter.
+            // Do not broaden the SQL prefilter to "all agents" here.
+            return new Set()
+          default: return new Set()
+        }
+      }
+      const collectPrefilterIds = (node, out = new Set()) => {
+        if (!node) return out
+        switch (node.t) {
+          case 'from':
+          case 'to':
+            for (const id of resolveAgentNode(node.x)) out.add(id)
+            break
+          case 'lit':
+          case 'me':
+            for (const id of resolveAgentNode(node)) out.add(id)
+            break
+          case 'and':
+          case 'or':
+            collectPrefilterIds(node.l, out); collectPrefilterIds(node.r, out)
+            break
+          case 'not':
+            break
+        }
+        return out
+      }
+      const matchesAgentNode = (node, id) => {
+        if (!node) return true
+        switch (node.t) {
+          case 'lit':
+          case 'me': return resolveAgentNode(node).has(id)
+          case 'and': return matchesAgentNode(node.l, id) && matchesAgentNode(node.r, id)
+          case 'or': return matchesAgentNode(node.l, id) || matchesAgentNode(node.r, id)
+          case 'not': return !matchesAgentNode(node.x, id)
+          default: return false
+        }
+      }
+      const rowId = (row, key) => row[key] || (key === 'from' ? row.agentId : null)
+      const matchesMessageNode = (node, row) => {
+        if (!node) return true
+        switch (node.t) {
+          case 'from': return matchesAgentNode(node.x, rowId(row, 'from'))
+          case 'to': return matchesAgentNode(node.x, rowId(row, 'to'))
+          case 'lit':
+          case 'me': return matchesAgentNode(node, rowId(row, 'from')) || matchesAgentNode(node, rowId(row, 'to')) || matchesAgentNode(node, row.agentId)
+          case 'since': return !row.timestamp || row.timestamp >= node.v
+          case 'before': return !row.timestamp || row.timestamp < node.v
+          case 'type': return row.type === node.v || row.role === node.v
+          case 'and': return matchesMessageNode(node.l, row) && matchesMessageNode(node.r, row)
+          case 'or': return matchesMessageNode(node.l, row) || matchesMessageNode(node.r, row)
+          case 'not': return !matchesMessageNode(node.x, row)
+          default: return false
+        }
+      }
+
       // Support lineage search: agents[] (array of fleet IDs to union)
       let searchAgent = msg.agents?.length ? msg.agents : msg.agent;
+      const messageFilter = msg.filterExpression ? parseMessageFilter(msg.filterExpression) : null
+      if (messageFilter) {
+        const ids = [...collectPrefilterIds(messageFilter)]
+        if (ids.length) searchAgent = ids
+      }
       // A typed name fragment (agent:/from:) resolves on the SERVER to the set of
       // fleet ids it refers to — substring over current + historical names,
       // dawn-aware. An empty match yields an impossible id (an empty result set),
       // NOT an unfiltered search.
       if (msg.agentQuery) {
         const ids = fleetStore.resolveAgentQuery(msg.agentQuery);
-        searchAgent = ids.length ? ids : [' __no_match__'];
+        searchAgent = ids.length ? ids : [noMatch];
       }
       const hasText = (msg.query || '').trim().length > 0;
-      const results = stampNames(fleetStore.searchAll(msg.query || '', {
+      let results = fleetStore.searchAll(msg.query || '', {
         limit: msg.limit, agent: searchAgent, role: msg.role, since: msg.since, before: msg.before,
         // No keyword + an agent filter → return that agent's whole history
         // instead of FTS-matching the literal query text.
         agentOnly: msg.agentOnly ?? (!hasText && !!searchAgent),
         fromOnly: msg.fromOnly,
-      }))
+      })
+      if (msg.eventType) results = results.filter(r => r.type === msg.eventType || r.role === msg.eventType)
+      if (messageFilter) results = results.filter(r => matchesMessageNode(messageFilter, r))
+      results = stampNames(results)
       const context = {}
       if (msg.context_timestamps?.length) {
         for (const ts of msg.context_timestamps) {

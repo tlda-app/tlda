@@ -83,28 +83,7 @@ export function labelsForAgent(agent) {
  * or injection surface.
  */
 
-function tokenizeFilter(str) {
-  const toks = []
-  let i = 0
-  const n = str.length
-  while (i < n) {
-    const c = str[i]
-    if (c === ' ' || c === '\t' || c === '\n' || c === '\r') { i++; continue }
-    if (c === '&' || c === '|' || c === '!' || c === '(' || c === ')') {
-      toks.push({ k: 'op', v: c }); i++; continue
-    }
-    let j = i
-    while (j < n) {
-      const d = str[j]
-      if (d === ' ' || d === '\t' || d === '\n' || d === '\r' ||
-          d === '&' || d === '|' || d === '!' || d === '(' || d === ')') break
-      j++
-    }
-    toks.push({ k: 'lit', v: str.slice(i, j) })
-    i = j
-  }
-  return toks
-}
+import { desugarMessageFilter, parseUnifiedFilter } from './unified-filter-grammar.mjs'
 
 /**
  * Parse a filter string into an AST (or `null` for an empty/whitespace filter,
@@ -112,45 +91,11 @@ function tokenizeFilter(str) {
  * fallback to match-all, so a typo'd filter fails loud rather than fanning out.
  */
 export function parseFilter(input) {
-  if (input == null) return null
-  if (typeof input !== 'string') {
-    throw new Error(`filter must be a string expression, got ${Array.isArray(input) ? 'array' : typeof input}`)
-  }
-  const toks = tokenizeFilter(input)
-  if (toks.length === 0) return null
-  let p = 0
-  const peek = () => toks[p]
-  const eat = (v) => {
-    const t = toks[p]
-    if (!t || (v && !(t.k === 'op' && t.v === v))) {
-      throw new Error(`filter parse error: expected ${v || 'token'} at position ${p} in "${input}"`)
-    }
-    p++; return t
-  }
-  function parseOr() {
-    let node = parseAnd()
-    while (peek() && peek().k === 'op' && peek().v === '|') { eat('|'); node = { t: 'or', l: node, r: parseAnd() } }
-    return node
-  }
-  function parseAnd() {
-    let node = parseNot()
-    while (peek() && peek().k === 'op' && peek().v === '&') { eat('&'); node = { t: 'and', l: node, r: parseNot() } }
-    return node
-  }
-  function parseNot() {
-    if (peek() && peek().k === 'op' && peek().v === '!') { eat('!'); return { t: 'not', x: parseNot() } }
-    return parseAtom()
-  }
-  function parseAtom() {
-    const t = peek()
-    if (!t) throw new Error(`filter parse error: unexpected end of "${input}"`)
-    if (t.k === 'op' && t.v === '(') { eat('('); const e = parseOr(); eat(')'); return e }
-    if (t.k === 'lit') { p++; return { t: 'lit', v: t.v } }
-    throw new Error(`filter parse error: unexpected "${t.v}" in "${input}"`)
-  }
-  const ast = parseOr()
-  if (p !== toks.length) throw new Error(`filter parse error: trailing "${toks[p].v}" in "${input}"`)
-  return ast
+  return parseUnifiedFilter(input, { sort: 'message' })
+}
+
+export function parseMessageFilter(input) {
+  return desugarMessageFilter(parseUnifiedFilter(input, { sort: 'message' }))
 }
 
 /**
@@ -165,6 +110,7 @@ export function evalExpr(ast, labels) {
   const ev = (n) => {
     switch (n.t) {
       case 'lit': return has(n.v)
+      case 'me': return has('me')
       case 'not': return !ev(n.x)
       case 'and': return ev(n.l) && ev(n.r)
       case 'or': return ev(n.l) || ev(n.r)
@@ -210,9 +156,22 @@ export function evalExprDirectional(ast, { fromLabels = [], toLabels = [] } = {}
     if (tok.startsWith('from:')) return from.has(tok.slice(5))
     return from.has(tok) || to.has(tok)
   }
+  const agentExpr = (n, labels) => {
+    switch (n.t) {
+      case 'lit': return labels.has(n.v)
+      case 'me': return labels.has('me')
+      case 'not': return !agentExpr(n.x, labels)
+      case 'and': return agentExpr(n.l, labels) && agentExpr(n.r, labels)
+      case 'or': return agentExpr(n.l, labels) || agentExpr(n.r, labels)
+      default: return false
+    }
+  }
   const ev = (n) => {
     switch (n.t) {
       case 'lit': return testLeaf(n.v)
+      case 'from': return agentExpr(n.x, from)
+      case 'to': return agentExpr(n.x, to)
+      case 'involving': return agentExpr(n.x, from) || agentExpr(n.x, to)
       case 'not': return !ev(n.x)
       case 'and': return ev(n.l) && ev(n.r)
       case 'or': return ev(n.l) || ev(n.r)

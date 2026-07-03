@@ -29,6 +29,7 @@ import { highlightSyntax, langFromFilePath } from '../fleet/utils.mjs'
 // @ts-ignore — vanilla JS module
 import { convertChatEvent } from '../fleet/fleet-data.mjs'
 import { appendToken } from '../authToken'
+import { buildFleetSearchFilters, parseSearchQuery, rankSearchResults } from '../fleet/search-query'
 import { useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
 import { dropPillOnTarget } from './FleetPillShape'
 import { dragCoordinator } from './dragCoordinator'
@@ -215,60 +216,6 @@ export class FleetSearchShapeUtil extends BaseBoxShapeUtil<any> {
 
 
 
-// Parse inline keyword filters from query string
-// Returns { query, filters } where query is the remaining FTS text
-// and filters has from, agent, before, after fields
-interface SearchFilters {
-  from?: string
-  agent?: string
-  role?: string
-  before?: string
-  after?: string
-}
-
-function parseSearchQuery(raw: string): { query: string; filters: SearchFilters } {
-  const filters: SearchFilters = {}
-  // Extract filter keywords (from:xxx, agent:xxx, before:xxx, after:xxx, role:xxx)
-  const remaining = raw.replace(/\b(from|agent|before|after|role):(\S+)/gi, (_, key, val) => {
-    const k = key.toLowerCase()
-    if (k === 'from') filters.from = val
-    else if (k === 'agent') filters.agent = val
-    else if (k === 'before') filters.before = val
-    else if (k === 'after') filters.after = val
-    else if (k === 'role') filters.role = val
-    return ''
-  }).trim()
-  return { query: remaining, filters }
-}
-
-// Resolve time filter values to ISO timestamps
-function resolveTimeFilter(val: string): string | null {
-  const now = new Date()
-  const lower = val.toLowerCase()
-  if (lower === 'today') {
-    const d = new Date(now); d.setHours(0, 0, 0, 0); return d.toISOString()
-  }
-  if (lower === 'yesterday') {
-    const d = new Date(now); d.setDate(d.getDate() - 1); d.setHours(0, 0, 0, 0); return d.toISOString()
-  }
-  // Relative: 1h, 2d, 3w, 4m
-  const relMatch = lower.match(/^(\d+)([hdwm])$/)
-  if (relMatch) {
-    const n = parseInt(relMatch[1])
-    const unit = relMatch[2]
-    const d = new Date(now)
-    if (unit === 'h') d.setHours(d.getHours() - n)
-    else if (unit === 'd') d.setDate(d.getDate() - n)
-    else if (unit === 'w') d.setDate(d.getDate() - n * 7)
-    else if (unit === 'm') d.setMonth(d.getMonth() - n)
-    return d.toISOString()
-  }
-  // Try parsing as date
-  const parsed = new Date(val)
-  if (!isNaN(parsed.getTime())) return parsed.toISOString()
-  return null
-}
-
 function FleetSearchInner({ shape }: { shape: any }) {
   const editor = useEditor()
   const { w, h } = shape.props
@@ -349,7 +296,7 @@ function FleetSearchInner({ shape }: { shape: any }) {
     const { query: ftsQuery, filters } = parseSearchQuery(q)
 
     // Need at least a query or a filter
-    if (!ftsQuery && !filters.from && !filters.agent) {
+    if (!ftsQuery && !filters.from && !filters.to && !filters.agent && !filters.filterExpression) {
       setResults([])
       setDocResults([])
       setSearched(false)
@@ -360,27 +307,13 @@ function FleetSearchInner({ shape }: { shape: any }) {
     setSearched(true)
     closeChat()
 
-    // Agent qualifiers resolve on the SERVER. An explicit `fleet:` id is sent as
-    // `agent` (exact); any other typed text is a name fragment sent as `agentQuery`
-    // — the server substring-matches it (dawn-aware) against current AND historical
-    // names, with no recency cap. `from:` narrows to the sender. When there's an
-    // agent filter and no keyword, the server returns that agent's whole history.
-    const nameSel = filters.agent ?? filters.from
-    const isExplicitId = !!nameSel && nameSel.startsWith('fleet:')
-    const serverFilters = {
-      agent: isExplicitId ? nameSel : undefined,
-      agentQuery: !isExplicitId ? nameSel : undefined,
-      fromOnly: !filters.agent && !!filters.from,
-      role: filters.role,
-      since: filters.after ? (resolveTimeFilter(filters.after) || undefined) : undefined,
-      before: filters.before ? (resolveTimeFilter(filters.before) || undefined) : undefined,
-    }
+    const serverFilters = buildFleetSearchFilters(filters)
     const [res, allDocs] = await Promise.all([
       searchFleet(ftsQuery || '', 100, serverFilters),
       fetchSharedDocs(),
     ])
 
-    setResults(res.slice(0, 50))
+    setResults(rankSearchResults(res, ftsQuery).slice(0, 50))
 
     // Filter shared docs by title match (only if there's an FTS query)
     if (ftsQuery) {
@@ -539,12 +472,15 @@ function FleetSearchInner({ shape }: { shape: any }) {
             }}
           />
           {/* Active filter indicators */}
-          {(activeFilters.from || activeFilters.agent || activeFilters.before || activeFilters.after) && (
+          {(activeFilters.from || activeFilters.to || activeFilters.agent || activeFilters.before || activeFilters.after || activeFilters.since || activeFilters.type) && (
             <div style={{ display: 'flex', gap: 4, marginTop: 3, flexWrap: 'wrap' }}>
               {activeFilters.from && <span className="fleet-search-filter-tag">from:{activeFilters.from}</span>}
+              {activeFilters.to && <span className="fleet-search-filter-tag">to:{activeFilters.to}</span>}
               {activeFilters.agent && <span className="fleet-search-filter-tag">agent:{activeFilters.agent}</span>}
+              {activeFilters.type && <span className="fleet-search-filter-tag">type:{activeFilters.type}</span>}
               {activeFilters.before && <span className="fleet-search-filter-tag">before:{activeFilters.before}</span>}
               {activeFilters.after && <span className="fleet-search-filter-tag">after:{activeFilters.after}</span>}
+              {activeFilters.since && <span className="fleet-search-filter-tag">since:{activeFilters.since}</span>}
             </div>
           )}
         </div>
