@@ -41,6 +41,7 @@ const FLEET_TYPES = FLEET_SHAPE_TYPES
 type TransitionParent = StateNode & {
   transition?: (id: string, info?: unknown) => void
 }
+type HitOverlay = NonNullable<ReturnType<Editor['overlays']['getOverlayAtPoint']>>
 
 // --- Inlined helpers (not exported from tldraw) ---
 
@@ -376,7 +377,15 @@ export class BrowseIdle extends StateNode {
       }
     }
     try {
-    switch (info.target) {
+      if (
+        (info.target === 'canvas' ||
+          info.target === 'shape' ||
+          (info.target === 'selection' && !info.handle)) &&
+        this._handleOverlayPointerDown(info)
+      ) {
+        return
+      }
+      switch (info.target) {
       case 'canvas': {
         // cmd-click on document pages: getHitShapeOnCanvasPointerDown skips svg-page
         // shapes (canSelect=false), so we hit-test them manually before the tldraw call.
@@ -459,6 +468,10 @@ export class BrowseIdle extends StateNode {
         }
 
         this.parent.transition('pointing_canvas', info)
+        break
+      }
+      case 'overlay': {
+        this._routeOverlayPointerDown(info.overlay, info)
         break
       }
       case 'shape': {
@@ -576,11 +589,70 @@ export class BrowseIdle extends StateNode {
     }
   }
 
+  private _handleOverlayPointerDown(info: TLPointerEventInfo): boolean {
+    const currentPagePoint = this.editor.screenToPage(info.point, { viewportId: info.viewportId })
+    const hitOverlay = this.editor.overlays.getOverlayAtPoint(
+      currentPagePoint,
+      this.editor.options.hitTestMargin / this.editor.getZoomLevel(),
+    )
+    if (!hitOverlay) return false
+
+    const { shape: _shape, ...selectionInfo } = info as TLPointerEventInfo & { shape?: TLShape }
+    this._routeOverlayPointerDown(hitOverlay, {
+      ...selectionInfo,
+      target: 'overlay',
+      overlay: hitOverlay,
+    } as TLPointerEventInfo & { target: 'overlay'; overlay: typeof hitOverlay })
+    return true
+  }
+
+  private _routeOverlayPointerDown(
+    hitOverlay: HitOverlay | null,
+    overlayInfo: TLPointerEventInfo & { target: 'overlay'; overlay: HitOverlay },
+  ): boolean {
+    if (!hitOverlay) return false
+
+    const util = this.editor.overlays.getOverlayUtil(hitOverlay)
+    if (util.onPointerDown) {
+      const result = util.onPointerDown(hitOverlay, overlayInfo)
+      if (result !== false) return true
+    }
+
+    if (hitOverlay.type === 'shape_handle') {
+      const shape = this.editor.getShape(hitOverlay.props.shapeId as TLShapeId)
+      if (shape) {
+        this.onPointerDown({
+          ...overlayInfo,
+          target: 'handle',
+          shape,
+          handle: hitOverlay.props.handle as any,
+        })
+      }
+      return true
+    }
+
+    const overlayType = hitOverlay.props.overlayType as string | undefined
+    if (
+      overlayType === 'resize_handle' ||
+      overlayType === 'rotate_handle' ||
+      overlayType === 'mobile_rotate'
+    ) {
+      this.onPointerDown({
+        ...overlayInfo,
+        target: 'selection',
+        handle: hitOverlay.props.handle as any,
+      } as TLPointerEventInfo)
+      return true
+    }
+
+    return false
+  }
+
   override onDoubleClick(info: TLClickEventInfo) {
     if (this.editor.inputs.getShiftKey() || info.phase !== 'up') return
     if (info.ctrlKey || info.shiftKey) return
 
-    switch (info.target) {
+      switch (info.target) {
       case 'canvas': {
         const hoveredShape = this.editor.getHoveredShape()
         const currentPagePoint = this.editor.inputs.getCurrentPagePoint()
