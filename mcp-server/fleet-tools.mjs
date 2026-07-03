@@ -27,6 +27,8 @@ import { nameForPhase, phaseFromName } from '../shared/lineage-name.mjs';
 import { formatSpawnModelSummary, validateSpawnModelSelection } from '../shared/spawn-model-validation.mjs';
 import { listModels as listSpawnModels } from '../bin/lib/spawn/models.mjs';
 import { spawn as spawnLocalAgent } from '../bin/lib/spawn/index.mjs';
+import { createPrivilegeLedger, defaultPrivilegeLedgerPath, withDaemonModelAliases } from '../bin/lib/spawn/privilege-ledger.mjs';
+import { normalizeRequestedPrivileges, resolveSpawnGrant } from '../server/lib/spawn-policy.mjs';
 import { classifyUserBlame } from '../bin/lib/user-blame-classifier.mjs';
 import { classifyLaunder } from '../bin/lib/launder-classifier.mjs';
 import {
@@ -314,7 +316,7 @@ async function bundleSharedMarkdownImages(body, sourceFile, fleetServerUrl) {
 const LOG_FILE = `${os.homedir()}/.claude/agent-messages.jsonl`;
 
 // --- tlda integration ---
-import { getRwToken, getServerUrl, getFleetServerUrl, loadConfig } from '../shared/config.mjs';
+import { CONFIG_DIR, getRwToken, getServerUrl, getFleetServerUrl, loadConfig } from '../shared/config.mjs';
 import { tldaFetch as _sharedFetch } from '../shared/http-client.mjs';
 import { formatUsageStatus, normalizeUsageStatus } from '../shared/usage-status.mjs';
 const TLDA_SERVER = getServerUrl();
@@ -354,7 +356,8 @@ let _spawnModelCatalog = null;
 let _spawnModelCatalogAt = 0;
 async function getSpawnModelCatalog({ maxAgeMs = 60_000 } = {}) {
   if (_spawnModelCatalog && Date.now() - _spawnModelCatalogAt < maxAgeMs) return _spawnModelCatalog;
-  const data = listSpawnModels();
+  const privilegeLedger = createPrivilegeLedger(defaultPrivilegeLedgerPath(CONFIG_DIR));
+  const data = listSpawnModels(withDaemonModelAliases(loadConfig(), privilegeLedger.config));
   _spawnModelCatalog = data;
   _spawnModelCatalogAt = Date.now();
   return data;
@@ -1224,16 +1227,43 @@ function findValidSession(agent) {
  *  @returns {Promise<string>} spawn summary
  */
 async function runFleetSpawn(name, opts = {}) {
+  const cwd = opts.cwd || getAgentCwd() || process.cwd();
+  const privilegeLedger = createPrivilegeLedger(defaultPrivilegeLedgerPath(CONFIG_DIR));
+  const config = withDaemonModelAliases(loadConfig(), privilegeLedger.config);
+  const requestedCapability = opts.capability || opts.spawnCapability || undefined;
+  const requestedPrivileges = opts.privileges || opts.requestedPrivileges || undefined;
+  const requestedPrivilegePolicy = requestedPrivileges
+    ? normalizeRequestedPrivileges(requestedPrivileges, requestedCapability || undefined)
+    : null;
+  const spawnerGrant = privilegeLedger.grantFor({ id: AGENT_ID });
+  const grant = resolveSpawnGrant({
+    requestedCapability: requestedPrivilegePolicy?.capability || requestedCapability,
+    requestedPrivileges,
+    spawnerPolicy: spawnerGrant.spawnPolicy,
+    spawnerPrivilegeSet: spawnerGrant.privilegeSet,
+    model: opts.model,
+    kind: opts.kind,
+    config,
+    cwd,
+  });
   const result = await spawnLocalAgent({
     spawnMode: opts.session ? 'session' : (opts.refresh ? 'refresh' : (opts.fresh ? 'fresh' : 'respawn')),
     name,
     sessionId: opts.session || undefined,
     model: opts.model || undefined,
+    kind: opts.kind || undefined,
     effort: opts.effort || undefined,
-    cwd: opts.cwd || undefined,
+    cwd,
     permissionMode: opts.mode || undefined,
-    requestedCapability: opts.capability || opts.spawnCapability || undefined,
-    requestedPrivileges: opts.privileges || opts.requestedPrivileges || undefined,
+    requestedCapability: grant.grantedCapability,
+    requestedPrivileges,
+    spawnPolicy: grant.grantedPolicy,
+    privilegeSet: grant.grantedPrivilegeSet,
+  });
+  privilegeLedger.set(result.fleetId, {
+    spawnPolicy: grant.grantedPolicy,
+    privilegeSet: grant.grantedPrivilegeSet,
+    source: 'mcp-local-spawn',
   });
   return `${result.tmuxSession} (${result.fleetId})`;
 }

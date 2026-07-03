@@ -6,40 +6,10 @@ import {
   emptyPrivilegeSet,
   normalizeRequestedPrivileges,
   normalizeSpawnPolicy,
-  ROOT_CAPABILITY,
 } from '../../../server/lib/spawn-policy.mjs'
 
 function nowIso() {
   return new Date().toISOString()
-}
-
-function keyCandidates(agent = {}) {
-  const keys = []
-  for (const value of [
-    agent.id,
-    agent.fleetId,
-    agent.name,
-    agent.friendly_name,
-    agent.friendlyName,
-    agent.human ? 'human' : null,
-    '*',
-  ]) {
-    const key = String(value || '').trim()
-    if (key && !keys.includes(key)) keys.push(key)
-  }
-  return keys
-}
-
-function lookupRootGrant(config = {}, agent = {}) {
-  const policy = config.spawnPolicy || {}
-  const roots = policy.rootCeilings || policy.rootGrants || {}
-  if (roots && typeof roots === 'object' && !Array.isArray(roots)) {
-    for (const key of keyCandidates(agent)) {
-      const configured = roots[key] ?? roots[String(key).toLowerCase()]
-      if (configured != null && configured !== '') return { value: configured, configured: true }
-    }
-  }
-  return { value: agent?.human ? ROOT_CAPABILITY : 'none', configured: false }
 }
 
 function normalizeLedgerGrant(value, fallback = 'none') {
@@ -65,6 +35,30 @@ function normalizeLedgerGrant(value, fallback = 'none') {
   }
 }
 
+export class PrivilegeLedgerError extends Error {
+  constructor(code, message, detail = {}) {
+    super(message)
+    this.name = 'PrivilegeLedgerError'
+    this.code = code
+    this.reason = code
+    this.detail = detail
+  }
+}
+
+function normalizeDaemonConfig(parsed) {
+  const root = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  const privileges = root.privileges && typeof root.privileges === 'object' && !Array.isArray(root.privileges)
+    ? root.privileges
+    : {}
+  const models = root.models && typeof root.models === 'object' && !Array.isArray(root.models)
+    ? root.models
+    : {}
+  const agents = privileges.agents && typeof privileges.agents === 'object' && !Array.isArray(privileges.agents)
+    ? privileges.agents
+    : {}
+  return { version: root.version || 1, privileges: { agents }, models }
+}
+
 function withStoredSpawnDefault(privilegeSet, policy) {
   if (!privilegeSet || policy.capability === 'none') return privilegeSet
   if (privilegeSet.operations?.spawn) return privilegeSet
@@ -85,11 +79,13 @@ export class PrivilegeLedger {
   constructor(file) {
     this.file = file
     this.rows = new Map()
+    this.config = { version: 1, privileges: { agents: {} }, models: {} }
     this.load()
   }
 
   load() {
     this.rows.clear()
+    this.config = { version: 1, privileges: { agents: {} }, models: {} }
     if (!fs.existsSync(this.file)) return
     let parsed
     try {
@@ -97,7 +93,8 @@ export class PrivilegeLedger {
     } catch (e) {
       throw new Error(`cannot read daemon privilege ledger ${this.file}: ${e.message}`)
     }
-    const agents = parsed.agents && typeof parsed.agents === 'object' ? parsed.agents : {}
+    this.config = normalizeDaemonConfig(parsed)
+    const agents = this.config.privileges.agents
     for (const [id, row] of Object.entries(agents)) {
       if (!id || !row || typeof row !== 'object') continue
       const grant = normalizeLedgerGrant(row)
@@ -117,23 +114,15 @@ export class PrivilegeLedger {
     return this.rows.get(key) || null
   }
 
-  grantFor(agent, config = {}) {
+  grantFor(agent) {
     const id = String(agent?.id || '').trim()
     const existing = this.get(id)
     if (existing) return existing
-    const rootGrant = lookupRootGrant(config, agent)
-    const root = normalizeLedgerGrant(rootGrant.value, agent?.human ? ROOT_CAPABILITY : 'none')
-    const row = {
-      id,
-      spawnPolicy: root.spawnPolicy,
-      privilegeSet: root.privilegeSet,
-      updatedAt: null,
-      source: rootGrant.configured || agent?.human ? 'root-config' : 'default-none',
-    }
-    if (id && (rootGrant.configured || agent?.human)) {
-      return this.set(id, { spawnPolicy: row.spawnPolicy, privilegeSet: row.privilegeSet, source: row.source })
-    }
-    return row
+    throw new PrivilegeLedgerError(
+      'SPAWN_PRIVILEGE_NO_LEDGER_ENTRY',
+      `spawn refused: ${id || 'caller'} has no daemon privilege ledger entry`,
+      { id: id || null },
+    )
   }
 
   set(id, { spawnPolicy, privilegeSet, source = 'spawn' } = {}) {
@@ -165,10 +154,29 @@ export class PrivilegeLedger {
         source: row.source || 'ledger',
       }
     }
-    const text = YAML.stringify({ version: 1, agents })
+    this.config = {
+      ...this.config,
+      version: 1,
+      privileges: {
+        ...(this.config.privileges || {}),
+        agents,
+      },
+    }
+    const text = YAML.stringify(this.config)
     const tmp = path.join(path.dirname(this.file), `.${path.basename(this.file)}.${process.pid}.${Date.now()}.tmp`)
     fs.writeFileSync(tmp, text, 'utf8')
     fs.renameSync(tmp, this.file)
+  }
+}
+
+export function withDaemonModelAliases(config = {}, daemonConfig = {}) {
+  const models = daemonConfig?.models && typeof daemonConfig.models === 'object' && !Array.isArray(daemonConfig.models)
+    ? daemonConfig.models
+    : {}
+  if (!Object.keys(models).length) return config || {}
+  return {
+    ...(config || {}),
+    models,
   }
 }
 

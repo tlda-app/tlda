@@ -643,7 +643,8 @@ function configuredProjectProfileName(projectProfiles = {}, keys = []) {
 // Resolve which profile NAME a spawn should inherit. Precedence:
 // the project record's own `profile` field → config.spawnPolicy.projectProfiles
 // keyed by project name / sourceDir / cwd basename → built-in basename profile
-// → config.spawnPolicy.defaultProfile → DEFAULT_SPAWN_PROFILE.
+// → DEFAULT_SPAWN_PROFILE. The daemon privilege ledger is the authority for
+// caller grants; config.json must not invent a broad default profile.
 export function resolveProjectProfileName(config = {}, { doc, project, cwd } = {}) {
   const policy = config.spawnPolicy || {}
   const projectProfiles = policy.projectProfiles || {}
@@ -662,7 +663,6 @@ export function resolveProjectProfileName(config = {}, { doc, project, cwd } = {
       cwdMatchesProject ? pathBasename(sourceDir) : null,
       pathBasename(cwd)
     )
-    || firstKnownProfile(policy.defaultProfile)
     || DEFAULT_SPAWN_PROFILE
 }
 

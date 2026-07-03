@@ -111,7 +111,7 @@ import { codexRolloutBelongsToAgent, codexRolloutHasOwnerEvidence, resolveTransc
 import { createRearmableFsWatcher } from './lib/source-watch-health.mjs'
 import { resolveSpawnGrant } from '../server/lib/spawn-policy.mjs'
 import { probeSpawnCapabilities } from './lib/spawn/capabilities.mjs'
-import { createPrivilegeLedger, defaultPrivilegeLedgerPath } from './lib/spawn/privilege-ledger.mjs'
+import { createPrivilegeLedger, defaultPrivilegeLedgerPath, withDaemonModelAliases } from './lib/spawn/privilege-ledger.mjs'
 import { acquireSingletonLock } from './lib/singleton-lock.mjs'
 const log = createLogger('daemon')
 // CONFIG_DIR holds config.json, cursors, PID and log files. Defaults to
@@ -185,12 +185,14 @@ const INSTALL_PATH = (() => {
 }
 
 function loadConfig() {
+  let cfg
   if (_usingCustomConfigDir) {
     const f = path.join(CONFIG_DIR, 'config.json')
-    if (!fs.existsSync(f)) return {}
-    return JSON.parse(fs.readFileSync(f, 'utf8'))
+    cfg = fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : {}
+  } else {
+    cfg = _loadSharedConfig()
   }
-  return _loadSharedConfig()
+  return withDaemonModelAliases(cfg, privilegeLedger.config)
 }
 
 function saveConfig(cfg) {
@@ -2723,8 +2725,13 @@ async function rpcSpawn({
       })
   let grant
   try {
-    const config = _loadSharedConfig()
-    const spawnerGrant = requester?.id ? privilegeLedger.grantFor(requester, config) : null
+    const config = loadConfig()
+    if (!requester?.id) {
+      const err = new Error('spawn refused: daemon RPC requester identity is required')
+      err.code = 'SPAWN_PRIVILEGE_NO_REQUESTER'
+      throw err
+    }
+    const spawnerGrant = privilegeLedger.grantFor(requester)
     grant = resolveSpawnGrant({
       requestedCapability: requestedCapability || (policy != null ? 'write' : undefined),
       requestedPrivileges,

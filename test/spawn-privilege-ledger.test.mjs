@@ -6,7 +6,7 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import YAML from 'yaml'
-import { createPrivilegeLedger } from '../bin/lib/spawn/privilege-ledger.mjs'
+import { createPrivilegeLedger, withDaemonModelAliases } from '../bin/lib/spawn/privilege-ledger.mjs'
 
 function tempLedger() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-privilege-ledger-'))
@@ -14,39 +14,33 @@ function tempLedger() {
 }
 
 describe('daemon privilege ledger', () => {
-  it('defaults unknown agents to none without writing a row', () => {
+  it('refuses unknown agents without writing a row', () => {
     const file = tempLedger()
     const ledger = createPrivilegeLedger(file)
-    const grant = ledger.grantFor({ id: 'fleet:unknown' }, {})
 
-    assert.equal(grant.spawnPolicy.capability, 'none')
-    assert.deepEqual(grant.privilegeSet.operations.write.allow, [])
-    assert.deepEqual(grant.privilegeSet.operations.spawn.allow, [])
+    assert.throws(
+      () => ledger.grantFor({ id: 'fleet:unknown' }),
+      (err) => err.code === 'SPAWN_PRIVILEGE_NO_LEDGER_ENTRY',
+    )
     assert.equal(fs.existsSync(file), false)
   })
 
-  it('seeds configured roots and reloads spawned child grants from yaml', () => {
+  it('writes and reloads grants from the daemon yaml privileges section', () => {
     const file = tempLedger()
     const ledger = createPrivilegeLedger(file)
 
-    const root = ledger.grantFor({ id: 'fleet:skip', human: true }, {
-      spawnPolicy: {
-        rootCeilings: {
-          'fleet:skip': {
-            spawnPolicy: 'write',
-            privilegeSet: {
-              type: 'privilege-set',
-              name: 'root-worktree',
-              operations: {
-                read: { allow: ['/private/tmp/worktree/**'], deny: [] },
-                write: { allow: ['/private/tmp/worktree/**'], deny: [] },
-                command: { allow: [], deny: [] },
-                network: { allow: [], deny: [] },
-              },
-            },
-          },
+    const root = ledger.set('fleet:skip', {
+      spawnPolicy: 'write',
+      privilegeSet: {
+        type: 'privilege-set',
+        name: 'root-worktree',
+        operations: {
+          read: { allow: ['/private/tmp/worktree/**'], deny: [] },
+          write: { allow: ['/private/tmp/worktree/**'], deny: [] },
+          spawn: { allow: ['**'], deny: [] },
         },
       },
+      source: 'operator',
     })
     assert.equal(root.spawnPolicy.capability, 'write')
     assert.equal(fs.existsSync(file), true)
@@ -60,13 +54,32 @@ describe('daemon privilege ledger', () => {
 
     const parsed = YAML.parse(fs.readFileSync(file, 'utf8'))
     assert.equal(parsed.version, 1)
-    assert.equal(parsed.agents['fleet:skip'].source, 'root-config')
-    assert.equal(parsed.agents['fleet:child'].source, 'spawn')
+    assert.equal(parsed.privileges.agents['fleet:skip'].source, 'operator')
+    assert.equal(parsed.privileges.agents['fleet:child'].source, 'spawn')
 
     const reloaded = createPrivilegeLedger(file)
-    const grant = reloaded.grantFor({ id: 'fleet:child' }, {})
+    const grant = reloaded.grantFor({ id: 'fleet:child' })
     assert.equal(grant.spawnPolicy.capability, 'write')
     assert.deepEqual(grant.privilegeSet.operations.write.allow, ['/private/tmp/worktree/**'])
     assert.deepEqual(grant.privilegeSet.operations.spawn.allow, ['**'])
+  })
+
+  it('loads daemon model aliases from yaml separately from server config', () => {
+    const file = tempLedger()
+    fs.writeFileSync(file, YAML.stringify({
+      version: 1,
+      models: {
+        claude: {
+          localopus: 'claude-opus-local',
+        },
+      },
+      privileges: {
+        agents: {},
+      },
+    }))
+
+    const ledger = createPrivilegeLedger(file)
+    const config = withDaemonModelAliases({ defaultConfig: 'live', models: { claude: { stale: 'old' } } }, ledger.config)
+    assert.deepEqual(config.models, { claude: { localopus: 'claude-opus-local' } })
   })
 })
