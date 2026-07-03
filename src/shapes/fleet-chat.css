@@ -1863,6 +1863,14 @@ body.phone-mode .fleet-agents-col-labels {
   touch-action: none;
 }
 
+/* --- Phone: the fleet panels sit at a semi-transparent RESTING opacity that only
+   reveals to full on mouse hover. Phone has no hover, so the panels (and their
+   text) stay washed out — "way more washed out on phone than other devices."
+   Pin them to full opacity on the phone surface. (Skip.) --- */
+body.phone-mode .fleet-hud-wrap .tl-shape {
+  opacity: 1 !important;
+}
+
 /* --- Phone: bump contrast — the faint dark-on-dark metadata is hard to read on
    a small screen. Modest opacity lifts, scoped to .phone-mode. (Skip.) --- */
 body.phone-mode .fleet-agents-col-task { opacity: 0.85; }
