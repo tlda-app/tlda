@@ -1,0 +1,898 @@
+[
+  {
+    "source": "bin/lib/spawn/models:DEFAULT_MODEL",
+    "kind": "claude",
+    "requested_model": "",
+    "concrete_id": "claude-opus-4-8[1m]",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": true
+  },
+  {
+    "source": "shared/harness:MODEL_ALIASES",
+    "kind": "claude",
+    "requested_model": "claude-haiku",
+    "concrete_id": "claude-haiku",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:MODEL_ALIASES.id",
+    "kind": "claude",
+    "requested_model": "claude-haiku-4-5",
+    "concrete_id": "claude-haiku-4-5",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:MODEL_ALIASES.id",
+    "kind": "claude",
+    "requested_model": "claude-opus-4-5",
+    "concrete_id": "claude-opus-4-5",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": false
+  },
+  {
+    "source": "shared/harness:MODEL_ALIASES",
+    "kind": "claude",
+    "requested_model": "claude-opus-4-5",
+    "concrete_id": "claude-opus-4-5",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": false
+  },
+  {
+    "source": "shared/harness:MODEL_ALIASES",
+    "kind": "claude",
+    "requested_model": "claude-opus-4-6",
+    "concrete_id": "claude-opus-4-6",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:MODEL_ALIASES.id",
+    "kind": "claude",
+    "requested_model": "claude-opus-4-6[1m]",
+    "concrete_id": "claude-opus-4-6[1m]",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": true
+  },
+  {
+    "source": "shared/harness:MODEL_ALIASES",
+    "kind": "claude",
+    "requested_model": "claude-opus-4-7",
+    "concrete_id": "claude-opus-4-7",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:MODEL_ALIASES.id",
+    "kind": "claude",
+    "requested_model": "claude-opus-4-7[1m]",
+    "concrete_id": "claude-opus-4-7[1m]",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": true
+  },
+  {
+    "source": "shared/harness:MODEL_ALIASES",
+    "kind": "claude",
+    "requested_model": "claude-opus-4-8",
+    "concrete_id": "claude-opus-4-8",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:MODEL_ALIASES.id",
+    "kind": "claude",
+    "requested_model": "claude-opus-4-8[1m]",
+    "concrete_id": "claude-opus-4-8[1m]",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": true
+  },
+  {
+    "source": "bin/lib/spawn/models:MODEL_ALIASES.id",
+    "kind": "claude",
+    "requested_model": "claude-sonnet-5",
+    "concrete_id": "claude-sonnet-5",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": false
+  },
+  {
+    "source": "shared/harness:MODEL_ALIASES",
+    "kind": "claude",
+    "requested_model": "claude-sonnet-5",
+    "concrete_id": "claude-sonnet-5",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:MODEL_ALIASES.alias",
+    "kind": "claude",
+    "requested_model": "fable",
+    "concrete_id": "claude-opus-4-8[1m]",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": true
+  },
+  {
+    "source": "shared/harness:CLAUDE_MODEL_NAMES",
+    "kind": "claude",
+    "requested_model": "fable",
+    "concrete_id": "claude-opus-4-8[1m]",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": true
+  },
+  {
+    "source": "shared/harness:MODEL_ALIASES",
+    "kind": "claude",
+    "requested_model": "fable",
+    "concrete_id": "claude-opus-4-8[1m]",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": true,
+    "error": "Expected values to be strictly equal:\n+ actual - expected\n\n+ 'claude-opus-4-8[1m]'\n- 'claude-opus-4-8'\n                  ^\n"
+  },
+  {
+    "source": "bin/lib/spawn/models:MODEL_ALIASES.alias",
+    "kind": "claude",
+    "requested_model": "fable5",
+    "concrete_id": "claude-opus-4-5",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": false
+  },
+  {
+    "source": "shared/harness:CLAUDE_MODEL_NAMES",
+    "kind": "claude",
+    "requested_model": "fable5",
+    "concrete_id": "claude-opus-4-5",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": false
+  },
+  {
+    "source": "shared/harness:MODEL_ALIASES",
+    "kind": "claude",
+    "requested_model": "fable5",
+    "concrete_id": "claude-opus-4-5",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:MODEL_ALIASES.alias",
+    "kind": "claude",
+    "requested_model": "haiku",
+    "concrete_id": "claude-haiku-4-5",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": false
+  },
+  {
+    "source": "shared/harness:CLAUDE_MODEL_NAMES",
+    "kind": "claude",
+    "requested_model": "haiku",
+    "concrete_id": "claude-haiku-4-5",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": false
+  },
+  {
+    "source": "shared/harness:MODEL_ALIASES",
+    "kind": "claude",
+    "requested_model": "haiku",
+    "concrete_id": "claude-haiku-4-5",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": false,
+    "error": "Expected values to be strictly equal:\n+ actual - expected\n\n+ 'claude-haiku-4-5'\n- 'claude-haiku'\n               ^\n"
+  },
+  {
+    "source": "bin/lib/spawn/models:MODEL_ALIASES.alias",
+    "kind": "claude",
+    "requested_model": "opus",
+    "concrete_id": "claude-opus-4-8[1m]",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": true
+  },
+  {
+    "source": "shared/harness:CLAUDE_MODEL_NAMES",
+    "kind": "claude",
+    "requested_model": "opus",
+    "concrete_id": "claude-opus-4-8[1m]",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": true
+  },
+  {
+    "source": "shared/harness:MODEL_ALIASES",
+    "kind": "claude",
+    "requested_model": "opus",
+    "concrete_id": "claude-opus-4-8[1m]",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": true,
+    "error": "Expected values to be strictly equal:\n+ actual - expected\n\n+ 'claude-opus-4-8[1m]'\n- 'claude-opus-4-8'\n                  ^\n"
+  },
+  {
+    "source": "bin/lib/spawn/models:MODEL_ALIASES.alias",
+    "kind": "claude",
+    "requested_model": "opus45",
+    "concrete_id": "claude-opus-4-5",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": false
+  },
+  {
+    "source": "shared/harness:CLAUDE_MODEL_NAMES",
+    "kind": "claude",
+    "requested_model": "opus45",
+    "concrete_id": "claude-opus-4-5",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": false
+  },
+  {
+    "source": "shared/harness:MODEL_ALIASES",
+    "kind": "claude",
+    "requested_model": "opus45",
+    "concrete_id": "claude-opus-4-5",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:MODEL_ALIASES.alias",
+    "kind": "claude",
+    "requested_model": "opus46",
+    "concrete_id": "claude-opus-4-6[1m]",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": true
+  },
+  {
+    "source": "shared/harness:CLAUDE_MODEL_NAMES",
+    "kind": "claude",
+    "requested_model": "opus46",
+    "concrete_id": "claude-opus-4-6[1m]",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": true
+  },
+  {
+    "source": "shared/harness:MODEL_ALIASES",
+    "kind": "claude",
+    "requested_model": "opus46",
+    "concrete_id": "claude-opus-4-6[1m]",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": true,
+    "error": "Expected values to be strictly equal:\n+ actual - expected\n\n+ 'claude-opus-4-6[1m]'\n- 'claude-opus-4-6'\n                  ^\n"
+  },
+  {
+    "source": "bin/lib/spawn/models:MODEL_ALIASES.alias",
+    "kind": "claude",
+    "requested_model": "opus47",
+    "concrete_id": "claude-opus-4-7[1m]",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": true
+  },
+  {
+    "source": "shared/harness:CLAUDE_MODEL_NAMES",
+    "kind": "claude",
+    "requested_model": "opus47",
+    "concrete_id": "claude-opus-4-7[1m]",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": true
+  },
+  {
+    "source": "shared/harness:MODEL_ALIASES",
+    "kind": "claude",
+    "requested_model": "opus47",
+    "concrete_id": "claude-opus-4-7[1m]",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": true,
+    "error": "Expected values to be strictly equal:\n+ actual - expected\n\n+ 'claude-opus-4-7[1m]'\n- 'claude-opus-4-7'\n                  ^\n"
+  },
+  {
+    "source": "bin/lib/spawn/models:MODEL_ALIASES.alias",
+    "kind": "claude",
+    "requested_model": "opus48",
+    "concrete_id": "claude-opus-4-8[1m]",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": true
+  },
+  {
+    "source": "shared/harness:CLAUDE_MODEL_NAMES",
+    "kind": "claude",
+    "requested_model": "opus48",
+    "concrete_id": "claude-opus-4-8[1m]",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": true
+  },
+  {
+    "source": "shared/harness:MODEL_ALIASES",
+    "kind": "claude",
+    "requested_model": "opus48",
+    "concrete_id": "claude-opus-4-8[1m]",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": true,
+    "error": "Expected values to be strictly equal:\n+ actual - expected\n\n+ 'claude-opus-4-8[1m]'\n- 'claude-opus-4-8'\n                  ^\n"
+  },
+  {
+    "source": "bin/lib/spawn/models:MODEL_ALIASES.alias",
+    "kind": "claude",
+    "requested_model": "sonnet",
+    "concrete_id": "claude-sonnet-5",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": false
+  },
+  {
+    "source": "shared/harness:CLAUDE_MODEL_NAMES",
+    "kind": "claude",
+    "requested_model": "sonnet",
+    "concrete_id": "claude-sonnet-5",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": false
+  },
+  {
+    "source": "shared/harness:MODEL_ALIASES",
+    "kind": "claude",
+    "requested_model": "sonnet",
+    "concrete_id": "claude-sonnet-5",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:MODEL_ALIASES.alias",
+    "kind": "claude",
+    "requested_model": "sonnet5",
+    "concrete_id": "claude-sonnet-5",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": false
+  },
+  {
+    "source": "shared/harness:CLAUDE_MODEL_NAMES",
+    "kind": "claude",
+    "requested_model": "sonnet5",
+    "concrete_id": "claude-sonnet-5",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": false
+  },
+  {
+    "source": "shared/harness:MODEL_ALIASES",
+    "kind": "claude",
+    "requested_model": "sonnet5",
+    "concrete_id": "claude-sonnet-5",
+    "family": "claude",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:CODEX_DEFAULT",
+    "kind": "codex",
+    "requested_model": "",
+    "concrete_id": "gpt-5.5",
+    "family": "codex",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:CODEX_MODELS.alias",
+    "kind": "codex",
+    "requested_model": "codex",
+    "concrete_id": "gpt-5.5",
+    "family": "codex",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:CODEX_MODELS.alias",
+    "kind": "codex",
+    "requested_model": "gpt",
+    "concrete_id": "gpt-5.5",
+    "family": "codex",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": false
+  },
+  {
+    "source": "shared/harness:MODEL_ALIASES",
+    "kind": "codex",
+    "requested_model": "gpt",
+    "concrete_id": "gpt-5.5",
+    "family": "codex",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:CODEX_MODELS.id",
+    "kind": "codex",
+    "requested_model": "gpt-5.5",
+    "concrete_id": "gpt-5.5",
+    "family": "codex",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": false
+  },
+  {
+    "source": "shared/harness:MODEL_ALIASES",
+    "kind": "codex",
+    "requested_model": "gpt-5.5",
+    "concrete_id": "gpt-5.5",
+    "family": "codex",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:CODEX_MODELS.alias",
+    "kind": "codex",
+    "requested_model": "gpt55",
+    "concrete_id": "gpt-5.5",
+    "family": "codex",
+    "trust_tier": "full",
+    "spawn_ceiling": "full",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_DEFAULT",
+    "kind": "goose",
+    "requested_model": "",
+    "concrete_id": "deepseek/deepseek-v4-pro",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_MODELS.alias",
+    "kind": "goose",
+    "requested_model": "cursor",
+    "concrete_id": "cursor-agent/default",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_MODELS.alias",
+    "kind": "goose",
+    "requested_model": "cursor-agent",
+    "concrete_id": "cursor-agent/default",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_MODELS.id",
+    "kind": "goose",
+    "requested_model": "cursor-agent/default",
+    "concrete_id": "cursor-agent/default",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_MODELS.alias",
+    "kind": "goose",
+    "requested_model": "cursor-default",
+    "concrete_id": "cursor-agent/default",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_MODELS.alias",
+    "kind": "goose",
+    "requested_model": "deepseek",
+    "concrete_id": "deepseek/deepseek-v4-pro",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  },
+  {
+    "source": "shared/harness:MODEL_ALIASES",
+    "kind": "goose",
+    "requested_model": "deepseek",
+    "concrete_id": "deepseek/deepseek-v4-pro",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_MODELS.alias",
+    "kind": "goose",
+    "requested_model": "deepseek-chat",
+    "concrete_id": "deepseek/deepseek-chat",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_MODELS.alias",
+    "kind": "goose",
+    "requested_model": "deepseek-r1",
+    "concrete_id": "deepseek/deepseek-r1-0528",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_MODELS.alias",
+    "kind": "goose",
+    "requested_model": "deepseek-reasoner",
+    "concrete_id": "deepseek/deepseek-r1-0528",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_MODELS.alias",
+    "kind": "goose",
+    "requested_model": "deepseek-v3",
+    "concrete_id": "deepseek/deepseek-v3.2",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_MODELS.alias",
+    "kind": "goose",
+    "requested_model": "deepseek-v4",
+    "concrete_id": "deepseek/deepseek-v4-pro",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_MODELS.alias",
+    "kind": "goose",
+    "requested_model": "deepseek-v4-flash",
+    "concrete_id": "deepseek/deepseek-v4-flash",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_MODELS.alias",
+    "kind": "goose",
+    "requested_model": "deepseek-v4-pro",
+    "concrete_id": "deepseek/deepseek-v4-pro",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  },
+  {
+    "source": "shared/harness:MODEL_ALIASES",
+    "kind": "goose",
+    "requested_model": "deepseek-v4-pro",
+    "concrete_id": "deepseek/deepseek-v4-pro",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_MODELS.id",
+    "kind": "goose",
+    "requested_model": "deepseek/deepseek-chat",
+    "concrete_id": "deepseek/deepseek-chat",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_MODELS.id",
+    "kind": "goose",
+    "requested_model": "deepseek/deepseek-r1-0528",
+    "concrete_id": "deepseek/deepseek-r1-0528",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_MODELS.id",
+    "kind": "goose",
+    "requested_model": "deepseek/deepseek-v3.2",
+    "concrete_id": "deepseek/deepseek-v3.2",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_MODELS.id",
+    "kind": "goose",
+    "requested_model": "deepseek/deepseek-v4-flash",
+    "concrete_id": "deepseek/deepseek-v4-flash",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_MODELS.id",
+    "kind": "goose",
+    "requested_model": "deepseek/deepseek-v4-pro",
+    "concrete_id": "deepseek/deepseek-v4-pro",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  },
+  {
+    "source": "shared/harness:MODEL_ALIASES",
+    "kind": "goose",
+    "requested_model": "deepseek/deepseek-v4-pro",
+    "concrete_id": "deepseek/deepseek-v4-pro",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_MODELS.alias",
+    "kind": "goose",
+    "requested_model": "gemini",
+    "concrete_id": "google/gemini-3.5-flash",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_MODELS.alias",
+    "kind": "goose",
+    "requested_model": "gemini-3.5-flash",
+    "concrete_id": "google/gemini-3.5-flash",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_MODELS.alias",
+    "kind": "goose",
+    "requested_model": "glm",
+    "concrete_id": "z-ai/glm-5.1",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_MODELS.alias",
+    "kind": "goose",
+    "requested_model": "glm-5.1",
+    "concrete_id": "z-ai/glm-5.1",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_MODELS.id",
+    "kind": "goose",
+    "requested_model": "google/gemini-3.5-flash",
+    "concrete_id": "google/gemini-3.5-flash",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_MODELS.alias",
+    "kind": "goose",
+    "requested_model": "kimi",
+    "concrete_id": "moonshotai/kimi-k2.7-code",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_MODELS.alias",
+    "kind": "goose",
+    "requested_model": "kimi-k2.7",
+    "concrete_id": "moonshotai/kimi-k2.7-code",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_MODELS.alias",
+    "kind": "goose",
+    "requested_model": "minimax",
+    "concrete_id": "minimax/minimax-m3",
+    "family": "goose",
+    "trust_tier": "elevated",
+    "spawn_ceiling": "tlda-write",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_MODELS.alias",
+    "kind": "goose",
+    "requested_model": "minimax-m3",
+    "concrete_id": "minimax/minimax-m3",
+    "family": "goose",
+    "trust_tier": "elevated",
+    "spawn_ceiling": "tlda-write",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_MODELS.id",
+    "kind": "goose",
+    "requested_model": "minimax/minimax-m3",
+    "concrete_id": "minimax/minimax-m3",
+    "family": "goose",
+    "trust_tier": "elevated",
+    "spawn_ceiling": "tlda-write",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_MODELS.alias",
+    "kind": "goose",
+    "requested_model": "mistral",
+    "concrete_id": "mistralai/mistral-medium-3-5",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_MODELS.alias",
+    "kind": "goose",
+    "requested_model": "mistral-medium-3-5",
+    "concrete_id": "mistralai/mistral-medium-3-5",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_MODELS.id",
+    "kind": "goose",
+    "requested_model": "mistralai/mistral-medium-3-5",
+    "concrete_id": "mistralai/mistral-medium-3-5",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_MODELS.id",
+    "kind": "goose",
+    "requested_model": "moonshotai/kimi-k2.7-code",
+    "concrete_id": "moonshotai/kimi-k2.7-code",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_MODELS.alias",
+    "kind": "goose",
+    "requested_model": "qwen",
+    "concrete_id": "qwen/qwen3.7-max",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_MODELS.id",
+    "kind": "goose",
+    "requested_model": "qwen/qwen3.7-max",
+    "concrete_id": "qwen/qwen3.7-max",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_MODELS.alias",
+    "kind": "goose",
+    "requested_model": "qwen3.7-max",
+    "concrete_id": "qwen/qwen3.7-max",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  },
+  {
+    "source": "bin/lib/spawn/models:GOOSE_MODELS.id",
+    "kind": "goose",
+    "requested_model": "z-ai/glm-5.1",
+    "concrete_id": "z-ai/glm-5.1",
+    "family": "goose",
+    "trust_tier": "narrow",
+    "spawn_ceiling": "write",
+    "one_m_context": false
+  }
+]
