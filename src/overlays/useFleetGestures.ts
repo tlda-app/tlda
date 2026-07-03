@@ -466,8 +466,19 @@ function stopTouchEvent(e: TouchEvent) {
 
 function finishPhoneLaneGesture(main: Editor, state: Extract<GestureState, { kind: 'phone-lane' }>) {
   if (state.mode === 'dragging') {
-    snapPhoneLane(main, state.docLeftPage)
+    const screenW = main.getViewportScreenBounds().w
+    const commit = phoneLaneCommitPx(screenW)
+    const dir = state.lastDx > 0 ? 1 : state.lastDx < 0 ? -1 : 0
+    // Static-until-threshold: the camera never moved during the drag, so on
+    // release we either transition one lane (past the commit distance) or stay put.
+    if (dir !== 0 && Math.abs(state.lastDx) >= commit && phoneLaneExistsInDirection(main, state.docLeftPage, dir)) {
+      snapPhoneLaneDirectional(main, state.docLeftPage, dir)
+    } else {
+      // Re-settle exactly onto the current lane (no-op if already aligned).
+      snapPhoneLane(main, state.docLeftPage)
+    }
   }
+  setPhoneLaneDrag(PHONE_LANE_DRAG_IDLE)
 }
 
 // My fleet shapes that share a margin with the seed shapes. Source the set from
@@ -623,6 +634,65 @@ function snapPhoneLane(editor: Editor, docLeftPage: number) {
     screenW: Math.round(screenW),
   })
   editor.setCamera({ ...camera, x }, { animation: { duration: PHONE_LANE_SNAP_DURATION } })
+}
+
+// --- Phone lane transition: static-until-threshold + fill-up arrow ---
+// The panes stay put while you drag; a horizontal drag past PHONE_LANE_COMMIT
+// (fraction of screen width) transitions to the adjacent lane on release. The
+// fill-up arrow overlay reads this signal to show how close you are to committing.
+const PHONE_LANE_COMMIT_FRAC = 0.28
+const PHONE_LANE_COMMIT_MIN = 60
+
+export type PhoneLaneDragState = { active: boolean; progress: number; dir: -1 | 0 | 1; armed: boolean }
+const PHONE_LANE_DRAG_IDLE: PhoneLaneDragState = { active: false, progress: 0, dir: 0, armed: false }
+let phoneLaneDragState: PhoneLaneDragState = PHONE_LANE_DRAG_IDLE
+const phoneLaneDragListeners = new Set<(s: PhoneLaneDragState) => void>()
+export function subscribePhoneLaneDrag(cb: (s: PhoneLaneDragState) => void): () => void {
+  phoneLaneDragListeners.add(cb)
+  cb(phoneLaneDragState)
+  return () => { phoneLaneDragListeners.delete(cb) }
+}
+function setPhoneLaneDrag(next: PhoneLaneDragState) {
+  if (
+    next.active === phoneLaneDragState.active &&
+    next.dir === phoneLaneDragState.dir &&
+    next.armed === phoneLaneDragState.armed &&
+    Math.abs(next.progress - phoneLaneDragState.progress) < 0.02
+  ) return
+  phoneLaneDragState = next
+  phoneLaneDragListeners.forEach(cb => cb(next))
+}
+
+function phoneLaneCommitPx(screenW: number): number {
+  return Math.max(PHONE_LANE_COMMIT_MIN, screenW * PHONE_LANE_COMMIT_FRAC)
+}
+
+// docLeftScreen of the lane the camera is currently snapped to.
+function currentPhoneLaneDocLeftScreen(editor: Editor, docLeftPage: number): number {
+  const cam = editor.getCamera()
+  const screenW = editor.getViewportScreenBounds().w
+  const cur = (docLeftPage + cam.x) * cam.z
+  return nearestPhoneLaneDocLeftScreen(cur, screenW).docLeftScreen
+}
+
+// dir +1 pulls toward the agents/inbox lane (higher docLeftScreen), -1 toward the
+// document lane (0). A lane exists in that direction unless we're already at an end.
+function phoneLaneExistsInDirection(editor: Editor, docLeftPage: number, dir: number): boolean {
+  if (dir === 0) return false
+  const screenW = editor.getViewportScreenBounds().w
+  const cur = currentPhoneLaneDocLeftScreen(editor, docLeftPage)
+  const target = cur + dir * screenW
+  return target >= -1 && target <= 2 * screenW + 1
+}
+
+function snapPhoneLaneDirectional(editor: Editor, docLeftPage: number, dir: number) {
+  const cam = editor.getCamera()
+  const screenW = editor.getViewportScreenBounds().w
+  if (!screenW || !Number.isFinite(screenW)) return
+  const cur = currentPhoneLaneDocLeftScreen(editor, docLeftPage)
+  const target = Math.max(0, Math.min(2 * screenW, cur + dir * screenW))
+  const x = target / cam.z - docLeftPage
+  editor.setCamera({ ...cam, x }, { animation: { duration: PHONE_LANE_SNAP_DURATION } })
 }
 
 export function applyShapeResizeAxisLock(input: {
@@ -1497,8 +1567,10 @@ export function useFleetGestures(opts: {
       if (!overlay) return
       const main = getMainEditor(mainEditor)
 
-      if (ts.length === 3) {
-        // Pan the doc from anywhere — even over the panels.
+      if (ts.length === 3 && isPhoneMode()) {
+        // Phone only: pan the doc from anywhere — even over the panels — with the
+        // soft breakable axis-lock below. Confined to the phone layout so every
+        // other layout gets plain TLDraw touch behavior (no phone-ish "almost-pan").
         consumeTouchEvent(e)
         setGestureActive(true)
         const cam = main.getCamera()
@@ -1735,10 +1807,15 @@ export function useFleetGestures(opts: {
           log.debug(LOG_NS, 'phone lane drag start', { dx: Math.round(dx), dy: Math.round(dy) })
         }
         consumeTouchEvent(e)
-        main.setCamera(
-          { ...main.getCamera(), x: state.cameraX0 + dx / state.z0, z: state.z0 },
-          { animation: { duration: 0 } },
-        )
+        // Static panes: do NOT move the camera while dragging. Instead report how
+        // close this drag is to the commit threshold so the fill-up arrow shows the
+        // impending transition; the actual lane switch happens on release.
+        const screenW = main.getViewportScreenBounds().w
+        const commit = phoneLaneCommitPx(screenW)
+        const dir: -1 | 0 | 1 = dx > 0 ? 1 : dx < 0 ? -1 : 0
+        const hasLane = phoneLaneExistsInDirection(main, state.docLeftPage, dir)
+        const progress = hasLane ? Math.min(1, Math.abs(dx) / commit) : 0
+        setPhoneLaneDrag({ active: true, progress, dir: hasLane ? dir : 0, armed: progress >= 1 })
         return
       }
 
@@ -1945,7 +2022,7 @@ export function useFleetGestures(opts: {
     }
 
     const onGlobalThreeFingerStart = (e: TouchEvent) => {
-      if (e.touches.length !== 3) return
+      if (!isPhoneMode() || e.touches.length !== 3) return
       onTouchStart(e)
     }
 
