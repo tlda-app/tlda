@@ -1,0 +1,22 @@
+# fly.stable.toml — staging/boot-verification Fly app for the live tlda backend.
+# Deploy with: fly deploy -c fly.stable.toml
+app = "tldraw-sync-skip-stable"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "Dockerfile.live"
+
+[env]
+  PORT = "5176"
+  NODE_ENV = "production"
+  TLDA_FLEET_SERVER = "https://tlda-fly-stable.cormorant-matrix.ts.net"
+  TLDA_NO_AUTH = "1"
+  TLDA_UPLOAD_DIR = "/app/server/persist/uploads"
+
+[[vm]]
+  size = "performance-2x"
+  memory = "4096"
+
+[mounts]
+  source = "sync_data"
+  destination = "/app/server/persist"
