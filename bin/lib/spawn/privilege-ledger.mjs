@@ -131,13 +131,13 @@ function derivedPolicyFromOperations(name, operations) {
   const hasTldaWrite = writeAllow.some(zone => zone === 'tlda-projects')
   const capability = hasUniversalWrite
     ? 'full'
-      : hasTldaWrite
-        ? 'tlda-write'
-        : writeAllow.length
-          ? 'write'
-          : readAllow.length
-            ? 'read'
-            : 'none'
+    : hasTldaWrite
+      ? 'tlda-write'
+      : writeAllow.length
+        ? 'write'
+        : readAllow.length
+          ? 'read'
+          : 'none'
   return {
     ...normalizeSpawnPolicy(capability),
     name,

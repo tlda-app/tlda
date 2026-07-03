@@ -293,17 +293,42 @@ describe('daemon privilege ledger', () => {
     const dir = tempConfigDir()
     fs.writeFileSync(defaultDaemonConfigPath(dir), YAML.stringify({
       regions: {
-        ops: ['**'],
-        chat_db: ['~/.config/tlda/fleet.db*'],
+        cwd: ['cwd'],
+        temp: ['/tmp', '/tmp/**', '/private/tmp', '/private/tmp/**'],
+        'agent-state-read': ['~/.codex', '~/.claude', '~/.claude/**', '~/.config/tlda', '~/.config/tlda/**'],
+        'agent-state-write': ['~/.cache/**', '~/.codex/**', '~/.claude*', '~/.claude/**'],
+        work: ['~/work/**'],
+        apps: ['~/work/tlda/**'],
+        'daemon-files': ['~/.config/tlda/fleet-daemon.log', '~/.config/tlda/fleet-daemon.pid', '~/.config/tlda/fleet-daemon.lock'],
+        'browser-runtime': ['/tmp/tlda-pw-runtime', '/tmp/tlda-pw-runtime/**', '~/Library/Caches/ms-playwright', '~/Library/Caches/ms-playwright/**'],
+        'daemon-db': ['~/.config/tlda/fleet.db*'],
+        secrets: ['~/.ssh/id_*', '~/.aws/credentials', '**/.env'],
+        machine: ['**'],
       },
       profiles: {
+        readonly: {
+          read: { allow: ['cwd', 'temp', 'agent-state-read'], deny: ['secrets'] },
+          write: { allow: [], deny: ['secrets'] },
+        },
+        wd: {
+          read: { allow: ['cwd', 'temp', 'agent-state-read'], deny: ['secrets'] },
+          write: { allow: ['cwd', 'temp', 'agent-state-write'], deny: ['daemon-db', 'secrets'] },
+        },
+        math: {
+          read: { allow: ['work', 'temp', 'agent-state-read'], deny: ['apps', 'secrets'] },
+          write: { allow: ['work', 'temp', 'agent-state-write'], deny: ['apps', 'daemon-db', 'secrets'] },
+        },
+        app: {
+          read: { allow: ['cwd', 'temp', 'daemon-files', 'browser-runtime', 'agent-state-read'], deny: ['secrets'] },
+          write: { allow: ['cwd', 'temp', 'daemon-files', 'browser-runtime', 'agent-state-write'], deny: ['daemon-db', 'secrets'] },
+        },
         ops: {
-          read: { allow: ['ops'], deny: [] },
-          write: { allow: ['ops'], deny: ['chat_db'] },
+          read: { allow: ['machine'], deny: ['secrets'] },
+          write: { allow: ['machine'], deny: ['daemon-db', 'secrets'] },
         },
       },
       grants: {
-        'fleet:spawner': 'ops',
+        'fleet:skip': 'ops',
       },
       models: {
         localgpt: {
@@ -322,8 +347,11 @@ describe('daemon privilege ledger', () => {
     const file = privilegeLedgerPathFromDaemonConfig(daemonConfig, dir)
     assert.equal(file, path.join(dir, 'fleet-daemon.db'))
     assert.deepEqual(Object.keys(daemonConfig).sort(), ['grants', 'models', 'profiles', 'regions', 'servers'])
-    assert.deepEqual(daemonConfig.regions.chat_db, ['~/.config/tlda/fleet.db*'])
-    assert.equal(daemonConfig.profiles.ops.operations.write.deny[0], '~/.config/tlda/fleet.db*')
+    assert.deepEqual(Object.keys(daemonConfig.profiles).sort(), ['app', 'math', 'ops', 'readonly', 'wd'])
+    assert.deepEqual(daemonConfig.regions.apps, ['~/work/tlda/**'])
+    assert.equal(daemonConfig.profiles.app.operations.write.deny[0], '~/.config/tlda/fleet.db*')
+    assert.equal(daemonConfig.profiles.math.operations.read.deny.includes('~/work/tlda/**'), true)
+    assert.equal(daemonConfig.profiles.math.operations.write.deny.includes('~/work/tlda/**'), true)
     assert.deepEqual(daemonConfig.profiles.ops.operations.spawn, { allow: [], deny: [] })
     assert.equal(daemonConfig.profiles.ops.projectedPolicy.capability, 'full')
 
@@ -331,7 +359,7 @@ describe('daemon privilege ledger', () => {
     applyDaemonGrants(ledger, daemonConfig)
     const db = new Database(file, { readonly: true })
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM privilege_grants').get().n, 1)
-    assert.equal(db.prepare('SELECT source FROM privilege_grants WHERE id = ?').get('fleet:spawner').source, 'daemon.yaml:grants')
+    assert.equal(db.prepare('SELECT source FROM privilege_grants WHERE id = ?').get('fleet:skip').source, 'daemon.yaml:grants')
     db.close()
 
     assert.equal(fs.readFileSync(defaultDaemonConfigPath(dir), 'utf8').includes('classes:'), false)
@@ -340,14 +368,14 @@ describe('daemon privilege ledger', () => {
 
     const config = withDaemonModelAliases({}, daemonConfig)
     assert.deepEqual(config.models.codex.localgpt, { id: 'gpt-local' })
-    assert.equal(config.spawnPolicy.privilegeProfiles.ops.operations.write.deny[0], '~/.config/tlda/fleet.db*')
+    assert.equal(config.spawnPolicy.privilegeProfiles.app.operations.write.deny[0], '~/.config/tlda/fleet.db*')
     assert.equal(config.spawnPolicy.modelCeilings.localgpt, 'read')
     assert.equal(config.spawnPolicy.modelCeilings['gpt-local'], 'read')
 
     const grant = resolveSpawnGrant({
       requestedCapability: 'full',
-      spawnerPolicy: ledger.grantFor({ id: 'fleet:spawner' }).spawnPolicy,
-      spawnerPrivilegeSet: ledger.grantFor({ id: 'fleet:spawner' }).privilegeSet,
+      spawnerPolicy: ledger.grantFor({ id: 'fleet:skip' }).spawnPolicy,
+      spawnerPrivilegeSet: ledger.grantFor({ id: 'fleet:skip' }).privilegeSet,
       model: 'localgpt',
       kind: 'codex',
       config,
@@ -357,6 +385,28 @@ describe('daemon privilege ledger', () => {
     assert.equal(grant.requestedCapability, 'full')
     assert.equal(grant.modelCapability, 'read')
     assert.equal(grant.grantedCapability, 'read')
+
+    const mathGrant = resolveSpawnGrant({
+      spawnerPolicy: 'full',
+      spawnerPrivilegeSet: {
+        type: 'privilege-set',
+        name: 'root',
+        operations: {
+          read: { allow: ['**'], deny: [] },
+          write: { allow: ['**'], deny: [] },
+          spawn: { allow: [], deny: [] },
+        },
+      },
+      model: 'claude-opus-4-8',
+      kind: 'claude',
+      config: { ...config, spawnPolicy: { ...config.spawnPolicy, projectProfiles: { mathdoc: 'math' } } },
+      doc: 'mathdoc',
+      cwd: '/Users/skip/work/math-paper',
+      project: { name: 'mathdoc', sourceDir: '/Users/skip/work/math-paper' },
+    })
+    assert.equal(mathGrant.requestedPrivilegeSet.operations.read.deny.includes('~/work/tlda/**'), true)
+    assert.equal(mathGrant.grantedPrivilegeSet.operations.read.deny.includes('/Users/skip/work/tlda/**'), true)
+    assert.equal(mathGrant.grantedPrivilegeSet.operations.write.allow.includes('/Users/skip/work/**'), true)
 
     await ledger.set('fleet:child', {
       spawnPolicy: grant.grantedPolicy,
