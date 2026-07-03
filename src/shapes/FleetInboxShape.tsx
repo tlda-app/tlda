@@ -308,6 +308,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
   // Which thread is open (partnerId), or null = thread list.
   const [openPartner, setOpenPartner] = useState<string | null>(null)
   const [filterOpen, setFilterOpen] = useState(false)
+  const [filterOpenByPill, setFilterOpenByPill] = useState(false)
   const [filterTargetId, setFilterTargetId] = useState<TLShapeId | null>(null)
   const [isPhoneSurface, setIsPhoneSurface] = useState(() => {
     if (typeof window === 'undefined') return false
@@ -424,6 +425,48 @@ function FleetInboxInner({ shape }: { shape: any }) {
     },
     [mainEd, filterTargetId, resolvePhoneChat],
   )
+
+  // Dragging an agent/label pill over the inbox pops the CHAT's filter overlay on
+  // the inbox surface (the inbox is just a drop target — the overlay edits the
+  // chat's filter). Mirrors the chat's own pill-over auto-open (FleetChatShape).
+  const pillOverKey = useValue('inbox-pill-over', () => {
+    const pills = editor.getCurrentPageShapes().filter(s => (s.type as string) === 'fleet-pill') as any[]
+    if (pills.length === 0) return ''
+    const myBounds = editor.getShapePageBounds(shape.id)
+    if (!myBounds) return ''
+    for (const pill of pills) {
+      const props = pill.props
+      if (props.pillType !== 'agent' && props.pillType !== 'label') continue
+      const pb = editor.getShapePageBounds(pill.id)
+      if (!pb) continue
+      const cx = pb.x + pb.w / 2
+      const cy = pb.y + pb.h / 2
+      if (cx >= myBounds.x && cx <= myBounds.x + myBounds.w &&
+          cy >= myBounds.y && cy <= myBounds.y + myBounds.h) {
+        const role = cy < myBounds.y + myBounds.h / 2 ? 'to' : 'from'
+        return `${role}\0${props.value}\0${props.displayName}`
+      }
+    }
+    return ''
+  }, [editor, shape.id])
+  const pillOver = useMemo(() => {
+    if (!pillOverKey) return null
+    const [role, value, displayName] = pillOverKey.split('\0')
+    return { role, value, displayName }
+  }, [pillOverKey])
+
+  useEffect(() => {
+    if (pillOver && !filterOpen) {
+      const target = resolvePhoneChat()
+      if (!target) return
+      setFilterTargetId(target.id)
+      setFilterOpenByPill(true)
+      setFilterOpen(true)
+    } else if (!pillOver && filterOpenByPill) {
+      setFilterOpenByPill(false)
+      setFilterOpen(false)
+    }
+  }, [!!pillOver])
 
   // Tasks group — a live projection of the understanding-ribbon's stale spans.
   // Reading the ribbon shape inside useValue keeps this reactive: re-approving a
@@ -642,6 +685,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
             shapeId={phoneChat.id}
             editor={mainEd}
             onClose={() => setFilterOpen(false)}
+            externalPillOver={pillOver}
             agents={agents}
             sendTargets={[]}
           />

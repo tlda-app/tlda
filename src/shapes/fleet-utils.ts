@@ -7,6 +7,7 @@ import { pretty_name_plain_text } from '../../shared/pretty_name.mjs'
 // @ts-ignore — vanilla JS module
 import { recentChatTargetAgents } from '../fleet/layout-targets.mjs'
 import { getPref } from '../preferences'
+import { log } from '../logger'
 import { isDocumentPageShape } from './document-pages'
 
 /** Canonical list of fleet shape types — the single source of truth for
@@ -524,6 +525,16 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
     .filter(s => (s.type as string) === 'fleet-chat')
     .map(s => (s as any).props?.filter as [string, string][][] | undefined)
   const vp = editor.getViewportScreenBounds()
+  // TEMP probe (phone chat height debug): record which variant + the viewport the
+  // layout is actually being created against, so we can see it from a real device.
+  log.warn('fleet-layout-probe', 'creating layout', {
+    variant,
+    vp: { w: Math.round(vp.w), h: Math.round(vp.h) },
+    innerW: typeof window !== 'undefined' ? window.innerWidth : null,
+    innerH: typeof window !== 'undefined' ? window.innerHeight : null,
+    heightFrac: getPref('layout-height-frac'),
+    camZ: +editor.getCamera().z.toFixed(3),
+  })
   const phoneTarget = variant === 'phone' ? getPhoneLayoutTarget(editor, docBounds.pageShapes, vp) : null
   if (variant === 'phone' && !phoneTarget) {
     console.warn('[FleetLayout] Refusing to create phone layout before document page bounds are usable')
