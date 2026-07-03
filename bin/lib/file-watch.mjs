@@ -21,7 +21,7 @@ export function createFileWatcher({
   if (typeof onEvent !== 'function') throw new TypeError('onEvent is required')
 
   const initialPaths = Array.isArray(paths) ? paths.filter(Boolean) : [paths].filter(Boolean)
-  const watcher = chokidar.watch(initialPaths, {
+  const options = {
     cwd: cwd || undefined,
     persistent,
     ignoreInitial,
@@ -31,7 +31,12 @@ export function createFileWatcher({
     binaryInterval,
     depth,
     awaitWriteFinish: false,
-  })
+  }
+  for (const key of ['cwd', 'interval', 'binaryInterval', 'depth']) {
+    if (options[key] === undefined) delete options[key]
+  }
+
+  const watcher = chokidar.watch(initialPaths, options)
 
   let closed = false
   let readySent = false
