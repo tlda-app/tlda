@@ -3354,6 +3354,46 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   position: absolute;
   inset: 0;
 }
+.fleet-source-editor-split {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.fleet-source-editor-pane {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.fleet-source-editor-split-active .fleet-source-editor-pane {
+  flex-basis: 0;
+}
+.fleet-source-editor-seam {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, max-content) minmax(24px, 1fr) minmax(0, max-content);
+  align-items: center;
+  gap: 6px;
+  padding: 1px 10px;
+  color: var(--text-dim, #8888a0);
+  opacity: 0.2;
+  font: 8px/1.2 ui-monospace, "SF Mono", Monaco, monospace;
+  pointer-events: none;
+  user-select: none;
+  transition: opacity 0.2s;
+}
+.fleet-source-editor-seam:hover {
+  opacity: 0.55;
+}
+.fleet-source-editor-seam span {
+  white-space: nowrap;
+}
+.fleet-source-editor-seam div {
+  height: 1px;
+  background: currentColor;
+  opacity: 0.55;
+}
 .fleet-source-editor:has(.cm-vim-panel) .fleet-source-editor-status {
   visibility: hidden;
 }

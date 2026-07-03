@@ -19,6 +19,7 @@ import { getOriginalDoc, unifiedMergeView, updateOriginalDoc } from '@codemirror
 import { vim, getCM, Vim, CodeMirror as CM5 } from '@replit/codemirror-vim'
 import { latex } from 'codemirror-lang-latex'
 import { DocContext } from '../PanelContext'
+import { STORE_HTTP } from '../activeConfig'
 import { PDF_HEIGHT, PDF_WIDTH } from '../layoutConstants'
 import { getPref, subscribePref } from '../preferences'
 import { loadLookup, type LookupData } from '../synctexLookup'
@@ -41,6 +42,8 @@ const SOURCE_CONTEXT_AFTER = 44
 const SOURCE_TRACK_INTERVAL_MS = 250
 const SOURCE_TRACK_LINE_THRESHOLD = 2
 const SOURCE_WHEEL_PX_PER_LINE = 18
+const SOURCE_SPLIT_LINE_WINDOW = 90
+const STORE_API = STORE_HTTP.replace(/\/$/, '')
 
 const sourceEditorHistoryKeymap = Prec.highest(keymap.of([
   { key: 'Mod-z', run: undo, preventDefault: true },
@@ -144,6 +147,14 @@ function normalizeFile(file: string) {
   return file.replace(/^\.\//, '') || 'main.tex'
 }
 
+function basename(file: string) {
+  return normalizeFile(file).replace(/^.*[\\/]/, '')
+}
+
+function projectApiPath(docName: string, path: string) {
+  return `${STORE_API}/api/projects/${encodeURIComponent(docName)}${path}`
+}
+
 function getFleetStyleVars(): CSSProperties {
   return {
     '--fleet-base-font': `${getPref('fleet-font-size')}px`,
@@ -174,6 +185,46 @@ function sourceWindowForText(text: string, centerLine: number) {
 function lineStatusText(file: string, sourceWindow: { targetLine: number }) {
   void file
   return `L${sourceWindow.targetLine}`
+}
+
+type SourceSplit = {
+  beforeFile: string
+  beforeLine: number
+  afterFile: string
+  afterLine: number
+}
+
+function sourceSplitForAnchor(lookup: LookupData | null, anchor: { file: string; line: number; page: number }): SourceSplit | null {
+  if (!lookup || !anchor.page) return null
+  const rows: Array<{ file: string; line: number; y: number }> = []
+  for (const [key, entry] of Object.entries(lookup.lines || {})) {
+    if (entry.page !== anchor.page) continue
+    if (!isUsableLookupEntry(entry)) continue
+    const parsed = parseLookupLineKey(key, lookup)
+    if (!Number.isFinite(parsed.line)) continue
+    rows.push({ ...parsed, y: entry.y })
+  }
+  rows.sort((a, b) => a.y - b.y)
+
+  let best: { split: SourceSplit; score: number } | null = null
+  for (let i = 1; i < rows.length; i += 1) {
+    const prev = rows[i - 1]
+    const next = rows[i]
+    if (prev.file === next.file) continue
+    const split = {
+      beforeFile: prev.file,
+      beforeLine: prev.line,
+      afterFile: next.file,
+      afterLine: next.line,
+    }
+    const score = anchor.file === prev.file
+      ? Math.abs(anchor.line - prev.line)
+      : anchor.file === next.file
+        ? Math.abs(anchor.line - next.line)
+        : SOURCE_SPLIT_LINE_WINDOW + 1
+    if (!best || score < best.score) best = { split, score }
+  }
+  return best && best.score <= SOURCE_SPLIT_LINE_WINDOW ? best.split : null
 }
 
 const VIM_REGEX_HINT_RE = /\s*\((?:set (?:no)?pcre to use (?:Vim|vim) regexps?|(?:JavaScript|Vim) regexp: set (?:no)?pcre)\)/g
@@ -334,11 +385,16 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const cmHostRef = useRef<HTMLDivElement>(null)
   const cmViewRef = useRef<EditorView | null>(null)
+  const secondaryCmHostRef = useRef<HTMLDivElement>(null)
+  const secondaryCmViewRef = useRef<EditorView | null>(null)
   const cmKeydownCleanupRef = useRef<(() => void) | null>(null)
   const cmPanelCleanupRef = useRef<(() => void) | null>(null)
   const writeTimerRef = useRef<number | null>(null)
+  const secondaryWriteTimerRef = useRef<number | null>(null)
   const saveSeqRef = useRef(0)
+  const secondarySaveSeqRef = useRef(0)
   const [file, setFile] = useState(() => normalizeFile(shape.props.file))
+  const [sourceSplit, setSourceSplit] = useState<SourceSplit | null>(null)
   const [trackedAnchor, setTrackedAnchor] = useState(() => ({
     file: normalizeFile(shape.props.file),
     line: Math.max(1, Number(shape.props.line || 1)),
@@ -356,7 +412,11 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
   const conflictRawTextRef = useRef('')
   const conflictSideRef = useRef<ConflictSide>('ours')
   const savedTextRef = useRef('')
+  const secondarySavedTextRef = useRef('')
   const fullSourceRef = useRef('')
+  const secondaryFullSourceRef = useRef('')
+  const sourceFilesRef = useRef<string[] | null>(null)
+  const sourceFilesPromiseRef = useRef<Promise<string[]> | null>(null)
   const sourceWindowRef = useRef({ startLine: 1, endLine: 1, targetLine: 1, text: '' })
   const vimModeRef = useRef(vimMode)
   const laserSessionRef = useRef<string | null>(null)
@@ -365,6 +425,10 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
   useEffect(() => { statusRef.current = status }, [status])
   useEffect(() => { vimModeRef.current = vimMode }, [vimMode])
   useEffect(() => { conflictFilesRef.current = conflictFiles }, [conflictFiles])
+  useEffect(() => {
+    sourceFilesRef.current = null
+    sourceFilesPromiseRef.current = null
+  }, [doc?.docName])
 
   const pdfSpansToCanvasMark = (spans: SourceCursorPdfSpan[], sourceLine: number): SourceCursorLaserMark | null => {
     const mainEditor = sourceCursorEditor(editor)
@@ -400,7 +464,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
 
   const computeCursorLaserMark = async (sourceFile: string, sourceLine: number, sourceColumn: number, seq: number) => {
     if (!doc?.docName) return null
-    const res = await fetch(`/api/projects/${encodeURIComponent(doc.docName)}/source-cursor`, {
+    const res = await fetch(projectApiPath(doc.docName, '/source-cursor'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ file: sourceFile, line: sourceLine, column: sourceColumn }),
@@ -497,7 +561,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
         return
       }
       try {
-        const res = await fetch(`/api/projects/${encodeURIComponent(doc!.docName)}`)
+        const res = await fetch(projectApiPath(doc!.docName, ''))
         if (!res.ok) throw new Error(`project ${res.status}`)
         const info = await res.json()
         const nextFile = normalizeFile(info?.mainFile || 'main.tex')
@@ -525,7 +589,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
     let cancelled = false
     async function loadProjectConflictState() {
       try {
-        const res = await fetch(`/api/projects/${encodeURIComponent(doc!.docName)}`)
+        const res = await fetch(projectApiPath(doc!.docName, ''))
         if (!res.ok) throw new Error(`project ${res.status}`)
         const info = await res.json()
         if (cancelled) return
@@ -558,6 +622,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
       const mainEditor = (typeof window !== 'undefined' && (window as any).__tldraw_editor__) || editor
       const next = sourceAnchorForViewport(mainEditor, lookup)
       if (!next) return
+      setSourceSplit(sourceSplitForAnchor(lookup, next))
       setTrackedAnchor(prev => {
         if (prev.file === next.file && Math.abs(prev.line - next.line) < SOURCE_TRACK_LINE_THRESHOLD) return prev
         return next
@@ -577,8 +642,54 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
   useEffect(() => {
     return () => {
       if (writeTimerRef.current) window.clearTimeout(writeTimerRef.current)
+      if (secondaryWriteTimerRef.current) window.clearTimeout(secondaryWriteTimerRef.current)
     }
   }, [])
+
+  const loadSourceFiles = async () => {
+    if (!doc?.docName) return []
+    if (sourceFilesRef.current) return sourceFilesRef.current
+    if (!sourceFilesPromiseRef.current) {
+      sourceFilesPromiseRef.current = fetch(projectApiPath(doc.docName, '/files'))
+        .then(async (res) => {
+          if (!res.ok) throw new Error(`files ${res.status}`)
+          const payload = await res.json()
+          const files = Array.isArray(payload?.files) ? payload.files.map(normalizeFile) : []
+          sourceFilesRef.current = files
+          return files
+        })
+        .catch(() => {
+          sourceFilesRef.current = []
+          return []
+        })
+    }
+    return sourceFilesPromiseRef.current
+  }
+
+  const resolveSourceFilePath = async (sourceFile: string) => {
+    const normalized = normalizeFile(sourceFile)
+    const files = await loadSourceFiles()
+    if (files.includes(normalized)) return normalized
+    const base = basename(normalized)
+    const matches = files.filter(candidate => basename(candidate) === base)
+    return matches.length === 1 ? matches[0] : normalized
+  }
+
+  const writeSourceFile = async (sourceFile: string, nextFullText: string) => {
+    if (!doc?.docName || !sourceFile) return null
+    const sourcePath = await resolveSourceFilePath(sourceFile)
+    const res = await fetch(projectApiPath(doc.docName, `/source/${encodeURIComponent(sourcePath)}`), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        content: nextFullText,
+        editedBy: shape.props.userId || shape.props.deviceId || 'fleet-source-editor',
+      }),
+    })
+    const payload = await res.json().catch(() => ({}))
+    if (!res.ok || payload?.ok === false) throw new Error(payload?.error || `sync ${res.status}`)
+    return payload
+  }
 
   const writeSource = async (nextFullText: string, seq: number) => {
     if (!doc?.docName || !file) return
@@ -590,16 +701,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
     setStatus('syncing')
     setStatusText('Syncing...')
     try {
-      const res = await fetch(`/api/projects/${encodeURIComponent(doc.docName)}/source/${encodeURIComponent(file)}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          content: nextFullText,
-          editedBy: shape.props.userId || shape.props.deviceId || 'fleet-source-editor',
-        }),
-      })
-      const payload = await res.json().catch(() => ({}))
-      if (!res.ok || payload?.ok === false) throw new Error(payload?.error || `sync ${res.status}`)
+      const payload = await writeSourceFile(file, nextFullText)
       if (seq !== saveSeqRef.current) return
       savedTextRef.current = nextFullText
       fullSourceRef.current = nextFullText
@@ -623,6 +725,26 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
     writeTimerRef.current = window.setTimeout(() => {
       writeTimerRef.current = null
       void writeSource(text, seq)
+    }, WRITE_DEBOUNCE_MS)
+  }
+
+  const queueSecondaryWrite = (sourceFile: string, text: string) => {
+    secondarySaveSeqRef.current += 1
+    const seq = secondarySaveSeqRef.current
+    if (secondaryWriteTimerRef.current) window.clearTimeout(secondaryWriteTimerRef.current)
+    secondaryWriteTimerRef.current = window.setTimeout(() => {
+      secondaryWriteTimerRef.current = null
+      void writeSourceFile(sourceFile, text)
+        .then(() => {
+          if (seq !== secondarySaveSeqRef.current) return
+          secondarySavedTextRef.current = text
+          secondaryFullSourceRef.current = text
+        })
+        .catch((err: any) => {
+          if (seq !== secondarySaveSeqRef.current) return
+          setStatus('error')
+          setStatusText(`${sourceFile}: ${err?.message || 'Sync failed'}`)
+        })
     }, WRITE_DEBOUNCE_MS)
   }
 
@@ -658,7 +780,8 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
       setStatus('loading')
       setStatusText(`Loading ${file}...`)
       try {
-        const res = await fetch(`/api/projects/${encodeURIComponent(doc!.docName)}/source/${encodeURIComponent(file)}`)
+        const sourcePath = await resolveSourceFilePath(file)
+        const res = await fetch(projectApiPath(doc!.docName, `/source/${encodeURIComponent(sourcePath)}`))
 	        if (!res.ok) throw new Error(`source ${res.status}`)
 	        const text = await res.text()
 	        if (cancelled || !cmHostRef.current) return
@@ -818,13 +941,16 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
 
   const handlePointerDown = (e: any) => {
     stopEventPropagation(e)
-    if (!cmHostRef.current?.contains(e.target as Node)) return
+    const target = e.target as Node
+    if (!cmHostRef.current?.contains(target) && !secondaryCmHostRef.current?.contains(target)) return
     requestAnimationFrame(() => {
-      cmViewRef.current?.focus()
+      if (secondaryCmHostRef.current?.contains(target)) secondaryCmViewRef.current?.focus()
+      else cmViewRef.current?.focus()
     })
   }
   const handleKeyDown = (e: any) => {
-    if (!cmHostRef.current?.contains(e.target as Node)) return
+    const target = e.target as Node
+    if (!cmHostRef.current?.contains(target) && !secondaryCmHostRef.current?.contains(target)) return
     stopEventPropagation(e)
   }
   const handleWheel = (e: any) => {
@@ -839,6 +965,126 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
   }
   const currentFileConflicted = conflictFiles.includes(normalizeFile(file))
   const canResolveConflict = currentFileConflicted && !sourceHasConflictMarkers && status !== 'syncing'
+  const secondaryFile = sourceSplit
+    ? normalizeFile(file) === normalizeFile(sourceSplit.beforeFile)
+      ? normalizeFile(sourceSplit.afterFile)
+      : normalizeFile(file) === normalizeFile(sourceSplit.afterFile)
+        ? normalizeFile(sourceSplit.beforeFile)
+        : null
+    : null
+  const primaryOnTop = !sourceSplit || normalizeFile(file) === normalizeFile(sourceSplit.beforeFile)
+
+  useEffect(() => {
+    if (!doc?.docName || !secondaryFile || !secondaryCmHostRef.current) {
+      secondaryCmViewRef.current?.destroy()
+      secondaryCmViewRef.current = null
+      secondarySavedTextRef.current = ''
+      secondaryFullSourceRef.current = ''
+      return
+    }
+
+    const docName = doc.docName
+    const activeSecondaryFile = secondaryFile
+    const activeSplit = sourceSplit
+    let cancelled = false
+    let keydownCleanup: (() => void) | null = null
+    let panelCleanup: (() => void) | null = null
+
+    async function loadSecondarySource() {
+      if (secondaryWriteTimerRef.current) window.clearTimeout(secondaryWriteTimerRef.current)
+      secondaryWriteTimerRef.current = null
+      try {
+        const sourcePath = await resolveSourceFilePath(activeSecondaryFile)
+        const res = await fetch(projectApiPath(docName, `/source/${encodeURIComponent(sourcePath)}`))
+        if (!res.ok) throw new Error(`source ${res.status}`)
+        const text = await res.text()
+        if (cancelled || !secondaryCmHostRef.current) return
+
+        keydownCleanup?.()
+        panelCleanup?.()
+        secondaryCmViewRef.current?.destroy()
+        secondarySavedTextRef.current = text
+        secondaryFullSourceRef.current = text
+        const startState = EditorState.create({
+          doc: text,
+          extensions: [
+            sourceEditorHistoryKeymap,
+            ...(useVim ? [vim()] : []),
+            lineNumbers(),
+            history({ minDepth: 10000 }),
+            latex(),
+            EditorView.lineWrapping,
+            sourceEditorTheme,
+            EditorView.updateListener.of((update) => {
+              if (!update.docChanged) return
+              const currentText = update.state.doc.toString()
+              secondaryFullSourceRef.current = currentText
+              if (currentText === secondarySavedTextRef.current) {
+                if (secondaryWriteTimerRef.current) window.clearTimeout(secondaryWriteTimerRef.current)
+                secondaryWriteTimerRef.current = null
+                return
+              }
+              queueSecondaryWrite(activeSecondaryFile, currentText)
+            }),
+            keymap.of([...defaultKeymap, ...historyKeymap]),
+          ],
+        })
+        const view = new EditorView({ state: startState, parent: secondaryCmHostRef.current })
+        const handleNativeKeydown = (event: KeyboardEvent) => {
+          const key = String(event.key || '').toLowerCase()
+          const mod = event.metaKey || event.ctrlKey
+          if (!mod || event.altKey || (key !== 'z' && key !== 'y')) return
+          event.preventDefault()
+          event.stopPropagation()
+          if (useVim) {
+            const cm = getCM(view)
+            if (!cm) return
+            Vim.handleKey(cm, '<Esc>', 'user')
+            Vim.handleKey(cm, key === 'y' || event.shiftKey ? '<C-r>' : 'u', 'user')
+            return
+          }
+          if (key === 'y' || event.shiftKey) redo(view)
+          else undo(view)
+        }
+        view.dom.addEventListener('keydown', handleNativeKeydown, { capture: true })
+        keydownCleanup = () => view.dom.removeEventListener('keydown', handleNativeKeydown, { capture: true })
+        stripVimRegexHints(view.dom)
+        const panelObserver = new MutationObserver(() => stripVimRegexHints(view.dom))
+        panelObserver.observe(view.dom, { childList: true, subtree: true, characterData: true })
+        panelCleanup = () => panelObserver.disconnect()
+        const cm = useVim ? getCM(view) : null
+        if (cm) cm.setOption('pcre', true)
+        secondaryCmViewRef.current = view
+        const targetLine = Math.max(1, Math.min(
+          activeSplit && normalizeFile(activeSecondaryFile) === normalizeFile(activeSplit.beforeFile)
+            ? activeSplit.beforeLine
+            : activeSplit?.afterLine || 1,
+          view.state.doc.lines,
+        ))
+        const line = view.state.doc.line(targetLine)
+        view.dispatch({
+          selection: { anchor: line.from },
+          effects: EditorView.scrollIntoView(line.from, { y: 'center' }),
+        })
+      } catch (err: any) {
+        if (cancelled) return
+        secondaryCmViewRef.current?.destroy()
+        secondaryCmViewRef.current = null
+        setStatus('error')
+        setStatusText(`${activeSecondaryFile}: ${err?.message || 'Failed to load source'}`)
+      }
+    }
+
+    void loadSecondarySource()
+    return () => {
+      cancelled = true
+      keydownCleanup?.()
+      panelCleanup?.()
+      secondaryCmViewRef.current?.destroy()
+      secondaryCmViewRef.current = null
+    }
+  }, [doc?.docName, secondaryFile, sourceSplit?.beforeFile, sourceSplit?.beforeLine, sourceSplit?.afterFile, sourceSplit?.afterLine, useVim])
+
   const applyConflictSide = (side: ConflictSide) => {
     const view = cmViewRef.current
     if (!view) return
@@ -920,7 +1166,27 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
         {status === 'error' && (
           <div className="fleet-source-editor-error">{statusText}</div>
         )}
-	        <div ref={cmHostRef} className="fleet-source-editor-cm" />
+        <div className={`fleet-source-editor-split${secondaryFile && sourceSplit ? ' fleet-source-editor-split-active' : ''}`}>
+          <div
+            ref={cmHostRef}
+            className="fleet-source-editor-cm fleet-source-editor-pane"
+            style={{ order: primaryOnTop ? 0 : 2 }}
+          />
+          {secondaryFile && sourceSplit && (
+            <>
+              <div className="fleet-source-editor-seam" aria-hidden="true" style={{ order: 1 }}>
+                <span>{basename(sourceSplit.beforeFile)}</span>
+                <div />
+                <span>{basename(sourceSplit.afterFile)}</span>
+              </div>
+              <div
+                ref={secondaryCmHostRef}
+                className="fleet-source-editor-cm fleet-source-editor-pane"
+                style={{ order: primaryOnTop ? 2 : 0 }}
+              />
+            </>
+          )}
+        </div>
 	      </div>
     </div>
   )
