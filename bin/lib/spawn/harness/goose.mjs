@@ -2,7 +2,7 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { activeConfigName, readConfig, repoRoot } from '../identity.mjs'
-import { gooseModelVerified, resolveGooseModel } from '../models.mjs'
+import { gooseModelVerified, resolveGooseModel, resolveGooseModelSelection } from '../models.mjs'
 
 const GOOSE_BIN = '/opt/homebrew/bin/goose'
 const GOOSE_STATE_ROOT = '/tmp/tlda-goose-state'
@@ -14,13 +14,18 @@ function sq(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`
 }
 
-function providerForModel(model) {
+function providerForModel(model, modelProvider = null) {
   if (model?.startsWith('cursor-agent/')) return { provider: 'cursor-agent', model: model.split('/', 2)[1] || 'default' }
+  if (modelProvider === 'deepseek') return { provider: 'openai', model }
   return { provider: 'openrouter', model }
 }
 
-export function resolveModel(model) {
-  return resolveGooseModel(model)
+export function resolveModel(model, options = {}) {
+  return resolveGooseModel(model, options)
+}
+
+export function resolveModelSelection(model, options = {}) {
+  return resolveGooseModelSelection(model, options)
 }
 
 export function warnModel(model) {
@@ -37,6 +42,7 @@ export function buildCmd({
   dnsAlias = null,
   env = process.env,
   config = readConfig(),
+  modelProvider = null,
 } = {}) {
   const recipe = path.join(repoRoot(), 'recipes', 'fleet-deepseek.yaml')
   const sandboxConfig = path.join(path.dirname(recipe), 'goose-sandbox')
@@ -46,7 +52,7 @@ export function buildCmd({
   fs.mkdirSync(path.join(stateDir, 'data'), { recursive: true })
   fs.mkdirSync(cacheDir, { recursive: true })
   fs.mkdirSync(stateHome, { recursive: true })
-  const { provider, model: providerModel } = providerForModel(model)
+  const { provider, model: providerModel } = providerForModel(model, modelProvider)
   const parts = [
     `FLEET_ID=${sq(fleetId)}`,
     `FLEET_TMUX_SESSION=${sq(tmuxSession)}`,
@@ -69,6 +75,11 @@ export function buildCmd({
   parts.push(`GOOSE_MAX_TOKENS=${GOOSE_MAX_TOKENS}`)
   parts.push('GOOSE_TELEMETRY_OFF=1')
   if (provider === 'cursor-agent') parts.push(`CURSOR_AGENT_COMMAND=${sq(CURSOR_AGENT_COMMAND)}`)
+  if (provider === 'openai') {
+    const deepseekKey = env.DEEPSEEK_API_KEY || ''
+    if (deepseekKey) parts.push(`OPENAI_API_KEY=${sq(deepseekKey)}`)
+    parts.push('OPENAI_HOST=https://api.deepseek.com')
+  }
   if (name) parts.push(`FLEET_NAME=${sq(name)}`)
   parts.push(sq(GOOSE_BIN))
   parts.push('run')

@@ -68,7 +68,15 @@ function traceSpawnDecision(label, detail) {
   process.stderr.write(`[spawn-trace] ${label} ${JSON.stringify(payload)}\n`)
 }
 
-async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, model, name, cwd, effort, permissionMode, spawnPolicy, api, dnsAlias, resumeId = null, includePrompt = true, leasePolicy = null }) {
+function resolveAdapterModel(adapter, rawModel, config) {
+  if (adapter.resolveModelSelection) {
+    const selection = adapter.resolveModelSelection(rawModel, { config })
+    return { model: selection.model, provider: selection.provider, selection }
+  }
+  return { model: adapter.resolveModel(rawModel, { config }), provider: null, selection: null }
+}
+
+async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, model, modelProvider = null, name, cwd, effort, permissionMode, spawnPolicy, api, dnsAlias, resumeId = null, includePrompt = true, leasePolicy = null }) {
   let cmd
   let sendKeys = false
   let projection = null
@@ -98,6 +106,7 @@ async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, mode
       fleetId,
       tmuxSession,
       model,
+      modelProvider,
       effort,
       mode: permissionMode,
       name,
@@ -144,10 +153,11 @@ async function spawnFresh(params) {
     } catch {
       serverUp = false
     }
-    tmuxSession = await (deps.uniqueSessionName || uniqueSessionName)(`fleet-${sanitizeSessionName(name)}`, { tmuxSocket: params.tmuxSocket })
-    model = adapter.resolveModel(params.model)
-    const dnsAlias = await (deps.resolveDnsAlias || resolveDnsAlias)(api)
     const config = params.config ?? readConfig()
+    tmuxSession = await (deps.uniqueSessionName || uniqueSessionName)(`fleet-${sanitizeSessionName(name)}`, { tmuxSocket: params.tmuxSocket })
+    const modelResolved = resolveAdapterModel(adapter, params.model, config)
+    model = modelResolved.model
+    const dnsAlias = await (deps.resolveDnsAlias || resolveDnsAlias)(api)
     const launchPolicy = resolveLaunchPolicy({
       spawnPolicy: params.spawnPolicy,
       privilegeSet: params.privilegeSet,
@@ -166,6 +176,7 @@ async function spawnFresh(params) {
       fleetId,
       requestedKind,
       model,
+      modelProvider: modelResolved.provider,
       cwd,
       requestedCapability: params.requestedCapability || null,
       requestedSpawnPolicy: params.spawnPolicy || null,
@@ -224,6 +235,7 @@ async function spawnFresh(params) {
       fleetId,
       requestedKind,
       model,
+      modelProvider: modelResolved.provider,
       cwd,
       tmuxSession,
       hasLeasePolicy: commandTrace.hasLeasePolicy,
@@ -278,7 +290,9 @@ async function spawnRespawn(params) {
   const fleetId = agent.id
   const friendlyName = params.name && !params.name.startsWith('fleet:') ? params.name : (agent.friendly_name || agent.name || fleetId)
   let cwd = resolveSpawnCwd(params.cwd || agent.cwd || process.cwd())
-  const model = adapter.resolveModel(rawModel)
+  const config = params.config ?? readConfig()
+  const modelResolved = resolveAdapterModel(adapter, rawModel, config)
+  const model = modelResolved.model
   const tmuxSession = agent.tmux_session || `fleet-${sanitizeSessionName(friendlyName)}`
   if (await sessionHasRuntime(tmuxSession, { tmuxSocket: params.tmuxSocket })) {
     return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, alreadyAlive: true }
@@ -293,7 +307,6 @@ async function spawnRespawn(params) {
   if (handle?.cwd) cwd = resolveSpawnCwd(handle.cwd)
   if (requestedKind === 'claude' && resumeId) stripSyntheticTail(resumeId)
   const dnsAlias = await resolveDnsAlias(api)
-  const config = params.config ?? readConfig()
   const launchPolicy = resolveLaunchPolicy({
     spawnPolicy: params.spawnPolicy || meta.spawnPolicy,
     privilegeSet: params.privilegeSet || meta.privilegeSet,
@@ -328,6 +341,7 @@ async function spawnRespawn(params) {
     fleetId,
     tmuxSession,
     model,
+    modelProvider: modelResolved.provider,
     name: friendlyName,
     cwd,
     effort: params.effort || meta.effort,
@@ -363,10 +377,11 @@ async function spawnRefresh(params) {
   const fleetId = agent.id
   const friendlyName = params.name && !params.name.startsWith('fleet:') ? params.name : (agent.friendly_name || agent.name || fleetId)
   const cwd = resolveSpawnCwd(params.cwd || agent.cwd || process.cwd())
-  const model = adapter.resolveModel(rawModel)
+  const config = params.config ?? readConfig()
+  const modelResolved = resolveAdapterModel(adapter, rawModel, config)
+  const model = modelResolved.model
   const tmuxSession = agent.tmux_session || `fleet-${sanitizeSessionName(friendlyName)}`
   const dnsAlias = await resolveDnsAlias(api)
-  const config = params.config ?? readConfig()
   const launchPolicy = resolveLaunchPolicy({
     spawnPolicy: params.spawnPolicy || meta.spawnPolicy,
     privilegeSet: params.privilegeSet || meta.privilegeSet,
@@ -400,6 +415,7 @@ async function spawnRefresh(params) {
     fleetId,
     tmuxSession,
     model,
+    modelProvider: modelResolved.provider,
     name: friendlyName,
     cwd,
     effort: params.effort || meta.effort,
@@ -452,14 +468,15 @@ async function spawnCodexSession(params, { api, sessionId, codexPath }) {
     ? params.name
     : (agentName || defaultEnrolledName(params, sessionId))
   const cwd = resolveSpawnCwd(params.cwd || sessionMeta.cwd || process.cwd())
-  const model = codex.resolveModel(params.model)
+  const config = params.config ?? readConfig()
+  const modelResolved = resolveAdapterModel(codex, params.model, config)
+  const model = modelResolved.model
   const tmuxSession = params.tmuxSession || `fleet-${sanitizeSessionName(friendlyName)}`
   if (await sessionHasRuntime(tmuxSession, { tmuxSocket: params.tmuxSocket })) {
     return { ok: true, fleetId, tmuxSession, harness: 'codex', model, resumeId: sessionId, alreadyAlive: true }
   }
   if (params.enroll) await checkFreshNameAvailable(friendlyName, { api, serverUp: true })
   const dnsAlias = await resolveDnsAlias(api)
-  const config = params.config ?? readConfig()
   const launchPolicy = resolveLaunchPolicy({
     spawnPolicy: params.spawnPolicy,
     privilegeSet: params.privilegeSet,
@@ -493,6 +510,7 @@ async function spawnCodexSession(params, { api, sessionId, codexPath }) {
     fleetId,
     tmuxSession,
     model,
+    modelProvider: modelResolved.provider,
     name: friendlyName,
     cwd,
     effort: params.effort,
@@ -521,7 +539,9 @@ async function spawnClaudeSession(params, { api, sessionId, identity }) {
     ? params.name
     : (identity.agentName || defaultEnrolledName(params, sessionId))
   const cwd = resolveSpawnCwd(params.cwd || identity.cwd || process.cwd())
-  const model = claude.resolveModel(params.model)
+  const config = params.config ?? readConfig()
+  const modelResolved = resolveAdapterModel(claude, params.model, config)
+  const model = modelResolved.model
   const tmuxSession = params.tmuxSession || `fleet-${sanitizeSessionName(friendlyName)}`
   if (await sessionHasRuntime(tmuxSession, { tmuxSocket: params.tmuxSocket })) {
     return { ok: true, fleetId, tmuxSession, harness: 'claude', model, resumeId: sessionId, alreadyAlive: true }
@@ -535,7 +555,7 @@ async function spawnClaudeSession(params, { api, sessionId, identity }) {
     harness: 'claude',
     model,
     cwd,
-    config: params.config,
+    config,
     permissionMode: params.permissionMode,
     mode: params.mode,
     explicitPolicy: params.explicitPolicy,
@@ -561,6 +581,7 @@ async function spawnClaudeSession(params, { api, sessionId, identity }) {
     fleetId,
     tmuxSession,
     model,
+    modelProvider: modelResolved.provider,
     name: friendlyName,
     cwd,
     effort: params.effort,

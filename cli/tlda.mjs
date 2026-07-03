@@ -1511,7 +1511,7 @@ async function attachToAgent(name) {
 async function runFleetSpawn(spawnArgs) {
   if (spawnArgs.includes('--list-models')) {
     const { listModels } = await import('../bin/lib/spawn/models.mjs')
-    console.log(JSON.stringify(listModels(), null, 2))
+    console.log(JSON.stringify(listModels(loadConfig()), null, 2))
     return
   }
   const { spawn } = await import('../bin/lib/spawn/index.mjs')

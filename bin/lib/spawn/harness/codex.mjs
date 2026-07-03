@@ -2,7 +2,7 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { activeConfigName, readConfig, repoRoot } from '../identity.mjs'
-import { resolveCodexModel } from '../models.mjs'
+import { resolveCodexModel, resolveCodexModelSelection } from '../models.mjs'
 import { registerPrompt } from './claude.mjs'
 
 const CODEX_CONFIG_FILE = path.join(os.homedir(), '.codex', 'config.toml')
@@ -20,8 +20,12 @@ function cenv(key, value) {
   return `-c ${sq(`mcp_servers.tlda.env.${key}=${value}`)}`
 }
 
-export function resolveModel(model) {
-  return resolveCodexModel(model)
+export function resolveModel(model, options = {}) {
+  return resolveCodexModel(model, options)
+}
+
+export function resolveModelSelection(model, options = {}) {
+  return resolveCodexModelSelection(model, options)
 }
 
 export function buildWorkspaceWriteConfigArgs({ writableRoots = [], networkAccess = true } = {}) {

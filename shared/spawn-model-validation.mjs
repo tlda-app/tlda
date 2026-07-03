@@ -5,6 +5,7 @@ export function normalizeSpawnModelCatalog(catalog) {
       alias: String(m?.alias || '').trim(),
       id: String(m?.id || '').trim(),
       kind: String(m?.kind || '').trim().toLowerCase(),
+      available: m?.available !== false,
       verified: m?.verified !== false,
     }))
     .filter((m) => m.alias && m.id && m.kind)
@@ -14,6 +15,7 @@ export function groupSpawnModels(catalog, { verifiedOnly = false, kind = null } 
   const wantedKind = kind ? String(kind).trim().toLowerCase() : null
   const grouped = new Map()
   for (const model of normalizeSpawnModelCatalog(catalog)) {
+    if (!model.available) continue
     if (verifiedOnly && !model.verified) continue
     if (wantedKind && model.kind !== wantedKind) continue
     if (!grouped.has(model.kind)) grouped.set(model.kind, [])
@@ -60,7 +62,7 @@ export function validateSpawnModelSelection({ model, kind } = {}, catalog) {
 
   if (!rawModel) return { ok: true }
 
-  const matches = normalized.filter((m) => m.alias === rawModel || m.id === rawModel)
+  const matches = normalized.filter((m) => (m.alias === rawModel || m.id === rawModel) && m.available)
   if (matches.length === 0) {
     if (rawModel.includes('/')) {
       if (!rawKind || rawKind === 'goose') {

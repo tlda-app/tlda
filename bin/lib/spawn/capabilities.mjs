@@ -3,7 +3,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import { CODEX_MODELS, DEFAULT_MODEL, GOOSE_MODELS, GOOSE_VERIFIED, MODEL_ALIASES } from './models.mjs'
+import { GOOSE_MODELS, GOOSE_VERIFIED, listModels } from './models.mjs'
+import { readConfig } from './identity.mjs'
 
 const execFileP = promisify(execFile)
 const DEFAULT_TIMEOUT_MS = 2500
@@ -83,44 +84,42 @@ async function cursorStatus(binaryPath, deps) {
   }
 }
 
-function modelRows(kind, { cursorAvailable = true } = {}) {
-  if (kind === 'claude') {
-    return Object.entries(MODEL_ALIASES).sort(([a], [b]) => a.localeCompare(b)).map(([alias, id]) => ({
-      alias,
-      id,
-      available: true,
-      verified: true,
+function modelRows(kind, config, { cursorAvailable = true } = {}) {
+  return listModels(config).models
+    .filter((model) => model.kind === kind)
+    .map((model) => ({
+      alias: model.alias,
+      id: model.id,
+      available: model.available !== false && (kind !== 'goose' || (model.verified !== false && (!model.id.startsWith('cursor-agent/') || cursorAvailable))),
+      verified: model.verified,
+      provider: model.provider,
+      tags: model.tags,
     }))
-  }
-  if (kind === 'codex') {
-    return Object.entries(CODEX_MODELS).sort(([a], [b]) => a.localeCompare(b)).map(([alias, id]) => ({
-      alias,
-      id,
-      available: true,
-      verified: true,
-    }))
-  }
-  return Object.entries(GOOSE_MODELS).sort(([a], [b]) => a.localeCompare(b)).map(([alias, id]) => ({
-    alias,
-    id,
-    available: GOOSE_VERIFIED.has(id) && (!id.startsWith('cursor-agent/') || cursorAvailable),
-    verified: GOOSE_VERIFIED.has(id),
-  }))
 }
 
 function harnessAvailable(h) {
   return !!(h.binary?.ok && h.authenticated?.ok)
 }
 
+function firstAvailableModel(harness, preferredAlias) {
+  const models = (harness.models || []).filter((model) => model.available !== false && model.verified !== false)
+  return models.find((model) => model.alias === preferredAlias) || models[0] || null
+}
+
 function chooseDefault(harnesses) {
-  if (harnessAvailable(harnesses.claude)) return { kind: 'claude', model: DEFAULT_MODEL, alias: 'opus' }
-  if (harnessAvailable(harnesses.codex)) return { kind: 'codex', model: CODEX_MODELS.gpt, alias: 'gpt' }
-  if (harnessAvailable(harnesses.goose)) return { kind: 'goose', model: GOOSE_MODELS.deepseek, alias: 'deepseek' }
-  if (harnessAvailable(harnesses.cursor)) return { kind: 'cursor', model: GOOSE_MODELS.cursor, alias: 'cursor' }
+  const claudeModel = harnessAvailable(harnesses.claude) ? firstAvailableModel(harnesses.claude, 'opus') : null
+  if (claudeModel) return { kind: 'claude', model: claudeModel.id, alias: claudeModel.alias }
+  const codexModel = harnessAvailable(harnesses.codex) ? firstAvailableModel(harnesses.codex, 'gpt') : null
+  if (codexModel) return { kind: 'codex', model: codexModel.id, alias: codexModel.alias }
+  const gooseModel = harnessAvailable(harnesses.goose) ? firstAvailableModel(harnesses.goose, 'deepseek') : null
+  if (gooseModel) return { kind: 'goose', model: gooseModel.id, alias: gooseModel.alias }
+  const cursorModel = harnessAvailable(harnesses.cursor) ? firstAvailableModel(harnesses.cursor, 'cursor') : null
+  if (cursorModel) return { kind: 'cursor', model: cursorModel.id, alias: cursorModel.alias }
   return null
 }
 
 export async function probeSpawnCapabilities({ env = process.env, now = new Date(), deps = {} } = {}) {
+  const config = deps.config ?? readConfig()
   const runner = {
     run: deps.run || ((command, args, opts = {}) => run(command, args, { ...opts, env })),
   }
@@ -143,21 +142,21 @@ export async function probeSpawnCapabilities({ env = process.env, now = new Date
       binary: claudePath ? okResult({ path: claudePath }) : failResult('binary-missing'),
       authenticated: claudeAuth,
       available: !!(claudePath && claudeAuth.ok),
-      models: modelRows('claude'),
+      models: modelRows('claude', config),
     },
     codex: {
       kind: 'codex',
       binary: codexPath ? okResult({ path: codexPath }) : failResult('binary-missing'),
       authenticated: codexAuth,
       available: !!(codexPath && codexAuth.ok),
-      models: modelRows('codex'),
+      models: modelRows('codex', config),
     },
     goose: {
       kind: 'goose',
       binary: goosePath ? okResult({ path: goosePath }) : failResult('binary-missing'),
       authenticated: gooseAuth,
       available: !!(goosePath && gooseAuth.ok),
-      models: modelRows('goose', { cursorAvailable }),
+      models: modelRows('goose', config, { cursorAvailable }),
       verified: [...GOOSE_VERIFIED].sort(),
     },
     cursor: {

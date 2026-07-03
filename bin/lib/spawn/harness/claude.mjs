@@ -1,7 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import { activeConfigName, readConfig, repoRoot } from '../identity.mjs'
-import { resolveClaudeModel } from '../models.mjs'
+import { resolveClaudeModel, resolveClaudeModelSelection } from '../models.mjs'
 
 const REGISTER_PROMPT = 'Call register() with the fleet MCP server. Then call my_task() to check for a pending task.'
 const DNS_ALIAS_PRELOAD = path.join(repoRoot(), 'shared', 'node-dns-alias.cjs')
@@ -17,8 +17,12 @@ export function registerPrompt(name) {
     : REGISTER_PROMPT
 }
 
-export function resolveModel(model) {
-  return resolveClaudeModel(model)
+export function resolveModel(model, options = {}) {
+  return resolveClaudeModel(model, options)
+}
+
+export function resolveModelSelection(model, options = {}) {
+  return resolveClaudeModelSelection(model, options)
 }
 
 export function buildCmd({
