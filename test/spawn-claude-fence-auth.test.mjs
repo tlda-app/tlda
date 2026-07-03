@@ -3,12 +3,12 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import * as claude from '../bin/lib/spawn/harness/claude.mjs'
 
-test('Claude fence read roots include auth and tlda config contents', () => {
+test('Claude fence read roots include tlda config and hard-deny credential stores', () => {
   const source = readFileSync(new URL('../bin/lib/spawn/fence.mjs', import.meta.url), 'utf8')
   assert.match(source, /'~\/\.claude\/\*\*'/)
   assert.match(source, /'~\/\.config\/tlda\/\*\*'/)
   assert.match(source, /'~\/Library\/Keychains\/\*\*'/)
-  assert.match(source, /com\.apple\.securityd/)
+  assert.doesNotMatch(source, /com\.apple\.securityd/)
 })
 
 test('Claude launch does not point Node at the denied tlda pem path', () => {
