@@ -11,6 +11,13 @@ function sq(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`
 }
 
+function appendLaunchFlags(parts, harnessOptions = {}) {
+  for (const flag of [...(harnessOptions.required || []), ...(harnessOptions.preferences || [])]) {
+    if (typeof flag !== 'string' || !flag.trim()) continue
+    if (!parts.includes(flag)) parts.push(flag)
+  }
+}
+
 export function registerPrompt(name) {
   return name
     ? `Call register(name="${String(name).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}") with the fleet MCP server. Then call my_task() to check for a pending task.`
@@ -38,6 +45,7 @@ export function buildCmd({
   includePrompt = true,
   env = process.env,
   config = readConfig(),
+  harnessOptions = {},
 } = {}) {
   const parts = [
     `FLEET_ID=${sq(fleetId)}`,
@@ -71,11 +79,11 @@ export function buildCmd({
   }
   parts.push('claude')
   if (resumeId) parts.push(`--resume ${sq(resumeId)}`)
-  parts.push('--dangerously-load-development-channels server:tlda')
   parts.push(`--model ${sq(model)}`)
   if (effort) parts.push(`--effort ${sq(effort)}`)
   if (mode === 'bypassPermissions') parts.push('--dangerously-skip-permissions')
   else if (mode) parts.push(`--permission-mode ${sq(mode)}`)
+  appendLaunchFlags(parts, harnessOptions)
   if (includePrompt) parts.push(sq(registerPrompt(name)))
   return parts.join(' ')
 }

@@ -335,6 +335,11 @@ describe('daemon privilege ledger', () => {
           provider: 'codex',
           provider_model: 'gpt-local',
           cap: 'read',
+          harness: {
+            required: ['--codex-required-control'],
+            preferences: ['--codex-preference'],
+            controls: true,
+          },
         },
       },
       servers: {
@@ -368,6 +373,12 @@ describe('daemon privilege ledger', () => {
 
     const config = withDaemonModelAliases({}, daemonConfig)
     assert.deepEqual(config.models.codex.localgpt, { id: 'gpt-local' })
+    assert.deepEqual(config.harnessOptions.codex.localgpt, {
+      required: ['--codex-required-control'],
+      preferences: ['--codex-preference'],
+      controls: true,
+    })
+    assert.deepEqual(config.harnessOptions.codex['gpt-local'], config.harnessOptions.codex.localgpt)
     assert.equal(config.spawnPolicy.privilegeProfiles.app.operations.write.deny[0], '~/.config/tlda/fleet.db*')
     assert.equal(config.spawnPolicy.modelCeilings.localgpt, 'read')
     assert.equal(config.spawnPolicy.modelCeilings['gpt-local'], 'read')
@@ -417,5 +428,23 @@ describe('daemon privilege ledger', () => {
     assert.equal(JSON.parse(check.prepare('SELECT spawn_policy FROM privilege_grants WHERE id = ?').get('fleet:child').spawn_policy).capability, 'read')
     check.close()
     await ledger.close()
+  })
+
+  it('ships two static daemon config files: harness default and fenced alternative', () => {
+    const harnessDefault = readDaemonConfig(new URL('../config/daemon.yaml', import.meta.url))
+    const fenced = readDaemonConfig(new URL('../config/daemon-fenced.yaml', import.meta.url))
+
+    const defaultConfig = withDaemonModelAliases({}, harnessDefault)
+    assert.deepEqual(defaultConfig.harnessOptions.claude['*'].required, ['--dangerously-load-development-channels server:tlda'])
+    assert.deepEqual(defaultConfig.harnessOptions.claude['*'].preferences, [])
+    assert.equal(defaultConfig.harnessOptions.claude['*'].controls, true)
+    assert.equal(Object.keys(defaultConfig.spawnPolicy.privilegeProfiles || {}).length, 0)
+    assert.equal(Object.keys(harnessDefault.grants).length, 0)
+
+    const fencedConfig = withDaemonModelAliases({}, fenced)
+    assert.deepEqual(fencedConfig.harnessOptions.claude['*'].preferences, ['--dangerously-skip-permissions'])
+    assert.equal(fencedConfig.harnessOptions.claude['*'].controls, true)
+    assert.deepEqual(Object.keys(fencedConfig.spawnPolicy.privilegeProfiles).sort(), ['app', 'math', 'ops', 'readonly', 'wd'])
+    assert.equal(fenced.grants['fleet:skip'], 'ops')
   })
 })

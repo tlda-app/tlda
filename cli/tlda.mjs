@@ -1712,7 +1712,8 @@ async function runFleetSpawn(spawnArgs) {
     : null
   const cwd = resolve(flagFromRaw(spawnArgs, 'cwd') || process.cwd())
   const model = flagFromRaw(spawnArgs, 'model') || undefined
-  const kind = flagFromRaw(spawnArgs, 'kind') || undefined
+    const kind = flagFromRaw(spawnArgs, 'kind') || undefined
+    const acknowledgeNoSecurity = hasRawFlag(spawnArgs, 'i-like-to-live-dangerously')
   let ledger = null
   try {
     const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
@@ -1748,6 +1749,7 @@ async function runFleetSpawn(spawnArgs) {
       agentId: preallocatedAgentId,
       model,
       kind,
+      config,
       cwd,
       effort: flagFromRaw(spawnArgs, 'effort') || undefined,
       permissionMode: flagFromRaw(spawnArgs, 'mode') || undefined,
@@ -1756,12 +1758,13 @@ async function runFleetSpawn(spawnArgs) {
       spawnPolicy: grant.grantedPolicy,
       privilegeSet: grant.grantedPrivilegeSet,
       explicitPolicy: policyArg != null,
+      acknowledgeNoSecurity,
       enforceFence: true,
       sessionId: session || undefined,
       enroll: hasRawFlag(spawnArgs, 'enroll'),
     }
     if (!params.name && !params.sessionId) {
-      console.error(red('Usage: tlda agent spawn-direct [--fresh|--refresh|--session uuid] <agent> [--model model] [--kind kind] [--cwd path] [--privileges profile] [--capability read|write|tlda-write|full] [--spawner-id fleet:skip]'))
+      console.error(red('Usage: tlda agent spawn-direct [--fresh|--refresh|--session uuid] <agent> [--model model] [--kind kind] [--cwd path] [--privileges profile] [--capability read|write|tlda-write|full] [--spawner-id fleet:skip] [--i-like-to-live-dangerously]'))
       process.exit(1)
     }
     let result
@@ -1863,6 +1866,7 @@ function parseRoutedSpawn(rawArgs) {
   }
   const privileges = privilegesFromRaw(rawArgs)
   if (privileges) body.privileges = privileges
+  if (hasRawFlag(rawArgs, 'i-like-to-live-dangerously')) body.iLikeToLiveDangerously = true
   return body
 }
 

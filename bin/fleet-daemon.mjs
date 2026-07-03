@@ -2695,6 +2695,7 @@ async function rpcSpawn({
   requestedCapability,
   requestedPrivileges,
   policy,
+  acknowledgeNoSecurity,
   callerRung,
   requester,
 }) {
@@ -2737,8 +2738,10 @@ async function rpcSpawn({
         return cwdPath === sourcePath || cwdPath.startsWith(`${sourcePath}${path.sep}`)
       })
   let grant
+  let spawnConfig
   try {
     const config = loadConfig()
+    spawnConfig = config
     if (!requester?.id) {
       const err = new Error('spawn refused: daemon RPC requester identity is required')
       err.code = 'SPAWN_PRIVILEGE_NO_REQUESTER'
@@ -2799,6 +2802,7 @@ async function rpcSpawn({
         name: agentName,
         model: launchModel,
         kind: launchKind,
+        config: spawnConfig,
         cwd: resolvedCwd,
         sessionId,
         enroll: !!enroll,
@@ -2807,6 +2811,7 @@ async function rpcSpawn({
         spawnPolicy: grant.grantedPolicy,
         privilegeSet: grant.grantedPrivilegeSet,
         explicitPolicy: policy != null,
+        acknowledgeNoSecurity: !!acknowledgeNoSecurity,
         machineId: MACHINE_ID,
         tmuxSocket: TMUX_SOCKET,
       })

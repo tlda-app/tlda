@@ -1,0 +1,141 @@
+models:
+  claude:
+    "*":
+      harness:
+        required:
+          - "--dangerously-load-development-channels server:tlda"
+        preferences:
+          - "--dangerously-skip-permissions"
+        controls: true
+  codex:
+    "*":
+      harness:
+        required: []
+        preferences:
+          - "--dangerously-bypass-approvals-and-sandbox"
+        controls: true
+
+servers: {}
+regions:
+  cwd:
+    - cwd
+  temp:
+    - /tmp
+    - /tmp/**
+    - /private/tmp
+    - /private/tmp/**
+  agent-state-read:
+    - ~/.codex
+    - ~/.claude
+    - ~/.claude/**
+    - ~/.config/tlda
+    - ~/.config/tlda/**
+  agent-state-write:
+    - ~/.cache/**
+    - ~/.codex/**
+    - ~/.claude*
+    - ~/.claude/**
+  work:
+    - ~/work/**
+  apps:
+    - ~/work/tlda/**
+  daemon-files:
+    - ~/.config/tlda/fleet-daemon.log
+    - ~/.config/tlda/fleet-daemon.pid
+    - ~/.config/tlda/fleet-daemon.lock
+  browser-runtime:
+    - /tmp/tlda-pw-runtime
+    - /tmp/tlda-pw-runtime/**
+    - ~/Library/Caches/ms-playwright
+    - ~/Library/Caches/ms-playwright/**
+  daemon-db:
+    - ~/.config/tlda/fleet.db*
+  secrets:
+    - ~/.ssh/id_*
+    - ~/.aws/credentials
+    - "**/.env"
+  machine:
+    - "**"
+
+profiles:
+  readonly:
+    read:
+      allow:
+        - cwd
+        - temp
+        - agent-state-read
+      deny:
+        - secrets
+    write:
+      allow: []
+      deny:
+        - secrets
+  wd:
+    read:
+      allow:
+        - cwd
+        - temp
+        - agent-state-read
+      deny:
+        - secrets
+    write:
+      allow:
+        - cwd
+        - temp
+        - agent-state-write
+      deny:
+        - daemon-db
+        - secrets
+  math:
+    read:
+      allow:
+        - work
+        - temp
+        - agent-state-read
+      deny:
+        - apps
+        - secrets
+    write:
+      allow:
+        - work
+        - temp
+        - agent-state-write
+      deny:
+        - apps
+        - daemon-db
+        - secrets
+  app:
+    read:
+      allow:
+        - cwd
+        - temp
+        - daemon-files
+        - browser-runtime
+        - agent-state-read
+      deny:
+        - secrets
+    write:
+      allow:
+        - cwd
+        - temp
+        - daemon-files
+        - browser-runtime
+        - agent-state-write
+      deny:
+        - daemon-db
+        - secrets
+  ops:
+    read:
+      allow:
+        - machine
+      deny:
+        - secrets
+    write:
+      allow:
+        - machine
+      deny:
+        - daemon-db
+        - secrets
+
+grants:
+  fleet:skip: ops

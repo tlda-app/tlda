@@ -16,6 +16,7 @@ test('spawn-direct uses the daemon privilege ledger as spawner authority', () =>
   assert.match(cli, /spawnerPrivilegeSet: spawnerGrant\.privilegeSet/)
   assert.match(cli, /spawnPolicy: grant\.grantedPolicy/)
   assert.match(cli, /privilegeSet: grant\.grantedPrivilegeSet/)
+  assert.match(cli, /config,/)
   assert.match(cli, /await ledger\.set\(preallocatedAgentId/)
   assert.match(cli, /await ledger\.delete\(preallocatedAgentId\)/)
 })
@@ -52,10 +53,26 @@ test('spawn-direct policy flag forces an explicit fenced launch without raising 
   assert.match(cli, /explicitPolicy: policyArg != null/)
 })
 
+test('no-security acknowledgment is plumbed through every spawn surface', () => {
+  const cli = fs.readFileSync(new URL('../cli/tlda.mjs', import.meta.url), 'utf8')
+  const tools = fs.readFileSync(new URL('../mcp-server/fleet-tools.mjs', import.meta.url), 'utf8')
+  const daemon = fs.readFileSync(new URL('../bin/fleet-daemon.mjs', import.meta.url), 'utf8')
+  const server = fs.readFileSync(new URL('../server/unified-server.mjs', import.meta.url), 'utf8')
+
+  assert.match(cli, /hasRawFlag\(spawnArgs, 'i-like-to-live-dangerously'\)/)
+  assert.match(cli, /acknowledgeNoSecurity,/)
+  assert.match(cli, /body\.iLikeToLiveDangerously = true/)
+  assert.match(tools, /iLikeToLiveDangerously/)
+  assert.match(tools, /acknowledgeNoSecurity: !!opts\.iLikeToLiveDangerously/)
+  assert.match(server, /acknowledgeNoSecurity: !!iLikeToLiveDangerously/)
+  assert.match(daemon, /acknowledgeNoSecurity: !!acknowledgeNoSecurity/)
+})
+
 test('MCP local spawn capability is passed to the shared Node spawn helper', () => {
   const tools = fs.readFileSync(new URL('../mcp-server/fleet-tools.mjs', import.meta.url), 'utf8')
   assert.match(tools, /const requestedCapability = opts\.capability \|\| opts\.spawnCapability \|\| undefined/)
   assert.match(tools, /requestedCapability: grant\.grantedCapability/)
+  assert.match(tools, /config,/)
   assert.match(tools, /await privilegeLedger\.set\(preallocatedAgentId/)
   assert.match(tools, /await privilegeLedger\.delete\(preallocatedAgentId\)/)
 })

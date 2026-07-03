@@ -920,6 +920,7 @@ async function performSpawnRelay(caller, msg) {
   const {
     name, agent, model, doc, cwd, respawn, fresh, refresh, effort, kind, mode,
     capability, spawnCapability, privileges, requestedPrivileges, session, sessionId, session_id, enroll, routeAgent,
+    iLikeToLiveDangerously,
   } = msg || {}
   const requestedSession = session || sessionId || session_id || null
   const sessionMode = !!requestedSession
@@ -995,6 +996,7 @@ async function performSpawnRelay(caller, msg) {
       mode: mode || undefined,
       requestedCapability: requestedCapability || undefined,
       requestedPrivileges: privilegeRequest || undefined,
+      acknowledgeNoSecurity: !!iLikeToLiveDangerously,
       requester: {
         id: caller.id,
         name: caller.friendly_name || caller.name || undefined,
