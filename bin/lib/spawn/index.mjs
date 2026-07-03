@@ -87,7 +87,7 @@ async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, mode
       fleetId,
       tmuxSession,
       model,
-      modelProvider: modelResolved.provider,
+      modelProvider,
       name,
       cwd,
       api,
